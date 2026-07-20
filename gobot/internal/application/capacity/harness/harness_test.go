@@ -175,17 +175,30 @@ func seedIdleHull(t *testing.T, db *gorm.DB, playerID int, symbol, location, sys
 
 // seedContractHaulers persists n cargo-capable hulls dedicated to the contract-fulfillment
 // fleet — members of the hauler tier the hauler-first staging gate counts (sp-5nd2 /
-// sp-u5nh). Dedicated (so never reuse-eligible) and outside every depot, they are inert to
-// the reconciler except to lift EconomicsSignals.ContractHaulerCount to the saturated tier
-// these depot scenarios assert: below it the planner desires haulers only, no buffer capacity.
+// sp-u5nh). Each is BUSY flying a CONTRACT container (a saturated contract fleet is
+// actively working, not idle reserve): it lifts EconomicsSignals.ContractHaulerCount to the
+// tier these depot scenarios assert, but — not idle (container_id set) — it is NOT tier-1
+// reuse-eligible, so the depot gap stays a genuine capital/idle-reuse question these
+// scenarios drive with their OWN idle hulls, never one the count-fillers silently pre-cover.
+// (Idle contract haulers ARE reuse-eligible now — reuse before buy — so lifting the count
+// requires working hulls, not idle ones.)
 func seedContractHaulers(t *testing.T, db *gorm.DB, playerID, n int) {
 	t.Helper()
 	for i := 0; i < n; i++ {
+		ship := fmt.Sprintf("CONTRACT-HAUL-%d-%d", playerID, i)
+		containerID := fmt.Sprintf("contract-op-%d-%d", playerID, i)
+		require.NoError(t, db.Create(&persistence.ContainerModel{
+			ID:            containerID,
+			PlayerID:      playerID,
+			ContainerType: string(container.ContainerTypeContract),
+			Status:        string(container.ContainerStatusRunning),
+		}).Error)
 		require.NoError(t, db.Create(&persistence.ShipModel{
-			ShipSymbol:     fmt.Sprintf("CONTRACT-HAUL-%d-%d", playerID, i),
+			ShipSymbol:     ship,
 			PlayerID:       playerID,
 			LocationSymbol: "X1-HAULER-DOCK",
 			SystemSymbol:   "X1-HAULER",
+			ContainerID:    &containerID, // busy flying a contract op → not idle → not reuse-eligible
 			DedicatedFleet: "contract",
 			CargoCapacity:  80,
 			Role:           "HAULER", // LIGHT-hauler class — the tier counts only these, never the COMMAND frigate (sp-cr2v)

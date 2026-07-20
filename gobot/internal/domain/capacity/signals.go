@@ -90,8 +90,8 @@ type TopologySignals struct {
 	// TopologySignals, so the reuse-eligible subset of Utilization.Hulls
 	// travels here). The SENSE lane fills it with the hulls whose
 	// Idle is true, alongside Clusters. The ladder differ re-verifies
-	// eligibility per hull (Idle && DedicatedFleet == "" && not already
-	// serving a cluster role), so an over-filled slice fails SAFE: an
+	// eligibility per hull (Idle && ReuseEligibleFleet(dedication, role) && not
+	// already serving a cluster role), so an over-filled slice fails SAFE: an
 	// ineligible entry is skipped, never reassigned. Empty ⇒ tier 1 has no
 	// free lever and gaps escalate up the ladder (approval-gated at tier 4).
 	IdleHulls []HullUtilization
@@ -179,6 +179,33 @@ type HullUtilization struct {
 // probe/satellite never does. Shared by the ladder's reusable guard and the
 // SENSE-side reuse-eligible filter so the two cannot drift (sp-5nd2).
 const MinReuseCargoCapacity = 1
+
+// reuseContractFleet is the contract op's own hauling-fleet tag (matches
+// assignment.dedicatedFleetContract; the domain cannot import that application
+// const). An idle hull in this pool is the contract op's OWN reserve hauler, so
+// repositioning it into a depot role is reuse, not poaching (Admiral: reuse
+// before buy) — it joins undedicated hulls (fresh autosizer buys) in the pool.
+const reuseContractFleet = "contract"
+
+// roleCommandFrigate is the last-resort command ship's registration role. It can
+// itself carry the "contract" tag, yet must NEVER be auto-poached into a depot
+// role (RULINGS #7 — the command frigate hauls only as last resort), so the reuse
+// pool excludes it BY ROLE even though its dedication would otherwise qualify.
+const roleCommandFrigate = "COMMAND"
+
+// ReuseEligibleFleet reports whether a hull's dedication + role put it in the
+// tier-1 reuse pool: the contract op's own free haulers — undedicated or the
+// "contract" reserve — EXCLUDING the command frigate. Any other fleet's pin
+// (trade/manufacturing/stocker/warehouse/depot-delivery/purchasing) is another
+// operation's hull and is never poached. Shared by the ladder's reusable guard
+// and the SENSE-side reuse-eligible filter so the two layers cannot drift on
+// which hulls are poachable.
+func ReuseEligibleFleet(dedicatedFleet, role string) bool {
+	if role == roleCommandFrigate {
+		return false
+	}
+	return dedicatedFleet == "" || dedicatedFleet == reuseContractFleet
+}
 
 // EconomicsSignals: treasury, income velocity, per-good source distances, and
 // stocker load (spec SENSE: Economics). The GOVERN phase paces capital spend

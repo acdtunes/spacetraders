@@ -15,10 +15,10 @@ package capacity
 // keeps proposal identities stable across re-files).
 //
 // v1 scope decisions (deliberate, documented):
-//   - Tier-1 eligibility is Idle && DedicatedFleet == "" && not already
-//     serving a cluster role. Own-fleet reuse is deferred: the differ carries
-//     no fleet identity, and reassigning only undedicated hulls can never
-//     poach another operation's pinned hull (the fleet-killer failure mode).
+//   - Tier-1 eligibility is Idle && ReuseEligibleFleet(dedication, role) && not
+//     already serving a cluster role: undedicated hulls AND the contract op's own
+//     "contract" reserve (repositioning within the op is reuse, not poaching),
+//     but never the command frigate or another operation's pin (fleet-killer).
 //   - Only WAREHOUSES reposition (tier 2): they are the stationary buffer
 //     anchors. Stockers roam to sources and workers fly deliveries — their
 //     instantaneous waypoints are duty, not misplacement, and the verb
@@ -427,9 +427,11 @@ func newIdlePool(actual TopologySignals) *idlePool {
 	return &idlePool{hulls: eligible}
 }
 
-// reusable applies the never-poach + never-mispick guard: only a genuinely
-// idle, undedicated, cargo-capable hull not already holding a cluster role (and
-// not listed twice) may be reassigned. The cargo floor (sp-5nd2) keeps a
+// reusable applies the never-poach + never-mispick guard: only a genuinely idle,
+// cargo-capable hull in the contract reuse pool (undedicated or the contract op's
+// own "contract" reserve, never the command frigate or another op's pin — see
+// ReuseEligibleFleet) not already holding a cluster role (and not listed twice)
+// may be reassigned. The cargo floor (sp-5nd2) keeps a
 // 0-cargo probe/satellite out of the reuse pool: every reconciler reuse target
 // is a hauling role the sp-r6f1 assign gate cargo-requires, so offering a
 // can't-haul hull only emits a reassign that gate BLOCKS — erroring CONVERGE and
@@ -438,7 +440,7 @@ func reusable(hull HullUtilization, serving, taken map[string]bool) bool {
 	if !hull.Idle {
 		return false
 	}
-	if hull.DedicatedFleet != "" {
+	if !ReuseEligibleFleet(hull.DedicatedFleet, hull.Role) {
 		return false
 	}
 	if hull.CargoCapacity < MinReuseCargoCapacity {

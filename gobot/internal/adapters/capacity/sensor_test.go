@@ -540,24 +540,29 @@ func TestSense_ScopesToRequestedPlayer(t *testing.T) {
 
 // Behavior 9: the SENSE lane fills Topology.IdleHulls with the tier-1
 // REUSE-ELIGIBLE subset of the SAME hull snapshot Utilization carries — idle AND
-// undedicated AND not already serving a cluster role. Diff receives ONLY
+// (undedicated OR the contract op's own "contract" reserve, never the command
+// frigate) AND not already serving a cluster role. Diff receives ONLY
 // TopologySignals, so an unfilled slice silently starves the reuse-first rung and
-// every hull gap escalates straight to tier-4 capital. All four eligibility cases
-// are drawn from one real snapshot:
+// every hull gap escalates straight to tier-4 capital. The eligibility cases are
+// drawn from one real snapshot:
 //
-//	(a) FREE-1 idle, undedicated, in no depot     -> PRESENT (the free lever);
-//	(b) DED-1  idle, DEDICATED, in no depot        -> absent (never poach a pin);
-//	(c) DL-1   idle, undedicated, a cluster worker -> absent (already serving);
-//	(d) WH-1   flying its container (busy)         -> absent (not idle).
+//	(a) FREE-1  idle, undedicated, in no depot        -> PRESENT (the free lever);
+//	(b) DED-1   idle, "contract", in no depot          -> PRESENT (the contract op's
+//	                                                      OWN reserve — reuse before buy);
+//	(c) TRADE-1 idle, pinned to ANOTHER op, no depot   -> absent (never poach a pin);
+//	(d) DL-1    idle, undedicated, a cluster worker     -> absent (already serving);
+//	(e) WH-1    flying its container (busy)             -> absent (not idle).
 //
-// ST-1 (idle, dedicated, AND a cluster stocker) is excluded on both counts.
+// ST-1 (idle, "contract", AND a cluster stocker) is excluded by the serving guard.
 func TestSense_FillsIdleHullsWithReuseEligibleSubset(t *testing.T) {
 	db := newTestDB(t)
 	playerID := seedWorld(t, db)
-	// Two hulls the base world lacks isolate the remaining cases: DED-1 is
-	// dedicated but in NO cluster (pure dedication exclusion), and FREE-1 is the
-	// sole genuinely reuse-eligible hull.
+	// Three hulls the base world lacks isolate the remaining cases: DED-1 is the
+	// contract op's own reserve in NO cluster (now reuse-eligible), TRADE-1 is
+	// pinned to another op in no cluster (the pure never-poach-a-pin exclusion),
+	// and FREE-1 is an undedicated reuse-eligible hull.
 	seedShip(t, db, playerID, "DED-1", hubWaypoint, "X1-TT77", nil, "idle", "contract")
+	seedShip(t, db, playerID, "TRADE-1", hubWaypoint, "X1-TT77", nil, "idle", "trade")
 	seedShip(t, db, playerID, "FREE-1", sourceWaypoint, "X1-TT77", nil, "idle", "")
 
 	// A duty-cycle entry for FREE-1 proves the IdleHulls entry is the SAME struct
@@ -572,8 +577,9 @@ func TestSense_FillsIdleHullsWithReuseEligibleSubset(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Equal(t, []capacity.HullUtilization{
+		{ShipSymbol: "DED-1", DedicatedFleet: "contract", Waypoint: hubWaypoint, DutyCyclePct: 0, Idle: true, CargoCapacity: 80},
 		{ShipSymbol: "FREE-1", DedicatedFleet: "", Waypoint: sourceWaypoint, DutyCyclePct: 42, Idle: true, CargoCapacity: 80},
-	}, signals.Topology.IdleHulls, "only the idle, undedicated, cargo-capable, non-cluster hull is reuse-eligible")
+	}, signals.Topology.IdleHulls, "the idle undedicated hull AND the idle contract-reserve hull are reuse-eligible; a hull pinned to another op is not")
 	// Same tick, same snapshot: every IdleHulls entry is field-for-field one of
 	// Utilization.Hulls (not a second DB read that could diverge).
 	require.Subset(t, signals.Utilization.Hulls, signals.Topology.IdleHulls)

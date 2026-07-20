@@ -186,7 +186,9 @@ func (s *Sensor) note(family string, err error) {
 // reuseEligibleIdleHulls filters the utilization hull snapshot to the tier-1
 // REUSE-ELIGIBLE idle subset the DIFF ladder may reassign. Eligibility mirrors
 // the ladder's own re-verification EXACTLY (domain/capacity/ladder.go's reusable
-// guard): idle AND undedicated AND cargo-capable AND not already holding a
+// guard): idle AND in the contract reuse pool (undedicated or the contract op's
+// own "contract" reserve, never the command frigate — domainCapacity.ReuseEligibleFleet)
+// AND cargo-capable AND not already holding a
 // cluster role — a stationary depot hull can read idle in the ships table yet
 // still anchor its cluster, so it must never be offered as free; and a 0-cargo
 // probe/satellite (below domainCapacity.MinReuseCargoCapacity) cannot serve a
@@ -200,7 +202,7 @@ func reuseEligibleIdleHulls(hulls []domainCapacity.HullUtilization, clusters []d
 	serving := clusterRoleShipSymbols(clusters)
 	var eligible []domainCapacity.HullUtilization
 	for _, hull := range hulls {
-		if hull.Idle && hull.DedicatedFleet == "" && hull.CargoCapacity >= domainCapacity.MinReuseCargoCapacity && !serving[hull.ShipSymbol] {
+		if hull.Idle && domainCapacity.ReuseEligibleFleet(hull.DedicatedFleet, hull.Role) && hull.CargoCapacity >= domainCapacity.MinReuseCargoCapacity && !serving[hull.ShipSymbol] {
 			eligible = append(eligible, hull)
 		}
 	}

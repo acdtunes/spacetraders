@@ -215,6 +215,16 @@ func TestLadderDiffer_IneligibleIdleHullsAreNeverReassigned(t *testing.T) {
 			}},
 		},
 		{
+			// The command frigate carries the "contract" tag yet must NEVER be
+			// auto-poached into a depot role (RULINGS #7 — it hauls only as last
+			// resort); the role guard keeps it out even after contract idles
+			// became reuse-eligible.
+			name: "the command frigate (contract-tagged, role COMMAND)",
+			actual: TopologySignals{IdleHulls: []HullUtilization{
+				{ShipSymbol: "FRIGATE", DedicatedFleet: "contract", Role: "COMMAND", Idle: true, CargoCapacity: haulCapableCargoUnits},
+			}},
+		},
+		{
 			name: "a 0-cargo probe cannot haul (sp-5nd2)",
 			actual: TopologySignals{IdleHulls: []HullUtilization{
 				cargoZeroIdleHull("SHIP-PROBE"),

@@ -9,20 +9,24 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 )
 
-// tier1_reuse_idle: the SENSE-side reuse-eligible
-// filter is the ONLY channel an idle hull reaches the DIFF ladder's reassign path through. It already
-// requires DedicatedFleet == "", so a hull dedicated to the exclusive "contract" fleet — the
-// reserve floor's stamp — is INVISIBLE to tier1: an armed reconciler can never reassign the
-// contract reserve, exactly as it can never poach it via the shared idle pool. This pins the
-// guarantee directly on the pure filter so a future edit cannot
-// silently drop the dedication check and re-open the poach vector.
-func TestReuseEligibleIdleHulls_ExcludesContractDedicatedHull(t *testing.T) {
-	// All cargo-capable, so dedication/idle is the ONLY exclusion reason under test.
+// tier1_reuse_idle: the SENSE-side reuse-eligible filter is the ONLY channel an
+// idle hull reaches the DIFF ladder's reassign path through. An idle hull tagged
+// "contract" is the contract op's OWN reserve hauler, so REPOSITIONING it into a
+// depot role is reuse, not poaching (Admiral: reuse before buy) — it belongs in
+// the reuse pool alongside undedicated hulls. The COMMAND frigate can itself carry
+// the "contract" tag yet must NEVER be poached (RULINGS #7 — last-resort hauler),
+// so the role guard keeps it out; every OTHER fleet's pin (depot roles, trade,
+// manufacturing) stays excluded. This pins the widened-but-safe eligibility on the
+// pure filter so a future edit can neither drop the contract idle nor re-open the
+// frigate/other-fleet poach.
+func TestReuseEligibleIdleHulls_IncludesContractHaulersExcludesFrigate(t *testing.T) {
+	// All cargo-capable, so dedication/role/idle are the ONLY exclusion reasons under test.
 	hulls := []domcap.HullUtilization{
-		{ShipSymbol: "CONTRACT-RESERVE", DedicatedFleet: "contract", Idle: true, CargoCapacity: 80},
-		{ShipSymbol: "FREE-1", DedicatedFleet: "", Idle: true, CargoCapacity: 80},
-		{ShipSymbol: "DEPOT-PIN", DedicatedFleet: "depot-delivery", Idle: true, CargoCapacity: 80},
-		{ShipSymbol: "BUSY-1", DedicatedFleet: "", Idle: false, CargoCapacity: 80},
+		{ShipSymbol: "CONTRACT-RESERVE", DedicatedFleet: "contract", Role: "HAULER", Idle: true, CargoCapacity: 80},
+		{ShipSymbol: "FREE-1", DedicatedFleet: "", Role: "HAULER", Idle: true, CargoCapacity: 80},
+		{ShipSymbol: "FRIGATE", DedicatedFleet: "contract", Role: "COMMAND", Idle: true, CargoCapacity: 80},
+		{ShipSymbol: "DEPOT-PIN", DedicatedFleet: "depot-delivery", Role: "HAULER", Idle: true, CargoCapacity: 80},
+		{ShipSymbol: "BUSY-1", DedicatedFleet: "", Role: "HAULER", Idle: false, CargoCapacity: 80},
 	}
 
 	eligible := reuseEligibleIdleHulls(hulls, nil)
@@ -31,8 +35,8 @@ func TestReuseEligibleIdleHulls_ExcludesContractDedicatedHull(t *testing.T) {
 	for _, h := range eligible {
 		symbols = append(symbols, h.ShipSymbol)
 	}
-	require.Equal(t, []string{"FREE-1"}, symbols,
-		"only the idle UNDEDICATED hull is reuse-eligible: a contract-dedicated reserve hull (and any other fleet's hull) is excluded, so tier1_reuse_idle cannot reassign it")
+	require.ElementsMatch(t, []string{"CONTRACT-RESERVE", "FREE-1"}, symbols,
+		"an idle contract-dedicated hauler AND an idle undedicated hauler are reuse-eligible; the command frigate (contract + role COMMAND), a depot pin, and a busy hull are excluded")
 }
 
 // sp-7r7w never-poach: the exclusive PURCHASING ship (the pivoted command frigate) stands by idle
