@@ -91,6 +91,10 @@ type RunCapacityReconcilerCoordinatorCommand struct {
 	AddThresholdPerHullCrHr  float64 // per-hull $/hr floor for adds; 0 → none
 	StockerCapacityBudget    int     // per-hub stocker budget; 0 → planner default
 	ApprovalThresholdCredits int64   // tier-4 cost needing approval; 0 → ALL tier-4
+
+	// ContractAddGateTradeBlind arms the trade-blind contract-delivery ADD gate.
+	// false → OFF = byte-identical (add gate benchmarks the fleet average).
+	ContractAddGateTradeBlind bool
 }
 
 // RunCapacityReconcilerCoordinatorResponse reports reconcile progress. Because
@@ -274,6 +278,9 @@ func resolveCalibration(cmd *RunCapacityReconcilerCoordinatorCommand) (capacity.
 	if cmd.StockerCapacityBudget != 0 {
 		cal.StockerCapacityBudget = cmd.StockerCapacityBudget
 	}
+	// Bool knob: false (default) leaves the byte-identical OFF path; no zero-means-
+	// default indirection needed.
+	cal.ContractAddGateTradeBlind = cmd.ContractAddGateTradeBlind
 	if cmd.ApprovalThresholdCredits != 0 {
 		cal.ApprovalThresholdCredits = cmd.ApprovalThresholdCredits
 	}

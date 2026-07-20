@@ -64,6 +64,18 @@ type Calibration struct {
 	// planner's own documented default until calibrated.
 	StockerCapacityBudget int
 
+	// ContractAddGateTradeBlind switches the contract-delivery ADD gate from the
+	// TRADE-contaminated fleet-wide per-hull average (FleetPerHullCrHr) to the
+	// CONTRACT op's own economics: a new depot is gated on the universal per-hull
+	// floor plus the depot's cycle-time-compression uplift, never the fleet
+	// average. Trade is CONCAVE, so the fleet average is an unachievable,
+	// actively-misleading opportunity cost for a contract-capacity add — it can
+	// suppress a positive-ROI depot the moment arbitrage inflates the average.
+	// Default false = OFF = byte-identical (add gate keeps benchmarking against
+	// the fleet average). Fail-closed is preserved on both paths: unreadable
+	// contract economics → no add.
+	ContractAddGateTradeBlind bool
+
 	// TickInterval is the reconcile cadence. Default 300s — capacity topology
 	// is strategic, not per-second.
 	TickInterval time.Duration
@@ -90,14 +102,15 @@ const (
 // DefaultCalibration is the engine's documented protective default set.
 func DefaultCalibration() Calibration {
 	return Calibration{
-		ReserveFloorCredits:      DefaultReserveFloorCredits,
-		SurplusFraction:          DefaultSurplusFraction,
-		PerDecisionCapPct:        DefaultPerDecisionCapPct,
-		ROIPaybackHorizon:        DefaultROIPaybackHorizon,
-		AddThresholdPerHullCrHr:  0,
-		StockerCapacityBudget:    0,
-		TickInterval:             DefaultTickInterval,
-		ApprovalThresholdCredits: 0,
+		ReserveFloorCredits:       DefaultReserveFloorCredits,
+		SurplusFraction:           DefaultSurplusFraction,
+		PerDecisionCapPct:         DefaultPerDecisionCapPct,
+		ROIPaybackHorizon:         DefaultROIPaybackHorizon,
+		AddThresholdPerHullCrHr:   0,
+		StockerCapacityBudget:     0,
+		ContractAddGateTradeBlind: false,
+		TickInterval:              DefaultTickInterval,
+		ApprovalThresholdCredits:  0,
 	}
 }
 

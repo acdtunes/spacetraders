@@ -51,6 +51,13 @@ type CapacityReconcilerConfig struct {
 	// the planner selects buffer goods under. 0/absent → planner default.
 	StockerCapacityBudget int `mapstructure:"stocker_capacity_budget" validate:"omitempty,min=0"`
 
+	// ContractAddGateTradeBlind gates a NEW contract depot on the contract op's
+	// own economics (universal per-hull floor + the depot's cycle-time-
+	// compression ROI) instead of the trade-contaminated fleet-wide per-hull
+	// average. false/absent → OFF = byte-identical (add gate keeps benchmarking
+	// against the fleet average). Set true to arm.
+	ContractAddGateTradeBlind bool `mapstructure:"contract_add_gate_trade_blind"`
+
 	// TickIntervalSecs is the reconcile cadence. 0/absent → 300.
 	TickIntervalSecs int `mapstructure:"tick_interval_secs" validate:"omitempty,min=5"`
 

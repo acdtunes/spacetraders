@@ -137,6 +137,7 @@ const (
 	stockerTravelSecondsPerDistance = 1.0
 	stockerTradeOverheadSeconds     = 120.0
 	secondsPerHour                  = 3600.0
+	secondsPerMinute                = 60.0
 )
 
 // ComputeDesired recomputes the desired capacity topology from live signals.
@@ -162,8 +163,16 @@ func (HeuristicPlanner) ComputeDesired(_ context.Context, signals Signals, cal C
 
 	var hubs []DesiredHub
 	for _, candidate := range rankHubCandidates(signals.Demand.Hubs, performanceByHub(signals.Performance.Hubs)) {
-		hub := planHub(candidate, sourceDistances[candidate.demand.HubSymbol], localProduction[candidate.demand.HubSymbol], gate, budgetUnits)
-		if walk.admits(candidate, hub) {
+		hubSourceDistances := sourceDistances[candidate.demand.HubSymbol]
+		hub := planHub(candidate, hubSourceDistances, localProduction[candidate.demand.HubSymbol], gate, budgetUnits)
+		// The depot's compression ROI is only credited on the trade-blind add
+		// path; computing it only when armed keeps the default-off path
+		// byte-identical.
+		compressionMinutesPerHour := 0.0
+		if cal.ContractAddGateTradeBlind {
+			compressionMinutesPerHour = hubCompressionMinutesPerHour(candidate.demand, hub, hubSourceDistances)
+		}
+		if walk.admits(candidate, hub, compressionMinutesPerHour) {
 			hubs = append(hubs, hub)
 		}
 	}
@@ -250,25 +259,39 @@ type coverageWalk struct {
 	addRequired float64
 	covered     map[string]bool
 	addStopped  bool
+	tradeBlind  bool
 }
 
 func newCoverageWalk(cal Calibration, signals Signals) *coverageWalk {
 	keepFloor := keepRequiredPerHullCrHr(cal)
+	// The ADD requirement: by default the absorption ceiling —
+	// max(floor, live fleet per-hull average). When trade-blind, the fleet
+	// average is dropped: it sums arbitrage trade revenue and, because trade is
+	// CONCAVE, is unachievable at the margin — an actively-misleading opportunity
+	// cost that suppresses a positive-ROI contract depot the moment arbitrage
+	// inflates it. The trade-blind add is gated on the universal per-hull floor
+	// alone, with the depot's cycle-time-compression ROI credited into the add
+	// marginal (admitsAdd) instead of benchmarked against trade.
+	addRequired := math.Max(keepFloor, signals.Economics.FleetPerHullCrHr)
+	if cal.ContractAddGateTradeBlind {
+		addRequired = keepFloor
+	}
 	return &coverageWalk{
 		keepFloor:   keepFloor,
-		addRequired: math.Max(keepFloor, signals.Economics.FleetPerHullCrHr),
+		addRequired: addRequired,
 		covered:     coveredHubs(signals.Topology),
+		tradeBlind:  cal.ContractAddGateTradeBlind,
 	}
 }
 
 // admits decides one ranked hub. Covered hubs KEEP their place while the
 // marginal hull clears the universal floor — shrink still works: a covered
 // hub below the floor drops out. Uncovered hubs face the ADD gate.
-func (walk *coverageWalk) admits(candidate hubCandidate, hub DesiredHub) bool {
+func (walk *coverageWalk) admits(candidate hubCandidate, hub DesiredHub, compressionMinutesPerHour float64) bool {
 	if walk.covered[candidate.demand.HubSymbol] {
 		return clearsCoverageGate(candidate, hub, walk.keepFloor)
 	}
-	return walk.admitsAdd(candidate, hub)
+	return walk.admitsAdd(candidate, hub, compressionMinutesPerHour)
 }
 
 // admitsAdd walks the ranking's NOT-yet-covered hubs and STOPS at the first
@@ -277,11 +300,20 @@ func (walk *coverageWalk) admits(candidate hubCandidate, hub DesiredHub) bool {
 // threshold" is a stop, not a filter: a leaner lower-ranked hub behind the
 // failure is NOT added even when its own marginal would clear the gate.
 // Covered hubs behind the stop still pass through admits' keep branch.
-func (walk *coverageWalk) admitsAdd(candidate hubCandidate, hub DesiredHub) bool {
+func (walk *coverageWalk) admitsAdd(candidate hubCandidate, hub DesiredHub, compressionMinutesPerHour float64) bool {
 	if walk.addStopped {
 		return false
 	}
-	walk.addStopped = !clearsCoverageGate(candidate, hub, walk.addRequired)
+	marginal := marginalPerHullCrHr(candidate.demand, hub)
+	if walk.tradeBlind {
+		// Credit the depot's cycle-time-compression ROI: the standalone
+		// freq×payment ÷ hulls marginal models the hub as a fresh capacity-add and
+		// UNDER-values a depot, whose real worth is throughput uplift on the
+		// EXISTING contract stream. Derived from this hub's own demand + cycle +
+		// buffer physics — trade never enters.
+		marginal += compressionMarginalPerHull(candidate, hub, compressionMinutesPerHour)
+	}
+	walk.addStopped = !(marginal > 0 && marginal >= walk.addRequired)
 	return !walk.addStopped
 }
 
@@ -319,6 +351,33 @@ func marginalPerHullCrHr(demand HubDemand, hub DesiredHub) float64 {
 		return 0
 	}
 	return demand.ContractFrequency * demand.AvgPaymentCredits / float64(hulls)
+}
+
+// compressionMarginalPerHull is the depot's cycle-time-compression ROI per hull
+// — the value the standalone capacity-add marginal omits. The depot
+// pre-stages buffered goods, avoiding source-and-haul minutes on the EXISTING
+// contract stream; valuing those avoided minutes at the hub's own contract
+// revenue rate (payment ÷ cycle-minutes) gives the throughput uplift in cr/hr,
+// spread across the hulls the depot commits. Contract-isolated: trade revenue
+// never enters. Zero (no credit) whenever it cannot be costed — no hulls, an
+// unmeasured cycle, no payment, or nothing buffered — so an uncostable depot
+// falls back to the conservative standalone marginal (fail-safe, never a
+// phantom-positive add). Clamped to the hub's own contract revenue rate:
+// compression cannot be worth more than the entire stream it compresses, which
+// also bounds a wedged-cycle telemetry reading.
+func compressionMarginalPerHull(candidate hubCandidate, hub DesiredHub, compressionMinutesPerHour float64) float64 {
+	hulls := hub.WorkerCount + hub.StockerCount + hub.WarehouseCount
+	cycleSeconds := candidate.performance.CycleTimeSeconds
+	payment := candidate.demand.AvgPaymentCredits
+	if hulls <= 0 || cycleSeconds <= 0 || payment <= 0 || compressionMinutesPerHour <= 0 {
+		return 0
+	}
+	revenuePerCycleMinute := payment / (cycleSeconds / secondsPerMinute)
+	compressionCrHr := compressionMinutesPerHour * revenuePerCycleMinute
+	if revenueRate := candidate.demand.ContractFrequency * payment; compressionCrHr > revenueRate {
+		compressionCrHr = revenueRate
+	}
+	return compressionCrHr / float64(hulls)
 }
 
 // keepRequiredPerHullCrHr is the universal per-hull-cr/hr floor EVERY hub —
@@ -470,7 +529,7 @@ func scoreBufferGood(good GoodDemand, sourceDistances map[string]float64) (buffe
 	if !known || distance <= 0 || good.Frequency <= 0 || good.AvgUnits <= 0 {
 		return bufferCandidate{}, false
 	}
-	savingPerContract := sourceDistanceSavingWeightMinutes*distance + averageUnitsSavingWeightMinutes*good.AvgUnits
+	savingPerContract := savingPerContractMinutes(distance, good.AvgUnits)
 	valueDensity := good.Frequency * savingPerContract / good.AvgUnits
 	return bufferCandidate{
 		selection: bufferSelection{
@@ -482,6 +541,51 @@ func scoreBufferGood(good GoodDemand, sourceDistances map[string]float64) (buffe
 		},
 		score: valueDensity,
 	}, true
+}
+
+// savingPerContractMinutes is the source-and-haul time a warehouse buffer avoids
+// per contract for one good (era-3 model): 0.030×source_distance +
+// 0.147×avg_units MINUTES, both terms positive. Shared by the buffer-value
+// scorer (value density) and the ADD gate's depot cycle-time-compression credit
+// so the two can never drift on the physics.
+func savingPerContractMinutes(distance, averageUnits float64) float64 {
+	return sourceDistanceSavingWeightMinutes*distance + averageUnitsSavingWeightMinutes*averageUnits
+}
+
+// hubCompressionMinutesPerHour totals the source-and-haul minutes the depot's
+// SELECTED buffered goods avoid per hour — Σ frequency × savingPerContract over
+// the whitelist. This is the avoided-time the ADD gate credits as
+// compression ROI; per-good frequency + avg-units come from the hub's contract
+// demand and the distance from the shared source-distance index, so it derives
+// from the same live signals the buffer selector used.
+func hubCompressionMinutesPerHour(demand HubDemand, hub DesiredHub, sourceDistances map[string]float64) float64 {
+	goods := goodDemandByName(demand.GoodMix)
+	total := 0.0
+	for _, buffered := range hub.BufferedGoods {
+		good, ok := goods[buffered.Good]
+		if !ok {
+			continue
+		}
+		distance, known := sourceDistances[buffered.Good]
+		if !known {
+			continue
+		}
+		total += good.Frequency * savingPerContractMinutes(distance, good.AvgUnits)
+	}
+	return total
+}
+
+// goodDemandByName indexes a hub's good mix by good; a duplicate good (malformed
+// sense) keeps the first entry so the lookup is deterministic.
+func goodDemandByName(goodMix []GoodDemand) map[string]GoodDemand {
+	byGood := make(map[string]GoodDemand, len(goodMix))
+	for _, good := range goodMix {
+		if _, seen := byGood[good.Good]; seen {
+			continue
+		}
+		byGood[good.Good] = good
+	}
+	return byGood
 }
 
 // bufferCapUnits is avg_units + 50% margin, never below one unit: one
