@@ -1454,6 +1454,16 @@ func run(cfg *config.Config) error {
 	contractInventoryFinder := contractServices.NewStorageInventoryFinder(storageOperationRepo, storageCoordinator)
 	contractFleetCoordinatorHandler.SetInventoryFinder(contractInventoryFinder)
 
+	// Warehouse-first construction sourcing (sp-crjla): the construction drain WITHDRAWS a gate
+	// material from an in-system depot warehouse before buying it at market, so a depot stocker is
+	// the sole buyer→warehouse and construction never double-buys the same units (RULINGS #4). It
+	// reuses the SAME shared finder + coordinator the contract path uses (one warehouse-query brain,
+	// not a divergent parallel one) and the construction executor as the warehouse-leg navigator.
+	// The same StorageRecoveryService that repopulates the coordinator on restart makes this
+	// restart-safe (RULINGS #2). Byte-identical when no depot warehouse holds the material — so it is
+	// arm-safe to deploy before the reconciler half emits gate-depot demand.
+	constructionCoordinatorHandler.SetInventorySource(contractInventoryFinder, storageCoordinator, apiClient, constructionExecutor)
+
 	// sp-o477: the in-memory storage coordinator is populated only by live
 	// deposits, so on daemon restart it starts EMPTY and the inventory-first path
 	// wired just above sees 0 available — contracts market-buy goods already

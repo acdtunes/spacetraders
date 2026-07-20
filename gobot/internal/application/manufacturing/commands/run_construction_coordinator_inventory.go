@@ -1,0 +1,160 @@
+package commands
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
+	"github.com/andrescamacho/spacetraders-go/pkg/utils"
+)
+
+// Warehouse-first construction sourcing (sp-crjla). Before buying a gate material at market, the
+// drain withdraws it from an in-system depot warehouse at zero marginal cost, enforcing
+// "one controller per resource": a depot stocker is the sole buyer→warehouse and the construction
+// coordinator only ever buys the RESIDUAL not covered by warehouse stock (RULINGS #4, no
+// double-buy). The finder is the SHARED contract StorageInventoryFinder; the withdrawal itself
+// mirrors the contract DeliveryExecutor's proven reserve→AlignAndTransferCargo→confirm shape.
+
+// warehouseFirstEnabled reports whether all four warehouse-first collaborators are wired
+// (SetInventorySource). When false the drain skips the withdrawal seam entirely and buys at market
+// exactly as today — the byte-identical off path that makes warehouse-first arm-safe to land before
+// the reconciler half.
+func (h *RunConstructionCoordinatorHandler) warehouseFirstEnabled() bool {
+	return h.invFinder != nil && h.invStorage != nil && h.invAPI != nil && h.invNavigator != nil
+}
+
+// trySourceFromWarehouse withdraws up to `needed` units of the task's material from an in-system
+// depot warehouse at ZERO cost, mirroring the contract DeliveryExecutor's proven withdrawal
+// (FindInSystemInventory → reserve → AlignAndTransferCargo → confirm).
+//
+// Returns withdrew>0 (with the reloaded hull) when at least one unit lands aboard; the caller then
+// delivers it and skips the market buy THIS trip — the residual re-stages, and a later trip
+// withdraws more or buys once the warehouse drains, so a covered unit is NEVER also bought.
+//
+// FAIL-OPEN to the market path (RULINGS #4 fails closed on SPEND, never on supply — the gate is
+// never starved): every no-inventory shape (feature unwired, no in-system warehouse, drained
+// between the finder read and the reservation, no hold space) and every error (missing token, nav,
+// transfer) returns withdrew=0 so the caller buys as today. A failed transfer releases its whole
+// reservation so no inventory is lost to another worker.
+func (h *RunConstructionCoordinatorHandler) trySourceFromWarehouse(
+	ctx context.Context,
+	task *manufacturing.ManufacturingTask,
+	ship *navigation.Ship,
+	systemSymbol string,
+	playerID shared.PlayerID,
+	needed int,
+) (int, *navigation.Ship, error) {
+	if !h.warehouseFirstEnabled() || needed <= 0 {
+		return 0, ship, nil
+	}
+	logger := common.LoggerFromContext(ctx)
+	good := task.Good()
+
+	// Decision read: an in-system warehouse holding this good? In-system only (RULINGS #14) — the
+	// finder never returns an out-of-system warehouse, so the withdrawal is a single-system hop.
+	src := h.invFinder.FindInSystemInventory(ctx, playerID.Value(), systemSymbol, good)
+	if src == nil {
+		return 0, ship, nil // no inventory -> market path
+	}
+
+	availableSpace := ship.Cargo().Capacity - ship.Cargo().Units
+	if availableSpace <= 0 {
+		return 0, ship, nil
+	}
+	want := utils.Min(availableSpace, needed)
+	if want <= 0 {
+		return 0, ship, nil
+	}
+
+	token, err := common.PlayerTokenFromContext(ctx)
+	if err != nil {
+		return 0, ship, fmt.Errorf("no player token for construction warehouse withdrawal: %w", err)
+	}
+
+	// Fly to the warehouse so the ship-to-ship transfer can run there.
+	moved, err := h.invNavigator.NavigateAndDock(ctx, ship.ShipSymbol(), src.StorageWaypoint, playerID)
+	if err != nil {
+		return 0, ship, fmt.Errorf("navigate to warehouse %s: %w", src.StorageWaypoint, err)
+	}
+	if moved != nil {
+		ship = moved
+	}
+
+	// Reserve from the warehouse's storage hull(s). A drain between the finder read and here yields
+	// no reservation -> fall through to market (fail-open).
+	storageShip, reserved := h.reserveFromWarehouse(src.OperationID, good)
+	if storageShip == nil || reserved <= 0 {
+		return 0, ship, nil
+	}
+	toMove := utils.Min(reserved, want)
+
+	// WITHDRAWAL: the warehouse hull is the stationary source (RULINGS #7 — never claimed, only
+	// transferred from); the construction hauler is the visitor aligned to it. A transfer error
+	// releases the whole reservation and falls through to market.
+	if _, _, err := common.AlignAndTransferCargo(ctx, h.invAPI, storageShip.ShipSymbol(), ship.ShipSymbol(), storageShip.ShipSymbol(), good, toMove, token); err != nil {
+		if cancelErr := storageShip.CancelReservation(good, reserved); cancelErr != nil {
+			logger.Log("ERROR", fmt.Sprintf("Construction withdrawal: cancel reservation after transfer error failed: %v", cancelErr), map[string]interface{}{
+				"storage_ship": storageShip.ShipSymbol(), "good": good,
+			})
+		}
+		return 0, ship, fmt.Errorf("transfer %d %s from warehouse ship %s: %w", toMove, good, storageShip.ShipSymbol(), err)
+	}
+
+	// Commit the moved units; release any over-reservation for other workers.
+	if err := storageShip.ConfirmTransfer(good, toMove); err != nil {
+		logger.Log("ERROR", fmt.Sprintf("Construction withdrawal: confirm transfer failed (cargo already moved): %v", err), map[string]interface{}{
+			"storage_ship": storageShip.ShipSymbol(), "good": good,
+		})
+	}
+	if excess := reserved - toMove; excess > 0 {
+		if err := storageShip.CancelReservation(good, excess); err != nil {
+			logger.Log("WARNING", fmt.Sprintf("Construction withdrawal: release over-reservation failed: %v", err), map[string]interface{}{
+				"storage_ship": storageShip.ShipSymbol(), "good": good, "excess": excess,
+			})
+		}
+	}
+
+	// Persist both hulls' cargo (mirror the contract/manufacturing write-back). A storage-hull sync
+	// miss is best-effort; a hauler sync failure is surfaced so the caller treats the trip as
+	// fail-open rather than delivering against a stale hold.
+	if _, err := h.shipRepo.SyncShipFromAPI(ctx, storageShip.ShipSymbol(), playerID); err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Construction withdrawal: storage-hull sync failed: %v", err), map[string]interface{}{
+			"storage_ship": storageShip.ShipSymbol(),
+		})
+	}
+	reloaded, err := h.shipRepo.SyncShipFromAPI(ctx, ship.ShipSymbol(), playerID)
+	if err != nil {
+		return 0, ship, fmt.Errorf("sync hauler after warehouse withdrawal: %w", err)
+	}
+	if reloaded != nil {
+		ship = reloaded
+	}
+
+	logger.Log("INFO", fmt.Sprintf("Construction sourced %d %s from warehouse ship %s at zero cost - no market buy this trip", toMove, good, storageShip.ShipSymbol()), map[string]interface{}{
+		"good": good, "units": toMove, "storage_op": src.OperationID, "ship": ship.ShipSymbol(),
+	})
+	return toMove, ship, nil
+}
+
+// reserveFromWarehouse reserves all unreserved units of good on the first storage hull in the
+// operation that holds any, returning that hull and the amount reserved (0 if none). Mirrors the
+// contract DeliveryExecutor: the caller MUST ConfirmTransfer the moved units and CancelReservation
+// any remainder. The per-hull reservation is atomic (TryReserveCargo holds the hull mutex), so two
+// construction lots racing the same units cannot double-claim — one reserves, the other sees them
+// gone and falls through to market.
+func (h *RunConstructionCoordinatorHandler) reserveFromWarehouse(operationID, good string) (*storage.StorageShip, int) {
+	for _, s := range h.invStorage.GetStorageShipsForOperation(operationID) {
+		if s == nil {
+			continue
+		}
+		reserved, err := s.TryReserveCargo(good, 1)
+		if err == nil && reserved > 0 {
+			return s, reserved
+		}
+	}
+	return nil, 0
+}

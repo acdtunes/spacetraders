@@ -15,7 +15,9 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -89,6 +91,14 @@ type ConstructionTreeResolver interface {
 	BuildDependencyTree(ctx context.Context, targetGood, systemSymbol string, playerID int) (*goods.SupplyChainNode, error)
 }
 
+// ConstructionNavigator flies a claimed hull to a waypoint and confirms it docked — the
+// warehouse leg of warehouse-first sourcing. *services.ProductionExecutor satisfies it via
+// NavigateAndDock. OPTIONAL: wired alongside the inventory finder by SetInventorySource; left
+// nil, warehouse-first is disabled and the drain buys at market as today (byte-identical).
+type ConstructionNavigator interface {
+	NavigateAndDock(ctx context.Context, shipSymbol, destination string, playerID shared.PlayerID) (*navigation.Ship, error)
+}
+
 // RunConstructionCoordinatorHandler is the thin construction-supply drain. Each
 // tick it: runs the activator, polls READY DELIVER_TO_CONSTRUCTION tasks from EXECUTING
 // pipelines, claims idle in-system haulers under the shared "manufacturing" identity, then
@@ -119,6 +129,16 @@ type RunConstructionCoordinatorHandler struct {
 	// constructionSupplyTaskDefaultTimeout; overridable — the daemon can tune it and the
 	// in-package tests set a tiny bound to keep the timeout test fast.
 	taskTimeout time.Duration
+	// Warehouse-first sourcing (sp-crjla): before buying a gate material at market, WITHDRAW it from
+	// an in-system depot warehouse at zero cost, so the depot's stocker is the sole buyer and the
+	// construction buy is only ever the residual (RULINGS #4, no double-buy). invFinder is the SHARED
+	// contract StorageInventoryFinder — NOT a divergent parallel one. All four are wired together by
+	// SetInventorySource; ANY left nil disables warehouse-first, so the existing coordinator tests and
+	// an unwired daemon buy at market exactly as today (byte-identical — the arm-safety property).
+	invFinder    contract.InventorySourceFinder
+	invStorage   storage.StorageCoordinator
+	invAPI       domainPorts.APIClient
+	invNavigator ConstructionNavigator
 }
 
 // NewRunConstructionCoordinatorHandler builds the drain. clock defaults to a RealClock when nil.
@@ -151,6 +171,24 @@ func NewRunConstructionCoordinatorHandler(
 // tests, which never build the resolver tree, unchanged (nil → fallback → byte-identical).
 func (h *RunConstructionCoordinatorHandler) SetTreeResolver(resolver ConstructionTreeResolver) {
 	h.resolver = resolver
+}
+
+// SetInventorySource wires warehouse-first sourcing (sp-crjla): the SHARED contract
+// StorageInventoryFinder, the shared storage coordinator it withdraws through, the API client for
+// the ship-to-ship transfer, and the navigator that flies the hull to the warehouse. A nil in ANY
+// argument disables warehouse-first, so the drain buys at market as today (byte-identical). A setter
+// (not a constructor arg) keeps every existing coordinator test — none of which wires warehouse
+// inventory — unchanged; the daemon injects the same finder the contract path uses.
+func (h *RunConstructionCoordinatorHandler) SetInventorySource(
+	finder contract.InventorySourceFinder,
+	coordinator storage.StorageCoordinator,
+	apiClient domainPorts.APIClient,
+	navigator ConstructionNavigator,
+) {
+	h.invFinder = finder
+	h.invStorage = coordinator
+	h.invAPI = apiClient
+	h.invNavigator = navigator
 }
 
 // Handle runs the standing drain loop: drain each tick until the container is cancelled
@@ -652,6 +690,46 @@ func (h *RunConstructionCoordinatorHandler) supplyTask(ctx context.Context, cmd 
 				return h.completeSupply(ctx, task, pipeline, ship, deliveredOnHand, lot.ephemeral)
 			}
 			// Otherwise fall through to source the still-outstanding remainder.
+		}
+	}
+
+	// ── PHASE 1.5: WAREHOUSE-FIRST sourcing (sp-crjla). Before buying at market, WITHDRAW the
+	// material from an in-system depot warehouse at ZERO cost, so the depot's stocker is the sole
+	// buyer and the construction buy is only ever the residual (RULINGS #4, no double-buy). A
+	// withdrawal trip delivers what it drew and re-stages the remainder; a later trip withdraws more
+	// or buys once the warehouse drains, so a covered unit is never also bought. Disabled or no
+	// warehouse -> withdrew 0 -> PHASE 2 buys exactly as today (byte-identical, the arm-safety
+	// property). The withdrawal buy-cap mirrors PHASE 2's fan-out slice so concurrent lots never
+	// over-draw a material's remaining requirement.
+	if h.warehouseFirstEnabled() {
+		need := h.remainingBill(ctx, task)
+		if lot.fillCap > 0 && lot.fillCap < need {
+			need = lot.fillCap
+		}
+		withdrew, reloaded, werr := h.trySourceFromWarehouse(ctx, task, ship, systemSymbol, playerID, need)
+		if werr != nil {
+			// Fail-open: a warehouse hiccup never starves the gate — log and fall through to the buy.
+			logger.Log("WARNING", fmt.Sprintf("Construction warehouse-first sourcing of %s failed; falling back to market buy: %v", task.Good(), werr), map[string]interface{}{
+				"ship": ship.ShipSymbol(), "good": task.Good(), "task": task.ID(),
+			})
+		}
+		if withdrew > 0 {
+			ship = reloaded
+			delivered, err := h.producer.DeliverToConstructionSite(ctx, ship.ShipSymbol(), task.Good(), task.ConstructionSite(), playerID)
+			if err != nil {
+				if isPhantomCargoSupplyError(err) {
+					return h.handlePhantomCargo(ctx, task, pipeline, ship, playerID, deliveredOnHand, lot.ephemeral)
+				}
+				if deliveredOnHand > 0 {
+					return h.completeSupply(ctx, task, pipeline, ship, deliveredOnHand, lot.ephemeral)
+				}
+				if !lot.ephemeral {
+					h.failTask(ctx, task, fmt.Sprintf("delivering withdrawn %s to %s failed: %v", task.Good(), task.ConstructionSite(), err))
+				}
+				return false
+			}
+			pipeline = h.recordDelivery(ctx, task, delivered)
+			return h.completeSupply(ctx, task, pipeline, ship, deliveredOnHand+delivered, lot.ephemeral)
 		}
 	}
 
