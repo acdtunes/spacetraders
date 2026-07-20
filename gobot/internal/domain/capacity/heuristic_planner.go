@@ -151,8 +151,17 @@ func (HeuristicPlanner) ComputeDesired(_ context.Context, signals Signals, cal C
 	// autosizer's light class as treasury clears the 25% guard, not by this reconciler) do
 	// contract work directly; standing up a depot with no hauler pool to serve is premature
 	// capital that races the cargo spend past the working capital the haulers need (PLAYBOOK §5).
+	// The hauler-first stage is CONTRACT-scoped (sp-3idiw): a contract depot with no
+	// light-hauler pool to fill/drain it is premature capital (PLAYBOOK §5), but the GATE
+	// construction depot serves the gate fill and is NOT gated on the contract op's hauler
+	// count. Below the tier, gate demand survives while contract demand is withheld; with
+	// no gate demand the filter empties the set and returns nothing (byte-identical OFF).
+	demandHubs := signals.Demand.Hubs
 	if signals.Economics.ContractHaulerCount < ContractHaulerTierSaturation {
-		return DesiredTopology{}, nil
+		demandHubs = gateHubsOnly(demandHubs)
+		if len(demandHubs) == 0 {
+			return DesiredTopology{}, nil
+		}
 	}
 
 	walk := newCoverageWalk(cal, signals)
@@ -162,7 +171,7 @@ func (HeuristicPlanner) ComputeDesired(_ context.Context, signals Signals, cal C
 	budgetUnits := stockerBudgetUnits(cal)
 
 	var hubs []DesiredHub
-	for _, candidate := range rankHubCandidates(signals.Demand.Hubs, performanceByHub(signals.Performance.Hubs)) {
+	for _, candidate := range rankHubCandidates(demandHubs, performanceByHub(signals.Performance.Hubs)) {
 		hubSourceDistances := sourceDistances[candidate.demand.HubSymbol]
 		hub := planHub(candidate, hubSourceDistances, localProduction[candidate.demand.HubSymbol], gate, budgetUnits)
 		// The depot's compression ROI is only credited on the trade-blind add
@@ -177,6 +186,19 @@ func (HeuristicPlanner) ComputeDesired(_ context.Context, signals Signals, cal C
 		}
 	}
 	return DesiredTopology{Hubs: hubs}, nil
+}
+
+// gateHubsOnly keeps only the GATE construction hubs — the subset that survives the
+// contract hauler-first stage (a gate depot is not gated on the contract op's hauler
+// pool). Contract hubs are dropped while the pool is below saturation.
+func gateHubsOnly(hubs []HubDemand) []HubDemand {
+	var gate []HubDemand
+	for _, hub := range hubs {
+		if hub.Kind == HubKindGate {
+			gate = append(gate, hub)
+		}
+	}
+	return gate
 }
 
 // ---- hub coverage ------------------------------------------------------------
@@ -260,10 +282,13 @@ type coverageWalk struct {
 	covered     map[string]bool
 	addStopped  bool
 	tradeBlind  bool
-	// ceiling caps the TOTAL desired contract-delivery hulls (Σ across admitted
-	// hubs). 0 = no cap. admittedHulls is the running total of every hub admitted
-	// so far (covered AND added), so the cap bounds reuse + buy TOGETHER.
+	// ceiling caps the TOTAL desired contract+gate-delivery hulls (Σ across admitted
+	// hubs). admittedHulls is the running total of every hub admitted so far (covered
+	// AND added), so the cap bounds reuse + buy TOGETHER. ceilingActive distinguishes a
+	// binding zero (fleet-scaled: a tiny fleet earns no new depot) from the OFF path's
+	// "0 = no cap" — see effectiveHullCeiling.
 	ceiling       int
+	ceilingActive bool
 	admittedHulls int
 }
 
@@ -281,13 +306,36 @@ func newCoverageWalk(cal Calibration, signals Signals) *coverageWalk {
 	if cal.ContractAddGateTradeBlind {
 		addRequired = keepFloor
 	}
+	ceiling, ceilingActive := effectiveHullCeiling(cal, signals.Economics.FleetHullCount)
 	return &coverageWalk{
-		keepFloor:   keepFloor,
-		addRequired: addRequired,
-		covered:     coveredHubs(signals.Topology),
-		tradeBlind:  cal.ContractAddGateTradeBlind,
-		ceiling:     cal.ContractDeliveryHullCeiling,
+		keepFloor:     keepFloor,
+		addRequired:   addRequired,
+		covered:       coveredHubs(signals.Topology),
+		tradeBlind:    cal.ContractAddGateTradeBlind,
+		ceiling:       ceiling,
+		ceilingActive: ceilingActive,
 	}
+}
+
+// effectiveHullCeiling resolves the class hull ceiling for this tick (sp-3idiw). With
+// fleet-scaling OFF (fraction ≤ 0) it is byte-identical: the fixed ContractDeliveryHullCeiling,
+// active only when > 0 (0 = no cap, as before). ON, it is floor(FleetHullCount × fraction)
+// clamped to the absolute backstop ContractDeliveryHullCeiling — a small fleet earns a
+// small (or zero) depot, a larger fleet scales up until the backstop binds. When scaling
+// is on the ceiling is ALWAYS active, so a scaled 0 desires no new depot (distinct from
+// the OFF path's 0 = no cap).
+func effectiveHullCeiling(cal Calibration, fleetHullCount int) (ceiling int, active bool) {
+	if cal.ContractDeliveryHullFleetFraction <= 0 {
+		return cal.ContractDeliveryHullCeiling, cal.ContractDeliveryHullCeiling > 0
+	}
+	scaled := int(math.Floor(float64(fleetHullCount) * cal.ContractDeliveryHullFleetFraction))
+	if scaled < 0 {
+		scaled = 0
+	}
+	if backstop := cal.ContractDeliveryHullCeiling; backstop > 0 && scaled > backstop {
+		scaled = backstop
+	}
+	return scaled, true
 }
 
 // hubHullCount is one hub's total desired hull draw — the unit the class ceiling
@@ -352,9 +400,10 @@ func (walk *coverageWalk) admitsAdd(candidate hubCandidate, hub DesiredHub, comp
 }
 
 // exceedsCeiling reports whether admitting hub would push the cumulative desired
-// contract-delivery hull total past the class ceiling. A zero ceiling is no cap.
+// contract+gate-delivery hull total past the class ceiling. An INACTIVE ceiling is no
+// cap; an ACTIVE ceiling binds even at 0 (a fleet-scaled tiny fleet earns no new depot).
 func (walk *coverageWalk) exceedsCeiling(hub DesiredHub) bool {
-	return walk.ceiling > 0 && walk.admittedHulls+hubHullCount(hub) > walk.ceiling
+	return walk.ceilingActive && walk.admittedHulls+hubHullCount(hub) > walk.ceiling
 }
 
 // clearsCoverageGate is the ROI self-limit: the hub's marginal hull must yield

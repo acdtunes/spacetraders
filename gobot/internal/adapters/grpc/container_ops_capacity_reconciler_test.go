@@ -224,3 +224,18 @@ func TestCapacityReconcilerCoordinatorPersistsLaunchDryRunFlag(t *testing.T) {
 		})
 	}
 }
+
+// sp-3idiw: the fleet-scaling fraction round-trips live from config.yaml into the
+// rebuilt coordinator command — the armable knob for fleet-scaled depot sizing.
+func TestCapacityReconcilerFleetFractionResolvesLiveFromConfigYAML(t *testing.T) {
+	s := newFactoryTestServer()
+	s.capacityReconcilerConfig = config.CapacityReconcilerConfig{ContractDeliveryHullFleetFraction: 0.5}
+
+	built, err := s.buildCommandForType("capacity_reconciler_coordinator",
+		jsonRoundTrip(t, map[string]interface{}{"container_id": "capacity-reconciler-7"}), 7, "capacity-reconciler-7")
+	require.NoError(t, err)
+
+	cmd := built.(*capacityCmd.RunCapacityReconcilerCoordinatorCommand)
+	require.Equal(t, 0.5, cmd.ContractDeliveryHullFleetFraction,
+		"a config.yaml fleet fraction must resolve into the rebuilt coordinator command")
+}

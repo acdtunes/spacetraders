@@ -39,10 +39,26 @@ type DemandSignals struct {
 	Hubs []HubDemand
 }
 
-// HubDemand is one contract hub's observed demand.
+// HubKind classifies a demand hub's operation so the planner can scope op-specific
+// gates (e.g. the contract hauler-first staging) to the right hubs. The zero value is
+// Contract, so every existing HubDemand — all contract-sourced — stays byte-identical.
+type HubKind int
+
+const (
+	// HubKindContract is a contract-delivery hub (the default zero value).
+	HubKindContract HubKind = iota
+	// HubKindGate is the jump-gate construction depot hub. It serves the gate fill and
+	// is NOT gated on the contract op's hauler count (sp-3idiw).
+	HubKindGate
+)
+
+// HubDemand is one hub's observed demand — a contract hub or the gate depot (Kind).
 type HubDemand struct {
 	// HubSymbol is the hub's waypoint symbol (contracts are accepted/delivered here).
 	HubSymbol string
+	// Kind classifies the hub's operation (contract-delivery vs gate construction). The
+	// zero value is HubKindContract, so contract demand is byte-identical.
+	Kind HubKind
 	// ContractFrequency is contracts/hour observed at this hub.
 	ContractFrequency float64
 	// AvgPaymentCredits is the mean total payment per contract at this hub —

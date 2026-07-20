@@ -79,6 +79,15 @@ type Calibration struct {
 	// cannot drift (RULINGS #5).
 	ContractDeliveryHullCeiling int
 
+	// ContractDeliveryHullFleetFraction scales the class hull ceiling to FLEET SIZE
+	// (sp-3idiw): the effective ceiling becomes floor(FleetHullCount × fraction), clamped
+	// to the absolute backstop ContractDeliveryHullCeiling. A small fleet earns a small
+	// (or zero) depot; a larger fleet scales the depot up until the backstop binds. When
+	// scaling is ON, the ceiling BINDS EVEN AT 0 (a tiny fleet earns no new depot) —
+	// distinct from the OFF path's ContractDeliveryHullCeiling==0 = no cap. Default 0 =
+	// OFF = byte-identical: the ceiling stays the fixed ContractDeliveryHullCeiling.
+	ContractDeliveryHullFleetFraction float64
+
 	// ContractAddGateTradeBlind switches the contract-delivery ADD gate from the
 	// TRADE-contaminated fleet-wide per-hull average (FleetPerHullCrHr) to the
 	// CONTRACT op's own economics: a new depot is gated on the universal per-hull
@@ -117,16 +126,17 @@ const (
 // DefaultCalibration is the engine's documented protective default set.
 func DefaultCalibration() Calibration {
 	return Calibration{
-		ReserveFloorCredits:         DefaultReserveFloorCredits,
-		SurplusFraction:             DefaultSurplusFraction,
-		PerDecisionCapPct:           DefaultPerDecisionCapPct,
-		ROIPaybackHorizon:           DefaultROIPaybackHorizon,
-		AddThresholdPerHullCrHr:     0,
-		StockerCapacityBudget:       0,
-		ContractDeliveryHullCeiling: 0, // 0 = no cap = byte-identical
-		ContractAddGateTradeBlind:   false,
-		TickInterval:                DefaultTickInterval,
-		ApprovalThresholdCredits:    0,
+		ReserveFloorCredits:               DefaultReserveFloorCredits,
+		SurplusFraction:                   DefaultSurplusFraction,
+		PerDecisionCapPct:                 DefaultPerDecisionCapPct,
+		ROIPaybackHorizon:                 DefaultROIPaybackHorizon,
+		AddThresholdPerHullCrHr:           0,
+		StockerCapacityBudget:             0,
+		ContractDeliveryHullCeiling:       0, // 0 = no cap = byte-identical
+		ContractDeliveryHullFleetFraction: 0, // 0 = OFF = byte-identical (fixed ceiling)
+		ContractAddGateTradeBlind:         false,
+		TickInterval:                      DefaultTickInterval,
+		ApprovalThresholdCredits:          0,
 	}
 }
 
@@ -154,6 +164,9 @@ func (c Calibration) Validate() error {
 	}
 	if c.ContractDeliveryHullCeiling < 0 {
 		return fmt.Errorf("contract_delivery_hull_ceiling must be >= 0, got %d", c.ContractDeliveryHullCeiling)
+	}
+	if c.ContractDeliveryHullFleetFraction < 0 {
+		return fmt.Errorf("contract_delivery_hull_fleet_fraction must be >= 0, got %v", c.ContractDeliveryHullFleetFraction)
 	}
 	if c.TickInterval <= 0 {
 		return fmt.Errorf("tick_interval must be > 0, got %v", c.TickInterval)

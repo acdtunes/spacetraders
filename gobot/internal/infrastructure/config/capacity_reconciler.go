@@ -67,6 +67,13 @@ type CapacityReconcilerConfig struct {
 	// against the fleet average). Set true to arm.
 	ContractAddGateTradeBlind bool `mapstructure:"contract_add_gate_trade_blind"`
 
+	// ContractDeliveryHullFleetFraction scales the class hull ceiling to fleet size
+	// (sp-3idiw): floor(FleetHullCount × fraction), clamped to the derived
+	// contract-delivery ceiling as an absolute backstop. 0/absent → OFF = byte-identical
+	// (the fixed ceiling stands). The exact curve is economy-analyst-owned; set a positive
+	// fraction to arm fleet-scaled depot sizing.
+	ContractDeliveryHullFleetFraction float64 `mapstructure:"contract_delivery_hull_fleet_fraction" validate:"omitempty,min=0"`
+
 	// TickIntervalSecs is the reconcile cadence. 0/absent → 300.
 	TickIntervalSecs int `mapstructure:"tick_interval_secs" validate:"omitempty,min=5"`
 

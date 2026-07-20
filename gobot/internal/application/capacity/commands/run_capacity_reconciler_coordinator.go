@@ -105,6 +105,11 @@ type RunCapacityReconcilerCoordinatorCommand struct {
 	// ContractAddGateTradeBlind arms the trade-blind contract-delivery ADD gate.
 	// false → OFF = byte-identical (add gate benchmarks the fleet average).
 	ContractAddGateTradeBlind bool
+
+	// ContractDeliveryHullFleetFraction scales the class hull ceiling to fleet size
+	// (sp-3idiw): floor(FleetHullCount × fraction), clamped to ContractDeliveryHullCeiling
+	// as an absolute backstop. 0 → OFF = byte-identical (the fixed ceiling stands).
+	ContractDeliveryHullFleetFraction float64
 }
 
 // RunCapacityReconcilerCoordinatorResponse reports reconcile progress. Because
@@ -306,6 +311,9 @@ func resolveCalibration(cmd *RunCapacityReconcilerCoordinatorCommand) (capacity.
 	// build derived it from the autosizer's own ceiling + default — the single
 	// no-drift source), so it copies straight through; 0 = no cap (byte-identical).
 	cal.ContractDeliveryHullCeiling = cmd.ContractDeliveryHullCeiling
+	// Fleet-scaling fraction (sp-3idiw): 0 → OFF = byte-identical (the fixed ceiling
+	// above stands); a positive fraction scales the ceiling to fleet size in the planner.
+	cal.ContractDeliveryHullFleetFraction = cmd.ContractDeliveryHullFleetFraction
 	// Bool knob: false (default) leaves the byte-identical OFF path; no zero-means-
 	// default indirection needed.
 	cal.ContractAddGateTradeBlind = cmd.ContractAddGateTradeBlind

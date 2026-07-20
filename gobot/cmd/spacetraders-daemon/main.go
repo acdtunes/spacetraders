@@ -1254,8 +1254,23 @@ func run(cfg *config.Config) error {
 	// st-x00, proposals st-0h8 — see internal/domain/capacity/CONTRACTS.md). The
 	// captain/DISABLED kill switch is the watchkeeper Workspace over the SAME workspace dir
 	// the supervisor polls, re-read at the top of every tick.
+	// sp-3idiw: the gate-construction shortfall boundary — the SENSE lane's second live
+	// touch. It locates the home system's incomplete jump gate and feeds its unfulfilled
+	// materials in as gate demand, so the reconciler DESIRES a gate-construction depot
+	// during the fill (fail-closed: any miss = no gate demand = byte-identical). Wired
+	// LIVE (the "active when wired" convention): the reconciler is boot-standing + armed
+	// (sp-ov8z), so gate demand flows and the depot is built from the next boot. Arm-safe:
+	// the INTERPOSE no-double-buy cooperation is enforced construction-side by sp-crjla
+	// (the construction coordinator withdraws gate materials from the depot warehouse
+	// before buying at source), and tier-4 capital stays proposal-gated. A nil reader is
+	// the emergency disable.
+	gateShortfallReader := capacityAdapters.NewGateShortfallReader(
+		capacityAdapters.NewShipHomeSystemFunc(db),
+		waypointRepo,
+		api.NewConstructionSiteRepository(apiClient, playerRepo),
+	)
 	capacityReconcilerHandler := capacityCmd.NewRunCapacityReconcilerCoordinatorHandler(
-		capacity.NewStaticDomain(capacity.ContractDeliveryDomainName, capacityAdapters.NewSensor(db, expansionAdapters.NewTreasuryReader(apiClient)), capacity.NewHeuristicPlanner()), // st-7ee SENSE + st-hlw PLAN
+		capacity.NewStaticDomain(capacity.ContractDeliveryDomainName, capacityAdapters.NewSensor(db, expansionAdapters.NewTreasuryReader(apiClient), capacityAdapters.WithGateShortfallReader(gateShortfallReader)), capacity.NewHeuristicPlanner()), // st-7ee SENSE + st-hlw PLAN + sp-3idiw gate demand
 		capacity.NewLadderDiffer(),                       // st-zr0 DIFF — cheapest-lever-first gap closure
 		capacity.NewCapexEmitter(contractDeliveryDemand), // st-x00 GOVERN — thin emitter: cheap tiers → Approved, capital tier → sp-1txd demand path (no second guard stack)
 		// st-5ig CONVERGE actuator (cheap tiers 1-3): each verb drives its EXISTING

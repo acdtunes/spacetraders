@@ -65,6 +65,7 @@ const (
 type Sensor struct {
 	db                    *gorm.DB
 	treasury              TreasuryReader
+	gateShortfall         GateShortfallReader
 	clock                 shared.Clock
 	dutyCycleReport       DutyCycleReportFunc
 	incomeWindow          time.Duration
@@ -88,6 +89,13 @@ func WithSensorClock(clock shared.Clock) SensorOption {
 // global in-memory sampler (nil-safe: zero report before the daemon starts it).
 func WithDutyCycleReport(report DutyCycleReportFunc) SensorOption {
 	return func(s *Sensor) { s.dutyCycleReport = report }
+}
+
+// WithGateShortfallReader wires the live jump-gate construction shortfall boundary
+// (sp-3idiw). Unset ⇒ nil ⇒ no gate demand: the sensor is byte-identical to its
+// contract-only self (the OFF / emergency-disable path).
+func WithGateShortfallReader(reader GateShortfallReader) SensorOption {
+	return func(s *Sensor) { s.gateShortfall = reader }
 }
 
 // WithIncomeWindow overrides the trailing income-velocity window.
@@ -153,6 +161,10 @@ func (s *Sensor) Sense(ctx context.Context, playerID int) (domainCapacity.Signal
 		contracts = nil
 	}
 	demand := s.senseDemand(contracts, now)
+	// Fold the live gate-construction shortfall in alongside contract demand (sp-3idiw),
+	// BEFORE economics so the gate materials get the same source-distance resolution the
+	// buffer scorer needs. Nil reader ⇒ no gate hub ⇒ byte-identical.
+	demand.Hubs = append(demand.Hubs, s.senseGateDemand(ctx, playerID)...)
 	topology := s.senseTopology(ctx, playerID)
 	utilization := s.senseUtilization(ctx, playerID)
 	// IdleHulls is the ONLY channel the tier-1 reuse-first supply reaches the

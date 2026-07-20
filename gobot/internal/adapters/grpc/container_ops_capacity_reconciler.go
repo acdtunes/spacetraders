@@ -113,6 +113,7 @@ var capacityReconcilerConfigKeys = []string{
 	"capacity_add_threshold_per_hull_cr_hr",
 	"capacity_stocker_capacity_budget",
 	"capacity_contract_add_gate_trade_blind",
+	"capacity_contract_delivery_hull_fleet_fraction",
 	"capacity_tick_interval_secs",
 	"capacity_approval_threshold",
 	// Derived from the autosizer's ceiling (not a [capacity_reconciler] knob) — cleared
@@ -164,6 +165,9 @@ func (s *DaemonServer) injectCapacityReconcilerConfig(config map[string]interfac
 	if cr.ContractAddGateTradeBlind {
 		config["capacity_contract_add_gate_trade_blind"] = true
 	}
+	if cr.ContractDeliveryHullFleetFraction != 0 {
+		config["capacity_contract_delivery_hull_fleet_fraction"] = cr.ContractDeliveryHullFleetFraction
+	}
 	if cr.TickIntervalSecs != 0 {
 		config["capacity_tick_interval_secs"] = cr.TickIntervalSecs
 	}
@@ -206,14 +210,15 @@ func buildCapacityReconcilerCoordinatorCommand(cfg *configReader, playerID int, 
 		// Money floor reads with PresentOrFail semantics (sp-ggk2 doctrine):
 		// a PRESENT-but-unparseable reserve floor must fail the build, never
 		// silently collapse to the 50k default and under-protect the runway.
-		ReserveFloorCredits:       int64(cfg.PresentOrFailInt("capacity_reserve_floor", 0)),
-		SurplusFraction:           cfg.OptionalFloat("capacity_surplus_fraction", 0),
-		PerDecisionCapPct:         cfg.OptionalInt("capacity_per_decision_cap_pct", 0),
-		ROIPaybackHorizonHours:    cfg.OptionalFloat("capacity_roi_payback_horizon_hours", 0),
-		AddThresholdPerHullCrHr:   cfg.OptionalFloat("capacity_add_threshold_per_hull_cr_hr", 0),
-		StockerCapacityBudget:     cfg.OptionalInt("capacity_stocker_capacity_budget", 0),
-		ContractAddGateTradeBlind: cfg.OptionalBool("capacity_contract_add_gate_trade_blind"),
-		ApprovalThresholdCredits:  int64(cfg.OptionalInt("capacity_approval_threshold", 0)),
+		ReserveFloorCredits:               int64(cfg.PresentOrFailInt("capacity_reserve_floor", 0)),
+		SurplusFraction:                   cfg.OptionalFloat("capacity_surplus_fraction", 0),
+		PerDecisionCapPct:                 cfg.OptionalInt("capacity_per_decision_cap_pct", 0),
+		ROIPaybackHorizonHours:            cfg.OptionalFloat("capacity_roi_payback_horizon_hours", 0),
+		AddThresholdPerHullCrHr:           cfg.OptionalFloat("capacity_add_threshold_per_hull_cr_hr", 0),
+		StockerCapacityBudget:             cfg.OptionalInt("capacity_stocker_capacity_budget", 0),
+		ContractAddGateTradeBlind:         cfg.OptionalBool("capacity_contract_add_gate_trade_blind"),
+		ContractDeliveryHullFleetFraction: cfg.OptionalFloat("capacity_contract_delivery_hull_fleet_fraction", 0),
+		ApprovalThresholdCredits:          int64(cfg.OptionalInt("capacity_approval_threshold", 0)),
 		// Derived from the autosizer's ceiling at inject time (the single no-drift
 		// source), so it is always present and effective — never the reconciler's own 0.
 		ContractDeliveryHullCeiling: cfg.OptionalInt("capacity_fleet_ceiling_contract_delivery", 0),
