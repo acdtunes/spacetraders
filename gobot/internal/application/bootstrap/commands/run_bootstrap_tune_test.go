@@ -62,6 +62,12 @@ func TestBootstrapTunableDefaults_MirrorsCoordinatorConsts(t *testing.T) {
 		"autosizer_early_scaling":          defaultAutosizerEarlyScaling,         // 0 (not-forced) — sp-sjvv positive force-on knob (feature is DEFAULT-ON via config)
 		"scaled_gate_entry_disabled":       defaultScaledGateEntryDisabled,       // 0 (not-disabled) — sp-5nd2 live kill-switch
 		"autosizer_early_scaling_disabled": defaultAutosizerEarlyScalingDisabled, // 0 (not-disabled) — sp-5nd2 live kill-switch
+		"gate_surplus_hardening":           defaultGateSurplusHardening,          // 0 (off) — sp-gm7r scaled-gate hardening master flag
+		"gate_hauler_floor":                defaultGateHaulerFloor,               // 4 — sp-gm7r raised armed-GATE hauler floor
+		"gate_surplus_floor":               int(defaultGateSurplusFloor),         // 500000 — sp-gm7r armed-GATE treasury surplus war chest
+		"gate_contract_floor":              defaultGateContractFloor,             // 2 — sp-gm7r contract-earner floor held through GATE
+		"gate_reentry_construction_pct":    5,                                    // defaultGateReentryConstructionPct 5.0 → 5 percent
+		"gate_reentry_streak_ticks":        defaultGateReentryStreakTicks,        // 3 — sp-gm7r escape-hatch anti-thrash streak
 	}
 	if len(got) != len(want) {
 		t.Fatalf("tunable defaults size: got %d want %d (%v)", len(got), len(want), got)

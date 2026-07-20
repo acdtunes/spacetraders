@@ -47,6 +47,14 @@ func BootstrapTunableDefaults() map[string]int {
 		// inverted polarity keeps the default-ON arm intact while giving an operator a no-restart OFF.
 		"scaled_gate_entry_disabled":       defaultScaledGateEntryDisabled,
 		"autosizer_early_scaling_disabled": defaultAutosizerEarlyScalingDisabled,
+		// Scaled-gate hardening: the DEFAULT-OFF master flag plus its five calibration knobs (the surplus
+		// floor is whole credits; the reentry construction ceiling is a whole percent). Tunable-only.
+		"gate_surplus_hardening":        defaultGateSurplusHardening,
+		"gate_hauler_floor":             defaultGateHaulerFloor,
+		"gate_surplus_floor":            int(defaultGateSurplusFloor),
+		"gate_contract_floor":           defaultGateContractFloor,
+		"gate_reentry_construction_pct": int(math.Round(defaultGateReentryConstructionPct)),
+		"gate_reentry_streak_ticks":     defaultGateReentryStreakTicks,
 	}
 }
 
@@ -102,6 +110,21 @@ type bootstrapRunConfig struct {
 	// false (byte-identical — the autosizer stays off the whole bootstrap run and bootstrap buys its
 	// haulers itself). A tunable flag (autosizer_early_scaling) — armed live, no launch key.
 	AutosizerEarlyScaling bool
+
+	// Scaled-gate hardening (default off / byte-identical). GateSurplusHardening true ⇒ three coupled
+	// additions that cure the cold-start GATE death spiral: (1) gateFunded also demands a RAISED hauler floor,
+	// a sustained $/hr, AND a treasury surplus; (2) planGateWorkers keeps ≥ GateContractFloor haulers earning
+	// (repurposes only the surplus); (3) reDeriveUnderScaledGate releases a sticky GATE that latched
+	// under-scaled with ~no construction back to INCOME after GateReentryStreakTicks consecutive ticks. The
+	// five calibration knobs resolve to their documented defaults even while off, so the struct stays
+	// deterministic (the byte-identical struct-equality guarantee); they are simply never read while
+	// GateSurplusHardening is false. All tunable-only (no launch key).
+	GateSurplusHardening       bool
+	GateHaulerFloor            int     // RAISED GATE-entry hauler floor (clamped ≥ GateMinHaulers at read); a real op, not a 2-hull blip.
+	GateSurplusFloor           int64   // treasury surplus (over common.ImmutableReserveFloor) required to enter GATE — the gate-bill war chest.
+	GateContractFloor          int     // haulers kept EARNING on contracts through GATE; only the surplus above this repurposes to construction.
+	GateReentryConstructionPct float64 // construction % below which an under-scaled sticky GATE may re-derive INCOME (the escape hatch's scope).
+	GateReentryStreakTicks     int     // consecutive under-scaled+low-progress ticks before the GATE→INCOME re-derive fires (anti-thrash hysteresis).
 }
 
 func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand, live liveconfig.Snapshot) bootstrapRunConfig {
@@ -191,6 +214,28 @@ func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand, live liveconfig
 		if v := live.PositiveIntOrZero("autosizer_early_scaling_disabled"); v > 0 {
 			c.AutosizerEarlyScaling = false
 		}
+		// Scaled-gate hardening: the master flag + its five calibration knobs, all tunable-only (no launch
+		// key), default off. A positive gate_surplus_hardening arms it; absent/zeroed ⇒ off (byte-identical).
+		// The <=0 fallbacks below fill each calibration knob's documented default so the struct is
+		// deterministic whether the flag is on or off.
+		if v := live.PositiveIntOrZero("gate_surplus_hardening"); v > 0 {
+			c.GateSurplusHardening = true
+		}
+		if v := live.PositiveIntOrZero("gate_hauler_floor"); v > 0 {
+			c.GateHaulerFloor = v
+		}
+		if v := live.PositiveIntOrZero("gate_surplus_floor"); v > 0 {
+			c.GateSurplusFloor = int64(v)
+		}
+		if v := live.PositiveIntOrZero("gate_contract_floor"); v > 0 {
+			c.GateContractFloor = v
+		}
+		if v := live.PositiveIntOrZero("gate_reentry_construction_pct"); v > 0 {
+			c.GateReentryConstructionPct = float64(v)
+		}
+		if v := live.PositiveIntOrZero("gate_reentry_streak_ticks"); v > 0 {
+			c.GateReentryStreakTicks = v
+		}
 	}
 
 	if c.Tick <= 0 {
@@ -236,6 +281,25 @@ func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand, live liveconfig
 	}
 	if c.GateMinHaulers <= 0 {
 		c.GateMinHaulers = defaultGateMinHaulers
+	}
+	// The hardening calibration knobs resolve to their documented defaults when neither launched nor tuned,
+	// so bootstrapRunConfig stays deterministic (byte-identical struct equality) whether hardening is armed
+	// or not — they are simply never read while GateSurplusHardening is off. The flag itself needs no
+	// fallback: the false zero value IS "off".
+	if c.GateHaulerFloor <= 0 {
+		c.GateHaulerFloor = defaultGateHaulerFloor
+	}
+	if c.GateSurplusFloor <= 0 {
+		c.GateSurplusFloor = defaultGateSurplusFloor
+	}
+	if c.GateContractFloor <= 0 {
+		c.GateContractFloor = defaultGateContractFloor
+	}
+	if c.GateReentryConstructionPct <= 0 {
+		c.GateReentryConstructionPct = defaultGateReentryConstructionPct
+	}
+	if c.GateReentryStreakTicks <= 0 {
+		c.GateReentryStreakTicks = defaultGateReentryStreakTicks
 	}
 	return c
 }
@@ -476,12 +540,18 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 	// derivation's input) carries the smoothed value. Consulted ONLY when armed — flag-off passes the raw
 	// observation to derivePhase exactly as today (byte-identical).
 	phaseObs := obs
-	if cfg.ScaledGateEntry {
+	if cfg.ScaledGateEntry || cfg.GateSurplusHardening {
 		phaseObs.IncomePerHour = h.incomeWindowFor(cmd.ContainerID).sustained(obs.IncomePerHour)
 	}
 
 	// Derive the phase from the observation — NEVER from a persisted enum (spec §Architecture).
 	phase := derivePhase(phaseObs, cfg)
+	// Escape hatch: a GATE that latched under-scaled with ~no construction re-derives INCOME (so the op can
+	// re-scale out of the death spiral) after an anti-thrash hysteresis streak. Armed-only — off ⇒ phase is
+	// derivePhase's exactly, and the streak map is never touched (byte-identical).
+	if cfg.GateSurplusHardening {
+		phase = h.reDeriveUnderScaledGate(cmd.ContainerID, phase, phaseObs, cfg)
+	}
 	res.Phase = phase
 	if h.metrics != nil {
 		h.metrics.RecordPhase(string(phase))
@@ -595,12 +665,95 @@ func derivePhase(obs Observation, cfg bootstrapRunConfig) Phase {
 // This is also WHY the ConstructionStarted sticky latch in derivePhase is safe when armed: construction is
 // started (by actGate) only AFTER derivePhase has returned GATE, which now demands a legitimate scaled-op
 // entry — so a spurious income spike can never reach ConstructionStarted and latch GATE permanently.
+//
+// HARDENED (gate_surplus_hardening ON): STRICTER still — a genuinely scaled AND funded op. GATE entry
+// additionally requires (over the plain scaled gate): a RAISED hauler floor (a real fleet, not the 2-hull
+// minimum the plain gate admits), and a treasury SURPLUS over the immutable reserve floor clearing the
+// gate-bill war chest — so GATE is EARNED from contract surplus, never raced on a thin treasury its own
+// material spend then crashes (the cold-start death spiral). The raised floor is clamped ≥ gate_min_haulers
+// so hardening can never be LOOSER than the plain scaled gate on the hauler axis (RULINGS #4: gate entry
+// only tightens). The $/hr bar reads the SAME sustained-window mean the reconciler substitutes, so a peak
+// still can't trip it. The surplus check is fail-closed: an unread/thin treasury yields a small or negative
+// surplus that does not gate.
 func gateFunded(obs Observation, cfg bootstrapRunConfig) bool {
+	if cfg.GateSurplusHardening {
+		haulerFloor := cfg.GateHaulerFloor
+		if haulerFloor < cfg.GateMinHaulers {
+			haulerFloor = cfg.GateMinHaulers // never looser than the plain scaled gate (RULINGS #4)
+		}
+		return len(obs.Haulers) >= haulerFloor &&
+			obs.IncomePerHour >= cfg.GateIncomeBar &&
+			obs.Treasury-common.ImmutableReserveFloor >= cfg.GateSurplusFloor
+	}
 	if !cfg.ScaledGateEntry {
 		return obs.IncomePerHour >= cfg.IncomeBar
 	}
 	return len(obs.Haulers) >= cfg.GateMinHaulers &&
 		obs.IncomePerHour >= cfg.GateIncomeBar
+}
+
+// reDeriveUnderScaledGate is the escape hatch: it overrides a STICKY-LATCHED GATE back to INCOME when the
+// op is under-scaled and construction has barely begun, so a cold start that latched GATE on a 2-hauler
+// income blip (then cannibalized itself into the death spiral) can climb back out by re-scaling the contract
+// op. It is the EXIT-side complement to gateFunded's stricter ENTRY: entry is now hard to reach under-scaled,
+// and this releases an already-stuck latch (curing a live stuck-GATE the deploy inherits). Armed-only — the
+// caller checks the flag.
+//
+// Anti-thrash HYSTERESIS: the under-scaled + low-progress condition must hold GateReentryStreakTicks
+// CONSECUTIVE ticks before the phase flips; ANY tick that breaks it resets the streak. The direction is
+// deliberately asymmetric — SLOW to leave GATE (N ticks), immediate to resume it once the op re-scales (a
+// scaled tick resets the streak → derivePhase's sticky GATE stands) — so the phase strongly prefers GATE and
+// only escapes a genuinely, persistently starved latch. The streak is in-memory per-container and fails SAFE
+// on restart: a dropped streak just re-accrues from 0 (delays the re-derive one window), never double-acts,
+// because the re-derive is a pure phase relabel (idempotent — no spend, no assignment; INCOME re-scales via
+// the already-guarded hauler buys, and the separate manufacturing executor keeps building meanwhile).
+//
+// Under-scaled is measured against the PLAIN floor (gate_min_haulers, not the raised entry floor) so the
+// escape fires only for a truly starved op — below 2 haulers OR below the sustained $/hr bar — never merely
+// because a decent op sits under the raised entry bar. Low-progress uses the same sustained $/hr the entry
+// gate reads (substituted by the caller), so a peak cannot mask a starved op.
+func (h *RunBootstrapCoordinatorHandler) reDeriveUnderScaledGate(containerID string, phase Phase, obs Observation, cfg bootstrapRunConfig) Phase {
+	// Only a sticky-latched GATE (started, not complete) is a candidate; a legitimately-funded fresh GATE
+	// (no pipeline yet) or a terminal COMPLETE is not. Anything else breaks the streak and stands.
+	if phase != PhaseGate || !obs.ConstructionStarted || obs.ConstructionComplete {
+		h.resetUnderScaledStreak(containerID)
+		return phase
+	}
+	underScaled := len(obs.Haulers) < cfg.GateMinHaulers || obs.IncomePerHour < cfg.GateIncomeBar
+	lowProgress := obs.ConstructionPercent < cfg.GateReentryConstructionPct
+	if !underScaled || !lowProgress {
+		h.resetUnderScaledStreak(containerID) // condition broke → the streak must be CONSECUTIVE
+		return phase
+	}
+	// Under-scaled + barely-built: accrue the streak; only re-derive once it holds the full window.
+	if h.bumpUnderScaledStreak(containerID) < cfg.GateReentryStreakTicks {
+		return phase // not yet sustained — hold sticky GATE (anti-thrash)
+	}
+	return PhaseIncome
+}
+
+// bumpUnderScaledStreak increments and returns the per-container under-scaled-GATE hysteresis counter. Keyed
+// by ContainerID like the other per-container state (buyBridges/incomeWindows) because this handler is a
+// REGISTERED SINGLETON; the mutex guards the map, and one container's ticks are sequential so the count is
+// only ever advanced by a single goroutine.
+func (h *RunBootstrapCoordinatorHandler) bumpUnderScaledStreak(containerID string) int {
+	h.underScaledStreakMu.Lock()
+	defer h.underScaledStreakMu.Unlock()
+	if h.underScaledStreaks == nil {
+		h.underScaledStreaks = map[string]int{}
+	}
+	h.underScaledStreaks[containerID]++
+	return h.underScaledStreaks[containerID]
+}
+
+// resetUnderScaledStreak clears the streak the instant the under-scaled+low-progress condition breaks, so
+// the re-derive requires GateReentryStreakTicks CONSECUTIVE (not cumulative) ticks — the anti-thrash property.
+func (h *RunBootstrapCoordinatorHandler) resetUnderScaledStreak(containerID string) {
+	h.underScaledStreakMu.Lock()
+	defer h.underScaledStreakMu.Unlock()
+	if h.underScaledStreaks != nil {
+		delete(h.underScaledStreaks, containerID)
+	}
 }
 
 // actData runs the DATA (scanning) workstream: (1) drive the probe fleet to probe_target THIS tick —

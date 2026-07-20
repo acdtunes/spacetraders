@@ -142,6 +142,49 @@ const (
 	// mutateTuneConfigKey `0 = revert-to-default` contract is untouched (RULINGS #4 — no tune-write change).
 	defaultScaledGateEntryDisabled       = 0
 	defaultAutosizerEarlyScalingDisabled = 0
+
+	// Scaled-gate hardening — the DEFAULT-OFF master flag (0 = byte-identical). It EXTENDS the scaled
+	// GATE-entry gate with a three-part cold-start-death-spiral cure: (1) GATE entry also requires a RAISED
+	// hauler floor, a SUSTAINED $/hr, AND a treasury surplus war chest; (2) GATE keeps a higher
+	// contract-earner floor so the repurpose-first seed never cannibalizes the contract op below the capacity
+	// reconciler's depot-staging pool; (3) a sticky GATE that latched under-scaled with ~no construction
+	// re-derives INCOME (so the op re-scales) after an anti-thrash hysteresis streak. A positive tunable flag
+	// with no launch key (like defer_probe_to_freshsizer), armed live after validation. Gate entry only ever
+	// tightens, never loosens (RULINGS #4).
+	defaultGateSurplusHardening = 0
+	// defaultGateHaulerFloor is the RAISED GATE-entry hauler floor while hardening is armed: a genuinely
+	// scaled contract op, NOT the 2-hull minimum the plain scaled gate (gate_min_haulers) admits. Aligned
+	// with hauler_target (4) so GATE waits for a real fleet rather than latching on a 2-hauler income blip.
+	// Clamped to ≥ gate_min_haulers at read so hardening can never be LOOSER than the plain scaled gate on
+	// the hauler dimension (RULINGS #4).
+	defaultGateHaulerFloor = 4
+	// defaultGateSurplusFloor is the treasury SURPLUS — over common.ImmutableReserveFloor (50k) — the op must
+	// hold to enter GATE while hardening is armed: a war chest for the jump-gate material bill (~1600 FAB_MATS
+	// + 400 ADVANCED_CIRCUITRY) so GATE is earned from contract surplus, never raced on a thin treasury its
+	// own material spend then crashes. 500k (⇒ treasury ≥ 550k to gate) is a CONSERVATIVE placeholder — tuned
+	// against the freshly-read gate bill. It is a PHASE-entry threshold, NOT a spend guard (RULINGS #5); the
+	// buy-time 150k working-capital floor is untouched. Base choice: the immutable 50k anti-stall bound; the
+	// 150k contract cushion is the stricter alternative if contract working capital should not count as surplus.
+	defaultGateSurplusFloor int64 = 500_000
+	// defaultGateContractFloor is how many contract-dedicated haulers stay EARNING through GATE while
+	// hardening is armed — GATE repurposes only the surplus ABOVE this to construction, never below: the
+	// capacity reconciler withholds the staging depot below a 2-hauler pool, so cannibalizing to 1 starves
+	// sourcing and funding collapses. 2 holds the depot-staging floor. Supersedes min_contract_earners (1)
+	// only while armed.
+	defaultGateContractFloor = 2
+	// defaultGateReentryConstructionPct is the construction-progress ceiling (whole percent, 0..100) below
+	// which an under-scaled sticky GATE may re-derive INCOME (the escape hatch). 5% scopes the escape to a
+	// GATE that latched but never really built — past it real materials are flowing (the manufacturing
+	// executor keeps delivering regardless of bootstrap's phase) and GATE is permanent.
+	defaultGateReentryConstructionPct = 5.0
+	// defaultGateReentryStreakTicks is how many CONSECUTIVE under-scaled + low-progress ticks must hold before
+	// the GATE→INCOME re-derive fires — anti-thrash hysteresis: a single dip never flips the phase, and the
+	// direction is asymmetric (SLOW to leave GATE over N ticks, immediate to resume it once the op re-scales),
+	// so the phase strongly prefers GATE and only escapes a genuinely, persistently starved latch. The streak
+	// is in-memory per-container and fails SAFE on restart: a dropped streak just re-accrues from 0 (delays the
+	// re-derive one window), never double-acts (the re-derive is a pure phase relabel — no spend, no
+	// assignment). 3 ticks ≈ 2.25 min at the 45s cold-start cadence.
+	defaultGateReentryStreakTicks = 3
 )
 
 // ShipRefresher forces a live re-read of the player's hulls before any role/assignment decision —
@@ -422,6 +465,15 @@ type RunBootstrapCoordinatorHandler struct {
 	// while it re-fills), so phase/progress stays derived purely from observation.
 	incomeWindowMu sync.Mutex
 	incomeWindows  map[string]*incomeWindow
+
+	// underScaledStreaks holds the per-container escape-hatch hysteresis counter: consecutive ticks a
+	// sticky-latched GATE has been under-scaled with ~no construction, so the GATE→INCOME re-derive fires only
+	// after gate_reentry_streak_ticks in a row (anti-thrash). Keyed by ContainerID for the same singleton
+	// reason as buyBridges/incomeWindows; underScaledStreakMu guards the MAP only (one container's ticks are
+	// sequential). Consulted only when gate_surplus_hardening is armed; NOT a progress cursor — dropped on
+	// restart (the re-derive just re-accrues from 0, delaying one window, never double-acting).
+	underScaledStreakMu sync.Mutex
+	underScaledStreaks  map[string]int
 }
 
 // NewRunBootstrapCoordinatorHandler wires the coordinator. clock defaults to the real clock when
