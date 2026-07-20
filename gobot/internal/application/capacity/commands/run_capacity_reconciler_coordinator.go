@@ -339,8 +339,63 @@ func (h *RunCapacityReconcilerCoordinatorHandler) reconcileTick(ctx context.Cont
 	if err != nil {
 		return failTick(outcome, capacity.PhaseGovern, err)
 	}
+	h.logCapitalDemand(ctx, cal, desired, actions, seq)
 	h.converge(ctx, cmd.PlayerID.Value(), cal, governed, cmd.DryRun, &outcome)
 	return outcome
+}
+
+// logCapitalDemand records, every tick, the contract-delivery CAPITAL demand this
+// pass emitted to the fleet autosizer bridge — the signal the "N actions, M
+// proposals filed" line HIDES (tier-4 capital goes to the bridge, never through
+// CONVERGE, so a healthy emit still logs "0 actions, 0 proposals"). It surfaces the
+// resolved arm state, the desired-hub count, and the per-role tier-4 gap, plus a
+// one-line reason whenever the emit is zero, so a disarmed ADD gate or a
+// cheap-tier-absorbed gap is visible per tick instead of needing a live operator to
+// notice the depot never builds.
+func (h *RunCapacityReconcilerCoordinatorHandler) logCapitalDemand(ctx context.Context, cal capacity.Calibration, desired capacity.DesiredTopology, actions []capacity.Action, seq int) {
+	hulls, warehouse, stocker, delivery := contractDeliveryCapitalGap(actions)
+	reason := ""
+	if hulls == 0 {
+		reason = " — " + zeroCapitalDemandReason(cal, desired)
+	}
+	common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf(
+		"Capacity reconcile tick %d contract-delivery capital demand: hulls=%d (warehouse=%d stocker=%d delivery=%d), desiredHubs=%d, trade_blind=%v%s",
+		seq, hulls, warehouse, stocker, delivery, len(desired.Hubs), cal.ContractAddGateTradeBlind, reason),
+		map[string]interface{}{
+			"action": "capacity_reconciler_capital_demand", "tick": seq,
+			"demand_hulls": hulls, "warehouse_hulls": warehouse, "stocker_hulls": stocker,
+			"delivery_hulls": delivery, "desired_hubs": len(desired.Hubs), "trade_blind": cal.ContractAddGateTradeBlind,
+		})
+}
+
+// contractDeliveryCapitalGap sums the tick's tier-4 (capital) actions per role —
+// the SAME fold CapexEmitter.Govern emits as CapitalDemand, recomputed here purely
+// from the action list so the diagnostic can never disagree with what was emitted.
+func contractDeliveryCapitalGap(actions []capacity.Action) (hulls, warehouse, stocker, delivery int) {
+	for _, action := range actions {
+		if action.Tier != capacity.TierCapital {
+			continue
+		}
+		hulls += action.HullDelta
+		warehouse += action.WarehouseDelta
+		stocker += action.StockerDelta
+		delivery += action.WorkerDelta
+	}
+	return hulls, warehouse, stocker, delivery
+}
+
+// zeroCapitalDemandReason explains a zero contract-delivery capital emit in one
+// line. The load-bearing case: an empty desired topology with the trade-blind arm
+// OFF means every hub was rejected against the trade-inflated fleet-average
+// benchmark — the exact silent failure that hides a mis-nested arm.
+func zeroCapitalDemandReason(cal capacity.Calibration, desired capacity.DesiredTopology) string {
+	if len(desired.Hubs) == 0 {
+		if !cal.ContractAddGateTradeBlind {
+			return "desired topology empty: no hub cleared the ADD gate and the trade-blind arm is OFF, so the gate benchmarks the trade-inflated fleet average (a high fleet cr/hr suppresses every contract depot) — check capacity_reconciler.contract_add_gate_trade_blind"
+		}
+		return "desired topology empty: no hub cleared the ADD gate (per-hull floor unmet or demand/economics too thin)"
+	}
+	return "desired hubs present but gaps closed by cheap tiers (idle-reuse / rebalance) — no capital hull needed this tick"
 }
 
 func failTick(outcome capacity.TickOutcome, phase capacity.Phase, err error) capacity.TickOutcome {

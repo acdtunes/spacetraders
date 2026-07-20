@@ -1,5 +1,14 @@
 package config
 
+import (
+	"fmt"
+	"reflect"
+	"sort"
+	"strings"
+
+	"github.com/spf13/viper"
+)
+
 // CapacityReconcilerConfig holds the capacity reconciler's calibration knobs
 // (epic st-7zk; spec 2026-07-15-capacity-reconciler-design.md, "Calibration
 // params (config, not code)"). It nests under the top-level
@@ -66,4 +75,50 @@ type CapacityReconcilerConfig struct {
 	// auto-executing. 0/absent → 0 = EVERY tier-4 action requires approval
 	// (tiered autonomy v1).
 	ApprovalThreshold int64 `mapstructure:"approval_threshold" validate:"omitempty,min=0"`
+}
+
+// misplacedTopLevelReconcilerKeys are the config.yaml TOP-LEVEL keys that are
+// really [capacity_reconciler] knobs written at the wrong nesting. Each knob's
+// container-launch key is "capacity_" + its section field name, so a captain who
+// writes that container-key name at the top level (instead of nesting it under
+// capacity_reconciler:) produces a key viper binds to NOTHING — the knob
+// silently no-ops. Derived by reflection over the struct's mapstructure tags so
+// the set can never drift from the fields it guards.
+func misplacedTopLevelReconcilerKeys() []string {
+	t := reflect.TypeOf(CapacityReconcilerConfig{})
+	keys := make([]string, 0, t.NumField())
+	for i := 0; i < t.NumField(); i++ {
+		tag := strings.Split(t.Field(i).Tag.Get("mapstructure"), ",")[0]
+		if tag == "" || tag == "-" {
+			continue
+		}
+		keys = append(keys, "capacity_"+tag)
+	}
+	return keys
+}
+
+// checkMisplacedCapacityReconcilerKeys FAILS the config load when a reconciler
+// knob sits at the config.yaml top level under its container-launch key name
+// instead of nested under [capacity_reconciler]. viper silently drops such a key,
+// so the knob no-ops with ZERO signal — an armed gate that never arms. Fail-loud
+// at load beats a silent disarm the operator only discovers by watching live
+// telemetry.
+func checkMisplacedCapacityReconcilerKeys(v *viper.Viper) error {
+	present := make(map[string]bool)
+	for _, k := range v.AllKeys() {
+		present[k] = true
+	}
+	var misplaced []string
+	for _, key := range misplacedTopLevelReconcilerKeys() {
+		if present[key] {
+			nested := "capacity_reconciler." + strings.TrimPrefix(key, "capacity_")
+			misplaced = append(misplaced, fmt.Sprintf("%q (nest it as %q)", key, nested))
+		}
+	}
+	if len(misplaced) == 0 {
+		return nil
+	}
+	sort.Strings(misplaced)
+	return fmt.Errorf("capacity_reconciler knob(s) at config top level bind to nothing and silently no-op — move them under the capacity_reconciler: section: %s",
+		strings.Join(misplaced, "; "))
 }

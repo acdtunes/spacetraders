@@ -110,6 +110,14 @@ func LoadConfig(configPath string) (*Config, error) {
 		v.Set("database.url", dbURL)
 	}
 
+	// Fail loud on a reconciler knob written at the top level under its
+	// container-launch key name instead of nested under [capacity_reconciler]:
+	// viper would bind it to nothing and the knob (e.g. the contract-delivery
+	// ADD-gate arm) would silently no-op.
+	if err := checkMisplacedCapacityReconcilerKeys(v); err != nil {
+		return nil, fmt.Errorf("invalid configuration: %w", err)
+	}
+
 	// Create config struct and unmarshal
 	var cfg Config
 	if err := v.Unmarshal(&cfg); err != nil {
