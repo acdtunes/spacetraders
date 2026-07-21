@@ -44,42 +44,13 @@ func buildRecoveredAutosizerCommand(t *testing.T, s *DaemonServer, persisted map
 	return cmd
 }
 
-// ABSENT config → coordinator ACTIVE. With no autosizer_disabled anywhere, the built command
-// carries Disabled=false, so the autosizer runs on deploy without any enablement flip — the pin
-// the Admiral's no-dark-shipping ruling mandates.
+// ABSENT config → coordinator ACTIVE. The autosizer runs on deploy without any enablement flip —
+// the pin the Admiral's no-dark-shipping ruling mandates.
 func TestAutosizerLiveByDefault(t *testing.T) {
 	s := newFleetAutosizerTestServer(config.FleetAutosizerConfig{})
 	cmd := buildRecoveredAutosizerCommand(t, s, autosizerLaunchConfig(nil))
-	require.False(t, cmd.Disabled,
-		"absent config must leave the autosizer ACTIVE (LIVE by default) — no dark-shipping")
-	require.False(t, cmd.LightsDisabled, "lights live by default")
-	require.False(t, cmd.HeaviesDisabled, "heavies live by default")
 	require.Equal(t, 7, cmd.PlayerID)
 	require.Equal(t, "autosizer-1txd", cmd.ContainerID)
-}
-
-// The master escape hatch + each per-class disable resolve live (RULINGS #5 off-switches).
-func TestAutosizerResolvesDisablesFromLiveConfig(t *testing.T) {
-	s := newFleetAutosizerTestServer(config.FleetAutosizerConfig{
-		AutosizerDisabled: true,
-		HeaviesDisabled:   true,
-	})
-	cmd := buildRecoveredAutosizerCommand(t, s, autosizerLaunchConfig(nil))
-	require.True(t, cmd.Disabled)
-	require.True(t, cmd.HeaviesDisabled)
-	require.False(t, cmd.LightsDisabled, "only the heavies disable was set")
-}
-
-// sp-ts82 live discipline: dropping the escape hatch from config.yaml must CLEAR a stale
-// persisted autosizer_disabled — otherwise a stale disable would silently keep the autosizer off
-// after the captain removed it, re-opening the dark-shipping gap.
-func TestAutosizerUnsetLiveClearsStalePersistedDisabled(t *testing.T) {
-	s := newFleetAutosizerTestServer(config.FleetAutosizerConfig{})
-	cmd := buildRecoveredAutosizerCommand(t, s, autosizerLaunchConfig(map[string]interface{}{
-		"autosizer_disabled": true, // stale copy from a prior boot
-	}))
-	require.False(t, cmd.Disabled,
-		"unset live must clear the stale persisted disable → autosizer ACTIVE")
 }
 
 // A captain tuning ceilings/knobs must produce a command carrying those values — through the whole

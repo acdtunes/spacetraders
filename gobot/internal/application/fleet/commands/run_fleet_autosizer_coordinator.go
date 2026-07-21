@@ -111,12 +111,7 @@ type RunFleetAutosizerCoordinatorCommand struct {
 	ContainerID string
 	AgentSymbol string
 
-	// Master + per-class escapes. Disabled is the negation of autosizer_disabled so an absent
-	// key reads as enabled (LIVE BY DEFAULT — Admiral no-dark-shipping).
-	Disabled              bool
 	DryRun                bool
-	LightsDisabled        bool
-	HeaviesDisabled       bool
 	WarehouseHullsEnabled bool
 
 	TickIntervalSecs   int
@@ -294,13 +289,10 @@ func (h *RunFleetAutosizerCoordinatorHandler) Handle(ctx context.Context, reques
 	}
 
 	cfg := resolveFleetAutosizerConfig(cmd)
-	logger.Log("INFO", fmt.Sprintf("Fleet autosizer starting (tick %s, dry_run=%v, disabled=%v, lights_disabled=%v, heavies_disabled=%v)", cfg.Tick, cfg.DryRun, cfg.Disabled, cfg.LightsDisabled, cfg.HeaviesDisabled), map[string]interface{}{
-		"action":           "autosizer_start",
-		"container_id":     cmd.ContainerID,
-		"dry_run":          cfg.DryRun,
-		"disabled":         cfg.Disabled,
-		"lights_disabled":  cfg.LightsDisabled,
-		"heavies_disabled": cfg.HeaviesDisabled,
+	logger.Log("INFO", fmt.Sprintf("Fleet autosizer starting (tick %s, dry_run=%v)", cfg.Tick, cfg.DryRun), map[string]interface{}{
+		"action":       "autosizer_start",
+		"container_id": cmd.ContainerID,
+		"dry_run":      cfg.DryRun,
 	})
 
 	result := &RunFleetAutosizerCoordinatorResponse{Errors: []string{}}
@@ -339,13 +331,11 @@ func (h *RunFleetAutosizerCoordinatorHandler) coordinatorState(containerID strin
 }
 
 // classDisabled reports whether a class is frozen by config. Lights/heavies are LIVE BY DEFAULT
-// (only an explicit *_disabled freezes them); warehouse is opt-IN (only runs when enabled).
+// and unconditionally run; warehouse is opt-IN (only runs when enabled).
 func (c autosizerRunConfig) classDisabled(class HullClass) bool {
 	switch class {
-	case HullClassLight:
-		return c.LightsDisabled
-	case HullClassHeavy:
-		return c.HeaviesDisabled
+	case HullClassLight, HullClassHeavy:
+		return false
 	case HullClassWarehouse:
 		return !c.WarehouseHullsEnabled
 	case HullClassExplorer:

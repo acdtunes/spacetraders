@@ -65,42 +65,6 @@ func TestReconcile_LiveByDefault_EvaluatesProviders(t *testing.T) {
 	}
 }
 
-// The autosizer_disabled escape hatch stands the WHOLE coordinator down: no provider is even read.
-func TestReconcile_Disabled_EvaluatesNothing(t *testing.T) {
-	light := &fakeDemandProvider{class: HullClassLight, demand: ClassDemand{Demand: 9, Current: 0, Readable: true}}
-	h := newHandlerWith(light)
-
-	res, err := h.reconcileOnce(context.Background(), &RunFleetAutosizerCoordinatorCommand{Disabled: true, ContainerID: "c1"})
-	if err != nil {
-		t.Fatalf("reconcileOnce error: %v", err)
-	}
-	if light.calls != 0 {
-		t.Fatalf("disabled autosizer must not read any provider, got %d calls", light.calls)
-	}
-	if res.ClassesEvaluated != 0 {
-		t.Fatalf("expected 0 classes evaluated when disabled, got %d", res.ClassesEvaluated)
-	}
-}
-
-// A per-class disable freezes ONE class while the others keep running (the captain can pause
-// heavy buys during an absorption dip without stopping worker buys).
-func TestReconcile_PerClassDisable_FreezesOnlyThatClass(t *testing.T) {
-	light := &fakeDemandProvider{class: HullClassLight, demand: ClassDemand{Demand: 5, Current: 0, Readable: true}}
-	heavy := &fakeDemandProvider{class: HullClassHeavy, demand: ClassDemand{Demand: 5, Current: 0, Readable: true}}
-	h := newHandlerWith(light, heavy)
-
-	_, err := h.reconcileOnce(context.Background(), &RunFleetAutosizerCoordinatorCommand{HeaviesDisabled: true, ContainerID: "c1"})
-	if err != nil {
-		t.Fatalf("reconcileOnce error: %v", err)
-	}
-	if light.calls != 1 {
-		t.Fatalf("lights must still run when only heavies are disabled, got %d", light.calls)
-	}
-	if heavy.calls != 0 {
-		t.Fatalf("heavies_disabled must freeze the heavy provider, got %d calls", heavy.calls)
-	}
-}
-
 // Warehouse is OPT-IN (not live-by-default): the warehouse provider is skipped unless
 // warehouse_hulls_enabled is set.
 func TestReconcile_WarehouseOptIn(t *testing.T) {

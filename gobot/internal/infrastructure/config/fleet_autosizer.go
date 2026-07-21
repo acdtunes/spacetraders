@@ -15,17 +15,10 @@ package config
 type FleetAutosizerConfig struct {
 	// --- master + per-class escapes (LIVE BY DEFAULT; Admiral: no dark-shipping) ---
 
-	// AutosizerDisabled stands the WHOLE autosizer down. Absent/false = ACTIVE, so an
-	// absent-config boots live (pinned by test). Set true only in an emergency.
-	AutosizerDisabled bool `mapstructure:"autosizer_disabled"`
 	// DryRun evaluates every buy decision and logs what it WOULD purchase (with full
 	// arithmetic) but spends nothing. NOT dark-shipping — it WARNs loudly every tick
 	// (no-silent-dry-run rule) and the zero-effect alarm still fires.
 	DryRun bool `mapstructure:"dry_run"`
-	// LightsDisabled / HeaviesDisabled freeze one class while the other keeps running (the
-	// captain can pause heavy buys during an absorption dip without stopping worker buys).
-	LightsDisabled  bool `mapstructure:"lights_disabled"`
-	HeaviesDisabled bool `mapstructure:"heavies_disabled"`
 	// WarehouseHullsEnabled opts INTO the warehouse-hull class (default OFF until the
 	// dispatch step is armed — sp-1txd M7). Unlike lights/heavies it is opt-in, not live.
 	WarehouseHullsEnabled bool `mapstructure:"warehouse_hulls_enabled"`

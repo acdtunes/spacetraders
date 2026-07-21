@@ -13,10 +13,7 @@ import (
 // holds ALL knobs so resolveFleetAutosizerConfig is written once and the guard/demand math reads
 // resolved values directly.
 type autosizerRunConfig struct {
-	Disabled              bool
 	DryRun                bool
-	LightsDisabled        bool
-	HeaviesDisabled       bool
 	WarehouseHullsEnabled bool
 
 	Tick               time.Duration
@@ -73,10 +70,7 @@ type autosizerRunConfig struct {
 
 func resolveFleetAutosizerConfig(cmd *RunFleetAutosizerCoordinatorCommand) autosizerRunConfig {
 	c := autosizerRunConfig{
-		Disabled:                         cmd.Disabled,
 		DryRun:                           cmd.DryRun,
-		LightsDisabled:                   cmd.LightsDisabled,
-		HeaviesDisabled:                  cmd.HeaviesDisabled,
 		WarehouseHullsEnabled:            cmd.WarehouseHullsEnabled,
 		Tick:                             time.Duration(cmd.TickIntervalSecs) * time.Second,
 		PurchaseCapPerTick:               cmd.PurchaseCapPerTick,
@@ -225,12 +219,6 @@ func (h *RunFleetAutosizerCoordinatorHandler) reconcileOnce(ctx context.Context,
 	cfg := resolveFleetAutosizerConfig(cmd)
 	logger := common.LoggerFromContext(ctx)
 	res := reconcileResult{}
-
-	// Master boot-gate (RULINGS #5): the container stays resident when disabled so a config flip
-	// + restart re-arms it with no manual relaunch, but it takes no action while stood down.
-	if cfg.Disabled {
-		return res, nil
-	}
 
 	// No-silent-dry-run: dry-run WARNs every tick — it is opt-in watch mode, not a silent no-op.
 	if cfg.DryRun {

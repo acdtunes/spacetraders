@@ -48,11 +48,10 @@ Each slow tick (default 15min) it, per enabled hull class:
            purchase counter + a captain notice, and stops at the per-tick cap.
 
 It is LIVE BY DEFAULT: launched here it is ACTIVE immediately. Set [fleet_autosizer]
-autosizer_disabled=true to stand the whole thing down, or lights_disabled / heavies_disabled to
-freeze one class. Set dry_run=true to evaluate + log every buy loudly while spending nothing.
+dry_run=true to evaluate + log every buy loudly while spending nothing.
 
 Tuning is config-driven (config.yaml [fleet_autosizer], live on daemon restart):
-  autosizer_disabled / dry_run / lights_disabled / heavies_disabled   escapes
+  dry_run                                                             escape
   tick_interval_secs / purchase_cap_per_tick                          pacing
   fleet_ceiling_total / fleet_ceiling_{lights,heavies}                API-budget ceilings
   purchase_margin_over_floor / reserve / reserve_treasury_pct         treasury guard

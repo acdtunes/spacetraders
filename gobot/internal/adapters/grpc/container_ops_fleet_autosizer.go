@@ -61,10 +61,7 @@ func (s *DaemonServer) FleetAutosizerCoordinator(ctx context.Context, playerID i
 // buildFleetAutosizerCommand's reads. container_id and agent_symbol are IDENTITY (set once at
 // creation) and are deliberately NOT in this list — they must survive a rebuild.
 var fleetAutosizerConfigKeys = []string{
-	"autosizer_disabled",
 	"autosizer_dry_run",
-	"autosizer_lights_disabled",
-	"autosizer_heavies_disabled",
 	"autosizer_warehouse_hulls_enabled",
 	"autosizer_tick_secs",
 	"autosizer_purchase_cap_per_tick",
@@ -122,22 +119,10 @@ func (s *DaemonServer) resolveFleetAutosizerConfig(config map[string]interface{}
 // (s.fleetAutosizerConfig) into a coordinator container's launch config. Only keys the captain
 // actually set (non-zero / non-nil) are written, so an unset knob defers to the coordinator's own
 // documented default (RULINGS #5 — the daemon never hardcodes the operational values).
-// autosizer_disabled is written ONLY when the coordinator is off: an absent key therefore reads
-// as enabled, so the LIVE-BY-DEFAULT intent survives both a fresh start and a recovery from an
-// old config that predates the key (Admiral: no dark-shipping).
 func (s *DaemonServer) injectFleetAutosizerConfig(config map[string]interface{}) {
 	fa := s.fleetAutosizerConfig
-	if fa.AutosizerDisabled {
-		config["autosizer_disabled"] = true
-	}
 	if fa.DryRun {
 		config["autosizer_dry_run"] = true
-	}
-	if fa.LightsDisabled {
-		config["autosizer_lights_disabled"] = true
-	}
-	if fa.HeaviesDisabled {
-		config["autosizer_heavies_disabled"] = true
 	}
 	if fa.WarehouseHullsEnabled {
 		config["autosizer_warehouse_hulls_enabled"] = true
@@ -262,18 +247,13 @@ func (s *DaemonServer) injectFleetAutosizerConfig(config map[string]interface{})
 // launch config so a daemon restart re-adopts it. The [fleet_autosizer] knobs are resolved LIVE
 // from config.yaml just before this runs (resolveFleetAutosizerConfig in buildCommandForType), so
 // the persisted autosizer_* keys are transient — the reads below see the current config.yaml.
-// Disabled is reconstructed as autosizer_disabled directly (absent = false = ENABLED, so LIVE BY
-// DEFAULT survives a recovery from an old config that predates the key).
 func buildFleetAutosizerCommand(cfg *configReader, playerID int, containerID string) interface{} {
 	cmd := &fleetCmd.RunFleetAutosizerCoordinatorCommand{
 		PlayerID:    playerID,
 		ContainerID: containerID,
 		AgentSymbol: cfg.OptionalString("agent_symbol"),
 
-		Disabled:              cfg.OptionalBool("autosizer_disabled"),
 		DryRun:                cfg.OptionalBool("autosizer_dry_run"),
-		LightsDisabled:        cfg.OptionalBool("autosizer_lights_disabled"),
-		HeaviesDisabled:       cfg.OptionalBool("autosizer_heavies_disabled"),
 		WarehouseHullsEnabled: cfg.OptionalBool("autosizer_warehouse_hulls_enabled"),
 
 		TickIntervalSecs:   cfg.OptionalInt("autosizer_tick_secs", 0),
