@@ -31,24 +31,8 @@ type DaemonConfig struct {
 	// re-applied, and the CAS save retried up to this many times before falling
 	// back to last-write-wins — so both writers' mutations survive instead of the
 	// loser being clobbered. 0/unset selects the built-in default. Live by
-	// default (RULINGS #5); see CASRetryDisabled for the escape hatch.
+	// default (RULINGS #5).
 	MaxCASRetries int `mapstructure:"max_cas_retries"`
-
-	// CASRetryDisabled is the escape hatch (RULINGS #5): true reverts ship saves
-	// to the legacy last-write-wins-on-conflict behavior (sp-60ff), disabling
-	// re-apply retry entirely. Absent/false = retry ACTIVE.
-	CASRetryDisabled bool `mapstructure:"cas_retry_disabled"`
-
-	// ArrivalWaitLiveReconfirmDisabled is the kill-switch (inverted polarity,
-	// mirroring CASRetryDisabled) for the arrival-wait fix (sp-arrwait): before
-	// parking a still-IN_TRANSIT-past-ETA ship as a lost event, WaitForShipArrival
-	// re-confirms ONCE against the authoritative live API (a short leg's local row
-	// can lag the async arrival transition) and debounces the short-leg race with a
-	// second local-DB poll. Absent/false = fix ACTIVE (default ON, bug fixed by
-	// default); true instantly reverts WaitForShipArrival to the pre-fix DB-only
-	// park with no code rollback. The re-confirm costs at most ONE API call, only on
-	// the rare park path — never on the happy path. Sticky across restart via config.
-	ArrivalWaitLiveReconfirmDisabled bool `mapstructure:"arrival_wait_live_reconfirm_disabled"`
 
 	// AgentCacheTTLSeconds bounds how long the shared API client may serve a
 	// cached agent before re-reading /my/agent live (sp-oszc): GetAgent was the
@@ -58,17 +42,6 @@ type DaemonConfig struct {
 	// from invalidating the cache on every credit-decreasing call, not the TTL —
 	// so tuning it never risks an over-spend. Sticky across restart via config.
 	AgentCacheTTLSeconds int `mapstructure:"agent_cache_ttl_seconds"`
-
-	// APIPrioritySchedulingEnabled arms priority-aware rate-limit scheduling in
-	// the shared API client (sp-ratelimit-prio). Absent/false — the DEFAULT — is
-	// byte-identical to the legacy FIFO/blocking token acquisition: nothing about
-	// the 2 req/s ceiling, burst, or refill changes. When true, trade-critical
-	// calls (Buy/Sell Cargo, and calls explicitly marked trade-blocking) acquire a
-	// CONTENDED token ahead of deferrable status polls under saturation, cutting
-	// trade latency without changing total throughput. Bounded aging guarantees no
-	// poll is starved. This is the governance gate — the reordering is completely
-	// inert until this is explicitly set true. Sticky across restart via config.
-	APIPrioritySchedulingEnabled bool `mapstructure:"api_priority_scheduling_enabled"`
 }
 
 // RestartPolicyConfig holds container restart policy configuration

@@ -3,7 +3,6 @@ package ship
 import (
 	"context"
 	"fmt"
-	"sync/atomic"
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
@@ -53,31 +52,8 @@ const (
 // (ShipStateScheduler.handleArrival, non-replaying) — gets exactly one more local
 // re-read (one gracePeriod later) for that transition to commit before any park
 // decision is taken. It is a LOCAL DB re-read, never an API call, so tightening it
-// costs zero API budget. Only active when the live-reconfirm kill-switch is on; with
-// it off, the wait parks on the first past-ETA observation.
+// costs zero API budget.
 const requiredPastETAObservationsBeforePark = 2
-
-// arrivalWaitLiveReconfirm is the kill-switch for the arrival-wait behavior
-// (Fix A: live-API re-confirm before parking; Fix B: short-leg debounce). It
-// DEFAULTS ON and is flipped by the daemon at boot from config via
-// SetArrivalWaitLiveReconfirm. Setting it false instantly reverts
-// WaitForShipArrival to the DB-only park behavior without a code rollback
-// (config arrival_wait_live_reconfirm_disabled=true). It is read exactly ONCE
-// per wait, at the public entry point (WaitForShipArrival), and threaded as a
-// plain bool into the testable core, so the core stays free of global state.
-var arrivalWaitLiveReconfirm atomic.Bool
-
-func init() {
-	arrivalWaitLiveReconfirm.Store(true)
-}
-
-// SetArrivalWaitLiveReconfirm flips the arrival-wait live-reconfirm kill-switch
-// (default ON). Wired from DaemonConfig at boot, mirroring
-// ShipRepository.SetCASRetryPolicy's setter injection; enabled=false reverts
-// WaitForShipArrival to the DB-only park behavior (Fix A + Fix B off).
-func SetArrivalWaitLiveReconfirm(enabled bool) {
-	arrivalWaitLiveReconfirm.Store(enabled)
-}
 
 // ErrArrivalWaitExhausted is returned when a ship-arrival wait gives up: the
 // ARRIVED event never arrived AND repeated resyncs against the ship
@@ -131,7 +107,7 @@ func WaitForShipArrival(
 	)
 	return waitForShipArrivalCore(
 		ctx, shipRepo, subscriber, ship, playerID, waitTimeSeconds, logger,
-		DefaultArrivalGracePeriod, budget, arrivalWaitLiveReconfirm.Load(),
+		DefaultArrivalGracePeriod, budget,
 	)
 }
 
@@ -160,15 +136,12 @@ func calculateArrivalWaitBudget(eta time.Duration, marginFactor float64, minMarg
 // timeout->resync->park backstop without slowing down the suite; production
 // always goes through WaitForShipArrival's fixed defaults above.
 //
-// liveReconfirm is the kill-switch, threaded as a plain bool so the core is
-// deterministic and free of global state. When true (default): a would-be
-// park requires two consecutive past-ETA local-DB observations (Fix B
-// short-leg debounce) and is then re-confirmed ONCE against the authoritative
-// live API (Fix A) before parking - the ship's local row can lag the async
-// IN_TRANSIT->IN_ORBIT transition on a short leg, so a DB-only park is a false
-// positive. When false: park on the first past-ETA observation off the DB
-// read alone (no API call). Either way the happy path (ARRIVED event, or a DB
-// poll that already shows the hull left transit) makes ZERO API calls.
+// A would-be park requires two consecutive past-ETA local-DB observations
+// (Fix B short-leg debounce) and is then re-confirmed ONCE against the
+// authoritative live API (Fix A) before parking - the ship's local row can lag
+// the async IN_TRANSIT->IN_ORBIT transition on a short leg, so a DB-only park
+// is a false positive. The happy path (ARRIVED event, or a DB poll that
+// already shows the hull left transit) makes ZERO API calls.
 func waitForShipArrivalCore(
 	ctx context.Context,
 	shipRepo domainNavigation.ShipQueryRepository,
@@ -179,7 +152,6 @@ func waitForShipArrivalCore(
 	logger common.ContainerLogger,
 	gracePeriod time.Duration,
 	budget time.Duration,
-	liveReconfirm bool,
 ) error {
 	shipSymbol := ship.ShipSymbol()
 
@@ -314,11 +286,6 @@ func waitForShipArrivalCore(
 				// to the DB row yet, so the stale row still reads IN_TRANSIT-past-ETA
 				// on the first poll. A DB-only park here fails the route segment and
 				// crash-loops the container — hence Fix B's debounce below.
-				if !liveReconfirm {
-					// Kill-switch OFF: park on the first past-ETA poll, off the DB
-					// read alone, no API call.
-					return parkLostEvent(logger, shipSymbol, attempt)
-				}
 
 				// Fix B (DB-only, no API): require two CONSECUTIVE past-ETA
 				// observations before parking, so a single stale first poll on a
@@ -410,9 +377,9 @@ func waitForShipArrivalCore(
 }
 
 // parkLostEvent logs the genuine lost/stuck-event park and returns the typed
-// exhaustion error. Factored out so all three park paths — the kill-switch-off
-// path, the debounce-satisfied-but-live-confirmed-stuck path, and the live-API
-// error fallback — emit one identical ERROR log and error.
+// exhaustion error. Factored out so both park paths — the
+// debounce-satisfied-but-live-confirmed-stuck path and the live-API error
+// fallback — emit one identical ERROR log and error.
 func parkLostEvent(logger common.ContainerLogger, shipSymbol string, attempt int) error {
 	logger.Log("ERROR", "Arrival resync still IN_TRANSIT past its own ETA - lost event, parking", map[string]interface{}{
 		"ship_symbol": shipSymbol,

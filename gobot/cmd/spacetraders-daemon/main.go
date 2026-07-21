@@ -166,11 +166,6 @@ func run(cfg *config.Config) error {
 	// benefit at once; safety comes from invalidating on every credit-decreasing
 	// call inside the client. 0/unset -> the client's built-in 15s default.
 	apiClient.SetAgentCacheTTL(time.Duration(cfg.Daemon.AgentCacheTTLSeconds) * time.Second)
-	// sp-ratelimit-prio: arm priority-aware rate-limit scheduling only if the
-	// config opts in. Default/absent (false) => the client keeps the legacy
-	// FIFO/blocking token acquisition, byte-identical to before. When on,
-	// trade-critical calls jump contended status polls without changing the rate.
-	apiClient.SetPriorityScheduling(cfg.Daemon.APIPrioritySchedulingEnabled)
 	fmt.Println("API client initialized")
 
 	// 4. Initialize ship repository (adapts API responses to domain entities)
@@ -216,16 +211,10 @@ func run(cfg *config.Config) error {
 	// Now initialize ship repository with graph service (implements IWaypointProvider)
 	// Pass db connection for hybrid API+DB operation (ship data from API, assignment from DB)
 	shipRepoImpl := api.NewShipRepository(apiClient, playerRepo, waypointRepo, graphService, db, nil) // nil = use RealClock
-	// sp-01wc: wire the CAS-retry knob (live by default; cas_retry_disabled reverts
-	// ship saves to sp-60ff last-write-wins). Setter injection keeps the 4
-	// NewShipRepository call sites untouched.
-	shipRepoImpl.SetCASRetryPolicy(cfg.Daemon.MaxCASRetries, cfg.Daemon.CASRetryDisabled)
+	// sp-01wc: wire the CAS-retry knob (live by default). Setter injection keeps
+	// the 4 NewShipRepository call sites untouched.
+	shipRepoImpl.SetCASRetryPolicy(cfg.Daemon.MaxCASRetries)
 	shipRepo = shipRepoImpl
-	// sp-arrwait: wire the arrival-wait live-reconfirm kill-switch (live by default;
-	// arrival_wait_live_reconfirm_disabled reverts WaitForShipArrival to the pre-fix
-	// DB-only park). Mirrors SetCASRetryPolicy's boot wiring; inverted-polarity flag
-	// so "default ON" survives Go's bool zero-value.
-	ship.SetArrivalWaitLiveReconfirm(!cfg.Daemon.ArrivalWaitLiveReconfirmDisabled)
 	fmt.Println("Ship repository initialized")
 
 	// 7. Initialize mediator (CQRS dispatcher)

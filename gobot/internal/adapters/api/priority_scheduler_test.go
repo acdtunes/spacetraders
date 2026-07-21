@@ -251,36 +251,19 @@ func TestPrioritySchedulingPreservesRateCeiling(t *testing.T) {
 	}
 }
 
-// ---- behaviour 4: flag OFF is the default and byte-identical to legacy -------
+// ---- behaviour 4: priority scheduling is always armed on a real client -----
 
-func TestPrioritySchedulingDefaultsOffAndIsInert(t *testing.T) {
+func TestPrioritySchedulingArmedByDefaultOnRealClient(t *testing.T) {
 	c := NewSpaceTradersClient()
 
-	// DEFAULT: no scheduler => legacy c.rateLimiter.Wait path.
-	if c.scheduler.Load() != nil {
-		t.Fatal("priority scheduler must be nil by default (OFF = byte-identical to legacy)")
-	}
-	c.SetPriorityScheduling(false)
-	if c.scheduler.Load() != nil {
-		t.Fatal("SetPriorityScheduling(false) must leave the scheduler nil")
+	if c.scheduler == nil {
+		t.Fatal("priority scheduler must be constructed on every client (sp-ratelimit-prio, ARMED)")
 	}
 
-	// OFF: acquireRateToken still acquires from the shared limiter. Even a HIGH
-	// endpoint like "Buy Cargo" triggers no scheduling — classification is inert.
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	if err := c.acquireRateToken(ctx, "Buy Cargo"); err != nil {
-		t.Fatalf("OFF acquireRateToken should acquire a burst token, got %v", err)
-	}
-
-	// Arming then disarming round-trips cleanly.
-	c.SetPriorityScheduling(true)
-	if c.scheduler.Load() == nil {
-		t.Fatal("SetPriorityScheduling(true) must arm the scheduler")
-	}
-	c.SetPriorityScheduling(false)
-	if c.scheduler.Load() != nil {
-		t.Fatal("SetPriorityScheduling(false) must disarm the scheduler")
+		t.Fatalf("acquireRateToken should acquire a burst token, got %v", err)
 	}
 }
 

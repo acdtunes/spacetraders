@@ -68,12 +68,10 @@ type ShipRepository struct {
 	// Optional arrival scheduler - notified after navigation to schedule state transition
 	arrivalScheduler navigation.ArrivalScheduler
 
-	// CAS-retry knob. maxCASRetries<=0 means "use defaultMaxCASRetries";
-	// casRetryDisabled forces the last-write-wins-on-conflict path. Both default to
-	// their zero value so retry is LIVE by default across every construction path
-	// (RULINGS #5); the daemon overrides them from DaemonConfig via SetCASRetryPolicy.
-	maxCASRetries    int
-	casRetryDisabled bool
+	// CAS-retry knob. maxCASRetries<=0 means "use defaultMaxCASRetries". Defaults
+	// to its zero value so retry is LIVE by default across every construction path
+	// (RULINGS #5); the daemon overrides it from DaemonConfig via SetCASRetryPolicy.
+	maxCASRetries int
 }
 
 // defaultMaxCASRetries is the number of re-find + re-apply attempts SaveWithRetry
@@ -111,21 +109,15 @@ func (r *ShipRepository) SetArrivalScheduler(scheduler navigation.ArrivalSchedul
 }
 
 // SetCASRetryPolicy configures the optimistic-concurrency retry knob for
-// SaveWithRetry. maxRetries<=0 selects the built-in default (defaultMaxCASRetries);
-// disabled=true forces the last-write-wins path, disabling re-apply retry entirely.
+// SaveWithRetry. maxRetries<=0 selects the built-in default (defaultMaxCASRetries).
 // Wired from DaemonConfig at boot; setter injection mirrors SetArrivalScheduler.
-func (r *ShipRepository) SetCASRetryPolicy(maxRetries int, disabled bool) {
+func (r *ShipRepository) SetCASRetryPolicy(maxRetries int) {
 	r.maxCASRetries = maxRetries
-	r.casRetryDisabled = disabled
 }
 
-// resolvedCASRetries reports the effective retry bound: 0 when disabled (straight
-// to last-write-wins on the first conflict), otherwise the configured value or
-// defaultMaxCASRetries when unset.
+// resolvedCASRetries reports the effective retry bound: the configured value,
+// or defaultMaxCASRetries when unset.
 func (r *ShipRepository) resolvedCASRetries() int {
-	if r.casRetryDisabled {
-		return 0
-	}
 	if r.maxCASRetries <= 0 {
 		return defaultMaxCASRetries
 	}
@@ -1021,8 +1013,7 @@ func (r *ShipRepository) preserveDedicatedFleetTag(ctx context.Context, model *p
 // contract. It re-finds the fresh row and re-applies mutate on every
 // ships.version conflict, bounded by resolvedCASRetries(), then falls
 // back to last-write-wins on exhaustion so behavior never regresses below
-// today's baseline. When the knob disables retry (resolvedCASRetries()==0) the
-// very first conflict falls straight through to last-write-wins — exactly today's Save.
+// today's baseline.
 func (r *ShipRepository) SaveWithRetry(ctx context.Context, symbol string, playerID shared.PlayerID, mutate navigation.ShipMutation) (*navigation.Ship, bool, error) {
 	if r.db == nil {
 		return nil, false, fmt.Errorf("database not configured")
