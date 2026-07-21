@@ -95,6 +95,84 @@ func TestMutateConstructionGoodOverride_NoActivePipelineErrors(t *testing.T) {
 	require.Contains(t, err.Error(), "no active construction pipeline")
 }
 
+// --- sp-duljg: live max-workers verb (DaemonServer write path) -----------------------------------
+
+// TestMutateConstructionMaxWorkers_LiveSetPersistsAndSurvivesReload drives the sp-duljg acceptance
+// end to end through the REAL persistence path (the pipeline row is the restart-durable store):
+// raising a RUNNING pipeline's max_workers from its launch value to 10 persists exactly that, and a
+// reload via FindByConstructionSite — the daemon-bounce equivalent — still reports 10 (RULINGS #2).
+// resolveWorkerCap reads MaxWorkers() off this same row every drain tick, so the change is honored
+// live with no restart. Re-setting to 10 is a reported no-op that skips the write.
+func TestMutateConstructionMaxWorkers_LiveSetPersistsAndSurvivesReload(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	seedOverridePlayer(t, db, 1, "DULJG-AGENT")
+
+	repo := persistence.NewGormManufacturingPipelineRepository(db)
+	ctx := context.Background()
+
+	// A running construction pipeline launched with a cap of 1 (the "worker cap 1" incident).
+	pipeline := manufacturing.NewConstructionPipeline("X1-FB5-I56", 1, 3, 1)
+	require.NoError(t, repo.Create(ctx, pipeline))
+
+	s := &DaemonServer{db: db}
+
+	res, err := s.MutateConstructionMaxWorkers(ctx, "X1-FB5-I56", 1, 10)
+	require.NoError(t, err)
+	require.True(t, res.Changed)
+	require.Equal(t, 10, res.WorkerCap)
+
+	// Reload = daemon bounce: the live-set cap survived (RULINGS #2).
+	reloaded, err := repo.FindByConstructionSite(ctx, "X1-FB5-I56", 1)
+	require.NoError(t, err)
+	require.NotNil(t, reloaded)
+	require.Equal(t, 10, reloaded.MaxWorkers(), "the live-set cap must survive a daemon restart")
+
+	// Re-setting to the current value is a no-op — skips the DB write, reported honestly.
+	noop, err := s.MutateConstructionMaxWorkers(ctx, "X1-FB5-I56", 1, 10)
+	require.NoError(t, err)
+	require.False(t, noop.Changed)
+	require.Equal(t, 10, noop.WorkerCap)
+}
+
+// TestMutateConstructionMaxWorkers_NoActivePipelineErrors: capping a site with no running
+// construction pipeline is a clear operator error, not a silent no-op.
+func TestMutateConstructionMaxWorkers_NoActivePipelineErrors(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	seedOverridePlayer(t, db, 1, "DULJG-AGENT")
+
+	s := &DaemonServer{db: db}
+	_, err = s.MutateConstructionMaxWorkers(context.Background(), "X1-NONE-I1", 1, 10)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "no active construction pipeline")
+}
+
+// TestMutateConstructionMaxWorkers_RejectsNonPositiveCount: the daemon single-writer (RULINGS #3)
+// enforces the >=1 bound and fails closed, so a raw gRPC caller cannot drive the drain's errgroup to
+// SetLimit(0) (which would deadlock the tick). A rejected count must leave the stored cap untouched —
+// no partial write.
+func TestMutateConstructionMaxWorkers_RejectsNonPositiveCount(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	seedOverridePlayer(t, db, 1, "DULJG-AGENT")
+
+	repo := persistence.NewGormManufacturingPipelineRepository(db)
+	ctx := context.Background()
+	pipeline := manufacturing.NewConstructionPipeline("X1-FB5-I56", 1, 3, 4)
+	require.NoError(t, repo.Create(ctx, pipeline))
+
+	s := &DaemonServer{db: db}
+	for _, count := range []int{0, -3} {
+		_, err := s.MutateConstructionMaxWorkers(ctx, "X1-FB5-I56", 1, count)
+		require.Error(t, err, "count %d must be rejected before any write", count)
+
+		reloaded, ferr := repo.FindByConstructionSite(ctx, "X1-FB5-I56", 1)
+		require.NoError(t, ferr)
+		require.Equal(t, 4, reloaded.MaxWorkers(), "a rejected count must not touch the stored cap")
+	}
+}
+
 // These tests pin applyGoodOverride (sp-pdb3), the PURE merge/clear at the heart of the live
 // `construction override` verb: it produces the next per-good GoodGatingOverrides map from a patch,
 // leaving every other good byte-identical and clamping the price-ceiling multiplier to the domain

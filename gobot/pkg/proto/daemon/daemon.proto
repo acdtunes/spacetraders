@@ -272,6 +272,12 @@ service DaemonService {
   // coordinator / task activator re-read the persisted overrides on their next discovery pass.
   rpc ConstructionGoodOverride(ConstructionGoodOverrideRequest) returns (ConstructionGoodOverrideResponse);
 
+  // ConstructionWorkerCap sets the concurrent supplyTask-worker cap (max_workers) on a RUNNING
+  // construction pipeline live, with no restart (sp-duljg). The drain re-reads max_workers off the
+  // pipeline row each tick (resolveWorkerCap -> errgroup.SetLimit) and converges its fan-out to N; the
+  // cap persists across daemon restarts. The construction analogue of FactoryWorkerCap.
+  rpc ConstructionWorkerCap(ConstructionWorkerCapRequest) returns (ConstructionWorkerCapResponse);
+
   // --- Contract depot management (sp-u9xa) ---
   // The daemon is the single writer of contract-depot topology; every mutation is durable
   // the instant it returns (through the application Store into the DB), so a granular edit
@@ -1744,6 +1750,27 @@ message ConstructionGoodOverrideResponse {
   string strategy = 5;
   double price_ceiling_mult = 6;
   string min_supply = 7;
+}
+
+// ConstructionWorkerCapRequest sets the live concurrent-worker cap (max_workers) on a running
+// construction pipeline (sp-duljg). construction_site identifies the target pipeline.
+message ConstructionWorkerCapRequest {
+  // construction_site is the waypoint whose running pipeline to cap.
+  string construction_site = 1;
+  // count is the maximum number of haulers the drain runs concurrently (>= 1).
+  int32 count = 2;
+  optional int32 player_id = 3;
+  optional string agent_symbol = 4;
+}
+
+// ConstructionWorkerCapResponse returns the resulting live cap after the mutation.
+message ConstructionWorkerCapResponse {
+  string construction_site = 1;
+  // worker_cap is the resulting concurrent-worker cap now in force.
+  int32 worker_cap = 2;
+  // changed is false when the verb was a no-op (the cap already equalled count),
+  // so the CLI can report it honestly.
+  bool changed = 3;
 }
 
 // --- Contract depot management messages (sp-u9xa) ---

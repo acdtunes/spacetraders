@@ -11398,6 +11398,142 @@ func (x *ConstructionGoodOverrideResponse) GetMinSupply() string {
 	return ""
 }
 
+// ConstructionWorkerCapRequest sets the live concurrent-worker cap (max_workers) on a running
+// construction pipeline (sp-duljg). construction_site identifies the target pipeline.
+type ConstructionWorkerCapRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// construction_site is the waypoint whose running pipeline to cap.
+	ConstructionSite string `protobuf:"bytes,1,opt,name=construction_site,json=constructionSite,proto3" json:"construction_site,omitempty"`
+	// count is the maximum number of haulers the drain runs concurrently (>= 1).
+	Count         int32   `protobuf:"varint,2,opt,name=count,proto3" json:"count,omitempty"`
+	PlayerId      *int32  `protobuf:"varint,3,opt,name=player_id,json=playerId,proto3,oneof" json:"player_id,omitempty"`
+	AgentSymbol   *string `protobuf:"bytes,4,opt,name=agent_symbol,json=agentSymbol,proto3,oneof" json:"agent_symbol,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ConstructionWorkerCapRequest) Reset() {
+	*x = ConstructionWorkerCapRequest{}
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[156]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConstructionWorkerCapRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConstructionWorkerCapRequest) ProtoMessage() {}
+
+func (x *ConstructionWorkerCapRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[156]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConstructionWorkerCapRequest.ProtoReflect.Descriptor instead.
+func (*ConstructionWorkerCapRequest) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{156}
+}
+
+func (x *ConstructionWorkerCapRequest) GetConstructionSite() string {
+	if x != nil {
+		return x.ConstructionSite
+	}
+	return ""
+}
+
+func (x *ConstructionWorkerCapRequest) GetCount() int32 {
+	if x != nil {
+		return x.Count
+	}
+	return 0
+}
+
+func (x *ConstructionWorkerCapRequest) GetPlayerId() int32 {
+	if x != nil && x.PlayerId != nil {
+		return *x.PlayerId
+	}
+	return 0
+}
+
+func (x *ConstructionWorkerCapRequest) GetAgentSymbol() string {
+	if x != nil && x.AgentSymbol != nil {
+		return *x.AgentSymbol
+	}
+	return ""
+}
+
+// ConstructionWorkerCapResponse returns the resulting live cap after the mutation.
+type ConstructionWorkerCapResponse struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	ConstructionSite string                 `protobuf:"bytes,1,opt,name=construction_site,json=constructionSite,proto3" json:"construction_site,omitempty"`
+	// worker_cap is the resulting concurrent-worker cap now in force.
+	WorkerCap int32 `protobuf:"varint,2,opt,name=worker_cap,json=workerCap,proto3" json:"worker_cap,omitempty"`
+	// changed is false when the verb was a no-op (the cap already equalled count),
+	// so the CLI can report it honestly.
+	Changed       bool `protobuf:"varint,3,opt,name=changed,proto3" json:"changed,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ConstructionWorkerCapResponse) Reset() {
+	*x = ConstructionWorkerCapResponse{}
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[157]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConstructionWorkerCapResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConstructionWorkerCapResponse) ProtoMessage() {}
+
+func (x *ConstructionWorkerCapResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[157]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConstructionWorkerCapResponse.ProtoReflect.Descriptor instead.
+func (*ConstructionWorkerCapResponse) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{157}
+}
+
+func (x *ConstructionWorkerCapResponse) GetConstructionSite() string {
+	if x != nil {
+		return x.ConstructionSite
+	}
+	return ""
+}
+
+func (x *ConstructionWorkerCapResponse) GetWorkerCap() int32 {
+	if x != nil {
+		return x.WorkerCap
+	}
+	return 0
+}
+
+func (x *ConstructionWorkerCapResponse) GetChanged() bool {
+	if x != nil {
+		return x.Changed
+	}
+	return false
+}
+
 // DepotElement is one placed depot member: a {waypoint, ship} pair. ship_symbol may
 // be empty for a declared-but-uncrewed slot. Nothing here is hardcoded — the whole
 // topology is operator data.
@@ -11411,7 +11547,7 @@ type DepotElement struct {
 
 func (x *DepotElement) Reset() {
 	*x = DepotElement{}
-	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[156]
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[158]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11423,7 +11559,7 @@ func (x *DepotElement) String() string {
 func (*DepotElement) ProtoMessage() {}
 
 func (x *DepotElement) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[156]
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[158]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11436,7 +11572,7 @@ func (x *DepotElement) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DepotElement.ProtoReflect.Descriptor instead.
 func (*DepotElement) Descriptor() ([]byte, []int) {
-	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{156}
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{158}
 }
 
 func (x *DepotElement) GetWaypoint() string {
@@ -11469,7 +11605,7 @@ type DepotSpec struct {
 
 func (x *DepotSpec) Reset() {
 	*x = DepotSpec{}
-	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[157]
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[159]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11481,7 +11617,7 @@ func (x *DepotSpec) String() string {
 func (*DepotSpec) ProtoMessage() {}
 
 func (x *DepotSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[157]
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[159]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11494,7 +11630,7 @@ func (x *DepotSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DepotSpec.ProtoReflect.Descriptor instead.
 func (*DepotSpec) Descriptor() ([]byte, []int) {
-	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{157}
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{159}
 }
 
 func (x *DepotSpec) GetId() string {
@@ -11545,7 +11681,7 @@ type ApplyDepotTopologyRequest struct {
 
 func (x *ApplyDepotTopologyRequest) Reset() {
 	*x = ApplyDepotTopologyRequest{}
-	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[158]
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[160]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11557,7 +11693,7 @@ func (x *ApplyDepotTopologyRequest) String() string {
 func (*ApplyDepotTopologyRequest) ProtoMessage() {}
 
 func (x *ApplyDepotTopologyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[158]
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[160]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11570,7 +11706,7 @@ func (x *ApplyDepotTopologyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApplyDepotTopologyRequest.ProtoReflect.Descriptor instead.
 func (*ApplyDepotTopologyRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{158}
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{160}
 }
 
 func (x *ApplyDepotTopologyRequest) GetPlayerId() int32 {
@@ -11604,7 +11740,7 @@ type ApplyDepotTopologyResponse struct {
 
 func (x *ApplyDepotTopologyResponse) Reset() {
 	*x = ApplyDepotTopologyResponse{}
-	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[159]
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[161]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11616,7 +11752,7 @@ func (x *ApplyDepotTopologyResponse) String() string {
 func (*ApplyDepotTopologyResponse) ProtoMessage() {}
 
 func (x *ApplyDepotTopologyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[159]
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[161]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11629,7 +11765,7 @@ func (x *ApplyDepotTopologyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApplyDepotTopologyResponse.ProtoReflect.Descriptor instead.
 func (*ApplyDepotTopologyResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{159}
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{161}
 }
 
 func (x *ApplyDepotTopologyResponse) GetStatus() string {
@@ -11658,7 +11794,7 @@ type AddDepotRequest struct {
 
 func (x *AddDepotRequest) Reset() {
 	*x = AddDepotRequest{}
-	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[160]
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[162]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11670,7 +11806,7 @@ func (x *AddDepotRequest) String() string {
 func (*AddDepotRequest) ProtoMessage() {}
 
 func (x *AddDepotRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[160]
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[162]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11683,7 +11819,7 @@ func (x *AddDepotRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddDepotRequest.ProtoReflect.Descriptor instead.
 func (*AddDepotRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{160}
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{162}
 }
 
 func (x *AddDepotRequest) GetPlayerId() int32 {
@@ -11716,7 +11852,7 @@ type AddDepotResponse struct {
 
 func (x *AddDepotResponse) Reset() {
 	*x = AddDepotResponse{}
-	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[161]
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[163]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11728,7 +11864,7 @@ func (x *AddDepotResponse) String() string {
 func (*AddDepotResponse) ProtoMessage() {}
 
 func (x *AddDepotResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[161]
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[163]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11741,7 +11877,7 @@ func (x *AddDepotResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddDepotResponse.ProtoReflect.Descriptor instead.
 func (*AddDepotResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{161}
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{163}
 }
 
 func (x *AddDepotResponse) GetStatus() string {
@@ -11763,7 +11899,7 @@ type RemoveDepotRequest struct {
 
 func (x *RemoveDepotRequest) Reset() {
 	*x = RemoveDepotRequest{}
-	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[162]
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[164]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11775,7 +11911,7 @@ func (x *RemoveDepotRequest) String() string {
 func (*RemoveDepotRequest) ProtoMessage() {}
 
 func (x *RemoveDepotRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[162]
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[164]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11788,7 +11924,7 @@ func (x *RemoveDepotRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveDepotRequest.ProtoReflect.Descriptor instead.
 func (*RemoveDepotRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{162}
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{164}
 }
 
 func (x *RemoveDepotRequest) GetPlayerId() int32 {
@@ -11821,7 +11957,7 @@ type RemoveDepotResponse struct {
 
 func (x *RemoveDepotResponse) Reset() {
 	*x = RemoveDepotResponse{}
-	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[163]
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[165]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11833,7 +11969,7 @@ func (x *RemoveDepotResponse) String() string {
 func (*RemoveDepotResponse) ProtoMessage() {}
 
 func (x *RemoveDepotResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[163]
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[165]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11846,7 +11982,7 @@ func (x *RemoveDepotResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveDepotResponse.ProtoReflect.Descriptor instead.
 func (*RemoveDepotResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{163}
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{165}
 }
 
 func (x *RemoveDepotResponse) GetStatus() string {
@@ -11872,7 +12008,7 @@ type AddDepotElementRequest struct {
 
 func (x *AddDepotElementRequest) Reset() {
 	*x = AddDepotElementRequest{}
-	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[164]
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[166]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11884,7 +12020,7 @@ func (x *AddDepotElementRequest) String() string {
 func (*AddDepotElementRequest) ProtoMessage() {}
 
 func (x *AddDepotElementRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[164]
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[166]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11897,7 +12033,7 @@ func (x *AddDepotElementRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddDepotElementRequest.ProtoReflect.Descriptor instead.
 func (*AddDepotElementRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{164}
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{166}
 }
 
 func (x *AddDepotElementRequest) GetPlayerId() int32 {
@@ -11956,7 +12092,7 @@ type RemoveDepotElementRequest struct {
 
 func (x *RemoveDepotElementRequest) Reset() {
 	*x = RemoveDepotElementRequest{}
-	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[165]
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[167]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11968,7 +12104,7 @@ func (x *RemoveDepotElementRequest) String() string {
 func (*RemoveDepotElementRequest) ProtoMessage() {}
 
 func (x *RemoveDepotElementRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[165]
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[167]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11981,7 +12117,7 @@ func (x *RemoveDepotElementRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveDepotElementRequest.ProtoReflect.Descriptor instead.
 func (*RemoveDepotElementRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{165}
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{167}
 }
 
 func (x *RemoveDepotElementRequest) GetPlayerId() int32 {
@@ -12035,7 +12171,7 @@ type PlaceDepotElementRequest struct {
 
 func (x *PlaceDepotElementRequest) Reset() {
 	*x = PlaceDepotElementRequest{}
-	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[166]
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[168]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12047,7 +12183,7 @@ func (x *PlaceDepotElementRequest) String() string {
 func (*PlaceDepotElementRequest) ProtoMessage() {}
 
 func (x *PlaceDepotElementRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[166]
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[168]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12060,7 +12196,7 @@ func (x *PlaceDepotElementRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PlaceDepotElementRequest.ProtoReflect.Descriptor instead.
 func (*PlaceDepotElementRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{166}
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{168}
 }
 
 func (x *PlaceDepotElementRequest) GetPlayerId() int32 {
@@ -12115,7 +12251,7 @@ type DepotElementResponse struct {
 
 func (x *DepotElementResponse) Reset() {
 	*x = DepotElementResponse{}
-	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[167]
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[169]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12127,7 +12263,7 @@ func (x *DepotElementResponse) String() string {
 func (*DepotElementResponse) ProtoMessage() {}
 
 func (x *DepotElementResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[167]
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[169]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12140,7 +12276,7 @@ func (x *DepotElementResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DepotElementResponse.ProtoReflect.Descriptor instead.
 func (*DepotElementResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{167}
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{169}
 }
 
 func (x *DepotElementResponse) GetStatus() string {
@@ -12160,7 +12296,7 @@ type ListDepotsRequest struct {
 
 func (x *ListDepotsRequest) Reset() {
 	*x = ListDepotsRequest{}
-	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[168]
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[170]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12172,7 +12308,7 @@ func (x *ListDepotsRequest) String() string {
 func (*ListDepotsRequest) ProtoMessage() {}
 
 func (x *ListDepotsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[168]
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[170]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12185,7 +12321,7 @@ func (x *ListDepotsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListDepotsRequest.ProtoReflect.Descriptor instead.
 func (*ListDepotsRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{168}
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{170}
 }
 
 func (x *ListDepotsRequest) GetPlayerId() int32 {
@@ -12211,7 +12347,7 @@ type ListDepotsResponse struct {
 
 func (x *ListDepotsResponse) Reset() {
 	*x = ListDepotsResponse{}
-	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[169]
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[171]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12223,7 +12359,7 @@ func (x *ListDepotsResponse) String() string {
 func (*ListDepotsResponse) ProtoMessage() {}
 
 func (x *ListDepotsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[169]
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[171]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12236,7 +12372,7 @@ func (x *ListDepotsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListDepotsResponse.ProtoReflect.Descriptor instead.
 func (*ListDepotsResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{169}
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{171}
 }
 
 func (x *ListDepotsResponse) GetDepots() []*DepotSpec {
@@ -12258,7 +12394,7 @@ type StartDepotRequest struct {
 
 func (x *StartDepotRequest) Reset() {
 	*x = StartDepotRequest{}
-	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[170]
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[172]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12270,7 +12406,7 @@ func (x *StartDepotRequest) String() string {
 func (*StartDepotRequest) ProtoMessage() {}
 
 func (x *StartDepotRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[170]
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[172]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12283,7 +12419,7 @@ func (x *StartDepotRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartDepotRequest.ProtoReflect.Descriptor instead.
 func (*StartDepotRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{170}
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{172}
 }
 
 func (x *StartDepotRequest) GetPlayerId() int32 {
@@ -12317,7 +12453,7 @@ type StartDepotResponse struct {
 
 func (x *StartDepotResponse) Reset() {
 	*x = StartDepotResponse{}
-	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[171]
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[173]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12329,7 +12465,7 @@ func (x *StartDepotResponse) String() string {
 func (*StartDepotResponse) ProtoMessage() {}
 
 func (x *StartDepotResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[171]
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[173]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12342,7 +12478,7 @@ func (x *StartDepotResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartDepotResponse.ProtoReflect.Descriptor instead.
 func (*StartDepotResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{171}
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{173}
 }
 
 func (x *StartDepotResponse) GetStatus() string {
@@ -12371,7 +12507,7 @@ type StopDepotRequest struct {
 
 func (x *StopDepotRequest) Reset() {
 	*x = StopDepotRequest{}
-	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[172]
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[174]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12383,7 +12519,7 @@ func (x *StopDepotRequest) String() string {
 func (*StopDepotRequest) ProtoMessage() {}
 
 func (x *StopDepotRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[172]
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[174]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12396,7 +12532,7 @@ func (x *StopDepotRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StopDepotRequest.ProtoReflect.Descriptor instead.
 func (*StopDepotRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{172}
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{174}
 }
 
 func (x *StopDepotRequest) GetPlayerId() int32 {
@@ -12430,7 +12566,7 @@ type StopDepotResponse struct {
 
 func (x *StopDepotResponse) Reset() {
 	*x = StopDepotResponse{}
-	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[173]
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[175]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12442,7 +12578,7 @@ func (x *StopDepotResponse) String() string {
 func (*StopDepotResponse) ProtoMessage() {}
 
 func (x *StopDepotResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[173]
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[175]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12455,7 +12591,7 @@ func (x *StopDepotResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StopDepotResponse.ProtoReflect.Descriptor instead.
 func (*StopDepotResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{173}
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{175}
 }
 
 func (x *StopDepotResponse) GetStatus() string {
@@ -13612,7 +13748,20 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"\bstrategy\x18\x05 \x01(\tR\bstrategy\x12,\n" +
 	"\x12price_ceiling_mult\x18\x06 \x01(\x01R\x10priceCeilingMult\x12\x1d\n" +
 	"\n" +
-	"min_supply\x18\a \x01(\tR\tminSupply\"K\n" +
+	"min_supply\x18\a \x01(\tR\tminSupply\"\xca\x01\n" +
+	"\x1cConstructionWorkerCapRequest\x12+\n" +
+	"\x11construction_site\x18\x01 \x01(\tR\x10constructionSite\x12\x14\n" +
+	"\x05count\x18\x02 \x01(\x05R\x05count\x12 \n" +
+	"\tplayer_id\x18\x03 \x01(\x05H\x00R\bplayerId\x88\x01\x01\x12&\n" +
+	"\fagent_symbol\x18\x04 \x01(\tH\x01R\vagentSymbol\x88\x01\x01B\f\n" +
+	"\n" +
+	"_player_idB\x0f\n" +
+	"\r_agent_symbol\"\x85\x01\n" +
+	"\x1dConstructionWorkerCapResponse\x12+\n" +
+	"\x11construction_site\x18\x01 \x01(\tR\x10constructionSite\x12\x1d\n" +
+	"\n" +
+	"worker_cap\x18\x02 \x01(\x05R\tworkerCap\x12\x18\n" +
+	"\achanged\x18\x03 \x01(\bR\achanged\"K\n" +
 	"\fDepotElement\x12\x1a\n" +
 	"\bwaypoint\x18\x01 \x01(\tR\bwaypoint\x12\x1f\n" +
 	"\vship_symbol\x18\x02 \x01(\tR\n" +
@@ -13698,7 +13847,7 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"\r_agent_symbol\"E\n" +
 	"\x11StopDepotResponse\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12\x18\n" +
-	"\astopped\x18\x02 \x01(\x05R\astopped2\xf52\n" +
+	"\astopped\x18\x02 \x01(\x05R\astopped2\xdb3\n" +
 	"\rDaemonService\x12I\n" +
 	"\fNavigateShip\x12\x1b.daemon.NavigateShipRequest\x1a\x1c.daemon.NavigateShipResponse\x12@\n" +
 	"\tRouteShip\x12\x18.daemon.RouteShipRequest\x1a\x19.daemon.RouteShipResponse\x12=\n" +
@@ -13768,7 +13917,8 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"\x19StartConstructionPipeline\x12(.daemon.StartConstructionPipelineRequest\x1a).daemon.StartConstructionPipelineResponse\x12d\n" +
 	"\x15GetConstructionStatus\x12$.daemon.GetConstructionStatusRequest\x1a%.daemon.GetConstructionStatusResponse\x12m\n" +
 	"\x18StopConstructionPipeline\x12'.daemon.StopConstructionPipelineRequest\x1a(.daemon.StopConstructionPipelineResponse\x12m\n" +
-	"\x18ConstructionGoodOverride\x12'.daemon.ConstructionGoodOverrideRequest\x1a(.daemon.ConstructionGoodOverrideResponse\x12[\n" +
+	"\x18ConstructionGoodOverride\x12'.daemon.ConstructionGoodOverrideRequest\x1a(.daemon.ConstructionGoodOverrideResponse\x12d\n" +
+	"\x15ConstructionWorkerCap\x12$.daemon.ConstructionWorkerCapRequest\x1a%.daemon.ConstructionWorkerCapResponse\x12[\n" +
 	"\x12ApplyDepotTopology\x12!.daemon.ApplyDepotTopologyRequest\x1a\".daemon.ApplyDepotTopologyResponse\x12=\n" +
 	"\bAddDepot\x12\x17.daemon.AddDepotRequest\x1a\x18.daemon.AddDepotResponse\x12F\n" +
 	"\vRemoveDepot\x12\x1a.daemon.RemoveDepotRequest\x1a\x1b.daemon.RemoveDepotResponse\x12O\n" +
@@ -13793,7 +13943,7 @@ func file_pkg_proto_daemon_daemon_proto_rawDescGZIP() []byte {
 	return file_pkg_proto_daemon_daemon_proto_rawDescData
 }
 
-var file_pkg_proto_daemon_daemon_proto_msgTypes = make([]protoimpl.MessageInfo, 177)
+var file_pkg_proto_daemon_daemon_proto_msgTypes = make([]protoimpl.MessageInfo, 179)
 var file_pkg_proto_daemon_daemon_proto_goTypes = []any{
 	(*NavigateShipRequest)(nil),                   // 0: daemon.NavigateShipRequest
 	(*NavigateShipResponse)(nil),                  // 1: daemon.NavigateShipResponse
@@ -13951,27 +14101,29 @@ var file_pkg_proto_daemon_daemon_proto_goTypes = []any{
 	(*StopConstructionPipelineResponse)(nil),      // 153: daemon.StopConstructionPipelineResponse
 	(*ConstructionGoodOverrideRequest)(nil),       // 154: daemon.ConstructionGoodOverrideRequest
 	(*ConstructionGoodOverrideResponse)(nil),      // 155: daemon.ConstructionGoodOverrideResponse
-	(*DepotElement)(nil),                          // 156: daemon.DepotElement
-	(*DepotSpec)(nil),                             // 157: daemon.DepotSpec
-	(*ApplyDepotTopologyRequest)(nil),             // 158: daemon.ApplyDepotTopologyRequest
-	(*ApplyDepotTopologyResponse)(nil),            // 159: daemon.ApplyDepotTopologyResponse
-	(*AddDepotRequest)(nil),                       // 160: daemon.AddDepotRequest
-	(*AddDepotResponse)(nil),                      // 161: daemon.AddDepotResponse
-	(*RemoveDepotRequest)(nil),                    // 162: daemon.RemoveDepotRequest
-	(*RemoveDepotResponse)(nil),                   // 163: daemon.RemoveDepotResponse
-	(*AddDepotElementRequest)(nil),                // 164: daemon.AddDepotElementRequest
-	(*RemoveDepotElementRequest)(nil),             // 165: daemon.RemoveDepotElementRequest
-	(*PlaceDepotElementRequest)(nil),              // 166: daemon.PlaceDepotElementRequest
-	(*DepotElementResponse)(nil),                  // 167: daemon.DepotElementResponse
-	(*ListDepotsRequest)(nil),                     // 168: daemon.ListDepotsRequest
-	(*ListDepotsResponse)(nil),                    // 169: daemon.ListDepotsResponse
-	(*StartDepotRequest)(nil),                     // 170: daemon.StartDepotRequest
-	(*StartDepotResponse)(nil),                    // 171: daemon.StartDepotResponse
-	(*StopDepotRequest)(nil),                      // 172: daemon.StopDepotRequest
-	(*StopDepotResponse)(nil),                     // 173: daemon.StopDepotResponse
-	nil,                                           // 174: daemon.ScoutMarketsResponse.AssignmentsEntry
-	nil,                                           // 175: daemon.APIBudgetReport.PurposeCountsEntry
-	nil,                                           // 176: daemon.APIBudgetReport.PurposeSharePctEntry
+	(*ConstructionWorkerCapRequest)(nil),          // 156: daemon.ConstructionWorkerCapRequest
+	(*ConstructionWorkerCapResponse)(nil),         // 157: daemon.ConstructionWorkerCapResponse
+	(*DepotElement)(nil),                          // 158: daemon.DepotElement
+	(*DepotSpec)(nil),                             // 159: daemon.DepotSpec
+	(*ApplyDepotTopologyRequest)(nil),             // 160: daemon.ApplyDepotTopologyRequest
+	(*ApplyDepotTopologyResponse)(nil),            // 161: daemon.ApplyDepotTopologyResponse
+	(*AddDepotRequest)(nil),                       // 162: daemon.AddDepotRequest
+	(*AddDepotResponse)(nil),                      // 163: daemon.AddDepotResponse
+	(*RemoveDepotRequest)(nil),                    // 164: daemon.RemoveDepotRequest
+	(*RemoveDepotResponse)(nil),                   // 165: daemon.RemoveDepotResponse
+	(*AddDepotElementRequest)(nil),                // 166: daemon.AddDepotElementRequest
+	(*RemoveDepotElementRequest)(nil),             // 167: daemon.RemoveDepotElementRequest
+	(*PlaceDepotElementRequest)(nil),              // 168: daemon.PlaceDepotElementRequest
+	(*DepotElementResponse)(nil),                  // 169: daemon.DepotElementResponse
+	(*ListDepotsRequest)(nil),                     // 170: daemon.ListDepotsRequest
+	(*ListDepotsResponse)(nil),                    // 171: daemon.ListDepotsResponse
+	(*StartDepotRequest)(nil),                     // 172: daemon.StartDepotRequest
+	(*StartDepotResponse)(nil),                    // 173: daemon.StartDepotResponse
+	(*StopDepotRequest)(nil),                      // 174: daemon.StopDepotRequest
+	(*StopDepotResponse)(nil),                     // 175: daemon.StopDepotResponse
+	nil,                                           // 176: daemon.ScoutMarketsResponse.AssignmentsEntry
+	nil,                                           // 177: daemon.APIBudgetReport.PurposeCountsEntry
+	nil,                                           // 178: daemon.APIBudgetReport.PurposeSharePctEntry
 }
 var file_pkg_proto_daemon_daemon_proto_depIdxs = []int32{
 	12,  // 0: daemon.InstallModuleResponse.modules:type_name -> daemon.ShipModuleInfo
@@ -13980,12 +14132,12 @@ var file_pkg_proto_daemon_daemon_proto_depIdxs = []int32{
 	13,  // 3: daemon.ListShipModulesResponse.feasibility:type_name -> daemon.ModuleFeasibility
 	26,  // 4: daemon.ScoutPostResponse.post:type_name -> daemon.ScoutPost
 	26,  // 5: daemon.ListScoutPostsResponse.posts:type_name -> daemon.ScoutPost
-	174, // 6: daemon.ScoutMarketsResponse.assignments:type_name -> daemon.ScoutMarketsResponse.AssignmentsEntry
+	176, // 6: daemon.ScoutMarketsResponse.assignments:type_name -> daemon.ScoutMarketsResponse.AssignmentsEntry
 	60,  // 7: daemon.ListContainersResponse.containers:type_name -> daemon.ContainerInfo
 	60,  // 8: daemon.GetContainerResponse.container:type_name -> daemon.ContainerInfo
 	67,  // 9: daemon.GetContainerLogsResponse.logs:type_name -> daemon.LogEntry
-	175, // 10: daemon.APIBudgetReport.purpose_counts:type_name -> daemon.APIBudgetReport.PurposeCountsEntry
-	176, // 11: daemon.APIBudgetReport.purpose_share_pct:type_name -> daemon.APIBudgetReport.PurposeSharePctEntry
+	177, // 10: daemon.APIBudgetReport.purpose_counts:type_name -> daemon.APIBudgetReport.PurposeCountsEntry
+	178, // 11: daemon.APIBudgetReport.purpose_share_pct:type_name -> daemon.APIBudgetReport.PurposeSharePctEntry
 	71,  // 12: daemon.APIBudgetReport.per_hull:type_name -> daemon.APIBudgetHullStats
 	73,  // 13: daemon.DutyCycleReport.hulls:type_name -> daemon.DutyCycleHullStats
 	72,  // 14: daemon.GetAPIBudgetResponse.current:type_name -> daemon.APIBudgetReport
@@ -14006,14 +14158,14 @@ var file_pkg_proto_daemon_daemon_proto_depIdxs = []int32{
 	112, // 29: daemon.GasExtractionOperationResponse.ship_routes:type_name -> daemon.ShipRoute
 	149, // 30: daemon.StartConstructionPipelineResponse.materials:type_name -> daemon.ConstructionMaterial
 	149, // 31: daemon.GetConstructionStatusResponse.materials:type_name -> daemon.ConstructionMaterial
-	156, // 32: daemon.DepotSpec.warehouses:type_name -> daemon.DepotElement
-	156, // 33: daemon.DepotSpec.stockers:type_name -> daemon.DepotElement
-	156, // 34: daemon.DepotSpec.delivery_hulls:type_name -> daemon.DepotElement
-	156, // 35: daemon.DepotSpec.source_hubs:type_name -> daemon.DepotElement
-	157, // 36: daemon.ApplyDepotTopologyRequest.depots:type_name -> daemon.DepotSpec
-	157, // 37: daemon.AddDepotRequest.depot:type_name -> daemon.DepotSpec
-	157, // 38: daemon.ListDepotsResponse.depots:type_name -> daemon.DepotSpec
-	157, // 39: daemon.StartDepotRequest.depot:type_name -> daemon.DepotSpec
+	158, // 32: daemon.DepotSpec.warehouses:type_name -> daemon.DepotElement
+	158, // 33: daemon.DepotSpec.stockers:type_name -> daemon.DepotElement
+	158, // 34: daemon.DepotSpec.delivery_hulls:type_name -> daemon.DepotElement
+	158, // 35: daemon.DepotSpec.source_hubs:type_name -> daemon.DepotElement
+	159, // 36: daemon.ApplyDepotTopologyRequest.depots:type_name -> daemon.DepotSpec
+	159, // 37: daemon.AddDepotRequest.depot:type_name -> daemon.DepotSpec
+	159, // 38: daemon.ListDepotsResponse.depots:type_name -> daemon.DepotSpec
+	159, // 39: daemon.StartDepotRequest.depot:type_name -> daemon.DepotSpec
 	55,  // 40: daemon.ScoutMarketsResponse.AssignmentsEntry.value:type_name -> daemon.MarketAssignment
 	0,   // 41: daemon.DaemonService.NavigateShip:input_type -> daemon.NavigateShipRequest
 	2,   // 42: daemon.DaemonService.RouteShip:input_type -> daemon.RouteShipRequest
@@ -14082,93 +14234,95 @@ var file_pkg_proto_daemon_daemon_proto_depIdxs = []int32{
 	150, // 105: daemon.DaemonService.GetConstructionStatus:input_type -> daemon.GetConstructionStatusRequest
 	152, // 106: daemon.DaemonService.StopConstructionPipeline:input_type -> daemon.StopConstructionPipelineRequest
 	154, // 107: daemon.DaemonService.ConstructionGoodOverride:input_type -> daemon.ConstructionGoodOverrideRequest
-	158, // 108: daemon.DaemonService.ApplyDepotTopology:input_type -> daemon.ApplyDepotTopologyRequest
-	160, // 109: daemon.DaemonService.AddDepot:input_type -> daemon.AddDepotRequest
-	162, // 110: daemon.DaemonService.RemoveDepot:input_type -> daemon.RemoveDepotRequest
-	164, // 111: daemon.DaemonService.AddDepotElement:input_type -> daemon.AddDepotElementRequest
-	165, // 112: daemon.DaemonService.RemoveDepotElement:input_type -> daemon.RemoveDepotElementRequest
-	166, // 113: daemon.DaemonService.PlaceDepotElement:input_type -> daemon.PlaceDepotElementRequest
-	168, // 114: daemon.DaemonService.ListDepots:input_type -> daemon.ListDepotsRequest
-	170, // 115: daemon.DaemonService.StartDepot:input_type -> daemon.StartDepotRequest
-	172, // 116: daemon.DaemonService.StopDepot:input_type -> daemon.StopDepotRequest
-	1,   // 117: daemon.DaemonService.NavigateShip:output_type -> daemon.NavigateShipResponse
-	3,   // 118: daemon.DaemonService.RouteShip:output_type -> daemon.RouteShipResponse
-	5,   // 119: daemon.DaemonService.DockShip:output_type -> daemon.DockShipResponse
-	7,   // 120: daemon.DaemonService.OrbitShip:output_type -> daemon.OrbitShipResponse
-	9,   // 121: daemon.DaemonService.RefuelShip:output_type -> daemon.RefuelShipResponse
-	11,  // 122: daemon.DaemonService.JumpShip:output_type -> daemon.JumpShipResponse
-	15,  // 123: daemon.DaemonService.InstallModule:output_type -> daemon.InstallModuleResponse
-	17,  // 124: daemon.DaemonService.RemoveModule:output_type -> daemon.RemoveModuleResponse
-	19,  // 125: daemon.DaemonService.ListShipModules:output_type -> daemon.ListShipModulesResponse
-	21,  // 126: daemon.DaemonService.BatchContractWorkflow:output_type -> daemon.BatchContractWorkflowResponse
-	23,  // 127: daemon.DaemonService.ContractFleetCoordinator:output_type -> daemon.ContractFleetCoordinatorResponse
-	25,  // 128: daemon.DaemonService.ScoutTour:output_type -> daemon.ScoutTourResponse
-	54,  // 129: daemon.DaemonService.ScoutMarkets:output_type -> daemon.ScoutMarketsResponse
-	57,  // 130: daemon.DaemonService.AssignScoutingFleet:output_type -> daemon.AssignScoutingFleetResponse
-	28,  // 131: daemon.DaemonService.ScoutPostCoordinator:output_type -> daemon.ScoutPostCoordinatorResponse
-	30,  // 132: daemon.DaemonService.TradeFleetCoordinator:output_type -> daemon.TradeFleetCoordinatorResponse
-	32,  // 133: daemon.DaemonService.SitingCoordinator:output_type -> daemon.SitingCoordinatorResponse
-	34,  // 134: daemon.DaemonService.FleetAutosizerCoordinator:output_type -> daemon.FleetAutosizerCoordinatorResponse
-	36,  // 135: daemon.DaemonService.BootstrapCoordinator:output_type -> daemon.BootstrapCoordinatorResponse
-	38,  // 136: daemon.DaemonService.CapacityReconcilerCoordinator:output_type -> daemon.CapacityReconcilerCoordinatorResponse
-	40,  // 137: daemon.DaemonService.AutoOutfitCoordinator:output_type -> daemon.AutoOutfitCoordinatorResponse
-	42,  // 138: daemon.DaemonService.FrontierExpansionCoordinator:output_type -> daemon.FrontierExpansionCoordinatorResponse
-	44,  // 139: daemon.DaemonService.ShipyardBackfillCoordinator:output_type -> daemon.ShipyardBackfillCoordinatorResponse
-	46,  // 140: daemon.DaemonService.WorkerRebalancerCoordinator:output_type -> daemon.WorkerRebalancerCoordinatorResponse
-	48,  // 141: daemon.DaemonService.AddScoutPost:output_type -> daemon.ScoutPostResponse
-	50,  // 142: daemon.DaemonService.RemoveScoutPost:output_type -> daemon.RemoveScoutPostResponse
-	52,  // 143: daemon.DaemonService.ListScoutPosts:output_type -> daemon.ListScoutPostsResponse
-	59,  // 144: daemon.DaemonService.ListContainers:output_type -> daemon.ListContainersResponse
-	62,  // 145: daemon.DaemonService.GetContainer:output_type -> daemon.GetContainerResponse
-	64,  // 146: daemon.DaemonService.StopContainer:output_type -> daemon.StopContainerResponse
-	66,  // 147: daemon.DaemonService.GetContainerLogs:output_type -> daemon.GetContainerLogsResponse
-	69,  // 148: daemon.DaemonService.HealthCheck:output_type -> daemon.HealthCheckResponse
-	75,  // 149: daemon.DaemonService.GetAPIBudget:output_type -> daemon.GetAPIBudgetResponse
-	77,  // 150: daemon.DaemonService.ListShips:output_type -> daemon.ListShipsResponse
-	80,  // 151: daemon.DaemonService.GetShip:output_type -> daemon.GetShipResponse
-	82,  // 152: daemon.DaemonService.RefreshShip:output_type -> daemon.RefreshShipResponse
-	84,  // 153: daemon.DaemonService.ReserveShip:output_type -> daemon.ReserveShipResponse
-	86,  // 154: daemon.DaemonService.ReleaseShip:output_type -> daemon.ReleaseShipResponse
-	88,  // 155: daemon.DaemonService.AssignShipFleet:output_type -> daemon.AssignShipFleetResponse
-	92,  // 156: daemon.DaemonService.UnassignShipFleet:output_type -> daemon.UnassignShipFleetResponse
-	96,  // 157: daemon.DaemonService.ListFleets:output_type -> daemon.ListFleetsResponse
-	90,  // 158: daemon.DaemonService.FleetHub:output_type -> daemon.FleetHubResponse
-	98,  // 159: daemon.DaemonService.ListWaypoints:output_type -> daemon.ListWaypointsResponse
-	100, // 160: daemon.DaemonService.GetWaypoint:output_type -> daemon.GetWaypointResponse
-	104, // 161: daemon.DaemonService.PurchaseShip:output_type -> daemon.PurchaseShipResponse
-	106, // 162: daemon.DaemonService.BatchPurchaseShips:output_type -> daemon.BatchPurchaseShipsResponse
-	108, // 163: daemon.DaemonService.GetShipyardListings:output_type -> daemon.GetShipyardListingsResponse
-	114, // 164: daemon.DaemonService.StartGoodsFactory:output_type -> daemon.StartGoodsFactoryResponse
-	116, // 165: daemon.DaemonService.StopGoodsFactory:output_type -> daemon.StopGoodsFactoryResponse
-	118, // 166: daemon.DaemonService.FactoryWorkerCap:output_type -> daemon.FactoryWorkerCapResponse
-	120, // 167: daemon.DaemonService.TuneContainerConfig:output_type -> daemon.TuneContainerConfigResponse
-	123, // 168: daemon.DaemonService.ShowTunableConfig:output_type -> daemon.ShowTunableConfigResponse
-	125, // 169: daemon.DaemonService.GetFrontierStatus:output_type -> daemon.GetFrontierStatusResponse
-	127, // 170: daemon.DaemonService.GetFactoryStatus:output_type -> daemon.GetFactoryStatusResponse
-	130, // 171: daemon.DaemonService.ScanArbitrageOpportunities:output_type -> daemon.ScanArbitrageOpportunitiesResponse
-	132, // 172: daemon.DaemonService.StartArbitrageCoordinator:output_type -> daemon.StartArbitrageCoordinatorResponse
-	134, // 173: daemon.DaemonService.JettisonCargo:output_type -> daemon.JettisonCargoResponse
-	146, // 174: daemon.DaemonService.GasExtractionOperation:output_type -> daemon.GasExtractionOperationResponse
-	136, // 175: daemon.DaemonService.StartTradeRoute:output_type -> daemon.StartTradeRouteResponse
-	138, // 176: daemon.DaemonService.StartWarehouse:output_type -> daemon.StartWarehouseResponse
-	140, // 177: daemon.DaemonService.StartArbRun:output_type -> daemon.StartArbRunResponse
-	142, // 178: daemon.DaemonService.StartTourRun:output_type -> daemon.StartTourRunResponse
-	144, // 179: daemon.DaemonService.StartStocker:output_type -> daemon.StartStockerResponse
-	148, // 180: daemon.DaemonService.StartConstructionPipeline:output_type -> daemon.StartConstructionPipelineResponse
-	151, // 181: daemon.DaemonService.GetConstructionStatus:output_type -> daemon.GetConstructionStatusResponse
-	153, // 182: daemon.DaemonService.StopConstructionPipeline:output_type -> daemon.StopConstructionPipelineResponse
-	155, // 183: daemon.DaemonService.ConstructionGoodOverride:output_type -> daemon.ConstructionGoodOverrideResponse
-	159, // 184: daemon.DaemonService.ApplyDepotTopology:output_type -> daemon.ApplyDepotTopologyResponse
-	161, // 185: daemon.DaemonService.AddDepot:output_type -> daemon.AddDepotResponse
-	163, // 186: daemon.DaemonService.RemoveDepot:output_type -> daemon.RemoveDepotResponse
-	167, // 187: daemon.DaemonService.AddDepotElement:output_type -> daemon.DepotElementResponse
-	167, // 188: daemon.DaemonService.RemoveDepotElement:output_type -> daemon.DepotElementResponse
-	167, // 189: daemon.DaemonService.PlaceDepotElement:output_type -> daemon.DepotElementResponse
-	169, // 190: daemon.DaemonService.ListDepots:output_type -> daemon.ListDepotsResponse
-	171, // 191: daemon.DaemonService.StartDepot:output_type -> daemon.StartDepotResponse
-	173, // 192: daemon.DaemonService.StopDepot:output_type -> daemon.StopDepotResponse
-	117, // [117:193] is the sub-list for method output_type
-	41,  // [41:117] is the sub-list for method input_type
+	156, // 108: daemon.DaemonService.ConstructionWorkerCap:input_type -> daemon.ConstructionWorkerCapRequest
+	160, // 109: daemon.DaemonService.ApplyDepotTopology:input_type -> daemon.ApplyDepotTopologyRequest
+	162, // 110: daemon.DaemonService.AddDepot:input_type -> daemon.AddDepotRequest
+	164, // 111: daemon.DaemonService.RemoveDepot:input_type -> daemon.RemoveDepotRequest
+	166, // 112: daemon.DaemonService.AddDepotElement:input_type -> daemon.AddDepotElementRequest
+	167, // 113: daemon.DaemonService.RemoveDepotElement:input_type -> daemon.RemoveDepotElementRequest
+	168, // 114: daemon.DaemonService.PlaceDepotElement:input_type -> daemon.PlaceDepotElementRequest
+	170, // 115: daemon.DaemonService.ListDepots:input_type -> daemon.ListDepotsRequest
+	172, // 116: daemon.DaemonService.StartDepot:input_type -> daemon.StartDepotRequest
+	174, // 117: daemon.DaemonService.StopDepot:input_type -> daemon.StopDepotRequest
+	1,   // 118: daemon.DaemonService.NavigateShip:output_type -> daemon.NavigateShipResponse
+	3,   // 119: daemon.DaemonService.RouteShip:output_type -> daemon.RouteShipResponse
+	5,   // 120: daemon.DaemonService.DockShip:output_type -> daemon.DockShipResponse
+	7,   // 121: daemon.DaemonService.OrbitShip:output_type -> daemon.OrbitShipResponse
+	9,   // 122: daemon.DaemonService.RefuelShip:output_type -> daemon.RefuelShipResponse
+	11,  // 123: daemon.DaemonService.JumpShip:output_type -> daemon.JumpShipResponse
+	15,  // 124: daemon.DaemonService.InstallModule:output_type -> daemon.InstallModuleResponse
+	17,  // 125: daemon.DaemonService.RemoveModule:output_type -> daemon.RemoveModuleResponse
+	19,  // 126: daemon.DaemonService.ListShipModules:output_type -> daemon.ListShipModulesResponse
+	21,  // 127: daemon.DaemonService.BatchContractWorkflow:output_type -> daemon.BatchContractWorkflowResponse
+	23,  // 128: daemon.DaemonService.ContractFleetCoordinator:output_type -> daemon.ContractFleetCoordinatorResponse
+	25,  // 129: daemon.DaemonService.ScoutTour:output_type -> daemon.ScoutTourResponse
+	54,  // 130: daemon.DaemonService.ScoutMarkets:output_type -> daemon.ScoutMarketsResponse
+	57,  // 131: daemon.DaemonService.AssignScoutingFleet:output_type -> daemon.AssignScoutingFleetResponse
+	28,  // 132: daemon.DaemonService.ScoutPostCoordinator:output_type -> daemon.ScoutPostCoordinatorResponse
+	30,  // 133: daemon.DaemonService.TradeFleetCoordinator:output_type -> daemon.TradeFleetCoordinatorResponse
+	32,  // 134: daemon.DaemonService.SitingCoordinator:output_type -> daemon.SitingCoordinatorResponse
+	34,  // 135: daemon.DaemonService.FleetAutosizerCoordinator:output_type -> daemon.FleetAutosizerCoordinatorResponse
+	36,  // 136: daemon.DaemonService.BootstrapCoordinator:output_type -> daemon.BootstrapCoordinatorResponse
+	38,  // 137: daemon.DaemonService.CapacityReconcilerCoordinator:output_type -> daemon.CapacityReconcilerCoordinatorResponse
+	40,  // 138: daemon.DaemonService.AutoOutfitCoordinator:output_type -> daemon.AutoOutfitCoordinatorResponse
+	42,  // 139: daemon.DaemonService.FrontierExpansionCoordinator:output_type -> daemon.FrontierExpansionCoordinatorResponse
+	44,  // 140: daemon.DaemonService.ShipyardBackfillCoordinator:output_type -> daemon.ShipyardBackfillCoordinatorResponse
+	46,  // 141: daemon.DaemonService.WorkerRebalancerCoordinator:output_type -> daemon.WorkerRebalancerCoordinatorResponse
+	48,  // 142: daemon.DaemonService.AddScoutPost:output_type -> daemon.ScoutPostResponse
+	50,  // 143: daemon.DaemonService.RemoveScoutPost:output_type -> daemon.RemoveScoutPostResponse
+	52,  // 144: daemon.DaemonService.ListScoutPosts:output_type -> daemon.ListScoutPostsResponse
+	59,  // 145: daemon.DaemonService.ListContainers:output_type -> daemon.ListContainersResponse
+	62,  // 146: daemon.DaemonService.GetContainer:output_type -> daemon.GetContainerResponse
+	64,  // 147: daemon.DaemonService.StopContainer:output_type -> daemon.StopContainerResponse
+	66,  // 148: daemon.DaemonService.GetContainerLogs:output_type -> daemon.GetContainerLogsResponse
+	69,  // 149: daemon.DaemonService.HealthCheck:output_type -> daemon.HealthCheckResponse
+	75,  // 150: daemon.DaemonService.GetAPIBudget:output_type -> daemon.GetAPIBudgetResponse
+	77,  // 151: daemon.DaemonService.ListShips:output_type -> daemon.ListShipsResponse
+	80,  // 152: daemon.DaemonService.GetShip:output_type -> daemon.GetShipResponse
+	82,  // 153: daemon.DaemonService.RefreshShip:output_type -> daemon.RefreshShipResponse
+	84,  // 154: daemon.DaemonService.ReserveShip:output_type -> daemon.ReserveShipResponse
+	86,  // 155: daemon.DaemonService.ReleaseShip:output_type -> daemon.ReleaseShipResponse
+	88,  // 156: daemon.DaemonService.AssignShipFleet:output_type -> daemon.AssignShipFleetResponse
+	92,  // 157: daemon.DaemonService.UnassignShipFleet:output_type -> daemon.UnassignShipFleetResponse
+	96,  // 158: daemon.DaemonService.ListFleets:output_type -> daemon.ListFleetsResponse
+	90,  // 159: daemon.DaemonService.FleetHub:output_type -> daemon.FleetHubResponse
+	98,  // 160: daemon.DaemonService.ListWaypoints:output_type -> daemon.ListWaypointsResponse
+	100, // 161: daemon.DaemonService.GetWaypoint:output_type -> daemon.GetWaypointResponse
+	104, // 162: daemon.DaemonService.PurchaseShip:output_type -> daemon.PurchaseShipResponse
+	106, // 163: daemon.DaemonService.BatchPurchaseShips:output_type -> daemon.BatchPurchaseShipsResponse
+	108, // 164: daemon.DaemonService.GetShipyardListings:output_type -> daemon.GetShipyardListingsResponse
+	114, // 165: daemon.DaemonService.StartGoodsFactory:output_type -> daemon.StartGoodsFactoryResponse
+	116, // 166: daemon.DaemonService.StopGoodsFactory:output_type -> daemon.StopGoodsFactoryResponse
+	118, // 167: daemon.DaemonService.FactoryWorkerCap:output_type -> daemon.FactoryWorkerCapResponse
+	120, // 168: daemon.DaemonService.TuneContainerConfig:output_type -> daemon.TuneContainerConfigResponse
+	123, // 169: daemon.DaemonService.ShowTunableConfig:output_type -> daemon.ShowTunableConfigResponse
+	125, // 170: daemon.DaemonService.GetFrontierStatus:output_type -> daemon.GetFrontierStatusResponse
+	127, // 171: daemon.DaemonService.GetFactoryStatus:output_type -> daemon.GetFactoryStatusResponse
+	130, // 172: daemon.DaemonService.ScanArbitrageOpportunities:output_type -> daemon.ScanArbitrageOpportunitiesResponse
+	132, // 173: daemon.DaemonService.StartArbitrageCoordinator:output_type -> daemon.StartArbitrageCoordinatorResponse
+	134, // 174: daemon.DaemonService.JettisonCargo:output_type -> daemon.JettisonCargoResponse
+	146, // 175: daemon.DaemonService.GasExtractionOperation:output_type -> daemon.GasExtractionOperationResponse
+	136, // 176: daemon.DaemonService.StartTradeRoute:output_type -> daemon.StartTradeRouteResponse
+	138, // 177: daemon.DaemonService.StartWarehouse:output_type -> daemon.StartWarehouseResponse
+	140, // 178: daemon.DaemonService.StartArbRun:output_type -> daemon.StartArbRunResponse
+	142, // 179: daemon.DaemonService.StartTourRun:output_type -> daemon.StartTourRunResponse
+	144, // 180: daemon.DaemonService.StartStocker:output_type -> daemon.StartStockerResponse
+	148, // 181: daemon.DaemonService.StartConstructionPipeline:output_type -> daemon.StartConstructionPipelineResponse
+	151, // 182: daemon.DaemonService.GetConstructionStatus:output_type -> daemon.GetConstructionStatusResponse
+	153, // 183: daemon.DaemonService.StopConstructionPipeline:output_type -> daemon.StopConstructionPipelineResponse
+	155, // 184: daemon.DaemonService.ConstructionGoodOverride:output_type -> daemon.ConstructionGoodOverrideResponse
+	157, // 185: daemon.DaemonService.ConstructionWorkerCap:output_type -> daemon.ConstructionWorkerCapResponse
+	161, // 186: daemon.DaemonService.ApplyDepotTopology:output_type -> daemon.ApplyDepotTopologyResponse
+	163, // 187: daemon.DaemonService.AddDepot:output_type -> daemon.AddDepotResponse
+	165, // 188: daemon.DaemonService.RemoveDepot:output_type -> daemon.RemoveDepotResponse
+	169, // 189: daemon.DaemonService.AddDepotElement:output_type -> daemon.DepotElementResponse
+	169, // 190: daemon.DaemonService.RemoveDepotElement:output_type -> daemon.DepotElementResponse
+	169, // 191: daemon.DaemonService.PlaceDepotElement:output_type -> daemon.DepotElementResponse
+	171, // 192: daemon.DaemonService.ListDepots:output_type -> daemon.ListDepotsResponse
+	173, // 193: daemon.DaemonService.StartDepot:output_type -> daemon.StartDepotResponse
+	175, // 194: daemon.DaemonService.StopDepot:output_type -> daemon.StopDepotResponse
+	118, // [118:195] is the sub-list for method output_type
+	41,  // [41:118] is the sub-list for method input_type
 	41,  // [41:41] is the sub-list for extension type_name
 	41,  // [41:41] is the sub-list for extension extendee
 	0,   // [0:41] is the sub-list for field type_name
@@ -14240,22 +14394,23 @@ func file_pkg_proto_daemon_daemon_proto_init() {
 	file_pkg_proto_daemon_daemon_proto_msgTypes[151].OneofWrappers = []any{}
 	file_pkg_proto_daemon_daemon_proto_msgTypes[152].OneofWrappers = []any{}
 	file_pkg_proto_daemon_daemon_proto_msgTypes[154].OneofWrappers = []any{}
-	file_pkg_proto_daemon_daemon_proto_msgTypes[158].OneofWrappers = []any{}
+	file_pkg_proto_daemon_daemon_proto_msgTypes[156].OneofWrappers = []any{}
 	file_pkg_proto_daemon_daemon_proto_msgTypes[160].OneofWrappers = []any{}
 	file_pkg_proto_daemon_daemon_proto_msgTypes[162].OneofWrappers = []any{}
 	file_pkg_proto_daemon_daemon_proto_msgTypes[164].OneofWrappers = []any{}
-	file_pkg_proto_daemon_daemon_proto_msgTypes[165].OneofWrappers = []any{}
 	file_pkg_proto_daemon_daemon_proto_msgTypes[166].OneofWrappers = []any{}
+	file_pkg_proto_daemon_daemon_proto_msgTypes[167].OneofWrappers = []any{}
 	file_pkg_proto_daemon_daemon_proto_msgTypes[168].OneofWrappers = []any{}
 	file_pkg_proto_daemon_daemon_proto_msgTypes[170].OneofWrappers = []any{}
 	file_pkg_proto_daemon_daemon_proto_msgTypes[172].OneofWrappers = []any{}
+	file_pkg_proto_daemon_daemon_proto_msgTypes[174].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pkg_proto_daemon_daemon_proto_rawDesc), len(file_pkg_proto_daemon_daemon_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   177,
+			NumMessages:   179,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

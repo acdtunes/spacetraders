@@ -207,6 +207,14 @@ func (p *ConstructionPipelinePlanner) StartOrResume(
 				existingPipeline.SetGoodOverrides(goodOverrides)
 				needsUpdate = true
 			}
+			// sp-duljg: a resumed launch with an explicit --max-workers (>0) updates the persisted
+			// concurrent-worker cap — the SAME field the live `construction workers` verb writes. 0 is
+			// the unset sentinel (an omitted flag, and the bootstrap gate caller's value), so an
+			// idempotent re-run never clobbers a live-tuned pipeline's cap.
+			if maxWorkers > 0 && maxWorkers != existingPipeline.MaxWorkers() {
+				existingPipeline.SetMaxWorkers(maxWorkers)
+				needsUpdate = true
+			}
 			if needsUpdate {
 				if err := p.pipelineRepo.Update(ctx, existingPipeline); err != nil {
 					return nil, fmt.Errorf("failed to persist updated sourcing config for pipeline %s: %w", existingPipeline.ID(), err)

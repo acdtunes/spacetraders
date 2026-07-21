@@ -379,6 +379,109 @@ func TestStartOrResume_ResumeWithEmptyMinSupply_DoesNotClobberExistingFloor(t *t
 	}
 }
 
+// --- sp-duljg §4: construction start --max-workers honored on fresh create AND resume ---
+
+// TestStartOrResume_NewPipeline_HonorsMaxWorkers confirms the fresh-create half of the sp-duljg §4
+// launch-flag check: a brand-new pipeline persists the launch --max-workers, so resolveWorkerCap
+// drains at the requested width from the first tick.
+func TestStartOrResume_NewPipeline_HonorsMaxWorkers(t *testing.T) {
+	pipelineRepo := &plannerStubPipelineRepo{}
+	taskRepo := &plannerStubTaskRepo{tasksByPipeline: map[string][]*manufacturing.ManufacturingTask{}}
+	planner := newPlannerUnderTest(pipelineRepo, taskRepo, newPlannerTestMarketRepo(t), newPlannerTestConstructionSite(t))
+
+	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 3, 8, "", "", nil)
+	if err != nil {
+		t.Fatalf("StartOrResume: %v", err)
+	}
+	if result.IsResumed {
+		t.Fatal("expected a fresh pipeline, got IsResumed=true")
+	}
+	if got := result.Pipeline.MaxWorkers(); got != 8 {
+		t.Errorf("expected a fresh pipeline to honor the launch --max-workers=8, got cap %d", got)
+	}
+	foundCreate := false
+	for _, p := range pipelineRepo.created {
+		if p.MaxWorkers() == 8 {
+			foundCreate = true
+		}
+	}
+	if !foundCreate {
+		t.Error("expected the launch cap to be persisted on the fresh pipeline row")
+	}
+}
+
+// TestStartOrResume_ResumeWithChangedMaxWorkers_PersistsNewCap is the resume half of the sp-duljg §4
+// fix. Re-running construction start with a DIFFERENT --max-workers on an already-running pipeline
+// updates the persisted cap — the same field the live `construction workers` verb writes. Before the
+// fix the resume path ignored --max-workers entirely (the "worker cap 1 despite --max-workers 10"
+// incident), so the launch flag was silently dropped for any pipeline that already existed.
+func TestStartOrResume_ResumeWithChangedMaxWorkers_PersistsNewCap(t *testing.T) {
+	existing := manufacturing.NewConstructionPipeline(plannerTestSite, 1, 3, 1)
+	if err := existing.Start(); err != nil {
+		t.Fatalf("existing.Start: %v", err)
+	}
+	pendingTask := manufacturing.NewDeliverToConstructionTask(
+		existing.ID(), 1, "FAB_MATS", plannerTestMarket, "", plannerTestSite, nil,
+	)
+
+	pipelineRepo := &plannerStubPipelineRepo{existing: existing}
+	taskRepo := &plannerStubTaskRepo{tasksByPipeline: map[string][]*manufacturing.ManufacturingTask{
+		existing.ID(): {pendingTask},
+	}}
+	planner := newPlannerUnderTest(pipelineRepo, taskRepo, newPlannerTestMarketRepo(t), newPlannerTestConstructionSite(t))
+
+	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 3, 10, "", "", nil)
+	if err != nil {
+		t.Fatalf("StartOrResume: %v", err)
+	}
+	if !result.IsResumed {
+		t.Fatal("expected IsResumed=true for a pipeline with incomplete tasks")
+	}
+	if got := result.Pipeline.MaxWorkers(); got != 10 {
+		t.Errorf("expected resuming with a changed --max-workers=10 to update the cap, got %d", got)
+	}
+	foundUpdate := false
+	for _, p := range pipelineRepo.updated {
+		if p.ID() == existing.ID() && p.MaxWorkers() == 10 {
+			foundUpdate = true
+		}
+	}
+	if !foundUpdate {
+		t.Error("expected the updated cap to be persisted via pipelineRepo.Update")
+	}
+}
+
+// TestStartOrResume_ResumeWithUnsetMaxWorkers_DoesNotClobberCap: resuming WITHOUT --max-workers
+// (threaded through as 0, the unset sentinel — matching the bootstrap gate caller which always
+// passes 0) must NOT reset a pipeline's live-tuned cap. The live `construction workers` verb owns a
+// running pipeline's cap; an idempotent re-run of construction start must never fight it.
+func TestStartOrResume_ResumeWithUnsetMaxWorkers_DoesNotClobberCap(t *testing.T) {
+	existing := manufacturing.NewConstructionPipeline(plannerTestSite, 1, 3, 10) // live-tuned to 10
+	if err := existing.Start(); err != nil {
+		t.Fatalf("existing.Start: %v", err)
+	}
+	pendingTask := manufacturing.NewDeliverToConstructionTask(
+		existing.ID(), 1, "FAB_MATS", plannerTestMarket, "", plannerTestSite, nil,
+	)
+
+	pipelineRepo := &plannerStubPipelineRepo{existing: existing}
+	taskRepo := &plannerStubTaskRepo{tasksByPipeline: map[string][]*manufacturing.ManufacturingTask{
+		existing.ID(): {pendingTask},
+	}}
+	planner := newPlannerUnderTest(pipelineRepo, taskRepo, newPlannerTestMarketRepo(t), newPlannerTestConstructionSite(t))
+
+	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 3, 0, "", "", nil)
+	if err != nil {
+		t.Fatalf("StartOrResume: %v", err)
+	}
+	if !result.IsResumed {
+		t.Fatal("expected IsResumed=true for a pipeline with incomplete tasks")
+	}
+	if got := result.Pipeline.MaxWorkers(); got != 10 {
+		t.Errorf("expected resuming with an unset (0) --max-workers to leave the live-tuned cap 10 untouched, got %d", got)
+	}
+}
+
 // sp-j2hq: a brand-new pipeline must also persist its caller-set --min-supply
 // floor onto the entity (not just use it transiently while sourcing the
 // initial materials) - otherwise a material that defers during THIS SAME

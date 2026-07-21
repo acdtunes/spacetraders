@@ -2014,3 +2014,29 @@ func (s *daemonServiceImpl) ConstructionGoodOverride(ctx context.Context, req *p
 		MinSupply:        result.Override.MinSupply,
 	}, nil
 }
+
+// ConstructionWorkerCap sets the live concurrent-worker cap (max_workers) on a running construction
+// pipeline (sp-duljg). Resolves the player from player_id or agent_symbol (like the other coordinator
+// RPCs), then delegates the persisted-row mutation to the daemon — the single writer (RULINGS #3).
+// The running drain re-reads the cap each tick and converges its fan-out to N with no restart.
+func (s *daemonServiceImpl) ConstructionWorkerCap(ctx context.Context, req *pb.ConstructionWorkerCapRequest) (*pb.ConstructionWorkerCapResponse, error) {
+	var pid int32
+	if req.PlayerId != nil {
+		pid = *req.PlayerId
+	}
+	playerID, err := s.resolvePlayerID(ctx, pid, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+
+	result, err := s.daemon.MutateConstructionMaxWorkers(ctx, req.ConstructionSite, playerID, int(req.Count))
+	if err != nil {
+		return nil, fmt.Errorf("failed to set construction worker cap: %w", err)
+	}
+
+	return &pb.ConstructionWorkerCapResponse{
+		ConstructionSite: result.ConstructionSite,
+		WorkerCap:        int32(result.WorkerCap),
+		Changed:          result.Changed,
+	}, nil
+}

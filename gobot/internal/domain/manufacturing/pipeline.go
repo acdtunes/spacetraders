@@ -215,6 +215,18 @@ func (p *ManufacturingPipeline) SupplyChainDepth() int { return p.supplyChainDep
 // 0 = unlimited, default is 5
 func (p *ManufacturingPipeline) MaxWorkers() int { return p.maxWorkers }
 
+// SetMaxWorkers amends the concurrent-worker cap on this construction pipeline. The drain re-reads it
+// off the pipeline row every tick (resolveWorkerCap → errgroup.SetLimit), so a live update converges
+// the fan-out on the next tick with no restart, and it is re-persisted so it survives a daemon bounce
+// (RULINGS #2). A non-positive value falls back to the default (mirroring the constructor) so the cap
+// can never drive SetLimit(0), which would deadlock the drain tick.
+func (p *ManufacturingPipeline) SetMaxWorkers(maxWorkers int) {
+	if maxWorkers <= 0 {
+		maxWorkers = defaultConstructionMaxWorkers
+	}
+	p.maxWorkers = maxWorkers
+}
+
 // MinSupply returns the caller-set EXPORT sourcing floor for this construction
 // pipeline (e.g. "SCARCE"), CONSTRUCTION pipelines only. Empty string means
 // unset, which callers (MarketLocator.FindConstructionSource) treat as the

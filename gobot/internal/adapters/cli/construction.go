@@ -206,6 +206,7 @@ Examples:
 	cmd.AddCommand(newConstructionStatusCommand())
 	cmd.AddCommand(newConstructionStopCommand())
 	cmd.AddCommand(newConstructionOverrideCommand())
+	cmd.AddCommand(newConstructionWorkersCommand())
 
 	return cmd
 }
@@ -375,7 +376,11 @@ Examples:
 	}
 
 	cmd.Flags().IntVar(&supplyChainDepth, "depth", 3, "Supply chain depth (0=full, 1=raw, 2=intermediate, 3=buy final)")
-	cmd.Flags().IntVar(&maxWorkers, "max-workers", 5, "Maximum parallel workers")
+	// Default 0 = "not provided" so an idempotent resume without --max-workers never clobbers a
+	// pipeline's live-tuned cap: a fresh pipeline falls back to the domain default (5), a running
+	// pipeline keeps its cap (owned by the live `construction workers` verb). An explicit value
+	// (>0) is honored on both fresh create and resume — the sp-duljg §4 fix.
+	cmd.Flags().IntVar(&maxWorkers, "max-workers", 0, "Maximum parallel workers for a NEW pipeline (default 5 when omitted); to change a RUNNING pipeline's cap live use 'construction workers <site> --count N' (no restart)")
 	cmd.Flags().StringVar(&systemSymbol, "system", "", "System symbol for market lookups (defaults to deriving from construction site)")
 	cmd.Flags().StringVar(&minSupply, "min-supply", "", "Lower the EXPORT sourcing floor below the default MODERATE (one of ABUNDANT, HIGH, MODERATE, LIMITED, SCARCE)")
 	cmd.Flags().StringArrayVar(&goodOverrideSpecs, "good-override", nil, "Per-good buy-gating override (repeatable), e.g. FAB_MATS:minSupply=LIMITED,strategy=prefer-buy,priceCeilingMult=2.0 — loosens ONE good; others keep the global floor (sp-sdyo)")
@@ -729,6 +734,90 @@ Examples:
 	cmd.Flags().StringVar(&f.minSupply, "min-supply", "", "Per-good EXPORT sourcing floor (ABUNDANT, HIGH, MODERATE, LIMITED, SCARCE)")
 	cmd.Flags().StringVar(&f.strategy, "strategy", "", "Per-good acquisition strategy (prefer-buy, prefer-fabricate, smart)")
 	cmd.Flags().Float64Var(&f.priceCeilingMult, "price-ceiling-mult", 0, "Per-good ladder-chase input-price ceiling multiplier (clamped to the domain cap)")
+
+	return cmd
+}
+
+// --- live `construction workers` verb (sp-duljg) -------------------------------------------------
+
+// constructionWorkerCapMutator is the narrow daemon surface the `construction workers` verb needs.
+// By construction it exposes ONLY the ConstructionWorkerCap RPC — no pipeline restart/stop — so "no
+// restart" is guaranteed by the surface this verb can reach, exactly as the goods-factory worker-cap
+// verb guarantees it for the factory fan-out.
+type constructionWorkerCapMutator interface {
+	ConstructionWorkerCap(ctx context.Context, constructionSite string, count int, playerID *int32, agentSymbol *string) (*pb.ConstructionWorkerCapResponse, error)
+}
+
+// runConstructionWorkers sets a RUNNING construction pipeline's concurrent supplyTask-worker cap live
+// via the daemon, then formats the operator-facing result. resolveWorkerCap re-reads the cap off the
+// pipeline row every drain tick and converges its fan-out to count on the next tick — no
+// pipeline/daemon restart. A no-op (the cap already equalled count) is reported honestly.
+func runConstructionWorkers(ctx context.Context, client constructionWorkerCapMutator, constructionSite string, count int, playerID *int32, agentSymbol *string) (string, error) {
+	resp, err := client.ConstructionWorkerCap(ctx, constructionSite, count, playerID, agentSymbol)
+	if err != nil {
+		return "", fmt.Errorf("failed to set worker cap %d on construction pipeline %s: %w", count, constructionSite, err)
+	}
+	if !resp.Changed {
+		return fmt.Sprintf("• construction pipeline %s worker cap is already %d — unchanged\n", constructionSite, resp.WorkerCap), nil
+	}
+	return fmt.Sprintf("✓ construction pipeline %s worker cap set to %d — the drain re-reads it live and converges to at most %d concurrent hauler(s) next tick; no restart.\n", constructionSite, resp.WorkerCap, resp.WorkerCap), nil
+}
+
+// newConstructionWorkersCommand creates the `construction workers <site>` subcommand — the live
+// concurrent supplyTask-worker cap on a RUNNING construction pipeline (sp-duljg), the construction
+// analogue of `goods factory workers`. No restart: resolveWorkerCap re-reads max_workers off the
+// pipeline row each tick, and the value survives a daemon bounce (RULINGS #2). The positional site
+// matches `construction start/status/stop`; --count matches `goods factory workers`.
+func newConstructionWorkersCommand() *cobra.Command {
+	var count int
+
+	cmd := &cobra.Command{
+		Use:   "workers <construction-site>",
+		Short: "Set a running construction pipeline's concurrent worker cap live (no restart)",
+		Long: `Set the maximum number of haulers a RUNNING construction pipeline drains concurrently,
+without a restart. The construction drain re-reads its cap (max_workers) off the pipeline row every
+tick, so it converges the fan-out to the new count on the next tick — a hull already mid-haul finishes
+first, never force-killed. The cap is per-pipeline and persists across daemon restarts (RULINGS #2).
+
+This is the live way to scale a running pipeline's throughput: unlike stop + 'construction start
+--max-workers N', it never aborts in-flight hauls or risks the restart-wedge.
+
+Examples:
+  spacetraders construction workers X1-FB5-I56 --count 10
+  spacetraders construction workers X1-FB5-I56 --count 4`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			constructionSite := args[0]
+			if count < 1 {
+				return fmt.Errorf("--count must be at least 1 (got %d) — raise it to widen the drain fan-out", count)
+			}
+
+			playerIdent, err := resolvePlayerIdentifier()
+			if err != nil {
+				return err
+			}
+
+			client, err := connectDaemon()
+			if err != nil {
+				return err
+			}
+			defer client.Close()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			playerID, agentSymbol := playerPointers(playerIdent)
+
+			msg, err := runConstructionWorkers(ctx, client, constructionSite, count, playerID, agentSymbol)
+			if err != nil {
+				return err
+			}
+			fmt.Print(msg)
+			return nil
+		},
+	}
+
+	cmd.Flags().IntVar(&count, "count", 0, "Maximum number of haulers the drain runs concurrently (required, >= 1)")
 
 	return cmd
 }

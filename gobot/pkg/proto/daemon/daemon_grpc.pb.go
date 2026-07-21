@@ -86,6 +86,7 @@ const (
 	DaemonService_GetConstructionStatus_FullMethodName         = "/daemon.DaemonService/GetConstructionStatus"
 	DaemonService_StopConstructionPipeline_FullMethodName      = "/daemon.DaemonService/StopConstructionPipeline"
 	DaemonService_ConstructionGoodOverride_FullMethodName      = "/daemon.DaemonService/ConstructionGoodOverride"
+	DaemonService_ConstructionWorkerCap_FullMethodName         = "/daemon.DaemonService/ConstructionWorkerCap"
 	DaemonService_ApplyDepotTopology_FullMethodName            = "/daemon.DaemonService/ApplyDepotTopology"
 	DaemonService_AddDepot_FullMethodName                      = "/daemon.DaemonService/AddDepot"
 	DaemonService_RemoveDepot_FullMethodName                   = "/daemon.DaemonService/RemoveDepot"
@@ -302,6 +303,11 @@ type DaemonServiceClient interface {
 	// override map) on a RUNNING construction pipeline live, with no restart (sp-pdb3). The
 	// coordinator / task activator re-read the persisted overrides on their next discovery pass.
 	ConstructionGoodOverride(ctx context.Context, in *ConstructionGoodOverrideRequest, opts ...grpc.CallOption) (*ConstructionGoodOverrideResponse, error)
+	// ConstructionWorkerCap sets the concurrent supplyTask-worker cap (max_workers) on a RUNNING
+	// construction pipeline live, with no restart (sp-duljg). The drain re-reads max_workers off the
+	// pipeline row each tick (resolveWorkerCap -> errgroup.SetLimit) and converges its fan-out to N; the
+	// cap persists across daemon restarts. The construction analogue of FactoryWorkerCap.
+	ConstructionWorkerCap(ctx context.Context, in *ConstructionWorkerCapRequest, opts ...grpc.CallOption) (*ConstructionWorkerCapResponse, error)
 	// --- Contract depot management (sp-u9xa) ---
 	// The daemon is the single writer of contract-depot topology; every mutation is durable
 	// the instant it returns (through the application Store into the DB), so a granular edit
@@ -999,6 +1005,16 @@ func (c *daemonServiceClient) ConstructionGoodOverride(ctx context.Context, in *
 	return out, nil
 }
 
+func (c *daemonServiceClient) ConstructionWorkerCap(ctx context.Context, in *ConstructionWorkerCapRequest, opts ...grpc.CallOption) (*ConstructionWorkerCapResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ConstructionWorkerCapResponse)
+	err := c.cc.Invoke(ctx, DaemonService_ConstructionWorkerCap_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *daemonServiceClient) ApplyDepotTopology(ctx context.Context, in *ApplyDepotTopologyRequest, opts ...grpc.CallOption) (*ApplyDepotTopologyResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ApplyDepotTopologyResponse)
@@ -1294,6 +1310,11 @@ type DaemonServiceServer interface {
 	// override map) on a RUNNING construction pipeline live, with no restart (sp-pdb3). The
 	// coordinator / task activator re-read the persisted overrides on their next discovery pass.
 	ConstructionGoodOverride(context.Context, *ConstructionGoodOverrideRequest) (*ConstructionGoodOverrideResponse, error)
+	// ConstructionWorkerCap sets the concurrent supplyTask-worker cap (max_workers) on a RUNNING
+	// construction pipeline live, with no restart (sp-duljg). The drain re-reads max_workers off the
+	// pipeline row each tick (resolveWorkerCap -> errgroup.SetLimit) and converges its fan-out to N; the
+	// cap persists across daemon restarts. The construction analogue of FactoryWorkerCap.
+	ConstructionWorkerCap(context.Context, *ConstructionWorkerCapRequest) (*ConstructionWorkerCapResponse, error)
 	// --- Contract depot management (sp-u9xa) ---
 	// The daemon is the single writer of contract-depot topology; every mutation is durable
 	// the instant it returns (through the application Store into the DB), so a granular edit
@@ -1521,6 +1542,9 @@ func (UnimplementedDaemonServiceServer) StopConstructionPipeline(context.Context
 }
 func (UnimplementedDaemonServiceServer) ConstructionGoodOverride(context.Context, *ConstructionGoodOverrideRequest) (*ConstructionGoodOverrideResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ConstructionGoodOverride not implemented")
+}
+func (UnimplementedDaemonServiceServer) ConstructionWorkerCap(context.Context, *ConstructionWorkerCapRequest) (*ConstructionWorkerCapResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ConstructionWorkerCap not implemented")
 }
 func (UnimplementedDaemonServiceServer) ApplyDepotTopology(context.Context, *ApplyDepotTopologyRequest) (*ApplyDepotTopologyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ApplyDepotTopology not implemented")
@@ -2776,6 +2800,24 @@ func _DaemonService_ConstructionGoodOverride_Handler(srv interface{}, ctx contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_ConstructionWorkerCap_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ConstructionWorkerCapRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ConstructionWorkerCap(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ConstructionWorkerCap_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ConstructionWorkerCap(ctx, req.(*ConstructionWorkerCapRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _DaemonService_ApplyDepotTopology_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ApplyDepotTopologyRequest)
 	if err := dec(in); err != nil {
@@ -3212,6 +3254,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ConstructionGoodOverride",
 			Handler:    _DaemonService_ConstructionGoodOverride_Handler,
+		},
+		{
+			MethodName: "ConstructionWorkerCap",
+			Handler:    _DaemonService_ConstructionWorkerCap_Handler,
 		},
 		{
 			MethodName: "ApplyDepotTopology",

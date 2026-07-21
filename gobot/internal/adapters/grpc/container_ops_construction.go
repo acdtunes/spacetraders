@@ -392,3 +392,58 @@ func (s *DaemonServer) MutateConstructionGoodOverride(ctx context.Context, const
 	}
 	return result, nil
 }
+
+// --- sp-duljg: live max_workers override verb ----------------------------------------------------
+//
+// The daemon side of the live `construction workers` verb (sp-duljg): it SETS the RUNNING
+// construction pipeline's max_workers — the concurrent supplyTask-worker cap — with no restart. The
+// construction drain re-reads max_workers off the pipeline row every tick (resolveWorkerCap →
+// errgroup.SetLimit), so the change converges the fan-out on the next tick and survives a daemon
+// bounce (RULINGS #2). The daemon is the SOLE writer of the value (RULINGS #3); the CLI only feeds
+// it. This mirrors the live `construction override` verb, with the pipeline row as the durable store.
+
+// ConstructionMaxWorkersResult reports the outcome of a live max-workers mutation.
+type ConstructionMaxWorkersResult struct {
+	ConstructionSite string
+	WorkerCap        int
+	Changed          bool
+}
+
+// MutateConstructionMaxWorkers sets the concurrent-worker cap on the RUNNING construction pipeline
+// for constructionSite, persisting it on the pipeline row (RULINGS #2) with no restart. It locates
+// the active pipeline and (only when the cap actually changes) writes it back via the repo's
+// full-row Update — the same durable path StartOrResume uses on resume. count must be >= 1: the cap
+// drives the drain's errgroup.SetLimit and SetLimit(0) would deadlock the tick, so the daemon
+// single-writer fails closed on a non-positive count before any write. Returns a clear error when
+// there is no active construction pipeline for the site.
+func (s *DaemonServer) MutateConstructionMaxWorkers(ctx context.Context, constructionSite string, playerID int, count int) (*ConstructionMaxWorkersResult, error) {
+	if count < 1 {
+		return nil, fmt.Errorf("construction worker cap must be at least 1 (got %d) — it bounds the drain's concurrent workers", count)
+	}
+
+	pipelineRepo := persistence.NewGormManufacturingPipelineRepository(s.db)
+
+	pipeline, err := pipelineRepo.FindByConstructionSite(ctx, constructionSite, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to locate construction pipeline for %s: %w", constructionSite, err)
+	}
+	if pipeline == nil {
+		return nil, fmt.Errorf("no active construction pipeline for %s (player %d) — start one before setting its worker cap", constructionSite, playerID)
+	}
+
+	changed := pipeline.MaxWorkers() != count
+	result := &ConstructionMaxWorkersResult{
+		ConstructionSite: constructionSite,
+		WorkerCap:        count,
+		Changed:          changed,
+	}
+	if !changed {
+		return result, nil // idempotent verb: nothing to persist
+	}
+
+	pipeline.SetMaxWorkers(count)
+	if err := pipelineRepo.Update(ctx, pipeline); err != nil {
+		return nil, fmt.Errorf("failed to persist worker cap %d for pipeline %s: %w", count, pipeline.ID(), err)
+	}
+	return result, nil
+}

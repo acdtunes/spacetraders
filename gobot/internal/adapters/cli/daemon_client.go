@@ -1078,6 +1078,24 @@ func (c *DaemonClient) FactoryWorkerCap(ctx context.Context, containerID string,
 	return resp, nil
 }
 
+// ConstructionWorkerCap sets the concurrent-worker cap (max_workers) on a running construction
+// pipeline live, with no pipeline/daemon restart (sp-duljg).
+func (c *DaemonClient) ConstructionWorkerCap(ctx context.Context, constructionSite string, count int, playerID *int32, agentSymbol *string) (*pb.ConstructionWorkerCapResponse, error) {
+	req := &pb.ConstructionWorkerCapRequest{
+		ConstructionSite: constructionSite,
+		Count:            int32(count),
+		PlayerId:         playerID,
+		AgentSymbol:      agentSymbol,
+	}
+
+	resp, err := c.client.ConstructionWorkerCap(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf(grpcCallFailed, err)
+	}
+
+	return resp, nil
+}
+
 // TuneContainerConfig sets (or, with value 0, reverts) one live knob on a running
 // container's persisted config, with no container restart (sp-vwek).
 func (c *DaemonClient) TuneContainerConfig(ctx context.Context, containerID, operation, key string, value int64, playerID *int32, agentSymbol *string) (*pb.TuneContainerConfigResponse, error) {
