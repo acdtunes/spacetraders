@@ -99,6 +99,32 @@ type Purchaser interface {
 	BuyAndHome(ctx context.Context, order BuyOrder) (BuyResult, error)
 }
 
+// ReclaimOrder is one ZERO-SPEND reuse: re-dedicate an already-owned idle undedicated
+// cargo hull into the contract fleet and home it demand-ranked across the SAME spread
+// standby set a BuyOrder carries. No purchase — the hull already exists.
+type ReclaimOrder struct {
+	PlayerID        int
+	ShipSymbol      string
+	StandbyStations []string
+	StandbyDemand   map[string]float64
+}
+
+// IdleHullReclaimer is the FREE reuse tier the ramp tries BEFORE every buy: find one
+// idle, UNDEDICATED, CARGO-CAPABLE hull already owned and reclaim it into the contract
+// fleet (RULINGS #7 — only DedicatedFleet=="" hulls; NEVER a dedicated hull of any
+// fleet; NEVER a probe/0-cargo hull; NEVER a hull mid-task). Reuse is FREE, so it is
+// NOT gated by the buy cushion and may proceed even below it — it strictly REDUCES
+// spend. A nil reclaimer skips the tier entirely (byte-identical to the buy-only ramp).
+type IdleHullReclaimer interface {
+	// FindReclaimable returns one reusable hull symbol (ok=false when none exists). A
+	// read error holds the reuse tier (fail-closed) and the ramp falls through to a buy.
+	FindReclaimable(ctx context.Context, playerID int) (shipSymbol string, ok bool, err error)
+	// Reclaim re-dedicates the hull to the contract fleet (single-writer AssignFleet,
+	// RULINGS #3) and homes it exactly like a bought hull. An error means the hull was
+	// NOT taken, so the caller safely buys instead (no double-count).
+	Reclaim(ctx context.Context, order ReclaimOrder) error
+}
+
 // RunContractScalerCommand launches the standing scaler for a player. Disabled is
 // the escape hatch (default false ⇒ live once launched); nothing arms the launch
 // itself except the operator's arm gate, so a bare deploy is byte-identical.
@@ -123,13 +149,14 @@ type RunContractScalerResponse struct {
 // player's ticks). All decision inputs are read fresh each pass; the only in-memory
 // state is the memoized-at-arm plan, keyed by container ID.
 type RunContractScalerHandler struct {
-	roles    RoleResolver
-	treasury TreasuryReader
-	price    PriceReader
-	counter  FleetCounter
-	buyer    Purchaser
-	ceiling  liveconfig.Reader
-	clock    shared.Clock
+	roles     RoleResolver
+	treasury  TreasuryReader
+	price     PriceReader
+	counter   FleetCounter
+	buyer     Purchaser
+	reclaimer IdleHullReclaimer
+	ceiling   liveconfig.Reader
+	clock     shared.Clock
 
 	mu    sync.Mutex
 	plans map[string]*armedPlan // keyed by container ID
@@ -151,12 +178,13 @@ func NewRunContractScalerHandler(clock shared.Clock) *RunContractScalerHandler {
 	return &RunContractScalerHandler{clock: clock, plans: make(map[string]*armedPlan)}
 }
 
-func (h *RunContractScalerHandler) SetRoleResolver(r RoleResolver)       { h.roles = r }
-func (h *RunContractScalerHandler) SetTreasuryReader(r TreasuryReader)   { h.treasury = r }
-func (h *RunContractScalerHandler) SetPriceReader(r PriceReader)         { h.price = r }
-func (h *RunContractScalerHandler) SetFleetCounter(r FleetCounter)       { h.counter = r }
-func (h *RunContractScalerHandler) SetPurchaser(p Purchaser)             { h.buyer = p }
-func (h *RunContractScalerHandler) SetCeilingReader(r liveconfig.Reader) { h.ceiling = r }
+func (h *RunContractScalerHandler) SetRoleResolver(r RoleResolver)           { h.roles = r }
+func (h *RunContractScalerHandler) SetTreasuryReader(r TreasuryReader)       { h.treasury = r }
+func (h *RunContractScalerHandler) SetPriceReader(r PriceReader)             { h.price = r }
+func (h *RunContractScalerHandler) SetFleetCounter(r FleetCounter)           { h.counter = r }
+func (h *RunContractScalerHandler) SetPurchaser(p Purchaser)                 { h.buyer = p }
+func (h *RunContractScalerHandler) SetIdleHullReclaimer(r IdleHullReclaimer) { h.reclaimer = r }
+func (h *RunContractScalerHandler) SetCeilingReader(r liveconfig.Reader)     { h.ceiling = r }
 
 // Handle runs the ramp loop until the context is cancelled.
 func (h *RunContractScalerHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
@@ -227,6 +255,14 @@ func (h *RunContractScalerHandler) reconcileOnce(ctx context.Context, cmd *RunCo
 
 	bought := 0
 	for current < target {
+		// ZERO-SPEND REUSE TIER (RULINGS #7): before spending, reclaim a free IDLE UNDEDICATED
+		// CARGO-CAPABLE hull into the contract fleet. FREE ⇒ NOT cushion-gated (the cushion gates
+		// buys only) — reuse may proceed below the cushion and strictly reduces spend.
+		if h.tryReclaim(ctx, cmd, armed) {
+			current++ // reused one — advance the ramp with no purchase
+			continue
+		}
+
 		unit := armed.plan[current]
 
 		price, yard, priceOK, _ := h.price.NextHullPrice(ctx, cmd.PlayerID, unit.ShipType)
@@ -282,6 +318,49 @@ func (h *RunContractScalerHandler) reconcileOnce(ctx context.Context, cmd *RunCo
 		current++
 	}
 	return bought, nil
+}
+
+// tryReclaim runs the zero-spend reuse tier for one ramp slot: find ONE idle undedicated cargo-capable
+// hull and re-dedicate+home it into the contract fleet. Returns true ONLY when a hull was actually
+// reclaimed (advance the ramp, no spend). Returns false — proceed to the buy path — when the tier is
+// unwired, hits a scan error (fail-closed), finds no free hull, or the re-dedicate fails (the hull was
+// NOT taken, so a buy is safe and cannot double-count). Dry-run logs the candidate and never actuates.
+func (h *RunContractScalerHandler) tryReclaim(ctx context.Context, cmd *RunContractScalerCommand, armed *armedPlan) bool {
+	if h.reclaimer == nil {
+		return false // reuse tier unwired → byte-identical to the buy-only ramp
+	}
+	logger := common.LoggerFromContext(ctx)
+	symbol, ok, err := h.reclaimer.FindReclaimable(ctx, cmd.PlayerID)
+	if err != nil {
+		logger.Log("INFO", fmt.Sprintf("Contract scaler: reuse scan failed (%v) — falling through to buy", err), map[string]interface{}{
+			"action": "contract_scaler_reuse_scan_error", "container_id": cmd.ContainerID,
+		})
+		return false // fail-closed: a scan error never blocks the ramp, it just skips reuse
+	}
+	if !ok {
+		return false // no free hull → buy
+	}
+	if cmd.DryRun {
+		logger.Log("WARN", fmt.Sprintf("Contract scaler WOULD RECLAIM %s (dry-run, no spend)", symbol), map[string]interface{}{
+			"action": "contract_scaler_would_reclaim", "container_id": cmd.ContainerID, "ship_symbol": symbol,
+		})
+		return false // observe-only: never actuate under dry-run (the buy path also holds on dry-run)
+	}
+	if err := h.reclaimer.Reclaim(ctx, ReclaimOrder{
+		PlayerID:        cmd.PlayerID,
+		ShipSymbol:      symbol,
+		StandbyStations: armed.standbyStations,
+		StandbyDemand:   armed.standbyDemand,
+	}); err != nil {
+		logger.Log("WARN", fmt.Sprintf("Contract scaler: reclaim of %s failed (%v) — falling through to buy", symbol, err), map[string]interface{}{
+			"action": "contract_scaler_reclaim_error", "container_id": cmd.ContainerID, "ship_symbol": symbol,
+		})
+		return false // re-dedicate failed → hull NOT taken → buy is safe
+	}
+	logger.Log("INFO", fmt.Sprintf("Contract scaler RECLAIMED %s into the contract fleet (no spend)", symbol), map[string]interface{}{
+		"action": "contract_scaler_reclaimed", "container_id": cmd.ContainerID, "ship_symbol": symbol,
+	})
+	return true
 }
 
 // armedPlanFor returns the container's once-at-arm plan, resolving + memoizing it

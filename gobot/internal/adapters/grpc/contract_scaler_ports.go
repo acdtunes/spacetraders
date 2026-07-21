@@ -223,6 +223,11 @@ func NewContractScalerCoordinatorHandler(
 		shipRepo: shipRepo,
 	})
 
+	// Reclaimer: the ZERO-SPEND reuse tier tried before every buy (RULINGS #7 — reclaim only an idle
+	// UNDEDICATED cargo-capable hull, never poach). Reuses the SAME ship repo the FleetCounter reads +
+	// the SAME mediator the purchaser homes through — no new daemon dependency.
+	h.SetIdleHullReclaimer(&contractScalerReclaimer{shipRepo: shipRepo, med: med})
+
 	// Ceiling: the live Pattern-C snapshot of the container's own config column (contract_fleet_max_hulls),
 	// so a `tune --operation contractscaler` lands on the next tick with no restart.
 	h.SetCeilingReader(NewContainerConfigReader(server.containerRepo))
@@ -287,32 +292,33 @@ func (p *contractScalerPurchaser) BuyAndHome(ctx context.Context, order contract
 	if err != nil {
 		return contractScalerCmd.BuyResult{}, err
 	}
-	p.home(ctx, res.ShipSymbol, order)
+	homeContractHull(ctx, p.med, p.shipRepo, res.ShipSymbol, order.PlayerID, order.StandbyStations, order.StandbyDemand)
 	return contractScalerCmd.BuyResult{ShipSymbol: res.ShipSymbol, Price: res.Price}, nil
 }
 
-// home dispatches the demand-ranked homing for the freshly-bought hull, carrying the spread standby set
-// + the per-park demand weights the HomeShipCommand consumes. Best-effort: it logs and swallows a
-// homing error so a completed purchase is never rolled back. FleetShips (the contract-fleet peers whose
-// positions determine the spread occupancy) is populated best-effort from the ship repo — an empty list
-// degrades to plain nearest-station homing, never an error.
-func (p *contractScalerPurchaser) home(ctx context.Context, shipSymbol string, order contractScalerCmd.BuyOrder) {
-	if len(order.StandbyStations) == 0 {
+// homeContractHull dispatches the demand-ranked C1 homing for a hull that JUST JOINED the contract
+// fleet — bought OR reclaimed — carrying the spread standby set + the per-park demand weights the
+// HomeShipCommand consumes. SHARED so a reclaimed hull homes byte-for-byte like a bought one. Best-
+// effort: it logs and swallows a homing error so a completed buy/reclaim is never rolled back.
+// FleetShips (the contract-fleet peers whose positions seed the spread occupancy) is populated best-
+// effort from the ship repo — an empty list degrades to plain nearest-station homing, never an error.
+func homeContractHull(ctx context.Context, med commandSender, shipRepo navigation.ShipRepository, shipSymbol string, playerID int, standbyStations []string, standbyDemand map[string]float64) {
+	if len(standbyStations) == 0 {
 		return // no spread set → nothing to home to (homing is opt-in on the standby set)
 	}
 	logger := common.LoggerFromContext(ctx)
-	pid, err := shared.NewPlayerID(order.PlayerID)
+	pid, err := shared.NewPlayerID(playerID)
 	if err != nil {
 		return
 	}
-	if _, err := p.med.Send(ctx, &contractCmd.HomeShipCommand{
+	if _, err := med.Send(ctx, &contractCmd.HomeShipCommand{
 		ShipSymbol:      shipSymbol,
 		PlayerID:        pid,
-		StandbyStations: order.StandbyStations,
-		StandbyDemand:   order.StandbyDemand,
-		FleetShips:      p.contractFleetPeers(ctx, pid),
+		StandbyStations: standbyStations,
+		StandbyDemand:   standbyDemand,
+		FleetShips:      contractFleetPeers(ctx, shipRepo, pid),
 	}); err != nil {
-		logger.Log("WARN", fmt.Sprintf("Contract scaler bought %s but homing failed (best-effort; between-legs homing will retry): %v", shipSymbol, err), map[string]interface{}{
+		logger.Log("WARN", fmt.Sprintf("Contract scaler homed %s but homing failed (best-effort; between-legs homing will retry): %v", shipSymbol, err), map[string]interface{}{
 			"action": "contract_scaler_home_failed", "ship_symbol": shipSymbol,
 		})
 	}
@@ -320,12 +326,12 @@ func (p *contractScalerPurchaser) home(ctx context.Context, shipSymbol string, o
 
 // contractFleetPeers lists the exclusive "contract"-dedicated hull symbols — the homing peers whose
 // positions seed the demand-ranked spread occupancy. A read failure yields nil (homing degrades to
-// nearest-station), never an error (best-effort positioning must not block a buy).
-func (p *contractScalerPurchaser) contractFleetPeers(ctx context.Context, pid shared.PlayerID) []string {
-	if p.shipRepo == nil {
+// nearest-station), never an error (best-effort positioning must not block a buy/reclaim).
+func contractFleetPeers(ctx context.Context, shipRepo navigation.ShipRepository, pid shared.PlayerID) []string {
+	if shipRepo == nil {
 		return nil
 	}
-	ships, err := p.shipRepo.FindAllByPlayer(ctx, pid)
+	ships, err := shipRepo.FindAllByPlayer(ctx, pid)
 	if err != nil {
 		return nil
 	}
@@ -336,4 +342,61 @@ func (p *contractScalerPurchaser) contractFleetPeers(ctx context.Context, pid sh
 		}
 	}
 	return peers
+}
+
+// --- reclaimer: the ZERO-SPEND reuse tier tried before every buy (RULINGS #7 — never poach) ---
+
+// contractScalerReclaimer implements the coordinator's IdleHullReclaimer: it finds ONE idle, UNDEDICATED,
+// CARGO-CAPABLE hull already owned and re-dedicates it EXCLUSIVE to the contract fleet (single-writer
+// AssignFleet, RULINGS #3), then homes it demand-ranked exactly like a bought hull (the SAME C1 path).
+// It uses the SAME ship repo the FleetCounter reads and the SAME mediator the purchaser homes through —
+// no new daemon dependency. RULINGS #7: only DedicatedFleet=="" hulls are ever reclaimed; a hull
+// dedicated to ANY fleet (trade/mfg/warehouse/contract) is never poached. Reuse is FREE — never cushion-
+// gated — and strictly reduces spend.
+type contractScalerReclaimer struct {
+	shipRepo navigation.ShipRepository
+	med      commandSender
+}
+
+// FindReclaimable returns the FIRST reuse-eligible hull symbol, or ok=false when none exists. A fleet-
+// read error fails closed (surfaced as an error) so the coordinator falls through to a buy rather than
+// silently treating an unknown fleet as "no reusable hull".
+func (r *contractScalerReclaimer) FindReclaimable(ctx context.Context, playerID int) (string, bool, error) {
+	pid, err := shared.NewPlayerID(playerID)
+	if err != nil {
+		return "", false, err
+	}
+	ships, err := r.shipRepo.FindAllByPlayer(ctx, pid)
+	if err != nil {
+		return "", false, err
+	}
+	for _, ship := range ships {
+		if isReclaimable(ship) {
+			return ship.ShipSymbol(), true, nil
+		}
+	}
+	return "", false, nil
+}
+
+// isReclaimable is the reuse-eligibility guard: IDLE (never mid-task → no stranding), NOT in transit,
+// UNDEDICATED (RULINGS #7 — never poach a dedicated hull of ANY fleet), and CARGO-CAPABLE (a probe /
+// 0-cargo hull re-dedicated to contract can't haul — mirrors the hauling-pin cargo guard).
+func isReclaimable(ship *navigation.Ship) bool {
+	return ship.IsIdle() && !ship.IsInTransit() && ship.DedicatedFleet() == "" && ship.CargoCapacity() > 0
+}
+
+// Reclaim re-dedicates the hull EXCLUSIVE to the contract fleet via the single write path (AssignFleet,
+// RULINGS #3), then homes it demand-ranked like a bought hull (best-effort C1 homing). It returns an
+// error ONLY when the re-dedicate itself fails — the hull is then NOT taken, so the coordinator safely
+// buys without double-counting. NO SPEND: reclaim is free and is never gated by the buy cushion.
+func (r *contractScalerReclaimer) Reclaim(ctx context.Context, order contractScalerCmd.ReclaimOrder) error {
+	pid, err := shared.NewPlayerID(order.PlayerID)
+	if err != nil {
+		return err
+	}
+	if err := r.shipRepo.AssignFleet(ctx, order.ShipSymbol, contractFleetTag, pid); err != nil {
+		return fmt.Errorf("reclaim re-dedicate %s → contract: %w", order.ShipSymbol, err)
+	}
+	homeContractHull(ctx, r.med, r.shipRepo, order.ShipSymbol, order.PlayerID, order.StandbyStations, order.StandbyDemand)
+	return nil
 }

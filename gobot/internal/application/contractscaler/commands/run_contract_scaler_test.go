@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
@@ -64,6 +65,40 @@ func (f *fakePurchaser) BuyAndHome(ctx context.Context, order BuyOrder) (BuyResu
 		f.counter.n++
 	}
 	return BuyResult{ShipSymbol: "SHIP-NEW", Price: order.ExpectedPrice}, nil
+}
+
+// fakeReclaimer is the FREE reuse tier: FindReclaimable hands out `available` symbols head-first, and
+// Reclaim consumes the head (a reclaimed hull is now dedicated, so no longer "available"). reclaimErr
+// models a re-dedicate failure — the hull is NOT taken, so nothing is consumed or recorded and the ramp
+// safely buys. findErr models a scan error (fail-closed → fall through to buy).
+type fakeReclaimer struct {
+	available  []string
+	findErr    error
+	reclaimErr error
+	reclaimed  []string
+	orders     []ReclaimOrder
+	findCalls  int
+}
+
+func (f *fakeReclaimer) FindReclaimable(ctx context.Context, playerID int) (string, bool, error) {
+	f.findCalls++
+	if f.findErr != nil {
+		return "", false, f.findErr
+	}
+	if len(f.available) == 0 {
+		return "", false, nil
+	}
+	return f.available[0], true, nil
+}
+
+func (f *fakeReclaimer) Reclaim(ctx context.Context, order ReclaimOrder) error {
+	if f.reclaimErr != nil {
+		return f.reclaimErr // re-dedicate failed → hull NOT taken (don't consume, don't record)
+	}
+	f.available = f.available[1:]
+	f.reclaimed = append(f.reclaimed, order.ShipSymbol)
+	f.orders = append(f.orders, order)
+	return nil
 }
 
 // fakeCeiling implements liveconfig.Reader with a settable live ceiling.
@@ -250,5 +285,121 @@ func TestReconcile_BuyOrderCarriesContractDedicationAndSpreadDemand(t *testing.T
 	}
 	if len(o.StandbyStations) != 3 {
 		t.Fatalf("order StandbyStations = %v, want the 3 central parks (spread set)", o.StandbyStations)
+	}
+}
+
+// --- UNDEDICATED-REUSE TIER (sp-wfgsa): reclaim a free idle undedicated cargo hull before spending ---
+
+// REUSE BEFORE BUY: a free idle undedicated cargo hull is RECLAIMED into the contract fleet, and the
+// buyer is NEVER called — reuse replaces the spend (current++ with zero purchase).
+func TestReconcile_ReclaimsFreeIdleHullBeforeBuying(t *testing.T) {
+	h, pur, _, _ := newHarness(1)
+	rec := &fakeReclaimer{available: []string{"HULL-IDLE"}}
+	h.SetIdleHullReclaimer(rec)
+
+	bought := reconcile(t, h, 1)
+	if bought != 0 {
+		t.Fatalf("bought %d, want 0 — a free idle hull is reclaimed, never bought", bought)
+	}
+	if len(pur.orders) != 0 {
+		t.Fatalf("buyer saw %d orders, want 0 — reuse must precede AND replace the buy", len(pur.orders))
+	}
+	if len(rec.reclaimed) != 1 || rec.reclaimed[0] != "HULL-IDLE" {
+		t.Fatalf("reclaimed %v, want [HULL-IDLE] (the free hull reused into the contract fleet)", rec.reclaimed)
+	}
+	// Reclaim homes to the SAME demand-ranked spread a bought hull gets (C1 homing parity).
+	if len(rec.orders) != 1 || len(rec.orders[0].StandbyStations) != 3 || rec.orders[0].StandbyDemand["P2"] != 9 {
+		t.Fatalf("reclaim order = %+v, want the 3-park spread set + park demand weights (homed like a bought hull)", rec.orders)
+	}
+}
+
+// COMPOSES WITH BUYS: with 1 reusable hull and a target of 3, the ramp reclaims the one free hull and
+// BUYS the remaining two in the same tick — reuse strictly reduces the buy count, never the fleet size.
+func TestReconcile_ReclaimsFreeHullThenBuysTheRemainder(t *testing.T) {
+	h, pur, _, _ := newHarness(3)
+	rec := &fakeReclaimer{available: []string{"HULL-IDLE"}}
+	h.SetIdleHullReclaimer(rec)
+
+	bought := reconcile(t, h, 3)
+	if bought != 2 {
+		t.Fatalf("bought %d, want 2 — 1 free hull reclaimed + 2 bought = target 3", bought)
+	}
+	if len(pur.orders) != 2 {
+		t.Fatalf("buyer saw %d orders, want 2 (the remainder after the free reclaim)", len(pur.orders))
+	}
+	if len(rec.reclaimed) != 1 {
+		t.Fatalf("reclaimed %v, want exactly 1 (the single free idle hull)", rec.reclaimed)
+	}
+}
+
+// NO REUSABLE HULL: a wired reclaimer that finds nothing falls through to the buy path unchanged.
+func TestReconcile_NoReusableHullFallsThroughToBuy(t *testing.T) {
+	h, pur, _, _ := newHarness(1)
+	rec := &fakeReclaimer{} // nothing available
+	h.SetIdleHullReclaimer(rec)
+
+	bought := reconcile(t, h, 1)
+	if bought != 1 || len(pur.orders) != 1 {
+		t.Fatalf("bought %d (orders %d), want 1 — no reusable hull ⇒ the ramp buys", bought, len(pur.orders))
+	}
+	if len(rec.reclaimed) != 0 {
+		t.Fatalf("reclaimed %v, want none", rec.reclaimed)
+	}
+}
+
+// REUSE IS FREE OF THE CUSHION (RULINGS #4): with the treasury BELOW the buy cushion (a buy would be
+// blocked), a free reclaim STILL proceeds — the 200000 cushion gates BUYS only, never reuse. Reuse
+// strictly reduces spend, so it may run when the treasury cannot afford a purchase.
+func TestReconcile_ReuseProceedsBelowBuyCushion(t *testing.T) {
+	h, pur, _, _ := newHarness(1)
+	// Treasury 250k, price 100k → treasury-price = 150k < 200000 cushion: a BUY is blocked.
+	tr := &fakeTreasury{credits: 250_000, readable: true}
+	h.SetTreasuryReader(tr)
+	pur.treasury = tr
+	rec := &fakeReclaimer{available: []string{"HULL-IDLE"}}
+	h.SetIdleHullReclaimer(rec)
+
+	bought := reconcile(t, h, 1)
+	if bought != 0 {
+		t.Fatalf("bought %d, want 0 — reuse is free, it never spends", bought)
+	}
+	if len(pur.orders) != 0 {
+		t.Fatalf("buyer saw %d orders, want 0 — the cushion blocks BUYS, never reuse", len(pur.orders))
+	}
+	if len(rec.reclaimed) != 1 {
+		t.Fatalf("reclaimed %v, want 1 — reuse must proceed BELOW the buy cushion (free ⇒ ungated)", rec.reclaimed)
+	}
+}
+
+// RECLAIM ERROR ⇒ FALL THROUGH TO BUY: a re-dedicate failure means the hull was NOT taken, so the ramp
+// buys instead (no double-count, no stranded slot).
+func TestReconcile_ReclaimErrorFallsThroughToBuy(t *testing.T) {
+	h, pur, _, _ := newHarness(1)
+	rec := &fakeReclaimer{available: []string{"HULL-IDLE"}, reclaimErr: errors.New("assign-fleet failed")}
+	h.SetIdleHullReclaimer(rec)
+
+	bought := reconcile(t, h, 1)
+	if bought != 1 || len(pur.orders) != 1 {
+		t.Fatalf("bought %d (orders %d), want 1 — a failed reclaim (hull NOT taken) falls through to a buy", bought, len(pur.orders))
+	}
+	if len(rec.reclaimed) != 0 {
+		t.Fatalf("reclaimed %v, want none — a re-dedicate failure must not record a reuse", rec.reclaimed)
+	}
+}
+
+// DEFAULT-OFF BYTE-IDENTICAL: a disabled scaler never even SCANS for reuse (no FindReclaimable call), so
+// a wired reclaimer + an available free hull change nothing until the operator arms the scaler.
+func TestReconcile_DisabledNeverReclaims(t *testing.T) {
+	h, pur, _, _ := newHarness(3)
+	rec := &fakeReclaimer{available: []string{"HULL-IDLE"}}
+	h.SetIdleHullReclaimer(rec)
+
+	cmd := &RunContractScalerCommand{PlayerID: 1, ContainerID: "cs-1", Disabled: true}
+	n, err := h.reconcileOnce(context.Background(), cmd)
+	if err != nil {
+		t.Fatalf("reconcileOnce error: %v", err)
+	}
+	if n != 0 || len(pur.orders) != 0 || len(rec.reclaimed) != 0 || rec.findCalls != 0 {
+		t.Fatalf("disabled scaler: bought %d, orders %d, reclaimed %d, findCalls %d — want all 0 (byte-identical)", n, len(pur.orders), len(rec.reclaimed), rec.findCalls)
 	}
 }

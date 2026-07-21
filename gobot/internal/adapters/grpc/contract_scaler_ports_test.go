@@ -2,8 +2,11 @@ package grpc
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
@@ -11,6 +14,7 @@ import (
 	fleetCmd "github.com/andrescamacho/spacetraders-go/internal/application/fleet/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contractscaler"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
@@ -250,5 +254,188 @@ func TestContractScalerPurchaser_BuyFailureNeverHomes(t *testing.T) {
 	}
 	if len(sender.sent) != 0 {
 		t.Fatalf("a failed buy must NOT dispatch a HomeShipCommand, got %d", len(sender.sent))
+	}
+}
+
+// --- UNDEDICATED-REUSE TIER (sp-wfgsa): the reclaimer's find + re-dedicate + home ---
+
+// fakeReclaimShipRepo serves a fixed fleet from FindAllByPlayer and records every AssignFleet call —
+// the single write path a reclaim re-dedicates through (RULINGS #3). assignErr models a re-dedicate
+// failure; findErr a fleet-read failure.
+type fakeReclaimShipRepo struct {
+	navigation.ShipRepository
+	all       []*navigation.Ship
+	findErr   error
+	assignErr error
+	assigned  []assignFleetCall
+}
+
+type assignFleetCall struct {
+	symbol string
+	fleet  string
+}
+
+func (r *fakeReclaimShipRepo) FindAllByPlayer(ctx context.Context, playerID shared.PlayerID) ([]*navigation.Ship, error) {
+	return r.all, r.findErr
+}
+
+func (r *fakeReclaimShipRepo) AssignFleet(ctx context.Context, shipSymbol, fleet string, playerID shared.PlayerID) error {
+	if r.assignErr != nil {
+		return r.assignErr
+	}
+	r.assigned = append(r.assigned, assignFleetCall{symbol: shipSymbol, fleet: fleet})
+	return nil
+}
+
+// reclaimHull builds an owned hull across the four axes the reuse predicate reads: cargo capacity
+// (0 = a probe / cargo-incapable), dedication tag ("" = undedicated), and nav status (in-transit =
+// mid-task). A fresh hull is idle (no assignment) unless the caller assigns it.
+func reclaimHull(t *testing.T, symbol string, cargoCapacity int, dedicatedFleet string, navStatus navigation.NavStatus) *navigation.Ship {
+	t.Helper()
+	cargo, err := shared.NewCargo(cargoCapacity, 0, nil)
+	require.NoError(t, err)
+	fuel, err := shared.NewFuel(100, 100)
+	require.NoError(t, err)
+	loc, err := shared.NewWaypoint("X1-SC-A1", 0, 0)
+	require.NoError(t, err)
+	ship, err := navigation.NewShip(
+		symbol, shared.MustNewPlayerID(1), loc, fuel, 100, cargoCapacity, cargo, 30,
+		"FRAME_LIGHT_FREIGHTER", "HAULER", nil, navStatus,
+	)
+	require.NoError(t, err)
+	if dedicatedFleet != "" {
+		ship.SetDedicatedFleet(dedicatedFleet)
+	}
+	return ship
+}
+
+// THE REUSE-ELIGIBILITY PREDICATE (the load-bearing safety guard): a hull is reclaimable ONLY when it
+// is idle, NOT in transit, UNDEDICATED (RULINGS #7 — never poach a dedicated hull of ANY fleet), and
+// cargo-capable (a probe / 0-cargo hull re-dedicated to contract can't haul).
+func TestIsReclaimable_ClassifiesReuseEligibility(t *testing.T) {
+	assigned := reclaimHull(t, "BUSY", 40, "", navigation.NavStatusInOrbit)
+	require.NoError(t, assigned.AssignToContainer("worker-1", shared.NewRealClock())) // mid-task under a coordinator
+
+	cases := []struct {
+		name string
+		ship *navigation.Ship
+		want bool
+	}{
+		{"idle undedicated cargo hull → reclaimable", reclaimHull(t, "FREE", 40, "", navigation.NavStatusInOrbit), true},
+		{"dedicated to trade → never poached (RULINGS #7)", reclaimHull(t, "TRADE", 40, "trade", navigation.NavStatusInOrbit), false},
+		{"dedicated to manufacturing → never poached", reclaimHull(t, "MFG", 40, "manufacturing", navigation.NavStatusInOrbit), false},
+		{"already contract-dedicated → not undedicated", reclaimHull(t, "CONTRACT", 40, "contract", navigation.NavStatusInOrbit), false},
+		{"undedicated probe / 0-cargo → cargo-incapable", reclaimHull(t, "PROBE", 0, "", navigation.NavStatusInOrbit), false},
+		{"undedicated cargo hull in transit → mid-task", reclaimHull(t, "TRANSIT", 40, "", navigation.NavStatusInTransit), false},
+		{"undedicated cargo hull assigned to a container → mid-task", assigned, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isReclaimable(tc.ship); got != tc.want {
+				t.Fatalf("isReclaimable(%s) = %v, want %v", tc.ship.ShipSymbol(), got, tc.want)
+			}
+		})
+	}
+}
+
+// FindReclaimable selects the FIRST free idle cargo hull, skipping dedicated + probe hulls, and returns
+// ok=false (NEVER poaches) when the fleet holds only dedicated idle hulls or is empty.
+func TestFindReclaimable_SelectsOnlyFreeIdleCargoHulls(t *testing.T) {
+	cases := []struct {
+		name       string
+		fleet      []*navigation.Ship
+		wantOK     bool
+		wantSymbol string
+	}{
+		{"skips dedicated + probe, returns the free cargo hull", []*navigation.Ship{
+			reclaimHull(t, "TRADE-IDLE", 40, "trade", navigation.NavStatusInOrbit), // dedicated first → must be skipped
+			reclaimHull(t, "PROBE", 0, "", navigation.NavStatusInOrbit),            // 0-cargo → excluded
+			reclaimHull(t, "FREE-HAULER", 40, "", navigation.NavStatusInOrbit),     // ← the only eligible hull
+		}, true, "FREE-HAULER"},
+		{"only dedicated idle hulls → never poached (RULINGS #7)", []*navigation.Ship{
+			reclaimHull(t, "TRADE-IDLE", 40, "trade", navigation.NavStatusInOrbit),
+			reclaimHull(t, "MFG-IDLE", 40, "manufacturing", navigation.NavStatusInOrbit),
+		}, false, ""},
+		{"empty fleet → nothing to reuse", nil, false, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &contractScalerReclaimer{shipRepo: &fakeReclaimShipRepo{all: tc.fleet}}
+			symbol, ok, err := r.FindReclaimable(context.Background(), 1)
+			if err != nil {
+				t.Fatalf("FindReclaimable: %v", err)
+			}
+			if ok != tc.wantOK || symbol != tc.wantSymbol {
+				t.Fatalf("FindReclaimable = (%q, %v), want (%q, %v)", symbol, ok, tc.wantSymbol, tc.wantOK)
+			}
+		})
+	}
+}
+
+// Fail-closed: a fleet-read error surfaces as an error (the coordinator falls through to a buy) — a read
+// failure must NEVER be silently read as "no reusable hull" and must never risk a wrong reclaim.
+func TestFindReclaimable_FleetReadErrorFailsClosed(t *testing.T) {
+	r := &contractScalerReclaimer{shipRepo: &fakeReclaimShipRepo{findErr: errors.New("db down")}}
+	if _, ok, err := r.FindReclaimable(context.Background(), 1); err == nil || ok {
+		t.Fatalf("FindReclaimable = (ok=%v, err=%v), want (false, error) — a read failure fails closed", ok, err)
+	}
+}
+
+// Reclaim RE-DEDICATES the hull to the exclusive "contract" fleet via the single write path (AssignFleet)
+// and homes it demand-ranked exactly like a bought hull (one HomeShipCommand carrying the spread set +
+// per-park demand weights). NO purchase — the hull already exists.
+func TestReclaim_ReDedicatesToContractAndHomesDemandRanked(t *testing.T) {
+	repo := &fakeReclaimShipRepo{all: []*navigation.Ship{reclaimHull(t, "FREE-HAULER", 40, "", navigation.NavStatusInOrbit)}}
+	sender := &recordingSender{}
+	r := &contractScalerReclaimer{shipRepo: repo, med: sender}
+
+	err := r.Reclaim(context.Background(), contractScalerCmd.ReclaimOrder{
+		PlayerID:        1,
+		ShipSymbol:      "FREE-HAULER",
+		StandbyStations: []string{"P1", "P2", "P3"},
+		StandbyDemand:   map[string]float64{"P1": 3, "P2": 9, "P3": 5},
+	})
+	if err != nil {
+		t.Fatalf("Reclaim: %v", err)
+	}
+
+	// Single-writer re-dedication to the exclusive "contract" fleet (RULINGS #3/#7).
+	if len(repo.assigned) != 1 || repo.assigned[0].symbol != "FREE-HAULER" || repo.assigned[0].fleet != "contract" {
+		t.Fatalf("AssignFleet calls = %+v, want one (FREE-HAULER → \"contract\")", repo.assigned)
+	}
+
+	// Homed demand-ranked, exactly like a bought hull: one HomeShipCommand carrying the spread + demand.
+	if len(sender.sent) != 1 {
+		t.Fatalf("dispatched %d commands, want exactly 1 (the HomeShipCommand)", len(sender.sent))
+	}
+	home, ok := sender.sent[0].(*contractCmd.HomeShipCommand)
+	if !ok {
+		t.Fatalf("dispatched %T, want *HomeShipCommand", sender.sent[0])
+	}
+	if home.ShipSymbol != "FREE-HAULER" {
+		t.Fatalf("homed %q, want the reclaimed FREE-HAULER", home.ShipSymbol)
+	}
+	if len(home.StandbyStations) != 3 || home.StandbyDemand["P2"] != 9 {
+		t.Fatalf("HomeShipCommand missing the spread set + park demand weights: stations=%v demand=%v", home.StandbyStations, home.StandbyDemand)
+	}
+}
+
+// A failed re-dedicate leaves the hull UNTAKEN: Reclaim returns the error and dispatches NO homing (a
+// non-dedicated hull must never be homed as contract) so the coordinator safely buys instead.
+func TestReclaim_AssignFleetFailurePropagatesAndDoesNotHome(t *testing.T) {
+	repo := &fakeReclaimShipRepo{assignErr: errors.New("CAS conflict")}
+	sender := &recordingSender{}
+	r := &contractScalerReclaimer{shipRepo: repo, med: sender}
+
+	err := r.Reclaim(context.Background(), contractScalerCmd.ReclaimOrder{
+		PlayerID:        1,
+		ShipSymbol:      "FREE-HAULER",
+		StandbyStations: []string{"P1", "P2", "P3"},
+	})
+	if err == nil {
+		t.Fatal("a failed re-dedicate must propagate the error (hull NOT taken → the ramp buys)")
+	}
+	if len(sender.sent) != 0 {
+		t.Fatalf("a failed re-dedicate must NOT home the hull, got %d dispatched", len(sender.sent))
 	}
 }
