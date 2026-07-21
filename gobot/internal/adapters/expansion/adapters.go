@@ -362,6 +362,85 @@ func (p *ProbePurchaser) probePriceAt(ctx context.Context, playerID shared.Playe
 	return listing.PurchasePrice, true
 }
 
+// ---- ProbeBuyerPositioner (sp-255rz: break the "probe unpriceable" stall) --
+
+// ProbeBuyerPositioner breaks the "probe unpriceable" stall (sp-255rz). When the frontier
+// coordinator's QuoteProbe fails closed because no idle undedicated hull sits at a probe-selling
+// shipyard and no priced yard is reachable from the deep target, fleet growth halts forever once the
+// fleet drifts from yards. This relays an eligible hull to the nearest reachable SCANNED probe-yard
+// from the HULL's OWN system, so the NEXT tick's presence-gated live price reads and the in-place buy
+// clears. Reachability is anchored where the hull IS (not at the deep target the proximal path failed
+// on) — the load-bearing difference from the buy path. It reuses the SAME collaborators as the
+// ProbePurchaser (the ReachableYardFinder + ship repo + navigation mediator) — no new subsystem. It
+// mirrors the sp-hh0h home-shipyard positioner: NEVER buys, NEVER weakens a money guard (RULINGS #4),
+// and NEVER poaches a dedicated or in-transit hull (RULINGS #7). Fail-safe + idempotent: a nil finder,
+// a fleet read miss, no reachable yard, a hull already at the yard, or an in-flight relay all no-op
+// (dispatched=false, no error) — only an unroutable relay surfaces an error.
+type ProbeBuyerPositioner struct {
+	mediator   common.Mediator
+	shipRepo   navigation.ShipRepository
+	yardFinder probeYardFinder
+}
+
+// NewProbeBuyerPositioner wires the stall breaker over the same seams as the purchaser. yardFinder is
+// optional (nil disables positioning — the coordinator stays fail-closed byte-identical).
+func NewProbeBuyerPositioner(mediator common.Mediator, shipRepo navigation.ShipRepository, yardFinder probeYardFinder) *ProbeBuyerPositioner {
+	return &ProbeBuyerPositioner{mediator: mediator, shipRepo: shipRepo, yardFinder: yardFinder}
+}
+
+// PositionProbeBuyer relays an eligible idle undedicated hull to the nearest reachable probe-yard from
+// its own system. dispatched=false (no relay) whenever the fix cannot safely act.
+func (p *ProbeBuyerPositioner) PositionProbeBuyer(ctx context.Context, playerID shared.PlayerID) (bool, error) {
+	if p.yardFinder == nil {
+		return false, nil // no finder wired → cannot locate a probe-yard (fail-safe no-op)
+	}
+	ships, err := p.shipRepo.FindIdleByPlayer(ctx, playerID)
+	if err != nil {
+		return false, nil // a fleet read miss never crashes the cycle — retry next tick
+	}
+	// Eligible buyer = idle, NOT dedicated (RULINGS #7 — never poach a contract hauler / mfg worker),
+	// NOT in transit, and located. An undedicated hull already IN TRANSIT is a prior positioning relay
+	// under way: bail so we never send a second hull (bounds in-flight to one, idempotent — RULINGS #2).
+	eligible := make([]*navigation.Ship, 0, len(ships))
+	for _, ship := range ships {
+		if ship.DedicatedFleet() != "" {
+			continue // a dedicated hull is never disturbed, even when momentarily idle
+		}
+		if ship.IsInTransit() {
+			return false, nil // an undedicated hull is already relaying — wait, do not double-send
+		}
+		if ship.CurrentLocation() == nil {
+			continue
+		}
+		eligible = append(eligible, ship)
+	}
+	if len(eligible) == 0 {
+		return false, nil // no free undedicated hull to position this cycle (fail-safe no-op)
+	}
+	// Relay the first eligible hull that can reach a scanned probe-yard from its OWN system. Per-hull
+	// (not a multi-source union) keeps the yard reachable from the hull actually sent.
+	for _, ship := range eligible {
+		loc := ship.CurrentLocation()
+		candidates, ferr := p.yardFinder.NearestYardsSelling(ctx, playerID.Value(), []string{probeShipType}, []string{loc.SystemSymbol})
+		if ferr != nil || len(candidates) == 0 {
+			continue // no reachable priced probe-yard from this hull's system — try the next hull
+		}
+		targetYard := candidates[0].WaypointSymbol
+		if loc.Symbol == targetYard {
+			return false, nil // a hull already sits at the yard — the live price reads next tick, no relay
+		}
+		if _, nerr := p.mediator.Send(ctx, &shipNav.NavigateRouteCommand{
+			ShipSymbol:  ship.ShipSymbol(),
+			Destination: targetYard,
+			PlayerID:    playerID,
+		}); nerr != nil {
+			return false, fmt.Errorf("failed to position probe buyer %s at yard %s: %w", ship.ShipSymbol(), targetYard, nerr)
+		}
+		return true, nil
+	}
+	return false, nil // no eligible hull can reach a probe-selling yard this cycle (fail-safe no-op)
+}
+
 // ---- ExpansionScanner ------------------------------------------------------
 
 // GateGraph is the slice of gategraph.Service the scanner uses. Adjacency is the whole

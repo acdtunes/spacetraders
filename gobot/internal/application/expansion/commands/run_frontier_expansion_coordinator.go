@@ -234,6 +234,22 @@ type ProbePurchaser interface {
 	BuyProbe(ctx context.Context, playerID shared.PlayerID, maxBudget int, target probebuy.ProbeTarget) (price int, shipSymbol string, err error)
 }
 
+// ProbeBuyerPositioner breaks the "probe unpriceable" stall (sp-255rz). QuoteProbe fails closed when
+// no idle undedicated hull sits at a probe-selling shipyard AND no priced yard is reachable from the
+// deep target — so the coordinator can never price a probe and fleet growth halts forever once the
+// fleet drifts from yards. On that stall this positioner LOCATES the nearest reachable scanned
+// probe-yard from an eligible hull's OWN system and RELAYS that hull there, so the NEXT tick's
+// presence-gated live PriceCheck reads and the in-place buy clears. It mirrors the sp-hh0h home-yard
+// ShipyardScanner idiom for the frontier. It NEVER buys and NEVER weakens a money guard (RULINGS #4)
+// — positioning only makes the price READABLE; if pricing still fails (e.g. over the ceiling) the buy
+// stays fail-closed. It NEVER poaches a dedicated hull (RULINGS #7 — only an idle, undedicated,
+// non-transit hull is eligible). Idempotent + best-effort (RULINGS #2): dispatched=false when a hull
+// is already at / en route to a yard, no reachable probe-yard is known, or no eligible hull is free.
+// Unset (nil) → the coordinator stays fail-closed byte-identical to pre-sp-255rz.
+type ProbeBuyerPositioner interface {
+	PositionProbeBuyer(ctx context.Context, playerID shared.PlayerID) (dispatched bool, err error)
+}
+
 // ExpansionCandidate is one gate-reachable system the scanner surfaces for the queue:
 // its hop distance from the nearest anchor (home/trade system), its count of known
 // marketplace waypoints, and whether it is charted at all. A virgin candidate
@@ -426,6 +442,12 @@ type RunFrontierExpansionCoordinatorHandler struct {
 	purchaser ProbePurchaser
 	scanner   ExpansionScanner
 
+	// probePositioner breaks the "probe unpriceable" stall (sp-255rz): when QuoteProbe fails
+	// closed it relays an eligible idle undedicated hull to a reachable probe-yard so the next
+	// tick's live price reads. Optional-injection; nil keeps the pre-sp-255rz fail-closed behavior
+	// byte-identical (never buys, never poaches — RULINGS #4/#7).
+	probePositioner ProbeBuyerPositioner
+
 	// darkScanner (sp-jide) enumerates the FULL charted-but-unscanned MARKET backlog the scan_only
 	// mode sweeps — every system with MARKETPLACE waypoints and zero player market_data, unbounded
 	// by gate hops (unlike scanner's expansion-frontier BFS). Optional-injection via
@@ -506,6 +528,14 @@ func (h *RunFrontierExpansionCoordinatorHandler) SetTreasuryReader(t TreasuryRea
 // machinery. Leaving it unset keeps the PURCHASE path fail-closed (nothing to buy through).
 func (h *RunFrontierExpansionCoordinatorHandler) SetProbePurchaser(p ProbePurchaser) {
 	h.purchaser = p
+}
+
+// SetProbeBuyerPositioner wires the "probe unpriceable" stall breaker (sp-255rz): on a fail-closed
+// quote it positions an eligible idle undedicated hull at a reachable probe-yard so pricing resumes
+// next tick. Leaving it unset keeps the coordinator fail-closed byte-identical (never poaches,
+// never buys — RULINGS #4/#7).
+func (h *RunFrontierExpansionCoordinatorHandler) SetProbeBuyerPositioner(p ProbeBuyerPositioner) {
+	h.probePositioner = p
 }
 
 // SetExpansionScanner wires the frontier enumerator. Leaving it unset disables the
@@ -1259,7 +1289,12 @@ func (h *RunFrontierExpansionCoordinatorHandler) decideAndMaybeBuy(
 	}
 	price, yard, err := h.purchaser.QuoteProbe(ctx, cmd.PlayerID, target)
 	if err != nil {
-		return fmt.Sprintf("no purchase: probe unpriceable (fail-closed): %v", err)
+		// STALL BREAKER (sp-255rz): the quote failed closed because no hull sits at a probe-selling
+		// yard and none is reachable-priced from the deep target. Position an eligible idle
+		// undedicated hull at a reachable probe-yard so NEXT tick's live PriceCheck reads (mirrors
+		// the sp-hh0h home-yard idiom). It never buys, never poaches (RULINGS #7), never weakens the
+		// guard (RULINGS #4) — pricing still gates the buy once readable.
+		return h.positionProbeBuyerOnStall(ctx, cmd, err)
 	}
 
 	// Per-unit price ceiling (sp-3u5d): the BACKSTOP for the deepest-frontier tail whose ONLY reachable
@@ -1326,6 +1361,38 @@ func (h *RunFrontierExpansionCoordinatorHandler) decideAndMaybeBuy(
 		"open_slots":  openSlots,
 	})
 	return fmt.Sprintf("bought probe %s for %d at %s", sym, paid, yard)
+}
+
+// positionProbeBuyerOnStall runs the sp-255rz stall breaker when QuoteProbe fails closed: position an
+// eligible idle undedicated hull at a reachable probe-selling yard so NEXT tick's presence-gated live
+// price reads and the in-place buy clears. Best-effort + nil-safe: an UNSET positioner, a DRY-RUN, a
+// positioning error, or a graceful no-op (no reachable yard / no eligible hull) all just report the
+// unchanged stall this cycle — byte-identical to pre-sp-255rz when unwired. It NEVER buys, NEVER
+// poaches a dedicated hull (RULINGS #7), and NEVER weakens the price guard (RULINGS #4): a positioned
+// hull only makes the price READABLE; the buy still runs every guard next tick.
+func (h *RunFrontierExpansionCoordinatorHandler) positionProbeBuyerOnStall(ctx context.Context, cmd *RunFrontierExpansionCoordinatorCommand, quoteErr error) string {
+	stall := fmt.Sprintf("no purchase: probe unpriceable (fail-closed): %v", quoteErr)
+	// Positioning moves a real hull, so it is suppressed under dry-run exactly like the buy; an unset
+	// positioner leaves the pre-sp-255rz behavior untouched.
+	if h.probePositioner == nil || cmd.DryRun {
+		return stall
+	}
+	logger := common.LoggerFromContext(ctx)
+	dispatched, err := h.probePositioner.PositionProbeBuyer(ctx, cmd.PlayerID)
+	if err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Frontier probe-buyer positioning failed (stall persists): %v", err), map[string]interface{}{
+			"action": "frontier_probe_position_failed",
+			"error":  err.Error(),
+		})
+		return stall
+	}
+	if !dispatched {
+		return stall // no reachable yard / no eligible undedicated hull this cycle — retry next tick
+	}
+	logger.Log("INFO", "Frontier probe unpriceable — positioned an idle undedicated hull at a probe-selling yard; the live price reads next tick (sp-255rz stall breaker)", map[string]interface{}{
+		"action": "frontier_probe_buyer_positioned",
+	})
+	return "no purchase: probe unpriceable — positioned a buyer hull at a probe-selling yard, pricing resumes next tick (sp-255rz)"
 }
 
 // maybeReuseExistingProbe runs the reuse-before-buy relay (sp-6vep) for targetSystem. It returns

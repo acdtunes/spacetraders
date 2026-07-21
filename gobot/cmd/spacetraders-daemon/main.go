@@ -1121,6 +1121,11 @@ func run(cfg *config.Config) error {
 	// sizer below (same purchaser, same fail-open selection).
 	probeYardFinder := shipyardQuery.NewReachableYardFinder(shipyardInventoryRepo, gateGraphService)
 	frontierExpansionHandler.SetProbePurchaser(expansionAdapters.NewProbePurchaser(med, shipRepo, probeYardFinder))
+	// sp-255rz stall breaker: on a fail-closed probe quote, relay an idle undedicated hull to a
+	// reachable probe-yard so the next tick's live price reads. Reuses the SAME purchaser seams
+	// (mediator + ship repo + yard finder); never buys, never poaches (RULINGS #4/#7). Active on
+	// deploy as a liveness/safety restoration (mirrors the sp-hh0h home-yard positioner).
+	frontierExpansionHandler.SetProbeBuyerPositioner(expansionAdapters.NewProbeBuyerPositioner(med, shipRepo, probeYardFinder))
 	// The expansion queue's frontier enumerator: one BFS over the SAME persisted gate graph
 	// the trade circuit and scout relays share, annotated with market-data counts and a
 	// swept/never-scanned flag from the waypoint catalog (sp-gb7h — so a genuinely-barren
