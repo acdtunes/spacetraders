@@ -35,6 +35,10 @@ This file exists so that class of miss cannot recur.)
 6. **Fleet purchases follow measured demand + the 25% rule.** Never buy hulls speculatively:
    a purchase requires measured lane/contract demand AND price ≤ ~25% of treasury.
    (Origin: the over-build that starved contracts; captain ruling st-wisp-93mg.)
+   **Exception (Admiral 2026-07-21):** the dedicated contract scaler (epic sp-9le3x) is
+   NOT bound by the 25% rule — it ramps a fixed, isolated contract fleet to a bounded ceiling
+   (contract_fleet_max_hulls) one hull at a time, reuse-before-buy, guarded instead by the
+   immutable 200k contract cushion. The 25% rule still governs all other/speculative growth.
 
 7. **The ownership model is law.** Pinned/dedicated hulls are never poached (l7h2 P1-P2.5,
    atomic ClaimShip); the command frigate hauls only as last resort (sp-4a4e). Do not code
