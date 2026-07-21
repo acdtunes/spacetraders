@@ -62,6 +62,7 @@ func TestBootstrapTunableDefaults_MirrorsCoordinatorConsts(t *testing.T) {
 		"autosizer_early_scaling":          defaultAutosizerEarlyScaling,         // 0 (not-forced) — sp-sjvv positive force-on knob (feature is DEFAULT-ON via config)
 		"scaled_gate_entry_disabled":       defaultScaledGateEntryDisabled,       // 0 (not-disabled) — sp-5nd2 live kill-switch
 		"autosizer_early_scaling_disabled": defaultAutosizerEarlyScalingDisabled, // 0 (not-disabled) — sp-5nd2 live kill-switch
+		"contract_scaler_early_scaling":    defaultContractScalerEarlyScaling,    // 0 (off) — epic sp-9le3x C2b DEFAULT-OFF contract-scaler arm
 		"gate_surplus_hardening":           defaultGateSurplusHardening,          // 0 (off) — sp-gm7r scaled-gate hardening master flag
 		"gate_hauler_floor":                defaultGateHaulerFloor,               // 4 — sp-gm7r raised armed-GATE hauler floor
 		"gate_surplus_floor":               int(defaultGateSurplusFloor),         // 500000 — sp-gm7r armed-GATE treasury surplus war chest

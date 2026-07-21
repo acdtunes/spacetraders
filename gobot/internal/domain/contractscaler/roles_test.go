@@ -2,8 +2,17 @@ package contractscaler
 
 import (
 	"reflect"
+	"sort"
 	"testing"
 )
+
+// sortedCopy returns a symbol-sorted copy so role-order assertions do not depend
+// on input order — a test-only helper (moved out of production roles.go in C2b).
+func sortedCopy(in []string) []string {
+	out := append([]string(nil), in...)
+	sort.Strings(out)
+	return out
+}
 
 // A home-system fixture with the invariant band geometry (star at origin): a
 // central cluster of contract sinks (importers), a far ring of raw exporters,

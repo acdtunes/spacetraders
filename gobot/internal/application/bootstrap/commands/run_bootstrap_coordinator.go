@@ -143,6 +143,15 @@ const (
 	defaultScaledGateEntryDisabled       = 0
 	defaultAutosizerEarlyScalingDisabled = 0
 
+	// defaultContractScalerEarlyScaling is the DEFAULT-OFF arm for the dedicated contract auto-scaler:
+	// 0 = OFF, so a bare deploy never launches the scaler (byte-identical). UNLIKE the autosizer arm
+	// (default-ON), this is a positive tunable-only flag armed after validation
+	// (`tune --operation bootstrap contract_scaler_early_scaling 1`). Armed, bootstrap launches the
+	// standing scaler EARLY during the DATA/INCOME window so it ramps the exclusive contract fleet behind
+	// the 200000 cushion; it is the eventual REPLACEMENT for the reconciler+autosizer contract-delivery
+	// path, so the operator arms one or the other, never both.
+	defaultContractScalerEarlyScaling = 0
+
 	// Scaled-gate hardening — the DEFAULT-OFF master flag (0 = byte-identical). It EXTENDS the scaled
 	// GATE-entry gate with a three-part cold-start-death-spiral cure: (1) GATE entry also requires a RAISED
 	// hauler floor, a SUSTAINED $/hr, AND a treasury surplus war chest; (2) GATE keeps a higher
@@ -362,6 +371,11 @@ type GateWorkerAcquirer interface {
 type HandoffLauncher interface {
 	LaunchAutosizer(ctx context.Context, playerID int, agentSymbol string) error
 	LaunchStandingCoordinators(ctx context.Context, playerID int, agentSymbol string) error
+	// LaunchContractScaler launches the standing dedicated contract auto-scaler during the cold-start
+	// scaling window when contract_scaler_early_scaling is armed. Idempotent (skips when one is already
+	// RUNNING/PENDING), so a re-run never double-launches. Default-off: nothing calls it until the flag
+	// is armed, so a bare deploy never launches the scaler (byte-identical).
+	LaunchContractScaler(ctx context.Context, playerID int, agentSymbol string) error
 }
 
 // RunBootstrapCoordinatorCommand launches the standing bootstrap coordinator for a player.

@@ -10,6 +10,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	autooutfitCmd "github.com/andrescamacho/spacetraders-go/internal/application/autooutfit"
 	bootstrapCmd "github.com/andrescamacho/spacetraders-go/internal/application/bootstrap/commands"
+	contractScalerCmd "github.com/andrescamacho/spacetraders-go/internal/application/contractscaler/commands"
 	expansionCmd "github.com/andrescamacho/spacetraders-go/internal/application/expansion/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
@@ -70,6 +71,7 @@ var tuneOperationCoordinatorTypes = map[string]string{
 	"autooutfit":       string(container.ContainerTypeAutoOutfitCoordinator),
 	"shipyardbackfill": string(container.ContainerTypeShipyardBackfillCoordinator),
 	"bootstrap":        string(container.ContainerTypeBootstrapCoordinator),
+	"contractscaler":   string(container.ContainerTypeContractScaler),
 }
 
 func tunableKnobsByContainerType() map[string]map[string]TuneBound {
@@ -80,7 +82,16 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 	autoOutfit := autooutfitCmd.AutoOutfitTunableDefaults()
 	shipyardBackfill := scoutingCmd.ShipyardBackfillTunableDefaults()
 	bootstrap := bootstrapCmd.BootstrapTunableDefaults()
+	contractScaler := contractScalerCmd.ContractScalerTunableDefaults()
 	return map[string]map[string]TuneBound{
+		string(container.ContainerTypeContractScaler): {
+			// The single operator lever on the dedicated contract auto-scaler: the delivery-hull ceiling,
+			// hot-reloaded each tick (Pattern-C). Keep LOW (default 2) during a gate sprint — contracts are
+			// the funding floor, the gate needs the treasury — and raise to 10-12 post-gate for full
+			// contract throughput (delivery hulls saturate ~7-8 = number of distinct central waypoints). Min
+			// 0 reverts to the default; the sole money guard (the 200000 cushion) is a const, not tunable.
+			"contract_fleet_max_hulls": {Type: "int", Min: 0, Max: 16, Default: contractScaler["contract_fleet_max_hulls"], Unit: "hulls", Description: "the exclusive contract fleet's live-tunable ceiling (delivery hulls; ramps behind the 200000 cushion). Low (2) during the gate sprint, 10-12 post-gate; saturates ~7-8"},
+		},
 		string(container.ContainerTypeAutoOutfitCoordinator): {
 			"min_telemetry_samples":     {Type: "int", Min: 1, Max: 1000, Default: autoOutfit["min_telemetry_samples"], Unit: "legs", Description: "fail-closed thin-telemetry floor — a hull with fewer measured legs is never upgraded"},
 			"price_ceiling":             {Type: "int", Min: 0, Max: 5_000_000, Default: autoOutfit["price_ceiling"], Unit: "credits", Description: "max module price the coordinator will pay per install"},
@@ -183,6 +194,8 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 			"gate_min_haulers":                 {Type: "int", Min: 1, Max: 50, Default: bootstrap["gate_min_haulers"], Unit: "hulls", Description: "sp-fp3y armed GATE-entry hauler floor: contract-dedicated haulers required to enter GATE, proving a multi-hull op (the ktio deadlock entered GATE with ZERO). Default 2, below hauler_target so few-hub universes still gate. Inert while the gate is disabled"},
 			"autosizer_early_scaling":          {Type: "int", Min: 0, Max: 1, Default: bootstrap["autosizer_early_scaling"], Unit: "flag", Description: "sp-sjvv FORCE-ON override (feature is DEFAULT-ON via config.yaml): 1 ⇒ force the early autosizer launch + single-buyer arbitration armed even if config disabled it; 0 (default) ⇒ defer to the config default. To turn it OFF live, use autosizer_early_scaling_disabled"},
 			"autosizer_early_scaling_disabled": {Type: "int", Min: 0, Max: 1, Default: bootstrap["autosizer_early_scaling_disabled"], Unit: "flag", Description: "sp-5nd2 live kill-switch: 1 ⇒ stand DOWN the (default-on) early autosizer launch + single-buyer arbitration next tick with no restart — the autosizer stays off and bootstrap buys its own haulers; 0 (default) ⇒ armed. Wins over autosizer_early_scaling"},
+			// DEFAULT-OFF contract-scaler arm — the shipwright's single arm lever, live-tunable.
+			"contract_scaler_early_scaling": {Type: "int", Min: 0, Max: 1, Default: bootstrap["contract_scaler_early_scaling"], Unit: "flag", Description: "1 ⇒ bootstrap launches the standing dedicated contract auto-scaler EARLY (DATA/INCOME) so it ramps the exclusive contract fleet behind the 200000 cushion; 0 (default) ⇒ OFF, byte-identical. Armed by the shipwright after validation"},
 			// Scaled-gate hardening — DEFAULT-OFF (0). Extends the scaled GATE gate so a cold start never
 			// LATCHES GATE on a 2-hauler income blip with no war chest and then cannibalizes the contract op
 			// below the depot-staging floor (the death spiral). Gate entry becomes STRICTER (RULINGS #4); the

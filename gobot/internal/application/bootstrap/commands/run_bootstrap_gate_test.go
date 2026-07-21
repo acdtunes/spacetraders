@@ -248,10 +248,12 @@ func (f *fakeGateAcquirer) BuyForConstruction(ctx context.Context, playerID int,
 }
 
 type fakeHandoff struct {
-	autosizer int
-	standing  int
-	autoErr   error
-	standErr  error
+	autosizer      int
+	standing       int
+	contractScaler int
+	autoErr        error
+	standErr       error
+	scalerErr      error
 }
 
 func (f *fakeHandoff) LaunchAutosizer(ctx context.Context, playerID int, agentSymbol string) error {
@@ -262,6 +264,11 @@ func (f *fakeHandoff) LaunchAutosizer(ctx context.Context, playerID int, agentSy
 func (f *fakeHandoff) LaunchStandingCoordinators(ctx context.Context, playerID int, agentSymbol string) error {
 	f.standing++
 	return f.standErr
+}
+
+func (f *fakeHandoff) LaunchContractScaler(ctx context.Context, playerID int, agentSymbol string) error {
+	f.contractScaler++
+	return f.scalerErr
 }
 
 // gateHandler wires a handler with the given GATE collaborators plus the always-needed refresher/observer

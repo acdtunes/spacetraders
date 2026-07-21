@@ -74,11 +74,3 @@ func ResolveRoles(markets []WaypointMarket) EraRoles {
 	sort.Strings(roles.FarSources)
 	return roles
 }
-
-// sortedCopy returns a symbol-sorted copy — a test helper kept in the package so
-// role-order assertions do not depend on input order.
-func sortedCopy(in []string) []string {
-	out := append([]string(nil), in...)
-	sort.Strings(out)
-	return out
-}

@@ -353,6 +353,11 @@ func autosizerDedicatedFleet(class fleetCmd.HullClass) string {
 		// sp-a3yn dedicate-at-purchase: tag the bought explorer to the "explorer" fleet in the same
 		// breath so no coordinator poaches it before the frontier dispatch loop warps it off-gate.
 		return "explorer"
+	case fleetCmd.HullClassContractDelivery:
+		// The dedicated contract auto-scaler drives this class through BuyAndDedicate, so a
+		// contract-delivery hull is stamped EXCLUSIVE to the "contract" fleet at purchase — killing the
+		// churn class the shared reuse pool created. Safe to tag: the class is opt-in default-off.
+		return "contract"
 	default:
 		return ""
 	}

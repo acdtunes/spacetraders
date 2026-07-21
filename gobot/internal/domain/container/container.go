@@ -91,6 +91,14 @@ const (
 	// the full money-guard stack. Like the trade-fleet/siting coordinators it is NOT a
 	// CoordinatorOwnsIterations type.
 	ContainerTypeFleetAutosizer ContainerType = "FLEET_AUTOSIZER_COORDINATOR"
+	// ContainerTypeContractScaler is the standing dedicated contract auto-scaler: a per-player
+	// coordinator that loops forever inside one Handle() ramping a FIXED, EXCLUSIVE contract fleet to a
+	// live-tunable ceiling behind ONE money guard (the 200000-credit cushion). It resolves this era's
+	// waypoint roles ONCE at arm (a lookup, not a solve) and drives the kept autosizer buy primitive
+	// with the fixed plan. Like the siting/autosizer coordinators it is NOT a CoordinatorOwnsIterations
+	// type. Its launch is ARMED (default-off) at the bootstrap early-scaling seam, never boot-standing;
+	// once launched it survives restarts via the persisted-container recovery idiom.
+	ContainerTypeContractScaler ContainerType = "CONTRACT_SCALER_COORDINATOR"
 	// ContainerTypeBootstrapCoordinator is the standing captain bootstrap coordinator: a
 	// per-player reconciler that loops forever inside one Handle() driving a cold agent through
 	// the cold-start arc to the jump gate (DATA→INCOME→GATE). Like the siting/autosizer

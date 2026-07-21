@@ -165,6 +165,10 @@ type Observation struct {
 	// AutosizerRunning reports whether the standing fleet-autosizer is already running — the COMPLETE
 	// launch-once hand-off guard (a restart post-COMPLETE re-observes it running ⇒ no re-launch, no exit loop).
 	AutosizerRunning bool
+	// ContractScalerRunning reports whether the standing dedicated contract auto-scaler is already
+	// running — the idempotency guard for the default-off early-launch arm (armed once, then RUNS
+	// FOREVER; a re-observe running ⇒ no re-launch). Consumed only when the arm is set.
+	ContractScalerRunning bool
 
 	// Readable reports whether the observer gathered all its inputs. false ⇒ fail-closed (no action
 	// this tick), with Reason naming what could not be read.

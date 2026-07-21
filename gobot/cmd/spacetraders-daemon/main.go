@@ -23,6 +23,7 @@ import (
 	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
 	contractQuery "github.com/andrescamacho/spacetraders-go/internal/application/contract/queries"
 	contractServices "github.com/andrescamacho/spacetraders-go/internal/application/contract/services"
+	contractScalerCmd "github.com/andrescamacho/spacetraders-go/internal/application/contractscaler/commands"
 	expansionCmd "github.com/andrescamacho/spacetraders-go/internal/application/expansion/commands"
 	fleetCmd "github.com/andrescamacho/spacetraders-go/internal/application/fleet/commands"
 	gasCmd "github.com/andrescamacho/spacetraders-go/internal/application/gas/commands"
@@ -893,6 +894,22 @@ func run(cfg *config.Config) error {
 	fleetAutosizerHandler.AddDemandProvider(contractDeliveryDemand) // st-x00: contract-delivery capital demand → sp-1txd buy path (dormant until armed)
 	if err := mediator.RegisterHandler[*fleetCmd.RunFleetAutosizerCoordinatorCommand](med, fleetAutosizerHandler); err != nil {
 		return fmt.Errorf("failed to register FleetAutosizerCoordinator handler: %w", err)
+	}
+
+	// Dedicated contract auto-scaler: the standing coordinator that ramps a FIXED, EXCLUSIVE contract
+	// fleet to a live-tunable ceiling behind the 200000-credit cushion. Its concrete ports — the NOVEL
+	// RoleResolver (home-system geometry + market roles), the treasury/yard-price REUSE of the autosizer
+	// idioms, the "contract"-fleet counter, and the buy+dedicate+home Purchaser (the kept autosizer buy
+	// primitive + the demand-ranked homing consumer) — are assembled inside
+	// grpc.NewContractScalerCoordinatorHandler. Registering it changes NO live behaviour: nothing launches
+	// the coordinator until the bootstrap early-scaling arm fires (contract_scaler_early_scaling,
+	// default-off), so a bare deploy is byte-identical.
+	contractScalerHandler := grpc.NewContractScalerCoordinatorHandler(
+		daemonServer, apiClient, shipRepo, med, waypointRepo, marketRepo,
+		shipyardQuery.NewReachableYardFinder(shipyardInventoryRepo, gateGraphService),
+	)
+	if err := mediator.RegisterHandler[*contractScalerCmd.RunContractScalerCommand](med, contractScalerHandler); err != nil {
+		return fmt.Errorf("failed to register ContractScalerCoordinator handler: %w", err)
 	}
 
 	// Captain bootstrap coordinator (sp-3nbe): the reconciler that drives a cold agent through the

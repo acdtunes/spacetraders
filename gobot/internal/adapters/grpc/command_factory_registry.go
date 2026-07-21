@@ -402,6 +402,12 @@ func containerSpecList() []ContainerSpec {
 		// trade_fleet/siting it loops forever inside one Handle(), so it is NOT a
 		// CoordinatorOwnsIterations type; the container-level budget (-1) is irrelevant.
 		{CommandType: "fleet_autosizer", build: buildFleetAutosizerCommand},
+		// contract_scaler: the standing dedicated contract auto-scaler. Like fleet_autosizer/siting it
+		// loops forever inside one Handle(), so it is NOT a CoordinatorOwnsIterations type; the
+		// container-level budget (-1) is irrelevant. Registering it here is what makes an ARMED-launch or
+		// restart-recovered scaler runnable — launch itself stays gated behind the bootstrap early-scaling
+		// arm (default-off), never boot-standing.
+		{CommandType: "contract_scaler", build: buildContractScalerCommand},
 		// bootstrap (sp-3nbe): the standing captain bootstrap coordinator. Like
 		// fleet_autosizer/siting it loops forever inside one Handle(), so it is NOT a
 		// CoordinatorOwnsIterations type; the container-level budget (-1) is irrelevant.

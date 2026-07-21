@@ -47,6 +47,9 @@ func BootstrapTunableDefaults() map[string]int {
 		// inverted polarity keeps the default-ON arm intact while giving an operator a no-restart OFF.
 		"scaled_gate_entry_disabled":       defaultScaledGateEntryDisabled,
 		"autosizer_early_scaling_disabled": defaultAutosizerEarlyScalingDisabled,
+		// DEFAULT-OFF contract-scaler arm: 0 = OFF (byte-identical); armed via
+		// `tune --operation bootstrap contract_scaler_early_scaling 1` after validation.
+		"contract_scaler_early_scaling": defaultContractScalerEarlyScaling,
 		// Scaled-gate hardening: the DEFAULT-OFF master flag plus its five calibration knobs (the surplus
 		// floor is whole credits; the reentry construction ceiling is a whole percent). Tunable-only.
 		"gate_surplus_hardening":        defaultGateSurplusHardening,
@@ -110,6 +113,13 @@ type bootstrapRunConfig struct {
 	// false (byte-identical — the autosizer stays off the whole bootstrap run and bootstrap buys its
 	// haulers itself). A tunable flag (autosizer_early_scaling) — armed live, no launch key.
 	AutosizerEarlyScaling bool
+
+	// ContractScalerEarlyScaling arms the dedicated contract auto-scaler: when true, bootstrap LAUNCHES
+	// the standing scaler EARLY during the DATA/INCOME scaling window so it ramps the exclusive contract
+	// fleet behind the 200000 cushion. DEFAULT-OFF (byte-identical — nothing launches the scaler); armed
+	// after validation. A positive tunable-only flag (contract_scaler_early_scaling) — armed live, no
+	// launch key.
+	ContractScalerEarlyScaling bool
 
 	// Scaled-gate hardening (default off / byte-identical). GateSurplusHardening true ⇒ three coupled
 	// additions that cure the cold-start GATE death spiral: (1) gateFunded also demands a RAISED hauler floor,
@@ -213,6 +223,11 @@ func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand, live liveconfig
 		}
 		if v := live.PositiveIntOrZero("autosizer_early_scaling_disabled"); v > 0 {
 			c.AutosizerEarlyScaling = false
+		}
+		// The contract-scaler arm is a positive tunable-only flag, DEFAULT-OFF (no seed arm above, unlike
+		// the default-on features). A positive value arms it; absent/zeroed ⇒ off (byte-identical).
+		if v := live.PositiveIntOrZero("contract_scaler_early_scaling"); v > 0 {
+			c.ContractScalerEarlyScaling = true
 		}
 		// Scaled-gate hardening: the master flag + its five calibration knobs, all tunable-only (no launch
 		// key), default off. A positive gate_surplus_hardening arms it; absent/zeroed ⇒ off (byte-identical).
@@ -336,6 +351,10 @@ type reconcileResult struct {
 	// observability — deliberately NOT in the heartbeat delta (keeping the flag-off log byte-identical);
 	// the early launch surfaces its own INFO line, mirroring how the sp-tsn2 deferral does.
 	AutosizerLaunchedEarly bool
+
+	// The dedicated contract auto-scaler was launched EARLY this tick (armed via the default-off
+	// contract_scaler_early_scaling). Same test-only observability as AutosizerLaunchedEarly.
+	ContractScalerLaunchedEarly bool
 }
 
 // probeBuyBridge closes the sync-lag window between a probe purchase and the ship-count observation
@@ -595,6 +614,15 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 		h.maybeLaunchAutosizerEarly(ctx, cmd, cfg, obs, &res)
 	}
 
+	// When the DEFAULT-OFF contract-scaler arm is set, launch the standing dedicated contract auto-scaler
+	// EARLY during the same DATA/INCOME scaling window so it ramps the exclusive contract fleet behind the
+	// 200000 cushion. Default-off ⇒ never launches (byte-identical). Idempotent (skips when already
+	// running). Scoped to DATA/INCOME like the autosizer arm: GATE repurposes haulers to construction, and
+	// the scaler is armed once then RUNS FOREVER via restart recovery.
+	if cfg.ContractScalerEarlyScaling && (phase == PhaseData || phase == PhaseIncome) {
+		h.maybeLaunchContractScalerEarly(ctx, cmd, cfg, obs, &res)
+	}
+
 	// Fold any probes bought this tick into the count-sync bridge (sp-lgo3), so the NEXT tick counts
 	// them against target before the observation reflects them — the invariant that prevents the
 	// short-tick cross-tick over-buy. Only the DATA probe buy sets res.Purchased; other phases and
@@ -852,6 +880,51 @@ func (h *RunBootstrapCoordinatorHandler) maybeLaunchAutosizerEarly(ctx context.C
 	res.AutosizerLaunchedEarly = true
 	logger.Log("INFO", "Bootstrap launched the fleet autosizer EARLY (cold-start contract scaling armed, sp-sjvv) — the capacity reconciler's emitted contract-delivery demand now has a guard-gated buyer; bootstrap will DEFER its own contract-hauler buys to it (single-buyer arbitration)", map[string]interface{}{
 		"action":       "bootstrap_autosizer_launched_early",
+		"container_id": cmd.ContainerID,
+	})
+}
+
+// maybeLaunchContractScalerEarly launches the standing dedicated contract auto-scaler DURING the
+// cold-start scaling window so it ramps the exclusive contract fleet behind the 200000 cushion. The
+// caller has already checked the DEFAULT-OFF arm (contract_scaler_early_scaling) is set AND we are in
+// the DATA/INCOME window. It mirrors maybeLaunchAutosizerEarly:
+//   - IDEMPOTENT: skips silently when the scaler is already running (obs.ContractScalerRunning) — the
+//     steady state once launched (armed once, then RUNS FOREVER via restart recovery);
+//   - is nil-safe (no launcher wired ⇒ logged skip) and dry-run-safe (WOULD-launch, no action);
+//   - is a BACKGROUND launch: it never claims res.Blocker, surfacing itself via its own INFO/ERROR line.
+func (h *RunBootstrapCoordinatorHandler) maybeLaunchContractScalerEarly(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
+	logger := common.LoggerFromContext(ctx)
+
+	if obs.ContractScalerRunning {
+		return // already launched (armed once) — idempotent no-op
+	}
+
+	if cfg.DryRun {
+		logger.Log("INFO", "Bootstrap DRY-RUN: WOULD launch the dedicated contract auto-scaler EARLY (contract_scaler_early_scaling armed) to ramp the exclusive contract fleet (took no action)", map[string]interface{}{
+			"action":       "bootstrap_would_launch_contract_scaler_early",
+			"container_id": cmd.ContainerID,
+		})
+		return
+	}
+
+	if h.handoff == nil {
+		logger.Log("WARN", "Bootstrap contract-scaler scaling is armed but no hand-off launcher wired — cannot launch the contract scaler early", map[string]interface{}{
+			"action":       "bootstrap_no_handoff_launcher",
+			"container_id": cmd.ContainerID,
+		})
+		return
+	}
+
+	if err := h.handoff.LaunchContractScaler(ctx, cmd.PlayerID, cmd.AgentSymbol); err != nil {
+		logger.Log("ERROR", fmt.Sprintf("Bootstrap failed to launch the contract auto-scaler early: %v", err), map[string]interface{}{
+			"action":       "bootstrap_contract_scaler_early_launch_error",
+			"container_id": cmd.ContainerID,
+		})
+		return
+	}
+	res.ContractScalerLaunchedEarly = true
+	logger.Log("INFO", "Bootstrap launched the dedicated contract auto-scaler EARLY (contract_scaler_early_scaling armed) — it ramps the exclusive contract fleet to the live ceiling behind the 200000 cushion", map[string]interface{}{
+		"action":       "bootstrap_contract_scaler_launched_early",
 		"container_id": cmd.ContainerID,
 	})
 }
