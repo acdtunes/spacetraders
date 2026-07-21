@@ -215,26 +215,11 @@ type RunScoutPostCoordinatorCommand struct {
 	// any effect.
 	GateReconcileMarketlessDisabled bool
 
-	// CoverageSpreadDisabled reverts the coverage-first manning order to depth-first
-	// (all of a post's slots before the next post's). Default false = LIVE:
-	// unmannedSlotTargets interleaves by slot tier so a scarce idle-probe pool spreads
-	// one-per-uncovered-system before it piles a multi-hull post's extra slots, instead
-	// of herding the whole probe group onto one target per cycle. The escape
-	// ([scouting] coverage_spread_disabled) lets a captain pin depth-first without a
-	// redeploy; not expected to be set in normal operation.
-	CoverageSpreadDisabled bool
-
 	// RespawnAttemptCap bounds how many CONSECUTIVE respawns of a post's dead tour the
 	// coordinator performs before PARKING the post for a backoff window instead
 	// ([scouting] respawn_attempt_cap). A tour that finally runs healthy resets the
 	// count. <= 0 uses defaultScoutRespawnAttemptCap, mirroring TickIntervalSecs.
 	RespawnAttemptCap int
-
-	// RespawnCapDisabled turns the respawn-loop cap OFF, restoring
-	// respawn-every-tick behavior ([scouting] respawn_cap_disabled). Default false =
-	// LIVE: the cap is on. Disable escape so a captain can lift it without a redeploy;
-	// not expected to be set in normal operation.
-	RespawnCapDisabled bool
 
 	// ManningStallCycles and ManningStallCorrectionCap tune the manning watchdog
 	// (LIVE-tunable via SetLiveConfigReader): the number of CONSECUTIVE reconcile cycles
@@ -842,8 +827,7 @@ func (h *RunScoutPostCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 
 	// Pass 2: man the unmanned slots, standing posts first. A post inside its respawn-cap
 	// backoff window is skipped here so a persistently-crashing tour is not respawned every tick.
-	_, respawnCapEnabled := resolveRespawnCap(cmd)
-	targets := h.unmannedSlotTargets(posts, removed, cmd.CoverageSpreadDisabled, respawnCapEnabled)
+	targets := h.unmannedSlotTargets(posts, removed)
 	// The gate-reconcile sweep (Pass 3) also spends the LEFTOVER idle pool, so the fast
 	// exit ("no unmanned slots => done") is preserved ONLY when the sweep is OFF. With
 	// it armed the tick continues (fetching the idle pool) even when every slot is
@@ -1468,18 +1452,14 @@ func (h *RunScoutPostCoordinatorHandler) reconcileMannedSlots(
 	return false
 }
 
-// resolveRespawnCap resolves the respawn-loop cap for this coordinator: whether the cap is
-// LIVE (RespawnCapDisabled is the RULINGS #5 escape) and, when live, the consecutive-respawn
-// ceiling ([scouting] respawn_attempt_cap, else defaultScoutRespawnAttemptCap). Mirrors
-// repositionFailureCooldown's <= 0 -> default shape.
-func resolveRespawnCap(cmd *RunScoutPostCoordinatorCommand) (attemptCap int, enabled bool) {
-	if cmd.RespawnCapDisabled {
-		return 0, false
-	}
+// resolveRespawnCap resolves the respawn-loop cap for this coordinator: the
+// consecutive-respawn ceiling ([scouting] respawn_attempt_cap, else
+// defaultScoutRespawnAttemptCap). Mirrors repositionFailureCooldown's <= 0 -> default shape.
+func resolveRespawnCap(cmd *RunScoutPostCoordinatorCommand) int {
 	if cmd.RespawnAttemptCap <= 0 {
-		return defaultScoutRespawnAttemptCap, true
+		return defaultScoutRespawnAttemptCap
 	}
-	return cmd.RespawnAttemptCap, true
+	return cmd.RespawnAttemptCap
 }
 
 // accountRespawn advances or resets a post's PERSISTED consecutive-respawn counter after one
@@ -1491,13 +1471,9 @@ func resolveRespawnCap(cmd *RunScoutPostCoordinatorCommand) (attemptCap int, ena
 // is logged (naturally rate-limited to one line per window, since a parked post spawns nothing to
 // respawn until the window elapses and it retries once). Both fields persist so the cap survives a
 // daemon restart rather than the crash-loop resuming at tick cadence. Healthy wins over respawn,
-// so any one live slot resets a multi-hull post's whole-post streak. Disabled => a no-op,
-// respawn-every-tick behavior.
+// so any one live slot resets a multi-hull post's whole-post streak.
 func (h *RunScoutPostCoordinatorHandler) accountRespawn(ctx context.Context, cmd *RunScoutPostCoordinatorCommand, post *domainScouting.ScoutPost, sawHealthy, sawRespawn bool) {
-	attemptCap, enabled := resolveRespawnCap(cmd)
-	if !enabled {
-		return
-	}
+	attemptCap := resolveRespawnCap(cmd)
 	switch {
 	case sawHealthy:
 		if post.RespawnAttempts == 0 && post.RespawnParkedUntil.IsZero() {
@@ -1589,23 +1565,22 @@ func (h *RunScoutPostCoordinatorHandler) reconcileRepositioningSlots(
 // isRespawnParked reports whether a post is currently inside its respawn-cap backoff
 // window — it exhausted the consecutive-respawn cap and is not yet due for a retry. Pass 2 skips
 // such a post so a persistently-crashing tour is not respawned every tick. A zero deadline (never
-// capped, or reset by a healthy tour / market-drift re-cut) reads false, and disabling the cap
-// (RULINGS #5) reads false for every post, immediately lifting any park.
-func (h *RunScoutPostCoordinatorHandler) isRespawnParked(post *domainScouting.ScoutPost, capEnabled bool) bool {
-	return capEnabled && !post.RespawnParkedUntil.IsZero() && h.clock.Now().Before(post.RespawnParkedUntil)
+// capped, or reset by a healthy tour / market-drift re-cut) reads false.
+func (h *RunScoutPostCoordinatorHandler) isRespawnParked(post *domainScouting.ScoutPost) bool {
+	return !post.RespawnParkedUntil.IsZero() && h.clock.Now().Before(post.RespawnParkedUntil)
 }
 
 // unmannedSlotTargets collects every slot that pass 2 should man: unmanned, not
 // repositioning, in a non-retired, non-respawn-parked post. Standing posts sort before sweep-once
 // (the freshness backbone is manned first), deterministic by system within a kind, and
 // primary-before-extra within a post — so manning order is stable and testable.
-func (h *RunScoutPostCoordinatorHandler) unmannedSlotTargets(posts []*domainScouting.ScoutPost, removed map[string]bool, spreadDisabled, respawnCapEnabled bool) []slotTarget {
+func (h *RunScoutPostCoordinatorHandler) unmannedSlotTargets(posts []*domainScouting.ScoutPost, removed map[string]bool) []slotTarget {
 	ordered := make([]*domainScouting.ScoutPost, 0, len(posts))
 	for _, post := range posts {
 		if removed[post.SystemSymbol] {
 			continue
 		}
-		if h.isRespawnParked(post, respawnCapEnabled) {
+		if h.isRespawnParked(post) {
 			continue // parked in its respawn-cap backoff window — none of its slots man this tick
 		}
 		ordered = append(ordered, post)
@@ -1634,15 +1609,6 @@ func (h *RunScoutPostCoordinatorHandler) unmannedSlotTargets(posts []*domainScou
 	}
 
 	targets := make([]slotTarget, 0, len(ordered))
-	if spreadDisabled {
-		// Depth-first (disable escape): every one of a post's slots before the next
-		// post's — byte-identical for single-hull posts.
-		for _, slots := range perPost {
-			targets = append(targets, slots...)
-		}
-		return targets
-	}
-
 	// Coverage-first: interleave by slot TIER across the priority-ordered posts —
 	// every post's first unmanned slot, THEN every post's second, and so on. With a scarce
 	// idle-probe pool (pass 2b consumes one satellite per target in order) this spreads one

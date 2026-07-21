@@ -720,7 +720,7 @@ func TestScoutPost_UnmannedSlotTargets_CoverageBeforeDepth(t *testing.T) {
 	}
 
 	h := &RunScoutPostCoordinatorHandler{}
-	targets := h.unmannedSlotTargets(posts, map[string]bool{}, false, false)
+	targets := h.unmannedSlotTargets(posts, map[string]bool{})
 
 	require.Len(t, targets, 12, "every unmanned slot is still a target (8 multi-hull + 4 single-hull)")
 
@@ -740,30 +740,6 @@ func TestScoutPost_UnmannedSlotTargets_CoverageBeforeDepth(t *testing.T) {
 		perSystem[tgt.post.SystemSymbol]++
 	}
 	require.Equal(t, 8, perSystem["X1-AAA"], "the multi-hull post still gets all 8 of its slots — depth resumes after coverage")
-}
-
-// The disable escape (RULINGS #5, live-by-default) reverts to the legacy depth-first
-// order — all of a post's slots before the next post — so the spread is provably the
-// DEFAULT and a captain can turn it off without a redeploy (sp-6ovd).
-func TestScoutPost_UnmannedSlotTargets_DisableEscape_RevertsToDepthFirst(t *testing.T) {
-	multi := &domainScouting.ScoutPost{
-		SystemSymbol: "X1-AAA",
-		Kind:         domainScouting.PostKindStanding,
-		Hulls:        3,
-		ExtraSlots:   make([]domainScouting.ScoutPostSlot, 2),
-	}
-	posts := []*domainScouting.ScoutPost{
-		multi,
-		{SystemSymbol: "X1-BBB", Kind: domainScouting.PostKindStanding},
-	}
-
-	h := &RunScoutPostCoordinatorHandler{}
-	targets := h.unmannedSlotTargets(posts, map[string]bool{}, true, false)
-
-	require.Len(t, targets, 4)
-	got := []string{targets[0].post.SystemSymbol, targets[1].post.SystemSymbol, targets[2].post.SystemSymbol, targets[3].post.SystemSymbol}
-	require.Equal(t, []string{"X1-AAA", "X1-AAA", "X1-AAA", "X1-BBB"}, got,
-		"disable escape: depth-first — the multi-hull post's 3 slots precede the next post")
 }
 
 // Only the in-system satellite is ever selected; the out-of-system one is left idle,

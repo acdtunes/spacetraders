@@ -48,13 +48,6 @@ type ScoutingConfig struct {
 	// enough to stop a genuinely-broken post from flooding the fleet.
 	RespawnAttemptCap int `mapstructure:"respawn_attempt_cap"`
 
-	// RespawnCapDisabled turns OFF the sp-py4n respawn-loop cap entirely, restoring the
-	// pre-py4n behavior where a dead tour is respawned every tick without limit. false/absent =>
-	// LIVE: the cap is on by default. RULINGS #5 disable escape so a captain can lift the cap
-	// without a redeploy if it ever mis-parks a post that should keep retrying; not expected to be
-	// set in normal operation.
-	RespawnCapDisabled bool `mapstructure:"respawn_cap_disabled"`
-
 	// HeavyShipTypes is the set of ship types that count as HEAVY freight for
 	// shipyard discovery (sp-42ow): the scout tour's piggybacked shipyard scan
 	// emits a one-time-per-era milestone event when a yard selling one of these
@@ -62,15 +55,6 @@ type ScoutingConfig struct {
 	// signal keys on the same classification. Empty/absent defers to the domain
 	// default {SHIP_HEAVY_FREIGHTER, SHIP_BULK_FREIGHTER} (RULINGS #5).
 	HeavyShipTypes []string `mapstructure:"heavy_ship_types"`
-
-	// CoverageSpreadDisabled turns OFF the sp-6ovd coverage-first manning order in the
-	// standing scout_post_coordinator, reverting to the legacy depth-first order (all of a
-	// post's slots before the next post's). false/absent => LIVE: the reconciler interleaves
-	// unmanned slots by tier so a scarce idle-probe pool spreads one-per-uncovered-system
-	// before piling a multi-hull post's extra slots — the durable fix for the reconciler
-	// herding the whole probe group onto one target per cycle. RULINGS #5 disable escape: a captain can pin
-	// depth-first without a redeploy; not expected to be set in normal operation.
-	CoverageSpreadDisabled bool `mapstructure:"coverage_spread_disabled"`
 
 	// GateReconcileEnabled arms the sp-bcsu RETROACTIVE gate-reconcile sweep in the standing
 	// scout_post_coordinator: a bounded pass that dispatches leftover idle probes to chart
@@ -93,7 +77,7 @@ type ScoutingConfig struct {
 	// ON whenever gate_reconcile_enabled arms the sweep): the sweep also charts uncharted transit
 	// systems a stale backoff marker proves traffic jumps THROUGH — the residual GetJumpGate-400
 	// source the market-scoped enumeration structurally cannot reach. Set true to pin market-only
-	// without a redeploy. RULINGS #5 disable escape, mirroring coverage_spread_disabled /
-	// respawn_cap_disabled (bool ⇒ liveconfig-only; the tune registry is int-typed).
+	// without a redeploy. RULINGS #5 disable escape (bool ⇒ liveconfig-only; the tune
+	// registry is int-typed).
 	GateReconcileMarketlessDisabled bool `mapstructure:"gate_reconcile_marketless_disabled"`
 }

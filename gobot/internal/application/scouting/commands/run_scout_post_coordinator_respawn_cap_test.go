@@ -75,21 +75,3 @@ func TestScoutPostRespawnCap_HealthyTourResetsTheStreak(t *testing.T) {
 	require.Equal(t, 0, got.RespawnAttempts, "a tour observed healthy resets the consecutive-respawn streak")
 	require.True(t, got.RespawnParkedUntil.IsZero(), "a reset post is not parked")
 }
-
-// TestScoutPostRespawnCap_Disabled_RespawnsWithoutLimit pins the RULINGS #5 disable escape: with
-// the cap turned off the coordinator respawns a dead tour every tick (the pre-py4n behavior) and
-// never parks — so a captain can lift the cap without a redeploy if it ever mis-parks a post.
-func TestScoutPostRespawnCap_Disabled_RespawnsWithoutLimit(t *testing.T) {
-	handler, postRepo, daemonClient, _, _ := newRespawnLoopFixture(t)
-
-	cmd := scoutPostTestCmd()
-	cmd.RespawnAttemptCap = 3
-	cmd.RespawnCapDisabled = true
-
-	for i := 0; i < 8; i++ {
-		require.NoError(t, handler.reconcileOnce(context.Background(), cmd))
-	}
-
-	require.Len(t, daemonClient.started, 8, "a disabled cap respawns every tick, unbounded")
-	require.True(t, postRepo.find("X1-GZ7").RespawnParkedUntil.IsZero(), "a disabled cap never parks a post")
-}
