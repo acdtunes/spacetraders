@@ -194,12 +194,6 @@ type DaemonServer struct {
 	// the cold-start behaviour by editing config and restarting, no code redeploy.
 	bootstrapConfig config.BootstrapConfig
 
-	// capacityReconcilerConfig carries the capacity reconciler's calibration (st-7zk) from
-	// config.yaml. The capacity_reconciler_coordinator resolves it into its container's launch
-	// config on every build (creation + restart recovery via resolveCapacityReconcilerConfig),
-	// so a captain retunes the engine by editing config.yaml and restarting, no code redeploy.
-	capacityReconcilerConfig config.CapacityReconcilerConfig
-
 	// Shutdown coordination
 	shutdownChan chan os.Signal
 	done         chan struct{}
@@ -242,7 +236,6 @@ func NewDaemonServer(
 	scoutingConfig config.ScoutingConfig,
 	fleetAutosizerConfig config.FleetAutosizerConfig,
 	bootstrapConfig config.BootstrapConfig,
-	capacityReconcilerConfig config.CapacityReconcilerConfig,
 	resyncConfig config.ResyncConfig,
 	shipEventPublisher navigation.ShipEventPublisher,
 ) (*DaemonServer, error) {
@@ -283,33 +276,32 @@ func NewDaemonServer(
 	}
 
 	server := &DaemonServer{
-		mediator:                 mediator,
-		db:                       db,
-		logRepo:                  logRepo,
-		containerRepo:            containerRepo,
-		waypointRepo:             waypointRepo,
-		shipRepo:                 shipRepo,
-		playerRepo:               playerRepo,
-		routingClient:            routingClient,
-		goodsFactoryRepo:         goodsFactoryRepo,
-		apiClient:                apiClient,
-		clock:                    clock,
-		shipStateScheduler:       shipStateScheduler,
-		listener:                 listener,
-		containers:               make(map[string]*ContainerRunner),
-		containerSpecs:           make(map[string]ContainerSpec),
-		pendingWorkerCommands:    make(map[string]interface{}),
-		metricsConfig:            metricsConfig,
-		contractConfig:           contractConfig,
-		tradeFleetConfig:         tradeFleetConfig,
-		workerRebalancerConfig:   workerRebalancerConfig,
-		manufacturingConfig:      manufacturingConfig,
-		scoutingConfig:           scoutingConfig,
-		fleetAutosizerConfig:     fleetAutosizerConfig,
-		bootstrapConfig:          bootstrapConfig,
-		capacityReconcilerConfig: capacityReconcilerConfig,
-		shutdownChan:             make(chan os.Signal, 1),
-		done:                     make(chan struct{}),
+		mediator:               mediator,
+		db:                     db,
+		logRepo:                logRepo,
+		containerRepo:          containerRepo,
+		waypointRepo:           waypointRepo,
+		shipRepo:               shipRepo,
+		playerRepo:             playerRepo,
+		routingClient:          routingClient,
+		goodsFactoryRepo:       goodsFactoryRepo,
+		apiClient:              apiClient,
+		clock:                  clock,
+		shipStateScheduler:     shipStateScheduler,
+		listener:               listener,
+		containers:             make(map[string]*ContainerRunner),
+		containerSpecs:         make(map[string]ContainerSpec),
+		pendingWorkerCommands:  make(map[string]interface{}),
+		metricsConfig:          metricsConfig,
+		contractConfig:         contractConfig,
+		tradeFleetConfig:       tradeFleetConfig,
+		workerRebalancerConfig: workerRebalancerConfig,
+		manufacturingConfig:    manufacturingConfig,
+		scoutingConfig:         scoutingConfig,
+		fleetAutosizerConfig:   fleetAutosizerConfig,
+		bootstrapConfig:        bootstrapConfig,
+		shutdownChan:           make(chan os.Signal, 1),
+		done:                   make(chan struct{}),
 	}
 
 	// Periodic full-fleet ship resync (sp-p1ci): re-syncs every player's ships
@@ -1630,18 +1622,6 @@ func (s *DaemonServer) StopContainer(containerID string) error {
 	if runner.containerEntity.Type() == container.ContainerTypeGasCoordinator ||
 		runner.containerEntity.Type() == container.ContainerTypeWarehouse {
 		s.terminalizeStorageOperation(ctx, containerID)
-	}
-
-	// sp-2jrz: stopping the capacity reconciler is a durable decommission — release the
-	// role-fleet dedications it wrote (warehouse/stocker/depot-delivery) back to the
-	// general pool so trade re-adopts the hulls (the release half of the captain's manual
-	// remedy). Reaping the depot-launched buffer containers is lane (ii)/sp-udgc, not here.
-	// STOP-PATH ONLY: interruptAllContainers (deploy recovery) marks INTERRUPTED via a
-	// direct UpdateStatus and never reaches here, so a graceful deploy of a live reconciler
-	// re-establishes its dedications rather than churning them — the Admiral's invariant
-	// that a restart must not change ship assignments.
-	if runner.containerEntity.Type() == container.ContainerTypeCapacityReconciler {
-		s.retireCapacityReconcilerDedications(ctx, playerID)
 	}
 
 	return stopErr

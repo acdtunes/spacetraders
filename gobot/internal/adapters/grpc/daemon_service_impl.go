@@ -589,20 +589,12 @@ func (s *daemonServiceImpl) BootstrapCoordinator(ctx context.Context, req *pb.Bo
 	return &pb.BootstrapCoordinatorResponse{ContainerId: containerID, Status: "RUNNING"}, nil
 }
 
-// CapacityReconcilerCoordinator starts the standing capacity reconciler (st-7zk). Explicit
-// start only — the daemon never boot-arms it (deploy-inert foundation).
+// CapacityReconcilerCoordinator is REMOVED (sp-y2ptq, epic sp-9le3x): the capacity-reconciler
+// contract-capacity stack was deleted and the dedicated contract scaler replaces it. The proto RPC
+// is retained only to satisfy the generated DaemonServiceServer interface (no proto regen in this
+// lane); it now refuses the call rather than launching anything.
 func (s *daemonServiceImpl) CapacityReconcilerCoordinator(ctx context.Context, req *pb.CapacityReconcilerCoordinatorRequest) (*pb.CapacityReconcilerCoordinatorResponse, error) {
-	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve player: %w", err)
-	}
-
-	containerID, err := s.daemon.CapacityReconcilerCoordinator(ctx, playerID, req.DryRun)
-	if err != nil {
-		return nil, fmt.Errorf("failed to start capacity reconciler coordinator: %w", err)
-	}
-
-	return &pb.CapacityReconcilerCoordinatorResponse{ContainerId: containerID, Status: "RUNNING"}, nil
+	return nil, fmt.Errorf("capacity reconciler removed (sp-y2ptq): the dedicated contract scaler owns contract-fleet capacity")
 }
 
 // AutoOutfitCoordinator starts the standing guarded auto-outfit coordinator (sp-buyd):

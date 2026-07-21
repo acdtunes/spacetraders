@@ -51,10 +51,6 @@ type Config struct {
 	// the bootstrap coordinator container on every build (creation + recovery), so a captain
 	// retunes the cold-start behaviour by editing config.yaml and restarting.
 	Bootstrap BootstrapConfig `mapstructure:"bootstrap"`
-	// CapacityReconciler holds the capacity reconciler's calibration (st-7zk), injected live
-	// into the capacity_reconciler_coordinator container on every build (creation + recovery),
-	// so a captain retunes the engine by editing config.yaml and restarting.
-	CapacityReconciler CapacityReconcilerConfig `mapstructure:"capacity_reconciler"`
 	// ShipResync holds the periodic full-fleet ship-resync cadence knobs (sp-p1ci) — base
 	// interval + jitter — consumed by the daemon's ShipResyncScheduler. Zero defers to the
 	// documented defaults (1h +/-10min).
@@ -110,13 +106,7 @@ func LoadConfig(configPath string) (*Config, error) {
 		v.Set("database.url", dbURL)
 	}
 
-	// Fail loud on a reconciler knob written at the top level under its
-	// container-launch key name instead of nested under [capacity_reconciler]:
-	// viper would bind it to nothing and the knob (e.g. the contract-delivery
-	// ADD-gate arm) would silently no-op.
-	if err := checkMisplacedCapacityReconcilerKeys(v); err != nil {
-		return nil, fmt.Errorf("invalid configuration: %w", err)
-	}
+	// sp-y2ptq: the capacity-reconciler misplaced-key guard was removed with the reconciler config.
 
 	// Create config struct and unmarshal
 	var cfg Config

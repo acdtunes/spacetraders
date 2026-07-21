@@ -260,7 +260,7 @@ func (s *DaemonServer) homeContractWorkerReserve(ctx context.Context, reg *depot
 		switch fleet {
 		case "":
 			inPool[ship.ShipSymbol()] = true // undedicated — the fresh reserve pool
-		case contractDedicatedFleet:
+		case contractFleetTag:
 			contractDedicated++ // already poach-proof — counts toward the floor (sp-7zoq)
 		case depot.DeliveryHullFleet:
 			pinned = append(pinned, ship.ShipSymbol()) // reclaim pool when the fresh reserve is short
@@ -286,7 +286,7 @@ func (s *DaemonServer) dedicateContractReserve(ctx context.Context, shipSymbol s
 	if s.shipRepo == nil {
 		return fmt.Errorf("dedicate contract reserve %s: no ship repository wired", shipSymbol)
 	}
-	if err := s.shipRepo.AssignFleet(ctx, shipSymbol, contractDedicatedFleet, shared.MustNewPlayerID(playerID)); err != nil {
+	if err := s.shipRepo.AssignFleet(ctx, shipSymbol, contractFleetTag, shared.MustNewPlayerID(playerID)); err != nil {
 		return fmt.Errorf("dedicate contract reserve %s: %w", shipSymbol, err)
 	}
 	return nil

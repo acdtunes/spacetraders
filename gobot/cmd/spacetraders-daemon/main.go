@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
-	capacityAdapters "github.com/andrescamacho/spacetraders-go/internal/adapters/capacity"
 	expansionAdapters "github.com/andrescamacho/spacetraders-go/internal/adapters/expansion"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/graph"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/grpc"
@@ -18,7 +17,6 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/routing"
 	autooutfitCmd "github.com/andrescamacho/spacetraders-go/internal/application/autooutfit"
 	bootstrapCmd "github.com/andrescamacho/spacetraders-go/internal/application/bootstrap/commands"
-	capacityCmd "github.com/andrescamacho/spacetraders-go/internal/application/capacity/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
 	contractQuery "github.com/andrescamacho/spacetraders-go/internal/application/contract/queries"
@@ -55,7 +53,6 @@ import (
 	tradingQueries "github.com/andrescamacho/spacetraders-go/internal/application/trading/queries"
 	tradingSvc "github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
 	watchkeeper "github.com/andrescamacho/spacetraders-go/internal/captain"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/capacity"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -564,7 +561,7 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to create socket directory: %w", err)
 	}
 
-	daemonServer, err := grpc.NewDaemonServer(med, db, containerLogRepo, containerRepo, waypointRepo, shipRepo, playerRepo, routingClient, goodsFactoryRepo, apiClient, socketPath, &cfg.Metrics, cfg.Contract, cfg.TradeFleet, cfg.WorkerRebalancer, cfg.Manufacturing, cfg.Scouting, cfg.FleetAutosizer, cfg.Bootstrap, cfg.CapacityReconciler, cfg.ShipResync, shipEventBus)
+	daemonServer, err := grpc.NewDaemonServer(med, db, containerLogRepo, containerRepo, waypointRepo, shipRepo, playerRepo, routingClient, goodsFactoryRepo, apiClient, socketPath, &cfg.Metrics, cfg.Contract, cfg.TradeFleet, cfg.WorkerRebalancer, cfg.Manufacturing, cfg.Scouting, cfg.FleetAutosizer, cfg.Bootstrap, cfg.ShipResync, shipEventBus)
 	if err != nil {
 		return fmt.Errorf("failed to create daemon server: %w", err)
 	}
@@ -780,28 +777,10 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register SitingCoordinator handler: %w", err)
 	}
 
-	// Register the standing contract-HUB placement coordinator (sp-q2zq): the demand-side
-	// SIBLING of the factory-siting coordinator above. Each slow tick it SCANs candidate hubs
-	// (the cheapest in-system EXPORT/EXCHANGE source for each recent-contract good — single
-	// system, RULINGS #14), SCOREs them by the MARGINAL payment-weighted buy-leg each eliminates
-	// (greedy facility-location over an EWMA-smoothed demand signal, so a central cluster
-	// self-limits and outliers score high), and PLACEs each new / idle-unhomed contract hauler at
-	// argmax marginal, growing the hub portfolio with the fleet. Phase 1 is placement-only: it
-	// never re-homes an already-homed hull (zero thrash) and is idle-only (never strands a hull
-	// mid-contract). LIVE BY DEFAULT (Admiral: no dark-shipping); every knob resolves live from
-	// the launch config (RULINGS #5). Like the siting sibling, registering the handler makes a
-	// launched or recovered container runnable — nothing auto-starts on daemon boot.
-	// The concrete port adapters (candidate scan over the market repo, demand EWMA source over the
-	// recent-contracts projection, hauler-home source over the ship repo, and the home ASSIGNER
-	// that persists to the contract coordinator's standby-station set via the daemon single-writer
-	// `fleet hub` path — RULINGS #2/#3) are assembled inside grpc.NewContractHubCoordinatorHandler
-	// from the SAME contract/market/waypoint/ship repos the contract path already uses.
-	contractHubCoordinatorHandler := grpc.NewContractHubCoordinatorHandler(
-		daemonServer, contractRepo, marketRepoAdapter, waypointRepo, shipRepo,
-	)
-	if err := mediator.RegisterHandler[*contractCmd.RunContractHubCoordinatorCommand](med, contractHubCoordinatorHandler); err != nil {
-		return fmt.Errorf("failed to register ContractHubCoordinator handler: %w", err)
-	}
+	// sp-y2ptq (epic sp-9le3x): the standalone contract-hub PLACEMENT coordinator (sp-q2zq) was DELETED — the
+	// scaler's ResolveRoles (home-system geometry + market roles) plus C1's demand-ranked homing via the
+	// fleet coordinator now own where idle contract haulers stage, making this brain redundant. Its four
+	// ports + wiring were removed; the shared `fleet hub` standby-station store is untouched.
 
 	// The persisted, fetch-through gate-graph resolver. travel() BFS-walks it to
 	// cross a multi-hop gap, and the arb pre-buy guard route-checks a cross-system
@@ -867,17 +846,6 @@ func run(cfg *config.Config) error {
 	// sp-42ow: the ReachableYardFinder is the heavy branch's yard-price FALLBACK — scout-scanned
 	// yards ranked by stored-gate-graph hops then price. Signal-only: with no scan data the price
 	// guard fails closed exactly as before, and every other guard still gates the buy.
-	// st-x00 (re-scoped by st-5le): the capacity reconciler's CAPITAL tier emits its
-	// tier-4 contract-delivery hull demand into sp-1txd's SINGLE guarded buy path via
-	// this bridge — NOT a second guard/budget stack. One object: the reconciler's
-	// GOVERN emitter writes it (capacity.CapitalDemandSink, wired below), the autosizer
-	// reads it as a registered demand provider. DORMANT — sp-1txd's classDisabled skips
-	// the unknown contract_delivery class ("unknown class: never act") until an arming
-	// lane wires it in — so registering it changes no live behaviour and nothing
-	// auto-buys. sp-1txd's absolute fleet ceiling + per-tick cap stay authoritative over
-	// the COMBINED post-buy fleet count across every provider, this one included.
-	contractDeliveryDemand := capacityAdapters.NewContractDeliveryDemandBridge()
-
 	// sp-a3yn slice C: the cross-coordinator bridge carrying slice-B off-gate demand (raised in the
 	// FRONTIER coordinator, wired below) to the FLEET autosizer's explorer BUY path. Created here so
 	// the explorer demand provider can be registered on the autosizer handler at construction; the
@@ -891,7 +859,6 @@ func run(cfg *config.Config) error {
 		shipyardQuery.NewReachableYardFinder(shipyardInventoryRepo, gateGraphService),
 		explorerOffGateBridge, // sp-a3yn: explorer demand provider reads off-gate demand through this bridge
 	)
-	fleetAutosizerHandler.AddDemandProvider(contractDeliveryDemand) // st-x00: contract-delivery capital demand → sp-1txd buy path (dormant until armed)
 	if err := mediator.RegisterHandler[*fleetCmd.RunFleetAutosizerCoordinatorCommand](med, fleetAutosizerHandler); err != nil {
 		return fmt.Errorf("failed to register FleetAutosizerCoordinator handler: %w", err)
 	}
@@ -1263,70 +1230,11 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register ShipyardBackfillCoordinator handler: %w", err)
 	}
 
-	// Capacity reconciler (epic st-7zk, foundation st-fyr): the standing declarative
-	// reconciler that drives the contract-delivery machine's actual capacity topology toward
-	// a computed desired topology (SENSE → PLAN → DIFF → GOVERN → CONVERGE), maximizing
-	// per-hull-sustained $/hr, capex-paced. REGISTRATION ONLY — the coordinator is
-	// deliberately NOT boot-standing-armed (deploy-inert): it runs only when explicitly
-	// started via `workflow capacity-reconciler`, then survives restarts through the
-	// persisted-container recovery idiom. The foundation wiring is the provably-inert NoOp
-	// chain (empty desired topology → zero actions); each epic lane replaces exactly one
-	// component here (SENSE st-7ee, planner st-hlw, differ st-zr0, actuator st-5ig, governor
-	// st-x00, proposals st-0h8 — see internal/domain/capacity/CONTRACTS.md). The
-	// captain/DISABLED kill switch is the watchkeeper Workspace over the SAME workspace dir
-	// the supervisor polls, re-read at the top of every tick.
-	// sp-3idiw: the gate-construction shortfall boundary — the SENSE lane's second live
-	// touch. It locates the home system's incomplete jump gate and feeds its unfulfilled
-	// materials in as gate demand, so the reconciler DESIRES a gate-construction depot
-	// during the fill (fail-closed: any miss = no gate demand = byte-identical). Wired
-	// LIVE (the "active when wired" convention): the reconciler is boot-standing + armed
-	// (sp-ov8z), so gate demand flows and the depot is built from the next boot. Arm-safe:
-	// the INTERPOSE no-double-buy cooperation is enforced construction-side by sp-crjla
-	// (the construction coordinator withdraws gate materials from the depot warehouse
-	// before buying at source), and tier-4 capital stays proposal-gated. A nil reader is
-	// the emergency disable.
-	gateShortfallReader := capacityAdapters.NewGateShortfallReader(
-		capacityAdapters.NewShipHomeSystemFunc(db),
-		waypointRepo,
-		api.NewConstructionSiteRepository(apiClient, playerRepo),
-	)
-	capacityReconcilerHandler := capacityCmd.NewRunCapacityReconcilerCoordinatorHandler(
-		capacity.NewStaticDomain(capacity.ContractDeliveryDomainName, capacityAdapters.NewSensor(db, expansionAdapters.NewTreasuryReader(apiClient), capacityAdapters.WithGateShortfallReader(gateShortfallReader)), capacity.NewHeuristicPlanner()), // st-7ee SENSE + st-hlw PLAN + sp-3idiw gate demand
-		capacity.NewLadderDiffer(),                       // st-zr0 DIFF — cheapest-lever-first gap closure
-		capacity.NewCapexEmitter(contractDeliveryDemand), // st-x00 GOVERN — thin emitter: cheap tiers → Approved, capital tier → sp-1txd demand path (no second guard stack)
-		// st-5ig CONVERGE actuator (cheap tiers 1-3): each verb drives its EXISTING
-		// primitive; ExecuteCapital is fail-closed (st-0h8 owns the capital path).
-		capacityAdapters.NewActuator(
-			capacityAdapters.NewMediatorReassigner(med),                                         // tier-1 reassign -> fleet-assign command
-			capacityAdapters.NewMediatorRepositioner(med),                                       // tier-2 reposition -> navigate command
-			capacityAdapters.NewWorkerRebalanceEnsurer(containerRepo, daemonServer, playerRepo), // tier-2 workers -> ensure the sp-f5pr rebalancer runs
-			capacityAdapters.NewWarehouseBufferConfigurator(db, shared.NewRealClock()),          // tier-3 buffer -> depot supported-goods whitelist writer
-			capacityAdapters.NewTokenPlayerResolver(apiClient, playerRepo),                      // reconciling player from the ambient auth token
-		),
-		// st-0h8 CONVERGE proposal channel (tier-4 capital): files a capex proposal
-		// for human approval as a DEFERRED captain nudge carrying the full ROI
-		// evidence (reusing the EventScoutPostProposal outbox idiom). Filing spends
-		// NOTHING — capital executes only later via the approval-execution path
-		// (ProposalApprovalExecutor), past the invariant-4 gate — so this swap is
-		// deploy-inert (the contract_delivery capital class stays dormant; the
-		// arming lane st-cpc drives approvals).
-		capacityAdapters.NewProposalChannel(captainEventRepo, shared.NewRealClock()),
-		watchkeeper.NewWorkspace(cfg.Captain.WorkspaceDir),
-		nil, // nil = use RealClock
-	)
-	capacityReconcilerHandler.SetEventRecorder(captainEventRepo) // emit coordinator error-loop events on reconcile streak breach
-	// sp-difa.1: the durable per-player era-scoped contract-graduation gate. When the operator has
-	// graduated a player (`contract graduate`), the reconciler idles its contract-delivery reconciliation
-	// (no re-strand of idle hulls from contract HISTORY) DURABLY across restarts. Reads eras.contracts_graduated.
-	capacityReconcilerHandler.SetContractGraduationReader(persistence.NewEraRepository(db))
-	// The reuse-path depot LAUNCH bridge. When the reconciler reuses idle hulls to FULLY staff a
-	// hub's depot roles, this LAUNCHES the depot (persist + idempotent coordinator launch via the
-	// StartDepot lifecycle) so the reused hulls actually operate and the hub becomes covered — the
-	// reuse-path twin of the autosizer's buy-path StartWarehouse bridge.
-	capacityReconcilerHandler.SetDepotLauncher(grpc.NewCapacityReconcilerDepotLauncher(daemonServer))
-	if err := mediator.RegisterHandler[*capacityCmd.RunCapacityReconcilerCoordinatorCommand](med, capacityReconcilerHandler); err != nil {
-		return fmt.Errorf("failed to register CapacityReconcilerCoordinator handler: %w", err)
-	}
+	// sp-y2ptq (epic sp-9le3x): the capacity-reconciler contract-capacity stack was DELETED. The
+	// dedicated contract scaler (registered above) replaces it as the contract-fleet capacity owner, and
+	// the jump gate is COMPLETE so the gate-depot demand machinery is dead weight. All reconciler wiring
+	// (SENSE/PLAN/DIFF/GOVERN/CONVERGE, the gate-shortfall reader, the depot launcher, the graduation
+	// gate) is gone; nothing boot-standing or restart-recovering depends on it (RULINGS #2).
 
 	// Auto-outfit coordinator (sp-buyd): the standing guarded auto-outfit coordinator — the
 	// module analogue of the autosizer's hull-buying. Each tick it measures per-hull cargo

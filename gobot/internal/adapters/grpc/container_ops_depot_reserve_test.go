@@ -268,12 +268,12 @@ func TestHomeContractWorkerReserve_CountsOnlyUndedicatedHomeGeneralHaulers(t *te
 	s, db, playerID, _ := newDepotDeliveryTestServer(t)
 	s.contractConfig.MinHomeContractWorkers = 3
 
-	insertDepotDeliveryHull(t, db, "HOME-A", playerID, "", "X1-J58-A", false)                         // undedicated, home
-	insertDepotDeliveryHull(t, db, "HOME-B", playerID, "", "X1-J58-B", false)                         // undedicated, home
-	insertDepotDeliveryHull(t, db, "FOREIGN-C", playerID, "", "X1-ZZ99-C", false)                     // undedicated but FOREIGN system
-	insertDepotDeliveryHull(t, db, "PINNED-D", playerID, depot.DeliveryHullFleet, "X1-J58-D", false)  // already depot-delivery pinned (reclaim pool)
-	insertDepotDeliveryHull(t, db, "CONTRACT-E", playerID, contractDedicatedFleet, "X1-J58-E", false) // already contract-dedicated (counts toward floor)
-	insertDepotDeliveryHull(t, db, "CONTRACT-F", playerID, "depot-delivery", "X1-ZZ99-F", false)      // pinned but FOREIGN — not home cover
+	insertDepotDeliveryHull(t, db, "HOME-A", playerID, "", "X1-J58-A", false)                        // undedicated, home
+	insertDepotDeliveryHull(t, db, "HOME-B", playerID, "", "X1-J58-B", false)                        // undedicated, home
+	insertDepotDeliveryHull(t, db, "FOREIGN-C", playerID, "", "X1-ZZ99-C", false)                    // undedicated but FOREIGN system
+	insertDepotDeliveryHull(t, db, "PINNED-D", playerID, depot.DeliveryHullFleet, "X1-J58-D", false) // already depot-delivery pinned (reclaim pool)
+	insertDepotDeliveryHull(t, db, "CONTRACT-E", playerID, contractFleetTag, "X1-J58-E", false)      // already contract-dedicated (counts toward floor)
+	insertDepotDeliveryHull(t, db, "CONTRACT-F", playerID, "depot-delivery", "X1-ZZ99-F", false)     // pinned but FOREIGN — not home cover
 
 	// Registry whose delivery hubs sit in X1-J58, so the home region is X1-J58.
 	c, err := depot.NewContractDepot("j58", []depot.Element{{Waypoint: "X1-J58-WH"}}, nil,
@@ -338,7 +338,7 @@ func TestLaunchDepotCoordinators_ReservedHaulerDedicatedToContractPoachProof(t *
 		require.NoError(t, db.Table("ships").Select("dedicated_fleet").
 			Where("ship_symbol = ? AND player_id = ?", sym, playerID).Scan(&got).Error)
 		switch got.DedicatedFleet {
-		case contractDedicatedFleet:
+		case contractFleetTag:
 			contractDedicated++
 		case depot.DeliveryHullFleet:
 			pinnedCount++
@@ -359,7 +359,7 @@ func TestLaunchDepotCoordinators_ReservedHaulerDedicatedToContractPoachProof(t *
 
 	// NO SELF-STARVATION: the reserve is dedicated TO contract, so the contract coordinator's OWN
 	// dedicated lookup still surfaces it to source an unbuffered-good contract.
-	_, contractPool, err := appContract.FindIdleShipsByFleet(context.Background(), pid, s.shipRepo, contractDedicatedFleet)
+	_, contractPool, err := appContract.FindIdleShipsByFleet(context.Background(), pid, s.shipRepo, contractFleetTag)
 	require.NoError(t, err)
 	require.Subset(t, contractPool, []string{"DLV-D", "DLV-E"},
 		"the dedicated reserve still serves contracts via the coordinator's own FindIdleShipsByFleet(\"contract\") lookup")

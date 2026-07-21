@@ -58,23 +58,10 @@ const (
 	defaultMaxPriceExplorer               = 900000
 	defaultShipTypeExplorer               = "SHIP_EXPLORER"
 
-	// Contract-delivery class (sp-nkqn). Opt-IN (default OFF, arming knob). Its hulls are routine
-	// light haulers/warehouses/stockers sized to MEASURED contract demand, so: the ship type is a
-	// light frame; the class ceiling is DELIBERATELY CONSERVATIVE (the total ceiling is the hard
-	// backstop, the captain raises this from evidence); and the 25%-treasury affordability rule
-	// APPLIES (unlike the light/worker pool, the routine capital buy carries RULINGS #6's <=25%
-	// rule). The absolute price cap defaults to 0 (no cap; the premium-over-cheapest ceiling +
-	// reserve floor + 25% rule are the price protections, as for the light frame class it matches).
-	defaultFleetCeilingContractDelivery           = 10
-	defaultContractDeliveryTreasuryPctPerPurchase = 25
-	defaultShipTypeContractDelivery               = "SHIP_LIGHT_HAULER"
+	// sp-y2ptq: the autosizer's contract-delivery class defaults were removed with the class (the
+	// dedicated scaler owns contract-fleet capacity). The HullClassContractDelivery enum + the
+	// "contract" dedication mapping the scaler reuses stay.
 )
-
-// DefaultFleetCeilingContractDelivery is the contract-delivery class ceiling the
-// autosizer applies when config.yaml leaves it unset. Exported as the SINGLE source the
-// capacity reconciler's planner cap shares, so the two ceilings can never drift on their
-// default (RULINGS #5) — there is no second default to keep in lockstep, only this one.
-const DefaultFleetCeilingContractDelivery = defaultFleetCeilingContractDelivery
 
 // DemandParams carries the live-resolved config the demand providers need each tick (rotation
 // slots, etc.). The coordinator fills it from its runConfig so the providers, constructed once at
@@ -184,16 +171,8 @@ type RunFleetAutosizerCoordinatorCommand struct {
 	MaxPriceExplorer               int64
 	ShipTypeExplorer               string
 
-	// Contract-delivery class (sp-nkqn). ContractDeliveryHullsEnabled is the opt-IN arming knob
-	// (default OFF — nothing boot-arms routine scaling). FleetCeilingContractDelivery is the
-	// conservative per-class ceiling; ContractDeliveryTreasuryPctPerPurchase is the <=25% rule;
-	// MaxPriceContractDelivery is the absolute price cap (default 0 = no cap; premium ceiling
-	// applies); ShipTypeContractDelivery is the purchased light frame.
-	ContractDeliveryHullsEnabled           bool
-	FleetCeilingContractDelivery           int
-	ContractDeliveryTreasuryPctPerPurchase int
-	MaxPriceContractDelivery               int64
-	ShipTypeContractDelivery               string
+	// sp-y2ptq: the contract-delivery class knobs were removed with the autosizer's demand-driven
+	// contract scaling (the dedicated scaler owns it now).
 }
 
 // RunFleetAutosizerCoordinatorResponse reports reconcile progress. Because the loop is infinite
@@ -215,15 +194,14 @@ type RunFleetAutosizerCoordinatorHandler struct {
 	// Buy-path collaborators, wired by setters at boot. Every one is nil-safe: a nil reader
 	// yields an unreadable input, which the guard stack fails CLOSED on (no buy) — the API-utilization
 	// reader included (an absent/unreadable utilization holds concurrency growth rather than permitting it).
-	treasury   TreasuryReader
-	era        EraClockReader
-	apiUtil    APIUtilizationReader
-	fleetSize  FleetSizeReader
-	yardPrice  YardPriceReader
-	purchaser  Purchaser
-	notifier   PurchaseNotifier
-	metrics    MetricsSink
-	graduation ContractGraduationReader // sp-sjvv: gates the contract_delivery class on graduation (nil ⇒ fail-open)
+	treasury  TreasuryReader
+	era       EraClockReader
+	apiUtil   APIUtilizationReader
+	fleetSize FleetSizeReader
+	yardPrice YardPriceReader
+	purchaser Purchaser
+	notifier  PurchaseNotifier
+	metrics   MetricsSink
 
 	// warehouse is the typed handle to the warehouse provider. Held in addition to its
 	// slot in providers so the reconcile loop can invoke its DISPATCH step (place idle/stranded hulls
@@ -306,13 +284,6 @@ func (h *RunFleetAutosizerCoordinatorHandler) SetPurchaseNotifier(n PurchaseNoti
 // SetMetricsSink wires the metrics recorder. Optional and nil-safe (pure observation).
 func (h *RunFleetAutosizerCoordinatorHandler) SetMetricsSink(m MetricsSink) { h.metrics = m }
 
-// SetContractGraduationReader wires the contract-graduation gate for the contract_delivery class
-// (sp-sjvv). Unset (nil) ⇒ fail-OPEN: the class is never graduation-gated, so behavior is byte-identical
-// to pre-sjvv (the reconciler's own graduation idle still applies). Wired in production to the era repo.
-func (h *RunFleetAutosizerCoordinatorHandler) SetContractGraduationReader(r ContractGraduationReader) {
-	h.graduation = r
-}
-
 // Handle runs the reconcile loop until the context is cancelled.
 func (h *RunFleetAutosizerCoordinatorHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
 	logger := common.LoggerFromContext(ctx)
@@ -381,13 +352,9 @@ func (c autosizerRunConfig) classDisabled(class HullClass) bool {
 		// Opt-IN arming: the explorer class runs ONLY when explicitly armed, so a bare
 		// deploy skips it entirely and buys no ~819k ROI-exempt hull.
 		return !c.ExplorerHullsEnabled
-	case HullClassContractDelivery:
-		// Opt-IN arming (sp-nkqn): routine contract-hauler scaling runs ONLY when explicitly armed,
-		// so a bare deploy keeps the capacity reconciler's emitted demand dormant (byte-identical).
-		// Armed, the buy flows through this coordinator's SINGLE money-guard stack — guard-gated
-		// AUTO, not captain-approval-gated (RULINGS #6).
-		return !c.ContractDeliveryHullsEnabled
 	default:
-		return true // unknown class: never act
+		// sp-y2ptq: HullClassContractDelivery (the autosizer's removed contract-scaling class) now
+		// falls here — never sized by the autosizer (the dedicated scaler owns it). "unknown class: never act".
+		return true
 	}
 }

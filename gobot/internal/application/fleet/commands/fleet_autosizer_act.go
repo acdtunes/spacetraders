@@ -32,20 +32,6 @@ type EraClockReader interface {
 	HoursToEraEnd(ctx context.Context) (hours float64, readable bool, err error)
 }
 
-// ContractGraduationReader reads the durable per-player era-scoped contract-graduation flag (sp-difa.1)
-// — the SAME flag the capacity reconciler and the bootstrap coordinator consult. It gates the
-// contract_delivery class ONLY (sp-sjvv): a graduated fleet has DURABLY retired the contract-delivery
-// operation, so the autosizer must NOT auto-buy contract haulers for it even with the class armed. This
-// is defense-in-depth beside the reconciler's own graduation idle: the ContractDeliveryDemandBridge
-// holds the LATEST emitted demand and the reconciler simply STOPS emitting when graduated (it never
-// clears a prior Present demand), so a fleet that emitted demand and THEN graduated would leave stale
-// demand the autosizer would otherwise keep buying against — re-spawning the contract op difa.1 killed.
-// Fail-OPEN: a nil reader (unwired) or a read error is treated as UN-graduated, so the class runs exactly
-// as today (a mis-wire / transient DB hiccup never silently suppresses armed routine scaling).
-type ContractGraduationReader interface {
-	IsContractGraduated(ctx context.Context, playerID int) (bool, error)
-}
-
 // APIUtilizationReader reads the sustained request-utilization percent. readable=false ⇒ the
 // API-util guard fails CLOSED: an unreadable/absent utilization surface holds concurrency growth.
 type APIUtilizationReader interface {
@@ -162,13 +148,9 @@ func classGuardConfig(class HullClass, cfg autosizerRunConfig) (shipType string,
 		// The realized-$/hr payback exemption is applied class-gated INSIDE EvaluateGuards, not here —
 		// every knob returned here is a REAL guard bound the explorer must still clear.
 		return cfg.ShipTypeExplorer, cfg.FleetCeilingExplorer, cfg.MaxPriceExplorer, cfg.ExplorerTreasuryPctPerPurchase
-	case HullClassContractDelivery:
-		// sp-nkqn: the routine contract-hauler class. A light frame, a conservative per-class ceiling,
-		// no absolute price cap by default (the premium ceiling applies), and the 25% affordability
-		// rule (RULINGS #6). NOT explorer-exempt — EvaluateGuards runs the full realized-$/hr income
-		// guards on it, so a routine buy is a MEASURED-demand buy.
-		return cfg.ShipTypeContractDelivery, cfg.FleetCeilingContractDelivery, cfg.MaxPriceContractDelivery, cfg.ContractDeliveryTreasuryPctPerPurchase
 	default:
+		// sp-y2ptq: HullClassContractDelivery's guard config was removed with the autosizer's contract
+		// class (the dedicated scaler owns it). An unhandled class yields no buy config.
 		return "", 0, 0, 0
 	}
 }

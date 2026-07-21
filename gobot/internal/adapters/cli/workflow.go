@@ -34,7 +34,6 @@ Examples:
 	cmd.AddCommand(newWorkflowTradeFleetCoordinatorCommand())
 	cmd.AddCommand(newWorkflowSitingCoordinatorCommand())
 	cmd.AddCommand(newWorkflowFleetAutosizerCommand())
-	cmd.AddCommand(newWorkflowCapacityReconcilerCommand())
 	cmd.AddCommand(newWorkflowShipyardBackfillCommand())
 	cmd.AddCommand(newWorkflowAutoOutfitCommand())
 	cmd.AddCommand(newWorkflowBootstrapCommand())

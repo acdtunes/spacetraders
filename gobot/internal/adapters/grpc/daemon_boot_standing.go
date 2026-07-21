@@ -47,22 +47,11 @@ var bootStandingCoordinatorTypes = []container.ContainerType{
 	// re-launching it every boot is a safe no-op. Its launch is idempotent (skips if already RUNNING/
 	// PENDING). THIS is what removes the manual `workflow bootstrap` at every era start.
 	container.ContainerTypeBootstrapCoordinator,
-	// sp-ov8z: the capacity reconciler is the only standing brain with NO other auto-launch path — the
-	// bootstrap GATE hand-off launches the autosizer/siting/rebalancer but NOT this — so it must be
-	// boot-standing for a zero-intervention cold start. It reconciles the contract-delivery topology
-	// toward a computed desired topology and IDLES when converged (an empty desired during cold start ⇒
-	// no actions); tier-4 capital stays gated behind the human-approved proposal path (no auto-buy).
-	// Auto-arming it is safe ONLY because sp-2jrz (stop-is-complete-retire) landed: a deploy re-adopts a
-	// live reconciler unchanged (the INTERRUPTED path never retires), and a decommission STOP retires it
-	// cleanly. This DELIBERATELY reverses the earlier "st-fyr deploy-inert hard requirement". Its launch
-	// is idempotent (skips if already RUNNING/PENDING); its own creation path also refuses a second live
-	// reconciler. FLAGGED (sp-ov8z): once boot-standing, a bare STOP no longer decommissions it across a
-	// restart — boot re-launches it — so a durable decommission additionally needs config dry_run/disable
-	// (cf. the sp-udgc demand-driven-boot-guard pattern).
+	// sp-y2ptq (epic sp-9le3x): the capacity reconciler was DELETED (dedicated contract scaler replaces
+	// it; jump gate COMPLETE). It is no longer boot-standing — nothing restart-surviving depends on it.
 	//
 	// The fleet autosizer is DELIBERATELY NOT a member: the bootstrap GATE hand-off already launches it
 	// at the mature-economy phase; boot-standing it would launch it prematurely during DATA/INCOME.
-	container.ContainerTypeCapacityReconciler,
 	// sp-9ujl (epic sp-difa, Auto-pilot Phase 1): the scout-post coordinator MANS the standing
 	// freshness posts the MarketFreshnessSizer (above) only DECLARES — each tick it assigns a probe to
 	// every unmanned slot (SetAssignedHull), partitions the system's markets across the post's hulls,
@@ -113,8 +102,6 @@ func (s *DaemonServer) ensureBootStandingCoordinators(ctx context.Context, playe
 			}
 		case container.ContainerTypeBootstrapCoordinator:
 			s.ensureBootstrapStanding(ctx, playerID)
-		case container.ContainerTypeCapacityReconciler:
-			s.ensureCapacityReconcilerStanding(ctx, playerID)
 		case container.ContainerTypeScoutPostCoordinator:
 			s.ensureScoutPostStanding(ctx, playerID)
 		}
@@ -146,25 +133,6 @@ func (s *DaemonServer) ensureBootstrapStanding(ctx context.Context, playerID int
 	}
 	if _, lerr := s.BootstrapCoordinator(ctx, playerID, s.agentSymbolForPlayer(ctx, playerID), false); lerr != nil {
 		fmt.Printf("Warning: failed to launch boot-standing bootstrap coordinator: %v\n", lerr)
-	}
-}
-
-// ensureCapacityReconcilerStanding launches the standing capacity reconciler (sp-ov8z) when none is
-// already running for the player. Idempotent via the containerTypeRunning pre-check (the reconciler's
-// own creation path also refuses a second live reconciler), so a warm restart re-adopts the existing
-// one instead of double-launching. Auto-armed (dryRun=false) — config.yaml [capacity_reconciler]
-// dry_run can still force observe-only. A launch failure is logged and non-fatal.
-func (s *DaemonServer) ensureCapacityReconcilerStanding(ctx context.Context, playerID int) {
-	running, err := containerTypeRunning(ctx, s.containerRepo, playerID, container.ContainerTypeCapacityReconciler)
-	if err != nil {
-		fmt.Printf("Warning: failed to check capacity reconciler state: %v\n", err)
-		return
-	}
-	if running {
-		return
-	}
-	if _, lerr := s.CapacityReconcilerCoordinator(ctx, playerID, false); lerr != nil {
-		fmt.Printf("Warning: failed to launch boot-standing capacity reconciler: %v\n", lerr)
 	}
 }
 

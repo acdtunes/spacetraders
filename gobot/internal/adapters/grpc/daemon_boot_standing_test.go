@@ -91,16 +91,13 @@ func TestEnsureBootStandingCoordinators_NoPanicOnGenesisEmptyDB(t *testing.T) {
 }
 
 // sp-ov8z (epic sp-difa, Auto-pilot Phase 1): the ARMING half of zero-intervention cold start.
-// The captain-bootstrap coordinator and the capacity reconciler must be BOOT-STANDING so an era
-// transition + daemon boot self-starts the whole cold-start machine with no manual
-// `workflow bootstrap` / `workflow capacity-reconciler` launch. Auto-arming the reconciler is only
-// safe because sp-2jrz (stop-is-complete-retire) landed — a mid-era restart re-adopts a live one and
-// a decommission STOP retires it cleanly.
-func TestBootStandingSet_IncludesBootstrapAndReconciler(t *testing.T) {
+// The captain-bootstrap coordinator must be BOOT-STANDING so an era transition + daemon boot
+// self-starts the whole cold-start machine with no manual `workflow bootstrap` launch.
+// sp-y2ptq (epic sp-9le3x): the capacity reconciler is NO LONGER a member — it was deleted (the
+// dedicated contract scaler replaces it), so this test now guards only the bootstrap membership.
+func TestBootStandingSet_IncludesBootstrap(t *testing.T) {
 	require.Contains(t, bootStandingCoordinatorTypes, container.ContainerTypeBootstrapCoordinator,
 		"the captain-bootstrap coordinator must be boot-standing: it is the master switch that self-drives DATA→INCOME→GATE and hands off the mature economy (sp-ov8z)")
-	require.Contains(t, bootStandingCoordinatorTypes, container.ContainerTypeCapacityReconciler,
-		"the capacity reconciler must be boot-standing: it is the only standing brain with no other auto-launch path, restart-safe post-sp-2jrz (sp-ov8z)")
 }
 
 // sp-ov8z: the fleet autosizer is deliberately NOT boot-standing. The bootstrap coordinator's GATE
@@ -116,10 +113,11 @@ func TestBootStandingSet_ExcludesFleetAutosizer(t *testing.T) {
 	}
 }
 
-// sp-ov8z: on a boot with a player present and no standing bootstrap/reconciler yet, both must be
-// launched exactly once. The bootstrap launch resolves the agent symbol from the player row (it
-// threads into the GATE hand-off), so the persisted container carries it.
-func TestEnsureBootStandingCoordinators_LaunchesBootstrapAndReconcilerWhenAbsent(t *testing.T) {
+// sp-ov8z: on a boot with a player present and no standing bootstrap yet, it must be launched exactly
+// once. The bootstrap launch resolves the agent symbol from the player row (it threads into the GATE
+// hand-off), so the persisted container carries it. (sp-y2ptq: the capacity reconciler was deleted, so
+// only bootstrap is asserted here now.)
+func TestEnsureBootStandingCoordinators_LaunchesBootstrapWhenAbsent(t *testing.T) {
 	s, db, playerID := newRecoveryTestServer(t)
 	s.playerRepo = persistence.NewGormPlayerRepository(db) // so the bootstrap launch resolves the agent symbol
 
@@ -132,8 +130,6 @@ func TestEnsureBootStandingCoordinators_LaunchesBootstrapAndReconcilerWhenAbsent
 
 	require.Equal(t, int64(1), countContainersOfType(t, db, playerID, container.ContainerTypeBootstrapCoordinator),
 		"boot must launch exactly one standing bootstrap coordinator when none is running")
-	require.Equal(t, int64(1), countContainersOfType(t, db, playerID, container.ContainerTypeCapacityReconciler),
-		"boot must launch exactly one standing capacity reconciler when none is running")
 
 	// The bootstrap container must carry the resolved agent symbol (REC-AGENT from the test player row).
 	var bootstrapModel persistence.ContainerModel
@@ -143,17 +139,16 @@ func TestEnsureBootStandingCoordinators_LaunchesBootstrapAndReconcilerWhenAbsent
 		"the boot-standing bootstrap launch must resolve + persist the player's agent symbol for the GATE hand-off")
 }
 
-// sp-ov8z: idempotence — a warm restart must never double-launch. With a bootstrap and a reconciler
-// already RUNNING (recovered from a prior boot), a second ensureBootStandingCoordinators pass must
-// launch no duplicate of either, mirroring the market-freshness sizer's containerTypeRunning guard.
-func TestEnsureBootStandingCoordinators_IdempotentForBootstrapAndReconciler(t *testing.T) {
+// sp-ov8z: idempotence — a warm restart must never double-launch. With a bootstrap already RUNNING
+// (recovered from a prior boot), a second ensureBootStandingCoordinators pass must launch no duplicate,
+// mirroring the market-freshness sizer's containerTypeRunning guard. (sp-y2ptq: the capacity reconciler
+// was deleted, so only bootstrap idempotence is asserted here now.)
+func TestEnsureBootStandingCoordinators_IdempotentForBootstrap(t *testing.T) {
 	s, db, playerID := newRecoveryTestServer(t)
 	s.playerRepo = persistence.NewGormPlayerRepository(db)
 
 	insertRunningContainer(t, db, "bootstrap-existing", "bootstrap",
 		string(container.ContainerTypeBootstrapCoordinator), `{"container_id":"bootstrap-existing","agent_symbol":"REC-AGENT"}`, playerID, nil)
-	insertRunningContainer(t, db, "capacity-reconciler-existing", "capacity_reconciler_coordinator",
-		string(container.ContainerTypeCapacityReconciler), `{"container_id":"capacity-reconciler-existing"}`, playerID, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -162,8 +157,6 @@ func TestEnsureBootStandingCoordinators_IdempotentForBootstrapAndReconciler(t *t
 
 	require.Equal(t, int64(1), countContainersOfType(t, db, playerID, container.ContainerTypeBootstrapCoordinator),
 		"a warm restart must not launch a duplicate bootstrap coordinator when one is already RUNNING")
-	require.Equal(t, int64(1), countContainersOfType(t, db, playerID, container.ContainerTypeCapacityReconciler),
-		"a warm restart must not launch a duplicate capacity reconciler when one is already RUNNING")
 }
 
 // sp-9ujl (epic sp-difa, Auto-pilot Phase 1): the scout-post coordinator must be BOOT-STANDING. The

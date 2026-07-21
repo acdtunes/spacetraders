@@ -5,8 +5,13 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/capacity"
 )
+
+// contractHaulerTierSaturation is the contract-hauler pool size at/below which bootstrap OWNS the
+// contract-hauler buys itself (the "seed 0→tier" range of the sp-sjvv single-buyer arbitration). It was
+// the capacity planner's ContractHaulerTierSaturation; inlined here (sp-y2ptq, epic sp-9le3x) when the
+// capacity stack was deleted, preserving the exact prior threshold (byte-identical behavior).
+const contractHaulerTierSaturation = 2
 
 // actIncome runs the INCOME phase (Slice 2): the contract-income ramp. Four independently-guarded,
 // idempotent actions on the observed delta, ordered so the fleet earns from tick 1 and never deadlocks:
@@ -90,22 +95,21 @@ func (h *RunBootstrapCoordinatorHandler) actIncome(ctx context.Context, cmd *Run
 // standing fleet autosizer (sp-sjvv single-buyer arbitration — the hauler sibling of the sp-tsn2
 // probe→freshsizer deferral). It engages ONLY when armed (autosizer_early_scaling) AND a fleet autosizer
 // is actually running to take over (obs.AutosizerRunning) AND the contract-hauler pool has reached the
-// tier (len(Haulers) >= capacity.ContractHaulerTierSaturation). CLEAN OWNERSHIP BY RANGE: bootstrap SEEDS
-// 0→tier itself (it keeps buying below the tier behind its own capital gate), the autosizer scales tier→N.
-// The tier gate is load-bearing — below it the capacity reconciler withholds ALL contract-delivery demand
-// (ComputeDesired returns empty), so deferring below the tier would leave the pool with no buyer and wedge
-// at 1: the two-buyer deadlock this dissolves. bootstrap also never defers into a vacuum, so a cold start
-// cannot wedge if the autosizer is down (bootstrap keeps buying until the early launch lands). The autosizer
-// scales the contract operation against the reconciler's emitted demand behind its own guard stack (reserve
-// floor + ≤25% treasury + era-payback), so exactly ONE buyer grows the contract fleet in each range. Default
-// off ⇒ always false (byte-identical to today: bootstrap buys its haulers itself). A deferral is surfaced on
-// the heartbeat, never silent.
+// tier (len(Haulers) >= contractHaulerTierSaturation). CLEAN OWNERSHIP BY RANGE: bootstrap SEEDS
+// 0→tier itself (it keeps buying below the tier behind its own capital gate), the sizer scales tier→N.
+// bootstrap never defers into a vacuum, so a cold start cannot wedge if the sizer is down (bootstrap keeps
+// buying until the early launch lands), and a deferral is surfaced on the heartbeat, never silent.
+//
+// sp-y2ptq (epic sp-9le3x): this is LEGACY single-buyer arbitration for the autosizer's now-DELETED
+// contract-delivery scaling path — the dedicated contract scaler (with its own contract_scaler_early_scaling
+// arm + deferral) supersedes it. Left in place, byte-identical, rather than disentangled from the shared
+// autosizer LaunchAutosizer/AutosizerRunning machinery in this deletion lane; the tier constant is inlined.
 func (h *RunBootstrapCoordinatorHandler) deferHaulerBuyToAutosizer(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) bool {
-	if !cfg.AutosizerEarlyScaling || !obs.AutosizerRunning || len(obs.Haulers) < capacity.ContractHaulerTierSaturation {
+	if !cfg.AutosizerEarlyScaling || !obs.AutosizerRunning || len(obs.Haulers) < contractHaulerTierSaturation {
 		return false
 	}
 	res.Blocker = "deferred_to_autosizer"
-	common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf("Bootstrap contract hauler needed (%d/%d) but DEFERRING the buy to the running fleet autosizer — single-buyer arbitration (sp-sjvv): the autosizer scales the contract op against the capacity reconciler's demand while the frigate keeps earning; the two never bid on one treasury", len(obs.Haulers), cfg.HaulerTarget), map[string]interface{}{
+	common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf("Bootstrap contract hauler needed (%d/%d) but DEFERRING the buy to the running fleet autosizer — single-buyer arbitration (sp-sjvv): the sizer scales the contract op while the frigate keeps earning; the two never bid on one treasury", len(obs.Haulers), cfg.HaulerTarget), map[string]interface{}{
 		"action":       "bootstrap_hauler_deferred",
 		"container_id": cmd.ContainerID,
 		"blocker":      "deferred_to_autosizer",

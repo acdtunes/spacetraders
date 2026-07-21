@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/capacity"
 )
 
 // sp-sjvv (ktio-B): the cold-start contract-scaling feature. ONE tunable flag (autosizer_early_scaling,
@@ -93,19 +92,19 @@ func TestBootstrap_HaulerArbitration_ArmedAndAutosizerRunning_FirstHaulerKept(t 
 
 // --- sp-mvo8: seed-tier ownership by range (bootstrap owns 0→tier, the autosizer owns tier→N) ---
 
-// ARMED + autosizer running but the pool is BELOW the tier (capacity.ContractHaulerTierSaturation):
+// ARMED + autosizer running but the pool is BELOW the tier (contractHaulerTierSaturation):
 // bootstrap SEEDS the tier ITSELF — it BUYS, it does NOT defer. Below the tier the reconciler withholds
 // ALL contract-delivery demand (ComputeDesired returns empty), so a deferral here would leave nobody to
 // buy and the pool would stick at 1 — the two-buyer deadlock. The buy runs behind the existing capital
 // gate (an idle purchaser executes it). One hauler is strictly below the tier of 2.
 func TestBootstrap_SeedsHaulerTier_BuysBelowTier_WhenArbitrationArmed(t *testing.T) {
-	if capacity.ContractHaulerTierSaturation < 2 {
+	if contractHaulerTierSaturation < 2 {
 		t.Skip("test assumes a tier ≥ 2 so len==1 is strictly below it")
 	}
 	acq := &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true}
 	armed := &fakeLiveConfig{snap: liveconfig.Snapshot{"autosizer_early_scaling": 1}}
 	// One hauler = below the tier → bootstrap must seed (buy), not defer.
-	h := sjvvHandler(sjvvIncomeObs(true, capacity.ContractHaulerTierSaturation-1), armed, &fakeHandoff{}, acq)
+	h := sjvvHandler(sjvvIncomeObs(true, contractHaulerTierSaturation-1), armed, &fakeHandoff{}, acq)
 
 	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if err != nil {
@@ -119,7 +118,7 @@ func TestBootstrap_SeedsHaulerTier_BuysBelowTier_WhenArbitrationArmed(t *testing
 	}
 }
 
-// ARMED + autosizer running + the pool AT the tier (capacity.ContractHaulerTierSaturation): bootstrap
+// ARMED + autosizer running + the pool AT the tier (contractHaulerTierSaturation): bootstrap
 // DEFERS tier→N scaling to the autosizer — the single buyer now that the reconciler emits demand (at the
 // tier ComputeDesired stops withholding). Anti-theatre half: the at-tier defer holds on BOTH the buggy
 // and the fixed code (only the below-tier path changed), so a green below-tier test is a validated flip,
@@ -128,7 +127,7 @@ func TestBootstrap_DefersToAutosizer_AtOrAboveTier(t *testing.T) {
 	acq := &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true}
 	armed := &fakeLiveConfig{snap: liveconfig.Snapshot{"autosizer_early_scaling": 1}}
 	// At the tier → the autosizer owns scaling; bootstrap defers.
-	h := sjvvHandler(sjvvIncomeObs(true, capacity.ContractHaulerTierSaturation), armed, &fakeHandoff{}, acq)
+	h := sjvvHandler(sjvvIncomeObs(true, contractHaulerTierSaturation), armed, &fakeHandoff{}, acq)
 
 	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if err != nil {

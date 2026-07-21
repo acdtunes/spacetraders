@@ -1365,26 +1365,6 @@ func (c *DaemonClient) FleetAutosizerCoordinator(ctx context.Context, playerID i
 	return resp.ContainerId, nil
 }
 
-// CapacityReconcilerCoordinator starts the standing capacity reconciler (st-7zk): drives the
-// contract-delivery machine's actual capacity topology toward the computed desired topology,
-// capex-paced. Identity-only launch — all [capacity_reconciler] calibration resolves live from
-// config.yaml. Explicit start only; a fresh deploy never arms it. dryRun (the CLI --dry-run)
-// launches it observe-only: it evaluates + logs every decision but actuates nothing.
-func (c *DaemonClient) CapacityReconcilerCoordinator(ctx context.Context, playerID int, agentSymbol string, dryRun bool) (string, error) {
-	req := &pb.CapacityReconcilerCoordinatorRequest{
-		PlayerId: int32(playerID),
-		DryRun:   dryRun,
-	}
-	if agentSymbol != "" {
-		req.AgentSymbol = &agentSymbol
-	}
-	resp, err := c.client.CapacityReconcilerCoordinator(ctx, req)
-	if err != nil {
-		return "", fmt.Errorf(grpcCallFailed, err)
-	}
-	return resp.ContainerId, nil
-}
-
 // AutoOutfitCoordinator starts the standing guarded auto-outfit coordinator (sp-buyd): the
 // module analogue of hull acquisition. Identity-only launch — all knobs default and are
 // live-tunable via `tune --operation autooutfit`. dryRun (the CLI --dry-run) launches it in
