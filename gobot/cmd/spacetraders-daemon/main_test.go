@@ -45,6 +45,7 @@ var knownUnregisteredExceptions = map[string]string{
 	"SyncPlayerCommand":        "handler exists (internal/application/player/commands/register_player.go) but nothing constructs or dispatches this command anywhere in the codebase, unlike its sibling RegisterPlayerCommand; dead code predating sp-423c",
 	"RegisterPlayerCommand":    "dispatched via a direct handler.Handle() call from the CLI (internal/adapters/cli/player.go), bypassing the mediator by design",
 	"CargoTransactionCommand":  "dispatched via a direct handler.Handle() call from SellCargoHandler/PurchaseCargoHandler as an internal shared-handler composition (internal/application/ship/commands/cargo/), bypassing the mediator by design",
+	"RunContractScalerCommand": "the dedicated contract auto-scaler coordinator brain (epic sp-9le3x, C2): the tested domain+application core (role lookup, fixed plan, ramp buy-loop, 200k cushion) lands ahead of its daemon actuation lane (C2b: container type, launch/recovery, concrete geometry+market ports, handler registration, tune knob). Byte-identical until C2b wires + arms it; the registration lands with C2b, which removes this entry.",
 }
 
 // TestEveryDeclaredCommandAndQueryIsRegisteredOrExempt is the primary gate: a

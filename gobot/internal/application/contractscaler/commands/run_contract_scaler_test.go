@@ -1,0 +1,254 @@
+package commands
+
+import (
+	"context"
+	"testing"
+
+	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/contractscaler"
+)
+
+// --- fakes ---
+
+type fakeRoleResolver struct {
+	roles  contractscaler.EraRoles
+	demand map[string]float64
+	calls  int
+	err    error
+}
+
+func (f *fakeRoleResolver) ResolveRoles(ctx context.Context, playerID int) (contractscaler.EraRoles, map[string]float64, error) {
+	f.calls++
+	return f.roles, f.demand, f.err
+}
+
+type fakeTreasury struct {
+	credits  int64
+	readable bool
+}
+
+func (f *fakeTreasury) Treasury(ctx context.Context, playerID int) (int64, bool, error) {
+	return f.credits, f.readable, nil
+}
+
+type fakePrice struct {
+	price    int64
+	yard     string
+	readable bool
+}
+
+func (f *fakePrice) NextHullPrice(ctx context.Context, playerID int, shipType string) (int64, string, bool, error) {
+	return f.price, f.yard, f.readable, nil
+}
+
+type fakeCounter struct{ n int }
+
+func (f *fakeCounter) ContractHullCount(ctx context.Context, playerID int) (int, error) {
+	return f.n, nil
+}
+
+type fakePurchaser struct {
+	orders []BuyOrder
+	// each buy decrements treasury via the linked fakeTreasury and increments the counter,
+	// so the ramp loop sees the fleet grow and the cushion shrink like production.
+	treasury *fakeTreasury
+	counter  *fakeCounter
+}
+
+func (f *fakePurchaser) BuyAndHome(ctx context.Context, order BuyOrder) (BuyResult, error) {
+	f.orders = append(f.orders, order)
+	if f.treasury != nil {
+		f.treasury.credits -= order.ExpectedPrice
+	}
+	if f.counter != nil {
+		f.counter.n++
+	}
+	return BuyResult{ShipSymbol: "SHIP-NEW", Price: order.ExpectedPrice}, nil
+}
+
+// fakeCeiling implements liveconfig.Reader with a settable live ceiling.
+type fakeCeiling struct{ value int }
+
+func (f *fakeCeiling) Snapshot(ctx context.Context, containerID string, playerID int) (liveconfig.Snapshot, error) {
+	if f.value <= 0 {
+		return liveconfig.Snapshot{}, nil
+	}
+	return liveconfig.Snapshot{ceilingKey: f.value}, nil
+}
+
+func threeParkRoles() contractscaler.EraRoles {
+	return contractscaler.EraRoles{CentralParks: []string{"P1", "P2", "P3"}, FarSink: "J1"}
+}
+
+// harness wires a handler with fakes; treasury starts rich, price cheap.
+func newHarness(ceiling int) (*RunContractScalerHandler, *fakePurchaser, *fakeCeiling, *fakeRoleResolver) {
+	treasury := &fakeTreasury{credits: 5_000_000, readable: true}
+	counter := &fakeCounter{n: 0}
+	pur := &fakePurchaser{treasury: treasury, counter: counter}
+	ceil := &fakeCeiling{value: ceiling}
+	rr := &fakeRoleResolver{roles: threeParkRoles(), demand: map[string]float64{"P1": 3, "P2": 9, "P3": 5}}
+
+	h := NewRunContractScalerHandler(nil)
+	h.SetRoleResolver(rr)
+	h.SetTreasuryReader(treasury)
+	h.SetPriceReader(&fakePrice{price: 100_000, yard: "YARD", readable: true})
+	h.SetFleetCounter(counter)
+	h.SetPurchaser(pur)
+	h.SetCeilingReader(ceil)
+	return h, pur, ceil, rr
+}
+
+func reconcile(t *testing.T, h *RunContractScalerHandler, ceiling int) int {
+	t.Helper()
+	cmd := &RunContractScalerCommand{PlayerID: 1, ContainerID: "cs-1"}
+	n, err := h.reconcileOnce(context.Background(), cmd)
+	if err != nil {
+		t.Fatalf("reconcileOnce error: %v", err)
+	}
+	return n
+}
+
+// RAMP with NO per-tick cap: a rich treasury buys the whole target in one tick.
+func TestReconcile_RampsToCeilingInOneTickNoPerTickCap(t *testing.T) {
+	h, pur, _, _ := newHarness(3)
+
+	bought := reconcile(t, h, 3)
+	if bought != 3 {
+		t.Fatalf("bought %d, want 3 in a single tick (no per-tick cap)", bought)
+	}
+	if len(pur.orders) != 3 {
+		t.Fatalf("purchaser saw %d orders, want 3", len(pur.orders))
+	}
+	// Delivery hulls first, demand-ranked distinct parks.
+	if pur.orders[0].Unit.Target != "P2" || pur.orders[1].Unit.Target != "P3" || pur.orders[2].Unit.Target != "P1" {
+		t.Fatalf("delivery targets = %q/%q/%q, want P2/P3/P1 (demand-ranked)", pur.orders[0].Unit.Target, pur.orders[1].Unit.Target, pur.orders[2].Unit.Target)
+	}
+}
+
+// The ceiling caps the ramp: min(plan, ceiling).
+func TestReconcile_StopsAtLiveCeiling(t *testing.T) {
+	h, pur, _, _ := newHarness(2)
+
+	bought := reconcile(t, h, 2)
+	if bought != 2 {
+		t.Fatalf("bought %d, want 2 (ceiling caps the plan)", bought)
+	}
+	if len(pur.orders) != 2 {
+		t.Fatalf("purchaser saw %d orders, want 2", len(pur.orders))
+	}
+}
+
+// THE 200k CUSHION IS THE SOLE GUARD: a treasury that cannot leave 200000 after
+// the buy halts the ramp — even with plan + ceiling headroom.
+func TestReconcile_TwoHundredKCushionHaltsBuying(t *testing.T) {
+	h, pur, _, _ := newHarness(3)
+	// treasury 250k, price 100k: first buy leaves 150k (< 200000) → the buy is BLOCKED.
+	h.SetTreasuryReader(&fakeTreasury{credits: 250_000, readable: true})
+	// re-link the purchaser to this treasury so a (blocked) buy would have shown.
+	tr := &fakeTreasury{credits: 250_000, readable: true}
+	pur.treasury = tr
+	h.SetTreasuryReader(tr)
+
+	bought := reconcile(t, h, 3)
+	if bought != 0 {
+		t.Fatalf("bought %d, want 0 — treasury-price (250k-100k=150k) is below the 200000 cushion", bought)
+	}
+	if len(pur.orders) != 0 {
+		t.Fatalf("purchaser saw %d orders, want 0 (cushion gates the buy)", len(pur.orders))
+	}
+}
+
+// Just above the cushion: treasury 300k, price 100k leaves exactly 200000 → the
+// buy proceeds (>= is allowed).
+func TestReconcile_BuysWhenExactlyAtCushion(t *testing.T) {
+	h, _, _, _ := newHarness(1)
+	tr := &fakeTreasury{credits: 300_000, readable: true}
+	h.SetTreasuryReader(tr)
+	h.SetPurchaser(&fakePurchaser{treasury: tr, counter: &fakeCounter{}})
+
+	if bought := reconcile(t, h, 1); bought != 1 {
+		t.Fatalf("bought %d, want 1 — 300k-100k=200000 meets the cushion exactly", bought)
+	}
+}
+
+// Fail-closed: an unreadable treasury never spends.
+func TestReconcile_UnreadableTreasuryFailsClosed(t *testing.T) {
+	h, pur, _, _ := newHarness(3)
+	h.SetTreasuryReader(&fakeTreasury{credits: 5_000_000, readable: false})
+
+	if bought := reconcile(t, h, 3); bought != 0 || len(pur.orders) != 0 {
+		t.Fatalf("bought %d (orders %d), want 0 — unreadable treasury fails closed", bought, len(pur.orders))
+	}
+}
+
+// Fail-closed: an unreadable price never spends.
+func TestReconcile_UnreadablePriceFailsClosed(t *testing.T) {
+	h, pur, _, _ := newHarness(3)
+	h.SetPriceReader(&fakePrice{price: 0, yard: "", readable: false})
+
+	if bought := reconcile(t, h, 3); bought != 0 || len(pur.orders) != 0 {
+		t.Fatalf("bought %d (orders %d), want 0 — unreadable price fails closed", bought, len(pur.orders))
+	}
+}
+
+// The ceiling is LIVE: raising it between ticks lets the standing scaler buy the
+// next fixed-sequence units immediately, no restart.
+func TestReconcile_LiveCeilingReReadEachTick(t *testing.T) {
+	h, pur, ceil, _ := newHarness(1)
+
+	if bought := reconcile(t, h, 1); bought != 1 {
+		t.Fatalf("tick 1 bought %d, want 1 at ceiling 1", bought)
+	}
+	ceil.value = 3 // operator raises the live ceiling, no restart
+	if bought := reconcile(t, h, 3); bought != 2 {
+		t.Fatalf("tick 2 bought %d, want 2 more (ramp 1→3 at the new live ceiling)", bought)
+	}
+	if len(pur.orders) != 3 {
+		t.Fatalf("total orders %d, want 3 across the two ticks", len(pur.orders))
+	}
+}
+
+// Default-off: a disabled scaler never buys (byte-identical to not running).
+func TestReconcile_DisabledNeverBuys(t *testing.T) {
+	h, pur, _, _ := newHarness(3)
+	cmd := &RunContractScalerCommand{PlayerID: 1, ContainerID: "cs-1", Disabled: true}
+	n, err := h.reconcileOnce(context.Background(), cmd)
+	if err != nil {
+		t.Fatalf("reconcileOnce error: %v", err)
+	}
+	if n != 0 || len(pur.orders) != 0 {
+		t.Fatalf("disabled scaler bought %d (orders %d), want 0", n, len(pur.orders))
+	}
+}
+
+// The role lookup is a LOOKUP resolved ONCE at arm, not a per-tick solve.
+func TestReconcile_RoleLookupMemoizedAtArm(t *testing.T) {
+	h, _, _, rr := newHarness(1)
+	for i := 0; i < 3; i++ {
+		reconcile(t, h, 1)
+	}
+	if rr.calls != 1 {
+		t.Fatalf("ResolveRoles called %d times, want exactly 1 (memoized at arm)", rr.calls)
+	}
+}
+
+// EXCLUSIVITY: every scaler buy carries the dedicated "contract" fleet + the
+// demand-ranked spread set, so the hull is homed to C1's spread and never poached.
+func TestReconcile_BuyOrderCarriesContractDedicationAndSpreadDemand(t *testing.T) {
+	h, pur, _, _ := newHarness(1)
+	reconcile(t, h, 1)
+
+	if len(pur.orders) != 1 {
+		t.Fatalf("orders = %d, want 1", len(pur.orders))
+	}
+	o := pur.orders[0]
+	if o.DedicatedFleet != "contract" {
+		t.Fatalf("order fleet = %q, want the exclusive \"contract\" dedication", o.DedicatedFleet)
+	}
+	if o.StandbyDemand["P2"] != 9 {
+		t.Fatalf("order StandbyDemand missing the park weights (got %v)", o.StandbyDemand)
+	}
+	if len(o.StandbyStations) != 3 {
+		t.Fatalf("order StandbyStations = %v, want the 3 central parks (spread set)", o.StandbyStations)
+	}
+}
