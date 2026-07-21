@@ -29,6 +29,27 @@ func (s *homeStubShipRepo) FindAllByPlayer(_ context.Context, _ shared.PlayerID)
 	return s.fleet, nil
 }
 
+// homeMultiShipRepo serves a fleet of ships by symbol (FindBySymbol) and the whole
+// set for peer-occupancy (FindAllByPlayer), so a test can home several co-located
+// hulls through independent Handle calls and observe the collective distribution.
+type homeMultiShipRepo struct {
+	navigation.ShipRepository
+	ships map[string]*navigation.Ship
+	fleet []*navigation.Ship
+}
+
+func (s *homeMultiShipRepo) FindBySymbol(_ context.Context, symbol string, _ shared.PlayerID) (*navigation.Ship, error) {
+	ship, ok := s.ships[symbol]
+	if !ok {
+		return nil, fmt.Errorf("ship %s not found", symbol)
+	}
+	return ship, nil
+}
+
+func (s *homeMultiShipRepo) FindAllByPlayer(_ context.Context, _ shared.PlayerID) ([]*navigation.Ship, error) {
+	return s.fleet, nil
+}
+
 // homeStubGraphProvider serves a fixed, pre-built graph regardless of the
 // system symbol requested - every test here uses a single system.
 type homeStubGraphProvider struct {
@@ -370,6 +391,88 @@ func TestHomeShipHandler_InTransitHullNeverMoved(t *testing.T) {
 	}
 	if homeResp.Navigated {
 		t.Fatalf("expected Navigated=false for an in-transit hull, got %+v", homeResp)
+	}
+}
+
+// THE LOAD-BEARING PROOF (sp-jydtb): several idle dedicated hulls sitting at the
+// SAME sink, homed against the same snapshot with no peer parked at any hub yet,
+// must SPREAD across the standby set instead of all piling on one point. The old
+// occupancy+distance balancer collapses them (every hub reads occupancy 0, so the
+// pure-distance tie sends every hull to the same nearest/first hub) - capping the
+// contract op at ~1.28x. The demand-ranked spread must fan them out.
+func TestHomeShipHandler_CoLocatedIdleHulls_SpreadNotPiled(t *testing.T) {
+	// Three hulls all idle at the same sink Z, equidistant from three empty hubs.
+	h1 := newHomeTestShip(t, "TORWIND-1", "X1-TEST-Z", 0, 0)
+	h2 := newHomeTestShip(t, "TORWIND-2", "X1-TEST-Z", 0, 0)
+	h3 := newHomeTestShip(t, "TORWIND-3", "X1-TEST-Z", 0, 0)
+	a := homeTestWaypoint(t, "X1-TEST-A", 10, 0)
+	b := homeTestWaypoint(t, "X1-TEST-B", 0, 10)
+	c := homeTestWaypoint(t, "X1-TEST-C", -10, 0) // all three exactly distance 10 from Z
+
+	repo := &homeMultiShipRepo{
+		ships: map[string]*navigation.Ship{"TORWIND-1": h1, "TORWIND-2": h2, "TORWIND-3": h3},
+		fleet: []*navigation.Ship{h1, h2, h3},
+	}
+	graphProvider := &homeStubGraphProvider{graph: homeTestGraph(a, b, c)}
+	fleetShips := []string{"TORWIND-1", "TORWIND-2", "TORWIND-3"}
+	stations := []string{"X1-TEST-A", "X1-TEST-B", "X1-TEST-C"}
+
+	targets := map[string]struct{}{}
+	for _, sym := range fleetShips {
+		mediator := &homeFakeMediator{}
+		handler := NewHomeShipHandler(mediator, repo, graphProvider)
+		resp, err := handler.Handle(context.Background(), &HomeShipCommand{
+			ShipSymbol:      sym,
+			PlayerID:        shared.MustNewPlayerID(1),
+			StandbyStations: stations,
+			FleetShips:      fleetShips,
+		})
+		if err != nil {
+			t.Fatalf("Handle(%s): %v", sym, err)
+		}
+		homeResp := resp.(*HomeShipResponse)
+		targets[homeResp.TargetStation] = struct{}{}
+	}
+
+	if len(targets) != 3 {
+		got := make([]string, 0, len(targets))
+		for tSym := range targets {
+			got = append(got, tSym)
+		}
+		t.Fatalf("co-located idle hulls piled onto %d hub(s) %v - expected a 3-way spread across the standby set", len(targets), got)
+	}
+}
+
+// Demand-ranked homing (sp-jydtb): a lone idle hull must home to the
+// HIGHEST-DEMAND standby waypoint, not merely the nearest one. The old balancer is
+// demand-blind and picks nearest; with a demand signal supplied the hull must
+// prefer the high-demand sink even when it is farther.
+func TestHomeShipHandler_DemandRankedHoming_PrefersHighestDemandOverNearest(t *testing.T) {
+	ship := newHomeTestShip(t, "TORWIND-4", "X1-TEST-ORIGIN", 0, 0)
+	near := homeTestWaypoint(t, "X1-TEST-NEAR", 10, 0)   // nearest, low demand
+	farHot := homeTestWaypoint(t, "X1-TEST-HOT", 100, 0) // farther, highest demand
+
+	repo := &homeMultiShipRepo{
+		ships: map[string]*navigation.Ship{"TORWIND-4": ship},
+		fleet: []*navigation.Ship{ship},
+	}
+	graphProvider := &homeStubGraphProvider{graph: homeTestGraph(near, farHot)}
+	mediator := &homeFakeMediator{}
+	handler := NewHomeShipHandler(mediator, repo, graphProvider)
+
+	resp, err := handler.Handle(context.Background(), &HomeShipCommand{
+		ShipSymbol:      "TORWIND-4",
+		PlayerID:        shared.MustNewPlayerID(1),
+		StandbyStations: []string{"X1-TEST-NEAR", "X1-TEST-HOT"},
+		FleetShips:      []string{"TORWIND-4"},
+		StandbyDemand:   map[string]float64{"X1-TEST-NEAR": 1, "X1-TEST-HOT": 100},
+	})
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	homeResp := resp.(*HomeShipResponse)
+	if homeResp.TargetStation != "X1-TEST-HOT" {
+		t.Fatalf("expected homing to the highest-demand hub X1-TEST-HOT, got %s (demand-blind nearest homing)", homeResp.TargetStation)
 	}
 }
 

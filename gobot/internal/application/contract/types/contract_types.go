@@ -264,6 +264,13 @@ type HomeShipCommand struct {
 	// occupancy for balancing. Empty preserves the original behavior: plain
 	// nearest-station homing.
 	FleetShips []string
+
+	// StandbyDemand is the optional per-waypoint contract-demand weight
+	// (frequency×payment / observed hub demand) that RANKS the standby set so idle
+	// hulls spread demand-first, highest-demand sinks covered before the rest. Nil
+	// or a uniform map leaves homing on plain occupancy+nearest balancing (the
+	// caller supplies the signal; the distribution is a pure function of it).
+	StandbyDemand map[string]float64
 }
 
 // HomeShipResponse contains the result of a homing dispatch.
