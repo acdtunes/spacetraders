@@ -37,7 +37,7 @@ func idleArbDepthHarness(t *testing.T, hulls int, cfg IdleArbConfig, sinkVolume 
 	launcher := &fakeIdleArbLauncher{repo: repo, clock: clock}
 	d := NewIdleArbDispatcher(repo, markets, graph, launcher, nil, nil, clock, shared.MustNewPlayerID(1), testFleet, cfg)
 	ledger := newFakeAbsorptionLedger()
-	d.SetAbsorptionLedger(ledger, false, 0)
+	d.SetAbsorptionLedger(ledger, 0)
 	key := absorption.LaneKey{Waypoint: sink.Symbol, Good: "MACHINERY", Side: absorption.SideSell}
 	return d, launcher, ledger, key
 }

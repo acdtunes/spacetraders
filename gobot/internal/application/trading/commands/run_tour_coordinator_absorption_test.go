@@ -80,7 +80,7 @@ func TestTourAbsorption_ReservesConvertsAndReleases(t *testing.T) {
 	planner := &tourFakeRoutingClient{plans: []*routing.TourPlan{arbPlan()}}
 	h := newTourHandler(t, fx, planner, &tourFakeTelemetry{})
 	ledger, db := setupTourLedger(t)
-	h.SetAbsorptionLedger(ledger, false, 0)
+	h.SetAbsorptionLedger(ledger, 0)
 
 	resp, err := h.Handle(context.Background(), &RunTourCoordinatorCommand{
 		ShipSymbol: "TOUR-1", PlayerID: 1, ContainerID: "ctr-1", ModelArtifactPath: writeTourArtifact(t),
@@ -115,7 +115,7 @@ func TestTourAbsorption_NetsOutstandingIntoPlanRequest(t *testing.T) {
 	fx := arbFixture(1000)
 	planner := &tourFakeRoutingClient{plans: []*routing.TourPlan{arbPlan()}}
 	h := newTourHandler(t, fx, planner, &tourFakeTelemetry{})
-	h.SetAbsorptionLedger(ledger, false, 0)
+	h.SetAbsorptionLedger(ledger, 0)
 
 	_, err = h.Handle(ctx, &RunTourCoordinatorCommand{
 		ShipSymbol: "TOUR-1", PlayerID: 1, ContainerID: "ctr-1", ModelArtifactPath: writeTourArtifact(t),
@@ -151,7 +151,7 @@ func TestTourAbsorption_ReserveBreachRePlansThenInfeasible(t *testing.T) {
 	fx := arbFixture(40) // tv 40 → tour CapUnits = 2*40 = 80, already saturated by the rival
 	planner := &tourFakeRoutingClient{plans: []*routing.TourPlan{arbPlan()}}
 	h := newTourHandler(t, fx, planner, &tourFakeTelemetry{})
-	h.SetAbsorptionLedger(ledger, false, 0)
+	h.SetAbsorptionLedger(ledger, 0)
 
 	resp, err := h.Handle(ctx, &RunTourCoordinatorCommand{
 		ShipSymbol: "TOUR-1", PlayerID: 1, ContainerID: "ctr-1", ModelArtifactPath: writeTourArtifact(t),
@@ -187,7 +187,7 @@ func TestTourAbsorption_RestartDoesNotDoubleReserve(t *testing.T) {
 	fx := arbFixture(1000)
 	planner := &tourFakeRoutingClient{plans: []*routing.TourPlan{arbPlan()}}
 	h := newTourHandler(t, fx, planner, &tourFakeTelemetry{})
-	h.SetAbsorptionLedger(ledger, false, 0)
+	h.SetAbsorptionLedger(ledger, 0)
 
 	_, err = h.Handle(ctx, &RunTourCoordinatorCommand{
 		ShipSymbol: "TOUR-1", PlayerID: 1, ContainerID: "ctr-1", ModelArtifactPath: writeTourArtifact(t),
@@ -222,7 +222,7 @@ func TestTourAbsorption_MultiTrancheSinkShadowsFullCrush(t *testing.T) {
 	}}}
 	h := newTourHandler(t, fx, planner, &tourFakeTelemetry{})
 	ledger, db := setupTourLedger(t)
-	h.SetAbsorptionLedger(ledger, false, 0)
+	h.SetAbsorptionLedger(ledger, 0)
 
 	_, err := h.Handle(context.Background(), &RunTourCoordinatorCommand{
 		ShipSymbol: "TOUR-1", PlayerID: 1, ContainerID: "ctr-1", ModelArtifactPath: writeTourArtifact(t),
@@ -250,7 +250,7 @@ func TestTourAbsorption_LogsRecoveryBurden_ReportOnly(t *testing.T) {
 	artifact := writeTourRecoveryArtifact(t)
 	h.SetModelArtifactPath(artifact)
 	ledger, _ := setupTourLedger(t)
-	h.SetAbsorptionLedger(ledger, false, 0)
+	h.SetAbsorptionLedger(ledger, 0)
 
 	logger := &laneLogCapturingLogger{}
 	ctx := common.WithLogger(context.Background(), logger)

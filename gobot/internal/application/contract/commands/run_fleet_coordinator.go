@@ -76,10 +76,9 @@ type RunFleetCoordinatorHandler struct {
 	// absorptionLedger is wired into the idle-arb dispatcher so it consults the
 	// cross-engine ledger (skip:reserved) and records each launched leg's
 	// absorption. Nil leaves the dispatcher's ledger integration inert.
-	// consultDisabled + plannedTTLSlack are the ledger knobs the daemon injects
-	// alongside it (RULINGS #5).
+	// plannedTTLSlack is the ledger knob the daemon injects alongside it
+	// (RULINGS #5).
 	absorptionLedger          absorption.Ledger
-	absorptionConsultOff      bool
 	absorptionPlannedTTLSlack time.Duration
 
 	// depotRegistryProvider resolves the LIVE contract-depot routing registry
@@ -162,12 +161,10 @@ func (h *RunFleetCoordinatorHandler) SetStandbyStationProvider(provider appContr
 }
 
 // SetAbsorptionLedger wires the cross-engine absorption ledger into the
-// idle-arb dispatcher this coordinator spawns, with the two ledger knobs
-// (consult kill-switch, PLANNED-hold TTL slack). Nil leaves the dispatcher's
-// ledger integration inert.
-func (h *RunFleetCoordinatorHandler) SetAbsorptionLedger(ledger absorption.Ledger, consultDisabled bool, plannedTTLSlack time.Duration) {
+// idle-arb dispatcher this coordinator spawns, with the PLANNED-hold TTL
+// slack knob. Nil leaves the dispatcher's ledger integration inert.
+func (h *RunFleetCoordinatorHandler) SetAbsorptionLedger(ledger absorption.Ledger, plannedTTLSlack time.Duration) {
 	h.absorptionLedger = ledger
-	h.absorptionConsultOff = consultDisabled
 	h.absorptionPlannedTTLSlack = plannedTTLSlack
 }
 
@@ -271,7 +268,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		)
 		// Wires the cross-engine absorption ledger so the dispatcher consults it
 		// (skip:reserved) and records launched legs. Inert when unwired.
-		dispatcher.SetAbsorptionLedger(h.absorptionLedger, h.absorptionConsultOff, h.absorptionPlannedTTLSlack)
+		dispatcher.SetAbsorptionLedger(h.absorptionLedger, h.absorptionPlannedTTLSlack)
 		// LIVE hub set: resolves the CURRENT standby set each pass from this
 		// coordinator's container config, so `fleet hub add|remove` re-homes idle
 		// hulls across the new set with no restart. Falls back to

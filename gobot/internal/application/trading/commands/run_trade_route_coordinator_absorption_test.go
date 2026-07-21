@@ -3,7 +3,6 @@ package commands
 import (
 	"context"
 	"fmt"
-	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -144,7 +143,7 @@ func TestScanLanes_Absorption_ShadowedSellSide_Excluded(t *testing.T) {
 	handler := NewRunTradeRouteCoordinatorHandler(&msMediator{}, nil, widgetLaneMarketRepo(), nil, nil, nil)
 	ledger := newAbsorptionFakeLedger()
 	ledger.preset(widgetSellKey, absorption.KeyOccupancy{RecoveringResidual: 5, PlannedUnits: 0})
-	handler.SetAbsorptionLedger(ledger, false)
+	handler.SetAbsorptionLedger(ledger)
 
 	logger := &laneLogCapturingLogger{}
 	lanes, err := handler.scanLanes(common.WithLogger(context.Background(), logger), "X1-HOME", 1, 40, "")
@@ -177,7 +176,7 @@ func TestScanLanes_Absorption_RecoveredPastFloor_RanksNormally(t *testing.T) {
 	handler := NewRunTradeRouteCoordinatorHandler(&msMediator{}, nil, widgetLaneMarketRepo(), nil, nil, nil)
 	ledger := newAbsorptionFakeLedger()
 	ledger.preset(widgetSellKey, absorption.KeyOccupancy{RecoveringResidual: 0, PlannedUnits: 0})
-	handler.SetAbsorptionLedger(ledger, false)
+	handler.SetAbsorptionLedger(ledger)
 
 	lanes, err := handler.scanLanes(context.Background(), "X1-HOME", 1, 40, "")
 	if err != nil {
@@ -197,7 +196,7 @@ func TestScanLanes_Absorption_ReservedDepthExhausted_Excluded(t *testing.T) {
 	handler := NewRunTradeRouteCoordinatorHandler(&msMediator{}, nil, widgetLaneMarketRepo(), nil, nil, nil)
 	ledger := newAbsorptionFakeLedger()
 	ledger.preset(widgetSellKey, absorption.KeyOccupancy{PlannedUnits: 65})
-	handler.SetAbsorptionLedger(ledger, false)
+	handler.SetAbsorptionLedger(ledger)
 
 	logger := &laneLogCapturingLogger{}
 	lanes, err := handler.scanLanes(common.WithLogger(context.Background(), logger), "X1-HOME", 1, 40, "")
@@ -220,7 +219,7 @@ func TestScanLanes_Absorption_LedgerUnreadable_FailsClosed(t *testing.T) {
 	handler := NewRunTradeRouteCoordinatorHandler(&msMediator{}, nil, widgetLaneMarketRepo(), nil, nil, nil)
 	ledger := newAbsorptionFakeLedger()
 	ledger.outErr = fmt.Errorf("ledger unreachable")
-	handler.SetAbsorptionLedger(ledger, false)
+	handler.SetAbsorptionLedger(ledger)
 
 	logger := &laneLogCapturingLogger{}
 	lanes, err := handler.scanLanes(common.WithLogger(context.Background(), logger), "X1-HOME", 1, 40, "")
@@ -237,35 +236,6 @@ func TestScanLanes_Absorption_LedgerUnreadable_FailsClosed(t *testing.T) {
 	excluded := entriesWithPrefix(logger, "Trade-route absorption consult: excluded lane")
 	if len(excluded) != 1 || !strings.Contains(excluded[0].message, "verdict unreadable") {
 		t.Fatalf("expected one exclusion line with verdict unreadable, got: %+v", excluded)
-	}
-}
-
-// 5. The kill-switch (consultDisabled=true) suppresses the consult entirely —
-// ranking must come back byte-identical to a nil-ledger scan, even though the
-// preset ledger state (a live shadow) would exclude the lane if the consult
-// were active. No absorption log line of any kind is emitted while killed.
-func TestScanLanes_Absorption_KillSwitch_RestoresRankingByteIdentically(t *testing.T) {
-	baselineHandler := NewRunTradeRouteCoordinatorHandler(&msMediator{}, nil, widgetLaneMarketRepo(), nil, nil, nil)
-	baseline, err := baselineHandler.scanLanes(context.Background(), "X1-HOME", 1, 40, "")
-	if err != nil {
-		t.Fatalf("expected no error computing the baseline, got: %v", err)
-	}
-
-	killedHandler := NewRunTradeRouteCoordinatorHandler(&msMediator{}, nil, widgetLaneMarketRepo(), nil, nil, nil)
-	ledger := newAbsorptionFakeLedger()
-	ledger.preset(widgetSellKey, absorption.KeyOccupancy{RecoveringResidual: 999}) // would fully block if active
-	killedHandler.SetAbsorptionLedger(ledger, true /* consultDisabled */)
-
-	logger := &laneLogCapturingLogger{}
-	killed, err := killedHandler.scanLanes(common.WithLogger(context.Background(), logger), "X1-HOME", 1, 40, "")
-	if err != nil {
-		t.Fatalf("expected no error, got: %v", err)
-	}
-	if !reflect.DeepEqual(baseline, killed) {
-		t.Fatalf("kill-switch must restore ranking byte-identically:\nbaseline=%+v\nkilled=  %+v", baseline, killed)
-	}
-	if len(entriesWithPrefix(logger, "Trade-route absorption consult:")) != 0 {
-		t.Fatalf("expected zero absorption-consult log lines while the kill-switch is set, got: %+v", logger.entries)
 	}
 }
 

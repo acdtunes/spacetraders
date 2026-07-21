@@ -47,15 +47,11 @@ const (
 )
 
 // SetAbsorptionLedger wires the cross-engine absorption ledger (sp-78ai L3) so the tour
-// reserves/nets/converts against fleet-wide market depth. consultDisabled is the operator
-// escape hatch (RULINGS #5): it stops NETTING and stops conditional GATING (never
-// rejects/re-plans on a breach) while still RECORDING each plan's occupancy so other
-// engines keep consulting it — the idle-arb "kill the consult, keep the record" posture.
-// plannedTTLSlack pads reservation TTLs (0 → default). Left unwired, the tour plans and
-// flies exactly as pre-sp-78ai. Mirrors the sibling SetAbsorptionLedger injections.
-func (h *RunTourCoordinatorHandler) SetAbsorptionLedger(ledger absorption.Ledger, consultDisabled bool, plannedTTLSlack time.Duration) {
+// reserves/nets/converts against fleet-wide market depth. plannedTTLSlack pads
+// reservation TTLs (0 → default). Left unwired, the tour plans and flies exactly as
+// pre-sp-78ai. Mirrors the sibling SetAbsorptionLedger injections.
+func (h *RunTourCoordinatorHandler) SetAbsorptionLedger(ledger absorption.Ledger, plannedTTLSlack time.Duration) {
 	h.absorptionLedger = ledger
-	h.tourConsultDisabled = consultDisabled
 	if plannedTTLSlack <= 0 {
 		plannedTTLSlack = defaultTourPlannedTTLSlack
 	}
@@ -110,12 +106,10 @@ func (h *RunTourCoordinatorHandler) planAndReserve(
 	return nil, nil, "tour unavailable: could not reserve tour depth (sinks contended by other containers)", false, nil
 }
 
-// reserveTourPlan reserves the plan's per-(waypoint, good, side) tranches. In the default
-// (consult-enabled) mode it is the CONDITIONAL, all-or-nothing Reserve: ok=false means a
-// sink breached the fleet-wide cap and the caller re-plans; a DB error fails CLOSED for
-// this attempt (RULINGS #4 — the money guard never proceeds on an unrunnable gate). In
-// the consult-disabled escape-hatch mode it RECORDS each sink unconditionally (never
-// gates) so other engines still see the tour's occupancy. A nil ledger or container-less
+// reserveTourPlan reserves the plan's per-(waypoint, good, side) tranches. It is the
+// CONDITIONAL, all-or-nothing Reserve: ok=false means a sink breached the fleet-wide
+// cap and the caller re-plans; a DB error fails CLOSED for this attempt (RULINGS #4 —
+// the money guard never proceeds on an unrunnable gate). A nil ledger or container-less
 // run reserves nothing and proceeds.
 func (h *RunTourCoordinatorHandler) reserveTourPlan(ctx context.Context, cmd *RunTourCoordinatorCommand, plan *routing.TourPlan, snapshot []routing.TourGoodSnapshot) (bool, error) {
 	if h.absorptionLedger == nil || cmd.ContainerID == "" {
@@ -126,18 +120,6 @@ func (h *RunTourCoordinatorHandler) reserveTourPlan(ctx context.Context, cmd *Ru
 		return true, nil
 	}
 	logger := common.LoggerFromContext(ctx)
-
-	if h.tourConsultDisabled {
-		// Escape hatch: publish occupancy but never gate. RecordPlanned is unconditional
-		// (fail-open on write — a launched plan is never stranded by a ledger miss).
-		for _, e := range entries {
-			if _, err := h.absorptionLedger.RecordPlanned(ctx, cmd.PlayerID, cmd.ContainerID, absorptionEngineTour, e); err != nil {
-				logger.Log("WARNING", fmt.Sprintf("Tour absorption record-only: could not record %s/%s (%s) for %s (plan flies; guards intact): %v",
-					e.Waypoint, e.Good, e.Side, cmd.ContainerID, err), nil)
-			}
-		}
-		return true, nil
-	}
 
 	_, ok, err := h.absorptionLedger.Reserve(ctx, cmd.PlayerID, cmd.ContainerID, absorptionEngineTour, entries)
 	if err != nil {
@@ -237,9 +219,9 @@ func (h *RunTourCoordinatorHandler) tourReserveTTL(plan *routing.TourPlan) time.
 // planner to net. It fails OPEN on a read error (returns nil → plan against full depth):
 // the conditional Reserve re-checks the fleet-wide cap in-transaction, so it is the hard
 // backstop and a transient netting miss cannot slip an un-capped co-dump. Inert when the
-// ledger is unwired or the consult is killed.
+// ledger is unwired.
 func (h *RunTourCoordinatorHandler) assembleAbsorption(ctx context.Context, playerID int) []routing.TourMarketAbsorption {
-	if h.absorptionLedger == nil || h.tourConsultDisabled {
+	if h.absorptionLedger == nil {
 		return nil
 	}
 	pools, err := h.absorptionLedger.Outstanding(ctx, playerID)

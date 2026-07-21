@@ -30,16 +30,16 @@ const absorptionEngineTradeRoute = "trade-route"
 // state — the same per-pass-read/thread-to-every-candidate shape idle-arb's L2
 // consult uses (design §2), sized here to one call per scanLanes invocation.
 type absorptionConsult struct {
-	active     bool // ledger wired AND the trade-route consult not killed
+	active     bool // ledger wired
 	unreadable bool // the read failed → fail closed
 	pools      map[absorption.LaneKey]absorption.KeyOccupancy
 }
 
 // readAbsorption performs the once-per-scan consult read. Inert (never excludes)
-// when the ledger is unwired or the kill-switch is set; fail-closed (excludes every
-// shadow-consult-eligible lane) when the read errors.
+// when the ledger is unwired; fail-closed (excludes every shadow-consult-eligible
+// lane) when the read errors.
 func (h *RunTradeRouteCoordinatorHandler) readAbsorption(ctx context.Context, playerID int) absorptionConsult {
-	if h.absorptionLedger == nil || h.absorptionConsultDisabled {
+	if h.absorptionLedger == nil {
 		return absorptionConsult{}
 	}
 	pools, err := h.absorptionLedger.Outstanding(ctx, playerID)

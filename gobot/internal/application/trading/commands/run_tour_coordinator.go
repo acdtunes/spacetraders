@@ -519,12 +519,6 @@ type RunTourCoordinatorHandler struct {
 	// so the solver plans AROUND sinks other containers occupy). Nil (tests that don't
 	// wire it) → no netting, no reservations: the tour plans and flies exactly as before.
 	absorptionLedger absorption.Ledger
-	// tourConsultDisabled is the operator escape hatch (RULINGS #5). true → the tour
-	// STOPS netting and STOPS conditionally gating (never rejects/re-plans on a
-	// reservation breach), but still RECORDS each plan's occupancy so other engines keep
-	// consulting it — the same "kill the consult, keep the record" posture idle-arb's
-	// IdleArbConsultDisabled takes. Convert + release still run. Default false.
-	tourConsultDisabled bool
 	// tourPlannedTTLSlack pads a plan's projected round-trip TTL (backstop to the sweep +
 	// dead-container reclaim). 0 → defaultTourPlannedTTLSlack.
 	tourPlannedTTLSlack time.Duration
@@ -783,7 +777,7 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 	// scanning every market around every trade. It rides the SAME ctx the operation
 	// context above already threads to the delegated travel + cargo legs, so the
 	// arrival scan (RouteExecutor) and the post-trade scan (cargo transactions) both
-	// see it. Unset (tests / scan_sampling_disabled) → no stamp → full-scan behavior.
+	// see it. Unset (tests that don't wire it) → no stamp → full-scan behavior.
 	if h.scanPolicySet {
 		ctx = shared.WithScanPolicy(ctx, h.scanPolicy)
 	}

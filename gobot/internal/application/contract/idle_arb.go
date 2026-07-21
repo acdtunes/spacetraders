@@ -363,11 +363,7 @@ type IdleArbDispatcher struct {
 	// CONSULTS it once per pass (skip:reserved) and RECORDS each launched leg's sell
 	// side so tours and other dispatchers see this leg's in-flight absorption — the
 	// lane mutex + flat hold above stay armed in parallel as a second layer.
-	// consultDisabled is the kill-switch: when set, the consult (skip:reserved) is
-	// suppressed but recording continues, so the ledger still populates for other
-	// engines while an operator diagnoses it.
 	ledger          absorption.Ledger
-	consultDisabled bool
 	plannedTTLSlack time.Duration
 	skipReserved    int // legs skipped: sink reserved/recovering in the absorption ledger
 
@@ -467,13 +463,10 @@ func (d *IdleArbDispatcher) resolveStandby(ctx context.Context) []string {
 
 // SetAbsorptionLedger wires the cross-engine absorption ledger, the
 // optional-port idiom the other dispatcher dependencies use. A nil ledger leaves the
-// consult and the launch-record inert. consultDisabled is the
-// consult kill-switch (recording continues so the ledger still serves other
-// engines); plannedTTLSlack pads a recorded leg's projected round-trip TTL (0 → the
-// package default).
-func (d *IdleArbDispatcher) SetAbsorptionLedger(ledger absorption.Ledger, consultDisabled bool, plannedTTLSlack time.Duration) {
+// consult and the launch-record inert. plannedTTLSlack pads a recorded leg's
+// projected round-trip TTL (0 → the package default).
+func (d *IdleArbDispatcher) SetAbsorptionLedger(ledger absorption.Ledger, plannedTTLSlack time.Duration) {
 	d.ledger = ledger
-	d.consultDisabled = consultDisabled
 	if plannedTTLSlack <= 0 {
 		plannedTTLSlack = defaultAbsorptionPlannedTTLSlack
 	}
@@ -532,7 +525,7 @@ func (c absorptionConsult) reserved(good, sink string, sinkDepthCap, legUnits in
 // the ledger is unwired or the consult is killed; fail-closed (blocks all) when the
 // read errors.
 func (d *IdleArbDispatcher) readAbsorption(ctx context.Context) absorptionConsult {
-	if d.ledger == nil || d.consultDisabled {
+	if d.ledger == nil {
 		return absorptionConsult{}
 	}
 	pools, err := d.ledger.Outstanding(ctx, d.playerID.Value())

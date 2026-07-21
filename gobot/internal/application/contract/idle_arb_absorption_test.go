@@ -110,7 +110,7 @@ func TestIdleArb_Consult_ReservedSink_Skips(t *testing.T) {
 	dispatcher, _, launcher := idleArbHarness(t, 2, IdleArbConfig{ReserveHulls: 1})
 	ledger := newFakeAbsorptionLedger()
 	ledger.preset(nearSink, absorption.KeyOccupancy{PlannedUnits: 70})
-	dispatcher.SetAbsorptionLedger(ledger, false, 0)
+	dispatcher.SetAbsorptionLedger(ledger, 0)
 
 	logger := &idleArbCapturingLogger{}
 	launched := dispatcher.DispatchOnce(common.WithLogger(context.Background(), logger))
@@ -135,7 +135,7 @@ func TestIdleArb_Consult_RecoveringShadow_Skips(t *testing.T) {
 	dispatcher, _, launcher := idleArbHarness(t, 2, IdleArbConfig{ReserveHulls: 1})
 	ledger := newFakeAbsorptionLedger()
 	ledger.preset(nearSink, absorption.KeyOccupancy{RecoveringResidual: 12.5})
-	dispatcher.SetAbsorptionLedger(ledger, false, 0)
+	dispatcher.SetAbsorptionLedger(ledger, 0)
 
 	if launched := dispatcher.DispatchOnce(context.Background()); launched != 0 || len(launcher.launches) != 0 {
 		t.Fatalf("a sink under a live recovery shadow must not be dumped into, got %d launches", launched)
@@ -152,7 +152,7 @@ func TestIdleArb_Consult_RecoveredPastFloor_DispatchesAndRecords(t *testing.T) {
 	ledger := newFakeAbsorptionLedger()
 	// Recovered past the floor: Outstanding reports zero residual and no planned.
 	ledger.preset(nearSink, absorption.KeyOccupancy{PlannedUnits: 0, RecoveringResidual: 0})
-	dispatcher.SetAbsorptionLedger(ledger, false, 0)
+	dispatcher.SetAbsorptionLedger(ledger, 0)
 
 	launched := dispatcher.DispatchOnce(context.Background())
 	if launched != 1 || len(launcher.launches) != 1 {
@@ -180,33 +180,13 @@ func TestIdleArb_Consult_LedgerUnreadable_FailsClosed(t *testing.T) {
 	dispatcher, _, launcher := idleArbHarness(t, 2, IdleArbConfig{ReserveHulls: 1})
 	ledger := newFakeAbsorptionLedger()
 	ledger.outErr = fmt.Errorf("ledger down")
-	dispatcher.SetAbsorptionLedger(ledger, false, 0)
+	dispatcher.SetAbsorptionLedger(ledger, 0)
 
 	if launched := dispatcher.DispatchOnce(context.Background()); launched != 0 || len(launcher.launches) != 0 {
 		t.Fatalf("an unreadable ledger must decline all candidates (fail-closed), got %d launches", launched)
 	}
 	if dispatcher.skipReserved != 2 {
 		t.Fatalf("both fail-closed declines are attributed to reserved, got %d", dispatcher.skipReserved)
-	}
-}
-
-// The consult kill-switch suppresses skip:reserved (so a wedged consult cannot halt
-// the harvest) but recording CONTINUES, so the ledger keeps serving other engines.
-func TestIdleArb_Consult_KillSwitch_DisablesConsultButStillRecords(t *testing.T) {
-	dispatcher, _, launcher := idleArbHarness(t, 2, IdleArbConfig{ReserveHulls: 1})
-	ledger := newFakeAbsorptionLedger()
-	ledger.preset(nearSink, absorption.KeyOccupancy{PlannedUnits: 20}) // reserved, but consult is OFF
-	dispatcher.SetAbsorptionLedger(ledger, true /* consultDisabled */, 0)
-
-	launched := dispatcher.DispatchOnce(context.Background())
-	if launched != 1 || len(launcher.launches) != 1 {
-		t.Fatalf("with the consult killed the leg dispatches despite the reservation, got %d launches", launched)
-	}
-	if dispatcher.skipReserved != 0 {
-		t.Fatalf("the kill-switch must suppress skip:reserved, got %d", dispatcher.skipReserved)
-	}
-	if ledger.recordedCount() != 1 {
-		t.Fatalf("recording must continue with the consult killed, got %d records", ledger.recordedCount())
 	}
 }
 
@@ -231,9 +211,9 @@ func TestIdleArb_TwoDispatcherCollision_SecondSkipsReserved(t *testing.T) {
 	ledger.preset(nearSink, absorption.KeyOccupancy{PlannedUnits: 40}) // another engine's in-flight leg
 
 	dA, _, launcherA := idleArbHarness(t, 2, IdleArbConfig{ReserveHulls: 1})
-	dA.SetAbsorptionLedger(ledger, false, 0)
+	dA.SetAbsorptionLedger(ledger, 0)
 	dB, _, launcherB := idleArbHarness(t, 2, IdleArbConfig{ReserveHulls: 1})
-	dB.SetAbsorptionLedger(ledger, false, 0)
+	dB.SetAbsorptionLedger(ledger, 0)
 
 	// A goes first: 60 units remain (100 depth − 40 reserved), enough for its 40-unit
 	// tranche, so it launches and records its absorption (planned now 80).
@@ -266,7 +246,7 @@ func TestIdleArb_HarvestSummary_IncludesReservedCounter(t *testing.T) {
 	dispatcher, _, _ := idleArbHarness(t, 2, IdleArbConfig{ReserveHulls: 1})
 	ledger := newFakeAbsorptionLedger()
 	ledger.preset(nearSink, absorption.KeyOccupancy{PlannedUnits: 70})
-	dispatcher.SetAbsorptionLedger(ledger, false, 0)
+	dispatcher.SetAbsorptionLedger(ledger, 0)
 
 	logger := &idleArbCapturingLogger{}
 	dispatcher.DispatchOnce(common.WithLogger(context.Background(), logger))

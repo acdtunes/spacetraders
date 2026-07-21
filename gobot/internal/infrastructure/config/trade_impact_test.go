@@ -22,11 +22,6 @@ func TestTradeImpactConfig_ZeroValueResolvesEra3Defaults(t *testing.T) {
 	if got := c.ResolvedCooldownTau(); got != trading.DefaultCooldownTau {
 		t.Fatalf("unset cooldown tau: got %v, want era-3 default %v", got, trading.DefaultCooldownTau)
 	}
-	// Default posture is model-ON (the whole point of the bead): an absent section is NOT
-	// disabled.
-	if c.Disabled {
-		t.Fatalf("absent [trade_impact] section must default to model ON (Disabled=false)")
-	}
 }
 
 // An explicitly-set knob (a next-era refit) overrides the default — proving the
@@ -46,9 +41,8 @@ func TestTradeImpactConfig_ExplicitValuesOverrideDefaults(t *testing.T) {
 }
 
 // sp-v34b: the scan-load knobs resolve to their operational defaults when unset, honor an
-// explicit dial (up before a refit, down to save API), clamp a >1 rate to full collection,
-// and the kill switch reverts the feature (ResolvedScanPolicy ok=false → the coordinator
-// stamps nothing → pre-sp-v34b full-scan behavior).
+// explicit dial (up before a refit, down to save API), and clamp a >1 rate to full
+// collection.
 func TestTradeImpactConfig_ScanPolicyResolution(t *testing.T) {
 	var zero config.TradeImpactConfig
 	if got := zero.ResolvedScanMaxAge(); got != 75*time.Second {
@@ -57,10 +51,7 @@ func TestTradeImpactConfig_ScanPolicyResolution(t *testing.T) {
 	if got := zero.ResolvedImpactSampleRate(); got != 0.15 {
 		t.Fatalf("unset impact sample rate: got %v, want 0.15 default", got)
 	}
-	policy, on := zero.ResolvedScanPolicy()
-	if !on {
-		t.Fatalf("absent [trade_impact] section must default to sp-v34b ON")
-	}
+	policy := zero.ResolvedScanPolicy()
 	if policy.MaxScanAge != 75*time.Second || policy.ImpactSampleRate != 0.15 {
 		t.Fatalf("default scan policy: got %+v, want {75s, 0.15}", policy)
 	}
@@ -78,27 +69,18 @@ func TestTradeImpactConfig_ScanPolicyResolution(t *testing.T) {
 	if got := (config.TradeImpactConfig{ImpactSampleRate: 2.0}).ResolvedImpactSampleRate(); got != 1.0 {
 		t.Fatalf("over-unit sample rate must clamp to 1.0, got %v", got)
 	}
-
-	// Kill switch reverts sp-v34b: the coordinator stamps NO policy (pre-sp-v34b behavior).
-	if _, on := (config.TradeImpactConfig{ScanSamplingDisabled: true}).ResolvedScanPolicy(); on {
-		t.Fatalf("scan_sampling_disabled must yield ok=false so the coordinator stamps no policy")
-	}
 }
 
 // sp-0dat: impact_sampling_disabled zeroes the deliberate post-trade impact instrumentation
 // (behavior 2) while the recent-scan freshness gate (behavior 1) stays fully ON. This is the
 // distinct middle ground the rate knob alone can't express: impact_sample_rate follows the
 // struct-wide "0 → era-3 default 0.15" convention, so it can never resolve to a literal 0 —
-// an operator asking for "instrumentation to 0" flips this switch instead. It differs from
-// scan_sampling_disabled, which reverts BOTH behaviors (ok=false → unconditional scanning).
+// an operator asking for "instrumentation to 0" flips this switch instead.
 func TestTradeImpactConfig_ImpactSamplingDisabled_KeepsFreshnessGate(t *testing.T) {
-	// Switch alone: policy is still STAMPED (ok=true, freshness gate governs), but the
+	// Switch alone: policy is still STAMPED (freshness gate governs), but the
 	// impact-sample rate is a hard 0 — sampleImpact(_, 0) never fires an instrumentation scan.
 	off := config.TradeImpactConfig{ImpactSamplingDisabled: true}
-	policy, on := off.ResolvedScanPolicy()
-	if !on {
-		t.Fatalf("impact_sampling_disabled must KEEP the policy stamped (ok=true) so the freshness gate stays live")
-	}
+	policy := off.ResolvedScanPolicy()
 	if policy.ImpactSampleRate != 0 {
 		t.Fatalf("impact_sampling_disabled must zero the sample rate: got %v, want 0", policy.ImpactSampleRate)
 	}
@@ -109,15 +91,15 @@ func TestTradeImpactConfig_ImpactSamplingDisabled_KeepsFreshnessGate(t *testing.
 	// Composes with an explicit freshness window: the operator can zero instrumentation AND
 	// tune the dedup window in the same section.
 	tuned := config.TradeImpactConfig{ImpactSamplingDisabled: true, ScanMaxAgeSeconds: 120}
-	tp, on := tuned.ResolvedScanPolicy()
-	if !on || tp.ImpactSampleRate != 0 || tp.MaxScanAge != 120*time.Second {
-		t.Fatalf("disabled+tuned: got ok=%v %+v, want ok=true {120s, 0}", on, tp)
+	tp := tuned.ResolvedScanPolicy()
+	if tp.ImpactSampleRate != 0 || tp.MaxScanAge != 120*time.Second {
+		t.Fatalf("disabled+tuned: got %+v, want {120s, 0}", tp)
 	}
 
 	// A non-zero configured rate is OVERRIDDEN by the switch — the kill switch wins, so an
 	// operator can hold a refit rate in config yet still cut instrumentation instantly.
 	both := config.TradeImpactConfig{ImpactSamplingDisabled: true, ImpactSampleRate: 0.5}
-	if bp, _ := both.ResolvedScanPolicy(); bp.ImpactSampleRate != 0 {
+	if bp := both.ResolvedScanPolicy(); bp.ImpactSampleRate != 0 {
 		t.Fatalf("kill switch must override a configured rate: got %v, want 0", bp.ImpactSampleRate)
 	}
 }

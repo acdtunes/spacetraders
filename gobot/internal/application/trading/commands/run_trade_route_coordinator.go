@@ -347,10 +347,6 @@ type RunTradeRouteCoordinatorHandler struct {
 	// behavior), the same optional-port contract gateGraph/eventSubscriber use. The
 	// daemon injects the shared ledger instance via SetAbsorptionLedger.
 	absorptionLedger absorption.Ledger
-	// absorptionConsultDisabled is the operator kill-switch (config
-	// absorption.trade_route_consult_disabled): true skips the consult read entirely
-	// and restores pre-L4 ranking byte-identically, even with a ledger wired.
-	absorptionConsultDisabled bool
 	// --- sp-tl68 era-3 price-impact + cooldown ranking model (config, refit-per-era) ---
 	// buyImpactCoeff/sellImpactCoeff are the analyst-fitted price-impact slopes the
 	// ranker charges a candidate lane's effective spread (the self-compression this
@@ -477,13 +473,9 @@ func (h *RunTradeRouteCoordinatorHandler) SetEventSubscriber(subscriber navigati
 
 // SetAbsorptionLedger wires the cross-engine absorption ledger (sp-78ai L4), the same
 // optional-port idiom the other coordinator dependencies use. A nil ledger leaves the
-// consult inert (pre-L4 behavior, byte-for-byte). consultDisabled is the operator
-// kill-switch — unlike idle-arb's L2 SetAbsorptionLedger, there is no recording to
-// keep alive when disabled, since trade-route circuits never write to the ledger
-// (trade-analyst Q1: "circuits write nothing").
-func (h *RunTradeRouteCoordinatorHandler) SetAbsorptionLedger(ledger absorption.Ledger, consultDisabled bool) {
+// consult inert (pre-L4 behavior, byte-for-byte).
+func (h *RunTradeRouteCoordinatorHandler) SetAbsorptionLedger(ledger absorption.Ledger) {
 	h.absorptionLedger = ledger
-	h.absorptionConsultDisabled = consultDisabled
 }
 
 // SetLaneImpactModel wires the era-3 price-impact coefficients and the shared cooldown

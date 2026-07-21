@@ -618,7 +618,7 @@ func run(cfg *config.Config) error {
 	contractFleetCoordinatorHandler.SetIdleArbLauncher(daemonServer)
 	// sp-78ai L2: wire the absorption ledger into the idle-arb dispatcher (consult +
 	// record), with the analyst-ruled knobs.
-	contractFleetCoordinatorHandler.SetAbsorptionLedger(absorptionLedger, cfg.Absorption.IdleArbConsultDisabled, cfg.Absorption.PlannedTTLSlack)
+	contractFleetCoordinatorHandler.SetAbsorptionLedger(absorptionLedger, cfg.Absorption.PlannedTTLSlack)
 	// sp-u9xa (the final seam): consume the boot-loaded contract-depot routing
 	// registry. The daemon server already re-derives the LIVE registry per player from
 	// the durable store (LoadDepotRegistry), so a `depot add|remove` on the running
@@ -926,21 +926,17 @@ func run(cfg *config.Config) error {
 	// sp-78ai L4: read-only absorption consult (trade-analyst Q1: "circuits write
 	// nothing") — scanLanes excludes a lane whose sell side is shadowed or whose
 	// reserved depth can't absorb a circuit tranche. Shares the SAME ledger instance
-	// L2 (idle-arb) writes to, above; TradeRouteConsultDisabled is the independent
-	// operator kill-switch for this read path only.
-	tradeRouteCoordinatorHandler.SetAbsorptionLedger(absorptionLedger, cfg.Absorption.TradeRouteConsultDisabled)
+	// L2 (idle-arb) writes to, above.
+	tradeRouteCoordinatorHandler.SetAbsorptionLedger(absorptionLedger)
 	// sp-tl68: wire the era-3 price-impact coefficients + the shared cooldown ledger into
 	// lane ranking. scanLanes now ranks on the EFFECTIVE spread (snapshot less the
 	// self-compression this hull's volume would cause + the live shared cooldown debt), and
-	// runCircuit accrues each completed leg's debt back to the shared ledger. The operator
-	// kill-switch [trade_impact].disabled leaves the handler on the inert (snapshot) model.
-	if !cfg.TradeImpact.Disabled {
-		tradeRouteCoordinatorHandler.SetLaneImpactModel(
-			cfg.TradeImpact.ResolvedBuyImpact(),
-			cfg.TradeImpact.ResolvedSellImpact(),
-			laneCooldownLedger,
-		)
-	}
+	// runCircuit accrues each completed leg's debt back to the shared ledger.
+	tradeRouteCoordinatorHandler.SetLaneImpactModel(
+		cfg.TradeImpact.ResolvedBuyImpact(),
+		cfg.TradeImpact.ResolvedSellImpact(),
+		laneCooldownLedger,
+	)
 	if err := mediator.RegisterHandler[*tradeRouteCmd.RunTradeRouteCoordinatorCommand](med, tradeRouteCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register TradeRouteCoordinator handler: %w", err)
 	}
@@ -1306,9 +1302,9 @@ func run(cfg *config.Config) error {
 	// sp-78ai L3: wire the SAME absorption ledger the idle-arb/arb engines use so the
 	// tour reserves its planned tranches (fleet-wide A-cap), nets outstanding depth into
 	// each plan, and converts sold sinks into recovery shadows — the flagship writer/reader
-	// of the cross-engine coordination. TourConsultDisabled is the operator escape hatch;
-	// the shared PlannedTTLSlack sizes reservation lifetimes.
-	tourCoordinatorHandler.SetAbsorptionLedger(absorptionLedger, cfg.Absorption.TourConsultDisabled, cfg.Absorption.PlannedTTLSlack)
+	// of the cross-engine coordination. The shared PlannedTTLSlack sizes reservation
+	// lifetimes.
+	tourCoordinatorHandler.SetAbsorptionLedger(absorptionLedger, cfg.Absorption.PlannedTTLSlack)
 	tourCoordinatorHandler.SetEventRecorder(captainEventRepo) // sp-6wxq: emit coordinator error-loop event when the dynamic-budget resolve stays unreadable
 	// sp-o4wa: inject the noise-goods cargo blocklist (FUEL/ALUMINUM/PLASTICS are sub-70-cr/u
 	// tempo drag) so the tour planner never selects a listed good as cargo. Global list from
@@ -1320,11 +1316,8 @@ func run(cfg *config.Config) error {
 	// SAMPLE the deliberate price-impact instrumentation (the top API consumer, ~80% of
 	// API) instead of scanning every market around every trade. Resolved from [trade_impact]
 	// config (scan_max_age_seconds / impact_sample_rate; restart to apply — the same
-	// refit-per-era path the model's coefficients already use). scan_sampling_disabled
-	// reverts to full-scan behavior.
-	if scanPolicy, on := cfg.TradeImpact.ResolvedScanPolicy(); on {
-		tourCoordinatorHandler.SetScanPolicy(scanPolicy)
-	}
+	// refit-per-era path the model's coefficients already use).
+	tourCoordinatorHandler.SetScanPolicy(cfg.TradeImpact.ResolvedScanPolicy())
 	if err := mediator.RegisterHandler[*tradeRouteCmd.RunTourCoordinatorCommand](med, tourCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register TourCoordinator handler: %w", err)
 	}

@@ -18,22 +18,4 @@ type AbsorptionConfig struct {
 	// PlannedTTLSlack pads a PLANNED hold's projected round-trip TTL — the backstop to
 	// the dead-container reclaim, not the primary cleanup. 0 → 15m default.
 	PlannedTTLSlack time.Duration `mapstructure:"planned_ttl_slack"`
-	// IdleArbConsultDisabled kills the idle-arb skip:reserved consult (recording still
-	// runs, so the ledger keeps serving other engines) — the operator escape hatch if
-	// the consult ever over-skips. Default false (consult on).
-	IdleArbConsultDisabled bool `mapstructure:"idle_arb_consult_disabled"`
-	// TradeRouteConsultDisabled kills the trade-route scanLanes absorption consult
-	// (sp-78ai L4) entirely — the read-only ledger lookup is skipped and lane ranking
-	// reverts to pre-L4 behavior byte-for-byte. Circuits have no write path here
-	// (trade-analyst Q1: "circuits write nothing"), so unlike IdleArbConsultDisabled
-	// there is no recording to keep alive. The operator escape hatch if the consult
-	// ever over-excludes. Default false (consult on).
-	TradeRouteConsultDisabled bool `mapstructure:"trade_route_consult_disabled"`
-	// TourConsultDisabled kills the tour's netting + conditional reservation gate
-	// (sp-78ai L3): the tour stops planning around reserved sinks and stops rejecting on
-	// a breach, while still RECORDING each plan's occupancy so other engines keep
-	// consulting it (the same "kill the consult, keep the record" posture as the idle-arb
-	// switch above). The operator escape hatch if the netting/gate ever over-restricts
-	// tour throughput. Default false (consult on).
-	TourConsultDisabled bool `mapstructure:"tour_consult_disabled"`
 }
