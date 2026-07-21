@@ -1124,19 +1124,14 @@ func buildGoodsFactoryCoordinatorCommand(cfg *configReader, playerID int, contai
 		// is the RULINGS #5 emergency off-switch.
 		RestWindowMinutes:  cfg.OptionalInt("rest_window_minutes", 0),
 		RestSignalDisabled: cfg.OptionalBool("rest_signal_disabled"),
-		// sp-vh1s (Admiral sign-off 2026-07-14): the unified gate-fill toggle + gate output-buy
-		// throughput-pacing, from [manufacturing] via injectManufacturingConfig. absent/false/0 → the
-		// whole feature dark (IsUnifiedGateNode needs BOTH the toggle AND a construction-site target) and
-		// the pacing coefficients resolve to their 2.0/1.0 defaults at the point of use — but the pacing
-		// is only ever consulted for a gate node, so an OFF/profit factory is byte-identical. The disable
-		// flag is the RULINGS #5 emergency off-switch. ConstructionSiteWaypoint is a PER-LAUNCH key (like
-		// good_gating_overrides): a gate-fill factory launch names the jump-gate site the root output is
-		// DELIVERED to; empty (every profit factory) leaves the run selling at a resale sink.
-		UnifiedGateFill:           cfg.OptionalBool("unified_gate_fill"),
-		ConstructionSiteWaypoint:  cfg.OptionalString("construction_site_waypoint"),
-		GateOutputBuyRateMultiple: cfg.OptionalFloat("gate_output_buy_rate_multiple", 0),
-		GateOutputPerLotMultiple:  cfg.OptionalFloat("gate_output_per_lot_multiple", 0),
-		GateOutputPacingDisabled:  cfg.OptionalBool("gate_output_pacing_disabled"),
+		// sp-vh1s (Admiral sign-off 2026-07-14): the unified gate-fill toggle, from [manufacturing] via
+		// injectManufacturingConfig. absent/false → the whole feature dark (IsUnifiedGateNode needs BOTH
+		// the toggle AND a construction-site target), so an OFF/profit factory is byte-identical.
+		// ConstructionSiteWaypoint is a PER-LAUNCH key (like good_gating_overrides): a gate-fill factory
+		// launch names the jump-gate site the root output is DELIVERED to; empty (every profit factory)
+		// leaves the run selling at a resale sink.
+		UnifiedGateFill:          cfg.OptionalBool("unified_gate_fill"),
+		ConstructionSiteWaypoint: cfg.OptionalString("construction_site_waypoint"),
 		// sp-to2v: the fabrication-efficiency feeding policy (toggle + saturation-window coefficients +
 		// the non-responsive-goods override). absent/false/0 → the whole layer dark and the coefficients
 		// resolve to their 200/25 defaults + the verified default non-responsive set at the point of use.

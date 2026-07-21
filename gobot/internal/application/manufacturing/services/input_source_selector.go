@@ -65,7 +65,7 @@ func inputSourcingConfigFromContext(ctx context.Context) inputSourcingConfig {
 // Admiral §9 sign-off (2026-07-14) authorises MARGIN-BLIND gating: the gate is a finite, affordable
 // (bill ~1.3-2.6M vs treasury ~4M), enormous-ROI investment, so per-material margin/price gating is
 // penny-wise/pound-foolish and freezes the unlock. Under gate mode the executor's gates relax to
-// solvency (9aoc) + throughput-pacing only:
+// solvency (9aoc) only:
 //   - the input-source supply FLOOR drops to SCARCE (a MODERATE floor permanently freezes deep
 //     chains like SILICON/ELECTRONICS that never regenerate to MODERATE under continuous buy — the
 //     ADV freeze), with buy-vs-feed decided by ACTIVITY not supply alone (selectInputSource);
@@ -89,7 +89,7 @@ const (
 	sourceModeRescue                                  // no eligible source; validated SCARCE/LIMITED/EXCHANGE buy
 	sourceModeEraEndPriceFirst                        // < T-6h era-end exception: price-first
 	sourceModePriceFirstOff                           // supply-first disabled (RULINGS #5 escape hatch)
-	sourceModeGateFill                                // sp-vh1s: sub-MODERATE PRODUCING buy under a lowered floor (gate run / per-good MinSupply override) — margin-blind, solvency+throughput bounded
+	sourceModeGateFill                                // sp-vh1s: sub-MODERATE PRODUCING buy under a lowered floor (gate run / per-good MinSupply override) — margin-blind, solvency-bounded
 )
 
 func (m inputSourceMode) String() string {
@@ -251,7 +251,7 @@ func (e *ProductionExecutor) routeSubModerateSource(ctx context.Context, good st
 		return nil, sourceModeNone, true
 	}
 	logger.Log("INFO", fmt.Sprintf(
-		"Gate-fill routing: buying %s at %s (supply %s, activity %s) below the MODERATE floor — margin-blind, bounded on solvency + throughput, not per-material margin (sp-vh1s)",
+		"Gate-fill routing: buying %s at %s (supply %s, activity %s) below the MODERATE floor — margin-blind, bounded on solvency, not per-material margin (sp-vh1s)",
 		good, fallback.WaypointSymbol, fallback.Supply, fallback.Activity,
 	), map[string]interface{}{
 		"good": good, "market": fallback.WaypointSymbol, "supply": fallback.Supply, "activity": fallback.Activity,

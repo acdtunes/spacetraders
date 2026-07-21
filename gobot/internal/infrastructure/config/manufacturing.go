@@ -137,32 +137,13 @@ type ManufacturingConfig struct {
 	// InputsOnly feeders, and the siting portfolio may harvest gate goods — byte-identical to today.
 	// ON: gate construction runs as a generic goods-factory run whose terminal DELIVERS the root
 	// output to the construction site instead of selling it at a resale sink; feeding is inherent in
-	// the recursive tree; gate nodes buy MARGIN-BLIND, bounded only by solvency (9aoc) + physical
-	// production THROUGHPUT-PACING (the dropped price ceiling's replacement); and the old
+	// the recursive tree; gate nodes buy MARGIN-BLIND, bounded only by solvency (9aoc); and the old
 	// bootstrap-feeder + siting-harvester paths for gate goods are short-circuited. Threaded into the
 	// factory/construction coordinators (WithUnifiedGateFill → IsUnifiedGateNode) and read directly by
 	// the boot-time siting/feeder short-circuits. Fed from unified_gate_fill; a captain flips it live
 	// by editing config.yaml and restarting (RULINGS #5). false is the zero value, so an absent key
 	// keeps every path on today's behavior — no SetDefaults entry needed.
 	UnifiedGateFill bool `mapstructure:"unified_gate_fill"`
-
-	// GateOutputBuyRateMultiple is k in the gate output-buy THROUGHPUT-PACING (sp-vh1s): the trailing-
-	// hour ceiling on buying a gate source factory's output, as a multiple of that factory's export
-	// trade volume (k × tv per hour). This is the ONLY safety limit on the margin-blind gate output buy
-	// (it replaces the dropped price ceiling), so it lands with the toggle. 0/absent → the 2.0
-	// analyst-validated default at the point of use (MEDIUM confidence — retuned live against observed
-	// F48/D42 production vs draw, RULINGS #5). Threaded into goods_factory_coordinator; only ever
-	// consulted for a gate node, so a profit factory is unaffected.
-	GateOutputBuyRateMultiple float64 `mapstructure:"gate_output_buy_rate_multiple"`
-
-	// GateOutputPerLotMultiple caps a single gate output-buy lot at this multiple of tv (0/absent → 1.0,
-	// per-lot ≤ tv), so a burst cannot front-load the hourly budget in one oversized buy (sp-vh1s).
-	GateOutputPerLotMultiple float64 `mapstructure:"gate_output_per_lot_multiple"`
-
-	// GateOutputPacingDisabled is the emergency off-switch for the gate output-buy throughput pacing
-	// (RULINGS #5): true reverts a gate output-buy to the plain min(cargo space, tv) cap. Absent/false
-	// keeps the pacing on at its default coefficient.
-	GateOutputPacingDisabled bool `mapstructure:"gate_output_pacing_disabled"`
 
 	// FabricationEfficiency is the sp-to2v master toggle for the executor feeding-efficiency policy —
 	// balanced-to-limiting input feeding (the ~4x lever), saturation-capped delivery tranches,

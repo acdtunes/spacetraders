@@ -131,7 +131,7 @@ func (e *ProductionExecutor) inputPriceCeilingParked(ctx context.Context, waypoi
 	// ladder-chase ceiling is a LOCAL per-material margin optimization the gate deliberately drops —
 	// the gate is a finite, affordable (~1.3-2.6M remaining bill vs ~4M treasury), enormous-ROI
 	// investment, so margin-gating it stalls the unlock to save pennies. It is bounded instead by
-	// the 9aoc solvency floor (in buyGood, untouched here) plus throughput-pacing (lane A). Off gate
+	// the 9aoc solvency floor (in buyGood, untouched here). Off gate
 	// mode this is byte-identical to the sp-a5j7/hzz5 cross-market backstop.
 	if IsUnifiedGateNode(ctx) {
 		return false

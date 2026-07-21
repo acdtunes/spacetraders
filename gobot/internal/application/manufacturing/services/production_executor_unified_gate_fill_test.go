@@ -10,7 +10,7 @@ import (
 )
 
 // sp-vh1s Part B (GATING half) — unified gate-fill runs a construction deliver-to-gate buy
-// MARGIN-BLIND, bounded only by solvency (9aoc) + physical throughput (Admiral §9 sign-off
+// MARGIN-BLIND, bounded only by solvency (9aoc) (Admiral §9 sign-off
 // 2026-07-14). This suite pins the two files this lane owns:
 //   - input_source_selector.go: ACTIVITY-aware routing (SCARCE+producing = buy, SCARCE+RESTRICTED
 //     = feed/recurse) and the per-node SCARCE supply floor (gate default + per-good MinSupply

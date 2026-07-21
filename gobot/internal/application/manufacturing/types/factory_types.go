@@ -158,19 +158,6 @@ type RunFactoryCoordinatorCommand struct {
 	// (WithDeliveryTarget -> ConstructionSiteTarget) so produceNodeOnly's terminal
 	// switches Sink<->ConstructionSite. Empty leaves the run selling at a sink.
 	ConstructionSiteWaypoint string
-	// GateOutputBuyRateMultiple is k in the gate output-buy THROUGHPUT-PACING: the
-	// trailing-hour output-buy ceiling as a multiple of the source factory's export
-	// trade volume (k x tv/hr). 0/absent resolves to the 2.0 default. Only ever
-	// consulted for a gate node (IsUnifiedGateNode); a profit factory is never paced.
-	// Fed from gate_output_buy_rate_multiple.
-	GateOutputBuyRateMultiple float64
-	// GateOutputPerLotMultiple caps a single gate output-buy lot at this multiple of
-	// tv (0/absent -> 1.0, i.e. per-lot <= tv). Fed from gate_output_per_lot_multiple.
-	GateOutputPerLotMultiple float64
-	// GateOutputPacingDisabled is the emergency off-switch for the gate output-buy
-	// throughput pacing: true reverts a gate output-buy to the plain
-	// min(cargo space, tv) cap. Fed from gate_output_pacing_disabled.
-	GateOutputPacingDisabled bool
 	// FabricationEfficiency turns on the feeding-efficiency policy for THIS run:
 	// balanced-to-limiting input feeding, saturation-capped delivery tranches,
 	// taproot-first ordering, and buy-or-skip for feed-unresponsive goods

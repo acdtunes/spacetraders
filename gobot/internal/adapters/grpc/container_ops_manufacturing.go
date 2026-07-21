@@ -31,16 +31,12 @@ var manufacturingConfigKeys = []string{
 	"anti_cycle_disabled",
 	"rest_window_minutes",
 	"rest_signal_disabled",
-	// sp-vh1s: the unified gate-fill master toggle + the gate output-buy throughput-pacing knobs.
-	// Cleared+reinjected from config.yaml on every build (sp-ts82) so flipping the toggle off reverts a
-	// recovered coordinator rather than shadowing it with a stale persisted copy. NOTE the per-launch
-	// construction_site_waypoint key is deliberately NOT listed — like good_gating_overrides it is set
-	// per-launch (a gate-fill factory launch names its site), not a global config.yaml knob, so it must
-	// survive a rebuild untouched.
+	// sp-vh1s: the unified gate-fill master toggle. Cleared+reinjected from config.yaml on every build
+	// (sp-ts82) so flipping the toggle off reverts a recovered coordinator rather than shadowing it with
+	// a stale persisted copy. NOTE the per-launch construction_site_waypoint key is deliberately NOT
+	// listed — like good_gating_overrides it is set per-launch (a gate-fill factory launch names its
+	// site), not a global config.yaml knob, so it must survive a rebuild untouched.
 	"unified_gate_fill",
-	"gate_output_buy_rate_multiple",
-	"gate_output_per_lot_multiple",
-	"gate_output_pacing_disabled",
 	// sp-to2v: the fabrication-efficiency feeding policy toggle + coefficients. Cleared+reinjected from
 	// config.yaml on every build (sp-ts82) so flipping the toggle off reverts a recovered coordinator.
 	"fabrication_efficiency",
@@ -159,25 +155,14 @@ func (s *DaemonServer) injectManufacturingConfig(config map[string]interface{}) 
 	if s.manufacturingConfig.RestSignalDisabled {
 		config["rest_signal_disabled"] = true
 	}
-	// sp-vh1s (Admiral sign-off 2026-07-14): the unified gate-fill master toggle + gate output-buy
-	// throughput-pacing knobs. The toggle and the pacing-disabled flag are written only when true, the
-	// pacing coefficients only when non-zero — so an absent [manufacturing] section is byte-identical to
-	// today: the toggle stays OFF (the whole feature dark, IsUnifiedGateNode false), and the coefficients
-	// resolve to their 2.0/1.0 defaults downstream but are only ever consulted for a gate node, so an
-	// OFF/profit factory never sees them. The clear in resolveManufacturingConfig makes flipping the
-	// toggle back off take effect on a recovered coordinator (sp-ts82). construction_site_waypoint is a
-	// per-launch key, not a global knob, so it is NOT injected here (see manufacturingConfigKeys).
+	// sp-vh1s (Admiral sign-off 2026-07-14): the unified gate-fill master toggle. Written only when
+	// true — so an absent [manufacturing] section is byte-identical to today: the toggle stays OFF (the
+	// whole feature dark, IsUnifiedGateNode false). The clear in resolveManufacturingConfig makes
+	// flipping the toggle back off take effect on a recovered coordinator (sp-ts82).
+	// construction_site_waypoint is a per-launch key, not a global knob, so it is NOT injected here
+	// (see manufacturingConfigKeys).
 	if s.manufacturingConfig.UnifiedGateFill {
 		config["unified_gate_fill"] = true
-	}
-	if s.manufacturingConfig.GateOutputBuyRateMultiple != 0 {
-		config["gate_output_buy_rate_multiple"] = s.manufacturingConfig.GateOutputBuyRateMultiple
-	}
-	if s.manufacturingConfig.GateOutputPerLotMultiple != 0 {
-		config["gate_output_per_lot_multiple"] = s.manufacturingConfig.GateOutputPerLotMultiple
-	}
-	if s.manufacturingConfig.GateOutputPacingDisabled {
-		config["gate_output_pacing_disabled"] = true
 	}
 	// sp-to2v: the fabrication-efficiency feeding policy. The toggle is written only when true, so
 	// absent/false keeps the greedy byte-identical feeding; the coefficients and the non-responsive
@@ -232,7 +217,7 @@ func (s *DaemonServer) injectManufacturingConfig(config map[string]interface{}) 
 
 // resolveConstructionUnifiedGateFill threads the SAME [manufacturing] unified_gate_fill toggle into
 // the construction-supply drain (sp-vh1s): the drain's RunConstructionCoordinatorCommand carries only
-// UnifiedGateFill (it derives its own construction site per-task, and its pacing/terminal live on the
+// UnifiedGateFill (it derives its own construction site per-task, and its terminal lives on the
 // factory command it delegates to), so this deliberately injects ONLY that one key rather than running
 // the full resolveManufacturingConfig — which would clear+reinject the drain's launch-config
 // production_strategy (a construction behavior change unrelated to this bead). Cleared then reinjected

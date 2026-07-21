@@ -450,15 +450,13 @@ func (h *RunFactoryCoordinatorHandler) executeCoordination(
 	// sp-vh1s — the ONE gate-fill stamp. When this run is a unified gate fill (toggle on AND a
 	// construction-site target), stamp the run context ONCE here so — because ctx threads BY VALUE
 	// through the whole recursive production chain — every node reads it: IsUnifiedGateNode is true
-	// tree-wide (lane B's per-node gates go MARGIN-BLIND, Admiral sign-off), the root terminal delivers
-	// the output to the gate instead of a resale sink, and the output-buy is throughput-paced (k×tv/hr,
-	// the dropped price ceiling's replacement). It is also a construction-supply run, so the
-	// resale-margin guards are scoped out (the gate delivers, never resells). ALL of this is gated on
-	// the toggle: an OFF run (or a profit factory) stamps nothing new and is byte-identical to today.
+	// tree-wide (lane B's per-node gates go MARGIN-BLIND, Admiral sign-off) and the root terminal
+	// delivers the output to the gate instead of a resale sink. It is also a construction-supply run,
+	// so the resale-margin guards are scoped out (the gate delivers, never resells). ALL of this is
+	// gated on the toggle: an OFF run (or a profit factory) stamps nothing new and is byte-identical.
 	if cmd.UnifiedGateFill && cmd.ConstructionSiteWaypoint != "" {
 		ctx = mfgServices.WithUnifiedGateFill(ctx, true)
 		ctx = mfgServices.WithDeliveryTarget(ctx, mfgServices.ConstructionSiteTarget(cmd.ConstructionSiteWaypoint))
-		ctx = mfgServices.WithThroughputPacing(ctx, cmd.GateOutputBuyRateMultiple, cmd.GateOutputPerLotMultiple, cmd.GateOutputPacingDisabled)
 		ctx = shared.WithConstructionSupply(ctx)
 	}
 
@@ -1847,8 +1845,8 @@ func (h *RunFactoryCoordinatorHandler) produceNodeOnly(
 		// finished good to the gate. Keyed on IsUnifiedGateNode (toggle on + a construction-site
 		// target), so a profit factory — and the whole OFF path — falls straight through to the
 		// unchanged resale-sink terminal below (byte-identical). The gate delivery is
-		// margin-blind by design (Admiral sign-off): the throughput pacing on the output BUY above,
-		// plus the sp-9aoc solvency floor, are the money bounds — never a resale-margin gate.
+		// margin-blind by design (Admiral sign-off): the sp-9aoc solvency floor is the money
+		// bound — never a resale-margin gate.
 		if mfgServices.IsUnifiedGateNode(ctx) {
 			site := mfgServices.DeliveryTargetFromContext(ctx).SiteWaypoint()
 			delivered, deliverErr := h.productionExecutor.DeliverToConstructionSite(

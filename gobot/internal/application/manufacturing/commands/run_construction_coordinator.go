@@ -781,9 +781,8 @@ func (h *RunConstructionCoordinatorHandler) supplyTask(ctx context.Context, cmd 
 	// above rides on ctx, so produceCtx carries both.
 	produceCtx := shared.WithConstructionSupply(ctx)
 	// Under unified gate-fill, mark this run a UNIFIED GATE NODE carrying the gate waypoint.
-	// IsUnifiedGateNode is then true through the whole tree (ctx threads by value), so the source
-	// factory's output-buy is THROUGHPUT-PACED (k×tv/hr) and lane B's per-node gates go
-	// MARGIN-BLIND. OFF stamps nothing (byte-identical).
+	// IsUnifiedGateNode is then true through the whole tree (ctx threads by value), so lane B's
+	// per-node gates go MARGIN-BLIND. OFF stamps nothing (byte-identical).
 	if cmd.UnifiedGateFill {
 		produceCtx = mfgServices.WithUnifiedGateFill(produceCtx, true)
 		produceCtx = mfgServices.WithDeliveryTarget(produceCtx, mfgServices.ConstructionSiteTarget(task.ConstructionSite()))

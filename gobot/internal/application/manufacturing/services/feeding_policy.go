@@ -9,7 +9,7 @@ import (
 )
 
 // sp-to2v — FABRICATION EFFICIENCY feeding policy (analyst adjustments #2, #3, #4; layered on the
-// sp-vh1s throughput-paced margin-blind gate). It shapes HOW the executor feeds a fabricated node's
+// sp-vh1s margin-blind gate). It shapes HOW the executor feeds a fabricated node's
 // inputs — sizing and ordering the per-window deliveries — without changing WHICH inputs the tree
 // resolves (that is the resolver's job). The three verified mechanics it encodes:
 //

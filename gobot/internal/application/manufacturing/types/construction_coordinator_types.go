@@ -28,9 +28,8 @@ type RunConstructionCoordinatorCommand struct {
 	ProductionStrategy string
 	// UnifiedGateFill switches the drain from the planner's frozen buy-vs-fabricate
 	// decision (OFF, default: byte-identical) to the resolver's full scarcity-gated tree
-	// for every gate material, marking the run a gate node so the output-buy is
-	// throughput-paced and lane B's per-node gates go margin-blind (ON). Fed from
-	// ManufacturingConfig.UnifiedGateFill.
+	// for every gate material, marking the run a gate node so lane B's per-node gates go
+	// margin-blind (ON). Fed from ManufacturingConfig.UnifiedGateFill.
 	UnifiedGateFill bool
 	// FabricationEfficiency enables balanced-to-limiting input feeding with
 	// saturation-capped tranches, taproot-first ordering, and buy-or-skip for
