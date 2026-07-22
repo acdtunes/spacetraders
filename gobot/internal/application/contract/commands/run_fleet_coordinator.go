@@ -555,6 +555,31 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			// Continue anyway - better to risk duplication than block indefinitely
 		}
 
+		// sp-1pf0r double-load defense: also see the contract-good load already
+		// aboard IDLE hulls (e.g. one reclaimed from a crashed worker). This is a
+		// DISPATCH signal, never a WAIT one — the wait gate below stays keyed on
+		// worker-held cargo only (waiting on an idle hull's load would stall,
+		// since the gate short-circuits before selection). When the shortfall is
+		// already aboard an idle hull, the coordinator completes that load with
+		// the SAME hull (cargo-priority selection picks the holder below) instead
+		// of sourcing a duplicate onto a second hull — the pattern that produced
+		// the 128-units-for-a-64-need double-load. A count failure is logged and
+		// ignored (better to risk a duplicate than to block).
+		idleReclaimedCargo, idleErr := h.idleReclaimedContractCargoHeld(ctx, requiredCargo, cmd.PlayerID.Value())
+		if idleErr != nil {
+			logger.Log("WARNING", fmt.Sprintf("Failed to count idle reclaimed contract cargo: %v", idleErr), nil)
+		} else if inFlightCargo < unitsNeeded && idleReclaimedCargo >= unitsNeeded-inFlightCargo {
+			logger.Log("INFO", fmt.Sprintf(
+				"%d units of %s already aboard idle hull(s) cover the %d-unit shortfall - the cargo-priority selection below completes that load with its holder before sourcing a duplicate onto a second hull (sp-1pf0r double-load defense)",
+				idleReclaimedCargo, requiredCargo, unitsNeeded-inFlightCargo), map[string]interface{}{
+				"action":          "idle_cargo_dispatch",
+				"contract_id":     contract.ContractID(),
+				"trade_symbol":    requiredCargo,
+				"idle_reclaimed":  idleReclaimedCargo,
+				"units_shortfall": unitsNeeded - inFlightCargo,
+			})
+		}
+
 		// If there's already enough in-flight cargo, wait for delivery instead of assigning new work
 		if inFlightCargo >= unitsNeeded {
 			logger.Log("INFO", fmt.Sprintf("Contract already has %d units of %s in-flight (needed: %d) - waiting for delivery instead of assigning new ship",
@@ -1510,6 +1535,34 @@ func (h *RunFleetCoordinatorHandler) calculateInFlightCargo(
 	}
 
 	return totalInFlight, nil
+}
+
+// idleReclaimedContractCargoHeld sums the contract good already aboard IDLE
+// (unassigned) hulls — most importantly one just reclaimed from a crashed
+// contract worker that still physically holds its contract load.
+//
+// calculateInFlightCargo deliberately counts only RUNNING/interrupted-worker
+// cargo for its WAIT gate: counting idle cargo there would STALL the coordinator,
+// because an idle hull's load is dispatchable NOW (the wait gate short-circuits
+// before selection, so a counted-but-not-dispatched idle load would loop
+// forever). This companion instead surfaces that idle load as a DISPATCH signal —
+// the coordinator completes it with the holding hull (cargo-priority selection
+// picks the holder) rather than sourcing a duplicate onto a second hull, which is
+// the sp-1pf0r double-load defense. Read-only; a load-failure is returned so the
+// caller can log and proceed (better to risk a duplicate than to block).
+func (h *RunFleetCoordinatorHandler) idleReclaimedContractCargoHeld(ctx context.Context, tradeSymbol string, playerID int) (int, error) {
+	ships, err := h.shipRepo.FindAllByPlayer(ctx, shared.MustNewPlayerID(playerID))
+	if err != nil {
+		return 0, fmt.Errorf("failed to load ships for idle-cargo count: %w", err)
+	}
+	total := 0
+	for _, ship := range ships {
+		if ship.IsAssigned() {
+			continue // on a worker/other container — waited on / counted elsewhere
+		}
+		total += ship.Cargo().GetItemUnits(tradeSymbol)
+	}
+	return total, nil
 }
 
 // recordErrorLoopEvent emits the captain outbox event for a checkpoint's

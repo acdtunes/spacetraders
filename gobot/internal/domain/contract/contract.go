@@ -116,6 +116,28 @@ func (c *Contract) DeliverCargo(tradeSymbol string, units int) error {
 	return nil
 }
 
+// MarkDeliveryTermsMet reconciles a single delivery to fully fulfilled after the
+// server has confirmed that good's terms are already met — a SpaceTraders 4509
+// "delivery terms ... have been met" response — while the local row had lagged
+// behind at a lower UnitsFulfilled. It sets UnitsFulfilled = UnitsRequired for
+// ONLY the named good (server truth), so a good the server has NOT confirmed is
+// never marked fulfilled and a partial over-fetch attempt does not under-record
+// the true server count. Idempotent: re-marking an already-met delivery is a
+// no-op. This heals the server-met/local-unmet divergence behind the sp-1pf0r
+// contract-fleet wedge.
+func (c *Contract) MarkDeliveryTermsMet(tradeSymbol string) error {
+	if !c.accepted {
+		return fmt.Errorf("contract not accepted")
+	}
+	for i := range c.terms.Deliveries {
+		if c.terms.Deliveries[i].TradeSymbol == tradeSymbol {
+			c.terms.Deliveries[i].UnitsFulfilled = c.terms.Deliveries[i].UnitsRequired
+			return nil
+		}
+	}
+	return fmt.Errorf("trade symbol not in contract")
+}
+
 // CanFulfill checks if all deliveries are complete
 func (c *Contract) CanFulfill() bool {
 	for _, delivery := range c.terms.Deliveries {

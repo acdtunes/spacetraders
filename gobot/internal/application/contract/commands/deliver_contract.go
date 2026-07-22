@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	contractTypes "github.com/andrescamacho/spacetraders-go/internal/application/contract/types"
@@ -10,6 +11,21 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 )
+
+// isContractDeliveryTermsMetError reports whether err is (or wraps, via %w) a
+// SpaceTraders API 4509 "Contract delivery terms ... have been met" response —
+// the authoritative server signal that a good's delivery is already fully
+// satisfied. Detection mirrors the established IsInsufficientCreditsError idiom
+// (services/insufficient_credits.go): a substring match on the wire-format
+// "code":4509 that survives every %w-wrapping layer between the API client and
+// here (the *APIError body preserves it verbatim), since the client's error type
+// is not exported for errors.As classification.
+func isContractDeliveryTermsMetError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), `"code":4509`)
+}
 
 // Type aliases for convenience
 type DeliverContractCommand = contractTypes.DeliverContractCommand
@@ -58,6 +74,16 @@ func (h *DeliverContractHandler) Handle(ctx context.Context, request common.Requ
 
 	deliveryData, err := h.callDeliverCargoAPI(ctx, cmd, token)
 	if err != nil {
+		// AUTHORITATIVE 4509 RECONCILIATION (sp-1pf0r): a "delivery terms have
+		// been met" response is server truth that this good is already fully
+		// delivered while the local row lagged behind. Do NOT propagate it as a
+		// crash — that is the retry loop that wedged the whole contract income
+		// stream (worker crash -> coordinator re-selects the same cargo-laden hull
+		// -> deliver -> 4509 -> forever). Reconcile the local delivery to fulfilled
+		// and return terminal success instead.
+		if isContractDeliveryTermsMetError(err) {
+			return h.reconcileDeliveryTermsMet(ctx, contract, cmd)
+		}
 		return nil, err
 	}
 
@@ -70,6 +96,50 @@ func (h *DeliverContractHandler) Handle(ctx context.Context, request common.Requ
 	return &DeliverContractResponse{
 		Contract:       contract,
 		UnitsDelivered: cmd.Units,
+	}, nil
+}
+
+// reconcileDeliveryTermsMet heals the server-met/local-unmet divergence behind
+// the sp-1pf0r wedge. It marks ONLY the good the server named terms-met to
+// UnitsRequired (never a good the server has not confirmed), PERSISTS it so the
+// reconciliation survives a restart (RULINGS #2) and the contract can never
+// resume the loop, and returns a terminal success. The worker then sees
+// UnitsFulfilled>=UnitsRequired, returns, and the workflow fulfils the contract
+// so it leaves the active set; the now-orphaned over-fetch cargo becomes
+// unrelated to any active contract and the coordinator's existing
+// FilterUnrelatedCargo + auto-liquidation path sells/dumps it — no crash, no
+// retry, no fleet-unassign needed.
+func (h *DeliverContractHandler) reconcileDeliveryTermsMet(ctx context.Context, contract *contract.Contract, cmd *DeliverContractCommand) (common.Response, error) {
+	if err := contract.MarkDeliveryTermsMet(cmd.TradeSymbol); err != nil {
+		return nil, fmt.Errorf("reconcile terms-met for %s: %w", cmd.TradeSymbol, err)
+	}
+	if err := h.saveContract(ctx, contract); err != nil {
+		return nil, err
+	}
+
+	common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
+		"Contract %s delivery terms for %s already met server-side (4509); reconciled local fulfilment to the server count and returning terminal success — ending the retry loop and releasing the hull (sp-1pf0r)",
+		cmd.ContractID, cmd.TradeSymbol), map[string]interface{}{
+		"action":       "contract_terms_met_reconcile",
+		"contract_id":  cmd.ContractID,
+		"ship_symbol":  cmd.ShipSymbol,
+		"trade_symbol": cmd.TradeSymbol,
+	})
+
+	// UnitsDelivered reports the units this call reconciled as delivered (the
+	// server-side count now recorded locally), not a physical hand-off — nothing
+	// left the hull. It is a display/telemetry field with no money or ledger
+	// consumer for contracts.
+	fulfilled := 0
+	for _, d := range contract.Terms().Deliveries {
+		if d.TradeSymbol == cmd.TradeSymbol {
+			fulfilled = d.UnitsFulfilled
+			break
+		}
+	}
+	return &DeliverContractResponse{
+		Contract:       contract,
+		UnitsDelivered: fulfilled,
 	}, nil
 }
 
