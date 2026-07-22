@@ -374,12 +374,11 @@ func containerSpecList() []ContainerSpec {
 		// CoordinatorOwnsIterations type; the container-level iteration budget (-1) is
 		// irrelevant because Handle() never returns.
 		{CommandType: "trade_fleet_coordinator", build: buildTradeFleetCoordinatorCommand},
-		// worker_rebalancer_coordinator (sp-f5pr): a standing coordinator that loops
-		// forever inside one Handle() call, so — like trade_fleet/scout_post — it is NOT a
-		// CoordinatorOwnsIterations type. worker_ferry is its one-shot cross-system relay
-		// worker (twin of scout_reposition): the coordinator owns re-dispatch, so the
-		// container wraps exactly ONE iteration (CoordinatorOwnsIterations).
-		{CommandType: "worker_rebalancer_coordinator", build: buildWorkerRebalancerCoordinatorCommand},
+		// worker_ferry (sp-f5pr): a one-shot cross-system relay worker (twin of scout_reposition)
+		// that moves a hull to a destination waypoint. Its former managing coordinator (the
+		// worker_rebalancer_coordinator) was retired with the factory ops (sp-hoj8u); the ferry
+		// primitive is retained for the daemon's persist/start dispatch + container recovery. It
+		// wraps exactly ONE iteration (CoordinatorOwnsIterations).
 		{CommandType: "worker_ferry", build: buildWorkerFerryCommand, CoordinatorOwnsIterations: true},
 		// cargo_liquidation (sp-39oi): the contract fleet coordinator's one-shot
 		// self-clearing worker for a parked-with-cargo hull (twin of worker_ferry). The
@@ -388,16 +387,11 @@ func containerSpecList() []ContainerSpec {
 		{CommandType: "cargo_liquidation", build: buildCargoLiquidationCommand, CoordinatorOwnsIterations: true},
 		{CommandType: "purchase_ship", build: buildPurchaseShipCommand},
 		{CommandType: "batch_purchase_ships", build: buildBatchPurchaseShipsCommand},
-		{CommandType: "goods_factory_coordinator", build: buildGoodsFactoryCoordinatorCommand},
 		// construction_coordinator (sp-382j): the standing construction-supply drain. Like
 		// trade_fleet/siting it loops forever inside one Handle(), so it is NOT a
 		// CoordinatorOwnsIterations type; the container-level budget (-1) is irrelevant.
 		// Registering it here is what makes a launched or restart-recovered drain runnable.
 		{CommandType: "construction_coordinator", build: buildConstructionCoordinatorCommand},
-		// siting_coordinator (sp-vdld): the standing factory-siting brain. Like
-		// trade_fleet/frontier it loops forever inside one Handle(), so it is NOT a
-		// CoordinatorOwnsIterations type; the container-level budget (-1) is irrelevant.
-		{CommandType: "siting_coordinator", build: buildSitingCoordinatorCommand},
 		// fleet_autosizer (sp-1txd): the standing fleet capacity autosizer. Like
 		// trade_fleet/siting it loops forever inside one Handle(), so it is NOT a
 		// CoordinatorOwnsIterations type; the container-level budget (-1) is irrelevant.
@@ -475,36 +469,12 @@ func (s *DaemonServer) buildCommandForType(commandType string, config map[string
 	if commandType == "trade_fleet_coordinator" {
 		s.resolveTradeFleetConfig(config)
 	}
-	// sp-f5pr: same live-config discipline for the worker-rebalancer coordinator. Its
-	// [worker_rebalancer] knobs are cleared and re-injected from the boot-loaded
-	// config.yaml on every build — creation and recovery alike — so a config edit +
-	// restart retunes a recovered coordinator and no persisted copy can shadow the live
-	// value.
-	if commandType == "worker_rebalancer_coordinator" {
-		s.resolveWorkerRebalancerConfig(config)
-	}
-	// sp-kk61: same live-config discipline for the goods_factory_coordinator's working-capital
-	// reserve (singleton ProductionExecutor, sp-agzj's max(50000, configured) input-buy floor):
-	// [manufacturing].working_capital_reserve is resolved fresh on every build — creation and
-	// restart recovery alike — so a config.yaml retune reaches a recovered coordinator with no
-	// redeploy.
-	if commandType == "goods_factory_coordinator" {
-		s.resolveManufacturingConfig(config)
-	}
 	// sp-vh1s: the construction-supply drain gets the SAME [manufacturing] unified_gate_fill toggle,
 	// resolved fresh on every build so a config edit + restart flips a recovered drain — but via a
 	// surgical resolver that injects ONLY the toggle, leaving the drain's launch-config production_strategy
 	// untouched (the full resolveManufacturingConfig would override it).
 	if commandType == "construction_coordinator" {
 		s.resolveConstructionUnifiedGateFill(config)
-	}
-	// sp-vdld: same live-config discipline for the siting coordinator. Its
-	// [manufacturing.siting] knobs are cleared and re-injected from the boot-loaded
-	// config.yaml on every build — creation and recovery alike — so a config edit +
-	// restart retunes a recovered coordinator and no persisted copy can shadow the live
-	// value.
-	if commandType == "siting_coordinator" {
-		s.resolveSitingConfig(config)
 	}
 	// sp-1txd: same live-config discipline for the fleet capacity autosizer. Its
 	// [fleet_autosizer] knobs are cleared and re-injected from the boot-loaded config.yaml on
@@ -627,32 +597,6 @@ func buildTradeFleetCoordinatorCommand(cfg *configReader, playerID int, containe
 		// 30-min default.
 		ReapStaleCaptainReservationsEnabled: cfg.OptionalBool("trade_fleet_reap_stale_captain_reservations_enabled"),
 		ReapIdleThresholdSecs:               cfg.OptionalInt("trade_fleet_reap_idle_threshold_secs", 0),
-	}
-}
-
-// buildWorkerRebalancerCoordinatorCommand rebuilds the standing worker-rebalancer
-// coordinator command (sp-f5pr) from a persisted launch config so a daemon restart
-// re-adopts it. The [worker_rebalancer] knobs are resolved LIVE from config.yaml just
-// before this runs (resolveWorkerRebalancerConfig in buildCommandForType), so the persisted
-// worker_rebalancer_* keys are transient — the reads below see the current config.yaml.
-// Enabled is reconstructed as the negation of worker_rebalancer_disabled: an absent key
-// reads as enabled, preserving the default-ON intent across a recovery from an old config
-// that predates the key. dry_run is the launch-time flag (mirrors the frontier
-// coordinator), read back so a dry-run coordinator resumes dry-run after a restart.
-func buildWorkerRebalancerCoordinatorCommand(cfg *configReader, playerID int, containerID string) interface{} {
-	return &tradingCmd.RunWorkerRebalancerCoordinatorCommand{
-		PlayerID:             shared.MustNewPlayerID(playerID),
-		ContainerID:          cfg.RequiredNonEmptyString("container_id"),
-		AgentSymbol:          cfg.OptionalString("agent_symbol"),
-		DryRun:               cfg.OptionalBool("dry_run"),
-		Enabled:              !cfg.OptionalBool("worker_rebalancer_disabled"),
-		TickIntervalSecs:     cfg.OptionalInt("worker_rebalancer_tick_secs", 0),
-		VacancyMinMinutes:    cfg.OptionalInt("worker_rebalancer_vacancy_min_minutes", 0),
-		SourceMinIdle:        cfg.OptionalInt("worker_rebalancer_source_min_idle", 0),
-		FerryCooldownSecs:    cfg.OptionalInt("worker_rebalancer_ferry_cooldown_secs", 0),
-		MaxConcurrentFerries: cfg.OptionalInt("worker_rebalancer_max_concurrent_ferries", 0),
-		MaxLightsPerSystem:   cfg.OptionalInt("worker_rebalancer_max_lights_per_system", 0),
-		EffectSelfcheckTicks: cfg.OptionalInt("worker_rebalancer_effect_selfcheck_ticks", 0),
 	}
 }
 
@@ -1050,141 +994,6 @@ func buildConstructionCoordinatorCommand(cfg *configReader, playerID int, contai
 		// drain to that fleet (no opportunistic fallback). Both reload on restart (RULINGS #2).
 		DedicatedFleet:          cfg.OptionalString("dedicated_fleet"),
 		ExclusiveDedicatedFleet: cfg.OptionalBool("exclusive_dedicated_fleet"),
-	}
-}
-
-func buildGoodsFactoryCoordinatorCommand(cfg *configReader, playerID int, containerID string) interface{} {
-	return &goodsCmd.RunFactoryCoordinatorCommand{
-		PlayerID:      playerID,
-		TargetGood:    cfg.RequiredString("target_good"),
-		SystemSymbol:  cfg.RequiredString("system_symbol"),
-		ContainerID:   cfg.RequiredString("container_id"),
-		MaxIterations: cfg.OptionalInt("max_iterations", 1),
-		InputsOnly:    cfg.OptionalBool("inputs_only"),
-		// sp-agzj: unify the factory input floor with the fleet reserve. 0/absent → the
-		// coordinator's immutable 50k lower bound; a set value (the fleet's 1M) raises it.
-		WorkingCapitalReserve: cfg.OptionalInt("working_capital_reserve", 0),
-		// sp-yqx4: 0/absent → the 40% default so a factory below ~2.5M treasury is not
-		// deadlocked by a reserve above the balance; a positive value is the captain's
-		// [manufacturing] override.
-		WorkingCapitalReserveTreasuryPct: resolveReserveTreasuryPct(cfg.OptionalInt("working_capital_reserve_treasury_pct", 0)),
-		// sp-iv65: the ladder-chase input price ceiling. 0/absent → the executor resolves the
-		// 1.5 default at the point of use (the guard runs ON in production without the captain
-		// naming it); a set value is the captain's [manufacturing] override. The disable flag
-		// is the emergency off-switch (RULINGS #5).
-		InputPriceCeilingMultiplier: cfg.OptionalFloat("input_price_ceiling_multiplier", 0),
-		InputPriceCeilingDisabled:   cfg.OptionalBool("input_price_ceiling_disabled"),
-		// sp-sdyo: the per-good buy-gating override map (JSON string). A per-launch key that
-		// persists in the container config and reloads on restart (RULINGS #2); absent → nil (every
-		// good on the global gates). NOT added to manufacturingConfigKeys — it is per-launch, not a
-		// global config.yaml knob, so resolveManufacturingConfig must not clear it.
-		GoodGatingOverrides: cfg.OptionalGoodGatingOverrides("good_gating_overrides"),
-		// sp-jav2 / FACTORY_DOCTRINE X1: the fabricate depth cap. 0/absent → the resolver resolves
-		// the depth-1 default at the point of use (the cap runs ON in production without the captain
-		// naming it — fabricate the output, buy its inputs); a set value is the captain's
-		// [manufacturing] override. The disable flag is the RULINGS #5 emergency off-switch.
-		FabricateMaxDepth:         cfg.OptionalInt("fabricate_max_depth", 0),
-		FabricateDepthCapDisabled: cfg.OptionalBool("fabricate_depth_cap_disabled"),
-		// sp-yfzi: the production acquisition strategy. Empty/absent → "smart" (resolveProductionStrategy),
-		// so this factory resolves its tree with scarcity-gated recursion ON without the captain naming
-		// it; a captain pins "prefer-buy" in [manufacturing] to dial back to the sp-jav2 posture.
-		ProductionStrategy: resolveProductionStrategy(cfg.OptionalString("production_strategy")),
-		// sp-a5j7 Phase 2: supply-first sourcing (the wedx restoration). Rescue multiplier 0 →
-		// the executor resolves the 1.2 default; era-end flips to price-first < T-6h; the disable
-		// flag is the RULINGS #5 escape hatch back to pure price-first.
-		InputRescueMultiplier: cfg.OptionalFloat("input_rescue_multiplier", 0),
-		InputEraEndPriceFirst: cfg.OptionalBool("input_era_end_price_first"),
-		InputSourcingDisabled: cfg.OptionalBool("input_sourcing_disabled"),
-		// sp-rh2z: the chain P&L kill-switch. 0/absent → the coordinator resolves the 30000/hr
-		// threshold + 6h window defaults at the point of use (the switch runs ON in production
-		// without the captain naming it); a set value is the captain's [manufacturing] override.
-		// The disable flag is the RULINGS #5 emergency off-switch.
-		ChainPnLKillThresholdPerHour: cfg.OptionalInt("chain_pnl_kill_threshold_per_hour", 0),
-		ChainPnLWindowHours:          cfg.OptionalInt("chain_pnl_window_hours", 0),
-		ChainPnLKillDisabled:         cfg.OptionalBool("chain_pnl_kill_disabled"),
-		// sp-r5a6: the input-poison anti-cycle. 0/absent → the coordinator resolves the 194min
-		// recovery half-life default at the point of use (the anti-cycle runs ON in production
-		// without the captain naming it); a set value is the analyst's [manufacturing] override.
-		// The disable flag is the RULINGS #5 emergency off-switch.
-		InputRecoveryReattemptMinutes: cfg.OptionalInt("input_recovery_reattempt_minutes", 0),
-		AntiCycleDisabled:             cfg.OptionalBool("anti_cycle_disabled"),
-		// sp-xdk6: the export-ask-subsidy rest signal. 0/absent → the coordinator resolves the 90min
-		// recovery-window default at the point of use (the signal runs ON in production without the
-		// captain naming it); a set value is the analyst's [manufacturing] override. The disable flag
-		// is the RULINGS #5 emergency off-switch.
-		RestWindowMinutes:  cfg.OptionalInt("rest_window_minutes", 0),
-		RestSignalDisabled: cfg.OptionalBool("rest_signal_disabled"),
-		// sp-vh1s (Admiral sign-off 2026-07-14): the unified gate-fill toggle, from [manufacturing] via
-		// injectManufacturingConfig. absent/false → the whole feature dark (IsUnifiedGateNode needs BOTH
-		// the toggle AND a construction-site target), so an OFF/profit factory is byte-identical.
-		// ConstructionSiteWaypoint is a PER-LAUNCH key (like good_gating_overrides): a gate-fill factory
-		// launch names the jump-gate site the root output is DELIVERED to; empty (every profit factory)
-		// leaves the run selling at a resale sink.
-		UnifiedGateFill:          cfg.OptionalBool("unified_gate_fill"),
-		ConstructionSiteWaypoint: cfg.OptionalString("construction_site_waypoint"),
-		// sp-to2v: the fabrication-efficiency feeding policy (toggle + saturation-window coefficients +
-		// the non-responsive-goods override). absent/false/0 → the whole layer dark and the coefficients
-		// resolve to their 200/25 defaults + the verified default non-responsive set at the point of use.
-		FabricationEfficiency:  cfg.OptionalBool("fabrication_efficiency"),
-		FeedSaturationMaxUnits: cfg.OptionalInt("feed_saturation_max_units", 0),
-		FeedSaturationMinUnits: cfg.OptionalInt("feed_saturation_min_units", 0),
-		FeedNonResponsiveGoods: cfg.OptionalStringSlice("feed_non_responsive_goods"),
-		// sp-ev0n: the live-tunable concurrent-hull cap. worker_cap is the PER-OP override the
-		// `goods factory workers` RPC writes live; it is NOT among the config.yaml-reinjected
-		// manufacturingConfigKeys, so a live value persists verbatim across a restart (RULINGS
-		// #2). factory_worker_cap_default carries the global [manufacturing.siting]
-		// workers_per_chain (injected by injectManufacturingConfig, re-resolved from config.yaml
-		// each build). resolveFactoryWorkerCap prefers the per-op override, else the global
-		// default, else 0 = unbounded — so a fleet that never set workers_per_chain keeps the
-		// pre-sp-ev0n emergent fan-out (RULINGS #5).
-		WorkerCap: resolveFactoryWorkerCap(cfg.OptionalInt("worker_cap", 0), cfg.OptionalInt("factory_worker_cap_default", 0)),
-	}
-}
-
-// resolveFactoryWorkerCap picks the concurrent-hull cap a goods_factory launches with
-// (sp-ev0n): the per-op override (set live via `goods factory workers`) wins; absent that,
-// the global [manufacturing.siting] workers_per_chain default; absent both, 0 = unbounded
-// (the pre-sp-ev0n emergent fan-out, so a fleet that never configured workers_per_chain is
-// unchanged). A negative override is treated as unset. The live provider re-reads the per-op
-// value each pass, so this only sets the launch/restart baseline (RULINGS #2/#5).
-func resolveFactoryWorkerCap(perOpOverride, globalDefault int) int {
-	if perOpOverride > 0 {
-		return perOpOverride
-	}
-	if globalDefault > 0 {
-		return globalDefault
-	}
-	return 0
-}
-
-// buildSitingCoordinatorCommand rebuilds the standing siting coordinator command (sp-vdld)
-// from a persisted launch config so a daemon restart re-adopts it. The [manufacturing.siting]
-// knobs are resolved LIVE from config.yaml just before this runs (resolveSitingConfig in
-// buildCommandForType), so the persisted siting_* keys are transient — the reads below see the
-// current config.yaml. Disabled is reconstructed as siting_disabled directly (absent = false =
-// ACTIVE), so an absent key boots the coordinator LIVE, preserving the default-ON intent across
-// a recovery from an old config that predates the key (Admiral: no dark-shipping).
-func buildSitingCoordinatorCommand(cfg *configReader, playerID int, containerID string) interface{} {
-	return &goodsCmd.RunSitingCoordinatorCommand{
-		PlayerID:                 playerID,
-		ContainerID:              cfg.RequiredNonEmptyString("container_id"),
-		AgentSymbol:              cfg.OptionalString("agent_symbol"),
-		Disabled:                 cfg.OptionalBool("siting_disabled"),
-		DryRun:                   cfg.OptionalBool("siting_dry_run"),
-		TickIntervalSecs:         cfg.OptionalInt("siting_tick_secs", 0),
-		TopK:                     cfg.OptionalInt("siting_top_k", 0),
-		WorkersPerChain:          cfg.OptionalFloat("siting_workers_per_chain", 0),
-		FreshnessMaxSecs:         cfg.OptionalInt("siting_freshness_max_secs", 0),
-		EmitStalenessSecs:        cfg.OptionalInt("siting_emit_staleness_secs", 0),
-		WeightTourAlignment:      cfg.OptionalFloat("siting_weight_tour_alignment", 0),
-		WeightInputCompetition:   cfg.OptionalFloat("siting_weight_input_competition", 0),
-		WeightStaleness:          cfg.OptionalFloat("siting_weight_staleness", 0),
-		WeightWorkerReachability: cfg.OptionalFloat("siting_weight_worker_reachability", 0),
-		MaxChainsPerSystem:       cfg.OptionalInt("siting_max_chains_per_system", 0),
-		MaxChainsPerInputMarket:  cfg.OptionalInt("siting_max_chains_per_input_market", 0),
-		RetireHysteresisTicks:    cfg.OptionalInt("siting_retire_hysteresis_ticks", 0),
-		EffectSelfcheckTicks:     cfg.OptionalInt("siting_effect_selfcheck_ticks", 0),
-		ScoutDemandCooldownSecs:  cfg.OptionalInt("siting_scout_demand_cooldown_secs", 0),
 	}
 }
 

@@ -1,0 +1,89 @@
+package commands
+
+import (
+	"testing"
+	"time"
+
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+)
+
+// Test helpers shared by the construction-coordinator tests. Originally defined in the goods-factory
+// coordinator's test file; relocated here when the factory ops were retired (sp-hoj8u), the
+// construction-coordinator tests now being their sole users. Names are kept verbatim so the existing
+// construction tests reference them unchanged.
+
+const (
+	testSystem          = "X1-TEST"
+	testFactoryWaypoint = "X1-TEST-FACTORY"
+)
+
+type factoryFakeClock struct{}
+
+func (c *factoryFakeClock) Now() time.Time        { return time.Now() }
+func (c *factoryFakeClock) Sleep(d time.Duration) {}
+
+func newTestHauler(t *testing.T, symbol string, inventory []*shared.CargoItem) *navigation.Ship {
+	t.Helper()
+
+	units := 0
+	for _, item := range inventory {
+		units += item.Units
+	}
+	cargo, err := shared.NewCargo(40, units, inventory)
+	if err != nil {
+		t.Fatalf("failed to build cargo: %v", err)
+	}
+	fuel, err := shared.NewFuel(100, 100)
+	if err != nil {
+		t.Fatalf("failed to build fuel: %v", err)
+	}
+	waypoint, err := shared.NewWaypoint(testFactoryWaypoint, 0, 0)
+	if err != nil {
+		t.Fatalf("failed to build waypoint: %v", err)
+	}
+	ship, err := navigation.NewShip(
+		symbol,
+		shared.MustNewPlayerID(1),
+		waypoint,
+		fuel,
+		100,
+		40,
+		cargo,
+		30,
+		"FRAME_LIGHT_FREIGHTER",
+		"HAULER",
+		nil,
+		navigation.NavStatusDocked,
+	)
+	if err != nil {
+		t.Fatalf("failed to build ship: %v", err)
+	}
+	return ship
+}
+
+// newTestHaulerAt builds an idle HAULER at a chosen waypoint (the system is derived from the symbol
+// exactly as production does), for tests that place a hull outside the factory's own system.
+func newTestHaulerAt(t *testing.T, symbol, waypointSymbol string) *navigation.Ship {
+	t.Helper()
+	cargo, err := shared.NewCargo(40, 0, nil)
+	if err != nil {
+		t.Fatalf("failed to build cargo: %v", err)
+	}
+	fuel, err := shared.NewFuel(100, 100)
+	if err != nil {
+		t.Fatalf("failed to build fuel: %v", err)
+	}
+	waypoint, err := shared.NewWaypoint(waypointSymbol, 0, 0)
+	if err != nil {
+		t.Fatalf("failed to build waypoint: %v", err)
+	}
+	ship, err := navigation.NewShip(
+		symbol, shared.MustNewPlayerID(1), waypoint, fuel, 100, 40, cargo, 30,
+		"FRAME_LIGHT_FREIGHTER", "HAULER", nil, navigation.NavStatusDocked,
+	)
+	if err != nil {
+		t.Fatalf("failed to build ship: %v", err)
+	}
+	return ship
+}

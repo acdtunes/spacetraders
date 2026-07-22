@@ -98,11 +98,6 @@ var (
 	// derived-phase gauge + probe-purchase counter through it.
 	globalBootstrapCollector *BootstrapMetricsCollector
 
-	// globalSitingCollector is the singleton factory-siting collector. Set by
-	// SetGlobalSitingCollector() when metrics are enabled; the siting coordinator's ACT and
-	// EMIT steps increment the launch/retire/scout-demand counters through it.
-	globalSitingCollector *SitingMetricsCollector
-
 	// globalAPIBudgetTracker is the singleton API request-budget tracker. Set
 	// by SetGlobalAPIBudgetTracker() at daemon startup; the API
 	// client falls back to it when no per-instance tracker was injected, the
@@ -647,42 +642,6 @@ func GetGlobalChainExportRestCollector() *ChainExportRestMetricsCollector {
 func RecordChainExportRest(good string) {
 	if globalChainExportRestCollector != nil {
 		globalChainExportRestCollector.RecordRest(good)
-	}
-}
-
-// SetGlobalSitingCollector sets the global factory-siting collector. Pass nil to
-// clear it (e.g. in test cleanup).
-func SetGlobalSitingCollector(collector *SitingMetricsCollector) {
-	globalSitingCollector = collector
-}
-
-// GetGlobalSitingCollector returns the global factory-siting collector.
-func GetGlobalSitingCollector() *SitingMetricsCollector {
-	return globalSitingCollector
-}
-
-// RecordSitingLaunch increments the siting launch counter for a (good, system) chain globally.
-// No-op when metrics are disabled, so a metrics miss never touches the ACT path
-// (RULINGS #4).
-func RecordSitingLaunch(good, system string) {
-	if globalSitingCollector != nil {
-		globalSitingCollector.RecordLaunch(good, system)
-	}
-}
-
-// RecordSitingRetire increments the siting retire counter for a (good, system) chain globally.
-// No-op when metrics are disabled (RULINGS #4).
-func RecordSitingRetire(good, system string) {
-	if globalSitingCollector != nil {
-		globalSitingCollector.RecordRetire(good, system)
-	}
-}
-
-// RecordSitingScoutDemand increments the siting scout-demand counter for a system globally.
-// No-op when metrics are disabled (RULINGS #4).
-func RecordSitingScoutDemand(system string) {
-	if globalSitingCollector != nil {
-		globalSitingCollector.RecordScoutDemand(system)
 	}
 }
 

@@ -48,19 +48,18 @@ type MetricsCollector interface {
 // DaemonServer implements the gRPC daemon service
 // Handles CLI requests and orchestrates background container operations
 type DaemonServer struct {
-	mediator         common.Mediator
-	listener         net.Listener
-	db               *gorm.DB // Database for creating repositories on demand
-	logRepo          persistence.ContainerLogRepository
-	containerRepo    *persistence.ContainerRepositoryGORM
-	waypointRepo     *persistence.GormWaypointRepository
-	shipRepo         navigation.ShipRepository
-	playerRepo       player.PlayerRepository
-	frontierStatus   frontierStatusProvider // sp-pvw3 frontier-status query; injected post-construction, nil until wired
-	routingClient    routing.RoutingClient
-	goodsFactoryRepo *persistence.GormGoodsFactoryRepository
-	apiClient        domainPorts.APIClient
-	clock            shared.Clock
+	mediator       common.Mediator
+	listener       net.Listener
+	db             *gorm.DB // Database for creating repositories on demand
+	logRepo        persistence.ContainerLogRepository
+	containerRepo  *persistence.ContainerRepositoryGORM
+	waypointRepo   *persistence.GormWaypointRepository
+	shipRepo       navigation.ShipRepository
+	playerRepo     player.PlayerRepository
+	frontierStatus frontierStatusProvider // sp-pvw3 frontier-status query; injected post-construction, nil until wired
+	routingClient  routing.RoutingClient
+	apiClient      domainPorts.APIClient
+	clock          shared.Clock
 
 	// storageRecovery re-seeds the in-memory StorageCoordinator's per-good cargo
 	// availability from live ship state on boot (sp-o477). The coordinator is
@@ -225,7 +224,6 @@ func NewDaemonServer(
 	shipRepo navigation.ShipRepository,
 	playerRepo player.PlayerRepository,
 	routingClient routing.RoutingClient,
-	goodsFactoryRepo *persistence.GormGoodsFactoryRepository,
 	apiClient domainPorts.APIClient,
 	socketPath string,
 	metricsConfig *config.MetricsConfig,
@@ -284,7 +282,6 @@ func NewDaemonServer(
 		shipRepo:               shipRepo,
 		playerRepo:             playerRepo,
 		routingClient:          routingClient,
-		goodsFactoryRepo:       goodsFactoryRepo,
 		apiClient:              apiClient,
 		clock:                  clock,
 		shipStateScheduler:     shipStateScheduler,
@@ -563,17 +560,6 @@ func NewDaemonServer(
 			return nil, fmt.Errorf("failed to register chain export-rest metrics collector: %w", err)
 		}
 		metrics.SetGlobalChainExportRestCollector(chainExportRestCollector)
-
-		// Create factory-siting collector (sp-vdld): the siting coordinator's ACT and EMIT
-		// steps emit the launch/retire/scout-demand decision counters through the global set
-		// here — the observability for the standing "brain" that automates factory placement.
-		// Event-driven (no polling goroutine), mirroring the chain-P&L collector above.
-		sitingCollector := metrics.NewSitingMetricsCollector()
-		if err := sitingCollector.Register(); err != nil {
-			listener.Close()
-			return nil, fmt.Errorf("failed to register factory-siting metrics collector: %w", err)
-		}
-		metrics.SetGlobalSitingCollector(sitingCollector)
 
 		// Create fleet-autosizer collector (sp-1txd): the autosizer's ACT path emits its
 		// purchase / guard-blocked / demand / zero-effect-alarm series through the global set here —
@@ -1066,6 +1052,21 @@ func (s *DaemonServer) gracefulShutdownWithTimeout(timeout time.Duration) {
 	}
 }
 
+// retiredCommandTypes are container command types removed from the registry by the factory-ops
+// retirement (sp-hoj8u): the goods-factory coordinator, the factory-siting coordinator, the
+// worker-rebalancer coordinator, and the vestigial manufacturing coordinator. A persisted
+// RUNNING/INTERRUPTED row of one of these types has no builder, so generic recovery would mark it
+// "recovery_failed" and log it as an unexplained loss. The recovery loop skips these explicitly —
+// marking the row terminated and exempting it from the loss summary — so a post-retirement daemon
+// boot recovers cleanly with no unknown-command-type errors. Data-driven: a future retirement adds
+// one line here.
+var retiredCommandTypes = map[string]bool{
+	"goods_factory_coordinator":     true,
+	"siting_coordinator":            true,
+	"worker_rebalancer_coordinator": true,
+	"manufacturing_coordinator":     true,
+}
+
 // RecoverRunningContainers recovers containers that were RUNNING or INTERRUPTED when daemon stopped
 // INTERRUPTED = graceful shutdown (daemon called interruptAllContainers)
 // RUNNING = ungraceful shutdown (kill -9, crash) - backwards compatibility
@@ -1171,6 +1172,16 @@ func (s *DaemonServer) RecoverRunningContainers(ctx context.Context) error {
 			s.markWorkerInterrupted(ctx, containerModel, "")
 			exempt[containerModel.ID] = true
 			coordinatorSkipCount++
+			continue
+		}
+
+		// sp-hoj8u: a persisted row of a RETIRED command type (factory/siting/worker-rebalancer ops)
+		// has no builder. Skip it cleanly — mark it terminated with a clear reason and exempt it from
+		// the loss summary — rather than letting generic recovery report a spurious "recovery_failed".
+		if retiredCommandTypes[containerModel.CommandType] {
+			fmt.Printf("Container %s: Skipping recovery (retired command type '%s', sp-hoj8u factory-ops retirement)\n", containerModel.ID, containerModel.CommandType)
+			s.markContainerFailed(ctx, containerModel, "retired_command_type", "command type retired (sp-hoj8u)")
+			exempt[containerModel.ID] = true
 			continue
 		}
 

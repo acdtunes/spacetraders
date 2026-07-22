@@ -67,19 +67,21 @@ func TestSignalCompletion_ShiplessCoordinator_NoCryWolfWarning(t *testing.T) {
 		"a ship-less container has no worker completion to publish")
 }
 
-// TestSignalCompletion_ManufacturingCoordinator_NoCryWolfWarning pins the
-// "goods_factory" half of the bead symptom with a second representative ship-less
-// coordinator type, guarding against a fix that special-cases only scouts.
-func TestSignalCompletion_ManufacturingCoordinator_NoCryWolfWarning(t *testing.T) {
+// TestSignalCompletion_ConstructionCoordinator_NoCryWolfWarning pins the construction-drain
+// half of the bead symptom with a second representative ship-less coordinator type, guarding
+// against a fix that special-cases only scouts. (This fixture was the goods_factory coordinator
+// before the factory ops were retired, sp-hoj8u — the construction drain is the surviving
+// ship-less manufacturing-family coordinator.)
+func TestSignalCompletion_ConstructionCoordinator_NoCryWolfWarning(t *testing.T) {
 	rec := &fakeRecorder{}
 	SetCaptainEventRecorder(rec)
 	defer SetCaptainEventRecorder(nil)
 
-	r, pub := newCompletionRunner(t, container.ContainerTypeManufacturingCoordinator, map[string]interface{}{})
+	r, pub := newCompletionRunner(t, container.ContainerTypeConstructionCoordinator, map[string]interface{}{})
 	r.signalCompletionWithStatus(true, "")
 
 	require.Zero(t, countCompletionWarnings(r),
-		"a ship-less manufacturing coordinator's clean exit must not cry wolf")
+		"a ship-less construction coordinator's clean exit must not cry wolf")
 	require.Empty(t, pub.events)
 }
 

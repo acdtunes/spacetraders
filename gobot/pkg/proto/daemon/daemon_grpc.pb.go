@@ -35,14 +35,12 @@ const (
 	DaemonService_AssignScoutingFleet_FullMethodName           = "/daemon.DaemonService/AssignScoutingFleet"
 	DaemonService_ScoutPostCoordinator_FullMethodName          = "/daemon.DaemonService/ScoutPostCoordinator"
 	DaemonService_TradeFleetCoordinator_FullMethodName         = "/daemon.DaemonService/TradeFleetCoordinator"
-	DaemonService_SitingCoordinator_FullMethodName             = "/daemon.DaemonService/SitingCoordinator"
 	DaemonService_FleetAutosizerCoordinator_FullMethodName     = "/daemon.DaemonService/FleetAutosizerCoordinator"
 	DaemonService_BootstrapCoordinator_FullMethodName          = "/daemon.DaemonService/BootstrapCoordinator"
 	DaemonService_CapacityReconcilerCoordinator_FullMethodName = "/daemon.DaemonService/CapacityReconcilerCoordinator"
 	DaemonService_AutoOutfitCoordinator_FullMethodName         = "/daemon.DaemonService/AutoOutfitCoordinator"
 	DaemonService_FrontierExpansionCoordinator_FullMethodName  = "/daemon.DaemonService/FrontierExpansionCoordinator"
 	DaemonService_ShipyardBackfillCoordinator_FullMethodName   = "/daemon.DaemonService/ShipyardBackfillCoordinator"
-	DaemonService_WorkerRebalancerCoordinator_FullMethodName   = "/daemon.DaemonService/WorkerRebalancerCoordinator"
 	DaemonService_AddScoutPost_FullMethodName                  = "/daemon.DaemonService/AddScoutPost"
 	DaemonService_RemoveScoutPost_FullMethodName               = "/daemon.DaemonService/RemoveScoutPost"
 	DaemonService_ListScoutPosts_FullMethodName                = "/daemon.DaemonService/ListScoutPosts"
@@ -66,13 +64,9 @@ const (
 	DaemonService_PurchaseShip_FullMethodName                  = "/daemon.DaemonService/PurchaseShip"
 	DaemonService_BatchPurchaseShips_FullMethodName            = "/daemon.DaemonService/BatchPurchaseShips"
 	DaemonService_GetShipyardListings_FullMethodName           = "/daemon.DaemonService/GetShipyardListings"
-	DaemonService_StartGoodsFactory_FullMethodName             = "/daemon.DaemonService/StartGoodsFactory"
-	DaemonService_StopGoodsFactory_FullMethodName              = "/daemon.DaemonService/StopGoodsFactory"
-	DaemonService_FactoryWorkerCap_FullMethodName              = "/daemon.DaemonService/FactoryWorkerCap"
 	DaemonService_TuneContainerConfig_FullMethodName           = "/daemon.DaemonService/TuneContainerConfig"
 	DaemonService_ShowTunableConfig_FullMethodName             = "/daemon.DaemonService/ShowTunableConfig"
 	DaemonService_GetFrontierStatus_FullMethodName             = "/daemon.DaemonService/GetFrontierStatus"
-	DaemonService_GetFactoryStatus_FullMethodName              = "/daemon.DaemonService/GetFactoryStatus"
 	DaemonService_ScanArbitrageOpportunities_FullMethodName    = "/daemon.DaemonService/ScanArbitrageOpportunities"
 	DaemonService_StartArbitrageCoordinator_FullMethodName     = "/daemon.DaemonService/StartArbitrageCoordinator"
 	DaemonService_JettisonCargo_FullMethodName                 = "/daemon.DaemonService/JettisonCargo"
@@ -147,11 +141,6 @@ type DaemonServiceClient interface {
 	// keeps continuous tours alive on 'trade'-dedicated hulls, relaunching on honest
 	// exit after a cooldown. Retires the captain hand-relaunch loop.
 	TradeFleetCoordinator(ctx context.Context, in *TradeFleetCoordinatorRequest, opts ...grpc.CallOption) (*TradeFleetCoordinatorResponse, error)
-	// SitingCoordinator starts the standing factory-siting coordinator (sp-vdld): the
-	// "brain" that automates factory discovery/placement/capacity — each slow tick it
-	// scans candidate sites, scores them by branchPL, maintains the top-K portfolio,
-	// launches/retires goods_factory chains through the guard stack, and emits scout-demand.
-	SitingCoordinator(ctx context.Context, in *SitingCoordinatorRequest, opts ...grpc.CallOption) (*SitingCoordinatorResponse, error)
 	// FleetAutosizerCoordinator starts the standing fleet capacity autosizer (sp-1txd): sizes
 	// the hull pool to demand and auto-buys hulls (lights to factory demand, heavies to trade
 	// demand) behind the full fail-closed money-guard stack. LIVE BY DEFAULT once launched.
@@ -178,10 +167,6 @@ type DaemonServiceClient interface {
 	// shipyard systems (the blind spots), deeper-first, bounded by a per-cycle dispatch cap and
 	// idle probe supply. EXPLICIT START ONLY — never boot-standing-armed (deploy-inert).
 	ShipyardBackfillCoordinator(ctx context.Context, in *ShipyardBackfillCoordinatorRequest, opts ...grpc.CallOption) (*ShipyardBackfillCoordinatorResponse, error)
-	// WorkerRebalancerCoordinator starts the standing worker-rebalancer coordinator (sp-f5pr):
-	// ferries idle light-haulers cross-system to worker-starved factory systems. All tuning
-	// lives in config.yaml [worker_rebalancer]; this request names the player/agent + dry_run.
-	WorkerRebalancerCoordinator(ctx context.Context, in *WorkerRebalancerCoordinatorRequest, opts ...grpc.CallOption) (*WorkerRebalancerCoordinatorResponse, error)
 	// AddScoutPost adds or updates a desired-state scout post for a system
 	AddScoutPost(ctx context.Context, in *AddScoutPostRequest, opts ...grpc.CallOption) (*ScoutPostResponse, error)
 	// RemoveScoutPost removes a scout post for a system
@@ -240,15 +225,6 @@ type DaemonServiceClient interface {
 	BatchPurchaseShips(ctx context.Context, in *BatchPurchaseShipsRequest, opts ...grpc.CallOption) (*BatchPurchaseShipsResponse, error)
 	// GetShipyardListings retrieves available ships at a shipyard
 	GetShipyardListings(ctx context.Context, in *GetShipyardListingsRequest, opts ...grpc.CallOption) (*GetShipyardListingsResponse, error)
-	// StartGoodsFactory initiates automated goods production using supply chain fabrication
-	StartGoodsFactory(ctx context.Context, in *StartGoodsFactoryRequest, opts ...grpc.CallOption) (*StartGoodsFactoryResponse, error)
-	// StopGoodsFactory stops a running goods factory operation
-	StopGoodsFactory(ctx context.Context, in *StopGoodsFactoryRequest, opts ...grpc.CallOption) (*StopGoodsFactoryResponse, error)
-	// FactoryWorkerCap sets the live concurrent-hull cap on a RUNNING goods factory
-	// operation (sp-ev0n). The coordinator re-reads it each production pass and
-	// converges its fan-out to N with no container restart; the cap persists across
-	// restarts.
-	FactoryWorkerCap(ctx context.Context, in *FactoryWorkerCapRequest, opts ...grpc.CallOption) (*FactoryWorkerCapResponse, error)
 	// TuneContainerConfig sets (or, with value 0, reverts) ONE live knob on a
 	// RUNNING/PENDING container's persisted config (sp-vwek) — the generic runtime
 	// tune verb generalizing FactoryWorkerCap. The tune is validated against a
@@ -266,8 +242,6 @@ type DaemonServiceClient interface {
 	// frontier depth, the honest dark-market backlog (charted markets with no/stale price
 	// data), probe allocation, the last probe buy, and the current fail-closed blockers.
 	GetFrontierStatus(ctx context.Context, in *GetFrontierStatusRequest, opts ...grpc.CallOption) (*GetFrontierStatusResponse, error)
-	// GetFactoryStatus retrieves status and progress of a goods factory
-	GetFactoryStatus(ctx context.Context, in *GetFactoryStatusRequest, opts ...grpc.CallOption) (*GetFactoryStatusResponse, error)
 	// ScanArbitrageOpportunities scans markets for profitable arbitrage opportunities
 	ScanArbitrageOpportunities(ctx context.Context, in *ScanArbitrageOpportunitiesRequest, opts ...grpc.CallOption) (*ScanArbitrageOpportunitiesResponse, error)
 	// StartArbitrageCoordinator initiates automated arbitrage trading operations
@@ -495,16 +469,6 @@ func (c *daemonServiceClient) TradeFleetCoordinator(ctx context.Context, in *Tra
 	return out, nil
 }
 
-func (c *daemonServiceClient) SitingCoordinator(ctx context.Context, in *SitingCoordinatorRequest, opts ...grpc.CallOption) (*SitingCoordinatorResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(SitingCoordinatorResponse)
-	err := c.cc.Invoke(ctx, DaemonService_SitingCoordinator_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 func (c *daemonServiceClient) FleetAutosizerCoordinator(ctx context.Context, in *FleetAutosizerCoordinatorRequest, opts ...grpc.CallOption) (*FleetAutosizerCoordinatorResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(FleetAutosizerCoordinatorResponse)
@@ -559,16 +523,6 @@ func (c *daemonServiceClient) ShipyardBackfillCoordinator(ctx context.Context, i
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ShipyardBackfillCoordinatorResponse)
 	err := c.cc.Invoke(ctx, DaemonService_ShipyardBackfillCoordinator_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *daemonServiceClient) WorkerRebalancerCoordinator(ctx context.Context, in *WorkerRebalancerCoordinatorRequest, opts ...grpc.CallOption) (*WorkerRebalancerCoordinatorResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(WorkerRebalancerCoordinatorResponse)
-	err := c.cc.Invoke(ctx, DaemonService_WorkerRebalancerCoordinator_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -805,36 +759,6 @@ func (c *daemonServiceClient) GetShipyardListings(ctx context.Context, in *GetSh
 	return out, nil
 }
 
-func (c *daemonServiceClient) StartGoodsFactory(ctx context.Context, in *StartGoodsFactoryRequest, opts ...grpc.CallOption) (*StartGoodsFactoryResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(StartGoodsFactoryResponse)
-	err := c.cc.Invoke(ctx, DaemonService_StartGoodsFactory_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *daemonServiceClient) StopGoodsFactory(ctx context.Context, in *StopGoodsFactoryRequest, opts ...grpc.CallOption) (*StopGoodsFactoryResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(StopGoodsFactoryResponse)
-	err := c.cc.Invoke(ctx, DaemonService_StopGoodsFactory_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *daemonServiceClient) FactoryWorkerCap(ctx context.Context, in *FactoryWorkerCapRequest, opts ...grpc.CallOption) (*FactoryWorkerCapResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(FactoryWorkerCapResponse)
-	err := c.cc.Invoke(ctx, DaemonService_FactoryWorkerCap_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 func (c *daemonServiceClient) TuneContainerConfig(ctx context.Context, in *TuneContainerConfigRequest, opts ...grpc.CallOption) (*TuneContainerConfigResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(TuneContainerConfigResponse)
@@ -859,16 +783,6 @@ func (c *daemonServiceClient) GetFrontierStatus(ctx context.Context, in *GetFron
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetFrontierStatusResponse)
 	err := c.cc.Invoke(ctx, DaemonService_GetFrontierStatus_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *daemonServiceClient) GetFactoryStatus(ctx context.Context, in *GetFactoryStatusRequest, opts ...grpc.CallOption) (*GetFactoryStatusResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(GetFactoryStatusResponse)
-	err := c.cc.Invoke(ctx, DaemonService_GetFactoryStatus_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1154,11 +1068,6 @@ type DaemonServiceServer interface {
 	// keeps continuous tours alive on 'trade'-dedicated hulls, relaunching on honest
 	// exit after a cooldown. Retires the captain hand-relaunch loop.
 	TradeFleetCoordinator(context.Context, *TradeFleetCoordinatorRequest) (*TradeFleetCoordinatorResponse, error)
-	// SitingCoordinator starts the standing factory-siting coordinator (sp-vdld): the
-	// "brain" that automates factory discovery/placement/capacity — each slow tick it
-	// scans candidate sites, scores them by branchPL, maintains the top-K portfolio,
-	// launches/retires goods_factory chains through the guard stack, and emits scout-demand.
-	SitingCoordinator(context.Context, *SitingCoordinatorRequest) (*SitingCoordinatorResponse, error)
 	// FleetAutosizerCoordinator starts the standing fleet capacity autosizer (sp-1txd): sizes
 	// the hull pool to demand and auto-buys hulls (lights to factory demand, heavies to trade
 	// demand) behind the full fail-closed money-guard stack. LIVE BY DEFAULT once launched.
@@ -1185,10 +1094,6 @@ type DaemonServiceServer interface {
 	// shipyard systems (the blind spots), deeper-first, bounded by a per-cycle dispatch cap and
 	// idle probe supply. EXPLICIT START ONLY — never boot-standing-armed (deploy-inert).
 	ShipyardBackfillCoordinator(context.Context, *ShipyardBackfillCoordinatorRequest) (*ShipyardBackfillCoordinatorResponse, error)
-	// WorkerRebalancerCoordinator starts the standing worker-rebalancer coordinator (sp-f5pr):
-	// ferries idle light-haulers cross-system to worker-starved factory systems. All tuning
-	// lives in config.yaml [worker_rebalancer]; this request names the player/agent + dry_run.
-	WorkerRebalancerCoordinator(context.Context, *WorkerRebalancerCoordinatorRequest) (*WorkerRebalancerCoordinatorResponse, error)
 	// AddScoutPost adds or updates a desired-state scout post for a system
 	AddScoutPost(context.Context, *AddScoutPostRequest) (*ScoutPostResponse, error)
 	// RemoveScoutPost removes a scout post for a system
@@ -1247,15 +1152,6 @@ type DaemonServiceServer interface {
 	BatchPurchaseShips(context.Context, *BatchPurchaseShipsRequest) (*BatchPurchaseShipsResponse, error)
 	// GetShipyardListings retrieves available ships at a shipyard
 	GetShipyardListings(context.Context, *GetShipyardListingsRequest) (*GetShipyardListingsResponse, error)
-	// StartGoodsFactory initiates automated goods production using supply chain fabrication
-	StartGoodsFactory(context.Context, *StartGoodsFactoryRequest) (*StartGoodsFactoryResponse, error)
-	// StopGoodsFactory stops a running goods factory operation
-	StopGoodsFactory(context.Context, *StopGoodsFactoryRequest) (*StopGoodsFactoryResponse, error)
-	// FactoryWorkerCap sets the live concurrent-hull cap on a RUNNING goods factory
-	// operation (sp-ev0n). The coordinator re-reads it each production pass and
-	// converges its fan-out to N with no container restart; the cap persists across
-	// restarts.
-	FactoryWorkerCap(context.Context, *FactoryWorkerCapRequest) (*FactoryWorkerCapResponse, error)
 	// TuneContainerConfig sets (or, with value 0, reverts) ONE live knob on a
 	// RUNNING/PENDING container's persisted config (sp-vwek) — the generic runtime
 	// tune verb generalizing FactoryWorkerCap. The tune is validated against a
@@ -1273,8 +1169,6 @@ type DaemonServiceServer interface {
 	// frontier depth, the honest dark-market backlog (charted markets with no/stale price
 	// data), probe allocation, the last probe buy, and the current fail-closed blockers.
 	GetFrontierStatus(context.Context, *GetFrontierStatusRequest) (*GetFrontierStatusResponse, error)
-	// GetFactoryStatus retrieves status and progress of a goods factory
-	GetFactoryStatus(context.Context, *GetFactoryStatusRequest) (*GetFactoryStatusResponse, error)
 	// ScanArbitrageOpportunities scans markets for profitable arbitrage opportunities
 	ScanArbitrageOpportunities(context.Context, *ScanArbitrageOpportunitiesRequest) (*ScanArbitrageOpportunitiesResponse, error)
 	// StartArbitrageCoordinator initiates automated arbitrage trading operations
@@ -1390,9 +1284,6 @@ func (UnimplementedDaemonServiceServer) ScoutPostCoordinator(context.Context, *S
 func (UnimplementedDaemonServiceServer) TradeFleetCoordinator(context.Context, *TradeFleetCoordinatorRequest) (*TradeFleetCoordinatorResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method TradeFleetCoordinator not implemented")
 }
-func (UnimplementedDaemonServiceServer) SitingCoordinator(context.Context, *SitingCoordinatorRequest) (*SitingCoordinatorResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method SitingCoordinator not implemented")
-}
 func (UnimplementedDaemonServiceServer) FleetAutosizerCoordinator(context.Context, *FleetAutosizerCoordinatorRequest) (*FleetAutosizerCoordinatorResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method FleetAutosizerCoordinator not implemented")
 }
@@ -1410,9 +1301,6 @@ func (UnimplementedDaemonServiceServer) FrontierExpansionCoordinator(context.Con
 }
 func (UnimplementedDaemonServiceServer) ShipyardBackfillCoordinator(context.Context, *ShipyardBackfillCoordinatorRequest) (*ShipyardBackfillCoordinatorResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ShipyardBackfillCoordinator not implemented")
-}
-func (UnimplementedDaemonServiceServer) WorkerRebalancerCoordinator(context.Context, *WorkerRebalancerCoordinatorRequest) (*WorkerRebalancerCoordinatorResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method WorkerRebalancerCoordinator not implemented")
 }
 func (UnimplementedDaemonServiceServer) AddScoutPost(context.Context, *AddScoutPostRequest) (*ScoutPostResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AddScoutPost not implemented")
@@ -1483,15 +1371,6 @@ func (UnimplementedDaemonServiceServer) BatchPurchaseShips(context.Context, *Bat
 func (UnimplementedDaemonServiceServer) GetShipyardListings(context.Context, *GetShipyardListingsRequest) (*GetShipyardListingsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetShipyardListings not implemented")
 }
-func (UnimplementedDaemonServiceServer) StartGoodsFactory(context.Context, *StartGoodsFactoryRequest) (*StartGoodsFactoryResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method StartGoodsFactory not implemented")
-}
-func (UnimplementedDaemonServiceServer) StopGoodsFactory(context.Context, *StopGoodsFactoryRequest) (*StopGoodsFactoryResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method StopGoodsFactory not implemented")
-}
-func (UnimplementedDaemonServiceServer) FactoryWorkerCap(context.Context, *FactoryWorkerCapRequest) (*FactoryWorkerCapResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method FactoryWorkerCap not implemented")
-}
 func (UnimplementedDaemonServiceServer) TuneContainerConfig(context.Context, *TuneContainerConfigRequest) (*TuneContainerConfigResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method TuneContainerConfig not implemented")
 }
@@ -1500,9 +1379,6 @@ func (UnimplementedDaemonServiceServer) ShowTunableConfig(context.Context, *Show
 }
 func (UnimplementedDaemonServiceServer) GetFrontierStatus(context.Context, *GetFrontierStatusRequest) (*GetFrontierStatusResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetFrontierStatus not implemented")
-}
-func (UnimplementedDaemonServiceServer) GetFactoryStatus(context.Context, *GetFactoryStatusRequest) (*GetFactoryStatusResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method GetFactoryStatus not implemented")
 }
 func (UnimplementedDaemonServiceServer) ScanArbitrageOpportunities(context.Context, *ScanArbitrageOpportunitiesRequest) (*ScanArbitrageOpportunitiesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ScanArbitrageOpportunities not implemented")
@@ -1882,24 +1758,6 @@ func _DaemonService_TradeFleetCoordinator_Handler(srv interface{}, ctx context.C
 	return interceptor(ctx, in, info, handler)
 }
 
-func _DaemonService_SitingCoordinator_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(SitingCoordinatorRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(DaemonServiceServer).SitingCoordinator(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: DaemonService_SitingCoordinator_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(DaemonServiceServer).SitingCoordinator(ctx, req.(*SitingCoordinatorRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 func _DaemonService_FleetAutosizerCoordinator_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(FleetAutosizerCoordinatorRequest)
 	if err := dec(in); err != nil {
@@ -2004,24 +1862,6 @@ func _DaemonService_ShipyardBackfillCoordinator_Handler(srv interface{}, ctx con
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DaemonServiceServer).ShipyardBackfillCoordinator(ctx, req.(*ShipyardBackfillCoordinatorRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _DaemonService_WorkerRebalancerCoordinator_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(WorkerRebalancerCoordinatorRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(DaemonServiceServer).WorkerRebalancerCoordinator(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: DaemonService_WorkerRebalancerCoordinator_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(DaemonServiceServer).WorkerRebalancerCoordinator(ctx, req.(*WorkerRebalancerCoordinatorRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2440,60 +2280,6 @@ func _DaemonService_GetShipyardListings_Handler(srv interface{}, ctx context.Con
 	return interceptor(ctx, in, info, handler)
 }
 
-func _DaemonService_StartGoodsFactory_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(StartGoodsFactoryRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(DaemonServiceServer).StartGoodsFactory(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: DaemonService_StartGoodsFactory_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(DaemonServiceServer).StartGoodsFactory(ctx, req.(*StartGoodsFactoryRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _DaemonService_StopGoodsFactory_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(StopGoodsFactoryRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(DaemonServiceServer).StopGoodsFactory(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: DaemonService_StopGoodsFactory_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(DaemonServiceServer).StopGoodsFactory(ctx, req.(*StopGoodsFactoryRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _DaemonService_FactoryWorkerCap_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(FactoryWorkerCapRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(DaemonServiceServer).FactoryWorkerCap(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: DaemonService_FactoryWorkerCap_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(DaemonServiceServer).FactoryWorkerCap(ctx, req.(*FactoryWorkerCapRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 func _DaemonService_TuneContainerConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(TuneContainerConfigRequest)
 	if err := dec(in); err != nil {
@@ -2544,24 +2330,6 @@ func _DaemonService_GetFrontierStatus_Handler(srv interface{}, ctx context.Conte
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DaemonServiceServer).GetFrontierStatus(ctx, req.(*GetFrontierStatusRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _DaemonService_GetFactoryStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(GetFactoryStatusRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(DaemonServiceServer).GetFactoryStatus(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: DaemonService_GetFactoryStatus_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(DaemonServiceServer).GetFactoryStatus(ctx, req.(*GetFactoryStatusRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -3052,10 +2820,6 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _DaemonService_TradeFleetCoordinator_Handler,
 		},
 		{
-			MethodName: "SitingCoordinator",
-			Handler:    _DaemonService_SitingCoordinator_Handler,
-		},
-		{
 			MethodName: "FleetAutosizerCoordinator",
 			Handler:    _DaemonService_FleetAutosizerCoordinator_Handler,
 		},
@@ -3078,10 +2842,6 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ShipyardBackfillCoordinator",
 			Handler:    _DaemonService_ShipyardBackfillCoordinator_Handler,
-		},
-		{
-			MethodName: "WorkerRebalancerCoordinator",
-			Handler:    _DaemonService_WorkerRebalancerCoordinator_Handler,
 		},
 		{
 			MethodName: "AddScoutPost",
@@ -3176,18 +2936,6 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _DaemonService_GetShipyardListings_Handler,
 		},
 		{
-			MethodName: "StartGoodsFactory",
-			Handler:    _DaemonService_StartGoodsFactory_Handler,
-		},
-		{
-			MethodName: "StopGoodsFactory",
-			Handler:    _DaemonService_StopGoodsFactory_Handler,
-		},
-		{
-			MethodName: "FactoryWorkerCap",
-			Handler:    _DaemonService_FactoryWorkerCap_Handler,
-		},
-		{
 			MethodName: "TuneContainerConfig",
 			Handler:    _DaemonService_TuneContainerConfig_Handler,
 		},
@@ -3198,10 +2946,6 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetFrontierStatus",
 			Handler:    _DaemonService_GetFrontierStatus_Handler,
-		},
-		{
-			MethodName: "GetFactoryStatus",
-			Handler:    _DaemonService_GetFactoryStatus_Handler,
 		},
 		{
 			MethodName: "ScanArbitrageOpportunities",

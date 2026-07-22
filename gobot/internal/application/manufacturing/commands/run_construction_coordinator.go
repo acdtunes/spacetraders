@@ -353,6 +353,12 @@ func (h *RunConstructionCoordinatorHandler) drainOnce(ctx context.Context, cmd *
 	return &RunConstructionCoordinatorResponse{TasksDrained: int(drained.Load())}, nil
 }
 
+// operationManufacturing is the shared "manufacturing" fleet/claim identity: the construction-supply
+// drain claims idle in-system haulers under this operation and prefers hulls tagged with it (see
+// dedicatedFleet below). Originally the goods-factory coordinator's fleet identity; it moved here with
+// the factory-ops retirement (sp-hoj8u), the construction drain now being its sole consumer.
+const operationManufacturing = "manufacturing"
+
 // dedicatedFleet is the Ship.DedicatedFleet() tag this drain PREFERS, defaulting to the shared
 // "manufacturing" identity. The default is deliberately EQUAL to operationManufacturing (the
 // ClaimShip operation): FindIdleShipsByFleet looks hulls up BY this tag AND ClaimShip authorizes a new

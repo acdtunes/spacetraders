@@ -76,29 +76,4 @@ type BootstrapConfig struct {
 	// arbitration. Absent/false = armed (the autosizer launches during DATA/INCOME so the reconciler's
 	// contract-delivery demand has a buyer). Arms as a pair with ScaledGateEntryDisabled.
 	AutosizerEarlyScalingDisabled bool `mapstructure:"autosizer_early_scaling_disabled"`
-
-	// GateSourceFeeders is the config-driven set of gate source EXPORT-factory feeders (sp-hoc6). For
-	// each entry, the daemon launches a STANDING InputsOnly goods_factory coordinator ALONGSIDE the
-	// construction drain: the feeder BUYS the source factory's IMPORT inputs and delivers them in,
-	// leaving the fabricated OUTPUT in export stock (InputsOnly=true, sp-q02m) for the drain to buy and
-	// haul to the gate. This sustains the source factory's export supply/price so the drain's buying of
-	// the gate output (e.g. FAB_MATS@F48, ADVANCED_CIRCUITRY@D42) stays under the buy-ceiling (sp-layd)
-	// instead of depleting supply → exploding the bid → stalling the fill.
-	//
-	// Which materials get a feeder is the Analyst's to own (RULINGS #5): a literal F48/D42 in the launch
-	// code is forbidden. The input recipe per material is resolved automatically from
-	// goods.ExportToImportMap (do NOT list inputs here). An entry's empty System resolves to the home
-	// system at launch (single-system, RULINGS #14); set it only to feed a source factory in another
-	// system. SetDefaults seeds a live-by-default set covering the current gate — edit config.yaml to
-	// retune.
-	GateSourceFeeders []GateSourceFeeder `mapstructure:"gate_source_feeders"`
-}
-
-// GateSourceFeeder names one gate source EXPORT-factory to keep fed (sp-hoc6). Good is the material
-// whose source factory is fed its imports (the feeder's target good — the SAME good the drain buys);
-// System is where that factory lives, empty meaning "resolve to the home system at launch". It carries
-// NO input list: the goods_factory op resolves the recipe from goods.ExportToImportMap.
-type GateSourceFeeder struct {
-	Good   string `mapstructure:"good"`
-	System string `mapstructure:"system"`
 }

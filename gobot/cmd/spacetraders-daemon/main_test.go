@@ -40,7 +40,6 @@ import (
 // rotting: an entry for a type that either disappears or becomes registered
 // fails that test.
 var knownUnregisteredExceptions = map[string]string{
-	"RunFactoryWorkerCommand":  "type declared (internal/application/manufacturing/types/factory_types.go) with no handler implementation anywhere in the codebase; dead/aspirational code predating sp-423c, superseded by RunFactoryCoordinatorCommand",
 	"RefreshMarketDataCommand": "RefreshMarketDataHandler exists (internal/application/scouting/commands/refresh_market_data.go) but nothing constructs or dispatches this command anywhere in the codebase; dead code predating sp-423c",
 	"SyncPlayerCommand":        "handler exists (internal/application/player/commands/register_player.go) but nothing constructs or dispatches this command anywhere in the codebase, unlike its sibling RegisterPlayerCommand; dead code predating sp-423c",
 	"RegisterPlayerCommand":    "dispatched via a direct handler.Handle() call from the CLI (internal/adapters/cli/player.go), bypassing the mediator by design",

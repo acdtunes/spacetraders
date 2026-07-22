@@ -7,16 +7,18 @@ import (
 )
 
 // The daemon persists container types from the domain constants, which are
-// UPPERCASE (e.g. "MANUFACTURING_COORDINATOR", "GAS_COORDINATOR"). The
-// operations verbs classify against these registered types; these tests pin the
-// verbs to the types the daemon actually stores so `operations status`/`stop`
-// can never again silently miss a running coordinator (sp-dpsq).
+// UPPERCASE (e.g. "PARALLEL_MANUFACTURING", "GAS_COORDINATOR"). The operations
+// verbs classify against these registered types; these tests pin the verbs to
+// the types the daemon actually stores so `operations status`/`stop` can never
+// again silently miss a running coordinator (sp-dpsq). The standard
+// MANUFACTURING_COORDINATOR was retired with the factory ops (sp-hoj8u);
+// PARALLEL_MANUFACTURING is the surviving manufacturing-coordinator type.
 
 func TestClassifyOperationContainersMatchesRegisteredTypes(t *testing.T) {
 	containers := []*ContainerInfo{
 		{ContainerID: "gas_coordinator-X1-abc", ContainerType: "GAS_COORDINATOR"},
 		{ContainerID: "gas_siphon-1", ContainerType: "GAS_SIPHON_WORKER"},
-		{ContainerID: "parallel_manufacturing-X1-def", ContainerType: "MANUFACTURING_COORDINATOR"},
+		{ContainerID: "parallel_manufacturing-X1-def", ContainerType: "PARALLEL_MANUFACTURING"},
 		{ContainerID: "mfg-worker-1", ContainerType: "MANUFACTURING_TASK_WORKER"},
 		{ContainerID: "storage-1", ContainerType: "STORAGE_SHIP"},
 	}
@@ -30,7 +32,7 @@ func TestClassifyOperationContainersMatchesRegisteredTypes(t *testing.T) {
 	require.Equal(t, "gas_siphon-1", groups.gasWorkers[0].ContainerID)
 
 	require.Len(t, groups.mfgCoordinators, 1,
-		"a running MANUFACTURING_COORDINATOR must be tracked as a manufacturing coordinator, not lost to Other")
+		"a running PARALLEL_MANUFACTURING coordinator must be tracked as a manufacturing coordinator, not lost to Other")
 	require.Equal(t, "parallel_manufacturing-X1-def", groups.mfgCoordinators[0].ContainerID)
 
 	require.Len(t, groups.mfgWorkers, 1)
@@ -56,13 +58,13 @@ func TestClassifyOperationContainersTracksParallelManufacturingType(t *testing.T
 
 func TestSelectCoordinatorsToStopTracksManufacturingCoordinator(t *testing.T) {
 	containers := []*ContainerInfo{
-		{ContainerID: "parallel_manufacturing-X1-PZ28-f388df4b", ContainerType: "MANUFACTURING_COORDINATOR"},
+		{ContainerID: "parallel_manufacturing-X1-PZ28-f388df4b", ContainerType: "PARALLEL_MANUFACTURING"},
 	}
 
 	toStop := selectCoordinatorsToStop(containers, false, true, "")
 
 	require.Len(t, toStop, 1,
-		"operations stop --manufacturing must match a running MANUFACTURING_COORDINATOR")
+		"operations stop --manufacturing must match a running PARALLEL_MANUFACTURING coordinator")
 	require.Equal(t, "parallel_manufacturing-X1-PZ28-f388df4b", toStop[0].ContainerID)
 }
 
@@ -74,7 +76,7 @@ func TestSelectCoordinatorsToStopRespectsTypeAndSystemFilters(t *testing.T) {
 	}
 	mfgCoord := &ContainerInfo{
 		ContainerID:   "parallel_manufacturing-X1-PZ28",
-		ContainerType: "MANUFACTURING_COORDINATOR",
+		ContainerType: "PARALLEL_MANUFACTURING",
 		Metadata:      `{"system_symbol":"X1-PZ28"}`,
 	}
 	mfgWorker := &ContainerInfo{

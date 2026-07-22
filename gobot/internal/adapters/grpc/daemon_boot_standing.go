@@ -2,7 +2,7 @@ package grpc
 
 // sp-382j: Admiral-selected launch model (a) — the construction-supply drain is now a STANDING
 // coordinator launched unconditionally at every daemon boot, mirroring how the other standing
-// coordinators (GoodsFactoryCoordinator/StartGoodsFactory, SitingCoordinator, ...) already
+// coordinators (market-freshness sizer, scout-post, bootstrap, ...) already
 // auto-start. Before this, launch was bootstrap-EnsureRunning-only: with no active bootstrapper
 // the ConstructionCoordinator never ran even once, so RecoverRunningContainers (which only
 // re-adopts containers already PERSISTED as RUNNING) found nothing to recover, leaving a live
@@ -106,14 +106,6 @@ func (s *DaemonServer) ensureBootStandingCoordinators(ctx context.Context, playe
 			s.ensureScoutPostStanding(ctx, playerID)
 		}
 	}
-
-	// sp-hoc6: ALONGSIDE the construction drain, keep the gate's source EXPORT-factories fed with their
-	// import inputs (standing InputsOnly goods_factory feeders) so the drain's buying of the gate output
-	// stays under the buy-ceiling (sp-layd) instead of depleting export supply. Config-driven feeder set
-	// (RULINGS #5), idempotent, and restart-resilient the same way the drain is — the feeders are
-	// goods_factory coordinators re-adopted by RecoverRunningContainers, and this pass skips any already
-	// running (RULINGS #2). Runs here, after recovery, so a warm restart re-adopts rather than duplicates.
-	s.ensureGateSourceFeeders(ctx, playerID)
 }
 
 // ensureBootstrapStanding launches the standing captain-bootstrap coordinator (sp-ov8z) when none is

@@ -1060,24 +1060,6 @@ func (c *DaemonClient) FleetHub(ctx context.Context, operation, waypoint string,
 	return resp, nil
 }
 
-// FactoryWorkerCap sets the live concurrent-hull cap on a running goods factory
-// operation, with no container restart (sp-ev0n).
-func (c *DaemonClient) FactoryWorkerCap(ctx context.Context, containerID string, count int, playerID *int32, agentSymbol *string) (*pb.FactoryWorkerCapResponse, error) {
-	req := &pb.FactoryWorkerCapRequest{
-		ContainerId: containerID,
-		Count:       int32(count),
-		PlayerId:    playerID,
-		AgentSymbol: agentSymbol,
-	}
-
-	resp, err := c.client.FactoryWorkerCap(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf(grpcCallFailed, err)
-	}
-
-	return resp, nil
-}
-
 // ConstructionWorkerCap sets the concurrent-worker cap (max_workers) on a running construction
 // pipeline live, with no pipeline/daemon restart (sp-duljg).
 func (c *DaemonClient) ConstructionWorkerCap(ctx context.Context, constructionSite string, count int, playerID *int32, agentSymbol *string) (*pb.ConstructionWorkerCapResponse, error) {
@@ -1331,23 +1313,6 @@ func (c *DaemonClient) TradeFleetCoordinator(ctx context.Context, playerID int, 
 	return resp.ContainerId, nil
 }
 
-// SitingCoordinator starts the standing factory-siting coordinator (sp-vdld): the standing
-// "brain" that automates factory discovery, placement, and capacity planning. Identity-only
-// launch — all [manufacturing.siting] tuning resolves live from config.yaml.
-func (c *DaemonClient) SitingCoordinator(ctx context.Context, playerID int, agentSymbol string) (string, error) {
-	req := &pb.SitingCoordinatorRequest{
-		PlayerId: int32(playerID),
-	}
-	if agentSymbol != "" {
-		req.AgentSymbol = &agentSymbol
-	}
-	resp, err := c.client.SitingCoordinator(ctx, req)
-	if err != nil {
-		return "", fmt.Errorf(grpcCallFailed, err)
-	}
-	return resp.ContainerId, nil
-}
-
 // FleetAutosizerCoordinator starts the standing fleet capacity autosizer (sp-1txd): sizes the hull
 // pool to demand and auto-buys hulls behind the fail-closed money-guard stack. Identity-only launch
 // — all [fleet_autosizer] tuning resolves live from config.yaml.
@@ -1397,23 +1362,6 @@ func (c *DaemonClient) BootstrapCoordinator(ctx context.Context, playerID int, a
 		req.AgentSymbol = &agentSymbol
 	}
 	resp, err := c.client.BootstrapCoordinator(ctx, req)
-	if err != nil {
-		return "", fmt.Errorf(grpcCallFailed, err)
-	}
-	return resp.ContainerId, nil
-}
-
-// WorkerRebalancerCoordinator starts the standing worker-rebalancer coordinator (sp-f5pr).
-// dryRun decides + logs the ferry it would dispatch but ferries nothing.
-func (c *DaemonClient) WorkerRebalancerCoordinator(ctx context.Context, playerID int, agentSymbol string, dryRun bool) (string, error) {
-	req := &pb.WorkerRebalancerCoordinatorRequest{
-		PlayerId: int32(playerID),
-		DryRun:   dryRun,
-	}
-	if agentSymbol != "" {
-		req.AgentSymbol = &agentSymbol
-	}
-	resp, err := c.client.WorkerRebalancerCoordinator(ctx, req)
 	if err != nil {
 		return "", fmt.Errorf(grpcCallFailed, err)
 	}
@@ -1765,88 +1713,6 @@ func (c *DaemonClient) StartStocker(
 		WarehouseWaypoint: resp.WarehouseWaypoint,
 		Status:            resp.Status,
 		Message:           resp.Message,
-	}, nil
-}
-
-func (c *DaemonClient) StartGoodsFactory(
-	ctx context.Context,
-	targetGood string,
-	systemSymbol *string,
-	playerID int,
-	agentSymbol *string,
-	maxIterations *int32,
-	inputsOnly bool,
-) (*StartGoodsFactoryResult, error) {
-	resp, err := c.client.StartGoodsFactory(ctx, &pb.StartGoodsFactoryRequest{
-		PlayerId:      int32(playerID),
-		TargetGood:    targetGood,
-		SystemSymbol:  systemSymbol,
-		AgentSymbol:   agentSymbol,
-		MaxIterations: maxIterations,
-		InputsOnly:    inputsOnly,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	return &StartGoodsFactoryResult{
-		FactoryID:  resp.FactoryId,
-		TargetGood: resp.TargetGood,
-		Status:     resp.Status,
-		Message:    resp.Message,
-		NodesTotal: int(resp.NodesTotal),
-	}, nil
-}
-
-// StopGoodsFactory stops a running goods factory
-func (c *DaemonClient) StopGoodsFactory(
-	ctx context.Context,
-	factoryID string,
-	playerID int,
-) (*StopGoodsFactoryResult, error) {
-	resp, err := c.client.StopGoodsFactory(ctx, &pb.StopGoodsFactoryRequest{
-		PlayerId:  int32(playerID),
-		FactoryId: factoryID,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	return &StopGoodsFactoryResult{
-		FactoryID: resp.FactoryId,
-		Status:    resp.Status,
-		Message:   resp.Message,
-	}, nil
-}
-
-// GetFactoryStatus retrieves the status of a goods factory
-func (c *DaemonClient) GetFactoryStatus(
-	ctx context.Context,
-	factoryID string,
-	playerID int,
-) (*GoodsFactoryStatusResult, error) {
-	resp, err := c.client.GetFactoryStatus(ctx, &pb.GetFactoryStatusRequest{
-		PlayerId:  int32(playerID),
-		FactoryId: factoryID,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	return &GoodsFactoryStatusResult{
-		FactoryID:        resp.FactoryId,
-		TargetGood:       resp.TargetGood,
-		Status:           resp.Status,
-		DependencyTree:   resp.DependencyTree,
-		QuantityAcquired: int(resp.QuantityAcquired),
-		TotalCost:        int(resp.TotalCost),
-		NodesCompleted:   int(resp.NodesCompleted),
-		NodesTotal:       int(resp.NodesTotal),
-		SystemSymbol:     resp.SystemSymbol,
-		ShipsUsed:        int(resp.ShipsUsed),
-		MarketQueries:    int(resp.MarketQueries),
-		ParallelLevels:   int(resp.ParallelLevels),
-		EstimatedSpeedup: float64(resp.EstimatedSpeedup),
 	}, nil
 }
 

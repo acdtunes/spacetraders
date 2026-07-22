@@ -52,12 +52,9 @@ const (
 	ContainerTypeScoutPostCoordinator     ContainerType = "SCOUT_POST_COORDINATOR"
 	ContainerTypeTradeFleetCoordinator    ContainerType = "TRADE_FLEET_COORDINATOR"
 	ContainerTypeScoutReposition          ContainerType = "SCOUT_REPOSITION"
-	// ContainerTypeWorkerRebalancerCoordinator is the standing coordinator that ferries
-	// idle light-haulers cross-system to worker-starved factory systems; like the
-	// trade-fleet/scout-post coordinators it loops forever inside one Handle().
-	ContainerTypeWorkerRebalancerCoordinator ContainerType = "WORKER_REBALANCER_COORDINATOR"
-	// ContainerTypeWorkerFerry is the one-shot cross-system ferry worker the
-	// worker_rebalancer_coordinator spawns, twin of ContainerTypeScoutReposition.
+	// ContainerTypeWorkerFerry is the one-shot cross-system ferry worker (twin of
+	// ContainerTypeScoutReposition). Its former spawner — the worker_rebalancer_coordinator — was
+	// retired with the factory ops (sp-hoj8u); the ferry primitive is retained.
 	ContainerTypeWorkerFerry ContainerType = "WORKER_FERRY"
 	// ContainerTypeCargoLiquidation is the one-shot cargo-liquidation worker the contract
 	// fleet coordinator spawns on a parked-with-cargo hull, twin of
@@ -78,13 +75,6 @@ const (
 	// it is NOT a CoordinatorOwnsIterations type.
 	ContainerTypeShipyardBackfillCoordinator ContainerType = "SHIPYARD_BACKFILL_COORDINATOR"
 	ContainerTypePurchase                    ContainerType = "PURCHASE"
-	ContainerTypeManufacturingCoordinator    ContainerType = "MANUFACTURING_COORDINATOR"
-	// ContainerTypeSitingCoordinator is the standing factory-siting brain: a
-	// per-player coordinator that loops forever inside one Handle() scanning/scoring/sizing
-	// the factory-chain portfolio and launching/retiring goods_factory chains through the
-	// existing guard stack. Like the trade-fleet/frontier coordinators it is NOT a
-	// CoordinatorOwnsIterations type.
-	ContainerTypeSitingCoordinator ContainerType = "SITING_COORDINATOR"
 	// ContainerTypeFleetAutosizer is the standing fleet capacity autosizer: a
 	// per-player coordinator that loops forever inside one Handle() sizing the hull pool to
 	// demand and auto-buying hulls (lights to factory demand, heavies to trade demand) behind

@@ -3,9 +3,8 @@ package grpc
 // This file holds the GATE-phase concrete adapters (Slice 3, sp-ysgb.2) that bind the bootstrap
 // coordinator's GATE ports to existing daemon capabilities — building NO new construction, fabrication,
 // or fleet logic (the captain-verification reuse gate). Each adapter is a thin wrapper over a surface
-// that already ships: `construction start` (StartConstructionPipeline), the manufacturing/goods-factory
-// coordinator (the construction executor), fleet dedication (AssignFleet), and the standing-coordinator
-// launches (FleetAutosizer / Siting / WorkerRebalancer).
+// that already ships: `construction start` (StartConstructionPipeline), the construction-supply drain
+// (the construction executor), fleet dedication (AssignFleet), and the standing fleet-autosizer launch.
 //
 // EXECUTOR NOTE (sp-382j): construction pipelines are worked by the dedicated construction-supply drain
 // (ContainerTypeConstructionCoordinator) — a thin drain on the shared ProductionExecutor engine that
@@ -279,22 +278,12 @@ func (h *bootstrapHandoffLauncher) LaunchContractScaler(ctx context.Context, pla
 	return err
 }
 
-// LaunchStandingCoordinators launches the rest of the mature economy's standing brains (siting +
-// worker-rebalancer), each idempotent on its own container type so a re-run never double-launches.
+// LaunchStandingCoordinators is a no-op since the factory-ops retirement (sp-hoj8u). It formerly
+// launched the siting + worker-rebalancer coordinators at the GATE hand-off; both were retired with
+// the factories, so there is nothing left to launch here. The method is retained (returning nil) so
+// the bootstrap GATE hand-off's control flow and its port contract are unchanged; the fleet-autosizer
+// hand-off runs through its own dedicated launcher. (Vestigial plumbing — a candidate for a later
+// clean removal of the port method + call sites.)
 func (h *bootstrapHandoffLauncher) LaunchStandingCoordinators(ctx context.Context, playerID int, agentSymbol string) error {
-	if running, err := containerTypeRunning(ctx, h.server.containerRepo, playerID, container.ContainerTypeSitingCoordinator); err != nil {
-		return err
-	} else if !running {
-		if _, err := h.server.SitingCoordinator(ctx, playerID, agentSymbol); err != nil {
-			return err
-		}
-	}
-	if running, err := containerTypeRunning(ctx, h.server.containerRepo, playerID, container.ContainerTypeWorkerRebalancerCoordinator); err != nil {
-		return err
-	} else if !running {
-		if _, err := h.server.WorkerRebalancerCoordinator(ctx, playerID, agentSymbol, false); err != nil {
-			return err
-		}
-	}
 	return nil
 }

@@ -25,7 +25,6 @@ func archiveClassRepositoryFilesScopedByThisGuard_ExcludesWipeAndOperationalJunk
 		"captain_event_repository.go",
 		"manufacturing_pipeline_repository.go",
 		"manufacturing_task_repository.go",
-		"goods_factory_repository.go",
 	}
 }
 

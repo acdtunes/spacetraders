@@ -153,7 +153,6 @@ func run(cfg *config.Config) error {
 	containerRepo := persistence.NewContainerRepository(db)
 	marketRepo := persistence.NewMarketRepository(db)
 	marketRepoAdapter := persistence.NewMarketRepositoryAdapter(marketRepo) // Adapter for domain market.MarketRepository interface
-	goodsFactoryRepo := persistence.NewGormGoodsFactoryRepository(db)
 	contractRepo := persistence.NewGormContractRepository(db)
 	tradingMarketRepo := persistence.NewMarketRepositoryAdapter(marketRepo)
 	transactionRepo := persistence.NewGormTransactionRepository(db)
@@ -550,7 +549,7 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to create socket directory: %w", err)
 	}
 
-	daemonServer, err := grpc.NewDaemonServer(med, db, containerLogRepo, containerRepo, waypointRepo, shipRepo, playerRepo, routingClient, goodsFactoryRepo, apiClient, socketPath, &cfg.Metrics, cfg.Contract, cfg.TradeFleet, cfg.WorkerRebalancer, cfg.Manufacturing, cfg.Scouting, cfg.FleetAutosizer, cfg.Bootstrap, cfg.ShipResync, shipEventBus)
+	daemonServer, err := grpc.NewDaemonServer(med, db, containerLogRepo, containerRepo, waypointRepo, shipRepo, playerRepo, routingClient, apiClient, socketPath, &cfg.Metrics, cfg.Contract, cfg.TradeFleet, cfg.WorkerRebalancer, cfg.Manufacturing, cfg.Scouting, cfg.FleetAutosizer, cfg.Bootstrap, cfg.ShipResync, shipEventBus)
 	if err != nil {
 		return fmt.Errorf("failed to create daemon server: %w", err)
 	}
@@ -664,38 +663,10 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register TradeFleetCoordinator handler: %w", err)
 	}
 
-	// Register GoodsFactoryCoordinator handler (depends on daemonClientLocal)
-	// Create goods factory services using the domain market repository adapter
+	// Shared production services for the construction-supply drain (sp-hoj8u: the goods-factory
+	// coordinator that also consumed these was retired; construction is now the sole consumer).
 	goodsMarketLocator := goodsServices.NewMarketLocator(marketRepoAdapter, waypointRepo, playerRepo, apiClient)
 	goodsResolver := goodsServices.NewSupplyChainResolver(goods.ExportToImportMap, marketRepoAdapter)
-
-	factoryCoordinatorHandler := goodsCmd.NewRunFactoryCoordinatorHandler(
-		med, shipRepo, marketRepoAdapter, goodsResolver, goodsMarketLocator, nil, // nil = use RealClock
-		apiClient, // sp-9aoc: live treasury for the factory input-buy working-capital spend floor
-	)
-	// sp-w3he: HARD cross-container concurrent spend cap. The per-buy floor (sp-9aoc) above is
-	// per-container, so N factory containers can each clear it inside their own check->buy window
-	// and collectively breach the reserve. This DB-backed reservation ledger (shared across all
-	// factory containers) serializes their in-flight input spend and closes that race.
-	factoryCoordinatorHandler.SetSpendLedger(persistence.NewSpendReservationLedger(db))
-	// sp-iv65: wire the trailing-median source for the ladder-chase input price ceiling. The
-	// priceHistoryRepo (already built above for the market scanner) reads the sell_price series
-	// buyGood checks each input ask against; left unset the ceiling is fail-open.
-	factoryCoordinatorHandler.SetPriceHistoryReader(priceHistoryRepo)
-	// sp-rh2z: wire the DB-backed realized-P&L ledger the chain kill-switch judges (per-good
-	// factory buys/sells + tour realized net + refuel pool over the rolling window). Left unset
-	// the kill-switch is fail-open (disabled) — the optional-port contract; the daemon turns it
-	// on by injecting the real reader here.
-	factoryCoordinatorHandler.SetChainPnLReader(persistence.NewGormChainPnLRepository(db))
-	// sp-ev0n: live per-op worker cap. The coordinator resolves its concurrent-hull cap
-	// from its own container config every production pass, so a `goods factory workers`
-	// change converges the fan-out with no restart — the factory mirror of the contract
-	// coordinator's live standby-station provider (sp-jcke). The value persists across a
-	// restart (worker_cap is not a config.yaml-reinjected key, RULINGS #2).
-	factoryCoordinatorHandler.SetWorkerCapProvider(grpc.NewFactoryWorkerCapConfigProvider(containerRepo))
-	if err := mediator.RegisterHandler[*goodsCmd.RunFactoryCoordinatorCommand](med, factoryCoordinatorHandler); err != nil {
-		return fmt.Errorf("failed to register GoodsFactoryCoordinator handler: %w", err)
-	}
 
 	// Register the standing construction-supply drain (sp-382j): the coordinator that rebuilds
 	// gate-construction EXECUTION — a THIN drain on the SHARED ProductionExecutor
@@ -737,33 +708,6 @@ func run(cfg *config.Config) error {
 	constructionCoordinatorHandler.SetTreeResolver(goodsResolver)
 	if err := mediator.RegisterHandler[*goodsCmd.RunConstructionCoordinatorCommand](med, constructionCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register ConstructionCoordinator handler: %w", err)
-	}
-
-	// Register the standing factory-SITING coordinator (sp-vdld): the standing "brain" that
-	// automates factory discovery, placement, and capacity planning. Each slow tick it SCANs
-	// candidate (good,system) sites (export-site hard gate + in-system input eligibility +
-	// freshness), SCOREs them by branchPL × tour-alignment − competition − staleness, MAINTAINs
-	// the top-K portfolio (K = floor(haulers / workers_per_chain), C3), ACTs by launching missing
-	// chains THROUGH the guard stack (StartGoodsFactory iterations=-1, so the child runs 2dv4 +
-	// a5j7 + C2 + r5a6 on its own passes) and retiring fallen ones with hysteresis, then EMITs
-	// scout-demand for stale-but-promising sites on the captain proposal channel. It reuses the
-	// SAME resolver/locator/guard the goods-factory coordinator holds, so it prices chains exactly
-	// as the launch path does. LIVE BY DEFAULT (Admiral: no dark-shipping); every weight/cap
-	// resolves live from config.yaml [manufacturing.siting]. Standing coordinators are CLI/gRPC
-	// first-launched then recovery-adopted — registering the handler makes a launched or recovered
-	// container runnable, but nothing auto-starts on daemon boot.
-	// The concrete port adapters (scanner data source, chain projector via the ChainMarginGuard,
-	// portfolio controller over StartGoodsFactory/StopGoodsFactory, HAULER worker counter, and
-	// scout-demand emitter) are assembled inside grpc.NewSitingCoordinatorHandler from the SAME
-	// resolver/locator/repos the goods-factory path uses. The tour-alignment provider is left
-	// unset there for now (the C1 stock-draw signal has no persisted read path yet and no
-	// tour_leg_telemetry throughput reader exists), so scoring ranks on branchPL alone — the
-	// documented monotonic proxy — until that seam lands (sp-vdld).
-	sitingCoordinatorHandler := grpc.NewSitingCoordinatorHandler(
-		daemonServer, goodsResolver, goodsMarketLocator, marketRepo, marketRepoAdapter, shipRepo, captainEventRepo,
-	)
-	if err := mediator.RegisterHandler[*goodsCmd.RunSitingCoordinatorCommand](med, sitingCoordinatorHandler); err != nil {
-		return fmt.Errorf("failed to register SitingCoordinator handler: %w", err)
 	}
 
 	// sp-y2ptq (epic sp-9le3x): the standalone contract-hub PLACEMENT coordinator (sp-q2zq) was DELETED — the
@@ -900,14 +844,6 @@ func run(cfg *config.Config) error {
 	// below, so ALL cross-system gate arrivals chart. Best-effort + idempotent: no new burst.
 	chartGateOnArrival := cfg.Routing.ChartGateOnArrival == nil || *cfg.Routing.ChartGateOnArrival
 	tradeRouteCoordinatorHandler.SetChartGateOnArrival(chartGateOnArrival)
-	// sp-3vg8: now that the shared stored-adjacency gate graph exists (built just above), wire
-	// the siting scorer's worker-reachability signal. The provider reuses the fleet's idle-worker
-	// locator + RepositionPath (no reinvented routing), so vdld deprioritizes far-cluster chains it
-	// cannot man (C81/GS93) instead of launching them workerless. The penalty weight is live by
-	// default (siting_weight_worker_reachability → 1.0); the Analyst tunes it from config.yaml.
-	sitingCoordinatorHandler.SetWorkerReachabilityProvider(
-		grpc.NewSitingWorkerReachabilityProvider(shipRepo, gateGraphService),
-	)
 	// sp-8l3o: the shared ship-arrival event bus lets travel() wait out a hull
 	// re-adopted mid-transit before any movement (jump/navigate) instead of 4214'ing
 	// and burning the container restart budget on a routine arrival.
@@ -1010,30 +946,9 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register RouteShip handler: %w", err)
 	}
 
-	// Worker-rebalancer coordinator (sp-f5pr): the standing coordinator that ferries idle
-	// undedicated light-haulers cross-system to worker-starved factory systems so a factory
-	// posting "No in-system worker" self-heals without captain hand-holding. It derives ALL
-	// state from ship + container rows (zero new persisted state, restart-safe), claims
-	// nothing directly (each ferry claims its own hull under operation="worker_ferry", never
-	// poaching a pinned/reserved hull), and reuses the trade-route coordinator's multi-jump
-	// travel() via the ferry worker below. The container-query adapter reads RUNNING factory
-	// + worker_ferry rows; waypointRepo supplies ferry destinations. Tuning is resolved live
-	// from config.yaml [worker_rebalancer].
-	workerRebalancerCoordinatorHandler := tradeRouteCmd.NewRunWorkerRebalancerCoordinatorHandler(
-		shipRepo,
-		daemonClientLocal,
-		grpc.NewWorkerRebalancerContainerQuery(containerRepo),
-		waypointRepo,
-		nil, // nil = use RealClock
-	)
-	// Shares the SAME persisted gate graph as the trade circuit / scout relays (one
-	// cache/graph) to rank the nearest idle light by jump hops. nil would disable ferrying
-	// (fail-closed park).
-	workerRebalancerCoordinatorHandler.SetGateGraph(gateGraphService)
-	workerRebalancerCoordinatorHandler.SetEventRecorder(captainEventRepo) // sp-6wxq: emit coordinator error-loop events on reconcile streak breach
-	if err := mediator.RegisterHandler[*tradeRouteCmd.RunWorkerRebalancerCoordinatorCommand](med, workerRebalancerCoordinatorHandler); err != nil {
-		return fmt.Errorf("failed to register WorkerRebalancerCoordinator handler: %w", err)
-	}
+	// (sp-hoj8u) The worker-rebalancer coordinator was retired with the factory ops: it ferried idle
+	// light-haulers to worker-starved FACTORY systems, which no longer exist. The worker_ferry
+	// primitive it drove is retained (below) for the daemon's persist/start dispatch + container recovery.
 	// The ferry worker reuses the trade-route coordinator's RepositionToWaypoint (the SAME
 	// multi-jump travel() the arb/trade circuits use) — twin of scoutRepositionHandler.
 	workerFerryHandler := tradeRouteCmd.NewWorkerFerryHandler(tradeRouteCoordinatorHandler)

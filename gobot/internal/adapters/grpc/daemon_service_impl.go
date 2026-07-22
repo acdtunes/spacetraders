@@ -527,28 +527,6 @@ func (s *daemonServiceImpl) TradeFleetCoordinator(ctx context.Context, req *pb.T
 	return &pb.TradeFleetCoordinatorResponse{ContainerId: containerID, Status: "RUNNING"}, nil
 }
 
-// SitingCoordinator starts the standing factory-siting coordinator (sp-vdld): identity-only
-// launch (all [manufacturing.siting] tuning resolves live from config.yaml inside the build
-// path). Mirrors TradeFleetCoordinator's thin shape.
-func (s *daemonServiceImpl) SitingCoordinator(ctx context.Context, req *pb.SitingCoordinatorRequest) (*pb.SitingCoordinatorResponse, error) {
-	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve player: %w", err)
-	}
-
-	agentSymbol := ""
-	if req.AgentSymbol != nil {
-		agentSymbol = *req.AgentSymbol
-	}
-
-	containerID, err := s.daemon.SitingCoordinator(ctx, playerID, agentSymbol)
-	if err != nil {
-		return nil, fmt.Errorf("failed to start siting coordinator: %w", err)
-	}
-
-	return &pb.SitingCoordinatorResponse{ContainerId: containerID, Status: "RUNNING"}, nil
-}
-
 // FleetAutosizerCoordinator starts the standing fleet capacity autosizer (sp-1txd).
 func (s *daemonServiceImpl) FleetAutosizerCoordinator(ctx context.Context, req *pb.FleetAutosizerCoordinatorRequest) (*pb.FleetAutosizerCoordinatorResponse, error) {
 	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
@@ -656,29 +634,6 @@ func (s *daemonServiceImpl) ShipyardBackfillCoordinator(ctx context.Context, req
 	}
 
 	return &pb.ShipyardBackfillCoordinatorResponse{ContainerId: containerID, Status: "RUNNING"}, nil
-}
-
-// WorkerRebalancerCoordinator starts the standing worker-rebalancer coordinator (sp-f5pr):
-// it ferries idle undedicated light-haulers cross-system to worker-starved factory systems.
-// All tuning lives in config.yaml [worker_rebalancer] (resolved live on every build); this
-// RPC only names the player/agent and the dry-run launch flag.
-func (s *daemonServiceImpl) WorkerRebalancerCoordinator(ctx context.Context, req *pb.WorkerRebalancerCoordinatorRequest) (*pb.WorkerRebalancerCoordinatorResponse, error) {
-	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve player: %w", err)
-	}
-
-	agentSymbol := ""
-	if req.AgentSymbol != nil {
-		agentSymbol = *req.AgentSymbol
-	}
-
-	containerID, err := s.daemon.WorkerRebalancerCoordinator(ctx, playerID, agentSymbol, req.DryRun)
-	if err != nil {
-		return nil, fmt.Errorf("failed to start worker rebalancer coordinator: %w", err)
-	}
-
-	return &pb.WorkerRebalancerCoordinatorResponse{ContainerId: containerID, Status: "RUNNING"}, nil
 }
 
 // AddScoutPost adds or updates a desired-state scout post (sp-cxpq)
@@ -1125,33 +1080,6 @@ func (s *daemonServiceImpl) FleetHub(ctx context.Context, req *pb.FleetHubReques
 	}, nil
 }
 
-// FactoryWorkerCap sets the live concurrent-hull cap on a running goods factory
-// operation (sp-ev0n). Resolves the player from player_id or agent_symbol (like the
-// other coordinator RPCs), then delegates the persisted-config mutation to the
-// daemon, which is the single writer (RULINGS #3). The running coordinator re-reads
-// the cap each pass and converges its fan-out to N with no restart.
-func (s *daemonServiceImpl) FactoryWorkerCap(ctx context.Context, req *pb.FactoryWorkerCapRequest) (*pb.FactoryWorkerCapResponse, error) {
-	var pid int32
-	if req.PlayerId != nil {
-		pid = *req.PlayerId
-	}
-	playerID, err := s.resolvePlayerID(ctx, pid, req.AgentSymbol)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve player: %w", err)
-	}
-
-	cap, changed, err := s.daemon.MutateFactoryWorkerCap(ctx, req.ContainerId, int(req.Count), playerID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to set factory worker cap: %w", err)
-	}
-
-	return &pb.FactoryWorkerCapResponse{
-		ContainerId: req.ContainerId,
-		WorkerCap:   int32(cap),
-		Changed:     changed,
-	}, nil
-}
-
 // TuneContainerConfig sets (or reverts, value 0) one live knob on a running
 // container (sp-vwek). Resolves the player from player_id or agent_symbol like the
 // other coordinator RPCs, then delegates the registry-validated, persisted-config
@@ -1408,46 +1336,6 @@ func (s *daemonServiceImpl) BatchPurchaseShips(ctx context.Context, req *pb.Batc
 	}, nil
 }
 
-// StartGoodsFactory implements the StartGoodsFactory RPC
-func (s *daemonServiceImpl) StartGoodsFactory(ctx context.Context, req *pb.StartGoodsFactoryRequest) (*pb.StartGoodsFactoryResponse, error) {
-	// Resolve player ID
-	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve player: %w", err)
-	}
-
-	// Default system symbol if not provided (would need to get current system from a ship)
-	systemSymbol := ""
-	if req.SystemSymbol != nil {
-		systemSymbol = *req.SystemSymbol
-	} else {
-		// TODO: Default to a system - for now require it
-		return nil, fmt.Errorf("system_symbol is required")
-	}
-
-	// Extract max_iterations (default to 1 if not provided)
-	maxIterations := 1
-	if req.MaxIterations != nil {
-		maxIterations = int(*req.MaxIterations)
-	}
-
-	// Start goods factory. inputs_only (default false) requests production-only mode:
-	// feed the dependency tree but leave the fabricated output in factory stock for a
-	// construction pipeline to source, rather than harvesting it (sp-q02m).
-	result, err := s.daemon.StartGoodsFactory(ctx, req.TargetGood, systemSymbol, playerID, maxIterations, req.GetInputsOnly())
-	if err != nil {
-		return nil, fmt.Errorf("failed to start goods factory: %w", err)
-	}
-
-	return &pb.StartGoodsFactoryResponse{
-		FactoryId:  result.FactoryID,
-		TargetGood: result.TargetGood,
-		Status:     "RUNNING",
-		Message:    fmt.Sprintf("Goods factory started for %s", req.TargetGood),
-		NodesTotal: int32(result.NodesTotal),
-	}, nil
-}
-
 // StartTradeRoute implements the StartTradeRoute RPC: it launches a single-hull
 // pure-arbitrage circuit as a recovery-safe daemon container (sp-zewt), delegating to
 // DaemonServer.StartTradeRoute which enforces the idle-gap discipline and owns the
@@ -1700,58 +1588,6 @@ func (s *daemonServiceImpl) StartStocker(ctx context.Context, req *pb.StartStock
 		WarehouseWaypoint: result.WarehouseWaypoint,
 		Status:            "RUNNING",
 		Message:           fmt.Sprintf("Stocker started for %s filling warehouse %s", req.ShipSymbol, req.WarehouseWaypoint),
-	}, nil
-}
-
-// StopGoodsFactory implements the StopGoodsFactory RPC
-func (s *daemonServiceImpl) StopGoodsFactory(ctx context.Context, req *pb.StopGoodsFactoryRequest) (*pb.StopGoodsFactoryResponse, error) {
-	// Resolve player ID
-	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve player: %w", err)
-	}
-
-	// Stop the factory
-	err = s.daemon.StopGoodsFactory(ctx, req.FactoryId, playerID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to stop goods factory: %w", err)
-	}
-
-	return &pb.StopGoodsFactoryResponse{
-		FactoryId: req.FactoryId,
-		Status:    "STOPPED",
-		Message:   "Goods factory stopped successfully",
-	}, nil
-}
-
-// GetFactoryStatus implements the GetFactoryStatus RPC
-func (s *daemonServiceImpl) GetFactoryStatus(ctx context.Context, req *pb.GetFactoryStatusRequest) (*pb.GetFactoryStatusResponse, error) {
-	// Resolve player ID
-	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve player: %w", err)
-	}
-
-	// Get factory status
-	status, err := s.daemon.GetFactoryStatus(ctx, req.FactoryId, playerID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get factory status: %w", err)
-	}
-
-	return &pb.GetFactoryStatusResponse{
-		FactoryId:        status.FactoryID,
-		TargetGood:       status.TargetGood,
-		Status:           status.Status,
-		DependencyTree:   status.DependencyTree,
-		QuantityAcquired: int32(status.QuantityAcquired),
-		TotalCost:        int32(status.TotalCost),
-		NodesCompleted:   int32(status.NodesCompleted),
-		NodesTotal:       int32(status.NodesTotal),
-		SystemSymbol:     status.SystemSymbol,
-		ShipsUsed:        int32(status.ShipsUsed),
-		MarketQueries:    int32(status.MarketQueries),
-		ParallelLevels:   int32(status.ParallelLevels),
-		EstimatedSpeedup: float32(status.EstimatedSpeedup),
 	}, nil
 }
 
