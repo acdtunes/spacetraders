@@ -12,7 +12,6 @@ import (
 	gasCmd "github.com/andrescamacho/spacetraders-go/internal/application/gas/commands"
 	liquidationCmd "github.com/andrescamacho/spacetraders-go/internal/application/liquidation"
 	goodsCmd "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/commands"
-	mfgServices "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
 	shipCargoCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
 	shipNavCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
@@ -955,20 +954,12 @@ func buildConstructionCoordinatorCommand(cfg *configReader, playerID int, contai
 		ContainerID:   cfg.RequiredString("container_id"),
 		MaxIterations: cfg.OptionalInt("max_iterations", -1),
 		TickSeconds:   cfg.OptionalInt("tick_seconds", 0),
-		// sp-yfzi: the production acquisition strategy the drain resolves a FABRICATE material's tree
-		// on. Empty/absent → "smart" (resolveProductionStrategy), so construction produces scarce
-		// intermediates recursively without the captain naming it; a per-launch production_strategy
-		// override or the pipeline's per-good overrides dial it back (RULINGS #5).
-		ProductionStrategy: resolveProductionStrategy(cfg.OptionalString("production_strategy")),
 		// sp-vh1s (Admiral sign-off 2026-07-14): the unified gate-fill toggle, from [manufacturing] via
 		// resolveConstructionUnifiedGateFill. absent/false → the drain honors the planner's frozen
 		// buy-vs-fabricate decision per material (byte-identical to today); ON drives the resolver's full
 		// scarcity-gated tree for every gate material and marks the run a gate node (the drain stamps
 		// WithUnifiedGateFill + a construction-site DeliveryTarget derived from the task's own site).
 		UnifiedGateFill: cfg.OptionalBool("unified_gate_fill"),
-		// sp-ubwi: the per-supplyTask timeout, from [manufacturing] via resolveConstructionUnifiedGateFill.
-		// 0/absent → the drain's raised 30m default (the old hardcoded 10m abandoned legit long hauls).
-		SupplyTaskTimeoutSeconds: cfg.OptionalInt("construction_supply_task_timeout_seconds", 0),
 		// sp-e55b: prefer the drain's OWN dedicated gate-hauler fleet (e.g. TORWIND-C/-D) before
 		// opportunistic idle hulls. Empty dedicated_fleet defaults (in-handler) to the shared
 		// "manufacturing" identity that also authorizes the claim; exclusive_dedicated_fleet seals the
@@ -1081,21 +1072,6 @@ func buildArbCoordinatorCommand(cfg *configReader, playerID int, containerID str
 func resolveReserveTreasuryPct(configured int) int {
 	if configured <= 0 {
 		return commonApp.DefaultReserveTreasuryPct
-	}
-	return configured
-}
-
-// resolveProductionStrategy resolves the production acquisition strategy for the PRODUCTION command
-// builders (goods_factory + construction), sp-yfzi. An empty/absent value → the scarcity-gated
-// "smart" default (mfgServices.DefaultProductionStrategy): the resolver fabricates a SCARCE
-// intermediate that has a factory and buys an abundant one, ON in production without the captain
-// naming it. A configured value ("prefer-buy" to dial back to the sp-jav2 posture, or
-// "prefer-fabricate") is passed through verbatim so the knob stays operator-tunable (RULINGS #5).
-// Applied at the launch build so a directly-built command (tests) keeps the empty value — the
-// resolver then falls back to its own prefer-buy default, byte-identical to today.
-func resolveProductionStrategy(configured string) string {
-	if configured == "" {
-		return mfgServices.DefaultProductionStrategy
 	}
 	return configured
 }

@@ -54,8 +54,8 @@ const (
 	// are single-system): a multi-hop light-hauler round trip can exceed 10m, abandoning healthy long
 	// hauls at the finish line and forcing the retry onto a fresh empty hull while the laden one
 	// strands out of the pool — 30m clears that haul while still converting a genuine indefinite hang
-	// into a logged, retried tick. Overridable per-launch via SupplyTaskTimeoutSeconds
-	// ([manufacturing].construction_supply_task_timeout_seconds).
+	// into a logged, retried tick. Was operator-tunable per-launch; sp-sxyx6 retired the knob —
+	// this const is now the sole value.
 	constructionSupplyTaskDefaultTimeout = 30 * time.Minute
 
 	// defaultConstructionLotUnits is the fallback per-lot hull-load used to size the fan-out when an
@@ -138,8 +138,8 @@ type RunConstructionCoordinatorHandler struct {
 	recordMu sync.Mutex
 	// taskTimeout bounds a single supplyTask (claim→source→deliver→record) so one wedged task can
 	// never silently freeze the whole drain goroutine. Defaulted in the constructor to
-	// constructionSupplyTaskDefaultTimeout; overridable — the daemon can tune it and the
-	// in-package tests set a tiny bound to keep the timeout test fast.
+	// constructionSupplyTaskDefaultTimeout; in-package tests set a tiny bound directly to keep the
+	// timeout test fast.
 	taskTimeout time.Duration
 	// Warehouse-first sourcing (sp-crjla): before buying a gate material at market, WITHDRAW it from
 	// an in-system depot warehouse at zero cost, so the depot's stocker is the sole buyer and the
@@ -853,14 +853,11 @@ func (h *RunConstructionCoordinatorHandler) supplyTaskTimeout() time.Duration {
 	return constructionSupplyTaskDefaultTimeout
 }
 
-// effectiveSupplyTaskTimeout resolves the per-supplyTask BASE deadline for this run: a per-launch
-// SupplyTaskTimeoutSeconds ([manufacturing].construction_supply_task_timeout_seconds) wins, else the
-// handler default (supplyTaskTimeout — 30m, or a test override). scaledSupplyTaskTimeout scales this
-// base by the material's supply-chain depth.
-func (h *RunConstructionCoordinatorHandler) effectiveSupplyTaskTimeout(cmd *RunConstructionCoordinatorCommand) time.Duration {
-	if cmd != nil && cmd.SupplyTaskTimeoutSeconds > 0 {
-		return time.Duration(cmd.SupplyTaskTimeoutSeconds) * time.Second
-	}
+// effectiveSupplyTaskTimeout resolves the per-supplyTask BASE deadline for this run: the handler
+// default (supplyTaskTimeout — 30m, or a test override). scaledSupplyTaskTimeout scales this base by
+// the material's supply-chain depth. The per-launch override knob was retired by sp-sxyx6 — the base
+// is always the handler default now.
+func (h *RunConstructionCoordinatorHandler) effectiveSupplyTaskTimeout() time.Duration {
 	return h.supplyTaskTimeout()
 }
 
@@ -868,10 +865,9 @@ func (h *RunConstructionCoordinatorHandler) effectiveSupplyTaskTimeout(cmd *RunC
 // DEPTH: a shallow buy-and-haul keeps the flat base (byte-identical); a deep fabricate chain (buy
 // inputs -> fabricate -> feed factory -> buy output -> haul) legitimately needs more than one round
 // trip, so it gets base*depth, clamped to constructionSupplyTaskMaxTimeout so a genuine hang stays
-// bounded. base is effectiveSupplyTaskTimeout, so the per-launch override seam is the value depth
-// multiplies.
+// bounded. base is effectiveSupplyTaskTimeout, the value depth multiplies.
 func (h *RunConstructionCoordinatorHandler) scaledSupplyTaskTimeout(ctx context.Context, cmd *RunConstructionCoordinatorCommand, task *manufacturing.ManufacturingTask) time.Duration {
-	base := h.effectiveSupplyTaskTimeout(cmd)
+	base := h.effectiveSupplyTaskTimeout()
 	depth := h.supplyTaskChainDepth(ctx, cmd, task)
 	return depthScaledTimeout(base, depth, constructionSupplyTaskMaxTimeout)
 }
@@ -1123,7 +1119,7 @@ func (h *RunConstructionCoordinatorHandler) resolveFabricationTree(ctx context.C
 			overrides = pipeline.GoodOverrides()
 		}
 	}
-	buildCtx := mfgServices.WithProductionStrategy(ctx, cmd.ProductionStrategy)
+	buildCtx := mfgServices.WithProductionStrategy(ctx, mfgServices.DefaultProductionStrategy)
 	buildCtx = mfgServices.WithFabricateDepthCap(buildCtx, depth, false)
 	buildCtx = mfgServices.WithGoodGatingOverrides(buildCtx, overrides)
 	tree, err := h.resolver.BuildDependencyTree(buildCtx, task.Good(), systemSymbol, playerID)

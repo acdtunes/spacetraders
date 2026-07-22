@@ -29,9 +29,9 @@ func seedOverridePlayer(t *testing.T, db *gorm.DB, id int, symbol string) {
 
 // TestMutateConstructionGoodOverride_LiveSetPersistsAndClears drives the sp-pdb3 acceptance end to
 // end through the REAL persistence path (an in-memory pipeline row = the restart-durable store):
-// setting FAB_MATS to {LIMITED, prefer-buy} on the running pipeline persists exactly that good's
-// override, leaves the non-overridden ADVANCED_CIRCUITRY at the global default (byte-identical), and
-// a subsequent --clear reverts FAB_MATS to the global default. The reload via FindByConstructionSite
+// setting FAB_MATS to {LIMITED} on the running pipeline persists exactly that good's override,
+// leaves the non-overridden ADVANCED_CIRCUITRY at the global default (byte-identical), and a
+// subsequent --clear reverts FAB_MATS to the global default. The reload via FindByConstructionSite
 // is the daemon-bounce equivalent — the override survives it (RULINGS #2).
 func TestMutateConstructionGoodOverride_LiveSetPersistsAndClears(t *testing.T) {
 	db, err := database.NewTestConnection()
@@ -50,7 +50,7 @@ func TestMutateConstructionGoodOverride_LiveSetPersistsAndClears(t *testing.T) {
 
 	// Loosen FAB_MATS only.
 	res, err := s.MutateConstructionGoodOverride(ctx, "X1-VB74-I55", 1, "FAB_MATS",
-		goodOverridePatch{minSupply: strPtr("LIMITED"), strategy: strPtr("prefer-buy")}, false)
+		goodOverridePatch{minSupply: strPtr("LIMITED")}, false)
 	require.NoError(t, err)
 	require.True(t, res.Changed)
 
@@ -58,7 +58,6 @@ func TestMutateConstructionGoodOverride_LiveSetPersistsAndClears(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, reloaded)
 	require.Equal(t, "LIMITED", reloaded.GoodOverrides()["FAB_MATS"].MinSupply)
-	require.Equal(t, "prefer-buy", reloaded.GoodOverrides()["FAB_MATS"].Strategy)
 	// The non-overridden good keeps the global floor — byte-identical to today.
 	require.Equal(t, "MODERATE",
 		reloaded.GoodOverrides().MinSupplyFor("ADVANCED_CIRCUITRY", reloaded.MinSupply()),
@@ -184,13 +183,11 @@ func TestApplyGoodOverride_SetsAbsentGood_LeavesOthersUntouched(t *testing.T) {
 		"ADVANCED_CIRCUITRY": {MinSupply: "MODERATE"},
 	}
 	next, result, changed := applyGoodOverride(current, "FAB_MATS",
-		goodOverridePatch{minSupply: strPtr("LIMITED"), strategy: strPtr("prefer-buy")}, false)
+		goodOverridePatch{minSupply: strPtr("LIMITED")}, false)
 
 	require.True(t, changed)
 	require.Equal(t, "LIMITED", result.MinSupply)
-	require.Equal(t, "prefer-buy", result.Strategy)
 	require.Equal(t, "LIMITED", next["FAB_MATS"].MinSupply)
-	require.Equal(t, "prefer-buy", next["FAB_MATS"].Strategy)
 	require.Equal(t, manufacturing.GoodGatingOverride{MinSupply: "MODERATE"}, next["ADVANCED_CIRCUITRY"],
 		"a non-targeted good must be byte-identical after a per-good override")
 }

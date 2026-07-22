@@ -12,6 +12,21 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// constructionSupplyChainDepth and constructionMaxWorkers replace the retired --depth and
+// --max-workers launch flags (sp-sxyx6): "smart" is the sole acquisition strategy now, so the
+// depth knob no longer has a live-CLI reason to vary from the buy-final default, and the worker
+// count is tuned live via `construction workers --count` (the standing sp-duljg verb) instead of
+// at launch. Both values are exactly the flags' former defaults, so a bare `construction start`
+// stages the byte-identical pipeline/tasks it always did.
+const (
+	// constructionSupplyChainDepth = 3 (buy final product, no production) — the former --depth default.
+	constructionSupplyChainDepth = 3
+	// constructionMaxWorkers = 0 tells the daemon "not provided": a NEW pipeline falls back to its
+	// own domain default (5), a RESUMED pipeline keeps its live-tuned cap — the former --max-workers
+	// default and sole value the CLI ever sent.
+	constructionMaxWorkers = 0
+)
+
 // validMinSupplyLevels enumerates the actual manufacturing.SupplyLevel values
 // accepted by --min-supply. Kept separate from
 // manufacturing.ParseSupplyLevel, which is intentionally lenient (it defaults
@@ -213,8 +228,6 @@ Examples:
 
 // newConstructionStartCommand creates the construction start subcommand
 func newConstructionStartCommand() *cobra.Command {
-	var supplyChainDepth int
-	var maxWorkers int
 	var systemSymbol string
 	var minSupply string
 	var goodOverrideSpecs []string
@@ -228,14 +241,7 @@ func newConstructionStartCommand() *cobra.Command {
 The pipeline will:
 - Fetch construction site requirements from the API
 - Create tasks for each required material
-- Produce/acquire materials based on supply chain depth
-- Deliver materials to the construction site
-
-Supply chain depth controls how much to produce:
-  0 - Full production (mine/produce everything from scratch)
-  1 - Buy raw materials only (produce intermediates)
-  2 - Buy intermediate goods (only final assembly)
-  3 - Buy final product (no production, just delivery)
+- Buy the final product (no production) and deliver it to the site
 
 --min-supply lowers the floor the sourcing locator will buy EXPORT
 materials down to (default floor: MODERATE). For example, --min-supply
@@ -261,7 +267,7 @@ an existing pipeline instead of creating a new one.
 
 Examples:
   spacetraders construction start X1-FB5-I61 --player-id 1
-  spacetraders construction start X1-FB5-I61 --system X1-FB5 --depth 3 --player-id 1
+  spacetraders construction start X1-FB5-I61 --system X1-FB5 --player-id 1
   spacetraders construction start X1-FB5-I61 --min-supply SCARCE --player-id 1
   spacetraders construction start X1-VB74-I55 --good-override FAB_MATS:minSupply=LIMITED,strategy=prefer-buy --player-id 1`,
 		Args: cobra.ExactArgs(1),
@@ -323,8 +329,8 @@ Examples:
 				constructionSite,
 				int32(playerIdent.PlayerID),
 				&playerIdent.AgentSymbol,
-				int32(supplyChainDepth),
-				int32(maxWorkers),
+				int32(constructionSupplyChainDepth),
+				int32(constructionMaxWorkers),
 				systemSymbolPtr,
 				minSupplyPtr,
 				goodOverridesPtr,
@@ -375,12 +381,6 @@ Examples:
 		},
 	}
 
-	cmd.Flags().IntVar(&supplyChainDepth, "depth", 3, "Supply chain depth (0=full, 1=raw, 2=intermediate, 3=buy final)")
-	// Default 0 = "not provided" so an idempotent resume without --max-workers never clobbers a
-	// pipeline's live-tuned cap: a fresh pipeline falls back to the domain default (5), a running
-	// pipeline keeps its cap (owned by the live `construction workers` verb). An explicit value
-	// (>0) is honored on both fresh create and resume — the sp-duljg §4 fix.
-	cmd.Flags().IntVar(&maxWorkers, "max-workers", 0, "Maximum parallel workers for a NEW pipeline (default 5 when omitted); to change a RUNNING pipeline's cap live use 'construction workers <site> --count N' (no restart)")
 	cmd.Flags().StringVar(&systemSymbol, "system", "", "System symbol for market lookups (defaults to deriving from construction site)")
 	cmd.Flags().StringVar(&minSupply, "min-supply", "", "Lower the EXPORT sourcing floor below the default MODERATE (one of ABUNDANT, HIGH, MODERATE, LIMITED, SCARCE)")
 	cmd.Flags().StringArrayVar(&goodOverrideSpecs, "good-override", nil, "Per-good buy-gating override (repeatable), e.g. FAB_MATS:minSupply=LIMITED,strategy=prefer-buy,priceCeilingMult=2.0 — loosens ONE good; others keep the global floor (sp-sdyo)")
@@ -551,24 +551,23 @@ type constructionOverrideFlags struct {
 	good             string
 	clear            bool
 	minSupply        string
-	strategy         string
 	priceCeilingMult float64
 	multProvided     bool // whether --price-ceiling-mult was set on the command line
 }
 
-// anyKnobSet reports whether at least one tunable knob (--min-supply,
-// --strategy, or --price-ceiling-mult) was provided on the command line.
+// anyKnobSet reports whether at least one tunable knob (--min-supply or
+// --price-ceiling-mult) was provided on the command line.
 func (f constructionOverrideFlags) anyKnobSet() bool {
-	return f.minSupply != "" || f.strategy != "" || f.multProvided
+	return f.minSupply != "" || f.multProvided
 }
 
 // buildConstructionOverrideRequest validates the `construction override` flags at the boundary and
 // assembles the gRPC request. It enforces that --clear is exclusive of the knob flags and that a
-// non-clear call sets at least one knob, validates the strategy/tier (rejecting unknown values),
-// and clamps the price-ceiling multiplier to the domain hard cap (RULINGS #4 — the CLI never
-// bypasses the guardrail). Only provided knobs become non-nil request fields, so an unset knob
-// leaves that dimension of the good's override unchanged (tune one at a time). The bool return
-// reports whether the multiplier was clamped, for an operator notice.
+// non-clear call sets at least one knob, validates the tier (rejecting unknown values), and clamps
+// the price-ceiling multiplier to the domain hard cap (RULINGS #4 — the CLI never bypasses the
+// guardrail). Only provided knobs become non-nil request fields, so an unset knob leaves that
+// dimension of the good's override unchanged (tune one at a time). The bool return reports whether
+// the multiplier was clamped, for an operator notice.
 func buildConstructionOverrideRequest(f constructionOverrideFlags, playerID int32, agentSymbol *string) (*pb.ConstructionGoodOverrideRequest, bool, error) {
 	if f.site == "" {
 		return nil, false, fmt.Errorf("--site is required (the construction site whose pipeline to tune)")
@@ -586,22 +585,16 @@ func buildConstructionOverrideRequest(f constructionOverrideFlags, playerID int3
 
 	if f.clear {
 		if f.anyKnobSet() {
-			return nil, false, fmt.Errorf("--clear removes the whole override for %s; it cannot be combined with --min-supply/--strategy/--price-ceiling-mult", f.good)
+			return nil, false, fmt.Errorf("--clear removes the whole override for %s; it cannot be combined with --min-supply/--price-ceiling-mult", f.good)
 		}
 		req.Clear = true
 		return req, false, nil
 	}
 
 	if !f.anyKnobSet() {
-		return nil, false, fmt.Errorf("nothing to set for %s: pass at least one of --min-supply, --strategy, --price-ceiling-mult (or --clear to remove the override)", f.good)
+		return nil, false, fmt.Errorf("nothing to set for %s: pass at least one of --min-supply, --price-ceiling-mult (or --clear to remove the override)", f.good)
 	}
 
-	if f.strategy != "" {
-		if _, err := parseStrategyFlag(f.strategy); err != nil {
-			return nil, false, err
-		}
-		req.Strategy = &f.strategy
-	}
 	if f.minSupply != "" {
 		if _, err := parseMinSupplyFlag(f.minSupply); err != nil {
 			return nil, false, err
@@ -645,14 +638,11 @@ func runConstructionOverride(ctx context.Context, client constructionOverrideMut
 }
 
 // formatOverrideKnobs renders the non-empty override dimensions of a response for the confirmation
-// line, e.g. "minSupply=LIMITED, strategy=prefer-buy".
+// line, e.g. "minSupply=LIMITED, priceCeilingMult=2.00".
 func formatOverrideKnobs(resp *pb.ConstructionGoodOverrideResponse) string {
-	parts := make([]string, 0, 3)
+	parts := make([]string, 0, 2)
 	if resp.MinSupply != "" {
 		parts = append(parts, "minSupply="+resp.MinSupply)
-	}
-	if resp.Strategy != "" {
-		parts = append(parts, "strategy="+resp.Strategy)
 	}
 	if resp.PriceCeilingMult > 0 {
 		parts = append(parts, fmt.Sprintf("priceCeilingMult=%.2f", resp.PriceCeilingMult))
@@ -682,14 +672,13 @@ daemon restart and applies to deferred-material recovery.
 
 Knobs (set only the ones you want to change; the rest stay as they are):
   --min-supply         EXPORT sourcing floor for this good (ABUNDANT|HIGH|MODERATE|LIMITED|SCARCE)
-  --strategy           acquisition strategy (prefer-buy|prefer-fabricate|smart)
   --price-ceiling-mult ladder-chase input-price ceiling multiplier (clamped to the domain cap)
 
 --clear removes the good's override entirely, reverting it to the pipeline's global default.
 A non-overridden good is always byte-identical to the global default.
 
 Examples:
-  spacetraders construction override --site X1-VB74-I55 --good FAB_MATS --min-supply LIMITED --strategy prefer-buy
+  spacetraders construction override --site X1-VB74-I55 --good FAB_MATS --min-supply LIMITED
   spacetraders construction override --site X1-VB74-I55 --good FAB_MATS --price-ceiling-mult 2.0
   spacetraders construction override --site X1-VB74-I55 --good FAB_MATS --clear`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -732,7 +721,6 @@ Examples:
 	cmd.Flags().StringVar(&f.good, "good", "", "Material symbol to override (required)")
 	cmd.Flags().BoolVar(&f.clear, "clear", false, "Remove the good's override, reverting it to the pipeline's global default")
 	cmd.Flags().StringVar(&f.minSupply, "min-supply", "", "Per-good EXPORT sourcing floor (ABUNDANT, HIGH, MODERATE, LIMITED, SCARCE)")
-	cmd.Flags().StringVar(&f.strategy, "strategy", "", "Per-good acquisition strategy (prefer-buy, prefer-fabricate, smart)")
 	cmd.Flags().Float64Var(&f.priceCeilingMult, "price-ceiling-mult", 0, "Per-good ladder-chase input-price ceiling multiplier (clamped to the domain cap)")
 
 	return cmd
@@ -779,8 +767,8 @@ without a restart. The construction drain re-reads its cap (max_workers) off the
 tick, so it converges the fan-out to the new count on the next tick — a hull already mid-haul finishes
 first, never force-killed. The cap is per-pipeline and persists across daemon restarts (RULINGS #2).
 
-This is the live way to scale a running pipeline's throughput: unlike stop + 'construction start
---max-workers N', it never aborts in-flight hauls or risks the restart-wedge.
+This is the live way to scale a running pipeline's throughput: unlike stopping and restarting the
+pipeline, it never aborts in-flight hauls or risks the restart-wedge.
 
 Examples:
   spacetraders construction workers X1-FB5-I56 --count 10

@@ -98,7 +98,6 @@ func TestConstructionDrain_FabricateMaterial_ResolvesScarcityGatedTree(t *testin
 	handler.SetTreeResolver(scarceChainResolver())
 
 	cmd := newDrainCommand()
-	cmd.ProductionStrategy = mfgServices.DefaultProductionStrategy // the launch build's smart default
 	if _, err := handler.drainOnce(context.Background(), cmd); err != nil {
 		t.Fatalf("drainOnce: %v", err)
 	}
@@ -151,7 +150,6 @@ func TestConstructionDrain_BuyFinalMaterial_BypassesResolver(t *testing.T) {
 	handler.SetTreeResolver(resolver)
 
 	cmd := newDrainCommand()
-	cmd.ProductionStrategy = mfgServices.DefaultProductionStrategy
 	if _, err := handler.drainOnce(context.Background(), cmd); err != nil {
 		t.Fatalf("drainOnce: %v", err)
 	}
@@ -186,7 +184,6 @@ func TestConstructionDrain_ResolverError_FallsBackToOneLevelNode(t *testing.T) {
 	handler.SetTreeResolver(resolver)
 
 	cmd := newDrainCommand()
-	cmd.ProductionStrategy = mfgServices.DefaultProductionStrategy
 	if _, err := handler.drainOnce(context.Background(), cmd); err != nil {
 		t.Fatalf("drainOnce: %v", err)
 	}

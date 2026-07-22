@@ -156,7 +156,7 @@ func TestBuildLaunchGoodOverrides_SpecOverridesJSONForSameGood(t *testing.T) {
 
 func TestBuildConstructionOverrideRequest_SetsProvidedKnobsOnly(t *testing.T) {
 	req, clamped, err := buildConstructionOverrideRequest(constructionOverrideFlags{
-		site: "X1-VB74-I55", good: "FAB_MATS", minSupply: "LIMITED", strategy: "prefer-buy",
+		site: "X1-VB74-I55", good: "FAB_MATS", minSupply: "LIMITED",
 	}, 1, nil)
 	require.NoError(t, err)
 	require.False(t, clamped)
@@ -165,8 +165,6 @@ func TestBuildConstructionOverrideRequest_SetsProvidedKnobsOnly(t *testing.T) {
 	require.False(t, req.Clear)
 	require.NotNil(t, req.MinSupply)
 	require.Equal(t, "LIMITED", *req.MinSupply)
-	require.NotNil(t, req.Strategy)
-	require.Equal(t, "prefer-buy", *req.Strategy)
 	require.Nil(t, req.PriceCeilingMult, "an unset knob must not be sent, so it leaves that dimension unchanged")
 }
 
@@ -178,14 +176,6 @@ func TestBuildConstructionOverrideRequest_ClampsMultAtBoundary(t *testing.T) {
 	require.True(t, clamped, "a value over the cap reports that it was clamped")
 	require.NotNil(t, req.PriceCeilingMult)
 	require.Equal(t, manufacturing.MaxPriceCeilingMultiplier, *req.PriceCeilingMult)
-}
-
-func TestBuildConstructionOverrideRequest_RejectsUnknownStrategy(t *testing.T) {
-	_, _, err := buildConstructionOverrideRequest(constructionOverrideFlags{
-		site: "X1-VB74-I55", good: "FAB_MATS", strategy: "bogus",
-	}, 1, nil)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "bogus")
 }
 
 func TestBuildConstructionOverrideRequest_RejectsUnknownTier(t *testing.T) {
@@ -210,7 +200,6 @@ func TestBuildConstructionOverrideRequest_ClearBuildsClearRequest(t *testing.T) 
 	require.NoError(t, err)
 	require.True(t, req.Clear)
 	require.Nil(t, req.MinSupply)
-	require.Nil(t, req.Strategy)
 	require.Nil(t, req.PriceCeilingMult)
 }
 
@@ -247,7 +236,7 @@ func (f *fakeConstructionOverrideClient) ConstructionGoodOverride(_ context.Cont
 func TestRunConstructionOverride_SetReportsLiveChange(t *testing.T) {
 	client := &fakeConstructionOverrideClient{resp: &pb.ConstructionGoodOverrideResponse{
 		ConstructionSite: "X1-VB74-I55", Good: "FAB_MATS", Changed: true,
-		MinSupply: "LIMITED", Strategy: "prefer-buy",
+		MinSupply: "LIMITED",
 	}}
 	req := &pb.ConstructionGoodOverrideRequest{ConstructionSite: "X1-VB74-I55", Good: "FAB_MATS"}
 

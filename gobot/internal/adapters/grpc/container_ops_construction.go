@@ -291,8 +291,9 @@ func (s *DaemonServer) getAPIClient() domainPorts.APIClient {
 // pointer means "knob not supplied this call" — leave the good's existing value intact so an
 // operator can tune one dimension at a time; a non-nil pointer sets that dimension. This
 // provided-vs-absent distinction is why pointers are used instead of a bare GoodGatingOverride.
+// Strategy is not a live-settable dimension (sp-sxyx6 — "smart" is the sole acquisition strategy);
+// GoodGatingOverride.Strategy itself survives for the launch-time --good-override path.
 type goodOverridePatch struct {
-	strategy         *string
 	minSupply        *string
 	priceCeilingMult *float64
 }
@@ -321,9 +322,6 @@ func applyGoodOverride(current manufacturing.GoodGatingOverrides, good string, p
 
 	prev, existed := next[good]
 	updated := prev
-	if patch.strategy != nil {
-		updated.Strategy = *patch.strategy
-	}
 	if patch.minSupply != nil {
 		updated.MinSupply = *patch.minSupply
 	}

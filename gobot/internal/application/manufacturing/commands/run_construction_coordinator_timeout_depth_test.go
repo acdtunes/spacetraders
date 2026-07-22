@@ -121,25 +121,6 @@ func TestScaledSupplyTaskTimeout_DeepFabricateGetsHeadroom_ShallowUnchanged(t *t
 	}
 }
 
-// PART A — the per-launch override seam is preserved AND still scales by depth: a captain-tuned base
-// (SupplyTaskTimeoutSeconds) is the base the depth multiplies, so the override is not removed.
-func TestScaledSupplyTaskTimeout_HonoursPerLaunchOverrideAsScaledBase(t *testing.T) {
-	depth3Pipeline := newDrainPipelineDepth(t, "FAB_MATS", 200, 3)
-	pipelineRepo := &drainStubPipelineRepo{pipelines: map[string]*manufacturing.ManufacturingPipeline{depth3Pipeline.ID(): depth3Pipeline}}
-	handler := NewRunConstructionCoordinatorHandler(&drainStubTaskRepo{}, pipelineRepo, newDrainShipRepo(), &fakeConstructionProducer{}, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
-	cmd := newDrainCommand()
-	cmd.SupplyTaskTimeoutSeconds = 600 // 10m per-launch base override
-
-	buyTask := manufacturing.NewDeliverToConstructionTask(depth3Pipeline.ID(), 1, "FAB_MATS", "X1-SRC", "", constructionSiteWP, nil)
-	if got := handler.scaledSupplyTaskTimeout(context.Background(), cmd, buyTask); got != 10*time.Minute {
-		t.Fatalf("a shallow task must keep the per-launch base 10m unchanged, got %s", got)
-	}
-	fabTask := manufacturing.NewDeliverToConstructionTask(depth3Pipeline.ID(), 1, "FAB_MATS", "", "X1-FACTORY", constructionSiteWP, nil)
-	if got := handler.scaledSupplyTaskTimeout(context.Background(), cmd, fabTask); got != 30*time.Minute {
-		t.Fatalf("a depth-3 task must scale the per-launch base 10m*3 = 30m, got %s", got)
-	}
-}
-
 // ctxAwareTaskRepo models the real GORM repo's ctx handling: an Update through a CANCELLED context
 // FAILS (the 'context canceled' the abandon path logs); a live context records the status. This lets
 // a test prove the cleanup persist survives an abandon only if it writes through a NON-cancelled ctx.

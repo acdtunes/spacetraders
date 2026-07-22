@@ -22,12 +22,4 @@ type ManufacturingConfig struct {
 	// short-circuits. Fed from unified_gate_fill; a captain flips it live by editing config.yaml and
 	// restarting (RULINGS #5). false is the zero value, so an absent key keeps today's behavior.
 	UnifiedGateFill bool `mapstructure:"unified_gate_fill"`
-
-	// ConstructionSupplyTaskTimeoutSeconds bounds a SINGLE construction supplyTask (claim→source→route-
-	// to-gate-with-refuel-hops→dock→supply→record) before the drain abandons it and retries next tick
-	// (sp-ubwi). 0/absent → the drain's raised 30m default; the old hardcoded 10m abandoned legit
-	// multi-hop light-hauler hauls at the finish line. Threaded into the construction_coordinator command
-	// (RunConstructionCoordinatorCommand.SupplyTaskTimeoutSeconds) so a captain retunes it live by
-	// editing config.yaml and restarting (sp-ts82 / RULINGS #5).
-	ConstructionSupplyTaskTimeoutSeconds int `mapstructure:"construction_supply_task_timeout_seconds"`
 }

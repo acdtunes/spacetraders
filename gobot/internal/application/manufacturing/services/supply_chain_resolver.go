@@ -43,11 +43,6 @@ func NewSupplyChainResolver(
 	}
 }
 
-// SetStrategy changes the acquisition strategy
-func (r *SupplyChainResolver) SetStrategy(strategy AcquisitionStrategy) {
-	r.strategy = strategy
-}
-
 // BuildDependencyTree constructs a complete dependency tree for producing a target good.
 // It recursively resolves all required inputs, querying markets to determine whether
 // each good should be purchased (BUY) or manufactured (FABRICATE).

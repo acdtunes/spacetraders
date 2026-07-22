@@ -10353,10 +10353,12 @@ func (x *StopConstructionPipelineResponse) GetMessage() string {
 
 // ConstructionGoodOverrideRequest sets or clears ONE good's per-good buy-gating override on a
 // running construction pipeline (sp-pdb3). construction_site + good identify the target. clear
-// removes the good's override, reverting it to the global default. The three optional knobs mirror
+// removes the good's override, reverting it to the global default. The optional knobs mirror
 // manufacturing.GoodGatingOverride; an unset knob leaves that dimension unchanged (tune one at a
 // time). price_ceiling_mult is clamped to the domain hard cap — the CLI never bypasses the
-// guardrail (RULINGS #4).
+// guardrail (RULINGS #4). Field 7 (strategy) retired by sp-sxyx6 — the live per-good strategy
+// knob is gone now that "smart" is the sole acquisition strategy; launch-time --good-override
+// strategy still flows through the domain field untouched.
 type ConstructionGoodOverrideRequest struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	ConstructionSite string                 `protobuf:"bytes,1,opt,name=construction_site,json=constructionSite,proto3" json:"construction_site,omitempty"`
@@ -10366,7 +10368,6 @@ type ConstructionGoodOverrideRequest struct {
 	// clear removes any existing override for good, reverting it to the global default.
 	Clear            bool     `protobuf:"varint,5,opt,name=clear,proto3" json:"clear,omitempty"`
 	MinSupply        *string  `protobuf:"bytes,6,opt,name=min_supply,json=minSupply,proto3,oneof" json:"min_supply,omitempty"`
-	Strategy         *string  `protobuf:"bytes,7,opt,name=strategy,proto3,oneof" json:"strategy,omitempty"`
 	PriceCeilingMult *float64 `protobuf:"fixed64,8,opt,name=price_ceiling_mult,json=priceCeilingMult,proto3,oneof" json:"price_ceiling_mult,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
@@ -10444,13 +10445,6 @@ func (x *ConstructionGoodOverrideRequest) GetMinSupply() string {
 	return ""
 }
 
-func (x *ConstructionGoodOverrideRequest) GetStrategy() string {
-	if x != nil && x.Strategy != nil {
-		return *x.Strategy
-	}
-	return ""
-}
-
 func (x *ConstructionGoodOverrideRequest) GetPriceCeilingMult() float64 {
 	if x != nil && x.PriceCeilingMult != nil {
 		return *x.PriceCeilingMult
@@ -10468,7 +10462,6 @@ type ConstructionGoodOverrideResponse struct {
 	// changed is false when the request was a no-op (the value already matched).
 	Changed bool `protobuf:"varint,4,opt,name=changed,proto3" json:"changed,omitempty"`
 	// The resulting override values for the good (empty/zero when cleared or that knob is unset).
-	Strategy         string  `protobuf:"bytes,5,opt,name=strategy,proto3" json:"strategy,omitempty"`
 	PriceCeilingMult float64 `protobuf:"fixed64,6,opt,name=price_ceiling_mult,json=priceCeilingMult,proto3" json:"price_ceiling_mult,omitempty"`
 	MinSupply        string  `protobuf:"bytes,7,opt,name=min_supply,json=minSupply,proto3" json:"min_supply,omitempty"`
 	unknownFields    protoimpl.UnknownFields
@@ -10531,13 +10524,6 @@ func (x *ConstructionGoodOverrideResponse) GetChanged() bool {
 		return x.Changed
 	}
 	return false
-}
-
-func (x *ConstructionGoodOverrideResponse) GetStrategy() string {
-	if x != nil {
-		return x.Strategy
-	}
-	return ""
 }
 
 func (x *ConstructionGoodOverrideResponse) GetPriceCeilingMult() float64 {
@@ -12797,7 +12783,7 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"\x11construction_site\x18\x02 \x01(\tR\x10constructionSite\x12\x16\n" +
 	"\x06status\x18\x03 \x01(\tR\x06status\x12'\n" +
 	"\x0ftasks_cancelled\x18\x04 \x01(\x05R\x0etasksCancelled\x12\x18\n" +
-	"\amessage\x18\x05 \x01(\tR\amessage\"\xf9\x02\n" +
+	"\amessage\x18\x05 \x01(\tR\amessage\"\xdb\x02\n" +
 	"\x1fConstructionGoodOverrideRequest\x12+\n" +
 	"\x11construction_site\x18\x01 \x01(\tR\x10constructionSite\x12\x12\n" +
 	"\x04good\x18\x02 \x01(\tR\x04good\x12\x1b\n" +
@@ -12805,22 +12791,19 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"\fagent_symbol\x18\x04 \x01(\tH\x00R\vagentSymbol\x88\x01\x01\x12\x14\n" +
 	"\x05clear\x18\x05 \x01(\bR\x05clear\x12\"\n" +
 	"\n" +
-	"min_supply\x18\x06 \x01(\tH\x01R\tminSupply\x88\x01\x01\x12\x1f\n" +
-	"\bstrategy\x18\a \x01(\tH\x02R\bstrategy\x88\x01\x01\x121\n" +
-	"\x12price_ceiling_mult\x18\b \x01(\x01H\x03R\x10priceCeilingMult\x88\x01\x01B\x0f\n" +
+	"min_supply\x18\x06 \x01(\tH\x01R\tminSupply\x88\x01\x01\x121\n" +
+	"\x12price_ceiling_mult\x18\b \x01(\x01H\x02R\x10priceCeilingMult\x88\x01\x01B\x0f\n" +
 	"\r_agent_symbolB\r\n" +
-	"\v_min_supplyB\v\n" +
-	"\t_strategyB\x15\n" +
-	"\x13_price_ceiling_mult\"\x80\x02\n" +
+	"\v_min_supplyB\x15\n" +
+	"\x13_price_ceiling_multJ\x04\b\a\x10\bR\bstrategy\"\xf4\x01\n" +
 	" ConstructionGoodOverrideResponse\x12+\n" +
 	"\x11construction_site\x18\x01 \x01(\tR\x10constructionSite\x12\x12\n" +
 	"\x04good\x18\x02 \x01(\tR\x04good\x12\x18\n" +
 	"\acleared\x18\x03 \x01(\bR\acleared\x12\x18\n" +
-	"\achanged\x18\x04 \x01(\bR\achanged\x12\x1a\n" +
-	"\bstrategy\x18\x05 \x01(\tR\bstrategy\x12,\n" +
+	"\achanged\x18\x04 \x01(\bR\achanged\x12,\n" +
 	"\x12price_ceiling_mult\x18\x06 \x01(\x01R\x10priceCeilingMult\x12\x1d\n" +
 	"\n" +
-	"min_supply\x18\a \x01(\tR\tminSupply\"\xca\x01\n" +
+	"min_supply\x18\a \x01(\tR\tminSupplyJ\x04\b\x05\x10\x06R\bstrategy\"\xca\x01\n" +
 	"\x1cConstructionWorkerCapRequest\x12+\n" +
 	"\x11construction_site\x18\x01 \x01(\tR\x10constructionSite\x12\x14\n" +
 	"\x05count\x18\x02 \x01(\x05R\x05count\x12 \n" +

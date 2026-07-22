@@ -18,26 +18,11 @@ type RunConstructionCoordinatorCommand struct {
 	MaxIterations int
 	// TickSeconds is the delay between drain ticks; <=0 uses the coordinator's default.
 	TickSeconds int
-	// ProductionStrategy is the SupplyChainResolver acquisition strategy for a FABRICATE
-	// material's dependency tree: "smart" (fabricate a SCARCE intermediate that has a
-	// factory, buy an abundant one — the fleet-wide default) unsticks a scarce gate
-	// material by producing it locally instead of buying it scarce; "prefer-buy" is the
-	// flat one-level sourcing. Empty defaults to "smart". Only consulted on the FABRICATE
-	// branch — a buy-final material (no factory) never touches the resolver. Fed from
-	// production_strategy.
-	ProductionStrategy string
 	// UnifiedGateFill switches the drain from the planner's frozen buy-vs-fabricate
 	// decision (OFF, default: byte-identical) to the resolver's full scarcity-gated tree
 	// for every gate material, marking the run a gate node so lane B's per-node gates go
 	// margin-blind (ON). Fed from ManufacturingConfig.UnifiedGateFill.
 	UnifiedGateFill bool
-	// SupplyTaskTimeoutSeconds bounds a single supplyTask (claim->source->route-with-refuel
-	// ->supply->record) before the drain abandons it and retries next tick. 0/absent uses
-	// the coordinator's 30m default — must cover a legit multi-hop light-hauler round trip,
-	// or a healthy long haul gets abandoned at the finish line and re-bought on a fresh
-	// empty hull while the laden one strands. Fed from
-	// [manufacturing].construction_supply_task_timeout_seconds so a captain retunes it live.
-	SupplyTaskTimeoutSeconds int
 
 	// DedicatedFleet is the Ship.DedicatedFleet() tag this drain prefers: each tick it
 	// discovers idle hulls carrying this tag via FindIdleShipsByFleet first, then

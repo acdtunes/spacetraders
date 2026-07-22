@@ -152,17 +152,14 @@ func TestConstructionDrain_FanoutDoesNotOverSupplyPastRequirement(t *testing.T) 
 	}
 }
 
-// (c) CONFIGURABLE TIMEOUT: the per-supply-task deadline must no longer be the hardcoded 10m that
-// abandoned healthy multi-hop hauls at the finish line. The default is raised to 30m, and a config
-// value threaded onto the command ([manufacturing].construction_supply_task_timeout_seconds) overrides it.
-func TestConstructionDrain_SupplyTaskTimeoutIsConfigurable(t *testing.T) {
+// (c) DEFAULT TIMEOUT: the per-supply-task deadline must no longer be the hardcoded 10m that
+// abandoned healthy multi-hop hauls at the finish line. The default is raised to 30m — a fixed
+// const (sp-sxyx6 retired the former per-launch config override; "smart" strategy handling is now
+// the sole path and the base is no longer operator-tunable).
+func TestConstructionDrain_SupplyTaskTimeoutDefaultsTo30Minutes(t *testing.T) {
 	handler := NewRunConstructionCoordinatorHandler(nil, nil, nil, nil, nil, &factoryFakeClock{})
 
-	if got := handler.effectiveSupplyTaskTimeout(&RunConstructionCoordinatorCommand{}); got != 30*time.Minute {
+	if got := handler.effectiveSupplyTaskTimeout(); got != 30*time.Minute {
 		t.Fatalf("expected the default supply-task timeout raised to 30m (was a hardcoded 10m that abandoned legit long hauls), got %s", got)
-	}
-	cmd := &RunConstructionCoordinatorCommand{SupplyTaskTimeoutSeconds: 2700} // 45m
-	if got := handler.effectiveSupplyTaskTimeout(cmd); got != 45*time.Minute {
-		t.Fatalf("expected the configured 45m supply-task timeout to override the default, got %s", got)
 	}
 }

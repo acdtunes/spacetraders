@@ -1601,10 +1601,12 @@ message StopConstructionPipelineResponse {
 
 // ConstructionGoodOverrideRequest sets or clears ONE good's per-good buy-gating override on a
 // running construction pipeline (sp-pdb3). construction_site + good identify the target. clear
-// removes the good's override, reverting it to the global default. The three optional knobs mirror
+// removes the good's override, reverting it to the global default. The optional knobs mirror
 // manufacturing.GoodGatingOverride; an unset knob leaves that dimension unchanged (tune one at a
 // time). price_ceiling_mult is clamped to the domain hard cap — the CLI never bypasses the
-// guardrail (RULINGS #4).
+// guardrail (RULINGS #4). Field 7 (strategy) retired by sp-sxyx6 — the live per-good strategy
+// knob is gone now that "smart" is the sole acquisition strategy; launch-time --good-override
+// strategy still flows through the domain field untouched.
 message ConstructionGoodOverrideRequest {
   string construction_site = 1;
   string good = 2;
@@ -1613,7 +1615,8 @@ message ConstructionGoodOverrideRequest {
   // clear removes any existing override for good, reverting it to the global default.
   bool clear = 5;
   optional string min_supply = 6;
-  optional string strategy = 7;
+  reserved 7;
+  reserved "strategy";
   optional double price_ceiling_mult = 8;
 }
 
@@ -1625,8 +1628,10 @@ message ConstructionGoodOverrideResponse {
   bool cleared = 3;
   // changed is false when the request was a no-op (the value already matched).
   bool changed = 4;
+  // Field 5 (strategy) retired by sp-sxyx6 — see ConstructionGoodOverrideRequest.
+  reserved 5;
+  reserved "strategy";
   // The resulting override values for the good (empty/zero when cleared or that knob is unset).
-  string strategy = 5;
   double price_ceiling_mult = 6;
   string min_supply = 7;
 }

@@ -43,9 +43,7 @@ func overrideChainResolver() *SupplyChainResolver {
 			"COPPER_ORE":       {WaypointSymbol: "X1-OV-CO", Supply: supplyAbundant, Activity: "STRONG", SellPrice: 40},
 		},
 	}
-	r := NewSupplyChainResolver(supplyChainMap, repo)
-	r.SetStrategy(StrategySmart)
-	return r
+	return NewSupplyChainResolver(supplyChainMap, repo)
 }
 
 func childByGood(root *goods.SupplyChainNode, good string) *goods.SupplyChainNode {
@@ -61,7 +59,10 @@ func childByGood(root *goods.SupplyChainNode, good string) *goods.SupplyChainNod
 // ELECTRONICS FABRICATES (Smart fabricates SCARCE/LIMITED) and the MODERATE COPPER is BOUGHT.
 func TestStrategyOverride_BaselineSmartFabricatesScarceInput(t *testing.T) {
 	resolver := overrideChainResolver()
-	ctx := WithFabricateDepthCap(context.Background(), 0, true) // cap disabled so strategy controls the shape
+	// global strategy = smart via the real production ctx-stamp (the resolver's own bare default is
+	// prefer-buy; production never relies on it — see WithProductionStrategy).
+	ctx := WithProductionStrategy(context.Background(), DefaultProductionStrategy)
+	ctx = WithFabricateDepthCap(ctx, 0, true) // cap disabled so strategy controls the shape
 
 	root, err := resolver.BuildDependencyTree(ctx, "ADVANCED_CIRCUITRY", "X1-OV", 1)
 	if err != nil {
@@ -87,7 +88,9 @@ func TestStrategyOverride_BaselineSmartFabricatesScarceInput(t *testing.T) {
 func TestStrategyOverride_PreferBuyFlipsBottleneckOnly(t *testing.T) {
 	resolver := overrideChainResolver()
 	overrides := manufacturing.GoodGatingOverrides{"ELECTRONICS": {Strategy: "prefer-buy"}}
-	ctx := WithGoodGatingOverrides(WithFabricateDepthCap(context.Background(), 0, true), overrides)
+	ctx := WithProductionStrategy(context.Background(), DefaultProductionStrategy)
+	ctx = WithFabricateDepthCap(ctx, 0, true)
+	ctx = WithGoodGatingOverrides(ctx, overrides)
 
 	root, err := resolver.BuildDependencyTree(ctx, "ADVANCED_CIRCUITRY", "X1-OV", 1)
 	if err != nil {

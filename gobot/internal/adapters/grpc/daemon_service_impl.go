@@ -1823,7 +1823,6 @@ func (s *daemonServiceImpl) ConstructionGoodOverride(ctx context.Context, req *p
 	}
 
 	patch := goodOverridePatch{
-		strategy:         req.Strategy,
 		minSupply:        req.MinSupply,
 		priceCeilingMult: req.PriceCeilingMult,
 	}
@@ -1838,7 +1837,6 @@ func (s *daemonServiceImpl) ConstructionGoodOverride(ctx context.Context, req *p
 		Good:             result.Good,
 		Cleared:          result.Cleared,
 		Changed:          result.Changed,
-		Strategy:         result.Override.Strategy,
 		PriceCeilingMult: result.Override.PriceCeilingMult,
 		MinSupply:        result.Override.MinSupply,
 	}, nil
