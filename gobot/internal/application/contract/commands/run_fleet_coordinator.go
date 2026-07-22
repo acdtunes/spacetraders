@@ -414,6 +414,38 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			continue // Loop back to check for available ships
 		}
 
+		// DETERMINISTIC SINGLE-HULL GATE (sp-zve2q): activeWorkerContainerID is this
+		// coordinator's OWN synchronous record of the worker it spawned or re-adopted
+		// this lifetime — set the instant readoptInterruptedDeliveries re-adopts a
+		// cargo-laden hull after a restart, BEFORE that fresh worker's async
+		// StartContainer surfaces it as RUNNING in the container store. During that
+		// window the RUNNING-status FindExistingWorkers query below sees zero workers,
+		// calculateInFlightCargo sees the hull on neither a RUNNING nor the dead FAILED
+		// container (it moved to the fresh one), and idleReclaimedContractCargoHeld sees
+		// it as assigned — every durable defense is blind, so the loop would negotiate
+		// + dispatch a SECOND hull onto the same contract and buy a duplicate load (the
+		// observed TORWIND-D re-adopted + TORWIND-9 selected double-buy). The contract
+		// runs exactly ONE hull at a time: while this coordinator already holds an
+		// active hull, WAIT for it to complete (re-selecting THAT hull as the sole
+		// hull) rather than dispatching another; only once it completes (id cleared
+		// on the completion event) does the loop fall through to distance-based
+		// selection of the NEXT hull. A no-op on the normal cold pass, where
+		// activeWorkerContainerID is "" here — byte-identical selection preserved.
+		if activeWorkerContainerID != "" {
+			logger.Log("INFO", fmt.Sprintf("Contract already has an active hull (worker %s) - waiting for it to complete before dispatching another (sp-zve2q deterministic single-hull)", activeWorkerContainerID), nil)
+			select {
+			case event := <-workerCompletedCh:
+				recordWorkerCompletion(logger, event, fmt.Sprintf("Active worker completed for ship %s", event.ShipSymbol))
+				activeWorkerContainerID = "" // Worker completed — next pass selects the NEXT hull by distance
+			case <-time.After(1 * time.Minute):
+				logger.Log("INFO", "Timeout waiting for active hull, will re-check", nil)
+			case <-ctx.Done():
+				h.stopActiveWorker(ctx, activeWorkerContainerID)
+				return result, ctx.Err()
+			}
+			continue
+		}
+
 		// CRITICAL CHECK: Prevent multiple workers by checking if any worker is already running
 		// This prevents race conditions when negotiation fails early in the loop
 		existingActiveWorkers, err := h.workerLifecycleManager.FindExistingWorkers(ctx, cmd.PlayerID.Value())
