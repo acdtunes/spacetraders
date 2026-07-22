@@ -688,7 +688,6 @@ func buildMarketFreshnessSizerCoordinatorCommand(cfg *configReader, playerID int
 		ReleaseStableWindowSecs:  cfg.OptionalInt("release_stable_window_secs", 0),
 		ReservedFrontierFloor:    cfg.OptionalInt("reserved_frontier_floor", 0),     // sp-iopd reserved frontier floor
 		HoldUnscannedMarketPosts: cfg.OptionalInt("hold_unscanned_market_posts", 0), // sp-u8jc/sp-gucu bootstrap flag (0=off)
-		SizeByChartedMarkets:     cfg.OptionalInt("size_by_charted_markets", 0),     // sp-7pdo cold-start scale-up flag (0=off)
 		MaxProbeFleet:            cfg.OptionalInt("max_probe_fleet", 0),
 		MaxSpendPerCycle:         cfg.OptionalInt("max_spend_per_cycle", 0),
 		PurchaseCooldownSecs:     cfg.OptionalInt("purchase_cooldown_secs", 0),

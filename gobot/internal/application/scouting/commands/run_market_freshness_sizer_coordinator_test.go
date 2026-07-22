@@ -1284,65 +1284,58 @@ func TestResolveSizerConfig_ReadsHoldUnscannedMarketPostsLiveWithDefaultFallback
 		"a live 0 reverts even a launch-armed flag (tune 0 = off)")
 }
 
-// ---- sp-7pdo: cold-start scale-up — size a partially-scanned system by its CHARTED market count ----
+// ---- cold-start scale-up — size a partially-scanned system by its CHARTED market count (default) ----
 
-// THE COLD-START SCALE-UP FIX. The freshness census keys "markets" on SCANNED market_data, so a
-// home post part-way through its FIRST circuit — one probe having scanned 9 of a 27-market system —
-// reads as 9 markets and sizes to RequiredHulls(9, 180s, 3600s)=1, so the bootstrap-declared single
-// hull never grows and the idle sibling probes sit unused (the scout-post coordinator sees the full
-// 27 charted markets and WARNS "needs 2 hulls", but nothing raises the budget — sp-7pdo root cause A).
-// Armed, the sizer sizes the SAME system against its 27 CHARTED markets → RequiredHulls(27,180,3600)=2,
-// so the post reaches its true hull count immediately and the coordinator mans + partitions the idle
-// probes. Disabled (the default) is byte-identical: it sizes on the scanned 9 and stays at 1. The
-// RED case is the armed scale-up row: on pre-fix code the sizer computes 1 and never resizes, so the
-// UpdateHulls==2 assertion fails. It also carries the mutation guard — revert the charted-count
-// override and the armed row sizes to 1, failing here.
-func TestSizer_SizesPartiallyScannedSystemByChartedMarketsWhenArmed(t *testing.T) {
+// THE COLD-START SCALE-UP FIX (the live-gap regression). During the initial circuit the freshness
+// census keys "markets" on SCANNED market_data, so a home post part-way through its first circuit
+// (10 of 21 charted markets scanned) reads as 10 markets. Two things kept it stuck at one hull:
+// the market-count numerator was the scanned 10, AND the measured per-market cycle is taken from that
+// same partial subset — a cold-start burst-and-idle artifact (median gap 139s, BELOW the 3600/21≈171s
+// a second hull needs), so even sizing off the full charted 21 yields RequiredHulls(21,139,3600)=1.
+// Sizing off the full CHARTED count AND the fixed SEED cycle (the scout-post coordinator's undersized-
+// warning avgHop) restores RequiredHulls(21,180,3600)=2 — the two coordinators now AGREE. The
+// deflated 139s cycle is the anti-theatre teeth: it FAILS a count-only fix (stays 1) AND a
+// seed-only fix without the count (RequiredHulls(10,180,3600)=1). Reader unwired ⇒ charted 0 ⇒
+// scanned-count fallback (byte-identical). Idempotent once already sized.
+func TestSizer_ColdStartSizesOffChartedMarketsAndSeedCycle(t *testing.T) {
 	cases := []struct {
 		name          string
-		armed         bool
 		readerWired   bool
 		existingHulls int // the bootstrap-declared / current post budget
-		wantHulls     int // expected UpdateHulls value; 0 ⇒ no resize (byte-identical / idempotent)
+		wantHulls     int // expected UpdateHulls value; 0 ⇒ no resize (fallback / idempotent)
 	}{
-		{"armed + 27 charted over 9 scanned + 1 hull → resize to 2 (RED: cold-start scale-up)", true, true, 1, 2},
-		{"disabled + 27 charted over 9 scanned + 1 hull → no resize (byte-identical, sizes on scanned 9)", false, true, 1, 0},
-		{"armed but charted reader unwired → no resize (fail-closed fallback to the scanned count)", true, false, 1, 0},
-		{"armed + already sized to 2 → no resize (idempotent, no re-partition thrash)", true, true, 2, 0},
+		{"21 charted over 10 scanned, deflated 139s cycle, 1 hull → resize to 2", true, 1, 2},
+		{"charted reader unwired → no resize (fail-closed fallback to the scanned count)", false, 1, 0},
+		{"already sized to 2 → no resize (idempotent, no re-partition thrash)", true, 2, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			// One probe has scanned 9 of the system's 27 markets at the true ~180s per-market pace
-			// (measured cycle 180s, trusted), all freshly scanned (oldest age well under the 1h SLA).
+			// 10 of the system's 21 charted markets scanned, their inter-scan gaps a cold-start burst →
+			// measured cycle 139s, trusted (9 samples, not starved), fresh (age well under the 1h SLA).
 			fr := &fakeFreshnessReader{snapshots: []domainScouting.SystemFreshnessSnapshot{
-				snap("X1-UM5", 9 /*scanned*/, 100 /*fresh oldest*/, 180 /*measured cycle*/, 8 /*trusted*/),
+				snap("X1-VR39", 10 /*scanned*/, 100 /*fresh oldest*/, 139 /*deflated measured cycle*/, 9 /*trusted*/),
 			}}
 			var post *domainScouting.ScoutPost
 			if tc.existingHulls > 1 {
-				post = fullyMannedSizerPost("X1-UM5", tc.existingHulls)
+				post = fullyMannedSizerPost("X1-VR39", tc.existingHulls)
 			} else {
-				post = standingSizerPost("X1-UM5", tc.existingHulls, "P-UM5")
+				post = standingSizerPost("X1-VR39", tc.existingHulls, "P-VR39")
 			}
 			pr := newSizerPostRepo(post)
 			fl := &fakeSizerFleetRepo{all: scouts(t, 10)} // supply ≫ demand → no buy in the way
 			h := newSizer(fr, pr, fl)
 			if tc.readerWired {
-				// 27 charted marketplace waypoints, only 9 scanned so far — the cold-start circuit state.
-				h.SetChartedMarketplaceReader(&fakeChartedMarketplaceReader{counts: map[string]int{"X1-UM5": 27}})
-			}
-			cmd := sizerCmd()
-			if tc.armed {
-				cmd.SizeByChartedMarkets = 1
+				h.SetChartedMarketplaceReader(&fakeChartedMarketplaceReader{counts: map[string]int{"X1-VR39": 21}})
 			}
 
-			require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
+			require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
 
 			if tc.wantHulls == 0 {
-				require.NotContains(t, pr.hullUpdates, "X1-UM5",
+				require.NotContains(t, pr.hullUpdates, "X1-VR39",
 					"no resize expected — the post stays at its current budget")
 			} else {
-				require.Equal(t, tc.wantHulls, pr.hullUpdates["X1-UM5"],
-					"armed, the post is sized against its 27 CHARTED markets → RequiredHulls(27,180,3600)=2")
+				require.Equal(t, tc.wantHulls, pr.hullUpdates["X1-VR39"],
+					"sized against 21 CHARTED markets at the seed 180s cycle → RequiredHulls(21,180,3600)=2")
 				require.Empty(t, pr.upserts,
 					"the resize goes through the manning-preserving UpdateHulls seam, never a clobbering Upsert")
 			}
@@ -1350,22 +1343,43 @@ func TestSizer_SizesPartiallyScannedSystemByChartedMarketsWhenArmed(t *testing.T
 	}
 }
 
-// Config wiring: size_by_charted_markets is a live-tunable int-mode flag. resolveSizerConfig reads it
-// from the tick's live-config snapshot (live > launch); with NO snapshot it falls back to the launch
-// command, else the documented default (OFF, size on the scanned count) — guarding the registry↔
-// overlay drift that would leave the knob registered but silently ineffective.
-func TestResolveSizerConfig_ReadsSizeByChartedMarketsLiveWithDefaultFallback(t *testing.T) {
-	require.False(t, resolveSizerConfig(sizerCmd(), nil).SizeByChartedMarkets,
-		"no snapshot, no launch value → the documented default (OFF, size on scanned)")
+// STEADY-STATE GUARD: charted sizing being the default must NOT over-provision. The charted override
+// is scoped to the cold-start window (charted > scanned): a FULLY-scanned system sizes on its real
+// MEASURED cycle, not the seed (proven by choosing a measured cycle whose RequiredHulls differs from
+// the seed's); and a cold-start system with a huge charted count is still bounded by the existing
+// per-system cap. Guards against the default silently sizing every system off the seed forever.
+func TestSizer_ChartedSizingDefaultDoesNotOverProvision(t *testing.T) {
+	t.Run("fully scanned (charted == scanned) sizes on the measured cycle, not the seed", func(t *testing.T) {
+		// 30 markets, all scanned, measured 300s cycle (trusted): RequiredHulls(30,300,3600)=3. Were the
+		// seed cycle wrongly applied it would be RequiredHulls(30,180,3600)=2 — so 3 proves measured is used.
+		fr := &fakeFreshnessReader{snapshots: []domainScouting.SystemFreshnessSnapshot{
+			snap("X1-FULL", 30 /*scanned*/, 100 /*fresh*/, 300 /*measured cycle*/, 29 /*trusted*/),
+		}}
+		pr := newSizerPostRepo(standingSizerPost("X1-FULL", 1, "P-FULL"))
+		fl := &fakeSizerFleetRepo{all: scouts(t, 10)}
+		h := newSizer(fr, pr, fl)
+		h.SetChartedMarketplaceReader(&fakeChartedMarketplaceReader{counts: map[string]int{"X1-FULL": 30}}) // charted == scanned
 
-	launch := sizerCmd()
-	launch.SizeByChartedMarkets = 1
-	require.True(t, resolveSizerConfig(launch, nil).SizeByChartedMarkets,
-		"no snapshot → the launch command value governs")
+		require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
 
-	require.True(t, resolveSizerConfig(sizerCmd(), liveconfig.Snapshot{"size_by_charted_markets": 1}).SizeByChartedMarkets,
-		"a live snapshot arms it next tick")
+		require.Equal(t, 3, pr.hullUpdates["X1-FULL"],
+			"fully scanned → the override is inert (charted ≤ scanned), so it sizes on the measured 300s cycle → 3, not the seed's 2")
+	})
 
-	require.False(t, resolveSizerConfig(launch, liveconfig.Snapshot{"size_by_charted_markets": 0}).SizeByChartedMarkets,
-		"a live 0 reverts even a launch-armed flag (tune 0 = off)")
+	t.Run("cold-start charted sizing is bounded by max_probes_per_system", func(t *testing.T) {
+		// 200 charted over 5 scanned at the seed cycle → RequiredHulls(200,180,3600)=10, capped to the
+		// per-system max of 8 — the default cannot run demand past the existing cap.
+		fr := &fakeFreshnessReader{snapshots: []domainScouting.SystemFreshnessSnapshot{
+			snap("X1-BIG", 5 /*scanned*/, 100 /*fresh*/, 139 /*measured cycle*/, 4 /*trusted*/),
+		}}
+		pr := newSizerPostRepo(standingSizerPost("X1-BIG", 1, "P-BIG"))
+		fl := &fakeSizerFleetRepo{all: scouts(t, 20)}
+		h := newSizer(fr, pr, fl)
+		h.SetChartedMarketplaceReader(&fakeChartedMarketplaceReader{counts: map[string]int{"X1-BIG": 200}})
+
+		require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
+
+		require.Equal(t, defaultMaxProbesPerSystem, pr.hullUpdates["X1-BIG"],
+			"cold-start charted sizing is clamped to the per-system hull cap (8), never the raw RequiredHulls(200,180,3600)=10")
+	})
 }
