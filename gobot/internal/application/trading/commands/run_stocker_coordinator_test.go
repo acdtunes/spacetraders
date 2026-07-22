@@ -16,6 +16,7 @@ import (
 	navCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	storageApp "github.com/andrescamacho/spacetraders-go/internal/application/storage"
 	tradingsvc "github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/contractscaler"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
@@ -154,6 +155,28 @@ func (r *stkFakeMarketRepo) GetMarketData(ctx context.Context, waypointSymbol st
 		r.t.Fatalf("market: %v", err)
 	}
 	return m, nil
+}
+
+// FindCheapestMarketSelling scans fx.ask for the cheapest waypoint IN system that sells
+// good — the pinned-depot path's (sp-rh1wi) direct home-market source lookup. Returns nil
+// (no error) when nothing in-system sells it, mirroring the real repository's "not found".
+func (r *stkFakeMarketRepo) FindCheapestMarketSelling(ctx context.Context, good, system string, playerID int) (*market.CheapestMarketResult, error) {
+	r.fx.mu.Lock()
+	defer r.fx.mu.Unlock()
+	var best *market.CheapestMarketResult
+	for waypoint, goods := range r.fx.ask {
+		if shared.ExtractSystemSymbol(waypoint) != system {
+			continue
+		}
+		ask, ok := goods[good]
+		if !ok {
+			continue
+		}
+		if best == nil || ask < best.SellPrice {
+			best = &market.CheapestMarketResult{WaypointSymbol: waypoint, TradeSymbol: good, SellPrice: ask, Supply: "MODERATE"}
+		}
+	}
+	return best, nil
 }
 
 type stkFakeShipRepo struct {
@@ -1376,8 +1399,11 @@ func stkHomeVsForeignMiner() *persistence.DemandMiner {
 
 // The depot stocker in HomeSystemOnly mode, with a CHEAPER foreign source and a viable home-system
 // source, must pick the HOME-system market — this is the sp-k2xav headline: sourcing is confined to
-// the warehouse's own system, never cross-gated (RULINGS #14). Driven through the REAL miner so the
-// command→miner threading is exercised end to end.
+// the warehouse's own system, never cross-gated (RULINGS #14). Post sp-rh1wi, HomeSystemOnly picks
+// via pickPinned (never the miner) — this fixture's warehouse-supported good still resolves to the
+// SAME home market through h.marketRepo.FindCheapestMarketSelling, so the observable pick is
+// unchanged; stkHomeVsForeignMiner is kept only to prove TestStocker_Pick_Default_StillSourcesCheaperForeign
+// below still exercises the real miner end to end for the generic path.
 func TestStocker_Pick_HomeSystemOnly_SelectsHomeSourceNotForeign(t *testing.T) {
 	fx := &stkFixture{cargo: map[string]int{}, location: "X1-S1-H", cargoCap: 100,
 		ask: map[string]map[string]int{
@@ -1427,5 +1453,67 @@ func TestStocker_Pick_Default_StillSourcesCheaperForeign(t *testing.T) {
 	}
 	if pick.ForeignMarket != "X1-FOREIGN-M" {
 		t.Fatalf("the generic (non-home-only) stocker must still source the cheapest foreign X1-FOREIGN-M, got %s", pick.ForeignMarket)
+	}
+}
+
+// ---- pinned depot: fixed supported_goods sourced directly from home (sp-rh1wi) ----
+
+// The pinned contract depot's warehouse buffers a FIXED, analyst-defined good set
+// (contractscaler.FarSourceGoods) that is entirely unrelated to whatever the demand miner
+// ranks by LIVE contract demand. Before this fix, pick() intersected the miner's ranked
+// rows against supported_goods (AnySupportsGood) and found nothing (miner_rows=N,
+// eligible=N, after_filters=0 - the reported production bug at X1-UM5-G49), leaving the
+// warehouse permanently empty even though the home market sells every pinned good. The
+// pinned path must source a supported good DIRECTLY from the cheapest home market and must
+// never even CONSULT the miner - the fake here errors if Mine is called, proving the
+// bypass rather than merely a lucky empty intersection.
+func TestStocker_PickPinned_SourcesSupportedGoodFromHome(t *testing.T) {
+	fx := &stkFixture{cargo: map[string]int{}, location: "X1-UM5-G49", cargoCap: 200,
+		ask: map[string]map[string]int{
+			"X1-UM5-A": {"COPPER_ORE": 50, "IRON_ORE": 40},
+		},
+		marketAge: map[string]time.Duration{}}
+	coord, op := stkWireWarehouse(t, "warehouse-TORWIND-A", "X1-UM5-G49", 5000, contractscaler.FarSourceGoods)
+	miner := &stkFakeMiner{err: errors.New("pinned depot must never consult the demand miner")}
+	h := newStockerHandler(t, fx, coord, op, miner, &sfFakeAPIClient{credits: 100000000}, tradingsvc.DepositCandidateConfig{}, 10)
+
+	ctx := auth.WithPlayerToken(context.Background(), "TOK")
+	pick, ok := h.pick(ctx, &RunStockerCoordinatorCommand{
+		ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-UM5-G49", HomeSystemOnly: true,
+	}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), maxListingAge)
+
+	if !ok {
+		t.Fatalf("expected the pinned depot to source a supported good from home (today: nothing, after_filters=0 - the sp-rh1wi bug)")
+	}
+	if pick.Good != "COPPER_ORE" || pick.ForeignMarket != "X1-UM5-A" || pick.ForeignAsk != 50 {
+		t.Fatalf("expected COPPER_ORE sourced from the home market X1-UM5-A @50, got %s from %s @%d", pick.Good, pick.ForeignMarket, pick.ForeignAsk)
+	}
+	if pick.UnitsShort != contractscaler.DepotUnitsPerGood {
+		t.Fatalf("expected the fixed per-good target %d against an empty warehouse, got units_short=%d", contractscaler.DepotUnitsPerGood, pick.UnitsShort)
+	}
+}
+
+// The GENERIC (non-pinned) path must take the OLD miner-based route even when
+// supported_goods is the fixed pinned set and the miner has nothing ranked for it (the
+// exact sp-rh1wi bug shape) - it must NEVER silently fall back to the pinned direct-home
+// sourcing. This is the byte-identical proof: pickPinned is reached ONLY via
+// cmd.HomeSystemOnly, never as an implicit fallback for an unlucky miner result.
+func TestStocker_PickPinned_GenericPathUnaffectedByEmptyMinerRows(t *testing.T) {
+	fx := &stkFixture{cargo: map[string]int{}, location: "X1-UM5-G49", cargoCap: 200,
+		ask: map[string]map[string]int{
+			"X1-UM5-A": {"COPPER_ORE": 50, "IRON_ORE": 40},
+		},
+		marketAge: map[string]time.Duration{}}
+	coord, op := stkWireWarehouse(t, "warehouse-TORWIND-A", "X1-UM5-G49", 5000, contractscaler.FarSourceGoods)
+	miner := &stkFakeMiner{rows: nil} // the miner's ranked rows never intersect the fixed set - the sp-rh1wi shape
+	h := newStockerHandler(t, fx, coord, op, miner, &sfFakeAPIClient{credits: 100000000}, tradingsvc.DepositCandidateConfig{}, 10)
+
+	ctx := auth.WithPlayerToken(context.Background(), "TOK")
+	_, ok := h.pick(ctx, &RunStockerCoordinatorCommand{
+		ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-UM5-G49", // HomeSystemOnly false (default)
+	}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), maxListingAge)
+
+	if ok {
+		t.Fatalf("generic (non-pinned) stocker must still use the miner-ranked path and find nothing here - it must never silently take the pinned direct-home-source route")
 	}
 }

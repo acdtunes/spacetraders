@@ -12,6 +12,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	gasCmd "github.com/andrescamacho/spacetraders-go/internal/application/gas/commands"
 	tradingsvc "github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/contractscaler"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
@@ -591,9 +592,13 @@ type stockerPick struct {
 	Units          int // the haul size (capped by hold / space / ceiling / per-leg budget)
 }
 
-// pick chooses the most-needed good to stock: the stock-eligible miner candidate with
-// the highest (savings/u × units-short) that the warehouse buffers, clears the
-// min-savings floor, is FRESH (75-min discipline), and whose haul fits the tightest of
+// pick chooses the most-needed good to stock. A PINNED depot (cmd.HomeSystemOnly, RULINGS
+// #14) short-circuits to pickPinned (sp-rh1wi) BEFORE the demand miner is ever consulted:
+// its supported_goods is a FIXED, analyst-defined set that the miner's live-contract-demand
+// ranking has no reason to intersect, so it sources directly from the cheapest home market
+// instead. Otherwise (the generic, cross-system stocker) it is the stock-eligible miner
+// candidate with the highest (savings/u × units-short) that the warehouse buffers, clears
+// the min-savings floor, is FRESH (75-min discipline), and whose haul fits the tightest of
 // hold space, warehouse free space, the capital ceiling, and the per-leg budget. Returns
 // ok=false (with a single verdict line) when nothing survives — an honest empty pass.
 // Every money guard fails CLOSED (RULINGS #4): an unreadable balance stocks nothing.
@@ -646,6 +651,15 @@ func (h *RunStockerCoordinatorHandler) pick(
 	currentSystem := ship.CurrentLocation().SystemSymbol
 
 	homeSystem := shared.ExtractSystemSymbol(cmd.WarehouseWaypoint)
+
+	// sp-rh1wi: a PINNED depot (HomeSystemOnly, RULINGS #14) buffers a FIXED,
+	// analyst-defined good set (contractscaler.FarSourceGoods) — never demand-mined or
+	// value-ranked (RULINGS #6). Short-circuits BEFORE the demand miner is ever consulted,
+	// so the generic (HomeSystemOnly==false) path below is completely untouched/byte-identical.
+	if cmd.HomeSystemOnly {
+		return h.pickPinned(ctx, cmd, group, homeSystem, currentSystem, hold, freeSpace, ceiling)
+	}
+
 	rows, err := h.demandMiner.Mine(ctx, homeSystem, cmd.PlayerID, nil, persistence.DemandMinerOptions{
 		MinRecurrence: h.config.MinRecurrence, TopN: stockerMinerTopN, BuyLegSavingsPerUnit: h.config.BuyLegSavingsPerUnit,
 		// sp-k2xav / RULINGS #14: the contract depot sources INTRA-system only — confine each
@@ -806,6 +820,143 @@ func (h *RunStockerCoordinatorHandler) pick(
 		"value": bestValue, "haul_units": best.Units, "ceiling": ceiling, "free_space": freeSpace,
 	})
 	return best, true
+}
+
+// pickPinned is the PINNED-depot path (cmd.HomeSystemOnly, RULINGS #14): it buffers a
+// FIXED, analyst-defined good set (contractscaler.FarSourceGoods) up to a flat per-good
+// target, sourced DIRECTLY from the cheapest HOME-system market for each good — it never
+// consults the demand miner and never gates on a savings-vs-anchor margin (sp-rh1wi). The
+// demand miner's cross-system ranking is opportunistic-arbitrage logic that does not apply
+// to a deliberately-pinned buffer: the depot's job is to hold FarSourceGoods ready for a
+// contract-delivery hull to draw down, not to chase the best margin. Every money guard
+// (ceiling, freeSpace, hold — all computed by the shared prefix in pick(), plus the
+// reserve floor re-checked live at buy()) still binds identically (RULINGS #4); only the
+// SELECTION and SAVINGS-GATE are bypassed.
+//
+// Freshness (the 75-min discipline foreignMarketFresh enforces for the generic path) is
+// deliberately NOT applied here: a pinned good has exactly ONE home-market candidate (the
+// cheapest home seller), unlike the miner's ranked list of alternatives, so filtering it
+// out on staleness would starve the good FOREVER — the cache never refreshes because the
+// hull is never dispatched to observe it. The dock-time live-ask ceiling (buy()'s sp-9mkf
+// verify, unchanged) remains the real safety net: a stale cached price can at worst abort
+// the buy at the dock, never cause an overspend. Narrow, documented relaxation.
+//
+// Ranks candidates by unitsShort (most-depleted-by-quantity) since there is no
+// savings/anchor concept on this path (explicitly not computed, RULINGS #6/#9).
+func (h *RunStockerCoordinatorHandler) pickPinned(
+	ctx context.Context,
+	cmd *RunStockerCoordinatorCommand,
+	group []*storage.StorageOperation,
+	homeSystem, currentSystem string,
+	hold, freeSpace int,
+	ceiling int64,
+) (stockerPick, bool) {
+	logger := common.LoggerFromContext(ctx)
+
+	target := contractscaler.DepotUnitsPerGood
+	if cmd.TargetPerGood > 0 {
+		target = cmd.TargetPerGood
+	}
+	refillFloor := cmd.RefillHysteresis
+	if refillFloor < 1 {
+		refillFloor = 1
+	}
+
+	goods := pinnedSupportedGoods(group)
+
+	var best stockerPick
+	bestShort := 0
+	considered, unreachable := 0, 0
+
+	for _, good := range goods {
+		// Net the target against AGGREGATE on-hand across the group (sp-5q2c) so a
+		// sibling warehouse's stock is never invisible.
+		unitsShort := target - tradingsvc.TotalCargoAvailable(h.storageCoordinator, group, good)
+		if unitsShort < refillFloor {
+			continue // at/over target, or within the hysteresis band
+		}
+		considered++
+
+		cheapest, err := h.marketRepo.FindCheapestMarketSelling(ctx, good, homeSystem, cmd.PlayerID)
+		if err != nil || cheapest == nil || cheapest.SellPrice <= 0 {
+			continue // no home-system seller found this pass - retry next pass (RULINGS #2)
+		}
+
+		// Reachability (sp-yuq9): same graph/bound travel() itself enforces. Same-system
+		// is trivially true for a genuinely home-scoped result; kept for parity/safety.
+		if !h.foreignMarketReachable(ctx, currentSystem, cheapest.WaypointSymbol, cmd.PlayerID) {
+			unreachable++
+			continue
+		}
+
+		units := min(unitsShort, hold)
+		units = min(units, freeSpace)
+		units = min(units, int(ceiling/int64(cheapest.SellPrice)))
+		if cmd.BudgetPerLeg > 0 {
+			units = min(units, cmd.BudgetPerLeg/cheapest.SellPrice)
+		}
+		if units <= 0 {
+			continue // ceiling/budget/space exhausted for this good
+		}
+
+		if unitsShort > bestShort {
+			bestShort = unitsShort
+			best = stockerPick{
+				Good:          good,
+				ForeignMarket: cheapest.WaypointSymbol,
+				ForeignAsk:    cheapest.SellPrice,
+				UnitsShort:    unitsShort,
+				Units:         units,
+			}
+		}
+	}
+
+	if bestShort <= 0 {
+		if unreachable > 0 {
+			h.recordNoReachableSource(ctx, cmd.ShipSymbol, unreachable, considered)
+		} else {
+			h.clearNoReachableSource(cmd.ShipSymbol)
+		}
+		logger.Log("INFO", fmt.Sprintf(
+			"Stocker verdict (pinned): nothing to stock — [warehouse=%s(group %d) free=%d ceiling=%d funnel: supported_goods=%d considered=%d unreachable=%d] (at target / unreachable / unaffordable / no home seller)",
+			cmd.WarehouseWaypoint, len(group), freeSpace, ceiling, len(goods), considered, unreachable), map[string]interface{}{
+			"ship_symbol": cmd.ShipSymbol, "warehouse_waypoint": cmd.WarehouseWaypoint, "group_size": len(group), "free_space": freeSpace,
+			"ceiling": ceiling, "supported_goods": len(goods), "considered": considered, "unreachable": unreachable,
+		})
+		return stockerPick{}, false
+	}
+
+	h.clearNoReachableSource(cmd.ShipSymbol)
+	logger.Log("INFO", fmt.Sprintf(
+		"stocking %s (pinned): %du short, buy@%s %d/u, hauling %du (ceiling %d, free %d)",
+		best.Good, best.UnitsShort, best.ForeignMarket, best.ForeignAsk, best.Units, ceiling, freeSpace), map[string]interface{}{
+		"ship_symbol": cmd.ShipSymbol, "good": best.Good, "units_short": best.UnitsShort,
+		"foreign_market": best.ForeignMarket, "foreign_ask": best.ForeignAsk,
+		"haul_units": best.Units, "ceiling": ceiling, "free_space": freeSpace,
+	})
+	return best, true
+}
+
+// pinnedSupportedGoods returns the union of every co-located warehouse member's OWN
+// declared supported_goods — the pinned depot's candidate list comes DIRECTLY from the
+// warehouse's own analyst-defined configuration (in production, exactly
+// contractscaler.FarSourceGoods, since that is what seeds the depot warehouse's
+// supported_goods at creation), never from a stocker-side constant re-derivation. This
+// mirrors the generic path's own AnySupportsGood filter (a good no member supports would
+// strand; no contract worker could withdraw it) and keeps the pinned path correct for any
+// HomeSystemOnly warehouse, not hardcoded to one specific whitelist.
+func pinnedSupportedGoods(group []*storage.StorageOperation) []string {
+	seen := map[string]bool{}
+	var goods []string
+	for _, op := range group {
+		for _, good := range op.SupportedGoods() {
+			if !seen[good] {
+				seen[good] = true
+				goods = append(goods, good)
+			}
+		}
+	}
+	return goods
 }
 
 // buy travels to the picked foreign market (multi-jump, jump-safe), docks, re-checks the
