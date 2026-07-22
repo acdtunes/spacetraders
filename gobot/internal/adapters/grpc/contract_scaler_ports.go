@@ -129,10 +129,16 @@ func (r *contractScalerRoleResolver) tradeRoles(ctx context.Context, waypointSym
 
 // --- concrete home-system reader (over the ship repo, mirroring the bootstrap observer) ---
 
-// contractScalerShipHomeReader resolves the home system from the player's hull locations: the command
-// frigate's system anchors it (the retire target / home anchor), falling back to the lexicographically
-// smallest ship system for determinism when no command frigate is present. Mirrors the bootstrap
-// observer's commandHome/anyHome idiom.
+// contractScalerShipHomeReader resolves the home system from the player's hull locations by ANCHOR
+// PRIORITY (sp-cfvgj): (1) the contract fleet's own FOOTPRINT — the base where the "contract"-dedicated
+// hulls sit — wins whenever any contract hull exists (degree 1+); (2) the command frigate's system
+// anchors ONLY when no contract hull exists yet (degree-0 cold-start, where the frigate IS the sole
+// contract hauler); (3) the lexicographically smallest ship system is the final determinism fallback.
+// Priority 1 exists because post-degree-0 the command frigate is RETIRED from contracts and becomes the
+// reserved PURCHASE ship that WANDERS to shipyards — anchoring on it flips home to the wrong system. The
+// footprint is the MODAL contract system (the base where MOST contract hulls sit), so a single hull
+// transiting away on a delivery never flips home. readable=false (no resolvable hull location) makes the
+// scaler no-op (an empty era) rather than guess.
 type contractScalerShipHomeReader struct{ shipRepo navigation.ShipRepository }
 
 func (r *contractScalerShipHomeReader) HomeSystem(ctx context.Context, playerID int) (string, bool, error) {
@@ -144,6 +150,7 @@ func (r *contractScalerShipHomeReader) HomeSystem(ctx context.Context, playerID 
 	if err != nil {
 		return "", false, err
 	}
+	contractSystems := map[string]int{} // contract-fleet footprint: system → count of "contract" hulls there
 	commandHome, anyHome := "", ""
 	for _, ship := range ships {
 		location := ship.CurrentLocation()
@@ -160,14 +167,38 @@ func (r *contractScalerShipHomeReader) HomeSystem(ctx context.Context, playerID 
 		if ship.Role() == commandRole {
 			commandHome = system
 		}
+		if ship.DedicatedFleet() == contractFleetTag {
+			contractSystems[system]++
+		}
 	}
+	// Priority 1: the contract fleet's own footprint (degree 1+) — the base most contract hulls sit in.
+	if footprint := mostCommonSystem(contractSystems); footprint != "" {
+		return footprint, true, nil
+	}
+	// Priority 2: the command frigate (degree-0 cold-start — it is the sole contract hauler).
 	if commandHome != "" {
 		return commandHome, true, nil
 	}
+	// Priority 3: any-hull lexicographically-smallest (final determinism fallback).
 	if anyHome != "" {
 		return anyHome, true, nil
 	}
 	return "", false, nil
+}
+
+// mostCommonSystem returns the system with the highest count, ties broken lexicographically smallest, or
+// "" when counts is empty. Choosing the MODAL system (not a first-seen or extremal one) is what makes the
+// contract-footprint anchor robust to a single hull transiting away on a delivery: the base where the
+// fleet actually sits wins over a transient far outlier. Deterministic regardless of map-iteration order —
+// a strictly greater count always replaces, and among equal counts the smaller system always replaces.
+func mostCommonSystem(counts map[string]int) string {
+	best, bestCount := "", 0
+	for system, count := range counts {
+		if count > bestCount || (count == bestCount && system < best) {
+			best, bestCount = system, count
+		}
+	}
+	return best
 }
 
 // --- handler assembly: wire the coordinator's ports to the daemon collaborators ---

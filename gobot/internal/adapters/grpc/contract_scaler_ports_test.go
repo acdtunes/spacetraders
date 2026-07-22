@@ -170,6 +170,132 @@ func TestRoleResolver_UnreadableHomeSystemYieldsEmptyEra(t *testing.T) {
 	}
 }
 
+// --- home-system anchor (sp-cfvgj): the once-at-arm home resolves by ANCHOR PRIORITY, not the mobile
+// command frigate. Post-degree-0 the frigate is RETIRED from contracts and becomes the reserved PURCHASE
+// ship that WANDERS to shipyards, so it must NOT anchor the contract home — the contract fleet's own
+// footprint (the base where the "contract"-dedicated hulls sit) does. ---
+
+// homeReaderShip builds an owned hull at a given location waypoint with a given registration role and
+// dedicated-fleet tag — the three axes HomeSystem anchors on: the system (ExtractSystemSymbol(location)),
+// the COMMAND role, and the "contract" dedication. Cargo/fuel/nav are fixed placeholders that don't
+// affect the anchor. Mirrors reclaimHull's NewShip idiom with the role + location made variable.
+func homeReaderShip(t *testing.T, symbol, locationWaypoint, role, dedicatedFleet string) *navigation.Ship {
+	t.Helper()
+	cargo, err := shared.NewCargo(40, 0, nil)
+	require.NoError(t, err)
+	fuel, err := shared.NewFuel(100, 100)
+	require.NoError(t, err)
+	loc, err := shared.NewWaypoint(locationWaypoint, 0, 0)
+	require.NoError(t, err)
+	ship, err := navigation.NewShip(
+		symbol, shared.MustNewPlayerID(1), loc, fuel, 100, 40, cargo, 30,
+		"FRAME_LIGHT_FREIGHTER", role, nil, navigation.NavStatusInOrbit,
+	)
+	require.NoError(t, err)
+	if dedicatedFleet != "" {
+		ship.SetDedicatedFleet(dedicatedFleet)
+	}
+	return ship
+}
+
+// TestContractScalerShipHomeReader_AnchorsOnContractFootprintNotCommandFrigate proves the anchor
+// priority: (1) the "contract"-fleet footprint wins whenever any contract hull exists — even against
+// the command frigate, which post-degree-0 is the wandering PURCHASE ship; (2) the command frigate
+// anchors only at degree-0 cold-start (no contract hull yet); (3) any-hull lexicographically-smallest is
+// the final determinism fallback. The footprint is the MODAL contract system (base majority), so a single
+// hull mid-delivery in a far system never flips home. The (string, bool, error) fail-safe is unchanged.
+func TestContractScalerShipHomeReader_AnchorsOnContractFootprintNotCommandFrigate(t *testing.T) {
+	cases := []struct {
+		name     string
+		ships    []*navigation.Ship
+		wantHome string
+		wantOK   bool
+	}{
+		{
+			// THE REGRESSION (sp-cfvgj): post-degree-0 the command frigate is the mobile PURCHASE ship,
+			// parked at a far shipyard. The contract fleet's own footprint must anchor home, NOT the frigate.
+			name: "contract footprint beats the wandering command frigate",
+			ships: []*navigation.Ship{
+				homeReaderShip(t, "PURCHASE", "X1-CD11-A1", commandRole, ""),             // frigate at a far shipyard
+				homeReaderShip(t, "CONTRACT-1", "X1-UM5-B2", "HAULER", contractFleetTag), // the contract base
+			},
+			wantHome: "X1-UM5",
+			wantOK:   true,
+		},
+		{
+			// DEGREE 0 (cold-start): the frigate IS the sole contract hauler; no "contract"-dedicated hull
+			// exists yet, so its system is the home (cold-start behaviour unchanged).
+			name: "no contract hull yet → the command frigate anchors (degree-0 cold-start)",
+			ships: []*navigation.Ship{
+				homeReaderShip(t, "FRIGATE", "X1-CD11-A1", commandRole, ""),
+			},
+			wantHome: "X1-CD11",
+			wantOK:   true,
+		},
+		{
+			// ROBUSTNESS: a single contract hull transiting away on a delivery must NOT flip home. The MODAL
+			// contract system (where most contract hulls sit) wins over the far outlier — even though the
+			// outlier "X1-AA10" is lexicographically smaller than the base "X1-UM5".
+			name: "modal contract base beats a single transiting outlier",
+			ships: []*navigation.Ship{
+				homeReaderShip(t, "CONTRACT-1", "X1-UM5-B2", "HAULER", contractFleetTag),
+				homeReaderShip(t, "CONTRACT-2", "X1-UM5-C3", "HAULER", contractFleetTag),
+				homeReaderShip(t, "CONTRACT-3", "X1-AA10-Z9", "HAULER", contractFleetTag), // mid-delivery, far, lexicographically smaller
+			},
+			wantHome: "X1-UM5",
+			wantOK:   true,
+		},
+		{
+			// TIE-BREAK: equal contract counts across two systems → lexicographically smallest, and a
+			// lexicographically-smaller NON-contract system is ignored (the footprint is contract-only).
+			name: "tie among contract systems → lexicographically smallest, ignoring a smaller non-contract system",
+			ships: []*navigation.Ship{
+				homeReaderShip(t, "IDLE", "X1-AA00-Q1", "HAULER", ""), // smallest overall, but non-contract → ignored
+				homeReaderShip(t, "CONTRACT-1", "X1-CC22-B2", "HAULER", contractFleetTag),
+				homeReaderShip(t, "CONTRACT-2", "X1-BB11-C3", "HAULER", contractFleetTag),
+			},
+			wantHome: "X1-BB11",
+			wantOK:   true,
+		},
+		{
+			// FALLBACK (P3 preserved): no contract hull, no command frigate → any-hull lexicographically
+			// smallest (the unchanged final determinism tier on the modified path).
+			name: "no contract hull, no command frigate → any-hull lexicographically smallest",
+			ships: []*navigation.Ship{
+				homeReaderShip(t, "IDLE-1", "X1-ZZ99-A1", "HAULER", ""),
+				homeReaderShip(t, "IDLE-2", "X1-MM55-B2", "HAULER", ""),
+			},
+			wantHome: "X1-MM55",
+			wantOK:   true,
+		},
+		{
+			// FAIL-SAFE unchanged: no resolvable hull location → ("", false, nil), the empty-era no-op.
+			name:     "no ships → unreadable home",
+			ships:    nil,
+			wantHome: "",
+			wantOK:   false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reader := &contractScalerShipHomeReader{shipRepo: &fakeReclaimShipRepo{all: tc.ships}}
+			home, ok, err := reader.HomeSystem(context.Background(), 1)
+			require.NoError(t, err)
+			require.Equal(t, tc.wantOK, ok, "readable flag")
+			require.Equal(t, tc.wantHome, home, "resolved home system")
+		})
+	}
+}
+
+// TestContractScalerShipHomeReader_FleetReadErrorFailsClosed proves a fleet-read failure surfaces as an
+// error (the resolver never guesses a home from a partial/unknown fleet).
+func TestContractScalerShipHomeReader_FleetReadErrorFailsClosed(t *testing.T) {
+	reader := &contractScalerShipHomeReader{shipRepo: &fakeReclaimShipRepo{findErr: errors.New("db down")}}
+	_, ok, err := reader.HomeSystem(context.Background(), 1)
+	require.Error(t, err, "a fleet-read failure must surface, not resolve a home")
+	require.False(t, ok)
+}
+
 // --- Purchaser composition: buy+dedicate (kept primitive) then home demand-ranked ---
 
 type fakeContractBuyer struct {
