@@ -1350,3 +1350,82 @@ func TestStocker_TagsBuyWritesAsContractOperationType(t *testing.T) {
 		}
 	}
 }
+
+// ---- intra-system sourcing: the contract depot buys HOME-system only (sp-k2xav, RULINGS #14) ----
+
+// stkHomeVsForeignMiner builds a REAL miner over a world where a good is sold BOTH at a cheaper
+// FOREIGN market and (pricier) at a HOME-system market — the exact shape that let the depot
+// stocker fly cross-system. HomeSystemOnly must confine the source to the home market.
+func stkHomeVsForeignMiner() *persistence.DemandMiner {
+	now := time.Date(2026, 7, 22, 0, 0, 0, 0, time.UTC)
+	return persistence.NewDemandMinerWithSources(
+		&stkFakeContractDemand{rows: []persistence.ContractGoodDemand{
+			{Good: "MEDICINE", ContractCount: 3, UnitsRequired: 40, FirstSeen: now.Add(-48 * time.Hour), LastSeen: now},
+		}},
+		&stkFakeMarketAsks{
+			// cheapest-first across ALL systems: the foreign X1-FOREIGN-M @2000 undercuts the home X1-S1-M @2500.
+			cross: map[string][]market.CheapestMarketResult{
+				"MEDICINE": {{WaypointSymbol: "X1-FOREIGN-M", SellPrice: 2000}, {WaypointSymbol: "X1-S1-M", SellPrice: 2500}},
+			},
+			home: map[string]*market.CheapestMarketResult{
+				"MEDICINE": {WaypointSymbol: "X1-S1-M", SellPrice: 2500},
+			},
+		},
+	)
+}
+
+// The depot stocker in HomeSystemOnly mode, with a CHEAPER foreign source and a viable home-system
+// source, must pick the HOME-system market — this is the sp-k2xav headline: sourcing is confined to
+// the warehouse's own system, never cross-gated (RULINGS #14). Driven through the REAL miner so the
+// command→miner threading is exercised end to end.
+func TestStocker_Pick_HomeSystemOnly_SelectsHomeSourceNotForeign(t *testing.T) {
+	fx := &stkFixture{cargo: map[string]int{}, location: "X1-S1-H", cargoCap: 100,
+		ask: map[string]map[string]int{
+			"X1-S1-M":      {"MEDICINE": 2500}, // the home-system source (fresh)
+			"X1-FOREIGN-M": {"MEDICINE": 2000}, // the cheaper foreign source — must NOT be chosen
+		},
+		marketAge: map[string]time.Duration{}}
+	coord, op := stkWireWarehouse(t, "wh", "X1-S1-H", 5000, []string{"MEDICINE"})
+	h := newStockerHandler(t, fx, coord, op, stkHomeVsForeignMiner(), &sfFakeAPIClient{credits: 100000000},
+		tradingsvc.DepositCandidateConfig{BuyLegSavingsPerUnit: 50}, 10)
+
+	ctx := auth.WithPlayerToken(context.Background(), "TOK")
+	pick, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H", HomeSystemOnly: true},
+		[]*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), maxListingAge)
+	if !ok {
+		t.Fatalf("expected a home-system pick")
+	}
+	if pick.ForeignMarket != "X1-S1-M" {
+		t.Fatalf("HomeSystemOnly must source the home-system market X1-S1-M, got %s (cross-system sourcing is the sp-k2xav bug)", pick.ForeignMarket)
+	}
+	if pick.Good != "MEDICINE" || pick.ForeignAsk != 2500 {
+		t.Fatalf("expected MEDICINE sourced at the home ask 2500, got %s @ %d", pick.Good, pick.ForeignAsk)
+	}
+}
+
+// The GENERIC (default, non-home-only) stocker is UNCHANGED: with the same world it still sources
+// the CHEAPEST market anywhere — the foreign X1-FOREIGN-M — so the intra-system constraint is gated
+// to the depot stocker and no other caller's cross-system trade economics are broken.
+func TestStocker_Pick_Default_StillSourcesCheaperForeign(t *testing.T) {
+	fx := &stkFixture{cargo: map[string]int{}, location: "X1-S1-H", cargoCap: 100,
+		ask: map[string]map[string]int{
+			"X1-S1-M":      {"MEDICINE": 2500},
+			"X1-FOREIGN-M": {"MEDICINE": 2000}, // the cheaper foreign source — chosen by the generic stocker
+		},
+		marketAge: map[string]time.Duration{}}
+	coord, op := stkWireWarehouse(t, "wh", "X1-S1-H", 5000, []string{"MEDICINE"})
+	h := newStockerHandler(t, fx, coord, op, stkHomeVsForeignMiner(), &sfFakeAPIClient{credits: 100000000},
+		tradingsvc.DepositCandidateConfig{BuyLegSavingsPerUnit: 50}, 10)
+	// The foreign source sits in another system; the generic path cross-gates, so wire the route.
+	h.SetGateGraph(&fakeHopGraph{hops: map[string]int{"X1-S1->X1-FOREIGN": 2}})
+
+	ctx := auth.WithPlayerToken(context.Background(), "TOK")
+	pick, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, // HomeSystemOnly false (default)
+		[]*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), maxListingAge)
+	if !ok {
+		t.Fatalf("expected the generic stocker to pick the cheapest source")
+	}
+	if pick.ForeignMarket != "X1-FOREIGN-M" {
+		t.Fatalf("the generic (non-home-only) stocker must still source the cheapest foreign X1-FOREIGN-M, got %s", pick.ForeignMarket)
+	}
+}

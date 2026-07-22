@@ -93,6 +93,14 @@ type DemandMinerOptions struct {
 	// RankByContractReward so a high-reward/low-savings good is not culled before the reward
 	// knapsack.
 	RankBy CandidateRankMode
+	// HomeSystemOnly confines each good's SOURCE market to the home system (bead sp-k2xav,
+	// RULINGS #14): the contract-depot stocker is home-system-scoped, so it buys the fixed
+	// far-source goods from the home system's OWN export/exchange waypoints, never across a gate.
+	// false (the zero value) keeps the trade-engine default — the cheapest source ANYWHERE (home
+	// OR foreign) — byte-identical for every existing caller (source warehouse, tour deposit sink,
+	// CLI, generic stocker). true drops a good the home system does not sell (no intra-system
+	// source ⇒ fail closed, never a foreign fallback).
+	HomeSystemOnly bool
 }
 
 // DemandCandidate is one ranked pre-positioning row: a recurrently-contracted good
@@ -221,12 +229,13 @@ func (m *DemandMiner) Mine(ctx context.Context, homeSystem string, playerID int,
 			continue
 		}
 
-		source, err := m.cheapestSourceMarket(ctx, d.Good, playerID)
+		source, err := m.resolveSourceMarket(ctx, d.Good, homeSystem, playerID, opts.HomeSystemOnly)
 		if err != nil {
 			return nil, err
 		}
 		if source == nil {
-			continue // no market sells it anywhere => nothing to source => drop (fail closed)
+			continue // no eligible source => drop (fail closed): no market anywhere (default), or —
+			// under HomeSystemOnly — no HOME-system market, which never falls back to a foreign one
 		}
 
 		c := DemandCandidate{
@@ -318,6 +327,24 @@ func lessByContractReward(a, b DemandCandidate) bool {
 		return a.ContractCount > b.ContractCount // then by recurrence desc
 	}
 	return a.Good < b.Good // stable tiebreak
+}
+
+// resolveSourceMarket picks the market the good is BOUGHT from. Default (homeSystemOnly=false):
+// the cheapest market ANYWHERE (home OR foreign) — the trade engine's cross-system sourcing,
+// byte-identical for every existing caller. INTRA-SYSTEM mode (homeSystemOnly=true — the contract
+// depot, bead sp-k2xav / RULINGS #14): the cheapest HOME-SYSTEM market ONLY, reusing the same
+// FindCheapestMarketSelling(homeSystem) lookup the home ask comes from. A good the home system does
+// not sell returns nil → the candidate is DROPPED (fail closed, RULINGS #4): the depot never
+// cross-gates to a cheaper foreign market, it stocks only what the home system itself exports.
+func (m *DemandMiner) resolveSourceMarket(ctx context.Context, good, homeSystem string, playerID int, homeSystemOnly bool) (*market.CheapestMarketResult, error) {
+	if homeSystemOnly {
+		home, err := m.markets.FindCheapestMarketSelling(ctx, good, homeSystem, playerID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to find home-system source for %s: %w", good, err)
+		}
+		return home, nil // nil => home system does not sell it => no intra-system source => drop
+	}
+	return m.cheapestSourceMarket(ctx, good, playerID)
 }
 
 // cheapestSourceMarket returns the cheapest market selling good ANYWHERE — home system OR

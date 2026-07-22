@@ -65,6 +65,7 @@ func (s *DaemonServer) StartStocker(
 	standing bool,
 	tickSeconds int,
 	refillHysteresis int,
+	homeSystemOnly bool,
 	agentSymbol string,
 	playerID int,
 ) (*StockerOperationResult, error) {
@@ -105,6 +106,10 @@ func (s *DaemonServer) StartStocker(
 		"standing":          standing,
 		"tick_seconds":      tickSeconds,
 		"refill_hysteresis": refillHysteresis,
+		// sp-k2xav / RULINGS #14: the contract depot's INTRA-system sourcing intent is PERSISTED
+		// so a daemon restart re-adopts the stocker home-system-scoped (RULINGS #2) — the recovery
+		// rebuild (buildStockerCoordinatorCommand) reads it back. A generic launch persists false.
+		"home_system_only": homeSystemOnly,
 		// The runner claims the hull through the atomic operation-checked
 		// ClaimShip when this key is present (sp-m92a, mirroring the warehouse):
 		// operation="stocker" matches the hull's "stocker" DedicatedFleet tag, so

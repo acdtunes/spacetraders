@@ -1236,5 +1236,9 @@ func buildStockerCoordinatorCommand(cfg *configReader, playerID int, containerID
 		Standing:         cfg.OptionalBool("standing"),
 		TickSeconds:      cfg.OptionalInt("tick_seconds", 0),
 		RefillHysteresis: cfg.OptionalInt("refill_hysteresis", 0),
+		// sp-k2xav / RULINGS #14: re-adopt the contract depot's INTRA-system sourcing across a
+		// restart. Absent (every generic/pre-existing stocker container) => false => cross-system,
+		// byte-identical.
+		HomeSystemOnly: cfg.OptionalBool("home_system_only"),
 	}
 }

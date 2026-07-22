@@ -73,7 +73,8 @@ const (
 // live treasury), the per-leg budget, and the working-capital reserve (#4); the hull is
 // dedicated/claimed by the container runner (#7); the whole lifecycle is resumable — a
 // hull that restarts laden deposits before buying more (#2); every knob is a flag/config
-// (#5). #14 does not bind — the trade engine crosses systems by design.
+// (#5). #14: the GENERIC stocker crosses systems by design (does not bind); the CONTRACT DEPOT
+// sets HomeSystemOnly (sp-k2xav) to confine sourcing to the home system, under which #14 DOES bind.
 type RunStockerCoordinatorCommand struct {
 	ShipSymbol        string
 	WarehouseWaypoint string // the home warehouse waypoint to deposit into (its system is the demand anchor)
@@ -116,6 +117,14 @@ type RunStockerCoordinatorCommand struct {
 	// (RULINGS #5). 0 → the default 1 (re-stage on any shortfall, the historical behavior);
 	// a positive value raises the re-stage threshold. Applied to the need-rank in pick().
 	RefillHysteresis int
+	// HomeSystemOnly confines source-market selection to the WAREHOUSE's OWN system (bead
+	// sp-k2xav, RULINGS #14): the contract-depot stocker sources the fixed far-source goods from
+	// the home system's own export/exchange waypoints ONLY, NEVER cross-gating to a cheaper
+	// foreign market. Set by launchDepotStocker for the contract depot; false (the default) leaves
+	// the GENERIC stocker's cross-system economics unchanged. Threaded into the demand miner's
+	// DemandMinerOptions.HomeSystemOnly in pick(). Persisted in the launch config so it survives
+	// recovery (RULINGS #2).
+	HomeSystemOnly bool
 }
 
 // RunStockerCoordinatorResponse reports the realised stocking economics and — via
@@ -639,6 +648,10 @@ func (h *RunStockerCoordinatorHandler) pick(
 	homeSystem := shared.ExtractSystemSymbol(cmd.WarehouseWaypoint)
 	rows, err := h.demandMiner.Mine(ctx, homeSystem, cmd.PlayerID, nil, persistence.DemandMinerOptions{
 		MinRecurrence: h.config.MinRecurrence, TopN: stockerMinerTopN, BuyLegSavingsPerUnit: h.config.BuyLegSavingsPerUnit,
+		// sp-k2xav / RULINGS #14: the contract depot sources INTRA-system only — confine each
+		// good's source market to homeSystem so a cheaper foreign market is never picked. The
+		// generic stocker leaves this false (cross-system, unchanged).
+		HomeSystemOnly: cmd.HomeSystemOnly,
 	})
 	if err != nil {
 		logger.Log("WARNING", "Stocker: demand mining failed - nothing to stock this pass: "+err.Error(), map[string]interface{}{

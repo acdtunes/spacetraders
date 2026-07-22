@@ -425,3 +425,60 @@ func TestDemandMiner_DefaultRankBySavings_Unchanged_KeepsHighSavingsUnderTopNCul
 	require.Equal(t, "POLYNUCLEOTIDES", got[0].Good,
 		"the default (stocker) ranking is UNCHANGED: it keeps the high-savings good under the TopN cull")
 }
+
+// TestDemandMiner_HomeSystemOnly_SourcesHomeNotCheaperForeign pins the contract-depot
+// intra-system constraint (bead sp-k2xav, RULINGS #14). Same fixture shape as
+// TestDemandMiner_ForeignStillPreferredWhenCheaper — a foreign source @40 undercuts the home
+// export @90 — but with HomeSystemOnly set the miner must source the HOME-system market ONLY,
+// never the cheaper foreign one. The depot op is home-system-scoped; the fixed far-source goods
+// are bought from the home system's own export waypoints, not hauled across a gate.
+func TestDemandMiner_HomeSystemOnly_SourcesHomeNotCheaperForeign(t *testing.T) {
+	now := time.Date(2026, 7, 22, 0, 0, 0, 0, time.UTC)
+	src := &fakeDemandSource{rows: []ContractGoodDemand{demand("IRON_ORE", 3, 200, now.Add(-24*time.Hour), now)}}
+	markets := &fakeMarketAsks{
+		crossByGood: map[string][]market.CheapestMarketResult{
+			// cheapest-first: a FOREIGN source @40 undercuts the home export @90.
+			"IRON_ORE": {{WaypointSymbol: "X1-FOREIGN-B1", SellPrice: 40}, {WaypointSymbol: "X1-VB74-A9", SellPrice: 90}},
+		},
+		homeByGood: map[string]*market.CheapestMarketResult{
+			"IRON_ORE": {WaypointSymbol: "X1-VB74-A9", SellPrice: 90},
+		},
+	}
+	miner := &DemandMiner{demand: src, markets: markets}
+
+	got, err := miner.Mine(context.Background(), "X1-VB74", 7, nil,
+		DemandMinerOptions{MinRecurrence: 2, BuyLegSavingsPerUnit: 10, HomeSystemOnly: true})
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+
+	iron := got[0]
+	require.Equal(t, "X1-VB74-A9", iron.ForeignMarket,
+		"HomeSystemOnly must source the HOME-system export, NOT the cheaper foreign X1-FOREIGN-B1")
+	require.Equal(t, "X1-VB74", iron.ForeignSystem, "the source must be in the home system")
+	require.Equal(t, 90, iron.ForeignAsk, "the source ask is the home ask, not the cheaper foreign 40")
+	require.True(t, iron.StockEligible, "an in-system-sourceable good stays stock-eligible via the buy-leg")
+}
+
+// TestDemandMiner_HomeSystemOnly_NoHomeMarket_DropsCandidate is the fail-closed half (RULINGS
+// #14/#4): when the home system does NOT sell the good, HomeSystemOnly has NO intra-system source,
+// so the candidate is DROPPED — never sourced across a gate from the foreign market that does sell
+// it. (In the DEFAULT mode the same foreign source would be picked; TestDemandMiner_ForeignStillPreferredWhenCheaper
+// pins that path.)
+func TestDemandMiner_HomeSystemOnly_NoHomeMarket_DropsCandidate(t *testing.T) {
+	now := time.Date(2026, 7, 22, 0, 0, 0, 0, time.UTC)
+	src := &fakeDemandSource{rows: []ContractGoodDemand{demand("DRUGS", 3, 120, now.Add(-24*time.Hour), now)}}
+	markets := &fakeMarketAsks{
+		// A FOREIGN market sells DRUGS, but the home system does not (homeByGood has no entry → nil).
+		crossByGood: map[string][]market.CheapestMarketResult{
+			"DRUGS": {{WaypointSymbol: "X1-FOREIGN-D1", SellPrice: 200}},
+		},
+		homeByGood: map[string]*market.CheapestMarketResult{},
+	}
+	miner := &DemandMiner{demand: src, markets: markets}
+
+	got, err := miner.Mine(context.Background(), "X1-VB74", 7, nil,
+		DemandMinerOptions{MinRecurrence: 2, HomeSystemOnly: true})
+	require.NoError(t, err)
+	require.Empty(t, got,
+		"HomeSystemOnly with no home-system source must DROP the good (fail closed), never cross-gate to the foreign market")
+}

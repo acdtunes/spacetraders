@@ -1575,7 +1575,10 @@ func (s *daemonServiceImpl) StartStocker(ctx context.Context, req *pb.StartStock
 		agentSymbol = *req.AgentSymbol
 	}
 
-	result, err := s.daemon.StartStocker(ctx, req.ShipSymbol, req.WarehouseWaypoint, budgetPerLeg, workingCapitalReserve, iterations, maxMarketAgeMinutes, targetPerGood, standing, tickSeconds, refillHysteresis, agentSymbol, playerID)
+	// homeSystemOnly=false: the CLI `workflow stocker` launches the GENERIC cross-system stocker,
+	// unchanged. The intra-system constraint (sp-k2xav, RULINGS #14) is set only by launchDepotStocker
+	// for the contract depot — no proto/CLI surface, so this manual path keeps its cross-system economics.
+	result, err := s.daemon.StartStocker(ctx, req.ShipSymbol, req.WarehouseWaypoint, budgetPerLeg, workingCapitalReserve, iterations, maxMarketAgeMinutes, targetPerGood, standing, tickSeconds, refillHysteresis, false, agentSymbol, playerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start stocker: %w", err)
 	}

@@ -577,6 +577,7 @@ func (s *DaemonServer) launchDepotStocker(ctx context.Context, shipSymbol, wareh
 		true, // standing: re-stage on drain, survive restart
 		0,    // tickSeconds → 30s default
 		0,    // refillHysteresis → default
+		true, // homeSystemOnly: the contract depot sources INTRA-system only (sp-k2xav, RULINGS #14) — buy the fixed far-source goods from the home system's own export waypoints, never cross-gate
 		"",   // agentSymbol resolved by the coordinator
 		playerID,
 	)
