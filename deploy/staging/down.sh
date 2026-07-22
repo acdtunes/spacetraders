@@ -26,6 +26,18 @@ staging_env_banner
 #     derived); the marker is the staging-suffixed binary name, which cannot
 #     match the prod daemon ('...-daemon' vs '...-daemon-staging'). ------------
 staging_stop_if_ours "$STAGING_PID" "spacetraders-daemon-staging" "daemon"
+# Fallback: a --force restart can leave the daemon without its self-written pidfile
+# (the config pid_file is removed during the reap handoff), so the stop above finds no
+# pidfile and the daemon orphans. Sweep any survivor by its staging-unique binary name —
+# env.sh asserts STAGING_DAEMON_BIN is '-staging'-suffixed, which can never match the prod
+# 'spacetraders-daemon', so this only ever reaches staging.
+if pgrep -f 'spacetraders-daemon-staging' >/dev/null 2>&1; then
+  echo "[down] sweeping orphaned staging daemon (spacetraders-daemon-staging)..."
+  # TERM then KILL (the daemon drains ~30s on SIGTERM), matching staging_stop_if_ours.
+  pkill -f 'spacetraders-daemon-staging' 2>/dev/null || true
+  sleep 1
+  pkill -9 -f 'spacetraders-daemon-staging' 2>/dev/null || true
+fi
 
 # --- Stop the staging routing service. Kill the tracked run.sh parent, then
 #     sweep any orphaned python child by the STAGING port (:50053, which can
