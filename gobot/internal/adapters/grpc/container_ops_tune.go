@@ -155,8 +155,7 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 			"scout_relay_max_hops":             {Type: "int", Min: 1, Max: 12, Default: scoutPost["scout_relay_max_hops"], Unit: "hops", Description: "sp-u8jc max gate-hops the cross-system reuse relay may move a surplus probe (probes are fuel_cap=0 gate-users, so reach is a router bound, not physical). Inert while scout_cross_system_relay_enabled=0"},
 		},
 		string(container.ContainerTypeContractFleetCoordinator): {
-			"min_home_contract_workers":        {Type: "int", Min: 0, Max: 200, Default: contract["min_home_contract_workers"], Unit: "hulls", Description: "undedicated home general haulers the depot topology never pins as depot-delivery — the contract-worker reserve floor for unbuffered-good sourcing"},
-			"depot_buffer_min_source_distance": {Type: "int", Min: 0, Max: 5_000, Default: contract["depot_buffer_min_source_distance"], Unit: "distance", Description: "sp-rxrg gate-3 floor: a depot warehouse never buffers a good whose nearest EXTERNAL source is within this many coordinate units — near/local-sourced goods barely benefit from a warehouse slot"},
+			"min_home_contract_workers": {Type: "int", Min: 0, Max: 200, Default: contract["min_home_contract_workers"], Unit: "hulls", Description: "undedicated home general haulers the depot topology never pins as depot-delivery — the contract-worker reserve floor for unbuffered-good sourcing"},
 		},
 		string(container.ContainerTypeShipyardBackfillCoordinator): {
 			"max_dispatches_per_cycle": {Type: "int", Min: 1, Max: 100, Default: shipyardBackfill["max_dispatches_per_cycle"], Unit: "posts", Description: "per-cycle cap on sweep-once posts the shipyard-backfill sweep declares (bounded further by idle probe supply) so it drains the blind spot over cycles instead of flooding the reconciler"},

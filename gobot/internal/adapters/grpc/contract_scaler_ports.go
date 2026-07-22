@@ -250,14 +250,7 @@ func NewContractScalerCoordinatorHandler(
 // counter/grower share ONE construction point. Unset (never called) ⇒ the ramp is delivery-only.
 func wireContractScalerDepotActuation(h *contractScalerCmd.RunContractScalerHandler, storeFor func(playerID int) *depotstore.Store, launcher depotGrowthLauncher) {
 	h.SetDepotElementCounter(&contractScalerDepotCounter{storeFor: storeFor})
-	h.SetDepotGrower(&contractScalerDepotGrower{
-		storeFor: storeFor,
-		launcher: launcher,
-		// The FIXED far-source whitelist + flat caps (economy-analyst authoritative, st-wisp-2h6r5),
-		// pinned on every grown warehouse — universe-invariant, resolved once here, never recomputed.
-		supportedGoods: contractscaler.FarSourceGoods,
-		targetUnits:    contractscaler.DepotTargetUnits(),
-	})
+	h.SetDepotGrower(&contractScalerDepotGrower{storeFor: storeFor, launcher: launcher})
 }
 
 // --- price reader: adapt the autosizer yard-price walk to the scaler's NextHullPrice port ---
@@ -322,35 +315,32 @@ func (c *contractScalerDepotCounter) count(ctx context.Context, playerID int, of
 // --- depot growth port: AddElement/AddDepot + the depot launch verbs grow the EXISTING depot
 // (sp-urpxy) ---
 
-// depotGrowthLauncher is the narrow slice of the depot launch verbs the grower dispatches — the
-// warehouse + stocker launches only (*DaemonServer satisfies it). The warehouse launch is the PINNED
-// variant (explicit supported_goods + caps, miner BYPASSED), so the fixed far-source whitelist is never
-// recomputed. Kept narrow + injectable so the grower's store+launch composition is unit-tested against a spy.
+// depotGrowthLauncher is the narrow slice of the depot launch verbs the grower dispatches — the warehouse
+// + stocker launches only (*DaemonServer satisfies it). launchDepotWarehouse itself now PINS the fixed
+// far-source whitelist (the miner is gone), so the grower passes no goods — it wires placement only.
+// Kept narrow + injectable so the grower's store+launch composition is unit-tested against a spy.
 type depotGrowthLauncher interface {
-	launchDepotWarehousePinned(ctx context.Context, shipSymbol, warehouseWaypoint string, supportedGoods []string, targetUnits map[string]int, playerID int) error
+	launchDepotWarehouse(ctx context.Context, shipSymbol, warehouseWaypoint string, playerID int) error
 	launchDepotStocker(ctx context.Context, shipSymbol, warehouseWaypoint string, playerID int) error
 }
 
 // contractScalerDepotGrower grows the EXISTING contract depot one element at a time by composing the
 // persistent depot store (AddElement / AddDepot — RULINGS #2/#3, single-writer durable topology) with
 // the depot launch verbs. It ADDS to the depot at the plan hub (never rebuilds it), so a ceiling raise
-// reconciles TORWIND-15/11 + -18 up to the plan targets rather than duplicating warehouses. It PINS the
-// warehouse's supported_goods + per-good caps EXPLICITLY (the fixed far-source whitelist, injected at
-// wiring from contractscaler.FarSourceGoods / DepotTargetUnits) — bypassing launchDepotWarehouse's
-// demand-miner path, because the set is universe-invariant and must never be recomputed (sp-9le3x /
-// st-wisp-2h6r5). Same persist-then-launch idiom startDepot uses (container_ops_depot_lifecycle.go).
+// reconciles TORWIND-15/11 + -18 up to the plan targets rather than duplicating warehouses. The warehouse
+// goods are the FIXED far-source whitelist pinned by launchDepotWarehouse itself (universe-invariant,
+// never recomputed — sp-9le3x / st-wisp-2h6r5), so the grower owns placement, not the buffer policy. Same
+// persist-then-launch idiom startDepot uses (container_ops_depot_lifecycle.go).
 type contractScalerDepotGrower struct {
-	storeFor       func(playerID int) *depotstore.Store
-	launcher       depotGrowthLauncher
-	supportedGoods []string       // the FIXED far-source whitelist, pinned on every grown warehouse
-	targetUnits    map[string]int // the flat per-good caps for that whitelist
+	storeFor func(playerID int) *depotstore.Store
+	launcher depotGrowthLauncher
 }
 
 // GrowWarehouse adds one warehouse hull to the depot anchored at order.Hub — AddElement onto the
 // existing depot, or AddDepot when none exists yet (the anchor warehouse NewContractDepot requires) —
-// then launches the warehouse coordinator on the hull with the FIXED far-source whitelist + caps pinned
-// explicitly (the demand miner bypassed). The launch re-dedicates the hull to the "warehouse" fleet via
-// positionDepotElementHull, so an undedicated reclaimed/bought hull is adopted cleanly.
+// then launches the warehouse coordinator on the hull. launchDepotWarehouse pins the FIXED far-source
+// whitelist itself; it re-dedicates the hull to the "warehouse" fleet via positionDepotElementHull, so an
+// undedicated reclaimed/bought hull is adopted cleanly.
 func (g *contractScalerDepotGrower) GrowWarehouse(ctx context.Context, order contractScalerCmd.DepotGrowOrder) error {
 	store := g.storeFor(order.PlayerID)
 	depotID, exists, err := g.depotAtHub(ctx, order.PlayerID, order.Hub)
@@ -371,7 +361,7 @@ func (g *contractScalerDepotGrower) GrowWarehouse(ctx context.Context, order con
 			return err
 		}
 	}
-	return g.launcher.launchDepotWarehousePinned(ctx, order.ShipSymbol, order.Hub, g.supportedGoods, g.targetUnits, order.PlayerID)
+	return g.launcher.launchDepotWarehouse(ctx, order.ShipSymbol, order.Hub, order.PlayerID)
 }
 
 // GrowStocker adds one stocker hull to the depot anchored at order.Hub and launches the stocker pointed

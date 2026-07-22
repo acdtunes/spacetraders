@@ -22,7 +22,6 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	storageApp "github.com/andrescamacho/spacetraders-go/internal/application/storage"
-	tradingsvc "github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -70,27 +69,20 @@ type DaemonServer struct {
 	// nil disables recovery (fail-open — boot never depends on it).
 	storageRecovery *storageApp.StorageRecoveryService
 
-	// depotReceiptMinerOverride, when non-nil, replaces the DB-backed receipt-demand miner
-	// the depot warehouse cap (re-)solve uses (sp-94du). Nil in production →
-	// persistence.NewDemandMiner(s.db); injected in tests to drive the reward-ranked
-	// re-solve from a fixed candidate set without a live demand history. Same
-	// post-construction test-seam convention as storageRecovery.
-	depotReceiptMinerOverride tradingsvc.DepositDemandMiner
-
 	// depotNavigateOverride, when non-nil, replaces NavigateShip for the depot element hull
 	// repositioning positionDepotElementHull performs (sp-3l64) — the delivery-hull hub and the
 	// source-hub waypoint (the two roles with no standing coordinator to park their own hull).
 	// Nil in production → the real NavigateShip (which spawns a navigate container). Injected in
 	// tests so the atomic claim-release + reposition decision is unit-tested against the real ship
 	// repo WITHOUT spawning a navigate goroutine that would race the assertions. Same
-	// post-construction test-seam convention as depotReceiptMinerOverride.
+	// post-construction test-seam convention as storageRecovery.
 	depotNavigateOverride func(ctx context.Context, shipSymbol, destination string, playerID int) (string, error)
 
 	// depotSinkOverride, when non-nil, replaces *DaemonServer as the depotCoordinatorSink the
 	// element-add / reload positioning routes each launch through (sp-3l64). Nil in production →
 	// s itself (the real StartWarehouse / StartStocker / navigate path). Injected in tests so the
 	// AddDepotElement → per-role positioning WIRING is proven against a spy sink WITHOUT spawning
-	// coordinator goroutines. Same post-construction test-seam convention as depotReceiptMinerOverride.
+	// coordinator goroutines. Same post-construction test-seam convention as storageRecovery.
 	depotSinkOverride depotCoordinatorSink
 
 	// depotLiveContractSystemsOverride, when non-nil, replaces the DB-backed live-contract lookup the

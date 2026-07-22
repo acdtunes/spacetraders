@@ -546,15 +546,13 @@ type spyDepotLauncher struct {
 }
 
 type depotLaunchCall struct {
-	ship           string
-	waypoint       string
-	supportedGoods []string
-	targetUnits    map[string]int
-	playerID       int
+	ship     string
+	waypoint string
+	playerID int
 }
 
-func (s *spyDepotLauncher) launchDepotWarehousePinned(_ context.Context, ship, waypoint string, supportedGoods []string, targetUnits map[string]int, playerID int) error {
-	s.warehouses = append(s.warehouses, depotLaunchCall{ship: ship, waypoint: waypoint, supportedGoods: supportedGoods, targetUnits: targetUnits, playerID: playerID})
+func (s *spyDepotLauncher) launchDepotWarehouse(_ context.Context, ship, waypoint string, playerID int) error {
+	s.warehouses = append(s.warehouses, depotLaunchCall{ship: ship, waypoint: waypoint, playerID: playerID})
 	return s.err
 }
 
@@ -577,22 +575,16 @@ func warehouseShips(t *testing.T, repo depotstore.Repository) []string {
 	return ships
 }
 
-// newPinnedGrower builds a grower pinned to the REAL fixed far-source whitelist + flat caps — the exact
-// goods+caps the boot wiring injects (contractscaler.FarSourceGoods / DepotTargetUnits), so the tests
-// prove the LOAD-BEARING outcome: the launch pins the fixed set explicitly (the miner never runs).
-func newPinnedGrower(repo depotstore.Repository, launcher depotGrowthLauncher) *contractScalerDepotGrower {
-	return &contractScalerDepotGrower{
-		storeFor:       storeFactoryOver(repo),
-		launcher:       launcher,
-		supportedGoods: contractscaler.FarSourceGoods,
-		targetUnits:    contractscaler.DepotTargetUnits(),
-	}
+// newDepotGrower builds a grower over an in-memory store + a spy launcher. The warehouse goods are now
+// pinned INSIDE launchDepotWarehouse (proven by container_ops_depot_reload_caps_test.go), so the grower
+// carries none — these tests prove the store+launch COMPOSITION (reconcile-not-duplicate, correct hull).
+func newDepotGrower(repo depotstore.Repository, launcher depotGrowthLauncher) *contractScalerDepotGrower {
+	return &contractScalerDepotGrower{storeFor: storeFactoryOver(repo), launcher: launcher}
 }
 
 // GrowWarehouse on a registry with an EXISTING depot ADDS a warehouse element (never a second depot) and
-// launches the warehouse on the new hull with the FIXED far-source whitelist + flat 140/good caps PINNED
-// explicitly (the demand miner bypassed — the set is universe-invariant, never recomputed).
-func TestContractScalerDepotGrower_GrowsExistingDepotWarehousePinningFixedGoods(t *testing.T) {
+// launches the warehouse coordinator on the new hull — reconciling the depot, not duplicating it.
+func TestContractScalerDepotGrower_GrowsExistingDepotWarehouse(t *testing.T) {
 	repo := newMemDepotRepo()
 	seed, err := depot.NewContractDepot("contract-depot-X1-UM5-I56",
 		[]depot.Element{{Waypoint: "X1-UM5-I56", ShipSymbol: "WH-1"}}, nil, nil, nil)
@@ -600,7 +592,7 @@ func TestContractScalerDepotGrower_GrowsExistingDepotWarehousePinningFixedGoods(
 	require.NoError(t, repo.Save(context.Background(), seed))
 
 	launcher := &spyDepotLauncher{}
-	grower := newPinnedGrower(repo, launcher)
+	grower := newDepotGrower(repo, launcher)
 
 	err = grower.GrowWarehouse(context.Background(), contractScalerCmd.DepotGrowOrder{PlayerID: 1, ShipSymbol: "WH-2", Hub: "X1-UM5-I56"})
 	require.NoError(t, err)
@@ -611,12 +603,10 @@ func TestContractScalerDepotGrower_GrowsExistingDepotWarehousePinningFixedGoods(
 	require.Len(t, reg.Depots(), 1, "reconcile the existing depot — never create a duplicate")
 	require.Equal(t, []string{"WH-1", "WH-2"}, warehouseShips(t, repo), "the new warehouse is ADDED to the existing depot")
 
-	// The warehouse launches on the new hull with the FIXED whitelist + flat caps pinned (miner bypassed).
+	// The warehouse coordinator launches on the new hull (launchDepotWarehouse pins the fixed goods itself).
 	require.Len(t, launcher.warehouses, 1)
 	require.Equal(t, "WH-2", launcher.warehouses[0].ship)
 	require.Equal(t, "X1-UM5-I56", launcher.warehouses[0].waypoint)
-	require.Equal(t, contractscaler.FarSourceGoods, launcher.warehouses[0].supportedGoods, "the FIXED far-source whitelist is pinned explicitly")
-	require.Equal(t, contractscaler.DepotTargetUnits(), launcher.warehouses[0].targetUnits, "flat 140/good caps pinned (never demand-mined)")
 	require.Empty(t, launcher.stockers)
 }
 
@@ -626,7 +616,7 @@ func TestContractScalerDepotGrower_GrowsExistingDepotWarehousePinningFixedGoods(
 func TestContractScalerDepotGrower_CreatesDepotOnEmptyRegistry(t *testing.T) {
 	repo := newMemDepotRepo()
 	launcher := &spyDepotLauncher{}
-	grower := newPinnedGrower(repo, launcher)
+	grower := newDepotGrower(repo, launcher)
 
 	err := grower.GrowWarehouse(context.Background(), contractScalerCmd.DepotGrowOrder{PlayerID: 1, ShipSymbol: "WH-1", Hub: "X1-UM5-I56"})
 	require.NoError(t, err)
@@ -649,7 +639,7 @@ func TestContractScalerDepotGrower_GrowsStockerIntoExistingDepot(t *testing.T) {
 	require.NoError(t, repo.Save(context.Background(), seed))
 
 	launcher := &spyDepotLauncher{}
-	grower := newPinnedGrower(repo, launcher)
+	grower := newDepotGrower(repo, launcher)
 
 	err = grower.GrowStocker(context.Background(), contractScalerCmd.DepotGrowOrder{PlayerID: 1, ShipSymbol: "STK-1", Hub: "X1-UM5-I56"})
 	require.NoError(t, err)
