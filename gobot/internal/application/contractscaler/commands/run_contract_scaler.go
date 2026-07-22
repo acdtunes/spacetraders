@@ -73,6 +73,36 @@ type FleetCounter interface {
 	ContractHullCount(ctx context.Context, playerID int) (int, error)
 }
 
+// DepotElementCounter reads the contract depot's actuated warehouse/stocker element counts
+// from the persistent depot registry — the ramp's per-role Current for the depot roles. It is
+// what makes the ramp RECONCILE the existing depot (add only the plan-short units) instead of
+// buying duplicate warehouses when the ceiling rises. A read error holds the ramp (fail-closed).
+// A nil counter (unset at boot) ⇒ warehouse/stocker are unreachable ⇒ delivery-only, byte-identical.
+type DepotElementCounter interface {
+	WarehouseCount(ctx context.Context, playerID int) (int, error)
+	StockerCount(ctx context.Context, playerID int) (int, error)
+}
+
+// DepotGrowOrder is one approved depot growth: place ShipSymbol (an idle hull, reclaimed OR
+// bought) into the contract depot at Hub — the warehouse anchor waypoint (the plan unit's
+// Target). No price/dedication: the grower re-dedicates the hull to its role fleet through the
+// depot launch verbs (positionDepotElementHull), and the depot self-solves its own supported_goods.
+type DepotGrowOrder struct {
+	PlayerID   int
+	ShipSymbol string
+	Hub        string
+}
+
+// DepotGrower grows the EXISTING contract depot by one warehouse/stocker element — the depot
+// half of the fixed plan, reusing the persistent depot store (AddElement / AddDepot) + the depot
+// launch verbs (launchDepotWarehouse / launchDepotStocker). It ADDS to the existing depot (never
+// rebuilds it), so the ramp reconciles TORWIND-15/11 + -18 up to the plan targets. A nil grower
+// (unset at boot) ⇒ the depot roles are unreachable ⇒ delivery-only, byte-identical.
+type DepotGrower interface {
+	GrowWarehouse(ctx context.Context, order DepotGrowOrder) error
+	GrowStocker(ctx context.Context, order DepotGrowOrder) error
+}
+
 // BuyOrder is one approved scaler purchase driven through the kept autosizer buy
 // primitive: buy the light frame, dedicate it EXCLUSIVELY to the contract fleet,
 // and home it demand-ranked across the spread standby set (C1).
@@ -92,11 +122,15 @@ type BuyResult struct {
 	Price      int64
 }
 
-// Purchaser buys + dedicates + homes ONE scaler hull. The concrete impl drives the
-// kept autosizer BuyAndDedicate primitive (the money-integrity batch path) and the
-// contract HomeShipCommand — this coordinator does not rebuild the buyer.
+// Purchaser buys ONE scaler hull. BuyAndHome buys+dedicates+homes a DELIVERY hull (the kept
+// autosizer BuyAndDedicate primitive + the contract HomeShipCommand). BuyHull buys ONE
+// UNDEDICATED hull for a DEPOT role (no contract-dedicate, no home): the grower re-dedicates it
+// to the "warehouse"/"stocker" fleet through the depot launch verbs, so the buy must leave it
+// unclaimed for that adoption (mirrors the reclaim path, which also hands the grower an
+// undedicated idle hull). This coordinator rebuilds neither buyer.
 type Purchaser interface {
 	BuyAndHome(ctx context.Context, order BuyOrder) (BuyResult, error)
+	BuyHull(ctx context.Context, order BuyOrder) (BuyResult, error)
 }
 
 // ReclaimOrder is one ZERO-SPEND reuse: re-dedicate an already-owned idle undedicated
@@ -149,14 +183,16 @@ type RunContractScalerResponse struct {
 // player's ticks). All decision inputs are read fresh each pass; the only in-memory
 // state is the memoized-at-arm plan, keyed by container ID.
 type RunContractScalerHandler struct {
-	roles     RoleResolver
-	treasury  TreasuryReader
-	price     PriceReader
-	counter   FleetCounter
-	buyer     Purchaser
-	reclaimer IdleHullReclaimer
-	ceiling   liveconfig.Reader
-	clock     shared.Clock
+	roles        RoleResolver
+	treasury     TreasuryReader
+	price        PriceReader
+	counter      FleetCounter
+	depotCounter DepotElementCounter
+	grower       DepotGrower
+	buyer        Purchaser
+	reclaimer    IdleHullReclaimer
+	ceiling      liveconfig.Reader
+	clock        shared.Clock
 
 	mu    sync.Mutex
 	plans map[string]*armedPlan // keyed by container ID
@@ -178,10 +214,14 @@ func NewRunContractScalerHandler(clock shared.Clock) *RunContractScalerHandler {
 	return &RunContractScalerHandler{clock: clock, plans: make(map[string]*armedPlan)}
 }
 
-func (h *RunContractScalerHandler) SetRoleResolver(r RoleResolver)           { h.roles = r }
-func (h *RunContractScalerHandler) SetTreasuryReader(r TreasuryReader)       { h.treasury = r }
-func (h *RunContractScalerHandler) SetPriceReader(r PriceReader)             { h.price = r }
-func (h *RunContractScalerHandler) SetFleetCounter(r FleetCounter)           { h.counter = r }
+func (h *RunContractScalerHandler) SetRoleResolver(r RoleResolver)     { h.roles = r }
+func (h *RunContractScalerHandler) SetTreasuryReader(r TreasuryReader) { h.treasury = r }
+func (h *RunContractScalerHandler) SetPriceReader(r PriceReader)       { h.price = r }
+func (h *RunContractScalerHandler) SetFleetCounter(r FleetCounter)     { h.counter = r }
+func (h *RunContractScalerHandler) SetDepotElementCounter(r DepotElementCounter) {
+	h.depotCounter = r
+}
+func (h *RunContractScalerHandler) SetDepotGrower(g DepotGrower)             { h.grower = g }
 func (h *RunContractScalerHandler) SetPurchaser(p Purchaser)                 { h.buyer = p }
 func (h *RunContractScalerHandler) SetIdleHullReclaimer(r IdleHullReclaimer) { h.reclaimer = r }
 func (h *RunContractScalerHandler) SetCeilingReader(r liveconfig.Reader)     { h.ceiling = r }
@@ -225,13 +265,13 @@ func (h *RunContractScalerHandler) Handle(ctx context.Context, request common.Re
 	}
 }
 
-// reconcileOnce runs one ramp pass: resolve the plan (once at arm), read the live
-// ceiling + current fleet, and buy the next fixed-sequence units up to
-// min(plan, ceiling) while the treasury can spare the 200000 cushion. Returns how
-// many hulls it bought this pass. Never a per-tick cap.
+// reconcileOnce runs one ramp pass: resolve the plan (once at arm), read the live ceiling, and fill
+// the fixed plan's roles IN PRIORITY ORDER — delivery, then warehouse, then stocker — each up to its
+// per-role target, budgeted by the ceiling, while the treasury can spare the 200000 cushion. Reuse
+// precedes every buy. Warehouse/stocker actuate the EXISTING depot (reconcile: add only the short
+// units); a nil depot counter/grower makes the ramp DELIVERY-ONLY (byte-identical). Returns how many
+// hulls it bought this pass. Never a per-tick cap.
 func (h *RunContractScalerHandler) reconcileOnce(ctx context.Context, cmd *RunContractScalerCommand) (int, error) {
-	logger := common.LoggerFromContext(ctx)
-
 	// Default-off / disabled: never spend.
 	if cmd.Disabled {
 		return 0, nil
@@ -246,24 +286,55 @@ func (h *RunContractScalerHandler) reconcileOnce(ctx context.Context, cmd *RunCo
 	}
 
 	ceiling := h.liveCeiling(ctx, cmd)
-	target := contractscaler.Target(len(armed.plan), ceiling)
+	deliveryTarget, warehouseTarget, stockerTarget := contractscaler.RoleTargets(armed.plan)
 
-	current, err := h.counter.ContractHullCount(ctx, cmd.PlayerID)
+	// Budgeted per-role fill: allocate the ceiling across the roles in PRIORITY ORDER, each capped at
+	// its plan target. Delivery is the scarce primary; the depot bundle draws only leftover budget, and
+	// only when the depot is actuatable (counter + grower wired). Nil either ⇒ zero depot budget ⇒ the
+	// ramp is delivery-only, byte-identical to the pre-actuation scaler.
+	remaining := ceiling
+	takeDelivery := clampTake(deliveryTarget, remaining)
+	remaining -= takeDelivery
+	takeWarehouse, takeStocker := 0, 0
+	if h.DepotActuatable() {
+		takeWarehouse = clampTake(warehouseTarget, remaining)
+		remaining -= takeWarehouse
+		takeStocker = clampTake(stockerTarget, remaining)
+		remaining -= takeStocker
+	}
+
+	bought := h.fillDeliveryRole(ctx, cmd, armed, takeDelivery)
+
+	// Reconcile the EXISTING depot up to the plan targets (add only the short warehouse/stocker). Skipped
+	// wholesale when no depot budget — so the default ceiling makes ZERO depot counter/grower calls.
+	if takeWarehouse > 0 || takeStocker > 0 {
+		bought += h.fillDepotRoles(ctx, cmd, armed, takeWarehouse, takeStocker)
+	}
+	return bought, nil
+}
+
+// fillDeliveryRole fills the delivery role up to takeDelivery — the byte-identical buy/reclaim+home
+// path: reuse a free idle hull before every buy, else buy the next demand-ranked delivery unit and home
+// it, gated by the sole 200000 cushion. haveDelivery reads the "contract"-tag Current (fail-closed on a
+// read error). Returns how many hulls it BOUGHT (reclaims are free, not counted).
+func (h *RunContractScalerHandler) fillDeliveryRole(ctx context.Context, cmd *RunContractScalerCommand, armed *armedPlan, takeDelivery int) int {
+	logger := common.LoggerFromContext(ctx)
+	haveDelivery, err := h.counter.ContractHullCount(ctx, cmd.PlayerID)
 	if err != nil {
-		return 0, nil // unknown fleet size → hold the ramp (fail closed)
+		return 0 // unknown fleet size → hold the ramp (fail closed)
 	}
 
 	bought := 0
-	for current < target {
+	for haveDelivery < takeDelivery {
 		// ZERO-SPEND REUSE TIER (RULINGS #7): before spending, reclaim a free IDLE UNDEDICATED
 		// CARGO-CAPABLE hull into the contract fleet. FREE ⇒ NOT cushion-gated (the cushion gates
 		// buys only) — reuse may proceed below the cushion and strictly reduces spend.
 		if h.tryReclaim(ctx, cmd, armed) {
-			current++ // reused one — advance the ramp with no purchase
+			haveDelivery++ // reused one — advance the ramp with no purchase
 			continue
 		}
 
-		unit := armed.plan[current]
+		unit := armed.plan[haveDelivery]
 
 		price, yard, priceOK, _ := h.price.NextHullPrice(ctx, cmd.PlayerID, unit.ShipType)
 		if !priceOK {
@@ -315,9 +386,168 @@ func (h *RunContractScalerHandler) reconcileOnce(ctx context.Context, cmd *RunCo
 			"action": "contract_scaler_bought", "container_id": cmd.ContainerID, "ship_symbol": res.ShipSymbol, "target": unit.Target,
 		})
 		bought++
-		current++
+		haveDelivery++
 	}
-	return bought, nil
+	return bought
+}
+
+// DepotActuatable reports whether the depot roles can be filled — BOTH the depot counter (per-role
+// Current) and the grower (the AddElement + launch actuator) must be wired. A nil either makes the ramp
+// delivery-only, byte-identical to the pre-actuation scaler. Exported as the wiring/diagnostic predicate
+// (is the depot half armed?), and the gate the budgeted fill consults each pass.
+func (h *RunContractScalerHandler) DepotActuatable() bool {
+	return h.depotCounter != nil && h.grower != nil
+}
+
+// fillDepotRoles reconciles the EXISTING depot up to the warehouse then stocker targets — reuse-before-
+// buy per role, growing the depot with each hull. Dry-run observes only (never actuates). The counter is
+// read per-role ONLY when that role has budget, so a delivery-only pass never touches the depot.
+func (h *RunContractScalerHandler) fillDepotRoles(ctx context.Context, cmd *RunContractScalerCommand, armed *armedPlan, takeWarehouse, takeStocker int) int {
+	logger := common.LoggerFromContext(ctx)
+	if cmd.DryRun {
+		logger.Log("WARN", "Contract scaler WOULD GROW the depot (dry-run, no actuation)", map[string]interface{}{
+			"action": "contract_scaler_would_grow", "container_id": cmd.ContainerID,
+		})
+		return 0
+	}
+	hub := planHub(armed.plan)
+	if hub == "" {
+		return 0 // no central anchor (empty era already returned) → nothing to grow
+	}
+
+	bought := 0
+	if takeWarehouse > 0 {
+		haveWarehouse, err := h.depotCounter.WarehouseCount(ctx, cmd.PlayerID)
+		if err != nil {
+			return bought // fail-closed: hold the depot fill on an unreadable Current
+		}
+		bought += h.fillDepotRole(ctx, cmd, contractscaler.Warehouse, hub, haveWarehouse, takeWarehouse)
+	}
+	if takeStocker > 0 {
+		haveStocker, err := h.depotCounter.StockerCount(ctx, cmd.PlayerID)
+		if err != nil {
+			return bought // fail-closed
+		}
+		bought += h.fillDepotRole(ctx, cmd, contractscaler.Stocker, hub, haveStocker, takeStocker)
+	}
+	return bought
+}
+
+// fillDepotRole fills one depot role (warehouse or stocker) from have up to take: reuse a free idle
+// undedicated hull before every buy (the grower re-dedicates it to the role fleet — FREE, never cushion-
+// gated), else buy ONE undedicated hull behind the 200000 cushion and grow the depot with it. Returns
+// how many hulls it BOUGHT.
+func (h *RunContractScalerHandler) fillDepotRole(ctx context.Context, cmd *RunContractScalerCommand, role contractscaler.UnitRole, hub string, have, take int) int {
+	logger := common.LoggerFromContext(ctx)
+	bought := 0
+	for have < take {
+		// REUSE BEFORE BUY (FREE, ungated): reclaim a free idle undedicated cargo hull and grow the
+		// depot with it. FindReclaimable hands back a symbol WITHOUT dedicating; the grower re-dedicates
+		// it to the role fleet (positionDepotElementHull). A grow failure falls through to the buy.
+		if symbol, ok := h.findReclaimableForDepot(ctx, cmd); ok {
+			if err := h.growDepot(ctx, cmd, role, symbol, hub); err == nil {
+				have++
+				continue
+			}
+			logger.Log("WARN", "Contract scaler: reclaimed-hull depot grow failed — falling through to a buy", map[string]interface{}{
+				"action": "contract_scaler_depot_grow_reclaim_error", "container_id": cmd.ContainerID, "ship_symbol": symbol,
+			})
+		}
+
+		price, yard, priceOK, _ := h.price.NextHullPrice(ctx, cmd.PlayerID, contractscaler.ScalerShipType)
+		if !priceOK {
+			break // fail closed
+		}
+		treasury, treasuryOK, _ := h.treasury.Treasury(ctx, cmd.PlayerID)
+		if !treasuryOK {
+			break // fail closed
+		}
+		// THE SOLE GUARD, applied to depot buys too: keep the 200000 cushion (RULINGS #6 amendment).
+		if treasury-price < ContractCushion {
+			logger.Log("INFO", fmt.Sprintf("Contract scaler: depot %v buy held — treasury %d minus price %d < %d cushion", role, treasury, price, ContractCushion), map[string]interface{}{
+				"action": "contract_scaler_depot_cushion_hold", "container_id": cmd.ContainerID,
+			})
+			break
+		}
+		if h.buyer == nil {
+			break
+		}
+		res, err := h.buyer.BuyHull(ctx, BuyOrder{
+			PlayerID:      cmd.PlayerID,
+			Unit:          contractscaler.PlanUnit{Role: role, ShipType: contractscaler.ScalerShipType, Target: hub},
+			Yard:          yard,
+			ExpectedPrice: price,
+		})
+		if err != nil {
+			logger.Log("ERROR", fmt.Sprintf("Contract scaler depot-hull buy failed: %v", err), map[string]interface{}{
+				"action": "contract_scaler_depot_buy_error", "container_id": cmd.ContainerID,
+			})
+			break
+		}
+		if err := h.growDepot(ctx, cmd, role, res.ShipSymbol, hub); err != nil {
+			logger.Log("ERROR", fmt.Sprintf("Contract scaler bought %s but depot grow failed: %v", res.ShipSymbol, err), map[string]interface{}{
+				"action": "contract_scaler_depot_grow_error", "container_id": cmd.ContainerID, "ship_symbol": res.ShipSymbol,
+			})
+			break // bought but could not place — stop this role rather than spin
+		}
+		logger.Log("INFO", fmt.Sprintf("Contract scaler GREW the depot with %s for %v at %s", res.ShipSymbol, role, hub), map[string]interface{}{
+			"action": "contract_scaler_depot_grew", "container_id": cmd.ContainerID, "ship_symbol": res.ShipSymbol,
+		})
+		bought++
+		have++
+	}
+	return bought
+}
+
+// findReclaimableForDepot returns one free idle undedicated cargo hull symbol for a depot role, or
+// ok=false when the reuse tier is unwired, hits a scan error (fail-closed → the ramp buys), or finds no
+// free hull. Unlike the delivery reuse it does NOT dedicate the hull to "contract" — the grower's launch
+// re-dedicates it to the "warehouse"/"stocker" fleet.
+func (h *RunContractScalerHandler) findReclaimableForDepot(ctx context.Context, cmd *RunContractScalerCommand) (string, bool) {
+	if h.reclaimer == nil {
+		return "", false
+	}
+	symbol, ok, err := h.reclaimer.FindReclaimable(ctx, cmd.PlayerID)
+	if err != nil {
+		return "", false // scan error → fall through to a buy (fail-closed)
+	}
+	return symbol, ok
+}
+
+// growDepot places one hull into the depot for the given role via the grower (AddElement + launch). It
+// is the single dispatch point mapping a plan role to its depot growth verb.
+func (h *RunContractScalerHandler) growDepot(ctx context.Context, cmd *RunContractScalerCommand, role contractscaler.UnitRole, shipSymbol, hub string) error {
+	order := DepotGrowOrder{PlayerID: cmd.PlayerID, ShipSymbol: shipSymbol, Hub: hub}
+	switch role {
+	case contractscaler.Warehouse:
+		return h.grower.GrowWarehouse(ctx, order)
+	case contractscaler.Stocker:
+		return h.grower.GrowStocker(ctx, order)
+	}
+	return fmt.Errorf("contract scaler: not a depot role: %v", role)
+}
+
+// clampTake is the per-role budget cut: as many of a role's target as the remaining ceiling budget
+// allows, never negative. remaining is kept >= 0 by the caller (each take is <= remaining).
+func clampTake(target, remaining int) int {
+	if remaining < target {
+		if remaining < 0 {
+			return 0
+		}
+		return remaining
+	}
+	return target
+}
+
+// planHub is the warehouse/stocker anchor — the central hub the fixed plan homes the depot bundle at
+// (the top-demand park). "" when the plan has no depot bundle (a hub-less era).
+func planHub(plan []contractscaler.PlanUnit) string {
+	for _, unit := range plan {
+		if unit.Role == contractscaler.Warehouse {
+			return unit.Target
+		}
+	}
+	return ""
 }
 
 // tryReclaim runs the zero-spend reuse tier for one ramp slot: find ONE idle undedicated cargo-capable

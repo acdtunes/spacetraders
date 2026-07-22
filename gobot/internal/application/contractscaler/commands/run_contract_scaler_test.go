@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
@@ -49,7 +50,8 @@ func (f *fakeCounter) ContractHullCount(ctx context.Context, playerID int) (int,
 }
 
 type fakePurchaser struct {
-	orders []BuyOrder
+	orders     []BuyOrder // delivery buys (BuyAndHome)
+	hullOrders []BuyOrder // undedicated depot-hull buys (BuyHull)
 	// each buy decrements treasury via the linked fakeTreasury and increments the counter,
 	// so the ramp loop sees the fleet grow and the cushion shrink like production.
 	treasury *fakeTreasury
@@ -65,6 +67,17 @@ func (f *fakePurchaser) BuyAndHome(ctx context.Context, order BuyOrder) (BuyResu
 		f.counter.n++
 	}
 	return BuyResult{ShipSymbol: "SHIP-NEW", Price: order.ExpectedPrice}, nil
+}
+
+// BuyHull buys an UNDEDICATED depot-role hull: it decrements the treasury like a real buy but does NOT
+// touch the "contract"-fleet counter (a depot hull joins the depot registry via the grower, not the
+// contract fleet) — so the delivery Current stays honest across ticks.
+func (f *fakePurchaser) BuyHull(ctx context.Context, order BuyOrder) (BuyResult, error) {
+	f.hullOrders = append(f.hullOrders, order)
+	if f.treasury != nil {
+		f.treasury.credits -= order.ExpectedPrice
+	}
+	return BuyResult{ShipSymbol: "DEPOT-HULL", Price: order.ExpectedPrice}, nil
 }
 
 // fakeReclaimer is the FREE reuse tier: FindReclaimable hands out `available` symbols head-first, and
@@ -401,5 +414,202 @@ func TestReconcile_DisabledNeverReclaims(t *testing.T) {
 	}
 	if n != 0 || len(pur.orders) != 0 || len(rec.reclaimed) != 0 || rec.findCalls != 0 {
 		t.Fatalf("disabled scaler: bought %d, orders %d, reclaimed %d, findCalls %d — want all 0 (byte-identical)", n, len(pur.orders), len(rec.reclaimed), rec.findCalls)
+	}
+}
+
+// --- ROLE-AWARE RAMP (sp-urpxy): fill delivery→warehouse→stocker, reconcile the EXISTING depot ---
+
+// fakeDepotCounter reports the depot's actuated warehouse/stocker Current and records every read (so a
+// test can prove the depot is UNTOUCHED at the default ceiling — byte-identical).
+type fakeDepotCounter struct {
+	warehouses, stockers int
+	whCalls, stkCalls    int
+}
+
+func (f *fakeDepotCounter) WarehouseCount(ctx context.Context, playerID int) (int, error) {
+	f.whCalls++
+	return f.warehouses, nil
+}
+
+func (f *fakeDepotCounter) StockerCount(ctx context.Context, playerID int) (int, error) {
+	f.stkCalls++
+	return f.stockers, nil
+}
+
+// fakeGrower records each depot growth and (linked to a counter) increments it, so across ticks the
+// depot Current reflects what the ramp already grew. err models a launch failure (the ramp falls
+// through to a buy on a failed reclaim-grow, and stops on a failed buy-grow).
+type fakeGrower struct {
+	counter        *fakeDepotCounter
+	warehouseGrows []DepotGrowOrder
+	stockerGrows   []DepotGrowOrder
+	err            error
+}
+
+func (f *fakeGrower) GrowWarehouse(ctx context.Context, order DepotGrowOrder) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.warehouseGrows = append(f.warehouseGrows, order)
+	if f.counter != nil {
+		f.counter.warehouses++
+	}
+	return nil
+}
+
+func (f *fakeGrower) GrowStocker(ctx context.Context, order DepotGrowOrder) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.stockerGrows = append(f.stockerGrows, order)
+	if f.counter != nil {
+		f.counter.stockers++
+	}
+	return nil
+}
+
+// manyParkRoles builds an n-park era with strictly-descending demand (P00 highest), so the central hub
+// (the top-demand park, ranked[0]) is the deterministic P00 the warehouse/stocker anchor at.
+func manyParkRoles(n int) (contractscaler.EraRoles, map[string]float64) {
+	parks := make([]string, n)
+	demand := map[string]float64{}
+	for i := range parks {
+		parks[i] = fmt.Sprintf("P%02d", i)
+		demand[parks[i]] = float64(n - i)
+	}
+	return contractscaler.EraRoles{CentralParks: parks}, demand
+}
+
+// newDepotHarness wires a role-aware handler: an n-park plan (n delivery + WarehouseUnits warehouse +
+// StockerUnits stocker), a depot counter reporting the EXISTING depot, a grower, rich treasury, cheap
+// hulls. contractHulls seeds the delivery Current; warehouses/stockers seed the depot Current.
+func newDepotHarness(ceiling, parks, contractHulls, warehouses, stockers int) (*RunContractScalerHandler, *fakePurchaser, *fakeDepotCounter, *fakeGrower) {
+	treasury := &fakeTreasury{credits: 5_000_000, readable: true}
+	fleet := &fakeCounter{n: contractHulls}
+	pur := &fakePurchaser{treasury: treasury, counter: fleet}
+	dc := &fakeDepotCounter{warehouses: warehouses, stockers: stockers}
+	gr := &fakeGrower{counter: dc}
+	roles, demand := manyParkRoles(parks)
+	rr := &fakeRoleResolver{roles: roles, demand: demand}
+
+	h := NewRunContractScalerHandler(nil)
+	h.SetRoleResolver(rr)
+	h.SetTreasuryReader(treasury)
+	h.SetPriceReader(&fakePrice{price: 100_000, yard: "YARD", readable: true})
+	h.SetFleetCounter(fleet)
+	h.SetPurchaser(pur)
+	h.SetCeilingReader(&fakeCeiling{value: ceiling})
+	h.SetDepotElementCounter(dc)
+	h.SetDepotGrower(gr)
+	return h, pur, dc, gr
+}
+
+// RECONCILE, NOT DUPLICATE: the depot already has 2 warehouses + 1 stocker and 7 delivery hulls exist;
+// with the ceiling raised past the delivery count the ramp adds ONLY the plan-short unit — exactly 1
+// warehouse (2→3), 0 stocker (1 already meets 1), 0 delivery — never a duplicate of the existing depot.
+func TestReconcile_ReconcilesExistingDepotAddsOnlyTheShortWarehouse(t *testing.T) {
+	h, pur, _, gr := newDepotHarness(10, 7, 7, 2, 1)
+
+	bought := reconcile(t, h, 10)
+
+	if len(pur.orders) != 0 {
+		t.Fatalf("delivery buys = %d, want 0 (delivery target 7 already met)", len(pur.orders))
+	}
+	if len(gr.warehouseGrows) != 1 {
+		t.Fatalf("warehouse grows = %d, want exactly 1 (reconcile 2→3 — add only the short one, no duplicate)", len(gr.warehouseGrows))
+	}
+	if len(gr.stockerGrows) != 0 {
+		t.Fatalf("stocker grows = %d, want 0 (stocker 1 already meets target 1)", len(gr.stockerGrows))
+	}
+	if gr.warehouseGrows[0].Hub != "P00" {
+		t.Fatalf("warehouse grow hub = %q, want the central hub P00 (top-demand park)", gr.warehouseGrows[0].Hub)
+	}
+	if len(pur.hullOrders) != 1 || bought != 1 {
+		t.Fatalf("depot-hull buys = %d (bought %d), want 1 (the short warehouse, bought then grown)", len(pur.hullOrders), bought)
+	}
+}
+
+// DEFAULT-OFF BYTE-IDENTICAL: at the default ceiling (2 = DefaultContractFleetMaxHulls) the ramp reaches
+// no warehouse plan index, so it makes ZERO depot counter/grower/BuyHull calls — delivery-only, exactly
+// the pre-actuation scaler. The feature activates only when the operator raises the ceiling.
+func TestReconcile_DefaultCeilingIsByteIdenticalDeliveryOnly(t *testing.T) {
+	h, pur, dc, gr := newDepotHarness(DefaultContractFleetMaxHulls, 7, 0, 2, 1)
+
+	bought := reconcile(t, h, DefaultContractFleetMaxHulls)
+
+	if bought != 2 || len(pur.orders) != 2 {
+		t.Fatalf("delivery buys = %d (bought %d), want 2 — the default ceiling fills delivery only", len(pur.orders), bought)
+	}
+	if len(pur.hullOrders) != 0 {
+		t.Fatalf("depot-hull buys = %d, want 0 (no depot growth at the default ceiling)", len(pur.hullOrders))
+	}
+	if dc.whCalls != 0 || dc.stkCalls != 0 {
+		t.Fatalf("depot counter reads = (%d,%d), want (0,0) — the depot is untouched at ceiling 2 (byte-identical)", dc.whCalls, dc.stkCalls)
+	}
+	if len(gr.warehouseGrows) != 0 || len(gr.stockerGrows) != 0 {
+		t.Fatalf("depot grows = (%d,%d), want (0,0) at the default ceiling", len(gr.warehouseGrows), len(gr.stockerGrows))
+	}
+}
+
+// FILL ORDER: a cold op (no hulls, empty depot) fills the fixed plan IN ORDER in one tick — delivery
+// first (homed), THEN the warehouse bundle, THEN the stocker — never the lumpy warehouse bundle before
+// the delivery knee.
+func TestReconcile_FillsDeliveryThenWarehouseThenStockerInOneTick(t *testing.T) {
+	// 3 parks → plan 3 delivery + WarehouseUnits warehouse + StockerUnits stocker; ceiling covers it all.
+	planSize := 3 + contractscaler.WarehouseUnits + contractscaler.StockerUnits
+	h, pur, _, gr := newDepotHarness(planSize, 3, 0, 0, 0)
+
+	bought := reconcile(t, h, planSize)
+
+	if len(pur.orders) != 3 {
+		t.Fatalf("delivery buys = %d, want 3 (delivery fills first)", len(pur.orders))
+	}
+	if len(gr.warehouseGrows) != contractscaler.WarehouseUnits {
+		t.Fatalf("warehouse grows = %d, want %d (the full warehouse bundle)", len(gr.warehouseGrows), contractscaler.WarehouseUnits)
+	}
+	if len(gr.stockerGrows) != contractscaler.StockerUnits {
+		t.Fatalf("stocker grows = %d, want %d", len(gr.stockerGrows), contractscaler.StockerUnits)
+	}
+	if bought != planSize {
+		t.Fatalf("bought = %d, want %d (3 delivery + %d warehouse + %d stocker, all bought)", bought, planSize, contractscaler.WarehouseUnits, contractscaler.StockerUnits)
+	}
+}
+
+// REUSE BEFORE BUY, PER ROLE: a free idle undedicated cargo hull is RECLAIMED into the short warehouse
+// slot (the grower is called with it) and NO hull is bought. The depot reuse uses FindReclaimable +
+// grow — NOT the delivery Reclaim (which contract-dedicates+homes); the grower re-dedicates to warehouse.
+func TestReconcile_ReclaimsIdleHullForWarehouseSlotBeforeBuying(t *testing.T) {
+	h, pur, _, gr := newDepotHarness(10, 7, 7, 2, 1)
+	rec := &fakeReclaimer{available: []string{"HULL-IDLE"}}
+	h.SetIdleHullReclaimer(rec)
+
+	reconcile(t, h, 10)
+
+	if len(gr.warehouseGrows) != 1 || gr.warehouseGrows[0].ShipSymbol != "HULL-IDLE" {
+		t.Fatalf("warehouse grows = %+v, want 1 carrying the reclaimed HULL-IDLE (reuse before buy)", gr.warehouseGrows)
+	}
+	if len(pur.hullOrders) != 0 {
+		t.Fatalf("depot-hull buys = %d, want 0 — a reclaimed hull replaces the buy", len(pur.hullOrders))
+	}
+	if len(rec.reclaimed) != 0 {
+		t.Fatalf("reclaimer.Reclaim calls = %d, want 0 — a depot hull is GROWN (grower re-dedicates), never contract-homed", len(rec.reclaimed))
+	}
+}
+
+// THE 200k CUSHION GATES DEPOT BUYS TOO: with the treasury unable to leave 200000 after a warehouse buy,
+// the depot buy is HELD (no grow, no buy) — the sole money guard is not weakened for the depot roles.
+func TestReconcile_WarehouseBuyHeldByCushion(t *testing.T) {
+	h, pur, _, gr := newDepotHarness(10, 7, 7, 2, 1)
+	tr := &fakeTreasury{credits: 250_000, readable: true} // 250k - 100k = 150k < 200000 cushion
+	h.SetTreasuryReader(tr)
+	pur.treasury = tr
+
+	bought := reconcile(t, h, 10)
+
+	if bought != 0 || len(pur.hullOrders) != 0 {
+		t.Fatalf("bought %d (depot-hull buys %d), want 0 — 250k-100k=150k is below the 200000 cushion", bought, len(pur.hullOrders))
+	}
+	if len(gr.warehouseGrows) != 0 {
+		t.Fatalf("warehouse grows = %d, want 0 — the cushion holds the depot buy", len(gr.warehouseGrows))
 	}
 }

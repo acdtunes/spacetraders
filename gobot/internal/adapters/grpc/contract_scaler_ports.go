@@ -8,8 +8,10 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
+	"github.com/andrescamacho/spacetraders-go/internal/application/contract/depotstore"
 	contractScalerCmd "github.com/andrescamacho/spacetraders-go/internal/application/contractscaler/commands"
 	fleetCmd "github.com/andrescamacho/spacetraders-go/internal/application/fleet/commands"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/contract/depot"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contractscaler"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -231,7 +233,31 @@ func NewContractScalerCoordinatorHandler(
 	// Ceiling: the live Pattern-C snapshot of the container's own config column (contract_fleet_max_hulls),
 	// so a `tune --operation contractscaler` lands on the next tick with no restart.
 	h.SetCeilingReader(NewContainerConfigReader(server.containerRepo))
+
+	// Depot actuation (sp-urpxy): arm the warehouse/stocker half of the fixed plan. The counter reads the
+	// persistent depot registry (per-role Current); the grower adds one element at a time via the depot
+	// store + the surviving launch verbs. BOTH over server.depotStore — the SAME player-scoped store the
+	// boot reload + contract routing consult — so the reconcile is restart-safe (RULINGS #2). *DaemonServer
+	// is the launcher (its launchDepotWarehouse/launchDepotStocker). Registering changes NO live behaviour:
+	// at the default ceiling (2) the ramp reaches no warehouse index → zero depot calls → byte-identical.
+	wireContractScalerDepotActuation(h, server.depotStore, server)
 	return h
+}
+
+// wireContractScalerDepotActuation arms the ramp's depot half: the depot-registry counter (per-role
+// Current) and the AddElement + launch grower, both over the player-scoped depot store. Extracted so
+// the wiring is unit-tested against an in-memory store + a spy launcher (no DaemonServer), and so the
+// counter/grower share ONE construction point. Unset (never called) ⇒ the ramp is delivery-only.
+func wireContractScalerDepotActuation(h *contractScalerCmd.RunContractScalerHandler, storeFor func(playerID int) *depotstore.Store, launcher depotGrowthLauncher) {
+	h.SetDepotElementCounter(&contractScalerDepotCounter{storeFor: storeFor})
+	h.SetDepotGrower(&contractScalerDepotGrower{
+		storeFor: storeFor,
+		launcher: launcher,
+		// The FIXED far-source whitelist + flat caps (economy-analyst authoritative, st-wisp-2h6r5),
+		// pinned on every grown warehouse — universe-invariant, resolved once here, never recomputed.
+		supportedGoods: contractscaler.FarSourceGoods,
+		targetUnits:    contractscaler.DepotTargetUnits(),
+	})
 }
 
 // --- price reader: adapt the autosizer yard-price walk to the scaler's NextHullPrice port ---
@@ -254,6 +280,135 @@ func (c *contractScalerFleetCounter) ContractHullCount(ctx context.Context, play
 	return countShips(ctx, c.shipRepo, playerID, func(sh *navigation.Ship) bool {
 		return sh.DedicatedFleet() == contractFleetTag
 	})
+}
+
+// --- depot-aware per-role counter: the depot registry is the source of truth for actuated
+// warehouse/stocker units (sp-urpxy) ---
+
+// contractScalerDepotCounter reads the contract depot's warehouse/stocker element counts from the
+// persistent depot registry (LoadRegistry → len(Warehouses()) / len(Stockers())), summed across the
+// player's depots — there is one contract depot, but summing is correct and future-proof. This is the
+// ramp's per-role Current for the depot roles: reading the REGISTRY (not the "contract"-tag ship count)
+// is what makes a ceiling raise RECONCILE the existing depot (add only the plan-short warehouse/stocker)
+// rather than buy a duplicate of the already-present TORWIND-15/11. storeFor builds the player-scoped
+// Store exactly as every depot handler does (s.depotStore(playerID)), so the count is the same registry
+// the boot reload + contract routing consult — restart-safe (RULINGS #2).
+type contractScalerDepotCounter struct {
+	storeFor func(playerID int) *depotstore.Store
+}
+
+func (c *contractScalerDepotCounter) WarehouseCount(ctx context.Context, playerID int) (int, error) {
+	return c.count(ctx, playerID, func(d *depot.ContractDepot) int { return len(d.Warehouses()) })
+}
+
+func (c *contractScalerDepotCounter) StockerCount(ctx context.Context, playerID int) (int, error) {
+	return c.count(ctx, playerID, func(d *depot.ContractDepot) int { return len(d.Stockers()) })
+}
+
+// count loads the player's depot registry and sums one element class across every depot. A load error
+// surfaces (the ramp holds fail-closed); an empty registry yields 0 (nothing actuated yet).
+func (c *contractScalerDepotCounter) count(ctx context.Context, playerID int, of func(*depot.ContractDepot) int) (int, error) {
+	reg, err := c.storeFor(playerID).LoadRegistry(ctx)
+	if err != nil {
+		return 0, err
+	}
+	total := 0
+	for _, d := range reg.Depots() {
+		total += of(d)
+	}
+	return total, nil
+}
+
+// --- depot growth port: AddElement/AddDepot + the depot launch verbs grow the EXISTING depot
+// (sp-urpxy) ---
+
+// depotGrowthLauncher is the narrow slice of the depot launch verbs the grower dispatches — the
+// warehouse + stocker launches only (*DaemonServer satisfies it). The warehouse launch is the PINNED
+// variant (explicit supported_goods + caps, miner BYPASSED), so the fixed far-source whitelist is never
+// recomputed. Kept narrow + injectable so the grower's store+launch composition is unit-tested against a spy.
+type depotGrowthLauncher interface {
+	launchDepotWarehousePinned(ctx context.Context, shipSymbol, warehouseWaypoint string, supportedGoods []string, targetUnits map[string]int, playerID int) error
+	launchDepotStocker(ctx context.Context, shipSymbol, warehouseWaypoint string, playerID int) error
+}
+
+// contractScalerDepotGrower grows the EXISTING contract depot one element at a time by composing the
+// persistent depot store (AddElement / AddDepot — RULINGS #2/#3, single-writer durable topology) with
+// the depot launch verbs. It ADDS to the depot at the plan hub (never rebuilds it), so a ceiling raise
+// reconciles TORWIND-15/11 + -18 up to the plan targets rather than duplicating warehouses. It PINS the
+// warehouse's supported_goods + per-good caps EXPLICITLY (the fixed far-source whitelist, injected at
+// wiring from contractscaler.FarSourceGoods / DepotTargetUnits) — bypassing launchDepotWarehouse's
+// demand-miner path, because the set is universe-invariant and must never be recomputed (sp-9le3x /
+// st-wisp-2h6r5). Same persist-then-launch idiom startDepot uses (container_ops_depot_lifecycle.go).
+type contractScalerDepotGrower struct {
+	storeFor       func(playerID int) *depotstore.Store
+	launcher       depotGrowthLauncher
+	supportedGoods []string       // the FIXED far-source whitelist, pinned on every grown warehouse
+	targetUnits    map[string]int // the flat per-good caps for that whitelist
+}
+
+// GrowWarehouse adds one warehouse hull to the depot anchored at order.Hub — AddElement onto the
+// existing depot, or AddDepot when none exists yet (the anchor warehouse NewContractDepot requires) —
+// then launches the warehouse coordinator on the hull with the FIXED far-source whitelist + caps pinned
+// explicitly (the demand miner bypassed). The launch re-dedicates the hull to the "warehouse" fleet via
+// positionDepotElementHull, so an undedicated reclaimed/bought hull is adopted cleanly.
+func (g *contractScalerDepotGrower) GrowWarehouse(ctx context.Context, order contractScalerCmd.DepotGrowOrder) error {
+	store := g.storeFor(order.PlayerID)
+	depotID, exists, err := g.depotAtHub(ctx, order.PlayerID, order.Hub)
+	if err != nil {
+		return err
+	}
+	element := depot.Element{Waypoint: order.Hub, ShipSymbol: order.ShipSymbol}
+	if exists {
+		if err := store.AddElement(ctx, depotID, depot.RoleWarehouse, element); err != nil {
+			return err
+		}
+	} else {
+		created, err := depot.NewContractDepot(depotID, []depot.Element{element}, nil, nil, nil)
+		if err != nil {
+			return err
+		}
+		if err := store.AddDepot(ctx, created); err != nil {
+			return err
+		}
+	}
+	return g.launcher.launchDepotWarehousePinned(ctx, order.ShipSymbol, order.Hub, g.supportedGoods, g.targetUnits, order.PlayerID)
+}
+
+// GrowStocker adds one stocker hull to the depot anchored at order.Hub and launches the stocker pointed
+// at the warehouse anchor (the deposit target = the hub). The fixed plan's fill order guarantees a
+// warehouse (the anchor) already exists before any stocker; a stocker with no anchor depot is a
+// programming error surfaced loudly rather than a fabricated depot.
+func (g *contractScalerDepotGrower) GrowStocker(ctx context.Context, order contractScalerCmd.DepotGrowOrder) error {
+	store := g.storeFor(order.PlayerID)
+	depotID, exists, err := g.depotAtHub(ctx, order.PlayerID, order.Hub)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return fmt.Errorf("contract scaler: cannot grow a stocker at %s — no depot anchored there (a warehouse fills first)", order.Hub)
+	}
+	if err := store.AddElement(ctx, depotID, depot.RoleStocker, depot.Element{Waypoint: order.Hub, ShipSymbol: order.ShipSymbol}); err != nil {
+		return err
+	}
+	return g.launcher.launchDepotStocker(ctx, order.ShipSymbol, order.Hub, order.PlayerID)
+}
+
+// depotAtHub finds the id of the depot whose warehouse anchor sits at hub (the one contract depot),
+// returning exists=false + a deterministic new id when none is anchored there yet (so a fresh grow
+// creates a hub-stable, restart-idempotent depot). A registry-load error surfaces (fail-closed).
+func (g *contractScalerDepotGrower) depotAtHub(ctx context.Context, playerID int, hub string) (string, bool, error) {
+	reg, err := g.storeFor(playerID).LoadRegistry(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	for _, d := range reg.Depots() {
+		for _, w := range d.Warehouses() {
+			if w.Waypoint == hub {
+				return d.ID(), true, nil
+			}
+		}
+	}
+	return "contract-depot-" + hub, false, nil
 }
 
 // --- purchaser: buy+dedicate (kept autosizer primitive) then home demand-ranked ---
@@ -293,6 +448,27 @@ func (p *contractScalerPurchaser) BuyAndHome(ctx context.Context, order contract
 		return contractScalerCmd.BuyResult{}, err
 	}
 	homeContractHull(ctx, p.med, p.shipRepo, res.ShipSymbol, order.PlayerID, order.StandbyStations, order.StandbyDemand)
+	return contractScalerCmd.BuyResult{ShipSymbol: res.ShipSymbol, Price: res.Price}, nil
+}
+
+// BuyHull buys ONE UNDEDICATED light hull for a DEPOT role (warehouse/stocker) — the kept buy
+// primitive driven with HullClassLight, whose dedicate-at-purchase tag is EMPTY
+// (autosizerDedicatedFleet(light)=""). It is deliberately NOT contract-dedicated and NOT homed: the
+// grower's launch (positionDepotElementHull) re-dedicates the idle hull to its "warehouse"/"stocker"
+// fleet, so leaving it undedicated is what lets that adoption succeed (a "contract"-tagged hull would
+// be refused by the depot never-poach guard). This mirrors the reclaim path, which likewise hands the
+// grower an undedicated idle hull; the buy is the fallback when no reclaimable hull is free.
+func (p *contractScalerPurchaser) BuyHull(ctx context.Context, order contractScalerCmd.BuyOrder) (contractScalerCmd.BuyResult, error) {
+	res, err := p.buyer.BuyAndDedicate(ctx, fleetCmd.BuyOrder{
+		PlayerID:      order.PlayerID,
+		Class:         fleetCmd.HullClassLight, // undedicated (no tag) → the grower re-dedicates to the role fleet
+		ShipType:      order.Unit.ShipType,
+		Yard:          order.Yard,
+		ExpectedPrice: order.ExpectedPrice,
+	})
+	if err != nil {
+		return contractScalerCmd.BuyResult{}, err
+	}
 	return contractScalerCmd.BuyResult{ShipSymbol: res.ShipSymbol, Price: res.Price}, nil
 }
 

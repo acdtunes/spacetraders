@@ -92,6 +92,25 @@ func StandbyDemand(roles EraRoles, parkDemand map[string]float64) map[string]flo
 	return out
 }
 
+// RoleTargets counts how many of each role the fixed plan holds — the per-role fill
+// targets (delivery D, warehouse W, stocker S) the role-aware ramp fills IN ORDER. It
+// lets the ramp reconcile the existing depot up to each role's target (adding only what
+// is short) instead of treating every plan unit as a delivery buy (the pre-actuation bug
+// where a warehouse/stocker plan index bought a plain delivery hull).
+func RoleTargets(plan []PlanUnit) (delivery, warehouse, stocker int) {
+	for _, unit := range plan {
+		switch unit.Role {
+		case DeliveryHauler:
+			delivery++
+		case Warehouse:
+			warehouse++
+		case Stocker:
+			stocker++
+		}
+	}
+	return delivery, warehouse, stocker
+}
+
 // Target is the buy-loop stop: buy up to min(plan size, live ceiling). The ceiling
 // (contract_fleet_max_hulls) is the single operator throttle; a zero ceiling buys
 // nothing.

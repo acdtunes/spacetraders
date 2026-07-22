@@ -511,16 +511,51 @@ func (s *DaemonServer) launchDepotWarehouse(ctx context.Context, shipSymbol, war
 		return fmt.Errorf("depot warehouse %s at %s: no receipt-demand goods to stock", shipSymbol, warehouseWaypoint)
 	}
 
+	return s.runOrRefreshDepotWarehouse(ctx, ship, shipSymbol, warehouseWaypoint, supportedGoods, targetUnits, playerID)
+}
+
+// runOrRefreshDepotWarehouse is the shared warehouse tail: persist+run the coordinator on a freshly-
+// positioned IDLE hull, or — for a hull already flying its coordinator — re-apply the whitelist to the
+// running persisted row instead of double-launching (the redeploy path; the stocker re-reads
+// supported_goods from the store each pass, and the IsIdle gate still refuses a second LAUNCH). It is
+// the tail BOTH the miner-solved launchDepotWarehouse and the fixed-whitelist launchDepotWarehousePinned
+// end in, so the container lifecycle / idle-gate / redeploy behaviour is identical whatever produced the
+// goods+caps — only the goods SOURCE differs upstream.
+func (s *DaemonServer) runOrRefreshDepotWarehouse(ctx context.Context, ship *navigation.Ship, shipSymbol, warehouseWaypoint string, supportedGoods []string, targetUnits map[string]int, playerID int) error {
 	if !ship.IsIdle() {
-		// Already flying its coordinator: DON'T double-launch — re-apply the freshly recomputed
-		// whitelist to the running warehouse's persisted row instead, so the redeployed selector
-		// reaches it (the stocker re-reads supported_goods from the store each pass). The IsIdle
-		// gate still refuses a second coordinator LAUNCH; only the cap re-solve is ungated.
 		return s.refreshRunningDepotWarehouseCaps(ctx, shipSymbol, warehouseWaypoint, supportedGoods, playerID)
 	}
-
-	_, err = s.persistAndRunWarehouse(ctx, shipSymbol, warehouseWaypoint, supportedGoods, targetUnits, playerID)
+	_, err := s.persistAndRunWarehouse(ctx, shipSymbol, warehouseWaypoint, supportedGoods, targetUnits, playerID)
 	return err
+}
+
+// launchDepotWarehousePinned starts a depot warehouse with an EXPLICITLY PINNED supported-goods
+// whitelist + per-good caps — the fixed once-at-arm far-source set the dedicated scaler owns (sp-urpxy,
+// economy-analyst authoritative st-wisp-2h6r5). It is the sibling of launchDepotWarehouse but BYPASSES
+// the receipt-demand miner (depotReceiptMiner / depotColocatedWarehouseTargets) entirely: the whitelist
+// is universe-invariant and must NEVER be recomputed (sp-9le3x: no runtime solver, no re-sensing). It
+// reuses the SAME hull positioning (positionDepotElementHull: re-dedicate to the "warehouse" fleet,
+// claim-release, never-poach) and the SAME container lifecycle (runOrRefreshDepotWarehouse), so only the
+// goods SOURCE differs. An undedicated reclaimed/bought hull is adopted cleanly; a foreign-fleet hull is
+// left uncrewed (never-poach), and an empty whitelist is a loud error (the scaler always pins the set).
+func (s *DaemonServer) launchDepotWarehousePinned(ctx context.Context, shipSymbol, warehouseWaypoint string, supportedGoods []string, targetUnits map[string]int, playerID int) error {
+	if shipSymbol == "" || warehouseWaypoint == "" {
+		return fmt.Errorf("depot warehouse launch requires a ship symbol and warehouse waypoint")
+	}
+	if len(supportedGoods) == 0 {
+		return fmt.Errorf("depot warehouse %s at %s: pinned supported_goods is empty", shipSymbol, warehouseWaypoint)
+	}
+	ship, crewed, err := s.positionDepotElementHull(ctx, shipSymbol, warehouseWaypoint, operationWarehouse, false, playerID)
+	if err != nil {
+		return err
+	}
+	if !crewed {
+		return nil // never-poach (sp-udgc): the hull is dedicated to a foreign fleet — element left uncrewed
+	}
+	if ship == nil {
+		return fmt.Errorf("depot warehouse hull %s not found", shipSymbol)
+	}
+	return s.runOrRefreshDepotWarehouse(ctx, ship, shipSymbol, warehouseWaypoint, supportedGoods, targetUnits, playerID)
 }
 
 // refreshRunningDepotWarehouseCaps re-applies a freshly-recomputed receipt whitelist to an

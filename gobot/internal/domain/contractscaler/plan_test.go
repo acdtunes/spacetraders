@@ -97,6 +97,60 @@ func TestBuildPlan_StandbyDemandIsTheParkWeights(t *testing.T) {
 	}
 }
 
+// RoleTargets exposes the per-role fill targets (delivery D / warehouse W / stocker S)
+// the role-aware ramp fills IN ORDER, so it can reconcile the existing depot up to each
+// role's target rather than treat every plan unit as a delivery buy. A hub-less era (no
+// central park) has no warehouse/stocker bundle, so all three are zero.
+func TestRoleTargets_CountsEachRoleOfTheFixedPlan(t *testing.T) {
+	demand := map[string]float64{}
+	sevenParks := make([]string, 7)
+	for i := range sevenParks {
+		sevenParks[i] = string(rune('A' + i))
+		demand[sevenParks[i]] = float64(i)
+	}
+
+	// 7 parks + a hub → 7 delivery, the full warehouse + stocker bundle.
+	if d, w, s := RoleTargets(BuildPlan(EraRoles{CentralParks: sevenParks}, demand)); d != 7 || w != WarehouseUnits || s != StockerUnits {
+		t.Fatalf("RoleTargets(7 parks) = (%d,%d,%d), want (7,%d,%d)", d, w, s, WarehouseUnits, StockerUnits)
+	}
+	// 0 parks → empty plan (no hull anchors the warehouse bundle) → no roles.
+	if d, w, s := RoleTargets(BuildPlan(EraRoles{}, demand)); d != 0 || w != 0 || s != 0 {
+		t.Fatalf("RoleTargets(0 parks) = (%d,%d,%d), want (0,0,0)", d, w, s)
+	}
+	// 3 parks → 3 delivery + the full warehouse + stocker bundle (bundle is hub-gated, not park-scaled).
+	if d, w, s := RoleTargets(BuildPlan(EraRoles{CentralParks: []string{"P1", "P2", "P3"}}, demand)); d != 3 || w != WarehouseUnits || s != StockerUnits {
+		t.Fatalf("RoleTargets(3 parks) = (%d,%d,%d), want (3,%d,%d)", d, w, s, WarehouseUnits, StockerUnits)
+	}
+}
+
+// FarSourceGoods is the FIXED, universe-invariant far-source whitelist the contract depot stocks
+// (economy-analyst authoritative, st-wisp-2h6r5): the ores / precious metals+stones / drugs — IDENTICAL
+// every era, NOT demand-mined, NOT export-derived, NOT value-ranked. DepotTargetUnits pins each at the
+// flat per-good buffer cap (~2× a typical ~70-unit contract quantity), never below one delivery.
+func TestFarSourceGoods_FixedWhitelistAndFlatCaps(t *testing.T) {
+	want := []string{"COPPER_ORE", "IRON_ORE", "ALUMINUM_ORE", "GOLD", "SILVER", "DIAMONDS", "PRECIOUS_STONES", "DRUGS"}
+	if !reflect.DeepEqual(FarSourceGoods, want) {
+		t.Fatalf("FarSourceGoods = %v, want the fixed 8-symbol far-source set %v", FarSourceGoods, want)
+	}
+	if DepotUnitsPerGood != 140 {
+		t.Fatalf("DepotUnitsPerGood = %d, want 140 (~2× the ~70 typical contract qty; never the useless 40/good)", DepotUnitsPerGood)
+	}
+	caps := DepotTargetUnits()
+	if len(caps) != len(FarSourceGoods) {
+		t.Fatalf("DepotTargetUnits has %d goods, want %d (one cap per whitelist good)", len(caps), len(FarSourceGoods))
+	}
+	for _, good := range FarSourceGoods {
+		if caps[good] != DepotUnitsPerGood {
+			t.Fatalf("DepotTargetUnits[%s] = %d, want the flat cap DepotUnitsPerGood=%d", good, caps[good], DepotUnitsPerGood)
+		}
+	}
+	// A fresh map each call — a caller mutating its caps never corrupts the fixed definition.
+	DepotTargetUnits()["IRON_ORE"] = 1
+	if DepotTargetUnits()["IRON_ORE"] != DepotUnitsPerGood {
+		t.Fatalf("DepotTargetUnits must return a fresh map each call (the fixed definition is immutable)")
+	}
+}
+
 func TestTarget_IsPlanCappedByCeiling(t *testing.T) {
 	if got := Target(10, 2); got != 2 {
 		t.Fatalf("Target(10,2) = %d, want 2 (ceiling caps the plan)", got)

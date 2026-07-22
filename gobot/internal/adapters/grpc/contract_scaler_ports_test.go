@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"errors"
+	"sort"
 	"testing"
 	"time"
 
@@ -10,8 +11,10 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
+	"github.com/andrescamacho/spacetraders-go/internal/application/contract/depotstore"
 	contractScalerCmd "github.com/andrescamacho/spacetraders-go/internal/application/contractscaler/commands"
 	fleetCmd "github.com/andrescamacho/spacetraders-go/internal/application/fleet/commands"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/contract/depot"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contractscaler"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -241,6 +244,30 @@ func TestContractScalerPurchaser_BuysContractDedicatedThenHomesDemandRanked(t *t
 	}
 }
 
+// TestContractScalerPurchaser_BuyHullBuysUndedicatedAndDoesNotHome proves the DEPOT-role buy: it
+// drives the kept primitive with the LIGHT class (whose dedicate-at-purchase tag is empty), so the
+// bought hull is UNDEDICATED and the grower's launch can re-dedicate it to "warehouse"/"stocker"
+// (positionDepotElementHull adopts an undedicated hull; a "contract"-tagged one would be never-poach
+// refused). It dispatches NO HomeShipCommand — a depot hull is placed by the grower, never contract-homed.
+func TestContractScalerPurchaser_BuyHullBuysUndedicatedAndDoesNotHome(t *testing.T) {
+	buyer := &fakeContractBuyer{result: fleetCmd.BuyResult{ShipSymbol: "DEPOT-HULL", Price: 90000}}
+	sender := &recordingSender{}
+	p := &contractScalerPurchaser{buyer: buyer, med: sender, shipRepo: nil}
+
+	res, err := p.BuyHull(context.Background(), contractScalerCmd.BuyOrder{
+		PlayerID:      1,
+		Unit:          contractscaler.PlanUnit{Role: contractscaler.Warehouse, ShipType: "SHIP_LIGHT_HAULER", Target: "HUB"},
+		Yard:          "YARD-1",
+		ExpectedPrice: 90000,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "DEPOT-HULL", res.ShipSymbol)
+	require.Equal(t, fleetCmd.HullClassLight, buyer.order.Class, "depot hull buys undedicated (light class) — the grower re-dedicates")
+	require.Equal(t, "SHIP_LIGHT_HAULER", buyer.order.ShipType)
+	require.Equal(t, "YARD-1", buyer.order.Yard)
+	require.Empty(t, sender.sent, "a depot hull is placed by the grower, never contract-homed")
+}
+
 // TestContractScalerPurchaser_BuyFailureNeverHomes proves a failed buy short-circuits: no hull exists
 // to home, so no HomeShipCommand is dispatched and the error propagates (the ramp records it).
 func TestContractScalerPurchaser_BuyFailureNeverHomes(t *testing.T) {
@@ -418,6 +445,224 @@ func TestReclaim_ReDedicatesToContractAndHomesDemandRanked(t *testing.T) {
 	if len(home.StandbyStations) != 3 || home.StandbyDemand["P2"] != 9 {
 		t.Fatalf("HomeShipCommand missing the spread set + park demand weights: stations=%v demand=%v", home.StandbyStations, home.StandbyDemand)
 	}
+}
+
+// --- depot-aware per-role counter (sp-urpxy): the depot registry is the source of truth for
+// actuated warehouse/stocker units, so raising the ceiling RECONCILES the existing depot
+// (adds only the plan-short units) instead of buying duplicate warehouses ---
+
+// memDepotRepo is an in-memory depotstore.Repository — the durable port's test double, so the
+// counter/grower are exercised over a REAL Store (LoadRegistry / AddElement / AddDepot) without DB I/O.
+type memDepotRepo struct {
+	byID map[string]*depot.ContractDepot
+}
+
+func newMemDepotRepo() *memDepotRepo { return &memDepotRepo{byID: map[string]*depot.ContractDepot{}} }
+
+func (r *memDepotRepo) List(context.Context) ([]*depot.ContractDepot, error) {
+	out := make([]*depot.ContractDepot, 0, len(r.byID))
+	for _, c := range r.byID {
+		out = append(out, c)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID() < out[j].ID() })
+	return out, nil
+}
+
+func (r *memDepotRepo) Get(_ context.Context, id string) (*depot.ContractDepot, bool, error) {
+	c, ok := r.byID[id]
+	return c, ok, nil
+}
+
+func (r *memDepotRepo) Save(_ context.Context, c *depot.ContractDepot) error {
+	r.byID[c.ID()] = c
+	return nil
+}
+
+func (r *memDepotRepo) Delete(_ context.Context, id string) error {
+	delete(r.byID, id)
+	return nil
+}
+
+// storeFactoryOver returns a per-player store factory pinned to ONE repo — the seam the
+// counter/grower construct their player-scoped Store through (production: s.depotStore(playerID)).
+func storeFactoryOver(repo depotstore.Repository) func(int) *depotstore.Store {
+	store := depotstore.New(repo)
+	return func(int) *depotstore.Store { return store }
+}
+
+// The counter reads the depot registry's element counts — 2 warehouses + 1 stocker (the live
+// TORWIND-15/11 + TORWIND-18 shape at hub X1-UM5-I56) — so the ramp's per-role Current is the
+// depot itself, and an empty registry (no depot yet) reports zero.
+func TestContractScalerDepotCounter_CountsWarehouseAndStockerFromRegistry(t *testing.T) {
+	repo := newMemDepotRepo()
+	d, err := depot.NewContractDepot("contract-hub",
+		[]depot.Element{{Waypoint: "X1-UM5-I56", ShipSymbol: "WH-1"}, {Waypoint: "X1-UM5-I56", ShipSymbol: "WH-2"}},
+		[]depot.Element{{Waypoint: "X1-UM5-I56", ShipSymbol: "STK-1"}},
+		nil, nil,
+	)
+	require.NoError(t, err)
+	require.NoError(t, repo.Save(context.Background(), d))
+
+	counter := &contractScalerDepotCounter{storeFor: storeFactoryOver(repo)}
+	wh, err := counter.WarehouseCount(context.Background(), 1)
+	require.NoError(t, err)
+	stk, err := counter.StockerCount(context.Background(), 1)
+	require.NoError(t, err)
+	require.Equal(t, 2, wh, "2 warehouse elements are the actuated warehouse Current")
+	require.Equal(t, 1, stk, "1 stocker element is the actuated stocker Current")
+
+	// Empty registry → (0,0): a player with no depot has nothing actuated yet.
+	empty := &contractScalerDepotCounter{storeFor: storeFactoryOver(newMemDepotRepo())}
+	wh0, err := empty.WarehouseCount(context.Background(), 1)
+	require.NoError(t, err)
+	stk0, err := empty.StockerCount(context.Background(), 1)
+	require.NoError(t, err)
+	require.Equal(t, 0, wh0)
+	require.Equal(t, 0, stk0)
+}
+
+// --- daemon wiring (sp-urpxy): the depot counter + grower are armed at boot; unset ⇒ delivery-only ---
+
+// Wiring arms depot actuation: a bare handler is delivery-only (counter+grower unset); after
+// wireContractScalerDepotActuation both are set, so the ramp reconciles the depot. This is the exact
+// helper NewContractScalerCoordinatorHandler calls over server.depotStore + the launch verbs.
+func TestWireContractScalerDepotActuation_ArmsCounterAndGrower(t *testing.T) {
+	h := contractScalerCmd.NewRunContractScalerHandler(nil)
+	require.False(t, h.DepotActuatable(), "a bare handler is delivery-only — depot actuation unset (byte-identical)")
+
+	wireContractScalerDepotActuation(h, storeFactoryOver(newMemDepotRepo()), &spyDepotLauncher{})
+	require.True(t, h.DepotActuatable(), "after wiring, both the depot counter and grower are set — depot actuation armed")
+}
+
+// --- depot growth port (sp-urpxy): AddElement/AddDepot + launchDepot* grows the EXISTING depot ---
+
+// spyDepotLauncher records the depot launch verbs the grower dispatches — the depotGrowthLauncher
+// boundary (*DaemonServer's launchDepotWarehouse/launchDepotStocker in production), so the grower's
+// store+launch composition is unit-tested without spawning coordinator goroutines.
+type spyDepotLauncher struct {
+	warehouses []depotLaunchCall
+	stockers   []depotLaunchCall
+	err        error
+}
+
+type depotLaunchCall struct {
+	ship           string
+	waypoint       string
+	supportedGoods []string
+	targetUnits    map[string]int
+	playerID       int
+}
+
+func (s *spyDepotLauncher) launchDepotWarehousePinned(_ context.Context, ship, waypoint string, supportedGoods []string, targetUnits map[string]int, playerID int) error {
+	s.warehouses = append(s.warehouses, depotLaunchCall{ship: ship, waypoint: waypoint, supportedGoods: supportedGoods, targetUnits: targetUnits, playerID: playerID})
+	return s.err
+}
+
+func (s *spyDepotLauncher) launchDepotStocker(_ context.Context, ship, waypoint string, playerID int) error {
+	s.stockers = append(s.stockers, depotLaunchCall{ship: ship, waypoint: waypoint, playerID: playerID})
+	return s.err
+}
+
+func warehouseShips(t *testing.T, repo depotstore.Repository) []string {
+	t.Helper()
+	reg, err := depotstore.New(repo).LoadRegistry(context.Background())
+	require.NoError(t, err)
+	var ships []string
+	for _, d := range reg.Depots() {
+		for _, w := range d.Warehouses() {
+			ships = append(ships, w.ShipSymbol)
+		}
+	}
+	sort.Strings(ships)
+	return ships
+}
+
+// newPinnedGrower builds a grower pinned to the REAL fixed far-source whitelist + flat caps — the exact
+// goods+caps the boot wiring injects (contractscaler.FarSourceGoods / DepotTargetUnits), so the tests
+// prove the LOAD-BEARING outcome: the launch pins the fixed set explicitly (the miner never runs).
+func newPinnedGrower(repo depotstore.Repository, launcher depotGrowthLauncher) *contractScalerDepotGrower {
+	return &contractScalerDepotGrower{
+		storeFor:       storeFactoryOver(repo),
+		launcher:       launcher,
+		supportedGoods: contractscaler.FarSourceGoods,
+		targetUnits:    contractscaler.DepotTargetUnits(),
+	}
+}
+
+// GrowWarehouse on a registry with an EXISTING depot ADDS a warehouse element (never a second depot) and
+// launches the warehouse on the new hull with the FIXED far-source whitelist + flat 140/good caps PINNED
+// explicitly (the demand miner bypassed — the set is universe-invariant, never recomputed).
+func TestContractScalerDepotGrower_GrowsExistingDepotWarehousePinningFixedGoods(t *testing.T) {
+	repo := newMemDepotRepo()
+	seed, err := depot.NewContractDepot("contract-depot-X1-UM5-I56",
+		[]depot.Element{{Waypoint: "X1-UM5-I56", ShipSymbol: "WH-1"}}, nil, nil, nil)
+	require.NoError(t, err)
+	require.NoError(t, repo.Save(context.Background(), seed))
+
+	launcher := &spyDepotLauncher{}
+	grower := newPinnedGrower(repo, launcher)
+
+	err = grower.GrowWarehouse(context.Background(), contractScalerCmd.DepotGrowOrder{PlayerID: 1, ShipSymbol: "WH-2", Hub: "X1-UM5-I56"})
+	require.NoError(t, err)
+
+	// AddElement, not AddDepot: still ONE depot, now with two warehouse hulls at the hub.
+	reg, err := depotstore.New(repo).LoadRegistry(context.Background())
+	require.NoError(t, err)
+	require.Len(t, reg.Depots(), 1, "reconcile the existing depot — never create a duplicate")
+	require.Equal(t, []string{"WH-1", "WH-2"}, warehouseShips(t, repo), "the new warehouse is ADDED to the existing depot")
+
+	// The warehouse launches on the new hull with the FIXED whitelist + flat caps pinned (miner bypassed).
+	require.Len(t, launcher.warehouses, 1)
+	require.Equal(t, "WH-2", launcher.warehouses[0].ship)
+	require.Equal(t, "X1-UM5-I56", launcher.warehouses[0].waypoint)
+	require.Equal(t, contractscaler.FarSourceGoods, launcher.warehouses[0].supportedGoods, "the FIXED far-source whitelist is pinned explicitly")
+	require.Equal(t, contractscaler.DepotTargetUnits(), launcher.warehouses[0].targetUnits, "flat 140/good caps pinned (never demand-mined)")
+	require.Empty(t, launcher.stockers)
+}
+
+// GrowWarehouse on an EMPTY registry first CREATES the depot (AddDepot — NewContractDepot requires the
+// anchor warehouse) with the hull as its anchor, then launches it. This is the cold-start path before
+// any depot exists; in the live game the depot already exists, so the reconcile path above dominates.
+func TestContractScalerDepotGrower_CreatesDepotOnEmptyRegistry(t *testing.T) {
+	repo := newMemDepotRepo()
+	launcher := &spyDepotLauncher{}
+	grower := newPinnedGrower(repo, launcher)
+
+	err := grower.GrowWarehouse(context.Background(), contractScalerCmd.DepotGrowOrder{PlayerID: 1, ShipSymbol: "WH-1", Hub: "X1-UM5-I56"})
+	require.NoError(t, err)
+
+	reg, err := depotstore.New(repo).LoadRegistry(context.Background())
+	require.NoError(t, err)
+	require.Len(t, reg.Depots(), 1, "the first warehouse anchors a new depot")
+	require.Equal(t, []string{"WH-1"}, warehouseShips(t, repo))
+	require.Len(t, launcher.warehouses, 1)
+	require.Equal(t, "WH-1", launcher.warehouses[0].ship)
+}
+
+// GrowStocker ADDS a stocker element to the existing depot and launches the stocker pointed at the
+// warehouse anchor (the deposit target). Fill order guarantees a warehouse (the anchor) already exists.
+func TestContractScalerDepotGrower_GrowsStockerIntoExistingDepot(t *testing.T) {
+	repo := newMemDepotRepo()
+	seed, err := depot.NewContractDepot("contract-depot-X1-UM5-I56",
+		[]depot.Element{{Waypoint: "X1-UM5-I56", ShipSymbol: "WH-1"}}, nil, nil, nil)
+	require.NoError(t, err)
+	require.NoError(t, repo.Save(context.Background(), seed))
+
+	launcher := &spyDepotLauncher{}
+	grower := newPinnedGrower(repo, launcher)
+
+	err = grower.GrowStocker(context.Background(), contractScalerCmd.DepotGrowOrder{PlayerID: 1, ShipSymbol: "STK-1", Hub: "X1-UM5-I56"})
+	require.NoError(t, err)
+
+	reg, err := depotstore.New(repo).LoadRegistry(context.Background())
+	require.NoError(t, err)
+	require.Len(t, reg.Depots(), 1)
+	require.Len(t, reg.Depots()[0].Stockers(), 1, "the stocker is ADDED to the existing depot")
+	require.Equal(t, "STK-1", reg.Depots()[0].Stockers()[0].ShipSymbol)
+	require.Len(t, launcher.stockers, 1)
+	require.Equal(t, "STK-1", launcher.stockers[0].ship)
+	require.Equal(t, "X1-UM5-I56", launcher.stockers[0].waypoint, "stocker deposits into the warehouse anchor")
+	require.Empty(t, launcher.warehouses)
 }
 
 // A failed re-dedicate leaves the hull UNTAKEN: Reclaim returns the error and dispatches NO homing (a
