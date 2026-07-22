@@ -37,17 +37,12 @@ type FleetAutosizerConfig struct {
 	FleetCeilingLights  int `mapstructure:"fleet_ceiling_lights"`
 	FleetCeilingHeavies int `mapstructure:"fleet_ceiling_heavies"`
 
-	// --- treasury guard (reuses common.EffectiveReserveFloor) ---
+	// --- treasury guard ---
 
 	// PurchaseMarginOverFloor is absolute credits of headroom required ABOVE the reserve floor
-	// stack after a buy (liveTreasury − floor ≥ price + this). 0/absent → 200000.
+	// (the flat common.ImmutableReserveFloor, sp-05glh) after a buy (liveTreasury − floor ≥
+	// price + this). 0/absent → 200000.
 	PurchaseMarginOverFloor int64 `mapstructure:"purchase_margin_over_floor"`
-	// Reserve is the absolute working-capital reserve fed to EffectiveReserveFloor. 0/absent →
-	// the common.ImmutableReserveFloor is still enforced; the resolver clamps.
-	Reserve int64 `mapstructure:"reserve"`
-	// ReserveTreasuryPct is the proportional reserve floor (percent of live treasury) fed to
-	// EffectiveReserveFloor. 0/absent → common.DefaultReserveTreasuryPct (40).
-	ReserveTreasuryPct int `mapstructure:"reserve_treasury_pct"`
 
 	// --- light (factory-worker) demand ---
 

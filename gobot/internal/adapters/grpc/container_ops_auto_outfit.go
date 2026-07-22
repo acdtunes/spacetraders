@@ -67,9 +67,9 @@ func (s *DaemonServer) AutoOutfitCoordinator(ctx context.Context, playerID int, 
 	}
 
 	// sp-rsgc: re-adopt the last persisted live-tuned config for this player's auto-outfit
-	// coordinator so a relaunch of a stopped one keeps its price_ceiling/treasury_reserve
-	// tunes (matching the daemon-restart recovery path) instead of silently reverting to the
-	// coordinator defaults. The launch-time dry-run mode stays authoritative from THIS start.
+	// coordinator so a relaunch of a stopped one keeps its price_ceiling tune (matching the
+	// daemon-restart recovery path) instead of silently reverting to the coordinator default.
+	// The launch-time dry-run mode stays authoritative from THIS start.
 	config, warnings, err := s.coordinatorStartConfig(ctx, playerID, config, autoOutfitStartSpec())
 	if err != nil {
 		return "", fmt.Errorf("failed to resolve auto-outfit start config: %w", err)

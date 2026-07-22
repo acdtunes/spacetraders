@@ -93,8 +93,8 @@ func WithWithdrawalRecorder(recorder storage.WithdrawalRecorder, clock shared.Cl
 
 // WithSourceBuyFloor arms the proactive working-capital reserve floor on the market
 // source-buy (sp-zq635 §4b): before a buy the executor reads live treasury and HOLDS
-// (parks, resuming when treasury recovers) any buy that would drop it below the
-// immutable reserve floor (common.EffectiveReserveFloor over common.ImmutableReserveFloor).
+// (parks, resuming when treasury recovers) any buy that would drop it below the flat,
+// immutable reserve floor (common.ImmutableReserveFloor).
 // Fail-closed: an unreadable treasury parks the buy. A DeliveryExecutor built without
 // this option is byte-identical to before — reactive 4600 handling only.
 func WithSourceBuyFloor() DeliveryExecutorOption {
@@ -384,8 +384,8 @@ func (e *DeliveryExecutor) lookupLiveCredits(ctx context.Context, playerID share
 }
 
 // sourceBuyFloorBreached reports whether buying a source tranche costing projectedCost
-// would drop live treasury below the immutable working-capital reserve floor
-// (common.EffectiveReserveFloor over common.ImmutableReserveFloor, sp-zq635 §4b). It is
+// would drop live treasury below the flat, immutable working-capital reserve floor
+// (common.ImmutableReserveFloor, sp-zq635 §4b / sp-05glh). It is
 // the contract-side analogue of the factory's spendFloorBreached and the trade/arb
 // spend-floor: a live treasury read right before the buy so the caller PARKS (not crash)
 // instead of spending below the reserve.
@@ -408,7 +408,7 @@ func (e *DeliveryExecutor) sourceBuyFloorBreached(ctx context.Context, playerID 
 		})
 		return true
 	}
-	floor := common.EffectiveReserveFloor(common.ImmutableReserveFloor, common.DefaultReserveTreasuryPct, int64(treasury))
+	const floor = common.ImmutableReserveFloor
 	if int64(treasury)-int64(projectedCost) < floor {
 		logger.Log("WARNING", fmt.Sprintf(
 			"Contract source-buy would breach the working-capital reserve floor — treasury %d, projected cost %d, reserve %d; parking (resumes when treasury recovers)",

@@ -132,17 +132,14 @@ type RunTradeFleetCoordinatorCommand struct {
 
 	// Tour launch knobs, passed verbatim to StartTourRun. 0 => the tour's own
 	// documented default for that knob (max_hops->6, max_spend->25% of live treasury,
-	// replan_limit->2, working_capital_reserve->the non-tunable floor). Sourced live
-	// from config.yaml's [trade_fleet] section on every build so an edit+restart
+	// replan_limit->2, working_capital_reserve->the non-tunable floor, sp-05glh flat). Sourced
+	// live from config.yaml's [trade_fleet] section on every build so an edit+restart
 	// retunes a recovered coordinator (sp-ts82 live-config pattern).
 	MaxHops               int
 	MaxSpend              int64
 	MinMargin             int
 	ReplanLimit           int
 	WorkingCapitalReserve int64
-	// WorkingCapitalReserveTreasuryPct is the sp-yqx4 counter-cyclical floor percent, passed
-	// verbatim to each StartTourRun. 0 => the tour's 40% default resolved at build.
-	WorkingCapitalReserveTreasuryPct int
 
 	// RelaunchBackoffMaxSecs caps the per-hull ADAPTIVE relaunch backoff (sp-1pli);
 	// <=0 uses defaultRelaunchBackoffMaxSeconds. See relaunchBackoffMaxDuration and the
@@ -193,16 +190,15 @@ type RunTradeFleetCoordinatorResponse struct {
 // persistence, and the operation="trade" stamp (StartTourRun), so the coordinator
 // stays a pure decision loop that claims nothing itself (RULINGS #3/#7).
 type TourLaunchSpec struct {
-	ShipSymbol                       string
-	MaxHops                          int
-	MaxSpend                         int64
-	MinMargin                        int
-	ReplanLimit                      int
-	WorkingCapitalReserve            int64
-	WorkingCapitalReserveTreasuryPct int // sp-yqx4 counter-cyclical floor percent (0 → 40% default at build)
-	AgentSymbol                      string
-	Iterations                       int
-	PlayerID                         int
+	ShipSymbol            string
+	MaxHops               int
+	MaxSpend              int64
+	MinMargin             int
+	ReplanLimit           int
+	WorkingCapitalReserve int64
+	AgentSymbol           string
+	Iterations            int
+	PlayerID              int
 
 	// RepositionReachEscalated arms reposition-reach for THIS launch (sp-nxrt part a),
 	// overriding the daemon-global reposition_reach_enabled. The fleet coordinator sets it
@@ -478,17 +474,16 @@ func (h *RunTradeFleetCoordinatorHandler) reconcileOnce(ctx context.Context, cmd
 		}
 
 		spec := TourLaunchSpec{
-			ShipSymbol:                       ship.ShipSymbol(),
-			MaxHops:                          cmd.MaxHops,
-			MaxSpend:                         cmd.MaxSpend,
-			MinMargin:                        cmd.MinMargin,
-			ReplanLimit:                      cmd.ReplanLimit,
-			WorkingCapitalReserve:            cmd.WorkingCapitalReserve,
-			WorkingCapitalReserveTreasuryPct: cmd.WorkingCapitalReserveTreasuryPct,
-			AgentSymbol:                      cmd.AgentSymbol,
-			Iterations:                       tourIterationsContinuous,
-			PlayerID:                         cmd.PlayerID.Value(),
-			RepositionReachEscalated:         reachEscalated,
+			ShipSymbol:               ship.ShipSymbol(),
+			MaxHops:                  cmd.MaxHops,
+			MaxSpend:                 cmd.MaxSpend,
+			MinMargin:                cmd.MinMargin,
+			ReplanLimit:              cmd.ReplanLimit,
+			WorkingCapitalReserve:    cmd.WorkingCapitalReserve,
+			AgentSymbol:              cmd.AgentSymbol,
+			Iterations:               tourIterationsContinuous,
+			PlayerID:                 cmd.PlayerID.Value(),
+			RepositionReachEscalated: reachEscalated,
 		}
 		containerID, lerr := h.launcher.LaunchTour(ctx, spec)
 		if lerr != nil {

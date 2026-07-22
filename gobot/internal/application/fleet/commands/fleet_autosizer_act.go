@@ -321,8 +321,6 @@ func (h *RunFleetAutosizerCoordinatorHandler) buildPurchaseRequest(
 
 		LiveTreasury:      in.treasury,
 		TreasuryReadable:  in.treasuryOK,
-		ReserveAbsolute:   cfg.Reserve,
-		ReservePct:        cfg.ReserveTreasuryPct,
 		MarginOverFloor:   cfg.PurchaseMarginOverFloor,
 		TreasuryPctPerBuy: treasuryPct,
 

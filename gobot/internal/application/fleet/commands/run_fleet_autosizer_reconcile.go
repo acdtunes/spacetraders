@@ -23,8 +23,6 @@ type autosizerRunConfig struct {
 	FleetCeilingHeavies int
 
 	PurchaseMarginOverFloor int64
-	Reserve                 int64
-	ReserveTreasuryPct      int
 
 	LightRotationSlots float64
 
@@ -67,8 +65,6 @@ func resolveFleetAutosizerConfig(cmd *RunFleetAutosizerCoordinatorCommand) autos
 		FleetCeilingLights:          cmd.FleetCeilingLights,
 		FleetCeilingHeavies:         cmd.FleetCeilingHeavies,
 		PurchaseMarginOverFloor:     cmd.PurchaseMarginOverFloor,
-		Reserve:                     cmd.Reserve,
-		ReserveTreasuryPct:          cmd.ReserveTreasuryPct,
 		LightRotationSlots:          cmd.LightRotationSlots,
 		HeavyMarginalRateFloor:      cmd.HeavyMarginalRateFloor,
 		HeavyUnservedLanesMin:       cmd.HeavyUnservedLanesMin,

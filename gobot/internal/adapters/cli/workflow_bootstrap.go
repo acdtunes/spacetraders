@@ -21,9 +21,10 @@ import (
 // at DATA-complete once market coverage clears the bar (INCOME/GATE are later slices).
 //
 // All tuning lives in config.yaml's [bootstrap] section (the disable, probe target, coverage bar,
-// reserve margin, tick cadence, probe ship type), resolved LIVE on every build — so a retune is
-// `edit config.yaml + restart daemon`, no code redeploy. This command only names the player/agent
-// and an optional --dry-run watch mode.
+// tick cadence, probe ship type), resolved LIVE on every build — so a retune is `edit config.yaml +
+// restart daemon`, no code redeploy. The money-guard itself (the working-capital floor every buy
+// respects) is the immutable common.ImmutableReserveFloor (sp-05glh) — not a config.yaml knob. This
+// command only names the player/agent and an optional --dry-run watch mode.
 func newWorkflowBootstrapCommand() *cobra.Command {
 	var dryRun bool
 
@@ -38,8 +39,9 @@ and resumes at real state with no double-acting.
 
 Slice 1 runs the DATA phase (INCOME/GATE are later slices):
   BUY     probes → probe_target (default 3), STAGED and capital-gated — at most one buy per tick,
-          and only when the price clears the money-guard (spend ≤ reserve_margin × treasury). Each
-          decision logs its full arithmetic (price, treasury, the cap, what would have blocked).
+          and only when the treasury left after the buy still clears the immutable working-capital
+          floor (cushion=(treasury−price) ≥ common.ImmutableReserveFloor, 50k). Each decision logs
+          its full arithmetic (price, treasury, cushion, floor, what would have blocked).
   SCOUT   assign every probe to scout-all-markets (idempotent VRP assignment) so market data flows.
   EXIT    hold at DATA-complete once market coverage ≥ coverage_bar (the later phases are stubs).
 
@@ -50,8 +52,10 @@ decision loudly while acting on nothing.
 Tuning is config-driven (config.yaml [bootstrap], live on daemon restart):
   bootstrap_disabled / dry_run                        escapes
   probe_target / coverage_bar                         DATA target + exit
-  reserve_margin                                      the ≤-fraction-of-treasury money-guard + pacer
   tick_seconds / probe_ship_type                      cadence + the asset bought
+
+The working-capital money-guard itself (every buy leaves the treasury ≥ this floor) is the
+immutable common.ImmutableReserveFloor (50k, sp-05glh) — a hard constant, not a config.yaml knob.
 
 Examples:
   spacetraders workflow bootstrap --agent ENDURANCE

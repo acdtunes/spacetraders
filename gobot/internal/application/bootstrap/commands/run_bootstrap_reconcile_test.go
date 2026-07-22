@@ -432,10 +432,11 @@ func TestBootstrap_RefreshFailure_FailsClosed(t *testing.T) {
 	}
 }
 
-// --- capital gate: price ≤ reserve_margin × treasury, fail closed, decision line emitted ---
+// --- capital gate: cushion (remaining-price) ≥ the immutable reserve floor, fail closed,
+// decision line emitted (sp-05glh: the floor is flat, no proportional reserve_margin) ---
 
 func TestBootstrap_CapitalGate_BlocksUnaffordableProbe(t *testing.T) {
-	// treasury 150k, reserve_margin 0.5 → cap 75k. A 300k probe must be blocked.
+	// treasury 150k, price 300k → cushion = 150000-300000 = -150000, below the 50k floor. Blocked.
 	obs := Observation{HomeSystem: "X1-HQ", ProbeCount: 1, ProbesScouting: 1, HasIdlePurchaser: true, Treasury: 150000, Readable: true}
 	acq := &fakeAcquirer{price: 300000, yard: "Y", readable: true}
 	h := NewRunBootstrapCoordinatorHandler(nil)
@@ -455,12 +456,12 @@ func TestBootstrap_CapitalGate_BlocksUnaffordableProbe(t *testing.T) {
 	if res.Blocker != "capital_gate" {
 		t.Fatalf("expected capital_gate blocker, got %q", res.Blocker)
 	}
-	// decision line must carry the arithmetic (price + treasury + cap)
+	// decision line must carry the arithmetic (price + treasury + cushion + floor)
 	dl, ok := log.find("bootstrap_buy_decision")
 	if !ok {
 		t.Fatalf("expected a buy-decision line with the guardrail arithmetic")
 	}
-	for _, want := range []string{"price=300000", "treasury=150000", "cap="} {
+	for _, want := range []string{"price=300000", "treasury=150000", "cushion=", "floor=50000"} {
 		if !strings.Contains(dl.msg, want) {
 			t.Fatalf("decision line missing %q: %s", want, dl.msg)
 		}
@@ -468,7 +469,9 @@ func TestBootstrap_CapitalGate_BlocksUnaffordableProbe(t *testing.T) {
 }
 
 func TestBootstrap_CapitalGate_AllowsAffordableProbe(t *testing.T) {
-	// treasury 150k, cap 75k/decrementing, probe 40k → both remaining buys affordable (1→3, need 2).
+	// treasury 150k, immutable floor 50k, probe 40k → both remaining buys affordable (1→3, need
+	// 2): cushion after buy 1 is 150000-40000=110000, after buy 2 is 110000-40000=70000, both
+	// ≥ the 50k floor.
 	obs := Observation{HomeSystem: "X1-HQ", ProbeCount: 1, ProbesScouting: 1, HasIdlePurchaser: true, Treasury: 150000, Readable: true}
 	acq := &fakeAcquirer{price: 40000, yard: "Y", readable: true}
 	h := newWiredHandler(obs, acq, &fakeDeclarer{})
@@ -521,11 +524,12 @@ func TestBootstrap_BuysToTargetInOneTick(t *testing.T) {
 	}
 }
 
-// The buy loop honors the reserve_margin capital gate against the DECREMENTING treasury: it buys what
+// The buy loop honors the flat-floor capital gate against the DECREMENTING treasury: it buys what
 // fits this tick and stops (the rest next tick as treasury grows), never overspending on a stale snapshot.
 func TestBootstrap_BuyLoop_CapitalGateStopsPartway(t *testing.T) {
-	// treasury 100k, reserve_margin 0.5, price 40k. iter1: cap on 100k = 50k ≥ 40k → buy (spent 40k).
-	// iter2: cap on remaining 60k = 30k < 40k → BLOCKED. So exactly 1 buys this tick, blocker capital_gate.
+	// treasury 100k, immutable floor 50k, price 40k. iter1: cushion = 100k-40k = 60k ≥ 50k floor →
+	// buy (spent 40k). iter2: cushion = 60k-40k = 20k < 50k floor → BLOCKED. So exactly 1 buys this
+	// tick, blocker capital_gate.
 	obs := Observation{HomeSystem: "X1-HQ", ProbeCount: 0, HasIdlePurchaser: true, Treasury: 100000, Readable: true}
 	acq := &fakeAcquirer{price: 40000, yard: "Y", readable: true}
 	h := newWiredHandler(obs, acq, &fakeDeclarer{})

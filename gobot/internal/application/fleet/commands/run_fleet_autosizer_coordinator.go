@@ -108,8 +108,6 @@ type RunFleetAutosizerCoordinatorCommand struct {
 	FleetCeilingHeavies int
 
 	PurchaseMarginOverFloor int64
-	Reserve                 int64
-	ReserveTreasuryPct      int
 
 	LightRotationSlots float64
 

@@ -316,7 +316,9 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd
 	// This replaces the old PROPORTIONAL reserve_margin×treasury cap, which made a ~300k hauler wait until
 	// treasury grew past ~2× its price; the hauler exists to SCALE cash flow, so it is bought as soon as
 	// the buy leaves a safe goods+fuel operating cushion (PLAYBOOK §3) — an absolute floor, not a fraction
-	// of a growing balance. reserve_margin is deliberately untouched (it still paces the DATA probe buy).
+	// of a growing balance. (The separate DATA-phase reserve_margin knob this once contrasted against is
+	// gone too — sp-05glh scrapped it with the 40% rule; the probe buy now gates on the same
+	// common.ImmutableReserveFloor cushion check, see run_bootstrap_reconcile.go.)
 	// RULINGS #4 fail-closed: an unreadable price already returned above, and a cushion below the floor
 	// does NOT buy — so after a permitted buy treasury ≥ floor by construction (the working-capital safety).
 	cushion := obs.Treasury - price

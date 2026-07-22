@@ -197,8 +197,10 @@ func marketFreshnessSizerStartSpec() coordinatorStartSpec {
 // is identity-only — every tunable knob defaults in the coordinator and is live-tunable — so
 // there are NO numeric start flags; the only authoritative keys are the new container id and
 // the launch-time dry-run mode (auto_outfit_launch_dry_run), which a live relaunch clears.
-// No safety knob: price_ceiling (default 500000) and treasury_reserve (default 50000) both
-// floor at positive defaults in resolveAutoOutfitConfig, so neither can resolve permissive.
+// No safety knob: price_ceiling (default 500000) floors at a positive default in
+// resolveAutoOutfitConfig, so it can never resolve permissive. (The proportional
+// treasury_reserve knob this comment used to pair it with is gone — sp-05glh replaced it with
+// the flat, non-tunable common.ImmutableReserveFloor.)
 func autoOutfitStartSpec() coordinatorStartSpec {
 	return coordinatorStartSpec{
 		containerType:     string(container.ContainerTypeAutoOutfitCoordinator),

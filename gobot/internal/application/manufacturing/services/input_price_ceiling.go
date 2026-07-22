@@ -74,10 +74,10 @@ func (e *ProductionExecutor) SetPriceHistoryReader(reader InputPriceHistoryReade
 }
 
 // inputPriceCeilingCtxKey carries the per-run ceiling config from the factory coordinator
-// down to the point of spend. It rides on ctx (not a struct field) for the SAME reason as
-// the working-capital reserve (WithConfiguredReserve): the ProductionExecutor is a
-// SINGLETON shared across every concurrent factory container, so a struct field would race
-// between sibling factories running different config; ctx is per-Handle and race-free.
+// down to the point of spend. It rides on ctx (not a struct field) because the
+// ProductionExecutor is a SINGLETON shared across every concurrent factory container, so a
+// struct field would race between sibling factories running different config; ctx is
+// per-Handle and race-free.
 type inputPriceCeilingCtxKey struct{}
 
 type inputPriceCeilingConfig struct {

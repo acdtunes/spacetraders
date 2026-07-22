@@ -42,8 +42,6 @@ func passingRequest() PurchaseRequest {
 
 		LiveTreasury:      5000000,
 		TreasuryReadable:  true,
-		ReserveAbsolute:   200000,
-		ReservePct:        40,
 		MarginOverFloor:   200000,
 		TreasuryPctPerBuy: 25,
 
@@ -265,20 +263,17 @@ func TestGuard_RealizedRate_NonHeavyDecliningAlwaysStops(t *testing.T) {
 func TestGuard_TreasuryPct_TooExpensive(t *testing.T) {
 	r := passingRequest()
 	// 25% of a 1M treasury = 250000 < price 437000. Keep the floor guard satisfied by a large
-	// reserve headroom: treasury 1M − floor(≤250000 at 25%… actually 40%×1M=400000) leaves 600000
-	// ≥ 637000? No — pick numbers so ONLY treasury_pct blocks.
+	// reserve headroom so ONLY treasury_pct blocks.
 	r.LiveTreasury = 1000000
-	r.ReservePct = 5           // floor = max(50000, min(200000, 5%×1M=50000)) = 50000
-	r.MarginOverFloor = 100000 // spendable 950000 ≥ 437000+100000 = 537000 (treasury_floor passes)
+	r.MarginOverFloor = 100000 // flat floor 50000, spendable 950000 ≥ 437000+100000 = 537000 (treasury_floor passes)
 	assertBlockedBy(t, r, GuardTreasuryPct)
 }
 
 func TestGuard_TreasuryPct_NotAppliedWhenZero(t *testing.T) {
 	r := passingRequest()
-	r.TreasuryPctPerBuy = 0 // lights: affordability-% rule off
-	r.LiveTreasury = 600000 // would fail a 25% rule, but the rule is off
-	r.ReservePct = 5
-	r.MarginOverFloor = 50000 // floor 50000, spendable 550000 ≥ 437000+50000 = 487000
+	r.TreasuryPctPerBuy = 0   // lights: affordability-% rule off
+	r.LiveTreasury = 600000   // would fail a 25% rule, but the rule is off
+	r.MarginOverFloor = 50000 // flat floor 50000, spendable 550000 ≥ 437000+50000 = 487000
 	d := EvaluateGuards(r)
 	for _, v := range d.Verdicts {
 		if v.Guard == GuardTreasuryPct && !v.Passed {
@@ -324,7 +319,7 @@ func TestGuard_APIUtil_UnderCeilingPasses(t *testing.T) {
 func TestGuard_TreasuryFloor_InsufficientAfterFloor(t *testing.T) {
 	r := passingRequest()
 	// Low treasury: even the immutable 50k floor leaves too little for price+margin.
-	r.LiveTreasury = 300000 // spendable ≈ 300000 − 120000(40%) = 180000 < 437000+200000
+	r.LiveTreasury = 300000 // spendable 300000 − 50000(flat floor) = 250000 < 437000+200000
 	r.TreasuryPctPerBuy = 0 // isolate the floor guard (25% rule off so it isn't the first blocker)
 	assertBlockedBy(t, r, GuardTreasuryFloor)
 }
@@ -336,23 +331,6 @@ func TestGuard_TreasuryFloor_UnreadableFailsClosed(t *testing.T) {
 	// evaluated first — so it is the named blocker. Turn it off to isolate the floor guard.
 	r.TreasuryPctPerBuy = 0
 	assertBlockedBy(t, r, GuardTreasuryFloor)
-}
-
-// The counter-cyclical proportional floor binds below ≈ absolute ÷ (pct/100) of
-// treasury, keeping a (1−pct%) slice spendable — so a mid treasury with a high absolute reserve
-// still permits an affordable buy rather than dead-locking.
-func TestGuard_TreasuryFloor_ProportionalFloorPermitsBuy(t *testing.T) {
-	r := passingRequest()
-	r.LiveTreasury = 2000000
-	r.ReserveAbsolute = 5000000 // a naive absolute floor above treasury would dead-lock every buy
-	r.ReservePct = 40           // proportional floor = 40% × 2M = 800000; spendable = 1,200,000
-	r.Price = 437000
-	r.MarginOverFloor = 200000 // need 637000 ≤ 1,200,000 → permitted
-	r.TreasuryPctPerBuy = 0
-	d := EvaluateGuards(r)
-	if !d.Approved {
-		t.Fatalf("proportional floor must permit an affordable buy at mid treasury; blocked by %q: %s", d.BlockedBy, d.Arithmetic())
-	}
 }
 
 // The decision log carries the full arithmetic for every guard (the park-line idiom).
@@ -422,8 +400,6 @@ func explorerPassingRequest() PurchaseRequest {
 
 		LiveTreasury:      10000000,
 		TreasuryReadable:  true,
-		ReserveAbsolute:   200000,
-		ReservePct:        40,
 		MarginOverFloor:   200000,
 		TreasuryPctPerBuy: 25, // big-ticket 25%-treasury affordability rule DOES apply to the explorer
 

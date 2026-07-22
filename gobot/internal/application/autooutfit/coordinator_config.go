@@ -15,7 +15,6 @@ type autoOutfitConfig struct {
 	Selection              domainOutfit.SelectionConfig
 	PriceCeiling           int
 	MaxInstallsPerTick     int
-	TreasuryReserve        int
 	MaxTreasuryFractionPct int
 	TelemetryWindow        time.Duration
 	WantedModules          []string
@@ -37,7 +36,6 @@ func AutoOutfitTunableDefaults() map[string]int {
 		"price_ceiling":             defaultPriceCeiling,
 		"max_installs_per_tick":     defaultMaxInstallsPerTick,
 		"payback_horizon_hours":     defaultPaybackHorizonHours,
-		"treasury_reserve":          defaultTreasuryReserve,
 		"max_treasury_fraction_pct": defaultMaxTreasuryFractionPct,
 	}
 }
@@ -58,7 +56,6 @@ func resolveAutoOutfitConfig(cmd *RunAutoOutfitCoordinatorCommand, live liveconf
 		},
 		PriceCeiling:           cmd.PriceCeiling,
 		MaxInstallsPerTick:     cmd.MaxInstallsPerTick,
-		TreasuryReserve:        cmd.TreasuryReserve,
 		MaxTreasuryFractionPct: cmd.MaxTreasuryFractionPct,
 		TelemetryWindow:        time.Duration(cmd.TelemetryWindowSecs) * time.Second,
 		WantedModules:          cmd.WantedModules,
@@ -69,7 +66,6 @@ func resolveAutoOutfitConfig(cmd *RunAutoOutfitCoordinatorCommand, live liveconf
 		c.Selection.PaybackHorizonHours = float64(live.PositiveIntOrZero("payback_horizon_hours"))
 		c.PriceCeiling = live.PositiveIntOrZero("price_ceiling")
 		c.MaxInstallsPerTick = live.PositiveIntOrZero("max_installs_per_tick")
-		c.TreasuryReserve = live.PositiveIntOrZero("treasury_reserve")
 		c.MaxTreasuryFractionPct = live.PositiveIntOrZero("max_treasury_fraction_pct")
 	}
 
@@ -89,9 +85,6 @@ func resolveAutoOutfitConfig(cmd *RunAutoOutfitCoordinatorCommand, live liveconf
 	}
 	if c.MaxInstallsPerTick <= 0 {
 		c.MaxInstallsPerTick = defaultMaxInstallsPerTick
-	}
-	if c.TreasuryReserve <= 0 {
-		c.TreasuryReserve = defaultTreasuryReserve
 	}
 	if c.MaxTreasuryFractionPct <= 0 {
 		c.MaxTreasuryFractionPct = defaultMaxTreasuryFractionPct

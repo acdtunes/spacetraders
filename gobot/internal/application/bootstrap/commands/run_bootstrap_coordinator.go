@@ -29,7 +29,6 @@ const (
 	defaultBootstrapTickSeconds = 45
 	defaultProbeTarget          = 3   // DATA target: 3 probes scouting so market data flows ASAP
 	defaultCoverageBar          = 0.9 // DATA→exit: 90% of home-system marketplaces fresh
-	defaultReserveMargin        = 0.5 // spend ≤ 50% of treasury per decision (guardrail + pacer)
 	// defaultProbeShipType is the shipyard ship-type symbol bought for a probe (RULINGS #5: even
 	// the asset is a knob).
 	defaultProbeShipType = "SHIP_PROBE"
@@ -66,9 +65,10 @@ const (
 	// every cushion move together and can never drift). The base common.ImmutableReserveFloor (50k) remains
 	// the SEPARATE immutable anti-stall backstop: the outer-max clamp that keeps mature tour/factory trade
 	// able to trade its way out of a low-treasury crunch, and the line the fleet autosizer clamps to
-	// (common.EffectiveReserveFloor). Both are hard constants — NOT live-tunable / config.yaml knobs, NOT
-	// the shared reserve_margin (which still paces the DATA probe buy). The contract cushion is RAISED above
-	// the immutable bound (stricter), so no money guard is weakened (RULINGS #4/#5): a permitted contract-op
+	// directly. Both are hard constants — NOT live-tunable / config.yaml knobs, and no longer paced by a
+	// separate reserve_margin knob (sp-05glh scrapped the 40% proportional rule entirely — the DATA probe
+	// buy now gates on common.ImmutableReserveFloor too). The contract cushion is RAISED above the
+	// immutable bound (stricter), so no money guard is weakened (RULINGS #4/#5): a permitted contract-op
 	// buy leaves the op funded at 150k.
 	defaultContractWorkingCapitalFloor int64 = common.ContractReserveCushion
 
@@ -399,7 +399,6 @@ type RunBootstrapCoordinatorCommand struct {
 	TickIntervalSecs int
 	ProbeTarget      int
 	CoverageBar      float64
-	ReserveMargin    float64
 	ProbeShipType    string
 
 	// INCOME-phase knobs (RULINGS #5; the zero value defers to the documented default).
@@ -608,7 +607,7 @@ func (h *RunBootstrapCoordinatorHandler) Handle(ctx context.Context, request com
 	// Startup log only — resolve from the launch command alone (nil live). Per-tick reconcile
 	// re-resolves WITH the live snapshot (sp-r6yq), so a later tune is reflected from that tick on.
 	cfg := resolveBootstrapConfig(cmd, nil)
-	logger.Log("INFO", fmt.Sprintf("Bootstrap coordinator starting (tick %s, dry_run=%v, disabled=%v, probe_target=%d, coverage_bar=%.2f, reserve_margin=%.2f, hauler_target=%d, income_bar=%.0f, min_contract_earners=%d)", cfg.Tick, cfg.DryRun, cfg.Disabled, cfg.ProbeTarget, cfg.CoverageBar, cfg.ReserveMargin, cfg.HaulerTarget, cfg.IncomeBar, cfg.MinContractEarners), map[string]interface{}{
+	logger.Log("INFO", fmt.Sprintf("Bootstrap coordinator starting (tick %s, dry_run=%v, disabled=%v, probe_target=%d, coverage_bar=%.2f, hauler_target=%d, income_bar=%.0f, min_contract_earners=%d)", cfg.Tick, cfg.DryRun, cfg.Disabled, cfg.ProbeTarget, cfg.CoverageBar, cfg.HaulerTarget, cfg.IncomeBar, cfg.MinContractEarners), map[string]interface{}{
 		"action":       "bootstrap_start",
 		"container_id": cmd.ContainerID,
 		"dry_run":      cfg.DryRun,

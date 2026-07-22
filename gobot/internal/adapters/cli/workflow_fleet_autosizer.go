@@ -54,7 +54,8 @@ Tuning is config-driven (config.yaml [fleet_autosizer], live on daemon restart):
   dry_run                                                             escape
   tick_interval_secs / purchase_cap_per_tick                          pacing
   fleet_ceiling_total / fleet_ceiling_{lights,heavies}                API-budget ceilings
-  purchase_margin_over_floor / reserve / reserve_treasury_pct         treasury guard
+  purchase_margin_over_floor                                          treasury guard (margin over the
+                                                                       immutable reserve floor)
   payback_safety_factor / purchase_cutoff_at_era_minus_hours          era-clock payback
   heavy_marginal_rate_floor / heavy_unserved_lanes_min                heavy economics
   max_price_{lights,heavies} / max_premium_over_cheapest_pct          price ceilings

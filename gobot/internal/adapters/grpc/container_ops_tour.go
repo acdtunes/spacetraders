@@ -80,7 +80,6 @@ func (s *DaemonServer) StartTourRun(
 	minMargin int,
 	replanLimit int,
 	workingCapitalReserve int64,
-	workingCapitalReserveTreasuryPct int,
 	agentSymbol string,
 	iterations int,
 	playerID int,
@@ -112,15 +111,6 @@ func (s *DaemonServer) StartTourRun(
 		"min_margin":              minMargin,
 		"replan_limit":            replanLimit,
 		"working_capital_reserve": workingCapitalReserve,
-		// sp-yqx4: the counter-cyclical floor percent. Persisted as-is (0 too, so an absent
-		// override survives a recovery rebuild unchanged); buildTourCoordinatorCommand's
-		// resolveReserveTreasuryPct resolves 0/absent → the 40% default BEFORE the command
-		// reaches the handler, so every tour — daemon relaunch, CLI, or recovery — carries a
-		// resolved (never-zero) pct by the time Handle()'s `WorkingCapitalReserveTreasuryPct
-		// > 0` ctx-stamp gate runs, which is therefore always true in production. It reads
-		// false only for a command built directly (bypassing this registry), which is how
-		// the sp-agzj/sp-ggk2 absolute-floor-only test suites keep asserting pre-yqx4 behavior.
-		"working_capital_reserve_treasury_pct": workingCapitalReserveTreasuryPct,
 		// sp-686e: the stranded-hull detector threshold, sourced from the daemon's live
 		// [trade_fleet] config (not a per-call param — it is a daemon-global tuning, the same
 		// for every tour a captain or the trade-fleet coordinator launches). Persisted as-is

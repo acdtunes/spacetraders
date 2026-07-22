@@ -168,7 +168,6 @@ func newHarness(t *testing.T) *harness {
 		PriceCeiling:           500_000,
 		MaxInstallsPerTick:     1,
 		PaybackHorizonHours:    0,
-		TreasuryReserve:        50_000,
 		MaxTreasuryFractionPct: 25,
 		InstallFeeEstimate:     1000,
 		WantedModules:          []string{"MODULE_CARGO_HOLD_II", "MODULE_CARGO_HOLD_III", "MODULE_FUEL_TANK"},

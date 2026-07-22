@@ -278,14 +278,7 @@ trade_fleet:
   # max_spend: 0
   # min_margin: 0
   # replan_limit: 0
-  # working_capital_reserve: 0
-  # working_capital_reserve_treasury_pct (sp-yqx4): the counter-cyclical floor as a percent
-  # of LIVE treasury. Each tour buy is floored at max(50000, min(working_capital_reserve,
-  # pct% x treasury)) so a reserve above the treasury can no longer deadlock the fleet at
-  # sub-reserve balances. 0/absent => 40% (deadlock-proof default). Above ~2.5M treasury the
-  # absolute reserve binds exactly as before; below it the proportional floor keeps buying
-  # feasible while the 50000 lower bound stands.
-  # working_capital_reserve_treasury_pct: 40
+  # working_capital_reserve: 0   # 0/absent => the flat immutable floor (sp-05glh; no proportional pct knob)
   # relaunch_backoff_max_minutes (sp-1pli): ceiling for the per-hull ADAPTIVE relaunch
   # backoff. When a hull's continuous tour exits unproductive (fast-fail — no plausible
   # trade leg flown), its relaunch cooldown DOUBLES from cooldown_seconds, up to this
@@ -341,27 +334,17 @@ worker_rebalancer:
   max_concurrent_ferries: 2        # cap on simultaneously-running ferries (default 2)
   max_lights_per_system: 0         # per-system light cap incl. in-flight ferries (0 = uncapped, default)
 
-# Manufacturing coordinators (sp-kk61): working_capital_reserve is the factory
-# input-buy spend floor. goods_factory_coordinator enforces it immediately — the
-# effective floor at every input purchase is max(50000, working_capital_reserve),
-# the 50000 an immutable lower bound (sp-agzj). manufacturing_coordinator (the
-# parallel task-based pipeline coordinator) carries the same value through for
-# reachability, but its purchaser does not yet enforce a floor at purchase time
-# (tracked as a follow-up).
+# Manufacturing coordinators (sp-kk61): goods_factory_coordinator's factory input-buy spend
+# floor is the flat, immutable common.ImmutableReserveFloor (50000, RULINGS #5) — NOT
+# configurable here. sp-05glh scrapped the counter-cyclical proportional-of-treasury knob
+# (working_capital_reserve_treasury_pct) and its absolute per-run override
+# (working_capital_reserve) alike — no production coordinator ever stamped a non-default
+# value, so both keys are gone; the floor is now unconditionally the one immutable constant.
 #
 # THIS SECTION IS LIVE (sp-ts82 pattern): resolved from THIS file on every
 # coordinator build — creation AND restart recovery — so a retune reaches an
 # already-running coordinator after a daemon restart, no redeploy needed.
-# Absent/0 => goods_factory_coordinator's standing 50k floor; unset here matches
-# a fleet with no [manufacturing] section at all (pre-sp-kk61 behavior, unchanged).
 manufacturing:
-  # working_capital_reserve: 0
-  # working_capital_reserve_treasury_pct (sp-yqx4): the counter-cyclical floor as a percent
-  # of LIVE treasury for goods_factory_coordinator input buys — each buy is floored at
-  # max(50000, min(working_capital_reserve, pct% x treasury)) so a factory below ~2.5M
-  # treasury is not deadlocked by a reserve above its balance. 0/absent => 40% default.
-  # working_capital_reserve_treasury_pct: 40
-  #
   # chain_pnl_kill_threshold_per_hour (sp-rh2z): the realized-P&L/hr floor below which a chain
   # AUTO-PAUSES. The goods_factory coordinator computes each chain's realized P&L over the
   # rolling window (factory local sells + tour realized net - input cost - lift) and pauses the
@@ -481,12 +464,12 @@ fleet_autosizer:
   # fleet_ceiling_heavies: 15
   # fleet_ceiling_warehouse: 8
 
-  # Treasury guard (reuses common.EffectiveReserveFloor, the sp-yqx4 counter-cyclical floor). A buy
-  # fires only if live treasury − reserve floor >= price + purchase_margin_over_floor. margin 0 =>
-  # 200000; reserve_treasury_pct 0 => the 40% proportional floor default.
+  # Treasury guard: a buy fires only if live treasury − the flat, immutable reserve floor
+  # (common.ImmutableReserveFloor, 50000, RULINGS #5, not configurable) >= price +
+  # purchase_margin_over_floor. margin 0 => 200000. (sp-05glh scrapped the counter-cyclical
+  # proportional reserve/reserve_treasury_pct knobs entirely — no production coordinator ever
+  # stamped a non-default value.)
   # purchase_margin_over_floor: 200000
-  # reserve: 0
-  # reserve_treasury_pct: 40
 
   # LIGHT (factory-worker) demand. K chains need K x light_rotation_slots workers (inverts the siting
   # C3 rotation math). 0 => 3.5.
@@ -563,10 +546,11 @@ bootstrap:
   # probe_target: 3
   # coverage_bar: 0.9
 
-  # Money-guard + pacer. reserve_margin is the <=-fraction-of-treasury-per-decision guardrail: a buy
-  # may spend at most this fraction of live treasury (leaving the rest as the working buffer), which
-  # also PACES the acquisition ramp (0 => 0.5 = the <=50% rule). Fails CLOSED on an unreadable price.
-  # reserve_margin: 0.5
+  # Money-guard. Every bootstrap buy (probes, contract haulers, gate workers) is affordable only when
+  # the treasury left AFTER the buy still clears the immutable working-capital floor: cushion =
+  # (treasury - price) >= common.ImmutableReserveFloor (50k). This is a hard constant (sp-05glh scrapped
+  # the old proportional reserve_margin x treasury rule entirely) -- not a config.yaml knob. Fails
+  # CLOSED on an unreadable price.
 
   # Cadence + the asset. tick_seconds is the reconcile cadence (0 => 300 = 5min; cold-start is a slow,
   # deliberate ramp). probe_ship_type is the shipyard ship-type symbol bought for a probe (even the

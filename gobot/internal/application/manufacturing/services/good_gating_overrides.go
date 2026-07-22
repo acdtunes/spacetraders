@@ -11,9 +11,9 @@ import (
 // The two ctx-carried gates (the SupplyChainResolver's per-node buy-vs-fabricate strategy and the
 // ProductionExecutor's per-tranche input price ceiling) both run on BOOT SINGLETONS shared across
 // every concurrent factory container. A per-good override map is per-run config, so — exactly like
-// the input price ceiling (WithInputPriceCeiling), the working-capital reserve (WithConfiguredReserve)
-// and the fabricate depth cap (WithFabricateDepthCap) — it rides on ctx (per-Handle, race-free), not
-// a struct field (which would race between sibling factories running different overrides).
+// the input price ceiling (WithInputPriceCeiling) and the fabricate depth cap
+// (WithFabricateDepthCap) — it rides on ctx (per-Handle, race-free), not a struct field (which
+// would race between sibling factories running different overrides).
 //
 // The factory coordinator stamps this once per Handle from its persisted launch config. A caller
 // that never stamps it (tests, and the demand/siting estimators) reads an empty map, so every good

@@ -1081,12 +1081,13 @@ func (h *RunFrontierExpansionCoordinatorHandler) decideAndMaybeBuy(
 	// WORKING-CAPITAL FLOOR (sp-tlekc §2E, RULINGS #4/#5): the frontier finally sits behind the
 	// standing 50k working-capital floor that tour/factory/trade/outfitting all enforce — a buy must
 	// leave AT LEAST the immutable reserve spendable (credits − price ≥ floor). It is the SHARED,
-	// IMMUTABLE surface (common.EffectiveReserveFloor clamps to common.ImmutableReserveFloor = 50k);
-	// there is NO config/tune seam, so it can never be weakened (RULINGS #5). It fails CLOSED on the
-	// treasury already read above (an unreadable treasury never reaches here). This ADDS a real
-	// solvency bound to REPLACE the two deleted rate governors and closes the §2A cross-coordinator
-	// low-treasury residual — added even as knobs are removed.
-	floor := common.EffectiveReserveFloor(common.ImmutableReserveFloor, common.DefaultReserveTreasuryPct, int64(credits))
+	// IMMUTABLE surface (common.ImmutableReserveFloor = 50k, flat — sp-05glh scrapped the prior
+	// proportional-of-treasury computation); there is NO config/tune seam, so it can never be
+	// weakened (RULINGS #5). It fails CLOSED on the treasury already read above (an unreadable
+	// treasury never reaches here). This ADDS a real solvency bound to REPLACE the two deleted rate
+	// governors and closes the §2A cross-coordinator low-treasury residual — added even as knobs are
+	// removed.
+	const floor = common.ImmutableReserveFloor
 	if int64(credits)-int64(price) < floor {
 		return fmt.Sprintf("no purchase: working-capital floor (treasury %d − price %d = %d < floor %d)", credits, price, credits-price, floor)
 	}

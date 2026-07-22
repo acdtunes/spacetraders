@@ -28,10 +28,6 @@ type BootstrapConfig struct {
 	// CoverageBar is the DATA→exit threshold: the fraction (0..1) of home-system marketplaces that
 	// must have fresh market data before the arc leaves DATA. 0/absent → 0.9.
 	CoverageBar float64 `mapstructure:"coverage_bar"`
-	// ReserveMargin is the ≤-fraction-of-treasury-per-decision guardrail (the money-guard: a buy may
-	// spend at most this fraction of live treasury, leaving the rest as the working buffer). It also
-	// paces the acquisition ramp. 0/absent → 0.5.
-	ReserveMargin float64 `mapstructure:"reserve_margin"`
 	// TickSeconds is the reconcile cadence. 0/absent → 300 (5min); cold-start is a slow ramp.
 	TickSeconds int `mapstructure:"tick_seconds"`
 	// ProbeShipType is the shipyard ship-type symbol bought for a probe (RULINGS #5: even the asset

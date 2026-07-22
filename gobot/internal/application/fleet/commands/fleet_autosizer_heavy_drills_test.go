@@ -100,15 +100,16 @@ func TestHeavyBuy_BlockedByMarginalRateFloor(t *testing.T) {
 	}
 }
 
-// G9 treasury-net-of-floor: when live treasury net of the reserve-floor stack cannot cover
-// price+margin, the buy is blocked (the 25% rule passes but the floor stack does not).
+// G9 treasury-net-of-floor: when live treasury net of the flat reserve floor cannot cover
+// price+margin, the buy is blocked (the 25% rule passes but the floor+margin stack does not).
 func TestHeavyBuy_BlockedByTreasuryFloor(t *testing.T) {
 	h, purchaser, metrics, _ := armedForHeavy(heavyProvider(6, 2, 500000, 450000, false))
 	h.SetTreasuryReader(&fakeTreasury{credits: 6000000, ok: true})
-	// Reserve floor 95% of 6M = 5.7M → spendable 300k < price 1.4M + margin 200k. (25% rule: 1.5M ≥ 1.4M, passes.)
+	// Floor is flat (sp-05glh): spendable = 6,000,000 − 50,000(ImmutableReserveFloor) = 5,950,000.
+	// A high margin-over-floor requirement pushes need to 1,400,000 + 4,600,000 = 6,000,000 >
+	// spendable → blocked by exactly the immutable floor. (25% rule: cap 1.5M ≥ price 1.4M, passes.)
 	cmd := heavyCmd()
-	cmd.Reserve = 6000000
-	cmd.ReserveTreasuryPct = 95
+	cmd.PurchaseMarginOverFloor = 4_600_000
 	res, _ := h.reconcileOnce(context.Background(), cmd)
 	if res.Purchased != 0 || len(purchaser.orders) != 0 {
 		t.Fatalf("treasury net of the reserve floor cannot cover the buy — must block, bought %d", res.Purchased)

@@ -68,8 +68,6 @@ var fleetAutosizerConfigKeys = []string{
 	"autosizer_fleet_ceiling_lights",
 	"autosizer_fleet_ceiling_heavies",
 	"autosizer_purchase_margin_over_floor",
-	"autosizer_reserve",
-	"autosizer_reserve_treasury_pct",
 	"autosizer_light_rotation_slots",
 	"autosizer_heavy_marginal_rate_floor",
 	"autosizer_heavy_unserved_lanes_min",
@@ -132,12 +130,6 @@ func (s *DaemonServer) injectFleetAutosizerConfig(config map[string]interface{})
 	}
 	if fa.PurchaseMarginOverFloor != 0 {
 		config["autosizer_purchase_margin_over_floor"] = int(fa.PurchaseMarginOverFloor)
-	}
-	if fa.Reserve != 0 {
-		config["autosizer_reserve"] = int(fa.Reserve)
-	}
-	if fa.ReserveTreasuryPct != 0 {
-		config["autosizer_reserve_treasury_pct"] = fa.ReserveTreasuryPct
 	}
 	if fa.LightRotationSlots != 0 {
 		config["autosizer_light_rotation_slots"] = fa.LightRotationSlots
@@ -227,8 +219,6 @@ func buildFleetAutosizerCommand(cfg *configReader, playerID int, containerID str
 		FleetCeilingHeavies: cfg.OptionalInt("autosizer_fleet_ceiling_heavies", 0),
 
 		PurchaseMarginOverFloor: int64(cfg.OptionalInt("autosizer_purchase_margin_over_floor", 0)),
-		Reserve:                 int64(cfg.OptionalInt("autosizer_reserve", 0)),
-		ReserveTreasuryPct:      cfg.OptionalInt("autosizer_reserve_treasury_pct", 0),
 
 		LightRotationSlots: cfg.OptionalFloat("autosizer_light_rotation_slots", 0),
 

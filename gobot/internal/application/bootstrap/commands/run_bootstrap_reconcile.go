@@ -16,23 +16,22 @@ import (
 // in this file next to the consts they mirror. The map's KEY SET is also the contract for which
 // BARE keys resolveBootstrapConfig live-overlays.
 //
-// The tune mechanism is integer-only (liveconfig.PositiveInt), so the two fraction knobs are
-// expressed as integer PERCENTS (coverage_bar_percent, reserve_margin_percent) and income_bar as
-// whole credits — the coordinator divides the percents by 100 on read. The two ship-type knobs
+// The tune mechanism is integer-only (liveconfig.PositiveInt), so the one fraction knob is
+// expressed as an integer PERCENT (coverage_bar_percent) and income_bar as whole credits — the
+// coordinator divides the percent by 100 on read. The two ship-type knobs
 // (probe_ship_type, hauler_ship_type) are deliberately NOT tunable: a string asset is launch-config
 // only across every coordinator (a hull type is not swapped mid-run). These keys are the SEPARATE
 // bare family — distinct from the config.yaml-authoritative prefixed bootstrap_* launch keys — so a
 // tune is never cleared by the launch-config rebuild and survives a daemon bounce (RULINGS #2).
 func BootstrapTunableDefaults() map[string]int {
 	return map[string]int{
-		"probe_target":           defaultProbeTarget,
-		"coverage_bar_percent":   int(math.Round(defaultCoverageBar * 100)),
-		"reserve_margin_percent": int(math.Round(defaultReserveMargin * 100)),
-		"hauler_target":          defaultHaulerTarget,
-		"income_bar":             int(math.Round(defaultIncomeBar)),
-		"min_contract_earners":   defaultMinContractEarners,
-		"gate_worker_target":     defaultGateWorkerTarget,
-		"tick_secs":              defaultBootstrapTickSeconds,
+		"probe_target":         defaultProbeTarget,
+		"coverage_bar_percent": int(math.Round(defaultCoverageBar * 100)),
+		"hauler_target":        defaultHaulerTarget,
+		"income_bar":           int(math.Round(defaultIncomeBar)),
+		"min_contract_earners": defaultMinContractEarners,
+		"gate_worker_target":   defaultGateWorkerTarget,
+		"tick_secs":            defaultBootstrapTickSeconds,
 		// sp-tsn2 single-buyer arbitration flag (0=off default, 1=on). A tunable flag with no launch key.
 		"defer_probe_to_freshsizer": defaultDeferProbeToFreshsizer,
 		// sp-fp3y scaled-GATE-entry gate: the arming flag (0=off default) plus its two calibration knobs
@@ -70,7 +69,6 @@ type bootstrapRunConfig struct {
 	Tick          time.Duration
 	ProbeTarget   int
 	CoverageBar   float64
-	ReserveMargin float64
 	ProbeShipType string
 
 	// INCOME-phase knobs, each resolved to its documented default when unset.
@@ -81,11 +79,12 @@ type bootstrapRunConfig struct {
 
 	// ContractWorkingCapitalFloor is the ABSOLUTE cash cushion (whole credits) the treasury must still
 	// clear AFTER a staged INCOME hauler buy — the money-safety that keeps the contract operation's
-	// goods+fuel working capital intact (sp-acv5). Its OWN dedicated parameter, distinct from the shared
-	// reserve_margin, so the hauler affordability gate is an absolute floor (treasury−price ≥ floor) not a
-	// proportion of a growing treasury. Resolved ONLY from the immutable defaultContractWorkingCapitalFloor
-	// constant — never the launch command, config.yaml, or a live tune — per the Admiral's hard 50k
-	// working-capital floor (RULINGS #5 + 2026-07-18 Amendment, "deliberately non-tunable per-run").
+	// goods+fuel working capital intact (sp-acv5). Its OWN dedicated parameter, a HIGHER absolute floor
+	// than the base common.ImmutableReserveFloor the DATA probe buy gates on (sp-05glh: both are now flat
+	// credit cushions — treasury−price ≥ floor — never a proportion of a growing treasury). Resolved ONLY
+	// from the immutable defaultContractWorkingCapitalFloor constant — never the launch command,
+	// config.yaml, or a live tune — per the Admiral's hard 50k working-capital floor (RULINGS #5 +
+	// 2026-07-18 Amendment, "deliberately non-tunable per-run").
 	ContractWorkingCapitalFloor int64
 
 	// GATE-phase knob, resolved to its documented default when unset.
@@ -144,7 +143,6 @@ func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand, live liveconfig
 		Tick:          time.Duration(cmd.TickIntervalSecs) * time.Second,
 		ProbeTarget:   cmd.ProbeTarget,
 		CoverageBar:   cmd.CoverageBar,
-		ReserveMargin: cmd.ReserveMargin,
 		ProbeShipType: cmd.ProbeShipType,
 
 		HaulerTarget:       cmd.HaulerTarget,
@@ -165,8 +163,8 @@ func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand, live liveconfig
 	// column; the per-tick snapshot overlays it here so the change lands on the NEXT tick with no
 	// restart. Only-when-present (NOT snapshot-authoritative like the freshsizer): bootstrap's
 	// launch keys are the SEPARATE prefixed bootstrap_* family, so an untuned bare key is genuinely
-	// absent and must not zero the launch value — byte-identical when nothing is tuned. The two
-	// fraction knobs decode from integer percent; income_bar is whole credits; the <=0 default
+	// absent and must not zero the launch value — byte-identical when nothing is tuned. The one
+	// fraction knob decodes from integer percent; income_bar is whole credits; the <=0 default
 	// fallbacks below still apply to any knob left unset by both the launch command and the overlay.
 	if live != nil {
 		if v := live.PositiveIntOrZero("probe_target"); v > 0 {
@@ -174,9 +172,6 @@ func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand, live liveconfig
 		}
 		if v := live.PositiveIntOrZero("coverage_bar_percent"); v > 0 {
 			c.CoverageBar = float64(v) / 100.0
-		}
-		if v := live.PositiveIntOrZero("reserve_margin_percent"); v > 0 {
-			c.ReserveMargin = float64(v) / 100.0
 		}
 		if v := live.PositiveIntOrZero("hauler_target"); v > 0 {
 			c.HaulerTarget = v
@@ -261,9 +256,6 @@ func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand, live liveconfig
 	}
 	if c.CoverageBar <= 0 {
 		c.CoverageBar = defaultCoverageBar
-	}
-	if c.ReserveMargin <= 0 {
-		c.ReserveMargin = defaultReserveMargin
 	}
 	if c.ProbeShipType == "" {
 		c.ProbeShipType = defaultProbeShipType
@@ -546,8 +538,9 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 	// spans the next tick, so without this the buy gate would re-buy toward a target already reached
 	// (over-buy → wasted capital, the money-safety hole a short tick exposes). Applied here, before the
 	// phase derivation and the switch, so the whole tick — buy gate, scout guard, heartbeat — reads one
-	// consistent effective count. It only ADJUSTS the count; the money guard (reserve_margin) is
-	// untouched. The bridge decays to zero as the observation catches up (see probeBuyBridge).
+	// consistent effective count. It only ADJUSTS the count; the money guard (the flat
+	// common.ImmutableReserveFloor cushion) is untouched. The bridge decays to zero as the
+	// observation catches up (see probeBuyBridge).
 	bridge := h.probeBridge(cmd.ContainerID)
 	obs.ProbeCount = bridge.effectiveProbeCount(obs.ProbeCount)
 
@@ -939,9 +932,9 @@ func (h *RunBootstrapCoordinatorHandler) maybeLaunchContractScalerEarly(ctx cont
 //     hull to the yard (h.scanner) so the NEXT tick's live read succeeds. The price guard is NOT weakened
 //     — no buy fires this tick; we make the price readable, not bypass it.
 //   - BUY-TO-TARGET: once readable, buy up to (target-count) probes in a loop, each iteration honoring the
-//     reserve_margin capital gate against the DECREMENTING treasury (the running spend is subtracted so the
-//     guard reflects real remaining credits — never a stale-treasury overspend). The yard ask is stable
-//     within a tick, so a single PriceCheck feeds the whole loop.
+//     flat common.ImmutableReserveFloor capital gate against the DECREMENTING treasury (the running spend
+//     is subtracted so the guard reflects real remaining credits — never a stale-treasury overspend). The
+//     yard ask is stable within a tick, so a single PriceCheck feeds the whole loop.
 func (h *RunBootstrapCoordinatorHandler) acquireProbesToTarget(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -977,23 +970,25 @@ func (h *RunBootstrapCoordinatorHandler) acquireProbesToTarget(ctx context.Conte
 	}
 
 	// Capital-gated buy LOOP: buy up to (target-count) probes THIS tick, decrementing the treasury each
-	// iteration so the reserve_margin gate reflects real remaining credits.
+	// iteration so the flat common.ImmutableReserveFloor gate reflects real remaining credits (sp-05glh:
+	// an additive cushion — treasury−price ≥ floor — replacing the deleted proportional reserve_margin
+	// gate).
 	need := cfg.ProbeTarget - obs.ProbeCount
 	var spent int64
 	for i := 0; i < need; i++ {
 		remaining := obs.Treasury - spent
-		capBudget := int64(float64(remaining) * cfg.ReserveMargin)
-		affordable := price <= capBudget
-		logger.Log("INFO", fmt.Sprintf("Bootstrap probe buy decision (%d of %d needed): price=%d treasury=%d spent_so_far=%d remaining=%d cap=(reserve_margin %.2f × remaining)=%d affordable=(price≤cap)=%v yard=%s — %s", i+1, need, price, obs.Treasury, spent, remaining, cfg.ReserveMargin, capBudget, affordable, yard, buyBlockNote(affordable)), map[string]interface{}{
-			"action":         "bootstrap_buy_decision",
-			"container_id":   cmd.ContainerID,
-			"price":          price,
-			"treasury":       obs.Treasury,
-			"remaining":      remaining,
-			"cap":            capBudget,
-			"reserve_margin": cfg.ReserveMargin,
-			"affordable":     affordable,
-			"yard":           yard,
+		cushion := remaining - price
+		affordable := cushion >= common.ImmutableReserveFloor
+		logger.Log("INFO", fmt.Sprintf("Bootstrap probe buy decision (%d of %d needed): price=%d treasury=%d spent_so_far=%d remaining=%d cushion=(remaining-price)=%d floor=%d affordable=(cushion≥floor)=%v yard=%s — %s", i+1, need, price, obs.Treasury, spent, remaining, cushion, common.ImmutableReserveFloor, affordable, yard, buyBlockNote(affordable)), map[string]interface{}{
+			"action":       "bootstrap_buy_decision",
+			"container_id": cmd.ContainerID,
+			"price":        price,
+			"treasury":     obs.Treasury,
+			"remaining":    remaining,
+			"cushion":      cushion,
+			"floor":        common.ImmutableReserveFloor,
+			"affordable":   affordable,
+			"yard":         yard,
 		})
 		if !affordable {
 			// The capital gate caps the ramp: buy what fits this tick, the rest next tick as treasury grows.
@@ -1098,7 +1093,7 @@ func buyBlockNote(affordable bool) string {
 	if affordable {
 		return "clears the capital gate"
 	}
-	return "BLOCKED by the capital gate (would exceed reserve_margin × treasury)"
+	return "BLOCKED by the capital gate (would drop the cushion below the immutable reserve floor)"
 }
 
 // declareHomeScoutPost declares the STANDING home-system scout post as a coverage target (sp-pt7d):

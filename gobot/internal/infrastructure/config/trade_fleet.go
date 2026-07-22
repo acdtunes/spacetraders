@@ -34,22 +34,15 @@ type TradeFleetConfig struct {
 
 	// Per-tour launch caps, passed verbatim to each StartTourRun. 0 => the tour's own
 	// documented default for that knob (MaxHops->6, MaxSpend->25% of live treasury,
-	// ReplanLimit->2, WorkingCapitalReserve->the non-tunable floor). Iterations is NOT
-	// configurable: every relaunched tour is continuous (-1) by construction — a finite
-	// tour would exit and park the hull, the sink this coordinator retires.
+	// ReplanLimit->2, WorkingCapitalReserve->the non-tunable floor, sp-05glh flat).
+	// Iterations is NOT configurable: every relaunched tour is continuous (-1) by
+	// construction — a finite tour would exit and park the hull, the sink this
+	// coordinator retires.
 	MaxHops               int   `mapstructure:"max_hops"`
 	MaxSpend              int64 `mapstructure:"max_spend"`
 	MinMargin             int   `mapstructure:"min_margin"`
 	ReplanLimit           int   `mapstructure:"replan_limit"`
 	WorkingCapitalReserve int64 `mapstructure:"working_capital_reserve"`
-
-	// WorkingCapitalReserveTreasuryPct is the sp-yqx4 counter-cyclical floor as a percent of
-	// LIVE treasury: each tour buy is floored at max(50k, min(working_capital_reserve, pct% ×
-	// treasury)) so a reserve above the treasury can no longer deadlock the fleet (6/9 heavies
-	// idled at sub-1M). 0/absent → the tour's 40% default (common.DefaultReserveTreasuryPct,
-	// pending the trade-analyst's ruling). Config, not a constant (RULINGS #5), so the ruled
-	// number lands on a restart with no redeploy.
-	WorkingCapitalReserveTreasuryPct int `mapstructure:"working_capital_reserve_treasury_pct"`
 
 	// RelaunchBackoffMaxMinutes caps the per-hull ADAPTIVE relaunch backoff (sp-1pli): when a
 	// hull's continuous tour exits unproductive (fast-fail — no plausible trade leg flown), the

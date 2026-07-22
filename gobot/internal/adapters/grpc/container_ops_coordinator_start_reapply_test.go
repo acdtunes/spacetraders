@@ -119,18 +119,19 @@ func TestFreshsizerStart_ExplicitFlagOverridesCarried_NonFlagTuneSurvives(t *tes
 	require.Equal(t, newID, merged["container_id"], "the relaunch always takes the NEW container id")
 }
 
-// A relaunch of a stopped auto-outfit coordinator re-adopts its persisted credit-moving tunes
-// (price_ceiling, treasury_reserve) as source=live-config. Auto-outfit's launch config is
-// identity-only (every knob is tune-only), so this is the pure re-adopt path. No safety
-// warning fires: both knobs floor at positive defaults, so neither can come up permissive.
+// A relaunch of a stopped auto-outfit coordinator re-adopts its persisted credit-moving tune
+// (price_ceiling) as source=live-config. Auto-outfit's launch config is identity-only (every
+// knob is tune-only), so this is the pure re-adopt path. No safety warning fires: the knob
+// floors at a positive default, so it can never come up permissive. (treasury_reserve was a
+// second such knob before sp-05glh scrapped it — autooutfit's proportional reserve is gone,
+// replaced by the flat common.ImmutableReserveFloor, which has no tune-registry entry to reapply.)
 func TestAutoOutfitStart_RelaunchReAppliesPersistedTunes(t *testing.T) {
 	db, repo, playerID := tuneTestDB(t)
 	const oldID = "auto_outfit-player-OLD"
 	const newID = "auto_outfit-player-NEW"
 	seedTuneContainer(t, db, playerID, oldID, autoOutfitContainerType, "auto_outfit_coordinator", "STOPPED", map[string]interface{}{
-		"container_id":     oldID,
-		"price_ceiling":    100000,
-		"treasury_reserve": 80000,
+		"container_id":  oldID,
+		"price_ceiling": 100000,
 	})
 	s := &DaemonServer{containerRepo: repo}
 	ctx := context.Background()
@@ -138,7 +139,7 @@ func TestAutoOutfitStart_RelaunchReAppliesPersistedTunes(t *testing.T) {
 	base := map[string]interface{}{"container_id": newID} // live relaunch, identity-only
 	merged, warnings, err := s.coordinatorStartConfig(ctx, playerID, base, autoOutfitStartSpec())
 	require.NoError(t, err)
-	require.Empty(t, warnings, "price_ceiling/treasury_reserve floor at positive defaults — never permissive, no warning")
+	require.Empty(t, warnings, "price_ceiling floors at a positive default — never permissive, no warning")
 
 	seedTuneContainer(t, db, playerID, newID, autoOutfitContainerType, "auto_outfit_coordinator", "RUNNING", merged)
 	show, err := s.ShowTunableConfig(ctx, "", "autooutfit", playerID)
@@ -147,10 +148,6 @@ func TestAutoOutfitStart_RelaunchReAppliesPersistedTunes(t *testing.T) {
 	ceiling := reapplyKnob(t, show, "price_ceiling")
 	require.Equal(t, 100000, ceiling.Effective, "the tuned price ceiling must survive the relaunch, not reset to the 500k default")
 	require.Equal(t, "live-config", ceiling.Source)
-
-	reserve := reapplyKnob(t, show, "treasury_reserve")
-	require.Equal(t, 80000, reserve.Effective, "the tuned treasury reserve must survive the relaunch")
-	require.Equal(t, "live-config", reserve.Source)
 }
 
 // Auto-outfit's launch-time dry-run is an IDENTITY flag: the mode chosen for THIS start is

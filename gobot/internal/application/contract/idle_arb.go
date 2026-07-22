@@ -559,13 +559,13 @@ func (d *IdleArbDispatcher) readAbsorption(ctx context.Context) absorptionConsul
 // reserveFloorGate is one pass's working-capital reserve bound (sp-zq635 §4a): built
 // once per DispatchOnce from a single live-treasury read, it reports when the pass's
 // cumulative committed leg-spend plus one more leg would drop treasury below the
-// EffectiveReserveFloor. The dispatcher's per-leg cap and the arb run's own 50k floor
+// flat ImmutableReserveFloor. The dispatcher's per-leg cap and the arb run's own 50k floor
 // bound EACH leg; this bounds their SUM — the concurrent breach no per-leg floor can see.
 type reserveFloorGate struct {
 	active     bool  // a treasury reader is wired
 	unreadable bool  // the read failed → fail closed (hold every leg this pass)
 	treasury   int64 // live balance at the pass's read
-	floor      int64 // EffectiveReserveFloor(ImmutableReserveFloor, DefaultReserveTreasuryPct, treasury)
+	floor      int64 // common.ImmutableReserveFloor (flat, sp-05glh)
 }
 
 // holds reports whether launching one more nextLegSpend-credit leg, on top of the spend
@@ -607,8 +607,7 @@ func (d *IdleArbDispatcher) readReserveFloorGate(ctx context.Context) reserveFlo
 			"Idle-arb working-capital reserve gate: live treasury read failed, holding all legs this pass (fail-closed): %v", err), nil)
 		return reserveFloorGate{active: true, unreadable: true}
 	}
-	floor := common.EffectiveReserveFloor(common.ImmutableReserveFloor, common.DefaultReserveTreasuryPct, balance)
-	return reserveFloorGate{active: true, treasury: balance, floor: floor}
+	return reserveFloorGate{active: true, treasury: balance, floor: common.ImmutableReserveFloor}
 }
 
 // recordAbsorption publishes a just-launched leg's sell-side occupancy to the ledger

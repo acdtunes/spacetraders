@@ -71,74 +71,19 @@ const minOutputSellMarginFactor = 1.0
 // ~848k drained the float to 23k in ~1min because bp6f guarded trade circuits but NOT
 // factory input buys.
 //
-// sp-agzj unifies this with the fleet's per-run working-capital reserve (the
-// working_capital_reserve launch-config key the tour/trade/arb coordinators already
-// run): the EFFECTIVE floor is effectiveReserveFloor's max(50000, configured). A
-// factory that ran this stale 50k while the fleet reserved 1M legally rode the balance
-// to a ~617k trough (the sp-agzj incident's second half). Config-level unification is
-// allowed; per-run WEAKENING below 50k is not (RULINGS #5) — a configured reserve under
-// 50k is clamped UP, so this stays the non-tunable floor an over-eager re-enable can
-// never zero out.
+// sp-agzj unified this with the fleet's per-run working-capital reserve; sp-05glh then
+// scrapped the proportional/per-run-override apparatus entirely (nothing ever stamped a
+// non-default value in production) — the factory input floor is now simply this flat
+// immutable constant, unconditionally (RULINGS #5).
 const defaultWorkingCapitalReserve = common.ImmutableReserveFloor // sp-zq635: the single immutable source (was a local 50000 dup)
 
-// reserveCtxKey carries the per-run configured working-capital reserve from the factory
-// coordinator (RunFactoryCoordinatorCommand.WorkingCapitalReserve, resolved from the
-// working_capital_reserve launch-config key) down to the point of spend. It rides on ctx
-// because the ProductionExecutor is a SINGLETON shared across every concurrent factory
-// container (main.go constructs it once) — a struct field would be a data race between
-// sibling factories running different reserves; ctx is per-Handle and race-free.
-type reserveCtxKey struct{}
-
-// WithConfiguredReserve stamps the per-run working-capital reserve onto ctx (sp-agzj).
-// The floor actually enforced is effectiveReserveFloor's max(defaultWorkingCapitalReserve,
-// configured); a 0/absent value simply leaves the immutable 50k floor in force.
-func WithConfiguredReserve(ctx context.Context, reserve int) context.Context {
-	return context.WithValue(ctx, reserveCtxKey{}, reserve)
-}
-
 // effectiveReserveFloor resolves the working-capital floor to enforce at a factory input
-// buy: the GREATER of the immutable defaultWorkingCapitalReserve (50k) and the per-run
-// configured reserve carried on ctx (sp-agzj). A configured reserve BELOW 50k is clamped
-// UP to 50k — the floor may be unified with the fleet's config or RAISED, never weakened
-// below its non-tunable lower bound (RULINGS #5). A reserve ABOVE it (the fleet's 1M) is
-// honored, so the factory input floor tracks the same reserve the rest of the fleet runs.
+// buy: the flat, immutable defaultWorkingCapitalReserve (50k), no proportional-of-treasury
+// computation and no per-run override (sp-05glh scrapped both the sp-yqx4 counter-cyclical
+// shrink and the dead sp-agzj ctx-override seam, which no production coordinator ever
+// stamped — the factory's own working-capital config surface was retired with sp-hoj8u).
 func effectiveReserveFloor(ctx context.Context) int {
-	configured := 0
-	if v, ok := ctx.Value(reserveCtxKey{}).(int); ok {
-		configured = v
-	}
-	if configured > defaultWorkingCapitalReserve {
-		return configured
-	}
 	return defaultWorkingCapitalReserve
-}
-
-// resolveInputBuyFloor applies the sp-yqx4 counter-cyclical resolution to the ABSOLUTE
-// factory floor (effectiveReserveFloor's max(50k, configured)) once the live treasury is
-// known. When a coordinator has stamped a treasury-percent on ctx, the enforced floor
-// becomes max(50k, min(absolute, pct% × liveTreasury)) — so a factory input buy is not
-// deadlocked by a reserve above the treasury, the same trough that idled the tour fleet.
-// With no pct stamped (the sp-agzj/sp-kk61 default and every direct test) it returns the
-// absolute floor UNCHANGED, keeping the guard exactly as before. It logs when the
-// proportional floor binds below the absolute — the watch's counter-cyclical signal.
-//
-// liveTreasury MUST be a readable balance: both call sites fail CLOSED (park) on an
-// unreadable read BEFORE reaching here, so the LOWERED proportional floor is never
-// computed against a treasury the guard could not see (RULINGS #4).
-func resolveInputBuyFloor(ctx context.Context, absolute, liveTreasury int) int {
-	pct, ok := common.ReserveTreasuryPctFromContext(ctx)
-	if !ok {
-		return absolute
-	}
-	effective := int(common.EffectiveReserveFloor(int64(absolute), pct, int64(liveTreasury)))
-	if effective < absolute {
-		common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf(
-			"Counter-cyclical factory working-capital floor engaged: proportional floor %d (%d%% of live treasury %d) below the configured %d reserve (sp-yqx4)",
-			effective, pct, liveTreasury, absolute), map[string]interface{}{
-			"effective_floor": effective, "configured_reserve": absolute, "treasury_pct": pct, "live_treasury": liveTreasury,
-		})
-	}
-	return effective
 }
 
 // defaultHullFillFraction is the fraction of a hauler's hold the construction-supply drain fills
@@ -658,8 +603,8 @@ func (e *ProductionExecutor) spendFloorBreached(ctx context.Context, projectedCo
 		return false
 	}
 
-	// Effective floor = max(50k, per-run configured reserve) (sp-agzj): unified with
-	// the fleet's working_capital_reserve, 50k an immutable lower bound (RULINGS #5).
+	// Flat immutable floor (sp-05glh): no per-run override, no proportional-of-treasury
+	// shrink — 50k always, RULINGS #5.
 	reserve := effectiveReserveFloor(ctx)
 
 	token, err := common.PlayerTokenFromContext(ctx)
@@ -679,11 +624,6 @@ func (e *ProductionExecutor) spendFloorBreached(ctx context.Context, projectedCo
 		})
 		return true
 	}
-
-	// sp-yqx4: below ~2.5M treasury the proportional floor binds so a factory input buy can
-	// still proceed (a floor above the treasury would deadlock the factory as it did the tour
-	// fleet). No-op when no pct is stamped — the absolute floor above stands unchanged.
-	reserve = resolveInputBuyFloor(ctx, reserve, agentData.Credits)
 
 	if agentData.Credits-projectedCost < reserve {
 		logger.Log("WARNING", fmt.Sprintf("Factory input buy would breach the working-capital reserve — treasury %d, projected cost %d, reserve %d", agentData.Credits, projectedCost, reserve), map[string]interface{}{
@@ -716,9 +656,9 @@ func (e *ProductionExecutor) reserveConcurrentSpendOrPark(ctx context.Context, p
 		return "", false
 	}
 
-	// Same unified floor as the per-buy check (sp-agzj): the concurrent cap must serialize
-	// against the SAME reserve the per-container floor enforces, or the two guards would
-	// disagree on where the line is. max(50k, configured), 50k immutable (RULINGS #5).
+	// Same flat immutable floor as the per-buy check (sp-agzj/sp-05glh): the concurrent cap
+	// must serialize against the SAME reserve the per-container floor enforces, or the two
+	// guards would disagree on where the line is. 50k, immutable (RULINGS #5).
 	reserve := effectiveReserveFloor(ctx)
 
 	token, err := common.PlayerTokenFromContext(ctx)
@@ -736,11 +676,6 @@ func (e *ProductionExecutor) reserveConcurrentSpendOrPark(ctx context.Context, p
 		})
 		return "", true
 	}
-
-	// sp-yqx4: serialize the concurrent cap against the SAME counter-cyclical floor the
-	// per-buy check enforces (they must not disagree on where the line is). No-op with no pct
-	// stamped — the absolute floor stands, unchanged from sp-w3he.
-	reserve = resolveInputBuyFloor(ctx, reserve, agentData.Credits)
 
 	// Container id attributes the reservation to the owning factory (already threaded into
 	// ctx by the coordinator, sp-9aoc's operation context). Best-effort: the staleness sweep

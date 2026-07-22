@@ -97,8 +97,6 @@ type PurchaseRequest struct {
 	// Treasury.
 	LiveTreasury      int64
 	TreasuryReadable  bool
-	ReserveAbsolute   int64 // fed to common.EffectiveReserveFloor.
-	ReservePct        int   // proportional reserve-floor percent (0 → the resolver's default).
 	MarginOverFloor   int64 // credits of headroom required above the reserve floor after the buy.
 	TreasuryPctPerBuy int   // analyst affordability rule: a single hull ≤ this pct% of treasury (0 = not applied).
 
@@ -349,12 +347,13 @@ func guardAPIUtil(req PurchaseRequest) GuardVerdict {
 }
 
 func guardTreasuryFloor(req PurchaseRequest) GuardVerdict {
-	// Fail-closed on an unreadable treasury: EffectiveReserveFloor's own contract forbids calling it
-	// without a live balance (RULINGS #4), and a buy must never proceed on an unknown balance.
+	// Fail-closed on an unreadable treasury: a buy must never proceed on an unknown balance
+	// (RULINGS #4). The floor is the flat, immutable common.ImmutableReserveFloor (sp-05glh
+	// scrapped the prior proportional-of-treasury computation) — no config/tune seam.
 	if !req.TreasuryReadable {
 		return GuardVerdict{Guard: GuardTreasuryFloor, Passed: false, Detail: "treasury unreadable"}
 	}
-	floor := common.EffectiveReserveFloor(req.ReserveAbsolute, req.ReservePct, req.LiveTreasury)
+	const floor = common.ImmutableReserveFloor
 	spendable := req.LiveTreasury - floor
 	need := req.Price + req.MarginOverFloor
 	return GuardVerdict{

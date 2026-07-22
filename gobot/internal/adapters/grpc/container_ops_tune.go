@@ -97,7 +97,6 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 			"price_ceiling":             {Type: "int", Min: 0, Max: 5_000_000, Default: autoOutfit["price_ceiling"], Unit: "credits", Description: "max module price the coordinator will pay per install"},
 			"max_installs_per_tick":     {Type: "int", Min: 1, Max: 20, Default: autoOutfit["max_installs_per_tick"], Unit: "installs", Description: "per-tick install cap"},
 			"payback_horizon_hours":     {Type: "int", Min: 1, Max: 8760, Default: autoOutfit["payback_horizon_hours"], Unit: "hours", Description: "absolute payback gate — cost must be recovered within this horizon (default 0 = off until per-hull throughput is wired)"},
-			"treasury_reserve":          {Type: "int", Min: 0, Max: 5_000_000, Default: autoOutfit["treasury_reserve"], Unit: "credits", Description: "working-capital floor an install must never breach"},
 			"max_treasury_fraction_pct": {Type: "int", Min: 1, Max: 100, Default: autoOutfit["max_treasury_fraction_pct"], Unit: "percent", Description: "a single module never exceeds this fraction of live treasury"},
 		},
 		string(container.ContainerTypeMarketFreshnessSizer): {
@@ -147,18 +146,17 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 		// BARE family (probe_target, coverage_bar_percent, …) — NOT the prefixed bootstrap_* launch keys,
 		// which resolveBootstrapConfig clears+reinjects from config.yaml on every rebuild. A bare tune
 		// therefore survives a daemon bounce (the coordinator's per-tick liveconfig reader keeps applying
-		// it) instead of being wiped. The int-only mechanism carries the two float knobs as integer
-		// percents (coverage_bar_percent, reserve_margin_percent) and income_bar as whole credits; the
-		// two ship-type knobs stay launch-only (no coordinator makes a string asset live-tunable).
+		// it) instead of being wiped. The int-only mechanism carries the one float knob as an integer
+		// percent (coverage_bar_percent) and income_bar as whole credits; the two ship-type knobs stay
+		// launch-only (no coordinator makes a string asset live-tunable).
 		string(container.ContainerTypeBootstrapCoordinator): {
-			"probe_target":           {Type: "int", Min: 1, Max: 50, Default: bootstrap["probe_target"], Unit: "hulls", Description: "DATA target: probes scouting the home system before the coverage bar can clear"},
-			"coverage_bar_percent":   {Type: "int", Min: 1, Max: 100, Default: bootstrap["coverage_bar_percent"], Unit: "percent", Description: "home-system scan-coverage target, integer percent (the float coverage_bar; 90 = 0.90) — continuous background (freshness sizer), no longer gates phase progression"},
-			"reserve_margin_percent": {Type: "int", Min: 1, Max: 100, Default: bootstrap["reserve_margin_percent"], Unit: "percent", Description: "capital gate: max percent of live treasury a single staged buy may spend (the float reserve_margin as an integer percent — 50 = 0.50)"},
-			"hauler_target":          {Type: "int", Min: 1, Max: 50, Default: bootstrap["hauler_target"], Unit: "hulls", Description: "INCOME hull cap: at most one contract hauler per viable hub, up to this"},
-			"income_bar":             {Type: "int", Min: 1, Max: 5_000_000, Default: bootstrap["income_bar"], Unit: "credits", Description: "INCOME→GATE exit: realized net credits/hour the contract fleet must clear (whole credits; the float income_bar carries no fractional part)"},
-			"min_contract_earners":   {Type: "int", Min: 1, Max: 50, Default: bootstrap["min_contract_earners"], Unit: "hulls", Description: "haulers kept on contracts through GATE to keep funding gate-material acquisition"},
-			"gate_worker_target":     {Type: "int", Min: 1, Max: 50, Default: bootstrap["gate_worker_target"], Unit: "hulls", Description: "GATE worker cap: ~one per active gate-material chain + a delivery hauler, up to this (mostly repurposed idle haulers, rarely a buy)"},
-			"tick_secs":              {Type: "int", Min: 10, Max: 86_400, Default: bootstrap["tick_secs"], Unit: "seconds", Description: "reconcile cadence — kept SHORT because bootstrap runs only at cold start (<0.1 req/s, 20x+ API headroom) and a fast tick cuts poll-latency dead time before the gate (default 45s; sp-lgo3)"},
+			"probe_target":         {Type: "int", Min: 1, Max: 50, Default: bootstrap["probe_target"], Unit: "hulls", Description: "DATA target: probes scouting the home system before the coverage bar can clear"},
+			"coverage_bar_percent": {Type: "int", Min: 1, Max: 100, Default: bootstrap["coverage_bar_percent"], Unit: "percent", Description: "home-system scan-coverage target, integer percent (the float coverage_bar; 90 = 0.90) — continuous background (freshness sizer), no longer gates phase progression"},
+			"hauler_target":        {Type: "int", Min: 1, Max: 50, Default: bootstrap["hauler_target"], Unit: "hulls", Description: "INCOME hull cap: at most one contract hauler per viable hub, up to this"},
+			"income_bar":           {Type: "int", Min: 1, Max: 5_000_000, Default: bootstrap["income_bar"], Unit: "credits", Description: "INCOME→GATE exit: realized net credits/hour the contract fleet must clear (whole credits; the float income_bar carries no fractional part)"},
+			"min_contract_earners": {Type: "int", Min: 1, Max: 50, Default: bootstrap["min_contract_earners"], Unit: "hulls", Description: "haulers kept on contracts through GATE to keep funding gate-material acquisition"},
+			"gate_worker_target":   {Type: "int", Min: 1, Max: 50, Default: bootstrap["gate_worker_target"], Unit: "hulls", Description: "GATE worker cap: ~one per active gate-material chain + a delivery hauler, up to this (mostly repurposed idle haulers, rarely a buy)"},
+			"tick_secs":            {Type: "int", Min: 10, Max: 86_400, Default: bootstrap["tick_secs"], Unit: "seconds", Description: "reconcile cadence — kept SHORT because bootstrap runs only at cold start (<0.1 req/s, 20x+ API headroom) and a fast tick cuts poll-latency dead time before the gate (default 45s; sp-lgo3)"},
 			// sp-tsn2 single-buyer arbitration flag: 1 ⇒ bootstrap DEFERS its DATA probe buy to the
 			// freshsizer once coverage>0 and a freshsizer coordinator is running (so exactly one buyer grows
 			// the shared fleet — the era-3 multi-buyer lesson); 0 (default) ⇒ today's behavior, both buy

@@ -44,8 +44,7 @@ const (
 	// defaultPaybackHorizonHours 0 = the absolute payback gate is OFF by default (the
 	// value-per-hour it needs is unmeasured until per-hull throughput is wired).
 	defaultPaybackHorizonHours    = 0
-	defaultTreasuryReserve        = common.ImmutableReserveFloor // hard working-capital floor (sp-zq635: the single immutable source, was a local 50000 dup)
-	defaultMaxTreasuryFractionPct = 25                           // a single module never exceeds 25% of live treasury
+	defaultMaxTreasuryFractionPct = 25 // a single module never exceeds 25% of live treasury
 	defaultInstallFeeEstimate     = 1000
 	defaultHopCost                = 5000         // logistics cost per gate hop to divert to the module's market
 	defaultTelemetryWindowSecs    = 12 * 60 * 60 // 12h read window, mirrors the heavy tour-rate window
@@ -109,7 +108,6 @@ type RunAutoOutfitCoordinatorCommand struct {
 	PriceCeiling           int
 	MaxInstallsPerTick     int
 	PaybackHorizonHours    int
-	TreasuryReserve        int
 	MaxTreasuryFractionPct int
 	InstallFeeEstimate     int
 	HopCost                int
@@ -317,8 +315,8 @@ func (h *RunAutoOutfitCoordinatorHandler) guardedInstall(ctx context.Context, cm
 		logger.Log("WARNING", fmt.Sprintf("Auto-outfit parked: treasury unreadable (fail-closed): %v", err), nil)
 		return false
 	}
-	if credits-price-cfg.Selection.InstallFeeEstimate < cfg.TreasuryReserve {
-		logger.Log("INFO", fmt.Sprintf("Auto-outfit parked %s on %s: spend would drop treasury %d below the %d reserve", pick.Module.Symbol, pick.ShipSymbol, credits, cfg.TreasuryReserve), nil)
+	if credits-price-cfg.Selection.InstallFeeEstimate < common.ImmutableReserveFloor {
+		logger.Log("INFO", fmt.Sprintf("Auto-outfit parked %s on %s: spend would drop treasury %d below the %d reserve", pick.Module.Symbol, pick.ShipSymbol, credits, common.ImmutableReserveFloor), nil)
 		return false
 	}
 	if price*100 > credits*cfg.MaxTreasuryFractionPct {

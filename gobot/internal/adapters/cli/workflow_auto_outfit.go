@@ -55,7 +55,7 @@ Calibration is live-tunable with no restart:
   spacetraders tune --operation autooutfit --show
   spacetraders tune --operation autooutfit min_telemetry_samples 12
   (knobs: min_telemetry_samples, price_ceiling, max_installs_per_tick, payback_horizon_hours,
-   treasury_reserve, max_treasury_fraction_pct)
+   max_treasury_fraction_pct)
 
 Examples:
   spacetraders workflow auto-outfit --agent TORWIND --dry-run

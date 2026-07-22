@@ -379,7 +379,9 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyGateWorker(ctx context.Context,
 	// that fails the gate this tick simply waits and re-checks (min_contract_earners keeps earning through
 	// GATE to grow the treasury). RULINGS #4 fail-closed: an unreadable price already returned above, and a
 	// cushion below the floor does NOT buy — so after a permitted buy treasury ≥ floor by construction.
-	// reserve_margin is deliberately untouched (it still paces the DATA probe buy).
+	// (The separate DATA-phase reserve_margin knob this once contrasted against is gone too — sp-05glh
+	// scrapped it with the 40% rule; the probe buy now gates on this same common.ImmutableReserveFloor
+	// cushion check, see run_bootstrap_reconcile.go.)
 	cushion := obs.Treasury - price
 	affordable := cushion >= cfg.ContractWorkingCapitalFloor
 	floorNote := "clears the working-capital floor"

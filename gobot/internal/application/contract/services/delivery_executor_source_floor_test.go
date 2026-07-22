@@ -59,8 +59,10 @@ func (m *sourceFloorFakeMediator) Send(ctx context.Context, request common.Reque
 // the whole guard is INERT unless WithSourceBuyFloor is wired (so every existing
 // caller/test is unchanged). One behavior, its variations parametrized.
 func TestSourceBuyReserveFloor(t *testing.T) {
-	// The floor in force is EffectiveReserveFloor(50k, 40%, treasury); below ~125k
-	// treasury the 50k immutable clamp binds, which is the regime these cases probe.
+	// The floor in force is the flat common.ImmutableReserveFloor (50k) — sp-05glh scrapped
+	// the old EffectiveReserveFloor(50k, 40%, treasury) proportional formula this comment used
+	// to describe. sourceBuyFloorBreached reads the constant directly (delivery_executor.go),
+	// so every case below is a flat-50k check, not a proportional-clamp regime.
 	cases := []struct {
 		name          string
 		wireFloor     bool

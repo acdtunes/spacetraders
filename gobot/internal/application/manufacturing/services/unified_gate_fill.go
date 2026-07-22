@@ -11,8 +11,8 @@ import (
 // the run context, alongside the UnifiedGateFill toggle.
 //
 // Everything rides on ctx (not a struct field) for the SAME singleton-executor race reason as the
-// working-capital reserve / input price ceiling / fabricate depth cap (WithConfiguredReserve,
-// WithInputPriceCeiling, WithFabricateDepthCap): the ProductionExecutor and SupplyChainResolver are
+// input price ceiling / fabricate depth cap (WithInputPriceCeiling, WithFabricateDepthCap): the
+// ProductionExecutor and SupplyChainResolver are
 // boot SINGLETONS shared across every concurrent factory container, so per-run config would race
 // between sibling factories if it lived on a struct — ctx is per-Handle and race-free. context.Context
 // threads BY VALUE through the recursive production chain, so ONE stamp in the coordinator's

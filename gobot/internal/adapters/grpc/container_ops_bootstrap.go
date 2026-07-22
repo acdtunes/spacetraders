@@ -72,7 +72,6 @@ var bootstrapConfigKeys = []string{
 	"bootstrap_dry_run",
 	"bootstrap_probe_target",
 	"bootstrap_coverage_bar",
-	"bootstrap_reserve_margin",
 	"bootstrap_tick_secs",
 	"bootstrap_probe_ship_type",
 	"bootstrap_hauler_target",
@@ -115,9 +114,6 @@ func (s *DaemonServer) injectBootstrapConfig(config map[string]interface{}) {
 	}
 	if b.CoverageBar != 0 {
 		config["bootstrap_coverage_bar"] = b.CoverageBar
-	}
-	if b.ReserveMargin != 0 {
-		config["bootstrap_reserve_margin"] = b.ReserveMargin
 	}
 	if b.TickSeconds != 0 {
 		config["bootstrap_tick_secs"] = b.TickSeconds
@@ -170,7 +166,6 @@ func buildBootstrapCommand(cfg *configReader, playerID int, containerID string) 
 		TickIntervalSecs: cfg.OptionalInt("bootstrap_tick_secs", 0),
 		ProbeTarget:      cfg.OptionalInt("bootstrap_probe_target", 0),
 		CoverageBar:      cfg.OptionalFloat("bootstrap_coverage_bar", 0),
-		ReserveMargin:    cfg.OptionalFloat("bootstrap_reserve_margin", 0),
 		ProbeShipType:    cfg.OptionalString("bootstrap_probe_ship_type"),
 
 		HaulerTarget:       cfg.OptionalInt("bootstrap_hauler_target", 0),
