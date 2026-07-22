@@ -9,6 +9,7 @@ package expansion
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	expansionCmd "github.com/andrescamacho/spacetraders-go/internal/application/expansion/commands"
@@ -16,6 +17,7 @@ import (
 	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	shipyardCmd "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/commands"
 	shipyardQueries "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/ledger"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
@@ -66,6 +68,35 @@ type probeYardFinder interface {
 	NearestYardsSelling(ctx context.Context, playerID int, shipTypes []string, fromSystems []string) ([]shipyardQueries.YardCandidate, error)
 }
 
+// PriceImpactSource supplies the sp-4m4ve Phase 3 (§2D) per-yard recent-buy price-impact term's
+// collaborators and tunables. A candidate yard's effective SELECTION cost is inflated by
+// EstImpactPerBuy credits for every recent probe PURCHASE_SHIP transaction this player made at
+// that yard's waypoint within ImpactDecayWindow — derived fresh from the PERSISTED ledger on
+// every call (restart-safe, RULINGS #2: never an in-memory per-yard counter a daemon restart
+// would lose). This lets sourcing rotate off a hammered yard PROACTIVELY, before the next market
+// re-scan reflects the price climb it already rode (the live-observed pathology: 10 consecutive
+// buys at one yard, +20.5%, and no rotation, because SELECTION only ever sees the stale scan
+// between re-scans). It is a SELECTION-only re-ranking signal: the money guards still gate on the
+// yard's real scanned/live price, never this inflated number (RULINGS #4 — this never creates a
+// new spend path and never changes WHETHER a probe is bought). A nil PriceImpactSource, or
+// EstImpactPerBuy<=0, disables the term entirely — no ledger read is even attempted, and
+// pickBuyYard's effective cost is byte-identical to pre-sp-4m4ve selection.
+type PriceImpactSource struct {
+	Ledger            ledger.TransactionRepository
+	Clock             shared.Clock  // nil -> real clock
+	EstImpactPerBuy   int           // credits added per recent buy at a candidate yard; <=0 disables the term
+	ImpactDecayWindow time.Duration // how far back a buy counts toward the term; older buys drop out
+}
+
+// DefaultEstImpactPerBuyCredits and DefaultImpactDecayWindow are the sp-4m4ve Phase 3 shipped
+// defaults: the term OFF (0 credits — byte-identical selection). Arming (raising
+// EstImpactPerBuyCredits above 0) is a separate, later change; the wiring here is already
+// restart-safe and correct at 0.
+const (
+	DefaultEstImpactPerBuyCredits = 0
+	DefaultImpactDecayWindow      = 2 * time.Hour
+)
+
 // ProbePurchaser prices and buys one probe through the existing purchase_ship mediator
 // path (RULINGS #3, the daemon is the single writer). It is DEMAND-PROXIMAL: given a
 // target system it spawns the probe at the scanned probe-yard NEAREST that system (fewest gate
@@ -80,12 +111,14 @@ type ProbePurchaser struct {
 	mediator   common.Mediator
 	shipRepo   navigation.ShipRepository
 	yardFinder probeYardFinder
+	impact     *PriceImpactSource
 }
 
 // NewProbePurchaser wires the price-and-buy port. yardFinder is optional (nil disables
-// target-aware selection — every buy stays on the home-yard in-place path).
-func NewProbePurchaser(mediator common.Mediator, shipRepo navigation.ShipRepository, yardFinder probeYardFinder) *ProbePurchaser {
-	return &ProbePurchaser{mediator: mediator, shipRepo: shipRepo, yardFinder: yardFinder}
+// target-aware selection — every buy stays on the home-yard in-place path). impact is optional
+// (nil disables the per-yard recent-buy price-impact term — see PriceImpactSource).
+func NewProbePurchaser(mediator common.Mediator, shipRepo navigation.ShipRepository, yardFinder probeYardFinder, impact *PriceImpactSource) *ProbePurchaser {
+	return &ProbePurchaser{mediator: mediator, shipRepo: shipRepo, yardFinder: yardFinder, impact: impact}
 }
 
 // probeBuyPlan is one resolved buy: the yard to buy at, the price the guards judge, and the
@@ -181,8 +214,60 @@ func (p *ProbePurchaser) resolveProximalBuy(ctx context.Context, playerID shared
 	if err != nil || len(candidates) == 0 {
 		return probeBuyPlan{}, false // fail OPEN — a sparse/unreadable scan store falls back to home
 	}
-	best := pickBuyYard(candidates, target.HopPenaltyCredits, target.SiblingPriceMarginCredits)
+	impact := p.recentBuyImpact(ctx, playerID)
+	best := pickBuyYard(candidates, target.HopPenaltyCredits, target.SiblingPriceMarginCredits, impact)
 	return probeBuyPlan{yard: best.WaypointSymbol, price: best.PurchasePrice}, true
+}
+
+// recentBuyImpactScan bounds the newest-first PURCHASE_SHIP rows scanned to derive each
+// candidate yard's recent-buy count — generous enough to cover every probe buy that can fall
+// inside a realistic ImpactDecayWindow, mirroring probebuy's windowProbeSpendScan bound.
+const recentBuyImpactScan = 500
+
+// recentBuyImpact derives, per yard waypoint, the SELECTION-only price-impact credits from this
+// player's PERSISTED recent probe PURCHASE_SHIP transactions (RULINGS #2: reconstructed fresh
+// from the ledger every call, never an in-memory counter a restart would lose). Returns nil (zero
+// impact everywhere) when the term is unarmed (nil source, EstImpactPerBuy<=0, no ledger wired)
+// or the ledger read fails — this SELECTION signal fails OPEN, exactly like the yard finder
+// above: it can never fail a buy closed (RULINGS #4 guards it never touches).
+func (p *ProbePurchaser) recentBuyImpact(ctx context.Context, playerID shared.PlayerID) map[string]int {
+	if p.impact == nil || p.impact.EstImpactPerBuy <= 0 || p.impact.Ledger == nil {
+		return nil
+	}
+	clock := p.impact.Clock
+	if clock == nil {
+		clock = shared.NewRealClock()
+	}
+	since := clock.Now().Add(-p.impact.ImpactDecayWindow)
+	shipPurchase := ledger.TransactionTypePurchaseShip
+	txns, err := p.impact.Ledger.FindByPlayer(ctx, playerID, ledger.QueryOptions{
+		TransactionType: &shipPurchase,
+		StartDate:       &since,
+		Limit:           recentBuyImpactScan,
+	})
+	if err != nil {
+		return nil
+	}
+	counts := make(map[string]int)
+	for _, t := range txns {
+		shipType, _ := t.Metadata()["ship_type"].(string)
+		if shipType != probeShipType {
+			continue
+		}
+		waypoint, _ := t.Metadata()["waypoint"].(string)
+		if waypoint == "" {
+			continue
+		}
+		counts[waypoint]++
+	}
+	if len(counts) == 0 {
+		return nil
+	}
+	impactByYard := make(map[string]int, len(counts))
+	for waypoint, n := range counts {
+		impactByYard[waypoint] = n * p.impact.EstImpactPerBuy
+	}
+	return impactByYard
 }
 
 // pickBuyYard selects the buy yard across ALL reachable candidates: the demand-proximal
@@ -191,28 +276,39 @@ func (p *ProbePurchaser) resolveProximalBuy(ctx context.Context, playerID shared
 // price (LIMITED→SCARCE); the override abandons a yard the moment a sibling beats it by more than
 // the margin, so the buy spreads instead of spiraling one market to 4x. A
 // siblingMargin<=0 disables the override, degenerating to pure hop-penalty selection (rollback).
-func pickBuyYard(candidates []shipyardQueries.YardCandidate, hopPenalty, siblingMargin int) shipyardQueries.YardCandidate {
-	proximal := pickProximalYard(candidates, hopPenalty)
+// impact (sp-4m4ve Phase 3 §2D) is the PROACTIVE counterpart: per-yard recent-buy price-impact
+// credits, folded into each candidate's effective cost BEFORE both the hop-penalty ranking and
+// the sibling-margin comparison, so consecutive buys rotate yards even between market re-scans. A
+// nil/empty impact map adds zero everywhere — byte-identical to pre-sp-4m4ve selection.
+func pickBuyYard(candidates []shipyardQueries.YardCandidate, hopPenalty, siblingMargin int, impact map[string]int) shipyardQueries.YardCandidate {
+	proximal := pickProximalYard(candidates, hopPenalty, impact)
 	if siblingMargin <= 0 {
 		return proximal
 	}
-	cheapest := cheapestYard(candidates)
-	if proximal.PurchasePrice-cheapest.PurchasePrice > siblingMargin {
+	cheapest := cheapestYard(candidates, impact)
+	if effectivePrice(proximal, impact)-effectivePrice(cheapest, impact) > siblingMargin {
 		return cheapest // depleted near yard — spread the buy to the cheapest sibling
 	}
 	return proximal
 }
 
-// pickProximalYard chooses the scanned probe-yard minimizing effectiveCost = PurchasePrice +
-// Hops*hopPenalty — the demand-proximal tradeoff. A high penalty makes proximity
-// dominate (buy NEAREST the post); a zero penalty degenerates to the cheapest reachable yard. The
-// finder pre-sorts candidates hops-then-price, so a strict-less comparison keeps the FIRST minimum
-// — the nearest, then cheapest — on a tie.
-func pickProximalYard(candidates []shipyardQueries.YardCandidate, hopPenalty int) shipyardQueries.YardCandidate {
+// effectivePrice is a candidate's scanned PurchasePrice plus its per-yard recent-buy
+// price-impact credit (0 for every yard while impact is nil/empty — the pre-sp-4m4ve value).
+func effectivePrice(c shipyardQueries.YardCandidate, impact map[string]int) int {
+	return c.PurchasePrice + impact[c.WaypointSymbol]
+}
+
+// pickProximalYard chooses the scanned probe-yard minimizing effectiveCost = effectivePrice +
+// Hops*hopPenalty — the demand-proximal tradeoff, proactively inflated per yard by the
+// recent-buy impact term. A high penalty makes proximity dominate (buy NEAREST the post); a zero
+// penalty degenerates to the cheapest reachable yard. The finder pre-sorts candidates
+// hops-then-price, so a strict-less comparison keeps the FIRST minimum — the nearest, then
+// cheapest — on a tie.
+func pickProximalYard(candidates []shipyardQueries.YardCandidate, hopPenalty int, impact map[string]int) shipyardQueries.YardCandidate {
 	best := candidates[0]
-	bestCost := best.PurchasePrice + best.Hops*hopPenalty
+	bestCost := effectivePrice(best, impact) + best.Hops*hopPenalty
 	for _, candidate := range candidates[1:] {
-		cost := candidate.PurchasePrice + candidate.Hops*hopPenalty
+		cost := effectivePrice(candidate, impact) + candidate.Hops*hopPenalty
 		if cost < bestCost {
 			best, bestCost = candidate, cost
 		}
@@ -220,13 +316,14 @@ func pickProximalYard(candidates []shipyardQueries.YardCandidate, hopPenalty int
 	return best
 }
 
-// cheapestYard returns the candidate with the lowest scanned PurchasePrice — the sibling the
-// supply-depletion override spreads a buy to when the proximity winner has been priced up. Ties
-// keep the first (the finder pre-sorts hops-then-price, so the nearest cheapest wins).
-func cheapestYard(candidates []shipyardQueries.YardCandidate) shipyardQueries.YardCandidate {
+// cheapestYard returns the candidate with the lowest EFFECTIVE price — the sibling the
+// supply-depletion override spreads a buy to when the proximity winner has been priced up (by the
+// live scan, the recent-buy impact term, or both). Ties keep the first (the finder pre-sorts
+// hops-then-price, so the nearest cheapest wins).
+func cheapestYard(candidates []shipyardQueries.YardCandidate, impact map[string]int) shipyardQueries.YardCandidate {
 	cheapest := candidates[0]
 	for _, candidate := range candidates[1:] {
-		if candidate.PurchasePrice < cheapest.PurchasePrice {
+		if effectivePrice(candidate, impact) < effectivePrice(cheapest, impact) {
 			cheapest = candidate
 		}
 	}

@@ -969,7 +969,17 @@ func run(cfg *config.Config) error {
 	// yard. Lands the probe undedicated for the reconciler to relay. Shared with the freshness
 	// sizer below (same purchaser, same fail-open selection).
 	probeYardFinder := shipyardQuery.NewReachableYardFinder(shipyardInventoryRepo, gateGraphService)
-	frontierExpansionHandler.SetProbePurchaser(expansionAdapters.NewProbePurchaser(med, shipRepo, probeYardFinder))
+	// sp-4m4ve Phase 3 (§2D): per-yard recent-buy price-impact term, derived fresh from the SAME
+	// persisted ledger every call (RULINGS #2 — restart-safe, no in-memory counter). Shared between
+	// the frontier coordinator and the freshness sizer below (both buy through this purchaser).
+	// DEFAULT-OFF (EstImpactPerBuy=0): byte-identical selection until armed.
+	probePriceImpact := &expansionAdapters.PriceImpactSource{
+		Ledger:            transactionRepo,
+		Clock:             nil, // nil = use RealClock
+		EstImpactPerBuy:   expansionAdapters.DefaultEstImpactPerBuyCredits,
+		ImpactDecayWindow: expansionAdapters.DefaultImpactDecayWindow,
+	}
+	frontierExpansionHandler.SetProbePurchaser(expansionAdapters.NewProbePurchaser(med, shipRepo, probeYardFinder, probePriceImpact))
 	// sp-255rz stall breaker: on a fail-closed probe quote, relay an idle undedicated hull to a
 	// reachable probe-yard so the next tick's live price reads. Reuses the SAME purchaser seams
 	// (mediator + ship repo + yard finder); never buys, never poaches (RULINGS #4/#7). Active on
@@ -1063,7 +1073,7 @@ func run(cfg *config.Config) error {
 	// for the reconciler to relay — the SAME demand-proximal purchaser the frontier coordinator
 	// uses (sp-hej4): the sizer names its neediest system as the target so the probe spawns at the
 	// nearest scanned probe-yard, fail-open to the home yard on sparse scan data.
-	freshnessSizerHandler.SetProbePurchaser(expansionAdapters.NewProbePurchaser(med, shipRepo, probeYardFinder))
+	freshnessSizerHandler.SetProbePurchaser(expansionAdapters.NewProbePurchaser(med, shipRepo, probeYardFinder, probePriceImpact))
 	// The narrow, manning-preserving resize seam: UpdateHulls touches only the hull column so
 	// a resize cannot clobber the manning the scout reconciler wrote to the same row.
 	freshnessSizerHandler.SetHullUpdater(scoutPostRepo)

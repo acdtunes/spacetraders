@@ -160,7 +160,7 @@ func TestBuyProbe_BuysAtProximalYard_NotHome_WhenTargetHasNearerYard(t *testing.
 	finder := &probeFakeYardFinder{candidates: []shipyardQueries.YardCandidate{
 		yard("X1-NEAR-YD", "X1-NEAR", 1, 30_000),
 	}}
-	p := NewProbePurchaser(med, ships, finder)
+	p := NewProbePurchaser(med, ships, finder, nil)
 
 	target := probebuy.ProbeTarget{System: "X1-NEAR", HopPenaltyCredits: probebuy.DefaultHopPenaltyCredits}
 	price, symbol, err := p.BuyProbe(context.Background(), shared.MustNewPlayerID(1), 50_000, target)
@@ -207,7 +207,7 @@ func TestQuoteProbe_PriceDistanceTradeoff_TunablePicksBothDirections(t *testing.
 			med := &probeFakeMediator{listings: map[string]int{"X1-HOME-YD": 25_000}} // in-place surface (RED fallback)
 			ships := &probeFakeShipRepo{idle: []*navigation.Ship{probeShip(t, "BUYER-1", "X1-HOME-YD")}}
 			finder := &probeFakeYardFinder{candidates: candidates}
-			p := NewProbePurchaser(med, ships, finder)
+			p := NewProbePurchaser(med, ships, finder, nil)
 
 			target := probebuy.ProbeTarget{System: "X1-DEST", HopPenaltyCredits: tc.hopPenalty}
 			price, gotYard, err := p.QuoteProbe(context.Background(), shared.MustNewPlayerID(1), target)
@@ -244,7 +244,7 @@ func TestBuyProbe_FailsOpenToHomeYard_WhenNoProximalYardKnown(t *testing.T) {
 			}
 			ships := &probeFakeShipRepo{idle: []*navigation.Ship{probeShip(t, "BUYER-1", "X1-HOME-YD")}}
 			finder := &probeFakeYardFinder{candidates: tc.candidates, err: tc.finderErr}
-			p := NewProbePurchaser(med, ships, finder)
+			p := NewProbePurchaser(med, ships, finder, nil)
 
 			price, symbol, err := p.BuyProbe(context.Background(), shared.MustNewPlayerID(1), 50_000, tc.target)
 
@@ -288,7 +288,7 @@ func TestBuyProbe_NavigatesHullToFrontierYard_NotMovementFreeAtSpikedHome(t *tes
 	finder := &probeFakeYardFinder{candidates: []shipyardQueries.YardCandidate{
 		yard(frontierYd, frontierSys, 0, 20_000),
 	}}
-	p := NewProbePurchaser(med, ships, finder)
+	p := NewProbePurchaser(med, ships, finder, nil)
 
 	target := probebuy.ProbeTarget{System: frontierSys, HopPenaltyCredits: probebuy.DefaultHopPenaltyCredits}
 	price, symbol, err := p.BuyProbe(context.Background(), shared.MustNewPlayerID(1), 90_000, target)
@@ -327,7 +327,7 @@ func TestBuyProbe_SelectsCheapestReachableYard_AndRelaysThere(t *testing.T) {
 		yard("X1-MID-A1", "X1-MID", 1, 140_000),
 		yard("X1-FAR-A1", "X1-FAR", 2, 100_000),
 	}}
-	p := NewProbePurchaser(med, ships, finder)
+	p := NewProbePurchaser(med, ships, finder, nil)
 
 	// Low hop penalty → price dominates: the far-cheaper yard wins the price+relay score.
 	target := probebuy.ProbeTarget{System: "X1-DEST", HopPenaltyCredits: 10_000, SiblingPriceMarginCredits: probebuy.DefaultSiblingPriceMarginCredits}
@@ -368,7 +368,7 @@ func TestQuoteProbe_SpreadsToCheaperSibling_WhenNearYardExceedsMargin(t *testing
 			med := &probeFakeMediator{listings: map[string]int{"X1-HOME-YD": 25_000}}
 			ships := &probeFakeShipRepo{idle: []*navigation.Ship{probeShip(t, "BUYER-1", "X1-HOME-YD")}}
 			finder := &probeFakeYardFinder{candidates: candidates}
-			p := NewProbePurchaser(med, ships, finder)
+			p := NewProbePurchaser(med, ships, finder, nil)
 
 			target := probebuy.ProbeTarget{System: "X1-DEST", HopPenaltyCredits: 50_000, SiblingPriceMarginCredits: tc.margin}
 			price, gotYard, err := p.QuoteProbe(context.Background(), shared.MustNewPlayerID(1), target)
@@ -397,7 +397,7 @@ func TestBuyProbe_GuardsOnRecheckedDockPrice_RefusesStaleCheapScan(t *testing.T)
 	finder := &probeFakeYardFinder{candidates: []shipyardQueries.YardCandidate{
 		yard(yardWp, yardSys, 0, 20_000), // STALE cheap scan
 	}}
-	p := NewProbePurchaser(med, ships, finder)
+	p := NewProbePurchaser(med, ships, finder, nil)
 
 	target := probebuy.ProbeTarget{System: yardSys, HopPenaltyCredits: probebuy.DefaultHopPenaltyCredits, SiblingPriceMarginCredits: probebuy.DefaultSiblingPriceMarginCredits}
 	_, _, err := p.BuyProbe(context.Background(), shared.MustNewPlayerID(1), 50_000, target) // budget = 25% treasury
@@ -421,7 +421,7 @@ func TestBuyProbe_SkipsRelay_WhenHullAlreadyAtWinningYard(t *testing.T) {
 	finder := &probeFakeYardFinder{candidates: []shipyardQueries.YardCandidate{
 		yard(yardWp, yardSys, 0, 20_000),
 	}}
-	p := NewProbePurchaser(med, ships, finder)
+	p := NewProbePurchaser(med, ships, finder, nil)
 
 	target := probebuy.ProbeTarget{System: yardSys, HopPenaltyCredits: probebuy.DefaultHopPenaltyCredits, SiblingPriceMarginCredits: probebuy.DefaultSiblingPriceMarginCredits}
 	price, _, err := p.BuyProbe(context.Background(), shared.MustNewPlayerID(1), 50_000, target)
@@ -455,7 +455,7 @@ func TestBuyProbe_NavigatingBuyer_SharedByBothConsumerTargetShapes(t *testing.T)
 			}
 			ships := &probeFakeShipRepo{idle: []*navigation.Ship{probeShip(t, "IDLE-AT-HOME", "X1-HOME-YD")}}
 			finder := &probeFakeYardFinder{candidates: []shipyardQueries.YardCandidate{yard(frontierYd, frontierSys, 0, 20_000)}}
-			p := NewProbePurchaser(med, ships, finder)
+			p := NewProbePurchaser(med, ships, finder, nil)
 
 			price, _, err := p.BuyProbe(context.Background(), shared.MustNewPlayerID(1), 90_000, tc.target)
 
