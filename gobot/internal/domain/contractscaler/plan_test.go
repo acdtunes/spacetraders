@@ -151,6 +151,27 @@ func TestFarSourceGoods_FixedWhitelistAndFlatCaps(t *testing.T) {
 	}
 }
 
+// The 14-hull arrangement (8 delivery + 5 warehouse + 1 stocker) is the Admiral-mandated
+// plan size at 8+ central parks — the +2 hulls over the prior 12-hull arrangement went
+// entirely to the central warehouse buffer depth (delivery saturates at MaxDeliveryHulls,
+// stocker count is not the bottleneck, so neither moved).
+func TestBuildPlan_FourteenHullPlanAtEightOrMoreCentralParks(t *testing.T) {
+	parks := make([]string, MaxDeliveryHulls)
+	demand := map[string]float64{}
+	for i := range parks {
+		parks[i] = string(rune('A' + i))
+		demand[parks[i]] = float64(i)
+	}
+	plan := BuildPlan(EraRoles{CentralParks: parks}, demand)
+
+	if len(plan) != 14 {
+		t.Fatalf("plan length = %d, want 14 (8 delivery + 5 warehouse + 1 stocker)", len(plan))
+	}
+	if d, w, s := RoleTargets(plan); d != 8 || w != 5 || s != 1 {
+		t.Fatalf("RoleTargets = (%d,%d,%d), want (8,5,1)", d, w, s)
+	}
+}
+
 func TestTarget_IsPlanCappedByCeiling(t *testing.T) {
 	if got := Target(10, 2); got != 2 {
 		t.Fatalf("Target(10,2) = %d, want 2 (ceiling caps the plan)", got)

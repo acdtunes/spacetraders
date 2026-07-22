@@ -507,15 +507,14 @@ func newDepotHarness(ceiling, parks, contractHulls, warehouses, stockers int) (*
 	return h, pur, dc, gr
 }
 
-// RECONCILE, NOT DUPLICATE: the depot already has 2 warehouses + 1 stocker and 7 delivery hulls exist;
-// with the ceiling raised to the plan size (7 delivery + 3 warehouse + 1 stocker = 11) the ramp adds
-// ONLY the plan-short unit — exactly 1 warehouse (2→3), 0 stocker (1 already meets 1), 0 delivery —
-// never a duplicate of the existing depot. (Ceiling 11, not 10: the functional-depot-first priority
-// spends the ceiling-10 depot slot on the stocker, so warehouse #3 — pure depth — lands at ceiling 11.)
+// RECONCILE, NOT DUPLICATE: the depot already has 4 warehouses + 1 stocker and 7 delivery hulls exist;
+// with the ceiling raised to the plan size (7 delivery + 5 warehouse + 1 stocker = 13) the ramp adds
+// ONLY the plan-short unit — exactly 1 warehouse (4→5), 0 stocker (1 already meets 1), 0 delivery —
+// never a duplicate of the existing depot.
 func TestReconcile_ReconcilesExistingDepotAddsOnlyTheShortWarehouse(t *testing.T) {
-	h, pur, _, gr := newDepotHarness(11, 7, 7, 2, 1)
+	h, pur, _, gr := newDepotHarness(13, 7, 7, 4, 1)
 
-	bought := reconcile(t, h, 11)
+	bought := reconcile(t, h, 13)
 
 	if len(pur.orders) != 0 {
 		t.Fatalf("delivery buys = %d, want 0 (delivery target 7 already met)", len(pur.orders))
@@ -639,13 +638,13 @@ func TestReconcile_NoStockerWhenAnchorWarehouseFailsToForm(t *testing.T) {
 // slot (the grower is called with it) and NO hull is bought. The depot reuse uses FindReclaimable +
 // grow — NOT the delivery Reclaim (which contract-dedicates+homes); the grower re-dedicates to warehouse.
 func TestReconcile_ReclaimsIdleHullForWarehouseSlotBeforeBuying(t *testing.T) {
-	// Ceiling 11 (plan size): the short warehouse #3 (depth) lands here under the functional-depot-first
-	// priority — the ceiling-10 depot slot went to the stocker (already present in this seed).
-	h, pur, _, gr := newDepotHarness(11, 7, 7, 2, 1)
+	// Ceiling 13 (plan size): the depot already has 4 of the 5-warehouse target (stocker already at
+	// its target of 1), so the one short warehouse slot lands here.
+	h, pur, _, gr := newDepotHarness(13, 7, 7, 4, 1)
 	rec := &fakeReclaimer{available: []string{"HULL-IDLE"}}
 	h.SetIdleHullReclaimer(rec)
 
-	reconcile(t, h, 11)
+	reconcile(t, h, 13)
 
 	if len(gr.warehouseGrows) != 1 || gr.warehouseGrows[0].ShipSymbol != "HULL-IDLE" {
 		t.Fatalf("warehouse grows = %+v, want 1 carrying the reclaimed HULL-IDLE (reuse before buy)", gr.warehouseGrows)
@@ -661,14 +660,14 @@ func TestReconcile_ReclaimsIdleHullForWarehouseSlotBeforeBuying(t *testing.T) {
 // THE 200k CUSHION GATES DEPOT BUYS TOO: with the treasury unable to leave 200000 after a warehouse buy,
 // the depot buy is HELD (no grow, no buy) — the sole money guard is not weakened for the depot roles.
 func TestReconcile_WarehouseBuyHeldByCushion(t *testing.T) {
-	// Ceiling 11 (plan size): the short warehouse #3 is the unit the cushion holds under the
-	// functional-depot-first priority (the ceiling-10 depot slot went to the already-present stocker).
-	h, pur, _, gr := newDepotHarness(11, 7, 7, 2, 1)
+	// Ceiling 13 (plan size): the depot already has 4 of the 5-warehouse target (stocker already at its
+	// target of 1), so the cushion holds the one short warehouse slot.
+	h, pur, _, gr := newDepotHarness(13, 7, 7, 4, 1)
 	tr := &fakeTreasury{credits: 250_000, readable: true} // 250k - 100k = 150k < 200000 cushion
 	h.SetTreasuryReader(tr)
 	pur.treasury = tr
 
-	bought := reconcile(t, h, 11)
+	bought := reconcile(t, h, 13)
 
 	if bought != 0 || len(pur.hullOrders) != 0 {
 		t.Fatalf("bought %d (depot-hull buys %d), want 0 — 250k-100k=150k is below the 200000 cushion", bought, len(pur.hullOrders))

@@ -12,9 +12,11 @@ const (
 	// flattens past it).
 	MaxDeliveryHulls = 8
 	// WarehouseUnits is the depth of the ONE central far-source warehouse
-	// (ores/precious/drugs buffered ~2 contracts per good; ~3 light-hull slots at
-	// the 10-hull efficient arrangement).
-	WarehouseUnits = 3
+	// (ores/precious/drugs buffered ~2 contracts per good; 5 light-hull slots at
+	// the 14-hull arrangement — the +2 hulls over the prior 12-hull plan went
+	// entirely here, since delivery saturates at MaxDeliveryHulls and stocker
+	// count is not the bottleneck).
+	WarehouseUnits = 5
 	// StockerUnits is the single central stocker running the far source-legs
 	// out-of-band (event-sim: 1 = 2 = 3, count is not the bottleneck; buffer depth is).
 	StockerUnits = 1
