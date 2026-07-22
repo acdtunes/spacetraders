@@ -1095,7 +1095,7 @@ func (e *ProductionExecutor) PollForProduction(
 				}
 			}
 
-			return e.purchaseFabricatedOutput(ctx, good, waypointSymbol, shipSymbol, playerID, tradeGood.TradeVolume())
+			return e.purchaseFabricatedOutput(ctx, good, waypointSymbol, shipSymbol, playerID, tradeGood.TradeVolume(), tradeGood.SellPrice())
 		}
 
 		// Log polling attempt. Past productionDwellWarnThreshold, escalate to a
@@ -1154,6 +1154,7 @@ func (e *ProductionExecutor) purchaseFabricatedOutput(
 	shipSymbol string,
 	playerID shared.PlayerID,
 	tradeVolume int,
+	unitPrice int, // per-unit harvest cost (the factory's ask = tradeGood.SellPrice()) — the working-capital-floor basis
 ) (int, int, error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -1214,6 +1215,33 @@ func (e *ProductionExecutor) purchaseFabricatedOutput(
 		return 0, 0, fmt.Errorf("trade volume is zero for %s", good)
 	}
 
+	// Working-capital spend floor (sp-65xqo, floor-everywhere) — the fabricated-OUTPUT buy is floored
+	// IDENTICALLY to the raw-input buyGood path (sp-9aoc), reusing the SAME primitive: no new floor,
+	// no new knob (RULINGS #4/#5). Closes the gap where the two LARGEST gate purchases (FAB_MATS,
+	// ADVANCED_CIRCUITRY) executed bounded only by a units cap. Fail-CLOSED: a breach — or a blind
+	// live-treasury read inside spendFloorBreached — PARKS the harvest rather than spending below the
+	// reserve. Parking loses nothing: the fabricated good stays in the factory's export stock and is
+	// picked up on a later pass (same as the full-hold skip above). The park cause goes IN THE MESSAGE
+	// (sp-iqyq) — the container-log renderer drops the metadata map.
+	projectedCost := purchaseQty * unitPrice
+	if e.spendFloorBreached(ctx, projectedCost) {
+		logger.Log("WARNING", fmt.Sprintf("Parked fabricated-output harvest of %s at %s — would breach the working-capital reserve (projected cost %d, reserve %d)", good, waypointSymbol, projectedCost, effectiveReserveFloor(ctx)), map[string]interface{}{
+			"good": good, "market": waypointSymbol, "projected_cost": projectedCost,
+			"action": "factory_parked", "reason": "spend_floor",
+		})
+		return 0, 0, nil
+	}
+
+	// Cross-container concurrent spend cap (sp-w3he): the floor above is a PER-CONTAINER live check, so
+	// N factories can each clear it inside their own check->buy window and collectively breach. This
+	// HARD cap serializes all in-flight factory spend — input AND output — through the shared ledger and
+	// PARKS if the combined exposure would breach. Reserved before the buy, released after (fail-CLOSED,
+	// same as buyGood). No-op when no ledger/apiClient is wired (the optional-port fail-open contract).
+	reservationID, parked := e.reserveConcurrentSpendOrPark(ctx, playerID.Value(), projectedCost, waypointSymbol, good)
+	if parked {
+		return 0, 0, nil // concurrent cap (reserveConcurrentSpendOrPark logged the cause)
+	}
+
 	logger.Log("INFO", fmt.Sprintf("Purchasing %d units of fabricated %s (cargo: %d, trade_volume: %d)", purchaseQty, good, availableSpace, tradeVolume), nil)
 
 	purchaseCmd := &shipCargo.PurchaseCargoCommand{
@@ -1226,6 +1254,9 @@ func (e *ProductionExecutor) purchaseFabricatedOutput(
 	// Same dock-retry guard as the raw-buy path: a transient "must be docked"
 	// re-docks and retries rather than crashing the container (sp-n7yp).
 	response, err := e.purchaseWithDockRetry(ctx, purchaseCmd)
+	// Release the concurrent-spend reservation on BOTH paths (success and error), mirroring buyGood
+	// (a no-op when no reservation was taken — the fail-open contract).
+	e.releaseSpendReservation(ctx, reservationID)
 	if err != nil {
 		return 0, 0, fmt.Errorf("failed to purchase fabricated output: %w", err)
 	}
