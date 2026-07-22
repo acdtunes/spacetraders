@@ -11,6 +11,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/contract/depotstore"
 	contractScalerCmd "github.com/andrescamacho/spacetraders-go/internal/application/contractscaler/commands"
 	fleetCmd "github.com/andrescamacho/spacetraders-go/internal/application/fleet/commands"
+	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contract/depot"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contractscaler"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
@@ -508,6 +509,15 @@ func homeContractHull(ctx context.Context, med commandSender, shipRepo navigatio
 	if err != nil {
 		return
 	}
+	// sp-orooy: a hull reclaimed/bought while idle in a FOREIGN system cannot be homed by the
+	// intra-system spread-home below — HomeShipHandler resolves the standby parks in the hull's
+	// CURRENT system graph, so a foreign hull fails ("none of the configured standby stations found
+	// in system X graph") and STRANDS (dedicated to "contract" but idle in the wrong system, never
+	// re-picked). Cross-gate it back to a home-system park FIRST; a hull already in the home system
+	// skips this entirely (byte-identical). SCALER-ONLY: homeContractHull is called only by the
+	// scaler's buy/reclaim home-return — idle-arb's deliberately leashed hub-local re-home never runs here.
+	repositionForeignHullHome(ctx, med, shipRepo, shipSymbol, pid, standbyStations, logger)
+
 	if _, err := med.Send(ctx, &contractCmd.HomeShipCommand{
 		ShipSymbol:      shipSymbol,
 		PlayerID:        pid,
@@ -517,6 +527,40 @@ func homeContractHull(ctx context.Context, med commandSender, shipRepo navigatio
 	}); err != nil {
 		logger.Log("WARN", fmt.Sprintf("Contract scaler homed %s but homing failed (best-effort; between-legs homing will retry): %v", shipSymbol, err), map[string]interface{}{
 			"action": "contract_scaler_home_failed", "ship_symbol": shipSymbol,
+		})
+	}
+}
+
+// repositionForeignHullHome cross-gates a hull that JUST JOINED the contract fleet (bought OR reclaimed)
+// from a FOREIGN system back to a home-system standby park, so the subsequent intra-system spread-home
+// can place it rather than fail-and-strand (sp-orooy — HomeShipHandler resolves parks in the hull's
+// CURRENT system only). The home system is read straight off a standby park symbol (the parks ARE the
+// home-system geometry). It is a NO-OP when the hull is already in the home system (byte-identical to the
+// pre-fix homing) or when its location is unreadable (defer to the intra-system home + between-legs self-
+// heal). Best-effort: a reposition hiccup only logs — the completed reclaim/buy is never rolled back, and
+// the contract coordinator's between-legs homing still retries. The move REUSES NavigateRouteCommand's
+// wired cross-system delegation (sp-9l4p → RepositionToWaypoint → the SAME multi-jump travel() the
+// scout/arb/trade circuits ride), never hand-rolled pathfinding.
+func repositionForeignHullHome(ctx context.Context, med commandSender, shipRepo navigation.ShipRepository, shipSymbol string, pid shared.PlayerID, standbyStations []string, logger common.ContainerLogger) {
+	if shipRepo == nil {
+		return
+	}
+	homeSystem := shared.ExtractSystemSymbol(standbyStations[0])
+	ship, err := shipRepo.FindBySymbol(ctx, shipSymbol, pid)
+	if err != nil || ship == nil || ship.CurrentLocation() == nil {
+		return // unreadable location → let the intra-system home try (and self-heal via between-legs homing)
+	}
+	currentSystem := shared.ExtractSystemSymbol(ship.CurrentLocation().Symbol)
+	if currentSystem == "" || currentSystem == homeSystem {
+		return // already home (or unknown) → the intra-system spread-home handles it (byte-identical)
+	}
+	if _, err := med.Send(ctx, &shipNav.NavigateRouteCommand{
+		ShipSymbol:  shipSymbol,
+		Destination: standbyStations[0],
+		PlayerID:    pid,
+	}); err != nil {
+		logger.Log("WARN", fmt.Sprintf("Contract scaler cross-gate reposition of %s from %s to home system %s failed (best-effort; between-legs homing will retry): %v", shipSymbol, currentSystem, homeSystem, err), map[string]interface{}{
+			"action": "contract_scaler_cross_gate_home_failed", "ship_symbol": shipSymbol, "from_system": currentSystem, "home_system": homeSystem,
 		})
 	}
 }

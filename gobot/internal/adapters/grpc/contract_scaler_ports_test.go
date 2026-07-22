@@ -14,6 +14,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/contract/depotstore"
 	contractScalerCmd "github.com/andrescamacho/spacetraders-go/internal/application/contractscaler/commands"
 	fleetCmd "github.com/andrescamacho/spacetraders-go/internal/application/fleet/commands"
+	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contract/depot"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contractscaler"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
@@ -432,6 +433,18 @@ func (r *fakeReclaimShipRepo) FindAllByPlayer(ctx context.Context, playerID shar
 	return r.all, r.findErr
 }
 
+// FindBySymbol serves one hull from the fixed fleet by symbol — the read homeContractHull uses to learn
+// the hull's CURRENT system for the sp-orooy foreign-hull cross-gate decision. A miss returns (nil, nil)
+// so the reposition guard degrades to "unreadable location → skip" (the intra-system home still fires).
+func (r *fakeReclaimShipRepo) FindBySymbol(ctx context.Context, symbol string, playerID shared.PlayerID) (*navigation.Ship, error) {
+	for _, s := range r.all {
+		if s != nil && s.ShipSymbol() == symbol {
+			return s, nil
+		}
+	}
+	return nil, nil
+}
+
 func (r *fakeReclaimShipRepo) AssignFleet(ctx context.Context, shipSymbol, fleet string, playerID shared.PlayerID) error {
 	if r.assignErr != nil {
 		return r.assignErr
@@ -542,11 +555,14 @@ func TestReclaim_ReDedicatesToContractAndHomesDemandRanked(t *testing.T) {
 	sender := &recordingSender{}
 	r := &contractScalerReclaimer{shipRepo: repo, med: sender}
 
+	// The standby parks share the reclaimed hull's system (X1-SC — reclaimHull sits at X1-SC-A1), so this
+	// is the common ALREADY-HOME case: the demand-ranked spread-home fires directly, with no cross-gate
+	// reposition (the sp-orooy foreign-hull path is covered by TestReclaim_CrossGatesAForeignHullHome...).
 	err := r.Reclaim(context.Background(), contractScalerCmd.ReclaimOrder{
 		PlayerID:        1,
 		ShipSymbol:      "FREE-HAULER",
-		StandbyStations: []string{"P1", "P2", "P3"},
-		StandbyDemand:   map[string]float64{"P1": 3, "P2": 9, "P3": 5},
+		StandbyStations: []string{"X1-SC-P1", "X1-SC-P2", "X1-SC-P3"},
+		StandbyDemand:   map[string]float64{"X1-SC-P1": 3, "X1-SC-P2": 9, "X1-SC-P3": 5},
 	})
 	if err != nil {
 		t.Fatalf("Reclaim: %v", err)
@@ -568,8 +584,73 @@ func TestReclaim_ReDedicatesToContractAndHomesDemandRanked(t *testing.T) {
 	if home.ShipSymbol != "FREE-HAULER" {
 		t.Fatalf("homed %q, want the reclaimed FREE-HAULER", home.ShipSymbol)
 	}
-	if len(home.StandbyStations) != 3 || home.StandbyDemand["P2"] != 9 {
+	if len(home.StandbyStations) != 3 || home.StandbyDemand["X1-SC-P2"] != 9 {
 		t.Fatalf("HomeShipCommand missing the spread set + park demand weights: stations=%v demand=%v", home.StandbyStations, home.StandbyDemand)
+	}
+}
+
+// TestReclaim_CrossGatesAForeignHullHomeBeforeSpreadHoming proves the sp-orooy fix: a hull reclaimed
+// while idle in a FOREIGN system (its current system != the contract home system, resolved from the
+// standby parks) is first CROSS-GATE repositioned to a home-system park, THEN spread-homed — so the
+// intra-system spread-home can place it instead of failing "none of the configured standby stations
+// found in system X graph" and STRANDING the hull (live: TORWIND-17 reclaimed idle in X1-DY91, parks in
+// X1-UM5). A hull ALREADY in the home system skips the reposition entirely (byte-identical: only the
+// HomeShipCommand). The cross-gate move reuses NavigateRouteCommand's wired cross-system delegation
+// (sp-9l4p) — the SAME multi-jump travel() the scout/arb/trade circuits ride — never hand-rolled paths.
+func TestReclaim_CrossGatesAForeignHullHomeBeforeSpreadHoming(t *testing.T) {
+	const homePark = "X1-UM5-A3" // standby parks live in the contract home system X1-UM5
+	standby := []string{homePark, "X1-UM5-B2", "X1-UM5-C1"}
+
+	cases := []struct {
+		name              string
+		hullLocation      string
+		wantCrossGateHome bool // a foreign hull is cross-gated home first; a home hull is not
+	}{
+		{
+			// THE BUG (live: TORWIND-17 reclaimed idle in X1-DY91, parks in X1-UM5): a foreign hull must
+			// be routed to a home-system park FIRST, then spread-homed — never left to strand.
+			name:              "foreign-system hull is cross-gated to a home park before homing",
+			hullLocation:      "X1-DY91-X5",
+			wantCrossGateHome: true,
+		},
+		{
+			// Byte-identical: a hull already in the home system is spread-homed directly, no reposition.
+			name:              "home-system hull spread-homes directly (no cross-gate reposition)",
+			hullLocation:      "X1-UM5-Z9",
+			wantCrossGateHome: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hull := homeReaderShip(t, "FREE-HAULER", tc.hullLocation, "HAULER", "")
+			repo := &fakeReclaimShipRepo{all: []*navigation.Ship{hull}}
+			sender := &recordingSender{}
+			r := &contractScalerReclaimer{shipRepo: repo, med: sender}
+
+			err := r.Reclaim(context.Background(), contractScalerCmd.ReclaimOrder{
+				PlayerID:        1,
+				ShipSymbol:      "FREE-HAULER",
+				StandbyStations: standby,
+				StandbyDemand:   map[string]float64{homePark: 3, "X1-UM5-B2": 9, "X1-UM5-C1": 5},
+			})
+			require.NoError(t, err)
+
+			if tc.wantCrossGateHome {
+				// A foreign hull: cross-gate reposition FIRST (to a home-system park), THEN the spread-home.
+				require.Len(t, sender.sent, 2, "foreign hull: a cross-gate reposition must precede the spread-home")
+				nav, ok := sender.sent[0].(*shipNav.NavigateRouteCommand)
+				require.Truef(t, ok, "first dispatch must be the cross-gate NavigateRouteCommand, got %T", sender.sent[0])
+				require.Equal(t, "FREE-HAULER", nav.ShipSymbol)
+				require.Equal(t, "X1-UM5", shared.ExtractSystemSymbol(nav.Destination), "reposition must target a HOME-system waypoint")
+				_, ok = sender.sent[1].(*contractCmd.HomeShipCommand)
+				require.Truef(t, ok, "the spread-home must follow the reposition, got %T", sender.sent[1])
+			} else {
+				// A home hull: only the spread-home, no cross-gate reposition (byte-identical to pre-fix).
+				require.Len(t, sender.sent, 1, "home hull: spread-home only, no cross-gate reposition")
+				_, ok := sender.sent[0].(*contractCmd.HomeShipCommand)
+				require.Truef(t, ok, "the sole dispatch must be the HomeShipCommand, got %T", sender.sent[0])
+			}
+		})
 	}
 }
 
