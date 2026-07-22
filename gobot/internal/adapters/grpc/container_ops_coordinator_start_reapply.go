@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
-	expansionCmd "github.com/andrescamacho/spacetraders-go/internal/application/expansion/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 )
 
@@ -38,11 +37,11 @@ type coordinatorStartSpec struct {
 	// carried-forward value ONLY when explicitly set (>0), matching the CLI's "0 = use the
 	// documented default" contract. A no-flag relaunch preserves every persisted tune.
 	overrideKeys []string
-	// safetyKnobs are credit-moving guards whose DISABLED sentinel is 0: the start path
-	// warns loudly when one resolves permissive (effective <= 0), mirroring frontier's
-	// max_probe_price=0 overpay-ceiling warning. A guard whose documented default is a
+	// safetyKnobs are credit-moving guards whose DISABLED sentinel is 0: the start path warns
+	// loudly when one resolves permissive (effective <= 0). A guard whose documented default is a
 	// positive safe value never trips this — its effective floors at that default — so a
-	// self-protecting coordinator carries none and stays silent (no false alarm).
+	// self-protecting coordinator carries none and stays silent (no false alarm). (Generic
+	// machinery; the frontier's former max_probe_price knob became an immutable const — sp-tlekc.)
 	safetyKnobs []coordinatorSafetyKnob
 }
 
@@ -157,9 +156,9 @@ func printCoordinatorStartWarnings(label string, playerID int, warnings []string
 
 // frontierStartSpec is the frontier-expansion re-apply spec (sp-ve3q, now expressed through
 // the shared machinery). container_id + dry_run are the new start's; the numeric CLI flags
-// override only when explicitly set; and max_probe_price — the sp-3u5d overpay ceiling whose
-// default is 0 (disabled = buy at any price) — is the credit-moving guard the start warns on
-// when it comes up unarmed.
+// override only when explicitly set. sp-tlekc retired the two rate governors and hardcoded the
+// probe price ceiling to an immutable const, so there are no governor override keys and no
+// max_probe_price safety knob (an un-tunable const can never come up "unarmed").
 func frontierStartSpec() coordinatorStartSpec {
 	return coordinatorStartSpec{
 		containerType:     string(container.ContainerTypeFrontierExpansion),
@@ -168,16 +167,8 @@ func frontierStartSpec() coordinatorStartSpec {
 		overrideKeys: []string{
 			"tick_interval_secs",
 			"max_probe_fleet",
-			"max_spend_per_cycle",
-			"purchase_cooldown_secs",
 			"expansion_max_hops",
 		},
-		safetyKnobs: []coordinatorSafetyKnob{{
-			key:             "max_probe_price",
-			registryDefault: expansionCmd.FrontierTunableDefaults()["max_probe_price"],
-			warning: "max_probe_price is 0 (DISABLED — the frontier will buy probes at ANY price); the sp-3u5d overpay " +
-				"ceiling is UNARMED. Re-arm it: spacetraders tune --operation frontier max_probe_price <credits>",
-		}},
 	}
 }
 

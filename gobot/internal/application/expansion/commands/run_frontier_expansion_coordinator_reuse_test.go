@@ -7,7 +7,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainScouting "github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -42,62 +41,11 @@ func (f *fakeNeighborReader) UnchartedNeighbors(_ context.Context, _ int, system
 	return f.neighbors[systemSymbol], nil
 }
 
-// The 4+1 sp-6vep knobs are DEFAULT-SAFE: with no snapshot and no launch value they resolve to
-// today's buy-only behavior (reuse OFF, snowball OFF, abandon-timeout OFF) so a merge is
-// byte-identical until armed next era. A launch value governs with no snapshot; a live snapshot
-// overrides next tick. This guards the registry<->overlay drift that would leave a knob registered
-// but silently ineffective (the exact failure mode the sp-3u5d/sp-iopd round-trips pin).
-func TestResolveFrontierConfig_ReadsReuseKnobsLiveWithDefaultSafeFallback(t *testing.T) {
-	def := resolveConfig(testCmd(), nil)
-	require.False(t, def.ProbeReuseEnabled, "no snapshot, no launch value -> reuse OFF (byte-identical to today's buy-only)")
-	require.False(t, def.SnowballNeighbors, "no snapshot, no launch value -> snowball OFF")
-	require.Zero(t, def.ReuseValueCeiling, "no snapshot, no launch value -> ceiling 0 (borrow off NO system)")
-	require.Zero(t, def.PostInflightTimeout, "no snapshot, no launch value -> abandon timeout OFF (no post is ever reaped)")
-	require.Equal(t, defaultEdgeRelayMaxHops, def.EdgeRelayMaxHops, "edge relay reach falls to its documented default (inert while reuse is off)")
-
-	launch := testCmd()
-	launch.ProbeReuseEnabled = 1
-	launch.EdgeRelayMaxHops = 2
-	launch.ReuseValueCeiling = 40000
-	launch.SnowballNeighbors = 1
-	launch.PostInflightTimeoutSecs = 1800
-	got := resolveConfig(launch, nil)
-	require.True(t, got.ProbeReuseEnabled, "no snapshot -> the launch command arms reuse")
-	require.Equal(t, 2, got.EdgeRelayMaxHops)
-	require.Equal(t, 40000, got.ReuseValueCeiling)
-	require.True(t, got.SnowballNeighbors)
-	require.Equal(t, 30*time.Minute, got.PostInflightTimeout)
-
-	live := liveconfig.Snapshot{
-		"probe_reuse_enabled":        1,
-		"edge_relay_max_hops":        3,
-		"reuse_value_ceiling":        55000,
-		"snowball_neighbors":         1,
-		"post_inflight_timeout_secs": 900,
-	}
-	overlaid := resolveConfig(testCmd(), live)
-	require.True(t, overlaid.ProbeReuseEnabled, "a live snapshot arms reuse next tick with no restart")
-	require.Equal(t, 3, overlaid.EdgeRelayMaxHops)
-	require.Equal(t, 55000, overlaid.ReuseValueCeiling)
-	require.True(t, overlaid.SnowballNeighbors)
-	require.Equal(t, 15*time.Minute, overlaid.PostInflightTimeout)
-}
-
-// A live snapshot that omits the reuse keys resolves them to OFF (not to a nonzero default) —
-// the sp-3u5d/sp-iopd "0 IS the default" discipline, so `tune <key> 0` genuinely disarms.
-func TestResolveFrontierConfig_ReuseKnobsAbsentFromSnapshotResolveOff(t *testing.T) {
-	armed := testCmd()
-	armed.ProbeReuseEnabled = 1
-	armed.SnowballNeighbors = 1
-	armed.ReuseValueCeiling = 40000
-	armed.PostInflightTimeoutSecs = 1800
-
-	empty := resolveConfig(armed, liveconfig.Snapshot{})
-	require.False(t, empty.ProbeReuseEnabled, "live present but key absent -> OFF (no fallback to a launch value)")
-	require.False(t, empty.SnowballNeighbors, "live present but key absent -> OFF")
-	require.Zero(t, empty.ReuseValueCeiling, "live present but key absent -> ceiling 0")
-	require.Zero(t, empty.PostInflightTimeout, "live present but key absent -> abandon OFF")
-}
+// The reuse relay, snowball walk, and reap timeout are no longer per-knob operator settings
+// (sp-tlekc): the reach_mode preset composes them (balanced/deep arm reuse+snowball+reap; shallow
+// disarms). That preset→config mapping is verified in reach_mode_test.go; the tests below drive the
+// ENGINE directly with a built config (cfgWith), so they still pin the reuse/snowball/reap MECHANISM
+// exactly, independent of how the values are resolved.
 
 // AC1 (the deadlock fix): with reuse ARMED and an existing edge probe reachable, the coordinator
 // staffs the unmanned frontier post by RELAYING that probe — zero purchases — instead of buying at
@@ -119,15 +67,17 @@ func TestFrontier_ReuseBeforeBuy_RelaysEdgeProbeInsteadOfBuying(t *testing.T) {
 	h.SetProbeReuseRelayer(relayer)
 
 	cmd := testCmd()
-	cmd.ProbeReuseEnabled = 1
-	cmd.EdgeRelayMaxHops = 3
-	cmd.ReuseValueCeiling = 50000
+	cfg := cfgWith(func(c *frontierConfig) {
+		c.ProbeReuseEnabled = true
+		c.EdgeRelayMaxHops = 3
+		c.ReuseValueCeiling = 50000
+	})
 
-	require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
+	require.NoError(t, h.reconcile(context.Background(), cmd, cfg))
 	require.Equal(t, 1, relayer.calls, "reuse is attempted before buying")
 	require.Zero(t, buyer.buyCalls, "a reused edge probe staffs the post — ZERO purchases (the deadlock fix)")
 	require.Equal(t, "X1-BK75", relayer.lastTarget.System, "reuse targets the unmanned post's system")
-	require.Equal(t, 3, relayer.lastTarget.MaxHops, "relay-reach is bounded by edge_relay_max_hops")
+	require.Equal(t, 3, relayer.lastTarget.MaxHops, "relay-reach is bounded by the reach preset's edge-relay hops")
 	require.Equal(t, 50000, relayer.lastTarget.ValueCeiling, "the value ceiling is threaded to the relayer")
 }
 
@@ -149,17 +99,20 @@ func TestFrontier_ReuseFallsBackToBuyWhenNoReusableProbe(t *testing.T) {
 	h.SetProbeReuseRelayer(relayer)
 
 	cmd := testCmd()
-	cmd.ProbeReuseEnabled = 1
-	cmd.ReuseValueCeiling = 50000
+	cfg := cfgWith(func(c *frontierConfig) {
+		c.ProbeReuseEnabled = true
+		c.ReuseValueCeiling = 50000
+	})
 
-	require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
+	require.NoError(t, h.reconcile(context.Background(), cmd, cfg))
 	require.Equal(t, 1, relayer.calls, "reuse is attempted first")
 	require.Equal(t, 1, buyer.buyCalls, "no reusable probe -> fall back to the unchanged buy path")
 }
 
-// DEFAULT-OFF byte-identical: with reuse DISARMED (the default) a wired relayer is NEVER consulted
-// and the buy path runs exactly as today. This is the merge-safety guarantee — arming is opt-in.
-func TestFrontier_ReuseDisabledByDefault_BuysAsTodayNoRelay(t *testing.T) {
+// reach_mode=shallow DISARMS reuse: a wired relayer is NEVER consulted and the buy path runs as the
+// pure buy-only frontier. (Balanced/deep arm reuse — the live default — so this pins the shallow
+// preset's reuse-off half via a built config with reuse disarmed.)
+func TestFrontier_ReuseDisarmed_BuysNoRelay(t *testing.T) {
 	clock := &shared.MockClock{CurrentTime: time.Now()}
 	pr := &fakePostRepo{posts: []*domainScouting.ScoutPost{
 		{PlayerID: 1, SystemSymbol: "X1-A", Kind: domainScouting.PostKindStanding},
@@ -173,10 +126,11 @@ func TestFrontier_ReuseDisabledByDefault_BuysAsTodayNoRelay(t *testing.T) {
 	relayer := &fakeReuseRelayer{ok: true, symbol: "PROBE-EDGE"}
 	h.SetProbeReuseRelayer(relayer)
 
-	require.NoError(t, h.ReconcileOnce(context.Background(), testCmd())) // probe_reuse_enabled defaults 0
+	cfg := cfgWith(func(c *frontierConfig) { c.ProbeReuseEnabled = false }) // shallow's reuse-off
+	require.NoError(t, h.reconcile(context.Background(), testCmd(), cfg))
 
-	require.Zero(t, relayer.calls, "reuse disarmed -> the relayer is never consulted (byte-identical to today)")
-	require.Equal(t, 1, buyer.buyCalls, "the buy path runs exactly as today")
+	require.Zero(t, relayer.calls, "reuse disarmed -> the relayer is never consulted")
+	require.Equal(t, 1, buyer.buyCalls, "the buy path runs as the pure buy-only frontier")
 }
 
 // AC2 (the no-timeout deadlock fix, INDEPENDENT of reuse): today 5 unstaffable posts jam the
@@ -221,12 +175,12 @@ func TestFrontier_AbandonsStaleInFlightPostIndependentOfReuse(t *testing.T) {
 			fr := &fakeFleetRepo{}
 			lr := &fakeLedgerRepo{}
 			h := newHandler(pr, fr, lr, clock)
-			// No reuse relayer, reuse disarmed — the reap must fire on the timeout knob ALONE.
+			// No reuse relayer — the reap must fire on the timeout ALONE (independent of reuse).
 
 			cmd := testCmd()
-			cmd.PostInflightTimeoutSecs = tc.timeoutSecs
+			cfg := cfgWith(func(c *frontierConfig) { c.PostInflightTimeout = time.Duration(tc.timeoutSecs) * time.Second })
 
-			require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
+			require.NoError(t, h.reconcile(context.Background(), cmd, cfg))
 			if tc.wantRemoved {
 				require.Equal(t, []string{"X1-WEDGED"}, pr.removed, "the wedged post is abandoned, freeing its in-flight slot")
 				return
@@ -263,15 +217,15 @@ func TestFrontier_ReapedSlotUnjamsDeclaration(t *testing.T) {
 
 	// Disabled: the cap stays full (5/5), no reap, and the fresh head cannot be declared.
 	jammed := &fakePostRepo{posts: makePosts()}
-	require.NoError(t, newScannerHandler(jammed).ReconcileOnce(context.Background(), testCmd()))
+	disabledCfg := cfgWith(func(c *frontierConfig) { c.PostInflightTimeout = 0 })
+	require.NoError(t, newScannerHandler(jammed).reconcile(context.Background(), testCmd(), disabledCfg))
 	require.Empty(t, jammed.removed, "disabled -> no reap")
 	require.Empty(t, jammed.upserts, "cap full (5/5) + no reap -> the fresh head is jammed out")
 
 	// Armed: a stale post is reaped and the freed slot admits the fresh head SAME cycle.
 	unjammed := &fakePostRepo{posts: makePosts()}
-	cmd := testCmd()
-	cmd.PostInflightTimeoutSecs = 1800
-	require.NoError(t, newScannerHandler(unjammed).ReconcileOnce(context.Background(), cmd))
+	armedCfg := cfgWith(func(c *frontierConfig) { c.PostInflightTimeout = 1800 * time.Second })
+	require.NoError(t, newScannerHandler(unjammed).reconcile(context.Background(), testCmd(), armedCfg))
 	require.NotEmpty(t, unjammed.removed, "armed -> at least one stale post reaped")
 	require.Len(t, unjammed.upserts, 1, "the freed slot admits the fresh discovery head — no permanent 5/5 jam")
 	require.Equal(t, "X1-FRESH", unjammed.upserts[0].SystemSymbol)
@@ -300,9 +254,8 @@ func TestFrontier_Snowball_EnqueuesUnchartedNeighborsWhenArmed(t *testing.T) {
 
 	t.Run("armed: S's uncharted neighbors are declared as sweep-once posts", func(t *testing.T) {
 		pr, nr, h := newSetup()
-		cmd := testCmd()
-		cmd.SnowballNeighbors = 1
-		require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
+		cfg := cfgWith(func(c *frontierConfig) { c.SnowballNeighbors = true })
+		require.NoError(t, h.reconcile(context.Background(), testCmd(), cfg))
 		require.Positive(t, nr.calls, "the neighbor reader is consulted for charted frontier systems")
 		declared := upsertedSystems(pr)
 		require.Contains(t, declared, "X1-N1", "S's uncharted neighbor N1 is enqueued")
@@ -314,11 +267,12 @@ func TestFrontier_Snowball_EnqueuesUnchartedNeighborsWhenArmed(t *testing.T) {
 		}
 	})
 
-	t.Run("disarmed (default): the reader is never consulted and nothing is declared", func(t *testing.T) {
+	t.Run("disarmed (reach_mode shallow): the reader is never consulted and nothing is declared", func(t *testing.T) {
 		pr, nr, h := newSetup()
-		require.NoError(t, h.ReconcileOnce(context.Background(), testCmd())) // snowball_neighbors defaults 0
+		cfg := cfgWith(func(c *frontierConfig) { c.SnowballNeighbors = false }) // shallow's snowball-off
+		require.NoError(t, h.reconcile(context.Background(), testCmd(), cfg))
 		require.Zero(t, nr.calls, "snowball disarmed -> the reader is never consulted")
-		require.Empty(t, pr.upserts, "snowball disarmed -> nothing declared (byte-identical)")
+		require.Empty(t, pr.upserts, "snowball disarmed -> nothing declared")
 	})
 }
 
@@ -336,11 +290,12 @@ func TestFrontier_Snowball_RespectsCapAndDedup(t *testing.T) {
 	nr := &fakeNeighborReader{neighbors: map[string][]string{"X1-S": {"X1-N1", "X1-N2", "X1-N3", "X1-N4"}}}
 	h.SetFrontierNeighborReader(nr)
 
-	cmd := testCmd()
-	cmd.SnowballNeighbors = 1
-	cmd.MaxFrontierPostsInFlight = 3 // 2 posts already in flight -> room for exactly ONE more
+	cfg := cfgWith(func(c *frontierConfig) {
+		c.SnowballNeighbors = true
+		c.MaxFrontierPostsInFlight = 3 // 2 posts already in flight -> room for exactly ONE more
+	})
 
-	require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
+	require.NoError(t, h.reconcile(context.Background(), testCmd(), cfg))
 	declared := upsertedSystems(pr)
 	require.NotContains(t, declared, "X1-N1", "an already-covered neighbor is not re-declared (dedup)")
 	require.Len(t, pr.upserts, 1, "only ONE new post fits under the in-flight cap (3 - 2 in flight)")

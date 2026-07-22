@@ -89,7 +89,7 @@ func (h *RunFrontierExpansionCoordinatorHandler) Status(ctx context.Context, cmd
 		PostsInFlight:     postsInFlight,
 		LastBuyPrice:      lastPrice,
 		LastBuyAgeSeconds: lastAge,
-		Blockers:          h.statusBlockers(cfg, satCount, postsInFlight, hadLast, lastWhen),
+		Blockers:          h.statusBlockers(cfg, satCount, postsInFlight),
 	}
 	return view, nil
 }
@@ -136,9 +136,10 @@ func splitSummary(share, discoveryBudget, scanBudget int, discoveryHasWork, scan
 
 // statusBlockers derives the read-only reasons the probe-buy path would currently fail closed, from
 // state already in hand — no extra I/O, no side effects. It mirrors the decideAndMaybeBuy gate stack
-// (fleet cap, post-in-flight cap, treasury/purchaser wiring, purchase cooldown) so the operator sees
-// WHY the frontier is not buying without having to read the logs.
-func (h *RunFrontierExpansionCoordinatorHandler) statusBlockers(cfg frontierConfig, satCount, postsInFlight int, hadLast bool, lastWhen time.Time) []string {
+// (fleet cap, post-in-flight cap, treasury/purchaser wiring) so the operator sees WHY the frontier is
+// not buying without having to read the logs. (The rate governors are gone — sp-tlekc §2A — so there
+// is no cooldown blocker to report; the solvency guards fail closed only at buy time on live prices.)
+func (h *RunFrontierExpansionCoordinatorHandler) statusBlockers(cfg frontierConfig, satCount, postsInFlight int) []string {
 	blockers := []string{}
 	if satCount >= cfg.MaxProbeFleet {
 		blockers = append(blockers, fmt.Sprintf("fleet cap reached (%d/%d satellites)", satCount, cfg.MaxProbeFleet))
@@ -152,18 +153,13 @@ func (h *RunFrontierExpansionCoordinatorHandler) statusBlockers(cfg frontierConf
 	if h.purchaser == nil {
 		blockers = append(blockers, "no probe purchaser wired — buys fail closed")
 	}
-	if hadLast {
-		if elapsed := h.clock.Now().Sub(lastWhen); elapsed < cfg.PurchaseCooldown {
-			blockers = append(blockers, fmt.Sprintf("purchase cooldown active (%s of %s elapsed)", elapsed.Round(time.Second), cfg.PurchaseCooldown))
-		}
-	}
 	return blockers
 }
 
 // lastProbePurchaseDetail returns the price + timestamp of the most recent probe buy from the
-// persisted ledger (the same source the cooldown gate reads), so status reflects real spend, not
-// memory. ok is false when no probe purchase is on record. Amounts are stored negative (expenses),
-// so the price is the negated amount.
+// persisted ledger, so status reflects real spend, not memory (an informational DISPLAY read — the
+// buy gate itself no longer reads the ledger, sp-tlekc §2A). ok is false when no probe purchase is on
+// record. Amounts are stored negative (expenses), so the price is the negated amount.
 func (h *RunFrontierExpansionCoordinatorHandler) lastProbePurchaseDetail(ctx context.Context, cmd *RunFrontierExpansionCoordinatorCommand) (price int, when time.Time, ok bool, err error) {
 	transactionType := ledger.TransactionTypePurchaseShip
 	txns, err := h.ledgerRepo.FindByPlayer(ctx, cmd.PlayerID, ledger.QueryOptions{
@@ -175,7 +171,9 @@ func (h *RunFrontierExpansionCoordinatorHandler) lastProbePurchaseDetail(ctx con
 		return 0, time.Time{}, false, err
 	}
 	for _, transaction := range txns {
-		if isProbePurchase(transaction) {
+		// The metadata ship_type the purchase machinery stamps identifies a probe buy (inlined from
+		// the removed isProbePurchase helper — the cooldown/spend readers that shared it are gone).
+		if shipType, _ := transaction.Metadata()["ship_type"].(string); shipType == probeShipType {
 			return -transaction.Amount(), transaction.Timestamp(), true, nil
 		}
 	}

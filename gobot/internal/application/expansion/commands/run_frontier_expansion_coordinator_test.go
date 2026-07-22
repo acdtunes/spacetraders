@@ -198,6 +198,18 @@ func newHandler(pr *fakePostRepo, fr *fakeFleetRepo, lr *fakeLedgerRepo, clock s
 	return NewRunFrontierExpansionCoordinatorHandler(pr, fr, lr, clock)
 }
 
+// cfgWith returns the default (balanced-preset) resolved config with an optional mutation applied —
+// the seam for driving the reach/depth/off-gate/reuse ENGINE directly through reconcile now that the
+// granular operator knobs are gone (sp-tlekc). A test overrides just the field it exercises; the
+// engine MECHANISM is byte-for-byte unchanged, so these tests still pin exactly what they did.
+func cfgWith(mutate func(*frontierConfig)) frontierConfig {
+	c := resolveConfig(testCmd(), nil) // balanced default: breadth 65, reuse/snowball armed, reap 1800s
+	if mutate != nil {
+		mutate(&c)
+	}
+	return c
+}
+
 // ---- tests: declaration + ranking -----------------------------------------
 
 // Pin #1/#3 + "queue-head system gets a sweep_once post declared through the real path":
@@ -351,10 +363,11 @@ func TestFrontier_OccupiedAnchorSystemNotDeclared(t *testing.T) {
 // Pin #3: declaration is bounded by MaxFrontierPostsInFlight so it never outruns manning.
 func TestFrontier_DeclarationCappedByInFlight(t *testing.T) {
 	clock := &shared.MockClock{CurrentTime: time.Now()}
-	// Two sweep-once posts already outstanding; cap is 2 → no new declaration.
+	// Two FRESH sweep-once posts already outstanding; cap is 2 → no new declaration. (CreatedAt=now so
+	// the balanced-default reap keeps them — they legitimately occupy the cap, not wedged/reapable.)
 	existing := []*domainScouting.ScoutPost{
-		{PlayerID: 1, SystemSymbol: "X1-S1", Kind: domainScouting.PostKindSweepOnce},
-		{PlayerID: 1, SystemSymbol: "X1-S2", Kind: domainScouting.PostKindSweepOnce},
+		{PlayerID: 1, SystemSymbol: "X1-S1", Kind: domainScouting.PostKindSweepOnce, CreatedAt: clock.Now()},
+		{PlayerID: 1, SystemSymbol: "X1-S2", Kind: domainScouting.PostKindSweepOnce, CreatedAt: clock.Now()},
 	}
 	pr := &fakePostRepo{posts: existing}
 	fr := &fakeFleetRepo{idle: []*navigation.Ship{newProbe(t, "P1", "X1-HOME-A1")}}
@@ -460,6 +473,32 @@ func TestFrontier_TwentyFivePercentRule(t *testing.T) {
 	require.Equal(t, 25000, over.lastBudget, "the buy budget is the 25% treasury ceiling")
 }
 
+// sp-tlekc §2E working-capital floor: the frontier now enforces the standing 50k reserve every
+// other coordinator does — a buy that would leave (treasury − price) below the immutable floor is
+// REFUSED even when the 25% rule passes. It is fail-closed and immutable (no tune seam). The two
+// rows isolate the floor as the sole blocker: a thin treasury where the price clears 25% but breaches
+// the floor is refused, and the SAME price on a fat treasury buys. Mutation guard: drop the floor
+// gate and the thin-treasury row buys → the first assertion fails.
+func TestFrontier_WorkingCapitalFloorEnforced(t *testing.T) {
+	run := func(price, credits int) *fakePurchaser {
+		clock := &shared.MockClock{CurrentTime: time.Now()}
+		pr := &fakePostRepo{posts: []*domainScouting.ScoutPost{{PlayerID: 1, SystemSymbol: "X1-A", Kind: domainScouting.PostKindStanding}}}
+		fr := &fakeFleetRepo{}
+		lr := &fakeLedgerRepo{}
+		h := newHandler(pr, fr, lr, clock)
+		h.SetTreasuryReader(&fakeTreasury{credits: credits})
+		buyer := &fakePurchaser{quotePrice: price, quoteYard: "X1-HOME-SY", buySymbol: "NEW", buyPrice: price}
+		h.SetProbePurchaser(buyer)
+		require.NoError(t, h.ReconcileOnce(context.Background(), testCmd()))
+		return buyer
+	}
+
+	// price 12000 clears 25% of 60000 (=15000), but 60000 − 12000 = 48000 < 50000 floor → refused.
+	require.Zero(t, run(12000, 60000).buyCalls, "a buy that would breach the 50k working-capital floor is refused (even within the 25% rule)")
+	// fat treasury: 200000 − 12000 = 188000 ≥ 50000 → the SAME price buys, isolating the floor.
+	require.Equal(t, 1, run(12000, 200000).buyCalls, "with ample treasury the same buy clears the floor")
+}
+
 // "fleet-cap enforced": at the satellite cap, no buy even under demand.
 func TestFrontier_FleetCapEnforced(t *testing.T) {
 	clock := &shared.MockClock{CurrentTime: time.Now()}
@@ -481,87 +520,12 @@ func TestFrontier_FleetCapEnforced(t *testing.T) {
 	require.Zero(t, buyer.buyCalls, "fleet cap reached → no buy")
 }
 
-// "cycle-spend enforced": trailing-window probe spend + price over the cap blocks the buy.
-func TestFrontier_CycleSpendCapEnforced(t *testing.T) {
-	now := time.Now()
-	clock := &shared.MockClock{CurrentTime: now}
-	pr := &fakePostRepo{posts: []*domainScouting.ScoutPost{{PlayerID: 1, SystemSymbol: "X1-A", Kind: domainScouting.PostKindStanding}}}
-	fr := &fakeFleetRepo{}
-	// A probe was bought 2 minutes ago for 90000 — OUTSIDE the 30s cooldown (so the cooldown
-	// is clear) but INSIDE the 1h spend window, so it folds into the spend cap.
-	lr := &fakeLedgerRepo{txns: []*ledger.Transaction{probeTxn(t, now.Add(-2*time.Minute), 90000)}}
-	h := newHandler(pr, fr, lr, clock)
-	h.SetTreasuryReader(&fakeTreasury{credits: 1_000_000})
-	buyer := &fakePurchaser{quotePrice: 30000, quoteYard: "X1-HOME-SY", buySymbol: "NEW"}
-	h.SetProbePurchaser(buyer)
-
-	cmd := testCmd()
-	cmd.MaxSpendPerCycle = 100000 // 90000 already spent this window + 30000 price > 100000
-	cmd.PurchaseCooldownSecs = 30 // 30s cooldown → the 2-min-old buy is outside cooldown
-	cmd.SpendWindowSecs = 3600    // 1h spend window → the 2-min-old buy IS inside it
-	cmd.MaxProbeFleet = 40
-
-	require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
-	require.Zero(t, buyer.buyCalls, "window spend + price exceeds the per-cycle cap → no buy")
-}
-
-// "cooldown enforced" AND the core of restart-idempotency: a probe bought within the
-// cooldown window (read from the persisted ledger, not memory) blocks another buy.
-func TestFrontier_CooldownEnforced_FromLedger(t *testing.T) {
-	now := time.Now()
-	clock := &shared.MockClock{CurrentTime: now}
-	pr := &fakePostRepo{posts: []*domainScouting.ScoutPost{{PlayerID: 1, SystemSymbol: "X1-A", Kind: domainScouting.PostKindStanding}}}
-	fr := &fakeFleetRepo{}
-	lr := &fakeLedgerRepo{txns: []*ledger.Transaction{probeTxn(t, now.Add(-2*time.Minute), 1000)}} // 2 min ago
-	h := newHandler(pr, fr, lr, clock)
-	h.SetTreasuryReader(&fakeTreasury{credits: 1_000_000})
-	buyer := &fakePurchaser{quotePrice: 1000, quoteYard: "X1-HOME-SY", buySymbol: "NEW"}
-	h.SetProbePurchaser(buyer)
-
-	cmd := testCmd()
-	cmd.PurchaseCooldownSecs = int((10 * time.Minute).Seconds()) // 10 min cooldown; last buy 2 min ago
-
-	require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
-	require.Zero(t, buyer.buyCalls, "within cooldown (derived from the ledger) → no buy")
-}
-
-// Restart idempotency: a FRESH handler (no in-memory state) with a recent ledger
-// purchase re-derives the cooldown and refuses to double-buy — exactly the mid-cycle
-// restart scenario (RULINGS #2).
-func TestFrontier_RestartMidCycle_NoDoubleBuy(t *testing.T) {
-	now := time.Now()
-	cmd := testCmd()
-	cmd.PurchaseCooldownSecs = int((10 * time.Minute).Seconds())
-
-	// A probe was just bought (30s ago) and its ledger row persisted.
-	lr := &fakeLedgerRepo{txns: []*ledger.Transaction{probeTxn(t, now.Add(-30*time.Second), 1000)}}
-	pr := &fakePostRepo{posts: []*domainScouting.ScoutPost{{PlayerID: 1, SystemSymbol: "X1-A", Kind: domainScouting.PostKindStanding}}}
-	fr := &fakeFleetRepo{}
-
-	// Simulate a restart: build a brand-new handler instance, no carried-over memory.
-	h := newHandler(pr, fr, lr, &shared.MockClock{CurrentTime: now})
-	h.SetTreasuryReader(&fakeTreasury{credits: 1_000_000})
-	buyer := &fakePurchaser{quotePrice: 1000, quoteYard: "X1-HOME-SY", buySymbol: "NEW"}
-	h.SetProbePurchaser(buyer)
-
-	require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
-	require.Zero(t, buyer.buyCalls, "post-restart, the ledger-derived cooldown prevents a double-buy")
-}
-
-// Ledger unreadable → fail closed (cannot verify the cooldown/spend → do not spend).
-func TestFrontier_LedgerUnreadable_NoBuy(t *testing.T) {
-	clock := &shared.MockClock{CurrentTime: time.Now()}
-	pr := &fakePostRepo{posts: []*domainScouting.ScoutPost{{PlayerID: 1, SystemSymbol: "X1-A", Kind: domainScouting.PostKindStanding}}}
-	fr := &fakeFleetRepo{}
-	lr := &fakeLedgerRepo{err: errors.New("db down")}
-	h := newHandler(pr, fr, lr, clock)
-	h.SetTreasuryReader(&fakeTreasury{credits: 1_000_000})
-	buyer := &fakePurchaser{quotePrice: 1000, quoteYard: "X1-HOME-SY", buySymbol: "NEW"}
-	h.SetProbePurchaser(buyer)
-
-	require.NoError(t, h.ReconcileOnce(context.Background(), testCmd()))
-	require.Zero(t, buyer.buyCalls, "unreadable purchase ledger fails closed")
-}
+// The two ledger-derived RATE GOVERNORS (per-buy cooldown + per-window spend cap) are REMOVED
+// (sp-tlekc §2A — proven redundant): the frontier buy gate no longer reads the PURCHASE_SHIP ledger.
+// Their tests (cycle-spend cap, cooldown-from-ledger, restart-no-double-buy, ledger-unreadable-fail-
+// closed) are retired with the mechanism. Probe buys stay bounded by one-buy-per-tick + the fleet cap
+// + the 25% rule + the new 50k working-capital floor (TestFrontier_WorkingCapitalFloorEnforced) + the
+// API limiter — the four surviving bounds §2A relies on.
 
 // ---- tests: happy path, claims-no-hulls, dry-run ---------------------------
 
@@ -583,7 +547,7 @@ func TestFrontier_BuysProbeWhenShortAndGuardsPass(t *testing.T) {
 	// sp-hej4: the buy carries the demand-proximal target — the unmanned-slot post's system, with
 	// the default per-hop penalty knob (testCmd sets none → the documented default).
 	require.Equal(t, "X1-A", buyer.lastTarget.System, "the target is the post whose unmanned slot the probe serves")
-	require.Equal(t, defaultProximalYardHopPenalty, buyer.lastTarget.HopPenaltyCredits, "the default proximal-yard penalty is applied when untuned")
+	require.Equal(t, hopPenaltyCredits, buyer.lastTarget.HopPenaltyCredits, "the internal proximal-yard penalty const is applied")
 }
 
 // "coordinator claims no hulls": across a full buy cycle it never mutates a ship — the
@@ -801,66 +765,39 @@ func TestResolveFrontierConfig_ReadsReservedFreshnessFloorLiveWithDefaultFallbac
 		"a live snapshot overrides the launch value next tick")
 }
 
-// sp-3u5d: the per-unit probe price ceiling DEFERS a buy whose final chosen quote exceeds it — the
-// backstop for the deep-frontier tail whose only reachable yard is a depleted deep one. Treasury 10M
-// and spend cap 5M so ONLY the ceiling can decide the over-priced row (mutation guard: delete the
-// check and the 235k quote passes every other gate and wrongly buys). A deferral is a normal no-op:
-// ReconcileOnce returns no error, the loop is never stranded, the post simply stays dark this cycle.
+// sp-tlekc §2C: the IMMUTABLE per-unit probe price ceiling (100k const, always on) DEFERS a buy whose
+// final chosen quote exceeds it — the anti-overpay backstop for the deep-frontier tail whose only
+// reachable yard is a depleted deep one. Treasury 10M so ONLY the ceiling can decide the over-priced
+// row (mutation guard: delete the check and the 235k quote passes every other gate and wrongly buys).
+// A deferral is a normal no-op: ReconcileOnce returns no error, the post simply stays dark this cycle.
+// The ceiling can NEVER be disabled now (it is a const, not a knob), so there is no "0 = off" row.
 func TestFrontier_ProbePriceCeilingDefersOverpricedBuy(t *testing.T) {
 	cases := []struct {
 		name     string
-		ceiling  int
 		quote    int
 		wantBuys bool
 	}{
-		{name: "final quote over ceiling defers (deep depleted yard)", ceiling: 60000, quote: 235000, wantBuys: false},
-		{name: "quote under ceiling still buys (cheap near yard flows)", ceiling: 60000, quote: 23000, wantBuys: true},
-		{name: "ceiling disabled (0) buys at any price — byte-identical to today", ceiling: 0, quote: 235000, wantBuys: true},
+		{name: "final quote over the 100k ceiling defers (deep depleted yard)", quote: 235000, wantBuys: false},
+		{name: "quote under the ceiling still buys (cheap near yard flows)", quote: 23000, wantBuys: true},
+		{name: "quote at exactly the ceiling buys (boundary inclusive — defer is strict >)", quote: maxProbePrice, wantBuys: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			clock := &shared.MockClock{CurrentTime: time.Now()}
 			pr := &fakePostRepo{posts: []*domainScouting.ScoutPost{{PlayerID: 1, SystemSymbol: "X1-A", Kind: domainScouting.PostKindStanding}}}
-			fr := &fakeFleetRepo{}  // no idle probes → short by one
-			lr := &fakeLedgerRepo{} // no prior purchases → cooldown clear
+			fr := &fakeFleetRepo{} // no idle probes → short by one
+			lr := &fakeLedgerRepo{}
 			h := newHandler(pr, fr, lr, clock)
-			h.SetTreasuryReader(&fakeTreasury{credits: 10_000_000}) // 25% = 2.5M, above every quote here
+			h.SetTreasuryReader(&fakeTreasury{credits: 10_000_000}) // 25% = 2.5M + floor clear, above every quote here
 			buyer := &fakePurchaser{quotePrice: tc.quote, quoteYard: "X1-DEEP-SY", buySymbol: "NEW", buyPrice: tc.quote}
 			h.SetProbePurchaser(buyer)
 
-			cmd := testCmd()
-			cmd.MaxProbePrice = tc.ceiling
-			cmd.MaxSpendPerCycle = 5_000_000 // far above any quote → the ceiling, not the spend cap, decides
-			cmd.MaxProbeFleet = 40
-
-			require.NoError(t, h.ReconcileOnce(context.Background(), cmd), "a ceiling defer is a normal no-op — never errors or strands the loop")
+			require.NoError(t, h.ReconcileOnce(context.Background(), testCmd()), "a ceiling defer is a normal no-op — never errors or strands the loop")
 			if tc.wantBuys {
-				require.Equal(t, 1, buyer.buyCalls, "quote %d within ceiling %d must still buy", tc.quote, tc.ceiling)
+				require.Equal(t, 1, buyer.buyCalls, "quote %d within the 100k ceiling must still buy", tc.quote)
 				return
 			}
-			require.Zero(t, buyer.buyCalls, "quote %d over ceiling %d must defer — the post stays dark", tc.quote, tc.ceiling)
+			require.Zero(t, buyer.buyCalls, "quote %d over the 100k ceiling must defer — the post stays dark", tc.quote)
 		})
 	}
-}
-
-// sp-3u5d config round-trip: the ceiling is DEFAULT-SAFE (0 = disabled) and live-authoritative.
-// Unlike the hop/sibling knobs it takes NO <=0 fallback — 0 is the real "off" value (the governance
-// gate), so an absent live key resolves to 0, not to a nonzero default. Mirrors reserved_freshness_floor.
-func TestResolveFrontierConfig_ReadsMaxProbePriceLiveDefaultDisabled(t *testing.T) {
-	def := resolveConfig(testCmd(), nil)
-	require.Equal(t, defaultMaxProbePrice, def.MaxProbePrice)
-	require.Zero(t, def.MaxProbePrice, "no snapshot, no launch value → 0 (ceiling DISABLED), byte-identical to today")
-
-	launch := testCmd()
-	launch.MaxProbePrice = 60000
-	require.Equal(t, 60000, resolveConfig(launch, nil).MaxProbePrice,
-		"no snapshot → the launch command value governs")
-
-	live := liveconfig.Snapshot{"max_probe_price": 55000}
-	require.Equal(t, 55000, resolveConfig(launch, live).MaxProbePrice,
-		"a live snapshot overrides the launch value next tick")
-
-	empty := liveconfig.Snapshot{}
-	require.Zero(t, resolveConfig(launch, empty).MaxProbePrice,
-		"live present but key absent ⇒ 0 (disabled) — no fallback to a nonzero default")
 }

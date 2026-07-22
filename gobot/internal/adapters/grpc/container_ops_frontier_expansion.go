@@ -24,26 +24,22 @@ func (s *DaemonServer) FrontierExpansionCoordinator(
 	tickIntervalSecs int,
 	dryRun bool,
 	maxProbeFleet int,
-	maxSpendPerCycle int,
-	purchaseCooldownSecs int,
 	expansionMaxHops int,
 ) (string, error) {
 	containerID := utils.GenerateContainerID("frontier_expansion_coordinator", fmt.Sprintf("player-%d", playerID))
 
 	config := map[string]interface{}{
-		"container_id":           containerID,
-		"tick_interval_secs":     tickIntervalSecs,
-		"dry_run":                dryRun,
-		"max_probe_fleet":        maxProbeFleet,
-		"max_spend_per_cycle":    maxSpendPerCycle,
-		"purchase_cooldown_secs": purchaseCooldownSecs,
-		"expansion_max_hops":     expansionMaxHops,
+		"container_id":       containerID,
+		"tick_interval_secs": tickIntervalSecs,
+		"dry_run":            dryRun,
+		"max_probe_fleet":    maxProbeFleet,
+		"expansion_max_hops": expansionMaxHops,
 	}
 
 	// sp-ve3q: re-adopt the last persisted live-tuned config for this player's frontier
 	// coordinator so a relaunch of a stopped one keeps its tunes (matching the daemon-restart
-	// recovery path) instead of silently reverting to config-file defaults. Warns loudly for
-	// any safety-critical knob (the max_probe_price overpay ceiling) that comes up disabled.
+	// recovery path) instead of silently reverting to config-file defaults. (sp-tlekc removed the
+	// two rate governors + the max_probe_price safety knob — the ceiling is now an immutable const.)
 	config, warnings, err := s.frontierStartConfig(ctx, playerID, config)
 	if err != nil {
 		return "", fmt.Errorf("failed to resolve frontier start config: %w", err)

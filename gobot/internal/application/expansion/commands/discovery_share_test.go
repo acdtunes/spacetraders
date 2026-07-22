@@ -53,27 +53,28 @@ func TestFrontierCapacitySplit(t *testing.T) {
 	}
 }
 
-// resolveDiscoveryShare folds the discovery_share knob and the DEPRECATED scan_only alias into one
-// effective share in [0,100]: discovery_share is authoritative when set (>0), else the deprecated
-// scan_only maps its binary (1 → pure backlog-scan share 0), else the documented default.
+// resolveDiscoveryShare folds the sp-tlekc discover_scan_balance dial and the legacy discovery_share
+// migration alias into one effective share in [0,100]: discover_scan_balance is authoritative when
+// set (>0), then the legacy discovery_share (the rename migration alias), else the documented default.
 func TestResolveDiscoveryShare(t *testing.T) {
 	cases := []struct {
-		name           string
-		discoveryShare int
-		scanOnly       int
-		want           int
+		name                 string
+		discoverScanBalance  int
+		legacyDiscoveryShare int
+		want                 int
 	}{
 		{"nothing set → documented default", 0, 0, defaultDiscoveryShare},
-		{"explicit share governs", 60, 0, 60},
+		{"discover_scan_balance governs", 70, 0, 70},
 		{"explicit 100 = pure discovery", 100, 0, 100},
-		{"share clamps above 100", 150, 0, 100},
-		{"deprecated scan_only=1 ↔ share 0 (pure backlog-scan)", 0, 1, 0},
-		{"discovery_share wins over the deprecated scan_only", 60, 1, 60},
-		{"scan_only=0 is inert (not pure-scan) → default", 0, 0, defaultDiscoveryShare},
+		{"discover_scan_balance clamps above 100", 150, 0, 100},
+		// the rename migration alias: a persisted discovery_share is honored until re-tuned.
+		{"legacy discovery_share honored when the dial is unset", 0, 40, 40},
+		{"the dial wins over the legacy alias", 70, 40, 70},
+		{"legacy discovery_share clamps above 100", 0, 150, 100},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, resolveDiscoveryShare(tc.discoveryShare, tc.scanOnly))
+			require.Equal(t, tc.want, resolveDiscoveryShare(tc.discoverScanBalance, tc.legacyDiscoveryShare))
 		})
 	}
 }

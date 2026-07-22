@@ -1372,24 +1372,20 @@ func (c *DaemonClient) BootstrapCoordinator(ctx context.Context, playerID int, a
 // expansion coordinator (sp-8w89). All are optional; a 0/false value uses the
 // coordinator's documented default (RULINGS #5).
 type FrontierExpansionCoordinatorParams struct {
-	TickIntervalSecs     int
-	DryRun               bool
-	MaxProbeFleet        int
-	MaxSpendPerCycle     int
-	PurchaseCooldownSecs int
-	ExpansionMaxHops     int
+	TickIntervalSecs int
+	DryRun           bool
+	MaxProbeFleet    int
+	ExpansionMaxHops int
 }
 
 // FrontierExpansionCoordinator starts the standing frontier expansion coordinator (sp-8w89).
 func (c *DaemonClient) FrontierExpansionCoordinator(ctx context.Context, playerID int, agentSymbol string, p FrontierExpansionCoordinatorParams) (string, error) {
 	req := &pb.FrontierExpansionCoordinatorRequest{
-		PlayerId:             int32(playerID),
-		TickIntervalSecs:     int32(p.TickIntervalSecs),
-		DryRun:               p.DryRun,
-		MaxProbeFleet:        int32(p.MaxProbeFleet),
-		MaxSpendPerCycle:     int32(p.MaxSpendPerCycle),
-		PurchaseCooldownSecs: int32(p.PurchaseCooldownSecs),
-		ExpansionMaxHops:     int32(p.ExpansionMaxHops),
+		PlayerId:         int32(playerID),
+		TickIntervalSecs: int32(p.TickIntervalSecs),
+		DryRun:           p.DryRun,
+		MaxProbeFleet:    int32(p.MaxProbeFleet),
+		ExpansionMaxHops: int32(p.ExpansionMaxHops),
 	}
 	if agentSymbol != "" {
 		req.AgentSymbol = &agentSymbol

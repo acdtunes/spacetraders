@@ -7,7 +7,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -36,42 +35,10 @@ func (f *fakeShipyardCoverage) GateShipyardsScanExhausted(_ context.Context, _ i
 	return f.exhausted, f.readable, f.err
 }
 
-// TestFrontier_OffGate_TunablesResolveLiveOverLaunchOverDefault pins sp-k645 test 6: the
-// off-gate demand knobs resolve live-config over launch over documented default — the
-// established sp-vwek/sp-0z7f precedence, matching the depth knobs.
-func TestFrontier_OffGate_TunablesResolveLiveOverLaunchOverDefault(t *testing.T) {
-	cmd := testCmd()
-	cmd.OffGateQueueExhaustionCycles = 3
-	cmd.OffGateWarpRangeFuel = 250
-	cmd.OffGateValueWeight = 7
-	cmd.OffGateFuelWeight = 2
-
-	// No live snapshot → launch values apply.
-	launch := resolveConfig(cmd, nil)
-	require.Equal(t, 3, launch.OffGateQueueExhaustionCycles, "launch value applies with no live snapshot")
-	require.Equal(t, 250, launch.OffGateWarpRangeFuel)
-	require.Equal(t, 7, launch.OffGateValueWeight)
-	require.Equal(t, 2, launch.OffGateFuelWeight)
-
-	// A live snapshot overrides the launch values.
-	live := resolveConfig(cmd, liveconfig.Snapshot{
-		"off_gate_queue_exhaustion_cycles": 8,
-		"off_gate_warp_range_fuel":         600,
-		"off_gate_value_weight":            20,
-		"off_gate_fuel_weight":             3,
-	})
-	require.Equal(t, 8, live.OffGateQueueExhaustionCycles, "live snapshot overrides launch")
-	require.Equal(t, 600, live.OffGateWarpRangeFuel)
-	require.Equal(t, 20, live.OffGateValueWeight)
-	require.Equal(t, 3, live.OffGateFuelWeight)
-
-	// An empty snapshot → every knob falls to its documented default.
-	def := resolveConfig(testCmd(), liveconfig.Snapshot{})
-	require.Equal(t, defaultOffGateQueueExhaustionCycles, def.OffGateQueueExhaustionCycles, "empty snapshot → default")
-	require.Equal(t, defaultOffGateWarpRangeFuel, def.OffGateWarpRangeFuel)
-	require.Equal(t, defaultOffGateValueWeight, def.OffGateValueWeight)
-	require.Equal(t, defaultOffGateFuelWeight, def.OffGateFuelWeight)
-}
+// The off-gate demand knobs are no longer per-knob operator settings (sp-tlekc): they resolve from
+// the reach_mode preset (balanced/shallow queue-exhaustion 5, deep 3; warp-fuel/weights per preset),
+// verified via reach_mode_test.go. The former per-knob live>launch>default test is retired; the
+// off-gate MECHANISM tests below drive the engine directly (cfgWith) and are unchanged.
 
 // TestOffGateDemand_FiresOnQueueExhaustionAfterNCyclesAndExposesTarget pins sp-k645 tests 3+5:
 // trigger (a) raises off-gate demand only after the gate-reachable expansion queue has been
@@ -90,19 +57,21 @@ func TestOffGateDemand_FiresOnQueueExhaustionAfterNCyclesAndExposesTarget(t *tes
 	}})
 
 	cmd := testCmd()
-	cmd.OffGateQueueExhaustionCycles = 3
+	// The queue-exhaustion debounce is N=3 here (driven via the engine seam — it is the deep preset's
+	// value; the operator no longer sets it granularly).
+	cfg := cfgWith(func(c *frontierConfig) { c.OffGateQueueExhaustionCycles = 3 })
 	pid := cmd.PlayerID.Value()
 	ctx := context.Background()
 
 	// Cycles 1..N-1: debounced — no demand yet.
 	for cycle := 1; cycle < 3; cycle++ {
-		require.NoError(t, h.ReconcileOnce(ctx, cmd))
+		require.NoError(t, h.reconcile(ctx, cmd, cfg))
 		sig, _ := h.OffGateDemand(pid)
 		require.False(t, sig.Demanded, "no off-gate demand before N empty-queue cycles (cycle %d)", cycle)
 	}
 
 	// Cycle N: demand fires and exposes the selected target (test 5).
-	require.NoError(t, h.ReconcileOnce(ctx, cmd))
+	require.NoError(t, h.reconcile(ctx, cmd, cfg))
 	sig, ok := h.OffGateDemand(pid)
 	require.True(t, ok, "the signal is exposed once evaluated")
 	require.True(t, sig.Demanded, "off-gate demand fires at the Nth empty-queue cycle")

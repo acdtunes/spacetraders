@@ -48,17 +48,18 @@ func newDedicatedExplorer(t *testing.T, symbol, waypoint string) *navigation.Shi
 }
 
 // armedExhaustedFrontier wires a coordinator whose off-gate demand FIRES (empty queue past the
-// debounce, a target selectable) with the given idle fleet and a recording dispatch port.
-func armedExhaustedFrontier(t *testing.T, idle []*navigation.Ship, disp *fakeExplorerDispatch, target OffGateTarget, found bool) (*RunFrontierExpansionCoordinatorHandler, *RunFrontierExpansionCoordinatorCommand) {
+// debounce, a target selectable) with the given idle fleet and a recording dispatch port. It returns
+// a config whose queue-exhaustion debounce is 1 (fire on the first empty cycle) — driven through the
+// engine seam, since the operator no longer sets it granularly (sp-tlekc).
+func armedExhaustedFrontier(t *testing.T, idle []*navigation.Ship, disp *fakeExplorerDispatch, target OffGateTarget, found bool) (*RunFrontierExpansionCoordinatorHandler, *RunFrontierExpansionCoordinatorCommand, frontierConfig) {
 	t.Helper()
 	clock := &shared.MockClock{CurrentTime: time.Now()}
 	h := newHandler(&fakePostRepo{}, &fakeFleetRepo{idle: idle}, &fakeLedgerRepo{}, clock)
 	h.SetExpansionScanner(&fakeScanner{candidates: nil}) // empty queue → exhaustion → demand fires
 	h.SetOffGateTargetSelector(&fakeOffGateSelector{found: found, target: target})
 	h.SetExplorerDispatchPort(disp)
-	cmd := testCmd()
-	cmd.OffGateQueueExhaustionCycles = 1 // fire on the first empty-queue cycle
-	return h, cmd
+	cfg := cfgWith(func(c *frontierConfig) { c.OffGateQueueExhaustionCycles = 1 })
+	return h, testCmd(), cfg
 }
 
 // Bead test (a) dispatch half: ARMED + off-gate demand fired + an idle dedicated explorer exists ⇒
@@ -66,9 +67,9 @@ func armedExhaustedFrontier(t *testing.T, idle []*navigation.Ship, disp *fakeExp
 func TestOffGateDispatch_WarpsIdleDedicatedExplorerToTarget(t *testing.T) {
 	disp := &fakeExplorerDispatch{}
 	target := OffGateTarget{SystemSymbol: "X1-OFF", FromSystem: "X1-EDGE", WarpFuelCost: 5}
-	h, cmd := armedExhaustedFrontier(t, []*navigation.Ship{newDedicatedExplorer(t, "EXP-1", "X1-EDGE-A1")}, disp, target, true)
+	h, cmd, cfg := armedExhaustedFrontier(t, []*navigation.Ship{newDedicatedExplorer(t, "EXP-1", "X1-EDGE-A1")}, disp, target, true)
 
-	require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
+	require.NoError(t, h.reconcile(context.Background(), cmd, cfg))
 
 	require.Equal(t, 1, disp.calls, "the bought+dedicated explorer must be dispatched exactly once when demand fires")
 	require.Equal(t, "EXP-1", disp.lastShip, "the dedicated explorer hull is the one warped")
@@ -97,18 +98,18 @@ func TestOffGateDispatch_NoDispatchWithoutDemand(t *testing.T) {
 // operates on a bought+dedicated explorer; there is nothing to warp until the autosizer buys one.
 func TestOffGateDispatch_NoDispatchWhenNoExplorerExists(t *testing.T) {
 	disp := &fakeExplorerDispatch{}
-	h, cmd := armedExhaustedFrontier(t, []*navigation.Ship{newProbe(t, "P1", "X1-EDGE-A1")}, disp, OffGateTarget{SystemSymbol: "X1-OFF"}, true)
+	h, cmd, cfg := armedExhaustedFrontier(t, []*navigation.Ship{newProbe(t, "P1", "X1-EDGE-A1")}, disp, OffGateTarget{SystemSymbol: "X1-OFF"}, true)
 
-	require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
+	require.NoError(t, h.reconcile(context.Background(), cmd, cfg))
 	require.Equal(t, 0, disp.calls, "no dedicated explorer exists ⇒ nothing to dispatch")
 }
 
 // Demand fires but the selector found NO reachable target ⇒ NO dispatch (nowhere to warp).
 func TestOffGateDispatch_NoDispatchWithoutTarget(t *testing.T) {
 	disp := &fakeExplorerDispatch{}
-	h, cmd := armedExhaustedFrontier(t, []*navigation.Ship{newDedicatedExplorer(t, "EXP-1", "X1-EDGE-A1")}, disp, OffGateTarget{}, false)
+	h, cmd, cfg := armedExhaustedFrontier(t, []*navigation.Ship{newDedicatedExplorer(t, "EXP-1", "X1-EDGE-A1")}, disp, OffGateTarget{}, false)
 
-	require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
+	require.NoError(t, h.reconcile(context.Background(), cmd, cfg))
 	require.Equal(t, 0, disp.calls, "no reachable off-gate target ⇒ no dispatch")
 }
 
@@ -124,15 +125,15 @@ func TestOffGateDispatch_ParksWhenFrontierResumesAfterCharting(t *testing.T) {
 	h.SetOffGateTargetSelector(&fakeOffGateSelector{found: true, target: OffGateTarget{SystemSymbol: "X1-OFF"}})
 	h.SetExplorerDispatchPort(disp)
 	cmd := testCmd()
-	cmd.OffGateQueueExhaustionCycles = 1
+	cfg := cfgWith(func(c *frontierConfig) { c.OffGateQueueExhaustionCycles = 1 })
 	ctx := context.Background()
 
-	require.NoError(t, h.ReconcileOnce(ctx, cmd))
+	require.NoError(t, h.reconcile(ctx, cmd, cfg))
 	require.Equal(t, 1, disp.calls, "cycle 1: exhausted frontier ⇒ explorer dispatched off-gate")
 
 	// The explorer charted its target; growFrontierGraph now reaches the new cluster.
 	scanner.candidates = []ExpansionCandidate{{SystemSymbol: "X1-NEW", Hops: 1, Charted: false, Scanned: false}}
-	require.NoError(t, h.ReconcileOnce(ctx, cmd))
+	require.NoError(t, h.reconcile(ctx, cmd, cfg))
 	require.Equal(t, 1, disp.calls, "cycle 2: frontier resumed (queue repopulated) ⇒ demand clears ⇒ explorer PARKS (no re-dispatch)")
 }
 
@@ -140,19 +141,19 @@ func TestOffGateDispatch_ParksWhenFrontierResumesAfterCharting(t *testing.T) {
 // the (now-idle-again) explorer ADVANCES to the next off-gate target.
 func TestOffGateDispatch_AdvancesToNextTargetWhileStillExhausted(t *testing.T) {
 	disp := &fakeExplorerDispatch{}
-	h, cmd := armedExhaustedFrontier(t, []*navigation.Ship{newDedicatedExplorer(t, "EXP-1", "X1-EDGE-A1")}, disp, OffGateTarget{SystemSymbol: "X1-OFF"}, true)
+	h, cmd, cfg := armedExhaustedFrontier(t, []*navigation.Ship{newDedicatedExplorer(t, "EXP-1", "X1-EDGE-A1")}, disp, OffGateTarget{SystemSymbol: "X1-OFF"}, true)
 	ctx := context.Background()
 
-	require.NoError(t, h.ReconcileOnce(ctx, cmd))
-	require.NoError(t, h.ReconcileOnce(ctx, cmd)) // still exhausted → advance
+	require.NoError(t, h.reconcile(ctx, cmd, cfg))
+	require.NoError(t, h.reconcile(ctx, cmd, cfg)) // still exhausted → advance
 	require.Equal(t, 2, disp.calls, "while the frontier stays exhausted the explorer advances to the next off-gate target")
 }
 
 // A dispatch-port error is logged and swallowed — a failed warp never aborts the whole reconcile pass.
 func TestOffGateDispatch_DispatchErrorIsNonFatal(t *testing.T) {
 	disp := &fakeExplorerDispatch{err: errors.New("warp API down")}
-	h, cmd := armedExhaustedFrontier(t, []*navigation.Ship{newDedicatedExplorer(t, "EXP-1", "X1-EDGE-A1")}, disp, OffGateTarget{SystemSymbol: "X1-OFF"}, true)
+	h, cmd, cfg := armedExhaustedFrontier(t, []*navigation.Ship{newDedicatedExplorer(t, "EXP-1", "X1-EDGE-A1")}, disp, OffGateTarget{SystemSymbol: "X1-OFF"}, true)
 
-	require.NoError(t, h.ReconcileOnce(context.Background(), cmd), "a dispatch failure must not fail the reconcile pass")
+	require.NoError(t, h.reconcile(context.Background(), cmd, cfg), "a dispatch failure must not fail the reconcile pass")
 	require.Equal(t, 1, disp.calls)
 }

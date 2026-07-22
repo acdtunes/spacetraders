@@ -112,8 +112,10 @@ func TestFrontierStatus_ReportsAllocationDepthAndBlockers(t *testing.T) {
 	require.Contains(t, view.Blockers, "no probe purchaser wired — buys fail closed")
 }
 
-// Status reports the last probe buy (price + age) from the persisted ledger, and flags the cooldown.
-func TestFrontierStatus_ReportsLastProbeBuyAndCooldownBlocker(t *testing.T) {
+// Status reports the last probe buy (price + age) from the persisted ledger — an informational
+// DISPLAY read that survives the sp-tlekc rate-governor removal (the cooldown blocker is gone: there
+// is no cooldown mechanism to report any more).
+func TestFrontierStatus_ReportsLastProbeBuyFromLedger(t *testing.T) {
 	now := time.Now()
 	clock := &shared.MockClock{CurrentTime: now}
 	pr := &fakePostRepo{}
@@ -123,13 +125,12 @@ func TestFrontierStatus_ReportsLastProbeBuyAndCooldownBlocker(t *testing.T) {
 	h.SetTreasuryReader(&fakeTreasury{credits: 1_000_000})
 	h.SetProbePurchaser(&fakePurchaser{quotePrice: 20000, quoteYard: "X1-HOME-SY", buySymbol: "NEW"})
 
-	cmd := testCmd()
-	cmd.PurchaseCooldownSecs = int((10 * time.Minute).Seconds()) // 10m cooldown; last buy 2m ago
-
-	view, err := h.Status(context.Background(), cmd)
+	view, err := h.Status(context.Background(), testCmd())
 	require.NoError(t, err)
 
 	require.Equal(t, 25000, view.LastBuyPrice, "last probe buy price from the ledger")
 	require.InDelta(t, 120, view.LastBuyAgeSeconds, 2, "seconds since the last probe buy")
-	require.Contains(t, view.Blockers[0], "purchase cooldown active", "the ledger-derived cooldown is a live blocker")
+	for _, blocker := range view.Blockers {
+		require.NotContains(t, blocker, "cooldown", "the rate-governor cooldown blocker is gone (sp-tlekc §2A)")
+	}
 }

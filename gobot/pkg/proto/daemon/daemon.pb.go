@@ -2876,17 +2876,15 @@ func (x *AutoOutfitCoordinatorResponse) GetStatus() string {
 // FrontierExpansionCoordinator launch knobs (sp-8w89). All optional; a 0/false value
 // uses the coordinator's documented default (RULINGS #5).
 type FrontierExpansionCoordinatorRequest struct {
-	state                protoimpl.MessageState `protogen:"open.v1"`
-	PlayerId             int32                  `protobuf:"varint,1,opt,name=player_id,json=playerId,proto3" json:"player_id,omitempty"`
-	AgentSymbol          *string                `protobuf:"bytes,2,opt,name=agent_symbol,json=agentSymbol,proto3,oneof" json:"agent_symbol,omitempty"`
-	TickIntervalSecs     int32                  `protobuf:"varint,3,opt,name=tick_interval_secs,json=tickIntervalSecs,proto3" json:"tick_interval_secs,omitempty"`             // reconcile cadence; 0 = default
-	DryRun               bool                   `protobuf:"varint,4,opt,name=dry_run,json=dryRun,proto3" json:"dry_run,omitempty"`                                             // log decisions, buy/declare nothing
-	MaxProbeFleet        int32                  `protobuf:"varint,5,opt,name=max_probe_fleet,json=maxProbeFleet,proto3" json:"max_probe_fleet,omitempty"`                      // total satellite cap; 0 = default
-	MaxSpendPerCycle     int32                  `protobuf:"varint,6,opt,name=max_spend_per_cycle,json=maxSpendPerCycle,proto3" json:"max_spend_per_cycle,omitempty"`           // probe spend cap in the trailing window; 0 = default
-	PurchaseCooldownSecs int32                  `protobuf:"varint,7,opt,name=purchase_cooldown_secs,json=purchaseCooldownSecs,proto3" json:"purchase_cooldown_secs,omitempty"` // min seconds between probe buys; 0 = default
-	ExpansionMaxHops     int32                  `protobuf:"varint,8,opt,name=expansion_max_hops,json=expansionMaxHops,proto3" json:"expansion_max_hops,omitempty"`             // gate-graph reach for the queue; 0 = default
-	unknownFields        protoimpl.UnknownFields
-	sizeCache            protoimpl.SizeCache
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	PlayerId         int32                  `protobuf:"varint,1,opt,name=player_id,json=playerId,proto3" json:"player_id,omitempty"`
+	AgentSymbol      *string                `protobuf:"bytes,2,opt,name=agent_symbol,json=agentSymbol,proto3,oneof" json:"agent_symbol,omitempty"`
+	TickIntervalSecs int32                  `protobuf:"varint,3,opt,name=tick_interval_secs,json=tickIntervalSecs,proto3" json:"tick_interval_secs,omitempty"` // reconcile cadence; 0 = default
+	DryRun           bool                   `protobuf:"varint,4,opt,name=dry_run,json=dryRun,proto3" json:"dry_run,omitempty"`                                 // log decisions, buy/declare nothing
+	MaxProbeFleet    int32                  `protobuf:"varint,5,opt,name=max_probe_fleet,json=maxProbeFleet,proto3" json:"max_probe_fleet,omitempty"`          // total satellite cap; 0 = default
+	ExpansionMaxHops int32                  `protobuf:"varint,8,opt,name=expansion_max_hops,json=expansionMaxHops,proto3" json:"expansion_max_hops,omitempty"` // gate-graph reach for the queue; 0 = default
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *FrontierExpansionCoordinatorRequest) Reset() {
@@ -2950,20 +2948,6 @@ func (x *FrontierExpansionCoordinatorRequest) GetDryRun() bool {
 func (x *FrontierExpansionCoordinatorRequest) GetMaxProbeFleet() int32 {
 	if x != nil {
 		return x.MaxProbeFleet
-	}
-	return 0
-}
-
-func (x *FrontierExpansionCoordinatorRequest) GetMaxSpendPerCycle() int32 {
-	if x != nil {
-		return x.MaxSpendPerCycle
-	}
-	return 0
-}
-
-func (x *FrontierExpansionCoordinatorRequest) GetPurchaseCooldownSecs() int32 {
-	if x != nil {
-		return x.PurchaseCooldownSecs
 	}
 	return 0
 }
@@ -12051,17 +12035,15 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"\r_agent_symbol\"Z\n" +
 	"\x1dAutoOutfitCoordinatorResponse\x12!\n" +
 	"\fcontainer_id\x18\x01 \x01(\tR\vcontainerId\x12\x16\n" +
-	"\x06status\x18\x02 \x01(\tR\x06status\"\xfd\x02\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\"\xd1\x02\n" +
 	"#FrontierExpansionCoordinatorRequest\x12\x1b\n" +
 	"\tplayer_id\x18\x01 \x01(\x05R\bplayerId\x12&\n" +
 	"\fagent_symbol\x18\x02 \x01(\tH\x00R\vagentSymbol\x88\x01\x01\x12,\n" +
 	"\x12tick_interval_secs\x18\x03 \x01(\x05R\x10tickIntervalSecs\x12\x17\n" +
 	"\adry_run\x18\x04 \x01(\bR\x06dryRun\x12&\n" +
-	"\x0fmax_probe_fleet\x18\x05 \x01(\x05R\rmaxProbeFleet\x12-\n" +
-	"\x13max_spend_per_cycle\x18\x06 \x01(\x05R\x10maxSpendPerCycle\x124\n" +
-	"\x16purchase_cooldown_secs\x18\a \x01(\x05R\x14purchaseCooldownSecs\x12,\n" +
+	"\x0fmax_probe_fleet\x18\x05 \x01(\x05R\rmaxProbeFleet\x12,\n" +
 	"\x12expansion_max_hops\x18\b \x01(\x05R\x10expansionMaxHopsB\x0f\n" +
-	"\r_agent_symbol\"a\n" +
+	"\r_agent_symbolJ\x04\b\x06\x10\aJ\x04\b\a\x10\bR\x13max_spend_per_cycleR\x16purchase_cooldown_secs\"a\n" +
 	"$FrontierExpansionCoordinatorResponse\x12!\n" +
 	"\fcontainer_id\x18\x01 \x01(\tR\vcontainerId\x12\x16\n" +
 	"\x06status\x18\x02 \x01(\tR\x06status\"\xe1\x01\n" +

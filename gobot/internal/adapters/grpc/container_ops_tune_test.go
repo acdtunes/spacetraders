@@ -262,22 +262,24 @@ func TestTune_FreshnessSizer_LiveRetuneChangesBuyGateNextTick_NoRestart(t *testi
 	require.Equal(t, 100000, cmd.MaxSpendPerCycle)
 }
 
-// THE sp-0z7f ACCEPTANCE (frontier): the same live cooldown retune lands on the
-// frontier coordinator's next tick — resolved by OPERATION TYPE (the `--operation
-// frontier` path, FindActiveCoordinatorByType) rather than by container id.
+// THE tune-mechanism ACCEPTANCE (frontier): a `--operation frontier` retune of a VALID frontier knob
+// resolves by OPERATION TYPE (FindActiveCoordinatorByType, not by container id) and lands on the
+// coordinator's NEXT tick — moving the buy gate with no restart. sp-tlekc retired the frontier rate
+// governors, so this exercises reserved_freshness_floor, the surviving live-tunable buy-gate knob: it
+// discounts an idle probe from the supply covering demand, flipping "supply covers → no buy" into
+// "short → buy".
 func TestTune_Frontier_LiveRetuneViaOperation_ChangesBuyGateNextTick(t *testing.T) {
 	db, repo, playerID := tuneTestDB(t)
 	now := time.Now()
 	seedTuneContainer(t, db, playerID, tuneFrontierContainerID, frontierContainerType, "frontier_expansion_coordinator", "RUNNING", map[string]interface{}{
-		"container_id":           tuneFrontierContainerID,
-		"purchase_cooldown_secs": 600,
+		"container_id": tuneFrontierContainerID,
 	})
-	// One standing post with an unmanned slot (demand 1), zero probes (supply 0),
-	// probe buy 5m ago, rich treasury, cheap quote — only the cooldown gates the buy.
-	lr := &tuneFakeLedger{txns: []*ledger.Transaction{tuneProbeTxn(t, playerID, now.Add(-5*time.Minute), 1000)}}
+	// One standing post with an unmanned slot (demand 1) + one idle probe (supply 1): the idle probe
+	// covers the slot → no buy, UNTIL the freshness floor discounts it. Rich treasury + cheap quote so
+	// only the demand-vs-supply gate is in play.
 	h := expansionCmd.NewRunFrontierExpansionCoordinatorHandler(
 		&tuneFakePostRepo{posts: []*domainScouting.ScoutPost{{PlayerID: playerID, SystemSymbol: "X1-A", Kind: domainScouting.PostKindStanding}}},
-		&tuneFakeFleet{}, lr, &shared.MockClock{CurrentTime: now},
+		&tuneFakeFleet{idle: []*navigation.Ship{tuneProbe(t, playerID, "P1")}}, &tuneFakeLedger{}, &shared.MockClock{CurrentTime: now},
 	)
 	h.SetTreasuryReader(&tuneFakeTreasury{credits: 1_000_000})
 	pu := &tuneFakePurchaser{quotePrice: 1000}
@@ -285,21 +287,20 @@ func TestTune_Frontier_LiveRetuneViaOperation_ChangesBuyGateNextTick(t *testing.
 	h.SetLiveConfigReader(NewContainerConfigReader(repo))
 	cmd := &expansionCmd.RunFrontierExpansionCoordinatorCommand{
 		PlayerID: shared.MustNewPlayerID(playerID), ContainerID: tuneFrontierContainerID,
-		PurchaseCooldownSecs: 600,
 	}
 	s := &DaemonServer{containerRepo: repo}
 	ctx := context.Background()
 
 	require.NoError(t, h.ReconcileOnce(ctx, cmd))
-	require.Zero(t, pu.buyCalls, "tick 1: the 10m launch cooldown must block the buy")
+	require.Zero(t, pu.buyCalls, "tick 1: the idle probe covers the slot → no buy")
 
-	out, err := s.MutateContainerConfigKey(ctx, "", "frontier", "purchase_cooldown_secs", 60, playerID)
+	out, err := s.MutateContainerConfigKey(ctx, "", "frontier", "reserved_freshness_floor", 1, playerID)
 	require.NoError(t, err)
 	require.True(t, out.Changed)
 	require.Equal(t, tuneFrontierContainerID, out.ContainerID, "the operation alias must resolve to the active frontier coordinator")
 
 	require.NoError(t, h.ReconcileOnce(ctx, cmd))
-	require.Equal(t, 1, pu.buyCalls, "tick 2: the 1m live cooldown must let the buy fire")
+	require.Equal(t, 1, pu.buyCalls, "tick 2: the live freshness floor discounts the idle probe → short → buy fires")
 }
 
 // ---- rejection: bounds + unknown keys, no write ------------------------------

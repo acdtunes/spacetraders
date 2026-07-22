@@ -55,17 +55,14 @@ const (
 	// maxTreasuryFractionPercent is the RULINGS #6 hard per-hull ceiling: a probe is
 	// bought only when its price is at most ~25% of LIVE treasury. It is a deliberate
 	// NON-tunable constant (RULINGS #5's hard-floor exception, RULINGS #4 "guards are
-	// never weakened") — unlike the spend/fleet CEILINGS below, which raise or lower
-	// how much the coordinator may expand but can never let a single buy breach 25%.
+	// never weakened") — unlike the fleet CAP, which raises or lowers how much the
+	// coordinator may expand but can never let a single buy breach 25%.
 	maxTreasuryFractionPercent = 25
 
 	// Config defaults (RULINGS #5: every operational value is a flag/config key, filled
 	// here only when the launch config leaves it unset). Documented in the dispatch report.
 	defaultTickSeconds              = 60
 	defaultMaxProbeFleet            = 40               // total satellite cap (current fleet + headroom)
-	defaultMaxSpendPerCycle         = 100000           // max probe spend within the trailing spend window
-	defaultPurchaseCooldown         = 10 * time.Minute // min wall-clock between probe buys
-	defaultSpendWindow              = 1 * time.Hour    // trailing window the spend cap sums over
 	defaultExpansionMaxHops         = 3                // gate-graph reach for the expansion queue
 	defaultMaxFrontierPostsInFlight = 5                // outstanding sweep-once posts cap (bounds runaway declaration)
 	defaultFrontierFreshness        = 60 * time.Minute // sweep-once post freshness target
@@ -75,136 +72,41 @@ const (
 	defaultWeightHopPenalty  = 5
 	defaultWeightVirginBonus = 15
 
-	// defaultProximalYardHopPenalty is the price/distance tradeoff for demand-proximal probe
-	// buying (sp-hej4): the credits of price premium the buyer accepts to spawn the probe ONE
-	// gate-hop closer to the target post, so a nearer-but-pricier probe-yard beats a far-cheaper
-	// one iff the per-hop saving clears this. ~one probe's price (probes run ~25–55k), so
-	// proximity dominates the typical yard spread by default — the "buy NEAREST the post" policy;
-	// raise it toward absolute proximity or lower it toward the cheapest reachable yard. Mirrors
-	// probebuy.DefaultHopPenaltyCredits (the freshness sizer's untuned value).
-	defaultProximalYardHopPenalty = probebuy.DefaultHopPenaltyCredits
+	// hopPenaltyCredits + siblingPriceMarginCredits are the INTERNAL probe-sourcing consts
+	// (sp-tlekc §2D — no longer operator knobs). hopPenaltyCredits is the demand-proximal
+	// price/distance tradeoff: the credits of price premium accepted per gate-hop closer to the
+	// target post, so a nearer-but-pricier yard beats a far-cheaper one iff the per-hop saving
+	// clears it (sp-hej4). siblingPriceMarginCredits is the supply-depletion / load-balance margin:
+	// once the proximal yard's scanned price exceeds the cheapest reachable sibling by more than
+	// this, the buy spreads to the sibling instead of spiraling one market to 4x (sp-iqv2). They
+	// mirror the freshness sizer's probebuy.Default* values, keeping the two coordinators' sourcing
+	// identical; the sourcing MECHANISM is unchanged, only the operator KNOBS were removed.
+	hopPenaltyCredits         = probebuy.DefaultHopPenaltyCredits
+	siblingPriceMarginCredits = probebuy.DefaultSiblingPriceMarginCredits
 
-	// defaultProbeSiblingPriceMargin is the sp-iqv2 supply-depletion / load-balance margin: once the
-	// hop-penalty-preferred probe-yard's scanned price exceeds the cheapest reachable sibling by more
-	// than this, the buy spreads to that sibling instead of spiraling one market to 4x (the live home
-	// hub 20k→86k). It bounds the premium proximity may pay. Mirrors probebuy.DefaultSiblingPriceMarginCredits.
-	defaultProbeSiblingPriceMargin = probebuy.DefaultSiblingPriceMarginCredits
-
-	// defaultMaxProbePrice is the sp-3u5d per-unit probe PRICE CEILING (credits) — the max the frontier
-	// will pay for ONE probe. It is the BACKSTOP for the deepest-frontier tail whose ONLY reachable yard
-	// is a depleted deep one: with no cheaper reachable sibling for probe_sibling_price_margin to spread
-	// to, price spirals to 210-235k with nothing to stop it (max_spend_per_cycle is a blunt trailing-window
-	// budget that also blocks the cheap near buys). When the FINAL chosen quote (after sibling-spread)
-	// exceeds this, the buy DEFERS — the post stays dark and retries next cycle. 0 (the default) = DISABLED,
-	// byte-identical to pre-sp-3u5d and the governance gate; unlike the hop/sibling knobs it takes NO <=0
-	// default fallback, so 0 is the real "off" value (mirrors reserved_freshness_floor).
-	defaultMaxProbePrice = 0
-	// Depth-vs-breadth balance (sp-rjgr). Pure BFS scores hop-1 above hop-2 EVERY time, so with
-	// scout throughput < ring width the near ring never drains and no probe ever reaches the depth
-	// a heavy-freighter yard needs. The depth slice reserves a fraction of frontier capacity for
-	// PATHFINDERS that pick the deepest-reachable virgin (ignoring score) along distinct corridors.
-	//
-	// The BREADTH fraction is the primary knob (its complement is the depth fraction): expressing
-	// the split as breadth-percent lets 100 mean "pure BFS, 0% depth" — a real value the tune
-	// mechanism's 0-means-revert-to-default could not otherwise carry. 65 ⇒ 65/35 breadth/depth.
-	defaultBreadthFractionPercent = 65 // ⇒ 35% depth
-	// defaultMaxDepthPathfinders caps concurrent depth posts so depth never starves breadth's
-	// market coverage even under a heavy objective bias.
-	defaultMaxDepthPathfinders = 3
-	// defaultMaxDepthHops bounds how deep a pathfinder targets (and the depth scan horizon). Kept
-	// within the expendable-probe reposition reach ([scouting] max_reposition_jumps, default 12) so
-	// a declared deep post is actually man-able by a relay.
-	defaultMaxDepthHops = 8
-	// defaultObjectiveBiasPercent is the percentage points added to the depth fraction while the
-	// deep-resource objective is UNMET (heavy shortfall > 0 AND no heavy yard known) — punch
-	// outward until a yard is found, then relax back to the baseline split.
-	defaultObjectiveBiasPercent = 40
+	// maxProbePrice is the IMMUTABLE per-unit probe PRICE CEILING (sp-tlekc §2C — no longer an
+	// operator knob). It is the anti-OVERPAY backstop for the deepest-frontier tail whose ONLY
+	// reachable yard is a depleted deep one: with no cheaper reachable sibling for the sibling-spread
+	// to fall to, the live price spirals to 210-235k. When the FINAL chosen quote (after the
+	// sibling-spread) exceeds this, the buy DEFERS — the post stays dark and retries next cycle. It
+	// is NOT a solvency guard (solvency is the 25% rule + the fleet cap + the 50k working-capital
+	// floor); it caps only per-unit OVERPAY, so an immutable const is MORE RULINGS-clean than a
+	// tunable — it can never be tuned OFF (into a spiral) or UP. 100000 is ~2x the ~55k baseline
+	// probe top, well under the spiral.
+	maxProbePrice = 100000
 
 	// defaultReservedFreshnessFloor is the sp-iopd SYMMETRIC freshness floor: N idle probes the
-	// frontier treats as UNAVAILABLE (reserved for the market-freshness sizer, sp-orgp). The
-	// frontier discounts them from the idle supply it counts toward covering its OWN coverage
-	// demand, so an aggressive frontier (heavy objective bias, many depth pathfinders) GROWS the
-	// pool with a guarded buy rather than cannibalizing scanning below a relaxed baseline. It is
-	// the mirror of the freshness sizer's reserved_frontier_floor; the pair keeps neither
-	// coordinator able to starve the other. 0 (the default) is EXACT pre-sp-iopd behavior — the
-	// floor is OFF until deployed, opt-in via `tune reserved_freshness_floor <N>` (a probe count
-	// for the MVP; the full allocator sizes it to hold known markets under a RELAXED SLA).
+	// frontier treats as UNAVAILABLE (reserved for the market-freshness sizer, sp-orgp). The frontier
+	// discounts them from the idle supply it counts toward covering its OWN coverage demand, so an
+	// aggressive frontier GROWS the pool with a guarded buy rather than cannibalizing scanning below
+	// a relaxed baseline. 0 (the default) is the floor OFF. It is the ONE retained expert guard —
+	// half of the two-coordinator mirror with the freshness sizer's reserved_frontier_floor (retired
+	// in Phase 4). Live-tunable (FrontierTunableDefaults).
 	defaultReservedFreshnessFloor = 0
-
-	// defaultScanOnly is the sp-jide scan_only knob's default: 0 (OFF) = today's behavior,
-	// BYTE-IDENTICAL. When tuned to 1 the coordinator DECOUPLES scanning the discovered-market
-	// backlog from expanding to virgin — it declares NO depth pathfinder, buys NO probe, and
-	// restricts its sweep-once declarations to the FULL charted-but-unscanned MARKET backlog (every
-	// system with MARKETPLACE waypoints but zero player market_data), draining it to zero then
-	// idling. Like reserved_freshness_floor, 0 IS the default here, so resolveConfig applies NO
-	// <=0 fallback for it (a `tune scan_only 0` must revert to OFF, not read as "unset → default").
-	defaultScanOnly = 0
-
-	// --- sp-6vep: reuse-before-buy the deep frontier (edge-probe relay) ------------------
-	// The coordinator is PURCHASE-ANCHORED: it staffs a frontier post by BUYING a probe at a
-	// yard near the target and relaying a BUYER there. At the deep edge no yard/buyer is
-	// reachable ("no jump-gate route from VB74 to BK75 within 5 jumps"), so the posts jam the
-	// in-flight cap with NO timeout — permanent deadlock, discovery 0. The retrofit teaches
-	// the coordinator to REUSE an existing edge probe (relay it ~1 hop from the charted edge
-	// to the virgin) before buying, anchors relay-reach to the nearest usable probe (not the
-	// far fixed buyer home), snowballs onto the freshly-charted system's neighbors, and reaps
-	// wedged posts on a timeout. EVERY knob below is DEFAULT-SAFE: it resolves to today's
-	// buy-only behavior, so a merge is byte-identical until armed next era.
-	//
-	// defaultProbeReuseEnabled is the reuse master switch. 0 (OFF) = today's buy-only path,
-	// byte-identical; next era arms it to 1. NO <=0 fallback (0 IS the default, like scan_only
-	// / max_probe_price), so `tune probe_reuse_enabled 0` genuinely disarms.
-	defaultProbeReuseEnabled = 0
-	// defaultEdgeRelayMaxHops bounds how far an EXISTING probe may be relayed to a post — the
-	// reach measured FROM the nearest edge probe TO the target (~1 for the queued virgins),
-	// replacing the fixed 5-jump-from-buyer wall. ~3 (the bead). It is INERT while reuse is
-	// off, so the nonzero default is safe; it takes a <=0 fallback like proximal_yard_hop_penalty.
-	defaultEdgeRelayMaxHops = 3
-	// defaultReuseValueCeiling is the depth-vs-freshness judgment: reuse BORROWS a probe only
-	// off a system whose trade-value is BELOW this, cannibalizing low-value deep-edge freshness
-	// to fund exploration and NEVER stripping a probe off a high-value core market. 0 (the
-	// default) = borrow off NO system, so an armed-but-unceilinged reuse is a safe no-op until
-	// the operator sets a real ceiling. NO <=0 fallback (0 IS the default).
-	defaultReuseValueCeiling = 0
-	// defaultSnowballNeighbors toggles the walk-outward: after a relayed probe charts a virgin
-	// S, auto-enqueue S's uncharted gate-neighbors as the next targets, so one probe walks the
-	// frontier outward. 0 (OFF) = today's one-head-per-cycle behavior. NO <=0 fallback.
-	defaultSnowballNeighbors = 0
-	// defaultPostInflightTimeoutSecs is the NO-TIMEOUT deadlock fix (also a live bug on its own):
-	// an unmanned, relay-free in-flight sweep-once post older than this is ABANDONED (removed),
-	// freeing its in-flight slot so declaration never jams permanently at the cap. 0 (the
-	// default) = DISABLED — no post is ever reaped, byte-identical to today. It is INDEPENDENT
-	// of probe_reuse_enabled (its own gate), so the reap applies regardless of reuse. NO <=0
-	// fallback (0 IS the default).
-	defaultPostInflightTimeoutSecs = 0
 
 	// rankingLogLimit bounds how many ranked queue entries are logged per cycle so the
 	// reposition-style ranking log (pin #1) stays readable on a large frontier.
 	rankingLogLimit = 10
-
-	// --- Off-gate explorer demand + target selection (sp-k645, slice B) -------------------
-	// These knobs drive the OFF-GATE DEMAND SIGNAL and warp TARGET SELECTION only; nothing
-	// here warps or buys (that is slice C). All four are live-tunable (FrontierTunableDefaults)
-	// under the FRONTIER container type. Appended as a self-contained block so the sp-iopd
-	// union-rebase stays trivial.
-	//
-	// defaultOffGateQueueExhaustionCycles is N: how many CONSECUTIVE cycles the gate-reachable
-	// expansion queue must be empty (no new ring opening) before trigger (a) — the "virgin set
-	// exhausted" signal — fires. Debounced so a one-cycle dip (a ring momentarily drained but
-	// about to reopen) never raises demand.
-	defaultOffGateQueueExhaustionCycles = 5
-	// defaultOffGateWarpRangeFuel bounds a single warp leg's fuel: an off-gate system whose
-	// nearest-edge leg costs more than this is out of range and excluded from selection. ~one
-	// explorer tank (CRUISE fuel ≈ inter-system distance); refined in slice C once the explorer
-	// hull's real capacity is known.
-	defaultOffGateWarpRangeFuel = 400
-	// defaultOffGateValueWeight and defaultOffGateFuelWeight weight the target-ranking score
-	// (score = value_weight*explorationValue − fuel_weight*warpFuel): value favors promising-type
-	// unexplored systems, fuel penalizes warp distance from the frontier edge. The default 10-vs-1
-	// makes proximity the tiebreak among equal-value systems while a promising type can still
-	// outrank a nearer barren one.
-	defaultOffGateValueWeight = 10
-	defaultOffGateFuelWeight  = 1
 )
 
 // TreasuryReader live-reads the player's treasury for the 25% money guard (RULINGS
@@ -318,10 +220,7 @@ type RunFrontierExpansionCoordinatorCommand struct {
 	// and buys no probe (pin #7 — the captain watches a cycle before arming it).
 	DryRun bool
 
-	MaxProbeFleet            int // total satellite cap
-	MaxSpendPerCycle         int // max probe spend within the trailing spend window
-	PurchaseCooldownSecs     int // min seconds between probe buys
-	SpendWindowSecs          int // trailing window (seconds) the spend cap sums over
+	MaxProbeFleet            int // total satellite cap — the sole probe-fleet throttle (sp-tlekc)
 	ExpansionMaxHops         int // gate-graph reach for the queue
 	MaxFrontierPostsInFlight int // outstanding sweep-once posts cap
 	FrontierFreshnessSecs    int // declared sweep-once freshness target
@@ -330,55 +229,28 @@ type RunFrontierExpansionCoordinatorCommand struct {
 	WeightHopPenalty  int
 	WeightVirginBonus int
 
-	// ProximalYardHopPenalty is the demand-proximal probe-buy tradeoff (sp-hej4): credits of
-	// price premium accepted per gate-hop closer to the target post's system. <= 0 → default.
-	ProximalYardHopPenalty int
-	// ProbeSiblingPriceMargin is the sp-iqv2 supply-depletion / load-balance margin: the buy spreads
-	// off a yard once a cheaper reachable sibling undercuts it by more than this. <= 0 → default.
-	ProbeSiblingPriceMargin int
-	// MaxProbePrice is the sp-3u5d per-unit probe price ceiling (credits): the buy DEFERS when the final
-	// chosen quote (after sibling-spread) exceeds it. 0 = DISABLED (byte-identical to today); no <=0
-	// default fallback — 0 is the real "off" value (the governance gate).
-	MaxProbePrice int
-	// Depth-vs-breadth balance knobs (sp-rjgr), all live-tunable (FrontierTunableDefaults).
-	BreadthFractionPercent int // breadth share; depth = 100 - this. 100 ⇒ pure BFS.
-	MaxDepthPathfinders    int // cap on concurrent depth posts
-	MaxDepthHops           int // depth scan horizon + per-pathfinder max target depth
-	ObjectiveBiasPercent   int // points added to the depth fraction while the heavy-yard objective is unmet
-
-	// Off-gate explorer demand knobs (sp-k645, slice B), all live-tunable (FrontierTunableDefaults).
-	OffGateQueueExhaustionCycles int // consecutive empty-queue cycles before off-gate demand fires (trigger a)
-	OffGateWarpRangeFuel         int // max warp fuel a single explorer leg may cost (target range bound)
-	OffGateValueWeight           int // weight on exploration value in target ranking
-	OffGateFuelWeight            int // weight on warp fuel (distance) in target ranking
 	// ReservedFreshnessFloor (sp-iopd) is the count of idle probes the frontier treats as
 	// reserved for the freshness sizer: it discounts them from the idle supply that covers its
-	// own demand, so it never cannibalizes scanning's baseline. 0 → the floor is off (pre-sp-iopd
-	// behavior). Live-tunable (FrontierTunableDefaults).
+	// own demand, so it never cannibalizes scanning's baseline. 0 → the floor is off. Live-tunable.
 	ReservedFreshnessFloor int
 
-	// DiscoveryShare (sp-pvw3) is the 0-100 percent of each cycle's post-declaration capacity spent
-	// CHARTING VIRGIN systems; the complement (100 - share) drains the dark-market backlog. 100 =
-	// pure discovery (== old scan_only=0); 0 = pure backlog-scan (== old scan_only=1); 50 = a
-	// balanced concurrent split. <= 0 (or unset) folds through the deprecated ScanOnly alias, else
-	// the documented default. Live-tunable (FrontierTunableDefaults).
+	// DiscoveryShare (sp-pvw3) is the LEGACY discovery/scan key, retained ONLY as a read-through
+	// migration alias for the sp-tlekc rename to DiscoverScanBalance: a persisted discovery_share
+	// still resolves to the equivalent share until it is re-tuned as discover_scan_balance. Nothing
+	// writes this key any more; prefer DiscoverScanBalance.
 	DiscoveryShare int
 
-	// ScanOnly (sp-jide) is the DEPRECATED binary predecessor of DiscoveryShare, kept as a read-only
-	// alias so an operator who tuned it still gets the equivalent share (1 ↔ share 0, 0 ↔ the
-	// default). resolveConfig folds it into DiscoveryShare; nothing else reads it. Prefer
-	// discovery_share.
-	ScanOnly int
+	// DiscoverScanBalance (sp-tlekc) is THE operator dial for the discovery/scan split (0-100):
+	// percent of each cycle's post-declaration capacity spent CHARTING VIRGIN systems; the rest
+	// drains the dark-market backlog. Authoritative when set (> 0), else the legacy DiscoveryShare
+	// alias, else the documented default. Live-tunable (FrontierTunableDefaults).
+	DiscoverScanBalance int
 
-	// sp-6vep reuse-before-buy knobs, all live-tunable (FrontierTunableDefaults) and DEFAULT-SAFE
-	// (0 => today's buy-only behavior). ProbeReuseEnabled and SnowballNeighbors are 0/1 flags;
-	// EdgeRelayMaxHops is a hop bound (~3); ReuseValueCeiling is credits; PostInflightTimeoutSecs
-	// is seconds. Resolved in resolveConfig, threaded from persisted config in the command factory.
-	ProbeReuseEnabled       int // 0 = OFF (buy-only, byte-identical), 1 = armed (reuse before buy)
-	EdgeRelayMaxHops        int // max hops to relay an EXISTING probe to a post (reach from the nearest probe)
-	ReuseValueCeiling       int // only borrow a probe off a system whose trade-value is BELOW this (0 = none)
-	SnowballNeighbors       int // 0 = OFF, 1 = walk outward: enqueue a charted system's uncharted neighbors
-	PostInflightTimeoutSecs int // abandon an unmanned in-flight sweep-once post older than this (0 = disabled)
+	// ReachMode (sp-tlekc) is THE operator dial for the frontier's reach: 1=shallow, 2=balanced
+	// (the live snapshot, the default), 3=deep. It composes the depth/breadth balance, the reuse
+	// relay, the off-gate explorer signal, and the reap timeout from ONE coherent preset
+	// (applyReachPreset), couplings honored by construction. Live-tunable (FrontierTunableDefaults).
+	ReachMode int
 }
 
 // ProbeReuseTarget is the reuse-relay request (sp-6vep): relay the nearest EXISTING probe to
@@ -631,71 +503,48 @@ func (h *RunFrontierExpansionCoordinatorHandler) Handle(ctx context.Context, req
 // resolveConfig live-overlays.
 func FrontierTunableDefaults() map[string]int {
 	return map[string]int{
-		"max_spend_per_cycle":        defaultMaxSpendPerCycle,
-		"purchase_cooldown_secs":     int(defaultPurchaseCooldown / time.Second),
-		"max_probe_fleet":            defaultMaxProbeFleet,
-		"proximal_yard_hop_penalty":  defaultProximalYardHopPenalty,
-		"probe_sibling_price_margin": defaultProbeSiblingPriceMargin,
-		// sp-3u5d per-unit probe price ceiling — the BACKSTOP for reachability-bound deep yards.
-		"max_probe_price": defaultMaxProbePrice,
-		// Depth-vs-breadth balance (sp-rjgr) — retunable live with no restart.
-		"breadth_fraction_percent": defaultBreadthFractionPercent,
-		"max_depth_pathfinders":    defaultMaxDepthPathfinders,
-		"max_depth_hops":           defaultMaxDepthHops,
-		"objective_bias_percent":   defaultObjectiveBiasPercent,
-		// Off-gate explorer demand + target selection (sp-k645, slice B).
-		"off_gate_queue_exhaustion_cycles": defaultOffGateQueueExhaustionCycles,
-		"off_gate_warp_range_fuel":         defaultOffGateWarpRangeFuel,
-		"off_gate_value_weight":            defaultOffGateValueWeight,
-		"off_gate_fuel_weight":             defaultOffGateFuelWeight,
-		"reserved_freshness_floor":         defaultReservedFreshnessFloor,
-		// Discovery/scan budget split (sp-pvw3): declare both discovery and dark-market scan posts
-		// each cycle, split by this ratio (100 = pure discovery, 0 = pure scan, 50 = balanced).
-		"discovery_share": defaultDiscoveryShare,
-		// scan_only (sp-jide) is the DEPRECATED binary alias, superseded by discovery_share. Kept so
-		// a persisted scan_only value still resolves to the equivalent share; prefer discovery_share.
-		"scan_only": defaultScanOnly,
-		// sp-6vep reuse-before-buy the deep frontier. All DEFAULT-SAFE (0 => today's buy-only path).
-		"probe_reuse_enabled":        defaultProbeReuseEnabled,
-		"edge_relay_max_hops":        defaultEdgeRelayMaxHops,
-		"reuse_value_ceiling":        defaultReuseValueCeiling,
-		"snowball_neighbors":         defaultSnowballNeighbors,
-		"post_inflight_timeout_secs": defaultPostInflightTimeoutSecs,
+		// sp-tlekc final operator surface — EXACTLY four knobs. The throttle (max_probe_fleet), the
+		// two composing dials (reach_mode, discover_scan_balance), and the one retained expert guard
+		// (reserved_freshness_floor, retired in Phase 4). Everything else — the price ceiling, the 50k
+		// floor, the hop-penalty/sibling-margin sourcing terms, the 25% rule — is an internal const.
+		"max_probe_fleet":          defaultMaxProbeFleet,
+		"reach_mode":               defaultReachMode,
+		"discover_scan_balance":    defaultDiscoveryShare,
+		"reserved_freshness_floor": defaultReservedFreshnessFloor,
 	}
 }
 
-// frontierConfig is the launch command with every default resolved, so the reconcile
-// logic never repeats the "<= 0 → default" fallback (RULINGS #5).
+// frontierConfig is the launch command with every default resolved, so the reconcile logic never
+// repeats the "<= 0 → default" fallback (RULINGS #5). The reach/yard/price fields are still read by
+// the engine verbatim — the MECHANISM is byte-for-byte unchanged (sp-tlekc) — but they are now
+// populated from the reach_mode PRESET and the internal sourcing consts, not from operator knobs.
 type frontierConfig struct {
 	MaxProbeFleet            int
-	MaxSpendPerCycle         int
-	PurchaseCooldown         time.Duration
-	SpendWindow              time.Duration
 	ExpansionMaxHops         int
 	MaxFrontierPostsInFlight int
 	FrontierFreshness        time.Duration
 	WeightKnownMarket        int
 	WeightHopPenalty         int
 	WeightVirginBonus        int
-	ProximalYardHopPenalty   int
-	ProbeSiblingPriceMargin  int
-	MaxProbePrice            int
-	BreadthFractionPercent   int
-	MaxDepthPathfinders      int
-	MaxDepthHops             int
-	ObjectiveBiasPercent     int
-	// Off-gate explorer demand + target selection (sp-k645, slice B).
+	// Probe-sourcing + anti-overpay ceiling — internal consts now (sp-tlekc §2C/§2D), not knobs.
+	ProximalYardHopPenalty  int
+	ProbeSiblingPriceMargin int
+	MaxProbePrice           int
+	// Depth/breadth + off-gate — populated by the reach_mode preset (applyReachPreset).
+	BreadthFractionPercent       int
+	MaxDepthPathfinders          int
+	MaxDepthHops                 int
+	ObjectiveBiasPercent         int
 	OffGateQueueExhaustionCycles int
 	OffGateWarpRangeFuel         int
 	OffGateValueWeight           int
 	OffGateFuelWeight            int
 	ReservedFreshnessFloor       int
-	// DiscoveryShare (sp-pvw3) is the effective 0-100 discovery/scan split for this tick, already
-	// folded from the discovery_share knob and the deprecated scan_only alias by resolveConfig.
+	// DiscoveryShare is the effective 0-100 discovery/scan split for this tick, folded from the
+	// discover_scan_balance dial (+ the legacy discovery_share migration alias) by resolveConfig.
 	DiscoveryShare int
-
-	// sp-6vep reuse-before-buy, resolved to the tick's effective values. The flags land as bools,
-	// the timeout as a Duration. All DEFAULT-SAFE (reuse/snowball OFF, ceiling 0, timeout 0).
+	// Reuse-before-buy + reap — populated by the reach_mode preset. The flags land as bools, the
+	// timeout as a Duration.
 	ProbeReuseEnabled   bool
 	EdgeRelayMaxHops    int
 	ReuseValueCeiling   int
@@ -703,106 +552,50 @@ type frontierConfig struct {
 	PostInflightTimeout time.Duration
 }
 
-// resolveConfig resolves one tick's effective config. live is the tick-start snapshot
-// of the container's persisted config column (nil when unwired/unreadable). For the
-// TUNABLE knobs (FrontierTunableDefaults) a non-nil snapshot is AUTHORITATIVE: a
-// positive value is the live value (the launch verb wrote its values into the same
-// column, so untuned knobs still read their launch values here), and an absent/zeroed
-// key means the documented default — the `tune <key> 0` revert. Only when there is NO
-// snapshot does the launch command fill those knobs (fail-safe launch behavior). The
-// non-tunable knobs always resolve from the launch command, unchanged.
+// resolveConfig resolves one tick's effective config. live is the tick-start snapshot of the
+// container's persisted config column (nil when unwired/unreadable). For the four TUNABLE knobs
+// (FrontierTunableDefaults) a non-nil snapshot is AUTHORITATIVE: a positive value is the live value
+// (the launch verb wrote its values into the same column, so untuned knobs still read their launch
+// values here) and an absent/zeroed key means the documented default — the `tune <key> 0` revert.
+// The probe-sourcing terms and the price ceiling are now INTERNAL CONSTS (sp-tlekc §2C/§2D); the
+// reach/depth/off-gate/reuse/reap values come wholly from the reach_mode PRESET (applyReachPreset).
 func resolveConfig(cmd *RunFrontierExpansionCoordinatorCommand, live liveconfig.Snapshot) frontierConfig {
 	c := frontierConfig{
 		MaxProbeFleet:            cmd.MaxProbeFleet,
-		MaxSpendPerCycle:         cmd.MaxSpendPerCycle,
-		PurchaseCooldown:         time.Duration(cmd.PurchaseCooldownSecs) * time.Second,
-		SpendWindow:              time.Duration(cmd.SpendWindowSecs) * time.Second,
 		ExpansionMaxHops:         cmd.ExpansionMaxHops,
 		MaxFrontierPostsInFlight: cmd.MaxFrontierPostsInFlight,
 		FrontierFreshness:        time.Duration(cmd.FrontierFreshnessSecs) * time.Second,
 		WeightKnownMarket:        cmd.WeightKnownMarket,
 		WeightHopPenalty:         cmd.WeightHopPenalty,
 		WeightVirginBonus:        cmd.WeightVirginBonus,
-		ProximalYardHopPenalty:   cmd.ProximalYardHopPenalty,
-		ProbeSiblingPriceMargin:  cmd.ProbeSiblingPriceMargin,
-		MaxProbePrice:            cmd.MaxProbePrice,
-		BreadthFractionPercent:   cmd.BreadthFractionPercent,
-		MaxDepthPathfinders:      cmd.MaxDepthPathfinders,
-		MaxDepthHops:             cmd.MaxDepthHops,
-		ObjectiveBiasPercent:     cmd.ObjectiveBiasPercent,
-
-		OffGateQueueExhaustionCycles: cmd.OffGateQueueExhaustionCycles,
-		OffGateWarpRangeFuel:         cmd.OffGateWarpRangeFuel,
-		OffGateValueWeight:           cmd.OffGateValueWeight,
-		OffGateFuelWeight:            cmd.OffGateFuelWeight,
-		ReservedFreshnessFloor:       cmd.ReservedFreshnessFloor,
+		ReservedFreshnessFloor:   cmd.ReservedFreshnessFloor,
+		// Probe sourcing + anti-overpay ceiling are IMMUTABLE internal consts now — the sourcing
+		// mechanism is byte-for-byte unchanged, only the operator knobs were removed (sp-tlekc §2C/§2D).
+		ProximalYardHopPenalty:  hopPenaltyCredits,
+		ProbeSiblingPriceMargin: siblingPriceMarginCredits,
+		MaxProbePrice:           maxProbePrice,
 	}
-	// sp-pvw3: seed the raw discovery_share knob and the deprecated scan_only alias from the launch
-	// command; a live snapshot (below) overrides both. They fold to one effective share after.
-	discoveryShare := cmd.DiscoveryShare
-	scanOnly := cmd.ScanOnly
-	// sp-6vep reuse-before-buy knobs, seeded from the launch command; a live snapshot overrides.
-	probeReuseEnabled := cmd.ProbeReuseEnabled
-	edgeRelayMaxHops := cmd.EdgeRelayMaxHops
-	reuseValueCeiling := cmd.ReuseValueCeiling
-	snowballNeighbors := cmd.SnowballNeighbors
-	postInflightTimeoutSecs := cmd.PostInflightTimeoutSecs
+	// sp-tlekc final dials: reach_mode (preset selector) + discover_scan_balance (discovery_share
+	// promoted 1:1). Seeded from the launch command; a live snapshot overrides. legacyDiscoveryShare
+	// is the read-through migration alias for the discovery_share → discover_scan_balance rename, so a
+	// coordinator with a persisted discovery_share tune keeps its split until it is re-tuned.
+	discoverScanBalance := cmd.DiscoverScanBalance
+	legacyDiscoveryShare := cmd.DiscoveryShare
+	reachMode := cmd.ReachMode
 	if live != nil {
 		c.MaxProbeFleet = live.PositiveIntOrZero("max_probe_fleet")
-		c.MaxSpendPerCycle = live.PositiveIntOrZero("max_spend_per_cycle")
-		c.PurchaseCooldown = time.Duration(live.PositiveIntOrZero("purchase_cooldown_secs")) * time.Second
-		c.ProximalYardHopPenalty = live.PositiveIntOrZero("proximal_yard_hop_penalty")
-		c.ProbeSiblingPriceMargin = live.PositiveIntOrZero("probe_sibling_price_margin")
-		// sp-3u5d probe price ceiling: live-authoritative. Absent/zeroed ⇒ 0 (ceiling OFF), the
-		// documented default — NO <=0 fallback, since 0 IS the default here (the governance gate).
-		c.MaxProbePrice = live.PositiveIntOrZero("max_probe_price")
-		c.BreadthFractionPercent = live.PositiveIntOrZero("breadth_fraction_percent")
-		c.MaxDepthPathfinders = live.PositiveIntOrZero("max_depth_pathfinders")
-		c.MaxDepthHops = live.PositiveIntOrZero("max_depth_hops")
-		c.ObjectiveBiasPercent = live.PositiveIntOrZero("objective_bias_percent")
-		c.OffGateQueueExhaustionCycles = live.PositiveIntOrZero("off_gate_queue_exhaustion_cycles")
-		c.OffGateWarpRangeFuel = live.PositiveIntOrZero("off_gate_warp_range_fuel")
-		c.OffGateValueWeight = live.PositiveIntOrZero("off_gate_value_weight")
-		c.OffGateFuelWeight = live.PositiveIntOrZero("off_gate_fuel_weight")
 		// sp-iopd reserved freshness floor: live-authoritative. Absent/zeroed ⇒ 0 (floor OFF),
 		// the documented default — no <=0 fallback, since 0 IS the default here.
 		c.ReservedFreshnessFloor = live.PositiveIntOrZero("reserved_freshness_floor")
-		// sp-pvw3 discovery_share + the deprecated scan_only alias: live-authoritative. A present
-		// snapshot governs, so a `tune discovery_share <N>` (or a legacy `tune scan_only …`) lands
-		// next tick with no restart.
-		discoveryShare = live.PositiveIntOrZero("discovery_share")
-		scanOnly = live.PositiveIntOrZero("scan_only")
-		// sp-6vep reuse knobs: live-authoritative. Absent/zeroed => the DEFAULT-SAFE value (reuse
-		// OFF, snowball OFF, ceiling 0, timeout 0) — NO <=0 fallback for the flags/ceiling/timeout,
-		// since 0 IS the default there (the `tune <key> 0` revert). edge_relay_max_hops keeps its
-		// <=0 fallback below (a nonzero reach default that is inert while reuse is off).
-		probeReuseEnabled = live.PositiveIntOrZero("probe_reuse_enabled")
-		edgeRelayMaxHops = live.PositiveIntOrZero("edge_relay_max_hops")
-		reuseValueCeiling = live.PositiveIntOrZero("reuse_value_ceiling")
-		snowballNeighbors = live.PositiveIntOrZero("snowball_neighbors")
-		postInflightTimeoutSecs = live.PositiveIntOrZero("post_inflight_timeout_secs")
+		discoverScanBalance = live.PositiveIntOrZero("discover_scan_balance")
+		legacyDiscoveryShare = live.PositiveIntOrZero("discovery_share")
+		reachMode = live.PositiveIntOrZero("reach_mode")
 	}
-	// Fold the knob + deprecated alias into one effective share in [0,100] (the default when unset).
-	c.DiscoveryShare = resolveDiscoveryShare(discoveryShare, scanOnly)
-	// sp-6vep: the flags land as bools (0 => false => OFF), the ceiling as raw credits (0 => borrow
-	// off no system), the timeout as a Duration (0 => never reap). edge_relay_max_hops takes its
-	// <=0 fallback below.
-	c.ProbeReuseEnabled = probeReuseEnabled > 0
-	c.EdgeRelayMaxHops = edgeRelayMaxHops
-	c.ReuseValueCeiling = reuseValueCeiling
-	c.SnowballNeighbors = snowballNeighbors > 0
-	c.PostInflightTimeout = time.Duration(postInflightTimeoutSecs) * time.Second
+	// Fold the dial (+ the legacy discovery_share migration alias) into one effective share in
+	// [0,100] (the default when unset). discover_scan_balance is authoritative; then the legacy key.
+	c.DiscoveryShare = resolveDiscoveryShare(discoverScanBalance, legacyDiscoveryShare)
 	if c.MaxProbeFleet <= 0 {
 		c.MaxProbeFleet = defaultMaxProbeFleet
-	}
-	if c.MaxSpendPerCycle <= 0 {
-		c.MaxSpendPerCycle = defaultMaxSpendPerCycle
-	}
-	if c.PurchaseCooldown <= 0 {
-		c.PurchaseCooldown = defaultPurchaseCooldown
-	}
-	if c.SpendWindow <= 0 {
-		c.SpendWindow = defaultSpendWindow
 	}
 	if c.ExpansionMaxHops <= 0 {
 		c.ExpansionMaxHops = defaultExpansionMaxHops
@@ -822,44 +615,14 @@ func resolveConfig(cmd *RunFrontierExpansionCoordinatorCommand, live liveconfig.
 	if c.WeightVirginBonus <= 0 {
 		c.WeightVirginBonus = defaultWeightVirginBonus
 	}
-	if c.ProximalYardHopPenalty <= 0 {
-		c.ProximalYardHopPenalty = defaultProximalYardHopPenalty
+	// sp-tlekc reach_mode PRESET: applied LAST and ALWAYS. It composes the depth/breadth balance,
+	// the reuse relay, the off-gate signal, and the reap timeout from ONE coherent preset —
+	// couplings honored by construction (§2B). An unset dial resolves to defaultReachMode (balanced,
+	// the live snapshot).
+	if reachMode <= 0 {
+		reachMode = defaultReachMode
 	}
-	if c.ProbeSiblingPriceMargin <= 0 {
-		c.ProbeSiblingPriceMargin = defaultProbeSiblingPriceMargin
-	}
-	if c.BreadthFractionPercent <= 0 {
-		c.BreadthFractionPercent = defaultBreadthFractionPercent
-	}
-	if c.BreadthFractionPercent > 100 {
-		c.BreadthFractionPercent = 100 // clamp: breadth is a percent (depth = 100 - breadth)
-	}
-	if c.MaxDepthPathfinders <= 0 {
-		c.MaxDepthPathfinders = defaultMaxDepthPathfinders
-	}
-	if c.MaxDepthHops <= 0 {
-		c.MaxDepthHops = defaultMaxDepthHops
-	}
-	if c.ObjectiveBiasPercent <= 0 {
-		c.ObjectiveBiasPercent = defaultObjectiveBiasPercent
-	}
-	if c.OffGateQueueExhaustionCycles <= 0 {
-		c.OffGateQueueExhaustionCycles = defaultOffGateQueueExhaustionCycles
-	}
-	if c.OffGateWarpRangeFuel <= 0 {
-		c.OffGateWarpRangeFuel = defaultOffGateWarpRangeFuel
-	}
-	if c.OffGateValueWeight <= 0 {
-		c.OffGateValueWeight = defaultOffGateValueWeight
-	}
-	if c.OffGateFuelWeight <= 0 {
-		c.OffGateFuelWeight = defaultOffGateFuelWeight
-	}
-	// sp-6vep: only edge_relay_max_hops takes a <=0 fallback (a nonzero reach default, inert while
-	// reuse is off). The flags/ceiling/timeout deliberately DO NOT — 0 IS their default.
-	if c.EdgeRelayMaxHops <= 0 {
-		c.EdgeRelayMaxHops = defaultEdgeRelayMaxHops
-	}
+	applyReachPreset(&c, reachMode)
 	return c
 }
 
@@ -910,13 +673,19 @@ func (h *RunFrontierExpansionCoordinatorHandler) liveConfigSnapshot(ctx context.
 // ReconcileOnce is one reconcile pass — the unit the tests drive directly (Handle just
 // calls it on a timer). It MEASURES demand, DECLARES the top frontier target, and BUYS
 // one probe when the fleet is short and every guard passes. It is idempotent: a restart
-// re-derives everything from persisted state (posts, ships, ledger), so it never
-// double-declares (Upsert is keyed by system) or double-buys (the cooldown reads the
-// ledger, not memory). The tick runs entirely on the live-config snapshot taken here;
-// a knob tuned mid-tick lands next tick.
+// re-derives everything from persisted state (posts, ships), so it never double-declares
+// (Upsert is keyed by system). It resolves the tick's config from the live-config snapshot
+// taken here — a knob tuned mid-tick lands next tick — then delegates to reconcile.
 func (h *RunFrontierExpansionCoordinatorHandler) ReconcileOnce(ctx context.Context, cmd *RunFrontierExpansionCoordinatorCommand) error {
+	return h.reconcile(ctx, cmd, resolveConfig(cmd, h.liveConfigSnapshot(ctx, cmd)))
+}
+
+// reconcile is one reconcile pass against an ALREADY-RESOLVED config — the seam that separates
+// config resolution (reach_mode preset, dial folding, the internal sourcing/price consts) from the
+// engine, so the engine's behavior can be driven directly from a frontierConfig. The reach/depth/
+// reuse/off-gate MECHANISM is byte-for-byte unchanged (sp-tlekc); only its inputs' provenance moved.
+func (h *RunFrontierExpansionCoordinatorHandler) reconcile(ctx context.Context, cmd *RunFrontierExpansionCoordinatorCommand, cfg frontierConfig) error {
 	logger := common.LoggerFromContext(ctx)
-	cfg := resolveConfig(cmd, h.liveConfigSnapshot(ctx, cmd))
 
 	posts, err := h.postRepo.ListActive(ctx, cmd.PlayerID.Value())
 	if err != nil {
@@ -1261,18 +1030,12 @@ func (h *RunFrontierExpansionCoordinatorHandler) decideAndMaybeBuy(
 		return fmt.Sprintf("no purchase: fleet cap reached (%d/%d satellites)", satCount, cfg.MaxProbeFleet)
 	}
 
-	// Cooldown (ledger-derived, restart-safe): at most one probe buy per cooldown. Read
-	// from the persisted PURCHASE_SHIP ledger, NOT memory, so a restart mid-cycle sees a
-	// just-bought probe and never double-buys (RULINGS #2).
-	last, hadLast, err := h.lastProbePurchase(ctx, cmd)
-	if err != nil {
-		return fmt.Sprintf("no purchase: purchase ledger unreadable (fail-closed): %v", err)
-	}
-	if hadLast {
-		if elapsed := h.clock.Now().Sub(last); elapsed < cfg.PurchaseCooldown {
-			return fmt.Sprintf("no purchase: cooldown active (%s since last probe, need %s)", elapsed.Round(time.Second), cfg.PurchaseCooldown)
-		}
-	}
+	// sp-tlekc §2A: the two ledger-derived RATE GOVERNORS (a per-buy cooldown + a per-window spend
+	// cap) are REMOVED — proven redundant. Probe buys stay bounded WITHOUT them by four surviving
+	// bounds: ONE buy per tick (structural — decideAndMaybeBuy runs once per ReconcileOnce, 60s tick),
+	// the FLEET CAP above (total ≤ fleet × price, a bounded one-time capital cost), the 25% per-buy
+	// rule + the 50k working-capital floor below, and the daemon API limiter. The frontier no longer
+	// reads the PURCHASE_SHIP ledger for cooldown/spend.
 
 	// Treasury (RULINGS #4/#6): cannot read the live balance → do not spend.
 	if h.treasury == nil {
@@ -1297,14 +1060,15 @@ func (h *RunFrontierExpansionCoordinatorHandler) decideAndMaybeBuy(
 		return h.positionProbeBuyerOnStall(ctx, cmd, err)
 	}
 
-	// Per-unit price ceiling (sp-3u5d): the BACKSTOP for the deepest-frontier tail whose ONLY reachable
-	// yard is a depleted deep one. QuoteProbe has already run the sibling-spread, so `price` is the
-	// FINAL cheapest reachable yard's price; when no cheaper sibling exists it can spiral to 210-235k.
-	// If the ceiling is set (>0) and that final price exceeds it, DEFER — leave the post dark and retry
-	// next cycle (price may recover or a nearer yard become reachable). A normal no-op like the spend
-	// cap: never spends, never errors, never strands the loop. Ceiling 0 = DISABLED (byte-identical to
-	// pre-sp-3u5d). Placed before the dry-run branch so a dry-run reports the deferral, not a "would buy".
-	if cfg.MaxProbePrice > 0 && price > cfg.MaxProbePrice {
+	// IMMUTABLE per-unit price ceiling (sp-tlekc §2C): the anti-OVERPAY backstop for the
+	// deepest-frontier tail whose ONLY reachable yard is a depleted deep one. QuoteProbe has already
+	// run the sibling-spread, so `price` is the FINAL cheapest reachable yard's price; when no cheaper
+	// sibling exists it can spiral to 210-235k. If that final price exceeds the ceiling, DEFER — leave
+	// the post dark and retry next cycle (price may recover or a nearer yard become reachable). A
+	// normal no-op like a covered slot: never spends, never errors, never strands the loop. The
+	// ceiling is now an IMMUTABLE const (maxProbePrice, cfg.MaxProbePrice) — always on, un-tunable, so
+	// it can never be weakened OFF into a spiral (RULINGS #5).
+	if price > cfg.MaxProbePrice {
 		return fmt.Sprintf("no purchase: probe price %d exceeds ceiling %d at yard %s (deferred, retry next cycle)", price, cfg.MaxProbePrice, yard)
 	}
 
@@ -1314,14 +1078,17 @@ func (h *RunFrontierExpansionCoordinatorHandler) decideAndMaybeBuy(
 		return fmt.Sprintf("no purchase: probe price %d exceeds %d%% of treasury %d", price, maxTreasuryFractionPercent, credits)
 	}
 
-	// Per-window spend cap (RULINGS #5 ceiling, ledger-derived): probe spend already
-	// booked in the trailing cooldown window plus this price must clear the cap.
-	windowSpend, err := h.probeSpendSince(ctx, cmd, h.clock.Now().Add(-cfg.SpendWindow))
-	if err != nil {
-		return fmt.Sprintf("no purchase: spend ledger unreadable (fail-closed): %v", err)
-	}
-	if windowSpend+price > cfg.MaxSpendPerCycle {
-		return fmt.Sprintf("no purchase: spend cap (window %d + price %d > %d)", windowSpend, price, cfg.MaxSpendPerCycle)
+	// WORKING-CAPITAL FLOOR (sp-tlekc §2E, RULINGS #4/#5): the frontier finally sits behind the
+	// standing 50k working-capital floor that tour/factory/trade/outfitting all enforce — a buy must
+	// leave AT LEAST the immutable reserve spendable (credits − price ≥ floor). It is the SHARED,
+	// IMMUTABLE surface (common.EffectiveReserveFloor clamps to common.ImmutableReserveFloor = 50k);
+	// there is NO config/tune seam, so it can never be weakened (RULINGS #5). It fails CLOSED on the
+	// treasury already read above (an unreadable treasury never reaches here). This ADDS a real
+	// solvency bound to REPLACE the two deleted rate governors and closes the §2A cross-coordinator
+	// low-treasury residual — added even as knobs are removed.
+	floor := common.EffectiveReserveFloor(common.ImmutableReserveFloor, common.DefaultReserveTreasuryPct, int64(credits))
+	if int64(credits)-int64(price) < floor {
+		return fmt.Sprintf("no purchase: working-capital floor (treasury %d − price %d = %d < floor %d)", credits, price, credits-price, floor)
 	}
 
 	// Every guard passed. The hard MaxBudget handed to the buy is the 25% treasury
@@ -1607,60 +1374,6 @@ func (h *RunFrontierExpansionCoordinatorHandler) satelliteCount(ctx context.Cont
 		}
 	}
 	return n, nil
-}
-
-// lastProbePurchase returns the timestamp of the most recent SHIP_PROBE purchase for
-// the player, derived from the persisted transactions ledger (RULINGS #2: the cooldown
-// clock survives a restart because it is READ from the ledger, not held in memory). It
-// scans recent PURCHASE_SHIP rows and matches the first whose metadata ship_type is a
-// probe — scoping the cooldown to probe buys from ANY source (coordinator or a manual
-// captain buy), which is the conservative reading: if the fleet just grew a probe,
-// pause and let the reconciler deploy it before buying more.
-func (h *RunFrontierExpansionCoordinatorHandler) lastProbePurchase(ctx context.Context, cmd *RunFrontierExpansionCoordinatorCommand) (time.Time, bool, error) {
-	ps := ledger.TransactionTypePurchaseShip
-	txns, err := h.ledgerRepo.FindByPlayer(ctx, cmd.PlayerID, ledger.QueryOptions{
-		TransactionType: &ps,
-		OrderBy:         "timestamp DESC",
-		Limit:           50,
-	})
-	if err != nil {
-		return time.Time{}, false, err
-	}
-	for _, t := range txns {
-		if isProbePurchase(t) {
-			return t.Timestamp(), true, nil
-		}
-	}
-	return time.Time{}, false, nil
-}
-
-// probeSpendSince sums probe purchase spend booked since `since`, derived from the
-// ledger (RULINGS #2/#5: the per-window spend cap is re-derived from persisted state
-// each tick). Amounts are stored negative (expenses), so spend is the negated sum.
-func (h *RunFrontierExpansionCoordinatorHandler) probeSpendSince(ctx context.Context, cmd *RunFrontierExpansionCoordinatorCommand, since time.Time) (int, error) {
-	ps := ledger.TransactionTypePurchaseShip
-	txns, err := h.ledgerRepo.FindByPlayer(ctx, cmd.PlayerID, ledger.QueryOptions{
-		TransactionType: &ps,
-		StartDate:       &since,
-		Limit:           500,
-	})
-	if err != nil {
-		return 0, err
-	}
-	sum := 0
-	for _, t := range txns {
-		if isProbePurchase(t) {
-			sum += -t.Amount()
-		}
-	}
-	return sum, nil
-}
-
-// isProbePurchase reports whether a PURCHASE_SHIP transaction bought a probe, read from
-// the metadata ship_type the purchase machinery stamps.
-func isProbePurchase(t *ledger.Transaction) bool {
-	st, _ := t.Metadata()["ship_type"].(string)
-	return st == probeShipType
 }
 
 // countUnmannedSlots counts manning slots with no hull AND no relay in flight across all

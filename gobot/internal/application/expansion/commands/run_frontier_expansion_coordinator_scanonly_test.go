@@ -10,16 +10,14 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
-	domainScouting "github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// sp-pvw3 discovery_share behavior (superseding the sp-jide binary scan_only): these drive the
-// coordinator through its ReconcileOnce driving port and assert observable outcomes at the
-// ScoutPostRepository (declared posts) and the ProbePurchaser boundary (buys), never internal
-// structure. They cover: the deprecated scan_only alias (pure backlog-scan), the CONCURRENT split
-// (both discovery and scan posts in one cycle), graceful degradation both directions, and the
-// resolveConfig knob/alias plumbing.
+// sp-pvw3 discover_scan_balance behavior (sp-tlekc: discovery_share promoted 1:1, the sp-jide binary
+// scan_only retired): these drive the coordinator through its ReconcileOnce/reconcile driving port and
+// assert observable outcomes at the ScoutPostRepository (declared posts) and the ProbePurchaser
+// boundary (buys), never internal structure. They cover the CONCURRENT split (both discovery and scan
+// posts in one cycle), graceful degradation both directions, and the resolveConfig dial plumbing.
 
 // fakeDarkScanner is the DarkMarketScanner port double: it returns a fixed dark-market backlog (the
 // discovered charted-but-price-unscanned set), so the tests pin exactly which systems the scan side
@@ -33,60 +31,6 @@ type fakeDarkScanner struct {
 func (f *fakeDarkScanner) ChartedUnscannedMarketSystems(_ context.Context, _ int) ([]ScanCandidate, error) {
 	f.calls++
 	return f.candidates, f.err
-}
-
-// DEPRECATED-ALIAS: `scan_only=1` still maps to discovery_share 0 (pure backlog-scan). The
-// coordinator declares a sweep-once post for EVERY uncovered dark-market system (ranked by market
-// count, an already-covered dark system excluded), declares NO depth pathfinder, buys NO probe, and
-// never even consults the expansion scanner — even though this exact fixture (empty posts + zero
-// idle probes + treasury & purchaser wired) BUYS in the discovery path. Pins the alias mapping +
-// pure-scan invariants (no depth, no buy, expansion scanner untouched).
-func TestFrontier_DeprecatedScanOnlyAlias_PureBacklogScan(t *testing.T) {
-	clock := &shared.MockClock{CurrentTime: time.Now()}
-	pr := &fakePostRepo{posts: []*domainScouting.ScoutPost{
-		standingPost("X1-COVERED", "P9"), // a dark system already covered → must NOT be re-declared
-	}}
-	fr := &fakeFleetRepo{} // zero idle probes → the discovery path would look short and BUY
-	lr := &fakeLedgerRepo{}
-	h := newHandler(pr, fr, lr, clock)
-	h.SetTreasuryReader(&fakeTreasury{credits: 1_000_000})
-	buyer := &fakePurchaser{quotePrice: 20000, quoteYard: "X1-HOME-SY", buySymbol: "PROBE-NEW", buyPrice: 20000}
-	h.SetProbePurchaser(buyer)
-	// The discovery scanner offers a depth-eligible deep virgin AND a market-rich breadth head — pure
-	// backlog-scan (share 0) must consult NEITHER (no discovery declaration, expansion scanner untouched).
-	normal := &fakeScanner{candidates: []ExpansionCandidate{
-		{SystemSymbol: "X1-VIRGIN-DEEP", Hops: 4, KnownMarkets: 0, Charted: false},
-		{SystemSymbol: "X1-BREADTH", Hops: 1, KnownMarkets: 9, Charted: true},
-	}}
-	h.SetExpansionScanner(normal)
-	dark := &fakeDarkScanner{candidates: []ScanCandidate{
-		{SystemSymbol: "X1-DARK-A", MarketCount: 3},
-		{SystemSymbol: "X1-DARK-B", MarketCount: 14}, // highest count → chosen head
-		{SystemSymbol: "X1-COVERED", MarketCount: 5}, // excluded: already posted
-	}}
-	h.SetDarkMarketScanner(dark)
-
-	cmd := testCmd()
-	cmd.ScanOnly = 1 // deprecated alias → discovery_share 0
-
-	require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
-
-	declared := map[string]*domainScouting.ScoutPost{}
-	for _, post := range pr.upserts {
-		declared[post.SystemSymbol] = post
-	}
-	require.Len(t, pr.upserts, 2, "a sweep-once post per uncovered dark-market system (X1-COVERED excluded)")
-	require.Contains(t, declared, "X1-DARK-A", "the full uncovered dark backlog is swept")
-	require.Contains(t, declared, "X1-DARK-B")
-	for _, post := range pr.upserts {
-		require.Equal(t, domainScouting.PostKindSweepOnce, post.Kind, "dark-backlog posts are breadth sweep-once posts")
-		require.Equal(t, 1, post.Hulls, "sweep-once is single-hull")
-	}
-	require.NotContains(t, declared, "X1-VIRGIN-DEEP", "pure backlog-scan declares no depth pathfinder to virgin")
-	require.NotContains(t, declared, "X1-BREADTH", "pure backlog-scan does not run the expansion-frontier ranker")
-	require.Zero(t, normal.calls, "pure backlog-scan never consults the expansion scanner")
-	require.Zero(t, buyer.buyCalls, "pure backlog-scan buys no probes")
-	require.Zero(t, buyer.quoteCalls, "pure backlog-scan does not even price a probe")
 }
 
 // THE CORE sp-pvw3 CAPABILITY the binary scan_only could never do: with a virgin frontier AND a
@@ -126,7 +70,7 @@ func TestFrontier_DiscoveryShare_DeclaresBothDiscoveryAndScanConcurrently(t *tes
 			h.SetDarkMarketScanner(&fakeDarkScanner{candidates: darkCandidates})
 
 			cmd := testCmd()
-			cmd.DiscoveryShare = tc.share
+			cmd.DiscoverScanBalance = tc.share
 			cmd.MaxFrontierPostsInFlight = tc.capacity
 
 			require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
@@ -145,11 +89,10 @@ func TestFrontier_DiscoveryShare_DeclaresBothDiscoveryAndScanConcurrently(t *tes
 	}
 }
 
-// GRACEFUL DEGRADATION (backlog dry → discovery). Even with pure-scan intent (deprecated scan_only=1
-// ↔ share 0), an EMPTY dark backlog redirects the whole cycle to discovery rather than idling — the
-// exact behavior the old binary scan_only lacked (it idled while virgin systems went unexplored). It
-// declares the top virgin frontier system. Mutating out the degradation redirect leaves share-0 with
-// a 0 discovery budget → nothing declared → this fails.
+// GRACEFUL DEGRADATION (backlog dry → discovery). Even with a scan-heavy balance (discover_scan_balance
+// low), an EMPTY dark backlog redirects the whole cycle to discovery rather than idling. It declares
+// the top virgin frontier system. Mutating out the degradation redirect leaves a scan-heavy split with
+// its scan budget stranded → this fails.
 func TestFrontier_BacklogEmpty_ScanShareRedirectsToDiscovery(t *testing.T) {
 	clock := &shared.MockClock{CurrentTime: time.Now()}
 	pr := &fakePostRepo{}
@@ -162,7 +105,7 @@ func TestFrontier_BacklogEmpty_ScanShareRedirectsToDiscovery(t *testing.T) {
 	h.SetDarkMarketScanner(&fakeDarkScanner{candidates: nil}) // backlog empty — fully drained
 
 	cmd := testCmd()
-	cmd.ScanOnly = 1 // pure-scan intent (share 0)
+	cmd.DiscoverScanBalance = 20 // scan-heavy — but the backlog is dry, so it all flows to discovery
 
 	require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
 
@@ -188,7 +131,7 @@ func TestFrontier_NoVirginFrontier_DiscoveryShareRedirectsToScan(t *testing.T) {
 	h.SetDarkMarketScanner(dark)
 
 	cmd := testCmd()
-	cmd.DiscoveryShare = 100 // pure-discovery intent
+	cmd.DiscoverScanBalance = 100 // pure-discovery intent
 
 	require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
 
@@ -218,7 +161,7 @@ func TestFrontier_PureDiscovery_DarkScannerInert(t *testing.T) {
 	h.SetDarkMarketScanner(dark)
 
 	cmd := testCmd()
-	cmd.DiscoveryShare = 100
+	cmd.DiscoverScanBalance = 100
 
 	require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
 
@@ -227,31 +170,32 @@ func TestFrontier_PureDiscovery_DarkScannerInert(t *testing.T) {
 	require.Zero(t, dark.calls, "pure discovery never consults the dark-market scanner")
 }
 
-// resolveConfig plumbing: discovery_share is authoritative (live > launch); the deprecated scan_only
-// maps its binary (1 ↔ share 0); an unset knob is the documented default. A present live snapshot is
-// authoritative, so a `tune` of either key lands next tick.
-func TestResolveFrontierConfig_DiscoveryShareWithScanOnlyAlias(t *testing.T) {
+// resolveConfig plumbing (sp-tlekc): discover_scan_balance is authoritative (live > launch); the
+// legacy discovery_share is the read-through migration alias; an unset dial is the documented default.
+// A present live snapshot is authoritative, so a `tune` lands next tick.
+func TestResolveFrontierConfig_DiscoverScanBalanceThreading(t *testing.T) {
 	require.Equal(t, defaultDiscoveryShare, resolveConfig(testCmd(), nil).DiscoveryShare,
 		"no snapshot, no launch value → the documented default (balanced split)")
 
-	launchShare := testCmd()
-	launchShare.DiscoveryShare = 60
-	require.Equal(t, 60, resolveConfig(launchShare, nil).DiscoveryShare, "no snapshot → the launch discovery_share governs")
+	launchDial := testCmd()
+	launchDial.DiscoverScanBalance = 60
+	require.Equal(t, 60, resolveConfig(launchDial, nil).DiscoveryShare, "no snapshot → the launch discover_scan_balance governs")
 
-	launchScanOnly := testCmd()
-	launchScanOnly.ScanOnly = 1
-	require.Equal(t, 0, resolveConfig(launchScanOnly, nil).DiscoveryShare, "deprecated scan_only=1 ↔ pure backlog-scan (share 0)")
+	// The legacy discovery_share is honored as the rename migration alias when the dial is unset.
+	launchLegacy := testCmd()
+	launchLegacy.DiscoveryShare = 40
+	require.Equal(t, 40, resolveConfig(launchLegacy, nil).DiscoveryShare, "a persisted legacy discovery_share still resolves (rename migration)")
 
-	liveShare := liveconfig.Snapshot{"discovery_share": 80}
-	require.Equal(t, 80, resolveConfig(testCmd(), liveShare).DiscoveryShare, "a live discovery_share governs next tick")
+	liveDial := liveconfig.Snapshot{"discover_scan_balance": 80}
+	require.Equal(t, 80, resolveConfig(testCmd(), liveDial).DiscoveryShare, "a live discover_scan_balance governs next tick")
 
-	liveAlias := liveconfig.Snapshot{"scan_only": 1}
-	require.Equal(t, 0, resolveConfig(testCmd(), liveAlias).DiscoveryShare, "a live scan_only=1 still resolves to share 0")
+	liveLegacy := liveconfig.Snapshot{"discovery_share": 30}
+	require.Equal(t, 30, resolveConfig(testCmd(), liveLegacy).DiscoveryShare, "a live legacy discovery_share still resolves (migration)")
 
-	livePrecedence := liveconfig.Snapshot{"discovery_share": 40, "scan_only": 1}
-	require.Equal(t, 40, resolveConfig(testCmd(), livePrecedence).DiscoveryShare, "discovery_share wins over the deprecated scan_only")
+	livePrecedence := liveconfig.Snapshot{"discover_scan_balance": 70, "discovery_share": 40}
+	require.Equal(t, 70, resolveConfig(testCmd(), livePrecedence).DiscoveryShare, "the dial wins over the legacy alias")
 
 	emptyLive := liveconfig.Snapshot{}
-	require.Equal(t, defaultDiscoveryShare, resolveConfig(launchShare, emptyLive).DiscoveryShare,
+	require.Equal(t, defaultDiscoveryShare, resolveConfig(launchDial, emptyLive).DiscoveryShare,
 		"a present-but-empty snapshot is authoritative → the documented default, overriding the launch value")
 }

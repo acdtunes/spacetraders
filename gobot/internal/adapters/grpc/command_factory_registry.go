@@ -651,31 +651,18 @@ func buildFrontierExpansionCoordinatorCommand(cfg *configReader, playerID int, c
 		TickIntervalSecs:         cfg.OptionalInt("tick_interval_secs", 0),
 		DryRun:                   cfg.OptionalBool("dry_run"),
 		MaxProbeFleet:            cfg.OptionalInt("max_probe_fleet", 0),
-		MaxSpendPerCycle:         cfg.OptionalInt("max_spend_per_cycle", 0),
-		PurchaseCooldownSecs:     cfg.OptionalInt("purchase_cooldown_secs", 0),
-		SpendWindowSecs:          cfg.OptionalInt("spend_window_secs", 0),
 		ExpansionMaxHops:         cfg.OptionalInt("expansion_max_hops", 0),
 		MaxFrontierPostsInFlight: cfg.OptionalInt("max_frontier_posts_in_flight", 0),
 		FrontierFreshnessSecs:    cfg.OptionalInt("frontier_freshness_secs", 0),
 		WeightKnownMarket:        cfg.OptionalInt("weight_known_market", 0),
 		WeightHopPenalty:         cfg.OptionalInt("weight_hop_penalty", 0),
 		WeightVirginBonus:        cfg.OptionalInt("weight_virgin_bonus", 0),
-		ProximalYardHopPenalty:   cfg.OptionalInt("proximal_yard_hop_penalty", 0),
-		ProbeSiblingPriceMargin:  cfg.OptionalInt("probe_sibling_price_margin", 0),
-		MaxProbePrice:            cfg.OptionalInt("max_probe_price", 0),
-		// sp-rjgr depth-vs-breadth balance (all live-tunable; 0 → the coordinator's own default).
-		BreadthFractionPercent: cfg.OptionalInt("breadth_fraction_percent", 0),
-		MaxDepthPathfinders:    cfg.OptionalInt("max_depth_pathfinders", 0),
-		MaxDepthHops:           cfg.OptionalInt("max_depth_hops", 0),
-		ObjectiveBiasPercent:   cfg.OptionalInt("objective_bias_percent", 0),
-		ReservedFreshnessFloor: cfg.OptionalInt("reserved_freshness_floor", 0), // sp-iopd symmetric floor
-		// sp-6vep reuse-before-buy the deep frontier (all live-tunable; 0 ⇒ the coordinator's own
-		// DEFAULT-SAFE value, so a merge is byte-identical to today until armed next era).
-		ProbeReuseEnabled:       cfg.OptionalInt("probe_reuse_enabled", 0),
-		EdgeRelayMaxHops:        cfg.OptionalInt("edge_relay_max_hops", 0),
-		ReuseValueCeiling:       cfg.OptionalInt("reuse_value_ceiling", 0),
-		SnowballNeighbors:       cfg.OptionalInt("snowball_neighbors", 0),
-		PostInflightTimeoutSecs: cfg.OptionalInt("post_inflight_timeout_secs", 0),
+		ReservedFreshnessFloor:   cfg.OptionalInt("reserved_freshness_floor", 0), // sp-iopd symmetric floor (retired P4)
+		// sp-tlekc FINAL operator dials. reach_mode composes the reach preset; discover_scan_balance
+		// is the discovery/scan split (discovery_share kept as a read-through migration alias).
+		ReachMode:           cfg.OptionalInt("reach_mode", 0),
+		DiscoverScanBalance: cfg.OptionalInt("discover_scan_balance", 0),
+		DiscoveryShare:      cfg.OptionalInt("discovery_share", 0), // legacy rename alias (sp-tlekc)
 	}
 }
 

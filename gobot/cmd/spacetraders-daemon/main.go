@@ -998,12 +998,12 @@ func run(cfg *config.Config) error {
 	frontierExpansionHandler.SetExpansionScanner(expansionAdapters.NewExpansionScanner(
 		gateGraphService, marketRepoAdapter, shipRepo, playerRepo, waypointRepo,
 	))
-	// sp-jide: the scan-only backlog enumerator — the FULL charted-but-unscanned MARKET set (every
-	// system with MARKETPLACE waypoints but zero player market_data), unbounded by gate hops. When
-	// `tune --operation frontier scan_only 1` is set the coordinator sweeps this whole discovered
-	// backlog (sp-pvw3: charted markets with NO or STALE price data — the honest dark set, not just
-	// never-scanned). The scan side of the discovery_share split drains it; discovery_share=100 never
-	// consults it. Reads the raw market repo (charted-market counts + the player's scan ages).
+	// sp-jide: the dark-market backlog enumerator — the FULL charted-but-unscanned MARKET set (every
+	// system with MARKETPLACE waypoints but zero player market_data), unbounded by gate hops
+	// (sp-pvw3: charted markets with NO or STALE price data — the honest dark set, not just
+	// never-scanned). The scan side of the discover_scan_balance split drains it (a lower balance
+	// scans more); discover_scan_balance=100 is pure discovery and never consults it. Reads the raw
+	// market repo (charted-market counts + the player's scan ages).
 	// sp-gucu: give the scanner the live standing-post SLA reader so a manned standing post scanned
 	// WITHIN its own 4–10h freshness SLA is not mislabeled dark against the fixed 4h bar (the false
 	// "nothing is draining" census). Systems with no manned standing post keep the fixed bar.
@@ -1023,14 +1023,14 @@ func run(cfg *config.Config) error {
 	// so `spacetraders tune` retunes the spend/cooldown/cap knobs on the next tick —
 	// no restart, no rebuild.
 	frontierExpansionHandler.SetLiveConfigReader(grpc.NewContainerConfigReader(containerRepo))
-	// sp-6vep reuse-before-buy the deep frontier (DEFAULT-OFF until armed next era). The
-	// ProbeReuseRelayer hops an EXISTING edge probe onto a target virgin instead of buying at an
-	// unreachable deep yard: it selects the nearest scout probe within edge_relay_max_hops sitting in
-	// a below-ceiling system (never cannibalizing a high-value core market — the depth-vs-freshness
-	// guard) and relays it over the SAME reposition path the scout reconciler uses
-	// (tradeRouteCoordinatorHandler). The FrontierNeighborScanner feeds the snowball walk — a charted
-	// system's uncharted gate-neighbors. Both are inert while probe_reuse_enabled / snowball_neighbors
-	// stay at their default 0, so a merge is byte-identical to today's buy-only path.
+	// sp-6vep reuse-before-buy the deep frontier (armed by the reach_mode preset — balanced/deep;
+	// off at shallow — sp-tlekc). The ProbeReuseRelayer hops an EXISTING edge probe onto a target
+	// virgin instead of buying at an unreachable deep yard: it selects the nearest scout probe within
+	// the preset's edge-relay reach sitting in a below-ceiling system (never cannibalizing a
+	// high-value core market — the depth-vs-freshness guard) and relays it over the SAME reposition
+	// path the scout reconciler uses (tradeRouteCoordinatorHandler). The FrontierNeighborScanner feeds
+	// the snowball walk — a charted system's uncharted gate-neighbors. Both are inert at reach_mode
+	// shallow (reuse/snowball off).
 	frontierExpansionHandler.SetProbeReuseRelayer(expansionAdapters.NewProbeReuseRelayer(
 		shipRepo,
 		gateGraphService,

@@ -7,7 +7,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -104,9 +103,11 @@ func TestFrontier_Depth_ZeroDepthSplitIsPureBFS(t *testing.T) {
 	}})
 
 	cmd := testCmd()
-	cmd.BreadthFractionPercent = 100 // 0% depth — pure BFS. No objective reader wired → nothing resurrects depth.
+	// breadth 100 ⇒ 0% depth — pure BFS (reach_mode=shallow's split). No objective reader → nothing
+	// resurrects depth. Driven through reconcile with a directly-built config (sp-tlekc seam).
+	cfg := cfgWith(func(c *frontierConfig) { c.BreadthFractionPercent = 100 })
 
-	require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
+	require.NoError(t, h.reconcile(context.Background(), cmd, cfg))
 
 	declared := declaredSystems(pr)
 	require.False(t, containsSystem(declared, "X1-DEEP"),
@@ -139,9 +140,9 @@ func TestFrontier_Depth_PathfindersFanAcrossDistinctBranches(t *testing.T) {
 	}})
 
 	cmd := testCmd()
-	cmd.MaxDepthPathfinders = 2 // two concurrent pathfinders
+	cfg := cfgWith(func(c *frontierConfig) { c.MaxDepthPathfinders = 2 }) // two concurrent pathfinders
 
-	require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
+	require.NoError(t, h.reconcile(context.Background(), cmd, cfg))
 
 	declared := declaredSystems(pr)
 	depthPicks := intersectSystems(declared, []string{"X1-A-DEEP1", "X1-A-DEEP2", "X1-B-DEEP"})
@@ -172,9 +173,11 @@ func TestFrontier_Depth_ObjectiveBiasShiftsTowardDepth(t *testing.T) {
 		}})
 		h.SetDepthObjectiveReader(&fakeObjective{shortfall: shortfall, yardKnown: yardKnown, readable: true})
 		cmd := testCmd()
-		cmd.BreadthFractionPercent = 100 // baseline depth 0% → pure BFS unless the objective biases
-		cmd.ObjectiveBiasPercent = 50    // unmet → depth 50%
-		require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
+		cfg := cfgWith(func(c *frontierConfig) {
+			c.BreadthFractionPercent = 100 // baseline depth 0% → pure BFS unless the objective biases
+			c.ObjectiveBiasPercent = 50    // unmet → depth 50%
+		})
+		require.NoError(t, h.reconcile(context.Background(), cmd, cfg))
 		return declaredSystems(pr)
 	}
 
@@ -205,9 +208,11 @@ func TestFrontier_Depth_MaxDepthCapBoundsPathfinder(t *testing.T) {
 			{SystemSymbol: "X1-TOODEEP", Hops: 5, Charted: false, BranchRoot: "X1-NEAR"},
 		}})
 		cmd := testCmd()
-		cmd.MaxDepthPathfinders = 1 // one pathfinder → it takes the single deepest-within-cap virgin
-		cmd.MaxDepthHops = maxDepthHops
-		require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
+		cfg := cfgWith(func(c *frontierConfig) {
+			c.MaxDepthPathfinders = 1 // one pathfinder → it takes the single deepest-within-cap virgin
+			c.MaxDepthHops = maxDepthHops
+		})
+		require.NoError(t, h.reconcile(context.Background(), cmd, cfg))
 		return declaredSystems(pr)
 	}
 
@@ -222,40 +227,7 @@ func TestFrontier_Depth_MaxDepthCapBoundsPathfinder(t *testing.T) {
 		"raise the cap and the deeper virgin becomes reachable and is targeted — the cap is load-bearing")
 }
 
-// ---- tunables resolve live > launch > default ------------------------------
-
-// Tunables (sp-rjgr test 6): the depth knobs resolve live-config over launch over documented
-// default, the established sp-vwek/sp-0z7f precedence.
-func TestFrontier_Depth_TunablesResolveLiveOverLaunchOverDefault(t *testing.T) {
-	cmd := testCmd()
-	cmd.BreadthFractionPercent = 70
-	cmd.MaxDepthPathfinders = 2
-	cmd.MaxDepthHops = 4
-	cmd.ObjectiveBiasPercent = 20
-
-	// No live snapshot → launch values apply.
-	launch := resolveConfig(cmd, nil)
-	require.Equal(t, 70, launch.BreadthFractionPercent, "launch value applies with no live snapshot")
-	require.Equal(t, 2, launch.MaxDepthPathfinders)
-	require.Equal(t, 4, launch.MaxDepthHops)
-	require.Equal(t, 20, launch.ObjectiveBiasPercent)
-
-	// A live snapshot overrides the launch values.
-	live := resolveConfig(cmd, liveconfig.Snapshot{
-		"breadth_fraction_percent": 80,
-		"max_depth_pathfinders":    5,
-		"max_depth_hops":           9,
-		"objective_bias_percent":   35,
-	})
-	require.Equal(t, 80, live.BreadthFractionPercent, "live snapshot overrides launch")
-	require.Equal(t, 5, live.MaxDepthPathfinders)
-	require.Equal(t, 9, live.MaxDepthHops)
-	require.Equal(t, 35, live.ObjectiveBiasPercent)
-
-	// An empty snapshot → every knob falls to its documented default.
-	def := resolveConfig(testCmd(), liveconfig.Snapshot{})
-	require.Equal(t, defaultBreadthFractionPercent, def.BreadthFractionPercent, "empty snapshot → default")
-	require.Equal(t, defaultMaxDepthPathfinders, def.MaxDepthPathfinders)
-	require.Equal(t, defaultMaxDepthHops, def.MaxDepthHops)
-	require.Equal(t, defaultObjectiveBiasPercent, def.ObjectiveBiasPercent)
-}
+// The depth knobs are no longer operator-tunable (sp-tlekc): the depth/breadth split resolves wholly
+// from the reach_mode preset, verified in reach_mode_test.go (balanced → breadth 65, shallow →
+// breadth 100, deep → breadth 50). The former per-knob live>launch>default precedence test is retired
+// with the knobs.

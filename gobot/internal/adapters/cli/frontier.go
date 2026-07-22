@@ -121,8 +121,6 @@ func newFrontierStartCommand() *cobra.Command {
 		tickInterval     time.Duration
 		dryRun           bool
 		maxProbeFleet    int
-		maxSpendPerCycle int
-		purchaseCooldown time.Duration
 		expansionMaxHops int
 	)
 
@@ -136,7 +134,7 @@ buying or declaring anything, then start it for real.
 Examples:
   spacetraders frontier start --agent ENDURANCE --dry-run
   spacetraders frontier start --agent ENDURANCE
-  spacetraders frontier start --player-id 1 --tick 60s --max-probe-fleet 40 --max-spend-per-cycle 100000`,
+  spacetraders frontier start --player-id 1 --tick 60s --max-probe-fleet 80`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			playerIdent, err := resolvePlayerIdentifier()
 			if err != nil {
@@ -153,12 +151,10 @@ Examples:
 			defer cancel()
 
 			containerID, err := client.FrontierExpansionCoordinator(ctx, playerIdent.PlayerID, playerIdent.AgentSymbol, FrontierExpansionCoordinatorParams{
-				TickIntervalSecs:     int(tickInterval.Seconds()),
-				DryRun:               dryRun,
-				MaxProbeFleet:        maxProbeFleet,
-				MaxSpendPerCycle:     maxSpendPerCycle,
-				PurchaseCooldownSecs: int(purchaseCooldown.Seconds()),
-				ExpansionMaxHops:     expansionMaxHops,
+				TickIntervalSecs: int(tickInterval.Seconds()),
+				DryRun:           dryRun,
+				MaxProbeFleet:    maxProbeFleet,
+				ExpansionMaxHops: expansionMaxHops,
 			})
 			if err != nil {
 				return fmt.Errorf("frontier expansion coordinator failed: %w", err)
@@ -180,9 +176,7 @@ Examples:
 
 	cmd.Flags().DurationVar(&tickInterval, "tick", 0, "Reconcile cadence (e.g. 60s); 0 uses the coordinator default")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Log decisions without buying or declaring anything")
-	cmd.Flags().IntVar(&maxProbeFleet, "max-probe-fleet", 0, "Total satellite cap; 0 uses the default (40)")
-	cmd.Flags().IntVar(&maxSpendPerCycle, "max-spend-per-cycle", 0, "Max probe spend per trailing window; 0 uses the default (100000)")
-	cmd.Flags().DurationVar(&purchaseCooldown, "purchase-cooldown", 0, "Min time between probe buys (e.g. 10m); 0 uses the default")
+	cmd.Flags().IntVar(&maxProbeFleet, "max-probe-fleet", 0, "Total satellite cap — the sole throttle; 0 uses the default (40). Tune reach + discover/scan live via 'spacetraders tune --operation frontier'")
 	cmd.Flags().IntVar(&expansionMaxHops, "expansion-max-hops", 0, "Gate-graph reach for the expansion queue; 0 uses the default (3)")
 	return cmd
 }

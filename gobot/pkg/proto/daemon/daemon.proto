@@ -688,8 +688,10 @@ message FrontierExpansionCoordinatorRequest {
   int32 tick_interval_secs = 3;      // reconcile cadence; 0 = default
   bool dry_run = 4;                  // log decisions, buy/declare nothing
   int32 max_probe_fleet = 5;         // total satellite cap; 0 = default
-  int32 max_spend_per_cycle = 6;     // probe spend cap in the trailing window; 0 = default
-  int32 purchase_cooldown_secs = 7;  // min seconds between probe buys; 0 = default
+  // sp-tlekc retired the two rate governors (max_spend_per_cycle, purchase_cooldown_secs) — proven
+  // redundant; probe buys stay bounded by one-buy-per-tick + fleet cap + 25% rule + 50k floor.
+  reserved 6, 7;
+  reserved "max_spend_per_cycle", "purchase_cooldown_secs";
   int32 expansion_max_hops = 8;      // gate-graph reach for the queue; 0 = default
 }
 message FrontierExpansionCoordinatorResponse {

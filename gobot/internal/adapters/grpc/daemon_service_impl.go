@@ -604,8 +604,6 @@ func (s *daemonServiceImpl) FrontierExpansionCoordinator(ctx context.Context, re
 		int(req.TickIntervalSecs),
 		req.DryRun,
 		int(req.MaxProbeFleet),
-		int(req.MaxSpendPerCycle),
-		int(req.PurchaseCooldownSecs),
 		int(req.ExpansionMaxHops),
 	)
 	if err != nil {
