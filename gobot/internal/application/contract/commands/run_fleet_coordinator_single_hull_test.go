@@ -180,3 +180,99 @@ func TestFleetCoordinator_DispatchesNormally_WhenNoActiveHull(t *testing.T) {
 		t.Fatalf("expected the coordinator to negotiate/select normally when no hull is active, but it never did (gate over-blocked the normal path)")
 	}
 }
+
+// newImpureCargoTestShip builds an IDLE hauler holding the contract good PLUS an
+// unrelated good — the NO-CARGO-DUMP-guard shape: claiming it for the contract
+// could jettison the unrelated load, so the holder short-circuit must NOT pick it.
+func newImpureCargoTestShip(t *testing.T, symbol, primaryGood string, primaryUnits int, otherGood string, otherUnits int) *navigation.Ship {
+	t.Helper()
+	location, err := shared.NewWaypoint("X1-TEST-A1", 0, 0)
+	if err != nil {
+		t.Fatalf("NewWaypoint: %v", err)
+	}
+	fuel, err := shared.NewFuel(0, 0)
+	if err != nil {
+		t.Fatalf("NewFuel: %v", err)
+	}
+	primary, err := shared.NewCargoItem(primaryGood, primaryGood, "", primaryUnits)
+	if err != nil {
+		t.Fatalf("NewCargoItem(primary): %v", err)
+	}
+	other, err := shared.NewCargoItem(otherGood, otherGood, "", otherUnits)
+	if err != nil {
+		t.Fatalf("NewCargoItem(other): %v", err)
+	}
+	cargo, err := shared.NewCargo(80, primaryUnits+otherUnits, []*shared.CargoItem{primary, other})
+	if err != nil {
+		t.Fatalf("NewCargo: %v", err)
+	}
+	ship, err := navigation.NewShip(symbol, shared.MustNewPlayerID(1), location, fuel, 0, 80, cargo, 9, "FRAME_HAULER", "HAULER", nil, navigation.NavStatusInOrbit)
+	if err != nil {
+		t.Fatalf("NewShip: %v", err)
+	}
+	return ship
+}
+
+// LIVE BUG sp-zve2q (08:45:45 smoking gun): an idle hull (TORWIND-15) already held
+// 43 FERTILIZERS — the exact contract need — the coordinator logged it would
+// "complete that load with its holder", then fell through to "Selecting closest
+// ship" and picked a DIFFERENT empty hull (TORWIND-8), which DOUBLE-SOURCED. The
+// upstream candidate discovery drops such a holder when it is in transit or
+// undedicated-while-a-dedicated-fleet-is-active, so it never reaches
+// SelectClosestShip's own cargo-priority. idleContractCargoHolder binds detection
+// to selection: it NAMES the holder the coordinator must select. It sees the
+// holder regardless of those filters (full-fleet scan), so the deterministic
+// short-circuit picks it over the closest empty hull — the pure holder wins over
+// an empty hull, an ASSIGNED holder (handled on its worker), and an IMPURE holder
+// (NO-CARGO-DUMP park/liquidate territory).
+func TestIdleContractCargoHolder_NamesPureIdleHolder_OverEmptyAssignedAndImpure(t *testing.T) {
+	empty := newOrphanReclaimTestShip(t, "TORWIND-8", navigation.NavStatusInOrbit)                // closest empty hull — the wrong pick
+	pureHolder := newInFlightCargoTestShip(t, "TORWIND-15", 43, "")                               // idle, holds only the good — the RIGHT pick
+	assignedHolder := newInFlightCargoTestShip(t, "TORWIND-3", 50, "cw-running")                  // holds MORE, but on a worker → excluded
+	impureHolder := newImpureCargoTestShip(t, "TORWIND-7", "LIQUID_NITROGEN", 30, "ICE_WATER", 5) // holds the good + unrelated → excluded
+	repo := &singleHullFakeShipRepo{ships: []*navigation.Ship{empty, pureHolder, assignedHolder, impureHolder}}
+	handler := &RunFleetCoordinatorHandler{shipRepo: repo}
+
+	got, err := handler.idleContractCargoHolder(context.Background(), "LIQUID_NITROGEN", 1)
+	if err != nil {
+		t.Fatalf("idleContractCargoHolder: %v", err)
+	}
+	if got != "TORWIND-15" {
+		t.Fatalf("expected the pure idle holder TORWIND-15 selected over the empty/assigned/impure hulls, got %q", got)
+	}
+}
+
+// Two pure idle holders: the coordinator must pick ONE deterministically so a
+// restart re-selects the SAME hull (never a second cargo-laden one). Rule: most
+// units, ties broken by the lexicographically-smallest symbol.
+func TestIdleContractCargoHolder_PicksMostUnits_ThenSymbol_Deterministic(t *testing.T) {
+	partial := newInFlightCargoTestShip(t, "TORWIND-9", 20, "") // fewer units
+	fullA := newInFlightCargoTestShip(t, "TORWIND-5", 43, "")   // tie on units, larger symbol
+	fullB := newInFlightCargoTestShip(t, "TORWIND-2", 43, "")   // tie on units, smaller symbol → winner
+	repo := &singleHullFakeShipRepo{ships: []*navigation.Ship{partial, fullA, fullB}}
+	handler := &RunFleetCoordinatorHandler{shipRepo: repo}
+
+	got, err := handler.idleContractCargoHolder(context.Background(), "LIQUID_NITROGEN", 1)
+	if err != nil {
+		t.Fatalf("idleContractCargoHolder: %v", err)
+	}
+	if got != "TORWIND-2" {
+		t.Fatalf("expected the most-units holder with the smallest symbol (TORWIND-2) for restart-deterministic re-selection, got %q", got)
+	}
+}
+
+// No idle hull holds the good → empty string, so the coordinator falls through to
+// its unchanged distance-based selection (behaviour preservation).
+func TestIdleContractCargoHolder_NoHolder_ReturnsEmpty(t *testing.T) {
+	empty := newOrphanReclaimTestShip(t, "TORWIND-8", navigation.NavStatusInOrbit)
+	repo := &singleHullFakeShipRepo{ships: []*navigation.Ship{empty}}
+	handler := &RunFleetCoordinatorHandler{shipRepo: repo}
+
+	got, err := handler.idleContractCargoHolder(context.Background(), "LIQUID_NITROGEN", 1)
+	if err != nil {
+		t.Fatalf("idleContractCargoHolder: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("expected no holder (empty string) so distance selection runs unchanged, got %q", got)
+	}
+}

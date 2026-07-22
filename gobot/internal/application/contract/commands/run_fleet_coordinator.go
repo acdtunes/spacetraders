@@ -727,7 +727,34 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		// source-nearest idle-hull selection below.
 		var selectedShip string
 		var distance float64
-		if hullRoute := resolveContractHullRoute(route, routeMatched, plan); hullRoute.UseDepotHull {
+
+		// DETERMINISTIC HOLDER SHORT-CIRCUIT (sp-zve2q): an IDLE hull that already
+		// holds the contract good delivers that EXISTING load — so it MUST win over
+		// sourcing a duplicate onto the closest empty hull. idleReclaimedContractCargoHeld
+		// DETECTED such a holder above and logged the intent to complete its load, but
+		// the candidate-discovery filters drop it when it is in transit or undedicated
+		// while a dedicated fleet is active, so SelectClosestShip's own cargo-priority
+		// never sees it and the closest EMPTY hull double-sources (observed: idle
+		// TORWIND-15 holds 43, "Selecting closest ship" picks TORWIND-8). This binds
+		// detection to selection — name the pure idle holder and select it directly (the
+		// SAME hull on a restart). A pure holder can't trip the NO-CARGO-DUMP guard, so
+		// the claim is safe; the normal no-holder pass returns "" and falls through to
+		// the unchanged depot/closest selection BYTE-IDENTICALLY.
+		holder, holderErr := h.idleContractCargoHolder(ctx, requiredCargo, cmd.PlayerID.Value())
+		if holderErr != nil {
+			logger.Log("WARNING", fmt.Sprintf("Failed to resolve idle contract-cargo holder (falling back to distance selection): %v", holderErr), nil)
+		}
+		if holder != "" {
+			selectedShip = holder
+			logger.Log("INFO", fmt.Sprintf(
+				"Idle hull %s already holds %s for contract %s - selecting it to complete its load instead of sourcing a duplicate onto the closest empty hull (sp-zve2q deterministic single-hull)",
+				holder, requiredCargo, contract.ContractID()), map[string]interface{}{
+				"action":       "select_cargo_holder",
+				"contract_id":  contract.ContractID(),
+				"ship_symbol":  holder,
+				"trade_symbol": requiredCargo,
+			})
+		} else if hullRoute := resolveContractHullRoute(route, routeMatched, plan); hullRoute.UseDepotHull {
 			selectedShip = hullRoute.DepotHull
 			logger.Log("INFO", fmt.Sprintf(
 				"Contract %s destination owned by depot %s - good BUFFERED at hub, routing to co-located delivery hull %s (withdraw-local+deliver-local via warehouse %s)",
@@ -850,8 +877,11 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 
 		// Last-resort verdict for the claim-side guard: the command frigate may be
 		// drafted for this leg only when NO regular hauler was an idle candidate
-		// this pass (RULINGS #7 — the frigate hauls only as a last resort).
-		commandDraftAllowed := !hasRegularHaulerCandidate(generalShipEntities)
+		// this pass (RULINGS #7 — the frigate hauls only as a last resort). A cargo
+		// HOLDER completing its EXISTING load is never a fresh last-resort draft
+		// (like a readopt) — so a command frigate already holding contract cargo is
+		// authorized here rather than benched, matching readoptInterruptedDeliveries.
+		commandDraftAllowed := holder != "" || !hasRegularHaulerCandidate(generalShipEntities)
 
 		workerContainerID, err := h.spawnContractWorker(ctx, cmd, selectedShip, commandDraftAllowed)
 		if err != nil {
@@ -1595,6 +1625,52 @@ func (h *RunFleetCoordinatorHandler) idleReclaimedContractCargoHeld(ctx context.
 		total += ship.Cargo().GetItemUnits(tradeSymbol)
 	}
 	return total, nil
+}
+
+// idleContractCargoHolder names the IDLE (unassigned) hull best positioned to
+// COMPLETE the active contract's delivery from cargo it ALREADY holds: among idle
+// hulls carrying ONLY the contract good (a PURE holder — safe to claim without the
+// NO-CARGO-DUMP guard tripping), the one holding the MOST units, ties broken by the
+// lexicographically-smallest symbol so a restart deterministically re-picks the
+// SAME hull, never a second cargo-laden one. Returns "" when no pure holder exists.
+//
+// This is the SELECTION companion to idleReclaimedContractCargoHeld's dispatch-
+// signal COUNT: that surfaces the intent to complete the load with its holder; this
+// NAMES the holder so the coordinator actually SELECTS it, short-circuiting the
+// distance-based pick. It is needed because the candidate-discovery filters
+// (FindIdleLightHaulers / FindIdleShipsByFleet) drop an idle holder that is IN
+// TRANSIT, or UNDEDICATED while a dedicated contract fleet is active (EXCLUSIVE
+// MODE) — so such a holder is DETECTED yet never reaches SelectClosestShip's own
+// cargo-priority, and the closest empty hull sources a duplicate (the observed
+// TORWIND-15-holds-43 / TORWIND-8-double-sources gap). This scans the full fleet,
+// like its count sibling, so it sees the holder regardless of those filters.
+// Read-only; a load failure is returned so the caller logs and falls back to
+// distance selection (better a possible duplicate than a blocked contract).
+func (h *RunFleetCoordinatorHandler) idleContractCargoHolder(ctx context.Context, requiredCargo string, playerID int) (string, error) {
+	ships, err := h.shipRepo.FindAllByPlayer(ctx, shared.MustNewPlayerID(playerID))
+	if err != nil {
+		return "", fmt.Errorf("failed to load ships for idle-holder selection: %w", err)
+	}
+	bestSymbol := ""
+	bestUnits := 0
+	for _, ship := range ships {
+		if ship.IsAssigned() {
+			continue // on a worker/other container — completing on its own worker, not idle-dispatchable here
+		}
+		units := ship.Cargo().GetItemUnits(requiredCargo)
+		if units <= 0 {
+			continue // holds none of the contract good
+		}
+		if ship.Cargo().HasItemsOtherThan(requiredCargo) {
+			continue // impure holder — leave to the NO-CARGO-DUMP park/liquidate path, never force-claim
+		}
+		symbol := ship.ShipSymbol()
+		if units > bestUnits || (units == bestUnits && symbol < bestSymbol) {
+			bestSymbol = symbol
+			bestUnits = units
+		}
+	}
+	return bestSymbol, nil
 }
 
 // recordErrorLoopEvent emits the captain outbox event for a checkpoint's
