@@ -471,6 +471,27 @@ func (f *fakeGrower) GrowStocker(ctx context.Context, order DepotGrowOrder) erro
 	return nil
 }
 
+// fakeDepotReclaimer is the HOME-SCOPED reuse tier double (DepotHullReclaimer, sp-fihvy): it hands out a
+// symbol only when a home-reachable candidate is queued, and records every homeSystem a role's fill
+// queried it with — so a test can prove the SAME home-scoping notion sp-fihvy wired for the stocker is
+// now ALSO consulted for the warehouse (sp-fis8y), never a second reachability mechanism invented here.
+type fakeDepotReclaimer struct {
+	available []string
+	findErr   error
+	calls     []string // homeSystem of each FindReclaimableForHome call, in order
+}
+
+func (f *fakeDepotReclaimer) FindReclaimableForHome(ctx context.Context, playerID int, homeSystem string) (string, bool, error) {
+	f.calls = append(f.calls, homeSystem)
+	if f.findErr != nil {
+		return "", false, f.findErr
+	}
+	if len(f.available) == 0 {
+		return "", false, nil
+	}
+	return f.available[0], true, nil
+}
+
 // manyParkRoles builds an n-park era with strictly-descending demand (P00 highest), so the central hub
 // (the top-demand park, ranked[0]) is the deterministic P00 the warehouse/stocker anchor at.
 func manyParkRoles(n int) (contractscaler.EraRoles, map[string]float64) {
@@ -654,6 +675,40 @@ func TestReconcile_ReclaimsIdleHullForWarehouseSlotBeforeBuying(t *testing.T) {
 	}
 	if len(rec.reclaimed) != 0 {
 		t.Fatalf("reclaimer.Reclaim calls = %d, want 0 — a depot hull is GROWN (grower re-dedicates), never contract-homed", len(rec.reclaimed))
+	}
+}
+
+// HOME-SCOPED REUSE EXTENDS TO THE WAREHOUSE (sp-fis8y, generalizing sp-fihvy's stocker-only scoping):
+// once a DepotHullReclaimer is wired, the WAREHOUSE slot's reuse tier consults it too — NOT the
+// fleet-wide IdleHullReclaimer — even though the fleet-wide reclaimer has a hull queued. This is what
+// stops a stranded-but-idle-undedicated hull (e.g. the live TORWIND-19, evicted by
+// launchDepotWarehouse's new home-reachability precondition) from being re-offered to the warehouse
+// grow on the very next tick: the home-scoped reclaimer reports none available (it already excludes
+// non-home-reachable hulls), so the ramp correctly falls through to a buy instead of looping the same
+// unreachable hull back in.
+func TestReconcile_WarehouseSlotUsesHomeScopedReclaimerWhenWired(t *testing.T) {
+	// Ceiling 13 (plan size): the depot already has 4 of the 5-warehouse target (stocker already at
+	// its target of 1), so the one short warehouse slot lands here — same shape as the fleet-wide
+	// reuse test above.
+	h, pur, _, gr := newDepotHarness(13, 7, 7, 4, 1)
+	fleetWide := &fakeReclaimer{available: []string{"STRANDED-FLEET-WIDE"}}
+	homeScoped := &fakeDepotReclaimer{} // no home-reachable candidate available
+	h.SetIdleHullReclaimer(fleetWide)
+	h.SetDepotHullReclaimer(homeScoped)
+
+	bought := reconcile(t, h, 13)
+
+	if len(homeScoped.calls) != 1 || homeScoped.calls[0] != "P00" {
+		t.Fatalf("home-scoped reclaimer calls = %v, want exactly 1 call scoped to the central hub's home system P00", homeScoped.calls)
+	}
+	if fleetWide.findCalls != 0 {
+		t.Fatalf("fleet-wide reclaimer FindReclaimable calls = %d, want 0 — the warehouse role must consult the home-scoped tier exclusively once wired", fleetWide.findCalls)
+	}
+	if len(gr.warehouseGrows) != 1 || gr.warehouseGrows[0].ShipSymbol != "DEPOT-HULL" {
+		t.Fatalf("warehouse grows = %+v, want exactly 1 carrying the BOUGHT DEPOT-HULL — never the fleet-wide STRANDED-FLEET-WIDE hull once a home-scoped reclaimer is wired", gr.warehouseGrows)
+	}
+	if len(pur.hullOrders) != 1 || bought != 1 {
+		t.Fatalf("depot-hull buys = %d (bought %d), want 1 — no home-reachable reuse candidate, so the ramp falls through to a buy", len(pur.hullOrders), bought)
 	}
 }
 

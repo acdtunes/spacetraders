@@ -162,12 +162,12 @@ type IdleHullReclaimer interface {
 	Reclaim(ctx context.Context, order ReclaimOrder) error
 }
 
-// DepotHullReclaimer is the HOME-SCOPED reuse tier the depot STOCKER role's reuse-before-buy fill
-// consults (sp-fihvy, RULINGS #14): the stocker is an intra-system role — it sources pinned goods
-// from home markets — so its reclaim candidate must be gate-reachable to the warehouse's home
-// system, never any idle hull fleet-wide. Warehouse reuse is unaffected; it keeps the fleet-wide
-// IdleHullReclaimer. A nil DepotHullReclaimer (unset at boot) degrades the stocker reuse tier back
-// to the fleet-wide reclaimer, byte-identical to the pre-sp-fihvy ramp.
+// DepotHullReclaimer is the HOME-SCOPED reuse tier BOTH depot roles' reuse-before-buy fill consults
+// (sp-fihvy stocker, generalized to the warehouse by sp-fis8y, RULINGS #14): every depot element must
+// be gate-reachable to the depot's home system, so a reclaim candidate for either role must be
+// gate-reachable to the warehouse's home system too — never any idle hull fleet-wide. A nil
+// DepotHullReclaimer (unset at boot) degrades BOTH roles' reuse tier back to the fleet-wide
+// IdleHullReclaimer, byte-identical to the pre-sp-fihvy ramp.
 type DepotHullReclaimer interface {
 	// FindReclaimableForHome returns one reusable, home-reachable hull symbol (ok=false when none
 	// exists). A read error holds the reuse tier (fail-closed) and the caller falls through to a buy.
@@ -494,11 +494,13 @@ func (h *RunContractScalerHandler) fillDepotRoles(ctx context.Context, cmd *RunC
 // how many hulls it BOUGHT.
 func (h *RunContractScalerHandler) fillDepotRole(ctx context.Context, cmd *RunContractScalerCommand, role contractscaler.UnitRole, hub string, have, take int) int {
 	logger := common.LoggerFromContext(ctx)
-	// homeSystem scopes the STOCKER role's reuse + buy-fallback to the warehouse's home system
-	// (sp-fihvy, RULINGS #14). hub is always the warehouse's Target waypoint (planHub), so this is the
-	// depot's one true home system. Warehouse is unaffected by homeSystem — findReclaimableForDepot and
-	// depotHullPrice both branch on role and leave the Warehouse path on the pre-existing fleet-wide
-	// readers, byte-identical.
+	// homeSystem scopes both depot roles' REUSE tier to the warehouse's home system (sp-fihvy stocker,
+	// generalized to the warehouse by sp-fis8y, RULINGS #14). hub is always the warehouse's Target
+	// waypoint (planHub), so this is the depot's one true home system. The BUY-fallback PRICE stays
+	// role-split: depotHullPrice keeps the Warehouse path on the pre-existing fleet-wide price reader,
+	// byte-identical — a freshly bought warehouse hull is not proven stranded the way a reused idle hull
+	// can be, and the warehouse's own coordinator self-navigates cross-system to place it, so narrowing
+	// the buy-time yard search is left out of this fix's scope.
 	homeSystem := shared.ExtractSystemSymbol(hub)
 	bought := 0
 	for have < take {
@@ -565,13 +567,15 @@ func (h *RunContractScalerHandler) fillDepotRole(ctx context.Context, cmd *RunCo
 // free hull. Unlike the delivery reuse it does NOT dedicate the hull to "contract" — the grower's launch
 // re-dedicates it to the "warehouse"/"stocker" fleet.
 //
-// STOCKER is home-scoped (sp-fihvy, RULINGS #14): the stocker is an intra-system role, so its reuse tier
-// consults ONLY h.depotReclaimer.FindReclaimableForHome — a hull gate-reachable to homeSystem — never any
-// idle hull fleet-wide. Warehouse is unaffected: it keeps the pre-existing fleet-wide h.reclaimer,
-// byte-identical. A nil depotReclaimer or blank homeSystem falls back to the fleet-wide reclaimer too, so
-// the stocker path degrades to its historical (pre-fix) behavior until fully wired.
+// BOTH depot roles are home-scoped (sp-fihvy stocker, generalized to the warehouse by sp-fis8y, RULINGS
+// #14): every depot element must be in, or gate-reachable to, the depot's home system, so the reuse tier
+// consults ONLY h.depotReclaimer.FindReclaimableForHome — never any idle hull fleet-wide — for both roles
+// alike. This is what stops a stranded hull evicted by the daemon's depotElementHullViable precondition
+// (e.g. TORWIND-19) from being re-offered to the very next grow: the home-scoped reclaimer already
+// excludes it. A nil depotReclaimer or blank homeSystem falls back to the fleet-wide h.reclaimer, so
+// either role degrades to its historical (pre-fix) behavior until fully wired.
 func (h *RunContractScalerHandler) findReclaimableForDepot(ctx context.Context, cmd *RunContractScalerCommand, role contractscaler.UnitRole, homeSystem string) (string, bool) {
-	if role == contractscaler.Stocker && h.depotReclaimer != nil && homeSystem != "" {
+	if (role == contractscaler.Stocker || role == contractscaler.Warehouse) && h.depotReclaimer != nil && homeSystem != "" {
 		symbol, ok, err := h.depotReclaimer.FindReclaimableForHome(ctx, cmd.PlayerID, homeSystem)
 		if err != nil {
 			return "", false // scan error → fall through to a buy (fail-closed)

@@ -1220,10 +1220,11 @@ func (s *DaemonServer) SetStorageRecovery(svc *storageApp.StorageRecoveryService
 	s.storageRecovery = svc
 }
 
-// SetGateGraph injects the cross-system gate-graph reachability service the depot stocker hull
-// viability precondition consults (sp-fihvy). Wired from main.go AFTER gategraph.Service is
-// constructed (it does not exist when NewDaemonServer runs), mirroring SetStorageRecovery. A nil
-// service is tolerated — depotStockerHullViable fails open, byte-identical to pre-sp-fihvy.
+// SetGateGraph injects the cross-system gate-graph reachability service the depot element hull
+// viability precondition consults (sp-fihvy stocker; generalized to every role by sp-fis8y). Wired
+// from main.go AFTER gategraph.Service is constructed (it does not exist when NewDaemonServer
+// runs), mirroring SetStorageRecovery. A nil service is tolerated — depotElementHullViable fails
+// open, byte-identical to pre-sp-fihvy.
 func (s *DaemonServer) SetGateGraph(g depotHomeRouter) {
 	s.gateGraph = g
 }

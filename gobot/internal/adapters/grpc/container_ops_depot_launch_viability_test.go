@@ -39,7 +39,7 @@ func (f *fakeGateRouter) Routable(ctx context.Context, fromSystem, toSystem stri
 
 // depotLaunchShipRepo is a minimal ship-repo fake for the launchDepotStocker viability + positioning
 // seam: FindBySymbol serves a fixed hull, AssignFleet/ReleaseContainerClaim record + apply the two
-// writes evictStrandedStocker (and positionDepotElementHull's re-dedicate) can issue. Embedding
+// writes evictStrandedDepotElement (and positionDepotElementHull's re-dedicate) can issue. Embedding
 // navigation.ShipRepository would panic on any unimplemented method reached via the nil interface, so
 // every method this seam can reach is implemented directly rather than left to embed through.
 type depotLaunchShipRepo struct {

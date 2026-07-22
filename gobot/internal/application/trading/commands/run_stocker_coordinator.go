@@ -11,6 +11,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	gasCmd "github.com/andrescamacho/spacetraders-go/internal/application/gas/commands"
+	shipCargo "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
 	tradingsvc "github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contractscaler"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
@@ -1032,11 +1033,17 @@ func (h *RunStockerCoordinatorHandler) buy(
 
 // haulAndDeposit travels the hull home to the warehouse waypoint (multi-jump, jump-safe),
 // docks, and deposits every held good the warehouse supports via the Lane B protocol
-// (ReserveSpaceForDeposit → TransferCargo → ConfirmDeposit). A good the warehouse does
-// not support is left aboard (it will report stranded at the final exit). Returns the
-// total units deposited. source is the market the just-bought cargo came from, threaded onto
-// each emitted stock-IN event (sp-j6uz); it is "" on the resume path, where the aboard cargo
-// was bought in a prior run and its provenance is unknown.
+// (ReserveSpaceForDeposit → TransferCargo → ConfirmDeposit). Before depositing, any held
+// good NO co-located member supports at all is JETTISONED (sp-bvoc5) — cargo INHERITED
+// from a prior role (e.g. a hauler re-seated as this depot's stocker still carrying its old
+// FABRICS), which this warehouse group can structurally never accept, so leaving it aboard
+// would loop the resume-safe deposit-before-buy path forever. A SUPPORTED good that is
+// merely undepositable THIS PASS (every member transiently full) is never jettisoned — it
+// is left aboard exactly as before (it will report stranded at the final exit if that
+// persists). Returns the total units deposited (jettisoned units are not counted as
+// deposited). source is the market the just-bought cargo came from, threaded onto each
+// emitted stock-IN event (sp-j6uz); it is "" on the resume path, where the aboard cargo was
+// bought in a prior run and its provenance is unknown.
 func (h *RunStockerCoordinatorHandler) haulAndDeposit(
 	ctx context.Context,
 	cmd *RunStockerCoordinatorCommand,
@@ -1080,6 +1087,12 @@ func (h *RunStockerCoordinatorHandler) haulAndDeposit(
 	}
 	sort.Strings(goods)
 
+	// Clear any INHERITED non-depot cargo BEFORE attempting a deposit (sp-bvoc5): a good no
+	// co-located member supports can NEVER be selected by SelectDepositWarehouse below, so
+	// trying first would just re-log "held aboard" forever. Deleting the jettisoned good from
+	// heldByGood makes the deposit loop below skip it silently (remaining=0).
+	h.jettisonUnsupportedCargo(ctx, cmd, group, heldByGood)
+
 	total := 0
 	for _, good := range goods {
 		// Deposit the good into the co-located group, spilling from the newest member
@@ -1108,6 +1121,44 @@ func (h *RunStockerCoordinatorHandler) haulAndDeposit(
 		}
 	}
 	return total, nil
+}
+
+// jettisonUnsupportedCargo clears held cargo NO co-located warehouse member declares
+// support for (sp-bvoc5) — inherited non-depot goods left aboard by a prior role, never a
+// good this depot could ever accept. This is what stops the resume-safe deposit-before-buy
+// path from looping "held aboard" forever (the live TORWIND-10 incident: 36 FABRICS aboard
+// a hull re-seated as the X1-UM5 stocker). Uses AnySupportsGood — a PURE structural check,
+// never capacity — so a SUPPORTED good that is merely full everywhere right now is NEVER
+// jettisoned (RULINGS #6/#9: only non-supported inherited cargo is cleared, never a
+// supported depot good, never sold/jettisoned speculatively). A jettison failure is logged
+// and the good stays aboard for the next pass to retry, rather than aborting the round trip.
+func (h *RunStockerCoordinatorHandler) jettisonUnsupportedCargo(
+	ctx context.Context,
+	cmd *RunStockerCoordinatorCommand,
+	group []*storage.StorageOperation,
+	heldByGood map[string]int,
+) {
+	logger := common.LoggerFromContext(ctx)
+	for good, units := range heldByGood {
+		if units <= 0 || tradingsvc.AnySupportsGood(group, good) {
+			continue
+		}
+		if _, err := h.mediator.Send(ctx, &shipCargo.JettisonCargoCommand{
+			ShipSymbol: cmd.ShipSymbol,
+			PlayerID:   shared.MustNewPlayerID(cmd.PlayerID),
+			GoodSymbol: good,
+			Units:      units,
+		}); err != nil {
+			logger.Log("WARNING", fmt.Sprintf("Stocker: failed to jettison %d unsupported inherited %s aboard %s - left aboard, will retry next pass: %v", units, good, cmd.ShipSymbol, err), map[string]interface{}{
+				"ship_symbol": cmd.ShipSymbol, "warehouse_waypoint": cmd.WarehouseWaypoint, "good": good, "units": units, "error": err.Error(),
+			})
+			continue
+		}
+		delete(heldByGood, good) // cleared — the deposit loop below must skip it, not re-select it
+		logger.Log("INFO", fmt.Sprintf("Stocker: jettisoned %d %s - inherited from a prior role, not in this depot's supported goods (sp-bvoc5)", units, good), map[string]interface{}{
+			"ship_symbol": cmd.ShipSymbol, "warehouse_waypoint": cmd.WarehouseWaypoint, "good": good, "units": units,
+		})
+	}
 }
 
 // depositGood deposits units of good into the warehouse using the gas-proven protocol:

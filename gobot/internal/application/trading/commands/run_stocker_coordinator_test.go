@@ -38,6 +38,7 @@ type stkFixture struct {
 	buys      int
 	buyUnits  int
 	transfers int
+	jettisons int
 	navs      []string
 	// buyOpTypes records the normalized operation_type each buy leg dispatched under
 	// (read off the ctx's operation context at the PurchaseCargoCommand boundary, exactly
@@ -117,6 +118,14 @@ func (m *stkFakeMediator) Send(ctx context.Context, request common.Request) (com
 		m.fx.transfers++
 		m.fx.mu.Unlock()
 		return &gasCmd.TransferCargoResponse{UnitsTransferred: cmd.Units}, nil
+	case *shipCargo.JettisonCargoCommand:
+		// sp-bvoc5: inherited non-depot cargo the warehouse group cannot accept LEAVES the
+		// hull for good (never deposited, never re-appears).
+		m.fx.mu.Lock()
+		m.fx.cargo[cmd.GoodSymbol] -= cmd.Units
+		m.fx.jettisons++
+		m.fx.mu.Unlock()
+		return &shipCargo.JettisonCargoResponse{UnitsJettisoned: cmd.Units}, nil
 	default:
 		return nil, nil // dock, orbit, etc. succeed silently
 	}
@@ -972,6 +981,42 @@ func TestStocker_RestartResume_DepositsHeldCargoFirst(t *testing.T) {
 	}
 	if r.UnitsDeposited != 40 {
 		t.Fatalf("expected 40 deposited on the resume, got %d", r.UnitsDeposited)
+	}
+}
+
+// A restart resuming with cargo INHERITED FROM A PRIOR ROLE (sp-bvoc5) that this warehouse
+// group does not support (the live TORWIND-10 incident: 36 FABRICS aboard, re-seated as the
+// X1-UM5 depot stocker whose warehouse only buffers the fixed far-source goods) must NOT loop
+// "held aboard" forever — it is JETTISONED so the hull clears and the stocker proceeds to buy
+// its pinned supported good. A SUPPORTED good is never touched by this path (RULINGS #6/#9);
+// this test's warehouse supports only MEDICINE, never FABRICS, so a correct fix can ONLY be
+// clearing the FABRICS, never a fabricated deposit destination for it.
+func TestStocker_RestartResume_JettisonsUnsupportedInheritedCargoThenBuys(t *testing.T) {
+	fx := &stkFixture{cargo: map[string]int{"FABRICS": 36}, location: "X1-S1-H", cargoCap: 100,
+		ask: map[string]map[string]int{"X1-S1-M": {"MEDICINE": 100}}, marketAge: map[string]time.Duration{}}
+	coord, op := stkWireWarehouse(t, "wh", "X1-S1-H", 1000, []string{"MEDICINE"})
+	// A miner that WOULD offer a buy once the hull is clear of the inherited cargo.
+	miner := &stkFakeMiner{rows: []persistence.DemandCandidate{eligible("MEDICINE", "X1-S1-M", 100, 800, 40)}}
+	h := newStockerHandler(t, fx, coord, op, miner, &sfFakeAPIClient{credits: 5000000}, tradingsvc.DepositCandidateConfig{}, 1)
+
+	ctx := auth.WithPlayerToken(context.Background(), "TOK")
+	resp, err := h.Handle(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "STOCKER-5", PlayerID: 1, ContainerID: "ctr-5", WarehouseWaypoint: "X1-S1-H", Iterations: 1})
+	if err != nil {
+		t.Fatalf("stocker returned error: %v", err)
+	}
+	r := stkResponse(t, resp)
+
+	if fx.cargo["FABRICS"] != 0 {
+		t.Fatalf("the unsupported inherited FABRICS must be cleared from the hull, %d still aboard", fx.cargo["FABRICS"])
+	}
+	if fx.jettisons != 1 {
+		t.Fatalf("expected exactly 1 jettison of the unsupported inherited cargo, got %d", fx.jettisons)
+	}
+	if r.CargoStranded {
+		t.Fatalf("the unsupported cargo was jettisoned, not left aboard — must not strand: %s", r.CargoStrandedReason)
+	}
+	if got := coord.GetTotalCargoAvailable("wh", "MEDICINE"); got == 0 {
+		t.Fatalf("clearing the inherited cargo must let the stocker proceed to buy+deposit its pinned MEDICINE, warehouse holds 0")
 	}
 }
 

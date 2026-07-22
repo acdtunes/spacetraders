@@ -264,9 +264,10 @@ func NewContractScalerCoordinatorHandler(
 	// Reclaimer: the ZERO-SPEND reuse tier tried before every buy (RULINGS #7 — reclaim only an idle
 	// UNDEDICATED cargo-capable hull, never poach). Reuses the SAME ship repo the FleetCounter reads +
 	// the SAME mediator the purchaser homes through — no new daemon dependency. The SAME instance also
-	// serves the depot STOCKER's home-scoped reuse tier (sp-fihvy, RULINGS #14): FindReclaimableForHome
-	// additionally requires the candidate be in, or gate-reachable to, the depot's home system via
-	// gateGraph — the identical Routable notion the daemon's stocker-viability guard consults.
+	// serves BOTH depot roles' home-scoped reuse tier (sp-fihvy stocker; generalized to the warehouse
+	// by sp-fis8y, RULINGS #14): FindReclaimableForHome additionally requires the candidate be in, or
+	// gate-reachable to, the depot's home system via gateGraph — the identical Routable notion the
+	// daemon's depot-element-viability guard consults.
 	reclaimer := &contractScalerReclaimer{shipRepo: shipRepo, med: med, gateGraph: gateGraph}
 	h.SetIdleHullReclaimer(reclaimer)
 	h.SetDepotHullReclaimer(reclaimer)
@@ -652,14 +653,17 @@ func (r *contractScalerReclaimer) FindReclaimable(ctx context.Context, playerID 
 	return "", false, nil
 }
 
-// FindReclaimableForHome is the depot STOCKER's home-scoped reuse tier (sp-fihvy, RULINGS #14): the
-// FIRST reuse-eligible hull (the SAME isReclaimable guard — idle, not in transit, undedicated,
-// cargo-capable) that is ALSO in, or gate-reachable to, homeSystem — the exact reachability notion
-// depotStockerHullViable / foreignMarketReachable use (gateGraph.Routable), never a second one
-// invented here. Skipping a foreign-but-otherwise-idle candidate here is what stops GrowStocker from
-// ever being handed a hull it cannot place viably; the ramp falls through to the equally
-// home-scoped buy tier instead. A read error fails closed (falls through to a buy) exactly like
-// FindReclaimable.
+// FindReclaimableForHome is the depot element's home-scoped reuse tier (sp-fihvy stocker;
+// generalized to the warehouse role by sp-fis8y, RULINGS #14): the FIRST reuse-eligible hull (the
+// SAME isReclaimable guard — idle, not in transit, undedicated, cargo-capable) that is ALSO in, or
+// gate-reachable to, homeSystem — the exact reachability notion depotElementHullViable /
+// foreignMarketReachable use (gateGraph.Routable), never a second one invented here. Skipping a
+// foreign-but-otherwise-idle candidate here is what stops GrowStocker/GrowWarehouse from ever being
+// handed a hull it cannot place viably (e.g. TORWIND-19, stranded at X1-ZK26 with no gate route
+// home); the ramp falls through to the equally home-scoped buy tier instead. Role-agnostic by
+// signature — it takes a homeSystem, not a role — so no reclaimer-level change was needed to extend
+// it to the warehouse; only findReclaimableForDepot's routing (run_contract_scaler.go) picks it for
+// both roles now. A read error fails closed (falls through to a buy) exactly like FindReclaimable.
 func (r *contractScalerReclaimer) FindReclaimableForHome(ctx context.Context, playerID int, homeSystem string) (string, bool, error) {
 	pid, err := shared.NewPlayerID(playerID)
 	if err != nil {

@@ -547,12 +547,15 @@ func TestFindReclaimable_FleetReadErrorFailsClosed(t *testing.T) {
 	}
 }
 
-// FindReclaimableForHome is the depot STOCKER's home-scoped reuse tier (sp-fihvy, RULINGS #14): it
-// selects only a reuse-eligible hull that is ALSO home-reachable (in, or gate-reachable to, the
-// warehouse's home system) — skipping a foreign, gate-unreachable candidate in favor of a reachable
-// one, and returning ok=false (never seating an unreachable hull) when none qualifies — so GrowStocker
-// is never handed a hull it cannot place viably (the live TORWIND-19/X1-ZK26 stranding this fix
-// prevents at grow time, mirroring the recovery-time guard in container_ops_depot_launch.go).
+// FindReclaimableForHome is the depot's home-scoped reuse tier, shared by BOTH depot roles (sp-fihvy
+// stocker, generalized to the warehouse by sp-fis8y, RULINGS #14): it selects only a reuse-eligible
+// hull that is ALSO home-reachable (in, or gate-reachable to, the warehouse's home system) — skipping
+// a foreign, gate-unreachable candidate in favor of a reachable one, and returning ok=false (never
+// seating an unreachable hull) when none qualifies — so GrowStocker/GrowWarehouse is never handed a
+// hull it cannot place viably (the live TORWIND-19/X1-ZK26 stranding this fix prevents at grow time,
+// mirroring the recovery-time guard in container_ops_depot_launch.go). Role-agnostic by signature — it
+// takes a homeSystem, not a role — so this adapter needed no code change to extend to the warehouse;
+// only the caller's routing (run_contract_scaler.go findReclaimableForDepot) picks it for both roles.
 func TestFindReclaimableForHome_SelectsOnlyHomeReachableHulls(t *testing.T) {
 	cases := []struct {
 		name       string
