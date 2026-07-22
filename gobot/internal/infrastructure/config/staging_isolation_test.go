@@ -13,12 +13,11 @@ import (
 // against these documented literals rather than by loading the untracked prod file
 // (which is absent in CI / a fresh checkout).
 const (
-	prodDaemonSocket  = "/tmp/spacetraders-daemon.sock"
-	prodDaemonPID     = "/tmp/spacetraders-daemon.pid"
-	prodDaemonAddress = "localhost:50052"
-	prodRoutingAddr   = "localhost:50051"
-	prodMetricsPort   = 9090
-	prodDatabaseName  = "spacetraders"
+	prodDaemonSocket = "/tmp/spacetraders-daemon.sock"
+	prodDaemonPID    = "/tmp/spacetraders-daemon.pid"
+	prodRoutingAddr  = "localhost:50051"
+	prodMetricsPort  = 9090
+	prodDatabaseName = "spacetraders"
 )
 
 // loadStagingConfig loads the committed staging config from the gobot root
@@ -56,7 +55,6 @@ func TestStagingIsolatedFromProd(t *testing.T) {
 	t.Logf("  database.url  : %-30s | %s", "<local config.yaml>/spacetraders", stg.Database.URL)
 	t.Logf("  daemon.socket : %-30s | %s", prodDaemonSocket, stg.Daemon.SocketPath)
 	t.Logf("  daemon.pid    : %-30s | %s", prodDaemonPID, stg.Daemon.PIDFile)
-	t.Logf("  daemon.address: %-30s | %s", prodDaemonAddress, stg.Daemon.Address)
 	t.Logf("  routing.addr  : %-30s | %s", prodRoutingAddr, stg.Routing.Address)
 	t.Logf("  metrics.port  : %-30d | %d", prodMetricsPort, stg.Metrics.Port)
 
@@ -66,7 +64,6 @@ func TestStagingIsolatedFromProd(t *testing.T) {
 	}{
 		{"daemon.socket_path", prodDaemonSocket, stg.Daemon.SocketPath},
 		{"daemon.pid_file", prodDaemonPID, stg.Daemon.PIDFile},
-		{"daemon.address", prodDaemonAddress, stg.Daemon.Address},
 		{"routing.address", prodRoutingAddr, stg.Routing.Address},
 		{"database.name", prodDatabaseName, stg.Database.Name},
 	}

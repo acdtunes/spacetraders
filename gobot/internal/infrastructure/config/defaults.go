@@ -6,10 +6,8 @@ import "time"
 // one focused helper per config section (each fills only the fields left unset).
 func SetDefaults(cfg *Config) {
 	setDatabaseDefaults(cfg)
-	setAPIDefaults(cfg)
 	setRoutingDefaults(cfg)
 	setDaemonDefaults(cfg)
-	setLoggingDefaults(cfg)
 	setMetricsDefaults(cfg)
 	setCaptainDefaults(cfg)
 	setTradeFleetDefaults(cfg)
@@ -47,50 +45,12 @@ func setDatabaseDefaults(cfg *Config) {
 	}
 }
 
-// setAPIDefaults fills unset API base URL, timeout, rate-limit, and retry fields.
-func setAPIDefaults(cfg *Config) {
-	// API defaults
-	if cfg.API.BaseURL == "" {
-		cfg.API.BaseURL = "https://api.spacetraders.io/v2"
-	}
-	if cfg.API.Timeout == 0 {
-		cfg.API.Timeout = 30 * time.Second
-	}
-	if cfg.API.RateLimit.Requests == 0 {
-		cfg.API.RateLimit.Requests = 2
-	}
-	if cfg.API.RateLimit.Burst == 0 {
-		// Mirror the limiter's real burst (api.RateLimitBurst = 30). This value
-		// is display-only today (surfaced in `config show`, not plumbed to the
-		// client).
-		cfg.API.RateLimit.Burst = 30
-	}
-	if cfg.API.Retry.MaxAttempts == 0 {
-		cfg.API.Retry.MaxAttempts = 3
-	}
-	if cfg.API.Retry.BackoffBase == 0 {
-		cfg.API.Retry.BackoffBase = 1 * time.Second
-	}
-}
-
-// setRoutingDefaults fills unset routing address, solver timeouts, gate-backoff,
+// setRoutingDefaults fills unset routing address, gate-backoff,
 // and gate charting/cache fields.
 func setRoutingDefaults(cfg *Config) {
 	// Routing defaults
 	if cfg.Routing.Address == "" {
 		cfg.Routing.Address = "localhost:50051"
-	}
-	if cfg.Routing.Timeout.Connect == 0 {
-		cfg.Routing.Timeout.Connect = 10 * time.Second
-	}
-	if cfg.Routing.Timeout.Dijkstra == 0 {
-		cfg.Routing.Timeout.Dijkstra = 30 * time.Second
-	}
-	if cfg.Routing.Timeout.TSP == 0 {
-		cfg.Routing.Timeout.TSP = 60 * time.Second
-	}
-	if cfg.Routing.Timeout.VRP == 0 {
-		cfg.Routing.Timeout.VRP = 120 * time.Second
 	}
 	// Gate-graph negative-result backoff (sp-ikx1). Defaults yield the ruled
 	// 5m → 30m → 2h re-probe schedule for an unreadable jump gate (5m, 5m×6=30m,
@@ -130,58 +90,14 @@ func setRoutingDefaults(cfg *Config) {
 	}
 }
 
-// setDaemonDefaults fills unset daemon address, socket/pid, and restart-policy fields.
+// setDaemonDefaults fills unset daemon socket/pid fields.
 func setDaemonDefaults(cfg *Config) {
 	// Daemon defaults
-	if cfg.Daemon.Address == "" {
-		cfg.Daemon.Address = "localhost:50052"
-	}
 	if cfg.Daemon.SocketPath == "" {
 		cfg.Daemon.SocketPath = "/tmp/spacetraders-daemon.sock"
 	}
 	if cfg.Daemon.PIDFile == "" {
 		cfg.Daemon.PIDFile = "/tmp/spacetraders-daemon.pid"
-	}
-	if cfg.Daemon.MaxContainers == 0 {
-		cfg.Daemon.MaxContainers = 100
-	}
-	if cfg.Daemon.HealthCheckInterval == 0 {
-		cfg.Daemon.HealthCheckInterval = 30 * time.Second
-	}
-	if cfg.Daemon.ShutdownTimeout == 0 {
-		cfg.Daemon.ShutdownTimeout = 30 * time.Second
-	}
-	if cfg.Daemon.RestartPolicy.MaxAttempts == 0 {
-		cfg.Daemon.RestartPolicy.MaxAttempts = 3
-	}
-	if cfg.Daemon.RestartPolicy.Delay == 0 {
-		cfg.Daemon.RestartPolicy.Delay = 5 * time.Second
-	}
-	if cfg.Daemon.RestartPolicy.BackoffMultiplier == 0 {
-		cfg.Daemon.RestartPolicy.BackoffMultiplier = 2.0
-	}
-}
-
-// setLoggingDefaults fills unset logging level/format/output and rotation fields.
-func setLoggingDefaults(cfg *Config) {
-	// Logging defaults
-	if cfg.Logging.Level == "" {
-		cfg.Logging.Level = "info"
-	}
-	if cfg.Logging.Format == "" {
-		cfg.Logging.Format = "json"
-	}
-	if cfg.Logging.Output == "" {
-		cfg.Logging.Output = "stdout"
-	}
-	if cfg.Logging.Rotation.MaxSize == 0 {
-		cfg.Logging.Rotation.MaxSize = 100 // MB
-	}
-	if cfg.Logging.Rotation.MaxBackups == 0 {
-		cfg.Logging.Rotation.MaxBackups = 3
-	}
-	if cfg.Logging.Rotation.MaxAge == 0 {
-		cfg.Logging.Rotation.MaxAge = 28 // days
 	}
 }
 
@@ -200,8 +116,8 @@ func setMetricsDefaults(cfg *Config) {
 	}
 }
 
-// setCaptainDefaults fills unset captain/watchkeeper cadence, session, wake, and
-// self-improvement fields.
+// setCaptainDefaults fills unset captain/watchkeeper cadence, session, and wake
+// fields.
 func setCaptainDefaults(cfg *Config) {
 	// Captain defaults
 	if cfg.Captain.PollIntervalSeconds == 0 {
@@ -231,14 +147,8 @@ func setCaptainDefaults(cfg *Config) {
 	if cfg.Captain.PinnedHullContainerlessMinutes == 0 {
 		cfg.Captain.PinnedHullContainerlessMinutes = 5
 	}
-	if cfg.Captain.ClaudeBin == "" {
-		cfg.Captain.ClaudeBin = "claude"
-	}
 	if cfg.Captain.Model == "" {
 		cfg.Captain.Model = "opus"
-	}
-	if cfg.Captain.FixModel == "" {
-		cfg.Captain.FixModel = cfg.Captain.Model
 	}
 	if cfg.Captain.WorkspaceDir == "" {
 		cfg.Captain.WorkspaceDir = "../captain"
@@ -246,23 +156,8 @@ func setCaptainDefaults(cfg *Config) {
 	if len(cfg.Captain.CreditsThresholds) == 0 {
 		cfg.Captain.CreditsThresholds = []int{100000, 250000, 500000, 1000000}
 	}
-	if cfg.Captain.MaxFixesPerDay == 0 {
-		cfg.Captain.MaxFixesPerDay = 3
-	}
-	if cfg.Captain.MaxFeaturesPerDay == 0 {
-		cfg.Captain.MaxFeaturesPerDay = 1
-	}
-	if cfg.Captain.FixSessionTimeoutMinutes == 0 {
-		cfg.Captain.FixSessionTimeoutMinutes = 30
-	}
-	if cfg.Captain.MaxFeatureDiffLines == 0 {
-		cfg.Captain.MaxFeatureDiffLines = 400
-	}
 	if cfg.Captain.RepoDir == "" {
 		cfg.Captain.RepoDir = "."
-	}
-	if cfg.Captain.RestartCmd == "" {
-		cfg.Captain.RestartCmd = "make restart-daemon"
 	}
 	if cfg.Captain.EngineMode == "" {
 		cfg.Captain.EngineMode = "legacy"

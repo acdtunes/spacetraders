@@ -98,28 +98,11 @@ Example:
 			}
 			fmt.Printf("  Max Connections:  %d\n", cfg.Database.Pool.MaxOpen)
 
-			fmt.Println("\nSpaceTraders API:")
-			fmt.Printf("  Base URL:         %s\n", cfg.API.BaseURL)
-			fmt.Printf("  Timeout:          %s\n", cfg.API.Timeout)
-			fmt.Printf("  Rate Limit:       %d req/s (burst: %d)\n",
-				cfg.API.RateLimit.Requests, cfg.API.RateLimit.Burst)
-			fmt.Printf("  Max Retries:      %d\n", cfg.API.Retry.MaxAttempts)
-
 			fmt.Println("\nRouting Service:")
 			fmt.Printf("  Address:          %s\n", cfg.Routing.Address)
-			fmt.Printf("  TSP Timeout:      %s\n", cfg.Routing.Timeout.TSP)
-			fmt.Printf("  VRP Timeout:      %s\n", cfg.Routing.Timeout.VRP)
 
 			fmt.Println("\nDaemon:")
-			fmt.Printf("  Address:          %s\n", cfg.Daemon.Address)
 			fmt.Printf("  Socket Path:      %s\n", cfg.Daemon.SocketPath)
-			fmt.Printf("  Max Containers:   %d\n", cfg.Daemon.MaxContainers)
-			fmt.Printf("  Health Interval:  %s\n", cfg.Daemon.HealthCheckInterval)
-
-			fmt.Println("\nLogging:")
-			fmt.Printf("  Level:            %s\n", cfg.Logging.Level)
-			fmt.Printf("  Format:           %s\n", cfg.Logging.Format)
-			fmt.Printf("  Output:           %s\n", cfg.Logging.Output)
 
 			return nil
 		},

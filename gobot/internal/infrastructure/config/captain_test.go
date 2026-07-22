@@ -41,17 +41,10 @@ func TestCaptainDefaults(t *testing.T) {
 	require.Equal(t, 10, cfg.Captain.SessionTimeoutMinutes)
 	require.Equal(t, 30, cfg.Captain.ShipIdleMinutes)
 	require.Equal(t, 5, cfg.Captain.StaleHeartbeatMinutes)
-	require.Equal(t, "claude", cfg.Captain.ClaudeBin)
 	require.Equal(t, "opus", cfg.Captain.Model)
 	require.Equal(t, "../captain", cfg.Captain.WorkspaceDir)
 	require.Equal(t, []int{100000, 250000, 500000, 1000000}, cfg.Captain.CreditsThresholds)
-	require.False(t, cfg.Captain.AutoMerge)
-	require.Equal(t, 3, cfg.Captain.MaxFixesPerDay)
-	require.Equal(t, 1, cfg.Captain.MaxFeaturesPerDay)
-	require.Equal(t, 30, cfg.Captain.FixSessionTimeoutMinutes)
-	require.Equal(t, 400, cfg.Captain.MaxFeatureDiffLines)
 	require.Equal(t, ".", cfg.Captain.RepoDir)
-	require.Equal(t, "make restart-daemon", cfg.Captain.RestartCmd)
 }
 
 func TestCaptainBridgeDefaults(t *testing.T) {
