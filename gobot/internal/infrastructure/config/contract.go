@@ -7,10 +7,9 @@ package config
 // including the money-guard blacklist — by editing config.yaml and restarting
 // the daemon (recovery-safe, RULINGS #2), with NO code redeploy.
 type ContractConfig struct {
-	IdleArb           IdleArbSettings           `mapstructure:"idle_arb"`
-	PrePositioning    PrePositioningSettings    `mapstructure:"pre_positioning"`
-	SourcePreposition SourcePrepositionSettings `mapstructure:"source_preposition"`
-	AutoLiquidation   AutoLiquidationSettings   `mapstructure:"auto_liquidation"`
+	IdleArb         IdleArbSettings         `mapstructure:"idle_arb"`
+	PrePositioning  PrePositioningSettings  `mapstructure:"pre_positioning"`
+	AutoLiquidation AutoLiquidationSettings `mapstructure:"auto_liquidation"`
 	// MinHomeContractWorkers is the contract-worker RESERVE FLOOR (bead sp-mzdk): the number of
 	// undedicated HOME general haulers the depot topology must NEVER convert to depot-delivery pins,
 	// so an UNBUFFERED-good contract always has a general sourcing worker to fly out and buy it. It
@@ -18,28 +17,6 @@ type ContractConfig struct {
 	// (MinHomeContractWorkersDefault = 6). Live-tunable without restart via `tune --operation
 	// contract --key min_home_contract_workers`.
 	MinHomeContractWorkers int `mapstructure:"min_home_contract_workers"`
-}
-
-// SourcePrepositionSettings are the yaml-tunable knobs for contract source
-// pre-positioning (sp-1ef0): during a delivery leg, an idle hull is nudged toward the
-// market that near-certainly sources the contract's next same-good delivery, so it is
-// closer when that delivery starts. The signal is restricted to same-contract /
-// same-good / multi-delivery-remaining; the source market is resolved from live scanned
-// availability (not persisted purchase-history tracking).
-//
-// Distinct from PrePositioningSettings above, which is the sp-dchv haul-to-storage
-// warehouse-deposit feature — different mechanism, different knobs.
-type SourcePrepositionSettings struct {
-	// Disabled turns source pre-positioning OFF (default: ON — live by default, RULINGS
-	// #5). Pre-positioning only ever biases an ALREADY-rebalancing idle hull toward a
-	// near-certain next source, so it is on by default; an absent key reads as enabled so
-	// the default-ON intent survives a recovery from a config predating the key.
-	Disabled bool `mapstructure:"disabled"`
-	// ConfidenceThreshold is the same-good-remaining signal confidence a prediction must
-	// clear to move an idle hull (bounds wasted-move risk). <=0 => the package default
-	// (0.8), which admits the near-certain single-good case and rejects the ambiguous
-	// multi-good case.
-	ConfidenceThreshold float64 `mapstructure:"confidence_threshold"`
 }
 
 // AutoLiquidationSettings are the yaml-tunable knobs for the contract coordinator's

@@ -204,28 +204,6 @@ type RunFleetCoordinatorResponse struct {
 }
 
 // ============================================================================
-// Fleet Rebalancing
-// ============================================================================
-
-// RebalanceContractFleetCommand requests rebalancing of ships across markets.
-type RebalanceContractFleetCommand struct {
-	CoordinatorID string
-	PlayerID      shared.PlayerID
-	SystemSymbol  string
-}
-
-// RebalanceContractFleetResponse contains rebalancing results.
-type RebalanceContractFleetResponse struct {
-	ShipsMoved         int
-	TargetMarkets      []string
-	AverageDistance    float64
-	DistanceThreshold  float64
-	RebalancingSkipped bool
-	SkipReason         string
-	Assignments        map[string]string // ship symbol -> market waypoint
-}
-
-// ============================================================================
 // Ship Balancing
 // ============================================================================
 

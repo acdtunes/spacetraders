@@ -25,6 +25,12 @@ type ContainerRepository interface {
 	Remove(ctx context.Context, containerID string, playerID int) error
 }
 
+// MarketRepository defines the interface for in-system market discovery used by
+// ship-position balancing.
+type MarketRepository interface {
+	FindAllMarketsInSystem(ctx context.Context, systemSymbol string, playerID int) ([]string, error)
+}
+
 // BalanceShipPositionHandler implements ship position balancing logic.
 //
 // This handler repositions a ship to optimize the overall fleet distribution
