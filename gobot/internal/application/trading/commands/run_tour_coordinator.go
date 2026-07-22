@@ -1044,6 +1044,17 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 			if rerr != nil {
 				return rerr
 			}
+			if !repositioned {
+				// sp-2v69u: fresh arb found nothing worth the jump. A LADEN hull is not
+				// actually stuck — it may still be worth jumping toward the best reachable
+				// sink for the cargo it is already holding (margin-exempt cash recovery).
+				// Fallback only: never engages while maybeReposition itself finds a plan.
+				offloaded, oerr := h.maybeOffloadHeldCargo(ctx, cmd, response, &episode)
+				if oerr != nil {
+					return oerr
+				}
+				repositioned = offloaded
+			}
 			if repositioned {
 				noProgressStreak = 0
 				continue
