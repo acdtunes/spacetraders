@@ -31,20 +31,6 @@ type RunConstructionCoordinatorCommand struct {
 	// for every gate material, marking the run a gate node so lane B's per-node gates go
 	// margin-blind (ON). Fed from ManufacturingConfig.UnifiedGateFill.
 	UnifiedGateFill bool
-	// FabricationEfficiency enables balanced-to-limiting input feeding with
-	// saturation-capped tranches, taproot-first ordering, and buy-or-skip for
-	// non-responsive goods. OFF (default) keeps greedy byte-identical feeding. Fed from
-	// fabrication_efficiency.
-	FabricationEfficiency bool
-	// FeedSaturationMaxUnits / FeedSaturationMinUnits / FeedNonResponsiveGoods are the
-	// feeding knobs: saturation-window bounds (0/absent -> 200/25) and the non-responsive
-	// OUTPUT-good set that is BUY-OR-SKIPed (nil/empty -> {EQUIPMENT,LAB_INSTRUMENTS,
-	// FOOD,MEDICINE}). Fed from feed_saturation_max_units / feed_saturation_min_units /
-	// feed_non_responsive_goods.
-	FeedSaturationMaxUnits int
-	FeedSaturationMinUnits int
-	FeedNonResponsiveGoods []string
-
 	// SupplyTaskTimeoutSeconds bounds a single supplyTask (claim->source->route-with-refuel
 	// ->supply->record) before the drain abandons it and retries next tick. 0/absent uses
 	// the coordinator's 30m default — must cover a legit multi-hop light-hauler round trip,

@@ -1,7 +1,6 @@
 package services
 
 import (
-	"context"
 	"testing"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
@@ -15,13 +14,10 @@ import (
 // everything above it; and EQUIPMENT/LAB_INSTRUMENTS/FOOD/MEDICINE do not respond to feeding.
 
 // isFeedResponsive keys on the node's OUTPUT good: the analyst-verified non-responsive set is
-// buy-or-skipped (feeding wastes hull-hours), everything else is fed. The default set is applied
-// when the policy is stamped with no explicit override.
+// buy-or-skipped (feeding wastes hull-hours), everything else is fed. The default set is the sole
+// set (sp-sxyx6 removed the per-run override).
 func TestFeedingPolicy_IsFeedResponsive_DefaultSet(t *testing.T) {
-	cfg, engaged := feedingPolicyEngaged(WithFeedingPolicy(context.Background(), 0, 0, nil, false))
-	if !engaged {
-		t.Fatalf("a stamped, non-disabled policy must be engaged")
-	}
+	cfg := defaultFeedingPolicy()
 	cases := []struct {
 		good string
 		want bool
@@ -42,34 +38,11 @@ func TestFeedingPolicy_IsFeedResponsive_DefaultSet(t *testing.T) {
 	}
 }
 
-// The non-responsive set is a config knob (RULINGS #5): a custom override replaces the default so
-// the analyst can retune which goods are worth feeding live.
-func TestFeedingPolicy_IsFeedResponsive_CustomSetOverridesDefault(t *testing.T) {
-	cfg, _ := feedingPolicyEngaged(WithFeedingPolicy(context.Background(), 0, 0, []string{"FUEL"}, false))
-	if cfg.isFeedResponsive("FUEL") {
-		t.Errorf("a custom non-responsive set must mark FUEL buy-or-skip")
-	}
-	if !cfg.isFeedResponsive("EQUIPMENT") {
-		t.Errorf("a custom set REPLACES the default: EQUIPMENT is no longer non-responsive when not listed")
-	}
-}
-
-// A disabled policy (RULINGS #5 escape hatch) is not engaged — the executor reverts to the greedy
-// byte-identical path.
-func TestFeedingPolicy_DisabledIsNotEngaged(t *testing.T) {
-	if _, engaged := feedingPolicyEngaged(WithFeedingPolicy(context.Background(), 0, 0, nil, true)); engaged {
-		t.Fatalf("a disabled policy must not engage")
-	}
-	if _, engaged := feedingPolicyEngaged(context.Background()); engaged {
-		t.Fatalf("an unstamped context must not engage the policy (OFF = byte-identical)")
-	}
-}
-
 // balancedTranche is the ~4x lever (#2) fused with the saturation cap (#3): the per-input delivery
 // this window is sized to the LIMITING (scarcest) input's sourceable flow, clamped into the
 // saturation window [min,max]. Piling onto the ample input past the limiting flow is wasted.
 func TestFeedingPolicy_BalancedTranche(t *testing.T) {
-	cfg, _ := feedingPolicyEngaged(WithFeedingPolicy(context.Background(), 200, 25, nil, false))
+	cfg := defaultFeedingPolicy()
 	n := func() *goods.SupplyChainNode { return goods.NewSupplyChainNode("X", goods.AcquisitionBuy) }
 	cases := []struct {
 		name   string

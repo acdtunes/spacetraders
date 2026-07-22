@@ -19,11 +19,10 @@ import (
 )
 
 // sp-to2v — fabrication efficiency, driven through the real fabricateGood/ProduceGood path. These
-// pin the executor's OBSERVABLE feeding behavior when the policy is engaged: the ample input is
-// pulled down to the scarce (limiting) input's flow rather than greedily piled on (#2), each
-// delivery is saturation-capped (#3), the scarcest input is fed FIRST (#4a), a non-responsive
-// output is BUY-OR-SKIPed instead of fed (#4b), and — with the policy OFF — feeding is byte-identical
-// to today's greedy single-trade-volume tranche.
+// pin the executor's OBSERVABLE feeding behavior (now the sole feeding path, sp-sxyx6): the ample
+// input is pulled down to the scarce (limiting) input's flow rather than greedily piled on (#2), each
+// delivery is saturation-capped (#3), the scarcest input is fed FIRST (#4a), and a non-responsive
+// output is BUY-OR-SKIPed instead of fed (#4b).
 
 const (
 	fpFactoryWP = "X1-FP-FAB"
@@ -187,14 +186,12 @@ func balancedFeedingRepo() *feedingMarketRepo {
 	}
 }
 
-func feedingCtx(policy bool) context.Context {
-	ctx := shared.WithConstructionSupply(common.WithLogger(context.Background(), &dwellCapturingLogger{}))
-	if policy {
-		// saturation window [5,200] so the balanced tranche (=limiter 40) passes through un-clamped and
-		// the ample input is visibly pulled from its full trade volume down to the limiter's flow.
-		ctx = WithFeedingPolicy(ctx, 200, 5, nil, false)
-	}
-	return ctx
+func feedingCtx() context.Context {
+	// Feeding is unconditional (sp-sxyx6): the executor runs the default balanced policy, so the ctx
+	// carries only the construction-supply marker + logger. The default saturation window [25,200]
+	// leaves the balanced tranche (=limiter 40) un-clamped, so the ample input is visibly pulled from
+	// its full trade volume down to the limiter's flow.
+	return shared.WithConstructionSupply(common.WithLogger(context.Background(), &dwellCapturingLogger{}))
 }
 
 // #2 (the ~4x lever): with the policy engaged, the ample COPPER input is fed the SAME balanced
@@ -204,7 +201,7 @@ func feedingCtx(policy bool) context.Context {
 func TestFeeding_BalancedToLimiting_CapsAmpleInput(t *testing.T) {
 	executor, mediator := newFeedingExecutor(t, balancedFeedingRepo())
 
-	_, err := executor.ProduceGood(feedingCtx(true), balancedFeedingRepo0Ship(), twoInputChain("ELECTRONICS"), fpSystem, 1, nil, false)
+	_, err := executor.ProduceGood(feedingCtx(), balancedFeedingRepo0Ship(), twoInputChain("ELECTRONICS"), fpSystem, 1, nil, false)
 	if err != nil {
 		t.Fatalf("balanced feeding must not error: %v", err)
 	}
@@ -216,26 +213,12 @@ func TestFeeding_BalancedToLimiting_CapsAmpleInput(t *testing.T) {
 	}
 }
 
-// Regression / OFF path: with NO policy stamped, feeding is byte-identical to today — the ample
-// COPPER input is bought at its full trade volume (100), the greedy behavior the policy improves on.
-func TestFeeding_PolicyOff_GreedyByteIdentical(t *testing.T) {
-	executor, mediator := newFeedingExecutor(t, balancedFeedingRepo())
-
-	_, err := executor.ProduceGood(feedingCtx(false), balancedFeedingRepo0Ship(), twoInputChain("ELECTRONICS"), fpSystem, 1, nil, false)
-	if err != nil {
-		t.Fatalf("greedy feeding must not error: %v", err)
-	}
-	if got := mediator.unitsFor(fpAmple); got != 100 {
-		t.Fatalf("with the policy OFF the ample input must keep the greedy full-trade-volume buy (100), got %d", got)
-	}
-}
-
-// #4a (taproot-first): the scarcer SILICON input gates everything above it, so with the policy
-// engaged it is fed BEFORE the ample COPPER input.
+// #4a (taproot-first): the scarcer SILICON input gates everything above it, so it is fed BEFORE the
+// ample COPPER input.
 func TestFeeding_TaprootFirst_ScarcestInputFedFirst(t *testing.T) {
 	executor, mediator := newFeedingExecutor(t, balancedFeedingRepo())
 
-	_, err := executor.ProduceGood(feedingCtx(true), balancedFeedingRepo0Ship(), twoInputChain("ELECTRONICS"), fpSystem, 1, nil, false)
+	_, err := executor.ProduceGood(feedingCtx(), balancedFeedingRepo0Ship(), twoInputChain("ELECTRONICS"), fpSystem, 1, nil, false)
 	if err != nil {
 		t.Fatalf("taproot-first feeding must not error: %v", err)
 	}
@@ -245,35 +228,9 @@ func TestFeeding_TaprootFirst_ScarcestInputFedFirst(t *testing.T) {
 	}
 }
 
-// #3 (saturation cap): with BOTH inputs ample but a small saturation window (max 30), each per-input
-// delivery is capped at the saturation ceiling (30) — Δactivity rolls off past saturation, so a hull
-// never dumps a node past it.
-func TestFeeding_SaturationCap_CapsBothAmpleInputs(t *testing.T) {
-	repo := &feedingMarketRepo{
-		outputGood: "ELECTRONICS", factoryWP: fpFactoryWP, outputSupply: "MODERATE", fabAsk: 50,
-		inputs: []feedInputSpec{
-			{good: fpScarce, waypoint: fpScarceWP, supply: "ABUNDANT", tradeVolume: 100, ask: 10}, // avail 80
-			{good: fpAmple, waypoint: fpAmpleWP, supply: "ABUNDANT", tradeVolume: 100, ask: 10},   // avail 80
-		},
-	}
-	executor, mediator := newFeedingExecutor(t, repo)
-	ctx := WithFeedingPolicy(shared.WithConstructionSupply(common.WithLogger(context.Background(), &dwellCapturingLogger{})), 30, 5, nil, false)
-
-	_, err := executor.ProduceGood(ctx, balancedFeedingRepo0Ship(), twoInputChain("ELECTRONICS"), fpSystem, 1, nil, false)
-	if err != nil {
-		t.Fatalf("saturation-capped feeding must not error: %v", err)
-	}
-	if got := mediator.unitsFor(fpAmple); got != 30 {
-		t.Fatalf("an ample input must be capped at the saturation ceiling (30), got %d", got)
-	}
-	if got := mediator.unitsFor(fpScarce); got != 30 {
-		t.Fatalf("both ample inputs saturation-cap at 30, got %d for the second", got)
-	}
-}
-
 // #4b (feed-responsive only): a NON-responsive output (EQUIPMENT) does not respond to feeding, so
-// with the policy engaged the executor BUYS-OR-SKIPs it — it does NOT haul inputs to feed the
-// factory (zero input purchases, a zero-spend result).
+// the executor BUYS-OR-SKIPs it — it does NOT haul inputs to feed the factory (zero input purchases,
+// a zero-spend result).
 func TestFeeding_NonResponsiveGood_BuyOrSkipNotFed(t *testing.T) {
 	repo := &feedingMarketRepo{
 		outputGood: "EQUIPMENT", factoryWP: fpFactoryWP, outputSupply: "MODERATE", fabAsk: 50,
@@ -284,7 +241,7 @@ func TestFeeding_NonResponsiveGood_BuyOrSkipNotFed(t *testing.T) {
 	}
 	executor, mediator := newFeedingExecutor(t, repo)
 
-	result, err := executor.ProduceGood(feedingCtx(true), balancedFeedingRepo0Ship(), twoInputChain("EQUIPMENT"), fpSystem, 1, nil, false)
+	result, err := executor.ProduceGood(feedingCtx(), balancedFeedingRepo0Ship(), twoInputChain("EQUIPMENT"), fpSystem, 1, nil, false)
 	if err != nil {
 		t.Fatalf("a non-responsive buy-or-skip must not error: %v", err)
 	}
@@ -301,7 +258,7 @@ func TestFeeding_NonResponsiveGood_BuyOrSkipNotFed(t *testing.T) {
 func TestFeeding_ResponsiveGood_IsFed(t *testing.T) {
 	executor, mediator := newFeedingExecutor(t, balancedFeedingRepo())
 
-	_, err := executor.ProduceGood(feedingCtx(true), balancedFeedingRepo0Ship(), twoInputChain("ELECTRONICS"), fpSystem, 1, nil, false)
+	_, err := executor.ProduceGood(feedingCtx(), balancedFeedingRepo0Ship(), twoInputChain("ELECTRONICS"), fpSystem, 1, nil, false)
 	if err != nil {
 		t.Fatalf("a responsive good must be fed without error: %v", err)
 	}

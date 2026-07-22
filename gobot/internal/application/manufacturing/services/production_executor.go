@@ -848,8 +848,8 @@ func (e *ProductionExecutor) fabricateGood(
 	//   #2/#3/#4a BALANCED-TO-LIMITING, SATURATION-CAPPED, TAPROOT-FIRST: order the inputs scarcest
 	//       (taproot) first and cap each delivery at the balanced tranche sized to the limiting input,
 	//       so an ample input is not greedily piled on while the scarce one starves (the ~4x lever).
-	feedCfg, feedEngaged := feedingPolicyEngaged(ctx)
-	if feedEngaged && len(node.Children) > 0 && !feedCfg.isFeedResponsive(node.Good) {
+	feedCfg := defaultFeedingPolicy()
+	if len(node.Children) > 0 && !feedCfg.isFeedResponsive(node.Good) {
 		logger.Log("INFO", fmt.Sprintf("Feed-responsive gate: %s does not respond to feeding — buy-or-skip, not hauling inputs (sp-to2v)", node.Good), map[string]interface{}{
 			"good": node.Good, "factory": factoryMarket.WaypointSymbol,
 			"action": "feed_skipped", "reason": "non_responsive_good",
@@ -863,12 +863,12 @@ func (e *ProductionExecutor) fabricateGood(
 		"input_count": len(node.Children),
 	})
 
-	// Taproot-first order + the balanced+saturation per-input feed cap when the policy is engaged.
-	// OFF: childOrder is node.Children in declared order and feedCap is 0 → the loop below is
-	// byte-identical to today (childCtx == ctx, no cap).
+	// Taproot-first order + the balanced+saturation per-input feed cap (sp-sxyx6: unconditional — the
+	// balanced feeding policy is the executor's sole feeding path). A childless leaf keeps the declared
+	// order with no cap (childCtx == ctx).
 	childOrder := node.Children
 	feedCap := 0
-	if feedEngaged && len(node.Children) > 0 {
+	if len(node.Children) > 0 {
 		childOrder, feedCap = e.planBalancedFeed(ctx, node, systemSymbol, playerID, feedCfg)
 	}
 

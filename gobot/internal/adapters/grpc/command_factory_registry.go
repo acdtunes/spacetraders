@@ -966,12 +966,6 @@ func buildConstructionCoordinatorCommand(cfg *configReader, playerID int, contai
 		// scarcity-gated tree for every gate material and marks the run a gate node (the drain stamps
 		// WithUnifiedGateFill + a construction-site DeliveryTarget derived from the task's own site).
 		UnifiedGateFill: cfg.OptionalBool("unified_gate_fill"),
-		// sp-to2v: the SAME feeding-efficiency policy the goods factory runs, threaded into the drain via
-		// resolveConstructionUnifiedGateFill. absent/false/0 → greedy byte-identical feeding.
-		FabricationEfficiency:  cfg.OptionalBool("fabrication_efficiency"),
-		FeedSaturationMaxUnits: cfg.OptionalInt("feed_saturation_max_units", 0),
-		FeedSaturationMinUnits: cfg.OptionalInt("feed_saturation_min_units", 0),
-		FeedNonResponsiveGoods: cfg.OptionalStringSlice("feed_non_responsive_goods"),
 		// sp-ubwi: the per-supplyTask timeout, from [manufacturing] via resolveConstructionUnifiedGateFill.
 		// 0/absent → the drain's raised 30m default (the old hardcoded 10m abandoned legit long hauls).
 		SupplyTaskTimeoutSeconds: cfg.OptionalInt("construction_supply_task_timeout_seconds", 0),

@@ -8,10 +8,10 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 )
 
-// sp-to2v — FABRICATION EFFICIENCY feeding policy (analyst adjustments #2, #3, #4; layered on the
-// sp-vh1s margin-blind gate). It shapes HOW the executor feeds a fabricated node's
-// inputs — sizing and ordering the per-window deliveries — without changing WHICH inputs the tree
-// resolves (that is the resolver's job). The three verified mechanics it encodes:
+// sp-to2v — FABRICATION EFFICIENCY feeding policy (analyst adjustments #2, #3, #4). It shapes HOW the
+// executor feeds a fabricated node's inputs — sizing and ordering the per-window deliveries — without
+// changing WHICH inputs the tree resolves (that is the resolver's job). The three verified mechanics
+// it encodes:
 //
 //   #2 BALANCED-TO-LIMITING (the ~4x lever): feed a node's inputs in balanced proportion gated by
 //      the SCARCEST (limiting) input's sourceable flow, never greedily piling onto the cheapest/
@@ -24,12 +24,10 @@ import (
 //      feeding — ADVANCED_CIRCUITRY/SHIP_PLATING/SHIP_PARTS respond, EQUIPMENT/LAB_INSTRUMENTS/
 //      FOOD/MEDICINE do NOT, so those are BUY-OR-SKIP (feeding them wastes hull-hours).
 //
-// Everything is parametrized (RULINGS #5) and rides ctx (per-Handle, race-free) for the SAME
-// singleton-executor reason as the sibling sp-vh1s / sp-a5j7 / sp-sdyo configs: the
-// ProductionExecutor is a boot singleton shared across concurrent factory containers, so per-run
-// config on a struct field would race between a gate run and a profit factory. A caller that never
-// stamps the policy (every pre-bead test, and every run while the fabrication_efficiency toggle is
-// OFF) reads "not engaged" → the executor keeps its greedy byte-identical feeding.
+// sp-sxyx6: this balanced feeding is now the executor's SOLE feeding path. The fabrication_efficiency
+// toggle + its greedy OFF alternative + the per-run coefficient/non-responsive overrides were deleted
+// (they were LIVE-on with the default coefficients) — the algorithm below runs unconditionally against
+// the analyst-tuned defaultFeedingPolicy consts, so there is no per-run config to race on ctx.
 
 const (
 	// defaultFeedSaturationMaxUnits caps a single per-input delivery tranche this window. Δactivity
@@ -47,7 +45,8 @@ const (
 // nothing from being fed, so the executor BUY-OR-SKIPs it instead of burning hull-hours hauling its
 // inputs. It is an EXCLUSION set, not a positive responder list: intermediates like ELECTRONICS /
 // MICROPROCESSORS must stay fed (the recursion depends on them), so only the known dead-ends are
-// listed and everything else is fed. Operator-overridable via WithFeedingPolicy (RULINGS #5).
+// listed and everything else is fed. This verified set is the sole exclusion set (sp-sxyx6 removed
+// the per-run operator override).
 var defaultNonResponsiveFeedGoods = map[string]bool{
 	"EQUIPMENT":       true,
 	"LAB_INSTRUMENTS": true,
@@ -59,58 +58,19 @@ type feedingPolicyConfig struct {
 	saturationMaxUnits int
 	saturationMinUnits int
 	nonResponsiveGoods map[string]bool
-	disabled           bool
-	stamped            bool
 }
 
-type feedingPolicyCtxKey struct{}
-
-// WithFeedingPolicy stamps the per-run fabrication-efficiency feeding policy onto ctx (sp-to2v). A 0
-// saturationMaxUnits resolves to defaultFeedSaturationMaxUnits and a 0 saturationMinUnits to
-// defaultFeedSaturationMinUnits at the point of use; a nil/empty nonResponsiveGoods resolves to
-// defaultNonResponsiveFeedGoods, while a non-empty slice REPLACES the default (the analyst retunes
-// which goods are worth feeding). disabled=true is the RULINGS #5 emergency off-switch that reverts
-// the executor to greedy byte-identical feeding. Only stamped when the fabrication_efficiency toggle
-// is on, so an OFF fleet reads "not engaged" and is unaffected.
-func WithFeedingPolicy(ctx context.Context, saturationMaxUnits, saturationMinUnits int, nonResponsiveGoods []string, disabled bool) context.Context {
-	cfg := feedingPolicyConfig{
-		saturationMaxUnits: saturationMaxUnits,
-		saturationMinUnits: saturationMinUnits,
-		disabled:           disabled,
-		stamped:            true,
+// defaultFeedingPolicy is the SOLE feeding policy the executor runs (sp-sxyx6): the analyst-tuned
+// saturation window [defaultFeedSaturationMinUnits, defaultFeedSaturationMaxUnits] and the verified
+// non-responsive OUTPUT-good exclusion set. It replaces the deleted fabrication_efficiency toggle +
+// WithFeedingPolicy/feedingPolicyEngaged plumbing — balanced feeding was LIVE-on with exactly these
+// default coefficients, so unconditionally engaging them here is byte-identical to that live path.
+func defaultFeedingPolicy() feedingPolicyConfig {
+	return feedingPolicyConfig{
+		saturationMaxUnits: defaultFeedSaturationMaxUnits,
+		saturationMinUnits: defaultFeedSaturationMinUnits,
+		nonResponsiveGoods: defaultNonResponsiveFeedGoods,
 	}
-	if len(nonResponsiveGoods) > 0 {
-		set := make(map[string]bool, len(nonResponsiveGoods))
-		for _, g := range nonResponsiveGoods {
-			set[g] = true
-		}
-		cfg.nonResponsiveGoods = set
-	}
-	return context.WithValue(ctx, feedingPolicyCtxKey{}, cfg)
-}
-
-// feedingPolicyEngaged reports whether the feeding policy is active for this run and, when so, the
-// config with all absent/zero fields resolved to their live-by-default values. It is NOT engaged
-// when unstamped (every OFF run and pre-bead test) or explicitly disabled — the greedy byte-identical
-// path.
-func feedingPolicyEngaged(ctx context.Context) (feedingPolicyConfig, bool) {
-	cfg, _ := ctx.Value(feedingPolicyCtxKey{}).(feedingPolicyConfig)
-	if !cfg.stamped || cfg.disabled {
-		return feedingPolicyConfig{}, false
-	}
-	if cfg.saturationMaxUnits <= 0 {
-		cfg.saturationMaxUnits = defaultFeedSaturationMaxUnits
-	}
-	if cfg.saturationMinUnits <= 0 {
-		cfg.saturationMinUnits = defaultFeedSaturationMinUnits
-	}
-	if cfg.saturationMinUnits > cfg.saturationMaxUnits {
-		cfg.saturationMinUnits = cfg.saturationMaxUnits // guard an inverted config from starving the tranche
-	}
-	if cfg.nonResponsiveGoods == nil {
-		cfg.nonResponsiveGoods = defaultNonResponsiveFeedGoods
-	}
-	return cfg, true
 }
 
 // isFeedResponsive reports whether feeding a factory that PRODUCES good raises its output activity
