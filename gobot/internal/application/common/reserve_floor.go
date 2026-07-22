@@ -9,6 +9,24 @@ import "context"
 // shared resolver owns the clamp here so the two engines can never disagree on the bound.
 const ImmutableReserveFloor = 50000
 
+// ContractReserveCushion is the contract OPERATING-capital floor (150_000): the working
+// capital a light-hauler contract op holds so several concurrent contract cycles stay
+// funded through a treasury dip. It is the immutable base (ImmutableReserveFloor) plus a
+// 100_000 contract-operating headroom — ONE base, a derived tier (RULINGS #5), so the base
+// and every cushion move together and can never drift. Gates the bootstrap first-hauler +
+// gate-worker buys (run_bootstrap_*). IMMUTABLE: const-only, no config/tune/launch seam.
+const ContractReserveCushion = ImmutableReserveFloor + 100_000
+
+// ContractScalerCushion is the contract SCALER's CAPEX floor (200_000) and the SOLE money
+// guard on a scaler hull/depot buy (RULINGS #6 amendment). It reserves MORE than the
+// contract OPERATING cushion (ContractReserveCushion) because a scaler buy is LUMPY capital
+// expenditure — a whole hull or depot role at once — not a per-cycle operating spend: the
+// extra 50_000 over the operating cushion keeps the contract op funded THROUGH that capex
+// draw rather than letting a single lumpy buy strand ongoing delivery cycles. Immutable base
+// (ImmutableReserveFloor) plus 150_000 scaler-capex headroom — the SAME base, a higher
+// derived tier. IMMUTABLE: const-only, no config/tune/launch seam.
+const ContractScalerCushion = ImmutableReserveFloor + 150_000
+
 // DefaultReserveTreasuryPct is the working-capital reserve's proportional floor as a
 // percent of LIVE treasury, applied when the per-engine
 // working_capital_reserve_treasury_pct config key is 0/absent. 40% is the

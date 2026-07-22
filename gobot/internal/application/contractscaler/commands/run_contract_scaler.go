@@ -34,10 +34,13 @@ const (
 	DefaultContractFleetMaxHulls = 2
 
 	// ContractCushion is the SOLE money guard on a scaler buy (RULINGS #6 amendment,
-	// Admiral-authorized): buy only while treasury-price >= this. It is working
-	// capital for warehouse stocking + goods-in-flight, well above the 50000
-	// immutable reserve floor (RULINGS #5, untouched).
-	ContractCushion = 200_000
+	// Admiral-authorized): buy only while treasury-price >= this. It is the derived
+	// SCALER-CAPEX tier common.ContractScalerCushion (200000 = common.ImmutableReserveFloor
+	// + 150k, sp-zq635 re-homed it into the ONE floor source) — working capital for
+	// warehouse stocking + goods-in-flight, well above the 50000 immutable base floor
+	// (RULINGS #5, untouched) and above the contract-operating cushion because a scaler buy
+	// is lumpy capex, not per-cycle operating spend.
+	ContractCushion = common.ContractScalerCushion
 
 	// scalerFleet is the exclusive dedicated-fleet tag every scaler hull carries so
 	// no gate/trade coordinator ever poaches it (the churn-class fix).

@@ -99,7 +99,13 @@ func NewRunWorkflowHandler(
 
 	cargoManager := contractServices.NewCargoManager(mediator, shipRepo)
 	lifecycleService := contractServices.NewContractLifecycleService(mediator, contractRepo)
-	deliveryExecutor := contractServices.NewDeliveryExecutor(mediator, shipRepo, cargoManager, cfg.deliveryOpts...)
+	// Arm the proactive source-buy working-capital reserve floor unconditionally in
+	// production (sp-zq635 §4b): a contract source-buy can never silently drop treasury
+	// below the immutable reserve. Add-only safety guard (RULINGS #4), active on deploy
+	// like the manufacturing output-buy floor (sp-65xqo); the reactive 4600 park remains
+	// the backstop.
+	deliveryOpts := append(cfg.deliveryOpts, contractServices.WithSourceBuyFloor())
+	deliveryExecutor := contractServices.NewDeliveryExecutor(mediator, shipRepo, cargoManager, deliveryOpts...)
 
 	if clock == nil {
 		clock = shared.NewRealClock()

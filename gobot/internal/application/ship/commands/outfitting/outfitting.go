@@ -27,10 +27,11 @@ const outfittingOperation = "outfitting"
 
 // defaultWorkingCapitalReserve is the hard, non-tunable working-capital floor
 // (RULING #4/#5) applied to the modification fee: an install/remove must never
-// drop live treasury below this. Mirrors the identically-named consts in the
-// trade-circuit (bp6f) and factory (sp-9aoc) guards — deliberately duplicated,
-// not shared, and never weakened.
-const defaultWorkingCapitalReserve = 50000
+// drop live treasury below this. Sourced from the ONE shared immutable floor
+// (common.ImmutableReserveFloor, sp-zq635) that the trade-circuit (bp6f) and
+// factory (sp-9aoc) guards now also reference — a single definition the guards
+// can never disagree on, never weakened.
+const defaultWorkingCapitalReserve = common.ImmutableReserveFloor
 
 // releaseContextTimeout bounds the cancellation-proof claim-release DB work.
 const releaseContextTimeout = 10 * time.Second

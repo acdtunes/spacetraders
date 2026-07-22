@@ -12,6 +12,7 @@ import (
 	contractTypes "github.com/andrescamacho/spacetraders-go/internal/application/contract/types"
 	"github.com/andrescamacho/spacetraders-go/internal/application/health"
 	"github.com/andrescamacho/spacetraders-go/internal/application/liquidation"
+	playerQueries "github.com/andrescamacho/spacetraders-go/internal/application/player/queries"
 	shipAssignment "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/assignment"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/absorption"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
@@ -269,6 +270,14 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		// Wires the cross-engine absorption ledger so the dispatcher consults it
 		// (skip:reserved) and records launched legs. Inert when unwired.
 		dispatcher.SetAbsorptionLedger(h.absorptionLedger, h.absorptionPlannedTTLSlack)
+		// Live-treasury source for the working-capital reserve gate (sp-zq635 §4a): the
+		// pass's concurrent legs can never collectively drain treasury below the immutable
+		// reserve. Reads the same live balance (mediator GetPlayerQuery) the contract park
+		// path reads; a read failure fails the gate CLOSED (holds the pass).
+		dispatcher.SetTreasuryReader(&mediatorTreasuryReader{
+			mediator: h.fleetPoolManager.GetMediator(),
+			playerID: cmd.PlayerID,
+		})
 		// LIVE hub set: resolves the CURRENT standby set each pass from this
 		// coordinator's container config, so `fleet hub add|remove` re-homes idle
 		// hulls across the new set with no restart. Falls back to
@@ -1123,6 +1132,29 @@ func (m *mediatorShipHomer) HomeShip(ctx context.Context, shipSymbol string, sta
 		}
 	}()
 	return nil
+}
+
+// mediatorTreasuryReader reads live treasury for the idle-arb dispatcher's working-
+// capital reserve gate (sp-zq635 §4a) over the mediator's GetPlayerQuery — the same live
+// balance the contract park path reads, bound to this coordinator's player.
+type mediatorTreasuryReader struct {
+	mediator common.Mediator
+	playerID shared.PlayerID
+}
+
+var _ appContract.TreasuryReader = (*mediatorTreasuryReader)(nil)
+
+func (r *mediatorTreasuryReader) LiveTreasury(ctx context.Context) (int64, error) {
+	pid := r.playerID.Value()
+	resp, err := r.mediator.Send(ctx, &playerQueries.GetPlayerQuery{PlayerID: &pid})
+	if err != nil {
+		return 0, err
+	}
+	playerResp, ok := resp.(*playerQueries.GetPlayerResponse)
+	if !ok || playerResp.Player == nil {
+		return 0, fmt.Errorf("idle-arb treasury read: unexpected GetPlayer response %T", resp)
+	}
+	return int64(playerResp.Player.Credits), nil
 }
 
 // isDedicatedShip reports whether shipSymbol is present in the given

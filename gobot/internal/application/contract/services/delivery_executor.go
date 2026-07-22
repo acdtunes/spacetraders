@@ -50,6 +50,13 @@ type DeliveryExecutor struct {
 	// timestamp; WithWithdrawalRecorder defaults it to a RealClock.
 	withdrawalRecorder storage.WithdrawalRecorder
 	withdrawalClock    shared.Clock
+
+	// enforceSourceBuyFloor arms the PROACTIVE working-capital reserve floor on the
+	// market source-buy (sp-zq635 §4b). Opt-in (WithSourceBuyFloor): OFF leaves the
+	// buy reactive-only (the ErrInsufficientCredits 4600 park below), so every existing
+	// caller/test is byte-identical; production wires it so a source-buy can never
+	// silently land treasury above 0 but under the immutable reserve.
+	enforceSourceBuyFloor bool
 }
 
 // DeliveryExecutorOption configures optional collaborators without breaking the
@@ -81,6 +88,18 @@ func WithWithdrawalRecorder(recorder storage.WithdrawalRecorder, clock shared.Cl
 			clock = shared.NewRealClock()
 		}
 		e.withdrawalClock = clock
+	}
+}
+
+// WithSourceBuyFloor arms the proactive working-capital reserve floor on the market
+// source-buy (sp-zq635 §4b): before a buy the executor reads live treasury and HOLDS
+// (parks, resuming when treasury recovers) any buy that would drop it below the
+// immutable reserve floor (common.EffectiveReserveFloor over common.ImmutableReserveFloor).
+// Fail-closed: an unreadable treasury parks the buy. A DeliveryExecutor built without
+// this option is byte-identical to before — reactive 4600 handling only.
+func WithSourceBuyFloor() DeliveryExecutorOption {
+	return func(e *DeliveryExecutor) {
+		e.enforceSourceBuyFloor = true
 	}
 }
 
@@ -364,6 +383,43 @@ func (e *DeliveryExecutor) lookupLiveCredits(ctx context.Context, playerID share
 	return playerResp.Player.Credits
 }
 
+// sourceBuyFloorBreached reports whether buying a source tranche costing projectedCost
+// would drop live treasury below the immutable working-capital reserve floor
+// (common.EffectiveReserveFloor over common.ImmutableReserveFloor, sp-zq635 §4b). It is
+// the contract-side analogue of the factory's spendFloorBreached and the trade/arb
+// spend-floor: a live treasury read right before the buy so the caller PARKS (not crash)
+// instead of spending below the reserve.
+//
+// Inert (returns false) unless WithSourceBuyFloor armed it — the optional-guard contract
+// every existing DeliveryExecutor caller/test relies on, byte-identical when off.
+//
+// Fails CLOSED on an unreadable treasury (lookupLiveCredits returns -1): a guard whose
+// job is keeping treasury above the reserve must never let a buy through blind, so a
+// failed read parks the buy rather than spending unseen.
+func (e *DeliveryExecutor) sourceBuyFloorBreached(ctx context.Context, playerID shared.PlayerID, projectedCost int) bool {
+	if !e.enforceSourceBuyFloor {
+		return false
+	}
+	logger := common.LoggerFromContext(ctx)
+	treasury := e.lookupLiveCredits(ctx, playerID)
+	if treasury < 0 {
+		logger.Log("WARNING", "Contract source-buy: live treasury unreadable for the working-capital reserve check — parking the buy (fail-closed)", map[string]interface{}{
+			"action": "source_buy_floor_park", "reason": "treasury_unreadable",
+		})
+		return true
+	}
+	floor := common.EffectiveReserveFloor(common.ImmutableReserveFloor, common.DefaultReserveTreasuryPct, int64(treasury))
+	if int64(treasury)-int64(projectedCost) < floor {
+		logger.Log("WARNING", fmt.Sprintf(
+			"Contract source-buy would breach the working-capital reserve floor — treasury %d, projected cost %d, reserve %d; parking (resumes when treasury recovers)",
+			treasury, projectedCost, floor), map[string]interface{}{
+			"action": "source_buy_floor_park", "reason": "reserve_floor", "treasury": treasury, "projected_cost": projectedCost, "reserve": floor,
+		})
+		return true
+	}
+	return false
+}
+
 // ExecutePurchaseLoop executes the multi-trip purchase loop.
 //
 // projectedUnitAsk is the cached ask the profitability evaluation (and the
@@ -454,6 +510,20 @@ func (e *DeliveryExecutor) executeSinglePurchaseTrip(
 			"reason":      "no_cargo_space",
 		})
 		return ship, unitsToPurchase, true, false, nil
+	}
+
+	// PROACTIVE working-capital reserve floor (sp-zq635 §4b): hold the buy BEFORE the
+	// flight to market when buying unitsThisTrip at the projected ask would drop treasury
+	// below the immutable reserve. This closes the gap where a source-buy leaves treasury
+	// above 0 (so the API's reactive 4600 never fires) but under the 50k reserve. Parked as
+	// ErrInsufficientCredits so the existing park-not-crash path resumes it next tick; the
+	// reactive 4600 below stays the backstop. Inert unless WithSourceBuyFloor is wired.
+	if e.sourceBuyFloorBreached(ctx, playerID, unitsThisTrip*projectedUnitAsk) {
+		return nil, 0, false, false, &ErrInsufficientCredits{
+			ShipSymbol:     shipSymbol,
+			TradeSymbol:    tradeSymbol,
+			UnitsAttempted: unitsThisTrip,
+		}
 	}
 
 	var err error

@@ -79,7 +79,7 @@ const minOutputSellMarginFactor = 1.0
 // allowed; per-run WEAKENING below 50k is not (RULINGS #5) — a configured reserve under
 // 50k is clamped UP, so this stays the non-tunable floor an over-eager re-enable can
 // never zero out.
-const defaultWorkingCapitalReserve = 50000
+const defaultWorkingCapitalReserve = common.ImmutableReserveFloor // sp-zq635: the single immutable source (was a local 50000 dup)
 
 // reserveCtxKey carries the per-run configured working-capital reserve from the factory
 // coordinator (RunFactoryCoordinatorCommand.WorkingCapitalReserve, resolved from the

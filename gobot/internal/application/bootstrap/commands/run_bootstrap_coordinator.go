@@ -61,15 +61,16 @@ const (
 	// deliberately conservative operating floor for the whole contract op, NOT a bare per-buy minimum.
 	//
 	// DISTINCT from the immutable anti-stall bound (Admiral RULINGS #5, 2026-07-18 amendment split): this
-	// contract cushion (150k) is its OWN documented hard constant — no longer common.ImmutableReserveFloor.
-	// common.ImmutableReserveFloor (50k) remains the SEPARATE immutable anti-stall backstop: the outer-max
-	// clamp that keeps mature tour/factory trade able to trade its way out of a low-treasury crunch, and
-	// the line the fleet autosizer clamps to (common.EffectiveReserveFloor) + the capacity reconciler's
-	// DefaultReserveFloorCredits equal (their compile-time lockstep guard is untouched, still 50k). Both
-	// are hard constants — NOT live-tunable / config.yaml knobs, NOT the shared reserve_margin (which still
-	// paces the DATA probe buy). The contract cushion is RAISED above the immutable bound (stricter), so no
-	// money guard is weakened (RULINGS #4/#5): a permitted contract-op buy leaves the op funded at 150k.
-	defaultContractWorkingCapitalFloor int64 = 150_000
+	// contract cushion is the derived CONTRACT-OPERATING tier common.ContractReserveCushion (150k =
+	// common.ImmutableReserveFloor + 100k; sp-zq635 re-homed it into the ONE floor source so the base and
+	// every cushion move together and can never drift). The base common.ImmutableReserveFloor (50k) remains
+	// the SEPARATE immutable anti-stall backstop: the outer-max clamp that keeps mature tour/factory trade
+	// able to trade its way out of a low-treasury crunch, and the line the fleet autosizer clamps to
+	// (common.EffectiveReserveFloor). Both are hard constants — NOT live-tunable / config.yaml knobs, NOT
+	// the shared reserve_margin (which still paces the DATA probe buy). The contract cushion is RAISED above
+	// the immutable bound (stricter), so no money guard is weakened (RULINGS #4/#5): a permitted contract-op
+	// buy leaves the op funded at 150k.
+	defaultContractWorkingCapitalFloor int64 = common.ContractReserveCushion
 
 	// GATE-phase defaults.
 	// defaultGateWorkerTarget caps gate-construction workers (actual = ~one per active gate-material

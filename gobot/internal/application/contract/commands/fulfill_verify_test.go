@@ -8,11 +8,13 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/auth"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	contractQueries "github.com/andrescamacho/spacetraders-go/internal/application/contract/queries"
+	playerQueries "github.com/andrescamacho/spacetraders-go/internal/application/player/queries"
 	shipCargo "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
 	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	shipTypes "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
@@ -87,6 +89,7 @@ type fulfillVerifyMediator struct {
 	capacity     int
 	perUnit      int // realized purchase price per unit
 	projectedAsk int // basis handed to the ladder cap (0 disables it)
+	liveCredits  int // treasury snapshot returned to the source-buy reserve-floor read (sp-zq635)
 
 	cargoUnits int
 	calls      []string
@@ -160,6 +163,12 @@ func (m *fulfillVerifyMediator) send(t *testing.T, ctx context.Context, request 
 		}
 		return &FulfillContractResponse{Contract: c}, nil
 
+	case *playerQueries.GetPlayerQuery:
+		// The proactive source-buy reserve floor (sp-zq635) reads live treasury; these
+		// sourcing/delivery/fulfill tests are not treasury-constrained, so answer with an
+		// ample balance that leaves the floor inert — byte-identical to their pre-floor assertions.
+		return &playerQueries.GetPlayerResponse{Player: &player.Player{Credits: m.liveCredits}}, nil
+
 	case *NegotiateContractCommand:
 		// The best-effort next-contract claim after a successful fulfill: a
 		// benign error is swallowed by negotiateNextContractBestEffort, keeping
@@ -194,6 +203,7 @@ func newFulfillVerifyHarness(t *testing.T, seed *contract.Contract, good string,
 		perUnit:      perUnit,
 		projectedAsk: projectedAsk,
 		cargoUnits:   startCargo,
+		liveCredits:  1_000_000_000, // ample: these tests are not treasury-constrained
 	}
 	shipRepo.ship = med.rebuild(t, startCargo)
 	adapter := &fulfillVerifyMediatorAdapter{fulfillVerifyMediator: med, t: t}

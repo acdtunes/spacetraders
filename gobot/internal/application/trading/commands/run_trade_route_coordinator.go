@@ -72,7 +72,7 @@ const noProgressStarvationLimit = 3
 // captain can raise or lower the floor operationally — e.g. to the current
 // contract+factory working-capital need the incident notes called out —
 // without a redeploy.
-const defaultWorkingCapitalReserve = 50000
+const defaultWorkingCapitalReserve = common.ImmutableReserveFloor // sp-zq635: the single immutable source (was a local 50000 dup)
 
 // negativeMarginAbortVisits bounds how many visits a circuit's OWN realized
 // margin (this circuit's sell revenue minus its buy cost, reset to zero every

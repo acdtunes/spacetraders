@@ -271,6 +271,15 @@ type IdleArbLauncher interface {
 	LaunchIdleArb(ctx context.Context, spec IdleArbSpec) (containerID string, err error)
 }
 
+// TreasuryReader reports the player's live credit balance for the dispatcher's
+// working-capital reserve gate (sp-zq635 §4a). Optional, wired via SetTreasuryReader:
+// a nil reader leaves the gate inert (the pre-sp-zq635 behavior), the same optional-port
+// contract the absorption ledger and re-homer use. Production wires it so the pass's
+// concurrent legs can never collectively drain treasury below the immutable reserve.
+type TreasuryReader interface {
+	LiveTreasury(ctx context.Context) (int64, error)
+}
+
 // ShipHomer re-homes ONE idle dedicated hull to its balanced standby station
 // through the EXISTING HomeShipCommand path — never a parallel homing
 // algorithm (RULINGS #7). A narrow port, implemented by the coordinator over
@@ -349,6 +358,7 @@ type IdleArbDispatcher struct {
 	launcher        IdleArbLauncher
 	homer           ShipHomer // post-leg re-homing (nil → re-home off)
 	contractGoods   ContractGoodsProvider
+	treasury        TreasuryReader // live-treasury source for the reserve gate (nil → gate inert)
 	clock           shared.Clock
 	playerID        shared.PlayerID
 	fleet           string
@@ -382,6 +392,7 @@ type IdleArbDispatcher struct {
 	skipLaneHeld     int // legs skipped: best lane held by a live/recovering leg
 	skipUnprofitable int // legs skipped: live net_per_u below the profitability floor
 	rehomed          int // hulls re-homed post-leg (cumulative)
+	heldReserveFloor int // passes cut short: one more leg would breach the working-capital reserve (sp-zq635)
 }
 
 // NewIdleArbDispatcher wires a dispatcher for the given dedicated fleet. A nil
@@ -473,6 +484,14 @@ func (d *IdleArbDispatcher) SetAbsorptionLedger(ledger absorption.Ledger, planne
 	d.plannedTTLSlack = plannedTTLSlack
 }
 
+// SetTreasuryReader wires the live-treasury source for the working-capital reserve gate
+// (sp-zq635 §4a). Nil (unset) leaves the gate inert — byte-identical to the pre-gate
+// behavior, so tests that never wire it are unaffected; production wires it so the pass's
+// cumulative leg-spend can never breach the immutable reserve floor.
+func (d *IdleArbDispatcher) SetTreasuryReader(reader TreasuryReader) {
+	d.treasury = reader
+}
+
 // absorptionConsult is one pass's batched read of the ledger plus its fail-closed
 // state. Built once per DispatchOnce (one outstanding query per pass) and
 // threaded to every candidate — the within-pass collision is the lane mutex's job,
@@ -535,6 +554,61 @@ func (d *IdleArbDispatcher) readAbsorption(ctx context.Context) absorptionConsul
 		return absorptionConsult{active: true, unreadable: true}
 	}
 	return absorptionConsult{active: true, pools: pools}
+}
+
+// reserveFloorGate is one pass's working-capital reserve bound (sp-zq635 §4a): built
+// once per DispatchOnce from a single live-treasury read, it reports when the pass's
+// cumulative committed leg-spend plus one more leg would drop treasury below the
+// EffectiveReserveFloor. The dispatcher's per-leg cap and the arb run's own 50k floor
+// bound EACH leg; this bounds their SUM — the concurrent breach no per-leg floor can see.
+type reserveFloorGate struct {
+	active     bool  // a treasury reader is wired
+	unreadable bool  // the read failed → fail closed (hold every leg this pass)
+	treasury   int64 // live balance at the pass's read
+	floor      int64 // EffectiveReserveFloor(ImmutableReserveFloor, DefaultReserveTreasuryPct, treasury)
+}
+
+// holds reports whether launching one more nextLegSpend-credit leg, on top of the spend
+// already committed this pass, would drop treasury below the reserve floor. Inert (never
+// holds) when no reader is wired; ALWAYS holds when the treasury was unreadable (fail-closed).
+func (g reserveFloorGate) holds(committed, nextLegSpend int64) bool {
+	if !g.active {
+		return false
+	}
+	if g.unreadable {
+		return true
+	}
+	return g.treasury-committed-nextLegSpend < g.floor
+}
+
+// logHold emits the reserve-gate hold in MESSAGE TEXT (the CLI renderer drops the
+// metadata map), carrying the numbers that refused the leg. Skipped for the fail-closed
+// hold, which readReserveFloorGate already logged with its read error.
+func (g reserveFloorGate) logHold(ctx context.Context, legSpend int, committed int64) {
+	if g.unreadable {
+		return
+	}
+	common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
+		"Idle-arb held: the next %d-credit leg would breach the working-capital reserve — treasury %d, committed this pass %d, reserve %d (holding the rest of the pass)",
+		legSpend, g.treasury, committed, g.floor), nil)
+}
+
+// readReserveFloorGate performs the once-per-pass live-treasury read for the reserve
+// gate. Inert (never holds) when no reader is wired — the optional-port contract the
+// existing dispatcher tests rely on. Fail-closed (holds every leg) when the read errors:
+// a guard whose job is keeping treasury above the reserve must never dispatch spend blind.
+func (d *IdleArbDispatcher) readReserveFloorGate(ctx context.Context) reserveFloorGate {
+	if d.treasury == nil {
+		return reserveFloorGate{}
+	}
+	balance, err := d.treasury.LiveTreasury(ctx)
+	if err != nil {
+		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
+			"Idle-arb working-capital reserve gate: live treasury read failed, holding all legs this pass (fail-closed): %v", err), nil)
+		return reserveFloorGate{active: true, unreadable: true}
+	}
+	floor := common.EffectiveReserveFloor(common.ImmutableReserveFloor, common.DefaultReserveTreasuryPct, balance)
+	return reserveFloorGate{active: true, treasury: balance, floor: floor}
 }
 
 // recordAbsorption publishes a just-launched leg's sell-side occupancy to the ledger
@@ -739,6 +813,15 @@ func (d *IdleArbDispatcher) DispatchOnce(ctx context.Context) int {
 	// declines every candidate this pass rather than dispatch blind.
 	consult := d.readAbsorption(ctx)
 
+	// One live-treasury read per pass for the working-capital reserve gate
+	// (sp-zq635 §4a). The dispatcher launches several concurrent legs per pass, each
+	// capped at MaxSpendPerLeg but with no shared spend ledger, so the gate accounts
+	// for THIS pass's CUMULATIVE committed spend (committedSpend, below) and holds the
+	// rest once one more leg would drop treasury under the reserve. Inert when no reader
+	// is wired; fail-closed when the read fails.
+	floorGate := d.readReserveFloorGate(ctx)
+	var committedSpend int64
+
 	// tried tracks hulls already handled this pass (launched, or skipped for
 	// want of a lane) so the recount loop below always terminates. A skipped
 	// hull stays idle and keeps padding the reserve — conservative.
@@ -790,6 +873,19 @@ func (d *IdleArbDispatcher) DispatchOnce(ctx context.Context) int {
 			continue
 		}
 
+		// WORKING-CAPITAL RESERVE GATE (sp-zq635 §4a): a GLOBAL treasury bound, not a
+		// lane skip. Once launching one more MaxSpendPerLeg leg would drop live treasury
+		// below the reserve — counting the legs this pass has already committed — no later
+		// candidate can pass either, so HOLD the rest of the pass (fail-closed on an
+		// unreadable treasury). Checked AFTER a lane is chosen so a hull with no lane is
+		// still attributed to its lane reason, not the floor. RULINGS #1: park, never crash.
+		if floorGate.holds(committedSpend, int64(d.cfg.MaxSpendPerLeg)) {
+			d.heldReserveFloor++
+			passSkips++
+			floorGate.logHold(ctx, d.cfg.MaxSpendPerLeg, committedSpend)
+			return launched
+		}
+
 		// Hand the arb run's live-verify gate the RELATIVE floor
 		// ceil(fraction × quoted margin), not the flat absolute floor. The run
 		// re-reads live prices and fails closed, so a leg whose live margin
@@ -820,6 +916,10 @@ func (d *IdleArbDispatcher) DispatchOnce(ctx context.Context) int {
 		}
 		launched++
 		d.launched++
+		// Commit this leg's worst-case spend to the pass's reserve-gate tally so a
+		// later leg THIS pass is judged against the treasury the earlier legs will draw
+		// (the concurrent-breach the per-leg arb-run floor alone cannot see).
+		committedSpend += int64(d.cfg.MaxSpendPerLeg)
 		// LANE MUTEX: mark this (good, sink) held the instant the leg
 		// launches, so a later candidate THIS pass that would pick the same sink is
 		// skipped:lane-held (within-pass dedupe), and the next pass holds it until
@@ -1227,8 +1327,8 @@ func (d *IdleArbDispatcher) logHarvestSummary(ctx context.Context, launchedThisP
 	}
 	logger.Log("INFO", fmt.Sprintf(
 		"Idle-arb harvest: %d leg(s) launched this pass; %d hull(s) re-homed this pass; %d attempt(s) total at %.1f/hr; "+
-			"skipped legs - blacklist %d, contract-good %d, leash %d, lane-held %d, reserved %d, unprofitable %d; re-homed %d total (cumulative; margin-aborts logged per-leg by the arb run)",
+			"skipped legs - blacklist %d, contract-good %d, leash %d, lane-held %d, reserved %d, unprofitable %d; reserve-floor holds %d; re-homed %d total (cumulative; margin-aborts logged per-leg by the arb run)",
 		launchedThisPass, rehomedThisPass, d.attempts, rate,
-		d.skipBlacklist, d.skipContractGood, d.skipLeash, d.skipLaneHeld, d.skipReserved, d.skipUnprofitable, d.rehomed,
+		d.skipBlacklist, d.skipContractGood, d.skipLeash, d.skipLaneHeld, d.skipReserved, d.skipUnprofitable, d.heldReserveFloor, d.rehomed,
 	), nil)
 }

@@ -44,8 +44,8 @@ const (
 	// defaultPaybackHorizonHours 0 = the absolute payback gate is OFF by default (the
 	// value-per-hour it needs is unmeasured until per-hull throughput is wired).
 	defaultPaybackHorizonHours    = 0
-	defaultTreasuryReserve        = 50000 // hard working-capital floor, mirrors the outfitting handler
-	defaultMaxTreasuryFractionPct = 25    // a single module never exceeds 25% of live treasury
+	defaultTreasuryReserve        = common.ImmutableReserveFloor // hard working-capital floor (sp-zq635: the single immutable source, was a local 50000 dup)
+	defaultMaxTreasuryFractionPct = 25                           // a single module never exceeds 25% of live treasury
 	defaultInstallFeeEstimate     = 1000
 	defaultHopCost                = 5000         // logistics cost per gate hop to divert to the module's market
 	defaultTelemetryWindowSecs    = 12 * 60 * 60 // 12h read window, mirrors the heavy tour-rate window
