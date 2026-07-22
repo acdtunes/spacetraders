@@ -62,13 +62,11 @@ func (s *DaemonServer) FleetAutosizerCoordinator(ctx context.Context, playerID i
 // creation) and are deliberately NOT in this list — they must survive a rebuild.
 var fleetAutosizerConfigKeys = []string{
 	"autosizer_dry_run",
-	"autosizer_warehouse_hulls_enabled",
 	"autosizer_tick_secs",
 	"autosizer_purchase_cap_per_tick",
 	"autosizer_fleet_ceiling_total",
 	"autosizer_fleet_ceiling_lights",
 	"autosizer_fleet_ceiling_heavies",
-	"autosizer_fleet_ceiling_warehouse",
 	"autosizer_purchase_margin_over_floor",
 	"autosizer_reserve",
 	"autosizer_reserve_treasury_pct",
@@ -87,13 +85,6 @@ var fleetAutosizerConfigKeys = []string{
 	"autosizer_ship_type_lights",
 	"autosizer_ship_type_heavies",
 	"autosizer_zero_effect_alarm_ticks",
-	"autosizer_warehouse_min_chain_realized_per_hour",
-	"autosizer_warehouse_min_chain_tick_persistence",
-	"autosizer_max_warehouse_hulls",
-	"autosizer_stocker_hulls_per_warehouse_group",
-	"autosizer_warehouse_capacity_target_hours",
-	"autosizer_max_module_spend_per_hull",
-	"autosizer_warehouse_frame_class_ceiling",
 	"autosizer_explorer_hulls_enabled",
 	"autosizer_fleet_ceiling_explorer",
 	"autosizer_explorer_treasury_pct_per_purchase",
@@ -124,9 +115,6 @@ func (s *DaemonServer) injectFleetAutosizerConfig(config map[string]interface{})
 	if fa.DryRun {
 		config["autosizer_dry_run"] = true
 	}
-	if fa.WarehouseHullsEnabled {
-		config["autosizer_warehouse_hulls_enabled"] = true
-	}
 	if fa.TickIntervalSecs != 0 {
 		config["autosizer_tick_secs"] = fa.TickIntervalSecs
 	}
@@ -141,9 +129,6 @@ func (s *DaemonServer) injectFleetAutosizerConfig(config map[string]interface{})
 	}
 	if fa.FleetCeilingHeavies != 0 {
 		config["autosizer_fleet_ceiling_heavies"] = fa.FleetCeilingHeavies
-	}
-	if fa.FleetCeilingWarehouse != 0 {
-		config["autosizer_fleet_ceiling_warehouse"] = fa.FleetCeilingWarehouse
 	}
 	if fa.PurchaseMarginOverFloor != 0 {
 		config["autosizer_purchase_margin_over_floor"] = int(fa.PurchaseMarginOverFloor)
@@ -201,27 +186,6 @@ func (s *DaemonServer) injectFleetAutosizerConfig(config map[string]interface{})
 	if fa.ZeroEffectAlarmTicks != 0 {
 		config["autosizer_zero_effect_alarm_ticks"] = fa.ZeroEffectAlarmTicks
 	}
-	if fa.WarehouseMinChainRealizedPerHour != 0 {
-		config["autosizer_warehouse_min_chain_realized_per_hour"] = fa.WarehouseMinChainRealizedPerHour
-	}
-	if fa.WarehouseMinChainTickPersistence != 0 {
-		config["autosizer_warehouse_min_chain_tick_persistence"] = fa.WarehouseMinChainTickPersistence
-	}
-	if fa.MaxWarehouseHulls != 0 {
-		config["autosizer_max_warehouse_hulls"] = fa.MaxWarehouseHulls
-	}
-	if fa.StockerHullsPerWarehouseGroup != 0 {
-		config["autosizer_stocker_hulls_per_warehouse_group"] = fa.StockerHullsPerWarehouseGroup
-	}
-	if fa.WarehouseCapacityTargetHours != 0 {
-		config["autosizer_warehouse_capacity_target_hours"] = fa.WarehouseCapacityTargetHours
-	}
-	if fa.MaxModuleSpendPerHull != 0 {
-		config["autosizer_max_module_spend_per_hull"] = int(fa.MaxModuleSpendPerHull)
-	}
-	if fa.WarehouseFrameClassCeiling != "" {
-		config["autosizer_warehouse_frame_class_ceiling"] = fa.WarehouseFrameClassCeiling
-	}
 	// Explorer class (sp-a3yn). The opt-in arming bool is written ONLY when true (an absent key reads
 	// as DISARMED, so nothing boot-arms it — mirrors warehouse_hulls_enabled).
 	if fa.ExplorerHullsEnabled {
@@ -253,16 +217,14 @@ func buildFleetAutosizerCommand(cfg *configReader, playerID int, containerID str
 		ContainerID: containerID,
 		AgentSymbol: cfg.OptionalString("agent_symbol"),
 
-		DryRun:                cfg.OptionalBool("autosizer_dry_run"),
-		WarehouseHullsEnabled: cfg.OptionalBool("autosizer_warehouse_hulls_enabled"),
+		DryRun: cfg.OptionalBool("autosizer_dry_run"),
 
 		TickIntervalSecs:   cfg.OptionalInt("autosizer_tick_secs", 0),
 		PurchaseCapPerTick: cfg.OptionalInt("autosizer_purchase_cap_per_tick", 0),
 
-		FleetCeilingTotal:     cfg.OptionalInt("autosizer_fleet_ceiling_total", 0),
-		FleetCeilingLights:    cfg.OptionalInt("autosizer_fleet_ceiling_lights", 0),
-		FleetCeilingHeavies:   cfg.OptionalInt("autosizer_fleet_ceiling_heavies", 0),
-		FleetCeilingWarehouse: cfg.OptionalInt("autosizer_fleet_ceiling_warehouse", 0),
+		FleetCeilingTotal:   cfg.OptionalInt("autosizer_fleet_ceiling_total", 0),
+		FleetCeilingLights:  cfg.OptionalInt("autosizer_fleet_ceiling_lights", 0),
+		FleetCeilingHeavies: cfg.OptionalInt("autosizer_fleet_ceiling_heavies", 0),
 
 		PurchaseMarginOverFloor: int64(cfg.OptionalInt("autosizer_purchase_margin_over_floor", 0)),
 		Reserve:                 int64(cfg.OptionalInt("autosizer_reserve", 0)),
@@ -288,14 +250,6 @@ func buildFleetAutosizerCommand(cfg *configReader, playerID int, containerID str
 		ShipTypeHeavies: cfg.OptionalString("autosizer_ship_type_heavies"),
 
 		ZeroEffectAlarmTicks: cfg.OptionalInt("autosizer_zero_effect_alarm_ticks", 0),
-
-		WarehouseMinChainRealizedPerHour: cfg.OptionalFloat("autosizer_warehouse_min_chain_realized_per_hour", 0),
-		WarehouseMinChainTickPersistence: cfg.OptionalInt("autosizer_warehouse_min_chain_tick_persistence", 0),
-		MaxWarehouseHulls:                cfg.OptionalInt("autosizer_max_warehouse_hulls", 0),
-		StockerHullsPerWarehouseGroup:    cfg.OptionalInt("autosizer_stocker_hulls_per_warehouse_group", 0),
-		WarehouseCapacityTargetHours:     cfg.OptionalFloat("autosizer_warehouse_capacity_target_hours", 0),
-		MaxModuleSpendPerHull:            int64(cfg.OptionalInt("autosizer_max_module_spend_per_hull", 0)),
-		WarehouseFrameClassCeiling:       cfg.OptionalString("autosizer_warehouse_frame_class_ceiling"),
 
 		ExplorerHullsEnabled:           cfg.OptionalBool("autosizer_explorer_hulls_enabled"),
 		FleetCeilingExplorer:           cfg.OptionalInt("autosizer_fleet_ceiling_explorer", 0),

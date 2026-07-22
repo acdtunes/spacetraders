@@ -13,16 +13,14 @@ import (
 // holds ALL knobs so resolveFleetAutosizerConfig is written once and the guard/demand math reads
 // resolved values directly.
 type autosizerRunConfig struct {
-	DryRun                bool
-	WarehouseHullsEnabled bool
+	DryRun bool
 
 	Tick               time.Duration
 	PurchaseCapPerTick int
 
-	FleetCeilingTotal     int
-	FleetCeilingLights    int
-	FleetCeilingHeavies   int
-	FleetCeilingWarehouse int
+	FleetCeilingTotal   int
+	FleetCeilingLights  int
+	FleetCeilingHeavies int
 
 	PurchaseMarginOverFloor int64
 	Reserve                 int64
@@ -50,14 +48,6 @@ type autosizerRunConfig struct {
 
 	ZeroEffectAlarmTicks int
 
-	WarehouseMinChainRealizedPerHour float64
-	WarehouseMinChainTickPersistence int
-	MaxWarehouseHulls                int
-	StockerHullsPerWarehouseGroup    int
-	WarehouseCapacityTargetHours     float64
-	MaxModuleSpendPerHull            int64
-	WarehouseFrameClassCeiling       string
-
 	// Explorer class.
 	ExplorerHullsEnabled           bool
 	FleetCeilingExplorer           int
@@ -70,38 +60,29 @@ type autosizerRunConfig struct {
 
 func resolveFleetAutosizerConfig(cmd *RunFleetAutosizerCoordinatorCommand) autosizerRunConfig {
 	c := autosizerRunConfig{
-		DryRun:                           cmd.DryRun,
-		WarehouseHullsEnabled:            cmd.WarehouseHullsEnabled,
-		Tick:                             time.Duration(cmd.TickIntervalSecs) * time.Second,
-		PurchaseCapPerTick:               cmd.PurchaseCapPerTick,
-		FleetCeilingTotal:                cmd.FleetCeilingTotal,
-		FleetCeilingLights:               cmd.FleetCeilingLights,
-		FleetCeilingHeavies:              cmd.FleetCeilingHeavies,
-		FleetCeilingWarehouse:            cmd.FleetCeilingWarehouse,
-		PurchaseMarginOverFloor:          cmd.PurchaseMarginOverFloor,
-		Reserve:                          cmd.Reserve,
-		ReserveTreasuryPct:               cmd.ReserveTreasuryPct,
-		LightRotationSlots:               cmd.LightRotationSlots,
-		HeavyMarginalRateFloor:           cmd.HeavyMarginalRateFloor,
-		HeavyUnservedLanesMin:            cmd.HeavyUnservedLanesMin,
-		HeavyTreasuryPctPerPurchase:      cmd.HeavyTreasuryPctPerPurchase,
-		DecliningRateUnservedFloor:       cmd.DecliningRateUnservedFloor,
-		APIUtilizationCeilingPct:         cmd.APIUtilizationCeilingPct,
-		PaybackSafetyFactor:              cmd.PaybackSafetyFactor,
-		PurchaseCutoffAtEraMinus:         time.Duration(cmd.PurchaseCutoffAtEraMinusHours * float64(time.Hour)),
-		MaxPriceLights:                   cmd.MaxPriceLights,
-		MaxPriceHeavies:                  cmd.MaxPriceHeavies,
-		MaxPremiumOverCheapestPct:        cmd.MaxPremiumOverCheapestPct,
-		ShipTypeLights:                   cmd.ShipTypeLights,
-		ShipTypeHeavies:                  cmd.ShipTypeHeavies,
-		ZeroEffectAlarmTicks:             cmd.ZeroEffectAlarmTicks,
-		WarehouseMinChainRealizedPerHour: cmd.WarehouseMinChainRealizedPerHour,
-		WarehouseMinChainTickPersistence: cmd.WarehouseMinChainTickPersistence,
-		MaxWarehouseHulls:                cmd.MaxWarehouseHulls,
-		StockerHullsPerWarehouseGroup:    cmd.StockerHullsPerWarehouseGroup,
-		WarehouseCapacityTargetHours:     cmd.WarehouseCapacityTargetHours,
-		MaxModuleSpendPerHull:            cmd.MaxModuleSpendPerHull,
-		WarehouseFrameClassCeiling:       cmd.WarehouseFrameClassCeiling,
+		DryRun:                      cmd.DryRun,
+		Tick:                        time.Duration(cmd.TickIntervalSecs) * time.Second,
+		PurchaseCapPerTick:          cmd.PurchaseCapPerTick,
+		FleetCeilingTotal:           cmd.FleetCeilingTotal,
+		FleetCeilingLights:          cmd.FleetCeilingLights,
+		FleetCeilingHeavies:         cmd.FleetCeilingHeavies,
+		PurchaseMarginOverFloor:     cmd.PurchaseMarginOverFloor,
+		Reserve:                     cmd.Reserve,
+		ReserveTreasuryPct:          cmd.ReserveTreasuryPct,
+		LightRotationSlots:          cmd.LightRotationSlots,
+		HeavyMarginalRateFloor:      cmd.HeavyMarginalRateFloor,
+		HeavyUnservedLanesMin:       cmd.HeavyUnservedLanesMin,
+		HeavyTreasuryPctPerPurchase: cmd.HeavyTreasuryPctPerPurchase,
+		DecliningRateUnservedFloor:  cmd.DecliningRateUnservedFloor,
+		APIUtilizationCeilingPct:    cmd.APIUtilizationCeilingPct,
+		PaybackSafetyFactor:         cmd.PaybackSafetyFactor,
+		PurchaseCutoffAtEraMinus:    time.Duration(cmd.PurchaseCutoffAtEraMinusHours * float64(time.Hour)),
+		MaxPriceLights:              cmd.MaxPriceLights,
+		MaxPriceHeavies:             cmd.MaxPriceHeavies,
+		MaxPremiumOverCheapestPct:   cmd.MaxPremiumOverCheapestPct,
+		ShipTypeLights:              cmd.ShipTypeLights,
+		ShipTypeHeavies:             cmd.ShipTypeHeavies,
+		ZeroEffectAlarmTicks:        cmd.ZeroEffectAlarmTicks,
 
 		ExplorerHullsEnabled:           cmd.ExplorerHullsEnabled,
 		FleetCeilingExplorer:           cmd.FleetCeilingExplorer,
@@ -124,12 +105,6 @@ func resolveFleetAutosizerConfig(cmd *RunFleetAutosizerCoordinatorCommand) autos
 	}
 	if c.FleetCeilingHeavies <= 0 {
 		c.FleetCeilingHeavies = defaultFleetCeilingHeavies
-	}
-	if c.FleetCeilingWarehouse <= 0 {
-		c.FleetCeilingWarehouse = defaultFleetCeilingWarehouse
-	}
-	if c.MaxWarehouseHulls <= 0 {
-		c.MaxWarehouseHulls = c.FleetCeilingWarehouse
 	}
 	if c.PurchaseMarginOverFloor <= 0 {
 		c.PurchaseMarginOverFloor = defaultPurchaseMarginOverFloor
@@ -169,15 +144,6 @@ func resolveFleetAutosizerConfig(cmd *RunFleetAutosizerCoordinatorCommand) autos
 	}
 	if c.ZeroEffectAlarmTicks <= 0 {
 		c.ZeroEffectAlarmTicks = defaultZeroEffectAlarmTicks
-	}
-	if c.WarehouseMinChainTickPersistence <= 0 {
-		c.WarehouseMinChainTickPersistence = defaultWarehouseMinChainTickPersistence
-	}
-	if c.WarehouseCapacityTargetHours <= 0 {
-		c.WarehouseCapacityTargetHours = defaultWarehouseCapacityTargetHours
-	}
-	if c.WarehouseFrameClassCeiling == "" {
-		c.WarehouseFrameClassCeiling = defaultWarehouseFrameClassCeiling
 	}
 	// Explorer defaults. ExplorerHullsEnabled has NO fallback — its false zero value IS the
 	// default (disarmed), so nothing boot-arms it. MaxPriceExplorer resolves to a REAL default (never
@@ -234,12 +200,9 @@ func (h *RunFleetAutosizerCoordinatorHandler) reconcileOnce(ctx context.Context,
 	// The live-resolved params every provider reads this tick (the live-config discipline): the
 	// providers are constructed once at boot but see the current config.yaml value through here.
 	params := DemandParams{
-		LightRotationSlots:          cfg.LightRotationSlots,
-		WarehouseMinTickPersistence: cfg.WarehouseMinChainTickPersistence,
-		WarehouseMinRealizedPerHour: cfg.WarehouseMinChainRealizedPerHour,
-		MaxWarehouseHulls:           cfg.MaxWarehouseHulls,
-		ExplorerHullsEnabled:        cfg.ExplorerHullsEnabled,
-		MaxExplorerHulls:            cfg.FleetCeilingExplorer,
+		LightRotationSlots:   cfg.LightRotationSlots,
+		ExplorerHullsEnabled: cfg.ExplorerHullsEnabled,
+		MaxExplorerHulls:     cfg.FleetCeilingExplorer,
 	}
 
 	// sp-y2ptq: the contract-delivery graduation gate was removed with the autosizer's contract class
@@ -277,23 +240,6 @@ func (h *RunFleetAutosizerCoordinatorHandler) reconcileOnce(ctx context.Context,
 		}
 		if unmetNoBuy {
 			anyUnmetNoBuy = true
-		}
-	}
-
-	// Warehouse DISPATCH: after the buy pass, place idle/stranded warehouse hulls onto the
-	// durable chains. This runs every tick the warehouse class is enabled — a hull stranded when vdld
-	// retires its chain must be re-sited even on a tick that buys nothing. The plan was computed by
-	// the warehouse provider's Demand() above; here we apply it (respecting dry-run).
-	if !cfg.classDisabled(HullClassWarehouse) && h.warehouse != nil {
-		dres := h.warehouse.DispatchPlanned(ctx, cmd.PlayerID, cfg.DryRun)
-		if dres.Dispatched > 0 || dres.Stranded > 0 || dres.Uncovered > 0 {
-			logger.Log("INFO", fmt.Sprintf("Autosizer warehouse dispatch: %d placed, %d still stranded, %d durable target(s) uncovered", dres.Dispatched, dres.Stranded, dres.Uncovered), map[string]interface{}{
-				"action":       "autosizer_warehouse_dispatch",
-				"container_id": cmd.ContainerID,
-				"dispatched":   dres.Dispatched,
-				"stranded":     dres.Stranded,
-				"uncovered":    dres.Uncovered,
-			})
 		}
 	}
 

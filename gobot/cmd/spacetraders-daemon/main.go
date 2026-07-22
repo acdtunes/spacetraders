@@ -773,9 +773,6 @@ func run(cfg *config.Config) error {
 	// read-only ProfitableLaneReader) and the realized tour-rate reads persisted tour telemetry
 	// (NewTourTelemetryRepository) — both fail closed on a read failure, so the guard stack still
 	// gates every heavy buy.
-	// sp-3yqa: goodsMarketLocator feeds the warehouse portfolio source (resolves each durable
-	// chain's in-system export waypoint — the warehouse's home). The warehouse class stays dormant
-	// until warehouse_hulls_enabled, so this wiring is safe to land ahead of opt-in.
 	// sp-42ow: the ReachableYardFinder is the heavy branch's yard-price FALLBACK — scout-scanned
 	// yards ranked by stored-gate-graph hops then price. Signal-only: with no scan data the price
 	// guard fails closed exactly as before, and every other guard still gates the buy.
@@ -787,7 +784,7 @@ func run(cfg *config.Config) error {
 	explorerOffGateBridge := expansionAdapters.NewExplorerOffGateBridge()
 
 	fleetAutosizerHandler := grpc.NewFleetAutosizerCoordinatorHandler(
-		daemonServer, apiClient, shipRepo, med, persistence.NewGormChainPnLRepository(db), waypointRepo, captainEventRepo, goodsMarketLocator,
+		daemonServer, apiClient, shipRepo, med, persistence.NewGormChainPnLRepository(db), waypointRepo, captainEventRepo,
 		marketRepo, persistence.NewTourTelemetryRepository(db),
 		shipyardQuery.NewReachableYardFinder(shipyardInventoryRepo, gateGraphService),
 		explorerOffGateBridge, // sp-a3yn: explorer demand provider reads off-gate demand through this bridge

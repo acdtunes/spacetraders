@@ -65,28 +65,28 @@ func TestReconcile_LiveByDefault_EvaluatesProviders(t *testing.T) {
 	}
 }
 
-// Warehouse is OPT-IN (not live-by-default): the warehouse provider is skipped unless
-// warehouse_hulls_enabled is set.
-func TestReconcile_WarehouseOptIn(t *testing.T) {
-	wh := &fakeDemandProvider{class: HullClassWarehouse, demand: ClassDemand{Demand: 2, Current: 0, Readable: true}}
+// Explorer is OPT-IN (not live-by-default): the explorer provider is skipped unless
+// explorer_hulls_enabled is set.
+func TestReconcile_ExplorerOptIn(t *testing.T) {
+	ex := &fakeDemandProvider{class: HullClassExplorer, demand: ClassDemand{Demand: 1, Current: 0, Readable: true}}
 
 	// Default (disabled): skipped.
-	h := newHandlerWith(wh)
+	h := newHandlerWith(ex)
 	if _, err := h.reconcileOnce(context.Background(), &RunFleetAutosizerCoordinatorCommand{ContainerID: "c1"}); err != nil {
 		t.Fatalf("reconcileOnce error: %v", err)
 	}
-	if wh.calls != 0 {
-		t.Fatalf("warehouse provider must be skipped when warehouse_hulls_enabled is unset, got %d", wh.calls)
+	if ex.calls != 0 {
+		t.Fatalf("explorer provider must be skipped when explorer_hulls_enabled is unset, got %d", ex.calls)
 	}
 
 	// Enabled: evaluated.
-	wh2 := &fakeDemandProvider{class: HullClassWarehouse, demand: ClassDemand{Demand: 2, Current: 0, Readable: true}}
-	h2 := newHandlerWith(wh2)
-	if _, err := h2.reconcileOnce(context.Background(), &RunFleetAutosizerCoordinatorCommand{WarehouseHullsEnabled: true, ContainerID: "c1"}); err != nil {
+	ex2 := &fakeDemandProvider{class: HullClassExplorer, demand: ClassDemand{Demand: 1, Current: 0, Readable: true}}
+	h2 := newHandlerWith(ex2)
+	if _, err := h2.reconcileOnce(context.Background(), &RunFleetAutosizerCoordinatorCommand{ExplorerHullsEnabled: true, ContainerID: "c1"}); err != nil {
 		t.Fatalf("reconcileOnce error: %v", err)
 	}
-	if wh2.calls != 1 {
-		t.Fatalf("warehouse provider must run when warehouse_hulls_enabled=true, got %d", wh2.calls)
+	if ex2.calls != 1 {
+		t.Fatalf("explorer provider must run when explorer_hulls_enabled=true, got %d", ex2.calls)
 	}
 }
 

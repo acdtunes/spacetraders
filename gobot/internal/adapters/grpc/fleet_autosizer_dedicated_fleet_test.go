@@ -17,7 +17,6 @@ func TestAutosizerDedicatedFleet_MapsEveryClassToItsExclusiveFleet(t *testing.T)
 	}{
 		{fleetCmd.HullClassLight, ""}, // a light IS a HAULER worker the moment it is bought — no tag
 		{fleetCmd.HullClassHeavy, "trade"},
-		{fleetCmd.HullClassWarehouse, "warehouse"},
 		{fleetCmd.HullClassExplorer, "explorer"},
 		{fleetCmd.HullClassContractDelivery, "contract"}, // the contract-scaler exclusivity fix (was "")
 	}

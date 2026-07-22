@@ -7,7 +7,7 @@
 // Shape mirrors run_siting_coordinator.go: a registered singleton handler with optional
 // setter-collaborators, one infinite reconcile loop in Handle(), resolveFleetAutosizerConfig()
 // resolving every <=0 knob to a documented protective default (RULINGS #5). One coordinator,
-// N pluggable demand providers (lights, heavies, warehouse) — the vdld pluggable-provider idiom.
+// N pluggable demand providers (lights, heavies, explorer) — the vdld pluggable-provider idiom.
 package commands
 
 // HullClass identifies an autosized hull pool. Each class has its own demand provider, fleet
@@ -19,9 +19,6 @@ const (
 	HullClassLight HullClass = "light"
 	// HullClassHeavy is the trade-tour pool (DedicatedFleet "trade"), sized to trade demand.
 	HullClassHeavy HullClass = "heavy"
-	// HullClassWarehouse is the storage/stocker pool (DedicatedFleet "warehouse"), sized to
-	// producing-chain export demand.
-	HullClassWarehouse HullClass = "warehouse"
 	// HullClassExplorer is the off-gate warp-exploration pool (DedicatedFleet "explorer").
 	// It is sized to slice-B off-gate demand and is the ONE class EXEMPT from
 	// the realized-$/hr payback guards: an explorer buys REACH (it charts new systems so the cheap

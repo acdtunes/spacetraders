@@ -19,9 +19,6 @@ type FleetAutosizerConfig struct {
 	// arithmetic) but spends nothing. NOT dark-shipping — it WARNs loudly every tick
 	// (no-silent-dry-run rule) and the zero-effect alarm still fires.
 	DryRun bool `mapstructure:"dry_run"`
-	// WarehouseHullsEnabled opts INTO the warehouse-hull class (default OFF until the
-	// dispatch step is armed — sp-1txd M7). Unlike lights/heavies it is opt-in, not live.
-	WarehouseHullsEnabled bool `mapstructure:"warehouse_hulls_enabled"`
 
 	// --- cadence + purchase pacing ---
 
@@ -34,12 +31,11 @@ type FleetAutosizerConfig struct {
 	// --- fleet ceilings (the HARD API-request-budget bound: each hull adds request load) ---
 
 	// FleetCeilingTotal caps the absolute fleet size the autosizer will grow to. 0/absent →
-	// defaultFleetCeilingTotal. FleetCeiling{Lights,Heavies,Warehouse} cap each class; 0/absent
+	// defaultFleetCeilingTotal. FleetCeiling{Lights,Heavies} cap each class; 0/absent
 	// → that class's documented default.
-	FleetCeilingTotal     int `mapstructure:"fleet_ceiling_total"`
-	FleetCeilingLights    int `mapstructure:"fleet_ceiling_lights"`
-	FleetCeilingHeavies   int `mapstructure:"fleet_ceiling_heavies"`
-	FleetCeilingWarehouse int `mapstructure:"fleet_ceiling_warehouse"`
+	FleetCeilingTotal   int `mapstructure:"fleet_ceiling_total"`
+	FleetCeilingLights  int `mapstructure:"fleet_ceiling_lights"`
+	FleetCeilingHeavies int `mapstructure:"fleet_ceiling_heavies"`
 
 	// --- treasury guard (reuses common.EffectiveReserveFloor) ---
 
@@ -124,38 +120,13 @@ type FleetAutosizerConfig struct {
 	// naming the persistent blocker (the f5pr silent-dry-run lesson). 0/absent → 4.
 	ZeroEffectAlarmTicks int `mapstructure:"zero_effect_alarm_ticks"`
 
-	// --- warehouse hull class + capacity ladder (sp-1txd M7/M8) ---
-
-	// WarehouseMinChainRealizedPerHour gates warehouse placement on a chain's realized $/hr
-	// (rh2z chain_pnl): only warehouse chains that PAY. 0/absent → 0 (no floor until tuned).
-	WarehouseMinChainRealizedPerHour float64 `mapstructure:"warehouse_min_chain_realized_per_hour"`
-	// WarehouseMinChainTickPersistence: a chain must persist in the durable set this many ticks
-	// before a warehouse follows it (hysteresis — warehouses follow durable chains, not every
-	// tick's reshuffle). 0/absent → 2.
-	WarehouseMinChainTickPersistence int `mapstructure:"warehouse_min_chain_tick_persistence"`
-	// MaxWarehouseHulls caps the warehouse-hull class. 0/absent → defaultFleetCeilingWarehouse.
-	MaxWarehouseHulls int `mapstructure:"max_warehouse_hulls"`
-	// StockerHullsPerWarehouseGroup is the 0/1 stocker demand per home-warehouse group under the
-	// capital ceiling. 0/absent → 0 (off until tuned).
-	StockerHullsPerWarehouseGroup int `mapstructure:"stocker_hulls_per_warehouse_group"`
-	// WarehouseCapacityTargetHours is the buffer depth (deposit rate × draw latency) the capacity
-	// ladder sizes slots to. 0/absent → 2.
-	WarehouseCapacityTargetHours float64 `mapstructure:"warehouse_capacity_target_hours"`
-	// MaxModuleSpendPerHull caps per-hull module spend on the capacity ladder's rung 1 (protects
-	// against a 196k HOLD_III install; market-priced per yard). 0/absent → 0 (no module installs
-	// until tuned — rung 1 disabled).
-	MaxModuleSpendPerHull int64 `mapstructure:"max_module_spend_per_hull"`
-	// WarehouseFrameClassCeiling caps the frame class the capacity ladder may buy ("light" or
-	// "heavy"); heavy requires explicit enable. 0/absent → "light".
-	WarehouseFrameClassCeiling string `mapstructure:"warehouse_frame_class_ceiling"`
-
 	// --- explorer hull class (sp-a3yn slice C of sp-4imi) ---
 	//
 	// The explorer auto-buys an ~819k SHIP_EXPLORER that is EXEMPT from the realized-$/hr payback
 	// gate (it buys REACH, not income). Because that spend is ROI-exempt and captain-reviewed, it is
 	// DEPLOY-INERT: ExplorerHullsEnabled defaults OFF and NOTHING boot-arms it — the buy requires BOTH
 	// (a) this flag armed AND (b) slice-B off-gate demand firing. Config+restart arming (not a live
-	// `tune`) is deliberate: a runtime tune cannot flip it. Like WarehouseHullsEnabled it is opt-IN.
+	// `tune`) is deliberate: a runtime tune cannot flip it. It is the sole opt-IN autosizer class.
 
 	// ExplorerHullsEnabled ARMS the explorer class. Absent/false = DISARMED (the class emits zero
 	// demand and buys nothing). Set true ONLY after the captain/human review signs off.

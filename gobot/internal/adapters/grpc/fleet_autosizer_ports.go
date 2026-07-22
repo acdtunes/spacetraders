@@ -56,10 +56,7 @@ type serverStatusReader interface {
 
 // NewFleetAutosizerCoordinatorHandler assembles the autosizer handler (sp-1txd M6), wiring every
 // concrete port to the daemon's live collaborators and registering the light + heavy demand
-// providers. The WAREHOUSE class (sp-1j3f demand + dispatch) is registered too (sp-3yqa M6-equiv),
-// wired over its concrete read-path ports; it stays DORMANT until the captain opts in with
-// warehouse_hulls_enabled (the coordinator skips the class otherwise), so registering it changes
-// no live behaviour.
+// providers (and the opt-in explorer class).
 func NewFleetAutosizerCoordinatorHandler(
 	server *DaemonServer,
 	apiClient *api.SpaceTradersClient,
@@ -68,7 +65,6 @@ func NewFleetAutosizerCoordinatorHandler(
 	chainPnL goodsServices.ChainPnLReader,
 	waypointRepo *persistence.GormWaypointRepository,
 	eventStore captain.EventStore,
-	marketLocator *goodsServices.MarketLocator,
 	marketRepo market.MarketRepository,
 	tourTelemetry tourTelemetryReader,
 	scannedYards scannedYardRanker,
@@ -91,18 +87,6 @@ func NewFleetAutosizerCoordinatorHandler(
 		tourRates:  tourTelemetry,
 		clock:      shared.NewRealClock(),
 	}))
-
-	// Warehouse class (sp-3yqa): the concrete read-path for the sp-1j3f WarehouseDemandProvider —
-	// the durable-chain portfolio (vdld chains ∩ export waypoint ∩ chain_pnl), the dedicated-hull
-	// pool, and the StartWarehouse dispatch bridge. SetWarehouseProvider both registers it in the
-	// demand loop AND hands the coordinator the typed handle its reconcile loop needs to run the
-	// anti-stranding DISPATCH step. Opt-in (warehouse_hulls_enabled, default off) so it is dormant
-	// until the captain enables it.
-	h.SetWarehouseProvider(fleetCmd.NewWarehouseDemandProvider(
-		newWarehousePortfolioSource(server.containerRepo, marketLocator, chainPnL),
-		newWarehouseHullSource(server.containerRepo, shipRepo),
-		newWarehouseDispatchBridge(server, shipRepo),
-	))
 
 	// Explorer class (sp-a3yn slice C): reads slice-B off-gate demand through the cross-coordinator
 	// bridge (offGateDemand) and the live explorer-pool count (dedicate-at-purchase "explorer" fleet).
@@ -338,14 +322,12 @@ type autosizerPurchaser struct {
 
 // autosizerDedicatedFleet maps a hull class to its permanent dedicated-fleet tag. Lights get NO tag
 // (a SHIP_LIGHT_HAULER is a HAULER worker the moment it is bought — being adopted by a factory chain
-// is the intended outcome, not the absorption hazard); heavies and warehouse hulls MUST be tagged at
-// purchase so no coordinator poaches them before they reach their role (the 3-of-5-absorbed lesson).
+// is the intended outcome, not the absorption hazard); heavies (and explorer/contract hulls) MUST be
+// tagged at purchase so no coordinator poaches them before they reach their role (the 3-of-5-absorbed lesson).
 func autosizerDedicatedFleet(class fleetCmd.HullClass) string {
 	switch class {
 	case fleetCmd.HullClassHeavy:
 		return "trade"
-	case fleetCmd.HullClassWarehouse:
-		return "warehouse"
 	case fleetCmd.HullClassExplorer:
 		// sp-a3yn dedicate-at-purchase: tag the bought explorer to the "explorer" fleet in the same
 		// breath so no coordinator poaches it before the frontier dispatch loop warps it off-gate.
@@ -409,7 +391,7 @@ func (p *autosizerPurchaser) BuyAndDedicate(ctx context.Context, order fleetCmd.
 	}
 	bought := batch.PurchasedShips[0]
 
-	// Dedicate-at-purchase: tag heavy/warehouse hulls to their fleet in the same breath so no
+	// Dedicate-at-purchase: tag heavy/explorer/contract hulls to their fleet in the same breath so no
 	// coordinator tick can adopt them first. Idempotent; lights get no tag (they ARE workers).
 	dedicated := false
 	if fleet := autosizerDedicatedFleet(order.Class); fleet != "" {

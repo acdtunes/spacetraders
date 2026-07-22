@@ -20,10 +20,9 @@ const (
 	// Protective fleet ceilings (the HARD API-request-budget bound — each hull adds request
 	// load). Deliberately conservative: an auto-buyer that surprises the treasury is worse than
 	// one that stops early, and the captain raises these from evidence.
-	defaultFleetCeilingTotal     = 50
-	defaultFleetCeilingLights    = 35
-	defaultFleetCeilingHeavies   = 15
-	defaultFleetCeilingWarehouse = 8
+	defaultFleetCeilingTotal   = 50
+	defaultFleetCeilingLights  = 35
+	defaultFleetCeilingHeavies = 15
 
 	defaultPurchaseMarginOverFloor     = 200000
 	defaultLightRotationSlots          = 3.5
@@ -44,10 +43,6 @@ const (
 	// Default shipyard ship-type symbols per class (RULINGS #5: even the asset is a knob).
 	defaultShipTypeLights  = "SHIP_LIGHT_HAULER"
 	defaultShipTypeHeavies = "SHIP_HEAVY_FREIGHTER"
-
-	defaultWarehouseMinChainTickPersistence = 2
-	defaultWarehouseCapacityTargetHours     = 2.0
-	defaultWarehouseFrameClassCeiling       = "light"
 
 	// Explorer class. Opt-IN (default OFF, arming knob). The HARD CAP is 1; the
 	// PRICE CEILING defaults to ~819k SHIP_EXPLORER + a premium (a REAL default, never 0=off — the
@@ -70,14 +65,6 @@ const (
 type DemandParams struct {
 	// LightRotationSlots is the C3 rotation divisor inverted: K chains need K × this workers.
 	LightRotationSlots float64
-	// WarehouseMinTickPersistence is the hysteresis: a chain must sit in the running portfolio this
-	// many consecutive ticks before a warehouse follows it.
-	WarehouseMinTickPersistence int
-	// WarehouseMinRealizedPerHour is the pay gate: only a chain earning at least this realized $/hr
-	// (rh2z chain_pnl) pulls a warehouse.
-	WarehouseMinRealizedPerHour float64
-	// MaxWarehouseHulls caps the warehouse demand regardless of how many durable chains exist.
-	MaxWarehouseHulls int
 	// ExplorerHullsEnabled ARMS the explorer class. Default false (opt-in): when false the
 	// explorer provider emits ZERO demand unconditionally, so a bare deploy buys no explorer.
 	ExplorerHullsEnabled bool
@@ -111,16 +98,14 @@ type RunFleetAutosizerCoordinatorCommand struct {
 	ContainerID string
 	AgentSymbol string
 
-	DryRun                bool
-	WarehouseHullsEnabled bool
+	DryRun bool
 
 	TickIntervalSecs   int
 	PurchaseCapPerTick int
 
-	FleetCeilingTotal     int
-	FleetCeilingLights    int
-	FleetCeilingHeavies   int
-	FleetCeilingWarehouse int
+	FleetCeilingTotal   int
+	FleetCeilingLights  int
+	FleetCeilingHeavies int
 
 	PurchaseMarginOverFloor int64
 	Reserve                 int64
@@ -147,15 +132,6 @@ type RunFleetAutosizerCoordinatorCommand struct {
 	ShipTypeHeavies string
 
 	ZeroEffectAlarmTicks int
-
-	// Warehouse class.
-	WarehouseMinChainRealizedPerHour float64
-	WarehouseMinChainTickPersistence int
-	MaxWarehouseHulls                int
-	StockerHullsPerWarehouseGroup    int
-	WarehouseCapacityTargetHours     float64
-	MaxModuleSpendPerHull            int64
-	WarehouseFrameClassCeiling       string
 
 	// Explorer class. ExplorerHullsEnabled is the opt-IN arming knob (default OFF
 	// — nothing boot-arms it). FleetCeilingExplorer is the HARD CAP (default 1); MaxPriceExplorer is
@@ -198,11 +174,6 @@ type RunFleetAutosizerCoordinatorHandler struct {
 	notifier  PurchaseNotifier
 	metrics   MetricsSink
 
-	// warehouse is the typed handle to the warehouse provider. Held in addition to its
-	// slot in providers so the reconcile loop can invoke its DISPATCH step (place idle/stranded hulls
-	// on durable chains) after the buy pass. nil until wired, in which case dispatch is skipped.
-	warehouse *WarehouseDemandProvider
-
 	mu    sync.Mutex
 	state map[string]*autosizerState // keyed by container ID
 }
@@ -233,16 +204,6 @@ func NewRunFleetAutosizerCoordinatorHandler(clock shared.Clock) *RunFleetAutosiz
 
 // AddDemandProvider registers a class demand provider. Registration order is evaluation order.
 func (h *RunFleetAutosizerCoordinatorHandler) AddDemandProvider(p ClassDemandProvider) {
-	h.providers = append(h.providers, p)
-}
-
-// SetWarehouseProvider wires the warehouse provider. It registers the provider in the
-// evaluation loop (its Demand() feeds the buy path like any class) AND keeps a typed handle so the
-// reconcile loop can run its DISPATCH step each tick — placing idle/stranded warehouse hulls on the
-// durable chains, which the generic buy path cannot do. Call this INSTEAD of AddDemandProvider for
-// the warehouse class.
-func (h *RunFleetAutosizerCoordinatorHandler) SetWarehouseProvider(p *WarehouseDemandProvider) {
-	h.warehouse = p
 	h.providers = append(h.providers, p)
 }
 
@@ -331,13 +292,11 @@ func (h *RunFleetAutosizerCoordinatorHandler) coordinatorState(containerID strin
 }
 
 // classDisabled reports whether a class is frozen by config. Lights/heavies are LIVE BY DEFAULT
-// and unconditionally run; warehouse is opt-IN (only runs when enabled).
+// and unconditionally run; explorer is opt-IN (only runs when armed).
 func (c autosizerRunConfig) classDisabled(class HullClass) bool {
 	switch class {
 	case HullClassLight, HullClassHeavy:
 		return false
-	case HullClassWarehouse:
-		return !c.WarehouseHullsEnabled
 	case HullClassExplorer:
 		// Opt-IN arming: the explorer class runs ONLY when explicitly armed, so a bare
 		// deploy skips it entirely and buys no ~819k ROI-exempt hull.
