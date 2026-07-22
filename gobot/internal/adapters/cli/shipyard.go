@@ -3,11 +3,17 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shipyard"
+	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
+	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
 // NewShipyardCommand creates the shipyard command with subcommands
@@ -29,6 +35,7 @@ Examples:
 	// Add subcommands
 	cmd.AddCommand(newShipyardListCommand())
 	cmd.AddCommand(newShipyardPurchaseCommand())
+	cmd.AddCommand(newShipyardYardsCommand())
 
 	return cmd
 }
@@ -212,4 +219,83 @@ Examples:
 	cmd.Flags().StringVar(&shipyardWaypoint, "waypoint", "", "Shipyard waypoint (optional - will auto-discover if not provided)")
 
 	return cmd
+}
+
+// shipyardYardsProvider is the narrow read seam newShipyardYardsCommand needs
+// from the saved shipyard-inventory scan cache. Satisfied by
+// *persistence.ShipyardInventoryRepositoryGORM; a fake stands in for CLI
+// rendering tests (shipyard_yards_test.go) — era-scoping and price ordering
+// are real behavior asserted separately against a real DB
+// (shipyard_inventory_repository_test.go).
+type shipyardYardsProvider interface {
+	ListSavedYards(ctx context.Context, playerID int, shipTypes []string) ([]shipyard.ShipTypeAvailability, error)
+}
+
+// newShipyardYardsCommand creates the shipyard yards subcommand (sp-qx29f):
+// a read-only query over the SAVED shipyard_inventory scan cache, unlike
+// `shipyard list` which requires a ship physically docked at the yard.
+func newShipyardYardsCommand() *cobra.Command {
+	var shipTypes []string
+
+	cmd := &cobra.Command{
+		Use:   "yards",
+		Short: "List saved shipyards dealing in a ship type (current era only, no ship presence required)",
+		Long: `Query the SAVED shipyard_inventory scan cache for yards dealing in the given
+ship type(s) — the daemon's per-yard catalog written by the shipyard scanner.
+
+Unlike 'shipyard list', NO ship needs to be physically present and docked at
+the yard: this reads data already collected by prior scans. Results are
+scoped to the CURRENT open era (a yard whose only rows are from a closed era
+is excluded) and ordered by purchase price ascending.
+
+Examples:
+  spacetraders shipyard yards --type SHIP_HEAVY_FREIGHTER --player-id 1
+  spacetraders shipyard yards --type SHIP_HEAVY_FREIGHTER --type SHIP_PROBE --player-id 1
+  spacetraders shipyard yards --player-id 1   # every saved yard, any type`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			playerIdent, err := resolvePlayerIdentifier()
+			if err != nil {
+				return err
+			}
+
+			cfg, err := config.LoadConfig("")
+			if err != nil {
+				return fmt.Errorf("failed to load config: %w", err)
+			}
+			db, err := database.NewConnection(&cfg.Database)
+			if err != nil {
+				return fmt.Errorf("failed to connect to database: %w", err)
+			}
+
+			repo := persistence.NewShipyardInventoryRepository(db)
+			return runShipyardYards(context.Background(), repo, os.Stdout, playerIdent.PlayerID, shipTypes)
+		},
+	}
+
+	cmd.Flags().StringSliceVar(&shipTypes, "type", nil, "Ship type(s) to filter by (repeatable or comma-list; omit for every saved type)")
+
+	return cmd
+}
+
+func runShipyardYards(ctx context.Context, p shipyardYardsProvider, out io.Writer, playerID int, shipTypes []string) error {
+	rows, err := p.ListSavedYards(ctx, playerID, shipTypes)
+	if err != nil {
+		return fmt.Errorf("failed to list saved yards: %w", err)
+	}
+
+	if len(rows) == 0 {
+		fmt.Fprintln(out, "No saved yards found.")
+		return nil
+	}
+
+	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "SYSTEM\tWAYPOINT\tTYPE\tPRICE\tSUPPLY\tLAST SCANNED")
+	for _, r := range rows {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\n",
+			r.SystemSymbol, r.WaypointSymbol, r.ShipType, r.PurchasePrice, r.Supply,
+			r.LastScanned.Format("2006-01-02 15:04:05"))
+	}
+	w.Flush()
+
+	return nil
 }

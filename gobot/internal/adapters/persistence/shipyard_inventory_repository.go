@@ -134,6 +134,38 @@ func (r *ShipyardInventoryRepositoryGORM) ScannedSystems(ctx context.Context, pl
 	return systems, nil
 }
 
+// ListSavedYards returns every era-scoped row for the player, optionally
+// filtered to shipTypes (empty = every saved ship type), ordered by
+// purchase_price ASCENDING — the `shipyard yards --type` CLI query (sp-qx29f).
+// Unlike ListByTypes (waypoint/type order for deterministic downstream
+// ranking, and a no-op on empty shipTypes), this orders for an operator
+// scanning for the cheapest yard and treats an empty filter as "every type".
+func (r *ShipyardInventoryRepositoryGORM) ListSavedYards(ctx context.Context, playerID int, shipTypes []string) ([]shipyard.ShipTypeAvailability, error) {
+	predicate, args := eraScopePredicate(r.openEraID(ctx))
+	query := r.db.WithContext(ctx).Model(&ShipyardInventoryModel{}).
+		Where("player_id = ?", playerID).
+		Where(predicate, args...)
+	if len(shipTypes) > 0 {
+		query = query.Where("ship_type IN ?", shipTypes)
+	}
+	var models []ShipyardInventoryModel
+	if err := query.Order("purchase_price ASC").Find(&models).Error; err != nil {
+		return nil, fmt.Errorf("failed to list saved yards: %w", err)
+	}
+	out := make([]shipyard.ShipTypeAvailability, 0, len(models))
+	for _, m := range models {
+		out = append(out, shipyard.ShipTypeAvailability{
+			SystemSymbol:   m.SystemSymbol,
+			WaypointSymbol: m.WaypointSymbol,
+			ShipType:       m.ShipType,
+			PurchasePrice:  m.PurchasePrice,
+			Supply:         m.Supply,
+			LastScanned:    m.LastScanned,
+		})
+	}
+	return out, nil
+}
+
 // openEraID mirrors GormGateEdgeRepository.openEraID: the open era is the
 // highest era_id with no closed_at. nil (no open era yet) scopes reads/writes
 // to NULL era_id rows, matching the pre-close transition window.

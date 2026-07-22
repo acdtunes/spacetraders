@@ -110,6 +110,86 @@ func TestShipyardInventory_DeadEraRows_InvisibleToLiveReads(t *testing.T) {
 	require.Equal(t, int64(1), total, "the re-scan must have purged the dead-era row, not stacked on it")
 }
 
+// ListSavedYards backs the `shipyard yards --type` CLI query: filtered to the
+// requested types, era-scoped, ordered by purchase_price ASCENDING (unlike
+// ListByTypes, which orders by waypoint/type for deterministic ranking).
+func TestShipyardInventory_ListSavedYards_FiltersByTypeOrderedByPriceAscending(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	require.NoError(t, db.Create(&persistence.EraModel{Name: "orion", AgentSymbol: "ORION", PlayerID: 1}).Error)
+
+	repo := persistence.NewShipyardInventoryRepository(db)
+	ctx := context.Background()
+
+	require.NoError(t, repo.ReplaceScan(ctx, 1, "X1-AA", "X1-AA-Y1", []shipyard.ShipTypeAvailability{
+		availability("X1-AA-Y1", "SHIP_HEAVY_FREIGHTER", 1_300_000, "MODERATE"),
+		availability("X1-AA-Y1", "SHIP_PROBE", 25_000, "HIGH"), // different type, must be excluded by the filter
+	}, time.Now()))
+	require.NoError(t, repo.ReplaceScan(ctx, 1, "X1-BB", "X1-BB-Y1", []shipyard.ShipTypeAvailability{
+		{SystemSymbol: "X1-BB", WaypointSymbol: "X1-BB-Y1", ShipType: "SHIP_HEAVY_FREIGHTER", PurchasePrice: 1_150_000, Supply: "HIGH"},
+	}, time.Now()))
+
+	rows, err := repo.ListSavedYards(ctx, 1, []string{"SHIP_HEAVY_FREIGHTER"})
+	require.NoError(t, err)
+	require.Len(t, rows, 2, "only the requested type must be returned")
+	require.Equal(t, "X1-BB-Y1", rows[0].WaypointSymbol, "cheaper yard must sort first")
+	require.Equal(t, 1_150_000, rows[0].PurchasePrice)
+	require.Equal(t, "X1-AA-Y1", rows[1].WaypointSymbol)
+	require.Equal(t, 1_300_000, rows[1].PurchasePrice)
+}
+
+// The CRITICAL acceptance requirement (Admiral, sp-qx29f): a yard whose only
+// shipyard_inventory rows are from a CLOSED era must never appear in the
+// `shipyard yards` result, even though a current-era yard for the same type
+// exists — a stale closed-era row would misdirect a live "buy 2 heavies" order.
+func TestShipyardInventory_ListSavedYards_ExcludesClosedEraRows(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+
+	closedAt := time.Now().Add(-24 * time.Hour)
+	require.NoError(t, db.Create(&persistence.EraModel{Name: "torwind", AgentSymbol: "TORWIND", PlayerID: 1, ClosedAt: &closedAt}).Error)
+	closedEra := 1
+	require.NoError(t, db.Create(&persistence.ShipyardInventoryModel{
+		PlayerID: 1, SystemSymbol: "X1-DEAD", WaypointSymbol: "X1-DEAD-Y1",
+		ShipType: "SHIP_HEAVY_FREIGHTER", PurchasePrice: 900_000, // cheapest — must NOT win the price sort
+		LastScanned: time.Now(), EraID: &closedEra,
+	}).Error)
+
+	require.NoError(t, db.Create(&persistence.EraModel{Name: "orion", AgentSymbol: "ORION", PlayerID: 1}).Error)
+	repo := persistence.NewShipyardInventoryRepository(db)
+	ctx := context.Background()
+
+	require.NoError(t, repo.ReplaceScan(ctx, 1, "X1-AA", "X1-AA-Y1", []shipyard.ShipTypeAvailability{
+		availability("X1-AA-Y1", "SHIP_HEAVY_FREIGHTER", 1_300_000, "MODERATE"),
+	}, time.Now()))
+
+	rows, err := repo.ListSavedYards(ctx, 1, []string{"SHIP_HEAVY_FREIGHTER"})
+	require.NoError(t, err)
+	require.Len(t, rows, 1, "the closed-era yard must not appear alongside the current-era yard")
+	require.Equal(t, "X1-AA-Y1", rows[0].WaypointSymbol, "only the current-era yard is present")
+}
+
+// No --type filter = every saved current-era ship type for the player, still
+// price-ascending across types.
+func TestShipyardInventory_ListSavedYards_NoTypeFilterReturnsAllSavedTypes(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	require.NoError(t, db.Create(&persistence.EraModel{Name: "orion", AgentSymbol: "ORION", PlayerID: 1}).Error)
+
+	repo := persistence.NewShipyardInventoryRepository(db)
+	ctx := context.Background()
+	require.NoError(t, repo.ReplaceScan(ctx, 1, "X1-AA", "X1-AA-Y1", []shipyard.ShipTypeAvailability{
+		availability("X1-AA-Y1", "SHIP_HEAVY_FREIGHTER", 1_300_000, "MODERATE"),
+		availability("X1-AA-Y1", "SHIP_PROBE", 25_000, "HIGH"),
+	}, time.Now()))
+
+	rows, err := repo.ListSavedYards(ctx, 1, nil)
+	require.NoError(t, err)
+	require.Len(t, rows, 2, "an empty type filter must return every saved type")
+	require.Equal(t, "SHIP_PROBE", rows[0].ShipType, "cheapest row sorts first regardless of type")
+	require.Equal(t, "SHIP_HEAVY_FREIGHTER", rows[1].ShipType)
+}
+
 // ScannedSystems returns the DISTINCT open-era systems the player has scanned: one entry per system regardless of how
 // many yards/types it holds, and a dead-era scan does NOT count as scanned (so a
 // universe reset re-backfills every shipyard this era).
