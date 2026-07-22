@@ -68,33 +68,21 @@ type probeYardFinder interface {
 	NearestYardsSelling(ctx context.Context, playerID int, shipTypes []string, fromSystems []string) ([]shipyardQueries.YardCandidate, error)
 }
 
-// PriceImpactSource supplies the sp-4m4ve Phase 3 (§2D) per-yard recent-buy price-impact term's
-// collaborators and tunables. A candidate yard's effective SELECTION cost is inflated by
-// EstImpactPerBuy credits for every recent probe PURCHASE_SHIP transaction this player made at
-// that yard's waypoint within ImpactDecayWindow — derived fresh from the PERSISTED ledger on
-// every call (restart-safe, RULINGS #2: never an in-memory per-yard counter a daemon restart
-// would lose). This lets sourcing rotate off a hammered yard PROACTIVELY, before the next market
-// re-scan reflects the price climb it already rode (the live-observed pathology: 10 consecutive
-// buys at one yard, +20.5%, and no rotation, because SELECTION only ever sees the stale scan
-// between re-scans). It is a SELECTION-only re-ranking signal: the money guards still gate on the
-// yard's real scanned/live price, never this inflated number (RULINGS #4 — this never creates a
-// new spend path and never changes WHETHER a probe is bought). A nil PriceImpactSource, or
-// EstImpactPerBuy<=0, disables the term entirely — no ledger read is even attempted, and
-// pickBuyYard's effective cost is byte-identical to pre-sp-4m4ve selection.
-type PriceImpactSource struct {
-	Ledger            ledger.TransactionRepository
-	Clock             shared.Clock  // nil -> real clock
-	EstImpactPerBuy   int           // credits added per recent buy at a candidate yard; <=0 disables the term
-	ImpactDecayWindow time.Duration // how far back a buy counts toward the term; older buys drop out
-}
-
-// DefaultEstImpactPerBuyCredits and DefaultImpactDecayWindow are the sp-4m4ve Phase 3 shipped
-// defaults: the term OFF (0 credits — byte-identical selection). Arming (raising
-// EstImpactPerBuyCredits above 0) is a separate, later change; the wiring here is already
-// restart-safe and correct at 0.
+// estImpactPerBuyCredits and impactDecayWindow are the sp-4m4ve Phase 3 (§2D) per-yard
+// recent-buy price-impact term's fixed rate and lookback — graduated UNCONDITIONAL (no flag,
+// no off path). A candidate yard's effective SELECTION cost is inflated by
+// estImpactPerBuyCredits credits for every recent probe PURCHASE_SHIP transaction this player
+// made at that yard's waypoint within impactDecayWindow — derived fresh from the PERSISTED
+// ledger on every call (restart-safe, RULINGS #2: never an in-memory per-yard counter a daemon
+// restart would lose). This lets sourcing rotate off a hammered yard PROACTIVELY, before the next
+// market re-scan reflects the price climb it already rode (the live-observed pathology: 10
+// consecutive buys at one yard, +20.5%, and no rotation, because SELECTION only ever sees the
+// stale scan between re-scans). It is a SELECTION-only re-ranking signal: the money guards still
+// gate on the yard's real scanned/live price, never this inflated number (RULINGS #4 — this
+// never creates a new spend path and never changes WHETHER a probe is bought).
 const (
-	DefaultEstImpactPerBuyCredits = 0
-	DefaultImpactDecayWindow      = 2 * time.Hour
+	estImpactPerBuyCredits = 5_000
+	impactDecayWindow      = 2 * time.Hour
 )
 
 // ProbePurchaser prices and buys one probe through the existing purchase_ship mediator
@@ -111,14 +99,16 @@ type ProbePurchaser struct {
 	mediator   common.Mediator
 	shipRepo   navigation.ShipRepository
 	yardFinder probeYardFinder
-	impact     *PriceImpactSource
+	ledger     ledger.TransactionRepository
+	clock      shared.Clock
 }
 
 // NewProbePurchaser wires the price-and-buy port. yardFinder is optional (nil disables
-// target-aware selection — every buy stays on the home-yard in-place path). impact is optional
-// (nil disables the per-yard recent-buy price-impact term — see PriceImpactSource).
-func NewProbePurchaser(mediator common.Mediator, shipRepo navigation.ShipRepository, yardFinder probeYardFinder, impact *PriceImpactSource) *ProbePurchaser {
-	return &ProbePurchaser{mediator: mediator, shipRepo: shipRepo, yardFinder: yardFinder, impact: impact}
+// target-aware selection — every buy stays on the home-yard in-place path). txnLedger backs the
+// per-yard recent-buy price-impact term (unconditional — see recentBuyImpact); clock is
+// nil-safe (nil -> real clock).
+func NewProbePurchaser(mediator common.Mediator, shipRepo navigation.ShipRepository, yardFinder probeYardFinder, txnLedger ledger.TransactionRepository, clock shared.Clock) *ProbePurchaser {
+	return &ProbePurchaser{mediator: mediator, shipRepo: shipRepo, yardFinder: yardFinder, ledger: txnLedger, clock: clock}
 }
 
 // probeBuyPlan is one resolved buy: the yard to buy at, the price the guards judge, and the
@@ -221,26 +211,23 @@ func (p *ProbePurchaser) resolveProximalBuy(ctx context.Context, playerID shared
 
 // recentBuyImpactScan bounds the newest-first PURCHASE_SHIP rows scanned to derive each
 // candidate yard's recent-buy count — generous enough to cover every probe buy that can fall
-// inside a realistic ImpactDecayWindow, mirroring probebuy's windowProbeSpendScan bound.
+// inside a realistic impactDecayWindow, mirroring probebuy's windowProbeSpendScan bound.
 const recentBuyImpactScan = 500
 
 // recentBuyImpact derives, per yard waypoint, the SELECTION-only price-impact credits from this
 // player's PERSISTED recent probe PURCHASE_SHIP transactions (RULINGS #2: reconstructed fresh
 // from the ledger every call, never an in-memory counter a restart would lose). Returns nil (zero
-// impact everywhere) when the term is unarmed (nil source, EstImpactPerBuy<=0, no ledger wired)
-// or the ledger read fails — this SELECTION signal fails OPEN, exactly like the yard finder
-// above: it can never fail a buy closed (RULINGS #4 guards it never touches).
+// impact everywhere) when the ledger read fails or turns up no recent probe buys — this
+// SELECTION signal fails OPEN, exactly like the yard finder above: it can never fail a buy closed
+// (RULINGS #4 guards it never touches).
 func (p *ProbePurchaser) recentBuyImpact(ctx context.Context, playerID shared.PlayerID) map[string]int {
-	if p.impact == nil || p.impact.EstImpactPerBuy <= 0 || p.impact.Ledger == nil {
-		return nil
-	}
-	clock := p.impact.Clock
+	clock := p.clock
 	if clock == nil {
 		clock = shared.NewRealClock()
 	}
-	since := clock.Now().Add(-p.impact.ImpactDecayWindow)
+	since := clock.Now().Add(-impactDecayWindow)
 	shipPurchase := ledger.TransactionTypePurchaseShip
-	txns, err := p.impact.Ledger.FindByPlayer(ctx, playerID, ledger.QueryOptions{
+	txns, err := p.ledger.FindByPlayer(ctx, playerID, ledger.QueryOptions{
 		TransactionType: &shipPurchase,
 		StartDate:       &since,
 		Limit:           recentBuyImpactScan,
@@ -265,7 +252,7 @@ func (p *ProbePurchaser) recentBuyImpact(ctx context.Context, playerID shared.Pl
 	}
 	impactByYard := make(map[string]int, len(counts))
 	for waypoint, n := range counts {
-		impactByYard[waypoint] = n * p.impact.EstImpactPerBuy
+		impactByYard[waypoint] = n * estImpactPerBuyCredits
 	}
 	return impactByYard
 }
