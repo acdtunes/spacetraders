@@ -297,10 +297,21 @@ func (h *RunContractScalerHandler) reconcileOnce(ctx context.Context, cmd *RunCo
 	remaining -= takeDelivery
 	takeWarehouse, takeStocker := 0, 0
 	if h.DepotActuatable() {
-		takeWarehouse = clampTake(warehouseTarget, remaining)
-		remaining -= takeWarehouse
+		// FUNCTIONAL DEPOT FIRST: fund the ANCHOR warehouse, THEN the stocker that fills it, THEN the
+		// remaining warehouse depth — a usable mini-depot (1 warehouse + 1 stocker) forms before the depth
+		// deepens (an empty warehouse is useless until a stocker deposits into it). So the stocker outranks
+		// warehouse #2+ for the leftover budget; the plan role COUNTS are unchanged, only the fill priority.
+		anchorTarget := 0
+		if warehouseTarget > 0 {
+			anchorTarget = 1
+		}
+		anchor := clampTake(anchorTarget, remaining)
+		remaining -= anchor
 		takeStocker = clampTake(stockerTarget, remaining)
 		remaining -= takeStocker
+		extra := clampTake(warehouseTarget-anchor, remaining)
+		remaining -= extra
+		takeWarehouse = anchor + extra
 	}
 
 	bought := h.fillDeliveryRole(ctx, cmd, armed, takeDelivery)
@@ -399,9 +410,12 @@ func (h *RunContractScalerHandler) DepotActuatable() bool {
 	return h.depotCounter != nil && h.grower != nil
 }
 
-// fillDepotRoles reconciles the EXISTING depot up to the warehouse then stocker targets — reuse-before-
-// buy per role, growing the depot with each hull. Dry-run observes only (never actuates). The counter is
-// read per-role ONLY when that role has budget, so a delivery-only pass never touches the depot.
+// fillDepotRoles reconciles the EXISTING depot in FUNCTIONAL-DEPOT-FIRST order: the ANCHOR warehouse,
+// THEN the stocker that fills it, THEN the remaining warehouse depth — so a usable mini-depot (1
+// warehouse + 1 stocker) forms before the depth deepens. The stocker is grown ONLY once ≥1 warehouse
+// exists to deposit into (no orphan stocker). Reuse-before-buy + the 200000 cushion live in fillDepotRole;
+// dry-run observes only. fillDepotRoles is entered only when a role has budget, so a delivery-only pass
+// never touches the depot.
 func (h *RunContractScalerHandler) fillDepotRoles(ctx context.Context, cmd *RunContractScalerCommand, armed *armedPlan, takeWarehouse, takeStocker int) int {
 	logger := common.LoggerFromContext(ctx)
 	if cmd.DryRun {
@@ -415,20 +429,32 @@ func (h *RunContractScalerHandler) fillDepotRoles(ctx context.Context, cmd *RunC
 		return 0 // no central anchor (empty era already returned) → nothing to grow
 	}
 
-	bought := 0
-	if takeWarehouse > 0 {
-		haveWarehouse, err := h.depotCounter.WarehouseCount(ctx, cmd.PlayerID)
-		if err != nil {
-			return bought // fail-closed: hold the depot fill on an unreadable Current
-		}
-		bought += h.fillDepotRole(ctx, cmd, contractscaler.Warehouse, hub, haveWarehouse, takeWarehouse)
+	haveWarehouse, err := h.depotCounter.WarehouseCount(ctx, cmd.PlayerID)
+	if err != nil {
+		return 0 // fail-closed: hold the depot fill on an unreadable Current
 	}
-	if takeStocker > 0 {
+
+	bought := 0
+	// Phase 1 — the ANCHOR warehouse: the hold the stocker deposits into. Grow at most one before the
+	// stocker so a functional mini-depot forms first.
+	if takeWarehouse >= 1 && haveWarehouse < 1 {
+		grew := h.fillDepotRole(ctx, cmd, contractscaler.Warehouse, hub, haveWarehouse, 1)
+		bought += grew
+		haveWarehouse += grew
+	}
+	// Phase 2 — the STOCKER: only once ≥1 warehouse EXISTS to deposit into (a stocker with no warehouse has
+	// nowhere to deposit). This is the reorder — the stocker precedes the remaining warehouse depth. If the
+	// anchor failed to form (grow held/errored), haveWarehouse is still 0 and the stocker is safely skipped.
+	if takeStocker > 0 && haveWarehouse >= 1 {
 		haveStocker, err := h.depotCounter.StockerCount(ctx, cmd.PlayerID)
 		if err != nil {
 			return bought // fail-closed
 		}
 		bought += h.fillDepotRole(ctx, cmd, contractscaler.Stocker, hub, haveStocker, takeStocker)
+	}
+	// Phase 3 — the remaining warehouse DEPTH, behind the now-functional mini-depot.
+	if haveWarehouse < takeWarehouse {
+		bought += h.fillDepotRole(ctx, cmd, contractscaler.Warehouse, hub, haveWarehouse, takeWarehouse)
 	}
 	return bought
 }

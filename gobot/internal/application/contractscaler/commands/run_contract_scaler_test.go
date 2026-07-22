@@ -443,10 +443,12 @@ type fakeGrower struct {
 	counter        *fakeDepotCounter
 	warehouseGrows []DepotGrowOrder
 	stockerGrows   []DepotGrowOrder
+	growCalls      []contractscaler.UnitRole // role of each grow CALL in order (recorded pre-error) — proves the warehouse/stocker interleaving
 	err            error
 }
 
 func (f *fakeGrower) GrowWarehouse(ctx context.Context, order DepotGrowOrder) error {
+	f.growCalls = append(f.growCalls, contractscaler.Warehouse)
 	if f.err != nil {
 		return f.err
 	}
@@ -458,6 +460,7 @@ func (f *fakeGrower) GrowWarehouse(ctx context.Context, order DepotGrowOrder) er
 }
 
 func (f *fakeGrower) GrowStocker(ctx context.Context, order DepotGrowOrder) error {
+	f.growCalls = append(f.growCalls, contractscaler.Stocker)
 	if f.err != nil {
 		return f.err
 	}
@@ -505,12 +508,14 @@ func newDepotHarness(ceiling, parks, contractHulls, warehouses, stockers int) (*
 }
 
 // RECONCILE, NOT DUPLICATE: the depot already has 2 warehouses + 1 stocker and 7 delivery hulls exist;
-// with the ceiling raised past the delivery count the ramp adds ONLY the plan-short unit — exactly 1
-// warehouse (2→3), 0 stocker (1 already meets 1), 0 delivery — never a duplicate of the existing depot.
+// with the ceiling raised to the plan size (7 delivery + 3 warehouse + 1 stocker = 11) the ramp adds
+// ONLY the plan-short unit — exactly 1 warehouse (2→3), 0 stocker (1 already meets 1), 0 delivery —
+// never a duplicate of the existing depot. (Ceiling 11, not 10: the functional-depot-first priority
+// spends the ceiling-10 depot slot on the stocker, so warehouse #3 — pure depth — lands at ceiling 11.)
 func TestReconcile_ReconcilesExistingDepotAddsOnlyTheShortWarehouse(t *testing.T) {
-	h, pur, _, gr := newDepotHarness(10, 7, 7, 2, 1)
+	h, pur, _, gr := newDepotHarness(11, 7, 7, 2, 1)
 
-	bought := reconcile(t, h, 10)
+	bought := reconcile(t, h, 11)
 
 	if len(pur.orders) != 0 {
 		t.Fatalf("delivery buys = %d, want 0 (delivery target 7 already met)", len(pur.orders))
@@ -551,10 +556,11 @@ func TestReconcile_DefaultCeilingIsByteIdenticalDeliveryOnly(t *testing.T) {
 	}
 }
 
-// FILL ORDER: a cold op (no hulls, empty depot) fills the fixed plan IN ORDER in one tick — delivery
-// first (homed), THEN the warehouse bundle, THEN the stocker — never the lumpy warehouse bundle before
-// the delivery knee.
-func TestReconcile_FillsDeliveryThenWarehouseThenStockerInOneTick(t *testing.T) {
+// FILL ORDER — FUNCTIONAL DEPOT FIRST: a cold op (no hulls, empty depot) fills the fixed plan in one
+// tick as delivery first (homed), THEN a functional mini-depot ASAP — the ANCHOR warehouse, then the
+// STOCKER that fills it, THEN the remaining warehouse depth. The stocker is grown SECOND among the depot
+// units, never last: an empty trailing warehouse is useless until a stocker deposits into it.
+func TestReconcile_FillsDeliveryThenAnchorWarehouseThenStockerThenDepth(t *testing.T) {
 	// 3 parks → plan 3 delivery + WarehouseUnits warehouse + StockerUnits stocker; ceiling covers it all.
 	planSize := 3 + contractscaler.WarehouseUnits + contractscaler.StockerUnits
 	h, pur, _, gr := newDepotHarness(planSize, 3, 0, 0, 0)
@@ -564,14 +570,68 @@ func TestReconcile_FillsDeliveryThenWarehouseThenStockerInOneTick(t *testing.T) 
 	if len(pur.orders) != 3 {
 		t.Fatalf("delivery buys = %d, want 3 (delivery fills first)", len(pur.orders))
 	}
-	if len(gr.warehouseGrows) != contractscaler.WarehouseUnits {
-		t.Fatalf("warehouse grows = %d, want %d (the full warehouse bundle)", len(gr.warehouseGrows), contractscaler.WarehouseUnits)
+	// The depot grows FUNCTIONAL-FIRST: warehouse #1 (the anchor), THEN the stocker, THEN the depth.
+	if len(gr.growCalls) != contractscaler.WarehouseUnits+contractscaler.StockerUnits {
+		t.Fatalf("depot grows = %d, want %d (the full warehouse+stocker bundle)", len(gr.growCalls), contractscaler.WarehouseUnits+contractscaler.StockerUnits)
 	}
-	if len(gr.stockerGrows) != contractscaler.StockerUnits {
-		t.Fatalf("stocker grows = %d, want %d", len(gr.stockerGrows), contractscaler.StockerUnits)
+	if gr.growCalls[0] != contractscaler.Warehouse {
+		t.Fatalf("first depot grow = %v, want Warehouse (the anchor the stocker deposits into)", gr.growCalls[0])
+	}
+	if gr.growCalls[1] != contractscaler.Stocker {
+		t.Fatalf("second depot grow = %v, want Stocker — the stocker follows the FIRST warehouse (functional depot ASAP), not all of them", gr.growCalls[1])
+	}
+	for i := 2; i < len(gr.growCalls); i++ {
+		if gr.growCalls[i] != contractscaler.Warehouse {
+			t.Fatalf("depot grow %d = %v, want Warehouse (remaining depth behind the functional mini-depot)", i, gr.growCalls[i])
+		}
+	}
+	// Counts unchanged: still the full warehouse bundle + the stocker (RoleTargets = D, W, S).
+	if len(gr.warehouseGrows) != contractscaler.WarehouseUnits || len(gr.stockerGrows) != contractscaler.StockerUnits {
+		t.Fatalf("depot bundle = (W%d,S%d), want (W%d,S%d) — the reorder preserves the counts", len(gr.warehouseGrows), len(gr.stockerGrows), contractscaler.WarehouseUnits, contractscaler.StockerUnits)
 	}
 	if bought != planSize {
 		t.Fatalf("bought = %d, want %d (3 delivery + %d warehouse + %d stocker, all bought)", bought, planSize, contractscaler.WarehouseUnits, contractscaler.StockerUnits)
+	}
+}
+
+// BUDGET PRIORITY — STOCKER BEFORE WAREHOUSE #2: raising the ceiling degree by degree past the delivery
+// target, the FIRST depot degree grows the anchor warehouse, and the NEXT grows the STOCKER — never
+// warehouse #2. The stocker takes the depot budget before the extra warehouse depth, so a functional
+// mini-depot (1 warehouse + 1 stocker) forms before the depth deepens.
+func TestReconcile_SecondDepotDegreeGrowsStockerNotWarehouseTwo(t *testing.T) {
+	// First depot degree = delivery target (7) + 1: the anchor warehouse forms (no stocker budget yet).
+	h1, _, _, gr1 := newDepotHarness(8, 7, 7, 0, 0)
+	reconcile(t, h1, 8)
+	if len(gr1.warehouseGrows) != 1 || len(gr1.stockerGrows) != 0 {
+		t.Fatalf("first depot degree grows = (W%d,S%d), want (1,0) — the anchor warehouse forms first", len(gr1.warehouseGrows), len(gr1.stockerGrows))
+	}
+
+	// Second depot degree (+1) with the anchor warehouse already present: the STOCKER forms next — NOT
+	// warehouse #2. This is the fix: the stocker precedes the extra warehouse depth.
+	h2, _, _, gr2 := newDepotHarness(9, 7, 7, 1, 0)
+	reconcile(t, h2, 9)
+	if len(gr2.stockerGrows) != 1 {
+		t.Fatalf("second depot degree stocker grows = %d, want 1 (the stocker fills the anchor before the depth)", len(gr2.stockerGrows))
+	}
+	if len(gr2.warehouseGrows) != 0 {
+		t.Fatalf("second depot degree warehouse grows = %d, want 0 — the stocker precedes warehouse #2", len(gr2.warehouseGrows))
+	}
+}
+
+// ANCHOR-FIRST SAFETY: if the anchor warehouse cannot form (the grower fails every launch), the stocker
+// — which deposits INTO a warehouse — must NOT be actuated. No orphan stocker with nowhere to deposit,
+// even when the ceiling budgets one.
+func TestReconcile_NoStockerWhenAnchorWarehouseFailsToForm(t *testing.T) {
+	planSize := 7 + contractscaler.WarehouseUnits + contractscaler.StockerUnits // ceiling budgets the full depot
+	h, _, _, gr := newDepotHarness(planSize, 7, 7, 0, 0)
+	gr.err = errors.New("launch failed")
+
+	reconcile(t, h, planSize)
+
+	for _, role := range gr.growCalls {
+		if role == contractscaler.Stocker {
+			t.Fatalf("stocker actuated with no warehouse to deposit into (grow calls = %v) — the anchor-warehouse-first invariant is broken", gr.growCalls)
+		}
 	}
 }
 
@@ -579,11 +639,13 @@ func TestReconcile_FillsDeliveryThenWarehouseThenStockerInOneTick(t *testing.T) 
 // slot (the grower is called with it) and NO hull is bought. The depot reuse uses FindReclaimable +
 // grow — NOT the delivery Reclaim (which contract-dedicates+homes); the grower re-dedicates to warehouse.
 func TestReconcile_ReclaimsIdleHullForWarehouseSlotBeforeBuying(t *testing.T) {
-	h, pur, _, gr := newDepotHarness(10, 7, 7, 2, 1)
+	// Ceiling 11 (plan size): the short warehouse #3 (depth) lands here under the functional-depot-first
+	// priority — the ceiling-10 depot slot went to the stocker (already present in this seed).
+	h, pur, _, gr := newDepotHarness(11, 7, 7, 2, 1)
 	rec := &fakeReclaimer{available: []string{"HULL-IDLE"}}
 	h.SetIdleHullReclaimer(rec)
 
-	reconcile(t, h, 10)
+	reconcile(t, h, 11)
 
 	if len(gr.warehouseGrows) != 1 || gr.warehouseGrows[0].ShipSymbol != "HULL-IDLE" {
 		t.Fatalf("warehouse grows = %+v, want 1 carrying the reclaimed HULL-IDLE (reuse before buy)", gr.warehouseGrows)
@@ -599,12 +661,14 @@ func TestReconcile_ReclaimsIdleHullForWarehouseSlotBeforeBuying(t *testing.T) {
 // THE 200k CUSHION GATES DEPOT BUYS TOO: with the treasury unable to leave 200000 after a warehouse buy,
 // the depot buy is HELD (no grow, no buy) — the sole money guard is not weakened for the depot roles.
 func TestReconcile_WarehouseBuyHeldByCushion(t *testing.T) {
-	h, pur, _, gr := newDepotHarness(10, 7, 7, 2, 1)
+	// Ceiling 11 (plan size): the short warehouse #3 is the unit the cushion holds under the
+	// functional-depot-first priority (the ceiling-10 depot slot went to the already-present stocker).
+	h, pur, _, gr := newDepotHarness(11, 7, 7, 2, 1)
 	tr := &fakeTreasury{credits: 250_000, readable: true} // 250k - 100k = 150k < 200000 cushion
 	h.SetTreasuryReader(tr)
 	pur.treasury = tr
 
-	bought := reconcile(t, h, 10)
+	bought := reconcile(t, h, 11)
 
 	if bought != 0 || len(pur.hullOrders) != 0 {
 		t.Fatalf("bought %d (depot-hull buys %d), want 0 — 250k-100k=150k is below the 200000 cushion", bought, len(pur.hullOrders))
