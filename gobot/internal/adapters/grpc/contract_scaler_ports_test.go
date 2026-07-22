@@ -476,8 +476,10 @@ func reclaimHull(t *testing.T, symbol string, cargoCapacity int, dedicatedFleet 
 }
 
 // THE REUSE-ELIGIBILITY PREDICATE (the load-bearing safety guard): a hull is reclaimable ONLY when it
-// is idle, NOT in transit, UNDEDICATED (RULINGS #7 — never poach a dedicated hull of ANY fleet), and
-// cargo-capable (a probe / 0-cargo hull re-dedicated to contract can't haul).
+// is idle, NOT in transit, UNDEDICATED (RULINGS #7 — never poach a dedicated hull of ANY fleet),
+// cargo-capable (a probe / 0-cargo hull re-dedicated to contract can't haul), and NOT the COMMAND
+// FRIGATE — the flagship is excluded even when idle+undedicated+cargo-capable (sp-gvvph, RULINGS #7),
+// reserved for its flagship/last-resort role instead of ever being pulled into a warehouse/stocker seat.
 func TestIsReclaimable_ClassifiesReuseEligibility(t *testing.T) {
 	assigned := reclaimHull(t, "BUSY", 40, "", navigation.NavStatusInOrbit)
 	require.NoError(t, assigned.AssignToContainer("worker-1", shared.NewRealClock())) // mid-task under a coordinator
@@ -494,6 +496,8 @@ func TestIsReclaimable_ClassifiesReuseEligibility(t *testing.T) {
 		{"undedicated probe / 0-cargo → cargo-incapable", reclaimHull(t, "PROBE", 0, "", navigation.NavStatusInOrbit), false},
 		{"undedicated cargo hull in transit → mid-task", reclaimHull(t, "TRANSIT", 40, "", navigation.NavStatusInTransit), false},
 		{"undedicated cargo hull assigned to a container → mid-task", assigned, false},
+		{"command frigate by COMMAND role → excluded even when idle+undedicated+cargo (sp-gvvph, RULINGS #7)", homeReaderShip(t, "PURCHASE", "X1-SC-A1", commandRole, ""), false},
+		{"command frigate by \"-1\" symbol → excluded even when idle+undedicated+cargo (sp-gvvph)", reclaimHull(t, "TORWIND-1", 40, "", navigation.NavStatusInOrbit), false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -518,6 +522,13 @@ func TestFindReclaimable_SelectsOnlyFreeIdleCargoHulls(t *testing.T) {
 			reclaimHull(t, "PROBE", 0, "", navigation.NavStatusInOrbit),            // 0-cargo → excluded
 			reclaimHull(t, "FREE-HAULER", 40, "", navigation.NavStatusInOrbit),     // ← the only eligible hull
 		}, true, "FREE-HAULER"},
+		{"skips the idle command frigate, returns the regular hauler (sp-gvvph, RULINGS #7)", []*navigation.Ship{
+			reclaimHull(t, "TORWIND-1", 40, "", navigation.NavStatusInOrbit),   // the flagship, idle+undedicated+cargo first → must be skipped
+			reclaimHull(t, "FREE-HAULER", 40, "", navigation.NavStatusInOrbit), // ← the only eligible hull
+		}, true, "FREE-HAULER"},
+		{"only the command frigate is free → never reclaimed (sp-gvvph — flagship stays free)", []*navigation.Ship{
+			reclaimHull(t, "TORWIND-1", 40, "", navigation.NavStatusInOrbit),
+		}, false, ""},
 		{"only dedicated idle hulls → never poached (RULINGS #7)", []*navigation.Ship{
 			reclaimHull(t, "TRADE-IDLE", 40, "trade", navigation.NavStatusInOrbit),
 			reclaimHull(t, "MFG-IDLE", 40, "manufacturing", navigation.NavStatusInOrbit),
@@ -571,6 +582,19 @@ func TestFindReclaimableForHome_SelectsOnlyHomeReachableHulls(t *testing.T) {
 				homeReaderShip(t, "HOME-IDLE", "X1-UM5-B2", "HAULER", ""),
 			},
 			routable: false, wantOK: true, wantSymbol: "HOME-IDLE",
+		},
+		{
+			name: "skips a HOME command frigate in favor of a regular home hull (sp-gvvph, RULINGS #7)",
+			fleet: []*navigation.Ship{
+				homeReaderShip(t, "TORWIND-1", "X1-UM5-A9", commandRole, ""), // flagship AT home (trivially reachable), listed first → still skipped
+				homeReaderShip(t, "HOME-IDLE", "X1-UM5-B2", "HAULER", ""),
+			},
+			routable: true, wantOK: true, wantSymbol: "HOME-IDLE",
+		},
+		{
+			name:     "only a HOME command frigate → never reclaimed for a depot role (sp-gvvph — flagship stays free)",
+			fleet:    []*navigation.Ship{homeReaderShip(t, "TORWIND-1", "X1-UM5-A9", commandRole, "")},
+			routable: true, wantOK: false,
 		},
 		{
 			name:     "a gate-reachable (not same-system) foreign hull still qualifies",

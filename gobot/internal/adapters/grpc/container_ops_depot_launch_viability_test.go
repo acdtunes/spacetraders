@@ -47,6 +47,7 @@ type depotLaunchShipRepo struct {
 	ships          map[string]*navigation.Ship
 	assignedFleet  []assignFleetCall
 	releasedClaims []string
+	releaseReasons []string
 }
 
 func (r *depotLaunchShipRepo) FindBySymbol(ctx context.Context, symbol string, playerID shared.PlayerID) (*navigation.Ship, error) {
@@ -63,6 +64,7 @@ func (r *depotLaunchShipRepo) AssignFleet(ctx context.Context, shipSymbol, fleet
 
 func (r *depotLaunchShipRepo) ReleaseContainerClaim(ctx context.Context, shipSymbol string, playerID shared.PlayerID, reason string) (bool, error) {
 	r.releasedClaims = append(r.releasedClaims, shipSymbol)
+	r.releaseReasons = append(r.releaseReasons, reason)
 	if ship, ok := r.ships[shipSymbol]; ok && ship.IsAssigned() {
 		ship.ForceRelease(reason, shared.NewRealClock())
 		return true, nil

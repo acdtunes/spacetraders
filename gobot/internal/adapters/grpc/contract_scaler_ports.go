@@ -12,6 +12,7 @@ import (
 	contractScalerCmd "github.com/andrescamacho/spacetraders-go/internal/application/contractscaler/commands"
 	fleetCmd "github.com/andrescamacho/spacetraders-go/internal/application/fleet/commands"
 	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
+	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contract/depot"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contractscaler"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
@@ -706,10 +707,14 @@ func (r *contractScalerReclaimer) homeReachable(ctx context.Context, ship *navig
 }
 
 // isReclaimable is the reuse-eligibility guard: IDLE (never mid-task → no stranding), NOT in transit,
-// UNDEDICATED (RULINGS #7 — never poach a dedicated hull of ANY fleet), and CARGO-CAPABLE (a probe /
-// 0-cargo hull re-dedicated to contract can't haul — mirrors the hauling-pin cargo guard).
+// UNDEDICATED (RULINGS #7 — never poach a dedicated hull of ANY fleet), CARGO-CAPABLE (a probe /
+// 0-cargo hull re-dedicated to contract can't haul — mirrors the hauling-pin cargo guard), and NOT the
+// COMMAND FRIGATE (sp-gvvph, RULINGS #7 — the flagship is excluded from ALL scaler reclaim even when
+// undedicated: it stays free for its flagship/last-resort role, never pulled into a delivery/depot seat
+// by the scaler's routine scaling). Shared by both FindReclaimable (delivery reuse) and
+// FindReclaimableForHome (depot warehouse/stocker reuse), so the exclusion covers every reclaim tier.
 func isReclaimable(ship *navigation.Ship) bool {
-	return ship.IsIdle() && !ship.IsInTransit() && ship.DedicatedFleet() == "" && ship.CargoCapacity() > 0
+	return ship.IsIdle() && !ship.IsInTransit() && ship.DedicatedFleet() == "" && ship.CargoCapacity() > 0 && !domainContract.IsCommandHull(ship)
 }
 
 // Reclaim re-dedicates the hull EXCLUSIVE to the contract fleet via the single write path (AssignFleet,

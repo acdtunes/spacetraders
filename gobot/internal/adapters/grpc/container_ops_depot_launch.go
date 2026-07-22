@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
+	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contract/depot"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contractscaler"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -651,6 +652,14 @@ func (s *DaemonServer) depotElementHullViable(ctx context.Context, shipSymbol, w
 	if err != nil || ship == nil {
 		return true // unreadable hull → fail open (never evict on a read hiccup)
 	}
+	// sp-gvvph (RULINGS #7): the command frigate is NEVER a depot hull — non-viable even when home-
+	// reachable, so a frigate seated as a depot element is evicted (below) rather than re-claimed on
+	// every restart recovery. Fails CLOSED here (unlike the reachability signal) because IsCommandHull
+	// is definite + stable (role/symbol never change): the eviction fires once and isReclaimable's
+	// matching exclusion keeps the freed frigate from being re-seated, so there is no thrash (RULINGS #2).
+	if domainContract.IsCommandHull(ship) {
+		return false
+	}
 	loc := ship.CurrentLocation()
 	if loc == nil {
 		return true // unreadable location → fail open
@@ -671,7 +680,8 @@ func (s *DaemonServer) depotElementHullViable(ctx context.Context, shipSymbol, w
 
 // evictStrandedDepotElement corrects a stale depot-element binding that failed
 // depotElementHullViable (sp-fihvy stocker; generalized to every depot role — warehouse, stocker,
-// or any future role — by sp-fis8y): it removes the depot-store element recording shipSymbol as
+// or any future role — by sp-fis8y; and to the command frigate, which is never a depot hull, by
+// sp-gvvph): it removes the depot-store element recording shipSymbol as
 // this depot's role member, un-dedicates the hull from its role fleet (releaseDepotHull — the SAME
 // single AssignFleet dedication write positionDepotElementHull's re-dedicate uses, run in reverse),
 // and releases its work-claim so the hull becomes plain undedicated-idle again — reclaimable by the
@@ -684,21 +694,31 @@ func (s *DaemonServer) depotElementHullViable(ctx context.Context, shipSymbol, w
 // rather than aborting — a stranded hull that survives one more restart is no worse than today, but
 // blocking boot on the cleanup would be strictly worse.
 func (s *DaemonServer) evictStrandedDepotElement(ctx context.Context, shipSymbol, waypoint string, role depot.Role, playerID int) {
+	// Honest reason (sp-gvvph): a command-frigate eviction is RULINGS #7 (the flagship is never a depot
+	// hull), a DIFFERENT cause than the sp-fihvy/sp-fis8y home-reachability eviction — so name it as such
+	// in both the human summary and the persisted claim-release reason. Load the hull to branch; fail-open
+	// to the reachability wording if it is momentarily unreadable (the eviction still proceeds — this only
+	// names the why, never gates the correction).
+	cause := fmt.Sprintf("not home-reachable to %s (sp-fihvy/sp-fis8y home-reachability precondition)", waypoint)
+	claimReason := fmt.Sprintf("evicted as an unreachable depot %s hull for %s (sp-fihvy/sp-fis8y home-reachability precondition)", role, waypoint)
+	if ship, err := s.shipRepo.FindBySymbol(ctx, shipSymbol, shared.MustNewPlayerID(playerID)); err == nil && ship != nil && domainContract.IsCommandHull(ship) {
+		cause = "the command frigate is never a depot hull (sp-gvvph, RULINGS #7)"
+		claimReason = fmt.Sprintf("evicted as a depot %s hull: %s", role, cause)
+	}
 	if depotID, ok := s.depotIDForElement(ctx, shipSymbol, role, playerID); ok {
 		if err := s.depotStore(playerID).RemoveElement(ctx, depotID, role, shipSymbol); err != nil {
-			fmt.Printf("depot %s eviction (sp-fihvy/sp-fis8y): failed to remove stale %s %s binding for %s: %v\n", role, depotID, role, shipSymbol, err)
+			fmt.Printf("depot %s eviction: failed to remove stale %s %s binding for %s: %v\n", role, depotID, role, shipSymbol, err)
 		}
 	} else {
-		fmt.Printf("depot %s eviction (sp-fihvy/sp-fis8y): no depot found owning %s hull %s — skipping element removal\n", role, role, shipSymbol)
+		fmt.Printf("depot %s eviction: no depot found owning %s hull %s — skipping element removal\n", role, role, shipSymbol)
 	}
 	if err := s.releaseDepotHull(ctx, shipSymbol, playerID); err != nil {
-		fmt.Printf("depot %s eviction (sp-fihvy/sp-fis8y): failed to un-dedicate stranded hull %s: %v\n", role, shipSymbol, err)
+		fmt.Printf("depot %s eviction: failed to un-dedicate stranded hull %s: %v\n", role, shipSymbol, err)
 	}
-	if _, err := s.shipRepo.ReleaseContainerClaim(ctx, shipSymbol, shared.MustNewPlayerID(playerID),
-		fmt.Sprintf("evicted as an unreachable depot %s hull for %s (sp-fihvy/sp-fis8y home-reachability precondition)", role, waypoint)); err != nil {
-		fmt.Printf("depot %s eviction (sp-fihvy/sp-fis8y): failed to release work-claim on stranded hull %s: %v\n", role, shipSymbol, err)
+	if _, err := s.shipRepo.ReleaseContainerClaim(ctx, shipSymbol, shared.MustNewPlayerID(playerID), claimReason); err != nil {
+		fmt.Printf("depot %s eviction: failed to release work-claim on stranded hull %s: %v\n", role, shipSymbol, err)
 	}
-	fmt.Printf("depot %s eviction (sp-fihvy/sp-fis8y): evicted stranded %s hull %s (not home-reachable to %s) — the scaler ramp re-grows on a home-viable hull next tick\n", role, role, shipSymbol, waypoint)
+	fmt.Printf("depot %s eviction: evicted stranded %s hull %s (%s) — the scaler ramp re-grows on a home-viable hull next tick\n", role, role, shipSymbol, cause)
 }
 
 // depotIDForElement finds the id of the depot whose ROLE elements include shipSymbol, by loading

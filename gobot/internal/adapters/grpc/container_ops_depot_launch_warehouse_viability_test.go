@@ -86,24 +86,26 @@ func TestLaunchDepotWarehouse_HomeHullIsUnchangedAcrossRestartNoThrash(t *testin
 	ctx := context.Background()
 	require.NoError(t, s.AddDepot(ctx, playerID, DepotSpec{
 		ID:         "central",
-		Warehouses: []ElementSpec{{Waypoint: "X1-UM5-I56", ShipSymbol: "WH-1"}},
+		Warehouses: []ElementSpec{{Waypoint: "X1-UM5-I56", ShipSymbol: "WH-9"}},
 	}))
 
 	// The home hull: parked in-system (X1-UM5), already the seated "warehouse"-dedicated hull,
-	// already flying its coordinator — the steady-state shape a restart must never disturb.
-	home := homeReaderShip(t, "WH-1", "X1-UM5-B7", "HAULER", "warehouse")
+	// already flying its coordinator — the steady-state shape a restart must never disturb. It is a
+	// REGULAR hauler with a non-"-1" symbol (a "*-1" symbol is the command frigate — sp-gvvph — which
+	// would be evicted, not preserved), so this proves the no-thrash path for an ordinary depot hull.
+	home := homeReaderShip(t, "WH-9", "X1-UM5-B7", "HAULER", "warehouse")
 	require.NoError(t, home.AssignToContainer("wh-run-1", shared.NewRealClock()))
-	shipRepo := &depotLaunchShipRepo{ships: map[string]*navigation.Ship{"WH-1": home}}
+	shipRepo := &depotLaunchShipRepo{ships: map[string]*navigation.Ship{"WH-9": home}}
 	gate := &fakeGateRouter{routable: true}
 	s.shipRepo = shipRepo
 	s.gateGraph = gate
 
 	for i := 0; i < 2; i++ { // two consecutive calls == two simulated restarts replaying the registry
-		require.NoError(t, s.launchDepotWarehouse(ctx, "WH-1", "X1-UM5-I56", playerID))
+		require.NoError(t, s.launchDepotWarehouse(ctx, "WH-9", "X1-UM5-I56", playerID))
 	}
 
 	reg := freshRegistry(t, db, playerID)
-	require.True(t, hasWarehouse(reg, "WH-1"), "the home hull's binding must STAY seated across restarts")
+	require.True(t, hasWarehouse(reg, "WH-9"), "the home hull's binding must STAY seated across restarts")
 	require.Empty(t, shipRepo.assignedFleet, "an already-home, already-dedicated hull must never be re-dedicated (no thrash)")
 	require.Empty(t, shipRepo.releasedClaims, "an already-home hull's live claim must never be released (no thrash)")
 	require.True(t, home.IsAssigned(), "the hull keeps flying its own coordinator, undisturbed")
