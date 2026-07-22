@@ -728,6 +728,11 @@ func run(cfg *config.Config) error {
 		}),
 		gategraph.WithSkipUnchartedFetch(skipUnchartedGateFetch),
 	)
+	// sp-fihvy: wire the SAME gate-graph reachability service into the daemon server so the depot
+	// stocker hull viability precondition can consult it (Routable) — never a second reachability
+	// mechanism. Post-construction (gateGraphService is built after NewDaemonServer runs), mirroring
+	// SetStorageRecovery below.
+	daemonServer.SetGateGraph(gateGraphService)
 
 	// Off-gate warp support (sp-0xd0, slice A): attach the warp-execute +
 	// chart-on-arrival capability to the route executor now that gateGraphService
@@ -789,6 +794,7 @@ func run(cfg *config.Config) error {
 	contractScalerHandler := grpc.NewContractScalerCoordinatorHandler(
 		daemonServer, apiClient, shipRepo, med, waypointRepo, marketRepo,
 		shipyardQuery.NewReachableYardFinder(shipyardInventoryRepo, gateGraphService),
+		gateGraphService, // sp-fihvy: home-scoped depot stocker reclaim (Routable) — same graph, no new mechanism
 	)
 	if err := mediator.RegisterHandler[*contractScalerCmd.RunContractScalerCommand](med, contractScalerHandler); err != nil {
 		return fmt.Errorf("failed to register ContractScalerCoordinator handler: %w", err)

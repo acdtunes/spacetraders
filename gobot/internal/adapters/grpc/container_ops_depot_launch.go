@@ -537,12 +537,33 @@ func (s *DaemonServer) depotSink() depotCoordinatorSink {
 	return s
 }
 
+// depotHomeRouter is the narrow cross-system reachability port the depot stocker hull viability
+// precondition consults (sp-fihvy) — the SAME notion of gate-graph routability
+// foreignMarketReachable uses (run_stocker_coordinator.go: gateGraphResolver().Routable), never a
+// second reachability mechanism invented here. Satisfied by *gategraph.Service, injected
+// post-construction via SetGateGraph (main.go builds it after NewDaemonServer runs).
+type depotHomeRouter interface {
+	Routable(ctx context.Context, fromSystem, toSystem string, playerID int) (bool, error)
+}
+
 // launchDepotStocker (depotCoordinatorSink) starts a STANDING, continuous stocker on
 // shipSymbol that fills the depot's destination warehouse (warehouseWaypoint) and re-stages
 // the moment contracts drain the buffer, surviving restart. It leaves every money/freshness
 // knob at the coordinator's own default (targetPerGood 0 → the warehouse's receipt caps drive
 // the fill). A hull that is not idle is already flying its coordinator — a benign
 // already-launched skip (nil), never an error. It reuses StartStocker (no parallel channel).
+//
+// sp-fihvy (RULINGS #14 hard precondition): the stocker is an INTRA-SYSTEM role — it sources the
+// FIXED far-source whitelist from the warehouse's HOME system ONLY (homeSystemOnly below), so its
+// hull must be IN, or gate-reachable to, that system BEFORE it is ever (re)claimed. This is
+// validated FIRST, unconditionally — before positionDepotElementHull's claim and before the idle
+// check — because a stranded hull's coordinator (e.g. TORWIND-19, parked unreachable forever) is
+// typically ALREADY recovered/non-idle by the time boot replays the depot registry, so a check
+// gated on IsIdle() would never see it. A non-viable hull is evicted (stale binding removed,
+// un-dedicated, claim released) instead of (re)launched; this is the SAME choke point GrowStocker's
+// fresh grow and the boot/reload replay both funnel through, so one guard covers selection,
+// recovery, and positioning at once. A viable hull (the overwhelming common case) falls straight
+// through to the unchanged positioning below.
 //
 // sp-3l64 (role-agnostic): FIRST free+re-dedicate the hull to its OWN "stocker" fleet via the
 // shared positionDepotElementHull (navigateOnAssign=false — the stocker COORDINATOR moves the hull:
@@ -552,6 +573,10 @@ func (s *DaemonServer) depotSink() depotCoordinatorSink {
 func (s *DaemonServer) launchDepotStocker(ctx context.Context, shipSymbol, warehouseWaypoint string, playerID int) error {
 	if shipSymbol == "" || warehouseWaypoint == "" {
 		return fmt.Errorf("depot stocker launch requires a ship symbol and warehouse waypoint")
+	}
+	if !s.depotStockerHullViable(ctx, shipSymbol, warehouseWaypoint, playerID) {
+		s.evictStrandedStocker(ctx, shipSymbol, warehouseWaypoint, playerID)
+		return nil // stale binding corrected; the scaler ramp re-grows the role on a home-viable hull next tick
 	}
 	ship, crewed, err := s.positionDepotElementHull(ctx, shipSymbol, warehouseWaypoint, operationStocker, false, playerID)
 	if err != nil {
@@ -582,4 +607,101 @@ func (s *DaemonServer) launchDepotStocker(ctx context.Context, shipSymbol, wareh
 		playerID,
 	)
 	return err
+}
+
+// depotStockerHullViable reports whether shipSymbol is IN, or gate-reachable to, warehouseWaypoint's
+// system (sp-fihvy) — the hard precondition every depot stocker hull must satisfy, using the exact
+// same routability notion foreignMarketReachable consults (gategraph.Service.Routable), never a
+// second reachability mechanism.
+//
+// It fails OPEN — reports viable — whenever the signal itself is unreadable (unresolvable home
+// system, unreadable ship/location, no gate graph wired, or a Routable read error): an eviction is a
+// consequential, hard-to-reverse action (un-dedicate + claim release + depot-store removal), so an
+// unverifiable signal must never trigger one (RULINGS #2 — a transient read hiccup is not grounds for
+// churn). This deliberately diverges from foreignMarketReachable's fail-CLOSED-on-error polarity:
+// that check only skips ONE candidate market for the current pass (cheap, instantly retried next
+// pass); this one gates a destructive side effect, so the safer default is the opposite direction.
+// The reachability VERDICT itself (same-system trivially true, else Routable's own answer) is
+// identical to foreignMarketReachable's — only the unreadable-signal fallback differs, and only
+// because the action it gates differs.
+func (s *DaemonServer) depotStockerHullViable(ctx context.Context, shipSymbol, warehouseWaypoint string, playerID int) bool {
+	homeSystem := shared.ExtractSystemSymbol(warehouseWaypoint)
+	if homeSystem == "" {
+		return true // no resolvable home → nothing to validate against, fail open
+	}
+	pid, err := shared.NewPlayerID(playerID)
+	if err != nil {
+		return true
+	}
+	ship, err := s.shipRepo.FindBySymbol(ctx, shipSymbol, pid)
+	if err != nil || ship == nil {
+		return true // unreadable hull → fail open (never evict on a read hiccup)
+	}
+	loc := ship.CurrentLocation()
+	if loc == nil {
+		return true // unreadable location → fail open
+	}
+	currentSystem := shared.ExtractSystemSymbol(loc.Symbol)
+	if currentSystem == "" || currentSystem == homeSystem {
+		return true // already home (or unresolvable) — trivially viable
+	}
+	if s.gateGraph == nil {
+		return true // reachability signal unwired → fail open, byte-identical to pre-sp-fihvy
+	}
+	routable, err := s.gateGraph.Routable(ctx, currentSystem, homeSystem, playerID)
+	if err != nil {
+		return true // unverifiable route → fail open (never evict on an unreadable graph)
+	}
+	return routable
+}
+
+// evictStrandedStocker corrects a stale stocker binding that failed depotStockerHullViable
+// (sp-fihvy): it removes the depot-store element recording shipSymbol as this depot's stocker,
+// un-dedicates the hull from the "stocker" fleet (releaseDepotHull — the SAME single AssignFleet
+// dedication write positionDepotElementHull's re-dedicate uses, run in reverse), and releases its
+// work-claim so the hull becomes plain undedicated-idle again — reclaimable by the now-hardened
+// picker on ANY future grow, depot or otherwise. It does NOT synchronously re-grow the role: the
+// standing scaler coordinator's next tick sees the depot registry's now-lower StockerCount and
+// re-fills it through the home-scoped reclaim/buy tiers (contract_scaler_ports.go /
+// run_contract_scaler.go), so "re-grow on a home-viable hull" happens one tick later, never here.
+//
+// Best-effort and fail-open throughout: each step that errors is logged and eviction continues
+// rather than aborting — a stranded hull that survives one more restart is no worse than today, but
+// blocking boot on the cleanup would be strictly worse.
+func (s *DaemonServer) evictStrandedStocker(ctx context.Context, shipSymbol, warehouseWaypoint string, playerID int) {
+	if depotID, ok := s.depotIDForStocker(ctx, shipSymbol, playerID); ok {
+		if err := s.depotStore(playerID).RemoveElement(ctx, depotID, depot.RoleStocker, shipSymbol); err != nil {
+			fmt.Printf("depot stocker eviction (sp-fihvy): failed to remove stale %s stocker binding for %s: %v\n", depotID, shipSymbol, err)
+		}
+	} else {
+		fmt.Printf("depot stocker eviction (sp-fihvy): no depot found owning stocker hull %s — skipping element removal\n", shipSymbol)
+	}
+	if err := s.releaseDepotHull(ctx, shipSymbol, playerID); err != nil {
+		fmt.Printf("depot stocker eviction (sp-fihvy): failed to un-dedicate stranded hull %s: %v\n", shipSymbol, err)
+	}
+	if _, err := s.shipRepo.ReleaseContainerClaim(ctx, shipSymbol, shared.MustNewPlayerID(playerID),
+		fmt.Sprintf("evicted as an unreachable depot stocker hull for %s (sp-fihvy home-reachability precondition)", warehouseWaypoint)); err != nil {
+		fmt.Printf("depot stocker eviction (sp-fihvy): failed to release work-claim on stranded hull %s: %v\n", shipSymbol, err)
+	}
+	fmt.Printf("depot stocker eviction (sp-fihvy): evicted stranded stocker hull %s (not home-reachable to %s) — the scaler ramp re-grows on a home-viable hull next tick\n", shipSymbol, warehouseWaypoint)
+}
+
+// depotIDForStocker finds the id of the depot whose stocker elements include shipSymbol, by loading
+// the player's depot registry and scanning each depot's Stockers() — the same registry the boot
+// reload + contract routing consult (no new lookup mechanism). ok=false when no depot claims this
+// hull as a stocker (a defensive case: element removal is then skipped rather than guessed at) or
+// the registry fails to load.
+func (s *DaemonServer) depotIDForStocker(ctx context.Context, shipSymbol string, playerID int) (string, bool) {
+	reg, err := s.depotStore(playerID).LoadRegistry(ctx)
+	if err != nil {
+		return "", false
+	}
+	for _, d := range reg.Depots() {
+		for _, st := range d.Stockers() {
+			if st.ShipSymbol == shipSymbol {
+				return d.ID(), true
+			}
+		}
+	}
+	return "", false
 }

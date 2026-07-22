@@ -208,9 +208,12 @@ func mostCommonSystem(counts map[string]int) string {
 // coordinator port to a concrete daemon collaborator: the NOVEL RoleResolver (home-system geometry +
 // market roles), the treasury/yard-price REUSE of the autosizer idioms, the exclusive-"contract"-fleet
 // counter, the buy+dedicate+home Purchaser (the kept autosizer buy primitive + the demand-ranked homing
-// consumer), and the live-tunable ceiling (the Pattern-C ContainerConfigReader). Registering it changes
-// NO live behaviour — nothing launches the coordinator until the bootstrap early-scaling arm fires
-// (default-off), so a bare deploy is byte-identical.
+// consumer), and the live-tunable ceiling (the Pattern-C ContainerConfigReader). gateGraph (sp-fihvy) is
+// the SAME cross-system reachability service the daemon's depot stocker viability guard uses — passed
+// through here so the depot STOCKER role's reuse/buy tiers can be scoped to the home system too (RULINGS
+// #14), never inventing a second reachability notion. Registering it changes NO live behaviour — nothing
+// launches the coordinator until the bootstrap early-scaling arm fires (default-off), so a bare deploy is
+// byte-identical.
 func NewContractScalerCoordinatorHandler(
 	server *DaemonServer,
 	apiClient *api.SpaceTradersClient,
@@ -219,6 +222,7 @@ func NewContractScalerCoordinatorHandler(
 	waypointRepo *persistence.GormWaypointRepository,
 	marketRepo market.MarketRepository,
 	scannedYards scannedYardRanker,
+	gateGraph depotHomeRouter,
 ) *contractScalerCmd.RunContractScalerHandler {
 	h := contractScalerCmd.NewRunContractScalerHandler(nil)
 
@@ -259,8 +263,20 @@ func NewContractScalerCoordinatorHandler(
 
 	// Reclaimer: the ZERO-SPEND reuse tier tried before every buy (RULINGS #7 — reclaim only an idle
 	// UNDEDICATED cargo-capable hull, never poach). Reuses the SAME ship repo the FleetCounter reads +
-	// the SAME mediator the purchaser homes through — no new daemon dependency.
-	h.SetIdleHullReclaimer(&contractScalerReclaimer{shipRepo: shipRepo, med: med})
+	// the SAME mediator the purchaser homes through — no new daemon dependency. The SAME instance also
+	// serves the depot STOCKER's home-scoped reuse tier (sp-fihvy, RULINGS #14): FindReclaimableForHome
+	// additionally requires the candidate be in, or gate-reachable to, the depot's home system via
+	// gateGraph — the identical Routable notion the daemon's stocker-viability guard consults.
+	reclaimer := &contractScalerReclaimer{shipRepo: shipRepo, med: med, gateGraph: gateGraph}
+	h.SetIdleHullReclaimer(reclaimer)
+	h.SetDepotHullReclaimer(reclaimer)
+
+	// Depot-hull buy price (sp-fihvy, RULINGS #14): the STOCKER role's buy-fallback yard search is
+	// home-system-ONLY — a bought stocker hull is crewed at its purchase yard with no repositioning
+	// step of its own, unlike a delivery buy (cross-gated home afterward) or the warehouse role
+	// (unchanged, out of this fix's scope, still the shared fleet-wide-cheapest PriceReader below).
+	// Wraps the SAME yardPriceReader constructed above — no new yard-price mechanism.
+	h.SetDepotPriceReader(&contractScalerDepotPriceReader{yards: yardPriceReader})
 
 	// Ceiling: the live Pattern-C snapshot of the container's own config column (contract_fleet_max_hulls),
 	// so a `tune --operation contractscaler` lands on the next tick with no restart.
@@ -295,6 +311,20 @@ type contractScalerPriceReader struct{ reader fleetCmd.YardPriceReader }
 func (p *contractScalerPriceReader) NextHullPrice(ctx context.Context, playerID int, shipType string) (int64, string, bool, error) {
 	price, _, yard, readable, err := p.reader.PriceFor(ctx, playerID, fleetCmd.HullClassContractDelivery, shipType, false)
 	return price, yard, readable, err
+}
+
+// contractScalerDepotPriceReader adapts the autosizer yard-price walk's home-scoped PriceForSystem
+// (sp-fihvy) to the scaler's DepotPriceReader port: the depot STOCKER's buy-fallback yard search,
+// restricted to the warehouse's own home system — never a foreign-but-technically-routable yard —
+// because a bought stocker hull is crewed at its purchase yard with no repositioning step of its own.
+// readable=false ⇒ the depot stocker buy holds (fail-closed — no price, no cushion check, no buy).
+type contractScalerDepotPriceReader struct{ yards *autosizerYardPriceReader }
+
+func (p *contractScalerDepotPriceReader) NextHullPriceForHome(ctx context.Context, playerID int, shipType, homeSystem string) (int64, string, bool, error) {
+	if p.yards == nil {
+		return 0, "", false, nil
+	}
+	return p.yards.PriceForSystem(ctx, playerID, shipType, homeSystem)
 }
 
 // --- fleet counter: the exclusive "contract"-dedicated pool (the ramp's Current) ---
@@ -597,6 +627,9 @@ func contractFleetPeers(ctx context.Context, shipRepo navigation.ShipRepository,
 type contractScalerReclaimer struct {
 	shipRepo navigation.ShipRepository
 	med      commandSender
+	// gateGraph is the cross-system reachability signal FindReclaimableForHome consults (sp-fihvy). A
+	// nil gateGraph (unwired) is tolerated — homeReachable fails open, degrading to the plain scan.
+	gateGraph depotHomeRouter
 }
 
 // FindReclaimable returns the FIRST reuse-eligible hull symbol, or ok=false when none exists. A fleet-
@@ -617,6 +650,55 @@ func (r *contractScalerReclaimer) FindReclaimable(ctx context.Context, playerID 
 		}
 	}
 	return "", false, nil
+}
+
+// FindReclaimableForHome is the depot STOCKER's home-scoped reuse tier (sp-fihvy, RULINGS #14): the
+// FIRST reuse-eligible hull (the SAME isReclaimable guard — idle, not in transit, undedicated,
+// cargo-capable) that is ALSO in, or gate-reachable to, homeSystem — the exact reachability notion
+// depotStockerHullViable / foreignMarketReachable use (gateGraph.Routable), never a second one
+// invented here. Skipping a foreign-but-otherwise-idle candidate here is what stops GrowStocker from
+// ever being handed a hull it cannot place viably; the ramp falls through to the equally
+// home-scoped buy tier instead. A read error fails closed (falls through to a buy) exactly like
+// FindReclaimable.
+func (r *contractScalerReclaimer) FindReclaimableForHome(ctx context.Context, playerID int, homeSystem string) (string, bool, error) {
+	pid, err := shared.NewPlayerID(playerID)
+	if err != nil {
+		return "", false, err
+	}
+	ships, err := r.shipRepo.FindAllByPlayer(ctx, pid)
+	if err != nil {
+		return "", false, err
+	}
+	for _, ship := range ships {
+		if isReclaimable(ship) && r.homeReachable(ctx, ship, homeSystem, playerID) {
+			return ship.ShipSymbol(), true, nil
+		}
+	}
+	return "", false, nil
+}
+
+// homeReachable reports whether ship's current location is in, or gate-reachable to, homeSystem —
+// same-system trivially true; a nil gateGraph (unwired) or an unreadable location fails OPEN so the
+// reuse tier degrades to the plain scan rather than refusing every candidate; a Routable read error
+// fails CLOSED (skip this candidate) — a scan-time skip is cheap and instantly retried, unlike an
+// eviction, so this mirrors foreignMarketReachable's polarity exactly (never invents a second notion).
+func (r *contractScalerReclaimer) homeReachable(ctx context.Context, ship *navigation.Ship, homeSystem string, playerID int) bool {
+	loc := ship.CurrentLocation()
+	if loc == nil {
+		return true
+	}
+	currentSystem := shared.ExtractSystemSymbol(loc.Symbol)
+	if currentSystem == "" || currentSystem == homeSystem {
+		return true
+	}
+	if r.gateGraph == nil {
+		return true
+	}
+	routable, err := r.gateGraph.Routable(ctx, currentSystem, homeSystem, playerID)
+	if err != nil {
+		return false
+	}
+	return routable
 }
 
 // isReclaimable is the reuse-eligibility guard: IDLE (never mid-task → no stranding), NOT in transit,

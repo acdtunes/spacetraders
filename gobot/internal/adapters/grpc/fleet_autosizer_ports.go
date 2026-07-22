@@ -269,6 +269,44 @@ func (r *autosizerYardPriceReader) PriceFor(ctx context.Context, playerID int, c
 	return cheapest, cheapest, cheapestYard, true, nil
 }
 
+// PriceForSystem finds the cheapest priced listing for the ship type at a SHIPYARD-trait waypoint
+// scoped to a SINGLE named system (sp-fihvy: the depot stocker hull viability fix). Unlike PriceFor
+// (which walks every system the player already operates in), the depot stocker buy-fallback must never
+// price a hull outside the warehouse's home system — RULINGS #14 (the stocker is intra-system) — so this
+// reader takes the home system as an explicit argument instead of discovering it from ship locations.
+// No remote-yard/scanned fallback: a depot stocker hull is either bought at home or not bought at all.
+func (r *autosizerYardPriceReader) PriceForSystem(ctx context.Context, playerID int, shipType, system string) (int64, string, bool, error) {
+	if r.waypointRepo == nil {
+		return 0, "", false, nil
+	}
+	pid, err := shared.NewPlayerID(playerID)
+	if err != nil {
+		return 0, "", false, nil
+	}
+	waypoints, werr := r.waypointRepo.ListBySystemWithTrait(ctx, system, "SHIPYARD")
+	if werr != nil {
+		return 0, "", false, nil
+	}
+	var cheapest int64
+	var cheapestYard string
+	for _, wp := range waypoints {
+		if wp == nil {
+			continue
+		}
+		price, ok := r.priceAtShipyard(ctx, system, wp.Symbol, shipType, pid)
+		if !ok {
+			continue
+		}
+		if cheapestYard == "" || price < cheapest {
+			cheapest, cheapestYard = price, wp.Symbol
+		}
+	}
+	if cheapestYard == "" {
+		return 0, "", false, nil
+	}
+	return cheapest, cheapestYard, true, nil
+}
+
 // scannedYardFallback opens the HEAVY price signal from the persisted shipyard
 // scans when the live in-system walk found no priced listing (sp-42ow). Heavy
 // ONLY: heavy hulls are the class whose yards are routinely out-of-system (the

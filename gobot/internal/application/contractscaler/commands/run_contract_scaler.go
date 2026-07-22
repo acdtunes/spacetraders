@@ -162,6 +162,28 @@ type IdleHullReclaimer interface {
 	Reclaim(ctx context.Context, order ReclaimOrder) error
 }
 
+// DepotHullReclaimer is the HOME-SCOPED reuse tier the depot STOCKER role's reuse-before-buy fill
+// consults (sp-fihvy, RULINGS #14): the stocker is an intra-system role — it sources pinned goods
+// from home markets — so its reclaim candidate must be gate-reachable to the warehouse's home
+// system, never any idle hull fleet-wide. Warehouse reuse is unaffected; it keeps the fleet-wide
+// IdleHullReclaimer. A nil DepotHullReclaimer (unset at boot) degrades the stocker reuse tier back
+// to the fleet-wide reclaimer, byte-identical to the pre-sp-fihvy ramp.
+type DepotHullReclaimer interface {
+	// FindReclaimableForHome returns one reusable, home-reachable hull symbol (ok=false when none
+	// exists). A read error holds the reuse tier (fail-closed) and the caller falls through to a buy.
+	FindReclaimableForHome(ctx context.Context, playerID int, homeSystem string) (shipSymbol string, ok bool, err error)
+}
+
+// DepotPriceReader is the HOME-SCOPED price signal the depot STOCKER role's buy fallback consults
+// (sp-fihvy, RULINGS #14): only a yard IN the warehouse's home system may price the hull — the
+// fleet-wide PriceReader could return a cheaper yard in a foreign system, which would buy a stocker
+// hull the depot can never route home. Warehouse buys are unaffected; they keep the shared
+// PriceReader. A nil DepotPriceReader (unset at boot) degrades the stocker buy fallback back to the
+// shared PriceReader, byte-identical to the pre-sp-fihvy ramp.
+type DepotPriceReader interface {
+	NextHullPriceForHome(ctx context.Context, playerID int, shipType, homeSystem string) (price int64, yard string, readable bool, err error)
+}
+
 // RunContractScalerCommand launches the standing scaler for a player. Disabled is
 // the escape hatch (default false ⇒ live once launched); nothing arms the launch
 // itself except the operator's arm gate, so a bare deploy is byte-identical.
@@ -186,16 +208,18 @@ type RunContractScalerResponse struct {
 // player's ticks). All decision inputs are read fresh each pass; the only in-memory
 // state is the memoized-at-arm plan, keyed by container ID.
 type RunContractScalerHandler struct {
-	roles        RoleResolver
-	treasury     TreasuryReader
-	price        PriceReader
-	counter      FleetCounter
-	depotCounter DepotElementCounter
-	grower       DepotGrower
-	buyer        Purchaser
-	reclaimer    IdleHullReclaimer
-	ceiling      liveconfig.Reader
-	clock        shared.Clock
+	roles          RoleResolver
+	treasury       TreasuryReader
+	price          PriceReader
+	counter        FleetCounter
+	depotCounter   DepotElementCounter
+	grower         DepotGrower
+	buyer          Purchaser
+	reclaimer      IdleHullReclaimer
+	depotReclaimer DepotHullReclaimer // sp-fihvy: home-scoped stocker reuse tier (nil-safe fallback to reclaimer)
+	depotPrice     DepotPriceReader   // sp-fihvy: home-scoped stocker buy-fallback price (nil-safe fallback to price)
+	ceiling        liveconfig.Reader
+	clock          shared.Clock
 
 	mu    sync.Mutex
 	plans map[string]*armedPlan // keyed by container ID
@@ -224,10 +248,12 @@ func (h *RunContractScalerHandler) SetFleetCounter(r FleetCounter)     { h.count
 func (h *RunContractScalerHandler) SetDepotElementCounter(r DepotElementCounter) {
 	h.depotCounter = r
 }
-func (h *RunContractScalerHandler) SetDepotGrower(g DepotGrower)             { h.grower = g }
-func (h *RunContractScalerHandler) SetPurchaser(p Purchaser)                 { h.buyer = p }
-func (h *RunContractScalerHandler) SetIdleHullReclaimer(r IdleHullReclaimer) { h.reclaimer = r }
-func (h *RunContractScalerHandler) SetCeilingReader(r liveconfig.Reader)     { h.ceiling = r }
+func (h *RunContractScalerHandler) SetDepotGrower(g DepotGrower)               { h.grower = g }
+func (h *RunContractScalerHandler) SetPurchaser(p Purchaser)                   { h.buyer = p }
+func (h *RunContractScalerHandler) SetIdleHullReclaimer(r IdleHullReclaimer)   { h.reclaimer = r }
+func (h *RunContractScalerHandler) SetCeilingReader(r liveconfig.Reader)       { h.ceiling = r }
+func (h *RunContractScalerHandler) SetDepotHullReclaimer(r DepotHullReclaimer) { h.depotReclaimer = r }
+func (h *RunContractScalerHandler) SetDepotPriceReader(r DepotPriceReader)     { h.depotPrice = r }
 
 // Handle runs the ramp loop until the context is cancelled.
 func (h *RunContractScalerHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
@@ -468,12 +494,18 @@ func (h *RunContractScalerHandler) fillDepotRoles(ctx context.Context, cmd *RunC
 // how many hulls it BOUGHT.
 func (h *RunContractScalerHandler) fillDepotRole(ctx context.Context, cmd *RunContractScalerCommand, role contractscaler.UnitRole, hub string, have, take int) int {
 	logger := common.LoggerFromContext(ctx)
+	// homeSystem scopes the STOCKER role's reuse + buy-fallback to the warehouse's home system
+	// (sp-fihvy, RULINGS #14). hub is always the warehouse's Target waypoint (planHub), so this is the
+	// depot's one true home system. Warehouse is unaffected by homeSystem — findReclaimableForDepot and
+	// depotHullPrice both branch on role and leave the Warehouse path on the pre-existing fleet-wide
+	// readers, byte-identical.
+	homeSystem := shared.ExtractSystemSymbol(hub)
 	bought := 0
 	for have < take {
 		// REUSE BEFORE BUY (FREE, ungated): reclaim a free idle undedicated cargo hull and grow the
 		// depot with it. FindReclaimable hands back a symbol WITHOUT dedicating; the grower re-dedicates
 		// it to the role fleet (positionDepotElementHull). A grow failure falls through to the buy.
-		if symbol, ok := h.findReclaimableForDepot(ctx, cmd); ok {
+		if symbol, ok := h.findReclaimableForDepot(ctx, cmd, role, homeSystem); ok {
 			if err := h.growDepot(ctx, cmd, role, symbol, hub); err == nil {
 				have++
 				continue
@@ -483,7 +515,7 @@ func (h *RunContractScalerHandler) fillDepotRole(ctx context.Context, cmd *RunCo
 			})
 		}
 
-		price, yard, priceOK, _ := h.price.NextHullPrice(ctx, cmd.PlayerID, contractscaler.ScalerShipType)
+		price, yard, priceOK := h.depotHullPrice(ctx, cmd, role, homeSystem)
 		if !priceOK {
 			break // fail closed
 		}
@@ -532,7 +564,20 @@ func (h *RunContractScalerHandler) fillDepotRole(ctx context.Context, cmd *RunCo
 // ok=false when the reuse tier is unwired, hits a scan error (fail-closed → the ramp buys), or finds no
 // free hull. Unlike the delivery reuse it does NOT dedicate the hull to "contract" — the grower's launch
 // re-dedicates it to the "warehouse"/"stocker" fleet.
-func (h *RunContractScalerHandler) findReclaimableForDepot(ctx context.Context, cmd *RunContractScalerCommand) (string, bool) {
+//
+// STOCKER is home-scoped (sp-fihvy, RULINGS #14): the stocker is an intra-system role, so its reuse tier
+// consults ONLY h.depotReclaimer.FindReclaimableForHome — a hull gate-reachable to homeSystem — never any
+// idle hull fleet-wide. Warehouse is unaffected: it keeps the pre-existing fleet-wide h.reclaimer,
+// byte-identical. A nil depotReclaimer or blank homeSystem falls back to the fleet-wide reclaimer too, so
+// the stocker path degrades to its historical (pre-fix) behavior until fully wired.
+func (h *RunContractScalerHandler) findReclaimableForDepot(ctx context.Context, cmd *RunContractScalerCommand, role contractscaler.UnitRole, homeSystem string) (string, bool) {
+	if role == contractscaler.Stocker && h.depotReclaimer != nil && homeSystem != "" {
+		symbol, ok, err := h.depotReclaimer.FindReclaimableForHome(ctx, cmd.PlayerID, homeSystem)
+		if err != nil {
+			return "", false // scan error → fall through to a buy (fail-closed)
+		}
+		return symbol, ok
+	}
 	if h.reclaimer == nil {
 		return "", false
 	}
@@ -541,6 +586,26 @@ func (h *RunContractScalerHandler) findReclaimableForDepot(ctx context.Context, 
 		return "", false // scan error → fall through to a buy (fail-closed)
 	}
 	return symbol, ok
+}
+
+// depotHullPrice resolves the buy-fallback price + yard for a depot role's hull.
+//
+// STOCKER is home-scoped (sp-fihvy, RULINGS #14): only a yard IN homeSystem may price the hull, via
+// h.depotPrice.NextHullPriceForHome — never the fleet-wide h.price reader, which could return a cheaper
+// yard in a foreign system and buy a stocker hull the depot can never route home. Warehouse is
+// unaffected: it keeps the shared h.price reader, byte-identical. A nil depotPrice or blank homeSystem
+// falls back to the shared reader too, so the stocker path degrades to its historical behavior until
+// fully wired.
+func (h *RunContractScalerHandler) depotHullPrice(ctx context.Context, cmd *RunContractScalerCommand, role contractscaler.UnitRole, homeSystem string) (int64, string, bool) {
+	if role == contractscaler.Stocker && h.depotPrice != nil && homeSystem != "" {
+		price, yard, ok, err := h.depotPrice.NextHullPriceForHome(ctx, cmd.PlayerID, contractscaler.ScalerShipType, homeSystem)
+		if err != nil {
+			return 0, "", false // fail closed
+		}
+		return price, yard, ok
+	}
+	price, yard, ok, _ := h.price.NextHullPrice(ctx, cmd.PlayerID, contractscaler.ScalerShipType)
+	return price, yard, ok
 }
 
 // growDepot places one hull into the depot for the given role via the grower (AddElement + launch). It

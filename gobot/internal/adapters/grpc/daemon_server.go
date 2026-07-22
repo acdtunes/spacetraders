@@ -93,6 +93,15 @@ type DaemonServer struct {
 	// test-seam convention as depotSinkOverride.
 	depotLiveContractSystemsOverride func(ctx context.Context, playerID int) (map[string]bool, error)
 
+	// gateGraph is the cross-system reachability signal the depot stocker hull viability precondition
+	// consults (sp-fihvy, RULINGS #14): the stocker is an intra-system role, so its hull must be in,
+	// or gate-reachable to, the warehouse's home system before it is (re)claimed. It uses the SAME
+	// Routable notion foreignMarketReachable relies on — never a second reachability mechanism.
+	// Injected post-construction via SetGateGraph because gategraph.Service is built after
+	// NewDaemonServer runs (main.go). A nil gateGraph fails open (byte-identical to pre-sp-fihvy: no
+	// signal, no eviction), mirroring the storageRecovery/depotSinkOverride convention.
+	gateGraph depotHomeRouter
+
 	// Ship state scheduler (timer-based state transitions)
 	shipStateScheduler *ShipStateScheduler
 
@@ -1209,6 +1218,14 @@ func (s *DaemonServer) RecoverRunningContainers(ctx context.Context) error {
 // recoverStorageOperations no-ops.
 func (s *DaemonServer) SetStorageRecovery(svc *storageApp.StorageRecoveryService) {
 	s.storageRecovery = svc
+}
+
+// SetGateGraph injects the cross-system gate-graph reachability service the depot stocker hull
+// viability precondition consults (sp-fihvy). Wired from main.go AFTER gategraph.Service is
+// constructed (it does not exist when NewDaemonServer runs), mirroring SetStorageRecovery. A nil
+// service is tolerated — depotStockerHullViable fails open, byte-identical to pre-sp-fihvy.
+func (s *DaemonServer) SetGateGraph(g depotHomeRouter) {
+	s.gateGraph = g
 }
 
 // recoverStorageOperations re-seeds the in-memory StorageCoordinator's per-good

@@ -547,6 +547,53 @@ func TestFindReclaimable_FleetReadErrorFailsClosed(t *testing.T) {
 	}
 }
 
+// FindReclaimableForHome is the depot STOCKER's home-scoped reuse tier (sp-fihvy, RULINGS #14): it
+// selects only a reuse-eligible hull that is ALSO home-reachable (in, or gate-reachable to, the
+// warehouse's home system) — skipping a foreign, gate-unreachable candidate in favor of a reachable
+// one, and returning ok=false (never seating an unreachable hull) when none qualifies — so GrowStocker
+// is never handed a hull it cannot place viably (the live TORWIND-19/X1-ZK26 stranding this fix
+// prevents at grow time, mirroring the recovery-time guard in container_ops_depot_launch.go).
+func TestFindReclaimableForHome_SelectsOnlyHomeReachableHulls(t *testing.T) {
+	cases := []struct {
+		name       string
+		fleet      []*navigation.Ship
+		routable   bool
+		wantOK     bool
+		wantSymbol string
+	}{
+		{
+			name: "skips a foreign gate-unreachable hull in favor of a home hull",
+			fleet: []*navigation.Ship{
+				homeReaderShip(t, "FOREIGN-IDLE", "X1-ZK26-A1", "HAULER", ""), // foreign + unreachable, listed first
+				homeReaderShip(t, "HOME-IDLE", "X1-UM5-B2", "HAULER", ""),
+			},
+			routable: false, wantOK: true, wantSymbol: "HOME-IDLE",
+		},
+		{
+			name:     "a gate-reachable (not same-system) foreign hull still qualifies",
+			fleet:    []*navigation.Ship{homeReaderShip(t, "REACHABLE", "X1-DY91-A1", "HAULER", "")},
+			routable: true, wantOK: true, wantSymbol: "REACHABLE",
+		},
+		{
+			name:     "no home-reachable candidate -> falls through to the buy tier, never seats the unreachable hull",
+			fleet:    []*navigation.Ship{homeReaderShip(t, "FOREIGN-ONLY", "X1-ZK26-A1", "HAULER", "")},
+			routable: false, wantOK: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &fakeReclaimShipRepo{all: tc.fleet}
+			gate := &fakeGateRouter{routable: tc.routable}
+			r := &contractScalerReclaimer{shipRepo: repo, gateGraph: gate}
+
+			symbol, ok, err := r.FindReclaimableForHome(context.Background(), 1, "X1-UM5")
+			require.NoError(t, err)
+			require.Equal(t, tc.wantOK, ok)
+			require.Equal(t, tc.wantSymbol, symbol)
+		})
+	}
+}
+
 // Reclaim RE-DEDICATES the hull to the exclusive "contract" fleet via the single write path (AssignFleet)
 // and homes it demand-ranked exactly like a bought hull (one HomeShipCommand carrying the spread set +
 // per-park demand weights). NO purchase — the hull already exists.
