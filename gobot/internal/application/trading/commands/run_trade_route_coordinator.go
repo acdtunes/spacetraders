@@ -371,6 +371,15 @@ type RunTradeRouteCoordinatorHandler struct {
 // ends, or a gategraph.ErrUnroutable-wrapped error naming both systems.
 type GateGraph interface {
 	Path(ctx context.Context, fromSystem, toSystem string, playerID int) ([]string, error)
+	// PathWithinJumps is Path with a CALLER-SUPPLIED jump bound instead of the hardcoded
+	// MaxJumpPath=5 — same STRICT fetch-through, fail-closed resolver, just deeper reach. It is the
+	// ONE strict caller allowed past 5 jumps: the long-haul arb heavy repositioning to a far multi-
+	// hop exotic source (sp-e059j). It stays strict (a laden heavy still refuses an unreadable
+	// frontier gate), so it is NOT RepositionPath (which relaxes over stored adjacency for the
+	// expendable probe/scout class). The large bound is isolated to the long-haul reposition wiring;
+	// every other strict caller keeps MaxJumpPath via Path. Consumed solely by
+	// RepositionToWaypointStrictWithinJumps.
+	PathWithinJumps(ctx context.Context, fromSystem, toSystem string, playerID, maxJumps int) ([]string, error)
 	// RepositionPath resolves a route over the PERSISTED stored adjacency (no fetch-
 	// through) bounded to maxJumps, routing PAST an unreadable frontier gate rather than
 	// dead-ending on it — the REPOSITION class (movement of a hull, not a commitment of

@@ -11,10 +11,12 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/application/system/gategraph"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
@@ -194,34 +196,57 @@ func (h *RunLongHaulArbHandler) runEpisode(ctx context.Context, cmd *RunLongHaul
 	if err != nil {
 		return false, fmt.Errorf("long-haul discovery failed: %w", err)
 	}
-	lane, units, ok := selectHaul(ranked, hull.AvailableCargoSpace(), envelope, h.absorptionHeadroom)
-	if !ok {
+	hauls := selectHauls(ranked, hull.AvailableCargoSpace(), envelope, h.absorptionHeadroom)
+	if len(hauls) == 0 {
 		logger.Log("INFO", fmt.Sprintf("Long-haul %s: no lane clears the floor+envelope this scan — idling", cmd.ShipSymbol), map[string]interface{}{
 			"action": "longhaul_no_lane", "ship_symbol": cmd.ShipSymbol,
 		})
 		return false, nil
 	}
 
-	// Reposition to the source (cross-gate), then run the OUT leg through the reused executor.
-	if err := h.reposition.RepositionToWaypoint(ctx, cmd.ShipSymbol, lane.Lane.SourceWaypoint, cmd.PlayerID); err != nil {
-		return false, fmt.Errorf("reposition to source %s failed: %w", lane.Lane.SourceWaypoint, err)
-	}
-	logger.Log("INFO", fmt.Sprintf(
-		"Long-haul %s: %s %s->%s x%d (realized ~%d/hr, %d hops)",
-		cmd.ShipSymbol, lane.Lane.Good, lane.Lane.SourceWaypoint, lane.Lane.DestWaypoint, units, int(lane.RealizedCreditsPerHour), lane.GateHops),
-		map[string]interface{}{
-			"action": "longhaul_out_leg", "ship_symbol": cmd.ShipSymbol, "good": lane.Lane.Good,
-			"source": lane.Lane.SourceWaypoint, "sink": lane.Lane.DestWaypoint, "units": units,
-		})
-	if _, err := h.legs.RunLeg(ctx, h.legCommand(cmd, lane.Lane, units, envelope)); err != nil {
-		return true, fmt.Errorf("out leg %s->%s failed: %w", lane.Lane.SourceWaypoint, lane.Lane.DestWaypoint, err)
+	// Try the viable lanes in realized-$/hr order: reposition to the source (cross-gate), then run
+	// the OUT leg on the FIRST lane the hull can actually reach. The engine deliberately ranks far
+	// multi-hop exotic lanes, some structurally unreachable for this hull's supply; a gate-
+	// UNROUTABLE source is SKIPPED for the next lane rather than error-returned — the old single
+	// pick error-looped the same deterministic top lane forever, capturing zero value (sp-e059j).
+	// A NON-unroutable reposition failure (a transient API blip) still fails the episode so the
+	// next cycle retries. Reachability is checked BEFORE any buy, so RULINGS #4 is untouched —
+	// still no spend without a completed reposition.
+	for _, haul := range hauls {
+		lane, units := haul.lane, haul.units
+		if err := h.reposition.RepositionToWaypoint(ctx, cmd.ShipSymbol, lane.Lane.SourceWaypoint, cmd.PlayerID); err != nil {
+			if errors.Is(err, gategraph.ErrUnroutable) {
+				logger.Log("INFO", fmt.Sprintf("Long-haul %s: top lane source %s is gate-unroutable — skipping to the next reachable lane", cmd.ShipSymbol, lane.Lane.SourceWaypoint), map[string]interface{}{
+					"action": "longhaul_source_unroutable", "ship_symbol": cmd.ShipSymbol, "source": lane.Lane.SourceWaypoint, "good": lane.Lane.Good,
+				})
+				continue
+			}
+			return false, fmt.Errorf("reposition to source %s failed: %w", lane.Lane.SourceWaypoint, err)
+		}
+		logger.Log("INFO", fmt.Sprintf(
+			"Long-haul %s: %s %s->%s x%d (realized ~%d/hr, %d hops)",
+			cmd.ShipSymbol, lane.Lane.Good, lane.Lane.SourceWaypoint, lane.Lane.DestWaypoint, units, int(lane.RealizedCreditsPerHour), lane.GateHops),
+			map[string]interface{}{
+				"action": "longhaul_out_leg", "ship_symbol": cmd.ShipSymbol, "good": lane.Lane.Good,
+				"source": lane.Lane.SourceWaypoint, "sink": lane.Lane.DestWaypoint, "units": units,
+			})
+		if _, err := h.legs.RunLeg(ctx, h.legCommand(cmd, lane.Lane, units, envelope)); err != nil {
+			return true, fmt.Errorf("out leg %s->%s failed: %w", lane.Lane.SourceWaypoint, lane.Lane.DestWaypoint, err)
+		}
+
+		// OPPORTUNISTIC BACKHAUL: re-rank restricted to a lane sourced near where the hull now sits
+		// (the sink system); if one clears the envelope, run it — else deadhead (the hull stays, the
+		// next episode discovers from here). Best-effort: a backhaul failure never fails the episode.
+		h.runBackhaul(ctx, cmd, lane.Lane.DestWaypoint, logger)
+		return true, nil
 	}
 
-	// OPPORTUNISTIC BACKHAUL: re-rank restricted to a lane sourced near where the hull now sits
-	// (the sink system); if one clears the envelope, run it — else deadhead (the hull stays, the
-	// next episode discovers from here). Best-effort: a backhaul failure never fails the episode.
-	h.runBackhaul(ctx, cmd, lane.Lane.DestWaypoint, logger)
-	return true, nil
+	// Every viable lane this scan was gate-unroutable from where the hull sits — idle and back off
+	// rather than error-loop (sp-e059j). The far ground recovers/re-ranks over the idle window.
+	logger.Log("INFO", fmt.Sprintf("Long-haul %s: no viable lane is reachable this scan (all unroutable) — idling", cmd.ShipSymbol), map[string]interface{}{
+		"action": "longhaul_all_unroutable", "ship_symbol": cmd.ShipSymbol,
+	})
+	return false, nil
 }
 
 // resumeHeldCargo sells a hull's held cargo toward the good's best current sink (the reused
@@ -272,24 +297,31 @@ func (h *RunLongHaulArbHandler) runBackhaul(ctx context.Context, cmd *RunLongHau
 	if err != nil {
 		return
 	}
-	lane, units, ok := selectHaul(nearSource, hull.AvailableCargoSpace(), envelope, h.absorptionHeadroom)
-	if !ok {
-		logger.Log("INFO", fmt.Sprintf("Long-haul %s: no backhaul from %s clears the envelope — deadheading", cmd.ShipSymbol, sinkSystem), map[string]interface{}{
-			"action": "longhaul_deadhead", "ship_symbol": cmd.ShipSymbol, "sink_system": sinkSystem,
+	// Iterate the viable near-sink lanes in $/hr order, mirroring the OUT leg's reachability
+	// fallback (sp-e059j): a gate-UNROUTABLE near-source is skipped for the next candidate rather
+	// than deadheading on the first one — the backhaul is opportunistic, so an unreachable top
+	// pick must not forfeit a reachable second. Best-effort throughout: any failure just deadheads.
+	for _, haul := range selectHauls(nearSource, hull.AvailableCargoSpace(), envelope, h.absorptionHeadroom) {
+		lane, units := haul.lane, haul.units
+		if err := h.reposition.RepositionToWaypoint(ctx, cmd.ShipSymbol, lane.Lane.SourceWaypoint, cmd.PlayerID); err != nil {
+			if errors.Is(err, gategraph.ErrUnroutable) {
+				continue
+			}
+			return
+		}
+		logger.Log("INFO", fmt.Sprintf("Long-haul %s: backhaul %s %s->%s x%d", cmd.ShipSymbol, lane.Lane.Good, lane.Lane.SourceWaypoint, lane.Lane.DestWaypoint, units), map[string]interface{}{
+			"action": "longhaul_backhaul", "ship_symbol": cmd.ShipSymbol, "good": lane.Lane.Good, "units": units,
 		})
+		if _, err := h.legs.RunLeg(ctx, h.legCommand(cmd, lane.Lane, units, envelope)); err != nil {
+			logger.Log("WARNING", fmt.Sprintf("Long-haul %s: backhaul leg failed (out leg already booked): %v", cmd.ShipSymbol, err), map[string]interface{}{
+				"action": "longhaul_backhaul_failed", "ship_symbol": cmd.ShipSymbol,
+			})
+		}
 		return
 	}
-	if err := h.reposition.RepositionToWaypoint(ctx, cmd.ShipSymbol, lane.Lane.SourceWaypoint, cmd.PlayerID); err != nil {
-		return
-	}
-	logger.Log("INFO", fmt.Sprintf("Long-haul %s: backhaul %s %s->%s x%d", cmd.ShipSymbol, lane.Lane.Good, lane.Lane.SourceWaypoint, lane.Lane.DestWaypoint, units), map[string]interface{}{
-		"action": "longhaul_backhaul", "ship_symbol": cmd.ShipSymbol, "good": lane.Lane.Good, "units": units,
+	logger.Log("INFO", fmt.Sprintf("Long-haul %s: no reachable backhaul from %s clears the envelope — deadheading", cmd.ShipSymbol, sinkSystem), map[string]interface{}{
+		"action": "longhaul_deadhead", "ship_symbol": cmd.ShipSymbol, "sink_system": sinkSystem,
 	})
-	if _, err := h.legs.RunLeg(ctx, h.legCommand(cmd, lane.Lane, units, envelope)); err != nil {
-		logger.Log("WARNING", fmt.Sprintf("Long-haul %s: backhaul leg failed (out leg already booked): %v", cmd.ShipSymbol, err), map[string]interface{}{
-			"action": "longhaul_backhaul_failed", "ship_symbol": cmd.ShipSymbol,
-		})
-	}
 }
 
 // readEnvelope live-reads treasury into the money envelope (per-haul cap + 200k cushion fence).

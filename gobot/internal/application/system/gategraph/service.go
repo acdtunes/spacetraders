@@ -579,7 +579,24 @@ func (s *Service) token(ctx context.Context, playerID int) (string, error) {
 // when no route exists within MaxJumpPath (including when the only route required an
 // excluded gate), or an underlying store/token error otherwise (fail closed).
 func (s *Service) Path(ctx context.Context, fromSystem, toSystem string, playerID int) ([]string, error) {
-	return bfsPath(fromSystem, toSystem, MaxJumpPath, func(systemSymbol string) ([]string, error) {
+	return s.PathWithinJumps(ctx, fromSystem, toSystem, playerID, MaxJumpPath)
+}
+
+// PathWithinJumps is Path with a CALLER-SUPPLIED jump bound instead of the hardcoded MaxJumpPath
+// — same strict fetch-through neighbor closure, same fail-closed unreadable-gate discipline, same
+// under-construction exclusion, same bfsPath. It exists for the ONE strict caller that must reach
+// deeper than MaxJumpPath=5: the long-haul arb heavy repositioning to a far multi-hop exotic
+// source (sp-e059j). It stays STRICT (fetch-through, fail-closed) — a laden heavy still refuses an
+// unreadable frontier gate — so it is emphatically NOT the RELAXED probe/scout RepositionPath
+// (which routes PAST unreadable gates over stored adjacency). The large bound is isolated to the
+// long-haul reposition wiring; every other strict caller keeps MaxJumpPath via Path. maxJumps <= 0
+// degrades to MaxJumpPath so a mis-wired caller can never accidentally get a zero-bound search
+// (mirrors RepositionPath's defensive fallback).
+func (s *Service) PathWithinJumps(ctx context.Context, fromSystem, toSystem string, playerID, maxJumps int) ([]string, error) {
+	if maxJumps <= 0 {
+		maxJumps = MaxJumpPath
+	}
+	return bfsPath(fromSystem, toSystem, maxJumps, func(systemSymbol string) ([]string, error) {
 		edges, err := s.Connections(ctx, systemSymbol, playerID)
 		if err != nil {
 			// One system's gate is unreadable (sp-qxa4 — a frontier gate the API

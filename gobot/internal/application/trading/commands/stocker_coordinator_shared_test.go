@@ -35,6 +35,12 @@ func (g *fakeHopGraph) RepositionPath(ctx context.Context, from, to string, _ in
 	return g.Path(ctx, from, to, 0)
 }
 
+// PathWithinJumps mirrors Path — it exists only to satisfy the GateGraph interface (sp-e059j); the
+// bound is ignored here (the stocker coordinator never routes long-haul-bounded).
+func (g *fakeHopGraph) PathWithinJumps(ctx context.Context, from, to string, playerID, _ int) ([]string, error) {
+	return g.Path(ctx, from, to, playerID)
+}
+
 func (g *fakeHopGraph) Routable(_ context.Context, from, to string, _ int) (bool, error) {
 	_, ok := g.hops[from+"->"+to]
 	return ok, nil

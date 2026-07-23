@@ -288,6 +288,48 @@ func TestService_Path_AllRoutesUnbuilt_Unroutable(t *testing.T) {
 	}
 }
 
+// --- sp-e059j: strict resolver with a caller-supplied bound (PathWithinJumps) ---
+
+// PathWithinJumps is the STRICT (fetch-through, fail-closed) resolver with a caller bound — the
+// long-haul reach fix. On a 7-jump linear chain (every hop a fresh store hit, so a nil API would
+// panic if the RELAXED stored-adjacency path were taken instead): the default Path STILL caps at
+// MaxJumpPath=5 and reports the far target unroutable (isolation — every other strict caller is
+// byte-identical), while PathWithinJumps at a large bound resolves the full strict 7-jump route.
+// At the SAME MaxJumpPath bound PathWithinJumps matches Path exactly, proving the bound (not a
+// changed resolver) is what admits the deeper route.
+func TestService_PathWithinJumps_ReachesBeyondMaxJumpPath_StrictAndIsolated(t *testing.T) {
+	store := &freshStore{adjacency: map[string][]system.GateEdge{
+		"X1-A": edgesTo("X1-B"),
+		"X1-B": edgesTo("X1-C"),
+		"X1-C": edgesTo("X1-D"),
+		"X1-D": edgesTo("X1-E"),
+		"X1-E": edgesTo("X1-F"),
+		"X1-F": edgesTo("X1-G"),
+		"X1-G": edgesTo("X1-H"), // H is 7 jumps from A — beyond MaxJumpPath=5
+	}}
+	svc := NewService(store, nil, nil, nil) // nil API: any fetch-through beyond the store would panic
+
+	// ISOLATION: the default strict Path is UNCHANGED — still capped at MaxJumpPath=5.
+	if _, err := svc.Path(context.Background(), "X1-A", "X1-H", 1); !errors.Is(err, ErrUnroutable) {
+		t.Fatalf("Path must still cap at MaxJumpPath=5 (byte-identical): a 7-jump target is ErrUnroutable, got %v", err)
+	}
+
+	// REACH: PathWithinJumps at a large bound resolves the SAME 7-jump route over the strict resolver.
+	got, err := svc.PathWithinJumps(context.Background(), "X1-A", "X1-H", 1, 25)
+	if err != nil {
+		t.Fatalf("PathWithinJumps(bound=25) must resolve the 7-jump strict route, got %v", err)
+	}
+	want := []string{"X1-A", "X1-B", "X1-C", "X1-D", "X1-E", "X1-F", "X1-G", "X1-H"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected the 7-jump strict path %v, got %v", want, got)
+	}
+
+	// EQUIVALENCE at the shared bound: PathWithinJumps(MaxJumpPath) is byte-identical to Path.
+	if _, err := svc.PathWithinJumps(context.Background(), "X1-A", "X1-H", 1, MaxJumpPath); !errors.Is(err, ErrUnroutable) {
+		t.Fatalf("PathWithinJumps at MaxJumpPath must match Path's cap (ErrUnroutable), got %v", err)
+	}
+}
+
 // --- sp-8qhu: fetch-through construction resolution (fake API) ---
 
 // missStore forces the fetch-through path: Edges always misses, GateWaypointOf

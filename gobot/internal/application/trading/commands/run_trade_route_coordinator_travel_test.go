@@ -542,6 +542,16 @@ type fakeGateGraph struct {
 	repositionPathErr error
 	repositionBound   int
 
+	// pathWithinResult / pathWithinErr, when set, are what PathWithinJumps returns — the STRICT
+	// large-bound resolver the long-haul heavy reposition rides (sp-e059j); unset, PathWithinJumps
+	// mirrors Path so a test that only cares about the default cap is unaffected. pathWithinBound
+	// records the last maxJumps it was called with, so a test can assert the long-haul large bound
+	// reached the STRICT resolver — and, by repositionBound staying 0, that the RELAXED
+	// RepositionPath was NOT used (a heavy must never route past an unreadable frontier gate).
+	pathWithinResult []string
+	pathWithinErr    error
+	pathWithinBound  int
+
 	// chartPresentCalls records every ChartPresentGate(systemSymbol) call IN ORDER (sp-bcsu),
 	// so a test can assert travel() charted the gate of each system the hull arrived on (and
 	// in what sequence). chartPresentShips records the shipSymbol threaded on each call (sp-lv2n)
@@ -561,6 +571,14 @@ func (f *fakeGateGraph) RepositionPath(ctx context.Context, from, to string, max
 	f.repositionBound = maxJumps
 	if f.repositionPath != nil || f.repositionPathErr != nil {
 		return f.repositionPath, f.repositionPathErr
+	}
+	return f.path, f.pathErr
+}
+
+func (f *fakeGateGraph) PathWithinJumps(ctx context.Context, from, to string, playerID, maxJumps int) ([]string, error) {
+	f.pathWithinBound = maxJumps
+	if f.pathWithinResult != nil || f.pathWithinErr != nil {
+		return f.pathWithinResult, f.pathWithinErr
 	}
 	return f.path, f.pathErr
 }
@@ -862,34 +880,95 @@ func (c *travelBlockingClock) Sleep(time.Duration) {
 	<-c.release
 }
 
-// sp-8k9m: jumpPath selects the resolver by the reposition bound — 0 keeps the strict
-// fetch-through Path (heavies/trade/arb, byte-for-byte unchanged), a positive bound routes
-// over the stored-adjacency RepositionPath AND forwards the bound to it (the expendable
-// probe reach that reaches posts past MaxJumpPath).
-func TestJumpPath_BoundSelectsRepositionResolver(t *testing.T) {
+// sp-8k9m + sp-e059j: jumpPath selects the resolver by its two bounds. (0,0) keeps the strict
+// fetch-through Path (heavies/trade/arb, byte-for-byte unchanged); a positive RELAXED bound routes
+// over the stored-adjacency RepositionPath (expendable probe/scout); a positive STRICT bound routes
+// the STRICT PathWithinJumps at that bound (the long-haul heavy reach). This is also the ISOLATION
+// guard: the default (0,0) path must NOT touch either bounded resolver, so tour/manual/trade keep
+// MaxJumpPath=5.
+func TestJumpPath_BoundsSelectStrictRelaxedAndStrictBoundedResolvers(t *testing.T) {
 	fake := &fakeGateGraph{
-		path:           []string{"X1-A", "X1-B"},                 // strict Path result
-		repositionPath: []string{"X1-A", "X1-M", "X1-N", "X1-Z"}, // stored-adjacency result
+		path:             []string{"X1-A", "X1-B"},                                         // strict Path result
+		repositionPath:   []string{"X1-A", "X1-M", "X1-N", "X1-Z"},                         // RELAXED stored-adjacency result
+		pathWithinResult: []string{"X1-A", "X1-P", "X1-Q", "X1-R", "X1-S", "X1-T", "X1-Z"}, // STRICT large-bound result
 	}
 	h := &RunTradeRouteCoordinatorHandler{gateGraph: fake}
 
-	strict, err := h.jumpPath(context.Background(), "X1-A", "X1-Z", 1, 0)
+	// (0,0): strict Path — and NEITHER bounded resolver is consulted (ISOLATION).
+	strict, err := h.jumpPath(context.Background(), "X1-A", "X1-Z", 1, 0, 0)
 	if err != nil {
 		t.Fatalf("strict jumpPath errored: %v", err)
 	}
 	if !reflect.DeepEqual(strict, fake.path) {
-		t.Fatalf("bound 0 must use strict Path %v, got %v", fake.path, strict)
+		t.Fatalf("bounds (0,0) must use strict Path %v, got %v", fake.path, strict)
+	}
+	if fake.repositionBound != 0 || fake.pathWithinBound != 0 {
+		t.Fatalf("ISOLATION: the default strict path must not consult a bounded resolver, got reposition=%d pathWithin=%d", fake.repositionBound, fake.pathWithinBound)
 	}
 
-	relaxed, err := h.jumpPath(context.Background(), "X1-A", "X1-Z", 1, 9)
+	// Positive RELAXED bound → RepositionPath (probe/scout, routes past unreadable gates).
+	relaxed, err := h.jumpPath(context.Background(), "X1-A", "X1-Z", 1, 9, 0)
 	if err != nil {
 		t.Fatalf("reposition jumpPath errored: %v", err)
 	}
 	if !reflect.DeepEqual(relaxed, fake.repositionPath) {
-		t.Fatalf("a positive bound must use RepositionPath %v, got %v", fake.repositionPath, relaxed)
+		t.Fatalf("a positive relaxed bound must use RepositionPath %v, got %v", fake.repositionPath, relaxed)
 	}
 	if fake.repositionBound != 9 {
-		t.Fatalf("the bound must reach the resolver, got %d", fake.repositionBound)
+		t.Fatalf("the relaxed bound must reach the resolver, got %d", fake.repositionBound)
+	}
+
+	// Positive STRICT bound → PathWithinJumps at that bound (long-haul heavy reach). It must NOT
+	// use the RELAXED RepositionPath — a laden heavy never routes past an unreadable frontier gate.
+	fake.repositionBound = 0
+	strictBounded, err := h.jumpPath(context.Background(), "X1-A", "X1-Z", 1, 0, 25)
+	if err != nil {
+		t.Fatalf("strict-bounded jumpPath errored: %v", err)
+	}
+	if !reflect.DeepEqual(strictBounded, fake.pathWithinResult) {
+		t.Fatalf("a positive strict bound must use PathWithinJumps %v, got %v", fake.pathWithinResult, strictBounded)
+	}
+	if fake.pathWithinBound != 25 {
+		t.Fatalf("the strict bound must reach PathWithinJumps, got %d", fake.pathWithinBound)
+	}
+	if fake.repositionBound != 0 {
+		t.Fatalf("a strict-bounded reposition must NEVER use the RELAXED RepositionPath, but it did (bound %d)", fake.repositionBound)
+	}
+}
+
+// sp-e059j: RepositionToWaypointStrictWithinJumps is the STRICT, caller-bounded reposition the
+// long-haul heavy rides. It routes a >5-jump gate-connected target via the STRICT resolver
+// (PathWithinJumps at the caller bound), NEVER the RELAXED RepositionPath (a laden heavy must not
+// route past an unreadable frontier gate). The fake makes BOTH the default-cap strict Path AND the
+// RELAXED RepositionPath error, so a completed 7-jump flight can only mean the strict large-bound
+// resolver drove it. Every existing bound-0 travel() caller is untouched.
+func TestRepositionToWaypointStrictWithinJumps_RoutesStrictAtLargeBound(t *testing.T) {
+	source := newTravelShipAtGate(t, "LH-1", "X1-A-GATE") // on the source gate → departure hop skipped
+	reloaded := newTravelShipAt(t, "LH-1", "X1-H-DEST")   // post-jump reload sits ON the destination waypoint
+	mediator := &travelMediator{jumpResp: &navCmd.JumpShipResponse{Success: true, CooldownSeconds: 60}}
+	clock := &travelFakeClock{}
+	shipRepo := &travelShipRepo{ship: source, reloadShip: reloaded}
+	handler := NewRunTradeRouteCoordinatorHandler(mediator, shipRepo, nil, nil, clock, nil)
+	fake := &fakeGateGraph{
+		pathWithinResult:  []string{"X1-A", "X1-B", "X1-C", "X1-D", "X1-E", "X1-F", "X1-G", "X1-H"}, // 7 strict jumps
+		pathErr:           errors.New("no jump-gate route from X1-A to X1-H within 5 jumps"),        // the default 5-cap would fail
+		repositionPathErr: errors.New("RELAXED RepositionPath must never carry a heavy long-haul reposition"),
+	}
+	handler.SetGateGraph(fake)
+
+	if err := handler.RepositionToWaypointStrictWithinJumps(context.Background(), "LH-1", "X1-H-DEST", 1, longHaulRepositionJumps); err != nil {
+		t.Fatalf("a >5-jump gate-connected target must resolve via the STRICT large-bound resolver, got %v", err)
+	}
+	// Seven jumps executed — the large-bound strict route drove the flight.
+	if len(mediator.jumps) != 7 {
+		t.Fatalf("expected 7 jumps for the 7-hop strict route, got %d", len(mediator.jumps))
+	}
+	// The STRICT resolver was consulted with the caller's large bound; the RELAXED one never.
+	if fake.pathWithinBound != longHaulRepositionJumps {
+		t.Fatalf("the strict resolver must receive the caller bound %d, got %d", longHaulRepositionJumps, fake.pathWithinBound)
+	}
+	if fake.repositionBound != 0 {
+		t.Fatalf("the RELAXED RepositionPath must NEVER be called for a strict long-haul reposition, got bound %d", fake.repositionBound)
 	}
 }
 

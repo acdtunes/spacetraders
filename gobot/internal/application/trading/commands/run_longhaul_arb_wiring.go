@@ -35,6 +35,36 @@ func (l shipRepoLoader) LoadShip(ctx context.Context, shipSymbol string, playerI
 	return l.repo.FindBySymbol(ctx, shipSymbol, shared.MustNewPlayerID(playerID))
 }
 
+// longHaulRepositionJumps is the STRICT jump bound the long-haul heavy reposition rides —
+// effectively "any number of hops" for a heavy, so the engine can reach the FAR multi-hop exotic
+// sources it deliberately ranks (sp-e059j; the 5-jump MaxJumpPath cap left it error-looping on
+// sources it could not fly to, capturing zero value). Sized to the universe's gate-graph diameter
+// (the deepest CHARTED routes run 6–12 jumps, sp-8k9m), with headroom. It stays the STRICT
+// resolver (PathWithinJumps, fail-closed on unreadable gates) — NOT the RELAXED probe/scout
+// RepositionPath — and is ISOLATED to this long-haul wiring adapter, so tour/manual/trade/arb keep
+// the strict MaxJumpPath=5. No feature flag: the const is armed on deploy (Admiral standing order).
+const longHaulRepositionJumps = 25
+
+// strictBoundedRepositioner is the STRICT, caller-bounded cross-gate reposition the long-haul
+// adapter drives (sp-e059j) — satisfied by *RunTradeRouteCoordinatorHandler via the shared travel
+// machinery. Kept narrow so the wiring states exactly the one seam it consumes.
+type strictBoundedRepositioner interface {
+	RepositionToWaypointStrictWithinJumps(ctx context.Context, shipSymbol, destinationWaypoint string, playerID, maxJumps int) error
+}
+
+// longHaulReposition adapts the shared strict-bounded reposition to the worker's hullRepositioner
+// port (RepositionToWaypoint) with the long-haul-isolated large bound: a long-haul heavy reaches
+// any gate-connected source over the STRICT resolver, while every other consumer of the shared
+// travel machinery keeps MaxJumpPath=5. The worker's hullRepositioner interface is UNCHANGED — the
+// large bound lives ONLY here, at the long-haul composition root.
+type longHaulReposition struct {
+	inner strictBoundedRepositioner
+}
+
+func (r longHaulReposition) RepositionToWaypoint(ctx context.Context, shipSymbol, destination string, playerID int) error {
+	return r.inner.RepositionToWaypointStrictWithinJumps(ctx, shipSymbol, destination, playerID, longHaulRepositionJumps)
+}
+
 // NewLongHaulArbWorkerHandler composes the per-hull long-haul worker over the daemon's REUSED
 // collaborators (design REUSE INVARIANT): the discovery pass (goods universe + the shared
 // BestSinks/BestSources scanners + the shared gate graph + the ONE shared price-impact model),
@@ -55,7 +85,7 @@ func NewLongHaulArbWorkerHandler(
 	market longHaulMarketPort,
 	gateGraph gateGraphPathfinder,
 	arb *RunArbCoordinatorHandler,
-	reposition hullRepositioner,
+	reposition strictBoundedRepositioner,
 	treasury longHaulTreasuryReader,
 	buyImpact float64,
 	sellImpact float64,
@@ -84,7 +114,7 @@ func NewLongHaulArbWorkerHandler(
 		shipRepoLoader{repo: shipRepo},
 		discoverer,
 		newLongHaulLegExecutor(arb),
-		reposition,
+		longHaulReposition{inner: reposition}, // isolate the large STRICT bound to long-haul (sp-e059j)
 		treasury,
 	)
 }

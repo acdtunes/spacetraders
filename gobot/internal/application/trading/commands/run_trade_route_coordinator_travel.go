@@ -218,24 +218,27 @@ func (h *RunTradeRouteCoordinatorHandler) travel(
 	playerID int,
 ) (*navigation.Ship, error) {
 	// Strict reach: heavies/trade/arb resolve the jump path through the fetch-through
-	// gategraph.Path (MaxJumpPath, fail-closed on unreadable gates). repositionJumpBound 0
-	// selects it — every existing caller's behavior is byte-for-byte unchanged (sp-8k9m).
-	return h.travelWithJumpBound(ctx, ship, destinationWaypoint, playerID, 0)
+	// gategraph.Path (MaxJumpPath, fail-closed on unreadable gates). Both bounds 0 select it —
+	// every existing caller's behavior is byte-for-byte unchanged (sp-8k9m/sp-e059j).
+	return h.travelWithJumpBound(ctx, ship, destinationWaypoint, playerID, 0, 0)
 }
 
-// travelWithJumpBound is travel() with an explicit reposition jump bound (sp-8k9m). A
-// bound of 0 uses the strict fetch-through Path (heavies/trade/arb); a positive bound
-// routes the cross-system leg over the PERSISTED stored adjacency via RepositionPath —
-// the expendable probe/scout reposition class only, reached through
-// RepositionToWaypointWithinJumps. Everything ELSE about the flight (in-transit wait,
-// source/arrival gate hops, per-hop cooldowns) is identical; only WHICH resolver picks the
-// system sequence changes.
+// travelWithJumpBound is travel() with explicit jump bounds (sp-8k9m/sp-e059j). Both bounds 0 use
+// the strict fetch-through Path at MaxJumpPath (heavies/trade/arb, byte-for-byte unchanged). A
+// positive repositionJumpBound routes the cross-system leg over the PERSISTED stored adjacency via
+// RepositionPath — the expendable probe/scout RELAXED class only (RepositionToWaypointWithinJumps),
+// routing PAST unreadable frontier gates. A positive strictJumpBound instead routes the STRICT
+// resolver (PathWithinJumps) at that larger bound — the long-haul heavy reach that still fail-closes
+// on an unreadable gate (RepositionToWaypointStrictWithinJumps). Exactly one bound is ever positive.
+// Everything ELSE about the flight (in-transit wait, source/arrival gate hops, per-hop cooldowns) is
+// identical; only WHICH resolver picks the system sequence changes.
 func (h *RunTradeRouteCoordinatorHandler) travelWithJumpBound(
 	ctx context.Context,
 	ship *navigation.Ship,
 	destinationWaypoint string,
 	playerID int,
 	repositionJumpBound int,
+	strictJumpBound int,
 ) (*navigation.Ship, error) {
 	// sp-8l3o — before ANY movement, ride out a hull that is still IN_TRANSIT. A
 	// run re-adopted mid-hop (the arb resume path: a hull mid in-system hop toward
@@ -271,7 +274,7 @@ func (h *RunTradeRouteCoordinatorHandler) travelWithJumpBound(
 	// dest returns the wrapped error (naming both systems) BEFORE any flying.
 	// Without one, jumpPath falls back to the legacy single directly-connected
 	// jump so existing callers/tests are byte-for-byte unchanged.
-	path, err := h.jumpPath(ctx, currentSystem, destSystem, playerID, repositionJumpBound)
+	path, err := h.jumpPath(ctx, currentSystem, destSystem, playerID, repositionJumpBound, strictJumpBound)
 	if err != nil {
 		return ship, err
 	}
@@ -475,7 +478,30 @@ func (h *RunTradeRouteCoordinatorHandler) RepositionToWaypointWithinJumps(ctx co
 	if err != nil {
 		return fmt.Errorf("failed to load ship %s for reposition to %s: %w", shipSymbol, destinationWaypoint, err)
 	}
-	if _, err := h.travelWithJumpBound(ctx, ship, destinationWaypoint, playerID, maxJumps); err != nil {
+	if _, err := h.travelWithJumpBound(ctx, ship, destinationWaypoint, playerID, maxJumps, 0); err != nil {
+		return fmt.Errorf("reposition of %s to %s failed: %w", shipSymbol, destinationWaypoint, err)
+	}
+	return nil
+}
+
+// RepositionToWaypointStrictWithinJumps is the STRICT, caller-bounded variant of
+// RepositionToWaypoint (sp-e059j): identical, except the cross-system jump path is resolved by the
+// STRICT fetch-through resolver (PathWithinJumps) at maxJumps rather than the hardcoded
+// MaxJumpPath=5. It exists for the long-haul arb HEAVY, whose engine deliberately ranks FAR multi-
+// hop exotic lanes: with the 5-jump cap the heavy could not reach the very sources it was told to
+// buy at, so it error-looped and captured zero value. It stays STRICT — fail-closed on an
+// unreadable frontier gate, exactly like RepositionToWaypoint — so it is emphatically NOT the
+// RELAXED RepositionToWaypointWithinJumps (which routes an EXPENDABLE probe/scout past unreadable
+// gates over stored adjacency; a laden heavy routed that way could strand at an unverified gate).
+// The large bound is supplied by the long-haul wiring adapter and isolated to it, so every other
+// strict caller (tour/manual/trade/arb) keeps MaxJumpPath=5. Money guards are untouched: this only
+// MOVES the hull; no buy happens without a completed reposition (RULINGS #4).
+func (h *RunTradeRouteCoordinatorHandler) RepositionToWaypointStrictWithinJumps(ctx context.Context, shipSymbol, destinationWaypoint string, playerID, maxJumps int) error {
+	ship, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, shared.MustNewPlayerID(playerID))
+	if err != nil {
+		return fmt.Errorf("failed to load ship %s for reposition to %s: %w", shipSymbol, destinationWaypoint, err)
+	}
+	if _, err := h.travelWithJumpBound(ctx, ship, destinationWaypoint, playerID, 0, maxJumps); err != nil {
 		return fmt.Errorf("reposition of %s to %s failed: %w", shipSymbol, destinationWaypoint, err)
 	}
 	return nil
@@ -521,7 +547,7 @@ func (h *RunTradeRouteCoordinatorHandler) RepositionToSystemGateAndChart(ctx con
 		return fmt.Errorf("no jump gate resolved for gate-chart reposition of %s (response %T)", shipSymbol, gateResp)
 	}
 
-	if _, terr := h.travelWithJumpBound(ctx, ship, gate.JumpGate.Symbol, playerID, maxJumps); terr != nil {
+	if _, terr := h.travelWithJumpBound(ctx, ship, gate.JumpGate.Symbol, playerID, maxJumps, 0); terr != nil {
 		return fmt.Errorf("gate-chart reposition of %s onto gate %s failed: %w", shipSymbol, gate.JumpGate.Symbol, terr)
 	}
 
@@ -611,16 +637,22 @@ func (h *RunTradeRouteCoordinatorHandler) waitForInTransitArrival(
 // dest is one directly-connected jump away, preserving every existing
 // caller/test that never wires a graph. A gate-graph error (unroutable, or a
 // store/fetch failure) propagates so travel() aborts rather than fly blind.
-// repositionJumpBound > 0 (the expendable probe/scout class, sp-8k9m) resolves the path
+// repositionJumpBound > 0 (the expendable probe/scout RELAXED class, sp-8k9m) resolves the path
 // over the PERSISTED stored adjacency via RepositionPath — routing PAST unreadable frontier
-// gates over a larger bound — instead of the strict fetch-through Path. Bound 0 is every
-// other caller (heavies/trade/arb): byte-for-byte the pre-8k9m behavior.
-func (h *RunTradeRouteCoordinatorHandler) jumpPath(ctx context.Context, fromSystem, destSystem string, playerID, repositionJumpBound int) ([]string, error) {
+// gates over a larger bound. strictJumpBound > 0 (the long-haul heavy reach, sp-e059j) instead
+// resolves the STRICT fetch-through PathWithinJumps at that larger bound — still fail-closed on an
+// unreadable gate, just deeper than MaxJumpPath=5. The RELAXED bound is checked first so a mis-wired
+// caller that set both can never route a heavy over the relaxed path. Both bounds 0 is every other
+// caller (heavies/trade/arb): byte-for-byte the pre-8k9m strict MaxJumpPath behavior.
+func (h *RunTradeRouteCoordinatorHandler) jumpPath(ctx context.Context, fromSystem, destSystem string, playerID, repositionJumpBound, strictJumpBound int) ([]string, error) {
 	if h.gateGraph == nil {
 		return []string{fromSystem, destSystem}, nil
 	}
 	if repositionJumpBound > 0 {
 		return h.gateGraph.RepositionPath(ctx, fromSystem, destSystem, repositionJumpBound)
+	}
+	if strictJumpBound > 0 {
+		return h.gateGraph.PathWithinJumps(ctx, fromSystem, destSystem, playerID, strictJumpBound)
 	}
 	return h.gateGraph.Path(ctx, fromSystem, destSystem, playerID)
 }
