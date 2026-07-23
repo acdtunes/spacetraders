@@ -29,6 +29,7 @@ import (
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/buildinfo"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/supervise"
 	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
@@ -377,6 +378,15 @@ func NewDaemonServer(
 		// Initialize the Prometheus registry
 		metrics.InitRegistry()
 
+		// Daemon build-info / process-start gauges (sp-wrh84): make a stale second
+		// daemon detectable from a scrape (which commit / when it started).
+		buildInfoCollector := metrics.NewDaemonBuildInfoCollector()
+		if err := buildInfoCollector.Register(); err != nil {
+			listener.Close()
+			return nil, fmt.Errorf("failed to register daemon build-info collector: %w", err)
+		}
+		buildInfoCollector.Record(buildinfo.Get().Commit, time.Now())
+
 		// Create container metrics collector
 		collector := metrics.NewContainerMetricsCollector(getContainers, shipRepo)
 		if err := collector.Register(); err != nil {
@@ -667,15 +677,13 @@ func (s *DaemonServer) Start() error {
 		s.dutyCycleSampler.Start()
 	}
 
-	// Start metrics server if enabled
+	// Start metrics server if enabled. A bind failure is FATAL (sp-wrh84 root
+	// cause B): a taken metrics port means another daemon already holds it — abort
+	// instead of running headless (no scrape, no alerting) beside a stale writer.
+	if err := s.startMetricsServerOrFail(); err != nil {
+		return err
+	}
 	if s.metricsConfig != nil && s.metricsConfig.Enabled {
-		if err := s.startMetricsServer(); err != nil {
-			fmt.Printf("Warning: Failed to start metrics server: %v\n", err)
-		} else {
-			fmt.Printf("Metrics server listening on %s:%d%s\n",
-				s.metricsConfig.Host, s.metricsConfig.Port, s.metricsConfig.Path)
-		}
-
 		// Start container metrics collector
 		if s.containerMetricsCollector != nil {
 			s.containerMetricsCollector.Start(context.Background())
@@ -771,6 +779,24 @@ func (s *DaemonServer) Start() error {
 // mux, beside /metrics (same localhost trust boundary; no auth change).
 func registerFlowsRoute(mux *http.ServeMux, reg *flowfeed.Registry) {
 	mux.Handle("/api/flows", flowfeed.NewFlowsHandler(reg))
+}
+
+// startMetricsServerOrFail starts the Prometheus metrics server when enabled and
+// returns a FATAL error if the bind fails. A taken metrics port means another
+// daemon instance is already live on this host: the daemon must abort rather than
+// run headless beside a stale writer (sp-wrh84 root cause B). Disabled metrics is
+// a no-op success.
+func (s *DaemonServer) startMetricsServerOrFail() error {
+	if s.metricsConfig == nil || !s.metricsConfig.Enabled {
+		return nil
+	}
+	if err := s.startMetricsServer(); err != nil {
+		return fmt.Errorf("metrics server failed to start (another daemon may already hold %s:%d): %w",
+			s.metricsConfig.Host, s.metricsConfig.Port, err)
+	}
+	fmt.Printf("Metrics server listening on %s:%d%s\n",
+		s.metricsConfig.Host, s.metricsConfig.Port, s.metricsConfig.Path)
+	return nil
 }
 
 func (s *DaemonServer) startMetricsServer() error {

@@ -62,6 +62,7 @@ import (
 	domainTrading "github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/buildinfo"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
+	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/daemonlock"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/pidfile"
 )
@@ -139,6 +140,35 @@ func run(cfg *config.Config) error {
 		fmt.Printf("WARNING: schema AutoMigrate failed (continuing on existing schema): %v\n", err)
 	} else {
 		fmt.Println("Schema reconciled (AutoMigrate)")
+	}
+
+	// Single-writer guard (sp-wrh84): take a Postgres SESSION advisory lock for
+	// this player BEFORE recovering any containers, so two daemons can never write
+	// the same player's game state — even past a PID-file/socket mismatch or a
+	// manual --force. The lock auto-releases when the pinned connection closes at
+	// shutdown (or drops on crash). SQLite (tests/local) is already a single-writer
+	// store, so the guard is Postgres-only.
+	if cfg.Database.Type == "postgres" {
+		sqlDB, err := db.DB()
+		if err != nil {
+			return fmt.Errorf("failed to get underlying db for advisory lock: %w", err)
+		}
+		lockCtx, lockCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		playerLock, err := daemonlock.NewPostgresPlayerLock(lockCtx, sqlDB)
+		if err != nil {
+			lockCancel()
+			return fmt.Errorf("failed to create daemon advisory lock: %w", err)
+		}
+		if err := daemonlock.AcquireExclusive(lockCtx, playerLock, cfg.Captain.PlayerID); err != nil {
+			lockCancel()
+			_ = playerLock.Close()
+			return err
+		}
+		lockCancel()
+		// Hold the lock (pinned connection) for the whole daemon lifetime; the
+		// deferred Close releases it at shutdown (LIFO: runs before database.Close).
+		defer func() { _ = playerLock.Close() }()
+		fmt.Printf("Daemon advisory lock acquired for player %d\n", cfg.Captain.PlayerID)
 	}
 
 	// 2. Initialize waypoint converter (needed for repositories)
