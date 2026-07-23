@@ -2,11 +2,13 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/andrescamacho/spacetraders-go/internal/application/system/gategraph"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 )
 
@@ -39,11 +41,36 @@ func (f *fakeSourceScanner) BestSourcesAcrossSystems(_ context.Context, _ []stri
 	return f.sources, f.err
 }
 
-// fakeGateGraphPathfinder returns a path of hopCount+1 systems (routable) for any distinct
-// pair — the length is all the discoverer's hop closure reads.
-type fakeGateGraphPathfinder struct{ hopCount int }
+// fakeGateGraphPathfinder stands in for the shared gategraph.Service across BOTH resolvers the
+// discoverer could use for its hop estimate: Path is the STRICT fetch-through (a per-system live
+// fetch — the ~10-min cold-cache first-episode stall, sp-yginc) and RepositionPath is the FAST
+// stored-adjacency read the estimate must ride instead. Each records a call count so a test can
+// assert WHICH resolver ran. With no repositionPaths map both resolvers return a routable
+// hopCount+1 path, so resolver-agnostic composition tests keep passing; a repositionPaths map
+// serves a per-pair stored path ("from|to" key; a missing pair => nil => unroutable) so a test can
+// rank a far lane and drop an unreachable one. pathErr makes the strict fetch-through FAIL,
+// modelling the cold-cache pathology the fix routes around.
+type fakeGateGraphPathfinder struct {
+	hopCount        int
+	pathErr         error
+	repositionPaths map[string][]string
+	pathCalls       int
+	repositionCalls int
+}
 
 func (f *fakeGateGraphPathfinder) Path(_ context.Context, _, _ string, _ int) ([]string, error) {
+	f.pathCalls++
+	if f.pathErr != nil {
+		return nil, f.pathErr
+	}
+	return make([]string, f.hopCount+1), nil
+}
+
+func (f *fakeGateGraphPathfinder) RepositionPath(_ context.Context, fromSystem, toSystem string, _ int) ([]string, error) {
+	f.repositionCalls++
+	if f.repositionPaths != nil {
+		return f.repositionPaths[fromSystem+"|"+toSystem], nil
+	}
 	return make([]string, f.hopCount+1), nil
 }
 
@@ -114,4 +141,81 @@ func TestLongHaulDiscoverer_ComposesUniverseScannersAssembleRank(t *testing.T) {
 	require.Equal(t, "LASER_RIFLES", ranked[0].Lane.Good)
 	require.Equal(t, 16000, ranked[0].Lane.SpreadPerUnit)
 	require.Positive(t, ranked[0].OptimalUnits)
+}
+
+// COLD-CACHE DISCOVERY LATENCY (sp-yginc, headline): the discovery hop estimate must ride the
+// FAST stored-adjacency resolver (RepositionPath), NEVER the strict fetch-through Path — on a cold
+// gate-graph cache Path fetches gate data per traversed system across every candidate lane, the
+// measured ~10-min first-episode stall. Modelled by a pathfinder whose strict Path FAILS (the
+// cold-cache pathology) while its RepositionPath serves the stored route: the lane still ranks
+// (RepositionPath used) and Path is never called (call-count 0). RED before the switch: hops() calls
+// Path -> the error drops the only lane -> ranked is empty and pathCalls == 1.
+func TestLongHaulDiscoverer_RanksViaStoredAdjacency_NeverStrictFetchThrough(t *testing.T) {
+	universe := &fakeGoodUniverse{goods: []string{"LASER_RIFLES"}}
+	sinks := &fakeSinkScanner{sinks: map[string]market.GlobalSinkResult{
+		"LASER_RIFLES": {WaypointSymbol: "X1-XD86-A1", SystemSymbol: "X1-XD86", Bid: 18000, TradeVolume: 20},
+	}}
+	sources := &fakeSourceScanner{sources: map[string]market.GlobalSourceResult{
+		"LASER_RIFLES": {WaypointSymbol: "X1-ZC66-AX1B", SystemSymbol: "X1-ZC66", Ask: 2000, TradeVolume: 30},
+	}}
+	graph := &fakeGateGraphPathfinder{
+		pathErr:         errors.New("cold-cache fetch-through storm"),
+		repositionPaths: map[string][]string{"X1-ZC66|X1-XD86": make([]string, 4)}, // 3 stored hops
+	}
+	d := &longHaulDiscoverer{
+		universe: universe, sinks: sinks, sources: sources,
+		gateGraph: graph,
+		model:     longHaulTestModel(), clock: clockAt(0), maxAge: time.Hour, minSpread: 100, marginFloor: 0,
+	}
+
+	ranked, err := d.DiscoverLanes(context.Background(), 1)
+
+	require.NoError(t, err)
+	require.Len(t, ranked, 1, "the lane ranks via the stored-adjacency resolver even though the strict fetch-through fails")
+	require.Equal(t, "LASER_RIFLES", ranked[0].Lane.Good)
+	require.Equal(t, 3, ranked[0].GateHops, "hop count comes from the stored-adjacency path length")
+	require.Zero(t, graph.pathCalls, "strict fetch-through Path is NEVER called by discovery (the cold-cache latency fix)")
+	require.Positive(t, graph.repositionCalls, "discovery ranks via RepositionPath (stored adjacency)")
+}
+
+// STORED-ADJACENCY HOP ESTIMATE (sp-yginc): discovery ranks a FAR (>5-hop, beyond MaxJumpPath)
+// lane with the hop count read from stored adjacency — a heavy reaches it via the large reposition
+// bound — and DROPS a lane with no stored-adjacency path within bound. The (hops,routable) contract
+// the strict resolver honored is unchanged; only the resolver behind it is now the fast store read.
+func TestLongHaulDiscoverer_RanksFarLane_DropsUnreachableByStoredAdjacency(t *testing.T) {
+	universe := &fakeGoodUniverse{goods: []string{"FAR_EXOTIC", "ISOLATED"}}
+	sinks := &fakeSinkScanner{sinks: map[string]market.GlobalSinkResult{
+		"FAR_EXOTIC": {WaypointSymbol: "X1-DEST-A1", SystemSymbol: "X1-DEST", Bid: 40000, TradeVolume: 30},
+		"ISOLATED":   {WaypointSymbol: "X1-VOID-A1", SystemSymbol: "X1-VOID", Bid: 22000, TradeVolume: 30},
+	}}
+	sources := &fakeSourceScanner{sources: map[string]market.GlobalSourceResult{
+		"FAR_EXOTIC": {WaypointSymbol: "X1-FAR-A1", SystemSymbol: "X1-FAR", Ask: 3000, TradeVolume: 30},
+		"ISOLATED":   {WaypointSymbol: "X1-ISO-A1", SystemSymbol: "X1-ISO", Ask: 5000, TradeVolume: 30},
+	}}
+	// FAR_EXOTIC's source->sink is 8 stored hops (len 9), far beyond MaxJumpPath=5; ISOLATED's pair
+	// has NO stored path (missing key => nil => unroutable), so it drops despite a positive spread.
+	graph := &fakeGateGraphPathfinder{repositionPaths: map[string][]string{
+		"X1-FAR|X1-DEST": make([]string, 9),
+	}}
+	d := &longHaulDiscoverer{
+		universe: universe, sinks: sinks, sources: sources,
+		gateGraph: graph,
+		model:     longHaulTestModel(), clock: clockAt(0), maxAge: time.Hour, minSpread: 100, marginFloor: 0,
+	}
+
+	ranked, err := d.DiscoverLanes(context.Background(), 1)
+
+	require.NoError(t, err)
+	require.Len(t, ranked, 1, "only the reachable far lane survives; the no-stored-path lane drops")
+	require.Equal(t, "FAR_EXOTIC", ranked[0].Lane.Good)
+	require.Equal(t, 8, ranked[0].GateHops, "far lane ranks with the stored-adjacency hop count (>5, beyond the strict MaxJumpPath)")
+}
+
+// ISOLATION (sp-yginc): the cold-cache discovery fix switches ONLY discovery's RANKING resolver.
+// The strict fetch-through reach cap the reposition rides is byte-untouched — MaxJumpPath stays 5,
+// and the large stored-adjacency bound discovery/reposition ride stays longHaulRepositionJumps=25.
+// A regression lock on the two constants the DO-NOT-TOUCH sp-e059j reposition path depends on.
+func TestLongHaulDiscovery_StrictReachCapUnchanged(t *testing.T) {
+	require.Equal(t, 5, gategraph.MaxJumpPath, "the strict fetch-through reach cap stays 5 — discovery's fast resolver does not touch it")
+	require.Equal(t, 25, longHaulRepositionJumps, "the large reach bound stays 25 (sp-e059j reposition bound, reused by discovery)")
 }

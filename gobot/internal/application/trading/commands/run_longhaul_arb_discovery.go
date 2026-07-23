@@ -115,13 +115,25 @@ type goodUniverse interface {
 	DistinctTradedGoods(ctx context.Context, playerID int, maxAge time.Duration, now time.Time) ([]string, error)
 }
 
-// gateGraphPathfinder returns the ordered gate-graph system path between two systems (J jumps
-// -> J+1 elements) for a player — the shared gategraph.Service satisfies it (Path). The
-// discoverer turns it into the context-free gateHopResolver assembleLongHaulCandidates wants
-// (hop count = len(path)-1, routable = a non-empty path), threading ctx+playerID that the pure
-// assembly must not carry.
+// gateGraphPathfinder is the gate-graph capability discovery's hop estimator rides. The shared
+// gategraph.Service satisfies BOTH methods; discovery deliberately uses the FAST one:
+//
+//   - RepositionPath resolves the hop path over the PERSISTED, stored gate adjacency (a pure store
+//     read — no per-system live fetch-through) at a caller bound. Discovery's hop count is only a
+//     RANKING estimate (realized $/hr ∝ GateHops) plus a reachability signal, so it does NOT need
+//     the strict fail-closed fetch-through — that is the reposition's job at execution time
+//     (sp-e059j, unchanged). On a COLD in-memory cache the fetch-through Path fetches gate data per
+//     traversed system across every candidate lane — the measured ~10-min first-episode discovery
+//     stall (sp-yginc); the stored-adjacency read is fast even cold, so hops() rides it.
+//   - Path is the STRICT fetch-through resolver, retained on the port so the deliberate choice of
+//     the fast resolver stays explicit and regression-locked; discovery does not call it.
+//
+// The discoverer turns the chosen resolver into the context-free gateHopResolver
+// assembleLongHaulCandidates wants (hop count = len(path)-1, routable = a path of ≥2 systems),
+// threading ctx that the pure assembly must not carry.
 type gateGraphPathfinder interface {
 	Path(ctx context.Context, fromSystem, toSystem string, playerID int) ([]string, error)
+	RepositionPath(ctx context.Context, fromSystem, toSystem string, maxJumps int) ([]string, error)
 }
 
 // longHaulDiscoverer composes the full discovery pass behind the worker's laneDiscoverer port:
@@ -144,8 +156,8 @@ type longHaulDiscoverer struct {
 
 // DiscoverLanes runs one discovery pass, returning the ranked profitable out-of-horizon lanes.
 // Any scanner error aborts the pass (the worker treats it as "no lane this scan"); an empty
-// universe or no candidate short-circuits to nil. The gate-hop closure threads this pass's
-// ctx+playerID into the shared gate graph while keeping the assembly pure.
+// universe or no candidate short-circuits to nil. The gate-hop closure threads this pass's ctx
+// into the shared gate graph's stored-adjacency resolver while keeping the assembly pure.
 func (d *longHaulDiscoverer) DiscoverLanes(ctx context.Context, playerID int) ([]pricedLongHaulLane, error) {
 	now := d.clock.Now()
 	goods, err := d.universe.DistinctTradedGoods(ctx, playerID, d.maxAge, now)
@@ -167,7 +179,16 @@ func (d *longHaulDiscoverer) DiscoverLanes(ctx context.Context, playerID int) ([
 		if fromSystem == toSystem {
 			return 0, true
 		}
-		path, perr := d.gateGraph.Path(ctx, fromSystem, toSystem, playerID)
+		// Ride the FAST stored-adjacency resolver (RepositionPath), NOT the strict fetch-through
+		// Path: discovery's hop count is only a RANKING estimate (realized $/hr ∝ GateHops) plus a
+		// reachability signal. On a COLD cache Path fetches gate data per traversed system across
+		// every candidate lane — the measured ~10-min first-episode discovery stall (sp-yginc); the
+		// stored-adjacency read is fast even cold. The strict fail-closed reach stays the
+		// reposition's job at execution time (sp-e059j, unchanged). Bounded by longHaulRepositionJumps
+		// — the same large long-haul reach the reposition flies, so discovery ranks exactly the far
+		// lanes a heavy can be sent to. The (0,false)/(hops,true) contract is identical, so
+		// assembleLongHaulCandidates is unchanged.
+		path, perr := d.gateGraph.RepositionPath(ctx, fromSystem, toSystem, longHaulRepositionJumps)
 		if perr != nil || len(path) < 2 {
 			return 0, false
 		}
