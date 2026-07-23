@@ -160,3 +160,28 @@ func NewShipDedicatedToOtherFleetError(shipSymbol, fleet, operation string) *Shi
 		Operation: operation,
 	}
 }
+
+// ShipIsCommandHullError indicates a claim was rejected because the ship is the
+// command frigate (RULINGS #7) and the claiming operation is a passive depot
+// role (warehouse/stocker) the flagship must never fill. Enforced atomically
+// inside ClaimShip on every path (launch, grow, restart recovery) so an orphaned
+// depot container recovered from the container registry can never re-claim the
+// frigate after a daemon restart (sp-3tsjz). Operation is the depot fleet the
+// claim identified itself as. Like the dedication rejection above it is a
+// standing rejection (never a transient claim-handoff race), so it fails fast
+// and leaves the row untouched.
+type ShipIsCommandHullError struct {
+	*ShipAssignmentError
+	Operation string
+}
+
+func NewShipIsCommandHullError(shipSymbol, operation string) *ShipIsCommandHullError {
+	return &ShipIsCommandHullError{
+		ShipAssignmentError: NewShipAssignmentError(
+			fmt.Sprintf("ship %s is the command frigate and cannot be claimed for depot role %q (RULINGS #7)", shipSymbol, operation),
+			shipSymbol,
+			"",
+		),
+		Operation: operation,
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	tradingsvc "github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
@@ -23,7 +24,12 @@ type WarehouseOperationResult struct {
 // `fleet assign --fleet warehouse` is claimable by its own warehouse container
 // and rejected for every other operation, so the dedicated buffer hull is never
 // poached by a gas/manufacturing/contract coordinator.
-const operationWarehouse = "warehouse"
+//
+// Defined FROM the domain source-of-truth (sp-3tsjz) so this launcher and the
+// claim-time command-frigate guard (ship_repository.go ClaimShip, via
+// domainContract.IsDepotOperation) can never name different strings and let the
+// guard silently drift out of coverage.
+const operationWarehouse = domainContract.DepotOperationWarehouse
 
 // StartWarehouse launches a passive inventory warehouse (sp-dchv Lane B) as a
 // recovery-safe daemon container on ONE dedicated storage hull parked at a home

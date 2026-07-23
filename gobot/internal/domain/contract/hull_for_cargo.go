@@ -12,12 +12,45 @@ import (
 // roleCommandHull is the registration role of the agent's command frigate.
 const roleCommandHull = "COMMAND"
 
+// DepotOperationWarehouse / DepotOperationStocker are the passive depot-role
+// fleet identities the command frigate must NEVER fill (RULINGS #7). They are
+// the canonical operation strings the warehouse and stocker launchers tag their
+// hulls and claim under; the grpc-layer operation constants
+// (operationWarehouse/operationStocker) are defined FROM these so the claim-time
+// command-frigate guard (ship_repository.go ClaimShip) and the launchers can
+// never name different strings and let the guard silently drift out of coverage.
+const (
+	DepotOperationWarehouse = "warehouse"
+	DepotOperationStocker   = "stocker"
+)
+
 // IsCommandHull reports whether a ship is the command frigate, by registration
 // role or by the conventional "*-1" symbol (e.g. "TORWIND-1"). Candidate
 // discovery, cargo-fit selection and the selection log all share this one
 // predicate so they agree on exactly which hull is treated as the command ship.
 func IsCommandHull(ship *navigation.Ship) bool {
-	return ship.Role() == roleCommandHull || strings.HasSuffix(ship.ShipSymbol(), "-1")
+	return IsCommandHullSymbolRole(ship.ShipSymbol(), ship.Role())
+}
+
+// IsCommandHullSymbolRole is the raw command-frigate predicate behind
+// IsCommandHull, taking the bare symbol + role so a persistence-layer guard
+// holding a locked row model (not a domain Ship) shares the EXACT same rule and
+// can never drift from it. Used by ClaimShip's depot-role command-frigate
+// rejection (sp-3tsjz), where reconstructing a full domain Ship inside the
+// row-locked claim transaction would be needless.
+func IsCommandHullSymbolRole(shipSymbol, role string) bool {
+	return role == roleCommandHull || strings.HasSuffix(shipSymbol, "-1")
+}
+
+// IsDepotOperation reports whether a claim operation is a passive depot role
+// (warehouse or stocker) — the roles the command frigate is rejected from at
+// claim time on EVERY path (launch, grow, and restart recovery), so an orphaned
+// depot container recovered from the registry can never re-claim the flagship
+// (sp-3tsjz, RULINGS #7). Every other operation (contract, gas, manufacturing,
+// scouting, ...) is unaffected: the frigate stays a legitimate last-resort haul
+// candidate there (SelectHullForCargo Tier 2/4).
+func IsDepotOperation(operation string) bool {
+	return operation == DepotOperationWarehouse || operation == DepotOperationStocker
 }
 
 // hullFit carries the per-candidate figures the cargo-fit ladder ranks on, so

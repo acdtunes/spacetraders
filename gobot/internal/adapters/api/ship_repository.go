@@ -16,6 +16,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
+	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
@@ -1243,6 +1244,25 @@ func (r *ShipRepository) ClaimShip(ctx context.Context, shipSymbol string, conta
 		}
 		if err != nil {
 			return fmt.Errorf("failed to lock ship: %w", err)
+		}
+
+		// sp-3tsjz (RULINGS #7, completes sp-gvvph): the command frigate is NEVER a
+		// depot hull. Reject a warehouse/stocker claim of the flagship on EVERY
+		// path — free, already-claimed, same-container recovery, or dedicated —
+		// BEFORE any assignment-state guard below, so an orphaned depot container
+		// recovered from the container registry can never re-claim it after a
+		// daemon restart (the reported bug: TORWIND-1 kept coming back as a
+		// warehouse). sp-gvvph's scaler-reclaim / launch-viability guards all miss
+		// the recovery path; this atomic, row-locked point does not. Checked
+		// against the locked row via the SAME predicate IsCommandHull uses
+		// (IsCommandHullSymbolRole), so the persistence guard can never drift from
+		// the domain rule. Placed first, ahead of the transient already-assigned
+		// retry, so it is a permanent fail-fast rejection: a depot op claiming the
+		// frigate never enters the handoff-race retry loop for a hull it can never
+		// hold. Every other operation is unaffected — the frigate stays a
+		// legitimate last-resort haul candidate there.
+		if domainContract.IsDepotOperation(operation) && domainContract.IsCommandHullSymbolRole(model.ShipSymbol, model.Role) {
+			return shared.NewShipIsCommandHullError(shipSymbol, operation)
 		}
 
 		// A captain reservation has no container_id (it was never a

@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
@@ -28,7 +29,12 @@ type StockerOperationResult struct {
 // stocking survive the stocker container ending: the dedication persists across
 // crash/restart/idle-gap, no coordinator can poach the hull, and the next
 // stocker relaunch re-claims its own.
-const operationStocker = "stocker"
+//
+// Defined FROM the domain source-of-truth (sp-3tsjz) so this launcher and the
+// claim-time command-frigate guard (ship_repository.go ClaimShip, via
+// domainContract.IsDepotOperation) can never name different strings and let the
+// guard silently drift out of coverage.
+const operationStocker = domainContract.DepotOperationStocker
 
 // StartStocker launches the STOCKER LOOP (sp-zdwg) as a recovery-safe daemon container:
 // a dedicated hull that fills a home warehouse the tours rationally won't (sp-dchv proved

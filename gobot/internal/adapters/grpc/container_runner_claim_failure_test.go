@@ -92,6 +92,49 @@ func TestStartTerminalizesRowWhenOperationClaimIsRejected(t *testing.T) {
 	require.Nil(t, s.registeredRunner(containerID))
 }
 
+// sp-3tsjz (RULINGS #7/#2, completes sp-gvvph): the reported bug, reproduced on
+// the RECOVERY path. On daemon restart the orphaned warehouse-TORWIND-1 container
+// rebuilds from the container registry carrying operation="warehouse" and re-runs
+// the operation-keyed ClaimShip on the command frigate — the exact path every
+// sp-gvvph guard (scaler reclaim / launch viability) bypasses. That claim is now
+// rejected at ClaimShip with the standing command-hull error, so the recovered
+// container must ride the same sp-cr86 terminal path as any permanent claim
+// failure (row FAILED claim_failed, frigate untouched, no zombie runner) and fail
+// FAST — a command-hull rejection is permanent, never entering the transient
+// handoff-race retry — so the flagship can never come back as a warehouse.
+func TestStartTerminalizesRowWhenWarehouseClaimsCommandFrigate(t *testing.T) {
+	s, db, playerID := newRecoveryTestServer(t)
+
+	frigate := newIdleTradeShip(t, "TORWIND-1", playerID)
+	repo := &tradeRouteShipRepo{
+		ships:    map[string]*navigation.Ship{"TORWIND-1": frigate},
+		claimErr: shared.NewShipIsCommandHullError("TORWIND-1", operationWarehouse),
+	}
+	s.shipRepo = repo
+
+	const containerID = "warehouse-TORWIND-1-abc123"
+	entity := container.NewContainer(containerID, container.ContainerTypeWarehouse, playerID, -1, nil,
+		map[string]interface{}{"ship_symbol": "TORWIND-1", "operation": operationWarehouse}, nil)
+	require.NoError(t, s.containerRepo.Add(context.Background(), entity, "warehouse"))
+
+	runner := NewContainerRunner(entity, s.mediator, nil, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
+
+	err := runner.Start()
+
+	require.Error(t, err, "a warehouse claim of the command frigate must fail")
+	var commandHull *shared.ShipIsCommandHullError
+	require.ErrorAs(t, err, &commandHull, "must be the standing command-hull rejection")
+	requireContainerState(t, db, containerID, "FAILED", "claim_failed")
+	// The flagship must be untouched: never seated as a warehouse hull, and our
+	// cleanup must not have force-released anything (we never held it).
+	require.False(t, frigate.IsAssigned(), "the frigate must never be seated as a warehouse hull")
+	require.Empty(t, repo.recordedClaims())
+	// A command-hull rejection is permanent — it must fail fast on the first
+	// attempt, never enter the transient handoff-race retry loop.
+	require.Equal(t, 1, repo.claimCallCount(), "a command-hull rejection must not be retried")
+	require.Nil(t, s.registeredRunner(containerID))
+}
+
 // sp-l7h2 Phase 2 happy path: an operation-carrying container claims through
 // ClaimShip under its fleet identity — the claim is recorded with the exact
 // operation string, the hull ends up assigned, and the row lands RUNNING.
