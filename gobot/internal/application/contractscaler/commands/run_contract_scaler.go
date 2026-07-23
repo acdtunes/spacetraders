@@ -111,7 +111,9 @@ type DepotGrower interface {
 
 // BuyOrder is one approved scaler purchase driven through the kept autosizer buy
 // primitive: buy the light frame, dedicate it EXCLUSIVELY to the contract fleet,
-// and home it demand-ranked across the spread standby set (C1).
+// and home it to its FIXED placement slot (one hull per waypoint, sp-mtgje). The
+// standby set is the ≤6 fixed delivery slots (TopDeliverySlots); the homing zips this
+// hull to its slot by symbol — NO runtime demand.
 type BuyOrder struct {
 	PlayerID        int
 	Unit            contractscaler.PlanUnit
@@ -119,7 +121,6 @@ type BuyOrder struct {
 	ExpectedPrice   int64
 	DedicatedFleet  string
 	StandbyStations []string
-	StandbyDemand   map[string]float64
 }
 
 // BuyResult reports the executed purchase.
@@ -140,13 +141,12 @@ type Purchaser interface {
 }
 
 // ReclaimOrder is one ZERO-SPEND reuse: re-dedicate an already-owned idle undedicated
-// cargo hull into the contract fleet and home it demand-ranked across the SAME spread
-// standby set a BuyOrder carries. No purchase — the hull already exists.
+// cargo hull into the contract fleet and home it to its FIXED placement slot across the SAME
+// ≤6 standby set a BuyOrder carries. No purchase — the hull already exists.
 type ReclaimOrder struct {
 	PlayerID        int
 	ShipSymbol      string
 	StandbyStations []string
-	StandbyDemand   map[string]float64
 }
 
 // IdleHullReclaimer is the FREE reuse tier the ramp tries BEFORE every buy: find one
@@ -163,6 +163,21 @@ type IdleHullReclaimer interface {
 	// RULINGS #3) and homes it exactly like a bought hull. An error means the hull was
 	// NOT taken, so the caller safely buys instead (no double-count).
 	Reclaim(ctx context.Context, order ReclaimOrder) error
+}
+
+// DeliverySurplusReleaser un-dedicates surplus "contract" delivery hulls — the RE-ROLE path
+// when the delivery count exceeds the plan knee (sp-mtgje: the delivery cap dropped 8→6, so the
+// 2 live-surplus delivery hulls must become warehouses, NOT stay as delivery and NOT be bought
+// anew). It releases IDLE delivery hulls (never mid-delivery) to the UNDEDICATED idle pool, from
+// where the depot fill's reuse-before-buy tier reclaims them into warehouse roles the same pass —
+// a re-composition with zero new hulls. Release is FREE (no spend), so it is never cushion-gated.
+// A nil releaser (unset at boot) skips the re-role entirely (byte-identical to the buy-only ramp).
+type DeliverySurplusReleaser interface {
+	// ReleaseSurplusDelivery un-dedicates up to count idle "contract" delivery hulls (deterministic:
+	// highest-symbol first, so the ≤6 lowest-symbol hulls keep the fixed slots the homing zips them
+	// to). It returns how many were actually released; a read/assign error releases fewer (fail-closed
+	// — a hull left dedicated is safe, it just re-roles a later pass).
+	ReleaseSurplusDelivery(ctx context.Context, playerID, count int) (int, error)
 }
 
 // DepotHullReclaimer is the HOME-SCOPED reuse tier BOTH depot roles' reuse-before-buy fill consults
@@ -219,8 +234,9 @@ type RunContractScalerHandler struct {
 	grower         DepotGrower
 	buyer          Purchaser
 	reclaimer      IdleHullReclaimer
-	depotReclaimer DepotHullReclaimer // sp-fihvy: home-scoped stocker reuse tier (nil-safe fallback to reclaimer)
-	depotPrice     DepotPriceReader   // sp-fihvy: home-scoped stocker buy-fallback price (nil-safe fallback to price)
+	releaser       DeliverySurplusReleaser // sp-mtgje: re-role surplus delivery → warehouse (nil-safe: skip re-role)
+	depotReclaimer DepotHullReclaimer      // sp-fihvy: home-scoped stocker reuse tier (nil-safe fallback to reclaimer)
+	depotPrice     DepotPriceReader        // sp-fihvy: home-scoped stocker buy-fallback price (nil-safe fallback to price)
 	ceiling        liveconfig.Reader
 	clock          shared.Clock
 
@@ -228,12 +244,12 @@ type RunContractScalerHandler struct {
 	plans map[string]*armedPlan // keyed by container ID
 }
 
-// armedPlan is the per-coordinator once-at-arm resolution: the fixed buy sequence
-// + the spread set + the demand weights, all stable for the era.
+// armedPlan is the per-coordinator once-at-arm resolution: the fixed buy sequence + the ≤6
+// FIXED placement slots (TopDeliverySlots) the homing zips hulls onto, stable for the era. No
+// demand map — the runtime homing carries no demand (sp-mtgje).
 type armedPlan struct {
 	plan            []contractscaler.PlanUnit
 	standbyStations []string
-	standbyDemand   map[string]float64
 }
 
 // NewRunContractScalerHandler wires the handler. clock defaults to the real clock.
@@ -251,9 +267,12 @@ func (h *RunContractScalerHandler) SetFleetCounter(r FleetCounter)     { h.count
 func (h *RunContractScalerHandler) SetDepotElementCounter(r DepotElementCounter) {
 	h.depotCounter = r
 }
-func (h *RunContractScalerHandler) SetDepotGrower(g DepotGrower)               { h.grower = g }
-func (h *RunContractScalerHandler) SetPurchaser(p Purchaser)                   { h.buyer = p }
-func (h *RunContractScalerHandler) SetIdleHullReclaimer(r IdleHullReclaimer)   { h.reclaimer = r }
+func (h *RunContractScalerHandler) SetDepotGrower(g DepotGrower)             { h.grower = g }
+func (h *RunContractScalerHandler) SetPurchaser(p Purchaser)                 { h.buyer = p }
+func (h *RunContractScalerHandler) SetIdleHullReclaimer(r IdleHullReclaimer) { h.reclaimer = r }
+func (h *RunContractScalerHandler) SetDeliverySurplusReleaser(r DeliverySurplusReleaser) {
+	h.releaser = r
+}
 func (h *RunContractScalerHandler) SetCeilingReader(r liveconfig.Reader)       { h.ceiling = r }
 func (h *RunContractScalerHandler) SetDepotHullReclaimer(r DepotHullReclaimer) { h.depotReclaimer = r }
 func (h *RunContractScalerHandler) SetDepotPriceReader(r DepotPriceReader)     { h.depotPrice = r }
@@ -348,12 +367,61 @@ func (h *RunContractScalerHandler) reconcileOnce(ctx context.Context, cmd *RunCo
 
 	bought := h.fillDeliveryRole(ctx, cmd, armed, takeDelivery)
 
+	// RE-ROLE the delivery surplus (sp-mtgje): when the live delivery count exceeds the knee (the cap
+	// dropped 8→6), un-dedicate the surplus into the idle pool so the depot fill below RECLAIMS it into
+	// the warehouse deficit the SAME pass — a re-composition with ZERO new hulls, never left idle. Runs
+	// between the delivery fill (which never removes) and the depot fill (which reclaims the released
+	// hulls). Skipped under dry-run and when the depot is not actuatable (nowhere to re-role to).
+	if !cmd.DryRun && h.DepotActuatable() {
+		h.reroleSurplusDelivery(ctx, cmd, takeDelivery, takeWarehouse)
+	}
+
 	// Reconcile the EXISTING depot up to the plan targets (add only the short warehouse/stocker). Skipped
 	// wholesale when no depot budget — so the default ceiling makes ZERO depot counter/grower calls.
 	if takeWarehouse > 0 || takeStocker > 0 {
 		bought += h.fillDepotRoles(ctx, cmd, armed, takeWarehouse, takeStocker)
 	}
 	return bought, nil
+}
+
+// reroleSurplusDelivery un-dedicates the delivery hulls that exceed the plan knee so the depot fill's
+// reuse-before-buy tier reclaims them into the warehouse deficit the SAME pass — the delivery-over-target
+// path (sp-mtgje: live 8 delivery, knee 6 → the 2 surplus become warehouses). It releases AT MOST the
+// warehouse deficit (takeWarehouse − haveWarehouse), so a released hull is always absorbed by a warehouse
+// slot rather than stranded idle. Best-effort + fail-closed: a nil releaser, an unreadable count, or no
+// surplus is a no-op; a partial release just re-roles fewer this pass (retried next tick). FREE — never
+// cushion-gated (un-dedicating spends nothing and strictly re-composes the existing fleet).
+func (h *RunContractScalerHandler) reroleSurplusDelivery(ctx context.Context, cmd *RunContractScalerCommand, takeDelivery, takeWarehouse int) {
+	if h.releaser == nil {
+		return
+	}
+	haveDelivery, err := h.counter.ContractHullCount(ctx, cmd.PlayerID)
+	if err != nil || haveDelivery <= takeDelivery {
+		return // fail-closed on an unknown count; no surplus → nothing to re-role
+	}
+	haveWarehouse, err := h.depotCounter.WarehouseCount(ctx, cmd.PlayerID)
+	if err != nil {
+		return // fail-closed: without the warehouse Current the release can't be bounded safely
+	}
+	release := haveDelivery - takeDelivery
+	if deficit := takeWarehouse - haveWarehouse; deficit < release {
+		release = deficit
+	}
+	if release <= 0 {
+		return // no warehouse deficit to absorb the surplus → leave delivery over rather than strand it idle
+	}
+	logger := common.LoggerFromContext(ctx)
+	released, err := h.releaser.ReleaseSurplusDelivery(ctx, cmd.PlayerID, release)
+	if err != nil {
+		logger.Log("WARN", fmt.Sprintf("Contract scaler: releasing %d surplus delivery hull(s) partially failed (%d released): %v", release, released, err), map[string]interface{}{
+			"action": "contract_scaler_surplus_release_error", "container_id": cmd.ContainerID,
+		})
+	}
+	if released > 0 {
+		logger.Log("INFO", fmt.Sprintf("Contract scaler RE-ROLED %d surplus delivery hull(s) toward the warehouse deficit (delivery %d over the %d knee)", released, haveDelivery, takeDelivery), map[string]interface{}{
+			"action": "contract_scaler_surplus_reroled", "container_id": cmd.ContainerID,
+		})
+	}
 }
 
 // fillDeliveryRole fills the delivery role up to takeDelivery — the byte-identical buy/reclaim+home
@@ -417,7 +485,6 @@ func (h *RunContractScalerHandler) fillDeliveryRole(ctx context.Context, cmd *Ru
 			ExpectedPrice:   price,
 			DedicatedFleet:  scalerFleet,
 			StandbyStations: armed.standbyStations,
-			StandbyDemand:   armed.standbyDemand,
 		})
 		if err != nil {
 			logger.Log("ERROR", fmt.Sprintf("Contract scaler buy failed: %v", err), map[string]interface{}{
@@ -681,7 +748,6 @@ func (h *RunContractScalerHandler) tryReclaim(ctx context.Context, cmd *RunContr
 		PlayerID:        cmd.PlayerID,
 		ShipSymbol:      symbol,
 		StandbyStations: armed.standbyStations,
-		StandbyDemand:   armed.standbyDemand,
 	}); err != nil {
 		logger.Log("WARN", fmt.Sprintf("Contract scaler: reclaim of %s failed (%v) — falling through to buy", symbol, err), map[string]interface{}{
 			"action": "contract_scaler_reclaim_error", "container_id": cmd.ContainerID, "ship_symbol": symbol,
@@ -709,10 +775,12 @@ func (h *RunContractScalerHandler) armedPlanFor(ctx context.Context, cmd *RunCon
 	if err != nil {
 		return nil, fmt.Errorf("contract scaler role lookup: %w", err)
 	}
+	// The standby set is the SAME ≤6 fixed placement slots the buy sequence uses (TopDeliverySlots),
+	// so the homing zips hulls onto exactly the parks the scaler bought against — one slot set, no
+	// drift. Not all central parks (the pre-fix set that let idle hulls spread demand-ranked and pile).
 	armed := &armedPlan{
 		plan:            contractscaler.BuildPlan(roles, demand),
-		standbyStations: append([]string(nil), roles.CentralParks...),
-		standbyDemand:   contractscaler.StandbyDemand(roles, demand),
+		standbyStations: contractscaler.TopDeliverySlots(roles.CentralParks, demand),
 	}
 	h.mu.Lock()
 	h.plans[cmd.ContainerID] = armed

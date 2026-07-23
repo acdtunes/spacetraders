@@ -9,7 +9,6 @@ import (
 	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
@@ -17,19 +16,15 @@ import (
 type HomeShipCommand = contractTypes.HomeShipCommand
 type HomeShipResponse = contractTypes.HomeShipResponse
 
-// HomeShipHandler dispatches an idle dedicated contract ship to an
-// operator-configured standby station, distributed DEMAND-RANKED across the
-// configured set: the idle fleet spreads so the highest-demand central sinks are
-// covered first and no hub piles up while another sits empty. Peers already parked
-// at (or heading to) a hub seed its occupancy; the remaining idle drifters plus
-// this hull are placed together (the same deterministic batch every hull's own
-// homing call computes), so co-located hulls fan out instead of collapsing onto
-// one nearest hub. A uniform (unranked) demand set degrades to plain
-// nearest-station homing. Unlike BalanceShipPositionHandler there is no temporary
-// container/assignment ceremony, because a dedicated ship is already permanently
-// invisible to other coordinators via the DedicatedFleet claim-filter, and the
-// contract coordinator's own idle-ship discovery already excludes in-transit ships
-// from re-claiming during the homing trip.
+// HomeShipHandler dispatches an idle dedicated contract hull to its FIXED placement slot
+// (sp-mtgje): each delivery hull permanently OWNS one waypoint — the symbol-zip of the delivery
+// roster (FleetShips) onto the ≤6 placement slots (StandbyStations), computed by the pure
+// domainContract.AssignedSlot. The assignment depends ONLY on the roster + the slot set — NO demand
+// ranking, NO occupancy, NO live/peer position — so N hulls land on N DISTINCT slots (never piled),
+// byte-identical across restarts, and a second pass moves no hull. This replaces the runtime
+// demand/occupancy distributor whose concurrent-homing timing piled idle hulls on the top-demand hub
+// (the live K83 pile). A hull beyond the slot count (surplus over the delivery knee) owns no slot and
+// is left where it is for the scaler to re-role into a warehouse.
 type HomeShipHandler struct {
 	mediator      common.Mediator
 	shipRepo      navigation.ShipRepository
@@ -58,8 +53,8 @@ func (h *HomeShipHandler) Handle(ctx context.Context, request common.Request) (c
 
 	logger := common.LoggerFromContext(ctx)
 
-	// Homing is opt-in: an empty --standby-stations list disables relocation
-	// entirely. The claim-filter still keeps the ship reserved either way.
+	// Homing is opt-in: an empty --standby-stations list disables relocation entirely. The
+	// claim-filter still keeps the ship reserved either way.
 	if len(cmd.StandbyStations) == 0 {
 		return &HomeShipResponse{Navigated: false}, nil
 	}
@@ -69,9 +64,8 @@ func (h *HomeShipHandler) Handle(ctx context.Context, request common.Request) (c
 		return nil, fmt.Errorf("failed to load ship %s: %w", cmd.ShipSymbol, err)
 	}
 
-	// Homing applies to idle standby hulls only (l7h2 Phase 3 invariant): a
-	// hull that is claimed/assigned or mid-flight is never relocated, no
-	// matter what the dispatcher believed when it fired this command.
+	// Homing applies to idle standby hulls only: a hull that is claimed/assigned or mid-flight is
+	// never relocated, no matter what the dispatcher believed when it fired this command.
 	if !ship.IsIdle() || ship.IsInTransit() {
 		logger.Log("INFO", "Skipping homing for busy hull", map[string]interface{}{
 			"action":      "home_ship",
@@ -82,146 +76,56 @@ func (h *HomeShipHandler) Handle(ctx context.Context, request common.Request) (c
 		return &HomeShipResponse{Navigated: false}, nil
 	}
 
+	// FIXED PLACEMENT: this hull's permanent slot is the symbol-zip of the delivery roster onto the ≤6
+	// placement slots — no demand, no occupancy, no peer position, so every independent homing call for
+	// the same roster lands each hull in its OWN distinct slot. A surplus hull (beyond the knee) owns no
+	// slot; it is left where it is for the scaler to re-role into a warehouse rather than piled onto an
+	// occupied slot.
+	slot, owns := domainContract.AssignedSlot(cmd.ShipSymbol, cmd.FleetShips, cmd.StandbyStations)
+	if !owns {
+		logger.Log("INFO", "No fixed slot for hull (surplus over the delivery knee) — left for re-role", map[string]interface{}{
+			"action":      "home_ship",
+			"ship_symbol": cmd.ShipSymbol,
+		})
+		return &HomeShipResponse{Navigated: false}, nil
+	}
+
 	systemSymbol := ship.CurrentLocation().SystemSymbol
 	graphResult, err := h.graphProvider.GetGraph(ctx, systemSymbol, false, cmd.PlayerID.Value())
 	if err != nil {
 		return nil, fmt.Errorf("failed to load system graph: %w", err)
 	}
-
-	candidateBySymbol := map[string]*shared.Waypoint{}
-	var candidates []*shared.Waypoint
-	for _, symbol := range cmd.StandbyStations {
-		wp, ok := graphResult.Graph.Waypoints[symbol]
-		if !ok {
-			continue // Skip stations not found in this system's graph.
-		}
-		candidates = append(candidates, wp)
-		candidateBySymbol[symbol] = wp
+	target, inGraph := graphResult.Graph.Waypoints[slot]
+	if !inGraph {
+		// The hull's assigned slot is not in its current system graph — an operator misconfiguration or a
+		// foreign hull the scaler's cross-gate step should have repositioned first. Surface it, never a
+		// silent no-op.
+		return nil, fmt.Errorf("assigned standby slot %s for ship %s not found in system %s graph", slot, cmd.ShipSymbol, systemSymbol)
 	}
 
-	if len(candidates) == 0 {
-		return nil, fmt.Errorf("none of the configured standby stations %v found in system %s graph", cmd.StandbyStations, systemSymbol)
+	// A hull already at ITS assigned slot stays — the "already home ONLY if at MY slot" rule (was "at ANY
+	// standby station", which let a hull sit on a peer's slot forever). A second homing pass therefore
+	// moves no hull (no thrash).
+	if ship.CurrentLocation().Symbol == slot {
+		return &HomeShipResponse{TargetStation: slot, Distance: 0, Navigated: false}, nil
 	}
 
-	// A hull already sitting at ANY standby station is left where it is: re-firing
-	// the distribution would chase the demand-ranked target and churn home hulls
-	// hub-to-hub every pass (mirrors the idle-arb re-home's off-station-only rule).
-	if wp, atStandby := candidateBySymbol[ship.CurrentLocation().Symbol]; atStandby {
-		return &HomeShipResponse{TargetStation: wp.Symbol, Distance: 0, Navigated: false}, nil
-	}
-
-	peers, err := h.loadFleetPeers(ctx, cmd)
-	if err != nil {
-		return nil, err
-	}
-
-	// DEMAND-RANKED SPREAD: replace the demand-blind occupancy+distance
-	// balancer with a distribution that fans co-located idle hulls across the
-	// standby set instead of piling them on one point. Peers already parked at (or
-	// heading to) a hub seed its occupancy; the remaining idle drifters plus this
-	// hull are placed together so the batch is identical across every hull's own
-	// homing call — each independent call lands this hull in its distinct slot.
-	occupancy := map[string]int{}
-	for _, peer := range peers {
-		if _, isStation := candidateBySymbol[peer.CurrentLocation().Symbol]; isStation {
-			occupancy[peer.CurrentLocation().Symbol]++
-		}
-	}
-	toPlace := []domainContract.IdleHullToPlace{{ShipSymbol: cmd.ShipSymbol, Distance: distancesTo(ship, candidates)}}
-	for _, peer := range peers {
-		if _, isStation := candidateBySymbol[peer.CurrentLocation().Symbol]; isStation {
-			continue // already home — counted as occupancy, not re-placed
-		}
-		if !peer.IsIdle() || peer.IsInTransit() {
-			continue // busy peers are not homing — they neither occupy a hub nor take a slot
-		}
-		toPlace = append(toPlace, domainContract.IdleHullToPlace{ShipSymbol: peer.ShipSymbol(), Distance: distancesTo(peer, candidates)})
-	}
-
-	waypoints := make([]domainContract.StandbyWaypoint, 0, len(candidates))
-	for _, wp := range candidates {
-		waypoints = append(waypoints, domainContract.StandbyWaypoint{Symbol: wp.Symbol, DemandWeight: cmd.StandbyDemand[wp.Symbol]})
-	}
-
-	placement := domainContract.DistributeIdleHullsAcrossStandby(toPlace, waypoints, occupancy)
-	target, ok := candidateBySymbol[placement[cmd.ShipSymbol]]
-	if !ok {
-		return nil, fmt.Errorf("standby distribution returned no waypoint for ship %s", cmd.ShipSymbol)
-	}
 	distance := ship.CurrentLocation().DistanceTo(target)
-
-	logger.Log("INFO", "Standby station selected for homing", map[string]interface{}{
-		"action":        "home_ship",
-		"ship_symbol":   cmd.ShipSymbol,
-		"station":       target.Symbol,
-		"distance":      distance,
-		"peers_at_hub":  occupancy[target.Symbol],
-		"fleet_peers":   len(peers),
-		"station_count": len(candidates),
-	})
-
-	if ship.IsAtLocation(target) {
-		return &HomeShipResponse{TargetStation: target.Symbol, Distance: distance, Navigated: false}, nil
-	}
-
-	navigateCmd := &shipNav.NavigateRouteCommand{
-		ShipSymbol:  cmd.ShipSymbol,
-		Destination: target.Symbol,
-		PlayerID:    cmd.PlayerID,
-	}
-	if _, err := h.mediator.Send(ctx, navigateCmd); err != nil {
-		return nil, fmt.Errorf("failed to navigate to standby station: %w", err)
-	}
-
-	logger.Log("INFO", "Dedicated ship homing to standby station", map[string]interface{}{
+	logger.Log("INFO", "Homing hull to its fixed standby slot", map[string]interface{}{
 		"action":      "home_ship",
 		"ship_symbol": cmd.ShipSymbol,
-		"station":     target.Symbol,
+		"slot":        slot,
 		"distance":    distance,
 	})
 
-	return &HomeShipResponse{TargetStation: target.Symbol, Distance: distance, Navigated: true}, nil
-}
-
-// distancesTo maps each candidate standby waypoint to the in-system distance from
-// the hull's current location, feeding the distribution's equal-demand tie-break
-// (so an unranked set still homes to the nearest hub).
-func distancesTo(ship *navigation.Ship, candidates []*shared.Waypoint) map[string]float64 {
-	loc := ship.CurrentLocation()
-	out := make(map[string]float64, len(candidates))
-	for _, wp := range candidates {
-		out[wp.Symbol] = loc.DistanceTo(wp)
+	navigateCmd := &shipNav.NavigateRouteCommand{
+		ShipSymbol:  cmd.ShipSymbol,
+		Destination: slot,
+		PlayerID:    cmd.PlayerID,
 	}
-	return out
-}
-
-// loadFleetPeers resolves the dedicated-fleet hulls (minus the ship being
-// homed) whose positions determine standby-station occupancy. An empty
-// FleetShips list means no occupancy data - the balancer then degrades to
-// pure nearest-station homing, the pre-Phase-3 behavior.
-func (h *HomeShipHandler) loadFleetPeers(ctx context.Context, cmd *HomeShipCommand) ([]*navigation.Ship, error) {
-	if len(cmd.FleetShips) == 0 {
-		return nil, nil
+	if _, err := h.mediator.Send(ctx, navigateCmd); err != nil {
+		return nil, fmt.Errorf("failed to navigate to standby slot: %w", err)
 	}
 
-	allShips, err := h.shipRepo.FindAllByPlayer(ctx, cmd.PlayerID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load fleet peers for homing: %w", err)
-	}
-
-	fleet := make(map[string]bool, len(cmd.FleetShips))
-	for _, symbol := range cmd.FleetShips {
-		fleet[symbol] = true
-	}
-
-	var peers []*navigation.Ship
-	for _, peer := range allShips {
-		if peer.ShipSymbol() == cmd.ShipSymbol {
-			continue
-		}
-		if fleet[peer.ShipSymbol()] {
-			peers = append(peers, peer)
-		}
-	}
-	return peers, nil
+	return &HomeShipResponse{TargetStation: slot, Distance: distance, Navigated: true}, nil
 }

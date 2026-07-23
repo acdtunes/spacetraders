@@ -93,16 +93,16 @@ type RunFleetCoordinatorHandler struct {
 	// the invFinder / standbyProvider optional-injection idiom.
 	depotRegistryProvider appContract.DepotRegistryProvider
 
-	// standbyDemandProvider resolves the LIVE per-central-park DEMAND weights each
-	// homing pass (coord-deduped, import-volume ranked) so between-legs homing spreads
-	// idle hulls DEMAND-RANKED across the central sinks instead of piling on one point
-	// (the live J59 1.06x bug, epic sp-9le3x C2c). It also auto-resolves the standby SET
-	// from the role-classified central parks when the `fleet hub` set is empty (the
-	// sp-bu6ma auto hub-placement). Backed by the SAME home-system role lookup the
-	// contract auto-scaler buys against, so both positioning consumers share ONE demand
-	// definition. Nil leaves homing on plain occupancy+nearest balancing (byte-identical
-	// to the pre-fix behavior); it is a READ, never a config write (RULINGS #3).
-	standbyDemandProvider appContract.StandbyDemandProvider
+	// standbyPlacementProvider resolves the LIVE ≤6 FIXED placement slots each homing
+	// pass (the sp-mtgje replacement for the demand-ranked spread that let concurrent homing
+	// pile idle hulls on the top-demand hub). Between-legs homing zips each hull to its own
+	// slot by symbol. It also auto-resolves the standby SET
+	// the FIXED ≤6 placement slots when the `fleet hub` set is empty (the sp-bu6ma auto
+	// hub-placement, now the fixed one-per-waypoint set). Backed by the SAME home-system role
+	// lookup + TopDeliverySlots selection the contract auto-scaler buys against, so both
+	// positioning consumers agree on ONE slot set. Nil leaves homing on the launch set
+	// (byte-identical); it is a READ, never a config write (RULINGS #3).
+	standbyPlacementProvider appContract.StandbyPlacementProvider
 }
 
 // NewRunFleetCoordinatorHandler creates a new fleet coordinator handler
@@ -197,14 +197,13 @@ func (h *RunFleetCoordinatorHandler) SetDepotRegistryProvider(provider appContra
 	h.depotRegistryProvider = provider
 }
 
-// SetStandbyDemandProvider wires the live per-central-park demand reader so between-legs
-// homing spreads idle hulls DEMAND-RANKED across the central sinks, and auto-resolves the
-// standby set from the role-classified central parks when the `fleet hub` set is empty.
-// Optional and nil-safe: without it homing stays on plain occupancy+nearest balancing
-// (byte-identical). The SAME shared demand definition the contract auto-scaler homes new
-// buys with (epic sp-9le3x), so both positioning consumers rank parks identically.
-func (h *RunFleetCoordinatorHandler) SetStandbyDemandProvider(provider appContract.StandbyDemandProvider) {
-	h.standbyDemandProvider = provider
+// SetStandbyPlacementProvider wires the live FIXED-placement reader so between-legs homing sends
+// each idle hull to its permanent slot, and auto-resolves the standby set from the ≤6 fixed
+// placement slots when the `fleet hub` set is empty. Optional and nil-safe: without it homing stays
+// on the launch set (byte-identical). The SAME ≤6 slot set the contract auto-scaler homes new buys
+// onto (epic sp-9le3x / sp-mtgje), so both positioning consumers place hulls on one slot set.
+func (h *RunFleetCoordinatorHandler) SetStandbyPlacementProvider(provider appContract.StandbyPlacementProvider) {
+	h.standbyPlacementProvider = provider
 }
 
 // Handle executes the fleet coordinator command
@@ -252,11 +251,11 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		// StandbyStations leaves re-homing off, exactly as it leaves the
 		// contract-handoff homing off.
 		homer := &mediatorShipHomer{
-			mediator:       h.fleetPoolManager.GetMediator(),
-			shipRepo:       h.shipRepo,
-			playerID:       cmd.PlayerID,
-			fleet:          dedicatedFleetContract,
-			demandProvider: h.standbyDemandProvider,
+			mediator:          h.fleetPoolManager.GetMediator(),
+			shipRepo:          h.shipRepo,
+			playerID:          cmd.PlayerID,
+			fleet:             dedicatedFleetContract,
+			placementProvider: h.standbyPlacementProvider,
 		}
 		dispatcher := appContract.NewIdleArbDispatcher(
 			h.shipRepo,
@@ -307,12 +306,11 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		dispatcher.SetStandbyResolver(func(resolveCtx context.Context) []string {
 			return appContract.ResolveStandbyStations(resolveCtx, common.LoggerFromContext(resolveCtx), h.standbyProvider, cmd.ContainerID, cmd.PlayerID.Value(), cmd.StandbyStations)
 		})
-		// LIVE demand auto-placement: when no `fleet hub` is pinned, the standing
-		// re-home sweep resolves its standby set from the role-classified central
-		// parks (sp-bu6ma) via the SAME provider the between-legs hook uses, so a
-		// SITTING idle pool homes demand-ranked instead of piling where it finished
-		// (the live J59 pile, sp-54uif). Nil-safe (byte-identical when unwired).
-		dispatcher.SetStandbyDemandProvider(h.standbyDemandProvider)
+		// LIVE fixed-placement auto-resolution: when no `fleet hub` is pinned, the standing
+		// re-home sweep resolves its standby set from the ≤6 fixed placement slots (sp-bu6ma /
+		// sp-mtgje) via the SAME provider the between-legs hook uses, so a SITTING idle pool homes
+		// to the fixed one-per-waypoint slots instead of piling. Nil-safe (byte-identical unwired).
+		dispatcher.SetStandbyPlacementProvider(h.standbyPlacementProvider)
 		go dispatcher.Run(ctx)
 	}
 
@@ -873,19 +871,18 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 				// when no provider is wired.
 				liveStandby := appContract.ResolveStandbyStations(ctx, logger, h.standbyProvider, cmd.ContainerID, cmd.PlayerID.Value(), cmd.StandbyStations)
 
-				// Attach the per-park DEMAND weights (and, when the fleet-hub set is empty,
-				// auto-resolve the set from the role-classified central parks — sp-bu6ma)
-				// so between-legs homing spreads idle hulls demand-ranked across the sinks
-				// instead of piling on one point. Nil-safe → liveStandby unchanged, uniform.
-				liveStandby, standbyDemand := appContract.ResolveStandbyForHoming(ctx, logger, h.standbyDemandProvider, cmd.PlayerID.Value(), liveStandby)
+				// Resolve the ≤6 FIXED placement slots when the fleet-hub set is empty (sp-bu6ma /
+				// sp-mtgje) so between-legs homing sends each idle hull to its permanent slot instead
+				// of piling. Nil-safe → liveStandby unchanged. The homing zips this hull to its slot
+				// by symbol against the dedicated roster (FleetShips) — no demand.
+				liveStandby = appContract.ResolveStandbyForHoming(ctx, logger, h.standbyPlacementProvider, cmd.PlayerID.Value(), liveStandby)
 
 				// Launch homing command asynchronously (fire-and-forget)
-				go func(shipSymbol string, playerID shared.PlayerID, standbyStations []string, standbyDemand map[string]float64, fleetShips []string) {
+				go func(shipSymbol string, playerID shared.PlayerID, standbyStations []string, fleetShips []string) {
 					homeCmd := &HomeShipCommand{
 						ShipSymbol:      shipSymbol,
 						PlayerID:        playerID,
 						StandbyStations: standbyStations,
-						StandbyDemand:   standbyDemand,
 						FleetShips:      fleetShips,
 					}
 					// Create background context since parent context may be cancelled
@@ -896,7 +893,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 					if err != nil {
 						logger.Log("WARNING", fmt.Sprintf("Failed to home dedicated ship %s: %v", shipSymbol, err), nil)
 					}
-				}(previousShipSymbol, cmd.PlayerID, liveStandby, standbyDemand, dedicatedMembers)
+				}(previousShipSymbol, cmd.PlayerID, liveStandby, dedicatedMembers)
 			} else {
 				logger.Log("INFO", fmt.Sprintf("Selected ship changed from %s to %s - balancing previous ship position", previousShipSymbol, selectedShip), nil)
 
@@ -1148,11 +1145,11 @@ type mediatorShipHomer struct {
 	shipRepo navigation.ShipRepository
 	playerID shared.PlayerID
 	fleet    string
-	// demandProvider ranks the re-home DEMAND-first and auto-resolves the standby set
-	// from the role central parks when the passed live set is empty — the SAME provider
-	// the coordinator's between-legs homing uses, so idle-arb re-homes track contract
-	// homing (RULINGS #7, one homing algorithm). Nil-safe: uniform → nearest homing.
-	demandProvider appContract.StandbyDemandProvider
+	// placementProvider resolves the ≤6 FIXED placement slots and auto-drives the standby set
+	// from them when the passed live set is empty — the SAME provider the coordinator's
+	// between-legs homing uses, so idle-arb re-homes track contract homing (RULINGS #7, one
+	// homing algorithm). Nil-safe: the passed set is kept unchanged.
+	placementProvider appContract.StandbyPlacementProvider
 }
 
 var _ appContract.ShipHomer = (*mediatorShipHomer)(nil)
@@ -1163,15 +1160,14 @@ var _ appContract.ShipHomer = (*mediatorShipHomer)(nil)
 // coordinator's between-legs homing uses.
 func (m *mediatorShipHomer) HomeShip(ctx context.Context, shipSymbol string, standbyStations []string) error {
 	logger := common.LoggerFromContext(ctx)
-	// Rank the re-home DEMAND-first and, when the passed live set is empty, auto-drive it
-	// from the role central parks — the SAME resolution the coordinator's between-legs
-	// homing uses (nil-safe → the passed set unchanged, uniform homing).
-	standbyStations, standbyDemand := appContract.ResolveStandbyForHoming(ctx, logger, m.demandProvider, m.playerID.Value(), standbyStations)
+	// When the passed live set is empty, auto-drive it from the ≤6 FIXED placement slots — the SAME
+	// resolution the coordinator's between-legs homing uses (nil-safe → the passed set unchanged). The
+	// homing zips this hull to its slot by symbol against the dedicated roster (FleetShips) — no demand.
+	standbyStations = appContract.ResolveStandbyForHoming(ctx, logger, m.placementProvider, m.playerID.Value(), standbyStations)
 	homeCmd := &HomeShipCommand{
 		ShipSymbol:      shipSymbol,
 		PlayerID:        m.playerID,
 		StandbyStations: standbyStations,
-		StandbyDemand:   standbyDemand,
 		FleetShips:      resolveDedicatedMembersForHoming(ctx, logger, m.shipRepo, m.playerID, m.fleet, nil),
 	}
 	go func() {
@@ -1280,39 +1276,37 @@ func (h *RunFleetCoordinatorHandler) homeCompletedHullToStandby(ctx context.Cont
 		return
 	}
 
-	// The SAME live-set + demand resolution the between-legs hook uses: live
-	// `fleet hub` pins ranked by demand, or the role central parks auto-driving the
-	// set when no hub is pinned (sp-bu6ma). Nil-safe → launch snapshot / uniform.
+	// The SAME live-set resolution the between-legs hook uses: live `fleet hub` pins, or the ≤6
+	// fixed placement slots auto-driving the set when no hub is pinned (sp-bu6ma / sp-mtgje).
+	// Nil-safe → launch snapshot.
 	liveStandby := appContract.ResolveStandbyStations(ctx, logger, h.standbyProvider, cmd.ContainerID, cmd.PlayerID.Value(), cmd.StandbyStations)
-	liveStandby, standbyDemand := appContract.ResolveStandbyForHoming(ctx, logger, h.standbyDemandProvider, cmd.PlayerID.Value(), liveStandby)
-
-	// No-thrash: a hull whose contract destination IS a standby sink already
-	// delivered AT home — skip the redundant dispatch (home_ship short-circuits an
-	// at-station hull too, this just avoids the wasteful command).
-	for _, station := range liveStandby {
-		if station == ship.CurrentLocation().Symbol {
-			return
-		}
-	}
+	liveStandby = appContract.ResolveStandbyForHoming(ctx, logger, h.standbyPlacementProvider, cmd.PlayerID.Value(), liveStandby)
 
 	dedicatedMembers := resolveDedicatedMembersForHoming(ctx, logger, h.shipRepo, cmd.PlayerID, dedicatedFleetContract, cmd.DedicatedShips)
+
+	// No-thrash: a hull already at ITS OWN assigned fixed slot skips the redundant dispatch (sp-mtgje —
+	// "at MY slot", not "at ANY sink": two hulls that both delivered to one sink would otherwise both
+	// skip and pile). A hull that owns no slot (surplus over the knee) is left for the scaler to re-role.
+	slot, owns := domainContract.AssignedSlot(shipSymbol, dedicatedMembers, liveStandby)
+	if !owns || ship.CurrentLocation().Symbol == slot {
+		return
+	}
 
 	// Fire-and-forget on a background context carrying the container logger — the
 	// SAME async dispatch the between-legs hook uses (HomeShipCommand blocks for the
 	// whole flight, so a synchronous send would stall the coordinator loop).
-	go func(shipSymbol string, playerID shared.PlayerID, standbyStations []string, standbyDemand map[string]float64, fleetShips []string) {
+	go func(shipSymbol string, playerID shared.PlayerID, standbyStations []string, fleetShips []string) {
 		homeCmd := &HomeShipCommand{
 			ShipSymbol:      shipSymbol,
 			PlayerID:        playerID,
 			StandbyStations: standbyStations,
-			StandbyDemand:   standbyDemand,
 			FleetShips:      fleetShips,
 		}
 		homeCtx := common.WithLogger(context.Background(), logger)
 		if _, err := h.fleetPoolManager.GetMediator().Send(homeCtx, homeCmd); err != nil {
 			logger.Log("WARNING", fmt.Sprintf("immediate homing: failed to home completed hull %s: %v", shipSymbol, err), nil)
 		}
-	}(shipSymbol, cmd.PlayerID, liveStandby, standbyDemand, dedicatedMembers)
+	}(shipSymbol, cmd.PlayerID, liveStandby, dedicatedMembers)
 }
 
 // readoptInterruptedDeliveries resumes a contract delivery that a daemon

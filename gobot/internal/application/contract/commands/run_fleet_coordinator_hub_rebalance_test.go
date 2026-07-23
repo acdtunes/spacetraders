@@ -9,11 +9,10 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// These tests cover PART 2 of the operation-level live hub model (sp-jcke): after
-// a `fleet hub add|remove` mutates the coordinator's LIVE standby set, the
-// coordinator's between-legs homing must re-home idle dedicated hulls to the
-// nearest hub of the CURRENT set — adding a hub draws idle hulls toward it,
-// removing one re-homes to the remaining set — while NEVER interrupting a hull
+// These tests cover PART 2 of the operation-level live hub model (sp-jcke), under fixed placement
+// (sp-mtgje): after a `fleet hub add|remove` mutates the coordinator's LIVE standby set, the
+// coordinator's between-legs homing must re-home idle dedicated hulls to their assigned slot in the
+// CURRENT set — a changed set redirects the fixed placement — while NEVER interrupting a hull
 // mid-contract-leg (RULINGS #7) and disabling homing entirely on an empty set.
 //
 // They mirror the composition the coordinator loop performs: resolve the
@@ -62,29 +61,29 @@ func homeToLiveSet(t *testing.T, ship *navigation.Ship, graph *homeStubGraphProv
 	return homeResp, mediator
 }
 
-// TestRebalance_IdleHullsHomeToNearestOfLiveSet: a hub added live (present in the
-// LIVE set, absent from the launch snapshot) draws an idle dedicated hull toward
-// it — the hull homes to the NEAREST hub of the CURRENT set, which the stale
-// launch list alone (only the far hub) would never have produced.
-func TestRebalance_IdleHullsHomeToNearestOfLiveSet(t *testing.T) {
+// TestRebalance_IdleHullHomesToItsSlotInLiveSet: a `fleet hub` change (launch {OLD}, live {NEW}) must
+// drive homing off the LIVE set — an idle dedicated hull homes to its assigned slot in the CURRENT set
+// (NEW), never the stale launch snapshot (OLD). Under fixed placement a lone hull owns the first live
+// slot; homing to NEW (not OLD) proves the live set, not the launch list, drives placement.
+func TestRebalance_IdleHullHomesToItsSlotInLiveSet(t *testing.T) {
 	ship := newHomeTestShip(t, "TORWIND-4", "X1-TEST-A1", 0, 0)
-	near := homeTestWaypoint(t, "X1-TEST-NEAR", 10, 0)
-	far := homeTestWaypoint(t, "X1-TEST-FAR", 100, 0)
-	graph := &homeStubGraphProvider{graph: homeTestGraph(near, far)}
+	old := homeTestWaypoint(t, "X1-TEST-OLD", 100, 0)
+	newHub := homeTestWaypoint(t, "X1-TEST-NEW", 10, 0)
+	graph := &homeStubGraphProvider{graph: homeTestGraph(old, newHub)}
 
-	launchList := []string{"X1-TEST-FAR"}                                            // the only hub at launch
-	provider := &hubRebalanceProvider{live: []string{"X1-TEST-FAR", "X1-TEST-NEAR"}} // NEAR added live
+	launchList := []string{"X1-TEST-OLD"}                            // the hub at launch
+	provider := &hubRebalanceProvider{live: []string{"X1-TEST-NEW"}} // changed live to NEW
 
 	resp, mediator := homeToLiveSet(t, ship, graph, provider, launchList)
 
 	if !resp.Navigated {
-		t.Fatalf("an idle dedicated hull must be homed to the live hub set, got Navigated=false")
+		t.Fatalf("an idle dedicated hull must be homed to its slot in the live hub set, got Navigated=false")
 	}
-	if resp.TargetStation != "X1-TEST-NEAR" {
-		t.Fatalf("hull must home to the NEAREST hub of the CURRENT live set (the live-added NEAR), got %q", resp.TargetStation)
+	if resp.TargetStation != "X1-TEST-NEW" {
+		t.Fatalf("hull must home to its slot in the CURRENT live set (NEW), not the stale launch OLD, got %q", resp.TargetStation)
 	}
-	if len(mediator.navigateCalls) != 1 || mediator.navigateCalls[0].Destination != "X1-TEST-NEAR" {
-		t.Fatalf("expected exactly one navigate to X1-TEST-NEAR, got %+v", mediator.navigateCalls)
+	if len(mediator.navigateCalls) != 1 || mediator.navigateCalls[0].Destination != "X1-TEST-NEW" {
+		t.Fatalf("expected exactly one navigate to X1-TEST-NEW, got %+v", mediator.navigateCalls)
 	}
 }
 

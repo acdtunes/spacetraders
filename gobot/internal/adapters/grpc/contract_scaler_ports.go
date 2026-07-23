@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
@@ -63,19 +64,24 @@ type contractScalerRoleResolver struct {
 
 // ResolveRoles is the once-at-arm lookup. It returns empty roles + empty demand (no error) when the
 // home system is unresolvable so the coordinator's armed plan is empty and it never spends against an
-// unknown topology (fail-safe, not fail-error — an empty era is a valid state, not a failure).
+// unknown topology (fail-safe, not fail-error — an empty era is a valid state, not a failure). The
+// central parks are coord-DEDUPED to one representative per location (dedupedCentralParkSymbols — the
+// SAME helper the placement provider uses), so the scaler's TopDeliverySlots selection and the
+// coordinator's homing placement derive from ONE deduped park set (no drift; sp-mtgje).
 func (r *contractScalerRoleResolver) ResolveRoles(ctx context.Context, playerID int) (contractscaler.EraRoles, map[string]float64, error) {
 	markets, demand, err := r.homeMarkets(ctx, playerID)
 	if err != nil {
 		return contractscaler.EraRoles{}, nil, err
 	}
-	return contractscaler.ResolveRoles(markets), demand, nil
+	roles := contractscaler.ResolveRoles(markets)
+	roles.CentralParks = dedupedCentralParkSymbols(roles, markets, demand)
+	return roles, demand, nil
 }
 
 // homeMarkets reads the home system ONCE and returns its waypoints as []WaypointMarket
 // (geometry + trade roles) plus the per-waypoint import-volume demand map — the SHARED
 // read behind BOTH the scaler's buy-order homing (ResolveRoles) and the coordinator's
-// between-legs homing (contractStandbyDemandProvider), so the two positioning consumers
+// between-legs homing (contractStandbyPlacementProvider), so the two positioning consumers
 // rank parks by ONE demand definition. Empty era (unresolvable/unscanned home, or no
 // waypoint surface wired) → nil markets + empty demand, no error (fail-safe, not fail-error).
 func (r *contractScalerRoleResolver) homeMarkets(ctx context.Context, playerID int) ([]contractscaler.WaypointMarket, map[string]float64, error) {
@@ -287,6 +293,11 @@ func NewContractScalerCoordinatorHandler(
 	reclaimer := &contractScalerReclaimer{shipRepo: shipRepo, med: med, gateGraph: gateGraph}
 	h.SetIdleHullReclaimer(reclaimer)
 	h.SetDepotHullReclaimer(reclaimer)
+
+	// Surplus-delivery releaser (sp-mtgje): un-dedicates idle "contract" delivery hulls over the knee so
+	// the depot fill reclaims them into warehouse roles — the re-role that re-composes the live 8+5+1 to
+	// 6+7+1 with no new hulls. Reuses the SAME ship repo; no new daemon dependency.
+	h.SetDeliverySurplusReleaser(&contractScalerDeliveryReleaser{shipRepo: shipRepo})
 
 	// Depot-hull buy price (sp-fihvy, RULINGS #14): the STOCKER role's buy-fallback yard search is
 	// home-system-ONLY — a bought stocker hull is crewed at its purchase yard with no repositioning
@@ -516,7 +527,7 @@ func (p *contractScalerPurchaser) BuyAndHome(ctx context.Context, order contract
 	if err != nil {
 		return contractScalerCmd.BuyResult{}, err
 	}
-	homeContractHull(ctx, p.med, p.shipRepo, res.ShipSymbol, order.PlayerID, order.StandbyStations, order.StandbyDemand)
+	homeContractHull(ctx, p.med, p.shipRepo, res.ShipSymbol, order.PlayerID, order.StandbyStations)
 	return contractScalerCmd.BuyResult{ShipSymbol: res.ShipSymbol, Price: res.Price}, nil
 }
 
@@ -541,15 +552,15 @@ func (p *contractScalerPurchaser) BuyHull(ctx context.Context, order contractSca
 	return contractScalerCmd.BuyResult{ShipSymbol: res.ShipSymbol, Price: res.Price}, nil
 }
 
-// homeContractHull dispatches the demand-ranked C1 homing for a hull that JUST JOINED the contract
-// fleet — bought OR reclaimed — carrying the spread standby set + the per-park demand weights the
-// HomeShipCommand consumes. SHARED so a reclaimed hull homes byte-for-byte like a bought one. Best-
-// effort: it logs and swallows a homing error so a completed buy/reclaim is never rolled back.
-// FleetShips (the contract-fleet peers whose positions seed the spread occupancy) is populated best-
-// effort from the ship repo — an empty list degrades to plain nearest-station homing, never an error.
-func homeContractHull(ctx context.Context, med commandSender, shipRepo navigation.ShipRepository, shipSymbol string, playerID int, standbyStations []string, standbyDemand map[string]float64) {
+// homeContractHull dispatches the FIXED-placement homing for a hull that JUST JOINED the contract
+// fleet — bought OR reclaimed — carrying the ≤6 fixed placement slots the HomeShipCommand zips this
+// hull onto by symbol (no demand). SHARED so a reclaimed hull homes byte-for-byte like a bought one.
+// Best-effort: it logs and swallows a homing error so a completed buy/reclaim is never rolled back.
+// FleetShips (the contract-fleet roster the placement slots are zipped against) is populated best-effort
+// from the ship repo — an empty roster degrades to this hull owning the first slot, never an error.
+func homeContractHull(ctx context.Context, med commandSender, shipRepo navigation.ShipRepository, shipSymbol string, playerID int, standbyStations []string) {
 	if len(standbyStations) == 0 {
-		return // no spread set → nothing to home to (homing is opt-in on the standby set)
+		return // no placement set → nothing to home to (homing is opt-in on the standby set)
 	}
 	logger := common.LoggerFromContext(ctx)
 	pid, err := shared.NewPlayerID(playerID)
@@ -569,7 +580,6 @@ func homeContractHull(ctx context.Context, med commandSender, shipRepo navigatio
 		ShipSymbol:      shipSymbol,
 		PlayerID:        pid,
 		StandbyStations: standbyStations,
-		StandbyDemand:   standbyDemand,
 		FleetShips:      contractFleetPeers(ctx, shipRepo, pid),
 	}); err != nil {
 		logger.Log("WARN", fmt.Sprintf("Contract scaler homed %s but homing failed (best-effort; between-legs homing will retry): %v", shipSymbol, err), map[string]interface{}{
@@ -721,6 +731,63 @@ func (r *contractScalerReclaimer) homeReachable(ctx context.Context, ship *navig
 	return routable
 }
 
+// --- delivery-surplus releaser: un-dedicate the surplus so the depot fill re-roles it (sp-mtgje) ---
+
+// contractScalerDeliveryReleaser implements the coordinator's DeliverySurplusReleaser: it un-dedicates
+// surplus "contract" delivery hulls back to the idle UNDEDICATED pool, from where the depot fill's
+// reuse-before-buy tier reclaims them into warehouse roles — the re-role of the live-surplus delivery
+// hulls after the knee dropped 8→6. It releases IDLE hulls only (never mid-delivery), HIGHEST-symbol
+// first (so the ≤6 lowest-symbol hulls keep the fixed slots domainContract.AssignedSlot zips them onto,
+// making the released surplus exactly the hulls that own no slot), and NEVER the command frigate
+// (RULINGS #7). Un-dedicate is the single write path (AssignFleet to "", RULINGS #3) — free, no spend.
+type contractScalerDeliveryReleaser struct {
+	shipRepo navigation.ShipRepository
+}
+
+// ReleaseSurplusDelivery un-dedicates up to count idle "contract" delivery hulls, returning how many it
+// released. A fleet-read error surfaces (the scaler holds the re-role fail-closed); an AssignFleet error
+// stops early and returns the partial count (a hull left dedicated is safe — re-roled a later pass).
+func (r *contractScalerDeliveryReleaser) ReleaseSurplusDelivery(ctx context.Context, playerID, count int) (int, error) {
+	if count <= 0 {
+		return 0, nil
+	}
+	pid, err := shared.NewPlayerID(playerID)
+	if err != nil {
+		return 0, err
+	}
+	ships, err := r.shipRepo.FindAllByPlayer(ctx, pid)
+	if err != nil {
+		return 0, err
+	}
+	var releasable []string
+	for _, ship := range ships {
+		if ship.DedicatedFleet() != contractFleetTag {
+			continue // only the exclusive "contract" delivery pool
+		}
+		if !ship.IsIdle() || ship.IsInTransit() {
+			continue // never yank a hull mid-delivery
+		}
+		if domainContract.IsCommandHull(ship) {
+			continue // the flagship is never re-roled (RULINGS #7)
+		}
+		releasable = append(releasable, ship.ShipSymbol())
+	}
+	// Highest-symbol first: the ≤6 lowest-symbol hulls keep the fixed slots (AssignedSlot's symbol-zip),
+	// so the released surplus is exactly the hulls beyond the knee that own no slot.
+	sort.Sort(sort.Reverse(sort.StringSlice(releasable)))
+	released := 0
+	for _, symbol := range releasable {
+		if released >= count {
+			break
+		}
+		if err := r.shipRepo.AssignFleet(ctx, symbol, "", pid); err != nil {
+			return released, fmt.Errorf("release surplus delivery %s → undedicated: %w", symbol, err)
+		}
+		released++
+	}
+	return released, nil
+}
+
 // isReclaimable is the reuse-eligibility guard: IDLE (never mid-task → no stranding), NOT in transit,
 // UNDEDICATED (RULINGS #7 — never poach a dedicated hull of ANY fleet), CARGO-CAPABLE (a probe /
 // 0-cargo hull re-dedicated to contract can't haul — mirrors the hauling-pin cargo guard), and NOT the
@@ -733,9 +800,9 @@ func isReclaimable(ship *navigation.Ship) bool {
 }
 
 // Reclaim re-dedicates the hull EXCLUSIVE to the contract fleet via the single write path (AssignFleet,
-// RULINGS #3), then homes it demand-ranked like a bought hull (best-effort C1 homing). It returns an
-// error ONLY when the re-dedicate itself fails — the hull is then NOT taken, so the coordinator safely
-// buys without double-counting. NO SPEND: reclaim is free and is never gated by the buy cushion.
+// RULINGS #3), then homes it to its fixed placement slot like a bought hull (best-effort homing). It
+// returns an error ONLY when the re-dedicate itself fails — the hull is then NOT taken, so the
+// coordinator safely buys without double-counting. NO SPEND: reclaim is free and never cushion-gated.
 func (r *contractScalerReclaimer) Reclaim(ctx context.Context, order contractScalerCmd.ReclaimOrder) error {
 	pid, err := shared.NewPlayerID(order.PlayerID)
 	if err != nil {
@@ -744,6 +811,6 @@ func (r *contractScalerReclaimer) Reclaim(ctx context.Context, order contractSca
 	if err := r.shipRepo.AssignFleet(ctx, order.ShipSymbol, contractFleetTag, pid); err != nil {
 		return fmt.Errorf("reclaim re-dedicate %s → contract: %w", order.ShipSymbol, err)
 	}
-	homeContractHull(ctx, r.med, r.shipRepo, order.ShipSymbol, order.PlayerID, order.StandbyStations, order.StandbyDemand)
+	homeContractHull(ctx, r.med, r.shipRepo, order.ShipSymbol, order.PlayerID, order.StandbyStations)
 	return nil
 }

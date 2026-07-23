@@ -7,16 +7,11 @@ import "sort"
 // distinct central-cluster waypoint, saturating at ~7-8; the central far-source
 // warehouse + stocker are the cheap add-on stocked centrally (no J depot).
 const (
-	// MaxDeliveryHulls caps the delivery pool at the number of distinct central
-	// waypoints the serial engine can usefully spread across (~7-8; the curve
-	// flattens past it).
-	MaxDeliveryHulls = 8
-	// WarehouseUnits is the depth of the ONE central far-source warehouse
-	// (ores/precious/drugs buffered ~2 contracts per good; 5 light-hull slots at
-	// the 14-hull arrangement — the +2 hulls over the prior 12-hull plan went
-	// entirely here, since delivery saturates at MaxDeliveryHulls and stocker
-	// count is not the bottleneck).
-	WarehouseUnits = 5
+	// MaxDeliveryHulls caps the delivery pool at the p-median knee (design STEP 1d:
+	// era-4 marginals 47/17/12/9/7 then 7%/2% → 6 haulers; "NEVER 8"). The 7th/8th
+	// hull's positioning gain falls below a warehouse haul-saving, so surplus budget
+	// reallocates to warehouse depth (see WarehouseUnits).
+	MaxDeliveryHulls = 6
 	// StockerUnits is the single central stocker running the far source-legs
 	// out-of-band (event-sim: 1 = 2 = 3, count is not the bottleneck; buffer depth is).
 	StockerUnits = 1
@@ -24,6 +19,14 @@ const (
 	// warehouses, and the stocker are all light hulls; depth, not frame, is the lever).
 	ScalerShipType = "SHIP_LIGHT_HAULER"
 )
+
+// WarehouseUnits is the DYNAMIC central far-source warehouse depth CAP: one warehouse per
+// far-source good (each buffered ~2× contract qty — DepotUnitsPerGood). The reconcile budget
+// DEEPENS the warehouse to fill the remaining ceiling (ceiling − delivery − stocker) UP TO
+// this cap, so the live composition scales with the ceiling — the design curve (budget 10→3wh,
+// 12→5wh, 14→7wh), capping at len(FarSourceGoods). Replaces the prior fixed-5 depth: with
+// delivery capped at 6, the ceiling headroom past 7 hulls goes entirely to warehouse depth.
+var WarehouseUnits = len(FarSourceGoods)
 
 // UnitRole is a scaler hull's role in the fixed plan.
 type UnitRole int
@@ -54,13 +57,10 @@ type PlanUnit struct {
 // is STRUCTURALLY MANDATED (delivery hulls to the knee before the lumpy warehouse
 // bundle), not a marginal-$/hr greedy. Deterministic: demand-desc, symbol-stable.
 func BuildPlan(roles EraRoles, parkDemand map[string]float64) []PlanUnit {
-	ranked := rankParks(roles.CentralParks, parkDemand)
-	if len(ranked) > MaxDeliveryHulls {
-		ranked = ranked[:MaxDeliveryHulls]
-	}
+	slots := TopDeliverySlots(roles.CentralParks, parkDemand)
 
-	plan := make([]PlanUnit, 0, len(ranked)+WarehouseUnits+StockerUnits)
-	for _, park := range ranked {
+	plan := make([]PlanUnit, 0, len(slots)+WarehouseUnits+StockerUnits)
+	for _, park := range slots {
 		plan = append(plan, PlanUnit{Role: DeliveryHauler, ShipType: ScalerShipType, Target: park, Demand: parkDemand[park]})
 	}
 
@@ -68,8 +68,8 @@ func BuildPlan(roles EraRoles, parkDemand map[string]float64) []PlanUnit {
 	// NOT the far J sink). "" when the era has no central park — then the warehouse
 	// bundle has no home and is omitted (delivery-only fallback).
 	hub := ""
-	if len(ranked) > 0 {
-		hub = ranked[0]
+	if len(slots) > 0 {
+		hub = slots[0]
 	}
 	if hub != "" {
 		for i := 0; i < WarehouseUnits; i++ {
@@ -82,16 +82,19 @@ func BuildPlan(roles EraRoles, parkDemand map[string]float64) []PlanUnit {
 	return plan
 }
 
-// StandbyDemand is the per-central-park demand weight map C1's demand-ranked idle
-// homing consumes — the spread signal that lets the 3rd..Nth delivery hull pay
-// (each covers a distinct pickup region). Derived here so the coordinator and the
-// contract fleet coordinator share ONE demand definition.
-func StandbyDemand(roles EraRoles, parkDemand map[string]float64) map[string]float64 {
-	out := make(map[string]float64, len(roles.CentralParks))
-	for _, park := range roles.CentralParks {
-		out[park] = parkDemand[park]
+// TopDeliverySlots is the FIXED delivery-hull placement set: the central parks ranked
+// highest-demand first (symbol-stable on ties), capped at the MaxDeliveryHulls knee. It is the
+// SINGLE selection both the scaler buys against (BuildPlan) AND the fixed homing zips hulls onto
+// (the standby set), so the two positioning consumers agree on ONE ≤6 slot set with no drift.
+// Demand is an input HERE, resolved ONCE at arm — the RUNTIME homing carries no demand at all
+// (it zips hulls to these slots by symbol; see domain/contract.AssignedSlot). Co-located parks
+// are deduped upstream by the resolver, so this ranks distinct LOCATIONS. Empty parks → empty.
+func TopDeliverySlots(parks []string, demand map[string]float64) []string {
+	ranked := rankParks(parks, demand)
+	if len(ranked) > MaxDeliveryHulls {
+		ranked = ranked[:MaxDeliveryHulls]
 	}
-	return out
+	return ranked
 }
 
 // RoleTargets counts how many of each role the fixed plan holds — the per-role fill

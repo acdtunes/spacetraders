@@ -139,9 +139,9 @@ func homeTestGraph(waypoints ...*shared.Waypoint) *system.NavigationGraph {
 	return graph
 }
 
-// A dedicated ship sitting idle with two configured standby stations at
-// different distances must home to the nearer one (sp-snmb).
-func TestHomeShipHandler_NavigatesToNearestStandbyStation(t *testing.T) {
+// A lone idle dedicated hull homes to its fixed slot — the first placement slot in symbol order
+// (B2 < C3), the symbol-zip of the single-hull roster onto the slots (sp-mtgje). Order-independent.
+func TestHomeShipHandler_NavigatesToItsFixedSlot(t *testing.T) {
 	ship := newHomeTestShip(t, "TORWIND-4", "X1-TEST-A1", 0, 0)
 	near := homeTestWaypoint(t, "X1-TEST-B2", 10, 0)
 	far := homeTestWaypoint(t, "X1-TEST-C3", 100, 0)
@@ -213,9 +213,9 @@ func TestHomeShipHandler_NoStandbyStationsConfigured_NoOp(t *testing.T) {
 	}
 }
 
-// A ship already parked at one of the configured standby stations must not
-// re-navigate to itself.
-func TestHomeShipHandler_AlreadyAtStandbyStation_NoOp(t *testing.T) {
+// A ship already parked at ITS assigned slot (B2 = slot[0] for the lone-hull roster) must not
+// re-navigate to itself — the "already home only if at MY slot" rule.
+func TestHomeShipHandler_AlreadyAtItsSlot_NoOp(t *testing.T) {
 	ship := newHomeTestShip(t, "TORWIND-4", "X1-TEST-B2", 10, 0)
 	near := homeTestWaypoint(t, "X1-TEST-B2", 10, 0)
 	far := homeTestWaypoint(t, "X1-TEST-C3", 100, 0)
@@ -252,18 +252,18 @@ func TestHomeShipHandler_AlreadyAtStandbyStation_NoOp(t *testing.T) {
 	}
 }
 
-// Balanced-standby homing (l7h2 Phase 3): with a fleet peer already parked at
-// the nearer station, the ship must home to the emptier, farther one -
-// fewest-assigned-first with distance only breaking ties. Nearest-only homing
-// clumped every idle hull on one hub.
-func TestHomeShipHandler_BalancesAcrossStandbyStations_AvoidsOccupiedHub(t *testing.T) {
+// FIXED PLACEMENT (sp-mtgje): each hull homes to ITS OWN slot — the symbol-zip of the roster onto the
+// slots — ignoring occupancy. TORWIND-4 (roster index 0) owns the first slot B2 and homes there even
+// though a peer sits at B2 (the old occupancy balancer would have sent it to the "emptier" C3). The slot
+// set order is irrelevant (symbol-zipped), so [C3, B2] resolves identically.
+func TestHomeShipHandler_HomesToItsOwnFixedSlot(t *testing.T) {
 	ship := newHomeTestShip(t, "TORWIND-4", "X1-TEST-A1", 0, 0)
-	peer := newHomeTestShip(t, "TORWIND-5", "X1-TEST-B2", 10, 0) // parked at the near hub
-	near := homeTestWaypoint(t, "X1-TEST-B2", 10, 0)
-	far := homeTestWaypoint(t, "X1-TEST-C3", 100, 0)
+	peer := newHomeTestShip(t, "TORWIND-5", "X1-TEST-B2", 10, 0) // sitting at TORWIND-4's slot
+	b := homeTestWaypoint(t, "X1-TEST-B2", 10, 0)
+	c := homeTestWaypoint(t, "X1-TEST-C3", 100, 0)
 
 	shipRepo := &homeStubShipRepo{ship: ship, fleet: []*navigation.Ship{ship, peer}}
-	graphProvider := &homeStubGraphProvider{graph: homeTestGraph(near, far)}
+	graphProvider := &homeStubGraphProvider{graph: homeTestGraph(b, c)}
 	mediator := &homeFakeMediator{}
 
 	handler := NewHomeShipHandler(mediator, shipRepo, graphProvider)
@@ -271,45 +271,38 @@ func TestHomeShipHandler_BalancesAcrossStandbyStations_AvoidsOccupiedHub(t *test
 	resp, err := handler.Handle(context.Background(), &HomeShipCommand{
 		ShipSymbol:      "TORWIND-4",
 		PlayerID:        shared.MustNewPlayerID(1),
-		StandbyStations: []string{"X1-TEST-B2", "X1-TEST-C3"},
+		StandbyStations: []string{"X1-TEST-C3", "X1-TEST-B2"}, // order-independent (symbol-zipped)
 		FleetShips:      []string{"TORWIND-4", "TORWIND-5"},
 	})
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
 
-	if len(mediator.navigateCalls) != 1 {
-		t.Fatalf("expected exactly one navigate dispatch, got %d", len(mediator.navigateCalls))
+	if len(mediator.navigateCalls) != 1 || mediator.navigateCalls[0].Destination != "X1-TEST-B2" {
+		t.Fatalf("TORWIND-4 (roster index 0) must home to its OWN slot B2, got %v", mediator.navigateCalls)
 	}
-	if mediator.navigateCalls[0].Destination != "X1-TEST-C3" {
-		t.Fatalf("expected navigation to the unoccupied station X1-TEST-C3, got %s", mediator.navigateCalls[0].Destination)
-	}
-	homeResp, ok := resp.(*HomeShipResponse)
-	if !ok {
-		t.Fatalf("unexpected response type: %T", resp)
-	}
-	if homeResp.TargetStation != "X1-TEST-C3" {
-		t.Fatalf("expected TargetStation X1-TEST-C3, got %s", homeResp.TargetStation)
+	if resp.(*HomeShipResponse).TargetStation != "X1-TEST-B2" {
+		t.Fatalf("TargetStation = %s, want its fixed slot B2", resp.(*HomeShipResponse).TargetStation)
 	}
 }
 
-// A peer still flying toward a station occupies it for balancing purposes:
-// its CurrentLocation is already the destination once transit starts, so two
-// hulls homed back-to-back must pick different hubs.
-func TestHomeShipHandler_InTransitPeerCountsAtItsDestination(t *testing.T) {
-	ship := newHomeTestShip(t, "TORWIND-4", "X1-TEST-A1", 0, 0)
-	peer := newHomeTestShipWithStatus(t, "TORWIND-5", "X1-TEST-B2", 10, 0, navigation.NavStatusInTransit) // flying to the near hub
-	near := homeTestWaypoint(t, "X1-TEST-B2", 10, 0)
-	far := homeTestWaypoint(t, "X1-TEST-C3", 100, 0)
+// The "already home ONLY if at MY slot" rule (sp-mtgje): a hull sitting at a PEER's slot is NOT left
+// there (the old "at ANY standby station" rule) — it moves to its OWN slot. TORWIND-5 (roster index 1)
+// owns C3 but sits at B2 (TORWIND-4's slot); it must navigate to C3.
+func TestHomeShipHandler_MovesOffAPeersSlotToItsOwn(t *testing.T) {
+	ship := newHomeTestShip(t, "TORWIND-5", "X1-TEST-B2", 10, 0) // sitting at TORWIND-4's slot, not its own
+	peer := newHomeTestShip(t, "TORWIND-4", "X1-TEST-B2", 10, 0)
+	b := homeTestWaypoint(t, "X1-TEST-B2", 10, 0)
+	c := homeTestWaypoint(t, "X1-TEST-C3", 100, 0)
 
 	shipRepo := &homeStubShipRepo{ship: ship, fleet: []*navigation.Ship{ship, peer}}
-	graphProvider := &homeStubGraphProvider{graph: homeTestGraph(near, far)}
+	graphProvider := &homeStubGraphProvider{graph: homeTestGraph(b, c)}
 	mediator := &homeFakeMediator{}
 
 	handler := NewHomeShipHandler(mediator, shipRepo, graphProvider)
 
 	_, err := handler.Handle(context.Background(), &HomeShipCommand{
-		ShipSymbol:      "TORWIND-4",
+		ShipSymbol:      "TORWIND-5",
 		PlayerID:        shared.MustNewPlayerID(1),
 		StandbyStations: []string{"X1-TEST-B2", "X1-TEST-C3"},
 		FleetShips:      []string{"TORWIND-4", "TORWIND-5"},
@@ -318,11 +311,8 @@ func TestHomeShipHandler_InTransitPeerCountsAtItsDestination(t *testing.T) {
 		t.Fatalf("Handle: %v", err)
 	}
 
-	if len(mediator.navigateCalls) != 1 {
-		t.Fatalf("expected exactly one navigate dispatch, got %d", len(mediator.navigateCalls))
-	}
-	if mediator.navigateCalls[0].Destination != "X1-TEST-C3" {
-		t.Fatalf("expected navigation away from the hub the in-transit peer is heading to, got %s", mediator.navigateCalls[0].Destination)
+	if len(mediator.navigateCalls) != 1 || mediator.navigateCalls[0].Destination != "X1-TEST-C3" {
+		t.Fatalf("TORWIND-5 at a PEER's slot B2 must move to its OWN slot C3 (not left at ANY station), got %v", mediator.navigateCalls)
 	}
 }
 
@@ -394,12 +384,11 @@ func TestHomeShipHandler_InTransitHullNeverMoved(t *testing.T) {
 	}
 }
 
-// THE LOAD-BEARING PROOF (sp-jydtb): several idle dedicated hulls sitting at the
-// SAME sink, homed against the same snapshot with no peer parked at any hub yet,
-// must SPREAD across the standby set instead of all piling on one point. The old
-// occupancy+distance balancer collapses them (every hub reads occupancy 0, so the
-// pure-distance tie sends every hull to the same nearest/first hub) - capping the
-// contract op at ~1.28x. The demand-ranked spread must fan them out.
+// THE LOAD-BEARING PROOF (sp-mtgje): several idle dedicated hulls sitting at the SAME sink, each homed
+// by an INDEPENDENT Handle call (as the live concurrent between-legs homing fires), must land on N
+// DISTINCT slots — one per waypoint, never piled. The old runtime distributor piled them on the
+// top-demand hub when peers were in-transit/invisible (the live K83 pile); the fixed symbol-zip gives
+// each hull its OWN slot from the roster + slot set, independent of demand/occupancy/timing.
 func TestHomeShipHandler_CoLocatedIdleHulls_SpreadNotPiled(t *testing.T) {
 	// Three hulls all idle at the same sink Z, equidistant from three empty hubs.
 	h1 := newHomeTestShip(t, "TORWIND-1", "X1-TEST-Z", 0, 0)
@@ -443,36 +432,55 @@ func TestHomeShipHandler_CoLocatedIdleHulls_SpreadNotPiled(t *testing.T) {
 	}
 }
 
-// Demand-ranked homing (sp-jydtb): a lone idle hull must home to the
-// HIGHEST-DEMAND standby waypoint, not merely the nearest one. The old balancer is
-// demand-blind and picks nearest; with a demand signal supplied the hull must
-// prefer the high-demand sink even when it is farther.
-func TestHomeShipHandler_DemandRankedHoming_PrefersHighestDemandOverNearest(t *testing.T) {
-	ship := newHomeTestShip(t, "TORWIND-4", "X1-TEST-ORIGIN", 0, 0)
-	near := homeTestWaypoint(t, "X1-TEST-NEAR", 10, 0)   // nearest, low demand
-	farHot := homeTestWaypoint(t, "X1-TEST-HOT", 100, 0) // farther, highest demand
+// A second homing pass moves NO hull (no thrash): a hull already AT its assigned slot stays put — the
+// deterministic symbol-zip re-computes the same slot every pass.
+func TestHomeShipHandler_SecondPassAtItsSlotIsNoOp(t *testing.T) {
+	ship := newHomeTestShip(t, "TORWIND-4", "X1-TEST-B2", 10, 0) // already at its slot (roster index 0 → B2)
+	b := homeTestWaypoint(t, "X1-TEST-B2", 10, 0)
+	c := homeTestWaypoint(t, "X1-TEST-C3", 100, 0)
 
-	repo := &homeMultiShipRepo{
-		ships: map[string]*navigation.Ship{"TORWIND-4": ship},
-		fleet: []*navigation.Ship{ship},
-	}
-	graphProvider := &homeStubGraphProvider{graph: homeTestGraph(near, farHot)}
+	shipRepo := &homeStubShipRepo{ship: ship, fleet: []*navigation.Ship{ship}}
+	graphProvider := &homeStubGraphProvider{graph: homeTestGraph(b, c)}
 	mediator := &homeFakeMediator{}
-	handler := NewHomeShipHandler(mediator, repo, graphProvider)
+	handler := NewHomeShipHandler(mediator, shipRepo, graphProvider)
 
 	resp, err := handler.Handle(context.Background(), &HomeShipCommand{
 		ShipSymbol:      "TORWIND-4",
 		PlayerID:        shared.MustNewPlayerID(1),
-		StandbyStations: []string{"X1-TEST-NEAR", "X1-TEST-HOT"},
+		StandbyStations: []string{"X1-TEST-B2", "X1-TEST-C3"},
 		FleetShips:      []string{"TORWIND-4"},
-		StandbyDemand:   map[string]float64{"X1-TEST-NEAR": 1, "X1-TEST-HOT": 100},
 	})
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
-	homeResp := resp.(*HomeShipResponse)
-	if homeResp.TargetStation != "X1-TEST-HOT" {
-		t.Fatalf("expected homing to the highest-demand hub X1-TEST-HOT, got %s (demand-blind nearest homing)", homeResp.TargetStation)
+	if len(mediator.navigateCalls) != 0 || resp.(*HomeShipResponse).Navigated {
+		t.Fatalf("a hull already at its fixed slot must not move (no thrash), got navigate=%v", mediator.navigateCalls)
+	}
+}
+
+// A surplus hull beyond the slot count owns NO slot and is left where it is — for the scaler to re-role
+// into a warehouse, never piled onto an occupied slot. TORWIND-9 is roster index 2 with only 2 slots.
+func TestHomeShipHandler_SurplusHullOwnsNoSlotAndIsNotMoved(t *testing.T) {
+	ship := newHomeTestShip(t, "TORWIND-9", "X1-TEST-A1", 0, 0)
+	b := homeTestWaypoint(t, "X1-TEST-B2", 10, 0)
+	c := homeTestWaypoint(t, "X1-TEST-C3", 100, 0)
+
+	shipRepo := &homeStubShipRepo{ship: ship, fleet: []*navigation.Ship{ship}}
+	graphProvider := &homeStubGraphProvider{graph: homeTestGraph(b, c)}
+	mediator := &homeFakeMediator{}
+	handler := NewHomeShipHandler(mediator, shipRepo, graphProvider)
+
+	resp, err := handler.Handle(context.Background(), &HomeShipCommand{
+		ShipSymbol:      "TORWIND-9",
+		PlayerID:        shared.MustNewPlayerID(1),
+		StandbyStations: []string{"X1-TEST-B2", "X1-TEST-C3"},
+		FleetShips:      []string{"TORWIND-4", "TORWIND-5", "TORWIND-9"}, // 3 hulls, 2 slots → TORWIND-9 surplus
+	})
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if len(mediator.navigateCalls) != 0 || resp.(*HomeShipResponse).Navigated {
+		t.Fatalf("a surplus hull (index 2, only 2 slots) owns no slot and must not move, got navigate=%v", mediator.navigateCalls)
 	}
 }
 

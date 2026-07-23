@@ -690,23 +690,26 @@ func idleArbRehomeHarness(t *testing.T, repo *idleArbFakeShipRepo, standby []str
 	return d, launcher, homer
 }
 
-// A hull left idle OFF-station after a leg is re-homed to its standby station
-// and is NOT re-arbed from the drift position that pass, while an ON-station
-// hull still arbs normally. One pass proves both.
+// A hull left idle OFF its assigned slot after a leg is re-homed to that slot and is NOT re-arbed
+// from the drift position that pass, while a hull sitting AT its slot still arbs normally. Under fixed
+// placement each hull owns a distinct slot (roster-symbol-zip): AT-HUB (index 0) owns E42 where it
+// sits, DRIFTED (index 1) owns F50 and is homed there. One pass proves both.
 func TestIdleArb_DriftedHullReHomed_OnStationHullStillArbs(t *testing.T) {
 	hub := idleArbWaypoint(t, "X1-HUB-E42", 0, 0)
 	near := idleArbWaypoint(t, "X1-HUB-D40", 0, 50)
 	repo := &idleArbFakeShipRepo{ships: []*navigation.Ship{
-		idleArbHull(t, "AT-HUB", hub, testFleet),   // on-station: arb candidate
-		idleArbHull(t, "DRIFTED", near, testFleet), // off-station post-leg: re-home
+		idleArbHull(t, "AT-HUB", hub, testFleet),   // at its slot E42: arb candidate
+		idleArbHull(t, "DRIFTED", near, testFleet), // off its slot F50 post-leg: re-home
 	}}
 
-	d, launcher, homer := idleArbRehomeHarness(t, repo, []string{hub.Symbol}, IdleArbConfig{ReserveHulls: 1})
+	// Two slots for two hulls (fixed placement is one-per-slot): E42 (AT-HUB's, where it sits) + F50
+	// (DRIFTED's). F50 > E42 so the symbol-zip gives AT-HUB(index0)→E42, DRIFTED(index1)→F50.
+	d, launcher, homer := idleArbRehomeHarness(t, repo, []string{hub.Symbol, "X1-HUB-F50"}, IdleArbConfig{ReserveHulls: 1})
 	d.DispatchOnce(context.Background())
 
-	// The drifted hull is homed, not re-arbed...
+	// The drifted hull is homed to its slot, not re-arbed...
 	if len(homer.homed) != 1 || homer.homed[0] != "DRIFTED" {
-		t.Fatalf("expected the off-station hull DRIFTED to be re-homed, got %v", homer.homed)
+		t.Fatalf("expected the off-slot hull DRIFTED to be re-homed, got %v", homer.homed)
 	}
 	// ...and the on-station hull still flew an arb leg (from the hub), so
 	// re-homing did not suppress the harvest for hulls that are already home.
@@ -792,7 +795,9 @@ func TestIdleArb_HomeDispatchFails_HullNotExcludedFromArb(t *testing.T) {
 		idleArbHull(t, "DRIFTED-B", near, testFleet),
 	}}
 
-	d, launcher, homer := idleArbRehomeHarness(t, repo, []string{"X1-HUB-E42"}, IdleArbConfig{ReserveHulls: 1})
+	// Two slots for two hulls (fixed placement, one-per-slot): both DRIFTED-A/B own a distinct off-slot
+	// (they sit at D40), so both attempt a home — the first fails (failNext), the second succeeds.
+	d, launcher, homer := idleArbRehomeHarness(t, repo, []string{"X1-HUB-E42", "X1-HUB-F50"}, IdleArbConfig{ReserveHulls: 1})
 	homer.failNext = true // the first home dispatch is refused
 	d.DispatchOnce(context.Background())
 

@@ -86,14 +86,27 @@ func TestBuildPlan_WarehouseAndStockerAnchorAtCentralHub(t *testing.T) {
 	}
 }
 
-// StandbyDemand carries the per-central-park weight to C1's demand-ranked homing.
-func TestBuildPlan_StandbyDemandIsTheParkWeights(t *testing.T) {
+// TopDeliverySlots is the ONE fixed placement set: central parks ranked highest-demand first,
+// symbol-stable, capped at MaxDeliveryHulls. Both the scaler buy sequence and the fixed homing
+// consume this SAME set (no drift). Demand is an input at arm ONLY.
+func TestTopDeliverySlots_RanksDemandDescCappedAtKnee(t *testing.T) {
 	demand := map[string]float64{"P1": 1, "P2": 9, "P3": 5, "P4": 2}
-	got := StandbyDemand(fourParkRoles(), demand)
+	got := TopDeliverySlots([]string{"P1", "P2", "P3", "P4"}, demand)
 
-	want := map[string]float64{"P1": 1, "P2": 9, "P3": 5, "P4": 2}
+	want := []string{"P2", "P3", "P4", "P1"}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("standby demand = %v, want the park weights %v", got, want)
+		t.Fatalf("TopDeliverySlots = %v, want demand-ranked %v", got, want)
+	}
+
+	// Capped at the MaxDeliveryHulls knee even with more distinct parks.
+	parks := make([]string, MaxDeliveryHulls+3)
+	manyDemand := map[string]float64{}
+	for i := range parks {
+		parks[i] = string(rune('A' + i))
+		manyDemand[parks[i]] = float64(i)
+	}
+	if got := TopDeliverySlots(parks, manyDemand); len(got) != MaxDeliveryHulls {
+		t.Fatalf("TopDeliverySlots on %d parks = %d slots, want the MaxDeliveryHulls cap %d", len(parks), len(got), MaxDeliveryHulls)
 	}
 }
 
@@ -109,9 +122,10 @@ func TestRoleTargets_CountsEachRoleOfTheFixedPlan(t *testing.T) {
 		demand[sevenParks[i]] = float64(i)
 	}
 
-	// 7 parks + a hub → 7 delivery, the full warehouse + stocker bundle.
-	if d, w, s := RoleTargets(BuildPlan(EraRoles{CentralParks: sevenParks}, demand)); d != 7 || w != WarehouseUnits || s != StockerUnits {
-		t.Fatalf("RoleTargets(7 parks) = (%d,%d,%d), want (7,%d,%d)", d, w, s, WarehouseUnits, StockerUnits)
+	// 7 parks + a hub → delivery CAPPED at the MaxDeliveryHulls knee (6, not 7), the full
+	// warehouse + stocker bundle.
+	if d, w, s := RoleTargets(BuildPlan(EraRoles{CentralParks: sevenParks}, demand)); d != MaxDeliveryHulls || w != WarehouseUnits || s != StockerUnits {
+		t.Fatalf("RoleTargets(7 parks) = (%d,%d,%d), want (%d,%d,%d) — delivery capped at the knee", d, w, s, MaxDeliveryHulls, WarehouseUnits, StockerUnits)
 	}
 	// 0 parks → empty plan (no hull anchors the warehouse bundle) → no roles.
 	if d, w, s := RoleTargets(BuildPlan(EraRoles{}, demand)); d != 0 || w != 0 || s != 0 {
@@ -151,12 +165,12 @@ func TestFarSourceGoods_FixedWhitelistAndFlatCaps(t *testing.T) {
 	}
 }
 
-// The 14-hull arrangement (8 delivery + 5 warehouse + 1 stocker) is the Admiral-mandated
-// plan size at 8+ central parks — the +2 hulls over the prior 12-hull arrangement went
-// entirely to the central warehouse buffer depth (delivery saturates at MaxDeliveryHulls,
-// stocker count is not the bottleneck, so neither moved).
-func TestBuildPlan_FourteenHullPlanAtEightOrMoreCentralParks(t *testing.T) {
-	parks := make([]string, MaxDeliveryHulls)
+// The FULL fixed plan at the delivery knee (sp-mtgje): delivery caps at MaxDeliveryHulls (6,
+// NEVER 8), and the warehouse deepens to one per far-source good (len(FarSourceGoods)=8) — the
+// reconcile budget then draws from this depth to fill the live ceiling (ceiling−delivery−stocker).
+// The plan CARRIES the full depth cap; the ceiling decides how much of it is bought.
+func TestBuildPlan_DeliveryKneeAtSixWarehouseDepthAtFarSourceGoodCount(t *testing.T) {
+	parks := make([]string, MaxDeliveryHulls+2) // more parks than the knee → delivery still caps at 6
 	demand := map[string]float64{}
 	for i := range parks {
 		parks[i] = string(rune('A' + i))
@@ -164,11 +178,12 @@ func TestBuildPlan_FourteenHullPlanAtEightOrMoreCentralParks(t *testing.T) {
 	}
 	plan := BuildPlan(EraRoles{CentralParks: parks}, demand)
 
-	if len(plan) != 14 {
-		t.Fatalf("plan length = %d, want 14 (8 delivery + 5 warehouse + 1 stocker)", len(plan))
+	wantLen := MaxDeliveryHulls + len(FarSourceGoods) + StockerUnits // 6 + 8 + 1 = 15
+	if len(plan) != wantLen {
+		t.Fatalf("plan length = %d, want %d (6 delivery + %d warehouse + 1 stocker)", len(plan), wantLen, len(FarSourceGoods))
 	}
-	if d, w, s := RoleTargets(plan); d != 8 || w != 5 || s != 1 {
-		t.Fatalf("RoleTargets = (%d,%d,%d), want (8,5,1)", d, w, s)
+	if d, w, s := RoleTargets(plan); d != MaxDeliveryHulls || w != len(FarSourceGoods) || s != StockerUnits {
+		t.Fatalf("RoleTargets = (%d,%d,%d), want (6,%d,1) — delivery knee 6, warehouse one-per-far-source-good", d, w, s, len(FarSourceGoods))
 	}
 }
 

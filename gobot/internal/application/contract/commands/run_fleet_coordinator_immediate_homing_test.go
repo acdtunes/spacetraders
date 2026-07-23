@@ -25,14 +25,14 @@ import (
 // newImmediateHomingHandler wires a coordinator handler with only the collaborators
 // the completion-point homing touches: the ship repo (load the completed hull +
 // fleet peers), the mediator the async HomeShipCommand is dispatched through, and
-// the demand provider that ranks / auto-resolves the standby set. standbyProvider
+// the placement provider that auto-resolves the fixed standby slot set. standbyProvider
 // is left nil so ResolveStandbyStations falls back to the (empty) launch set — the
-// live empty-hub case where the role demand parks auto-drive homing.
-func newImmediateHomingHandler(med common.Mediator, shipRepo navigation.ShipRepository, demand appContract.StandbyDemandProvider) *RunFleetCoordinatorHandler {
+// live empty-hub case where the fixed placement slots auto-drive homing.
+func newImmediateHomingHandler(med common.Mediator, shipRepo navigation.ShipRepository, placement appContract.StandbyPlacementProvider) *RunFleetCoordinatorHandler {
 	return &RunFleetCoordinatorHandler{
-		shipRepo:              shipRepo,
-		fleetPoolManager:      contractServices.NewFleetPoolManager(med),
-		standbyDemandProvider: demand,
+		shipRepo:                 shipRepo,
+		fleetPoolManager:         contractServices.NewFleetPoolManager(med),
+		standbyPlacementProvider: placement,
 	}
 }
 
@@ -47,7 +47,7 @@ func TestCoordinator_ImmediateHomingOnCompletion_DispatchesCompletedHullToStandb
 	shipRepo := &homeStubShipRepo{ship: completed, fleet: []*navigation.Ship{completed}}
 	got := make(chan *HomeShipCommand, 1)
 	med := &recordingHomeMediator{got: got}
-	provider := &stubDemandProvider{demand: map[string]float64{"X1-UM5-G49": 340, "X1-UM5-K83": 260}}
+	provider := &stubPlacementProvider{slots: []string{"X1-UM5-G49", "X1-UM5-K83"}}
 
 	handler := newImmediateHomingHandler(med, shipRepo, provider)
 	cmd := &RunFleetCoordinatorCommand{PlayerID: shared.MustNewPlayerID(1), ContainerID: "coord-1"}
@@ -59,12 +59,9 @@ func TestCoordinator_ImmediateHomingOnCompletion_DispatchesCompletedHullToStandb
 		if dispatched.ShipSymbol != "TORWIND-5" {
 			t.Fatalf("expected immediate home for the completed hull TORWIND-5, got %s", dispatched.ShipSymbol)
 		}
-		wantStations := []string{"X1-UM5-G49", "X1-UM5-K83"} // empty hub set → sorted role parks auto-drive
+		wantStations := []string{"X1-UM5-G49", "X1-UM5-K83"} // empty hub set → fixed placement slots auto-drive
 		if !reflect.DeepEqual(dispatched.StandbyStations, wantStations) {
-			t.Fatalf("immediate home must carry the demand-resolved standby set %v, got %v", wantStations, dispatched.StandbyStations)
-		}
-		if !reflect.DeepEqual(dispatched.StandbyDemand, provider.demand) {
-			t.Fatalf("immediate home must carry the per-park demand weights, got %v", dispatched.StandbyDemand)
+			t.Fatalf("immediate home must carry the fixed placement slots %v, got %v", wantStations, dispatched.StandbyStations)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("completed hull was NOT homed in the same handling — it will loiter at the delivery waypoint until the next pass")
@@ -80,7 +77,7 @@ func TestCoordinator_ImmediateHomingOnCompletion_SkipsHullAlreadyAtStandbySink(t
 	shipRepo := &homeStubShipRepo{ship: completed, fleet: []*navigation.Ship{completed}}
 	got := make(chan *HomeShipCommand, 1)
 	med := &recordingHomeMediator{got: got}
-	provider := &stubDemandProvider{demand: map[string]float64{"X1-UM5-G49": 340, "X1-UM5-K83": 260}}
+	provider := &stubPlacementProvider{slots: []string{"X1-UM5-G49", "X1-UM5-K83"}}
 
 	handler := newImmediateHomingHandler(med, shipRepo, provider)
 	cmd := &RunFleetCoordinatorCommand{PlayerID: shared.MustNewPlayerID(1), ContainerID: "coord-1"}
@@ -104,7 +101,7 @@ func TestCoordinator_ImmediateHomingOnCompletion_ExcludesCommandFrigate(t *testi
 	shipRepo := &homeStubShipRepo{ship: frigate, fleet: []*navigation.Ship{frigate}}
 	got := make(chan *HomeShipCommand, 1)
 	med := &recordingHomeMediator{got: got}
-	provider := &stubDemandProvider{demand: map[string]float64{"X1-UM5-G49": 340, "X1-UM5-K83": 260}}
+	provider := &stubPlacementProvider{slots: []string{"X1-UM5-G49", "X1-UM5-K83"}}
 
 	handler := newImmediateHomingHandler(med, shipRepo, provider)
 	cmd := &RunFleetCoordinatorCommand{PlayerID: shared.MustNewPlayerID(1), ContainerID: "coord-1"}

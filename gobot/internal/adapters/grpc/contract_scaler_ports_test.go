@@ -322,7 +322,7 @@ func (r *recordingSender) Send(ctx context.Context, request common.Request) (com
 // AND dispatches the HomeShipCommand carrying the spread standby set + per-park demand weights — the C1
 // demand-ranked homing consumer. This is what makes the 3rd..Nth delivery hull pay (each covers a
 // distinct central pickup region) instead of piling on one hub.
-func TestContractScalerPurchaser_BuysContractDedicatedThenHomesDemandRanked(t *testing.T) {
+func TestContractScalerPurchaser_BuysContractDedicatedThenHomesToFixedSlot(t *testing.T) {
 	buyer := &fakeContractBuyer{result: fleetCmd.BuyResult{ShipSymbol: "SHIP-NEW", Price: 120000, Dedicated: true}}
 	sender := &recordingSender{}
 	p := &contractScalerPurchaser{buyer: buyer, med: sender, shipRepo: nil}
@@ -334,7 +334,6 @@ func TestContractScalerPurchaser_BuysContractDedicatedThenHomesDemandRanked(t *t
 		ExpectedPrice:   120000,
 		DedicatedFleet:  "contract",
 		StandbyStations: []string{"P1", "P2", "P3"},
-		StandbyDemand:   map[string]float64{"P1": 3, "P2": 9, "P3": 5},
 	}
 	res, err := p.BuyAndHome(context.Background(), order)
 	if err != nil {
@@ -352,7 +351,8 @@ func TestContractScalerPurchaser_BuysContractDedicatedThenHomesDemandRanked(t *t
 		t.Fatalf("buy order didn't carry the plan unit's frame + yard: %+v", buyer.order)
 	}
 
-	// The fresh hull is homed demand-ranked: exactly one HomeShipCommand for it, carrying the spread set.
+	// The fresh hull is homed to its fixed slot: exactly one HomeShipCommand for it, carrying the ≤6
+	// fixed placement set (the handler zips it to its own slot — no demand).
 	if len(sender.sent) != 1 {
 		t.Fatalf("dispatched %d commands, want exactly 1 (the HomeShipCommand)", len(sender.sent))
 	}
@@ -364,10 +364,7 @@ func TestContractScalerPurchaser_BuysContractDedicatedThenHomesDemandRanked(t *t
 		t.Fatalf("homed %q, want the freshly-bought SHIP-NEW", home.ShipSymbol)
 	}
 	if len(home.StandbyStations) != 3 {
-		t.Fatalf("HomeShipCommand.StandbyStations = %v, want the 3-park spread set", home.StandbyStations)
-	}
-	if home.StandbyDemand["P2"] != 9 {
-		t.Fatalf("HomeShipCommand.StandbyDemand missing the park weights (the homing consumer): %v", home.StandbyDemand)
+		t.Fatalf("HomeShipCommand.StandbyStations = %v, want the 3-slot fixed placement set", home.StandbyStations)
 	}
 }
 
@@ -630,13 +627,12 @@ func TestReclaim_ReDedicatesToContractAndHomesDemandRanked(t *testing.T) {
 	r := &contractScalerReclaimer{shipRepo: repo, med: sender}
 
 	// The standby parks share the reclaimed hull's system (X1-SC — reclaimHull sits at X1-SC-A1), so this
-	// is the common ALREADY-HOME case: the demand-ranked spread-home fires directly, with no cross-gate
+	// is the common ALREADY-HOME case: the fixed-placement home fires directly, with no cross-gate
 	// reposition (the sp-orooy foreign-hull path is covered by TestReclaim_CrossGatesAForeignHullHome...).
 	err := r.Reclaim(context.Background(), contractScalerCmd.ReclaimOrder{
 		PlayerID:        1,
 		ShipSymbol:      "FREE-HAULER",
 		StandbyStations: []string{"X1-SC-P1", "X1-SC-P2", "X1-SC-P3"},
-		StandbyDemand:   map[string]float64{"X1-SC-P1": 3, "X1-SC-P2": 9, "X1-SC-P3": 5},
 	})
 	if err != nil {
 		t.Fatalf("Reclaim: %v", err)
@@ -647,7 +643,7 @@ func TestReclaim_ReDedicatesToContractAndHomesDemandRanked(t *testing.T) {
 		t.Fatalf("AssignFleet calls = %+v, want one (FREE-HAULER → \"contract\")", repo.assigned)
 	}
 
-	// Homed demand-ranked, exactly like a bought hull: one HomeShipCommand carrying the spread + demand.
+	// Homed to its fixed slot, exactly like a bought hull: one HomeShipCommand carrying the ≤6 slot set.
 	if len(sender.sent) != 1 {
 		t.Fatalf("dispatched %d commands, want exactly 1 (the HomeShipCommand)", len(sender.sent))
 	}
@@ -658,8 +654,8 @@ func TestReclaim_ReDedicatesToContractAndHomesDemandRanked(t *testing.T) {
 	if home.ShipSymbol != "FREE-HAULER" {
 		t.Fatalf("homed %q, want the reclaimed FREE-HAULER", home.ShipSymbol)
 	}
-	if len(home.StandbyStations) != 3 || home.StandbyDemand["X1-SC-P2"] != 9 {
-		t.Fatalf("HomeShipCommand missing the spread set + park demand weights: stations=%v demand=%v", home.StandbyStations, home.StandbyDemand)
+	if len(home.StandbyStations) != 3 {
+		t.Fatalf("HomeShipCommand missing the fixed placement set: stations=%v", home.StandbyStations)
 	}
 }
 
@@ -705,7 +701,6 @@ func TestReclaim_CrossGatesAForeignHullHomeBeforeSpreadHoming(t *testing.T) {
 				PlayerID:        1,
 				ShipSymbol:      "FREE-HAULER",
 				StandbyStations: standby,
-				StandbyDemand:   map[string]float64{homePark: 3, "X1-UM5-B2": 9, "X1-UM5-C1": 5},
 			})
 			require.NoError(t, err)
 

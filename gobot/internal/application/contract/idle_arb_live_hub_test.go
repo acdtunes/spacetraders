@@ -12,38 +12,39 @@ import (
 // hub add|remove` changes the set, the at-home filter and the homer both track
 // the CURRENT hubs with no restart.
 
-// TestIdleArb_ReHome_UsesLiveStandbySet: the dispatcher is CONSTRUCTED with the
-// launch hub set {E42} but handed a LIVE resolver that returns {D40} (as a `fleet
-// hub` change would). On the next pass the at-home filter must use {D40}: the hull
-// sitting at D40 is treated as home (not re-homed), and the hull at the now-removed
-// E42 is off-station and re-homed — the exact inverse of the frozen-set behavior,
-// proving the live set drives re-homing. The homer also receives the LIVE set.
+// TestIdleArb_ReHome_UsesLiveStandbySet: the dispatcher is CONSTRUCTED with the launch hub set {E42}
+// but handed a LIVE resolver that returns {D40, K80} (as a `fleet hub` change would). On the next pass
+// the fixed-placement assignment must use the LIVE slots: AT-NEW (roster index 0) owns D40 and sits
+// there → left alone; AT-OLD (roster index 1) owns K80 but sits at the now-removed E42 → re-homed. If
+// it used the frozen launch {E42}, AT-OLD would be "at its slot" and skipped — so re-homing AT-OLD
+// proves the LIVE set drives. The homer also receives the LIVE set.
 func TestIdleArb_ReHome_UsesLiveStandbySet(t *testing.T) {
-	const oldHub = "X1-HUB-E42" // launch hub (0,0)
-	const newHub = "X1-HUB-D40" // hub added live (0,50)
+	const oldHub = "X1-HUB-E42" // launch hub, removed live (0,0)
+	const liveA = "X1-HUB-D40"  // live slot (0,50) — AT-NEW's (roster index 0)
+	const liveB = "X1-HUB-K80"  // live slot — AT-OLD's (roster index 1)
 
 	repo := &idleArbFakeShipRepo{ships: []*navigation.Ship{
 		idleArbHull(t, "AT-OLD", idleArbWaypoint(t, oldHub, 0, 0), testFleet),
-		idleArbHull(t, "AT-NEW", idleArbWaypoint(t, newHub, 0, 50), testFleet),
+		idleArbHull(t, "AT-NEW", idleArbWaypoint(t, liveA, 0, 50), testFleet),
 	}}
 
 	// Constructed with the LAUNCH hub set {oldHub}; ReserveHulls high enough that
 	// the arb loop launches nothing, isolating the re-home behavior.
 	d, _, homer := idleArbRehomeHarness(t, repo, []string{oldHub}, IdleArbConfig{ReserveHulls: 5})
 
-	// A `fleet hub` change: the live set is now {newHub}, not the launch {oldHub}.
-	d.SetStandbyResolver(func(_ context.Context) []string { return []string{newHub} })
+	// A `fleet hub` change: the live set is now {liveA, liveB}, not the launch {oldHub}.
+	d.SetStandbyResolver(func(_ context.Context) []string { return []string{liveA, liveB} })
 
 	d.DispatchOnce(context.Background())
 
-	// The hull at the removed old hub is off the LIVE set → re-homed; the hull at
-	// the live-added new hub is at home → left alone.
+	// AT-NEW is at its live slot (D40) → left alone; AT-OLD is off its live slot (K80, sitting at the
+	// removed E42) → re-homed. Proves the LIVE set, not the launch snapshot, drives placement.
 	if len(homer.homed) != 1 || homer.homed[0] != "AT-OLD" {
-		t.Fatalf("re-home must use the LIVE hub set {%s}: expected only AT-OLD re-homed, got %v", newHub, homer.homed)
+		t.Fatalf("re-home must use the LIVE hub set {%s,%s}: expected only AT-OLD re-homed, got %v", liveA, liveB, homer.homed)
 	}
-	// The homer must be handed the LIVE set, so it balances to the current hubs.
-	if len(homer.lastStandby) != 1 || homer.lastStandby[0] != newHub {
-		t.Fatalf("the homer must receive the LIVE standby set {%s}, got %v", newHub, homer.lastStandby)
+	// The homer must be handed the LIVE set, so it places hulls on the current slots.
+	if len(homer.lastStandby) != 2 || homer.lastStandby[0] != liveA || homer.lastStandby[1] != liveB {
+		t.Fatalf("the homer must receive the LIVE standby set {%s,%s}, got %v", liveA, liveB, homer.lastStandby)
 	}
 }
 

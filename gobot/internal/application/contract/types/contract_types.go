@@ -227,28 +227,21 @@ type BalanceShipPositionResponse struct {
 // Dedicated Ship Homing (sp-snmb)
 // ============================================================================
 
-// HomeShipCommand requests sending an idle dedicated ship to an
-// operator-configured standby station, balanced across the configured set
-// (l7h2 Phase 3): the station with the fewest fleet hulls already parked at
-// (or heading to) it wins, distance breaking ties - so idle hulls spread
-// across the standby hubs instead of clumping on the nearest one.
+// HomeShipCommand requests sending an idle dedicated hull to its FIXED placement slot
+// (sp-mtgje): each delivery hull permanently owns one of the ≤6 placement waypoints — the
+// symbol-zip of the delivery roster (FleetShips) onto StandbyStations. NO demand, NO occupancy:
+// the assignment is a pure function of the roster + the slot set, so N hulls land on N DISTINCT
+// slots and a second pass moves no hull.
 type HomeShipCommand struct {
 	ShipSymbol      string
 	PlayerID        shared.PlayerID
-	StandbyStations []string // Operator-supplied waypoint symbols (--standby-stations)
+	StandbyStations []string // The ≤6 FIXED placement slots (TopDeliverySlots); empty disables homing.
 
-	// FleetShips (l7h2 Phase 3): symbols of every hull in this coordinator's
-	// dedicated fleet - the homing peers whose positions determine station
-	// occupancy for balancing. Empty preserves the original behavior: plain
-	// nearest-station homing.
+	// FleetShips: symbols of every hull in this coordinator's dedicated (delivery) fleet — the
+	// ROSTER the placement slots are symbol-zipped against so each hull resolves its OWN distinct
+	// slot. Empty degrades to this hull owning the first slot (the between-legs/scaler paths always
+	// populate the full roster).
 	FleetShips []string
-
-	// StandbyDemand is the optional per-waypoint contract-demand weight
-	// (frequency×payment / observed hub demand) that RANKS the standby set so idle
-	// hulls spread demand-first, highest-demand sinks covered before the rest. Nil
-	// or a uniform map leaves homing on plain occupancy+nearest balancing (the
-	// caller supplies the signal; the distribution is a pure function of it).
-	StandbyDemand map[string]float64
 }
 
 // HomeShipResponse contains the result of a homing dispatch.

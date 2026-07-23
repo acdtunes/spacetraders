@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
@@ -280,9 +281,10 @@ func TestReconcile_RoleLookupMemoizedAtArm(t *testing.T) {
 	}
 }
 
-// EXCLUSIVITY: every scaler buy carries the dedicated "contract" fleet + the
-// demand-ranked spread set, so the hull is homed to C1's spread and never poached.
-func TestReconcile_BuyOrderCarriesContractDedicationAndSpreadDemand(t *testing.T) {
+// EXCLUSIVITY + FIXED PLACEMENT: every scaler buy carries the dedicated "contract" fleet + the
+// ≤6 FIXED placement slots (TopDeliverySlots, ranked highest-demand first), so the hull is homed
+// to its permanent slot and never poached. No demand map — the runtime homing carries no demand.
+func TestReconcile_BuyOrderCarriesContractDedicationAndFixedPlacementSlots(t *testing.T) {
 	h, pur, _, _ := newHarness(1)
 	reconcile(t, h, 1)
 
@@ -293,11 +295,10 @@ func TestReconcile_BuyOrderCarriesContractDedicationAndSpreadDemand(t *testing.T
 	if o.DedicatedFleet != "contract" {
 		t.Fatalf("order fleet = %q, want the exclusive \"contract\" dedication", o.DedicatedFleet)
 	}
-	if o.StandbyDemand["P2"] != 9 {
-		t.Fatalf("order StandbyDemand missing the park weights (got %v)", o.StandbyDemand)
-	}
-	if len(o.StandbyStations) != 3 {
-		t.Fatalf("order StandbyStations = %v, want the 3 central parks (spread set)", o.StandbyStations)
+	// The 3 parks (P2>P3>P1 by demand) are the fixed placement set — all ≤ the knee, ranked.
+	want := []string{"P2", "P3", "P1"}
+	if !reflect.DeepEqual(o.StandbyStations, want) {
+		t.Fatalf("order StandbyStations = %v, want the fixed ≤6 placement slots %v", o.StandbyStations, want)
 	}
 }
 
@@ -320,9 +321,9 @@ func TestReconcile_ReclaimsFreeIdleHullBeforeBuying(t *testing.T) {
 	if len(rec.reclaimed) != 1 || rec.reclaimed[0] != "HULL-IDLE" {
 		t.Fatalf("reclaimed %v, want [HULL-IDLE] (the free hull reused into the contract fleet)", rec.reclaimed)
 	}
-	// Reclaim homes to the SAME demand-ranked spread a bought hull gets (C1 homing parity).
-	if len(rec.orders) != 1 || len(rec.orders[0].StandbyStations) != 3 || rec.orders[0].StandbyDemand["P2"] != 9 {
-		t.Fatalf("reclaim order = %+v, want the 3-park spread set + park demand weights (homed like a bought hull)", rec.orders)
+	// Reclaim homes to the SAME fixed ≤6 placement set a bought hull gets (homing parity, no demand).
+	if len(rec.orders) != 1 || !reflect.DeepEqual(rec.orders[0].StandbyStations, []string{"P2", "P3", "P1"}) {
+		t.Fatalf("reclaim order = %+v, want the fixed placement slots [P2 P3 P1] (homed like a bought hull)", rec.orders)
 	}
 }
 
@@ -492,6 +493,33 @@ func (f *fakeDepotReclaimer) FindReclaimableForHome(ctx context.Context, playerI
 	return f.available[0], true, nil
 }
 
+// fakeReleaser is the surplus-delivery RE-ROLE double (DeliverySurplusReleaser, sp-mtgje): on
+// ReleaseSurplusDelivery it decrements the "contract" fleet Current by count (un-dedicate) and pushes
+// count freshly-idle symbols into the depot reuse tier — modelling how a released delivery hull becomes
+// reclaimable into the warehouse deficit the SAME pass. calls records each release count in order.
+type fakeReleaser struct {
+	counter   *fakeCounter        // the "contract" fleet Current the release un-dedicates from
+	reclaimer *fakeDepotReclaimer // released hulls surface here for the depot reuse-before-buy tier
+	calls     []int
+	released  int
+	err       error
+}
+
+func (f *fakeReleaser) ReleaseSurplusDelivery(ctx context.Context, playerID, count int) (int, error) {
+	f.calls = append(f.calls, count)
+	if f.err != nil {
+		return 0, f.err
+	}
+	for i := 0; i < count; i++ {
+		f.reclaimer.available = append(f.reclaimer.available, fmt.Sprintf("REROLED-%d", f.released+i))
+	}
+	if f.counter != nil {
+		f.counter.n -= count
+	}
+	f.released += count
+	return count, nil
+}
+
 // manyParkRoles builds an n-park era with strictly-descending demand (P00 highest), so the central hub
 // (the top-demand park, ranked[0]) is the deterministic P00 the warehouse/stocker anchor at.
 func manyParkRoles(n int) (contractscaler.EraRoles, map[string]float64) {
@@ -528,20 +556,19 @@ func newDepotHarness(ceiling, parks, contractHulls, warehouses, stockers int) (*
 	return h, pur, dc, gr
 }
 
-// RECONCILE, NOT DUPLICATE: the depot already has 4 warehouses + 1 stocker and 7 delivery hulls exist;
-// with the ceiling raised to the plan size (7 delivery + 5 warehouse + 1 stocker = 13) the ramp adds
-// ONLY the plan-short unit — exactly 1 warehouse (4→5), 0 stocker (1 already meets 1), 0 delivery —
-// never a duplicate of the existing depot.
+// RECONCILE, NOT DUPLICATE: the depot already has 5 warehouses + 1 stocker and 6 delivery hulls exist
+// (at the knee); at ceiling 13 the ramp budgets 6 warehouses, so it adds ONLY the plan-short unit —
+// exactly 1 warehouse (5→6), 0 stocker (1 already meets 1), 0 delivery — never a duplicate.
 func TestReconcile_ReconcilesExistingDepotAddsOnlyTheShortWarehouse(t *testing.T) {
-	h, pur, _, gr := newDepotHarness(13, 7, 7, 4, 1)
+	h, pur, _, gr := newDepotHarness(13, 7, 6, 5, 1)
 
 	bought := reconcile(t, h, 13)
 
 	if len(pur.orders) != 0 {
-		t.Fatalf("delivery buys = %d, want 0 (delivery target 7 already met)", len(pur.orders))
+		t.Fatalf("delivery buys = %d, want 0 (delivery target 6 already met)", len(pur.orders))
 	}
 	if len(gr.warehouseGrows) != 1 {
-		t.Fatalf("warehouse grows = %d, want exactly 1 (reconcile 2→3 — add only the short one, no duplicate)", len(gr.warehouseGrows))
+		t.Fatalf("warehouse grows = %d, want exactly 1 (reconcile 5→6 — add only the short one, no duplicate)", len(gr.warehouseGrows))
 	}
 	if len(gr.stockerGrows) != 0 {
 		t.Fatalf("stocker grows = %d, want 0 (stocker 1 already meets target 1)", len(gr.stockerGrows))
@@ -559,8 +586,8 @@ func TestReconcile_ReconcilesExistingDepotAddsOnlyTheShortWarehouse(t *testing.T
 // guards DefaultContractFleetMaxHulls staying above the delivery saturation (~7-8) so the default is always
 // armed; regress it below the delivery target and the depot stops actuating and this fails.
 func TestReconcile_DefaultCeilingIsArmedAndActuatesDepot(t *testing.T) {
-	// Delivery target 7, EMPTY depot: at ceiling 10 the ramp fills 7 delivery, THEN actuates the remaining
-	// 3 units into the depot bundle (functional-first: anchor warehouse, stocker, depth).
+	// Delivery target 6 (knee), EMPTY depot: at ceiling 10 the ramp fills 6 delivery, THEN actuates the
+	// remaining 4 units into the depot bundle (functional-first: anchor warehouse, stocker, depth).
 	h, pur, _, gr := newDepotHarness(DefaultContractFleetMaxHulls, 7, 0, 0, 0)
 
 	bought := reconcile(t, h, DefaultContractFleetMaxHulls)
@@ -568,8 +595,8 @@ func TestReconcile_DefaultCeilingIsArmedAndActuatesDepot(t *testing.T) {
 	if bought != DefaultContractFleetMaxHulls {
 		t.Fatalf("bought = %d, want %d — the default ceiling fills to saturation (ARMED), not a delivery-only crawl", bought, DefaultContractFleetMaxHulls)
 	}
-	if len(pur.orders) != 7 {
-		t.Fatalf("delivery buys = %d, want 7 (delivery fills to target first)", len(pur.orders))
+	if len(pur.orders) != 6 {
+		t.Fatalf("delivery buys = %d, want 6 (delivery fills to the knee first)", len(pur.orders))
 	}
 	if len(gr.warehouseGrows) == 0 && len(gr.stockerGrows) == 0 {
 		t.Fatalf("depot grows = (%d,%d), want >0 — the DEFAULT ceiling must ACTUATE the depot (ship-armed), not delivery-only", len(gr.warehouseGrows), len(gr.stockerGrows))
@@ -619,17 +646,17 @@ func TestReconcile_FillsDeliveryThenAnchorWarehouseThenStockerThenDepth(t *testi
 // warehouse #2. The stocker takes the depot budget before the extra warehouse depth, so a functional
 // mini-depot (1 warehouse + 1 stocker) forms before the depth deepens.
 func TestReconcile_SecondDepotDegreeGrowsStockerNotWarehouseTwo(t *testing.T) {
-	// First depot degree = delivery target (7) + 1: the anchor warehouse forms (no stocker budget yet).
-	h1, _, _, gr1 := newDepotHarness(8, 7, 7, 0, 0)
-	reconcile(t, h1, 8)
+	// First depot degree = delivery knee (6) + 1: the anchor warehouse forms (no stocker budget yet).
+	h1, _, _, gr1 := newDepotHarness(7, 7, 6, 0, 0)
+	reconcile(t, h1, 7)
 	if len(gr1.warehouseGrows) != 1 || len(gr1.stockerGrows) != 0 {
 		t.Fatalf("first depot degree grows = (W%d,S%d), want (1,0) — the anchor warehouse forms first", len(gr1.warehouseGrows), len(gr1.stockerGrows))
 	}
 
 	// Second depot degree (+1) with the anchor warehouse already present: the STOCKER forms next — NOT
 	// warehouse #2. This is the fix: the stocker precedes the extra warehouse depth.
-	h2, _, _, gr2 := newDepotHarness(9, 7, 7, 1, 0)
-	reconcile(t, h2, 9)
+	h2, _, _, gr2 := newDepotHarness(8, 7, 6, 1, 0)
+	reconcile(t, h2, 8)
 	if len(gr2.stockerGrows) != 1 {
 		t.Fatalf("second depot degree stocker grows = %d, want 1 (the stocker fills the anchor before the depth)", len(gr2.stockerGrows))
 	}
@@ -659,9 +686,9 @@ func TestReconcile_NoStockerWhenAnchorWarehouseFailsToForm(t *testing.T) {
 // slot (the grower is called with it) and NO hull is bought. The depot reuse uses FindReclaimable +
 // grow — NOT the delivery Reclaim (which contract-dedicates+homes); the grower re-dedicates to warehouse.
 func TestReconcile_ReclaimsIdleHullForWarehouseSlotBeforeBuying(t *testing.T) {
-	// Ceiling 13 (plan size): the depot already has 4 of the 5-warehouse target (stocker already at
-	// its target of 1), so the one short warehouse slot lands here.
-	h, pur, _, gr := newDepotHarness(13, 7, 7, 4, 1)
+	// Ceiling 13: 6 delivery (at the knee), the depot has 5 of the 6-warehouse budget (stocker already
+	// at its target of 1), so exactly one short warehouse slot lands here.
+	h, pur, _, gr := newDepotHarness(13, 7, 6, 5, 1)
 	rec := &fakeReclaimer{available: []string{"HULL-IDLE"}}
 	h.SetIdleHullReclaimer(rec)
 
@@ -687,10 +714,10 @@ func TestReconcile_ReclaimsIdleHullForWarehouseSlotBeforeBuying(t *testing.T) {
 // non-home-reachable hulls), so the ramp correctly falls through to a buy instead of looping the same
 // unreachable hull back in.
 func TestReconcile_WarehouseSlotUsesHomeScopedReclaimerWhenWired(t *testing.T) {
-	// Ceiling 13 (plan size): the depot already has 4 of the 5-warehouse target (stocker already at
-	// its target of 1), so the one short warehouse slot lands here — same shape as the fleet-wide
+	// Ceiling 13: 6 delivery (at the knee), the depot has 5 of the 6-warehouse budget (stocker already at
+	// its target of 1), so exactly one short warehouse slot lands here — same shape as the fleet-wide
 	// reuse test above.
-	h, pur, _, gr := newDepotHarness(13, 7, 7, 4, 1)
+	h, pur, _, gr := newDepotHarness(13, 7, 6, 5, 1)
 	fleetWide := &fakeReclaimer{available: []string{"STRANDED-FLEET-WIDE"}}
 	homeScoped := &fakeDepotReclaimer{} // no home-reachable candidate available
 	h.SetIdleHullReclaimer(fleetWide)
@@ -715,9 +742,9 @@ func TestReconcile_WarehouseSlotUsesHomeScopedReclaimerWhenWired(t *testing.T) {
 // THE 200k CUSHION GATES DEPOT BUYS TOO: with the treasury unable to leave 200000 after a warehouse buy,
 // the depot buy is HELD (no grow, no buy) — the sole money guard is not weakened for the depot roles.
 func TestReconcile_WarehouseBuyHeldByCushion(t *testing.T) {
-	// Ceiling 13 (plan size): the depot already has 4 of the 5-warehouse target (stocker already at its
-	// target of 1), so the cushion holds the one short warehouse slot.
-	h, pur, _, gr := newDepotHarness(13, 7, 7, 4, 1)
+	// Ceiling 13: 6 delivery (at the knee), the depot has 5 of the 6-warehouse budget (stocker already at
+	// its target of 1), so the cushion holds the one short warehouse slot.
+	h, pur, _, gr := newDepotHarness(13, 7, 6, 5, 1)
 	tr := &fakeTreasury{credits: 250_000, readable: true} // 250k - 100k = 150k < 200000 cushion
 	h.SetTreasuryReader(tr)
 	pur.treasury = tr
@@ -729,5 +756,78 @@ func TestReconcile_WarehouseBuyHeldByCushion(t *testing.T) {
 	}
 	if len(gr.warehouseGrows) != 0 {
 		t.Fatalf("warehouse grows = %d, want 0 — the cushion holds the depot buy", len(gr.warehouseGrows))
+	}
+}
+
+// --- COMPOSITION AT THE KNEE (sp-mtgje): delivery caps at 6, warehouse deepens to fill the ceiling ---
+
+// COLD BUILD at ceiling 14 (≥8 central parks, empty depot) composes the NEW curve — 6 delivery + 7
+// warehouse + 1 stocker (delivery capped at the knee; warehouse = ceiling − 6 − 1). NOT the old 8+5+1.
+func TestReconcile_CeilingFourteenComposesSixDeliverySevenWarehouseOneStocker(t *testing.T) {
+	h, pur, _, gr := newDepotHarness(14, 8, 0, 0, 0)
+
+	bought := reconcile(t, h, 14)
+
+	if len(pur.orders) != 6 {
+		t.Fatalf("delivery buys = %d, want 6 (capped at the knee, NEVER 8)", len(pur.orders))
+	}
+	if len(gr.warehouseGrows) != 7 {
+		t.Fatalf("warehouse grows = %d, want 7 (ceiling 14 − 6 delivery − 1 stocker; warehouse deepens to fill)", len(gr.warehouseGrows))
+	}
+	if len(gr.stockerGrows) != 1 {
+		t.Fatalf("stocker grows = %d, want 1", len(gr.stockerGrows))
+	}
+	if bought != 14 {
+		t.Fatalf("bought = %d, want 14 (6 delivery + 7 warehouse + 1 stocker)", bought)
+	}
+}
+
+// RE-ROLE THE SURPLUS at ceiling 14: the live 8 delivery + 5 warehouse + 1 stocker re-composes to 6
+// delivery + 7 warehouse + 1 stocker with ZERO new hulls — the 2 surplus delivery hulls are RELEASED
+// (un-dedicated) and RECLAIMED into the warehouse deficit, never left idle, never bought new.
+func TestReconcile_CeilingFourteenReRolesSurplusDeliveryIntoWarehouse(t *testing.T) {
+	h, pur, _, gr := newDepotHarness(14, 8, 8, 5, 1) // live: 8 delivery, 5 warehouse, 1 stocker
+	depotRec := &fakeDepotReclaimer{}
+	rel := &fakeReleaser{counter: pur.counter, reclaimer: depotRec}
+	h.SetDepotHullReclaimer(depotRec)
+	h.SetDeliverySurplusReleaser(rel)
+
+	bought := reconcile(t, h, 14)
+
+	if len(rel.calls) != 1 || rel.calls[0] != 2 {
+		t.Fatalf("release calls = %v, want a single release of the 2 surplus delivery hulls (8→6 knee)", rel.calls)
+	}
+	if len(pur.orders) != 0 {
+		t.Fatalf("delivery buys = %d, want 0 (re-role, never re-buy)", len(pur.orders))
+	}
+	if len(pur.hullOrders) != 0 {
+		t.Fatalf("depot-hull buys = %d, want 0 — the released hulls fill the warehouse deficit, none bought", len(pur.hullOrders))
+	}
+	if len(gr.warehouseGrows) != 2 {
+		t.Fatalf("warehouse grows = %d, want 2 (5→7 from the 2 re-roled delivery hulls, reclaimed not bought)", len(gr.warehouseGrows))
+	}
+	if bought != 0 {
+		t.Fatalf("bought = %d, want 0 — a pure re-composition of the live fleet spends nothing", bought)
+	}
+}
+
+// RE-ROLE IS BOUNDED BY THE WAREHOUSE DEFICIT: with no warehouse room (ceiling leaves no deficit), a
+// surplus delivery hull is NOT released — leaving it over-target is safe; stranding it idle is not.
+func TestReconcile_SurplusDeliveryNotReleasedWithoutWarehouseDeficit(t *testing.T) {
+	// Ceiling 7: takeDelivery=6, remaining=1 → anchor warehouse only (takeWarehouse=1). Depot already has
+	// 1 warehouse, so deficit 0. 7 live delivery hulls (surplus 1) but nowhere to re-role → no release.
+	h, _, _, gr := newDepotHarness(7, 8, 7, 1, 1)
+	depotRec := &fakeDepotReclaimer{}
+	rel := &fakeReleaser{counter: &fakeCounter{n: 7}, reclaimer: depotRec}
+	h.SetDepotHullReclaimer(depotRec)
+	h.SetDeliverySurplusReleaser(rel)
+
+	reconcile(t, h, 7)
+
+	if len(rel.calls) != 0 {
+		t.Fatalf("release calls = %v, want none — no warehouse deficit to absorb the surplus (never strand a released hull idle)", rel.calls)
+	}
+	if len(gr.warehouseGrows) != 0 {
+		t.Fatalf("warehouse grows = %d, want 0 (anchor already present, no deficit)", len(gr.warehouseGrows))
 	}
 }
