@@ -92,6 +92,17 @@ type RunFleetCoordinatorHandler struct {
 	// injects a store-backed provider via SetDepotRegistryProvider, mirroring
 	// the invFinder / standbyProvider optional-injection idiom.
 	depotRegistryProvider appContract.DepotRegistryProvider
+
+	// standbyDemandProvider resolves the LIVE per-central-park DEMAND weights each
+	// homing pass (coord-deduped, import-volume ranked) so between-legs homing spreads
+	// idle hulls DEMAND-RANKED across the central sinks instead of piling on one point
+	// (the live J59 1.06x bug, epic sp-9le3x C2c). It also auto-resolves the standby SET
+	// from the role-classified central parks when the `fleet hub` set is empty (the
+	// sp-bu6ma auto hub-placement). Backed by the SAME home-system role lookup the
+	// contract auto-scaler buys against, so both positioning consumers share ONE demand
+	// definition. Nil leaves homing on plain occupancy+nearest balancing (byte-identical
+	// to the pre-fix behavior); it is a READ, never a config write (RULINGS #3).
+	standbyDemandProvider appContract.StandbyDemandProvider
 }
 
 // NewRunFleetCoordinatorHandler creates a new fleet coordinator handler
@@ -186,6 +197,16 @@ func (h *RunFleetCoordinatorHandler) SetDepotRegistryProvider(provider appContra
 	h.depotRegistryProvider = provider
 }
 
+// SetStandbyDemandProvider wires the live per-central-park demand reader so between-legs
+// homing spreads idle hulls DEMAND-RANKED across the central sinks, and auto-resolves the
+// standby set from the role-classified central parks when the `fleet hub` set is empty.
+// Optional and nil-safe: without it homing stays on plain occupancy+nearest balancing
+// (byte-identical). The SAME shared demand definition the contract auto-scaler homes new
+// buys with (epic sp-9le3x), so both positioning consumers rank parks identically.
+func (h *RunFleetCoordinatorHandler) SetStandbyDemandProvider(provider appContract.StandbyDemandProvider) {
+	h.standbyDemandProvider = provider
+}
+
 // Handle executes the fleet coordinator command
 func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
 	logger := common.LoggerFromContext(ctx)
@@ -231,10 +252,11 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		// StandbyStations leaves re-homing off, exactly as it leaves the
 		// contract-handoff homing off.
 		homer := &mediatorShipHomer{
-			mediator: h.fleetPoolManager.GetMediator(),
-			shipRepo: h.shipRepo,
-			playerID: cmd.PlayerID,
-			fleet:    dedicatedFleetContract,
+			mediator:       h.fleetPoolManager.GetMediator(),
+			shipRepo:       h.shipRepo,
+			playerID:       cmd.PlayerID,
+			fleet:          dedicatedFleetContract,
+			demandProvider: h.standbyDemandProvider,
 		}
 		dispatcher := appContract.NewIdleArbDispatcher(
 			h.shipRepo,
@@ -845,12 +867,19 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 				// when no provider is wired.
 				liveStandby := appContract.ResolveStandbyStations(ctx, logger, h.standbyProvider, cmd.ContainerID, cmd.PlayerID.Value(), cmd.StandbyStations)
 
+				// Attach the per-park DEMAND weights (and, when the fleet-hub set is empty,
+				// auto-resolve the set from the role-classified central parks — sp-bu6ma)
+				// so between-legs homing spreads idle hulls demand-ranked across the sinks
+				// instead of piling on one point. Nil-safe → liveStandby unchanged, uniform.
+				liveStandby, standbyDemand := appContract.ResolveStandbyForHoming(ctx, logger, h.standbyDemandProvider, cmd.PlayerID.Value(), liveStandby)
+
 				// Launch homing command asynchronously (fire-and-forget)
-				go func(shipSymbol string, playerID shared.PlayerID, standbyStations []string, fleetShips []string) {
+				go func(shipSymbol string, playerID shared.PlayerID, standbyStations []string, standbyDemand map[string]float64, fleetShips []string) {
 					homeCmd := &HomeShipCommand{
 						ShipSymbol:      shipSymbol,
 						PlayerID:        playerID,
 						StandbyStations: standbyStations,
+						StandbyDemand:   standbyDemand,
 						FleetShips:      fleetShips,
 					}
 					// Create background context since parent context may be cancelled
@@ -861,7 +890,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 					if err != nil {
 						logger.Log("WARNING", fmt.Sprintf("Failed to home dedicated ship %s: %v", shipSymbol, err), nil)
 					}
-				}(previousShipSymbol, cmd.PlayerID, liveStandby, dedicatedMembers)
+				}(previousShipSymbol, cmd.PlayerID, liveStandby, standbyDemand, dedicatedMembers)
 			} else {
 				logger.Log("INFO", fmt.Sprintf("Selected ship changed from %s to %s - balancing previous ship position", previousShipSymbol, selectedShip), nil)
 
@@ -1106,6 +1135,11 @@ type mediatorShipHomer struct {
 	shipRepo navigation.ShipRepository
 	playerID shared.PlayerID
 	fleet    string
+	// demandProvider ranks the re-home DEMAND-first and auto-resolves the standby set
+	// from the role central parks when the passed live set is empty — the SAME provider
+	// the coordinator's between-legs homing uses, so idle-arb re-homes track contract
+	// homing (RULINGS #7, one homing algorithm). Nil-safe: uniform → nearest homing.
+	demandProvider appContract.StandbyDemandProvider
 }
 
 var _ appContract.ShipHomer = (*mediatorShipHomer)(nil)
@@ -1116,10 +1150,15 @@ var _ appContract.ShipHomer = (*mediatorShipHomer)(nil)
 // coordinator's between-legs homing uses.
 func (m *mediatorShipHomer) HomeShip(ctx context.Context, shipSymbol string, standbyStations []string) error {
 	logger := common.LoggerFromContext(ctx)
+	// Rank the re-home DEMAND-first and, when the passed live set is empty, auto-drive it
+	// from the role central parks — the SAME resolution the coordinator's between-legs
+	// homing uses (nil-safe → the passed set unchanged, uniform homing).
+	standbyStations, standbyDemand := appContract.ResolveStandbyForHoming(ctx, logger, m.demandProvider, m.playerID.Value(), standbyStations)
 	homeCmd := &HomeShipCommand{
 		ShipSymbol:      shipSymbol,
 		PlayerID:        m.playerID,
 		StandbyStations: standbyStations,
+		StandbyDemand:   standbyDemand,
 		FleetShips:      resolveDedicatedMembersForHoming(ctx, logger, m.shipRepo, m.playerID, m.fleet, nil),
 	}
 	go func() {

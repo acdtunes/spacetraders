@@ -586,6 +586,14 @@ func run(cfg *config.Config) error {
 	// add|remove` on the running coordinator is honored with no restart — the
 	// operation-level mirror of the live dedicated-fleet tag read (sp-cmwc).
 	contractFleetCoordinatorHandler.SetStandbyStationProvider(grpc.NewStandbyStationConfigProvider(containerRepo))
+	// Live per-park DEMAND weights (sp-5rakx/sp-bu6ma, epic sp-9le3x C2c): the coordinator
+	// homes idle hulls DEMAND-RANKED across the central sinks, and auto-resolves the standby
+	// set from the role-classified central parks when the `fleet hub` set is empty (fixes the
+	// J59 pile-up). Backed by the SAME home-system role lookup + import-volume demand the
+	// contract auto-scaler buys against (marketRepo, waypointRepo, shipRepo) — ONE demand
+	// definition so the two positioning consumers rank parks identically. A READ, never a
+	// config write (RULINGS #3); coord-deduped so hulls spread across distinct LOCATIONS.
+	contractFleetCoordinatorHandler.SetStandbyDemandProvider(grpc.NewContractStandbyDemandProvider(shipRepo, waypointRepo, marketRepo))
 	// Idle-gap arb (sp-1z2h): the coordinator's dispatcher launches its
 	// one-shot legs through the daemon server (claim-first, recovery-safe).
 	contractFleetCoordinatorHandler.SetIdleArbLauncher(daemonServer)

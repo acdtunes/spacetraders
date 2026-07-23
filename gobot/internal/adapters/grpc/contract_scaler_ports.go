@@ -65,20 +65,34 @@ type contractScalerRoleResolver struct {
 // home system is unresolvable so the coordinator's armed plan is empty and it never spends against an
 // unknown topology (fail-safe, not fail-error — an empty era is a valid state, not a failure).
 func (r *contractScalerRoleResolver) ResolveRoles(ctx context.Context, playerID int) (contractscaler.EraRoles, map[string]float64, error) {
-	system, readable, err := r.home.HomeSystem(ctx, playerID)
+	markets, demand, err := r.homeMarkets(ctx, playerID)
 	if err != nil {
 		return contractscaler.EraRoles{}, nil, err
 	}
+	return contractscaler.ResolveRoles(markets), demand, nil
+}
+
+// homeMarkets reads the home system ONCE and returns its waypoints as []WaypointMarket
+// (geometry + trade roles) plus the per-waypoint import-volume demand map — the SHARED
+// read behind BOTH the scaler's buy-order homing (ResolveRoles) and the coordinator's
+// between-legs homing (contractStandbyDemandProvider), so the two positioning consumers
+// rank parks by ONE demand definition. Empty era (unresolvable/unscanned home, or no
+// waypoint surface wired) → nil markets + empty demand, no error (fail-safe, not fail-error).
+func (r *contractScalerRoleResolver) homeMarkets(ctx context.Context, playerID int) ([]contractscaler.WaypointMarket, map[string]float64, error) {
+	system, readable, err := r.home.HomeSystem(ctx, playerID)
+	if err != nil {
+		return nil, nil, err
+	}
 	if !readable || system == "" {
-		return contractscaler.EraRoles{}, map[string]float64{}, nil
+		return nil, map[string]float64{}, nil
 	}
 	if r.waypoints == nil {
-		return contractscaler.EraRoles{}, map[string]float64{}, nil // no waypoint surface wired → empty era, no spend
+		return nil, map[string]float64{}, nil // no waypoint surface wired → empty era, no spend
 	}
 
 	waypoints, err := r.waypoints.ListBySystem(ctx, system)
 	if err != nil {
-		return contractscaler.EraRoles{}, nil, err
+		return nil, nil, err
 	}
 
 	markets := make([]contractscaler.WaypointMarket, 0, len(waypoints))
@@ -99,7 +113,7 @@ func (r *contractScalerRoleResolver) ResolveRoles(ctx context.Context, playerID 
 			demand[waypoint.Symbol] = weight
 		}
 	}
-	return contractscaler.ResolveRoles(markets), demand, nil
+	return markets, demand, nil
 }
 
 // tradeRoles reads one waypoint's market and splits its goods into EXPORT / IMPORT symbol lists
