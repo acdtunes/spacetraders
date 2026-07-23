@@ -301,6 +301,26 @@ func isAlreadyCharted(err error) bool {
 	return strings.Contains(msg, "4230") || strings.Contains(msg, "already charted")
 }
 
+// maxGateSyncReadAttempts bounds how many times a SYNC-time gate refresh re-reads a gate's
+// live connections when the read comes back a successful-but-EMPTY 200 (sp-dmxy5, the
+// sync-time analog of sp-hguq3's execution-time re-read). The SpaceTraders jump-gate
+// endpoint intermittently returns a 200 OK with an empty/incomplete connections list — a
+// transient, eventually-consistent read the API client's status-code retry never catches
+// (an empty 200 is not a 429/5xx, so it never reaches here as a retryable error). Copying
+// that empty set verbatim and Replace()ing the cache would erase a charted gate's real,
+// previously-good edges until the next successful sync (~24h). Re-reading a bounded few
+// times recovers the real set (it reappears on the next read); a genuinely-connectionless
+// gate simply re-reads empty and syncs empty (bounded cost, no infinite re-read).
+const maxGateSyncReadAttempts = 3
+
+// gateSyncReadRetryBackoff is the short settle between bounded re-reads of a gate whose live
+// connections came back empty (sp-dmxy5) — enough for an eventually-consistent backend to
+// converge without stalling the reconcile. Applied ONLY between re-reads (never after the
+// final attempt, never on the happy path), via the service clock so tests advance it
+// instantly. Mirrors jump_ship.go's jumpGateReadRetryBackoff; combined with the API client's
+// own rate limiter, the extra reads happen only on the (rare) empty-read path.
+const gateSyncReadRetryBackoff = 750 * time.Millisecond
+
 // fetchAndStore resolves systemSymbol's own gate, fetches its live connections,
 // persists the fresh edge set, and returns it. The gate is resolved from the
 // store first (a neighbor may have recorded it — this is the path that expands an
@@ -334,7 +354,7 @@ func (s *Service) fetchAndStore(ctx context.Context, systemSymbol string, player
 		}
 	}
 
-	gateData, err := s.apiClient.GetJumpGate(ctx, systemSymbol, gateWaypoint, token)
+	gateData, err := s.readConnectionsBounded(ctx, systemSymbol, gateWaypoint, token)
 	if err != nil {
 		// A per-system fetch failure (a frontier gate the API refuses, 400 "no ship
 		// present") is NOT a whole-route failure: tag it ErrGateUnreadable so the BFS
@@ -370,10 +390,92 @@ func (s *Service) fetchAndStore(ctx context.Context, systemSymbol string, player
 		})
 	}
 
+	// sp-dmxy5: an empty edge set that survived the bounded re-reads must not clobber a
+	// known-good cached set. Connections are static within an era (an era change is handled
+	// by era scoping, which drops the prior set), so a charted gate we already hold real
+	// edges for reading empty is the intermittent empty-200, not a real topology change —
+	// refuse the destructive Replace and keep the good set visible. A gate with no prior
+	// cache (a first sync, or a genuinely-connectionless gate) still persists the empty set.
+	if len(edges) == 0 {
+		if prior, ok := s.priorNonEmptyEdges(ctx, systemSymbol); ok {
+			logger.Log("INFO", "Gate read came back empty but a good cached edge set exists — refusing to overwrite (transient empty-200, sp-dmxy5)", map[string]interface{}{
+				"action":     "gate_sync_empty_read_refused",
+				"system":     systemSymbol,
+				"gate":       gateWaypoint,
+				"kept_edges": len(prior),
+			})
+			return prior, nil
+		}
+	}
+
 	if err := s.store.Replace(ctx, systemSymbol, edges); err != nil {
 		return nil, err
 	}
 	return edges, nil
+}
+
+// readConnectionsBounded fetches a gate's live connections, re-reading a bounded number of
+// times (maxGateSyncReadAttempts) when the read is a successful-but-EMPTY 200 — the
+// intermittent incomplete read that would otherwise overwrite a charted gate's real edges
+// with nothing (sp-dmxy5). The happy path (a non-empty first read, the overwhelming common
+// case) returns immediately with exactly ONE read — zero overhead. A hard GetJumpGate error
+// is returned immediately for the caller's existing backoff-on-permanent handling (the client
+// already retried a transient status, so re-reading here would not help). A gate genuinely
+// returning empty on every attempt returns the final empty snapshot — the caller then refuses
+// to clobber a good cache, or syncs empty when there is none.
+func (s *Service) readConnectionsBounded(ctx context.Context, systemSymbol, gateWaypoint, token string) (*ports.JumpGateData, error) {
+	logger := logging.LoggerFromContext(ctx)
+	var gateData *ports.JumpGateData
+	for attempt := 0; attempt < maxGateSyncReadAttempts; attempt++ {
+		data, err := s.apiClient.GetJumpGate(ctx, systemSymbol, gateWaypoint, token)
+		if err != nil {
+			return nil, err
+		}
+		gateData = data
+		if len(data.Connections) > 0 {
+			return data, nil
+		}
+		if attempt < maxGateSyncReadAttempts-1 {
+			logger.Log("INFO", "Gate connections came back empty at sync — re-reading (transient incomplete 200, sp-dmxy5)", map[string]interface{}{
+				"action":  "gate_sync_reread",
+				"system":  systemSymbol,
+				"gate":    gateWaypoint,
+				"attempt": attempt + 1,
+			})
+			s.clock.Sleep(gateSyncReadRetryBackoff)
+		}
+	}
+	return gateData, nil
+}
+
+// priorNonEmptyEdges reports systemSymbol's currently-cached NON-EMPTY edge set (if any),
+// read from the persisted adjacency REGARDLESS of staleness — the known-good set an empty
+// live read must not erase (sp-dmxy5). Consulted ONLY when a bounded re-read still came back
+// empty: connections are static within an era, so a charted gate reading empty while we
+// already hold real edges for it is the intermittent empty-200, never a real topology change.
+// A store read failure, or no prior set, degrades to ok=false so the caller persists the fresh
+// (empty) read — the pre-fix behaviour, never a new failure mode (the bounded re-read is the
+// primary recovery; this is the belt-and-suspenders net for the rare all-reads-empty case).
+// The returned edges are a clean copy with Adjacency's raw Stale flag cleared — a routing read
+// must never surface it.
+func (s *Service) priorNonEmptyEdges(ctx context.Context, systemSymbol string) ([]system.GateEdge, bool) {
+	adjacency, err := s.store.Adjacency(ctx)
+	if err != nil {
+		return nil, false
+	}
+	cached := adjacency[systemSymbol]
+	if len(cached) == 0 {
+		return nil, false
+	}
+	edges := make([]system.GateEdge, 0, len(cached))
+	for _, e := range cached {
+		edges = append(edges, system.GateEdge{
+			ConnectedSystem:   e.ConnectedSystem,
+			GateWaypoint:      e.GateWaypoint,
+			UnderConstruction: e.UnderConstruction,
+		})
+	}
+	return edges, true
 }
 
 // isPermanentGateAbsence reports whether a GetJumpGate failure is the API's PERMANENT verdict
