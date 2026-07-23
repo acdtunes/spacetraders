@@ -7,20 +7,9 @@ import (
 	"testing"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
 )
 
 // --- derivePhase: GATE stickiness + COMPLETE ---
-
-// DISABLED (pre-arm): the INCOME→GATE entry is realized $/hr ≥ income_bar. (Default-on requires a scaled
-// op — see the scaled-gate suite; here the kill-switch restores the bare-bar trigger.)
-func TestBootstrap_DerivePhase_Disabled_EntersGateAtIncomeBar(t *testing.T) {
-	cfg := disabledCfg(t) // income_bar 10000, gate disarmed
-	obs := Observation{MarketsTotal: 10, MarketsCovered: 10, IncomePerHour: 12000}
-	if p := derivePhase(obs, cfg); p != PhaseGate {
-		t.Fatalf("disabled: income over bar should derive GATE, got %s", p)
-	}
-}
 
 // THE key correctness pin: once a construction pipeline exists, GATE is STICKY even though contract
 // income has fallen back under the bar (haulers repurposed to construction). Without this, derivePhase
@@ -310,18 +299,25 @@ func gateObs() Observation {
 	}
 }
 
+// primeGateIncomeWindow pre-fills a container's GATE-entry income smoother so the NEXT reconcile tick sees a
+// SUSTAINED $/hr over gate_income_bar — the (unconditionally-on) scaled gate then enters GATE on a scaled op
+// without waiting the full rolling window to fill. Pair with Haulers ≥ gate_min_haulers on the observation.
+func primeGateIncomeWindow(h *RunBootstrapCoordinatorHandler, containerID string, perHour float64) {
+	w := h.incomeWindowFor(containerID)
+	for i := 0; i < gateIncomeWindowTicks; i++ {
+		w.sustained(perHour)
+	}
+}
+
 // --- actGate ---
 
-// No gate site discovered ⇒ GATE is BLOCKED and never starts construction on an unknown target.
+// No gate site discovered ⇒ GATE is BLOCKED and never starts construction on an unknown target. Reaches
+// GATE via the sticky ConstructionStarted latch (gateObs's default), so the site guard is exercised directly.
 func TestBootstrap_Gate_NoSite_Blocks(t *testing.T) {
-	obs := gateObs()
+	obs := gateObs() // ConstructionStarted=true → sticky GATE
 	obs.GateSite = ""
-	obs.ConstructionStarted = false
-	obs.IncomePerHour = 12000 // over the bar so the phase is GATE even without a pipeline
 	con := &fakeConstruction{}
 	h := gateHandler(obs, con, &fakeManufacturing{}, &fakeRepurposer{}, &fakeGateAcquirer{}, &fakeHandoff{})
-	// Disable the scaled gate so income-over-bar enters GATE (this test predates the sp-5nd2 default-on arm).
-	h.SetLiveConfigReader(&fakeLiveConfig{snap: liveconfig.Snapshot{"scaled_gate_entry_disabled": 1}})
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if res.Phase != PhaseGate {
 		t.Fatalf("expected GATE phase, got %s", res.Phase)
@@ -335,16 +331,17 @@ func TestBootstrap_Gate_NoSite_Blocks(t *testing.T) {
 }
 
 // Entering GATE with no pipeline yet ⇒ start construction, and DON'T ensure/bounce this tick (the
-// observation still reads !started; adoption waits for the pipeline to be real next tick).
+// observation still reads !started; adoption waits for the pipeline to be real next tick). Enters GATE via
+// the (unconditionally-on) scaled gate: 2 haulers + a primed sustained-income window, ConstructionStarted=false.
 func TestBootstrap_Gate_StartsConstructionOnce_NoAdoptSameTick(t *testing.T) {
 	obs := gateObs()
 	obs.ConstructionStarted = false
-	obs.IncomePerHour = 12000 // GATE entry via the income bar
+	obs.Haulers = []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}} // ≥ gate_min_haulers
+	obs.IncomePerHour = 60000                                      // ≥ gate_income_bar 50000 (sustained)
 	con := &fakeConstruction{}
 	mfg := &fakeManufacturing{}
 	h := gateHandler(obs, con, mfg, &fakeRepurposer{}, &fakeGateAcquirer{}, &fakeHandoff{})
-	// Disable the scaled gate so income-over-bar enters GATE (this test predates the sp-5nd2 default-on arm).
-	h.SetLiveConfigReader(&fakeLiveConfig{snap: liveconfig.Snapshot{"scaled_gate_entry_disabled": 1}})
+	primeGateIncomeWindow(h, baseCmd().ContainerID, 60000) // full window ⇒ the scaled gate enters GATE this tick
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if con.starts != 1 || con.sites[0] != "X1-HQ-GATE" {
 		t.Fatalf("expected one construction start on X1-HQ-GATE, got starts=%d sites=%v", con.starts, con.sites)
@@ -599,25 +596,6 @@ func TestBootstrap_Complete_LaunchesHandoffAndExits(t *testing.T) {
 	}
 	if !res.HandoffLaunched || !res.Done {
 		t.Fatalf("expected HandoffLaunched=true and Done=true, got %+v", res)
-	}
-}
-
-// Restart post-COMPLETE (autosizer arm DISABLED, so a running autosizer means the FULL hand-off already
-// completed): never re-launch, just exit (terminal idempotency). The armed-early case — where a running
-// autosizer still needs the standing coordinators — is covered by the sp-sjvv COMPLETE suite.
-func TestBootstrap_Complete_Disabled_NoRelaunchWhenAutosizerRunning(t *testing.T) {
-	obs := gateObs()
-	obs.ConstructionComplete = true
-	obs.AutosizerRunning = true
-	ho := &fakeHandoff{}
-	h := gateHandler(obs, &fakeConstruction{}, &fakeManufacturing{}, &fakeRepurposer{}, &fakeGateAcquirer{}, ho)
-	h.SetLiveConfigReader(&fakeLiveConfig{snap: liveconfig.Snapshot{"autosizer_early_scaling_disabled": 1}})
-	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
-	if ho.autosizer != 0 || ho.standing != 0 {
-		t.Fatalf("must not relaunch the hand-off when the autosizer already runs, got autosizer=%d standing=%d", ho.autosizer, ho.standing)
-	}
-	if !res.Done {
-		t.Fatalf("post-COMPLETE with autosizer running should still exit (Done=true), got Done=%v", res.Done)
 	}
 }
 

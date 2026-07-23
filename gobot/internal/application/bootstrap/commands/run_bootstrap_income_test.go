@@ -5,8 +5,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-
-	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
 )
 
 // --- INCOME fakes (black-box: the reconciler is driven through its ports only) ---
@@ -275,14 +273,6 @@ func TestBootstrap_DerivePhase_IncomeBelowBar(t *testing.T) {
 	obs := Observation{ProbeCount: 3, ProbesScouting: 3, IncomePerHour: 5000}
 	if p := derivePhase(obs, cfg); p != PhaseIncome {
 		t.Fatalf("provisioned + income below bar should derive INCOME, got %s", p)
-	}
-}
-
-func TestBootstrap_DerivePhase_Disabled_GateAtIncomeBar(t *testing.T) {
-	cfg := disabledCfg(t) // gate disarmed → bare income_bar trigger (pre-arm)
-	obs := Observation{MarketsTotal: 10, MarketsCovered: 10, IncomePerHour: 10000}
-	if p := derivePhase(obs, cfg); p != PhaseGate {
-		t.Fatalf("disabled: realized $/hr ≥ bar should derive GATE, got %s", p)
 	}
 }
 
@@ -573,14 +563,14 @@ func TestBootstrap_Income_DryRunTakesNoAction(t *testing.T) {
 
 func TestBootstrap_IncomeToGate_Crossover_NoIncomeAct(t *testing.T) {
 	obs := incomeObs()
-	obs.IncomePerHour = 50000 // ≥ 10k bar → GATE
+	obs.Haulers = []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}} // scaled op ⇒ eligible for GATE
+	obs.IncomePerHour = 60000                                      // ≥ gate_income_bar 50000 (sustained) → GATE
 	obs.BatchContractRunning = false
 	ret := &fakeRetirer{}
 	acq := &fakeHaulerAcquirer{price: 100000, yard: "Y", readable: true}
 	run := &fakeContractRunner{}
-	h := newIncomeHandler(obs, ret, acq, run) // no GATE collaborators wired
-	// Disable the scaled gate so income-over-bar crosses to GATE (this test predates the sp-5nd2 default-on arm).
-	h.SetLiveConfigReader(&fakeLiveConfig{snap: liveconfig.Snapshot{"scaled_gate_entry_disabled": 1}})
+	h := newIncomeHandler(obs, ret, acq, run)              // no GATE collaborators wired
+	primeGateIncomeWindow(h, baseCmd().ContainerID, 60000) // full window ⇒ the scaled gate crosses to GATE
 	log := &capturingLogger{}
 	res, _ := h.reconcileOnce(ctxWithLogger(log), baseCmd())
 	if res.Phase != PhaseGate {

@@ -554,25 +554,25 @@ func TestReconcile_ReconcilesExistingDepotAddsOnlyTheShortWarehouse(t *testing.T
 	}
 }
 
-// DEFAULT-OFF BYTE-IDENTICAL: at the default ceiling (2 = DefaultContractFleetMaxHulls) the ramp reaches
-// no warehouse plan index, so it makes ZERO depot counter/grower/BuyHull calls — delivery-only, exactly
-// the pre-actuation scaler. The feature activates only when the operator raises the ceiling.
-func TestReconcile_DefaultCeilingIsByteIdenticalDeliveryOnly(t *testing.T) {
-	h, pur, dc, gr := newDepotHarness(DefaultContractFleetMaxHulls, 7, 0, 2, 1)
+// SHIP-ARMED (sp-1cbxz, Admiral): at DefaultContractFleetMaxHulls (10) the DEFAULT ceiling ACTUATES the
+// plan — delivery fills to target AND the depot bundle grows — NOT the old delivery-only crawl at 2. This
+// guards DefaultContractFleetMaxHulls staying above the delivery saturation (~7-8) so the default is always
+// armed; regress it below the delivery target and the depot stops actuating and this fails.
+func TestReconcile_DefaultCeilingIsArmedAndActuatesDepot(t *testing.T) {
+	// Delivery target 7, EMPTY depot: at ceiling 10 the ramp fills 7 delivery, THEN actuates the remaining
+	// 3 units into the depot bundle (functional-first: anchor warehouse, stocker, depth).
+	h, pur, _, gr := newDepotHarness(DefaultContractFleetMaxHulls, 7, 0, 0, 0)
 
 	bought := reconcile(t, h, DefaultContractFleetMaxHulls)
 
-	if bought != 2 || len(pur.orders) != 2 {
-		t.Fatalf("delivery buys = %d (bought %d), want 2 — the default ceiling fills delivery only", len(pur.orders), bought)
+	if bought != DefaultContractFleetMaxHulls {
+		t.Fatalf("bought = %d, want %d — the default ceiling fills to saturation (ARMED), not a delivery-only crawl", bought, DefaultContractFleetMaxHulls)
 	}
-	if len(pur.hullOrders) != 0 {
-		t.Fatalf("depot-hull buys = %d, want 0 (no depot growth at the default ceiling)", len(pur.hullOrders))
+	if len(pur.orders) != 7 {
+		t.Fatalf("delivery buys = %d, want 7 (delivery fills to target first)", len(pur.orders))
 	}
-	if dc.whCalls != 0 || dc.stkCalls != 0 {
-		t.Fatalf("depot counter reads = (%d,%d), want (0,0) — the depot is untouched at ceiling 2 (byte-identical)", dc.whCalls, dc.stkCalls)
-	}
-	if len(gr.warehouseGrows) != 0 || len(gr.stockerGrows) != 0 {
-		t.Fatalf("depot grows = (%d,%d), want (0,0) at the default ceiling", len(gr.warehouseGrows), len(gr.stockerGrows))
+	if len(gr.warehouseGrows) == 0 && len(gr.stockerGrows) == 0 {
+		t.Fatalf("depot grows = (%d,%d), want >0 — the DEFAULT ceiling must ACTUATE the depot (ship-armed), not delivery-only", len(gr.warehouseGrows), len(gr.stockerGrows))
 	}
 }
 

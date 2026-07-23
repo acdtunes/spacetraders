@@ -93,19 +93,19 @@ func (h *RunBootstrapCoordinatorHandler) actIncome(ctx context.Context, cmd *Run
 
 // deferHaulerBuyToAutosizer reports whether bootstrap should hand THIS tick's contract-hauler buy to the
 // standing fleet autosizer (sp-sjvv single-buyer arbitration — the hauler sibling of the sp-tsn2
-// probe→freshsizer deferral). It engages ONLY when armed (autosizer_early_scaling) AND a fleet autosizer
-// is actually running to take over (obs.AutosizerRunning) AND the contract-hauler pool has reached the
+// probe→freshsizer deferral). It engages when a fleet autosizer is actually running to take over
+// (obs.AutosizerRunning) AND the contract-hauler pool has reached the
 // tier (len(Haulers) >= contractHaulerTierSaturation). CLEAN OWNERSHIP BY RANGE: bootstrap SEEDS
 // 0→tier itself (it keeps buying below the tier behind its own capital gate), the sizer scales tier→N.
 // bootstrap never defers into a vacuum, so a cold start cannot wedge if the sizer is down (bootstrap keeps
 // buying until the early launch lands), and a deferral is surfaced on the heartbeat, never silent.
 //
 // sp-y2ptq (epic sp-9le3x): this is LEGACY single-buyer arbitration for the autosizer's now-DELETED
-// contract-delivery scaling path — the dedicated contract scaler (with its own contract_scaler_early_scaling
-// arm + deferral) supersedes it. Left in place, byte-identical, rather than disentangled from the shared
-// autosizer LaunchAutosizer/AutosizerRunning machinery in this deletion lane; the tier constant is inlined.
+// contract-delivery scaling path — the dedicated contract scaler supersedes it. Left in place,
+// byte-identical, rather than disentangled from the shared autosizer LaunchAutosizer/AutosizerRunning
+// machinery in this deletion lane; the tier constant is inlined.
 func (h *RunBootstrapCoordinatorHandler) deferHaulerBuyToAutosizer(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) bool {
-	if !cfg.AutosizerEarlyScaling || !obs.AutosizerRunning || len(obs.Haulers) < contractHaulerTierSaturation {
+	if !obs.AutosizerRunning || len(obs.Haulers) < contractHaulerTierSaturation {
 		return false
 	}
 	res.Blocker = "deferred_to_autosizer"

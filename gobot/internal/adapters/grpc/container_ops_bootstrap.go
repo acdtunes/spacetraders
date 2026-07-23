@@ -79,8 +79,6 @@ var bootstrapConfigKeys = []string{
 	"bootstrap_min_contract_earners",
 	"bootstrap_hauler_ship_type",
 	"bootstrap_gate_worker_target",
-	"bootstrap_scaled_gate_entry_disabled",
-	"bootstrap_autosizer_early_scaling_disabled",
 }
 
 // resolveBootstrapConfig makes config.yaml the single LIVE source of truth for the bootstrap
@@ -136,15 +134,6 @@ func (s *DaemonServer) injectBootstrapConfig(config map[string]interface{}) {
 	if b.GateWorkerTarget != 0 {
 		config["bootstrap_gate_worker_target"] = b.GateWorkerTarget
 	}
-	// sp-5nd2 cold-start arms: written ONLY when disabled, so an absent key reads as ARMED — the
-	// DEFAULT-ON intent survives a fresh start and a recovery from a config predating the keys (the
-	// same negation idiom as bootstrap_disabled above).
-	if b.ScaledGateEntryDisabled {
-		config["bootstrap_scaled_gate_entry_disabled"] = true
-	}
-	if b.AutosizerEarlyScalingDisabled {
-		config["bootstrap_autosizer_early_scaling_disabled"] = true
-	}
 }
 
 // buildBootstrapCommand rebuilds the standing bootstrap command (sp-3nbe) from a persisted launch
@@ -174,10 +163,5 @@ func buildBootstrapCommand(cfg *configReader, playerID int, containerID string) 
 		HaulerShipType:     cfg.OptionalString("bootstrap_hauler_ship_type"),
 
 		GateWorkerTarget: cfg.OptionalInt("bootstrap_gate_worker_target", 0),
-
-		// sp-5nd2 cold-start arms: absent → false → ARMED (default-on). OptionalBool collapses an absent
-		// key to false, which is exactly the negation default here (like Disabled/bootstrap_disabled).
-		ScaledGateEntryDisabled:       cfg.OptionalBool("bootstrap_scaled_gate_entry_disabled"),
-		AutosizerEarlyScalingDisabled: cfg.OptionalBool("bootstrap_autosizer_early_scaling_disabled"),
 	}
 }

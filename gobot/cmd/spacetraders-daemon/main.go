@@ -796,9 +796,9 @@ func run(cfg *config.Config) error {
 	// RoleResolver (home-system geometry + market roles), the treasury/yard-price REUSE of the autosizer
 	// idioms, the "contract"-fleet counter, and the buy+dedicate+home Purchaser (the kept autosizer buy
 	// primitive + the demand-ranked homing consumer) — are assembled inside
-	// grpc.NewContractScalerCoordinatorHandler. Registering it changes NO live behaviour: nothing launches
-	// the coordinator until the bootstrap early-scaling arm fires (contract_scaler_early_scaling,
-	// default-off), so a bare deploy is byte-identical.
+	// grpc.NewContractScalerCoordinatorHandler. Registering the handler changes NO live behaviour by itself
+	// — it merely makes the coordinator available; the bootstrap coordinator launches this scaler during its
+	// DATA/INCOME cold-start window (unconditional, sp-1cbxz).
 	contractScalerHandler := grpc.NewContractScalerCoordinatorHandler(
 		daemonServer, apiClient, shipRepo, med, waypointRepo, marketRepo,
 		shipyardQuery.NewReachableYardFinder(shipyardInventoryRepo, gateGraphService),

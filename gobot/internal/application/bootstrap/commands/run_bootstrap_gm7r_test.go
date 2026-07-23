@@ -21,7 +21,7 @@ import (
 // because this bug hid precisely because each single-guard check looked "correct" in isolation.
 
 // hardenedCfg resolves the coordinator config with scaled-gate hardening ARMED (gate_surplus_hardening=1).
-// scaled_gate_entry is also on (its default-ON state), which is the realistic deployment. Asserts the flag
+// The scaled gate is unconditionally on, which is the realistic deployment. Asserts the hardening flag
 // and the documented calibration defaults so the behavior tests below read against known bars.
 func hardenedCfg(t *testing.T) bootstrapRunConfig {
 	t.Helper()
@@ -37,8 +37,8 @@ func hardenedCfg(t *testing.T) bootstrapRunConfig {
 	return cfg
 }
 
-// offCfg resolves the config with hardening OFF (nothing tuned) — today's behavior (scaled_gate_entry on,
-// hardening off). The byte-identical baseline.
+// offCfg resolves the config with hardening OFF (nothing tuned) — the scaled gate on (unconditional),
+// hardening off. The byte-identical baseline.
 func offCfg(t *testing.T) bootstrapRunConfig {
 	t.Helper()
 	cfg := resolveBootstrapConfig(baseCmd(), nil)
@@ -262,7 +262,7 @@ func TestBootstrap_Gm7r_EscapeOff_StuckGateStaysGate_ByteIdentical(t *testing.T)
 	h := NewRunBootstrapCoordinatorHandler(nil)
 	h.SetShipRefresher(&fakeRefresher{})
 	h.SetWorldObserver(obsvr)
-	// No live-config reader wired → hardening OFF (and scaled_gate_entry off too — pre-arm sticky path).
+	// No live-config reader wired → hardening OFF; the sticky ConstructionStarted latch holds GATE.
 	cmd := baseCmd()
 
 	for tick := 1; tick <= 5; tick++ {

@@ -34,21 +34,10 @@ func BootstrapTunableDefaults() map[string]int {
 		"tick_secs":            defaultBootstrapTickSeconds,
 		// sp-tsn2 single-buyer arbitration flag (0=off default, 1=on). A tunable flag with no launch key.
 		"defer_probe_to_freshsizer": defaultDeferProbeToFreshsizer,
-		// sp-fp3y scaled-GATE-entry gate: the arming flag (0=off default) plus its two calibration knobs
-		// (the SUSTAINED $/hr bar as whole credits, and the hauler floor). Tunable-only, no launch keys.
-		"scaled_gate_entry": defaultScaledGateEntry,
-		"gate_income_bar":   int(math.Round(defaultGateIncomeBar)),
-		"gate_min_haulers":  defaultGateMinHaulers,
-		// sp-sjvv/sp-fp3y positive FORCE-ON knobs (0=not-forced default — both features are DEFAULT-ON via
-		// the config.yaml launch layer, so these only matter to force-arm a config-disabled run).
-		"autosizer_early_scaling": defaultAutosizerEarlyScaling,
-		// sp-5nd2 live kill-switches (0=not-disabled default, 1=disable live next tick, no restart). The
-		// inverted polarity keeps the default-ON arm intact while giving an operator a no-restart OFF.
-		"scaled_gate_entry_disabled":       defaultScaledGateEntryDisabled,
-		"autosizer_early_scaling_disabled": defaultAutosizerEarlyScalingDisabled,
-		// DEFAULT-OFF contract-scaler arm: 0 = OFF (byte-identical); armed via
-		// `tune --operation bootstrap contract_scaler_early_scaling 1` after validation.
-		"contract_scaler_early_scaling": defaultContractScalerEarlyScaling,
+		// The scaled-GATE-entry gate is UNCONDITIONALLY ON (sp-1cbxz); these are its two always-consulted
+		// calibration knobs — the SUSTAINED $/hr bar (whole credits) and the hauler floor. Tunable-only.
+		"gate_income_bar":  int(math.Round(defaultGateIncomeBar)),
+		"gate_min_haulers": defaultGateMinHaulers,
 		// Scaled-gate hardening: the DEFAULT-OFF master flag plus its five calibration knobs (the surplus
 		// floor is whole credits; the reentry construction ceiling is a whole percent). Tunable-only.
 		"gate_surplus_hardening":        defaultGateSurplusHardening,
@@ -96,29 +85,11 @@ type bootstrapRunConfig struct {
 	// (byte-identical). A tunable flag (defer_probe_to_freshsizer) — armed live, no launch key.
 	DeferProbeToFreshsizer bool
 
-	// GATE-entry gate (sp-fp3y), consulted ONLY when ScaledGateEntry is armed; GateIncomeBar and
-	// GateMinHaulers still resolve to their documented defaults when off so the struct is deterministic.
-	// ScaledGateEntry true ⇒ derivePhase enters GATE on a SCALED contract op (haulers ≥ GateMinHaulers AND
-	// a SUSTAINED $/hr ≥ GateIncomeBar) instead of the bare instantaneous income_bar. Default false
-	// (byte-identical). A tunable flag (scaled_gate_entry) — armed live, no launch key.
-	ScaledGateEntry bool
-	GateIncomeBar   float64 // SUSTAINED (rolling-window mean) net $/hr the fleet must clear for armed GATE entry.
-	GateMinHaulers  int     // hauler floor for armed GATE entry — proves a multi-hull op, not a lone spike.
-
-	// AutosizerEarlyScaling arms the sp-sjvv cold-start contract-scaling feature (ktio-B): when true,
-	// bootstrap (1) LAUNCHES the fleet autosizer EARLY during the DATA/INCOME scaling window so the
-	// capacity reconciler's emitted contract-delivery demand has a buyer, and (2) DEFERS its own
-	// contract-hauler buys to that autosizer once it is running (single-buyer arbitration). Default
-	// false (byte-identical — the autosizer stays off the whole bootstrap run and bootstrap buys its
-	// haulers itself). A tunable flag (autosizer_early_scaling) — armed live, no launch key.
-	AutosizerEarlyScaling bool
-
-	// ContractScalerEarlyScaling arms the dedicated contract auto-scaler: when true, bootstrap LAUNCHES
-	// the standing scaler EARLY during the DATA/INCOME scaling window so it ramps the exclusive contract
-	// fleet behind the 200000 cushion. DEFAULT-OFF (byte-identical — nothing launches the scaler); armed
-	// after validation. A positive tunable-only flag (contract_scaler_early_scaling) — armed live, no
-	// launch key.
-	ContractScalerEarlyScaling bool
+	// GATE-entry gate (sp-fp3y): the scaled gate is UNCONDITIONALLY ON (sp-1cbxz) — derivePhase enters
+	// GATE on a SCALED contract op (haulers ≥ GateMinHaulers AND a SUSTAINED $/hr ≥ GateIncomeBar), never
+	// the bare instantaneous income_bar. GateIncomeBar and GateMinHaulers are always consulted at entry.
+	GateIncomeBar  float64 // SUSTAINED (rolling-window mean) net $/hr the fleet must clear for GATE entry.
+	GateMinHaulers int     // hauler floor for GATE entry — proves a multi-hull op, not a lone spike.
 
 	// Scaled-gate hardening (default off / byte-identical). GateSurplusHardening true ⇒ three coupled
 	// additions that cure the cold-start GATE death spiral: (1) gateFunded also demands a RAISED hauler floor,
@@ -151,12 +122,6 @@ func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand, live liveconfig
 		HaulerShipType:     cmd.HaulerShipType,
 
 		GateWorkerTarget: cmd.GateWorkerTarget,
-
-		// sp-5nd2 cold-start arms, DEFAULT-ON via the bootstrap_disabled negation idiom: an absent/false
-		// launch disable flag ⇒ armed, so a fresh cold start (no config, no tune) runs both features. The
-		// live *_disabled tune below is the no-restart kill-switch; the positive knobs stay as force-on.
-		ScaledGateEntry:       !cmd.ScaledGateEntryDisabled,
-		AutosizerEarlyScaling: !cmd.AutosizerEarlyScalingDisabled,
 	}
 
 	// Live overlay (sp-r6yq): a `tune` writes a BARE positive key to the persisted config
@@ -193,36 +158,13 @@ func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand, live liveconfig
 		if v := live.PositiveIntOrZero("defer_probe_to_freshsizer"); v > 0 {
 			c.DeferProbeToFreshsizer = true
 		}
-		// sp-fp3y scaled-GATE-entry: the arming flag + its two calibration knobs, all tunable-only. Absent/
-		// zeroed ⇒ off / launch value (byte-identical); the <=0 fallbacks below fill the two bars' defaults.
+		// The scaled-GATE-entry gate is unconditionally on; these are its two always-consulted calibration
+		// knobs, both tunable-only. Absent/zeroed ⇒ launch value; the <=0 fallbacks below fill their defaults.
 		if v := live.PositiveIntOrZero("gate_income_bar"); v > 0 {
 			c.GateIncomeBar = float64(v)
 		}
 		if v := live.PositiveIntOrZero("gate_min_haulers"); v > 0 {
 			c.GateMinHaulers = v
-		}
-		// sp-fp3y is DEFAULT-ON (seeded above). The positive knob is now a FORCE-ON override (re-arms even
-		// if config.yaml disabled it); the *_disabled tune is the live kill-switch and WINS (checked last),
-		// so `tune scaled_gate_entry_disabled 1` stands the armed gate down next tick with no restart, and
-		// `... 0` deletes the key → reverts to the config default (armed) — no mutateTuneConfigKey change (sp-5nd2).
-		if v := live.PositiveIntOrZero("scaled_gate_entry"); v > 0 {
-			c.ScaledGateEntry = true
-		}
-		if v := live.PositiveIntOrZero("scaled_gate_entry_disabled"); v > 0 {
-			c.ScaledGateEntry = false
-		}
-		// sp-sjvv is DEFAULT-ON (seeded above), armed as a pair with sp-fp3y. Same force-on / disabled-wins
-		// live seam: the positive knob force-arms, the *_disabled tune is the no-restart kill-switch.
-		if v := live.PositiveIntOrZero("autosizer_early_scaling"); v > 0 {
-			c.AutosizerEarlyScaling = true
-		}
-		if v := live.PositiveIntOrZero("autosizer_early_scaling_disabled"); v > 0 {
-			c.AutosizerEarlyScaling = false
-		}
-		// The contract-scaler arm is a positive tunable-only flag, DEFAULT-OFF (no seed arm above, unlike
-		// the default-on features). A positive value arms it; absent/zeroed ⇒ off (byte-identical).
-		if v := live.PositiveIntOrZero("contract_scaler_early_scaling"); v > 0 {
-			c.ContractScalerEarlyScaling = true
 		}
 		// Scaled-gate hardening: the master flag + its five calibration knobs, all tunable-only (no launch
 		// key), default off. A positive gate_surplus_hardening arms it; absent/zeroed ⇒ off (byte-identical).
@@ -279,10 +221,9 @@ func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand, live liveconfig
 	// from the constant, never the launch command / config.yaml / a live tune. There is deliberately no
 	// override seam above — a hard floor is not a per-run knob (sp-acv5).
 	c.ContractWorkingCapitalFloor = defaultContractWorkingCapitalFloor
-	// sp-fp3y: the armed-GATE bars resolve to their documented defaults when neither launched nor tuned,
-	// so bootstrapRunConfig stays deterministic (the byte-identical struct-equality guarantee) whether the
-	// gate is armed or not — they are simply never read while ScaledGateEntry is off. ScaledGateEntry itself
-	// needs no fallback: the false zero value IS "off".
+	// sp-fp3y: the scaled-GATE bars resolve to their documented defaults when neither launched nor tuned,
+	// so bootstrapRunConfig stays deterministic. The scaled gate is unconditionally on, so these are always
+	// consulted at GATE entry.
 	if c.GateIncomeBar <= 0 {
 		c.GateIncomeBar = defaultGateIncomeBar
 	}
@@ -344,8 +285,8 @@ type reconcileResult struct {
 	// the early launch surfaces its own INFO line, mirroring how the sp-tsn2 deferral does.
 	AutosizerLaunchedEarly bool
 
-	// The dedicated contract auto-scaler was launched EARLY this tick (armed via the default-off
-	// contract_scaler_early_scaling). Same test-only observability as AutosizerLaunchedEarly.
+	// The dedicated contract auto-scaler was launched EARLY this tick (unconditional in the DATA/INCOME
+	// window). Same test-only observability as AutosizerLaunchedEarly.
 	ContractScalerLaunchedEarly bool
 }
 
@@ -544,17 +485,14 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 	bridge := h.probeBridge(cmd.ContainerID)
 	obs.ProbeCount = bridge.effectiveProbeCount(obs.ProbeCount)
 
-	// sp-fp3y: when the scaled-gate-entry gate is armed, GATE entry must read a SUSTAINED $/hr (smoothed
-	// over a rolling window of recent ticks), so a single instantaneous contract-payout spike cannot trip
-	// GATE with an unscaled op (the ktio deadlock). Substitute the window mean into the observation the
-	// phase derivation reads — mirroring how the sp-lgo3 bridge substitutes ProbeCount just above. The raw
-	// obs is left UNTOUCHED so the heartbeat still reports instantaneous income; only phaseObs (the phase
-	// derivation's input) carries the smoothed value. Consulted ONLY when armed — flag-off passes the raw
-	// observation to derivePhase exactly as today (byte-identical).
+	// sp-fp3y: GATE entry must read a SUSTAINED $/hr (smoothed over a rolling window of recent ticks), so a
+	// single instantaneous contract-payout spike cannot trip GATE with an unscaled op (the ktio deadlock).
+	// The scaled gate is unconditionally on, so the smoothing is applied every tick. Substitute the window
+	// mean into the observation the phase derivation reads — mirroring how the sp-lgo3 bridge substitutes
+	// ProbeCount just above. The raw obs is left UNTOUCHED so the heartbeat still reports instantaneous
+	// income; only phaseObs (the phase derivation's input) carries the smoothed value.
 	phaseObs := obs
-	if cfg.ScaledGateEntry || cfg.GateSurplusHardening {
-		phaseObs.IncomePerHour = h.incomeWindowFor(cmd.ContainerID).sustained(obs.IncomePerHour)
-	}
+	phaseObs.IncomePerHour = h.incomeWindowFor(cmd.ContainerID).sustained(obs.IncomePerHour)
 
 	// Derive the phase from the observation — NEVER from a persisted enum (spec §Architecture).
 	phase := derivePhase(phaseObs, cfg)
@@ -597,22 +535,20 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 		h.actComplete(ctx, cmd, cfg, obs, &res)
 	}
 
-	// sp-sjvv (ktio-B): during the cold-start SCALING window (DATA/INCOME), when armed, launch the
-	// fleet autosizer EARLY so the capacity reconciler's emitted contract-delivery demand finally has a
-	// buyer (steps 2-3 of the Admiral cold-start sequence). Default-off ⇒ never launches (byte-identical:
-	// the autosizer stays off the whole bootstrap run, as today). Idempotent (skips when already running).
-	// Deliberately NOT launched in GATE/COMPLETE: GATE repurposes haulers to construction (a running
-	// autosizer scaling the contract op would contend), and COMPLETE performs the normal hand-off.
-	if cfg.AutosizerEarlyScaling && (phase == PhaseData || phase == PhaseIncome) {
+	// sp-sjvv (ktio-B): during the cold-start SCALING window (DATA/INCOME), launch the fleet autosizer
+	// EARLY so the capacity reconciler's emitted contract-delivery demand finally has a buyer (steps 2-3
+	// of the Admiral cold-start sequence). Unconditional in the DATA/INCOME window. Idempotent (skips when
+	// already running). Deliberately NOT launched in GATE/COMPLETE: GATE repurposes haulers to construction
+	// (a running autosizer scaling the contract op would contend), and COMPLETE performs the normal hand-off.
+	if phase == PhaseData || phase == PhaseIncome {
 		h.maybeLaunchAutosizerEarly(ctx, cmd, cfg, obs, &res)
 	}
 
-	// When the DEFAULT-OFF contract-scaler arm is set, launch the standing dedicated contract auto-scaler
-	// EARLY during the same DATA/INCOME scaling window so it ramps the exclusive contract fleet behind the
-	// 200000 cushion. Default-off ⇒ never launches (byte-identical). Idempotent (skips when already
-	// running). Scoped to DATA/INCOME like the autosizer arm: GATE repurposes haulers to construction, and
-	// the scaler is armed once then RUNS FOREVER via restart recovery.
-	if cfg.ContractScalerEarlyScaling && (phase == PhaseData || phase == PhaseIncome) {
+	// Launch the standing dedicated contract auto-scaler EARLY during the same DATA/INCOME scaling window so
+	// it ramps the exclusive contract fleet behind the 200000 cushion. Unconditional in the DATA/INCOME
+	// window. Idempotent (skips when already running). Scoped to DATA/INCOME like the autosizer launch: GATE
+	// repurposes haulers to construction, and the scaler is launched once then RUNS FOREVER via restart recovery.
+	if phase == PhaseData || phase == PhaseIncome {
 		h.maybeLaunchContractScalerEarly(ctx, cmd, cfg, obs, &res)
 	}
 
@@ -643,10 +579,10 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 // repurposes contract haulers to construction, which DROPS realized $/hr back under income_bar. So GATE
 // is made STICKY on obs.ConstructionStarted — once a construction pipeline exists the arc stays in GATE
 // regardless of income, never regressing (which would re-buy the just-repurposed haulers and thrash).
-// The GATE-ENTRY decision itself is factored into gateFunded: default-off it is the historical
-// instantaneous income_bar check; armed it demands a scaled contract op (haulers + a SUSTAINED $/hr),
-// which is what makes the sticky latch above safe — construction can only start after a legitimate
-// scaled entry, so a spurious income spike can never latch GATE permanently (the ktio deadlock).
+// The GATE-ENTRY decision itself is factored into gateFunded, which unconditionally demands a scaled
+// contract op (haulers + a SUSTAINED $/hr), which is what makes the sticky latch above safe —
+// construction can only start after a legitimate scaled entry, so a spurious income spike can never
+// latch GATE permanently (the ktio deadlock).
 // COMPLETE is terminal and monotone (a built gate stays built). A restart at any point re-derives the
 // true phase from these live signals — no persisted cursor, no double-advance.
 func derivePhase(obs Observation, cfg bootstrapRunConfig) Phase {
@@ -671,21 +607,18 @@ func derivePhase(obs Observation, cfg bootstrapRunConfig) Phase {
 
 // gateFunded reports whether the economic signals warrant entering GATE (jump-gate construction).
 //
-// DEFAULT (scaled_gate_entry OFF): instantaneous realized $/hr ≥ income_bar — the historical check, so
-// the phase derivation is byte-identical while the flag is off.
-//
-// ARMED (scaled_gate_entry ON): GATE requires a genuinely SCALED contract operation, not a lone income
-// spike. Both must hold together — coverage is NOT a gate here (scan-completeness is continuous
-// background, never a phase gate; sourcing gate materials is construction's job):
+// The scaled gate is UNCONDITIONALLY ON (sp-1cbxz): GATE requires a genuinely SCALED contract operation,
+// not a lone income spike. Both must hold together — coverage is NOT a gate here (scan-completeness is
+// continuous background, never a phase gate; sourcing gate materials is construction's job):
 //   - haulers ≥ gate_min_haulers — the INCOME ramp actually bought a multi-hull fleet (the ktio deadlock
 //     entered GATE with ZERO haulers off a single contract payout); and
 //   - a SUSTAINED $/hr ≥ gate_income_bar — obs.IncomePerHour here carries the rolling-window MEAN the
-//     reconciler substitutes when armed (an instantaneous spike is diluted well under the bar; a
+//     reconciler substitutes every tick (an instantaneous spike is diluted well under the bar; a
 //     not-yet-full window reads −inf), so a fresh spike on short history can never trip GATE.
 //
-// This is also WHY the ConstructionStarted sticky latch in derivePhase is safe when armed: construction is
-// started (by actGate) only AFTER derivePhase has returned GATE, which now demands a legitimate scaled-op
-// entry — so a spurious income spike can never reach ConstructionStarted and latch GATE permanently.
+// This is also WHY the ConstructionStarted sticky latch in derivePhase is safe: construction is started
+// (by actGate) only AFTER derivePhase has returned GATE, which demands a legitimate scaled-op entry — so a
+// spurious income spike can never reach ConstructionStarted and latch GATE permanently.
 //
 // HARDENED (gate_surplus_hardening ON): STRICTER still — a genuinely scaled AND funded op. GATE entry
 // additionally requires (over the plain scaled gate): a RAISED hauler floor (a real fleet, not the 2-hull
@@ -705,9 +638,6 @@ func gateFunded(obs Observation, cfg bootstrapRunConfig) bool {
 		return len(obs.Haulers) >= haulerFloor &&
 			obs.IncomePerHour >= cfg.GateIncomeBar &&
 			obs.Treasury-common.ImmutableReserveFloor >= cfg.GateSurplusFloor
-	}
-	if !cfg.ScaledGateEntry {
-		return obs.IncomePerHour >= cfg.IncomeBar
 	}
 	return len(obs.Haulers) >= cfg.GateMinHaulers &&
 		obs.IncomePerHour >= cfg.GateIncomeBar
@@ -831,7 +761,7 @@ func (h *RunBootstrapCoordinatorHandler) deferProbeBuyToFreshsizer(ctx context.C
 // maybeLaunchAutosizerEarly launches the standing fleet autosizer DURING the cold-start scaling window
 // (sp-sjvv, ktio-B) so the capacity reconciler's emitted contract-delivery demand has a buyer that scales
 // the contract operation (haulers/warehouse/stockers) — the Admiral's step 3. The caller has already
-// checked the feature is armed AND we are in the DATA/INCOME window. It:
+// checked we are in the DATA/INCOME window. It:
 //   - is IDEMPOTENT: skips silently when the autosizer is already running (obs.AutosizerRunning) — the
 //     steady state once launched, so no per-tick log spam and no double-launch;
 //   - reuses the SAME hand-off launcher (LaunchAutosizer) the COMPLETE hand-off uses, so the early
@@ -879,10 +809,9 @@ func (h *RunBootstrapCoordinatorHandler) maybeLaunchAutosizerEarly(ctx context.C
 
 // maybeLaunchContractScalerEarly launches the standing dedicated contract auto-scaler DURING the
 // cold-start scaling window so it ramps the exclusive contract fleet behind the 200000 cushion. The
-// caller has already checked the DEFAULT-OFF arm (contract_scaler_early_scaling) is set AND we are in
-// the DATA/INCOME window. It mirrors maybeLaunchAutosizerEarly:
+// caller has already checked we are in the DATA/INCOME window. It mirrors maybeLaunchAutosizerEarly:
 //   - IDEMPOTENT: skips silently when the scaler is already running (obs.ContractScalerRunning) — the
-//     steady state once launched (armed once, then RUNS FOREVER via restart recovery);
+//     steady state once launched (launched once, then RUNS FOREVER via restart recovery);
 //   - is nil-safe (no launcher wired ⇒ logged skip) and dry-run-safe (WOULD-launch, no action);
 //   - is a BACKGROUND launch: it never claims res.Blocker, surfacing itself via its own INFO/ERROR line.
 func (h *RunBootstrapCoordinatorHandler) maybeLaunchContractScalerEarly(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
@@ -893,7 +822,7 @@ func (h *RunBootstrapCoordinatorHandler) maybeLaunchContractScalerEarly(ctx cont
 	}
 
 	if cfg.DryRun {
-		logger.Log("INFO", "Bootstrap DRY-RUN: WOULD launch the dedicated contract auto-scaler EARLY (contract_scaler_early_scaling armed) to ramp the exclusive contract fleet (took no action)", map[string]interface{}{
+		logger.Log("INFO", "Bootstrap DRY-RUN: WOULD launch the dedicated contract auto-scaler EARLY to ramp the exclusive contract fleet (took no action)", map[string]interface{}{
 			"action":       "bootstrap_would_launch_contract_scaler_early",
 			"container_id": cmd.ContainerID,
 		})
@@ -901,7 +830,7 @@ func (h *RunBootstrapCoordinatorHandler) maybeLaunchContractScalerEarly(ctx cont
 	}
 
 	if h.handoff == nil {
-		logger.Log("WARN", "Bootstrap contract-scaler scaling is armed but no hand-off launcher wired — cannot launch the contract scaler early", map[string]interface{}{
+		logger.Log("WARN", "Bootstrap has no hand-off launcher wired — cannot launch the contract scaler early", map[string]interface{}{
 			"action":       "bootstrap_no_handoff_launcher",
 			"container_id": cmd.ContainerID,
 		})
@@ -916,7 +845,7 @@ func (h *RunBootstrapCoordinatorHandler) maybeLaunchContractScalerEarly(ctx cont
 		return
 	}
 	res.ContractScalerLaunchedEarly = true
-	logger.Log("INFO", "Bootstrap launched the dedicated contract auto-scaler EARLY (contract_scaler_early_scaling armed) — it ramps the exclusive contract fleet to the live ceiling behind the 200000 cushion", map[string]interface{}{
+	logger.Log("INFO", "Bootstrap launched the dedicated contract auto-scaler EARLY — it ramps the exclusive contract fleet to the live ceiling behind the 200000 cushion", map[string]interface{}{
 		"action":       "bootstrap_contract_scaler_launched_early",
 		"container_id": cmd.ContainerID,
 	})

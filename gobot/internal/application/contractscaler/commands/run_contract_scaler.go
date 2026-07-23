@@ -28,10 +28,13 @@ const (
 	// (contract_fleet_max_hulls, hot-reloaded each tick — the single operator lever).
 	ceilingKey = "contract_fleet_max_hulls"
 
-	// DefaultContractFleetMaxHulls is the ceiling when the operator sets none: kept
-	// LOW for a gate sprint (contracts are the funding floor, the gate needs the
-	// treasury); raised post-gate to 10-12 for full contract throughput.
-	DefaultContractFleetMaxHulls = 2
+	// DefaultContractFleetMaxHulls is the ceiling when the operator sets none. Admiral
+	// directive (2026-07-22, sp-1cbxz): the scaler ships ARMED at 10 every cold-start —
+	// full contract throughput from hour 0, not a gate-sprint crawl at 2. The 200000
+	// cushion (ContractCushion) keeps the early ramp treasury-gated + self-limiting, so a
+	// pre-gate ceiling of 10 never starves the gate build. Delivery hulls saturate ~7-8
+	// (= distinct central waypoints); operators still raise/lower it live via contract_fleet_max_hulls.
+	DefaultContractFleetMaxHulls = 10
 
 	// ContractCushion is the SOLE money guard on a scaler buy (RULINGS #6 amendment,
 	// Admiral-authorized): buy only while treasury-price >= this. It is the derived

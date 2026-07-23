@@ -446,16 +446,14 @@ func (h *RunBootstrapCoordinatorHandler) actComplete(ctx context.Context, cmd *R
 
 	if !obs.AutosizerRunning {
 		h.launchHandoff(ctx, cmd, cfg, res)
-	} else if cfg.AutosizerEarlyScaling && !h.ensureStandingHandoff(ctx, cmd, cfg, res) {
-		// sp-sjvv: cold-start scaling launched the fleet autosizer EARLY, so it is already running here
-		// and launchHandoff's autosizer-gated path (which ALSO launches the standing coordinators) is
-		// skipped — but siting + worker-rebalancer still have to be started (the early launch only
-		// started the autosizer, and siting has no other launch path). Ensure them now; if they cannot
-		// be confirmed this tick, HOLD (return without setting Done) and retry next tick, so bootstrap
-		// never exits with the mature economy half-handed-off. This branch is UNREACHABLE when the flag
-		// is off (byte-identical): with the feature disarmed the autosizer only ever runs by way of the
-		// normal hand-off, which launches the standing coordinators in the same call — so an
-		// autosizer-running-but-standing-coordinators-absent state can only arise under the early launch.
+	} else if !h.ensureStandingHandoff(ctx, cmd, cfg, res) {
+		// sp-sjvv: cold-start scaling launched the fleet autosizer EARLY (unconditional now), so it is
+		// already running here and launchHandoff's autosizer-gated path (which ALSO launches the standing
+		// coordinators) is skipped — but siting + worker-rebalancer still have to be started (the early
+		// launch only started the autosizer, and siting has no other launch path). Ensure them now; if they
+		// cannot be confirmed this tick, HOLD (return without setting Done) and retry next tick, so bootstrap
+		// never exits with the mature economy half-handed-off. An autosizer-running-but-standing-coordinators-
+		// absent state can only arise under the early launch (the normal hand-off launches both in one call).
 		return
 	}
 

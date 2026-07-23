@@ -918,12 +918,16 @@ func TestBootstrap_ParallelDataIncome_ContractsStartAtHour0WhileScanning(t *test
 	}
 }
 
-// GATE triggers on funding regardless of coverage (t39j point 4): a fleet that clears income_bar while
+// GATE triggers on funding regardless of coverage (t39j point 4): a scaled op that clears the gate while
 // still scanning enters GATE, not held in DATA by the coverage bar.
-func TestBootstrap_DerivePhase_Disabled_IncomeBarBeatsCoverage_Gate(t *testing.T) {
-	cfg := disabledCfg(t) // gate disarmed → bare income_bar trigger; income_bar 10000, coverage_bar 0.90
-	obs := Observation{MarketsTotal: 10, MarketsCovered: 3, IncomePerHour: 12000}
+func TestBootstrap_DerivePhase_IncomeBeatsCoverage_Gate(t *testing.T) {
+	cfg := resolveBootstrapConfig(baseCmd(), nil)
+	obs := Observation{
+		MarketsTotal: 10, MarketsCovered: 3, // 30% coverage
+		Haulers:       []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}}, // ≥ gate_min_haulers
+		IncomePerHour: 60000,                                            // ≥ gate_income_bar (a scaled op)
+	}
 	if p := derivePhase(obs, cfg); p != PhaseGate {
-		t.Fatalf("disabled: income over the bar while still scanning (coverage 30%%) should derive GATE, got %s", p)
+		t.Fatalf("a scaled op over the gate bar while still scanning (coverage 30%%) should derive GATE, got %s", p)
 	}
 }

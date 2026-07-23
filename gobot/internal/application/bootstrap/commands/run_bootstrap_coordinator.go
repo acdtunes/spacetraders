@@ -90,16 +90,13 @@ const (
 	// the freshsizer once the first market is covered (coverage>0) and a freshsizer coordinator runs.
 	defaultDeferProbeToFreshsizer = 0
 
-	// sp-fp3y GATE-entry gate — now DEFAULT-ON (sp-5nd2): the arm lives in the config.yaml launch layer
-	// (cmd.ScaledGateEntryDisabled negation), so GATE entry requires a genuinely SCALED contract op
-	// (haulers + a SUSTAINED $/hr) — closing the ktio deadlock where one contract payout spiked income
-	// past income_bar and drove GATE with ZERO haulers, latching on ConstructionStarted. defaultScaledGateEntry
-	// is the FORCE-ON positive tune's default: 0 = not-forced (the config default carries the arm); a live
-	// `tune scaled_gate_entry 1` still force-arms even if config disabled it. The live scaled_gate_entry_disabled
-	// tune is the no-restart kill-switch. Arms TOGETHER WITH ktio-B (sp-sjvv) — both default-on as a pair.
-	defaultScaledGateEntry = 0
+	// sp-fp3y GATE-entry gate — UNCONDITIONALLY ON (sp-1cbxz): GATE entry requires a genuinely SCALED
+	// contract op (haulers + a SUSTAINED $/hr) — closing the ktio deadlock where one contract payout spiked
+	// income past income_bar and drove GATE with ZERO haulers, latching on ConstructionStarted. Its two
+	// always-consulted calibration bars follow.
+	//
 	// defaultGateIncomeBar is the SUSTAINED (rolling-mean over gateIncomeWindowTicks) net credits/hour the
-	// contract fleet must clear to enter GATE when scaled_gate_entry is armed. Deliberately well ABOVE
+	// contract fleet must clear to enter GATE. Deliberately well ABOVE
 	// income_bar (10000): a single contract payout momentarily spikes instantaneous income past 10000 (the
 	// ktio false trigger), but a genuinely scaled 2–4 hauler op sustains net $/hr in this range once warmed
 	// while a lone spike, smoothed over the window alongside the net-negative spend ticks, nets far less.
@@ -107,51 +104,26 @@ const (
 	// phase-transition threshold like income_bar, NOT a money-floor (RULINGS #5) — no spend guard reads it.
 	// A bar set too HIGH only delays GATE; too low re-opens the spurious trigger.
 	defaultGateIncomeBar = 50000.0
-	// defaultGateMinHaulers is the hauler floor for armed GATE entry: the INCOME ramp must hold at least
+	// defaultGateMinHaulers is the hauler floor for GATE entry: the INCOME ramp must hold at least
 	// this many contract-dedicated haulers, proving a multi-hull op (the ktio deadlock entered GATE with
 	// ZERO haulers — a frigate-only contract spike). Set BELOW hauler_target (4) because viable hubs may be
 	// fewer than the target, so requiring the full target could wedge a legitimately-scaled op; 2 clearly
 	// separates a scaled op from the 0-hauler spike. Tunable via gate_min_haulers.
 	defaultGateMinHaulers = 2
-	// gateIncomeWindowTicks is how many recent reconcile ticks the armed GATE-entry $/hr is smoothed over
+	// gateIncomeWindowTicks is how many recent reconcile ticks the GATE-entry $/hr is smoothed over
 	// (the "sustained" window). A call-site constant, not a knob — a shape detail of the sustained metric,
 	// bounded in wall-clock by tick_secs (at the 45s cold-start cadence, 5 ticks ≈ 3.75 min of sustained
 	// earning). The window must be FULL before it can clear the bar, so a spike on a fresh/short history
 	// (the first ticks after arming, or after a restart drops the window) can never trip GATE.
 	gateIncomeWindowTicks = 5
 
-	// defaultAutosizerEarlyScaling is the sp-sjvv cold-start-contract-scaling flag — now DEFAULT-ON
-	// (sp-5nd2) via the config.yaml launch layer (cmd.AutosizerEarlyScalingDisabled negation). This const
-	// is the FORCE-ON positive tune's default: 0 = not-forced (the config default carries the arm); the
-	// live autosizer_early_scaling_disabled tune is the no-restart kill-switch. Armed, ONE flag arms TWO coupled behaviors so
-	// the capacity reconciler's emitted contract-delivery demand finally has a buyer during cold start
-	// (the ktio-B fix): (1) bootstrap LAUNCHES the fleet autosizer EARLY, during the DATA/INCOME
-	// scaling window, so the reconciler's demand is consumed by the autosizer's guard-gated buy path
-	// (contract_delivery armed via sp-nkqn's own contract_delivery_hulls_enabled config knob); and
-	// (2) bootstrap DEFERS its own contract-hauler buys to that autosizer once it is running
-	// (single-buyer arbitration — the two never bid on one treasury), which also dissolves the
-	// maybeBuyHauler no_purchaser deadlock. The coupling is deliberate: bootstrap only defers to a
-	// buyer it has confirmed running, so a cold start can never wedge on an absent autosizer. This
-	// REVERSES the deliberate "autosizer off the whole bootstrap run" guard; the arbitration + the
-	// ktio-A absolute treasury floor (sp-bpdf) are the load-bearing safety that replaces it.
-	defaultAutosizerEarlyScaling = 0
-
-	// The sp-5nd2 live kill-switches: 0 = NOT disabled (the default — both features run, armed via the
-	// config.yaml launch layer). A live `tune scaled_gate_entry_disabled 1` / `autosizer_early_scaling_disabled 1`
-	// stands the respective feature down on the next tick with no restart; `... 0` deletes the key → reverts
-	// to the config default (armed). Inverted polarity so the zero value stays default-ON, and so the
-	// mutateTuneConfigKey `0 = revert-to-default` contract is untouched (RULINGS #4 — no tune-write change).
-	defaultScaledGateEntryDisabled       = 0
-	defaultAutosizerEarlyScalingDisabled = 0
-
-	// defaultContractScalerEarlyScaling is the DEFAULT-OFF arm for the dedicated contract auto-scaler:
-	// 0 = OFF, so a bare deploy never launches the scaler (byte-identical). UNLIKE the autosizer arm
-	// (default-ON), this is a positive tunable-only flag armed after validation
-	// (`tune --operation bootstrap contract_scaler_early_scaling 1`). Armed, bootstrap launches the
-	// standing scaler EARLY during the DATA/INCOME window so it ramps the exclusive contract fleet behind
-	// the 200000 cushion; it is the eventual REPLACEMENT for the reconciler+autosizer contract-delivery
-	// path, so the operator arms one or the other, never both.
-	defaultContractScalerEarlyScaling = 0
+	// The sp-sjvv cold-start contract-scaling feature and the dedicated contract auto-scaler are now
+	// UNCONDITIONALLY launched EARLY (sp-1cbxz) during the DATA/INCOME scaling window: (1) bootstrap
+	// LAUNCHES the fleet autosizer early so the capacity reconciler's emitted contract-delivery demand has
+	// a buyer, and DEFERS its own contract-hauler buys to it once running (single-buyer arbitration — the
+	// two never bid on one treasury); and (2) bootstrap LAUNCHES the standing dedicated contract auto-scaler
+	// early so it ramps the exclusive contract fleet behind the 200000 cushion. The arbitration + the ktio-A
+	// absolute treasury floor (sp-bpdf) are the load-bearing safety for running the autosizer during cold start.
 
 	// Scaled-gate hardening — the DEFAULT-OFF master flag (0 = byte-identical). It EXTENDS the scaled
 	// GATE-entry gate with a three-part cold-start-death-spiral cure: (1) GATE entry also requires a RAISED
@@ -375,9 +347,8 @@ type HandoffLauncher interface {
 	LaunchAutosizer(ctx context.Context, playerID int, agentSymbol string) error
 	LaunchStandingCoordinators(ctx context.Context, playerID int, agentSymbol string) error
 	// LaunchContractScaler launches the standing dedicated contract auto-scaler during the cold-start
-	// scaling window when contract_scaler_early_scaling is armed. Idempotent (skips when one is already
-	// RUNNING/PENDING), so a re-run never double-launches. Default-off: nothing calls it until the flag
-	// is armed, so a bare deploy never launches the scaler (byte-identical).
+	// scaling window (unconditional in the DATA/INCOME window, sp-1cbxz). Idempotent (skips when one is
+	// already RUNNING/PENDING), so a re-run never double-launches.
 	LaunchContractScaler(ctx context.Context, playerID int, agentSymbol string) error
 }
 
@@ -411,13 +382,6 @@ type RunBootstrapCoordinatorCommand struct {
 
 	// GATE-phase knob (RULINGS #5; the zero value defers to the documented default).
 	GateWorkerTarget int // GATE worker cap — actual = ~one per active gate-material chain + delivery.
-
-	// Cold-start economics arms (sp-5nd2), default-ON via the bootstrap_disabled negation idiom: an
-	// absent/false disable flag reads as ARMED, so the zero value is LIVE-BY-DEFAULT and resolve needs
-	// no positive fallback. Set true (config.yaml bootstrap_*_disabled) to stand the feature down at
-	// launch; the live *_disabled tune is the no-restart kill-switch.
-	ScaledGateEntryDisabled       bool // true ⇒ GATE entry falls back to the bare income_bar (sp-fp3y off).
-	AutosizerEarlyScalingDisabled bool // true ⇒ the early autosizer + single-buyer arbitration stay off (sp-sjvv off).
 }
 
 // RunBootstrapCoordinatorResponse reports reconcile progress. Because the loop is infinite it is
@@ -473,12 +437,12 @@ type RunBootstrapCoordinatorHandler struct {
 	buyBridges  map[string]*probeBuyBridge
 
 	// incomeWindows holds the per-container GATE-entry income smoother (sp-fp3y): the rolling window of
-	// recent realized-$/hr readings whose mean is the SUSTAINED $/hr the armed scaled-gate-entry gate reads,
-	// so a lone instantaneous income spike never trips GATE with an unscaled op (the ktio deadlock). Keyed by
-	// ContainerID for the same singleton reason as buyBridges; incomeWindowMu guards the MAP only (one
-	// container's ticks are sequential — see incomeWindowFor). Consulted only when scaled_gate_entry is armed;
-	// like buyBridges it is NOT a progress cursor (dropped on restart, and GATE entry re-defers a few ticks
-	// while it re-fills), so phase/progress stays derived purely from observation.
+	// recent realized-$/hr readings whose mean is the SUSTAINED $/hr the (unconditionally-on) scaled-gate-entry
+	// gate reads, so a lone instantaneous income spike never trips GATE with an unscaled op (the ktio deadlock).
+	// Keyed by ContainerID for the same singleton reason as buyBridges; incomeWindowMu guards the MAP only (one
+	// container's ticks are sequential — see incomeWindowFor). Consulted every tick; like buyBridges it is NOT a
+	// progress cursor (dropped on restart, and GATE entry re-defers a few ticks while it re-fills), so
+	// phase/progress stays derived purely from observation.
 	incomeWindowMu sync.Mutex
 	incomeWindows  map[string]*incomeWindow
 

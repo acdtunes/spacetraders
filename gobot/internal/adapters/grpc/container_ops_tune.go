@@ -86,11 +86,12 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 	return map[string]map[string]TuneBound{
 		string(container.ContainerTypeContractScaler): {
 			// The single operator lever on the dedicated contract auto-scaler: the delivery-hull ceiling,
-			// hot-reloaded each tick (Pattern-C). Keep LOW (default 2) during a gate sprint — contracts are
-			// the funding floor, the gate needs the treasury — and raise to 10-12 post-gate for full
-			// contract throughput (delivery hulls saturate ~7-8 = number of distinct central waypoints). Min
-			// 0 reverts to the default; the sole money guard (the 200000 cushion) is a const, not tunable.
-			"contract_fleet_max_hulls": {Type: "int", Min: 0, Max: 16, Default: contractScaler["contract_fleet_max_hulls"], Unit: "hulls", Description: "the exclusive contract fleet's live-tunable ceiling (delivery hulls; ramps behind the 200000 cushion). Low (2) during the gate sprint, 10-12 post-gate; saturates ~7-8"},
+			// hot-reloaded each tick (Pattern-C). Ships ARMED at the default 10 every cold-start (sp-1cbxz,
+			// Admiral directive) for full contract throughput from hour 0 (delivery hulls saturate ~7-8 =
+			// number of distinct central waypoints); the 200000 cushion keeps the early ramp treasury-gated so
+			// 10 never starves the gate build. Min 0 reverts to the default; the sole money guard (the 200000
+			// cushion) is a const, not tunable.
+			"contract_fleet_max_hulls": {Type: "int", Min: 0, Max: 16, Default: contractScaler["contract_fleet_max_hulls"], Unit: "hulls", Description: "the exclusive contract fleet's live-tunable ceiling (delivery hulls; ramps behind the 200000 cushion). Default 10 (ARMED from hour 0); saturates ~7-8"},
 		},
 		string(container.ContainerTypeAutoOutfitCoordinator): {
 			"min_telemetry_samples":     {Type: "int", Min: 1, Max: 1000, Default: autoOutfit["min_telemetry_samples"], Unit: "legs", Description: "fail-closed thin-telemetry floor — a hull with fewer measured legs is never upgraded"},
@@ -161,18 +162,10 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 			// the shared fleet — the era-3 multi-buyer lesson); 0 (default) ⇒ today's behavior, both buy
 			// behind their own guards. Bootstrap never defers into a vacuum (freshsizer must be running).
 			"defer_probe_to_freshsizer": {Type: "int", Min: 0, Max: 1, Default: bootstrap["defer_probe_to_freshsizer"], Unit: "flag", Description: "sp-tsn2: 1 ⇒ bootstrap hands DATA probe acquisition to the freshsizer once the first market is covered and a freshsizer coordinator runs (single-buyer arbitration); 0 (default) ⇒ both buy independently (byte-identical)"},
-			// sp-fp3y scaled-GATE-entry gate + sp-sjvv early-autosizer are DEFAULT-ON (sp-5nd2), armed via
-			// config.yaml. The positive knobs below are FORCE-ON overrides (re-arm a config-disabled run);
-			// the *_disabled knobs are the no-restart live kill-switches (disable wins). The two bars are
-			// phase thresholds like income_bar, NOT money-floors (RULINGS #5).
-			"scaled_gate_entry":                {Type: "int", Min: 0, Max: 1, Default: bootstrap["scaled_gate_entry"], Unit: "flag", Description: "sp-fp3y FORCE-ON override (feature is DEFAULT-ON via config.yaml): 1 ⇒ force the scaled GATE-entry gate armed even if config disabled it; 0 (default) ⇒ defer to the config default. To turn the gate OFF live, use scaled_gate_entry_disabled"},
-			"scaled_gate_entry_disabled":       {Type: "int", Min: 0, Max: 1, Default: bootstrap["scaled_gate_entry_disabled"], Unit: "flag", Description: "sp-5nd2 live kill-switch: 1 ⇒ stand DOWN the (default-on) scaled GATE-entry gate next tick with no restart — GATE re-enters on the bare income_bar; 0 (default) ⇒ armed. Wins over scaled_gate_entry"},
-			"gate_income_bar":                  {Type: "int", Min: 1, Max: 5_000_000, Default: bootstrap["gate_income_bar"], Unit: "credits", Description: "sp-fp3y armed GATE-entry bar: SUSTAINED (rolling-window mean) net credits/hour the contract fleet must clear to enter GATE (whole credits; default 50000, well above income_bar so a single contract payout cannot trip it). Inert while the gate is disabled"},
-			"gate_min_haulers":                 {Type: "int", Min: 1, Max: 50, Default: bootstrap["gate_min_haulers"], Unit: "hulls", Description: "sp-fp3y armed GATE-entry hauler floor: contract-dedicated haulers required to enter GATE, proving a multi-hull op (the ktio deadlock entered GATE with ZERO). Default 2, below hauler_target so few-hub universes still gate. Inert while the gate is disabled"},
-			"autosizer_early_scaling":          {Type: "int", Min: 0, Max: 1, Default: bootstrap["autosizer_early_scaling"], Unit: "flag", Description: "sp-sjvv FORCE-ON override (feature is DEFAULT-ON via config.yaml): 1 ⇒ force the early autosizer launch + single-buyer arbitration armed even if config disabled it; 0 (default) ⇒ defer to the config default. To turn it OFF live, use autosizer_early_scaling_disabled"},
-			"autosizer_early_scaling_disabled": {Type: "int", Min: 0, Max: 1, Default: bootstrap["autosizer_early_scaling_disabled"], Unit: "flag", Description: "sp-5nd2 live kill-switch: 1 ⇒ stand DOWN the (default-on) early autosizer launch + single-buyer arbitration next tick with no restart — the autosizer stays off and bootstrap buys its own haulers; 0 (default) ⇒ armed. Wins over autosizer_early_scaling"},
-			// DEFAULT-OFF contract-scaler arm — the shipwright's single arm lever, live-tunable.
-			"contract_scaler_early_scaling": {Type: "int", Min: 0, Max: 1, Default: bootstrap["contract_scaler_early_scaling"], Unit: "flag", Description: "1 ⇒ bootstrap launches the standing dedicated contract auto-scaler EARLY (DATA/INCOME) so it ramps the exclusive contract fleet behind the 200000 cushion; 0 (default) ⇒ OFF, byte-identical. Armed by the shipwright after validation"},
+			// sp-fp3y scaled-GATE-entry gate is UNCONDITIONALLY ON (sp-1cbxz); these are its two always-consulted
+			// calibration bars — phase thresholds like income_bar, NOT money-floors (RULINGS #5).
+			"gate_income_bar":  {Type: "int", Min: 1, Max: 5_000_000, Default: bootstrap["gate_income_bar"], Unit: "credits", Description: "sp-fp3y GATE-entry bar: SUSTAINED (rolling-window mean) net credits/hour the contract fleet must clear to enter GATE (whole credits; default 50000, well above income_bar so a single contract payout cannot trip it)"},
+			"gate_min_haulers": {Type: "int", Min: 1, Max: 50, Default: bootstrap["gate_min_haulers"], Unit: "hulls", Description: "sp-fp3y GATE-entry hauler floor: contract-dedicated haulers required to enter GATE, proving a multi-hull op (the ktio deadlock entered GATE with ZERO). Default 2, below hauler_target so few-hub universes still gate"},
 			// Scaled-gate hardening — DEFAULT-OFF (0). Extends the scaled GATE gate so a cold start never
 			// LATCHES GATE on a 2-hauler income blip with no war chest and then cannibalizes the contract op
 			// below the depot-staging floor (the death spiral). Gate entry becomes STRICTER (RULINGS #4); the

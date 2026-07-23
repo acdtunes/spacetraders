@@ -261,11 +261,11 @@ func (h *bootstrapHandoffLauncher) LaunchAutosizer(ctx context.Context, playerID
 	return err
 }
 
-// LaunchContractScaler launches the standing dedicated contract auto-scaler when the default-off
-// contract_scaler_early_scaling arm fires. Idempotent on its own container type — a re-run (or a stale
+// LaunchContractScaler launches the standing dedicated contract auto-scaler during the cold-start
+// scaling window (unconditional, sp-1cbxz). Idempotent on its own container type — a re-run (or a stale
 // obs.ContractScalerRunning) never double-launches a second ramp loop fighting the first over the same
 // treasury cushion. The coordinator then survives restarts via the persisted-container recovery idiom
-// (armed once, runs forever).
+// (launched once, runs forever).
 func (h *bootstrapHandoffLauncher) LaunchContractScaler(ctx context.Context, playerID int, agentSymbol string) error {
 	running, err := containerTypeRunning(ctx, h.server.containerRepo, playerID, container.ContainerTypeContractScaler)
 	if err != nil {

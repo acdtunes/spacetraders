@@ -289,10 +289,9 @@ func (o *bootstrapObserver) Observe(ctx context.Context, playerID int) (bootstra
 		if running, rerr := containerTypeRunning(ctx, o.containerRepo, playerID, container.ContainerTypeFleetAutosizer); rerr == nil {
 			obs.AutosizerRunning = running
 		}
-		// The dedicated contract auto-scaler's running-state — the idempotency signal for the default-off
-		// early-launch arm. Read every tick alongside the autosizer's (a lightweight indexed lookup);
-		// consumed only when contract_scaler_early_scaling is armed, so it is byte-identical off (no
-		// decision/spend depends on it until the flag is armed).
+		// The dedicated contract auto-scaler's running-state — the idempotency signal for the (unconditional)
+		// early launch. Read every tick alongside the autosizer's (a lightweight indexed lookup); the early
+		// launch skips when it is already running.
 		if running, rerr := containerTypeRunning(ctx, o.containerRepo, playerID, container.ContainerTypeContractScaler); rerr == nil {
 			obs.ContractScalerRunning = running
 		}

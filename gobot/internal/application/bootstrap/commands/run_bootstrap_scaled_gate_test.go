@@ -7,62 +7,31 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
 )
 
-// These tests cover the sp-fp3y scaled-GATE-entry gate (ktio-C). THE ktio DEADLOCK: derivePhase entered
-// GATE the instant instantaneous income cleared the 10000 income_bar — trivially crossed by ONE contract
-// payout (staging: rolling income −55k→+105k in 53s) — so bootstrap drove GATE with ZERO haulers and
-// latched sticky on ConstructionStarted, permanently. THE FIX (armed via scaled_gate_entry, DEFAULT OFF)
-// requires a genuinely SCALED contract op to enter GATE: haulers ≥ gate_min_haulers AND a SUSTAINED
-// (rolling-window mean, NOT instantaneous) $/hr ≥ gate_income_bar (coverage is NOT a gate — it is
-// continuous background). It
-// ARMS TOGETHER WITH ktio-B (autosizer-early): armed alone the op never scales haulers and the arc would
-// wedge in INCOME, which is why it ships OFF (this suite proves both the OFF byte-identical path and the
-// armed behavior).
+// These tests cover the sp-fp3y scaled-GATE-entry gate (ktio-C), now UNCONDITIONALLY ON (sp-1cbxz). THE
+// ktio DEADLOCK: derivePhase entered GATE the instant instantaneous income cleared the 10000 income_bar —
+// trivially crossed by ONE contract payout (staging: rolling income −55k→+105k in 53s) — so bootstrap drove
+// GATE with ZERO haulers and latched sticky on ConstructionStarted, permanently. THE FIX requires a
+// genuinely SCALED contract op to enter GATE: haulers ≥ gate_min_haulers AND a SUSTAINED (rolling-window
+// mean, NOT instantaneous) $/hr ≥ gate_income_bar (coverage is NOT a gate — it is continuous background).
 
-// armedCfg resolves the coordinator config with the scaled GATE-entry gate armed — now the DEFAULT-ON
-// state (sp-5nd2: no tune, no config disable), so the gate's two calibration knobs (gate_income_bar 50000,
-// gate_min_haulers 2) carry their documented defaults.
-func armedCfg(t *testing.T) bootstrapRunConfig {
+// scaledGateCfg resolves the coordinator config for the scaled GATE-entry gate, which is UNCONDITIONALLY
+// ON (sp-1cbxz), so the gate's two calibration knobs (gate_income_bar 50000, gate_min_haulers 2) carry
+// their documented defaults.
+func scaledGateCfg(t *testing.T) bootstrapRunConfig {
 	t.Helper()
 	cfg := resolveBootstrapConfig(baseCmd(), nil)
-	if !cfg.ScaledGateEntry {
-		t.Fatalf("scaled_gate_entry must be armed by DEFAULT (sp-5nd2)")
-	}
 	if cfg.GateIncomeBar != defaultGateIncomeBar || cfg.GateMinHaulers != defaultGateMinHaulers {
-		t.Fatalf("armed gate must carry the documented bars: income=%v haulers=%d", cfg.GateIncomeBar, cfg.GateMinHaulers)
+		t.Fatalf("scaled gate must carry the documented bars: income=%v haulers=%d", cfg.GateIncomeBar, cfg.GateMinHaulers)
 	}
 	return cfg
 }
 
-// disabledCfg resolves the config with the scaled GATE-entry gate stood down via the sp-5nd2 live
-// kill-switch, restoring the pre-arm bare-income_bar GATE trigger.
-func disabledCfg(t *testing.T) bootstrapRunConfig {
-	t.Helper()
-	cfg := resolveBootstrapConfig(baseCmd(), liveconfig.Snapshot{"scaled_gate_entry_disabled": 1})
-	if cfg.ScaledGateEntry {
-		t.Fatalf("scaled_gate_entry_disabled=1 must stand the gate down")
-	}
-	return cfg
-}
-
-// --- disabled: the kill-switch restores today's instantaneous income_bar trigger ---
-
-// The live kill-switch at the derivePhase seam: with scaled_gate_entry_disabled=1, the exact ktio spike
-// (one payout over income_bar, ZERO haulers, 30% coverage) STILL derives GATE — byte-identical to the
-// pre-arm behavior. This is the disable half of the sp-5nd2 contract (the kill-switch restores legacy).
-func TestBootstrap_ScaledGate_Disabled_ByteIdentical_InstantSpikeStillGates(t *testing.T) {
-	cfg := disabledCfg(t)
-	obs := Observation{MarketsTotal: 10, MarketsCovered: 3, IncomePerHour: 12000} // over income_bar 10000, 0 haulers
-	if p := derivePhase(obs, cfg); p != PhaseGate {
-		t.Fatalf("disabled must be byte-identical: instantaneous income over income_bar → GATE, got %s", p)
-	}
-}
-
-// --- armed: GATE requires haulers AND a sustained $/hr (coverage is NOT a gate) ---
+// --- GATE requires haulers AND a sustained $/hr (coverage is NOT a gate) ---
 
 // Both conditions met (haulers ≥ floor, a sustained $/hr ≥ gate_income_bar) → GATE: a genuinely scaled,
 // funded contract op is the legitimate entry.
-func TestBootstrap_ScaledGate_Armed_HaulersAndSustainedIncome_EntersGate(t *testing.T) {
-	cfg := armedCfg(t)
+func TestBootstrap_ScaledGate_HaulersAndSustainedIncome_EntersGate(t *testing.T) {
+	cfg := scaledGateCfg(t)
 	obs := Observation{
 		Haulers:       []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}}, // 2 ≥ floor
 		IncomePerHour: 60000,                                            // (as substituted: the sustained mean) ≥ 50000
@@ -75,8 +44,8 @@ func TestBootstrap_ScaledGate_Armed_HaulersAndSustainedIncome_EntersGate(t *test
 // THE ktio case under the armed gate: income spiked far over the bar but with ZERO haulers (a frigate-only
 // contract payout, not a scaled op). Must NOT enter GATE — the hauler floor is the primary defense against
 // the 0-hauler deadlock, regardless of how high income spikes.
-func TestBootstrap_ScaledGate_Armed_SpikeWithZeroHaulers_DoesNotGate(t *testing.T) {
-	cfg := armedCfg(t)
+func TestBootstrap_ScaledGate_SpikeWithZeroHaulers_DoesNotGate(t *testing.T) {
+	cfg := scaledGateCfg(t)
 	obs := Observation{Haulers: nil, IncomePerHour: 300000}
 	if p := derivePhase(obs, cfg); p == PhaseGate {
 		t.Fatalf("armed: a 0-hauler income spike must NOT enter GATE (unscaled op — the ktio deadlock), got %s", p)
@@ -84,8 +53,8 @@ func TestBootstrap_ScaledGate_Armed_SpikeWithZeroHaulers_DoesNotGate(t *testing.
 }
 
 // Haulers met, but the sustained $/hr is under gate_income_bar → not yet funded, must NOT enter GATE.
-func TestBootstrap_ScaledGate_Armed_SustainedBelowBar_DoesNotGate(t *testing.T) {
-	cfg := armedCfg(t)
+func TestBootstrap_ScaledGate_SustainedBelowBar_DoesNotGate(t *testing.T) {
+	cfg := scaledGateCfg(t)
 	obs := Observation{Haulers: []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}}, IncomePerHour: 40000}
 	if p := derivePhase(obs, cfg); p == PhaseGate {
 		t.Fatalf("armed: haulers met but sustained income under the bar must NOT enter GATE, got %s", p)
@@ -95,8 +64,8 @@ func TestBootstrap_ScaledGate_Armed_SustainedBelowBar_DoesNotGate(t *testing.T) 
 // Coverage is NOT a GATE-entry condition: haulers + a sustained $/hr enter GATE even while the home
 // system is barely scanned (30% coverage). Scan-completeness runs as continuous background (the
 // freshness sizer), never a phase gate — a scaled, earning contract op is the legitimate entry.
-func TestBootstrap_ScaledGate_Armed_LowCoverage_StillEntersGate(t *testing.T) {
-	cfg := armedCfg(t)
+func TestBootstrap_ScaledGate_LowCoverage_StillEntersGate(t *testing.T) {
+	cfg := scaledGateCfg(t)
 	obs := Observation{MarketsTotal: 10, MarketsCovered: 3, Haulers: []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}}, IncomePerHour: 60000}
 	if p := derivePhase(obs, cfg); p != PhaseGate {
 		t.Fatalf("armed: haulers + sustained income must enter GATE regardless of coverage (30%%), got %s", p)
@@ -106,8 +75,8 @@ func TestBootstrap_ScaledGate_Armed_LowCoverage_StillEntersGate(t *testing.T) {
 // Sticky-latch safety: ConstructionStarted still forces GATE (a legitimately-started pipeline resumes on
 // restart), and — because construction can only START after a legit armed entry — this latch can never be
 // tripped by a spurious spike. Pins that the sticky branch is unchanged (checked before the entry gate).
-func TestBootstrap_ScaledGate_Armed_ConstructionStartedStaysGateEvenUnfunded(t *testing.T) {
-	cfg := armedCfg(t)
+func TestBootstrap_ScaledGate_ConstructionStartedStaysGateEvenUnfunded(t *testing.T) {
+	cfg := scaledGateCfg(t)
 	// Repurposed haulers have pulled the op back under every entry condition, but a pipeline exists.
 	obs := Observation{MarketsTotal: 10, MarketsCovered: 10, Haulers: nil, IncomePerHour: -55000, ConstructionStarted: true}
 	if p := derivePhase(obs, cfg); p != PhaseGate {
@@ -115,15 +84,15 @@ func TestBootstrap_ScaledGate_Armed_ConstructionStartedStaysGateEvenUnfunded(t *
 	}
 }
 
-// --- CURATIVE re-derive (sp-5nd2): the deploy's daemon RESTART cures the LIVE stuck-GATE latch ---
+// --- CURATIVE re-derive: the deploy's daemon RESTART cures a LIVE stuck-GATE latch ---
 
-// The arm gates GATE ENTRY, not EXIT — a running container stuck in GATE stays there. The CURE is the
-// deploy's fresh container BUILD (restart), which re-derives phase from live signals (no persisted phase
-// cursor) with the NEW config DEFAULT-ON (sp-5nd2) — no tune, not disabled. This pins that re-derive against
-// the LIVE torwind-2026-07-19 stuck-GATE state: construction 0% (never started — blocked on no_purchaser),
-// ZERO haulers, income ≈68000/hr, coverage ≈0.89, probes at target & scouting. Default-on, it must re-derive
-// INCOME — NOT GATE (the disabled/pre-arm wedge), NOT DATA (coverage is no longer a phase gate, sp-nsge).
-// GATES THE DEPLOY: if the default-on restart did not cure the latch here, the live P1 would stay wedged.
+// The scaled gate (unconditionally on, sp-1cbxz) gates GATE ENTRY, not EXIT — a running container stuck in
+// GATE stays there. The CURE is the deploy's fresh container BUILD (restart), which re-derives phase from
+// live signals (no persisted phase cursor). This pins that re-derive against the LIVE torwind-2026-07-19
+// stuck-GATE state: construction 0% (never started — blocked on no_purchaser), ZERO haulers, income
+// ≈68000/hr, coverage ≈0.89, probes at target & scouting. It must re-derive INCOME — NOT GATE (the pre-fix
+// wedge), NOT DATA (coverage is no longer a phase gate, sp-nsge). GATES THE DEPLOY: if the restart did not
+// cure the latch here, the live P1 would stay wedged.
 func TestBootstrap_ScaledGate_DefaultOnRestart_ReDerivesIncomeFromStuckGateLiveState(t *testing.T) {
 	// The live stuck-GATE observation, modeled faithfully. ConstructionStarted=false is load-bearing: the
 	// pipeline never actually started, so NO sticky latch (derivePhase line: obs.ConstructionStarted) fights
@@ -139,18 +108,11 @@ func TestBootstrap_ScaledGate_DefaultOnRestart_ReDerivesIncomeFromStuckGateLiveS
 		MarketsCovered:       8, // coverage ≈ 0.89 — must NOT route to DATA (sp-nsge removed the coverage phase gate)
 	}
 
-	// DISABLED (kill-switch) = the pre-arm live wedge: the bare income≥income_bar(10000) trigger forces GATE
-	// with 0 haulers. Pins exactly WHAT the deploy must cure (and proves the default-on assertion below is
-	// falsifiable — same obs, only the arm differs, yet the derived phase must change).
-	if p := derivePhase(stuck, disabledCfg(t)); p != PhaseGate {
-		t.Fatalf("disabled must reproduce the pre-arm wedge (income≥income_bar → GATE with 0 haulers), got %s", p)
-	}
-
-	// DEFAULT-ON restart (no tune, not disabled): gateFunded is FALSE — the hauler floor (0 < gate_min_haulers
-	// 2) blocks GATE even though 68000 ≥ gate_income_bar 50000 — and ConstructionStarted is false (no sticky
-	// latch), so the arc falls through to INCOME (probes at target & scouting). The cure the restart delivers.
+	// gateFunded is FALSE — the hauler floor (0 < gate_min_haulers 2) blocks GATE even though 68000 ≥
+	// gate_income_bar 50000 — and ConstructionStarted is false (no sticky latch), so the arc falls through to
+	// INCOME (probes at target & scouting). The cure the restart delivers.
 	if p := derivePhase(stuck, resolveBootstrapConfig(baseCmd(), nil)); p != PhaseIncome {
-		t.Fatalf("default-on restart must re-derive INCOME from the stuck-GATE live state (cure the latch), got %s", p)
+		t.Fatalf("restart must re-derive INCOME from the stuck-GATE live state (cure the latch), got %s", p)
 	}
 }
 
@@ -196,10 +158,10 @@ func TestIncomeWindow_SustainedHigh_ClearsBarOnceFull(t *testing.T) {
 	}
 }
 
-// --- acceptance (armed, multi-tick through reconcileOnce): the smoother is WIRED into the phase
-// derivation — a lone income spike never enters GATE, but a SUSTAINED $/hr does once the window fills. ---
+// --- acceptance (multi-tick through reconcileOnce): the smoother is WIRED into the phase derivation —
+// a lone income spike never enters GATE, but a SUSTAINED $/hr does once the window fills. ---
 
-func TestBootstrap_ScaledGate_Armed_SpikeStaysIncome_SustainedEntersGate(t *testing.T) {
+func TestBootstrap_ScaledGate_SpikeStaysIncome_SustainedEntersGate(t *testing.T) {
 	// A scaled op: coverage 100%, 2 haulers — so ONLY the sustained-income condition is in question here.
 	base := Observation{
 		HomeSystem: "X1-HQ", ProbeCount: 3, ProbesScouting: 3, HasIdlePurchaser: true,
@@ -208,13 +170,13 @@ func TestBootstrap_ScaledGate_Armed_SpikeStaysIncome_SustainedEntersGate(t *test
 		Treasury: 1_000_000, Readable: true,
 	}
 	obsvr := &fakeObserver{obs: base}
-	armed := &fakeLiveConfig{snap: liveconfig.Snapshot{"scaled_gate_entry": 1}}
+	live := &fakeLiveConfig{snap: liveconfig.Snapshot{}} // scaled gate is unconditionally on
 	h := NewRunBootstrapCoordinatorHandler(nil)
 	h.SetShipRefresher(&fakeRefresher{})
 	h.SetWorldObserver(obsvr)
 	h.SetProbeAcquirer(&fakeAcquirer{price: 40000, yard: "Y", readable: true})
 	h.SetScoutPostDeclarer(&fakeDeclarer{})
-	h.SetLiveConfigReader(armed)
+	h.SetLiveConfigReader(live)
 	cmd := baseCmd()
 
 	// A lone spike among net-negative spend ticks: the window mean never clears the bar, so the arc stays
@@ -246,31 +208,5 @@ func TestBootstrap_ScaledGate_Armed_SpikeStaysIncome_SustainedEntersGate(t *test
 	}
 	if !gateEntered {
 		t.Fatalf("sustained $/hr over the bar (a scaled op) must enter GATE once the rolling window fills")
-	}
-}
-
-// Byte-identical at the reconcileOnce seam: with the gate DISABLED (kill-switch), the ktio spike (one tick
-// over income_bar, 0 haulers) enters GATE on the very first tick exactly as the pre-arm behavior — the
-// smoother is never consulted.
-func TestBootstrap_ScaledGate_Disabled_ReconcileGatesOnInstantSpike(t *testing.T) {
-	obs := Observation{
-		HomeSystem: "X1-HQ", ProbeCount: 3, ProbesScouting: 3, HasIdlePurchaser: true,
-		MarketsTotal: 10, MarketsCovered: 3, // 30% coverage — under the bar
-		Treasury: 1_000_000, IncomePerHour: 12000, Readable: true, // one payout over income_bar, 0 haulers
-	}
-	h := NewRunBootstrapCoordinatorHandler(nil)
-	h.SetShipRefresher(&fakeRefresher{})
-	h.SetWorldObserver(&fakeObserver{obs: obs})
-	h.SetProbeAcquirer(&fakeAcquirer{price: 40000, yard: "Y", readable: true})
-	h.SetScoutPostDeclarer(&fakeDeclarer{})
-	// Disable BOTH arms so the reconcile takes the pre-arm path (bare income_bar GATE; autosizer off).
-	h.SetLiveConfigReader(&fakeLiveConfig{snap: liveconfig.Snapshot{"scaled_gate_entry_disabled": 1, "autosizer_early_scaling_disabled": 1}})
-
-	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
-	if err != nil {
-		t.Fatalf("reconcileOnce: %v", err)
-	}
-	if res.Phase != PhaseGate {
-		t.Fatalf("disabled: an instantaneous spike over income_bar must GATE on the first tick (byte-identical), got %s", res.Phase)
 	}
 }

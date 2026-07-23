@@ -47,27 +47,22 @@ func (f *fakeLiveConfig) set(s liveconfig.Snapshot) {
 func TestBootstrapTunableDefaults_MirrorsCoordinatorConsts(t *testing.T) {
 	got := BootstrapTunableDefaults()
 	want := map[string]int{
-		"probe_target":                     defaultProbeTarget,                   // 3
-		"coverage_bar_percent":             90,                                   // defaultCoverageBar 0.90 → 90%
-		"hauler_target":                    defaultHaulerTarget,                  // 4
-		"income_bar":                       10000,                                // defaultIncomeBar 10000.0 → 10000 credits
-		"min_contract_earners":             defaultMinContractEarners,            // 1
-		"gate_worker_target":               defaultGateWorkerTarget,              // 6
-		"tick_secs":                        defaultBootstrapTickSeconds,          // 45 (sp-lgo3: short cold-start cadence)
-		"defer_probe_to_freshsizer":        defaultDeferProbeToFreshsizer,        // 0 (off) — sp-tsn2 arbitration flag
-		"scaled_gate_entry":                defaultScaledGateEntry,               // 0 (off) — sp-fp3y GATE-entry gate
-		"gate_income_bar":                  50000,                                // defaultGateIncomeBar 50000.0 → 50000 credits
-		"gate_min_haulers":                 defaultGateMinHaulers,                // 2 — sp-fp3y armed-GATE hauler floor
-		"autosizer_early_scaling":          defaultAutosizerEarlyScaling,         // 0 (not-forced) — sp-sjvv positive force-on knob (feature is DEFAULT-ON via config)
-		"scaled_gate_entry_disabled":       defaultScaledGateEntryDisabled,       // 0 (not-disabled) — sp-5nd2 live kill-switch
-		"autosizer_early_scaling_disabled": defaultAutosizerEarlyScalingDisabled, // 0 (not-disabled) — sp-5nd2 live kill-switch
-		"contract_scaler_early_scaling":    defaultContractScalerEarlyScaling,    // 0 (off) — epic sp-9le3x C2b DEFAULT-OFF contract-scaler arm
-		"gate_surplus_hardening":           defaultGateSurplusHardening,          // 0 (off) — sp-gm7r scaled-gate hardening master flag
-		"gate_hauler_floor":                defaultGateHaulerFloor,               // 4 — sp-gm7r raised armed-GATE hauler floor
-		"gate_surplus_floor":               int(defaultGateSurplusFloor),         // 500000 — sp-gm7r armed-GATE treasury surplus war chest
-		"gate_contract_floor":              defaultGateContractFloor,             // 2 — sp-gm7r contract-earner floor held through GATE
-		"gate_reentry_construction_pct":    5,                                    // defaultGateReentryConstructionPct 5.0 → 5 percent
-		"gate_reentry_streak_ticks":        defaultGateReentryStreakTicks,        // 3 — sp-gm7r escape-hatch anti-thrash streak
+		"probe_target":                  defaultProbeTarget,            // 3
+		"coverage_bar_percent":          90,                            // defaultCoverageBar 0.90 → 90%
+		"hauler_target":                 defaultHaulerTarget,           // 4
+		"income_bar":                    10000,                         // defaultIncomeBar 10000.0 → 10000 credits
+		"min_contract_earners":          defaultMinContractEarners,     // 1
+		"gate_worker_target":            defaultGateWorkerTarget,       // 6
+		"tick_secs":                     defaultBootstrapTickSeconds,   // 45 (sp-lgo3: short cold-start cadence)
+		"defer_probe_to_freshsizer":     defaultDeferProbeToFreshsizer, // 0 (off) — sp-tsn2 arbitration flag
+		"gate_income_bar":               50000,                         // defaultGateIncomeBar 50000.0 → 50000 credits
+		"gate_min_haulers":              defaultGateMinHaulers,         // 2 — sp-fp3y scaled-GATE hauler floor (unconditional)
+		"gate_surplus_hardening":        defaultGateSurplusHardening,   // 0 (off) — sp-gm7r scaled-gate hardening master flag
+		"gate_hauler_floor":             defaultGateHaulerFloor,        // 4 — sp-gm7r raised armed-GATE hauler floor
+		"gate_surplus_floor":            int(defaultGateSurplusFloor),  // 500000 — sp-gm7r armed-GATE treasury surplus war chest
+		"gate_contract_floor":           defaultGateContractFloor,      // 2 — sp-gm7r contract-earner floor held through GATE
+		"gate_reentry_construction_pct": 5,                             // defaultGateReentryConstructionPct 5.0 → 5 percent
+		"gate_reentry_streak_ticks":     defaultGateReentryStreakTicks, // 3 — sp-gm7r escape-hatch anti-thrash streak
 	}
 	if len(got) != len(want) {
 		t.Fatalf("tunable defaults size: got %d want %d (%v)", len(got), len(want), got)
@@ -119,8 +114,7 @@ func TestBootstrap_ResolveConfig_LiveOverlayOverridesLaunchAndConvertsFractions(
 
 // Seam-inertness: a nil snapshot (reader unwired/unreadable), an empty snapshot, and a snapshot
 // carrying only the prefixed launch keys (no bare tune key) ALL resolve identically to the
-// launch-frozen defaults (including the sp-5nd2 default-ON arms, which come from the launch cmd,
-// not this seam). The live-read seam changes nothing until an operator tunes a bare key.
+// launch-frozen defaults. The live-read seam changes nothing until an operator tunes a bare key.
 func TestBootstrap_ResolveConfig_NilAndEmptyAndNoiseLive_ByteIdentical(t *testing.T) {
 	base := resolveBootstrapConfig(baseCmd(), nil)
 
