@@ -827,9 +827,11 @@ def test_netting_zero_absorption_is_byte_identical():
         out = solve_tour(board, ship, cons, MODEL, absorption=absorption)
         assert out == baseline, (absorption, out, baseline)
     # And the baseline really does take BOTH tranches (so the netting tests above are
-    # cutting real depth, not a degenerate single-tranche plan). Sells emit
-    # price-ascending (the executor's dock order), so step 1 (900) precedes step 0.
-    assert _b_sells(baseline) == [(40, 900), (40, 1000)], baseline
+    # cutting real depth, not a degenerate single-tranche plan). Under the sp-2v69u
+    # per-visit absorption cap (one trade_volume per dock) an 80-hold hull lifts the
+    # second tranche via a SECOND visit to B (A->B->A->B, empty middle A pruned), so the
+    # sells emit in VISIT order: step 0 (1000) at the first dock, step 1 (900) at the second.
+    assert _b_sells(baseline) == [(40, 1000), (40, 900)], baseline
 
 
 def test_netting_fully_absorbed_market_reroutes():
@@ -1149,10 +1151,16 @@ def test_resolve_max_planned_tranches_env_override(monkeypatch, env_value, expec
 def test_max_planned_tranches_env_deepens_planned_load(monkeypatch):
     # sp-acb8 Tune 1 (the point of the knob): a HIGHER cap must let one hull load a
     # DEEPER tranche stack at a single (market, good, side) — the ladder cap in the
-    # score_sequence `pool` closure is MAX_PLANNED_TRANCHES * trade_volume. One cheap
-    # source (A) feeding one fat sink (B), with a big hold and budget so the ONLY
-    # binding throttle is the tranche cap (not hold/spend/market depth). objective is
-    # pinned to profit so the assertion is deterministic under any deploy-time default.
+    # score_sequence `pool` closure is MAX_PLANNED_TRANCHES * trade_volume.
+    #
+    # sp-2v69u SECONDARY updated the depth MODEL: the realized per-visit sink-absorption
+    # cap (one trade_volume per DOCK) now supersedes the tranche-count where they conflict,
+    # so MAX_PLANNED_TRANCHES no longer deepens a SINGLE visit — the pool's tranches are
+    # realized one-per-visit, across successive revisits (A->B->A->B->A->B). The knob is
+    # still the throughput lever, now expressed through absorption: raising it lets each
+    # extra sink VISIT lift another tranche. max_hops=6 admits up to 3 B-visits so the
+    # pool (not the visit count) is the binding throttle across cap in {1,2,3}. objective
+    # is pinned to profit so the assertion is deterministic under any deploy-time default.
     snapshot = [
         snap("A", "S1", "G", ask=100, bid=90, tv=20),    # cheap source
         snap("B", "S1", "G", ask=999, bid=500, tv=20),   # fat sink; deep tranches stay profitable
@@ -1160,27 +1168,25 @@ def test_max_planned_tranches_env_deepens_planned_load(monkeypatch):
     ship = dict(ship_symbol="H", current_waypoint="A", current_system="S1",
                 hold_capacity=400, fuel_current=400, fuel_capacity=400,
                 engine_speed=30, cargo=[])
-    cons = dict(max_hops=4, max_spend=10_000_000, min_margin_per_unit=1,
+    cons = dict(max_hops=6, max_spend=10_000_000, min_margin_per_unit=1,
                 working_capital_reserve=0, allowed_systems=["S1"],
                 max_snapshot_age_minutes=75, expected_model_version="1@e")
 
     def buy_units(env_value):
-        if env_value is None:
-            monkeypatch.delenv("TOUR_SOLVER_MAX_PLANNED_TRANCHES", raising=False)
-        else:
-            monkeypatch.setenv("TOUR_SOLVER_MAX_PLANNED_TRANCHES", env_value)
+        monkeypatch.setenv("TOUR_SOLVER_MAX_PLANNED_TRANCHES", env_value)
         out = solve_tour(snapshot, ship, cons, MODEL, objective="profit")
         assert out["feasible"], out
         return sum(t["units"] for l in out["legs"]
                    for t in l["trades"] if t["is_buy"])
 
-    baseline = buy_units(None)      # default cap 2
-    deeper = buy_units("3")         # cap 3
-    deepest = buy_units("4")        # cap 4
+    baseline = buy_units("1")       # cap 1 -> one B-visit lifts one tranche (20)
+    deeper = buy_units("2")         # cap 2 -> two B-visits (40)
+    deepest = buy_units("3")        # cap 3 -> three B-visits (60)
 
-    assert baseline > 0, "sanity: the default-cap tour must load SOMETHING"
-    # The knob's whole purpose: raising the cap raises acquisition depth (throughput).
-    # Mutation guard: hardcode the resolver to 2 and baseline == deeper == deepest here.
+    assert baseline > 0, "sanity: the cap-1 tour must load SOMETHING"
+    # The knob's whole purpose: raising the cap raises acquisition depth (throughput),
+    # now realized across sink VISITS under the absorption model.
+    # Mutation guard: hardcode the resolver to 1 and baseline == deeper == deepest here.
     assert deeper > baseline, (baseline, deeper)
     assert deepest > deeper, (deeper, deepest)
 

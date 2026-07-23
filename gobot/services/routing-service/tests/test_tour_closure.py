@@ -190,15 +190,18 @@ def test_unresolvable_anchor_is_infeasible(anchor, keep_s2_rows, reason):
 
 # --------------------------------------------------------------- selection honesty
 def test_rate_objective_honestly_charges_the_return_leg():
-    # Two lanes from source A: far/rich B (bid 177, x=600) vs near/thin C (bid 120,
-    # x=1). Open rate: B's lane clocks ~24.6k/hr vs C's ~21.8k/hr — B wins. Closed
-    # (floating anchor A) charges the 620s return: B drops to ~12.8k/hr, C only to
-    # ~14.5k/hr — the honest rate ordering flips to C. Every market also bids for
-    # the held token L (A strictly best at 12) so EVERY candidate carries a real
-    # sell leg => seconds>0 => the _sort_scored zero-time degrade can never silently
-    # knock this fixture back to profit ordering.
+    # Two lanes from source A: far/rich B (bid 240, x=600) vs near/thin C (bid 120,
+    # x=1). Open rate: B's richer single-dock lane still out-clocks near C — B wins.
+    # Closed (floating anchor A) charges the 620s return, which flips the honest rate
+    # ordering to C. (B's bid is 240, not the pre-sp-2v69u 177: under the per-visit
+    # absorption cap each dock lifts ONE trade_volume, halving what the far lane earns
+    # per trip, so B needs the richer margin to still win OPEN before the return re-ranks
+    # it closed — the flip window is bid_B in ~(222, 256).) Every market also bids for
+    # the held token L (A strictly best at 12) so EVERY candidate carries a real sell leg
+    # => seconds>0 => the _sort_scored zero-time degrade can never silently knock this
+    # fixture back to profit ordering.
     snapshot = [snap("A", "S1", "G", ask=100, bid=0),
-                snap("B", "S1", "G", ask=0, bid=177),
+                snap("B", "S1", "G", ask=0, bid=240),
                 snap("C", "S1", "G", ask=0, bid=120),
                 snap("A", "S1", "L", ask=0, bid=12),
                 snap("B", "S1", "L", ask=0, bid=10),

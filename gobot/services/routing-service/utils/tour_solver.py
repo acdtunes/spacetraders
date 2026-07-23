@@ -140,6 +140,25 @@ MAX_PLANNED_TRANCHES_PER_MARKET_GOOD_SIDE = 2  # env TOUR_SOLVER_MAX_PLANNED_TRA
 MAX_PLANNED_TRANCHES_ENV_VAR = "TOUR_SOLVER_MAX_PLANNED_TRANCHES"
 MAX_PLANNED_TRANCHES_MIN = 1   # floor: 1 tranche still trades; 0 would plan no loads
 MAX_PLANNED_TRANCHES_MAX = 6   # ceiling: well above the analyst's {2,3,4} sweep
+# Realized per-visit market-sink absorption cap (sp-2v69u SECONDARY — capacity-aware buy budget).
+# THE binding single-sink depth constraint, LIVE on deploy (Admiral ruling: no flag, no arm-seam;
+# absorption-based depth SUPERSEDES the tranche-count MAX_PLANNED_TRANCHES where they conflict —
+# the more-principled model). MAX_PLANNED_TRANCHES still bounds the pool depth per (market, good,
+# side) across the WHOLE tour, but it is capacity-BLIND: it would let a 225-cargo freighter dump
+# its full 2*trade_volume load into a SINGLE sink dock — tranches a shallow WEAK/RESTRICTED market
+# cannot realize, so the excess strands (the bead's RC1/RC2). This bound is capacity-AWARE: a
+# single sink VISIT realizes at most REALIZED_SINK_TRANCHES_PER_VISIT trade_volume tranches at the
+# live quote; deeper same-visit tranches are the optimistic-decay bet that does not clear the
+# execution sell floor under real (fleet-contended, shallow) depth. Because the greedy allocator
+# matches each buy 1:1 to a sell, bounding realized per-visit sink absorption bounds the per-good
+# BUY commitment to what the reachable sink graph can actually take — net of fleet-wide absorption,
+# which net_absorption already nets out of each pool upstream. Revisits and multiple sinks are
+# unaffected: each dock still absorbs its tranche, so a diverse or repeat-visit tour (with real
+# travel-time recovery between visits) realizes its full spread. Byte-identical only where capacity
+# is not the binding constraint (hold_capacity <= trade_volume — a hull that cannot carry more than
+# one tranche to a dock never trips it). A named const (RULINGS #5); caps PLANNED units downward
+# only, never weakening a spend guard (RULINGS #4).
+REALIZED_SINK_TRANCHES_PER_VISIT = 1
 CRUISE_TIME_MULTIPLIER = 31   # mirrors utils/routing_engine.FlightMode.CRUISE
 GATE_HOP_ALLOWANCE_SECONDS = 450   # to-gate / from-gate hop (gate coords not carried)
 JUMP_COOLDOWN_SECONDS = 900        # gate jump + cooldown
@@ -710,6 +729,11 @@ def score_sequence(seq, markets, ship, constraints, model, travel_fn, deposit_si
     revenue = 0
     allocations = []            # (good, buy_leg, sell_leg, units, buy_price, sell_price, kind)
     alive = list(pairs)
+    # sp-2v69u SECONDARY: units already sold at each market-sink VISIT keyed by (sell_leg, good).
+    # Bounds one dock's realized absorption to REALIZED_SINK_TRANCHES_PER_VISIT * trade_volume so a
+    # heavy hull cannot dump its excess capacity into a single sink (a repeat visit or another sink
+    # each get their own tranches). DEPOSIT sinks (synthetic transfers, no crush) are exempt.
+    sold_this_visit = {}
 
     def sink_for(kind, j, good):
         # A deposit pairing draws from the flat synthetic warehouse pool; every
@@ -748,6 +772,19 @@ def score_sequence(seq, markets, ship, constraints, model, travel_fn, deposit_si
                 slack = hold_cap - max(occ[i:j]) if j > i else 0
                 afford = (spend_cap - spend) // buy_price
                 units = min(buy_rem, sell_rem, slack, afford)
+            # sp-2v69u SECONDARY (LIVE): a single market-sink visit realizes at most
+            # REALIZED_SINK_TRANCHES_PER_VISIT trade_volume tranches; cap this pairing's units at
+            # the dock's remaining per-visit absorption so a heavy never over-concentrates its
+            # capacity into one sink (buys are matched to sells, so this bounds the per-good BUY
+            # commitment). DEPOSIT sinks are synthetic transfers with no market crush — exempt.
+            # The pool head is already fleet-absorption-netted; this is the binding single-sink
+            # depth constraint, superseding MAX_PLANNED_TRANCHES per visit where they conflict.
+            if kind != "deposit":
+                visit_rem = (REALIZED_SINK_TRANCHES_PER_VISIT
+                             * markets[seq[j]]["goods"][good]["trade_volume"]
+                             - sold_this_visit.get((j, good), 0))
+                if units > visit_rem:
+                    units = visit_rem
             if units <= 0:
                 continue
             key = (margin, -j, -(i if i is not None else -1))
@@ -757,6 +794,8 @@ def score_sequence(seq, markets, ship, constraints, model, travel_fn, deposit_si
             break
         _, good, i, j, units, buy_price, sell_price, kind = best
         sink_for(kind, j, good).take(units)
+        if kind != "deposit":   # sp-2v69u SECONDARY: bank this dock's realized absorption
+            sold_this_visit[(j, good)] = sold_this_visit.get((j, good), 0) + units
         if i is None:
             initial_left[good] -= units
             for k in range(j, n):

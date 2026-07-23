@@ -86,17 +86,22 @@ def test_golden_tour(tmp_path):
     assert resp.model_version == "1@goldene"
 
     legs = [(l.waypoint_symbol, l.system_symbol) for l in resp.legs]
-    # Exact chosen sequence (golden): buy G at A, cross the gate to sell G
-    # deep at D and load H, come back to sell H at E — hold full both ways.
-    assert legs == [("A", "S1"), ("D", "S2"), ("E", "S1")]
+    # Exact chosen sequence (golden): buy 80 G at A, then run the D<->E lane TWICE —
+    # sp-2v69u's per-visit absorption cap lets each dock (D for G, E for H) lift only one
+    # trade_volume per visit, so the second tranche of each good rides a second D/E round
+    # trip (the same total load, spread across visits) rather than a single-visit dump.
+    assert legs == [("A", "S1"), ("D", "S2"), ("E", "S1"), ("D", "S2"), ("E", "S1")]
 
+    # Aggregated by (waypoint, good, side, price): the total load is unchanged (80 G sold
+    # cross-gate at D across two visits, 80 H sold back home at E across two visits) —
+    # only the leg structure spread; the price-keyed trade set and the profit are identical.
     trades = {(l.waypoint_symbol, t.good_symbol, t.is_buy, t.expected_unit_price): t.units
               for l in resp.legs for t in l.trades}
     assert trades == {
         ("A", "G", True, 100): 40, ("A", "G", True, 110): 40,   # 80u G loaded
-        ("D", "G", False, 320): 40, ("D", "G", False, 288): 40,  # sold cross-gate
+        ("D", "G", False, 320): 40, ("D", "G", False, 288): 40,  # sold cross-gate (two visits)
         ("D", "H", True, 50): 40, ("D", "H", True, 55): 40,      # 80u H return cargo
-        ("E", "H", False, 160): 40, ("E", "H", False, 144): 40,  # sold back home
+        ("E", "H", False, 160): 40, ("E", "H", False, 144): 40,  # sold back home (two visits)
     }
     assert resp.projected_profit == 23_880
     assert resp.projected_credits_per_hour > 0

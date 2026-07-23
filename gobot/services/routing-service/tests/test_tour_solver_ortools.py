@@ -275,9 +275,10 @@ def test_ortools_visits_pure_buy_source_from_neutral_start(monkeypatch):
     # N). The FUEL source A is strictly intermediate: its value exists ONLY on
     # the arc that LEAVES it toward sink B. A sell-side-only prize model skips
     # A (strictly-dominated skip) and never books the buy.
-    # hold=80 equals the A-cap depth (2*tv) so a single visit lifts the whole
-    # profitable depth and beam's revisit ladder adds nothing (same rationale
-    # as the T6 crossing fixture) — DIRECT single-visit parity is then exact.
+    # Under the sp-2v69u per-visit absorption cap a single dock lifts ONE tranche, so the
+    # revisit-capable beam/ortools UNION (out) matches beam, while the single-visit DIRECT
+    # ortools set realizes the single-visit optimum (one tranche) — less than beam's revisit
+    # ladder, but strictly positive: a sell-side-only prize model would skip A and book 0.
     snapshot = [
         snap("N", "S1", "JUNK", ask=999, bid=1, tv=40),
         snap("A", "S1", "FUEL", ask=50, bid=40, tv=40),
@@ -303,7 +304,10 @@ def test_ortools_visits_pure_buy_source_from_neutral_start(monkeypatch):
     monkeypatch.setenv("TOUR_SOLVER_ORTOOLS_TIME_VALUE", "0")
     best, cands = _best_direct_profit(snapshot, ship, cons)
     assert cands, "ortools produced no candidates"
-    assert best == beam_out["projected_profit"], (best, cands)
+    # Single-visit optimum = one tranche: 40 * (150 - 50). Proves ortools BOOKS the
+    # intermediate buy (anti-skip); beam's larger union profit is the revisit ladder the
+    # single-visit prize space structurally cannot reach under the sp-2v69u per-visit cap.
+    assert best == 40 * (150 - 50), (best, cands)
 
 
 # --- T6 (F2 blocker): crossing-ladder ordering --------------------------------
@@ -311,9 +315,10 @@ def test_ortools_visits_pure_buy_source_from_neutral_start(monkeypatch):
 def _crossing_ladder_fixture():
     # A (S1): G source. D (S2): G sink AND H source. E (S1): H sink. The
     # travel-cheapest order A->E->D (300+1800s) books only the G leg; only the
-    # value order A->D->E (1800+1800s) crosses buy-before-sell on H. hold=80
-    # equals the A-cap depth (2*tv) so revisits add nothing and permutation
-    # brute force is the true optimum.
+    # value order A->D->E (1800+1800s) crosses buy-before-sell on H. max_hops=3
+    # admits the 3-stop crossing but forbids the extra revisit leg the sp-2v69u
+    # per-visit absorption cap would otherwise reward (A->D->E->D), so the
+    # single-visit permutation brute force stays the true optimum.
     snapshot = [
         snap("A", "S1", "G", ask=100, bid=90, tv=40),
         snap("D", "S2", "G", ask=360, bid=320, tv=40),
@@ -321,7 +326,7 @@ def _crossing_ladder_fixture():
         snap("E", "S1", "H", ask=999, bid=160, tv=40),
     ]
     ship = _ship(hold=80)
-    cons = _cons(allowed_systems=["S1", "S2"])
+    cons = _cons(allowed_systems=["S1", "S2"], max_hops=3)
     return snapshot, ship, cons
 
 
@@ -344,9 +349,12 @@ def test_ortools_orders_buy_before_sell_across_the_crossing(monkeypatch):
 # --- T7: brute-force equality, single system ----------------------------------
 
 def test_ortools_matches_brute_force_on_single_system_chain(monkeypatch):
-    # 5 markets, hold >= A-cap depth (2*tv) so permutations are the optimum.
-    # The value chain M1(FUEL)->M2(sell FUEL, buy ORE)->M3(sell ORE, buy GAS)
+    # 5 markets. The value chain M1(FUEL)->M2(sell FUEL, buy ORE)->M3(sell ORE, buy GAS)
     # ->M4(sell GAS) must be discovered by ordering, not luck.
+    # sp-2v69u: the single-visit prize space (ortools DIRECT) still equals the single-visit
+    # permutation brute force EXACTLY (the sequencer pin, below); the full revisit-capable
+    # solver (out) may EXCEED it, because under the per-visit absorption cap a revisit lifts a
+    # second tranche the single-visit space cannot reach (the documented RED#5b relation).
     snapshot = [
         snap("M1", "S1", "FUEL", ask=50, bid=45, tv=20),
         snap("M2", "S1", "FUEL", ask=999, bid=150, tv=20),
@@ -364,8 +372,10 @@ def test_ortools_matches_brute_force_on_single_system_chain(monkeypatch):
     _ortools_env(monkeypatch)
     out = solve_tour(snapshot, ship, cons, MODEL)
     assert out["feasible"], out
-    assert out["projected_profit"] == optimum, out
+    # Revisit-capable upper bound (see docstring): >= the single-visit brute-force optimum.
+    assert out["projected_profit"] >= optimum, out
 
+    # DIRECT single-visit sequencer pin: ortools' single-visit prize optimum == brute force.
     best, cands = _best_direct_profit(snapshot, ship, cons)
     assert best == optimum, (best, optimum, cands[:5])
 
