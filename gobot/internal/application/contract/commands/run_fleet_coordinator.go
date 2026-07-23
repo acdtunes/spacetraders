@@ -963,6 +963,13 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			}
 			if recordWorkerCompletion(logger, event, fmt.Sprintf("Contract completed by %s", event.ShipSymbol)) {
 				result.ContractsCompleted++
+				// Home the just-delivered hull to a standby sink IMMEDIATELY (sp-x80j3)
+				// instead of leaving it loitering at the delivery waypoint until the next
+				// between-legs selection change or the ~90s idle-arb sweep. Scoped to a
+				// successful delivery (the hull is free/idle at the delivery waypoint here);
+				// reuses the coordinator's ONE homing path — frigate-excluded, no-thrash,
+				// best-effort.
+				h.homeCompletedHullToStandby(ctx, cmd, event.ShipSymbol)
 			}
 			activeWorkerContainerID = ""
 			previousShipSymbol = event.ShipSymbol
@@ -1253,6 +1260,59 @@ func recordWorkerCompletion(logger common.ContainerLogger, event navigation.Work
 	}
 	logger.Log("ERROR", fmt.Sprintf("Worker for ship %s failed: %s", event.ShipSymbol, event.Error), nil)
 	return false
+}
+
+// homeCompletedHullToStandby dispatches a just-completed contract-work hull to a
+// demand-ranked standby sink THE MOMENT its worker finishes (sp-x80j3), so the hull
+// does not loiter at the delivery waypoint until the next between-legs selection
+// change or the ~90s idle-arb sweep.
+func (h *RunFleetCoordinatorHandler) homeCompletedHullToStandby(ctx context.Context, cmd *RunFleetCoordinatorCommand, shipSymbol string) {
+	logger := common.LoggerFromContext(ctx)
+
+	ship, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, cmd.PlayerID)
+	if err != nil {
+		logger.Log("WARNING", fmt.Sprintf("immediate homing: failed to load completed hull %s (skipping fast re-home): %v", shipSymbol, err), nil)
+		return
+	}
+	// The command frigate homes on its own last-resort rules, never parked as a
+	// standby drifter (RULINGS #7) — mirror the candidate-side IsCommandHull gate.
+	if domainContract.IsCommandHull(ship) {
+		return
+	}
+
+	// The SAME live-set + demand resolution the between-legs hook uses: live
+	// `fleet hub` pins ranked by demand, or the role central parks auto-driving the
+	// set when no hub is pinned (sp-bu6ma). Nil-safe → launch snapshot / uniform.
+	liveStandby := appContract.ResolveStandbyStations(ctx, logger, h.standbyProvider, cmd.ContainerID, cmd.PlayerID.Value(), cmd.StandbyStations)
+	liveStandby, standbyDemand := appContract.ResolveStandbyForHoming(ctx, logger, h.standbyDemandProvider, cmd.PlayerID.Value(), liveStandby)
+
+	// No-thrash: a hull whose contract destination IS a standby sink already
+	// delivered AT home — skip the redundant dispatch (home_ship short-circuits an
+	// at-station hull too, this just avoids the wasteful command).
+	for _, station := range liveStandby {
+		if station == ship.CurrentLocation().Symbol {
+			return
+		}
+	}
+
+	dedicatedMembers := resolveDedicatedMembersForHoming(ctx, logger, h.shipRepo, cmd.PlayerID, dedicatedFleetContract, cmd.DedicatedShips)
+
+	// Fire-and-forget on a background context carrying the container logger — the
+	// SAME async dispatch the between-legs hook uses (HomeShipCommand blocks for the
+	// whole flight, so a synchronous send would stall the coordinator loop).
+	go func(shipSymbol string, playerID shared.PlayerID, standbyStations []string, standbyDemand map[string]float64, fleetShips []string) {
+		homeCmd := &HomeShipCommand{
+			ShipSymbol:      shipSymbol,
+			PlayerID:        playerID,
+			StandbyStations: standbyStations,
+			StandbyDemand:   standbyDemand,
+			FleetShips:      fleetShips,
+		}
+		homeCtx := common.WithLogger(context.Background(), logger)
+		if _, err := h.fleetPoolManager.GetMediator().Send(homeCtx, homeCmd); err != nil {
+			logger.Log("WARNING", fmt.Sprintf("immediate homing: failed to home completed hull %s: %v", shipSymbol, err), nil)
+		}
+	}(shipSymbol, cmd.PlayerID, liveStandby, standbyDemand, dedicatedMembers)
 }
 
 // readoptInterruptedDeliveries resumes a contract delivery that a daemon
