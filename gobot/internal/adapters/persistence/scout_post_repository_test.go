@@ -253,3 +253,43 @@ func TestScoutPostRepo_SingleHullNoPartitionColumns(t *testing.T) {
 	require.Nil(t, model.ExtraSlots)
 	require.Equal(t, 1, model.Hulls)
 }
+
+// The home manning FLOOR round-trips through the DB (sp-2ci9y): the freshsizer reads MinHulls off
+// the post each tick to floor the home budget. A fresh/non-home post reads 0 (no floor,
+// byte-identical). UpdateMinHulls is the NARROW seam bootstrap stamps the floor through — it touches
+// ONLY min_hulls, so it cannot clobber the freshsizer's Hulls resize or the reconciler's live manning.
+func TestScoutPostRepo_MinHullsFloorRoundTripAndNarrowUpdate(t *testing.T) {
+	repo, _, playerID := newScoutPostTestRepo(t)
+	ctx := context.Background()
+
+	fresh := &domainScouting.ScoutPost{PlayerID: playerID, SystemSymbol: "X1-QW1", FreshnessTarget: time.Hour, Kind: domainScouting.PostKindStanding, Hulls: 2}
+	require.NoError(t, repo.Upsert(ctx, fresh))
+	floored := &domainScouting.ScoutPost{PlayerID: playerID, SystemSymbol: "X1-HOME", FreshnessTarget: time.Hour, Kind: domainScouting.PostKindStanding, Hulls: 1, MinHulls: 3, AssignedHull: "SAT-HOME"}
+	require.NoError(t, repo.Upsert(ctx, floored))
+
+	load := func(system string) *domainScouting.ScoutPost {
+		posts, err := repo.ListActive(ctx, playerID)
+		require.NoError(t, err)
+		for _, p := range posts {
+			if p.SystemSymbol == system {
+				return p
+			}
+		}
+		t.Fatalf("post %s not found", system)
+		return nil
+	}
+
+	require.Equal(t, 0, load("X1-QW1").MinHulls, "a fresh/non-home post is unfloored (MinHulls 0)")
+	require.Equal(t, 3, load("X1-HOME").MinHulls, "the floor survives a DB round-trip")
+
+	// The narrow UpdateMinHulls seam sets ONLY min_hulls: it raises the floor while leaving Hulls
+	// (the freshsizer's column) and the live manning untouched.
+	require.NoError(t, repo.UpdateMinHulls(ctx, playerID, "X1-HOME", 4))
+	after := load("X1-HOME")
+	require.Equal(t, 4, after.MinHulls, "UpdateMinHulls raises the floor")
+	require.Equal(t, 1, after.Hulls, "UpdateMinHulls leaves the Hulls budget untouched (disjoint column)")
+	require.Equal(t, "SAT-HOME", after.AssignedHull, "UpdateMinHulls leaves live manning untouched")
+
+	// Updating a post that does not exist is a no-op (not an error).
+	require.NoError(t, repo.UpdateMinHulls(ctx, playerID, "X1-NOPE", 5))
+}

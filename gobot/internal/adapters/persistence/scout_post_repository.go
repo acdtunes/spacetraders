@@ -123,6 +123,28 @@ func (r *GormScoutPostRepository) UpdateHulls(ctx context.Context, playerID int,
 	return nil
 }
 
+// UpdateMinHulls updates ONLY the manning-floor column of the (playerID, systemSymbol)
+// post in the open era: the narrow seam bootstrap uses to stamp the home post's permanent
+// probe_target floor (sp-2ci9y) without disturbing the freshsizer's Hulls resize or the
+// reconciler's manning — a single-column write, so it cannot clobber either. min_hulls is a
+// DISJOINT column from hulls: bootstrap is the sole writer of the floor, the freshsizer the
+// sole writer of the budget, so the two never oscillate. Updating a post that does not exist
+// is a no-op (the caller declares a missing post first).
+func (r *GormScoutPostRepository) UpdateMinHulls(ctx context.Context, playerID int, systemSymbol string, minHulls int) error {
+	openEra := r.openEraID(ctx)
+	if openEra == nil {
+		return fmt.Errorf("cannot update scout post min hulls: no open era")
+	}
+	result := r.db.WithContext(ctx).
+		Model(&ScoutPostModel{}).
+		Where("player_id = ? AND system_symbol = ? AND era_id = ?", playerID, systemSymbol, *openEra).
+		Update("min_hulls", minHulls)
+	if result.Error != nil {
+		return fmt.Errorf("failed to update scout post min hulls: %w", result.Error)
+	}
+	return nil
+}
+
 // Remove deletes the post for (playerID, systemSymbol). Not finding a row to
 // delete is not an error.
 func (r *GormScoutPostRepository) Remove(ctx context.Context, playerID int, systemSymbol string) error {
@@ -150,6 +172,7 @@ func scoutPostToModel(p *domainScouting.ScoutPost) *ScoutPostModel {
 		TourContainerID:        stringToPtr(p.TourContainerID),
 		RepositionContainerID:  stringToPtr(p.RepositionContainerID),
 		Hulls:                  hulls,
+		MinHulls:               p.MinHulls,
 		PrimaryPartition:       marshalPartition(p.PrimaryPartition),
 		ExtraSlots:             marshalExtraSlots(p.ExtraSlots),
 		RespawnAttempts:        p.RespawnAttempts,
@@ -173,6 +196,7 @@ func modelToScoutPost(m *ScoutPostModel) *domainScouting.ScoutPost {
 		TourContainerID:       derefString(m.TourContainerID),
 		RepositionContainerID: derefString(m.RepositionContainerID),
 		Hulls:                 hulls,
+		MinHulls:              m.MinHulls,
 		PrimaryPartition:      unmarshalPartition(m.PrimaryPartition),
 		ExtraSlots:            unmarshalExtraSlots(m.ExtraSlots),
 		RespawnAttempts:       m.RespawnAttempts,

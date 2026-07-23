@@ -84,6 +84,15 @@ type ScoutPost struct {
 	// (HullBudget clamps it). RULINGS #5: a config/DB value, never a constant.
 	Hulls int
 
+	// MinHulls is a PERMANENT manning FLOOR: the freshsizer never sizes this post below
+	// it (it may size UP if the SLA genuinely demands more, but never below). 0 — the
+	// default for every post — means no floor, so a non-floored post is byte-identical.
+	// Bootstrap stamps the HOME post's floor to probe_target so the probes it bought for
+	// the home scan are never sized away and stranded (sp-2ci9y). It is a MANNING floor
+	// only: the freshsizer applies it when writing the budget, but its probe BUY-demand
+	// stays the un-floored SLA size, so the floor never double-buys against bootstrap.
+	MinHulls int
+
 	// PrimaryPartition is the primary slot's frozen disjoint market tour when
 	// Hulls>1. Empty ⇒ the slot tours ALL the system's markets (the single-hull
 	// default), so a single-hull post never carries one.
@@ -129,6 +138,23 @@ func (p *ScoutPost) HullBudget() int {
 		return 1
 	}
 	return p.Hulls
+}
+
+// FloorHulls raises a desired hull count to this post's manning floor: max(desired,
+// MinHulls). A post with MinHulls 0 (the default for every post) returns desired
+// unchanged, so only a floored post — the home post — is affected, and every other
+// post stays byte-identical. A negative floor clamps to 0. This is the MANNING floor
+// the freshsizer applies when it writes the post budget; the probe BUY-demand it sums
+// stays un-floored, so a floored post never inflates a buy (sp-2ci9y).
+func (p *ScoutPost) FloorHulls(desired int) int {
+	floor := p.MinHulls
+	if floor < 0 {
+		floor = 0
+	}
+	if desired < floor {
+		return floor
+	}
+	return desired
 }
 
 // Slots returns a mutable handle for each MATERIALIZED slot: the primary slot plus

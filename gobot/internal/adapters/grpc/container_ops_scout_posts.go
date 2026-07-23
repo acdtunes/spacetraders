@@ -120,6 +120,10 @@ func (s *DaemonServer) AddScoutPost(ctx context.Context, playerID int, systemSym
 			post.PrimaryPartition = p.PrimaryPartition
 			post.ExtraSlots = p.ExtraSlots
 			post.CreatedAt = p.CreatedAt
+			// Preserve the manning floor (sp-2ci9y) — bootstrap owns it via the narrow
+			// UpdateScoutPostMinHulls seam, so a full-row re-add here (a CLI `scout posts
+			// add`) must not zero the home post's probe_target floor.
+			post.MinHulls = p.MinHulls
 			break
 		}
 	}
@@ -128,6 +132,15 @@ func (s *DaemonServer) AddScoutPost(ctx context.Context, playerID int, systemSym
 		return nil, fmt.Errorf("failed to save scout post: %w", err)
 	}
 	return post, nil
+}
+
+// UpdateScoutPostMinHulls sets ONLY the manning-floor column of the (playerID, systemSymbol)
+// post — the narrow seam bootstrap uses to stamp the home post's permanent probe_target floor
+// (sp-2ci9y) without disturbing the freshsizer's Hulls resize or the reconciler's manning. A
+// missing post is a no-op (the caller creates it first, then stamps the floor).
+func (s *DaemonServer) UpdateScoutPostMinHulls(ctx context.Context, playerID int, systemSymbol string, minHulls int) error {
+	repo := persistence.NewGormScoutPostRepository(s.db)
+	return repo.UpdateMinHulls(ctx, playerID, systemSymbol, minHulls)
 }
 
 // RemoveScoutPost deletes a scout post for a system and releases its hull if one

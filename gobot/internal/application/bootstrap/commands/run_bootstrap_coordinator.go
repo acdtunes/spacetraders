@@ -229,9 +229,11 @@ type ProbeAcquirer interface {
 // Idempotent — a post already declared for the system is preserved, not re-touched — so bootstrap
 // can call it every DATA tick. This REPLACES the old probe-holding scout-all-markets sweep, which
 // held the probes and starved the now-boot-standing coordinator (sp-pt7d, Admiral intent: bootstrap
-// buys probes but assigns them to nothing; the coordinator mans them).
+// buys probes but assigns them to nothing; the coordinator mans them). minHulls is the permanent
+// manning FLOOR (probe_target, sp-2ci9y) stamped on the home post so the freshsizer never sizes it
+// below the probes bootstrap bought — passed through and applied idempotently.
 type ScoutPostDeclarer interface {
-	DeclareHomeScoutPost(ctx context.Context, playerID int, system string) error
+	DeclareHomeScoutPost(ctx context.Context, playerID int, system string, minHulls int) error
 }
 
 // ShipyardScanner positions an idle hull AT a home-system shipyard so the NEXT tick's live PriceCheck

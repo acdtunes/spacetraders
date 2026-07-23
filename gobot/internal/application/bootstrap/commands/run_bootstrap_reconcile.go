@@ -1122,7 +1122,7 @@ func (h *RunBootstrapCoordinatorHandler) declareHomeScoutPost(ctx context.Contex
 		return
 	}
 
-	if err := h.postDeclarer.DeclareHomeScoutPost(ctx, cmd.PlayerID, obs.HomeSystem); err != nil {
+	if err := h.postDeclarer.DeclareHomeScoutPost(ctx, cmd.PlayerID, obs.HomeSystem, cfg.ProbeTarget); err != nil {
 		res.Blocker = "scout_post_error"
 		logger.Log("ERROR", fmt.Sprintf("Bootstrap home scout-post declaration failed: %v", err), map[string]interface{}{
 			"action":       "bootstrap_scout_post_error",

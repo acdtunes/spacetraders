@@ -719,8 +719,18 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Co
 			neediestGap = gap
 			neediestSystem = snap.SystemSymbol
 		}
+		// MANNING FLOOR (sp-2ci9y): the home post carries a permanent MinHulls floor (probe_target)
+		// so the freshsizer never sizes it below the probes bootstrap bought for the home scan. The
+		// floor raises only the size WRITTEN to the post; `desired` (the buy-demand summed into
+		// totalDemand, and the neediest-gap above) stays UN-floored, so the guarded buyer never
+		// double-buys against bootstrap's single-buyer probe purchase. Every non-home post has
+		// MinHulls 0, so FloorHulls is a no-op and non-home sizing is byte-identical.
+		manning := desired
+		if existing != nil {
+			manning = existing.FloorHulls(desired)
+		}
 		if !cmd.DryRun {
-			h.applyPost(ctx, cmd, existing, snap.SystemSymbol, desired, cfg.slaFor(snap.SystemSymbol))
+			h.applyPost(ctx, cmd, existing, snap.SystemSymbol, manning, cfg.slaFor(snap.SystemSymbol))
 		}
 	}
 

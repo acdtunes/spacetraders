@@ -1383,3 +1383,83 @@ func TestSizer_ChartedSizingDefaultDoesNotOverProvision(t *testing.T) {
 			"cold-start charted sizing is clamped to the per-system hull cap (8), never the raw RequiredHulls(200,180,3600)=10")
 	})
 }
+
+// HOME MANNING FLOOR (sp-2ci9y): the home post carries a permanent MinHulls floor (probe_target)
+// so the freshsizer never sizes it below the probes bootstrap bought for the home scan. Same
+// fixture (26 markets, telemetry-starved → seed 180s cycle → SLA RequiredHulls=2) both ways: an
+// UN-floored post (MinHulls 0, every non-home post) sizes to the SLA minimum 2 — byte-identical to
+// pre-sp-2ci9y — while the floored home post is pinned UP to 3. On pre-fix code BOTH size to 2, so
+// the floored case is the reproduction of the strand (the 3rd bought probe left idle).
+func TestSizer_HomePostFlooredToProbeTarget(t *testing.T) {
+	cases := []struct {
+		name      string
+		minHulls  int
+		wantHulls int
+	}{
+		{"unfloored post (MinHulls 0) sizes to the SLA minimum", 0, 2},
+		{"home floor (MinHulls probe_target=3) pins the post up to 3", 3, 3},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fr := &fakeFreshnessReader{snapshots: []domainScouting.SystemFreshnessSnapshot{
+				snap("X1-JC27", 26, 100 /*fresh*/, 0 /*no measured cycle*/, 1 /*starved → seed 180s*/),
+			}}
+			home := standingSizerPost("X1-JC27", 1, "PROBE-MANNED")
+			home.MinHulls = tc.minHulls
+			pr := newSizerPostRepo(home)
+			fl := &fakeSizerFleetRepo{all: scouts(t, 3)} // supply covers → isolate sizing from the buy
+			h := newSizer(fr, pr, fl)
+
+			require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
+
+			require.Equal(t, tc.wantHulls, pr.hullUpdates["X1-JC27"],
+				"26 markets @ seed 180s / 3600s SLA = 2; the home floor raises manning to probe_target")
+			require.Empty(t, pr.upserts, "resize goes through the narrow UpdateHulls seam, never a full Upsert")
+		})
+	}
+}
+
+// FLOOR IS A FLOOR, NOT A CAP (sp-2ci9y): if the SLA genuinely demands MORE than probe_target the
+// home post still sizes UP. A fully-manned home post breaching its SLA 8× is raised to 8 probes —
+// the floor of 3 does not cap it. Guards against a min()-instead-of-max() mis-implementation (which
+// would clamp the raise back down to 3).
+func TestSizer_HomeFloorDoesNotCapAnSLARaise(t *testing.T) {
+	fr := &fakeFreshnessReader{snapshots: []domainScouting.SystemFreshnessSnapshot{
+		snap("X1-JC27", 26, 28800 /*8h stale vs 1h SLA*/, 120, 25),
+	}}
+	home := fullyMannedSizerPost("X1-JC27", 1)
+	home.MinHulls = 3 // the home floor is below the SLA-driven target
+	pr := newSizerPostRepo(home)
+	fl := &fakeSizerFleetRepo{all: scouts(t, 20)}
+	h := newSizer(fr, pr, fl)
+
+	require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
+
+	require.Equal(t, 8, pr.hullUpdates["X1-JC27"],
+		"an 8× SLA breach raises the home post to 8 — the probe_target floor (3) never caps a legitimate SLA raise")
+}
+
+// NO EXTRA BUY FROM THE FLOOR (sp-2ci9y, RULINGS #4): the floor is a MANNING floor, not a spend
+// change. The home post is floored to 3 (probe_target) while its SLA buy-demand stays 2. With supply
+// exactly 2, the un-floored buy-demand (2) is covered — no purchase — even though the post is manned
+// to 3. Were the floor leaking into the buy-demand (3 > 2 supply), the guarded buyer would double-buy
+// against bootstrap's single-buyer probe purchase; this proves it does not.
+func TestSizer_HomeFloorDoesNotInflateBuyDemand(t *testing.T) {
+	fr := &fakeFreshnessReader{snapshots: []domainScouting.SystemFreshnessSnapshot{
+		snap("X1-JC27", 26, 100 /*fresh*/, 0, 1 /*starved → seed 180s → SLA demand 2*/),
+	}}
+	home := standingSizerPost("X1-JC27", 1, "PROBE-MANNED")
+	home.MinHulls = 3
+	pr := newSizerPostRepo(home)
+	fl := &fakeSizerFleetRepo{all: scouts(t, 2)} // supply 2 == SLA buy-demand 2 (the floor of 3 must NOT tip a buy)
+	h := newSizer(fr, pr, fl)
+	pu := &fakePurchaser{quotePrice: 5000, buySymbol: "PROBE-NEW"}
+	h.SetProbePurchaser(pu)
+
+	require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
+
+	require.Equal(t, 0, pu.buyCalls,
+		"the manning floor must not inflate buy-demand: SLA demand 2 == supply 2, so no probe is bought")
+	require.Equal(t, 3, pr.hullUpdates["X1-JC27"],
+		"the post is still MANNED to the floor (3) — the floor drives manning, not the buy")
+}

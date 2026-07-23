@@ -110,3 +110,28 @@ func TestIsFullyManned_SingleHull(t *testing.T) {
 	p.AssignedHull = "SAT-1"
 	require.True(t, p.IsFullyManned())
 }
+
+// ---- FloorHulls (sp-2ci9y home manning floor) ------------------------------
+
+// The default post (MinHulls 0) has NO floor: FloorHulls returns the desired size
+// unchanged, so every non-home post is byte-identical.
+func TestFloorHulls_ZeroFloorIsNoOp(t *testing.T) {
+	p := &ScoutPost{Kind: PostKindStanding}
+	require.Equal(t, 2, p.FloorHulls(2))
+	require.Equal(t, 0, p.FloorHulls(0))
+}
+
+// A floored post is raised UP to the floor when the desired size is below it (the
+// home post pinned to probe_target), but the floor never CAPS a larger desired size.
+func TestFloorHulls_RaisesToFloorButNeverCaps(t *testing.T) {
+	p := &ScoutPost{Kind: PostKindStanding, MinHulls: 3}
+	require.Equal(t, 3, p.FloorHulls(2), "below the floor → raised to the floor")
+	require.Equal(t, 3, p.FloorHulls(3), "at the floor → unchanged")
+	require.Equal(t, 8, p.FloorHulls(8), "above the floor → NOT capped")
+}
+
+// A negative floor (a malformed row) clamps to 0 — never a negative budget.
+func TestFloorHulls_NegativeFloorClampsToZero(t *testing.T) {
+	p := &ScoutPost{Kind: PostKindStanding, MinHulls: -5}
+	require.Equal(t, 2, p.FloorHulls(2))
+}

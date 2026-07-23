@@ -73,14 +73,16 @@ func (f *fakeAcquirer) Buy(ctx context.Context, playerID int, shipType, yard str
 // scout probes (that is the scout-post coordinator's job, not modeled here), so it only records the
 // declaration calls — it never touches the scripted world's probesScouting.
 type fakeDeclarer struct {
-	calls   int
-	systems []string
-	err     error
+	calls    int
+	systems  []string
+	minHulls []int // the manning-floor (probe_target) passed on each call (sp-2ci9y)
+	err      error
 }
 
-func (f *fakeDeclarer) DeclareHomeScoutPost(ctx context.Context, playerID int, system string) error {
+func (f *fakeDeclarer) DeclareHomeScoutPost(ctx context.Context, playerID int, system string, minHulls int) error {
 	f.calls++
 	f.systems = append(f.systems, system)
+	f.minHulls = append(f.minHulls, minHulls)
 	return f.err
 }
 
@@ -556,6 +558,12 @@ func TestBootstrap_DeclaresHomeScoutPost_WhenHomeResolved(t *testing.T) {
 	h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if declarer.calls != 1 || len(declarer.systems) != 1 || declarer.systems[0] != "X1-HQ" {
 		t.Fatalf("bootstrap must declare the home scout post in X1-HQ, got calls=%d systems=%v", declarer.calls, declarer.systems)
+	}
+	// sp-2ci9y: the declaration carries the permanent home manning FLOOR = probe_target (default 3),
+	// parametrized from config (RULINGS #5), NOT hardcoded — so the freshsizer never strands a
+	// bought home probe below it.
+	if len(declarer.minHulls) != 1 || declarer.minHulls[0] != 3 {
+		t.Fatalf("home post must be declared with a probe_target floor of 3, got minHulls=%v", declarer.minHulls)
 	}
 }
 

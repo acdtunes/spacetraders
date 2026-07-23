@@ -691,6 +691,12 @@ type ScoutPostModel struct {
 	// every existing post reads as single-hull. RULINGS #5: a DB value, not a const.
 	Hulls int `gorm:"column:hulls;not null;default:1"`
 
+	// MinHulls is the PERMANENT manning FLOOR the freshsizer never sizes the post below
+	// (sp-2ci9y). Defaults to 0 (no floor); AutoMigrate adds the column with default 0,
+	// so every existing/non-home row reads as unfloored and stays byte-identical.
+	// Bootstrap stamps the home post's floor to probe_target. RULINGS #5: a DB value.
+	MinHulls int `gorm:"column:min_hulls;not null;default:0"`
+
 	// PrimaryPartition is the JSON-encoded frozen market tour of the PRIMARY slot
 	// when Hulls>1. NULL/empty ⇒ the primary tours ALL markets (single-hull
 	// behavior), so a single-hull row never carries one and stays byte-identical.
