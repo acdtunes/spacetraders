@@ -442,6 +442,11 @@ type tourFakeRoutingClient struct {
 	// the planner as false/"" — the dormant proto3 default, byte-identical to today.
 	closed        []bool
 	anchorSystems []string
+	// interSystemHops captures cons.InterSystemHops on each call (sp-tp5c3): the gate-graph
+	// feed a coordinator-level pin asserts against — the per-pair gate-hop distances that ride
+	// the widened horizon so the solver prices multi-hop crossings honestly. Unwidened must
+	// reach the planner empty (the flat-1-hop default, byte-identical to today).
+	interSystemHops [][]routing.InterSystemHopDistance
 	// snapshots captures the market good-universe the coordinator handed the planner on
 	// each call (sp-o4wa): the seam a noise-goods blocklist test asserts against — a
 	// blocklisted good must never appear in the snapshot the solver plans cargo over.
@@ -457,6 +462,7 @@ func (c *tourFakeRoutingClient) OptimizeTradeTour(ctx context.Context, snapshot 
 	c.maxTourSystems = append(c.maxTourSystems, cons.MaxTourSystems)
 	c.closed = append(c.closed, cons.Closed)
 	c.anchorSystems = append(c.anchorSystems, cons.AnchorSystem)
+	c.interSystemHops = append(c.interSystemHops, cons.InterSystemHops)
 	c.absorptions = append(c.absorptions, absorption)
 	held := map[string]int{}
 	for g, u := range ship.Cargo {

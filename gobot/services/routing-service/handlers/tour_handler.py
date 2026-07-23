@@ -97,6 +97,14 @@ class TourHandlerMixin:
                 # default — solve_tour treats them as a strict no-op (open tour).
                 closed=request.constraints.closed,
                 anchor_system=request.constraints.anchor_system,
+                # sp-tp5c3: per-pair gate-hop distances so the solver prices a cross-system
+                # crossing at gate_hops x the per-crossing charge (real multi-hop travel model)
+                # instead of a flat 1 hop. Absent (the un-widened default) -> [] -> every
+                # crossing defaults to 1 hop -> byte-identical to today.
+                inter_system_hops=[dict(from_system=h.from_system,
+                                        to_system=h.to_system,
+                                        gate_hops=h.gate_hops)
+                                   for h in request.constraints.inter_system_hops],
                 expected_model_version=request.constraints.expected_model_version)
             waypoints = [dict(symbol=w.symbol, system_symbol=w.system_symbol,
                               x=w.x, y=w.y)

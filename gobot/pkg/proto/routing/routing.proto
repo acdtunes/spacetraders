@@ -382,6 +382,27 @@ message TourConstraints {
   // an explicit system symbol = return to that system's lexicographically-first
   // fresh market waypoint (must be inside allowed_systems, else infeasible).
   string anchor_system = 10;
+  // sp-tp5c3: per-pair gate-hop distances between systems in allowed_systems,
+  // computed Go-side over the SAME gate graph the reposition/candidate walk uses.
+  // The solver prices a cross-system crossing as gate_hops x the per-crossing charge
+  // instead of a flat 1 hop, so a widened (max_tour_systems > 2) horizon is priced
+  // honestly — a 3-hop lane costs the true 3x, not the ~3x-underpriced flat 1 hop.
+  // Empty (the un-widened default, or any pair omitted) => the solver defaults that
+  // crossing to 1 hop => byte-identical to today. Distance is symmetric; the Go caller
+  // may send either direction.
+  repeated InterSystemHopDistance inter_system_hops = 11;
+}
+
+// InterSystemHopDistance is one gate-hop distance between two systems (sp-tp5c3),
+// resolved by the Go caller's bounded BFS over the persisted jump-gate adjacency —
+// the ONE gate-graph route model shared with the reposition/candidate walk. gate_hops
+// is the number of jump-gate crossings on the shortest built-gate route (1 for a
+// directly-gated pair). The solver multiplies it by the per-crossing charge; a
+// non-positive value is ignored (that crossing defaults to 1 hop).
+message InterSystemHopDistance {
+  string from_system = 1;
+  string to_system = 2;
+  int32 gate_hops = 3;
 }
 
 // TourTrade is one buy or sell tranche at a leg (execution order preserved).

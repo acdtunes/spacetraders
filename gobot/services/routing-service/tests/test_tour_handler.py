@@ -142,6 +142,30 @@ def test_handler_forwards_max_tour_systems(tmp_path):
         [(l.waypoint_symbol, l.system_symbol) for l in resp_default.legs]
 
 
+def test_handler_forwards_inter_system_hops(tmp_path):
+    # sp-tp5c3: the pb TourConstraints.inter_system_hops must be BRIDGED into the solver
+    # constraints dict so a cross-system crossing is priced at gate_hops x the per-crossing
+    # charge. On the golden board every S1<->S2 crossing is a flat 1800 by default; declaring
+    # S1<->S2 as 2 gate hops doubles each crossing's trip_time to 3600 (honest multi-hop),
+    # WITHOUT changing the profit-primary tour shape (declaring hops changes time, not profit).
+    handler = RoutingServiceHandler(tour_artifact_path=_artifact(tmp_path))
+
+    # Baseline: no map -> every crossing defaults to 1 hop = 1800 (byte-identical wire).
+    base = handler.OptimizeTradeTour(request(), None)
+    assert base.feasible
+    assert [l.travel_seconds_from_prev for l in base.legs[1:]] == [1800, 1800, 1800, 1800]
+
+    # Armed: S1<->S2 declared as 2 gate hops -> each crossing prices at 2 x 1800 = 3600.
+    req = request()
+    req.constraints.inter_system_hops.append(
+        routing_pb2.InterSystemHopDistance(from_system="S1", to_system="S2", gate_hops=2))
+    armed = handler.OptimizeTradeTour(req, None)
+    assert armed.feasible
+    assert [(l.waypoint_symbol, l.system_symbol) for l in armed.legs] == \
+        [(l.waypoint_symbol, l.system_symbol) for l in base.legs]
+    assert [l.travel_seconds_from_prev for l in armed.legs[1:]] == [3600, 3600, 3600, 3600]
+
+
 def test_handler_forwards_closure_fields(tmp_path):
     # sp-im74: the pb closed/anchor_system fields must be BRIDGED into the solver
     # constraints dict. Golden board: the open winner is A->D->E (ends at E).

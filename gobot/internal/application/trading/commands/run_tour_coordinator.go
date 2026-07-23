@@ -1810,6 +1810,11 @@ func (h *RunTourCoordinatorHandler) planForState(
 		// anchor via an appended, honestly-priced no-trade return leg.
 		Closed:       cmd.ClosedTours,
 		AnchorSystem: cmd.AnchorSystem,
+		// sp-tp5c3: the gate-hop distance between every pair of allowedSystems, so the solver
+		// prices a cross-system crossing by its REAL hop count instead of a flat 1 hop. Empty
+		// at the default cap (every crossing is a single hop the flat charge prices exactly) =>
+		// byte-identical to today; only a widened horizon (MaxTourSystems > 2) populates it.
+		InterSystemHops: h.tourInterSystemHops(ctx, allowedSystems, cmd),
 	}
 	plan, err := h.planner.OptimizeTradeTour(ctx, snapshot, waypoints, shipState, cons, deposits, absorptionView)
 	if err != nil {

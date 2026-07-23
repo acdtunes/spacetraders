@@ -525,6 +525,29 @@ def _build_stock_sources(stock_sources, markets, allowed_systems):
     return sources
 
 
+def _build_inter_system_hop_index(constraints):
+    """Build a SYMMETRIC {(from_system, to_system): gate_hops} lookup from the request-carried
+    `inter_system_hops` list (sp-tp5c3). The Go caller computes these gate-hop distances over
+    the SAME gate graph the reposition/candidate walk uses; the solver never sees the jump-gate
+    graph itself, so this fed distance is the ONE multi-hop route cost (no duplicated path-cost
+    logic here). Gate-hop distance is symmetric, so both directions are stored. A non-int /
+    non-positive / partial entry is DROPPED — the crossing then defaults to 1 hop (the flat
+    charge), so a malformed or incomplete feed can never zero-price or under-price BELOW today's
+    baseline. Empty / absent -> {} -> every crossing defaults to 1 hop, byte-identical to the
+    pre-multi-hop flat model (the un-widened / degraded path)."""
+    index = {}
+    for entry in constraints.get("inter_system_hops") or []:
+        from_system = entry.get("from_system")
+        to_system = entry.get("to_system")
+        gate_hops = entry.get("gate_hops")
+        if (not from_system or not to_system
+                or not isinstance(gate_hops, int) or gate_hops <= 0):
+            continue
+        index[(from_system, to_system)] = gate_hops
+        index[(to_system, from_system)] = gate_hops
+    return index
+
+
 def _make_travel_fn(constraints, markets, ship, waypoints=None):
     """Travel-seconds fn(a, b). Precedence: caller-supplied `_travel_fn`
     hook > coordinate mode (CRUISE formula on request-carried TourWaypoint
@@ -535,10 +558,14 @@ def _make_travel_fn(constraints, markets, ship, waypoints=None):
 
     coords = {w["symbol"]: (w["x"], w["y"]) for w in (waypoints or [])}
     engine_speed = max(1, ship.get("engine_speed") or 1)
-    # sp-kab1 part (c): resolve the flat inter-system crossing charge ONCE per build
-    # (default 1800 == 2*GATE_HOP + JUMP_COOLDOWN, byte-identical) so every crossing in
-    # this solve is priced consistently; TOUR_SOLVER_INTER_SYSTEM_TRAVEL_SECONDS arms it.
+    # sp-kab1 part (c): resolve the flat PER-crossing charge ONCE per build (default 1800 ==
+    # 2*GATE_HOP + JUMP_COOLDOWN, byte-identical) so every crossing in this solve is priced
+    # consistently; TOUR_SOLVER_INTER_SYSTEM_TRAVEL_SECONDS arms it. Under sp-tp5c3 this is the
+    # PER-HOP unit (multiplied by the real gate-hop count below), not the whole-crossing charge.
     inter_system_seconds = _resolve_inter_system_travel_seconds()
+    # sp-tp5c3: the per-pair gate-hop distance map. Empty (un-widened default / no feed) -> {} ->
+    # every crossing prices at 1 hop = the flat charge, byte-identical to today.
+    inter_system_hops = _build_inter_system_hop_index(constraints)
 
     def system_of(wp):
         if wp in markets:
@@ -552,9 +579,13 @@ def _make_travel_fn(constraints, markets, ship, waypoints=None):
             return 0
         sys_a, sys_b = system_of(a), system_of(b)
         if sys_a and sys_b and sys_a != sys_b:
-            # Gate positions are not request-carried: price the crossing as the flat
-            # inter-system charge (INTER_SYSTEM_TRAVEL_SECONDS, env-tunable per sp-kab1).
-            return inter_system_seconds
+            # Gate positions are not request-carried: price the crossing as the REAL gate-hop
+            # count x the flat per-crossing charge (sp-tp5c3 multi-hop travel model). gate_hops
+            # comes from the fed distance map, DEFAULTING to 1 hop (today's flat charge,
+            # INTER_SYSTEM_TRAVEL_SECONDS, env-tunable per sp-kab1) when the pair is absent — so a
+            # 1-hop lane is byte-equal to the pre-fix baseline and a 3-hop lane costs the honest 3x.
+            gate_hops = inter_system_hops.get((sys_a, sys_b), 1)
+            return gate_hops * inter_system_seconds
         if a in coords and b in coords:
             distance = math.hypot(coords[b][0] - coords[a][0],
                                   coords[b][1] - coords[a][1])

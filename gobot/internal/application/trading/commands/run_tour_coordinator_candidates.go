@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 
+	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
 
@@ -88,6 +89,77 @@ func (h *RunTourCoordinatorHandler) widenedTourSystems(
 	// FLOOR: union oneHop so widened ⊇ 1-hop ALWAYS. The 1-hop neighbors are today's baseline;
 	// the shortlist's drop-zero-edge applies only to the ≥2-hop systems it ADDS.
 	return unionSystems(oneHop, shortlist)
+}
+
+// tourInterSystemHops resolves the gate-hop distance between every pair of systems in
+// allowedSystems (sp-tp5c3), so the solver prices a cross-system crossing at gate_hops x the
+// per-crossing charge instead of a flat 1 hop — the multi-hop travel model that lets the widened
+// horizon price honestly (a 3-hop lane costs the true 3x, not the ~3x-underpriced flat 1 hop that
+// corrupted cph selection and kept the horizon pinned at 1 gate hop, sp-mtvg/sp-mepj). It REUSES
+// the SAME durable-gate-graph BFS the candidate walk uses (repositionNeighborsWithinJumps stamps
+// the hop count sp-z7ng's deadhead pricing already rides) — one gate-graph route model, ZERO
+// duplicated path-cost logic here.
+//
+// COMPUTED ONLY when the horizon is actually widened (MaxTourSystems > 2): at the default cap a
+// tour touches at most 2 systems (start + one gate neighbor), so every crossing is a single gate
+// hop the flat charge already prices exactly — the map is empty and the wire is byte-identical.
+// A nil gate graph (graph-less tests / pre-wiring) or a sub-2 system set likewise yields no map,
+// so flat pricing stands. Only pairs whose real distance is > 1 hop are emitted; a 1-hop pair, or
+// one the BFS cannot connect, is omitted and defaults to 1 hop in the solver (the flat charge —
+// never an under-priced phantom below today's baseline). One entry per unordered pair (from < to),
+// deterministically ordered so the payload and its logs are reproducible.
+func (h *RunTourCoordinatorHandler) tourInterSystemHops(
+	ctx context.Context, allowedSystems []string, cmd *RunTourCoordinatorCommand,
+) []routing.InterSystemHopDistance {
+	// Arming gate: below the raised cap a tour touches at most 2 systems, so every crossing is a
+	// single gate hop the flat charge prices exactly — no map, byte-identical. A nil gate graph or
+	// a sub-2 system set likewise cannot (and need not) resolve any multi-hop distance.
+	if cmd.MaxTourSystems <= 2 || h.legs.gateGraph == nil || len(allowedSystems) < 2 {
+		return nil
+	}
+	// The BFS bound must span the widest pairwise distance among allowed systems. They sit within
+	// effectiveCandidateHopDepth gate hops of home, so any two are within twice that (via home). At
+	// least 2, since repositionNeighborsWithinJumps only walks past 1 hop when maxJumps > 1.
+	bound := 2 * h.effectiveCandidateHopDepth(cmd)
+	if bound < 2 {
+		bound = 2
+	}
+	allowed := make(map[string]bool, len(allowedSystems))
+	for _, s := range allowedSystems {
+		allowed[s] = true
+	}
+	// Canonical {lo, hi} -> gate hops, so a pair found from either endpoint's BFS is stored once.
+	distances := make(map[[2]string]int)
+	for _, from := range allowedSystems {
+		far, _ := h.legs.repositionNeighborsWithinJumps(ctx, from, cmd.PlayerID, bound)
+		for _, edge := range far {
+			// Only genuine >1-hop distances between two ALLOWED systems need correcting; a 1-hop
+			// pair (or one the BFS cannot reach) defaults to the flat 1-hop charge in the solver.
+			if edge.hops <= 1 || edge.system == from || !allowed[edge.system] {
+				continue
+			}
+			lo, hi := from, edge.system
+			if hi < lo {
+				lo, hi = hi, lo
+			}
+			if _, seen := distances[[2]string{lo, hi}]; !seen {
+				distances[[2]string{lo, hi}] = edge.hops
+			}
+		}
+	}
+	out := make([]routing.InterSystemHopDistance, 0, len(distances))
+	for pair, hops := range distances {
+		out = append(out, routing.InterSystemHopDistance{
+			FromSystem: pair[0], ToSystem: pair[1], GateHops: hops,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].FromSystem != out[j].FromSystem {
+			return out[i].FromSystem < out[j].FromSystem
+		}
+		return out[i].ToSystem < out[j].ToSystem
+	})
+	return out
 }
 
 // shortlistByProfitableEdge scores each FAR system by the max CappedSpread of any RankSpreads

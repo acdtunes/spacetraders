@@ -1417,3 +1417,135 @@ def test_env_knobs_resolve_from_boot_environment():
                     text=True, env=env, cwd=root)
     assert proc.returncode == 0, proc.stderr
     assert "BOOT_ENV_OK" in proc.stdout
+
+
+# ── sp-tp5c3: real multi-hop (gate-graph) travel model ────────────────────────
+# The load-bearing correctness change: the tour solver priced EVERY inter-system
+# crossing as ONE gate hop (flat INTER_SYSTEM_TRAVEL_SECONDS), so a 3-hop lane was
+# ~3x under-priced and cph selection corrupted — which is why the 1-hop horizon
+# could never safely widen (sp-mtvg/sp-mepj). The fix carries a per-pair gate-hop
+# distance map (`inter_system_hops`, computed Go-side over the SAME gate graph the
+# reposition/candidate walk uses) and prices a crossing at gate_hops x per-crossing
+# charge. Absent map / missing pair -> 1 hop -> byte-identical to today. The per-hop
+# unit stays the existing env-tunable charge, so a 1-hop lane is byte-equal to the
+# flat baseline (near-lane cph NOT degraded) while a >1-hop lane costs the honest
+# multiple (true $/hr). Mirrors the sp-z7ng reposition deadhead model (hops x charge).
+
+def _crossing_hop_with_map(inter_system_hops):
+    """A default (coords-less) travel fn over two markets in DIFFERENT systems, carrying a
+    fed gate-hop distance map, so _make_travel_fn's hop() takes the inter-system branch and
+    prices the crossing at gate_hops x per-crossing charge. inter_system_hops=None omits
+    the field entirely (the un-widened / pre-fix wire)."""
+    from utils.tour_solver import _make_travel_fn, _build_markets
+    markets = _build_markets([snap("A", "S1", "G", ask=100, bid=90),
+                              snap("B", "S2", "G", ask=999, bid=300)])
+    ship = dict(ship_symbol="H", current_waypoint="A", current_system="S1",
+                hold_capacity=80, fuel_current=400, fuel_capacity=400,
+                engine_speed=30, cargo=[])
+    cons = dict(allowed_systems=["S1", "S2"])
+    if inter_system_hops is not None:
+        cons["inter_system_hops"] = inter_system_hops
+    return _make_travel_fn(cons, markets, ship)
+
+
+def test_crossing_multihop_scales_by_fed_gate_hops(monkeypatch):
+    # The core pricing law: crossing = gate_hops x per-crossing seconds. A 1-hop lane is
+    # byte-equal to the historical flat 1800 (near-lane undegraded); a 3-hop lane is 3x.
+    from utils.tour_solver import INTER_SYSTEM_TRAVEL_SECONDS_ENV_VAR
+    monkeypatch.delenv(INTER_SYSTEM_TRAVEL_SECONDS_ENV_VAR, raising=False)
+    one_hop = [dict(from_system="S1", to_system="S2", gate_hops=1)]
+    three_hop = [dict(from_system="S1", to_system="S2", gate_hops=3)]
+    assert _crossing_hop_with_map(one_hop)("A", "B") == 1800      # near-lane byte-equal
+    assert _crossing_hop_with_map(three_hop)("A", "B") == 5400    # 3 x 1800, honest multi-hop
+    # Distance is symmetric: the reverse crossing (S2->S1) prices the same 3 hops.
+    assert _crossing_hop_with_map(three_hop)("B", "A") == 5400
+
+
+def test_crossing_absent_or_missing_pair_defaults_to_one_hop_byte_identical(monkeypatch):
+    # No map at all, AND a present-but-incomplete map that omits this pair, BOTH default the
+    # crossing to 1 hop = today's flat charge (byte-identical wire / safe degrade — a partial
+    # feed can never silently under-price a real lane below today's baseline).
+    from utils.tour_solver import INTER_SYSTEM_TRAVEL_SECONDS_ENV_VAR
+    monkeypatch.delenv(INTER_SYSTEM_TRAVEL_SECONDS_ENV_VAR, raising=False)
+    assert _crossing_hop_with_map(None)("A", "B") == 1800
+    assert _crossing_hop_with_map([])("A", "B") == 1800
+    unrelated = [dict(from_system="S3", to_system="S4", gate_hops=3)]
+    assert _crossing_hop_with_map(unrelated)("A", "B") == 1800
+
+
+def test_crossing_multihop_multiplies_the_env_per_hop_charge(monkeypatch):
+    # The per-hop unit is the SAME env-tunable charge; multi-hop multiplies it, so the model
+    # stays consistent when the empirical ~1200 charge is armed: 3 hops -> 3 x 1200 = 3600.
+    from utils.tour_solver import INTER_SYSTEM_TRAVEL_SECONDS_ENV_VAR
+    monkeypatch.setenv(INTER_SYSTEM_TRAVEL_SECONDS_ENV_VAR, "1200")
+    three_hop = [dict(from_system="S1", to_system="S2", gate_hops=3)]
+    assert _crossing_hop_with_map(three_hop)("A", "B") == 3600
+
+
+def _tp5c3_cons(**over):
+    base = dict(max_hops=4, max_spend=100_000, min_margin_per_unit=1,
+                working_capital_reserve=0, allowed_systems=["S1", "S2"],
+                max_snapshot_age_minutes=75, expected_model_version="1@e")
+    base.update(over)
+    return base
+
+
+def test_near_lane_cph_undegraded_vs_flat_baseline():
+    # THE load-bearing A/B (lead's stop-ship gate): on the SAME 1-gate-hop lane, arming the
+    # multi-hop model with the crossing declared as 1 hop produces a plan byte-equal to the
+    # pre-fix flat-charge baseline — identical cph AND identical crossing trip_time. Near-lane
+    # selection is NOT degraded by the multi-hop travel model.
+    snapshot = [snap("A", "S1", "G", ask=100, bid=90, tv=40),
+                snap("B", "S2", "G", ask=999, bid=300, tv=40)]
+    ship = dict(ship_symbol="H", current_waypoint="A", current_system="S1",
+                hold_capacity=40, fuel_current=2000, fuel_capacity=2000,
+                engine_speed=30, cargo=[])
+    baseline = solve_tour(snapshot, ship, _tp5c3_cons(), MODEL, objective="rate")
+    armed = solve_tour(
+        snapshot, ship,
+        _tp5c3_cons(inter_system_hops=[dict(from_system="S1", to_system="S2", gate_hops=1)]),
+        MODEL, objective="rate")
+    assert baseline["feasible"] and armed["feasible"]
+    assert armed["projected_credits_per_hour"] == baseline["projected_credits_per_hour"]
+    assert armed["projected_profit"] == baseline["projected_profit"]
+    cross = lambda out: [l["travel_seconds_from_prev"] for l in out["legs"]
+                         if l["system_symbol"] == "S2"]
+    assert cross(armed) == cross(baseline)
+
+
+def test_far_lane_crossing_trip_time_reflects_actual_hops():
+    # A >1-hop lane's crossing trip_time is the REAL hop count x per-crossing charge (the true
+    # $/hr denominator), not a flat 1 hop nor an inflated multiple. Raising max_tour_systems +
+    # feeding the 3-hop distance lets the solver plan the tour to a sink 3 gate hops out.
+    snapshot = [snap("SRC", "S1", "G", ask=100, bid=0, tv=40),
+                snap("SINK", "S2", "G", ask=0, bid=900, tv=40)]
+    ship = dict(ship_symbol="H", current_waypoint="SRC", current_system="S1",
+                hold_capacity=40, fuel_current=2000, fuel_capacity=2000,
+                engine_speed=30, cargo=[])
+    cons = _tp5c3_cons(max_tour_systems=3,
+                       inter_system_hops=[dict(from_system="S1", to_system="S2", gate_hops=3)])
+    out = solve_tour(snapshot, ship, cons, MODEL)
+    assert out["feasible"], out
+    sink_leg = [l for l in out["legs"] if l["waypoint_symbol"] == "SINK"][0]
+    assert sink_leg["travel_seconds_from_prev"] == 5400   # 3 hops x 1800, not a flat 1800
+
+
+def test_multihop_cph_is_lower_than_flat_for_the_same_far_lane():
+    # Selection integrity: the SAME far (3-hop) lane scores a strictly LOWER cph under the honest
+    # multi-hop cost than under the old flat-1-hop cost — the ~3x under-pricing the flat model hid
+    # (and that corrupted cph ranking) is gone. Same board, same objective; only the travel model
+    # differs, so the cph gap isolates the pricing fix.
+    snapshot = [snap("SRC", "S1", "G", ask=100, bid=0, tv=40),
+                snap("SINK", "S2", "G", ask=0, bid=900, tv=40)]
+    ship = dict(ship_symbol="H", current_waypoint="SRC", current_system="S1",
+                hold_capacity=40, fuel_current=2000, fuel_capacity=2000,
+                engine_speed=30, cargo=[])
+    flat = solve_tour(snapshot, ship, _tp5c3_cons(max_tour_systems=3), MODEL, objective="rate")
+    honest = solve_tour(
+        snapshot, ship,
+        _tp5c3_cons(max_tour_systems=3,
+                    inter_system_hops=[dict(from_system="S1", to_system="S2", gate_hops=3)]),
+        MODEL, objective="rate")
+    assert flat["feasible"] and honest["feasible"]
+    assert honest["projected_profit"] == flat["projected_profit"]         # same trade, same profit
+    assert honest["projected_credits_per_hour"] < flat["projected_credits_per_hour"]  # honest time

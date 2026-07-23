@@ -397,6 +397,25 @@ func buildTourRequest(
 		return pbAbsorption[i].Side < pbAbsorption[j].Side
 	})
 
+	// sp-tp5c3: per-pair gate-hop distances so the solver prices cross-system crossings by
+	// the real hop count. Empty (the un-widened default) serializes to nothing — byte-identical
+	// to a pre-multi-hop binary. Emitted in a deterministic (from, to) order so request payloads
+	// and their logs are reproducible, mirroring the snapshot/deposit/absorption ordering.
+	pbInterSystemHops := make([]*pb.InterSystemHopDistance, 0, len(cons.InterSystemHops))
+	for _, h := range cons.InterSystemHops {
+		pbInterSystemHops = append(pbInterSystemHops, &pb.InterSystemHopDistance{
+			FromSystem: h.FromSystem,
+			ToSystem:   h.ToSystem,
+			GateHops:   int32(h.GateHops),
+		})
+	}
+	sort.Slice(pbInterSystemHops, func(i, j int) bool {
+		if pbInterSystemHops[i].FromSystem != pbInterSystemHops[j].FromSystem {
+			return pbInterSystemHops[i].FromSystem < pbInterSystemHops[j].FromSystem
+		}
+		return pbInterSystemHops[i].ToSystem < pbInterSystemHops[j].ToSystem
+	})
+
 	return &pb.OptimizeTradeTourRequest{
 		Snapshot: pbSnapshot,
 		Ship: &pb.TourShip{
@@ -420,8 +439,9 @@ func buildTourRequest(
 			MaxTourSystems:        int32(cons.MaxTourSystems),
 			// Closure mode. Zero-values (false/"") serialize to nothing —
 			// an open request is byte-identical to a pre-closure binary's.
-			Closed:       cons.Closed,
-			AnchorSystem: cons.AnchorSystem,
+			Closed:          cons.Closed,
+			AnchorSystem:    cons.AnchorSystem,
+			InterSystemHops: pbInterSystemHops,
 		},
 		Waypoints:         pbWaypoints,
 		DepositCandidates: pbDeposits,

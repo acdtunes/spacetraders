@@ -79,6 +79,23 @@ type TourConstraints struct {
 	MaxTourSystems        int
 	Closed                bool
 	AnchorSystem          string
+	// InterSystemHops carries the gate-hop distance between each pair of systems in
+	// AllowedSystems (sp-tp5c3), resolved Go-side over the SAME gate graph the reposition
+	// and candidate walk use. The solver prices a cross-system crossing as gate_hops x the
+	// per-crossing charge instead of a flat 1 hop, so a widened (MaxTourSystems > 2) horizon
+	// is priced honestly. Empty (the un-widened default) => the solver defaults every crossing
+	// to 1 hop => byte-identical to today; a pair the map omits also defaults to 1 hop.
+	InterSystemHops []InterSystemHopDistance
+}
+
+// InterSystemHopDistance is one gate-hop distance between two systems (sp-tp5c3). GateHops is
+// the number of jump-gate crossings on the shortest built-gate route (1 for a directly-gated
+// pair). Distance is symmetric; a caller may send either direction. The solver ignores a
+// non-positive GateHops (that crossing defaults to 1 hop).
+type InterSystemHopDistance struct {
+	FromSystem string
+	ToSystem   string
+	GateHops   int
 }
 
 // TourTrade is one buy or sell tranche at a leg. ExpectedUnitPrice is the
