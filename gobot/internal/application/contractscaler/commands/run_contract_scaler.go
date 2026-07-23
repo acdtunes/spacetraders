@@ -50,6 +50,14 @@ const (
 	scalerFleet = "contract"
 
 	defaultTickSeconds = 900 // 15min — the ramp is strategic, most ticks are a no-op at the ceiling
+
+	// defaultReadTimeout bounds each per-tick DB read (the once-at-arm plan resolve + the live-ceiling
+	// snapshot). database/sql has NO connection-acquire timeout and there is no server statement_timeout,
+	// so a read issued when the connection pool is momentarily exhausted waits for a free conn FOREVER on
+	// an unbounded ctx — the exact 11h RUNNING-but-silent freeze in sp-ljvxa. This applies the daemon-wide
+	// dbOperationTimeout idiom (container_runner.go) to the scaler's reads: a stuck read errors at the
+	// deadline → logged → retried next tick (a failed resolve is NOT memoized, so it re-resolves cleanly).
+	defaultReadTimeout = 5 * time.Second
 )
 
 // --- ports (wired by setters at boot; every one nil-safe, fail-CLOSED on unread) ---
@@ -239,6 +247,7 @@ type RunContractScalerHandler struct {
 	depotPrice     DepotPriceReader        // sp-fihvy: home-scoped stocker buy-fallback price (nil-safe fallback to price)
 	ceiling        liveconfig.Reader
 	clock          shared.Clock
+	readTimeout    time.Duration // per-tick DB-read deadline; 0 ⇒ defaultReadTimeout (sp-ljvxa). Injectable for tests.
 
 	mu    sync.Mutex
 	plans map[string]*armedPlan // keyed by container ID
@@ -276,6 +285,20 @@ func (h *RunContractScalerHandler) SetDeliverySurplusReleaser(r DeliverySurplusR
 func (h *RunContractScalerHandler) SetCeilingReader(r liveconfig.Reader)       { h.ceiling = r }
 func (h *RunContractScalerHandler) SetDepotHullReclaimer(r DepotHullReclaimer) { h.depotReclaimer = r }
 func (h *RunContractScalerHandler) SetDepotPriceReader(r DepotPriceReader)     { h.depotPrice = r }
+
+// SetReadTimeout overrides the per-tick DB-read deadline (default defaultReadTimeout). Tests inject a
+// short value to assert the bound fires without waiting the full 5s.
+func (h *RunContractScalerHandler) SetReadTimeout(d time.Duration) { h.readTimeout = d }
+
+// boundReadCtx derives the per-tick read deadline from ctx — the daemon dbOperationTimeout idiom applied
+// to the scaler's reads so an exhausted-pool DB read errors instead of hanging the loop forever (sp-ljvxa).
+func (h *RunContractScalerHandler) boundReadCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	d := h.readTimeout
+	if d <= 0 {
+		d = defaultReadTimeout
+	}
+	return context.WithTimeout(ctx, d)
+}
 
 // Handle runs the ramp loop until the context is cancelled.
 func (h *RunContractScalerHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
@@ -328,7 +351,13 @@ func (h *RunContractScalerHandler) reconcileOnce(ctx context.Context, cmd *RunCo
 		return 0, nil
 	}
 
-	armed, err := h.armedPlanFor(ctx, cmd)
+	// Bound the top-of-tick DB reads (once-at-arm plan resolve + live ceiling): an exhausted-pool read
+	// errors at the deadline instead of freezing the whole loop forever (sp-ljvxa). The BUYS below keep
+	// the original ctx — they are already bounded by the HTTP client timeout + rate-limiter aging, and a
+	// 5s cap would false-kill a legitimate multi-hop home navigation.
+	planCtx, planCancel := h.boundReadCtx(ctx)
+	armed, err := h.armedPlanFor(planCtx, cmd)
+	planCancel()
 	if err != nil {
 		return 0, err
 	}
@@ -336,7 +365,9 @@ func (h *RunContractScalerHandler) reconcileOnce(ctx context.Context, cmd *RunCo
 		return 0, nil // no roles resolved (empty era) → nothing to ramp
 	}
 
-	ceiling := h.liveCeiling(ctx, cmd)
+	ceilCtx, ceilCancel := h.boundReadCtx(ctx)
+	ceiling := h.liveCeiling(ceilCtx, cmd)
+	ceilCancel()
 	deliveryTarget, warehouseTarget, stockerTarget := contractscaler.RoleTargets(armed.plan)
 
 	// Budgeted per-role fill: allocate the ceiling across the roles in PRIORITY ORDER, each capped at

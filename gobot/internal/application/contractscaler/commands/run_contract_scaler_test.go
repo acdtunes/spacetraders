@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contractscaler"
@@ -23,6 +24,16 @@ type fakeRoleResolver struct {
 func (f *fakeRoleResolver) ResolveRoles(ctx context.Context, playerID int) (contractscaler.EraRoles, map[string]float64, error) {
 	f.calls++
 	return f.roles, f.demand, f.err
+}
+
+// blockingRoleResolver models a DB read wedged on an exhausted connection pool: ResolveRoles blocks
+// until its ctx is cancelled, then returns ctx.Err() — exactly how database/sql QueryContext behaves
+// waiting for a free connection with no server statement_timeout. Only a per-read deadline unblocks it.
+type blockingRoleResolver struct{}
+
+func (blockingRoleResolver) ResolveRoles(ctx context.Context, playerID int) (contractscaler.EraRoles, map[string]float64, error) {
+	<-ctx.Done()
+	return contractscaler.EraRoles{}, nil, ctx.Err()
 }
 
 type fakeTreasury struct {
@@ -155,6 +166,37 @@ func reconcile(t *testing.T, h *RunContractScalerHandler, ceiling int) int {
 		t.Fatalf("reconcileOnce error: %v", err)
 	}
 	return n
+}
+
+// TestReconcileOnce_BoundsHangingRead is the sp-ljvxa regression: a top-of-tick DB read that blocks
+// (exhausted connection pool, no server statement_timeout) must surface as an error at the read
+// deadline, NOT freeze the scaler forever (the observed 11h RUNNING-but-silent hang). reconcileOnce
+// bounds its reads with boundReadCtx, so a wedged resolve errors → the loop logs it → retries next tick.
+func TestReconcileOnce_BoundsHangingRead(t *testing.T) {
+	h := NewRunContractScalerHandler(nil)
+	h.SetRoleResolver(blockingRoleResolver{})
+	h.SetCeilingReader(&fakeCeiling{value: 10})
+	h.SetReadTimeout(50 * time.Millisecond) // short so the test is fast; 0 would use the 5s default
+
+	cmd := &RunContractScalerCommand{PlayerID: 1, ContainerID: "cs-1"}
+	done := make(chan error, 1)
+	go func() {
+		// context.Background() ⇒ NO caller deadline: only the reconcile's OWN per-read bound can save it.
+		_, err := h.reconcileOnce(context.Background(), cmd)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("reconcileOnce returned nil on a wedged read — a hanging read must surface as an error")
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("want context.DeadlineExceeded from the bounded read, got: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("reconcileOnce HUNG on a blocking read — top-of-tick reads are not bounded (sp-ljvxa regression)")
+	}
 }
 
 // RAMP with NO per-tick cap: a rich treasury buys the whole target in one tick.
