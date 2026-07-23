@@ -875,7 +875,7 @@ class ORToolsRoutingEngine:
         transit_callback_index = routing.RegisterTransitCallback(distance_callback)
         routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
 
-        # Add travel time dimension
+        # Add travel time dimension (arcs are per-leg travel TIME, not distance/count).
         routing.AddDimension(
             transit_callback_index,
             0,
@@ -884,6 +884,12 @@ class ORToolsRoutingEngine:
             "TravelTime"
         )
         time_dimension = routing.GetDimensionOrDie("TravelTime")
+        # sp-cc2na: MIN-MAKESPAN. The global span cost penalizes the MAXIMUM per-probe
+        # tour time (max end-cumul, since starts are fixed to 0), so the solver balances
+        # probes by TIME — freshness per market is its probe's circuit time, and uneven
+        # geography makes equal-COUNT tours have unequal freshness. This dominates the
+        # arc-cost sum (which only keeps each route individually short), so the partition
+        # equalizes tour time rather than market count.
         time_dimension.SetGlobalSpanCostCoefficient(100)
 
         # Add disjunction constraints for markets
@@ -892,6 +898,21 @@ class ORToolsRoutingEngine:
                 [manager.NodeToIndex(node_index[market])],
                 disjunction_penalty
             )
+
+        # sp-cc2na: force EVERY probe to take >=1 market when there are at least as many
+        # markets as probes. Min-makespan alone leaves a probe idle whenever using it
+        # would not lower the max tour time — a tight far cluster (splitting it barely
+        # changes the depot-leg-dominated time) or an outlier that pins the makespan. The
+        # secondary arc-cost sum then packs markets onto fewer vehicles, so with N floored
+        # scout slots only <N actually scout and the whole partition covers at (N-1)-probe
+        # cadence (the live sp-cc2na symptom: "3 disjoint tours" logged, 2 probes moving).
+        # A non-empty route means Start does not go straight to End. When M<N only M probes
+        # can be non-empty (the rest have no market to take) — leave those free; the span
+        # cost still balances the forced assignment by time.
+        if len(markets) >= len(ships):
+            solver = routing.solver()
+            for vehicle in range(len(ships)):
+                solver.Add(routing.NextVar(routing.Start(vehicle)) != routing.End(vehicle))
 
         # Search parameters
         search_parameters = pywrapcp.DefaultRoutingSearchParameters()
