@@ -454,6 +454,19 @@ type RunBootstrapCoordinatorHandler struct {
 	// restart (the re-derive just re-accrues from 0, delaying one window, never double-acting).
 	underScaledStreakMu sync.Mutex
 	underScaledStreaks  map[string]int
+
+	// haulerPrices holds the per-container LAST READABLE contract-hauler price (sp-muc5x): the most recent
+	// presence-gated hauler shipyard ask this coordinator observed. It is cached so the INCOME first-hauler
+	// pivot can test AFFORDABILITY *before* it frees the command frigate's earning loop to position the buyer
+	// — the cold-start deadlock where the frigate was freed while the hauler was permanently unaffordable,
+	// leaving no earner (treasury never grew → permanent stall). Seeded in DATA (a probe-buy hull already at
+	// the yard reads the hauler price at the same GetShipyard moment) and refreshed on every readable hauler
+	// PriceCheck. Keyed by ContainerID for the same REGISTERED-SINGLETON reason as buyBridges; haulerPriceMu
+	// guards the MAP only (one container's ticks are sequential). NOT a progress cursor — dropped on restart
+	// (a DATA re-seed re-populates it on a fresh cold start), so phase/progress stays derived purely from
+	// observation. A 0/absent cache reads as "no evidence yet" and preserves the existing free+position path.
+	haulerPriceMu sync.Mutex
+	haulerPrices  map[string]int64
 }
 
 // NewRunBootstrapCoordinatorHandler wires the coordinator. clock defaults to the real clock when

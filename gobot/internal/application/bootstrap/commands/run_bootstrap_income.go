@@ -311,6 +311,11 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd
 		return
 	}
 
+	// sp-muc5x: cache the just-read hauler price so a later COLD-price tick can test affordability BEFORE
+	// freeing the frigate's earning loop (the deadlock this bead fixes). This refreshes the DATA seed with
+	// the live price whenever the yard reads — it stores an already-read value (no extra API call).
+	h.cacheHaulerPrice(cmd.ContainerID, price)
+
 	// Capital gate (sp-acv5): buy as soon as the treasury AFTER the buy still clears the ABSOLUTE
 	// contract working-capital floor — affordable ⇔ cushion=(treasury−price) ≥ contract_working_capital_floor.
 	// This replaces the old PROPORTIONAL reserve_margin×treasury cap, which made a ~300k hauler wait until
@@ -465,6 +470,28 @@ func (h *RunBootstrapCoordinatorHandler) ensureHaulerPriceReadable(ctx context.C
 	// unreadable tick (still en route) re-positions idempotently WITHOUT re-freeing.
 	frigateReady := obs.CommandFrigatePurchasing && obs.CommandFrigateID != ""
 	if pivot {
+		// sp-muc5x — NEVER free the frigate's earning loop while the hauler is UNAFFORDABLE. The live price is
+		// unreadable here (cold yard), so gate the free on the CACHED last-hauler-price seeded in DATA. When a
+		// cache exists AND the buy would breach the working-capital floor (treasury−price < floor), keep the
+		// frigate ON its contract loop EARNING (blocker=capital_gate) and return — it is freed to position+buy
+		// only once the treasury clears the floor. This restores the invariant the deadlock violated: the
+		// frigate was freed while permanently unaffordable, so no earner remained and the treasury never grew
+		// (permanent stall). No money guard is weakened — this is the SAME cushion≥floor test as the capital
+		// gate on the readable path (RULINGS #4/#5); it only TIGHTENS *when* the frigate is freed. A 0/absent
+		// cache (first-ever read, e.g. a fresh boot before the DATA seed) proceeds to the existing free+position.
+		if cached := h.cachedHaulerPrice(cmd.ContainerID); cached > 0 && obs.Treasury-cached < cfg.ContractWorkingCapitalFloor {
+			res.Blocker = "capital_gate"
+			logger.Log("INFO", fmt.Sprintf("Bootstrap first-hauler pivot HELD (not freeing the earner): cached hauler price=%d treasury=%d cushion=(treasury−price)=%d floor=%d — keeping the command frigate %s on its contract loop EARNING until the treasury clears the working-capital floor (sp-muc5x: never stop the sole earner while the hauler is unaffordable)", cached, obs.Treasury, obs.Treasury-cached, cfg.ContractWorkingCapitalFloor, obs.CommandFrigateID), map[string]interface{}{
+				"action":       "bootstrap_pivot_held_unaffordable",
+				"container_id": cmd.ContainerID,
+				"blocker":      "capital_gate",
+				"cached_price": cached,
+				"treasury":     obs.Treasury,
+				"floor":        cfg.ContractWorkingCapitalFloor,
+				"ship":         obs.CommandFrigateID,
+			})
+			return
+		}
 		if h.retirer == nil {
 			res.Blocker = "price_unreadable"
 			logger.Log("WARN", "Bootstrap hauler price unreadable and no retirer wired to free the command frigate — failing closed (no buy)", map[string]interface{}{
@@ -532,6 +559,25 @@ func (h *RunBootstrapCoordinatorHandler) ensureHaulerPriceReadable(ctx context.C
 		"blocker":      "positioning_purchaser_at_shipyard",
 		"ship":         obs.CommandFrigateID,
 	})
+}
+
+// seedHaulerPriceFromYard price-checks the contract-hauler ship type while a hull is already at the home
+// shipyard (the DATA probe-buy moment, run_bootstrap_reconcile.go) and caches the readable price (sp-muc5x).
+// It exists so the INCOME first-hauler pivot can test the capital gate BEFORE freeing the command frigate's
+// earning loop — the cold-start deadlock where the frigate is freed while the hauler is unaffordable, so no
+// earner remains and the treasury never grows (permanent stall). It is READ-ONLY (a price-check, never a
+// buy — the money guard is untouched, RULINGS #4) and best-effort: a nil hauler acquirer or an unreadable
+// hauler listing caches nothing, and the guard then treats the cache as absent and preserves the existing
+// free+position behavior (this fix only ever TIGHTENS, never loosens).
+func (h *RunBootstrapCoordinatorHandler) seedHaulerPriceFromYard(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig) {
+	if h.haulAcquirer == nil {
+		return
+	}
+	price, _, readable, err := h.haulAcquirer.PriceCheck(ctx, cmd.PlayerID, cfg.HaulerShipType)
+	if err != nil || !readable {
+		return
+	}
+	h.cacheHaulerPrice(cmd.ContainerID, price)
 }
 
 // firstUnservedHub returns the highest-ranked viable hub (within the hauler_target cap) that no

@@ -403,6 +403,32 @@ func (h *RunBootstrapCoordinatorHandler) incomeWindowFor(containerID string) *in
 	return w
 }
 
+// cachedHaulerPrice returns the last readable contract-hauler price cached for this container (sp-muc5x),
+// or 0 when none has been observed yet. The caller treats 0 as "no evidence" and proceeds unchanged (the
+// existing free+position path), so the guard only ever TIGHTENS behavior on a POSITIVE cache. Keyed by
+// ContainerID like the other per-container state (this handler is a REGISTERED SINGLETON); the mutex guards
+// the map, and one container's ticks are sequential so the value is only ever touched by a single goroutine.
+func (h *RunBootstrapCoordinatorHandler) cachedHaulerPrice(containerID string) int64 {
+	h.haulerPriceMu.Lock()
+	defer h.haulerPriceMu.Unlock()
+	return h.haulerPrices[containerID]
+}
+
+// cacheHaulerPrice records the last readable contract-hauler price for this container (sp-muc5x), so a later
+// cold-price tick can test the first-hauler capital gate BEFORE freeing the frigate's earning loop. A
+// non-positive price caches nothing (an unreadable read must not overwrite a good cache with 0).
+func (h *RunBootstrapCoordinatorHandler) cacheHaulerPrice(containerID string, price int64) {
+	if price <= 0 {
+		return
+	}
+	h.haulerPriceMu.Lock()
+	defer h.haulerPriceMu.Unlock()
+	if h.haulerPrices == nil {
+		h.haulerPrices = map[string]int64{}
+	}
+	h.haulerPrices[containerID] = price
+}
+
 // reconcileOnce runs one full pass: phantom-cache refresh → observe → derive phase → act on the
 // delta → heartbeat. It is the unit the tests drive directly; Handle just calls it on the tick.
 // Every side-effecting step is guarded "already done / in-flight?" and fails CLOSED on an
@@ -897,6 +923,14 @@ func (h *RunBootstrapCoordinatorHandler) acquireProbesToTarget(ctx context.Conte
 		h.ensureShipyardReadable(ctx, cmd, cfg, obs, res, err)
 		return
 	}
+
+	// sp-muc5x: a hull is at the yard NOW (the probe price just read), so the presence-gated hauler price is
+	// readable at this same GetShipyard moment. SEED the last-hauler-price cache so INCOME knows the
+	// first-hauler affordability BEFORE it ever frees the command frigate to position the buyer — the
+	// cold-start deadlock this bead fixes (the frigate freed while permanently unaffordable, no earner left).
+	// Read-only + best-effort (no spend — the price guard is untouched, RULINGS #4): a nil hauler acquirer or
+	// an unreadable hauler listing caches nothing and the seed simply retries on the next readable DATA tick.
+	h.seedHaulerPriceFromYard(ctx, cmd, cfg)
 
 	// Capital-gated buy LOOP: buy up to (target-count) probes THIS tick, decrementing the treasury each
 	// iteration so the flat common.ImmutableReserveFloor gate reflects real remaining credits (sp-05glh:
