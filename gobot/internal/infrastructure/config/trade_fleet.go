@@ -193,23 +193,11 @@ type TradeFleetConfig struct {
 	CandidateHopDepth      int `mapstructure:"candidate_hop_depth"`
 	CandidateShortlistTopN int `mapstructure:"candidate_shortlist_top_n"`
 
-	// --- Stale-captain-reservation reaper (sp-6asm, epic sp-g9td) ---
-	// The downstream safety net for orphaned owner=captain reservations left by manual
-	// captain bridge-authority ops that never dropped the reservation (upstream tech debt
-	// sp-lxwn/zhii/sfoe). ReapStaleCaptainReservationsEnabled defaults FALSE — the
-	// governance gate: the reaper is inert (byte-identical deploy) until the captain arms it
-	// by editing config.yaml + restarting the daemon (RULINGS #5, no code redeploy).
-	// ReapIdleThresholdSeconds is how long a captain reservation must have sat parked and
-	// untouched by any live/recent container before it is reaped; 0/absent → the
-	// coordinator's own default (1800s / 30 min), which lives in the consumer, not here.
-	ReapStaleCaptainReservationsEnabled bool `mapstructure:"reap_stale_captain_reservations_enabled"`
-	ReapIdleThresholdSeconds            int  `mapstructure:"reap_idle_threshold_seconds"`
-
 	// --- Liveness watchdog (sp-m3122) ---
 	// WatchdogStallSeconds is how long a RUNNING tour may make ZERO real progress
 	// (plan/navigate/arrive/buy/sell) before the coordinator declares it HUNG, kills the
 	// container, and relaunches a fresh tour — the automated form of the manual
-	// `container stop <hung-tour>`. UNLIKE the reaper above, the watchdog has NO on/off gate:
+	// `container stop <hung-tour>`. The watchdog has NO on/off gate:
 	// it ships ARMED (a daemon restart routinely strands hulls this way, so it must always
 	// heal). This is the one tunable, an operational value (RULINGS #5), not an arm-seam: a
 	// captain who ever needs to soften it raises the threshold. 0/absent → the coordinator's

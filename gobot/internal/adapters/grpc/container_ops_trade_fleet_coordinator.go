@@ -94,17 +94,6 @@ func (s *DaemonServer) LaunchTour(ctx context.Context, spec tradingCmd.TourLaunc
 	return result.ContainerID, nil
 }
 
-// ActiveContainerShips implements tradingCmd.ActiveContainerShipsPort (sp-6asm): it reports
-// the hulls a container has touched within the reaper's idle window — any hull named (config
-// "ship_symbol") by a container that is still non-terminal (a live claim/op) OR that
-// terminated at/after activeSince (a recent op). The stale-captain-reservation reaper treats
-// membership as "legitimately in use" and never reaps such a hull, so a hull a captain op is
-// using — or just finished using — is protected even though its ships-row reservation looks
-// orphaned. It READS the containers table the daemon single-writes; it mutates nothing.
-func (s *DaemonServer) ActiveContainerShips(ctx context.Context, playerID shared.PlayerID, activeSince time.Time) (map[string]bool, error) {
-	return s.containerRepo.FindShipSymbolsWithActiveOrRecentContainers(ctx, playerID.Value(), activeSince)
-}
-
 // LastTourProgress implements tradingCmd.TourLivenessPort (sp-m3122): for each running trade
 // tour container it reports the timestamp of the tour's most recent real activity — the newest
 // line in its container-log trail. That trail advances on every real step (plan/navigate/
@@ -170,8 +159,6 @@ var tradeFleetConfigKeys = []string{
 	"trade_fleet_masspark_exempt_disabled",
 	"trade_fleet_masspark_window_seconds",
 	"trade_fleet_masspark_min_hulls",
-	"trade_fleet_reap_stale_captain_reservations_enabled",
-	"trade_fleet_reap_idle_threshold_secs",
 	"trade_fleet_watchdog_stall_secs",
 }
 
@@ -244,15 +231,6 @@ func (s *DaemonServer) injectTradeFleetConfig(config map[string]interface{}) {
 	}
 	if tf.MassParkMinHulls != 0 {
 		config["trade_fleet_masspark_min_hulls"] = tf.MassParkMinHulls
-	}
-	// sp-6asm: the reaper is default-OFF — only write the enable flag when the captain set
-	// it, so an absent key reads as inert (byte-identical). Threshold defers to the
-	// coordinator's own 30-min default when unset.
-	if tf.ReapStaleCaptainReservationsEnabled {
-		config["trade_fleet_reap_stale_captain_reservations_enabled"] = true
-	}
-	if tf.ReapIdleThresholdSeconds != 0 {
-		config["trade_fleet_reap_idle_threshold_secs"] = tf.ReapIdleThresholdSeconds
 	}
 	// sp-m3122: the watchdog is always ARMED (no on/off key); only the stall threshold is
 	// tunable — an absent key defers to the coordinator's 12-min default.

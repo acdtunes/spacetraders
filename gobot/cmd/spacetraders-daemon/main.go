@@ -679,8 +679,7 @@ func run(cfg *config.Config) error {
 	// path `workflow tour-run` uses. Tuning is resolved live from config.yaml [trade_fleet].
 	tradeFleetCoordinatorHandler := tradeRouteCmd.NewRunTradeFleetCoordinatorHandler(shipRepo, nil) // nil = use RealClock
 	tradeFleetCoordinatorHandler.SetTourLauncher(daemonServer)
-	tradeFleetCoordinatorHandler.SetEventRecorder(captainEventRepo)    // sp-6wxq: emit coordinator error-loop events on reconcile streak breach
-	tradeFleetCoordinatorHandler.SetActiveContainerShips(daemonServer) // sp-6asm: reaper safety signal — hulls a live/recent container touched (never reap those)
+	tradeFleetCoordinatorHandler.SetEventRecorder(captainEventRepo) // sp-6wxq: emit coordinator error-loop events on reconcile streak breach
 	// sp-m3122 liveness watchdog: read each running tour's last real-progress time and kill+relaunch
 	// any RUNNING-but-hung tour (the daemon serves both ports over the containers/logs it single-writes),
 	// plus promptly release absorption reservations of dead containers on restart / after a kill.
