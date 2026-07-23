@@ -9,6 +9,7 @@ package expansion
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
@@ -86,14 +87,17 @@ const (
 )
 
 // ProbePurchaser prices and buys one probe through the existing purchase_ship mediator
-// path (RULINGS #3, the daemon is the single writer). It is DEMAND-PROXIMAL: given a
-// target system it spawns the probe at the scanned probe-yard NEAREST that system (fewest gate
-// hops, arbitrated against price by the caller's tunable), so the reconciler's relay is short
-// instead of always buying at the home yard and relaying across the network. The purchase runs
-// through an idle, UNDEDICATED hull (never a pinned or working one — RULINGS #7); a target-yard
-// buy navigates that hull to the yard (the demand-proximal pattern), a home-yard buy uses
-// an in-place hull movement-free. FAIL-OPEN by construction: no target, no finder, an empty/sparse
-// scan store, or an unreadable rank all fall back to the home yard exactly as before — missing
+// path (RULINGS #3, the daemon is the single writer). It is DEMAND-PROXIMAL but BUYER-REACHABLE:
+// given a target system it spawns the probe at the scanned probe-yard NEAREST that system (fewest
+// gate hops, arbitrated against price by the caller's tunable) WHEN an idle undedicated buyer can
+// relay to it, so the reconciler's relay is short instead of always buying at the home yard. When
+// the near-target yard is beyond every buyer's jump-reach it FALLS BACK to the nearest reachable
+// yard from a buyer's OWN system first (sp-xvi15 — reachability is anchored where a buyer IS, not at
+// the deep target the relay cannot route to, so a buy never retry-loops a yard beyond reach while a
+// reachable current-era yard sits in inventory). The purchase runs through an idle, UNDEDICATED hull
+// (never a pinned or working one — RULINGS #7) chosen to REACH the yard; a home-yard buy uses an
+// in-place hull movement-free. FAIL-OPEN by construction: no target, no finder, no located buyer, an
+// empty/sparse scan store, or nothing buyer-reachable all fall back to the home yard — missing
 // shipyard data never fails a buy closed.
 type ProbePurchaser struct {
 	mediator   common.Mediator
@@ -111,13 +115,17 @@ func NewProbePurchaser(mediator common.Mediator, shipRepo navigation.ShipReposit
 	return &ProbePurchaser{mediator: mediator, shipRepo: shipRepo, yardFinder: yardFinder, ledger: txnLedger, clock: clock}
 }
 
-// probeBuyPlan is one resolved buy: the yard to buy at, the price the guards judge, and the
-// in-place buyer already there. An empty buyer marks a target-yard plan, whose hull is resolved
-// lazily at purchase time — any idle undedicated hull navigates to the yard.
+// probeBuyPlan is one resolved buy: the buyer hull, the yard to buy at, and the price the guards
+// judge. relay marks a demand-proximal plan whose buyer must be RELAYED to the yard (and the live
+// dock price re-checked) before the buy; a home in-place plan leaves relay false and buys where the
+// buyer already sits. buyerAtYard (relay plans only) records that the resolved buyer already sits at
+// the yard, so the relay is skipped movement-free while the dock price is still re-checked.
 type probeBuyPlan struct {
-	buyer string
-	yard  string
-	price int
+	buyer       string
+	yard        string
+	price       int
+	relay       bool
+	buyerAtYard bool
 }
 
 // QuoteProbe returns the demand-proximal probe price and yard: the scanned probe-yard nearest
@@ -145,10 +153,9 @@ func (p *ProbePurchaser) BuyProbe(ctx context.Context, playerID shared.PlayerID,
 		return 0, "", err
 	}
 
-	buyer := plan.buyer
 	price := plan.price
-	if buyer == "" { // target-yard plan: relay an idle hull to the yard, then re-price at the dock
-		buyer, price, err = p.prepareTargetYardBuyer(ctx, playerID, plan.yard)
+	if plan.relay { // demand-proximal plan: relay the resolved buyer to the yard, then re-price at the dock
+		price, err = p.relayAndRecheck(ctx, playerID, plan)
 		if err != nil {
 			return 0, "", err
 		}
@@ -162,7 +169,7 @@ func (p *ProbePurchaser) BuyProbe(ctx context.Context, playerID shared.PlayerID,
 	}
 
 	resp, err := p.mediator.Send(ctx, &shipyardCmd.PurchaseShipCommand{
-		PurchasingShipSymbol: buyer,
+		PurchasingShipSymbol: plan.buyer,
 		ShipType:             probeShipType,
 		PlayerID:             playerID,
 		ShipyardWaypoint:     plan.yard, // buyer is now AT the yard (relayed or in-place) → movement-free
@@ -191,22 +198,199 @@ func (p *ProbePurchaser) resolveProbeBuy(ctx context.Context, playerID shared.Pl
 	return p.resolveInPlaceBuy(ctx, playerID)
 }
 
-// resolveProximalBuy selects the scanned probe-yard nearest the target, arbitrating hops against
-// price by the target's tunable penalty. ok=false signals "no proximal yard — fall back to home"
-// for every fail-open case (no target, no finder, empty/unreadable scan store), so missing
-// shipyard data never fails a buy closed. The plan carries no buyer: a target-yard buy
-// resolves the navigating hull lazily at purchase time.
+// resolveProximalBuy selects a buy yard REACHABLE from an idle undedicated buyer hull, anchoring
+// reachability where a buyer actually IS — not at the deep target the relay cannot route to (sp-xvi15:
+// the demand-proximal winner is often beyond the buyer's jump-reach, so relaying to it fail-closes
+// every cycle and the fleet stalls at its cap). It KEEPS the demand-proximal winner when a buyer can
+// reach it (the unchanged sp-4m4ve near-target selection), else FALLS BACK to the nearest reachable
+// yard from a buyer's own system first, so a buy never retry-loops a yard beyond reach while a
+// reachable current-era yard sits in inventory. The resolved buyer PROVABLY reaches the chosen yard,
+// so the later relay routes. ok=false fails OPEN to the home in-place path for every gap (no target,
+// no finder, no located buyer, an empty/unreadable scan store, nothing buyer-reachable) — missing
+// shipyard data never fails a buy closed.
 func (p *ProbePurchaser) resolveProximalBuy(ctx context.Context, playerID shared.PlayerID, target probebuy.ProbeTarget) (probeBuyPlan, bool) {
 	if target.System == "" || p.yardFinder == nil {
 		return probeBuyPlan{}, false
 	}
-	candidates, err := p.yardFinder.NearestYardsSelling(ctx, playerID.Value(), []string{probeShipType}, []string{target.System})
-	if err != nil || len(candidates) == 0 {
-		return probeBuyPlan{}, false // fail OPEN — a sparse/unreadable scan store falls back to home
+	buyers := p.eligibleBuyers(ctx, playerID)
+	if len(buyers) == 0 {
+		return probeBuyPlan{}, false // no located undedicated hull to relay → fall open to home
+	}
+	reachBySystem := p.reachableYardsByBuyerSystem(ctx, playerID, buyers)
+	if len(reachBySystem) == 0 {
+		return probeBuyPlan{}, false // no buyer system reaches a priced yard → fall open to home
 	}
 	impact := p.recentBuyImpact(ctx, playerID)
-	best := pickBuyYard(candidates, target.HopPenaltyCredits, target.SiblingPriceMarginCredits, impact)
-	return probeBuyPlan{yard: best.WaypointSymbol, price: best.PurchasePrice}, true
+	chosen, ok := p.pickReachableYard(ctx, playerID, target, reachBySystem, impact)
+	if !ok {
+		return probeBuyPlan{}, false
+	}
+	buyer, ok := selectRelayBuyer(buyers, reachBySystem, chosen)
+	if !ok {
+		return probeBuyPlan{}, false
+	}
+	return probeBuyPlan{
+		buyer:       buyer.ShipSymbol(),
+		yard:        chosen.WaypointSymbol,
+		price:       chosen.PurchasePrice,
+		relay:       true,
+		buyerAtYard: buyerAtYard(buyer, chosen.WaypointSymbol),
+	}, true
+}
+
+// eligibleBuyers returns the idle, UNDEDICATED, located hulls a probe buy may relay (RULINGS #7 —
+// never poach a dedicated hull). A hull with no location cannot anchor reachability and is skipped;
+// a fleet read miss yields none (fail open to home).
+func (p *ProbePurchaser) eligibleBuyers(ctx context.Context, playerID shared.PlayerID) []*navigation.Ship {
+	ships, err := p.shipRepo.FindIdleByPlayer(ctx, playerID)
+	if err != nil {
+		return nil
+	}
+	buyers := make([]*navigation.Ship, 0, len(ships))
+	for _, ship := range ships {
+		if ship.DedicatedFleet() != "" {
+			continue
+		}
+		if ship.CurrentLocation() == nil {
+			continue
+		}
+		buyers = append(buyers, ship)
+	}
+	return buyers
+}
+
+// reachableYardsByBuyerSystem runs ONE per-system finder read for each DISTINCT buyer system,
+// returning the priced probe-yards reachable from that system (ranked hops-then-price). Anchoring
+// reachability per buyer SYSTEM — not at the deep target — is the fix: a yard here is one an actual
+// buyer can relay to. A per-system read error or an empty rank drops that system (it contributes no
+// reachable yard), never a whole-buy failure — fail open.
+func (p *ProbePurchaser) reachableYardsByBuyerSystem(ctx context.Context, playerID shared.PlayerID, buyers []*navigation.Ship) map[string][]shipyardQueries.YardCandidate {
+	reach := make(map[string][]shipyardQueries.YardCandidate)
+	for _, buyer := range buyers {
+		system := buyer.CurrentLocation().SystemSymbol
+		if _, seen := reach[system]; seen {
+			continue
+		}
+		candidates, err := p.yardFinder.NearestYardsSelling(ctx, playerID.Value(), []string{probeShipType}, []string{system})
+		if err != nil || len(candidates) == 0 {
+			continue
+		}
+		reach[system] = candidates
+	}
+	return reach
+}
+
+// pickReachableYard chooses the buy yard from the buyer-reachable set: the DEMAND-PROXIMAL winner
+// when a buyer can reach it (the unchanged sp-4m4ve selection, so a reachable near-target yard still
+// wins), else the NEAREST reachable yard from any buyer system — the buyer's own system first, a
+// 0-hop same-system yard the hop penalty prefers. ok=false only when the reachable union is empty
+// (guarded by the caller).
+func (p *ProbePurchaser) pickReachableYard(ctx context.Context, playerID shared.PlayerID, target probebuy.ProbeTarget, reachBySystem map[string][]shipyardQueries.YardCandidate, impact map[string]int) (shipyardQueries.YardCandidate, bool) {
+	if demand := p.demandProximalReachable(ctx, playerID, target, reachableWaypoints(reachBySystem)); len(demand) > 0 {
+		return pickBuyYard(demand, target.HopPenaltyCredits, target.SiblingPriceMarginCredits, impact), true
+	}
+	union := mergeReachByMinHops(reachBySystem)
+	if len(union) == 0 {
+		return shipyardQueries.YardCandidate{}, false
+	}
+	return pickBuyYard(union, target.HopPenaltyCredits, target.SiblingPriceMarginCredits, impact), true
+}
+
+// demandProximalReachable ranks the demand-proximal candidates (nearest the TARGET system) but keeps
+// only those a buyer can actually reach — the intersection that preserves the near-target win WHEN it
+// is relayable. An unreadable target rank yields none, so the caller falls back to nearest-reachable.
+func (p *ProbePurchaser) demandProximalReachable(ctx context.Context, playerID shared.PlayerID, target probebuy.ProbeTarget, reachable map[string]bool) []shipyardQueries.YardCandidate {
+	candidates, err := p.yardFinder.NearestYardsSelling(ctx, playerID.Value(), []string{probeShipType}, []string{target.System})
+	if err != nil {
+		return nil
+	}
+	demand := make([]shipyardQueries.YardCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if reachable[candidate.WaypointSymbol] {
+			demand = append(demand, candidate)
+		}
+	}
+	return demand
+}
+
+// reachableWaypoints flattens the per-system reachable yards to the set of reachable yard waypoints.
+func reachableWaypoints(reachBySystem map[string][]shipyardQueries.YardCandidate) map[string]bool {
+	set := make(map[string]bool)
+	for _, candidates := range reachBySystem {
+		for _, candidate := range candidates {
+			set[candidate.WaypointSymbol] = true
+		}
+	}
+	return set
+}
+
+// mergeReachByMinHops unions the per-system reachable yards, keeping each yard at its MINIMUM hop
+// distance across buyer systems (the nearest buyer's reach), so the fallback rank prefers a yard in a
+// buyer's own system (0 hops). The result is sorted hops-then-price-then-waypoint so a tie resolves
+// deterministically (RULINGS #2), mirroring the finder's own rank.
+func mergeReachByMinHops(reachBySystem map[string][]shipyardQueries.YardCandidate) []shipyardQueries.YardCandidate {
+	best := make(map[string]shipyardQueries.YardCandidate)
+	for _, candidates := range reachBySystem {
+		for _, candidate := range candidates {
+			if existing, ok := best[candidate.WaypointSymbol]; !ok || candidate.Hops < existing.Hops {
+				best[candidate.WaypointSymbol] = candidate
+			}
+		}
+	}
+	union := make([]shipyardQueries.YardCandidate, 0, len(best))
+	for _, candidate := range best {
+		union = append(union, candidate)
+	}
+	sort.Slice(union, func(i, j int) bool {
+		if union[i].Hops != union[j].Hops {
+			return union[i].Hops < union[j].Hops
+		}
+		if union[i].PurchasePrice != union[j].PurchasePrice {
+			return union[i].PurchasePrice < union[j].PurchasePrice
+		}
+		return union[i].WaypointSymbol < union[j].WaypointSymbol
+	})
+	return union
+}
+
+// selectRelayBuyer picks the hull that relays to the chosen yard, PROVABLY able to reach it: a hull
+// already AT the yard (movement-free) first, then a hull in the yard's OWN system (a 0-hop in-system
+// relay), then any hull whose system's reach includes the yard. ok=false only if no buyer reaches it
+// (unreachable by construction — the caller then fails open to home).
+func selectRelayBuyer(buyers []*navigation.Ship, reachBySystem map[string][]shipyardQueries.YardCandidate, chosen shipyardQueries.YardCandidate) (*navigation.Ship, bool) {
+	var sameSystem, anyReaching *navigation.Ship
+	for _, buyer := range buyers {
+		loc := buyer.CurrentLocation()
+		if loc.Symbol == chosen.WaypointSymbol {
+			return buyer, true // already at the yard → movement-free
+		}
+		if !reaches(reachBySystem[loc.SystemSymbol], chosen.WaypointSymbol) {
+			continue
+		}
+		if loc.SystemSymbol == chosen.SystemSymbol && sameSystem == nil {
+			sameSystem = buyer
+		}
+		if anyReaching == nil {
+			anyReaching = buyer
+		}
+	}
+	if sameSystem != nil {
+		return sameSystem, true
+	}
+	if anyReaching != nil {
+		return anyReaching, true
+	}
+	return nil, false
+}
+
+// reaches reports whether a system's reachable-yard slice contains the chosen yard waypoint.
+func reaches(candidates []shipyardQueries.YardCandidate, waypoint string) bool {
+	for _, candidate := range candidates {
+		if candidate.WaypointSymbol == waypoint {
+			return true
+		}
+	}
+	return false
 }
 
 // recentBuyImpactScan bounds the newest-first PURCHASE_SHIP rows scanned to derive each
@@ -348,28 +532,23 @@ func (p *ProbePurchaser) resolveInPlaceBuy(ctx context.Context, playerID shared.
 	return best, nil
 }
 
-// prepareTargetYardBuyer readies a target-yard buy: it resolves an idle undedicated
-// hull, RELAYS it to the winning yard when it is not already there (never a movement-free buy
-// wherever a hull sits), and RE-CHECKS the live dock price so the money guard
-// judges the ACTUAL price rather than a stale scan. Returns the buyer symbol and the re-checked
-// live price. A relay that cannot route, or a dock whose live price is unreadable after arrival,
-// fails the buy CLOSED — the fail-OPEN home fallback covers only MISSING selection data, not a
-// committed relay that then cannot be priced (never overpay blind).
-func (p *ProbePurchaser) prepareTargetYardBuyer(ctx context.Context, playerID shared.PlayerID, yard string) (string, int, error) {
-	buyer, err := p.resolveIdleUndedicatedBuyer(ctx, playerID, yard)
-	if err != nil {
-		return "", 0, err
-	}
-	if !buyerAtYard(buyer, yard) {
-		if err := p.navigateBuyerToYard(ctx, playerID, buyer.ShipSymbol(), yard); err != nil {
-			return "", 0, err
+// relayAndRecheck readies a demand-proximal buy: it RELAYS the plan's already-resolved buyer to the
+// winning yard when it is not already there (the buyer was chosen to reach it), and RE-CHECKS the
+// live dock price so the money guard judges the ACTUAL price rather than a stale scan. Returns the
+// re-checked live price. A relay that cannot route, or a dock whose live price is unreadable after
+// arrival, fails the buy CLOSED — the fail-OPEN home fallback covers only MISSING selection data, not
+// a committed relay that then cannot be priced (never overpay blind).
+func (p *ProbePurchaser) relayAndRecheck(ctx context.Context, playerID shared.PlayerID, plan probeBuyPlan) (int, error) {
+	if !plan.buyerAtYard {
+		if err := p.navigateBuyerToYard(ctx, playerID, plan.buyer, plan.yard); err != nil {
+			return 0, err
 		}
 	}
-	price, ok := p.probePriceAt(ctx, playerID, shared.ExtractSystemSymbol(yard), yard)
+	price, ok := p.probePriceAt(ctx, playerID, shared.ExtractSystemSymbol(plan.yard), plan.yard)
 	if !ok {
-		return "", 0, fmt.Errorf("live dock price at %s unreadable after relay", yard)
+		return 0, fmt.Errorf("live dock price at %s unreadable after relay", plan.yard)
 	}
-	return buyer.ShipSymbol(), price, nil
+	return price, nil
 }
 
 // navigateBuyerToYard relays the buyer to the winning yard via the shared high-level navigation
@@ -392,35 +571,6 @@ func (p *ProbePurchaser) navigateBuyerToYard(ctx context.Context, playerID share
 func buyerAtYard(buyer *navigation.Ship, yard string) bool {
 	loc := buyer.CurrentLocation()
 	return loc != nil && loc.Symbol == yard
-}
-
-// resolveIdleUndedicatedBuyer returns an idle, undedicated hull to execute a target-yard buy,
-// PREFERRING one already at preferYard (movement-free) so no relay is needed when a hull is already
-// present. It never selects a dedicated hull (RULINGS #7). No idle hull → error (the buy fails
-// closed exactly as the in-place path does when no buyer exists — never a data-driven fail-close,
-// just no hull to buy through).
-func (p *ProbePurchaser) resolveIdleUndedicatedBuyer(ctx context.Context, playerID shared.PlayerID, preferYard string) (*navigation.Ship, error) {
-	ships, err := p.shipRepo.FindIdleByPlayer(ctx, playerID)
-	if err != nil {
-		return nil, err
-	}
-	var fallback *navigation.Ship
-	for _, ship := range ships {
-		if ship.DedicatedFleet() != "" {
-			continue
-		}
-		loc := ship.CurrentLocation()
-		if loc != nil && loc.Symbol == preferYard {
-			return ship, nil // already at the yard → movement-free
-		}
-		if fallback == nil {
-			fallback = ship
-		}
-	}
-	if fallback == nil {
-		return nil, fmt.Errorf("no idle undedicated ship available to buy the probe")
-	}
-	return fallback, nil
 }
 
 // probePriceAt reads the live SHIP_PROBE purchase price at a waypoint's shipyard, or

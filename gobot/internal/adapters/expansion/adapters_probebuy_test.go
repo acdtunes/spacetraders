@@ -36,7 +36,8 @@ type probeFakeMediator struct {
 	listings     map[string]int // waypoint -> live SHIP_PROBE price (the dock re-check + in-place surface)
 	purchases    []*shipyardCmd.PurchaseShipCommand
 	navigations  []*shipNav.NavigateRouteCommand // buyer relays to the winning yard (spy)
-	navErr       error                           // set to model an unroutable relay (fail-closed)
+	navErr       error                           // set to model an unroutable relay for ALL destinations (fail-closed)
+	navErrByDest map[string]error                // per-destination unroutable relay (a yard beyond the buyer's reach)
 	boughtSymbol string
 	boughtPrice  int
 	deliverType  string // "" -> SHIP_PROBE (the honest delivery); set to model a substituted hull
@@ -56,6 +57,9 @@ func (m *probeFakeMediator) Send(_ context.Context, request common.Request) (com
 		// modelled, report arrival at the destination so the dock price re-check runs.
 		if m.navErr != nil {
 			return nil, m.navErr
+		}
+		if err := m.navErrByDest[cmd.Destination]; err != nil {
+			return nil, err // this destination is beyond the buyer's jump-reach (fail-closed)
 		}
 		m.navigations = append(m.navigations, cmd)
 		return &shipNav.NavigateRouteResponse{Status: "completed", CurrentLocation: cmd.Destination}, nil
@@ -91,17 +95,24 @@ func (r *probeFakeShipRepo) FindIdleByPlayer(_ context.Context, _ shared.PlayerI
 // probe-yards near the target and records the query so a test can assert the reuse contract
 // (the probe ship type + the target system as fromSystems).
 type probeFakeYardFinder struct {
-	candidates      []shipyardQueries.YardCandidate
-	err             error
-	lastShipTypes   []string
-	lastFromSystems []string
-	calls           int
+	candidates         []shipyardQueries.YardCandidate
+	candidatesBySystem map[string][]shipyardQueries.YardCandidate // per-from-system yards: models reachability differing by reference system
+	err                error
+	lastShipTypes      []string
+	lastFromSystems    []string
+	calls              int
 }
 
 func (f *probeFakeYardFinder) NearestYardsSelling(_ context.Context, _ int, shipTypes, fromSystems []string) ([]shipyardQueries.YardCandidate, error) {
 	f.calls++
 	f.lastShipTypes = shipTypes
 	f.lastFromSystems = fromSystems
+	if f.candidatesBySystem != nil {
+		if len(fromSystems) == 0 {
+			return nil, f.err
+		}
+		return f.candidatesBySystem[fromSystems[0]], f.err
+	}
 	return f.candidates, f.err
 }
 
@@ -463,6 +474,65 @@ func TestBuyProbe_NavigatingBuyer_SharedByBothConsumerTargetShapes(t *testing.T)
 			require.Equal(t, 20_000, price, "both consumer shapes buy at the cheap frontier yard, not the spiked home")
 			require.Len(t, med.navigations, 1)
 			require.Equal(t, frontierYd, med.navigations[0].Destination)
+		})
+	}
+}
+
+// THE LIVE BUG (sp-xvi15, RED-first): the demand-proximal yard the finder returns for the TARGET
+// system (X1-AM3-Z13F) is BEYOND the buyer's jump-reach — every relay to it fail-closes and the
+// probe fleet stalls at its cap. Meanwhile a current-era probe yard sits reachable from the buyer's
+// OWN system (or one hop out). The buy must FALL BACK to the nearest REACHABLE yard and succeed,
+// NEVER retry-loop the dead far target. Two reachability shapes (same-system, one-hop-out sibling) =
+// one behavior, parametrized (Mandate 5). Pre-fix the buyer relays to the unreachable X1-AM3-Z13F and
+// BuyProbe errors; post-fix it relays to the reachable yard and buys there.
+func TestBuyProbe_FallsBackToReachableYard_WhenDemandProximalIsBeyondBuyerReach(t *testing.T) {
+	const (
+		buyerSystem = "X1-DY16"
+		buyerWp     = "X1-DY16-A2"  // where the idle buyer sits (NOT at a yard)
+		deadYard    = "X1-AM3-Z13F" // the demand-proximal winner, UNREACHABLE from the buyer (the live stall)
+		targetSys   = "X1-AM3"
+	)
+	cases := []struct {
+		name         string
+		reachableYd  string
+		reachableSys string
+		reachableHop int
+	}{
+		{name: "a probe yard in the buyer's OWN system (0 hops)", reachableYd: "X1-DY16-X12D", reachableSys: "X1-DY16", reachableHop: 0},
+		{name: "a probe yard one hop out (within reach)", reachableYd: "X1-NB99-B1", reachableSys: "X1-NB99", reachableHop: 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			med := &probeFakeMediator{
+				listings:     map[string]int{tc.reachableYd: 27_907},
+				navErrByDest: map[string]error{deadYard: errors.New("no jump-gate route from " + buyerSystem + " to " + targetSys + " within 5 jumps")},
+				boughtSymbol: "PROBE-NEW",
+				boughtPrice:  27_907,
+			}
+			ships := &probeFakeShipRepo{idle: []*navigation.Ship{probeShip(t, "BUYER-1", buyerWp)}}
+			finder := &probeFakeYardFinder{candidatesBySystem: map[string][]shipyardQueries.YardCandidate{
+				// From the TARGET system the only scanned yard is the deep, UNREACHABLE one (the live defect).
+				targetSys: {yard(deadYard, targetSys, 1, 20_000)},
+				// From the BUYER's own system a current-era probe yard IS reachable.
+				buyerSystem: {yard(tc.reachableYd, tc.reachableSys, tc.reachableHop, 27_907)},
+			}}
+			p := NewProbePurchaser(med, ships, finder, &probeFakeLedger{}, nil)
+
+			target := probebuy.ProbeTarget{System: targetSys, HopPenaltyCredits: probebuy.DefaultHopPenaltyCredits, SiblingPriceMarginCredits: probebuy.DefaultSiblingPriceMarginCredits}
+			price, symbol, err := p.BuyProbe(context.Background(), shared.MustNewPlayerID(1), 50_000, target)
+
+			require.NoError(t, err, "the buy falls back to the reachable yard instead of failing on the unreachable target")
+			require.Equal(t, 27_907, price)
+			require.Equal(t, "PROBE-NEW", symbol)
+			require.Len(t, med.purchases, 1)
+			require.Equal(t, tc.reachableYd, med.purchases[0].ShipyardWaypoint, "the probe is bought at the REACHABLE yard, not the unreachable demand target")
+			require.Equal(t, "BUYER-1", med.purchases[0].PurchasingShipSymbol)
+			// The buyer is relayed ONLY to the reachable yard — never to the dead far target it cannot route to.
+			require.Len(t, med.navigations, 1)
+			require.Equal(t, tc.reachableYd, med.navigations[0].Destination, "the buyer relays to the reachable yard")
+			for _, nav := range med.navigations {
+				require.NotEqual(t, deadYard, nav.Destination, "never retry-loop the unreachable demand yard")
+			}
 		})
 	}
 }
