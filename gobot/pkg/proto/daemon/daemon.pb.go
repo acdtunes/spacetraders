@@ -6835,6 +6835,7 @@ type BatchPurchaseShipsRequest struct {
 	AgentSymbol          *string                `protobuf:"bytes,6,opt,name=agent_symbol,json=agentSymbol,proto3,oneof" json:"agent_symbol,omitempty"`
 	ShipyardWaypoint     *string                `protobuf:"bytes,7,opt,name=shipyard_waypoint,json=shipyardWaypoint,proto3,oneof" json:"shipyard_waypoint,omitempty"` // Optional - will auto-discover if not provided
 	Iterations           *int32                 `protobuf:"varint,8,opt,name=iterations,proto3,oneof" json:"iterations,omitempty"`                                    // -1 for infinite, default 1
+	DedicateFleet        *string                `protobuf:"bytes,9,opt,name=dedicate_fleet,json=dedicateFleet,proto3,oneof" json:"dedicate_fleet,omitempty"`          // sp-0ms61: dedicate each purchased hull to this fleet ATOMICALLY at purchase; omitted = hull lands undedicated (current behavior)
 	unknownFields        protoimpl.UnknownFields
 	sizeCache            protoimpl.SizeCache
 }
@@ -6923,6 +6924,13 @@ func (x *BatchPurchaseShipsRequest) GetIterations() int32 {
 		return *x.Iterations
 	}
 	return 0
+}
+
+func (x *BatchPurchaseShipsRequest) GetDedicateFleet() string {
+	if x != nil && x.DedicateFleet != nil {
+		return *x.DedicateFleet
+	}
+	return ""
 }
 
 type BatchPurchaseShipsResponse struct {
@@ -12381,7 +12389,7 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"\x15purchased_ship_symbol\x18\x02 \x01(\tR\x13purchasedShipSymbol\x12%\n" +
 	"\x0epurchase_price\x18\x03 \x01(\x05R\rpurchasePrice\x12#\n" +
 	"\ragent_credits\x18\x04 \x01(\x05R\fagentCredits\x12\x16\n" +
-	"\x06status\x18\x05 \x01(\tR\x06status\"\xfb\x02\n" +
+	"\x06status\x18\x05 \x01(\tR\x06status\"\xba\x03\n" +
 	"\x19BatchPurchaseShipsRequest\x124\n" +
 	"\x16purchasing_ship_symbol\x18\x01 \x01(\tR\x14purchasingShipSymbol\x12\x1b\n" +
 	"\tship_type\x18\x02 \x01(\tR\bshipType\x12\x1a\n" +
@@ -12393,10 +12401,12 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"\x11shipyard_waypoint\x18\a \x01(\tH\x01R\x10shipyardWaypoint\x88\x01\x01\x12#\n" +
 	"\n" +
 	"iterations\x18\b \x01(\x05H\x02R\n" +
-	"iterations\x88\x01\x01B\x0f\n" +
+	"iterations\x88\x01\x01\x12*\n" +
+	"\x0ededicate_fleet\x18\t \x01(\tH\x03R\rdedicateFleet\x88\x01\x01B\x0f\n" +
 	"\r_agent_symbolB\x14\n" +
 	"\x12_shipyard_waypointB\r\n" +
-	"\v_iterations\"\xcf\x01\n" +
+	"\v_iterationsB\x11\n" +
+	"\x0f_dedicate_fleet\"\xcf\x01\n" +
 	"\x1aBatchPurchaseShipsResponse\x12!\n" +
 	"\fcontainer_id\x18\x01 \x01(\tR\vcontainerId\x12*\n" +
 	"\x11ships_to_purchase\x18\x02 \x01(\x05R\x0fshipsToPurchase\x12\x1d\n" +

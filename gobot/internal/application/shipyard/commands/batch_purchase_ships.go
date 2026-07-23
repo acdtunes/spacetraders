@@ -3,8 +3,10 @@ package commands
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/assignment"
 	"github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
@@ -29,6 +31,19 @@ type BatchPurchaseShipsCommand struct {
 	MaxBudget            int // 0 = unlimited budget
 	PlayerID             shared.PlayerID
 	ShipyardWaypoint     string // Optional - will auto-discover if empty
+
+	// DedicateFleet, when non-empty (after trimming), dedicates EACH purchased
+	// hull to that named fleet ATOMICALLY — in the same daemon operation as the
+	// buy, before the container returns — via the single sanctioned dedication
+	// write (AssignShipFleetCommand -> shipRepo.AssignFleet, the same path
+	// `fleet assign` uses; RULINGS #2/#3). This closes the operator-intent-drift
+	// gap: an undedicated hull (DedicatedFleet()=="") is fair game to the depot
+	// reclaimer (isReclaimable, contract_scaler_ports.go) and the depot launcher
+	// (container_ops_depot_launch.go) in the window between a manual purchase and
+	// a later manual `fleet assign`; stamping the tag at purchase makes it
+	// never-poach immediately (RULINGS #7). Empty/whitespace == omitted, which is
+	// byte-identical to a plain purchase (hull lands undedicated). sp-0ms61.
+	DedicateFleet string
 }
 
 // BatchPurchaseShipsResponse contains the list of purchased ships and total cost
@@ -263,6 +278,14 @@ func (h *BatchPurchaseShipsHandler) executePurchaseLoop(
 			shipyardWaypoint = purchaseResp.Ship.CurrentLocation().Symbol
 		}
 
+		// Atomic dedicate-at-purchase (sp-0ms61): stamp the operator-named fleet on
+		// THIS freshly-bought hull before the next buy — closing the reclaim window
+		// per hull in the same daemon operation. A failure is a hard abort (the hull
+		// would otherwise sit reclaimable), matching the type-substitution floor above.
+		if err := h.dedicateBoughtHull(ctx, cmd, purchaseResp.Ship); err != nil {
+			return nil, 0, err
+		}
+
 		if !h.hasRemainingBudgetAndCredits(totalSpent, purchaseResp.AgentCredits, shipPrice, cmd.MaxBudget) {
 			break
 		}
@@ -296,6 +319,42 @@ func (h *BatchPurchaseShipsHandler) purchaseShip(
 	}
 
 	return purchaseResp, nil
+}
+
+// dedicateBoughtHull stamps the operator-named fleet on a freshly-bought hull
+// via the SINGLE sanctioned dedication write — AssignShipFleetCommand ->
+// shipRepo.AssignFleet, the exact path a manual `fleet assign` uses (RULINGS
+// #2/#3), NOT a second/parallel path. It runs in the same daemon operation as
+// the buy so no coordinator tick observes the hull undedicated: an empty
+// DedicatedFleet() is the sole hull-state clause the depot reclaimer
+// (isReclaimable, contract_scaler_ports.go) and the depot launcher
+// (container_ops_depot_launch.go) use to treat a hull as fair game, so a
+// non-empty tag makes it never-poach immediately (RULINGS #7). Manual=true
+// carries operator authority exactly like `fleet assign` (the captain may pin
+// any named fleet). Empty/whitespace DedicateFleet is a no-op — byte-identical
+// to a plain purchase. A write failure is LOUD: the hull is bought but
+// undedicated (reclaimable), so the caller aborts rather than silently orphaning
+// it (the sp-0ms61 incident: hull 58 poached, hull 59 stranded).
+func (h *BatchPurchaseShipsHandler) dedicateBoughtHull(ctx context.Context, cmd *BatchPurchaseShipsCommand, ship *navigation.Ship) error {
+	fleet := strings.TrimSpace(cmd.DedicateFleet)
+	if fleet == "" {
+		return nil
+	}
+	if ship == nil {
+		return fmt.Errorf("cannot dedicate to %q fleet: purchase returned no ship handle", fleet)
+	}
+	playerID := cmd.PlayerID.Value()
+	_, err := h.mediator.Send(ctx, &assignment.AssignShipFleetCommand{
+		ShipSymbol: ship.ShipSymbol(),
+		Fleet:      fleet,
+		PlayerID:   &playerID,
+		Assigner:   "cli:shipyard-purchase",
+		Manual:     true,
+	})
+	if err != nil {
+		return fmt.Errorf("bought %s but failed to dedicate it to %q fleet: %w — hull is undedicated (reclaimable); rerun `fleet assign`", ship.ShipSymbol(), fleet, err)
+	}
+	return nil
 }
 
 // hasRemainingBudgetAndCredits checks if we can afford another ship purchase

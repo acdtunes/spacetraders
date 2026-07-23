@@ -1310,6 +1310,13 @@ func (s *daemonServiceImpl) BatchPurchaseShips(ctx context.Context, req *pb.Batc
 		iterations = &iter
 	}
 
+	// sp-0ms61: the optional operator-named fleet to dedicate each purchased hull to
+	// atomically at purchase. Absent -> "" -> byte-identical (hull lands undedicated).
+	dedicateFleet := ""
+	if req.DedicateFleet != nil {
+		dedicateFleet = *req.DedicateFleet
+	}
+
 	// Call daemon's BatchPurchaseShips method
 	containerID, shipsToPurchase, maxBudget, resolvedShipyard, status, err := s.daemon.BatchPurchaseShips(
 		ctx,
@@ -1320,6 +1327,7 @@ func (s *daemonServiceImpl) BatchPurchaseShips(ctx context.Context, req *pb.Batc
 		playerID,
 		shipyardWaypoint,
 		iterations,
+		dedicateFleet,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to batch purchase ships: %w", err)

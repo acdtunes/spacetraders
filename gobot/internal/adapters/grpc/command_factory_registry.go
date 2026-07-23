@@ -931,6 +931,11 @@ func buildBatchPurchaseShipsCommand(cfg *configReader, playerID int, containerID
 		MaxBudget:            cfg.RequiredInt("max_budget"),
 		PlayerID:             shared.MustNewPlayerID(playerID),
 		ShipyardWaypoint:     cfg.OptionalString("shipyard"),
+		// sp-0ms61: the optional operator-named fleet to dedicate each purchased hull
+		// to atomically. Absent (plain purchase) -> "" -> byte-identical (hull lands
+		// undedicated). Persisted in the container config so a daemon restart re-adopts
+		// the same atomic buy+dedicate intent (RULINGS #2).
+		DedicateFleet: cfg.OptionalString("dedicate_fleet"),
 	}
 }
 

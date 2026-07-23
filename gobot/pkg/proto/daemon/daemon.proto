@@ -1163,6 +1163,7 @@ message BatchPurchaseShipsRequest {
   optional string agent_symbol = 6;
   optional string shipyard_waypoint = 7; // Optional - will auto-discover if not provided
   optional int32 iterations = 8; // -1 for infinite, default 1
+  optional string dedicate_fleet = 9; // sp-0ms61: dedicate each purchased hull to this fleet ATOMICALLY at purchase; omitted = hull lands undedicated (current behavior)
 }
 
 message BatchPurchaseShipsResponse {

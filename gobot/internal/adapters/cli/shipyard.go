@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -128,6 +129,7 @@ func newShipyardPurchaseCommand() *cobra.Command {
 		quantity         int
 		maxBudget        int
 		shipyardWaypoint string
+		dedicateFleet    string
 	)
 
 	cmd := &cobra.Command{
@@ -151,7 +153,8 @@ The operation runs in a background container that can be monitored.
 Examples:
   spacetraders shipyard purchase --ship AGENT-1 --type SHIP_PROBE --player-id 1
   spacetraders shipyard purchase --ship AGENT-1 --type SHIP_PROBE --quantity 5 --budget 500000 --player-id 1
-  spacetraders shipyard purchase --ship AGENT-1 --type SHIP_MINING_DRONE --quantity 10 --waypoint X1-GZ7-A1 --player-id 1`,
+  spacetraders shipyard purchase --ship AGENT-1 --type SHIP_MINING_DRONE --quantity 10 --waypoint X1-GZ7-A1 --player-id 1
+  spacetraders shipyard purchase --ship AGENT-1 --type SHIP_HEAVY_FREIGHTER --quantity 5 --fleet trade --player-id 1  # atomic buy+dedicate to the trade fleet`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Validate flags
 			if purchasingShip == "" {
@@ -184,7 +187,11 @@ Examples:
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
-			response, err := client.BatchPurchaseShips(ctx, purchasingShip, shipType, quantity, maxBudget, playerIdent.PlayerID, playerIdent.AgentSymbol, shipyardWaypoint)
+			// sp-0ms61: trim so a whitespace-only --fleet is treated as omitted (no
+			// accidental empty-tag dedicate) before it ever leaves the CLI.
+			dedicateFleet = strings.TrimSpace(dedicateFleet)
+
+			response, err := client.BatchPurchaseShips(ctx, purchasingShip, shipType, quantity, maxBudget, playerIdent.PlayerID, playerIdent.AgentSymbol, shipyardWaypoint, dedicateFleet)
 			if err != nil {
 				return fmt.Errorf("failed to batch purchase ships: %w", err)
 			}
@@ -205,6 +212,9 @@ Examples:
 			} else {
 				fmt.Printf("  Shipyard:         Auto-discovering...\n")
 			}
+			if dedicateFleet != "" {
+				fmt.Printf("  Dedicated Fleet:  %s (atomic buy+dedicate)\n", dedicateFleet)
+			}
 			fmt.Printf("  Status:           %s\n", response.Status)
 			fmt.Printf("\nTrack progress with: spacetraders container logs %s\n", response.ContainerId)
 
@@ -217,6 +227,7 @@ Examples:
 	cmd.Flags().IntVar(&quantity, "quantity", 1, "Number of ships to purchase (default: 1)")
 	cmd.Flags().IntVar(&maxBudget, "budget", 0, "Maximum budget in credits (0 = no limit, default: 0)")
 	cmd.Flags().StringVar(&shipyardWaypoint, "waypoint", "", "Shipyard waypoint (optional - will auto-discover if not provided)")
+	cmd.Flags().StringVar(&dedicateFleet, "fleet", "", "Optional: dedicate each purchased hull to this fleet tag ATOMICALLY at purchase (same vocabulary as `fleet assign --fleet`), so it is never observable as an undedicated/reclaimable pool hull. Omitted = hull lands undedicated (current behavior).")
 
 	return cmd
 }

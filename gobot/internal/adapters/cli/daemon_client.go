@@ -1221,7 +1221,7 @@ func (c *DaemonClient) PurchaseShip(ctx context.Context, purchasingShipSymbol, s
 }
 
 // BatchPurchaseShips purchases multiple ships in batch
-func (c *DaemonClient) BatchPurchaseShips(ctx context.Context, purchasingShipSymbol, shipType string, quantity, maxBudget, playerID int, agentSymbol, shipyardWaypoint string) (*pb.BatchPurchaseShipsResponse, error) {
+func (c *DaemonClient) BatchPurchaseShips(ctx context.Context, purchasingShipSymbol, shipType string, quantity, maxBudget, playerID int, agentSymbol, shipyardWaypoint, dedicateFleet string) (*pb.BatchPurchaseShipsResponse, error) {
 	req := &pb.BatchPurchaseShipsRequest{
 		PurchasingShipSymbol: purchasingShipSymbol,
 		ShipType:             shipType,
@@ -1234,6 +1234,11 @@ func (c *DaemonClient) BatchPurchaseShips(ctx context.Context, purchasingShipSym
 	}
 	if shipyardWaypoint != "" {
 		req.ShipyardWaypoint = &shipyardWaypoint
+	}
+	// sp-0ms61: forward the optional --fleet role only when set, so an omitted flag
+	// leaves the field nil (byte-identical: the daemon lands the hull undedicated).
+	if dedicateFleet != "" {
+		req.DedicateFleet = &dedicateFleet
 	}
 
 	resp, err := c.client.BatchPurchaseShips(ctx, req)

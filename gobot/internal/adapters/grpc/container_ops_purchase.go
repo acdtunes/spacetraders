@@ -55,8 +55,14 @@ func (s *DaemonServer) PurchaseShip(ctx context.Context, purchasingShipSymbol, s
 	return containerID, "", 0, 0, "starting", nil
 }
 
-// BatchPurchaseShips purchases multiple ships from a shipyard as a background operation
-func (s *DaemonServer) BatchPurchaseShips(ctx context.Context, purchasingShipSymbol, shipType string, quantity, maxBudget, playerID int, shipyardWaypoint *string, iterations *int) (string, int32, int32, string, string, error) {
+// BatchPurchaseShips purchases multiple ships from a shipyard as a background operation.
+//
+// dedicateFleet (sp-0ms61) is the optional operator-named fleet each purchased hull is
+// dedicated to ATOMICALLY at purchase (via the container's BatchPurchaseShipsCommand, which
+// stamps the single sanctioned AssignFleet write per hull before it completes). Empty ->
+// hull lands undedicated, byte-identical to a plain purchase. It rides in the persisted
+// container config so a daemon restart re-adopts the same atomic buy+dedicate intent.
+func (s *DaemonServer) BatchPurchaseShips(ctx context.Context, purchasingShipSymbol, shipType string, quantity, maxBudget, playerID int, shipyardWaypoint *string, iterations *int, dedicateFleet string) (string, int32, int32, string, string, error) {
 	shipyard := ""
 	if shipyardWaypoint != nil {
 		shipyard = *shipyardWaypoint
@@ -71,11 +77,12 @@ func (s *DaemonServer) BatchPurchaseShips(ctx context.Context, purchasingShipSym
 	containerID := utils.GenerateContainerID("batch_purchase_ships", purchasingShipSymbol)
 
 	config := map[string]interface{}{
-		"ship_symbol": purchasingShipSymbol,
-		"ship_type":   shipType,
-		"quantity":    quantity,
-		"max_budget":  maxBudget,
-		"shipyard":    shipyard,
+		"ship_symbol":    purchasingShipSymbol,
+		"ship_type":      shipType,
+		"quantity":       quantity,
+		"max_budget":     maxBudget,
+		"shipyard":       shipyard,
+		"dedicate_fleet": dedicateFleet,
 	}
 
 	// Create batch purchase command from the launch config
