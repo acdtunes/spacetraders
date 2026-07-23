@@ -93,3 +93,24 @@ func TestResolveRoles_InnerBandPureExporterIsNotAPark(t *testing.T) {
 		t.Fatalf("central parks = %v, want only the inner-band importer", roles.CentralParks)
 	}
 }
+
+// A charted inner-band MARKETPLACE whose per-good imports have NOT been dock-scanned
+// this pass (no scanned Imports/Exports) is STILL a central contract-sink park:
+// classification keys on the DURABLE marketplace trait, not the transient scanned
+// import goods (sp-ojp32). Without this, idle delivery hulls pile onto only the
+// handful of currently-scanned importers (the live A/K/G/H pile) while the unscanned
+// E/F/D/C central bands sit EMPTY. A marketplace that is a KNOWN pure exporter stays
+// excluded — it is a source, not a sink, even in the inner band.
+func TestResolveRoles_ChartedMarketplaceIsACentralParkBeforeImportsAreScanned(t *testing.T) {
+	markets := []WaypointMarket{
+		{Symbol: "X1-AA-A1", X: 20, Y: 10, IsMarketplace: true, Imports: []string{"ELECTRONICS"}}, // scanned importer
+		{Symbol: "X1-AA-E43", X: 50, Y: 24, IsMarketplace: true},                                  // charted marketplace, imports not scanned yet
+		{Symbol: "X1-AA-F1", X: 50, Y: 50, IsMarketplace: true, Exports: []string{"FUEL"}},        // marketplace but a KNOWN pure source
+	}
+	roles := ResolveRoles(markets)
+
+	want := []string{"X1-AA-A1", "X1-AA-E43"}
+	if !reflect.DeepEqual(sortedCopy(roles.CentralParks), want) {
+		t.Fatalf("central parks = %v, want the scanned importer + the unscanned charted marketplace (pure exporter excluded) %v", roles.CentralParks, want)
+	}
+}

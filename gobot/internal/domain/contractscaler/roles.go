@@ -22,11 +22,17 @@ const centralBandRadius = 300.0
 // to the per-era role lookup. Exports/Imports are the good symbols the waypoint
 // EXPORTs / IMPORTs (EXCHANGE goods, being neither produced nor consumed, are
 // omitted by the caller). Coordinates are relative to the system star at (0,0).
+// IsMarketplace is the DURABLE charted MARKETPLACE trait (set from waypoint charting,
+// independent of whether the per-good market has been dock-scanned this pass): it is
+// what keeps an inner-band contract sink in the central-park set even before its
+// import goods are scanned, so idle delivery hulls spread across ALL distinct central
+// waypoints instead of piling on the handful currently scanned as importers.
 type WaypointMarket struct {
-	Symbol  string
-	X, Y    float64
-	Exports []string
-	Imports []string
+	Symbol        string
+	X, Y          float64
+	Exports       []string
+	Imports       []string
+	IsMarketplace bool
 }
 
 // EraRoles is the resolved per-era topology: which of THIS era's waypoints fill
@@ -42,7 +48,7 @@ type EraRoles struct {
 
 // ResolveRoles classifies home-system waypoints into the fixed roles by geometry
 // band and market trade role — "a lookup, not a solve":
-//   - central parks = inner-band sinks (importers): the contract-delivery targets.
+//   - central parks = inner-band contract sinks (isCentralSink): the delivery targets.
 //   - far sources   = far-band exporters: where the fleet sources ores/precious/drugs.
 //   - far sink      = the FARTHEST importer: the J-outlier consumer, served live.
 //
@@ -57,7 +63,7 @@ func ResolveRoles(markets []WaypointMarket) EraRoles {
 		importer := len(m.Imports) > 0
 		exporter := len(m.Exports) > 0
 		if dist <= centralBandRadius {
-			if importer {
+			if isCentralSink(m) {
 				roles.CentralParks = append(roles.CentralParks, m.Symbol)
 			}
 			continue
@@ -73,4 +79,31 @@ func ResolveRoles(markets []WaypointMarket) EraRoles {
 	sort.Strings(roles.CentralParks)
 	sort.Strings(roles.FarSources)
 	return roles
+}
+
+// isCentralSink reports whether an inner-band waypoint is a contract-delivery sink —
+// a central park. It keys on the DURABLE marketplace fact, not transient scanned
+// import goods, so an inner-band MARKETPLACE whose per-good market has not been
+// dock-scanned this pass is STILL a park (sp-ojp32). This is the fix for the live
+// idle-hull pile-up: when classification required scanned imports, only the handful
+// of currently-scanned central sinks joined the standby set (the A/K/G/H pile) while
+// the unscanned E/F/D/C central bands sat empty, so N idle hulls clustered on ~4
+// waypoints instead of spreading one-per-band.
+//
+//   - A scanned importer is a sink.
+//   - An unscanned marketplace (charted trait, or trade goods already observed) is
+//     ASSUMED a sink — inner-band marketplaces receive contract deliveries; the far
+//     source ring is the only exporter cluster, and it is beyond centralBandRadius.
+//   - A KNOWN pure exporter (exports, no imports) is a SOURCE, not a sink, excluded
+//     even in the inner band (parks are consumers, not factories).
+//   - A non-market waypoint (no trait, no trade goods) is never a park.
+func isCentralSink(m WaypointMarket) bool {
+	hasMarket := m.IsMarketplace || len(m.Imports) > 0 || len(m.Exports) > 0
+	if !hasMarket {
+		return false
+	}
+	if len(m.Imports) > 0 {
+		return true
+	}
+	return len(m.Exports) == 0
 }

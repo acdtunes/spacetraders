@@ -103,11 +103,12 @@ func (r *contractScalerRoleResolver) homeMarkets(ctx context.Context, playerID i
 		}
 		exports, imports, weight := r.tradeRoles(ctx, waypoint.Symbol, playerID)
 		markets = append(markets, contractscaler.WaypointMarket{
-			Symbol:  waypoint.Symbol,
-			X:       waypoint.X,
-			Y:       waypoint.Y,
-			Exports: exports,
-			Imports: imports,
+			Symbol:        waypoint.Symbol,
+			X:             waypoint.X,
+			Y:             waypoint.Y,
+			Exports:       exports,
+			Imports:       imports,
+			IsMarketplace: waypoint.IsMarketplace(), // durable charted trait → a sink even before its imports are dock-scanned
 		})
 		if len(imports) > 0 {
 			demand[waypoint.Symbol] = weight
