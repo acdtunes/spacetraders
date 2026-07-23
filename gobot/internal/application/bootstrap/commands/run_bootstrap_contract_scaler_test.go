@@ -11,7 +11,10 @@ import (
 // window so it ramps the exclusive contract fleet behind the 200000 cushion.
 
 // contractScalerIncomeObs is an INCOME-phase observation (haulers at desired, autosizer running so the early
-// autosizer launch is an idempotent no-op) with the contract-scaler running-state set by the caller.
+// autosizer launch is an idempotent no-op) with the contract-scaler running-state set by the caller. The 3
+// contract haulers put it in the POST-trade-seed state via sjvvIncomeObs (TradeHullCount=1), so the scaler
+// DELAY-LAUNCH gate (sp-192k4) is open and these tests pin the launch/idempotency behavior as intended; the
+// "held until the trade hull exists" half is covered by TestBootstrap_ContractScaler_HeldUntilTradeHullSeeded.
 func contractScalerIncomeObs(scalerRunning bool) Observation {
 	o := sjvvIncomeObs(true, 3) // 3 haulers = desired → no hauler buy; autosizer "running" → no autosizer launch
 	o.ContractScalerRunning = scalerRunning

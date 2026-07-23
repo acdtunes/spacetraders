@@ -272,6 +272,13 @@ type HaulerAcquirer interface {
 	// behavior (pick any idle hull), and a set value pins THE purchaser — the first-hauler pivot passes
 	// the freed command frigate so the buy is deterministic, not dependent on an incidentally-idle probe.
 	BuyAndPlace(ctx context.Context, playerID int, shipType, yard, hubWaypoint, purchaserSymbol string) (BuyResult, error)
+	// BuyAndDedicate buys ONE hull and dedicates it to the arbitrary fleet tag `fleet` (sp-192k4), with
+	// NO hub placement — the fleet-parameterized sibling of BuyAndPlace (which hardcodes the contract
+	// fleet + a hub). The INCOME hull-routing trade-seed calls it with fleet="trade" to seed acquisition
+	// #2 to the trade fleet. purchaserSymbol pins the buy ship exactly as BuyAndPlace does (the trade seed
+	// passes the exclusive purchasing frigate). Reuses the same atomic buy+dedicate path (BatchPurchaseShips
+	// + fleet assign) BuyAndPlace uses, minus the navigate.
+	BuyAndDedicate(ctx context.Context, playerID int, shipType, yard, fleet, purchaserSymbol string) (BuyResult, error)
 }
 
 // ContractRunner launches the contract fleet coordinator (workflow batch-contract) for a player
@@ -350,6 +357,11 @@ type HandoffLauncher interface {
 	// scaling window (unconditional in the DATA/INCOME window, sp-1cbxz). Idempotent (skips when one is
 	// already RUNNING/PENDING), so a re-run never double-launches.
 	LaunchContractScaler(ctx context.Context, playerID int, agentSymbol string) error
+	// LaunchTradeFleetCoordinator launches the standing trade-fleet coordinator at the INCOME trade-seed
+	// (sp-192k4), so the freshly-seeded trade hull is picked up and put on a continuous tour. Idempotent
+	// (skips when one is already RUNNING/PENDING) — the observable trade hull is the seeded signal, so a
+	// re-run never double-launches.
+	LaunchTradeFleetCoordinator(ctx context.Context, playerID int, agentSymbol string) error
 }
 
 // RunBootstrapCoordinatorCommand launches the standing bootstrap coordinator for a player.

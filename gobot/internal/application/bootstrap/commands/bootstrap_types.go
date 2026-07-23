@@ -170,6 +170,15 @@ type Observation struct {
 	// FOREVER; a re-observe running ⇒ no re-launch). Consumed only when the arm is set.
 	ContractScalerRunning bool
 
+	// TradeHullCount is the number of 'trade'-fleet-dedicated hulls NOW — the observable trade-seeded
+	// signal (sp-192k4). The trade hull EXISTING is the durable "seeded" marker: idempotent by
+	// construction, auto-re-derived each tick from the live fleet (no stored flag), so it is restart-safe.
+	// It drives the INCOME hull-routing trade-seed (acquisition #2 → trade, held until a trade hull
+	// exists) AND the contract-scaler delay-launch (the scaler is not launched until TradeHullCount ≥ 1,
+	// so it never grabs acquisition #2 as a contract hull). Mirrors how obs.Haulers counts contract-
+	// dedicated hulls, filtering on the "trade" tag instead. 0 (the cold-start default) ⇒ not yet seeded.
+	TradeHullCount int
+
 	// Readable reports whether the observer gathered all its inputs. false ⇒ fail-closed (no action
 	// this tick), with Reason naming what could not be read.
 	Readable bool

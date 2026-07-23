@@ -278,6 +278,23 @@ func (h *bootstrapHandoffLauncher) LaunchContractScaler(ctx context.Context, pla
 	return err
 }
 
+// LaunchTradeFleetCoordinator launches the standing trade-fleet coordinator at the INCOME trade-seed
+// (sp-192k4), so the freshly-seeded trade hull is picked up and put on a continuous tour. Idempotent on its
+// own container type — a re-run (or a stale observation) never double-launches a second coordinator fighting
+// the first over the same 'trade'-dedicated hulls. The coordinator then survives restarts via the
+// persisted-container recovery idiom (launched once, runs forever) — mirroring LaunchContractScaler.
+func (h *bootstrapHandoffLauncher) LaunchTradeFleetCoordinator(ctx context.Context, playerID int, agentSymbol string) error {
+	running, err := containerTypeRunning(ctx, h.server.containerRepo, playerID, container.ContainerTypeTradeFleetCoordinator)
+	if err != nil {
+		return err
+	}
+	if running {
+		return nil // idempotent: already launched
+	}
+	_, err = h.server.TradeFleetCoordinator(ctx, playerID, agentSymbol)
+	return err
+}
+
 // LaunchStandingCoordinators is a no-op since the factory-ops retirement (sp-hoj8u). It formerly
 // launched the siting + worker-rebalancer coordinators at the GATE hand-off; both were retired with
 // the factories, so there is nothing left to launch here. The method is retained (returning nil) so

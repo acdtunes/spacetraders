@@ -240,9 +240,11 @@ type fakeHandoff struct {
 	autosizer      int
 	standing       int
 	contractScaler int
+	tradeCoord     int // sp-192k4: LaunchTradeFleetCoordinator calls
 	autoErr        error
 	standErr       error
 	scalerErr      error
+	tradeErr       error
 }
 
 func (f *fakeHandoff) LaunchAutosizer(ctx context.Context, playerID int, agentSymbol string) error {
@@ -258,6 +260,11 @@ func (f *fakeHandoff) LaunchStandingCoordinators(ctx context.Context, playerID i
 func (f *fakeHandoff) LaunchContractScaler(ctx context.Context, playerID int, agentSymbol string) error {
 	f.contractScaler++
 	return f.scalerErr
+}
+
+func (f *fakeHandoff) LaunchTradeFleetCoordinator(ctx context.Context, playerID int, agentSymbol string) error {
+	f.tradeCoord++
+	return f.tradeErr
 }
 
 // gateHandler wires a handler with the given GATE collaborators plus the always-needed refresher/observer

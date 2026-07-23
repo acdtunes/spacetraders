@@ -266,6 +266,7 @@ type reconcileResult struct {
 	ContractRun        bool // batch-contract was launched this tick
 	FrigateLoopStarted bool // the command frigate's continuous contract loop was started this tick (sp-rype)
 	FrigatePivoted     bool // the first-hauler pivot fired this tick: frigate loop STOPPED + dedicated the exclusive purchasing ship (sp-7r7w). With a readable yard price the buy also runs this tick; on a COLD price it is a SEPARATE later tick once the freed frigate is positioned (sp-5nd2 fault-2)
+	TradeHullSeeded    bool // the INCOME hull-routing trade-seed fired this tick (sp-192k4): acquisition #2 bought + dedicated to the trade fleet + the trade coordinator ensured
 	ViableHubs         int  // viable contract hubs the selector found (for the heartbeat)
 
 	// GATE tallies.
@@ -571,10 +572,15 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 	}
 
 	// Launch the standing dedicated contract auto-scaler EARLY during the same DATA/INCOME scaling window so
-	// it ramps the exclusive contract fleet behind the 200000 cushion. Unconditional in the DATA/INCOME
-	// window. Idempotent (skips when already running). Scoped to DATA/INCOME like the autosizer launch: GATE
-	// repurposes haulers to construction, and the scaler is launched once then RUNS FOREVER via restart recovery.
-	if phase == PhaseData || phase == PhaseIncome {
+	// it ramps the exclusive contract fleet behind the 200000 cushion. Idempotent (skips when already
+	// running). Scoped to DATA/INCOME like the autosizer launch: GATE repurposes haulers to construction, and
+	// the scaler is launched once then RUNS FOREVER via restart recovery. DELAY-LAUNCHED until the trade hull
+	// exists (obs.TradeHullCount >= 1, sp-192k4): the scaler would otherwise grab acquisition #2 as a contract
+	// hull, racing the INCOME trade-seed for that slot. Holding the scaler until the trade hull is seeded lets
+	// the bootstrap own the #1-contract → #2-trade routing; the scaler then ramps #3… (it is cushion-gated, so
+	// a slightly later launch never delays real buying). The trade hull existing is the observable, restart-safe
+	// gate — no stored marker.
+	if (phase == PhaseData || phase == PhaseIncome) && obs.TradeHullCount >= 1 {
 		h.maybeLaunchContractScalerEarly(ctx, cmd, cfg, obs, &res)
 	}
 
@@ -1106,7 +1112,7 @@ func (h *RunBootstrapCoordinatorHandler) declareHomeScoutPost(ctx context.Contex
 func (h *RunBootstrapCoordinatorHandler) emitHeartbeat(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, phase Phase, obs Observation, res reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
-	delta := fmt.Sprintf("bought=%d home_post=%v haulers_bought=%d frigate_retired=%v batch_contract=%v frigate_loop=%v construction_started=%v mfg_ensured=%v mfg_bounced=%v workers_released=%d gate_workers_bought=%d handoff=%v", res.Purchased, res.HomePostDeclared, res.HaulersBought, res.FrigateRetired, res.ContractRun, res.FrigateLoopStarted, res.ConstructionStartRan, res.MfgEnsured, res.MfgBounced, res.WorkersReleased, res.GateWorkersBought, res.HandoffLaunched)
+	delta := fmt.Sprintf("bought=%d home_post=%v haulers_bought=%d trade_seeded=%v frigate_retired=%v batch_contract=%v frigate_loop=%v construction_started=%v mfg_ensured=%v mfg_bounced=%v workers_released=%d gate_workers_bought=%d handoff=%v", res.Purchased, res.HomePostDeclared, res.HaulersBought, res.TradeHullSeeded, res.FrigateRetired, res.ContractRun, res.FrigateLoopStarted, res.ConstructionStartRan, res.MfgEnsured, res.MfgBounced, res.WorkersReleased, res.GateWorkersBought, res.HandoffLaunched)
 	if cfg.DryRun {
 		delta = fmt.Sprintf("would_buy=%d (dry-run)", res.WouldBuy)
 	}
@@ -1128,12 +1134,14 @@ func (h *RunBootstrapCoordinatorHandler) emitHeartbeat(ctx context.Context, cmd 
 		"markets_total":      obs.MarketsTotal,
 		"haulers":            len(obs.Haulers),
 		"hauler_target":      cfg.HaulerTarget,
+		"trade_hulls":        obs.TradeHullCount,
 		"viable_hubs":        res.ViableHubs,
 		"income_per_hour":    obs.IncomePerHour,
 		"income_bar":         cfg.IncomeBar,
 		"treasury":           obs.Treasury,
 		"purchased":          res.Purchased,
 		"haulers_bought":     res.HaulersBought,
+		"trade_seeded":       res.TradeHullSeeded,
 		"frigate_retired":    res.FrigateRetired,
 		"batch_contract":     res.ContractRun,
 		"frigate_loop":       res.FrigateLoopStarted,

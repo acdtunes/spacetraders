@@ -13,6 +13,12 @@ import (
 // capacity stack was deleted, preserving the exact prior threshold (byte-identical behavior).
 const contractHaulerTierSaturation = 2
 
+// tradeFleetTag is the dedicated-fleet tag the standing trade-fleet coordinator selects on (matches the
+// trading package's tradeFleet). The INCOME hull-routing trade-seed (sp-192k4) buys ONE hull and dedicates
+// it to this fleet so acquisition #2 becomes a trade hull, decoupled from the contract op — the trade
+// coordinator, contract coordinator, and contract scaler stay phase-BLIND (all the phase logic lives here).
+const tradeFleetTag = "trade"
+
 // actIncome runs the INCOME phase (Slice 2): the contract-income ramp. Four independently-guarded,
 // idempotent actions on the observed delta, ordered so the fleet earns from tick 1 and never deadlocks:
 //
@@ -29,9 +35,13 @@ const contractHaulerTierSaturation = 2
 //     the frigate parks idle at the shipyard after its hour-0 probe buy and income never flows — the
 //     stall this fixes. The loop and the coordinator are mutually exclusive at the daemon (per-player
 //     single CONTRACT_WORKFLOW worker), so there is no double-claim (RULINGS #7).
-//  4. Staged, capital-gated hauler acquisition — one light hauler per viable contract hub, capped at
-//     hauler_target. The COUNT guard (haulers < desired) is the double-buy protection; placement picks
-//     the top-ranked hub no hauler yet serves. At most one buy per tick (never a blind buy-all).
+//  4. Staged, capital-gated hull acquisition, ROUTED BY ORDER (sp-192k4): acquisition #1 → the contract
+//     fleet, #2 → the TRADE fleet (the trade-seed, held until the first contract hull exists), #3… →
+//     contract again. One light hauler per viable contract hub, capped at hauler_target. The COUNT guard
+//     (haulers < desired) is the double-buy protection; placement picks the top-ranked hub no hauler yet
+//     serves. At most one buy per tick (never a blind buy-all). The trade hull is decoupled — it does not
+//     count toward the contract scaler's ceiling, and all the phase logic lives HERE (the trade/contract
+//     coordinators + scaler stay phase-blind).
 //
 // Each action is guarded "already done / in-flight?" against the FRESH observation, so re-evaluation —
 // including the first tick after a restart — never double-acts or double-buys.
@@ -75,18 +85,35 @@ func (h *RunBootstrapCoordinatorHandler) actIncome(ctx context.Context, cmd *Run
 		h.startFrigateContractLoop(ctx, cmd, cfg, obs, res)
 	}
 
-	// (4) Staged hauler acquisition — one per viable hub, capped at hauler_target. Compute the viable
-	// hubs (pure) and the desired count; the count guard is the double-buy protection. sp-sjvv: when
-	// the single-buyer arbitration is armed and the fleet autosizer has taken over (autosizer running),
-	// DEFER the buy to it so the two never bid on one treasury — this also dissolves the maybeBuyHauler
-	// no_purchaser deadlock (bootstrap just defers, exactly as it already does for probes → freshsizer).
+	// (4) Staged hull acquisition — one per viable hub, capped at hauler_target. Compute the viable hubs
+	// (pure) and the desired count; the count guard is the double-buy protection.
 	hubs := selectContractHubs(obs.Markets, obs.ContractGoods)
 	res.ViableHubs = len(hubs)
 	desired := len(hubs)
 	if desired > cfg.HaulerTarget {
 		desired = cfg.HaulerTarget
 	}
-	if len(obs.Haulers) < desired && !h.deferHaulerBuyToAutosizer(ctx, cmd, cfg, obs, res) {
+	contractHaulers := len(obs.Haulers)
+
+	// (4a) INCOME HULL-ROUTING (sp-192k4): route cold-start light-hull acquisitions by order — #1 →
+	// contract, #2 → TRADE, #3… → contract. Once the FIRST contract hull exists and no trade hull does yet,
+	// seed ONE trade-dedicated hull + ensure the trade coordinator, then RETURN so THIS tick's acquisition
+	// is the trade seed, not a 2nd contract hauler. The trade hull EXISTING (obs.TradeHullCount) is the
+	// durable, observable "seeded" signal — idempotent by construction, re-derived each tick, restart-safe
+	// (no stored flag). The trade hull is decoupled from the contract op: it does NOT count toward the
+	// contract scaler's ceiling, and the trade/contract coordinators + scaler stay phase-BLIND.
+	if contractHaulers >= 1 && obs.TradeHullCount == 0 {
+		h.maybeSeedTradeHull(ctx, cmd, cfg, obs, res)
+		return
+	}
+
+	// (4b) Staged contract-hauler acquisition — HELD at 1 contract hull until the trade hull is seeded
+	// (the (contractHaulers == 0 || TradeHullCount >= 1) guard), so acquisition #2 is the trade seed above:
+	// contractHaulers==0 still buys contract #1 unchanged; once a trade hull exists contract buying resumes
+	// for #3…, capped at desired. sp-sjvv: when the single-buyer arbitration is armed and the fleet autosizer
+	// has taken over (autosizer running), DEFER the buy to it so the two never bid on one treasury — this
+	// also dissolves the maybeBuyHauler no_purchaser deadlock (bootstrap just defers, as it does for probes).
+	if contractHaulers < desired && (contractHaulers == 0 || obs.TradeHullCount >= 1) && !h.deferHaulerBuyToAutosizer(ctx, cmd, cfg, obs, res) {
 		h.maybeBuyHauler(ctx, cmd, cfg, obs, hubs, res)
 	}
 }
@@ -428,6 +455,127 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd
 		"ship":         bought.ShipSymbol,
 		"price":        bought.Price,
 		"hub":          hub,
+	})
+}
+
+// maybeSeedTradeHull seeds acquisition #2 to the TRADE fleet (sp-192k4 INCOME hull-routing). The caller has
+// checked the routing gate (one contract hull exists, no trade hull yet — obs.TradeHullCount==0, the durable
+// observable "seeded" signal). It buys ONE hull, dedicates it to the trade fleet (NO hub — a trade hull runs
+// continuous tours the coordinator assigns, not a fixed contract hub), then ensures the standing trade-fleet
+// coordinator so the hull is put on a tour.
+//
+// MONEY GUARD (RULINGS #4): it carries the SAME price-check + working-capital gate as maybeBuyHauler because
+// the trade hull occupies acquisition-slot #2 — the slot that as a contract hauler is capital-gated at
+// contract_working_capital_floor — so re-routing #2 to trade must NOT weaken the guard on that spend (an
+// unreadable price or a short cushion buys nothing this tick). No first-hauler pivot / cold-price dance is
+// needed: by this point the command frigate is already the exclusive purchasing ship (established freeing it
+// for contract #1) and idle at the yard, so it is the deterministic purchaser. Both collaborators are required
+// UP FRONT (never buy a trade hull we cannot then manage) — a nil acquirer/launcher is a logged skip surfaced
+// as a blocker (like the maybeBuyHauler nil guards), never a panic. Dry-run-safe (WOULD-buy, no action).
+func (h *RunBootstrapCoordinatorHandler) maybeSeedTradeHull(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
+	logger := common.LoggerFromContext(ctx)
+
+	if h.haulAcquirer == nil {
+		res.Blocker = "no_hauler_acquirer"
+		logger.Log("WARN", "Bootstrap trade-seed needed but no hauler acquirer wired — cannot price-check or buy", map[string]interface{}{
+			"action":       "bootstrap_income_blocked",
+			"container_id": cmd.ContainerID,
+			"blocker":      "no_hauler_acquirer",
+		})
+		return
+	}
+	// Require the launcher BEFORE buying — never strand a purchased trade hull with no coordinator to run it.
+	if h.handoff == nil {
+		res.Blocker = "no_handoff_launcher"
+		logger.Log("WARN", "Bootstrap trade-seed needed but no hand-off launcher wired — cannot ensure the trade coordinator, so not buying a trade hull we could not then manage", map[string]interface{}{
+			"action":       "bootstrap_income_blocked",
+			"container_id": cmd.ContainerID,
+			"blocker":      "no_handoff_launcher",
+		})
+		return
+	}
+
+	// Price-check (reuse shipyard list — a live, PRESENCE-GATED GetShipyard). Unreadable ⇒ the capital gate
+	// cannot be evaluated, so nothing is bought this tick (RULINGS #4 fail-closed). By the trade-seed point the
+	// purchasing frigate is at the yard from the contract-#1 buy, so the price normally reads.
+	price, yard, readable, err := h.haulAcquirer.PriceCheck(ctx, cmd.PlayerID, cfg.HaulerShipType)
+	if err != nil || !readable {
+		res.Blocker = "price_unreadable"
+		logger.Log("WARN", fmt.Sprintf("Bootstrap trade-seed price unreadable — failing closed (no buy): err=%v", err), map[string]interface{}{
+			"action":       "bootstrap_income_blocked",
+			"container_id": cmd.ContainerID,
+			"blocker":      "price_unreadable",
+		})
+		return
+	}
+
+	// Capital gate (sp-acv5): affordable ⇔ cushion=(treasury−price) ≥ contract_working_capital_floor — the SAME
+	// floor the contract-hauler buy this slot displaces uses, so re-routing #2 to trade never weakens the money
+	// guard (RULINGS #4/#5). A cushion below the floor does NOT buy.
+	cushion := obs.Treasury - price
+	affordable := cushion >= cfg.ContractWorkingCapitalFloor
+	floorNote := "clears the working-capital floor"
+	if !affordable {
+		floorNote = "BLOCKED by the working-capital floor (treasury−price below the contract working-capital floor)"
+	}
+	logger.Log("INFO", fmt.Sprintf("Bootstrap trade-seed buy decision: price=%d treasury=%d floor=%d cushion=(treasury−price)=%d affordable=(cushion≥floor)=%v yard=%s — %s", price, obs.Treasury, cfg.ContractWorkingCapitalFloor, cushion, affordable, yard, floorNote), map[string]interface{}{
+		"action":       "bootstrap_trade_seed_buy_decision",
+		"container_id": cmd.ContainerID,
+		"price":        price,
+		"treasury":     obs.Treasury,
+		"floor":        cfg.ContractWorkingCapitalFloor,
+		"cushion":      cushion,
+		"affordable":   affordable,
+		"yard":         yard,
+	})
+	if !affordable {
+		res.Blocker = "capital_gate"
+		return
+	}
+
+	if cfg.DryRun {
+		res.WouldBuy++
+		logger.Log("INFO", fmt.Sprintf("Bootstrap DRY-RUN: WOULD seed the 2nd cold-start hull to the TRADE fleet — buy 1 %s at %s for %d, dedicate it %q, and ensure the trade coordinator (took no action)", cfg.HaulerShipType, yard, price, tradeFleetTag), map[string]interface{}{
+			"action":       "bootstrap_would_seed_trade_hull",
+			"container_id": cmd.ContainerID,
+		})
+		return
+	}
+
+	// Buy + dedicate to the trade fleet (no hub). The purchaser is the command frigate — the exclusive
+	// purchasing ship established at the first-hauler pivot — so the buy is deterministic, not dependent on an
+	// incidentally-idle hull.
+	bought, err := h.haulAcquirer.BuyAndDedicate(ctx, cmd.PlayerID, cfg.HaulerShipType, yard, tradeFleetTag, obs.CommandFrigateID)
+	if err != nil {
+		res.Blocker = "trade_seed_purchase_error"
+		logger.Log("ERROR", fmt.Sprintf("Bootstrap trade-seed purchase failed: %v", err), map[string]interface{}{
+			"action":       "bootstrap_trade_seed_buy_error",
+			"container_id": cmd.ContainerID,
+		})
+		return
+	}
+	res.TradeHullSeeded = true
+	logger.Log("INFO", fmt.Sprintf("Bootstrap seeding the 2nd cold-start hull to the TRADE fleet (INCOME hull-routing) + ensuring the trade coordinator: bought %s at %s for %d, dedicated %q (does NOT count toward the contract scaler ceiling)", bought.ShipSymbol, yard, bought.Price, tradeFleetTag), map[string]interface{}{
+		"action":       "bootstrap_seeded_trade_hull",
+		"container_id": cmd.ContainerID,
+		"ship":         bought.ShipSymbol,
+		"price":        bought.Price,
+	})
+
+	// Ensure the standing trade-fleet coordinator so the seeded hull is put on a continuous tour. Idempotent
+	// (skips a running coordinator). Best-effort BACKGROUND launch: it surfaces a failure on its own ERROR line
+	// and never claims res.Blocker (the seed itself succeeded), mirroring the early autosizer/contract-scaler
+	// launches.
+	if err := h.handoff.LaunchTradeFleetCoordinator(ctx, cmd.PlayerID, cmd.AgentSymbol); err != nil {
+		logger.Log("ERROR", fmt.Sprintf("Bootstrap trade-seed: launching the trade-fleet coordinator failed (the seeded hull will idle until it is launched): %v", err), map[string]interface{}{
+			"action":       "bootstrap_trade_coordinator_launch_error",
+			"container_id": cmd.ContainerID,
+		})
+		return
+	}
+	logger.Log("INFO", "Bootstrap ensured the trade-fleet coordinator (INCOME trade-seed) — the seeded trade hull is now managed on continuous tours", map[string]interface{}{
+		"action":       "bootstrap_trade_coordinator_ensured",
+		"container_id": cmd.ContainerID,
 	})
 }
 

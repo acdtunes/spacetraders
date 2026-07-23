@@ -127,6 +127,7 @@ func TestBootstrap_Pivot_SubsequentHauler_DoesNotPivot(t *testing.T) {
 	loop := &fakeFrigateLoop{}
 	obs := pivotObs()
 	obs.Haulers = make([]HaulerSnapshot, 1) // one hauler already ⇒ not the first
+	obs.TradeHullCount = 1                  // sp-192k4: post-seed — the subsequent-hauler path, not the trade-seed
 	h := pivotHandler(obs, ret, acq, loop)
 
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())

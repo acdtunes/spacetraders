@@ -46,7 +46,12 @@ const (
 	// (matches the contract package's dedicatedFleetContract). A hauler carrying it is adopted as a
 	// contract worker (and puts the pool in exclusive mode, dropping the untagged frigate); the frigate
 	// retire clears it. The INCOME window (1h) is the trailing span the realized-$/hr read averages.
-	contractFleetTag      = "contract"
+	contractFleetTag = "contract"
+	// tradeFleetTag is the dedicated-fleet tag the standing trade-fleet coordinator selects on (matches the
+	// trading package's tradeFleet and the autosizer's trade count). obs.TradeHullCount counts hulls carrying
+	// it — the observable "trade-seeded" signal that drives the sp-192k4 INCOME trade-seed + the scaler
+	// delay-launch. The bootstrap trade-seed (BuyAndDedicate) is what stamps a bought hull with this tag.
+	tradeFleetTag         = "trade"
 	bootstrapIncomeWindow = time.Hour
 	// bootstrapHomeScoutPostFreshness is the SEED freshness SLA stamped on the cold-start home scout
 	// post (sp-pt7d). Transitional: the market-freshness sizer RESIZES the post's SLA + hull budget
@@ -191,6 +196,12 @@ func (o *bootstrapObserver) Observe(ctx context.Context, playerID int) (bootstra
 			obs.CommandFrigatePurchasing = s.DedicatedFleet() == navigation.PurchasingFleet
 		} else if s.DedicatedFleet() == contractFleetTag {
 			obs.Haulers = append(obs.Haulers, bootstrapCmd.HaulerSnapshot{Symbol: s.ShipSymbol(), Waypoint: wp})
+		} else if s.DedicatedFleet() == tradeFleetTag {
+			// sp-192k4: a hull dedicated to the trade fleet is the observable "trade-seeded" signal. Counted
+			// here mirroring obs.Haulers (same ship set, same DedicatedFleet() source), filtering the "trade"
+			// tag instead of "contract" — drives the INCOME trade-seed routing + the contract-scaler
+			// delay-launch. Restart-safe by construction: the hull EXISTING is the marker (no stored flag).
+			obs.TradeHullCount++
 		} else if s.DedicatedFleet() == manufacturingFleetTag {
 			// A hull dedicated to the manufacturing fleet is a gate-construction worker (Slice 3) — the
 			// worker-sizing "have" count, so the staged top-up buy never overshoots the pipeline's shape.
@@ -604,6 +615,27 @@ func (a *bootstrapHaulerAcquirer) BuyAndPlace(ctx context.Context, playerID int,
 	// batch-contract still adopts it wherever it is — placement is an optimisation, not a correctness bar).
 	if _, nerr := a.med.Send(ctx, &navCmd.NavigateRouteCommand{ShipSymbol: bought.ShipSymbol, Destination: hubWaypoint, PlayerID: pid}); nerr != nil {
 		return bought, fmt.Errorf("navigate hauler %s to hub %s: %w", bought.ShipSymbol, hubWaypoint, nerr)
+	}
+	return bought, nil
+}
+
+// BuyAndDedicate buys ONE hull at yard (reused batch path) and dedicates it to the arbitrary fleet tag
+// `fleet` — the fleet-parameterized sibling of BuyAndPlace, minus the hub placement (sp-192k4). The INCOME
+// hull-routing trade-seed calls it with fleet="trade" to make acquisition #2 a trade hull; the dedication
+// uses the SAME single fleet-assign write path (shipRepo.AssignFleet) BuyAndPlace uses over the SAME
+// money-integrity BatchPurchaseShips buy, so no money guard is touched (RULINGS #4). NO navigate: a trade
+// hull runs the continuous tours the trade-fleet coordinator assigns, not a fixed contract hub.
+func (a *bootstrapHaulerAcquirer) BuyAndDedicate(ctx context.Context, playerID int, shipType, yard, fleet, purchaserSymbol string) (bootstrapCmd.BuyResult, error) {
+	bought, err := a.buyWith(ctx, playerID, shipType, yard, purchaserSymbol)
+	if err != nil {
+		return bootstrapCmd.BuyResult{}, err
+	}
+	pid, err := shared.NewPlayerID(playerID)
+	if err != nil {
+		return bought, err
+	}
+	if derr := a.shipRepo.AssignFleet(ctx, bought.ShipSymbol, fleet, pid); derr != nil {
+		return bought, fmt.Errorf("dedicate hull %s to %q fleet: %w", bought.ShipSymbol, fleet, derr)
 	}
 	return bought, nil
 }
