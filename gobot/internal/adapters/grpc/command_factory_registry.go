@@ -592,6 +592,9 @@ func buildTradeFleetCoordinatorCommand(cfg *configReader, playerID int, containe
 		// 30-min default.
 		ReapStaleCaptainReservationsEnabled: cfg.OptionalBool("trade_fleet_reap_stale_captain_reservations_enabled"),
 		ReapIdleThresholdSecs:               cfg.OptionalInt("trade_fleet_reap_idle_threshold_secs", 0),
+		// sp-m3122: the liveness watchdog is always ARMED — only the stall threshold is
+		// configurable. 0/absent ⇒ the coordinator's own 12-min default.
+		WatchdogStallSecs: cfg.OptionalInt("trade_fleet_watchdog_stall_secs", 0),
 	}
 }
 

@@ -118,7 +118,7 @@ func TestTradeReap_OrphanedCaptainReservation_ReleasedAndRejoinsIdle(t *testing.
 
 	// It genuinely rejoins the relaunch pool: partitionTradeFleet now buckets it idle.
 	idle, running := partitionTradeFleet(repo.ships)
-	require.Equal(t, 0, running)
+	require.Empty(t, running)
 	require.Len(t, idle, 1)
 	require.Equal(t, "TORWIND-7D", idle[0].ShipSymbol())
 }

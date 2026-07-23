@@ -3,6 +3,7 @@ package persistence
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"time"
 
@@ -119,6 +120,41 @@ func (r *GormContainerLogRepository) cleanupDedupCache() {
 			delete(r.dedupCache, key)
 		}
 	}
+}
+
+// LatestLogTimestamps returns, for each of the given container IDs, the timestamp of its most
+// recent log line — the daemon's persistent per-container ACTIVITY signal (sp-m3122). A tour
+// logs on every real step (plan/navigate/arrive/buy/sell) and each iteration boundary, while
+// the wall-clock heartbeat writes NO log on success, so the newest log timestamp advances on
+// real progress and STALLS the moment a tour goes silent — exactly what the liveness watchdog
+// needs to tell a working tour from a RUNNING-but-hung one (the incident's "last log line
+// 04:34:02, silent 2h, still RUNNING"). Containers with no logs are simply absent from the
+// map, so the watchdog leaves them alone (fail-closed on unknown progress).
+func (r *GormContainerLogRepository) LatestLogTimestamps(ctx context.Context, playerID int, containerIDs []string) (map[string]time.Time, error) {
+	out := make(map[string]time.Time, len(containerIDs))
+	// One newest-row read per container, mirroring GetLogs' proven shape (WHERE
+	// container_id+player_id, ORDER BY timestamp DESC, LIMIT 1) — read into the model so
+	// GORM parses the datetime column on BOTH sqlite (tests) and postgres (prod), which a
+	// SELECT MAX(timestamp) aggregate does not (sqlite returns it as a bare string). N is the
+	// running-tour count (tens), the read runs at the reconcile cadence (30s), and the query
+	// is index-identical to GetLogs, so the per-container loop is cheap.
+	for _, id := range containerIDs {
+		if id == "" {
+			continue
+		}
+		var newest []ContainerLogModel
+		if err := r.db.WithContext(ctx).
+			Where("container_id = ? AND player_id = ?", id, playerID).
+			Order("timestamp DESC").
+			Limit(1).
+			Find(&newest).Error; err != nil {
+			return nil, fmt.Errorf("read latest container log timestamp for %s: %w", id, err)
+		}
+		if len(newest) == 1 && !newest[0].Timestamp.IsZero() {
+			out[id] = newest[0].Timestamp
+		}
+	}
+	return out, nil
 }
 
 // GetLogs retrieves logs for a container with optional filtering

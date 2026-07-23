@@ -204,6 +204,19 @@ type TradeFleetConfig struct {
 	// coordinator's own default (1800s / 30 min), which lives in the consumer, not here.
 	ReapStaleCaptainReservationsEnabled bool `mapstructure:"reap_stale_captain_reservations_enabled"`
 	ReapIdleThresholdSeconds            int  `mapstructure:"reap_idle_threshold_seconds"`
+
+	// --- Liveness watchdog (sp-m3122) ---
+	// WatchdogStallSeconds is how long a RUNNING tour may make ZERO real progress
+	// (plan/navigate/arrive/buy/sell) before the coordinator declares it HUNG, kills the
+	// container, and relaunches a fresh tour — the automated form of the manual
+	// `container stop <hung-tour>`. UNLIKE the reaper above, the watchdog has NO on/off gate:
+	// it ships ARMED (a daemon restart routinely strands hulls this way, so it must always
+	// heal). This is the one tunable, an operational value (RULINGS #5), not an arm-seam: a
+	// captain who ever needs to soften it raises the threshold. 0/absent → the coordinator's
+	// own default (720s / 12 min), which lives in the consumer, not this config layer. A hull
+	// IN_TRANSIT is never killed regardless (a flying hull is progressing), so this bounds only
+	// PARKED-and-silent time.
+	WatchdogStallSeconds int `mapstructure:"watchdog_stall_seconds"`
 }
 
 // EnabledOrDefault reports whether the coordinator is enabled, treating an unset (nil)

@@ -85,6 +85,19 @@ const (
 	defaultMassParkWindowSeconds = 120
 	defaultMassParkMinHulls      = 4
 
+	// defaultWatchdogStallSeconds is the sp-m3122 liveness-watchdog stall threshold: how
+	// long a RUNNING tour may make ZERO real progress (no plan/navigate/arrive/buy/sell)
+	// before it is declared HUNG, killed, and relaunched fresh. The watchdog is ALWAYS ON
+	// (no arm-seam) — this is the one tunable, an operational value (RULINGS #5), not a
+	// feature flag. 12 min sits in the bead's 10-15min band: far above any single legit
+	// silent leg (a jump cooldown, a market/plan micro-wait — the longest legs, multi-hop
+	// travel, are IN_TRANSIT and skipped outright), far below the multi-hour strandings the
+	// watchdog exists to end. Keying on PROGRESS (not wall-clock) is what makes a slow-but-
+	// healthy tour safe: a flying hull is progressing, and a docked one advances its progress
+	// signal on every real step. A config knob (WatchdogStallSecs /
+	// trade_fleet.watchdog_stall_seconds) — retune without a rebuild.
+	defaultWatchdogStallSeconds = 720
+
 	// defaultReapIdleThresholdSeconds is how long a captain reservation must have sat
 	// parked and untouched by any live/recent container before the sp-6asm reaper releases
 	// it as an orphan. owner=captain reservations left by manual captain bridge-authority
@@ -175,6 +188,13 @@ type RunTradeFleetCoordinatorCommand struct {
 	// untouched (reserved-since anchor, no live/recent container) before the reaper releases
 	// it; <=0 uses defaultReapIdleThresholdSeconds (30 min).
 	ReapIdleThresholdSecs int
+
+	// WatchdogStallSecs is the sp-m3122 liveness-watchdog stall threshold — how long a
+	// RUNNING tour may make ZERO real progress before it is declared HUNG, killed, and
+	// relaunched fresh; <=0 uses defaultWatchdogStallSeconds (12 min). The watchdog itself
+	// has NO on/off flag (it ships ARMED): a captain who ever needs to soften it raises this
+	// threshold. RULINGS #5 (operational value, not an arm-seam).
+	WatchdogStallSecs int
 }
 
 // RunTradeFleetCoordinatorResponse reports reconcile progress. Because the loop is
@@ -234,6 +254,38 @@ type ActiveContainerShipsPort interface {
 	ActiveContainerShips(ctx context.Context, playerID shared.PlayerID, activeSince time.Time) (map[string]bool, error)
 }
 
+// TourLivenessPort reports the last real-PROGRESS time of each named running tour container
+// (sp-m3122): the most recent moment the tour actually did something — planned, navigated,
+// arrived, bought, or sold. It is deliberately NOT the container's wall-clock heartbeat: a
+// tour whose worker goroutine has silently died or wedged still has a fresh heartbeat (a
+// separate goroutine keeps stamping it), which is exactly how a hung tour masqueraded as
+// healthy for hours. The daemon implements it over the container activity trail it single-
+// writes; a container absent from the returned map has no known progress and is left alone
+// (the watchdog never kills a tour whose liveness it could not read). Optional-injection like
+// ActiveContainerShipsPort: a nil port makes the watchdog inert (fail-closed).
+type TourLivenessPort interface {
+	LastTourProgress(ctx context.Context, playerID shared.PlayerID, containerIDs []string) (map[string]time.Time, error)
+}
+
+// TourStopper kills one hung tour container by ID (sp-m3122) — the watchdog's remedy, the
+// automated form of the captain's manual `container stop <hung-tour>`. The daemon implements
+// it (StopContainer): the stop releases the hull's claim, so the next relaunch re-claims it
+// cleanly. Optional-injection: without a stopper the watchdog is inert (fail-closed — it can
+// detect a hang but must not "handle" it by leaving the hull relaunched under a still-live
+// doomed container).
+type TourStopper interface {
+	StopTour(ctx context.Context, containerID, reason string) error
+}
+
+// DeadContainerAbsorptionReclaimer promptly releases market_absorption_ledger reservations
+// held by containers that no longer exist (sp-m3122 part 3), rather than waiting for the TTL
+// sweep — so phantom reservations left by a restart or by a just-killed hung tour never make
+// open sinks look contended. The daemon implements it over the ledger's existing dead-
+// container sweep. Optional-injection: a nil reclaimer skips the reclaim (nil-safe).
+type DeadContainerAbsorptionReclaimer interface {
+	ReclaimDeadContainerAbsorption(ctx context.Context, playerID shared.PlayerID) (int, error)
+}
+
 // RunTradeFleetCoordinatorHandler keeps continuous tours alive across the 'trade'
 // fleet (sp-1278). Every reconcile pass snapshots the fleet, and for each trade hull
 // parked by an honest tour exit (idle, past its cooldown) it relaunches a fresh
@@ -277,6 +329,23 @@ type RunTradeFleetCoordinatorHandler struct {
 	// fails closed (reaps nothing), never panics, so a wiring gap can never yank a hull it
 	// could not confirm idle.
 	activeShips ActiveContainerShipsPort
+
+	// tourLiveness / tourStopper are the sp-m3122 liveness watchdog's two ports: read each
+	// running tour's last real-progress time, and kill a tour that has stalled past the
+	// threshold. BOTH must be wired for the watchdog to act (fail-closed): without them a
+	// reconcile pass detects nothing and kills nothing, byte-identical to pre-sp-m3122.
+	tourLiveness TourLivenessPort
+	tourStopper  TourStopper
+
+	// absorptionReclaimer promptly releases absorption reservations of dead containers
+	// (sp-m3122 part 3). Optional; nil skips the reclaim.
+	absorptionReclaimer DeadContainerAbsorptionReclaimer
+
+	// startupReclaimDone gates the one-shot restart absorption reclaim to the FIRST reconcile
+	// pass of this handler (a fresh handler per daemon process — so it re-runs on every daemon
+	// restart, the case that strands phantom reservations). After that, the reclaim only runs
+	// when the watchdog actually killed a tour this pass.
+	startupReclaimDone bool
 }
 
 // NewRunTradeFleetCoordinatorHandler wires the coordinator. clock defaults to the real
@@ -313,6 +382,26 @@ func (h *RunTradeFleetCoordinatorHandler) SetEventRecorder(rec captain.EventReco
 // whose in-use state it could not confirm.
 func (h *RunTradeFleetCoordinatorHandler) SetActiveContainerShips(port ActiveContainerShipsPort) {
 	h.activeShips = port
+}
+
+// SetTourLiveness wires the sp-m3122 watchdog's progress signal — the port that reports each
+// running tour's last real-progress time. Optional-injection like SetTourLauncher: without it
+// (or without a stopper) the watchdog is inert (fail-closed), never a panic.
+func (h *RunTradeFleetCoordinatorHandler) SetTourLiveness(port TourLivenessPort) {
+	h.tourLiveness = port
+}
+
+// SetTourStopper wires the sp-m3122 watchdog's remedy — the port that kills a hung tour
+// container. Optional-injection like SetTourLauncher: without it the watchdog can detect a
+// hang but takes no action (fail-closed).
+func (h *RunTradeFleetCoordinatorHandler) SetTourStopper(port TourStopper) {
+	h.tourStopper = port
+}
+
+// SetAbsorptionReclaimer wires the sp-m3122 part-3 dead-container absorption reclaim.
+// Optional-injection: without it the reclaim is skipped (nil-safe).
+func (h *RunTradeFleetCoordinatorHandler) SetAbsorptionReclaimer(port DeadContainerAbsorptionReclaimer) {
+	h.absorptionReclaimer = port
 }
 
 // Handle runs the reconcile loop until the context is cancelled.
@@ -417,9 +506,28 @@ func (h *RunTradeFleetCoordinatorHandler) reconcileOnce(ctx context.Context, cmd
 	// Default-OFF (byte-identical) until armed — see reapStaleCaptainReservations.
 	h.reapStaleCaptainReservations(ctx, cmd, ships, now, logger)
 
-	idle, runningTours := partitionTradeFleet(ships)
+	idle, running := partitionTradeFleet(ships)
+
+	// sp-m3122 liveness watchdog: a RUNNING claim is no longer trusted as healthy. Kill and
+	// relaunch fresh any running tour that has made ZERO real progress past the stall
+	// threshold (a hung mid-jump restart-resume, or any other silent wedge). Runs BEFORE the
+	// empty-idle early return — a fleet whose ONLY problem is a hung RUNNING tour has an empty
+	// idle bucket, yet that tour is exactly what must be killed. Because the progress signal is
+	// persistent, a daemon-restart hang is detected on the FIRST pass (its last progress
+	// predates the restart), not one stall-threshold later.
+	watchdogKilled, watchdogRelaunched := h.relaunchHungTours(ctx, cmd, running, now, logger)
+
+	// sp-m3122 part 3: promptly release absorption reservations held by containers that no
+	// longer exist — on restart (this handler's first pass) and after any watchdog kill (the
+	// just-killed container's holds) — rather than waiting for the TTL sweep, so phantom
+	// reservations never make open sinks look contended.
+	if !h.startupReclaimDone || watchdogKilled > 0 {
+		h.reclaimDeadContainerAbsorption(ctx, cmd, logger)
+	}
+	h.startupReclaimDone = true
+
 	if len(idle) == 0 {
-		return 0, nil
+		return watchdogRelaunched, nil
 	}
 
 	// Deterministic relaunch order so a max_concurrent cap picks the same hulls every
@@ -429,7 +537,10 @@ func (h *RunTradeFleetCoordinatorHandler) reconcileOnce(ctx context.Context, cmd
 	baseCooldown := cmd.cooldownDuration()
 	backoffMax := cmd.relaunchBackoffMaxDuration()
 	maxConcurrent := cmd.MaxConcurrentTours
-	launched := 0
+	// A watchdog kill+relaunch is a 1:1 replacement, so it nets zero against the cap; a kill
+	// whose relaunch failed frees a slot. launched already counts the watchdog relaunches.
+	launched := watchdogRelaunched
+	runningTours := len(running) - watchdogKilled + watchdogRelaunched
 
 	// sp-nkci: a daemon blip parks the whole fleet in one window; those synchronized parks
 	// are a restart signature, not thin depth, so exempt them from the sp-1pli backoff
@@ -473,18 +584,7 @@ func (h *RunTradeFleetCoordinatorHandler) reconcileOnce(ctx context.Context, cmd
 			continue
 		}
 
-		spec := TourLaunchSpec{
-			ShipSymbol:               ship.ShipSymbol(),
-			MaxHops:                  cmd.MaxHops,
-			MaxSpend:                 cmd.MaxSpend,
-			MinMargin:                cmd.MinMargin,
-			ReplanLimit:              cmd.ReplanLimit,
-			WorkingCapitalReserve:    cmd.WorkingCapitalReserve,
-			AgentSymbol:              cmd.AgentSymbol,
-			Iterations:               tourIterationsContinuous,
-			PlayerID:                 cmd.PlayerID.Value(),
-			RepositionReachEscalated: reachEscalated,
-		}
+		spec := buildTourLaunchSpec(cmd, ship.ShipSymbol(), reachEscalated)
 		containerID, lerr := h.launcher.LaunchTour(ctx, spec)
 		if lerr != nil {
 			// A single hull's launch failure (e.g. it was claimed between the snapshot
@@ -518,6 +618,150 @@ func (h *RunTradeFleetCoordinatorHandler) reconcileOnce(ctx context.Context, cmd
 	return launched, nil
 }
 
+// relaunchHungTours is the sp-m3122 liveness watchdog — the primary fix. For each RUNNING
+// trade tour it reads the tour's last real-PROGRESS time (plan/navigate/arrive/buy/sell) and,
+// if the tour has been parked-and-silent past the stall threshold, KILLS the container and
+// relaunches a fresh tour on the hull — the automated form of the captain's manual
+// `container stop <hung-tour>` (which is how the sp-m3122 incident was cleared by hand). A
+// fresh tour re-plans from scratch against current sinks and offloads any held cargo via the
+// existing held-cargo-aware path (sp-2v69u), so a hull stranded FULL by a hung tour resumes
+// selling. This self-heals ANY hang — restart-induced or otherwise — and is the backstop that
+// makes keeping the mid-jump restart-resume safe (the bead's explicit allowance).
+//
+// It NEVER kills a hull IN_TRANSIT: a flying hull is on a legitimately-long leg (multi-hop
+// travel / jump), which is progress, not a stall — this is how the watchdog keys on PROGRESS
+// rather than wall-clock silence. And it fails CLOSED: without BOTH ports wired, on a liveness
+// read error, or for any container whose progress it cannot read, it kills nothing — a
+// watchdog that cannot confirm a hang must never "remedy" one. Returns (killed, relaunched);
+// a kill whose fresh launch failed is counted in killed but not relaunched (the released hull
+// rejoins the idle bucket and the idle path relaunches it next tick).
+func (h *RunTradeFleetCoordinatorHandler) relaunchHungTours(
+	ctx context.Context,
+	cmd *RunTradeFleetCoordinatorCommand,
+	running []*navigation.Ship,
+	now time.Time,
+	logger common.ContainerLogger,
+) (killed, relaunched int) {
+	// Fail closed: the watchdog acts only when it can both READ progress and KILL. A wiring
+	// gap or a partial injection must never leave it detecting a hang it cannot remedy.
+	if h.tourLiveness == nil || h.tourStopper == nil || len(running) == 0 {
+		return 0, 0
+	}
+
+	// Only PARKED running tours are watchdog candidates — a hull IN_TRANSIT is on a
+	// legitimately-long leg, which is progress. Gather their container IDs for the read.
+	parked := make([]*navigation.Ship, 0, len(running))
+	containerIDs := make([]string, 0, len(running))
+	for _, ship := range running {
+		if ship.IsInTransit() {
+			continue
+		}
+		parked = append(parked, ship)
+		containerIDs = append(containerIDs, ship.ContainerID())
+	}
+	if len(parked) == 0 {
+		return 0, 0
+	}
+
+	progress, err := h.tourLiveness.LastTourProgress(ctx, cmd.PlayerID, containerIDs)
+	if err != nil {
+		// Fail closed for THIS tick: without the progress set we cannot prove any tour hung.
+		logger.Log("WARNING", fmt.Sprintf("Trade fleet watchdog: could not read tour progress — killing nothing this tick: %v", err), map[string]interface{}{
+			"action": "trade_fleet_watchdog_progress_read_failed",
+		})
+		return 0, 0
+	}
+
+	threshold := cmd.watchdogStallThreshold()
+	for _, ship := range parked {
+		last, ok := progress[ship.ContainerID()]
+		if !ok || last.IsZero() {
+			continue // unknown progress — never kill a tour whose liveness we could not read
+		}
+		stalledFor := now.Sub(last)
+		if stalledFor < threshold {
+			continue // still progressing within the threshold
+		}
+
+		// HUNG. Kill the container (which releases the hull), then relaunch a fresh tour.
+		reason := fmt.Sprintf("sp-m3122 watchdog: RUNNING but hung — no progress for %s (>= %s stall threshold)", stalledFor.Truncate(time.Second), threshold)
+		if serr := h.tourStopper.StopTour(ctx, ship.ContainerID(), reason); serr != nil {
+			logger.Log("WARNING", fmt.Sprintf("Trade fleet watchdog: failed to kill hung tour container %s on %s: %v", ship.ContainerID(), ship.ShipSymbol(), serr), map[string]interface{}{
+				"action":       "trade_fleet_watchdog_kill_failed",
+				"ship_symbol":  ship.ShipSymbol(),
+				"container_id": ship.ContainerID(),
+			})
+			continue // do NOT relaunch: the doomed container may still hold the hull
+		}
+		killed++
+
+		containerID, lerr := h.launcher.LaunchTour(ctx, buildTourLaunchSpec(cmd, ship.ShipSymbol(), false))
+		if lerr != nil {
+			// The hull is now released (the kill succeeded) but the fresh launch failed — it
+			// rejoins the idle bucket and the idle-relaunch path picks it up next tick.
+			logger.Log("WARNING", fmt.Sprintf("Trade fleet watchdog: killed hung tour on %s but relaunch failed (retry next tick): %v", ship.ShipSymbol(), lerr), map[string]interface{}{
+				"action":      "trade_fleet_watchdog_relaunch_failed",
+				"ship_symbol": ship.ShipSymbol(),
+			})
+			continue
+		}
+		relaunched++
+		logger.Log("INFO", fmt.Sprintf(
+			"Trade hull %s tour made no progress for %s (>= %s stall threshold) — HUNG: killed container %s and relaunched fresh tour %s (sp-m3122)",
+			ship.ShipSymbol(), stalledFor.Truncate(time.Second), threshold, ship.ContainerID(), containerID), map[string]interface{}{
+			"action":           "trade_fleet_watchdog_relaunch",
+			"ship_symbol":      ship.ShipSymbol(),
+			"killed_container": ship.ContainerID(),
+			"new_container":    containerID,
+			"stalled_secs":     int(stalledFor.Seconds()),
+			"threshold_secs":   int(threshold.Seconds()),
+		})
+	}
+	return killed, relaunched
+}
+
+// reclaimDeadContainerAbsorption promptly releases market_absorption_ledger reservations held
+// by containers that no longer exist (sp-m3122 part 3). Nil-safe: without a reclaimer wired it
+// is a no-op. Best-effort: a reclaim error is logged and swallowed (the TTL sweep remains the
+// backstop), never aborting the reconcile pass.
+func (h *RunTradeFleetCoordinatorHandler) reclaimDeadContainerAbsorption(ctx context.Context, cmd *RunTradeFleetCoordinatorCommand, logger common.ContainerLogger) {
+	if h.absorptionReclaimer == nil {
+		return
+	}
+	reclaimed, err := h.absorptionReclaimer.ReclaimDeadContainerAbsorption(ctx, cmd.PlayerID)
+	if err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Trade fleet: dead-container absorption reclaim failed: %v", err), map[string]interface{}{
+			"action": "trade_fleet_absorption_reclaim_failed",
+		})
+		return
+	}
+	if reclaimed > 0 {
+		logger.Log("INFO", fmt.Sprintf("Trade fleet: reclaimed %d absorption reservation(s) held by non-existent containers (sp-m3122)", reclaimed), map[string]interface{}{
+			"action":    "trade_fleet_absorption_reclaimed",
+			"reclaimed": reclaimed,
+		})
+	}
+}
+
+// buildTourLaunchSpec assembles the launch request for one hull, shared by the idle-relaunch
+// path and the sp-m3122 watchdog relaunch (one spec shape, no drift). reachEscalated arms
+// reposition-reach for this tour (sp-nxrt); the watchdog always passes false — a fresh tour on
+// a hung hull re-plans normally, it was not a margins-death fast-fail.
+func buildTourLaunchSpec(cmd *RunTradeFleetCoordinatorCommand, shipSymbol string, reachEscalated bool) TourLaunchSpec {
+	return TourLaunchSpec{
+		ShipSymbol:               shipSymbol,
+		MaxHops:                  cmd.MaxHops,
+		MaxSpend:                 cmd.MaxSpend,
+		MinMargin:                cmd.MinMargin,
+		ReplanLimit:              cmd.ReplanLimit,
+		WorkingCapitalReserve:    cmd.WorkingCapitalReserve,
+		AgentSymbol:              cmd.AgentSymbol,
+		Iterations:               tourIterationsContinuous,
+		PlayerID:                 cmd.PlayerID.Value(),
+		RepositionReachEscalated: reachEscalated,
+	}
+}
+
 // noteReconcile records one reconcile pass at the "reconcile" streak checkpoint
 // (sp-6wxq): a nil err is a success that resets the streak; a non-nil err that
 // repeats identically for DefaultStreakThreshold consecutive passes crosses and
@@ -545,11 +789,13 @@ func (h *RunTradeFleetCoordinatorHandler) noteReconcile(ctx context.Context, cmd
 //     before either bucket, so a reserved hull is never relaunched AND never counted
 //     against the concurrency cap.
 //
-// A hull mid-tour (a live container claim) is counted as a running tour and left
-// untouched. An in-transit idle hull (a rare gap between release and the next claim
-// while still flying) is neither relaunched this tick nor counted — StartTourRun would
-// refuse a non-idle hull anyway, and counting it would distort the cap.
-func partitionTradeFleet(ships []*navigation.Ship) (idle []*navigation.Ship, runningTours int) {
+// A hull mid-tour (a live container claim) is returned in `running` — the sp-m3122
+// watchdog inspects each for liveness (a RUNNING claim is no longer trusted as healthy),
+// and len(running) is the concurrency-cap count. An in-transit idle hull (a rare gap
+// between release and the next claim while still flying) is neither relaunched this tick
+// nor counted — StartTourRun would refuse a non-idle hull anyway, and counting it would
+// distort the cap.
+func partitionTradeFleet(ships []*navigation.Ship) (idle []*navigation.Ship, running []*navigation.Ship) {
 	for _, ship := range ships {
 		if ship.DedicatedFleet() != tradeFleet {
 			continue // not a trade hull (or unpinned — the captain's per-hull opt-out)
@@ -558,7 +804,7 @@ func partitionTradeFleet(ships []*navigation.Ship) (idle []*navigation.Ship, run
 			continue // captain reserved: respect it, never relaunch and never count it
 		}
 		if ship.IsAssigned() {
-			runningTours++ // live container claim => a tour is running; leave it be
+			running = append(running, ship) // live container claim => a tour is running
 			continue
 		}
 		if ship.IsInTransit() {
@@ -566,7 +812,7 @@ func partitionTradeFleet(ships []*navigation.Ship) (idle []*navigation.Ship, run
 		}
 		idle = append(idle, ship) // parked by an honest tour exit: relaunch candidate
 	}
-	return idle, runningTours
+	return idle, running
 }
 
 // reapStaleCaptainReservations releases the captain reservation on any 'trade' hull that is
@@ -976,6 +1222,16 @@ func (c *RunTradeFleetCoordinatorCommand) reapIdleThreshold() time.Duration {
 	secs := c.ReapIdleThresholdSecs
 	if secs <= 0 {
 		secs = defaultReapIdleThresholdSeconds
+	}
+	return time.Duration(secs) * time.Second
+}
+
+// watchdogStallThreshold resolves the sp-m3122 liveness-watchdog stall threshold, applying
+// the default (12 min) when unset.
+func (c *RunTradeFleetCoordinatorCommand) watchdogStallThreshold() time.Duration {
+	secs := c.WatchdogStallSecs
+	if secs <= 0 {
+		secs = defaultWatchdogStallSeconds
 	}
 	return time.Duration(secs) * time.Second
 }

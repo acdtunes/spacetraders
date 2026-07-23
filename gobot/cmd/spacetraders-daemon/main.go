@@ -651,6 +651,12 @@ func run(cfg *config.Config) error {
 	tradeFleetCoordinatorHandler.SetTourLauncher(daemonServer)
 	tradeFleetCoordinatorHandler.SetEventRecorder(captainEventRepo)    // sp-6wxq: emit coordinator error-loop events on reconcile streak breach
 	tradeFleetCoordinatorHandler.SetActiveContainerShips(daemonServer) // sp-6asm: reaper safety signal — hulls a live/recent container touched (never reap those)
+	// sp-m3122 liveness watchdog: read each running tour's last real-progress time and kill+relaunch
+	// any RUNNING-but-hung tour (the daemon serves both ports over the containers/logs it single-writes),
+	// plus promptly release absorption reservations of dead containers on restart / after a kill.
+	tradeFleetCoordinatorHandler.SetTourLiveness(daemonServer)
+	tradeFleetCoordinatorHandler.SetTourStopper(daemonServer)
+	tradeFleetCoordinatorHandler.SetAbsorptionReclaimer(grpc.NewDeadContainerAbsorptionReclaimer(absorptionLedger))
 	if err := mediator.RegisterHandler[*tradeRouteCmd.RunTradeFleetCoordinatorCommand](med, tradeFleetCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register TradeFleetCoordinator handler: %w", err)
 	}

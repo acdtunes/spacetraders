@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -104,6 +105,50 @@ func (s *DaemonServer) ActiveContainerShips(ctx context.Context, playerID shared
 	return s.containerRepo.FindShipSymbolsWithActiveOrRecentContainers(ctx, playerID.Value(), activeSince)
 }
 
+// LastTourProgress implements tradingCmd.TourLivenessPort (sp-m3122): for each running trade
+// tour container it reports the timestamp of the tour's most recent real activity — the newest
+// line in its container-log trail. That trail advances on every real step (plan/navigate/
+// arrive/buy/sell) but NOT on the wall-clock heartbeat (which writes no log on success), so it
+// stalls the instant a tour goes silent — the persistent signal the liveness watchdog compares
+// to the stall threshold to tell a working tour from a RUNNING-but-hung one. It READS the
+// container_logs table the daemon single-writes; it mutates nothing. Built on demand over s.db
+// (the "repositories on demand" pattern), like the CLI's container-log reader.
+func (s *DaemonServer) LastTourProgress(ctx context.Context, playerID shared.PlayerID, containerIDs []string) (map[string]time.Time, error) {
+	return persistence.NewGormContainerLogRepository(s.db, nil).LatestLogTimestamps(ctx, playerID.Value(), containerIDs)
+}
+
+// StopTour implements tradingCmd.TourStopper (sp-m3122): it kills a hung tour container through
+// the daemon's normal StopContainer path — the automated form of the captain's manual
+// `container stop <hung-tour>` that cleared the incident by hand. StopContainer stops the
+// runner and releases the hull's claim, so the coordinator's fresh relaunch re-claims it
+// cleanly. reason is recorded by the watchdog's own log line at the call site. The error (if
+// any) is surfaced to the coordinator, which then does NOT relaunch (fail-closed: a hull whose
+// hung container could not be killed must not be re-launched under a still-live doomed one).
+func (s *DaemonServer) StopTour(_ context.Context, containerID, reason string) error {
+	_ = reason // logged by the watchdog caller; StopContainer records the STOPPED row itself
+	return s.StopContainer(containerID)
+}
+
+// deadContainerAbsorptionReclaimer adapts the absorption ledger's dead-container sweep to the
+// trade-fleet coordinator's DeadContainerAbsorptionReclaimer port (sp-m3122 part 3). The
+// ledger's Sweep reclaims TTL-expired PLANNED, hard-cap-expired EXECUTED, AND dead-container
+// PLANNED holds; the last (keyed on the live-container set) is the part that promptly clears
+// reservations left by a restart or by a just-killed hung tour, rather than waiting for the
+// next reserve to trigger the sweep.
+type deadContainerAbsorptionReclaimer struct {
+	ledger *persistence.AbsorptionLedgerGORM
+}
+
+// NewDeadContainerAbsorptionReclaimer wires the ledger sweep behind the coordinator's reclaim
+// port (sp-m3122 part 3).
+func NewDeadContainerAbsorptionReclaimer(ledger *persistence.AbsorptionLedgerGORM) tradingCmd.DeadContainerAbsorptionReclaimer {
+	return &deadContainerAbsorptionReclaimer{ledger: ledger}
+}
+
+func (a *deadContainerAbsorptionReclaimer) ReclaimDeadContainerAbsorption(ctx context.Context, playerID shared.PlayerID) (int, error) {
+	return a.ledger.Sweep(ctx, playerID.Value())
+}
+
 // tradeFleetConfigKeys enumerates every launch-config key the [trade_fleet] knobs
 // occupy. resolveTradeFleetConfig clears these before re-injecting the live values, so
 // a stale persisted copy from a prior boot can never shadow the current config.yaml
@@ -127,6 +172,7 @@ var tradeFleetConfigKeys = []string{
 	"trade_fleet_masspark_min_hulls",
 	"trade_fleet_reap_stale_captain_reservations_enabled",
 	"trade_fleet_reap_idle_threshold_secs",
+	"trade_fleet_watchdog_stall_secs",
 }
 
 // resolveTradeFleetConfig makes config.yaml the single LIVE source of truth for the
@@ -207,5 +253,10 @@ func (s *DaemonServer) injectTradeFleetConfig(config map[string]interface{}) {
 	}
 	if tf.ReapIdleThresholdSeconds != 0 {
 		config["trade_fleet_reap_idle_threshold_secs"] = tf.ReapIdleThresholdSeconds
+	}
+	// sp-m3122: the watchdog is always ARMED (no on/off key); only the stall threshold is
+	// tunable — an absent key defers to the coordinator's 12-min default.
+	if tf.WatchdogStallSeconds != 0 {
+		config["trade_fleet_watchdog_stall_secs"] = tf.WatchdogStallSeconds
 	}
 }
