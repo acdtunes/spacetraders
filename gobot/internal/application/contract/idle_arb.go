@@ -366,7 +366,15 @@ type IdleArbDispatcher struct {
 	blacklist       map[string]struct{}            // upper-cased cfg.Blacklist, built once
 	launchStandby   []string                       // the launch standby set — the fallback when no live resolver is wired
 	standbyResolver func(context.Context) []string // resolves the LIVE standby set each pass (nil → launchStandby)
-	lanes           *laneMutex                     // one hull per (good, sink) per recovery window
+	// demandProvider auto-resolves the standby set from the role-classified central
+	// parks when the live `fleet hub` set is EMPTY (the sp-bu6ma auto hub-placement),
+	// ranked by import-volume demand — the SAME resolution (ResolveStandbyForHoming)
+	// the coordinator's between-legs homing uses, so the standing re-home sweep and
+	// the between-legs hook home to ONE demand definition (RULINGS #7). Nil-safe:
+	// without it rehomeDriftedHulls keeps the raw fleet-hub/launch set, so a sweep
+	// with no hubs pinned is byte-identical to the pre-fix behavior.
+	demandProvider StandbyDemandProvider
+	lanes          *laneMutex // one hull per (good, sink) per recovery window
 
 	// The cross-engine absorption ledger. nil → integration inert (the same
 	// optional-port contract the other guards use). When wired, the dispatcher
@@ -470,6 +478,17 @@ func (d *IdleArbDispatcher) resolveStandby(ctx context.Context) []string {
 		return d.standbyResolver(ctx)
 	}
 	return d.launchStandby
+}
+
+// SetStandbyDemandProvider wires the demand reader the standing re-home sweep
+// (rehomeDriftedHulls) auto-resolves its standby set from when the live `fleet
+// hub` set is empty, so a SITTING idle pool homes to the role-classified central
+// parks with NO manual hub pins — the sp-bu6ma auto hub-placement the
+// coordinator's between-legs homing already uses (via ResolveStandbyForHoming).
+// Optional and nil-safe: without it the sweep stays on the raw fleet-hub/launch
+// set (byte-identical), matching the SetStandbyResolver optional-port idiom.
+func (d *IdleArbDispatcher) SetStandbyDemandProvider(provider StandbyDemandProvider) {
+	d.demandProvider = provider
 }
 
 // SetAbsorptionLedger wires the cross-engine absorption ledger, the
@@ -968,9 +987,20 @@ func (d *IdleArbDispatcher) fleetShipContainerIDs(ctx context.Context) (map[stri
 }
 
 // rehomeDriftedHulls sends every idle dedicated hull that is NOT sitting at one
-// of the configured standby stations back to its balanced standby station via
-// the EXISTING HomeShipCommand, and returns the set of hulls homed this pass so
-// the caller keeps them out of the arb loop.
+// of the standby stations back to its balanced standby station via the EXISTING
+// HomeShipCommand (the ShipHomer port), and returns the set of hulls homed this
+// pass so the caller keeps them out of the arb loop. This is the STANDING sweep
+// that clears the SITTING idle pool (contracts finished long ago, hulls held
+// ready): it runs at the top of every pass on ALL idle off-station hulls,
+// regardless of whether they ever fly an arb leg — so the reserve-floor buffer
+// (never arb'd) is homed too (sp-54uif).
+//
+// STANDBY SET: resolved the SAME way the coordinator's between-legs homing
+// resolves it — the `fleet hub`/launch set, then ResolveStandbyForHoming
+// AUTO-FILLS it from the role-classified central parks when the pinned set is
+// EMPTY (the sp-bu6ma auto hub-placement). Without the auto-fill the sweep bailed
+// whenever the operator relied on auto-placement, leaving the pool to pile where
+// it last finished (the live J59 pile).
 //
 // Re-homing off-station hulls between legs also keeps the hub-local leash
 // honest: the leash is measured from the hull's CURRENT waypoint, so a hull
@@ -980,32 +1010,43 @@ func (d *IdleArbDispatcher) fleetShipContainerIDs(ctx context.Context) (map[stri
 // left alone. Re-firing HomeShipCommand on it would chase the balancer's
 // least-occupied target and shuffle home hulls station-to-station every tick
 // (churn); the balancer only needs to run when a hull is actually being brought
-// back. Claimed and in-transit hulls never appear here — FindIdleShipsByFleet
-// already excludes them — so an active contract claim or an in-flight leg is
-// never disturbed (RULINGS #7).
+// back (RULINGS #2, no thrash). Claimed and in-transit hulls never appear here —
+// FindIdleShipsByFleet already excludes them — so an active contract claim or an
+// in-flight leg is never disturbed, and a captain-reserved hull (an active
+// assignment, so !IsIdle) is likewise never surfaced. The command frigate is
+// skipped explicitly: it hauls only as a last resort and is positioned by that
+// draft, not the idle harvest (RULINGS #7).
 //
-// Best-effort and inert when re-homing is off (nil homer or no standby stations
-// configured), matching HomeShipCommand's own "empty stations disables
-// relocation" contract.
+// Best-effort and inert when re-homing is off (nil homer, or an empty EFFECTIVE
+// standby set — no `fleet hub` pins AND no demand signal), matching
+// HomeShipCommand's own "empty stations disables relocation" contract.
 func (d *IdleArbDispatcher) rehomeDriftedHulls(ctx context.Context) map[string]bool {
 	homed := map[string]bool{}
 	if d.homer == nil {
 		return homed
 	}
 
-	// LIVE standby set for this pass: a `fleet hub add|remove` is honored
-	// with no restart. An empty set disables re-homing entirely, matching
-	// HomeShipCommand's own "empty stations = no relocation" contract.
-	liveStandby := d.resolveStandby(ctx)
-	if len(liveStandby) == 0 {
+	logger := common.LoggerFromContext(ctx)
+
+	// LIVE standby set for this pass, resolved the SAME way the coordinator's
+	// between-legs homing resolves it: the `fleet hub`/launch set (resolveStandby),
+	// then ResolveStandbyForHoming AUTO-FILLS it from the role-classified central
+	// parks when EMPTY (the sp-bu6ma auto hub-placement) so a SITTING idle pool
+	// homes with no manual hub pins. Before this the sweep bailed whenever the
+	// operator relied on auto-placement, leaving the pool to pile where it last
+	// finished (the live J59 pile, sp-54uif). Nil demand provider → the raw set is
+	// kept (byte-identical). An empty EFFECTIVE set (no `fleet hub` pins AND no
+	// demand signal) disables re-homing, matching HomeShipCommand's own "empty
+	// stations = no relocation" contract; a `fleet hub add|remove` is still honored
+	// with no restart via resolveStandby.
+	standbyStations, _ := ResolveStandbyForHoming(ctx, logger, d.demandProvider, d.playerID.Value(), d.resolveStandby(ctx))
+	if len(standbyStations) == 0 {
 		return homed
 	}
-	atStandby := make(map[string]struct{}, len(liveStandby))
-	for _, s := range liveStandby {
+	atStandby := make(map[string]struct{}, len(standbyStations))
+	for _, s := range standbyStations {
 		atStandby[s] = struct{}{}
 	}
-
-	logger := common.LoggerFromContext(ctx)
 
 	idleShips, _, err := FindIdleShipsByFleet(ctx, d.playerID, d.shipRepo, d.fleet)
 	if err != nil {
@@ -1014,6 +1055,15 @@ func (d *IdleArbDispatcher) rehomeDriftedHulls(ctx context.Context) map[string]b
 	}
 
 	for _, hull := range idleShips {
+		// The command frigate is never swept by the standing re-home: it hauls
+		// only as a last resort and its positioning is managed by that draft, not
+		// the idle harvest (RULINGS #7). A captain-reserved hull never reaches here
+		// — a captain reservation is an active assignment, so it is !IsIdle and
+		// FindIdleShipsByFleet already excludes it (only the idle-arb reserve-floor
+		// buffer, which IS contract-held, is homed).
+		if isCommandHull(hull) {
+			continue
+		}
 		loc := hull.CurrentLocation()
 		if loc == nil {
 			continue
@@ -1021,7 +1071,7 @@ func (d *IdleArbDispatcher) rehomeDriftedHulls(ctx context.Context) map[string]b
 		if _, home := atStandby[loc.Symbol]; home {
 			continue // already home — re-firing would chase balance and churn
 		}
-		if err := d.homer.HomeShip(ctx, hull.ShipSymbol(), liveStandby); err != nil {
+		if err := d.homer.HomeShip(ctx, hull.ShipSymbol(), standbyStations); err != nil {
 			logger.Log("WARNING", fmt.Sprintf(
 				"Idle-arb re-home: could not dispatch homing for %s from %s: %v", hull.ShipSymbol(), loc.Symbol, err), nil)
 			continue

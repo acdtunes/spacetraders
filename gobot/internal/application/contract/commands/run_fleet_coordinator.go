@@ -307,6 +307,12 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		dispatcher.SetStandbyResolver(func(resolveCtx context.Context) []string {
 			return appContract.ResolveStandbyStations(resolveCtx, common.LoggerFromContext(resolveCtx), h.standbyProvider, cmd.ContainerID, cmd.PlayerID.Value(), cmd.StandbyStations)
 		})
+		// LIVE demand auto-placement: when no `fleet hub` is pinned, the standing
+		// re-home sweep resolves its standby set from the role-classified central
+		// parks (sp-bu6ma) via the SAME provider the between-legs hook uses, so a
+		// SITTING idle pool homes demand-ranked instead of piling where it finished
+		// (the live J59 pile, sp-54uif). Nil-safe (byte-identical when unwired).
+		dispatcher.SetStandbyDemandProvider(h.standbyDemandProvider)
 		go dispatcher.Run(ctx)
 	}
 

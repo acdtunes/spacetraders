@@ -785,9 +785,11 @@ func TestIdleArb_ClaimedHull_NeverReHomed(t *testing.T) {
 // can't strand a hull.
 func TestIdleArb_HomeDispatchFails_HullNotExcludedFromArb(t *testing.T) {
 	near := idleArbWaypoint(t, "X1-HUB-D40", 0, 50)
+	// Regular haulers (symbols must NOT end in "-1", the command-hull convention the
+	// standing re-home excludes — see TestIdleArb_CommandFrigate_ExcludedFromStandingReHome).
 	repo := &idleArbFakeShipRepo{ships: []*navigation.Ship{
-		idleArbHull(t, "DRIFTED-1", near, testFleet),
-		idleArbHull(t, "DRIFTED-2", near, testFleet),
+		idleArbHull(t, "DRIFTED-A", near, testFleet),
+		idleArbHull(t, "DRIFTED-B", near, testFleet),
 	}}
 
 	d, launcher, homer := idleArbRehomeHarness(t, repo, []string{"X1-HUB-E42"}, IdleArbConfig{ReserveHulls: 1})
