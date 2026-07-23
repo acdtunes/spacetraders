@@ -306,13 +306,13 @@ func (h *JumpShipHandler) Handle(ctx context.Context, request common.Request) (c
 	// bare destination system symbol (sp-n0x7 round 2) - posting the system
 	// symbol 422s with "waypointSymbol Required, received undefined".
 	// Resolve it via the origin gate's connections list, which carries the
-	// full waypoint symbol of every system it's linked to.
+	// full waypoint symbol of every system it's linked to. The resolve RE-READS
+	// the gate a bounded few times if the destination is missing (sp-hguq3): the
+	// live jump-gate endpoint intermittently returns an incomplete/empty 200, and
+	// treating that transient read as a permanent "no connection" is what bounced
+	// hulls forever between systems.
 	originGateSymbol := ship.CurrentLocation().Symbol
-	gateData, err := h.apiClient.GetJumpGate(ctx, shared.ExtractSystemSymbol(originGateSymbol), originGateSymbol, playerEntity.Token)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve jump gate connections for %s: %w", originGateSymbol, err)
-	}
-	destinationGateWaypointSymbol, err := destinationGateWaypoint(gateData.Connections, cmd.DestinationSystem)
+	destinationGateWaypointSymbol, err := h.resolveDestinationGateWaypoint(ctx, originGateSymbol, cmd.DestinationSystem, playerEntity.Token)
 	if err != nil {
 		return nil, err
 	}
@@ -461,18 +461,77 @@ func isNotInOrbitError(err error) bool {
 	return strings.Contains(msg, "4236") || strings.Contains(msg, "not currently in orbit")
 }
 
-// destinationGateWaypoint finds the connection in a jump gate's connections
-// list whose system matches destinationSystem, returning its full waypoint
-// symbol (e.g. "X1-GQ92-I51"). The live SpaceTraders jump API requires this
-// WAYPOINT - not the bare system symbol - as waypointSymbol in the request
-// body (sp-n0x7 round 2).
-func destinationGateWaypoint(connections []string, destinationSystem string) (string, error) {
-	for _, conn := range connections {
-		if shared.ExtractSystemSymbol(conn) == destinationSystem {
-			return conn, nil
+// maxJumpGateReadAttempts bounds how many times a cross-system jump re-reads the ORIGIN
+// gate's live connections when the intended destination is missing from the response
+// (sp-hguq3). The SpaceTraders jump-gate endpoint intermittently returns a 200 OK with an
+// incomplete/empty connections list — a transient, eventually-consistent read, DISTINCT
+// from a 429 (which the API client already retries on status code, so it never reaches
+// here as an empty list). Treating that one bad read as a permanent "no connection" is
+// what bounced hulls forever between two systems: the gate_edges cache is a faithful
+// snapshot that MATCHES the live API, so the charted connection is real and reappears on
+// the very next read. A few bounded re-reads recover the hop; a destination absent from
+// ALL attempts fails cleanly (no infinite bounce, no cache poisoning).
+const maxJumpGateReadAttempts = 3
+
+// jumpGateReadRetryBackoff is the short settle between bounded re-reads of a gate whose
+// live connections came back missing the destination — enough for an eventually-consistent
+// backend to converge without stalling the jump. Applied ONLY between re-reads (never after
+// the final attempt, never on the happy path), and via the handler clock so tests advance
+// it instantly. Combined with the API client's own rate limiter, the re-read never spams:
+// the extra reads happen only on the (rare) missing-destination path.
+const jumpGateReadRetryBackoff = 750 * time.Millisecond
+
+// resolveDestinationGateWaypoint resolves the destination system's gate WAYPOINT from the
+// origin gate's LIVE connections (sp-n0x7 round 2 requires the waypoint, not the bare
+// system, in the jump request body), re-reading a bounded number of times when the
+// destination is missing (sp-hguq3). A single live read is NOT trusted for a NEGATIVE
+// verdict: the jump-gate endpoint occasionally returns an incomplete/empty 200, and a
+// charted connection reappears on the next read. The happy path (destination present on
+// the first read) returns immediately with exactly one read — zero overhead, no spam. A
+// destination genuinely absent from every bounded read yields a clean, terminal error (no
+// infinite bounce). A hard GetJumpGate error (429-exhausted, 5xx, network) is surfaced
+// immediately — the client already retried it, so re-reading here would not help.
+func (h *JumpShipHandler) resolveDestinationGateWaypoint(ctx context.Context, originGateSymbol, destinationSystem, token string) (string, error) {
+	originSystem := shared.ExtractSystemSymbol(originGateSymbol)
+	logger := common.LoggerFromContext(ctx)
+	for attempt := 0; attempt < maxJumpGateReadAttempts; attempt++ {
+		gateData, err := h.apiClient.GetJumpGate(ctx, originSystem, originGateSymbol, token)
+		if err != nil {
+			return "", fmt.Errorf("failed to resolve jump gate connections for %s: %w", originGateSymbol, err)
+		}
+		if waypoint, ok := findDestinationGateWaypoint(gateData.Connections, destinationSystem); ok {
+			return waypoint, nil
+		}
+		// Destination missing from THIS read. A charted gate momentarily returning an
+		// incomplete/empty connection set is a transient live read, not a permanent
+		// topology change — re-read (bounded) before concluding there is no connection.
+		if attempt < maxJumpGateReadAttempts-1 {
+			logger.Log("INFO", "Destination missing from live gate connections — re-reading (transient incomplete read, sp-hguq3)", map[string]interface{}{
+				"action":             "jump_gate_reread",
+				"origin_gate":        originGateSymbol,
+				"destination_system": destinationSystem,
+				"connections_seen":   len(gateData.Connections),
+				"attempt":            attempt + 1,
+			})
+			h.clock.Sleep(jumpGateReadRetryBackoff)
 		}
 	}
-	return "", fmt.Errorf("no jump gate connection from origin gate to system %s", destinationSystem)
+	return "", fmt.Errorf("no jump gate connection from origin gate %s to system %s after %d live reads", originGateSymbol, destinationSystem, maxJumpGateReadAttempts)
+}
+
+// findDestinationGateWaypoint returns the connection in a jump gate's connections list
+// whose system matches destinationSystem, and whether one was found. The live SpaceTraders
+// jump API requires this full WAYPOINT (e.g. "X1-GQ92-I51"), not the bare system symbol, as
+// waypointSymbol in the request body (sp-n0x7 round 2). Returning ok=false (rather than an
+// error) lets the caller distinguish "missing from THIS read" — worth a bounded re-read
+// (sp-hguq3) — from a hard fetch failure.
+func findDestinationGateWaypoint(connections []string, destinationSystem string) (string, bool) {
+	for _, conn := range connections {
+		if shared.ExtractSystemSymbol(conn) == destinationSystem {
+			return conn, true
+		}
+	}
+	return "", false
 }
 
 // sourceGateComplete reports whether the jump gate at waypointSymbol has
