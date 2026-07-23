@@ -351,6 +351,14 @@ type RunTourCoordinatorResponse struct {
 	Repositions int
 	ExitDetail  string
 
+	// DistressLiquidations counts how many stuck-laden episodes this run resolved by the
+	// sp-2v69u TERTIARY last resort: a laden hull with no profitable fresh tour AND no
+	// reachable sink (the fresh-arb reposition and the held-cargo offload both declined)
+	// sold its held cargo at the best AVAILABLE local bid — below the profit floor,
+	// sunk-cost cash recovery — so it re-enters planning EMPTY instead of churning
+	// relaunch-after-relaunch full. Zero on every run that never strands a hull laden.
+	DistressLiquidations int
+
 	// TourUnavailable marks a fail-open exit: no trading happened, the single-lane
 	// fallback remains. A CLEAN completion (not a failure), never a phantom trade.
 	TourUnavailable       bool
@@ -1054,6 +1062,22 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 					return oerr
 				}
 				repositioned = offloaded
+			}
+			if !repositioned {
+				// sp-2v69u TERTIARY: neither a fresh-arb jump nor a held-cargo offload could
+				// rescue this laden hull — there is no profitable fresh tour anywhere reachable
+				// AND no reachable OTHER-system sink for its load. LAST RESORT: sell the held
+				// cargo at the best AVAILABLE bid in the hull's CURRENT system (a ground the
+				// offload never evaluates), even below the profit floor — the cargo is sunk cost,
+				// so recovering partial capital and freeing the hull beats churning full forever.
+				// Sell-side cash recovery only (RULINGS #4 buy guards untouched); shares the same
+				// kill-switch + one-action-per-episode budget, so it fires at most once per stuck
+				// episode. Fallback only: never engages while a fresh plan or an offload sink exists.
+				liquidated, lerr := h.maybeDistressLiquidate(ctx, cmd, response, &episode, netBought)
+				if lerr != nil {
+					return lerr
+				}
+				repositioned = liquidated
 			}
 			if repositioned {
 				noProgressStreak = 0
