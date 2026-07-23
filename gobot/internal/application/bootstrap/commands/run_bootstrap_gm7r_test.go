@@ -4,185 +4,226 @@ import (
 	"testing"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
 )
 
-// These tests cover the scaled-gate hardening (P0): the cold-start GATE death spiral where the
-// bootstrap latched GATE on a 2-hauler PEAK-income blip with no war chest, then cannibalized the contract
-// op below the capacity reconciler's depot-staging pool (2→1), drove FleetPerHullCrHr negative, and could
-// never rebuy — stuck at 1 hauler, no depot, treasury crashed on a starved gate build. Every guard fired
-// locally-correct; the SYSTEM self-defeated. The fix is at the phase-machine × fleet-allocation level and
-// ships DEFAULT-OFF behind one flag (gate_surplus_hardening). Three coupled parts:
-//   Part 1 (keystone) — gateFunded ALSO requires a RAISED hauler floor + a SUSTAINED $/hr + a treasury surplus.
-//   Part 2 — planGateWorkers keeps ≥ gate_contract_floor haulers earning (repurposes only the surplus).
-//   Part 3 — reDeriveUnderScaledGate releases a sticky GATE that latched under-scaled with ~no construction
-//            back to INCOME, after an anti-thrash consecutive-tick hysteresis streak.
-// Gate entry becomes STRICTER, never looser (RULINGS #4). Tested at the STATE-MACHINE level (not per-guard),
-// because this bug hid precisely because each single-guard check looked "correct" in isolation.
+// These tests cover the sp-gm7r P0 fix: the cold-start GATE death spiral where bootstrap advanced
+// INCOME→GATE PREMATURELY. gateFunded entered GATE on a lightly-scaled contract op (as little as 2
+// haulers + a sustained-income spike), actGate started a construction pipeline, and derivePhase's
+// ConstructionStarted sticky latch then held GATE forever — even though the op was never genuinely
+// scaled — so the op cannibalized its contract haulers into construction and death-spiralled.
+//
+// THE FIX (two coupled parts, UNCONDITIONALLY ON — the flag is gone):
+//   A. The former gate_surplus_hardening hardening is now the SOLE path (no flag, no default-off).
+//   B. The static hauler floor is replaced by a DYNAMIC bar: GATE entry requires the FULL contract
+//      fleet (delivery Haulers + depot warehouse/stocker hulls) to have reached the auto-scaler's
+//      live achievable target (ContractScalerTarget), AND a sustained $/hr, AND a treasury surplus.
+//
+// The target is a HARD bar: an op that cannot reach the target stays in INCOME by design. It is
+// fail-closed — a 0/unread target NEVER gates. Tested at the STATE-MACHINE level (derivePhase /
+// planGateWorkers / reconcileOnce), because this bug hid precisely because each single-guard check
+// looked "correct" in isolation.
 
-// hardenedCfg resolves the coordinator config with scaled-gate hardening ARMED (gate_surplus_hardening=1).
-// The scaled gate is unconditionally on, which is the realistic deployment. Asserts the hardening flag
-// and the documented calibration defaults so the behavior tests below read against known bars.
-func hardenedCfg(t *testing.T) bootstrapRunConfig {
-	t.Helper()
-	cfg := resolveBootstrapConfig(baseCmd(), liveconfig.Snapshot{"gate_surplus_hardening": 1})
-	if !cfg.GateSurplusHardening {
-		t.Fatalf("gate_surplus_hardening=1 must arm hardening")
-	}
-	if cfg.GateHaulerFloor != defaultGateHaulerFloor || cfg.GateSurplusFloor != defaultGateSurplusFloor ||
-		cfg.GateContractFloor != defaultGateContractFloor || cfg.GateReentryConstructionPct != defaultGateReentryConstructionPct ||
-		cfg.GateReentryStreakTicks != defaultGateReentryStreakTicks {
-		t.Fatalf("armed hardening must carry the documented calibration defaults, got %+v", cfg)
-	}
-	return cfg
-}
-
-// offCfg resolves the config with hardening OFF (nothing tuned) — the scaled gate on (unconditional),
-// hardening off. The byte-identical baseline.
-func offCfg(t *testing.T) bootstrapRunConfig {
+// unifiedCfg resolves the coordinator config for the unified (flag-free) model. The scaled-gate bars
+// and the surplus/contract/escape floors are all UNCONDITIONALLY consulted now, so it asserts the
+// documented calibration defaults so the behavior tests below read against known bars.
+func unifiedCfg(t *testing.T) bootstrapRunConfig {
 	t.Helper()
 	cfg := resolveBootstrapConfig(baseCmd(), nil)
-	if cfg.GateSurplusHardening {
-		t.Fatalf("hardening must be OFF by default (byte-identical baseline)")
+	if cfg.GateIncomeBar != defaultGateIncomeBar || cfg.GateMinHaulers != defaultGateMinHaulers ||
+		cfg.GateSurplusFloor != defaultGateSurplusFloor || cfg.GateContractFloor != defaultGateContractFloor ||
+		cfg.GateReentryConstructionPct != defaultGateReentryConstructionPct ||
+		cfg.GateReentryStreakTicks != defaultGateReentryStreakTicks {
+		t.Fatalf("unified config must carry the documented calibration defaults, got %+v", cfg)
 	}
 	return cfg
 }
 
-// --- Part 0: byte-identical when hardening is OFF (the safety net) ---
-
-// With hardening OFF, derivePhase is exactly today's scaled-gate machine across DATA/INCOME/GATE/COMPLETE.
-// The load-bearing discriminator vs the armed path: a 2-hauler op at 60k with a THIN treasury STILL enters
-// GATE — because neither the raised hauler floor NOR the surplus floor is applied while the flag is off. If
-// any hardening condition leaked into the off path, this 2-hauler/thin-treasury case would be blocked.
-func TestBootstrap_Gm7r_ByteIdentical_WhenHardeningOff(t *testing.T) {
-	cfg := offCfg(t)
-
-	// COMPLETE: a built gate is terminal.
-	if p := derivePhase(Observation{ConstructionComplete: true}, cfg); p != PhaseComplete {
-		t.Fatalf("off: ConstructionComplete → COMPLETE, got %s", p)
-	}
-	// GATE sticky: a started pipeline stays GATE regardless of income/haulers.
-	if p := derivePhase(Observation{ConstructionStarted: true}, cfg); p != PhaseGate {
-		t.Fatalf("off: ConstructionStarted → sticky GATE, got %s", p)
-	}
-	// GATE entry (today's scaled gate): 2 haulers + sustained 60k enters GATE — EVEN with a thin treasury
-	// (100k) and low coverage. This is the exact case hardening will BLOCK; off, it must still gate.
-	thin := Observation{
-		Haulers:       []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}},
-		IncomePerHour: 60000, Treasury: 100_000, MarketsTotal: 10, MarketsCovered: 3,
-	}
-	if p := derivePhase(thin, cfg); p != PhaseGate {
-		t.Fatalf("off must be byte-identical: 2 haulers + 60k → GATE even on a thin treasury, got %s", p)
-	}
-	// INCOME: probes at target + scouting, not funded.
-	if p := derivePhase(Observation{ProbeCount: 3, ProbesScouting: 3, IncomePerHour: 0}, cfg); p != PhaseIncome {
-		t.Fatalf("off: provisioned + unfunded → INCOME, got %s", p)
-	}
-	// DATA: probes under target.
-	if p := derivePhase(Observation{ProbeCount: 1, ProbesScouting: 1}, cfg); p != PhaseData {
-		t.Fatalf("off: probes under target → DATA, got %s", p)
-	}
+// provisionedScanning stamps the "scanning workstream done" fields (probes at target & scouting,
+// fully covered) onto an entry-gate observation, so a blocked GATE falls through to INCOME (not DATA)
+// — isolating the GATE-entry decision as the only variable.
+func provisionedScanning(obs Observation) Observation {
+	obs.ProbeCount = 3
+	obs.ProbesScouting = 3
+	obs.MarketsTotal = 10
+	obs.MarketsCovered = 10
+	return obs
 }
 
-// --- Part 1 (keystone): GATE entry demands a RAISED hauler floor + sustained $/hr + a treasury surplus ---
+// --- Part B (keystone): GATE entry demands the FULL fleet reach the scaler target (+ sustained $/hr + surplus) ---
 
-// Each armed sub-case is genuinely UNDER-SCALED or UNFUNDED on exactly one axis, so GATE must NOT be
-// entered — the op stays INCOME (provisioned: probes at target & scouting). The plain scaled gate (today)
-// would gate every one of these (2 haulers + 50k clears it); hardening blocks them.
-func TestBootstrap_Gm7r_GateEntry_Blocked_WhenUnscaledOrNoSurplus(t *testing.T) {
-	cfg := hardenedCfg(t)
-	provisioned := Observation{ProbeCount: 3, ProbesScouting: 3, MarketsTotal: 10, MarketsCovered: 10}
+// Each case is genuinely UNDER the scaler target, UNFUNDED, or missing the surplus on exactly one axis,
+// so GATE must NOT be entered — the op stays INCOME. The OLD static gate would have entered GATE on the
+// first case (2 haulers + 60k clears the old 2-hauler floor); the dynamic target blocks it.
+func TestBootstrap_Gm7r_GateEntry_BelowScalerTarget_StaysIncome(t *testing.T) {
+	cfg := unifiedCfg(t)
+	surplus := common.ImmutableReserveFloor + defaultGateSurplusFloor // treasury with exactly the required surplus
 
 	cases := []struct {
 		name string
 		obs  Observation
 	}{
 		{
-			// 2 haulers is below the RAISED floor (4) though above the plain floor (2). A 2-hull op is not a
-			// real fleet — the very shape the ktio/gm7r spiral latched on.
-			name: "below_raised_hauler_floor",
-			obs:  Observation{Haulers: twoHaulers(), IncomePerHour: 60000, Treasury: 2_000_000},
+			// The very shape the spiral latched on: a 2-hull op earning well with a fat treasury, but far
+			// below the scaler's 10-hull target. A 2-hull op is not a scaled fleet.
+			name: "full_fleet_far_below_target",
+			obs:  Observation{Haulers: twoHaulers(), ContractScalerTarget: 10, IncomePerHour: 60000, Treasury: 2_000_000},
 		},
 		{
-			// A real 4-hull fleet earning well, but the treasury has NO surplus (100k − 50k = 50k < 500k) —
-			// gating here would race the gate build on a war chest that can't pay the material bill (the spiral).
-			name: "no_treasury_surplus",
-			obs:  Observation{Haulers: nHaulers(4), IncomePerHour: 60000, Treasury: 100_000},
+			// One hull short of the target — still not the fleet the scaler is driving toward.
+			name: "full_fleet_one_short_of_target",
+			obs:  Observation{Haulers: nHaulers(9), ContractScalerTarget: 10, IncomePerHour: 60000, Treasury: 2_000_000},
 		},
 		{
-			// A real 4-hull fleet with a fat treasury, but sustained $/hr under the bar (40k < 50k) — not yet
-			// earning enough to fund a gate build; a warming op, not a funded one.
-			name: "sustained_income_under_bar",
-			obs:  Observation{Haulers: nHaulers(4), IncomePerHour: 40000, Treasury: 2_000_000},
+			// Full fleet AT target and earning well, but NO treasury surplus (150k − 50k = 100k < 500k) —
+			// gating here would race the gate build on a war chest that cannot pay the material bill.
+			name: "at_target_but_no_surplus",
+			obs:  Observation{Haulers: nHaulers(10), ContractScalerTarget: 10, IncomePerHour: 60000, Treasury: 150_000},
+		},
+		{
+			// Full fleet AT target with a fat treasury, but sustained $/hr under the bar (40k < 50k) — a
+			// warming op, not a funded one.
+			name: "at_target_but_income_under_bar",
+			obs:  Observation{Haulers: nHaulers(10), ContractScalerTarget: 10, IncomePerHour: 40000, Treasury: 2_000_000},
+		},
+		{
+			// Surplus exactly one credit under the floor — fail-closed direction (surplus must be ≥ floor).
+			name: "surplus_one_credit_under_floor",
+			obs:  Observation{Haulers: nHaulers(10), ContractScalerTarget: 10, IncomePerHour: 60000, Treasury: surplus - 1},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			obs := tc.obs
-			obs.ProbeCount = provisioned.ProbeCount
-			obs.ProbesScouting = provisioned.ProbesScouting
-			obs.MarketsTotal = provisioned.MarketsTotal
-			obs.MarketsCovered = provisioned.MarketsCovered
-			if p := derivePhase(obs, cfg); p == PhaseGate {
-				t.Fatalf("armed hardening must NOT enter GATE for %s (unscaled/unfunded op), got %s", tc.name, p)
+			if p := derivePhase(provisionedScanning(tc.obs), cfg); p == PhaseGate {
+				t.Fatalf("%s: an op that has not reached the scaler target (or lacks surplus/income) must NOT enter GATE, got %s", tc.name, p)
 			}
 		})
 	}
 }
 
-// A genuinely SCALED and FUNDED op enters GATE: haulers ≥ the raised floor (4), a sustained $/hr ≥ the bar
-// (60k ≥ 50k), AND a treasury surplus ≥ the floor. The surplus check is boundary-exact: surplus = treasury −
-// ImmutableReserveFloor(50k), so treasury 550k ⇒ surplus 500k == floor ⇒ gates; 549_999 ⇒ 499_999 < floor ⇒
-// does not. This proves hardening admits the legitimate entry and is not merely blocking everything.
-func TestBootstrap_Gm7r_GateEntry_Allowed_WhenScaledAndFunded(t *testing.T) {
-	cfg := hardenedCfg(t)
-	scaledFunded := Observation{Haulers: nHaulers(4), IncomePerHour: 60000, Treasury: 600_000}
+// A genuinely SCALED and FUNDED op enters GATE: the full contract fleet has reached the scaler target,
+// a sustained $/hr ≥ the bar, AND a treasury surplus ≥ the floor. The surplus check is boundary-exact:
+// surplus = treasury − ImmutableReserveFloor(50k), so treasury 550k ⇒ surplus 500k == floor ⇒ gates;
+// one credit under ⇒ does not. This proves the bar admits the legitimate entry, not merely blocks everything.
+func TestBootstrap_Gm7r_GateEntry_AtOrAboveScalerTarget_EntersGate(t *testing.T) {
+	cfg := unifiedCfg(t)
+
+	// Full fleet == target, sustained 60k ≥ bar, treasury 600k ⇒ surplus 550k ≥ floor → GATE.
+	scaledFunded := Observation{Haulers: nHaulers(10), ContractScalerTarget: 10, IncomePerHour: 60000, Treasury: 600_000}
 	if p := derivePhase(scaledFunded, cfg); p != PhaseGate {
-		t.Fatalf("armed: scaled (4 haulers) + sustained 60k + 550k surplus → GATE, got %s", p)
+		t.Fatalf("scaled (full fleet at target) + sustained 60k + 550k surplus → GATE, got %s", p)
+	}
+
+	// Full fleet ABOVE target still gates (the bar is a floor, not an equality).
+	above := Observation{Haulers: nHaulers(12), ContractScalerTarget: 10, IncomePerHour: 60000, Treasury: 600_000}
+	if p := derivePhase(above, cfg); p != PhaseGate {
+		t.Fatalf("full fleet above target must still gate, got %s", p)
 	}
 
 	// Boundary: surplus exactly at the floor gates (≥), one credit under does not (fail-closed direction).
-	atFloor := Observation{Haulers: nHaulers(4), IncomePerHour: 60000, Treasury: common.ImmutableReserveFloor + defaultGateSurplusFloor}
+	atFloor := Observation{Haulers: nHaulers(10), ContractScalerTarget: 10, IncomePerHour: 60000, Treasury: common.ImmutableReserveFloor + defaultGateSurplusFloor}
 	if p := derivePhase(atFloor, cfg); p != PhaseGate {
-		t.Fatalf("armed: surplus exactly at the floor must gate (≥), got %s", p)
+		t.Fatalf("surplus exactly at the floor must gate (≥), got %s", p)
 	}
 	underFloor := atFloor
 	underFloor.Treasury--
 	if p := derivePhase(underFloor, cfg); p == PhaseGate {
-		t.Fatalf("armed: surplus one credit under the floor must NOT gate, got %s", p)
+		t.Fatalf("surplus one credit under the floor must NOT gate, got %s", p)
 	}
 }
 
-// --- Part 2: GATE must not cannibalize contract haulers below the scaled floor ---
-
-// planGateWorkers keeps ≥ gate_contract_floor (2) haulers EARNING while hardening is armed and repurposes
-// only the surplus above it; with the flag off it keeps only min_contract_earners (1). Same 4-hauler input,
-// only the flag differs — so the released count changes from 3 (off) to 2 (on), and the kept-on-contract
-// pool never drops below the depot-staging floor of 2. This is the cannibalization the spiral turned on.
-func TestBootstrap_Gm7r_Gate_DoesNotCannibalizeContractsBelowFloor(t *testing.T) {
-	four := Observation{Haulers: nHaulers(4)} // GateMaterialChains 0 → no buy noise; pure release accounting
-
-	off := planGateWorkers(four, offCfg(t))
-	if len(off.ReleaseShips) != 3 {
-		t.Fatalf("off (min_contract_earners=1): 4 haulers → release 3, got %d (%v)", len(off.ReleaseShips), off.ReleaseShips)
+// The DEPOT half of the contract fleet counts toward the bar: 6 delivery haulers ALONE fall short of a
+// 10-hull target (would NOT gate), but 6 haulers + 4 depot (warehouse/stocker) hulls reach it and gate.
+// This is the load-bearing behavior of the "FULL fleet" bar vs the old delivery-only floor.
+func TestBootstrap_Gm7r_DepotHullsCountTowardTarget(t *testing.T) {
+	cfg := unifiedCfg(t)
+	funded := func(depot int) Observation {
+		return Observation{
+			Haulers:                nHaulers(6),
+			ContractDepotHullCount: depot,
+			ContractScalerTarget:   10,
+			IncomePerHour:          60000,
+			Treasury:               2_000_000,
+		}
 	}
 
-	on := planGateWorkers(four, hardenedCfg(t))
-	if len(on.ReleaseShips) != 2 {
-		t.Fatalf("armed (gate_contract_floor=2): 4 haulers → release only the 2-hauler surplus, got %d (%v)", len(on.ReleaseShips), on.ReleaseShips)
+	// 6 delivery haulers + 0 depot = 6 < 10 target → NOT gated.
+	if p := derivePhase(provisionedScanning(funded(0)), cfg); p == PhaseGate {
+		t.Fatalf("6 delivery haulers alone (< 10 target) must NOT gate, got %s", p)
 	}
-	if kept := len(four.Haulers) - len(on.ReleaseShips); kept < defaultGateContractFloor {
-		t.Fatalf("armed: contract pool kept earning (%d) must never drop below the depot-staging floor (%d)", kept, defaultGateContractFloor)
+	// 6 delivery + 4 depot = 10 == target → gated. The depot hulls are what cross the bar.
+	if p := derivePhase(funded(4), cfg); p != PhaseGate {
+		t.Fatalf("6 delivery + 4 depot hulls (= 10 target) must gate — the depot half counts, got %s", p)
 	}
-	// The released hulls are exactly the SURPLUS above the floor (Haulers[floor:]), never the earners kept.
-	if on.ReleaseShips[0] != "H3" || on.ReleaseShips[1] != "H4" {
-		t.Fatalf("armed: only the surplus above the floor is released, got %v (want [H3 H4])", on.ReleaseShips)
+}
+
+// FAIL-CLOSED: a 0 scaler target (no scaler running / unread) NEVER gates, even with a huge fleet, huge
+// income, and a huge surplus — bootstrap must never enter GATE on an unknown target (it would gate blind).
+func TestBootstrap_Gm7r_FailClosed_ZeroScalerTarget_NeverGates(t *testing.T) {
+	cfg := unifiedCfg(t)
+	huge := Observation{
+		Haulers:                nHaulers(20),
+		ContractDepotHullCount: 10,
+		ContractScalerTarget:   0, // unknown target
+		IncomePerHour:          500000,
+		Treasury:               50_000_000,
+	}
+	if p := derivePhase(provisionedScanning(huge), cfg); p == PhaseGate {
+		t.Fatalf("a 0 scaler target must NEVER gate (fail-closed on an unknown target), got %s", p)
+	}
+}
+
+// --- Part 2: GATE must not cannibalize contract haulers below the scaled floor (always-on now) ---
+
+// planGateWorkers keeps ≥ gate_contract_floor (2) haulers EARNING and repurposes only the surplus above
+// it — unconditionally now (the flag is gone). From 4 haulers it releases exactly the 2-hauler surplus
+// (H3,H4), never the earners kept; at the floor (2 haulers) it releases nothing. This is the
+// cannibalization the spiral turned on.
+func TestBootstrap_Gm7r_Gate_KeepsContractFloor_RepurposesOnlySurplus(t *testing.T) {
+	cfg := unifiedCfg(t)
+
+	four := planGateWorkers(Observation{Haulers: nHaulers(4)}, cfg) // GateMaterialChains 0 → pure release accounting
+	if len(four.ReleaseShips) != 2 {
+		t.Fatalf("gate_contract_floor=2: 4 haulers → release only the 2-hauler surplus, got %d (%v)", len(four.ReleaseShips), four.ReleaseShips)
+	}
+	if four.ReleaseShips[0] != "H3" || four.ReleaseShips[1] != "H4" {
+		t.Fatalf("only the surplus above the floor is released, got %v (want [H3 H4])", four.ReleaseShips)
+	}
+	if kept := 4 - len(four.ReleaseShips); kept < defaultGateContractFloor {
+		t.Fatalf("contract pool kept earning (%d) must never drop below the depot-staging floor (%d)", kept, defaultGateContractFloor)
 	}
 
-	// At the floor exactly (2 haulers), armed hardening repurposes NOTHING — the op is never cannibalized.
-	atFloor := planGateWorkers(Observation{Haulers: nHaulers(2)}, hardenedCfg(t))
+	// At the floor exactly (2 haulers), repurpose NOTHING — the op is never cannibalized below the floor.
+	atFloor := planGateWorkers(Observation{Haulers: nHaulers(2)}, cfg)
 	if len(atFloor.ReleaseShips) != 0 {
-		t.Fatalf("armed: a 2-hauler pool at the floor must release nothing, got %v", atFloor.ReleaseShips)
+		t.Fatalf("a 2-hauler pool at the floor must release nothing, got %v", atFloor.ReleaseShips)
+	}
+}
+
+// --- Part 2b: the escape hatch is UNCONDITIONALLY ON — a legit fresh GATE entry is never re-derived ---
+
+// A legitimately-funded FRESH GATE (full fleet at target + sustained income + surplus, no pipeline yet)
+// is NOT a stuck latch, so the escape hatch leaves it in GATE across many ticks. This proves
+// reDeriveUnderScaledGate (now unconditional) only releases a STICKY, under-scaled latch — never a
+// genuine entry.
+func TestBootstrap_Gm7r_Escape_DoesNotReDeriveLegitFreshGate(t *testing.T) {
+	funded := Observation{
+		HomeSystem: "X1-HQ", ProbeCount: 3, ProbesScouting: 3, MarketsTotal: 10, MarketsCovered: 10,
+		Haulers: nHaulers(10), ContractScalerTarget: 10, IncomePerHour: 60000, Treasury: 2_000_000,
+		Readable: true,
+	}
+	obsvr := &fakeObserver{obs: funded}
+	h := newEscapeHandler(obsvr)
+	cmd := baseCmd()
+	// A fresh GATE entry needs a full sustained-income window before derivePhase sees the mean over the bar.
+	primeGateIncomeWindow(h, cmd.ContainerID, 60000)
+	for tick := 1; tick <= gateReentryStreakThreshold+2; tick++ {
+		res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), cmd)
+		if err != nil {
+			t.Fatalf("tick %d: %v", tick, err)
+		}
+		if res.Phase != PhaseGate {
+			t.Fatalf("tick %d: a legit funded fresh GATE (not a stuck latch) must stay GATE, got %s", tick, res.Phase)
+		}
 	}
 }
 
@@ -190,8 +231,9 @@ func TestBootstrap_Gm7r_Gate_DoesNotCannibalizeContractsBelowFloor(t *testing.T)
 
 // A sticky GATE that latched under-scaled (0 haulers, income under the bar) with ~no construction (0% <
 // gate_reentry_construction_pct 5%) re-derives INCOME so the op can re-scale — but ONLY after
-// gate_reentry_streak_ticks (3) CONSECUTIVE such ticks (anti-thrash). Ticks 1-2 hold GATE (streak building);
-// tick 3 flips to INCOME. Driven through reconcileOnce so the real per-container hysteresis state runs.
+// gate_reentry_streak_ticks (3) CONSECUTIVE such ticks (anti-thrash). Ticks 1-2 hold GATE (streak
+// building); tick 3 flips to INCOME. Driven through reconcileOnce so the real per-container hysteresis
+// state runs. Unconditional now (no flag).
 func TestBootstrap_Gm7r_ReDerivesIncome_WhenLatchedUnderScaled(t *testing.T) {
 	stuck := Observation{
 		ConstructionStarted: true, // sticky-GATE latch holds
@@ -202,35 +244,35 @@ func TestBootstrap_Gm7r_ReDerivesIncome_WhenLatchedUnderScaled(t *testing.T) {
 		Readable:            true,
 	}
 	obsvr := &fakeObserver{obs: stuck}
-	h := newHardenedEscapeHandler(obsvr)
+	h := newEscapeHandler(obsvr)
 	cmd := baseCmd()
 
-	for tick := 1; tick <= 2; tick++ {
+	for tick := 1; tick < gateReentryStreakThreshold; tick++ {
 		res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), cmd)
 		if err != nil {
 			t.Fatalf("tick %d: %v", tick, err)
 		}
 		if res.Phase != PhaseGate {
-			t.Fatalf("tick %d: streak not yet full (< 3) must HOLD sticky GATE (anti-thrash), got %s", tick, res.Phase)
+			t.Fatalf("tick %d: streak not yet full (< %d) must HOLD sticky GATE (anti-thrash), got %s", tick, gateReentryStreakThreshold, res.Phase)
 		}
 	}
 	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), cmd)
 	if err != nil {
-		t.Fatalf("tick 3: %v", err)
+		t.Fatalf("tick %d: %v", gateReentryStreakThreshold, err)
 	}
 	if res.Phase != PhaseIncome {
-		t.Fatalf("tick 3: 3 consecutive under-scaled low-progress ticks must re-derive INCOME (escape the latch), got %s", res.Phase)
+		t.Fatalf("%d consecutive under-scaled low-progress ticks must re-derive INCOME (escape the latch), got %s", gateReentryStreakThreshold, res.Phase)
 	}
 }
 
-// Anti-thrash: a single tick that BREAKS the condition (construction crosses the 5% ceiling — real materials
-// are flowing) RESETS the streak, so the re-derive requires 3 fresh CONSECUTIVE ticks again. Were the streak
-// cumulative, tick 4 below would fire INCOME; because it is consecutive, ticks 1-5 all hold GATE and only the
-// 3rd fresh consecutive stuck tick (tick 6) escapes.
+// Anti-thrash: a single tick that BREAKS the condition (construction crosses the 5% ceiling — real
+// materials are flowing) RESETS the streak, so the re-derive requires 3 fresh CONSECUTIVE ticks again.
+// Were the streak cumulative, tick 4 would fire INCOME; because it is consecutive, ticks 1-5 all hold
+// GATE and only the 3rd fresh consecutive stuck tick (tick 6) escapes.
 func TestBootstrap_Gm7r_EscapeHysteresis_ResetsOnConditionBreak(t *testing.T) {
 	stuck := Observation{ConstructionStarted: true, ConstructionPercent: 0, Haulers: nil, IncomePerHour: -20000, Treasury: 125_000, Readable: true}
 	obsvr := &fakeObserver{obs: stuck}
-	h := newHardenedEscapeHandler(obsvr)
+	h := newEscapeHandler(obsvr)
 	cmd := baseCmd()
 
 	mustPhase := func(tick int, want Phase) {
@@ -254,38 +296,21 @@ func TestBootstrap_Gm7r_EscapeHysteresis_ResetsOnConditionBreak(t *testing.T) {
 	mustPhase(6, PhaseIncome) // streak 3 → escape
 }
 
-// Byte-identical at the reconcileOnce seam: with hardening OFF, the SAME stuck-GATE state stays sticky GATE
-// forever — the escape hatch never fires (it is entirely behind the flag). Five ticks, all GATE.
-func TestBootstrap_Gm7r_EscapeOff_StuckGateStaysGate_ByteIdentical(t *testing.T) {
-	stuck := Observation{ConstructionStarted: true, ConstructionPercent: 0, Haulers: nil, IncomePerHour: -20000, Treasury: 125_000, Readable: true}
-	obsvr := &fakeObserver{obs: stuck}
+// newEscapeHandler wires a coordinator with the minimal collaborators the escape-hatch / entry-gate
+// reconcile path needs (refresher + observer; the GATE/INCOME action collaborators are nil-safe logged
+// skips, which is all these phase-derivation tests exercise). No live-config reader is needed — the
+// hardening + escape hatch are UNCONDITIONALLY ON (the flag is gone), so the documented defaults resolve
+// from a nil snapshot.
+func newEscapeHandler(obsvr *fakeObserver) *RunBootstrapCoordinatorHandler {
 	h := NewRunBootstrapCoordinatorHandler(nil)
 	h.SetShipRefresher(&fakeRefresher{})
 	h.SetWorldObserver(obsvr)
-	// No live-config reader wired → hardening OFF; the sticky ConstructionStarted latch holds GATE.
-	cmd := baseCmd()
-
-	for tick := 1; tick <= 5; tick++ {
-		res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), cmd)
-		if err != nil {
-			t.Fatalf("tick %d: %v", tick, err)
-		}
-		if res.Phase != PhaseGate {
-			t.Fatalf("hardening OFF: a sticky GATE must never escape (byte-identical), tick %d got %s", tick, res.Phase)
-		}
-	}
-}
-
-// newHardenedEscapeHandler wires a coordinator with hardening ARMED via the live-config reader and the
-// minimal collaborators the escape-hatch reconcile path needs (refresher + observer; the GATE/INCOME action
-// collaborators are nil-safe logged skips, which is all these phase-derivation tests exercise).
-func newHardenedEscapeHandler(obsvr *fakeObserver) *RunBootstrapCoordinatorHandler {
-	h := NewRunBootstrapCoordinatorHandler(nil)
-	h.SetShipRefresher(&fakeRefresher{})
-	h.SetWorldObserver(obsvr)
-	h.SetLiveConfigReader(&fakeLiveConfig{snap: liveconfig.Snapshot{"gate_surplus_hardening": 1}})
 	return h
 }
+
+// gateReentryStreakThreshold mirrors the documented default so the escape tests read against the
+// consecutive-tick count without hard-coding it.
+const gateReentryStreakThreshold = defaultGateReentryStreakTicks
 
 // twoHaulers / nHaulers build symbol-tagged contract-hauler pools (H1..Hn) for the sizing + entry tests.
 func twoHaulers() []HaulerSnapshot { return nHaulers(2) }
@@ -298,4 +323,9 @@ func nHaulers(n int) []HaulerSnapshot {
 	return hs
 }
 
-func haulerSymbol(i int) string { return "H" + string(rune('0'+i)) }
+func haulerSymbol(i int) string {
+	if i < 10 {
+		return "H" + string(rune('0'+i))
+	}
+	return "H1" + string(rune('0'+i-10))
+}

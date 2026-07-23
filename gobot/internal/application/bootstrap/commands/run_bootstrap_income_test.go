@@ -601,8 +601,9 @@ func TestBootstrap_Income_DryRunTakesNoAction(t *testing.T) {
 
 func TestBootstrap_IncomeToGate_Crossover_NoIncomeAct(t *testing.T) {
 	obs := incomeObs()
-	obs.Haulers = []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}} // scaled op ⇒ eligible for GATE
-	obs.IncomePerHour = 60000                                      // ≥ gate_income_bar 50000 (sustained) → GATE
+	obs.Haulers = []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}} // full fleet = 2
+	obs.ContractScalerTarget = 2                                   // == full fleet ⇒ scaler target reached (scaled op)
+	obs.IncomePerHour = 60000                                      // ≥ gate_income_bar 50000 (sustained) → GATE; incomeObs treasury clears the surplus floor
 	obs.BatchContractRunning = false
 	ret := &fakeRetirer{}
 	acq := &fakeHaulerAcquirer{price: 100000, yard: "Y", readable: true}

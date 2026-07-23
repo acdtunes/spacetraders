@@ -63,39 +63,41 @@ func TestBootstrap_DerivePhase_EconomicSignalsIgnoreCoverage(t *testing.T) {
 
 // --- planGateWorkers: deterministic repurpose-first → top-up sizing ---
 
-// Repurpose-first: when GATE begins, all contract haulers beyond min_contract_earners are released to
+// Repurpose-first: when GATE begins, all contract haulers beyond the contract-earner floor are released to
 // the executor as the seed workforce — BEFORE the pipeline reveals its shape (chains still 0), so no buy.
+// The floor is gate_contract_floor (2, UNCONDITIONALLY held now — sp-gm7r), so it never cannibalizes the
+// contract op below the capacity reconciler's depot-staging pool.
 func TestBootstrap_PlanGateWorkers_RepurposesSurplusFirst(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd(), nil) // min_contract_earners 1, gate_worker_target 6
+	cfg := resolveBootstrapConfig(baseCmd(), nil) // gate_contract_floor 2, gate_worker_target 6
 	obs := Observation{
 		Haulers:            []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}, {Symbol: "H3"}, {Symbol: "H4"}},
 		GateMaterialChains: 0, // pipeline shape not yet known
 	}
 	plan := planGateWorkers(obs, cfg)
-	if got := len(plan.ReleaseShips); got != 3 {
-		t.Fatalf("expected 3 surplus haulers released (4 on contract − 1 kept), got %d (%v)", got, plan.ReleaseShips)
+	if got := len(plan.ReleaseShips); got != 2 {
+		t.Fatalf("expected 2 surplus haulers released (4 on contract − 2 kept at the contract floor), got %d (%v)", got, plan.ReleaseShips)
 	}
-	if plan.KeptOnContract != 1 {
-		t.Fatalf("expected 1 hauler kept on contract, got %d", plan.KeptOnContract)
+	if plan.KeptOnContract != 2 {
+		t.Fatalf("expected 2 haulers kept on contract (the gate_contract_floor), got %d", plan.KeptOnContract)
 	}
 	if plan.Buy != 0 {
 		t.Fatalf("no buy before the pipeline reveals its chains, got buy=%d", plan.Buy)
 	}
-	// The kept earner (first) is NOT released; the surplus (H2..H4) is.
+	// The kept earners (first two) are NOT released; the surplus (H3,H4) is.
 	for _, s := range plan.ReleaseShips {
-		if s == "H1" {
-			t.Fatalf("the kept contract earner H1 must not be released, got %v", plan.ReleaseShips)
+		if s == "H1" || s == "H2" {
+			t.Fatalf("the kept contract earners H1/H2 must not be released, got %v", plan.ReleaseShips)
 		}
 	}
 }
 
-// The keep guard holds: at exactly min_contract_earners on contract, nothing is released.
+// The keep guard holds: at exactly the contract-earner floor on contract, nothing is released.
 func TestBootstrap_PlanGateWorkers_KeepsMinContractEarners(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd(), nil) // keep 1
-	obs := Observation{Haulers: []HaulerSnapshot{{Symbol: "H1"}}, GateMaterialChains: 3}
+	cfg := resolveBootstrapConfig(baseCmd(), nil) // keep = gate_contract_floor 2
+	obs := Observation{Haulers: []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}}, GateMaterialChains: 3}
 	plan := planGateWorkers(obs, cfg)
 	if len(plan.ReleaseShips) != 0 {
-		t.Fatalf("must keep min_contract_earners on contract, released %v", plan.ReleaseShips)
+		t.Fatalf("must keep the contract-earner floor on contract, released %v", plan.ReleaseShips)
 	}
 }
 
@@ -127,11 +129,12 @@ func TestBootstrap_PlanGateWorkers_StagesOneBuyPerTick(t *testing.T) {
 	}
 }
 
-// No buy when the repurposed seed + existing workers already cover the pipeline's shape.
+// No buy when the repurposed seed + existing workers already cover the pipeline's shape. With the
+// contract-earner floor at 2 (always-on), 5 haulers release 3 — enough to cover a 3-worker desired.
 func TestBootstrap_PlanGateWorkers_NoBuyWhenPoolCovers(t *testing.T) {
 	cfg := resolveBootstrapConfig(baseCmd(), nil) // target 6, desired = min(2+1,6) = 3
 	obs := Observation{
-		Haulers:            []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}, {Symbol: "H3"}, {Symbol: "H4"}}, // release 3
+		Haulers:            []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}, {Symbol: "H3"}, {Symbol: "H4"}, {Symbol: "H5"}}, // keep 2, release 3
 		GateWorkers:        0,
 		GateMaterialChains: 2,
 	}
@@ -140,7 +143,7 @@ func TestBootstrap_PlanGateWorkers_NoBuyWhenPoolCovers(t *testing.T) {
 		t.Fatalf("desired = 3, got %d", plan.DesiredWorkers)
 	}
 	if len(plan.ReleaseShips) != 3 {
-		t.Fatalf("expected 3 released, got %d", len(plan.ReleaseShips))
+		t.Fatalf("expected 3 released (5 on contract − 2 kept at the floor), got %d", len(plan.ReleaseShips))
 	}
 	if plan.Buy != 0 {
 		t.Fatalf("pool after release (0 workers + 3 released) covers desired 3 — no buy, got %d", plan.Buy)
@@ -343,8 +346,9 @@ func TestBootstrap_Gate_NoSite_Blocks(t *testing.T) {
 func TestBootstrap_Gate_StartsConstructionOnce_NoAdoptSameTick(t *testing.T) {
 	obs := gateObs()
 	obs.ConstructionStarted = false
-	obs.Haulers = []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}} // ≥ gate_min_haulers
-	obs.IncomePerHour = 60000                                      // ≥ gate_income_bar 50000 (sustained)
+	obs.Haulers = []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}} // full fleet = 2
+	obs.ContractScalerTarget = 2                                   // == full fleet ⇒ scaler target reached
+	obs.IncomePerHour = 60000                                      // ≥ gate_income_bar 50000 (sustained); gateObs treasury clears the surplus floor
 	con := &fakeConstruction{}
 	mfg := &fakeManufacturing{}
 	h := gateHandler(obs, con, mfg, &fakeRepurposer{}, &fakeGateAcquirer{}, &fakeHandoff{})
@@ -419,18 +423,19 @@ func TestBootstrap_Gate_NoBounceWhenAdopted(t *testing.T) {
 	}
 }
 
-// Repurpose-first: surplus contract haulers beyond min_contract_earners are released to the executor.
+// Repurpose-first: surplus contract haulers beyond the contract-earner floor (2, always-on) are released to
+// the executor.
 func TestBootstrap_Gate_RepurposesSurplusHaulers(t *testing.T) {
 	obs := gateObs()
 	obs.Haulers = []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}, {Symbol: "H3"}}
 	rep := &fakeRepurposer{}
 	h := gateHandler(obs, &fakeConstruction{}, &fakeManufacturing{}, rep, &fakeGateAcquirer{}, &fakeHandoff{})
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
-	if rep.calls != 2 { // keep 1, release 2
-		t.Fatalf("expected 2 haulers repurposed (3 − 1 kept), got %d (%v)", rep.calls, rep.ships)
+	if rep.calls != 1 { // keep 2 (the gate_contract_floor), release 1
+		t.Fatalf("expected 1 hauler repurposed (3 − 2 kept), got %d (%v)", rep.calls, rep.ships)
 	}
-	if res.WorkersReleased != 2 {
-		t.Fatalf("expected WorkersReleased=2, got %d", res.WorkersReleased)
+	if res.WorkersReleased != 1 {
+		t.Fatalf("expected WorkersReleased=1, got %d", res.WorkersReleased)
 	}
 }
 

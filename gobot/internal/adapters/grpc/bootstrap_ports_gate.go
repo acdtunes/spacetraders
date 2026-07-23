@@ -21,7 +21,9 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	bootstrapCmd "github.com/andrescamacho/spacetraders-go/internal/application/bootstrap/commands"
+	contractScalerCmd "github.com/andrescamacho/spacetraders-go/internal/application/contractscaler/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/contractscaler"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -78,6 +80,29 @@ func firstContainerIDOfType(ctx context.Context, repo *persistence.ContainerRepo
 		}
 	}
 	return "", nil
+}
+
+// contractScalerTargetFor returns the contract auto-scaler's live ACHIEVABLE fleet target for the player
+// (sp-gm7r) — min(the scaler's fixed plan slots, the scaler's live contract_fleet_max_hulls ceiling) — the
+// bar bootstrap's GATE entry measures the full contract fleet (delivery haulers + depot hulls) against. It
+// FAILS CLOSED at 0 when no scaler is running (an unknown target must never gate). Because the warehouse
+// deepens to fill the ceiling budget, min(planSlots, ceiling) equals the scaler's own Target(planSize,
+// ceiling) for any op with ≥1 park — so no role resolution is needed. It reads the scaler container's OWN
+// config so the target tracks a live contract_fleet_max_hulls tune, mirroring the scaler's liveCeiling read;
+// a config-read error falls back to the plan-vs-default-ceiling bound rather than gate blind.
+func contractScalerTargetFor(ctx context.Context, repo *persistence.ContainerRepositoryGORM, playerID int) int {
+	id, err := firstContainerIDOfType(ctx, repo, playerID, container.ContainerTypeContractScaler)
+	if err != nil || id == "" {
+		return 0 // fail-closed: no scaler ⇒ never gate on an unknown target
+	}
+	ceiling := contractScalerCmd.DefaultContractFleetMaxHulls
+	if snap, serr := (&ContainerConfigReader{containerRepo: repo}).Snapshot(ctx, id, playerID); serr == nil {
+		if v := snap.PositiveIntOrZero("contract_fleet_max_hulls"); v > 0 {
+			ceiling = v
+		}
+	}
+	planSlots := contractscaler.MaxDeliveryHulls + contractscaler.WarehouseUnits + contractscaler.StockerUnits
+	return min(planSlots, ceiling)
 }
 
 // bootstrapGateSnapshot is the observer's GATE read: it discovers the home-system jump-gate construction

@@ -7,16 +7,18 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
 )
 
-// These tests cover the sp-fp3y scaled-GATE-entry gate (ktio-C), now UNCONDITIONALLY ON (sp-1cbxz). THE
-// ktio DEADLOCK: derivePhase entered GATE the instant instantaneous income cleared the 10000 income_bar —
-// trivially crossed by ONE contract payout (staging: rolling income −55k→+105k in 53s) — so bootstrap drove
-// GATE with ZERO haulers and latched sticky on ConstructionStarted, permanently. THE FIX requires a
-// genuinely SCALED contract op to enter GATE: haulers ≥ gate_min_haulers AND a SUSTAINED (rolling-window
-// mean, NOT instantaneous) $/hr ≥ gate_income_bar (coverage is NOT a gate — it is continuous background).
+// These tests cover the scaled GATE-entry gate, now driven by the sp-gm7r DYNAMIC bar (the full contract
+// fleet must reach the auto-scaler's live target) rather than a static hauler floor. THE ORIGINAL ktio
+// DEADLOCK: derivePhase entered GATE the instant instantaneous income cleared the 10000 income_bar —
+// trivially crossed by ONE contract payout — so bootstrap drove GATE with ZERO haulers and latched sticky on
+// ConstructionStarted, permanently. THE sp-gm7r FIX requires a genuinely SCALED AND FUNDED contract op to
+// enter GATE: the FULL fleet (delivery + depot) ≥ ContractScalerTarget, a SUSTAINED (rolling-window mean, NOT
+// instantaneous) $/hr ≥ gate_income_bar, AND a treasury surplus (coverage is NOT a gate — it is continuous
+// background).
 
-// scaledGateCfg resolves the coordinator config for the scaled GATE-entry gate, which is UNCONDITIONALLY
-// ON (sp-1cbxz), so the gate's two calibration knobs (gate_income_bar 50000, gate_min_haulers 2) carry
-// their documented defaults.
+// scaledGateCfg resolves the coordinator config for the GATE-entry gate. gate_income_bar (50000) is the
+// sustained-$/hr bar; gate_min_haulers (2) is now the escape-hatch starved-earner floor (GATE ENTRY uses the
+// scaler target). Both carry their documented defaults.
 func scaledGateCfg(t *testing.T) bootstrapRunConfig {
 	t.Helper()
 	cfg := resolveBootstrapConfig(baseCmd(), nil)
@@ -26,55 +28,72 @@ func scaledGateCfg(t *testing.T) bootstrapRunConfig {
 	return cfg
 }
 
-// --- GATE requires haulers AND a sustained $/hr (coverage is NOT a gate) ---
+// gateSurplusTreasury is a treasury that clears the GATE-entry surplus floor (≥ 550k ⇒ surplus ≥ 500k).
+const gateSurplusTreasury = 600_000
 
-// Both conditions met (haulers ≥ floor, a sustained $/hr ≥ gate_income_bar) → GATE: a genuinely scaled,
-// funded contract op is the legitimate entry.
-func TestBootstrap_ScaledGate_HaulersAndSustainedIncome_EntersGate(t *testing.T) {
+// --- GATE requires the full fleet at the scaler target AND a sustained $/hr AND a surplus (coverage is NOT a gate) ---
+
+// All three conditions met (full fleet ≥ target, a sustained $/hr ≥ gate_income_bar, a treasury surplus) →
+// GATE: a genuinely scaled, funded contract op is the legitimate entry.
+func TestBootstrap_ScaledGate_FullFleetAtTargetAndFunded_EntersGate(t *testing.T) {
 	cfg := scaledGateCfg(t)
 	obs := Observation{
-		Haulers:       []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}}, // 2 ≥ floor
-		IncomePerHour: 60000,                                            // (as substituted: the sustained mean) ≥ 50000
+		Haulers:              []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}}, // 2 delivery
+		ContractScalerTarget: 2,                                               // full fleet (2) == target
+		IncomePerHour:        60000,                                           // (as substituted: the sustained mean) ≥ 50000
+		Treasury:             gateSurplusTreasury,                             // surplus ≥ floor
 	}
 	if p := derivePhase(obs, cfg); p != PhaseGate {
-		t.Fatalf("armed: haulers + sustained income met → GATE, got %s", p)
+		t.Fatalf("full fleet at target + sustained income + surplus → GATE, got %s", p)
 	}
 }
 
-// THE ktio case under the armed gate: income spiked far over the bar but with ZERO haulers (a frigate-only
-// contract payout, not a scaled op). Must NOT enter GATE — the hauler floor is the primary defense against
-// the 0-hauler deadlock, regardless of how high income spikes.
+// THE ktio case under the dynamic bar: income spiked far over the bar but with ZERO haulers (a frigate-only
+// contract payout, not a scaled op). Must NOT enter GATE — the full fleet (0) is below the scaler target,
+// regardless of how high income spikes.
 func TestBootstrap_ScaledGate_SpikeWithZeroHaulers_DoesNotGate(t *testing.T) {
 	cfg := scaledGateCfg(t)
-	obs := Observation{Haulers: nil, IncomePerHour: 300000}
+	obs := Observation{Haulers: nil, ContractScalerTarget: 2, IncomePerHour: 300000, Treasury: 2_000_000}
 	if p := derivePhase(obs, cfg); p == PhaseGate {
-		t.Fatalf("armed: a 0-hauler income spike must NOT enter GATE (unscaled op — the ktio deadlock), got %s", p)
+		t.Fatalf("a 0-hauler income spike must NOT enter GATE (full fleet below target — the ktio deadlock), got %s", p)
 	}
 }
 
-// Haulers met, but the sustained $/hr is under gate_income_bar → not yet funded, must NOT enter GATE.
+// Full fleet at target and a surplus, but the sustained $/hr is under gate_income_bar → not yet funded, must
+// NOT enter GATE.
 func TestBootstrap_ScaledGate_SustainedBelowBar_DoesNotGate(t *testing.T) {
 	cfg := scaledGateCfg(t)
-	obs := Observation{Haulers: []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}}, IncomePerHour: 40000}
+	obs := Observation{
+		Haulers:              []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}},
+		ContractScalerTarget: 2,
+		IncomePerHour:        40000, // under the 50000 bar
+		Treasury:             gateSurplusTreasury,
+	}
 	if p := derivePhase(obs, cfg); p == PhaseGate {
-		t.Fatalf("armed: haulers met but sustained income under the bar must NOT enter GATE, got %s", p)
+		t.Fatalf("full fleet at target but sustained income under the bar must NOT enter GATE, got %s", p)
 	}
 }
 
-// Coverage is NOT a GATE-entry condition: haulers + a sustained $/hr enter GATE even while the home
-// system is barely scanned (30% coverage). Scan-completeness runs as continuous background (the
-// freshness sizer), never a phase gate — a scaled, earning contract op is the legitimate entry.
+// Coverage is NOT a GATE-entry condition: a scaled, funded op enters GATE even while the home system is barely
+// scanned (30% coverage). Scan-completeness runs as continuous background (the freshness sizer), never a phase
+// gate.
 func TestBootstrap_ScaledGate_LowCoverage_StillEntersGate(t *testing.T) {
 	cfg := scaledGateCfg(t)
-	obs := Observation{MarketsTotal: 10, MarketsCovered: 3, Haulers: []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}}, IncomePerHour: 60000}
+	obs := Observation{
+		MarketsTotal: 10, MarketsCovered: 3, // 30% coverage
+		Haulers:              []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}},
+		ContractScalerTarget: 2,
+		IncomePerHour:        60000,
+		Treasury:             gateSurplusTreasury,
+	}
 	if p := derivePhase(obs, cfg); p != PhaseGate {
-		t.Fatalf("armed: haulers + sustained income must enter GATE regardless of coverage (30%%), got %s", p)
+		t.Fatalf("a scaled, funded op must enter GATE regardless of coverage (30%%), got %s", p)
 	}
 }
 
 // Sticky-latch safety: ConstructionStarted still forces GATE (a legitimately-started pipeline resumes on
-// restart), and — because construction can only START after a legit armed entry — this latch can never be
-// tripped by a spurious spike. Pins that the sticky branch is unchanged (checked before the entry gate).
+// restart), and — because construction can only START after a legit scaled+funded entry — this latch can never
+// be tripped by a spurious spike. Pins that the sticky branch is unchanged (checked before the entry gate).
 func TestBootstrap_ScaledGate_ConstructionStartedStaysGateEvenUnfunded(t *testing.T) {
 	cfg := scaledGateCfg(t)
 	// Repurposed haulers have pulled the op back under every entry condition, but a pipeline exists.
@@ -86,29 +105,29 @@ func TestBootstrap_ScaledGate_ConstructionStartedStaysGateEvenUnfunded(t *testin
 
 // --- CURATIVE re-derive: the deploy's daemon RESTART cures a LIVE stuck-GATE latch ---
 
-// The scaled gate (unconditionally on, sp-1cbxz) gates GATE ENTRY, not EXIT — a running container stuck in
-// GATE stays there. The CURE is the deploy's fresh container BUILD (restart), which re-derives phase from
-// live signals (no persisted phase cursor). This pins that re-derive against the LIVE torwind-2026-07-19
-// stuck-GATE state: construction 0% (never started — blocked on no_purchaser), ZERO haulers, income
-// ≈68000/hr, coverage ≈0.89, probes at target & scouting. It must re-derive INCOME — NOT GATE (the pre-fix
-// wedge), NOT DATA (coverage is no longer a phase gate, sp-nsge). GATES THE DEPLOY: if the restart did not
-// cure the latch here, the live P1 would stay wedged.
+// The gate gates GATE ENTRY, not EXIT — a running container stuck in GATE stays there. The CURE is the
+// deploy's fresh container BUILD (restart), which re-derives phase from live signals (no persisted phase
+// cursor). This pins that re-derive against a stuck-GATE live state: construction 0% (never started — blocked
+// on no_purchaser), ZERO haulers, income ≈68000/hr, coverage ≈0.89, probes at target & scouting. It must
+// re-derive INCOME — NOT GATE (the pre-fix wedge), NOT DATA (coverage is no longer a phase gate). GATES THE
+// DEPLOY: if the restart did not cure the latch here, the live P1 would stay wedged.
 func TestBootstrap_ScaledGate_DefaultOnRestart_ReDerivesIncomeFromStuckGateLiveState(t *testing.T) {
 	// The live stuck-GATE observation, modeled faithfully. ConstructionStarted=false is load-bearing: the
-	// pipeline never actually started, so NO sticky latch (derivePhase line: obs.ConstructionStarted) fights
-	// the re-derive. The scanning workstream is mature (probes at target, all scouting; 89% coverage).
+	// pipeline never actually started, so NO sticky latch fights the re-derive. The scanning workstream is
+	// mature (probes at target, all scouting; 89% coverage).
 	stuck := Observation{
 		ConstructionStarted:  false, // construction 0% — never started, so the sticky-GATE latch does not hold
 		ConstructionComplete: false,
 		Haulers:              nil,   // ZERO haulers — the op never scaled past the sole frigate
-		IncomePerHour:        68000, // ≈ live realized $/hr; on its own clears BOTH income_bar(10000) and gate_income_bar(50000)
+		ContractScalerTarget: 10,    // the scaler's live target; the full fleet (0) is far below it
+		IncomePerHour:        68000, // ≈ live realized $/hr; clears gate_income_bar(50000) on its own
 		ProbeCount:           3,     // == defaultProbeTarget: scanning workstream done
 		ProbesScouting:       3,     // all scouting
 		MarketsTotal:         9,
-		MarketsCovered:       8, // coverage ≈ 0.89 — must NOT route to DATA (sp-nsge removed the coverage phase gate)
+		MarketsCovered:       8, // coverage ≈ 0.89 — must NOT route to DATA (coverage is not a phase gate)
 	}
 
-	// gateFunded is FALSE — the hauler floor (0 < gate_min_haulers 2) blocks GATE even though 68000 ≥
+	// gateFunded is FALSE — the full fleet (0) is below the scaler target (10) even though 68000 ≥
 	// gate_income_bar 50000 — and ConstructionStarted is false (no sticky latch), so the arc falls through to
 	// INCOME (probes at target & scouting). The cure the restart delivers.
 	if p := derivePhase(stuck, resolveBootstrapConfig(baseCmd(), nil)); p != PhaseIncome {
@@ -162,15 +181,17 @@ func TestIncomeWindow_SustainedHigh_ClearsBarOnceFull(t *testing.T) {
 // a lone income spike never enters GATE, but a SUSTAINED $/hr does once the window fills. ---
 
 func TestBootstrap_ScaledGate_SpikeStaysIncome_SustainedEntersGate(t *testing.T) {
-	// A scaled op: coverage 100%, 2 haulers — so ONLY the sustained-income condition is in question here.
+	// A scaled, funded op: full fleet at target (2), a fat treasury (surplus over the floor) — so ONLY the
+	// sustained-income condition is in question here.
 	base := Observation{
 		HomeSystem: "X1-HQ", ProbeCount: 3, ProbesScouting: 3, HasIdlePurchaser: true,
 		MarketsTotal: 10, MarketsCovered: 10,
-		Haulers:  []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}},
-		Treasury: 1_000_000, Readable: true,
+		Haulers:              []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}},
+		ContractScalerTarget: 2,
+		Treasury:             1_000_000, Readable: true,
 	}
 	obsvr := &fakeObserver{obs: base}
-	live := &fakeLiveConfig{snap: liveconfig.Snapshot{}} // scaled gate is unconditionally on
+	live := &fakeLiveConfig{snap: liveconfig.Snapshot{}}
 	h := NewRunBootstrapCoordinatorHandler(nil)
 	h.SetShipRefresher(&fakeRefresher{})
 	h.SetWorldObserver(obsvr)
@@ -207,6 +228,6 @@ func TestBootstrap_ScaledGate_SpikeStaysIncome_SustainedEntersGate(t *testing.T)
 		}
 	}
 	if !gateEntered {
-		t.Fatalf("sustained $/hr over the bar (a scaled op) must enter GATE once the rolling window fills")
+		t.Fatalf("sustained $/hr over the bar (a scaled, funded op at target) must enter GATE once the rolling window fills")
 	}
 }

@@ -51,7 +51,14 @@ const (
 	// trading package's tradeFleet and the autosizer's trade count). obs.TradeHullCount counts hulls carrying
 	// it — the observable "trade-seeded" signal that drives the sp-192k4 INCOME trade-seed + the scaler
 	// delay-launch. The bootstrap trade-seed (BuyAndDedicate) is what stamps a bought hull with this tag.
-	tradeFleetTag         = "trade"
+	tradeFleetTag = "trade"
+	// warehouseFleetTag / stockerFleetTag are the dedicated-fleet tags the contract auto-scaler stamps on the
+	// DEPOT half of the contract fleet — the central far-source warehouse hulls and the stocker
+	// (container_ops_depot_launch.go). obs.ContractDepotHullCount counts hulls carrying either, mirroring how
+	// obs.Haulers/TradeHullCount count by DedicatedFleet() tag; the delivery Haulers + this depot count are
+	// the FULL contract fleet the sp-gm7r GATE-entry bar measures against the scaler's target.
+	warehouseFleetTag     = "warehouse"
+	stockerFleetTag       = "stocker"
 	bootstrapIncomeWindow = time.Hour
 	// bootstrapHomeScoutPostFreshness is the SEED freshness SLA stamped on the cold-start home scout
 	// post (sp-pt7d). Transitional: the market-freshness sizer RESIZES the post's SLA + hull budget
@@ -206,6 +213,12 @@ func (o *bootstrapObserver) Observe(ctx context.Context, playerID int) (bootstra
 			// A hull dedicated to the manufacturing fleet is a gate-construction worker (Slice 3) — the
 			// worker-sizing "have" count, so the staged top-up buy never overshoots the pipeline's shape.
 			obs.GateWorkers++
+		} else if s.DedicatedFleet() == warehouseFleetTag || s.DedicatedFleet() == stockerFleetTag {
+			// sp-gm7r: a hull dedicated to the contract auto-scaler's DEPOT half (warehouse or stocker). Counted
+			// here mirroring obs.Haulers/TradeHullCount (same ship set, same DedicatedFleet() source) — the
+			// delivery Haulers + this depot count are the FULL contract fleet the GATE-entry bar measures
+			// against ContractScalerTarget.
+			obs.ContractDepotHullCount++
 		}
 	}
 	obs.HomeSystem = commandHome
@@ -306,6 +319,10 @@ func (o *bootstrapObserver) Observe(ctx context.Context, playerID int) (bootstra
 		if running, rerr := containerTypeRunning(ctx, o.containerRepo, playerID, container.ContainerTypeContractScaler); rerr == nil {
 			obs.ContractScalerRunning = running
 		}
+		// sp-gm7r GATE-entry bar input: the contract auto-scaler's live achievable fleet target
+		// (min(scaler plan slots, the scaler's live contract_fleet_max_hulls ceiling)). 0 when no scaler is
+		// running or the target is unread — fail-closed, so gateFunded never enters GATE on an unknown target.
+		obs.ContractScalerTarget = contractScalerTargetFor(ctx, o.containerRepo, playerID)
 	}
 
 	obs.Readable = true

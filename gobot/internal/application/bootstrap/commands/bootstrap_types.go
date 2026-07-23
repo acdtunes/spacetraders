@@ -179,6 +179,23 @@ type Observation struct {
 	// dedicated hulls, filtering on the "trade" tag instead. 0 (the cold-start default) ⇒ not yet seeded.
 	TradeHullCount int
 
+	// ContractDepotHullCount is the DEPOT half of the contract fleet NOW (sp-gm7r): hulls whose
+	// DedicatedFleet() is "warehouse" OR "stocker" — the central far-source warehouse + stocker the
+	// contract auto-scaler grows (container_ops_depot_launch.go stamps these tags). len(obs.Haulers) is
+	// the DELIVERY half; the two sum to the FULL contract fleet the GATE-entry bar measures against the
+	// scaler's target. Mirrors how obs.Haulers/TradeHullCount count by DedicatedFleet() tag; 0 (the
+	// cold-start default) ⇒ no depot yet, so the full fleet is just the delivery haulers.
+	ContractDepotHullCount int
+
+	// ContractScalerTarget is the contract auto-scaler's live ACHIEVABLE fleet target NOW (sp-gm7r) —
+	// min(scaler plan slots, the scaler's live contract_fleet_max_hulls ceiling) — the HARD bar
+	// GATE entry measures the full contract fleet (Haulers + ContractDepotHullCount) against. It replaces
+	// the old static hauler floor: GATE is entered only once the contract op has genuinely reached the
+	// size the scaler is driving it toward, so a lightly-scaled op can never latch GATE and cannibalize
+	// itself (the sp-gm7r death spiral). 0 (no scaler running / unread target) ⇒ FAIL-CLOSED: gateFunded
+	// never gates on an unknown target, so a scaler-less op stays in INCOME rather than entering GATE blind.
+	ContractScalerTarget int
+
 	// Readable reports whether the observer gathered all its inputs. false ⇒ fail-closed (no action
 	// this tick), with Reason naming what could not be read.
 	Readable bool

@@ -104,11 +104,11 @@ const (
 	// phase-transition threshold like income_bar, NOT a money-floor (RULINGS #5) — no spend guard reads it.
 	// A bar set too HIGH only delays GATE; too low re-opens the spurious trigger.
 	defaultGateIncomeBar = 50000.0
-	// defaultGateMinHaulers is the hauler floor for GATE entry: the INCOME ramp must hold at least
-	// this many contract-dedicated haulers, proving a multi-hull op (the ktio deadlock entered GATE with
-	// ZERO haulers — a frigate-only contract spike). Set BELOW hauler_target (4) because viable hubs may be
-	// fewer than the target, so requiring the full target could wedge a legitimately-scaled op; 2 clearly
-	// separates a scaled op from the 0-hauler spike. Tunable via gate_min_haulers.
+	// defaultGateMinHaulers is the escape hatch's STARVED-EARNER floor (sp-gm7r repurposed it): a sticky GATE
+	// holding fewer than this many contract haulers reads as under-scaled and (with low progress, for the
+	// hysteresis streak) re-derives INCOME. GATE ENTRY no longer uses it — the full scaler-target bar is the
+	// entry gate — so it scopes only the release of a stuck latch: 2 clearly marks a starved op (a lone
+	// frigate spike latched GATE with ZERO haulers). Tunable via gate_min_haulers.
 	defaultGateMinHaulers = 2
 	// gateIncomeWindowTicks is how many recent reconcile ticks the GATE-entry $/hr is smoothed over
 	// (the "sustained" window). A call-site constant, not a knob — a shape detail of the sustained metric,
@@ -125,34 +125,27 @@ const (
 	// early so it ramps the exclusive contract fleet behind the 200000 cushion. The arbitration + the ktio-A
 	// absolute treasury floor (sp-bpdf) are the load-bearing safety for running the autosizer during cold start.
 
-	// Scaled-gate hardening — the DEFAULT-OFF master flag (0 = byte-identical). It EXTENDS the scaled
-	// GATE-entry gate with a three-part cold-start-death-spiral cure: (1) GATE entry also requires a RAISED
-	// hauler floor, a SUSTAINED $/hr, AND a treasury surplus war chest; (2) GATE keeps a higher
-	// contract-earner floor so the repurpose-first seed never cannibalizes the contract op below the capacity
-	// reconciler's depot-staging pool; (3) a sticky GATE that latched under-scaled with ~no construction
-	// re-derives INCOME (so the op re-scales) after an anti-thrash hysteresis streak. A positive tunable flag
-	// with no launch key (like defer_probe_to_freshsizer), armed live after validation. Gate entry only ever
-	// tightens, never loosens (RULINGS #4).
-	defaultGateSurplusHardening = 0
-	// defaultGateHaulerFloor is the RAISED GATE-entry hauler floor while hardening is armed: a genuinely
-	// scaled contract op, NOT the 2-hull minimum the plain scaled gate (gate_min_haulers) admits. Aligned
-	// with hauler_target (4) so GATE waits for a real fleet rather than latching on a 2-hauler income blip.
-	// Clamped to ≥ gate_min_haulers at read so hardening can never be LOOSER than the plain scaled gate on
-	// the hauler dimension (RULINGS #4).
-	defaultGateHaulerFloor = 4
+	// Death-spiral cure (UNCONDITIONALLY ON, sp-gm7r removed the master flag). It replaces the premature
+	// GATE-entry gate with a three-part cure: (1) GATE entry requires the FULL contract fleet (delivery +
+	// depot) to have reached the auto-scaler's live achievable target, a SUSTAINED $/hr, AND a treasury
+	// surplus war chest (gateFunded); (2) GATE keeps a higher contract-earner floor so the repurpose-first
+	// seed never cannibalizes the contract op below the capacity reconciler's depot-staging pool; (3) a
+	// sticky GATE that latched under-scaled with ~no construction re-derives INCOME (so the op re-scales)
+	// after an anti-thrash hysteresis streak. Gate entry only ever tightens, never loosens (RULINGS #4). The
+	// calibration knobs follow (tunable-only, no launch key).
+	//
 	// defaultGateSurplusFloor is the treasury SURPLUS — over common.ImmutableReserveFloor (50k) — the op must
-	// hold to enter GATE while hardening is armed: a war chest for the jump-gate material bill (~1600 FAB_MATS
-	// + 400 ADVANCED_CIRCUITRY) so GATE is earned from contract surplus, never raced on a thin treasury its
-	// own material spend then crashes. 500k (⇒ treasury ≥ 550k to gate) is a CONSERVATIVE placeholder — tuned
-	// against the freshly-read gate bill. It is a PHASE-entry threshold, NOT a spend guard (RULINGS #5); the
-	// buy-time 150k working-capital floor is untouched. Base choice: the immutable 50k anti-stall bound; the
-	// 150k contract cushion is the stricter alternative if contract working capital should not count as surplus.
+	// hold to enter GATE: a war chest for the jump-gate material bill (~1600 FAB_MATS + 400 ADVANCED_CIRCUITRY)
+	// so GATE is earned from contract surplus, never raced on a thin treasury its own material spend then
+	// crashes. 500k (⇒ treasury ≥ 550k to gate) is a CONSERVATIVE placeholder — tuned against the freshly-read
+	// gate bill. It is a PHASE-entry threshold, NOT a spend guard (RULINGS #5); the buy-time 150k
+	// working-capital floor is untouched. Base choice: the immutable 50k anti-stall bound; the 150k contract
+	// cushion is the stricter alternative if contract working capital should not count as surplus.
 	defaultGateSurplusFloor int64 = 500_000
-	// defaultGateContractFloor is how many contract-dedicated haulers stay EARNING through GATE while
-	// hardening is armed — GATE repurposes only the surplus ABOVE this to construction, never below: the
-	// capacity reconciler withholds the staging depot below a 2-hauler pool, so cannibalizing to 1 starves
-	// sourcing and funding collapses. 2 holds the depot-staging floor. Supersedes min_contract_earners (1)
-	// only while armed.
+	// defaultGateContractFloor is how many contract-dedicated haulers stay EARNING through GATE — GATE
+	// repurposes only the surplus ABOVE this to construction, never below: the capacity reconciler withholds
+	// the staging depot below a 2-hauler pool, so cannibalizing to 1 starves sourcing and funding collapses.
+	// 2 holds the depot-staging floor. Supersedes min_contract_earners (1).
 	defaultGateContractFloor = 2
 	// defaultGateReentryConstructionPct is the construction-progress ceiling (whole percent, 0..100) below
 	// which an under-scaled sticky GATE may re-derive INCOME (the escape hatch). 5% scopes the escape to a
@@ -462,7 +455,7 @@ type RunBootstrapCoordinatorHandler struct {
 	// sticky-latched GATE has been under-scaled with ~no construction, so the GATE→INCOME re-derive fires only
 	// after gate_reentry_streak_ticks in a row (anti-thrash). Keyed by ContainerID for the same singleton
 	// reason as buyBridges/incomeWindows; underScaledStreakMu guards the MAP only (one container's ticks are
-	// sequential). Consulted only when gate_surplus_hardening is armed; NOT a progress cursor — dropped on
+	// sequential). Consulted every tick (sp-gm7r removed the flag); NOT a progress cursor — dropped on
 	// restart (the re-derive just re-accrues from 0, delaying one window, never double-acting).
 	underScaledStreakMu sync.Mutex
 	underScaledStreaks  map[string]int

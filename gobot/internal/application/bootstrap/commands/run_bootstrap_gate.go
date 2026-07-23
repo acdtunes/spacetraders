@@ -53,13 +53,13 @@ func planGateWorkers(obs Observation, cfg bootstrapRunConfig) gateWorkerPlan {
 	if keep < 0 {
 		keep = 0
 	}
-	// While hardening is armed, hold a HIGHER contract-earner floor than min_contract_earners so the
-	// repurpose-first seed never cannibalizes the contract op below the capacity reconciler's depot-staging
-	// pool (it withholds the staging depot below 2 haulers, so releasing to 1 starves sourcing and funding
-	// collapses — the death spiral). Only the surplus ABOVE this floor is released; the pipeline top-up then
-	// prefers BUYING a dedicated worker (or an idle non-contract hull) over pulling an earner below the floor.
-	// Off ⇒ keep is min_contract_earners exactly (byte-identical).
-	if cfg.GateSurplusHardening && cfg.GateContractFloor > keep {
+	// Hold a HIGHER contract-earner floor than min_contract_earners (UNCONDITIONALLY, sp-gm7r removed the
+	// flag) so the repurpose-first seed never cannibalizes the contract op below the capacity reconciler's
+	// depot-staging pool (it withholds the staging depot below 2 haulers, so releasing to 1 starves sourcing
+	// and funding collapses — the death spiral). Only the surplus ABOVE this floor is released; the pipeline
+	// top-up then prefers BUYING a dedicated worker (or an idle non-contract hull) over pulling an earner
+	// below the floor.
+	if cfg.GateContractFloor > keep {
 		keep = cfg.GateContractFloor
 	}
 	onContract := len(obs.Haulers)

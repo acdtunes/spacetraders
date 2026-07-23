@@ -56,10 +56,8 @@ func TestBootstrapTunableDefaults_MirrorsCoordinatorConsts(t *testing.T) {
 		"tick_secs":                     defaultBootstrapTickSeconds,   // 45 (sp-lgo3: short cold-start cadence)
 		"defer_probe_to_freshsizer":     defaultDeferProbeToFreshsizer, // 0 (off) — sp-tsn2 arbitration flag
 		"gate_income_bar":               50000,                         // defaultGateIncomeBar 50000.0 → 50000 credits
-		"gate_min_haulers":              defaultGateMinHaulers,         // 2 — sp-fp3y scaled-GATE hauler floor (unconditional)
-		"gate_surplus_hardening":        defaultGateSurplusHardening,   // 0 (off) — sp-gm7r scaled-gate hardening master flag
-		"gate_hauler_floor":             defaultGateHaulerFloor,        // 4 — sp-gm7r raised armed-GATE hauler floor
-		"gate_surplus_floor":            int(defaultGateSurplusFloor),  // 500000 — sp-gm7r armed-GATE treasury surplus war chest
+		"gate_min_haulers":              defaultGateMinHaulers,         // 2 — sp-gm7r escape-hatch starved-earner floor (GATE ENTRY uses the scaler target)
+		"gate_surplus_floor":            int(defaultGateSurplusFloor),  // 500000 — sp-gm7r GATE-entry treasury surplus war chest
 		"gate_contract_floor":           defaultGateContractFloor,      // 2 — sp-gm7r contract-earner floor held through GATE
 		"gate_reentry_construction_pct": 5,                             // defaultGateReentryConstructionPct 5.0 → 5 percent
 		"gate_reentry_streak_ticks":     defaultGateReentryStreakTicks, // 3 — sp-gm7r escape-hatch anti-thrash streak
