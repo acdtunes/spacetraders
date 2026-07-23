@@ -1335,6 +1335,24 @@ func (c *DaemonClient) FleetAutosizerCoordinator(ctx context.Context, playerID i
 	return resp.ContainerId, nil
 }
 
+// LongHaulArbCoordinator starts the standing long-haul arb fleet coordinator (sp-mepj): the
+// out-of-horizon single-good arb engine that launches a per-hull worker on every idle
+// long-haul-tagged hull. Identity-only launch; ARMED on deploy but inert until an operator tags
+// a hull `fleet add --operation long-haul --ship X`.
+func (c *DaemonClient) LongHaulArbCoordinator(ctx context.Context, playerID int, agentSymbol string) (string, error) {
+	req := &pb.LongHaulArbCoordinatorRequest{
+		PlayerId: int32(playerID),
+	}
+	if agentSymbol != "" {
+		req.AgentSymbol = &agentSymbol
+	}
+	resp, err := c.client.LongHaulArbCoordinator(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf(grpcCallFailed, err)
+	}
+	return resp.ContainerId, nil
+}
+
 // AutoOutfitCoordinator starts the standing guarded auto-outfit coordinator (sp-buyd): the
 // module analogue of hull acquisition. Identity-only launch — all knobs default and are
 // live-tunable via `tune --operation autooutfit`. dryRun (the CLI --dry-run) launches it in

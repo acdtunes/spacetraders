@@ -414,6 +414,17 @@ func containerSpecList() []ContainerSpec {
 		{CommandType: "warehouse", build: buildWarehouseCommand},
 		{CommandType: "trade_route", build: buildTradeRouteCoordinatorCommand, CoordinatorOwnsIterations: true},
 		{CommandType: "arb_run", build: buildArbCoordinatorCommand, CoordinatorOwnsIterations: true},
+		// longhaul_arb_coordinator (sp-mepj): the standing long-haul arb fleet coordinator.
+		// Like trade_fleet_coordinator it loops forever inside one Handle(), so it is NOT a
+		// CoordinatorOwnsIterations type; the container-level budget (-1) is irrelevant.
+		// Registering it here is what makes an armed-launch or restart-recovered coordinator
+		// runnable — the launch itself is the operator's `workflow long-haul-coordinator` arm.
+		{CommandType: "longhaul_arb_coordinator", build: buildLongHaulArbFleetCoordinatorCommand},
+		// longhaul_arb (sp-mepj): the per-hull long-haul WORKER the coordinator spawns. Like
+		// arb_run/trade_route its handler owns the whole run internally (its continuous
+		// discover->buy->sell->backhaul episode loop), so the container wraps exactly ONE
+		// iteration (CoordinatorOwnsIterations) — the runner must not re-enter and double-loop.
+		{CommandType: "longhaul_arb", build: buildLongHaulArbWorkerCommand, CoordinatorOwnsIterations: true},
 		{CommandType: "tour_run", build: buildTourCoordinatorCommand, CoordinatorOwnsIterations: true},
 		{CommandType: "stocker", build: buildStockerCoordinatorCommand, CoordinatorOwnsIterations: true},
 		// One-shot ship operations (sp-7yej invariant 4). Each rebuilds trivially
@@ -595,6 +606,45 @@ func buildTradeFleetCoordinatorCommand(cfg *configReader, playerID int, containe
 		// sp-m3122: the liveness watchdog is always ARMED — only the stall threshold is
 		// configurable. 0/absent ⇒ the coordinator's own 12-min default.
 		WatchdogStallSecs: cfg.OptionalInt("trade_fleet_watchdog_stall_secs", 0),
+	}
+}
+
+// buildLongHaulArbFleetCoordinatorCommand rebuilds the standing long-haul arb coordinator
+// (sp-mepj) from its persisted launch config, so creation and restart recovery share one
+// builder. It carries only the coordinator's IDENTITY (container/agent) plus the
+// Admiral-authorized money-envelope caps + cadence; unset caps defer to the command's own
+// aggressive defaults (~1M/haul, ~2M exposure). Like trade_fleet_coordinator it loops
+// forever inside one Handle(), so the container's iteration budget is irrelevant.
+func buildLongHaulArbFleetCoordinatorCommand(cfg *configReader, playerID int, containerID string) interface{} {
+	return &tradingCmd.LongHaulArbFleetCoordinatorCommand{
+		PlayerID:         shared.MustNewPlayerID(playerID),
+		ContainerID:      cfg.RequiredNonEmptyString("container_id"),
+		AgentSymbol:      cfg.OptionalString("agent_symbol"),
+		TickIntervalSecs: cfg.OptionalInt("longhaul_tick_secs", 0),
+		// Admiral-authorized aggressive SIZING; 0/absent defers to the command's own
+		// defaultLongHaulPerHaulCap / defaultLongHaulTotalExposureCap.
+		PerHaulCap:        int64(cfg.OptionalInt("longhaul_per_haul_cap", 0)),
+		TotalExposureCap:  int64(cfg.OptionalInt("longhaul_total_exposure_cap", 0)),
+		WatchdogStallSecs: cfg.OptionalInt("longhaul_watchdog_stall_secs", 0),
+	}
+}
+
+// buildLongHaulArbWorkerCommand rebuilds one per-hull long-haul worker (sp-mepj) from its
+// persisted launch config — the recovery-safe rebuild LaunchLongHaul and restart recovery
+// share. The operation="long-haul" claim identity lives in the config (read by
+// createShipAssignments), so it is deliberately not a command field here. Iterations defaults
+// to -1 (continuous) so a recovered worker resumes its episode loop.
+func buildLongHaulArbWorkerCommand(cfg *configReader, playerID int, containerID string) interface{} {
+	return &tradingCmd.RunLongHaulArbCommand{
+		ShipSymbol:       cfg.RequiredNonEmptyString("ship_symbol"),
+		AgentSymbol:      cfg.OptionalString("agent_symbol"),
+		PlayerID:         playerID,
+		ContainerID:      containerID,
+		Iterations:       cfg.OptionalInt("iterations", -1),
+		PerHaulCap:       int64(cfg.OptionalInt("per_haul_cap", 0)),
+		TotalExposureCap: int64(cfg.OptionalInt("total_exposure_cap", 0)),
+		MinMargin:        cfg.OptionalInt("min_margin", 0),
+		IdleBackoffSecs:  cfg.OptionalInt("idle_backoff_secs", 0),
 	}
 }
 

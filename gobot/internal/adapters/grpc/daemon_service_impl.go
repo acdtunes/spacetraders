@@ -547,6 +547,28 @@ func (s *daemonServiceImpl) FleetAutosizerCoordinator(ctx context.Context, req *
 	return &pb.FleetAutosizerCoordinatorResponse{ContainerId: containerID, Status: "RUNNING"}, nil
 }
 
+// LongHaulArbCoordinator starts the standing long-haul arb fleet coordinator (sp-mepj): the
+// out-of-horizon arb engine that launches a per-hull worker on every idle long-haul-tagged hull.
+// Identity-only launch; idempotent on its own container type.
+func (s *daemonServiceImpl) LongHaulArbCoordinator(ctx context.Context, req *pb.LongHaulArbCoordinatorRequest) (*pb.LongHaulArbCoordinatorResponse, error) {
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+
+	agentSymbol := ""
+	if req.AgentSymbol != nil {
+		agentSymbol = *req.AgentSymbol
+	}
+
+	containerID, err := s.daemon.LongHaulArbCoordinator(ctx, playerID, agentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start long-haul arb coordinator: %w", err)
+	}
+
+	return &pb.LongHaulArbCoordinatorResponse{ContainerId: containerID, Status: "RUNNING"}, nil
+}
+
 // BootstrapCoordinator starts the standing captain bootstrap coordinator (sp-3nbe).
 func (s *daemonServiceImpl) BootstrapCoordinator(ctx context.Context, req *pb.BootstrapCoordinatorRequest) (*pb.BootstrapCoordinatorResponse, error) {
 	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)

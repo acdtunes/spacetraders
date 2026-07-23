@@ -125,6 +125,23 @@ type GlobalSinkResult struct {
 	WaypointSymbol string
 	SystemSymbol   string
 	Bid            int // What the market pays us (purchase_price), the sell-side quote
+	// TradeVolume is the sink's per-tranche depth (trade_volume) — half of a lane's
+	// VolumeCap (min of source and sink), needed by the long-haul engine's realized
+	// price-impact pricing (sp-mepj). Additive: the tour diagnostic caller ignores it.
+	TradeVolume int
+}
+
+// GlobalSourceResult is the CHEAPEST buy source for a good ACROSS ALL SYSTEMS (the single
+// lowest ask), the source-side mirror of GlobalSinkResult. IMPORT markets are excluded
+// (an importer only BUYS a good, it never sells one to us), symmetric to the sink scan's
+// EXPORT exclusion. It is the source half of the long-haul engine's out-of-horizon lane
+// discovery (sp-mepj §2): pairing it with GlobalSinkResult yields (good, source, sink, ask,
+// bid) spanning any number of gate hops. SystemSymbol is derived from the waypoint.
+type GlobalSourceResult struct {
+	WaypointSymbol string
+	SystemSymbol   string
+	Ask            int // What we pay to buy here (sell_price), the buy-side quote
+	TradeVolume    int // the source's per-tranche depth (supply side of a lane's VolumeCap)
 }
 
 // BestBuyingMarketResult represents the result of finding the best market to buy from

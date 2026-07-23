@@ -1183,6 +1183,59 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register ArbCoordinator handler: %w", err)
 	}
 
+	// Long-haul arb engine (sp-mepj): the out-of-horizon single-good arb engine that captures the
+	// exotic lanes the 1-gate-hop discovery horizon hides from BOTH the tour solver and the arb
+	// scanner (proven by sp-mtvg). It REUSES the daemon's already-built collaborators (design
+	// REUSE INVARIANT): the arb handler above as its per-leg executor, the trade-route
+	// coordinator's cross-gate reposition (RepositionToWaypoint), the shared gate graph, the GORM
+	// market repo's global-best sink/source scanners, the ONE shared price-impact model, and the
+	// sp-m3122 liveness watchdog. ARMED on deploy but INERT until an operator tags a hull
+	// `fleet add --operation long-haul --ship X` (an empty long-haul fleet → an empty idle bucket
+	// → zero launches). No feature flag (Admiral standing order).
+	const (
+		longHaulMaxDataAge           = time.Hour // a lane priced from an observation older than this cannot win
+		longHaulMinSpreadFloor       = 100       // coarse per-unit pre-filter; realized economics do the ranking
+		longHaulMarginalFloorCredits = 0.0       // take the full argmax tranche (marginal spread ≥ 0); realized-net>0 filters losers
+	)
+	// The worker handler is a singleton the mediator dispatches per launched worker container;
+	// each coordinator tick launches one worker per idle long-haul hull via DaemonServer.LaunchLongHaul
+	// (FK-safe, recovery-safe, operation="long-haul"). debt is nil: the exotic cross-system lanes the
+	// engine works are not the same-system lanes the trade fleet hammers, so shared cooldown debt is
+	// ~zero and nil-safe; the era-3 buy/sell impact coefficients still drive optimal-volume.
+	longHaulWorkerHandler := tradeRouteCmd.NewLongHaulArbWorkerHandler(
+		shipRepo,
+		marketRepo,
+		gateGraphService,
+		arbCoordinatorHandler,        // reused one-shot arb leg executor
+		tradeRouteCoordinatorHandler, // shared cross-gate reposition
+		grpc.NewLongHaulTreasuryReader(apiClient),
+		cfg.TradeImpact.ResolvedBuyImpact(),
+		cfg.TradeImpact.ResolvedSellImpact(),
+		nil, // debt lookup: nil-safe (see above)
+		nil, // RealClock
+		longHaulMaxDataAge,
+		longHaulMinSpreadFloor,
+		longHaulMarginalFloorCredits,
+	)
+	if err := mediator.RegisterHandler[*tradeRouteCmd.RunLongHaulArbCommand](med, longHaulWorkerHandler); err != nil {
+		return fmt.Errorf("failed to register LongHaulArb worker handler: %w", err)
+	}
+
+	// The standing fleet coordinator: each tick it launches a worker on every idle
+	// long-haul-tagged hull and runs the SHARED sp-m3122 liveness watchdog — the SAME daemon
+	// launcher/liveness/stopper/absorption-reclaim ports the trade-fleet coordinator wires
+	// (~main.go trade-fleet block), never a new set. Registering it makes an armed-launch or
+	// restart-recovered coordinator runnable; DaemonServer.LongHaulArbCoordinator (the
+	// `workflow long-haul-coordinator` arm) launches the container.
+	longHaulCoordinatorHandler := tradeRouteCmd.NewLongHaulArbFleetCoordinatorHandler(shipRepo, nil) // nil = RealClock
+	longHaulCoordinatorHandler.SetLongHaulLauncher(daemonServer)
+	longHaulCoordinatorHandler.SetTourLiveness(daemonServer)
+	longHaulCoordinatorHandler.SetTourStopper(daemonServer)
+	longHaulCoordinatorHandler.SetAbsorptionReclaimer(grpc.NewDeadContainerAbsorptionReclaimer(absorptionLedger))
+	if err := mediator.RegisterHandler[*tradeRouteCmd.LongHaulArbFleetCoordinatorCommand](med, longHaulCoordinatorHandler); err != nil {
+		return fmt.Errorf("failed to register LongHaulArbFleetCoordinator handler: %w", err)
+	}
+
 	// Tour-run coordinator (sp-1ek0): a one-shot, captain-directed, guarded multi-hop
 	// trade tour. Wired with the same ports as arb/trade-route (so its buy/sell/navigate
 	// legs resolve to the identical RouteExecutor-backed daemon handlers, and it inherits

@@ -359,17 +359,73 @@ func (r *MarketRepositoryGORM) FindBestMarketBuying(
 	}, nil
 }
 
-// BestSinksAcrossSystems returns, for each requested good, the single highest-bid
-// sell destination ACROSS ALL SYSTEMS for the player. EXPORT markets are
-// excluded so the result mirrors the tour snapshot's sink eligibility — an EXPORT bid
-// is a low sellback the solver zeroes, never a real sell destination. Rows
-// older than maxAge (relative to now) are excluded so a moved price never reports a
-// phantom sink. A good with no fresh non-EXPORT sink is simply absent from the map.
-//
-// It backs the tour coordinator's out-of-horizon lane diagnostic: a returned sink whose
-// SystemSymbol falls outside the 1-gate-hop tour graph is a profitable lane the planner
-// structurally cannot see. Read-only and best-effort by contract (the caller treats any
-// error as "no diagnostic this cycle"); it never participates in trade selection.
+// crossSystemGood is one good's best cross-system market row — the shared result shape both
+// global scanners return before mapping it to their typed sink/source result.
+type crossSystemGood struct {
+	GoodSymbol     string
+	WaypointSymbol string
+	Price          int
+	TradeVolume    int
+}
+
+// bestAcrossSystems is the ONE parameterized cross-system scan behind BOTH
+// BestSinksAcrossSystems (best bid) and BestSourcesAcrossSystems (cheapest ask): DISTINCT ON
+// (good_symbol) the best priceColumn per good across ALL SYSTEMS, with the counterpart trade
+// type excluded (a sink is never an EXPORT, a source is never an IMPORT), and stale/zero-price
+// rows dropped. sp-mepj discovery shares this one code path rather than a copy-pasted
+// symmetric twin — the reuse invariant covers discovery too. priceColumn/priceDir/
+// excludeTradeType are fixed internal column names, never caller input (no injection surface).
+func (r *MarketRepositoryGORM) bestAcrossSystems(
+	ctx context.Context,
+	goods []string,
+	playerID int,
+	maxAge time.Duration,
+	now time.Time,
+	priceColumn, priceDir, excludeTradeType string,
+) ([]crossSystemGood, error) {
+	if len(goods) == 0 {
+		return nil, nil
+	}
+	var rows []struct {
+		GoodSymbol     string
+		WaypointSymbol string
+		Price          int
+		TradeVolume    int
+	}
+	err := r.db.WithContext(ctx).
+		Table(marketDataTable).
+		Select(fmt.Sprintf("DISTINCT ON (good_symbol) good_symbol, waypoint_symbol, %s AS price, trade_volume", priceColumn)).
+		Where("player_id = ?", playerID).
+		Where("good_symbol IN ?", goods).
+		Where("last_updated >= ?", now.Add(-maxAge)).
+		Where(priceColumn+" > 0").
+		Where("(trade_type IS NULL OR trade_type <> ?)", excludeTradeType).
+		Order(fmt.Sprintf("good_symbol, %s %s", priceColumn, priceDir)).
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	out := make([]crossSystemGood, 0, len(rows))
+	for _, row := range rows {
+		if row.Price <= 0 {
+			continue
+		}
+		out = append(out, crossSystemGood{
+			GoodSymbol:     row.GoodSymbol,
+			WaypointSymbol: row.WaypointSymbol,
+			Price:          row.Price,
+			TradeVolume:    row.TradeVolume,
+		})
+	}
+	return out, nil
+}
+
+// BestSinksAcrossSystems returns, for each requested good, the single highest-bid sell
+// destination ACROSS ALL SYSTEMS for the player. EXPORT markets are excluded so the result
+// mirrors the tour snapshot's sink eligibility — an EXPORT bid is a low sellback the solver
+// zeroes, never a real sell destination. A good with no fresh non-EXPORT sink is simply
+// absent from the map. It backs the tour coordinator's out-of-horizon lane diagnostic AND the
+// long-haul engine's discovery. Read-only and best-effort by contract.
 func (r *MarketRepositoryGORM) BestSinksAcrossSystems(
 	ctx context.Context,
 	goods []string,
@@ -377,40 +433,75 @@ func (r *MarketRepositoryGORM) BestSinksAcrossSystems(
 	maxAge time.Duration,
 	now time.Time,
 ) (map[string]market.GlobalSinkResult, error) {
-	out := map[string]market.GlobalSinkResult{}
-	if len(goods) == 0 {
-		return out, nil
-	}
-	var rows []struct {
-		GoodSymbol     string
-		WaypointSymbol string
-		PurchasePrice  int
-	}
-	// DISTINCT ON (good_symbol) ... ORDER BY good_symbol, purchase_price DESC keeps the
-	// single best (highest-bid) sink row per good in one indexed pass (Postgres).
-	err := r.db.WithContext(ctx).
-		Table(marketDataTable).
-		Select("DISTINCT ON (good_symbol) good_symbol, waypoint_symbol, purchase_price").
-		Where("player_id = ?", playerID).
-		Where("good_symbol IN ?", goods).
-		Where("last_updated >= ?", now.Add(-maxAge)).
-		Where("(trade_type IS NULL OR trade_type <> ?)", string(market.TradeTypeExport)).
-		Order("good_symbol, purchase_price DESC").
-		Scan(&rows).Error
+	rows, err := r.bestAcrossSystems(ctx, goods, playerID, maxAge, now, "purchase_price", "DESC", string(market.TradeTypeExport))
 	if err != nil {
 		return nil, fmt.Errorf("failed to find best sinks across systems: %w", err)
 	}
+	out := make(map[string]market.GlobalSinkResult, len(rows))
 	for _, row := range rows {
-		if row.PurchasePrice <= 0 {
-			continue
-		}
 		out[row.GoodSymbol] = market.GlobalSinkResult{
 			WaypointSymbol: row.WaypointSymbol,
 			SystemSymbol:   shared.ExtractSystemSymbol(row.WaypointSymbol),
-			Bid:            row.PurchasePrice,
+			Bid:            row.Price,
+			TradeVolume:    row.TradeVolume,
 		}
 	}
 	return out, nil
+}
+
+// BestSourcesAcrossSystems returns, for each requested good, the CHEAPEST buy source ACROSS
+// ALL SYSTEMS for the player — the source-side mirror of BestSinksAcrossSystems, sharing the
+// ONE bestAcrossSystems scan (sp-mepj §2). IMPORT markets are excluded (an importer only BUYS
+// a good, never sells one to us), symmetric to the sink scan's EXPORT exclusion. A good with
+// no fresh sellable source is simply absent from the map. Paired per-good with the sink scan
+// it yields (good, source, sink, ask, bid, depths) spanning any number of gate hops — the
+// multi-hop lanes the 1-gate-hop tour/arb horizon structurally cannot see.
+func (r *MarketRepositoryGORM) BestSourcesAcrossSystems(
+	ctx context.Context,
+	goods []string,
+	playerID int,
+	maxAge time.Duration,
+	now time.Time,
+) (map[string]market.GlobalSourceResult, error) {
+	rows, err := r.bestAcrossSystems(ctx, goods, playerID, maxAge, now, "sell_price", "ASC", string(market.TradeTypeImport))
+	if err != nil {
+		return nil, fmt.Errorf("failed to find best sources across systems: %w", err)
+	}
+	out := make(map[string]market.GlobalSourceResult, len(rows))
+	for _, row := range rows {
+		out[row.GoodSymbol] = market.GlobalSourceResult{
+			WaypointSymbol: row.WaypointSymbol,
+			SystemSymbol:   shared.ExtractSystemSymbol(row.WaypointSymbol),
+			Ask:            row.Price,
+			TradeVolume:    row.TradeVolume,
+		}
+	}
+	return out, nil
+}
+
+// DistinctTradedGoods returns every good with a fresh market observation for the player —
+// the long-haul engine's discovery universe (the goods to scan for out-of-horizon lanes,
+// sp-mepj §2). Rows older than maxAge are excluded so a dead good never widens the scan. A
+// plain SELECT DISTINCT (not the DISTINCT ON the best-price scans need), ordered for a stable
+// scan set.
+func (r *MarketRepositoryGORM) DistinctTradedGoods(ctx context.Context, playerID int, maxAge time.Duration, now time.Time) ([]string, error) {
+	var rows []struct{ GoodSymbol string }
+	err := r.db.WithContext(ctx).
+		Table(marketDataTable).
+		Select("DISTINCT good_symbol").
+		Where("player_id = ?", playerID).
+		Where("last_updated >= ?", now.Add(-maxAge)).
+		Where("good_symbol <> ''").
+		Order("good_symbol").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to list distinct traded goods: %w", err)
+	}
+	goods := make([]string, 0, len(rows))
+	for _, row := range rows {
+		goods = append(goods, row.GoodSymbol)
+	}
+	return goods, nil
 }
 
 // FindAllMarketsInSystem returns all distinct market waypoint symbols in a system

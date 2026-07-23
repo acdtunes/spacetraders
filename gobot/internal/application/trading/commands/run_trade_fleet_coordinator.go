@@ -642,82 +642,23 @@ func (h *RunTradeFleetCoordinatorHandler) relaunchHungTours(
 	now time.Time,
 	logger common.ContainerLogger,
 ) (killed, relaunched int) {
-	// Fail closed: the watchdog acts only when it can both READ progress and KILL. A wiring
-	// gap or a partial injection must never leave it detecting a hang it cannot remedy.
-	if h.tourLiveness == nil || h.tourStopper == nil || len(running) == 0 {
-		return 0, 0
-	}
-
-	// Only PARKED running tours are watchdog candidates — a hull IN_TRANSIT is on a
-	// legitimately-long leg, which is progress. Gather their container IDs for the read.
-	parked := make([]*navigation.Ship, 0, len(running))
-	containerIDs := make([]string, 0, len(running))
-	for _, ship := range running {
-		if ship.IsInTransit() {
-			continue
-		}
-		parked = append(parked, ship)
-		containerIDs = append(containerIDs, ship.ContainerID())
-	}
-	if len(parked) == 0 {
-		return 0, 0
-	}
-
-	progress, err := h.tourLiveness.LastTourProgress(ctx, cmd.PlayerID, containerIDs)
-	if err != nil {
-		// Fail closed for THIS tick: without the progress set we cannot prove any tour hung.
-		logger.Log("WARNING", fmt.Sprintf("Trade fleet watchdog: could not read tour progress — killing nothing this tick: %v", err), map[string]interface{}{
-			"action": "trade_fleet_watchdog_progress_read_failed",
-		})
-		return 0, 0
-	}
-
-	threshold := cmd.watchdogStallThreshold()
-	for _, ship := range parked {
-		last, ok := progress[ship.ContainerID()]
-		if !ok || last.IsZero() {
-			continue // unknown progress — never kill a tour whose liveness we could not read
-		}
-		stalledFor := now.Sub(last)
-		if stalledFor < threshold {
-			continue // still progressing within the threshold
-		}
-
-		// HUNG. Kill the container (which releases the hull), then relaunch a fresh tour.
-		reason := fmt.Sprintf("sp-m3122 watchdog: RUNNING but hung — no progress for %s (>= %s stall threshold)", stalledFor.Truncate(time.Second), threshold)
-		if serr := h.tourStopper.StopTour(ctx, ship.ContainerID(), reason); serr != nil {
-			logger.Log("WARNING", fmt.Sprintf("Trade fleet watchdog: failed to kill hung tour container %s on %s: %v", ship.ContainerID(), ship.ShipSymbol(), serr), map[string]interface{}{
-				"action":       "trade_fleet_watchdog_kill_failed",
-				"ship_symbol":  ship.ShipSymbol(),
-				"container_id": ship.ContainerID(),
-			})
-			continue // do NOT relaunch: the doomed container may still hold the hull
-		}
-		killed++
-
-		containerID, lerr := h.launcher.LaunchTour(ctx, buildTourLaunchSpec(cmd, ship.ShipSymbol(), false))
-		if lerr != nil {
-			// The hull is now released (the kill succeeded) but the fresh launch failed — it
-			// rejoins the idle bucket and the idle-relaunch path picks it up next tick.
-			logger.Log("WARNING", fmt.Sprintf("Trade fleet watchdog: killed hung tour on %s but relaunch failed (retry next tick): %v", ship.ShipSymbol(), lerr), map[string]interface{}{
-				"action":      "trade_fleet_watchdog_relaunch_failed",
-				"ship_symbol": ship.ShipSymbol(),
-			})
-			continue
-		}
-		relaunched++
-		logger.Log("INFO", fmt.Sprintf(
-			"Trade hull %s tour made no progress for %s (>= %s stall threshold) — HUNG: killed container %s and relaunched fresh tour %s (sp-m3122)",
-			ship.ShipSymbol(), stalledFor.Truncate(time.Second), threshold, ship.ContainerID(), containerID), map[string]interface{}{
-			"action":           "trade_fleet_watchdog_relaunch",
-			"ship_symbol":      ship.ShipSymbol(),
-			"killed_container": ship.ContainerID(),
-			"new_container":    containerID,
-			"stalled_secs":     int(stalledFor.Seconds()),
-			"threshold_secs":   int(threshold.Seconds()),
-		})
-	}
-	return killed, relaunched
+	// The watchdog ENGINE is shared with the long-haul engine (relaunchHungContainers, see
+	// watchdog.go) so ONE watchdog serves trade tours AND long-haul hauls (sp-mepj), not a
+	// fork. Trade supplies its own tour-relaunch closure; the fail-closed progress read, the
+	// IN_TRANSIT skip, the kill, the kill-failed-no-relaunch rule, and the stall threshold all
+	// live in the shared engine. The held-cargo-aware fresh tour (sp-2v69u) is the relaunch's
+	// own behavior, so a hull stranded FULL by a hung tour still resumes selling.
+	return relaunchHungContainers(ctx, running, now, logger, watchdogConfig{
+		liveness:   h.tourLiveness,
+		stopper:    h.tourStopper,
+		playerID:   cmd.PlayerID,
+		threshold:  cmd.watchdogStallThreshold(),
+		humanLabel: "Trade fleet",
+		action:     "trade_fleet",
+		relaunch: func(ctx context.Context, shipSymbol string) (string, error) {
+			return h.launcher.LaunchTour(ctx, buildTourLaunchSpec(cmd, shipSymbol, false))
+		},
+	})
 }
 
 // reclaimDeadContainerAbsorption promptly releases market_absorption_ledger reservations held

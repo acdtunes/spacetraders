@@ -124,6 +124,18 @@ const (
 	// reuses the trade-route coordinator's multi-jump travel() to cross gates. Like the
 	// other one-shot ship ops it is a single-iteration, CoordinatorOwnsIterations type.
 	ContainerTypeRoute ContainerType = "ROUTE"
+	// ContainerTypeLongHaulArbCoordinator is the standing long-haul arb fleet coordinator
+	// (sp-mepj): a per-player coordinator that loops forever inside one Handle() launching a
+	// per-hull long-haul worker on every idle long-haul-tagged hull and running the SHARED
+	// sp-m3122 watchdog. Like the trade-fleet/autosizer coordinators it is NOT a
+	// CoordinatorOwnsIterations type; it survives restarts via the persisted-container recovery
+	// idiom.
+	ContainerTypeLongHaulArbCoordinator ContainerType = "LONGHAUL_ARB_COORDINATOR"
+	// ContainerTypeLongHaulArb is the per-hull long-haul WORKER the coordinator spawns: it runs
+	// continuous discover->buy->multi-jump->sell->backhaul episodes on ONE long-haul hull,
+	// composing the reused arb executor. Coordinator-managed, continuous (-1) until the worker
+	// finds no lane; recovery-safe (stateless re-derive from the DB on restart).
+	ContainerTypeLongHaulArb ContainerType = "LONGHAUL_ARB"
 )
 
 const (

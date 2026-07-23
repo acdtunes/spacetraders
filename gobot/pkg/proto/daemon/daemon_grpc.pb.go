@@ -36,6 +36,7 @@ const (
 	DaemonService_ScoutPostCoordinator_FullMethodName          = "/daemon.DaemonService/ScoutPostCoordinator"
 	DaemonService_TradeFleetCoordinator_FullMethodName         = "/daemon.DaemonService/TradeFleetCoordinator"
 	DaemonService_FleetAutosizerCoordinator_FullMethodName     = "/daemon.DaemonService/FleetAutosizerCoordinator"
+	DaemonService_LongHaulArbCoordinator_FullMethodName        = "/daemon.DaemonService/LongHaulArbCoordinator"
 	DaemonService_BootstrapCoordinator_FullMethodName          = "/daemon.DaemonService/BootstrapCoordinator"
 	DaemonService_CapacityReconcilerCoordinator_FullMethodName = "/daemon.DaemonService/CapacityReconcilerCoordinator"
 	DaemonService_AutoOutfitCoordinator_FullMethodName         = "/daemon.DaemonService/AutoOutfitCoordinator"
@@ -145,6 +146,11 @@ type DaemonServiceClient interface {
 	// the hull pool to demand and auto-buys hulls (lights to factory demand, heavies to trade
 	// demand) behind the full fail-closed money-guard stack. LIVE BY DEFAULT once launched.
 	FleetAutosizerCoordinator(ctx context.Context, in *FleetAutosizerCoordinatorRequest, opts ...grpc.CallOption) (*FleetAutosizerCoordinatorResponse, error)
+	// LongHaulArbCoordinator starts the standing long-haul arb fleet coordinator (sp-mepj): the
+	// out-of-horizon single-good arb engine. Each tick it launches a per-hull worker on every idle
+	// long-haul-tagged hull. ARMED on deploy but INERT until an operator tags a hull with
+	// `fleet add --operation long-haul --ship X`. Idempotent on its own container type.
+	LongHaulArbCoordinator(ctx context.Context, in *LongHaulArbCoordinatorRequest, opts ...grpc.CallOption) (*LongHaulArbCoordinatorResponse, error)
 	// BootstrapCoordinator starts the standing captain bootstrap coordinator (sp-3nbe): a
 	// reconciler that drives a cold agent through the cold-start arc to the jump gate. Slice 1
 	// ships the DATA phase (probes → 3, scout every market). LIVE BY DEFAULT once launched.
@@ -473,6 +479,16 @@ func (c *daemonServiceClient) FleetAutosizerCoordinator(ctx context.Context, in 
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(FleetAutosizerCoordinatorResponse)
 	err := c.cc.Invoke(ctx, DaemonService_FleetAutosizerCoordinator_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) LongHaulArbCoordinator(ctx context.Context, in *LongHaulArbCoordinatorRequest, opts ...grpc.CallOption) (*LongHaulArbCoordinatorResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(LongHaulArbCoordinatorResponse)
+	err := c.cc.Invoke(ctx, DaemonService_LongHaulArbCoordinator_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1072,6 +1088,11 @@ type DaemonServiceServer interface {
 	// the hull pool to demand and auto-buys hulls (lights to factory demand, heavies to trade
 	// demand) behind the full fail-closed money-guard stack. LIVE BY DEFAULT once launched.
 	FleetAutosizerCoordinator(context.Context, *FleetAutosizerCoordinatorRequest) (*FleetAutosizerCoordinatorResponse, error)
+	// LongHaulArbCoordinator starts the standing long-haul arb fleet coordinator (sp-mepj): the
+	// out-of-horizon single-good arb engine. Each tick it launches a per-hull worker on every idle
+	// long-haul-tagged hull. ARMED on deploy but INERT until an operator tags a hull with
+	// `fleet add --operation long-haul --ship X`. Idempotent on its own container type.
+	LongHaulArbCoordinator(context.Context, *LongHaulArbCoordinatorRequest) (*LongHaulArbCoordinatorResponse, error)
 	// BootstrapCoordinator starts the standing captain bootstrap coordinator (sp-3nbe): a
 	// reconciler that drives a cold agent through the cold-start arc to the jump gate. Slice 1
 	// ships the DATA phase (probes → 3, scout every market). LIVE BY DEFAULT once launched.
@@ -1286,6 +1307,9 @@ func (UnimplementedDaemonServiceServer) TradeFleetCoordinator(context.Context, *
 }
 func (UnimplementedDaemonServiceServer) FleetAutosizerCoordinator(context.Context, *FleetAutosizerCoordinatorRequest) (*FleetAutosizerCoordinatorResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method FleetAutosizerCoordinator not implemented")
+}
+func (UnimplementedDaemonServiceServer) LongHaulArbCoordinator(context.Context, *LongHaulArbCoordinatorRequest) (*LongHaulArbCoordinatorResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method LongHaulArbCoordinator not implemented")
 }
 func (UnimplementedDaemonServiceServer) BootstrapCoordinator(context.Context, *BootstrapCoordinatorRequest) (*BootstrapCoordinatorResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method BootstrapCoordinator not implemented")
@@ -1772,6 +1796,24 @@ func _DaemonService_FleetAutosizerCoordinator_Handler(srv interface{}, ctx conte
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DaemonServiceServer).FleetAutosizerCoordinator(ctx, req.(*FleetAutosizerCoordinatorRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_LongHaulArbCoordinator_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LongHaulArbCoordinatorRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).LongHaulArbCoordinator(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_LongHaulArbCoordinator_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).LongHaulArbCoordinator(ctx, req.(*LongHaulArbCoordinatorRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2822,6 +2864,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "FleetAutosizerCoordinator",
 			Handler:    _DaemonService_FleetAutosizerCoordinator_Handler,
+		},
+		{
+			MethodName: "LongHaulArbCoordinator",
+			Handler:    _DaemonService_LongHaulArbCoordinator_Handler,
 		},
 		{
 			MethodName: "BootstrapCoordinator",
