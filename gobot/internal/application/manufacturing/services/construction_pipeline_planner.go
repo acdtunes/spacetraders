@@ -42,14 +42,6 @@ type ConstructionPipelinePlanner struct {
 	// SupplyChainResolver the drain runs (sp-yfzi). Optional (wired by SetTreeResolver); nil falls
 	// back to the pre-sp-3bza "every immediate input buyable at MODERATE+" gate.
 	treeResolver FabricationTreeResolver
-	// unifiedGateFill is the sp-yexq admission-floor toggle (wired by SetUnifiedGateFill, fed from
-	// ManufacturingConfig.UnifiedGateFill — the SAME toggle the construction coordinator carries as
-	// cmd.UnifiedGateFill). When true, a pipeline with NO explicit operator --min-supply defaults its
-	// EXPORT admission floor to SCARCE (margin-blind admission), so a gate material whose only source
-	// is SCARCE (e.g. ADVANCED_CIRCUITRY@D42) is admitted+promoted automatically — no manual flag. The
-	// zero value (false — a planner built without the setter, and every in-package test that never
-	// calls it) keeps the MODERATE default, byte-identical to before the toggle.
-	unifiedGateFill bool
 }
 
 // NewConstructionPipelinePlanner creates a new construction pipeline planner.
@@ -88,27 +80,15 @@ func (p *ConstructionPipelinePlanner) SetTreeResolver(resolver FabricationTreeRe
 	p.treeResolver = resolver
 }
 
-// SetUnifiedGateFill wires the sp-yexq unified gate-fill admission-floor toggle (fed from
-// ManufacturingConfig.UnifiedGateFill via the daemon — the SAME toggle the construction coordinator
-// carries as cmd.UnifiedGateFill). When enabled, a pipeline with no explicit operator --min-supply
-// defaults its EXPORT admission floor to SCARCE, so scarce gate materials are admitted and promoted
-// automatically (no manual flag); an explicit --min-supply / per-good override still wins. A setter
-// (not a constructor arg) keeps the existing planner constructor and its in-package tests unchanged
-// (unset → false → MODERATE default → byte-identical to before the toggle).
-func (p *ConstructionPipelinePlanner) SetUnifiedGateFill(enabled bool) {
-	p.unifiedGateFill = enabled
-}
-
-// admissionFloor resolves the pipeline's EXPORT admission floor (sp-yexq). Under unified gate-fill a
+// admissionFloor resolves the pipeline's EXPORT admission floor (sp-yexq / unified gate-fill). A
 // pipeline with NO explicit operator floor (empty minSupply) defaults to SCARCE — margin-blind
 // admission — so a gate material whose only source is SCARCE (e.g. ADVANCED_CIRCUITRY@D42) is
 // admitted and promoted automatically, no manual --min-supply. An explicit floor (non-empty
-// minSupply) always wins, and OFF (the zero value) returns minSupply unchanged → the MODERATE default
-// FindConstructionSource applies is byte-identical to before the toggle. This floor is persisted on
-// the pipeline, so the deferred-material recovery loop (task_activator.pipelineMinSupply) reads the
-// SAME SCARCE default — one source of truth for planning AND activation.
+// minSupply) always wins. This floor is persisted on the pipeline, so the deferred-material recovery
+// loop (task_activator.pipelineMinSupply) reads the SAME SCARCE default — one source of truth for
+// planning AND activation.
 func (p *ConstructionPipelinePlanner) admissionFloor(minSupply string) string {
-	if minSupply == "" && p.unifiedGateFill {
+	if minSupply == "" {
 		return string(manufacturing.SupplyLevelScarce)
 	}
 	return minSupply
@@ -190,14 +170,13 @@ func (p *ConstructionPipelinePlanner) StartOrResume(
 				existingPipeline.SetMinSupply(minSupply)
 				needsUpdate = true
 			}
-			// sp-yexq: under unified gate-fill, a resumed pipeline that STILL has no explicit floor
-			// (empty — the MODERATE default; e.g. a gate pipeline created before this fix, now stuck
-			// with its SCARCE material deferred) is upgraded to the SCARCE admission default so the
-			// deferred-material recovery loop promotes it automatically, no manual --min-supply. Only
-			// FILLS an empty floor: an explicit operator floor (set this call above, or persisted
-			// earlier) is never clobbered, so an explicit override still wins on resume. OFF (the zero
-			// value) never fires → byte-identical resume.
-			if p.unifiedGateFill && existingPipeline.MinSupply() == "" {
+			// sp-yexq: a resumed pipeline that STILL has no explicit floor (empty — e.g. a gate pipeline
+			// created before unified gate-fill, now stuck with its SCARCE material deferred) is upgraded
+			// to the SCARCE admission default so the deferred-material recovery loop promotes it
+			// automatically, no manual --min-supply. Only FILLS an empty floor: an explicit operator
+			// floor (set this call above, or persisted earlier) is never clobbered, so an explicit
+			// override still wins on resume.
+			if existingPipeline.MinSupply() == "" {
 				existingPipeline.SetMinSupply(string(manufacturing.SupplyLevelScarce))
 				needsUpdate = true
 			}

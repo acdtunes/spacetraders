@@ -134,9 +134,11 @@ func (r *recordingResolver) BuildDependencyTree(_ context.Context, _, _ string, 
 	return r.tree, r.err
 }
 
-// A BUY-FINAL material (no factory) never consults the resolver and stays a direct AcquisitionBuy —
-// byte-identical to pre-sp-yfzi, even with the resolver wired.
-func TestConstructionDrain_BuyFinalMaterial_BypassesResolver(t *testing.T) {
+// A BUY-FINAL material (no factory) whose good the resolver CANNOT build a tree for (returns nil —
+// stale/absent market data) falls back to a direct AcquisitionBuy. Unified gate-fill (sp-9i4mq)
+// consults the resolver for EVERY material, but a buy-planned good with no resolvable tree stays a
+// plain buy rather than dying.
+func TestConstructionDrain_BuyFinalMaterial_FallsBackToBuyWhenResolverCannotBuild(t *testing.T) {
 	pipeline := newDrainPipeline(t, "FAB_MATS", 100)
 	task := readyConstructionTask(t, pipeline, "FAB_MATS") // factory "" => buy-final branch
 
@@ -145,7 +147,8 @@ func TestConstructionDrain_BuyFinalMaterial_BypassesResolver(t *testing.T) {
 	pipelineRepo := &drainStubPipelineRepo{pipelines: map[string]*manufacturing.ManufacturingPipeline{pipeline.ID(): pipeline}}
 	shipRepo := newDrainShipRepo(newTestHauler(t, "HAULER-7", nil))
 
-	resolver := &recordingResolver{tree: goods.NewSupplyChainNode("FAB_MATS", goods.AcquisitionFabricate)}
+	// Resolver returns nil (cannot build): the drain consults it, then falls back to the frozen buy.
+	resolver := &recordingResolver{tree: nil}
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
 	handler.SetTreeResolver(resolver)
 
@@ -154,15 +157,15 @@ func TestConstructionDrain_BuyFinalMaterial_BypassesResolver(t *testing.T) {
 		t.Fatalf("drainOnce: %v", err)
 	}
 
-	if resolver.calls != 0 {
-		t.Fatalf("buy-final material must NOT consult the resolver, got %d calls", resolver.calls)
+	if resolver.calls != 1 {
+		t.Fatalf("unified gate-fill consults the resolver for every material, want 1 call, got %d", resolver.calls)
 	}
 	if len(producer.produceNodes) != 1 {
 		t.Fatalf("expected exactly one ProduceGood call, got %d", len(producer.produceNodes))
 	}
 	node := producer.produceNodes[0]
 	if node.AcquisitionMethod != goods.AcquisitionBuy || len(node.Children) != 0 {
-		t.Fatalf("buy-final material must be a direct BUY leaf, got %+v", node)
+		t.Fatalf("a buy-final material with no resolvable tree must fall back to a direct BUY leaf, got %+v", node)
 	}
 }
 

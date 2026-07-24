@@ -281,31 +281,78 @@ func (a *TaskActivator) resourcePendingTask(ctx context.Context, task *manufactu
 	return betterSupply, true
 }
 
-// resourceDeferredConstructionTask attempts to locate a buy source for a
-// construction material that was deferred at planning time (no source found
-// then). It reuses the construction source locator (EXPORT MODERATE+, with the
-// IMPORT/EXCHANGE ABUNDANT/HIGH fallback). On success it assigns the source to
-// the task (keeping it PENDING) so the caller can mark it READY; on failure it
-// returns false and the task stays deferred for a later poll.
+// resourceDeferredConstructionTask un-sticks a construction material that was deferred at planning
+// time (neither a buy source nor a factory found then). It recovers in two ways, in precedence order:
+//
+//  1. FABRICATE (primary, sp-9p87s): resolve a FACTORY that exports the good and set it on the task,
+//     so the task goes READY and the drain fabricates it (buying inputs, feeding the factory,
+//     harvesting) instead of buying the good's own export cold. This breaks the buy-only deadlock:
+//     the drain buying a manufactured export without feeding it depletes that export MODERATE->SCARCE,
+//     after which the buy-only recovery below can NEVER clear the floor, so the task sat PENDING
+//     forever. Only for MANUFACTURABLE goods — a raw/mined good is never fabricated.
+//  2. BUY (fallback): re-source against the pipeline's persisted --min-supply floor — the recovery
+//     for raw/mined goods with no factory. Stays deferred (returns false) if no buy source clears.
+//
+// On success it assigns the factory/source (keeping the task PENDING) so the caller marks it READY;
+// on failure it returns false and the task stays deferred for a later poll. It never spends — input
+// buys still flow through the drain's produce path and its money-guard stack (RULINGS #4).
 func (a *TaskActivator) resourceDeferredConstructionTask(ctx context.Context, task *manufacturing.ManufacturingTask) bool {
-	logger := common.LoggerFromContext(ctx)
-
 	if a.marketLocator == nil {
 		return false
 	}
-
 	systemSymbol := extractSystem(task.ConstructionSite())
-	// sp-j2hq: read the caller-set --min-supply floor back off the persisted
-	// pipeline, so a floor set at planning time (or updated later via a
-	// resumed `construction start --min-supply X` call) is honored here too,
-	// not just during the initial planning pass. An unset/unreadable floor
-	// still resolves to "" and FindConstructionSource treats that as MODERATE.
+	if a.resolveDeferredViaFactory(ctx, task, systemSymbol) {
+		return true
+	}
+	return a.resolveDeferredViaBuySource(ctx, task, systemSymbol)
+}
+
+// resolveDeferredViaFactory sets a fabrication factory on a deferred construction task so it recovers
+// as a FABRICATE (sp-9p87s). It mirrors the planner's fabricate-eligibility (planFabrication): a good
+// with a recipe (GetRequiredInputs non-empty) for which a factory EXPORTS it while IMPORTING its
+// inputs. Returns false (leaving the task for the buy fallback) when the good has no recipe or no such
+// factory exists — so a good with only a plain buy market falls through to the buy path.
+func (a *TaskActivator) resolveDeferredViaFactory(ctx context.Context, task *manufacturing.ManufacturingTask, systemSymbol string) bool {
+	logger := common.LoggerFromContext(ctx)
+	good := task.Good()
+	inputs := goods.GetRequiredInputs(good)
+	if len(inputs) == 0 {
+		return false // no recipe — not fabricable; use the buy fallback
+	}
+	factory, err := a.marketLocator.FindFactoryForProduction(ctx, good, inputs, systemSymbol, a.playerID)
+	if err != nil || factory == nil {
+		return false
+	}
+	if err := task.UpdateFactorySymbol(factory.WaypointSymbol); err != nil {
+		logger.Log("WARN", "Failed to assign factory to deferred construction task", map[string]interface{}{
+			"task_id": shortID(task.ID()),
+			"good":    good,
+			"error":   err.Error(),
+		})
+		return false
+	}
+	logger.Log("INFO", "Recovered deferred construction material via fabrication - factory resolved", map[string]interface{}{
+		"task_id":           shortID(task.ID()),
+		"good":              good,
+		"factory":           factory.WaypointSymbol,
+		"construction_site": task.ConstructionSite(),
+	})
+	return true
+}
+
+// resolveDeferredViaBuySource re-sources a deferred construction material from a BUY market against
+// the pipeline's persisted --min-supply floor. sp-j2hq: read the caller-set floor back off the
+// persisted pipeline, so a floor set at planning time (or updated later via a resumed
+// `construction start --min-supply X` call) is honored here too, not just during the initial planning
+// pass. An unset/unreadable floor resolves to "" and FindConstructionSource treats that as MODERATE.
+// This is the fallback for raw/mined goods with no fabrication factory.
+func (a *TaskActivator) resolveDeferredViaBuySource(ctx context.Context, task *manufacturing.ManufacturingTask, systemSymbol string) bool {
+	logger := common.LoggerFromContext(ctx)
 	minSupply := a.pipelineMinSupply(ctx, task.PipelineID(), task.Good())
 	source, err := a.marketLocator.FindConstructionSource(ctx, task.Good(), systemSymbol, a.playerID, manufacturing.SupplyLevel(minSupply))
 	if err != nil || source == nil {
 		return false
 	}
-
 	if err := task.UpdateSourceMarket(source.WaypointSymbol); err != nil {
 		logger.Log("WARN", "Failed to assign source to deferred construction task", map[string]interface{}{
 			"task_id": shortID(task.ID()),
@@ -314,7 +361,6 @@ func (a *TaskActivator) resourceDeferredConstructionTask(ctx context.Context, ta
 		})
 		return false
 	}
-
 	logger.Log("INFO", "Re-sourced deferred construction material - supply recovered", map[string]interface{}{
 		"task_id":           shortID(task.ID()),
 		"good":              task.Good(),

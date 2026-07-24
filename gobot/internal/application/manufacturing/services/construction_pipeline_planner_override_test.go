@@ -10,13 +10,15 @@ import (
 
 // sp-sdyo gate 3 (minSupply SOURCING FLOOR) — per-good construction sourcing-floor override.
 //
-// The construction pipeline's EXPORT sourcing floor is GLOBAL (default MODERATE). A per-good
-// override lowers the floor for a single bottleneck material so it can be sourced from a SCARCE
-// market, while every other material keeps the global floor. This suite drives the planner over a
-// site with a SCARCE-only bottleneck (ADVANCED_CIRCUITRY) and an ABUNDANT normal good (FAB_MATS)
-// and pins: without an override the SCARCE good DEFERS (rejected at the MODERATE floor); a per-good
-// {minSupply:SCARCE} override sources it (surgical unstick) while the normal good is byte-identical;
-// and the override is persisted on the pipeline for restart-resilience (RULINGS #2).
+// The construction pipeline's EXPORT sourcing floor is GLOBAL. A per-good override lowers the floor
+// for a single bottleneck material so it can be sourced from a SCARCE market, while every other
+// material keeps the global floor. This suite drives the planner over a site with a SCARCE-only
+// bottleneck (ADVANCED_CIRCUITRY) and an ABUNDANT normal good (FAB_MATS) at an EXPLICIT global
+// MODERATE floor (unified gate-fill defaults an unset floor to SCARCE — sp-9i4mq — so the override's
+// effect is only observable against a stricter explicit floor) and pins: without an override the
+// SCARCE good DEFERS (rejected at the MODERATE floor); a per-good {minSupply:SCARCE} override sources
+// it (surgical unstick) while the normal good is byte-identical; and the override is persisted on the
+// pipeline for restart-resilience (RULINGS #2).
 
 const (
 	ovFabWP  = "X1-PZ28-F56"
@@ -51,7 +53,9 @@ func TestConstructionOverride_BaselineDefersScarceGood(t *testing.T) {
 	planner := newPlannerUnderTest(pipelineRepo, taskRepo, overrideConstructionMarketRepo(t), newPlannerTestConstructionSite(t))
 
 	// depth 3 = "buy final only": fabrication is skipped, so an unbuyable material can only DEFER.
-	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 3, 5, "", "", nil)
+	// Explicit MODERATE floor: unified gate-fill would default an unset floor to SCARCE (admitting the
+	// SCARCE export), so the baseline deferral is only observable at a stricter explicit floor.
+	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 3, 5, "", "MODERATE", nil)
 	if err != nil {
 		t.Fatalf("StartOrResume: %v", err)
 	}
@@ -73,7 +77,9 @@ func TestConstructionOverride_PerGoodFloorSourcesBottleneckOnly(t *testing.T) {
 	planner := newPlannerUnderTest(pipelineRepo, taskRepo, overrideConstructionMarketRepo(t), newPlannerTestConstructionSite(t))
 
 	overrides := manufacturing.GoodGatingOverrides{"ADVANCED_CIRCUITRY": {MinSupply: "SCARCE"}}
-	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 3, 5, "", "", overrides)
+	// Explicit MODERATE global floor (see baseline): the per-good SCARCE override must unstick the
+	// bottleneck against it, proving the override — not the toggle's SCARCE default — sources the good.
+	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 3, 5, "", "MODERATE", overrides)
 	if err != nil {
 		t.Fatalf("StartOrResume: %v", err)
 	}

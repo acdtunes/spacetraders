@@ -75,49 +75,56 @@ func TestStaticSupplyChainDepth_FabMatsDeep_LeafShallow_CycleSafe(t *testing.T) 
 	}
 }
 
-// PART A — supplyTaskChainDepth: a BUY task (no factory) is buy+haul = depth 1 (shallow,
-// byte-identical); a FABRICATE task takes the good's chain depth bounded by the pipeline's cap.
-func TestSupplyTaskChainDepth_BuyShallow_FabricateDeep(t *testing.T) {
+// PART A — supplyTaskChainDepth: the drain fabricates EVERY material (unified gate-fill, sp-9i4mq), so
+// a task takes the good's chain depth bounded by the pipeline's cap REGARDLESS of the planner's frozen
+// buy-vs-fabricate decision — a buy-planned good (no factory) is depth-scaled the same as a fabricate.
+func TestSupplyTaskChainDepth_UsesChainDepthRegardlessOfFactory(t *testing.T) {
 	depth3Pipeline := newDrainPipelineDepth(t, "FAB_MATS", 200, 3)
 	pipelineRepo := &drainStubPipelineRepo{pipelines: map[string]*manufacturing.ManufacturingPipeline{depth3Pipeline.ID(): depth3Pipeline}}
 	handler := NewRunConstructionCoordinatorHandler(&drainStubTaskRepo{}, pipelineRepo, newDrainShipRepo(), &fakeConstructionProducer{}, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
 	cmd := newDrainCommand()
 
-	// BUY: FactorySymbol "" (planner resolved a market). Depth 1 regardless of the good's recipe.
+	// BUY-planned: FactorySymbol "" (planner resolved a market). The drain still fabricates it, so it
+	// takes FAB_MATS' chain depth capped by the depth-3 pipeline = 3 (no longer a shallow depth 1).
 	buyTask := manufacturing.NewDeliverToConstructionTask(depth3Pipeline.ID(), 1, "FAB_MATS", "X1-SRC", "", constructionSiteWP, nil)
-	if got := handler.supplyTaskChainDepth(context.Background(), cmd, buyTask); got != 1 {
-		t.Fatalf("a BUY task (no factory) must be shallow depth 1, got %d", got)
+	if got := handler.supplyTaskChainDepth(context.Background(), cmd, buyTask); got != 3 {
+		t.Fatalf("a buy-planned FAB_MATS task must take the chain depth 3 (the drain fabricates every material), got %d", got)
 	}
 
-	// FABRICATE: FactorySymbol set. Depth = FAB_MATS chain depth capped by the depth-3 pipeline = 3.
+	// FABRICATE-planned: FactorySymbol set. Depth = FAB_MATS chain depth capped by the depth-3 pipeline = 3.
 	fabTask := manufacturing.NewDeliverToConstructionTask(depth3Pipeline.ID(), 1, "FAB_MATS", "", "X1-FACTORY", constructionSiteWP, nil)
 	if got := handler.supplyTaskChainDepth(context.Background(), cmd, fabTask); got != 3 {
 		t.Fatalf("a FABRICATE FAB_MATS task on a depth-3 pipeline must be depth 3, got %d", got)
 	}
 }
 
-// PART A (headline) — scaledSupplyTaskTimeout end-to-end: a deep fabricate chain resolves a LONGER
-// deadline than a shallow buy-and-haul, while the shallow path stays at the flat 30m default. This is
-// the sp-9f24o regression fence: today the resolver is flat 30m regardless of depth.
-func TestScaledSupplyTaskTimeout_DeepFabricateGetsHeadroom_ShallowUnchanged(t *testing.T) {
+// PART A (headline) — scaledSupplyTaskTimeout end-to-end: a deep chain resolves a LONGER deadline than
+// a shallow one. Unified gate-fill (sp-9i4mq) fabricates EVERY material, so the depth is driven by the
+// pipeline's fabricate cap, not the planner's buy-vs-fabricate decision: a depth-3 pipeline gets
+// base*3 headroom, a depth-1 pipeline stays at the flat 30m default (the sp-9f24o regression fence).
+func TestScaledSupplyTaskTimeout_DeepChainGetsHeadroom_ShallowUnchanged(t *testing.T) {
+	depth1Pipeline := newDrainPipelineDepth(t, "FAB_MATS", 200, 1)
 	depth3Pipeline := newDrainPipelineDepth(t, "FAB_MATS", 200, 3)
-	pipelineRepo := &drainStubPipelineRepo{pipelines: map[string]*manufacturing.ManufacturingPipeline{depth3Pipeline.ID(): depth3Pipeline}}
+	pipelineRepo := &drainStubPipelineRepo{pipelines: map[string]*manufacturing.ManufacturingPipeline{
+		depth1Pipeline.ID(): depth1Pipeline,
+		depth3Pipeline.ID(): depth3Pipeline,
+	}}
 	handler := NewRunConstructionCoordinatorHandler(&drainStubTaskRepo{}, pipelineRepo, newDrainShipRepo(), &fakeConstructionProducer{}, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
 	cmd := newDrainCommand()
 
-	buyTask := manufacturing.NewDeliverToConstructionTask(depth3Pipeline.ID(), 1, "FAB_MATS", "X1-SRC", "", constructionSiteWP, nil)
-	shallow := handler.scaledSupplyTaskTimeout(context.Background(), cmd, buyTask)
+	shallowTask := manufacturing.NewDeliverToConstructionTask(depth1Pipeline.ID(), 1, "FAB_MATS", "", "X1-FACTORY", constructionSiteWP, nil)
+	shallow := handler.scaledSupplyTaskTimeout(context.Background(), cmd, shallowTask)
 	if shallow != constructionSupplyTaskDefaultTimeout {
-		t.Fatalf("a shallow buy task must keep the flat 30m default, got %s", shallow)
+		t.Fatalf("a depth-1 (shallow) chain must keep the flat 30m default, got %s", shallow)
 	}
 
-	fabTask := manufacturing.NewDeliverToConstructionTask(depth3Pipeline.ID(), 1, "FAB_MATS", "", "X1-FACTORY", constructionSiteWP, nil)
-	deep := handler.scaledSupplyTaskTimeout(context.Background(), cmd, fabTask)
+	deepTask := manufacturing.NewDeliverToConstructionTask(depth3Pipeline.ID(), 1, "FAB_MATS", "", "X1-FACTORY", constructionSiteWP, nil)
+	deep := handler.scaledSupplyTaskTimeout(context.Background(), cmd, deepTask)
 	if deep <= shallow {
-		t.Fatalf("a deep fabricate chain must resolve a LONGER deadline than a shallow buy (%s), got %s", shallow, deep)
+		t.Fatalf("a deep chain must resolve a LONGER deadline than a shallow one (%s), got %s", shallow, deep)
 	}
 	if deep != 90*time.Minute {
-		t.Fatalf("a depth-3 fabricate chain at the 30m default must resolve base*3 = 90m, got %s", deep)
+		t.Fatalf("a depth-3 chain at the 30m default must resolve base*3 = 90m, got %s", deep)
 	}
 }
 

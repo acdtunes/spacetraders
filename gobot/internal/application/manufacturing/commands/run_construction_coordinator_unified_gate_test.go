@@ -11,11 +11,11 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// sp-vh1s Part A — the construction coordinator as a UNIFIED GATE-FILL wrapper. Under the toggle the
-// drain drives a goods-factory run per gate material with feeding INHERENT in the tree: it
-// short-circuits the old bespoke buy-vs-fabricate planner decision (which froze a pure-BUY at plan
-// time and fed NOTHING — the bug) and stamps the run as a gate node so the output-buy is
-// throughput-paced and lane B's per-node gates go margin-blind. OFF is byte-identical.
+// sp-vh1s Part A — the construction coordinator as a UNIFIED GATE-FILL wrapper. The drain drives a
+// goods-factory run per gate material with feeding INHERENT in the tree: it short-circuits the old
+// bespoke buy-vs-fabricate planner decision (which froze a pure-BUY at plan time and fed NOTHING —
+// the bug) and stamps the run as a gate node so the output-buy is throughput-paced and lane B's
+// per-node gates go margin-blind. Unified gate-fill is unconditional (sp-9i4mq removed the flag).
 
 // gateProbeProducer captures, per ProduceGood call, the node handed to it and the gate-mode signals
 // on the run context, so a test can prove the drain drove a gate-node run. Satisfies ConstructionProducer.
@@ -45,92 +45,59 @@ func gateFabricateTree() *goods.SupplyChainNode {
 	return root
 }
 
-// Short-circuit contract: a BUY-FINAL material (planner froze a pure-BUY, FactorySymbol == "") is
-// sourced cold with zero feeding today. Under the toggle the drain IGNORES that frozen decision and
-// drives the resolver's FULL scarcity-gated tree (feeding inherent); with the toggle OFF it keeps the
-// frozen bare-BUY and never consults the resolver (byte-identical).
+// Short-circuit contract: a BUY-FINAL material (planner froze a pure-BUY, FactorySymbol == "") would
+// be sourced cold with zero feeding. The drain IGNORES that frozen decision and drives the resolver's
+// FULL scarcity-gated tree (feeding inherent), consulting the resolver and driving a fabricate node.
 func TestConstructionDrain_UnifiedGateFill_ShortCircuitsFrozenBuyFinal(t *testing.T) {
-	cases := []struct {
-		name          string
-		unified       bool
-		wantResolver  int
-		wantFabricate bool
-	}{
-		{name: "toggle off keeps the frozen pure-BUY (resolver bypassed)", unified: false, wantResolver: 0, wantFabricate: false},
-		{name: "toggle on short-circuits to the full tree (resolver consulted)", unified: true, wantResolver: 1, wantFabricate: true},
+	pipeline := newDrainPipeline(t, "FAB_MATS", 100)
+	task := readyConstructionTask(t, pipeline, "FAB_MATS") // factory "" => the planner's frozen pure-BUY
+	producer := &gateProbeProducer{acquire: 40, delivered: 40}
+	taskRepo := &drainStubTaskRepo{tasks: []*manufacturing.ManufacturingTask{task}}
+	pipelineRepo := &drainStubPipelineRepo{pipelines: map[string]*manufacturing.ManufacturingPipeline{pipeline.ID(): pipeline}}
+	shipRepo := newDrainShipRepo(newTestHauler(t, "HAULER-7", nil))
+	resolver := &recordingResolver{tree: gateFabricateTree()}
+
+	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
+	handler.SetTreeResolver(resolver)
+
+	if _, err := handler.drainOnce(context.Background(), newDrainCommand()); err != nil {
+		t.Fatalf("drainOnce: %v", err)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			pipeline := newDrainPipeline(t, "FAB_MATS", 100)
-			task := readyConstructionTask(t, pipeline, "FAB_MATS") // factory "" => the planner's frozen pure-BUY
-			producer := &gateProbeProducer{acquire: 40, delivered: 40}
-			taskRepo := &drainStubTaskRepo{tasks: []*manufacturing.ManufacturingTask{task}}
-			pipelineRepo := &drainStubPipelineRepo{pipelines: map[string]*manufacturing.ManufacturingPipeline{pipeline.ID(): pipeline}}
-			shipRepo := newDrainShipRepo(newTestHauler(t, "HAULER-7", nil))
-			resolver := &recordingResolver{tree: gateFabricateTree()}
 
-			handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
-			handler.SetTreeResolver(resolver)
-
-			cmd := newDrainCommand()
-			cmd.UnifiedGateFill = tc.unified
-			if _, err := handler.drainOnce(context.Background(), cmd); err != nil {
-				t.Fatalf("drainOnce: %v", err)
-			}
-
-			if resolver.calls != tc.wantResolver {
-				t.Fatalf("resolver consulted %d times, want %d (toggle=%v)", resolver.calls, tc.wantResolver, tc.unified)
-			}
-			if len(producer.nodes) != 1 {
-				t.Fatalf("expected exactly one ProduceGood call, got %d", len(producer.nodes))
-			}
-			gotFabricate := producer.nodes[0].AcquisitionMethod == goods.AcquisitionFabricate
-			if gotFabricate != tc.wantFabricate {
-				t.Fatalf("driven node fabricate=%v, want %v (toggle=%v) — ON must drive the full tree, OFF the frozen bare-BUY", gotFabricate, tc.wantFabricate, tc.unified)
-			}
-		})
+	if resolver.calls != 1 {
+		t.Fatalf("resolver consulted %d times, want 1 — the drain must drive the full tree, not the frozen bare-BUY", resolver.calls)
+	}
+	if len(producer.nodes) != 1 {
+		t.Fatalf("expected exactly one ProduceGood call, got %d", len(producer.nodes))
+	}
+	if producer.nodes[0].AcquisitionMethod != goods.AcquisitionFabricate {
+		t.Fatalf("driven node acquisition = %v, want Fabricate — the drain must drive the full tree, not the frozen bare-BUY", producer.nodes[0].AcquisitionMethod)
 	}
 }
 
-// Gate-mode stamp: under the toggle the drain marks the produce context a unified gate node (so the
-// output-buy is throughput-paced and lane B's gates go margin-blind) carrying the gate waypoint; with
-// the toggle OFF the run is never a gate node (byte-identical).
+// Gate-mode stamp: the drain marks the produce context a unified gate node (so the output-buy is
+// throughput-paced and lane B's gates go margin-blind) carrying the gate waypoint.
 func TestConstructionDrain_UnifiedGateFill_StampsGateModeOnProduceContext(t *testing.T) {
-	cases := []struct {
-		name       string
-		unified    bool
-		wantGate   bool
-		wantTarget string
-	}{
-		{name: "toggle off is never a gate node", unified: false, wantGate: false, wantTarget: ""},
-		{name: "toggle on marks a gate node carrying the site", unified: true, wantGate: true, wantTarget: constructionSiteWP},
+	pipeline := newDrainPipeline(t, "FAB_MATS", 100)
+	task := readyConstructionTask(t, pipeline, "FAB_MATS")
+	producer := &gateProbeProducer{acquire: 40, delivered: 40}
+	taskRepo := &drainStubTaskRepo{tasks: []*manufacturing.ManufacturingTask{task}}
+	pipelineRepo := &drainStubPipelineRepo{pipelines: map[string]*manufacturing.ManufacturingPipeline{pipeline.ID(): pipeline}}
+	shipRepo := newDrainShipRepo(newTestHauler(t, "HAULER-7", nil))
+
+	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
+
+	if _, err := handler.drainOnce(context.Background(), newDrainCommand()); err != nil {
+		t.Fatalf("drainOnce: %v", err)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			pipeline := newDrainPipeline(t, "FAB_MATS", 100)
-			task := readyConstructionTask(t, pipeline, "FAB_MATS")
-			producer := &gateProbeProducer{acquire: 40, delivered: 40}
-			taskRepo := &drainStubTaskRepo{tasks: []*manufacturing.ManufacturingTask{task}}
-			pipelineRepo := &drainStubPipelineRepo{pipelines: map[string]*manufacturing.ManufacturingPipeline{pipeline.ID(): pipeline}}
-			shipRepo := newDrainShipRepo(newTestHauler(t, "HAULER-7", nil))
 
-			handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
-
-			cmd := newDrainCommand()
-			cmd.UnifiedGateFill = tc.unified
-			if _, err := handler.drainOnce(context.Background(), cmd); err != nil {
-				t.Fatalf("drainOnce: %v", err)
-			}
-
-			if len(producer.gateNodeFlags) != 1 {
-				t.Fatalf("expected exactly one ProduceGood call, got %d", len(producer.gateNodeFlags))
-			}
-			if producer.gateNodeFlags[0] != tc.wantGate {
-				t.Fatalf("IsUnifiedGateNode on the produce ctx = %v, want %v (toggle=%v)", producer.gateNodeFlags[0], tc.wantGate, tc.unified)
-			}
-			if producer.deliveryTargets[0] != tc.wantTarget {
-				t.Fatalf("delivery target waypoint = %q, want %q (toggle=%v)", producer.deliveryTargets[0], tc.wantTarget, tc.unified)
-			}
-		})
+	if len(producer.gateNodeFlags) != 1 {
+		t.Fatalf("expected exactly one ProduceGood call, got %d", len(producer.gateNodeFlags))
+	}
+	if !producer.gateNodeFlags[0] {
+		t.Fatal("IsUnifiedGateNode on the produce ctx = false, want true — the drain must mark a gate node")
+	}
+	if producer.deliveryTargets[0] != constructionSiteWP {
+		t.Fatalf("delivery target waypoint = %q, want %q", producer.deliveryTargets[0], constructionSiteWP)
 	}
 }

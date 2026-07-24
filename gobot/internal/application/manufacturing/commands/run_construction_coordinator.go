@@ -786,13 +786,10 @@ func (h *RunConstructionCoordinatorHandler) supplyTask(ctx context.Context, cmd 
 	// resold. INPUT buys still pass the full money-guard stack. The hull-fill target stamped
 	// above rides on ctx, so produceCtx carries both.
 	produceCtx := shared.WithConstructionSupply(ctx)
-	// Under unified gate-fill, mark this run a UNIFIED GATE NODE carrying the gate waypoint.
-	// IsUnifiedGateNode is then true through the whole tree (ctx threads by value), so lane B's
-	// per-node gates go MARGIN-BLIND. OFF stamps nothing (byte-identical).
-	if cmd.UnifiedGateFill {
-		produceCtx = mfgServices.WithUnifiedGateFill(produceCtx, true)
-		produceCtx = mfgServices.WithDeliveryTarget(produceCtx, mfgServices.ConstructionSiteTarget(task.ConstructionSite()))
-	}
+	// Mark this run a UNIFIED GATE NODE carrying the gate waypoint. IsUnifiedGateNode is then true
+	// through the whole tree (ctx threads by value), so lane B's per-node gates go MARGIN-BLIND.
+	produceCtx = mfgServices.WithUnifiedGateFill(produceCtx, true)
+	produceCtx = mfgServices.WithDeliveryTarget(produceCtx, mfgServices.ConstructionSiteTarget(task.ConstructionSite()))
 	// The executor feeds the drain's per-material production with the balanced-to-limiting policy
 	// (saturation-capped tranches, taproot-first, feed-responsive-only) unconditionally (sp-sxyx6);
 	// no per-run feeding config is threaded from the coordinator any more.
@@ -872,16 +869,11 @@ func (h *RunConstructionCoordinatorHandler) scaledSupplyTaskTimeout(ctx context.
 	return depthScaledTimeout(base, depth, constructionSupplyTaskMaxTimeout)
 }
 
-// supplyTaskChainDepth is the effective fabrication depth this task will drive. A BUY task (the planner
-// resolved a market for the final good, no factory) is a buy+haul — depth 1, the flat-30m shallow path
-// (byte-identical). A FABRICATE task drives the resolver tree, so it takes the good's static chain
-// depth bounded by the pipeline's configured fabricate cap (the depth the resolver actually walks).
-// Unified gate-fill resolves the full tree for EVERY material regardless of the frozen buy/fabricate
-// decision, so it uses the chain depth even for a buy-planned good.
+// supplyTaskChainDepth is the effective fabrication depth this task will drive. The drain resolves the
+// full scarcity-gated tree for EVERY material regardless of the planner's frozen buy/fabricate decision
+// (unified gate-fill), so a task takes the good's static chain depth bounded by the pipeline's
+// configured fabricate cap (the depth the resolver actually walks) — even a buy-planned good.
 func (h *RunConstructionCoordinatorHandler) supplyTaskChainDepth(ctx context.Context, cmd *RunConstructionCoordinatorCommand, task *manufacturing.ManufacturingTask) int {
-	if task.FactorySymbol() == "" && !cmd.UnifiedGateFill {
-		return 1
-	}
 	depth := staticSupplyChainDepth(task.Good(), h.resolveChainDepthCap(ctx, task))
 	if depth < 1 {
 		depth = 1
@@ -1047,40 +1039,27 @@ func onHandUnits(ship *navigation.Ship, good string) int {
 }
 
 // constructionSourcingNode builds the SupplyChainNode the drain hands to ProduceGood for one
-// construction material, honoring the buy-vs-produce decision the planner recorded on the task:
+// construction material. Unified gate-fill ALWAYS resolves the full scarcity-gated dependency tree
+// via the shared SupplyChainResolver, ignoring the planner's frozen buy-vs-fabricate decision:
+// feeding is INHERENT in the tree, so a gate material whose good HAS a source factory is
+// fabricated+fed instead of bought cold (a pure-BUY feeds nothing — the bug this closes). The
+// resolver itself decides buy-vs-fabricate per node by live supply, so it PRODUCES a scarce
+// intermediate that has a factory (recursing its sub-chain to relieve the scarcity) and BUYS an
+// abundant one. The tree resolves under the run strategy (smart by default) and is bounded by the
+// pipeline's SupplyChainDepth (the depth backstop) + the resolver's cycle guard.
 //
-//   - FactorySymbol == "": the planner found a market selling the final good, so BUY it directly
-//     (one hop, no chain). The resolver is never consulted here.
-//   - FactorySymbol != "": the planner chose FABRICATION. Builds the FULL scarcity-gated
-//     dependency tree via the shared SupplyChainResolver, so the drain PRODUCES a scarce
-//     intermediate that has a factory (recursing its sub-chain to relieve the scarcity) and BUYS an
-//     abundant one — instead of a flat one-level "fabricate root, buy every immediate input"
-//     node. The tree resolves under the run strategy (smart by default) and is bounded by the
-//     pipeline's SupplyChainDepth (the depth backstop) + the resolver's cycle guard. When the
-//     resolver is unwired (existing coordinator tests) OR cannot resolve the good (stale/absent
-//     market data), it FALLS BACK to the one-level fabricate node.
-//
-// A fabricate task whose good has no known recipe (should not happen — the planner never
-// fabricates a raw good) falls back to a BUY so the engine attempts a market source rather than
-// polling forever on a childless fabricate.
+// It falls back to the planner's frozen decision ONLY when the resolver is unwired (existing
+// coordinator tests) or cannot build the tree (stale/absent market data): a buy-final task
+// (FactorySymbol == "") becomes a bare BUY; a fabricate task becomes the one-level fabricate node.
+// A fabricate task whose good has no known recipe (should not happen — the planner never fabricates
+// a raw good) falls back to a BUY so the engine attempts a market source rather than polling forever
+// on a childless fabricate.
 func (h *RunConstructionCoordinatorHandler) constructionSourcingNode(ctx context.Context, cmd *RunConstructionCoordinatorCommand, task *manufacturing.ManufacturingTask, systemSymbol string, playerID int) *goods.SupplyChainNode {
-	// Unified gate-fill short-circuits the bespoke buy-vs-fabricate planner path. Feeding is
-	// INHERENT in the tree, so ALWAYS resolve the full scarcity-gated tree, ignoring the planner's
-	// frozen decision — a pure-BUY decision feeds nothing, so a gate material whose good HAS a
-	// source factory must fabricate+feed instead of buying it cold; the resolver itself decides
-	// buy-vs-fabricate per node by live supply. Falls through to the frozen decision below if the
-	// resolver cannot build (unwired/stale market data) — never dies, never worse than a plain
-	// buy-vs-fabricate run.
-	if cmd.UnifiedGateFill {
-		if tree := h.resolveFabricationTree(ctx, cmd, task, systemSymbol, playerID); tree != nil {
-			return tree
-		}
+	if tree := h.resolveFabricationTree(ctx, cmd, task, systemSymbol, playerID); tree != nil {
+		return tree
 	}
 	if task.FactorySymbol() == "" {
 		return &goods.SupplyChainNode{Good: task.Good(), AcquisitionMethod: goods.AcquisitionBuy}
-	}
-	if tree := h.resolveFabricationTree(ctx, cmd, task, systemSymbol, playerID); tree != nil {
-		return tree
 	}
 	// Fallback: the original one-level fabricate node.
 	node := goods.NewSupplyChainNode(task.Good(), goods.AcquisitionFabricate)

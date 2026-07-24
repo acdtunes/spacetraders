@@ -28,8 +28,6 @@ func TestStartOrResume_UnifiedGateFill_AdmitsScarceExportWithoutMinSupply(t *tes
 	pipelineRepo := &plannerStubPipelineRepo{}
 	taskRepo := &plannerStubTaskRepo{tasksByPipeline: map[string][]*manufacturing.ManufacturingTask{}}
 	planner := newPlannerUnderTest(pipelineRepo, taskRepo, overrideConstructionMarketRepo(t), newPlannerTestConstructionSite(t))
-	planner.SetUnifiedGateFill(true)
-
 	// depth 3 = buy-final-only: an unbuyable material can only DEFER, so admission is the sole gate.
 	// minSupply="" (flag not passed): the toggle must supply the SCARCE admission default.
 	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 3, 5, "", "", nil)
@@ -64,38 +62,12 @@ func TestStartOrResume_UnifiedGateFill_AdmitsScarceExportWithoutMinSupply(t *tes
 	}
 }
 
-// AC2 (byte-identical OFF): the SAME scenario with the toggle OFF must DEFER the SCARCE export at the
-// MODERATE default and persist NO floor — proving the fix is dark when unified_gate_fill is off.
-func TestStartOrResume_UnifiedGateFillOff_DefersScarceExport(t *testing.T) {
-	pipelineRepo := &plannerStubPipelineRepo{}
-	taskRepo := &plannerStubTaskRepo{tasksByPipeline: map[string][]*manufacturing.ManufacturingTask{}}
-	planner := newPlannerUnderTest(pipelineRepo, taskRepo, overrideConstructionMarketRepo(t), newPlannerTestConstructionSite(t))
-	planner.SetUnifiedGateFill(false)
-
-	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 3, 5, "", "", nil)
-	if err != nil {
-		t.Fatalf("StartOrResume: %v", err)
-	}
-
-	if !contains(result.DeferredMaterials, "ADVANCED_CIRCUITRY") {
-		t.Fatalf("with unified gate-fill OFF the SCARCE export must DEFER at the MODERATE floor, got deferred=%v", result.DeferredMaterials)
-	}
-	if len(pipelineRepo.created) != 1 {
-		t.Fatalf("expected exactly 1 pipeline persisted, got %d", len(pipelineRepo.created))
-	}
-	if got := pipelineRepo.created[0].MinSupply(); got != "" {
-		t.Errorf("OFF must persist no floor (empty → MODERATE default downstream), got %q", got)
-	}
-}
-
 // AC3 (explicit override wins): an explicit --min-supply=MODERATE must beat the toggle's SCARCE
 // default — the operator can still FORCE a stricter floor even under unified gate-fill.
 func TestStartOrResume_ExplicitMinSupplyBeatsUnifiedGateFillDefault(t *testing.T) {
 	pipelineRepo := &plannerStubPipelineRepo{}
 	taskRepo := &plannerStubTaskRepo{tasksByPipeline: map[string][]*manufacturing.ManufacturingTask{}}
 	planner := newPlannerUnderTest(pipelineRepo, taskRepo, overrideConstructionMarketRepo(t), newPlannerTestConstructionSite(t))
-	planner.SetUnifiedGateFill(true)
-
 	// Explicit MODERATE floor: even though the toggle would default SCARCE, the operator's MODERATE wins.
 	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 3, 5, "", "MODERATE", nil)
 	if err != nil {
@@ -126,8 +98,6 @@ func TestStartOrResume_UnifiedGateFillResume_UpgradesEmptyFloorToScarce(t *testi
 	pipelineRepo := &plannerStubPipelineRepo{existing: existing}
 	taskRepo := &plannerStubTaskRepo{tasksByPipeline: map[string][]*manufacturing.ManufacturingTask{existing.ID(): {deferred}}}
 	planner := newPlannerUnderTest(pipelineRepo, taskRepo, overrideConstructionMarketRepo(t), newPlannerTestConstructionSite(t))
-	planner.SetUnifiedGateFill(true)
-
 	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 3, 5, "", "", nil)
 	if err != nil {
 		t.Fatalf("StartOrResume: %v", err)
@@ -165,8 +135,6 @@ func TestStartOrResume_UnifiedGateFillResume_PreservesExplicitFloor(t *testing.T
 	pipelineRepo := &plannerStubPipelineRepo{existing: existing}
 	taskRepo := &plannerStubTaskRepo{tasksByPipeline: map[string][]*manufacturing.ManufacturingTask{existing.ID(): {pending}}}
 	planner := newPlannerUnderTest(pipelineRepo, taskRepo, newPlannerTestMarketRepo(t), newPlannerTestConstructionSite(t))
-	planner.SetUnifiedGateFill(true)
-
 	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 3, 5, "", "", nil)
 	if err != nil {
 		t.Fatalf("StartOrResume: %v", err)

@@ -268,6 +268,30 @@ func (t *ManufacturingTask) UpdateSourceMarket(newSource string) error {
 	return nil
 }
 
+// UpdateFactorySymbol assigns a fabrication factory to a DELIVER_TO_CONSTRUCTION task that was
+// deferred at planning time (no buy source found). It mirrors UpdateSourceMarket's validation style:
+// only PENDING tasks may be updated (to avoid disrupting in-flight work). Assigning a factory makes
+// the task no longer IsDeferredConstruction(), so the activator marks it READY and the drain
+// fabricates the material (buying inputs, feeding the factory, harvesting) rather than buying the
+// good's depleted export cold — the buy-only deadlock recovery (sp-9p87s). Construction-only: a
+// factory is meaningless for other task types (an ACQUIRE_DELIVER's factorySymbol is its delivery
+// target, not a fabrication site).
+func (t *ManufacturingTask) UpdateFactorySymbol(newFactory string) error {
+	if t.status != TaskStatusPending {
+		return &ErrInvalidTaskTransition{
+			TaskID:      t.id,
+			From:        t.status,
+			To:          t.status,
+			Description: "can only update factory for PENDING tasks",
+		}
+	}
+	if t.taskType != TaskTypeDeliverToConstruction {
+		return fmt.Errorf("can only update factory for DELIVER_TO_CONSTRUCTION tasks, got %s", t.taskType)
+	}
+	t.factorySymbol = newFactory
+	return nil
+}
+
 // Phase completion methods
 
 // MarkCollectPhaseComplete marks the collect phase as completed for COLLECT_SELL tasks.

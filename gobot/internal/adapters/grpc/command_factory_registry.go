@@ -478,13 +478,6 @@ func (s *DaemonServer) buildCommandForType(commandType string, config map[string
 	if commandType == "trade_fleet_coordinator" {
 		s.resolveTradeFleetConfig(config)
 	}
-	// sp-vh1s: the construction-supply drain gets the SAME [manufacturing] unified_gate_fill toggle,
-	// resolved fresh on every build so a config edit + restart flips a recovered drain — but via a
-	// surgical resolver that injects ONLY the toggle, leaving the drain's launch-config production_strategy
-	// untouched (the full resolveManufacturingConfig would override it).
-	if commandType == "construction_coordinator" {
-		s.resolveConstructionUnifiedGateFill(config)
-	}
 	// sp-1txd: same live-config discipline for the fleet capacity autosizer. Its
 	// [fleet_autosizer] knobs are cleared and re-injected from the boot-loaded config.yaml on
 	// every build — creation and recovery alike — so a config edit + restart retunes a recovered
@@ -1001,12 +994,6 @@ func buildConstructionCoordinatorCommand(cfg *configReader, playerID int, contai
 		ContainerID:   cfg.RequiredString("container_id"),
 		MaxIterations: cfg.OptionalInt("max_iterations", -1),
 		TickSeconds:   cfg.OptionalInt("tick_seconds", 0),
-		// sp-vh1s (Admiral sign-off 2026-07-14): the unified gate-fill toggle, from [manufacturing] via
-		// resolveConstructionUnifiedGateFill. absent/false → the drain honors the planner's frozen
-		// buy-vs-fabricate decision per material (byte-identical to today); ON drives the resolver's full
-		// scarcity-gated tree for every gate material and marks the run a gate node (the drain stamps
-		// WithUnifiedGateFill + a construction-site DeliveryTarget derived from the task's own site).
-		UnifiedGateFill: cfg.OptionalBool("unified_gate_fill"),
 		// sp-e55b: prefer the drain's OWN dedicated gate-hauler fleet (e.g. TORWIND-C/-D) before
 		// opportunistic idle hulls. Empty dedicated_fleet defaults (in-handler) to the shared
 		// "manufacturing" identity that also authorizes the claim; exclusive_dedicated_fleet seals the

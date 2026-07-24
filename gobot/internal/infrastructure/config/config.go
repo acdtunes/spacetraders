@@ -40,9 +40,6 @@ type Config struct {
 	// WorkerRebalancer holds the worker-rebalancer coordinator's knobs (sp-f5pr),
 	// injected live into the coordinator container on every build.
 	WorkerRebalancer WorkerRebalancerConfig `mapstructure:"worker_rebalancer"`
-	// Manufacturing holds the manufacturing coordinators' knobs (sp-kk61),
-	// injected live into the coordinator container on every build.
-	Manufacturing ManufacturingConfig `mapstructure:"manufacturing"`
 	// Scouting holds the scouting subsystem's knobs (sp-x8i5) — the tour-start phase
 	// jitter ceiling — injected live into scout_tour and scout_post_coordinator
 	// containers on every build.

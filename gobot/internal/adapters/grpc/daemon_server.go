@@ -167,14 +167,6 @@ type DaemonServer struct {
 	// restarting, no code redeploy.
 	workerRebalancerConfig config.WorkerRebalancerConfig
 
-	// manufacturingConfig carries the manufacturing coordinators' working-capital
-	// reserve knob (sp-kk61) from config.yaml. Both goods_factory_coordinator and
-	// manufacturing_coordinator resolve it into the coordinator container's launch
-	// config on every build (creation + restart recovery via
-	// resolveManufacturingConfig), so a captain raises the factory input-buy spend
-	// floor above its 50k default by editing config and restarting, no code redeploy.
-	manufacturingConfig config.ManufacturingConfig
-
 	// scoutingConfig carries the scouting subsystem's tour-start phase jitter ceiling
 	// (sp-x8i5) from config.yaml. ScoutTour and ScoutPostCoordinator resolve it into
 	// their container's launch config on every build (creation + restart recovery via
@@ -232,7 +224,6 @@ func NewDaemonServer(
 	contractConfig config.ContractConfig,
 	tradeFleetConfig config.TradeFleetConfig,
 	workerRebalancerConfig config.WorkerRebalancerConfig,
-	manufacturingConfig config.ManufacturingConfig,
 	scoutingConfig config.ScoutingConfig,
 	fleetAutosizerConfig config.FleetAutosizerConfig,
 	bootstrapConfig config.BootstrapConfig,
@@ -295,7 +286,6 @@ func NewDaemonServer(
 		contractConfig:         contractConfig,
 		tradeFleetConfig:       tradeFleetConfig,
 		workerRebalancerConfig: workerRebalancerConfig,
-		manufacturingConfig:    manufacturingConfig,
 		scoutingConfig:         scoutingConfig,
 		fleetAutosizerConfig:   fleetAutosizerConfig,
 		bootstrapConfig:        bootstrapConfig,

@@ -556,7 +556,9 @@ func TestStartOrResume_MixedSourceableAndUnsourceable_SavesWithDeferral(t *testi
 	taskRepo := &plannerStubTaskRepo{tasksByPipeline: map[string][]*manufacturing.ManufacturingTask{}}
 	planner := newPlannerUnderTest(pipelineRepo, taskRepo, marketRepo, newPlannerTestConstructionSite(t))
 
-	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 3, 5, "", "", nil)
+	// Explicit MODERATE floor: unified gate-fill (sp-9i4mq) defaults an unset floor to SCARCE, which
+	// would admit the LIMITED circuitry export; MODERATE keeps the SCARCE-below-floor good deferred.
+	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 3, 5, "", "MODERATE", nil)
 	if err != nil {
 		t.Fatalf("StartOrResume must not fail when one material is unsourceable: %v", err)
 	}
@@ -622,7 +624,9 @@ func TestStartOrResume_MixedSourceableAndUnsourceable_ReportsDeferredMaterialByN
 	taskRepo := &plannerStubTaskRepo{tasksByPipeline: map[string][]*manufacturing.ManufacturingTask{}}
 	planner := newPlannerUnderTest(pipelineRepo, taskRepo, marketRepo, newPlannerTestConstructionSite(t))
 
-	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 3, 5, "", "", nil)
+	// Explicit MODERATE floor: unified gate-fill (sp-9i4mq) defaults an unset floor to SCARCE, which
+	// would admit the LIMITED circuitry export; MODERATE keeps the SCARCE-below-floor good deferred.
+	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 3, 5, "", "MODERATE", nil)
 	if err != nil {
 		t.Fatalf("StartOrResume must not fail when one material is unsourceable: %v", err)
 	}
@@ -855,7 +859,9 @@ func TestStartOrResume_FabricableOnlyMaterialFabricatedWithinCeiling(t *testing.
 	taskRepo := &plannerStubTaskRepo{tasksByPipeline: map[string][]*manufacturing.ManufacturingTask{}}
 	planner := newPlannerUnderTest(pipelineRepo, taskRepo, marketRepo, singleMaterialSite("MACHINERY", 50))
 
-	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 2, 5, "", "", nil)
+	// Explicit MODERATE floor: unified gate-fill (sp-9i4mq) defaults an unset floor to SCARCE, which
+	// would admit the LIMITED factory export as a direct buy; MODERATE keeps this a fabricate decision.
+	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 2, 5, "", "MODERATE", nil)
 	if err != nil {
 		t.Fatalf("StartOrResume must fabricate a fabricable-only material: %v", err)
 	}
@@ -925,7 +931,9 @@ func TestStartOrResume_FabricableMaterialDefersWhenInputUnsourceable(t *testing.
 	taskRepo := &plannerStubTaskRepo{tasksByPipeline: map[string][]*manufacturing.ManufacturingTask{}}
 	planner := newPlannerUnderTest(pipelineRepo, taskRepo, marketRepo, singleMaterialSite("MACHINERY", 50))
 
-	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 2, 5, "", "", nil)
+	// Explicit MODERATE floor: unified gate-fill (sp-9i4mq) defaults an unset floor to SCARCE, which
+	// would admit the LIMITED factory export as a direct buy; MODERATE keeps this a fabricate decision.
+	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 2, 5, "", "MODERATE", nil)
 	if err != nil {
 		t.Fatalf("StartOrResume must defer (not error) an unfeedable fabrication: %v", err)
 	}
@@ -1053,7 +1061,9 @@ func TestStartOrResume_ScarceButProducibleInput_StagedViaResolver(t *testing.T) 
 	// A resolver that builds a complete tree => the drain can source every input => FEASIBLE.
 	planner.SetTreeResolver(&fakeFabResolver{node: goods.NewSupplyChainNode("ADVANCED_CIRCUITRY", goods.AcquisitionFabricate)})
 
-	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 0, 5, "", "", nil)
+	// Explicit MODERATE floor: unified gate-fill (sp-9i4mq) defaults an unset floor to SCARCE, which
+	// would admit the SCARCE factory export as a direct buy; MODERATE keeps this a fabricate decision.
+	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 0, 5, "", "MODERATE", nil)
 	if err != nil {
 		t.Fatalf("StartOrResume: %v", err)
 	}
@@ -1102,7 +1112,9 @@ func TestStartOrResume_ScarceProducibleInput_DeferredWithoutResolver(t *testing.
 	planner := newPlannerUnderTest(pipelineRepo, taskRepo, scarceProducibleCircuitryRepo(t), singleMaterialSite("ADVANCED_CIRCUITRY", 280))
 	// No SetTreeResolver: the fallback MODERATE+ immediate-input gate applies.
 
-	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 0, 5, "", "", nil)
+	// Explicit MODERATE floor: unified gate-fill (sp-9i4mq) defaults an unset floor to SCARCE, which
+	// would admit the SCARCE factory export as a direct buy; MODERATE keeps this a fabricate decision.
+	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 0, 5, "", "MODERATE", nil)
 	if err != nil {
 		t.Fatalf("StartOrResume must defer (not error) when an input is not MODERATE+ buyable: %v", err)
 	}
@@ -1131,7 +1143,9 @@ func TestStartOrResume_TrulyUnsourceableInput_DefersWhenResolverErrors(t *testin
 	// The resolver errors - the tree cannot be completed because an input is genuinely unsourceable.
 	planner.SetTreeResolver(&fakeFabResolver{err: &goods.ErrUnknownGood{Good: "ELECTRONICS"}})
 
-	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 0, 5, "", "", nil)
+	// Explicit MODERATE floor: unified gate-fill (sp-9i4mq) defaults an unset floor to SCARCE, which
+	// would admit the SCARCE factory export as a direct buy; MODERATE keeps this a fabricate decision.
+	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 0, 5, "", "MODERATE", nil)
 	if err != nil {
 		t.Fatalf("StartOrResume must defer (not error) a truly-unsourceable material: %v", err)
 	}
@@ -1180,7 +1194,9 @@ func TestStartOrResume_AllInputsBuyable_StagedViaResolver(t *testing.T) {
 	planner := newPlannerUnderTest(pipelineRepo, taskRepo, marketRepo, singleMaterialSite("MACHINERY", 50))
 	planner.SetTreeResolver(&fakeFabResolver{node: goods.NewSupplyChainNode("MACHINERY", goods.AcquisitionFabricate)})
 
-	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 2, 5, "", "", nil)
+	// Explicit MODERATE floor: unified gate-fill (sp-9i4mq) defaults an unset floor to SCARCE, which
+	// would admit the LIMITED factory export as a direct buy; MODERATE keeps this a fabricate decision.
+	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 2, 5, "", "MODERATE", nil)
 	if err != nil {
 		t.Fatalf("StartOrResume: %v", err)
 	}

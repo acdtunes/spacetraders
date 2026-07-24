@@ -18,11 +18,6 @@ type RunConstructionCoordinatorCommand struct {
 	MaxIterations int
 	// TickSeconds is the delay between drain ticks; <=0 uses the coordinator's default.
 	TickSeconds int
-	// UnifiedGateFill switches the drain from the planner's frozen buy-vs-fabricate
-	// decision (OFF, default: byte-identical) to the resolver's full scarcity-gated tree
-	// for every gate material, marking the run a gate node so lane B's per-node gates go
-	// margin-blind (ON). Fed from ManufacturingConfig.UnifiedGateFill.
-	UnifiedGateFill bool
 
 	// DedicatedFleet is the Ship.DedicatedFleet() tag this drain prefers: each tick it
 	// discovers idle hulls carrying this tag via FindIdleShipsByFleet first, then
