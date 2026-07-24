@@ -1643,10 +1643,18 @@ def solve_tour(snapshot, ship, constraints, model, waypoints=None,
     age_cap = constraints.get("max_snapshot_age_minutes") or MAX_SNAPSHOT_AGE_MINUTES_DEFAULT
     cutoff = time.time() - age_cap * 60
     allowed = set(constraints.get("allowed_systems") or [ship["current_system"]])
-    rows = [r for r in snapshot
-            if r["observed_at_unix"] >= cutoff
-            and r["system_symbol"] in allowed
-            and (r["ask"] > 0 or r["bid"] > 0)]
+    in_scope = [r for r in snapshot
+                if r["system_symbol"] in allowed
+                and (r["ask"] > 0 or r["bid"] > 0)]
+    rows = [r for r in in_scope if r["observed_at_unix"] >= cutoff]
+    # This cap is a BACKSTOP behind the caller's own per-activity freshness pass, so every
+    # row it drops is one the caller judged rankable. Report the count: an unmetered second
+    # filter can void the upstream model wholesale and, unreported, only ever surfaces in
+    # the total-wipeout case below.
+    stale_dropped = len(in_scope) - len(rows)
+    if stale_dropped:
+        logger.info("tour-solver: staleness backstop dropped %d of %d in-scope rows "
+                    "(cap %d min)", stale_dropped, len(in_scope), age_cap)
     if not rows:
         return _infeasible("no_fresh_market_data", model_version)
 

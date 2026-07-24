@@ -1863,9 +1863,13 @@ func (h *RunTourCoordinatorHandler) planForState(
 		plannerReserve = 0
 	}
 	cons := routing.TourConstraints{
-		MaxHops:               maxHops,
-		MinMarginPerUnit:      cmd.MinMargin,
-		MaxSnapshotAgeMinutes: int(maxListingAge.Minutes()),
+		MaxHops:          maxHops,
+		MinMarginPerUnit: cmd.MinMargin,
+		// The solver re-filters the snapshot on this cap, so it must be a BACKSTOP, not a
+		// second opinion: BuildTourSnapshot above already dropped each row against ITS OWN
+		// activity's fitted cap, and a tighter flat value here would silently re-drop the
+		// long-lived WEAK rows that pass deliberately kept.
+		MaxSnapshotAgeMinutes: int(h.rankerAgeCaps.Widest().Minutes()),
 		MaxSpend:              maxSpend,
 		WorkingCapitalReserve: plannerReserve,
 		AllowedSystems:        allowedSystems,

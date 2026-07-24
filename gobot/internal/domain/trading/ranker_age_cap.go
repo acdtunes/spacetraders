@@ -86,6 +86,27 @@ func (c RankerAgeCaps) For(activity string) time.Duration {
 	}
 }
 
+// Widest returns the loosest cap in the table — the age past which NO activity is still
+// rankable. It is the honest BACKSTOP for a consumer downstream of a per-activity filter
+// (the tour solver, which re-checks the snapshot it is handed): anything tighter would
+// re-drop rows the per-activity pass deliberately kept, silently defeating the fitted
+// model, while anything looser would admit rows no activity considers fresh. Derived from
+// the same table For reads, so a retune moves it with no second definition.
+func (c RankerAgeCaps) Widest() time.Duration {
+	widest := time.Duration(0)
+	for _, activity := range []shared.ActivityLevel{
+		shared.ActivityLevelWeak,
+		shared.ActivityLevelRestricted,
+		shared.ActivityLevelGrowing,
+		shared.ActivityLevelStrong,
+	} {
+		if capped := c.For(string(activity)); capped > widest {
+			widest = capped
+		}
+	}
+	return widest
+}
+
 // capOrDefault returns d when it is a positive duration, else the fitted default —
 // the per-field "0 → armed default" fallback For relies on.
 func capOrDefault(d, fitted time.Duration) time.Duration {

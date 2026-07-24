@@ -54,6 +54,11 @@ type tourFixture struct {
 	// to model a real IMPORT sink so the look-back sink discipline (sp-9mkf: never sell into
 	// an exporter's bid) is exercised, not bypassed.
 	tradeType map[string]map[string]string
+	// activityByWaypoint and ageByWaypoint give a test per-market control of the two inputs
+	// the activity-conditioned freshness caps read: the good's ACTIVITY level and how old the
+	// cached read is. Absent → the "STRONG, observed now" default every other test relies on.
+	activityByWaypoint map[string]string
+	ageByWaypoint      map[string]time.Duration
 
 	// neighbors maps a system to the systems one jump-gate hop away (the fake's answer to
 	// GetJumpGateConnectionsQuery). Drives both the tour graph's neighbor scan and the
@@ -302,6 +307,9 @@ func (r *tourFakeMarketRepo) GetMarketData(ctx context.Context, waypointSymbol s
 		return nil, nil
 	}
 	supply, activity := "MODERATE", "STRONG"
+	if a, ok := r.fx.activityByWaypoint[waypointSymbol]; ok {
+		activity = a
+	}
 	var tgs []market.TradeGood
 	for good := range goods {
 		// Per-good trade type (sp-ed4i): defaults to EXPORT (the pre-existing behavior) so a
@@ -326,6 +334,9 @@ func (r *tourFakeMarketRepo) GetMarketData(ctx context.Context, waypointSymbol s
 	observedAt := time.Now()
 	if r.fx.staleMarkets[waypointSymbol] {
 		observedAt = observedAt.Add(-2 * time.Hour) // >maxListingAge (75m) → freshListings drops it
+	}
+	if age, ok := r.fx.ageByWaypoint[waypointSymbol]; ok {
+		observedAt = time.Now().Add(-age)
 	}
 	m, err := market.NewMarket(waypointSymbol, tgs, observedAt)
 	if err != nil {
@@ -451,12 +462,17 @@ type tourFakeRoutingClient struct {
 	// each call (sp-o4wa): the seam a noise-goods blocklist test asserts against — a
 	// blocklisted good must never appear in the snapshot the solver plans cargo over.
 	snapshots [][]routing.TourGoodSnapshot
+	// snapshotAgeCaps captures cons.MaxSnapshotAgeMinutes on each call: the solver-side
+	// staleness BACKSTOP. It must never be tighter than the activity caps the snapshot was
+	// already filtered against, or the solver silently re-drops rows the Go side kept.
+	snapshotAgeCaps []int
 }
 
 func (c *tourFakeRoutingClient) OptimizeTradeTour(ctx context.Context, snapshot []routing.TourGoodSnapshot, waypoints []routing.TourWaypoint, ship routing.TourShipState, cons routing.TourConstraints, deposits []routing.TourDepositCandidate, absorption []routing.TourMarketAbsorption) (*routing.TourPlan, error) {
 	c.calls++
 	c.positions = append(c.positions, ship.CurrentWaypoint)
 	c.snapshots = append(c.snapshots, snapshot)
+	c.snapshotAgeCaps = append(c.snapshotAgeCaps, cons.MaxSnapshotAgeMinutes)
 	c.maxSpends = append(c.maxSpends, cons.MaxSpend)
 	c.reserves = append(c.reserves, cons.WorkingCapitalReserve)
 	c.maxTourSystems = append(c.maxTourSystems, cons.MaxTourSystems)
