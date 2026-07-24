@@ -8,6 +8,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
 
 // The tour snapshot must zero the sink-side Bid for an EXPORT good so the solver —
@@ -34,7 +35,7 @@ func TestBuildTourSnapshot_ZeroesExportBid_PreservesImportAndExchangeBid(t *test
 	}
 	wps := &snapFakeWaypointRepo{byS: map[string][]*shared.Waypoint{}}
 
-	snapshot, _, err := BuildTourSnapshot(context.Background(), repo, wps, []string{"X1-GQ92"}, 1, now, time.Hour)
+	snapshot, _, err := BuildTourSnapshot(context.Background(), repo, wps, []string{"X1-GQ92"}, 1, now, trading.DefaultRankerAgeCaps())
 	if err != nil {
 		t.Fatalf("BuildTourSnapshot: %v", err)
 	}

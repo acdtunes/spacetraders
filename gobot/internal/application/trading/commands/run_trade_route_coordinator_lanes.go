@@ -69,27 +69,28 @@ func (h *RunTradeRouteCoordinatorHandler) scanLanes(
 		listings = append(listings, neighborListings...)
 	}
 
-	// Ranker age-cap (sp-xwa1): a lane priced from a market observation older than
-	// maxListingAge can already have moved, so ranking it chases a spread that no
-	// longer exists. An UNDIRECTED auto-scan drops stale rows before ranking so a
-	// stale lane can't win selection and execute at moved prices. A DIRECTED --dest
-	// scan keeps every row — the operator's lane is re-verified LIVE at execution
-	// (staleAskAborts + the per-visit margin re-check), so staleness must never
-	// SILENTLY veto it — but logs the retained stale rows so the reliance on live
-	// re-verification is visible. Either way the exclusion/retention is put in the
-	// MESSAGE TEXT (staleListingSummary), which `container logs` keeps even though it
-	// drops the metadata map (sp-149h/sp-iqyq renderer defect).
+	// Ranker age-cap (sp-xwa1, activity-conditioned sp-t5sh5): a lane priced from a
+	// market observation past its activity's freshness cap can already have moved, so
+	// ranking it chases a spread that no longer exists. Each listing is dropped against
+	// ITS OWN activity's cap (h.rankerAgeCaps.For — a WEAK market stays eligible for
+	// hours, a STRONG one only ~30 min), not one flat threshold. An UNDIRECTED auto-scan
+	// drops stale rows before ranking so a stale lane can't win selection and execute at
+	// moved prices. A DIRECTED --dest scan keeps every row — the operator's lane is
+	// re-verified LIVE at execution (staleAskAborts + the per-visit margin re-check), so
+	// staleness must never SILENTLY veto it — but logs the retained stale rows so the
+	// reliance on live re-verification is visible. Either way the exclusion/retention is
+	// put in the MESSAGE TEXT (staleListingSummary), which `container logs` keeps even
+	// though it drops the metadata map (sp-149h/sp-iqyq renderer defect).
 	logger := common.LoggerFromContext(ctx)
-	fresh, stale := partitionListingsByAge(listings, h.clock.Now(), maxListingAge)
+	fresh, stale := partitionListingsByAge(listings, h.clock.Now(), h.rankerAgeCaps)
 	if len(stale) > 0 {
 		if targetDest == "" {
 			logger.Log("INFO", fmt.Sprintf(
-				"Excluded %d stale market listing(s) older than %s from undirected lane ranking: %s",
-				len(stale), maxListingAge, staleListingSummary(stale)),
+				"Excluded %d stale market listing(s) past their activity-conditioned freshness cap from undirected lane ranking: %s",
+				len(stale), staleListingSummary(stale)),
 				map[string]interface{}{
-					"action":          "stale_listings_excluded",
-					"count":           len(stale),
-					"max_age_minutes": int(maxListingAge.Minutes()),
+					"action": "stale_listings_excluded",
+					"count":  len(stale),
 				})
 			listings = fresh
 		} else {
@@ -97,10 +98,9 @@ func (h *RunTradeRouteCoordinatorHandler) scanLanes(
 				"Retained %d stale market listing(s) for directed --dest %q (re-verified live at execution, not vetoed): %s",
 				len(stale), targetDest, staleListingSummary(stale)),
 				map[string]interface{}{
-					"action":          "stale_listings_retained_directed",
-					"count":           len(stale),
-					"target_dest":     targetDest,
-					"max_age_minutes": int(maxListingAge.Minutes()),
+					"action":      "stale_listings_retained_directed",
+					"count":       len(stale),
+					"target_dest": targetDest,
 				})
 			// listings unchanged: the directed path ranks all rows; live re-verify guards it.
 		}

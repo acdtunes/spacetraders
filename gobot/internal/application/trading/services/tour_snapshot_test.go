@@ -9,6 +9,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
 
 // snapFakeMarketRepo serves a fixed set of markets keyed by waypoint symbol.
@@ -63,13 +64,14 @@ func mustWaypoint(t *testing.T, sym string, x, y float64) *shared.Waypoint {
 	return w
 }
 
-// A stale market row (older than maxAge) is excluded from the snapshot, and only
-// snapshot-market waypoints get coordinates — the exact D39 field mapping is
-// asserted so a swapped bid/ask or dropped tier can't slip through.
+// A stale good row (older than its activity's cap) is excluded from the snapshot, and
+// only snapshot-market waypoints get coordinates — the exact D39 field mapping is
+// asserted so a swapped bid/ask or dropped tier can't slip through. C37's SHIP_PARTS
+// is RESTRICTED (180-min cap), so a -4h observation is past it.
 func TestBuildTourSnapshot_ExcludesStaleAndAssemblesCoords(t *testing.T) {
 	now := time.Date(2026, 7, 9, 22, 0, 0, 0, time.UTC)
-	fresh := now.Add(-10 * time.Minute) // within the 75-min cap
-	stale := now.Add(-2 * time.Hour)    // beyond the cap
+	fresh := now.Add(-10 * time.Minute) // within K79 FUEL's STRONG 30-min cap
+	stale := now.Add(-4 * time.Hour)    // past C37 SHIP_PARTS's RESTRICTED 180-min cap
 
 	repo := &snapFakeMarketRepo{
 		order: map[string][]string{"X1-NK36": {"X1-NK36-D39", "X1-NK36-K79", "X1-NK36-C37"}},
@@ -92,7 +94,7 @@ func TestBuildTourSnapshot_ExcludesStaleAndAssemblesCoords(t *testing.T) {
 	}}
 
 	snapshot, waypoints, err := BuildTourSnapshot(context.Background(), repo, wps,
-		[]string{"X1-NK36"}, 1, now, 75*time.Minute)
+		[]string{"X1-NK36"}, 1, now, trading.DefaultRankerAgeCaps())
 	if err != nil {
 		t.Fatalf("BuildTourSnapshot: %v", err)
 	}
@@ -145,6 +147,37 @@ func TestBuildTourSnapshot_ExcludesStaleAndAssemblesCoords(t *testing.T) {
 	}
 }
 
+// TestBuildTourSnapshot_PerGoodActivityStaleness proves the staleness gate is
+// per-GOOD, not per-market (sp-t5sh5): a single market observed once, holding a WEAK
+// good and a STRONG good, keeps the WEAK row and drops the STRONG one at the SAME
+// observation age — so a market with mixed activities is neither wholly kept nor wholly
+// dropped.
+func TestBuildTourSnapshot_PerGoodActivityStaleness(t *testing.T) {
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	observed := now.Add(-90 * time.Minute) // past STRONG's 30m cap, within WEAK's 480m cap
+
+	repo := &snapFakeMarketRepo{
+		order: map[string][]string{"X1-MIX": {"X1-MIX-M1"}},
+		markets: map[string]*market.Market{
+			"X1-MIX-M1": mustMarket(t, "X1-MIX-M1", observed,
+				mustGood(t, "STABLE_GOOD", 1000, 1100, 20, "LIMITED", "WEAK", market.TradeTypeImport),
+				mustGood(t, "FAST_GOOD", 500, 600, 20, "MODERATE", "STRONG", market.TradeTypeImport)),
+		},
+	}
+	wps := &snapFakeWaypointRepo{byS: map[string][]*shared.Waypoint{"X1-MIX": {mustWaypoint(t, "X1-MIX-M1", 1, 1)}}}
+
+	snapshot, _, err := BuildTourSnapshot(context.Background(), repo, wps, []string{"X1-MIX"}, 1, now, trading.DefaultRankerAgeCaps())
+	if err != nil {
+		t.Fatalf("BuildTourSnapshot: %v", err)
+	}
+	if len(snapshot) != 1 {
+		t.Fatalf("expected only the WEAK good retained at 90m (STRONG dropped), got %d rows: %+v", len(snapshot), snapshot)
+	}
+	if snapshot[0].Good != "STABLE_GOOD" || snapshot[0].Activity != "WEAK" {
+		t.Fatalf("expected the WEAK STABLE_GOOD retained, got %+v", snapshot[0])
+	}
+}
+
 // TestBuildTourSnapshot_StaleDrop_IncrementsExclusionCounter proves the counter
 // increments once PER dropped stale lane, labeled by system — so a market-rich
 // system silently aging out of the plan is visible on tour_lanes_stale_excluded_total,
@@ -163,7 +196,9 @@ func TestBuildTourSnapshot_StaleDrop_IncrementsExclusionCounter(t *testing.T) {
 	metrics.SetGlobalTourStalenessCollector(coll)
 
 	now := time.Date(2026, 7, 9, 22, 0, 0, 0, time.UTC)
-	stale := now.Add(-2 * time.Hour) // beyond the 75-min cap
+	// -9h is past BOTH stale goods' activity caps: ST1 MEDICINE is WEAK (480-min cap)
+	// and ST2 SHIP_PARTS is RESTRICTED (180-min cap), so both drop and count as 2.
+	stale := now.Add(-9 * time.Hour)
 
 	// One fresh + two stale markets: the two stale drops must count as 2 for the system.
 	repo := &snapFakeMarketRepo{
@@ -179,7 +214,7 @@ func TestBuildTourSnapshot_StaleDrop_IncrementsExclusionCounter(t *testing.T) {
 	}
 	wps := &snapFakeWaypointRepo{byS: map[string][]*shared.Waypoint{"X1-NK36": {mustWaypoint(t, "X1-NK36-FRESH", 1, 2)}}}
 
-	if _, _, err := BuildTourSnapshot(context.Background(), repo, wps, []string{"X1-NK36"}, 1, now, 75*time.Minute); err != nil {
+	if _, _, err := BuildTourSnapshot(context.Background(), repo, wps, []string{"X1-NK36"}, 1, now, trading.DefaultRankerAgeCaps()); err != nil {
 		t.Fatalf("BuildTourSnapshot: %v", err)
 	}
 

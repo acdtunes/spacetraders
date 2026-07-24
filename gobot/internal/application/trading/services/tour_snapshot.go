@@ -13,6 +13,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
 
 // BuildTourSnapshot assembles the market snapshot and waypoint coordinates for
@@ -23,11 +24,15 @@ import (
 // (WaypointRepository.ListBySystem is already era-filtered, so dead-era coords never
 // leak into routing).
 //
-// Staleness: a market row whose cached snapshot is older than maxAge (relative to
-// now) is excluded — the same age-cap discipline as lane ranking. The caller passes
-// the trading package's maxListingAge so the 75-minute value is defined once, not
-// redeclared here. A zero ObservedAt means "unknown age" and is treated as fresh
-// (matching GoodListing semantics).
+// Staleness: each GOOD row is excluded when its market's cached snapshot is older than
+// that good's ACTIVITY-conditioned freshness cap (sp-t5sh5): caps.For(good.Activity) —
+// a WEAK good survives for hours, a STRONG one only ~30 min — the same activity-cap
+// discipline as the undirected lane ranker (partitionListingsByAge). The check is
+// per-good, not per-market, so a market with mixed activities keeps its WEAK rows while
+// dropping its STRONG ones. The caller passes the same config-resolved RankerAgeCaps
+// table the lane ranker uses, so the caps are defined once, not redeclared here. A zero
+// ObservedAt means "unknown age" and is treated as fresh (matching GoodListing
+// semantics).
 //
 // Failure posture: a market that cannot be read simply contributes no rows (an
 // unreadable market is not a lane); a per-system waypoint-repo error degrades that
@@ -44,7 +49,7 @@ func BuildTourSnapshot(
 	systems []string,
 	playerID int,
 	now time.Time,
-	maxAge time.Duration,
+	caps trading.RankerAgeCaps,
 ) ([]routing.TourGoodSnapshot, []routing.TourWaypoint, error) {
 	var snapshot []routing.TourGoodSnapshot
 	var waypoints []routing.TourWaypoint
@@ -63,15 +68,21 @@ func BuildTourSnapshot(
 				continue // an unreadable market simply doesn't contribute rows
 			}
 			observed := mkt.LastUpdated()
-			if !observed.IsZero() && now.Sub(observed) > maxAge {
-				// Count this drop so a market-rich system silently aging past the cap
-				// is visible on tour_lanes_stale_excluded_total instead of just
-				// vanishing from the plan. Observation only (RULINGS #4): a no-op when
-				// metrics are disabled.
-				metrics.RecordTourLanesStaleExcluded(playerID, sys, 1)
-				continue // stale — same age-cap as lane ranking
-			}
+			age := now.Sub(observed)
+			observedKnown := !observed.IsZero()
 			for _, g := range mkt.TradeGoods() {
+				activity := derefString(g.Activity())
+				if observedKnown && age > caps.For(activity) {
+					// Per-good activity-conditioned staleness (sp-t5sh5): drop this good's
+					// row against ITS OWN activity's cap, not one flat market-wide
+					// threshold, so a market with mixed activities keeps its WEAK rows and
+					// drops its STRONG ones. Counted per dropped good ("lane") so a
+					// market-rich system silently aging past the cap is visible on
+					// tour_lanes_stale_excluded_total instead of just vanishing from the
+					// plan. Observation only (RULINGS #4): a no-op when metrics are disabled.
+					metrics.RecordTourLanesStaleExcluded(playerID, sys, 1)
+					continue
+				}
 				// An EXPORT market's bid is a low sellback price, never a real import sink —
 				// the tour solver admits ANY positive-bid market as a sell destination, which
 				// would let it dump goods into an exporter at a giveaway price. Zero the
@@ -91,14 +102,16 @@ func BuildTourSnapshot(
 					System:      sys,
 					Good:        g.Symbol(),
 					Supply:      derefString(g.Supply()),
-					Activity:    derefString(g.Activity()),
+					Activity:    activity,
 					Ask:         g.SellPrice(), // market SELL column = what we pay buying
 					Bid:         bid,
 					TradeVolume: g.TradeVolume(),
 					ObservedAt:  observed,
 				})
+				// Mark the market only once a good row actually survives its activity cap,
+				// so a market whose every good aged out contributes no coords either.
+				snapshotMarkets[mkt.WaypointSymbol()] = true
 			}
-			snapshotMarkets[mkt.WaypointSymbol()] = true
 		}
 
 		wps, werr := waypointRepo.ListBySystem(ctx, sys)

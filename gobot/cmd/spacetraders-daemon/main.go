@@ -892,6 +892,10 @@ func run(cfg *config.Config) error {
 		cfg.TradeImpact.ResolvedSellImpact(),
 		laneCooldownLedger,
 	)
+	// sp-t5sh5: arm the activity-conditioned ranker freshness caps for the undirected
+	// auto-scan. Absent [trading] config → the fitted armed defaults; a captain retunes
+	// per activity from config.yaml + restart (RULINGS #5).
+	tradeRouteCoordinatorHandler.SetRankerAgeCaps(cfg.Trading.RankerAgeCapMinutes.Resolved())
 	if err := mediator.RegisterHandler[*tradeRouteCmd.RunTradeRouteCoordinatorCommand](med, tradeRouteCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register TradeRouteCoordinator handler: %w", err)
 	}
@@ -1319,6 +1323,10 @@ func run(cfg *config.Config) error {
 	// config (scan_max_age_seconds / impact_sample_rate; restart to apply — the same
 	// refit-per-era path the model's coefficients already use).
 	tourCoordinatorHandler.SetScanPolicy(cfg.TradeImpact.ResolvedScanPolicy())
+	// sp-t5sh5: arm the SAME activity-conditioned freshness caps for the tour snapshot
+	// builder, so the tour path and the lane ranker drop stale rows against one
+	// config-resolved table (defined once).
+	tourCoordinatorHandler.SetRankerAgeCaps(cfg.Trading.RankerAgeCapMinutes.Resolved())
 	if err := mediator.RegisterHandler[*tradeRouteCmd.RunTourCoordinatorCommand](med, tourCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register TourCoordinator handler: %w", err)
 	}

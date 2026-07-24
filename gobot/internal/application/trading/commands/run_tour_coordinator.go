@@ -433,6 +433,14 @@ type RunTourCoordinatorHandler struct {
 	scanPolicy    shared.ScanPolicy
 	scanPolicySet bool
 
+	// rankerAgeCaps is the activity-conditioned listing freshness table the tour
+	// snapshot builder drops stale market rows against (sp-t5sh5), each good measured
+	// against its OWN activity's cap. The daemon injects the config-resolved table via
+	// SetRankerAgeCaps; the zero value is SAFE (RankerAgeCaps.For fills the fitted armed
+	// defaults per activity), so an unwired handler — every existing test — builds the
+	// snapshot on the analyst's era3/4 fit rather than a cap of 0.
+	rankerAgeCaps trading.RankerAgeCaps
+
 	// repositionPersister durably records an in-flight margins-death reposition (its
 	// target system+waypoint) into the container config so a daemon restart mid-jump
 	// resumes toward the SAME ground (RULINGS #2). Optional; nil disables persistence
@@ -641,6 +649,16 @@ func (h *RunTourCoordinatorHandler) SetChartGateOnArrival(enabled bool) {
 func (h *RunTourCoordinatorHandler) SetScanPolicy(policy shared.ScanPolicy) {
 	h.scanPolicy = policy
 	h.scanPolicySet = true
+}
+
+// SetRankerAgeCaps wires the activity-conditioned listing freshness table (sp-t5sh5)
+// into the tour snapshot builder, the same optional-injection idiom as SetScanPolicy.
+// The daemon injects cfg.Trading.RankerAgeCapMinutes.Resolved() so the tour path and
+// the lane ranker drop stale rows against the SAME config-resolved caps; left unset
+// the zero-value table still builds on the fitted armed defaults, so every existing
+// test is unaffected.
+func (h *RunTourCoordinatorHandler) SetRankerAgeCaps(caps trading.RankerAgeCaps) {
+	h.rankerAgeCaps = caps
 }
 
 // SetCargoBlocklist injects the tour cargo good-blocklist (sp-o4wa) from
@@ -1755,7 +1773,7 @@ func (h *RunTourCoordinatorHandler) planForState(
 	cmd *RunTourCoordinatorCommand,
 	modelVersion string,
 ) (*routing.TourPlan, []routing.TourGoodSnapshot, []routing.TourMarketAbsorption, error) {
-	snapshot, waypoints, err := tradingsvc.BuildTourSnapshot(ctx, h.marketRepo, h.waypointRepo, allowedSystems, cmd.PlayerID, h.clock.Now(), maxListingAge)
+	snapshot, waypoints, err := tradingsvc.BuildTourSnapshot(ctx, h.marketRepo, h.waypointRepo, allowedSystems, cmd.PlayerID, h.clock.Now(), h.rankerAgeCaps)
 	if err != nil {
 		return nil, nil, nil, err
 	}

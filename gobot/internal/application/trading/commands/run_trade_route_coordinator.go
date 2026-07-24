@@ -360,6 +360,14 @@ type RunTradeRouteCoordinatorHandler struct {
 	// contract gateGraph/absorptionLedger use. The daemon injects one shared instance
 	// across the trade-route/arb/tour/stocker coordinators so the ledger is fleet-wide.
 	laneLedger *trading.LaneCooldownLedger
+	// rankerAgeCaps is the activity-conditioned listing freshness table the UNDIRECTED
+	// auto-scan drops stale rows against (sp-t5sh5) — each cached listing measured
+	// against its OWN activity's cap instead of one flat threshold. The daemon injects
+	// the config-resolved table via SetRankerAgeCaps; the zero value is SAFE (For fills
+	// the fitted armed defaults per activity), so an unwired handler — every existing
+	// test — ranks on the analyst's era3/4 fit rather than a cap of 0. Only the ranker
+	// VISIBILITY cap; the execution money guards are untouched (RULINGS #4).
+	rankerAgeCaps trading.RankerAgeCaps
 }
 
 // GateGraph resolves multi-jump routes over the persisted cross-system gate
@@ -507,6 +515,16 @@ func (h *RunTradeRouteCoordinatorHandler) SetLaneImpactModel(buyImpact, sellImpa
 	h.buyImpactCoeff = buyImpact
 	h.sellImpactCoeff = sellImpact
 	h.laneLedger = ledger
+}
+
+// SetRankerAgeCaps wires the activity-conditioned listing freshness table (sp-t5sh5)
+// into the undirected auto-scan, the same optional-injection idiom as the other
+// setters. The daemon injects cfg.Trading.RankerAgeCapMinutes.Resolved(); left unset
+// the zero-value table still ranks on the fitted armed defaults (RankerAgeCaps.For
+// fills each activity's default), so every existing test is unaffected while the
+// daemon path is fully retunable from config (RULINGS #5).
+func (h *RunTradeRouteCoordinatorHandler) SetRankerAgeCaps(caps trading.RankerAgeCaps) {
+	h.rankerAgeCaps = caps
 }
 
 // buildLaneImpactModel snapshots the ranking-time impact model: the configured impact

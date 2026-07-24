@@ -31,6 +31,12 @@ type Config struct {
 	// cooldown ledger. Refit per era: the FORM is stable, the NUMBERS are re-fitted, so
 	// they are config (edit config.yaml + restart), never consts.
 	TradeImpact TradeImpactConfig `mapstructure:"trade_impact"`
+	// Trading holds the trade-ranker tune knobs (sp-t5sh5) — the activity-conditioned
+	// listing freshness caps — read at daemon start into the trade-route coordinator's
+	// undirected auto-scan and the tour snapshot builder. Absent section defers to the
+	// fitted armed defaults (trading.DefaultRankerAgeCap*), so the ranker runs the
+	// analyst's era3/4 fit unchanged.
+	Trading TradingConfig `mapstructure:"trading"`
 	// WorkerRebalancer holds the worker-rebalancer coordinator's knobs (sp-f5pr),
 	// injected live into the coordinator container on every build.
 	WorkerRebalancer WorkerRebalancerConfig `mapstructure:"worker_rebalancer"`

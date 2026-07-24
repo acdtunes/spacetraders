@@ -762,28 +762,33 @@ func estimatedCircuitSeconds(crossSystem bool) float64 {
 	return seconds
 }
 
-// maxListingAge bounds how old a cached market observation may be and still feed
-// UNDIRECTED lane ranking (sp-xwa1). The ranker scores lanes off cached prices; a
-// lane priced from an observation this stale can already have moved, so ranking it
-// chases a spread that no longer exists (the analyst's arb-board finding: the
-// ranker "picks lanes that already moved"). 75 minutes is deliberately generous —
-// a frontier market a hull hasn't visited in over an hour is genuinely unreliable,
-// while a lane re-observed within the hour (every completed trade refreshes its
-// own two markets, see scanLanes' refreshMarketData note) stays eligible. It gates
-// only undirected auto-scan: an operator-directed --dest lane is re-verified LIVE
-// at execution (staleAskAborts + the per-visit margin re-check), so staleness must
-// not silently veto it — see scanLanes.
+// maxListingAge bounds how old a cached market observation may be and still feed the
+// freshness-gated helper paths that are NOT the activity-conditioned ranker: the
+// freshListings-based sink/offload/reposition/distress/candidate scans and the
+// stocker. The UNDIRECTED lane ranker (partitionListingsByAge) and the tour snapshot
+// (BuildTourSnapshot) moved OFF this flat threshold to the per-activity RankerAgeCaps
+// table (sp-t5sh5) — the analyst's era3/4 fit showed staleness cost is
+// activity-dependent, so one uniform 75-minute cap is the wrong shape for ranking.
+// 75 minutes stays a generous flat cap for those simpler paths: a frontier market a
+// hull hasn't visited in over an hour is genuinely unreliable, while a lane
+// re-observed within the hour (every completed trade refreshes its own two markets,
+// see scanLanes' refreshMarketData note) stays eligible. Even for the ranker it never
+// silently vetoes an operator-directed --dest lane, which is re-verified LIVE at
+// execution (staleAskAborts + the per-visit margin re-check) — see scanLanes.
 const maxListingAge = 75 * time.Minute
 
-// partitionListingsByAge splits listings into those observed within maxAge of now
-// (fresh) and those older (stale), preserving input order in each. A listing with a
+// partitionListingsByAge splits listings into those still fresh and those stale,
+// preserving input order in each. Each listing is measured against ITS OWN activity's
+// freshness cap (sp-t5sh5): caps.For(l.Activity) — a WEAK market stays eligible for
+// hours, a STRONG one only ~30 min — instead of one flat threshold, because the
+// analyst's era3/4 fit shows staleness cost is activity-dependent. A listing with a
 // zero ObservedAt is treated as FRESH — an unknown age is not evidence of staleness,
 // and callers that never populate the timestamp (older tests, non-cache sources)
-// must rank unchanged. Pure and now-injected so the age gate is unit-testable
-// without a clock; scanLanes supplies h.clock.Now().
-func partitionListingsByAge(listings []trading.GoodListing, now time.Time, maxAge time.Duration) (fresh, stale []trading.GoodListing) {
+// must rank unchanged. Pure and now-injected so the age gate is unit-testable without
+// a clock; scanLanes supplies h.clock.Now() and h.rankerAgeCaps.
+func partitionListingsByAge(listings []trading.GoodListing, now time.Time, caps trading.RankerAgeCaps) (fresh, stale []trading.GoodListing) {
 	for _, l := range listings {
-		if !l.ObservedAt.IsZero() && now.Sub(l.ObservedAt) > maxAge {
+		if !l.ObservedAt.IsZero() && now.Sub(l.ObservedAt) > caps.For(l.Activity) {
 			stale = append(stale, l)
 			continue
 		}

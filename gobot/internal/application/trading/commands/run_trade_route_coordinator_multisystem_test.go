@@ -54,6 +54,11 @@ type msGood struct {
 	bid, ask  int
 	volume    int
 	tradeType market.TradeType
+	// activity optionally sets the market activity level (WEAK/RESTRICTED/GROWING/
+	// STRONG) so the activity-conditioned age-cap tests can pick a listing's freshness
+	// window. Empty defaults to "STRONG" (the fixture's historical hardcode), so every
+	// existing fixture that omits it is unchanged.
+	activity string
 }
 
 // msMarketRepo serves a fixed set of waypoints per system, each with at most
@@ -79,7 +84,10 @@ func (r *msMarketRepo) GetMarketData(ctx context.Context, waypointSymbol string,
 		return nil, nil
 	}
 	supply := "MODERATE"
-	activity := "STRONG"
+	activity := g.activity
+	if activity == "" {
+		activity = "STRONG"
+	}
 	good, err := market.NewTradeGood(g.symbol, &supply, &activity, g.bid, g.ask, g.volume, g.tradeType)
 	if err != nil {
 		return nil, err
