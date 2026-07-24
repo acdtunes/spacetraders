@@ -1616,3 +1616,126 @@ func TestPathWithinJumpsStoredThenVerify_NoStoredRoute_UnroutableZeroProbes(t *t
 		t.Fatalf("no chosen path means no construction probes at all, got %d", api.getWaypointCalls)
 	}
 }
+
+// --- sp-if4lx: the PATHFIND has a hard wall-clock budget (defense-in-depth atop sp-0o9ub) ---
+
+// blockingGateAPI models the pathological stall the budget guards against: a construction probe
+// (GetWaypoint) that never returns on its own — it blocks until the context is done, exactly like a
+// rate-limited / hung API call. GetJumpGate still serves the stored connections so a strict
+// fetch-through would work; only the per-gate construction verify hangs.
+type blockingGateAPI struct {
+	adjacency map[string][]system.GateEdge
+}
+
+func (b *blockingGateAPI) GetJumpGate(ctx context.Context, sys, wp, tok string) (*ports.JumpGateData, error) {
+	conns := make([]string, 0, len(b.adjacency[sys]))
+	for _, e := range b.adjacency[sys] {
+		conns = append(conns, e.GateWaypoint)
+	}
+	return &ports.JumpGateData{Symbol: wp, Connections: conns}, nil
+}
+func (b *blockingGateAPI) GetWaypoint(ctx context.Context, sys, wp, tok string) (*ports.WaypointDetail, error) {
+	<-ctx.Done() // hang until the pathfind budget (or a parent cancel) fires — the stall under test
+	return nil, ctx.Err()
+}
+func (b *blockingGateAPI) CreateChart(ctx context.Context, shipSymbol, token string) error {
+	return nil
+}
+
+// HEADLINE (sp-if4lx): a construction probe that hangs past the pathfind budget must NOT stall the
+// hull's planning step forever. The resolver wraps the plan+verify in a wall-clock budget and, on
+// the deadline, returns ErrUnroutable so the worker's reachability fallback skips this lane. A short
+// injected budget (production uses the 90s const) lets the deadline fire fast; the 5s guard proves
+// the resolver RETURNS at the deadline rather than blocking indefinitely on the hung probe.
+func TestPathWithinJumpsStoredThenVerify_PathfindDeadline_Unroutable(t *testing.T) {
+	adjacency := map[string][]system.GateEdge{
+		"X1-A": repoEdgesTo("X1-B"),
+		"X1-B": repoEdgesTo("X1-C"),
+	}
+	api := &blockingGateAPI{adjacency: adjacency}
+	svc := NewService(&verifyStore{adjacency: adjacency}, api, nil, &stubPlayerRepo{token: "tok"}, WithPathfindBudget(50*time.Millisecond))
+
+	done := make(chan struct{})
+	var path []string
+	var err error
+	go func() {
+		path, err = svc.PathWithinJumpsStoredThenVerify(context.Background(), "X1-A", "X1-C", 1, 25)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		if !errors.Is(err, ErrUnroutable) {
+			t.Fatalf("a pathfind that exceeds the budget must return ErrUnroutable (skip the lane), got path=%v err=%v", path, err)
+		}
+		if path != nil {
+			t.Fatalf("a deadline-refused pathfind must return no path, got %v", path)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the pathfind must RETURN at its budget deadline, not block indefinitely on a hung construction probe")
+	}
+}
+
+// ISOLATION (sp-if4lx): the budget is defense-in-depth, not a behavior change. A warm route with
+// fast probes resolves normally WELL within even a short budget — the deadline never fires, the
+// chosen path and its exact chosen-path probe count are byte-identical to the pre-budget resolver.
+func TestPathWithinJumpsStoredThenVerify_WarmPath_NoDeadlineFired(t *testing.T) {
+	adjacency := map[string][]system.GateEdge{
+		"X1-A": repoEdgesTo("X1-B"),
+		"X1-B": repoEdgesTo("X1-C"),
+	}
+	api := &countingGateAPI{adjacency: adjacency} // fast probes, all built
+	svc := NewService(&verifyStore{adjacency: adjacency}, api, nil, &stubPlayerRepo{token: "tok"}, WithPathfindBudget(5*time.Second))
+
+	got, err := svc.PathWithinJumpsStoredThenVerify(context.Background(), "X1-A", "X1-C", 1, 25)
+	if err != nil {
+		t.Fatalf("a warm fast route must resolve within budget with no deadline fired, got %v", err)
+	}
+	want := []string{"X1-A", "X1-B", "X1-C"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("warm path = %v, want %v", got, want)
+	}
+	if api.getWaypointCalls != len(want)-1 {
+		t.Fatalf("warm path must probe exactly the %d chosen-path gates (byte-identical), got %d", len(want)-1, api.getWaypointCalls)
+	}
+}
+
+// SHUTDOWN SAFETY (sp-if4lx): a PARENT-context cancel (a real daemon shutdown) must PROPAGATE as a
+// cancel, NOT be masked as a skippable "unroutable" lane — even though the fail-closed construction
+// verify would otherwise turn the aborted probe into an ErrUnroutable. Only OUR budget's deadline
+// maps to ErrUnroutable; a genuine cancel ends the episode. This is the falsifiable guard against
+// gateUnderConstruction's fail-closed swallowing a real shutdown.
+func TestPathWithinJumpsStoredThenVerify_ParentCancel_PropagatesNotUnroutable(t *testing.T) {
+	adjacency := map[string][]system.GateEdge{
+		"X1-A": repoEdgesTo("X1-B"),
+		"X1-B": repoEdgesTo("X1-C"),
+	}
+	api := &blockingGateAPI{adjacency: adjacency} // hangs in the verify loop until the ctx is done
+	// A generous budget so the DEADLINE never fires — the parent cancel must be what ends the plan.
+	svc := NewService(&verifyStore{adjacency: adjacency}, api, nil, &stubPlayerRepo{token: "tok"}, WithPathfindBudget(10*time.Second))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	var path []string
+	var err error
+	go func() {
+		path, err = svc.PathWithinJumpsStoredThenVerify(ctx, "X1-A", "X1-C", 1, 25)
+		close(done)
+	}()
+	cancel() // a real shutdown while the pathfind is in-flight
+
+	select {
+	case <-done:
+		if errors.Is(err, ErrUnroutable) {
+			t.Fatalf("a parent cancel must NOT be masked as a skippable unroutable lane, got %v", err)
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("a parent cancel must propagate a cancel-flavored error so the episode ends, got %v", err)
+		}
+		if path != nil {
+			t.Fatalf("a canceled pathfind must return no path, got %v", path)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a canceled parent must end the pathfind promptly")
+	}
+}

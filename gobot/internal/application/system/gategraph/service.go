@@ -48,6 +48,17 @@ type gateAPI interface {
 // through BFS deeper than this over unreadable frontier gates is exactly the storm it guards.
 const MaxJumpPath = 5
 
+// longHaulPathfindBudget is the hard wall-clock ceiling on the long-haul reposition PATHFIND
+// (PathWithinJumpsStoredThenVerify) — the stored-adjacency PLAN plus the chosen-path construction
+// VERIFY, both of which complete BEFORE any jump. It is defense-in-depth (sp-if4lx) atop the sp-0o9ub
+// latency fix that already made the normal plan ~11s: no FUTURE slowness (e.g. an API rate-limit
+// hanging the chosen-path construction probes) can ever silently stall a hull's planning step again.
+// 90s is deliberately generous vs the ~11s normal case — it fires ONLY on a pathological stall, and
+// maps that stall to ErrUnroutable so the worker's reachability fallback skips the lane. It bounds
+// ONLY the pathfind; the multi-hop FLIGHT that follows (jumps + minutes-long cooldowns) is NOT
+// bounded here and routinely exceeds this.
+const longHaulPathfindBudget = 90 * time.Second
+
 // unchartedTrait is the waypoint trait the SpaceTraders API stamps on an unswept waypoint.
 // A JUMP_GATE that still carries it has no readable /jump-gate endpoint without a ship
 // present — a no-ship GetJumpGate on it 400s — so it is the is-charted precondition the
@@ -114,6 +125,11 @@ type Service struct {
 	playerRepo    player.PlayerRepository
 	clock         shared.Clock
 	backoff       BackoffSchedule
+	// pathfindBudget is the wall-clock ceiling the long-haul reposition pathfind
+	// (PathWithinJumpsStoredThenVerify) is wrapped in — longHaulPathfindBudget in production, a
+	// short duration in tests via WithPathfindBudget so a hung construction probe surfaces as
+	// ErrUnroutable fast (sp-if4lx). Bounds ONLY the pathfind, never the flight.
+	pathfindBudget time.Duration
 	// skipUnchartedFetch is the doomed-call precondition (sp-jgcache): when true (default),
 	// a remote, no-ship Connections read whose OWN gate is still UNCHARTED (per the system
 	// graph we already hold) SKIPS the live GetJumpGate — that call is guaranteed to 400
@@ -143,6 +159,13 @@ func WithClock(c shared.Clock) Option {
 	return func(s *Service) { s.clock = c }
 }
 
+// WithPathfindBudget overrides the long-haul reposition pathfind wall-clock ceiling
+// (longHaulPathfindBudget, sp-if4lx). Production keeps the default; tests inject a short duration to
+// exercise the deadline without a real 90s wait.
+func WithPathfindBudget(d time.Duration) Option {
+	return func(s *Service) { s.pathfindBudget = d }
+}
+
 // WithSkipUnchartedGateFetch toggles the doomed-call precondition (sp-jgcache). Default is
 // ON (skip the live GetJumpGate on an UNCHARTED origin gate — it would only 400). Passing
 // false restores the legacy probe-then-backoff behaviour, wired from config as the staged-
@@ -167,6 +190,7 @@ func NewService(
 		playerRepo:         playerRepo,
 		clock:              shared.NewRealClock(),
 		backoff:            DefaultBackoffSchedule,
+		pathfindBudget:     longHaulPathfindBudget,
 		skipUnchartedFetch: true, // doomed-call precondition ON by default (sp-jgcache)
 	}
 	for _, opt := range opts {
@@ -709,6 +733,38 @@ func (s *Service) RepositionPath(ctx context.Context, fromSystem, toSystem strin
 // used by tour/manual/arb at MaxJumpPath=5 are untouched. maxJumps <= 0 degrades to MaxJumpPath via
 // RepositionPath's own fallback.
 func (s *Service) PathWithinJumpsStoredThenVerify(ctx context.Context, fromSystem, toSystem string, playerID, maxJumps int) ([]string, error) {
+	// DEFENSE-IN-DEPTH (sp-if4lx): bound ONLY the PATHFIND — the stored-adjacency plan plus the
+	// chosen-path construction verify, both of which return BEFORE any jump — with a generous
+	// wall-clock ceiling. A pathological stall (e.g. an API rate-limit hanging a construction probe)
+	// then surfaces as ErrUnroutable so the worker's reachability fallback skips this lane, instead
+	// of silently stalling the hull. The multi-hop FLIGHT that follows is emphatically NOT bounded
+	// here (it routinely runs minutes) — cancel() ends this deadline the instant the plan returns.
+	dctx, cancel := context.WithTimeout(ctx, s.pathfindBudget)
+	defer cancel()
+
+	path, err := s.storedThenVerify(dctx, fromSystem, toSystem, playerID, maxJumps)
+	if err == nil {
+		return path, nil
+	}
+	// A genuine PARENT cancel (a real shutdown) must PROPAGATE as a cancel — never be masked as a
+	// skippable unroutable lane, even though the fail-closed verify may have already turned the
+	// aborted probe into an ErrUnroutable. Check the parent FIRST; only OUR budget's deadline (the
+	// parent still live, dctx alone expired) maps to ErrUnroutable so the worker skips to the next
+	// lane. Any other error (a genuine bad-gate ErrUnroutable, a store failure) propagates verbatim.
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return nil, fmt.Errorf("reposition pathfind %s→%s canceled: %w", fromSystem, toSystem, ctx.Err())
+	}
+	if errors.Is(dctx.Err(), context.DeadlineExceeded) {
+		return nil, fmt.Errorf("%w from %s to %s: pathfind exceeded the %s budget (pathological planning stall)", ErrUnroutable, fromSystem, toSystem, s.pathfindBudget)
+	}
+	return nil, err
+}
+
+// storedThenVerify is the unbounded core of PathWithinJumpsStoredThenVerify: PLAN over the stored
+// adjacency, then VERIFY construction on only the chosen path. The public method wraps it in the
+// pathfind budget (sp-if4lx) and passes the bounded context here, so the RepositionPath store read
+// and every per-gate GetWaypoint construction probe observe that deadline.
+func (s *Service) storedThenVerify(ctx context.Context, fromSystem, toSystem string, playerID, maxJumps int) ([]string, error) {
 	// PLAN over the stored adjacency (no probe). An unroutable/store-error verdict propagates
 	// verbatim — fail closed, and no chosen path means nothing to verify (zero probes).
 	path, err := s.RepositionPath(ctx, fromSystem, toSystem, maxJumps)
