@@ -246,6 +246,57 @@ func (r *bootstrapWorkerRepurposer) RepurposeToConstruction(ctx context.Context,
 	return r.shipRepo.AssignFleet(ctx, shipSymbol, manufacturingFleetTag, pid)
 }
 
+// --- GateSurplusReleaser: un-dedicate surplus IDLE manufacturing hulls to the idle pool (sp-mxflh) ---
+
+// bootstrapGateSurplusReleaser implements the coordinator's GateSurplusReleaser: it un-dedicates the gate's
+// surplus IDLE manufacturing hulls back to the UNDEDICATED idle pool (AssignFleet→"", the single write path,
+// RULINGS #3), from where the contract scaler's IdleHullReclaimer adopts them into the contract fleet before
+// it buys — the zero-buy re-balance. It mirrors contractScalerDeliveryReleaser (un-dedicate to the idle pool)
+// and is the OPPOSITE direction of bootstrapWorkerRepurposer (which re-dedicates TO manufacturing). It
+// RE-GUARDS every requested hull at release time — still manufacturing-dedicated, still idle, not in transit —
+// so a hull that picked up a construction task since the observation is never yanked mid-task. Un-dedicate is
+// FREE: no spend, never cushion-gated. (The command frigate can never appear here: the observer never counts
+// it as a gate worker, so it is never in the requested set.)
+type bootstrapGateSurplusReleaser struct{ shipRepo navigation.ShipRepository }
+
+// ReleaseSurplusGateWorkers un-dedicates the requested manufacturing hulls that are still idle, returning how
+// many it released. A fleet-read error surfaces (hold the release fail-closed); an AssignFleet error stops
+// early and returns the partial count (a hull left dedicated is safe — re-balanced a later tick).
+func (r *bootstrapGateSurplusReleaser) ReleaseSurplusGateWorkers(ctx context.Context, playerID int, shipSymbols []string) (int, error) {
+	if len(shipSymbols) == 0 {
+		return 0, nil
+	}
+	pid, err := shared.NewPlayerID(playerID)
+	if err != nil {
+		return 0, err
+	}
+	ships, err := r.shipRepo.FindAllByPlayer(ctx, pid)
+	if err != nil {
+		return 0, err // fail-closed: never write on an unknown fleet
+	}
+	requested := make(map[string]bool, len(shipSymbols))
+	for _, symbol := range shipSymbols {
+		requested[symbol] = true
+	}
+	released := 0
+	for _, ship := range ships {
+		if !requested[ship.ShipSymbol()] {
+			continue // never touch a hull outside the selected surplus set
+		}
+		if ship.DedicatedFleet() != manufacturingFleetTag {
+			continue // re-tagged/adopted since the observation → skip
+		}
+		if !ship.IsIdle() || ship.IsInTransit() {
+			continue // picked up a construction task since the observation → never yank mid-task
+		}
+		if err := r.shipRepo.AssignFleet(ctx, ship.ShipSymbol(), "", pid); err != nil {
+			return released, fmt.Errorf("release surplus gate worker %s → undedicated: %w", ship.ShipSymbol(), err)
+		}
+		released++
+	}
+	return released, nil
+}
+
 // --- GateWorkerAcquirer: buy a worker hull and dedicate it to the manufacturing fleet ---
 
 type bootstrapGateWorkerAcquirer struct {

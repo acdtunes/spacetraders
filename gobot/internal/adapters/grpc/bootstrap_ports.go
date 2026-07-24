@@ -117,6 +117,8 @@ func NewBootstrapCoordinatorHandler(
 	h.SetConstructionManager(&bootstrapConstructionManager{server: server})
 	h.SetManufacturingController(&bootstrapManufacturingController{server: server})
 	h.SetWorkerRepurposer(&bootstrapWorkerRepurposer{shipRepo: shipRepo})
+	// sp-mxflh: un-dedicate surplus idle gate workers → idle pool so the contract scaler adopts them (zero buys).
+	h.SetGateSurplusReleaser(&bootstrapGateSurplusReleaser{shipRepo: shipRepo})
 	h.SetGateWorkerAcquirer(&bootstrapGateWorkerAcquirer{bootstrapAcquirer: acq, shipRepo: shipRepo})
 	h.SetHandoffLauncher(&bootstrapHandoffLauncher{server: server})
 	return h
@@ -212,7 +214,13 @@ func (o *bootstrapObserver) Observe(ctx context.Context, playerID int) (bootstra
 		} else if s.DedicatedFleet() == manufacturingFleetTag {
 			// A hull dedicated to the manufacturing fleet is a gate-construction worker (Slice 3) — the
 			// worker-sizing "have" count, so the staged top-up buy never overshoots the pipeline's shape.
+			// GateWorkerHulls carries the per-hull detail + idle status (sp-mxflh) the surplus-release
+			// selection reads — appended in lock-step with the count so len(GateWorkerHulls)==GateWorkers.
 			obs.GateWorkers++
+			obs.GateWorkerHulls = append(obs.GateWorkerHulls, bootstrapCmd.GateWorkerSnapshot{
+				Symbol: s.ShipSymbol(),
+				Idle:   s.IsIdle() && !s.IsInTransit(),
+			})
 		} else if s.DedicatedFleet() == warehouseFleetTag || s.DedicatedFleet() == stockerFleetTag {
 			// sp-gm7r: a hull dedicated to the contract auto-scaler's DEPOT half (warehouse or stocker). Counted
 			// here mirroring obs.Haulers/TradeHullCount (same ship set, same DedicatedFleet() source) — the

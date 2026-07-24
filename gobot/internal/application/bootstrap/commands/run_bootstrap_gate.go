@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 )
@@ -23,6 +24,13 @@ type gateWorkerPlan struct {
 	// scaler's ContractHullCount and drove the buy→repurpose→buy churn). The field + the repurposer seam
 	// it feeds are retained (dormant) rather than ripped out; sizeGateWorkers simply never iterates it.
 	ReleaseShips []string
+	// SurplusToUndedicate are the gate's OWN surplus IDLE manufacturing hulls to un-dedicate this tick (sp-mxflh):
+	// when the executor holds MORE gate workers than the pipeline's revealed shape needs, the idle overage is
+	// released to the UNDEDICATED idle pool so the contract scaler's reclaim-before-buy tier adopts it into the
+	// contract fleet BEFORE buying — the zero-buy re-balance. Distinct from ReleaseShips (the dormant
+	// re-dedicate-TO-construction seam): this un-dedicates AWAY from construction. Empty unless over-provisioned
+	// (byte-identical to today); never a hull mid-task, never a contract hauler.
+	SurplusToUndedicate []string
 	// Buy is the staged top-up: gate-worker hulls to BUY this tick (0 or 1 — never a blind buy-all),
 	// non-zero only once the pipeline reveals its chains AND the executor's existing workers fall short of
 	// the pipeline's shape. With the contract fleet exclusive, the BUY (plus any idle non-dedicated hull the
@@ -75,11 +83,42 @@ func planGateWorkers(obs Observation, cfg bootstrapRunConfig) gateWorkerPlan {
 	}
 
 	return gateWorkerPlan{
-		ReleaseShips:   nil,
-		Buy:            buy,
-		DesiredWorkers: desired,
-		KeptOnContract: kept,
+		ReleaseShips:        nil,
+		SurplusToUndedicate: selectGateSurplus(obs, desired),
+		Buy:                 buy,
+		DesiredWorkers:      desired,
+		KeptOnContract:      kept,
 	}
+}
+
+// selectGateSurplus picks the IDLE manufacturing hulls to un-dedicate this tick (sp-mxflh) — the
+// (GateWorkers − desired) overage, drawn ONLY from idle hulls (never one mid-task) in deterministic
+// symbol order so the release is stable and reaches a fixed point (a released hull becomes a contract
+// hull next tick, shrinking the surplus). It returns nil — releasing nothing, byte-identical to the
+// pre-fix ramp — UNLESS the pipeline's shape is revealed (desired > 0) AND the executor holds more
+// workers than that shape needs. When the surplus exceeds the idle count it releases only the idle
+// ones (fail-safe: the rest re-balance a later tick as they go idle). The buy path (desired > GateWorkers)
+// and this release path (GateWorkers > desired) are mutually exclusive, so the sizing is a clean
+// bang-bang around desired — never buying and releasing in the same tick.
+func selectGateSurplus(obs Observation, desired int) []string {
+	if desired <= 0 || obs.GateWorkers <= desired {
+		return nil
+	}
+	idle := make([]string, 0, len(obs.GateWorkerHulls))
+	for _, worker := range obs.GateWorkerHulls {
+		if worker.Idle {
+			idle = append(idle, worker.Symbol)
+		}
+	}
+	sort.Strings(idle) // deterministic (lowest-symbol first) so the release is stable — no thrash
+	surplus := obs.GateWorkers - desired
+	if surplus < len(idle) {
+		idle = idle[:surplus]
+	}
+	if len(idle) == 0 {
+		return nil
+	}
+	return idle
 }
 
 // gateSiteOrNone renders the gate site for the heartbeat, or "none" before it is discovered.
@@ -263,9 +302,58 @@ func (h *RunBootstrapCoordinatorHandler) sizeGateWorkers(ctx context.Context, cm
 		h.repurposeHauler(ctx, cmd, cfg, ship, res)
 	}
 
+	// (1b) sp-mxflh: release the gate's OWN surplus IDLE manufacturing hulls to the UNDEDICATED idle pool so the
+	// contract scaler's reclaim-before-buy tier adopts them into the contract fleet — the zero-buy re-balance
+	// (which is also how the scaler's over-buying stops). Non-empty ONLY when over-provisioned; FREE (no spend).
+	if len(plan.SurplusToUndedicate) > 0 {
+		h.releaseGateSurplus(ctx, cmd, cfg, plan, res)
+	}
+
 	// (2) Staged top-up: buy the delta (at most one hull) only when the executor's workers are short of the shape.
 	if plan.Buy > 0 {
 		h.maybeBuyGateWorker(ctx, cmd, cfg, obs, plan, res)
+	}
+}
+
+// releaseGateSurplus un-dedicates the gate's surplus IDLE manufacturing hulls (planGateWorkers selected them —
+// GateWorkers over the pipeline's revealed shape) back to the UNDEDICATED idle pool via the single-writer
+// AssignFleet (fleet→"", RULINGS #3), from where the contract scaler's IdleHullReclaimer adopts them into the
+// contract fleet before it buys — the zero-buy re-balance (sp-mxflh). FREE (un-dedicate spends nothing) ⇒ never
+// cushion-gated. Best-effort + fail-closed: a nil releaser or a partial release just re-balances fewer this
+// tick (retried next); the releaser re-guards each hull's idle status so one that started a task since the
+// observation is never yanked mid-task. Skipped under dry-run (observe-only, like the buy/repurpose paths).
+func (h *RunBootstrapCoordinatorHandler) releaseGateSurplus(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, plan gateWorkerPlan, res *reconcileResult) {
+	logger := common.LoggerFromContext(ctx)
+
+	if cfg.DryRun {
+		logger.Log("INFO", fmt.Sprintf("Bootstrap DRY-RUN: WOULD release %d surplus idle gate worker(s) to the undedicated pool for the contract scaler to adopt: %v (took no action)", len(plan.SurplusToUndedicate), plan.SurplusToUndedicate), map[string]interface{}{
+			"action":       "bootstrap_would_release_gate_surplus",
+			"container_id": cmd.ContainerID,
+		})
+		return
+	}
+	if h.gateReleaser == nil {
+		res.Blocker = "no_gate_releaser"
+		logger.Log("WARN", "Bootstrap GATE has surplus gate workers to release but no gate-surplus releaser wired — holding the surplus", map[string]interface{}{
+			"action":       "bootstrap_gate_blocked",
+			"container_id": cmd.ContainerID,
+			"blocker":      "no_gate_releaser",
+		})
+		return
+	}
+	released, err := h.gateReleaser.ReleaseSurplusGateWorkers(ctx, cmd.PlayerID, plan.SurplusToUndedicate)
+	if err != nil {
+		logger.Log("WARN", fmt.Sprintf("Bootstrap GATE: releasing %d surplus gate worker(s) partially failed (%d released): %v", len(plan.SurplusToUndedicate), released, err), map[string]interface{}{
+			"action":       "bootstrap_gate_surplus_release_error",
+			"container_id": cmd.ContainerID,
+		})
+	}
+	res.WorkersReleased += released
+	if released > 0 {
+		logger.Log("INFO", fmt.Sprintf("Bootstrap GATE released %d surplus idle gate worker(s) to the undedicated pool — the contract scaler now adopts them into the contract fleet (zero buys)", released), map[string]interface{}{
+			"action":       "bootstrap_gate_surplus_released",
+			"container_id": cmd.ContainerID,
+		})
 	}
 }
 

@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -604,5 +605,141 @@ func TestBootstrap_Complete_HoldsWhenHandoffFails(t *testing.T) {
 	}
 	if res.Blocker == "" {
 		t.Fatalf("expected a blocker on the failed hand-off")
+	}
+}
+
+// --- sp-mxflh: release the gate's OWN surplus idle manufacturing hulls to the undedicated pool ---
+
+// idleWorkers builds GateWorkerSnapshots (all idle) from symbols — the common over-provisioned-worker shape.
+func idleWorkers(symbols ...string) []GateWorkerSnapshot {
+	out := make([]GateWorkerSnapshot, 0, len(symbols))
+	for _, s := range symbols {
+		out = append(out, GateWorkerSnapshot{Symbol: s, Idle: true})
+	}
+	return out
+}
+
+// planGateWorkers releases the gate's OWN surplus IDLE manufacturing hulls (GateWorkers over the pipeline's
+// revealed shape) to the undedicated pool — deterministic (lowest-symbol first), exactly (GateWorkers−desired)
+// of them, NEVER a hull mid-task, and NEVER a contract hauler (obs.Haulers is untouched). It releases NOTHING
+// (byte-identical) at/below the shape or before the shape is revealed. Distinct from the dormant ReleaseShips
+// repurpose seam, which stays empty throughout.
+func TestBootstrap_PlanGateWorkers_ReleasesIdleManufacturingSurplus(t *testing.T) {
+	cfg := resolveBootstrapConfig(baseCmd(), nil) // gate_worker_target 6, gateDeliveryHaulers 1
+
+	cases := []struct {
+		name string
+		obs  Observation
+		want []string
+	}{
+		{
+			// desired = min(3+1,6) = 4; 6 workers ⇒ 2 surplus. Symbols deliberately shuffled to prove sorting.
+			"over-provisioned → the 2 lowest-symbol idle surplus, deterministic",
+			Observation{Haulers: nHaulers(10), GateMaterialChains: 3, GateWorkers: 6,
+				GateWorkerHulls: idleWorkers("M5", "M4", "M3", "M2", "M1", "M6")},
+			[]string{"M1", "M2"},
+		},
+		{
+			"mid-task hulls are never selected — the surplus is drawn from the idle ones only",
+			Observation{GateMaterialChains: 3, GateWorkers: 6, GateWorkerHulls: []GateWorkerSnapshot{
+				{Symbol: "M1", Idle: false}, {Symbol: "M2", Idle: false}, // mid-construction — excluded
+				{Symbol: "M3", Idle: true}, {Symbol: "M4", Idle: true},
+				{Symbol: "M5", Idle: true}, {Symbol: "M6", Idle: true}}},
+			[]string{"M3", "M4"},
+		},
+		{
+			"surplus exceeds the idle count → release only the idle ones (fail-safe, retry next tick)",
+			Observation{GateMaterialChains: 3, GateWorkers: 8, GateWorkerHulls: []GateWorkerSnapshot{ // surplus 4
+				{Symbol: "M1", Idle: true}, {Symbol: "M2", Idle: true}, // only 2 idle
+				{Symbol: "M3", Idle: false}, {Symbol: "M4", Idle: false},
+				{Symbol: "M5", Idle: false}, {Symbol: "M6", Idle: false},
+				{Symbol: "M7", Idle: false}, {Symbol: "M8", Idle: false}}},
+			[]string{"M1", "M2"},
+		},
+		{
+			"at the shape → releases nothing (byte-identical)",
+			Observation{GateMaterialChains: 3, GateWorkers: 4, GateWorkerHulls: idleWorkers("M1", "M2", "M3", "M4")},
+			nil,
+		},
+		{
+			"below the shape → releases nothing (the buy path sizes up instead)",
+			Observation{GateMaterialChains: 3, GateWorkers: 2, GateWorkerHulls: idleWorkers("M1", "M2")},
+			nil,
+		},
+		{
+			"shape not yet revealed (chains 0) → never release, even with idle workers",
+			Observation{GateMaterialChains: 0, GateWorkers: 6, GateWorkerHulls: idleWorkers("M1", "M2", "M3", "M4", "M5", "M6")},
+			nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := planGateWorkers(tc.obs, cfg)
+			if !reflect.DeepEqual(plan.SurplusToUndedicate, tc.want) {
+				t.Fatalf("SurplusToUndedicate = %v, want %v", plan.SurplusToUndedicate, tc.want)
+			}
+			// the release path and the buy path are mutually exclusive (a clean bang-bang around desired).
+			if len(tc.want) > 0 && plan.Buy != 0 {
+				t.Fatalf("must never buy while releasing surplus, got Buy=%d", plan.Buy)
+			}
+			// the exclusive contract fleet is never released, and the dormant repurpose seam stays empty.
+			if len(plan.ReleaseShips) != 0 {
+				t.Fatalf("ReleaseShips must stay empty (dormant repurpose seam), got %v", plan.ReleaseShips)
+			}
+		})
+	}
+}
+
+// fakeGateReleaser is the GateSurplusReleaser double (sp-mxflh): it records each release call's symbols and
+// reports every requested hull released (the happy path), so the test can assert exactly which hulls the
+// coordinator handed to the un-dedicate action.
+type fakeGateReleaser struct {
+	calls [][]string
+	err   error
+}
+
+func (f *fakeGateReleaser) ReleaseSurplusGateWorkers(ctx context.Context, playerID int, shipSymbols []string) (int, error) {
+	f.calls = append(f.calls, shipSymbols)
+	if f.err != nil {
+		return 0, f.err
+	}
+	return len(shipSymbols), nil
+}
+
+// sp-mxflh (through the driving port): a GATE tick where the executor holds MORE manufacturing hulls than the
+// pipeline's shape needs un-dedicates the surplus IDLE ones to the undedicated pool (so the contract scaler
+// adopts them, zero buys) — while NEVER touching the exclusive contract delivery fleet and NEVER buying a
+// gate worker (it is over, not under, the shape).
+func TestBootstrap_Gate_ReleasesSurplusManufacturingHulls(t *testing.T) {
+	obs := gateObs()
+	obs.Haulers = nHaulers(10) // the exclusive contract fleet — must be untouched
+	obs.GateMaterialChains = 3 // desired = min(3+1,6) = 4
+	obs.GateWorkers = 6        // 2 over the shape
+	obs.GateWorkerHulls = []GateWorkerSnapshot{
+		{Symbol: "M1", Idle: true}, {Symbol: "M2", Idle: true}, {Symbol: "M3", Idle: true},
+		{Symbol: "M4", Idle: true}, {Symbol: "M5", Idle: true}, {Symbol: "M6", Idle: false}, // one mid-task
+	}
+	rel := &fakeGateReleaser{}
+	acq := &fakeGateAcquirer{price: 200000, yard: "Y1", readable: true}
+	h := gateHandler(obs, &fakeConstruction{}, &fakeManufacturing{}, &fakeRepurposer{}, acq, &fakeHandoff{})
+	h.SetGateSurplusReleaser(rel)
+	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+
+	if len(rel.calls) != 1 {
+		t.Fatalf("expected exactly one surplus-release call, got %d (%v)", len(rel.calls), rel.calls)
+	}
+	if !reflect.DeepEqual(rel.calls[0], []string{"M1", "M2"}) {
+		t.Fatalf("expected the 2 idle manufacturing surplus [M1 M2] released, got %v", rel.calls[0])
+	}
+	if res.WorkersReleased != 2 {
+		t.Fatalf("expected WorkersReleased=2, got %d", res.WorkersReleased)
+	}
+	if acq.buys != 0 {
+		t.Fatalf("an over-provisioned gate must NOT buy a worker, got %d buys", acq.buys)
+	}
+	for _, s := range rel.calls[0] {
+		if strings.HasPrefix(s, "H") {
+			t.Fatalf("a contract hauler was released to the idle pool: %s", s)
+		}
 	}
 }

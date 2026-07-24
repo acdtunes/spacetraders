@@ -162,6 +162,12 @@ type Observation struct {
 	// GateWorkers is how many hulls are NOW dedicated to gate construction (claimed by the executor) — the
 	// worker-sizing "have" count, so the staged top-up buy never overshoots the pipeline's shape.
 	GateWorkers int
+	// GateWorkerHulls is the per-hull detail of those same manufacturing-dedicated gate workers (sp-mxflh) —
+	// each with its idle status — the surplus-release selection input. len(GateWorkerHulls) == GateWorkers by
+	// construction (the observer appends one here for every GateWorkers++). Only planGateWorkers's surplus
+	// path reads it, so it is inert unless the executor is over-provisioned; mirrors how obs.Haulers carries
+	// the per-hull delivery detail alongside its count-based guards.
+	GateWorkerHulls []GateWorkerSnapshot
 	// AutosizerRunning reports whether the standing fleet-autosizer is already running — the COMPLETE
 	// launch-once hand-off guard (a restart post-COMPLETE re-observes it running ⇒ no re-launch, no exit loop).
 	AutosizerRunning bool
@@ -209,6 +215,15 @@ type Observation struct {
 type HaulerSnapshot struct {
 	Symbol   string
 	Waypoint string
+}
+
+// GateWorkerSnapshot is one manufacturing-dedicated gate worker's identity + release-eligibility (sp-mxflh).
+// Idle is true ONLY when the hull is genuinely free (idle and not in transit), so the surplus-release
+// selection can never pick a hull mid-construction-task. It carries only what the release decision needs,
+// mirroring HaulerSnapshot's minimal shape.
+type GateWorkerSnapshot struct {
+	Symbol string
+	Idle   bool
 }
 
 // MarketSnapshot is one scouted marketplace's tradable goods — the unit the contract-hub selector

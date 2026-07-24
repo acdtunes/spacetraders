@@ -327,6 +327,22 @@ type WorkerRepurposer interface {
 	RepurposeToConstruction(ctx context.Context, playerID int, shipSymbol string) error
 }
 
+// GateSurplusReleaser un-dedicates the gate's OWN surplus IDLE manufacturing hulls back to the UNDEDICATED
+// idle pool via the single-writer AssignFleet (fleet→"", RULINGS #3), from where the contract scaler's
+// reclaim-before-buy tier (IdleHullReclaimer) adopts them into the contract fleet BEFORE it buys — the
+// zero-buy fleet re-balance (sp-mxflh). It mirrors the contract scaler's DeliverySurplusReleaser (un-dedicate
+// to the idle pool); it is the OPPOSITE direction of WorkerRepurposer (which re-dedicates TO construction) and
+// never touches the exclusive contract fleet. Un-dedicate is FREE (no spend) ⇒ never cushion-gated. Nil-safe:
+// unset ⇒ the surplus release is a logged skip (the gate keeps its surplus until wired), never a panic.
+type GateSurplusReleaser interface {
+	// ReleaseSurplusGateWorkers un-dedicates the given manufacturing-hull symbols to "" (the idle pool),
+	// returning how many it actually released. It RE-GUARDS each hull at release time (still manufacturing-
+	// dedicated, still idle, not in transit) so a hull that picked up a construction task since the observation
+	// is never yanked mid-task; an AssignFleet error stops early and returns the partial count (a hull left
+	// dedicated is safe — re-balanced a later tick). A fleet-read error surfaces (release nothing, fail-closed).
+	ReleaseSurplusGateWorkers(ctx context.Context, playerID int, shipSymbols []string) (int, error)
+}
+
 // GateWorkerAcquirer price-checks and buys ONE gate-construction worker hull and dedicates it to
 // construction (reuses shipyard purchase + fleet assign). The staged top-up when repurposed haulers
 // don't cover the pipeline's shape. Mirrors HaulerAcquirer but does not place on a hub (the executor
@@ -419,6 +435,7 @@ type RunBootstrapCoordinatorHandler struct {
 	construction  ConstructionManager
 	manufacturing ManufacturingController
 	repurposer    WorkerRepurposer
+	gateReleaser  GateSurplusReleaser // sp-mxflh: un-dedicate surplus idle gate workers → idle pool (scaler adopts)
 	gateAcquirer  GateWorkerAcquirer
 	handoff       HandoffLauncher
 
@@ -541,6 +558,13 @@ func (h *RunBootstrapCoordinatorHandler) SetManufacturingController(m Manufactur
 // SetWorkerRepurposer wires the "release an income hauler to construction" action (reuses fleet
 // unassign). Unset → GATE cannot repurpose haulers and top-up buys carry the whole worker load (surfaced loudly).
 func (h *RunBootstrapCoordinatorHandler) SetWorkerRepurposer(r WorkerRepurposer) { h.repurposer = r }
+
+// SetGateSurplusReleaser wires the "un-dedicate surplus idle gate workers to the idle pool" action (sp-mxflh)
+// so the contract scaler's reclaim-before-buy tier adopts them (zero buys). Unset → the gate keeps its surplus
+// (a logged skip), never a panic.
+func (h *RunBootstrapCoordinatorHandler) SetGateSurplusReleaser(r GateSurplusReleaser) {
+	h.gateReleaser = r
+}
 
 // SetGateWorkerAcquirer wires the price-check + buy-for-construction path (reuses shipyard purchase +
 // fleet assign). Unset → GATE repurposes but never buys the top-up delta (surfaced loudly).

@@ -251,7 +251,7 @@ type reconcileResult struct {
 	ConstructionStartRan bool // `construction start` ran this tick (created/resumed the pipeline)
 	MfgEnsured           bool // the manufacturing coordinator (executor) was ensured-running this tick
 	MfgBounced           bool // the executor was bounced for pipeline adoption this tick (captain L57)
-	WorkersReleased      int  // contract haulers released to construction this tick (repurpose-first)
+	WorkersReleased      int  // gate workers un-dedicated to the idle pool this tick (sp-mxflh surplus re-balance; the sp-cdxy2 repurpose seam is dormant)
 	GateWorkersBought    int  // gate-worker hulls actually bought this tick (staged: at most 1)
 	DesiredWorkers       int  // the tick's gate-worker sizing target (for the heartbeat)
 
