@@ -1262,18 +1262,16 @@ func run(cfg *config.Config) error {
 	// `workflow long-haul-coordinator` arm) launches the container.
 	longHaulCoordinatorHandler := tradeRouteCmd.NewLongHaulArbFleetCoordinatorHandler(shipRepo, nil) // nil = RealClock
 	longHaulCoordinatorHandler.SetLongHaulLauncher(daemonServer)
-	// sp-mepj — long-haul liveness watchdog DISABLED (Admiral order, 2026-07-23): the strict
-	// multi-hop reposition to far exotic sources legitimately takes far longer than the 12-min
-	// stall threshold (jump cooldowns + fetch-through gate/construction probes across distant,
-	// often-uncharted gates), and the shared sp-m3122 watchdog was killing workers mid-journey
-	// (repeated ~12-36m "no progress" kills) so no haul ever completed. Leaving BOTH ports
-	// unwired makes the watchdog fail-closed inert for long-haul (relaunchHungContainers returns
-	// 0,0 on a nil liveness/stopper — detects nothing, kills nothing). The trade-fleet
-	// coordinator's watchdog (a separate handler with its own SetTourStopper) is UNAFFECTED.
-	// Re-enable by restoring these two lines once the reposition timescale is reconciled with
-	// the stall model.
-	// longHaulCoordinatorHandler.SetTourLiveness(daemonServer)
-	// longHaulCoordinatorHandler.SetTourStopper(daemonServer)
+	// sp-tg11c — long-haul liveness watchdog RE-ENABLED (2026-07-24). It was disabled in
+	// bba4cba3 because the shared sp-m3122 watchdog false-killed workers mid multi-hop
+	// reposition — a long jump cooldown read as ">=12m no progress". sp-39hjn fixed that at the
+	// SHARED watchdog: relaunchHungContainers now skips IsOnCooldown hulls, and the cooldown
+	// wait emits a periodic heartbeat so the liveness signal advances. Re-wiring both ports
+	// restores genuine hang-detection for long-haul (a truly-stuck worker with NO active
+	// cooldown is killed+relaunched) without the false-kill. The reposition storm that also
+	// stalled these hulls is gone too (sp-0o9ub plan-cheap-verify + sp-if4lx pathfind deadline).
+	longHaulCoordinatorHandler.SetTourLiveness(daemonServer)
+	longHaulCoordinatorHandler.SetTourStopper(daemonServer)
 	longHaulCoordinatorHandler.SetAbsorptionReclaimer(grpc.NewDeadContainerAbsorptionReclaimer(absorptionLedger))
 	if err := mediator.RegisterHandler[*tradeRouteCmd.LongHaulArbFleetCoordinatorCommand](med, longHaulCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register LongHaulArbFleetCoordinator handler: %w", err)
