@@ -21,6 +21,7 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	DaemonService_NavigateShip_FullMethodName                  = "/daemon.DaemonService/NavigateShip"
 	DaemonService_RouteShip_FullMethodName                     = "/daemon.DaemonService/RouteShip"
+	DaemonService_WarpShip_FullMethodName                      = "/daemon.DaemonService/WarpShip"
 	DaemonService_DockShip_FullMethodName                      = "/daemon.DaemonService/DockShip"
 	DaemonService_OrbitShip_FullMethodName                     = "/daemon.DaemonService/OrbitShip"
 	DaemonService_RefuelShip_FullMethodName                    = "/daemon.DaemonService/RefuelShip"
@@ -106,6 +107,10 @@ type DaemonServiceClient interface {
 	// background container (sp-6hjw). Unlike NavigateShip (in-system only), it reuses
 	// the multi-jump travel machinery so a hull can reach a waypoint in any system.
 	RouteShip(ctx context.Context, in *RouteShipRequest, opts ...grpc.CallOption) (*RouteShipResponse, error)
+	// WarpShip initiates an OFF-gate warp as a background container. Unlike RouteShip
+	// (which crosses jump gates) it warps a warp-drive hull straight to a waypoint in
+	// another system, reaching targets the gate network does not connect.
+	WarpShip(ctx context.Context, in *WarpShipRequest, opts ...grpc.CallOption) (*WarpShipResponse, error)
 	// DockShip docks a ship at its current location
 	DockShip(ctx context.Context, in *DockShipRequest, opts ...grpc.CallOption) (*DockShipResponse, error)
 	// OrbitShip puts a ship into orbit from docked position
@@ -329,6 +334,16 @@ func (c *daemonServiceClient) RouteShip(ctx context.Context, in *RouteShipReques
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RouteShipResponse)
 	err := c.cc.Invoke(ctx, DaemonService_RouteShip_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) WarpShip(ctx context.Context, in *WarpShipRequest, opts ...grpc.CallOption) (*WarpShipResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(WarpShipResponse)
+	err := c.cc.Invoke(ctx, DaemonService_WarpShip_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1048,6 +1063,10 @@ type DaemonServiceServer interface {
 	// background container (sp-6hjw). Unlike NavigateShip (in-system only), it reuses
 	// the multi-jump travel machinery so a hull can reach a waypoint in any system.
 	RouteShip(context.Context, *RouteShipRequest) (*RouteShipResponse, error)
+	// WarpShip initiates an OFF-gate warp as a background container. Unlike RouteShip
+	// (which crosses jump gates) it warps a warp-drive hull straight to a waypoint in
+	// another system, reaching targets the gate network does not connect.
+	WarpShip(context.Context, *WarpShipRequest) (*WarpShipResponse, error)
 	// DockShip docks a ship at its current location
 	DockShip(context.Context, *DockShipRequest) (*DockShipResponse, error)
 	// OrbitShip puts a ship into orbit from docked position
@@ -1262,6 +1281,9 @@ func (UnimplementedDaemonServiceServer) NavigateShip(context.Context, *NavigateS
 }
 func (UnimplementedDaemonServiceServer) RouteShip(context.Context, *RouteShipRequest) (*RouteShipResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RouteShip not implemented")
+}
+func (UnimplementedDaemonServiceServer) WarpShip(context.Context, *WarpShipRequest) (*WarpShipResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method WarpShip not implemented")
 }
 func (UnimplementedDaemonServiceServer) DockShip(context.Context, *DockShipRequest) (*DockShipResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DockShip not implemented")
@@ -1526,6 +1548,24 @@ func _DaemonService_RouteShip_Handler(srv interface{}, ctx context.Context, dec 
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DaemonServiceServer).RouteShip(ctx, req.(*RouteShipRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_WarpShip_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(WarpShipRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).WarpShip(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_WarpShip_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).WarpShip(ctx, req.(*WarpShipRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2804,6 +2844,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RouteShip",
 			Handler:    _DaemonService_RouteShip_Handler,
+		},
+		{
+			MethodName: "WarpShip",
+			Handler:    _DaemonService_WarpShip_Handler,
 		},
 		{
 			MethodName: "DockShip",

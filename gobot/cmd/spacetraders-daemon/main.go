@@ -783,18 +783,30 @@ func run(cfg *config.Config) error {
 	// exists (WithWarpSupport mutates the same *RouteExecutor the nav handlers
 	// already hold, so no re-wiring is needed). The charter reuses the SAME gate
 	// graph, market scanner, and shipyard scanner the gate-nav path uses, plus the
-	// graph provider as its waypoint source. INERT until a caller (slice C's
-	// explorer) invokes ExecuteWarpLeg/ExecuteWarpRoute — nothing dispatches a warp
-	// yet, so this changes no live behavior.
+	// graph provider as its waypoint source. Its callers are the frontier explorer
+	// dispatcher and the `ship warp` verb wired just below.
+	warpWaypointSource := ship.NewGraphWaypointSource(graphService)
 	routeExecutor.WithWarpSupport(
 		ship.NewAPIWarpNavigator(apiClient),
 		ship.NewWarpSystemCharter(
 			gateGraphService,
-			ship.NewGraphWaypointSource(graphService),
+			warpWaypointSource,
 			marketScanner,
 			shipyardScanner,
 		),
 	)
+
+	// The `ship warp` verb: the operator entry point to the warp executor just wired
+	// above. Registered here (not beside the other ship verbs) because warp support
+	// only exists from this point on. Its handler adds no warp logic — it resolves the
+	// hull and the destination waypoint, then hands the leg to ExecuteWarpLeg, so every
+	// warp runs behind the executor's fail-closed drive/strand guards. Destinations
+	// resolve through the SAME fetch-through waypoint source the charter uses, which is
+	// what lets an operator warp to a system the fleet has never charted.
+	warpShipHandler := shipNav.NewWarpShipHandler(routeExecutor, shipRepo, warpWaypointSource)
+	if err := mediator.RegisterHandler[*shipNav.WarpShipCommand](med, warpShipHandler); err != nil {
+		return fmt.Errorf("failed to register WarpShip handler: %w", err)
+	}
 
 	// Fleet capacity autosizer (sp-1txd): the buy-side twin of the siting coordinator. It sizes the
 	// hull pool to demand and auto-buys hulls behind the fail-closed money-guard stack. LIVE BY

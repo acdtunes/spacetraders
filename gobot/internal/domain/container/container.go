@@ -124,6 +124,12 @@ const (
 	// reuses the trade-route coordinator's multi-jump travel() to cross gates. Like the
 	// other one-shot ship ops it is a single-iteration, CoordinatorOwnsIterations type.
 	ContainerTypeRoute ContainerType = "ROUTE"
+	// ContainerTypeWarp is the one-shot OFF-gate move behind the `ship warp` verb.
+	// Unlike ContainerTypeRoute (which crosses jump gates) it warps a warp-drive hull
+	// straight to a waypoint in another system, reaching targets the gate network does
+	// not connect. Like the other one-shot ship ops it is a single-iteration,
+	// CoordinatorOwnsIterations type.
+	ContainerTypeWarp ContainerType = "WARP"
 	// ContainerTypeLongHaulArbCoordinator is the standing long-haul arb fleet coordinator
 	// (sp-mepj): a per-player coordinator that loops forever inside one Handle() launching a
 	// per-hull long-haul worker on every idle long-haul-tagged hull and running the SHARED

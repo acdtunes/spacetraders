@@ -120,6 +120,31 @@ func (s *daemonServiceImpl) RouteShip(ctx context.Context, req *pb.RouteShipRequ
 	return response, nil
 }
 
+// WarpShip initiates an off-gate warp
+func (s *daemonServiceImpl) WarpShip(ctx context.Context, req *pb.WarpShipRequest) (*pb.WarpShipResponse, error) {
+	// Resolve player ID from request (supports both player_id and agent_symbol)
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+
+	// Call daemon's WarpShip method
+	containerID, err := s.daemon.WarpShip(ctx, req.ShipSymbol, req.Destination, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to warp ship: %w", err)
+	}
+
+	// Build response
+	response := &pb.WarpShipResponse{
+		ContainerId: containerID,
+		ShipSymbol:  req.ShipSymbol,
+		Destination: req.Destination,
+		Status:      "PENDING",
+	}
+
+	return response, nil
+}
+
 // DockShip docks a ship
 func (s *daemonServiceImpl) DockShip(ctx context.Context, req *pb.DockShipRequest) (*pb.DockShipResponse, error) {
 	// Resolve player ID from request (supports both player_id and agent_symbol)

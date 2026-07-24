@@ -37,6 +37,13 @@ type RouteResponse struct {
 	Status      string
 }
 
+type WarpResponse struct {
+	ContainerID string
+	ShipSymbol  string
+	Destination string
+	Status      string
+}
+
 type DockResponse struct {
 	ContainerID string
 	ShipSymbol  string
@@ -241,6 +248,36 @@ func (c *DaemonClient) RouteShip(
 	}
 
 	return &RouteResponse{
+		ContainerID: resp.ContainerId,
+		ShipSymbol:  resp.ShipSymbol,
+		Destination: resp.Destination,
+		Status:      resp.Status,
+	}, nil
+}
+
+// WarpShip initiates an off-gate warp. The daemon performs the warp behind its
+// fail-closed guards (RULING #3: the CLI never touches the game API itself).
+func (c *DaemonClient) WarpShip(
+	ctx context.Context,
+	shipSymbol, destination string,
+	playerID int,
+	agentSymbol string,
+) (*WarpResponse, error) {
+	req := &pb.WarpShipRequest{
+		ShipSymbol:  shipSymbol,
+		Destination: destination,
+		PlayerId:    int32(playerID),
+	}
+	if agentSymbol != "" {
+		req.AgentSymbol = &agentSymbol
+	}
+
+	resp, err := c.client.WarpShip(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf(grpcCallFailed, err)
+	}
+
+	return &WarpResponse{
 		ContainerID: resp.ContainerId,
 		ShipSymbol:  resp.ShipSymbol,
 		Destination: resp.Destination,

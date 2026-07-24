@@ -440,6 +440,7 @@ func containerSpecList() []ContainerSpec {
 		// honestly rather than silently.
 		{CommandType: "navigate_ship", build: buildNavigateShipCommand, CoordinatorOwnsIterations: true},
 		{CommandType: "route_ship", build: buildRouteShipCommand, CoordinatorOwnsIterations: true},
+		{CommandType: "warp_ship", build: buildWarpShipCommand, CoordinatorOwnsIterations: true},
 		{CommandType: "dock_ship", build: buildDockShipCommand, CoordinatorOwnsIterations: true},
 		{CommandType: "orbit_ship", build: buildOrbitShipCommand, CoordinatorOwnsIterations: true},
 		{CommandType: "refuel_ship", build: buildRefuelShipCommand, CoordinatorOwnsIterations: true},
@@ -852,6 +853,19 @@ func buildNavigateShipCommand(cfg *configReader, playerID int, containerID strin
 // hull's CURRENT position, so a mid-route restart resumes rather than strands.
 func buildRouteShipCommand(cfg *configReader, playerID int, containerID string) interface{} {
 	return &shipNavCmd.RouteShipCommand{
+		ShipSymbol:  cfg.RequiredString("ship_symbol"),
+		Destination: cfg.RequiredString("destination"),
+		PlayerID:    shared.MustNewPlayerID(playerID),
+	}
+}
+
+// buildWarpShipCommand rebuilds a one-shot off-gate warp from its persisted launch
+// config so restart recovery re-adopts a RUNNING warp instead of orphaning the hull
+// (sp-7yej invariant 4, twin of buildRouteShipCommand). Re-running is safe: the
+// executor re-reads the hull's CURRENT position and re-runs its fuel-safety guard, so
+// a hull that already arrived is refused or no-ops rather than warped twice blind.
+func buildWarpShipCommand(cfg *configReader, playerID int, containerID string) interface{} {
+	return &shipNavCmd.WarpShipCommand{
 		ShipSymbol:  cfg.RequiredString("ship_symbol"),
 		Destination: cfg.RequiredString("destination"),
 		PlayerID:    shared.MustNewPlayerID(playerID),

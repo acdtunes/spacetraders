@@ -55,6 +55,7 @@ Examples:
 	cmd.AddCommand(newShipReservedCargoCommand())
 	cmd.AddCommand(newShipNavigateCommand())
 	cmd.AddCommand(newShipRouteCommand())
+	cmd.AddCommand(newShipWarpCommand())
 	cmd.AddCommand(newShipDockCommand())
 	cmd.AddCommand(newShipOrbitCommand())
 	cmd.AddCommand(newShipRefuelCommand())
@@ -1028,6 +1029,87 @@ Examples:
 	// Command-specific flags
 	cmd.Flags().StringVar(&shipSymbol, "ship", "", "Ship symbol to route (required)")
 	cmd.Flags().StringVar(&destination, "destination", "", "Destination waypoint symbol in any reachable system (required)")
+
+	return cmd
+}
+
+// newShipWarpCommand creates the ship warp subcommand
+func newShipWarpCommand() *cobra.Command {
+	var (
+		shipSymbol  string
+		destination string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "warp",
+		Short: "Warp a ship OFF the jump-gate network to a waypoint in another system",
+		Long: `Warp a ship directly to a waypoint in another system, without a jump gate.
+
+Unlike 'ship route' (which crosses jump gates) and 'ship jump' (a single gate hop),
+warp reaches systems the gate network does not connect. The ship must have a warp
+drive module installed - only an explorer hull carries one.
+
+The daemon will automatically:
+- Orbit the ship if docked
+- Enforce the fuel-safety guard (topping off first when the origin sells fuel)
+- Warp to the destination and chart the arrival system
+- Return a container ID for tracking progress
+
+Two refusals are possible and both come BEFORE any warp is attempted, leaving the
+ship exactly where it is: the ship has no warp drive, or the leg would strand it
+(reported with the fuel required, available and tank capacity). Read either one with
+'spacetraders container logs <container-id>'.
+
+Examples:
+  spacetraders ship warp --ship TORWIND-F6 --destination X1-TY66-A1 --player-id 1
+  spacetraders ship warp --ship EXPLORER-1 --destination X1-FAR-A1 --agent ENDURANCE`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// Validate flags
+			if shipSymbol == "" {
+				return fmt.Errorf("--ship flag is required")
+			}
+			if destination == "" {
+				return fmt.Errorf("--destination flag is required")
+			}
+
+			// Resolve player from flags or defaults
+			playerIdent, err := resolvePlayerIdentifier()
+			if err != nil {
+				return err
+			}
+
+			// Create gRPC client
+			client, err := connectDaemon()
+			if err != nil {
+				return err
+			}
+			defer client.Close()
+
+			// Execute warp command
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			result, err := client.WarpShip(ctx, shipSymbol, destination, playerIdent.PlayerID, playerIdent.AgentSymbol)
+			if err != nil {
+				return fmt.Errorf("warp failed: %w", err)
+			}
+
+			// Display result
+			fmt.Println("✓ Warp started successfully")
+			fmt.Printf("  Container ID:     %s\n", result.ContainerID)
+			fmt.Printf("  Ship:             %s\n", result.ShipSymbol)
+			fmt.Printf("  Destination:      %s\n", result.Destination)
+			fmt.Printf("  Status:           %s\n", result.Status)
+			fmt.Printf("\nTrack progress with: spacetraders container logs %s\n", result.ContainerID)
+			fmt.Println("A refusal (no warp drive, or the leg would strand the ship) is reported there in full.")
+
+			return nil
+		},
+	}
+
+	// Command-specific flags
+	cmd.Flags().StringVar(&shipSymbol, "ship", "", "Ship symbol to warp - must have a warp drive (required)")
+	cmd.Flags().StringVar(&destination, "destination", "", "Destination waypoint symbol in another system (required)")
 
 	return cmd
 }

@@ -91,6 +91,46 @@ func (s *DaemonServer) RouteShip(ctx context.Context, shipSymbol, destination st
 	return containerID, nil
 }
 
+// WarpShip handles OFF-gate warp requests — the daemon side of the `ship warp` verb.
+// Unlike RouteShip (which crosses jump gates) it dispatches a WarpShipCommand whose
+// handler delegates to the route executor's warp path, so a warp-drive hull reaches a
+// system the gate network does not connect. The container claims the hull (metadata
+// "ship_symbol") and carries the captain manual-op authority flag so this deliberate
+// CLI move may operate a fleet-dedicated hull (audited override).
+func (s *DaemonServer) WarpShip(ctx context.Context, shipSymbol, destination string, playerID int) (string, error) {
+	containerID := utils.GenerateContainerID("warp", shipSymbol)
+
+	cmd := &shipNav.WarpShipCommand{
+		ShipSymbol:  shipSymbol,
+		Destination: destination,
+		PlayerID:    shared.MustNewPlayerID(playerID),
+	}
+
+	containerEntity := container.NewContainer(
+		containerID,
+		container.ContainerTypeWarp,
+		playerID,
+		1,   // Single iteration for warp
+		nil, // No parent container
+		map[string]interface{}{
+			"ship_symbol": shipSymbol,
+			"destination": destination,
+			// sp-sg35 BRIDGE: captain manual-op authority — this deliberate CLI op
+			// may operate a fleet-dedicated hull (audited override; see the const).
+			captainManualAuthorityKey: true,
+		},
+		nil, // Use default RealClock for production
+	)
+
+	if err := s.containerRepo.Add(ctx, containerEntity, "warp_ship"); err != nil {
+		return "", fmt.Errorf("failed to persist container: %w", err)
+	}
+
+	s.startContainerRunner(containerEntity, cmd, containerID, "Container")
+
+	return containerID, nil
+}
+
 // DockShip handles ship docking requests
 func (s *DaemonServer) DockShip(ctx context.Context, shipSymbol string, playerID int) (string, error) {
 	containerID := utils.GenerateContainerID("dock", shipSymbol)

@@ -15,6 +15,11 @@ service DaemonService {
   // the multi-jump travel machinery so a hull can reach a waypoint in any system.
   rpc RouteShip(RouteShipRequest) returns (RouteShipResponse);
 
+  // WarpShip initiates an OFF-gate warp as a background container. Unlike RouteShip
+  // (which crosses jump gates) it warps a warp-drive hull straight to a waypoint in
+  // another system, reaching targets the gate network does not connect.
+  rpc WarpShip(WarpShipRequest) returns (WarpShipResponse);
+
   // DockShip docks a ship at its current location
   rpc DockShip(DockShipRequest) returns (DockShipResponse);
 
@@ -334,6 +339,36 @@ message RouteShipRequest {
 // RouteShipResponse returns container ID for tracking
 message RouteShipResponse {
   // Container ID for tracking the route operation
+  string container_id = 1;
+
+  // Ship symbol
+  string ship_symbol = 2;
+
+  // Destination waypoint
+  string destination = 3;
+
+  // Initial status
+  string status = 4;
+}
+
+// WarpShipRequest initiates an off-gate warp
+message WarpShipRequest {
+  // Ship symbol to warp (e.g., "TORWIND-F6") — must carry a warp drive module
+  string ship_symbol = 1;
+
+  // Destination waypoint in another system, off the jump-gate network (e.g., "X1-TY66-A1")
+  string destination = 2;
+
+  // Player ID for authentication
+  int32 player_id = 3;
+
+  // Optional agent symbol (alternative to player_id)
+  optional string agent_symbol = 4;
+}
+
+// WarpShipResponse returns container ID for tracking
+message WarpShipResponse {
+  // Container ID for tracking the warp operation
   string container_id = 1;
 
   // Ship symbol
