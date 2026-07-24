@@ -69,10 +69,11 @@ type LongHaulArbFleetCoordinatorCommand struct {
 	TickIntervalSecs int
 
 	// Money-envelope knobs (design §3), Admiral-authorized aggressive SIZING, live-tunable;
-	// <=0 → the defaults. PerHaulCap caps a single out/backhaul buy (~1M);
-	// TotalExposureCap caps total in-flight long-haul capital (~2M), enforced as the
-	// concurrent-haul limit (worst-case exposure = concurrent × perHaulCap). Threaded to
-	// each worker so the per-buy fence + per-haul cap use the same numbers.
+	// <=0 → the defaults. PerHaulCap caps a single out/backhaul buy (~1M) and is threaded to
+	// each worker's per-buy envelope (the fail-closed reserve-floor fence). TotalExposureCap
+	// (~2M) is still threaded to each worker for parity, but the coordinator NO LONGER
+	// enforces it as a concurrent-haul ceiling (sp-bwjyn, Admiral uncap order): every idle
+	// tagged hull launches each tick, and spend stays bounded per buy by the reserve-floor fence.
 	PerHaulCap       int64
 	TotalExposureCap int64
 
@@ -106,12 +107,6 @@ func (c *LongHaulArbFleetCoordinatorCommand) resolvedTotalExposureCap() int64 {
 		return c.TotalExposureCap
 	}
 	return defaultLongHaulTotalExposureCap
-}
-
-// concurrentHaulLimit is the exposure cap expressed as a concurrent-worker bound (design
-// guard 3): totalExposureCap / perHaulCap. 0 → unlimited (bounded by the tagged fleet size).
-func (c *LongHaulArbFleetCoordinatorCommand) concurrentHaulLimit() int {
-	return maxConcurrentHauls(c.resolvedTotalExposureCap(), c.resolvedPerHaulCap())
 }
 
 // LongHaulArbFleetCoordinatorResponse reports reconcile progress. Because the loop is
@@ -296,29 +291,19 @@ func (h *LongHaulArbFleetCoordinatorHandler) reconcileOnce(ctx context.Context, 
 	}
 	h.startupReclaimDone = true
 
-	// Deterministic dispatch order so the tests are stable and the concurrency cap picks the
-	// same hulls every tick.
+	// Deterministic dispatch order (RULINGS #2): stable across ticks and tests.
 	sort.Slice(idle, func(i, j int) bool { return idle[i].ShipSymbol() < idle[j].ShipSymbol() })
 
-	// EXPOSURE CAP (design §3): bound simultaneously-running hauls so worst-case in-flight
-	// exposure (concurrent × perHaulCap) stays within the total-exposure cap. A watchdog
-	// kill+relaunch is a 1:1 replacement (net running unchanged); a kill whose relaunch failed
-	// frees a slot. launched already counts the watchdog relaunches.
-	maxHauls := cmd.concurrentHaulLimit()
+	// UNCAPPED CONCURRENCY (sp-bwjyn, Admiral order): launch a worker for EVERY idle tagged
+	// long-haul hull each tick. The total-exposure CONCURRENCY ceiling that previously held
+	// idle hulls when running >= totalExposureCap/perHaulCap is removed, so a tagged hull
+	// never sits idle behind it. Spend is still fail-closed PER BUY inside each worker — the
+	// reserve-floor fence (newLongHaulFence → common.ReserveFloorGate, the 200k cushion over
+	// the immutable 50k floor, RULINGS #4/#5) and the per-haul cap (threaded via
+	// buildLongHaulLaunchSpec) are untouched. launched already counts any watchdog relaunch.
 	launched := watchdogRelaunched
-	runningHauls := len(running) - watchdogKilled + watchdogRelaunched
 
 	for _, ship := range idle {
-		if maxHauls > 0 && runningHauls >= maxHauls {
-			logger.Log("INFO", fmt.Sprintf(
-				"Long-haul at exposure cap (%d concurrent hauls, ~%d total / ~%d per haul) — holding %d idle hull(s) this tick",
-				maxHauls, cmd.resolvedTotalExposureCap(), cmd.resolvedPerHaulCap(), len(idle)-(launched-watchdogRelaunched)), map[string]interface{}{
-				"action":        "longhaul_exposure_cap_hold",
-				"max_hauls":     maxHauls,
-				"running_hauls": runningHauls,
-			})
-			break
-		}
 		spec := buildLongHaulLaunchSpec(cmd, ship.ShipSymbol())
 		containerID, lerr := h.launcher.LaunchLongHaul(ctx, spec)
 		if lerr != nil {
@@ -332,7 +317,6 @@ func (h *LongHaulArbFleetCoordinatorHandler) reconcileOnce(ctx context.Context, 
 			continue
 		}
 		launched++
-		runningHauls++
 		logger.Log("INFO", fmt.Sprintf("Launched long-haul worker for hull %s (container %s)", ship.ShipSymbol(), containerID), map[string]interface{}{
 			"action":       "longhaul_launch",
 			"ship_symbol":  ship.ShipSymbol(),

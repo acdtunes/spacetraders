@@ -110,11 +110,7 @@ func TestLongHaulReconcile_Isolation_DispatchesOnlyIdleLongHaulHulls(t *testing.
 	logger := &tradeCaptureLogger{}
 	h := newLongHaulHandler(repo, launcher, clockAt(1000))
 
-	// A high exposure cap so the concurrent-haul limit (tested separately) does not mask the
-	// isolation assertion — this test is about WHICH hulls are eligible, not how many.
-	cmd := longHaulCmd()
-	cmd.TotalExposureCap = 100_000_000
-	launched, err := h.reconcileOnce(tradeCtx(logger), cmd)
+	launched, err := h.reconcileOnce(tradeCtx(logger), longHaulCmd())
 	require.NoError(t, err)
 	require.Equal(t, 2, launched)
 	require.Equal(t, []string{"LH-IDLE-A", "LH-IDLE-B"}, launcher.launchedSymbols(),
@@ -157,27 +153,35 @@ func TestLongHaulReconcile_FailsClosedWhenLauncherUnwired(t *testing.T) {
 	require.Equal(t, 0, launched)
 }
 
-// EXPOSURE CAP (design §3): the coordinator caps concurrent hauls at
-// totalExposureCap/perHaulCap (default 2M/1M = 2), counting hulls ALREADY running a worker
-// against the limit — so a restart-adopted fleet is never over-launched — and threads the
-// envelope caps to each worker it does launch.
-func TestLongHaulReconcile_ExposureCap_CountsRunningHaulsAndThreadsEnvelope(t *testing.T) {
-	runningA := longHaulHull(t, "LH-RUN-A", longHaulFleet, "HAULER", 60)
-	require.NoError(t, runningA.AssignToContainer("lh-live-A", clockAt(0)))
+// UNCAPPED CONCURRENCY (sp-bwjyn, Admiral order): the coordinator launches a worker for
+// EVERY idle tagged long-haul hull each tick — the total-exposure CONCURRENCY ceiling is
+// removed, so tagged hulls never sit idle behind it even when the number already running
+// meets or exceeds the OLD cap (default 2M/1M = 2). It still threads the money envelope
+// (per-haul cap + total-exposure figure) to each worker it launches; spend stays
+// fail-closed PER BUY at the reserve-floor fence inside the worker (unchanged).
+func TestLongHaulReconcile_LaunchesAllIdleHulls_UncappedConcurrency_ThreadsEnvelope(t *testing.T) {
+	// The production wedge: two hulls already in flight (T59+T82) SATURATED the old cap of 2,
+	// so the two tagged-but-idle hulls (B2+B3) were held every tick and never launched.
+	runningT59 := longHaulHull(t, "TORWIND-T59", longHaulFleet, "HAULER", 60)
+	require.NoError(t, runningT59.AssignToContainer("lh-live-T59", clockAt(0)))
+	runningT82 := longHaulHull(t, "TORWIND-T82", longHaulFleet, "HAULER", 60)
+	require.NoError(t, runningT82.AssignToContainer("lh-live-T82", clockAt(0)))
 	repo := &fakeTradeShipRepo{ships: []*navigation.Ship{
-		runningA, // 1 already in flight — counts against the cap
-		longHaulHull(t, "LH-B", longHaulFleet, "HAULER", 60),
-		longHaulHull(t, "LH-C", longHaulFleet, "HAULER", 60),
+		runningT59, // running — under the old cap these two saturated it
+		runningT82, // running
+		longHaulHull(t, "TORWIND-B2", longHaulFleet, "HAULER", 60), // idle, was held at the cap
+		longHaulHull(t, "TORWIND-B3", longHaulFleet, "HAULER", 60), // idle, was held at the cap
 	}}
 	launcher := &fakeLongHaulLauncher{}
 	h := newLongHaulHandler(repo, launcher, clockAt(1000))
 
 	launched, err := h.reconcileOnce(tradeCtx(&tradeCaptureLogger{}), longHaulCmd())
 	require.NoError(t, err)
-	require.Equal(t, 1, launched, "1 running + default cap 2 -> only 1 more launched")
-	require.Equal(t, []string{"LH-B"}, launcher.launchedSymbols())
-	require.Equal(t, defaultLongHaulPerHaulCap, launcher.launches[0].PerHaulCap, "envelope threaded to the worker")
-	require.Equal(t, defaultLongHaulTotalExposureCap, launcher.launches[0].TotalExposureCap)
+	require.Equal(t, 2, launched, "both idle hulls launch despite 2 already running (no concurrency ceiling)")
+	require.Equal(t, []string{"TORWIND-B2", "TORWIND-B3"}, launcher.launchedSymbols(),
+		"every idle tagged hull is dispatched, none held behind an exposure cap")
+	require.Equal(t, defaultLongHaulPerHaulCap, launcher.launches[0].PerHaulCap, "per-haul cap still threaded to the worker")
+	require.Equal(t, defaultLongHaulTotalExposureCap, launcher.launches[0].TotalExposureCap, "total-exposure figure still threaded to the worker")
 }
 
 // A per-hull launch failure is logged and skipped — the rest of the fleet is still

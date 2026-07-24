@@ -94,9 +94,9 @@ type RunLongHaulArbCommand struct {
 	ContainerID string
 	Iterations  int
 	PerHaulCap  int64
-	// TotalExposureCap is carried for parity with the launch spec; the fleet coordinator
-	// enforces it as the concurrent-haul limit (design guard 3, v1), so the worker itself only
-	// applies the per-haul cap + cushion fence.
+	// TotalExposureCap is carried for parity with the launch spec. The coordinator no longer
+	// enforces a total in-flight ceiling (sp-bwjyn, Admiral uncap order), so the worker itself
+	// only applies the per-haul cap + cushion fence.
 	TotalExposureCap int64
 	// MinMargin is the per-unit floor handed to each leg's reused arb guard; 0 leaves the
 	// executor's own non-positive-margin rejection + sell floor as the backstop (the lane
