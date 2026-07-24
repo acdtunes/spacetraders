@@ -986,6 +986,17 @@ func repoEdgesTo(systems ...string) []system.GateEdge {
 	return edges
 }
 
+// staleEdgesTo is repoEdgesTo with every row flagged UNVERIFIED — what Adjacency reports for a row
+// whose synced_at is missing or past its freshness window. It is the precondition for the chosen-
+// path verify to spend a live construction probe at all: a fresh row is already a probe's verdict.
+func staleEdgesTo(systems ...string) []system.GateEdge {
+	edges := repoEdgesTo(systems...)
+	for i := range edges {
+		edges[i].Stale = true
+	}
+	return edges
+}
+
 // A 6-jump frontier route (deeper than MaxJumpPath=5) resolves under a raised bound —
 // this is the whole point of the expendable-probe resolver: reach a post the strict
 // 5-jump cap rejects. The SAME route under a 5-jump bound is unroutable, proving the
@@ -1508,10 +1519,11 @@ func (c *countingGateAPI) CreateChart(ctx context.Context, shipSymbol, token str
 // resolver, which probes construction (a GetWaypoint per edge) across the WHOLE bound-25 BFS
 // frontier on a cold cache — hundreds of probes, ~20 min. PathWithinJumpsStoredThenVerify instead
 // plans the shortest route over the persisted stored adjacency (no probe) and verifies construction
-// on ONLY the chosen path's gates. On a far 6-hop charted route hung with a wide dead-end frontier:
-// the STRICT control probes the frontier (many GetWaypoint calls), while the new resolver probes
-// EXACTLY the 6 chosen-path gates — the SAME route, a fraction of the probes.
-func TestPathWithinJumpsStoredThenVerify_ProbesChosenPathNotFrontier(t *testing.T) {
+// from the stored build state, reaching for a live probe only where that state is unverified. On a
+// far 6-hop charted route hung with a wide dead-end frontier: the STRICT control probes the frontier
+// (many GetWaypoint calls), while the new resolver walks the SAME route over a fresh stored topology
+// for ZERO probes — each of those rows already carries a live probe's verdict from its own sync.
+func TestPathWithinJumpsStoredThenVerify_SameRouteWithoutFrontierProbes(t *testing.T) {
 	// A→B→C→D→E→F→G is the only route to G (6 hops); each early system ALSO gates to five
 	// dead-end frontier siblings the strict BFS fans out over and probes edge-by-edge.
 	adjacency := map[string][]system.GateEdge{
@@ -1550,13 +1562,14 @@ func TestPathWithinJumpsStoredThenVerify_ProbesChosenPathNotFrontier(t *testing.
 		t.Fatalf("stored-then-verify route = %v, want %v", cheapPath, want)
 	}
 
-	// The fix: EXACTLY the 6 chosen-path gates are probed (B,C,D,E,F,G), never the frontier.
-	if cheapAPI.getWaypointCalls != len(want)-1 {
-		t.Fatalf("stored-then-verify must probe exactly the %d chosen-path gates, got %d", len(want)-1, cheapAPI.getWaypointCalls)
+	// The fix: a fully-verified stored topology costs NO live probe — not the frontier's, not the
+	// chosen path's. Every row on this route was probed when it synced and is still inside its window.
+	if cheapAPI.getWaypointCalls != 0 {
+		t.Fatalf("a fresh stored topology needs no live construction probe at all, got %d", cheapAPI.getWaypointCalls)
 	}
-	// The drop: the strict resolver probes the whole frontier — far more than the path length.
-	if strictAPI.getWaypointCalls <= cheapAPI.getWaypointCalls {
-		t.Fatalf("the strict resolver must probe MORE than the chosen path (frontier probing): strict=%d cheap=%d", strictAPI.getWaypointCalls, cheapAPI.getWaypointCalls)
+	// The drop: the strict resolver still probes the whole frontier — it is deliberately untouched.
+	if strictAPI.getWaypointCalls <= len(want)-1 {
+		t.Fatalf("the strict resolver must still probe MORE than the chosen path (frontier probing), got %d", strictAPI.getWaypointCalls)
 	}
 }
 
@@ -1578,10 +1591,12 @@ func TestPathWithinJumpsStoredThenVerify_BadChosenPathGate_Unroutable(t *testing
 		t.Run(tc.name, func(t *testing.T) {
 			// Stored adjacency: shortest route A→B→C (both stored-clean, so RepositionPath picks it),
 			// plus an equal-length clean alternate A→D→C. B's gate is the bad one at verify time.
+			// Every row is UNVERIFIED — the staleness window is exactly the case the live probe
+			// exists to catch, and the only one in which the stored flag can be this wrong.
 			adjacency := map[string][]system.GateEdge{
-				"X1-A": repoEdgesTo("X1-B", "X1-D"), // B first → the stored plan is A→B→C
-				"X1-B": repoEdgesTo("X1-C"),
-				"X1-D": repoEdgesTo("X1-C"),
+				"X1-A": staleEdgesTo("X1-B", "X1-D"), // B first → the stored plan is A→B→C
+				"X1-B": staleEdgesTo("X1-C"),
+				"X1-D": staleEdgesTo("X1-C"),
 			}
 			api := &countingGateAPI{adjacency: adjacency, underConstruction: tc.underConstruction, waypointErr: tc.waypointErr}
 			svc := NewService(&verifyStore{adjacency: adjacency}, api, nil, &stubPlayerRepo{token: "tok"})
@@ -1648,9 +1663,10 @@ func (b *blockingGateAPI) CreateChart(ctx context.Context, shipSymbol, token str
 // injected budget (production uses the 90s const) lets the deadline fire fast; the 5s guard proves
 // the resolver RETURNS at the deadline rather than blocking indefinitely on the hung probe.
 func TestPathWithinJumpsStoredThenVerify_PathfindDeadline_Unroutable(t *testing.T) {
+	// UNVERIFIED rows, so the verify actually reaches for the live probe that then hangs.
 	adjacency := map[string][]system.GateEdge{
-		"X1-A": repoEdgesTo("X1-B"),
-		"X1-B": repoEdgesTo("X1-C"),
+		"X1-A": staleEdgesTo("X1-B"),
+		"X1-B": staleEdgesTo("X1-C"),
 	}
 	api := &blockingGateAPI{adjacency: adjacency}
 	svc := NewService(&verifyStore{adjacency: adjacency}, api, nil, &stubPlayerRepo{token: "tok"}, WithPathfindBudget(50*time.Millisecond))
@@ -1676,9 +1692,10 @@ func TestPathWithinJumpsStoredThenVerify_PathfindDeadline_Unroutable(t *testing.
 	}
 }
 
-// ISOLATION (sp-if4lx): the budget is defense-in-depth, not a behavior change. A warm route with
-// fast probes resolves normally WELL within even a short budget — the deadline never fires, the
-// chosen path and its exact chosen-path probe count are byte-identical to the pre-budget resolver.
+// ISOLATION (sp-if4lx): the budget is defense-in-depth, not a behavior change. A warm route over a
+// fully-verified stored topology resolves WELL within even a short budget — the deadline never
+// fires, and the route costs no live probe at all, so no amount of API pressure can push the common
+// case toward the wall.
 func TestPathWithinJumpsStoredThenVerify_WarmPath_NoDeadlineFired(t *testing.T) {
 	adjacency := map[string][]system.GateEdge{
 		"X1-A": repoEdgesTo("X1-B"),
@@ -1695,8 +1712,8 @@ func TestPathWithinJumpsStoredThenVerify_WarmPath_NoDeadlineFired(t *testing.T) 
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("warm path = %v, want %v", got, want)
 	}
-	if api.getWaypointCalls != len(want)-1 {
-		t.Fatalf("warm path must probe exactly the %d chosen-path gates (byte-identical), got %d", len(want)-1, api.getWaypointCalls)
+	if api.getWaypointCalls != 0 {
+		t.Fatalf("a warm route over verified stored rows must spend no live probe, got %d", api.getWaypointCalls)
 	}
 }
 
@@ -1706,9 +1723,10 @@ func TestPathWithinJumpsStoredThenVerify_WarmPath_NoDeadlineFired(t *testing.T) 
 // maps to ErrUnroutable; a genuine cancel ends the episode. This is the falsifiable guard against
 // gateUnderConstruction's fail-closed swallowing a real shutdown.
 func TestPathWithinJumpsStoredThenVerify_ParentCancel_PropagatesNotUnroutable(t *testing.T) {
+	// UNVERIFIED rows, so the verify actually reaches for the live probe the cancel must interrupt.
 	adjacency := map[string][]system.GateEdge{
-		"X1-A": repoEdgesTo("X1-B"),
-		"X1-B": repoEdgesTo("X1-C"),
+		"X1-A": staleEdgesTo("X1-B"),
+		"X1-B": staleEdgesTo("X1-C"),
 	}
 	api := &blockingGateAPI{adjacency: adjacency} // hangs in the verify loop until the ctx is done
 	// A generous budget so the DEADLINE never fires — the parent cancel must be what ends the plan.
