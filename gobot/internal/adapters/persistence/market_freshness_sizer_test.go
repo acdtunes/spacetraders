@@ -83,6 +83,7 @@ func TestMarketRepo_SystemsFreshness(t *testing.T) {
 	require.Len(t, bb.Markets, 1)
 	require.Equal(t, 1100.0, bb.Markets[0].Weight, "a single-good market weighs one good's trade_volume × mid-price (100 × 11)")
 	require.InDelta(t, 500, bb.Markets[0].AgeSeconds, 5)
+	require.Equal(t, "X1-BB-M1", bb.Markets[0].Waypoint, "sp-wuksw: the census carries each market's waypoint — the sink identity the demand re-weighting keys on")
 }
 
 // SystemsFreshness carries each market's ACTIVITY state (sp-j4kjv), collapsing a market's per-good

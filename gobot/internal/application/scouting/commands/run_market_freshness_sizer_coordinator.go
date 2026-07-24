@@ -51,6 +51,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainScouting "github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
 
 const (
@@ -115,7 +116,18 @@ const (
 	// so the percentile is value-weighted by default — a high-value stale market pulls the
 	// percentile up (arb core stays tight) while a low-traffic straggler stays in the tolerated
 	// tail. `tune value_weighted 1` disables it live (falls back to a plain count percentile).
-	defaultValueWeighted       = true
+	defaultValueWeighted = true
+	// defaultDemandHalfLifeSeconds (sp-wuksw) is the EWMA half-life of the realized-sink-demand
+	// weight: a SELL leg this many seconds old counts half as much as one just realized. 3h matches
+	// the lane-decay priors — long enough that a steady arb lane holds a stable weight, short enough
+	// that a lane the fleet abandons decays off within a shift so its markets stop winning scarce
+	// probes. Tunable-only via demand_ewma_half_life_secs (no launch field, like the sp-j4kjv
+	// per-activity SLAs); `tune demand_ewma_half_life_secs 0` reverts to this default.
+	defaultDemandHalfLifeSeconds = 10800
+	// demandWindowHalfLives bounds the telemetry READ window at this many half-lives — after 6 a
+	// sale retains 2^-6 (~1.5%) of its weight, negligible, so reading further back only costs I/O.
+	// It is a derived constant, not a knob: the half-life is the single tuning surface (RULINGS #5).
+	demandWindowHalfLives      = 6
 	defaultReleaseSlackPercent = 60 // release a feedback probe only below this % of the SLA (hysteresis)
 	// defaultReleaseStableWindowSecs is how long a WARM post's measured surplus (desired <
 	// current, under the SLA but past the slack line) must hold before one probe is shed to
@@ -188,6 +200,18 @@ type ScoutPostHullUpdater interface {
 // even when wired.
 type ChartedMarketplaceReader interface {
 	ChartedMarketSystemCounts(ctx context.Context) (map[string]int, error)
+}
+
+// TourTelemetryReader is the REUSED tour-telemetry read (sp-wuksw): the same
+// trading.TourTelemetryRepository.ListByPlayer the auto-outfit coordinator reads, scoped to the
+// player and a rolling window. The freshness sizer folds its SELL legs into a per-sink realized-
+// demand weight that supersedes the intrinsic Σ(trade_volume × price) census weight as the PRIMARY
+// input to the value-weighted freshness percentile (a market never traded keeps its intrinsic
+// prior). Optional-injection: nil (unwired) leaves every market on its intrinsic weight — byte-
+// identical to pre-sp-wuksw. Structurally satisfied by *persistence.TourTelemetryRepositoryGORM
+// (the read is REUSED, not forked — the repository enforces the player_id row filter).
+type TourTelemetryReader interface {
+	ListByPlayer(ctx context.Context, playerID int, since time.Time) ([]trading.TourLegTelemetry, error)
 }
 
 // RunMarketFreshnessSizerCoordinatorCommand launches the standing coordinator for a player
@@ -276,6 +300,12 @@ type RunMarketFreshnessSizerCoordinatorHandler struct {
 	// identical; even wired it is inert until the hold_unscanned_market_posts knob is armed.
 	chartedMarketplaceReader ChartedMarketplaceReader
 
+	// tourTelemetry is the optional REUSED tour-telemetry read (sp-wuksw): the sizer folds its
+	// SELL legs into a per-sink realized-demand weight that supersedes the intrinsic census weight
+	// in the value-weighted percentile. nil (unwired) or no telemetry ⇒ every market keeps its
+	// intrinsic weight — byte-identical to pre-sp-wuksw.
+	tourTelemetry TourTelemetryReader
+
 	// captainEvents emits the coordinator error-loop event when a reconcile pass fails with
 	// the identical error for DefaultStreakThreshold consecutive ticks. Optional-injection.
 	captainEvents captain.EventRecorder
@@ -341,6 +371,13 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) SetHullUpdater(u ScoutPostHu
 // byte-identical; even wired it is inert until hold_unscanned_market_posts is armed.
 func (h *RunMarketFreshnessSizerCoordinatorHandler) SetChartedMarketplaceReader(r ChartedMarketplaceReader) {
 	h.chartedMarketplaceReader = r
+}
+
+// SetTourTelemetryReader wires the REUSED tour-telemetry read (sp-wuksw) that drives the demand
+// weight. Leaving it unset keeps every market on its intrinsic census weight — byte-identical to
+// pre-sp-wuksw. The demand weight is applied only when value-weighting is on (mode 2).
+func (h *RunMarketFreshnessSizerCoordinatorHandler) SetTourTelemetryReader(r TourTelemetryReader) {
+	h.tourTelemetry = r
 }
 
 // SetEventRecorder wires the captain outbox for the reconcile error-loop event.
@@ -428,12 +465,13 @@ func SizerTunableDefaults() map[string]int {
 		"max_probe_fleet":             defaultSizerMaxProbeFleet,
 		"max_probes_per_system":       defaultMaxProbesPerSystem,
 		"sla_seconds":                 defaultSLASeconds,
-		"sla_seconds_weak":            defaultSLAWeakSeconds,       // sp-j4kjv per-activity SLA (WEAK, 360m)
-		"sla_seconds_restricted":      defaultSLARestrictedSeconds, // sp-j4kjv per-activity SLA (RESTRICTED + unknown/null, 135m)
-		"sla_seconds_growing":         defaultSLAGrowingSeconds,    // sp-j4kjv per-activity SLA (GROWING, 45m)
-		"sla_seconds_strong":          defaultSLAStrongSeconds,     // sp-j4kjv per-activity SLA (STRONG, 22m)
-		"target_percentile":           defaultTargetPercentile,     // sp-r57g percentile-age target
-		"value_weighted":              valueWeightedModeOn,         // sp-r57g value-weighting mode (2=on default, 1=off)
+		"sla_seconds_weak":            defaultSLAWeakSeconds,        // sp-j4kjv per-activity SLA (WEAK, 360m)
+		"sla_seconds_restricted":      defaultSLARestrictedSeconds,  // sp-j4kjv per-activity SLA (RESTRICTED + unknown/null, 135m)
+		"sla_seconds_growing":         defaultSLAGrowingSeconds,     // sp-j4kjv per-activity SLA (GROWING, 45m)
+		"sla_seconds_strong":          defaultSLAStrongSeconds,      // sp-j4kjv per-activity SLA (STRONG, 22m)
+		"target_percentile":           defaultTargetPercentile,      // sp-r57g percentile-age target
+		"value_weighted":              valueWeightedModeOn,          // sp-r57g value-weighting mode (2=on default, 1=off)
+		"demand_ewma_half_life_secs":  defaultDemandHalfLifeSeconds, // sp-wuksw realized-demand EWMA half-life
 		"worst_cycle_seconds":         defaultWorstCycleSeconds,
 		"cycle_dampening_percent":     defaultCycleDampeningPercent,
 		"breach_response_percent":     defaultBreachResponsePercent,
@@ -459,8 +497,9 @@ type sizerConfig struct {
 	CycleDampeningPercent    int
 	MaxProbesPerSystem       int
 	BreachResponsePercent    int
-	TargetPercentile         int  // sp-r57g percentile-age target (default 90; 100 = max-age behavior)
-	ValueWeighted            bool // sp-r57g: weight the percentile by per-market value (default ON)
+	TargetPercentile         int           // sp-r57g percentile-age target (default 90; 100 = max-age behavior)
+	ValueWeighted            bool          // sp-r57g: weight the percentile by per-market value (default ON)
+	DemandHalfLife           time.Duration // sp-wuksw: EWMA half-life of the realized-sink-demand weight
 	ReleaseSlackPercent      int
 	ReleaseStableWindow      time.Duration
 	ReservedFrontierFloor    int
@@ -573,7 +612,23 @@ func resolveSizerConfig(cmd *RunMarketFreshnessSizerCoordinatorCommand, live liv
 		}
 	}
 	c.ActivitySLA = resolveActivitySLA(live)
+	c.DemandHalfLife = resolveDemandHalfLife(live)
 	return c
+}
+
+// resolveDemandHalfLife (sp-wuksw) resolves the realized-demand EWMA half-life from the tick's live
+// snapshot: live-authoritative when a positive value is present, the documented default otherwise
+// (an absent/zeroed key, or no snapshot). It is tunable-only — no launch-command field, mirroring
+// the sp-j4kjv per-activity SLA knobs — so a nil snapshot yields the armed default directly.
+func resolveDemandHalfLife(live liveconfig.Snapshot) time.Duration {
+	secs := 0
+	if live != nil {
+		secs = live.PositiveIntOrZero("demand_ewma_half_life_secs")
+	}
+	if secs <= 0 {
+		secs = defaultDemandHalfLifeSeconds
+	}
+	return time.Duration(secs) * time.Second
 }
 
 func (c sizerConfig) slaFor(system string) time.Duration {
@@ -669,6 +724,12 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Co
 	if err != nil {
 		return fmt.Errorf("failed to read system freshness: %w", err)
 	}
+	// sp-wuksw: override each market's intrinsic census weight with its realized SELL demand — the
+	// PRIMARY weight source for the value-weighted freshness percentile so the fleet holds SLA on
+	// the sinks it earns through and lets zero-demand markets breach. A never-traded market keeps
+	// its intrinsic prior; a no-op (byte-identical) when unwired, value-weighting off, or no demand.
+	h.applyDemandWeights(ctx, cmd, cfg, snapshots)
+
 	posts, err := h.postRepo.ListActive(ctx, cmd.PlayerID.Value())
 	if err != nil {
 		return fmt.Errorf("failed to list scout posts: %w", err)
@@ -836,6 +897,61 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Co
 		})
 	}
 	return nil
+}
+
+// applyDemandWeights (sp-wuksw) overrides each market's intrinsic census weight with its realized
+// SELL demand — the PRIMARY weight source for the value-weighted freshness percentile — leaving a
+// never-traded market on its intrinsic prior. Because it only rewrites the WEIGHT the percentile
+// consumes, the whole sizing pipeline (WeightedPercentileAgeSeconds, the per-activity static base,
+// the release/hysteresis math, the SLA) is untouched: this changes WHICH markets win scarce
+// freshness, not the caps or the sizing math (orthogonal to sp-t5sh5 and sp-j4kjv).
+//
+// It is a no-op (byte-identical to intrinsic weighting) when value-weighting is off (mode 1, the
+// weight is ignored), the telemetry reader is unwired, or the read yields no realized demand. A
+// telemetry read error is logged and swallowed — demand REFINES an already-correct intrinsic
+// weighting, so an unreadable read falls open to intrinsic rather than aborting the tick.
+func (h *RunMarketFreshnessSizerCoordinatorHandler) applyDemandWeights(ctx context.Context, cmd *RunMarketFreshnessSizerCoordinatorCommand, cfg sizerConfig, snapshots []domainScouting.SystemFreshnessSnapshot) {
+	if h.tourTelemetry == nil || !cfg.ValueWeighted {
+		return
+	}
+	now := h.clock.Now()
+	since := now.Add(-cfg.DemandHalfLife * demandWindowHalfLives)
+	legs, err := h.tourTelemetry.ListByPlayer(ctx, cmd.PlayerID.Value(), since)
+	if err != nil {
+		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf("Tour telemetry unreadable — freshness demand weighting falls back to intrinsic this tick: %v", err), nil)
+		return
+	}
+	demand := domainScouting.DemandWeightsBySink(toSinkSales(legs, now), cfg.DemandHalfLife.Seconds())
+	if len(demand) == 0 {
+		return // cold start / no realized demand — every market keeps its intrinsic prior.
+	}
+	for i := range snapshots {
+		for j := range snapshots[i].Markets {
+			if weight, ok := demand[snapshots[i].Markets[j].Waypoint]; ok && weight > 0 {
+				snapshots[i].Markets[j].Weight = weight
+			}
+		}
+	}
+}
+
+// toSinkSales maps realized SELL legs to the slim scouting.SinkSale shape the demand EWMA folds,
+// keeping the scouting domain free of the trading package (mirrors autooutfit's toLegSaturation). A
+// BUY leg is not a sink and is dropped; the realized sell-value is RealizedUnits × RealizedUnitPrice
+// (a skipped leg's RealizedUnits=0 ⇒ zero value ⇒ dropped by the domain fold), and the recency age
+// is measured from RealizedAt.
+func toSinkSales(legs []trading.TourLegTelemetry, now time.Time) []domainScouting.SinkSale {
+	sales := make([]domainScouting.SinkSale, 0, len(legs))
+	for _, leg := range legs {
+		if leg.IsBuy {
+			continue
+		}
+		sales = append(sales, domainScouting.SinkSale{
+			Waypoint:   leg.Waypoint,
+			Value:      float64(leg.RealizedUnits) * float64(leg.RealizedUnitPrice),
+			AgeSeconds: now.Sub(leg.RealizedAt).Seconds(),
+		})
+	}
+	return sales
 }
 
 // measuredAgeSeconds is the sp-r57g closed-loop ground truth: the (value-weighted) P90 market age

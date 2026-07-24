@@ -665,6 +665,7 @@ func (r *MarketRepositoryGORM) SystemsFreshness(
 	// value weight already uses, so a market's freshness activity (sp-j4kjv) tracks the good that
 	// actually drives its throughput rather than an arbitrary or low-volume one.
 	type marketRollup struct {
+		waypoint      string
 		latest        time.Time
 		weight        float64
 		activity      string
@@ -674,7 +675,7 @@ func (r *MarketRepositoryGORM) SystemsFreshness(
 	for _, row := range rows {
 		market := perWaypoint[row.WaypointSymbol]
 		if market == nil {
-			market = &marketRollup{latest: row.LastUpdated}
+			market = &marketRollup{waypoint: row.WaypointSymbol, latest: row.LastUpdated}
 			perWaypoint[row.WaypointSymbol] = market
 		}
 		if row.LastUpdated.After(market.latest) {
@@ -711,6 +712,7 @@ func (r *MarketRepositoryGORM) SystemsFreshness(
 				AgeSeconds: now.Sub(market.latest).Seconds(),
 				Weight:     market.weight,
 				Activity:   market.activity,
+				Waypoint:   market.waypoint, // sp-wuksw: sink identity the demand re-weighting keys on
 			})
 		}
 		cycleSeconds, sampleCount := domainScouting.MedianScanIntervalSeconds(scanTimes)

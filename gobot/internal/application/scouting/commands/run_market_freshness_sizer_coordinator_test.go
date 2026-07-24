@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainScouting "github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
 
 // ---- fakes -----------------------------------------------------------------
@@ -124,6 +126,24 @@ func (f *fakeLedger) FindByPlayer(_ context.Context, _ shared.PlayerID, opts led
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Timestamp().After(out[j].Timestamp()) })
 	return out, nil
+}
+
+// fakeTourTelemetryReader stands in for the reused tour_telemetry_repository read (sp-wuksw):
+// it returns the player's realized trade legs and RECORDS the player_id + since it was asked
+// for, so a test can assert the coordinator scopes the demand read by player.
+type fakeTourTelemetryReader struct {
+	legs         []trading.TourLegTelemetry
+	err          error
+	calledPlayer int
+	sinceArg     time.Time
+	calls        int
+}
+
+func (f *fakeTourTelemetryReader) ListByPlayer(_ context.Context, playerID int, since time.Time) ([]trading.TourLegTelemetry, error) {
+	f.calledPlayer = playerID
+	f.sinceArg = since
+	f.calls++
+	return f.legs, f.err
 }
 
 // ---- helpers ---------------------------------------------------------------
@@ -1581,4 +1601,153 @@ func TestSizer_HomeFloorDoesNotInflateBuyDemand(t *testing.T) {
 		"the manning floor must not inflate buy-demand: SLA demand 2 == supply 2, so no probe is bought")
 	require.Equal(t, 3, pr.hullUpdates["X1-JC27"],
 		"the post is still MANNED to the floor (3) — the floor drives manning, not the buy")
+}
+
+// ---- sp-wuksw: demand-weighted freshness (realized SELL demand supersedes intrinsic) ----
+
+// mktWP is mkt() with the waypoint identity the demand re-weighting keys on.
+func mktWP(waypoint string, ageSecs, intrinsicWeight float64) domainScouting.MarketFreshnessSample {
+	return domainScouting.MarketFreshnessSample{Waypoint: waypoint, AgeSeconds: ageSecs, Weight: intrinsicWeight}
+}
+
+// freshMarketsWP builds n fresh markets (age 600s) each with a distinct waypoint and the given
+// intrinsic weight — the arb-core bulk a stale market is appended to in the demand fixtures.
+func freshMarketsWP(prefix string, n int, intrinsicWeight float64) []domainScouting.MarketFreshnessSample {
+	out := make([]domainScouting.MarketFreshnessSample, 0, n)
+	for i := 0; i < n; i++ {
+		out = append(out, mktWP(fmt.Sprintf("%s-%d", prefix, i), 600, intrinsicWeight))
+	}
+	return out
+}
+
+// sellLegAt builds a realized SELL leg (a sink hit) at a waypoint, realized now (full weight).
+func sellLegAt(waypoint string, units, price int, at time.Time) trading.TourLegTelemetry {
+	return trading.TourLegTelemetry{
+		Waypoint: waypoint, Good: "PRECIOUS_STONES", IsBuy: false,
+		RealizedUnits: units, RealizedUnitPrice: price, RealizedAt: at, PlannedAt: at, PlayerID: 1,
+	}
+}
+
+// HEADLINE (sp-wuksw test #1): the WEIGHT SOURCE for the value-weighted freshness percentile is
+// REALIZED SELL DEMAND, not intrinsic Σ(trade_volume × price). The two cases flip the sizing
+// decision on a 25-fresh + 1-stale system (the exact 7-raised / 3-released numbers the intrinsic
+// value-weighted test uses), driven purely by where the FLEET earns:
+//   - a stale market the fleet SELLS THROUGH (high realized demand, low intrinsic) pulls the P90
+//     onto itself and the post is RAISED to hold it (7) — where intrinsic weighting would have
+//     tolerated it as a low-value straggler (released to 3);
+//   - a stale market with HIGH intrinsic but ZERO realized demand, sitting behind a fresh arb core
+//     the fleet DOES earn through, is TOLERATED (released to 3) so it breaches — where intrinsic
+//     weighting would have chased it to the circuit target (raised to 7), starving the real sinks.
+//
+// RED (today, no demand reader): intrinsic weight decides — case 1 releases (3), case 2 raises (7).
+// GREEN: realized demand decides — case 1 raises (7), case 2 tolerates (3).
+func TestSizer_DemandWeightSupersedesIntrinsicAsPercentileWeightSource(t *testing.T) {
+	now := time.Now()
+	cases := []struct {
+		name      string
+		markets   []domainScouting.MarketFreshnessSample
+		legs      []trading.TourLegTelemetry
+		wantHulls int
+	}{
+		{
+			name: "a stale sink the fleet SELLS THROUGH is raised (demand beats low intrinsic)",
+			// 25 fresh low-intrinsic markets + one stale market with the SAME low intrinsic weight
+			// but heavy realized sell-demand. Intrinsic weighting tolerates it; demand raises it.
+			markets:   append(freshMarketsWP("X1-DW-CORE", 25, 1), mktWP("X1-DW-SINK", 5640, 1)),
+			legs:      []trading.TourLegTelemetry{sellLegAt("X1-DW-SINK", 1000, 100, now)}, // 100k realized
+			wantHulls: 7,
+		},
+		{
+			name: "a stale HIGH-intrinsic market with ZERO realized demand is tolerated (breaches)",
+			// 25 fresh markets — one of which is the fleet's real demand sink — plus a stale market
+			// with high intrinsic value but no realized demand. Intrinsic weighting chases the stale
+			// straggler; demand keeps the P90 on the fresh sink and lets the straggler breach.
+			markets: append(
+				append(freshMarketsWP("X1-DW-CORE", 24, 1), mktWP("X1-DW-SINK", 600, 1)),
+				mktWP("X1-DW-PERIPHERY", 5640, 100),
+			),
+			legs:      []trading.TourLegTelemetry{sellLegAt("X1-DW-SINK", 1000, 100, now)}, // 100k realized on a FRESH sink
+			wantHulls: 3,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fr := &fakeFreshnessReader{snapshots: []domainScouting.SystemFreshnessSnapshot{
+				snapWithMarkets("X1-DW32", 120, 25, tc.markets),
+			}}
+			pr := newSizerPostRepo(fullyMannedSizerPost("X1-DW32", 4))
+			fl := &fakeSizerFleetRepo{all: scouts(t, 20)}
+			h := newSizer(fr, pr, fl)
+			h.SetTourTelemetryReader(&fakeTourTelemetryReader{legs: tc.legs})
+
+			require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
+
+			require.Equal(t, tc.wantHulls, pr.hullUpdates["X1-DW32"],
+				"realized sell-demand, not intrinsic value, decides which stale market drives the freshness percentile")
+		})
+	}
+}
+
+// BYTE-IDENTICAL FALLBACK (sp-wuksw test #2): with NO realized-demand telemetry (empty read, or
+// no reader wired at all) the sizer output is identical to today's intrinsic value-weighting — the
+// cold-start prior. The fixture is case 2's high-intrinsic stale straggler, which intrinsic
+// weighting RAISES to 7: it must raise to 7 both with an empty telemetry reader and with none.
+func TestSizer_ByteIdenticalToIntrinsicWhenNoDemandTelemetry(t *testing.T) {
+	markets := append(
+		append(freshMarketsWP("X1-CS-CORE", 24, 1), mktWP("X1-CS-SINK", 600, 1)),
+		mktWP("X1-CS-PERIPHERY", 5640, 100),
+	)
+	run := func(wireEmptyReader bool) int {
+		fr := &fakeFreshnessReader{snapshots: []domainScouting.SystemFreshnessSnapshot{
+			snapWithMarkets("X1-CS32", 120, 25, markets),
+		}}
+		pr := newSizerPostRepo(fullyMannedSizerPost("X1-CS32", 4))
+		fl := &fakeSizerFleetRepo{all: scouts(t, 20)}
+		h := newSizer(fr, pr, fl)
+		if wireEmptyReader {
+			h.SetTourTelemetryReader(&fakeTourTelemetryReader{legs: nil})
+		}
+		require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
+		return pr.hullUpdates["X1-CS32"]
+	}
+
+	require.Equal(t, 7, run(false), "no reader wired → pure intrinsic value-weighting (raises the high-intrinsic straggler to 7)")
+	require.Equal(t, 7, run(true), "reader wired but empty → byte-identical to intrinsic value-weighting")
+}
+
+// PLAYER SCOPING (sp-wuksw test #4): the coordinator reads demand telemetry scoped to ITS player,
+// so another player's realized demand cannot bleed into this player's freshness weighting. The
+// coordinator's contract is to pass its own player_id (the repository enforces the row filter).
+func TestSizer_DemandReadIsScopedToThePlayer(t *testing.T) {
+	fr := &fakeFreshnessReader{snapshots: []domainScouting.SystemFreshnessSnapshot{
+		snapWithMarkets("X1-PS32", 120, 25, freshMarketsWP("X1-PS-CORE", 25, 1)),
+	}}
+	pr := newSizerPostRepo(fullyMannedSizerPost("X1-PS32", 4))
+	fl := &fakeSizerFleetRepo{all: scouts(t, 20)}
+	h := newSizer(fr, pr, fl)
+	reader := &fakeTourTelemetryReader{legs: nil}
+	h.SetTourTelemetryReader(reader)
+
+	require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
+
+	require.Equal(t, 1, reader.calls, "the coordinator reads demand telemetry once per tick")
+	require.Equal(t, sizerCmd().PlayerID.Value(), reader.calledPlayer,
+		"the demand read is scoped to this coordinator's player — another player's demand cannot bleed in")
+	require.False(t, reader.sinceArg.IsZero(), "the demand read is bounded to a rolling window, not the full history")
+}
+
+// KNOB WIRING (sp-wuksw test #3, config half): the EWMA half-life is a tunable-only knob resolving
+// live > default, mirroring the sp-j4kjv per-activity SLA knobs (no launch-command field). The decay
+// math itself is proven in TestDemandWeightsBySink_HalfLifeDecaysRealizedValue.
+func TestResolveSizerConfig_ReadsDemandHalfLifeLiveWithDefaultFallback(t *testing.T) {
+	def := resolveSizerConfig(sizerCmd(), nil)
+	require.Equal(t, time.Duration(defaultDemandHalfLifeSeconds)*time.Second, def.DemandHalfLife,
+		"no snapshot → the documented demand half-life default")
+
+	live := resolveSizerConfig(sizerCmd(), liveconfig.Snapshot{"demand_ewma_half_life_secs": 7200})
+	require.Equal(t, 2*time.Hour, live.DemandHalfLife, "a live snapshot overrides the half-life next tick")
+
+	reverted := resolveSizerConfig(sizerCmd(), liveconfig.Snapshot{"demand_ewma_half_life_secs": 0})
+	require.Equal(t, time.Duration(defaultDemandHalfLifeSeconds)*time.Second, reverted.DemandHalfLife,
+		"`tune demand_ewma_half_life_secs 0` reverts to the default")
 }

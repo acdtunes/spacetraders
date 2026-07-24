@@ -1131,6 +1131,13 @@ func run(cfg *config.Config) error {
 	// default) the reader is read by nothing, so the coordinator is byte-identical to today. It is
 	// the missing piece the sp-u8jc relay + probe-buyer need: the post must survive to be manned.
 	freshnessSizerHandler.SetChartedMarketplaceReader(marketRepo)
+	// sp-wuksw: the REUSED tour_telemetry read (the SAME repository the auto-outfit coordinator
+	// reads) drives the demand weight — the freshsizer folds its SELL legs into a per-sink realized-
+	// demand weight that supersedes the intrinsic Σ(trade_volume × price) census weight in the value-
+	// weighted freshness percentile, so under probe scarcity the fleet holds SLA on the sinks it
+	// earns through and lets zero-demand markets breach. A market never traded keeps its intrinsic
+	// prior; with no telemetry the sizer is byte-identical to intrinsic weighting. Player-scoped read.
+	freshnessSizerHandler.SetTourTelemetryReader(persistence.NewTourTelemetryRepository(db))
 	freshnessSizerHandler.SetEventRecorder(captainEventRepo) // emit coordinator error-loop events on reconcile streak breach
 	// Per-tick live-config snapshots: the cooldown/spend knobs are `tune`-able live,
 	// no restart needed.
