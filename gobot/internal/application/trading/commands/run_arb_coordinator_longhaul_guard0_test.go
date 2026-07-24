@@ -15,7 +15,7 @@ import (
 // boundedRoutabilityGraph is a GateGraph port double whose routability verdict depends on the
 // caller's jump bound: a cross-system lane is routable iff its stored source->sink hop distance is
 // within the bound. It records the exact bound Guard-0 threaded (lastBound), so a test proves the
-// command's RoutabilityJumpBound reached the resolver — never a second reachability notion invented
+// command's LegJumpBound reached the resolver — never a second reachability notion invented
 // in the test. err, when set, makes the routability check a fail-closed lookup failure (false,err)
 // rather than a clean unroutable verdict. Every non-routability method is inert: Guard-0 consults
 // only RoutableWithinJumps, and each run under test aborts at Guard-0 or the location guard, before
@@ -70,7 +70,7 @@ func (g *boundedRoutabilityGraph) ChartPresentGate(context.Context, string, stri
 // buy-at); with the default bound the SAME lane is still refused fail-closed exactly as today. Both
 // rows also assert the exact bound Guard-0 threaded reached the resolver — proving the command knob,
 // not a changed resolver, is what moves the horizon.
-func TestArbCoordinator_Guard0_HonorsRoutabilityJumpBound(t *testing.T) {
+func TestArbCoordinator_Guard0_HonorsLegJumpBound(t *testing.T) {
 	const farBuyAt = "X1-KA42-DOCK"    // system X1-KA42 — the hull is NOT here
 	const farSellAt = "X1-JP61-MARKET" // system X1-JP61 — 7 gate hops from X1-KA42
 
@@ -91,12 +91,12 @@ func TestArbCoordinator_Guard0_HonorsRoutabilityJumpBound(t *testing.T) {
 			h.SetGateGraph(graph)
 
 			resp, err := h.Handle(context.Background(), &RunArbCoordinatorCommand{
-				ShipSymbol:           ship.ShipSymbol(),
-				Good:                 trGood,
-				BuyAt:                farBuyAt,
-				SellAt:               farSellAt,
-				PlayerID:             1,
-				RoutabilityJumpBound: tc.bound,
+				ShipSymbol:   ship.ShipSymbol(),
+				Good:         trGood,
+				BuyAt:        farBuyAt,
+				SellAt:       farSellAt,
+				PlayerID:     1,
+				LegJumpBound: tc.bound,
 			})
 			if err != nil {
 				t.Fatalf("a guarded refusal must not be a Go error, got: %v", err)
@@ -107,7 +107,7 @@ func TestArbCoordinator_Guard0_HonorsRoutabilityJumpBound(t *testing.T) {
 				t.Fatalf("RoutabilityAbort=%v, want %v (bound=%d) — resp %+v", arb.RoutabilityAbort, tc.wantRoutabilityAbort, tc.bound, arb)
 			}
 			if graph.lastBound != tc.wantResolvedBound {
-				t.Fatalf("Guard-0 resolved bound=%d, want %d — the command's RoutabilityJumpBound must reach the resolver", graph.lastBound, tc.wantResolvedBound)
+				t.Fatalf("Guard-0 resolved bound=%d, want %d — the command's LegJumpBound must reach the resolver", graph.lastBound, tc.wantResolvedBound)
 			}
 			if len(mediator.purchases) != 0 {
 				t.Fatalf("no buy may occur before the location guard, got %d", len(mediator.purchases))
@@ -134,12 +134,12 @@ func TestArbCoordinator_Guard0_LongHaulBound_StillRefusesGenuinelyUnroutable(t *
 	h.SetGateGraph(graph)
 
 	resp, err := h.Handle(context.Background(), &RunArbCoordinatorCommand{
-		ShipSymbol:           ship.ShipSymbol(),
-		Good:                 trGood,
-		BuyAt:                "X1-BR81-DOCK",
-		SellAt:               "X1-UZ45-MARKET",
-		PlayerID:             1,
-		RoutabilityJumpBound: 25,
+		ShipSymbol:   ship.ShipSymbol(),
+		Good:         trGood,
+		BuyAt:        "X1-BR81-DOCK",
+		SellAt:       "X1-UZ45-MARKET",
+		PlayerID:     1,
+		LegJumpBound: 25,
 	})
 	if err != nil {
 		t.Fatalf("a guarded refusal must not be a Go error, got: %v", err)
@@ -168,12 +168,12 @@ func TestArbCoordinator_Guard0_LongHaulBound_LookupError_FailsClosedCouldNotVeri
 	h.SetGateGraph(graph)
 
 	resp, err := h.Handle(context.Background(), &RunArbCoordinatorCommand{
-		ShipSymbol:           ship.ShipSymbol(),
-		Good:                 trGood,
-		BuyAt:                "X1-TJ83-DOCK",
-		SellAt:               "X1-UM5-MARKET",
-		PlayerID:             1,
-		RoutabilityJumpBound: 25,
+		ShipSymbol:   ship.ShipSymbol(),
+		Good:         trGood,
+		BuyAt:        "X1-TJ83-DOCK",
+		SellAt:       "X1-UM5-MARKET",
+		PlayerID:     1,
+		LegJumpBound: 25,
 	})
 	if err != nil {
 		t.Fatalf("a guarded refusal must not be a Go error, got: %v", err)
@@ -195,12 +195,12 @@ func TestArbCoordinator_Guard0_LongHaulBound_LookupError_FailsClosedCouldNotVeri
 // mapping that opts long-haul into the widened horizon; every other RunArbCoordinatorCommand builder
 // (the gRPC one-shot factory, incl. its restart-recovery rebuild) omits the field, so it defaults to
 // 0 -> MaxJumpPath and the one-shot arb Guard-0 stays byte-identical.
-func TestArbCommandForLeg_SetsLongHaulRoutabilityBound(t *testing.T) {
+func TestArbCommandForLeg_SetsLongHaulLegJumpBound(t *testing.T) {
 	cmd := arbCommandForLeg(directedLegCommand{
 		ShipSymbol: "LH-1", Good: "EXOTIC_MATTER", BuyAt: "X1-UM5-DOCK", SellAt: "X1-VB78-MARKET",
 		Units: 40, PerHaulCap: 500000, MinMargin: 100, PlayerID: 1, ContainerID: "c-1",
 	})
-	if cmd.RoutabilityJumpBound != longHaulRepositionJumps {
-		t.Fatalf("the long-haul leg must set RoutabilityJumpBound=%d so Guard-0 admits its far sinks, got %d", longHaulRepositionJumps, cmd.RoutabilityJumpBound)
+	if cmd.LegJumpBound != longHaulRepositionJumps {
+		t.Fatalf("the long-haul leg must set LegJumpBound=%d so Guard-0 admits its far sinks, got %d", longHaulRepositionJumps, cmd.LegJumpBound)
 	}
 }

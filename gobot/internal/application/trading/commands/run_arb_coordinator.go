@@ -75,17 +75,21 @@ type RunArbCoordinatorCommand struct {
 	// reads it back here and reports the true net. It is REPORTING ONLY: no guard reads
 	// it (the spend caps read live state), so it can never gate or resize a buy.
 	PriorAttemptCost int
-	// RoutabilityJumpBound (sp-ry741) is the jump horizon Guard-0's pre-buy delivery
-	// routability check uses. 0 → gategraph.MaxJumpPath (5), so the one-shot arb and every
-	// gRPC/recovery-rebuilt run keep the strict 5-hop veto BYTE-IDENTICAL (this follows the
-	// same "0 → default" knob idiom as MaxUnits/MaxSpend/WorkingCapitalReserve). The
-	// long-haul arb leg (arbCommandForLeg) sets it to longHaulRepositionJumps (25) so Guard-0
-	// admits the far 6–12 hop exotic sinks discovery RANKS and the reposition FLIES to —
-	// aligning the guard horizon with the engine's reach instead of vetoing every lane long-
-	// haul exists to capture. It is a HORIZON, never a spend relaxation: at 25 Guard-0 still
-	// refuses a genuinely-unroutable lane fail-closed (RULINGS #4). Isolated by construction —
-	// only arbCommandForLeg sets it, so it can never reach the shared handler's one-shot runs.
-	RoutabilityJumpBound int
+	// LegJumpBound (sp-ry741) is the jump horizon the WHOLE long-haul leg resolves at — BOTH
+	// Guard-0's pre-buy delivery routability CHECK and the travel-to-sink FLIGHT. 0 →
+	// gategraph.MaxJumpPath (5), so the one-shot arb and every gRPC/recovery-rebuilt run keep the
+	// strict 5-hop reach BYTE-IDENTICAL for check AND flight (this follows the same "0 → default"
+	// knob idiom as MaxUnits/MaxSpend/WorkingCapitalReserve). The long-haul arb leg
+	// (arbCommandForLeg) sets it to longHaulRepositionJumps (25) so the check ADMITS and the flight
+	// REACHES the far 6–12 hop exotic sinks discovery RANKS and the reposition FLIES to — aligning
+	// check, flight, and the buy-side reposition on ONE horizon instead of vetoing (or stranding
+	// laden at) every lane long-haul exists to capture. The residual bug this name-change records:
+	// sp-ry741 first widened only the CHECK, so the hull passed the buy check at 25 then fail-looped
+	// the sell FLIGHT at 5 — the field now drives both. It is a HORIZON, never a spend relaxation: at
+	// 25 Guard-0 still refuses a genuinely-unroutable lane fail-closed (RULINGS #4), and the flight
+	// still fail-closes on an unreadable chosen-path gate. Isolated by construction — only
+	// arbCommandForLeg sets it, so it can never reach the shared handler's one-shot runs.
+	LegJumpBound int
 }
 
 // RunArbCoordinatorResponse reports the realised one-shot economics and, when the run
@@ -387,7 +391,16 @@ func (h *RunArbCoordinatorHandler) execute(
 		response.AbortReason = fmt.Sprintf("could not reload ship %s before travel: %v", cmd.ShipSymbol, err)
 		return err
 	}
-	ship, err = h.legs.travel(ctx, ship, cmd.SellAt, cmd.PlayerID)
+	// sp-ry741 residual: the travel-to-sink FLIGHT must honor the SAME jump horizon Guard-0's pre-buy
+	// routability CHECK used (cmd.LegJumpBound). Before this the check admitted a far long-haul
+	// sink at bound 25 while the flight still resolved at the hardcoded MaxJumpPath=5, so the hull passed
+	// the buy check, bought, then failed the sell-leg flight ("no jump-gate route ... within 5 jumps")
+	// and stranded laden — capturing zero value. Reuse the shared bound-aware travel (no forked route
+	// logic): thread the bound into the stored-then-verify slot — the SAME resolver the long-haul
+	// reposition-to-source rides (sp-0o9ub) — so the buy-side reposition and the sell-side flight agree
+	// on horizon AND resolver. 0 -> all bounds 0 -> the strict Path at MaxJumpPath, byte-identical for
+	// the one-shot arb and every other (non-long-haul) caller, which never set the bound.
+	ship, err = h.legs.travelWithJumpBound(ctx, ship, cmd.SellAt, cmd.PlayerID, 0, 0, cmd.LegJumpBound)
 	if err != nil {
 		response.AbortReason = fmt.Sprintf("travel of %s to %s failed: %v", cmd.ShipSymbol, cmd.SellAt, err)
 		return err
@@ -512,7 +525,7 @@ func (h *RunArbCoordinatorHandler) guardAndBuy(
 	//
 	// The routability HORIZON is caller-chosen (sp-ry741). Default 0 → gategraph.MaxJumpPath=5,
 	// so the one-shot arb and every gRPC/recovery-rebuilt run keep the strict 5-hop veto
-	// BYTE-IDENTICAL. The long-haul arb leg sets RoutabilityJumpBound=longHaulRepositionJumps(25)
+	// BYTE-IDENTICAL. The long-haul arb leg sets LegJumpBound=longHaulRepositionJumps(25)
 	// so this check ADMITS the far 6–12 hop exotic sinks discovery ranks and the reposition flies
 	// — the horizon was the whole bug: the bound-5 Routable vetoed every long-haul lane at buy
 	// time, deadheading the hull home empty. Widening the horizon does NOT weaken the fence: at 25
@@ -521,7 +534,7 @@ func (h *RunArbCoordinatorHandler) guardAndBuy(
 		buySystem := shared.ExtractSystemSymbol(cmd.BuyAt)
 		sellSystem := shared.ExtractSystemSymbol(cmd.SellAt)
 		if buySystem != sellSystem {
-			routabilityBound := cmd.RoutabilityJumpBound
+			routabilityBound := cmd.LegJumpBound
 			if routabilityBound <= 0 {
 				routabilityBound = gategraph.MaxJumpPath
 			}

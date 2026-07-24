@@ -42,14 +42,16 @@ func arbCommandForLeg(cmd directedLegCommand) *RunArbCoordinatorCommand {
 		PlayerID:              cmd.PlayerID,
 		ContainerID:           cmd.ContainerID,
 		WorkingCapitalReserve: int(common.ContractScalerCushion),
-		// sp-ry741: align the reused arb Guard-0's pre-buy delivery routability horizon with the
-		// long-haul reposition bound. A long-haul lane's sell leg is 6–12 gate hops from its source
-		// (the whole reason long-haul exists — lanes beyond the 1-hop/5-hop horizon); the default
-		// bound-5 Routable vetoed every one at buy time, so the empty hull flew to the source, was
-		// refused the buy, and deadheaded home. 25 = longHaulRepositionJumps, the SAME bound discovery
-		// ranks and the reposition flies — so admission, reposition, and buy now agree on the horizon.
-		// This is the ONLY builder that sets it, so the shared handler's one-shot arb runs stay at 5.
-		RoutabilityJumpBound: longHaulRepositionJumps,
+		// sp-ry741: align the reused arb leg's jump horizon — BOTH Guard-0's pre-buy delivery
+		// routability CHECK and the travel-to-sink FLIGHT — with the long-haul reposition bound. A
+		// long-haul lane's sell leg is 6–12 gate hops from its source (the whole reason long-haul
+		// exists — lanes beyond the 1-hop/5-hop horizon); at the default bound-5 the check vetoed every
+		// one at buy time, and once the check alone was first widened the flight then fail-looped the
+		// sell leg at 5 (the residual). 25 = longHaulRepositionJumps, the SAME bound discovery ranks
+		// and the reposition flies — so admission, reposition, buy, and delivery now agree on the
+		// horizon. This is the ONLY builder that sets it, so the shared handler's one-shot arb runs
+		// stay at 5.
+		LegJumpBound: longHaulRepositionJumps,
 	}
 }
 
