@@ -58,7 +58,6 @@ func TestBootstrapTunableDefaults_MirrorsCoordinatorConsts(t *testing.T) {
 		"gate_income_bar":               50000,                         // defaultGateIncomeBar 50000.0 → 50000 credits
 		"gate_min_haulers":              defaultGateMinHaulers,         // 2 — sp-gm7r escape-hatch starved-earner floor (GATE ENTRY uses the scaler target)
 		"gate_surplus_floor":            int(defaultGateSurplusFloor),  // 500000 — sp-gm7r GATE-entry treasury surplus war chest
-		"gate_contract_floor":           defaultGateContractFloor,      // 2 — sp-gm7r contract-earner floor held through GATE
 		"gate_reentry_construction_pct": 5,                             // defaultGateReentryConstructionPct 5.0 → 5 percent
 		"gate_reentry_streak_ticks":     defaultGateReentryStreakTicks, // 3 — sp-gm7r escape-hatch anti-thrash streak
 	}

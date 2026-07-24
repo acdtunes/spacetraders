@@ -17,68 +17,47 @@ import (
 // whole bootstrap run). It is computed by planGateWorkers from the observation alone and then executed
 // by actGate behind the readiness/capital gates.
 type gateWorkerPlan struct {
-	// ReleaseShips are the contract haulers to release back to the idle pool this tick so the
-	// manufacturing coordinator claims them as gate-construction workers — the "repurpose idle INCOME
-	// haulers FIRST" seed. Everything beyond min_contract_earners, so the income fleet becomes the seed
-	// workforce while a cash earner stays on contracts.
+	// ReleaseShips are contract haulers to release into the executor's worker pool this tick. It is ALWAYS
+	// EMPTY now (sp-cdxy2): the contract fleet is EXCLUSIVE (sp-9le3x) and is NEVER repurposed to gate
+	// construction, so GATE never re-tags a "contract" hull "manufacturing" (the re-tag that dropped the
+	// scaler's ContractHullCount and drove the buy→repurpose→buy churn). The field + the repurposer seam
+	// it feeds are retained (dormant) rather than ripped out; sizeGateWorkers simply never iterates it.
 	ReleaseShips []string
 	// Buy is the staged top-up: gate-worker hulls to BUY this tick (0 or 1 — never a blind buy-all),
-	// non-zero only once the pipeline reveals its chains AND the repurposed pool + existing workers fall
-	// short of the pipeline's shape.
+	// non-zero only once the pipeline reveals its chains AND the executor's existing workers fall short of
+	// the pipeline's shape. With the contract fleet exclusive, the BUY (plus any idle non-dedicated hull the
+	// executor claims on its own) is the SOLE source of the gate workforce — it sizes it from scratch.
 	Buy int
 	// DesiredWorkers is the sizing target (~one per active gate-material chain + a delivery hauler, capped
-	// at gate_worker_target). 0 until the pipeline reveals its chains — the seed release doesn't wait on it.
+	// at gate_worker_target). 0 until the pipeline reveals its chains.
 	DesiredWorkers int
-	// KeptOnContract is how many haulers are deliberately kept on contracts (min_contract_earners) to keep
-	// funding material acquisition through GATE — carried for the decision log.
+	// KeptOnContract is how many haulers stay on contracts through GATE — the WHOLE contract delivery fleet
+	// now (sp-cdxy2), never a floored subset — carried for the decision log.
 	KeptOnContract int
 }
 
-// planGateWorkers sizes the gate-construction workforce deterministically from the observation (spec
-// §Fleet scaling & hand-off), in the spec's priority order:
+// planGateWorkers sizes the gate-construction workforce deterministically from the observation. The
+// contract fleet is EXCLUSIVE (sp-9le3x): GATE builds its OWN construction fleet and never competes with
+// contracts for hulls, so the plan is two independent decisions:
 //
-//  1. REPURPOSE FIRST — release every contract hauler beyond min_contract_earners to the idle pool so
-//     the manufacturing coordinator claims it. This is the seed workforce and it does NOT wait on the
-//     pipeline's shape (contracts wind down as GATE begins). The count guard is len(Haulers) > keep, so
-//     once the surplus is released a later tick re-observes fewer contract haulers and releases nothing.
-//  2. TOP-UP TO THE PIPELINE'S SHAPE — once construction reveals its producing chains, target ~one
-//     worker per active chain + a delivery hauler, capped at gate_worker_target, and BUY the staged
-//     delta (one hull per tick) only if the repurposed pool + existing gate workers fall short.
-//  3. KEEP A CASH EARNER — min_contract_earners haulers stay on contracts through GATE (never released).
+//  1. KEEP THE WHOLE CONTRACT FLEET — every "contract"-dedicated delivery hauler stays EARNING on
+//     contracts through GATE (ReleaseShips is always empty). Repurposing them was the sp-cdxy2 churn: a
+//     contract→manufacturing re-tag dropped the scaler's ContractHullCount below its delivery target, so
+//     the scaler re-bought to refill and GATE repurposed again. Contracts fund the gate build at full
+//     scale (RULINGS #1); the depot warehouse/stocker hulls are separately tagged and likewise untouched.
+//  2. TOP-UP TO THE PIPELINE'S SHAPE — once construction reveals its producing chains, target ~one worker
+//     per active chain + a delivery hauler, capped at gate_worker_target, and BUY the staged delta (one
+//     hull per tick) whenever the executor's existing workers fall short. A bought hull is dedicated to the
+//     manufacturing fleet and shows up as a GateWorker next tick, so the deficit shrinks one per tick and
+//     the buy stops at the target — the buy sizes the full workforce from scratch, never an over-buy.
 //
-// It is pure and idempotent: a restart mid-GATE re-derives the same plan from the re-observed pool, so
-// no hauler is double-released and no top-up hull is double-bought.
+// It is pure and idempotent: a restart mid-GATE re-derives the same plan from the re-observed pool, so no
+// top-up hull is double-bought.
 func planGateWorkers(obs Observation, cfg bootstrapRunConfig) gateWorkerPlan {
-	keep := cfg.MinContractEarners
-	if keep < 0 {
-		keep = 0
-	}
-	// Hold a HIGHER contract-earner floor than min_contract_earners (UNCONDITIONALLY, sp-gm7r removed the
-	// flag) so the repurpose-first seed never cannibalizes the contract op below the capacity reconciler's
-	// depot-staging pool (it withholds the staging depot below 2 haulers, so releasing to 1 starves sourcing
-	// and funding collapses — the death spiral). Only the surplus ABOVE this floor is released; the pipeline
-	// top-up then prefers BUYING a dedicated worker (or an idle non-contract hull) over pulling an earner
-	// below the floor.
-	if cfg.GateContractFloor > keep {
-		keep = cfg.GateContractFloor
-	}
-	onContract := len(obs.Haulers)
-	kept := keep
-	if kept > onContract {
-		kept = onContract
-	}
+	// (1) The exclusive contract fleet is never repurposed — release nothing, keep the whole delivery fleet.
+	kept := len(obs.Haulers)
 
-	// (1) + (3): release the surplus beyond the kept earners; keep the first `keep` on contracts.
-	var release []string
-	if onContract > keep {
-		for _, h := range obs.Haulers[keep:] {
-			if h.Symbol != "" {
-				release = append(release, h.Symbol)
-			}
-		}
-	}
-
-	// (2): the top-up target, revealed only once the pipeline exposes its producing chains.
+	// (2) The top-up target, revealed only once the pipeline exposes its producing chains.
 	desired := 0
 	if obs.GateMaterialChains > 0 {
 		desired = obs.GateMaterialChains + gateDeliveryHaulers
@@ -87,20 +66,16 @@ func planGateWorkers(obs Observation, cfg bootstrapRunConfig) gateWorkerPlan {
 		}
 	}
 
-	// Buy the staged delta (at most one per tick) only when the pool AFTER this tick's release still
-	// falls short. The executor's already-claimed workers (GateWorkers) plus the surplus we hand it this
-	// tick is the pool; a bought hull becomes a GateWorker next tick, so the deficit shrinks and the buy
-	// stops — never an over-buy.
+	// Buy the staged delta (at most one per tick) whenever the executor's already-claimed workers fall short
+	// of the pipeline's shape. GateWorkers is the whole pool now (no repurposed seed is folded in): a bought
+	// hull becomes a GateWorker next tick, so the deficit shrinks and the buy stops at the target.
 	buy := 0
-	if desired > 0 {
-		poolAfterRelease := obs.GateWorkers + len(release)
-		if desired > poolAfterRelease {
-			buy = 1
-		}
+	if desired > obs.GateWorkers {
+		buy = 1
 	}
 
 	return gateWorkerPlan{
-		ReleaseShips:   release,
+		ReleaseShips:   nil,
 		Buy:            buy,
 		DesiredWorkers: desired,
 		KeptOnContract: kept,
@@ -127,8 +102,8 @@ func gateSiteOrNone(site string) string {
 //  3. Ensure the executor has ADOPTED the pipeline (captain L57): if it is down, EnsureRunning starts it
 //     (a fresh start adopts existing pipelines); if it is up but has not adopted the new pipeline, bounce
 //     it so a restart adopts. Running-and-adopted ⇒ nothing.
-//  4. Size the gate workforce (planGateWorkers): repurpose surplus contract haulers to construction FIRST,
-//     then buy the staged top-up delta only if the pool falls short of the pipeline's shape.
+//  4. Size the gate workforce (planGateWorkers): BUY the staged top-up delta when the executor's workers
+//     fall short of the pipeline's shape. The exclusive contract fleet is never repurposed (sp-cdxy2).
 //
 // The monitor→COMPLETE transition is derivePhase's job (obs.ConstructionComplete), so GATE has no explicit
 // "is it done?" branch — it just reconciles the construction drive each tick until the phase flips.
@@ -156,7 +131,7 @@ func (h *RunBootstrapCoordinatorHandler) actGate(ctx context.Context, cmd *RunBo
 	// (3) Ensure the executor is running AND has adopted the pipeline (the L57 adoption bounce).
 	h.ensureExecutorAdopted(ctx, cmd, cfg, obs, res)
 
-	// (4) Size the gate workforce: repurpose surplus haulers first, buy the staged top-up if short.
+	// (4) Size the gate workforce: buy the staged top-up if the executor's workers fall short.
 	h.sizeGateWorkers(ctx, cmd, cfg, obs, res)
 }
 
@@ -272,27 +247,32 @@ func (h *RunBootstrapCoordinatorHandler) ensureExecutorAdopted(ctx context.Conte
 	})
 }
 
-// sizeGateWorkers executes the deterministic worker plan: release surplus contract haulers to the
-// executor (repurpose-first), then buy the staged top-up delta if the pool falls short. Each release and
-// the buy is independently guarded, so a partial failure this tick simply retries next tick.
+// sizeGateWorkers executes the deterministic worker plan: buy the staged top-up delta when the executor's
+// workers fall short of the pipeline's shape. The release loop is retained but INERT — planGateWorkers keeps
+// the whole exclusive contract fleet on contracts (sp-cdxy2), so plan.ReleaseShips is always empty and no
+// hauler is ever repurposed; the loop stays only so a regression that reintroduced a release would still
+// route through the guarded, idempotent repurposer rather than a raw re-tag. Each step is independently
+// guarded, so a partial failure this tick simply retries next tick.
 func (h *RunBootstrapCoordinatorHandler) sizeGateWorkers(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
 	plan := planGateWorkers(obs, cfg)
 	res.DesiredWorkers = plan.DesiredWorkers
 
-	// (1) Repurpose-first: release every surplus contract hauler to the executor's worker pool.
+	// (1) INERT (always empty, sp-cdxy2): the exclusive contract fleet is never repurposed. Retained as the
+	// guarded seam so a reintroduced release could never bypass the idempotent repurposer.
 	for _, ship := range plan.ReleaseShips {
 		h.repurposeHauler(ctx, cmd, cfg, ship, res)
 	}
 
-	// (2) Staged top-up: buy the delta (at most one hull) only when the pool is short of the shape.
+	// (2) Staged top-up: buy the delta (at most one hull) only when the executor's workers are short of the shape.
 	if plan.Buy > 0 {
 		h.maybeBuyGateWorker(ctx, cmd, cfg, obs, plan, res)
 	}
 }
 
 // repurposeHauler releases ONE contract hauler back to the idle pool (reuse fleet unassign) so the
-// manufacturing coordinator claims it as a gate worker. Idempotent at the adapter (clearing an
-// already-clear tag is a no-op), so a re-release across a laggy observation is harmless.
+// manufacturing coordinator claims it as a gate worker. INERT under sp-cdxy2 (the exclusive contract fleet is
+// never repurposed, so planGateWorkers hands it no ships) — retained as the guarded, idempotent seam. Idempotent
+// at the adapter (clearing an already-clear tag is a no-op), so a re-release across a laggy observation is harmless.
 func (h *RunBootstrapCoordinatorHandler) repurposeHauler(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, ship string, res *reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -323,7 +303,7 @@ func (h *RunBootstrapCoordinatorHandler) repurposeHauler(ctx context.Context, cm
 		return
 	}
 	res.WorkersReleased++
-	logger.Log("INFO", fmt.Sprintf("Bootstrap released contract hauler %s to the manufacturing coordinator as a gate-construction worker (repurpose-first, keeping %d earner(s) on contracts)", ship, cfg.MinContractEarners), map[string]interface{}{
+	logger.Log("INFO", fmt.Sprintf("Bootstrap released contract hauler %s to the manufacturing coordinator as a gate-construction worker", ship), map[string]interface{}{
 		"action":       "bootstrap_repurposed_hauler",
 		"container_id": cmd.ContainerID,
 		"ship":         ship,

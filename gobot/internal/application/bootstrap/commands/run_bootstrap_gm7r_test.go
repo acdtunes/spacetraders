@@ -30,7 +30,7 @@ func unifiedCfg(t *testing.T) bootstrapRunConfig {
 	t.Helper()
 	cfg := resolveBootstrapConfig(baseCmd(), nil)
 	if cfg.GateIncomeBar != defaultGateIncomeBar || cfg.GateMinHaulers != defaultGateMinHaulers ||
-		cfg.GateSurplusFloor != defaultGateSurplusFloor || cfg.GateContractFloor != defaultGateContractFloor ||
+		cfg.GateSurplusFloor != defaultGateSurplusFloor ||
 		cfg.GateReentryConstructionPct != defaultGateReentryConstructionPct ||
 		cfg.GateReentryStreakTicks != defaultGateReentryStreakTicks {
 		t.Fatalf("unified config must carry the documented calibration defaults, got %+v", cfg)
@@ -172,32 +172,14 @@ func TestBootstrap_Gm7r_FailClosed_ZeroScalerTarget_NeverGates(t *testing.T) {
 	}
 }
 
-// --- Part 2: GATE must not cannibalize contract haulers below the scaled floor (always-on now) ---
-
-// planGateWorkers keeps ≥ gate_contract_floor (2) haulers EARNING and repurposes only the surplus above
-// it — unconditionally now (the flag is gone). From 4 haulers it releases exactly the 2-hauler surplus
-// (H3,H4), never the earners kept; at the floor (2 haulers) it releases nothing. This is the
-// cannibalization the spiral turned on.
-func TestBootstrap_Gm7r_Gate_KeepsContractFloor_RepurposesOnlySurplus(t *testing.T) {
-	cfg := unifiedCfg(t)
-
-	four := planGateWorkers(Observation{Haulers: nHaulers(4)}, cfg) // GateMaterialChains 0 → pure release accounting
-	if len(four.ReleaseShips) != 2 {
-		t.Fatalf("gate_contract_floor=2: 4 haulers → release only the 2-hauler surplus, got %d (%v)", len(four.ReleaseShips), four.ReleaseShips)
-	}
-	if four.ReleaseShips[0] != "H3" || four.ReleaseShips[1] != "H4" {
-		t.Fatalf("only the surplus above the floor is released, got %v (want [H3 H4])", four.ReleaseShips)
-	}
-	if kept := 4 - len(four.ReleaseShips); kept < defaultGateContractFloor {
-		t.Fatalf("contract pool kept earning (%d) must never drop below the depot-staging floor (%d)", kept, defaultGateContractFloor)
-	}
-
-	// At the floor exactly (2 haulers), repurpose NOTHING — the op is never cannibalized below the floor.
-	atFloor := planGateWorkers(Observation{Haulers: nHaulers(2)}, cfg)
-	if len(atFloor.ReleaseShips) != 0 {
-		t.Fatalf("a 2-hauler pool at the floor must release nothing, got %v", atFloor.ReleaseShips)
-	}
-}
+// --- Part 2: GATE never cannibalizes the contract fleet (superseded by sp-cdxy2: keep the WHOLE fleet) ---
+//
+// The sp-gm7r cure held a gate_contract_floor (2) and repurposed only the surplus ABOVE it. sp-cdxy2
+// SUPERSEDED that with the exclusive-fleet rule (sp-9le3x): GATE keeps the WHOLE contract delivery fleet and
+// repurposes NONE of it (the floor knob is gone), so the cannibalization the spiral turned on cannot happen
+// at all — the gate builds its own construction fleet by BUYING. That stronger invariant is pinned in
+// run_bootstrap_gate_test.go: TestBootstrap_PlanGateWorkers_KeepsWholeContractFleet_ReleasesNone (the sizing)
+// and TestBootstrap_Gate_NeverRepurposesContractFleet (through the driving port).
 
 // --- Part 2b: the escape hatch is UNCONDITIONALLY ON — a legit fresh GATE entry is never re-derived ---
 

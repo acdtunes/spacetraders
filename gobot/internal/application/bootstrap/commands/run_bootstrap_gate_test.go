@@ -61,43 +61,26 @@ func TestBootstrap_DerivePhase_EconomicSignalsIgnoreCoverage(t *testing.T) {
 	}
 }
 
-// --- planGateWorkers: deterministic repurpose-first → top-up sizing ---
+// --- planGateWorkers: the contract fleet is EXCLUSIVE (keep-all) → buy-only top-up sizing ---
 
-// Repurpose-first: when GATE begins, all contract haulers beyond the contract-earner floor are released to
-// the executor as the seed workforce — BEFORE the pipeline reveals its shape (chains still 0), so no buy.
-// The floor is gate_contract_floor (2, UNCONDITIONALLY held now — sp-gm7r), so it never cannibalizes the
-// contract op below the capacity reconciler's depot-staging pool.
-func TestBootstrap_PlanGateWorkers_RepurposesSurplusFirst(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd(), nil) // gate_contract_floor 2, gate_worker_target 6
-	obs := Observation{
-		Haulers:            []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}, {Symbol: "H3"}, {Symbol: "H4"}},
-		GateMaterialChains: 0, // pipeline shape not yet known
-	}
-	plan := planGateWorkers(obs, cfg)
-	if got := len(plan.ReleaseShips); got != 2 {
-		t.Fatalf("expected 2 surplus haulers released (4 on contract − 2 kept at the contract floor), got %d (%v)", got, plan.ReleaseShips)
-	}
-	if plan.KeptOnContract != 2 {
-		t.Fatalf("expected 2 haulers kept on contract (the gate_contract_floor), got %d", plan.KeptOnContract)
-	}
-	if plan.Buy != 0 {
-		t.Fatalf("no buy before the pipeline reveals its chains, got buy=%d", plan.Buy)
-	}
-	// The kept earners (first two) are NOT released; the surplus (H3,H4) is.
-	for _, s := range plan.ReleaseShips {
-		if s == "H1" || s == "H2" {
-			t.Fatalf("the kept contract earners H1/H2 must not be released, got %v", plan.ReleaseShips)
+// sp-cdxy2: the contract fleet is EXCLUSIVE (sp-9le3x) — GATE NEVER repurposes it to construction. For ANY
+// contract delivery fleet size, planGateWorkers releases NOTHING and keeps the whole fleet on contracts, so
+// the scaler's ContractHullCount never drops and the observed buy→repurpose→buy churn cannot start. Chains
+// are 0 here (shape not yet revealed), so no buy either — a settled hold on the contract op.
+func TestBootstrap_PlanGateWorkers_KeepsWholeContractFleet_ReleasesNone(t *testing.T) {
+	cfg := resolveBootstrapConfig(baseCmd(), nil) // gate_worker_target 6
+	for _, n := range []int{0, 1, 2, 4, 10} {
+		obs := Observation{Haulers: nHaulers(n), GateMaterialChains: 0}
+		plan := planGateWorkers(obs, cfg)
+		if len(plan.ReleaseShips) != 0 {
+			t.Fatalf("n=%d: the exclusive contract fleet is never repurposed — expected 0 released, got %d (%v)", n, len(plan.ReleaseShips), plan.ReleaseShips)
 		}
-	}
-}
-
-// The keep guard holds: at exactly the contract-earner floor on contract, nothing is released.
-func TestBootstrap_PlanGateWorkers_KeepsMinContractEarners(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd(), nil) // keep = gate_contract_floor 2
-	obs := Observation{Haulers: []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}}, GateMaterialChains: 3}
-	plan := planGateWorkers(obs, cfg)
-	if len(plan.ReleaseShips) != 0 {
-		t.Fatalf("must keep the contract-earner floor on contract, released %v", plan.ReleaseShips)
+		if plan.KeptOnContract != n {
+			t.Fatalf("n=%d: the whole contract fleet stays on contracts — expected KeptOnContract=%d, got %d", n, n, plan.KeptOnContract)
+		}
+		if plan.Buy != 0 {
+			t.Fatalf("n=%d: no buy before the pipeline reveals its chains, got buy=%d", n, plan.Buy)
+		}
 	}
 }
 
@@ -129,35 +112,19 @@ func TestBootstrap_PlanGateWorkers_StagesOneBuyPerTick(t *testing.T) {
 	}
 }
 
-// No buy when the repurposed seed + existing workers already cover the pipeline's shape. With the
-// contract-earner floor at 2 (always-on), 5 haulers release 3 — enough to cover a 3-worker desired.
-func TestBootstrap_PlanGateWorkers_NoBuyWhenPoolCovers(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd(), nil) // target 6, desired = min(2+1,6) = 3
-	obs := Observation{
-		Haulers:            []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}, {Symbol: "H3"}, {Symbol: "H4"}, {Symbol: "H5"}}, // keep 2, release 3
-		GateWorkers:        0,
-		GateMaterialChains: 2,
-	}
-	plan := planGateWorkers(obs, cfg)
-	if plan.DesiredWorkers != 3 {
-		t.Fatalf("desired = 3, got %d", plan.DesiredWorkers)
-	}
-	if len(plan.ReleaseShips) != 3 {
-		t.Fatalf("expected 3 released (5 on contract − 2 kept at the floor), got %d", len(plan.ReleaseShips))
-	}
-	if plan.Buy != 0 {
-		t.Fatalf("pool after release (0 workers + 3 released) covers desired 3 — no buy, got %d", plan.Buy)
-	}
-}
-
 // No buy when the executor already has enough workers (idempotency: a restart mid-GATE re-observes
-// GateWorkers and never re-buys or re-overshoots).
+// GateWorkers and never re-buys or re-overshoots). The pool is the executor's OWN workers alone now — the
+// contract fleet is never released into it (sp-cdxy2), so a large contract fleet next to it never masks a
+// genuine worker deficit.
 func TestBootstrap_PlanGateWorkers_NoBuyWhenWorkersSuffice(t *testing.T) {
 	cfg := resolveBootstrapConfig(baseCmd(), nil)
-	obs := Observation{Haulers: []HaulerSnapshot{{Symbol: "H1"}}, GateWorkers: 4, GateMaterialChains: 3}
-	plan := planGateWorkers(obs, cfg) // desired = 4, have 4
+	obs := Observation{Haulers: nHaulers(8), GateWorkers: 4, GateMaterialChains: 3}
+	plan := planGateWorkers(obs, cfg) // desired = 4, have 4 workers (the 8 contract haulers are NOT the pool)
 	if plan.Buy != 0 {
 		t.Fatalf("workers already cover desired — no buy, got %d", plan.Buy)
+	}
+	if len(plan.ReleaseShips) != 0 {
+		t.Fatalf("the 8 contract haulers are exclusive — none released, got %v", plan.ReleaseShips)
 	}
 }
 
@@ -423,19 +390,28 @@ func TestBootstrap_Gate_NoBounceWhenAdopted(t *testing.T) {
 	}
 }
 
-// Repurpose-first: surplus contract haulers beyond the contract-earner floor (2, always-on) are released to
-// the executor.
-func TestBootstrap_Gate_RepurposesSurplusHaulers(t *testing.T) {
+// sp-cdxy2 (the churn fix, through the driving port): a GATE tick with a full contract delivery fleet NEVER
+// repurposes a contract hauler to construction — the repurposer spy records ZERO calls — so no
+// "contract"→"manufacturing" re-tag drops the scaler's ContractHullCount and triggers the observed
+// buy→repurpose→buy churn. The gate workforce is sourced by BUYING the delta instead, proving the fix does
+// not merely disable worker sizing.
+func TestBootstrap_Gate_NeverRepurposesContractFleet(t *testing.T) {
 	obs := gateObs()
-	obs.Haulers = []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}, {Symbol: "H3"}}
+	obs.Haulers = nHaulers(10) // a fully-ramped exclusive contract fleet
+	obs.GateWorkers = 0
+	obs.GateMaterialChains = 3 // desired = min(3+1,6) = 4 > 0 workers ⇒ the buy path sizes the workforce
 	rep := &fakeRepurposer{}
-	h := gateHandler(obs, &fakeConstruction{}, &fakeManufacturing{}, rep, &fakeGateAcquirer{}, &fakeHandoff{})
+	acq := &fakeGateAcquirer{price: 200000, yard: "Y1", readable: true}
+	h := gateHandler(obs, &fakeConstruction{}, &fakeManufacturing{}, rep, acq, &fakeHandoff{})
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
-	if rep.calls != 1 { // keep 2 (the gate_contract_floor), release 1
-		t.Fatalf("expected 1 hauler repurposed (3 − 2 kept), got %d (%v)", rep.calls, rep.ships)
+	if rep.calls != 0 {
+		t.Fatalf("the exclusive contract fleet must NEVER be repurposed in GATE, got %d repurpose call(s) (%v)", rep.calls, rep.ships)
 	}
-	if res.WorkersReleased != 1 {
-		t.Fatalf("expected WorkersReleased=1, got %d", res.WorkersReleased)
+	if res.WorkersReleased != 0 {
+		t.Fatalf("no contract hauler is released to construction, got WorkersReleased=%d", res.WorkersReleased)
+	}
+	if acq.buys != 1 {
+		t.Fatalf("the gate workforce is sourced by BUYING the delta (not cannibalizing contracts), expected 1 buy, got %d", acq.buys)
 	}
 }
 

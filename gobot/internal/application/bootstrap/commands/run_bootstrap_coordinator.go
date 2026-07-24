@@ -76,7 +76,8 @@ const (
 	// defaultGateWorkerTarget caps gate-construction workers (actual = ~one per active gate-material
 	// chain + a delivery hauler, up to this). 6 covers a typical jump-gate material shape (a handful of
 	// producing chains + delivery) without letting a wide pipeline drain the treasury; the Analyst tunes
-	// it. The worker pool is mostly REPURPOSED idle contract haulers, so this rarely drives a buy.
+	// it. The gate BUYS its own workers (sp-cdxy2: the contract fleet is exclusive and never repurposed), so
+	// this cap bounds the construction-worker spend directly.
 	defaultGateWorkerTarget = 6
 	// gateDeliveryHaulers is the small fixed delivery allowance added to the per-chain worker target
 	// (spec §Fleet scaling: "~one worker per active gate-material chain + 1–2 delivery haulers"). Kept a
@@ -128,11 +129,12 @@ const (
 	// Death-spiral cure (UNCONDITIONALLY ON, sp-gm7r removed the master flag). It replaces the premature
 	// GATE-entry gate with a three-part cure: (1) GATE entry requires the FULL contract fleet (delivery +
 	// depot) to have reached the auto-scaler's live achievable target, a SUSTAINED $/hr, AND a treasury
-	// surplus war chest (gateFunded); (2) GATE keeps a higher contract-earner floor so the repurpose-first
-	// seed never cannibalizes the contract op below the capacity reconciler's depot-staging pool; (3) a
-	// sticky GATE that latched under-scaled with ~no construction re-derives INCOME (so the op re-scales)
-	// after an anti-thrash hysteresis streak. Gate entry only ever tightens, never loosens (RULINGS #4). The
-	// calibration knobs follow (tunable-only, no launch key).
+	// surplus war chest (gateFunded); (2) GATE keeps the WHOLE contract fleet earning and never repurposes it
+	// to construction (sp-cdxy2: the contract fleet is EXCLUSIVE — the gate BUYS its own workers instead of
+	// cannibalizing contracts, which had churned buy→repurpose→buy against the scaler); (3) a sticky GATE that
+	// latched under-scaled with ~no construction re-derives INCOME (so the op re-scales) after an anti-thrash
+	// hysteresis streak. Gate entry only ever tightens, never loosens (RULINGS #4). The calibration knobs
+	// follow (tunable-only, no launch key).
 	//
 	// defaultGateSurplusFloor is the treasury SURPLUS — over common.ImmutableReserveFloor (50k) — the op must
 	// hold to enter GATE: a war chest for the jump-gate material bill (~1600 FAB_MATS + 400 ADVANCED_CIRCUITRY)
@@ -142,11 +144,6 @@ const (
 	// working-capital floor is untouched. Base choice: the immutable 50k anti-stall bound; the 150k contract
 	// cushion is the stricter alternative if contract working capital should not count as surplus.
 	defaultGateSurplusFloor int64 = 500_000
-	// defaultGateContractFloor is how many contract-dedicated haulers stay EARNING through GATE — GATE
-	// repurposes only the surplus ABOVE this to construction, never below: the capacity reconciler withholds
-	// the staging depot below a 2-hauler pool, so cannibalizing to 1 starves sourcing and funding collapses.
-	// 2 holds the depot-staging floor. Supersedes min_contract_earners (1).
-	defaultGateContractFloor = 2
 	// defaultGateReentryConstructionPct is the construction-progress ceiling (whole percent, 0..100) below
 	// which an under-scaled sticky GATE may re-derive INCOME (the escape hatch). 5% scopes the escape to a
 	// GATE that latched but never really built — past it real materials are flowing (the manufacturing

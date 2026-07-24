@@ -41,7 +41,6 @@ func BootstrapTunableDefaults() map[string]int {
 		// Death-spiral cure (UNCONDITIONALLY ON, sp-gm7r removed the master flag): its calibration knobs (the
 		// surplus floor is whole credits; the reentry construction ceiling is a whole percent). Tunable-only.
 		"gate_surplus_floor":            int(defaultGateSurplusFloor),
-		"gate_contract_floor":           defaultGateContractFloor,
 		"gate_reentry_construction_pct": int(math.Round(defaultGateReentryConstructionPct)),
 		"gate_reentry_streak_ticks":     defaultGateReentryStreakTicks,
 	}
@@ -94,13 +93,12 @@ type bootstrapRunConfig struct {
 	GateMinHaulers int
 
 	// Death-spiral cure (UNCONDITIONALLY ON, sp-gm7r removed the flag): (1) gateFunded's full-fleet-vs-scaler
-	// -target bar + a sustained $/hr + a treasury surplus (see gateFunded); (2) planGateWorkers keeps ≥
-	// GateContractFloor haulers earning (repurposes only the surplus); (3) reDeriveUnderScaledGate releases a
-	// sticky GATE that latched under-scaled with ~no construction back to INCOME after GateReentryStreakTicks
-	// consecutive ticks. The calibration knobs resolve to their documented defaults, so the struct stays
-	// deterministic. All tunable-only (no launch key).
+	// -target bar + a sustained $/hr + a treasury surplus (see gateFunded); (2) planGateWorkers keeps the
+	// WHOLE contract fleet earning (sp-cdxy2: the exclusive fleet is never repurposed — the gate BUYS its
+	// workers); (3) reDeriveUnderScaledGate releases a sticky GATE that latched under-scaled with ~no
+	// construction back to INCOME after GateReentryStreakTicks consecutive ticks. The calibration knobs
+	// resolve to their documented defaults, so the struct stays deterministic. All tunable-only (no launch key).
 	GateSurplusFloor           int64   // treasury surplus (over common.ImmutableReserveFloor) required to enter GATE — the gate-bill war chest.
-	GateContractFloor          int     // haulers kept EARNING on contracts through GATE; only the surplus above this repurposes to construction.
 	GateReentryConstructionPct float64 // construction % below which an under-scaled sticky GATE may re-derive INCOME (the escape hatch's scope).
 	GateReentryStreakTicks     int     // consecutive under-scaled+low-progress ticks before the GATE→INCOME re-derive fires (anti-thrash hysteresis).
 }
@@ -170,9 +168,6 @@ func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand, live liveconfig
 		if v := live.PositiveIntOrZero("gate_surplus_floor"); v > 0 {
 			c.GateSurplusFloor = int64(v)
 		}
-		if v := live.PositiveIntOrZero("gate_contract_floor"); v > 0 {
-			c.GateContractFloor = v
-		}
 		if v := live.PositiveIntOrZero("gate_reentry_construction_pct"); v > 0 {
 			c.GateReentryConstructionPct = float64(v)
 		}
@@ -225,9 +220,6 @@ func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand, live liveconfig
 	// tuned, so bootstrapRunConfig stays deterministic (they are always consulted now — sp-gm7r removed the flag).
 	if c.GateSurplusFloor <= 0 {
 		c.GateSurplusFloor = defaultGateSurplusFloor
-	}
-	if c.GateContractFloor <= 0 {
-		c.GateContractFloor = defaultGateContractFloor
 	}
 	if c.GateReentryConstructionPct <= 0 {
 		c.GateReentryConstructionPct = defaultGateReentryConstructionPct
