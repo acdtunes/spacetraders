@@ -106,3 +106,14 @@ bootstrap:
 
 fleet_autosizer:
   contract_delivery_hulls_enabled: true
+
+# Manufacturing — gate-fill parity with prod (config.yaml:217). Without this the
+# unified gate-fill feeder (sp-vh1s routeSubModerateSource) is INERT off-gate:
+# perNodeSupplyFloor returns MODERATE, the sub-MODERATE feed-routing never engages,
+# and a SCARCE/RESTRICTED gate-material factory (e.g. FAB_MATS at F45) never gets its
+# inputs fed -> the jump-gate build stalls (observed: DEV15 frozen at 22%). ARMED here
+# to match the live prod behaviour staging is meant to rehearse.
+# TEMPORARY: the unified_gate_fill flag is being removed entirely (always-on) — once
+# that lands this key is dead and this section goes away.
+manufacturing:
+  unified_gate_fill: true
