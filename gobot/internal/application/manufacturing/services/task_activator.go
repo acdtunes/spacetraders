@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
@@ -223,6 +224,76 @@ func (a *TaskActivator) ActivateSupplyGatedTasks(ctx context.Context) int {
 	}
 
 	return activated
+}
+
+// sweepRetryableConstructionFailures flips FAILED DELIVER_TO_CONSTRUCTION tasks that
+// still have retry budget back to PENDING via the domain's ResetForRetry — the retry
+// seam Fail() already charges (retryCount increments on each failure) but which
+// nothing drove for construction tasks, so transient-class failures (a phantom-cargo
+// 4219 resync, a bad surplus-sell market pick) sat FAILED forever and froze the gate
+// leg (sp-qxxr6). The retry re-runs the whole chain: the existing resync machinery
+// and a fresh market pick handle the transient causes, so no error-code special
+// cases here. Bounded three ways:
+//   - task.CanRetry(): after maxRetries the task stays FAILED (visible, existing
+//     semantics)
+//   - a failure-age backoff (constructionRetryBackoff, read off the completedAt
+//     stamp Fail() sets), so a hot failure is not re-queued the same tick
+//   - the pipeline must still be EXECUTING — a recycled pipeline's Cancel()ed tasks
+//     are FAILED without a retry charge and must not resurrect
+//
+// Flipped tasks re-enter the PENDING pass in this same activation call, so
+// promotion to READY happens as soon as dependencies allow.
+func (a *TaskActivator) sweepRetryableConstructionFailures(ctx context.Context, pipelineStatusCache map[string]manufacturing.PipelineStatus) {
+	logger := common.LoggerFromContext(ctx)
+
+	failedTasks, err := a.taskRepo.FindByStatus(ctx, a.playerID, manufacturing.TaskStatusFailed)
+	if err != nil {
+		logger.Log("WARN", "Failed to find failed tasks for the construction retry sweep", map[string]interface{}{
+			"error": err.Error(),
+		})
+		return
+	}
+
+	for _, task := range failedTasks {
+		if task.TaskType() != manufacturing.TaskTypeDeliverToConstruction {
+			continue
+		}
+		if !task.CanRetry() {
+			continue
+		}
+		failedAt := task.CompletedAt()
+		if failedAt == nil || time.Since(*failedAt) < constructionRetryBackoff {
+			continue
+		}
+		pipelineStatus, found := a.cachedPipelineStatus(ctx, pipelineStatusCache, task.PipelineID())
+		if !found || pipelineStatus != manufacturing.PipelineStatusExecuting {
+			continue
+		}
+
+		lastError := task.ErrorMessage() // ResetForRetry clears it — capture for the log
+		if err := task.ResetForRetry(); err != nil {
+			logger.Log("WARN", "Failed to reset construction task for retry", map[string]interface{}{
+				"task_id": shortID(task.ID()),
+				"error":   err.Error(),
+			})
+			continue
+		}
+		if err := a.taskRepo.Update(ctx, task); err != nil {
+			logger.Log("WARN", "Failed to persist construction task retry", map[string]interface{}{
+				"task_id": shortID(task.ID()),
+				"error":   err.Error(),
+			})
+			continue
+		}
+
+		logger.Log("INFO", "Swept FAILED construction task back to PENDING for retry", map[string]interface{}{
+			"task_id":     shortID(task.ID()),
+			"good":        task.Good(),
+			"retry_count": task.RetryCount(),
+			"max_retries": task.MaxRetries(),
+			"last_error":  lastError,
+		})
+	}
 }
 
 func (a *TaskActivator) cachedPipelineStatus(ctx context.Context, cache map[string]manufacturing.PipelineStatus, pipelineID string) (manufacturing.PipelineStatus, bool) {
@@ -517,16 +588,30 @@ func (a *TaskActivator) executingCollectionPipeline(ctx context.Context, cache m
 	return pipeline
 }
 
-// ActivateConstructionTasks checks all PENDING DELIVER_TO_CONSTRUCTION tasks and
-// activates those whose dependencies are complete. Construction deliveries have a
-// fixed bill at the construction site, so no supply gating is applied beyond
-// requiring the pipeline to be EXECUTING and dependencies to be COMPLETED.
+// constructionRetryBackoff is the minimum age of a task's last failure before the
+// retry sweep re-queues it (sp-qxxr6): long enough that the transient cause (a
+// phantom-cargo resync, a bad surplus-sell market pick) has had a tick to clear,
+// short enough that a gate leg doesn't sit dead for an hour.
+const constructionRetryBackoff = 2 * time.Minute
+
+// ActivateConstructionTasks first sweeps retryable FAILED DELIVER_TO_CONSTRUCTION
+// tasks back to PENDING (sp-qxxr6), then checks all PENDING DELIVER_TO_CONSTRUCTION
+// tasks and activates those whose dependencies are complete — so a swept task is
+// promoted READY within the same pass when dependencies allow. Construction
+// deliveries have a fixed bill at the construction site, so no supply gating is
+// applied beyond requiring the pipeline to be EXECUTING and dependencies COMPLETED.
 func (a *TaskActivator) ActivateConstructionTasks(ctx context.Context) int {
 	logger := common.LoggerFromContext(ctx)
 
 	if a.taskRepo == nil {
 		return 0
 	}
+
+	// Cache pipeline status lookups to avoid repeated DB queries (shared by the
+	// retry sweep and the activation pass below)
+	pipelineStatusCache := make(map[string]manufacturing.PipelineStatus)
+
+	a.sweepRetryableConstructionFailures(ctx, pipelineStatusCache)
 
 	pendingTasks, err := a.taskRepo.FindByStatus(ctx, a.playerID, manufacturing.TaskStatusPending)
 	if err != nil {
@@ -535,9 +620,6 @@ func (a *TaskActivator) ActivateConstructionTasks(ctx context.Context) int {
 		})
 		return 0
 	}
-
-	// Cache pipeline status lookups to avoid repeated DB queries
-	pipelineStatusCache := make(map[string]manufacturing.PipelineStatus)
 
 	activated := 0
 	lastActivatedPipelineID := ""

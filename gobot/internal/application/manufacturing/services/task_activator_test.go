@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
@@ -10,19 +11,26 @@ import (
 
 // activatorStubTaskRepo embeds the domain interface so only the methods the
 // activator exercises need concrete implementations; any unexpected call
-// panics on a nil-method deref.
+// panics on a nil-method deref. The retry sweep (sp-qxxr6) reads FAILED tasks,
+// and tasks it flips to PENDING re-enter the PENDING read within the same
+// activation pass — so FindByStatus filters the seeded tasks by their LIVE
+// status, like the real repository would.
 type activatorStubTaskRepo struct {
 	manufacturing.TaskRepository
 
 	pending []*manufacturing.ManufacturingTask
+	failed  []*manufacturing.ManufacturingTask
 	updated []*manufacturing.ManufacturingTask
 }
 
 func (r *activatorStubTaskRepo) FindByStatus(_ context.Context, _ int, status manufacturing.TaskStatus) ([]*manufacturing.ManufacturingTask, error) {
-	if status != manufacturing.TaskStatusPending {
-		return nil, nil
+	var out []*manufacturing.ManufacturingTask
+	for _, task := range append(append([]*manufacturing.ManufacturingTask{}, r.pending...), r.failed...) {
+		if task.Status() == status {
+			out = append(out, task)
+		}
 	}
-	return r.pending, nil
+	return out, nil
 }
 
 func (r *activatorStubTaskRepo) Update(_ context.Context, task *manufacturing.ManufacturingTask) error {
@@ -298,5 +306,136 @@ func TestActivateConstructionTasks_DeferredManufacturable_NoFactory_RecoversViaB
 	}
 	if deferredTask.Status() != manufacturing.TaskStatusReady {
 		t.Errorf("expected the recovered task READY, got %s", deferredTask.Status())
+	}
+}
+
+// reconstituteFailedTask builds a FAILED task the way production meets one — read
+// back from persistence — with a controlled retry count and a backdated failure
+// timestamp (Fail() stamps completedAt, which the retry sweep's backoff reads).
+// The task carries a resolved source market (not deferred) and no dependencies,
+// so once swept back to PENDING nothing but pipeline status gates its promotion.
+func reconstituteFailedTask(pipelineID string, taskType manufacturing.TaskType, retryCount int, failedAgo time.Duration) *manufacturing.ManufacturingTask {
+	failedAt := time.Now().Add(-failedAgo)
+	createdAt := time.Now().Add(-2 * time.Hour)
+	return manufacturing.ReconstituteTask(
+		"failed-task-1", pipelineID, 1, taskType, manufacturing.TaskStatusFailed,
+		"FAB_MATS", 0, 0,
+		"X1-TEST-SRC", "", "", "", "", plannerTestSite,
+		nil, "STRANDED-1", 0,
+		retryCount, manufacturing.DefaultMaxRetries, 0, 0,
+		"Market X1-VD76-H47 does not list QUARTZ_SAND (4602)",
+		createdAt, nil, nil, &failedAt,
+		false, false, nil,
+	)
+}
+
+// sp-qxxr6: FAILED DELIVER_TO_CONSTRUCTION tasks with retry budget left were never
+// retried — task.CanRetry() existed (and Fail() charged retryCount) but no sweeper
+// flipped them back to PENDING, so two gate materials sat FAILED (retry 1/3) for
+// >80min on transient-class errors and construction froze. The activation pass must
+// sweep such tasks back to PENDING (via the domain's ResetForRetry) and promote
+// them READY in the same pass when dependencies allow — bounded by the retry
+// budget, a failure-age backoff, and the pipeline still EXECUTING (so recycled
+// pipelines' cancelled tasks are never resurrected).
+func TestActivateConstructionTasks_RetriesFailedDeliveries(t *testing.T) {
+	cases := []struct {
+		name              string
+		taskType          manufacturing.TaskType
+		retryCount        int
+		failedAgo         time.Duration
+		pipelineExecuting bool
+		wantStatus        manufacturing.TaskStatus
+		wantEnqueued      int
+	}{
+		{
+			name:              "retryable old failure is swept back and promoted READY in the same pass",
+			taskType:          manufacturing.TaskTypeDeliverToConstruction,
+			retryCount:        1, // Fail() already charged attempt #1; budget 1/3 leaves retries
+			failedAgo:         10 * time.Minute,
+			pipelineExecuting: true,
+			wantStatus:        manufacturing.TaskStatusReady,
+			wantEnqueued:      1,
+		},
+		{
+			name:              "retry budget exhausted stays FAILED (visible, existing semantics)",
+			taskType:          manufacturing.TaskTypeDeliverToConstruction,
+			retryCount:        manufacturing.DefaultMaxRetries,
+			failedAgo:         10 * time.Minute,
+			pipelineExecuting: true,
+			wantStatus:        manufacturing.TaskStatusFailed,
+			wantEnqueued:      0,
+		},
+		{
+			name:              "fresh failure inside the backoff window is left for a later pass",
+			taskType:          manufacturing.TaskTypeDeliverToConstruction,
+			retryCount:        1,
+			failedAgo:         10 * time.Second,
+			pipelineExecuting: true,
+			wantStatus:        manufacturing.TaskStatusFailed,
+			wantEnqueued:      0,
+		},
+		{
+			name:              "non-construction FAILED tasks are outside this sweep",
+			taskType:          manufacturing.TaskTypeAcquireDeliver,
+			retryCount:        1,
+			failedAgo:         10 * time.Minute,
+			pipelineExecuting: true,
+			wantStatus:        manufacturing.TaskStatusFailed,
+			wantEnqueued:      0,
+		},
+		{
+			name:              "a pipeline no longer EXECUTING never resurrects its tasks",
+			taskType:          manufacturing.TaskTypeDeliverToConstruction,
+			retryCount:        1,
+			failedAgo:         10 * time.Minute,
+			pipelineExecuting: false,
+			wantStatus:        manufacturing.TaskStatusFailed,
+			wantEnqueued:      0,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pipeline := manufacturing.NewConstructionPipeline(plannerTestSite, 1, 3, 5)
+			if tc.pipelineExecuting {
+				if err := pipeline.Start(); err != nil {
+					t.Fatalf("pipeline.Start: %v", err)
+				}
+			}
+
+			failedTask := reconstituteFailedTask(pipeline.ID(), tc.taskType, tc.retryCount, tc.failedAgo)
+
+			marketLocator := NewMarketLocator(&plannerStubMarketRepo{markets: map[string]*market.Market{}}, nil, nil, nil)
+			taskRepo := &activatorStubTaskRepo{failed: []*manufacturing.ManufacturingTask{failedTask}}
+			pipelineRepo := &activatorStubPipelineRepo{pipeline: pipeline}
+			taskQueue := &activatorStubTaskQueue{}
+			activator := newActivatorUnderTest(taskRepo, pipelineRepo, taskQueue, marketLocator)
+
+			activated := activator.ActivateConstructionTasks(context.Background())
+
+			if failedTask.Status() != tc.wantStatus {
+				t.Errorf("task status = %s, want %s", failedTask.Status(), tc.wantStatus)
+			}
+			if activated != tc.wantEnqueued {
+				t.Errorf("activated = %d, want %d", activated, tc.wantEnqueued)
+			}
+			if len(taskQueue.enqueued) != tc.wantEnqueued {
+				t.Errorf("enqueued = %d, want %d", len(taskQueue.enqueued), tc.wantEnqueued)
+			}
+
+			if tc.wantStatus == manufacturing.TaskStatusReady {
+				// The sweep must not double-charge the budget (Fail() already did)
+				// and must release the stranded hull so any ship can take the retry.
+				if failedTask.RetryCount() != tc.retryCount {
+					t.Errorf("retry count = %d, want %d (retries are charged at failure time, not at sweep time)", failedTask.RetryCount(), tc.retryCount)
+				}
+				if failedTask.AssignedShip() != "" {
+					t.Errorf("assigned ship = %q, want released (empty)", failedTask.AssignedShip())
+				}
+			}
+			if tc.wantStatus == manufacturing.TaskStatusFailed && len(taskRepo.updated) != 0 {
+				t.Errorf("an untouched task must not be re-persisted (no write-thrash), got %d updates", len(taskRepo.updated))
+			}
+		})
 	}
 }

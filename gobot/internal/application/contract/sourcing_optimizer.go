@@ -53,6 +53,13 @@ const (
 	// pass at live prices.
 	SourcingLadderCapNumer = 3
 	SourcingLadderCapDenom = 2
+
+	// MinPartialSourceBuyUnits is the smallest floor-sized partial lot worth a
+	// source-buy trip (sp-8f8fg). When a full lot would breach the working-capital
+	// reserve the executor buys the largest affordable lot instead of parking
+	// all-or-nothing — but a lot under this many units isn't worth the flight;
+	// the buy parks (resumes when treasury recovers) as before.
+	MinPartialSourceBuyUnits = 5
 )
 
 // SourcingPlan is the chosen sourcing decision for a contract's first

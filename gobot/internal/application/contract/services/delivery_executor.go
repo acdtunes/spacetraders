@@ -323,11 +323,11 @@ func (e *DeliveryExecutor) ProcessSingleDelivery(
 		}
 
 		if sourcingHalted {
-			// The ladder cap already WARNING-logged the runaway ask and the
-			// unsourced remainder. Deliver-what's-aboard has run; park the
-			// remainder for the coordinator's defer gate rather than looping
-			// and re-laddering the same ask (never a skip).
-			logger.Log("INFO", "Delivery leg parked partial after ladder-cap sourcing halt; remainder re-projects next coordinator pass", map[string]interface{}{
+			// The halt cause already WARNING-logged itself (a ladder-cap runaway
+			// ask, or a reserve-floor partial lot — sp-8f8fg). Deliver-what's-aboard
+			// has run; park the remainder for the coordinator's defer gate rather
+			// than looping and re-buying the same ask (never a skip).
+			logger.Log("INFO", "Delivery leg parked partial after sourcing halt (ladder cap or reserve-floor partial); remainder re-projects next coordinator pass", map[string]interface{}{
 				"ship_symbol":     shipSymbol,
 				"action":          "delivery_leg_sourcing_halt_park",
 				"trade_symbol":    currentDelivery.TradeSymbol,
@@ -383,22 +383,28 @@ func (e *DeliveryExecutor) lookupLiveCredits(ctx context.Context, playerID share
 	return playerResp.Player.Credits
 }
 
-// sourceBuyFloorBreached reports whether buying a source tranche costing projectedCost
-// would drop live treasury below the flat, immutable working-capital reserve floor
-// (common.ImmutableReserveFloor, sp-zq635 §4b / sp-05glh). It is
-// the contract-side analogue of the factory's spendFloorBreached and the trade/arb
-// spend-floor: a live treasury read right before the buy so the caller PARKS (not crash)
-// instead of spending below the reserve.
+// affordableSourceBuyLot sizes the source-buy lot the flat, immutable working-capital
+// reserve floor (common.ImmutableReserveFloor, sp-zq635 §4b / sp-05glh) allows, from a
+// live treasury read right before the buy. It is the contract-side analogue of the
+// factory's spendFloorBreached and the trade/arb spend-floor, extended by sp-8f8fg:
+// an all-or-nothing park deadlocked the sole earner over a small gap (nothing else
+// refilled treasury), so when the FULL lot would breach the floor the largest
+// affordable lot is bought instead — the floor itself is untouched (RULINGS #4/#5),
+// since the partial's projected cost still leaves treasury >= the reserve.
 //
-// Inert (returns false) unless WithSourceBuyFloor armed it — the optional-guard contract
-// every existing DeliveryExecutor caller/test relies on, byte-identical when off.
-//
-// Fails CLOSED on an unreadable treasury (lookupLiveCredits returns -1): a guard whose
-// job is keeping treasury above the reserve must never let a buy through blind, so a
-// failed read parks the buy rather than spending unseen.
-func (e *DeliveryExecutor) sourceBuyFloorBreached(ctx context.Context, playerID shared.PlayerID, projectedCost int) bool {
+// Returns (units, held):
+//   - guard unarmed (WithSourceBuyFloor not wired) → (unitsWanted, false): the
+//     optional-guard contract every existing caller/test relies on, byte-identical
+//   - treasury unreadable → (0, true): fails CLOSED — a guard whose job is keeping
+//     treasury above the reserve must never let a buy through blind
+//   - full lot clears the floor → (unitsWanted, false), byte-identical
+//   - full lot breaches but ≥ MinPartialSourceBuyUnits are affordable →
+//     (floor((treasury−reserve)/unitPrice), false)
+//   - anything smaller (or no positive unit price to size a lot with) → (0, true):
+//     PARK (not crash), resuming when treasury recovers, as before
+func (e *DeliveryExecutor) affordableSourceBuyLot(ctx context.Context, playerID shared.PlayerID, unitsWanted, unitPrice int) (int, bool) {
 	if !e.enforceSourceBuyFloor {
-		return false
+		return unitsWanted, false
 	}
 	logger := common.LoggerFromContext(ctx)
 	treasury := e.lookupLiveCredits(ctx, playerID)
@@ -406,18 +412,31 @@ func (e *DeliveryExecutor) sourceBuyFloorBreached(ctx context.Context, playerID 
 		logger.Log("WARNING", "Contract source-buy: live treasury unreadable for the working-capital reserve check — parking the buy (fail-closed)", map[string]interface{}{
 			"action": "source_buy_floor_park", "reason": "treasury_unreadable",
 		})
-		return true
+		return 0, true
 	}
 	const floor = common.ImmutableReserveFloor
-	if int64(treasury)-int64(projectedCost) < floor {
-		logger.Log("WARNING", fmt.Sprintf(
-			"Contract source-buy would breach the working-capital reserve floor — treasury %d, projected cost %d, reserve %d; parking (resumes when treasury recovers)",
-			treasury, projectedCost, floor), map[string]interface{}{
-			"action": "source_buy_floor_park", "reason": "reserve_floor", "treasury": treasury, "projected_cost": projectedCost, "reserve": floor,
-		})
-		return true
+	fullCost := int64(unitsWanted) * int64(unitPrice)
+	if int64(treasury)-fullCost >= floor {
+		return unitsWanted, false
 	}
-	return false
+	if unitPrice > 0 {
+		affordable := int((int64(treasury) - floor) / int64(unitPrice))
+		if affordable >= appContract.MinPartialSourceBuyUnits {
+			logger.Log("WARNING", fmt.Sprintf(
+				"Contract source-buy full lot would breach the working-capital reserve floor — treasury %d, full cost %d, reserve %d; buying the affordable partial lot of %d units (cost %d) instead so fulfillment keeps advancing (sp-8f8fg)",
+				treasury, fullCost, floor, affordable, affordable*unitPrice), map[string]interface{}{
+				"action": "source_buy_floor_partial", "treasury": treasury, "full_cost": fullCost, "reserve": floor,
+				"units_wanted": unitsWanted, "units_affordable": affordable,
+			})
+			return affordable, false
+		}
+	}
+	logger.Log("WARNING", fmt.Sprintf(
+		"Contract source-buy would breach the working-capital reserve floor — treasury %d, projected cost %d, reserve %d; parking (resumes when treasury recovers)",
+		treasury, fullCost, floor), map[string]interface{}{
+		"action": "source_buy_floor_park", "reason": "reserve_floor", "treasury": treasury, "projected_cost": fullCost, "reserve": floor,
+	})
+	return 0, true
 }
 
 // ExecutePurchaseLoop executes the multi-trip purchase loop.
@@ -512,19 +531,27 @@ func (e *DeliveryExecutor) executeSinglePurchaseTrip(
 		return ship, unitsToPurchase, true, false, nil
 	}
 
-	// PROACTIVE working-capital reserve floor (sp-zq635 §4b): hold the buy BEFORE the
-	// flight to market when buying unitsThisTrip at the projected ask would drop treasury
-	// below the immutable reserve. This closes the gap where a source-buy leaves treasury
-	// above 0 (so the API's reactive 4600 never fires) but under the 50k reserve. Parked as
-	// ErrInsufficientCredits so the existing park-not-crash path resumes it next tick; the
-	// reactive 4600 below stays the backstop. Inert unless WithSourceBuyFloor is wired.
-	if e.sourceBuyFloorBreached(ctx, playerID, unitsThisTrip*projectedUnitAsk) {
+	// PROACTIVE working-capital reserve floor (sp-zq635 §4b): size the buy BEFORE the
+	// flight to market. A lot that would drop treasury below the immutable reserve is
+	// shrunk to the largest affordable lot (sp-8f8fg) — and only when even the minimum
+	// partial is unaffordable is the buy HELD, parked as ErrInsufficientCredits so the
+	// existing park-not-crash path resumes it next tick. This closes the gap where a
+	// source-buy leaves treasury above 0 (so the API's reactive 4600 never fires) but
+	// under the 50k reserve; the reactive 4600 below stays the backstop. Inert unless
+	// WithSourceBuyFloor is wired.
+	affordableUnits, held := e.affordableSourceBuyLot(ctx, playerID, unitsThisTrip, projectedUnitAsk)
+	if held {
 		return nil, 0, false, false, &ErrInsufficientCredits{
 			ShipSymbol:     shipSymbol,
 			TradeSymbol:    tradeSymbol,
 			UnitsAttempted: unitsThisTrip,
 		}
 	}
+	// A floor-shrunk lot leaves treasury AT the reserve — further trips this pass are
+	// pointless, so it halts sourcing exactly like a ladder breach: deliver what's
+	// aboard, park the remainder for the coordinator's defer gate to re-project.
+	floorShrunk := affordableUnits < unitsThisTrip
+	unitsThisTrip = affordableUnits
 
 	var err error
 	ship, err = e.navigateAndDock(ctx, shipSymbol, cheapestMarket, playerID)
@@ -580,7 +607,8 @@ func (e *DeliveryExecutor) executeSinglePurchaseTrip(
 		return nil, 0, false, false, fmt.Errorf("failed to reload ship after purchase: %w", err)
 	}
 
-	return ship, unitsToPurchase, ladderBreached, ladderBreached, nil
+	haltSourcing := ladderBreached || floorShrunk
+	return ship, unitsToPurchase, haltSourcing, haltSourcing, nil
 }
 
 // sourcingLadderBreached reports whether the trip's realized per-unit price ran
