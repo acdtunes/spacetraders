@@ -38,6 +38,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -61,9 +62,23 @@ const (
 	// Config defaults (RULINGS #5: every operational value is a flag/config key, filled
 	// here only when the launch config leaves it unset).
 	defaultSizerTickSeconds = 60
-	defaultSLASeconds       = 3600 // 1h freshness SLA
-	defaultSeedCycleSeconds = 180  // seeded per-market cycle until telemetry exists
-	defaultMinCycleSamples  = 3    // min consecutive-interval samples to trust a measured cycle
+	defaultSLASeconds       = 3600 // 1h freshness SLA (the global fallback when a system carries no activity signal)
+	// Per-activity freshness SLAs (sp-j4kjv): the freshness SLA is a FUNCTION OF market ACTIVITY
+	// STATE, not one global value. A WEAK market tolerates far staler prices than a STRONG one, so a
+	// single global SLA over-serves the weak and under-serves the tight. The sizer partitions each
+	// system's markets by activity, sizes each cohort against ITS OWN SLA (ceil(cohortMarkets × cycle
+	// / activitySLA)), and SUMS the per-cohort probe needs. Defaults were chosen ~0.75× the trade-
+	// ranker's age caps (documented here — NOT a runtime dependency on sp-t5sh5's cap table). Defined
+	// ONCE here (RULINGS #5), surfaced through SizerTunableDefaults, and live-tunable via
+	// sla_seconds_{weak,restricted,growing,strong}. An unknown/null activity is sized at the
+	// RESTRICTED default; a system whose EVERY market lacks an activity signal falls back to the
+	// single global defaultSLASeconds (byte-identical to pre-sp-j4kjv).
+	defaultSLAWeakSeconds       = 21600 // 360 min — weak markets move slowly, tolerate the stalest prices
+	defaultSLARestrictedSeconds = 8100  // 135 min — also the unknown/null default
+	defaultSLAGrowingSeconds    = 2700  // 45 min
+	defaultSLAStrongSeconds     = 1320  // 22 min — strong markets move fastest, need the freshest prices
+	defaultSeedCycleSeconds     = 180   // seeded per-market cycle until telemetry exists
+	defaultMinCycleSamples      = 3     // min consecutive-interval samples to trust a measured cycle
 	// defaultWorstCycleSeconds is the worst-plausible per-market cycle bounding the market-count
 	// CLAMP ceiling (sp-iupr issue 3b): a system can never be sized above RequiredHulls(markets,
 	// this, sla), so a noisy-HIGH per-market reading cannot over-size a small-market system
@@ -413,8 +428,12 @@ func SizerTunableDefaults() map[string]int {
 		"max_probe_fleet":             defaultSizerMaxProbeFleet,
 		"max_probes_per_system":       defaultMaxProbesPerSystem,
 		"sla_seconds":                 defaultSLASeconds,
-		"target_percentile":           defaultTargetPercentile, // sp-r57g percentile-age target
-		"value_weighted":              valueWeightedModeOn,     // sp-r57g value-weighting mode (2=on default, 1=off)
+		"sla_seconds_weak":            defaultSLAWeakSeconds,       // sp-j4kjv per-activity SLA (WEAK, 360m)
+		"sla_seconds_restricted":      defaultSLARestrictedSeconds, // sp-j4kjv per-activity SLA (RESTRICTED + unknown/null, 135m)
+		"sla_seconds_growing":         defaultSLAGrowingSeconds,    // sp-j4kjv per-activity SLA (GROWING, 45m)
+		"sla_seconds_strong":          defaultSLAStrongSeconds,     // sp-j4kjv per-activity SLA (STRONG, 22m)
+		"target_percentile":           defaultTargetPercentile,     // sp-r57g percentile-age target
+		"value_weighted":              valueWeightedModeOn,         // sp-r57g value-weighting mode (2=on default, 1=off)
 		"worst_cycle_seconds":         defaultWorstCycleSeconds,
 		"cycle_dampening_percent":     defaultCycleDampeningPercent,
 		"breach_response_percent":     defaultBreachResponsePercent,
@@ -427,8 +446,13 @@ func SizerTunableDefaults() map[string]int {
 
 // sizerConfig is the launch command with every default resolved.
 type sizerConfig struct {
-	DefaultSLA               time.Duration
-	Overrides                map[string]time.Duration
+	DefaultSLA time.Duration
+	Overrides  map[string]time.Duration
+	// ActivitySLA (sp-j4kjv) is the per-activity freshness SLA: each market ACTIVITY state is sized
+	// against its own SLA, keyed by the canonical shared.ActivityLevel. Resolved once in
+	// resolveSizerConfig from the sla_seconds_{weak,restricted,growing,strong} knobs; read via
+	// slaForActivity, which maps an unknown/absent activity to the RESTRICTED entry.
+	ActivitySLA              map[shared.ActivityLevel]time.Duration
 	SeedCycle                time.Duration
 	MinCycleSamples          int
 	WorstCycle               time.Duration
@@ -548,6 +572,7 @@ func resolveSizerConfig(cmd *RunMarketFreshnessSizerCoordinatorCommand, live liv
 			c.Overrides[system] = time.Duration(secs) * time.Second
 		}
 	}
+	c.ActivitySLA = resolveActivitySLA(live)
 	return c
 }
 
@@ -556,6 +581,47 @@ func (c sizerConfig) slaFor(system string) time.Duration {
 		return sla
 	}
 	return c.DefaultSLA
+}
+
+// resolveActivitySLA (sp-j4kjv) resolves the per-activity freshness SLA map from the tick's live
+// snapshot. Each knob is live-authoritative when a positive value is present and falls back to its
+// documented default otherwise (an absent/zeroed key, or no snapshot) — the same tune-registry
+// semantics the other tunables use, where `tune <key> 0` reverts to the default. The launch verb
+// does not carry these knobs (they arm at the defaults and tune live), so there is no launch-command
+// field to fold in — a nil snapshot yields the armed defaults directly.
+func resolveActivitySLA(live liveconfig.Snapshot) map[shared.ActivityLevel]time.Duration {
+	weak, restricted, growing, strong := 0, 0, 0, 0
+	if live != nil {
+		weak = live.PositiveIntOrZero("sla_seconds_weak")
+		restricted = live.PositiveIntOrZero("sla_seconds_restricted")
+		growing = live.PositiveIntOrZero("sla_seconds_growing")
+		strong = live.PositiveIntOrZero("sla_seconds_strong")
+	}
+	return map[shared.ActivityLevel]time.Duration{
+		shared.ActivityLevelWeak:       activitySLAOrDefault(weak, defaultSLAWeakSeconds),
+		shared.ActivityLevelRestricted: activitySLAOrDefault(restricted, defaultSLARestrictedSeconds),
+		shared.ActivityLevelGrowing:    activitySLAOrDefault(growing, defaultSLAGrowingSeconds),
+		shared.ActivityLevelStrong:     activitySLAOrDefault(strong, defaultSLAStrongSeconds),
+	}
+}
+
+// activitySLAOrDefault turns a knob's resolved seconds into a duration, substituting the documented
+// default for a non-positive (unset / `tune 0`-reverted) value.
+func activitySLAOrDefault(secs, defaultSecs int) time.Duration {
+	if secs <= 0 {
+		secs = defaultSecs
+	}
+	return time.Duration(secs) * time.Second
+}
+
+// slaForActivity returns the freshness SLA for a canonical activity level (sp-j4kjv). An activity
+// absent from the map — an unknown/null state, or the "" zero value — resolves to the RESTRICTED
+// entry, the documented unknown default.
+func (c sizerConfig) slaForActivity(level shared.ActivityLevel) time.Duration {
+	if sla, ok := c.ActivitySLA[level]; ok {
+		return sla
+	}
+	return c.ActivitySLA[shared.ActivityLevelRestricted]
 }
 
 // valueWeightedFromMode maps the int-mode value_weighted knob to a bool: valueWeightedModeOff (1)
@@ -793,8 +859,8 @@ func measuredAgeSeconds(snap domainScouting.SystemFreshnessSnapshot, cfg sizerCo
 // The two age-driven branches are deliberately DISJOINT (they must never collide):
 //   - a TELEMETRY-STARVED system (its probes have not produced MinCycleSamples scan intervals)
 //     has an age that reflects a MANNING failure, NOT a capacity shortfall — raising demand off
-//     it only strands more probes (the issue-1 pathology). It stays on the static MARKET-COUNT
-//     model (modelTarget) and is NEVER raised off the age;
+//     it only strands more probes (the issue-1 pathology). It stays on the static base (the
+//     per-activity cohort sum, or the single-SLA market-count model) and is NEVER raised off the age;
 //   - a TRUSTED, FULLY MANNED system is the OPPOSITE case: its P90 market age at the CURRENT hull
 //     count is an honest circuit measurement, so the breach response sizes it straight from that
 //     circuit. Gated on !starved, so it can never fire for the starved case above.
@@ -807,9 +873,21 @@ func measuredAgeSeconds(snap domainScouting.SystemFreshnessSnapshot, cfg sizerCo
 func computeTarget(snap domainScouting.SystemFreshnessSnapshot, sla, cycle time.Duration, cfg sizerConfig, current int, fullyManned bool, measuredAgeSeconds float64) (target int, starved bool) {
 	starved = snap.CycleSamples < cfg.MinCycleSamples
 
-	// 1. MODEL — the cycle-driven estimate (starved: static market-count; trusted: sp-orgp
-	//    closed loop corrected by the empirical P90 age).
-	target = modelTarget(snap, sla, cycle, starved, measuredAgeSeconds)
+	// 0. STATIC BASE — the required_probes = ceil(markets × cycle / sla) model. sp-j4kjv: when the
+	//    census carries per-market ACTIVITY the base is the per-activity cohort SUM (each activity
+	//    sized against its OWN SLA and the per-cohort needs summed); otherwise it is the single-SLA
+	//    RequiredHulls over the whole market count. ONLY this base's sla input became per-activity —
+	//    the age raise, clamp, circuit response, and release pacing below are UNCHANGED, each still
+	//    keyed on the system SLA (`sla`), so a census with no activity signal is byte-identical.
+	_, hasOverride := cfg.Overrides[snap.SystemSymbol]
+	staticBase, perActivity := activityStaticHulls(snap, cycle, cfg, hasOverride)
+	if !perActivity {
+		staticBase = domainScouting.RequiredHulls(snap.MarketCount, cycle, sla)
+	}
+
+	// 1. MODEL — the static base (starved) or that base raised by the empirical P90 breach (trusted:
+	//    sp-orgp/sp-r57g closed loop). The base is per-activity when the census carries activity.
+	target = modelTargetFromBase(staticBase, sla, starved, measuredAgeSeconds)
 
 	// 2. MARKET-COUNT CLAMP (sp-iupr issue 3b) — bound the noise-driven model to what this
 	//    market count could justify at the worst plausible cycle, capping a small-market system a
@@ -860,16 +938,80 @@ func breachResponseAge(ageSeconds float64, breachResponsePercent int) time.Durat
 	return time.Duration(scaledSeconds * float64(time.Second))
 }
 
-// modelTarget is the cycle-driven size estimate before the issue-3 clamp and sanity floor. A
-// telemetry-starved system uses the static market-count model (RequiredHulls) and is NOT age-
-// raised (issue 1: its age is a manning signal); a trusted system uses the sp-orgp closed loop
-// corrected by its empirical P90 age (sp-r57g — measuredAgeSeconds, not the tail-dominated max).
-func modelTarget(snap domainScouting.SystemFreshnessSnapshot, sla, cycle time.Duration, starved bool, measuredAgeSeconds float64) int {
+// modelTargetFromBase turns the STATIC required-hull base into the cycle-driven model target. A
+// telemetry-starved system uses the base as-is and is NOT age-raised (issue 1: its age is a manning
+// signal, not a capacity one); a trusted system raises the base by its empirical P90 breach (the
+// sp-orgp/sp-r57g closed loop, via RaisedForBreach). The static base is either the sp-j4kjv per-
+// activity cohort sum or the single-SLA RequiredHulls — computed by the caller (computeTarget), which
+// is where the per-activity vs global-SLA decision lives; this function only applies the age raise.
+func modelTargetFromBase(staticBase int, sla time.Duration, starved bool, measuredAgeSeconds float64) int {
 	if starved {
-		return domainScouting.RequiredHulls(snap.MarketCount, cycle, sla)
+		return staticBase
 	}
 	age := time.Duration(measuredAgeSeconds * float64(time.Second))
-	return domainScouting.FreshnessRequiredHulls(snap.MarketCount, cycle, sla, age)
+	return domainScouting.RaisedForBreach(staticBase, sla, age)
+}
+
+// activityStaticHulls is the sp-j4kjv per-activity static base: it partitions the system's markets by
+// ACTIVITY and SUMS each cohort's RequiredHulls, sizing each cohort against ITS OWN SLA — a WEAK
+// cohort tolerates a longer SLA and needs fewer probes than an equal STRONG one. It replaces the
+// single-SLA RequiredHulls(MarketCount, cycle, sla) as the model's static base.
+//
+// It returns (_, false) — "no activity signal, size on the global SLA (byte-identical to
+// pre-sp-j4kjv)" — when ANY of:
+//   - the system carries a per-system SLA override (an explicit operator decision governs the WHOLE
+//     system across activities, so per-activity heuristics must not second-guess it);
+//   - the per-market breakdown does not fully account for MarketCount — a cold-start charted override
+//     inflated MarketCount beyond the scanned markets, or an aggregate-only / pre-breakdown census;
+//   - no market carries a KNOWN activity (a pre-activity census, or a test fixture): an all-unknown
+//     system stays on the tuned global SLA rather than repricing every market at the RESTRICTED
+//     default, which is what keeps every pre-sp-j4kjv sizing test byte-identical.
+//
+// Within a partitioned system a market whose activity is unknown/null joins the RESTRICTED cohort
+// (the documented unknown default), so a mix of known + null markets sizes the null ones at RESTRICTED.
+func activityStaticHulls(snap domainScouting.SystemFreshnessSnapshot, cycle time.Duration, cfg sizerConfig, hasOverride bool) (int, bool) {
+	if hasOverride {
+		return 0, false
+	}
+	if len(snap.Markets) == 0 || len(snap.Markets) != snap.MarketCount {
+		return 0, false
+	}
+	counts := make(map[shared.ActivityLevel]int, 4)
+	anyKnown := false
+	for i := range snap.Markets {
+		level, known := canonicalActivity(snap.Markets[i].Activity)
+		if known {
+			anyKnown = true
+		}
+		counts[level]++
+	}
+	if !anyKnown {
+		return 0, false
+	}
+	total := 0
+	for level, count := range counts {
+		total += domainScouting.RequiredHulls(count, cycle, cfg.slaForActivity(level))
+	}
+	return total, true
+}
+
+// canonicalActivity maps a raw market_data.activity string to its canonical ActivityLevel. An empty
+// or unrecognized value returns (ActivityLevelRestricted, false): unknown/null is SIZED at the
+// RESTRICTED default (sp-j4kjv), while the false flag lets activityStaticHulls tell an ALL-unknown
+// system (fall back to the global SLA) from a mix carrying at least one known activity.
+func canonicalActivity(raw string) (shared.ActivityLevel, bool) {
+	switch shared.ActivityLevel(strings.ToUpper(strings.TrimSpace(raw))) {
+	case shared.ActivityLevelWeak:
+		return shared.ActivityLevelWeak, true
+	case shared.ActivityLevelGrowing:
+		return shared.ActivityLevelGrowing, true
+	case shared.ActivityLevelStrong:
+		return shared.ActivityLevelStrong, true
+	case shared.ActivityLevelRestricted:
+		return shared.ActivityLevelRestricted, true
+	default:
+		return shared.ActivityLevelRestricted, false
+	}
 }
 
 // desiredHulls applies release PACING on top of computeTarget so the fleet neither flaps at

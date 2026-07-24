@@ -209,6 +209,17 @@ func freshMarkets(n int, ageSecs, weight float64) []domainScouting.MarketFreshne
 	return out
 }
 
+// activityMarkets builds n identical FRESH markets (age 100s < any SLA so no breach raise fires,
+// unit weight) carrying `activity` — a single-activity cohort for the sp-j4kjv per-activity SLA
+// fixtures. An empty activity is the unknown/null case.
+func activityMarkets(n int, activity string) []domainScouting.MarketFreshnessSample {
+	out := make([]domainScouting.MarketFreshnessSample, 0, n)
+	for i := 0; i < n; i++ {
+		out = append(out, domainScouting.MarketFreshnessSample{AgeSeconds: 100, Weight: 1, Activity: activity})
+	}
+	return out
+}
+
 // snapWithMarkets builds a TRUSTED freshness snapshot from an explicit per-market distribution
 // (sp-r57g): MarketCount and OldestAgeSeconds (the max) are DERIVED from the markets so the
 // snapshot is self-consistent, while Markets drives the value-weighted percentile the sizer sizes
@@ -472,6 +483,114 @@ func TestSizer_HonorsPerSystemSLAOverride(t *testing.T) {
 	require.Len(t, pr.upserts, 1)
 	require.Equal(t, 4, pr.upserts[0].Hulls, "ceil(60×120/1800)=4 under the 30min override")
 	require.Equal(t, 30*time.Minute, pr.upserts[0].FreshnessTarget)
+}
+
+// ---- sp-j4kjv: per-activity SLA sizing -------------------------------------
+
+// The freshness SLA is a FUNCTION OF market ACTIVITY. Two systems with the IDENTICAL market count
+// (90) and cycle (120s) are sized differently purely by activity: a WEAK cohort against the 360m
+// SLA needs 1 probe (ceil(90×120/21600)=1), the SAME markets as a STRONG cohort against the 22m SLA
+// need 9 (ceil(90×120/1320)=9). A single global SLA would size both alike — proving the SLA input
+// to the required_probes sizing is now per-activity.
+func TestSizer_SizesActivityCohortsAgainstPerActivitySLA_StrongNeedsMoreThanWeak(t *testing.T) {
+	fr := &fakeFreshnessReader{snapshots: []domainScouting.SystemFreshnessSnapshot{
+		snapWithMarkets("X1-WEAK", 120, 89, activityMarkets(90, "WEAK")),
+		snapWithMarkets("X1-STRONG", 120, 89, activityMarkets(90, "STRONG")),
+	}}
+	pr := newSizerPostRepo()
+	fl := &fakeSizerFleetRepo{all: scouts(t, 40)}
+	h := newSizer(fr, pr, fl)
+	cmd := sizerCmd()
+	cmd.MaxProbesPerSystem = 20 // lift the default-8 cap so the STRONG cohort's true need isn't clipped
+
+	require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
+
+	got := map[string]int{}
+	for _, u := range pr.upserts {
+		got[u.SystemSymbol] = u.Hulls
+	}
+	require.Equal(t, 1, got["X1-WEAK"], "a WEAK cohort at the 360m SLA needs 1 probe: ceil(90×120/21600)=1")
+	require.Equal(t, 9, got["X1-STRONG"], "the SAME 90 markets at the 22m STRONG SLA need 9 probes: ceil(90×120/1320)=9")
+	require.Greater(t, got["X1-STRONG"], got["X1-WEAK"], "a tighter activity SLA sizes more probes for the same market count")
+}
+
+// A single system with a MIXED activity set is sized as the SUM of its per-cohort sizing, not one
+// blended global SLA. 30 STRONG (ceil(30×120/1320)=3) + 30 WEAK (ceil(30×120/21600)=1) = 4 probes,
+// where a single global 60m SLA over all 60 markets would be ceil(60×120/3600)=2.
+func TestSizer_MixedActivitySystemSumsPerCohortSizing_NotSingleGlobalSLA(t *testing.T) {
+	mixed := append(activityMarkets(30, "STRONG"), activityMarkets(30, "WEAK")...)
+	fr := &fakeFreshnessReader{snapshots: []domainScouting.SystemFreshnessSnapshot{
+		snapWithMarkets("X1-MIX", 120, 89, mixed),
+	}}
+	pr := newSizerPostRepo()
+	fl := &fakeSizerFleetRepo{all: scouts(t, 40)}
+	h := newSizer(fr, pr, fl)
+
+	require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
+
+	require.Len(t, pr.upserts, 1)
+	require.Equal(t, 4, pr.upserts[0].Hulls,
+		"mixed-activity demand is the SUM of per-cohort sizing (3 STRONG + 1 WEAK), not the single-global-SLA 2")
+}
+
+// Markets whose activity is unknown/null are sized at the RESTRICTED default (135m). A system of 60
+// null-activity markets + 30 GROWING markets at a 300s cycle: null → RESTRICTED (8100s):
+// ceil(60×300/8100)=3, GROWING (2700s): ceil(30×300/2700)=4, total 7. A single global 60m SLA over
+// all 90 markets would be ceil(90×300/3600)=8, and pricing the null cohort as WEAK would be 1
+// (total 5) — 7 proves the null cohort is sized at RESTRICTED. (The GROWING market makes the system
+// activity-bearing; an ALL-null system falls back to the global SLA — see the guard test below.)
+func TestSizer_UnknownActivityMarketsSizedAtRestrictedDefault(t *testing.T) {
+	markets := append(activityMarkets(60, ""), activityMarkets(30, "GROWING")...)
+	fr := &fakeFreshnessReader{snapshots: []domainScouting.SystemFreshnessSnapshot{
+		snapWithMarkets("X1-NULLACT", 300, 89, markets),
+	}}
+	pr := newSizerPostRepo()
+	fl := &fakeSizerFleetRepo{all: scouts(t, 40)}
+	h := newSizer(fr, pr, fl)
+
+	require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
+
+	require.Len(t, pr.upserts, 1)
+	require.Equal(t, 7, pr.upserts[0].Hulls,
+		"unknown/null activity is sized at the RESTRICTED default (135m): 3 (null@RESTRICTED) + 4 (GROWING) = 7")
+}
+
+// BYTE-IDENTICAL GUARD: a system whose markets carry NO activity signal at all (a pre-activity
+// census, or an aggregate-only fixture) is sized on the single global sla_seconds — it does NOT
+// silently reprice every market at the RESTRICTED default. 90 markets, 120s cycle, global 60m SLA:
+// ceil(90×120/3600)=3 (RESTRICTED would be 2). This is the property that keeps every pre-sp-j4kjv
+// test green.
+func TestSizer_NoActivitySignalFallsBackToGlobalSLA(t *testing.T) {
+	fr := &fakeFreshnessReader{snapshots: []domainScouting.SystemFreshnessSnapshot{
+		snapWithMarkets("X1-NOACT", 120, 89, freshMarkets(90, 100, 1)), // freshMarkets carry Activity ""
+	}}
+	pr := newSizerPostRepo()
+	fl := &fakeSizerFleetRepo{all: scouts(t, 40)}
+	h := newSizer(fr, pr, fl)
+
+	require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
+
+	require.Len(t, pr.upserts, 1)
+	require.Equal(t, 3, pr.upserts[0].Hulls,
+		"no activity signal → the global sla_seconds (byte-identical), not the RESTRICTED default")
+}
+
+// The per-activity SLAs are TUNE KNOBS defined once (RULINGS #5): resolveSizerConfig resolves each
+// from the tick's live snapshot and falls back to its documented default with no snapshot (or a
+// `tune 0` revert), and an unknown/null activity resolves to the RESTRICTED default.
+func TestResolveSizerConfig_ReadsPerActivitySLAKnobsLiveWithDefaultFallback(t *testing.T) {
+	def := resolveSizerConfig(sizerCmd(), nil)
+	require.Equal(t, time.Duration(defaultSLAWeakSeconds)*time.Second, def.slaForActivity(shared.ActivityLevelWeak), "no snapshot → WEAK default (360m)")
+	require.Equal(t, time.Duration(defaultSLARestrictedSeconds)*time.Second, def.slaForActivity(shared.ActivityLevelRestricted), "RESTRICTED default (135m)")
+	require.Equal(t, time.Duration(defaultSLAGrowingSeconds)*time.Second, def.slaForActivity(shared.ActivityLevelGrowing), "GROWING default (45m)")
+	require.Equal(t, time.Duration(defaultSLAStrongSeconds)*time.Second, def.slaForActivity(shared.ActivityLevelStrong), "STRONG default (22m)")
+	require.Equal(t, time.Duration(defaultSLARestrictedSeconds)*time.Second, def.slaForActivity(shared.ActivityLevel("")), "unknown/null activity resolves to the RESTRICTED default")
+
+	live := liveconfig.Snapshot{"sla_seconds_weak": 9999, "sla_seconds_strong": 111}
+	got := resolveSizerConfig(sizerCmd(), live)
+	require.Equal(t, 9999*time.Second, got.slaForActivity(shared.ActivityLevelWeak), "live snapshot overrides WEAK next tick")
+	require.Equal(t, 111*time.Second, got.slaForActivity(shared.ActivityLevelStrong), "live snapshot overrides STRONG next tick")
+	require.Equal(t, time.Duration(defaultSLAGrowingSeconds)*time.Second, got.slaForActivity(shared.ActivityLevelGrowing), "an unset knob under a live snapshot still falls back to its documented default")
 }
 
 // ---- sp-iupr: telemetry-starved over-provisioning + slack release --------------

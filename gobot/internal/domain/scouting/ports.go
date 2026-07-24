@@ -62,6 +62,13 @@ type SystemFreshnessSnapshot struct {
 type MarketFreshnessSample struct {
 	AgeSeconds float64
 	Weight     float64
+	// Activity is the market's raw market_data.activity state (WEAK/GROWING/STRONG/RESTRICTED, or
+	// "" when the census carries no activity signal). sp-j4kjv sizes each activity cohort against
+	// ITS OWN freshness SLA — a WEAK market tolerates far staler prices than a STRONG one — and an
+	// unknown/"" activity is sized at the RESTRICTED default. When EVERY market's activity is empty
+	// (a pre-activity census, or an aggregate-only fixture) the sizer falls back to the single
+	// global sla_seconds, byte-identical to pre-sp-j4kjv.
+	Activity string
 }
 
 // SystemFreshnessReader supplies the per-system freshness census the market-freshness

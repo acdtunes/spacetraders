@@ -85,6 +85,36 @@ func TestMarketRepo_SystemsFreshness(t *testing.T) {
 	require.InDelta(t, 500, bb.Markets[0].AgeSeconds, 5)
 }
 
+// SystemsFreshness carries each market's ACTIVITY state (sp-j4kjv), collapsing a market's per-good
+// rows to the activity of its DOMINANT (highest trade_volume × mid-price) good — the throughput
+// proxy the value weight already uses. Here M1's GOLD good (100 × 50) dwarfs its FUEL good (1 × 10),
+// so the market reads STRONG even though FUEL carries no activity.
+func TestMarketRepo_SystemsFreshness_CarriesDominantGoodActivity(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	player := persistence.PlayerModel{AgentSymbol: "SP-ACT", Token: "tok", CreatedAt: time.Now()}
+	require.NoError(t, db.Create(&player).Error)
+	repo := persistence.NewMarketRepository(db)
+	ctx := context.Background()
+	now := time.Now()
+
+	strong := "STRONG"
+	addGood := func(waypoint, good string, activity *string, tradeVolume, price int) {
+		require.NoError(t, db.Create(&persistence.MarketData{
+			WaypointSymbol: waypoint, GoodSymbol: good, PurchasePrice: price, SellPrice: price,
+			TradeVolume: tradeVolume, Activity: activity, LastUpdated: now.Add(-100 * time.Second), PlayerID: player.ID,
+		}).Error)
+	}
+	addGood("X1-ACT-M1", "FUEL", nil, 1, 10)       // low-throughput, null activity
+	addGood("X1-ACT-M1", "GOLD", &strong, 100, 50) // dominant good → STRONG
+
+	got, err := repo.SystemsFreshness(ctx, player.ID)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Len(t, got[0].Markets, 1, "the two goods collapse to one market")
+	require.Equal(t, "STRONG", got[0].Markets[0].Activity, "the market carries its dominant good's activity")
+}
+
 // UpdateHulls resizes a live standing post's budget WITHOUT clobbering its manning: the
 // assignment and tour columns the scout reconciler wrote survive the resize.
 func TestScoutPostRepo_UpdateHullsPreservesManning(t *testing.T) {

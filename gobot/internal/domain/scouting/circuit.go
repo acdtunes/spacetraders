@@ -115,7 +115,16 @@ func MedianScanIntervalSeconds(scanTimes []time.Time) (float64, int) {
 // A degenerate cycle/sla/markets (static == 0, "cannot assess") is never raised — the
 // coordinator seeds a cycle so this guards only the no-telemetry edge.
 func FreshnessRequiredHulls(markets int, cycle, sla, actualAge time.Duration) int {
-	static := RequiredHulls(markets, cycle, sla)
+	return RaisedForBreach(RequiredHulls(markets, cycle, sla), sla, actualAge)
+}
+
+// RaisedForBreach applies the closed-loop breach raise to a PRE-COMPUTED static hull count: at or
+// under the SLA the static base stands; when actualAge breaches the SLA demand rises in proportion
+// (ceil(static × age/sla)), never below static. It is the raise half of FreshnessRequiredHulls,
+// factored out so a per-activity static base (sp-j4kjv, the sum of per-cohort RequiredHulls) reuses
+// the IDENTICAL closed-loop response instead of re-deriving it from a single blended SLA. A static
+// of 0 ("cannot assess") is never raised. Extracting it leaves FreshnessRequiredHulls byte-identical.
+func RaisedForBreach(static int, sla, actualAge time.Duration) int {
 	if static == 0 {
 		return 0
 	}

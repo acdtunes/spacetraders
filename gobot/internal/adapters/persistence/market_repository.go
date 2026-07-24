@@ -647,11 +647,12 @@ func (r *MarketRepositoryGORM) SystemsFreshness(
 		TradeVolume    int
 		PurchasePrice  int
 		SellPrice      int
+		Activity       *string
 	}
 
 	err := r.db.WithContext(ctx).
 		Table(marketDataTable).
-		Select("waypoint_symbol, last_updated, trade_volume, purchase_price, sell_price").
+		Select("waypoint_symbol, last_updated, trade_volume, purchase_price, sell_price, activity").
 		Where("player_id = ?", playerID).
 		Scan(&rows).Error
 	if err != nil {
@@ -659,10 +660,15 @@ func (r *MarketRepositoryGORM) SystemsFreshness(
 	}
 
 	// Collapse per-(waypoint,good) rows to one market: the latest scan time (defensively — a
-	// market's goods share one scan) and the summed Σ(trade_volume × mid-price) value weight.
+	// market's goods share one scan), the summed Σ(trade_volume × mid-price) value weight, and the
+	// activity of the DOMINANT (highest trade_volume × mid-price) good — the throughput proxy the
+	// value weight already uses, so a market's freshness activity (sp-j4kjv) tracks the good that
+	// actually drives its throughput rather than an arbitrary or low-volume one.
 	type marketRollup struct {
-		latest time.Time
-		weight float64
+		latest        time.Time
+		weight        float64
+		activity      string
+		topGoodWeight float64
 	}
 	perWaypoint := make(map[string]*marketRollup, len(rows))
 	for _, row := range rows {
@@ -675,7 +681,12 @@ func (r *MarketRepositoryGORM) SystemsFreshness(
 			market.latest = row.LastUpdated
 		}
 		midPrice := float64(row.PurchasePrice+row.SellPrice) / 2
-		market.weight += float64(row.TradeVolume) * midPrice
+		goodWeight := float64(row.TradeVolume) * midPrice
+		market.weight += goodWeight
+		if goodWeight >= market.topGoodWeight {
+			market.topGoodWeight = goodWeight
+			market.activity = derefString(row.Activity)
+		}
 	}
 
 	// Group markets by system.
@@ -699,6 +710,7 @@ func (r *MarketRepositoryGORM) SystemsFreshness(
 			samples = append(samples, domainScouting.MarketFreshnessSample{
 				AgeSeconds: now.Sub(market.latest).Seconds(),
 				Weight:     market.weight,
+				Activity:   market.activity,
 			})
 		}
 		cycleSeconds, sampleCount := domainScouting.MedianScanIntervalSeconds(scanTimes)
