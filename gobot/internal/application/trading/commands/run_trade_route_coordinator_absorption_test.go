@@ -114,6 +114,17 @@ func (f *absorptionFakeLedger) ReleaseByContainer(context.Context, string, int) 
 	return 0, nil
 }
 
+func (f *absorptionFakeLedger) ReleaseByContainerExcept(context.Context, string, int, []absorption.LaneKey) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.releaseCalls++
+	return 0, nil
+}
+
+func (f *absorptionFakeLedger) HeldByContainer(context.Context, string, int) (map[absorption.LaneKey]int, error) {
+	return map[absorption.LaneKey]int{}, nil
+}
+
 func (f *absorptionFakeLedger) writesCalled() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()

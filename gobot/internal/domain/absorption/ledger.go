@@ -73,6 +73,16 @@ type Ledger interface {
 	// Outstanding returns the player's non-expired absorption pools decayed to now —
 	// the single batched read a consult pass nets against market depth.
 	Outstanding(ctx context.Context, playerID int) (map[LaneKey]KeyOccupancy, error)
+	// HeldByContainer returns ONE container's own still-PLANNED units per key — the
+	// firm, recovery-safe sell guarantee an executor consults before it buys (sp-pcxju):
+	// a tour sizes each buy to the depth its OWN downstream sink reservation can still
+	// absorb, so it never buys cargo whose sink another engine has since filled. Only
+	// this container's non-expired PLANNED rows count (EXECUTED shadows are recovering
+	// history, not a live hold; other containers' rows are consulted via Outstanding).
+	// An empty map means the container holds no reservation — the executor then buys
+	// nothing on spec (fail-closed). It is also the netting-subtraction and
+	// skip-re-reserve read the laden-hull re-plan uses to keep a held sink firm.
+	HeldByContainer(ctx context.Context, containerID string, playerID int) (map[LaneKey]int, error)
 	// ConvertByContainer turns a container's PLANNED hold into an EXECUTED recovery
 	// shadow at sale (untagged sinks / zero-unit sales leave none — Q2). Idempotent.
 	ConvertByContainer(ctx context.Context, containerID string, playerID int, key LaneKey, realizedUnits int, liveTier string, trancheSize int) error
@@ -86,4 +96,13 @@ type Ledger interface {
 	// recovering, which the container's own next plan must also avoid). Returns the
 	// number of PLANNED rows dropped. No-op (0) when the container holds none.
 	ReleaseByContainer(ctx context.Context, containerID string, playerID int) (int, error)
+	// ReleaseByContainerExcept drops a container's still-PLANNED reservations EXCEPT
+	// those matching a kept key — the LADEN-hull re-plan seam (sp-pcxju). A re-plan
+	// clears stale in-flight intent (buy-side rows, and sink rows for goods NOT yet
+	// bought) but PRESERVES the sink rows backing cargo already in the hold, so a buy
+	// the hull already committed keeps its guaranteed sell depth through the re-plan
+	// instead of being dropped and re-breached on a saturated surface. A nil/empty keep
+	// is exactly ReleaseByContainer (release all). EXECUTED shadows are left untouched.
+	// Returns the number of PLANNED rows dropped.
+	ReleaseByContainerExcept(ctx context.Context, containerID string, playerID int, keep []LaneKey) (int, error)
 }

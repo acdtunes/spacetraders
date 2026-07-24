@@ -373,6 +373,71 @@ func (r *AbsorptionLedgerGORM) ReleaseByContainer(ctx context.Context, container
 	return int(result.RowsAffected), nil
 }
 
+// ReleaseByContainerExcept drops the container's still-PLANNED rows EXCEPT those whose
+// (waypoint, good, side) is in keep — the laden re-plan seam that preserves the sink
+// rows backing cargo already in the hold (sp-pcxju). A nil/empty keep is exactly
+// ReleaseByContainer. EXECUTED shadows are excluded (state = PLANNED filter). Returns
+// the count dropped.
+func (r *AbsorptionLedgerGORM) ReleaseByContainerExcept(ctx context.Context, containerID string, playerID int, keep []absorption.LaneKey) (int, error) {
+	if containerID == "" {
+		return 0, nil
+	}
+	if len(keep) == 0 {
+		return r.ReleaseByContainer(ctx, containerID, playerID)
+	}
+	keepSet := make(map[absorption.LaneKey]struct{}, len(keep))
+	for _, k := range keep {
+		keepSet[k] = struct{}{}
+	}
+	var rows []MarketAbsorptionLedgerModel
+	if err := r.db.WithContext(ctx).
+		Where("container_id = ? AND player_id = ? AND state = ?", containerID, playerID, absorptionStatePlanned).
+		Find(&rows).Error; err != nil {
+		return 0, fmt.Errorf("scan planned absorption for selective release: %w", err)
+	}
+	var dropIDs []string
+	for i := range rows {
+		row := &rows[i]
+		if _, kept := keepSet[absorption.LaneKey{Waypoint: row.Waypoint, Good: row.Good, Side: row.Side}]; kept {
+			continue
+		}
+		dropIDs = append(dropIDs, row.ID)
+	}
+	if len(dropIDs) == 0 {
+		return 0, nil
+	}
+	result := r.db.WithContext(ctx).Where("id IN ?", dropIDs).Delete(&MarketAbsorptionLedgerModel{})
+	if result.Error != nil {
+		return 0, fmt.Errorf("selective release planned absorption for container %s: %w", containerID, result.Error)
+	}
+	return int(result.RowsAffected), nil
+}
+
+// HeldByContainer returns one container's own still-PLANNED units per (waypoint, good,
+// side), non-expired — the firm sell-depth an executor consults before buying (sp-pcxju)
+// and the own-subtraction the laden re-plan nets with. EXECUTED shadows are excluded
+// (recovering history, not a live in-flight hold); expired rows are filtered here (the
+// sweep inside Reserve physically deletes them). An empty map means no held reservation.
+func (r *AbsorptionLedgerGORM) HeldByContainer(ctx context.Context, containerID string, playerID int) (map[absorption.LaneKey]int, error) {
+	out := map[absorption.LaneKey]int{}
+	if containerID == "" {
+		return out, nil
+	}
+	now := time.Now()
+	var rows []MarketAbsorptionLedgerModel
+	if err := r.db.WithContext(ctx).
+		Where("container_id = ? AND player_id = ? AND state = ? AND expires_at > ?",
+			containerID, playerID, absorptionStatePlanned, now).
+		Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("read held absorption for container %s: %w", containerID, err)
+	}
+	for i := range rows {
+		row := &rows[i]
+		out[absorption.LaneKey{Waypoint: row.Waypoint, Good: row.Good, Side: row.Side}] += row.Units
+	}
+	return out, nil
+}
+
 // Sweep runs the self-cleaning pass (TTL-expired PLANNED, hard-cap-expired EXECUTED,
 // dead-container PLANNED reclaim) outside a reserve and returns how many rows it
 // reclaimed. Reserve runs the same sweep inside its own transaction on every call,

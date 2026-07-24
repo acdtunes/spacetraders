@@ -423,6 +423,106 @@ func TestAbsorptionLedger_ReleaseByContainer_IdempotentAndBlankNoop(t *testing.T
 	require.Equal(t, int64(0), countAbsorption(t, db))
 }
 
+// --- HeldByContainer: the firm-sink read (sp-pcxju) ---
+
+// HeldByContainer reports ONLY this container's own still-PLANNED units per key: another
+// container's PLANNED depth and this container's OWN converted EXECUTED shadow are both
+// excluded, because neither is a live sell hold the buyer can guarantee. This is the read
+// executeBuy sizes a buy against so it never buys past its own reserved sink depth.
+func TestAbsorptionLedger_HeldByContainer_OnlyOwnPlanned(t *testing.T) {
+	ledger, _ := setupAbsorptionLedger(t, nil)
+	ctx := context.Background()
+
+	// ctr-A holds two PLANNED sinks; ctr-B holds a third (must not leak into A's view).
+	_, ok, err := ledger.Reserve(ctx, 1, "ctr-A", "tour", []absorption.ReserveEntry{
+		sellEntry("WP-1", "IRON", 40, 400, time.Hour),
+		sellEntry("WP-2", "COPPER", 25, 400, time.Hour),
+	})
+	require.NoError(t, err)
+	require.True(t, ok)
+	_, ok, err = ledger.Reserve(ctx, 1, "ctr-B", "tour",
+		[]absorption.ReserveEntry{sellEntry("WP-1", "IRON", 30, 400, time.Hour)})
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	// ctr-A converts WP-2 to an EXECUTED recovery shadow — no longer a live hold.
+	require.NoError(t, ledger.ConvertByContainer(ctx, "ctr-A", 1,
+		absorption.LaneKey{Waypoint: "WP-2", Good: "COPPER", Side: "sell"}, 25, "WEAK", 40))
+
+	held, err := ledger.HeldByContainer(ctx, "ctr-A", 1)
+	require.NoError(t, err)
+	require.Equal(t, 40, held[absorption.LaneKey{Waypoint: "WP-1", Good: "IRON", Side: "sell"}],
+		"only ctr-A's OWN planned depth on WP-1 (ctr-B's 30 is excluded)")
+	_, hasConverted := held[absorption.LaneKey{Waypoint: "WP-2", Good: "COPPER", Side: "sell"}]
+	require.False(t, hasConverted, "a converted EXECUTED shadow is not a live hold")
+	require.Len(t, held, 1, "exactly one live PLANNED sink for ctr-A")
+}
+
+// A container with nothing planned (fresh, or fully released) yields an empty map — the
+// signal executeBuy fail-closes on: no firm sink, buy nothing on spec.
+func TestAbsorptionLedger_HeldByContainer_EmptyWhenNoneHeld(t *testing.T) {
+	ledger, _ := setupAbsorptionLedger(t, nil)
+	held, err := ledger.HeldByContainer(context.Background(), "ctr-none", 1)
+	require.NoError(t, err)
+	require.Empty(t, held)
+}
+
+// --- ReleaseByContainerExcept: the laden re-plan preserve seam (sp-pcxju) ---
+
+// A laden hull's re-plan must NOT drop the sink reservation backing cargo already in the
+// hold. ReleaseByContainerExcept preserves the kept sink key and drops every OTHER of the
+// container's PLANNED rows (the stale buy-side hold, and sinks for goods not yet bought),
+// while leaving other containers and EXECUTED shadows untouched.
+func TestAbsorptionLedger_ReleaseByContainerExcept_PreservesKept(t *testing.T) {
+	ledger, db := setupAbsorptionLedger(t, nil)
+	ctx := context.Background()
+
+	// ctr-A: a buy-side hold (WP-A/IRON/buy), the sink for held cargo (WP-B/IRON/sell,
+	// to KEEP), and a sink for a good NOT yet bought (WP-C/GOLD/sell, to drop).
+	_, ok, err := ledger.Reserve(ctx, 1, "ctr-A", "tour", []absorption.ReserveEntry{
+		{Waypoint: "WP-A", Good: "IRON", Side: absorption.SideBuy, Units: 40, CapUnits: 400, TTL: time.Hour},
+		sellEntry("WP-B", "IRON", 40, 400, time.Hour),
+		sellEntry("WP-C", "GOLD", 40, 400, time.Hour),
+	})
+	require.NoError(t, err)
+	require.True(t, ok)
+	_, ok, err = ledger.Reserve(ctx, 1, "ctr-B", "tour",
+		[]absorption.ReserveEntry{sellEntry("WP-B", "IRON", 30, 400, time.Hour)})
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	keep := []absorption.LaneKey{{Waypoint: "WP-B", Good: "IRON", Side: absorption.SideSell}}
+	dropped, err := ledger.ReleaseByContainerExcept(ctx, "ctr-A", 1, keep)
+	require.NoError(t, err)
+	require.Equal(t, 2, dropped, "the buy-side hold and the not-yet-bought sink drop; the held-cargo sink stays")
+
+	held, err := ledger.HeldByContainer(ctx, "ctr-A", 1)
+	require.NoError(t, err)
+	require.Equal(t, map[absorption.LaneKey]int{
+		{Waypoint: "WP-B", Good: "IRON", Side: absorption.SideSell}: 40,
+	}, held, "only the preserved held-cargo sink survives for ctr-A")
+	require.Equal(t, int64(1), plannedCountFor(t, db, "ctr-B"), "another container's PLANNED is untouched")
+}
+
+// An empty keep is exactly ReleaseByContainer (release every PLANNED row) — the fresh-plan
+// path, byte-identical to today.
+func TestAbsorptionLedger_ReleaseByContainerExcept_EmptyKeepReleasesAll(t *testing.T) {
+	ledger, db := setupAbsorptionLedger(t, nil)
+	ctx := context.Background()
+
+	_, ok, err := ledger.Reserve(ctx, 1, "ctr-A", "tour", []absorption.ReserveEntry{
+		sellEntry("WP-1", "IRON", 40, 400, time.Hour),
+		sellEntry("WP-2", "COPPER", 40, 400, time.Hour),
+	})
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	dropped, err := ledger.ReleaseByContainerExcept(ctx, "ctr-A", 1, nil)
+	require.NoError(t, err)
+	require.Equal(t, 2, dropped, "a nil keep releases everything, like ReleaseByContainer")
+	require.Equal(t, int64(0), countAbsorption(t, db))
+}
+
 // --- Decay math + 50%-floor unblocking ---
 
 // insertExecuted writes an EXECUTED shadow directly with a chosen age, so decay is

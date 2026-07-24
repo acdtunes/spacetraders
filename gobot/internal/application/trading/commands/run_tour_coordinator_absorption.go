@@ -116,6 +116,12 @@ func (h *RunTourCoordinatorHandler) reserveTourPlan(ctx context.Context, cmd *Ru
 		return true, nil
 	}
 	entries := h.buildTourReserveEntries(plan, snapshot)
+	// sp-pcxju Part 2: a held-cargo sink this container PRESERVED across the re-plan is
+	// already firmly reserved — drop it from the fresh reserve so the plan re-USES it
+	// instead of stacking a second row (which the cap check might breach, and whose sale
+	// would double-count the crush into two recovery shadows). Inert when nothing was
+	// preserved (fresh plans), keeping the reserve byte-identical to pre-Part-2.
+	entries = h.dropPreservedSinks(ctx, cmd, entries)
 	if len(entries) == 0 {
 		return true, nil
 	}
@@ -214,13 +220,79 @@ func (h *RunTourCoordinatorHandler) tourReserveTTL(plan *routing.TourPlan) time.
 	return ttl
 }
 
+// tourGoodDispositions records, per good the plan trades, how that good LEAVES the hull:
+// a market sell (a real market sink whose firm reservation gates the buy) and/or a
+// haul-to-storage deposit (the warehouse — a guaranteed sink that exempts the buy from
+// the gate). A good the plan buys but never disposes of has neither flag set — the
+// firm-sink gate then fail-closes it (buying it would strand the cargo).
+type tourGoodDispositions struct {
+	marketSold map[string]bool
+	deposited  map[string]bool
+}
+
+// planDispositions folds a plan's SELL-side trades into per-good dispositions once, so the
+// per-buy firm-sink gate reads a map instead of re-scanning the plan each tranche.
+func planDispositions(plan *routing.TourPlan) tourGoodDispositions {
+	d := tourGoodDispositions{marketSold: map[string]bool{}, deposited: map[string]bool{}}
+	for _, leg := range plan.Legs {
+		for _, tr := range leg.Trades {
+			if tr.IsBuy {
+				continue
+			}
+			if tr.IsDeposit {
+				d.deposited[tr.Good] = true
+				continue
+			}
+			d.marketSold[tr.Good] = true
+		}
+	}
+	return d
+}
+
+// firmSinkUnits sizes a buy of good to the depth THIS hull's OWN downstream sink
+// reservation can still absorb (sp-pcxju) — the achievableUnits min-bound shape ported
+// to the tour's plan-time-reserve model. It answers "how many units of this good does a
+// GUARANTEED, RESERVED sink still back?":
+//
+//   - -1 ("not gated"): no ledger wired, a container-less run (the tour reserves nothing
+//     there either), or a deposit-bound good (the warehouse is a guaranteed sink). The
+//     buy proceeds on its existing bounds, byte-identical to pre-sp-pcxju.
+//   - 0 ("no firm sink"): a market-sold good whose sink this container no longer holds
+//     (saturated by others / dropped on a re-plan), a buy with no sell disposition at all,
+//     or an unreadable ledger. The caller buys nothing on spec (fail-closed, RULINGS #4).
+//   - a positive value: the firm reserved sell-depth still held, summed across the good's
+//     sinks. By the ledger's cap invariant this is ≤ CapUnits − others' outstanding, so a
+//     deep freshly-reserved sink returns ≥ the planned tranche and the gate is a no-op.
+func (h *RunTourCoordinatorHandler) firmSinkUnits(ctx context.Context, cmd *RunTourCoordinatorCommand, good string, disp tourGoodDispositions) int {
+	if h.absorptionLedger == nil || cmd.ContainerID == "" {
+		return -1
+	}
+	if !disp.marketSold[good] {
+		if disp.deposited[good] {
+			return -1 // warehouse sink is guaranteed — exempt from the market-depth gate
+		}
+		return 0 // bought with no way to sell it — fail-closed
+	}
+	held, err := h.absorptionLedger.HeldByContainer(ctx, cmd.ContainerID, cmd.PlayerID)
+	if err != nil {
+		return 0 // the firm-sink guard could not run — fail-closed (never buy blind)
+	}
+	total := 0
+	for key, units := range held {
+		if key.Good == good && key.Side == absorption.SideSell {
+			total += units
+		}
+	}
+	return total
+}
+
 // assembleAbsorption reads the player's outstanding cross-container absorption (PLANNED
 // units + EXECUTED shadows already decayed Go-side by the ledger) and shapes it for the
 // planner to net. It fails OPEN on a read error (returns nil → plan against full depth):
 // the conditional Reserve re-checks the fleet-wide cap in-transaction, so it is the hard
 // backstop and a transient netting miss cannot slip an un-capped co-dump. Inert when the
 // ledger is unwired.
-func (h *RunTourCoordinatorHandler) assembleAbsorption(ctx context.Context, playerID int) []routing.TourMarketAbsorption {
+func (h *RunTourCoordinatorHandler) assembleAbsorption(ctx context.Context, playerID int, containerID string) []routing.TourMarketAbsorption {
 	if h.absorptionLedger == nil {
 		return nil
 	}
@@ -230,20 +302,47 @@ func (h *RunTourCoordinatorHandler) assembleAbsorption(ctx context.Context, play
 			fmt.Sprintf("Tour absorption consult: ledger read failed, planning against full depth (Reserve remains the hard cap): %v", err), nil)
 		return nil
 	}
+	// Net THIS container's own still-PLANNED depth out of its own plan request (sp-pcxju
+	// Part 2): with held-cargo sinks now PRESERVED across a re-plan, the tour must plan
+	// INTO its own reserved sink (sell the held cargo there), not treat its own hold as
+	// depth to route around — a sink filled to its cap would otherwise self-net to
+	// infeasible and strand the cargo. OTHERS' PLANNED depth and every EXECUTED recovery
+	// shadow (real damage, even the hull's own) still net in. Byte-identical pre-Part-2:
+	// the release-before-replan left this container no own PLANNED rows to subtract.
+	own := h.ownPlannedUnits(ctx, containerID, playerID)
 	out := make([]routing.TourMarketAbsorption, 0, len(pools))
 	for key, occ := range pools {
-		if occ.PlannedUnits == 0 && occ.RecoveringResidual == 0 {
+		planned := occ.PlannedUnits - own[key]
+		if planned < 0 {
+			planned = 0
+		}
+		if planned == 0 && occ.RecoveringResidual == 0 {
 			continue
 		}
 		out = append(out, routing.TourMarketAbsorption{
 			Waypoint:        key.Waypoint,
 			Good:            key.Good,
 			Side:            key.Side,
-			PlannedUnits:    occ.PlannedUnits,
+			PlannedUnits:    planned,
 			RecoveringUnits: occ.RecoveringResidual,
 		})
 	}
 	return out
+}
+
+// ownPlannedUnits reads this container's own still-PLANNED depth per key for the
+// assembleAbsorption own-subtraction (sp-pcxju Part 2). Fails OPEN (nil): a container-less
+// run or an unreadable read subtracts nothing, so the plan nets against full depth exactly
+// as before — the conditional Reserve's cap check remains the hard backstop.
+func (h *RunTourCoordinatorHandler) ownPlannedUnits(ctx context.Context, containerID string, playerID int) map[absorption.LaneKey]int {
+	if containerID == "" {
+		return nil
+	}
+	own, err := h.absorptionLedger.HeldByContainer(ctx, containerID, playerID)
+	if err != nil {
+		return nil
+	}
+	return own
 }
 
 // tourSinkSale accumulates one sink good's realized sale across a leg's price-tiered
@@ -308,18 +407,75 @@ func (h *RunTourCoordinatorHandler) convertLegShadows(ctx context.Context, cmd *
 	}
 }
 
-// releaseTourReservations drops all of this container's still-PLANNED rows (the
-// release-before-(re)plan invariant and the on-exit cleanup). EXECUTED shadows are left by
-// the ledger. Best-effort and fail-open: a nil ledger / container-less run is a no-op, and
+// releaseTourReservations drops this container's still-PLANNED rows on a (re)plan and on
+// exit — but PRESERVES the sink-side rows backing cargo currently in the hold (sp-pcxju
+// Part 2), so a laden hull's re-plan cannot drop the sink under already-bought cargo and
+// let another engine crush it before the hull sells. Everything else (stale buy-side holds,
+// sinks for goods not yet bought) still drops, so the fresh plan nets against OTHERS' depth.
+// EXECUTED shadows are left by the ledger. Best-effort and fail-open: a nil ledger /
+// container-less run is a no-op; an unreadable hold degrades to release-all (pre-Part-2);
 // a release error is logged (the TTL sweep + dead-container reclaim are the backstop).
 func (h *RunTourCoordinatorHandler) releaseTourReservations(ctx context.Context, cmd *RunTourCoordinatorCommand) {
 	if h.absorptionLedger == nil || cmd.ContainerID == "" {
 		return
 	}
-	if _, err := h.absorptionLedger.ReleaseByContainer(ctx, cmd.ContainerID, cmd.PlayerID); err != nil {
+	keep := h.heldCargoSinkKeys(ctx, cmd)
+	if _, err := h.absorptionLedger.ReleaseByContainerExcept(ctx, cmd.ContainerID, cmd.PlayerID, keep); err != nil {
 		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
 			"Tour absorption release failed for %s (TTL sweep + dead-container reclaim will clean up): %v", cmd.ContainerID, err), nil)
 	}
+}
+
+// heldCargoSinkKeys returns this container's still-PLANNED SELL-side keys whose good is
+// currently in the hull's hold — the sinks releaseTourReservations must preserve so
+// already-bought cargo keeps its guaranteed sell depth (sp-pcxju). It loads the ship fresh
+// (both the re-plan release and the on-exit release run through here, and the on-exit hold
+// differs from the start), and fails OPEN: an unreadable ship or ledger returns nil, so the
+// caller releases everything exactly as before Part 2 (the safe direction — a hold we cannot
+// confirm is left to the fresh plan rather than pinned).
+func (h *RunTourCoordinatorHandler) heldCargoSinkKeys(ctx context.Context, cmd *RunTourCoordinatorCommand) []absorption.LaneKey {
+	ship, err := h.legs.loadShip(ctx, cmd.ShipSymbol, cmd.PlayerID)
+	if err != nil {
+		return nil
+	}
+	cargo := ship.Cargo()
+	if cargo == nil {
+		return nil
+	}
+	held, err := h.absorptionLedger.HeldByContainer(ctx, cmd.ContainerID, cmd.PlayerID)
+	if err != nil {
+		return nil
+	}
+	var keep []absorption.LaneKey
+	for key := range held {
+		if key.Side == absorption.SideSell && cargo.GetItemUnits(key.Good) > 0 {
+			keep = append(keep, key)
+		}
+	}
+	return keep
+}
+
+// dropPreservedSinks removes from a plan's reserve entries any SELL-side sink this
+// container already holds a PLANNED row for — the preserved held-cargo sinks (sp-pcxju
+// Part 2). Re-reserving them would double the row (a breach risk) and double the recovery
+// shadow on sale. Fails OPEN: an unreadable ledger keeps every entry (the conditional
+// Reserve's cap check is the backstop). A no-preserved-rows container drops nothing, so
+// fresh plans reserve exactly as before Part 2.
+func (h *RunTourCoordinatorHandler) dropPreservedSinks(ctx context.Context, cmd *RunTourCoordinatorCommand, entries []absorption.ReserveEntry) []absorption.ReserveEntry {
+	held, err := h.absorptionLedger.HeldByContainer(ctx, cmd.ContainerID, cmd.PlayerID)
+	if err != nil || len(held) == 0 {
+		return entries
+	}
+	kept := make([]absorption.ReserveEntry, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Side == absorption.SideSell {
+			if _, preserved := held[absorption.LaneKey{Waypoint: entry.Waypoint, Good: entry.Good, Side: entry.Side}]; preserved {
+				continue
+			}
+		}
+		kept = append(kept, entry)
+	}
+	return kept
 }
 
 // logRecoveryBurden logs projected_recovery_burden (Q3, REPORT-ONLY): the sum over the

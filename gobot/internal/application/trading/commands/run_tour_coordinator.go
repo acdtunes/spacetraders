@@ -1300,6 +1300,10 @@ func (h *RunTourCoordinatorHandler) executePlan(
 	maxSpend, reserve int64,
 ) (bool, error) {
 	logger := common.LoggerFromContext(ctx)
+	// Per-good sink dispositions for the firm-sink buy gate (sp-pcxju), folded once from
+	// the plan: which goods have a market sink (gated on firm reserved depth) vs a
+	// warehouse deposit (exempt — a guaranteed sink).
+	dispositions := planDispositions(plan)
 
 	for legIdx, leg := range plan.Legs {
 		ship, err := h.legs.loadShip(ctx, cmd.ShipSymbol, cmd.PlayerID)
@@ -1343,7 +1347,7 @@ func (h *RunTourCoordinatorHandler) executePlan(
 		// Sells before buys (errata): a leg that fills the hold both ways must free
 		// space before spending it, and sell tranches are ordered price-ascending.
 		for _, trade := range sellsBeforeBuys(leg.Trades) {
-			executed, terr := h.executeTrade(ctx, cmd, leg, legIdx, trade, shadowSinks, response, netBought, cumulativeSpend, maxSpend, reserve, legSells)
+			executed, terr := h.executeTrade(ctx, cmd, leg, legIdx, trade, shadowSinks, dispositions, response, netBought, cumulativeSpend, maxSpend, reserve, legSells)
 			if terr != nil {
 				return false, terr
 			}
@@ -1372,6 +1376,7 @@ func (h *RunTourCoordinatorHandler) executeTrade(
 	legIdx int,
 	trade routing.TourTrade,
 	shadowSinks map[shadowSinkKey]bool,
+	dispositions tourGoodDispositions,
 	response *RunTourCoordinatorResponse,
 	netBought map[string]int,
 	cumulativeSpend *int64,
@@ -1413,7 +1418,7 @@ func (h *RunTourCoordinatorHandler) executeTrade(
 	}
 
 	if trade.IsBuy {
-		return h.executeBuy(ctx, cmd, leg, legIdx, trade, shadowSinks, live, response, netBought, cumulativeSpend, maxSpend, reserve)
+		return h.executeBuy(ctx, cmd, leg, legIdx, trade, shadowSinks, dispositions, live, response, netBought, cumulativeSpend, maxSpend, reserve)
 	}
 	return h.executeSell(ctx, cmd, leg, legIdx, trade, live, response, netBought, legSells)
 }
@@ -1425,6 +1430,7 @@ func (h *RunTourCoordinatorHandler) executeBuy(
 	legIdx int,
 	trade routing.TourTrade,
 	shadowSinks map[shadowSinkKey]bool,
+	dispositions tourGoodDispositions,
 	live *market.TradeGood,
 	response *RunTourCoordinatorResponse,
 	netBought map[string]int,
@@ -1460,6 +1466,32 @@ func (h *RunTourCoordinatorHandler) executeBuy(
 			units = affordable
 		}
 	}
+
+	// Firm-sink gate (sp-pcxju): "we absolutely cannot buy cargo and not sell it." Bound
+	// this buy to the depth THIS hull's OWN downstream sink reservation can still absorb,
+	// and refuse entirely when no firm sink is held — validated HERE at buy EXECUTION (not
+	// just at plan time), so a sink saturated or dropped since planning cannot slip an
+	// on-spec buy. sinkBound < 0 is "not gated" (no ledger wired / warehouse-bound good),
+	// keeping the happy path byte-identical; 0 fails closed (RULINGS #4 — never buy blind).
+	if sinkBound := h.firmSinkUnits(ctx, cmd, trade.Good, dispositions); sinkBound >= 0 {
+		if sinkBound == 0 {
+			metrics.RecordAbsorptionConsultVerdict(cmd.PlayerID, "skip_reserved", absorptionEngineTour)
+			logger.Log("WARNING", fmt.Sprintf("Tour leg %d: no firm sink held for %s at %s - not buying (sp-pcxju: never buy cargo we cannot sell)",
+				legIdx, trade.Good, leg.Waypoint), map[string]interface{}{
+				"leg": legIdx, "good": trade.Good, "waypoint": leg.Waypoint, "reason": "no_firm_sink",
+			})
+			return false, nil
+		}
+		if sinkBound < units {
+			metrics.RecordAbsorptionConsultVerdict(cmd.PlayerID, "skip_reserved", absorptionEngineTour)
+			logger.Log("INFO", fmt.Sprintf("Tour leg %d: shrinking buy of %s from %d to %d units to fit firm sink depth (sp-pcxju)",
+				legIdx, trade.Good, units, sinkBound), map[string]interface{}{
+				"leg": legIdx, "good": trade.Good, "planned_units": units, "firm_sink_units": sinkBound,
+			})
+			units = sinkBound
+		}
+	}
+
 	if units <= 0 {
 		return false, nil
 	}
@@ -1796,7 +1828,7 @@ func (h *RunTourCoordinatorHandler) planForState(
 	// available depth so it plans AROUND sinks other containers occupy. Empty when
 	// the ledger is unwired / the consult is killed / the read fails (fail-OPEN — the
 	// conditional Reserve is the hard backstop), leaving the plan against full depth.
-	absorptionView := h.assembleAbsorption(ctx, cmd.PlayerID)
+	absorptionView := h.assembleAbsorption(ctx, cmd.PlayerID, cmd.ContainerID)
 	// The solver's money guard is spend_cap = max(0, max_spend − working_capital_reserve)
 	// (tour_solver.py, score_sequence) — a CASH contract: max_spend is the cash the
 	// caller lets the tour touch, the reserve a keep-back. That pairing only holds on

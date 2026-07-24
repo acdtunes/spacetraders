@@ -100,6 +100,17 @@ func (f *fakeAbsorptionLedger) ReleaseByContainer(context.Context, string, int) 
 	return 0, nil
 }
 
+func (f *fakeAbsorptionLedger) ReleaseByContainerExcept(context.Context, string, int, []absorption.LaneKey) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.releases++
+	return 0, nil
+}
+
+func (f *fakeAbsorptionLedger) HeldByContainer(context.Context, string, int) (map[absorption.LaneKey]int, error) {
+	return map[absorption.LaneKey]int{}, nil
+}
+
 var _ absorption.Ledger = (*fakeAbsorptionLedger)(nil)
 
 // A sink the ledger shows reserved so heavily that the remaining depth can't fit
