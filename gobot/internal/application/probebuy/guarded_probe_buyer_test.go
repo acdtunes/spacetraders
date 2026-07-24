@@ -267,4 +267,53 @@ func TestDefers_WhenFinalQuoteExceedsPriceCeiling(t *testing.T) {
 	}
 }
 
+// Working-capital floor (sp-f082y): when Config.ReserveFloor is set, a buy must leave AT LEAST that
+// reserve spendable (credits − price >= floor) — the SAME flat 50k reserve the
+// frontier/tour/factory/trade already enforce. ReserveFloor 0 (the default) disables it, so every
+// pre-existing caller (the freshness sizer) is byte-identical. The stationed probe-buyer coordinator
+// sets it to common.ImmutableReserveFloor so its buys can never drain working capital. One table:
+// cap/cooldown/spend are all non-binding and the 25% rule passes on every row, so ONLY the floor
+// decides — the mutation guard is: delete the check and the low-reserve row wrongly buys.
+func TestDefers_WhenBuyWouldBreachReserveFloor(t *testing.T) {
+	cases := []struct {
+		name    string
+		floor   int64
+		credits int
+		price   int
+		wantBuy bool
+	}{
+		// 55000 − 10000 = 45000 < 50000 floor, yet 10000 <= 25% of 55000 (=13750) so the 25% rule passes.
+		{name: "floor blocks when the reserve would be breached", floor: 50_000, credits: 55_000, price: 10_000, wantBuy: false},
+		// 100000 − 10000 = 90000 >= 50000 floor → the buy proceeds.
+		{name: "floor passes when the reserve stays intact", floor: 50_000, credits: 100_000, price: 10_000, wantBuy: true},
+		// floor 0 = disabled → byte-identical to a caller that never sets it (the freshness sizer).
+		{name: "floor disabled (0) buys regardless", floor: 0, credits: 55_000, price: 10_000, wantBuy: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clock := &shared.MockClock{CurrentTime: time.Now()}
+			pu := &fakePurchaser{quotePrice: tc.price, quoteYard: "X1-HQ-YARD", buySymbol: "PROBE-NEW"}
+			cfg := Config{
+				MaxProbeFleet:    40,
+				MaxSpendPerCycle: 5_000_000, // non-binding
+				PurchaseCooldown: 10 * time.Minute,
+				SpendWindow:      1 * time.Hour,
+				ReserveFloor:     tc.floor,
+			}
+			b := NewGuardedProbeBuyer(&fakeTreasury{credits: tc.credits}, pu, &fakeLedger{}, clock, cfg)
+
+			out := b.MaybeBuy(context.Background(), shared.MustNewPlayerID(1), 10 /*demand*/, 0 /*supply*/, false, noTarget)
+
+			if tc.wantBuy {
+				require.True(t, out.Bought, "reserve intact should buy (%s)", out.Reason)
+				require.Equal(t, 1, pu.buyCalls, "exactly one probe bought")
+				return
+			}
+			require.False(t, out.Bought, "a buy that would breach the reserve must defer (%s)", out.Reason)
+			require.Zero(t, pu.buyCalls, "no buy when the working-capital floor blocks")
+			require.Contains(t, out.Reason, "working-capital floor", "the defer reason names the floor")
+		})
+	}
+}
+
 func ptr[T any](v T) *T { return &v }

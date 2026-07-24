@@ -33,6 +33,8 @@ import (
 	goodsServices "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
 	"github.com/andrescamacho/spacetraders-go/internal/application/mediator"
 	playerQuery "github.com/andrescamacho/spacetraders-go/internal/application/player/queries"
+	"github.com/andrescamacho/spacetraders-go/internal/application/probebuy"
+	probeBuyerFleetCmd "github.com/andrescamacho/spacetraders-go/internal/application/probebuyerfleet/commands"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
 	scoutingQuery "github.com/andrescamacho/spacetraders-go/internal/application/scouting/queries"
 	ship "github.com/andrescamacho/spacetraders-go/internal/application/ship"
@@ -1144,6 +1146,45 @@ func run(cfg *config.Config) error {
 	freshnessSizerHandler.SetLiveConfigReader(grpc.NewContainerConfigReader(containerRepo))
 	if err := mediator.RegisterHandler[*scoutingCmd.RunMarketFreshnessSizerCoordinatorCommand](med, freshnessSizerHandler); err != nil {
 		return fmt.Errorf("failed to register MarketFreshnessSizerCoordinator handler: %w", err)
+	}
+
+	// Probe-buyer-fleet coordinator (sp-f082y): the standing coordinator that maintains K dedicated
+	// (dedicated_fleet="probe-buyer") buyer hulls stationed at probe-yards so the probe fleet keeps
+	// GROWING when freshness/scout demand outruns supply and no idle undedicated hull is left to buy
+	// through — the catch-22 the frontier/freshness buy path deadlocks on. It orchestrates the SAME
+	// machinery, forking nothing: the shared GuardedProbeBuyer guard stack (25% treasury +
+	// working-capital floor + fleet cap + price ceiling) drives the shared ProbePurchaser
+	// .resolveInPlaceBuy, and the shared ProbeBuyerPositioner stations/rotates — both wired
+	// ownFleet="probe-buyer" so they select the dedicated buyers and claim them under their own fleet
+	// operation (every other coordinator keeps skipping those hulls). Recruitment tags the nearest
+	// reachable idle undedicated satellite through the single AssignFleet write path. Boot-standing +
+	// ARMED (daemon_boot_standing.go). PurchaseCooldown=0 + a large spend window so the fleet grows as
+	// fast as the reused money guards allow (K buys/tick); the fleet CAP is the binding growth bound,
+	// enforced authoritatively by the coordinator's own live cap gate (the buyer's internal cap is a
+	// redundant backstop). The shared 50k working-capital floor is injected via ReserveFloor.
+	probeBuyerPurchaser := expansionAdapters.NewProbePurchaser(med, shipRepo, probeYardFinder, transactionRepo, nil).
+		SetOwnFleet(probeBuyerFleetCmd.ProbeBuyerFleet)
+	probeBuyerPositioner := expansionAdapters.NewProbeBuyerPositioner(med, shipRepo, probeYardFinder).
+		SetOwnFleet(probeBuyerFleetCmd.ProbeBuyerFleet)
+	probeBuyerGuardedBuyer := probebuy.NewGuardedProbeBuyer(
+		expansionAdapters.NewTreasuryReader(apiClient),
+		probeBuyerPurchaser,
+		transactionRepo,
+		nil, // RealClock
+		probebuy.Config{
+			MaxProbeFleet:    probeBuyerFleetCmd.DefaultProbeBuyerMaxFleet, // redundant backstop; the coordinator's live cap gate binds first
+			MaxSpendPerCycle: 1_000_000_000,                                // effectively non-binding: the cap + 25% + floor are the real bounds
+			PurchaseCooldown: 0,                                            // no pacing — grow as fast as the guards allow
+			SpendWindow:      time.Hour,
+			ReserveFloor:     common.ImmutableReserveFloor, // the shared 50k working-capital floor (RULINGS #4)
+		},
+	)
+	probeBuyerHandler := probeBuyerFleetCmd.NewRunProbeBuyerFleetCoordinatorHandler(
+		shipRepo, probeBuyerGuardedBuyer, probeBuyerPositioner, probeYardFinder, nil, // nil = RealClock
+	)
+	probeBuyerHandler.SetLiveConfigReader(grpc.NewContainerConfigReader(containerRepo))
+	if err := mediator.RegisterHandler[*probeBuyerFleetCmd.RunProbeBuyerFleetCoordinatorCommand](med, probeBuyerHandler); err != nil {
+		return fmt.Errorf("failed to register ProbeBuyerFleetCoordinator handler: %w", err)
 	}
 
 	// Shipyard-backfill sweep (sp-rhju): the standing catch-up coordinator that closes the

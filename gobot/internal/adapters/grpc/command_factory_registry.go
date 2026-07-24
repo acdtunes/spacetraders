@@ -11,6 +11,7 @@ import (
 	gasCmd "github.com/andrescamacho/spacetraders-go/internal/application/gas/commands"
 	liquidationCmd "github.com/andrescamacho/spacetraders-go/internal/application/liquidation"
 	goodsCmd "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/commands"
+	probeBuyerFleetCmd "github.com/andrescamacho/spacetraders-go/internal/application/probebuyerfleet/commands"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
 	shipCargoCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
 	shipNavCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
@@ -425,6 +426,11 @@ func containerSpecList() []ContainerSpec {
 		// discover->buy->sell->backhaul episode loop), so the container wraps exactly ONE
 		// iteration (CoordinatorOwnsIterations) — the runner must not re-enter and double-loop.
 		{CommandType: "longhaul_arb", build: buildLongHaulArbWorkerCommand, CoordinatorOwnsIterations: true},
+		// probe_buyer_coordinator (sp-f082y): the standing probe-buyer-fleet coordinator. Like
+		// scout_post/freshness it loops forever inside one Handle(), so it is NOT a
+		// CoordinatorOwnsIterations type; the container-level budget (-1) is irrelevant. Registering it
+		// here is what makes a boot-standing launch or restart-recovered coordinator runnable.
+		{CommandType: "probe_buyer_coordinator", build: buildProbeBuyerFleetCoordinatorCommand},
 		{CommandType: "tour_run", build: buildTourCoordinatorCommand, CoordinatorOwnsIterations: true},
 		{CommandType: "stocker", build: buildStockerCoordinatorCommand, CoordinatorOwnsIterations: true},
 		// One-shot ship operations (sp-7yej invariant 4). Each rebuilds trivially
@@ -556,6 +562,22 @@ func buildScoutPostCoordinatorCommand(cfg *configReader, playerID int, container
 		// config.yaml ⇒ OptionalInt returns 0 ⇒ the relay is off and byte-identical to today.
 		ScoutCrossSystemRelayEnabled: cfg.OptionalInt("scout_cross_system_relay_enabled", 0),
 		ScoutRelayMaxHops:            cfg.OptionalInt("scout_relay_max_hops", 0),
+	}
+}
+
+// buildProbeBuyerFleetCoordinatorCommand rebuilds the standing probe-buyer-fleet coordinator
+// (sp-f082y) from its persisted launch config so a daemon restart re-adopts it. It loops forever
+// inside one Handle(), so the container-level iteration budget is irrelevant. probe_buyer_count (K)
+// and max_probe_fleet (the cap) are optional live-tunable ints (0 → the coordinator's documented
+// defaults); dry_run leaves it observe-only.
+func buildProbeBuyerFleetCoordinatorCommand(cfg *configReader, playerID int, containerID string) interface{} {
+	return &probeBuyerFleetCmd.RunProbeBuyerFleetCoordinatorCommand{
+		PlayerID:         shared.MustNewPlayerID(playerID),
+		ContainerID:      cfg.RequiredNonEmptyString("container_id"),
+		TickIntervalSecs: cfg.OptionalInt("tick_interval_secs", 0),
+		ProbeBuyerCount:  cfg.OptionalInt("probe_buyer_count", 0),
+		MaxProbeFleet:    cfg.OptionalInt("max_probe_fleet", 0),
+		DryRun:           cfg.OptionalBool("dry_run"),
 	}
 }
 

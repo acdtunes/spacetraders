@@ -13,6 +13,7 @@ import (
 	contractScalerCmd "github.com/andrescamacho/spacetraders-go/internal/application/contractscaler/commands"
 	expansionCmd "github.com/andrescamacho/spacetraders-go/internal/application/expansion/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
+	probeBuyerFleetCmd "github.com/andrescamacho/spacetraders-go/internal/application/probebuyerfleet/commands"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
@@ -72,6 +73,7 @@ var tuneOperationCoordinatorTypes = map[string]string{
 	"shipyardbackfill": string(container.ContainerTypeShipyardBackfillCoordinator),
 	"bootstrap":        string(container.ContainerTypeBootstrapCoordinator),
 	"contractscaler":   string(container.ContainerTypeContractScaler),
+	"probebuyer":       string(container.ContainerTypeProbeBuyerCoordinator),
 }
 
 func tunableKnobsByContainerType() map[string]map[string]TuneBound {
@@ -83,7 +85,16 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 	shipyardBackfill := scoutingCmd.ShipyardBackfillTunableDefaults()
 	bootstrap := bootstrapCmd.BootstrapTunableDefaults()
 	contractScaler := contractScalerCmd.ContractScalerTunableDefaults()
+	probeBuyer := probeBuyerFleetCmd.ProbeBuyerTunableDefaults()
 	return map[string]map[string]TuneBound{
+		// sp-f082y probe-buyer-fleet coordinator: two live knobs — K (how many dedicated buyers to
+		// maintain) and the total satellite cap it grows toward. Every buy stays behind the reused,
+		// non-tunable money guards (25% treasury + immutable 50k working-capital floor + immutable 100k
+		// price ceiling); those are consts, never knobs.
+		string(container.ContainerTypeProbeBuyerCoordinator): {
+			"probe_buyer_count": {Type: "int", Min: 0, Max: 20, Default: probeBuyer["probe_buyer_count"], Unit: "hulls", Description: "K — dedicated probe-buyer hulls stationed at yards to keep the fleet growing (default 2; 0 reverts to default)"},
+			"max_probe_fleet":   {Type: "int", Min: 0, Max: 200, Default: probeBuyer["max_probe_fleet"], Unit: "hulls", Description: "total satellite cap the coordinator grows the fleet toward, then stops buying"},
+		},
 		string(container.ContainerTypeContractScaler): {
 			// The single operator lever on the dedicated contract auto-scaler: the delivery-hull ceiling,
 			// hot-reloaded each tick (Pattern-C). Ships ARMED at the default 10 every cold-start (sp-1cbxz,

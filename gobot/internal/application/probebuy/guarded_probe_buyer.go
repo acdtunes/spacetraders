@@ -116,6 +116,14 @@ type Config struct {
 	MaxSpendPerCycle int           // max probe spend within the trailing spend window
 	PurchaseCooldown time.Duration // min wall-clock between probe buys
 	SpendWindow      time.Duration // trailing window the spend cap sums over
+	// ReserveFloor is the working-capital reserve a probe buy must leave spendable: the buy is
+	// refused when credits − price < ReserveFloor (RULINGS #4, fail-closed, never weakened). 0 (the
+	// default) DISABLES it — byte-identical for every pre-existing caller (the freshness sizer sets no
+	// floor). The stationed probe-buyer coordinator (sp-f082y) sets it to common.ImmutableReserveFloor
+	// (the flat 50k the frontier/tour/factory/trade all enforce) so its buys can never drain the
+	// treasury below the standing reserve. Kept as an int64 config value (not a common import) so the
+	// guard package stays dependency-free; the caller injects the constant.
+	ReserveFloor int64
 }
 
 // Outcome is the buyer's decision for the caller's per-cycle summary. Bought is true only
@@ -205,6 +213,15 @@ func (b *GuardedProbeBuyer) MaybeBuy(ctx context.Context, playerID shared.Player
 	// 25% rule (RULINGS #6): integer form price*100 > credits*25 avoids float rounding.
 	if price*100 > credits*maxTreasuryFractionPercent {
 		return Outcome{Reason: fmt.Sprintf("no purchase: probe price %d exceeds %d%% of treasury %d", price, maxTreasuryFractionPercent, credits)}
+	}
+
+	// Working-capital floor (RULINGS #4/#5): a buy must leave AT LEAST the configured reserve
+	// spendable — the SAME flat 50k the frontier/tour/factory/trade enforce, injected by the caller as
+	// ReserveFloor. It fails CLOSED on the treasury already read above and is never weakened. 0
+	// disables it, so every pre-existing caller is byte-identical; only a caller that governs
+	// working capital (the sp-f082y probe-buyer coordinator) sets it.
+	if b.cfg.ReserveFloor > 0 && int64(credits)-int64(price) < b.cfg.ReserveFloor {
+		return Outcome{Reason: fmt.Sprintf("no purchase: working-capital floor (treasury %d − price %d = %d < floor %d)", credits, price, int64(credits)-int64(price), b.cfg.ReserveFloor)}
 	}
 
 	// Per-window spend cap (RULINGS #5 ceiling, ledger-derived).

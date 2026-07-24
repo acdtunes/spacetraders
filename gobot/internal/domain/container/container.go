@@ -136,6 +136,14 @@ const (
 	// composing the reused arb executor. Coordinator-managed, continuous (-1) until the worker
 	// finds no lane; recovery-safe (stateless re-derive from the DB on restart).
 	ContainerTypeLongHaulArb ContainerType = "LONGHAUL_ARB"
+	// ContainerTypeProbeBuyerCoordinator is the standing probe-buyer-fleet coordinator (sp-f082y): a
+	// per-player coordinator that loops forever inside one Handle() maintaining K dedicated
+	// (dedicated_fleet="probe-buyer") hulls stationed at probe-yards doing movement-free in-place buys,
+	// so the probe fleet grows even when freshness demand outruns supply and no idle undedicated hull is
+	// left to buy through. Like the scout-post/freshness coordinators it is NOT a
+	// CoordinatorOwnsIterations type; it re-derives its buyers from the persisted dedicated_fleet tag
+	// each tick and survives restarts via the persisted-container recovery idiom.
+	ContainerTypeProbeBuyerCoordinator ContainerType = "PROBE_BUYER_COORDINATOR"
 )
 
 const (

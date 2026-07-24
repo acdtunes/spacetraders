@@ -122,6 +122,14 @@ type ProbePurchaser struct {
 	yardFinder probeYardFinder
 	ledger     ledger.TransactionRepository
 	clock      shared.Clock
+	// ownFleet is the dedicated-fleet tag whose hulls THIS purchaser may drive as buyers, in
+	// addition to undedicated hulls (sp-f082y). Default "" = undedicated-only, byte-identical to
+	// every pre-existing caller (frontier + freshness sizer set nothing). Set to "probe-buyer" so the
+	// stationed probe-buyer coordinator reuses this exact buy path over its OWN dedicated hulls — the
+	// buyer selection accepts them AND the single-writer claim is taken under their fleet operation so
+	// ClaimShip's dedication guard passes. Every OTHER caller keeps ownFleet="" and so keeps skipping
+	// ALL dedicated hulls, so a probe-buyer hull stays "driven by one coordinator, skipped by the rest".
+	ownFleet string
 }
 
 // NewProbePurchaser wires the price-and-buy port. yardFinder is optional (nil disables
@@ -130,6 +138,25 @@ type ProbePurchaser struct {
 // nil-safe (nil -> real clock).
 func NewProbePurchaser(mediator common.Mediator, shipRepo navigation.ShipRepository, yardFinder probeYardFinder, txnLedger ledger.TransactionRepository, clock shared.Clock) *ProbePurchaser {
 	return &ProbePurchaser{mediator: mediator, shipRepo: shipRepo, yardFinder: yardFinder, ledger: txnLedger, clock: clock}
+}
+
+// SetOwnFleet sets the dedicated-fleet tag whose idle hulls this purchaser may also use as buyers
+// (sp-f082y), returning the receiver for fluent wiring. Default "" leaves the purchaser
+// undedicated-only (byte-identical to every existing caller). The stationed probe-buyer coordinator
+// wires a dedicated instance with SetOwnFleet("probe-buyer") so it reuses the whole buy path over its
+// own hulls without forking it. See the ownFleet field doc.
+func (p *ProbePurchaser) SetOwnFleet(fleet string) *ProbePurchaser {
+	p.ownFleet = fleet
+	return p
+}
+
+// drivableBuyer reports whether an idle hull may be driven as a probe buyer: an UNDEDICATED hull, or
+// one dedicated to ownFleet (the caller's own fleet, when set). A hull dedicated to ANOTHER fleet is
+// never poached (RULINGS #7). ownFleet=="" degenerates to "undedicated only" — exactly the pre-sp-f082y
+// `DedicatedFleet() != ""` skip, so every existing caller is byte-identical.
+func drivableBuyer(ship *navigation.Ship, ownFleet string) bool {
+	fleet := ship.DedicatedFleet()
+	return fleet == "" || fleet == ownFleet
 }
 
 // probeBuyPlan is one resolved buy: the buyer hull, the yard to buy at, and the price the guards
@@ -229,7 +256,15 @@ func (p *ProbePurchaser) claimBuyer(ctx context.Context, playerID shared.PlayerI
 	if owner == "" {
 		owner = defaultProbeBuyClaimOwner
 	}
-	if err := p.shipRepo.ClaimShip(ctx, buyer, owner, playerID, probeBuyClaimOperation); err != nil {
+	// The claim operation is the buyer's OWN fleet when driving a dedicated probe-buyer hull, so
+	// ClaimShip's dedication guard (DedicatedFleet != "" && != operation) accepts it instead of
+	// rejecting it; for the default undedicated buyer the operation stays the plain probe_buy label
+	// (the guard is a no-op on an undedicated hull either way). Byte-identical when ownFleet is "".
+	operation := probeBuyClaimOperation
+	if p.ownFleet != "" {
+		operation = p.ownFleet
+	}
+	if err := p.shipRepo.ClaimShip(ctx, buyer, owner, playerID, operation); err != nil {
 		return nil, fmt.Errorf("probe buyer %s claim failed (fail-closed, no concurrent driver): %w", buyer, err)
 	}
 	return func() {
@@ -304,7 +339,7 @@ func (p *ProbePurchaser) eligibleBuyers(ctx context.Context, playerID shared.Pla
 	}
 	buyers := make([]*navigation.Ship, 0, len(ships))
 	for _, ship := range ships {
-		if ship.DedicatedFleet() != "" {
+		if !drivableBuyer(ship, p.ownFleet) {
 			continue
 		}
 		if ship.CurrentLocation() == nil {
@@ -567,8 +602,9 @@ func (p *ProbePurchaser) resolveInPlaceBuy(ctx context.Context, playerID shared.
 	}
 	best := probeBuyPlan{}
 	for _, ship := range ships {
-		if ship.DedicatedFleet() != "" {
-			continue // never disturb a dedicated hull (RULINGS #7)
+		if !drivableBuyer(ship, p.ownFleet) {
+			continue // never disturb a hull dedicated to ANOTHER fleet (RULINGS #7); the caller's own
+			// probe-buyer fleet is drivable when ownFleet is set, byte-identical (undedicated-only) otherwise
 		}
 		loc := ship.CurrentLocation()
 		if loc == nil {
@@ -670,12 +706,26 @@ type ProbeBuyerPositioner struct {
 	mediator   common.Mediator
 	shipRepo   navigation.ShipRepository
 	yardFinder probeYardFinder
+	// ownFleet mirrors ProbePurchaser.ownFleet: the dedicated-fleet tag whose idle hulls this
+	// positioner may relay to a yard, in addition to undedicated ones (sp-f082y). Default "" =
+	// undedicated-only, byte-identical to the pre-existing frontier caller. The probe-buyer
+	// coordinator wires SetOwnFleet("probe-buyer") so it stations its OWN dedicated buyers via the
+	// same relay path; every other caller keeps skipping all dedicated hulls.
+	ownFleet string
 }
 
 // NewProbeBuyerPositioner wires the stall breaker over the same seams as the purchaser. yardFinder is
 // optional (nil disables positioning — the coordinator stays fail-closed byte-identical).
 func NewProbeBuyerPositioner(mediator common.Mediator, shipRepo navigation.ShipRepository, yardFinder probeYardFinder) *ProbeBuyerPositioner {
 	return &ProbeBuyerPositioner{mediator: mediator, shipRepo: shipRepo, yardFinder: yardFinder}
+}
+
+// SetOwnFleet sets the dedicated-fleet tag whose idle hulls this positioner may also relay to a yard
+// (sp-f082y), returning the receiver for fluent wiring. Default "" is undedicated-only (byte-identical
+// to the frontier caller). See the ownFleet field doc.
+func (p *ProbeBuyerPositioner) SetOwnFleet(fleet string) *ProbeBuyerPositioner {
+	p.ownFleet = fleet
+	return p
 }
 
 // PositionProbeBuyer relays an eligible idle undedicated hull to the nearest reachable probe-yard from
@@ -693,8 +743,9 @@ func (p *ProbeBuyerPositioner) PositionProbeBuyer(ctx context.Context, playerID 
 	// under way: bail so we never send a second hull (bounds in-flight to one, idempotent — RULINGS #2).
 	eligible := make([]*navigation.Ship, 0, len(ships))
 	for _, ship := range ships {
-		if ship.DedicatedFleet() != "" {
-			continue // a dedicated hull is never disturbed, even when momentarily idle
+		if !drivableBuyer(ship, p.ownFleet) {
+			continue // a hull dedicated to ANOTHER fleet is never disturbed; the caller's own probe-buyer
+			// fleet is drivable when ownFleet is set, byte-identical (undedicated-only) otherwise
 		}
 		if ship.IsInTransit() {
 			return false, nil // an undedicated hull is already relaying — wait, do not double-send
