@@ -160,6 +160,7 @@ var tradeFleetConfigKeys = []string{
 	"trade_fleet_masspark_window_seconds",
 	"trade_fleet_masspark_min_hulls",
 	"trade_fleet_watchdog_stall_secs",
+	"trade_fleet_full_hull_pause_pct",
 }
 
 // resolveTradeFleetConfig makes config.yaml the single LIVE source of truth for the
@@ -236,5 +237,11 @@ func (s *DaemonServer) injectTradeFleetConfig(config map[string]interface{}) {
 	// tunable — an absent key defers to the coordinator's 12-min default.
 	if tf.WatchdogStallSeconds != 0 {
 		config["trade_fleet_watchdog_stall_secs"] = tf.WatchdogStallSeconds
+	}
+	// sp-tgll8: the inventory-pressure governor is always ARMED (no on/off key); only the
+	// FULL-hull pause threshold is tunable — an absent key defers to the coordinator's 65%
+	// default.
+	if tf.FullHullPausePct != 0 {
+		config["trade_fleet_full_hull_pause_pct"] = tf.FullHullPausePct
 	}
 }

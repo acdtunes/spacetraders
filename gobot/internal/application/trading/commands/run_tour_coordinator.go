@@ -441,6 +441,15 @@ type RunTourCoordinatorHandler struct {
 	// snapshot on the analyst's era3/4 fit rather than a cap of 0.
 	rankerAgeCaps trading.RankerAgeCaps
 
+	// sinkFreshnessMaxAge is the sp-tgll8 item-2 "FRESH" clause on the firm-sink buy gate:
+	// at buy execution the gate re-reads each held sell-sink's LIVE cached market_data and
+	// refuses the buy when that row is older than this (the sink is no longer a trustworthy
+	// FRESH sink). The daemon injects cfg.TradeFleet.ResolvedSinkFreshnessMaxAge() via
+	// SetSinkFreshness at boot (mirrors SetRankerAgeCaps/SetCargoBlocklist). The zero value
+	// (setter never called — every existing test) leaves the freshness clause INERT, so the
+	// gate behaves exactly as sp-pcxju; production ships it ARMED at the conservative default.
+	sinkFreshnessMaxAge time.Duration
+
 	// repositionPersister durably records an in-flight margins-death reposition (its
 	// target system+waypoint) into the container config so a daemon restart mid-jump
 	// resumes toward the SAME ground (RULINGS #2). Optional; nil disables persistence
@@ -669,6 +678,16 @@ func (h *RunTourCoordinatorHandler) SetRankerAgeCaps(caps trading.RankerAgeCaps)
 // explicit config edit (recommended value: FUEL, ALUMINUM, PLASTICS) + daemon restart.
 func (h *RunTourCoordinatorHandler) SetCargoBlocklist(goods []string) {
 	h.cargoBlocklist = stringSet(goods)
+}
+
+// SetSinkFreshness arms the sp-tgll8 item-2 "FRESH" clause on the firm-sink buy gate with
+// the maximum age a downstream sink's cached market_data may carry at buy time. The daemon
+// injects cfg.TradeFleet.ResolvedSinkFreshnessMaxAge() at boot — the same global-config →
+// handler-setter idiom SetRankerAgeCaps/SetCargoBlocklist use, re-read on every restart. A
+// non-positive age leaves the clause INERT (the gate behaves exactly as sp-pcxju), so every
+// existing ledger-wired tour test that never calls this is byte-identical.
+func (h *RunTourCoordinatorHandler) SetSinkFreshness(maxAge time.Duration) {
+	h.sinkFreshnessMaxAge = maxAge
 }
 
 // SetModelArtifactPath injects the daemon-configured (absolute) market-model artifact

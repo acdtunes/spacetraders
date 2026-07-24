@@ -1332,6 +1332,11 @@ func run(cfg *config.Config) error {
 	// builder, so the tour path and the lane ranker drop stale rows against one
 	// config-resolved table (defined once).
 	tourCoordinatorHandler.SetRankerAgeCaps(cfg.Trading.RankerAgeCapMinutes.Resolved())
+	// sp-tgll8 item 2: arm the "FRESH" clause on the firm-sink buy gate — at buy execution the
+	// gate re-reads each held sink's LIVE market_data and refuses on stale data (older than
+	// this). Ships ARMED at the 75-min default (matching maxListingAge); [trade_fleet].
+	// sink_freshness_max_minutes retunes it, restart to apply. Byte-identical for fresh sinks.
+	tourCoordinatorHandler.SetSinkFreshness(cfg.TradeFleet.ResolvedSinkFreshnessMaxAge())
 	if err := mediator.RegisterHandler[*tradeRouteCmd.RunTourCoordinatorCommand](med, tourCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register TourCoordinator handler: %w", err)
 	}

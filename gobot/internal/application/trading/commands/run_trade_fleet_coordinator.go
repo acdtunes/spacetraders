@@ -97,6 +97,18 @@ const (
 	// signal on every real step. A config knob (WatchdogStallSecs /
 	// trade_fleet.watchdog_stall_seconds) — retune without a rebuild.
 	defaultWatchdogStallSeconds = 720
+
+	// defaultFullHullPausePct is the sp-tgll8 inventory-pressure governor threshold: the
+	// percentage of trade-fleet hulls sitting FULL (cargo at capacity, unable to offload)
+	// above which the coordinator PAUSES relaunching EMPTY idle hulls into NEW buying tours
+	// this tick — governing buy-rate by sell-rate so a fleet drowning in unsold inventory
+	// stops buying more it cannot sell. 65% is conservative: a healthy fleet (hulls buy,
+	// carry, sell — rarely more than a fraction FULL at once) is nowhere near it, so the
+	// governor is byte-identical below saturation. LADEN idle hulls ALWAYS relaunch (they can
+	// sell), so the fleet drains and un-throttles — no wedge (RULINGS #4). A config knob
+	// (FullHullPausePct / [trade_fleet].full_hull_pause_pct, RULINGS #5): ships ARMED (no
+	// on/off flag), softened by RAISING toward 100 (unreachable ⇒ effectively off).
+	defaultFullHullPausePct = 65
 )
 
 // RunTradeFleetCoordinatorCommand launches the standing trade-fleet coordinator for
@@ -166,6 +178,13 @@ type RunTradeFleetCoordinatorCommand struct {
 	// has NO on/off flag (it ships ARMED): a captain who ever needs to soften it raises this
 	// threshold. RULINGS #5 (operational value, not an arm-seam).
 	WatchdogStallSecs int
+
+	// FullHullPausePct is the sp-tgll8 inventory-pressure governor threshold — the percentage
+	// of trade-fleet hulls sitting FULL above which the coordinator pauses relaunching EMPTY
+	// idle hulls into new buying tours this tick (LADEN idle hulls always relaunch to drain);
+	// <=0 uses defaultFullHullPausePct (65%). Ships ARMED (no on/off flag, RULINGS #5); a
+	// captain softens it by raising the threshold toward 100 (unreachable ⇒ effectively off).
+	FullHullPausePct int
 }
 
 // RunTradeFleetCoordinatorResponse reports reconcile progress. Because the loop is
@@ -486,7 +505,41 @@ func (h *RunTradeFleetCoordinatorHandler) reconcileOnce(ctx context.Context, cmd
 		massParkExempt = detectMassPark(idle, cmd.massParkWindow(), cmd.massParkMinHulls())
 	}
 
+	// sp-tgll8 inventory-pressure governor: govern buy-rate by sell-rate. When too much of the
+	// trade fleet is sitting FULL of cargo it cannot offload, PAUSE relaunching EMPTY idle
+	// hulls into NEW buying tours this tick — the fleet stops buying what it cannot sell. LADEN
+	// idle hulls are NEVER paused (they must always relaunch to sell, so the fleet drains and
+	// the governor un-throttles — no wedge, RULINGS #4). Conservative default (65% FULL) so a
+	// healthy fleet is byte-identical.
+	fullHulls, totalHulls := fullHullPressure(idle, running)
+	pausePct := cmd.fullHullPausePct()
+	pauseEmptyRelaunch := totalHulls > 0 && fullHulls*100 > pausePct*totalHulls
+	if pauseEmptyRelaunch {
+		logger.Log("INFO", fmt.Sprintf(
+			"Trade fleet inventory pressure %d%% FULL (%d/%d) exceeds the %d%% pause threshold — pausing new buying tours on EMPTY idle hulls this tick (laden hulls still relaunch to sell)",
+			fullHulls*100/totalHulls, fullHulls, totalHulls, pausePct), map[string]interface{}{
+			"action":      "trade_fleet_inventory_pressure_pause",
+			"full_hulls":  fullHulls,
+			"total_hulls": totalHulls,
+			"full_pct":    fullHulls * 100 / totalHulls,
+			"pause_pct":   pausePct,
+		})
+	}
+
 	for _, ship := range idle {
+		// sp-tgll8: under fleet saturation, hold an EMPTY idle hull this tick rather than
+		// start a NEW buying tour into a fleet drowning in unsold inventory. A LADEN idle hull
+		// (cargo to sell) is never held — blocking a sell would wedge the fleet (RULINGS #4).
+		if pauseEmptyRelaunch && ship.CargoUnits() == 0 {
+			logger.Log("INFO", fmt.Sprintf(
+				"Trade hull %s held this tick under inventory pressure (%d%% of the fleet is FULL) — not starting a new buying tour on an EMPTY hull while the fleet cannot offload",
+				ship.ShipSymbol(), fullHulls*100/totalHulls), map[string]interface{}{
+				"action":      "trade_fleet_inventory_pressure_hold",
+				"ship_symbol": ship.ShipSymbol(),
+				"full_pct":    fullHulls * 100 / totalHulls,
+			})
+			continue
+		}
 		if maxConcurrent > 0 && runningTours >= maxConcurrent {
 			logger.Log("INFO", fmt.Sprintf(
 				"Trade fleet at max concurrent tours (%d) — holding %d idle hull(s) this tick",
@@ -762,6 +815,33 @@ func detectMassPark(idle []*navigation.Ship, window time.Duration, minHulls int)
 	return exempt
 }
 
+// fullHullPressure counts how many of the fleet's trade hulls (idle + running) are sitting
+// FULL — the sp-tgll8 inventory-pressure signal — alongside the total, so reconcileOnce can
+// decide whether the fleet is too saturated with unsold cargo to launch NEW buying tours. A
+// FULL hull genuinely cannot offload; a merely LADEN (partly-loaded) hull is a healthy
+// mid-run tour and is NOT counted — the naive "laden fraction" would false-trip on a working
+// fleet, so the signal keys on FULL/stuck, not laden.
+func fullHullPressure(idle, running []*navigation.Ship) (full, total int) {
+	for _, ship := range idle {
+		if isFullTradeHull(ship) {
+			full++
+		}
+	}
+	for _, ship := range running {
+		if isFullTradeHull(ship) {
+			full++
+		}
+	}
+	return full, len(idle) + len(running)
+}
+
+// isFullTradeHull reports whether a hull's hold is at capacity — the sp-tgll8 saturation
+// signal. The capacity guard rejects a zero-capacity hull (which would spuriously read
+// units>=capacity as 0>=0) so only a real cargo hull genuinely stuck full counts.
+func isFullTradeHull(ship *navigation.Ship) bool {
+	return ship.CargoCapacity() > 0 && ship.CargoUnits() >= ship.CargoCapacity()
+}
+
 // absDuration returns the absolute value of a duration.
 func absDuration(d time.Duration) time.Duration {
 	if d < 0 {
@@ -984,6 +1064,15 @@ func (c *RunTradeFleetCoordinatorCommand) watchdogStallThreshold() time.Duration
 		secs = defaultWatchdogStallSeconds
 	}
 	return time.Duration(secs) * time.Second
+}
+
+// fullHullPausePct resolves the sp-tgll8 inventory-pressure governor threshold, applying the
+// default (65%) when unset.
+func (c *RunTradeFleetCoordinatorCommand) fullHullPausePct() int {
+	if c.FullHullPausePct <= 0 {
+		return defaultFullHullPausePct
+	}
+	return c.FullHullPausePct
 }
 
 // maxConcurrentLabel renders the concurrency cap for the start log — "unlimited" for

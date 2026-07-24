@@ -280,10 +280,63 @@ func (h *RunTourCoordinatorHandler) firmSinkUnits(ctx context.Context, cmd *RunT
 	total := 0
 	for key, units := range held {
 		if key.Good == good && key.Side == absorption.SideSell {
-			total += units
+			// sp-tgll8 item 2 (the "FRESH" clause): the reservation proves the sink is FIRM,
+			// but a buy must also target a FRESH, still-DEEP sink. Re-check each held sink's
+			// LIVE market at buy time — a stale sink contributes 0 (fail-closed), a shrunk one
+			// contributes only its live depth. Inert (contributes the full held units) until
+			// SetSinkFreshness arms it, so this is byte-identical to sp-pcxju by default.
+			total += h.freshReachableSinkDepth(ctx, cmd.PlayerID, key.Waypoint, good, units)
 		}
 	}
 	return total
+}
+
+// freshReachableSinkDepth bounds one held sell-sink's reserved units by its LIVE market at
+// buy time (sp-tgll8 item 2 — the "FRESH" clause of the Admiral principle "a buy must target
+// a GUARANTEED, RESERVED, REACHABLE, FRESH, sufficiently-DEEP sink"). sp-pcxju already
+// enforces FIRM+DEEP off the reservation; this re-observes the sink waypoint's cached
+// market_data (the SAME reader observeGood/foreignMarketFresh use — no new reader) and:
+//
+//   - returns heldUnits unchanged — INERT, byte-identical to sp-pcxju — when no market repo
+//     is wired or the freshness clause is unarmed (SetSinkFreshness never called);
+//   - returns 0 (FAIL-CLOSED) when the sink's market is unreadable/gone, no longer trades the
+//     good, or is STALE past the freshness threshold — the "fresh" guarantee cannot be
+//     confirmed, so the gate never buys on spec (RULINGS #4);
+//   - returns min(heldUnits, live absorbable depth) when fresh — shrinking to the live depth
+//     (tourACapTranches × live trade_volume, the SAME cap formula buildTourReserveEntries
+//     uses) if the sink shrank since planning, a no-op for a still-deep sink.
+//
+// A zero LastUpdated is "unknown age" and treated as FRESH, matching foreignMarketFresh /
+// freshListings / tour_snapshot — the one place the codebase fails OPEN on missing recency.
+func (h *RunTourCoordinatorHandler) freshReachableSinkDepth(ctx context.Context, playerID int, waypoint, good string, heldUnits int) int {
+	if h.marketRepo == nil || h.sinkFreshnessMaxAge <= 0 {
+		return heldUnits // freshness clause inert — byte-identical to sp-pcxju
+	}
+	mkt, err := h.marketRepo.GetMarketData(ctx, waypoint, playerID)
+	if err != nil || mkt == nil {
+		// The gate logs a generic "no firm sink" at the call site; surface the REAL reason
+		// here so a fail-closed refusal is never a silent/misattributed guard.
+		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
+			"Tour firm-sink freshness: sink market at %s unreadable for %s - failing closed (never buy into a sink we cannot confirm is live)", waypoint, good), nil)
+		return 0 // cannot confirm the sink is fresh — fail-closed (never buy blind)
+	}
+	sink := mkt.FindGood(good)
+	if sink == nil {
+		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
+			"Tour firm-sink freshness: sink %s no longer trades %s - failing closed", waypoint, good), nil)
+		return 0 // the sink no longer trades the good — fail-closed
+	}
+	if observed := mkt.LastUpdated(); !observed.IsZero() && h.clock.Now().Sub(observed) > h.sinkFreshnessMaxAge {
+		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
+			"Tour firm-sink freshness: sink %s/%s market_data is %s stale (> %s cap) - failing closed (the FRESH guarantee failed, sp-tgll8)",
+			waypoint, good, h.clock.Now().Sub(observed).Truncate(time.Second), h.sinkFreshnessMaxAge), nil)
+		return 0 // stale market_data — the fresh guarantee failed, fail-closed
+	}
+	liveDepth := tourACapTranches * sink.TradeVolume()
+	if liveDepth < heldUnits {
+		return liveDepth // sink depth shrank since planning — shrink to what it can now absorb
+	}
+	return heldUnits
 }
 
 // assembleAbsorption reads the player's outstanding cross-container absorption (PLANNED

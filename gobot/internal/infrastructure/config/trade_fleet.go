@@ -1,5 +1,7 @@
 package config
 
+import "time"
+
 // TradeFleetConfig holds the trade-fleet coordinator's knobs (sp-1278). The daemon
 // injects these into the coordinator container's launch config on every build —
 // creation AND restart recovery, via resolveTradeFleetConfig — so a captain retunes
@@ -205,6 +207,46 @@ type TradeFleetConfig struct {
 	// IN_TRANSIT is never killed regardless (a flying hull is progressing), so this bounds only
 	// PARKED-and-silent time.
 	WatchdogStallSeconds int `mapstructure:"watchdog_stall_seconds"`
+
+	// --- Sink freshness clause on the firm-sink buy gate (sp-tgll8 item 2) ---
+	// SinkFreshnessMaxMinutes is the maximum age a downstream sink's cached market_data may
+	// carry at BUY EXECUTION before the tour refuses the buy — the "FRESH" clause of the
+	// Admiral principle "never buy cargo we cannot GUARANTEED-RESERVED-REACHABLE-FRESH-DEEP
+	// sell". sp-pcxju gates FIRM+DEEP off the reservation; this re-reads the sink's LIVE
+	// market and fail-closes on stale data. Daemon-global: injected into the tour coordinator
+	// handler via SetSinkFreshness at boot (the same cfg.TradeFleet → handler-setter path
+	// CargoBlocklist uses), re-read on every restart. It ships ARMED (no on/off flag,
+	// RULINGS #5 operational value): 0/absent → the 75-min default (matching the standing
+	// maxListingAge freshness discipline), byte-identical for any genuinely fresh sink. A
+	// captain softens it by RAISING the threshold (like the watchdog), never disabling.
+	SinkFreshnessMaxMinutes int `mapstructure:"sink_freshness_max_minutes"`
+
+	// --- Inventory-pressure governor (sp-tgll8 item 1) ---
+	// FullHullPausePct is the percentage of trade-fleet hulls sitting FULL (cargo at capacity,
+	// unable to offload) above which the coordinator PAUSES relaunching EMPTY idle hulls into
+	// NEW buying tours this tick — governing buy-rate by sell-rate so the fleet stops buying
+	// what it cannot sell. LADEN idle hulls ALWAYS relaunch so they can drain (never block a
+	// sell — RULINGS #4 no-wedge), so a saturated fleet un-throttles itself as it sells down.
+	// It ships ARMED (no on/off flag): 0/absent → the coordinator's 65% default (a healthy
+	// fleet is nowhere near 65% FULL, so byte-identical below saturation). A captain softens it
+	// by RAISING the threshold toward 100 (never reached, so effectively off), never disabling.
+	FullHullPausePct int `mapstructure:"full_hull_pause_pct"`
+}
+
+// sink-freshness clause default (sp-tgll8 item 2): the standing 75-min freshness discipline
+// (maxListingAge), applied when the [trade_fleet] knob is unset so the clause ships ARMED.
+const defaultSinkFreshnessMaxMinutes = 75
+
+// ResolvedSinkFreshnessMaxAge returns the configured sink-freshness ceiling as a Duration, or
+// the 75-min default when unset (non-positive) — so the daemon always injects a POSITIVE age
+// and the clause ships ARMED (sp-tgll8 item 2). Centralizes default resolution the way the
+// [trade_impact] Resolved* helpers do.
+func (c TradeFleetConfig) ResolvedSinkFreshnessMaxAge() time.Duration {
+	minutes := c.SinkFreshnessMaxMinutes
+	if minutes <= 0 {
+		minutes = defaultSinkFreshnessMaxMinutes
+	}
+	return time.Duration(minutes) * time.Minute
 }
 
 // EnabledOrDefault reports whether the coordinator is enabled, treating an unset (nil)

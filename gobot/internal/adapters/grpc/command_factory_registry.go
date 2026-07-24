@@ -594,6 +594,9 @@ func buildTradeFleetCoordinatorCommand(cfg *configReader, playerID int, containe
 		// sp-m3122: the liveness watchdog is always ARMED — only the stall threshold is
 		// configurable. 0/absent ⇒ the coordinator's own 12-min default.
 		WatchdogStallSecs: cfg.OptionalInt("trade_fleet_watchdog_stall_secs", 0),
+		// sp-tgll8: the inventory-pressure governor is always ARMED — only the FULL-hull pause
+		// threshold is configurable. 0/absent ⇒ the coordinator's own 65% default.
+		FullHullPausePct: cfg.OptionalInt("trade_fleet_full_hull_pause_pct", 0),
 	}
 }
 
