@@ -17,7 +17,7 @@ const (
 	// config.BootstrapConfig.
 	// defaultBootstrapTickSeconds is the cold-start reconcile cadence. SHORT on purpose (sp-lgo3):
 	// bootstrap runs ONLY during cold start — 1 frigate + 1-3 probes make <0.1 req/s vs the 2 req/s
-	// ACCOUNT limit (20x+ headroom) and it exits at COMPLETE before the fleet is ever large, so a fast
+	// ACCOUNT limit (20x+ headroom) and it exits at EXPANSION (gate built) before the fleet is ever large, so a fast
 	// tick carries zero API-pacing concern for its whole lifetime. The old 300s injected up to 5min of
 	// dead time between a real event (frigate docks, scan/arrival completes) and the coordinator
 	// reacting — almost all of the observed ~11min probe-buy was poll latency, not travel. 45s cuts
@@ -352,10 +352,10 @@ type GateWorkerAcquirer interface {
 	BuyForConstruction(ctx context.Context, playerID int, shipType, yard string) (BuyResult, error)
 }
 
-// HandoffLauncher performs the COMPLETE hand-off: it launches the standing fleet-autosizer (OFF the whole
+// HandoffLauncher performs the EXPANSION hand-off: it launches the standing fleet-autosizer (OFF the whole
 // bootstrap run so the two never issue conflicting purchases against one treasury) and the other standing
 // coordinators, turning the fleet over to the mature demand-driven economy. Guarded on obs.AutosizerRunning
-// so a restart post-COMPLETE re-observes the autosizer running and never re-launches.
+// so a restart post-gate re-observes the autosizer running and never re-launches.
 type HandoffLauncher interface {
 	LaunchAutosizer(ctx context.Context, playerID int, agentSymbol string) error
 	LaunchStandingCoordinators(ctx context.Context, playerID int, agentSymbol string) error
@@ -572,7 +572,7 @@ func (h *RunBootstrapCoordinatorHandler) SetGateWorkerAcquirer(a GateWorkerAcqui
 	h.gateAcquirer = a
 }
 
-// SetHandoffLauncher wires the COMPLETE hand-off (launch the autosizer + standing coordinators). Unset →
+// SetHandoffLauncher wires the EXPANSION hand-off (launch the autosizer + standing coordinators). Unset →
 // the gate completes but the hand-off is a logged skip, so the mature economy is not launched (surfaced loudly).
 func (h *RunBootstrapCoordinatorHandler) SetHandoffLauncher(l HandoffLauncher) { h.handoff = l }
 
@@ -635,11 +635,11 @@ func (h *RunBootstrapCoordinatorHandler) Handle(ctx context.Context, request com
 		}
 		result.Ticks++
 
-		// Terminal COMPLETE: the gate is built and the standing economy is handed off, so the coordinator
-		// has finished its job and exits cleanly (spec §Architecture: "then exits COMPLETE"). A restart
-		// post-COMPLETE re-derives COMPLETE, re-observes the hand-off done, and exits again — idempotent.
+		// Terminal EXPANSION (sp-feiy7 — formerly COMPLETE): the gate is built and the standing economy is
+		// handed off, so the coordinator has finished its job and exits cleanly (spec §Architecture). A
+		// restart post-gate re-derives EXPANSION, re-observes the hand-off done, and exits again — idempotent.
 		if res.Done {
-			logger.Log("INFO", "Bootstrap coordinator exiting: COMPLETE reached and handed off", map[string]interface{}{
+			logger.Log("INFO", "Bootstrap coordinator exiting: EXPANSION reached (gate built) and handed off", map[string]interface{}{
 				"action":       "bootstrap_exit_complete",
 				"container_id": cmd.ContainerID,
 			})

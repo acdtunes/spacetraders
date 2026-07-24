@@ -1179,8 +1179,17 @@ func run(cfg *config.Config) error {
 			ReserveFloor:     common.ImmutableReserveFloor, // the shared 50k working-capital floor (RULINGS #4)
 		},
 	)
+	// sp-f3mcc EXPANSION phase gate (Admiral 2026-07-24): the coordinator is INERT outside the
+	// bootstrap-derived EXPANSION phase — probes are bought only once the home jump gate is BUILT
+	// (sp-feiy7), never during DATA/INCOME/GATE where the sp-f082y buyer drained ~500k of the
+	// contract working-capital band on staging. The reader re-derives the phase from the live world
+	// (ships → home system → jump-gate construction site, the same signal bootstrap's derivePhase
+	// reads) because the phase is never persisted and bootstrap exits after its hand-off. Fail-closed.
+	probeBuyerPhase := expansionAdapters.NewBootstrapExpansionPhaseReader(
+		shipRepo, waypointRepo, api.NewConstructionSiteRepository(apiClient, playerRepo),
+	)
 	probeBuyerHandler := probeBuyerFleetCmd.NewRunProbeBuyerFleetCoordinatorHandler(
-		shipRepo, probeBuyerGuardedBuyer, probeBuyerPositioner, probeYardFinder, nil, // nil = RealClock
+		shipRepo, probeBuyerGuardedBuyer, probeBuyerPositioner, probeYardFinder, probeBuyerPhase, nil, // nil = RealClock
 	)
 	probeBuyerHandler.SetLiveConfigReader(grpc.NewContainerConfigReader(containerRepo))
 	if err := mediator.RegisterHandler[*probeBuyerFleetCmd.RunProbeBuyerFleetCoordinatorCommand](med, probeBuyerHandler); err != nil {

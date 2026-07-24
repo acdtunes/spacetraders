@@ -41,11 +41,12 @@ var bootStandingCoordinatorTypes = []container.ContainerType{
 	// sp-ov8z (epic sp-difa, Auto-pilot Phase 1 — the ARMING half of zero-intervention cold start):
 	// the captain-bootstrap coordinator is the MASTER SWITCH of the cold-start machine. Boot-launched
 	// unconditionally, it OBSERVES the live world each tick, DERIVES its phase (DATA/INCOME/GATE/
-	// COMPLETE — never a stored cursor), drives a cold agent to the jump gate, and at GATE hands the
-	// mature economy off to the fleet-autosizer + siting + worker-rebalancer, then exits. A mid-era
-	// restart in a built world re-observes COMPLETE, ensures the autosizer is running, and exits — so
-	// re-launching it every boot is a safe no-op. Its launch is idempotent (skips if already RUNNING/
-	// PENDING). THIS is what removes the manual `workflow bootstrap` at every era start.
+	// EXPANSION — never a stored cursor), drives a cold agent to the jump gate, and at the gate-built
+	// EXPANSION hands the mature economy off to the fleet-autosizer + siting + worker-rebalancer, then
+	// exits. A mid-era restart in a built world re-observes EXPANSION, ensures the autosizer is
+	// running, and exits — so re-launching it every boot is a safe no-op. Its launch is idempotent
+	// (skips if already RUNNING/PENDING). THIS is what removes the manual `workflow bootstrap` at
+	// every era start.
 	container.ContainerTypeBootstrapCoordinator,
 	// sp-y2ptq (epic sp-9le3x): the capacity reconciler was DELETED (dedicated contract scaler replaces
 	// it; jump gate COMPLETE). It is no longer boot-standing — nothing restart-surviving depends on it.

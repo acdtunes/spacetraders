@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/probebuy"
 	shipyardQueries "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -55,9 +56,11 @@ type fakeFleetRepo struct {
 	ships    []*navigation.Ship
 	err      error
 	assigned []assignCall
+	reads    int // FindAllByPlayer calls — the pre-EXPANSION inertness pin (zero work, not just zero buys)
 }
 
 func (f *fakeFleetRepo) FindAllByPlayer(_ context.Context, _ shared.PlayerID) ([]*navigation.Ship, error) {
+	f.reads++
 	return f.ships, f.err
 }
 
@@ -82,6 +85,50 @@ func (f *fakeYardFinder) NearestYardsSelling(_ context.Context, _ int, _ []strin
 		return nil, nil
 	}
 	return f.bySystem[fromSystems[0]], nil
+}
+
+// fakePhaseReader doubles the bootstrap-EXPANSION phase port (sp-f3mcc): inExpansion is what the
+// derived-phase read reports; err models an unreadable phase (the fail-closed input).
+type fakePhaseReader struct {
+	inExpansion bool
+	err         error
+	calls       int
+}
+
+func (f *fakePhaseReader) InExpansion(_ context.Context, _ shared.PlayerID) (bool, error) {
+	f.calls++
+	return f.inExpansion, f.err
+}
+
+// captureLogger records log lines so the phase-gate tests can pin the honest no-work reason
+// (a deferral is surfaced, never a silent stall).
+type captureLogger struct {
+	lines []capturedLine
+}
+
+type capturedLine struct {
+	level  string
+	msg    string
+	action string
+}
+
+func (l *captureLogger) Log(level, message string, metadata map[string]interface{}) {
+	action := ""
+	if metadata != nil {
+		if a, ok := metadata["action"].(string); ok {
+			action = a
+		}
+	}
+	l.lines = append(l.lines, capturedLine{level: level, msg: message, action: action})
+}
+
+func (l *captureLogger) find(action string) (capturedLine, bool) {
+	for _, ln := range l.lines {
+		if ln.action == action {
+			return ln, true
+		}
+	}
+	return capturedLine{}, false
 }
 
 // ---- ship builders ---------------------------------------------------------
@@ -117,8 +164,12 @@ func newFrigate(t *testing.T, symbol, waypoint string) *navigation.Ship {
 
 func pid() shared.PlayerID { return shared.MustNewPlayerID(1) }
 
+// newHandler wires a handler whose bootstrap phase reads EXPANSION, so the orchestration tests
+// exercise the armed (buying) coordinator — they double as the "buys proceed under EXPANSION,
+// composing with the existing guard stack" pins (sp-f3mcc). The phase-gate tests below wire
+// pre-EXPANSION/unreadable readers instead.
 func newHandler(repo fleetRepository, buyer guardedBuyer, pos buyerPositioner, finder yardReachability) *RunProbeBuyerFleetCoordinatorHandler {
-	return NewRunProbeBuyerFleetCoordinatorHandler(repo, buyer, pos, finder, nil)
+	return NewRunProbeBuyerFleetCoordinatorHandler(repo, buyer, pos, finder, &fakePhaseReader{inExpansion: true}, nil)
 }
 
 // ---- tests -----------------------------------------------------------------
@@ -290,3 +341,111 @@ func yardCand(waypoint, system string, hops, price int) shipyardQueries.YardCand
 		PurchasePrice:  price,
 	}
 }
+
+// ---- sp-f3mcc: the Admiral EXPANSION phase gate ----------------------------
+//
+// "WE SHOULD NOT BE BUYING PROBES IN THE GATE PHASE... not in the gate, not in data, not in
+// income!" (Admiral, 2026-07-24). Outside EXPANSION (the bootstrap-derived gate-built phase,
+// sp-feiy7) the coordinator is FULLY INERT — zero purchases, zero recruitment, zero positioning,
+// not even a fleet read — and it surfaces the honest no-work reason. DATA/INCOME/GATE all read
+// pre-EXPANSION at this boundary (the derived phase is EXPANSION iff the home jump gate is built),
+// so one pre-EXPANSION pin covers all three. Fail-closed: an unreadable phase never defaults a
+// spender open (RULINGS #4).
+
+// expansionGateFleet is a fleet shaped so EVERY action would fire if the gate were open: stationed
+// buyers ready to buy, an idle undedicated satellite ready to recruit, all far below the cap.
+func expansionGateFleet(t *testing.T) *fakeFleetRepo {
+	t.Helper()
+	return &fakeFleetRepo{ships: []*navigation.Ship{
+		newSat(t, "PB-1", "X1-AA-YD", ProbeBuyerFleet),
+		newSat(t, "FREE-1", "X1-AA-F1", ""),
+	}}
+}
+
+// Pre-EXPANSION (the world still in DATA/INCOME/GATE — the home jump gate not yet built): the tick
+// performs NOTHING — no buy reaches even the guard stack, no recruit, no positioning, no fleet
+// read — and the deferral is logged with the honest reason. This is the staging incident pin: the
+// coordinator that bought ~23 probes during GATE must now sit inert until EXPANSION.
+func TestReconcile_PreExpansion_FullyInert_AndLogsHonestReason(t *testing.T) {
+	repo := expansionGateFleet(t)
+	buyer := &fakeBuyer{bought: true}
+	pos := &fakePositioner{}
+	phase := &fakePhaseReader{inExpansion: false}
+	h := NewRunProbeBuyerFleetCoordinatorHandler(repo, buyer, pos, nil, phase, nil)
+	cmd := &RunProbeBuyerFleetCoordinatorCommand{PlayerID: pid(), ContainerID: "pb-cid", ProbeBuyerCount: 2, MaxProbeFleet: 200}
+
+	log := &captureLogger{}
+	require.NoError(t, h.reconcileOnce(common.WithLogger(context.Background(), log), cmd))
+
+	require.Empty(t, buyer.calls, "pre-EXPANSION: no buy may even reach the guard stack")
+	require.Empty(t, repo.assigned, "pre-EXPANSION: no recruitment (no idle satellite is pulled off manning)")
+	require.Zero(t, pos.calls, "pre-EXPANSION: no stationing/positioning (zero API churn)")
+	require.Zero(t, repo.reads, "pre-EXPANSION: fully inert — not even a fleet read")
+	line, ok := log.find("probe_buyer_phase_deferred")
+	require.True(t, ok, "the deferral must surface an honest no-work reason, never a silent stall")
+	require.Contains(t, line.msg, "EXPANSION", "the reason names the phase gate")
+}
+
+// Unreadable phase (reader error): FAIL-CLOSED — a spender guard never defaults open. Zero actions,
+// and the fail-closed reason is surfaced.
+func TestReconcile_PhaseUnreadable_FailsClosed_NoActions(t *testing.T) {
+	repo := expansionGateFleet(t)
+	buyer := &fakeBuyer{bought: true}
+	pos := &fakePositioner{}
+	phase := &fakePhaseReader{inExpansion: true, err: contextDeadlineErr{}} // reader errors trump its bool
+	h := NewRunProbeBuyerFleetCoordinatorHandler(repo, buyer, pos, nil, phase, nil)
+	cmd := &RunProbeBuyerFleetCoordinatorCommand{PlayerID: pid(), ContainerID: "pb-cid", ProbeBuyerCount: 2, MaxProbeFleet: 200}
+
+	log := &captureLogger{}
+	require.NoError(t, h.reconcileOnce(common.WithLogger(context.Background(), log), cmd))
+
+	require.Empty(t, buyer.calls, "unreadable phase: fail-closed, no buys")
+	require.Empty(t, repo.assigned, "unreadable phase: no recruitment")
+	require.Zero(t, pos.calls, "unreadable phase: no positioning")
+	_, ok := log.find("probe_buyer_phase_unreadable")
+	require.True(t, ok, "the fail-closed hold must be surfaced")
+}
+
+// A NIL phase reader (mis-wire) is the same fail-closed hold: the spender cannot run without a
+// phase source. Surfaced loudly so a wiring regression is visible, never a silent default-open.
+func TestReconcile_NilPhaseReader_FailsClosed(t *testing.T) {
+	repo := expansionGateFleet(t)
+	buyer := &fakeBuyer{bought: true}
+	h := NewRunProbeBuyerFleetCoordinatorHandler(repo, buyer, &fakePositioner{}, nil, nil, nil)
+	cmd := &RunProbeBuyerFleetCoordinatorCommand{PlayerID: pid(), ContainerID: "pb-cid", ProbeBuyerCount: 2, MaxProbeFleet: 200}
+
+	log := &captureLogger{}
+	require.NoError(t, h.reconcileOnce(common.WithLogger(context.Background(), log), cmd))
+
+	require.Empty(t, buyer.calls, "no phase reader wired: fail-closed, no buys")
+	_, ok := log.find("probe_buyer_phase_unreadable")
+	require.True(t, ok, "the nil-reader hold must be surfaced")
+}
+
+// EXPANSION: the gate opens and buying proceeds EXACTLY as before — through the unchanged reused
+// guard stack (25% treasury / working-capital floor / fleet cap / price ceiling all still consulted
+// inside MaybeBuy; a guard refusal still refuses). The phase gate composes with — never replaces —
+// the money guards. (The full orchestration behaviors are pinned by the tests above, which all run
+// with an EXPANSION-true reader via newHandler.)
+func TestReconcile_Expansion_BuysProceedBehindExistingGuards(t *testing.T) {
+	repo := &fakeFleetRepo{ships: []*navigation.Ship{
+		newSat(t, "PB-1", "X1-AA-YD", ProbeBuyerFleet),
+		newSat(t, "PB-2", "X1-AA-YD", ProbeBuyerFleet),
+		newSat(t, "FREE-1", "X1-AA-F1", ""),
+	}}
+	buyer := &fakeBuyer{bought: true}
+	phase := &fakePhaseReader{inExpansion: true}
+	h := NewRunProbeBuyerFleetCoordinatorHandler(repo, buyer, &fakePositioner{}, nil, phase, nil)
+	cmd := &RunProbeBuyerFleetCoordinatorCommand{PlayerID: pid(), ContainerID: "pb-cid", ProbeBuyerCount: 2, MaxProbeFleet: 5}
+
+	require.NoError(t, h.reconcileOnce(context.Background(), cmd))
+
+	require.Equal(t, 1, phase.calls, "the phase is read once per tick")
+	require.Len(t, buyer.calls, 2, "EXPANSION: the K in-place buys proceed through the reused guard stack")
+	require.Equal(t, probeBuyerMaxProbePrice, buyer.calls[0].target.MaxProbePriceCredits, "the money-guard stack is untouched (RULINGS #4)")
+}
+
+// contextDeadlineErr is a tiny named error for the unreadable-phase double.
+type contextDeadlineErr struct{}
+
+func (contextDeadlineErr) Error() string { return "bootstrap phase read timed out" }

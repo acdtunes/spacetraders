@@ -10,7 +10,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 )
 
-// --- derivePhase: GATE stickiness + COMPLETE ---
+// --- derivePhase: GATE stickiness + EXPANSION ---
 
 // THE key correctness pin: once a construction pipeline exists, GATE is STICKY even though contract
 // income has fallen back under the bar (haulers repurposed to construction). Without this, derivePhase
@@ -27,8 +27,10 @@ func TestBootstrap_DerivePhase_GateStickyOnceConstructionStarted(t *testing.T) {
 	}
 }
 
-// A 100%-delivered gate derives COMPLETE — terminal and monotone, so a restart post-completion resumes COMPLETE.
-func TestBootstrap_DerivePhase_CompleteWhenConstructionComplete(t *testing.T) {
+// A 100%-delivered gate derives EXPANSION (sp-feiy7, Admiral 2026-07-24: the gate is built, steady-state
+// growth begins — THE phase where probe-buying starts). Terminal and monotone, so a restart
+// post-completion resumes EXPANSION.
+func TestBootstrap_DerivePhase_ExpansionWhenConstructionComplete(t *testing.T) {
 	cfg := resolveBootstrapConfig(baseCmd(), nil)
 	obs := Observation{
 		MarketsTotal: 10, MarketsCovered: 10,
@@ -36,21 +38,43 @@ func TestBootstrap_DerivePhase_CompleteWhenConstructionComplete(t *testing.T) {
 		ConstructionStarted:  true,
 		ConstructionComplete: true,
 	}
-	if p := derivePhase(obs, cfg); p != PhaseComplete {
-		t.Fatalf("completed construction should derive COMPLETE, got %s", p)
+	if p := derivePhase(obs, cfg); p != PhaseExpansion {
+		t.Fatalf("completed construction should derive EXPANSION, got %s", p)
+	}
+}
+
+// STICKINESS (sp-feiy7): a built gate dominates EVERY pre-100%% signal — even an observation whose other
+// fields all point at the coldest possible DATA/INCOME world (zero probes, zero coverage, −inf sustained
+// income, no scaler target, empty treasury) derives EXPANSION on ConstructionComplete alone. This is the
+// same world-signal stickiness GATE rides (ConstructionStarted): no post-gate income dip, fleet churn, or
+// restart-dropped in-memory window can pull the arc back to a buying phase and thrash (the GATE→INCOME
+// re-buy lesson). A built gate stays built, so the derivation is monotone tick after tick.
+func TestBootstrap_DerivePhase_ExpansionSticky_DominatesAllPreGateSignals(t *testing.T) {
+	cfg := resolveBootstrapConfig(baseCmd(), nil)
+	obs := Observation{
+		// Every non-construction signal at its coldest: this would derive DATA if the gate were unbuilt.
+		ProbeCount: 0, MarketsTotal: 0, MarketsCovered: 0,
+		IncomePerHour: 0, Treasury: 0, ContractScalerTarget: 0,
+		ConstructionStarted:  false, // even the pipeline signal gone (post-completion the pipeline may be reaped)
+		ConstructionComplete: true,
+	}
+	for tick := 0; tick < 3; tick++ {
+		if p := derivePhase(obs, cfg); p != PhaseExpansion {
+			t.Fatalf("tick %d: a built gate must derive EXPANSION regardless of every other signal, got %s (thrash)", tick, p)
+		}
 	}
 }
 
 // PARALLEL MODEL (sp-t39j): coverage NO LONGER gates the economic phase. The construction/income
-// signals are evaluated regardless of scan coverage — a built gate is COMPLETE (terminal, monotone)
+// signals are evaluated regardless of scan coverage — a built gate is EXPANSION (terminal, monotone)
 // even on a cold, uncovered world; a cold world with NO economic signal yet stays DATA (still scanning),
 // and the contract workstream runs in parallel with that DATA label (see the tick dispatch). This
 // replaces the old "coverage-gate-beats-everything" serial rule.
 func TestBootstrap_DerivePhase_EconomicSignalsIgnoreCoverage(t *testing.T) {
 	cfg := resolveBootstrapConfig(baseCmd(), nil)
-	// A completed gate is COMPLETE even uncovered (terminal + monotone — a built gate stays built).
-	if p := derivePhase(Observation{MarketsTotal: 0, ConstructionStarted: true, ConstructionComplete: true}, cfg); p != PhaseComplete {
-		t.Fatalf("completed construction should derive COMPLETE regardless of coverage, got %s", p)
+	// A completed gate is EXPANSION even uncovered (terminal + monotone — a built gate stays built).
+	if p := derivePhase(Observation{MarketsTotal: 0, ConstructionStarted: true, ConstructionComplete: true}, cfg); p != PhaseExpansion {
+		t.Fatalf("completed construction should derive EXPANSION regardless of coverage, got %s", p)
 	}
 	// A started (not complete) pipeline is GATE even uncovered (sticky).
 	if p := derivePhase(Observation{MarketsTotal: 0, ConstructionStarted: true}, cfg); p != PhaseGate {
@@ -566,19 +590,19 @@ func TestBootstrap_Gate_SettledTickIsQuiet(t *testing.T) {
 	}
 }
 
-// --- actComplete (hand-off) ---
+// --- actExpansion (hand-off) ---
 
-// On COMPLETE with the autosizer not yet running, launch the autosizer + standing coordinators once and
-// signal the loop to exit (Done).
-func TestBootstrap_Complete_LaunchesHandoffAndExits(t *testing.T) {
+// On EXPANSION with the autosizer not yet running, launch the autosizer + standing coordinators once and
+// signal the loop to exit (Done) — the gate is built, the standing economy owns steady-state growth.
+func TestBootstrap_Expansion_LaunchesHandoffAndExits(t *testing.T) {
 	obs := gateObs()
-	obs.ConstructionComplete = true // derives COMPLETE
+	obs.ConstructionComplete = true // derives EXPANSION
 	obs.AutosizerRunning = false
 	ho := &fakeHandoff{}
 	h := gateHandler(obs, &fakeConstruction{}, &fakeManufacturing{}, &fakeRepurposer{}, &fakeGateAcquirer{}, ho)
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
-	if res.Phase != PhaseComplete {
-		t.Fatalf("expected COMPLETE phase, got %s", res.Phase)
+	if res.Phase != PhaseExpansion {
+		t.Fatalf("expected EXPANSION phase, got %s", res.Phase)
 	}
 	if ho.autosizer != 1 || ho.standing != 1 {
 		t.Fatalf("expected one autosizer + one standing launch, got autosizer=%d standing=%d", ho.autosizer, ho.standing)
@@ -590,7 +614,7 @@ func TestBootstrap_Complete_LaunchesHandoffAndExits(t *testing.T) {
 
 // A hand-off whose autosizer launch FAILS does not exit — it holds and retries next tick (never leaves
 // the fleet un-handed-off).
-func TestBootstrap_Complete_HoldsWhenHandoffFails(t *testing.T) {
+func TestBootstrap_Expansion_HoldsWhenHandoffFails(t *testing.T) {
 	obs := gateObs()
 	obs.ConstructionComplete = true
 	obs.AutosizerRunning = false
@@ -605,6 +629,56 @@ func TestBootstrap_Complete_HoldsWhenHandoffFails(t *testing.T) {
 	}
 	if res.Blocker == "" {
 		t.Fatalf("expected a blocker on the failed hand-off")
+	}
+}
+
+// STICKY across live ticks + full observability threading (sp-feiy7): a held EXPANSION (hand-off blocked,
+// so the loop keeps ticking — the one state where bootstrap genuinely ticks repeatedly post-gate) stays
+// EXPANSION every tick, the phase GAUGE records "EXPANSION" every tick, the heartbeat prints it, and the
+// nextAction switch handles it (no "unhandled" fallthrough). Meanwhile NO pre-gate action fires — the
+// probe acquirer and hauler machinery are never touched — so the phase can never thrash back into a
+// buying phase (RULINGS #2).
+func TestBootstrap_Expansion_StickyAcrossTicks_GaugeHeartbeatAndNoPreGateActions(t *testing.T) {
+	obs := gateObs()
+	obs.ConstructionComplete = true
+	obs.AutosizerRunning = false
+	ho := &fakeHandoff{autoErr: errors.New("launcher down")} // hold: Done stays false, ticks continue
+	acq := &fakeAcquirer{price: 1, yard: "Y", readable: true}
+	metrics := &fakeMetrics{}
+	log := &capturingLogger{}
+	h := gateHandler(obs, &fakeConstruction{}, &fakeManufacturing{}, &fakeRepurposer{}, &fakeGateAcquirer{}, ho)
+	h.SetProbeAcquirer(acq)
+	h.SetMetricsSink(metrics)
+
+	for tick := 0; tick < 3; tick++ {
+		res, err := h.reconcileOnce(ctxWithLogger(log), baseCmd())
+		if err != nil {
+			t.Fatalf("tick %d: reconcileOnce: %v", tick, err)
+		}
+		if res.Phase != PhaseExpansion {
+			t.Fatalf("tick %d: EXPANSION must be sticky across ticks, got %s", tick, res.Phase)
+		}
+	}
+	if len(metrics.phases) != 3 {
+		t.Fatalf("the phase gauge must be recorded every tick, got %d records (%v)", len(metrics.phases), metrics.phases)
+	}
+	for i, p := range metrics.phases {
+		if p != "EXPANSION" {
+			t.Fatalf("gauge record %d: expected EXPANSION, got %q (%v)", i, p, metrics.phases)
+		}
+	}
+	hb, ok := log.find("bootstrap_heartbeat")
+	if !ok {
+		t.Fatalf("expected a heartbeat line")
+	}
+	if !strings.Contains(hb.msg, "phase=EXPANSION") {
+		t.Fatalf("heartbeat must print the EXPANSION phase, got: %s", hb.msg)
+	}
+	if strings.Contains(hb.msg, "unhandled") {
+		t.Fatalf("nextAction must handle EXPANSION (no unhandled fallthrough), got: %s", hb.msg)
+	}
+	if acq.buys != 0 || acq.priceChks != 0 {
+		t.Fatalf("EXPANSION must never run the DATA probe-buy machinery, got buys=%d priceChecks=%d", acq.buys, acq.priceChks)
 	}
 }
 

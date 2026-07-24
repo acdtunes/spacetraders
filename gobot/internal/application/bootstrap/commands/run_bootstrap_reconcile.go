@@ -535,15 +535,15 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 		h.actIncome(ctx, cmd, cfg, obs, &res)
 	case PhaseGate:
 		h.actGate(ctx, cmd, cfg, obs, &res)
-	case PhaseComplete:
-		h.actComplete(ctx, cmd, cfg, obs, &res)
+	case PhaseExpansion:
+		h.actExpansion(ctx, cmd, cfg, obs, &res)
 	}
 
 	// sp-sjvv (ktio-B): during the cold-start SCALING window (DATA/INCOME), launch the fleet autosizer
 	// EARLY so the capacity reconciler's emitted contract-delivery demand finally has a buyer (steps 2-3
 	// of the Admiral cold-start sequence). Unconditional in the DATA/INCOME window. Idempotent (skips when
-	// already running). Deliberately NOT launched in GATE/COMPLETE: GATE repurposes haulers to construction
-	// (a running autosizer scaling the contract op would contend), and COMPLETE performs the normal hand-off.
+	// already running). Deliberately NOT launched in GATE/EXPANSION: GATE repurposes haulers to construction
+	// (a running autosizer scaling the contract op would contend), and EXPANSION performs the normal hand-off.
 	if phase == PhaseData || phase == PhaseIncome {
 		h.maybeLaunchAutosizerEarly(ctx, cmd, cfg, obs, &res)
 	}
@@ -593,11 +593,16 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 // surplus), which is what makes the sticky latch above safe — construction can only start after a
 // legitimate scaled+funded entry, so a spurious income spike on a lightly-scaled op can never latch GATE
 // permanently (the sp-gm7r death spiral).
-// COMPLETE is terminal and monotone (a built gate stays built). A restart at any point re-derives the
+// EXPANSION (sp-feiy7) is terminal and monotone (a built gate stays built): the jump-gate construction is
+// COMPLETE, so the world has entered the Admiral's steady-state-growth era — the ONE phase probe-buying
+// belongs to. It is checked FIRST, before every other signal, and rides the same world-signal stickiness
+// GATE does: the observer reports a BUILT home gate as ConstructionComplete every tick (including after a
+// restart, when the pipeline is long gone), so no income dip, fleet churn, or restart-dropped in-memory
+// window can ever pull the arc back into a buying phase. A restart at any point re-derives the
 // true phase from these live signals — no persisted cursor, no double-advance.
 func derivePhase(obs Observation, cfg bootstrapRunConfig) Phase {
 	if obs.ConstructionComplete {
-		return PhaseComplete
+		return PhaseExpansion // sticky/terminal: the gate is built — steady-state growth, never regress
 	}
 	if obs.ConstructionStarted {
 		return PhaseGate // sticky: stay in GATE even as repurposed haulers pull income under the bar
@@ -1180,11 +1185,11 @@ func (h *RunBootstrapCoordinatorHandler) nextAction(cfg bootstrapRunConfig, phas
 			return fmt.Sprintf("buy 1 gate worker (staged, capital-gated; %d have/%d desired)", obs.GateWorkers, plan.DesiredWorkers)
 		}
 		return fmt.Sprintf("monitor construction to 100%% (%.0f%%)", obs.ConstructionPercent)
-	case PhaseComplete:
+	case PhaseExpansion:
 		if !obs.AutosizerRunning {
 			return "launch the fleet-autosizer + standing coordinators (hand-off)"
 		}
-		return "COMPLETE — gate built, economy handed off, exiting"
+		return "EXPANSION — gate built, economy handed off; steady-state growth (probe-buying era), exiting"
 	default:
 		return fmt.Sprintf("phase %s unhandled", phase)
 	}

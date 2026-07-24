@@ -131,6 +131,7 @@ func (s *DaemonServer) readBootstrapGateSnapshot(ctx context.Context, homeSystem
 		return snap
 	}
 	constructionRepo := api.NewConstructionSiteRepository(s.getAPIClient(), s.playerRepo)
+	builtSite := ""
 	for _, wp := range wps {
 		if wp == nil || wp.Type != jumpGateWaypointType {
 			continue
@@ -139,9 +140,14 @@ func (s *DaemonServer) readBootstrapGateSnapshot(ctx context.Context, homeSystem
 		if serr != nil || site == nil {
 			continue
 		}
-		// The gate site is the jump gate that still needs materials. A finished gate is skipped so a
-		// prior era's built gate never reads as the current target.
+		// A finished gate is never the construction TARGET — but it IS the EXPANSION world signal
+		// (sp-feiy7): the live-API read means this era's home gate is genuinely built, so remember it.
+		// Reporting it (below, when no under-construction gate supersedes it) is what makes
+		// obs.ConstructionComplete MONOTONE — previously a built gate was skipped entirely, the snapshot
+		// read zero-valued, and a post-completion tick or restart re-derived DATA/INCOME (phase flap).
+		// Era-safe: FindByWaypoint is a live API read, so a prior era's gate can never appear here.
 		if site.IsComplete() {
+			builtSite = wp.Symbol
 			continue
 		}
 		snap.Site = wp.Symbol
@@ -169,6 +175,14 @@ func (s *DaemonServer) readBootstrapGateSnapshot(ctx context.Context, homeSystem
 			snap.Complete = status.IsComplete
 		}
 		return snap
+	}
+	// No under-construction gate, but the home gate IS built: report it as the terminal EXPANSION
+	// signal (sp-feiy7) so the derived phase stays monotone across post-completion ticks and restarts.
+	// An under-construction gate (returned above) always supersedes — a built gate is never a target.
+	if builtSite != "" {
+		snap.Site = builtSite
+		snap.Complete = true
+		snap.Percent = 100
 	}
 	return snap
 }

@@ -5,8 +5,10 @@ import (
 )
 
 // bootstrapKnownPhases enumerates the phases the phase gauge tracks, so RecordPhase can zero the
-// others and leave exactly one series at 1 (the currently-derived phase).
-var bootstrapKnownPhases = []string{"DATA", "INCOME", "GATE", "COMPLETE"}
+// others and leave exactly one series at 1 (the currently-derived phase). EXPANSION (sp-feiy7)
+// replaced COMPLETE as the terminal gate-built phase — dashboards keying on phase="COMPLETE" read
+// the EXPANSION series now.
+var bootstrapKnownPhases = []string{"DATA", "INCOME", "GATE", "EXPANSION"}
 
 // BootstrapMetricsCollector houses the captain bootstrap coordinator's observation series:
 //

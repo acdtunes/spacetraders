@@ -145,7 +145,7 @@ func TestBootstrap_HaulerArbitration_AutosizerDown_BuysAndLaunchesEarly(t *testi
 // --- early autosizer launch: only in the DATA/INCOME scaling window, idempotent, not in GATE ---
 
 // In the INCOME scaling window with the autosizer down: bootstrap launches it once, and the EARLY launch
-// does NOT launch the standing coordinators (that is the COMPLETE hand-off's job). (3 haulers = desired,
+// does NOT launch the standing coordinators (that is the EXPANSION hand-off's job). (3 haulers = desired,
 // isolating the launch from the hauler decision.)
 func TestBootstrap_EarlyAutosizer_InIncome_Launches(t *testing.T) {
 	ho := &fakeHandoff{}
@@ -160,7 +160,7 @@ func TestBootstrap_EarlyAutosizer_InIncome_Launches(t *testing.T) {
 		t.Fatalf("INCOME + autosizer down: must launch the autosizer early once (autosizer_launches=%d early=%v)", ho.autosizer, res.AutosizerLaunchedEarly)
 	}
 	if ho.standing != 0 {
-		t.Fatalf("the EARLY launch must NOT launch the standing coordinators (siting/rebalancer) — that is the COMPLETE hand-off's job, got standing=%d", ho.standing)
+		t.Fatalf("the EARLY launch must NOT launch the standing coordinators (siting/rebalancer) — that is the EXPANSION hand-off's job, got standing=%d", ho.standing)
 	}
 }
 
@@ -198,15 +198,15 @@ func TestBootstrap_EarlyAutosizer_NotLaunchedDuringGate(t *testing.T) {
 	}
 }
 
-// --- COMPLETE hand-off collision: an early-launched autosizer must still get the standing coordinators ---
+// --- EXPANSION hand-off collision: an early-launched autosizer must still get the standing coordinators ---
 
-// COMPLETE + autosizer already running (launched early): the autosizer is NOT relaunched, but the standing
+// EXPANSION + autosizer already running (launched early): the autosizer is NOT relaunched, but the standing
 // coordinators (siting + rebalancer) — which the early launch did NOT start — ARE launched, and bootstrap
-// exits. This is the collision fix: the COMPLETE hand-off's autosizer-gated path is skipped, so its second
+// exits. This is the collision fix: the EXPANSION hand-off's autosizer-gated path is skipped, so its second
 // half must still run.
-func TestBootstrap_Complete_EarlyLaunched_LaunchesStandingCoordinators(t *testing.T) {
+func TestBootstrap_Expansion_EarlyLaunched_LaunchesStandingCoordinators(t *testing.T) {
 	obs := gateObs()
-	obs.ConstructionComplete = true // derives COMPLETE
+	obs.ConstructionComplete = true // derives EXPANSION
 	obs.AutosizerRunning = true     // launched early during the scaling window
 	ho := &fakeHandoff{}
 	h := gateHandler(obs, &fakeConstruction{}, &fakeManufacturing{}, &fakeRepurposer{}, &fakeGateAcquirer{}, ho)
@@ -216,19 +216,19 @@ func TestBootstrap_Complete_EarlyLaunched_LaunchesStandingCoordinators(t *testin
 		t.Fatalf("reconcileOnce: %v", err)
 	}
 	if ho.autosizer != 0 {
-		t.Fatalf("the autosizer was already launched early — it must NOT be relaunched at COMPLETE, got autosizer=%d", ho.autosizer)
+		t.Fatalf("the autosizer was already launched early — it must NOT be relaunched at EXPANSION, got autosizer=%d", ho.autosizer)
 	}
 	if ho.standing != 1 {
-		t.Fatalf("the standing coordinators (siting + rebalancer) MUST be launched at COMPLETE even when the autosizer was launched early, got standing=%d", ho.standing)
+		t.Fatalf("the standing coordinators (siting + rebalancer) MUST be launched at EXPANSION even when the autosizer was launched early, got standing=%d", ho.standing)
 	}
 	if !res.HandoffLaunched || !res.Done {
-		t.Fatalf("COMPLETE must finish the hand-off and exit, got HandoffLaunched=%v Done=%v", res.HandoffLaunched, res.Done)
+		t.Fatalf("EXPANSION must finish the hand-off and exit, got HandoffLaunched=%v Done=%v", res.HandoffLaunched, res.Done)
 	}
 }
 
-// COMPLETE + autosizer running, but the standing-coordinator launch FAILS: bootstrap HOLDS (does not exit)
+// EXPANSION + autosizer running, but the standing-coordinator launch FAILS: bootstrap HOLDS (does not exit)
 // and retries — it never exits with the mature economy half-handed-off.
-func TestBootstrap_Complete_EarlyLaunched_HoldsWhenStandingLaunchFails(t *testing.T) {
+func TestBootstrap_Expansion_EarlyLaunched_HoldsWhenStandingLaunchFails(t *testing.T) {
 	obs := gateObs()
 	obs.ConstructionComplete = true
 	obs.AutosizerRunning = true

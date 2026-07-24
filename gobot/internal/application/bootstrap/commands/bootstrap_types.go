@@ -26,8 +26,14 @@ const (
 	// PhaseGate is jump-gate construction: start the construction pipeline, ensure the executor
 	// has adopted it, and size the gate workforce until the site is complete.
 	PhaseGate Phase = "GATE"
-	// PhaseComplete is the terminal: the gate is built, standing coordinators handed off.
-	PhaseComplete Phase = "COMPLETE"
+	// PhaseExpansion is the terminal: the jump-gate construction is COMPLETE — the gate is built,
+	// steady-state growth begins (sp-feiy7, Admiral 2026-07-24: "we should add a new phase called
+	// EXPANSION — this is the phase where we start to buy probes"). It replaces the old COMPLETE
+	// label in that exact slot: bootstrap's own job here is unchanged (hand the standing economy
+	// off, then exit), but the DERIVED phase now names the era the world has entered — the phase
+	// growth spenders (the probe-buyer fleet, sp-f3mcc) key on. Like a built gate it is monotone:
+	// once derived it never regresses to a buying phase.
+	PhaseExpansion Phase = "EXPANSION"
 )
 
 // Observation is one tick's read of the live world — the reconciler's entire input. Everything the
@@ -142,8 +148,9 @@ type Observation struct {
 	// repurposed haulers, so derivePhase never regresses GATE→INCOME (which would re-buy haulers and
 	// thrash). A restart mid-GATE re-observes this true → resumes in GATE.
 	ConstructionStarted bool
-	// ConstructionComplete reports whether the gate construction site is 100% delivered — the GATE→COMPLETE
-	// exit. Terminal and monotone (a built gate stays built), so a restart post-completion re-derives COMPLETE.
+	// ConstructionComplete reports whether the gate construction site is 100% delivered — the
+	// GATE→EXPANSION exit. Terminal and monotone (a built gate stays built — the observer reports a
+	// BUILT home gate as complete, sp-feiy7), so a restart post-completion re-derives EXPANSION.
 	ConstructionComplete bool
 	// ConstructionPercent is the site's delivery progress in [0,100] — heartbeat + metrics only (never a guard).
 	ConstructionPercent float64
@@ -168,8 +175,8 @@ type Observation struct {
 	// path reads it, so it is inert unless the executor is over-provisioned; mirrors how obs.Haulers carries
 	// the per-hull delivery detail alongside its count-based guards.
 	GateWorkerHulls []GateWorkerSnapshot
-	// AutosizerRunning reports whether the standing fleet-autosizer is already running — the COMPLETE
-	// launch-once hand-off guard (a restart post-COMPLETE re-observes it running ⇒ no re-launch, no exit loop).
+	// AutosizerRunning reports whether the standing fleet-autosizer is already running — the EXPANSION
+	// launch-once hand-off guard (a restart post-gate re-observes it running ⇒ no re-launch, no exit loop).
 	AutosizerRunning bool
 	// ContractScalerRunning reports whether the standing dedicated contract auto-scaler is already
 	// running — the idempotency guard for the default-off early-launch arm (armed once, then RUNS

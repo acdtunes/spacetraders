@@ -9,7 +9,7 @@ import (
 )
 
 // This file holds the GATE phase: the jump-gate construction drive and its
-// deterministic worker sizing, plus the COMPLETE hand-off. It mirrors run_bootstrap_income.go's shape —
+// deterministic worker sizing, plus the EXPANSION hand-off. It mirrors run_bootstrap_income.go's shape —
 // independently-guarded, idempotent actions on the observed delta, each failing CLOSED — so a restart
 // mid-GATE re-observes construction %, the executor's adoption, and the worker pool, and never
 // double-starts, double-bounces, or double-buys.
@@ -144,7 +144,7 @@ func gateSiteOrNone(site string) string {
 //  4. Size the gate workforce (planGateWorkers): BUY the staged top-up delta when the executor's workers
 //     fall short of the pipeline's shape. The exclusive contract fleet is never repurposed (sp-cdxy2).
 //
-// The monitor→COMPLETE transition is derivePhase's job (obs.ConstructionComplete), so GATE has no explicit
+// The monitor→EXPANSION transition is derivePhase's job (obs.ConstructionComplete), so GATE has no explicit
 // "is it done?" branch — it just reconciles the construction drive each tick until the phase flips.
 func (h *RunBootstrapCoordinatorHandler) actGate(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
@@ -503,13 +503,15 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyGateWorker(ctx context.Context,
 	})
 }
 
-// actComplete runs the terminal COMPLETE phase: the gate is built, so bootstrap hands the fleet
-// off to the mature demand-driven economy and exits. The hand-off launches the fleet-autosizer (OFF the
-// whole bootstrap run so the two never bid against one treasury) and the other standing coordinators,
-// exactly ONCE — guarded on obs.AutosizerRunning, so a restart post-COMPLETE re-observes the autosizer
-// running and skips straight to exit (terminal idempotency, spec §Architecture). The loop exits only once
-// the hand-off is confirmed (autosizer running or launched this tick); a blocked hand-off holds and retries.
-func (h *RunBootstrapCoordinatorHandler) actComplete(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
+// actExpansion runs the terminal EXPANSION phase (sp-feiy7 — formerly COMPLETE): the gate is built and
+// steady-state growth begins, so bootstrap hands the fleet off to the mature demand-driven economy and
+// exits (the standing coordinators — including the probe-buyer fleet, the Admiral's EXPANSION spender —
+// own all growth from here). The hand-off launches the fleet-autosizer (OFF the whole bootstrap run so
+// the two never bid against one treasury) and the other standing coordinators, exactly ONCE — guarded on
+// obs.AutosizerRunning, so a restart post-gate re-observes the autosizer running and skips straight to
+// exit (terminal idempotency, spec §Architecture). The loop exits only once the hand-off is confirmed
+// (autosizer running or launched this tick); a blocked hand-off holds and retries.
+func (h *RunBootstrapCoordinatorHandler) actExpansion(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
 	if !obs.AutosizerRunning {
@@ -530,20 +532,20 @@ func (h *RunBootstrapCoordinatorHandler) actComplete(ctx context.Context, cmd *R
 	// retries — bootstrap never exits having left the fleet un-handed-off.
 	if obs.AutosizerRunning || res.HandoffLaunched {
 		res.Done = true
-		logger.Log("INFO", "Bootstrap COMPLETE — the jump gate is built and the standing economy is handed off (fleet-autosizer + coordinators live); the bootstrap coordinator is exiting (its job is done)", map[string]interface{}{
+		logger.Log("INFO", "Bootstrap EXPANSION — the jump gate is built and the standing economy is handed off (fleet-autosizer + coordinators live); steady-state growth (probe-buying era) begins and the bootstrap coordinator is exiting (its job is done)", map[string]interface{}{
 			"action":       "bootstrap_complete",
 			"container_id": cmd.ContainerID,
 		})
 	}
 }
 
-// ensureStandingHandoff finishes the COMPLETE hand-off for the sp-sjvv case where the fleet autosizer was
+// ensureStandingHandoff finishes the EXPANSION hand-off for the sp-sjvv case where the fleet autosizer was
 // launched EARLY (armed cold-start scaling) and is therefore already running — so launchHandoff's
 // autosizer-gated path is skipped, but its SECOND half (the standing coordinators: siting +
 // worker-rebalancer) still has to run. It reports whether the standing coordinators are confirmed up
 // (launched this tick or already running). Idempotent at the adapter (each launch skips when the
 // coordinator is already RUNNING/PENDING), dry-run-safe, and nil-safe. On success it sets
-// res.HandoffLaunched so the caller's terminal-exit check passes and the COMPLETE line fires; on a
+// res.HandoffLaunched so the caller's terminal-exit check passes and the EXPANSION line fires; on a
 // blocked/failed launch it sets a blocker and returns false so the caller HOLDS (never exits
 // half-handed-off). Mirrors launchHandoff's standing-coordinator portion.
 func (h *RunBootstrapCoordinatorHandler) ensureStandingHandoff(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, res *reconcileResult) bool {
@@ -558,7 +560,7 @@ func (h *RunBootstrapCoordinatorHandler) ensureStandingHandoff(ctx context.Conte
 	}
 	if h.handoff == nil {
 		res.Blocker = "no_handoff_launcher"
-		logger.Log("WARN", "Bootstrap COMPLETE (autosizer launched early) but no hand-off launcher wired — cannot launch the standing coordinators (holding, not exiting)", map[string]interface{}{
+		logger.Log("WARN", "Bootstrap EXPANSION (autosizer launched early) but no hand-off launcher wired — cannot launch the standing coordinators (holding, not exiting)", map[string]interface{}{
 			"action":       "bootstrap_complete_blocked",
 			"container_id": cmd.ContainerID,
 			"blocker":      "no_handoff_launcher",
@@ -588,7 +590,7 @@ func (h *RunBootstrapCoordinatorHandler) launchHandoff(ctx context.Context, cmd 
 	logger := common.LoggerFromContext(ctx)
 
 	if cfg.DryRun {
-		logger.Log("INFO", "Bootstrap DRY-RUN: WOULD launch the fleet-autosizer + standing coordinators as the COMPLETE hand-off (took no action, and holds rather than exiting)", map[string]interface{}{
+		logger.Log("INFO", "Bootstrap DRY-RUN: WOULD launch the fleet-autosizer + standing coordinators as the EXPANSION hand-off (took no action, and holds rather than exiting)", map[string]interface{}{
 			"action":       "bootstrap_would_handoff",
 			"container_id": cmd.ContainerID,
 		})
@@ -596,7 +598,7 @@ func (h *RunBootstrapCoordinatorHandler) launchHandoff(ctx context.Context, cmd 
 	}
 	if h.handoff == nil {
 		res.Blocker = "no_handoff_launcher"
-		logger.Log("WARN", "Bootstrap COMPLETE but no hand-off launcher wired — cannot launch the standing economy (holding, not exiting)", map[string]interface{}{
+		logger.Log("WARN", "Bootstrap EXPANSION but no hand-off launcher wired — cannot launch the standing economy (holding, not exiting)", map[string]interface{}{
 			"action":       "bootstrap_complete_blocked",
 			"container_id": cmd.ContainerID,
 			"blocker":      "no_handoff_launcher",

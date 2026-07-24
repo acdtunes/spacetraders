@@ -23,6 +23,11 @@
 // so every tick re-derives its buyers from persisted ship rows and never holds in-memory-only state.
 // It NEVER poaches a hull dedicated to another fleet and NEVER touches the command frigate (RULINGS
 // #7); every buy stays behind the unchanged money guards + cap (RULINGS #4), stopping at the cap.
+//
+// PHASE-GATED (sp-f3mcc, Admiral 2026-07-24): the whole reconcile is inert outside the bootstrap-
+// derived EXPANSION phase (the home jump gate built, sp-feiy7) — probes are bought ONLY in the
+// steady-state-growth era, never during DATA/INCOME/GATE where they drained the contract working-
+// capital band. Fail-closed: an unreadable phase holds every action.
 package commands
 
 import (
@@ -85,6 +90,17 @@ type buyerPositioner interface {
 	PositionProbeBuyer(ctx context.Context, playerID shared.PlayerID) (bool, error)
 }
 
+// expansionPhaseReader reports whether the bootstrap-derived lifecycle phase is EXPANSION — the
+// gate-built steady-state-growth era that probe-buying belongs to (Admiral 2026-07-24, sp-f3mcc:
+// "not in the gate, not in data, not in income"). The phase is DERIVED from the live world exactly
+// the way the bootstrap coordinator derives it (never a persisted enum, never a running-container
+// read — bootstrap EXITS after its hand-off): EXPANSION ⇔ the home-system jump-gate construction is
+// COMPLETE (derivePhase's terminal branch, sp-feiy7). An error means the phase could not be read —
+// the coordinator treats that FAIL-CLOSED (no buys), because a spender guard never defaults open.
+type expansionPhaseReader interface {
+	InExpansion(ctx context.Context, playerID shared.PlayerID) (bool, error)
+}
+
 // fleetRepository is the ship-roster slice this coordinator needs: read the whole fleet (to count
 // satellites + derive the current buyers, restart-safe), and write the dedicated_fleet tag on a
 // recruit (the single AssignFleet write path). Satisfied by navigation.ShipRepository.
@@ -122,17 +138,21 @@ type RunProbeBuyerFleetCoordinatorHandler struct {
 	buyer      guardedBuyer
 	positioner buyerPositioner
 	yardFinder yardReachability
+	phase      expansionPhaseReader
 	clock      shared.Clock
 	liveConfig liveconfig.Reader
 }
 
 // NewRunProbeBuyerFleetCoordinatorHandler wires the coordinator. yardFinder + liveConfig are optional
-// (nil-safe); clock defaults to the real clock.
+// (nil-safe); clock defaults to the real clock. phase is the sp-f3mcc EXPANSION gate — a REQUIRED
+// spender guard, deliberately a constructor parameter (not an optional setter): a nil reader holds
+// the coordinator fail-closed (no buys, surfaced loudly every tick), never silently open.
 func NewRunProbeBuyerFleetCoordinatorHandler(
 	fleetRepo fleetRepository,
 	buyer guardedBuyer,
 	positioner buyerPositioner,
 	yardFinder yardReachability,
+	phase expansionPhaseReader,
 	clock shared.Clock,
 ) *RunProbeBuyerFleetCoordinatorHandler {
 	if clock == nil {
@@ -143,6 +163,7 @@ func NewRunProbeBuyerFleetCoordinatorHandler(
 		buyer:      buyer,
 		positioner: positioner,
 		yardFinder: yardFinder,
+		phase:      phase,
 		clock:      clock,
 	}
 }
@@ -187,11 +208,23 @@ func (h *RunProbeBuyerFleetCoordinatorHandler) Handle(ctx context.Context, reque
 	}
 }
 
-// reconcileOnce is one tick: re-derive the fleet from persisted rows (restart-safe), recruit toward K
+// reconcileOnce is one tick: check the Admiral EXPANSION phase gate (outside EXPANSION the tick is
+// fully inert), then re-derive the fleet from persisted rows (restart-safe), recruit toward K
 // dedicated buyers when short and below cap, then drive up to K in-place buys through the stationed
 // buyers behind the reused money-guard stack, and station/rotate a buyer on a shortfall. Every input
 // comes from the persisted world each tick; the handler holds no cycle state (RULINGS #2).
 func (h *RunProbeBuyerFleetCoordinatorHandler) reconcileOnce(ctx context.Context, cmd *RunProbeBuyerFleetCoordinatorCommand) error {
+	// ADMIRAL PHASE GATE (sp-f3mcc, 2026-07-24): "WE SHOULD NOT BE BUYING PROBES IN THE GATE
+	// PHASE... not in the gate, not in data, not in income!" Probe-fleet growth belongs to
+	// EXPANSION (the gate-built era, sp-feiy7) alone. Outside it — and whenever the phase cannot
+	// be read (fail-closed, RULINGS #4) — the WHOLE tick is inert: no buy reaches the guard stack,
+	// no satellite is recruited off manning, no buyer is repositioned (zero API churn), not even a
+	// fleet read. Checked FIRST so a pre-EXPANSION tick spends nothing anywhere. Guard tightening
+	// only: the money-guard stack behind MaybeBuy is untouched and still applies in EXPANSION.
+	if !h.expansionReached(ctx, cmd) {
+		return nil
+	}
+
 	fleetCap, buyerCount := h.resolveConfig(ctx, cmd)
 
 	ships, err := h.fleetRepo.FindAllByPlayer(ctx, cmd.PlayerID)
@@ -253,6 +286,35 @@ func (h *RunProbeBuyerFleetCoordinatorHandler) reconcileOnce(ctx context.Context
 		}
 	}
 	return nil
+}
+
+// expansionReached reports whether the bootstrap-derived phase is EXPANSION, surfacing the honest
+// no-work reason when it is not (never a silent stall). FAIL-CLOSED on every unreadable input
+// (RULINGS #4 — a spender guard never defaults open): a nil reader (mis-wire) and a read error both
+// hold the coordinator inert, each with its own loud line so the wedge is visible on the first look.
+func (h *RunProbeBuyerFleetCoordinatorHandler) expansionReached(ctx context.Context, cmd *RunProbeBuyerFleetCoordinatorCommand) bool {
+	logger := common.LoggerFromContext(ctx)
+	if h.phase == nil {
+		logger.Log("WARNING", "probe buying held (fail-closed): no bootstrap-phase reader wired — cannot verify the EXPANSION phase, and a spender guard never defaults open (sp-f3mcc)", map[string]interface{}{
+			"action": "probe_buyer_phase_unreadable",
+		})
+		return false
+	}
+	inExpansion, err := h.phase.InExpansion(ctx, cmd.PlayerID)
+	if err != nil {
+		logger.Log("WARNING", fmt.Sprintf("probe buying held (fail-closed): bootstrap phase unreadable — no buys on an unknown phase (sp-f3mcc): %v", err), map[string]interface{}{
+			"action": "probe_buyer_phase_unreadable",
+			"error":  err.Error(),
+		})
+		return false
+	}
+	if !inExpansion {
+		logger.Log("INFO", "probe buying deferred: bootstrap phase pre-EXPANSION (jump-gate construction incomplete — the world is still in DATA/INCOME/GATE); probes are bought only in EXPANSION (Admiral 2026-07-24, sp-f3mcc)", map[string]interface{}{
+			"action": "probe_buyer_phase_deferred",
+		})
+		return false
+	}
+	return true
 }
 
 // resolveConfig resolves the effective cap + K for this tick: a positive live-config override wins
