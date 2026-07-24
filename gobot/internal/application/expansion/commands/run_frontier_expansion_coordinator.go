@@ -980,7 +980,7 @@ func (h *RunFrontierExpansionCoordinatorHandler) decideAndMaybeBuy(
 	logger := common.LoggerFromContext(ctx)
 	// The demand-proximal yard hint handed to the quote+buy (sp-hej4). SELECTION only — every
 	// guard below is unchanged and gates the buy on the quoted price of the selected yard.
-	target := probebuy.ProbeTarget{System: targetSystem, HopPenaltyCredits: cfg.ProximalYardHopPenalty, SiblingPriceMarginCredits: cfg.ProbeSiblingPriceMargin, MaxProbePriceCredits: cfg.MaxProbePrice}
+	target := probebuy.ProbeTarget{System: targetSystem, HopPenaltyCredits: cfg.ProximalYardHopPenalty, SiblingPriceMarginCredits: cfg.ProbeSiblingPriceMargin, MaxProbePriceCredits: cfg.MaxProbePrice, ClaimOwnerContainerID: cmd.ContainerID}
 
 	// A named target must exist: an unmanned slot on a declared post. The expansion
 	// queue only becomes a target once declared into a post (above), so gating on

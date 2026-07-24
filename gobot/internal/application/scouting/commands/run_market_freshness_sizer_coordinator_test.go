@@ -352,6 +352,9 @@ func TestSizer_BuysWhenAggregateDemandExceedsSupply(t *testing.T) {
 	// per-hop penalty, so the probe spawns at the yard nearest the shortfall — fail-open otherwise.
 	require.Equal(t, "X1-A", pu.lastTarget.System, "the neediest market-bearing system is the buy target")
 	require.Equal(t, probebuy.DefaultHopPenaltyCredits, pu.lastTarget.HopPenaltyCredits, "the sizer applies the shared default proximal penalty")
+	// sp-1bme8: the aggregate buy owns its exclusive single-writer journey claim by the DRIVING
+	// sizer's container id, so the frontier coordinator can never grab this buyer mid-relay.
+	require.Equal(t, "freshness-1", pu.lastTarget.ClaimOwnerContainerID, "the journey claim is owned by the freshness container id")
 }
 
 // Supply already covers aggregate demand → no purchase (the sp-njwy over-buy guard: idle +

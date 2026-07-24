@@ -548,6 +548,9 @@ func TestFrontier_BuysProbeWhenShortAndGuardsPass(t *testing.T) {
 	// the default per-hop penalty knob (testCmd sets none → the documented default).
 	require.Equal(t, "X1-A", buyer.lastTarget.System, "the target is the post whose unmanned slot the probe serves")
 	require.Equal(t, hopPenaltyCredits, buyer.lastTarget.HopPenaltyCredits, "the internal proximal-yard penalty const is applied")
+	// sp-1bme8: the buy owns its exclusive single-writer journey claim by the DRIVING coordinator's
+	// container id, so the freshness sizer's selection can never grab this buyer mid-relay.
+	require.Equal(t, "frontier-1", buyer.lastTarget.ClaimOwnerContainerID, "the journey claim is owned by the frontier container id")
 }
 
 // "coordinator claims no hulls": across a full buy cycle it never mutates a ship — the

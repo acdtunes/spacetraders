@@ -237,10 +237,21 @@ type travelShipRepo struct {
 	// Unset, every call returns `ship`, so every pre-sp-4yse test (a single reload) is unchanged.
 	reloadShip *navigation.Ship
 	findCalls  int
+	// findSeq, when non-empty, is consumed one entry per FindBySymbol call (front to back) BEFORE
+	// the reloadShip/ship fallbacks — it models the hull's LIVE persisted position at successive
+	// mid-flight reloads (sp-1bme8: the jumpHop re-anchor reads it to tell a genuine pre-restart
+	// cooldown, hull still at origin, from a jump SUCCESS mis-reported as a 409, hull already at the
+	// destination). A nil/empty slice leaves every existing test's single post-jump reload unchanged.
+	findSeq []*navigation.Ship
 }
 
 func (r *travelShipRepo) FindBySymbol(ctx context.Context, symbol string, playerID shared.PlayerID) (*navigation.Ship, error) {
 	r.findCalls++
+	if len(r.findSeq) > 0 {
+		next := r.findSeq[0]
+		r.findSeq = r.findSeq[1:]
+		return next, nil
+	}
 	if r.findCalls > 1 && r.reloadShip != nil {
 		return r.reloadShip, nil
 	}
@@ -787,7 +798,11 @@ func TestTravel_CrossSystem_JumpOnCooldown_RidesRemainingThenRetries(t *testing.
 		jumpResp:   &navCmd.JumpShipResponse{Success: true, DestinationSystem: "X1-BBB", CooldownSeconds: 60},
 	}
 	clock := &travelFakeClock{}
-	handler := NewRunTradeRouteCoordinatorHandler(mediator, &travelShipRepo{ship: reloaded}, nil, nil, clock, nil)
+	// sp-1bme8: the re-anchor reload on the 409 must see the hull STILL at its origin (X1-AAA) —
+	// a genuine pre-restart cooldown, not yet jumped — so travel rides it out and retries rather
+	// than mistaking it for an already-landed jump.
+	shipRepo := &travelShipRepo{ship: reloaded, findSeq: []*navigation.Ship{newTravelShipAtGate(t, "HAULER-1", "X1-AAA-GATE")}}
+	handler := NewRunTradeRouteCoordinatorHandler(mediator, shipRepo, nil, nil, clock, nil)
 
 	got, err := handler.travel(context.Background(), ship, "X1-BBB-GATE", 1)
 	if err != nil {
@@ -810,6 +825,50 @@ func TestTravel_CrossSystem_JumpOnCooldown_RidesRemainingThenRetries(t *testing.
 
 	if got != reloaded {
 		t.Fatal("expected travel() to return the reloaded ship after riding the cooldown")
+	}
+}
+
+// sp-1bme8 — THE cooldown-ride self-jump guard: the residual self-jump that survives the
+// single-writer buyer claim (Part 1) because it needs NO 2nd actor. When a jump SUCCESS is
+// mis-reported as a 409 cooldown, a blind ride would re-fire the SAME jump — but the hull has
+// ALREADY left for the destination, so re-jumping to it FROM the just-arrived position is a
+// physically-impossible self-jump (the live error: "no jump gate connection from origin gate
+// X1-AM3-C15A to system X1-AM3"). travel() must RE-ANCHOR to the hull's live position on the 409:
+// seeing it already in the destination system, it reports the jump landed (settling the reported
+// remaining cooldown) instead of re-firing — exactly ONE jump, never a second self-jump.
+func TestTravel_CrossSystem_JumpSuccessMisreportedAsCooldown_ReAnchorsInsteadOfSelfJumping(t *testing.T) {
+	ship := newTravelShipAtGate(t, "HAULER-1", "X1-AAA-GATE")
+	arrived := newTravelShipAtGate(t, "HAULER-1", "X1-BBB-GATE") // the hull ALREADY landed at the destination
+	// The jump landed the hull at X1-BBB but the response was mis-reported as a 409; a blind
+	// ride+retry would then jump to X1-BBB FROM X1-BBB — the self-jump. A second (self-jump) error
+	// is armed to PROVE the re-anchor prevents the re-fire.
+	cooldownErr := errors.New(`API error (status 409): {"error":{"code":4000,"message":"Ship action is still on cooldown for 42 second(s).","data":{"cooldown":{"remainingSeconds":42}}}}`)
+	selfJumpErr := errors.New("no jump gate connection from origin gate X1-BBB-C15A to system X1-BBB after 3 live reads")
+	mediator := &travelMediator{
+		jumpErrSeq: []error{cooldownErr, selfJumpErr},
+		jumpResp:   &navCmd.JumpShipResponse{Success: true, DestinationSystem: "X1-BBB", CooldownSeconds: 60},
+	}
+	clock := &travelFakeClock{}
+	// The re-anchor reload sees the hull ALREADY at the destination system → the 409 was a
+	// mis-reported success; the post-loop reload then returns the same arrived hull.
+	shipRepo := &travelShipRepo{ship: arrived, findSeq: []*navigation.Ship{arrived}}
+	handler := NewRunTradeRouteCoordinatorHandler(mediator, shipRepo, nil, nil, clock, nil)
+
+	got, err := handler.travel(context.Background(), ship, "X1-BBB-GATE", 1)
+	if err != nil {
+		t.Fatalf("expected travel to re-anchor and complete, got error: %v", err)
+	}
+	// The guard prevents the re-jump: exactly ONE jump was dispatched, never the armed self-jump.
+	if len(mediator.jumps) != 1 {
+		t.Fatalf("expected exactly one JumpShipCommand (the re-anchor must NOT re-fire the mis-reported jump), got %d", len(mediator.jumps))
+	}
+	// The reported remaining cooldown (42s) is still settled — the hull is genuinely cooling.
+	wantSettle := calculateCooldownWaitBudget(42*time.Second, DefaultCooldownMarginFactor, DefaultCooldownMinMargin)
+	if len(clock.slept) != 1 || clock.slept[0] != wantSettle {
+		t.Fatalf("expected a single settle sleep of %v for the landed jump's remaining cooldown, got %v", wantSettle, clock.slept)
+	}
+	if got != arrived {
+		t.Fatal("expected travel() to return the arrived hull")
 	}
 }
 

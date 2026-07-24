@@ -66,11 +66,21 @@ type TreasuryReader interface {
 // cycle (price may recover or a nearer yard become reachable), a normal no-op exactly like the spend
 // cap. 0 (or absent) = DISABLED. Only a caller that governs deep-yard spend sets it (the
 // frontier coordinator's live max_probe_price knob); the freshness sizer leaves it 0.
+//
+// ClaimOwnerContainerID is the DRIVING coordinator's container id, which OWNS the exclusive
+// single-writer journey claim the purchaser holds on the buyer hull for the whole source→yard
+// reposition (sp-1bme8, RULINGS #3). It stops the OTHER probe-buyer coordinator from grabbing the
+// same idle hull mid-relay and desyncing the no-reload multi-hop jump into a physically-impossible
+// self-jump. Yard SELECTION and the money guards are untouched. Empty is safe: the claim is still
+// taken under a default owner, and the daemon's boot-time ReleaseAllActive frees a claim under any
+// owner (RULINGS #2 restart-idempotent), so cleanup never depends on this id — it is who-owns-it
+// for observability plus mid-life container-death scoping.
 type ProbeTarget struct {
 	System                    string
 	HopPenaltyCredits         int
 	SiblingPriceMarginCredits int
 	MaxProbePriceCredits      int
+	ClaimOwnerContainerID     string
 }
 
 // DefaultHopPenaltyCredits is the demand-proximal tradeoff a caller applies when it resolves a

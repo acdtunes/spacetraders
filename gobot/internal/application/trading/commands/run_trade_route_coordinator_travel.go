@@ -180,6 +180,20 @@ func (h *RunTradeRouteCoordinatorHandler) jumpHop(ctx context.Context, cmd *navC
 			if cooldown <= 0 || ride >= maxCooldownRides {
 				return nil, err
 			}
+			// sp-1bme8 re-anchor: a jump SUCCESS mis-reported as a 409 would otherwise re-fire the
+			// SAME jump from the just-arrived position — a physically-impossible self-jump (the
+			// residual self-jump that survives the single-writer buyer claim because it needs NO 2nd
+			// actor). Re-anchor to the hull's LIVE position: if it has ALREADY reached
+			// DestinationSystem the jump landed and the 409 is spurious, so report success (settling
+			// the reported remaining cooldown) instead of re-jumping. A hull still at the origin (a
+			// genuine pre-restart cooldown, sp-wc5h) rides as before.
+			if h.hullReachedJumpDestination(ctx, cmd) {
+				return &navCmd.JumpShipResponse{
+					Success:           true,
+					DestinationSystem: cmd.DestinationSystem,
+					CooldownSeconds:   int(cooldown.Seconds()),
+				}, nil
+			}
 			logger := common.LoggerFromContext(ctx)
 			logger.Log("INFO", "Jump still on cooldown from a pre-restart hop — riding it out before retrying (resume-safe)", map[string]interface{}{
 				"action":             "jump_cooldown_ride",
@@ -202,6 +216,21 @@ func (h *RunTradeRouteCoordinatorHandler) jumpHop(ctx context.Context, cmd *navC
 		}
 		return jumpResp, nil
 	}
+}
+
+// hullReachedJumpDestination re-anchors to the hull's LIVE persisted position and reports whether it
+// already sits in the jump's DestinationSystem — i.e. the jump landed and the 409 was a mis-reported
+// success (sp-1bme8). A reload error, a missing player id, or a missing location conservatively
+// reports false, so the re-anchor never turns a genuine pre-restart cooldown into a skipped jump.
+func (h *RunTradeRouteCoordinatorHandler) hullReachedJumpDestination(ctx context.Context, cmd *navCmd.JumpShipCommand) bool {
+	if cmd.PlayerID == nil {
+		return false
+	}
+	live, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, shared.MustNewPlayerID(*cmd.PlayerID))
+	if err != nil || live == nil || live.CurrentLocation() == nil {
+		return false
+	}
+	return live.CurrentLocation().SystemSymbol == cmd.DestinationSystem
 }
 
 // parseJumpCooldownRemaining extracts the remaining cooldown from a jump 409

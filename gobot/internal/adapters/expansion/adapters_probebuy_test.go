@@ -40,7 +40,8 @@ type probeFakeMediator struct {
 	navErrByDest map[string]error                // per-destination unroutable relay (a yard beyond the buyer's reach)
 	boughtSymbol string
 	boughtPrice  int
-	deliverType  string // "" -> SHIP_PROBE (the honest delivery); set to model a substituted hull
+	deliverType  string    // "" -> SHIP_PROBE (the honest delivery); set to model a substituted hull
+	events       *[]string // optional shared journey-event log (claim/navigate/buy/release ordering)
 }
 
 func (m *probeFakeMediator) Send(_ context.Context, request common.Request) (common.Response, error) {
@@ -62,9 +63,15 @@ func (m *probeFakeMediator) Send(_ context.Context, request common.Request) (com
 			return nil, err // this destination is beyond the buyer's jump-reach (fail-closed)
 		}
 		m.navigations = append(m.navigations, cmd)
+		if m.events != nil {
+			*m.events = append(*m.events, "navigate:"+cmd.ShipSymbol)
+		}
 		return &shipNav.NavigateRouteResponse{Status: "completed", CurrentLocation: cmd.Destination}, nil
 	case *shipyardCmd.PurchaseShipCommand:
 		m.purchases = append(m.purchases, cmd)
+		if m.events != nil {
+			*m.events = append(*m.events, "buy:"+cmd.PurchasingShipSymbol)
+		}
 		deliver := m.deliverType
 		if deliver == "" {
 			deliver = probeShipType
@@ -79,16 +86,59 @@ func (m *probeFakeMediator) Send(_ context.Context, request common.Request) (com
 	}
 }
 
-// probeFakeShipRepo answers FindIdleByPlayer (the only ship-repo method the adapter touches);
-// every other method nil-panics via the embedded interface.
+// probeFakeShipRepo answers FindIdleByPlayer plus the atomic single-writer claim primitives the
+// probe-buy journey holds (ClaimShip / ReleaseContainerClaim, sp-1bme8); every other method
+// nil-panics via the embedded interface. It models the row-locked DB contract: a claimed hull is
+// EXCLUSIVE (a second claim by another container is rejected) and drops out of the idle pool exactly
+// as the real ClaimShip flips assignment_status to "active".
 type probeFakeShipRepo struct {
 	navigation.ShipRepository
 	idle []*navigation.Ship
 	err  error
+
+	claims   map[string]string // shipSymbol -> owning containerID for every LIVE journey claim
+	claimErr error             // when set, ClaimShip fails (models a lost claim race → fail closed)
+	events   *[]string         // optional shared journey-event log (claim/navigate/buy/release ordering)
 }
 
 func (r *probeFakeShipRepo) FindIdleByPlayer(_ context.Context, _ shared.PlayerID) ([]*navigation.Ship, error) {
-	return r.idle, r.err
+	if r.err != nil {
+		return nil, r.err
+	}
+	out := make([]*navigation.Ship, 0, len(r.idle))
+	for _, ship := range r.idle {
+		if _, claimed := r.claims[ship.ShipSymbol()]; claimed {
+			continue // a claimed hull is non-idle — the row-locked claim excludes it from selection
+		}
+		out = append(out, ship)
+	}
+	return out, nil
+}
+
+func (r *probeFakeShipRepo) ClaimShip(_ context.Context, shipSymbol, containerID string, _ shared.PlayerID, _ string) error {
+	if r.claimErr != nil {
+		return r.claimErr
+	}
+	if r.claims == nil {
+		r.claims = map[string]string{}
+	}
+	if owner, ok := r.claims[shipSymbol]; ok && owner != containerID {
+		return shared.NewShipAlreadyAssignedError(shipSymbol, owner) // already driven by another relay
+	}
+	r.claims[shipSymbol] = containerID
+	if r.events != nil {
+		*r.events = append(*r.events, "claim:"+shipSymbol+":"+containerID)
+	}
+	return nil
+}
+
+func (r *probeFakeShipRepo) ReleaseContainerClaim(_ context.Context, shipSymbol string, _ shared.PlayerID, _ string) (bool, error) {
+	_, held := r.claims[shipSymbol]
+	delete(r.claims, shipSymbol)
+	if r.events != nil {
+		*r.events = append(*r.events, "release:"+shipSymbol)
+	}
+	return held, nil
 }
 
 // probeFakeYardFinder is the ReachableYardFinder double: it returns the scanned

@@ -31,6 +31,23 @@ import (
 // the coordinator's own constant.
 const probeShipType = "SHIP_PROBE"
 
+const (
+	// probeBuyClaimOperation is the fleet label the buyer-relay journey claim (sp-1bme8) records on
+	// ClaimShip. The buyer is always an UNDEDICATED hull (eligibleBuyers / resolveInPlaceBuy filter
+	// DedicatedFleet != ""), so ClaimShip's dedication guard is a no-op for it; the label is for
+	// observability of who holds the hull.
+	probeBuyClaimOperation = "probe_buy"
+
+	// defaultProbeBuyClaimOwner owns the journey claim when the caller passes no
+	// ClaimOwnerContainerID, so the exclusive single-writer claim (RULINGS #3) is NEVER silently
+	// skipped. The daemon's boot-time ReleaseAllActive frees a claim under ANY owner, so restart
+	// cleanup (RULINGS #2) never depends on this value.
+	defaultProbeBuyClaimOwner = "probe_buy_relay"
+
+	// probeBuyClaimReleaseReason labels the claim release for the audit trail.
+	probeBuyClaimReleaseReason = "probe_buy_relay_complete"
+)
+
 // ---- TreasuryReader --------------------------------------------------------
 
 // TreasuryReader reads the player's live treasury from the API for the 25% money guard.
@@ -153,6 +170,20 @@ func (p *ProbePurchaser) BuyProbe(ctx context.Context, playerID shared.PlayerID,
 		return 0, "", err
 	}
 
+	// RULINGS #3 single-writer: hold an EXCLUSIVE journey claim on the buyer for the WHOLE
+	// source→yard reposition, so the OTHER probe-buyer coordinator can never grab this same idle hull
+	// mid-relay and desync the no-reload multi-hop jump into a physically-impossible self-jump
+	// (sp-1bme8). The claim is the atomic, row-locked ShipRepository primitive — a lost race fails the
+	// buy CLOSED (RULINGS #4 safe: no concurrent second driver, no bad spend). Released on EVERY exit
+	// below; a claim stranded by a crash is freed by the daemon's boot-time ReleaseAllActive (RULINGS
+	// #2 restart-idempotent). Once the journey holds this real claim, the gate-crosser's existing
+	// SkipClaim hops trust a claim that now genuinely exists.
+	releaseClaim, err := p.claimBuyer(ctx, playerID, plan.buyer, target.ClaimOwnerContainerID)
+	if err != nil {
+		return 0, "", err
+	}
+	defer releaseClaim()
+
 	price := plan.price
 	if plan.relay { // demand-proximal plan: relay the resolved buyer to the yard, then re-price at the dock
 		price, err = p.relayAndRecheck(ctx, playerID, plan)
@@ -185,6 +216,31 @@ func (p *ProbePurchaser) BuyProbe(ctx context.Context, playerID shared.PlayerID,
 		return 0, "", fmt.Errorf("yard delivered %q, not %q", r.ShipType, probeShipType)
 	}
 	return r.PurchasePrice, r.Ship.ShipSymbol(), nil
+}
+
+// claimBuyer takes the EXCLUSIVE, atomic single-writer claim on the buyer hull for the whole
+// probe-buy journey (RULINGS #3, sp-1bme8) and returns a release closure that is always safe to
+// defer — the underlying ReleaseContainerClaim is idempotent (a no-op on an already-idle hull). A
+// lost claim race surfaces as an error so BuyProbe fails CLOSED, never a concurrent second driver.
+// owner defaults to a well-known label so the claim is taken even when the caller wires no container
+// id (the exclusivity never silently degrades). The claim reuses the SAME row-locked
+// ShipRepository primitive every coordinator claims work through — no new table or mechanism.
+func (p *ProbePurchaser) claimBuyer(ctx context.Context, playerID shared.PlayerID, buyer, owner string) (func(), error) {
+	if owner == "" {
+		owner = defaultProbeBuyClaimOwner
+	}
+	if err := p.shipRepo.ClaimShip(ctx, buyer, owner, playerID, probeBuyClaimOperation); err != nil {
+		return nil, fmt.Errorf("probe buyer %s claim failed (fail-closed, no concurrent driver): %w", buyer, err)
+	}
+	return func() {
+		if _, err := p.shipRepo.ReleaseContainerClaim(ctx, buyer, playerID, probeBuyClaimReleaseReason); err != nil {
+			common.LoggerFromContext(ctx).Log("WARN", "probe buyer journey claim release failed (boot ReleaseAllActive is the backstop)", map[string]interface{}{
+				"action":      "probe_buy_claim_release",
+				"ship_symbol": buyer,
+				"error":       err.Error(),
+			})
+		}
+	}, nil
 }
 
 // resolveProbeBuy picks the buy yard: the demand-proximal scanned yard nearest the target when one
