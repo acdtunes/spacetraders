@@ -380,6 +380,15 @@ type GateGraph interface {
 	// every other strict caller keeps MaxJumpPath via Path. Consumed solely by
 	// RepositionToWaypointStrictWithinJumps.
 	PathWithinJumps(ctx context.Context, fromSystem, toSystem string, playerID, maxJumps int) ([]string, error)
+	// PathWithinJumpsStoredThenVerify is the LONG-HAUL reposition resolver (sp-0o9ub): it PLANS the
+	// shortest route over the persisted stored adjacency (like RepositionPath — no fetch-through, no
+	// per-edge construction probe) and VERIFIES construction on ONLY the chosen path's gates. It is
+	// the latency fix for the ~20-min cold-cache stall PathWithinJumps caused by probing construction
+	// per-edge across the WHOLE bound-25 frontier. A gate on the chosen path that is under construction
+	// or unreadable ends the plan in ErrUnroutable (skip this lane, no jump-time loop), never a
+	// route-around. Consumed solely by RepositionToWaypointStoredThenVerifyWithinJumps; every other
+	// caller (tour/manual/arb via Path, the strict long-haul via PathWithinJumps) is untouched.
+	PathWithinJumpsStoredThenVerify(ctx context.Context, fromSystem, toSystem string, playerID, maxJumps int) ([]string, error)
 	// RepositionPath resolves a route over the PERSISTED stored adjacency (no fetch-
 	// through) bounded to maxJumps, routing PAST an unreadable frontier gate rather than
 	// dead-ending on it — the REPOSITION class (movement of a hull, not a commitment of

@@ -681,6 +681,81 @@ func (s *Service) RepositionPath(ctx context.Context, fromSystem, toSystem strin
 	})
 }
 
+// PathWithinJumpsStoredThenVerify is the "plan cheap, verify the chosen path" resolver for the
+// long-haul heavy reposition to a FAR source (sp-0o9ub). It is the latency fix for the residual
+// ~20-min cold-cache stall the STRICT PathWithinJumps left: that resolver probes construction with a
+// live GetWaypoint PER EDGE across the WHOLE bound-25 BFS frontier, hundreds of probes on a cold
+// cache. This resolver instead:
+//
+//  1. PLANS the shortest route over the PERSISTED stored adjacency via RepositionPath — a pure store
+//     read, NO fetch-through, NO per-edge probe. Long-haul targets are CHARTED (discovery ranks over
+//     stored adjacency post-sp-yginc), so the sp-qxa4 "unreadable frontier" concern that made
+//     sp-e059j pick the strict resolver does not apply here.
+//  2. VERIFIES construction on ONLY the CHOSEN path's gates — a handful of GetWaypoint calls
+//     (reusing gateUnderConstruction, which fails CLOSED: an unreadable gate reads as under
+//     construction). This closes the one trap a pure stored-adjacency swap would open: RepositionPath
+//     routes over a stored edge whose gate has SINCE gone under construction, planning succeeds, and
+//     the jump then fails at hop time — a failure sp-e059j's planning-time reachability fallback
+//     (which triggers on ErrUnroutable) would NOT catch, so the hull could LOOP on that gate.
+//
+// A bad gate on the chosen path (under construction, or unreadable → fail closed) ends the PLAN in
+// ErrUnroutable, so the episode's reachability fallback skips this lane to the next reachable one —
+// it deliberately does NOT route AROUND the bad gate to a longer alternate (skipping the LANE is the
+// point). A clean path flies; jump_ship.go's source/destination construction checks and the live
+// jump API remain the authoritative fail-closed backstop at hop time regardless of this plan.
+//
+// It reuses RepositionPath (the plan), gateUnderConstruction (the verify), bfsPath (via
+// RepositionPath), and ErrUnroutable; it never fetches through, so the strict Path/PathWithinJumps
+// used by tour/manual/arb at MaxJumpPath=5 are untouched. maxJumps <= 0 degrades to MaxJumpPath via
+// RepositionPath's own fallback.
+func (s *Service) PathWithinJumpsStoredThenVerify(ctx context.Context, fromSystem, toSystem string, playerID, maxJumps int) ([]string, error) {
+	// PLAN over the stored adjacency (no probe). An unroutable/store-error verdict propagates
+	// verbatim — fail closed, and no chosen path means nothing to verify (zero probes).
+	path, err := s.RepositionPath(ctx, fromSystem, toSystem, maxJumps)
+	if err != nil {
+		return nil, err
+	}
+	if len(path) <= 1 {
+		return path, nil // same-system / zero-hop plan: no gate to jump into, nothing to verify
+	}
+
+	token, err := s.token(ctx, playerID)
+	if err != nil {
+		return nil, err
+	}
+	// Re-read the stored adjacency to resolve each chosen hop's gate waypoint (the neighbor edge
+	// carries it). A pure store read — the same source RepositionPath just planned from — so the
+	// chosen edges are guaranteed present; a store failure fails CLOSED.
+	adjacency, err := s.store.Adjacency(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("reposition verify: read stored adjacency for %s→%s: %w", fromSystem, toSystem, err)
+	}
+
+	logger := logging.LoggerFromContext(ctx)
+	for i := 0; i < len(path)-1; i++ {
+		gateWaypoint, ok := gateWaypointForHop(adjacency, path[i], path[i+1])
+		// A missing edge (an adjacency that shifted under the plan) OR a live probe reporting the
+		// gate under construction / unreadable both fail the plan closed: skip this lane, no loop.
+		if !ok || s.gateUnderConstruction(ctx, path[i+1], gateWaypoint, token, logger) {
+			return nil, fmt.Errorf("%w from %s to %s: gate into %s is under construction or unreadable (verified on the chosen path)", ErrUnroutable, fromSystem, toSystem, path[i+1])
+		}
+	}
+	return path, nil
+}
+
+// gateWaypointForHop finds the stored gate waypoint of the hop fromSystem→toSystem — the connected
+// gate the jump lands on, carried on fromSystem's neighbor edge. Reports ok=false when no such edge
+// is stored (a route resolved against an adjacency that has since shifted), so the caller fails
+// closed rather than probe a guessed waypoint.
+func gateWaypointForHop(adjacency map[string][]system.GateEdge, fromSystem, toSystem string) (string, bool) {
+	for _, e := range adjacency[fromSystem] {
+		if e.ConnectedSystem == toSystem {
+			return e.GateWaypoint, true
+		}
+	}
+	return "", false
+}
+
 // Routable reports whether a route from→to exists. A DEFINITIVE unroutable
 // verdict is (false, nil) — the caller refuses the spend but this is not an
 // operational error; a store/fetch failure surfaces as (false, err) so the

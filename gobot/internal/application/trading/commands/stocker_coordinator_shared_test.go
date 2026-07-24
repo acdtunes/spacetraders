@@ -41,6 +41,12 @@ func (g *fakeHopGraph) PathWithinJumps(ctx context.Context, from, to string, pla
 	return g.Path(ctx, from, to, playerID)
 }
 
+// PathWithinJumpsStoredThenVerify mirrors Path — it exists only to satisfy the GateGraph interface
+// (sp-0o9ub); the stocker coordinator never routes the long-haul stored-then-verify reposition.
+func (g *fakeHopGraph) PathWithinJumpsStoredThenVerify(ctx context.Context, from, to string, playerID, _ int) ([]string, error) {
+	return g.Path(ctx, from, to, playerID)
+}
+
 func (g *fakeHopGraph) Routable(_ context.Context, from, to string, _ int) (bool, error) {
 	_, ok := g.hops[from+"->"+to]
 	return ok, nil

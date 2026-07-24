@@ -257,23 +257,26 @@ func TestLongHaulWorker_NonUnroutableRepositionError_FailsEpisodeWithoutFallingT
 	require.Equal(t, []string{"X1-FARSRC-A1"}, repo.moves, "stops at the transient failure — must NOT fall through to the next lane")
 }
 
-// sp-e059j THE HEADLINE: a long-haul worker whose top-$/hr lane's SOURCE is 7 gate-hops away must
-// REACH it (strict, large bound) and run the OUT leg. Pre-fix the reposition (strict MaxJumpPath=5)
-// failed "within 5 jumps" every cycle and the engine captured zero value. Wired through the REAL
-// long-haul reposition adapter (longHaulReposition) over the shared travel machinery, so this proves
-// the isolated large bound is applied end-to-end. The gate graph makes BOTH the default-cap strict
-// Path AND the RELAXED RepositionPath error, so a run OUT leg can only mean the strict large-bound
-// resolver reached the far source.
-func TestLongHaulWorker_FarMultiHopSource_ReachesViaStrictLargeBound_RunsOutLeg(t *testing.T) {
+// sp-0o9ub THE HEADLINE (extends sp-e059j): a long-haul worker whose top-$/hr lane's SOURCE is 7
+// gate-hops away must REACH it and run the OUT leg — now via the CHEAP "plan over stored adjacency,
+// verify only the chosen path" resolver (the latency fix) rather than the strict whole-frontier
+// per-edge probe. Wired through the REAL long-haul reposition adapter (longHaulReposition) over the
+// shared travel machinery, so this proves the resolver switch is applied end-to-end at the isolated
+// large bound. The gate graph makes the default-cap strict Path, the STRICT PathWithinJumps, AND the
+// RELAXED RepositionPath all error, so a run OUT leg can ONLY mean the stored-then-verify resolver
+// reached the far source.
+func TestLongHaulWorker_FarMultiHopSource_ReachesViaStoredThenVerify_RunsOutLeg(t *testing.T) {
 	flying := newTravelShipAtGate(t, "LH-1", "X1-A-GATE") // the flying hull starts on the source-region gate
-	onSource := newTravelShipAt(t, "LH-1", "X1-H-SRC")    // 7 strict hops later it lands ON the lane source
+	onSource := newTravelShipAt(t, "LH-1", "X1-H-SRC")    // 7 hops later it lands ON the lane source
 	mediator := &travelMediator{jumpResp: &navCmd.JumpShipResponse{Success: true, CooldownSeconds: 60}}
 	trHandler := NewRunTradeRouteCoordinatorHandler(mediator, &travelShipRepo{ship: flying, reloadShip: onSource}, nil, nil, &travelFakeClock{}, nil)
-	trHandler.SetGateGraph(&fakeGateGraph{
-		pathWithinResult:  []string{"X1-A", "X1-B", "X1-C", "X1-D", "X1-E", "X1-F", "X1-G", "X1-H"}, // 7 strict jumps to the source system
-		pathErr:           errors.New("no jump-gate route from X1-A to X1-H within 5 jumps"),        // the pre-fix 5-cap failure
-		repositionPathErr: errors.New("a heavy long-haul reposition must not use the RELAXED resolver"),
-	})
+	fake := &fakeGateGraph{
+		storedThenVerifyResult: []string{"X1-A", "X1-B", "X1-C", "X1-D", "X1-E", "X1-F", "X1-G", "X1-H"}, // 7 jumps via the cheap stored-then-verify resolver
+		pathErr:                errors.New("no jump-gate route from X1-A to X1-H within 5 jumps"),        // the pre-fix 5-cap failure (strict Path)
+		pathWithinErr:          errors.New("the long-haul reposition must not use the STRICT fetch-through resolver (sp-0o9ub)"),
+		repositionPathErr:      errors.New("a heavy long-haul reposition must not use the RELAXED resolver"),
+	}
+	trHandler.SetGateGraph(fake)
 
 	hull := longHaulHull(t, "LH-1", longHaulFleet, "HAULER", 60) // empty, for the worker's hold sizing
 	legs := &fakeLegExecutor{}
@@ -284,16 +287,20 @@ func TestLongHaulWorker_FarMultiHopSource_ReachesViaStrictLargeBound_RunsOutLeg(
 		&fakeShipLoader{ship: hull},
 		&fakeLaneDiscoverer{lanes: lanes},
 		legs,
-		longHaulReposition{inner: trHandler}, // the REAL long-haul adapter — strict resolver, large isolated bound
+		longHaulReposition{inner: trHandler}, // the REAL long-haul adapter — stored-then-verify resolver, large isolated bound
 		&fakeTreasuryReader{balance: 50_000_000},
 	)
 
 	didWork, err := worker.runEpisode(tradeCtx(&tradeCaptureLogger{}), workerCmd())
 
-	require.NoError(t, err, "the far source must be reachable via the strict large bound — no 'within 5 jumps' failure")
+	require.NoError(t, err, "the far source must be reachable via the stored-then-verify resolver — no 'within 5 jumps' failure")
 	require.True(t, didWork)
 	require.Equal(t, []string{"EXOTIC_MATTER"}, legs.legGoods(), "the OUT leg fires once the far source is reached")
-	require.Equal(t, 7, len(mediator.jumps), "the hull flew the 7-hop strict route to the far source")
+	require.Equal(t, 7, len(mediator.jumps), "the hull flew the 7-hop stored-then-verify route to the far source")
+	// The isolated large bound reached the NEW resolver, and neither the strict nor relaxed resolver was used.
+	require.Equal(t, longHaulRepositionJumps, fake.storedThenVerifyBound, "the long-haul bound must drive the stored-then-verify resolver")
+	require.Equal(t, 0, fake.pathWithinBound, "the strict PathWithinJumps must NOT be consulted for the long-haul reposition")
+	require.Equal(t, 0, fake.repositionBound, "the RELAXED RepositionPath must NOT be consulted for the long-haul reposition")
 }
 
 // sp-e059j (backhaul symmetry): the opportunistic backhaul applies the SAME reachability fallback as

@@ -552,6 +552,16 @@ type fakeGateGraph struct {
 	pathWithinErr    error
 	pathWithinBound  int
 
+	// storedThenVerifyResult / storedThenVerifyErr, when set, are what PathWithinJumpsStoredThenVerify
+	// returns — the LONG-HAUL "plan cheap over stored adjacency, verify only the chosen path" resolver
+	// (sp-0o9ub); unset, it mirrors Path. storedThenVerifyBound records the last maxJumps it was called
+	// with, so a test can assert the long-haul bound reached the NEW resolver — and, by pathWithinBound
+	// AND repositionBound both staying 0, that neither the strict PathWithinJumps nor the RELAXED
+	// RepositionPath was consulted for the long-haul reposition.
+	storedThenVerifyResult []string
+	storedThenVerifyErr    error
+	storedThenVerifyBound  int
+
 	// chartPresentCalls records every ChartPresentGate(systemSymbol) call IN ORDER (sp-bcsu),
 	// so a test can assert travel() charted the gate of each system the hull arrived on (and
 	// in what sequence). chartPresentShips records the shipSymbol threaded on each call (sp-lv2n)
@@ -579,6 +589,14 @@ func (f *fakeGateGraph) PathWithinJumps(ctx context.Context, from, to string, pl
 	f.pathWithinBound = maxJumps
 	if f.pathWithinResult != nil || f.pathWithinErr != nil {
 		return f.pathWithinResult, f.pathWithinErr
+	}
+	return f.path, f.pathErr
+}
+
+func (f *fakeGateGraph) PathWithinJumpsStoredThenVerify(ctx context.Context, from, to string, playerID, maxJumps int) ([]string, error) {
+	f.storedThenVerifyBound = maxJumps
+	if f.storedThenVerifyResult != nil || f.storedThenVerifyErr != nil {
+		return f.storedThenVerifyResult, f.storedThenVerifyErr
 	}
 	return f.path, f.pathErr
 }
@@ -894,8 +912,8 @@ func TestJumpPath_BoundsSelectStrictRelaxedAndStrictBoundedResolvers(t *testing.
 	}
 	h := &RunTradeRouteCoordinatorHandler{gateGraph: fake}
 
-	// (0,0): strict Path — and NEITHER bounded resolver is consulted (ISOLATION).
-	strict, err := h.jumpPath(context.Background(), "X1-A", "X1-Z", 1, 0, 0)
+	// (0,0,0): strict Path — and NO bounded resolver is consulted (ISOLATION).
+	strict, err := h.jumpPath(context.Background(), "X1-A", "X1-Z", 1, 0, 0, 0)
 	if err != nil {
 		t.Fatalf("strict jumpPath errored: %v", err)
 	}
@@ -907,7 +925,7 @@ func TestJumpPath_BoundsSelectStrictRelaxedAndStrictBoundedResolvers(t *testing.
 	}
 
 	// Positive RELAXED bound → RepositionPath (probe/scout, routes past unreadable gates).
-	relaxed, err := h.jumpPath(context.Background(), "X1-A", "X1-Z", 1, 9, 0)
+	relaxed, err := h.jumpPath(context.Background(), "X1-A", "X1-Z", 1, 9, 0, 0)
 	if err != nil {
 		t.Fatalf("reposition jumpPath errored: %v", err)
 	}
@@ -921,7 +939,7 @@ func TestJumpPath_BoundsSelectStrictRelaxedAndStrictBoundedResolvers(t *testing.
 	// Positive STRICT bound → PathWithinJumps at that bound (long-haul heavy reach). It must NOT
 	// use the RELAXED RepositionPath — a laden heavy never routes past an unreadable frontier gate.
 	fake.repositionBound = 0
-	strictBounded, err := h.jumpPath(context.Background(), "X1-A", "X1-Z", 1, 0, 25)
+	strictBounded, err := h.jumpPath(context.Background(), "X1-A", "X1-Z", 1, 0, 25, 0)
 	if err != nil {
 		t.Fatalf("strict-bounded jumpPath errored: %v", err)
 	}
@@ -933,6 +951,38 @@ func TestJumpPath_BoundsSelectStrictRelaxedAndStrictBoundedResolvers(t *testing.
 	}
 	if fake.repositionBound != 0 {
 		t.Fatalf("a strict-bounded reposition must NEVER use the RELAXED RepositionPath, but it did (bound %d)", fake.repositionBound)
+	}
+}
+
+// sp-0o9ub: a positive storedVerify bound routes jumpPath through the LONG-HAUL "plan cheap over
+// stored adjacency, verify only the chosen path" resolver (PathWithinJumpsStoredThenVerify) at that
+// bound — and consults NEITHER the strict PathWithinJumps NOR the RELAXED RepositionPath (ISOLATION:
+// the long-haul latency fix does not disturb the other resolver modes).
+func TestJumpPath_StoredVerifyBound_SelectsStoredThenVerifyResolver(t *testing.T) {
+	fake := &fakeGateGraph{
+		path:                   []string{"X1-A", "X1-B"},                                                 // strict Path result (must NOT be used)
+		repositionPath:         []string{"X1-A", "X1-M", "X1-Z"},                                         // RELAXED result (must NOT be used)
+		pathWithinResult:       []string{"X1-A", "X1-P", "X1-Z"},                                         // STRICT large-bound result (must NOT be used)
+		storedThenVerifyResult: []string{"X1-A", "X1-B", "X1-C", "X1-D", "X1-E", "X1-F", "X1-G", "X1-Z"}, // the long-haul resolver result
+	}
+	h := &RunTradeRouteCoordinatorHandler{gateGraph: fake}
+
+	got, err := h.jumpPath(context.Background(), "X1-A", "X1-Z", 1, 0, 0, 25)
+	if err != nil {
+		t.Fatalf("stored-verify jumpPath errored: %v", err)
+	}
+	if !reflect.DeepEqual(got, fake.storedThenVerifyResult) {
+		t.Fatalf("a positive storedVerify bound must use PathWithinJumpsStoredThenVerify %v, got %v", fake.storedThenVerifyResult, got)
+	}
+	if fake.storedThenVerifyBound != 25 {
+		t.Fatalf("the storedVerify bound must reach PathWithinJumpsStoredThenVerify, got %d", fake.storedThenVerifyBound)
+	}
+	// ISOLATION: neither the strict nor the relaxed resolver was consulted.
+	if fake.pathWithinBound != 0 {
+		t.Fatalf("the long-haul stored-verify reposition must NOT consult the strict PathWithinJumps, got bound %d", fake.pathWithinBound)
+	}
+	if fake.repositionBound != 0 {
+		t.Fatalf("the long-haul stored-verify reposition must NOT consult the RELAXED RepositionPath, got bound %d", fake.repositionBound)
 	}
 }
 

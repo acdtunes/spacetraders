@@ -1441,3 +1441,178 @@ func TestService_ChartPresentGate_UnchartedGate_BypassesPreconditionAndFetches(t
 		t.Fatalf("expected the edge to X1-NBR, got %v", edges)
 	}
 }
+
+// --- sp-0o9ub: PathWithinJumpsStoredThenVerify (plan cheap over stored adjacency, verify only the chosen path) ---
+
+// verifyStore backs the stored-then-verify tests. It serves ONE topology to BOTH resolvers so a
+// single test can contrast them: Adjacency() returns the full persisted topology (the cheap
+// RepositionPath plan + the chosen-path gate-waypoint lookup), while Edges() MISSES and
+// GateWaypointOf resolves each system's own gate — forcing the STRICT PathWithinJumps control to
+// fetch-through and probe the WHOLE frontier (the ~20-min cold-cache bug this fix removes). The
+// negative-result backoff is a no-op: every gate here is readable. The stored-then-verify resolver
+// itself must never touch Edges/GateWaypointOf/UnreadableState — a store-only plan plus a
+// path-only verify.
+type verifyStore struct {
+	adjacency map[string][]system.GateEdge
+	adjErr    error
+}
+
+func (v *verifyStore) Adjacency(ctx context.Context) (map[string][]system.GateEdge, error) {
+	return v.adjacency, v.adjErr
+}
+func (v *verifyStore) Edges(ctx context.Context, s string) ([]system.GateEdge, bool, error) {
+	return nil, false, nil // MISS → the strict control fetches through; my resolver never reads Edges
+}
+func (v *verifyStore) GateWaypointOf(ctx context.Context, s string) (string, bool, error) {
+	return s + "-GATE", true, nil
+}
+func (v *verifyStore) Replace(ctx context.Context, s string, e []system.GateEdge) error { return nil }
+func (v *verifyStore) UnreadableState(ctx context.Context, s string) (int, time.Time, bool, error) {
+	return 0, time.Time{}, false, nil
+}
+func (v *verifyStore) MarkUnreadable(ctx context.Context, s, gate string, now time.Time) (int, error) {
+	return 0, nil
+}
+
+// countingGateAPI counts GetWaypoint (the per-gate CONSTRUCTION probe) calls — the exact cost the
+// stored-then-verify fix drives down. GetJumpGate serves each system's connection gate waypoints
+// (derived from the adjacency) so the STRICT control can fetch-through; GetWaypoint returns each
+// gate's live construction/read state and increments the probe counter, so a test measures probes
+// directly rather than inferring them.
+type countingGateAPI struct {
+	adjacency         map[string][]system.GateEdge
+	underConstruction map[string]bool
+	waypointErr       map[string]error
+	getWaypointCalls  int
+}
+
+func (c *countingGateAPI) GetJumpGate(ctx context.Context, sys, wp, tok string) (*ports.JumpGateData, error) {
+	conns := make([]string, 0, len(c.adjacency[sys]))
+	for _, e := range c.adjacency[sys] {
+		conns = append(conns, e.GateWaypoint)
+	}
+	return &ports.JumpGateData{Symbol: wp, Connections: conns}, nil
+}
+func (c *countingGateAPI) GetWaypoint(ctx context.Context, sys, wp, tok string) (*ports.WaypointDetail, error) {
+	c.getWaypointCalls++
+	if err := c.waypointErr[wp]; err != nil {
+		return nil, err
+	}
+	return &ports.WaypointDetail{Symbol: wp, IsUnderConstruction: c.underConstruction[wp]}, nil
+}
+func (c *countingGateAPI) CreateChart(ctx context.Context, shipSymbol, token string) error {
+	return nil
+}
+
+// The headline latency fix (sp-0o9ub): the long-haul reposition to a FAR source used the STRICT
+// resolver, which probes construction (a GetWaypoint per edge) across the WHOLE bound-25 BFS
+// frontier on a cold cache — hundreds of probes, ~20 min. PathWithinJumpsStoredThenVerify instead
+// plans the shortest route over the persisted stored adjacency (no probe) and verifies construction
+// on ONLY the chosen path's gates. On a far 6-hop charted route hung with a wide dead-end frontier:
+// the STRICT control probes the frontier (many GetWaypoint calls), while the new resolver probes
+// EXACTLY the 6 chosen-path gates — the SAME route, a fraction of the probes.
+func TestPathWithinJumpsStoredThenVerify_ProbesChosenPathNotFrontier(t *testing.T) {
+	// A→B→C→D→E→F→G is the only route to G (6 hops); each early system ALSO gates to five
+	// dead-end frontier siblings the strict BFS fans out over and probes edge-by-edge.
+	adjacency := map[string][]system.GateEdge{
+		"X1-A": repoEdgesTo("X1-B", "X1-A1", "X1-A2", "X1-A3", "X1-A4", "X1-A5"),
+		"X1-B": repoEdgesTo("X1-C", "X1-B1", "X1-B2", "X1-B3", "X1-B4", "X1-B5"),
+		"X1-C": repoEdgesTo("X1-D", "X1-C1", "X1-C2", "X1-C3", "X1-C4", "X1-C5"),
+		"X1-D": repoEdgesTo("X1-E", "X1-D1", "X1-D2", "X1-D3", "X1-D4", "X1-D5"),
+		"X1-E": repoEdgesTo("X1-F", "X1-E1", "X1-E2", "X1-E3", "X1-E4", "X1-E5"),
+		"X1-F": repoEdgesTo("X1-G"),
+	}
+	want := []string{"X1-A", "X1-B", "X1-C", "X1-D", "X1-E", "X1-F", "X1-G"}
+	ctx := context.Background()
+	// A MockClock keeps the strict control's empty-200 re-read settle (readConnectionsBounded's
+	// gateSyncReadRetryBackoff, hit on every dead-end sibling) instant instead of a real sleep.
+	instant := func() Option { return WithClock(&shared.MockClock{CurrentTime: time.Now()}) }
+
+	// CONTROL: the STRICT resolver fetch-throughs and probes the whole frontier (the cold-cache bug).
+	strictAPI := &countingGateAPI{adjacency: adjacency}
+	strictSvc := NewService(&verifyStore{adjacency: adjacency}, strictAPI, nil, &stubPlayerRepo{token: "tok"}, instant())
+	strictPath, err := strictSvc.PathWithinJumps(ctx, "X1-A", "X1-G", 1, 25)
+	if err != nil {
+		t.Fatalf("strict control must resolve the 6-hop route, got %v", err)
+	}
+	if !reflect.DeepEqual(strictPath, want) {
+		t.Fatalf("strict control route = %v, want %v", strictPath, want)
+	}
+
+	// UNDER TEST: plan over stored adjacency, verify only the chosen path.
+	cheapAPI := &countingGateAPI{adjacency: adjacency}
+	cheapSvc := NewService(&verifyStore{adjacency: adjacency}, cheapAPI, nil, &stubPlayerRepo{token: "tok"}, instant())
+	cheapPath, err := cheapSvc.PathWithinJumpsStoredThenVerify(ctx, "X1-A", "X1-G", 1, 25)
+	if err != nil {
+		t.Fatalf("stored-then-verify must resolve the same 6-hop route, got %v", err)
+	}
+	if !reflect.DeepEqual(cheapPath, want) {
+		t.Fatalf("stored-then-verify route = %v, want %v", cheapPath, want)
+	}
+
+	// The fix: EXACTLY the 6 chosen-path gates are probed (B,C,D,E,F,G), never the frontier.
+	if cheapAPI.getWaypointCalls != len(want)-1 {
+		t.Fatalf("stored-then-verify must probe exactly the %d chosen-path gates, got %d", len(want)-1, cheapAPI.getWaypointCalls)
+	}
+	// The drop: the strict resolver probes the whole frontier — far more than the path length.
+	if strictAPI.getWaypointCalls <= cheapAPI.getWaypointCalls {
+		t.Fatalf("the strict resolver must probe MORE than the chosen path (frontier probing): strict=%d cheap=%d", strictAPI.getWaypointCalls, cheapAPI.getWaypointCalls)
+	}
+}
+
+// No-loop safety (sp-0o9ub): planning cheaply over the STORED adjacency can pick a path whose gate
+// has SINCE gone under construction (a stale stored flag) — or a gate whose live read now fails. The
+// verify step probes each chosen-path gate LIVE and, on a bad gate, returns ErrUnroutable so the
+// episode's reachability fallback skips this lane to the NEXT one (never a jump-time loop). It does
+// NOT silently route around the bad gate to the equal-length clean alternate A→D→C (that is the
+// strict resolver's job; the whole point here is to skip the LANE) — so the alternate stays unflown.
+func TestPathWithinJumpsStoredThenVerify_BadChosenPathGate_Unroutable(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		underConstruction map[string]bool
+		waypointErr       map[string]error
+	}{
+		{"chosen-path gate went under construction (stale stored flag)", map[string]bool{"X1-B-GATE": true}, nil},
+		{"chosen-path gate live read fails (fail closed)", nil, map[string]error{"X1-B-GATE": errors.New("api 500 reading waypoint")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Stored adjacency: shortest route A→B→C (both stored-clean, so RepositionPath picks it),
+			// plus an equal-length clean alternate A→D→C. B's gate is the bad one at verify time.
+			adjacency := map[string][]system.GateEdge{
+				"X1-A": repoEdgesTo("X1-B", "X1-D"), // B first → the stored plan is A→B→C
+				"X1-B": repoEdgesTo("X1-C"),
+				"X1-D": repoEdgesTo("X1-C"),
+			}
+			api := &countingGateAPI{adjacency: adjacency, underConstruction: tc.underConstruction, waypointErr: tc.waypointErr}
+			svc := NewService(&verifyStore{adjacency: adjacency}, api, nil, &stubPlayerRepo{token: "tok"})
+
+			path, err := svc.PathWithinJumpsStoredThenVerify(context.Background(), "X1-A", "X1-C", 1, 25)
+			if !errors.Is(err, ErrUnroutable) {
+				t.Fatalf("a bad gate on the chosen path must be ErrUnroutable (skip the lane, no loop), got path=%v err=%v", path, err)
+			}
+			if path != nil {
+				t.Fatalf("a refused route must return no path, got %v", path)
+			}
+		})
+	}
+}
+
+// When no route exists over the stored adjacency at all, the resolver surfaces RepositionPath's
+// ErrUnroutable verdict WITHOUT probing a single gate — planning failed, so there is no chosen path
+// to verify. (Mutation guard: a resolver that probed before consulting the plan would show calls>0.)
+func TestPathWithinJumpsStoredThenVerify_NoStoredRoute_UnroutableZeroProbes(t *testing.T) {
+	adjacency := map[string][]system.GateEdge{
+		"X1-A": repoEdgesTo("X1-B"),
+		"X1-B": repoEdgesTo("X1-A"), // closed pocket — X1-ZZZ is unreachable
+	}
+	api := &countingGateAPI{adjacency: adjacency}
+	svc := NewService(&verifyStore{adjacency: adjacency}, api, nil, &stubPlayerRepo{token: "tok"})
+
+	path, err := svc.PathWithinJumpsStoredThenVerify(context.Background(), "X1-A", "X1-ZZZ", 1, 25)
+	if !errors.Is(err, ErrUnroutable) {
+		t.Fatalf("an unreachable destination must be ErrUnroutable, got path=%v err=%v", path, err)
+	}
+	if api.getWaypointCalls != 0 {
+		t.Fatalf("no chosen path means no construction probes at all, got %d", api.getWaypointCalls)
+	}
+}
