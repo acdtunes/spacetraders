@@ -1258,8 +1258,18 @@ func run(cfg *config.Config) error {
 	// `workflow long-haul-coordinator` arm) launches the container.
 	longHaulCoordinatorHandler := tradeRouteCmd.NewLongHaulArbFleetCoordinatorHandler(shipRepo, nil) // nil = RealClock
 	longHaulCoordinatorHandler.SetLongHaulLauncher(daemonServer)
-	longHaulCoordinatorHandler.SetTourLiveness(daemonServer)
-	longHaulCoordinatorHandler.SetTourStopper(daemonServer)
+	// sp-mepj — long-haul liveness watchdog DISABLED (Admiral order, 2026-07-23): the strict
+	// multi-hop reposition to far exotic sources legitimately takes far longer than the 12-min
+	// stall threshold (jump cooldowns + fetch-through gate/construction probes across distant,
+	// often-uncharted gates), and the shared sp-m3122 watchdog was killing workers mid-journey
+	// (repeated ~12-36m "no progress" kills) so no haul ever completed. Leaving BOTH ports
+	// unwired makes the watchdog fail-closed inert for long-haul (relaunchHungContainers returns
+	// 0,0 on a nil liveness/stopper — detects nothing, kills nothing). The trade-fleet
+	// coordinator's watchdog (a separate handler with its own SetTourStopper) is UNAFFECTED.
+	// Re-enable by restoring these two lines once the reposition timescale is reconciled with
+	// the stall model.
+	// longHaulCoordinatorHandler.SetTourLiveness(daemonServer)
+	// longHaulCoordinatorHandler.SetTourStopper(daemonServer)
 	longHaulCoordinatorHandler.SetAbsorptionReclaimer(grpc.NewDeadContainerAbsorptionReclaimer(absorptionLedger))
 	if err := mediator.RegisterHandler[*tradeRouteCmd.LongHaulArbFleetCoordinatorCommand](med, longHaulCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register LongHaulArbFleetCoordinator handler: %w", err)
