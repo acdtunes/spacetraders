@@ -140,14 +140,21 @@ const (
 
 // defaultStandingCoordinatorFleets is the sp-jetm exemption list, wired by the
 // supervisor until CaptainConfig grows a tunable field (follow-up bead, mirrors
-// the crash-loop/pinned-hull defaults above). "contract" is the one fleet with a
-// pooling standing coordinator today — CONTRACT_FLEET_COORDINATOR, matching
-// dedicatedFleetContract in run_fleet_coordinator.go. Tour/trade pins are
-// deliberately absent: those hulls run one dedicated container each with no
-// pool, so a containerless tour/trade hull stays exactly the anomaly the
-// watchdog was built to catch.
+// the crash-loop/pinned-hull defaults above). Two fleets pool their hulls under a
+// standing coordinator today:
+//   - "contract" → CONTRACT_FLEET_COORDINATOR, matching dedicatedFleetContract in
+//     run_fleet_coordinator.go.
+//   - "probe-buyer" → PROBE_BUYER_COORDINATOR (sp-f082y): the standing probe-buyer
+//     coordinator dispatches its dedicated buyers directly, WITHOUT a per-hull
+//     container, so a probe-buyer hull is containerless-by-design between buys —
+//     the same pooled shape as contract.
+//
+// Tour/trade pins are deliberately absent: those hulls run one dedicated container
+// each with no pool, so a containerless tour/trade hull stays exactly the anomaly
+// the watchdog was built to catch.
 var defaultStandingCoordinatorFleets = []StandingCoordinatorFleet{
 	{Fleet: "contract", ContainerType: "CONTRACT_FLEET_COORDINATOR"},
+	{Fleet: "probe-buyer", ContainerType: "PROBE_BUYER_COORDINATOR"},
 }
 
 // defaultFactoryIncomeStall is the sp-7vos per-factory window, wired by the

@@ -208,6 +208,38 @@ func TestContainerlessPinnedHull_ContractFleetCoordinatorNotRunning_Fires(t *tes
 	require.Contains(t, events[0].Payload, "contract")
 }
 
+// A probe-buyer-fleet hull (sp-f082y) pooled-idle between yard buys stays silent
+// WHILE the probe-buyer fleet's standing PROBE_BUYER_COORDINATOR has a RUNNING
+// container: that coordinator dispatches its dedicated buyers directly, WITHOUT a
+// per-hull container, so a containerless probe-buyer hull is by design — exactly
+// the contract-fleet case. Asserts against the REAL defaultStandingCoordinatorFleets
+// so the test pins the default exemption list itself (the probe-buyer entry must be
+// present, or the hull fires). Coordinator config deliberately omits the ship symbol:
+// the exemption is fleet-based (DedicatedFleet match), not a per-ship config join.
+func TestContainerlessPinnedHull_ProbeBuyerFleetWithRunningCoordinator_Silent(t *testing.T) {
+	db, playerID, store := setupDB(t)
+	now := time.Now()
+	released := now.Add(-30 * time.Minute)
+	insertDedicatedShip(t, db, playerID, "TORWIND-PB1", "probe-buyer", &released, 0, 0)
+
+	started := now.Add(-2 * time.Hour)
+	require.NoError(t, db.Create(&persistence.ContainerModel{
+		ID: "probe-buyer-coordinator-live", PlayerID: playerID, Status: "RUNNING",
+		ContainerType: "PROBE_BUYER_COORDINATOR",
+		Config:        `{"container_id":"probe-buyer-coordinator-live"}`,
+		StartedAt:     &started,
+	}).Error)
+
+	cfg := DetectorConfig{
+		PlayerID: playerID, PinnedHullContainerless: 5 * time.Minute, ShipIdle: time.Hour,
+		StandingCoordinatorFleets: defaultStandingCoordinatorFleets,
+	}
+	require.NoError(t, detectContainerlessPinnedHulls(context.Background(), db, store, cfg, now))
+
+	require.Empty(t, containerlessEvents(t, store, playerID),
+		"a probe-buyer-fleet hull pooled-idle between buys must stay silent while its standing coordinator runs")
+}
+
 // A tour-pinned hull still fires even when StandingCoordinatorFleets is
 // configured (with "contract") AND a contract coordinator happens to be
 // RUNNING at the same time — the exemption must not leak across fleets
