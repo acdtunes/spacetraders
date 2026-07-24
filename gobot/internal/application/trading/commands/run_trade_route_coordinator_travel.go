@@ -35,6 +35,19 @@ const (
 	// that jitter without ballooning the wait on the much shorter cooldown
 	// timescale.
 	DefaultCooldownMinMargin = 10 * time.Second
+
+	// cooldownHeartbeatInterval bounds the silence during a LONG jump-cooldown wait
+	// (sp-39hjn). waitForJumpCooldown logs once at the start, then — pre-fix — slept the
+	// whole budget in a single blocking call, emitting nothing until the cooldown ended. On
+	// a far sp-tp5c3 tour that gap exceeds the sp-m3122 watchdog's 12-min (720s) stall
+	// threshold, so the log-derived liveness (LatestLogTimestamps, the newest container-log
+	// line) goes stale and a log-derived consumer misreads the parked, legitimately-waiting
+	// hull as hung. Chunking any wait longer than this and logging a heartbeat between the
+	// chunks keeps that signal advancing. Sized ABOVE every ordinary cooldown budget (a 60s
+	// jump -> 75s, a 352s jump -> 440s) so those still wait in a SINGLE sleep — byte-
+	// identical to the pre-fix behavior — and BELOW the 720s watchdog threshold so the
+	// heartbeat always breaks the silence before a false-hang could trip.
+	cooldownHeartbeatInterval = 10 * time.Minute
 )
 
 // calculateCooldownWaitBudget mirrors calculateArrivalWaitBudget's formula
@@ -85,7 +98,38 @@ func (h *RunTradeRouteCoordinatorHandler) waitForJumpCooldown(ctx context.Contex
 		"cooldown_seconds":    cooldownSeconds,
 		"wait_budget_seconds": int(budget.Seconds()),
 	})
-	return h.sleepInterruptibly(ctx, budget)
+	return h.sleepWithCooldownHeartbeat(ctx, budget, logger, cooldownSeconds)
+}
+
+// sleepWithCooldownHeartbeat waits out total ctx-interruptibly, but breaks any wait longer
+// than cooldownHeartbeatInterval into bounded chunks and logs a heartbeat between them, so a
+// long silent jump-cooldown wait keeps the tour's log-derived liveness signal advancing
+// instead of tripping the sp-m3122 watchdog's stall threshold (sp-39hjn). A wait within a
+// single interval sleeps EXACTLY ONCE — byte-identical to the pre-heartbeat single
+// h.sleepInterruptibly(ctx, budget). This is the ONE shared cooldown-wait heartbeat: every
+// fleet whose cross-system travel rides waitForJumpCooldown (trade / arb / long-haul) gets
+// it here, not forked per fleet. Returns ctx.Err() the instant the context is cancelled, so
+// a Stop/shutdown never has to wait a chunk out (the sp-wc5h graceful-exit contract holds).
+func (h *RunTradeRouteCoordinatorHandler) sleepWithCooldownHeartbeat(ctx context.Context, total time.Duration, logger common.ContainerLogger, cooldownSeconds int) error {
+	remaining := total
+	for {
+		chunk := remaining
+		if chunk > cooldownHeartbeatInterval {
+			chunk = cooldownHeartbeatInterval
+		}
+		if werr := h.sleepInterruptibly(ctx, chunk); werr != nil {
+			return werr
+		}
+		remaining -= chunk
+		if remaining <= 0 {
+			return nil
+		}
+		logger.Log("INFO", "Still waiting out jump cooldown (heartbeat) — the hull is parked mid-circuit, not hung", map[string]interface{}{
+			"action":              "jump_cooldown_wait_heartbeat",
+			"cooldown_seconds":    cooldownSeconds,
+			"remaining_wait_secs": int(remaining.Seconds()),
+		})
+	}
 }
 
 // sleepInterruptibly blocks for d via the handler's injected clock (instant

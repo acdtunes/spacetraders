@@ -358,6 +358,93 @@ func TestTradeWatchdog_AfterKill_ReclaimsDeadContainerAbsorption(t *testing.T) {
 	require.Equal(t, 1, reclaimer.calls, "killing a hung tour triggers a prompt dead-container absorption reclaim")
 }
 
+// ---- sp-39hjn: cooldown-aware liveness -------------------------------------
+
+// cooldownRunningTradeHull models a RUNNING (container-claimed) trade hull that has
+// finished its jump and is now PARKED (IN_ORBIT) waiting out the game jump cooldown — the
+// sp-tp5c3 far-tour case: the jump COMPLETED (so the hull is NOT IN_TRANSIT) but it is
+// legitimately idle until the cooldown clears, emitting no tour-progress log meanwhile.
+func cooldownRunningTradeHull(t *testing.T, symbol string, cooldownExpiry time.Time) *navigation.Ship {
+	t.Helper()
+	ship := runningTradeHull(t, symbol)
+	ship.SetCooldown(cooldownExpiry)
+	return ship
+}
+
+// (B6, sp-39hjn HEADLINE) A RUNNING trade hull parked (IN_ORBIT) waiting out a STILL-ACTIVE
+// jump cooldown is NOT hung — it is legitimately idle until the game timer clears. Even
+// though its last tour-progress log predates the stall threshold (a far sp-tp5c3 tour's
+// multi-minute cooldown is a silent log gap), the watchdog keys on the hull's OWN cooldown
+// state and skips it: no kill, no relaunch. This is the false-kill that orphaned the hull's
+// reserved-but-unexecuted sells and thrashed the trade fleet.
+func TestTradeWatchdog_ParkedOnActiveCooldown_NotKilled(t *testing.T) {
+	now := nowAfterBase(1000) // now = baseTime + 1000s
+	// Cooldown expires 600s in the FUTURE — the hull is genuinely mid-cooldown.
+	cooling := cooldownRunningTradeHull(t, "TORWIND-61", baseTime.Add(1600*time.Second))
+	repo := &fakeTradeShipRepo{ships: []*navigation.Ship{cooling}}
+	liveness := &fakeTourLiveness{progress: map[string]time.Time{
+		liveContainer("TORWIND-61"): baseTime, // 1000s of "silence" >> 720s threshold — but it is cooling down
+	}}
+	stopper := &fakeTourStopper{}
+	launcher := &fakeTourLauncher{}
+	logger := &tradeCaptureLogger{}
+
+	h := NewRunTradeFleetCoordinatorHandler(repo, now)
+	h.SetTourLauncher(launcher)
+	h.SetTourLiveness(liveness)
+	h.SetTourStopper(stopper)
+
+	launched, err := h.reconcileOnce(tradeCtx(logger), watchdogCmd())
+
+	require.NoError(t, err)
+	require.Empty(t, stopper.stopped, "a hull waiting out an active jump cooldown must never be killed")
+	require.Empty(t, launcher.launches)
+	require.Equal(t, 0, launched)
+}
+
+// (B7, sp-39hjn REGRESSION GUARD) Cooldown-awareness must NOT blunt genuine hang detection:
+// a PARKED hull whose cooldown has already EXPIRED (a stale past timestamp) or that has NO
+// cooldown at all, silent past the stall threshold, is STILL hung and STILL killed —
+// byte-identical to pre-sp-39hjn behavior. Only a FUTURE (active) cooldown protects a hull.
+func TestTradeWatchdog_ParkedCooldownExpiredOrNone_StillKilled(t *testing.T) {
+	cases := []struct {
+		name        string
+		setCooldown bool
+		expiry      time.Time
+	}{
+		{name: "cooldown already expired (past)", setCooldown: true, expiry: baseTime.Add(500 * time.Second)}, // 500s < now(1000s) -> expired
+		{name: "no cooldown at all", setCooldown: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			now := nowAfterBase(1000)
+			hung := runningTradeHull(t, "TORWIND-63")
+			if tc.setCooldown {
+				hung.SetCooldown(tc.expiry)
+			}
+			repo := &fakeTradeShipRepo{ships: []*navigation.Ship{hung}}
+			liveness := &fakeTourLiveness{progress: map[string]time.Time{
+				liveContainer("TORWIND-63"): baseTime, // 1000s silent >> 720s
+			}}
+			stopper := &fakeTourStopper{}
+			launcher := &fakeTourLauncher{}
+			logger := &tradeCaptureLogger{}
+
+			h := NewRunTradeFleetCoordinatorHandler(repo, now)
+			h.SetTourLauncher(launcher)
+			h.SetTourLiveness(liveness)
+			h.SetTourStopper(stopper)
+
+			launched, err := h.reconcileOnce(tradeCtx(logger), watchdogCmd())
+
+			require.NoError(t, err)
+			require.Equal(t, []string{liveContainer("TORWIND-63")}, stopper.stopped, "a hull with no ACTIVE cooldown, silent past the threshold, is still hung and must be killed")
+			require.Equal(t, []string{"TORWIND-63"}, launcher.launchedSymbols())
+			require.Equal(t, 1, launched)
+		})
+	}
+}
+
 // ---- threshold knob --------------------------------------------------------
 
 func TestWatchdogStallThreshold_DefaultAndOverride(t *testing.T) {

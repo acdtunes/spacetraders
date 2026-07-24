@@ -509,6 +509,17 @@ func (s *Ship) IsInTransit() bool {
 	return s.navStatus == NavStatusInTransit
 }
 
+// IsOnCooldown reports whether the ship's action cooldown (a jump / reactor timer) has
+// NOT yet expired as of now. A PARKED hull mid-cooldown is legitimately waiting out a game
+// timer — progress, not a hang — so a liveness watchdog must treat it like an IN_TRANSIT
+// hull and never kill it (sp-39hjn: a far sp-tp5c3 tour's multi-minute jump cooldown is a
+// silent log gap the log-derived liveness would otherwise misread as hung). A nil or
+// already-past expiry is NOT on cooldown, so a stale timestamp never falsely shields a
+// genuinely hung hull from the watchdog.
+func (s *Ship) IsOnCooldown(now time.Time) bool {
+	return s.cooldownExpiration != nil && s.cooldownExpiration.After(now)
+}
+
 func (s *Ship) String() string {
 	return fmt.Sprintf("Ship(symbol=%s, location=%s, status=%s, fuel=%s)",
 		s.shipSymbol, s.currentLocation.Symbol, s.navStatus, s.fuel)

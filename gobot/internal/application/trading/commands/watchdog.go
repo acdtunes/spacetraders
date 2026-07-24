@@ -57,12 +57,19 @@ func relaunchHungContainers(
 		return 0, 0
 	}
 
-	// Only PARKED running hulls are watchdog candidates — a hull IN_TRANSIT is on a
-	// legitimately-long leg, which is progress. Gather their container IDs for the read.
+	// Only PARKED-and-idle running hulls are watchdog candidates. Two states are
+	// legitimately-waiting, not hung, and must never be killed even when the log-derived
+	// progress looks old: a hull IN_TRANSIT is on a legitimately-long leg (progress), and a
+	// hull mid-cooldown (IsOnCooldown) is waiting out a game jump/reactor timer it cannot act
+	// through — a far sp-tp5c3 tour's multi-minute cooldown is a silent log gap the watchdog
+	// would otherwise misread as a hang and false-kill (sp-39hjn), orphaning the hull's
+	// reserved-but-unexecuted sells. The cooldown is read from the hull's OWN state, not the
+	// log timestamp; a stale/past cooldown does NOT shield a genuinely hung hull. Gather the
+	// remaining candidates' container IDs for the progress read.
 	parked := make([]*navigation.Ship, 0, len(running))
 	containerIDs := make([]string, 0, len(running))
 	for _, ship := range running {
-		if ship.IsInTransit() {
+		if ship.IsInTransit() || ship.IsOnCooldown(now) {
 			continue
 		}
 		parked = append(parked, ship)
