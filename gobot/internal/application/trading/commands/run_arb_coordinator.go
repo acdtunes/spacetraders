@@ -8,6 +8,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/flowfeed"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/application/system/gategraph"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/absorption"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -74,6 +75,17 @@ type RunArbCoordinatorCommand struct {
 	// reads it back here and reports the true net. It is REPORTING ONLY: no guard reads
 	// it (the spend caps read live state), so it can never gate or resize a buy.
 	PriorAttemptCost int
+	// RoutabilityJumpBound (sp-ry741) is the jump horizon Guard-0's pre-buy delivery
+	// routability check uses. 0 → gategraph.MaxJumpPath (5), so the one-shot arb and every
+	// gRPC/recovery-rebuilt run keep the strict 5-hop veto BYTE-IDENTICAL (this follows the
+	// same "0 → default" knob idiom as MaxUnits/MaxSpend/WorkingCapitalReserve). The
+	// long-haul arb leg (arbCommandForLeg) sets it to longHaulRepositionJumps (25) so Guard-0
+	// admits the far 6–12 hop exotic sinks discovery RANKS and the reposition FLIES to —
+	// aligning the guard horizon with the engine's reach instead of vetoing every lane long-
+	// haul exists to capture. It is a HORIZON, never a spend relaxation: at 25 Guard-0 still
+	// refuses a genuinely-unroutable lane fail-closed (RULINGS #4). Isolated by construction —
+	// only arbCommandForLeg sets it, so it can never reach the shared handler's one-shot runs.
+	RoutabilityJumpBound int
 }
 
 // RunArbCoordinatorResponse reports the realised one-shot economics and, when the run
@@ -497,11 +509,23 @@ func (h *RunArbCoordinatorHandler) guardAndBuy(
 	// the check itself cannot be completed. A same-system lane needs no jump and skips the
 	// check; no gate graph wired skips it too (fail-open on the missing port, matching the
 	// sibling guards' optional-port contract).
+	//
+	// The routability HORIZON is caller-chosen (sp-ry741). Default 0 → gategraph.MaxJumpPath=5,
+	// so the one-shot arb and every gRPC/recovery-rebuilt run keep the strict 5-hop veto
+	// BYTE-IDENTICAL. The long-haul arb leg sets RoutabilityJumpBound=longHaulRepositionJumps(25)
+	// so this check ADMITS the far 6–12 hop exotic sinks discovery ranks and the reposition flies
+	// — the horizon was the whole bug: the bound-5 Routable vetoed every long-haul lane at buy
+	// time, deadheading the hull home empty. Widening the horizon does NOT weaken the fence: at 25
+	// a genuinely-unroutable lane is still refused fail-closed (RULINGS #4).
 	if gateGraph := h.legs.gateGraphResolver(); gateGraph != nil {
 		buySystem := shared.ExtractSystemSymbol(cmd.BuyAt)
 		sellSystem := shared.ExtractSystemSymbol(cmd.SellAt)
 		if buySystem != sellSystem {
-			routable, rerr := gateGraph.Routable(ctx, buySystem, sellSystem, cmd.PlayerID)
+			routabilityBound := cmd.RoutabilityJumpBound
+			if routabilityBound <= 0 {
+				routabilityBound = gategraph.MaxJumpPath
+			}
+			routable, rerr := gateGraph.RoutableWithinJumps(ctx, buySystem, sellSystem, cmd.PlayerID, routabilityBound)
 			if rerr != nil {
 				response.Aborted = true
 				response.RoutabilityAbort = true

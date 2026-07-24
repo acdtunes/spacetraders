@@ -812,15 +812,31 @@ func gateWaypointForHop(adjacency map[string][]system.GateEdge, fromSystem, toSy
 	return "", false
 }
 
-// Routable reports whether a route from→to exists. A DEFINITIVE unroutable
-// verdict is (false, nil) — the caller refuses the spend but this is not an
-// operational error; a store/fetch failure surfaces as (false, err) so the
-// caller fails closed. Same-system is trivially routable.
+// Routable reports whether a route from→to exists within the strict MaxJumpPath=5. A DEFINITIVE
+// unroutable verdict is (false, nil) — the caller refuses the spend but this is not an operational
+// error; a store/fetch failure surfaces as (false, err) so the caller fails closed. Same-system is
+// trivially routable. It delegates to RoutableWithinJumps at MaxJumpPath, so the two are provably
+// one resolver — every existing Routable caller (stocker, trade, one-shot arb Guard-0) is unchanged.
 func (s *Service) Routable(ctx context.Context, fromSystem, toSystem string, playerID int) (bool, error) {
+	return s.RoutableWithinJumps(ctx, fromSystem, toSystem, playerID, MaxJumpPath)
+}
+
+// RoutableWithinJumps is Routable with a CALLER-SUPPLIED jump bound (sp-ry741): the same (bool, error)
+// contract resolved over the SAME strict PathWithinJumps primitive (no forked path logic), just at a
+// deeper reach. It exists for the ONE routability caller that must align its check past MaxJumpPath=5 —
+// the long-haul arb Guard-0, whose sell leg is 6-12 gate hops from its source (the far exotic sinks
+// discovery ranks and the reposition flies; the bound-5 Routable vetoed every one at buy time and the
+// hull deadheaded home empty). A DEFINITIVE unroutable verdict — no path within maxJumps, including a
+// route that required an excluded (unreadable / under-construction) gate — is (false, nil), the clean
+// pre-buy veto; a store/fetch failure is (false, err) so the caller fails CLOSED (RULINGS #4 — this
+// aligns the horizon, it does NOT weaken the fence: at 25 a genuinely unroutable lane is still refused).
+// Same-system is trivially routable. maxJumps <= 0 degrades to MaxJumpPath (inherited from
+// PathWithinJumps' defensive fallback), so a mis-wired caller can never widen the horizon by accident.
+func (s *Service) RoutableWithinJumps(ctx context.Context, fromSystem, toSystem string, playerID, maxJumps int) (bool, error) {
 	if fromSystem == toSystem {
 		return true, nil
 	}
-	_, err := s.Path(ctx, fromSystem, toSystem, playerID)
+	_, err := s.PathWithinJumps(ctx, fromSystem, toSystem, playerID, maxJumps)
 	if errors.Is(err, ErrUnroutable) {
 		return false, nil
 	}

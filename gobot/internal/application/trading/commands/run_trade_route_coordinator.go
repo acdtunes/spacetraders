@@ -407,6 +407,15 @@ type GateGraph interface {
 	// RepositionToWaypointWithinJumps.
 	RepositionPath(ctx context.Context, fromSystem, toSystem string, maxJumps int) ([]string, error)
 	Routable(ctx context.Context, fromSystem, toSystem string, playerID int) (bool, error)
+	// RoutableWithinJumps is Routable with a CALLER-SUPPLIED jump bound (sp-ry741) — the same
+	// (bool, error) verdict, where (false, nil) is a DEFINITIVE unroutable veto and (false, err)
+	// a fail-closed lookup failure, resolved at a deeper horizon than the hardcoded MaxJumpPath=5.
+	// It is the routability twin of PathWithinJumps and shares its strict fetch-through resolver;
+	// the long-haul arb Guard-0 is its ONE caller past bound 5 (its sell leg sits 6-12 gate hops
+	// out — the exotic sinks discovery ranks and the reposition flies — which the bound-5 Routable
+	// vetoed at buy time, deadheading the hull home empty). Routable delegates here at MaxJumpPath,
+	// so every existing routability caller is provably byte-identical.
+	RoutableWithinJumps(ctx context.Context, fromSystem, toSystem string, playerID, maxJumps int) (bool, error)
 	// Connections returns fromSystem's directly-gated neighbor edges from the
 	// persisted era-scoped adjacency (fetch-through on a cache miss/stale). Unlike
 	// the live GetJumpGate scan, this durable read is origin-INDEPENDENT: it answers
