@@ -81,6 +81,21 @@ func TestSourceBuyReserveFloor(t *testing.T) {
 			wantPark:      true,
 		},
 		{
+			// sp-q8bon regression pin: the NON-CONTRACT engines' reserve default rose to
+			// common.NonContractWorkingCapitalFloor (150k) so the 50k–150k band is
+			// contract-EXCLUSIVE — which only works if the contract engine itself keeps
+			// gating on the untouched 50k ImmutableReserveFloor. A source-buy landing
+			// INSIDE the band (100k − 36k = 64k ≥ 50k) must therefore PROCEED; parking it
+			// would mean the contract floor was accidentally raised too, recreating the
+			// full-economy deadlock the band exists to prevent.
+			name:          "contract keeps the 50k floor: a buy landing in the 50k-150k band proceeds (sp-q8bon)",
+			wireFloor:     true,
+			liveCredits:   100_000,
+			unitAsk:       2_000,
+			wantPurchases: 1,
+			wantPark:      false,
+		},
+		{
 			name:          "ample treasury proceeds byte-identical",
 			wireFloor:     true,
 			liveCredits:   10_000_000,

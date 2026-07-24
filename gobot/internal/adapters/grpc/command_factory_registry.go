@@ -1126,7 +1126,8 @@ func buildArbCoordinatorCommand(cfg *configReader, playerID int, containerID str
 // mirroring arb_run/trade_route so the operation context and the runner's ship claim stay
 // pinned across a restart. ship_symbol is required; the guard knobs default to 0 (the
 // coordinator's own "0 → default" semantics: max_hops→6, max_spend→25% of treasury,
-// replan_limit→2, working_capital_reserve→50k). iterations drives the CONTINUOUS-tour
+// replan_limit→2, working_capital_reserve→150k, the non-contract floor per sp-q8bon).
+// iterations drives the CONTINUOUS-tour
 // loop (sp-m5kv): -1 = tour until margins die, N>0 = N tours, 0/absent → the one-tour
 // default (unchanged one-shot behavior). The coordinator owns this loop
 // (CoordinatorOwnsIterations); the container still runs Handle() once. A restart
@@ -1229,8 +1230,9 @@ func buildTourCoordinatorCommand(cfg *configReader, playerID int, containerID st
 // mirroring tour_run so the operation context and the runner's ship claim stay pinned
 // across a restart. ship_symbol + warehouse_waypoint are required (the dedicated hull and
 // the deposit anchor); the caps default to 0 (the coordinator's own "0 → default"
-// semantics: budget_per_leg → no cap, working_capital_reserve → 50k, iterations → one
-// round-trip, max_market_age_minutes → 75, target_per_good → the miner's demand). The
+// semantics: budget_per_leg → no cap, working_capital_reserve → 150k (the non-contract
+// floor, sp-q8bon), iterations → one round-trip, max_market_age_minutes → 75,
+// target_per_good → the miner's demand). The
 // coordinator owns the round-trip loop (CoordinatorOwnsIterations); the container runs
 // Handle() once. A restart re-plans from the hull's current cargo — a laden hull resumes
 // deposit-first, never a blind re-buy (RULINGS #2).

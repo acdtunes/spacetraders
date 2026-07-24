@@ -92,7 +92,8 @@ Examples:
 			defer cancel()
 
 			// Optional knobs: 0 (flag unset) → nil, letting the coordinator apply its own
-			// default per knob (budget_per_leg → no cap, working_capital_reserve → 50k,
+			// default per knob (budget_per_leg → no cap, working_capital_reserve → 150k —
+			// the non-contract floor, sp-q8bon,
 			// max_market_age_minutes → 75, target_per_good → the miner's measured demand,
 			// iterations → one round-trip). --iterations -1 (continuous) is non-zero, so it
 			// maps through to &(-1) and is honored.

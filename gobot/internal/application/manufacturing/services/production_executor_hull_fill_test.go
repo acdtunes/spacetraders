@@ -103,10 +103,15 @@ func (c *sequentialCreditsAPIClient) GetAgent(_ context.Context, _ string) (*pla
 // The money guard is re-checked EACH iteration against live treasury and fails CLOSED under the
 // loop (RULINGS #4): once the NEXT tranche would breach the working-capital reserve the loop stops
 // and delivers what is already aboard — it never forces the buy. Each 10-unit tranche costs 100;
-// the reserve is 50000. Credits 50200 -> 50100 -> 50050: the first two tranches clear (…-100 >=
-// 50000), the third would breach, so the fill stops at 20 units after 2 buys.
+// the reserve is defaultWorkingCapitalReserve (the 150k non-contract floor, sp-q8bon). Credits
+// floor+200 -> floor+100 -> floor+50: the first two tranches clear (…-100 >= floor), the third
+// would breach, so the fill stops at 20 units after 2 buys.
 func TestBuyGood_HullFill_StopsWhenMoneyGuardTrips(t *testing.T) {
-	api := &sequentialCreditsAPIClient{credits: []int{50200, 50100, 50050}}
+	api := &sequentialCreditsAPIClient{credits: []int{
+		defaultWorkingCapitalReserve + 200,
+		defaultWorkingCapitalReserve + 100,
+		defaultWorkingCapitalReserve + 50,
+	}}
 	executor, repo, mediator := newSpendFloorExecutor(t, api)
 	logger := &dwellCapturingLogger{}
 	ctx := common.WithLogger(common.WithPlayerToken(context.Background(), "TOKEN-2ME2"), logger)

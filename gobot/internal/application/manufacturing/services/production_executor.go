@@ -74,14 +74,18 @@ const minOutputSellMarginFactor = 1.0
 // sp-agzj unified this with the fleet's per-run working-capital reserve; sp-05glh then
 // scrapped the proportional/per-run-override apparatus entirely (nothing ever stamped a
 // non-default value in production) — the factory input floor is now simply this flat
-// immutable constant, unconditionally (RULINGS #5).
-const defaultWorkingCapitalReserve = common.ImmutableReserveFloor // sp-zq635: the single immutable source (was a local 50000 dup)
+// immutable constant, unconditionally (RULINGS #5). sp-q8bon raised it from the 50k base
+// to the 150k non-contract floor: margin-blind gate-fill buys dragged the treasury
+// 638k→142k and the contract engine — the sole earner — parked against ITS 50k floor, a
+// full-economy deadlock; the 50k–150k band is now contract-exclusive.
+const defaultWorkingCapitalReserve = common.NonContractWorkingCapitalFloor // sp-q8bon: the non-contract 150k floor (was the 50k base)
 
 // effectiveReserveFloor resolves the working-capital floor to enforce at a factory input
-// buy: the flat, immutable defaultWorkingCapitalReserve (50k), no proportional-of-treasury
-// computation and no per-run override (sp-05glh scrapped both the sp-yqx4 counter-cyclical
-// shrink and the dead sp-agzj ctx-override seam, which no production coordinator ever
-// stamped — the factory's own working-capital config surface was retired with sp-hoj8u).
+// buy: the flat, immutable defaultWorkingCapitalReserve (the 150k non-contract floor), no
+// proportional-of-treasury computation and no per-run override (sp-05glh scrapped both the
+// sp-yqx4 counter-cyclical shrink and the dead sp-agzj ctx-override seam, which no
+// production coordinator ever stamped — the factory's own working-capital config surface
+// was retired with sp-hoj8u).
 func effectiveReserveFloor(ctx context.Context) int {
 	return defaultWorkingCapitalReserve
 }

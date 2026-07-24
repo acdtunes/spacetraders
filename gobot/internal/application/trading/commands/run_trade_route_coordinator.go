@@ -62,17 +62,21 @@ const noProgressStarvationLimit = 3
 
 // defaultWorkingCapitalReserve is the fallback hard spend floor (sp-bp6f): a
 // circuit must not execute a buy that would drop LIVE treasury below this
-// line. Sized to the exact level the 2026-07-09 incident called "danger" —
-// treasury bottomed at 43,041 and briefly went negative (-30,537) before the
-// captain intervened — so a circuit now stops BEFORE crossing back into that
-// zone instead of the failure being discovered after the fact. Overridable
-// per-run via RunTradeRouteCoordinatorCommand.WorkingCapitalReserve (0 → this
+// line. Originally sized to the exact level the 2026-07-09 incident called
+// "danger" — treasury bottomed at 43,041 and briefly went negative (-30,537)
+// before the captain intervened; sp-q8bon then raised the default from that
+// 50k base to the 150k non-contract floor after the same drain class recurred
+// one band higher (treasury 638k→142k, the contract engine parked against ITS
+// 50k floor: a full-economy deadlock — the 50k–150k band is now
+// contract-exclusive). Shared by every trading coordinator's default (tour /
+// trade-route / arb / stocker — all non-contract buys). Overridable per-run
+// via RunTradeRouteCoordinatorCommand.WorkingCapitalReserve (0 → this
 // default) and via the daemon's "working_capital_reserve" launch-config key
 // (mirroring max_visits' own "0 → coordinator default" convention), so the
 // captain can raise or lower the floor operationally — e.g. to the current
 // contract+factory working-capital need the incident notes called out —
 // without a redeploy.
-const defaultWorkingCapitalReserve = common.ImmutableReserveFloor // sp-zq635: the single immutable source (was a local 50000 dup)
+const defaultWorkingCapitalReserve = common.NonContractWorkingCapitalFloor // sp-q8bon: the non-contract 150k floor (was the 50k base)
 
 // negativeMarginAbortVisits bounds how many visits a circuit's OWN realized
 // margin (this circuit's sell revenue minus its buy cost, reset to zero every

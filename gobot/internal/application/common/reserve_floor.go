@@ -4,10 +4,26 @@ package common
 // everywhere, no proportional-of-treasury computation, no configured override may drop the
 // ENFORCED floor below this (sp-05glh scrapped the 40%-of-treasury proportional rule — the
 // prior counter-cyclical shrink-toward-50k-as-treasury-falls resolver, EffectiveReserveFloor,
-// is gone; every former caller now uses this constant directly). It mirrors the
-// identically-valued defaultWorkingCapitalReserve consts in the tour and factory engines
-// (both 50000) so every engine agrees on the one bound.
+// is gone; every former caller now uses this constant directly). This 50k base still
+// gates the CONTRACT engine (and probe/bootstrap capex); the trade and factory engines'
+// defaultWorkingCapitalReserve consts now alias the higher NonContractWorkingCapitalFloor
+// (sp-q8bon), so the 50k–150k band above this base is contract-exclusive.
 const ImmutableReserveFloor = 50000
+
+// NonContractWorkingCapitalFloor is the DEFAULT working-capital spend floor (150_000) for
+// the NON-CONTRACT buy engines — construction gate-fill (factory input buys + fabricated-
+// output harvests, production_executor.go) and the trading coordinators (tour / trade-route
+// / arb / stocker, the shared default in run_trade_route_coordinator.go) — sp-q8bon,
+// Admiral 2026-07-24: "We can't go down 150K! Or else we risk contracts stalling". Observed
+// failure: margin-blind gate-fill buys dragged the treasury 638k→142k and the contract
+// engine — the sole earner — parked its next 106,400 source-buy against the 50k floor: a
+// full-economy deadlock. Flooring every non-contract DEFAULT here keeps the 50k–150k
+// working-capital band exclusively contract-owned; the contract engine itself still gates
+// on the untouched ImmutableReserveFloor base. ONE base, a derived tier (RULINGS #5) — the
+// base and this band move together and can never drift. An explicitly configured
+// launch-config reserve still wins (existing semantics): only the absent-config DEFAULT
+// resolves here.
+const NonContractWorkingCapitalFloor = ImmutableReserveFloor + 100_000
 
 // ContractReserveCushion is the contract OPERATING-capital floor (150_000): the working
 // capital a light-hauler contract op holds so several concurrent contract cycles stay
