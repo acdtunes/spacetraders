@@ -10,6 +10,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	shipQuery "github.com/andrescamacho/spacetraders-go/internal/application/ship/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
 
 // scanLanes looks one jump-gate hop beyond the home system so the ranker can surface
@@ -154,6 +155,95 @@ func TestScanLanes_NeighborQueryFails_FailsOpenToHomeSystemOnly(t *testing.T) {
 	}
 	if len(lanes) != 1 || lanes[0].SourceWaypoint != "X1-HOME-A" {
 		t.Fatalf("expected the home-system lane to still be returned, got %+v", lanes)
+	}
+}
+
+// ── Horizon lock: this scanner stays at ONE gate hop ─────────────────────────
+//
+// The tour planner discovers across a WIDER horizon (candidate_hop_depth) than this
+// scanner does, and that divergence is deliberate, not drift. The tour path earned
+// its width by first carrying a per-pair gate-hop distance map, so its solver prices
+// a crossing at its REAL hop count. This scanner has no such model: its cross-system
+// premium is charged off a BOOLEAN (laneCircuitRatePerHour's `crossSystem`), and an
+// ArbitrageLane carries no hop-distance field at all — so every crossing, near or
+// far, pays one flat round-trip surcharge. Widening discovery here would therefore
+// price an N-hop lane as a 1-hop one and rank it ~N times too well, i.e. relax a
+// money guard as a side effect of a reach change. At exactly one hop the flat charge
+// IS the honest price, which is what makes today's horizon sound rather than merely
+// narrow.
+//
+// The two tests below are a PAIR and are meant to be read together: the first pins
+// the horizon, the second pins the hop-blindness that is the REASON for it. Teach the
+// surcharge real distance and the second test fails — that failure is the signal that
+// the first may then be revisited, and not before.
+
+// The horizon bound itself: a system two gate hops out is never scanned, so its
+// markets cannot form a lane no matter how rich they are. The 2-hop sink here is
+// priced absurdly high on purpose — were it ever in scope it would rank first, so
+// its ABSENCE from the result isolates the discovery horizon rather than the ranking.
+func TestScanLanes_HorizonStopsAtOneGateHop(t *testing.T) {
+	marketRepo := &msMarketRepo{
+		waypointsBySystem: map[string][]string{
+			"X1-HOME": {"X1-HOME-A"},
+			"X1-NEAR": {"X1-NEAR-B"},
+			"X1-FAR":  {"X1-FAR-C"},
+		},
+		goods: map[string]msGood{
+			// WIDGET is sourceable at home, but its only sink sits two hops out.
+			"X1-HOME-A": {symbol: "WIDGET", bid: 50, ask: 100, volume: 60, tradeType: market.TradeTypeExport},
+			// The 1-hop neighbor trades an unrelated good, so it pairs with nothing.
+			"X1-NEAR-B": {symbol: "GADGET", bid: 20, ask: 40, volume: 60, tradeType: market.TradeTypeExport},
+			"X1-FAR-C":  {symbol: "WIDGET", bid: 9000, ask: 9050, volume: 60, tradeType: market.TradeTypeImport},
+		},
+	}
+	// X1-HOME -> X1-NEAR -> X1-FAR: the chain the scan must NOT walk transitively.
+	mediator := &msMediator{connections: map[string][]string{
+		"X1-HOME": {"X1-NEAR"},
+		"X1-NEAR": {"X1-FAR"},
+	}}
+	handler := NewRunTradeRouteCoordinatorHandler(mediator, nil, marketRepo, nil, nil, nil)
+
+	lanes, err := handler.scanLanes(context.Background(), "X1-HOME", 1, 0, "")
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if len(lanes) != 0 {
+		t.Fatalf("the 2-hop sink X1-FAR-C must be outside the scan horizon, so WIDGET has no sell side and no lane may form; got %d lane(s): %+v", len(lanes), lanes)
+	}
+	// Discovery is a single hop off home, never a recursive walk: the neighbor's own
+	// connections are not consulted. This is the mechanism half of the lock — it fails
+	// on a transitive widening even if the fixture's markets happened to form no lane.
+	if len(mediator.queries) != 1 || mediator.queries[0].SystemSymbol != "X1-HOME" {
+		t.Fatalf("expected exactly one jump-gate query, from the home system only (no transitive walk); got %+v", mediator.queries)
+	}
+}
+
+// The reason half of the lock: the cross-system premium is hop-blind. Two lanes that
+// are identical in every economic field differ only in which system their endpoints
+// name — one crossing a single gate hop, one notionally far deeper — and they price
+// at the SAME rate, because the rate function has no distance input to consult. The
+// same-system control proves the surcharge is real (and therefore that it is binary,
+// not absent). Make the premium distance-aware and this test fails by design.
+func TestLaneCircuitRate_CrossSystemSurchargeIsHopBlind(t *testing.T) {
+	const capacity = 60
+	lane := func(source, dest string) trading.ArbitrageLane {
+		return trading.ArbitrageLane{
+			Good: "WIDGET", SourceWaypoint: source, DestWaypoint: dest,
+			SourceAsk: 100, DestBid: 600, SpreadPerUnit: 500,
+			VolumeCap: capacity, CappedSpread: 500 * capacity,
+		}
+	}
+	// One gate hop out versus notionally several — indistinguishable to the ranker.
+	near := laneCircuitRatePerHour(lane("X1-HOME-A", "X1-NEAR-B"), capacity, "", laneImpactModel{})
+	far := laneCircuitRatePerHour(lane("X1-HOME-A", "X1-FAR-C"), capacity, "", laneImpactModel{})
+	if near != far {
+		t.Fatalf("the cross-system surcharge is charged off a boolean, so distance cannot change it: near %.6f != far %.6f — if the premium is now distance-aware, revisit the one-hop discovery horizon in TestScanLanes_HorizonStopsAtOneGateHop", near, far)
+	}
+	// Control: the premium exists at all, so the equality above is hop-blindness and
+	// not simply a surcharge that never fires.
+	sameSystem := laneCircuitRatePerHour(lane("X1-HOME-A", "X1-HOME-B"), capacity, "", laneImpactModel{})
+	if !(sameSystem > near) {
+		t.Fatalf("a same-system lane must out-rate an otherwise identical gate-crossing one (%.6f > %.6f) — without a live surcharge the hop-blindness assertion proves nothing", sameSystem, near)
 	}
 }
 
