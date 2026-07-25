@@ -3,21 +3,29 @@ package persistence
 import (
 	"context"
 	"fmt"
+	"time"
 )
 
-// RecordedBuiltGate reports whether gateWaypoint is ALREADY recorded as finished
-// building, by a stored edge that is era-scoped and inside its freshness window.
+// RecordedBuiltGate reports whether gateWaypoint was ALREADY OBSERVED to have finished
+// building, by an era-scoped stored edge.
 //
 // It answers only the MONOTONE direction. A jump gate goes under-construction →
-// complete and never back, so a recorded-built verdict cannot go wrong within the
-// era; every other case — under construction, stale, unknown, dead era, or a
-// backoff marker — answers false, which sends the caller to the live probe. That
-// keeps the fail-closed contract intact: this read can suppress a redundant
-// confirmation, never manufacture a permissive one.
+// complete and never back, so a finished build is a PERMANENT fact and age cannot
+// invalidate it. This is deliberately NOT bounded by the edge freshness window: that
+// window is the "is this edge set current" signal, and it is the very condition that
+// triggers a refresh — bounding the verdict by it would reject exactly the rows whose
+// refresh the verdict exists to spare, leaving the probe to suppress only reads nobody
+// was going to make. Era scoping is what contains the universe reset, where gates do
+// go back to unbuilt.
 //
-// The freshness bound is the same healthy-edge window Edges() applies to the same
-// row, so serving the verdict from here adds no staleness the routing cache does
-// not already carry.
+// Every other case answers false and sends the caller to the live probe: still under
+// construction (the mutable verdict), unknown, dead era, or a backoff marker.
+//
+// The one age-like check that remains is OBSERVATION, not freshness. A row with no
+// parseable synced_at was never probed — its under_construction is the column default
+// (false), and the migration that introduced the column blanks synced_at precisely so
+// such rows are re-probed before routing trusts them. Serving those would route a hull
+// through a gate whose build state was never read, so they are refused.
 func (r *GormGateEdgeRepository) RecordedBuiltGate(ctx context.Context, gateWaypoint string) (bool, error) {
 	if gateWaypoint == "" {
 		return false, nil
@@ -37,9 +45,22 @@ func (r *GormGateEdgeRepository) RecordedBuiltGate(ctx context.Context, gateWayp
 	}
 
 	for _, m := range models {
-		if !r.rowStale(m) {
+		if constructionStateWasObserved(m) {
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+// constructionStateWasObserved reports whether a row's under_construction value came
+// from a real probe rather than the column default. A probe failure is recorded as
+// under-construction (fail closed), so an observed false is always a live read that saw
+// the gate finished. The timestamp is used only as evidence THAT the row was written by
+// a probe — never how recently, since a finished build does not expire.
+func constructionStateWasObserved(m GateEdgeModel) bool {
+	if m.SyncedAt == "" {
+		return false
+	}
+	_, err := time.Parse(time.RFC3339, m.SyncedAt)
+	return err == nil
 }

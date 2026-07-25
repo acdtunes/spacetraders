@@ -68,10 +68,10 @@ func TestGateConstructionProbe_OnlyTheUnbuiltNeighbourCostsARequest(t *testing.T
 		"only the under-construction gate may cost a live request")
 }
 
-// GUARD: once the record ages out, every gate is re-probed live again — the store
-// short-circuit is bounded by the same freshness window the routing cache uses, so
-// it can never pin a verdict indefinitely.
-func TestGateConstructionProbe_ExpiredRecordReprobesEveryGate(t *testing.T) {
+// THE RECOVERY, end to end. The refresh path triggers on STALENESS, so the sets being
+// re-read are precisely the ones holding aged rows. A built verdict must survive that
+// age or the probe only ever spares sets nobody was refreshing.
+func TestGateConstructionProbe_AgedBuiltRecordStillCostsNothing(t *testing.T) {
 	db, err := database.NewTestConnection()
 	require.NoError(t, err)
 	require.NoError(t, db.Create(&persistence.EraModel{Name: "orion", AgentSymbol: "ORION", PlayerID: 1}).Error)
@@ -82,16 +82,44 @@ func TestGateConstructionProbe_ExpiredRecordReprobesEveryGate(t *testing.T) {
 	require.NoError(t, repo.Replace(ctx, "X1-KA42", []system.GateEdge{
 		{ConnectedSystem: "X1-PA3", GateWaypoint: "X1-PA3-I51"},
 		{ConnectedSystem: "X1-UQ16", GateWaypoint: "X1-UQ16-I12"},
+		{ConnectedSystem: "X1-AF2", GateWaypoint: "X1-AF2-I90", UnderConstruction: true},
 	}))
 
-	inner := &probedGateAPI{underBuild: map[string]bool{}}
+	inner := &probedGateAPI{underBuild: map[string]bool{"X1-AF2-I90": true}}
 	probe := api.NewGateConstructionProbe(inner, repo)
 
-	for _, gate := range []string{"X1-PA3-I51", "X1-UQ16-I12"} {
-		_, derr := probe.GetWaypoint(ctx, "X1-KA42", gate, "tok")
+	for _, gate := range []string{"X1-PA3-I51", "X1-UQ16-I12", "X1-AF2-I90"} {
+		detail, derr := probe.GetWaypoint(ctx, "X1-KA42", gate, "tok")
 		require.NoError(t, derr)
+		require.Equal(t, gate == "X1-AF2-I90", detail.IsUnderConstruction)
 	}
 
-	require.Equal(t, []string{"X1-PA3-I51", "X1-UQ16-I12"}, inner.probed,
-		"an expired record must send every gate back to the live probe")
+	require.Equal(t, []string{"X1-AF2-I90"}, inner.probed,
+		"aged BUILT gates cost nothing; only the unbuilt one is re-probed")
 }
+
+// GUARD: a row whose build state was NEVER OBSERVED is not a record. The schema
+// migration that added the column blanks synced_at precisely so those rows are
+// re-probed before routing trusts them — under_construction is a column default there,
+// not a probe result.
+func TestGateConstructionProbe_NeverObservedRowIsProbedLive(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	require.NoError(t, db.Create(&persistence.EraModel{Name: "orion", AgentSymbol: "ORION", PlayerID: 1}).Error)
+	require.NoError(t, db.Create(&persistence.GateEdgeModel{
+		SystemSymbol: "X1-KA42", ConnectedSystem: "X1-PA3", GateWaypoint: "X1-PA3-I51",
+		EraID: intPtr(1), SyncedAt: "", UnderConstruction: false,
+	}).Error)
+
+	ctx := context.Background()
+	inner := &probedGateAPI{underBuild: map[string]bool{"X1-PA3-I51": true}}
+	probe := api.NewGateConstructionProbe(inner, persistence.NewGormGateEdgeRepository(db))
+
+	detail, err := probe.GetWaypoint(ctx, "X1-KA42", "X1-PA3-I51", "tok")
+	require.NoError(t, err)
+	require.Equal(t, []string{"X1-PA3-I51"}, inner.probed,
+		"an unobserved default must be probed, never served")
+	require.True(t, detail.IsUnderConstruction, "the live verdict must win")
+}
+
+func intPtr(i int) *int { return &i }
