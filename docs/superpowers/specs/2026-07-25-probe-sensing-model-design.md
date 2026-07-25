@@ -195,10 +195,13 @@ machinery this design deletes.
 
 **Surviving knobs: three.** The whitelist, the depth floor, and `N`.
 
-The legacy coordinator stays in the tree as reference until the new one is proven in era 5, then
-is deleted. **Open question for implementation: which coordinator runs during that window.** Both
-present with a runtime switch is a feature flag, which is against standing doctrine; the intent
-here is that only the new one is wired and the legacy is unreferenced code pending deletion.
+The legacy coordinators are **unwired** — removed from the launch path so only the new coordinator
+runs. Their source stays in the tree as reference until the new design is proven in era 5, then is
+deleted. There is no runtime switch between them and no fallback path: unreferenced code pending
+deletion, not a second implementation held in reserve.
+
+This is deliberate. A switch between two coordinators would be a feature flag, which standing
+doctrine forbids, and a fallback nobody exercises is a fallback that does not work when needed.
 
 ## Risks
 
