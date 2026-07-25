@@ -176,17 +176,16 @@ func SelectorBranchFromContext(ctx context.Context) (string, bool) {
 	return "", false
 }
 
-// ScanPolicy is the tour-scan load policy a TRADE coordinator (tour /
-// trade-route) threads onto ctx to throttle the deliberate price-impact
-// instrumentation the model is fitted from. It governs two API-reducing
-// gates on the SHARED scan path WITHOUT touching the freshness-scout recovery path
-// (which never stamps a policy, so its scans stay ungated — the recovery/decay
-// dataset is unaffected) or the shipyard scan:
+// ScanPolicy is the scan-load policy a coordinator threads onto ctx. It governs
+// two API-reducing gates on the SHARED market-scan path, and never the shipyard
+// scan (which carries its own window):
 //
 //   - MaxScanAge: an arrival/decision scan whose CACHED market was updated within
 //     this window reuses the cache instead of re-calling GetMarket — the redundant
-//     re-scan killer (the measured "same hull re-scanning a market 4s apart"). 0
-//     disables the gate (always scan — the prior behavior).
+//     re-scan killer (the measured "same hull re-scanning a market 4s apart", and
+//     two scouts on overlapping routes both paying for one observation). It must
+//     stay FAR below the freshness sizer's tightest per-activity SLA: it exists to
+//     drop duplicate observations, never to set scan policy. 0 disables the gate.
 //   - ImpactSampleRate: the FRACTION of trades on which the deliberate post-trade
 //     impact scan (the paired before/after that records dP/P) still fires so the
 //     analyst can refit the model per era (~1 day of pairs at 0.15 is plenty). A
@@ -202,9 +201,10 @@ type ScanPolicy struct {
 	ImpactSampleRate float64
 }
 
-// WithScanPolicy stamps the scan-load policy onto ctx. Only the trade
-// coordinators stamp it; the scout tour deliberately does NOT, so its recovery scans
-// remain ungated.
+// WithScanPolicy stamps the scan-load policy onto ctx. The trade coordinators
+// stamp the full policy; the scout tour stamps MaxScanAge only, so its arrival
+// scans dedup against a market another hull just refreshed without ever
+// enabling the trade-side impact instrumentation.
 func WithScanPolicy(ctx context.Context, policy ScanPolicy) context.Context {
 	return context.WithValue(ctx, scanPolicyKey, policy)
 }

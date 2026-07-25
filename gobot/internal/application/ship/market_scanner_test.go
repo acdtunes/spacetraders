@@ -2,10 +2,16 @@ package ship
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	scoutingQuery "github.com/andrescamacho/spacetraders-go/internal/application/scouting/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 )
 
 // fakePriceHistoryRepo captures every RecordPriceChange call so a test can
@@ -111,5 +117,74 @@ func TestRecordPriceChanges_NewGoodCapturesTierToo(t *testing.T) {
 	}
 	if a := got.Activity(); a == nil || *a != "STRONG" {
 		t.Fatalf("Activity() = %v, want STRONG", a)
+	}
+}
+
+// adversarialMarketRepo is the cached-market read behind the recent-scan gate.
+// It is deliberately ADVERSARIAL: when readErr is set it STILL returns a
+// perfectly fresh market, so a gate that ignores the error reuses a cache it was
+// never able to read and skips a scan it owed.
+type adversarialMarketRepo struct {
+	scoutingQuery.MarketRepository
+	waypoint    string
+	lastUpdated time.Time
+	readErr     error
+}
+
+func (r *adversarialMarketRepo) GetMarketData(context.Context, string, int) (*market.Market, error) {
+	supply, activity := "MODERATE", "WEAK"
+	g, err := market.NewTradeGood("IRON_ORE", &supply, &activity, 100, 200, 1000, market.TradeTypeExport)
+	if err != nil {
+		return nil, err
+	}
+	m, err := market.NewMarket(r.waypoint, []market.TradeGood{*g}, r.lastUpdated)
+	if err != nil {
+		return nil, err
+	}
+	return m, r.readErr
+}
+
+func (r *adversarialMarketRepo) UpsertMarketData(context.Context, uint, string, []market.TradeGood, time.Time) error {
+	return nil
+}
+
+// countingScanAPI records the live GetMarket calls, which is the whole
+// observable of the gate: a skipped scan is a GetMarket that never fired.
+type countingScanAPI struct {
+	domainPorts.APIClient
+	gets int
+}
+
+func (c *countingScanAPI) GetMarket(_ context.Context, _, waypointSymbol, _ string) (*domainPorts.MarketData, error) {
+	c.gets++
+	return &domainPorts.MarketData{Symbol: waypointSymbol}, nil
+}
+
+// The gate skips a scan on the strength of the CACHED row, so an unreadable
+// cache is not evidence of freshness. A read error must fall through to a scan
+// rather than silently reuse whatever the failed read happened to return.
+func TestScanAndSaveMarketFresh_CacheReadError_ScansAnyway(t *testing.T) {
+	const waypoint = "X1-DEDUP-MKT"
+	cases := []struct {
+		name     string
+		readErr  error
+		wantGets int
+	}{
+		{"readable fresh cache is reused", nil, 0},
+		{"unreadable cache falls through to a scan", errors.New("db down"), 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			api := &countingScanAPI{}
+			scanner := NewMarketScanner(api,
+				&adversarialMarketRepo{waypoint: waypoint, lastUpdated: time.Now(), readErr: tc.readErr},
+				nil, nil)
+
+			ctx := common.WithPlayerToken(context.Background(), "test-token")
+			_, err := scanner.ScanAndSaveMarketFresh(ctx, 1, waypoint, 75*time.Second)
+
+			require.NoError(t, err)
+			require.Equal(t, tc.wantGets, api.gets)
+		})
 	}
 }

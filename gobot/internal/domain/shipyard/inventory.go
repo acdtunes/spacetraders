@@ -85,4 +85,9 @@ type InventoryRepository interface {
 	// ListByTypes returns every era-scoped row for the player whose ship_type
 	// is in shipTypes, for the reachable-yard ranking.
 	ListByTypes(ctx context.Context, playerID int, shipTypes []string) ([]ShipTypeAvailability, error)
+	// LastScannedAt returns when this waypoint's rows were last stamped and
+	// whether any era-scoped row exists at all. known=false means the yard has
+	// never been scanned this era, which callers must treat as "scan now" —
+	// discovery is never delayed by a recency window.
+	LastScannedAt(ctx context.Context, playerID int, waypointSymbol string) (scannedAt time.Time, known bool, err error)
 }

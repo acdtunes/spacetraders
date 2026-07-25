@@ -62,6 +62,12 @@ func (r *fakeVisitInventory) ListByTypes(context.Context, int, []string) ([]ship
 	return nil, nil
 }
 
+// LastScannedAt reports "never scanned this era", so the recency window never
+// suppresses the arrival scan this fixture is asserting on.
+func (r *fakeVisitInventory) LastScannedAt(context.Context, int, string) (time.Time, bool, error) {
+	return time.Time{}, false, nil
+}
+
 // shipyardTraitReader answers the scanner's immutable-trait gate: only the yard
 // symbol bears SHIPYARD.
 type shipyardTraitReader struct {
@@ -95,7 +101,7 @@ func TestExecuteRoute_ArrivalAtShipyardOnlyWaypoint_PersistsRow_AndReachesHeavyE
 	}}
 	inventory := newFakeVisitInventory()
 	events := &spyEvents{}
-	scanner := ship.NewShipyardScanner(api, inventory, &shipyardTraitReader{yard: yard}, events, shipyard.NewHeavyShipTypeSet(nil))
+	scanner := ship.NewShipyardScanner(api, inventory, &shipyardTraitReader{yard: yard}, events, shipyard.NewHeavyShipTypeSet(nil), 0)
 
 	// A single-leg route whose destination bears the SHIPYARD trait but NOT
 	// MARKETPLACE — a charted-but-un-toured shipyard.

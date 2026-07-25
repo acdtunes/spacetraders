@@ -334,6 +334,7 @@ func run(cfg *config.Config) error {
 	shipyardScanner := ship.NewShipyardScanner(
 		apiClient, shipyardInventoryRepo, waypointRepo, captainEventRepo,
 		domainShipyard.NewHeavyShipTypeSet(cfg.Scouting.HeavyShipTypes),
+		time.Duration(cfg.Scouting.ShipyardRescanTTLSeconds)*time.Second,
 	)
 
 	routeExecutor := ship.NewRouteExecutor(shipRepo, med, nil, marketScanner, shipyardScanner, nil, waypointRepo, shipEventBus) // nil = use RealClock and default refuel strategy
@@ -373,6 +374,9 @@ func run(cfg *config.Config) error {
 	// Market scouting handlers (shipyardScanner constructed above, next to the
 	// route executor it now also feeds — sp-42ow emit-path fix)
 	scoutTourHandler := scoutingCmd.NewScoutTourHandler(shipRepo, med, marketScanner, shipyardScanner, nil) // nil clock = RealClock (sp-zixw)
+	// The same recent-scan window the trade coordinators stamp, so the fleet keeps
+	// one definition of "already scanned recently enough" rather than two that drift.
+	scoutTourHandler.SetScanDedupWindow(cfg.TradeImpact.ResolvedScanMaxAge())
 	if err := mediator.RegisterHandler[*scoutingCmd.ScoutTourCommand](med, scoutTourHandler); err != nil {
 		return fmt.Errorf("failed to register ScoutTour handler: %w", err)
 	}

@@ -56,6 +56,16 @@ type ScoutingConfig struct {
 	// default {SHIP_HEAVY_FREIGHTER, SHIP_BULK_FREIGHTER} (RULINGS #5).
 	HeavyShipTypes []string `mapstructure:"heavy_ship_types"`
 
+	// ShipyardRescanTTLSeconds is the recency window between live shipyard reads at one
+	// waypoint. The shipyard scan piggybacks every scout market visit, so overlapping
+	// scout routes re-read the same yards far more often than their contents change; this
+	// window collapses that clustering. A yard with no scan yet is ALWAYS read immediately
+	// — the window bounds re-reads, never discovery. Sized against the price consumers, not
+	// the discovery ones: the stored purchase_price feeds the reachable-yard ranking and the
+	// autosizer's heavy-price signal, so this is also the staleness bound on a money-guard
+	// input and does not belong in the hours range. 0/absent => 15 minutes (RULINGS #5).
+	ShipyardRescanTTLSeconds int `mapstructure:"shipyard_rescan_ttl_seconds"`
+
 	// GateReconcileEnabled arms the sp-bcsu RETROACTIVE gate-reconcile sweep in the standing
 	// scout_post_coordinator: a bounded pass that dispatches leftover idle probes to chart
 	// market-known-but-gate-uncharted frontier systems (Part 1 charts the gate on arrival),

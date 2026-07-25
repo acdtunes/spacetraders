@@ -170,7 +170,7 @@ func TestExecuteRoute_ArrivalAtShipyardMarketplace_PersistsShipyardInventoryRow(
 			{Type: "SHIP_PROBE", PurchasePrice: 55_000, Supply: "ABUNDANT"},
 		},
 	}}
-	shipyardScanner := ship.NewShipyardScanner(api, inventoryRepo, waypointRepo, nil, shipyard.NewHeavyShipTypeSet(nil))
+	shipyardScanner := ship.NewShipyardScanner(api, inventoryRepo, waypointRepo, nil, shipyard.NewHeavyShipTypeSet(nil), 0)
 
 	// A single-leg route from a plain origin to the SHIPYARD-trait marketplace.
 	// The in-memory destination waypoint must carry the MARKETPLACE trait so the

@@ -131,8 +131,11 @@ func MarketFreshWithin(m *market.Market, maxAge time.Duration, now time.Time) bo
 // scan error, never the gate.
 func (s *MarketScanner) ScanAndSaveMarketFresh(ctx context.Context, playerID uint, waypointSymbol string, maxAge time.Duration) (bool, error) {
 	if maxAge > 0 {
-		existing, _ := s.marketRepo.GetMarketData(ctx, waypointSymbol, int(playerID))
-		if MarketFreshWithin(existing, maxAge, time.Now()) {
+		// A cache we could not read is not evidence of freshness: the read error is
+		// honored before the returned market is looked at, so a failed read falls
+		// through to a scan instead of reusing whatever it happened to hand back.
+		existing, err := s.marketRepo.GetMarketData(ctx, waypointSymbol, int(playerID))
+		if err == nil && MarketFreshWithin(existing, maxAge, time.Now()) {
 			common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf(
 				"[MarketScanner] Skipping scan at %s - cached market fresh (< %s old)", waypointSymbol, maxAge), map[string]interface{}{
 				"action": "scan_skipped_fresh", "waypoint": waypointSymbol, "max_age_seconds": int(maxAge.Seconds()),

@@ -100,6 +100,12 @@ func (f *fakeInventoryStore) HasAnyOfTypes(_ context.Context, _ int, shipTypes [
 	return false, nil
 }
 
+// LastScannedAt reports "never scanned this era", so the recency window never
+// suppresses the tour scan this fixture is asserting on.
+func (f *fakeInventoryStore) LastScannedAt(context.Context, int, string) (time.Time, bool, error) {
+	return time.Time{}, false, nil
+}
+
 func (f *fakeInventoryStore) ListByTypes(context.Context, int, []string) ([]domainShipyard.ShipTypeAvailability, error) {
 	return nil, nil
 }
@@ -164,7 +170,7 @@ func tourFixture(t *testing.T, api *fakeScanAPI, inventory *fakeInventoryStore, 
 		&fakeWaypointTraits{waypoints: map[string]*shared.Waypoint{
 			scoutedYard: shipyardWaypoint(t, scoutedYard, "MARKETPLACE", "SHIPYARD"),
 		}},
-		events, heavy,
+		events, heavy, 0,
 	)
 	h := NewScoutTourHandler(&fakeTourShipRepo{ship: scoutAt(t, scoutedYard)}, nil, marketScanner, shipyardScanner, &shared.MockClock{CurrentTime: time.Now()})
 	cmd := &ScoutTourCommand{

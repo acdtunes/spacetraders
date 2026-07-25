@@ -42,23 +42,41 @@ type ShipyardScanner struct {
 	waypointRepo  waypointTraitReader
 	events        captain.EventRecorder
 	heavyTypes    shipyard.HeavyShipTypeSet
+	rescanTTL     time.Duration
 }
+
+// DefaultShipyardRescanTTL is the recency window between live reads of one
+// shipyard. It is deliberately kept in the same order of magnitude as the
+// re-scan cadence the fleet already runs, because these rows are not
+// discovery-only: the reachable-yard ranking and the fleet autosizer's
+// heavy-price signal judge probe and hull buys on this stored PurchasePrice, so
+// the window doubles as the staleness bound on a money-guard input. Widening it
+// to hours would age that input by an order of magnitude and stretch the gap
+// that the per-yard recent-buy impact term already exists to cover.
+const DefaultShipyardRescanTTL = 15 * time.Minute
 
 // NewShipyardScanner creates the scanner. events may be nil (milestone becomes
 // log-only); heavyTypes built from config (empty config → default set).
+// rescanTTL of 0 or less resolves to DefaultShipyardRescanTTL — the recency
+// window is always active, config tunes its size but never removes it.
 func NewShipyardScanner(
 	apiClient shipyardAPI,
 	inventoryRepo shipyard.InventoryRepository,
 	waypointRepo waypointTraitReader,
 	events captain.EventRecorder,
 	heavyTypes shipyard.HeavyShipTypeSet,
+	rescanTTL time.Duration,
 ) *ShipyardScanner {
+	if rescanTTL <= 0 {
+		rescanTTL = DefaultShipyardRescanTTL
+	}
 	return &ShipyardScanner{
 		apiClient:     apiClient,
 		inventoryRepo: inventoryRepo,
 		waypointRepo:  waypointRepo,
 		events:        events,
 		heavyTypes:    heavyTypes,
+		rescanTTL:     rescanTTL,
 	}
 }
 
@@ -66,13 +84,22 @@ func NewShipyardScanner(
 // bears the SHIPYARD trait) and persists availability + prices. Non-shipyard
 // waypoints are a silent no-op — this is called on EVERY scout market visit,
 // and the trait check is a cached-waypoint read, so the no-op path spends no
-// API budget. Errors are returned for the caller to log; a scan failure must
-// never fail the tour that hosts it.
+// API budget. A yard whose rows are newer than the rescan window is skipped
+// without a live read; a yard never scanned this era is always read. Errors are
+// returned for the caller to log; a scan failure must never fail the tour that
+// hosts it.
 func (s *ShipyardScanner) ScanAndSaveShipyard(ctx context.Context, playerID uint, waypointSymbol string) error {
 	if !s.isShipyardWaypoint(ctx, waypointSymbol) {
 		return nil
 	}
 	logger := common.LoggerFromContext(ctx)
+
+	if s.scannedWithinWindow(ctx, int(playerID), waypointSymbol) {
+		logger.Log("INFO", fmt.Sprintf("[ShipyardScanner] Skipping scan of %s - inventory scanned within %s", waypointSymbol, s.rescanTTL), map[string]interface{}{
+			"action": "shipyard_scan_skipped_fresh", "waypoint": waypointSymbol, "ttl_seconds": int(s.rescanTTL.Seconds()),
+		})
+		return nil
+	}
 
 	token, err := common.PlayerTokenFromContext(ctx)
 	if err != nil {
@@ -106,6 +133,22 @@ func (s *ShipyardScanner) ScanAndSaveShipyard(ctx context.Context, playerID uint
 		s.emitHeavyYardMilestone(ctx, int(playerID), systemSymbol, waypointSymbol, heavyFound, logger)
 	}
 	return nil
+}
+
+// scannedWithinWindow reports whether this yard already holds rows newer than
+// the rescan window, so the live read can be skipped. Every uncertainty resolves
+// to FALSE (scan): a yard with no row this era, an unreadable stamp, or a store
+// error must never grant a skip — skipping is the optimization, so an unproven
+// "we already have this" is not one. The flags are honored BEFORE the timestamp
+// is used, so a store that returns a stale-but-plausible value alongside a
+// failure signal cannot suppress a required scan. A skip writes nothing, leaving
+// last_scanned pointing at the real observation.
+func (s *ShipyardScanner) scannedWithinWindow(ctx context.Context, playerID int, waypointSymbol string) bool {
+	lastScanned, known, err := s.inventoryRepo.LastScannedAt(ctx, playerID, waypointSymbol)
+	if err != nil || !known || lastScanned.IsZero() {
+		return false
+	}
+	return time.Since(lastScanned) < s.rescanTTL
 }
 
 // isShipyardWaypoint reports whether the cached waypoint bears the SHIPYARD

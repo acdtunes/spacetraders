@@ -163,6 +163,20 @@ type ScoutTourHandler struct {
 	// one (tests, minimal wiring) simply skips shipyard scans.
 	shipyardScanner *ship.ShipyardScanner
 	clock           shared.Clock
+	// scanDedupWindow suppresses a re-scan of a market another hull already
+	// refreshed this recently. Scout routes overlap, so two probes can reach one
+	// market seconds apart and both pay for the same observation. Optional
+	// injection (SetScanDedupWindow); 0 leaves every scan ungated.
+	scanDedupWindow time.Duration
+}
+
+// SetScanDedupWindow wires the recent-scan dedup window, the same window the
+// trade coordinators stamp, so the fleet keeps ONE definition of "already
+// scanned recently enough". It must stay far below the freshness sizer's
+// tightest per-activity SLA — it removes redundant observations, it must never
+// become a second, competing scan policy.
+func (h *ScoutTourHandler) SetScanDedupWindow(window time.Duration) {
+	h.scanDedupWindow = window
 }
 
 // NewScoutTourHandler creates a new scout tour command handler. A nil clock
@@ -198,6 +212,13 @@ func (h *ScoutTourHandler) Handle(ctx context.Context, request common.Request) (
 	ship, tourOrder, response, err := h.loadShipAndPrepareTour(ctx, cmd)
 	if err != nil {
 		return nil, err
+	}
+
+	// A multi-market tour never scans in this handler — it navigates and the route
+	// executor scans on arrival, reading the window off the context — so the window
+	// only reaches that path if it is stamped here.
+	if h.scanDedupWindow > 0 {
+		ctx = shared.WithScanPolicy(ctx, shared.ScanPolicy{MaxScanAge: h.scanDedupWindow})
 	}
 
 	if !h.waitStartJitter(ctx, cmd) {
@@ -338,7 +359,7 @@ func (h *ScoutTourHandler) performInitialScan(
 		"reason":      "already_present",
 	})
 
-	if err := h.marketScanner.ScanAndSaveMarket(ctx, playerID, marketWaypoint); err != nil {
+	if _, err := h.marketScanner.ScanAndSaveMarketFresh(ctx, playerID, marketWaypoint, h.scanDedupWindow); err != nil {
 		logger.Log("ERROR", "Initial market scan failed", map[string]interface{}{
 			"ship_symbol": shipSymbol,
 			"action":      "scan_market",
@@ -408,7 +429,7 @@ func (h *ScoutTourHandler) continuousMarketScanning(
 			"iteration":   iteration + 1,
 		})
 
-		if err := h.marketScanner.ScanAndSaveMarket(ctx, uint(cmd.PlayerID.Value()), marketWaypoint); err != nil {
+		if _, err := h.marketScanner.ScanAndSaveMarketFresh(ctx, uint(cmd.PlayerID.Value()), marketWaypoint, h.scanDedupWindow); err != nil {
 			logger.Log("ERROR", "Market scan failed", map[string]interface{}{
 				"ship_symbol": cmd.ShipSymbol,
 				"action":      "scan_market",

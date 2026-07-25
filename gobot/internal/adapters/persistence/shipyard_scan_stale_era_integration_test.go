@@ -81,7 +81,7 @@ func TestShipyardScan_StaleAndPriorEraShipyard_StillScansAndPersists(t *testing.
 			{Type: "SHIP_BULK_FREIGHTER", PurchasePrice: 2_000_000, Supply: "LOW"},
 		},
 	}}
-	scanner := ship.NewShipyardScanner(api, inventoryRepo, waypointRepo, nil, shipyard.NewHeavyShipTypeSet(nil))
+	scanner := ship.NewShipyardScanner(api, inventoryRepo, waypointRepo, nil, shipyard.NewHeavyShipTypeSet(nil), 0)
 
 	const playerID = 2
 	ctx := common.WithPlayerToken(context.Background(), "test-token")
@@ -145,4 +145,54 @@ func TestHasWaypointTrait_ReadsImmutableTraitIgnoringEraAndTTL(t *testing.T) {
 			require.Equal(t, tc.expected, has)
 		})
 	}
+}
+
+// TestLastScannedAt_EraScopedRecency pins the rescan-window predicate at the real
+// repository boundary, where the era scoping actually lives. The window may only
+// suppress a re-read of a yard scanned in the OPEN era: a yard with no rows, and a
+// yard whose only rows belong to a CLOSED era, must both read as never-scanned so
+// the first visit of a new universe still spends its one discovery read.
+func TestLastScannedAt_EraScopedRecency(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+
+	closedAt := time.Date(2026, 7, 5, 0, 0, 0, 0, time.UTC)
+	require.NoError(t, db.Create(&persistence.EraModel{Name: "torwind", AgentSymbol: "TORWIND", PlayerID: 1, ClosedAt: &closedAt}).Error)
+	require.NoError(t, db.Create(&persistence.EraModel{Name: "orion", AgentSymbol: "ORION", PlayerID: 2}).Error)
+	var priorEra persistence.EraModel
+	require.NoError(t, db.Where("name = ?", "torwind").First(&priorEra).Error)
+	priorID := priorEra.EraID
+
+	repo := persistence.NewShipyardInventoryRepository(db)
+	const playerID = 2
+	ctx := context.Background()
+
+	t.Run("never-scanned yard is unknown", func(t *testing.T) {
+		_, known, err := repo.LastScannedAt(ctx, playerID, "X1-NEW-YARD")
+		require.NoError(t, err)
+		require.False(t, known, "a yard with no rows must never suppress its own discovery scan")
+	})
+
+	t.Run("dead-era rows read as never scanned", func(t *testing.T) {
+		require.NoError(t, db.Create(&persistence.ShipyardInventoryModel{
+			PlayerID: playerID, SystemSymbol: "X1-DEAD", WaypointSymbol: "X1-DEAD-YARD",
+			ShipType: "SHIP_BULK_FREIGHTER", PurchasePrice: 2_000_000,
+			LastScanned: time.Now(), EraID: &priorID,
+		}).Error)
+
+		_, known, err := repo.LastScannedAt(ctx, playerID, "X1-DEAD-YARD")
+		require.NoError(t, err)
+		require.False(t, known, "a freshly-stamped row from a CLOSED era must not suppress the open era's first scan")
+	})
+
+	t.Run("open-era scan is readable at its stamp", func(t *testing.T) {
+		scannedAt := time.Now().Add(-3 * time.Minute).UTC().Truncate(time.Second)
+		require.NoError(t, repo.ReplaceScan(ctx, playerID, "X1-LIVE", "X1-LIVE-YARD",
+			[]shipyard.ShipTypeAvailability{{ShipType: "SHIP_PROBE", PurchasePrice: 60_000}}, scannedAt))
+
+		got, known, err := repo.LastScannedAt(ctx, playerID, "X1-LIVE-YARD")
+		require.NoError(t, err)
+		require.True(t, known)
+		require.WithinDuration(t, scannedAt, got.UTC(), time.Second)
+	})
 }

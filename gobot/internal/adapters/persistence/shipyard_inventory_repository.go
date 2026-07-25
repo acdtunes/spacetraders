@@ -114,6 +114,29 @@ func (r *ShipyardInventoryRepositoryGORM) ListByTypes(ctx context.Context, playe
 	return out, nil
 }
 
+// LastScannedAt returns the newest last_scanned stamp across the waypoint's
+// era-scoped rows, and whether any such row exists. Era-scoped like every other
+// read here, so a scan booked in a DEAD era reads as never-scanned and the yard
+// is re-scanned once in the open era. A store error surfaces rather than being
+// flattened into "never scanned": the caller decides, and it fails toward
+// scanning.
+func (r *ShipyardInventoryRepositoryGORM) LastScannedAt(ctx context.Context, playerID int, waypointSymbol string) (time.Time, bool, error) {
+	predicate, args := eraScopePredicate(r.openEraID(ctx))
+	var models []ShipyardInventoryModel
+	if err := r.db.WithContext(ctx).Model(&ShipyardInventoryModel{}).
+		Where("player_id = ? AND waypoint_symbol = ?", playerID, waypointSymbol).
+		Where(predicate, args...).
+		Order("last_scanned DESC").
+		Limit(1).
+		Find(&models).Error; err != nil {
+		return time.Time{}, false, fmt.Errorf("failed to read shipyard scan recency for %s: %w", waypointSymbol, err)
+	}
+	if len(models) == 0 {
+		return time.Time{}, false, nil
+	}
+	return models[0].LastScanned, true, nil
+}
+
 // ScannedSystems returns the DISTINCT systems the player has a live-era shipyard
 // scan for — the SCANNED set the backfill sweep excludes when enumerating
 // the charted-but-unscanned blind spot. Era-SCOPED (mirroring the other reads): a
