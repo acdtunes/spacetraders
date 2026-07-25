@@ -47,6 +47,19 @@ func (g *fakeHopGraph) PathWithinJumpsStoredThenVerify(ctx context.Context, from
 	return g.Path(ctx, from, to, playerID)
 }
 
+// StoredHopDistances reads the same fixed hop table — it exists only to satisfy the GateGraph
+// interface; the stocker coordinator never proves multi-target reach. A target with no table
+// entry is absent from the result, the interface's own way of saying unproven.
+func (g *fakeHopGraph) StoredHopDistances(_ context.Context, from string, targets []string, _ int) (map[string]int, error) {
+	out := map[string]int{}
+	for _, to := range targets {
+		if n, ok := g.hops[from+"->"+to]; ok {
+			out[to] = n
+		}
+	}
+	return out, nil
+}
+
 func (g *fakeHopGraph) Routable(_ context.Context, from, to string, _ int) (bool, error) {
 	_, ok := g.hops[from+"->"+to]
 	return ok, nil

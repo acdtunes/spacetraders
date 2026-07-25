@@ -410,6 +410,17 @@ type GateGraph interface {
 	// money-commitment, not probe vs heavy. This seam is consumed solely by
 	// RepositionToWaypointWithinJumps.
 	RepositionPath(ctx context.Context, fromSystem, toSystem string, maxJumps int) ([]string, error)
+	// StoredHopDistances resolves fromSystem's gate-hop distance to each target in ONE
+	// breadth-first walk of the PERSISTED adjacency — a pure store read that never fetches.
+	// Every other resolver here reaches its neighbours through Connections, which fetches a
+	// missing or stale set LIVE; that makes them unusable for proving reach into the
+	// under-explored regions where far sinks live, because a miss there is the common case and
+	// each one costs a request from a saturated budget. This one answers from cache alone and
+	// reads a miss as a refusal. Refusal is ABSENCE: a target beyond maxJumps, unreachable over
+	// built gates, or reachable only through uncached/stale topology is missing from the result.
+	// Exact within the bound — depth-bounded but NOT breadth-bounded, so a dense neighbourhood
+	// cannot exhaust a discovery budget and make a near target look unreachable.
+	StoredHopDistances(ctx context.Context, fromSystem string, targets []string, maxJumps int) (map[string]int, error)
 	Routable(ctx context.Context, fromSystem, toSystem string, playerID int) (bool, error)
 	// RoutableWithinJumps is Routable with a CALLER-SUPPLIED jump bound (sp-ry741) — the same
 	// (bool, error) verdict, where (false, nil) is a DEFINITIVE unroutable veto and (false, err)

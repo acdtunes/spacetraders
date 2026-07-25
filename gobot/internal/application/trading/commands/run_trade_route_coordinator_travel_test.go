@@ -582,6 +582,13 @@ type fakeGateGraph struct {
 	chartPresentCalls []string
 	chartPresentShips []string
 	chartPresentErr   error
+
+	// storedHopErr, when set, makes StoredHopDistances fail — the unreadable-graph branch a
+	// reach proof must refuse on rather than admit optimistically.
+	storedHopErr error
+	// connCalls records every Connections(system) call in order, so a test can assert how much
+	// FETCH-THROUGH topology a path reads — the cost that becomes live API requests in production.
+	connCalls []string
 }
 
 func (f *fakeGateGraph) Path(ctx context.Context, from, to string, playerID int) ([]string, error) {
@@ -620,10 +627,66 @@ func (f *fakeGateGraph) Routable(ctx context.Context, from, to string, playerID 
 }
 
 func (f *fakeGateGraph) Connections(ctx context.Context, from string, playerID int) ([]system.GateEdge, error) {
+	// Recorded because Connections is the FETCH-THROUGH seam: in production a miss or stale set
+	// here becomes a live gate fetch, so a count of these calls is a count of the API requests a
+	// code path can cost.
+	f.connCalls = append(f.connCalls, from)
 	if f.connErr != nil {
 		return nil, f.connErr
 	}
 	return f.edges[from], nil
+}
+
+// StoredHopDistances walks the SAME fixture adjacency the real store-only resolver walks:
+// breadth-first from `from`, depth-bounded by maxJumps and deliberately NOT breadth-bounded,
+// refusing to expand through an uncached or stale system and never crossing an
+// under-construction edge. Mirroring the production traversal is the point — a fixture that
+// simply returned a hop table could not tell a reach proof from a lookup. storedHopErr forces
+// the unreadable-graph branch.
+func (f *fakeGateGraph) StoredHopDistances(_ context.Context, from string, targets []string, maxJumps int) (map[string]int, error) {
+	if f.storedHopErr != nil {
+		return nil, f.storedHopErr
+	}
+	wanted := map[string]bool{}
+	for _, t := range targets {
+		wanted[t] = true
+	}
+	out := map[string]int{}
+	if wanted[from] {
+		out[from] = 0
+	}
+	visited := map[string]bool{from: true}
+	frontier := []string{from}
+	for depth := 1; depth <= maxJumps && len(frontier) > 0; depth++ {
+		var next []string
+		for _, cur := range frontier {
+			edges := f.edges[cur]
+			if anyFixtureEdgeStale(edges) {
+				continue
+			}
+			for _, e := range edges {
+				if e.ConnectedSystem == "" || e.UnderConstruction || visited[e.ConnectedSystem] {
+					continue
+				}
+				visited[e.ConnectedSystem] = true
+				if wanted[e.ConnectedSystem] {
+					out[e.ConnectedSystem] = depth
+				}
+				next = append(next, e.ConnectedSystem)
+			}
+		}
+		frontier = next
+	}
+	return out, nil
+}
+
+func anyFixtureEdgeStale(edges []system.GateEdge) bool {
+	for _, e := range edges {
+		if e.Stale {
+			return true
+		}
+	}
+	return false
 }
 
 func (f *fakeGateGraph) ChartPresentGate(ctx context.Context, systemSymbol, shipSymbol string, playerID int) ([]system.GateEdge, error) {

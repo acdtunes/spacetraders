@@ -50,6 +50,17 @@ func (g *boundedRoutabilityGraph) Path(context.Context, string, string, int) ([]
 func (g *boundedRoutabilityGraph) PathWithinJumps(context.Context, string, string, int, int) ([]string, error) {
 	return nil, nil
 }
+func (g *boundedRoutabilityGraph) StoredHopDistances(_ context.Context, from string, targets []string, maxJumps int) (map[string]int, error) {
+	out := map[string]int{}
+	for _, to := range targets {
+		if to == from {
+			out[to] = 0
+		} else if g.err == nil && g.hops <= maxJumps {
+			out[to] = g.hops
+		}
+	}
+	return out, nil
+}
 func (g *boundedRoutabilityGraph) PathWithinJumpsStoredThenVerify(context.Context, string, string, int, int) ([]string, error) {
 	return nil, nil
 }

@@ -883,6 +883,91 @@ func (s *Service) Adjacency(ctx context.Context) (map[string][]system.GateEdge, 
 	return s.store.Adjacency(ctx)
 }
 
+// StoredHopDistances resolves the gate-hop distance from fromSystem to each requested target
+// in ONE breadth-first walk of the stored adjacency, bounded to maxJumps. It answers the
+// multi-target question ("how far is this system from each of those?") that the single-target
+// resolvers can only answer one fetch-through search at a time.
+//
+// It is a PURE STORE READ — one Adjacency query, no fetch-through, ever. That is the whole
+// point: the strict resolvers reach their neighbours through Connections, which fetches a
+// missing or stale set LIVE, so using them to prove reach spends the API budget on topology
+// exactly where topology is least cached. Here an uncached system is simply a DEAD END, so a
+// cache miss costs a refusal instead of a request.
+//
+// Refusal is expressed by ABSENCE: a target further than maxJumps, unreachable over built
+// gates, or reachable only through uncached or stale topology is missing from the result, and
+// callers must read a missing target as unproven. Two exclusions keep that verdict no laxer
+// than the STRICT resolver the executor actually flies (RULINGS #4):
+//   - an under-construction edge is impassable (a jump into an unbuilt gate fails at hop time);
+//   - a system whose stored edge set is STALE is not expanded THROUGH. Its onward gates are
+//     unverified, and staleness is precisely where Connections would re-fetch and may then
+//     refuse — so trusting it here could prove a route the executor cannot resolve. Arriving
+//     AT such a system is still resolved: only the edge into it must be verified for that.
+//
+// Distances are exact within the bound: the walk is depth-bounded but NOT breadth-bounded, so
+// a dense neighbourhood around fromSystem can never exhaust a discovery budget and leave a
+// genuinely-near target looking unreachable. maxJumps <= 0 degrades to MaxJumpPath, mirroring
+// the other bounded resolvers, so a mis-wired caller can never get a zero-bound search. A
+// store read failure fails CLOSED (a real error, never an empty "nothing is reachable").
+func (s *Service) StoredHopDistances(ctx context.Context, fromSystem string, targets []string, maxJumps int) (map[string]int, error) {
+	if maxJumps <= 0 {
+		maxJumps = MaxJumpPath
+	}
+	wanted := make(map[string]bool, len(targets))
+	for _, t := range targets {
+		if t != "" {
+			wanted[t] = true
+		}
+	}
+	distances := make(map[string]int, len(wanted))
+	if len(wanted) == 0 || fromSystem == "" {
+		return distances, nil
+	}
+	adjacency, err := s.store.Adjacency(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("stored hop distances from %s: failed to read stored gate adjacency: %w", fromSystem, err)
+	}
+	if wanted[fromSystem] {
+		distances[fromSystem] = 0
+	}
+	visited := map[string]bool{fromSystem: true}
+	frontier := []string{fromSystem}
+	for depth := 1; depth <= maxJumps && len(frontier) > 0; depth++ {
+		var next []string
+		for _, current := range frontier {
+			// An uncached system has no edges to expand and dead-ends here of its own accord;
+			// a stale one is dropped explicitly, its onward gates being past verification.
+			edges := adjacency[current]
+			if anyEdgeStale(edges) {
+				continue
+			}
+			for _, e := range edges {
+				if e.ConnectedSystem == "" || e.UnderConstruction || visited[e.ConnectedSystem] {
+					continue
+				}
+				visited[e.ConnectedSystem] = true
+				if wanted[e.ConnectedSystem] {
+					distances[e.ConnectedSystem] = depth
+				}
+				next = append(next, e.ConnectedSystem)
+			}
+		}
+		frontier = next
+	}
+	return distances, nil
+}
+
+// anyEdgeStale reports whether a stored edge set is stale. A system's edges are written in one
+// Replace under a single timestamp, so one stale row condemns the whole set.
+func anyEdgeStale(edges []system.GateEdge) bool {
+	for _, e := range edges {
+		if e.Stale {
+			return true
+		}
+	}
+	return false
+}
+
 // bfsPath is the pure breadth-first search over a neighbor function, extracted so
 // the traversal is unit-testable against an in-memory adjacency with no store,
 // API, or clock. It returns the shortest hop path (fewest jumps) from→to

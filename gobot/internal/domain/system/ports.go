@@ -107,13 +107,15 @@ type GateEdge struct {
 	// per-edge on refresh; fails CLOSED (treated true) when the neighbor's build
 	// state cannot be read.
 	UnderConstruction bool
-	// Stale is set only by Adjacency (the `system gates` overview): the row is a
-	// raw cache dump whose synced_at is empty/expired, so its UnderConstruction
-	// value is UNVERIFIED and will be re-probed on the next routing lookup. Routing
-	// reads (Edges) never surface a stale edge — a stale set reads as a miss and is
-	// re-fetched — so this is always false on the routing path. The verb
-	// annotates a stale edge distinctly so the captain's chart never presents an
-	// invalidated row as an authoritative built/unbuilt verdict.
+	// Stale is set only by Adjacency (the raw cache dump): the row's synced_at is
+	// empty/expired, so its UnderConstruction value is UNVERIFIED and will be
+	// re-probed on the next fetch-through lookup. Fetch-through reads (Edges) never
+	// surface a stale edge — a stale set reads as a miss and is re-fetched — so this
+	// is always false there. It matters to the two Adjacency consumers: the `system
+	// gates` verb annotates a stale edge distinctly so the captain's chart never
+	// presents an invalidated row as an authoritative built/unbuilt verdict, and the
+	// store-only distance walk refuses to route THROUGH a stale system rather than
+	// trusting onward gates the fetch-through resolver would have re-verified.
 	Stale bool
 }
 

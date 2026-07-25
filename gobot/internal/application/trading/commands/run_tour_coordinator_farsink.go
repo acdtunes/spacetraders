@@ -176,7 +176,7 @@ func (h *RunTourCoordinatorHandler) probeFarSink(
 	ctx context.Context, cmd *RunTourCoordinatorCommand, sinkSystem string, admitted []string, now time.Time,
 ) farSinkProbe {
 	probe := farSinkProbe{provenAgainst: len(admitted)}
-	reach, ok := h.farSinkReachAt(ctx, sinkSystem, admitted, cmd.PlayerID)
+	reach, ok := h.farSinkReachAt(ctx, sinkSystem, admitted)
 	if !ok {
 		metrics.RecordTourCandidateDropped(cmd.PlayerID, farSinkUnreachableReason, 1)
 		return probe
@@ -198,31 +198,32 @@ func (h *RunTourCoordinatorHandler) probeFarSink(
 	return probe
 }
 
-// farSinkReachAt resolves the candidate's gate distance to every already-admitted system
-// over the SAME durable-graph BFS the tour's hop matrix is built from, bounded by the
-// executor's strict flight cap. It reports ok=false the moment ONE admitted system is not
-// resolvable within that bound: an unreadable or over-long leg is a refusal, never an
-// optimistic guess. A breadth-truncated walk therefore refuses too, which is the safe side.
+// farSinkReachAt resolves the candidate's gate distance to every already-admitted system over
+// the PERSISTED gate adjacency, bounded by the executor's strict flight cap. It reports
+// ok=false the moment ONE admitted system is not resolvable within that bound: an unproven or
+// over-long leg is a refusal, never an optimistic guess.
+//
+// The distances come from the store alone (StoredHopDistances). Proving reach must not cost
+// API: a far sink sits in an under-explored region, so a fetch-through walk rooted there
+// misses its cache on most nodes and turns every admission attempt into a topology-fetch burst
+// — taken straight from a request budget the fleet needs for selling. Uncached topology is
+// therefore read as UNPROVEN and refused, which keeps the guard fail-closed at zero cost.
 func (h *RunTourCoordinatorHandler) farSinkReachAt(
-	ctx context.Context, sinkSystem string, admitted []string, playerID int,
+	ctx context.Context, sinkSystem string, admitted []string,
 ) (farSinkReach, bool) {
-	edges, _ := h.legs.repositionNeighborsWithinJumps(ctx, sinkSystem, playerID, gategraph.MaxJumpPath)
-	if len(edges) == 0 {
+	if h.legs.gateGraph == nil {
 		return farSinkReach{}, false
 	}
-	nearest := make(map[string]int, len(edges))
-	for _, edge := range edges {
-		if edge.system == "" || edge.hops <= 0 {
-			continue
-		}
-		if cur, seen := nearest[edge.system]; !seen || edge.hops < cur {
-			nearest[edge.system] = edge.hops
-		}
+	nearest, err := h.legs.gateGraph.StoredHopDistances(ctx, sinkSystem, admitted, gategraph.MaxJumpPath)
+	if err != nil {
+		return farSinkReach{}, false // the graph is unreadable — prove nothing, admit nothing
 	}
 	var reach farSinkReach
 	for _, sys := range admitted {
 		hops, resolved := nearest[sys]
-		if !resolved || hops > gategraph.MaxJumpPath {
+		// A zero distance would mean the sink IS this admitted system, which would price the
+		// haul as free and age its rows by nothing — refuse rather than let it through.
+		if !resolved || hops <= 0 || hops > gategraph.MaxJumpPath {
 			return farSinkReach{}, false // the executor cannot fly this leg — refuse the sink
 		}
 		if hops > reach.maxHops {
