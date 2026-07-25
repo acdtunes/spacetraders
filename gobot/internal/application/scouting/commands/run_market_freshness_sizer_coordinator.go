@@ -1519,14 +1519,18 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) retireMarketlessPosts(ctx co
 	if cmd.DryRun {
 		return 0
 	}
-	released := h.releaseOutOfScopePosts(ctx, cmd, posts, scope)
-	// FAIL-SAFE (the enumerate-the-rejected-class lesson): never mass-retire on an EMPTY
+	// FAIL-SAFE (the enumerate-the-rejected-class lesson): never mass-remove on an EMPTY
 	// census. A cold start, an era gap, or a transient read that surfaced zero market-bearing
 	// systems would otherwise remove EVERY standing post in one tick — a fleet-killer. With
-	// no census to compare against, retire nothing and wait for it to repopulate.
+	// no census to compare against, remove nothing and wait for it to repopulate.
+	//
+	// It covers the SCOPE pass as well as the retire sweep, and must run before both: the scope's
+	// discovery tier is drawn from that same census, so an empty one yields a scope with no
+	// discovery slots at all, and releasing against it un-mans everything outside the footprint.
 	if len(marketBearing) == 0 {
-		return released
+		return 0
 	}
+	released := h.releaseOutOfScopePosts(ctx, cmd, posts, scope)
 	logger := common.LoggerFromContext(ctx)
 	retired := released
 	for _, post := range posts {

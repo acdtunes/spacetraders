@@ -49,6 +49,23 @@ func newHaulerAt(t *testing.T, symbol, waypoint string) *navigation.Ship {
 	return ship
 }
 
+// newCommandFrigateAt builds the COMMAND frigate — the hull every era opens with. It is NOT
+// scout-type, so it anchors its system into the footprint from the first tick, which is what
+// makes a real opening fleet a NARROWED one however little it has traded.
+func newCommandFrigateAt(t *testing.T, symbol, waypoint string) *navigation.Ship {
+	t.Helper()
+	loc, err := shared.NewWaypoint(waypoint, 0, 0)
+	require.NoError(t, err)
+	fuel, err := shared.NewFuel(400, 400)
+	require.NoError(t, err)
+	cargo, err := shared.NewCargo(40, 0, nil)
+	require.NoError(t, err)
+	ship, err := navigation.NewShip(symbol, shared.MustNewPlayerID(1), loc, fuel, 400, 0, cargo, 40,
+		"FRAME_FRIGATE", "COMMAND", nil, navigation.NavStatusInOrbit)
+	require.NoError(t, err)
+	return ship
+}
+
 // newScoutAt is newScout at an explicit waypoint — used to prove a PROBE's position does not
 // anchor its own system into the footprint.
 func newScoutAt(t *testing.T, symbol, waypoint string) *navigation.Ship {
@@ -196,28 +213,84 @@ func TestSizer_ReleasesASystemOnlyAfterTheRetentionWindowElapses(t *testing.T) {
 	require.NotContains(t, pr.removed, "X1-ANCHOR")
 }
 
-// COLD START must not starve. Before the fleet has traded anywhere and while it has no hull
-// placed, there is no footprint to scope against — so the sizer senses the WHOLE census exactly
-// as it did before, and a fleet with no history can still earn one.
-func TestSizer_ColdStartWithEmptyFootprintSensesEveryMarketSystem(t *testing.T) {
+// COLD START must not starve, and this is the fleet an era actually opens with: a COMMAND
+// frigate and some probes, having traded nowhere. That fleet's scope is NARROWED from the first
+// tick — footprint is traded UNION occupied, and the frigate is not scout-type, so it anchors
+// its system with no trade history at all. The empty-footprint escape does not apply to any
+// fleet that owns a hull.
+//
+// What protects a cold start is therefore not an un-narrowed scope but the DISCOVERY ALLOWANCE
+// out-sizing a young census: while the untraded systems fit in the slots, every one of them
+// keeps a standing watch and nothing is released. The default allowance is what an opening
+// fleet runs, so this fixture pins the default rather than a smaller one.
+func TestSizer_ColdStartWithACommandFrigateIsNarrowedYetSensesEveryMarketSystem(t *testing.T) {
 	fr := &fakeFreshnessReader{snapshots: []domainScouting.SystemFreshnessSnapshot{
 		scopeSnap("X1-AA", 12, 600, 1),
 		scopeSnap("X1-BB", 12, 600, 1),
 		scopeSnap("X1-CC", 12, 600, 1),
 	}}
 	pr := newSizerPostRepo()
-	fl := &fakeSizerFleetRepo{all: scouts(t, 20)} // probes only — no trading hull placed yet
+	fl := &fakeSizerFleetRepo{all: append(scouts(t, 20), newCommandFrigateAt(t, "FRIGATE-1", "X1-HOME-A1"))}
 	h := newSizer(fr, pr, fl)
 	h.SetTourTelemetryReader(&fakeTourTelemetryReader{legs: nil}) // no trade history at all
-	h.SetLiveConfigReader(oneDiscoverySlot())
 
 	require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
 
 	declared := declaredSystems(pr)
 	for _, system := range []string{"X1-AA", "X1-BB", "X1-CC"} {
-		require.Contains(t, declared, system, "cold start senses every market-bearing system")
+		require.Contains(t, declared, system,
+			"a young census fits inside the discovery allowance, so every market-bearing system stays sensed")
 	}
 	require.Empty(t, pr.removed, "cold start releases nothing")
+}
+
+// The cold-start protection above is FINITE, and naming its real mechanism is the point of this
+// test: it is the allowance, not an absent footprint. Hold the same opening fleet and shrink the
+// allowance below the census, and the scope narrows for real — only the slotted system keeps a
+// watch. A fleet that owns a hull is always narrowed; the only question is whether the allowance
+// still covers what it knows.
+func TestSizer_ColdStartProtectionIsTheAllowanceNotAnAbsentFootprint(t *testing.T) {
+	fr := &fakeFreshnessReader{snapshots: []domainScouting.SystemFreshnessSnapshot{
+		scopeSnap("X1-AA", 12, 600, 1),
+		scopeSnap("X1-BB", 12, 600, 1),
+		scopeSnap("X1-CC", 12, 600, 1),
+	}}
+	pr := newSizerPostRepo()
+	fl := &fakeSizerFleetRepo{all: append(scouts(t, 20), newCommandFrigateAt(t, "FRIGATE-1", "X1-HOME-A1"))}
+	h := newSizer(fr, pr, fl)
+	h.SetTourTelemetryReader(&fakeTourTelemetryReader{legs: nil})
+	h.SetLiveConfigReader(oneDiscoverySlot())
+
+	require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
+
+	require.Len(t, declaredSystems(pr), 1,
+		"with the allowance below the census the scope genuinely narrows — an opening fleet is not exempt from narrowing, it is only covered by the slots")
+}
+
+// An EMPTY census releases NOTHING, even while the scope is narrowed. A census that surfaced
+// zero market-bearing systems is absent evidence, not evidence of absence — a truncated cache
+// after an era reset, or one transient read failure. The scope built from it is equally empty
+// of discovery slots, so acting on it would release every standing post outside the footprint
+// in a single tick and un-man the fleet's whole sensing frontier.
+//
+// The fleet here is a REAL opening fleet: a COMMAND frigate anchors its system, so the scope IS
+// narrowed and the empty-footprint escape does not apply. That combination — narrowed scope,
+// empty census — is the one the fail-safe exists for.
+func TestSizer_EmptyCensusReleasesNothingEvenWhileNarrowed(t *testing.T) {
+	fr := &fakeFreshnessReader{snapshots: nil} // census truncated / unreadable this tick
+	pr := newSizerPostRepo(
+		standingSizerPost("X1-AA", 2, "PROBE-A"),
+		standingSizerPost("X1-BB", 2, "PROBE-B"),
+		standingSizerPost("X1-CC", 2, "PROBE-C"),
+	)
+	fl := &fakeSizerFleetRepo{all: append(scouts(t, 20), newCommandFrigateAt(t, "FRIGATE-1", "X1-HOME-A1"))}
+	h := newSizer(fr, pr, fl)
+	h.SetTourTelemetryReader(&fakeTourTelemetryReader{legs: nil}) // read succeeds, no trades yet
+
+	require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
+
+	require.Empty(t, pr.removed,
+		"an empty census must release NO post — the scope derived from it carries no discovery tier, so acting on it un-mans the frontier in one tick")
 }
 
 // An unreadable telemetry read must NOT narrow the scope. Narrowing is the risky act — a system
