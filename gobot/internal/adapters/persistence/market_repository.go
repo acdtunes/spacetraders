@@ -806,7 +806,7 @@ func (r *MarketRepositoryGORM) FindBestMarketForBuying(
 	err := r.db.WithContext(ctx).
 		Table(marketDataTable).
 		Select("waypoint_symbol, good_symbol, sell_price, supply, activity, trade_type").
-		Where("player_id = player_id").
+		Where("player_id = ?", playerID).
 		Where("waypoint_symbol LIKE ?", systemSymbol+"-%").
 		Where("good_symbol = ?", goodSymbol).
 		Scan(&results).Error

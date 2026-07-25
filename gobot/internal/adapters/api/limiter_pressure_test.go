@@ -54,6 +54,64 @@ func TestLimiterPressure_HalfLifeDecay(t *testing.T) {
 		"two silent half-lives quarter it")
 }
 
+// Observe BLENDS with the decayed carry — it never replaces the level with
+// the latest wait. After settling at 100ms, a 0ms wait observed one half-life
+// later reads ~50ms, not 0: the surviving half of the old level plus half of
+// the new zero. A last-wait-wins implementation reads 0 here.
+func TestLimiterPressure_ObserveBlendsCarry_DropToZero(t *testing.T) {
+	halfLife := 30 * time.Second
+	p := NewLimiterPressure(halfLife)
+	start := time.Now()
+
+	p.Observe(100*time.Millisecond, start)
+	p.Observe(0, start.Add(halfLife))
+
+	require.InDelta(t, float64(50*time.Millisecond), float64(p.Current(start.Add(halfLife))), float64(2*time.Millisecond),
+		"one half-life of carry survives a zero observation — the EWMA blends, it does not replace")
+}
+
+// The blend also bounds spikes: one 10× wait at a small Δt barely moves the
+// reading, so a single slow call can never flip the rotation. A last-wait-wins
+// implementation jumps straight to the spike.
+func TestLimiterPressure_ObserveBlendsCarry_SpikeBarelyMoves(t *testing.T) {
+	p := NewLimiterPressure(30 * time.Second)
+	start := time.Now()
+
+	p.Observe(100*time.Millisecond, start)
+	at := start.Add(1 * time.Second)
+	p.Observe(1000*time.Millisecond, at)
+
+	current := p.Current(at)
+	require.Greater(t, current, 100*time.Millisecond, "the spike must register")
+	require.Less(t, current, 200*time.Millisecond,
+		"one spike at a 1s gap must move the smoothed reading only fractionally, never toward itself")
+}
+
+// SetHalfLife retunes the decay in place: a 2s half-life halves a 100ms level
+// in 2s (the untouched default would still read ~95ms there), and a
+// non-positive value falls back to the built-in default. Exercised through the
+// client's config seam (SetLimiterPressureHalfLife) so the boot wiring path is
+// the thing under test.
+func TestSpaceTradersClient_SetLimiterPressureHalfLife_RetunesDecay(t *testing.T) {
+	client := NewSpaceTradersClientWithConfig("http://unused", 0, time.Millisecond, nil)
+	client.SetLimiterPressureHalfLife(2 * time.Second)
+
+	tracker := client.LimiterPressure()
+	start := time.Now()
+	tracker.Observe(100*time.Millisecond, start)
+	require.InDelta(t, float64(50*time.Millisecond), float64(tracker.Current(start.Add(2*time.Second))), float64(2*time.Millisecond),
+		"a retuned 2s half-life must halve the level in 2s")
+
+	// Non-positive selects the built-in default (30s), mirroring the constructor.
+	fallback := NewSpaceTradersClientWithConfig("http://unused", 0, time.Millisecond, nil)
+	fallback.SetLimiterPressureHalfLife(-5 * time.Second)
+	tracker = fallback.LimiterPressure()
+	start = time.Now()
+	tracker.Observe(100*time.Millisecond, start)
+	require.InDelta(t, float64(50*time.Millisecond), float64(tracker.Current(start.Add(30*time.Second))), float64(2*time.Millisecond),
+		"a non-positive override must fall back to the 30s default")
+}
+
 // With no traffic the signal decays toward zero — a long-idle daemon reads no
 // pressure, so scanning is never shed on stale history.
 func TestLimiterPressure_DecaysTowardZeroWithSilence(t *testing.T) {

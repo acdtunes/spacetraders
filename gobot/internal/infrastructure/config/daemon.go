@@ -25,4 +25,13 @@ type DaemonConfig struct {
 	// from invalidating the cache on every credit-decreasing call, not the TTL —
 	// so tuning it never risks an over-spend. Sticky across restart via config.
 	AgentCacheTTLSeconds int `mapstructure:"agent_cache_ttl_seconds"`
+
+	// LimiterPressureHalfLifeSeconds is the smoothing half-life of the API
+	// client's rate-limiter-wait EWMA — the pressure signal the probe-sensing
+	// coordinator sheds scanning against. It governs how fast the fleet reacts
+	// to (and forgives) limiter contention: shorter reacts within a tick,
+	// longer rides out bursts. 0/unset selects the built-in default (30s).
+	// Wired at boot via SpaceTradersClient.SetLimiterPressureHalfLife
+	// (RULINGS #5: an operational tuning number, not a rebuild).
+	LimiterPressureHalfLifeSeconds int `mapstructure:"limiter_pressure_half_life_seconds"`
 }

@@ -122,6 +122,51 @@ func TestScoutTour_DormantMultiMarketCircuit_HoldsBeforeFirstLeg(t *testing.T) {
 		"two dormant checks sleep two full scan intervals in place")
 }
 
+// A standing post that goes dormant MID-LIFE parks between scan cycles: the
+// tour has already scanned once, the rotation sheds it, and for the whole hold
+// the market-read count is FROZEN — then the remaining cycles complete when
+// the bit clears. This is the production shape (rotation flips posts on a
+// running tour), and it is carried entirely by the hold inside the scan-cycle
+// loop: deleting that call site fails this test.
+func TestScoutTour_DormantMidLife_FreezesScanCycleThenResumes(t *testing.T) {
+	api := &countingScoutAPI{}
+	marketScanner := ship.NewMarketScanner(api, &fakeMarketStore{}, nil, nil)
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	h := NewScoutTourHandler(&fakeTourShipRepo{ship: scoutAt(t, scoutedYard)}, nil, marketScanner, nil, clock)
+
+	var getsWhileDormant []int
+	reader := &scriptedDormancy{
+		script: func(call int) (bool, error) {
+			dormant := call >= 2 && call <= 4
+			if dormant {
+				getsWhileDormant = append(getsWhileDormant, api.marketGets)
+			}
+			return dormant, nil
+		},
+	}
+	h.SetDormancyReader(reader)
+
+	before := clock.CurrentTime
+	_, err := h.Handle(tourCtx(), &ScoutTourCommand{
+		PlayerID:           shared.MustNewPlayerID(1),
+		ShipSymbol:         "PROBE-1",
+		Markets:            []string{scoutedYard},
+		Iterations:         3,
+		ScanInterval:       5 * time.Minute,
+		StartJitterMaxSecs: 1,
+	})
+	require.NoError(t, err)
+
+	require.Len(t, getsWhileDormant, 3,
+		"the scan-cycle loop must consult dormancy every cycle — going dormant mid-life parks via that call site")
+	for i, gets := range getsWhileDormant {
+		require.Equalf(t, 1, gets, "hold check %d: the read count must be frozen at the pre-hold scan", i+1)
+	}
+	require.Equal(t, 3, api.marketGets, "the remaining cycles complete once the bit clears")
+	require.GreaterOrEqual(t, clock.CurrentTime.Sub(before), 25*time.Minute,
+		"three parked intervals plus two live scan waits")
+}
+
 // A dormancy READ ERROR must fail toward scanning: the stub returns a wrong
 // dormant=true alongside the error, and the tour must scan anyway, immediately
 // — the error wins over the value, because a blind sensing signal must never

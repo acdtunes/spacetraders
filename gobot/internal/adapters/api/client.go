@@ -215,6 +215,16 @@ func (c *SpaceTradersClient) LimiterPressure() *LimiterPressure {
 	return c.limiterPressure
 }
 
+// SetLimiterPressureHalfLife overrides the pressure tracker's smoothing
+// half-life. Wired at daemon boot from
+// DaemonConfig.LimiterPressureHalfLifeSeconds via setter injection, so the
+// many NewSpaceTradersClient call sites stay untouched (the SetAgentCacheTTL
+// idiom, RULINGS #5). halfLife<=0 selects the built-in default. The tracker is
+// retuned IN PLACE, so consumers already holding it never go stale.
+func (c *SpaceTradersClient) SetLimiterPressureHalfLife(halfLife time.Duration) {
+	c.limiterPressure.SetHalfLife(halfLife)
+}
+
 // acquireRateToken acquires exactly ONE token from the shared rate limiter before
 // an API attempt, ordered by the call's priority (endpoint classification,
 // overridable via WithPriority). Every token still comes from the SAME limiter,

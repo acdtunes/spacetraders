@@ -41,6 +41,22 @@ func NewLimiterPressure(halfLife time.Duration) *LimiterPressure {
 	return &LimiterPressure{halfLife: halfLife}
 }
 
+// SetHalfLife retunes the smoothing half-life in place, preserving the tracker
+// pointer so consumers wired through the client accessor never go stale. A
+// non-positive value selects defaultLimiterPressureHalfLife, mirroring the
+// constructor. Nil-safe.
+func (p *LimiterPressure) SetHalfLife(halfLife time.Duration) {
+	if p == nil {
+		return
+	}
+	if halfLife <= 0 {
+		halfLife = defaultLimiterPressureHalfLife
+	}
+	p.mu.Lock()
+	p.halfLife = halfLife
+	p.mu.Unlock()
+}
+
 // Observe blends one rate-limiter wait into the EWMA. Nil-safe: a zero-value
 // client without a tracker simply records nothing.
 func (p *LimiterPressure) Observe(wait time.Duration, at time.Time) {

@@ -275,9 +275,11 @@ func (h *ScoutTourHandler) waitStartJitter(ctx context.Context, cmd *ScoutTourCo
 // re-checks after each sleep, resuming the moment the rotation clears the bit.
 // A read ERROR reads as not-dormant even when the value alongside it says
 // otherwise: sensing is the fleet's sensor, and a blind signal must fail
-// toward scanning, never silently park the fleet. Returns false when ctx was
-// cancelled during the hold, mirroring sleepInterruptibly's contract.
-func (h *ScoutTourHandler) holdWhileDormant(ctx context.Context, cmd *ScoutTourCommand) bool {
+// toward scanning, never silently park the fleet; the failure is WARNed at
+// most once per circuit/cycle (the error path returns immediately). Returns
+// false when ctx was cancelled during the hold, mirroring
+// sleepInterruptibly's contract.
+func (h *ScoutTourHandler) holdWhileDormant(ctx context.Context, cmd *ScoutTourCommand, response *ScoutTourResponse) bool {
 	if h.dormancy == nil || len(cmd.Markets) == 0 {
 		return true
 	}
@@ -286,7 +288,16 @@ func (h *ScoutTourHandler) holdWhileDormant(ctx context.Context, cmd *ScoutTourC
 	logger := common.LoggerFromContext(ctx)
 	for {
 		dormant, err := h.dormancy.IsDormant(ctx, cmd.PlayerID.Value(), system)
-		if err != nil || !dormant {
+		if err != nil {
+			logger.Log("WARN", "Dormancy read failed — scanning anyway", map[string]interface{}{
+				"ship_symbol": cmd.ShipSymbol,
+				"action":      "dormancy_read_failed",
+				"system":      system,
+				"error":       err.Error(),
+			})
+			return true
+		}
+		if !dormant {
 			return true
 		}
 		logger.Log("INFO", "Scout post dormant — parking in place", map[string]interface{}{
@@ -296,6 +307,11 @@ func (h *ScoutTourHandler) holdWhileDormant(ctx context.Context, cmd *ScoutTourC
 			"duration":    interval.String(),
 		})
 		if !h.sleepInterruptibly(ctx, interval) {
+			logger.Log("INFO", "Scout tour cancelled by context", map[string]interface{}{
+				"ship_symbol":          cmd.ShipSymbol,
+				"action":               "tour_cancelled",
+				"iterations_completed": response.Iterations,
+			})
 			return false
 		}
 	}
@@ -332,7 +348,7 @@ func (h *ScoutTourHandler) executeStationaryScout(
 ) error {
 	// Dormancy gates the FIRST visit too: a post parked before the probe ever
 	// flew must not spend the navigate + initial scan.
-	if !h.holdWhileDormant(ctx, cmd) {
+	if !h.holdWhileDormant(ctx, cmd, response) {
 		return nil
 	}
 
@@ -461,7 +477,7 @@ func (h *ScoutTourHandler) continuousMarketScanning(
 	for iteration := 1; iteration < cmd.Iterations || cmd.Iterations == -1; iteration++ {
 		// A stationary post's scan cycle is its circuit: a dormant post skips
 		// the scan and sleeps in place instead (zero API), waking in turn.
-		if !h.holdWhileDormant(ctx, cmd) {
+		if !h.holdWhileDormant(ctx, cmd, response) {
 			return nil
 		}
 
@@ -549,7 +565,7 @@ func (h *ScoutTourHandler) executeMultiMarketTour(
 		// Circuit start is the dormancy gate: a parked circuit never flies its
 		// first leg, and the hold consumes no iteration — when the post wakes,
 		// this circuit flies in full.
-		if !h.holdWhileDormant(ctx, cmd) {
+		if !h.holdWhileDormant(ctx, cmd, response) {
 			return nil
 		}
 
