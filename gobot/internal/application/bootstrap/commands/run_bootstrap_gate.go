@@ -509,34 +509,89 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyGateWorker(ctx context.Context,
 // own all growth from here). The hand-off launches the fleet-autosizer (OFF the whole bootstrap run so
 // the two never bid against one treasury) and the other standing coordinators, exactly ONCE — guarded on
 // obs.AutosizerRunning, so a restart post-gate re-observes the autosizer running and skips straight to
-// exit (terminal idempotency, spec §Architecture). The loop exits only once the hand-off is confirmed
-// (autosizer running or launched this tick); a blocked hand-off holds and retries.
+// exit (terminal idempotency, spec §Architecture).
+//
+// TERMINATION IS DRIVEN BY THE WORLD, NOT BY THE HAND-OFF'S OUTCOME. Reaching this phase already means the
+// home jump gate reads BUILT — bootstrap's own terminal goal — so there is no cold-start work left whatever
+// the launcher does. A confirmed hand-off exits immediately; an unconfirmed one is retried for
+// expansionHandoffRetryTicks consecutive ticks and then exits anyway, because bootstrap is boot-standing
+// and every launch is idempotent — the retry continues at the next daemon boot rather than every tick
+// forever. That bound is load-bearing on a MATURE fleet: this coordinator's whole tick-cadence budget
+// assumes it exits once the gate is built, and each tick it does not costs a fully-paginated fleet re-read
+// against an account-wide request limit that fleet growth cannot raise.
+//
+// The distinction that keeps this safe is in the SIGNAL, not here: obs.ConstructionComplete is a positive
+// live-API assertion, and every read miss on the gate-snapshot path leaves it false, so an unreadable or
+// undiscovered world holds the arc in a cold-start phase and can never reach this function.
 func (h *RunBootstrapCoordinatorHandler) actExpansion(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
+	// Cold-start scaling launches the fleet autosizer EARLY, so when it is already running
+	// launchHandoff's autosizer-gated path (which ALSO launches the standing coordinators) is skipped and
+	// the standing half still has to be ensured here. An autosizer-running-but-standing-absent state can
+	// only arise under that early launch — the normal hand-off launches both in one call.
+	handedOff := false
 	if !obs.AutosizerRunning {
 		h.launchHandoff(ctx, cmd, cfg, res)
-	} else if !h.ensureStandingHandoff(ctx, cmd, cfg, res) {
-		// sp-sjvv: cold-start scaling launched the fleet autosizer EARLY (unconditional now), so it is
-		// already running here and launchHandoff's autosizer-gated path (which ALSO launches the standing
-		// coordinators) is skipped — but siting + worker-rebalancer still have to be started (the early
-		// launch only started the autosizer, and siting has no other launch path). Ensure them now; if they
-		// cannot be confirmed this tick, HOLD (return without setting Done) and retry next tick, so bootstrap
-		// never exits with the mature economy half-handed-off. An autosizer-running-but-standing-coordinators-
-		// absent state can only arise under the early launch (the normal hand-off launches both in one call).
+		handedOff = res.HandoffLaunched
+	} else {
+		handedOff = h.ensureStandingHandoff(ctx, cmd, cfg, res)
+	}
+
+	if !handedOff {
+		// Hold and retry while the fault could still be transient, so a fleet that has only just finished
+		// its gate exits with the standing economy confirmed live rather than on the bounded path.
+		if held := h.bumpExpansionHoldStreak(cmd.ContainerID); held < expansionHandoffRetryTicks {
+			return
+		}
+		h.resetExpansionHoldStreak(cmd.ContainerID)
+		res.Done = true
+		logger.Log("WARN", fmt.Sprintf("Bootstrap EXPANSION — the jump gate is built, so bootstrap's own work is finished, but the hand-off could not be confirmed in %d consecutive ticks (blocker=%s); exiting anyway rather than holding a mature fleet in a per-tick full-fleet re-read. Bootstrap is boot-standing and the hand-off launches are idempotent, so the next daemon boot retries it", expansionHandoffRetryTicks, blockerOrNone(res.Blocker)), map[string]interface{}{
+			"action":       "bootstrap_complete_unconfirmed_handoff",
+			"container_id": cmd.ContainerID,
+			"blocker":      res.Blocker,
+		})
 		return
 	}
 
-	// Terminal exit: only once the standing economy is confirmed live (autosizer already running, or the
-	// hand-off launched successfully this tick). A blocked/failed hand-off leaves Done false so the tick
-	// retries — bootstrap never exits having left the fleet un-handed-off.
-	if obs.AutosizerRunning || res.HandoffLaunched {
-		res.Done = true
-		logger.Log("INFO", "Bootstrap EXPANSION — the jump gate is built and the standing economy is handed off (fleet-autosizer + coordinators live); steady-state growth (probe-buying era) begins and the bootstrap coordinator is exiting (its job is done)", map[string]interface{}{
-			"action":       "bootstrap_complete",
-			"container_id": cmd.ContainerID,
-		})
+	h.resetExpansionHoldStreak(cmd.ContainerID)
+	res.Done = true
+	logger.Log("INFO", "Bootstrap EXPANSION — the jump gate is built and the standing economy is handed off (fleet-autosizer + coordinators live); steady-state growth (probe-buying era) begins and the bootstrap coordinator is exiting (its job is done)", map[string]interface{}{
+		"action":       "bootstrap_complete",
+		"container_id": cmd.ContainerID,
+	})
+}
+
+// bumpExpansionHoldStreak increments and returns the per-container count of consecutive EXPANSION ticks
+// whose hand-off could not be confirmed. Keyed by ContainerID like the other per-container state because
+// this handler is a REGISTERED SINGLETON; the mutex guards the map, and one container's ticks are
+// sequential so the count is only ever advanced by a single goroutine.
+func (h *RunBootstrapCoordinatorHandler) bumpExpansionHoldStreak(containerID string) int {
+	h.expansionHoldStreakMu.Lock()
+	defer h.expansionHoldStreakMu.Unlock()
+	if h.expansionHoldStreaks == nil {
+		h.expansionHoldStreaks = map[string]int{}
 	}
+	h.expansionHoldStreaks[containerID]++
+	return h.expansionHoldStreaks[containerID]
+}
+
+// resetExpansionHoldStreak clears the streak once the terminal exit is taken, so a container relaunched
+// under the same ID starts its retry window fresh.
+func (h *RunBootstrapCoordinatorHandler) resetExpansionHoldStreak(containerID string) {
+	h.expansionHoldStreakMu.Lock()
+	defer h.expansionHoldStreakMu.Unlock()
+	if h.expansionHoldStreaks != nil {
+		delete(h.expansionHoldStreaks, containerID)
+	}
+}
+
+// blockerOrNone renders an empty blocker as "none" for the log line.
+func blockerOrNone(blocker string) string {
+	if blocker == "" {
+		return "none"
+	}
+	return blocker
 }
 
 // ensureStandingHandoff finishes the EXPANSION hand-off for the sp-sjvv case where the fleet autosizer was
@@ -552,7 +607,7 @@ func (h *RunBootstrapCoordinatorHandler) ensureStandingHandoff(ctx context.Conte
 	logger := common.LoggerFromContext(ctx)
 
 	if cfg.DryRun {
-		logger.Log("INFO", "Bootstrap DRY-RUN: the autosizer was launched early — WOULD launch the standing coordinators (siting + worker-rebalancer) to finish the hand-off (took no action, and holds rather than exiting)", map[string]interface{}{
+		logger.Log("INFO", "Bootstrap DRY-RUN: the autosizer was launched early — WOULD launch the standing coordinators (siting + worker-rebalancer) to finish the hand-off (took no action)", map[string]interface{}{
 			"action":       "bootstrap_would_finish_handoff",
 			"container_id": cmd.ContainerID,
 		})
@@ -590,7 +645,7 @@ func (h *RunBootstrapCoordinatorHandler) launchHandoff(ctx context.Context, cmd 
 	logger := common.LoggerFromContext(ctx)
 
 	if cfg.DryRun {
-		logger.Log("INFO", "Bootstrap DRY-RUN: WOULD launch the fleet-autosizer + standing coordinators as the EXPANSION hand-off (took no action, and holds rather than exiting)", map[string]interface{}{
+		logger.Log("INFO", "Bootstrap DRY-RUN: WOULD launch the fleet-autosizer + standing coordinators as the EXPANSION hand-off (took no action)", map[string]interface{}{
 			"action":       "bootstrap_would_handoff",
 			"container_id": cmd.ContainerID,
 		})

@@ -157,6 +157,23 @@ const (
 	// re-derive one window), never double-acts (the re-derive is a pure phase relabel — no spend, no
 	// assignment). 3 ticks ≈ 2.25 min at the 45s cold-start cadence.
 	defaultGateReentryStreakTicks = 3
+
+	// expansionHandoffRetryTicks bounds how many CONSECUTIVE ticks the terminal EXPANSION phase
+	// re-attempts an UNCONFIRMED hand-off before exiting anyway. EXPANSION is terminal on the WORLD
+	// signal — the home jump gate is BUILT — so the only open question is where an unconfirmable
+	// hand-off gets retried: in-process every tick, or at the next daemon boot. Bootstrap is
+	// boot-standing and every hand-off launch is idempotent, so the bounded exit still retries — once
+	// per boot instead of forever.
+	//
+	// The bound is what keeps BOTH failure modes covered. A TRANSIENT launcher fault is fully inside the
+	// window (it succeeds on a later tick and exits with the hand-off confirmed, so a fleet that has just
+	// finished its gate never exits half-handed-off). A PERSISTENT one — a launcher that is down, absent,
+	// or observe-only — can no longer pin the coordinator in a per-tick full-fleet re-read on a mature
+	// fleet, where that loop costs a double-digit share of the account-wide (unraisable) request budget
+	// while achieving nothing. In-memory per container and fails SAFE on restart: a dropped streak just
+	// re-accrues from 0, and the exit is a pure loop-exit (no spend, no assignment), so it never
+	// double-acts. 3 ticks ≈ 2.25 min at the 45s cadence.
+	expansionHandoffRetryTicks = 3
 )
 
 // ShipRefresher forces a live re-read of the player's hulls before any role/assignment decision —
@@ -473,6 +490,16 @@ type RunBootstrapCoordinatorHandler struct {
 	// restart (the re-derive just re-accrues from 0, delaying one window, never double-acting).
 	underScaledStreakMu sync.Mutex
 	underScaledStreaks  map[string]int
+
+	// expansionHoldStreaks holds the per-container terminal-exit hysteresis counter: consecutive EXPANSION
+	// ticks whose hand-off could not be confirmed, so the bounded exit fires only after
+	// expansionHandoffRetryTicks in a row (a transient launcher fault still exits with the hand-off
+	// confirmed). Keyed by ContainerID for the same singleton reason as underScaledStreaks;
+	// expansionHoldStreakMu guards the MAP only (one container's ticks are sequential). NOT a progress
+	// cursor — dropped on restart, where it simply re-accrues from 0 and the exit is a pure loop-exit
+	// (no spend, no assignment), so it can never double-act.
+	expansionHoldStreakMu sync.Mutex
+	expansionHoldStreaks  map[string]int
 
 	// haulerPrices holds the per-container LAST READABLE contract-hauler price (sp-muc5x): the most recent
 	// presence-gated hauler shipyard ask this coordinator observed. It is cached so the INCOME first-hauler
