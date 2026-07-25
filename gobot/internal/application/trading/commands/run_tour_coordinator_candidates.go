@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 
+	"github.com/andrescamacho/spacetraders-go/internal/application/system/gategraph"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
@@ -117,12 +118,14 @@ func (h *RunTourCoordinatorHandler) tourInterSystemHops(
 	if cmd.MaxTourSystems <= 2 || h.legs.gateGraph == nil || len(allowedSystems) < 2 {
 		return nil
 	}
-	// The BFS bound must span the widest pairwise distance among allowed systems. They sit within
-	// effectiveCandidateHopDepth gate hops of home, so any two are within twice that (via home). At
-	// least 2, since repositionNeighborsWithinJumps only walks past 1 hop when maxJumps > 1.
+	// The BFS bound must span the widest pairwise distance among allowed systems. Candidate-walk
+	// systems sit within effectiveCandidateHopDepth gate hops of home, so any two are within twice
+	// that (via home); an admitted far sink sits within the executor's flight bound of every other
+	// allowed system, so the bound must clear that too — an unresolved pair defaults to 1 hop in
+	// the solver, which is the underpricing this map exists to remove.
 	bound := 2 * h.effectiveCandidateHopDepth(cmd)
-	if bound < 2 {
-		bound = 2
+	if bound < gategraph.MaxJumpPath {
+		bound = gategraph.MaxJumpPath
 	}
 	allowed := make(map[string]bool, len(allowedSystems))
 	for _, s := range allowedSystems {

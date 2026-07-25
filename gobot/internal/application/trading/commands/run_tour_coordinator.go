@@ -1873,7 +1873,16 @@ func (h *RunTourCoordinatorHandler) planForState(
 	// the default path is byte-identical. This is the tour cargo universe only — refueling
 	// is a separate command that never reads this snapshot.
 	snapshot = filterBlocklistedCargo(snapshot, h.cargoBlocklist)
-	// sp-mtvg: make the 1-gate-hop horizon's dropped exotic lanes LOUD. Best-effort and
+	// Pull the richest sinks the gate-neighbour horizon HIDES back into the tour graph,
+	// behind an explicit bound and only where reach and freshness both survive the haul
+	// (admitFarSinks). Empty whenever the bound, the guards or the wiring say so, leaving
+	// the graph exactly as the candidate walk produced it.
+	far := h.admitFarSinks(ctx, cmd, allowedSystems, snapshot)
+	allowedSystems = append(append([]string(nil), allowedSystems...), far.systems...)
+	snapshot = append(snapshot, far.rows...)
+	waypoints = append(waypoints, far.waypoints...)
+	// sp-mtvg: make the horizon's dropped exotic lanes LOUD. Read against the FINAL graph,
+	// so what it counts is the value still out of reach after capture. Best-effort and
 	// read-only — it never touches snapshot/plan and any error is swallowed (RULINGS #4).
 	h.recordUnreachableLanes(ctx, allowedSystems, snapshot, cmd.PlayerID)
 	// Assemble haul-to-storage deposit candidates for the planner to price against arb
@@ -1925,7 +1934,9 @@ func (h *RunTourCoordinatorHandler) planForState(
 		// prices a cross-system crossing by its REAL hop count instead of a flat 1 hop. Empty
 		// at the default cap (every crossing is a single hop the flat charge prices exactly) =>
 		// byte-identical to today; only a widened horizon (MaxTourSystems > 2) populates it.
-		InterSystemHops: h.tourInterSystemHops(ctx, allowedSystems, cmd),
+		// A far sink's distances are merged in from the reachability check that ADMITTED it,
+		// so the crossing is priced on exactly the hops the guard verified.
+		InterSystemHops: mergeInterSystemHops(h.tourInterSystemHops(ctx, allowedSystems, cmd), far.hops),
 		// Recovery-externality charge. 0 (the unarmed default) leaves
 		// the solver's pairing order untouched; a positive weight makes a hull prefer the
 		// sink the fleet is not still recovering at equal spread. PREFERENCE only — the

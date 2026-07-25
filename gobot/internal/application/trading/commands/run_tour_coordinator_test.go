@@ -477,6 +477,10 @@ type tourFakeRoutingClient struct {
 	// the planner as false/"" — the dormant proto3 default, byte-identical to today.
 	closed        []bool
 	anchorSystems []string
+	// allowedSystems captures cons.AllowedSystems on each call: the tour graph the solver was
+	// allowed to route over. It is the seam a far-sink capture test asserts against — a sink
+	// system absent here was never even visible to the planner.
+	allowedSystems [][]string
 	// interSystemHops captures cons.InterSystemHops on each call (sp-tp5c3): the gate-graph
 	// feed a coordinator-level pin asserts against — the per-pair gate-hop distances that ride
 	// the widened horizon so the solver prices multi-hop crossings honestly. Unwidened must
@@ -507,6 +511,7 @@ func (c *tourFakeRoutingClient) OptimizeTradeTour(ctx context.Context, snapshot 
 	c.maxTourSystems = append(c.maxTourSystems, cons.MaxTourSystems)
 	c.closed = append(c.closed, cons.Closed)
 	c.anchorSystems = append(c.anchorSystems, cons.AnchorSystem)
+	c.allowedSystems = append(c.allowedSystems, cons.AllowedSystems)
 	c.interSystemHops = append(c.interSystemHops, cons.InterSystemHops)
 	c.absorptions = append(c.absorptions, absorption)
 	held := map[string]int{}
