@@ -760,8 +760,15 @@ func run(cfg *config.Config) error {
 	// (default ON; an explicit [routing] skip_uncharted_gate_fetch:false restores probe-
 	// then-backoff). A nil switch defaults ON, matching SetDefaults.
 	skipUnchartedGateFetch := cfg.Routing.SkipUnchartedGateFetch == nil || *cfg.Routing.SkipUnchartedGateFetch
+	// A gate-set refresh re-reads EVERY connected gate's build state, and a set expires
+	// as a whole — so one neighbour still under construction drags its healthy siblings
+	// onto the short window and re-confirms verdicts that cannot have changed (gate
+	// construction is monotone). This probe answers those from the same era-scoped,
+	// freshness-bounded row the routing cache already trusts; every uncertain case still
+	// goes live. Scoped to the gate graph, the only consumer of the per-gate read.
+	gateProbeClient := api.NewGateConstructionProbe(apiClient, gateEdgeRepo)
 	gateGraphService := gategraph.NewService(
-		gateEdgeRepo, apiClient, graphService, playerRepo,
+		gateEdgeRepo, gateProbeClient, graphService, playerRepo,
 		// sp-ikx1: back off re-probing an unreadable jump gate (5m→30m→2h) instead of
 		// re-fetching it every reconcile tick — the negative-result backoff is persisted
 		// on the gate_edges row so a restart resumes it rather than re-storming the API.
