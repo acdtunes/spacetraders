@@ -56,6 +56,16 @@ type ContainerRepository interface {
 	Remove(ctx context.Context, containerID string, playerID int) error
 }
 
+// JumpTopologyStore answers a jump's two topology questions from the persisted gate
+// graph the router already maintains: which gate waypoint a hop leaves for, and whether
+// a gate has finished building. Both are era-scoped and freshness-bounded by the store,
+// and both report a miss for anything uncertain, so the handler falls through to the
+// live read rather than acting on a guess.
+type JumpTopologyStore interface {
+	StoredGateWaypoint(ctx context.Context, fromSystem, toSystem string) (string, bool, error)
+	RecordedBuiltGate(ctx context.Context, gateWaypoint string) (bool, error)
+}
+
 // JumpShipHandler handles the JumpShip command with auto-navigation
 type JumpShipHandler struct {
 	shipRepo         domainNavigation.ShipRepository
@@ -66,6 +76,14 @@ type JumpShipHandler struct {
 	constructionRepo manufacturing.ConstructionSiteRepository
 	clock            shared.Clock
 	playerResolver   *common.PlayerResolver
+	topologyStore    JumpTopologyStore
+}
+
+// SetJumpTopologyStore attaches the persisted gate graph so a jump can answer its
+// topology questions without spending API requests. Optional: a nil store leaves the
+// live reads exactly as they were.
+func (h *JumpShipHandler) SetJumpTopologyStore(store JumpTopologyStore) {
+	h.topologyStore = store
 }
 
 // NewJumpShipHandler creates a new JumpShipHandler. If clock is nil, uses
@@ -494,6 +512,15 @@ const jumpGateReadRetryBackoff = 750 * time.Millisecond
 func (h *JumpShipHandler) resolveDestinationGateWaypoint(ctx context.Context, originGateSymbol, destinationSystem, token string) (string, error) {
 	originSystem := shared.ExtractSystemSymbol(originGateSymbol)
 	logger := common.LoggerFromContext(ctx)
+	// The router already recorded this hop's destination gate, written from this very
+	// origin gate's connections list — the same string the live read returns, for a
+	// symbol that does not change within an era. A miss, a stale row, or any store
+	// failure falls through to the live reads below unchanged.
+	if h.topologyStore != nil {
+		if waypoint, ok, err := h.topologyStore.StoredGateWaypoint(ctx, originSystem, destinationSystem); err == nil && ok && waypoint != "" {
+			return waypoint, nil
+		}
+	}
 	for attempt := 0; attempt < maxJumpGateReadAttempts; attempt++ {
 		gateData, err := h.apiClient.GetJumpGate(ctx, originSystem, originGateSymbol, token)
 		if err != nil {
@@ -540,6 +567,15 @@ func findDestinationGateWaypoint(connections []string, destinationSystem string)
 // repository configured, or the lookup itself failed) - callers should fail
 // open on error rather than block an otherwise-legal jump.
 func (h *JumpShipHandler) sourceGateComplete(ctx context.Context, waypointSymbol string, playerID int) (bool, error) {
+	// A gate the router already recorded as finished cannot have gone back to being
+	// built, so re-reading it costs a request to learn nothing. Only that verdict is
+	// taken from the record; anything else — not recorded, still building, stale, or a
+	// store failure — is verified live below.
+	if h.topologyStore != nil {
+		if built, err := h.topologyStore.RecordedBuiltGate(ctx, waypointSymbol); err == nil && built {
+			return true, nil
+		}
+	}
 	if h.constructionRepo == nil {
 		return false, fmt.Errorf("construction repository not configured")
 	}

@@ -766,6 +766,11 @@ func run(cfg *config.Config) error {
 	// construction is monotone). This probe answers those from the same era-scoped,
 	// freshness-bounded row the routing cache already trusts; every uncertain case still
 	// goes live. Scoped to the gate graph, the only consumer of the per-gate read.
+	// A jump asks two topology questions the router has already answered and stored:
+	// which gate waypoint the hop leaves for, and whether the source gate is built.
+	// Attached here, where the store exists; the handler keeps its live reads for
+	// anything the store does not hold.
+	jumpShipHandler.SetJumpTopologyStore(gateEdgeRepo)
 	gateProbeClient := api.NewGateConstructionProbe(apiClient, gateEdgeRepo)
 	gateGraphService := gategraph.NewService(
 		gateEdgeRepo, gateProbeClient, graphService, playerRepo,
