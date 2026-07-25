@@ -785,6 +785,10 @@ func run(cfg *config.Config) error {
 	// graph, market scanner, and shipyard scanner the gate-nav path uses, plus the
 	// graph provider as its waypoint source. Its callers are the frontier explorer
 	// dispatcher and the `ship warp` verb wired just below.
+	// The onward-viability reader answers the one strand question the API does not:
+	// whether a system a warp lands in can be LEFT again. It reuses the SAME
+	// fetch-through waypoint source (so an uncharted destination answers truthfully
+	// instead of reading as empty) and the same gate-edge store the routing BFS reads.
 	warpWaypointSource := ship.NewGraphWaypointSource(graphService)
 	routeExecutor.WithWarpSupport(
 		ship.NewAPIWarpNavigator(apiClient),
@@ -794,6 +798,7 @@ func run(cfg *config.Config) error {
 			marketScanner,
 			shipyardScanner,
 		),
+		ship.NewSystemEscapeReader(warpWaypointSource, gateEdgeRepo),
 	)
 
 	// The `ship warp` verb: the operator entry point to the warp executor just wired

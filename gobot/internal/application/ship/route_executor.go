@@ -52,11 +52,12 @@ type RouteExecutor struct {
 	shipEventSubscriber domainNavigation.ShipEventSubscriber
 
 	// Off-gate warp support, attached post-construction via WithWarpSupport so every
-	// existing NewRouteExecutor call site is unchanged. Both nil until wired:
-	// ExecuteWarpRoute fails closed when warpNavigator is absent, and chart-on-arrival
-	// is skipped when systemCharter is absent.
-	warpNavigator WarpNavigator
-	systemCharter SystemCharter
+	// existing NewRouteExecutor call site is unchanged. All nil until wired:
+	// ExecuteWarpRoute fails closed when warpNavigator or warpEscapeReader is absent,
+	// and chart-on-arrival is skipped when systemCharter is absent.
+	warpNavigator    WarpNavigator
+	systemCharter    SystemCharter
+	warpEscapeReader WarpEscapeReader
 }
 
 // NewRouteExecutor creates a new route executor
@@ -106,12 +107,16 @@ func NewRouteExecutor(
 // existing call site - stays untouched; warp is an additive capability, inert
 // until a caller (slice C's explorer) invokes ExecuteWarpRoute.
 //
-// warpNavigator is the API boundary a warp leg crosses. charter may be nil, in
-// which case chart-on-arrival is skipped (the warp still executes). Intended to
-// be called once at wiring time, before the executor is used concurrently.
-func (e *RouteExecutor) WithWarpSupport(warpNavigator WarpNavigator, charter SystemCharter) *RouteExecutor {
+// warpNavigator is the API boundary a warp leg crosses; escapeReader answers whether
+// a destination system can be LEFT again, and a nil one refuses every warp (a safety
+// guard must never be bypassable by omission - it is a parameter rather than an
+// option so the compiler names every wiring site). charter may be nil, in which case
+// chart-on-arrival is skipped (the warp still executes). Intended to be called once
+// at wiring time, before the executor is used concurrently.
+func (e *RouteExecutor) WithWarpSupport(warpNavigator WarpNavigator, charter SystemCharter, escapeReader WarpEscapeReader) *RouteExecutor {
 	e.warpNavigator = warpNavigator
 	e.systemCharter = charter
+	e.warpEscapeReader = escapeReader
 	return e
 }
 

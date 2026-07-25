@@ -20,8 +20,9 @@ import (
 // issued to a WAYPOINT, so we resolve one here via the graph waypoint source (which lists a system's
 // waypoints). If resolution yields nothing (an uncharted system whose waypoints the graph does not yet
 // know), the dispatch fail-CLOSES: it logs and warps nothing — no strand, no spend. Slice-A
-// ExecuteWarpRoute independently fail-closes on any fuel-strand or missing-warp-drive (ErrWarpWouldStrand
-// / ErrShipHasNoWarpDrive), so even an imperfect arrival waypoint can only cause a logged refusal.
+// ExecuteWarpRoute independently fail-closes on an unleavable destination, an unaffordable leg, or a
+// missing warp drive (ErrWarpDeadEnd / ErrWarpWouldStrand / ErrShipHasNoWarpDrive), so even an
+// imperfect arrival waypoint can only cause a logged refusal.
 
 // warpRouteRunner is the slice-A warp entrypoint (satisfied by *ship.RouteExecutor.ExecuteWarpRoute).
 type warpRouteRunner interface {

@@ -3,12 +3,14 @@ package ship
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/mediator"
 	"github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
 	domainNavigation "github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
@@ -20,19 +22,73 @@ import (
 // destination - the fuel numbers are injected by the test, never recomputed from
 // the production cost formula, so a fuel assertion cannot be a circular echo of
 // the code under test.
+//
+// refusals is the queue of errors successive Warp calls return before the canned
+// success: it is how a test drives the SERVER's authoritative fuel refusal
+// through the executor without an HTTP round trip.
 type fakeWarpNavigator struct {
 	fuelAfter map[string]int // destination waypoint symbol -> ship fuel reported after warp
+	refusals  []error        // consumed one per call; a nil entry means "this call succeeds"
 	calls     []string       // destination waypoint symbols, in call order
 }
 
 func (f *fakeWarpNavigator) Warp(_ context.Context, ship *domainNavigation.Ship, destination *shared.Waypoint, _ shared.PlayerID) (*domainNavigation.Result, error) {
 	f.calls = append(f.calls, destination.Symbol)
+	if len(f.refusals) > 0 {
+		refusal := f.refusals[0]
+		f.refusals = f.refusals[1:]
+		if refusal != nil {
+			return nil, refusal
+		}
+	}
 	return &domainNavigation.Result{
 		Destination:    destination.Symbol,
 		ArrivalTimeStr: "", // empty => executor settles arrival immediately (no event wait)
 		FuelCurrent:    f.fuelAfter[destination.Symbol],
 		FuelCapacity:   ship.Fuel().Capacity,
 	}, nil
+}
+
+// warpInsufficientFuel reproduces the live API's pre-flight warp refusal verbatim:
+// a 400 carrying code 4203 and the SERVER's own fuelRequired/fuelAvailable, wrapped
+// exactly as the API client wraps it. Both observed refusals (831/800 and 1144/798)
+// have this shape. The hull does not move, so a test using it asserts on a ship that
+// is still at its origin.
+func warpInsufficientFuel(required, available int) error {
+	body := fmt.Sprintf(
+		`{"error":{"message":"Warp request failed. Ship EXPLORER-1 requires %d more fuel for navigation.","code":4203,"data":{"fuelRequired":%d,"fuelAvailable":%d}}}`,
+		required-available, required, available,
+	)
+	return fmt.Errorf("failed to warp ship: %w", &domainPorts.APIError{StatusCode: 400, Body: body})
+}
+
+// fakeEscapeReader is the double at the onward-viability port. A system it was not
+// told about reads as the ZERO escape state (no fuel, no built gate) - a dead end -
+// so every test must state its destination's escape facts explicitly and no test can
+// pass a viability check by omission.
+type fakeEscapeReader struct {
+	escapes map[string]WarpDestinationEscape
+	err     error    // when set, the destination state is UNREADABLE
+	asked   []string // system symbols, in call order
+}
+
+func (f *fakeEscapeReader) EscapeOptions(_ context.Context, systemSymbol string, _ shared.PlayerID) (WarpDestinationEscape, error) {
+	f.asked = append(f.asked, systemSymbol)
+	if f.err != nil {
+		return WarpDestinationEscape{}, f.err
+	}
+	return f.escapes[systemSymbol], nil
+}
+
+// escapableSystems builds an escape reader for which each named system sells fuel -
+// the "the hull can leave again" baseline every test that is NOT about onward
+// viability needs, so those tests exercise the behaviour they actually pin.
+func escapableSystems(systems ...string) *fakeEscapeReader {
+	escapes := make(map[string]WarpDestinationEscape, len(systems))
+	for _, system := range systems {
+		escapes[system] = WarpDestinationEscape{SellsFuel: true}
+	}
+	return &fakeEscapeReader{escapes: escapes}
 }
 
 // spyCharter records which systems chart-on-arrival was invoked for, so a test
@@ -47,13 +103,18 @@ func (s *spyCharter) ChartSystem(_ context.Context, systemSymbol string, _ share
 }
 
 // warpRefuelMediator satisfies common.Mediator for the atomic commands a warp
-// leg's fuel-safety refuel issues (orbit, dock, refuel). Unlike route_executor's
-// recordingMediator it mutates the SHIP's fuel to capacity on refuel - matching
-// production, where the refuel handler updates ship state in memory - so the
-// guard's post-refuel re-check reads a genuinely full tank. Refuel attempts are
-// counted so "topped off before the next warp" is observable.
+// leg's refuel issues (orbit, dock, refuel). Unlike route_executor's
+// recordingMediator it mutates the SHIP's fuel on refuel - matching production,
+// where the refuel handler updates ship state in memory - so a post-refuel
+// re-check reads a genuinely changed tank. Refuel attempts are counted so
+// "topped off before the next warp" is observable.
+//
+// fillTo, when non-empty, is the tank level successive refuels reach - a market
+// whose fuel stock is FINITE, which is the only way a topped-off hull can still
+// meet the server's fuel requirement short. Empty (the default) fills to capacity.
 type warpRefuelMediator struct {
 	refuels int
+	fillTo  []int
 }
 
 func (m *warpRefuelMediator) Send(_ context.Context, request mediator.Request) (mediator.Response, error) {
@@ -64,7 +125,7 @@ func (m *warpRefuelMediator) Send(_ context.Context, request mediator.Request) (
 		return &types.DockShipResponse{Status: "docked"}, nil
 	case *types.RefuelShipCommand:
 		m.refuels++
-		if _, err := cmd.Ship.RefuelToFull(); err != nil {
+		if err := m.fill(cmd.Ship); err != nil {
 			return nil, err
 		}
 		return &types.RefuelShipResponse{
@@ -75,6 +136,16 @@ func (m *warpRefuelMediator) Send(_ context.Context, request mediator.Request) (
 	default:
 		return &types.OrbitShipResponse{Status: "in_orbit"}, nil
 	}
+}
+
+func (m *warpRefuelMediator) fill(ship *domainNavigation.Ship) error {
+	if len(m.fillTo) == 0 {
+		_, err := ship.RefuelToFull()
+		return err
+	}
+	level := m.fillTo[0]
+	m.fillTo = m.fillTo[1:]
+	return ship.UpdateFuelFromAPI(level, ship.Fuel().Capacity)
 }
 
 func (m *warpRefuelMediator) Register(reflect.Type, mediator.RequestHandler) error { return nil }
@@ -117,9 +188,9 @@ func newWarpExplorerShip(t *testing.T, current, capacity int, location *shared.W
 // --- Tests ----------------------------------------------------------------
 
 // TestExecuteWarpLeg_WarpsToReachableSystemWithAdequateFuel pins scenario 1: a
-// warp-capable ship with fuel to spare warps to a waypoint in ANOTHER system and
-// ends physically IN that system. Distance A(0,0)->B(100,0) is 100, cost 100 at
-// the CRUISE rate; the full 800 tank covers it with no refuel.
+// warp-capable ship with a full tank warps to a waypoint in ANOTHER system and
+// ends physically IN that system, with the post-warp fuel the SERVER reported
+// folded onto the hull.
 func TestExecuteWarpLeg_WarpsToReachableSystemWithAdequateFuel(t *testing.T) {
 	origin := mustWaypoint(t, "X1-SYSA-A1", 0, 0)
 	dest := mustWaypoint(t, "X1-SYSB-B1", 100, 0)
@@ -129,7 +200,7 @@ func TestExecuteWarpLeg_WarpsToReachableSystemWithAdequateFuel(t *testing.T) {
 	warp := &fakeWarpNavigator{fuelAfter: map[string]int{dest.Symbol: 700}}
 	mediator := &warpRefuelMediator{}
 	executor := NewRouteExecutor(nil, mediator, nil, nil, nil, nil, nil, stubSubscriber{}).
-		WithWarpSupport(warp, &spyCharter{})
+		WithWarpSupport(warp, &spyCharter{}, escapableSystems("X1-SYSB"))
 
 	err := executor.ExecuteWarpLeg(context.Background(), ship, dest, shared.MustNewPlayerID(1))
 	if err != nil {
@@ -153,47 +224,230 @@ func TestExecuteWarpLeg_WarpsToReachableSystemWithAdequateFuel(t *testing.T) {
 	}
 }
 
-// TestExecuteWarpLeg_RefusesLegThatWouldStrand pins scenario 2, the key safety
-// property: a leg the ship cannot safely complete is REFUSED before any warp API
-// call. Two strand shapes are covered as one behaviour (parametrized): a leg that
-// costs more than a full tank, and a leg the ship is too low on fuel for with no
-// fuel station at the origin to top off. In both, no warp is issued and the ship
-// stays put.
-func TestExecuteWarpLeg_RefusesLegThatWouldStrand(t *testing.T) {
+// TestExecuteWarpLeg_TakesTheFuelVerdictFromTheServer pins the deletion of the
+// local fuel prediction. The old guard priced these legs itself and refused them
+// without asking; the executor now ASKS, and the server's pre-flight 4203 refusal -
+// carrying ITS OWN fuelRequired/fuelAvailable - is what the caller sees. The
+// required figures asserted below are the server's, unrelated to any distance in
+// these fixtures, so they cannot be an echo of a local formula.
+//
+// Every shape of refusal the executor cannot satisfy is TERMINAL, and each is
+// parametrized here: the requirement exceeds a full tank, the origin has no fuel
+// station, and a refuel that leaves the tank still short. In all three the leg is
+// asked exactly ONCE and then abandoned - never a blind retry burning the
+// container's restart budget.
+func TestExecuteWarpLeg_TakesTheFuelVerdictFromTheServer(t *testing.T) {
 	cases := []struct {
 		name        string
-		fuelCurrent int
 		originFuel  bool
-		destX       float64
+		fuelCurrent int
+		fillTo      []int
+		required    int
+		available   int
+		wantRefuels int
+		wantReason  string
 	}{
-		{name: "cost exceeds full tank", fuelCurrent: 800, originFuel: true, destX: 900},
-		{name: "too low with no fuel station at origin", fuelCurrent: 50, originFuel: false, destX: 100},
+		{
+			name:        "requirement exceeds a full tank",
+			originFuel:  true,
+			fuelCurrent: 800,
+			required:    831,
+			available:   800,
+			wantRefuels: 0,
+			wantReason:  "server refused: leg costs more than a full tank",
+		},
+		{
+			name:        "origin sells no fuel to top off with",
+			originFuel:  false,
+			fuelCurrent: 400,
+			required:    700,
+			available:   400,
+			wantRefuels: 0,
+			wantReason:  "server refused: insufficient fuel and no fuel station at origin to refuel",
+		},
+		{
+			name:        "refueling leaves the tank still short of the requirement",
+			originFuel:  true,
+			fuelCurrent: 400,
+			fillTo:      []int{600, 650}, // a fuel stop whose stock runs out short
+			required:    700,
+			available:   600,
+			wantRefuels: 2,
+			wantReason:  "server refused: still insufficient fuel after refueling",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			origin := mustWaypoint(t, "X1-SYSA-A1", 0, 0)
 			origin.HasFuel = tc.originFuel
-			dest := mustWaypoint(t, "X1-SYSB-B1", tc.destX, 0)
+			dest := mustWaypoint(t, "X1-SYSB-B1", 900, 0)
 
 			ship := newWarpExplorerShip(t, tc.fuelCurrent, 800, origin)
 
-			warp := &fakeWarpNavigator{fuelAfter: map[string]int{}}
-			executor := NewRouteExecutor(nil, &warpRefuelMediator{}, nil, nil, nil, nil, nil, stubSubscriber{}).
-				WithWarpSupport(warp, &spyCharter{})
+			warp := &fakeWarpNavigator{
+				fuelAfter: map[string]int{},
+				refusals:  []error{warpInsufficientFuel(tc.required, tc.available)},
+			}
+			mediator := &warpRefuelMediator{fillTo: tc.fillTo}
+			executor := NewRouteExecutor(nil, mediator, nil, nil, nil, nil, nil, stubSubscriber{}).
+				WithWarpSupport(warp, &spyCharter{}, escapableSystems("X1-SYSB"))
 
 			err := executor.ExecuteWarpLeg(context.Background(), ship, dest, shared.MustNewPlayerID(1))
 			if err == nil {
-				t.Fatalf("expected warp to be refused as a strand risk, got nil error")
+				t.Fatalf("expected the server's fuel refusal to fail the leg, got nil error")
 			}
 			var strand *ErrWarpWouldStrand
 			if !errors.As(err, &strand) {
 				t.Fatalf("expected *ErrWarpWouldStrand so a caller can report unreachability, got %T: %v", err, err)
 			}
-			if len(warp.calls) != 0 {
-				t.Fatalf("a refused leg must make NO warp API call, got %v", warp.calls)
+			if strand.Required != tc.required {
+				t.Fatalf("expected the SERVER's requirement %d carried through, got %d", tc.required, strand.Required)
+			}
+			if strand.Reason != tc.wantReason {
+				t.Fatalf("expected reason %q, got %q", tc.wantReason, strand.Reason)
+			}
+			if len(warp.calls) != 1 {
+				t.Fatalf("expected exactly one warp call - the question asked once, no retry storm - got %v", warp.calls)
+			}
+			if mediator.refuels != tc.wantRefuels {
+				t.Fatalf("expected %d refuels, got %d", tc.wantRefuels, mediator.refuels)
 			}
 			if ship.CurrentLocation().Symbol != origin.Symbol {
-				t.Fatalf("expected ship to stay at origin %s after refusal, got %s", origin.Symbol, ship.CurrentLocation().Symbol)
+				t.Fatalf("expected ship to stay at origin %s after the server's refusal, got %s", origin.Symbol, ship.CurrentLocation().Symbol)
+			}
+		})
+	}
+}
+
+// TestExecuteWarpLeg_RefuelsToTheServersRequirementAndRetriesOnce pins the
+// actionable half of the 4203 contract. The origin sells fuel but its stock is
+// finite, so the pre-warp top-off only reaches 600 of an 800 tank and the server
+// refuses the leg needing 700. That refusal is not a blind restart: the executor
+// refuels again to the server's stated requirement and retries EXACTLY once, which
+// succeeds. Two warp calls and no more is the anti-retry-storm assertion.
+func TestExecuteWarpLeg_RefuelsToTheServersRequirementAndRetriesOnce(t *testing.T) {
+	origin := mustWaypoint(t, "X1-SYSA-A1", 0, 0)
+	origin.HasFuel = true
+	dest := mustWaypoint(t, "X1-SYSB-B1", 100, 0)
+
+	ship := newWarpExplorerShip(t, 400, 800, origin)
+
+	warp := &fakeWarpNavigator{
+		fuelAfter: map[string]int{dest.Symbol: 100},
+		refusals:  []error{warpInsufficientFuel(700, 600)},
+	}
+	mediator := &warpRefuelMediator{fillTo: []int{600, 800}} // market restocks between refuels
+	executor := NewRouteExecutor(nil, mediator, nil, nil, nil, nil, nil, stubSubscriber{}).
+		WithWarpSupport(warp, &spyCharter{}, escapableSystems("X1-SYSB"))
+
+	err := executor.ExecuteWarpLeg(context.Background(), ship, dest, shared.MustNewPlayerID(1))
+	if err != nil {
+		t.Fatalf("expected the refuelled retry to complete the leg, got error: %v", err)
+	}
+	if len(warp.calls) != 2 {
+		t.Fatalf("expected the refused leg to be retried exactly once (2 warp calls), got %v", warp.calls)
+	}
+	if mediator.refuels != 2 {
+		t.Fatalf("expected the pre-warp top-off plus one refuel to the server's requirement, got %d refuels", mediator.refuels)
+	}
+	if ship.CurrentLocation().Symbol != dest.Symbol {
+		t.Fatalf("expected ship at destination %s after the retry, got %s", dest.Symbol, ship.CurrentLocation().Symbol)
+	}
+}
+
+// TestExecuteWarpLeg_RefusesDestinationTheHullCouldNeverLeave pins the NEW guard -
+// the one safety question the server does not answer. It validates that a hull can
+// AFFORD a leg; it will happily land one somewhere with no fuel to buy and no built
+// gate to jump out of. Three refusals are covered as one behaviour: the live
+// near-miss (a destination with zero fuel whose only exit gate is still under
+// construction), an UNREADABLE destination, and an unwired viability reader. All
+// three fail CLOSED - refused before any warp call, ship untouched.
+func TestExecuteWarpLeg_RefusesDestinationTheHullCouldNeverLeave(t *testing.T) {
+	cases := []struct {
+		name   string
+		escape *fakeEscapeReader
+		wired  bool
+	}{
+		{
+			name:   "no fuel and the exit gate is under construction",
+			escape: &fakeEscapeReader{escapes: map[string]WarpDestinationEscape{"X1-SYSB": {SellsFuel: false, HasBuiltGate: false}}},
+			wired:  true,
+		},
+		{
+			name:   "destination escape state unreadable",
+			escape: &fakeEscapeReader{err: errors.New("gate adjacency read failed")},
+			wired:  true,
+		},
+		{
+			name:  "no viability reader wired",
+			wired: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			origin := mustWaypoint(t, "X1-SYSA-A1", 0, 0)
+			origin.HasFuel = true
+			dest := mustWaypoint(t, "X1-SYSB-B1", 100, 0)
+
+			ship := newWarpExplorerShip(t, 800, 800, origin)
+
+			warp := &fakeWarpNavigator{fuelAfter: map[string]int{}}
+			executor := NewRouteExecutor(nil, &warpRefuelMediator{}, nil, nil, nil, nil, nil, stubSubscriber{})
+			if tc.wired {
+				executor = executor.WithWarpSupport(warp, &spyCharter{}, tc.escape)
+			} else {
+				executor = executor.WithWarpSupport(warp, &spyCharter{}, nil)
+			}
+
+			err := executor.ExecuteWarpLeg(context.Background(), ship, dest, shared.MustNewPlayerID(1))
+			if err == nil {
+				t.Fatalf("expected the warp to be refused as a one-way trip, got nil error")
+			}
+			if len(warp.calls) != 0 {
+				t.Fatalf("a destination refused as unleavable must make NO warp API call, got %v", warp.calls)
+			}
+			if ship.CurrentLocation().Symbol != origin.Symbol {
+				t.Fatalf("expected ship to stay at origin %s, got %s", origin.Symbol, ship.CurrentLocation().Symbol)
+			}
+		})
+	}
+}
+
+// TestExecuteWarpLeg_AllowsDestinationWithAWayOut is the other half of the onward-
+// viability behaviour: a destination the hull CAN leave is warped to. Either escape
+// alone suffices - a market to buy fuel from, or a built jump gate to leave on with
+// an empty tank - so all three combinations are parametrized. Without this the
+// guard could pass its refusal tests by refusing everything.
+func TestExecuteWarpLeg_AllowsDestinationWithAWayOut(t *testing.T) {
+	cases := []struct {
+		name   string
+		escape WarpDestinationEscape
+	}{
+		{name: "sells fuel", escape: WarpDestinationEscape{SellsFuel: true}},
+		{name: "built jump gate to leave on", escape: WarpDestinationEscape{HasBuiltGate: true}},
+		{name: "both", escape: WarpDestinationEscape{SellsFuel: true, HasBuiltGate: true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			origin := mustWaypoint(t, "X1-SYSA-A1", 0, 0)
+			dest := mustWaypoint(t, "X1-SYSB-B1", 100, 0)
+
+			ship := newWarpExplorerShip(t, 800, 800, origin)
+
+			warp := &fakeWarpNavigator{fuelAfter: map[string]int{dest.Symbol: 700}}
+			escape := &fakeEscapeReader{escapes: map[string]WarpDestinationEscape{"X1-SYSB": tc.escape}}
+			executor := NewRouteExecutor(nil, &warpRefuelMediator{}, nil, nil, nil, nil, nil, stubSubscriber{}).
+				WithWarpSupport(warp, &spyCharter{}, escape)
+
+			err := executor.ExecuteWarpLeg(context.Background(), ship, dest, shared.MustNewPlayerID(1))
+			if err != nil {
+				t.Fatalf("expected a leavable destination to be warped to, got error: %v", err)
+			}
+			if !reflect.DeepEqual(escape.asked, []string{"X1-SYSB"}) {
+				t.Fatalf("expected the DESTINATION system's escape state to be read, got %v", escape.asked)
+			}
+			if ship.CurrentLocation().Symbol != dest.Symbol {
+				t.Fatalf("expected ship at destination %s, got %s", dest.Symbol, ship.CurrentLocation().Symbol)
 			}
 		})
 	}
@@ -218,7 +472,7 @@ func TestExecuteWarpRoute_MultiHopRefuelsBetweenLegs(t *testing.T) {
 	}}
 	mediator := &warpRefuelMediator{}
 	executor := NewRouteExecutor(nil, mediator, nil, nil, nil, nil, nil, stubSubscriber{}).
-		WithWarpSupport(warp, &spyCharter{})
+		WithWarpSupport(warp, &spyCharter{}, escapableSystems("X1-SYSB", "X1-SYSC"))
 
 	err := executor.ExecuteWarpRoute(context.Background(), ship, []*shared.Waypoint{hop1, hop2}, shared.MustNewPlayerID(1))
 	if err != nil {
@@ -229,7 +483,7 @@ func TestExecuteWarpRoute_MultiHopRefuelsBetweenLegs(t *testing.T) {
 		t.Fatalf("expected warps to %s then %s, got %v", hop1.Symbol, hop2.Symbol, warp.calls)
 	}
 	if mediator.refuels != 1 {
-		t.Fatalf("expected exactly one refuel (before leg 2, when 300 fuel < 700 needed), got %d", mediator.refuels)
+		t.Fatalf("expected exactly one refuel (the top-off at fuel-selling hop1, where the tank sat at 300 of 800), got %d", mediator.refuels)
 	}
 	if ship.CurrentLocation().Symbol != hop2.Symbol {
 		t.Fatalf("expected ship at final hop %s, got %s", hop2.Symbol, ship.CurrentLocation().Symbol)
@@ -255,7 +509,7 @@ func TestExecuteWarpLeg_ChartsDestinationSystemOnArrival(t *testing.T) {
 	warp := &fakeWarpNavigator{fuelAfter: map[string]int{dest.Symbol: 680}}
 	charter := &spyCharter{}
 	executor := NewRouteExecutor(nil, &warpRefuelMediator{}, nil, nil, nil, nil, nil, stubSubscriber{}).
-		WithWarpSupport(warp, charter)
+		WithWarpSupport(warp, charter, escapableSystems("X1-SYSB"))
 
 	err := executor.ExecuteWarpLeg(context.Background(), ship, dest, shared.MustNewPlayerID(1))
 	if err != nil {
@@ -282,7 +536,7 @@ func TestExecuteWarpLeg_RefusesShipWithoutWarpDrive(t *testing.T) {
 
 	warp := &fakeWarpNavigator{fuelAfter: map[string]int{dest.Symbol: 700}}
 	executor := NewRouteExecutor(nil, &warpRefuelMediator{}, nil, nil, nil, nil, nil, stubSubscriber{}).
-		WithWarpSupport(warp, &spyCharter{})
+		WithWarpSupport(warp, &spyCharter{}, escapableSystems("X1-SYSB"))
 
 	err := executor.ExecuteWarpLeg(context.Background(), ship, dest, shared.MustNewPlayerID(1))
 	if err == nil {

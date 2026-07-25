@@ -44,9 +44,9 @@ func NewAPIWarpNavigator(apiClient warpShipAPI) *APIWarpNavigator {
 	return &APIWarpNavigator{apiClient: apiClient}
 }
 
-// Warp resolves the token from context and executes the live warp leg. The
-// caller (RouteExecutor.executeWarpLeg) has already enforced the fuel-safety
-// guard, so a rejection here is a genuine API failure surfaced to the caller.
+// Warp resolves the token from context and executes the live warp leg. A rejection
+// is returned unflattened: the server owns the fuel rule, and its pre-flight
+// refusal carries the real numbers the caller acts on.
 func (a *APIWarpNavigator) Warp(ctx context.Context, ship *domainNavigation.Ship, destination *shared.Waypoint, _ shared.PlayerID) (*domainNavigation.Result, error) {
 	token, err := common.PlayerTokenFromContext(ctx)
 	if err != nil {
