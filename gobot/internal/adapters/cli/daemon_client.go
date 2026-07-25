@@ -83,6 +83,18 @@ type JettisonResponse struct {
 	Message         string
 }
 
+// TransferCargoResponse is the CLI-side result of a ship-to-ship cargo move.
+// Error carries the daemon's refusal verbatim when the move was turned away.
+type TransferCargoResponse struct {
+	Success          bool
+	FromShipSymbol   string
+	ToShipSymbol     string
+	GoodSymbol       string
+	UnitsTransferred int32
+	RemainingUnits   int32
+	Error            string
+}
+
 type BatchContractWorkflowResponse struct {
 	ContainerID string
 	ShipSymbol  string
@@ -403,6 +415,42 @@ func (c *DaemonClient) JumpShip(
 		CooldownSeconds:   resp.CooldownSeconds,
 		Message:           resp.Message,
 		Error:             resp.Error,
+	}, nil
+}
+
+// TransferCargo moves cargo between two co-located hulls. The daemon performs the
+// move behind its own guards (RULING #3: the CLI never touches the game API itself).
+func (c *DaemonClient) TransferCargo(
+	ctx context.Context,
+	fromShipSymbol, toShipSymbol, goodSymbol string,
+	units int,
+	playerID int,
+	agentSymbol string,
+) (*TransferCargoResponse, error) {
+	req := &pb.TransferCargoRequest{
+		FromShipSymbol: fromShipSymbol,
+		ToShipSymbol:   toShipSymbol,
+		GoodSymbol:     goodSymbol,
+		Units:          int32(units),
+		PlayerId:       int32(playerID),
+	}
+	if agentSymbol != "" {
+		req.AgentSymbol = &agentSymbol
+	}
+
+	resp, err := c.client.TransferCargo(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf(grpcCallFailed, err)
+	}
+
+	return &TransferCargoResponse{
+		Success:          resp.Success,
+		FromShipSymbol:   resp.FromShipSymbol,
+		ToShipSymbol:     resp.ToShipSymbol,
+		GoodSymbol:       resp.GoodSymbol,
+		UnitsTransferred: resp.UnitsTransferred,
+		RemainingUnits:   resp.RemainingUnits,
+		Error:            resp.Error,
 	}, nil
 }
 

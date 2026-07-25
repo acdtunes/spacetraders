@@ -29,6 +29,7 @@ const (
 	DaemonService_InstallModule_FullMethodName                 = "/daemon.DaemonService/InstallModule"
 	DaemonService_RemoveModule_FullMethodName                  = "/daemon.DaemonService/RemoveModule"
 	DaemonService_ListShipModules_FullMethodName               = "/daemon.DaemonService/ListShipModules"
+	DaemonService_TransferCargo_FullMethodName                 = "/daemon.DaemonService/TransferCargo"
 	DaemonService_BatchContractWorkflow_FullMethodName         = "/daemon.DaemonService/BatchContractWorkflow"
 	DaemonService_ContractFleetCoordinator_FullMethodName      = "/daemon.DaemonService/ContractFleetCoordinator"
 	DaemonService_ScoutTour_FullMethodName                     = "/daemon.DaemonService/ScoutTour"
@@ -131,6 +132,11 @@ type DaemonServiceClient interface {
 	// ListShipModules lists the modules currently installed on a ship (read-only,
 	// no claim).
 	ListShipModules(ctx context.Context, in *ListShipModulesRequest, opts ...grpc.CallOption) (*ListShipModulesResponse, error)
+	// TransferCargo moves cargo (including a removed module, which travels as an
+	// ordinary good) from one hull to another. Both must be at the SAME waypoint —
+	// the API requires co-location. Synchronous like the outfit verbs it sits
+	// between: the move is instantaneous, so there is nothing to track.
+	TransferCargo(ctx context.Context, in *TransferCargoRequest, opts ...grpc.CallOption) (*TransferCargoResponse, error)
 	// BatchContractWorkflow executes batch contract workflow operations
 	BatchContractWorkflow(ctx context.Context, in *BatchContractWorkflowRequest, opts ...grpc.CallOption) (*BatchContractWorkflowResponse, error)
 	// ContractFleetCoordinator manages a pool of ships for continuous contract execution
@@ -414,6 +420,16 @@ func (c *daemonServiceClient) ListShipModules(ctx context.Context, in *ListShipM
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListShipModulesResponse)
 	err := c.cc.Invoke(ctx, DaemonService_ListShipModules_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) TransferCargo(ctx context.Context, in *TransferCargoRequest, opts ...grpc.CallOption) (*TransferCargoResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TransferCargoResponse)
+	err := c.cc.Invoke(ctx, DaemonService_TransferCargo_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1087,6 +1103,11 @@ type DaemonServiceServer interface {
 	// ListShipModules lists the modules currently installed on a ship (read-only,
 	// no claim).
 	ListShipModules(context.Context, *ListShipModulesRequest) (*ListShipModulesResponse, error)
+	// TransferCargo moves cargo (including a removed module, which travels as an
+	// ordinary good) from one hull to another. Both must be at the SAME waypoint —
+	// the API requires co-location. Synchronous like the outfit verbs it sits
+	// between: the move is instantaneous, so there is nothing to track.
+	TransferCargo(context.Context, *TransferCargoRequest) (*TransferCargoResponse, error)
 	// BatchContractWorkflow executes batch contract workflow operations
 	BatchContractWorkflow(context.Context, *BatchContractWorkflowRequest) (*BatchContractWorkflowResponse, error)
 	// ContractFleetCoordinator manages a pool of ships for continuous contract execution
@@ -1305,6 +1326,9 @@ func (UnimplementedDaemonServiceServer) RemoveModule(context.Context, *RemoveMod
 }
 func (UnimplementedDaemonServiceServer) ListShipModules(context.Context, *ListShipModulesRequest) (*ListShipModulesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListShipModules not implemented")
+}
+func (UnimplementedDaemonServiceServer) TransferCargo(context.Context, *TransferCargoRequest) (*TransferCargoResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method TransferCargo not implemented")
 }
 func (UnimplementedDaemonServiceServer) BatchContractWorkflow(context.Context, *BatchContractWorkflowRequest) (*BatchContractWorkflowResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method BatchContractWorkflow not implemented")
@@ -1692,6 +1716,24 @@ func _DaemonService_ListShipModules_Handler(srv interface{}, ctx context.Context
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DaemonServiceServer).ListShipModules(ctx, req.(*ListShipModulesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_TransferCargo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TransferCargoRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).TransferCargo(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_TransferCargo_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).TransferCargo(ctx, req.(*TransferCargoRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2876,6 +2918,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListShipModules",
 			Handler:    _DaemonService_ListShipModules_Handler,
+		},
+		{
+			MethodName: "TransferCargo",
+			Handler:    _DaemonService_TransferCargo_Handler,
 		},
 		{
 			MethodName: "BatchContractWorkflow",

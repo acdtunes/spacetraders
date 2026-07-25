@@ -47,6 +47,12 @@ service DaemonService {
   // no claim).
   rpc ListShipModules(ListShipModulesRequest) returns (ListShipModulesResponse);
 
+  // TransferCargo moves cargo (including a removed module, which travels as an
+  // ordinary good) from one hull to another. Both must be at the SAME waypoint —
+  // the API requires co-location. Synchronous like the outfit verbs it sits
+  // between: the move is instantaneous, so there is nothing to track.
+  rpc TransferCargo(TransferCargoRequest) returns (TransferCargoResponse);
+
   // BatchContractWorkflow executes batch contract workflow operations
   rpc BatchContractWorkflow(BatchContractWorkflowRequest) returns (BatchContractWorkflowResponse);
 
@@ -570,6 +576,47 @@ message ListShipModulesResponse {
   int32 crew_capacity = 12;
   // feasibility is populated only when the request carried a candidate_symbol.
   optional ModuleFeasibility feasibility = 13;
+}
+
+// TransferCargoRequest moves cargo between two hulls parked at the same waypoint.
+message TransferCargoRequest {
+  // Hull the cargo leaves (e.g., "TORWIND-F6")
+  string from_ship_symbol = 1;
+
+  // Hull the cargo arrives on — must sit at the SAME waypoint as the source
+  string to_ship_symbol = 2;
+
+  // Good to move. A module removed with `ship outfit remove` rides in cargo as an
+  // ordinary good (e.g., "MODULE_WARP_DRIVE_I"), so it moves through this same path.
+  string good_symbol = 3;
+
+  // Units to move
+  int32 units = 4;
+
+  // Player ID for authentication
+  int32 player_id = 5;
+
+  // Optional agent symbol (alternative to player_id)
+  optional string agent_symbol = 6;
+}
+
+// TransferCargoResponse reports the completed move, or the refusal.
+message TransferCargoResponse {
+  bool success = 1;
+  string from_ship_symbol = 2;
+  string to_ship_symbol = 3;
+  string good_symbol = 4;
+
+  // units_transferred is what actually moved.
+  int32 units_transferred = 5;
+
+  // remaining_units is how much of good_symbol is left on the SOURCE hull.
+  int32 remaining_units = 6;
+
+  // error carries the refusal VERBATIM. The two an operator hits are the hulls
+  // sitting at different waypoints and a receiver with no room left; both name
+  // their own condition, so neither is ever collapsed into a generic failure.
+  string error = 7;
 }
 
 // BatchContractWorkflowRequest initiates batch contract workflow

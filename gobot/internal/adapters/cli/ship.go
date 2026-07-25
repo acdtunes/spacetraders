@@ -64,6 +64,7 @@ Examples:
 	cmd.AddCommand(newShipBuyCommand())
 	cmd.AddCommand(newShipJettisonCommand())
 	cmd.AddCommand(newShipOutfitCommand())
+	cmd.AddCommand(newShipTransferCommand())
 
 	return cmd
 }
@@ -1110,6 +1111,98 @@ Examples:
 	// Command-specific flags
 	cmd.Flags().StringVar(&shipSymbol, "ship", "", "Ship symbol to warp - must have a warp drive (required)")
 	cmd.Flags().StringVar(&destination, "destination", "", "Destination waypoint symbol in another system (required)")
+
+	return cmd
+}
+
+// newShipTransferCommand creates the ship transfer subcommand
+func newShipTransferCommand() *cobra.Command {
+	var (
+		fromShip   string
+		toShip     string
+		goodSymbol string
+		units      int
+	)
+
+	cmd := &cobra.Command{
+		Use:   "transfer",
+		Short: "Move cargo from one ship to another at the same waypoint",
+		Long: `Move cargo directly from one ship's hold into another's.
+
+Both ships must be parked at the same waypoint - the game requires it, and there
+is no in-flight handover. The daemon aligns their nav states (both docked or both
+in orbit) before the move, so they need not already match.
+
+A module removed with 'ship outfit remove' sits in the ship's cargo as an ordinary
+good, so this is how a module moves between hulls:
+
+  ship outfit remove   --ship EXPLORER-1 --module MODULE_WARP_DRIVE_I
+  ship transfer --from EXPLORER-1 --to FREIGHTER-1 --good MODULE_WARP_DRIVE_I --units 1
+  ship outfit install  --ship FREIGHTER-1 --module MODULE_WARP_DRIVE_I
+
+Two refusals are possible and both leave the cargo exactly where it is: the ships
+are at different waypoints (reported with each one's location), or the receiving
+ship has no cargo space left (reported with its capacity and load). The move is
+instantaneous, so either is printed here rather than in a container log.
+
+Examples:
+  spacetraders ship transfer --from TORWIND-F6 --to TORWIND-2 --good MODULE_WARP_DRIVE_I --units 1 --player-id 1
+  spacetraders ship transfer --from TORWIND-F6 --to TORWIND-2 --good ALUMINUM --units 40 --agent TORWIND`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// Validate flags
+			if fromShip == "" {
+				return fmt.Errorf("--from flag is required")
+			}
+			if toShip == "" {
+				return fmt.Errorf("--to flag is required")
+			}
+			if goodSymbol == "" {
+				return fmt.Errorf("--good flag is required")
+			}
+			if units <= 0 {
+				return fmt.Errorf("--units must be greater than zero")
+			}
+
+			// Resolve player from flags or defaults
+			playerIdent, err := resolvePlayerIdentifier()
+			if err != nil {
+				return err
+			}
+
+			// Create gRPC client
+			client, err := connectDaemon()
+			if err != nil {
+				return err
+			}
+			defer client.Close()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+
+			result, err := client.TransferCargo(ctx, fromShip, toShip, goodSymbol, units,
+				playerIdent.PlayerID, playerIdent.AgentSymbol)
+			if err != nil {
+				return fmt.Errorf("transfer failed: %w", err)
+			}
+			// The daemon's refusal already names its own condition (different waypoints,
+			// or no room on the receiver) - pass it through whole rather than restating it.
+			if result.Error != "" {
+				return fmt.Errorf("transfer refused: %s", result.Error)
+			}
+
+			fmt.Printf("✓ Transferred %d x %s from %s to %s\n",
+				result.UnitsTransferred, result.GoodSymbol, result.FromShipSymbol, result.ToShipSymbol)
+			fmt.Printf("  Left on %s:  %d\n", result.FromShipSymbol, result.RemainingUnits)
+
+			return nil
+		},
+	}
+
+	// Command-specific flags
+	cmd.Flags().StringVar(&fromShip, "from", "", "Ship symbol the cargo leaves (required)")
+	cmd.Flags().StringVar(&toShip, "to", "", "Ship symbol the cargo arrives on, at the same waypoint (required)")
+	cmd.Flags().StringVar(&goodSymbol, "good", "", "Good symbol to move, e.g. MODULE_WARP_DRIVE_I (required)")
+	cmd.Flags().IntVar(&units, "units", 0, "Units to move (required, must be greater than zero)")
 
 	return cmd
 }

@@ -7,13 +7,16 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
+	gasCmd "github.com/andrescamacho/spacetraders-go/internal/application/gas/commands"
 	playerQuery "github.com/andrescamacho/spacetraders-go/internal/application/player/queries"
 	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	shipOutfit "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/outfitting"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	domainScouting "github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
@@ -414,6 +417,72 @@ func (s *daemonServiceImpl) ListShipModules(ctx context.Context, req *pb.ListShi
 	}
 
 	return out, nil
+}
+
+// TransferCargo moves cargo from one hull to another through the EXISTING gas
+// TransferCargoCommand — the same command the siphon workers, the stocker and the tour
+// deposit already dispatch (RULING #3: the daemon performs the move). It is synchronous
+// like the outfit verbs it completes: the move is instantaneous, so there is no progress
+// to track and no reason to make the operator go read a container log for the outcome.
+//
+// A refusal rides back in the response's error field VERBATIM. The two an operator hits
+// — hulls at different waypoints, and a receiver with no room — each name their own
+// condition in full, and a gRPC status error would bury that under a transport prefix.
+func (s *daemonServiceImpl) TransferCargo(ctx context.Context, req *pb.TransferCargoRequest) (*pb.TransferCargoResponse, error) {
+	refusal := func(reason string) *pb.TransferCargoResponse {
+		return &pb.TransferCargoResponse{
+			FromShipSymbol: req.FromShipSymbol,
+			ToShipSymbol:   req.ToShipSymbol,
+			GoodSymbol:     req.GoodSymbol,
+			Error:          reason,
+		}
+	}
+
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return refusal(fmt.Sprintf("failed to resolve player: %v", err)), nil
+	}
+
+	cmd := &gasCmd.TransferCargoCommand{
+		FromShip:   req.FromShipSymbol,
+		ToShip:     req.ToShipSymbol,
+		GoodSymbol: req.GoodSymbol,
+		Units:      int(req.Units),
+		PlayerID:   shared.MustNewPlayerID(playerID),
+	}
+
+	result, err := s.daemon.mediator.Send(ctx, cmd)
+	if err != nil {
+		return refusal(err.Error()), nil
+	}
+	resp, ok := result.(*gasCmd.TransferCargoResponse)
+	if !ok {
+		return refusal("unexpected response type from TransferCargoCommand"), nil
+	}
+
+	return &pb.TransferCargoResponse{
+		Success:          true,
+		FromShipSymbol:   req.FromShipSymbol,
+		ToShipSymbol:     req.ToShipSymbol,
+		GoodSymbol:       req.GoodSymbol,
+		UnitsTransferred: int32(resp.UnitsTransferred),
+		RemainingUnits:   int32(remainingUnitsOfGood(resp.RemainingCargo, req.GoodSymbol)),
+	}, nil
+}
+
+// remainingUnitsOfGood reads how much of good is left in a post-transfer cargo hold.
+// A hold the API did not report back reads as zero rather than failing the move that
+// already committed.
+func remainingUnitsOfGood(cargo *navigation.CargoData, good string) int {
+	if cargo == nil {
+		return 0
+	}
+	for _, item := range cargo.Inventory {
+		if item.Symbol == good {
+			return item.Units
+		}
+	}
+	return 0
 }
 
 // toProtoShipModules maps the application-layer module list to the proto shape.
