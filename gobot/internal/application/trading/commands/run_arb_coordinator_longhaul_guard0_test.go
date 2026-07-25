@@ -61,6 +61,12 @@ func (g *boundedRoutabilityGraph) StoredHopDistances(_ context.Context, from str
 	}
 	return out, nil
 }
+
+// StoredRankingDistances mirrors the proof-grade table — this fixture carries no staleness, so
+// the two walks have nothing to differ on here.
+func (g *boundedRoutabilityGraph) StoredRankingDistances(ctx context.Context, from string, targets []string, maxJumps int) (map[string]int, error) {
+	return g.StoredHopDistances(ctx, from, targets, maxJumps)
+}
 func (g *boundedRoutabilityGraph) PathWithinJumpsStoredThenVerify(context.Context, string, string, int, int) ([]string, error) {
 	return nil, nil
 }

@@ -2,8 +2,11 @@ package commands
 
 import (
 	"context"
+	"fmt"
 	"sort"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/system/gategraph"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
@@ -92,23 +95,60 @@ func (h *RunTourCoordinatorHandler) widenedTourSystems(
 	return unionSystems(oneHop, shortlist)
 }
 
+// unprovenCrossingReason labels crossings the hop matrix could not price from stored topology.
+// This counter staying non-zero means gate coverage is thin enough that some allowed pairs are
+// being refused rather than ranked — it is the guard reporting, not a fault.
+const unprovenCrossingReason = "inter_system_crossing_unproven"
+
+// unprovenCrossingHops is what a crossing the matrix could not prove is CHARGED. The solver has
+// no way to express an impassable leg — it reads an ABSENT pair as one gate hop, its cheapest
+// possible charge — so a route that cannot be proven must still be priced, and priced past every
+// distance the walk was able to resolve. One hop beyond the walk's own bound is the tightest
+// honest statement available: whatever the route is, it is longer than anything measurable here.
+func unprovenCrossingHops(bound int) int { return bound + 1 }
+
+// canonicalSystemPair orders a system pair so a crossing found from either endpoint keys the same.
+func canonicalSystemPair(a, b string) [2]string {
+	if b < a {
+		a, b = b, a
+	}
+	return [2]string{a, b}
+}
+
 // tourInterSystemHops resolves the gate-hop distance between every pair of systems in
-// allowedSystems (sp-tp5c3), so the solver prices a cross-system crossing at gate_hops x the
-// per-crossing charge instead of a flat 1 hop — the multi-hop travel model that lets the widened
-// horizon price honestly (a 3-hop lane costs the true 3x, not the ~3x-underpriced flat 1 hop that
-// corrupted cph selection and kept the horizon pinned at 1 gate hop, sp-mtvg/sp-mepj). It REUSES
-// the SAME durable-gate-graph BFS the candidate walk uses (repositionNeighborsWithinJumps stamps
-// the hop count sp-z7ng's deadhead pricing already rides) — one gate-graph route model, ZERO
-// duplicated path-cost logic here.
+// allowedSystems, so the solver prices a cross-system crossing at gate_hops x the per-crossing
+// charge instead of a flat 1 hop. That flat charge is why the map exists: the solver defaults an
+// absent pair to ONE hop, so a three-hop crossing left unresolved ranks roughly three times too
+// well and the planner picks tours whose travel it has understated.
+//
+// Distances come from the STORE ALONE (StoredRankingDistances): one adjacency read plus an exact
+// depth-bounded walk, no fetch-through and therefore no live API. That matters twice over. The
+// walk is depth-bounded but NOT breadth-bounded, so a dense neighbourhood around either endpoint
+// can never exhaust a discovery budget and leave a genuinely-near pair looking unreachable; and
+// the fetch-through seam every other resolver reaches its neighbours through would spend live gate
+// requests per system per plan, on a budget already at the server ceiling.
+//
+// This is the RANKING walk, not the far-sink admission guard's proof-grade one. A price is not a
+// commitment — the executor still resolves the real route strictly at flight time — so topology
+// merely past its freshness window is read rather than refused, which is the accurate answer and
+// not a laxer one: a gate's build state moves only toward built, and a set that has since gained
+// an edge over-estimates. What stays refused is what is genuinely unusable — an under-construction
+// gate, and a system never cached at all.
+//
+// EVERY allowed system is walked rather than one endpoint per pair: the walk refuses to expand
+// THROUGH a system whose own topology is unverified but resolves one it merely ARRIVES at, so a
+// pair unprovable from one end is frequently provable from the other, and the shortest proven
+// route wins.
+//
+// A pair either prices at its proven distance or is REFUSED at unprovenCrossingHops and counted —
+// never silently dropped into the solver's 1-hop default. Only >1-hop distances are emitted; a
+// proven 1-hop crossing already prices exactly at the flat charge. One entry per unordered pair
+// (from < to), deterministically ordered so the payload and its logs are reproducible.
 //
 // COMPUTED ONLY when the horizon is actually widened (MaxTourSystems > 2): at the default cap a
 // tour touches at most 2 systems (start + one gate neighbor), so every crossing is a single gate
 // hop the flat charge already prices exactly — the map is empty and the wire is byte-identical.
-// A nil gate graph (graph-less tests / pre-wiring) or a sub-2 system set likewise yields no map,
-// so flat pricing stands. Only pairs whose real distance is > 1 hop are emitted; a 1-hop pair, or
-// one the BFS cannot connect, is omitted and defaults to 1 hop in the solver (the flat charge —
-// never an under-priced phantom below today's baseline). One entry per unordered pair (from < to),
-// deterministically ordered so the payload and its logs are reproducible.
+// A nil gate graph (graph-less tests / pre-wiring) or a sub-2 system set likewise yields no map.
 func (h *RunTourCoordinatorHandler) tourInterSystemHops(
 	ctx context.Context, allowedSystems []string, cmd *RunTourCoordinatorCommand,
 ) []routing.InterSystemHopDistance {
@@ -118,43 +158,54 @@ func (h *RunTourCoordinatorHandler) tourInterSystemHops(
 	if cmd.MaxTourSystems <= 2 || h.legs.gateGraph == nil || len(allowedSystems) < 2 {
 		return nil
 	}
-	// The BFS bound must span the widest pairwise distance among allowed systems. Candidate-walk
+	// The bound must span the widest pairwise distance among allowed systems. Candidate-walk
 	// systems sit within effectiveCandidateHopDepth gate hops of home, so any two are within twice
 	// that (via home); an admitted far sink sits within the executor's flight bound of every other
-	// allowed system, so the bound must clear that too — an unresolved pair defaults to 1 hop in
-	// the solver, which is the underpricing this map exists to remove.
+	// allowed system, so the bound must clear that too.
 	bound := 2 * h.effectiveCandidateHopDepth(cmd)
 	if bound < gategraph.MaxJumpPath {
 		bound = gategraph.MaxJumpPath
 	}
-	allowed := make(map[string]bool, len(allowedSystems))
-	for _, s := range allowedSystems {
-		allowed[s] = true
-	}
-	// Canonical {lo, hi} -> gate hops, so a pair found from either endpoint's BFS is stored once.
-	distances := make(map[[2]string]int)
+	proven := make(map[[2]string]int)
 	for _, from := range allowedSystems {
-		far, _ := h.legs.repositionNeighborsWithinJumps(ctx, from, cmd.PlayerID, bound)
-		for _, edge := range far {
-			// Only genuine >1-hop distances between two ALLOWED systems need correcting; a 1-hop
-			// pair (or one the BFS cannot reach) defaults to the flat 1-hop charge in the solver.
-			if edge.hops <= 1 || edge.system == from || !allowed[edge.system] {
+		hops, err := h.legs.gateGraph.StoredRankingDistances(ctx, from, allowedSystems, bound)
+		if err != nil {
+			// An unreadable store proves nothing. Whatever it leaves unproven is refused below —
+			// never priced on the strength of a read that failed.
+			continue
+		}
+		for to, distance := range hops {
+			if to == from || distance <= 0 {
 				continue
 			}
-			lo, hi := from, edge.system
-			if hi < lo {
-				lo, hi = hi, lo
-			}
-			if _, seen := distances[[2]string{lo, hi}]; !seen {
-				distances[[2]string{lo, hi}] = edge.hops
+			pair := canonicalSystemPair(from, to)
+			if best, seen := proven[pair]; !seen || distance < best {
+				proven[pair] = distance
 			}
 		}
 	}
-	out := make([]routing.InterSystemHopDistance, 0, len(distances))
-	for pair, hops := range distances {
-		out = append(out, routing.InterSystemHopDistance{
-			FromSystem: pair[0], ToSystem: pair[1], GateHops: hops,
-		})
+	out := make([]routing.InterSystemHopDistance, 0, len(proven))
+	priced := make(map[[2]string]bool, len(allowedSystems))
+	unproven := 0
+	for i, from := range allowedSystems {
+		for _, to := range allowedSystems[i+1:] {
+			pair := canonicalSystemPair(from, to)
+			if pair[0] == pair[1] || priced[pair] {
+				continue
+			}
+			priced[pair] = true
+			hops, resolved := proven[pair]
+			if !resolved {
+				hops = unprovenCrossingHops(bound)
+				unproven++
+			}
+			if hops <= 1 {
+				continue
+			}
+			out = append(out, routing.InterSystemHopDistance{
+				FromSystem: pair[0], ToSystem: pair[1], GateHops: hops,
+			})
+		}
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].FromSystem != out[j].FromSystem {
@@ -162,7 +213,27 @@ func (h *RunTourCoordinatorHandler) tourInterSystemHops(
 		}
 		return out[i].ToSystem < out[j].ToSystem
 	})
+	h.logUnprovenCrossings(ctx, cmd.PlayerID, unproven, len(priced), unprovenCrossingHops(bound))
 	return out
+}
+
+// logUnprovenCrossings makes the refusals countable and legible: a crossing charged past the
+// walk's reach is a decision the planner acted on, so it must be readable from the metric and
+// the log rather than inferred from a tour that quietly never got picked.
+func (h *RunTourCoordinatorHandler) logUnprovenCrossings(ctx context.Context, playerID, unproven, pairs, charge int) {
+	if unproven == 0 {
+		return
+	}
+	metrics.RecordTourCandidateDropped(playerID, unprovenCrossingReason, unproven)
+	common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf(
+		"Tour hop matrix could not prove %d of %d system crossing(s) over stored gate topology; each unproven crossing is charged %d gate hops rather than the solver's 1-hop default",
+		unproven, pairs, charge),
+		map[string]interface{}{
+			"action":            "tour_inter_system_crossing_unproven",
+			"unproven":          unproven,
+			"pairs":             pairs,
+			"charged_gate_hops": charge,
+		})
 }
 
 // shortlistByProfitableEdge scores each FAR system by the max CappedSpread of any RankSpreads

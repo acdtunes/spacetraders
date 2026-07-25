@@ -909,7 +909,45 @@ func (s *Service) Adjacency(ctx context.Context) (map[string][]system.GateEdge, 
 // genuinely-near target looking unreachable. maxJumps <= 0 degrades to MaxJumpPath, mirroring
 // the other bounded resolvers, so a mis-wired caller can never get a zero-bound search. A
 // store read failure fails CLOSED (a real error, never an empty "nothing is reachable").
+//
+// This is the PROOF-grade walk, for callers deciding whether a hull may be committed to a
+// route. A caller that only needs a distance to RANK with wants StoredRankingDistances, whose
+// staleness rule is accurate rather than conservative; choose between them deliberately.
 func (s *Service) StoredHopDistances(ctx context.Context, fromSystem string, targets []string, maxJumps int) (map[string]int, error) {
+	return s.storedDistances(ctx, fromSystem, targets, maxJumps, false)
+}
+
+// StoredRankingDistances answers the same multi-target distance question as StoredHopDistances,
+// over the same pure store read with the same depth bound and the same zero-API guarantee, and
+// differs in exactly one rule: it expands THROUGH a system whose stored edge set is past its
+// freshness window, rather than treating that system as a dead end.
+//
+// That is a RANKING primitive, never a reach proof. The distinction is what the answer is used
+// for. A reach proof commits a hull: an unverified route that turns out to be unflyable strands
+// it holding cargo, so there staleness must refuse. A ranking distance commits nothing — the
+// crossing is priced either way, and the executor still resolves the real route through the
+// strict fetch-through resolver at flight time. Refusing a stale set there does not make the
+// answer safer, only less accurate, and it charges a near crossing as though it were beyond the
+// horizon.
+//
+// Reading a stale set is sound for a price because of which way its errors run. A gate's build
+// state moves only from under-construction to built, so an edge recorded as built is still
+// built however old the row; and a set that has since GAINED an edge makes the computed
+// distance an OVER-estimate, never an under-estimate. Both harmless directions for a rank.
+//
+// It is laxer about FRESHNESS and about nothing else (RULINGS #4). An under-construction edge
+// stays impassable — a jump into an unbuilt gate fails at hop time whatever the row's age — a
+// system that was never cached is still a dead end rather than an assumed connection, and
+// unreadable-gate markers never enter the adjacency at all, so this can never route past a gate
+// the executor cannot read. A store read failure still fails CLOSED.
+func (s *Service) StoredRankingDistances(ctx context.Context, fromSystem string, targets []string, maxJumps int) (map[string]int, error) {
+	return s.storedDistances(ctx, fromSystem, targets, maxJumps, true)
+}
+
+// storedDistances is the one breadth-first walk behind both distance resolvers. throughStale is
+// their ONLY difference, so the proof-grade verdict cannot drift from the ranking one by
+// accident — there is no second copy of the traversal to fall out of step.
+func (s *Service) storedDistances(ctx context.Context, fromSystem string, targets []string, maxJumps int, throughStale bool) (map[string]int, error) {
 	if maxJumps <= 0 {
 		maxJumps = MaxJumpPath
 	}
@@ -925,7 +963,7 @@ func (s *Service) StoredHopDistances(ctx context.Context, fromSystem string, tar
 	}
 	adjacency, err := s.store.Adjacency(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("stored hop distances from %s: failed to read stored gate adjacency: %w", fromSystem, err)
+		return nil, fmt.Errorf("stored distances from %s: failed to read stored gate adjacency: %w", fromSystem, err)
 	}
 	if wanted[fromSystem] {
 		distances[fromSystem] = 0
@@ -936,9 +974,10 @@ func (s *Service) StoredHopDistances(ctx context.Context, fromSystem string, tar
 		var next []string
 		for _, current := range frontier {
 			// An uncached system has no edges to expand and dead-ends here of its own accord;
-			// a stale one is dropped explicitly, its onward gates being past verification.
+			// a stale one is dropped unless the caller ranks rather than proves, its onward
+			// gates being past verification.
 			edges := adjacency[current]
-			if anyEdgeStale(edges) {
+			if !throughStale && anyEdgeStale(edges) {
 				continue
 			}
 			for _, e := range edges {

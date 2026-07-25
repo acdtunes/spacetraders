@@ -644,6 +644,17 @@ func (f *fakeGateGraph) Connections(ctx context.Context, from string, playerID i
 // simply returned a hop table could not tell a reach proof from a lookup. storedHopErr forces
 // the unreadable-graph branch.
 func (f *fakeGateGraph) StoredHopDistances(_ context.Context, from string, targets []string, maxJumps int) (map[string]int, error) {
+	return f.storedDistances(from, targets, maxJumps, false)
+}
+
+// StoredRankingDistances mirrors the production ranking walk: the same traversal, expanding
+// THROUGH a stale system instead of dead-ending there. Mirroring the real difference is the
+// point — a fixture whose two walks answered alike could not tell a reach proof from a price.
+func (f *fakeGateGraph) StoredRankingDistances(_ context.Context, from string, targets []string, maxJumps int) (map[string]int, error) {
+	return f.storedDistances(from, targets, maxJumps, true)
+}
+
+func (f *fakeGateGraph) storedDistances(from string, targets []string, maxJumps int, throughStale bool) (map[string]int, error) {
 	if f.storedHopErr != nil {
 		return nil, f.storedHopErr
 	}
@@ -661,7 +672,7 @@ func (f *fakeGateGraph) StoredHopDistances(_ context.Context, from string, targe
 		var next []string
 		for _, cur := range frontier {
 			edges := f.edges[cur]
-			if anyFixtureEdgeStale(edges) {
+			if !throughStale && anyFixtureEdgeStale(edges) {
 				continue
 			}
 			for _, e := range edges {

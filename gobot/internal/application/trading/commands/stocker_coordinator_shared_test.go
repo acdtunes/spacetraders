@@ -60,6 +60,12 @@ func (g *fakeHopGraph) StoredHopDistances(_ context.Context, from string, target
 	return out, nil
 }
 
+// StoredRankingDistances mirrors the same fixed table — the stocker coordinator ranks no
+// crossings, and the table carries no staleness for the two walks to differ on.
+func (g *fakeHopGraph) StoredRankingDistances(ctx context.Context, from string, targets []string, maxJumps int) (map[string]int, error) {
+	return g.StoredHopDistances(ctx, from, targets, maxJumps)
+}
+
 func (g *fakeHopGraph) Routable(_ context.Context, from, to string, _ int) (bool, error) {
 	_, ok := g.hops[from+"->"+to]
 	return ok, nil

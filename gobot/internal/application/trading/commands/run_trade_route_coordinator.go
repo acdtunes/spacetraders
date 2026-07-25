@@ -421,6 +421,17 @@ type GateGraph interface {
 	// Exact within the bound — depth-bounded but NOT breadth-bounded, so a dense neighbourhood
 	// cannot exhaust a discovery budget and make a near target look unreachable.
 	StoredHopDistances(ctx context.Context, fromSystem string, targets []string, maxJumps int) (map[string]int, error)
+	// StoredRankingDistances is the same pure store walk at the same bound with the same zero-API
+	// guarantee, differing in one rule: it expands THROUGH a system whose stored edge set is past
+	// its freshness window instead of dead-ending there. It is for distances used to RANK, never
+	// to prove reach. A reach proof commits a hull, so an unverified route must refuse; a ranking
+	// distance commits nothing — the crossing is priced either way and the executor still resolves
+	// the real route strictly at flight time — so refusing a stale set only makes the price wrong,
+	// charging a near crossing as though it were beyond the horizon. Sound because of which way
+	// its errors run: a gate's build state moves only toward built, and a set that has since
+	// gained an edge over-estimates. Laxer about FRESHNESS and nothing else — an under-construction
+	// edge is still impassable and a never-cached system is still a dead end.
+	StoredRankingDistances(ctx context.Context, fromSystem string, targets []string, maxJumps int) (map[string]int, error)
 	Routable(ctx context.Context, fromSystem, toSystem string, playerID int) (bool, error)
 	// RoutableWithinJumps is Routable with a CALLER-SUPPLIED jump bound (sp-ry741) — the same
 	// (bool, error) verdict, where (false, nil) is a DEFINITIVE unroutable veto and (false, err)
