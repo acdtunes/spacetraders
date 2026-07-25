@@ -223,8 +223,17 @@ func (c *SpaceTradersClient) GetShip(ctx context.Context, symbol, token string) 
 	return response.Data.toShipData(), nil
 }
 
-// ListShips retrieves all ships for the authenticated agent
-// Uses pagination to fetch all ships (20 per page)
+// ListShips retrieves all ships for the authenticated agent.
+//
+// Pages at the API maximum of 20 per request (openapi.json: limit maximum 20)
+// and stops as soon as two independent signals agree the collection is
+// exhausted: the page came back short, AND meta.total accounts for every hull
+// already read. Either signal alone can lie — a short page from a server that
+// under-fills, a total that is stale against a fleet growing mid-pagination —
+// and a short ship list is not a cheap error: SyncAllFromAPI treats a successful
+// response as the authoritative fleet and prunes every row missing from it. When
+// the signals do not agree, or the server reports no usable total, the loop falls
+// back to probing for an empty page.
 func (c *SpaceTradersClient) ListShips(ctx context.Context, token string) ([]*navigation.ShipData, error) {
 	var allShips []*navigation.ShipData
 	page := 1
@@ -252,6 +261,14 @@ func (c *SpaceTradersClient) ListShips(ctx context.Context, token string) ([]*na
 
 		for i := range response.Data {
 			allShips = append(allShips, response.Data[i].toShipData())
+		}
+
+		// total is re-read every page, so a fleet that grows mid-pagination
+		// pushes the finish line out rather than cutting the loop short.
+		shortPage := len(response.Data) < limit
+		totalAccountedFor := response.Meta.Total > 0 && len(allShips) >= response.Meta.Total
+		if shortPage && totalAccountedFor {
+			break
 		}
 
 		page++
