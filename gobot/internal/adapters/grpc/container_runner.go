@@ -11,6 +11,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/flowfeed"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
+	bootstrapCmd "github.com/andrescamacho/spacetraders-go/internal/application/bootstrap/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
@@ -71,6 +72,19 @@ func restartBackoffFor(restartsTaken int) time.Duration {
 	return restartBackoffSchedule[restartsTaken]
 }
 
+// standingIterationFloors is the defence-in-depth iteration pacing for standing
+// (infinite-budget) container types whose handler owns its whole run — and its
+// pacing — internally, so the runner loop is only ever re-entered when that
+// handler RETURNS between ticks. The normal return is terminal (RunTerminalReporter
+// → the loop completes above); should the terminal seam break or regress, the
+// floor paces each re-entry at the type's own reconcile tick, degrading a standing
+// container to its ordinary cadence instead of a same-second full-fleet-refresh
+// spin. Types absent here are unaffected (floor 0 = no pacing), so runner-loop
+// types that legitimately iterate back-to-back keep their exact behavior.
+var standingIterationFloors = map[container.ContainerType]time.Duration{
+	container.ContainerTypeBootstrapCoordinator: bootstrapCmd.DefaultTickInterval,
+}
+
 // ContainerRunner executes a container operation in a background goroutine
 // Manages the lifecycle of a single container including error handling and restarts
 type ContainerRunner struct {
@@ -107,6 +121,14 @@ type ContainerRunner struct {
 	// any earlier veto. Guarded by mu like contractRunParked.
 	taskIncomplete       bool
 	taskIncompleteReason string
+
+	// runTerminal records that the most recent iteration's response implemented
+	// common.RunTerminalReporter and reported the command's WHOLE run finished
+	// (the bootstrap coordinator's gate-built EXPANSION exit). The iteration
+	// loop then completes the container instead of re-entering the handler —
+	// load-bearing for infinite-budget containers, whose ShouldContinue never
+	// goes false on its own. Guarded by mu like contractRunParked.
+	runTerminal bool
 
 	// Heartbeat control
 	heartbeatStop chan struct{} // Signal to stop heartbeat goroutine
@@ -511,6 +533,19 @@ func (r *ContainerRunner) execute() {
 		r.log("INFO", fmt.Sprintf("Iteration %d completed",
 			r.containerEntity.CurrentIteration()), nil)
 
+		// A response reporting the run TERMINAL (common.RunTerminalReporter — the
+		// bootstrap coordinator's gate-built EXPANSION exit) ends the loop here,
+		// through the same clean-exit choke point as budget exhaustion. This is the
+		// ONLY way an infinite (-1) container completes: its ShouldContinue never
+		// goes false, so re-entering would run a finished handler forever.
+		r.mu.RLock()
+		runDone := r.runTerminal
+		r.mu.RUnlock()
+		if runDone {
+			r.log("INFO", "Run terminal — the response reports the command's whole run finished; completing without re-entering", nil)
+			break
+		}
+
 		// Check for stop signal
 		select {
 		case <-r.ctx.Done():
@@ -518,6 +553,23 @@ func (r *ContainerRunner) execute() {
 			return
 		default:
 			// Continue to next iteration
+		}
+
+		// Defence in depth for standing (infinite-budget) types whose handler owns
+		// its own pacing: if such a handler RETURNS between ticks without reporting
+		// terminal (a broken/regressed terminal seam), pace the re-entry at the
+		// type's own tick instead of spinning it — on a mature fleet each unpaced
+		// re-entry is a fully-paginated fleet re-read against the account-wide
+		// request budget. Inert for every type without a declared floor, and never
+		// reached on the terminal path above. Ctx-interruptible like the restart
+		// backoff, so a Stop/shutdown never waits the tick out.
+		if floor := standingIterationFloors[r.containerEntity.Type()]; floor > 0 && r.containerEntity.MaxIterations() == -1 {
+			if err := r.sleepOrCancel(floor); err != nil {
+				r.log("INFO", "Iteration pacing canceled by stop/shutdown", nil)
+				r.signalCompletion()
+				r.releaseShipAssignments("canceled")
+				return
+			}
 		}
 	}
 
@@ -782,6 +834,18 @@ func (r *ContainerRunner) executeIteration() error {
 		r.mu.Lock()
 		r.taskIncomplete = !outcomeOK
 		r.taskIncompleteReason = reason
+		r.mu.Unlock()
+	}
+
+	// Run termination: a response that implements common.RunTerminalReporter
+	// declares whether the command's WHOLE run is finished (the bootstrap
+	// coordinator's gate-built EXPANSION exit). execute() stops iterating on a
+	// standing terminal report — the container's iteration budget alone cannot
+	// end an infinite (-1) container, so without this the runner would re-enter
+	// a finished run forever. Recorded per iteration, last one governs.
+	if term, ok := result.(common.RunTerminalReporter); ok {
+		r.mu.Lock()
+		r.runTerminal = term.RunTerminal()
 		r.mu.Unlock()
 	}
 

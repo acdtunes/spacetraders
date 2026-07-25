@@ -46,7 +46,12 @@ func (s *DaemonServer) BootstrapCoordinator(ctx context.Context, playerID int, a
 		containerID,
 		container.ContainerTypeBootstrapCoordinator,
 		playerID,
-		-1,  // Infinite iterations (reconcile loop) — NOT a CoordinatorOwnsIterations type
+		// Infinite budget: Handle() owns the whole reconcile loop and, unlike the other standing
+		// coordinators, RETURNS at the terminal EXPANSION exit — the runner completes the container
+		// on that response's RunTerminal report (never on this budget), and paces any non-terminal
+		// return at the bootstrap tick (standingIterationFloors) so a returning handler can never
+		// spin the runner loop.
+		-1,
 		nil, // No parent container
 		config,
 		nil,

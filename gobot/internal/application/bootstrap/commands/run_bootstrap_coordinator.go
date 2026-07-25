@@ -171,6 +171,11 @@ const (
 	expansionHandoffRetryTicks = 3
 )
 
+// DefaultTickInterval is defaultBootstrapTickSeconds as a wall-clock duration. The container
+// runner reads it as the defence-in-depth pacing floor between runner re-entries of an infinite
+// bootstrap container — single-sourced here so the floor can never drift from the tick it mirrors.
+const DefaultTickInterval = defaultBootstrapTickSeconds * time.Second
+
 // ShipRefresher forces a live re-read of the player's hulls before any role/assignment decision —
 // the phantom-cache guard (captain L47): the ship cache desyncs (a phantom-idle hull misread as
 // busy, or vice-versa), so the reconciler refreshes the pool at the top of every tick. An error
@@ -414,12 +419,23 @@ type RunBootstrapCoordinatorCommand struct {
 	GateWorkerTarget int // GATE worker cap — actual = ~one per active gate-material chain + delivery.
 }
 
-// RunBootstrapCoordinatorResponse reports reconcile progress. Because the loop is infinite it is
-// only observed on context cancellation (shutdown).
+// RunBootstrapCoordinatorResponse reports reconcile progress, observed on context cancellation
+// (shutdown) or at the terminal EXPANSION exit.
 type RunBootstrapCoordinatorResponse struct {
 	Ticks  int
 	Errors []string
+
+	// Done reports the terminal EXPANSION exit: the gate is built and the standing economy is handed
+	// off, so the WHOLE bootstrap run is finished. The container runner consumes it via RunTerminal —
+	// the boot-standing container carries an infinite iteration budget, and without this signal the
+	// runner re-enters Handle() the instant it returns, spinning a mature fleet through unpaced
+	// full-fleet re-reads instead of completing.
+	Done bool
 }
+
+// RunTerminal implements common.RunTerminalReporter: a done response ends the container's iteration
+// loop (COMPLETED) instead of re-entering the handler.
+func (r *RunBootstrapCoordinatorResponse) RunTerminal() bool { return r.Done }
 
 // RunBootstrapCoordinatorHandler reconciles a cold agent toward the jump gate. It holds NO
 // in-memory progress state: progress is ALWAYS re-derived from the live observation each tick
@@ -660,7 +676,11 @@ func (h *RunBootstrapCoordinatorHandler) Handle(ctx context.Context, request com
 		// Terminal EXPANSION (sp-feiy7 — formerly COMPLETE): the gate is built and the standing economy is
 		// handed off, so the coordinator has finished its job and exits cleanly (spec §Architecture). A
 		// restart post-gate re-derives EXPANSION, re-observes the hand-off done, and exits again — idempotent.
+		// Done MUST reach the response: it is what stops the container runner's iteration loop
+		// (RunTerminal) — the return alone does not, because the boot-standing container's iteration
+		// budget is infinite and the runner would re-enter Handle() immediately.
 		if res.Done {
+			result.Done = true
 			logger.Log("INFO", "Bootstrap coordinator exiting: EXPANSION reached (gate built) and handed off", map[string]interface{}{
 				"action":       "bootstrap_exit_complete",
 				"container_id": cmd.ContainerID,

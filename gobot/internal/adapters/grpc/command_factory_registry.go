@@ -402,8 +402,11 @@ func containerSpecList() []ContainerSpec {
 		// arm (default-off), never boot-standing.
 		{CommandType: "contract_scaler", build: buildContractScalerCommand},
 		// bootstrap (sp-3nbe): the standing captain bootstrap coordinator. Like
-		// fleet_autosizer/siting it loops forever inside one Handle(), so it is NOT a
-		// CoordinatorOwnsIterations type; the container-level budget (-1) is irrelevant.
+		// fleet_autosizer/siting it owns its whole reconcile loop inside one Handle() (NOT a
+		// CoordinatorOwnsIterations type) — but UNLIKE them Handle() RETURNS at the terminal
+		// EXPANSION exit (gate built + handed off), so its container completes on the response's
+		// RunTerminal report, and any non-terminal return is paced at the bootstrap tick
+		// (standingIterationFloors) rather than re-entered at loop speed.
 		{CommandType: "bootstrap", build: buildBootstrapCommand},
 		// auto_outfit_coordinator (sp-buyd): the standing guarded auto-outfit coordinator.
 		// Like fleet_autosizer/capacity it loops forever inside one Handle(), so it is NOT a
