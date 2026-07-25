@@ -88,6 +88,11 @@ type tourFixture struct {
 	// The fake models gates as "<sys>-GATE" waypoints. Default false so every existing jump test,
 	// which relies on the fake jump always succeeding, is byte-for-byte unchanged.
 	jumpRequiresGate bool
+	// navFail marks destinations whose navigate fails operationally (an API/route failure the
+	// runner retries, NOT gate-graph drift). It models the real gap between a tour's buy leg and
+	// its sell leg: the hull loads, the hop to the sink fails, the iteration exits resumable and
+	// the container restarts laden. Absent (nil) → every navigate succeeds, as before.
+	navFail map[string]bool
 	// departureHopNavStall, when true, models the arrival-wait false-positive that caused the
 	// live leg-1 crash (sp-trnp): a departure-hop navigate to a jump gate reports completion
 	// (route "arrived") while the persisted position still lags at the origin (the nav-cache
@@ -96,6 +101,13 @@ type tourFixture struct {
 	// false so every existing navigate moves synchronously exactly as before.
 	departureHopNavStall bool
 	stalledGateDest      string
+
+	// shipUnreadableAfterUnloads makes every ship read fail once that many unloads (sells or
+	// warehouse-deposit transfers) have taken cargo off the hull — the transient persistence
+	// blip that leaves the honest-completion epilogue unable to see the hold. unloads counts
+	// them. 0 (the default) → every read succeeds, as before.
+	shipUnreadableAfterUnloads int
+	unloads                    int
 
 	sellCap  map[string]int // per-good cap on units a sell absorbs (stranded test); 0 = uncapped
 	timeline []string       // ordered "BUY:good"/"SELL:good" for sell-before-buy assertions
@@ -191,6 +203,10 @@ func (m *tourFakeMediator) Send(ctx context.Context, request common.Request) (co
 	case *navCmd.NavigateRouteCommand:
 		m.fx.mu.Lock()
 		m.fx.navDests = append(m.fx.navDests, cmd.Destination)
+		if m.fx.navFail[cmd.Destination] {
+			m.fx.mu.Unlock()
+			return nil, fmt.Errorf("navigate to %s failed", cmd.Destination)
+		}
 		// sp-trnp: model the nav-cache false-positive on a departure-hop navigate to the
 		// gate — the route reports "arrived" but the persisted position lags at the origin,
 		// so the hull does NOT move here; only an authoritative resync reveals the truth.
@@ -229,6 +245,7 @@ func (m *tourFakeMediator) Send(ctx context.Context, request common.Request) (co
 		m.fx.cargo[cmd.GoodSymbol] -= units
 		m.fx.timeline = append(m.fx.timeline, "SELL:"+cmd.GoodSymbol)
 		m.fx.sells++
+		m.fx.unloads++
 		m.fx.sellOpTypes = append(m.fx.sellOpTypes, shared.OperationContextFromContext(ctx).NormalizedOperationType())
 		m.fx.mu.Unlock()
 		return &shipCargo.SellCargoResponse{TotalRevenue: units * price, UnitsSold: units, TransactionCount: 1}, nil
@@ -237,6 +254,7 @@ func (m *tourFakeMediator) Send(ctx context.Context, request common.Request) (co
 		// into the warehouse — model it like a sell with no revenue.
 		m.fx.mu.Lock()
 		m.fx.cargo[cmd.GoodSymbol] -= cmd.Units
+		m.fx.unloads++
 		m.fx.mu.Unlock()
 		return &gasCmd.TransferCargoResponse{UnitsTransferred: cmd.Units}, nil
 	case *shipQueries.GetJumpGateConnectionsQuery:
@@ -366,6 +384,12 @@ type tourFakeShipRepo struct {
 }
 
 func (r *tourFakeShipRepo) FindBySymbol(ctx context.Context, symbol string, playerID shared.PlayerID) (*navigation.Ship, error) {
+	r.fx.mu.Lock()
+	blind := r.fx.shipUnreadableAfterUnloads > 0 && r.fx.unloads >= r.fx.shipUnreadableAfterUnloads
+	r.fx.mu.Unlock()
+	if blind {
+		return nil, fmt.Errorf("ship %s unreadable", symbol)
+	}
 	return r.fx.buildShip(r.t, symbol), nil
 }
 func (r *tourFakeShipRepo) Save(ctx context.Context, ship *navigation.Ship) error { return nil }

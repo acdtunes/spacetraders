@@ -506,6 +506,22 @@ type RunTourCoordinatorHandler struct {
 	strandedMu     sync.Mutex
 	strandedStreak map[string]*strandedHullState
 
+	// purchaseObligation records how many units of each good a hull bought under tour
+	// operation and has NOT yet discharged (sold, deposited or liquidated). The
+	// honest-completion veto reads it at every terminal exit, so a tour can never release a
+	// hull still holding cargo it bought. Keyed by SHIP symbol, not container id, because the
+	// obligation must outlive the container that incurred it: the runner restarts an
+	// interrupted iteration — and the fleet relaunches an idle hull — with a brand-new
+	// in-memory run, and a purchase forgotten across that boundary is exactly how a full hold
+	// reached a success=true exit. Guarded by purchaseObligationMu because the handler is a
+	// SHARED singleton dispatched concurrently for every touring hull (the same per-hull
+	// discipline as strandedStreak). Dropped the moment the hull's hold discharges, so it can
+	// never wedge a healthy hull. In-memory only: a daemon restart resets it (acceptable — the
+	// hull re-accrues its obligation on its next buy, and the veto is a backstop for a strand
+	// the ordinary sell path is meant to prevent, not the only guard).
+	purchaseObligationMu sync.Mutex
+	purchaseObligation   map[string]map[string]int
+
 	// rateFloorLastRelocation records the last rate-floor relocation time per hull for the
 	// dwell window: a hull that relocated within reposition_rate_floor_dwell_minutes is not
 	// a rate-floor candidate again, so it cannot hop-scotch across successive productive
@@ -603,6 +619,7 @@ func NewRunTourCoordinatorHandler(
 		mediator:                   mediator,
 		depositParked:              make(map[string]string),
 		strandedStreak:             make(map[string]*strandedHullState),
+		purchaseObligation:         make(map[string]map[string]int),
 		rateFloorLastRelocation:    make(map[string]time.Time),
 		pendingRelocationsBySystem: make(map[string]int),
 	}
@@ -828,6 +845,29 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 	// cleanup).
 	defer h.releaseTourReservations(ctx, cmd)
 
+	// netBought is the hull's OUTSTANDING tour-purchase obligation: units bought under tour
+	// operation minus what has since left the hold. It is adopted from — and handed back to —
+	// the per-hull carry, because a purchase the run cannot discharge must not be forgotten by
+	// the restart that interrupted it. Cumulative across every tour this run: a tour ending
+	// with held cargo is NOT stranded mid-run, since the next tour re-plans from the hull's
+	// current cargo and the solver sells it as launch inventory. Only cargo BOUGHT and never
+	// discharged survives to veto the completion; cargo the tour never bought is never in here,
+	// so a hull handed a foreign load is never falsely vetoed.
+	netBought := h.adoptPurchaseObligation(cmd.ShipSymbol)
+
+	// The honest-completion epilogue. Deferred so EVERY exit funnels through it — a fail-open
+	// "tour unavailable", a planner outage, margins-death, an unreadable model artifact — and
+	// a future exit condition cannot bypass the laden check the way the pre-fix exits did. A
+	// resumable (non-nil error) exit claims nothing: the runner retries it, so only the carry
+	// is written back and no terminal verdict is reached.
+	defer func() {
+		defer h.retainPurchaseObligation(cmd.ShipSymbol, netBought)
+		if err != nil {
+			return
+		}
+		h.vetoLadenExit(ctx, cmd, response, netBought)
+	}()
+
 	// Bind the model version from the checked-in artifact (RULINGS #4: unreadable →
 	// fail OPEN to single-lane, never guess a version). Path precedence: an explicit
 	// per-run cmd.ModelArtifactPath (tests) → the daemon-configured absolute path
@@ -884,16 +924,6 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 		iterations = 1
 	}
 	continuous := iterations < 0
-
-	// netBought is CUMULATIVE across every tour this run: the honest-completion
-	// stranded veto (invariant: unsold bought cargo is never a clean completion) is
-	// checked ONCE, at the final exit. A tour ending with held cargo is NOT stranded
-	// mid-run — the next tour re-plans from the hull's current cargo and the solver
-	// sells it as launch inventory. Only cargo BOUGHT this run and never sold survives
-	// to veto the final completion; pre-held cargo (never in netBought) drives it
-	// negative, so liquidating the captain's pre-existing load is a bonus, never a
-	// false veto.
-	netBought := map[string]int{}
 
 	// The budget counts PRODUCTIVE tours (ToursCompleted), not attempts: "N tours"
 	// means N tours actually flown, so a transient no-plan mid-run is retried (bounded
@@ -1148,17 +1178,8 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 		response.ExitReason = tourExitIterations
 	}
 
-	// Honest-completion check (FINAL exit only): any cargo bought this run and still
-	// aboard after the whole loop is a stranded veto — the container is terminalized
-	// FAILED. A mid-run held load is deliberately NOT checked here; it was carried
-	// forward to the next tour's plan.
-	if reason, stranded := h.strandedReason(ctx, cmd, netBought); stranded {
-		response.CargoStranded = true
-		response.CargoStrandedReason = reason
-		logger.Log("ERROR", reason, map[string]interface{}{"ship_symbol": cmd.ShipSymbol})
-		return nil
-	}
-
+	// The honest-completion veto runs in the deferred epilogue, which every exit shares —
+	// including the ones that used to return before this point.
 	response.NetProfit = response.TotalRevenue - response.TotalSpent
 	logger.Log("INFO", "Tour run complete", map[string]interface{}{
 		"ship_symbol": cmd.ShipSymbol, "tours_completed": response.ToursCompleted, "exit_reason": response.ExitReason,
@@ -1643,7 +1664,7 @@ func (h *RunTourCoordinatorHandler) executeSell(
 	}
 	response.TotalRevenue += int64(sellResp.TotalRevenue)
 	response.TradesExecuted++
-	netBought[trade.Good] -= sellResp.UnitsSold
+	dischargePurchaseObligation(netBought, trade.Good, sellResp.UnitsSold)
 	// Accumulate the realized units sold into this sink for the per-sink conversion
 	// at leg completion. The solver splits a sink's A-cap depth into SEPARATE
 	// price-tiered tranches (distinct trades), so a single sink can sell across several
@@ -1762,7 +1783,7 @@ func (h *RunTourCoordinatorHandler) executeDeposit(
 	}
 
 	response.TradesExecuted++
-	netBought[trade.Good] -= deposited // left the hull into inventory — not stranded
+	dischargePurchaseObligation(netBought, trade.Good, deposited) // left the hull into inventory — not stranded
 	return true, nil
 }
 
@@ -2301,26 +2322,112 @@ func (h *RunTourCoordinatorHandler) defaultMaxSpend(ctx context.Context) (int64,
 	return spendCap, false
 }
 
-// strandedReason reports whether any good the tour bought is still aboard (net
-// bought minus sold > 0) — an honest-completion veto. The message names each good,
-// its stranded units, and the hull's current location so the strand is greppable
-// and hand-recoverable.
+// adoptPurchaseObligation hands this run the hull's outstanding tour-purchase ledger,
+// seeded with whatever an earlier run left undischarged, for the run to accumulate into.
+// A copy, so a concurrent read of the carry never races the run's own buys and sells.
+func (h *RunTourCoordinatorHandler) adoptPurchaseObligation(shipSymbol string) map[string]int {
+	h.purchaseObligationMu.Lock()
+	defer h.purchaseObligationMu.Unlock()
+	outstanding := map[string]int{}
+	for good, units := range h.purchaseObligation[shipSymbol] {
+		outstanding[good] = units
+	}
+	return outstanding
+}
+
+// retainPurchaseObligation hands the run's ledger back for the hull's NEXT run, so a
+// purchase survives the restart that interrupted it. A hull with nothing outstanding is
+// dropped entirely — a settled obligation must never linger to veto a later, unrelated run.
+func (h *RunTourCoordinatorHandler) retainPurchaseObligation(shipSymbol string, outstanding map[string]int) {
+	carry := map[string]int{}
+	for good, units := range outstanding {
+		if units > 0 {
+			carry[good] = units
+		}
+	}
+	h.purchaseObligationMu.Lock()
+	defer h.purchaseObligationMu.Unlock()
+	if len(carry) == 0 {
+		delete(h.purchaseObligation, shipSymbol)
+		return
+	}
+	h.purchaseObligation[shipSymbol] = carry
+}
+
+// dischargePurchaseObligation books units of good OFF the hull's outstanding obligation as
+// they leave the hold — sold, deposited or liquidated. It never falls below zero: moving
+// cargo the tour did NOT buy (a load the hull was handed, liquidated as launch inventory)
+// discharges nothing, so it cannot buy credit against a LATER purchase the run then fails
+// to sell. That netting is how a run could empty an inherited hold, refill it, and still
+// report success.
+func dischargePurchaseObligation(outstanding map[string]int, good string, units int) {
+	remaining := outstanding[good] - units
+	if remaining <= 0 {
+		delete(outstanding, good)
+		return
+	}
+	outstanding[good] = remaining
+}
+
+// vetoLadenExit terminalizes the run FAILED when the hull is ending laden with cargo the
+// tour bought — the honest-completion veto (RULINGS #4: a hold the tour bought and did not
+// sell is a failure, never a success). Called from the deferred epilogue so no exit path
+// can release a laden hull as a clean completion.
+func (h *RunTourCoordinatorHandler) vetoLadenExit(ctx context.Context, cmd *RunTourCoordinatorCommand, response *RunTourCoordinatorResponse, netBought map[string]int) {
+	reason, stranded := h.strandedReason(ctx, cmd, netBought)
+	if !stranded {
+		return
+	}
+	response.CargoStranded = true
+	response.CargoStrandedReason = reason
+	response.Completed = false
+	common.LoggerFromContext(ctx).Log("ERROR", reason, map[string]interface{}{"ship_symbol": cmd.ShipSymbol})
+}
+
+// strandedReason reports whether cargo the tour bought is still aboard — an
+// honest-completion veto. Each good's strand is bounded by what the hull ACTUALLY holds,
+// so an obligation the hold no longer carries (sold on another ground, transferred off,
+// hand-rescued by the captain) is discharged rather than wedging the hull in permanent
+// failure. It also settles the ledger against that live read, so the discharge carries to
+// the next run. The message names each good, its stranded units, and the hull's current
+// location so the strand is greppable and hand-recoverable.
 func (h *RunTourCoordinatorHandler) strandedReason(ctx context.Context, cmd *RunTourCoordinatorCommand, netBought map[string]int) (string, bool) {
+	if len(netBought) == 0 {
+		return "", false
+	}
+	// An unreadable hull cannot prove the hold is empty. Fail CLOSED on the ledger alone
+	// (RULINGS #4) — a read failure must never convert a strand into a success — and leave
+	// the ledger untouched so the next run re-checks against a live read.
+	loc := "unknown"
+	ship, err := h.legs.loadShip(ctx, cmd.ShipSymbol, cmd.PlayerID)
+	if err == nil {
+		loc = ship.CurrentLocation().Symbol
+	}
 	var parts []string
-	for good, net := range netBought {
-		if net > 0 {
-			parts = append(parts, fmt.Sprintf("%d %s", net, good))
+	for good, bought := range netBought {
+		stranded := bought
+		if err == nil {
+			stranded = min(bought, shipHeldUnits(ship, good))
+			netBought[good] = stranded
+		}
+		if stranded > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", stranded, good))
 		}
 	}
 	if len(parts) == 0 {
 		return "", false
 	}
 	sort.Strings(parts)
-	loc := "unknown"
-	if ship, err := h.legs.loadShip(ctx, cmd.ShipSymbol, cmd.PlayerID); err == nil {
-		loc = ship.CurrentLocation().Symbol
-	}
 	return fmt.Sprintf("stranded cargo: %s still aboard at %s (tour-bought, unsold) - reporting failure", strings.Join(parts, ", "), loc), true
+}
+
+// shipHeldUnits reads how many units of good the hull is carrying right now.
+func shipHeldUnits(ship *navigation.Ship, good string) int {
+	c := ship.Cargo()
+	if c == nil {
+		return 0
+	}
+	return c.GetItemUnits(good)
 }
 
 func (h *RunTourCoordinatorHandler) recordLeg(

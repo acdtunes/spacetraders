@@ -194,7 +194,7 @@ func (h *RunTourCoordinatorHandler) distressSellGood(
 
 	response.TotalRevenue += int64(sellResp.TotalRevenue)
 	response.TradesExecuted++
-	netBought[good] -= sellResp.UnitsSold // left the hull — no longer a stranded-veto candidate
+	dischargePurchaseObligation(netBought, good, sellResp.UnitsSold) // left the hull — no longer a stranded-veto candidate
 	logger.Log("WARNING", fmt.Sprintf("Distress liquidation (sp-2v69u): %s stuck laden with no fresh plan and no reachable sink - sold %d %s at %s for %d credits (bid %d/u, BELOW the profit floor) to free the hull; sunk-cost cash recovery, deliberate below-floor loss booked (sell-side only, RULINGS #4 buy guards untouched)", cmd.ShipSymbol, sellResp.UnitsSold, good, sink.waypoint, sellResp.TotalRevenue, sink.bid), map[string]interface{}{
 		"ship_symbol": cmd.ShipSymbol, "good": good, "waypoint": sink.waypoint,
 		"units_sold": sellResp.UnitsSold, "revenue": sellResp.TotalRevenue, "bid_per_unit": sink.bid,
