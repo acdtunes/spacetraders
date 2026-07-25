@@ -4,7 +4,10 @@ import (
 	"math"
 	"testing"
 
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	contractScalerCmd "github.com/andrescamacho/spacetraders-go/internal/application/contractscaler/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/contractscaler"
 )
 
 // These tests cover the scaled GATE-entry gate, now driven by the sp-gm7r DYNAMIC bar (the full contract
@@ -39,9 +42,9 @@ func TestBootstrap_ScaledGate_FullFleetAtTargetAndFunded_EntersGate(t *testing.T
 	cfg := scaledGateCfg(t)
 	obs := Observation{
 		Haulers:              []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}}, // 2 delivery
-		ContractScalerTarget: 2,                                               // full fleet (2) == target
-		IncomePerHour:        60000,                                           // (as substituted: the sustained mean) ≥ 50000
-		Treasury:             gateSurplusTreasury,                             // surplus ≥ floor
+		ContractScalerTarget: 2,                                                // full fleet (2) == target
+		IncomePerHour:        60000,                                            // (as substituted: the sustained mean) ≥ 50000
+		Treasury:             gateSurplusTreasury,                              // surplus ≥ floor
 	}
 	if p := derivePhase(obs, cfg); p != PhaseGate {
 		t.Fatalf("full fleet at target + sustained income + surplus → GATE, got %s", p)
@@ -229,5 +232,100 @@ func TestBootstrap_ScaledGate_SpikeStaysIncome_SustainedEntersGate(t *testing.T)
 	}
 	if !gateEntered {
 		t.Fatalf("sustained $/hr over the bar (a scaled, funded op at target) must enter GATE once the rolling window fills")
+	}
+}
+
+// --- The era-5 cold-start retune: GATE is reached by a SMALLER contract operation ---
+
+// coldStartScalerTarget is the GATE-entry hull bar an era-5 cold start actually faces: the contract
+// auto-scaler's achievable target under its SHIPPED default ceiling. The observer derives this same
+// min(plan slots, live ceiling) into obs.ContractScalerTarget, so deriving it from the scaler's own default
+// here keeps the phase bar coupled to the knob instead of to a copied literal.
+func coldStartScalerTarget() int {
+	planSlots := contractscaler.MaxDeliveryHulls + contractscaler.WarehouseUnits + contractscaler.StockerUnits
+	return min(planSlots, contractScalerCmd.DefaultContractFleetMaxHulls)
+}
+
+// THE ADMIRAL'S ERA-5 BAR: GATE is reached once the contract operation holds THREE hulls. The default
+// ceiling is what sets it, so this pins the operational number the retune exists to deliver.
+func TestBootstrap_ColdStartGate_EntryBarIsThreeContractHulls(t *testing.T) {
+	if got := coldStartScalerTarget(); got != 3 {
+		t.Fatalf("cold-start GATE-entry bar = %d contract hulls, want 3 (the era-5 default ceiling)", got)
+	}
+}
+
+// A funded operation at THREE hulls enters GATE — and the same operation one hull short does NOT. The
+// boundary is the whole point: the hull bar moved down, it did not disappear.
+func TestBootstrap_ColdStartGate_EntersAtThreeHullsNotTwo(t *testing.T) {
+	cfg := scaledGateCfg(t)
+	target := coldStartScalerTarget()
+
+	funded := func(hulls int) Observation {
+		return Observation{
+			Haulers:              nHaulers(hulls),
+			ContractScalerTarget: target,
+			IncomePerHour:        defaultGateIncomeBar + 1, // sustained mean, over the bar
+			Treasury:             gateSurplusTreasury,
+		}
+	}
+	if p := derivePhase(funded(target), cfg); p != PhaseGate {
+		t.Fatalf("a funded op at the %d-hull target must enter GATE, got %s", target, p)
+	}
+	if p := derivePhase(funded(target-1), cfg); p == PhaseGate {
+		t.Fatalf("a funded op one hull SHORT of the %d-hull target must NOT enter GATE, got %s", target, p)
+	}
+}
+
+// The depot hulls count toward the bar exactly as the delivery haulers do — the bar is the FULL contract
+// fleet, so a mixed 2-delivery + 1-depot operation reaches GATE at the same three hulls.
+func TestBootstrap_ColdStartGate_FullFleetCountsDepotHulls(t *testing.T) {
+	cfg := scaledGateCfg(t)
+	target := coldStartScalerTarget()
+	obs := Observation{
+		Haulers:                nHaulers(target - 1),
+		ContractDepotHullCount: 1,
+		ContractScalerTarget:   target,
+		IncomePerHour:          defaultGateIncomeBar + 1,
+		Treasury:               gateSurplusTreasury,
+	}
+	if p := derivePhase(obs, cfg); p != PhaseGate {
+		t.Fatalf("delivery+depot reaching the %d-hull target must enter GATE, got %s", target, p)
+	}
+}
+
+// THE FUNDING BAR SURVIVES THE SMALLER FLEET. At the new three-hull bar the other two gateFunded
+// conditions still each independently BLOCK entry: a short sustained $/hr, and a treasury whose surplus
+// over the immutable reserve floor is under the war chest. Lowering the hull bar must not become a way in
+// on an unfunded operation.
+func TestBootstrap_ColdStartGate_ThreeHullsStillBlockedWhenUnfunded(t *testing.T) {
+	cfg := scaledGateCfg(t)
+	target := coldStartScalerTarget()
+
+	cases := []struct {
+		name string
+		obs  Observation
+	}{
+		{
+			"sustained $/hr under gate_income_bar",
+			Observation{
+				Haulers: nHaulers(target), ContractScalerTarget: target,
+				IncomePerHour: defaultGateIncomeBar - 1, Treasury: gateSurplusTreasury,
+			},
+		},
+		{
+			"treasury surplus under the gate war chest",
+			Observation{
+				Haulers: nHaulers(target), ContractScalerTarget: target,
+				IncomePerHour: defaultGateIncomeBar + 1,
+				Treasury:      common.ImmutableReserveFloor + int64(cfg.GateSurplusFloor) - 1,
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if p := derivePhase(tc.obs, cfg); p == PhaseGate {
+				t.Fatalf("a %d-hull op with %s must NOT enter GATE, got %s", target, tc.name, p)
+			}
+		})
 	}
 }

@@ -73,17 +73,12 @@ const (
 	defaultContractWorkingCapitalFloor int64 = common.ContractReserveCushion
 
 	// GATE-phase defaults.
-	// defaultGateWorkerTarget caps gate-construction workers (actual = ~one per active gate-material
-	// chain + a delivery hauler, up to this). 6 covers a typical jump-gate material shape (a handful of
-	// producing chains + delivery) without letting a wide pipeline drain the treasury; the Analyst tunes
-	// it. The gate BUYS its own workers (sp-cdxy2: the contract fleet is exclusive and never repurposed), so
-	// this cap bounds the construction-worker spend directly.
-	defaultGateWorkerTarget = 6
-	// gateDeliveryHaulers is the small fixed delivery allowance added to the per-chain worker target
-	// (spec §Fleet scaling: "~one worker per active gate-material chain + 1–2 delivery haulers"). Kept a
-	// call-site constant (not a knob) — it is a shape detail of the sizing formula, bounded by
-	// gate_worker_target which IS the operator-reachable cap.
-	gateDeliveryHaulers = 1
+	// defaultGateWorkerTarget is the gate-construction workforce: the size GATE ramps to, one hull per
+	// tick, from the moment the pipeline exists. The gate BUYS its own workers (the contract fleet is
+	// exclusive and never repurposed), so this is also the direct bound on the construction-worker spend —
+	// 4 keeps that spend small enough that the contract operation still funds the material bill alongside
+	// it. Tunable via gate_worker_target.
+	defaultGateWorkerTarget = 4
 
 	// defaultDeferProbeToFreshsizer is the sp-tsn2 single-buyer-arbitration flag default: 0 = OFF
 	// (byte-identical — bootstrap and freshsizer each buy behind their own guards). Armed to 1 via

@@ -623,25 +623,24 @@ func TestReconcile_ReconcilesExistingDepotAddsOnlyTheShortWarehouse(t *testing.T
 	}
 }
 
-// SHIP-ARMED (sp-1cbxz, Admiral): at DefaultContractFleetMaxHulls (10) the DEFAULT ceiling ACTUATES the
-// plan — delivery fills to target AND the depot bundle grows — NOT the old delivery-only crawl at 2. This
-// guards DefaultContractFleetMaxHulls staying above the delivery saturation (~7-8) so the default is always
-// armed; regress it below the delivery target and the depot stops actuating and this fails.
-func TestReconcile_DefaultCeilingIsArmedAndActuatesDepot(t *testing.T) {
-	// Delivery target 6 (knee), EMPTY depot: at ceiling 10 the ramp fills 6 delivery, THEN actuates the
-	// remaining 4 units into the depot bundle (functional-first: anchor warehouse, stocker, depth).
-	h, pur, _, gr := newDepotHarness(DefaultContractFleetMaxHulls, 7, 0, 0, 0)
+// RAISING THE CEILING ACTUATES THE DEPOT. The cold-start default is a small delivery-only operation, so the
+// depot bundle is what the operator's post-gate tune buys: at a ceiling of 10 the ramp fills 6 delivery to
+// the knee and then puts the remaining 4 units into the depot (functional-first: anchor warehouse, stocker,
+// depth). A ramp that stayed delivery-only above the knee would fail here.
+func TestReconcile_RaisedCeilingActuatesDepotBeyondTheDeliveryKnee(t *testing.T) {
+	const raised = 10
+	h, pur, _, gr := newDepotHarness(raised, 7, 0, 0, 0)
 
-	bought := reconcile(t, h, DefaultContractFleetMaxHulls)
+	bought := reconcile(t, h, raised)
 
-	if bought != DefaultContractFleetMaxHulls {
-		t.Fatalf("bought = %d, want %d — the default ceiling fills to saturation (ARMED), not a delivery-only crawl", bought, DefaultContractFleetMaxHulls)
+	if bought != raised {
+		t.Fatalf("bought = %d, want %d — a raised ceiling fills to saturation, not a delivery-only crawl", bought, raised)
 	}
 	if len(pur.orders) != 6 {
 		t.Fatalf("delivery buys = %d, want 6 (delivery fills to the knee first)", len(pur.orders))
 	}
 	if len(gr.warehouseGrows) == 0 && len(gr.stockerGrows) == 0 {
-		t.Fatalf("depot grows = (%d,%d), want >0 — the DEFAULT ceiling must ACTUATE the depot (ship-armed), not delivery-only", len(gr.warehouseGrows), len(gr.stockerGrows))
+		t.Fatalf("depot grows = (%d,%d), want >0 — budget past the delivery knee must ACTUATE the depot", len(gr.warehouseGrows), len(gr.stockerGrows))
 	}
 }
 
@@ -871,5 +870,60 @@ func TestReconcile_SurplusDeliveryNotReleasedWithoutWarehouseDeficit(t *testing.
 	}
 	if len(gr.warehouseGrows) != 0 {
 		t.Fatalf("warehouse grows = %d, want 0 (anchor already present, no deficit)", len(gr.warehouseGrows))
+	}
+}
+
+// --- The era-5 cold-start retune: a SMALLER contract operation that reaches the gate sooner ---
+
+// THE ADMIRAL'S ERA-5 CEILING. The shipped default sizes the whole contract operation at three hulls, so
+// bootstrap's GATE-entry bar (the full fleet against the scaler's achievable target) is reached early. This
+// pins the operational number; the operator raises it live when the gate is behind them.
+func TestContractScaler_DefaultCeilingIsThree(t *testing.T) {
+	if DefaultContractFleetMaxHulls != 3 {
+		t.Fatalf("DefaultContractFleetMaxHulls = %d, want 3 (the era-5 cold-start contract operation)", DefaultContractFleetMaxHulls)
+	}
+	if got := ContractScalerTunableDefaults()[ceilingKey]; got != 3 {
+		t.Fatalf("the tune registry's documented default for %s = %d, want 3", ceilingKey, got)
+	}
+}
+
+// THE SEAM IS UNCHANGED — only the default moved. contract_fleet_max_hulls is still read LIVE from the
+// container's own config every tick, so an operator raising it mid-era still lifts the ceiling above the
+// default, and clearing it still falls back to the default. A retune that hardcoded the ceiling would fail.
+func TestContractScaler_CeilingStaysLiveTunableAboveTheDefault(t *testing.T) {
+	h := NewRunContractScalerHandler(nil)
+	cmd := &RunContractScalerCommand{ContainerID: "c1", PlayerID: 1}
+
+	for _, tuned := range []int{1, 6, 10, 16} {
+		h.SetCeilingReader(&fakeCeiling{value: tuned})
+		if got := h.liveCeiling(context.Background(), cmd); got != tuned {
+			t.Fatalf("a live tune to %d must take effect, got ceiling %d", tuned, got)
+		}
+	}
+
+	// Unset (0) reverts to the documented default rather than stalling the ramp at zero.
+	h.SetCeilingReader(&fakeCeiling{value: 0})
+	if got := h.liveCeiling(context.Background(), cmd); got != DefaultContractFleetMaxHulls {
+		t.Fatalf("an unset ceiling must revert to the default %d, got %d", DefaultContractFleetMaxHulls, got)
+	}
+}
+
+// At the shipped default the ramp fills DELIVERY hulls only — three central parks, no depot bundle. The
+// fill order is structurally delivery-first, so a three-hull budget never strands capital in a warehouse
+// that has no delivery fleet to serve.
+func TestReconcile_DefaultCeilingBuysThreeDeliveryHullsAndNoDepot(t *testing.T) {
+	h, pur, _, gr := newDepotHarness(DefaultContractFleetMaxHulls, 7, 0, 0, 0)
+
+	bought := reconcile(t, h, DefaultContractFleetMaxHulls)
+
+	if bought != DefaultContractFleetMaxHulls {
+		t.Fatalf("bought = %d, want %d — the default ceiling fills its whole budget", bought, DefaultContractFleetMaxHulls)
+	}
+	if len(pur.orders) != DefaultContractFleetMaxHulls {
+		t.Fatalf("delivery buys = %d, want %d (delivery fills first and the budget stops there)", len(pur.orders), DefaultContractFleetMaxHulls)
+	}
+	if len(gr.warehouseGrows) != 0 || len(gr.stockerGrows) != 0 {
+		t.Fatalf("depot grows = (%d,%d), want (0,0) — a three-hull budget is spent entirely on delivery",
+			len(gr.warehouseGrows), len(gr.stockerGrows))
 	}
 }

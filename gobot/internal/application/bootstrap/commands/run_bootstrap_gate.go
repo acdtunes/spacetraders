@@ -25,19 +25,18 @@ type gateWorkerPlan struct {
 	// it feeds are retained (dormant) rather than ripped out; sizeGateWorkers simply never iterates it.
 	ReleaseShips []string
 	// SurplusToUndedicate are the gate's OWN surplus IDLE manufacturing hulls to un-dedicate this tick (sp-mxflh):
-	// when the executor holds MORE gate workers than the pipeline's revealed shape needs, the idle overage is
+	// when the executor holds MORE gate workers than the workforce target, the idle overage is
 	// released to the UNDEDICATED idle pool so the contract scaler's reclaim-before-buy tier adopts it into the
 	// contract fleet BEFORE buying — the zero-buy re-balance. Distinct from ReleaseShips (the dormant
-	// re-dedicate-TO-construction seam): this un-dedicates AWAY from construction. Empty unless over-provisioned
-	// (byte-identical to today); never a hull mid-task, never a contract hauler.
+	// re-dedicate-TO-construction seam): this un-dedicates AWAY from construction. Empty unless over-provisioned;
+	// never a hull mid-task, never a contract hauler.
 	SurplusToUndedicate []string
-	// Buy is the staged top-up: gate-worker hulls to BUY this tick (0 or 1 — never a blind buy-all),
-	// non-zero only once the pipeline reveals its chains AND the executor's existing workers fall short of
-	// the pipeline's shape. With the contract fleet exclusive, the BUY (plus any idle non-dedicated hull the
-	// executor claims on its own) is the SOLE source of the gate workforce — it sizes it from scratch.
+	// Buy is the staged ramp step: gate-worker hulls to BUY this tick (0 or 1 — never a blind buy-all),
+	// non-zero while the executor's existing workers fall short of the workforce target. With the contract
+	// fleet exclusive, the BUY (plus any idle non-dedicated hull the executor claims on its own) is the SOLE
+	// source of the gate workforce — it sizes it from scratch.
 	Buy int
-	// DesiredWorkers is the sizing target (~one per active gate-material chain + a delivery hauler, capped
-	// at gate_worker_target). 0 until the pipeline reveals its chains.
+	// DesiredWorkers is the sizing target: gate_worker_target, live from GATE entry.
 	DesiredWorkers int
 	// KeptOnContract is how many haulers stay on contracts through GATE — the WHOLE contract delivery fleet
 	// now (sp-cdxy2), never a floored subset — carried for the decision log.
@@ -53,30 +52,29 @@ type gateWorkerPlan struct {
 //     contract→manufacturing re-tag dropped the scaler's ContractHullCount below its delivery target, so
 //     the scaler re-bought to refill and GATE repurposed again. Contracts fund the gate build at full
 //     scale (RULINGS #1); the depot warehouse/stocker hulls are separately tagged and likewise untouched.
-//  2. TOP-UP TO THE PIPELINE'S SHAPE — once construction reveals its producing chains, target ~one worker
-//     per active chain + a delivery hauler, capped at gate_worker_target, and BUY the staged delta (one
-//     hull per tick) whenever the executor's existing workers fall short. A bought hull is dedicated to the
-//     manufacturing fleet and shows up as a GateWorker next tick, so the deficit shrinks one per tick and
-//     the buy stops at the target — the buy sizes the full workforce from scratch, never an over-buy.
+//  2. RAMP TO THE WORKFORCE TARGET FROM GATE ENTRY — target gate_worker_target workers as soon as the
+//     pipeline exists and BUY the staged delta (one hull per tick) while the executor's workers fall short.
+//     A bought hull is dedicated to the manufacturing fleet and shows up as a GateWorker next tick, so the
+//     deficit shrinks one per tick and the buy stops at the target — never an over-buy.
+//
+// The target deliberately does NOT wait for, or track, the pipeline's revealed chain count: waiting would
+// stall the whole construction ramp behind revelation, and tracking would make the target non-monotone
+// inside GATE — a chain count that dropped would turn the hulls just bought into surplus and release them,
+// the buy/release oscillation the bang-bang around desired exists to prevent. gate_worker_target is the
+// single operator-reachable size, and the working-capital floor (not the shape) is what bounds the spend.
 //
 // It is pure and idempotent: a restart mid-GATE re-derives the same plan from the re-observed pool, so no
-// top-up hull is double-bought.
+// ramp hull is double-bought.
 func planGateWorkers(obs Observation, cfg bootstrapRunConfig) gateWorkerPlan {
 	// (1) The exclusive contract fleet is never repurposed — release nothing, keep the whole delivery fleet.
 	kept := len(obs.Haulers)
 
-	// (2) The top-up target, revealed only once the pipeline exposes its producing chains.
-	desired := 0
-	if obs.GateMaterialChains > 0 {
-		desired = obs.GateMaterialChains + gateDeliveryHaulers
-		if desired > cfg.GateWorkerTarget {
-			desired = cfg.GateWorkerTarget
-		}
-	}
+	// (2) The workforce target, live from the moment GATE has a pipeline to work.
+	desired := cfg.GateWorkerTarget
 
-	// Buy the staged delta (at most one per tick) whenever the executor's already-claimed workers fall short
-	// of the pipeline's shape. GateWorkers is the whole pool now (no repurposed seed is folded in): a bought
-	// hull becomes a GateWorker next tick, so the deficit shrinks and the buy stops at the target.
+	// Buy the staged delta (at most one per tick) while the executor's already-claimed workers fall short.
+	// GateWorkers is the whole pool: a bought hull becomes a GateWorker next tick, so the deficit shrinks
+	// and the buy stops at the target.
 	buy := 0
 	if desired > obs.GateWorkers {
 		buy = 1
@@ -94,9 +92,9 @@ func planGateWorkers(obs Observation, cfg bootstrapRunConfig) gateWorkerPlan {
 // selectGateSurplus picks the IDLE manufacturing hulls to un-dedicate this tick (sp-mxflh) — the
 // (GateWorkers − desired) overage, drawn ONLY from idle hulls (never one mid-task) in deterministic
 // symbol order so the release is stable and reaches a fixed point (a released hull becomes a contract
-// hull next tick, shrinking the surplus). It returns nil — releasing nothing, byte-identical to the
-// pre-fix ramp — UNLESS the pipeline's shape is revealed (desired > 0) AND the executor holds more
-// workers than that shape needs. When the surplus exceeds the idle count it releases only the idle
+// hull next tick, shrinking the surplus). It returns nil — releasing nothing — unless the executor holds
+// more workers than the workforce target, which happens only when the executor has claimed idle hulls of
+// its own beyond what the ramp bought. When the surplus exceeds the idle count it releases only the idle
 // ones (fail-safe: the rest re-balance a later tick as they go idle). The buy path (desired > GateWorkers)
 // and this release path (GateWorkers > desired) are mutually exclusive, so the sizing is a clean
 // bang-bang around desired — never buying and releasing in the same tick.
@@ -141,8 +139,8 @@ func gateSiteOrNone(site string) string {
 //  3. Ensure the executor has ADOPTED the pipeline (captain L57): if it is down, EnsureRunning starts it
 //     (a fresh start adopts existing pipelines); if it is up but has not adopted the new pipeline, bounce
 //     it so a restart adopts. Running-and-adopted ⇒ nothing.
-//  4. Size the gate workforce (planGateWorkers): BUY the staged top-up delta when the executor's workers
-//     fall short of the pipeline's shape. The exclusive contract fleet is never repurposed (sp-cdxy2).
+//  4. Size the gate workforce (planGateWorkers): BUY the staged ramp delta while the executor's workers
+//     fall short of the workforce target. The exclusive contract fleet is never repurposed (sp-cdxy2).
 //
 // The monitor→EXPANSION transition is derivePhase's job (obs.ConstructionComplete), so GATE has no explicit
 // "is it done?" branch — it just reconciles the construction drive each tick until the phase flips.
@@ -286,8 +284,8 @@ func (h *RunBootstrapCoordinatorHandler) ensureExecutorAdopted(ctx context.Conte
 	})
 }
 
-// sizeGateWorkers executes the deterministic worker plan: buy the staged top-up delta when the executor's
-// workers fall short of the pipeline's shape. The release loop is retained but INERT — planGateWorkers keeps
+// sizeGateWorkers executes the deterministic worker plan: buy the staged ramp delta while the executor's
+// workers fall short of the workforce target. The release loop is retained but INERT — planGateWorkers keeps
 // the whole exclusive contract fleet on contracts (sp-cdxy2), so plan.ReleaseShips is always empty and no
 // hauler is ever repurposed; the loop stays only so a regression that reintroduced a release would still
 // route through the guarded, idempotent repurposer rather than a raw re-tag. Each step is independently
@@ -309,14 +307,14 @@ func (h *RunBootstrapCoordinatorHandler) sizeGateWorkers(ctx context.Context, cm
 		h.releaseGateSurplus(ctx, cmd, cfg, plan, res)
 	}
 
-	// (2) Staged top-up: buy the delta (at most one hull) only when the executor's workers are short of the shape.
+	// (2) Staged ramp: buy the delta (at most one hull) only while the executor's workers are short of the target.
 	if plan.Buy > 0 {
 		h.maybeBuyGateWorker(ctx, cmd, cfg, obs, plan, res)
 	}
 }
 
 // releaseGateSurplus un-dedicates the gate's surplus IDLE manufacturing hulls (planGateWorkers selected them —
-// GateWorkers over the pipeline's revealed shape) back to the UNDEDICATED idle pool via the single-writer
+// GateWorkers over the workforce target) back to the UNDEDICATED idle pool via the single-writer
 // AssignFleet (fleet→"", RULINGS #3), from where the contract scaler's IdleHullReclaimer adopts them into the
 // contract fleet before it buys — the zero-buy re-balance (sp-mxflh). FREE (un-dedicate spends nothing) ⇒ never
 // cushion-gated. Best-effort + fail-closed: a nil releaser or a partial release just re-balances fewer this
@@ -401,7 +399,7 @@ func (h *RunBootstrapCoordinatorHandler) repurposeHauler(ctx context.Context, cm
 // maybeBuyGateWorker evaluates and (unless dry-run) executes ONE staged gate-worker buy behind the
 // readiness and capital gates, emitting the same guardrail arithmetic as the probe/hauler buys (RULINGS
 // #4, fail closed). Gate workers reuse the light-hauler asset (hauler_ship_type). Caller has checked the
-// plan calls for a buy (pool short of the pipeline's shape).
+// plan calls for a buy (pool short of the workforce target).
 func (h *RunBootstrapCoordinatorHandler) maybeBuyGateWorker(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, plan gateWorkerPlan, res *reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 

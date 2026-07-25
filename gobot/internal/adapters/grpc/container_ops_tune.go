@@ -96,13 +96,12 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 			"max_probe_fleet":   {Type: "int", Min: 0, Max: 200, Default: probeBuyer["max_probe_fleet"], Unit: "hulls", Description: "total satellite cap the coordinator grows the fleet toward, then stops buying"},
 		},
 		string(container.ContainerTypeContractScaler): {
-			// The single operator lever on the dedicated contract auto-scaler: the delivery-hull ceiling,
-			// hot-reloaded each tick (Pattern-C). Ships ARMED at the default 10 every cold-start (sp-1cbxz,
-			// Admiral directive) for full contract throughput from hour 0 (delivery hulls saturate ~7-8 =
-			// number of distinct central waypoints); the 200000 cushion keeps the early ramp treasury-gated so
-			// 10 never starves the gate build. Min 0 reverts to the default; the sole money guard (the 200000
-			// cushion) is a const, not tunable.
-			"contract_fleet_max_hulls": {Type: "int", Min: 0, Max: 16, Default: contractScaler["contract_fleet_max_hulls"], Unit: "hulls", Description: "the exclusive contract fleet's live-tunable ceiling (delivery hulls; ramps behind the 200000 cushion). Default 10 (ARMED from hour 0); saturates ~7-8"},
+			// The single operator lever on the dedicated contract auto-scaler: the contract operation's hull
+			// ceiling, hot-reloaded each tick (Pattern-C). It doubles as bootstrap's GATE-entry bar, so the
+			// shipped default is sized for time-to-gate (a small operation funds the gate sooner) and is
+			// raised live once the gate is built — delivery saturates ~7-8. Min 0 reverts to the default; the
+			// sole money guard (the 200000 cushion) is a const, not tunable.
+			"contract_fleet_max_hulls": {Type: "int", Min: 0, Max: 16, Default: contractScaler["contract_fleet_max_hulls"], Unit: "hulls", Description: "the exclusive contract fleet's live-tunable ceiling (filled delivery-first, behind the 200000 cushion). Default 3 — the cold start's GATE-entry bar; raise it once the gate is built (delivery saturates ~7-8)"},
 		},
 		string(container.ContainerTypeAutoOutfitCoordinator): {
 			"min_telemetry_samples":     {Type: "int", Min: 1, Max: 1000, Default: autoOutfit["min_telemetry_samples"], Unit: "legs", Description: "fail-closed thin-telemetry floor — a hull with fewer measured legs is never upgraded"},
