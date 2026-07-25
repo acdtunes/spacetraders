@@ -168,6 +168,30 @@ const (
 	// still retire. Live-tunable (SizerTunableDefaults); requires the daemon to have wired the
 	// charted-marketplace reader (SetChartedMarketplaceReader).
 	defaultHoldUnscannedMarketPosts = 0
+	// SENSING SCOPE. The API budget is server-capped and cannot be raised, while the charted map
+	// grows without bound — so sensing every market-bearing system spends a fixed budget over an
+	// ever-larger set and per-system freshness decays as the map grows. These three bound the set
+	// the sizer sizes against: the fleet's operating footprint plus a fixed discovery allowance.
+	//
+	// defaultScanFootprintRetentionSecs is how long a system stays in the footprint after its last
+	// realized trade. It is deliberately LONGER than any freshness SLA and longer than a market
+	// takes to recover: the fleet stops trading a lane precisely BECAUSE it crushed it, so a
+	// shorter retention would evict a crushed market exactly while it reverts, and it could never
+	// return — nothing would scan it, so nothing would trade it. 24h clears the ~8-9h full
+	// reversion and the 12-24h dead window of a crushed lane with margin.
+	defaultScanFootprintRetentionSecs = 86400
+	// defaultScanDiscoveryAllowance is how many OUT-of-footprint systems stay under a standing
+	// watch so a narrowed scope can still grow — the price paid to keep options. Each slot is ONE
+	// probe on the richest untraded system, so the whole allowance costs exactly this many probes.
+	// Slots rotate on success: a discovery system the fleet trades enters the footprint, is sized
+	// by the full model, and frees its slot. Roving discovery over UNCHARTED space stays the
+	// frontier coordinator's job.
+	defaultScanDiscoveryAllowance = 8
+	// defaultScanDiscoverySLASeconds is the freshness target stamped on a discovery post. It is
+	// deliberately loose: a one-probe watch on a system the fleet does not trade cannot hold a
+	// trading SLA, and a post stamped with an unreachable target reads as permanently breaching —
+	// which would raise its demand and put the scout reconciler's manning watchdog on its tour.
+	defaultScanDiscoverySLASeconds = 21600
 )
 
 // FleetReader is the narrow slice of the ship repository the sizer reads: the whole fleet,
@@ -479,6 +503,11 @@ func SizerTunableDefaults() map[string]int {
 		"release_stable_window_secs":  defaultReleaseStableWindowSecs,
 		"reserved_frontier_floor":     defaultReservedFrontierFloor,
 		"hold_unscanned_market_posts": defaultHoldUnscannedMarketPosts, // sp-u8jc/sp-gucu bootstrap flag (0=off)
+		// Sensing scope: how long a traded system stays in the footprint, how many out-of-footprint
+		// systems stay under watch, and the relaxed target those watch posts carry.
+		"scan_footprint_retention_secs": defaultScanFootprintRetentionSecs,
+		"scan_discovery_allowance":      defaultScanDiscoveryAllowance,
+		"scan_discovery_sla_seconds":    defaultScanDiscoverySLASeconds,
 	}
 }
 
@@ -504,7 +533,13 @@ type sizerConfig struct {
 	ReleaseStableWindow      time.Duration
 	ReservedFrontierFloor    int
 	HoldUnscannedMarketPosts bool // sp-u8jc/sp-gucu: hold-not-retire charted-but-unscanned posts
-	Buy                      probebuy.Config
+	// FootprintRetention is how long a system stays in the trading footprint after its last
+	// realized trade; DiscoveryAllowance how many out-of-footprint systems keep a standing watch;
+	// DiscoverySLA the relaxed freshness target those watch posts carry.
+	FootprintRetention time.Duration
+	DiscoveryAllowance int
+	DiscoverySLA       time.Duration
+	Buy                probebuy.Config
 }
 
 // resolveSizerConfig resolves one tick's effective config. live is the tick-start
@@ -613,7 +648,28 @@ func resolveSizerConfig(cmd *RunMarketFreshnessSizerCoordinatorCommand, live liv
 	}
 	c.ActivitySLA = resolveActivitySLA(live)
 	c.DemandHalfLife = resolveDemandHalfLife(live)
+	c.FootprintRetention = liveSecondsOrDefault(live, "scan_footprint_retention_secs", defaultScanFootprintRetentionSecs)
+	c.DiscoverySLA = liveSecondsOrDefault(live, "scan_discovery_sla_seconds", defaultScanDiscoverySLASeconds)
+	c.DiscoveryAllowance = defaultScanDiscoveryAllowance
+	if live != nil {
+		if allowance := live.PositiveIntOrZero("scan_discovery_allowance"); allowance > 0 {
+			c.DiscoveryAllowance = allowance
+		}
+	}
 	return c
+}
+
+// liveSecondsOrDefault resolves a tunable-only seconds knob: live-authoritative when a positive
+// value is present, the documented default otherwise (absent key, `tune <key> 0`, or no snapshot).
+func liveSecondsOrDefault(live liveconfig.Snapshot, key string, defaultSeconds int) time.Duration {
+	secs := 0
+	if live != nil {
+		secs = live.PositiveIntOrZero(key)
+	}
+	if secs <= 0 {
+		secs = defaultSeconds
+	}
+	return time.Duration(secs) * time.Second
 }
 
 // resolveDemandHalfLife (sp-wuksw) resolves the realized-demand EWMA half-life from the tick's live
@@ -724,25 +780,40 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Co
 	if err != nil {
 		return fmt.Errorf("failed to read system freshness: %w", err)
 	}
+	// ONE telemetry read serves both the demand weight and the sensing scope.
+	now := h.clock.Now()
+	legs, tradeEvidence := h.readTradeLegs(ctx, cmd, cfg, now)
+
 	// sp-wuksw: override each market's intrinsic census weight with its realized SELL demand — the
 	// PRIMARY weight source for the value-weighted freshness percentile so the fleet holds SLA on
 	// the sinks it earns through and lets zero-demand markets breach. A never-traded market keeps
 	// its intrinsic prior; a no-op (byte-identical) when unwired, value-weighting off, or no demand.
-	h.applyDemandWeights(ctx, cmd, cfg, snapshots)
+	h.applyDemandWeights(cfg, snapshots, legs, now)
 
 	posts, err := h.postRepo.ListActive(ctx, cmd.PlayerID.Value())
 	if err != nil {
 		return fmt.Errorf("failed to list scout posts: %w", err)
 	}
 	postBySystem := indexPostsBySystem(posts)
+	// The fleet-wide cycle median stays measured over the WHOLE census, not the scope: it is a
+	// noise-dampening statistic and a wider sample is a better one.
 	globalCycle := aggregateMeasuredCycleSeconds(snapshots, cfg.MinCycleSamples)
 
 	// SUPPLY is read up front: the sp-iopd reserved frontier floor holds the sizer's AGGREGATE
 	// demand against (supply − floor), so the cap needs the pool count before the posts are sized.
-	supply, err := h.scoutSupply(ctx, cmd)
+	// The same pass yields the systems the fleet's non-scout hulls occupy, which anchor the scope.
+	fleet, err := h.readFleet(ctx, cmd)
 	if err != nil {
 		return err
 	}
+	supply := fleet.supply
+
+	// SENSING SCOPE: the API budget is fixed while the charted map is not, so the sizer sizes
+	// against the systems the fleet OPERATES in plus a bounded discovery allowance, rather than
+	// every market-bearing system. This bounds the INPUT SET only — every sizing decision inside
+	// the scope runs the unchanged model, so the same probes over fewer systems buy proportionally
+	// more freshness where the fleet actually earns.
+	scope := buildScanScope(snapshots, legs, tradeEvidence, fleet.occupied, cfg, now)
 
 	// CHARTED-MARKETPLACE signal: system → charted marketplace-waypoint count, independent of whether
 	// prices were scanned yet. Read whenever the reader is wired (nil ⇒ every lookup zero, so an
@@ -774,6 +845,17 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Co
 			continue
 		}
 		marketBearing[snap.SystemSymbol] = true
+		if !scope.Includes(snap.SystemSymbol) {
+			continue // outside the sensing scope — no demand, no post write; released below.
+		}
+		// A DISCOVERY slot is a cheap standing watch on a system the fleet does not trade: one
+		// probe against the relaxed discovery target, never the full SLA model. Sizing it like a
+		// traded system is what made sensing scale with the map in the first place.
+		if scope.IsDiscovery(snap.SystemSymbol) {
+			desiredBySystem[snap.SystemSymbol] = 1
+			totalDemand++
+			continue
+		}
 		sla := cfg.slaFor(snap.SystemSymbol)
 		cycle := resolveCycleSeconds(snap, globalCycle, cfg)
 		existing := postBySystem[snap.SystemSymbol]
@@ -824,7 +906,7 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Co
 	// AFTER the reserved-frontier-floor recompute (which resets totalDemand from the per-system map)
 	// so the floor never wipes it — this is NEW buy-demand, not a per-system holding the floor caps.
 	// Empty holdCharted (hold_unscanned off / reader unwired) ⇒ 0 ⇒ byte-identical.
-	totalDemand += initialScanDemand(posts, marketBearing, holdCharted)
+	totalDemand += initialScanDemand(posts, marketBearing, holdCharted, scope)
 
 	// neediest{System,Gap} tracks the market-bearing system with the LARGEST unmet probe gap
 	// (desired − current) — the demand-proximal buy TARGET (sp-hej4). The aggregate buy lands one
@@ -833,7 +915,7 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Co
 	neediestSystem := ""
 	neediestGap := 0
 	for _, snap := range snapshots {
-		if snap.MarketCount <= 0 {
+		if snap.MarketCount <= 0 || !scope.Includes(snap.SystemSymbol) {
 			continue
 		}
 		desired := desiredBySystem[snap.SystemSymbol]
@@ -856,8 +938,15 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Co
 		if existing != nil {
 			manning = existing.FloorHulls(desired)
 		}
+		// A discovery post carries the RELAXED watch target: a one-probe post stamped with a
+		// trading SLA it can never meet reads as permanently breaching, which would raise its
+		// demand and put the scout reconciler's manning watchdog on its tour.
+		postSLA := cfg.slaFor(snap.SystemSymbol)
+		if scope.IsDiscovery(snap.SystemSymbol) {
+			postSLA = cfg.DiscoverySLA
+		}
 		if !cmd.DryRun {
-			h.applyPost(ctx, cmd, existing, snap.SystemSymbol, manning, cfg.slaFor(snap.SystemSymbol))
+			h.applyPost(ctx, cmd, existing, snap.SystemSymbol, manning, postSLA)
 		}
 	}
 
@@ -865,7 +954,7 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Co
 	// markets retired) is removed, freeing its probes back to the pool. A charted-but-unscanned
 	// system (marketplace waypoints present, no market_data yet) is HELD when armed — it needs an
 	// initial scan, not retirement (sp-u8jc/sp-gucu).
-	retired := h.retireMarketlessPosts(ctx, cmd, posts, marketBearing, holdCharted)
+	retired := h.retireMarketlessPosts(ctx, cmd, posts, marketBearing, holdCharted, scope)
 
 	// AGGREGATE BUY: one guarded probe buy when total freshness demand outruns supply. With the
 	// reserved frontier floor engaged, totalDemand is already ≤ (supply − floor) < supply, so the
@@ -907,21 +996,22 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Co
 // freshness, not the caps or the sizing math (orthogonal to sp-t5sh5 and sp-j4kjv).
 //
 // It is a no-op (byte-identical to intrinsic weighting) when value-weighting is off (mode 1, the
-// weight is ignored), the telemetry reader is unwired, or the read yields no realized demand. A
-// telemetry read error is logged and swallowed — demand REFINES an already-correct intrinsic
-// weighting, so an unreadable read falls open to intrinsic rather than aborting the tick.
-func (h *RunMarketFreshnessSizerCoordinatorHandler) applyDemandWeights(ctx context.Context, cmd *RunMarketFreshnessSizerCoordinatorCommand, cfg sizerConfig, snapshots []domainScouting.SystemFreshnessSnapshot) {
-	if h.tourTelemetry == nil || !cfg.ValueWeighted {
+// weight is ignored) or there is no realized demand — legs is empty when the telemetry reader is
+// unwired or its read failed, so an unreadable read falls open to intrinsic rather than aborting.
+func (h *RunMarketFreshnessSizerCoordinatorHandler) applyDemandWeights(cfg sizerConfig, snapshots []domainScouting.SystemFreshnessSnapshot, legs []trading.TourLegTelemetry, now time.Time) {
+	if !cfg.ValueWeighted {
 		return
 	}
-	now := h.clock.Now()
-	since := now.Add(-cfg.DemandHalfLife * demandWindowHalfLives)
-	legs, err := h.tourTelemetry.ListByPlayer(ctx, cmd.PlayerID.Value(), since)
-	if err != nil {
-		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf("Tour telemetry unreadable — freshness demand weighting falls back to intrinsic this tick: %v", err), nil)
-		return
+	// The shared read spans the WIDER of the demand and footprint windows; the demand weight keeps
+	// its own narrower window so a longer footprint retention cannot perturb the weighting.
+	demandSince := now.Add(-cfg.DemandHalfLife * demandWindowHalfLives)
+	inWindow := make([]trading.TourLegTelemetry, 0, len(legs))
+	for _, leg := range legs {
+		if !leg.PlannedAt.Before(demandSince) {
+			inWindow = append(inWindow, leg)
+		}
 	}
-	demand := domainScouting.DemandWeightsBySink(toSinkSales(legs, now), cfg.DemandHalfLife.Seconds())
+	demand := domainScouting.DemandWeightsBySink(toSinkSales(inWindow, now), cfg.DemandHalfLife.Seconds())
 	if len(demand) == 0 {
 		return // cold start / no realized demand — every market keeps its intrinsic prior.
 	}
@@ -952,6 +1042,94 @@ func toSinkSales(legs []trading.TourLegTelemetry, now time.Time) []domainScoutin
 		})
 	}
 	return sales
+}
+
+// readTradeLegs pulls ONE tick's realized trade telemetry, spanning the WIDER of the demand-weight
+// and footprint-retention windows so a single read serves both consumers (each applies its own
+// window downstream).
+//
+// The bool reports whether the tick has TRADE EVIDENCE at all — false when the reader is unwired
+// or its read failed, as distinct from a successful read that found no trades. The scope must not
+// narrow without it: hull presence alone would drop every system the fleet trades in but happens
+// to hold no hull in right now, so a transient read failure would mass-release posts.
+func (h *RunMarketFreshnessSizerCoordinatorHandler) readTradeLegs(ctx context.Context, cmd *RunMarketFreshnessSizerCoordinatorCommand, cfg sizerConfig, now time.Time) ([]trading.TourLegTelemetry, bool) {
+	if h.tourTelemetry == nil {
+		return nil, false
+	}
+	window := cfg.DemandHalfLife * demandWindowHalfLives
+	if cfg.FootprintRetention > window {
+		window = cfg.FootprintRetention
+	}
+	legs, err := h.tourTelemetry.ListByPlayer(ctx, cmd.PlayerID.Value(), now.Add(-window))
+	if err != nil {
+		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf("Tour telemetry unreadable — demand weighting falls back to intrinsic and the scan scope stays un-narrowed this tick: %v", err), nil)
+		return nil, false
+	}
+	return legs, true
+}
+
+// buildScanScope derives the tick's sensing scope: the systems the fleet operates in (traded ∪
+// occupied) plus the bounded discovery allowance drawn from the richest systems outside it.
+//
+// A leg's system comes from the census's own waypoint index where the market is still present —
+// the authoritative mapping — falling back to parsing the symbol for a market that has since left
+// the census. An empty footprint yields an un-narrowed scope, so cold start and any evidence gap
+// sense the whole census exactly as before.
+//
+// tradeEvidence false (no telemetry reader, or its read failed) refuses to narrow at all: the
+// occupied set alone is not a footprint, and narrowing on it would release every system the fleet
+// trades in but holds no hull in at this instant.
+func buildScanScope(snapshots []domainScouting.SystemFreshnessSnapshot, legs []trading.TourLegTelemetry, tradeEvidence bool, occupied map[string]bool, cfg sizerConfig, now time.Time) domainScouting.ScanScope {
+	if !tradeEvidence {
+		return domainScouting.ScanScope{}
+	}
+	waypointSystem := make(map[string]string)
+	for _, snap := range snapshots {
+		for _, market := range snap.Markets {
+			if market.Waypoint != "" {
+				waypointSystem[market.Waypoint] = snap.SystemSymbol
+			}
+		}
+	}
+	visits := make([]domainScouting.TradeVisit, 0, len(legs))
+	for _, leg := range legs {
+		if leg.RealizedUnits <= 0 {
+			continue // a skipped or degraded leg is not a trade
+		}
+		system, ok := waypointSystem[leg.Waypoint]
+		if !ok {
+			system = shared.ExtractSystemSymbol(leg.Waypoint)
+		}
+		visits = append(visits, domainScouting.TradeVisit{System: system, AgeSeconds: now.Sub(leg.RealizedAt).Seconds()})
+	}
+	traded := domainScouting.TradedFootprint(visits, cfg.FootprintRetention.Seconds())
+
+	candidates := make([]domainScouting.DiscoveryCandidate, 0, len(snapshots))
+	for _, snap := range snapshots {
+		if snap.MarketCount <= 0 {
+			continue
+		}
+		candidates = append(candidates, domainScouting.DiscoveryCandidate{System: snap.SystemSymbol, Weight: intrinsicSystemWeight(snap)})
+	}
+	return domainScouting.BuildScanScope(traded, occupied, candidates, cfg.DiscoveryAllowance)
+}
+
+// intrinsicSystemWeight totals a system's per-market value weights — the census's own
+// Σ(trade_volume × price) prior — used to rank discovery candidates by how rich a market the fleet
+// would be watching. A census with no per-market breakdown falls back to the market count so a
+// candidate is still ranked above an emptier one rather than collapsing to zero.
+func intrinsicSystemWeight(snap domainScouting.SystemFreshnessSnapshot) float64 {
+	if len(snap.Markets) == 0 {
+		return float64(snap.MarketCount)
+	}
+	total := 0.0
+	for _, market := range snap.Markets {
+		total += market.Weight
+	}
+	if total <= 0 {
+		return float64(snap.MarketCount)
+	}
+	return total
 }
 
 // measuredAgeSeconds is the sp-r57g closed-loop ground truth: the (value-weighted) P90 market age
@@ -1337,22 +1515,26 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) applyPost(ctx context.Contex
 // so the reconciler/relay can man it and the probe can make that first scan. chartedMarketplace
 // is nil (⇒ zero for every lookup) unless the hold_unscanned_market_posts knob is armed AND the
 // reader is wired, so this guard never fires by default — retire-as-gone stays byte-identical.
-func (h *RunMarketFreshnessSizerCoordinatorHandler) retireMarketlessPosts(ctx context.Context, cmd *RunMarketFreshnessSizerCoordinatorCommand, posts []*domainScouting.ScoutPost, marketBearing map[string]bool, chartedMarketplace map[string]int) int {
+func (h *RunMarketFreshnessSizerCoordinatorHandler) retireMarketlessPosts(ctx context.Context, cmd *RunMarketFreshnessSizerCoordinatorCommand, posts []*domainScouting.ScoutPost, marketBearing map[string]bool, chartedMarketplace map[string]int, scope domainScouting.ScanScope) int {
 	if cmd.DryRun {
 		return 0
 	}
+	released := h.releaseOutOfScopePosts(ctx, cmd, posts, scope)
 	// FAIL-SAFE (the enumerate-the-rejected-class lesson): never mass-retire on an EMPTY
 	// census. A cold start, an era gap, or a transient read that surfaced zero market-bearing
 	// systems would otherwise remove EVERY standing post in one tick — a fleet-killer. With
 	// no census to compare against, retire nothing and wait for it to repopulate.
 	if len(marketBearing) == 0 {
-		return 0
+		return released
 	}
 	logger := common.LoggerFromContext(ctx)
-	retired := 0
+	retired := released
 	for _, post := range posts {
 		if post.Kind != domainScouting.PostKindStanding || marketBearing[post.SystemSymbol] {
 			continue
+		}
+		if !scope.Includes(post.SystemSymbol) {
+			continue // already released by the scope pass
 		}
 		if chartedMarketplace[post.SystemSymbol] > 0 {
 			// Charted WITH marketplace waypoints but not yet scanned — held for its initial scan.
@@ -1371,6 +1553,39 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) retireMarketlessPosts(ctx co
 		})
 	}
 	return retired
+}
+
+// releaseOutOfScopePosts removes every STANDING post whose system fell outside the sensing scope,
+// freeing its probes back to the shared pool for the in-scope posts (and the frontier) to claim.
+// This is the mechanism by which the scope cut converts into freshness: the same probes redistribute
+// onto the systems the fleet actually trades in, rather than being spread over the whole map.
+//
+// Two guards. An UN-NARROWED scope releases nothing, so cold start and every evidence gap keep
+// today's behavior. A post carrying a manning FLOOR is never released — the floor exists to keep
+// bootstrap's home probes from being sized away, and releasing the post would strand them.
+func (h *RunMarketFreshnessSizerCoordinatorHandler) releaseOutOfScopePosts(ctx context.Context, cmd *RunMarketFreshnessSizerCoordinatorCommand, posts []*domainScouting.ScoutPost, scope domainScouting.ScanScope) int {
+	if !scope.Narrowed {
+		return 0
+	}
+	logger := common.LoggerFromContext(ctx)
+	released := 0
+	for _, post := range posts {
+		if post.Kind != domainScouting.PostKindStanding || scope.Includes(post.SystemSymbol) {
+			continue
+		}
+		if post.MinHulls > 0 {
+			continue // a floored post is pinned by the operator; the scope cut never strands it
+		}
+		if err := h.postRepo.Remove(ctx, cmd.PlayerID.Value(), post.SystemSymbol); err != nil {
+			logger.Log("WARNING", fmt.Sprintf("Failed to release out-of-scope freshness post %s: %v", post.SystemSymbol, err), nil)
+			continue
+		}
+		released++
+		logger.Log("INFO", fmt.Sprintf("Released freshness post %s — outside the trading footprint and the discovery allowance, probes freed to the pool", post.SystemSymbol), map[string]interface{}{
+			"action": "freshness_post_out_of_scope", "system_symbol": post.SystemSymbol,
+		})
+	}
+	return released
 }
 
 // chartedMarketplaceSystems reads the "has a marketplace" signal for this tick: system → charted
@@ -1393,7 +1608,7 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) chartedMarketplaceSystems(ct
 // scaled by the marketplace count — and only for systems that already have a post (a mannable
 // target), so it can never over-provision. A nil chartedMarketplace (knob off / reader unwired)
 // yields 0, keeping the aggregate demand byte-identical.
-func initialScanDemand(posts []*domainScouting.ScoutPost, marketBearing map[string]bool, chartedMarketplace map[string]int) int {
+func initialScanDemand(posts []*domainScouting.ScoutPost, marketBearing map[string]bool, chartedMarketplace map[string]int, scope domainScouting.ScanScope) int {
 	demand := 0
 	for _, post := range posts {
 		if post.Kind != domainScouting.PostKindStanding {
@@ -1402,6 +1617,9 @@ func initialScanDemand(posts []*domainScouting.ScoutPost, marketBearing map[stri
 		if marketBearing[post.SystemSymbol] {
 			continue // already counted by the census demand loop
 		}
+		if !scope.Includes(post.SystemSymbol) {
+			continue // outside the sensing scope — its post is released, so it needs no scan capacity
+		}
 		if chartedMarketplace[post.SystemSymbol] > 0 {
 			demand++ // ONE probe for the initial scan — never scaled by the marketplace count
 		}
@@ -1409,26 +1627,44 @@ func initialScanDemand(posts []*domainScouting.ScoutPost, marketBearing map[stri
 	return demand
 }
 
-// scoutSupply counts the scout-probe SUPPLY: every scout-type hull the player owns that is
-// available to scouting (undedicated or scout-tagged), in ANY nav state — idle, in-flight,
-// or manning. Counting in-flight/manning probes as supply is what stops the coordinator
-// over-buying while a probe it already owns is en route to a slot (the sp-njwy lesson).
-func (h *RunMarketFreshnessSizerCoordinatorHandler) scoutSupply(ctx context.Context, cmd *RunMarketFreshnessSizerCoordinatorCommand) (int, error) {
+// fleetView is one pass over the fleet: the scout-probe SUPPLY and the systems the fleet's
+// NON-scout hulls occupy.
+type fleetView struct {
+	// supply is every scout-type hull available to scouting (undedicated or scout-tagged), in ANY
+	// nav state — idle, in-flight, or manning. Counting in-flight/manning probes as supply is what
+	// stops the coordinator over-buying while a probe it already owns is en route to a slot.
+	supply int
+	// occupied is the systems the fleet's NON-scout hulls sit in — where it works rather than
+	// where it looks. It anchors contract hubs, the gate construction site, and factory feed
+	// systems into the sensing footprint, none of which need have produced a tour leg.
+	//
+	// Probes are excluded deliberately: they are the sensor, not a reason to sense. Counting them
+	// would let every scanned system justify its own scanning and the scope could never narrow.
+	occupied map[string]bool
+}
+
+// readFleet derives the scout supply and the occupied-system set in a single fleet read.
+func (h *RunMarketFreshnessSizerCoordinatorHandler) readFleet(ctx context.Context, cmd *RunMarketFreshnessSizerCoordinatorCommand) (fleetView, error) {
 	ships, err := h.fleetRepo.FindAllByPlayer(ctx, cmd.PlayerID)
 	if err != nil {
-		return 0, fmt.Errorf("failed to list fleet: %w", err)
+		return fleetView{}, fmt.Errorf("failed to list fleet: %w", err)
 	}
-	n := 0
+	view := fleetView{occupied: make(map[string]bool)}
 	for _, ship := range ships {
 		if !ship.IsScoutType() {
+			// An IN_TRANSIT hull reports its DESTINATION here, so a hauler en route anchors the
+			// system it is about to work in — which is exactly when fresh prices there start mattering.
+			if loc := ship.CurrentLocation(); loc != nil && loc.Symbol != "" {
+				view.occupied[shared.ExtractSystemSymbol(loc.Symbol)] = true
+			}
 			continue
 		}
 		if fleet := ship.DedicatedFleet(); fleet != "" && fleet != freshnessScoutFleetTag {
 			continue
 		}
-		n++
+		view.supply++
 	}
-	return n, nil
+	return view, nil
 }
 
 // resolveCycleSeconds picks the per-market cycle for a system: its own MEASURED cycle when
