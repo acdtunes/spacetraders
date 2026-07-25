@@ -74,6 +74,19 @@ func (h *RunTourCoordinatorHandler) planAndReserve(
 	maxSpend, reserve int64,
 	modelVersion string,
 ) (*routing.TourPlan, map[shadowSinkKey]bool, string, bool, error) {
+	// One planner per player through release → net → solve → reserve. Without it every
+	// planner in a batch nets the SAME pre-reservation snapshot, ranks the same sink best
+	// and converges there, and the release below briefly shows an incumbent's own held sink
+	// free to whoever is reading right then. Refusing when the gate cannot be taken is the
+	// fail-closed direction: unserialized depth is not depth we can honestly plan against.
+	if h.absorptionLedger != nil && cmd.ContainerID != "" {
+		releaseGate, gated := h.acquirePlanGate(ctx, cmd.PlayerID)
+		if !gated {
+			return nil, nil, "tour unavailable: could not serialize plan-time sink reservation (planning blind would co-dump a sink another hull is taking)", false, nil
+		}
+		defer releaseGate()
+	}
+
 	// Clear this container's stale in-flight intent before (re)planning: a prior tour's
 	// leftover holds, or pre-restart rows that liveness re-adopted. EXECUTED recovery
 	// shadows are left untouched (real damage still recovering — the plan must avoid them).

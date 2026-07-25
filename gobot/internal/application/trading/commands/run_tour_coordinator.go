@@ -564,6 +564,15 @@ type RunTourCoordinatorHandler struct {
 	// tourPlannedTTLSlack pads a plan's projected round-trip TTL (backstop to the sweep +
 	// dead-container reclaim). 0 → defaultTourPlannedTTLSlack.
 	tourPlannedTTLSlack time.Duration
+	// planGates holds one per-player planning gate, so the netting read and the reservation
+	// that follows it are one critical section: concurrent planners otherwise all net
+	// against the same pre-reservation snapshot and converge on one sink. This handler is a
+	// single instance shared by every tour container, so an instance-level gate serializes
+	// the whole fleet's planners. Pure mutual exclusion, no state (see the plangate file).
+	planGateMu sync.Mutex
+	planGates  map[int]chan struct{}
+	// planGateWait bounds the queue wait; 0 → tourPlanGateWait.
+	planGateWait time.Duration
 	// recoveryHalfLives caches the fitted per-tier recovery half-lives (minutes) read
 	// from the model artifact ONCE, for the report-only projected_recovery_burden metric
 	// (Q3). Immutable after the first load; the handler is shared across concurrent tour
