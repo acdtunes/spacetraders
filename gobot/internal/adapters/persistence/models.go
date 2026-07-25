@@ -697,6 +697,12 @@ type ScoutPostModel struct {
 	// Bootstrap stamps the home post's floor to probe_target. RULINGS #5: a DB value.
 	MinHulls int `gorm:"column:min_hulls;not null;default:0"`
 
+	// Dormant is the sensing coordinator's pressure-rotation bit: a dormant
+	// post's probe parks in place (its tour sleeps instead of scanning), so
+	// shedding under API pressure costs zero API and moves no hull. Defaults to
+	// false — every existing post keeps scanning.
+	Dormant bool `gorm:"column:dormant;not null;default:false"`
+
 	// PrimaryPartition is the JSON-encoded frozen market tour of the PRIMARY slot
 	// when Hulls>1. NULL/empty ⇒ the primary tours ALL markets (single-hull
 	// behavior), so a single-hull row never carries one and stays byte-identical.

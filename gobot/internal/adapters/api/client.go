@@ -74,6 +74,13 @@ type SpaceTradersClient struct {
 	metricsCollector APIMetricsRecorder
 	budgetTracker    *metrics.APIBudgetTracker
 
+	// limiterPressure is the always-on smoothed rate-limiter-wait signal
+	// (see LimiterPressure). It is updated at the same site that records the
+	// wait histogram, but unconditionally — pressure is a control signal the
+	// sensing coordinator sheds scanning on, not telemetry, so it must exist
+	// even with metrics disabled.
+	limiterPressure *LimiterPressure
+
 	// Agent cache. All GetAgent callers share this one client instance, so
 	// caching here transparently cuts the redundant live reads for every money
 	// guard and monitor at once. agentCacheMu guards ALL four fields below AND is
@@ -135,6 +142,7 @@ func NewSpaceTradersClientWithConfig(
 		backoffBase:      backoffBase,
 		clock:            clock,
 		metricsCollector: nil,
+		limiterPressure:  NewLimiterPressure(defaultLimiterPressureHalfLife),
 	}
 	client.scheduler = newPriorityScheduler(rateLimiter.Wait, clock, defaultPriorityAgingWindow)
 
@@ -197,6 +205,14 @@ func (c *SpaceTradersClient) getBudgetTracker() *metrics.APIBudgetTracker {
 // This is useful for monitoring rate limiter saturation (max 30 tokens)
 func (c *SpaceTradersClient) GetRateLimiterTokens() float64 {
 	return c.rateLimiter.Tokens()
+}
+
+// LimiterPressure exposes the client's smoothed rate-limiter-wait tracker —
+// the scouting.PressureReader the sensing coordinator consumes. May be nil on
+// a hand-built client; LimiterPressure methods are nil-safe and read as no
+// pressure.
+func (c *SpaceTradersClient) LimiterPressure() *LimiterPressure {
+	return c.limiterPressure
 }
 
 // acquireRateToken acquires exactly ONE token from the shared rate limiter before

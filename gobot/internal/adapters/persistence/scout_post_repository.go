@@ -145,6 +145,30 @@ func (r *GormScoutPostRepository) UpdateMinHulls(ctx context.Context, playerID i
 	return nil
 }
 
+// IsDormant reports whether the (playerID, system) post in the open era is
+// dormant — the scout tour's park-in-place read (scouting.DormancyReader). A
+// missing post, like a between-eras gap, reads as NOT dormant: only an
+// explicit rotation bit may park a probe. Errors are surfaced so the consumer
+// can fail toward scanning.
+func (r *GormScoutPostRepository) IsDormant(ctx context.Context, playerID int, system string) (bool, error) {
+	openEra := r.openEraID(ctx)
+	if openEra == nil {
+		return false, nil
+	}
+	var model ScoutPostModel
+	err := r.db.WithContext(ctx).
+		Where("player_id = ? AND system_symbol = ? AND era_id = ?", playerID, system, *openEra).
+		First(&model).Error
+	switch {
+	case err == nil:
+		return model.Dormant, nil
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		return false, nil
+	default:
+		return false, fmt.Errorf("failed to read scout post dormancy: %w", err)
+	}
+}
+
 // Remove deletes the post for (playerID, systemSymbol). Not finding a row to
 // delete is not an error.
 func (r *GormScoutPostRepository) Remove(ctx context.Context, playerID int, systemSymbol string) error {
@@ -173,6 +197,7 @@ func scoutPostToModel(p *domainScouting.ScoutPost) *ScoutPostModel {
 		RepositionContainerID:  stringToPtr(p.RepositionContainerID),
 		Hulls:                  hulls,
 		MinHulls:               p.MinHulls,
+		Dormant:                p.Dormant,
 		PrimaryPartition:       marshalPartition(p.PrimaryPartition),
 		ExtraSlots:             marshalExtraSlots(p.ExtraSlots),
 		RespawnAttempts:        p.RespawnAttempts,
@@ -197,6 +222,7 @@ func modelToScoutPost(m *ScoutPostModel) *domainScouting.ScoutPost {
 		RepositionContainerID: derefString(m.RepositionContainerID),
 		Hulls:                 hulls,
 		MinHulls:              m.MinHulls,
+		Dormant:               m.Dormant,
 		PrimaryPartition:      unmarshalPartition(m.PrimaryPartition),
 		ExtraSlots:            unmarshalExtraSlots(m.ExtraSlots),
 		RespawnAttempts:       m.RespawnAttempts,

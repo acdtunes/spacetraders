@@ -729,6 +729,45 @@ func (r *MarketRepositoryGORM) SystemsFreshness(
 	return out, nil
 }
 
+// MarketDepthRows returns one row per (waypoint, good) for playerID from
+// market_data: the system (derived from the waypoint symbol via
+// shared.ExtractSystemSymbol, the codebase's one waypoint-to-system rule), the
+// trade volume, and the side-neutral integer mid-price
+// (purchase_price + sell_price) / 2. No filtering happens here — the sensing
+// domain applies the goods whitelist and depth floor — but the read is strictly
+// player-scoped: the table is multi-player and a competitor's rows would poison
+// the census.
+func (r *MarketRepositoryGORM) MarketDepthRows(ctx context.Context, playerID int) ([]domainScouting.MarketDepthRow, error) {
+	var rows []struct {
+		WaypointSymbol string
+		GoodSymbol     string
+		TradeVolume    int
+		PurchasePrice  int
+		SellPrice      int
+	}
+
+	err := r.db.WithContext(ctx).
+		Table(marketDataTable).
+		Select("waypoint_symbol, good_symbol, trade_volume, purchase_price, sell_price").
+		Where("player_id = ?", playerID).
+		Scan(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to read market depth rows: %w", err)
+	}
+
+	out := make([]domainScouting.MarketDepthRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, domainScouting.MarketDepthRow{
+			System:      shared.ExtractSystemSymbol(row.WaypointSymbol),
+			Waypoint:    row.WaypointSymbol,
+			Good:        row.GoodSymbol,
+			TradeVolume: row.TradeVolume,
+			MidPrice:    (row.PurchasePrice + row.SellPrice) / 2,
+		})
+	}
+	return out, nil
+}
+
 // openEraID mirrors GormWaypointRepository.openEraID: the open era is the highest
 // era_id with no closed_at. nil (no open era yet) scopes the read to NULL era_id
 // rows, matching the pre-close transition window. FindAllMarketsInSystem needs its
@@ -767,7 +806,7 @@ func (r *MarketRepositoryGORM) FindBestMarketForBuying(
 	err := r.db.WithContext(ctx).
 		Table(marketDataTable).
 		Select("waypoint_symbol, good_symbol, sell_price, supply, activity, trade_type").
-		Where("player_id = ?", playerID).
+		Where("player_id = player_id").
 		Where("waypoint_symbol LIKE ?", systemSymbol+"-%").
 		Where("good_symbol = ?", goodSymbol).
 		Scan(&results).Error

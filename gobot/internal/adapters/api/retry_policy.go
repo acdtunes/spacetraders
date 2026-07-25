@@ -131,8 +131,10 @@ func (c *SpaceTradersClient) doWithRetry(ctx context.Context, method, path, toke
 		if err := c.acquireRateToken(ctx, endpoint); err != nil {
 			return fmt.Errorf("rate limiter error: %w", err)
 		}
+		rateLimitWait := time.Since(rateLimitStart)
+		c.limiterPressure.Observe(rateLimitWait, time.Now())
 		if collector := c.getMetricsCollector(); collector != nil {
-			collector.RecordRateLimitWait(method, endpoint, time.Since(rateLimitStart).Seconds())
+			collector.RecordRateLimitWait(method, endpoint, rateLimitWait.Seconds())
 			collector.SetRateLimiterTokens(c.rateLimiter.Tokens())
 		}
 

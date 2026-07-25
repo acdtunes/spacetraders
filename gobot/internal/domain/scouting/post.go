@@ -93,6 +93,14 @@ type ScoutPost struct {
 	// stays the un-floored SLA size, so the floor never double-buys against bootstrap.
 	MinHulls int
 
+	// Dormant marks a post whose scanning is shed this rotation under API
+	// pressure: the probe PARKS in place — its tour sleeps a scan interval at a
+	// time instead of flying, so a dormant system costs zero API and wakes in
+	// turn when the rotation clears the bit. Manning is untouched: the hull
+	// stays assigned and never repositions, because probe movement is exactly
+	// the API spend being eliminated.
+	Dormant bool
+
 	// PrimaryPartition is the primary slot's frozen disjoint market tour when
 	// Hulls>1. Empty ⇒ the slot tours ALL the system's markets (the single-hull
 	// default), so a single-hull post never carries one.

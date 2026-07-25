@@ -1,6 +1,9 @@
 package scouting
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // ScoutPostRepository is the persistence port for the desired-state posts table.
 // All reads are scoped to the open era so a universe reset never leaves the
@@ -75,6 +78,24 @@ type MarketFreshnessSample struct {
 	// (a pre-activity census, or an aggregate-only fixture) the sizer falls back to the single
 	// global sla_seconds, byte-identical to pre-sp-j4kjv.
 	Activity string
+}
+
+// DormancyReader reports whether a system's scout post is currently dormant —
+// rotated out of scanning under API pressure. Consumed by the scout tour at
+// every circuit start so a dormant probe parks in place at zero API. A read
+// error must be surfaced, never swallowed into a dormant=true: the consumer
+// fails TOWARD scanning (sensing is the fleet's sensor, and a blind fleet must
+// keep looking). Satisfied by the scout-post repository.
+type DormancyReader interface {
+	IsDormant(ctx context.Context, playerID int, system string) (bool, error)
+}
+
+// PressureReader supplies the smoothed API rate-limiter wait the sensing
+// coordinator sheds scanning against (ActiveShare). Wait time — not
+// utilisation, which reads ~100% whenever work is queued — measures actual
+// contention. Satisfied by the API client's limiter-pressure EWMA.
+type PressureReader interface {
+	Current(at time.Time) time.Duration
 }
 
 // SystemFreshnessReader supplies the per-system freshness census the market-freshness
