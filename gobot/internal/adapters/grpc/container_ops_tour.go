@@ -186,7 +186,14 @@ func (s *DaemonServer) StartTourRun(
 		// take effect — without it cmd.CandidateHopDepth is inert and every tour stays 1-hop.
 		"candidate_hop_depth":       s.tradeFleetConfig.CandidateHopDepth,
 		"candidate_shortlist_top_n": s.tradeFleetConfig.CandidateShortlistTopN,
-		"iterations":                iterations,
+		// The recovery-externality weight, sourced from the daemon's live
+		// [trade_fleet] config (daemon-global tour tuning, the mirror of candidate_hop_depth
+		// above). Persisted as-is (0 too, so an absent knob survives a recovery rebuild
+		// unchanged and the unarmed default is stable in BOTH directions). This WRITE is what
+		// lets the knob take effect — without it cmd.ExternalityWeight is inert and every tour
+		// keeps ranking on raw margin.
+		"externality_weight": s.tradeFleetConfig.ExternalityWeight,
+		"iterations":         iterations,
 		// sp-sg35: the tour heavies are dedicated to the "trade" fleet
 		// (ships.dedicated_fleet == "trade"), so tour_run MUST claim under that
 		// same 'trade' identity — otherwise the dedication guard (atomic ClaimShip

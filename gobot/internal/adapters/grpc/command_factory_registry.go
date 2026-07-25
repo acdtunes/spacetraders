@@ -1235,6 +1235,11 @@ func buildTourCoordinatorCommand(cfg *configReader, playerID int, containerID st
 		// solver clamp already lifted.
 		CandidateHopDepth:      cfg.OptionalInt("candidate_hop_depth", 0),
 		CandidateShortlistTopN: cfg.OptionalInt("candidate_shortlist_top_n", 0),
+		// The read side of the recovery-externality weight's launch/rebuild
+		// boundary. OptionalFloat yields 0 for an absent key → the solver charges nothing and
+		// ranks on raw margin, byte-identical to today, so every container launched before
+		// arming (and every recovery rebuild of one) stays unarmed.
+		ExternalityWeight: cfg.OptionalFloat("externality_weight", 0),
 	}
 }
 

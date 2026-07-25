@@ -295,9 +295,12 @@ func (r *AbsorptionLedgerGORM) Outstanding(ctx context.Context, playerID int) (m
 // activity read live at sale, trancheSize its trade_volume — so the shadow decays
 // on the right curve and sizes its own recovery floor.
 //
-// UNTAGGED sinks or a zero-unit sale leave NO shadow: the PLANNED row is deleted,
-// exactly as if the leg had released it. Idempotent: a retry after conversion finds
-// no PLANNED row and is a no-op. A missing row (already swept) is not an error.
+// A zero-unit sale leaves NO shadow: the PLANNED row is deleted, exactly as if the leg
+// had released it. An UNTAGGED sink DOES leave one, decaying on the artifact's pooled
+// fit — without it consecutive plans saw virgin depth and rebuilt the whole tranche
+// ladder there (the cross-plan A-cap gap). Idempotent: a retry after
+// conversion finds no PLANNED row and is a no-op. A missing row (already swept) is not
+// an error.
 func (r *AbsorptionLedgerGORM) ConvertByContainer(
 	ctx context.Context,
 	containerID string,
@@ -309,9 +312,8 @@ func (r *AbsorptionLedgerGORM) ConvertByContainer(
 ) error {
 	now := time.Now()
 
-	if realizedUnits <= 0 || !r.recovery.IsTagged(liveTier) {
-		// No lasting shadow: release the in-flight hold. A micro-sale or an unmodelled
-		// (untagged) sink records nothing — the model cannot price what it has not fit.
+	if realizedUnits <= 0 {
+		// Nothing sold, so nothing to recover from: release the in-flight hold.
 		if err := r.db.WithContext(ctx).
 			Where("container_id = ? AND player_id = ? AND waypoint_symbol = ? AND good_symbol = ? AND side = ? AND state = ?",
 				containerID, playerID, key.Waypoint, key.Good, key.Side, absorptionStatePlanned).

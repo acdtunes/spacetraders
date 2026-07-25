@@ -126,6 +126,18 @@ TOP_REJECTED_N = 3            # rejected alternatives reported (observability pa
 MAX_SNAPSHOT_AGE_MINUTES_DEFAULT = 75   # mirrors trading's maxListingAge
 DEFAULT_SELL_DECAY = 0.9      # conservative fallback when tier not fitted
 DEFAULT_BUY_GROWTH = 1.1
+# Recovery-externality pricing. The reference window normalises a
+# fitted half-life into a dimensionless multiplier: WEAK is the best-sampled mid tier
+# (n_series 416 in the era-07-19 fit), so a WEAK sink prices near 1.0x and every other
+# tier scales relative to it. A CONSTANT rather than a re-read of the artifact on
+# purpose — a reference that moved with each re-fit would silently re-scale what
+# externality_weight means. It is pinned to the era-07-19 WEAK half-life; a future
+# re-fit that moves WEAK far from this re-scales the weight and should be repinned
+# together with it.
+EXTERNALITY_REFERENCE_MINUTES = 1599.2
+# Below this many fitted control series a tier's half-life is a false prior
+# (PLAYBOOK §12) and prices on the pooled untagged fit instead.
+EXTERNALITY_MIN_FITTED_SERIES = 5
 # Planned-depth ladder cap (harbormaster A-capped ruling 2026-07-09): interim
 # stand-in for phase-2 recovery-externality pricing — see module docstring.
 # sp-acb8 Tune 1: the DEFAULT for the now env-overridable throughput knob. It caps
@@ -372,15 +384,14 @@ def _resolve_anchor(constraints, ship, rows, allowed):
     return None
 
 
-def tranche_prices(quote, trade_volume, tier, model, is_buy, max_units):
-    """Piecewise price schedule: list of (units, unit_price) tranches.
+def impact_factor(model, tier, is_buy):
+    """The ONE resolution of a market's fitted per-tranche price factor.
 
-    Tranche 0 is at the live quote; each subsequent tradeVolume-sized
-    tranche is multiplied by the tier's fitted decay (sell) / growth (buy)
-    factor. Missing tier or side -> conservative default, logged once.
+    Both the tranche ladder and the recovery-externality charge must read the
+    SAME number for the same market: two decay values for one market is the
+    market is a second table free to drift. Missing tier or side -> conservative default,
+    logged once per (tier, side) per process.
     """
-    if quote <= 0 or trade_volume <= 0 or max_units <= 0:
-        return []
     entry = (model.get("impact") or {}).get(tier) or {}
     key = "buy_growth_per_step" if is_buy else "sell_decay_per_step"
     factor = entry.get(key)
@@ -390,6 +401,19 @@ def tranche_prices(quote, trade_volume, tier, model, is_buy, max_units):
             _warned_tiers.add((tier, key))
             logger.info("tour-solver: tier-missing %s (%s) — conservative default %.2f",
                         tier, key, factor)
+    return factor
+
+
+def tranche_prices(quote, trade_volume, tier, model, is_buy, max_units):
+    """Piecewise price schedule: list of (units, unit_price) tranches.
+
+    Tranche 0 is at the live quote; each subsequent tradeVolume-sized
+    tranche is multiplied by the tier's fitted decay (sell) / growth (buy)
+    factor.
+    """
+    if quote <= 0 or trade_volume <= 0 or max_units <= 0:
+        return []
+    factor = impact_factor(model, tier, is_buy)
     tranches = []
     price = float(quote)
     left = max_units
@@ -431,6 +455,56 @@ def net_absorption(tranches, units_planned, units_recovering, trade_volume):
     if end <= start:
         return []
     return tranches[start:end]
+
+
+def externality_cost_per_unit(activity, units, trade_volume, sell_price,
+                              weight, recovery_tbl, sell_decay=None):
+    """Per-unit charge for the FUTURE recovery burden a sell tranche imposes on
+    the rest of the fleet.
+
+    Three disjoint accounts, so this cannot double-count:
+      - PAST crush    -> already in the live quote
+      - PLANNED depth -> netted as CAPACITY by net_absorption()
+      - FUTURE crush  -> this term, and nothing else prices it
+
+    Per UNIT so it is commensurable with `margin` (also per unit); charging a
+    per-tranche total against a per-unit margin would bias against big tranches.
+
+    Fails OPEN (0.0 = today's ordering) on any unreadable input. This is an
+    OBJECTIVE term, not a spend guard: RULINGS #4 governs guards, and degrading
+    to the measured baseline is the safe direction for a price.
+    """
+    if not recovery_tbl or weight <= 0 or trade_volume <= 0 or units <= 0:
+        return 0.0
+
+    half_life = _recovery_half_life(recovery_tbl, activity)
+    if half_life <= 0:
+        return 0.0
+
+    # Crush per tranche = 1 - the fitted sell-decay the tranche builder already
+    # applies as `price *= factor`. The caller threads the SAME resolved factor
+    # (impact_factor); DEFAULT_SELL_DECAY is only this module's unfitted fallback.
+    decay = DEFAULT_SELL_DECAY if sell_decay is None else sell_decay
+    crush_per_tranche = max(0.0, 1.0 - decay)
+
+    tranches = units / float(trade_volume)
+    recovery_multiple = half_life / EXTERNALITY_REFERENCE_MINUTES
+    return weight * tranches * recovery_multiple * sell_price * crush_per_tranche
+
+
+def _recovery_half_life(recovery_tbl, activity):
+    """Fitted recovery half-life for an activity, in minutes, or 0.0 when the
+    table can price nothing.
+
+    A tier fitted on fewer than EXTERNALITY_MIN_FITTED_SERIES control series is
+    not a trustworthy prior (PLAYBOOK §12), so it prices on the pooled untagged
+    fit instead of its own thin one — as does an activity the table never saw.
+    The pool itself is the fallback of last resort and is used whatever its n.
+    """
+    tier = recovery_tbl.get(activity) or {}
+    if (tier.get("n_series") or 0) < EXTERNALITY_MIN_FITTED_SERIES:
+        tier = recovery_tbl.get("") or {}
+    return tier.get("half_life_minutes") or 0.0
 
 
 class _TranchePool:
@@ -652,6 +726,13 @@ def score_sequence(seq, markets, ship, constraints, model, travel_fn, deposit_si
                     - constraints.get("working_capital_reserve", 0))
     min_margin = max(1, constraints.get("min_margin_per_unit", 0))
     pool_ceiling = hold_cap * n + total_initial
+    # Recovery-externality pricing, resolved ONCE per scoring so one solve is
+    # internally consistent. The recovery table is read straight off the artifact
+    # already threaded here — the SINGLE fitted table, never a Python redeclaration.
+    # 0 weight / no table -> every charge is 0.0 -> byte-identical to today.
+    externality_weight = constraints.get("externality_weight") or 0.0
+    recovery_tbl = (model or {}).get("recovery")
+    externality_priced = externality_weight > 0 and bool(recovery_tbl)
 
     buy_pools, sell_pools = {}, {}
 
@@ -818,7 +899,23 @@ def score_sequence(seq, markets, ship, constraints, model, travel_fn, deposit_si
                     units = visit_rem
             if units <= 0:
                 continue
-            key = (margin, -j, -(i if i is not None else -1))
+            # Rank on the externality-adjusted margin: at equal spread a hull now
+            # prefers the sink the fleet is not still recovering. Deposits are
+            # synthetic inventory transfers with no market crush — exempt, exactly
+            # like the per-visit absorption cap above.
+            #
+            # NOTE the min_margin gate above tests the RAW margin, deliberately: this
+            # term reorders PREFERENCE, it does not decide ELIGIBILITY. Gating on the
+            # adjusted margin would silently tighten a spend guard, which RULINGS #4
+            # forbids as a side effect.
+            eff_margin = margin
+            if externality_priced and kind != "deposit":
+                srow = markets[seq[j]]["goods"][good]
+                eff_margin -= externality_cost_per_unit(
+                    srow.get("activity"), units, srow["trade_volume"], sell_price,
+                    externality_weight, recovery_tbl,
+                    sell_decay=impact_factor(model, _tier_of(srow), is_buy=False))
+            key = (eff_margin, -j, -(i if i is not None else -1))
             if best is None or key > best[0]:
                 best = (key, good, i, j, units, buy_price, sell_price, kind)
         if best is None:

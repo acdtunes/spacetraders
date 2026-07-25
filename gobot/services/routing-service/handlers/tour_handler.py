@@ -105,6 +105,12 @@ class TourHandlerMixin:
                                         to_system=h.to_system,
                                         gate_hops=h.gate_hops)
                                    for h in request.constraints.inter_system_hops],
+                # The recovery-externality weight. The solver reads the
+                # fitted half-lives straight off self.tour_model["recovery"] — the SAME
+                # artifact table, never a second copy — so only the coefficient crosses
+                # the wire. Absent/0 (the unarmed default) -> no charge -> the pairing
+                # order is byte-identical to today.
+                externality_weight=request.constraints.externality_weight,
                 expected_model_version=request.constraints.expected_model_version)
             waypoints = [dict(symbol=w.symbol, system_symbol=w.system_symbol,
                               x=w.x, y=w.y)

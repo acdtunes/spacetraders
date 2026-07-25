@@ -1,190 +1,226 @@
 {
   "diagnostics": {
-    "control_series_count": 49,
-    "ladder_count": 3347,
+    "control_series_count": 1274,
+    "ladder_count": 20516,
     "tier_at_time": {
-      "coverage": 0.9549,
-      "steps_total": 4812,
-      "steps_true": 4595
+      "coverage": 0.8317,
+      "steps_total": 43032,
+      "steps_true": 35791
     }
   },
-  "era": "torwind-2026-07-05",
+  "era": "torwind-2026-07-19",
   "fit_version": 2,
-  "generated_at": "2026-07-10T01:19:07.480160+00:00",
+  "generated_at": "2026-07-25T02:45:17.799984+00:00",
   "impact": {
-    "ABUNDANT|GROWING": {
-      "buy_growth_per_step": 1.0,
-      "buy_n_obs": 85,
-      "n_obs": 171,
-      "sell_decay_per_step": 1.0,
-      "sell_n_obs": 86
-    },
-    "ABUNDANT|RESTRICTED": {
-      "buy_growth_per_step": 1.0341638556624235,
-      "buy_n_obs": 111,
-      "n_obs": 111
-    },
-    "ABUNDANT|WEAK": {
-      "buy_growth_per_step": 1.0330874569399717,
-      "buy_n_obs": 63,
-      "n_obs": 63
-    },
-    "HIGH|GROWING": {
-      "buy_growth_per_step": 1.0,
-      "buy_n_obs": 24,
-      "buy_thin": true,
-      "n_obs": 47,
-      "sell_decay_per_step": 0.9190937127065686,
-      "sell_n_obs": 23,
-      "sell_thin": true
-    },
-    "HIGH|RESTRICTED": {
-      "buy_growth_per_step": 1.0561217187210628,
-      "buy_n_obs": 312,
-      "n_obs": 312
-    },
-    "HIGH|STRONG": {
-      "buy_growth_per_step": 1.0218304036338046,
-      "buy_n_obs": 7,
-      "buy_thin": true,
-      "n_obs": 7
-    },
-    "HIGH|WEAK": {
-      "buy_growth_per_step": 1.0648026334576128,
-      "buy_n_obs": 40,
-      "n_obs": 40
-    },
-    "LIMITED|": {
-      "buy_growth_per_step": 1.0,
-      "buy_n_obs": 16,
-      "buy_thin": true,
-      "n_obs": 16
-    },
-    "LIMITED|GROWING": {
-      "buy_growth_per_step": 1.1040724115912677,
-      "buy_n_obs": 22,
-      "buy_thin": true,
-      "n_obs": 81,
-      "sell_decay_per_step": 0.9846386758193993,
-      "sell_n_obs": 59
-    },
-    "LIMITED|RESTRICTED": {
-      "buy_growth_per_step": 1.0943539406568892,
-      "buy_n_obs": 289,
-      "n_obs": 318,
-      "sell_decay_per_step": 0.9874823593006093,
-      "sell_n_obs": 29,
-      "sell_thin": true
-    },
-    "LIMITED|STRONG": {
-      "buy_growth_per_step": 1.107362825391782,
-      "buy_n_obs": 10,
-      "buy_thin": true,
-      "n_obs": 10
-    },
-    "LIMITED|WEAK": {
-      "buy_growth_per_step": 1.0446522068660629,
-      "buy_n_obs": 24,
-      "buy_thin": true,
-      "n_obs": 65,
-      "sell_decay_per_step": 0.9676162456275721,
-      "sell_n_obs": 41
-    },
-    "MODERATE|": {
-      "buy_growth_per_step": 1.0,
-      "buy_n_obs": 12,
-      "buy_thin": true,
-      "n_obs": 12
-    },
-    "MODERATE|GROWING": {
-      "buy_growth_per_step": 1.0194014337290431,
-      "buy_n_obs": 121,
-      "n_obs": 291,
-      "sell_decay_per_step": 0.9644789611467618,
-      "sell_n_obs": 170
-    },
-    "MODERATE|RESTRICTED": {
-      "buy_growth_per_step": 1.0791435977461243,
-      "buy_n_obs": 520,
-      "n_obs": 543,
-      "sell_decay_per_step": 0.9504963536688549,
-      "sell_n_obs": 23,
-      "sell_thin": true
-    },
-    "MODERATE|STRONG": {
-      "buy_growth_per_step": 1.1014526159380267,
+    "ABUNDANT|": {
+      "buy_growth_per_step": 1.0428233967845455,
       "buy_n_obs": 5,
       "buy_thin": true,
-      "n_obs": 8,
-      "sell_decay_per_step": 1.0,
+      "n_obs": 209,
+      "sell_decay_per_step": 0.9828425309550217,
+      "sell_n_obs": 204
+    },
+    "ABUNDANT|GROWING": {
+      "buy_growth_per_step": 1.0048885637004932,
+      "buy_n_obs": 348,
+      "n_obs": 468,
+      "sell_decay_per_step": 0.9756356520307652,
+      "sell_n_obs": 120
+    },
+    "ABUNDANT|RESTRICTED": {
+      "buy_growth_per_step": 1.0326824906042105,
+      "buy_n_obs": 776,
+      "n_obs": 782,
+      "sell_decay_per_step": 0.8103243180639841,
+      "sell_n_obs": 6,
+      "sell_thin": true
+    },
+    "ABUNDANT|STRONG": {
+      "buy_growth_per_step": 1.0327299682212623,
+      "buy_n_obs": 6,
+      "buy_thin": true,
+      "n_obs": 11,
+      "sell_decay_per_step": 0.8619728212469777,
+      "sell_n_obs": 5,
+      "sell_thin": true
+    },
+    "ABUNDANT|WEAK": {
+      "buy_growth_per_step": 1.0258902079525885,
+      "buy_n_obs": 407,
+      "n_obs": 425,
+      "sell_decay_per_step": 0.763694896808986,
+      "sell_n_obs": 18,
+      "sell_thin": true
+    },
+    "HIGH|": {
+      "buy_growth_per_step": 1.0030339808220605,
+      "buy_n_obs": 13,
+      "buy_thin": true,
+      "n_obs": 205,
+      "sell_decay_per_step": 0.9937961031507314,
+      "sell_n_obs": 192
+    },
+    "HIGH|GROWING": {
+      "buy_growth_per_step": 1.0040268770393077,
+      "buy_n_obs": 170,
+      "n_obs": 225,
+      "sell_decay_per_step": 0.8703129015640124,
+      "sell_n_obs": 55
+    },
+    "HIGH|RESTRICTED": {
+      "buy_growth_per_step": 1.0511834505255273,
+      "buy_n_obs": 1540,
+      "n_obs": 1560,
+      "sell_decay_per_step": 0.9100418778432219,
+      "sell_n_obs": 20,
+      "sell_thin": true
+    },
+    "HIGH|STRONG": {
+      "buy_growth_per_step": 1.0,
+      "buy_n_obs": 37,
+      "n_obs": 40,
+      "sell_decay_per_step": 0.9537860679912864,
       "sell_n_obs": 3,
       "sell_thin": true
     },
+    "HIGH|WEAK": {
+      "buy_growth_per_step": 1.0397577037365402,
+      "buy_n_obs": 531,
+      "n_obs": 542,
+      "sell_decay_per_step": 0.8858762696884496,
+      "sell_n_obs": 11,
+      "sell_thin": true
+    },
+    "LIMITED|": {
+      "buy_growth_per_step": 1.0038973435996172,
+      "buy_n_obs": 278,
+      "n_obs": 286,
+      "sell_decay_per_step": 0.9924881503004465,
+      "sell_n_obs": 8,
+      "sell_thin": true
+    },
+    "LIMITED|GROWING": {
+      "buy_growth_per_step": 1.093052620511826,
+      "buy_n_obs": 65,
+      "n_obs": 229,
+      "sell_decay_per_step": 0.9763658614023285,
+      "sell_n_obs": 164
+    },
+    "LIMITED|RESTRICTED": {
+      "buy_growth_per_step": 1.1022334663685263,
+      "buy_n_obs": 1058,
+      "n_obs": 1432,
+      "sell_decay_per_step": 0.9776902795219651,
+      "sell_n_obs": 374
+    },
+    "LIMITED|STRONG": {
+      "buy_growth_per_step": 1.0849910841677162,
+      "buy_n_obs": 67,
+      "n_obs": 78,
+      "sell_decay_per_step": 0.9635069404544367,
+      "sell_n_obs": 11,
+      "sell_thin": true
+    },
+    "LIMITED|WEAK": {
+      "buy_growth_per_step": 1.0600703336998558,
+      "buy_n_obs": 53,
+      "n_obs": 997,
+      "sell_decay_per_step": 0.9783135458995522,
+      "sell_n_obs": 944
+    },
+    "MODERATE|": {
+      "buy_growth_per_step": 1.0009512547248391,
+      "buy_n_obs": 297,
+      "n_obs": 533,
+      "sell_decay_per_step": 0.9993661875109306,
+      "sell_n_obs": 236
+    },
+    "MODERATE|GROWING": {
+      "buy_growth_per_step": 1.0334463544072359,
+      "buy_n_obs": 409,
+      "n_obs": 771,
+      "sell_decay_per_step": 0.9566521807231461,
+      "sell_n_obs": 362
+    },
+    "MODERATE|RESTRICTED": {
+      "buy_growth_per_step": 1.07230567079426,
+      "buy_n_obs": 3464,
+      "n_obs": 3792,
+      "sell_decay_per_step": 0.9576657249507928,
+      "sell_n_obs": 328
+    },
+    "MODERATE|STRONG": {
+      "buy_growth_per_step": 1.0347846218566505,
+      "buy_n_obs": 267,
+      "n_obs": 304,
+      "sell_decay_per_step": 0.9044157243929821,
+      "sell_n_obs": 37
+    },
     "MODERATE|WEAK": {
-      "buy_growth_per_step": 1.090570510274322,
-      "buy_n_obs": 36,
-      "n_obs": 72,
-      "sell_decay_per_step": 0.9288012453286727,
-      "sell_n_obs": 36
+      "buy_growth_per_step": 1.060343309574084,
+      "buy_n_obs": 650,
+      "n_obs": 1330,
+      "sell_decay_per_step": 0.9609381855672983,
+      "sell_n_obs": 680
     },
     "SCARCE|": {
-      "buy_growth_per_step": 1.0237069155135317,
-      "buy_n_obs": 35,
-      "n_obs": 35
+      "buy_growth_per_step": 1.0235765053795154,
+      "buy_n_obs": 738,
+      "n_obs": 927,
+      "sell_decay_per_step": 0.948795041548525,
+      "sell_n_obs": 189
     },
     "SCARCE|GROWING": {
-      "buy_growth_per_step": 1.0170069689171706,
-      "buy_n_obs": 18,
+      "buy_growth_per_step": 1.063444424000016,
+      "buy_n_obs": 28,
       "buy_thin": true,
-      "n_obs": 214,
-      "sell_decay_per_step": 0.9907712860664993,
-      "sell_n_obs": 196
+      "n_obs": 746,
+      "sell_decay_per_step": 0.9886338067051028,
+      "sell_n_obs": 718
     },
     "SCARCE|RESTRICTED": {
-      "buy_growth_per_step": 1.0766497110064606,
-      "buy_n_obs": 518,
-      "n_obs": 537,
-      "sell_decay_per_step": 0.9566518588352977,
-      "sell_n_obs": 19,
-      "sell_thin": true
+      "buy_growth_per_step": 1.1316500348394312,
+      "buy_n_obs": 761,
+      "n_obs": 1202,
+      "sell_decay_per_step": 0.9850164038437449,
+      "sell_n_obs": 441
     },
     "SCARCE|STRONG": {
-      "buy_growth_per_step": 1.0114178063052655,
-      "buy_n_obs": 122,
-      "n_obs": 136,
-      "sell_decay_per_step": 0.9924600704985496,
-      "sell_n_obs": 14,
-      "sell_thin": true
+      "buy_growth_per_step": 1.055716911774122,
+      "buy_n_obs": 143,
+      "n_obs": 206,
+      "sell_decay_per_step": 0.9861786544208567,
+      "sell_n_obs": 63
     },
     "SCARCE|WEAK": {
-      "buy_growth_per_step": 1.0384543749655617,
-      "buy_n_obs": 15,
+      "buy_growth_per_step": 1.042312854092153,
+      "buy_n_obs": 27,
       "buy_thin": true,
-      "n_obs": 258,
-      "sell_decay_per_step": 0.981002702981735,
-      "sell_n_obs": 243
+      "n_obs": 3216,
+      "sell_decay_per_step": 0.9887985243805719,
+      "sell_n_obs": 3189
     }
   },
   "recovery": {
     "": {
-      "half_life_minutes": 1074.3230648521003,
-      "n_series": 3
+      "half_life_minutes": 2848.932725096541,
+      "n_series": 51
     },
     "GROWING": {
-      "half_life_minutes": 180.67584044583344,
-      "n_series": 3
+      "half_life_minutes": 1942.0945352394685,
+      "n_series": 49
     },
     "RESTRICTED": {
-      "half_life_minutes": 413.6573775318799,
-      "n_series": 22
+      "half_life_minutes": 2366.4576822223316,
+      "n_series": 754
     },
     "STRONG": {
-      "half_life_minutes": 386.12786531997995,
-      "n_series": 1
+      "half_life_minutes": 1577.7284828530492,
+      "n_series": 4
     },
     "WEAK": {
-      "half_life_minutes": 279.1386201788089,
-      "n_series": 20
+      "half_life_minutes": 1599.240596055635,
+      "n_series": 416
     }
   }
 }

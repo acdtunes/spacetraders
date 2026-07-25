@@ -17,14 +17,15 @@ import (
 // absorber's own next plan, can step into the hole until the model says it has
 // regrown, and the absorber pays no synthetic tax.
 //
-// UNTAGGED sinks (empty activity) are deliberately excluded: the artifact fits a
-// ~1074min (18h) baseline half-life for them, but any shadow there is either wrong
-// or effectively eternal against a ~45h era, and we have no business bulk-dumping
-// into a market the depth model has not fit. IsTagged reports false for them so the
-// writer skips the shadow entirely.
+// UNTAGGED sinks (empty activity) decay on the artifact's POOLED ("") fit. They used to
+// be excluded — no shadow at all — which meant consecutive plans saw virgin depth and
+// lawfully rebuilt the whole tranche ladder at the same sink. Untagged
+// is roughly a quarter of the live market universe, so that was where the ladder was
+// actually being rebuilt. The pooled fit is the SAME number the solver's thin-tier
+// fallback prices against; the 12h hard cap remains the outer bound on any shadow.
 type absorptionRecoveryModel struct {
-	// halfLives maps activity tier → fitted recovery half-life. The untagged ("")
-	// key from the artifact is intentionally NOT loaded — see IsTagged.
+	// halfLives maps activity tier → fitted recovery half-life, including the pooled
+	// ("") fit that untagged sinks decay on.
 	halfLives map[string]time.Duration
 	// loaded is false when the artifact could not be read/parsed. A reader then
 	// treats every EXECUTED residual as UNDECAYED (full units) until its 12h hard
@@ -63,10 +64,8 @@ func loadAbsorptionRecoveryModel(path string) *absorptionRecoveryModel {
 		return m
 	}
 	for tier, entry := range art.Recovery {
-		if tier == "" || entry.HalfLifeMinutes <= 0 {
-			// Untagged ("") and non-positive fits are excluded: untagged sinks get no
-			// shadow, and a non-positive half-life would make decay undefined.
-			continue
+		if entry.HalfLifeMinutes <= 0 {
+			continue // a non-positive half-life would make decay undefined
 		}
 		m.halfLives[tier] = time.Duration(entry.HalfLifeMinutes * float64(time.Minute))
 	}
@@ -74,19 +73,10 @@ func loadAbsorptionRecoveryModel(path string) *absorptionRecoveryModel {
 	return m
 }
 
-// IsTagged reports whether tier is a modelled activity the ledger may write an
-// EXECUTED shadow for. Untagged sinks (empty tier) are always false — the writer
-// releases such a leg's PLANNED row without leaving a shadow (Q2). A non-empty tier
-// the loaded artifact does not know is still tagged (a shadow is written) but reads
-// undecayed until the hard cap — fail closed, never optimistically freed.
-func (m *absorptionRecoveryModel) IsTagged(tier string) bool {
-	return tier != ""
-}
-
 // decayedUnits returns the still-occupied depth of an EXECUTED shadow of `units`
 // after `elapsed`, per units × 0.5^(elapsed/half_life(tier)). A tier with no known
-// half-life (untagged, unknown, or the artifact unloaded) decays not at all — the
-// full units stand until the hard cap sweeps the row (fail closed, RULINGS #4).
+// half-life (unknown, or the artifact unloaded) decays not at all — the full units
+// stand until the hard cap sweeps the row (fail closed, RULINGS #4).
 // elapsed ≤ 0 returns the full units (a just-written shadow).
 func (m *absorptionRecoveryModel) decayedUnits(units int, tier string, elapsed time.Duration) float64 {
 	if units <= 0 {

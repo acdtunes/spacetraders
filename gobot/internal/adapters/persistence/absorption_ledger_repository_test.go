@@ -304,9 +304,13 @@ func TestAbsorptionLedger_Convert_TaggedSale_WritesDecayingShadow(t *testing.T) 
 	require.InDelta(t, 40.0, out[key].RecoveringResidual, 0.5)
 }
 
-// Trade-analyst Q2: an UNTAGGED sink gets NO shadow — the PLANNED hold is released,
-// the model cannot price what it has not fit.
-func TestAbsorptionLedger_Convert_UntaggedSink_WritesNoShadow(t *testing.T) {
+// Cross-plan A-cap continuity, superseding the original rule that
+// dropped untagged sales outright). An UNTAGGED sink used to leave NO row, so consecutive
+// plans rebuilt the whole tranche ladder there — the D39 shape, lawfully, one plan at a
+// time. It now leaves a shadow like any other sink, decaying on the artifact's POOLED
+// untagged half-life. Untagged is ~24% of the live market universe, so this is where the
+// ladder was actually being rebuilt.
+func TestAbsorptionLedger_Convert_UntaggedSink_CarriesShadowOnThePooledHalfLife(t *testing.T) {
 	ledger, db := setupAbsorptionLedger(t, nil)
 	ctx := context.Background()
 
@@ -316,8 +320,56 @@ func TestAbsorptionLedger_Convert_UntaggedSink_WritesNoShadow(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, ok)
 
-	require.NoError(t, ledger.ConvertByContainer(ctx, "ctr-A", 1, key, 40, "", 200))
-	require.Equal(t, int64(0), countAbsorption(t, db), "an untagged sink leaves no row at all")
+	require.NoError(t, ledger.ConvertByContainer(ctx, "ctr-A", 1, key, 40, "", 40))
+
+	var row persistence.MarketAbsorptionLedgerModel
+	require.NoError(t, db.Where("player_id = 1").First(&row).Error)
+	require.Equal(t, "EXECUTED", row.State, "an untagged sale must leave a recovery shadow, not vanish")
+	require.Equal(t, 40, row.Units)
+	require.Equal(t, "", row.TierAtWrite)
+
+	out, err := ledger.Outstanding(ctx, 1)
+	require.NoError(t, err)
+	require.InDelta(t, 40.0, out[key].RecoveringResidual, 0.5, "a fresh untagged shadow blocks at its realized units")
+}
+
+// The untagged shadow decays on the artifact's POOLED half-life — the same ""-keyed fit
+// the solver's thin-tier fallback prices against. One table, read in one place: a
+// hardcoded Go-side constant here would be a second table, free to drift from the first.
+func TestAbsorptionLedger_UntaggedShadow_DecaysOnThePooledHalfLife(t *testing.T) {
+	ledger, db := setupAbsorptionLedger(t, nil)
+	key := absorption.LaneKey{Waypoint: "WP-U", Good: "IRON", Side: "sell"}
+
+	// The fixture artifact fits the pooled ("") half-life at 1000min; tranche 10 → floor 5,
+	// so the 50-unit residual stays well above it and the decay is visible. The row is
+	// inserted under a wide hard cap so the 12h sweep — a separate mechanism, tested
+	// elsewhere — cannot be what clears it.
+	insertExecuted(t, db, key, 100, 10, "", 1000*time.Minute, 48*time.Hour)
+
+	out, err := ledger.Outstanding(context.Background(), 1)
+	require.NoError(t, err)
+	require.InDelta(t, 50.0, out[key].RecoveringResidual, 1.0,
+		"one pooled half-life must halve the untagged residual — not hold it undecayed, not free it")
+}
+
+// Fail CLOSED (RULINGS #4 — this bounds BUY COMMITMENT). An artifact with no pooled fit
+// leaves the untagged shadow UNDECAYED until the 12h hard cap sweeps it. Depth we cannot
+// confirm has regrown is never optimistically freed.
+func TestAbsorptionLedger_UntaggedShadow_WithoutAPooledFitStaysUndecayed(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	path := filepath.Join(t.TempDir(), "market_model.json")
+	require.NoError(t, os.WriteFile(path, []byte(
+		`{"fit_version":"test","recovery":{"WEAK":{"half_life_minutes":60.0,"n_series":20}}}`), 0o644))
+	ledger := persistence.NewAbsorptionLedger(db, path, persistence.AbsorptionLedgerConfig{}, nil)
+
+	key := absorption.LaneKey{Waypoint: "WP-U", Good: "IRON", Side: "sell"}
+	insertExecuted(t, db, key, 100, 10, "", 10*time.Hour, 12*time.Hour)
+
+	out, err := ledger.Outstanding(context.Background(), 1)
+	require.NoError(t, err)
+	require.InDelta(t, 100.0, out[key].RecoveringResidual, 0.5,
+		"no pooled fit → the untagged residual holds at full units until the hard cap, never freed on a guess")
 }
 
 // A zero-unit sale (nothing sold) leaves no shadow — the hold is released.

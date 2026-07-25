@@ -442,6 +442,9 @@ func buildTourRequest(
 			Closed:          cons.Closed,
 			AnchorSystem:    cons.AnchorSystem,
 			InterSystemHops: pbInterSystemHops,
+			// Recovery-externality weight. 0 (unarmed) serializes to nothing, so the
+			// request is byte-identical to a binary that predates the charge.
+			ExternalityWeight: cons.ExternalityWeight,
 		},
 		Waypoints:         pbWaypoints,
 		DepositCandidates: pbDeposits,

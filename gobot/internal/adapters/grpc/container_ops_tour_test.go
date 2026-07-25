@@ -556,3 +556,61 @@ func TestStartTourRun_CandidateWideningDefaultsWhenUnset(t *testing.T) {
 	require.Equal(t, 0, cmd.CandidateHopDepth, "an unset candidate_hop_depth must rebuild to the sentinel 0 (consumer floors -> 1, the exact 1-hop set, byte-identical to today)")
 	require.Equal(t, 0, cmd.CandidateShortlistTopN, "an unset candidate_shortlist_top_n must rebuild to the sentinel 0 (consumer resolves -> 6)")
 }
+
+// The recovery-externality weight is a daemon-global [trade_fleet] tuning like
+// candidate_hop_depth, so it must survive the SAME launch/rebuild boundary: StartTourRun
+// stamps it into the launch config and buildTourCoordinatorCommand reads it back. Without
+// both writes the knob is inert — the operator's config.yaml value never reaches the solver
+// and every tour keeps ranking on raw margin, which is how a knob ships inert.
+func TestStartTourRun_StampsExternalityWeightFromTradeFleetConfig(t *testing.T) {
+	s, db, playerID := newRecoveryTestServer(t)
+	s.tradeFleetConfig.ExternalityWeight = 0.35 // the captain's [trade_fleet] arming
+
+	hull := newIdleTradeShip(t, "TORWIND-19", playerID)
+	hull.SetDedicatedFleet("trade")
+	s.shipRepo = &tradeRouteShipRepo{ships: map[string]*navigation.Ship{"TORWIND-19": hull}}
+
+	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), "AGENT", 1, playerID, nil)
+	require.NoError(t, err)
+	runner := s.registeredRunner(result.ContainerID)
+	require.NotNil(t, runner)
+	defer runner.cancelFunc()
+
+	var model persistence.ContainerModel
+	require.NoError(t, db.First(&model, "id = ?", result.ContainerID).Error)
+	require.Contains(t, model.Config, `"externality_weight":0.35`, "StartTourRun must stamp the [trade_fleet] externality_weight so the launch/rebuild reads it back — otherwise the charge is inert and every tour ranks on raw margin")
+
+	var cfg map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(model.Config), &cfg))
+	rebuilt, err := s.buildCommandForType("tour_run", cfg, playerID, result.ContainerID)
+	require.NoError(t, err)
+	cmd := rebuilt.(*tradingCmd.RunTourCoordinatorCommand)
+	require.Equal(t, 0.35, cmd.ExternalityWeight)
+}
+
+// Default-safety companion: an UNSET externality_weight rebuilds to 0, so a daemon that
+// never arms it plans byte-identically to today — and a recovery rebuild of a container
+// launched before arming stays unarmed rather than inheriting a code-side default.
+func TestStartTourRun_ExternalityWeightDefaultsWhenUnset(t *testing.T) {
+	s, db, playerID := newRecoveryTestServer(t)
+	// tradeFleetConfig.ExternalityWeight left at its zero value (never armed).
+
+	hull := newIdleTradeShip(t, "TORWIND-19", playerID)
+	hull.SetDedicatedFleet("trade")
+	s.shipRepo = &tradeRouteShipRepo{ships: map[string]*navigation.Ship{"TORWIND-19": hull}}
+
+	result, err := s.StartTourRun(context.Background(), "TORWIND-19", 5, int64(100000), 10, 3, int64(0), "AGENT", 1, playerID, nil)
+	require.NoError(t, err)
+	runner := s.registeredRunner(result.ContainerID)
+	require.NotNil(t, runner)
+	defer runner.cancelFunc()
+
+	var model persistence.ContainerModel
+	require.NoError(t, db.First(&model, "id = ?", result.ContainerID).Error)
+	var cfg map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(model.Config), &cfg))
+	rebuilt, err := s.buildCommandForType("tour_run", cfg, playerID, result.ContainerID)
+	require.NoError(t, err)
+	cmd := rebuilt.(*tradingCmd.RunTourCoordinatorCommand)
+	require.Equal(t, 0.0, cmd.ExternalityWeight, "an unset externality_weight must rebuild to 0 — the solver then ranks on raw margin, byte-identical to today")
+}

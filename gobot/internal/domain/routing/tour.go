@@ -86,6 +86,14 @@ type TourConstraints struct {
 	// is priced honestly. Empty (the un-widened default) => the solver defaults every crossing
 	// to 1 hop => byte-identical to today; a pair the map omits also defaults to 1 hop.
 	InterSystemHops []InterSystemHopDistance
+	// ExternalityWeight prices the FUTURE recovery burden each planned sell tranche
+	// imposes on the rest of the fleet: the solver subtracts the
+	// charge from its pairing-selection key so that, at equal spread, a hull prefers
+	// the sink the fleet is not still recovering. It moves PREFERENCE only — the
+	// min-margin eligibility gate keeps testing the raw margin. 0 (the unarmed
+	// default) charges nothing and plans byte-identically to today, which is also the
+	// documented revert.
+	ExternalityWeight float64
 }
 
 // InterSystemHopDistance is one gate-hop distance between two systems (sp-tp5c3). GateHops is

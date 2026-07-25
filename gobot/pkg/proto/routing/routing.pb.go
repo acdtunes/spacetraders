@@ -1671,8 +1671,15 @@ type TourConstraints struct {
 	// crossing to 1 hop => byte-identical to today. Distance is symmetric; the Go caller
 	// may send either direction.
 	InterSystemHops []*InterSystemHopDistance `protobuf:"bytes,11,rep,name=inter_system_hops,json=interSystemHops,proto3" json:"inter_system_hops,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// externality_weight prices the FUTURE recovery burden each planned sell tranche
+	// imposes on the rest of the fleet, so hulls stop converging on the same sinks
+	// The solver subtracts the charge from the pairing loop's
+	// selection key — PREFERENCE only; the min-margin eligibility gate keeps testing
+	// the RAW margin. 0/unset (the proto3 double default) => no charge => the solver
+	// ranks exactly as today, which is also the documented revert.
+	ExternalityWeight float64 `protobuf:"fixed64,12,opt,name=externality_weight,json=externalityWeight,proto3" json:"externality_weight,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *TourConstraints) Reset() {
@@ -1780,6 +1787,13 @@ func (x *TourConstraints) GetInterSystemHops() []*InterSystemHopDistance {
 		return x.InterSystemHops
 	}
 	return nil
+}
+
+func (x *TourConstraints) GetExternalityWeight() float64 {
+	if x != nil {
+		return x.ExternalityWeight
+	}
+	return 0
 }
 
 // InterSystemHopDistance is one gate-hop distance between two systems (sp-tp5c3),
@@ -2811,7 +2825,7 @@ const file_pkg_proto_routing_routing_proto_rawDesc = "" +
 	"\rTourCargoItem\x12\x1f\n" +
 	"\vgood_symbol\x18\x01 \x01(\tR\n" +
 	"goodSymbol\x12\x14\n" +
-	"\x05units\x18\x02 \x01(\x05R\x05units\"\xfc\x03\n" +
+	"\x05units\x18\x02 \x01(\x05R\x05units\"\xab\x04\n" +
 	"\x0fTourConstraints\x12\x19\n" +
 	"\bmax_hops\x18\x01 \x01(\x05R\amaxHops\x12\x1b\n" +
 	"\tmax_spend\x18\x02 \x01(\x03R\bmaxSpend\x12-\n" +
@@ -2824,7 +2838,8 @@ const file_pkg_proto_routing_routing_proto_rawDesc = "" +
 	"\x06closed\x18\t \x01(\bR\x06closed\x12#\n" +
 	"\ranchor_system\x18\n" +
 	" \x01(\tR\fanchorSystem\x12K\n" +
-	"\x11inter_system_hops\x18\v \x03(\v2\x1f.routing.InterSystemHopDistanceR\x0finterSystemHops\"s\n" +
+	"\x11inter_system_hops\x18\v \x03(\v2\x1f.routing.InterSystemHopDistanceR\x0finterSystemHops\x12-\n" +
+	"\x12externality_weight\x18\f \x01(\x01R\x11externalityWeight\"s\n" +
 	"\x16InterSystemHopDistance\x12\x1f\n" +
 	"\vfrom_system\x18\x01 \x01(\tR\n" +
 	"fromSystem\x12\x1b\n" +

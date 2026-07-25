@@ -313,6 +313,14 @@ type RunTourCoordinatorCommand struct {
 	// CandidateShortlistTopN bounds how many ≥2-hop systems the profitable-edge shortlist
 	// ADDS on top of the always-present 1-hop floor. 0/absent → candidateShortlistTopNDefault (6).
 	CandidateShortlistTopN int
+
+	// ExternalityWeight prices the recovery burden a planned sell tranche imposes on the
+	// rest of the fleet, so hulls stop converging on the same sinks.
+	// Config-driven from [trade_fleet] (RULINGS #5) and threaded through the container
+	// config, so a captain arms and retunes it by editing config.yaml + restarting.
+	// 0/absent → no charge → the solver ranks on raw margin exactly as today, which is
+	// also the documented revert.
+	ExternalityWeight float64
 }
 
 // RunTourCoordinatorResponse reports the realised tour economics and — via
@@ -1909,6 +1917,12 @@ func (h *RunTourCoordinatorHandler) planForState(
 		// at the default cap (every crossing is a single hop the flat charge prices exactly) =>
 		// byte-identical to today; only a widened horizon (MaxTourSystems > 2) populates it.
 		InterSystemHops: h.tourInterSystemHops(ctx, allowedSystems, cmd),
+		// Recovery-externality charge. 0 (the unarmed default) leaves
+		// the solver's pairing order untouched; a positive weight makes a hull prefer the
+		// sink the fleet is not still recovering at equal spread. PREFERENCE only — the
+		// solver's min-margin gate keeps testing the raw margin (RULINGS #4: no guard is
+		// tightened as a side effect).
+		ExternalityWeight: cmd.ExternalityWeight,
 	}
 	plan, err := h.planner.OptimizeTradeTour(ctx, snapshot, waypoints, shipState, cons, deposits, absorptionView)
 	if err != nil {

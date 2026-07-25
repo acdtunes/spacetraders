@@ -248,6 +248,45 @@ func TestLoadConfig_CandidateWidening_AbsentIsDefaults(t *testing.T) {
 		"an absent candidate_shortlist_top_n must be the sentinel 0 (the consumer resolves 0 -> default 6)")
 }
 
+// Recovery-externality weight round-trip: the coefficient that prices a sell tranche's
+// future recovery burden must reach the config struct through the REAL viper mapstructure
+// pipeline, so it is armed and retuned by editing config.yaml + restarting. It is a FLOAT,
+// which is exactly where a mapstructure typo hides — an int-typed field would silently
+// truncate 0.35 to 0 and ship a dead knob that looks armed in config.yaml.
+func TestLoadConfig_ExternalityWeight_RoundTrips(t *testing.T) {
+	t.Setenv("SPACETRADERS_CONFIG", "")
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(
+		"trade_fleet:\n"+
+			"  enabled: true\n"+
+			"  externality_weight: 0.35\n"), 0o644))
+	t.Chdir(dir)
+
+	cfg, err := LoadConfig("")
+
+	require.NoError(t, err)
+	require.Equal(t, 0.35, cfg.TradeFleet.ExternalityWeight,
+		"externality_weight must round-trip as a float so the captain arms and retunes the recovery-externality charge from config.yaml")
+}
+
+// Default-safety companion: an ABSENT externality_weight is 0, which the solver
+// short-circuits to today's exact pairing order. Landing the code unarmed is the whole
+// point of the sentinel — and 0 is also the documented revert.
+func TestLoadConfig_ExternalityWeight_AbsentIsUnarmed(t *testing.T) {
+	t.Setenv("SPACETRADERS_CONFIG", "")
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(
+		"trade_fleet:\n"+
+			"  enabled: true\n"), 0o644))
+	t.Chdir(dir)
+
+	cfg, err := LoadConfig("")
+
+	require.NoError(t, err)
+	require.Equal(t, 0.0, cfg.TradeFleet.ExternalityWeight,
+		"an absent externality_weight must be 0 — the solver then plans byte-identically to today")
+}
+
 // sp-o4wa cargo_blocklist round-trip pin: the noise-goods blocklist must travel from
 // config.yaml's [trade_fleet] section into the loaded config unchanged, so a captain arms
 // the FUEL/ALUMINUM/PLASTICS filter by editing config.yaml + restarting — no code redeploy.

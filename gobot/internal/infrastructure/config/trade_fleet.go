@@ -195,6 +195,16 @@ type TradeFleetConfig struct {
 	CandidateHopDepth      int `mapstructure:"candidate_hop_depth"`
 	CandidateShortlistTopN int `mapstructure:"candidate_shortlist_top_n"`
 
+	// --- Recovery-externality pricing ---
+	// Daemon-global tour tuning (the mirror of candidate_hop_depth above): StartTourRun stamps
+	// it into every tour launch config, buildTourCoordinatorCommand reads it back, and the
+	// solver charges each planned sell tranche for the recovery burden it imposes on the rest
+	// of the fleet — so at equal spread a hull prefers the sink the fleet is not still
+	// recovering. A FLOAT, deliberately: the coefficient is fitted, not a step. 0/absent is the
+	// UNARMED default (no charge, byte-identical to today) and is also the documented revert —
+	// set 0 + restart the daemon, the candidate_hop_depth numeric-knob pattern, no flag.
+	ExternalityWeight float64 `mapstructure:"externality_weight"`
+
 	// --- Liveness watchdog (sp-m3122) ---
 	// WatchdogStallSeconds is how long a RUNNING tour may make ZERO real progress
 	// (plan/navigate/arrive/buy/sell) before the coordinator declares it HUNG, kills the

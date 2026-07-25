@@ -391,6 +391,13 @@ message TourConstraints {
   // crossing to 1 hop => byte-identical to today. Distance is symmetric; the Go caller
   // may send either direction.
   repeated InterSystemHopDistance inter_system_hops = 11;
+  // externality_weight prices the FUTURE recovery burden each planned sell tranche
+  // imposes on the rest of the fleet, so hulls stop converging on the same sinks
+  // The solver subtracts the charge from the pairing loop's
+  // selection key — PREFERENCE only; the min-margin eligibility gate keeps testing
+  // the RAW margin. 0/unset (the proto3 double default) => no charge => the solver
+  // ranks exactly as today, which is also the documented revert.
+  double externality_weight = 12;
 }
 
 // InterSystemHopDistance is one gate-hop distance between two systems (sp-tp5c3),

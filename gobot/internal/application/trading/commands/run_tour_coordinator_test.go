@@ -490,6 +490,10 @@ type tourFakeRoutingClient struct {
 	// staleness BACKSTOP. It must never be tighter than the activity caps the snapshot was
 	// already filtered against, or the solver silently re-drops rows the Go side kept.
 	snapshotAgeCaps []int
+	// externalityWeights captures cons.ExternalityWeight on each call: the recovery-externality
+	// charge is applied in the solver's pairing loop, so a weight that does not reach the
+	// request prices nothing at all.
+	externalityWeights []float64
 }
 
 func (c *tourFakeRoutingClient) OptimizeTradeTour(ctx context.Context, snapshot []routing.TourGoodSnapshot, waypoints []routing.TourWaypoint, ship routing.TourShipState, cons routing.TourConstraints, deposits []routing.TourDepositCandidate, absorption []routing.TourMarketAbsorption) (*routing.TourPlan, error) {
@@ -497,6 +501,7 @@ func (c *tourFakeRoutingClient) OptimizeTradeTour(ctx context.Context, snapshot 
 	c.positions = append(c.positions, ship.CurrentWaypoint)
 	c.snapshots = append(c.snapshots, snapshot)
 	c.snapshotAgeCaps = append(c.snapshotAgeCaps, cons.MaxSnapshotAgeMinutes)
+	c.externalityWeights = append(c.externalityWeights, cons.ExternalityWeight)
 	c.maxSpends = append(c.maxSpends, cons.MaxSpend)
 	c.reserves = append(c.reserves, cons.WorkingCapitalReserve)
 	c.maxTourSystems = append(c.maxTourSystems, cons.MaxTourSystems)
