@@ -273,6 +273,25 @@ func CircuitDuration(markets, hulls int, avgHop time.Duration) time.Duration {
 	return time.Duration(float64(markets) / float64(hulls) * float64(avgHop))
 }
 
+// CircuitPeriod is the wall-clock period over which a post's WORST-CASE market age can first
+// improve: the time for one probe to work through its share of the tour and come back round to
+// the market it scanned first. Until a circuit closes, every market the probe has not reached
+// yet only ages, so the worst case can only climb — nothing about a post's freshness can be
+// judged over a shorter window.
+//
+// A tour paces its circuit PERIOD to the freshness target, waiting out the remainder when its
+// partition is small, so the period is the LONGER of the paced target and the modeled travel
+// circuit ((markets / hulls) × avgHop): a small partition never comes round faster than the
+// pace, and an undersized post never beats its own travel time. Degenerate inputs contribute
+// nothing, so an unusable target and an unusable circuit together yield 0 — "cannot assess".
+func CircuitPeriod(markets, hulls int, avgHop, freshness time.Duration) time.Duration {
+	travel := CircuitDuration(markets, hulls, avgHop)
+	if freshness > travel {
+		return freshness
+	}
+	return travel
+}
+
 // IsUndersized reports whether a post touring `markets` markets with `hulls` probes
 // cannot keep them within `freshness` under the avgHop circuit model — its modeled
 // circuit exceeds the freshness target, so every lane ages past the contract and (past

@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"sync"
 	"time"
@@ -126,9 +127,12 @@ const (
 	// IsFullyManned() yet has produced no new scan telemetry — worst-case market age
 	// breaches the post's own freshness target without improving — for this many
 	// CONSECUTIVE cycles (the tour can be wedged: container reads RUNNING but the hull no
-	// longer scans). CorrectionCap bounds how many re-mans one post gets before the
-	// watchdog backs off and leaves the persisted captain event to carry it to the
-	// operator, instead of churning a tour on an unreachable market forever.
+	// longer scans). It is a MINIMUM debounce: manningStallWindowCycles raises it to the
+	// post's own circuit period, the soonest that age could possibly improve, so this value
+	// binds only on a post whose circuit is shorter than a couple of ticks.
+	// CorrectionCap bounds how many re-mans one post gets before the watchdog backs off and
+	// leaves the persisted captain event to carry it to the operator, instead of churning a
+	// tour on an unreachable market forever.
 	defaultManningStallCycles        = 4
 	defaultManningStallCorrectionCap = 3
 )
@@ -222,9 +226,10 @@ type RunScoutPostCoordinatorCommand struct {
 	RespawnAttemptCap int
 
 	// ManningStallCycles and ManningStallCorrectionCap tune the manning watchdog
-	// (LIVE-tunable via SetLiveConfigReader): the number of CONSECUTIVE reconcile cycles
-	// a fully-manned standing post must breach its freshness target without its
-	// worst-case market age improving before the watchdog re-mans it, and the number of
+	// (LIVE-tunable via SetLiveConfigReader): the MINIMUM number of CONSECUTIVE reconcile
+	// cycles a fully-manned standing post must breach its freshness target without its
+	// worst-case market age improving before the watchdog re-mans it — raised per post to
+	// its own circuit period, the soonest that age could improve — and the number of
 	// re-mans of one post before the watchdog backs off (leaving the captain event to
 	// carry it). <= 0 uses the coordinator's own defaults, mirroring TickIntervalSecs.
 	// Both are registered in the daemon tune bounds registry as manning_stall_cycles /
@@ -479,8 +484,8 @@ type RunScoutPostCoordinatorHandler struct {
 	// stall* back the manning watchdog's in-memory, per-post (driftKey shape) debounce,
 	// mirroring driftPendingSince: stallLastAgeSeconds is last tick's OldestAgeSeconds
 	// (to detect an IMPROVEMENT — telemetry advancing — versus a frozen climb);
-	// stallCycles is the consecutive breach-without-improvement count (the N-cycle
-	// debounce); stallCorrections is how many re-mans this post has already had (the K
+	// stallCycles is the consecutive breach-without-improvement count (measured against
+	// the post's circuit window); stallCorrections is how many re-mans this post has had (the K
 	// failed-correction backoff). All reset on restart: a lost baseline only re-earns
 	// the debounce, never a spurious teardown — a post under its SLA never populates
 	// these maps. Guarded by stallMu for the same singleton-handler concurrency reason
@@ -618,10 +623,7 @@ func (h *RunScoutPostCoordinatorHandler) Handle(ctx context.Context, request com
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	tick := time.Duration(cmd.TickIntervalSecs) * time.Second
-	if tick <= 0 {
-		tick = defaultScoutPostTickSeconds * time.Second
-	}
+	tick := scoutPostTick(cmd)
 
 	result := &RunScoutPostCoordinatorResponse{Errors: []string{}}
 	logger.Log("INFO", fmt.Sprintf("Scout post coordinator starting (tick %s)", tick), map[string]interface{}{
@@ -661,6 +663,26 @@ func (h *RunScoutPostCoordinatorHandler) Handle(ctx context.Context, request com
 			return result, ctx.Err()
 		}
 	}
+}
+
+// scoutPostTick is the reconcile cadence: the launch value, or the documented default when
+// unset (RULINGS #5). The manning watchdog reads it too, to express its per-post window — a
+// duration — in the cycles its knob counts.
+func scoutPostTick(cmd *RunScoutPostCoordinatorCommand) time.Duration {
+	if tick := time.Duration(cmd.TickIntervalSecs) * time.Second; tick > 0 {
+		return tick
+	}
+	return defaultScoutPostTickSeconds * time.Second
+}
+
+// scoutAvgHop is the circuit-model average per-market hop cost (nav + scan dwell): the
+// undersized warning projects a post's circuit with it, and the manning watchdog sizes its
+// stall window from the same projection, so both judge a post by ONE number.
+func scoutAvgHop(cmd *RunScoutPostCoordinatorCommand) time.Duration {
+	if hop := time.Duration(cmd.UndersizedAvgHopSecs) * time.Second; hop > 0 {
+		return hop
+	}
+	return defaultUndersizedAvgHop
 }
 
 // waitStartJitter waits out this coordinator's deterministic start-of-loop phase
@@ -818,7 +840,7 @@ func (h *RunScoutPostCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 
 	// Manning watchdog: re-man a standing post that reads IsFullyManned() yet has gone
 	// silent (its worst-case market age has breached its freshness target without
-	// improving for N consecutive cycles). It runs AFTER the partition /
+	// improving for a full circuit period). It runs AFTER the partition /
 	// single-hull-freshness teardowns and BEFORE the manning passes, so a torn-down
 	// stalled post is re-manned this SAME tick. A no-op when no census reader is wired.
 	h.remanStalledPosts(ctx, cmd, posts)
@@ -1090,10 +1112,7 @@ func (h *RunScoutPostCoordinatorHandler) warnUndersizedPosts(ctx context.Context
 	}
 	logger := common.LoggerFromContext(ctx)
 
-	avgHop := time.Duration(cmd.UndersizedAvgHopSecs) * time.Second
-	if avgHop <= 0 {
-		avgHop = defaultUndersizedAvgHop
-	}
+	avgHop := scoutAvgHop(cmd)
 	cooldown := time.Duration(cmd.UndersizedRewarnCooldownSecs) * time.Second
 	if cooldown <= 0 {
 		cooldown = defaultUndersizedRewarnCooldown
@@ -1246,24 +1265,27 @@ func (h *RunScoutPostCoordinatorHandler) liveConfigSnapshot(ctx context.Context,
 }
 
 // remanStalledPosts is the manning watchdog: it re-mans a standing post that reads
-// IsFullyManned() yet has produced NO new scan telemetry for N consecutive reconcile cycles.
+// IsFullyManned() yet has produced NO new scan telemetry for a full CIRCUIT PERIOD.
 // The signal is the SystemsFreshness census's OldestAgeSeconds (worst-case market
 // staleness): a fully-manned post whose worst-case age BREACHES its own FreshnessTarget and is
-// NOT improving (no re-scan pulling it back — telemetry is not advancing) for N cycles has a
+// NOT improving (no re-scan pulling it back — telemetry is not advancing) has a
 // wedged tour whose container may read RUNNING while its hull no longer scans, invisible to
 // pass 1. The FreshnessTarget breach gate is what keeps a healthy, correctly-sized post (whose
-// worst-case age stays within its own contract and improves each per-market scan) OUT of the
-// watchdog's sights, so the short N-cycle debounce is a debounce, not the whole false-positive
-// guard; the improvement check additionally spares a post that is over its SLA but already
-// RECOVERING on its own.
+// worst-case age stays within its own contract) OUT of the watchdog's sights; the improvement
+// check additionally spares a post that is over its SLA but already RECOVERING on its own.
+//
+// The window is the post's OWN circuit period (manningStallWindowCycles), not a flat cycle
+// count, because the worst-case age is a circuit-period signal: it cannot fall until a probe
+// comes back round to the market it scanned first, so judging a post over any shorter window
+// mistakes a tour that has not finished its first lap for one that has died.
 //
 // The corrective action REUSES tearDownSlots (the single-hull-freshness teardown): stop
 // the wedged tour, reclaim the hull, clear the slot so THIS SAME tick's passes re-man it fresh —
 // a different idle in-system hull if one is free, else the reclaimed hull on a fresh tour
 // container. It never repositions an in-system hull or reinvents claiming.
 //
-// Anti-thrash: after each re-man the consecutive-cycle counter resets, so the next re-man is at
-// least N cycles away (never every tick); and after ManningStallCorrectionCap re-mans that did
+// Anti-thrash: after each re-man the consecutive-cycle counter resets, so the next re-man is a
+// full window away (never every tick); and after ManningStallCorrectionCap re-mans that did
 // not restore telemetry the watchdog BACKS OFF — it keeps emitting the deferred
 // scout.post_manning_stalled event (so the stuck post stays VISIBLE) but stops churning a tour a
 // genuinely unreachable market will only wedge again. Scope: standing, fully-manned posts with a
@@ -1288,6 +1310,7 @@ func (h *RunScoutPostCoordinatorHandler) remanStalledPosts(ctx context.Context, 
 		census[snap.SystemSymbol] = snap
 	}
 	stallCycles, correctionCap := resolveManningStallConfig(cmd, h.liveConfigSnapshot(ctx, cmd))
+	tick, avgHop := scoutPostTick(cmd), scoutAvgHop(cmd)
 
 	for _, post := range posts {
 		key := driftKey(cmd.PlayerID.Value(), post.SystemSymbol)
@@ -1307,12 +1330,13 @@ func (h *RunScoutPostCoordinatorHandler) remanStalledPosts(ctx context.Context, 
 		if !h.manningStallBreaching(key, snap.OldestAgeSeconds, post.FreshnessTarget) {
 			continue // within its freshness contract, or worst-case age is improving (advancing)
 		}
-		if h.noteManningStallCycle(key) < stallCycles {
-			continue // debounce: still below the N consecutive-cycle threshold
+		window := manningStallWindowCycles(stallCycles, tick, post, snap.MarketCount, avgHop)
+		if h.noteManningStallCycle(key) < window {
+			continue // still inside the post's own circuit window — the age could not have improved yet
 		}
-		h.resetManningStallCycle(key) // rate-limit: the next re-man is another N cycles away
+		h.resetManningStallCycle(key) // rate-limit: the next re-man is another window away
 		attempts := h.manningStallCorrections(key)
-		h.emitManningStalled(ctx, cmd, post, snap, stallCycles, attempts, correctionCap)
+		h.emitManningStalled(ctx, cmd, post, snap, window, attempts, correctionCap)
 		if attempts >= correctionCap {
 			continue // backed off — the event carries it, no more tour churn on an unreachable market
 		}
@@ -1322,6 +1346,30 @@ func (h *RunScoutPostCoordinatorHandler) remanStalledPosts(ctx context.Context, 
 		}
 		h.bumpManningStallCorrections(key)
 	}
+}
+
+// manningStallWindowCycles is how many CONSECUTIVE breach-without-improvement cycles a post
+// must show before its tour is judged silent: the configured debounce, raised to the post's own
+// CIRCUIT PERIOD. The watchdog's only evidence is the worst-case market age, and that age cannot
+// fall until a probe closes a full circuit back to the market it scanned first — every market
+// ahead of the probe only ages meanwhile. A window shorter than one circuit therefore demands an
+// improvement that cannot exist yet, and re-mans a healthy tour still on its first lap; worst at
+// cold start, where every market is stale from the opening tick and a just-manned probe is still
+// flying to its first market, so the teardown lands faster than any tour could ever report.
+//
+// Raising, never lowering, keeps manning_stall_cycles honest: a longer tuned window still stands.
+// An un-assessable circuit (no census markets and no freshness contract) leaves the configured
+// debounce as the only window there is.
+func manningStallWindowCycles(configured int, tick time.Duration, post *domainScouting.ScoutPost, markets int, avgHop time.Duration) int {
+	period := domainScouting.CircuitPeriod(markets, post.HullBudget(), avgHop, post.FreshnessTarget)
+	if period <= 0 || tick <= 0 {
+		return configured
+	}
+	cycles := int(math.Ceil(float64(period) / float64(tick)))
+	if cycles > configured {
+		return cycles
+	}
+	return configured
 }
 
 // manningStallBreaching records this tick's worst-case age for a post and reports whether it is
