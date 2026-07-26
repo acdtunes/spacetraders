@@ -26,7 +26,7 @@ import (
 // table since the domain repository only exposes active-contract queries.
 type contractStore interface {
 	ListContracts(ctx context.Context, playerID int) ([]persistence.ContractModel, error)
-	GetContract(ctx context.Context, id string) (*persistence.ContractModel, error)
+	FindContractsByIDPrefix(ctx context.Context, prefix string) ([]persistence.ContractModel, error)
 }
 
 // gormContractStore reads contract rows directly via GORM (read-only, no API calls).
@@ -87,13 +87,20 @@ func (s *gormContractStore) ListContracts(ctx context.Context, playerID int) ([]
 	return models, nil
 }
 
-func (s *gormContractStore) GetContract(ctx context.Context, id string) (*persistence.ContractModel, error) {
-	var model persistence.ContractModel
-	result := s.db.WithContext(ctx).Where("id = ?", id).First(&model)
+// likeWildcardEscaper neutralises LIKE metacharacters so an operator-typed id is
+// matched literally rather than as a pattern.
+var likeWildcardEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+
+func (s *gormContractStore) FindContractsByIDPrefix(ctx context.Context, prefix string) ([]persistence.ContractModel, error) {
+	var models []persistence.ContractModel
+	result := s.db.WithContext(ctx).
+		Where(`id LIKE ? ESCAPE '\'`, likeWildcardEscaper.Replace(prefix)+"%").
+		Order("id").
+		Find(&models)
 	if result.Error != nil {
-		return nil, fmt.Errorf("contract not found: %s", id)
+		return nil, fmt.Errorf("failed to find contracts by id prefix %s: %w", prefix, result.Error)
 	}
-	return &model, nil
+	return models, nil
 }
 
 // marshalDeliveries serializes deliveries the same way the contract
@@ -201,9 +208,40 @@ func listContractRows(ctx context.Context, store contractStore, playerID int) ([
 	return rows, nil
 }
 
+// resolveContract finds the contract an operator named. `contract list` prints an
+// abbreviated id, so a prefix has to resolve too — otherwise the table advertises
+// ids that cannot be looked up. An exact id always wins over a prefix match.
+func resolveContract(ctx context.Context, store contractStore, id string) (*persistence.ContractModel, error) {
+	matches, err := store.FindContractsByIDPrefix(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	for i := range matches {
+		if matches[i].ID == id {
+			return &matches[i], nil
+		}
+	}
+	if len(matches) == 0 {
+		return nil, fmt.Errorf("contract not found: %s", id)
+	}
+	if len(matches) > 1 {
+		return nil, fmt.Errorf("contract id %s is ambiguous, it matches %d contracts: %s",
+			id, len(matches), strings.Join(contractIDsOf(matches), ", "))
+	}
+	return &matches[0], nil
+}
+
+func contractIDsOf(models []persistence.ContractModel) []string {
+	ids := make([]string, 0, len(models))
+	for _, m := range models {
+		ids = append(ids, m.ID)
+	}
+	return ids
+}
+
 // getContractDetail builds the `contract get` detail for one contract.
 func getContractDetail(ctx context.Context, store contractStore, id string) (*contractDetail, error) {
-	model, err := store.GetContract(ctx, id)
+	model, err := resolveContract(ctx, store, id)
 	if err != nil {
 		return nil, err
 	}
@@ -475,9 +513,12 @@ func newContractGetCommand() *cobra.Command {
 		Long: `Show full detail for one contract, including per-delivery progress
 (good, units required, units fulfilled) and both payment components.
 
+Takes either the full contract id or the abbreviated id the contract list table
+prints. An abbreviation matching several contracts is reported, never guessed.
+
 Examples:
-  spacetraders contract get contract-abc123 --player-id 1
-  spacetraders contract get contract-abc123 --player-id 1 --json`,
+  spacetraders contract get cms1ww9it
+  spacetraders contract get cms1ww9it000108l4ce4gd2ka --json`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			store, err := newContractStore()

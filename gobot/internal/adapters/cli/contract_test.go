@@ -3,7 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
-	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,20 +13,24 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 )
 
+// fakeContractStore stands in for the contracts table. Both verbs read the SAME
+// rows, so an id `list` can print but `get` cannot resolve fails a test.
 type fakeContractStore struct {
 	contracts []persistence.ContractModel
-	byID      map[string]*persistence.ContractModel
 }
 
 func (f *fakeContractStore) ListContracts(ctx context.Context, playerID int) ([]persistence.ContractModel, error) {
 	return f.contracts, nil
 }
 
-func (f *fakeContractStore) GetContract(ctx context.Context, id string) (*persistence.ContractModel, error) {
-	if m, ok := f.byID[id]; ok {
-		return m, nil
+func (f *fakeContractStore) FindContractsByIDPrefix(ctx context.Context, prefix string) ([]persistence.ContractModel, error) {
+	var matches []persistence.ContractModel
+	for _, m := range f.contracts {
+		if strings.HasPrefix(m.ID, prefix) {
+			matches = append(matches, m)
+		}
 	}
-	return nil, errors.New("contract not found: " + id)
+	return matches, nil
 }
 
 func deliveriesJSON(t *testing.T, deliveries []contract.Delivery) string {
@@ -88,7 +92,7 @@ func TestRunContractListMarksOverdueDeadline(t *testing.T) {
 
 func TestRunContractGetReturnsDeliveryProgressAndPayments(t *testing.T) {
 	future := time.Now().UTC().Add(24 * time.Hour).Format(time.RFC3339)
-	model := &persistence.ContractModel{
+	model := persistence.ContractModel{
 		ID:                 "contract-full-id-xyz",
 		FactionSymbol:      "COSMIC",
 		Type:               "PROCUREMENT",
@@ -101,7 +105,7 @@ func TestRunContractGetReturnsDeliveryProgressAndPayments(t *testing.T) {
 			{TradeSymbol: "IRON_ORE", DestinationSymbol: "X1-AB-C", UnitsRequired: 100, UnitsFulfilled: 40},
 		}),
 	}
-	store := &fakeContractStore{byID: map[string]*persistence.ContractModel{"contract-full-id-xyz": model}}
+	store := &fakeContractStore{contracts: []persistence.ContractModel{model}}
 
 	detail, err := getContractDetail(context.Background(), store, "contract-full-id-xyz")
 	require.NoError(t, err)
@@ -114,8 +118,62 @@ func TestRunContractGetReturnsDeliveryProgressAndPayments(t *testing.T) {
 	require.Equal(t, 40, detail.Deliveries[0].UnitsFulfilled)
 }
 
+// The two verbs must agree on the identifier: `contract get` has to resolve every id
+// `contract list` prints, or the table advertises ids the operator cannot look up.
+// Real contract ids are 25-char cuids and the table prints a 9-char abbreviation.
+func TestContractGetResolvesEveryIDContractListPrints(t *testing.T) {
+	future := time.Now().UTC().Add(24 * time.Hour).Format(time.RFC3339)
+	store := &fakeContractStore{contracts: []persistence.ContractModel{
+		{
+			ID: "cms1ww9it000108l4ce4gd2ka", Type: "PROCUREMENT", FactionSymbol: "COSMIC",
+			Accepted: true, Deadline: future, PaymentOnAccepted: 63885, PaymentOnFulfilled: 255540,
+			DeliveriesJSON: deliveriesJSON(t, []contract.Delivery{{TradeSymbol: "IRON_ORE", UnitsRequired: 200}}),
+		},
+		{
+			ID: "cms1wualv000208l4f2h9x7bc", Type: "PROCUREMENT", FactionSymbol: "COSMIC",
+			Accepted: true, Fulfilled: true, Deadline: future, PaymentOnAccepted: 15768, PaymentOnFulfilled: 63072,
+			DeliveriesJSON: deliveriesJSON(t, nil),
+		},
+		{
+			ID: "cms1v602e000308l4b1c8m3qd", Type: "PROCUREMENT", FactionSymbol: "COSMIC",
+			Accepted: true, Fulfilled: true, Deadline: future, PaymentOnAccepted: 5576, PaymentOnFulfilled: 22304,
+			DeliveriesJSON: deliveriesJSON(t, nil),
+		},
+	}}
+
+	rows, err := listContractRows(context.Background(), store, 1)
+	require.NoError(t, err)
+	require.Len(t, rows, 3, "every listed contract must be exercised")
+
+	for _, row := range rows {
+		printed := row.ShortID // exactly what the `contract list` table column carries
+
+		detail, err := getContractDetail(context.Background(), store, printed)
+
+		require.NoErrorf(t, err, "contract get must resolve the id contract list prints: %q", printed)
+		require.Equal(t, row.ID, detail.ID, "the printed id must resolve to the contract that produced it")
+		require.Equal(t, row.TotalPayment, detail.PaymentOnAccepted+detail.PaymentOnFulfilled)
+	}
+}
+
+// An abbreviation shared by several contracts must be reported with the full ids to
+// retype, never silently resolved to an arbitrary one.
+func TestContractGetRejectsAmbiguousIDPrefix(t *testing.T) {
+	store := &fakeContractStore{contracts: []persistence.ContractModel{
+		{ID: "cms1ww9it000108l4ce4gd2ka", DeliveriesJSON: deliveriesJSON(t, nil)},
+		{ID: "cms1ww9it000208l4h7k2p9wz", DeliveriesJSON: deliveriesJSON(t, nil)},
+	}}
+
+	_, err := getContractDetail(context.Background(), store, "cms1ww9it")
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "ambiguous")
+	require.Contains(t, err.Error(), "cms1ww9it000108l4ce4gd2ka")
+	require.Contains(t, err.Error(), "cms1ww9it000208l4h7k2p9wz")
+}
+
 func TestRunContractGetNotFoundReturnsError(t *testing.T) {
-	store := &fakeContractStore{byID: map[string]*persistence.ContractModel{}}
+	store := &fakeContractStore{}
 
 	_, err := getContractDetail(context.Background(), store, "missing")
 	require.Error(t, err)
