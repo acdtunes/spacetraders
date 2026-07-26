@@ -166,29 +166,25 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 		},
 		// sp-r6yq: the captain bootstrap coordinator (workflow bootstrap; DATA→INCOME→GATE). It is the
 		// first CONFIG.YAML-AUTHORITATIVE coordinator in the registry, so its tune keys are the SEPARATE
-		// BARE family (probe_target, coverage_bar_percent, …) — NOT the prefixed bootstrap_* launch keys,
+		// BARE family (probe_target, hauler_target, …) — NOT the prefixed bootstrap_* launch keys,
 		// which resolveBootstrapConfig clears+reinjects from config.yaml on every rebuild. A bare tune
 		// therefore survives a daemon bounce (the coordinator's per-tick liveconfig reader keeps applying
-		// it) instead of being wiped. The int-only mechanism carries the one float knob as an integer
-		// percent (coverage_bar_percent) and income_bar as whole credits; the two ship-type knobs stay
-		// launch-only (no coordinator makes a string asset live-tunable).
+		// it) instead of being wiped. The int-only mechanism carries income_bar as whole credits; the two
+		// ship-type knobs stay launch-only (no coordinator makes a string asset live-tunable).
 		string(container.ContainerTypeBootstrapCoordinator): {
-			"probe_target":         {Type: "int", Min: 1, Max: 50, Default: bootstrap["probe_target"], Unit: "hulls", Description: "DATA target: probes scouting the home system before the coverage bar can clear"},
-			"coverage_bar_percent": {Type: "int", Min: 1, Max: 100, Default: bootstrap["coverage_bar_percent"], Unit: "percent", Description: "home-system scan-coverage target, integer percent (the float coverage_bar; 90 = 0.90) — continuous background (freshness sizer), no longer gates phase progression"},
-			"hauler_target":        {Type: "int", Min: 1, Max: 50, Default: bootstrap["hauler_target"], Unit: "hulls", Description: "INCOME hull cap: at most one contract hauler per viable hub, up to this"},
-			"income_bar":           {Type: "int", Min: 1, Max: 5_000_000, Default: bootstrap["income_bar"], Unit: "credits", Description: "INCOME→GATE exit: realized net credits/hour the contract fleet must clear (whole credits; the float income_bar carries no fractional part)"},
-			"min_contract_earners": {Type: "int", Min: 1, Max: 50, Default: bootstrap["min_contract_earners"], Unit: "hulls", Description: "haulers kept on contracts through GATE to keep funding gate-material acquisition"},
-			"gate_worker_target":   {Type: "int", Min: 1, Max: 50, Default: bootstrap["gate_worker_target"], Unit: "hulls", Description: "GATE worker cap: ~one per active gate-material chain + a delivery hauler, up to this (mostly repurposed idle haulers, rarely a buy)"},
-			"tick_secs":            {Type: "int", Min: 10, Max: 86_400, Default: bootstrap["tick_secs"], Unit: "seconds", Description: "reconcile cadence — kept SHORT because bootstrap runs only at cold start (<0.1 req/s, 20x+ API headroom) and a fast tick cuts poll-latency dead time before the gate (default 45s; sp-lgo3)"},
+			"probe_target":       {Type: "int", Min: 1, Max: 50, Default: bootstrap["probe_target"], Unit: "hulls", Description: "DATA target: probes the coordinator ramps to for scouting the home system"},
+			"hauler_target":      {Type: "int", Min: 1, Max: 50, Default: bootstrap["hauler_target"], Unit: "hulls", Description: "INCOME hull cap: at most one contract hauler per viable hub, up to this"},
+			"income_bar":         {Type: "int", Min: 1, Max: 5_000_000, Default: bootstrap["income_bar"], Unit: "credits", Description: "INCOME→GATE exit: realized net credits/hour the contract fleet must clear (whole credits; the float income_bar carries no fractional part)"},
+			"gate_worker_target": {Type: "int", Min: 1, Max: 50, Default: bootstrap["gate_worker_target"], Unit: "hulls", Description: "GATE worker cap: ~one per active gate-material chain + a delivery hauler, up to this (the gate BUYS its workers — the contract fleet is exclusive and never repurposed)"},
+			"tick_secs":          {Type: "int", Min: 10, Max: 86_400, Default: bootstrap["tick_secs"], Unit: "seconds", Description: "reconcile cadence — kept SHORT because bootstrap runs only at cold start (<0.1 req/s, 20x+ API headroom) and a fast tick cuts poll-latency dead time before the gate (default 45s; sp-lgo3)"},
 			// sp-tsn2 single-buyer arbitration flag: 1 ⇒ bootstrap DEFERS its DATA probe buy to the
 			// freshsizer once coverage>0 and a freshsizer coordinator is running (so exactly one buyer grows
 			// the shared fleet — the era-3 multi-buyer lesson); 0 (default) ⇒ today's behavior, both buy
 			// behind their own guards. Bootstrap never defers into a vacuum (freshsizer must be running).
 			"defer_probe_to_freshsizer": {Type: "int", Min: 0, Max: 1, Default: bootstrap["defer_probe_to_freshsizer"], Unit: "flag", Description: "sp-tsn2: 1 ⇒ bootstrap hands DATA probe acquisition to the freshsizer once the first market is covered and a freshsizer coordinator runs (single-buyer arbitration); 0 (default) ⇒ both buy independently (byte-identical)"},
 			// GATE-entry calibration. The GATE-entry bar itself is DYNAMIC (sp-gm7r): the full contract fleet
-			// must reach the auto-scaler's live target (not a static hauler count), plus a sustained $/hr and a
-			// treasury surplus — phase thresholds like income_bar, NOT money-floors (RULINGS #5).
-			"gate_income_bar":  {Type: "int", Min: 1, Max: 5_000_000, Default: bootstrap["gate_income_bar"], Unit: "credits", Description: "GATE-entry bar: SUSTAINED (rolling-window mean) net credits/hour the contract fleet must clear to enter GATE (whole credits; default 50000, well above income_bar so a single contract payout cannot trip it)"},
+			// must reach the auto-scaler's live target (not a static hauler count), plus a treasury surplus —
+			// phase thresholds like income_bar, NOT money-floors (RULINGS #5).
 			"gate_min_haulers": {Type: "int", Min: 1, Max: 50, Default: bootstrap["gate_min_haulers"], Unit: "hulls", Description: "escape-hatch STARVED-EARNER floor (sp-gm7r): a sticky GATE holding fewer haulers than this reads as under-scaled and (with low progress) re-derives INCOME. GATE ENTRY uses the full scaler-target bar, NOT this. Default 2"},
 			// Death-spiral cure calibration (UNCONDITIONALLY ON, sp-gm7r removed the master flag). GATE entry
 			// never latches on a lightly-scaled op with no war chest; and (sp-cdxy2) GATE keeps the WHOLE

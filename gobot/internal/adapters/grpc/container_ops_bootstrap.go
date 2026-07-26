@@ -76,12 +76,10 @@ var bootstrapConfigKeys = []string{
 	"bootstrap_disabled",
 	"bootstrap_dry_run",
 	"bootstrap_probe_target",
-	"bootstrap_coverage_bar",
 	"bootstrap_tick_secs",
 	"bootstrap_probe_ship_type",
 	"bootstrap_hauler_target",
 	"bootstrap_income_bar",
-	"bootstrap_min_contract_earners",
 	"bootstrap_hauler_ship_type",
 	"bootstrap_gate_worker_target",
 }
@@ -115,9 +113,6 @@ func (s *DaemonServer) injectBootstrapConfig(config map[string]interface{}) {
 	if b.ProbeTarget != 0 {
 		config["bootstrap_probe_target"] = b.ProbeTarget
 	}
-	if b.CoverageBar != 0 {
-		config["bootstrap_coverage_bar"] = b.CoverageBar
-	}
 	if b.TickSeconds != 0 {
 		config["bootstrap_tick_secs"] = b.TickSeconds
 	}
@@ -129,9 +124,6 @@ func (s *DaemonServer) injectBootstrapConfig(config map[string]interface{}) {
 	}
 	if b.IncomeBar != 0 {
 		config["bootstrap_income_bar"] = b.IncomeBar
-	}
-	if b.MinContractEarners != 0 {
-		config["bootstrap_min_contract_earners"] = b.MinContractEarners
 	}
 	if b.HaulerShipType != "" {
 		config["bootstrap_hauler_ship_type"] = b.HaulerShipType
@@ -159,13 +151,11 @@ func buildBootstrapCommand(cfg *configReader, playerID int, containerID string) 
 
 		TickIntervalSecs: cfg.OptionalInt("bootstrap_tick_secs", 0),
 		ProbeTarget:      cfg.OptionalInt("bootstrap_probe_target", 0),
-		CoverageBar:      cfg.OptionalFloat("bootstrap_coverage_bar", 0),
 		ProbeShipType:    cfg.OptionalString("bootstrap_probe_ship_type"),
 
-		HaulerTarget:       cfg.OptionalInt("bootstrap_hauler_target", 0),
-		IncomeBar:          cfg.OptionalFloat("bootstrap_income_bar", 0),
-		MinContractEarners: cfg.OptionalInt("bootstrap_min_contract_earners", 0),
-		HaulerShipType:     cfg.OptionalString("bootstrap_hauler_ship_type"),
+		HaulerTarget:   cfg.OptionalInt("bootstrap_hauler_target", 0),
+		IncomeBar:      cfg.OptionalFloat("bootstrap_income_bar", 0),
+		HaulerShipType: cfg.OptionalString("bootstrap_hauler_ship_type"),
 
 		GateWorkerTarget: cfg.OptionalInt("bootstrap_gate_worker_target", 0),
 	}

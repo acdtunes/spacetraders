@@ -37,13 +37,19 @@ never babysits. It OBSERVES the live world each tick, DERIVES the current phase 
 observation (never a stored cursor), and ACTS on the delta behind guards, so a restart re-observes
 and resumes at real state with no double-acting.
 
-Slice 1 runs the DATA phase (INCOME/GATE are later slices):
+DATA and INCOME are PARALLEL workstreams (contracts are the funding floor and run from hour 0, never
+waiting on scanning); GATE follows, and EXPANSION is terminal:
   BUY     probes → probe_target (default 3), STAGED and capital-gated — at most one buy per tick,
           and only when the treasury left after the buy still clears the immutable working-capital
           floor (cushion=(treasury−price) ≥ common.ImmutableReserveFloor, 50k). Each decision logs
           its full arithmetic (price, treasury, cushion, floor, what would have blocked).
   SCOUT   assign every probe to scout-all-markets (idempotent VRP assignment) so market data flows.
-  EXIT    hold at DATA-complete once market coverage ≥ coverage_bar (the later phases are stubs).
+  EARN    retire the frigate, place one light hauler per viable contract hub (up to hauler_target),
+          and run batch-contract — alongside the probe ramp, not after it.
+  GATE    once the contract op is genuinely SCALED AND FUNDED (the full fleet has reached the
+          auto-scaler's live target and the treasury holds a surplus), drive jump-gate
+          construction and size gate workers to the active material chains.
+  EXIT    at EXPANSION — the gate is BUILT, so it hands off to the standing coordinators and exits.
 
 It is LIVE BY DEFAULT: launched here it is ACTIVE immediately. Set [bootstrap] bootstrap_disabled=
 true to stand it down. Pass --dry-run (or set [bootstrap] dry_run=true) to evaluate + log every
@@ -51,8 +57,10 @@ decision loudly while acting on nothing.
 
 Tuning is config-driven (config.yaml [bootstrap], live on daemon restart):
   bootstrap_disabled / dry_run                        escapes
-  probe_target / coverage_bar                         DATA target + exit
-  tick_seconds / probe_ship_type                      cadence + the asset bought
+  probe_target                                        DATA probe target
+  hauler_target / income_bar                          INCOME ramp + the earning bar
+  gate_worker_target                                  GATE worker cap
+  tick_seconds / probe_ship_type / hauler_ship_type   cadence + the assets bought
 
 The working-capital money-guard itself (every buy leaves the treasury ≥ this floor) is the
 immutable common.ImmutableReserveFloor (50k, sp-05glh) — a hard constant, not a config.yaml knob.

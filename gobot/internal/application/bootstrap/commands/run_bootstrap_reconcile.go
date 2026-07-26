@@ -16,27 +16,24 @@ import (
 // in this file next to the consts they mirror. The map's KEY SET is also the contract for which
 // BARE keys resolveBootstrapConfig live-overlays.
 //
-// The tune mechanism is integer-only (liveconfig.PositiveInt), so the one fraction knob is
-// expressed as an integer PERCENT (coverage_bar_percent) and income_bar as whole credits — the
-// coordinator divides the percent by 100 on read. The two ship-type knobs
+// The tune mechanism is integer-only (liveconfig.PositiveInt), so every knob is carried as a whole
+// number — income_bar as whole credits, gate_reentry_construction_pct as a whole percent. The two
+// ship-type knobs
 // (probe_ship_type, hauler_ship_type) are deliberately NOT tunable: a string asset is launch-config
 // only across every coordinator (a hull type is not swapped mid-run). These keys are the SEPARATE
 // bare family — distinct from the config.yaml-authoritative prefixed bootstrap_* launch keys — so a
 // tune is never cleared by the launch-config rebuild and survives a daemon bounce (RULINGS #2).
 func BootstrapTunableDefaults() map[string]int {
 	return map[string]int{
-		"probe_target":         defaultProbeTarget,
-		"coverage_bar_percent": int(math.Round(defaultCoverageBar * 100)),
-		"hauler_target":        defaultHaulerTarget,
-		"income_bar":           int(math.Round(defaultIncomeBar)),
-		"min_contract_earners": defaultMinContractEarners,
-		"gate_worker_target":   defaultGateWorkerTarget,
-		"tick_secs":            defaultBootstrapTickSeconds,
+		"probe_target":       defaultProbeTarget,
+		"hauler_target":      defaultHaulerTarget,
+		"income_bar":         int(math.Round(defaultIncomeBar)),
+		"gate_worker_target": defaultGateWorkerTarget,
+		"tick_secs":          defaultBootstrapTickSeconds,
 		// sp-tsn2 single-buyer arbitration flag (0=off default, 1=on). A tunable flag with no launch key.
 		"defer_probe_to_freshsizer": defaultDeferProbeToFreshsizer,
-		// The GATE-entry SUSTAINED $/hr bar (whole credits). Tunable-only. gate_min_haulers is the escape
-		// hatch's starved-earner floor now (GATE ENTRY uses the scaler target, not a static hauler count).
-		"gate_income_bar":  int(math.Round(defaultGateIncomeBar)),
+		// The escape hatch's starved-earner floor (GATE ENTRY uses the scaler target, not a static hauler
+		// count). Tunable-only.
 		"gate_min_haulers": defaultGateMinHaulers,
 		// Death-spiral cure (UNCONDITIONALLY ON, sp-gm7r removed the master flag): its calibration knobs (the
 		// surplus floor is whole credits; the reentry construction ceiling is a whole percent). Tunable-only.
@@ -54,14 +51,12 @@ type bootstrapRunConfig struct {
 
 	Tick          time.Duration
 	ProbeTarget   int
-	CoverageBar   float64
 	ProbeShipType string
 
 	// INCOME-phase knobs, each resolved to its documented default when unset.
-	HaulerTarget       int
-	IncomeBar          float64
-	MinContractEarners int
-	HaulerShipType     string
+	HaulerTarget   int
+	IncomeBar      float64
+	HaulerShipType string
 
 	// ContractWorkingCapitalFloor is the ABSOLUTE cash cushion (whole credits) the treasury must still
 	// clear AFTER a staged INCOME hauler buy — the money-safety that keeps the contract operation's
@@ -84,16 +79,16 @@ type bootstrapRunConfig struct {
 
 	// GATE-entry gate: GATE requires a genuinely SCALED AND FUNDED contract op (sp-gm7r). derivePhase enters
 	// GATE only once the FULL contract fleet has reached the auto-scaler's live target (obs.ContractScalerTarget,
-	// a HARD bar — an op that cannot reach it stays INCOME), a SUSTAINED $/hr ≥ GateIncomeBar, AND a treasury
-	// surplus ≥ GateSurplusFloor — never the bare instantaneous income_bar and never a static hauler floor.
-	GateIncomeBar float64 // SUSTAINED (rolling-window mean) net $/hr the fleet must clear for GATE entry.
+	// a HARD bar — an op that cannot reach it stays INCOME) AND the treasury holds a surplus ≥ GateSurplusFloor
+	// — never a static hauler floor.
+	//
 	// GateMinHaulers is the escape hatch's STARVED-EARNER floor (sp-gm7r): reDeriveUnderScaledGate treats a
 	// sticky GATE with fewer than this many haulers as under-scaled and re-derives INCOME. GATE ENTRY no
 	// longer uses it (the scaler target is the entry bar) — it now scopes only the release of a stuck latch.
 	GateMinHaulers int
 
 	// Death-spiral cure (UNCONDITIONALLY ON, sp-gm7r removed the flag): (1) gateFunded's full-fleet-vs-scaler
-	// -target bar + a sustained $/hr + a treasury surplus (see gateFunded); (2) planGateWorkers keeps the
+	// -target bar + a treasury surplus (see gateFunded); (2) planGateWorkers keeps the
 	// WHOLE contract fleet earning (sp-cdxy2: the exclusive fleet is never repurposed — the gate BUYS its
 	// workers); (3) reDeriveUnderScaledGate releases a sticky GATE that latched under-scaled with ~no
 	// construction back to INCOME after GateReentryStreakTicks consecutive ticks. The calibration knobs
@@ -109,13 +104,11 @@ func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand, live liveconfig
 		DryRun:        cmd.DryRun,
 		Tick:          time.Duration(cmd.TickIntervalSecs) * time.Second,
 		ProbeTarget:   cmd.ProbeTarget,
-		CoverageBar:   cmd.CoverageBar,
 		ProbeShipType: cmd.ProbeShipType,
 
-		HaulerTarget:       cmd.HaulerTarget,
-		IncomeBar:          cmd.IncomeBar,
-		MinContractEarners: cmd.MinContractEarners,
-		HaulerShipType:     cmd.HaulerShipType,
+		HaulerTarget:   cmd.HaulerTarget,
+		IncomeBar:      cmd.IncomeBar,
+		HaulerShipType: cmd.HaulerShipType,
 
 		GateWorkerTarget: cmd.GateWorkerTarget,
 	}
@@ -124,24 +117,18 @@ func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand, live liveconfig
 	// column; the per-tick snapshot overlays it here so the change lands on the NEXT tick with no
 	// restart. Only-when-present (NOT snapshot-authoritative like the freshsizer): bootstrap's
 	// launch keys are the SEPARATE prefixed bootstrap_* family, so an untuned bare key is genuinely
-	// absent and must not zero the launch value — byte-identical when nothing is tuned. The one
-	// fraction knob decodes from integer percent; income_bar is whole credits; the <=0 default
-	// fallbacks below still apply to any knob left unset by both the launch command and the overlay.
+	// absent and must not zero the launch value — byte-identical when nothing is tuned. income_bar is
+	// whole credits; the <=0 default fallbacks below still apply to any knob left unset by both the
+	// launch command and the overlay.
 	if live != nil {
 		if v := live.PositiveIntOrZero("probe_target"); v > 0 {
 			c.ProbeTarget = v
-		}
-		if v := live.PositiveIntOrZero("coverage_bar_percent"); v > 0 {
-			c.CoverageBar = float64(v) / 100.0
 		}
 		if v := live.PositiveIntOrZero("hauler_target"); v > 0 {
 			c.HaulerTarget = v
 		}
 		if v := live.PositiveIntOrZero("income_bar"); v > 0 {
 			c.IncomeBar = float64(v)
-		}
-		if v := live.PositiveIntOrZero("min_contract_earners"); v > 0 {
-			c.MinContractEarners = v
 		}
 		if v := live.PositiveIntOrZero("gate_worker_target"); v > 0 {
 			c.GateWorkerTarget = v
@@ -154,11 +141,8 @@ func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand, live liveconfig
 		if v := live.PositiveIntOrZero("defer_probe_to_freshsizer"); v > 0 {
 			c.DeferProbeToFreshsizer = true
 		}
-		// The scaled-GATE-entry gate is unconditionally on; these are its two always-consulted calibration
-		// knobs, both tunable-only. Absent/zeroed ⇒ launch value; the <=0 fallbacks below fill their defaults.
-		if v := live.PositiveIntOrZero("gate_income_bar"); v > 0 {
-			c.GateIncomeBar = float64(v)
-		}
+		// The escape hatch's always-consulted starved-earner floor, tunable-only. Absent/zeroed ⇒ launch
+		// value; the <=0 fallback below fills its default.
 		if v := live.PositiveIntOrZero("gate_min_haulers"); v > 0 {
 			c.GateMinHaulers = v
 		}
@@ -182,9 +166,6 @@ func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand, live liveconfig
 	if c.ProbeTarget <= 0 {
 		c.ProbeTarget = defaultProbeTarget
 	}
-	if c.CoverageBar <= 0 {
-		c.CoverageBar = defaultCoverageBar
-	}
 	if c.ProbeShipType == "" {
 		c.ProbeShipType = defaultProbeShipType
 	}
@@ -193,9 +174,6 @@ func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand, live liveconfig
 	}
 	if c.IncomeBar <= 0 {
 		c.IncomeBar = defaultIncomeBar
-	}
-	if c.MinContractEarners <= 0 {
-		c.MinContractEarners = defaultMinContractEarners
 	}
 	if c.HaulerShipType == "" {
 		c.HaulerShipType = defaultHaulerShipType
@@ -207,12 +185,8 @@ func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand, live liveconfig
 	// from the constant, never the launch command / config.yaml / a live tune. There is deliberately no
 	// override seam above — a hard floor is not a per-run knob (sp-acv5).
 	c.ContractWorkingCapitalFloor = defaultContractWorkingCapitalFloor
-	// sp-fp3y: the scaled-GATE bars resolve to their documented defaults when neither launched nor tuned,
-	// so bootstrapRunConfig stays deterministic. The scaled gate is unconditionally on, so these are always
-	// consulted at GATE entry.
-	if c.GateIncomeBar <= 0 {
-		c.GateIncomeBar = defaultGateIncomeBar
-	}
+	// The escape hatch's starved-earner floor resolves to its documented default when neither launched nor
+	// tuned, so bootstrapRunConfig stays deterministic. It is unconditionally on, so it is always consulted.
 	if c.GateMinHaulers <= 0 {
 		c.GateMinHaulers = defaultGateMinHaulers
 	}
@@ -329,59 +303,6 @@ func (h *RunBootstrapCoordinatorHandler) probeBridge(containerID string) *probeB
 	return b
 }
 
-// incomeWindow is the sp-fp3y GATE-entry income smoother: a rolling window of the last
-// gateIncomeWindowTicks realized-$/hr observations whose MEAN is the SUSTAINED $/hr the armed GATE gate
-// reads. It exists because obs.IncomePerHour as observed is spiky — a single contract payout swings it
-// from net-negative to well over the old 10000 income_bar in one tick (the ktio false trigger) — so the
-// instantaneous value must NOT trip GATE. The mean over the window dilutes a lone spike against the
-// surrounding (often net-negative) spend ticks; only a genuinely sustained rate clears the bar. Like the
-// probeBuyBridge it is per-container handler state, not persisted progress: it is dropped on restart, and
-// sustained() returns −inf until the window is FULL, so a spike on short history (the first ticks after
-// arming or a restart) can never enter GATE — the arc simply keeps scaling the contract op until the
-// income is genuinely sustained.
-type incomeWindow struct {
-	samples []float64
-}
-
-// sustained records this tick's realized $/hr and returns the rolling-window mean once the window holds a
-// FULL gateIncomeWindowTicks samples; until then it returns −inf (below any positive bar), so the armed
-// GATE gate requires the income to have been observed sustained across the whole window, never a single
-// instantaneous spike. Called once per readable tick when the gate is armed (a single goroutine per
-// container — see incomeWindowFor), so no per-window locking is needed.
-func (w *incomeWindow) sustained(perHour float64) float64 {
-	w.samples = append(w.samples, perHour)
-	if len(w.samples) > gateIncomeWindowTicks {
-		w.samples = w.samples[len(w.samples)-gateIncomeWindowTicks:]
-	}
-	if len(w.samples) < gateIncomeWindowTicks {
-		return math.Inf(-1) // not yet sustained: a short history can never clear a positive bar
-	}
-	var sum float64
-	for _, s := range w.samples {
-		sum += s
-	}
-	return sum / float64(len(w.samples))
-}
-
-// incomeWindowFor returns the per-container GATE-entry income smoother (sp-fp3y), lazily created. Keyed by
-// ContainerID for the same reason as probeBridge: this handler is a REGISTERED SINGLETON serving every
-// bootstrap container, so a bare field would be shared and RACED across concurrent players. One container's
-// ticks run sequentially (Handle awaits each reconcile), so the returned *incomeWindow is only ever touched
-// by a single goroutine — the mutex guards the map, not the returned struct.
-func (h *RunBootstrapCoordinatorHandler) incomeWindowFor(containerID string) *incomeWindow {
-	h.incomeWindowMu.Lock()
-	defer h.incomeWindowMu.Unlock()
-	if h.incomeWindows == nil {
-		h.incomeWindows = map[string]*incomeWindow{}
-	}
-	w := h.incomeWindows[containerID]
-	if w == nil {
-		w = &incomeWindow{}
-		h.incomeWindows[containerID] = w
-	}
-	return w
-}
-
 // cachedHaulerPrice returns the last readable contract-hauler price cached for this container (sp-muc5x),
 // or 0 when none has been observed yet. The caller treats 0 as "no evidence" and proceeds unchanged (the
 // existing free+position path), so the guard only ever TIGHTENS behavior on a POSITIVE cache. Keyed by
@@ -490,22 +411,13 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 	bridge := h.probeBridge(cmd.ContainerID)
 	obs.ProbeCount = bridge.effectiveProbeCount(obs.ProbeCount)
 
-	// sp-fp3y: GATE entry must read a SUSTAINED $/hr (smoothed over a rolling window of recent ticks), so a
-	// single instantaneous contract-payout spike cannot trip GATE with an unscaled op (the ktio deadlock).
-	// The scaled gate is unconditionally on, so the smoothing is applied every tick. Substitute the window
-	// mean into the observation the phase derivation reads — mirroring how the sp-lgo3 bridge substitutes
-	// ProbeCount just above. The raw obs is left UNTOUCHED so the heartbeat still reports instantaneous
-	// income; only phaseObs (the phase derivation's input) carries the smoothed value.
-	phaseObs := obs
-	phaseObs.IncomePerHour = h.incomeWindowFor(cmd.ContainerID).sustained(obs.IncomePerHour)
-
 	// Derive the phase from the observation — NEVER from a persisted enum (spec §Architecture).
-	phase := derivePhase(phaseObs, cfg)
+	phase := derivePhase(obs, cfg)
 	// Escape hatch (UNCONDITIONALLY ON, sp-gm7r): a GATE that latched under-scaled with ~no construction
 	// re-derives INCOME (so the op can re-scale out of the death spiral) after an anti-thrash hysteresis
 	// streak. A legitimately-funded fresh GATE and a genuinely-building GATE are untouched — the re-derive
 	// only releases a sticky, starved latch (see reDeriveUnderScaledGate).
-	phase = h.reDeriveUnderScaledGate(cmd.ContainerID, phase, phaseObs, cfg)
+	phase = h.reDeriveUnderScaledGate(cmd.ContainerID, phase, obs, cfg)
 	res.Phase = phase
 	if h.metrics != nil {
 		h.metrics.RecordPhase(string(phase))
@@ -584,15 +496,13 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 // runs in BOTH (the tick dispatch runs actIncome in the DATA phase too). Coverage is continuous
 // background — the freshness sizer keeps the map fresh — and never gates the label.
 //
-// The arc must be MONOTONE, but realized income is NOT monotone across the INCOME→GATE boundary: GATE
-// repurposes contract haulers to construction, which DROPS realized $/hr back under income_bar. So GATE
-// is made STICKY on obs.ConstructionStarted — once a construction pipeline exists the arc stays in GATE
-// regardless of income, never regressing (which would re-buy the just-repurposed haulers and thrash).
-// The GATE-ENTRY decision itself is factored into gateFunded, which demands a genuinely SCALED AND FUNDED
-// op (the full contract fleet has reached the auto-scaler's target, a SUSTAINED $/hr, AND a treasury
+// The arc must be MONOTONE, so GATE is STICKY on obs.ConstructionStarted — once a construction pipeline
+// exists the arc stays in GATE, never regressing (which would re-buy the just-repurposed haulers and
+// thrash). The GATE-ENTRY decision itself is factored into gateFunded, which demands a genuinely SCALED
+// AND FUNDED op (the full contract fleet has reached the auto-scaler's target AND the treasury holds a
 // surplus), which is what makes the sticky latch above safe — construction can only start after a
-// legitimate scaled+funded entry, so a spurious income spike on a lightly-scaled op can never latch GATE
-// permanently (the sp-gm7r death spiral).
+// legitimate scaled+funded entry, so a lightly-scaled op can never latch GATE permanently (the sp-gm7r
+// death spiral).
 // EXPANSION (sp-feiy7) is terminal and monotone (a built gate stays built): the jump-gate construction is
 // COMPLETE, so the world has entered the Admiral's steady-state-growth era — the ONE phase probe-buying
 // belongs to. It is checked FIRST, before every other signal, and rides the same world-signal stickiness
@@ -622,19 +532,17 @@ func derivePhase(obs Observation, cfg bootstrapRunConfig) Phase {
 
 // gateFunded reports whether the economic signals warrant entering GATE (jump-gate construction).
 //
-// GATE requires a genuinely SCALED AND FUNDED contract operation, not a lightly-scaled op on an income
-// spike (the sp-gm7r death spiral: GATE entered on ~2 haulers + a spike, started a pipeline, and the
-// ConstructionStarted sticky latch then held GATE forever while the op cannibalized its haulers). All
-// three must hold together — coverage is NOT a gate here (scan-completeness is continuous background,
-// never a phase gate; sourcing gate materials is construction's job):
+// GATE requires a genuinely SCALED AND FUNDED contract operation, not a lightly-scaled op that happened to
+// book a good hour (the sp-gm7r death spiral: GATE entered on ~2 haulers, started a pipeline, and the
+// ConstructionStarted sticky latch then held GATE forever while the op cannibalized its haulers). Both
+// must hold together — coverage is NOT a gate here (scan-completeness is continuous background, never a
+// phase gate; sourcing gate materials is construction's job), and neither is realized $/hr (a spiky
+// signal one contract payout swings from net-negative to a false all-clear in a single tick):
 //   - the FULL contract fleet (delivery obs.Haulers + depot obs.ContractDepotHullCount) has reached the
 //     auto-scaler's live achievable target (obs.ContractScalerTarget) — the op is the size the scaler is
 //     genuinely driving it toward, not a 2-hull blip. This is a HARD bar (sp-gm7r): an op that cannot
 //     reach the target stays in INCOME by design, and it FAILS CLOSED — a 0/unread target (no scaler
-//     running) NEVER gates, so bootstrap never enters GATE on an unknown target;
-//   - a SUSTAINED $/hr ≥ gate_income_bar — obs.IncomePerHour here carries the rolling-window MEAN the
-//     reconciler substitutes every tick (an instantaneous spike is diluted well under the bar; a
-//     not-yet-full window reads −inf), so a fresh spike on short history can never trip GATE; and
+//     running) NEVER gates, so bootstrap never enters GATE on an unknown target; and
 //   - a treasury SURPLUS over the immutable reserve floor clearing the gate-bill war chest
 //     (gate_surplus_floor) — so GATE is EARNED from contract surplus, never raced on a thin treasury its
 //     own material spend then crashes. Fail-closed: an unread/thin treasury yields a small or negative
@@ -642,13 +550,12 @@ func derivePhase(obs Observation, cfg bootstrapRunConfig) Phase {
 //
 // This is also WHY the ConstructionStarted sticky latch in derivePhase is safe: construction is started
 // (by actGate) only AFTER derivePhase has returned GATE, which demands a legitimate scaled+funded entry —
-// so a spurious income spike on a lightly-scaled op can never reach ConstructionStarted and latch GATE
-// permanently. Gate entry only ever tightens, never loosens (RULINGS #4).
+// so a lightly-scaled op can never reach ConstructionStarted and latch GATE permanently. Gate entry only
+// ever tightens, never loosens (RULINGS #4).
 func gateFunded(obs Observation, cfg bootstrapRunConfig) bool {
 	fullFleet := len(obs.Haulers) + obs.ContractDepotHullCount
 	return obs.ContractScalerTarget > 0 &&
 		fullFleet >= obs.ContractScalerTarget &&
-		obs.IncomePerHour >= cfg.GateIncomeBar &&
 		obs.Treasury-common.ImmutableReserveFloor >= cfg.GateSurplusFloor
 }
 
@@ -669,9 +576,8 @@ func gateFunded(obs Observation, cfg bootstrapRunConfig) bool {
 // the already-guarded hauler buys, and the separate manufacturing executor keeps building meanwhile).
 //
 // Under-scaled is measured against gate_min_haulers (the escape hatch's starved-earner floor) so the escape
-// fires only for a truly starved op — below 2 haulers OR below the sustained $/hr bar — never merely because
-// a decent op sits under the full scaler-target entry bar. Low-progress uses the same sustained $/hr the
-// entry gate reads (substituted by the caller), so a peak cannot mask a starved op.
+// fires only for a truly starved op — below 2 haulers — never merely because a decent op sits under the full
+// scaler-target entry bar.
 func (h *RunBootstrapCoordinatorHandler) reDeriveUnderScaledGate(containerID string, phase Phase, obs Observation, cfg bootstrapRunConfig) Phase {
 	// Only a sticky-latched GATE (started, not complete) is a candidate; a legitimately-funded fresh GATE
 	// (no pipeline yet) or a terminal COMPLETE is not. Anything else breaks the streak and stands.
@@ -679,7 +585,7 @@ func (h *RunBootstrapCoordinatorHandler) reDeriveUnderScaledGate(containerID str
 		h.resetUnderScaledStreak(containerID)
 		return phase
 	}
-	underScaled := len(obs.Haulers) < cfg.GateMinHaulers || obs.IncomePerHour < cfg.GateIncomeBar
+	underScaled := len(obs.Haulers) < cfg.GateMinHaulers
 	lowProgress := obs.ConstructionPercent < cfg.GateReentryConstructionPct
 	if !underScaled || !lowProgress {
 		h.resetUnderScaledStreak(containerID) // condition broke → the streak must be CONSECUTIVE
@@ -693,7 +599,7 @@ func (h *RunBootstrapCoordinatorHandler) reDeriveUnderScaledGate(containerID str
 }
 
 // bumpUnderScaledStreak increments and returns the per-container under-scaled-GATE hysteresis counter. Keyed
-// by ContainerID like the other per-container state (buyBridges/incomeWindows) because this handler is a
+// by ContainerID like the other per-container state (buyBridges) because this handler is a
 // REGISTERED SINGLETON; the mutex guards the map, and one container's ticks are sequential so the count is
 // only ever advanced by a single goroutine.
 func (h *RunBootstrapCoordinatorHandler) bumpUnderScaledStreak(containerID string) int {

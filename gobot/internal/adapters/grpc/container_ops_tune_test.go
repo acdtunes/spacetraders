@@ -596,13 +596,13 @@ func TestShowTunableConfig_ListsEffectiveValuesSourcesAndBounds(t *testing.T) {
 // (source "default"), never a launch value.
 func TestTune_Bootstrap_TunesLiveViaOperation_ShowRevertAudit(t *testing.T) {
 	db, repo, playerID := tuneTestDB(t)
-	// Seed with the config.yaml-authoritative PREFIXED launch keys (a float coverage bar + identity),
-	// mirroring how the daemon launches bootstrap — the bare tune keys are a distinct family.
+	// Seed with the config.yaml-authoritative PREFIXED launch keys (+ identity), mirroring how the
+	// daemon launches bootstrap — the bare tune keys are a distinct family.
 	seedTuneContainer(t, db, playerID, tuneBootstrapContainerID, bootstrapContainerType, "bootstrap", "RUNNING", map[string]interface{}{
-		"container_id":           tuneBootstrapContainerID,
-		"agent_symbol":           "TUNE-AGENT",
-		"bootstrap_coverage_bar": 0.9,
-		"bootstrap_probe_target": 3,
+		"container_id":            tuneBootstrapContainerID,
+		"agent_symbol":            "TUNE-AGENT",
+		"bootstrap_probe_target":  3,
+		"bootstrap_hauler_target": 4,
 	})
 	rec := &tuneFakeRecorder{}
 	SetCaptainEventRecorder(rec)
@@ -610,22 +610,22 @@ func TestTune_Bootstrap_TunesLiveViaOperation_ShowRevertAudit(t *testing.T) {
 	s := &DaemonServer{containerRepo: repo}
 	ctx := context.Background()
 
-	// Live tune via the operation alias: coverage_bar_percent 90 (default) → 95. No restart.
-	out, err := s.MutateContainerConfigKey(ctx, "", "bootstrap", "coverage_bar_percent", 95, playerID)
+	// Live tune via the operation alias: probe_target 3 (default) → 5. No restart.
+	out, err := s.MutateContainerConfigKey(ctx, "", "bootstrap", "probe_target", 5, playerID)
 	require.NoError(t, err)
 	require.True(t, out.Changed)
 	require.Equal(t, tuneBootstrapContainerID, out.ContainerID, "the operation alias must resolve to the active bootstrap coordinator")
-	require.Equal(t, 90, out.OldEffective, "pre-tune effective is the documented default (0.90 → 90%)")
-	require.Equal(t, 95, out.NewEffective)
+	require.Equal(t, 3, out.OldEffective, "pre-tune effective is the documented default")
+	require.Equal(t, 5, out.NewEffective)
 	require.Len(t, rec.events, 1, "an effective tune emits exactly one config.tuned audit event")
 	require.Equal(t, captain.EventConfigTuned, rec.events[0].Type)
 
 	// The BARE tune key is what the coordinator's per-tick live reader consumes.
 	snap, err := NewContainerConfigReader(repo).Snapshot(ctx, tuneBootstrapContainerID, playerID)
 	require.NoError(t, err)
-	v, set := snap.PositiveInt("coverage_bar_percent")
+	v, set := snap.PositiveInt("probe_target")
 	require.True(t, set)
-	require.Equal(t, 95, v)
+	require.Equal(t, 5, v)
 
 	// --show lists every registered knob; the tuned knob is live-config, an untuned knob is its default.
 	show, err := s.ShowTunableConfig(ctx, "", "bootstrap", playerID)
@@ -635,28 +635,28 @@ func TestTune_Bootstrap_TunesLiveViaOperation_ShowRevertAudit(t *testing.T) {
 	for _, k := range show.Knobs {
 		byKey[k.Key] = k
 	}
-	require.Equal(t, 95, byKey["coverage_bar_percent"].Effective)
-	require.Equal(t, "live-config", byKey["coverage_bar_percent"].Source)
-	require.Equal(t, 100, byKey["coverage_bar_percent"].Bound.Max)
-	require.Equal(t, "percent", byKey["coverage_bar_percent"].Bound.Unit)
-	require.Equal(t, 3, byKey["probe_target"].Effective, "probe_target untuned → documented default (the prefixed launch key is a separate family)")
-	require.Equal(t, "default", byKey["probe_target"].Source)
+	require.Equal(t, 5, byKey["probe_target"].Effective)
+	require.Equal(t, "live-config", byKey["probe_target"].Source)
+	require.Equal(t, 50, byKey["probe_target"].Bound.Max)
+	require.Equal(t, "hulls", byKey["probe_target"].Bound.Unit)
+	require.Equal(t, 4, byKey["hauler_target"].Effective, "hauler_target untuned → documented default (the prefixed launch key is a separate family)")
+	require.Equal(t, "default", byKey["hauler_target"].Source)
 
 	// Out-of-bounds is rejected before any write (the column stays byte-identical).
 	before := containerConfigJSON(t, repo, tuneBootstrapContainerID, playerID)
-	_, err = s.MutateContainerConfigKey(ctx, "", "bootstrap", "coverage_bar_percent", 150, playerID)
-	require.Error(t, err, "coverage_bar_percent 150 exceeds the 100 ceiling")
+	_, err = s.MutateContainerConfigKey(ctx, "", "bootstrap", "probe_target", 51, playerID)
+	require.Error(t, err, "probe_target 51 exceeds the 50 ceiling")
 	require.Equal(t, before, containerConfigJSON(t, repo, tuneBootstrapContainerID, playerID))
 
 	// `tune 0` reverts to the documented default; the bare key is cleared from the column.
-	out, err = s.MutateContainerConfigKey(ctx, "", "bootstrap", "coverage_bar_percent", 0, playerID)
+	out, err = s.MutateContainerConfigKey(ctx, "", "bootstrap", "probe_target", 0, playerID)
 	require.NoError(t, err)
 	require.True(t, out.Changed)
-	require.Equal(t, 90, out.NewEffective)
+	require.Equal(t, 3, out.NewEffective)
 	require.Equal(t, "default", out.NewSource)
 	snap, err = NewContainerConfigReader(repo).Snapshot(ctx, tuneBootstrapContainerID, playerID)
 	require.NoError(t, err)
-	_, set = snap.PositiveInt("coverage_bar_percent")
+	_, set = snap.PositiveInt("probe_target")
 	require.False(t, set, "revert clears the bare tune key from the column")
 }
 
@@ -671,15 +671,15 @@ func TestTune_Bootstrap_BareTuneKeySurvivesConfigRebuild(t *testing.T) {
 	config := map[string]interface{}{
 		"container_id":           "boot-x",
 		"agent_symbol":           "A",
-		"bootstrap_coverage_bar": 0.9, // prefixed launch key — transient, config.yaml-authoritative
-		"coverage_bar_percent":   95,  // bare tune key — must survive the rebuild
-		"probe_target":           7,   // bare tune key — must survive the rebuild
+		"bootstrap_probe_target": 3, // prefixed launch key — transient, config.yaml-authoritative
+		"probe_target":           7, // bare tune key — must survive the rebuild
+		"hauler_target":          9, // bare tune key — must survive the rebuild
 	}
 	s.resolveBootstrapConfig(config)
 
-	require.EqualValues(t, 95, config["coverage_bar_percent"], "a bare tune key must survive the launch-config rebuild")
 	require.EqualValues(t, 7, config["probe_target"], "a bare tune key must survive the launch-config rebuild")
-	_, hasPrefixed := config["bootstrap_coverage_bar"]
+	require.EqualValues(t, 9, config["hauler_target"], "a bare tune key must survive the launch-config rebuild")
+	_, hasPrefixed := config["bootstrap_probe_target"]
 	require.False(t, hasPrefixed, "the prefixed launch key is transient — cleared and re-injected from config.yaml")
 	require.Equal(t, "boot-x", config["container_id"], "identity keys survive the rebuild")
 	require.Equal(t, "A", config["agent_symbol"], "identity keys survive the rebuild")

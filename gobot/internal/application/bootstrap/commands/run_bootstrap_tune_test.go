@@ -16,8 +16,7 @@ import (
 // bootstrap_* family (prefixed, cleared+reinjected on every rebuild), so the tune keys are
 // deliberately SEPARATE bare keys — an untuned bare key is genuinely absent and MUST NOT
 // zero the launch value (byte-identical when nothing is tuned). The int-only registry
-// expresses the one fraction knob as an integer percent (coverage_bar_percent 90 = 0.90)
-// and income_bar as whole credits.
+// expresses income_bar as whole credits.
 
 // fakeLiveConfig is a settable liveconfig.Reader: a test flips the snapshot between ticks to
 // prove a `tune` write lands on the NEXT reconcile with no restart. Concurrency-guarded
@@ -41,21 +40,18 @@ func (f *fakeLiveConfig) set(s liveconfig.Snapshot) {
 }
 
 // BootstrapTunableDefaults is the defaults-of-record the daemon tune bounds registry reads;
-// its KEY SET is the contract for which bare keys resolveBootstrapConfig live-overlays. The
-// one fraction knob is an integer percent and income_bar is whole credits, so the int-only
-// tune mechanism (liveconfig.PositiveInt) can carry every bootstrap knob.
+// its KEY SET is the contract for which bare keys resolveBootstrapConfig live-overlays. Every
+// value is a whole number (income_bar is whole credits), so the int-only tune mechanism
+// (liveconfig.PositiveInt) can carry every bootstrap knob.
 func TestBootstrapTunableDefaults_MirrorsCoordinatorConsts(t *testing.T) {
 	got := BootstrapTunableDefaults()
 	want := map[string]int{
 		"probe_target":                  defaultProbeTarget,            // 3
-		"coverage_bar_percent":          90,                            // defaultCoverageBar 0.90 → 90%
 		"hauler_target":                 defaultHaulerTarget,           // 4
 		"income_bar":                    10000,                         // defaultIncomeBar 10000.0 → 10000 credits
-		"min_contract_earners":          defaultMinContractEarners,     // 1
 		"gate_worker_target":            defaultGateWorkerTarget,       // 6
 		"tick_secs":                     defaultBootstrapTickSeconds,   // 45 (sp-lgo3: short cold-start cadence)
 		"defer_probe_to_freshsizer":     defaultDeferProbeToFreshsizer, // 0 (off) — sp-tsn2 arbitration flag
-		"gate_income_bar":               50000,                         // defaultGateIncomeBar 50000.0 → 50000 credits
 		"gate_min_haulers":              defaultGateMinHaulers,         // 2 — sp-gm7r escape-hatch starved-earner floor (GATE ENTRY uses the scaler target)
 		"gate_surplus_floor":            int(defaultGateSurplusFloor),  // 500000 — sp-gm7r GATE-entry treasury surplus war chest
 		"gate_reentry_construction_pct": 5,                             // defaultGateReentryConstructionPct 5.0 → 5 percent
@@ -71,35 +67,26 @@ func TestBootstrapTunableDefaults_MirrorsCoordinatorConsts(t *testing.T) {
 	}
 }
 
-// The live overlay wins for the tick when a bare tune key is present-and-positive, and the
-// one fraction knob converts integer percent → fraction while income_bar reads as whole
-// credits. This is the per-tick re-read that makes `tune --operation bootstrap` land next
-// tick with no restart.
-func TestBootstrap_ResolveConfig_LiveOverlayOverridesLaunchAndConvertsFractions(t *testing.T) {
+// The live overlay wins for the tick when a bare tune key is present-and-positive, with
+// income_bar reading as whole credits. This is the per-tick re-read that makes
+// `tune --operation bootstrap` land next tick with no restart.
+func TestBootstrap_ResolveConfig_LiveOverlayOverridesLaunch(t *testing.T) {
 	live := liveconfig.Snapshot{
-		"probe_target":         5,
-		"coverage_bar_percent": 80,
-		"hauler_target":        2,
-		"income_bar":           20000,
-		"min_contract_earners": 3,
-		"gate_worker_target":   8,
-		"tick_secs":            120,
+		"probe_target":       5,
+		"hauler_target":      2,
+		"income_bar":         20000,
+		"gate_worker_target": 8,
+		"tick_secs":          120,
 	}
 	cfg := resolveBootstrapConfig(baseCmd(), live)
 	if cfg.ProbeTarget != 5 {
 		t.Errorf("probe_target: got %d want 5", cfg.ProbeTarget)
-	}
-	if cfg.CoverageBar != 0.80 {
-		t.Errorf("coverage_bar: got %v want 0.80 (from coverage_bar_percent 80)", cfg.CoverageBar)
 	}
 	if cfg.HaulerTarget != 2 {
 		t.Errorf("hauler_target: got %d want 2", cfg.HaulerTarget)
 	}
 	if cfg.IncomeBar != 20000 {
 		t.Errorf("income_bar: got %v want 20000", cfg.IncomeBar)
-	}
-	if cfg.MinContractEarners != 3 {
-		t.Errorf("min_contract_earners: got %d want 3", cfg.MinContractEarners)
 	}
 	if cfg.GateWorkerTarget != 8 {
 		t.Errorf("gate_worker_target: got %d want 8", cfg.GateWorkerTarget)
@@ -120,15 +107,15 @@ func TestBootstrap_ResolveConfig_NilAndEmptyAndNoiseLive_ByteIdentical(t *testin
 	}
 	// A snapshot with only the config.yaml-authoritative prefixed keys + unrelated noise must
 	// not overlay any tunable knob (the tune keys are the separate BARE family).
-	noise := liveconfig.Snapshot{"bootstrap_coverage_bar": 0.9, "bootstrap_probe_target": 3, "unrelated": 7}
+	noise := liveconfig.Snapshot{"bootstrap_probe_target": 3, "bootstrap_hauler_target": 4, "unrelated": 7}
 	if got := resolveBootstrapConfig(baseCmd(), noise); got != base {
 		t.Fatalf("a snapshot without bare tune keys must be byte-identical to defaults: %+v vs %+v", got, base)
 	}
 	// And the documented defaults are what a cold, all-zero launch resolves to.
-	if base.ProbeTarget != defaultProbeTarget || base.CoverageBar != defaultCoverageBar ||
+	if base.ProbeTarget != defaultProbeTarget ||
 		base.IncomeBar != defaultIncomeBar ||
 		base.HaulerTarget != defaultHaulerTarget || base.GateWorkerTarget != defaultGateWorkerTarget ||
-		base.MinContractEarners != defaultMinContractEarners || base.Tick != defaultBootstrapTickSeconds*time.Second {
+		base.Tick != defaultBootstrapTickSeconds*time.Second {
 		t.Fatalf("nil-live resolve must be the documented defaults, got %+v", base)
 	}
 }
@@ -141,8 +128,7 @@ func TestBootstrap_ResolveConfig_PartialOverlay_LeavesOthersAtLaunch(t *testing.
 	if cfg.ProbeTarget != 9 {
 		t.Fatalf("probe_target must overlay to 9, got %d", cfg.ProbeTarget)
 	}
-	if cfg.CoverageBar != defaultCoverageBar ||
-		cfg.HaulerTarget != defaultHaulerTarget || cfg.GateWorkerTarget != defaultGateWorkerTarget {
+	if cfg.HaulerTarget != defaultHaulerTarget || cfg.GateWorkerTarget != defaultGateWorkerTarget {
 		t.Fatalf("untuned knobs must stay at their launch/default values, got %+v", cfg)
 	}
 }
@@ -189,23 +175,6 @@ func TestBootstrap_LiveRetune_ProbeTarget_LandsNextTick_NoRestart(t *testing.T) 
 
 	if cmd.ProbeTarget != 0 {
 		t.Fatalf("no restart happened: launch cmd.ProbeTarget must remain 0, got %d", cmd.ProbeTarget)
-	}
-}
-
-// coverage_bar_percent still converts + resolves live (the knob remains tunable), but it is now INERT for
-// phase progression: retuning it does NOT flip derivePhase. Coverage runs as continuous background (the
-// freshness sizer), never a phase gate.
-func TestBootstrap_LiveRetune_CoverageBarPercent_ConvertsToFraction_InertForPhase(t *testing.T) {
-	obs := Observation{MarketsTotal: 10, MarketsCovered: 9, ProbeCount: 3, ProbesScouting: 3} // provisioned, 90% coverage
-
-	base := derivePhase(obs, resolveBootstrapConfig(baseCmd(), nil))
-
-	cfg := resolveBootstrapConfig(baseCmd(), liveconfig.Snapshot{"coverage_bar_percent": 95})
-	if cfg.CoverageBar != 0.95 {
-		t.Fatalf("coverage_bar_percent 95 must still resolve to 0.95 (tunable config intact), got %v", cfg.CoverageBar)
-	}
-	if p := derivePhase(obs, cfg); p != base {
-		t.Fatalf("retuning coverage_bar_percent must NOT flip the phase (coverage is not a gate): base=%s got=%s", base, p)
 	}
 }
 

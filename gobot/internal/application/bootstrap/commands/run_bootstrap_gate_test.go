@@ -45,8 +45,8 @@ func TestBootstrap_DerivePhase_ExpansionWhenConstructionComplete(t *testing.T) {
 }
 
 // STICKINESS (sp-feiy7): a built gate dominates EVERY pre-100%% signal — even an observation whose other
-// fields all point at the coldest possible DATA/INCOME world (zero probes, zero coverage, −inf sustained
-// income, no scaler target, empty treasury) derives EXPANSION on ConstructionComplete alone. This is the
+// fields all point at the coldest possible DATA/INCOME world (zero probes, zero coverage, no scaler
+// target, empty treasury) derives EXPANSION on ConstructionComplete alone. This is the
 // same world-signal stickiness GATE rides (ConstructionStarted): no post-gate income dip, fleet churn, or
 // restart-dropped in-memory window can pull the arc back to a buying phase and thrash (the GATE→INCOME
 // re-buy lesson). A built gate stays built, so the derivation is monotone tick after tick.
@@ -84,6 +84,33 @@ func TestBootstrap_DerivePhase_EconomicSignalsIgnoreCoverage(t *testing.T) {
 	// A cold world with NO economic signal is DATA (still scanning) — contracts run in parallel there.
 	if p := derivePhase(Observation{MarketsTotal: 0}, cfg); p != PhaseData {
 		t.Fatalf("cold world with no economic signal should derive DATA, got %s", p)
+	}
+}
+
+// Scan coverage NEVER gates the phase, at ANY reading. Holding one observation fixed (probes at target and
+// scouting, no economic signal) and sweeping coverage across its whole range — nothing charted at all,
+// none covered, part-way, fully covered — derives the SAME phase every time. Scanning is a continuous
+// background workstream (the freshness sizer keeps the map fresh), so no coverage reading can advance the
+// arc or hold it back.
+func TestBootstrap_DerivePhase_CoverageNeverGatesPhase(t *testing.T) {
+	cfg := resolveBootstrapConfig(baseCmd(), nil)
+	for _, tc := range []struct {
+		name           string
+		covered, total int
+	}{
+		{"nothing charted", 0, 0},
+		{"none covered", 0, 10},
+		{"one covered", 1, 10},
+		{"half covered", 5, 10},
+		{"one short of fully covered", 9, 10},
+		{"fully covered", 10, 10},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			obs := Observation{ProbeCount: 3, ProbesScouting: 3, MarketsCovered: tc.covered, MarketsTotal: tc.total}
+			if p := derivePhase(obs, cfg); p != PhaseIncome {
+				t.Fatalf("coverage %d/%d must derive the same phase as every other coverage (INCOME — the probe ramp is done and no economic signal has landed), got %s", tc.covered, tc.total, p)
+			}
+		})
 	}
 }
 
@@ -294,23 +321,13 @@ func gateHandler(obs Observation, con ConstructionManager, mfg ManufacturingCont
 func gateObs() Observation {
 	return Observation{
 		HomeSystem: "X1-HQ", MarketsTotal: 10, MarketsCovered: 10, Treasury: 1000000,
-		IncomePerHour:        500, // repurposed — under the bar; GATE stays sticky on ConstructionStarted
+		IncomePerHour:        500, // haulers pulled onto the gate build — GATE stays sticky on ConstructionStarted
 		GateSite:             "X1-HQ-GATE",
 		ConstructionStarted:  true,
 		ManufacturingRunning: true,
 		ManufacturingAdopted: true,
 		HasIdlePurchaser:     true,
 		Readable:             true,
-	}
-}
-
-// primeGateIncomeWindow pre-fills a container's GATE-entry income smoother so the NEXT reconcile tick sees a
-// SUSTAINED $/hr over gate_income_bar — the (unconditionally-on) scaled gate then enters GATE on a scaled op
-// without waiting the full rolling window to fill. Pair with Haulers ≥ gate_min_haulers on the observation.
-func primeGateIncomeWindow(h *RunBootstrapCoordinatorHandler, containerID string, perHour float64) {
-	w := h.incomeWindowFor(containerID)
-	for i := 0; i < gateIncomeWindowTicks; i++ {
-		w.sustained(perHour)
 	}
 }
 
@@ -337,17 +354,15 @@ func TestBootstrap_Gate_NoSite_Blocks(t *testing.T) {
 
 // Entering GATE with no pipeline yet ⇒ start construction, and DON'T ensure/bounce this tick (the
 // observation still reads !started; adoption waits for the pipeline to be real next tick). Enters GATE via
-// the (unconditionally-on) scaled gate: 2 haulers + a primed sustained-income window, ConstructionStarted=false.
+// the (unconditionally-on) scaled gate: the full fleet at the scaler target, ConstructionStarted=false.
 func TestBootstrap_Gate_StartsConstructionOnce_NoAdoptSameTick(t *testing.T) {
 	obs := gateObs()
 	obs.ConstructionStarted = false
 	obs.Haulers = []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}} // full fleet = 2
-	obs.ContractScalerTarget = 2                                   // == full fleet ⇒ scaler target reached
-	obs.IncomePerHour = 60000                                      // ≥ gate_income_bar 50000 (sustained); gateObs treasury clears the surplus floor
+	obs.ContractScalerTarget = 2                                   // == full fleet ⇒ scaler target reached; gateObs treasury clears the surplus floor
 	con := &fakeConstruction{}
 	mfg := &fakeManufacturing{}
 	h := gateHandler(obs, con, mfg, &fakeRepurposer{}, &fakeGateAcquirer{}, &fakeHandoff{})
-	primeGateIncomeWindow(h, baseCmd().ContainerID, 60000) // full window ⇒ the scaled gate enters GATE this tick
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if con.starts != 1 || con.sites[0] != "X1-HQ-GATE" {
 		t.Fatalf("expected one construction start on X1-HQ-GATE, got starts=%d sites=%v", con.starts, con.sites)
@@ -485,12 +500,12 @@ func TestBootstrap_Gate_CapitalGateBlocksWorkerBuy(t *testing.T) {
 // working-capital line, and a worker is bought as soon as the buy still clears the floor. ---
 
 // gateFloorObs is a GATE observation shaped so planGateWorkers calls for exactly ONE staged worker buy
-// (3 material chains ⇒ desired 4, no existing workers, only the kept earner so nothing to repurpose):
-// the capital gate is the only thing between it and the buy, so treasury/price isolate the floor.
+// (3 material chains ⇒ desired 4, no existing workers): the capital gate is the only thing between it
+// and the buy, so treasury/price isolate the floor.
 func gateFloorObs(treasury int64) Observation {
 	obs := gateObs()
 	obs.Treasury = treasury
-	obs.Haulers = []HaulerSnapshot{{Symbol: "H1"}} // exactly min_contract_earners → no surplus to repurpose
+	obs.Haulers = []HaulerSnapshot{{Symbol: "H1"}} // the exclusive contract fleet — never drawn on for workers
 	obs.GateWorkers = 0
 	// desired = gate_worker_target (4) > pool(0) ⇒ plan.Buy = 1
 	return obs

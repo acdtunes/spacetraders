@@ -442,8 +442,8 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyGateWorker(ctx context.Context,
 	// cushion=(treasury−price) ≥ contract_working_capital_floor — NOT the old proportional reserve_margin×
 	// treasury cap. Gate construction therefore can never drive the treasury below the working-capital line
 	// the fleet autosizer also honors (common.ImmutableReserveFloor; the two-buyer safety, ktio-B). A worker
-	// that fails the gate this tick simply waits and re-checks (min_contract_earners keeps earning through
-	// GATE to grow the treasury). RULINGS #4 fail-closed: an unreadable price already returned above, and a
+	// that fails the gate this tick simply waits and re-checks (the whole contract fleet keeps earning
+	// through GATE to grow the treasury). RULINGS #4 fail-closed: an unreadable price already returned above, and a
 	// cushion below the floor does NOT buy — so after a permitted buy treasury ≥ floor by construction.
 	// (The separate DATA-phase reserve_margin knob this once contrasted against is gone too — sp-05glh
 	// scrapped it with the 40% rule; the probe buy now gates on this same common.ImmutableReserveFloor

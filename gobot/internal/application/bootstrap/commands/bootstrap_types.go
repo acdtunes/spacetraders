@@ -75,10 +75,10 @@ type Observation struct {
 	// haulers, frigate untagged, no market data), so a DATA-phase observation that leaves them unset
 	// reads as "INCOME not started" and the DATA guards are unaffected. ---
 
-	// IncomePerHour is the contract fleet's realized net credits/hour over a trailing window — the
-	// INCOME→GATE exit input. Realized (booked ledger income), not projected, so the bar measures a
-	// fleet that is genuinely earning. 0 on a fresh INCOME entry keeps the arc in INCOME (income_bar is
-	// positive by default), so it never skips straight to GATE.
+	// IncomePerHour is the contract fleet's realized net credits/hour over a trailing window — reported on
+	// the heartbeat against income_bar so an operator can watch the contract op warm up. Realized (booked
+	// ledger income), not projected. It is OBSERVABILITY ONLY: it drives no phase transition, because a
+	// single contract payout swings it from net-negative to a false all-clear in one tick.
 	IncomePerHour float64
 	// CommandFrigateID is the command frigate's ship symbol — the hull retired from contract work (a
 	// poor contract worker: low fuel/cargo). "" when no command hull is resolved.

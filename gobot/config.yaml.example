@@ -540,11 +540,9 @@ bootstrap:
   # dry_run: false
 
   # DATA phase. probe_target is the probe count the coordinator ramps to, STAGED and capital-gated —
-  # at most one buy per tick (0 => 3). coverage_bar is the DATA->INCOME exit threshold: the fraction
-  # (0..1) of home-system marketplaces that must have fresh market data before the arc leaves DATA
-  # (0 => 0.9). Contracts are blocked until data exists — the contract hubs are chosen FROM that data.
+  # at most one buy per tick (0 => 3). Scanning is a CONTINUOUS background workstream, never a gate on
+  # the rest of the arc: the DATA label only says the probe ramp is still running.
   # probe_target: 3
-  # coverage_bar: 0.9
 
   # Money-guard. Every bootstrap buy (probes, contract haulers, gate workers) is affordable only when
   # the treasury left AFTER the buy still clears the immutable working-capital floor: cushion =
@@ -558,32 +556,31 @@ bootstrap:
   # tick_seconds: 300
   # probe_ship_type: SHIP_PROBE
 
-  # INCOME phase (Slice 2). Past the coverage bar the coordinator retires the command frigate from
-  # contract work (a poor contract worker: low fuel/cargo), selects contract hubs from the scouted
-  # market data (central, market-dense waypoints where contract goods are cheaply sourceable), buys one
-  # light hauler per viable hub (STAGED + capital-gated, placed on its hub), and runs batch-contract.
+  # INCOME phase (Slice 2), running in PARALLEL with the probe ramp. The coordinator retires the command
+  # frigate from contract work (a poor contract worker: low fuel/cargo), selects contract hubs from the
+  # scouted market data (central, market-dense waypoints where contract goods are cheaply sourceable),
+  # buys one light hauler per viable hub (STAGED + capital-gated, placed on its hub), and runs
+  # batch-contract.
   # hauler_target caps the hull count (actual = one per viable hub, up to this; 0 => 4). hauler_ship_type
   # is the asset bought (0/absent => SHIP_LIGHT_HAULER).
   # hauler_target: 4
   # hauler_ship_type: SHIP_LIGHT_HAULER
 
-  # income_bar is the INCOME->GATE exit: realized NET credits/hour the contract fleet must clear before
-  # the arc drives gate construction (0 => 10000). Deliberately CONSERVATIVE — the Phase-1 objective is
-  # building the gate, so a too-HIGH bar (the arc never reaching GATE) is the worse failure; this is the
-  # primary field-calibration knob. min_contract_earners is how many haulers stay on contracts through
-  # GATE to keep funding material acquisition (consumed in the GATE phase, Slice 3; 0 => 1).
+  # income_bar is the realized NET credits/hour the heartbeat reads the contract fleet against, so an
+  # operator can watch the operation warm up (0 => 10000). Deliberately CONSERVATIVE; it is the primary
+  # field-calibration knob for that reading.
   # income_bar: 10000
-  # min_contract_earners: 1
 
-  # GATE phase (Slice 3). Past the income bar the coordinator discovers the home-system jump-gate
-  # construction site, drives `construction start` (the manufacturing coordinator — the executor — then
-  # produces/acquires/delivers the materials), bounces that executor so it ADOPTS the fresh pipeline
-  # (captain L57), sizes gate-construction workers deterministically (REPURPOSING idle contract haulers
-  # beyond min_contract_earners to the manufacturing fleet FIRST, then buying the delta only if short),
-  # and monitors construction to 100% -> COMPLETE (where it launches the fleet-autosizer + standing
-  # coordinators as the hand-off, then exits). gate_worker_target caps the workers (actual = ~one per
-  # active gate-material chain + a delivery hauler, up to this; 0 => 6). Gate workers reuse
-  # hauler_ship_type. The autosizer stays OFF the whole bootstrap run and is launched only at COMPLETE.
+  # GATE phase (Slice 3). Once the contract operation is genuinely SCALED (the full fleet has reached the
+  # auto-scaler's live target) and the treasury holds the gate-bill war chest, the coordinator discovers
+  # the home-system jump-gate construction site, drives `construction start` (the manufacturing
+  # coordinator — the executor — then produces/acquires/delivers the materials), bounces that executor so
+  # it ADOPTS the fresh pipeline (captain L57), sizes gate-construction workers deterministically (BUYING
+  # the shortfall — the contract fleet is exclusive and keeps earning throughout), and monitors
+  # construction to 100% -> COMPLETE (where it launches the fleet-autosizer + standing coordinators as the
+  # hand-off, then exits). gate_worker_target caps the workers (actual = ~one per active gate-material
+  # chain + a delivery hauler, up to this; 0 => 6). Gate workers reuse hauler_ship_type. The autosizer
+  # stays OFF the whole bootstrap run and is launched only at COMPLETE.
   # gate_worker_target: 6
 
 # Capacity reconciler (epic st-7zk): the standing declarative engine that drives the

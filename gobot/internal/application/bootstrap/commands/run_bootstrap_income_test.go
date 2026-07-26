@@ -317,9 +317,6 @@ func TestBootstrap_ResolvesIncomeDefaults(t *testing.T) {
 	if cfg.IncomeBar != defaultIncomeBar {
 		t.Fatalf("income_bar default = %.0f, got %.0f", defaultIncomeBar, cfg.IncomeBar)
 	}
-	if cfg.MinContractEarners != defaultMinContractEarners {
-		t.Fatalf("min_contract_earners default = %d, got %d", defaultMinContractEarners, cfg.MinContractEarners)
-	}
 	if cfg.HaulerShipType != defaultHaulerShipType {
 		t.Fatalf("hauler_ship_type default = %q, got %q", defaultHaulerShipType, cfg.HaulerShipType)
 	}
@@ -595,21 +592,19 @@ func TestBootstrap_Income_DryRunTakesNoAction(t *testing.T) {
 	}
 }
 
-// --- INCOME→GATE crossover: income ≥ bar derives GATE, and the INCOME acts stop running.
+// --- INCOME→GATE crossover: a scaled, funded op derives GATE, and the INCOME acts stop running.
 // From the INCOME fixture (no gate site discovered, no GATE collaborators wired) GATE blocks on the
 // undiscovered site rather than doing any INCOME work — the phase crossover is clean. ---
 
 func TestBootstrap_IncomeToGate_Crossover_NoIncomeAct(t *testing.T) {
 	obs := incomeObs()
 	obs.Haulers = []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}} // full fleet = 2
-	obs.ContractScalerTarget = 2                                   // == full fleet ⇒ scaler target reached (scaled op)
-	obs.IncomePerHour = 60000                                      // ≥ gate_income_bar 50000 (sustained) → GATE; incomeObs treasury clears the surplus floor
+	obs.ContractScalerTarget = 2                                   // == full fleet ⇒ scaler target reached (scaled op); incomeObs treasury clears the surplus floor
 	obs.BatchContractRunning = false
 	ret := &fakeRetirer{}
 	acq := &fakeHaulerAcquirer{price: 100000, yard: "Y", readable: true}
 	run := &fakeContractRunner{}
-	h := newIncomeHandler(obs, ret, acq, run)              // no GATE collaborators wired
-	primeGateIncomeWindow(h, baseCmd().ContainerID, 60000) // full window ⇒ the scaled gate crosses to GATE
+	h := newIncomeHandler(obs, ret, acq, run) // no GATE collaborators wired
 	log := &capturingLogger{}
 	res, _ := h.reconcileOnce(ctxWithLogger(log), baseCmd())
 	if res.Phase != PhaseGate {

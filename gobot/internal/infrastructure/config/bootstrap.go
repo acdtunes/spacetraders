@@ -10,9 +10,9 @@ package config
 // documented default (resolved once in the handler's resolveBootstrapConfig). The Analyst/Admiral
 // own these numbers — they are all config, never call-site constants (RULINGS #5).
 //
-// Slice 1 + Slice 2 + Slice 3 knobs. The INCOME knobs (hauler_target, income_bar, min_contract_earners,
-// hauler_ship_type) landed with Slice 2; the GATE knob (gate_worker_target) landed with Slice 3, the
-// last deferred field, now that the GATE phase reads it.
+// Slice 1 + Slice 2 + Slice 3 knobs. The INCOME knobs (hauler_target, income_bar, hauler_ship_type)
+// landed with Slice 2; the GATE knob (gate_worker_target) landed with Slice 3, the last deferred
+// field, now that the GATE phase reads it.
 type BootstrapConfig struct {
 	// BootstrapDisabled stands the WHOLE coordinator down. Absent/false = ACTIVE, so an
 	// absent-config boots LIVE (pinned by test — Admiral: no dark-shipping). Set true only in an
@@ -25,9 +25,6 @@ type BootstrapConfig struct {
 	// ProbeTarget is the DATA-phase probe count the coordinator ramps to (staged, capital-gated).
 	// 0/absent → 3.
 	ProbeTarget int `mapstructure:"probe_target"`
-	// CoverageBar is the DATA→exit threshold: the fraction (0..1) of home-system marketplaces that
-	// must have fresh market data before the arc leaves DATA. 0/absent → 0.9.
-	CoverageBar float64 `mapstructure:"coverage_bar"`
 	// TickSeconds is the reconcile cadence. 0/absent → 300 (5min); cold-start is a slow ramp.
 	TickSeconds int `mapstructure:"tick_seconds"`
 	// ProbeShipType is the shipyard ship-type symbol bought for a probe (RULINGS #5: even the asset
@@ -44,9 +41,6 @@ type BootstrapConfig struct {
 	// building the gate, so a too-HIGH bar (arc never reaches GATE) is the worse failure. This is the
 	// primary field-calibration knob. 0/absent → 10000.
 	IncomeBar float64 `mapstructure:"income_bar"`
-	// MinContractEarners is how many haulers stay on contracts through GATE to keep funding material
-	// acquisition (consumed by the GATE phase in Slice 3; plumbed here with the INCOME ramp). 0/absent → 1.
-	MinContractEarners int `mapstructure:"min_contract_earners"`
 	// HaulerShipType is the shipyard ship-type bought for a contract hauler (RULINGS #5: the asset is a
 	// knob). 0/absent → SHIP_LIGHT_HAULER.
 	HaulerShipType string `mapstructure:"hauler_ship_type"`
@@ -54,9 +48,9 @@ type BootstrapConfig struct {
 	// --- GATE-phase knob (Slice 3, sp-ysgb.2). ---
 
 	// GateWorkerTarget is the GATE-phase worker cap: the coordinator sizes gate-construction workers to
-	// ~one per active gate-material chain + a delivery hauler, up to this many — repurposing idle contract
-	// haulers first (the seed workforce) and buying the delta (staged, capital-gated) only if the pool is
-	// short. It caps the top-up so a wide pipeline never runs the treasury dry (min_contract_earners still
-	// stays on contracts to fund material acquisition). 0/absent → 6. Gate workers reuse hauler_ship_type.
+	// ~one per active gate-material chain + a delivery hauler, up to this many — BUYING the shortfall
+	// (staged, capital-gated) because the contract fleet is exclusive and is never drawn on. It caps the
+	// top-up so a wide pipeline never runs the treasury dry, while the whole contract fleet keeps earning
+	// to fund material acquisition. 0/absent → 6. Gate workers reuse hauler_ship_type.
 	GateWorkerTarget int `mapstructure:"gate_worker_target"`
 }

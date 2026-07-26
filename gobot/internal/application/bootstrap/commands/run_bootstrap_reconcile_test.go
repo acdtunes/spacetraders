@@ -919,14 +919,13 @@ func TestBootstrap_ParallelDataIncome_ContractsStartAtHour0WhileScanning(t *test
 }
 
 // GATE triggers on funding regardless of coverage (t39j point 4): a scaled+funded op that clears the gate
-// while still scanning enters GATE, not held in DATA by the coverage bar.
-func TestBootstrap_DerivePhase_IncomeBeatsCoverage_Gate(t *testing.T) {
+// while still scanning enters GATE, not held in DATA by scan progress.
+func TestBootstrap_DerivePhase_FundingBeatsCoverage_Gate(t *testing.T) {
 	cfg := resolveBootstrapConfig(baseCmd(), nil)
 	obs := Observation{
 		MarketsTotal: 10, MarketsCovered: 3, // 30% coverage
 		Haulers:              []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}}, // full fleet = 2
 		ContractScalerTarget: 2,                                                // == full fleet ⇒ scaler target reached
-		IncomePerHour:        60000,                                            // ≥ gate_income_bar (a scaled op)
 		Treasury:             600_000,                                          // surplus ≥ the gate-entry floor
 	}
 	if p := derivePhase(obs, cfg); p != PhaseGate {

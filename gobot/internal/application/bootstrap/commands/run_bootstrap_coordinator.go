@@ -27,8 +27,7 @@ const (
 	// (react to arrival/scan-complete via the wake/watch model instead of a fixed poll) is a future
 	// follow-up — the tick drop is the scoped fix.
 	defaultBootstrapTickSeconds = 45
-	defaultProbeTarget          = 3   // DATA target: 3 probes scouting so market data flows ASAP
-	defaultCoverageBar          = 0.9 // DATA→exit: 90% of home-system marketplaces fresh
+	defaultProbeTarget          = 3 // DATA target: 3 probes scouting so market data flows ASAP
 	// defaultProbeShipType is the shipyard ship-type symbol bought for a probe (RULINGS #5: even
 	// the asset is a knob).
 	defaultProbeShipType = "SHIP_PROBE"
@@ -41,9 +40,6 @@ const (
 	// HIGH the arc never reaches GATE — a lower bar only risks starting GATE with a still-warming
 	// fleet. This is the primary field-calibration knob (an open tuning question).
 	defaultIncomeBar = 10000.0
-	// defaultMinContractEarners is how many haulers stay on contracts through GATE to keep funding
-	// material acquisition (consumed by the GATE phase; plumbed here with the INCOME ramp).
-	defaultMinContractEarners = 1
 	// defaultHaulerShipType is the shipyard ship-type bought for a contract hauler (RULINGS #5: the
 	// asset is a knob). A light hauler is the cold-start contract workhorse (cheap, adequate cargo).
 	defaultHaulerShipType = "SHIP_LIGHT_HAULER"
@@ -86,32 +82,17 @@ const (
 	// the freshsizer once the first market is covered (coverage>0) and a freshsizer coordinator runs.
 	defaultDeferProbeToFreshsizer = 0
 
-	// sp-fp3y GATE-entry gate — UNCONDITIONALLY ON (sp-1cbxz): GATE entry requires a genuinely SCALED
-	// contract op (haulers + a SUSTAINED $/hr) — closing the ktio deadlock where one contract payout spiked
-	// income past income_bar and drove GATE with ZERO haulers, latching on ConstructionStarted. Its two
-	// always-consulted calibration bars follow.
+	// GATE-entry gate — UNCONDITIONALLY ON (sp-1cbxz): GATE entry requires a genuinely SCALED contract op
+	// (the FULL fleet at the auto-scaler's live target) — closing the ktio deadlock where one contract
+	// payout spiked income past income_bar and drove GATE with ZERO haulers, latching on
+	// ConstructionStarted. Its always-consulted calibration floor follows.
 	//
-	// defaultGateIncomeBar is the SUSTAINED (rolling-mean over gateIncomeWindowTicks) net credits/hour the
-	// contract fleet must clear to enter GATE. Deliberately well ABOVE
-	// income_bar (10000): a single contract payout momentarily spikes instantaneous income past 10000 (the
-	// ktio false trigger), but a genuinely scaled 2–4 hauler op sustains net $/hr in this range once warmed
-	// while a lone spike, smoothed over the window alongside the net-negative spend ticks, nets far less.
-	// The primary field-calibration knob for the armed gate (tunable via gate_income_bar). It is a
-	// phase-transition threshold like income_bar, NOT a money-floor (RULINGS #5) — no spend guard reads it.
-	// A bar set too HIGH only delays GATE; too low re-opens the spurious trigger.
-	defaultGateIncomeBar = 50000.0
 	// defaultGateMinHaulers is the escape hatch's STARVED-EARNER floor (sp-gm7r repurposed it): a sticky GATE
 	// holding fewer than this many contract haulers reads as under-scaled and (with low progress, for the
 	// hysteresis streak) re-derives INCOME. GATE ENTRY no longer uses it — the full scaler-target bar is the
 	// entry gate — so it scopes only the release of a stuck latch: 2 clearly marks a starved op (a lone
 	// frigate spike latched GATE with ZERO haulers). Tunable via gate_min_haulers.
 	defaultGateMinHaulers = 2
-	// gateIncomeWindowTicks is how many recent reconcile ticks the GATE-entry $/hr is smoothed over
-	// (the "sustained" window). A call-site constant, not a knob — a shape detail of the sustained metric,
-	// bounded in wall-clock by tick_secs (at the 45s cold-start cadence, 5 ticks ≈ 3.75 min of sustained
-	// earning). The window must be FULL before it can clear the bar, so a spike on a fresh/short history
-	// (the first ticks after arming, or after a restart drops the window) can never trip GATE.
-	gateIncomeWindowTicks = 5
 
 	// The sp-sjvv cold-start contract-scaling feature and the dedicated contract auto-scaler are now
 	// UNCONDITIONALLY launched EARLY (sp-1cbxz) during the DATA/INCOME scaling window: (1) bootstrap
@@ -123,7 +104,7 @@ const (
 
 	// Death-spiral cure (UNCONDITIONALLY ON, sp-gm7r removed the master flag). It replaces the premature
 	// GATE-entry gate with a three-part cure: (1) GATE entry requires the FULL contract fleet (delivery +
-	// depot) to have reached the auto-scaler's live achievable target, a SUSTAINED $/hr, AND a treasury
+	// depot) to have reached the auto-scaler's live achievable target AND a treasury
 	// surplus war chest (gateFunded); (2) GATE keeps the WHOLE contract fleet earning and never repurposes it
 	// to construction (sp-cdxy2: the contract fleet is EXCLUSIVE — the gate BUYS its own workers instead of
 	// cannibalizing contracts, which had churned buy→repurpose→buy against the scaler); (3) a sticky GATE that
@@ -406,14 +387,12 @@ type RunBootstrapCoordinatorCommand struct {
 
 	TickIntervalSecs int
 	ProbeTarget      int
-	CoverageBar      float64
 	ProbeShipType    string
 
 	// INCOME-phase knobs (RULINGS #5; the zero value defers to the documented default).
-	HaulerTarget       int     // INCOME hull cap — actual = one per viable contract hub, up to this.
-	IncomeBar          float64 // INCOME→GATE exit: realized net credits/hour the fleet must clear.
-	MinContractEarners int     // haulers kept on contracts through GATE.
-	HaulerShipType     string  // the shipyard ship-type bought for a contract hauler.
+	HaulerTarget   int     // INCOME hull cap — actual = one per viable contract hub, up to this.
+	IncomeBar      float64 // INCOME→GATE exit: realized net credits/hour the fleet must clear.
+	HaulerShipType string  // the shipyard ship-type bought for a contract hauler.
 
 	// GATE-phase knob (RULINGS #5; the zero value defers to the documented default).
 	GateWorkerTarget int // GATE worker cap — actual = ~one per active gate-material chain + delivery.
@@ -483,20 +462,10 @@ type RunBootstrapCoordinatorHandler struct {
 	buyBridgeMu sync.Mutex
 	buyBridges  map[string]*probeBuyBridge
 
-	// incomeWindows holds the per-container GATE-entry income smoother (sp-fp3y): the rolling window of
-	// recent realized-$/hr readings whose mean is the SUSTAINED $/hr the (unconditionally-on) scaled-gate-entry
-	// gate reads, so a lone instantaneous income spike never trips GATE with an unscaled op (the ktio deadlock).
-	// Keyed by ContainerID for the same singleton reason as buyBridges; incomeWindowMu guards the MAP only (one
-	// container's ticks are sequential — see incomeWindowFor). Consulted every tick; like buyBridges it is NOT a
-	// progress cursor (dropped on restart, and GATE entry re-defers a few ticks while it re-fills), so
-	// phase/progress stays derived purely from observation.
-	incomeWindowMu sync.Mutex
-	incomeWindows  map[string]*incomeWindow
-
 	// underScaledStreaks holds the per-container escape-hatch hysteresis counter: consecutive ticks a
 	// sticky-latched GATE has been under-scaled with ~no construction, so the GATE→INCOME re-derive fires only
 	// after gate_reentry_streak_ticks in a row (anti-thrash). Keyed by ContainerID for the same singleton
-	// reason as buyBridges/incomeWindows; underScaledStreakMu guards the MAP only (one container's ticks are
+	// reason as buyBridges; underScaledStreakMu guards the MAP only (one container's ticks are
 	// sequential). Consulted every tick (sp-gm7r removed the flag); NOT a progress cursor — dropped on
 	// restart (the re-derive just re-accrues from 0, delaying one window, never double-acting).
 	underScaledStreakMu sync.Mutex
@@ -650,7 +619,7 @@ func (h *RunBootstrapCoordinatorHandler) Handle(ctx context.Context, request com
 	// Startup log only — resolve from the launch command alone (nil live). Per-tick reconcile
 	// re-resolves WITH the live snapshot (sp-r6yq), so a later tune is reflected from that tick on.
 	cfg := resolveBootstrapConfig(cmd, nil)
-	logger.Log("INFO", fmt.Sprintf("Bootstrap coordinator starting (tick %s, dry_run=%v, disabled=%v, probe_target=%d, coverage_bar=%.2f, hauler_target=%d, income_bar=%.0f, min_contract_earners=%d)", cfg.Tick, cfg.DryRun, cfg.Disabled, cfg.ProbeTarget, cfg.CoverageBar, cfg.HaulerTarget, cfg.IncomeBar, cfg.MinContractEarners), map[string]interface{}{
+	logger.Log("INFO", fmt.Sprintf("Bootstrap coordinator starting (tick %s, dry_run=%v, disabled=%v, probe_target=%d, hauler_target=%d, income_bar=%.0f)", cfg.Tick, cfg.DryRun, cfg.Disabled, cfg.ProbeTarget, cfg.HaulerTarget, cfg.IncomeBar), map[string]interface{}{
 		"action":       "bootstrap_start",
 		"container_id": cmd.ContainerID,
 		"dry_run":      cfg.DryRun,
