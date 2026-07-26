@@ -222,10 +222,22 @@ func (w *incomeWorld) dedicatePurchasing() {
 	w.frigateOnContract = false
 }
 
+// retireFrigate models the fleet unassign behind RetireFromContract: it writes an EMPTY dedication, so
+// it clears whichever tag the frigate carried — the contract one at the stale-tag retire, the purchasing
+// one when a stranded buy ship is handed back to earning.
 func (w *incomeWorld) retireFrigate() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.frigateOnContract = false
+	w.commandFrigatePurchasing = false
+}
+
+// earn models the sole earner booking contract income between ticks — the treasury growth that a frigate
+// held off its loop can never produce.
+func (w *incomeWorld) earn(credits int64) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.treasury += credits
 }
 
 // purchaserAtYard models the freed+dedicated command frigate arriving at the home shipyard (sp-5nd2

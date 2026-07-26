@@ -69,6 +69,7 @@ type reconcileResult struct {
 	ContractRun        bool // batch-contract was launched this tick
 	FrigateLoopStarted bool // the command frigate's continuous contract loop was started this tick (sp-rype)
 	FrigatePivoted     bool // the first-hauler pivot fired this tick: frigate loop STOPPED + dedicated the exclusive purchasing ship (sp-7r7w). With a readable yard price the buy also runs this tick; on a COLD price it is a SEPARATE later tick once the freed frigate is positioned (sp-5nd2 fault-2)
+	PurchaserReleased  bool // the pivot's purchasing dedication was cleared this tick, handing a stranded frigate back to earning (the buy it was freed for had moved out of reach)
 	TradeHullSeeded    bool // the cold-start hull-routing trade-seed fired this tick (sp-192k4): acquisition #2 bought + dedicated to the trade fleet + the trade coordinator ensured
 	PlacementSlots     int  // fixed delivery slots this era resolves — where the ramp spreads its hulls (for the heartbeat)
 
@@ -734,7 +735,7 @@ func (h *RunBootstrapCoordinatorHandler) declareHomeScoutPost(ctx context.Contex
 func (h *RunBootstrapCoordinatorHandler) emitHeartbeat(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, phase Phase, obs Observation, res reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
-	delta := fmt.Sprintf("bought=%d home_post=%v haulers_bought=%d trade_seeded=%v frigate_retired=%v batch_contract=%v frigate_loop=%v construction_started=%v mfg_ensured=%v mfg_bounced=%v workers_released=%d gate_workers_bought=%d handoff=%v", res.Purchased, res.HomePostDeclared, res.HaulersBought, res.TradeHullSeeded, res.FrigateRetired, res.ContractRun, res.FrigateLoopStarted, res.ConstructionStartRan, res.MfgEnsured, res.MfgBounced, res.WorkersReleased, res.GateWorkersBought, res.HandoffLaunched)
+	delta := fmt.Sprintf("bought=%d home_post=%v haulers_bought=%d trade_seeded=%v frigate_retired=%v batch_contract=%v frigate_loop=%v purchaser_released=%v construction_started=%v mfg_ensured=%v mfg_bounced=%v workers_released=%d gate_workers_bought=%d handoff=%v", res.Purchased, res.HomePostDeclared, res.HaulersBought, res.TradeHullSeeded, res.FrigateRetired, res.ContractRun, res.FrigateLoopStarted, res.PurchaserReleased, res.ConstructionStartRan, res.MfgEnsured, res.MfgBounced, res.WorkersReleased, res.GateWorkersBought, res.HandoffLaunched)
 	next := h.nextAction(phase, obs)
 	blockers := res.Blocker
 	if blockers == "" {
@@ -763,6 +764,7 @@ func (h *RunBootstrapCoordinatorHandler) emitHeartbeat(ctx context.Context, cmd 
 		"frigate_retired":    res.FrigateRetired,
 		"batch_contract":     res.ContractRun,
 		"frigate_loop":       res.FrigateLoopStarted,
+		"purchaser_released": res.PurchaserReleased,
 		"home_post_declared": res.HomePostDeclared,
 		"gate_site":          obs.GateSite,
 		"construction_pct":   obs.ConstructionPercent,

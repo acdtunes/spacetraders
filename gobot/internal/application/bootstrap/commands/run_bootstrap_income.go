@@ -13,7 +13,7 @@ import (
 // coordinator, contract coordinator, and contract scaler stay phase-BLIND (all the phase logic lives here).
 const tradeFleetTag = "trade"
 
-// actIncome runs the CONTRACT-INCOME workstream (Slice 2): the contract-income ramp. Four independently-guarded,
+// actIncome runs the CONTRACT-INCOME workstream (Slice 2): the contract-income ramp. Five independently-guarded,
 // idempotent actions on the observed delta, ordered so the fleet earns from tick 1 and never deadlocks:
 //
 //  1. Retire the command frigate from contract work IF it still carries the "contract" tag (it is a
@@ -29,7 +29,12 @@ const tradeFleetTag = "trade"
 //     the frigate parks idle at the shipyard after its hour-0 probe buy and income never flows — the
 //     stall this fixes. The loop and the coordinator are mutually exclusive at the daemon (per-player
 //     single CONTRACT_WORKFLOW worker), so there is no double-claim (RULINGS #7).
-//  4. Staged, capital-gated hull acquisition, ROUTED BY ORDER (sp-192k4): acquisition #1 → the contract
+//  4. Hand a STRANDED purchasing frigate back to earning. Step 5's pivot makes the frigate the exclusive
+//     buy ship on the evidence that hauler #1 is within reach; when the ask sits outside the
+//     working-capital floor instead, that same frigate is the fleet's only earner and it is not earning.
+//     Clearing its dedication returns it to step 3, and it re-pivots by itself once the treasury clears
+//     the floor. Skipped whenever the buy is genuinely within reach — the pivot owns that case.
+//  5. Staged, capital-gated hull acquisition, ROUTED BY ORDER (sp-192k4): acquisition #1 → the contract
 //     fleet, #2 → the TRADE fleet (the trade-seed, held until the first contract hull exists), #3… →
 //     contract again. The ramp climbs to the FIXED Phase-1 hauler target, placing each hull on a distinct
 //     fixed delivery slot. The COUNT guard (haulers < haulerTarget) is the double-buy protection;
@@ -79,7 +84,12 @@ func (h *RunBootstrapCoordinatorHandler) actIncome(ctx context.Context, cmd *Run
 		h.startFrigateContractLoop(ctx, cmd, obs, res)
 	}
 
-	// (4) Staged hull acquisition. The target is the FIXED Phase-1 hauler count — a constant of the plan,
+	// (4) Hand a STRANDED purchasing frigate back to earning, so (3) puts it on its loop next tick.
+	if h.releaseStrandedPurchaser(ctx, cmd, obs, res) {
+		return
+	}
+
+	// (5) Staged hull acquisition. The target is the FIXED Phase-1 hauler count — a constant of the plan,
 	// never a per-tick reading of markets or of whatever contract is live, so the ramp climbs to one size
 	// and stays there instead of resizing under it. The count guard is the double-buy protection; the
 	// era's fixed delivery slots decide only WHERE each hull lands.
@@ -87,7 +97,7 @@ func (h *RunBootstrapCoordinatorHandler) actIncome(ctx context.Context, cmd *Run
 	desired := haulerTarget
 	contractHaulers := len(obs.Haulers)
 
-	// (4a) HULL-ROUTING (sp-192k4): route cold-start light-hull acquisitions by order — #1 →
+	// (5a) HULL-ROUTING (sp-192k4): route cold-start light-hull acquisitions by order — #1 →
 	// contract, #2 → TRADE, #3… → contract. Once the FIRST contract hull exists and no trade hull does yet,
 	// seed ONE trade-dedicated hull + ensure the trade coordinator, then RETURN so THIS tick's acquisition
 	// is the trade seed, not a 2nd contract hauler. The trade hull EXISTING (obs.TradeHullCount) is the
@@ -99,13 +109,80 @@ func (h *RunBootstrapCoordinatorHandler) actIncome(ctx context.Context, cmd *Run
 		return
 	}
 
-	// (4b) Staged contract-hauler acquisition — HELD at 1 contract hull until the trade hull is seeded
+	// (5b) Staged contract-hauler acquisition — HELD at 1 contract hull until the trade hull is seeded
 	// (the (contractHaulers == 0 || TradeHullCount >= 1) guard), so acquisition #2 is the trade seed above:
 	// contractHaulers==0 still buys contract #1 unchanged; once a trade hull exists contract buying resumes
 	// for #3…, capped at the fixed hauler target.
 	if contractHaulers < desired && (contractHaulers == 0 || obs.TradeHullCount >= 1) {
 		h.maybeBuyHauler(ctx, cmd, obs, res)
 	}
+}
+
+// pivotWouldHold reports whether the first-hauler pivot's capital hold applies to `ask`: committing the
+// sole earner to a buy that would leave the contract op under its working-capital floor strands it,
+// because with the earner stopped nothing then makes up the difference. A 0 ask is the absence of any
+// yard reading — no evidence, and no evidence is no reason to hold. It decides only WHEN the earner is
+// committed; the floor it reads is the same cushion≥floor test the buy itself gates on, untouched.
+func pivotWouldHold(treasury, ask int64) bool {
+	return ask > 0 && treasury-ask < contractWorkingCapitalFloor
+}
+
+// releaseStrandedPurchaser hands the command frigate back to earning when the pivot has left it holding a
+// purchase it cannot make, and reports whether it did. The pivot stops the pre-hauler sole earner and
+// dedicates it the exclusive buy ship on the evidence that hauler #1 is within reach; when the ask then
+// sits outside the working-capital floor the fleet has NO earner at all — the loop is stopped, the
+// treasury is frozen at whatever it held, and the ask can therefore never come within reach. Clearing the
+// dedication is the whole action: the step-3 loop gate reads it and restarts the earner on its own next
+// tick, and the frigate re-pivots by itself once the treasury clears the floor.
+//
+// It fires only on that exact shape — no hauler bought yet, the frigate carrying the purchasing
+// dedication with no loop of its own running, and an ask that the SAME hold the pivot weighs rejects.
+// Release and pivot therefore read one decision on one treasury and one ask, and cannot ping-pong: the
+// release fires only where the pivot would hold, and a frigate freed BY the pivot is by construction one
+// the release leaves alone.
+//
+// Nav state is deliberately not consulted. Clearing a dedication writes a tag — it commands nothing and
+// abandons nothing, unlike stopping a loop mid-delivery, which is why the pivot alone guards on empty
+// cargo. So a frigate still flying to the yard for the price read is released on the same terms as one
+// parked at it: that flight is the longest-lived form of the strand, and its only purpose is to price a
+// hull this very decision has established the treasury cannot cover.
+//
+// Nothing here spends, and the working-capital floor is read, never moved (RULINGS #4).
+func (h *RunBootstrapCoordinatorHandler) releaseStrandedPurchaser(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult) bool {
+	if len(obs.Haulers) > 0 || !obs.CommandFrigatePurchasing || obs.CommandFrigateID == "" || obs.FrigateContractLoopRunning {
+		return false
+	}
+	if h.haulAcquirer == nil || h.retirer == nil {
+		return false
+	}
+	logger := common.LoggerFromContext(ctx)
+
+	// The ask is live while the yard prices and the last one on record while it is cold, so readability
+	// changes how fresh the evidence is, never which decision it supports.
+	ask, _, _, _ := h.haulAcquirer.PriceCheck(ctx, cmd.PlayerID, haulerShipType)
+	if !pivotWouldHold(obs.Treasury, ask) {
+		return false
+	}
+
+	if err := h.retirer.RetireFromContract(ctx, cmd.PlayerID, obs.CommandFrigateID); err != nil {
+		res.Blocker = "purchaser_release_error"
+		logger.Log("ERROR", fmt.Sprintf("Bootstrap could not clear the stranded command frigate %s purchasing dedication — it stays the buy ship with nothing to buy; retry next tick: %v", obs.CommandFrigateID, err), map[string]interface{}{
+			"action":       "bootstrap_purchaser_release_error",
+			"container_id": cmd.ContainerID,
+			"ship":         obs.CommandFrigateID,
+		})
+		return false
+	}
+	res.PurchaserReleased = true
+	logger.Log("INFO", fmt.Sprintf("Bootstrap RELEASED the stranded purchasing frigate %s back to earning: hauler ask=%d treasury=%d cushion=(treasury−ask)=%d floor=%d — the buy it was freed for is out of reach and nothing else earns, so its dedication is cleared and it goes back on its contract loop", obs.CommandFrigateID, ask, obs.Treasury, obs.Treasury-ask, contractWorkingCapitalFloor), map[string]interface{}{
+		"action":       "bootstrap_purchaser_released",
+		"container_id": cmd.ContainerID,
+		"ship":         obs.CommandFrigateID,
+		"last_ask":     ask,
+		"treasury":     obs.Treasury,
+		"floor":        contractWorkingCapitalFloor,
+	})
+	return true
 }
 
 // retireFrigate clears the command frigate's contract-fleet dedication (reuses fleet unassign). The
@@ -520,7 +597,7 @@ func (h *RunBootstrapCoordinatorHandler) awaitHaulerPrice(ctx context.Context, c
 		// last ask it gave against the SAME cushion≥floor test the readable path applies (RULINGS #4/#5)
 		// — the money guard is untouched, this only decides WHEN the frigate is freed. No ask means no
 		// evidence, and no evidence is no reason to hold.
-		if lastAsk > 0 && obs.Treasury-lastAsk < contractWorkingCapitalFloor {
+		if pivotWouldHold(obs.Treasury, lastAsk) {
 			res.Blocker = "capital_gate"
 			logger.Log("INFO", fmt.Sprintf("Bootstrap first-hauler pivot HELD (not freeing the earner): last hauler ask=%d treasury=%d cushion=(treasury−price)=%d floor=%d — keeping the command frigate %s on its contract loop EARNING until the treasury clears the working-capital floor", lastAsk, obs.Treasury, obs.Treasury-lastAsk, contractWorkingCapitalFloor, obs.CommandFrigateID), map[string]interface{}{
 				"action":       "bootstrap_pivot_held_unaffordable",
