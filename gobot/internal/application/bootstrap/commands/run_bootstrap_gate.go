@@ -488,6 +488,13 @@ func (h *RunBootstrapCoordinatorHandler) actExpansion(ctx context.Context, cmd *
 		handedOff = h.ensureStandingHandoff(ctx, cmd, cfg, res)
 	}
 
+	// The hand-off also RELEASES the home scout reinforcement — keyed on the WORLD signal (reaching
+	// EXPANSION means the home gate reads BUILT), never on the hand-off's outcome, exactly like the
+	// exit itself: confirmed or bounded-WARN, the floor comes down, and the boot-standing sensing
+	// coordinator resizes home on its own next tick. Placed before the exit decisions so every
+	// EXPANSION tick reaches it; its own guard makes repeats write-free.
+	h.releaseHomeScoutReinforcement(ctx, cmd, cfg, obs, res)
+
 	if !handedOff {
 		// Hold and retry while the fault could still be transient, so a fleet that has only just finished
 		// its gate exits with the standing economy confirmed live rather than on the bounded path.
@@ -510,6 +517,87 @@ func (h *RunBootstrapCoordinatorHandler) actExpansion(ctx context.Context, cmd *
 		"action":       "bootstrap_complete",
 		"container_id": cmd.ContainerID,
 	})
+}
+
+// releaseHomeScoutReinforcement lowers the HOME scout post's manning floor to expansionHomeMinHulls
+// once the arc is in EXPANSION: the cold-start reinforcement (the probeTarget floor that pinned
+// probeTarget probes on home so market data flowed before the standing economy existed) is released,
+// and the probe-sensing coordinator — boot-standing, so live whatever the hand-off did — resizes home
+// to its standard rule on its own next tick; the freed probes go idle and become its buyer supply.
+// It reuses the declarer's narrow floor seam: the same equality-guarded min_hulls-only write the
+// cold-start declaration stamps probeTarget through, so no second port to the scout-post store exists.
+//
+// Idempotency is layered like the exit's own safety. Within a run, the per-container released flag
+// makes every repeat — the WARN path's hold ticks, and any runner re-entry after the terminal exit —
+// issue ZERO further port calls. Across a restart the flag is gone, and the single re-issued release
+// is absorbed by the declarer's equality guard (a floor already at the target is a zero-write no-op).
+//
+// It is best-effort and can NEVER hold the terminal exit (no res.Blocker, no effect on Done): a nil
+// declarer, an unresolved home system, or a write error is logged on its own line and left unmarked,
+// so the next tick — or the next daemon boot, bootstrap being boot-standing — retries it. A mature
+// fleet must never be pinned in the per-tick full-fleet re-read over a floor write.
+func (h *RunBootstrapCoordinatorHandler) releaseHomeScoutReinforcement(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
+	logger := common.LoggerFromContext(ctx)
+
+	if h.homeReinforcementAlreadyReleased(cmd.ContainerID) {
+		return // already released this run — a repeat invocation performs zero writes
+	}
+	if cfg.DryRun {
+		logger.Log("INFO", fmt.Sprintf("Bootstrap DRY-RUN: WOULD lower the home scout post's manning floor to %d to release the cold-start reinforcement (took no action)", expansionHomeMinHulls), map[string]interface{}{
+			"action":       "bootstrap_would_release_home_reinforcement",
+			"container_id": cmd.ContainerID,
+		})
+		return
+	}
+	if obs.HomeSystem == "" {
+		logger.Log("WARN", "Bootstrap EXPANSION could not release the home scout reinforcement: no home system resolved this tick — the floor stays until a later tick or the next boot resolves it", map[string]interface{}{
+			"action":       "bootstrap_home_reinforcement_skipped",
+			"container_id": cmd.ContainerID,
+		})
+		return
+	}
+	if h.postDeclarer == nil {
+		logger.Log("WARN", "Bootstrap EXPANSION could not release the home scout reinforcement: no scout-post declarer wired — the home floor keeps its cold-start value until the next boot", map[string]interface{}{
+			"action":       "bootstrap_home_reinforcement_skipped",
+			"container_id": cmd.ContainerID,
+		})
+		return
+	}
+	if err := h.postDeclarer.DeclareHomeScoutPost(ctx, cmd.PlayerID, obs.HomeSystem, expansionHomeMinHulls); err != nil {
+		logger.Log("ERROR", fmt.Sprintf("Bootstrap EXPANSION failed to lower the home scout post floor (retried next tick/boot; the exit is not held on it): %v", err), map[string]interface{}{
+			"action":       "bootstrap_home_reinforcement_error",
+			"container_id": cmd.ContainerID,
+			"system":       obs.HomeSystem,
+		})
+		return
+	}
+	h.markHomeReinforcementReleased(cmd.ContainerID)
+	logger.Log("INFO", fmt.Sprintf("Bootstrap released the home scout reinforcement: %s manning floor lowered to %d — the probe-sensing coordinator resizes home to its standard rule next tick and the freed probes become buyer supply", obs.HomeSystem, expansionHomeMinHulls), map[string]interface{}{
+		"action":       "bootstrap_home_reinforcement_released",
+		"container_id": cmd.ContainerID,
+		"system":       obs.HomeSystem,
+		"min_hulls":    expansionHomeMinHulls,
+	})
+}
+
+// homeReinforcementAlreadyReleased reports whether this run already lowered the home floor for the
+// container. Keyed by ContainerID like the other per-container state because this handler is a
+// REGISTERED SINGLETON; the mutex guards the map, and one container's ticks are sequential.
+func (h *RunBootstrapCoordinatorHandler) homeReinforcementAlreadyReleased(containerID string) bool {
+	h.homeReinforcementMu.Lock()
+	defer h.homeReinforcementMu.Unlock()
+	return h.homeReinforcementReleased[containerID]
+}
+
+// markHomeReinforcementReleased records the successful floor release for the container, so every
+// later invocation this run skips the write path entirely.
+func (h *RunBootstrapCoordinatorHandler) markHomeReinforcementReleased(containerID string) {
+	h.homeReinforcementMu.Lock()
+	defer h.homeReinforcementMu.Unlock()
+	if h.homeReinforcementReleased == nil {
+		h.homeReinforcementReleased = map[string]bool{}
+	}
+	h.homeReinforcementReleased[containerID] = true
 }
 
 // bumpExpansionHoldStreak increments and returns the per-container count of consecutive EXPANSION ticks

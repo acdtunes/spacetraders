@@ -126,6 +126,16 @@ const (
 	// re-accrues from 0, and the exit is a pure loop-exit (no spend, no assignment), so it never
 	// double-acts. 3 ticks ≈ 2.25 min at the 45s cadence.
 	expansionHandoffRetryTicks = 3
+
+	// expansionHomeMinHulls is the home scout post's manning floor from EXPANSION on. Cold start pins
+	// probeTarget probes on home (the MinHulls floor the probe-sensing coordinator honours) so market
+	// data flows before the standing economy exists; reaching EXPANSION means that reinforcement's job
+	// is done, so the hand-off lowers the floor and the sensing coordinator resizes home to its
+	// standard rule on its own next tick — the freed probes go idle and become the sensing buyer's
+	// supply. 1 and not 0, deliberately: a floored (MinHulls > 0) post is also PERMANENT to the
+	// sensing coordinator — never removed even when home falls out of sensing scope — so home always
+	// keeps a probe. Part of the cold-start shape, so a constant, not a knob (RULINGS #5).
+	expansionHomeMinHulls = 1
 )
 
 // DefaultTickInterval is defaultBootstrapTickSeconds as a wall-clock duration. The container
@@ -170,9 +180,11 @@ type ProbeAcquirer interface {
 // Idempotent — a post already declared for the system is preserved, not re-touched — so bootstrap
 // can call it every tick. This REPLACES the old probe-holding scout-all-markets sweep, which
 // held the probes and starved the now-boot-standing coordinator (sp-pt7d, Admiral intent: bootstrap
-// buys probes but assigns them to nothing; the coordinator mans them). minHulls is the permanent
-// manning FLOOR (probeTarget, sp-2ci9y) stamped on the home post so the freshsizer never sizes it
-// below the probes bootstrap bought — passed through and applied idempotently.
+// buys probes but assigns them to nothing; the coordinator mans them). minHulls is the manning FLOOR
+// stamped on the home post through the equality-guarded min_hulls-only write (a floor already at the
+// requested value is a zero-write no-op): probeTarget through cold start so the sensing coordinator
+// never sizes home below the probes bootstrap bought, lowered to expansionHomeMinHulls at the
+// EXPANSION hand-off, which releases the reinforcement to the sensing coordinator's standard rule.
 type ScoutPostDeclarer interface {
 	DeclareHomeScoutPost(ctx context.Context, playerID int, system string, minHulls int) error
 }
@@ -444,6 +456,15 @@ type RunBootstrapCoordinatorHandler struct {
 	// (no spend, no assignment), so it can never double-act.
 	expansionHoldStreakMu sync.Mutex
 	expansionHoldStreaks  map[string]int
+
+	// homeReinforcementReleased marks, per container, that this run already lowered the home scout
+	// post's manning floor at EXPANSION, so the hold ticks and any runner re-entry after the terminal
+	// exit issue ZERO further floor writes. Keyed by ContainerID for the same singleton reason as the
+	// streaks; homeReinforcementMu guards the MAP only (one container's ticks are sequential). NOT a
+	// progress cursor — dropped on restart, where the single re-issued release is absorbed by the
+	// declarer's equality-guarded min_hulls write (a floor already at the target is a zero-write no-op).
+	homeReinforcementMu       sync.Mutex
+	homeReinforcementReleased map[string]bool
 }
 
 // NewRunBootstrapCoordinatorHandler wires the coordinator. clock defaults to the real clock when
