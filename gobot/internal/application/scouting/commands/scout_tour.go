@@ -317,6 +317,53 @@ func (h *ScoutTourHandler) holdWhileDormant(ctx context.Context, cmd *ScoutTourC
 	}
 }
 
+// hotCircuit restricts a STANDING tour's circuit to its post's stage-2 hot
+// set — the markets that DEAL IN whitelisted goods — read fresh each circuit
+// so a stage flip lands on the next circuit without a respawn. Every failure
+// direction flies the FULL circuit, in check order: an unwired reader; a
+// finite tour (a sweep/first-scan pass must see every market); a read error —
+// the error wins even over a non-empty list returned beside it, because a
+// blind signal may widen scanning, never narrow it; an empty set (stage 1 /
+// cold start); and an intersection under two legs — a lone repeated waypoint
+// is a no-op navigate that never rescans, so restricting that far would blind
+// the post's only hot market.
+func (h *ScoutTourHandler) hotCircuit(ctx context.Context, cmd *ScoutTourCommand, tourOrder []string) []string {
+	if h.dormancy == nil || len(tourOrder) < 2 {
+		return tourOrder
+	}
+	if cmd.Iterations != -1 {
+		return tourOrder
+	}
+	system := shared.ExtractSystemSymbol(tourOrder[0])
+	hot, err := h.dormancy.HotWaypoints(ctx, cmd.PlayerID.Value(), system)
+	if err != nil {
+		common.LoggerFromContext(ctx).Log("WARN", "Hot-set read failed — flying the full circuit", map[string]interface{}{
+			"ship_symbol": cmd.ShipSymbol,
+			"action":      "hot_circuit_read_failed",
+			"system":      system,
+			"error":       err.Error(),
+		})
+		return tourOrder
+	}
+	if len(hot) == 0 {
+		return tourOrder
+	}
+	hotSet := make(map[string]bool, len(hot))
+	for _, waypoint := range hot {
+		hotSet[waypoint] = true
+	}
+	restricted := make([]string, 0, len(tourOrder))
+	for _, waypoint := range tourOrder {
+		if hotSet[waypoint] {
+			restricted = append(restricted, waypoint)
+		}
+	}
+	if len(restricted) < 2 {
+		return tourOrder
+	}
+	return restricted
+}
+
 // loadShipAndPrepareTour loads ship data, rotates tour to start at current location, and initializes response
 func (h *ScoutTourHandler) loadShipAndPrepareTour(
 	ctx context.Context,
@@ -569,9 +616,10 @@ func (h *ScoutTourHandler) executeMultiMarketTour(
 			return nil
 		}
 
+		legs := h.hotCircuit(ctx, cmd, tourOrder)
 		circuitStart := h.clock.Now()
 
-		for _, marketWaypoint := range tourOrder {
+		for _, marketWaypoint := range legs {
 			navResult, err := h.navigateToMarket(ctx, cmd, marketWaypoint, iteration)
 			if err != nil {
 				return err
@@ -608,7 +656,7 @@ func (h *ScoutTourHandler) executeMultiMarketTour(
 			"ship_symbol": cmd.ShipSymbol,
 			"action":      "circuit_pace",
 			"duration":    wait.String(),
-			"markets":     len(tourOrder),
+			"markets":     len(legs),
 		})
 		if !h.sleepInterruptibly(ctx, wait) {
 			logger.Log("INFO", "Scout tour cancelled by context", map[string]interface{}{

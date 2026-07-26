@@ -169,6 +169,34 @@ func (r *GormScoutPostRepository) IsDormant(ctx context.Context, playerID int, s
 	}
 }
 
+// HotWaypoints returns the (playerID, system) STANDING post's stage-2 circuit
+// in the open era — the scout tour's restriction read (scouting.DormancyReader).
+// A missing post, a between-eras gap, and a sweep-once post all read empty:
+// only a standing post may narrow a circuit, and a sweep's one pass IS the
+// first scan, so it must see everything. Errors are surfaced so the consumer
+// can fail toward the full circuit.
+func (r *GormScoutPostRepository) HotWaypoints(ctx context.Context, playerID int, system string) ([]string, error) {
+	openEra := r.openEraID(ctx)
+	if openEra == nil {
+		return nil, nil
+	}
+	var model ScoutPostModel
+	err := r.db.WithContext(ctx).
+		Where("player_id = ? AND system_symbol = ? AND era_id = ?", playerID, system, *openEra).
+		First(&model).Error
+	switch {
+	case err == nil:
+		if model.Kind != string(domainScouting.PostKindStanding) {
+			return nil, nil
+		}
+		return unmarshalPartition(model.HotWaypoints), nil
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("failed to read scout post hot waypoints: %w", err)
+	}
+}
+
 // Remove deletes the post for (playerID, systemSymbol). Not finding a row to
 // delete is not an error.
 func (r *GormScoutPostRepository) Remove(ctx context.Context, playerID int, systemSymbol string) error {
@@ -198,6 +226,7 @@ func scoutPostToModel(p *domainScouting.ScoutPost) *ScoutPostModel {
 		Hulls:                  hulls,
 		MinHulls:               p.MinHulls,
 		Dormant:                p.Dormant,
+		HotWaypoints:           marshalPartition(p.HotWaypoints),
 		PrimaryPartition:       marshalPartition(p.PrimaryPartition),
 		ExtraSlots:             marshalExtraSlots(p.ExtraSlots),
 		RespawnAttempts:        p.RespawnAttempts,
@@ -223,6 +252,7 @@ func modelToScoutPost(m *ScoutPostModel) *domainScouting.ScoutPost {
 		Hulls:                 hulls,
 		MinHulls:              m.MinHulls,
 		Dormant:               m.Dormant,
+		HotWaypoints:          unmarshalPartition(m.HotWaypoints),
 		PrimaryPartition:      unmarshalPartition(m.PrimaryPartition),
 		ExtraSlots:            unmarshalExtraSlots(m.ExtraSlots),
 		RespawnAttempts:       m.RespawnAttempts,

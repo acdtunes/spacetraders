@@ -400,6 +400,16 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 
 	plan := domainScouting.PlanSensing(profiles, cfg.DepthFloor, cfg.SecondProbeThreshold)
 
+	// hotBySystem is each census system's stage-2 circuit, stamped onto every
+	// standing post below. Membership is goods-based only (see
+	// SystemSensingProfile.HotWaypoints): depth gates whether a post EXISTS,
+	// never which markets it circuits — a crushed market still deals its goods
+	// and stays in the circuit while its prices recover.
+	hotBySystem := make(map[string][]string, len(profiles))
+	for _, profile := range profiles {
+		hotBySystem[profile.System] = profile.HotWaypoints
+	}
+
 	posts, err := h.postRepo.ListActive(ctx, cmd.PlayerID.Value())
 	if err != nil {
 		return fmt.Errorf("failed to list scout posts: %w", err)
@@ -440,6 +450,7 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 			continue
 		}
 		wantDormant := dormant[system]
+		wantHot := hotBySystem[system]
 		existing := standingBySystem[system]
 		if existing == nil {
 			post := &domainScouting.ScoutPost{
@@ -449,6 +460,7 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 				Kind:            domainScouting.PostKindStanding,
 				Hulls:           plan.Hulls[system],
 				Dormant:         wantDormant,
+				HotWaypoints:    wantHot,
 				CreatedAt:       now,
 			}
 			if err := h.postRepo.Upsert(ctx, post); err != nil {
@@ -465,12 +477,13 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 		// home with MinHulls, and honouring it here is what keeps the home
 		// probes manned through INCOME.
 		hulls := existing.FloorHulls(plan.Hulls[system])
-		if existing.HullBudget() == hulls && existing.Dormant == wantDormant {
+		if existing.HullBudget() == hulls && existing.Dormant == wantDormant && sameWaypointList(existing.HotWaypoints, wantHot) {
 			continue
 		}
 		updated := *existing
 		updated.Hulls = hulls
 		updated.Dormant = wantDormant
+		updated.HotWaypoints = wantHot
 		if err := h.postRepo.Upsert(ctx, &updated); err != nil {
 			logger.Log("WARNING", fmt.Sprintf("Failed to update sensing post %s: %v", system, err), nil)
 			continue
@@ -490,15 +503,22 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 			continue
 		}
 		if post.MinHulls > 0 {
-			if post.Dormant {
-				woken := *post
-				woken.Dormant = false
-				if err := h.postRepo.Upsert(ctx, &woken); err != nil {
-					logger.Log("WARNING", fmt.Sprintf("Failed to wake floored sensing post %s: %v", post.SystemSymbol, err), nil)
-					continue
-				}
-				upserts++
+			// Kept, woken if dormant, and its hot set held census-true: a stale
+			// restriction on the kept post would blind exactly the markets
+			// stage 2 exists to watch (no whitelisted goods left ⇒ cleared ⇒
+			// the tour flies its full circuit again).
+			wantHot := hotBySystem[post.SystemSymbol]
+			if !post.Dormant && sameWaypointList(post.HotWaypoints, wantHot) {
+				continue
 			}
+			kept := *post
+			kept.Dormant = false
+			kept.HotWaypoints = wantHot
+			if err := h.postRepo.Upsert(ctx, &kept); err != nil {
+				logger.Log("WARNING", fmt.Sprintf("Failed to refresh floored sensing post %s: %v", post.SystemSymbol, err), nil)
+				continue
+			}
+			upserts++
 			continue
 		}
 		if err := h.postRepo.Remove(ctx, cmd.PlayerID.Value(), post.SystemSymbol); err != nil {
@@ -574,6 +594,22 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 		})
 	}
 	return nil
+}
+
+// sameWaypointList reports element-wise equality of two waypoint lists (nil
+// and empty are equal) — the hot-set delta guard, so a converged tick writes
+// nothing. Both sides are coordinator-stamped sorted asc, so plain positional
+// comparison is exact.
+func sameWaypointList(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // probeSupply is the sensing fleet count: every scout-type hull that is

@@ -703,6 +703,12 @@ type ScoutPostModel struct {
 	// false — every existing post keeps scanning.
 	Dormant bool `gorm:"column:dormant;not null;default:false"`
 
+	// HotWaypoints is the JSON-encoded stage-2 circuit of a STANDING post: the
+	// system's market waypoints dealing in ≥1 whitelisted good, stamped sorted
+	// by the sensing coordinator. NULL/empty ⇒ stage 1 — the tour flies its
+	// full circuit — so every pre-existing row keeps full-circuit scanning.
+	HotWaypoints *string `gorm:"column:hot_waypoints"`
+
 	// PrimaryPartition is the JSON-encoded frozen market tour of the PRIMARY slot
 	// when Hulls>1. NULL/empty ⇒ the primary tours ALL markets (single-hull
 	// behavior), so a single-hull row never carries one and stays byte-identical.

@@ -346,7 +346,7 @@ func TestSensing_SecondProbeAboveThreshold(t *testing.T) {
 func TestSensing_BelowFloorPostRemoved(t *testing.T) {
 	rows := append(richRows("X1-AA1", 3), thinRows("X1-TH1")...)
 	dr := &fakeDepthReader{rows: rows}
-	pr := newSensingPostRepo(sensingPost("X1-AA1", 1), sensingPost("X1-TH1", 1))
+	pr := newSensingPostRepo(hotSensingPost("X1-AA1", 1, 3), sensingPost("X1-TH1", 1))
 	h, _ := newSensingHandler(dr, pr, calmFleet(t), &fakePressure{})
 
 	require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
@@ -364,7 +364,9 @@ func TestSensing_MinHullsPostNeverShrunkOrRemoved(t *testing.T) {
 
 	t.Run("out of scope: kept, not removed, not rewritten", func(t *testing.T) {
 		rows := append(richRows("X1-AA1", 3), thinRows("X1-HOME")...) // home below the floor
-		pr := newSensingPostRepo(sensingPost("X1-AA1", 1), home(3, 3))
+		kept := home(3, 3)
+		kept.HotWaypoints = []string{"X1-HOME-W0"} // census-true under thinRows
+		pr := newSensingPostRepo(hotSensingPost("X1-AA1", 1, 3), kept)
 		h, _ := newSensingHandler(&fakeDepthReader{rows: rows}, pr, calmFleet(t), &fakePressure{})
 
 		require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
@@ -375,7 +377,9 @@ func TestSensing_MinHullsPostNeverShrunkOrRemoved(t *testing.T) {
 
 	t.Run("in scope: never sized below the floor", func(t *testing.T) {
 		rows := append(richRows("X1-AA1", 3), richRows("X1-HOME", 3)...) // plan wants 1 at home
-		pr := newSensingPostRepo(sensingPost("X1-AA1", 1), home(3, 3))
+		floored := home(3, 3)
+		floored.HotWaypoints = hotWaypointsFor("X1-HOME", 3)
+		pr := newSensingPostRepo(hotSensingPost("X1-AA1", 1, 3), floored)
 		h, _ := newSensingHandler(&fakeDepthReader{rows: rows}, pr, calmFleet(t), &fakePressure{})
 
 		require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
@@ -441,7 +445,7 @@ func fourRichSystems() ([]domainScouting.MarketDepthRow, []*domainScouting.Scout
 	posts := make([]*domainScouting.ScoutPost, 0, len(systems))
 	for _, s := range systems {
 		rows = append(rows, richRows(s, 3)...)
-		posts = append(posts, sensingPost(s, 1))
+		posts = append(posts, hotSensingPost(s, 1, 3))
 	}
 	return rows, posts
 }
@@ -499,7 +503,7 @@ func TestSensing_DormancyWritesOnlyDeltas(t *testing.T) {
 
 func TestSensing_SteadyStateZeroWrites(t *testing.T) {
 	rows := append(richRows("X1-AA1", 3), richRows("X1-BB2", 13)...)
-	pr := newSensingPostRepo(sensingPost("X1-AA1", 1), sensingPost("X1-BB2", 2))
+	pr := newSensingPostRepo(hotSensingPost("X1-AA1", 1, 3), hotSensingPost("X1-BB2", 2, 13))
 	h, buyer := newSensingHandler(&fakeDepthReader{rows: rows}, pr, calmFleet(t), &fakePressure{})
 
 	require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
@@ -511,7 +515,7 @@ func TestSensing_SteadyStateZeroWrites(t *testing.T) {
 
 func TestSensing_RotationAdvancesAcrossTicks(t *testing.T) {
 	rows := append(richRows("X1-AA1", 3), richRows("X1-BB2", 3)...)
-	pr := newSensingPostRepo(sensingPost("X1-AA1", 1), sensingPost("X1-BB2", 1))
+	pr := newSensingPostRepo(hotSensingPost("X1-AA1", 1, 3), hotSensingPost("X1-BB2", 1, 3))
 	// share 0.5 over 2 systems ⇒ 1 active per tick, round-robin.
 	h, _ := newSensingHandler(&fakeDepthReader{rows: rows}, pr, calmFleet(t), &fakePressure{wait: 4 * time.Second})
 

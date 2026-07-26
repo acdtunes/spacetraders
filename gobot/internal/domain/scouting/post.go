@@ -101,6 +101,15 @@ type ScoutPost struct {
 	// the API spend being eliminated.
 	Dormant bool
 
+	// HotWaypoints is a standing post's stage-2 circuit: the system's market
+	// waypoints that DEAL IN at least one whitelisted good, stamped sorted
+	// ascending by the sensing coordinator from the same census that scoped the
+	// post. Membership is goods-based only — a crushed market still trades what
+	// it trades, so it stays in the circuit while its prices recover. Empty ⇒
+	// stage 1: the tour flies the FULL circuit. Sweep-once posts never carry
+	// one — the sweep IS the first scan.
+	HotWaypoints []string
+
 	// PrimaryPartition is the primary slot's frozen disjoint market tour when
 	// Hulls>1. Empty ⇒ the slot tours ALL the system's markets (the single-hull
 	// default), so a single-hull post never carries one.

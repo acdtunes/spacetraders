@@ -202,3 +202,58 @@ func TestPlanSensing_TotalHullsIsSumOfHulls(t *testing.T) {
 	require.Equal(t, sum, plan.TotalHulls)
 	require.Equal(t, map[string]int{"X1-AA": 1, "X1-BB": 2, "X1-CC": 1}, plan.Hulls)
 }
+
+// The stage-2 hot set is the sorted waypoint list behind the hot-market idea:
+// every waypoint carrying ≥1 whitelisted good, ascending, with multi-good
+// waypoints collapsed to one entry. Input order must not matter — the
+// coordinator's delta-write guard compares these lists element-wise.
+func TestBuildSensingProfiles_HotWaypointsSortedAndDeduplicated(t *testing.T) {
+	whitelist := map[string]bool{"CLOTHING": true, "FOOD": true}
+	rows := []MarketDepthRow{
+		{System: "X1-AA", Waypoint: "X1-AA-M3", Good: "FOOD", TradeVolume: 5, MidPrice: 5},
+		{System: "X1-AA", Waypoint: "X1-AA-M1", Good: "CLOTHING", TradeVolume: 10, MidPrice: 100},
+		{System: "X1-AA", Waypoint: "X1-AA-M1", Good: "FOOD", TradeVolume: 20, MidPrice: 50},
+		{System: "X1-AA", Waypoint: "X1-AA-M2", Good: "FUEL", TradeVolume: 9999, MidPrice: 9999},
+	}
+
+	profiles := BuildSensingProfiles(rows, whitelist)
+
+	require.Len(t, profiles, 1)
+	require.Equal(t, []string{"X1-AA-M1", "X1-AA-M3"}, profiles[0].HotWaypoints,
+		"sorted asc, deduplicated, and the FUEL-only waypoint excluded — membership is the whitelist")
+}
+
+// THE stage-2 safety property: hot-set membership is decided by what a market
+// DEALS IN, never what it is worth. A garbled/crushed observation (zero
+// volume, zero price) still proves the market trades the good, so it STAYS in
+// the circuit — while the validity-screened figures (Depth, HotMarkets) keep
+// ignoring it so garbage can never inflate probe demand.
+func TestBuildSensingProfiles_HotWaypointsAreGoodsBasedOnly_NoPriceTerm(t *testing.T) {
+	whitelist := map[string]bool{"CLOTHING": true}
+	rows := []MarketDepthRow{
+		{System: "X1-AA", Waypoint: "X1-AA-M1", Good: "CLOTHING", TradeVolume: 10, MidPrice: 100},
+		{System: "X1-AA", Waypoint: "X1-AA-M2", Good: "CLOTHING", TradeVolume: 0, MidPrice: 0},
+	}
+
+	profiles := BuildSensingProfiles(rows, whitelist)
+
+	require.Len(t, profiles, 1)
+	require.Equal(t, []string{"X1-AA-M1", "X1-AA-M2"}, profiles[0].HotWaypoints,
+		"the garbled-price market still DEALS clothing — no price/value term may drop it")
+	require.Equal(t, 1, profiles[0].HotMarkets, "sizing stays validity-screened")
+	require.Equal(t, int64(1000), profiles[0].Depth, "the garbled row contributes no depth")
+}
+
+// A system whose EVERY whitelisted row is garbled still gets no profile at
+// all: the hot set may not conjure scope (profile existence keeps its validity
+// screen, so the era-gap fail-safe and the sensing scope are unmoved).
+func TestBuildSensingProfiles_AllGarbledRowsCreateNoProfile(t *testing.T) {
+	whitelist := map[string]bool{"CLOTHING": true}
+	rows := []MarketDepthRow{
+		{System: "X1-JUNK", Waypoint: "X1-JUNK-M1", Good: "CLOTHING", TradeVolume: 0, MidPrice: 0},
+	}
+
+	profiles := BuildSensingProfiles(rows, whitelist)
+
+	require.Empty(t, profiles, "garbage alone must not create a profile — scope is unmoved")
+}

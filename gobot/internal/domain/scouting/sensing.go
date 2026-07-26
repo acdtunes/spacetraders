@@ -24,6 +24,15 @@ type SystemSensingProfile struct {
 	Depth int64
 	// HotMarkets is the count of distinct waypoints carrying ≥1 whitelisted good.
 	HotMarkets int
+	// HotWaypoints is the sorted (asc) waypoint set carrying ≥1 whitelisted
+	// good — the stage-2 circuit stamped onto the system's standing post.
+	// Membership is goods-based ONLY: no price, value, or spread term may enter
+	// it, because a crushed market still deals its goods and must stay in the
+	// circuit while its prices recover — so even a garbled-price row proves
+	// membership. It can therefore be a SUPERSET of the HotMarkets count, which
+	// stays validity-screened so garbage can never inflate probe demand:
+	// sensing fails open, sizing fails closed.
+	HotWaypoints []string
 }
 
 // BuildSensingProfiles rolls the per-(waypoint,good) rows up to one profile per
@@ -37,6 +46,11 @@ func BuildSensingProfiles(rows []MarketDepthRow, whitelist map[string]bool) []Sy
 		hot   map[string]bool
 	}
 	bySystem := make(map[string]*rollup)
+	// Circuit membership accumulates separately from the rollup, on the
+	// whitelist term ALONE: a garbled-price row proves what a market DEALS IN,
+	// but it must not create a profile — profile existence keeps the validity
+	// screen, so the sensing scope and the era-gap fail-safe are unmoved.
+	hotGoodsBySystem := make(map[string]map[string]bool)
 	for _, row := range rows {
 		if row.System == "" || row.Waypoint == "" {
 			continue
@@ -44,6 +58,12 @@ func BuildSensingProfiles(rows []MarketDepthRow, whitelist map[string]bool) []Sy
 		if !whitelist[row.Good] {
 			continue
 		}
+		hotGoods := hotGoodsBySystem[row.System]
+		if hotGoods == nil {
+			hotGoods = make(map[string]bool)
+			hotGoodsBySystem[row.System] = hotGoods
+		}
+		hotGoods[row.Waypoint] = true
 		if row.TradeVolume <= 0 || row.MidPrice <= 0 {
 			continue
 		}
@@ -59,13 +79,28 @@ func BuildSensingProfiles(rows []MarketDepthRow, whitelist map[string]bool) []Sy
 	profiles := make([]SystemSensingProfile, 0, len(bySystem))
 	for system, agg := range bySystem {
 		profiles = append(profiles, SystemSensingProfile{
-			System:     system,
-			Depth:      agg.depth,
-			HotMarkets: len(agg.hot),
+			System:       system,
+			Depth:        agg.depth,
+			HotMarkets:   len(agg.hot),
+			HotWaypoints: sortedWaypointSet(hotGoodsBySystem[system]),
 		})
 	}
 	sort.Slice(profiles, func(i, j int) bool { return profiles[i].System < profiles[j].System })
 	return profiles
+}
+
+// sortedWaypointSet flattens a waypoint set to a sorted (asc) list; empty ⇒
+// nil, so a stage-1 profile carries no list at all.
+func sortedWaypointSet(set map[string]bool) []string {
+	if len(set) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(set))
+	for waypoint := range set {
+		out = append(out, waypoint)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // SensingPlan is the desired standing-post set for one tick.

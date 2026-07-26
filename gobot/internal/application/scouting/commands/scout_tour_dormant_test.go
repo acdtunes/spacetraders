@@ -24,6 +24,12 @@ type scriptedDormancy struct {
 	calls   int
 	script  func(call int) (bool, error)
 	onCheck func()
+
+	// hotScript scripts the stage-2 hot-set read of the same seam; nil reads
+	// as "no restriction" so every dormancy-only test keeps its full circuit.
+	// Like script, it can return a WRONG non-empty list ALONGSIDE an error.
+	hotCalls  int
+	hotScript func(call int) ([]string, error)
 }
 
 func (s *scriptedDormancy) IsDormant(context.Context, int, string) (bool, error) {
@@ -32,6 +38,14 @@ func (s *scriptedDormancy) IsDormant(context.Context, int, string) (bool, error)
 		s.onCheck()
 	}
 	return s.script(s.calls)
+}
+
+func (s *scriptedDormancy) HotWaypoints(context.Context, int, string) ([]string, error) {
+	s.hotCalls++
+	if s.hotScript == nil {
+		return nil, nil
+	}
+	return s.hotScript(s.hotCalls)
 }
 
 // countingTourMediator counts navigation sends — the multi-market tour's whole

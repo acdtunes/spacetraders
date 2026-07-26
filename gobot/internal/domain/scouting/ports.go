@@ -80,14 +80,24 @@ type MarketFreshnessSample struct {
 	Activity string
 }
 
-// DormancyReader reports whether a system's scout post is currently dormant —
-// rotated out of scanning under API pressure. Consumed by the scout tour at
-// every circuit start so a dormant probe parks in place at zero API. A read
-// error must be surfaced, never swallowed into a dormant=true: the consumer
-// fails TOWARD scanning (sensing is the fleet's sensor, and a blind fleet must
-// keep looking). Satisfied by the scout-post repository.
+// DormancyReader is the scout tour's standing-post read seam, consumed at
+// every circuit start: the dormancy park bit and the stage-2 hot-set
+// restriction. A read error must be surfaced, never swallowed into a parked or
+// restricted verdict: the consumer fails TOWARD scanning (sensing is the
+// fleet's sensor, and a blind fleet must keep looking). Satisfied by the
+// scout-post repository.
 type DormancyReader interface {
+	// IsDormant reports whether the system's post is rotated out of scanning
+	// under API pressure, so the probe parks in place at zero API.
 	IsDormant(ctx context.Context, playerID int, system string) (bool, error)
+
+	// HotWaypoints is the (playerID, system) STANDING post's stage-2 circuit:
+	// the market waypoints dealing in ≥1 whitelisted good — selected by what
+	// they DEAL IN, never what they are currently worth. Empty ⇒ no
+	// restriction: the tour flies its full circuit (stage 1 / cold start). A
+	// missing post, a between-eras gap, and a sweep-once post all read empty —
+	// a first scan must see everything.
+	HotWaypoints(ctx context.Context, playerID int, system string) ([]string, error)
 }
 
 // PressureReader supplies the smoothed API rate-limiter wait the sensing
