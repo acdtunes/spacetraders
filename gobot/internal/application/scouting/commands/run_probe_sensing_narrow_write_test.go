@@ -1,9 +1,9 @@
 package commands
 
 // The narrow-seam invariant (I1): every LIVE-post delta the sensing coordinator
-// writes — resize, dormancy flip, hot-set stamp — must go through the
-// three-column UpdateSensingState, never a full-row Upsert of the tick-start
-// snapshot. Under saturation RotateDormant flips every in-scope post's dormant
+// writes — resize, dormancy flip, hot-set stamp, freshness refresh — must go
+// through the four-column UpdateSensingState, never a full-row Upsert of the
+// tick-start snapshot. Under saturation RotateDormant flips every in-scope post's dormant
 // bit EVERY tick, so a full-row write is a per-tick clobber surface over the
 // manning columns the scout reconciler writes concurrently and the min_hulls
 // floor bootstrap flips exactly once behind an in-memory latch (a revert it
@@ -13,6 +13,7 @@ package commands
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -41,6 +42,7 @@ func TestSensing_LiveDeltaPreservesConcurrentManningWrite(t *testing.T) {
 	require.Len(t, writes, 1, "exactly one narrow delta write")
 	require.Equal(t, 1, writes[0].hulls)
 	require.False(t, writes[0].dormant)
+	require.Equal(t, time.Hour, writes[0].freshnessTarget, "every live-post delta re-stamps the config target ")
 }
 
 // The T9 revert scenario: bootstrap's hand-off drops the home post's MinHulls

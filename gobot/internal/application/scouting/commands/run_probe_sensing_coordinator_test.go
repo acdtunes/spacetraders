@@ -36,13 +36,14 @@ func (f *fakeDepthReader) MarketDepthRows(_ context.Context, _ int) ([]domainSco
 }
 
 // sensingStateWrite is one recorded UpdateSensingState call — the narrow
-// live-post delta the coordinator writes for resizes, dormancy flips, and
-// hot-set stamps.
+// live-post delta the coordinator writes for resizes, dormancy flips, hot-set
+// stamps, and freshness-target refreshes .
 type sensingStateWrite struct {
-	system       string
-	hulls        int
-	dormant      bool
-	hotWaypoints []string
+	system          string
+	hulls           int
+	dormant         bool
+	hotWaypoints    []string
+	freshnessTarget time.Duration
 }
 
 // fakeSensingPostRepo records every write AND applies Upserts/Removes/state
@@ -91,12 +92,12 @@ func (f *fakeSensingPostRepo) find(system string) *domainScouting.ScoutPost {
 }
 
 // UpdateSensingState mirrors the real repository's narrow-column contract: it
-// merges ONLY hulls/dormant/hot onto the stored ROW, preserving every other
-// field, and a missing post is a no-op. The store slot is replaced with a
+// merges ONLY hulls/dormant/hot/freshness onto the stored ROW, preserving every
+// other field, and a missing post is a no-op. The store slot is replaced with a
 // merged COPY — never mutated in place — because a DB write does not reach the
 // post objects a caller already holds from an earlier read.
-func (f *fakeSensingPostRepo) UpdateSensingState(_ context.Context, _ int, systemSymbol string, hulls int, dormant bool, hotWaypoints []string) error {
-	f.stateWrites = append(f.stateWrites, sensingStateWrite{system: systemSymbol, hulls: hulls, dormant: dormant, hotWaypoints: hotWaypoints})
+func (f *fakeSensingPostRepo) UpdateSensingState(_ context.Context, _ int, systemSymbol string, hulls int, dormant bool, hotWaypoints []string, freshnessTarget time.Duration) error {
+	f.stateWrites = append(f.stateWrites, sensingStateWrite{system: systemSymbol, hulls: hulls, dormant: dormant, hotWaypoints: hotWaypoints, freshnessTarget: freshnessTarget})
 	for i, post := range f.posts {
 		if post.SystemSymbol != systemSymbol {
 			continue
@@ -105,6 +106,7 @@ func (f *fakeSensingPostRepo) UpdateSensingState(_ context.Context, _ int, syste
 		merged.Hulls = hulls
 		merged.Dormant = dormant
 		merged.HotWaypoints = hotWaypoints
+		merged.FreshnessTarget = freshnessTarget
 		f.posts[i] = &merged
 		break
 	}
@@ -1267,6 +1269,26 @@ func TestSensing_ConfigDefaults(t *testing.T) {
 	require.Equal(t, time.Hour, cfg.Buy.SpendWindow)
 	require.Equal(t, int64(common.ImmutableReserveFloor), cfg.Buy.ReserveFloor,
 		"probe buys leave the immutable working-capital reserve spendable (RULINGS #4/#5)")
+}
+
+// TestSensing_DefaultFreshnessTargetUnderTradeSinkCap pins the outage
+// invariant: the code-default freshness target stamped on standing posts must sit
+// UNDER the trade planner's firm-sink freshness cap — 75 minutes, the
+// [trade_fleet] sink_freshness_max_minutes default (sp-tgll8 item 2; that const
+// is unexported in the config package, so the bar is pinned here by value). The
+// scout tour deliberately stretches each circuit to its post's target, so a
+// default at or past the cap paces EVERY scanned market stale, and the
+// fail-closed cap (RULINGS #4 — correct, never weakened) then refuses every
+// trade buy: zero transactions fleet-wide, the trade fleet start/kill-looping on
+// its stall watchdog. 3600 (1h) leaves a 15-minute margin for scan jitter and
+// tour turnaround.
+func TestSensing_DefaultFreshnessTargetUnderTradeSinkCap(t *testing.T) {
+	const tradeSinkFreshnessCap = 75 * time.Minute
+
+	require.Equal(t, 3600, defaultSensingFreshnessTargetSecs,
+		"the documented default is 1h — never revert toward the era-4 3h (10800s) shape that starved trading")
+	require.Less(t, time.Duration(defaultSensingFreshnessTargetSecs)*time.Second, tradeSinkFreshnessCap,
+		"a sensing freshness default at or past the sink-freshness cap is the trading-outage shape")
 }
 
 func TestSensing_BuyerConfigFromCommand(t *testing.T) {

@@ -123,14 +123,17 @@ func (r *GormScoutPostRepository) UpdateHulls(ctx context.Context, playerID int,
 	return nil
 }
 
-// UpdateSensingState updates ONLY the sensing-owned columns — hulls, dormant, and
-// hot_waypoints — of the (playerID, systemSymbol) post in the open era: the probe-sensing
-// coordinator's narrow live-post delta seam, mirroring UpdateHulls. A full-row Upsert here
-// would clobber the manning/partition/respawn columns the scout reconciler concurrently
-// writes and the min_hulls floor bootstrap stamps behind a once-latch (a revert it would
-// never repair). Updating a post that does not exist is a no-op, not an error — the caller
-// declares a missing post through Upsert instead.
-func (r *GormScoutPostRepository) UpdateSensingState(ctx context.Context, playerID int, systemSymbol string, hulls int, dormant bool, hotWaypoints []string) error {
+// UpdateSensingState updates ONLY the sensing-owned columns — hulls, dormant,
+// hot_waypoints, and freshness_target_seconds — of the (playerID, systemSymbol) post in the
+// open era: the probe-sensing coordinator's narrow live-post delta seam, mirroring
+// UpdateHulls. A full-row Upsert here would clobber the manning/partition/respawn columns
+// the scout reconciler concurrently writes and the min_hulls floor bootstrap stamps behind a
+// once-latch (a revert it would never repair). freshness_target_seconds rides the same delta
+// An adopted post carrying a dead era's pacing target must converge to the live
+// config target, or its scout circuits pace every market past the trade planner's
+// sink-freshness cap and trading fail-closes on every buy. Updating a post that does not
+// exist is a no-op, not an error — the caller declares a missing post through Upsert instead.
+func (r *GormScoutPostRepository) UpdateSensingState(ctx context.Context, playerID int, systemSymbol string, hulls int, dormant bool, hotWaypoints []string, freshnessTarget time.Duration) error {
 	openEra := r.openEraID(ctx)
 	if openEra == nil {
 		return fmt.Errorf("cannot update scout post sensing state: no open era")
@@ -139,9 +142,10 @@ func (r *GormScoutPostRepository) UpdateSensingState(ctx context.Context, player
 		Model(&ScoutPostModel{}).
 		Where("player_id = ? AND system_symbol = ? AND era_id = ?", playerID, systemSymbol, *openEra).
 		Updates(map[string]interface{}{
-			"hulls":         hulls,
-			"dormant":       dormant,
-			"hot_waypoints": marshalPartition(hotWaypoints),
+			"hulls":                    hulls,
+			"dormant":                  dormant,
+			"hot_waypoints":            marshalPartition(hotWaypoints),
+			"freshness_target_seconds": int(freshnessTarget.Seconds()),
 		})
 	if result.Error != nil {
 		return fmt.Errorf("failed to update scout post sensing state: %w", result.Error)

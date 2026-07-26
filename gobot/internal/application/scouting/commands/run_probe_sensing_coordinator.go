@@ -43,12 +43,21 @@ const (
 	defaultSensingProbeBudget          = 150       // N — the single budget dial: the total probe count the fleet may hold
 	defaultSensingSecondProbeThreshold = 12        // hot markets above which a system earns a second probe
 	defaultSensingPurchaseCooldownSecs = 10
-	defaultSensingFreshnessTargetSecs  = 3600 // stamped on every standing post; the reconciler's manning watchdog reads it
-	defaultSensingWaitLowMs            = 50   // limiter wait at or under this: full scanning, discovery allowed
-	defaultSensingWaitHighMs           = 1000 // limiter wait at or past this: scanning sheds toward the 0.5 floor
-	defaultSensingMaxSpend             = 500_000
-	defaultSensingSpendWindowSecs      = 3600
-	defaultSensingDiscoveryDeclares    = 4 // sweep-once frontier declares per tick — paces propagation, never floods the reconciler
+	// defaultSensingFreshnessTargetSecs is stamped on every standing post; the
+	// reconciler's manning watchdog reads it, and the scout tour deliberately
+	// STRETCHES each circuit to the post's target — so it must stay comfortably
+	// UNDER the trade planner's 75-min firm-sink freshness cap (the [trade_fleet]
+	// sink_freshness_max_minutes default, sp-tgll8 item 2). A target at or past
+	// the cap paces every scanned market stale, and the fail-closed cap (RULINGS
+	// #4, never weakened) then refuses every trade buy fleet-wide — the
+	// outage, where adopted era-4 posts carried 3h targets. 3600 (1h) leaves a
+	// 15-minute margin for scan jitter and tour turnaround.
+	defaultSensingFreshnessTargetSecs = 3600
+	defaultSensingWaitLowMs           = 50   // limiter wait at or under this: full scanning, discovery allowed
+	defaultSensingWaitHighMs          = 1000 // limiter wait at or past this: scanning sheds toward the 0.5 floor
+	defaultSensingMaxSpend            = 500_000
+	defaultSensingSpendWindowSecs     = 3600
+	defaultSensingDiscoveryDeclares   = 4 // sweep-once frontier declares per tick — paces propagation, never floods the reconciler
 )
 
 // defaultSensingWhitelist is the era-invariant goods whitelist: a market is
@@ -70,15 +79,15 @@ type MarketDepthReader interface {
 
 // SensingPostRepository is the coordinator's posts-table surface: the shared
 // desired-state port plus the narrow live-post delta seam. EVERY live-post
-// delta — resize, dormancy flip, hot-set stamp — goes through
-// UpdateSensingState, which touches only the three sensing-owned columns, so a
-// write from this tick's snapshot can never clobber the manning/partition/
+// delta — resize, dormancy flip, hot-set stamp, freshness-target refresh — goes
+// through UpdateSensingState, which touches only the four sensing-owned columns,
+// so a write from this tick's snapshot can never clobber the manning/partition/
 // respawn columns the scout reconciler writes concurrently, nor the min_hulls
 // floor bootstrap stamps behind a once-latch. Upsert is for CREATES only.
 // Satisfied by the GORM scout-post repository.
 type SensingPostRepository interface {
 	domainScouting.ScoutPostRepository
-	UpdateSensingState(ctx context.Context, playerID int, systemSymbol string, hulls int, dormant bool, hotWaypoints []string) error
+	UpdateSensingState(ctx context.Context, playerID int, systemSymbol string, hulls int, dormant bool, hotWaypoints []string, freshnessTarget time.Duration) error
 }
 
 // guardedBuyer is the shared fail-closed buy engine (probebuy.GuardedProbeBuyer):
@@ -490,13 +499,18 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 		// home with MinHulls, and honouring it here is what keeps the home
 		// probes manned through INCOME.
 		hulls := existing.FloorHulls(plan.Hulls[system])
-		if existing.HullBudget() == hulls && existing.Dormant == wantDormant && sameWaypointList(existing.HotWaypoints, wantHot) {
+		if existing.HullBudget() == hulls && existing.Dormant == wantDormant && sameWaypointList(existing.HotWaypoints, wantHot) && existing.FreshnessTarget == cfg.FreshnessTarget {
 			continue
 		}
 		// Narrow delta, never a full-row Upsert: this snapshot is a tick old, and
 		// under saturation the rotation makes a delta land EVERY tick — a whole-row
 		// write would clobber whatever the reconciler/bootstrap wrote since the read.
-		if err := h.postRepo.UpdateSensingState(ctx, cmd.PlayerID.Value(), system, hulls, wantDormant, wantHot); err != nil {
+		// FreshnessTarget rides the delta: an adopted post carrying a dead
+		// era's pacing target converges to the config target here — the scout tour
+		// paces circuits to the post's target, so a target past the trade planner's
+		// sink-freshness cap ages every market stale and trading fail-closes on the
+		// buy. A converged post writes nothing (the zero-write guard above).
+		if err := h.postRepo.UpdateSensingState(ctx, cmd.PlayerID.Value(), system, hulls, wantDormant, wantHot, cfg.FreshnessTarget); err != nil {
 			logger.Log("WARNING", fmt.Sprintf("Failed to update sensing post %s: %v", system, err), nil)
 			continue
 		}
@@ -518,14 +532,16 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 			// Kept, woken if dormant, and its hot set held census-true: a stale
 			// restriction on the kept post would blind exactly the markets
 			// stage 2 exists to watch (no whitelisted goods left ⇒ cleared ⇒
-			// the tour flies its full circuit again).
+			// the tour flies its full circuit again). Its freshness target
+			// converges too : a kept era-4 post pacing HOME's markets
+			// past the trade sink-freshness cap starves home trading the same way.
 			wantHot := hotBySystem[post.SystemSymbol]
-			if !post.Dormant && sameWaypointList(post.HotWaypoints, wantHot) {
+			if !post.Dormant && sameWaypointList(post.HotWaypoints, wantHot) && post.FreshnessTarget == cfg.FreshnessTarget {
 				continue
 			}
 			// Same narrow seam as the in-scope delta: the wake write may only touch
 			// the sensing-owned columns, and it never shrinks the post.
-			if err := h.postRepo.UpdateSensingState(ctx, cmd.PlayerID.Value(), post.SystemSymbol, post.HullBudget(), false, wantHot); err != nil {
+			if err := h.postRepo.UpdateSensingState(ctx, cmd.PlayerID.Value(), post.SystemSymbol, post.HullBudget(), false, wantHot, cfg.FreshnessTarget); err != nil {
 				logger.Log("WARNING", fmt.Sprintf("Failed to refresh floored sensing post %s: %v", post.SystemSymbol, err), nil)
 				continue
 			}

@@ -112,10 +112,14 @@ func TestScoutPostRepo_UpsertUpdatesInPlace(t *testing.T) {
 }
 
 // UpdateSensingState is the sensing coordinator's narrow live-post delta seam:
-// it may touch ONLY hulls, dormant, and hot_waypoints. Everything the scout
-// reconciler writes (assignment/relay/partitions/respawn state) and the
-// min_hulls floor bootstrap stamps must survive it — a full-row write here is
-// the per-tick clobber the seam exists to close.
+// it may touch ONLY hulls, dormant, hot_waypoints, and freshness_target_seconds
+// (the fourth column: adopted posts carrying a dead era's pacing
+// target must be convergeable to the live config target, or their scout tours
+// pace every market past the trade planner's sink-freshness cap and trading
+// refuses to buy). Everything the scout reconciler writes
+// (assignment/relay/partitions/respawn state) and the min_hulls floor bootstrap
+// stamps must survive it — a full-row write here is the per-tick clobber the
+// seam exists to close.
 func TestScoutPostRepo_UpdateSensingStateTouchesOnlySensingColumns(t *testing.T) {
 	repo, _, playerID := newScoutPostTestRepo(t)
 	ctx := context.Background()
@@ -124,7 +128,7 @@ func TestScoutPostRepo_UpdateSensingStateTouchesOnlySensingColumns(t *testing.T)
 	post := &domainScouting.ScoutPost{
 		PlayerID:              playerID,
 		SystemSymbol:          "X1-GZ7",
-		FreshnessTarget:       time.Hour,
+		FreshnessTarget:       3 * time.Hour, // the adopted era-4 shape (10800s) the freshness refresh converges
 		Kind:                  domainScouting.PostKindStanding,
 		AssignedHull:          "SAT-1",
 		TourContainerID:       "tour-1",
@@ -140,7 +144,7 @@ func TestScoutPostRepo_UpdateSensingStateTouchesOnlySensingColumns(t *testing.T)
 	}
 	require.NoError(t, repo.Upsert(ctx, post))
 
-	require.NoError(t, repo.UpdateSensingState(ctx, playerID, "X1-GZ7", 3, true, []string{"X1-GZ7-A1", "X1-GZ7-C3"}))
+	require.NoError(t, repo.UpdateSensingState(ctx, playerID, "X1-GZ7", 3, true, []string{"X1-GZ7-A1", "X1-GZ7-C3"}, time.Hour))
 
 	posts, err := repo.ListActive(ctx, playerID)
 	require.NoError(t, err)
@@ -149,6 +153,7 @@ func TestScoutPostRepo_UpdateSensingStateTouchesOnlySensingColumns(t *testing.T)
 	require.Equal(t, 3, got.Hulls, "the sensing-owned resize lands")
 	require.True(t, got.Dormant, "the sensing-owned dormancy bit lands")
 	require.Equal(t, []string{"X1-GZ7-A1", "X1-GZ7-C3"}, got.HotWaypoints, "the sensing-owned hot set lands")
+	require.Equal(t, time.Hour, got.FreshnessTarget, "the sensing-owned freshness refresh lands ")
 	require.Equal(t, "SAT-1", got.AssignedHull, "the reconciler's manning must survive a sensing delta")
 	require.Equal(t, "tour-1", got.TourContainerID)
 	require.Equal(t, "relay-1", got.RepositionContainerID)
@@ -157,12 +162,12 @@ func TestScoutPostRepo_UpdateSensingStateTouchesOnlySensingColumns(t *testing.T)
 	require.Equal(t, 4, got.RespawnAttempts)
 	require.WithinDuration(t, parked, got.RespawnParkedUntil, time.Second)
 
-	require.NoError(t, repo.UpdateSensingState(ctx, playerID, "X1-GZ7", 3, false, nil))
+	require.NoError(t, repo.UpdateSensingState(ctx, playerID, "X1-GZ7", 3, false, nil, time.Hour))
 	posts, err = repo.ListActive(ctx, playerID)
 	require.NoError(t, err)
 	require.Empty(t, posts[0].HotWaypoints, "an empty hot set clears the restriction (full circuit)")
 
-	require.NoError(t, repo.UpdateSensingState(ctx, playerID, "X1-NOPE", 1, false, nil),
+	require.NoError(t, repo.UpdateSensingState(ctx, playerID, "X1-NOPE", 1, false, nil, time.Hour),
 		"updating a missing post is a no-op, not an error")
 }
 
