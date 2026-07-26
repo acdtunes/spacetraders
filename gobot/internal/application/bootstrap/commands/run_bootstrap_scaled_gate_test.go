@@ -137,8 +137,8 @@ func TestBootstrap_ScaledGate_DefaultOnRestart_ReDerivesIncomeFromStuckGateLiveS
 	// gateFunded is FALSE — the full fleet (0) is below the scaler target (10), and the healthy 68000 $/hr
 	// buys no relief — and ConstructionStarted is false (no sticky latch), so the arc falls through to
 	// INCOME (probes at target & scouting). The cure the restart delivers.
-	if p := derivePhase(stuck, resolveBootstrapConfig(baseCmd(), nil)); p != PhaseIncome {
-		t.Fatalf("restart must re-derive INCOME from the stuck-GATE live state (cure the latch), got %s", p)
+	if p := derivePhase(stuck, resolveBootstrapConfig(baseCmd(), nil)); p != PhaseColdStart {
+		t.Fatalf("restart must re-derive COLDSTART from the stuck-GATE live state (cure the latch), got %s", p)
 	}
 }
 

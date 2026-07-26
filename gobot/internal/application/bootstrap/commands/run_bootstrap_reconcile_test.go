@@ -333,37 +333,21 @@ func TestBootstrap_Disabled_TakesNoAction(t *testing.T) {
 
 // --- phase derivation is from observation, never a stored cursor ---
 
-func TestBootstrap_DerivePhase_DataWhenUncovered(t *testing.T) {
+func TestBootstrap_DerivePhase_ColdStartWithoutEconomicSignal(t *testing.T) {
 	cfg := resolveBootstrapConfig(baseCmd(), nil)
-	if p := derivePhase(Observation{MarketsTotal: 10, MarketsCovered: 0}, cfg); p != PhaseData {
-		t.Fatalf("uncovered world should derive DATA, got %s", p)
+	if p := derivePhase(Observation{MarketsTotal: 10, MarketsCovered: 0}, cfg); p != PhaseColdStart {
+		t.Fatalf("uncovered world should derive COLDSTART, got %s", p)
 	}
-	// cold agent: nothing known yet (total 0) stays DATA, never reads empty world as fully covered
-	if p := derivePhase(Observation{MarketsTotal: 0, MarketsCovered: 0}, cfg); p != PhaseData {
-		t.Fatalf("cold agent (total 0) should derive DATA, got %s", p)
-	}
-}
-
-// The DATA↔INCOME label follows probe PROVISIONING, not coverage: probes at target and scouting derive
-// INCOME even at low coverage; probes still ramping derive DATA even at full coverage. Coverage is
-// continuous background (the freshness sizer), never a phase gate.
-func TestBootstrap_DerivePhase_LabelFollowsProvisioningNotCoverage(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd(), nil) // probe_target 3
-	// Provisioned (3/3 probes scouting) but barely scanned → INCOME.
-	provisioned := Observation{MarketsTotal: 10, MarketsCovered: 1, ProbeCount: 3, ProbesScouting: 3}
-	if p := derivePhase(provisioned, cfg); p != PhaseIncome {
-		t.Fatalf("provisioned probes (low coverage) should derive INCOME, got %s", p)
-	}
-	// Fully covered but probes still ramping → DATA (the scanning workstream is not idle yet).
-	ramping := Observation{MarketsTotal: 10, MarketsCovered: 10, ProbeCount: 1, ProbesScouting: 1}
-	if p := derivePhase(ramping, cfg); p != PhaseData {
-		t.Fatalf("ramping probes (full coverage) should derive DATA, got %s", p)
+	// cold agent: nothing known yet (total 0) stays COLDSTART, never reads empty world as advanced
+	if p := derivePhase(Observation{MarketsTotal: 0, MarketsCovered: 0}, cfg); p != PhaseColdStart {
+		t.Fatalf("cold agent (total 0) should derive COLDSTART, got %s", p)
 	}
 }
 
-// Provisioned probes (at target + scouting) enter INCOME even at low coverage: the DATA act (probe buy,
-// home-post declaration) must NOT run — only INCOME acts from here.
-func TestBootstrap_ProvisionedProbes_EntersIncome_NoDataAct(t *testing.T) {
+// Probes at target + scouting: the scanning workstream self-guards to a no-op (no probe buy) while the
+// arc stays in COLDSTART and the contract workstream keeps running. The home coverage post is still
+// ensured every tick — the declarer is idempotent, so re-ensuring it writes nothing.
+func TestBootstrap_ProvisionedProbes_StayColdStart_NoProbeBuy(t *testing.T) {
 	obs := Observation{HomeSystem: "X1-HQ", ProbeCount: 3, ProbesScouting: 3, HasIdlePurchaser: true, Treasury: 500000, MarketsTotal: 10, MarketsCovered: 2, Readable: true}
 	acq := &fakeAcquirer{price: 40000, yard: "Y", readable: true}
 	declarer := &fakeDeclarer{}
@@ -378,15 +362,17 @@ func TestBootstrap_ProvisionedProbes_EntersIncome_NoDataAct(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reconcileOnce: %v", err)
 	}
-	if res.Phase != PhaseIncome {
-		t.Fatalf("expected derived phase INCOME, got %s", res.Phase)
+	if res.Phase != PhaseColdStart {
+		t.Fatalf("expected derived phase COLDSTART, got %s", res.Phase)
 	}
-	if acq.buys != 0 || declarer.calls != 0 {
-		t.Fatalf("provisioned: DATA act must not run; buys=%d declares=%d", acq.buys, declarer.calls)
+	if acq.buys != 0 {
+		t.Fatalf("probes at target: the probe buy must be a no-op; buys=%d", acq.buys)
 	}
-	// No "phase not yet implemented" hold at INCOME — that line is reserved for GATE, past the income bar.
+	if declarer.calls != 1 {
+		t.Fatalf("the home coverage post is still ensured each tick (idempotent), got %d declares", declarer.calls)
+	}
 	if log.has("bootstrap_phase_not_implemented") {
-		t.Fatalf("INCOME is live: must not log a 'phase not yet implemented' hold")
+		t.Fatalf("every derived phase is live: must not log a 'phase not yet implemented' hold")
 	}
 }
 
@@ -609,7 +595,7 @@ func TestBootstrap_HeartbeatEmittedEveryTick(t *testing.T) {
 	if !ok {
 		t.Fatalf("every tick must emit a heartbeat")
 	}
-	for _, want := range []string{"phase=DATA", "probes=2/3", "coverage=4/10"} {
+	for _, want := range []string{"phase=COLDSTART", "probes=2/3", "coverage=4/10"} {
 		if !strings.Contains(hb.msg, want) {
 			t.Fatalf("heartbeat missing %q: %s", want, hb.msg)
 		}
@@ -624,8 +610,8 @@ func TestBootstrap_RecordsMetrics(t *testing.T) {
 	h := newWiredHandler(obs, &fakeAcquirer{price: 40000, yard: "Y", readable: true}, &fakeDeclarer{})
 	h.SetMetricsSink(m)
 	h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
-	if len(m.phases) != 1 || m.phases[0] != "DATA" {
-		t.Fatalf("expected phase DATA recorded, got %v", m.phases)
+	if len(m.phases) != 1 || m.phases[0] != "COLDSTART" {
+		t.Fatalf("expected phase COLDSTART recorded, got %v", m.phases)
 	}
 	// buy-to-target records one metric per probe bought (0/3 → 3).
 	if m.purchase != 3 {
@@ -907,8 +893,8 @@ func TestBootstrap_ParallelDataIncome_ContractsStartAtHour0WhileScanning(t *test
 	h.SetContractRunner(run)
 
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
-	if res.Phase != PhaseData {
-		t.Fatalf("uncovered world is still in the DATA (scanning) label, got %s", res.Phase)
+	if res.Phase != PhaseColdStart {
+		t.Fatalf("an uncovered world with no economic signal is COLDSTART, got %s", res.Phase)
 	}
 	if acq.buys != 2 { // 1/3 probes → buy the 2-probe remainder (scanning workstream)
 		t.Fatalf("scanning must run in parallel: expected 2 probe buys to target, got %d", acq.buys)

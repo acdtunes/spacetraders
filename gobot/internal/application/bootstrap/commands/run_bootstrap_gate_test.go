@@ -81,9 +81,9 @@ func TestBootstrap_DerivePhase_EconomicSignalsIgnoreCoverage(t *testing.T) {
 	if p := derivePhase(Observation{MarketsTotal: 0, ConstructionStarted: true}, cfg); p != PhaseGate {
 		t.Fatalf("started construction should derive GATE regardless of coverage, got %s", p)
 	}
-	// A cold world with NO economic signal is DATA (still scanning) — contracts run in parallel there.
-	if p := derivePhase(Observation{MarketsTotal: 0}, cfg); p != PhaseData {
-		t.Fatalf("cold world with no economic signal should derive DATA, got %s", p)
+	// A cold world with NO economic signal is COLDSTART — scanning and contracts run in parallel there.
+	if p := derivePhase(Observation{MarketsTotal: 0}, cfg); p != PhaseColdStart {
+		t.Fatalf("cold world with no economic signal should derive COLDSTART, got %s", p)
 	}
 }
 
@@ -107,8 +107,8 @@ func TestBootstrap_DerivePhase_CoverageNeverGatesPhase(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			obs := Observation{ProbeCount: 3, ProbesScouting: 3, MarketsCovered: tc.covered, MarketsTotal: tc.total}
-			if p := derivePhase(obs, cfg); p != PhaseIncome {
-				t.Fatalf("coverage %d/%d must derive the same phase as every other coverage (INCOME — the probe ramp is done and no economic signal has landed), got %s", tc.covered, tc.total, p)
+			if p := derivePhase(obs, cfg); p != PhaseColdStart {
+				t.Fatalf("coverage %d/%d must derive the same phase as every other coverage (COLDSTART — no economic signal has landed), got %s", tc.covered, tc.total, p)
 			}
 		})
 	}

@@ -144,7 +144,7 @@ func (s *DaemonServer) readBootstrapGateSnapshot(ctx context.Context, homeSystem
 		// (sp-feiy7): the live-API read means this era's home gate is genuinely built, so remember it.
 		// Reporting it (below, when no under-construction gate supersedes it) is what makes
 		// obs.ConstructionComplete MONOTONE — previously a built gate was skipped entirely, the snapshot
-		// read zero-valued, and a post-completion tick or restart re-derived DATA/INCOME (phase flap).
+		// read zero-valued, and a post-completion tick or restart re-derived COLDSTART (phase flap).
 		// Era-safe: FindByWaypoint is a live API read, so a prior era's gate can never appear here.
 		if site.IsComplete() {
 			builtSite = wp.Symbol
@@ -368,7 +368,7 @@ func (h *bootstrapHandoffLauncher) LaunchContractScaler(ctx context.Context, pla
 	return err
 }
 
-// LaunchTradeFleetCoordinator launches the standing trade-fleet coordinator at the INCOME trade-seed
+// LaunchTradeFleetCoordinator launches the standing trade-fleet coordinator at the cold-start trade-seed
 // (sp-192k4), so the freshly-seeded trade hull is picked up and put on a continuous tour. Idempotent on its
 // own container type — a re-run (or a stale observation) never double-launches a second coordinator fighting
 // the first over the same 'trade'-dedicated hulls. The coordinator then survives restarts via the

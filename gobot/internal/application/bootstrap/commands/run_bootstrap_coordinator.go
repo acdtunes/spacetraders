@@ -179,7 +179,7 @@ type ProbeAcquirer interface {
 // leaves its probes IDLE, and the coordinator does the manning (claim → VRP-partition → scan),
 // which seeds the initial home scan → census → the freshsizer takes over declaring the rest.
 // Idempotent — a post already declared for the system is preserved, not re-touched — so bootstrap
-// can call it every DATA tick. This REPLACES the old probe-holding scout-all-markets sweep, which
+// can call it every tick. This REPLACES the old probe-holding scout-all-markets sweep, which
 // held the probes and starved the now-boot-standing coordinator (sp-pt7d, Admiral intent: bootstrap
 // buys probes but assigns them to nothing; the coordinator mans them). minHulls is the permanent
 // manning FLOOR (probe_target, sp-2ci9y) stamped on the home post so the freshsizer never sizes it
@@ -191,7 +191,7 @@ type ScoutPostDeclarer interface {
 // ShipyardScanner positions an idle hull AT a home-system shipyard so the NEXT tick's live PriceCheck
 // returns priced listings (sp-hh0h). The cold-start deadlock it breaks: on a fresh universe nothing
 // has ever visited the home shipyard, its live ship listing is presence-gated (empty unless a hull is
-// there), so PriceCheck reads unreadable and every probe buy fails closed FOREVER — DATA never leaves
+// there), so PriceCheck reads unreadable and every probe buy fails closed FOREVER — cold start never leaves
 // the ground without a captain. This does NOT weaken the price guard (RULINGS #4): a genuinely
 // unreadable price still buys nothing this tick; the scanner makes the price READABLE by getting a hull
 // to the yard, so the guard clears on evidence. EnsureHomeShipyardReadable is idempotent and
@@ -217,9 +217,9 @@ type ShipyardScanner interface {
 type MetricsSink interface {
 	// RecordPhase sets the derived-phase gauge (spacetraders_bootstrap_phase{phase}).
 	RecordPhase(phase string)
-	// RecordProbePurchased increments the probes-bought counter (once per executed DATA buy).
+	// RecordProbePurchased increments the probes-bought counter (once per executed probe buy).
 	RecordProbePurchased()
-	// RecordHaulerPurchased increments the haulers-bought counter (once per executed INCOME buy).
+	// RecordHaulerPurchased increments the haulers-bought counter (once per executed hauler buy).
 	RecordHaulerPurchased()
 	// RecordConstructionPct sets the gate construction-progress gauge [0,100] (GATE phase).
 	RecordConstructionPct(pct float64)
@@ -254,7 +254,7 @@ type HaulerAcquirer interface {
 	BuyAndPlace(ctx context.Context, playerID int, shipType, yard, hubWaypoint, purchaserSymbol string) (BuyResult, error)
 	// BuyAndDedicate buys ONE hull and dedicates it to the arbitrary fleet tag `fleet` (sp-192k4), with
 	// NO hub placement — the fleet-parameterized sibling of BuyAndPlace (which hardcodes the contract
-	// fleet + a hub). The INCOME hull-routing trade-seed calls it with fleet="trade" to seed acquisition
+	// fleet + a hub). The cold-start hull-routing trade-seed calls it with fleet="trade" to seed acquisition
 	// #2 to the trade fleet. purchaserSymbol pins the buy ship exactly as BuyAndPlace does (the trade seed
 	// passes the exclusive purchasing frigate). Reuses the same atomic buy+dedicate path (BatchPurchaseShips
 	// + fleet assign) BuyAndPlace uses, minus the navigate.
@@ -311,7 +311,7 @@ type ManufacturingController interface {
 
 // WorkerRepurposer releases a contract-dedicated income hauler back to the idle pool (reuses fleet
 // unassign — the same tag-clear as retiring the frigate) so the manufacturing coordinator claims it as
-// a gate-construction worker. This is the "repurpose idle INCOME haulers FIRST" seed (spec §Fleet
+// a gate-construction worker. This is the "repurpose idle contract haulers FIRST" seed (spec §Fleet
 // scaling): the income fleet becomes the seed construction workforce before any hull is bought.
 type WorkerRepurposer interface {
 	RepurposeToConstruction(ctx context.Context, playerID int, shipSymbol string) error
@@ -350,10 +350,10 @@ type HandoffLauncher interface {
 	LaunchAutosizer(ctx context.Context, playerID int, agentSymbol string) error
 	LaunchStandingCoordinators(ctx context.Context, playerID int, agentSymbol string) error
 	// LaunchContractScaler launches the standing dedicated contract auto-scaler during the cold-start
-	// scaling window (unconditional in the DATA/INCOME window, sp-1cbxz). Idempotent (skips when one is
+	// scaling window (unconditional in the cold-start window, sp-1cbxz). Idempotent (skips when one is
 	// already RUNNING/PENDING), so a re-run never double-launches.
 	LaunchContractScaler(ctx context.Context, playerID int, agentSymbol string) error
-	// LaunchTradeFleetCoordinator launches the standing trade-fleet coordinator at the INCOME trade-seed
+	// LaunchTradeFleetCoordinator launches the standing trade-fleet coordinator at the cold-start trade-seed
 	// (sp-192k4), so the freshly-seeded trade hull is picked up and put on a continuous tour. Idempotent
 	// (skips when one is already RUNNING/PENDING) — the observable trade hull is the seeded signal, so a
 	// re-run never double-launches.
@@ -423,7 +423,7 @@ type RunBootstrapCoordinatorHandler struct {
 	scanner      ShipyardScanner // sp-hh0h: positions a hull at the home yard so the cold price reads
 	metrics      MetricsSink
 
-	// INCOME-phase collaborators. Each is nil-safe: a nil collaborator degrades the INCOME
+	// Contract-workstream collaborators. Each is nil-safe: a nil collaborator degrades the contract
 	// action it drives to a logged skip (surfaced as a blocker), never a panic.
 	retirer      FrigateRetirer
 	haulAcquirer HaulerAcquirer
@@ -445,7 +445,7 @@ type RunBootstrapCoordinatorHandler struct {
 
 	// buyBridges holds the per-container fresh-buy count-sync bridge (sp-lgo3): it folds probes the
 	// coordinator has bought but the ship-count observation has not yet reflected into the count the
-	// DATA buy gate reads, so a SHORT reconcile tick never re-buys toward a target already reached
+	// probe buy gate reads, so a SHORT reconcile tick never re-buys toward a target already reached
 	// (the over-buy the sync lag would otherwise cause). Keyed by ContainerID because this handler is
 	// a REGISTERED SINGLETON serving every bootstrap container — a bare field would be shared/raced
 	// across concurrent players; buyBridgeMu guards the MAP only (see probeBridge). It is NOT a
@@ -455,7 +455,7 @@ type RunBootstrapCoordinatorHandler struct {
 	buyBridges  map[string]*probeBuyBridge
 
 	// underScaledStreaks holds the per-container escape-hatch hysteresis counter: consecutive ticks a
-	// sticky-latched GATE has been under-scaled with ~no construction, so the GATE→INCOME re-derive fires only
+	// sticky-latched GATE has been under-scaled with ~no construction, so the GATE→COLDSTART re-derive fires only
 	// after gate_reentry_streak_ticks in a row (anti-thrash). Keyed by ContainerID for the same singleton
 	// reason as buyBridges; underScaledStreakMu guards the MAP only (one container's ticks are
 	// sequential). Consulted every tick (sp-gm7r removed the flag); NOT a progress cursor — dropped on
@@ -474,14 +474,14 @@ type RunBootstrapCoordinatorHandler struct {
 	expansionHoldStreaks  map[string]int
 
 	// haulerPrices holds the per-container LAST READABLE contract-hauler price (sp-muc5x): the most recent
-	// presence-gated hauler shipyard ask this coordinator observed. It is cached so the INCOME first-hauler
+	// presence-gated hauler shipyard ask this coordinator observed. It is cached so the first-hauler
 	// pivot can test AFFORDABILITY *before* it frees the command frigate's earning loop to position the buyer
 	// — the cold-start deadlock where the frigate was freed while the hauler was permanently unaffordable,
-	// leaving no earner (treasury never grew → permanent stall). Seeded in DATA (a probe-buy hull already at
+	// leaving no earner (treasury never grew → permanent stall). Seeded at the probe buy (a hull already at
 	// the yard reads the hauler price at the same GetShipyard moment) and refreshed on every readable hauler
 	// PriceCheck. Keyed by ContainerID for the same REGISTERED-SINGLETON reason as buyBridges; haulerPriceMu
 	// guards the MAP only (one container's ticks are sequential). NOT a progress cursor — dropped on restart
-	// (a DATA re-seed re-populates it on a fresh cold start), so phase/progress stays derived purely from
+	// (a re-seed re-populates it on a fresh cold start), so phase/progress stays derived purely from
 	// observation. A 0/absent cache reads as "no evidence yet" and preserves the existing free+position path.
 	haulerPriceMu sync.Mutex
 	haulerPrices  map[string]int64
@@ -528,7 +528,7 @@ func (h *RunBootstrapCoordinatorHandler) SetMetricsSink(m MetricsSink) { h.metri
 func (h *RunBootstrapCoordinatorHandler) SetFrigateRetirer(r FrigateRetirer) { h.retirer = r }
 
 // SetHaulerAcquirer wires the price-check + buy-and-place-on-hub path (reuses shipyard purchase +
-// fleet assign + navigate). Unset → INCOME evaluates and logs but never buys a hauler.
+// fleet assign + navigate). Unset → the contract workstream evaluates and logs but never buys a hauler.
 func (h *RunBootstrapCoordinatorHandler) SetHaulerAcquirer(a HaulerAcquirer) { h.haulAcquirer = a }
 
 // SetContractRunner wires the batch-contract launch (reuses the contract fleet coordinator). Unset →

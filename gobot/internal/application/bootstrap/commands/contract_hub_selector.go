@@ -32,7 +32,7 @@ const minHubSourceableGoods = 1
 // The heuristic:
 //
 //  1. TARGET GOODS. When contractGoods is non-empty, score hubs by how well they source THOSE goods.
-//     When empty (no contract accepted/offered yet — hub selection runs at INCOME start, before
+//     When empty (no contract accepted/offered yet — hub selection runs from the first tick, before
 //     batch-contract has taken a contract), fall back to ALL sourceable goods: a dense, cheap market
 //     is a sound generic contract hub, so the ramp is never blocked waiting for a contract.
 //  2. VIABILITY (hard gate). Keep only markets that source ≥ minHubSourceableGoods target goods. A

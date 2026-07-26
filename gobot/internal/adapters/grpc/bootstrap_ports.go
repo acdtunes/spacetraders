@@ -38,18 +38,18 @@ const (
 	marketplaceTrait = "MARKETPLACE"
 	shipyardTrait    = "SHIPYARD"
 	// bootstrapMarketFreshnessMin bounds how old a market's data may be and still count as
-	// "covered" for the DATA coverage bar. Generous (24h) because markets are actively scouted
+	// "covered" for the heartbeat coverage reading. Generous (24h) because markets are actively scouted
 	// during bootstrap, so coverage measures BREADTH (how many marketplaces have data), not
 	// staleness. A tighter freshness window is a later refinement.
 	bootstrapMarketFreshnessMin = 24 * 60
 	// contractFleetTag is the dedicated-fleet tag the contract coordinator's dedicated pool selects on
 	// (matches the contract package's dedicatedFleetContract). A hauler carrying it is adopted as a
 	// contract worker (and puts the pool in exclusive mode, dropping the untagged frigate); the frigate
-	// retire clears it. The INCOME window (1h) is the trailing span the realized-$/hr read averages.
+	// retire clears it. The income window (1h) is the trailing span the realized-$/hr read averages.
 	contractFleetTag = "contract"
 	// tradeFleetTag is the dedicated-fleet tag the standing trade-fleet coordinator selects on (matches the
 	// trading package's tradeFleet and the autosizer's trade count). obs.TradeHullCount counts hulls carrying
-	// it — the observable "trade-seeded" signal that drives the sp-192k4 INCOME trade-seed + the scaler
+	// it — the observable "trade-seeded" signal that drives the sp-192k4 trade-seed + the scaler
 	// delay-launch. The bootstrap trade-seed (BuyAndDedicate) is what stamps a bought hull with this tag.
 	tradeFleetTag = "trade"
 	// warehouseFleetTag / stockerFleetTag are the dedicated-fleet tags the contract auto-scaler stamps on the
@@ -88,7 +88,7 @@ func NewBootstrapCoordinatorHandler(
 		med: med, contractRepo: contractRepo, containerRepo: server.containerRepo, server: server,
 		eraRepo: persistence.NewEraRepository(server.db),
 	})
-	// One acquirer instance drives both the DATA probe buy and (embedded) the INCOME hauler price-check
+	// One acquirer instance drives both the probe buy and (embedded) the hauler price-check
 	// + buy — the yard price-scan + batch-purchase plumbing is asset-agnostic (parameterised by shipType).
 	acq := &bootstrapAcquirer{med: med, shipRepo: shipRepo, waypointRepo: waypointRepo}
 	h.SetProbeAcquirer(acq)
@@ -144,7 +144,7 @@ type bootstrapObserver struct {
 	shipRepo     navigation.ShipRepository
 	waypointRepo *persistence.GormWaypointRepository
 	marketRepo   *persistence.MarketRepositoryAdapter
-	// INCOME-phase reads (Slice 2). med runs the realized-$/hr ledger query; contractRepo lists the
+	// Contract-workstream reads (Slice 2). med runs the realized-$/hr ledger query; contractRepo lists the
 	// active contracts' demanded goods (hub bias); containerRepo answers "is batch-contract running?".
 	med           common.Mediator
 	contractRepo  contract.ContractRepository
@@ -192,7 +192,7 @@ func (o *bootstrapObserver) Observe(ctx context.Context, playerID int) (bootstra
 				commandHome = sys
 			}
 		}
-		// INCOME fleet signals (Slice 2): the command frigate (retire target) and the contract-dedicated
+		// Contract fleet signals (Slice 2): the command frigate (retire target) and the contract-dedicated
 		// haulers (the staged-buy count + placement guard). A hull tagged "contract" that is the command
 		// frigate is NOT a hauler — it is the retire target, tracked separately.
 		if s.Role() == commandRole {
@@ -208,7 +208,7 @@ func (o *bootstrapObserver) Observe(ctx context.Context, playerID int) (bootstra
 		} else if s.DedicatedFleet() == tradeFleetTag {
 			// sp-192k4: a hull dedicated to the trade fleet is the observable "trade-seeded" signal. Counted
 			// here mirroring obs.Haulers (same ship set, same DedicatedFleet() source), filtering the "trade"
-			// tag instead of "contract" — drives the INCOME trade-seed routing + the contract-scaler
+			// tag instead of "contract" — drives the trade-seed routing + the contract-scaler
 			// delay-launch. Restart-safe by construction: the hull EXISTING is the marker (no stored flag).
 			obs.TradeHullCount++
 		} else if s.DedicatedFleet() == manufacturingFleetTag {
@@ -248,8 +248,8 @@ func (o *bootstrapObserver) Observe(ctx context.Context, playerID int) (bootstra
 	obs.Treasury = int64(agent.Credits)
 
 	// Coverage — home-system marketplaces total vs those with (fresh) market data. A read miss on
-	// either leaves that count 0, which reads as uncovered (stay in DATA) rather than falsely exiting.
-	// The single ListMarketsInSystem read serves BOTH the DATA coverage count AND the INCOME hub
+	// either leaves that count 0, which simply reads as uncovered on the heartbeat.
+	// The single ListMarketsInSystem read serves BOTH the coverage count AND the contract-hub
 	// selector's market snapshots (sourceable goods + prices).
 	if obs.HomeSystem != "" {
 		if wps, werr := o.waypointRepo.ListBySystemWithTrait(ctx, obs.HomeSystem, marketplaceTrait); werr == nil {
@@ -261,8 +261,8 @@ func (o *bootstrapObserver) Observe(ctx context.Context, playerID int) (bootstra
 		}
 	}
 
-	// Contract graduation (sp-difa.1): the durable per-player era-scoped flag that gates the whole INCOME
-	// (contract) workstream. Best-effort + fail-OPEN — a nil repo or read error leaves it false, so
+	// Contract graduation (sp-difa.1): the durable per-player era-scoped flag that gates the whole
+	// contract-income workstream. Best-effort + fail-OPEN — a nil repo or read error leaves it false, so
 	// contracts run as today (a mis-wire never silently kills the funding floor). This is the SAME read
 	// the capacity reconciler consults, so both coordinators honor one operator decision.
 	if o.eraRepo != nil {
@@ -271,8 +271,8 @@ func (o *bootstrapObserver) Observe(ctx context.Context, playerID int) (bootstra
 		}
 	}
 
-	// INCOME-phase reads (Slice 2). Each is BEST-EFFORT: a miss leaves the field at its zero value,
-	// which the reconciler reads fail-safe — 0 $/hr keeps the arc in INCOME (never premature GATE),
+	// Contract-workstream reads (Slice 2). Each is BEST-EFFORT: a miss leaves the field at its zero value,
+	// which the reconciler reads fail-safe — 0 $/hr never advances the arc (never premature GATE),
 	// empty Markets means no hubs (no hauler buys), empty ContractGoods falls back to density+cheapness.
 	obs.IncomePerHour = o.readIncomePerHour(ctx, playerID)
 	if o.contractRepo != nil {
@@ -286,7 +286,7 @@ func (o *bootstrapObserver) Observe(ctx context.Context, playerID int) (bootstra
 		}
 		// sp-rype earner-signal: is the command frigate's OWN continuous contract loop running? SEPARATE
 		// from BatchContractRunning (which detects the contract_fleet_coordinator TYPE, not this per-hull
-		// CONTRACT_WORKFLOW loop — sp-ehg9 note), so the INCOME action starts the loop exactly once and
+		// CONTRACT_WORKFLOW loop — sp-ehg9 note), so the contract action starts the loop exactly once and
 		// never double-claims. Best-effort + only when the frigate is resolved: a read miss leaves it
 		// false, and the daemon's per-player single-CONTRACT_WORKFLOW guard rejects any redundant start.
 		if obs.CommandFrigateID != "" {
@@ -326,8 +326,8 @@ func (o *bootstrapObserver) Observe(ctx context.Context, playerID int) (bootstra
 }
 
 // readIncomePerHour reads the player's realized NET credits over the trailing income window (reusing
-// the ledger GetProfitLoss query) — the INCOME→GATE exit input. Realized (booked ledger rows), not
-// projected. A read miss returns 0, which keeps the arc in INCOME (never a premature GATE).
+// the ledger GetProfitLoss query) — the heartbeat's realized-earnings reading. Realized (booked ledger
+// rows), not projected. A read miss returns 0, which drives no decision (it gates nothing).
 func (o *bootstrapObserver) readIncomePerHour(ctx context.Context, playerID int) float64 {
 	if o.med == nil {
 		return 0
@@ -381,7 +381,7 @@ func toMarketSnapshots(mkts []market.Market) []bootstrapCmd.MarketSnapshot {
 
 // contractDemandGoods collects the distinct trade symbols the player's active contracts require
 // delivered — the hub selector's contract-good bias. Empty when no accepted contract exists yet (the
-// selector then falls back to market density + cheapness), which is the normal state at INCOME start.
+// selector then falls back to market density + cheapness), which is the normal state at cold-start.
 func contractDemandGoods(contracts []*contract.Contract) []string {
 	seen := map[string]struct{}{}
 	var goods []string
@@ -423,7 +423,7 @@ func contractFleetCoordinatorRunning(ctx context.Context, repo *persistence.Cont
 }
 
 // frigateContractLoopRunning reports whether the command frigate's OWN continuous single-hull contract
-// loop is RUNNING or PENDING for the player — the sp-rype earner-signal the bootstrap INCOME action
+// loop is RUNNING or PENDING for the player — the sp-rype earner-signal the bootstrap contract action
 // guards on (so it starts the loop exactly once and never double-claims). It is the loop container
 // sp-ehg9 creates: a CONTRACT_WORKFLOW container with ship_symbol==frigate AND iterations==-1. Matching
 // BOTH is what distinguishes it from a coordinator-spawned single-shot worker (iterations 1, on a
@@ -534,7 +534,7 @@ func (a *bootstrapAcquirer) priceAtShipyard(ctx context.Context, system, waypoin
 
 // Buy purchases ONE shipType at yard through the money-integrity batch path (which navigates an idle
 // hull to the yard and enforces the sp-e7je type guard). Probes are scouts — no dedicated-fleet tag.
-// It picks ANY idle hull as the purchaser (the DATA-phase default, where the frigate/probes are idle).
+// It picks ANY idle hull as the purchaser (the probe-buy default, where the frigate/probes are idle).
 func (a *bootstrapAcquirer) Buy(ctx context.Context, playerID int, shipType, yard string) (bootstrapCmd.BuyResult, error) {
 	return a.buyWith(ctx, playerID, shipType, yard, "")
 }
@@ -556,7 +556,7 @@ func (a *bootstrapAcquirer) buyWith(ctx context.Context, playerID int, shipType,
 		}
 		// sp-7r7w: PREFER the exclusive purchasing ship (the pivoted command frigate) when it is idle, so
 		// every cold-start + scaling buy runs through the deterministic, protected buy ship rather than an
-		// incidentally-idle hull. Fall back to any idle hull before the pivot exists (e.g. the DATA probe
+		// incidentally-idle hull. Fall back to any idle hull before the pivot exists (e.g. the probe
 		// buy) or if the purchasing ship is momentarily busy.
 		for _, s := range ships {
 			if s.IsIdle() && s.DedicatedFleet() == navigation.PurchasingFleet {
@@ -596,9 +596,9 @@ func (a *bootstrapAcquirer) buyWith(ctx context.Context, playerID int, shipType,
 	return bootstrapCmd.BuyResult{ShipSymbol: bought.ShipSymbol(), Price: int64(batch.TotalCost)}, nil
 }
 
-// --- hauler acquirer (INCOME: reuse the probe price-check + buy, then dedicate + place on the hub) ---
+// --- hauler acquirer (reuse the probe price-check + buy, then dedicate + place on the hub) ---
 
-// bootstrapHaulerAcquirer embeds the DATA-phase acquirer to reuse its cheapest-yard PriceCheck and the
+// bootstrapHaulerAcquirer embeds the probe acquirer to reuse its cheapest-yard PriceCheck and the
 // money-integrity BatchPurchaseShips buy (both asset-agnostic, parameterised by shipType); it only adds
 // the contract-fleet dedication + hub placement that distinguish a positioned contract hauler from a
 // free scout. Building nothing new (spec §Reuse).
@@ -633,7 +633,7 @@ func (a *bootstrapHaulerAcquirer) BuyAndPlace(ctx context.Context, playerID int,
 }
 
 // BuyAndDedicate buys ONE hull at yard (reused batch path) and dedicates it to the arbitrary fleet tag
-// `fleet` — the fleet-parameterized sibling of BuyAndPlace, minus the hub placement (sp-192k4). The INCOME
+// `fleet` — the fleet-parameterized sibling of BuyAndPlace, minus the hub placement (sp-192k4). The
 // hull-routing trade-seed calls it with fleet="trade" to make acquisition #2 a trade hull; the dedication
 // uses the SAME single fleet-assign write path (shipRepo.AssignFleet) BuyAndPlace uses over the SAME
 // money-integrity BatchPurchaseShips buy, so no money guard is touched (RULINGS #4). NO navigate: a trade
@@ -653,7 +653,7 @@ func (a *bootstrapHaulerAcquirer) BuyAndDedicate(ctx context.Context, playerID i
 	return bought, nil
 }
 
-// --- frigate retirer (INCOME: clear the command frigate's contract dedication — fleet unassign) ---
+// --- frigate retirer (clear the command frigate's contract dedication — fleet unassign) ---
 
 type bootstrapFrigateRetirer struct{ shipRepo navigation.ShipRepository }
 
@@ -680,7 +680,7 @@ func (r *bootstrapFrigateRetirer) DedicateAsPurchaser(ctx context.Context, playe
 	return r.shipRepo.AssignFleet(ctx, shipSymbol, navigation.PurchasingFleet, pid)
 }
 
-// --- contract runner (INCOME: launch the contract fleet coordinator — workflow batch-contract) ---
+// --- contract runner (launch the contract fleet coordinator — workflow batch-contract) ---
 
 type bootstrapContractRunner struct{ server *DaemonServer }
 
@@ -750,7 +750,7 @@ type bootstrapScoutPostDeclarer struct{ server *DaemonServer }
 // enters the scanned census (but never below the floor). Replaces the old AssignScoutingFleet sweep
 // that HELD the probes.
 //
-// The post ROW is declared ONCE (re-Upsert every DATA tick would churn the coordinator's manning and
+// The post ROW is declared ONCE (re-Upsert every tick would churn the coordinator's manning and
 // the freshsizer's Hulls resize). The floor is stamped through the NARROW min_hulls-only seam
 // (UpdateScoutPostMinHulls) — a DISJOINT column from hulls, so it disturbs neither writer — and is
 // idempotent: it fires once on a fresh or pre-floor post, then the equality guard makes it a no-op,

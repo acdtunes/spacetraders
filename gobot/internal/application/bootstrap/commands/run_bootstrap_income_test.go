@@ -302,8 +302,8 @@ func incomeObs() Observation {
 func TestBootstrap_DerivePhase_IncomeBelowBar(t *testing.T) {
 	cfg := resolveBootstrapConfig(baseCmd(), nil) // income_bar default 10000
 	obs := Observation{ProbeCount: 3, ProbesScouting: 3, IncomePerHour: 5000}
-	if p := derivePhase(obs, cfg); p != PhaseIncome {
-		t.Fatalf("provisioned + income below bar should derive INCOME, got %s", p)
+	if p := derivePhase(obs, cfg); p != PhaseColdStart {
+		t.Fatalf("provisioned + income below bar should derive COLDSTART, got %s", p)
 	}
 }
 
@@ -729,8 +729,8 @@ func TestBootstrap_Income_StartsFrigateLoopAtLowCoverage(t *testing.T) {
 	h := newIncomeHandler(obs, &fakeRetirer{}, &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true}, &fakeContractRunner{})
 	h.SetFrigateContractLoopStarter(loop)
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
-	if res.Phase != PhaseIncome {
-		t.Fatalf("provisioned probes must derive INCOME regardless of coverage (20%%), got %s", res.Phase)
+	if res.Phase != PhaseColdStart {
+		t.Fatalf("provisioned probes must derive COLDSTART regardless of coverage (20%%), got %s", res.Phase)
 	}
 	if loop.calls != 1 || loop.ships[0] != "FRIGATE-1" {
 		t.Fatalf("a provisioned frigate must start earning (contract loop), got calls=%d ships=%v", loop.calls, loop.ships)

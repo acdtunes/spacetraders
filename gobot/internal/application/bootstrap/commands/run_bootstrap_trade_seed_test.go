@@ -140,8 +140,8 @@ func TestBootstrap_ContractScaler_EnsuredBeforeTradeHullSeeded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reconcileOnce: %v", err)
 	}
-	if res.Phase != PhaseIncome {
-		t.Fatalf("expected INCOME, got %s", res.Phase)
+	if res.Phase != PhaseColdStart {
+		t.Fatalf("expected COLDSTART, got %s", res.Phase)
 	}
 	if ho.contractScaler != 1 || !res.ContractScalerLaunchedEarly {
 		t.Fatalf("0 trade hulls: the contract scaler is still ensured (its launch is not coupled to the seed), got launches=%d early=%v", ho.contractScaler, res.ContractScalerLaunchedEarly)

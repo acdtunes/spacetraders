@@ -55,7 +55,7 @@ func TestBootstrap_Income_ContractGraduated_NoContractActions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reconcileOnce: %v", err)
 	}
-	if res.Phase != PhaseIncome {
+	if res.Phase != PhaseColdStart {
 		t.Fatalf("expected INCOME phase, got %s", res.Phase)
 	}
 	if ret.calls != 0 || run.calls != 0 || loop.calls != 0 || acq.buys != 0 {

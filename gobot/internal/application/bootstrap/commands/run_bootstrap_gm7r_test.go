@@ -231,8 +231,8 @@ func TestBootstrap_Gm7r_ReDerivesIncome_WhenLatchedUnderScaled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tick %d: %v", gateReentryStreakThreshold, err)
 	}
-	if res.Phase != PhaseIncome {
-		t.Fatalf("%d consecutive under-scaled low-progress ticks must re-derive INCOME (escape the latch), got %s", gateReentryStreakThreshold, res.Phase)
+	if res.Phase != PhaseColdStart {
+		t.Fatalf("%d consecutive under-scaled low-progress ticks must re-derive COLDSTART (escape the latch), got %s", gateReentryStreakThreshold, res.Phase)
 	}
 }
 
@@ -264,7 +264,7 @@ func TestBootstrap_Gm7r_EscapeHysteresis_ResetsOnConditionBreak(t *testing.T) {
 	obsvr.obs.ConstructionPercent = 0
 	mustPhase(4, PhaseGate)   // streak 1 again (NOT 3 — proves consecutive, not cumulative)
 	mustPhase(5, PhaseGate)   // streak 2
-	mustPhase(6, PhaseIncome) // streak 3 → escape
+	mustPhase(6, PhaseColdStart) // streak 3 → escape
 }
 
 // newEscapeHandler wires a coordinator with the minimal collaborators the escape-hatch / entry-gate

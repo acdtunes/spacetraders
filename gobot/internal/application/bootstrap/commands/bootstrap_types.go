@@ -11,18 +11,17 @@
 // persisted enum), and ACTS on the delta with each action guarded "already done / in-flight?".
 package commands
 
-// Phase is the bootstrap arc phase. It is ALWAYS derived from the current observation (market
-// coverage, fleet, ...) and NEVER read back from storage — a persisted enum can desync from the
+// Phase is the bootstrap arc phase. It is ALWAYS derived from the current observation (fleet,
+// construction, treasury) and NEVER read back from storage — a persisted enum can desync from the
 // live world, which is the whole failure mode a reconciler exists to avoid (spec §Architecture).
 type Phase string
 
 const (
-	// PhaseData is the cold-start data phase: buy probes to target and scout every market so
-	// contract/hub selection has data to work from.
-	PhaseData Phase = "DATA"
-	// PhaseIncome is the contract-income ramp: retire the frigate, staged-buy hub haulers, run
-	// batch-contract, exit to GATE when realized $/hr ≥ income_bar.
-	PhaseIncome Phase = "INCOME"
+	// PhaseColdStart is the cold start, and it drives TWO PARALLEL workstreams every tick: scanning
+	// (buy probes to target, declare the home scout post so market data flows) and contract income
+	// (retire the frigate, run batch-contract, stage the hub haulers). Each self-guards to a no-op
+	// once its own work is done, so one finishing never holds the other back.
+	PhaseColdStart Phase = "COLDSTART"
 	// PhaseGate is jump-gate construction: start the construction pipeline, ensure the executor
 	// has adopted it, and size the gate workforce until the site is complete.
 	PhaseGate Phase = "GATE"
@@ -37,7 +36,7 @@ const (
 )
 
 // Observation is one tick's read of the live world — the reconciler's entire input. Everything the
-// phase derivation and the DATA-phase guards need is here, read fresh each tick so a restart
+// phase derivation and the cold-start guards need is here, read fresh each tick so a restart
 // resumes at real state with no persisted cursor (spec §Idempotency). A read that could not gather
 // all its inputs sets Readable=false, which the reconciler treats as fail-closed: NO action this
 // tick (a missing signal must never drive a spend or an assignment).
@@ -55,18 +54,18 @@ type Observation struct {
 	// HasIdlePurchaser reports whether an idle hull exists to fly to a shipyard and execute a buy
 	// (the batch-purchase path needs a purchasing hull). When false the buy is BLOCKED, not failed.
 	HasIdlePurchaser bool
-	// MarketsCovered is how many home-system marketplaces have (fresh) market data — the DATA-exit
-	// numerator.
+	// MarketsCovered is how many home-system marketplaces have (fresh) market data — the heartbeat's
+	// scan-progress numerator (observability only; coverage gates nothing).
 	MarketsCovered int
-	// MarketsTotal is how many marketplaces the home system has — the DATA-exit denominator. 0 when
-	// no waypoints are known yet (a cold agent), which reads as 0 coverage (stay in DATA).
+	// MarketsTotal is how many marketplaces the home system has — that same denominator. 0 when no
+	// waypoints are known yet (a cold agent), which reads as 0 coverage.
 	MarketsTotal int
 	// Treasury is live agent credits — the capital-gate input.
 	Treasury int64
 
-	// --- INCOME-phase signals (Slice 2). Zero values are the cold-start default (no income yet, no
-	// haulers, frigate untagged, no market data), so a DATA-phase observation that leaves them unset
-	// reads as "INCOME not started" and the DATA guards are unaffected. ---
+	// --- Contract-income workstream signals (Slice 2). Zero values are the cold-start default (no
+	// income yet, no haulers, frigate untagged, no market data), so an observation that leaves them
+	// unset reads as "contracts not started" and the scanning guards are unaffected. ---
 
 	// IncomePerHour is the contract fleet's realized net credits/hour over a trailing window — reported on
 	// the heartbeat against income_bar so an operator can watch the contract op warm up. Realized (booked
@@ -111,7 +110,7 @@ type Observation struct {
 	FrigateCargoEmpty bool
 	// Markets is the scouted market data for the home system(s) — the contract-hub selector's input
 	// (each marketplace's sourceable goods + purchase prices). Empty ⇒ no hubs selectable this tick
-	// (fail-closed: no hauler buys), which a fresh INCOME entry before scouting completes reads as.
+	// (fail-closed: no hauler buys), which the first ticks before scouting completes read as.
 	Markets []MarketSnapshot
 	// ContractGoods is the set of goods the player's available/active contracts demand — the selector
 	// scores hubs by how cheaply they source THESE. Empty ⇒ the selector falls back to overall market
@@ -119,17 +118,17 @@ type Observation struct {
 	// works even before the first contract is accepted.
 	ContractGoods []string
 	// ContractGraduated reports the durable per-player era-scoped contract-graduation flag (sp-difa.1):
-	// the operator has retired contracts as the funding floor. When true, the INCOME workstream (actIncome
+	// the operator has retired contracts as the funding floor. When true, the contract workstream (actIncome
 	// — batch-contract, the frigate sole-earner loop, staged hauler buys) does NOT run, DURABLY across
 	// restarts, so a boot-standing bootstrap never re-establishes the contract earner on a graduated fleet.
 	// False (the default / a fresh era / a read miss) ⇒ contracts run as today — byte-identical, fail-OPEN.
-	// It gates ONLY the contract-income workstream; DATA (probes/scouting), GATE (construction), and trade
-	// are untouched.
+	// It gates ONLY the contract-income workstream; scanning (probes/scouting), GATE (construction), and
+	// trade are untouched.
 	ContractGraduated bool
 
 	// --- GATE-phase signals. Zero values are the pre-GATE default (no gate site known, no
-	// construction pipeline, the executor down, no gate workers), so an INCOME-phase observation that
-	// leaves them unset reads as "GATE not started" and the earlier phases' guards are unaffected. ---
+	// construction pipeline, the executor down, no gate workers), so a cold-start observation that leaves
+	// them unset reads as "GATE not started" and the cold-start guards are unaffected. ---
 
 	// GateSite is the home-system jump-gate construction site waypoint (an under-construction JUMP_GATE).
 	// "" when it could not be resolved yet (no waypoint data) or the system has no gate to build — a
@@ -138,7 +137,7 @@ type Observation struct {
 	// ConstructionStarted reports whether a construction pipeline ALREADY exists for GateSite. It is
 	// BOTH the idempotency guard for `construction start` (never create a second pipeline) AND the
 	// STICKY-GATE signal: once a pipeline exists the arc stays in GATE even as contract income falls with
-	// repurposed haulers, so derivePhase never regresses GATE→INCOME (which would re-buy haulers and
+	// repurposed haulers, so derivePhase never regresses GATE→COLDSTART (which would re-buy haulers and
 	// thrash). A restart mid-GATE re-observes this true → resumes in GATE.
 	ConstructionStarted bool
 	// ConstructionComplete reports whether the gate construction site is 100% delivered — the
@@ -175,7 +174,7 @@ type Observation struct {
 	// TradeHullCount is the number of 'trade'-fleet-dedicated hulls NOW — the observable trade-seeded
 	// signal (sp-192k4). The trade hull EXISTING is the durable "seeded" marker: idempotent by
 	// construction, auto-re-derived each tick from the live fleet (no stored flag), so it is restart-safe.
-	// It drives the INCOME hull-routing trade-seed: acquisition #2 → trade, held until a trade hull
+	// It drives the cold-start hull-routing trade-seed: acquisition #2 → trade, held until a trade hull
 	// exists. Mirrors how obs.Haulers counts contract-dedicated hulls, filtering on the "trade" tag
 	// instead. 0 (the cold-start default) ⇒ not yet seeded.
 	TradeHullCount int
@@ -194,7 +193,7 @@ type Observation struct {
 	// the old static hauler floor: GATE is entered only once the contract op has genuinely reached the
 	// size the scaler is driving it toward, so a lightly-scaled op can never latch GATE and cannibalize
 	// itself (the sp-gm7r death spiral). 0 (no scaler running / unread target) ⇒ FAIL-CLOSED: gateFunded
-	// never gates on an unknown target, so a scaler-less op stays in INCOME rather than entering GATE blind.
+	// never gates on an unknown target, so a scaler-less op stays in cold start rather than entering GATE blind.
 	ContractScalerTarget int
 
 	// Readable reports whether the observer gathered all its inputs. false ⇒ fail-closed (no action
@@ -239,7 +238,7 @@ type MarketGood struct {
 }
 
 // CoverageFraction is MarketsCovered / MarketsTotal, and 0 when nothing is known yet (total 0) so
-// a cold agent reads as uncovered and stays in DATA rather than dividing by zero.
+// a cold agent reads as uncovered rather than dividing by zero.
 func (o Observation) CoverageFraction() float64 {
 	if o.MarketsTotal <= 0 {
 		return 0

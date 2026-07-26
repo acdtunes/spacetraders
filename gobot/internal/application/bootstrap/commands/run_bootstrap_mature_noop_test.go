@@ -260,8 +260,8 @@ func TestBootstrap_FreshFleet_NeverTerminal_ColdStartUnaffected(t *testing.T) {
 		if res.Done {
 			t.Fatalf("tick %d: a fresh fleet must NEVER be terminal — cold start would be skipped entirely", tick)
 		}
-		if res.Phase != PhaseData {
-			t.Fatalf("tick %d: a fresh fleet must stay in DATA, got %s", tick, res.Phase)
+		if res.Phase != PhaseColdStart {
+			t.Fatalf("tick %d: a fresh fleet must stay in COLDSTART, got %s", tick, res.Phase)
 		}
 	}
 	if spies.refresher.calls != ticks {
