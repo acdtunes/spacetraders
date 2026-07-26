@@ -11,7 +11,6 @@ import (
 	autooutfitCmd "github.com/andrescamacho/spacetraders-go/internal/application/autooutfit"
 	bootstrapCmd "github.com/andrescamacho/spacetraders-go/internal/application/bootstrap/commands"
 	contractScalerCmd "github.com/andrescamacho/spacetraders-go/internal/application/contractscaler/commands"
-	expansionCmd "github.com/andrescamacho/spacetraders-go/internal/application/expansion/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
 	probeBuyerFleetCmd "github.com/andrescamacho/spacetraders-go/internal/application/probebuyerfleet/commands"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
@@ -65,8 +64,7 @@ type TuneShowOutcome struct {
 }
 
 var tuneOperationCoordinatorTypes = map[string]string{
-	"freshsizer":       string(container.ContainerTypeMarketFreshnessSizer),
-	"frontier":         string(container.ContainerTypeFrontierExpansion),
+	"sensing":          string(container.ContainerTypeProbeSensingCoordinator),
 	"scoutpost":        string(container.ContainerTypeScoutPostCoordinator),
 	"contract":         string(container.ContainerTypeContractFleetCoordinator),
 	"autooutfit":       string(container.ContainerTypeAutoOutfitCoordinator),
@@ -77,8 +75,7 @@ var tuneOperationCoordinatorTypes = map[string]string{
 }
 
 func tunableKnobsByContainerType() map[string]map[string]TuneBound {
-	sizer := scoutingCmd.SizerTunableDefaults()
-	frontier := expansionCmd.FrontierTunableDefaults()
+	sensing := scoutingCmd.SensingTunableDefaults()
 	scoutPost := scoutingCmd.ScoutPostTunableDefaults()
 	contract := ContractCoordinatorTunableDefaults()
 	autoOutfit := autooutfitCmd.AutoOutfitTunableDefaults()
@@ -110,46 +107,29 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 			"payback_horizon_hours":     {Type: "int", Min: 1, Max: 8760, Default: autoOutfit["payback_horizon_hours"], Unit: "hours", Description: "absolute payback gate — cost must be recovered within this horizon (default 0 = off until per-hull throughput is wired)"},
 			"max_treasury_fraction_pct": {Type: "int", Min: 1, Max: 100, Default: autoOutfit["max_treasury_fraction_pct"], Unit: "percent", Description: "a single module never exceeds this fraction of live treasury"},
 		},
-		string(container.ContainerTypeMarketFreshnessSizer): {
-			"max_spend_per_cycle":         {Type: "int", Min: 0, Max: 5_000_000, Default: sizer["max_spend_per_cycle"], Unit: "credits", Description: "max probe spend within the trailing spend window"},
-			"purchase_cooldown_secs":      {Type: "int", Min: 10, Max: 86_400, Default: sizer["purchase_cooldown_secs"], Unit: "seconds", Description: "min wall-clock between probe buys"},
-			"spend_window_secs":           {Type: "int", Min: 10, Max: 86_400, Default: sizer["spend_window_secs"], Unit: "seconds", Description: "trailing window the spend cap sums over"},
-			"max_probe_fleet":             {Type: "int", Min: 0, Max: 200, Default: sizer["max_probe_fleet"], Unit: "hulls", Description: "total satellite cap"},
-			"max_probes_per_system":       {Type: "int", Min: 0, Max: 200, Default: sizer["max_probes_per_system"], Unit: "hulls", Description: "per-system hull cap"},
-			"sla_seconds":                 {Type: "int", Min: 10, Max: 86_400, Default: sizer["sla_seconds"], Unit: "seconds", Description: "global freshness SLA — the fallback the sizer sizes against when a system carries no per-market activity signal"},
-			"sla_seconds_weak":            {Type: "int", Min: 10, Max: 86_400, Default: sizer["sla_seconds_weak"], Unit: "seconds", Description: "sp-j4kjv per-activity SLA for WEAK markets (default 360m) — the SLA is a function of activity: each cohort is sized against its own SLA and summed"},
-			"sla_seconds_restricted":      {Type: "int", Min: 10, Max: 86_400, Default: sizer["sla_seconds_restricted"], Unit: "seconds", Description: "sp-j4kjv per-activity SLA for RESTRICTED markets, also the unknown/null-activity default (default 135m)"},
-			"sla_seconds_growing":         {Type: "int", Min: 10, Max: 86_400, Default: sizer["sla_seconds_growing"], Unit: "seconds", Description: "sp-j4kjv per-activity SLA for GROWING markets (default 45m)"},
-			"sla_seconds_strong":          {Type: "int", Min: 10, Max: 86_400, Default: sizer["sla_seconds_strong"], Unit: "seconds", Description: "sp-j4kjv per-activity SLA for STRONG markets (default 22m) — the tightest, sized the most probes"},
-			"target_percentile":           {Type: "int", Min: 1, Max: 100, Default: sizer["target_percentile"], Unit: "percentile", Description: "sp-r57g age percentile the sizer sizes against — a system breaches iff its measured P90 exceeds the SLA, not its max (tail tolerated); 100 = pre-sp-r57g max-age behavior"},
-			"value_weighted":              {Type: "int", Min: 1, Max: 2, Default: sizer["value_weighted"], Unit: "mode", Description: "sp-r57g value-weighting mode: 2=on (percentile weighted by per-market trade_volume×price, arb core stays tight), 1=off (plain count percentile)"},
-			"demand_ewma_half_life_secs":  {Type: "int", Min: 60, Max: 86_400, Default: sizer["demand_ewma_half_life_secs"], Unit: "seconds", Description: "sp-wuksw realized-demand EWMA half-life: a SELL leg this old counts half — the freshness percentile is weighted by where the fleet ACTUALLY earns (realized sell-value per sink), superseding intrinsic value; a decayed lane drops off, a newly-hit sink climbs (default 3h). Only active when value_weighted=2"},
-			"worst_cycle_seconds":         {Type: "int", Min: 60, Max: 86_400, Default: sizer["worst_cycle_seconds"], Unit: "seconds", Description: "worst-plausible per-market cycle bounding the market-count clamp ceiling"},
-			"cycle_dampening_percent":     {Type: "int", Min: 1, Max: 100, Default: sizer["cycle_dampening_percent"], Unit: "percent", Description: "shrinkage of a system's own noisy per-market cycle toward the fleet median"},
-			"breach_response_percent":     {Type: "int", Min: 1, Max: 500, Default: sizer["breach_response_percent"], Unit: "percent", Description: "aggressiveness of the circuit-observed breach response (scales the observed age fed to the circuit sizing; 100 = exact measured circuit, >100 buys headroom)"},
-			"release_slack_percent":       {Type: "int", Min: 1, Max: 100, Default: sizer["release_slack_percent"], Unit: "percent", Description: "release hysteresis as a percent of the SLA"},
-			"release_stable_window_secs":  {Type: "int", Min: 10, Max: 86_400, Default: sizer["release_stable_window_secs"], Unit: "seconds", Description: "how long a warm surplus must hold before a probe is shed"},
-			"reserved_frontier_floor":     {Type: "int", Min: 0, Max: 200, Default: sizer["reserved_frontier_floor"], Unit: "hulls", Description: "sp-iopd MVP: probes reserved for the frontier — the sizer holds its aggregate against (supply − this) and releases the surplus; 0 = off (pre-sp-iopd)"},
-			"hold_unscanned_market_posts": {Type: "int", Min: 0, Max: 1, Default: sizer["hold_unscanned_market_posts"], Unit: "flag", Description: "sp-u8jc/sp-gucu bootstrap-catch-22 fix: 1 ⇒ a CHARTED system whose waypoints carry the MARKETPLACE trait but that has NO scanned market_data yet is HELD (its standing post is not retired 'markets gone') and counted as one-probe initial-scan demand, so the coordinator mans it (in-system idle, sp-u8jc cross-system relay, or a probe buy) and it gets its first scan; 0 (default) ⇒ retire-as-gone, byte-identical. Requires the daemon to have wired the charted-marketplace reader"},
-			// SENSING SCOPE — the API budget is fixed while the charted map is not, so the sizer sizes
-			// against the systems the fleet OPERATES in (traded recently ∪ occupied by a non-scout hull)
-			// plus a bounded discovery allowance, instead of every market-bearing system. Raising the
-			// retention or the allowance WIDENS sensing (more systems, less freshness each); lowering
-			// them concentrates the same probes on fewer systems.
-			"scan_footprint_retention_secs": {Type: "int", Min: 3_600, Max: 604_800, Default: sizer["scan_footprint_retention_secs"], Unit: "seconds", Description: "how long a system stays in the trading footprint after its last realized trade. Deliberately longer than any freshness SLA and longer than a market takes to recover: the fleet stops trading a lane BECAUSE it crushed it, so a short retention would stop scanning a crushed market exactly while it reverts and it could never return (nothing scans it ⇒ nothing trades it). Default 24h clears the ~8-9h full reversion and the 12-24h dead window"},
-			"scan_discovery_allowance":      {Type: "int", Min: 0, Max: 200, Default: sizer["scan_discovery_allowance"], Unit: "systems", Description: "how many OUT-of-footprint systems keep a standing watch so a narrowed scope can still grow — the price of keeping options. Each slot is ONE probe on the richest untraded system, so the allowance costs exactly this many probes. Slots rotate on success: a discovery system the fleet trades enters the footprint, is sized by the full model, and frees its slot. Roving discovery over UNCHARTED space stays the frontier coordinator's job. 0 reverts to the default like every knob"},
-			"scan_discovery_sla_seconds":    {Type: "int", Min: 60, Max: 604_800, Default: sizer["scan_discovery_sla_seconds"], Unit: "seconds", Description: "freshness target stamped on a discovery post. Deliberately loose: a one-probe watch on a system the fleet does not trade cannot hold a trading SLA, and a post stamped with an unreachable target would read as permanently breaching — raising its demand and putting the scout reconciler's manning watchdog on its tour"},
-		},
-		// sp-tlekc frontier overhaul: EXACTLY four operator knobs (22 → 4). max_probe_fleet is the sole
-		// throttle; reach_mode + discover_scan_balance compose the reach + discover/scan split from
-		// coherent presets; reserved_freshness_floor is the one retained expert guard (retired P4).
-		// Everything else — the price ceiling (immutable 100k), the 50k working-capital floor, the
-		// hop-penalty/sibling-margin sourcing terms, the 25% rule — is an internal const, not a knob.
-		string(container.ContainerTypeFrontierExpansion): {
-			"max_probe_fleet":          {Type: "int", Min: 0, Max: 200, Default: frontier["max_probe_fleet"], Unit: "hulls", Description: "total satellite cap — the SOLE frontier throttle. Set the fleet size; it fills one probe per tick as fast as the API + 25% rule + 50k floor safely allow, then stops. ~30 trickle / ~50 normal / 80 aggressive / ~150 flood"},
-			"reach_mode":               {Type: "int", Min: 1, Max: 3, Default: frontier["reach_mode"], Unit: "mode", Description: "sp-tlekc frontier reach preset: 1=shallow (pure-BFS near ring, reuse off), 2=balanced (the live snapshot: 65/35 breadth/depth, reuse+snowball+reap armed), 3=deep (deeper hops, more pathfinders, wider reuse). Composes depth/breadth + reuse relay + off-gate + reap timeout from ONE coherent preset (couplings honored by construction)"},
-			"discover_scan_balance":    {Type: "int", Min: 0, Max: 100, Default: frontier["discover_scan_balance"], Unit: "percent", Description: "sp-tlekc percent of each cycle's post-declaration capacity spent CHARTING VIRGIN systems; the rest (100-this) concurrently drains the dark-market backlog, with graceful degradation (a dry side yields its budget to the other). 100 = pure discovery, 40 = the live snapshot. Tuning 0 reverts to the default like every knob"},
-			"reserved_freshness_floor": {Type: "int", Min: 0, Max: 200, Default: frontier["reserved_freshness_floor"], Unit: "hulls", Description: "sp-iopd MVP: idle probes the frontier reserves for freshness — discounted from the supply covering its demand (buys rather than cannibalize scanning); 0 = off. The one retained expert guard (retired when probe allocation unifies, sp-tlekc Phase 4)"},
+		// The probe-sensing coordinator (`--operation sensing`): the ONE standing sensing engine,
+		// successor of the market-freshness sizer + frontier expansion pair. probe_budget is the
+		// single fleet-size dial; depth/threshold shape which systems earn probes; the wait band
+		// governs pressure shedding; every buy stays behind the reused fail-closed money-guard
+		// stack (25% treasury + immutable 50k floor + spend window) — consts, never knobs.
+		// goods_whitelist is a string and therefore lives in the [sensing] config.yaml section
+		// (the tune mechanism is int-only), injected at container construction.
+		// REBUILD LATENCY (every key below says so): the sensing handler has no liveconfig
+		// reader, so a tune persists immediately but the RUNNING loop applies it only at the
+		// coordinator's next rebuild (daemon restart or relaunch) — never mid-run.
+		string(container.ContainerTypeProbeSensingCoordinator): {
+			"depth_floor":                 {Type: "int", Min: 1, Max: 100_000_000, Default: sensing["depth_floor"], Unit: "credits", Description: "whitelisted-goods market depth below which a system earns no standing probe (~bottom quartile at the default); applies at coordinator rebuild (restart/relaunch), not next tick"},
+			"probe_budget":                {Type: "int", Min: 1, Max: 200, Default: sensing["probe_budget"], Unit: "hulls", Description: "N — the single budget dial: the total probe count the fleet may hold; sizing, rotation, and the guarded buy all reconcile toward it; applies at coordinator rebuild (restart/relaunch), not next tick"},
+			"second_probe_threshold":      {Type: "int", Min: 1, Max: 200, Default: sensing["second_probe_threshold"], Unit: "markets", Description: "hot-market count above which a system earns a second probe; applies at coordinator rebuild (restart/relaunch), not next tick"},
+			"purchase_cooldown_secs":      {Type: "int", Min: 10, Max: 86_400, Default: sensing["purchase_cooldown_secs"], Unit: "seconds", Description: "min wall-clock between probe buys; applies at coordinator rebuild (restart/relaunch), not next tick"},
+			"tick_secs":                   {Type: "int", Min: 10, Max: 86_400, Default: sensing["tick_secs"], Unit: "seconds", Description: "reconcile cadence; applies at coordinator rebuild (restart/relaunch), not next tick"},
+			"wait_low_ms":                 {Type: "int", Min: 1, Max: 60_000, Default: sensing["wait_low_ms"], Unit: "milliseconds", Description: "smoothed limiter wait at or under this: full scanning, discovery allowed; applies at coordinator rebuild (restart/relaunch), not next tick"},
+			"wait_high_ms":                {Type: "int", Min: 1, Max: 600_000, Default: sensing["wait_high_ms"], Unit: "milliseconds", Description: "smoothed limiter wait at or past this: scanning sheds toward the dormancy floor; applies at coordinator rebuild (restart/relaunch), not next tick"},
+			"freshness_target_secs":       {Type: "int", Min: 60, Max: 86_400, Default: sensing["freshness_target_secs"], Unit: "seconds", Description: "freshness target stamped on every standing sensing post; the scout reconciler's manning watchdog reads it; applies at coordinator rebuild (restart/relaunch), not next tick"},
+			"max_spend_per_cycle":         {Type: "int", Min: 0, Max: 5_000_000, Default: sensing["max_spend_per_cycle"], Unit: "credits", Description: "max probe spend within the trailing spend window; applies at coordinator rebuild (restart/relaunch), not next tick — a tightened cap does NOT bind the running loop until a bounce"},
+			"spend_window_secs":           {Type: "int", Min: 10, Max: 86_400, Default: sensing["spend_window_secs"], Unit: "seconds", Description: "trailing window the spend cap sums over; applies at coordinator rebuild (restart/relaunch), not next tick"},
+			"discovery_declares_per_tick": {Type: "int", Min: 1, Max: 100, Default: sensing["discovery_declares_per_tick"], Unit: "posts", Description: "sweep-once frontier declares per tick — paces propagation so discovery never floods the scout reconciler; applies at coordinator rebuild (restart/relaunch), not next tick"},
+			"pressure_half_life_secs":     {Type: "int", Min: 1, Max: 3_600, Default: sensing["pressure_half_life_secs"], Unit: "seconds", Description: "smoothing half-life of the API limiter-pressure EWMA the dormancy rotation sheds against. Boot value comes from config.yaml [daemon] limiter_pressure_half_life_seconds; a tuned value persists and is applied whenever the coordinator is rebuilt (restart/relaunch)"},
 		},
 		string(container.ContainerTypeScoutPostCoordinator): {
 			"manning_stall_cycles":             {Type: "int", Min: 1, Max: 1440, Default: scoutPost["manning_stall_cycles"], Unit: "cycles", Description: "consecutive stale reconcile cycles before a silent fully-manned post is re-manned"},
@@ -267,7 +247,7 @@ func (s *DaemonServer) MutateContainerConfigKey(ctx context.Context, containerID
 
 	knobs, ok := tunableKnobsByContainerType()[model.ContainerType]
 	if !ok {
-		return nil, fmt.Errorf("container %s is a %s, which has no live-tunable knobs yet (tunable engines: freshness sizer, frontier expansion)", model.ID, model.ContainerType)
+		return nil, fmt.Errorf("container %s is a %s, which has no live-tunable knobs yet (tunable operations: %s)", model.ID, model.ContainerType, joinSortedKeys(tuneOperationCoordinatorTypes))
 	}
 	bound, ok := knobs[key]
 	if !ok {

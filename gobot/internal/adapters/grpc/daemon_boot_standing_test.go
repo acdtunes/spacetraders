@@ -187,9 +187,61 @@ func TestEnsureBootStandingCoordinators_LaunchesScoutPostCoordinatorWhenAbsent(t
 		"boot must launch exactly one standing scout-post coordinator when none is running (sp-9ujl)")
 }
 
+// The probe-sensing coordinator REPLACES the market-freshness sizer in the boot-standing
+// set: sensing is the fleet's standing sensor (whitelist-scoped posts, dormancy rotation,
+// discovery declares, budgeted buys), so it must self-start at every boot exactly as the
+// sizer did — and the sizer must be GONE from the set, or two engines would fight over the
+// same posts and probe budget. This is the wiring half of the swap; the registry refusal
+// (command_factory_probe_sensing_test.go) is the recovery half.
+func TestBootStandingSet_IncludesProbeSensingAndExcludesFreshnessSizer(t *testing.T) {
+	require.Contains(t, bootStandingCoordinatorTypes, container.ContainerTypeProbeSensingCoordinator,
+		"the probe-sensing coordinator must be boot-standing: it is the fleet's one standing sensing engine")
+	require.NotContains(t, bootStandingCoordinatorTypes, container.ContainerTypeMarketFreshnessSizer,
+		"the market-freshness sizer is retired — boot-standing it would launch an unbuildable container every boot")
+}
+
+// On a boot with a player present and no standing probe-sensing coordinator yet, exactly one
+// must be launched — all-defaults (RULINGS #5), the same idempotent EnsureRunning shape the
+// other standing coordinators use.
+func TestEnsureBootStandingCoordinators_LaunchesProbeSensingWhenAbsent(t *testing.T) {
+	s, db, playerID := newRecoveryTestServer(t)
+	s.playerRepo = persistence.NewGormPlayerRepository(db) // the co-launched bootstrap resolves the agent symbol
+
+	// The launched standing coordinators spawn background runners that block on the (blocking) test
+	// mediator; a cancelable context lets them exit cleanly when the test ends.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	s.ensureBootStandingCoordinators(ctx, playerID)
+
+	require.Equal(t, int64(1), countContainersOfType(t, db, playerID, container.ContainerTypeProbeSensingCoordinator),
+		"boot must launch exactly one standing probe-sensing coordinator when none is running")
+	require.Equal(t, int64(0), countContainersOfType(t, db, playerID, container.ContainerTypeMarketFreshnessSizer),
+		"boot must no longer launch the retired market-freshness sizer")
+}
+
+// Idempotence — a warm restart must never double-launch. With a probe-sensing coordinator
+// already RUNNING (recovered from a prior boot), a second ensureBootStandingCoordinators pass
+// must launch no duplicate: a twin reconcile loop would double-spend the probe budget.
+func TestEnsureBootStandingCoordinators_IdempotentForProbeSensing(t *testing.T) {
+	s, db, playerID := newRecoveryTestServer(t)
+	s.playerRepo = persistence.NewGormPlayerRepository(db)
+
+	insertRunningContainer(t, db, "probe-sensing-existing", "probe_sensing_coordinator",
+		string(container.ContainerTypeProbeSensingCoordinator), `{"container_id":"probe-sensing-existing"}`, playerID, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	s.ensureBootStandingCoordinators(ctx, playerID)
+
+	require.Equal(t, int64(1), countContainersOfType(t, db, playerID, container.ContainerTypeProbeSensingCoordinator),
+		"a warm restart must not launch a duplicate probe-sensing coordinator when one is already RUNNING")
+}
+
 // sp-9ujl: idempotence — a warm restart must never double-launch. With a scout-post coordinator already
 // RUNNING (recovered from a prior boot), a second ensureBootStandingCoordinators pass must launch no
-// duplicate, mirroring the market-freshness sizer's containerTypeRunning guard. A twin reconcile loop
+// duplicate, mirroring the probe-sensing coordinator's containerTypeRunning guard. A twin reconcile loop
 // would fight the first over the same posts and idle probes.
 func TestEnsureBootStandingCoordinators_IdempotentForScoutPostCoordinator(t *testing.T) {
 	s, db, playerID := newRecoveryTestServer(t)

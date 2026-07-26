@@ -22,7 +22,6 @@ import (
 	contractQuery "github.com/andrescamacho/spacetraders-go/internal/application/contract/queries"
 	contractServices "github.com/andrescamacho/spacetraders-go/internal/application/contract/services"
 	contractScalerCmd "github.com/andrescamacho/spacetraders-go/internal/application/contractscaler/commands"
-	expansionCmd "github.com/andrescamacho/spacetraders-go/internal/application/expansion/commands"
 	fleetCmd "github.com/andrescamacho/spacetraders-go/internal/application/fleet/commands"
 	gasCmd "github.com/andrescamacho/spacetraders-go/internal/application/gas/commands"
 	gasQuery "github.com/andrescamacho/spacetraders-go/internal/application/gas/queries"
@@ -52,7 +51,6 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/system/gategraph"
 	systemQuery "github.com/andrescamacho/spacetraders-go/internal/application/system/queries"
 	tradeRouteCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
-	tradingQueries "github.com/andrescamacho/spacetraders-go/internal/application/trading/queries"
 	tradingSvc "github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
 	watchkeeper "github.com/andrescamacho/spacetraders-go/internal/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
@@ -197,6 +195,10 @@ func run(cfg *config.Config) error {
 	// benefit at once; safety comes from invalidating on every credit-decreasing
 	// call inside the client. 0/unset -> the client's built-in 15s default.
 	apiClient.SetAgentCacheTTL(time.Duration(cfg.Daemon.AgentCacheTTLSeconds) * time.Second)
+	// The limiter-pressure EWMA half-life the probe-sensing coordinator sheds scanning
+	// against (RULINGS #5 — an operational tuning number, not a rebuild). 0/unset -> the
+	// client's built-in 30s default; a persisted sensing-container tune overrides at rebuild.
+	apiClient.SetLimiterPressureHalfLife(time.Duration(cfg.Daemon.LimiterPressureHalfLifeSeconds) * time.Second)
 	fmt.Println("API client initialized")
 
 	// 4. Initialize ship repository (adapts API responses to domain entities)
@@ -377,6 +379,11 @@ func run(cfg *config.Config) error {
 	// The same recent-scan window the trade coordinators stamp, so the fleet keeps
 	// one definition of "already scanned recently enough" rather than two that drift.
 	scoutTourHandler.SetScanDedupWindow(cfg.TradeImpact.ResolvedScanMaxAge())
+	// The scout-post dormancy bit the tour parks on: without this reader every tour
+	// scans unconditionally and the probe-sensing coordinator's pressure rotation is
+	// inert fleet-wide. The repo is shared with the scout-post/probe-sensing wiring below.
+	scoutPostRepo := persistence.NewGormScoutPostRepository(db)
+	scoutTourHandler.SetDormancyReader(scoutPostRepo)
 	if err := mediator.RegisterHandler[*scoutingCmd.ScoutTourCommand](med, scoutTourHandler); err != nil {
 		return fmt.Errorf("failed to register ScoutTour handler: %w", err)
 	}
@@ -570,7 +577,7 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to create socket directory: %w", err)
 	}
 
-	daemonServer, err := grpc.NewDaemonServer(med, db, containerLogRepo, containerRepo, waypointRepo, shipRepo, playerRepo, routingClient, apiClient, socketPath, &cfg.Metrics, cfg.Contract, cfg.TradeFleet, cfg.WorkerRebalancer, cfg.Scouting, cfg.FleetAutosizer, cfg.Bootstrap, cfg.ShipResync, shipEventBus)
+	daemonServer, err := grpc.NewDaemonServer(med, db, containerLogRepo, containerRepo, waypointRepo, shipRepo, playerRepo, routingClient, apiClient, socketPath, &cfg.Metrics, cfg.Contract, cfg.TradeFleet, cfg.WorkerRebalancer, cfg.Scouting, cfg.Sensing, cfg.FleetAutosizer, cfg.Bootstrap, cfg.ShipResync, shipEventBus)
 	if err != nil {
 		return fmt.Errorf("failed to create daemon server: %w", err)
 	}
@@ -662,9 +669,9 @@ func run(cfg *config.Config) error {
 	// Register the standing scout-post coordinator (sp-cxpq): reconciles the
 	// desired-state posts table every tick — respawns dead tours, claims idle
 	// satellites for unmanned posts, retires completed sweep-once posts. The posts
-	// table and waypoint repo are read directly; the container repo supplies tour
-	// liveness (ListByStatusSimple), daemonClientLocal spawns/stops tour workers.
-	scoutPostRepo := persistence.NewGormScoutPostRepository(db)
+	// table (scoutPostRepo, constructed with the scout-tour wiring above) and waypoint
+	// repo are read directly; the container repo supplies tour liveness
+	// (ListByStatusSimple), daemonClientLocal spawns/stops tour workers.
 	scoutPostCoordinatorHandler := scoutingCmd.NewRunScoutPostCoordinatorHandler(
 		scoutPostRepo,
 		shipRepo,
@@ -843,11 +850,11 @@ func run(cfg *config.Config) error {
 	// sp-42ow: the ReachableYardFinder is the heavy branch's yard-price FALLBACK — scout-scanned
 	// yards ranked by stored-gate-graph hops then price. Signal-only: with no scan data the price
 	// guard fails closed exactly as before, and every other guard still gates the buy.
-	// sp-a3yn slice C: the cross-coordinator bridge carrying slice-B off-gate demand (raised in the
-	// FRONTIER coordinator, wired below) to the FLEET autosizer's explorer BUY path. Created here so
-	// the explorer demand provider can be registered on the autosizer handler at construction; the
-	// frontier connects the WRITE side (SetOffGateDemandSink) further down. Dormant until the frontier
-	// emits AND the explorer class is armed (explorer_hulls_enabled, default off) — nothing auto-buys.
+	// The cross-coordinator off-gate demand bridge the FLEET autosizer's explorer BUY path
+	// reads (sp-a3yn). Its only writer was the retired frontier coordinator, so the bridge is
+	// currently always empty and the explorer path dormant — retained because the autosizer
+	// registers its demand provider at construction, and a future off-gate emitter (the
+	// probe-sensing discovery pass is the natural candidate) reconnects the write side here.
 	explorerOffGateBridge := expansionAdapters.NewExplorerOffGateBridge()
 
 	fleetAutosizerHandler := grpc.NewFleetAutosizerCoordinatorHandler(
@@ -1035,150 +1042,42 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register CargoLiquidation handler: %w", err)
 	}
 
-	// Frontier expansion coordinator (sp-8w89): the standing coordinator that closes the
-	// manual expansion loop — it measures coverage demand (unmanned scout-post slots +
-	// a gate-ranked expansion queue), declares frontier sweep-once posts through the SAME
-	// scout-post repo the reconciler mans, and buys probes under the money guards. It moves
-	// and claims NOTHING; the scout-post reconciler (above) and its s232 relays do all
-	// movement. shipRepo satisfies the coordinator's read-only FleetReader; transactionRepo
-	// supplies the ledger-derived, restart-safe cooldown/spend (RULINGS #2).
-	frontierExpansionHandler := expansionCmd.NewRunFrontierExpansionCoordinatorHandler(
-		scoutPostRepo, shipRepo, transactionRepo, nil, // nil = use RealClock
-	)
-	// Live treasury for the 25% guard (RULINGS #6) — nil would fail-close every buy.
-	frontierExpansionHandler.SetTreasuryReader(expansionAdapters.NewTreasuryReader(apiClient))
-	// Price-and-buy over the existing purchase_ship machinery (RULINGS #3): DEMAND-PROXIMAL
-	// (sp-hej4) — given the target post's system it spawns the probe at the scout-scanned
-	// probe-yard NEAREST that system (fewest gate hops, arbitrated against price by the live
-	// proximal_yard_hop_penalty knob) instead of always at the home yard, so the reconciler's
-	// relay is short. The probeYardFinder reads the SAME sp-42ow shipyard-inventory scans + stored
-	// gate graph the heavy-yard fallback uses; a sparse/empty scan store fails OPEN to the home
-	// yard. Lands the probe undedicated for the reconciler to relay. Shared with the freshness
-	// sizer below (same purchaser, same fail-open selection).
+	// Reachable probe-yard finder for demand-proximal probe buys (sp-hej4): given a target
+	// system it selects the scout-scanned probe-yard NEAREST it (fewest gate hops, arbitrated
+	// against price) instead of always the home yard. Reads the SAME sp-42ow shipyard-inventory
+	// scans + stored gate graph the heavy-yard fallback uses; a sparse/empty scan store fails
+	// OPEN to the home yard. Lands the probe undedicated for the scout reconciler to relay.
+	// Shared by the probe-sensing coordinator and the probe-buyer fleet below.
 	probeYardFinder := shipyardQuery.NewReachableYardFinder(shipyardInventoryRepo, gateGraphService)
-	// sp-4m4ve Phase 3 (§2D), graduated UNCONDITIONAL: per-yard recent-buy price-impact term,
-	// derived fresh from the SAME persisted ledger every call (RULINGS #2 — restart-safe, no
-	// in-memory counter). Shared between the frontier coordinator and the freshness sizer below
-	// (both buy through this purchaser).
-	frontierExpansionHandler.SetProbePurchaser(expansionAdapters.NewProbePurchaser(med, shipRepo, probeYardFinder, transactionRepo, nil))
-	// sp-255rz stall breaker: on a fail-closed probe quote, relay an idle undedicated hull to a
-	// reachable probe-yard so the next tick's live price reads. Reuses the SAME purchaser seams
-	// (mediator + ship repo + yard finder); never buys, never poaches (RULINGS #4/#7). Active on
-	// deploy as a liveness/safety restoration (mirrors the sp-hh0h home-yard positioner).
-	frontierExpansionHandler.SetProbeBuyerPositioner(expansionAdapters.NewProbeBuyerPositioner(med, shipRepo, probeYardFinder))
-	// The expansion queue's frontier enumerator: one BFS over the SAME persisted gate graph
-	// the trade circuit and scout relays share, annotated with market-data counts and a
-	// swept/never-scanned flag from the waypoint catalog (sp-gb7h — so a genuinely-barren
-	// scanned system stops being re-scouted). nil would leave the coordinator serving only
-	// unmanned-slot demand.
-	frontierExpansionHandler.SetExpansionScanner(expansionAdapters.NewExpansionScanner(
-		gateGraphService, marketRepoAdapter, shipRepo, playerRepo, waypointRepo,
-	))
-	// sp-jide: the dark-market backlog enumerator — the FULL charted-but-unscanned MARKET set (every
-	// system with MARKETPLACE waypoints but zero player market_data), unbounded by gate hops
-	// (sp-pvw3: charted markets with NO or STALE price data — the honest dark set, not just
-	// never-scanned). The scan side of the discover_scan_balance split drains it (a lower balance
-	// scans more); discover_scan_balance=100 is pure discovery and never consults it. Reads the raw
-	// market repo (charted-market counts + the player's scan ages).
-	// sp-gucu: give the scanner the live standing-post SLA reader so a manned standing post scanned
-	// WITHIN its own 4–10h freshness SLA is not mislabeled dark against the fixed 4h bar (the false
-	// "nothing is draining" census). Systems with no manned standing post keep the fixed bar.
-	darkMarketScanner := expansionAdapters.NewDarkMarketScanner(marketRepo, expansionAdapters.DefaultStaleMarketSeconds)
-	darkMarketScanner.SetScoutCoverageSource(scoutPostRepo)
-	frontierExpansionHandler.SetDarkMarketScanner(darkMarketScanner)
-	// sp-rjgr §4: the deep-resource (heavy-yard) objective the DEPTH slice biases on — heavy
-	// capacity shortfall (sp-4ewi profitable-lane surface, read-only off the market cache) AND
-	// whether a heavy-freighter yard is known yet (sp-42ow shipyard inventory). While unmet the
-	// split shifts toward depth to FIND the yard; once known it relaxes. Fails safe (no bias) when
-	// unreadable — it moves a policy split, never a spend.
-	frontierExpansionHandler.SetDepthObjectiveReader(expansionAdapters.NewDepthObjectiveReader(
-		shipyardInventoryRepo, tradingQueries.NewProfitableLaneReader(marketRepo), shipRepo,
-	))
-	frontierExpansionHandler.SetEventRecorder(captainEventRepo) // sp-6wxq: emit coordinator error-loop events on reconcile streak breach
-	// sp-vwek: per-tick live-config snapshots from the container's OWN config column,
-	// so `spacetraders tune` retunes the spend/cooldown/cap knobs on the next tick —
-	// no restart, no rebuild.
-	frontierExpansionHandler.SetLiveConfigReader(grpc.NewContainerConfigReader(containerRepo))
-	// sp-6vep reuse-before-buy the deep frontier (armed by the reach_mode preset — balanced/deep;
-	// off at shallow — sp-tlekc). The ProbeReuseRelayer hops an EXISTING edge probe onto a target
-	// virgin instead of buying at an unreachable deep yard: it selects the nearest scout probe within
-	// the preset's edge-relay reach sitting in a below-ceiling system (never cannibalizing a
-	// high-value core market — the depth-vs-freshness guard) and relays it over the SAME reposition
-	// path the scout reconciler uses (tradeRouteCoordinatorHandler). The FrontierNeighborScanner feeds
-	// the snowball walk — a charted system's uncharted gate-neighbors. Both are inert at reach_mode
-	// shallow (reuse/snowball off).
-	frontierExpansionHandler.SetProbeReuseRelayer(expansionAdapters.NewProbeReuseRelayer(
-		shipRepo,
-		gateGraphService,
-		expansionAdapters.NewMarketSystemValueReader(marketRepoAdapter),
-		expansionAdapters.NewRepositionerRelayDispatcher(tradeRouteCoordinatorHandler, gateGraphService),
-	))
-	frontierExpansionHandler.SetFrontierNeighborReader(expansionAdapters.NewFrontierNeighborScanner(
-		gateGraphService, marketRepoAdapter,
-	))
-	// sp-a3yn slice C: connect the off-gate BUY seam (mirror each tick's signal into the bridge the
-	// autosizer's explorer provider reads) and the explorer DISPATCH seam (warp a bought+dedicated
-	// idle explorer to the off-gate target via slice-A ExecuteWarpRoute; on arrival slice A charts the
-	// system so growFrontierGraph resumes). Both are optional injection — a bare deploy with the
-	// explorer class disarmed buys nothing, so this dispatch never fires.
-	frontierExpansionHandler.SetOffGateDemandSink(explorerOffGateBridge)
-	frontierExpansionHandler.SetExplorerDispatchPort(expansionAdapters.NewExplorerWarpDispatcher(
-		routeExecutor, shipRepo, ship.NewGraphWaypointSource(graphService),
-	))
-	if err := mediator.RegisterHandler[*expansionCmd.RunFrontierExpansionCoordinatorCommand](med, frontierExpansionHandler); err != nil {
-		return fmt.Errorf("failed to register FrontierExpansionCoordinator handler: %w", err)
-	}
-	// sp-pvw3 `frontier status`: expose the coordinator's read-only live-state query through the
-	// daemon. The handler already holds every port the view needs; the daemon just resolves the
-	// running container and delegates.
-	daemonServer.SetFrontierStatusProvider(frontierExpansionHandler)
 
-	// Market-freshness auto-sizer (sp-orgp): the standing coordinator that keeps EVERY
-	// scanned market fresh within an SLA by auto-sizing AND auto-buying probe capacity per
-	// system — the freshness analogue of the frontier coverage auto-sizer above. It measures
-	// per-system demand (markets × measured scan-cycle / SLA, corrected by the empirical
-	// worst-case market age), declares/resizes/retires each market-bearing system's STANDING
-	// scout post through the SAME scout-post repo the reconciler mans and partitions, and
-	// buys probes under the SHARED money-guard stack (probebuy.GuardedProbeBuyer). It moves
-	// and claims NOTHING. marketRepo satisfies the per-system freshness census
-	// (SystemsFreshness); shipRepo the read-only FleetReader; transactionRepo the
-	// ledger-derived, restart-safe cooldown/spend it shares with the frontier coordinator so
-	// the two never collectively over-buy.
-	freshnessSizerHandler := scoutingCmd.NewRunMarketFreshnessSizerCoordinatorHandler(
-		marketRepo, scoutPostRepo, shipRepo, transactionRepo, nil, // nil = use RealClock
+	// Probe-sensing coordinator: the fleet's ONE standing sensing engine (successor of the
+	// market-freshness sizer + frontier expansion pair). Each tick it reconciles the
+	// whitelist-scoped footprint — standing posts sized by market depth (marketRepo's
+	// depth census), the pressure-driven dormancy rotation (the API client's live
+	// limiter-pressure EWMA), sweep-once discovery declares over the stored gate graph,
+	// and the budgeted probe buy behind the SHARED money-guard stack
+	// (probebuy.GuardedProbeBuyer). It declares posts through the SAME scout-post repo
+	// the reconciler mans and partitions; it moves and claims NOTHING. shipRepo is the
+	// read-only FleetReader; transactionRepo the ledger-derived, restart-safe
+	// cooldown/spend window.
+	probeSensingHandler := scoutingCmd.NewRunProbeSensingCoordinatorHandler(
+		marketRepo, scoutPostRepo, shipRepo, apiClient.LimiterPressure(), transactionRepo, nil, // nil = use RealClock
 	)
-	// Live treasury for the 25% guard — nil would fail-close every buy. Reuses the frontier
-	// coordinator's api-backed reader (same seam, same guard).
-	freshnessSizerHandler.SetTreasuryReader(expansionAdapters.NewTreasuryReader(apiClient))
-	// Price-and-buy over the existing purchase_ship machinery, landing the probe undedicated
-	// for the reconciler to relay — the SAME demand-proximal purchaser the frontier coordinator
-	// uses (sp-hej4): the sizer names its neediest system as the target so the probe spawns at the
-	// nearest scanned probe-yard, fail-open to the home yard on sparse scan data.
-	freshnessSizerHandler.SetProbePurchaser(expansionAdapters.NewProbePurchaser(med, shipRepo, probeYardFinder, transactionRepo, nil))
-	// The narrow, manning-preserving resize seam: UpdateHulls touches only the hull column so
-	// a resize cannot clobber the manning the scout reconciler wrote to the same row.
-	freshnessSizerHandler.SetHullUpdater(scoutPostRepo)
-	// sp-u8jc/sp-gucu bootstrap-catch-22 fix: wire the "has a marketplace" signal over the SAME
-	// GORM market repo (ChartedMarketSystemCounts — the era-scoped, fuel-excluded, MARKETPLACE-
-	// trait census the dark-market scanner is built on), so a CHARTED-but-unscanned dense hub is
-	// HELD (not retired "markets gone") and counted as initial-scan demand once armed. This makes
-	// the fix ARM-able by a knob flip (hold_unscanned_market_posts=1); while that flag is 0 (the
-	// default) the reader is read by nothing, so the coordinator is byte-identical to today. It is
-	// the missing piece the sp-u8jc relay + probe-buyer need: the post must survive to be manned.
-	freshnessSizerHandler.SetChartedMarketplaceReader(marketRepo)
-	// sp-wuksw: the REUSED tour_telemetry read (the SAME repository the auto-outfit coordinator
-	// reads) drives the demand weight — the freshsizer folds its SELL legs into a per-sink realized-
-	// demand weight that supersedes the intrinsic Σ(trade_volume × price) census weight in the value-
-	// weighted freshness percentile, so under probe scarcity the fleet holds SLA on the sinks it
-	// earns through and lets zero-demand markets breach. A market never traded keeps its intrinsic
-	// prior; with no telemetry the sizer is byte-identical to intrinsic weighting. Player-scoped read.
-	freshnessSizerHandler.SetTourTelemetryReader(persistence.NewTourTelemetryRepository(db))
-	freshnessSizerHandler.SetEventRecorder(captainEventRepo) // emit coordinator error-loop events on reconcile streak breach
-	// Per-tick live-config snapshots: the cooldown/spend knobs are `tune`-able live,
-	// no restart needed.
-	freshnessSizerHandler.SetLiveConfigReader(grpc.NewContainerConfigReader(containerRepo))
-	if err := mediator.RegisterHandler[*scoutingCmd.RunMarketFreshnessSizerCoordinatorCommand](med, freshnessSizerHandler); err != nil {
-		return fmt.Errorf("failed to register MarketFreshnessSizerCoordinator handler: %w", err)
+	// Live treasury for the 25% guard — nil would fail-close every buy.
+	probeSensingHandler.SetTreasuryReader(expansionAdapters.NewTreasuryReader(apiClient))
+	// Price-and-buy over the existing purchase_ship machinery, demand-proximal via the
+	// shared probeYardFinder (sp-hej4), landing the probe undedicated for the reconciler
+	// to relay; the ledger-backed purchaser keeps the per-yard price-impact term.
+	probeSensingHandler.SetProbePurchaser(expansionAdapters.NewProbePurchaser(med, shipRepo, probeYardFinder, transactionRepo, nil))
+	// The discovery pair, wired together or not at all: the stored gate adjacency the
+	// sweep-once propagation walks, and the persisted waypoint catalog whose swept
+	// knowledge excludes marketless systems — the gate graph without the catalog would
+	// re-declare swept-marketless neighbours forever.
+	probeSensingHandler.SetGateGraph(gateGraphService)
+	probeSensingHandler.SetWaypointCatalog(waypointRepo)
+	probeSensingHandler.SetEventRecorder(captainEventRepo) // emit coordinator error-loop events on reconcile streak breach
+	if err := mediator.RegisterHandler[*scoutingCmd.RunProbeSensingCoordinatorCommand](med, probeSensingHandler); err != nil {
+		return fmt.Errorf("failed to register ProbeSensingCoordinator handler: %w", err)
 	}
 
 	// Probe-buyer-fleet coordinator (sp-f082y): the standing coordinator that maintains K dedicated

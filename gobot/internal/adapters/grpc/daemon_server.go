@@ -174,6 +174,13 @@ type DaemonServer struct {
 	// config and restarting, no code redeploy.
 	scoutingConfig config.ScoutingConfig
 
+	// sensingConfig carries the probe-sensing coordinator's config.yaml-authoritative
+	// knobs (the goods whitelist — a string the int-only tune registry cannot carry).
+	// Injected into the probe_sensing_coordinator launch config on every build
+	// (resolveSensingConfig), creation and restart recovery alike, so config.yaml is
+	// the whitelist's single source of truth.
+	sensingConfig config.SensingConfig
+
 	// fleetAutosizerConfig carries the fleet capacity autosizer's knobs (sp-1txd) from
 	// config.yaml. The fleet_autosizer coordinator resolves it into its container's launch
 	// config on every build (creation + restart recovery via resolveFleetAutosizerConfig), so
@@ -225,6 +232,7 @@ func NewDaemonServer(
 	tradeFleetConfig config.TradeFleetConfig,
 	workerRebalancerConfig config.WorkerRebalancerConfig,
 	scoutingConfig config.ScoutingConfig,
+	sensingConfig config.SensingConfig,
 	fleetAutosizerConfig config.FleetAutosizerConfig,
 	bootstrapConfig config.BootstrapConfig,
 	resyncConfig config.ResyncConfig,
@@ -287,6 +295,7 @@ func NewDaemonServer(
 		tradeFleetConfig:       tradeFleetConfig,
 		workerRebalancerConfig: workerRebalancerConfig,
 		scoutingConfig:         scoutingConfig,
+		sensingConfig:          sensingConfig,
 		fleetAutosizerConfig:   fleetAutosizerConfig,
 		bootstrapConfig:        bootstrapConfig,
 		shutdownChan:           make(chan os.Signal, 1),
@@ -1069,19 +1078,26 @@ func (s *DaemonServer) gracefulShutdownWithTimeout(timeout time.Duration) {
 	}
 }
 
-// retiredCommandTypes are container command types removed from the registry by the factory-ops
-// retirement (sp-hoj8u): the goods-factory coordinator, the factory-siting coordinator, the
-// worker-rebalancer coordinator, and the vestigial manufacturing coordinator. A persisted
-// RUNNING/INTERRUPTED row of one of these types has no builder, so generic recovery would mark it
-// "recovery_failed" and log it as an unexplained loss. The recovery loop skips these explicitly —
-// marking the row terminated and exempting it from the loss summary — so a post-retirement daemon
-// boot recovers cleanly with no unknown-command-type errors. Data-driven: a future retirement adds
-// one line here.
+// retiredCommandTypes are container command types deliberately removed from the registry by a
+// retirement. A persisted RUNNING/INTERRUPTED row of one of these types has no builder, so
+// generic recovery would mark it "recovery_failed" and log it as an unexplained loss. The
+// recovery loop skips these explicitly — marking the row terminated and exempting it from the
+// loss summary — so a post-retirement daemon boot recovers cleanly with no
+// unknown-command-type errors. Data-driven: a future retirement adds one line here, with its
+// attribution.
 var retiredCommandTypes = map[string]bool{
+	// The factory-ops retirement (sp-hoj8u): goods-factory, factory-siting,
+	// worker-rebalancer, and the vestigial manufacturing coordinator.
 	"goods_factory_coordinator":     true,
 	"siting_coordinator":            true,
 	"worker_rebalancer_coordinator": true,
 	"manufacturing_coordinator":     true,
+	// The probe-sensing retirement: the market-freshness sizer and the frontier
+	// expansion coordinator are superseded by probe_sensing_coordinator. Their
+	// rows are marked terminated on the first post-retirement boot instead of
+	// alarming as unexplained losses; the registry refuses to build them either way.
+	"market_freshness_sizer_coordinator": true,
+	"frontier_expansion_coordinator":     true,
 }
 
 // RecoverRunningContainers recovers containers that were RUNNING or INTERRUPTED when daemon stopped
@@ -1192,12 +1208,13 @@ func (s *DaemonServer) RecoverRunningContainers(ctx context.Context) error {
 			continue
 		}
 
-		// sp-hoj8u: a persisted row of a RETIRED command type (factory/siting/worker-rebalancer ops)
-		// has no builder. Skip it cleanly — mark it terminated with a clear reason and exempt it from
-		// the loss summary — rather than letting generic recovery report a spurious "recovery_failed".
+		// A persisted row of a RETIRED command type has no builder. Skip it cleanly — mark it
+		// terminated with a clear reason and exempt it from the loss summary — rather than
+		// letting generic recovery report a spurious "recovery_failed". Which retirement
+		// removed the type is documented on retiredCommandTypes itself.
 		if retiredCommandTypes[containerModel.CommandType] {
-			fmt.Printf("Container %s: Skipping recovery (retired command type '%s', sp-hoj8u factory-ops retirement)\n", containerModel.ID, containerModel.CommandType)
-			s.markContainerFailed(ctx, containerModel, "retired_command_type", "command type retired (sp-hoj8u)")
+			fmt.Printf("Container %s: Skipping recovery (retired command type '%s')\n", containerModel.ID, containerModel.CommandType)
+			s.markContainerFailed(ctx, containerModel, "retired_command_type", fmt.Sprintf("command type '%s' retired", containerModel.CommandType))
 			exempt[containerModel.ID] = true
 			continue
 		}

@@ -7,7 +7,6 @@ import (
 
 	autooutfitCmd "github.com/andrescamacho/spacetraders-go/internal/application/autooutfit"
 	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
-	expansionCmd "github.com/andrescamacho/spacetraders-go/internal/application/expansion/commands"
 	gasCmd "github.com/andrescamacho/spacetraders-go/internal/application/gas/commands"
 	liquidationCmd "github.com/andrescamacho/spacetraders-go/internal/application/liquidation"
 	goodsCmd "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/commands"
@@ -362,8 +361,13 @@ func containerSpecList() []ContainerSpec {
 	return []ContainerSpec{
 		{CommandType: "scout_tour", build: buildScoutTourCommand, CoordinatorOwnsIterations: true},
 		{CommandType: "scout_post_coordinator", build: buildScoutPostCoordinatorCommand},
-		{CommandType: "frontier_expansion_coordinator", build: buildFrontierExpansionCoordinatorCommand},
-		{CommandType: "market_freshness_sizer_coordinator", build: buildMarketFreshnessSizerCoordinatorCommand},
+		// probe_sensing_coordinator: the standing sensing engine (successor of the retired
+		// market-freshness sizer + frontier expansion pair — their types are deliberately
+		// ABSENT from this list so a still-RUNNING legacy container fails closed at restart
+		// recovery). Like scout_post/contract_fleet it loops forever inside one Handle(), so
+		// it is NOT a CoordinatorOwnsIterations type; the container-level budget (-1) is
+		// irrelevant.
+		{CommandType: "probe_sensing_coordinator", build: buildProbeSensingCoordinatorCommand},
 		{CommandType: "shipyard_backfill_coordinator", build: buildShipyardBackfillCoordinatorCommand},
 		{CommandType: "scout_reposition", build: buildScoutRepositionCommand, CoordinatorOwnsIterations: true},
 		{CommandType: "contract_workflow", build: buildContractWorkflowCommand},
@@ -509,6 +513,24 @@ func (s *DaemonServer) buildCommandForType(commandType string, config map[string
 	// recovered scout and no persisted copy can shadow the live value.
 	if commandType == "scout_tour" || commandType == "scout_post_coordinator" {
 		s.resolveScoutingConfig(config)
+	}
+	// probe_sensing_coordinator: two live-config resolutions on every build — creation and
+	// restart recovery alike. (1) The [sensing] config.yaml knobs (the goods whitelist — a
+	// string the int-only tune registry cannot carry) are cleared and re-injected so a stale
+	// persisted copy can never shadow the current config.yaml (the sp-ts82 discipline).
+	// (2) A persisted/tuned pressure_half_life_secs is applied to the API client's
+	// limiter-pressure EWMA, so a `tune` of it survives a bounce and takes effect at the next
+	// rebuild. The boot default comes from config.yaml [daemon]
+	// limiter_pressure_half_life_seconds (wired in main.go); a positive container value takes
+	// precedence. The half-life is process-global client state, hence the narrow assertion
+	// instead of widening the domain port.
+	if commandType == "probe_sensing_coordinator" {
+		s.resolveSensingConfig(config)
+		if halfLife, ok := intValue(config["pressure_half_life_secs"]); ok && halfLife > 0 {
+			if setter, ok := s.apiClient.(interface{ SetLimiterPressureHalfLife(time.Duration) }); ok {
+				setter.SetLimiterPressureHalfLife(time.Duration(halfLife) * time.Second)
+			}
+		}
 	}
 	return spec.BuildCommand(config, playerID, containerID)
 }
@@ -703,66 +725,54 @@ func buildCargoLiquidationCommand(cfg *configReader, playerID int, containerID s
 	}
 }
 
-// buildFrontierExpansionCoordinatorCommand rebuilds the standing frontier expansion
-// coordinator from its persisted launch config so restart recovery re-adopts it
-// byte-identically (RULINGS #2, sp-8w89). It is a reconcile-loop coordinator (NOT a
-// CoordinatorOwnsIterations type — it loops forever inside one Handle()). Every knob is
-// optional (0/false → the coordinator's own default, RULINGS #5), so the creation op and
-// recovery share one construction and can never drift.
-func buildFrontierExpansionCoordinatorCommand(cfg *configReader, playerID int, containerID string) interface{} {
-	return &expansionCmd.RunFrontierExpansionCoordinatorCommand{
+// buildProbeSensingCoordinatorCommand rebuilds the standing probe-sensing coordinator from
+// its persisted launch config so restart recovery re-adopts it byte-identically (RULINGS #2).
+// Like the scout-post coordinator it is a reconcile-loop coordinator (NOT a
+// CoordinatorOwnsIterations type). Every knob is optional (0/absent → the coordinator's own
+// documented default, RULINGS #5), so the creation op and recovery share one construction and
+// can never drift. goods_whitelist arrives as the [sensing] config.yaml CSV, injected by
+// resolveSensingConfig just before this runs (the int-only tune mechanism carries no
+// strings); an explicit slice is also accepted for forward compatibility.
+func buildProbeSensingCoordinatorCommand(cfg *configReader, playerID int, containerID string) interface{} {
+	goods := cfg.OptionalStringSlice("goods_whitelist")
+	if len(goods) == 0 {
+		goods = csvValues(cfg.OptionalString("goods_whitelist"))
+	}
+	return &scoutingCmd.RunProbeSensingCoordinatorCommand{
 		PlayerID:                 shared.MustNewPlayerID(playerID),
 		ContainerID:              cfg.RequiredNonEmptyString("container_id"),
-		TickIntervalSecs:         cfg.OptionalInt("tick_interval_secs", 0),
-		DryRun:                   cfg.OptionalBool("dry_run"),
-		MaxProbeFleet:            cfg.OptionalInt("max_probe_fleet", 0),
-		ExpansionMaxHops:         cfg.OptionalInt("expansion_max_hops", 0),
-		MaxFrontierPostsInFlight: cfg.OptionalInt("max_frontier_posts_in_flight", 0),
-		FrontierFreshnessSecs:    cfg.OptionalInt("frontier_freshness_secs", 0),
-		WeightKnownMarket:        cfg.OptionalInt("weight_known_market", 0),
-		WeightHopPenalty:         cfg.OptionalInt("weight_hop_penalty", 0),
-		WeightVirginBonus:        cfg.OptionalInt("weight_virgin_bonus", 0),
-		ReservedFreshnessFloor:   cfg.OptionalInt("reserved_freshness_floor", 0), // sp-iopd symmetric floor (retired P4)
-		// sp-tlekc FINAL operator dials. reach_mode composes the reach preset; discover_scan_balance
-		// is the discovery/scan split (discovery_share kept as a read-through migration alias).
-		ReachMode:           cfg.OptionalInt("reach_mode", 0),
-		DiscoverScanBalance: cfg.OptionalInt("discover_scan_balance", 0),
-		DiscoveryShare:      cfg.OptionalInt("discovery_share", 0), // legacy rename alias (sp-tlekc)
+		GoodsWhitelist:           goods,
+		DepthFloor:               int64(cfg.OptionalInt("depth_floor", 0)),
+		ProbeBudget:              cfg.OptionalInt("probe_budget", 0),
+		SecondProbeThreshold:     cfg.OptionalInt("second_probe_threshold", 0),
+		PurchaseCooldownSecs:     cfg.OptionalInt("purchase_cooldown_secs", 0),
+		TickSecs:                 cfg.OptionalInt("tick_secs", 0),
+		WaitLowMs:                cfg.OptionalInt("wait_low_ms", 0),
+		WaitHighMs:               cfg.OptionalInt("wait_high_ms", 0),
+		FreshnessTargetSecs:      cfg.OptionalInt("freshness_target_secs", 0),
+		MaxSpendPerCycle:         cfg.OptionalInt("max_spend_per_cycle", 0),
+		SpendWindowSecs:          cfg.OptionalInt("spend_window_secs", 0),
+		DiscoveryDeclaresPerTick: cfg.OptionalInt("discovery_declares_per_tick", 0),
 	}
 }
 
-// buildMarketFreshnessSizerCoordinatorCommand rebuilds the standing market-freshness
-// auto-sizer from its persisted launch config so restart recovery re-adopts it
-// byte-identically (RULINGS #2, sp-orgp). Like the frontier coordinator it is a
-// reconcile-loop coordinator (NOT a CoordinatorOwnsIterations type). Every knob is optional
-// (0/false → the coordinator's own default, RULINGS #5), so the creation op and recovery
-// share one construction and can never drift. Per-system SLA overrides are a command-level
-// capability wired through a richer config path; the flat launch config carries the scalar
-// knobs the common single-SLA case needs.
-func buildMarketFreshnessSizerCoordinatorCommand(cfg *configReader, playerID int, containerID string) interface{} {
-	return &scoutingCmd.RunMarketFreshnessSizerCoordinatorCommand{
-		PlayerID:                 shared.MustNewPlayerID(playerID),
-		ContainerID:              cfg.RequiredNonEmptyString("container_id"),
-		TickIntervalSecs:         cfg.OptionalInt("tick_interval_secs", 0),
-		DryRun:                   cfg.OptionalBool("dry_run"),
-		SLASeconds:               cfg.OptionalInt("sla_seconds", 0),
-		SeedCycleSeconds:         cfg.OptionalInt("seed_cycle_seconds", 0),
-		MinCycleSamples:          cfg.OptionalInt("min_cycle_samples", 0),
-		WorstCycleSeconds:        cfg.OptionalInt("worst_cycle_seconds", 0),
-		CycleDampeningPercent:    cfg.OptionalInt("cycle_dampening_percent", 0),
-		MaxProbesPerSystem:       cfg.OptionalInt("max_probes_per_system", 0),
-		BreachResponsePercent:    cfg.OptionalInt("breach_response_percent", 0),
-		TargetPercentile:         cfg.OptionalInt("target_percentile", 0), // sp-r57g percentile-age target
-		ValueWeightedMode:        cfg.OptionalInt("value_weighted", 0),    // sp-r57g value-weighting mode (2=on default, 1=off)
-		ReleaseSlackPercent:      cfg.OptionalInt("release_slack_percent", 0),
-		ReleaseStableWindowSecs:  cfg.OptionalInt("release_stable_window_secs", 0),
-		ReservedFrontierFloor:    cfg.OptionalInt("reserved_frontier_floor", 0),     // sp-iopd reserved frontier floor
-		HoldUnscannedMarketPosts: cfg.OptionalInt("hold_unscanned_market_posts", 0), // sp-u8jc/sp-gucu bootstrap flag (0=off)
-		MaxProbeFleet:            cfg.OptionalInt("max_probe_fleet", 0),
-		MaxSpendPerCycle:         cfg.OptionalInt("max_spend_per_cycle", 0),
-		PurchaseCooldownSecs:     cfg.OptionalInt("purchase_cooldown_secs", 0),
-		SpendWindowSecs:          cfg.OptionalInt("spend_window_secs", 0),
+// csvValues splits a comma-separated launch value into its trimmed, non-empty
+// entries; an empty/absent value yields nil so the consumer's default applies.
+func csvValues(raw string) []string {
+	if raw == "" {
+		return nil
 	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // buildShipyardBackfillCoordinatorCommand rebuilds the standing shipyard-backfill sweep from

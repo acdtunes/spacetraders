@@ -5,18 +5,20 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 )
 
-// These tests pin the sp-rsgc generalization of the sp-ve3q frontier re-apply: relaunching
-// a previously-stopped TUNABLE coordinator via its `start` verb must RE-ADOPT the last
+// These tests pin the sp-rsgc generalization of the sp-ve3q re-apply: relaunching a
+// previously-stopped TUNABLE coordinator via its `start` verb must RE-ADOPT the last
 // persisted live-tuned config (source=live-config) instead of silently reverting every knob
-// to config-file defaults — for the market-freshness sizer, the guarded auto-outfit
+// to config-file defaults — for the probe-sensing coordinator, the guarded auto-outfit
 // coordinator, and the scout-post coordinator. The seam under test is the SHARED
 // coordinatorStartConfig: the exact build each
 // start handler runs before it persists the new container, asserted through ShowTunableConfig
 // — the operator's `tune --operation <op>` view — plus the merge/warning helpers directly.
 //
-// Test budget: 6 distinct behaviors (sizer re-apply, sizer override precedence, auto-outfit
+// Test budget: 6 distinct behaviors (sensing re-apply, override precedence, auto-outfit
 // re-apply, auto-outfit mode-flag authority, scout-post re-apply, generic safety-warning
 // hook) × 2 = 12 max. This file holds 7.
 
@@ -34,89 +36,68 @@ func reapplyKnob(t *testing.T, out *TuneShowOutcome, key string) TunableKnobStat
 
 const autoOutfitContainerType = "AUTO_OUTFIT_COORDINATOR"
 
-// freshSizerStartBase mirrors the config map MarketFreshnessSizerCoordinator builds from the
-// CLI flags: the new container id + mode, every numeric knob at 0 (= use the default) — an
-// operator relaunching with no flags.
-func freshSizerStartBase(newID string) map[string]interface{} {
-	return map[string]interface{}{
-		"container_id":           newID,
-		"tick_interval_secs":     0,
-		"dry_run":                false,
-		"sla_seconds":            0,
-		"max_probes_per_system":  0,
-		"max_probe_fleet":        0,
-		"max_spend_per_cycle":    0,
-		"purchase_cooldown_secs": 0,
-	}
-}
-
-// A relaunch of a stopped freshness sizer re-adopts the persisted live-tunes: a tune-only
-// knob (spend_window_secs) and the credit-moving spend cap both come back as
-// source=live-config, NOT the default.
-func TestFreshsizerStart_RelaunchReAppliesPersistedTunes(t *testing.T) {
+// A relaunch of a stopped probe-sensing coordinator re-adopts the persisted live-tunes: the
+// launch is identity-only (every knob is tune-only), so this is the pure re-adopt path — the
+// credit-moving spend cap and a shaping knob both come back as source=live-config, NOT the
+// default, and the new container id wins.
+func TestProbeSensingStart_RelaunchReAppliesPersistedTunes(t *testing.T) {
 	db, repo, playerID := tuneTestDB(t)
-	const oldID = "market_freshness_sizer_coordinator-player-OLD"
-	const newID = "market_freshness_sizer_coordinator-player-NEW"
-	seedTuneContainer(t, db, playerID, oldID, sizerContainerType, "market_freshness_sizer_coordinator", "STOPPED", map[string]interface{}{
+	const oldID = "probe_sensing_coordinator-player-OLD"
+	const newID = "probe_sensing_coordinator-player-NEW"
+	seedTuneContainer(t, db, playerID, oldID, sensingContainerType, "probe_sensing_coordinator", "STOPPED", map[string]interface{}{
 		"container_id":        oldID,
-		"spend_window_secs":   1800,   // tune-only (not a start-flag) — pure carry
-		"target_percentile":   95,     // tune-only — pure carry
-		"max_spend_per_cycle": 250000, // credit-moving; a no-flag relaunch must carry it
+		"probe_budget":        90,      // tune-only — pure carry
+		"depth_floor":         3000000, // tune-only — pure carry
+		"max_spend_per_cycle": 250000,  // credit-moving; a no-flag relaunch must carry it
 	})
 	s := &DaemonServer{containerRepo: repo}
 	ctx := context.Background()
 
-	merged, warnings, err := s.coordinatorStartConfig(ctx, playerID, freshSizerStartBase(newID), marketFreshnessSizerStartSpec())
+	merged, warnings, err := s.coordinatorStartConfig(ctx, playerID, map[string]interface{}{
+		"container_id": newID,
+	}, probeSensingStartSpec())
 	require.NoError(t, err)
-	require.Empty(t, warnings, "the sizer spend cap floors at a positive default — it can never come up uncapped, so no safety warning")
+	require.Empty(t, warnings, "the sensing spend cap floors at a positive default — it can never come up uncapped, so no safety warning")
+	require.Equal(t, newID, merged["container_id"], "the relaunch always takes the NEW container id")
 
-	seedTuneContainer(t, db, playerID, newID, sizerContainerType, "market_freshness_sizer_coordinator", "RUNNING", merged)
-	show, err := s.ShowTunableConfig(ctx, "", "freshsizer", playerID)
+	seedTuneContainer(t, db, playerID, newID, sensingContainerType, "probe_sensing_coordinator", "RUNNING", merged)
+	show, err := s.ShowTunableConfig(ctx, "", "sensing", playerID)
 	require.NoError(t, err)
 
-	window := reapplyKnob(t, show, "spend_window_secs")
-	require.Equal(t, 1800, window.Effective, "a tuned window must survive the relaunch, not reset to default")
-	require.Equal(t, "live-config", window.Source)
+	budget := reapplyKnob(t, show, "probe_budget")
+	require.Equal(t, 90, budget.Effective, "a tuned probe budget must survive the relaunch, not reset to default")
+	require.Equal(t, "live-config", budget.Source)
 
-	pct := reapplyKnob(t, show, "target_percentile")
-	require.Equal(t, 95, pct.Effective)
-	require.Equal(t, "live-config", pct.Source)
+	floor := reapplyKnob(t, show, "depth_floor")
+	require.Equal(t, 3000000, floor.Effective)
+	require.Equal(t, "live-config", floor.Source)
 
 	spend := reapplyKnob(t, show, "max_spend_per_cycle")
 	require.Equal(t, 250000, spend.Effective, "the tuned spend cap must survive a no-flag relaunch")
 	require.Equal(t, "live-config", spend.Source)
 }
 
-// An explicit start flag (positive) on the relaunch overrides the carried-forward value,
-// while a non-flag tune still survives — the merge preserves tunes without ignoring explicit
-// new intent (mirrors the frontier precedence test).
-func TestFreshsizerStart_ExplicitFlagOverridesCarried_NonFlagTuneSurvives(t *testing.T) {
+// The retired launch verbs answer honestly: both legacy engines' start paths return a clear
+// "retired" error pointing at the probe-sensing coordinator, and neither persists a container
+// — the era-5 unwire keeps the gRPC surface but kills the launch capability.
+func TestRetiredLegacyCoordinatorStartVerbs_ReturnRetiredError(t *testing.T) {
 	db, repo, playerID := tuneTestDB(t)
-	const oldID = "market_freshness_sizer_coordinator-player-OLD"
-	const newID = "market_freshness_sizer_coordinator-player-NEW"
-	seedTuneContainer(t, db, playerID, oldID, sizerContainerType, "market_freshness_sizer_coordinator", "STOPPED", map[string]interface{}{
-		"container_id":        oldID,
-		"max_spend_per_cycle": 250000,
-		"spend_window_secs":   1800,
-	})
 	s := &DaemonServer{containerRepo: repo}
 	ctx := context.Background()
 
-	base := freshSizerStartBase(newID)
-	base["max_spend_per_cycle"] = 400000 // operator explicitly re-caps spend on this relaunch
+	_, err := s.MarketFreshnessSizerCoordinator(ctx, playerID, 0, false, 0, 0, 0, 0, 0)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "retired", "the sizer start verb must say it is retired")
+	require.Contains(t, err.Error(), "probe-sensing", "the error must point the operator at the successor")
 
-	merged, _, err := s.coordinatorStartConfig(ctx, playerID, base, marketFreshnessSizerStartSpec())
-	require.NoError(t, err)
+	_, err = s.FrontierExpansionCoordinator(ctx, playerID, 0, false, 0, 0)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "retired", "the frontier start verb must say it is retired")
+	require.Contains(t, err.Error(), "probe-sensing", "the error must point the operator at the successor")
 
-	spend, ok := intValue(merged["max_spend_per_cycle"])
-	require.True(t, ok)
-	require.Equal(t, 400000, spend, "an explicit start flag (>0) overrides the carried-forward value")
-
-	window, ok := intValue(merged["spend_window_secs"])
-	require.True(t, ok)
-	require.Equal(t, 1800, window, "a non-flag tune is still carried forward across the relaunch")
-
-	require.Equal(t, newID, merged["container_id"], "the relaunch always takes the NEW container id")
+	var count int64
+	require.NoError(t, db.Model(&persistence.ContainerModel{}).Where("player_id = ?", playerID).Count(&count).Error)
+	require.Zero(t, count, "a retired verb must persist nothing")
 }
 
 // A relaunch of a stopped auto-outfit coordinator re-adopts its persisted credit-moving tune

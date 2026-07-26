@@ -44,6 +44,10 @@ type Config struct {
 	// jitter ceiling — injected live into scout_tour and scout_post_coordinator
 	// containers on every build.
 	Scouting ScoutingConfig `mapstructure:"scouting"`
+	// Sensing holds the probe-sensing coordinator's config.yaml-authoritative knobs
+	// (the goods whitelist — a string the int-only tune registry cannot carry),
+	// injected live into the probe_sensing_coordinator container on every build.
+	Sensing SensingConfig `mapstructure:"sensing"`
 	// FleetAutosizer holds the fleet capacity autosizer's knobs (sp-1txd), injected live
 	// into the fleet_autosizer coordinator container on every build (creation + recovery),
 	// so a captain retunes the sizing/buying behaviour by editing config.yaml and restarting.

@@ -154,42 +154,17 @@ func printCoordinatorStartWarnings(label string, playerID int, warnings []string
 
 // --- per-coordinator specs ---------------------------------------------------
 
-// frontierStartSpec is the frontier-expansion re-apply spec (sp-ve3q, now expressed through
-// the shared machinery). container_id + dry_run are the new start's; the numeric CLI flags
-// override only when explicitly set. sp-tlekc retired the two rate governors and hardcoded the
-// probe price ceiling to an immutable const, so there are no governor override keys and no
-// max_probe_price safety knob (an un-tunable const can never come up "unarmed").
-func frontierStartSpec() coordinatorStartSpec {
+// probeSensingStartSpec is the probe-sensing re-apply spec. The launch config is
+// identity-only — every knob defaults in the coordinator and is live-tunable via
+// `tune --operation sensing` — so there are NO numeric start flags and container_id is the
+// only authoritative key: a relaunch carries every persisted tune forward verbatim. No
+// safety knob: the spend cap, cooldown, and window all floor at positive documented
+// defaults in resolveSensingConfig, so the coordinator can never come up uncapped.
+func probeSensingStartSpec() coordinatorStartSpec {
 	return coordinatorStartSpec{
-		containerType:     string(container.ContainerTypeFrontierExpansion),
-		label:             "frontier",
-		authoritativeKeys: []string{"container_id", "dry_run"},
-		overrideKeys: []string{
-			"tick_interval_secs",
-			"max_probe_fleet",
-			"expansion_max_hops",
-		},
-	}
-}
-
-// marketFreshnessSizerStartSpec is the freshness-sizer re-apply spec (sp-rsgc). container_id
-// + dry_run are the new start's; every numeric probe/SLA flag overrides only when explicitly
-// set. No safety knob: max_spend_per_cycle (and the cooldown/window) floor at positive
-// defaults in resolveSizerConfig, so the sizer can never come up uncapped — the re-adopt of
-// the operator's tighter cap is the protection, and a warning would be a false alarm.
-func marketFreshnessSizerStartSpec() coordinatorStartSpec {
-	return coordinatorStartSpec{
-		containerType:     string(container.ContainerTypeMarketFreshnessSizer),
-		label:             "freshsizer",
-		authoritativeKeys: []string{"container_id", "dry_run"},
-		overrideKeys: []string{
-			"tick_interval_secs",
-			"sla_seconds",
-			"max_probes_per_system",
-			"max_probe_fleet",
-			"max_spend_per_cycle",
-			"purchase_cooldown_secs",
-		},
+		containerType:     string(container.ContainerTypeProbeSensingCoordinator),
+		label:             "sensing",
+		authoritativeKeys: []string{"container_id"},
 	}
 }
 

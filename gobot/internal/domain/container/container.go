@@ -67,6 +67,14 @@ const (
 	// money-guard stack. Like the frontier/siting/autosizer coordinators it is NOT a
 	// CoordinatorOwnsIterations type.
 	ContainerTypeMarketFreshnessSizer ContainerType = "MARKET_FRESHNESS_SIZER_COORDINATOR"
+	// ContainerTypeProbeSensingCoordinator is the standing probe-sensing coordinator: a
+	// per-player coordinator that loops forever inside one Handle() reconciling the
+	// whitelist-scoped sensing footprint — standing posts sized by market depth, the
+	// pressure-driven dormancy rotation, sweep-once discovery declares, and the budgeted
+	// probe buy behind the shared money-guard stack. Successor of the market-freshness
+	// sizer + frontier expansion pair. Like the siting/autosizer coordinators it is NOT a
+	// CoordinatorOwnsIterations type.
+	ContainerTypeProbeSensingCoordinator ContainerType = "PROBE_SENSING_COORDINATOR"
 	// ContainerTypeShipyardBackfillCoordinator is the standing shipyard-backfill sweep: a
 	// per-player coordinator that loops forever inside one Handle() closing the charted-but-
 	// unscanned shipyard blind spot the market-tour-only scan left behind — enumerating known-

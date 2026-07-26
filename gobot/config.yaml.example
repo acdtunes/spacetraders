@@ -435,6 +435,19 @@ scouting:
   # gate_reconcile_enabled: false
   # gate_reconcile_max_dispatch: 2
 
+# sensing: the standing probe-sensing coordinator's config.yaml-authoritative knobs.
+# Injected into the probe_sensing_coordinator container on every build — creation AND
+# restart recovery — so a retune reaches the running fleet after a daemon restart, no
+# redeploy. Only strings live here (the int-only `tune --operation sensing` registry
+# carries every numeric knob); config.yaml is the whitelist's single source of truth —
+# a stale persisted copy never shadows it.
+sensing:
+  # goods_whitelist is the comma-separated set of goods whose market depth defines the
+  # sensing footprint — a system earns standing probes only for depth in these goods.
+  # Empty/absent => the coordinator's era-goods default (medicine/equipment/uranite/
+  # microprocessors/ship-plating/machinery/electronics class goods).
+  # goods_whitelist: "MEDICINE,EQUIPMENT,URANITE,MICROPROCESSORS,SHIP_PLATING,MACHINERY,ELECTRONICS"
+
 # fleet_autosizer (sp-1txd): the standing fleet capacity autosizer — the buy-side twin of the
 # siting coordinator. It sizes the hull pool to demand each slow tick and AUTO-BUYS hulls when
 # funds clear the full fail-closed money-guard stack. LIVE BY DEFAULT once first-launched

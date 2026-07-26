@@ -213,22 +213,28 @@ WRITE (give a value):
 
 The daemon validates the (key, value) against its static bounds registry — an
 out-of-bounds or unknown-key tune is rejected before anything is written — then
-amends just the container's persisted config. The running coordinator re-reads
-its config at each tick start, so the change takes effect on the NEXT reconcile
-tick; it also survives daemon restarts (the config column is the recovery
-source). Every effective tune is recorded as a config.tuned captain audit event.
+amends just the container's persisted config. A coordinator with a live-config
+reader (bootstrap, contract, scoutpost, ...) re-reads its config at each tick
+start, so the change takes effect on the NEXT reconcile tick. The SENSING
+coordinator has no live reader yet: a sensing tune persists immediately but is
+applied at the coordinator's next REBUILD (daemon restart or relaunch) — until
+then the RUNNING loop keeps its launch values, so do not rely on a sensing tune
+(e.g. tightening max_spend_per_cycle) taking effect without a bounce. Every tune
+survives daemon restarts (the config column is the recovery source), and every
+effective tune is recorded as a config.tuned captain audit event.
 
 A value of 0 (or --reset) reverts the knob to its documented default.
-Currently tunable engines: the market-freshness sizer ("freshsizer") and the
-frontier expansion coordinator ("frontier").
+Tunable operations include the probe-sensing coordinator ("sensing"), the
+scout-post reconciler ("scoutpost"), bootstrap ("bootstrap"), and more — the
+daemon lists every supported alias when given an unknown one.
 
 Examples:
-  spacetraders tune --operation frontier                       # read all frontier knobs
-  spacetraders tune --operation frontier discovery_share        # read one knob's value + metadata
-  spacetraders tune --operation frontier discovery_share 60     # 60% discover / 40% scan
-  spacetraders tune --operation frontier --json                 # read all, as JSON
-  spacetraders tune --operation freshsizer purchase_cooldown_secs 60
-  spacetraders tune --operation frontier purchase_cooldown_secs --reset`,
+  spacetraders tune --operation sensing                        # read all sensing knobs
+  spacetraders tune --operation sensing probe_budget            # read one knob's value + metadata
+  spacetraders tune --operation sensing probe_budget 120        # size the probe fleet budget
+  spacetraders tune --operation sensing --json                  # read all, as JSON
+  spacetraders tune --operation sensing purchase_cooldown_secs 60
+  spacetraders tune --operation sensing purchase_cooldown_secs --reset`,
 		Args: cobra.RangeArgs(0, 3),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			containerID, key, value, isShow, err := parseTuneArgs(args, operation, reset, show)
@@ -265,7 +271,7 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVar(&operation, "operation", "", "Resolve the target by coordinator type instead of container id (freshsizer, frontier)")
+	cmd.Flags().StringVar(&operation, "operation", "", "Resolve the target by coordinator type instead of container id (sensing, scoutpost, bootstrap, ...)")
 	cmd.Flags().BoolVar(&reset, "reset", false, "Revert the knob to its documented default (same as value 0)")
 	cmd.Flags().BoolVar(&show, "show", false, "Force the read/list form (equivalent to omitting the value)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Render the read/list output as JSON for scripts")

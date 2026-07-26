@@ -2,7 +2,7 @@ package grpc
 
 // sp-382j: Admiral-selected launch model (a) — the construction-supply drain is now a STANDING
 // coordinator launched unconditionally at every daemon boot, mirroring how the other standing
-// coordinators (market-freshness sizer, scout-post, bootstrap, ...) already
+// coordinators (probe-sensing, scout-post, bootstrap, ...) already
 // auto-start. Before this, launch was bootstrap-EnsureRunning-only: with no active bootstrapper
 // the ConstructionCoordinator never ran even once, so RecoverRunningContainers (which only
 // re-adopts containers already PERSISTED as RUNNING) found nothing to recover, leaving a live
@@ -32,12 +32,13 @@ import (
 // across restarts with no manual relaunch.
 var bootStandingCoordinatorTypes = []container.ContainerType{
 	container.ContainerTypeConstructionCoordinator,
-	// sp-orgp: the market-freshness auto-sizer is a genuinely STANDING coordinator (it must
-	// hold every market under an SLA continuously), so it boot-launches unconditionally like
-	// the construction drain. Its launch is idempotent (skips if already RUNNING/PENDING) and
-	// every action it takes is guarded — money guards on buys, and a fail-safe that never
-	// mass-retires on an empty census — so an armed auto-start is safe.
-	container.ContainerTypeMarketFreshnessSizer,
+	// The probe-sensing coordinator is the fleet's ONE standing sensing engine (successor of
+	// the retired market-freshness sizer + frontier expansion pair): it must continuously hold
+	// the whitelist-scoped footprint under its freshness target, rotate dormancy against
+	// limiter pressure, and pace discovery — so it boot-launches unconditionally like the
+	// construction drain. Its launch is idempotent (skips if already RUNNING/PENDING) and
+	// every buy runs the shared fail-closed money-guard stack, so an armed auto-start is safe.
+	container.ContainerTypeProbeSensingCoordinator,
 	// sp-ov8z (epic sp-difa, Auto-pilot Phase 1 — the ARMING half of zero-intervention cold start):
 	// the captain-bootstrap coordinator is the MASTER SWITCH of the cold-start machine. Boot-launched
 	// unconditionally, it OBSERVES the live world each tick, DERIVES its phase (DATA/INCOME/GATE/
@@ -97,18 +98,8 @@ func (s *DaemonServer) ensureBootStandingCoordinators(ctx context.Context, playe
 			if err := mc.EnsureRunning(ctx, playerID); err != nil {
 				fmt.Printf("Warning: failed to launch boot-standing construction coordinator: %v\n", err)
 			}
-		case container.ContainerTypeMarketFreshnessSizer:
-			// Idempotent: skip if a sizer is already RUNNING/PENDING (a warm restart re-adopts
-			// it from its persisted config via RecoverRunningContainers instead). All-default
-			// knobs (RULINGS #5); the coordinator fills in its documented defaults.
-			running, err := containerTypeRunning(ctx, s.containerRepo, playerID, container.ContainerTypeMarketFreshnessSizer)
-			if err != nil {
-				fmt.Printf("Warning: failed to check market-freshness sizer state: %v\n", err)
-			} else if !running {
-				if _, lerr := s.MarketFreshnessSizerCoordinator(ctx, playerID, 0, false, 0, 0, 0, 0, 0); lerr != nil {
-					fmt.Printf("Warning: failed to launch boot-standing market-freshness sizer: %v\n", lerr)
-				}
-			}
+		case container.ContainerTypeProbeSensingCoordinator:
+			s.ensureProbeSensingStanding(ctx, playerID)
 		case container.ContainerTypeBootstrapCoordinator:
 			s.ensureBootstrapStanding(ctx, playerID)
 		case container.ContainerTypeScoutPostCoordinator:
@@ -135,6 +126,26 @@ func (s *DaemonServer) ensureBootstrapStanding(ctx context.Context, playerID int
 	}
 	if _, lerr := s.BootstrapCoordinator(ctx, playerID, s.agentSymbolForPlayer(ctx, playerID)); lerr != nil {
 		fmt.Printf("Warning: failed to launch boot-standing bootstrap coordinator: %v\n", lerr)
+	}
+}
+
+// ensureProbeSensingStanding launches the standing probe-sensing coordinator when none is already
+// running for the player. Idempotent via the same containerTypeRunning pre-check the other standing
+// coordinators use, so a warm restart re-adopts the existing one (via RecoverRunningContainers)
+// instead of double-launching. All-default launch (RULINGS #5): the coordinator fills in its
+// documented defaults; the knobs are live via `tune --operation sensing`. A launch failure is
+// logged and non-fatal.
+func (s *DaemonServer) ensureProbeSensingStanding(ctx context.Context, playerID int) {
+	running, err := containerTypeRunning(ctx, s.containerRepo, playerID, container.ContainerTypeProbeSensingCoordinator)
+	if err != nil {
+		fmt.Printf("Warning: failed to check probe-sensing coordinator state: %v\n", err)
+		return
+	}
+	if running {
+		return
+	}
+	if _, lerr := s.ProbeSensingCoordinator(ctx, playerID); lerr != nil {
+		fmt.Printf("Warning: failed to launch boot-standing probe-sensing coordinator: %v\n", lerr)
 	}
 }
 
