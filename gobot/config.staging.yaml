@@ -99,9 +99,7 @@ captain:
 # for a fast local rehearsal, NOT for prod economics.
 bootstrap:
   bootstrap_disabled: false
-  dry_run: false
   tick_seconds: 45
-  probe_target: 3
 
 fleet_autosizer:
   contract_delivery_hulls_enabled: true

@@ -6,13 +6,13 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
 )
 
-// sp-192k4 INCOME hull-routing: cold-start light-hull acquisitions are routed by ORDER — #1 → the contract
+// sp-192k4 cold-start hull-routing: cold-start light-hull acquisitions are routed by ORDER — #1 → the contract
 // fleet, #2 → the TRADE fleet (the trade-seed, held until the first contract hull exists), #3… → contract
 // again. The trade hull EXISTING (obs.TradeHullCount) is the durable, observable "seeded" signal — no stored
 // flag. The contract/trade coordinators + the scaler stay phase-BLIND; all the phase logic lives in the
 // bootstrap.
 
-// tradeSeedHandler wires an INCOME handler through sjvvHandler (INCOME collaborators + a hand-off launcher +
+// tradeSeedHandler wires an contract handler through sjvvHandler (contract collaborators + a hand-off launcher +
 // a live-config reader), so a single tick exercises the trade-seed routing.
 func tradeSeedHandler(obs Observation, ho *fakeHandoff, acq *fakeHaulerAcquirer) *RunBootstrapCoordinatorHandler {
 	return sjvvHandler(obs, &fakeLiveConfig{snap: liveconfig.Snapshot{}}, ho, acq)
@@ -22,7 +22,7 @@ func tradeSeedHandler(obs Observation, ho *fakeHandoff, acq *fakeHaulerAcquirer)
 // and do NOT buy a 2nd contract hauler (acquisition #2 is the trade seed) ---
 
 func TestBootstrap_TradeSeed_SecondAcquisitionRoutedToTradeFleet(t *testing.T) {
-	obs := incomeObs()              // INCOME-labeled (probes 3/3), 3 viable hubs, treasury 2M
+	obs := incomeObs()              // COLDSTART (probes 3/3), 3 viable hubs, treasury 2M
 	obs.BatchContractRunning = true // isolate: don't launch batch-contract
 	obs.AutosizerRunning = true     // isolate: the early autosizer launch is an idempotent no-op
 	obs.CommandFrigateID = "FRIGATE-1"
@@ -118,7 +118,7 @@ func TestBootstrap_TradeSeed_ZeroContract_BuysContractFirstNotTrade(t *testing.T
 // same isolated fixture (no contract haulers, no markets → neither the trade-seed nor the contract-buy
 // branch fires) at both trade-hull counts. ---
 
-// scalerGateObs is an INCOME fixture isolated to the scaler launch: 0 contract haulers (the trade-seed
+// scalerGateObs is a cold-start fixture isolated to the scaler launch: 0 contract haulers (the trade-seed
 // branch needs ≥1, so it never fires), no viable hubs (the contract-buy branch never fires), autosizer running
 // (the early autosizer launch is a no-op).
 func scalerGateObs(tradeHulls int) Observation {
@@ -190,7 +190,7 @@ func TestBootstrap_TradeSeed_NilHandoff_SkipsBuyAndBlocks(t *testing.T) {
 	}
 }
 
-// --- INCOME hull-routing acceptance: from a provisioned fixture the arc buys contract #1, seeds the TRADE
+// --- cold-start hull-routing acceptance: from a provisioned fixture the arc buys contract #1, seeds the TRADE
 // hull as acquisition #2 (+ ensures the trade coordinator), then resumes contract buying #3… — the trade hull
 // is DECOUPLED (it does not consume a contract slot). ---
 
@@ -198,7 +198,7 @@ func TestBootstrap_TradeSeedAcceptance_RoutesSecondAcquisitionToTrade(t *testing
 	world := &incomeWorld{
 		treasury: 5000000, homeSystem: "X1", marketsTotal: 10, marketsCovered: 10,
 		frigateID: "FRIGATE-1", frigateOnContract: false, batchRunning: true,
-		probeCount: 3, // provisioned (probe_target 3) → INCOME-labeled
+		probeCount: 3, // provisioned (probe_target 3) → COLDSTART-labeled
 		markets:    incomeHubs(), contractGoods: []string{"IRON", "ALUMINUM"},
 		incomePerHour:            0,
 		hasPurchaser:             true,

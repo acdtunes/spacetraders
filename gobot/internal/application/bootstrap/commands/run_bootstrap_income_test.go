@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// --- INCOME fakes (black-box: the reconciler is driven through its ports only) ---
+// --- contract fakes (black-box: the reconciler is driven through its ports only) ---
 
 type fakeRetirer struct {
 	calls       int
@@ -147,7 +147,7 @@ func (f *fakeFrigateLoop) StopLoop(ctx context.Context, playerID int, frigateSym
 	return nil
 }
 
-// incomeWorld is a stateful model so a multi-tick INCOME acceptance test can observe the effect of the
+// incomeWorld is a stateful model so a multi-tick Contract acceptance test can observe the effect of the
 // retire / batch-contract launch / staged hauler buys.
 type incomeWorld struct {
 	mu                       sync.Mutex
@@ -179,7 +179,7 @@ func (w *incomeWorld) snapshot() Observation {
 		MarketsTotal:               w.marketsTotal,
 		MarketsCovered:             w.marketsCovered,
 		ProbeCount:                 w.probeCount,
-		ProbesScouting:             w.probeCount, // provisioned probes are scouting in the INCOME world
+		ProbesScouting:             w.probeCount, // provisioned probes are scouting in the contract world
 		CommandFrigateID:           w.frigateID,
 		CommandFrigateOnContract:   w.frigateOnContract,
 		BatchContractRunning:       w.batchRunning,
@@ -271,13 +271,13 @@ func incomeHubs() []MarketSnapshot {
 	}
 }
 
-// newIncomeHandler wires a handler with a fixed observation + all INCOME collaborators, for the
-// single-tick INCOME guard pins.
+// newIncomeHandler wires a handler with a fixed observation + all contract collaborators, for the
+// single-tick contract guard pins.
 func newIncomeHandler(obs Observation, ret *fakeRetirer, acq *fakeHaulerAcquirer, run *fakeContractRunner) *RunBootstrapCoordinatorHandler {
 	h := NewRunBootstrapCoordinatorHandler(nil)
 	h.SetShipRefresher(&fakeRefresher{})
 	h.SetWorldObserver(&fakeObserver{obs: obs})
-	h.SetProbeAcquirer(&fakeAcquirer{price: 40000, yard: "Y", readable: true}) // present but unused in INCOME
+	h.SetProbeAcquirer(&fakeAcquirer{price: 40000, yard: "Y", readable: true}) // present but unused by the contract workstream
 	h.SetScoutPostDeclarer(&fakeDeclarer{})
 	h.SetFrigateRetirer(ret)
 	h.SetHaulerAcquirer(acq)
@@ -285,40 +285,26 @@ func newIncomeHandler(obs Observation, ret *fakeRetirer, acq *fakeHaulerAcquirer
 	return h
 }
 
-// incomeObs is a provisioned observation in the INCOME band (income below the default 10k bar).
-// Provisioning — probes at target + scouting — is what derives the INCOME label, not coverage.
+// incomeObs is a provisioned observation in the cold-start band (income below the default 10k bar).
+// Provisioning — probes at target + scouting — is what derives the phase label, not coverage.
 func incomeObs() Observation {
 	return Observation{
 		HomeSystem: "X1", MarketsTotal: 10, MarketsCovered: 10,
-		ProbeCount: 3, ProbesScouting: 3, // provisioned (probe_target 3) + scouting → INCOME-labeled
+		ProbeCount: 3, ProbesScouting: 3, // provisioned (probe_target 3) + scouting → COLDSTART-labeled
 		Treasury: 2000000, HasIdlePurchaser: true, IncomePerHour: 0,
 		Markets: incomeHubs(), ContractGoods: []string{"IRON", "ALUMINUM"},
 		Readable: true,
 	}
 }
 
-// --- phase derivation: past coverage, INCOME below the bar, GATE at/above it ---
+// --- the cold-start contract shape is fixed in code ---
 
-func TestBootstrap_DerivePhase_IncomeBelowBar(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd(), nil) // income_bar default 10000
-	obs := Observation{ProbeCount: 3, ProbesScouting: 3, IncomePerHour: 5000}
-	if p := derivePhase(obs, cfg); p != PhaseColdStart {
-		t.Fatalf("provisioned + income below bar should derive COLDSTART, got %s", p)
+func TestBootstrap_ContractShape_IsFixed(t *testing.T) {
+	if haulerTarget != 4 {
+		t.Fatalf("hauler cap = %d, want 4 (one per viable contract hub, up to 4)", haulerTarget)
 	}
-}
-
-// --- config defaults resolve LIVE for the INCOME knobs ---
-
-func TestBootstrap_ResolvesIncomeDefaults(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd(), nil)
-	if cfg.HaulerTarget != defaultHaulerTarget {
-		t.Fatalf("hauler_target default = %d, got %d", defaultHaulerTarget, cfg.HaulerTarget)
-	}
-	if cfg.IncomeBar != defaultIncomeBar {
-		t.Fatalf("income_bar default = %.0f, got %.0f", defaultIncomeBar, cfg.IncomeBar)
-	}
-	if cfg.HaulerShipType != defaultHaulerShipType {
-		t.Fatalf("hauler_ship_type default = %q, got %q", defaultHaulerShipType, cfg.HaulerShipType)
+	if haulerShipType != "SHIP_LIGHT_HAULER" {
+		t.Fatalf("contract hauler asset = %q, want SHIP_LIGHT_HAULER", haulerShipType)
 	}
 }
 
@@ -448,13 +434,13 @@ func TestBootstrap_Income_WorkingCapitalFloor_BuysAsSoonAsCushionClears(t *testi
 	// treasury = price + floor + 1 → the cushion clears the floor by 1 credit, so the buy IS made. This
 	// treasury is far below 2×price (600000), so the OLD proportional gate (cap = reserve_margin×treasury
 	// = 0.5×350001 = 175000 < price) would have BLOCKED it — the exact ~2×price delay sp-acv5 removes.
-	obs.Treasury = price + defaultContractWorkingCapitalFloor + 1
+	obs.Treasury = price + contractWorkingCapitalFloor + 1
 	acq := &fakeHaulerAcquirer{price: price, yard: "X1-YARD", readable: true}
 	h := newIncomeHandler(obs, &fakeRetirer{}, acq, &fakeContractRunner{})
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if acq.buys != 1 || res.HaulersBought != 1 {
 		t.Fatalf("cushion clears the working-capital floor (treasury=%d price=%d floor=%d): must buy 1, got buys=%d bought=%d blocker=%q",
-			obs.Treasury, price, defaultContractWorkingCapitalFloor, acq.buys, res.HaulersBought, res.Blocker)
+			obs.Treasury, price, contractWorkingCapitalFloor, acq.buys, res.HaulersBought, res.Blocker)
 	}
 }
 
@@ -464,13 +450,13 @@ func TestBootstrap_Income_WorkingCapitalFloor_BlocksWhenCushionShort(t *testing.
 	obs.BatchContractRunning = true
 	// treasury = price + floor − 1 → the buy would leave 1 credit LESS than the floor. RULINGS #4
 	// fail-closed: do NOT buy (the contract operation must retain its working-capital cushion).
-	obs.Treasury = price + defaultContractWorkingCapitalFloor - 1
+	obs.Treasury = price + contractWorkingCapitalFloor - 1
 	acq := &fakeHaulerAcquirer{price: price, yard: "X1-YARD", readable: true}
 	h := newIncomeHandler(obs, &fakeRetirer{}, acq, &fakeContractRunner{})
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if acq.buys != 0 {
 		t.Fatalf("cushion is 1 below the working-capital floor (treasury=%d price=%d floor=%d): must NOT buy, got %d",
-			obs.Treasury, price, defaultContractWorkingCapitalFloor, acq.buys)
+			obs.Treasury, price, contractWorkingCapitalFloor, acq.buys)
 	}
 	if res.Blocker != "capital_gate" {
 		t.Fatalf("expected capital_gate blocker on a short cushion, got %q", res.Blocker)
@@ -522,7 +508,7 @@ func TestBootstrap_Income_PlacementSkipsServedHub(t *testing.T) {
 	}
 }
 
-// --- cap: one hauler per viable hub, capped at min(hubs, hauler_target) → no buy when met ---
+// --- cap: one hauler per viable hub, capped at min(hubs, haulerTarget) → no buy when met ---
 
 func TestBootstrap_Income_NoBuyWhenPerHubCapMet(t *testing.T) {
 	obs := incomeObs() // 3 viable hubs
@@ -542,15 +528,13 @@ func TestBootstrap_Income_NoBuyWhenPerHubCapMet(t *testing.T) {
 // --- recovery: a restart with haulers already at the cap never double-buys ---
 
 func TestBootstrap_Income_Recovery_NoDoubleBuy(t *testing.T) {
-	cmd := baseCmd()
-	cmd.HaulerTarget = 2 // cap 2
-	obs := incomeObs()   // 3 viable hubs → desired min(3,2)=2
+	obs := incomeObs() // 3 viable hubs → desired min(3, haulerTarget)=3
 	obs.BatchContractRunning = true
 	obs.TradeHullCount = 1 // sp-192k4: post-seed — isolate the recovery cap guard (no trade-seed detour)
-	obs.Haulers = []HaulerSnapshot{{Waypoint: "X1-HUBA"}, {Waypoint: "X1-HUBB"}}
+	obs.Haulers = []HaulerSnapshot{{Waypoint: "X1-HUBA"}, {Waypoint: "X1-HUBB"}, {Waypoint: "X1-HUBC"}}
 	acq := &fakeHaulerAcquirer{price: 100000, yard: "Y", readable: true}
 	h := newIncomeHandler(obs, &fakeRetirer{}, acq, &fakeContractRunner{})
-	h.reconcileOnce(ctxWithLogger(&capturingLogger{}), cmd)
+	h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if acq.buys != 0 {
 		t.Fatalf("cap met on restart: must not double-buy, got %d", acq.buys)
 	}
@@ -570,33 +554,11 @@ func TestBootstrap_Income_NoMarketsNoHaulerBuy(t *testing.T) {
 	}
 }
 
-// --- dry-run: INCOME evaluates + logs but takes NO retire/launch/buy action ---
+// --- COLDSTART→GATE crossover: a scaled, funded op derives GATE, and the contract acts stop running.
+// From the cold-start fixture (no gate site discovered, no GATE collaborators wired) GATE blocks on the
+// undiscovered site rather than doing any contract work — the phase crossover is clean. ---
 
-func TestBootstrap_Income_DryRunTakesNoAction(t *testing.T) {
-	obs := incomeObs()
-	obs.CommandFrigateID = "FRIGATE-1"
-	obs.CommandFrigateOnContract = true
-	obs.BatchContractRunning = false
-	ret := &fakeRetirer{}
-	acq := &fakeHaulerAcquirer{price: 100000, yard: "Y", readable: true}
-	run := &fakeContractRunner{}
-	h := newIncomeHandler(obs, ret, acq, run)
-	cmd := baseCmd()
-	cmd.DryRun = true
-	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), cmd)
-	if ret.calls != 0 || run.calls != 0 || acq.buys != 0 {
-		t.Fatalf("dry-run must take no action: retire=%d launch=%d buy=%d", ret.calls, run.calls, acq.buys)
-	}
-	if res.WouldBuy != 1 {
-		t.Fatalf("dry-run should report would_buy=1 hauler, got %d", res.WouldBuy)
-	}
-}
-
-// --- INCOME→GATE crossover: a scaled, funded op derives GATE, and the INCOME acts stop running.
-// From the INCOME fixture (no gate site discovered, no GATE collaborators wired) GATE blocks on the
-// undiscovered site rather than doing any INCOME work — the phase crossover is clean. ---
-
-func TestBootstrap_IncomeToGate_Crossover_NoIncomeAct(t *testing.T) {
+func TestBootstrap_ColdStartToGate_Crossover_NoContractAct(t *testing.T) {
 	obs := incomeObs()
 	obs.Haulers = []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}} // full fleet = 2
 	obs.ContractScalerTarget = 2                                   // == full fleet ⇒ scaler target reached (scaled op); incomeObs treasury clears the surplus floor
@@ -611,9 +573,9 @@ func TestBootstrap_IncomeToGate_Crossover_NoIncomeAct(t *testing.T) {
 		t.Fatalf("expected derived phase GATE, got %s", res.Phase)
 	}
 	if ret.calls != 0 || run.calls != 0 || acq.buys != 0 {
-		t.Fatalf("in GATE the INCOME act must not run; retire=%d launch=%d buy=%d", ret.calls, run.calls, acq.buys)
+		t.Fatalf("in GATE the contract act must not run; retire=%d launch=%d buy=%d", ret.calls, run.calls, acq.buys)
 	}
-	// The INCOME fixture has no gate site, so GATE fails closed on discovery — never a "not implemented" hold.
+	// The cold-start fixture has no gate site, so GATE fails closed on discovery — never a "not implemented" hold.
 	if res.Blocker != "no_gate_site" {
 		t.Fatalf("expected GATE to block on the undiscovered site, got blocker %q", res.Blocker)
 	}
@@ -626,7 +588,7 @@ func TestBootstrap_IncomeToGate_Crossover_NoIncomeAct(t *testing.T) {
 // own continuous contract loop so it EARNS instead of parking idle at the shipyard after the probe buy.
 // Guarded on provisioning-done + not-already-looping (the earner-signal), nil-safe, dry-run-silent. ---
 
-// frigateLoopObs is a provisioned INCOME observation with the frigate present and no loop yet running —
+// frigateLoopObs is a provisioned cold-start observation with the frigate present and no loop yet running —
 // the state in which the frigate must be put on its earning loop. Batch-contract "running" and the
 // hauler cap "met" isolate the assertion to the frigate-loop action.
 func frigateLoopObs() Observation {
@@ -702,7 +664,7 @@ func TestBootstrap_Income_SkipsFrigateLoopWithoutFrigateID(t *testing.T) {
 }
 
 // nil-safe: no starter wired ⇒ a logged skip surfaced as a blocker, never a panic (matches the other
-// INCOME collaborators' nil contract).
+// contract collaborators' nil contract).
 func TestBootstrap_Income_FrigateLoopNilSafe(t *testing.T) {
 	h := newIncomeHandler(frigateLoopObs(), &fakeRetirer{}, &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true}, &fakeContractRunner{})
 	// deliberately NO SetFrigateContractLoopStarter
@@ -716,13 +678,13 @@ func TestBootstrap_Income_FrigateLoopNilSafe(t *testing.T) {
 }
 
 // the sp-rype stall reproduction: the frigate has finished its hour-0 shipyard run + probe buy (probes at
-// target, scouting), so the arc is INCOME-labeled even though the home system is barely scanned (20%
+// target, scouting), so the arc is COLDSTART-labeled even though the home system is barely scanned (20%
 // coverage — coverage no longer gates the label). The frigate must start EARNING rather than park idle at
 // the yard — the fix for "sole earner dead, income never flows".
 func TestBootstrap_Income_StartsFrigateLoopAtLowCoverage(t *testing.T) {
 	obs := Observation{
 		HomeSystem: "X1-HQ", ProbeCount: 3, ProbesScouting: 3, HasIdlePurchaser: true,
-		Treasury: 120000, MarketsTotal: 10, MarketsCovered: 2, // 20% coverage — provisioned probes → INCOME
+		Treasury: 120000, MarketsTotal: 10, MarketsCovered: 2, // 20% coverage — no economic signal → COLDSTART
 		CommandFrigateID: "FRIGATE-1", FrigateContractLoopRunning: false, Readable: true,
 	}
 	loop := &fakeFrigateLoop{}
@@ -737,19 +699,6 @@ func TestBootstrap_Income_StartsFrigateLoopAtLowCoverage(t *testing.T) {
 	}
 	if !res.FrigateLoopStarted {
 		t.Fatalf("res.FrigateLoopStarted should be true for a provisioned frigate")
-	}
-}
-
-// dry-run: evaluated + logged but NO loop started.
-func TestBootstrap_Income_DryRunNoFrigateLoop(t *testing.T) {
-	loop := &fakeFrigateLoop{}
-	h := newIncomeHandler(frigateLoopObs(), &fakeRetirer{}, &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true}, &fakeContractRunner{})
-	h.SetFrigateContractLoopStarter(loop)
-	cmd := baseCmd()
-	cmd.DryRun = true
-	h.reconcileOnce(ctxWithLogger(&capturingLogger{}), cmd)
-	if loop.calls != 0 {
-		t.Fatalf("dry-run must not start the frigate loop, got %d calls", loop.calls)
 	}
 }
 
@@ -787,14 +736,14 @@ func TestBootstrap_Income_FrigateLoopStartedExactlyOnce(t *testing.T) {
 	}
 }
 
-// --- INCOME acceptance (Slice 2): from a provisioned fixture, the arc retires the frigate, launches
+// --- Contract acceptance (Slice 2): from a provisioned fixture, the arc retires the frigate, launches
 // batch-contract, and stages one hauler per viable hub (capped), one per tick, on distinct hubs. ---
 
 func TestBootstrap_IncomeAcceptance_RetiresLaunchesRampsHaulers(t *testing.T) {
 	world := &incomeWorld{
 		treasury: 3000000, homeSystem: "X1", marketsTotal: 10, marketsCovered: 10,
 		frigateID: "FRIGATE-1", frigateOnContract: true, batchRunning: false,
-		probeCount: 3, // provisioned (probe_target 3) → INCOME-labeled
+		probeCount: 3, // provisioned (probe_target 3) → COLDSTART-labeled
 		markets:    incomeHubs(), contractGoods: []string{"IRON", "ALUMINUM"},
 		incomePerHour: 0, hasPurchaser: true,
 		// sp-192k4: post-seed state (a trade hull already exists) so this test stays a PURE contract ramp;

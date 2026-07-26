@@ -525,63 +525,32 @@ fleet_autosizer:
   # warehouse_frame_class_ceiling: light
 
 # Captain bootstrap coordinator (sp-3nbe): the standing reconciler that drives a COLD agent through
-# the cold-start arc to the jump gate — launched once via 'workflow bootstrap', it OBSERVES the live
-# world each tick, DERIVES the phase from that observation (never a stored cursor), and ACTS on the
-# delta behind guards, so a restart re-observes and resumes at real state. LIVE BY DEFAULT once
-# launched (LAUNCH-GATED: nothing runs until you invoke 'workflow bootstrap'). DATA (probes -> target,
-# scout every market) and INCOME (retire the frigate, hub-placed hauler ramp, batch-contract, $/hr
-# exit) are live; GATE (construction) is a later slice.
+# the cold-start arc to the jump gate. It OBSERVES the live world each tick, DERIVES the phase from
+# that observation (never a stored cursor), and ACTS on the delta behind guards, so a restart
+# re-observes and resumes at real state. Boot-standing and LIVE BY DEFAULT.
+#
+# COLDSTART drives scanning (probes -> 3, home coverage post) and contract income (retire the
+# frigate, hub-placed hauler ramp, trade seed, batch-contract) as PARALLEL workstreams; GATE builds
+# the jump gate once the contract op is scaled and funded; EXPANSION hands off and exits.
+#
+# The cold-start SHAPE - how many probes/haulers/gate workers, which hulls, every phase bar - is
+# fixed in the coordinator: it is one known-good sequence, not a per-run configuration. Two controls
+# live here.
+#
+# Money-guard: every bootstrap buy (probes, contract haulers, gate workers) is affordable only when
+# the treasury left AFTER the buy still clears the immutable working-capital floor: cushion =
+# (treasury - price) >= common.ImmutableReserveFloor (50k), and the contract-op buys clear the
+# stricter 150k contract cushion. Hard constants, not config.yaml knobs. Fails CLOSED on an
+# unreadable price.
 bootstrap:
-  # Escapes. bootstrap_disabled stands the WHOLE coordinator down (absent/false = ACTIVE, no
-  # dark-shipping); the container stays resident so a flip + restart re-arms it. dry_run evaluates +
-  # logs every decision LOUDLY (probe buys, scout assignments) but acts on nothing (also available as
-  # the CLI --dry-run launch flag).
+  # The escape: bootstrap_disabled stands the WHOLE coordinator down (absent/false = ACTIVE, no
+  # dark-shipping); the container stays resident so a flip + restart re-arms it.
   # bootstrap_disabled: false
-  # dry_run: false
 
-  # DATA phase. probe_target is the probe count the coordinator ramps to, STAGED and capital-gated —
-  # at most one buy per tick (0 => 3). Scanning is a CONTINUOUS background workstream, never a gate on
-  # the rest of the arc: the DATA label only says the probe ramp is still running.
-  # probe_target: 3
-
-  # Money-guard. Every bootstrap buy (probes, contract haulers, gate workers) is affordable only when
-  # the treasury left AFTER the buy still clears the immutable working-capital floor: cushion =
-  # (treasury - price) >= common.ImmutableReserveFloor (50k). This is a hard constant (sp-05glh scrapped
-  # the old proportional reserve_margin x treasury rule entirely) -- not a config.yaml knob. Fails
-  # CLOSED on an unreadable price.
-
-  # Cadence + the asset. tick_seconds is the reconcile cadence (0 => 300 = 5min; cold-start is a slow,
-  # deliberate ramp). probe_ship_type is the shipyard ship-type symbol bought for a probe (even the
-  # asset is a knob; 0/absent => SHIP_PROBE).
-  # tick_seconds: 300
-  # probe_ship_type: SHIP_PROBE
-
-  # INCOME phase (Slice 2), running in PARALLEL with the probe ramp. The coordinator retires the command
-  # frigate from contract work (a poor contract worker: low fuel/cargo), selects contract hubs from the
-  # scouted market data (central, market-dense waypoints where contract goods are cheaply sourceable),
-  # buys one light hauler per viable hub (STAGED + capital-gated, placed on its hub), and runs
-  # batch-contract.
-  # hauler_target caps the hull count (actual = one per viable hub, up to this; 0 => 4). hauler_ship_type
-  # is the asset bought (0/absent => SHIP_LIGHT_HAULER).
-  # hauler_target: 4
-  # hauler_ship_type: SHIP_LIGHT_HAULER
-
-  # income_bar is the realized NET credits/hour the heartbeat reads the contract fleet against, so an
-  # operator can watch the operation warm up (0 => 10000). Deliberately CONSERVATIVE; it is the primary
-  # field-calibration knob for that reading.
-  # income_bar: 10000
-
-  # GATE phase (Slice 3). Once the contract operation is genuinely SCALED (the full fleet has reached the
-  # auto-scaler's live target) and the treasury holds the gate-bill war chest, the coordinator discovers
-  # the home-system jump-gate construction site, drives `construction start` (the manufacturing
-  # coordinator — the executor — then produces/acquires/delivers the materials), bounces that executor so
-  # it ADOPTS the fresh pipeline (captain L57), sizes gate-construction workers deterministically (BUYING
-  # the shortfall — the contract fleet is exclusive and keeps earning throughout), and monitors
-  # construction to 100% -> COMPLETE (where it launches the fleet-autosizer + standing coordinators as the
-  # hand-off, then exits). gate_worker_target caps the workers (actual = ~one per active gate-material
-  # chain + a delivery hauler, up to this; 0 => 6). Gate workers reuse hauler_ship_type. The autosizer
-  # stays OFF the whole bootstrap run and is launched only at COMPLETE.
-  # gate_worker_target: 6
+  # Reconcile cadence (0 => 45s). Kept SHORT because bootstrap runs only at cold start, where a fast
+  # tick cuts poll-latency dead time before the gate. Also live-tunable with no restart:
+  # `spacetraders tune --operation bootstrap tick_secs <n>`.
+  # tick_seconds: 45
 
 # Capacity reconciler (epic st-7zk): the standing declarative engine that drives the
 # contract-delivery machine's ACTUAL capacity topology toward a computed DESIRED topology

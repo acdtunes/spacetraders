@@ -3,7 +3,6 @@ package commands
 import (
 	"context"
 	"fmt"
-	"math"
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
@@ -12,181 +11,47 @@ import (
 
 // BootstrapTunableDefaults maps every LIVE-tunable bootstrap knob (sp-r6yq) to its documented
 // default — the value that applies when the persisted config column carries no positive
-// override. The daemon's tune bounds registry reads THIS map, so the defaults-of-record stay
-// in this file next to the consts they mirror. The map's KEY SET is also the contract for which
+// override. The daemon's tune bounds registry reads THIS map, so the default-of-record stays
+// in this file next to the const it mirrors. The map's KEY SET is also the contract for which
 // BARE keys resolveBootstrapConfig live-overlays.
 //
-// The tune mechanism is integer-only (liveconfig.PositiveInt), so every knob is carried as a whole
-// number — income_bar as whole credits, gate_reentry_construction_pct as a whole percent. The two
-// ship-type knobs
-// (probe_ship_type, hauler_ship_type) are deliberately NOT tunable: a string asset is launch-config
-// only across every coordinator (a hull type is not swapped mid-run). These keys are the SEPARATE
-// bare family — distinct from the config.yaml-authoritative prefixed bootstrap_* launch keys — so a
-// tune is never cleared by the launch-config rebuild and survives a daemon bounce (RULINGS #2).
+// The cadence is the ONE thing an operator retunes at runtime: every other cold-start value is the
+// shape of the seed itself, fixed in code. This key is the SEPARATE bare family — distinct from the
+// config.yaml-authoritative prefixed bootstrap_* launch keys — so a tune is never cleared by the
+// launch-config rebuild and survives a daemon bounce (RULINGS #2).
 func BootstrapTunableDefaults() map[string]int {
 	return map[string]int{
-		"probe_target":       defaultProbeTarget,
-		"hauler_target":      defaultHaulerTarget,
-		"income_bar":         int(math.Round(defaultIncomeBar)),
-		"gate_worker_target": defaultGateWorkerTarget,
-		"tick_secs":          defaultBootstrapTickSeconds,
-		// The escape hatch's starved-earner floor (GATE ENTRY uses the scaler target, not a static hauler
-		// count). Tunable-only.
-		"gate_min_haulers": defaultGateMinHaulers,
-		// Death-spiral cure (UNCONDITIONALLY ON, sp-gm7r removed the master flag): its calibration knobs (the
-		// surplus floor is whole credits; the reentry construction ceiling is a whole percent). Tunable-only.
-		"gate_surplus_floor":            int(defaultGateSurplusFloor),
-		"gate_reentry_construction_pct": int(math.Round(defaultGateReentryConstructionPct)),
-		"gate_reentry_streak_ticks":     defaultGateReentryStreakTicks,
+		"tick_secs": defaultBootstrapTickSeconds,
 	}
 }
 
-// bootstrapRunConfig is the launch command with every default resolved, so the reconcile logic
-// never repeats the "<= 0 → default" fallback (RULINGS #5, the autosizer resolveConfig idiom).
+// bootstrapRunConfig is the launch command with its cadence default resolved, so the reconcile logic
+// never repeats the "<= 0 → default" fallback (the autosizer resolveConfig idiom).
 type bootstrapRunConfig struct {
 	Disabled bool
 	DryRun   bool
-
-	Tick          time.Duration
-	ProbeTarget   int
-	ProbeShipType string
-
-	// INCOME-phase knobs, each resolved to its documented default when unset.
-	HaulerTarget   int
-	IncomeBar      float64
-	HaulerShipType string
-
-	// ContractWorkingCapitalFloor is the ABSOLUTE cash cushion (whole credits) the treasury must still
-	// clear AFTER a staged INCOME hauler buy — the money-safety that keeps the contract operation's
-	// goods+fuel working capital intact (sp-acv5). Its OWN dedicated parameter, a HIGHER absolute floor
-	// than the base common.ImmutableReserveFloor the DATA probe buy gates on (sp-05glh: both are now flat
-	// credit cushions — treasury−price ≥ floor — never a proportion of a growing treasury). Resolved ONLY
-	// from the immutable defaultContractWorkingCapitalFloor constant — never the launch command,
-	// config.yaml, or a live tune — per the Admiral's hard 50k working-capital floor (RULINGS #5 +
-	// 2026-07-18 Amendment, "deliberately non-tunable per-run").
-	ContractWorkingCapitalFloor int64
-
-	// GATE-phase knob, resolved to its documented default when unset.
-	GateWorkerTarget int
-
-	// GATE-entry gate: GATE requires a genuinely SCALED AND FUNDED contract op (sp-gm7r). derivePhase enters
-	// GATE only once the FULL contract fleet has reached the auto-scaler's live target (obs.ContractScalerTarget,
-	// a HARD bar — an op that cannot reach it stays INCOME) AND the treasury holds a surplus ≥ GateSurplusFloor
-	// — never a static hauler floor.
-	//
-	// GateMinHaulers is the escape hatch's STARVED-EARNER floor (sp-gm7r): reDeriveUnderScaledGate treats a
-	// sticky GATE with fewer than this many haulers as under-scaled and re-derives INCOME. GATE ENTRY no
-	// longer uses it (the scaler target is the entry bar) — it now scopes only the release of a stuck latch.
-	GateMinHaulers int
-
-	// Death-spiral cure (UNCONDITIONALLY ON, sp-gm7r removed the flag): (1) gateFunded's full-fleet-vs-scaler
-	// -target bar + a treasury surplus (see gateFunded); (2) planGateWorkers keeps the
-	// WHOLE contract fleet earning (sp-cdxy2: the exclusive fleet is never repurposed — the gate BUYS its
-	// workers); (3) reDeriveUnderScaledGate releases a sticky GATE that latched under-scaled with ~no
-	// construction back to INCOME after GateReentryStreakTicks consecutive ticks. The calibration knobs
-	// resolve to their documented defaults, so the struct stays deterministic. All tunable-only (no launch key).
-	GateSurplusFloor           int64   // treasury surplus (over common.ImmutableReserveFloor) required to enter GATE — the gate-bill war chest.
-	GateReentryConstructionPct float64 // construction % below which an under-scaled sticky GATE may re-derive INCOME (the escape hatch's scope).
-	GateReentryStreakTicks     int     // consecutive under-scaled+low-progress ticks before the GATE→INCOME re-derive fires (anti-thrash hysteresis).
+	Tick     time.Duration
 }
 
 func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand, live liveconfig.Snapshot) bootstrapRunConfig {
 	c := bootstrapRunConfig{
-		Disabled:      cmd.Disabled,
-		DryRun:        cmd.DryRun,
-		Tick:          time.Duration(cmd.TickIntervalSecs) * time.Second,
-		ProbeTarget:   cmd.ProbeTarget,
-		ProbeShipType: cmd.ProbeShipType,
-
-		HaulerTarget:   cmd.HaulerTarget,
-		IncomeBar:      cmd.IncomeBar,
-		HaulerShipType: cmd.HaulerShipType,
-
-		GateWorkerTarget: cmd.GateWorkerTarget,
+		Disabled: cmd.Disabled,
+		Tick:     time.Duration(cmd.TickIntervalSecs) * time.Second,
 	}
 
 	// Live overlay (sp-r6yq): a `tune` writes a BARE positive key to the persisted config
 	// column; the per-tick snapshot overlays it here so the change lands on the NEXT tick with no
 	// restart. Only-when-present (NOT snapshot-authoritative like the freshsizer): bootstrap's
 	// launch keys are the SEPARATE prefixed bootstrap_* family, so an untuned bare key is genuinely
-	// absent and must not zero the launch value — byte-identical when nothing is tuned. income_bar is
-	// whole credits; the <=0 default fallbacks below still apply to any knob left unset by both the
-	// launch command and the overlay.
+	// absent and must not zero the launch value.
 	if live != nil {
-		if v := live.PositiveIntOrZero("probe_target"); v > 0 {
-			c.ProbeTarget = v
-		}
-		if v := live.PositiveIntOrZero("hauler_target"); v > 0 {
-			c.HaulerTarget = v
-		}
-		if v := live.PositiveIntOrZero("income_bar"); v > 0 {
-			c.IncomeBar = float64(v)
-		}
-		if v := live.PositiveIntOrZero("gate_worker_target"); v > 0 {
-			c.GateWorkerTarget = v
-		}
 		if v := live.PositiveIntOrZero("tick_secs"); v > 0 {
 			c.Tick = time.Duration(v) * time.Second
-		}
-		// The escape hatch's always-consulted starved-earner floor, tunable-only. Absent/zeroed ⇒ launch
-		// value; the <=0 fallback below fills its default.
-		if v := live.PositiveIntOrZero("gate_min_haulers"); v > 0 {
-			c.GateMinHaulers = v
-		}
-		// Death-spiral cure calibration knobs (UNCONDITIONALLY ON, sp-gm7r removed the master flag), all
-		// tunable-only (no launch key). Absent/zeroed ⇒ the launch value; the <=0 fallbacks below fill each
-		// knob's documented default so the struct is deterministic.
-		if v := live.PositiveIntOrZero("gate_surplus_floor"); v > 0 {
-			c.GateSurplusFloor = int64(v)
-		}
-		if v := live.PositiveIntOrZero("gate_reentry_construction_pct"); v > 0 {
-			c.GateReentryConstructionPct = float64(v)
-		}
-		if v := live.PositiveIntOrZero("gate_reentry_streak_ticks"); v > 0 {
-			c.GateReentryStreakTicks = v
 		}
 	}
 
 	if c.Tick <= 0 {
 		c.Tick = defaultBootstrapTickSeconds * time.Second
-	}
-	if c.ProbeTarget <= 0 {
-		c.ProbeTarget = defaultProbeTarget
-	}
-	if c.ProbeShipType == "" {
-		c.ProbeShipType = defaultProbeShipType
-	}
-	if c.HaulerTarget <= 0 {
-		c.HaulerTarget = defaultHaulerTarget
-	}
-	if c.IncomeBar <= 0 {
-		c.IncomeBar = defaultIncomeBar
-	}
-	if c.HaulerShipType == "" {
-		c.HaulerShipType = defaultHaulerShipType
-	}
-	if c.GateWorkerTarget <= 0 {
-		c.GateWorkerTarget = defaultGateWorkerTarget
-	}
-	// The contract working-capital floor is the Admiral's IMMUTABLE hard floor (RULINGS #5): sourced ONLY
-	// from the constant, never the launch command / config.yaml / a live tune. There is deliberately no
-	// override seam above — a hard floor is not a per-run knob (sp-acv5).
-	c.ContractWorkingCapitalFloor = defaultContractWorkingCapitalFloor
-	// The escape hatch's starved-earner floor resolves to its documented default when neither launched nor
-	// tuned, so bootstrapRunConfig stays deterministic. It is unconditionally on, so it is always consulted.
-	if c.GateMinHaulers <= 0 {
-		c.GateMinHaulers = defaultGateMinHaulers
-	}
-	// The death-spiral-cure calibration knobs resolve to their documented defaults when neither launched nor
-	// tuned, so bootstrapRunConfig stays deterministic (they are always consulted now — sp-gm7r removed the flag).
-	if c.GateSurplusFloor <= 0 {
-		c.GateSurplusFloor = defaultGateSurplusFloor
-	}
-	if c.GateReentryConstructionPct <= 0 {
-		c.GateReentryConstructionPct = defaultGateReentryConstructionPct
-	}
-	if c.GateReentryStreakTicks <= 0 {
-		c.GateReentryStreakTicks = defaultGateReentryStreakTicks
 	}
 	return c
 }
@@ -195,7 +60,6 @@ func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand, live liveconfig
 type reconcileResult struct {
 	Phase            Phase
 	Purchased        int    // probes actually bought this tick (the scanning workstream)
-	WouldBuy         int    // ships a dry-run WOULD have bought this tick (probe or hauler)
 	HomePostDeclared bool   // the home scout-post coverage target was ensured this tick (sp-pt7d)
 	Blocker          string // the one guard that blocked the highest-priority action (for the heartbeat)
 
@@ -334,15 +198,6 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 		return res, nil
 	}
 
-	// No-silent-dry-run (f5pr lesson): dry-run WARNs every tick — it is opt-in watch mode, not a
-	// silent no-op.
-	if cfg.DryRun {
-		logger.Log("WARN", "Bootstrap in DRY-RUN — every decision is evaluated and logged but NOTHING is bought or assigned (set dry_run=false to arm)", map[string]interface{}{
-			"action":       "bootstrap_dry_run",
-			"container_id": cmd.ContainerID,
-		})
-	}
-
 	// Phantom-cache guard (captain L47): force a live ship re-read BEFORE any role/assignment
 	// decision so a phantom-idle hull isn't misread. A refresh failure fails the tick CLOSED —
 	// acting on a stale pool is exactly the desync this guards against.
@@ -382,7 +237,7 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 			"container_id": cmd.ContainerID,
 			"reason":       obs.Reason,
 		})
-		h.emitHeartbeat(ctx, cmd, cfg, PhaseColdStart, obs, res)
+		h.emitHeartbeat(ctx, cmd, PhaseColdStart, obs, res)
 		return res, nil
 	}
 
@@ -399,12 +254,12 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 	obs.ProbeCount = bridge.effectiveProbeCount(obs.ProbeCount)
 
 	// Derive the phase from the observation — NEVER from a persisted enum (spec §Architecture).
-	phase := derivePhase(obs, cfg)
+	phase := derivePhase(obs)
 	// Escape hatch (UNCONDITIONALLY ON, sp-gm7r): a GATE that latched under-scaled with ~no construction
 	// re-derives COLDSTART (so the op can re-scale out of the death spiral) after an anti-thrash hysteresis
 	// streak. A legitimately-funded fresh GATE and a genuinely-building GATE are untouched — the re-derive
 	// only releases a sticky, starved latch (see reDeriveUnderScaledGate).
-	phase = h.reDeriveUnderScaledGate(cmd.ContainerID, phase, obs, cfg)
+	phase = h.reDeriveUnderScaledGate(cmd.ContainerID, phase, obs)
 	res.Phase = phase
 	if h.metrics != nil {
 		h.metrics.RecordPhase(string(phase))
@@ -421,16 +276,16 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 		// an accepted-but-unsourceable contract gracefully — verified — and claims no ship until a
 		// market is known, so it cannot steal the idle hull bootstrap needs to buy probes). Contracts
 		// therefore run from hour 0 (RULINGS #1), never waiting on scanning.
-		h.actData(ctx, cmd, cfg, obs, &res)
+		h.actData(ctx, cmd, obs, &res)
 		scanningBlocker := res.Blocker
-		h.actIncome(ctx, cmd, cfg, obs, &res)
+		h.actIncome(ctx, cmd, obs, &res)
 		// The scanning blocker is the higher-signal heartbeat line (it is the critical path to markets),
 		// so it outranks the contract one; income's shows only when scanning is unblocked.
 		if scanningBlocker != "" {
 			res.Blocker = scanningBlocker
 		}
 	case PhaseGate:
-		h.actGate(ctx, cmd, cfg, obs, &res)
+		h.actGate(ctx, cmd, obs, &res)
 	case PhaseExpansion:
 		h.actExpansion(ctx, cmd, cfg, obs, &res)
 	}
@@ -442,8 +297,8 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 	// repurposes haulers to construction (a running autosizer scaling the contract op would contend), and
 	// EXPANSION performs the normal hand-off.
 	if phase == PhaseColdStart {
-		h.maybeLaunchAutosizerEarly(ctx, cmd, cfg, obs, &res)
-		h.ensureContractScalerEarly(ctx, cmd, cfg, &res)
+		h.maybeLaunchAutosizerEarly(ctx, cmd, obs, &res)
+		h.ensureContractScalerEarly(ctx, cmd, &res)
 	}
 
 	// Fold any probes bought this tick into the count-sync bridge (sp-lgo3), so the NEXT tick counts
@@ -452,7 +307,7 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 	// dry-runs record nothing.
 	bridge.recordProbeBuys(res.Purchased)
 
-	h.emitHeartbeat(ctx, cmd, cfg, phase, obs, res)
+	h.emitHeartbeat(ctx, cmd, phase, obs, res)
 	return res, nil
 }
 
@@ -479,14 +334,14 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 // restart, when the pipeline is long gone), so no income dip, fleet churn, or restart-dropped in-memory
 // window can ever pull the arc back into a buying phase. A restart at any point re-derives the
 // true phase from these live signals — no persisted cursor, no double-advance.
-func derivePhase(obs Observation, cfg bootstrapRunConfig) Phase {
+func derivePhase(obs Observation) Phase {
 	if obs.ConstructionComplete {
 		return PhaseExpansion // sticky/terminal: the gate is built — steady-state growth, never regress
 	}
 	if obs.ConstructionStarted {
 		return PhaseGate // sticky: stay in GATE even as repurposed haulers pull income under the bar
 	}
-	if gateFunded(obs, cfg) {
+	if gateFunded(obs) {
 		return PhaseGate
 	}
 	return PhaseColdStart
@@ -506,7 +361,7 @@ func derivePhase(obs Observation, cfg bootstrapRunConfig) Phase {
 //     reach the target stays in cold start by design, and it FAILS CLOSED — a 0/unread target (no scaler
 //     running) NEVER gates, so bootstrap never enters GATE on an unknown target; and
 //   - a treasury SURPLUS over the immutable reserve floor clearing the gate-bill war chest
-//     (gate_surplus_floor) — so GATE is EARNED from contract surplus, never raced on a thin treasury its
+//     (gateSurplusFloor) — so GATE is EARNED from contract surplus, never raced on a thin treasury its
 //     own material spend then crashes. Fail-closed: an unread/thin treasury yields a small or negative
 //     surplus that does not gate.
 //
@@ -514,11 +369,11 @@ func derivePhase(obs Observation, cfg bootstrapRunConfig) Phase {
 // (by actGate) only AFTER derivePhase has returned GATE, which demands a legitimate scaled+funded entry —
 // so a lightly-scaled op can never reach ConstructionStarted and latch GATE permanently. Gate entry only
 // ever tightens, never loosens (RULINGS #4).
-func gateFunded(obs Observation, cfg bootstrapRunConfig) bool {
+func gateFunded(obs Observation) bool {
 	fullFleet := len(obs.Haulers) + obs.ContractDepotHullCount
 	return obs.ContractScalerTarget > 0 &&
 		fullFleet >= obs.ContractScalerTarget &&
-		obs.Treasury-common.ImmutableReserveFloor >= cfg.GateSurplusFloor
+		obs.Treasury-common.ImmutableReserveFloor >= gateSurplusFloor
 }
 
 // reDeriveUnderScaledGate is the escape hatch: it overrides a STICKY-LATCHED GATE back to COLDSTART when the
@@ -537,24 +392,24 @@ func gateFunded(obs Observation, cfg bootstrapRunConfig) bool {
 // because the re-derive is a pure phase relabel (idempotent — no spend, no assignment; cold start re-scales via
 // the already-guarded hauler buys, and the separate manufacturing executor keeps building meanwhile).
 //
-// Under-scaled is measured against gate_min_haulers (the escape hatch's starved-earner floor) so the escape
+// Under-scaled is measured against gateMinHaulers (the escape hatch's starved-earner floor) so the escape
 // fires only for a truly starved op — below 2 haulers — never merely because a decent op sits under the full
 // scaler-target entry bar.
-func (h *RunBootstrapCoordinatorHandler) reDeriveUnderScaledGate(containerID string, phase Phase, obs Observation, cfg bootstrapRunConfig) Phase {
+func (h *RunBootstrapCoordinatorHandler) reDeriveUnderScaledGate(containerID string, phase Phase, obs Observation) Phase {
 	// Only a sticky-latched GATE (started, not complete) is a candidate; a legitimately-funded fresh GATE
 	// (no pipeline yet) or a terminal COMPLETE is not. Anything else breaks the streak and stands.
 	if phase != PhaseGate || !obs.ConstructionStarted || obs.ConstructionComplete {
 		h.resetUnderScaledStreak(containerID)
 		return phase
 	}
-	underScaled := len(obs.Haulers) < cfg.GateMinHaulers
-	lowProgress := obs.ConstructionPercent < cfg.GateReentryConstructionPct
+	underScaled := len(obs.Haulers) < gateMinHaulers
+	lowProgress := obs.ConstructionPercent < gateReentryConstructionPct
 	if !underScaled || !lowProgress {
 		h.resetUnderScaledStreak(containerID) // condition broke → the streak must be CONSECUTIVE
 		return phase
 	}
 	// Under-scaled + barely-built: accrue the streak; only re-derive once it holds the full window.
-	if h.bumpUnderScaledStreak(containerID) < cfg.GateReentryStreakTicks {
+	if h.bumpUnderScaledStreak(containerID) < gateReentryStreakTicks {
 		return phase // not yet sustained — hold sticky GATE (anti-thrash)
 	}
 	return PhaseColdStart
@@ -584,21 +439,21 @@ func (h *RunBootstrapCoordinatorHandler) resetUnderScaledStreak(containerID stri
 	}
 }
 
-// actData runs the SCANNING workstream: (1) drive the probe fleet to probe_target THIS tick —
+// actData runs the SCANNING workstream: (1) drive the probe fleet to probeTarget THIS tick —
 // buying up to (target-count) probes in a capital-gated loop, or (when the home shipyard price is not
 // yet readable) positioning a hull at the yard so the next tick's live read succeeds (sp-hh0h);
 // (2) declare the home-system scout post as a coverage target (sp-pt7d) — the boot-standing scout-post
 // coordinator (sp-9ujl) mans it by claiming an idle probe (bootstrap assigns NO probes itself). Both
 // actions are independently guarded and idempotent, so re-evaluation never double-acts. It executes
 // ALONGSIDE actIncome on every cold-start tick (the parallel model, sp-t39j).
-func (h *RunBootstrapCoordinatorHandler) actData(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
+func (h *RunBootstrapCoordinatorHandler) actData(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult) {
 	// (1) Capital-gated probe acquisition — buy to target in ONE pass (sp-hh0h: a fresh universe must
-	// reach probe_target fast, not one probe per 5-min tick). Guarded on the re-observed count, so a
+	// reach probeTarget fast, not one probe per 5-min tick). Guarded on the re-observed count, so a
 	// mid-purchase restart that already incremented the count simply buys the remainder. The seed is
-	// bootstrap's alone: it buys 0→probe_target and nothing beyond, so the standing freshsizer owns
+	// bootstrap's alone: it buys 0→probeTarget and nothing beyond, so the standing freshsizer owns
 	// every probe above it with no runtime hand-off between the two.
-	if obs.ProbeCount < cfg.ProbeTarget {
-		h.acquireProbesToTarget(ctx, cmd, cfg, obs, res)
+	if obs.ProbeCount < probeTarget {
+		h.acquireProbesToTarget(ctx, cmd, obs, res)
 	}
 
 	// (2) Declare the home-system scout post as a COVERAGE target (sp-pt7d). Bootstrap no longer
@@ -610,7 +465,7 @@ func (h *RunBootstrapCoordinatorHandler) actData(ctx context.Context, cmd *RunBo
 	// on a resolved home system only — declare the coverage target even before the first probe lands,
 	// so manning starts the instant a probe is idle.
 	if obs.HomeSystem != "" {
-		h.declareHomeScoutPost(ctx, cmd, cfg, obs, res)
+		h.declareHomeScoutPost(ctx, cmd, obs, res)
 	}
 }
 
@@ -625,20 +480,12 @@ func (h *RunBootstrapCoordinatorHandler) actData(ctx context.Context, cmd *RunBo
 //     contract_delivery_hulls_enabled config knob is set (a SEPARATE arming, set at the coordinated arm);
 //   - is a BACKGROUND launch: it never claims res.Blocker (the scaling workstream's own blocker is the
 //     higher-signal heartbeat line), surfacing itself via its own INFO/ERROR log line instead;
-//   - is nil-safe (no launcher wired ⇒ logged skip) and dry-run-safe (WOULD-launch, no action).
-func (h *RunBootstrapCoordinatorHandler) maybeLaunchAutosizerEarly(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
+//   - is nil-safe (no launcher wired ⇒ logged skip).
+func (h *RunBootstrapCoordinatorHandler) maybeLaunchAutosizerEarly(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
 	if obs.AutosizerRunning {
 		return // already launched (this tick's earlier run, or an earlier tick) — idempotent no-op
-	}
-
-	if cfg.DryRun {
-		logger.Log("INFO", "Bootstrap DRY-RUN: WOULD launch the fleet autosizer EARLY (cold-start contract scaling armed) so the capacity reconciler's demand has a buyer (took no action)", map[string]interface{}{
-			"action":       "bootstrap_would_launch_autosizer_early",
-			"container_id": cmd.ContainerID,
-		})
-		return
 	}
 
 	if h.handoff == nil {
@@ -668,18 +515,10 @@ func (h *RunBootstrapCoordinatorHandler) maybeLaunchAutosizerEarly(ctx context.C
 // caller has already checked we are in the cold-start window. It mirrors maybeLaunchAutosizerEarly:
 //   - IDEMPOTENCY lives in the LAUNCHER, which skips a coordinator already RUNNING/PENDING, so calling
 //     it every cold-start tick never double-launches a second ramp loop;
-//   - is nil-safe (no launcher wired ⇒ logged skip) and dry-run-safe (WOULD-launch, no action);
+//   - is nil-safe (no launcher wired ⇒ logged skip);
 //   - is a BACKGROUND launch: it never claims res.Blocker, surfacing itself via its own INFO/ERROR line.
-func (h *RunBootstrapCoordinatorHandler) ensureContractScalerEarly(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, res *reconcileResult) {
+func (h *RunBootstrapCoordinatorHandler) ensureContractScalerEarly(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, res *reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
-
-	if cfg.DryRun {
-		logger.Log("INFO", "Bootstrap DRY-RUN: WOULD ensure the dedicated contract auto-scaler is running to ramp the exclusive contract fleet (took no action)", map[string]interface{}{
-			"action":       "bootstrap_would_launch_contract_scaler_early",
-			"container_id": cmd.ContainerID,
-		})
-		return
-	}
 
 	if h.handoff == nil {
 		logger.Log("WARN", "Bootstrap has no hand-off launcher wired — cannot ensure the contract scaler", map[string]interface{}{
@@ -703,7 +542,7 @@ func (h *RunBootstrapCoordinatorHandler) ensureContractScalerEarly(ctx context.C
 	})
 }
 
-// acquireProbesToTarget drives the probe fleet to probe_target in ONE tick (sp-hh0h), behind the
+// acquireProbesToTarget drives the probe fleet to probeTarget in ONE tick (sp-hh0h), behind the
 // readiness and capital gates, emitting the guardrail arithmetic per buy (RULINGS #4, fail closed).
 // Caller has checked "needed" (ProbeCount < target).
 //
@@ -716,14 +555,14 @@ func (h *RunBootstrapCoordinatorHandler) ensureContractScalerEarly(ctx context.C
 //     flat common.ImmutableReserveFloor capital gate against the DECREMENTING treasury (the running spend
 //     is subtracted so the guard reflects real remaining credits — never a stale-treasury overspend). The
 //     yard ask is stable within a tick, so a single PriceCheck feeds the whole loop.
-func (h *RunBootstrapCoordinatorHandler) acquireProbesToTarget(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
+func (h *RunBootstrapCoordinatorHandler) acquireProbesToTarget(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
 	// Readiness gate, second half: unblocked? The batch-purchase path needs an idle hull to fly to
 	// the yard. No idle hull ⇒ BLOCKED (not failed) — a later tick with a free hull retries.
 	if !obs.HasIdlePurchaser {
 		res.Blocker = "no_purchaser"
-		logger.Log("WARN", fmt.Sprintf("Bootstrap probe needed (%d/%d) but BLOCKED: no idle hull to execute the purchase", obs.ProbeCount, cfg.ProbeTarget), map[string]interface{}{
+		logger.Log("WARN", fmt.Sprintf("Bootstrap probe needed (%d/%d) but BLOCKED: no idle hull to execute the purchase", obs.ProbeCount, probeTarget), map[string]interface{}{
 			"action":       "bootstrap_buy_blocked",
 			"container_id": cmd.ContainerID,
 			"blocker":      "no_purchaser",
@@ -744,9 +583,9 @@ func (h *RunBootstrapCoordinatorHandler) acquireProbesToTarget(ctx context.Conte
 	// Price-check ONCE (the cheapest reachable yard's ask is stable within a tick, so it feeds the whole
 	// buy loop). Unreadable price ⇒ do NOT buy this tick; instead make it readable by positioning a hull
 	// at the yard (sp-hh0h). Still fails CLOSED (no spend) — a genuinely unreadable price buys nothing.
-	price, yard, readable, err := h.acquirer.PriceCheck(ctx, cmd.PlayerID, cfg.ProbeShipType)
+	price, yard, readable, err := h.acquirer.PriceCheck(ctx, cmd.PlayerID, probeShipType)
 	if err != nil || !readable {
-		h.ensureShipyardReadable(ctx, cmd, cfg, obs, res, err)
+		h.ensureShipyardReadable(ctx, cmd, obs, res, err)
 		return
 	}
 
@@ -756,13 +595,13 @@ func (h *RunBootstrapCoordinatorHandler) acquireProbesToTarget(ctx context.Conte
 	// cold-start deadlock this bead fixes (the frigate freed while permanently unaffordable, no earner left).
 	// Read-only + best-effort (no spend — the price guard is untouched, RULINGS #4): a nil hauler acquirer or
 	// an unreadable hauler listing caches nothing and the seed simply retries on the next readable tick.
-	h.seedHaulerPriceFromYard(ctx, cmd, cfg)
+	h.seedHaulerPriceFromYard(ctx, cmd)
 
 	// Capital-gated buy LOOP: buy up to (target-count) probes THIS tick, decrementing the treasury each
 	// iteration so the flat common.ImmutableReserveFloor gate reflects real remaining credits (sp-05glh:
 	// an additive cushion — treasury−price ≥ floor — replacing the deleted proportional reserve_margin
 	// gate).
-	need := cfg.ProbeTarget - obs.ProbeCount
+	need := probeTarget - obs.ProbeCount
 	var spent int64
 	for i := 0; i < need; i++ {
 		remaining := obs.Treasury - spent
@@ -785,17 +624,7 @@ func (h *RunBootstrapCoordinatorHandler) acquireProbesToTarget(ctx context.Conte
 			break
 		}
 
-		if cfg.DryRun {
-			res.WouldBuy++
-			spent += price // model the cumulative spend so the dry-run count respects the same gate
-			logger.Log("INFO", fmt.Sprintf("Bootstrap DRY-RUN: WOULD buy %s #%d/%d at %s for %d (took no action)", cfg.ProbeShipType, obs.ProbeCount+i+1, cfg.ProbeTarget, yard, price), map[string]interface{}{
-				"action":       "bootstrap_would_buy",
-				"container_id": cmd.ContainerID,
-			})
-			continue
-		}
-
-		bought, berr := h.acquirer.Buy(ctx, cmd.PlayerID, cfg.ProbeShipType, yard)
+		bought, berr := h.acquirer.Buy(ctx, cmd.PlayerID, probeShipType, yard)
 		if berr != nil {
 			res.Blocker = "purchase_error"
 			logger.Log("ERROR", fmt.Sprintf("Bootstrap probe purchase failed: %v", berr), map[string]interface{}{
@@ -809,7 +638,7 @@ func (h *RunBootstrapCoordinatorHandler) acquireProbesToTarget(ctx context.Conte
 		if h.metrics != nil {
 			h.metrics.RecordProbePurchased()
 		}
-		logger.Log("INFO", fmt.Sprintf("Bootstrap bought probe %s at %s for %d (%d/%d)", bought.ShipSymbol, yard, bought.Price, obs.ProbeCount+res.Purchased, cfg.ProbeTarget), map[string]interface{}{
+		logger.Log("INFO", fmt.Sprintf("Bootstrap bought probe %s at %s for %d (%d/%d)", bought.ShipSymbol, yard, bought.Price, obs.ProbeCount+res.Purchased, probeTarget), map[string]interface{}{
 			"action":       "bootstrap_bought_probe",
 			"container_id": cmd.ContainerID,
 			"ship":         bought.ShipSymbol,
@@ -825,7 +654,7 @@ func (h *RunBootstrapCoordinatorHandler) acquireProbesToTarget(ctx context.Conte
 // the pre-hh0h fail-closed behavior (blocker=price_unreadable, no repositioning) — byte-identical. The
 // scanner is idempotent (a no-op when a hull is already positioned/en route), so calling it each
 // unreadable tick never re-navigates.
-func (h *RunBootstrapCoordinatorHandler) ensureShipyardReadable(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult, priceErr error) {
+func (h *RunBootstrapCoordinatorHandler) ensureShipyardReadable(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult, priceErr error) {
 	logger := common.LoggerFromContext(ctx)
 
 	if h.scanner == nil {
@@ -834,15 +663,6 @@ func (h *RunBootstrapCoordinatorHandler) ensureShipyardReadable(ctx context.Cont
 			"action":       "bootstrap_buy_blocked",
 			"container_id": cmd.ContainerID,
 			"blocker":      "price_unreadable",
-		})
-		return
-	}
-
-	if cfg.DryRun {
-		res.Blocker = "price_unreadable"
-		logger.Log("INFO", "Bootstrap DRY-RUN: probe price unreadable — WOULD position an idle hull at the home shipyard to make it readable (took no action)", map[string]interface{}{
-			"action":       "bootstrap_would_position_purchaser",
-			"container_id": cmd.ContainerID,
 		})
 		return
 	}
@@ -859,7 +679,7 @@ func (h *RunBootstrapCoordinatorHandler) ensureShipyardReadable(ctx context.Cont
 	}
 	if dispatched {
 		res.Blocker = "positioning_purchaser_at_shipyard"
-		logger.Log("INFO", fmt.Sprintf("Bootstrap probe price unreadable (cold home shipyard) — dispatched an idle hull to the home-system shipyard so the next tick's live price read succeeds (sp-hh0h); probes %d/%d", obs.ProbeCount, cfg.ProbeTarget), map[string]interface{}{
+		logger.Log("INFO", fmt.Sprintf("Bootstrap probe price unreadable (cold home shipyard) — dispatched an idle hull to the home-system shipyard so the next tick's live price read succeeds (sp-hh0h); probes %d/%d", obs.ProbeCount, probeTarget), map[string]interface{}{
 			"action":       "bootstrap_positioning_purchaser",
 			"container_id": cmd.ContainerID,
 			"blocker":      "positioning_purchaser_at_shipyard",
@@ -869,7 +689,7 @@ func (h *RunBootstrapCoordinatorHandler) ensureShipyardReadable(ctx context.Cont
 	// Not dispatched: a hull is already present/en route at a shipyard (price should clear soon) or none
 	// is free to send. Keep price_unreadable so the heartbeat shows we are still waiting on the read.
 	res.Blocker = "price_unreadable"
-	logger.Log("INFO", fmt.Sprintf("Bootstrap probe price unreadable — a hull is already at/en route to the home shipyard, or none is free; awaiting a readable price (probes %d/%d)", obs.ProbeCount, cfg.ProbeTarget), map[string]interface{}{
+	logger.Log("INFO", fmt.Sprintf("Bootstrap probe price unreadable — a hull is already at/en route to the home shipyard, or none is free; awaiting a readable price (probes %d/%d)", obs.ProbeCount, probeTarget), map[string]interface{}{
 		"action":       "bootstrap_buy_blocked",
 		"container_id": cmd.ContainerID,
 		"blocker":      "price_unreadable",
@@ -890,16 +710,8 @@ func buyBlockNote(affordable bool) string {
 // probe. It does NOT assign or dedicate a probe — that is the coordinator's job — so bootstrap's
 // probes stay idle and claimable. Idempotent: the declarer skips a post that already exists, so
 // re-declaring every tick is a no-op. Caller has checked HomeSystem is resolved.
-func (h *RunBootstrapCoordinatorHandler) declareHomeScoutPost(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
+func (h *RunBootstrapCoordinatorHandler) declareHomeScoutPost(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
-
-	if cfg.DryRun {
-		logger.Log("INFO", fmt.Sprintf("Bootstrap DRY-RUN: WOULD declare the home scout post %s for the scout-post coordinator to man (took no action)", obs.HomeSystem), map[string]interface{}{
-			"action":       "bootstrap_would_declare_home_post",
-			"container_id": cmd.ContainerID,
-		})
-		return
-	}
 
 	if h.postDeclarer == nil {
 		res.Blocker = "no_scout_post_declarer"
@@ -911,7 +723,7 @@ func (h *RunBootstrapCoordinatorHandler) declareHomeScoutPost(ctx context.Contex
 		return
 	}
 
-	if err := h.postDeclarer.DeclareHomeScoutPost(ctx, cmd.PlayerID, obs.HomeSystem, cfg.ProbeTarget); err != nil {
+	if err := h.postDeclarer.DeclareHomeScoutPost(ctx, cmd.PlayerID, obs.HomeSystem, probeTarget); err != nil {
 		res.Blocker = "scout_post_error"
 		logger.Log("ERROR", fmt.Sprintf("Bootstrap home scout-post declaration failed: %v", err), map[string]interface{}{
 			"action":       "bootstrap_scout_post_error",
@@ -929,35 +741,31 @@ func (h *RunBootstrapCoordinatorHandler) declareHomeScoutPost(ctx context.Contex
 
 // emitHeartbeat writes the per-tick progress line (phase · delta done · next action · blockers) so
 // a wedged reconciler is visible, never a silent stall (captain L61, spec §Observability).
-func (h *RunBootstrapCoordinatorHandler) emitHeartbeat(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, phase Phase, obs Observation, res reconcileResult) {
+func (h *RunBootstrapCoordinatorHandler) emitHeartbeat(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, phase Phase, obs Observation, res reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
 	delta := fmt.Sprintf("bought=%d home_post=%v haulers_bought=%d trade_seeded=%v frigate_retired=%v batch_contract=%v frigate_loop=%v construction_started=%v mfg_ensured=%v mfg_bounced=%v workers_released=%d gate_workers_bought=%d handoff=%v", res.Purchased, res.HomePostDeclared, res.HaulersBought, res.TradeHullSeeded, res.FrigateRetired, res.ContractRun, res.FrigateLoopStarted, res.ConstructionStartRan, res.MfgEnsured, res.MfgBounced, res.WorkersReleased, res.GateWorkersBought, res.HandoffLaunched)
-	if cfg.DryRun {
-		delta = fmt.Sprintf("would_buy=%d (dry-run)", res.WouldBuy)
-	}
-	next := h.nextAction(cfg, phase, obs)
+	next := h.nextAction(phase, obs)
 	blockers := res.Blocker
 	if blockers == "" {
 		blockers = "none"
 	}
 
-	logger.Log("INFO", fmt.Sprintf("Bootstrap heartbeat: phase=%s probes=%d/%d scouting=%d coverage=%d/%d (%.0f%%) haulers=%d/%d hubs=%d income/hr=%.0f/%.0f treasury=%d gate_site=%s construction=%.0f%% gate_workers=%d/%d · %s · next=%q · blockers=%s",
-		phase, obs.ProbeCount, cfg.ProbeTarget, obs.ProbesScouting, obs.MarketsCovered, obs.MarketsTotal, obs.CoverageFraction()*100, len(obs.Haulers), cfg.HaulerTarget, res.ViableHubs, obs.IncomePerHour, cfg.IncomeBar, obs.Treasury, gateSiteOrNone(obs.GateSite), obs.ConstructionPercent, obs.GateWorkers, res.DesiredWorkers, delta, next, blockers), map[string]interface{}{
+	logger.Log("INFO", fmt.Sprintf("Bootstrap heartbeat: phase=%s probes=%d/%d scouting=%d coverage=%d/%d (%.0f%%) haulers=%d/%d hubs=%d income/hr=%.0f treasury=%d gate_site=%s construction=%.0f%% gate_workers=%d/%d · %s · next=%q · blockers=%s",
+		phase, obs.ProbeCount, probeTarget, obs.ProbesScouting, obs.MarketsCovered, obs.MarketsTotal, obs.CoverageFraction()*100, len(obs.Haulers), haulerTarget, res.ViableHubs, obs.IncomePerHour, obs.Treasury, gateSiteOrNone(obs.GateSite), obs.ConstructionPercent, obs.GateWorkers, res.DesiredWorkers, delta, next, blockers), map[string]interface{}{
 		"action":             "bootstrap_heartbeat",
 		"container_id":       cmd.ContainerID,
 		"phase":              string(phase),
 		"probes":             obs.ProbeCount,
-		"probe_target":       cfg.ProbeTarget,
+		"probe_target":       probeTarget,
 		"probes_scouting":    obs.ProbesScouting,
 		"markets_covered":    obs.MarketsCovered,
 		"markets_total":      obs.MarketsTotal,
 		"haulers":            len(obs.Haulers),
-		"hauler_target":      cfg.HaulerTarget,
+		"hauler_target":      haulerTarget,
 		"trade_hulls":        obs.TradeHullCount,
 		"viable_hubs":        res.ViableHubs,
 		"income_per_hour":    obs.IncomePerHour,
-		"income_bar":         cfg.IncomeBar,
 		"treasury":           obs.Treasury,
 		"purchased":          res.Purchased,
 		"haulers_bought":     res.HaulersBought,
@@ -977,13 +785,13 @@ func (h *RunBootstrapCoordinatorHandler) emitHeartbeat(ctx context.Context, cmd 
 }
 
 // nextAction names the single next thing the reconciler intends, for the heartbeat.
-func (h *RunBootstrapCoordinatorHandler) nextAction(cfg bootstrapRunConfig, phase Phase, obs Observation) string {
+func (h *RunBootstrapCoordinatorHandler) nextAction(phase Phase, obs Observation) string {
 	switch phase {
 	case PhaseColdStart:
 		// Scanning and contracts run together (sp-t39j), so this walks both workstreams' outstanding
 		// steps in one list — scanning first, because it is the critical path to markets.
-		if obs.ProbeCount < cfg.ProbeTarget {
-			return fmt.Sprintf("buy probes to target (%d/%d, capital-gated; positions a hull at the yard first if the price is cold)", obs.ProbeCount, cfg.ProbeTarget)
+		if obs.ProbeCount < probeTarget {
+			return fmt.Sprintf("buy probes to target (%d/%d, capital-gated; positions a hull at the yard first if the price is cold)", obs.ProbeCount, probeTarget)
 		}
 		if obs.ProbeCount > 0 && obs.ProbesScouting < obs.ProbeCount {
 			return "home scout post declared — awaiting the scout-post coordinator to man idle probe(s) (sp-pt7d)"
@@ -998,8 +806,8 @@ func (h *RunBootstrapCoordinatorHandler) nextAction(cfg bootstrapRunConfig, phas
 			return "start the command frigate's continuous contract loop (pre-hauler sole earner)"
 		}
 		desired := len(selectContractHubs(obs.Markets, obs.ContractGoods))
-		if desired > cfg.HaulerTarget {
-			desired = cfg.HaulerTarget
+		if desired > haulerTarget {
+			desired = haulerTarget
 		}
 		if len(obs.Haulers) < desired {
 			return fmt.Sprintf("buy contract hauler %d/%d (staged, capital-gated, hub-placed)", len(obs.Haulers)+1, desired)
@@ -1018,7 +826,7 @@ func (h *RunBootstrapCoordinatorHandler) nextAction(cfg bootstrapRunConfig, phas
 		if !obs.ManufacturingAdopted {
 			return "bounce the manufacturing coordinator so it adopts the pipeline (L57)"
 		}
-		plan := planGateWorkers(obs, cfg)
+		plan := planGateWorkers(obs)
 		if len(plan.ReleaseShips) > 0 {
 			return fmt.Sprintf("repurpose %d surplus hauler(s) to gate construction", len(plan.ReleaseShips))
 		}

@@ -13,14 +13,14 @@ import (
 // owned: it seeds the cold-start hulls behind its capital gates regardless of which standing coordinators
 // happen to be up, so no runtime hand-off decision exists between the two.
 
-// sjvvHandler wires a bootstrap handler with the INCOME collaborators plus a hand-off launcher and a
+// sjvvHandler wires a bootstrap handler with the contract collaborators plus a hand-off launcher and a
 // live-config reader, so a single tick exercises both the staged hauler buy and the early autosizer
 // launch.
 func sjvvHandler(obs Observation, live *fakeLiveConfig, ho *fakeHandoff, haul *fakeHaulerAcquirer) *RunBootstrapCoordinatorHandler {
 	h := NewRunBootstrapCoordinatorHandler(nil)
 	h.SetShipRefresher(&fakeRefresher{})
 	h.SetWorldObserver(&fakeObserver{obs: obs})
-	h.SetProbeAcquirer(&fakeAcquirer{price: 40000, yard: "Y", readable: true}) // present, unused in INCOME
+	h.SetProbeAcquirer(&fakeAcquirer{price: 40000, yard: "Y", readable: true}) // present, unused by the contract workstream
 	h.SetScoutPostDeclarer(&fakeDeclarer{})
 	h.SetFrigateRetirer(&fakeRetirer{})
 	h.SetContractRunner(&fakeContractRunner{})
@@ -36,10 +36,10 @@ func sjvvHandler(obs Observation, live *fakeLiveConfig, ho *fakeHandoff, haul *f
 	return h
 }
 
-// sjvvIncomeObs is an INCOME-phase observation with the autosizer running-state and hauler pool set by
+// sjvvColdStartObs is a cold-start observation with the autosizer running-state and hauler pool set by
 // the caller. BatchContractRunning=true isolates the hauler decision (step 4) from the batch-contract
 // launch (step 2).
-func sjvvIncomeObs(autosizerRunning bool, haulers int) Observation {
+func sjvvColdStartObs(autosizerRunning bool, haulers int) Observation {
 	o := incomeObs()
 	o.AutosizerRunning = autosizerRunning
 	o.BatchContractRunning = true
@@ -60,7 +60,7 @@ func sjvvIncomeObs(autosizerRunning bool, haulers int) Observation {
 // coordinator can suppress a seed acquisition, and no "deferred" blocker reaches the heartbeat.
 func TestBootstrap_StaticOwnership_AutosizerRunningStillBuysHauler(t *testing.T) {
 	acq := &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true}
-	h := sjvvHandler(sjvvIncomeObs(true, 2), &fakeLiveConfig{snap: liveconfig.Snapshot{}}, &fakeHandoff{}, acq)
+	h := sjvvHandler(sjvvColdStartObs(true, 2), &fakeLiveConfig{snap: liveconfig.Snapshot{}}, &fakeHandoff{}, acq)
 
 	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if err != nil {
@@ -79,7 +79,7 @@ func TestBootstrap_StaticOwnership_AutosizerRunningStillBuysHauler(t *testing.T)
 func TestBootstrap_EarlyAutosizer_AutosizerDown_BuysAndLaunchesEarly(t *testing.T) {
 	acq := &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true}
 	ho := &fakeHandoff{}
-	h := sjvvHandler(sjvvIncomeObs(false, 0), &fakeLiveConfig{snap: liveconfig.Snapshot{}}, ho, acq) // autosizer down
+	h := sjvvHandler(sjvvColdStartObs(false, 0), &fakeLiveConfig{snap: liveconfig.Snapshot{}}, ho, acq) // autosizer down
 
 	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if err != nil {
@@ -93,14 +93,14 @@ func TestBootstrap_EarlyAutosizer_AutosizerDown_BuysAndLaunchesEarly(t *testing.
 	}
 }
 
-// --- early autosizer launch: only in the DATA/INCOME scaling window, idempotent, not in GATE ---
+// --- early autosizer launch: only in the cold-start scaling window, idempotent, not in GATE ---
 
-// In the INCOME scaling window with the autosizer down: bootstrap launches it once, and the EARLY launch
+// In the cold-start scaling window with the autosizer down: bootstrap launches it once, and the EARLY launch
 // does NOT launch the standing coordinators (that is the EXPANSION hand-off's job). (3 haulers = desired,
 // isolating the launch from the hauler decision.)
-func TestBootstrap_EarlyAutosizer_InIncome_Launches(t *testing.T) {
+func TestBootstrap_EarlyAutosizer_InColdStart_Launches(t *testing.T) {
 	ho := &fakeHandoff{}
-	obs := sjvvIncomeObs(false, 3) // 3 haulers = desired (3 viable hubs) → no hauler buy this tick
+	obs := sjvvColdStartObs(false, 3) // 3 haulers = desired (3 viable hubs) → no hauler buy this tick
 	h := sjvvHandler(obs, &fakeLiveConfig{snap: liveconfig.Snapshot{}}, ho, &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true})
 
 	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
@@ -108,7 +108,7 @@ func TestBootstrap_EarlyAutosizer_InIncome_Launches(t *testing.T) {
 		t.Fatalf("reconcileOnce: %v", err)
 	}
 	if ho.autosizer != 1 || !res.AutosizerLaunchedEarly {
-		t.Fatalf("INCOME + autosizer down: must launch the autosizer early once (autosizer_launches=%d early=%v)", ho.autosizer, res.AutosizerLaunchedEarly)
+		t.Fatalf("cold start + autosizer down: must launch the autosizer early once (autosizer_launches=%d early=%v)", ho.autosizer, res.AutosizerLaunchedEarly)
 	}
 	if ho.standing != 0 {
 		t.Fatalf("the EARLY launch must NOT launch the standing coordinators (siting/rebalancer) — that is the EXPANSION hand-off's job, got standing=%d", ho.standing)
@@ -118,7 +118,7 @@ func TestBootstrap_EarlyAutosizer_InIncome_Launches(t *testing.T) {
 // Autosizer already running: no relaunch (idempotent — the steady state once launched).
 func TestBootstrap_EarlyAutosizer_AlreadyRunning_NoRelaunch(t *testing.T) {
 	ho := &fakeHandoff{}
-	h := sjvvHandler(sjvvIncomeObs(true, 3), &fakeLiveConfig{snap: liveconfig.Snapshot{}}, ho, &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true})
+	h := sjvvHandler(sjvvColdStartObs(true, 3), &fakeLiveConfig{snap: liveconfig.Snapshot{}}, ho, &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true})
 
 	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if err != nil {
@@ -129,7 +129,7 @@ func TestBootstrap_EarlyAutosizer_AlreadyRunning_NoRelaunch(t *testing.T) {
 	}
 }
 
-// In the GATE phase: the autosizer is NOT launched early — the early launch is scoped to the DATA/INCOME
+// In the GATE phase: the autosizer is NOT launched early — the early launch is scoped to the cold-start
 // scaling window (GATE repurposes haulers to construction; a running autosizer scaling the contract op would
 // contend).
 func TestBootstrap_EarlyAutosizer_NotLaunchedDuringGate(t *testing.T) {

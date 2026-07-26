@@ -4,13 +4,13 @@ import (
 	"testing"
 )
 
-// sp-difa.1 — the durable contract-graduation gate on bootstrap's INCOME workstream (the SECONDARY
-// re-spawner: a gate-built fleet whose realized income is still below the bar derives INCOME, where
+// sp-difa.1 — the durable contract-graduation gate on bootstrap's contract workstream (the SECONDARY
+// re-spawner: a gate-built fleet whose realized income is still below the bar derives COLDSTART, where
 // actIncome would (re)start batch-contract / the frigate sole-earner loop / staged hauler buys). When a
 // player is graduated, actIncome must do NOTHING — no contract earner is started or maintained, durably
-// across restarts — while DATA scanning and GATE construction (and trade) run untouched.
+// across restarts — while scanning and GATE construction (and trade) run untouched.
 
-// graduationIncomeHandler wires an INCOME-phase handler with every contract collaborator, so a
+// graduationIncomeHandler wires a cold-start handler with every contract collaborator, so a
 // non-empty contract action would fire if the phase were not gated.
 func graduationIncomeHandler(obs Observation, ret *fakeRetirer, acq *fakeHaulerAcquirer, run *fakeContractRunner, loop *fakeFrigateLoop) *RunBootstrapCoordinatorHandler {
 	h := NewRunBootstrapCoordinatorHandler(nil)
@@ -25,11 +25,11 @@ func graduationIncomeHandler(obs Observation, ret *fakeRetirer, acq *fakeHaulerA
 	return h
 }
 
-// graduationIncomeObs is an INCOME-phase observation primed so ALL four contract actions would fire:
+// graduationIncomeObs is a cold-start observation primed so ALL four contract actions would fire:
 // a tagged frigate to retire, no batch-contract running, probes provisioned + no frigate loop, and an
 // unserved hub with an idle purchaser + treasury for a hauler buy.
 func graduationIncomeObs() Observation {
-	obs := incomeObs() // coverage met, income 0 < bar → INCOME
+	obs := incomeObs() // coverage met, no economic signal → COLDSTART
 	obs.CommandFrigateID = "FRIGATE-1"
 	obs.CommandFrigateOnContract = true // would retire
 	obs.ProbeCount = 3                  // >= default probe_target → frigate loop eligible
@@ -56,7 +56,7 @@ func TestBootstrap_Income_ContractGraduated_NoContractActions(t *testing.T) {
 		t.Fatalf("reconcileOnce: %v", err)
 	}
 	if res.Phase != PhaseColdStart {
-		t.Fatalf("expected INCOME phase, got %s", res.Phase)
+		t.Fatalf("expected COLDSTART phase, got %s", res.Phase)
 	}
 	if ret.calls != 0 || run.calls != 0 || loop.calls != 0 || acq.buys != 0 {
 		t.Fatalf("graduated: NO contract action may fire — retire=%d batch=%d frigate_loop=%d hauler_buys=%d", ret.calls, run.calls, loop.calls, acq.buys)
@@ -69,7 +69,7 @@ func TestBootstrap_Income_ContractGraduated_NoContractActions(t *testing.T) {
 	}
 }
 
-// NOT GRADUATED (baseline / byte-identical): the same observation runs the full INCOME workstream —
+// NOT GRADUATED (baseline / byte-identical): the same observation runs the full contract workstream —
 // proving the graduation flag is exactly what suppresses it. All four contract actions fire.
 func TestBootstrap_Income_NotGraduated_RunsContractsAsToday(t *testing.T) {
 	obs := graduationIncomeObs()

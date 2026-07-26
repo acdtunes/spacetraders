@@ -151,7 +151,7 @@ func (m *fakeMetrics) RecordConstructionPct(pct float64) {
 }
 
 // scriptedWorld is a tiny stateful model so a multi-tick acceptance test can observe the effect of
-// probe buys across ticks (the DATA arc filling the probe fleet to target). probesScouting stays 0
+// probe buys across ticks (the probe fleet filling to target). probesScouting stays 0
 // under Option B — bootstrap no longer scouts (the scout-post coordinator does); it is retained only
 // as observed telemetry.
 type scriptedWorld struct {
@@ -334,12 +334,11 @@ func TestBootstrap_Disabled_TakesNoAction(t *testing.T) {
 // --- phase derivation is from observation, never a stored cursor ---
 
 func TestBootstrap_DerivePhase_ColdStartWithoutEconomicSignal(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd(), nil)
-	if p := derivePhase(Observation{MarketsTotal: 10, MarketsCovered: 0}, cfg); p != PhaseColdStart {
+	if p := derivePhase(Observation{MarketsTotal: 10, MarketsCovered: 0}); p != PhaseColdStart {
 		t.Fatalf("uncovered world should derive COLDSTART, got %s", p)
 	}
 	// cold agent: nothing known yet (total 0) stays COLDSTART, never reads empty world as advanced
-	if p := derivePhase(Observation{MarketsTotal: 0, MarketsCovered: 0}, cfg); p != PhaseColdStart {
+	if p := derivePhase(Observation{MarketsTotal: 0, MarketsCovered: 0}); p != PhaseColdStart {
 		t.Fatalf("cold agent (total 0) should derive COLDSTART, got %s", p)
 	}
 }
@@ -536,7 +535,7 @@ func TestBootstrap_BuyLoop_CapitalGateStopsPartway(t *testing.T) {
 
 // The home post is declared whenever the home system is resolved — independent of how many probes
 // are already scouting (that is the coordinator's business). The declarer is idempotent in the
-// adapter, so declaring every DATA tick is a no-op there.
+// adapter, so declaring every tick is a no-op there.
 func TestBootstrap_DeclaresHomeScoutPost_WhenHomeResolved(t *testing.T) {
 	obs := Observation{HomeSystem: "X1-HQ", ProbeCount: 3, ProbesScouting: 0, HasIdlePurchaser: true, Treasury: 500000, Readable: true}
 	declarer := &fakeDeclarer{}
@@ -545,7 +544,7 @@ func TestBootstrap_DeclaresHomeScoutPost_WhenHomeResolved(t *testing.T) {
 	if declarer.calls != 1 || len(declarer.systems) != 1 || declarer.systems[0] != "X1-HQ" {
 		t.Fatalf("bootstrap must declare the home scout post in X1-HQ, got calls=%d systems=%v", declarer.calls, declarer.systems)
 	}
-	// sp-2ci9y: the declaration carries the permanent home manning FLOOR = probe_target (default 3),
+	// sp-2ci9y: the declaration carries the permanent home manning FLOOR = probeTarget (default 3),
 	// parametrized from config (RULINGS #5), NOT hardcoded — so the freshsizer never strands a
 	// bought home probe below it.
 	if len(declarer.minHulls) != 1 || declarer.minHulls[0] != 3 {
@@ -566,23 +565,6 @@ func TestBootstrap_SkipsHomeScoutPost_WhenHomeUnresolved(t *testing.T) {
 }
 
 // --- dry-run: observes + logs would-buy but takes NO action ---
-
-func TestBootstrap_DryRun_TakesNoAction(t *testing.T) {
-	obs := Observation{HomeSystem: "X1-HQ", ProbeCount: 0, ProbesScouting: 0, HasIdlePurchaser: true, Treasury: 500000, Readable: true}
-	acq := &fakeAcquirer{price: 40000, yard: "Y", readable: true}
-	declarer := &fakeDeclarer{}
-	h := newWiredHandler(obs, acq, declarer)
-	cmd := baseCmd()
-	cmd.DryRun = true
-	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), cmd)
-	if acq.buys != 0 || declarer.calls != 0 {
-		t.Fatalf("dry-run must take no action: buys=%d declares=%d", acq.buys, declarer.calls)
-	}
-	// buy-to-target dry-run reports the whole remainder it WOULD buy (0/3 → 3), still spending nothing.
-	if res.WouldBuy != 3 {
-		t.Fatalf("dry-run should report would_buy=3 (buy-to-target), got %d", res.WouldBuy)
-	}
-}
 
 // --- heartbeat emitted every tick (captain L61: never a silent stall) ---
 
@@ -655,14 +637,14 @@ func TestBootstrap_Recovery_NoBuyWhenTargetMet(t *testing.T) {
 	}
 }
 
-// --- DATA-phase acceptance (sp-hh0h + sp-pt7d): from a cold fixture, the probe fleet fills to target
+// --- cold-start acceptance (sp-hh0h + sp-pt7d): from a cold fixture, the probe fleet fills to target
 // in ONE tick with no overshoot, AND bootstrap DECLARES the home scout post while leaving the probes
 // IDLE — it assigns NO probe itself. The boot-standing scout-post coordinator (sp-9ujl) then mans an
 // idle probe and seeds the initial home scan; that manning half is covered by the scouting package's
 // TestScoutPost_UnmannedPost_ClaimsIdleSatellite. This is the sp-pt7d seed-propagation contract on the
 // bootstrap side: declares the post + buys probes + leaves them idle + no scan sweep. ---
 
-func TestBootstrap_DataAcceptance_ReachesTargetProbes_DeclaresHomePost_LeavesIdle(t *testing.T) {
+func TestBootstrap_ScanningAcceptance_ReachesTargetProbes_DeclaresHomePost_LeavesIdle(t *testing.T) {
 	world := &scriptedWorld{probeCount: 0, probesScouting: 0, treasury: 500000, homeSystem: "X1-HQ", hasPurchaser: true, marketsTotal: 10, marketsCovered: 0}
 	acq := &fakeAcquirer{price: 40000, yard: "X1-HQ-YARD", readable: true, world: world}
 	declarer := &fakeDeclarer{}
@@ -673,7 +655,7 @@ func TestBootstrap_DataAcceptance_ReachesTargetProbes_DeclaresHomePost_LeavesIdl
 	h.SetProbeAcquirer(acq)
 	h.SetScoutPostDeclarer(declarer)
 
-	// Tick 0 buys the whole 3-probe remainder to target; every DATA tick also (idempotently) declares
+	// Tick 0 buys the whole 3-probe remainder to target; every tick also (idempotently) declares
 	// the home coverage post. A few ticks reach steady state.
 	firstTickBuys := 0
 	for i := 0; i < 5; i++ {
@@ -686,23 +668,23 @@ func TestBootstrap_DataAcceptance_ReachesTargetProbes_DeclaresHomePost_LeavesIdl
 		}
 	}
 	if firstTickBuys != 3 {
-		t.Fatalf("DATA acceptance: probe fleet must reach target in the FIRST tick (buy-to-target), bought %d on tick 0", firstTickBuys)
+		t.Fatalf("Scanning acceptance: probe fleet must reach target in the FIRST tick (buy-to-target), bought %d on tick 0", firstTickBuys)
 	}
 	final := world.snapshot()
 	if final.ProbeCount != 3 {
-		t.Fatalf("DATA acceptance: expected 3 probes, got %d", final.ProbeCount)
+		t.Fatalf("Scanning acceptance: expected 3 probes, got %d", final.ProbeCount)
 	}
 	if acq.buys != 3 {
-		t.Fatalf("DATA acceptance: expected exactly 3 buys total (no overshoot), got %d", acq.buys)
+		t.Fatalf("Scanning acceptance: expected exactly 3 buys total (no overshoot), got %d", acq.buys)
 	}
 	// Bootstrap declares the home coverage post so the coordinator has something to man...
 	if declarer.calls < 1 || declarer.systems[0] != "X1-HQ" {
-		t.Fatalf("DATA acceptance: bootstrap must declare the home scout post X1-HQ, got calls=%d systems=%v", declarer.calls, declarer.systems)
+		t.Fatalf("Scanning acceptance: bootstrap must declare the home scout post X1-HQ, got calls=%d systems=%v", declarer.calls, declarer.systems)
 	}
 	// ...but assigns NO probe itself — they stay IDLE for the coordinator to claim (ProbesScouting is
 	// never advanced by bootstrap; the old probe-holding sweep that inflated it is gone).
 	if final.ProbesScouting != 0 {
-		t.Fatalf("DATA acceptance: bootstrap must leave probes IDLE (assign none itself), got %d scouting", final.ProbesScouting)
+		t.Fatalf("Scanning acceptance: bootstrap must leave probes IDLE (assign none itself), got %d scouting", final.ProbesScouting)
 	}
 }
 
@@ -870,15 +852,15 @@ func TestBootstrap_ColdShipyard_PositionsThenBuysToTarget(t *testing.T) {
 	}
 }
 
-// --- sp-t39j: DATA (scanning) and INCOME (contracts) run in PARALLEL from hour-0. Coverage no longer
+// --- sp-t39j: scanning and contracts run in PARALLEL from hour-0. Coverage no longer
 // gates income — contracts are the RULINGS #1 funding floor, started while probes are still scanning. ---
 
-// The critical parallel pin: a cold, uncovered world (still DATA/scanning) STILL launches the contract
+// The critical parallel pin: a cold, uncovered world (still scanning) STILL launches the contract
 // engine this tick AND buys probes to target — both workstreams act in one reconcile.
-func TestBootstrap_ParallelDataIncome_ContractsStartAtHour0WhileScanning(t *testing.T) {
+func TestBootstrap_ParallelWorkstreams_ContractsStartAtHour0WhileScanning(t *testing.T) {
 	obs := Observation{
 		HomeSystem: "X1-HQ", ProbeCount: 1, ProbesScouting: 1, HasIdlePurchaser: true,
-		MarketsTotal: 10, MarketsCovered: 0, // coverage 0 → still DATA (scanning)
+		MarketsTotal: 10, MarketsCovered: 0, // coverage 0 → still scanning
 		Treasury: 500000, CommandFrigateID: "FRIGATE-1", BatchContractRunning: false, Readable: true,
 	}
 	acq := &fakeAcquirer{price: 40000, yard: "X1-HQ-YARD", readable: true}
@@ -905,16 +887,15 @@ func TestBootstrap_ParallelDataIncome_ContractsStartAtHour0WhileScanning(t *test
 }
 
 // GATE triggers on funding regardless of coverage (t39j point 4): a scaled+funded op that clears the gate
-// while still scanning enters GATE, not held in DATA by scan progress.
+// while still scanning enters GATE, not held in cold start by scan progress.
 func TestBootstrap_DerivePhase_FundingBeatsCoverage_Gate(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd(), nil)
 	obs := Observation{
 		MarketsTotal: 10, MarketsCovered: 3, // 30% coverage
 		Haulers:              []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}}, // full fleet = 2
 		ContractScalerTarget: 2,                                                // == full fleet ⇒ scaler target reached
 		Treasury:             600_000,                                          // surplus ≥ the gate-entry floor
 	}
-	if p := derivePhase(obs, cfg); p != PhaseGate {
+	if p := derivePhase(obs); p != PhaseGate {
 		t.Fatalf("a scaled+funded op over the gate bar while still scanning (coverage 30%%) should derive GATE, got %s", p)
 	}
 }

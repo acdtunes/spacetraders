@@ -164,30 +164,14 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 			"max_dispatches_per_cycle": {Type: "int", Min: 1, Max: 100, Default: shipyardBackfill["max_dispatches_per_cycle"], Unit: "posts", Description: "per-cycle cap on sweep-once posts the shipyard-backfill sweep declares (bounded further by idle probe supply) so it drains the blind spot over cycles instead of flooding the reconciler"},
 			"backfill_max_hops":        {Type: "int", Min: 1, Max: 1000, Default: shipyardBackfill["backfill_max_hops"], Unit: "hops", Description: "enumeration REACH — how deep into the gate graph the sweep hunts charted-but-unscanned shipyards; a charted shipyard is in-graph + relay-reachable so the default is the full gate graph (sp-b8lf), tune DOWN only to cap per-cycle enumeration cost"},
 		},
-		// sp-r6yq: the captain bootstrap coordinator (workflow bootstrap; DATA→INCOME→GATE). It is the
-		// first CONFIG.YAML-AUTHORITATIVE coordinator in the registry, so its tune keys are the SEPARATE
-		// BARE family (probe_target, hauler_target, …) — NOT the prefixed bootstrap_* launch keys,
-		// which resolveBootstrapConfig clears+reinjects from config.yaml on every rebuild. A bare tune
-		// therefore survives a daemon bounce (the coordinator's per-tick liveconfig reader keeps applying
-		// it) instead of being wiped. The int-only mechanism carries income_bar as whole credits; the two
-		// ship-type knobs stay launch-only (no coordinator makes a string asset live-tunable).
+		// sp-r6yq: the captain bootstrap coordinator (workflow bootstrap; COLDSTART→GATE→EXPANSION). It is
+		// the first CONFIG.YAML-AUTHORITATIVE coordinator in the registry, so its tune key is the SEPARATE
+		// BARE family — NOT the prefixed bootstrap_* launch keys, which resolveBootstrapConfig
+		// clears+reinjects from config.yaml on every rebuild. A bare tune therefore survives a daemon bounce
+		// (the coordinator's per-tick liveconfig reader keeps applying it) instead of being wiped. The
+		// cold-start SHAPE is fixed in the coordinator, so the cadence is the only runtime lever.
 		string(container.ContainerTypeBootstrapCoordinator): {
-			"probe_target":       {Type: "int", Min: 1, Max: 50, Default: bootstrap["probe_target"], Unit: "hulls", Description: "DATA target: probes the coordinator ramps to for scouting the home system"},
-			"hauler_target":      {Type: "int", Min: 1, Max: 50, Default: bootstrap["hauler_target"], Unit: "hulls", Description: "INCOME hull cap: at most one contract hauler per viable hub, up to this"},
-			"income_bar":         {Type: "int", Min: 1, Max: 5_000_000, Default: bootstrap["income_bar"], Unit: "credits", Description: "INCOME→GATE exit: realized net credits/hour the contract fleet must clear (whole credits; the float income_bar carries no fractional part)"},
-			"gate_worker_target": {Type: "int", Min: 1, Max: 50, Default: bootstrap["gate_worker_target"], Unit: "hulls", Description: "GATE worker cap: ~one per active gate-material chain + a delivery hauler, up to this (the gate BUYS its workers — the contract fleet is exclusive and never repurposed)"},
-			"tick_secs":          {Type: "int", Min: 10, Max: 86_400, Default: bootstrap["tick_secs"], Unit: "seconds", Description: "reconcile cadence — kept SHORT because bootstrap runs only at cold start (<0.1 req/s, 20x+ API headroom) and a fast tick cuts poll-latency dead time before the gate (default 45s; sp-lgo3)"},
-			// GATE-entry calibration. The GATE-entry bar itself is DYNAMIC (sp-gm7r): the full contract fleet
-			// must reach the auto-scaler's live target (not a static hauler count), plus a treasury surplus —
-			// phase thresholds like income_bar, NOT money-floors (RULINGS #5).
-			"gate_min_haulers": {Type: "int", Min: 1, Max: 50, Default: bootstrap["gate_min_haulers"], Unit: "hulls", Description: "escape-hatch STARVED-EARNER floor (sp-gm7r): a sticky GATE holding fewer haulers than this reads as under-scaled and (with low progress) re-derives INCOME. GATE ENTRY uses the full scaler-target bar, NOT this. Default 2"},
-			// Death-spiral cure calibration (UNCONDITIONALLY ON, sp-gm7r removed the master flag). GATE entry
-			// never latches on a lightly-scaled op with no war chest; and (sp-cdxy2) GATE keeps the WHOLE
-			// exclusive contract fleet earning, never repurposing it to construction. These floors are phase
-			// thresholds, not money-guards (RULINGS #5).
-			"gate_surplus_floor":            {Type: "int", Min: 0, Max: 50_000_000, Default: bootstrap["gate_surplus_floor"], Unit: "credits", Description: "GATE-entry treasury SURPLUS (over the immutable 50k reserve) required to enter GATE — the gate-material war chest so GATE is earned from surplus, never raced on a thin treasury. Default 500000 (⇒ treasury ≥ 550k). A phase threshold, not a spend guard"},
-			"gate_reentry_construction_pct": {Type: "int", Min: 0, Max: 100, Default: bootstrap["gate_reentry_construction_pct"], Unit: "percent", Description: "escape hatch: construction-progress ceiling below which an under-scaled sticky GATE may re-derive INCOME (past it, real materials are flowing and GATE is permanent). Default 5"},
-			"gate_reentry_streak_ticks":     {Type: "int", Min: 1, Max: 1000, Default: bootstrap["gate_reentry_streak_ticks"], Unit: "ticks", Description: "escape-hatch anti-thrash hysteresis: consecutive under-scaled + low-progress ticks before the GATE→INCOME re-derive fires (a single dip never flips the phase; in-memory, fails safe on restart). Default 3 (≈2.25 min at 45s)"},
+			"tick_secs": {Type: "int", Min: 10, Max: 86_400, Default: bootstrap["tick_secs"], Unit: "seconds", Description: "reconcile cadence — kept SHORT because bootstrap runs only at cold start (<0.1 req/s, 20x+ API headroom) and a fast tick cuts poll-latency dead time before the gate (default 45s; sp-lgo3)"},
 		},
 	}
 }

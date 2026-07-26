@@ -745,7 +745,7 @@ type bootstrapScoutPostDeclarer struct{ server *DaemonServer }
 
 // DeclareHomeScoutPost ensures a STANDING scout post exists for the home system so the boot-standing
 // scout-post coordinator (sp-9ujl) has a coverage target to man, and stamps its permanent manning
-// FLOOR = minHulls (probe_target, sp-2ci9y). It assigns/dedicates NO probe; the coordinator claims an
+// FLOOR = minHulls (probeTarget, sp-2ci9y). It assigns/dedicates NO probe; the coordinator claims an
 // idle one. hulls=1: one probe slot initially; the freshsizer resizes the budget once the system
 // enters the scanned census (but never below the floor). Replaces the old AssignScoutingFleet sweep
 // that HELD the probes.

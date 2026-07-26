@@ -13,7 +13,7 @@ import (
 // frigate's contract loop (freeing it to idle), dedicate it the EXCLUSIVE purchasing ship, and buy
 // hauler #1 with it. NO money guard changes — it rides acv5's existing working-capital cushion.
 
-// pivotObs is a cold-start INCOME observation primed for the pivot: 0 haulers, NO idle purchaser (the
+// pivotObs is a cold-start cold-start observation primed for the pivot: 0 haulers, NO idle purchaser (the
 // real cold start), the frigate on its loop, cargo empty (the safe point), affordable (treasury ≫
 // price + floor), viable hubs present.
 func pivotObs() Observation {
@@ -136,24 +136,6 @@ func TestBootstrap_Pivot_SubsequentHauler_DoesNotPivot(t *testing.T) {
 	}
 	if res.Blocker != "no_purchaser" {
 		t.Fatalf("subsequent hauler, no idle hull, no pivot ⇒ no_purchaser, got %q", res.Blocker)
-	}
-}
-
-// DRY-RUN evaluates the pivot but takes NO action: no loop stop, no dedication, no buy.
-func TestBootstrap_Pivot_DryRun_NoAction(t *testing.T) {
-	ret := &fakeRetirer{}
-	acq := &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true}
-	loop := &fakeFrigateLoop{}
-	h := pivotHandler(pivotObs(), ret, acq, loop)
-	cmd := baseCmd()
-	cmd.DryRun = true
-
-	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), cmd)
-	if loop.stopCalls != 0 || len(ret.dedications) != 0 || acq.buys != 0 {
-		t.Fatalf("dry-run must take no action; stopCalls=%d dedications=%v buys=%d", loop.stopCalls, ret.dedications, acq.buys)
-	}
-	if res.WouldBuy != 1 {
-		t.Fatalf("dry-run must record WouldBuy=1, got %d", res.WouldBuy)
 	}
 }
 

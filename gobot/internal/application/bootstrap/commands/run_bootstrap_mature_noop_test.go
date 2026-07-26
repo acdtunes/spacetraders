@@ -175,28 +175,15 @@ func TestBootstrap_MatureFleet_ExitsWhenHandoffNeverConfirms(t *testing.T) {
 	spies.assertNoColdStartAction(t)
 }
 
-// The mature no-op must also hold for the OTHER unconfirmable-hand-off shapes: no launcher wired at all,
-// and dry-run (which evaluates and logs but never launches). Each one held the loop open forever.
+// The mature no-op must also hold for the other unconfirmable-hand-off shape: no launcher wired at
+// all, which held the loop open forever.
 func TestBootstrap_MatureFleet_ExitsWhenHandoffCannotRun(t *testing.T) {
-	t.Run("no launcher wired", func(t *testing.T) {
-		h, spies := spiedHandler(matureObs(), nil)
-		ticks, res := runToExit(t, h, baseCmd(), 25)
-		if !res.Done {
-			t.Fatalf("a mature fleet with no hand-off launcher must still become terminal, ran %d ticks", ticks)
-		}
-		spies.assertNoColdStartAction(t)
-	})
-
-	t.Run("dry run", func(t *testing.T) {
-		h, spies := spiedHandler(matureObs(), &fakeHandoff{})
-		cmd := baseCmd()
-		cmd.DryRun = true
-		ticks, res := runToExit(t, h, cmd, 25)
-		if !res.Done {
-			t.Fatalf("a mature fleet in dry-run must still become terminal (there is nothing left to watch), ran %d ticks", ticks)
-		}
-		spies.assertNoColdStartAction(t)
-	})
+	h, spies := spiedHandler(matureObs(), nil)
+	ticks, res := runToExit(t, h, baseCmd(), 25)
+	if !res.Done {
+		t.Fatalf("a mature fleet with no hand-off launcher must still become terminal, ran %d ticks", ticks)
+	}
+	spies.assertNoColdStartAction(t)
 }
 
 // A hand-off that confirms on the first tick exits on that tick with the hand-off recorded — the healthy

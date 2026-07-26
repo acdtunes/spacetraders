@@ -675,7 +675,7 @@ func (s *daemonServiceImpl) BootstrapCoordinator(ctx context.Context, req *pb.Bo
 		agentSymbol = *req.AgentSymbol
 	}
 
-	containerID, err := s.daemon.BootstrapCoordinator(ctx, playerID, agentSymbol, req.DryRun)
+	containerID, err := s.daemon.BootstrapCoordinator(ctx, playerID, agentSymbol)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start bootstrap coordinator: %w", err)
 	}

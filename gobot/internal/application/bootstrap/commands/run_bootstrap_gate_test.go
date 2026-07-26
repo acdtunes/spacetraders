@@ -15,16 +15,15 @@ import (
 
 // THE key correctness pin: once a construction pipeline exists, GATE is STICKY even though contract
 // income has fallen back under the bar (haulers repurposed to construction). Without this, derivePhase
-// regresses GATE→INCOME and re-buys haulers — a thrash loop.
+// regresses GATE→COLDSTART and re-buys haulers — a thrash loop.
 func TestBootstrap_DerivePhase_GateStickyOnceConstructionStarted(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd(), nil)
 	obs := Observation{
 		MarketsTotal: 10, MarketsCovered: 10,
 		IncomePerHour:       500, // well under the 10000 bar — haulers repurposed
 		ConstructionStarted: true,
 	}
-	if p := derivePhase(obs, cfg); p != PhaseGate {
-		t.Fatalf("construction started should keep GATE despite low income, got %s (would thrash to INCOME)", p)
+	if p := derivePhase(obs); p != PhaseGate {
+		t.Fatalf("construction started should keep GATE despite low income, got %s (would thrash to COLDSTART)", p)
 	}
 }
 
@@ -32,35 +31,33 @@ func TestBootstrap_DerivePhase_GateStickyOnceConstructionStarted(t *testing.T) {
 // growth begins — THE phase where probe-buying starts). Terminal and monotone, so a restart
 // post-completion resumes EXPANSION.
 func TestBootstrap_DerivePhase_ExpansionWhenConstructionComplete(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd(), nil)
 	obs := Observation{
 		MarketsTotal: 10, MarketsCovered: 10,
 		IncomePerHour:        200, // income is irrelevant once the gate is built
 		ConstructionStarted:  true,
 		ConstructionComplete: true,
 	}
-	if p := derivePhase(obs, cfg); p != PhaseExpansion {
+	if p := derivePhase(obs); p != PhaseExpansion {
 		t.Fatalf("completed construction should derive EXPANSION, got %s", p)
 	}
 }
 
 // STICKINESS (sp-feiy7): a built gate dominates EVERY pre-100%% signal — even an observation whose other
-// fields all point at the coldest possible DATA/INCOME world (zero probes, zero coverage, no scaler
+// fields all point at the coldest possible cold-start world (zero probes, zero coverage, no scaler
 // target, empty treasury) derives EXPANSION on ConstructionComplete alone. This is the
 // same world-signal stickiness GATE rides (ConstructionStarted): no post-gate income dip, fleet churn, or
-// restart-dropped in-memory window can pull the arc back to a buying phase and thrash (the GATE→INCOME
+// restart-dropped in-memory window can pull the arc back to a buying phase and thrash (the GATE→COLDSTART
 // re-buy lesson). A built gate stays built, so the derivation is monotone tick after tick.
 func TestBootstrap_DerivePhase_ExpansionSticky_DominatesAllPreGateSignals(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd(), nil)
 	obs := Observation{
-		// Every non-construction signal at its coldest: this would derive DATA if the gate were unbuilt.
+		// Every non-construction signal at its coldest: this would derive COLDSTART if the gate were unbuilt.
 		ProbeCount: 0, MarketsTotal: 0, MarketsCovered: 0,
 		IncomePerHour: 0, Treasury: 0, ContractScalerTarget: 0,
 		ConstructionStarted:  false, // even the pipeline signal gone (post-completion the pipeline may be reaped)
 		ConstructionComplete: true,
 	}
 	for tick := 0; tick < 3; tick++ {
-		if p := derivePhase(obs, cfg); p != PhaseExpansion {
+		if p := derivePhase(obs); p != PhaseExpansion {
 			t.Fatalf("tick %d: a built gate must derive EXPANSION regardless of every other signal, got %s (thrash)", tick, p)
 		}
 	}
@@ -68,21 +65,20 @@ func TestBootstrap_DerivePhase_ExpansionSticky_DominatesAllPreGateSignals(t *tes
 
 // PARALLEL MODEL (sp-t39j): coverage NO LONGER gates the economic phase. The construction/income
 // signals are evaluated regardless of scan coverage — a built gate is EXPANSION (terminal, monotone)
-// even on a cold, uncovered world; a cold world with NO economic signal yet stays DATA (still scanning),
-// and the contract workstream runs in parallel with that DATA label (see the tick dispatch). This
+// even on a cold, uncovered world; a cold world with NO economic signal yet stays COLDSTART (still scanning),
+// and the contract workstream runs in parallel with it (see the tick dispatch). This
 // replaces the old "coverage-gate-beats-everything" serial rule.
 func TestBootstrap_DerivePhase_EconomicSignalsIgnoreCoverage(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd(), nil)
 	// A completed gate is EXPANSION even uncovered (terminal + monotone — a built gate stays built).
-	if p := derivePhase(Observation{MarketsTotal: 0, ConstructionStarted: true, ConstructionComplete: true}, cfg); p != PhaseExpansion {
+	if p := derivePhase(Observation{MarketsTotal: 0, ConstructionStarted: true, ConstructionComplete: true}); p != PhaseExpansion {
 		t.Fatalf("completed construction should derive EXPANSION regardless of coverage, got %s", p)
 	}
 	// A started (not complete) pipeline is GATE even uncovered (sticky).
-	if p := derivePhase(Observation{MarketsTotal: 0, ConstructionStarted: true}, cfg); p != PhaseGate {
+	if p := derivePhase(Observation{MarketsTotal: 0, ConstructionStarted: true}); p != PhaseGate {
 		t.Fatalf("started construction should derive GATE regardless of coverage, got %s", p)
 	}
 	// A cold world with NO economic signal is COLDSTART — scanning and contracts run in parallel there.
-	if p := derivePhase(Observation{MarketsTotal: 0}, cfg); p != PhaseColdStart {
+	if p := derivePhase(Observation{MarketsTotal: 0}); p != PhaseColdStart {
 		t.Fatalf("cold world with no economic signal should derive COLDSTART, got %s", p)
 	}
 }
@@ -93,7 +89,6 @@ func TestBootstrap_DerivePhase_EconomicSignalsIgnoreCoverage(t *testing.T) {
 // background workstream (the freshness sizer keeps the map fresh), so no coverage reading can advance the
 // arc or hold it back.
 func TestBootstrap_DerivePhase_CoverageNeverGatesPhase(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd(), nil)
 	for _, tc := range []struct {
 		name           string
 		covered, total int
@@ -107,7 +102,7 @@ func TestBootstrap_DerivePhase_CoverageNeverGatesPhase(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			obs := Observation{ProbeCount: 3, ProbesScouting: 3, MarketsCovered: tc.covered, MarketsTotal: tc.total}
-			if p := derivePhase(obs, cfg); p != PhaseColdStart {
+			if p := derivePhase(obs); p != PhaseColdStart {
 				t.Fatalf("coverage %d/%d must derive the same phase as every other coverage (COLDSTART — no economic signal has landed), got %s", tc.covered, tc.total, p)
 			}
 		})
@@ -121,10 +116,9 @@ func TestBootstrap_DerivePhase_CoverageNeverGatesPhase(t *testing.T) {
 // the scaler's ContractHullCount never drops and the observed buy→repurpose→buy churn cannot start. The
 // workforce is sourced by BUYING instead, at every fleet size — the gate never reaches for a contract hull.
 func TestBootstrap_PlanGateWorkers_KeepsWholeContractFleet_ReleasesNone(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd(), nil)
 	for _, n := range []int{0, 1, 2, 4, 10} {
 		obs := Observation{Haulers: nHaulers(n), GateWorkers: 0}
-		plan := planGateWorkers(obs, cfg)
+		plan := planGateWorkers(obs)
 		if len(plan.ReleaseShips) != 0 {
 			t.Fatalf("n=%d: the exclusive contract fleet is never repurposed — expected 0 released, got %d (%v)", n, len(plan.ReleaseShips), plan.ReleaseShips)
 		}
@@ -140,13 +134,12 @@ func TestBootstrap_PlanGateWorkers_KeepsWholeContractFleet_ReleasesNone(t *testi
 // Ramp buy: no repurposable haulers and no workers yet, so the staged delta buys ONE hull (never a
 // blind buy-all) toward the workforce target.
 func TestBootstrap_PlanGateWorkers_TopsUpWhenShort(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd(), nil) // gate_worker_target 4
 	obs := Observation{
 		Haulers:            []HaulerSnapshot{{Symbol: "H1"}}, // only the kept earner, nothing to repurpose
 		GateWorkers:        0,
 		GateMaterialChains: 3,
 	}
-	plan := planGateWorkers(obs, cfg)
+	plan := planGateWorkers(obs)
 	if plan.DesiredWorkers != 4 {
 		t.Fatalf("desired = gate_worker_target = 4, got %d", plan.DesiredWorkers)
 	}
@@ -155,15 +148,13 @@ func TestBootstrap_PlanGateWorkers_TopsUpWhenShort(t *testing.T) {
 	}
 }
 
-// One buy per tick: even a large deficit stages exactly one buy (never a blind buy-all).
+// One buy per tick: the whole workforce deficit from an empty pool still stages exactly one buy
+// (never a blind buy-all).
 func TestBootstrap_PlanGateWorkers_StagesOneBuyPerTick(t *testing.T) {
-	cmd := baseCmd()
-	cmd.GateWorkerTarget = 6 // a tuned-up workforce ⇒ deficit 6 from an empty pool
-	cfg := resolveBootstrapConfig(cmd, nil)
 	obs := Observation{Haulers: []HaulerSnapshot{{Symbol: "H1"}}, GateWorkers: 0}
-	plan := planGateWorkers(obs, cfg)
+	plan := planGateWorkers(obs)
 	if plan.Buy != 1 {
-		t.Fatalf("deficit of 6 must still stage exactly one buy, got %d", plan.Buy)
+		t.Fatalf("a deficit of %d must still stage exactly one buy, got %d", gateWorkerTarget, plan.Buy)
 	}
 }
 
@@ -172,26 +163,13 @@ func TestBootstrap_PlanGateWorkers_StagesOneBuyPerTick(t *testing.T) {
 // contract fleet is never released into it (sp-cdxy2), so a large contract fleet next to it never masks a
 // genuine worker deficit.
 func TestBootstrap_PlanGateWorkers_NoBuyWhenWorkersSuffice(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd(), nil)
 	obs := Observation{Haulers: nHaulers(8), GateWorkers: 4, GateMaterialChains: 3}
-	plan := planGateWorkers(obs, cfg) // desired = 4, have 4 workers (the 8 contract haulers are NOT the pool)
+	plan := planGateWorkers(obs) // desired = 4, have 4 workers (the 8 contract haulers are NOT the pool)
 	if plan.Buy != 0 {
 		t.Fatalf("workers already cover desired — no buy, got %d", plan.Buy)
 	}
 	if len(plan.ReleaseShips) != 0 {
 		t.Fatalf("the 8 contract haulers are exclusive — none released, got %v", plan.ReleaseShips)
-	}
-}
-
-// An explicitly-tuned gate_worker_target overrides the default and is the whole sizing decision.
-func TestBootstrap_PlanGateWorkers_HonoursTunedTarget(t *testing.T) {
-	cmd := baseCmd()
-	cmd.GateWorkerTarget = 7
-	cfg := resolveBootstrapConfig(cmd, nil)
-	obs := Observation{Haulers: []HaulerSnapshot{{Symbol: "H1"}}, GateWorkers: 0}
-	plan := planGateWorkers(obs, cfg)
-	if plan.DesiredWorkers != 7 {
-		t.Fatalf("desired must follow the tuned gate_worker_target=7, got %d", plan.DesiredWorkers)
 	}
 }
 
@@ -442,7 +420,7 @@ func TestBootstrap_Gate_NeverRepurposesContractFleet(t *testing.T) {
 	obs := gateObs()
 	obs.Haulers = nHaulers(10) // a fully-ramped exclusive contract fleet
 	obs.GateWorkers = 0
-	// desired = gate_worker_target (4) > 0 workers ⇒ the buy path sizes the workforce
+	// desired = gateWorkerTarget (4) > 0 workers ⇒ the buy path sizes the workforce
 	rep := &fakeRepurposer{}
 	acq := &fakeGateAcquirer{price: 200000, yard: "Y1", readable: true}
 	h := gateHandler(obs, &fakeConstruction{}, &fakeManufacturing{}, rep, acq, &fakeHandoff{})
@@ -507,7 +485,7 @@ func gateFloorObs(treasury int64) Observation {
 	obs.Treasury = treasury
 	obs.Haulers = []HaulerSnapshot{{Symbol: "H1"}} // the exclusive contract fleet — never drawn on for workers
 	obs.GateWorkers = 0
-	// desired = gate_worker_target (4) > pool(0) ⇒ plan.Buy = 1
+	// desired = gateWorkerTarget (4) > pool(0) ⇒ plan.Buy = 1
 	return obs
 }
 
@@ -516,13 +494,13 @@ func gateFloorObs(treasury int64) Observation {
 // (0.5×350001 = 175000 < price) would have refused the worker — the same premature-hold the floor removes.
 func TestBootstrap_Gate_WorkingCapitalFloor_BuysWhereProportionalCapWouldBlock(t *testing.T) {
 	const price = int64(300000)
-	obs := gateFloorObs(price + defaultContractWorkingCapitalFloor + 1)
+	obs := gateFloorObs(price + contractWorkingCapitalFloor + 1)
 	acq := &fakeGateAcquirer{price: price, yard: "Y1", readable: true}
 	h := gateHandler(obs, &fakeConstruction{}, &fakeManufacturing{}, &fakeRepurposer{}, acq, &fakeHandoff{})
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if acq.buys != 1 || res.GateWorkersBought != 1 {
 		t.Fatalf("cushion clears the floor (treasury=%d price=%d floor=%d): must buy 1 worker, got buys=%d bought=%d blocker=%q",
-			obs.Treasury, price, defaultContractWorkingCapitalFloor, acq.buys, res.GateWorkersBought, res.Blocker)
+			obs.Treasury, price, contractWorkingCapitalFloor, acq.buys, res.GateWorkersBought, res.Blocker)
 	}
 }
 
@@ -546,14 +524,14 @@ func TestBootstrap_Gate_WorkingCapitalFloor_BlocksWhereProportionalCapWouldAllow
 // decision line emits the floor guardrail arithmetic (floor/cushion, not reserve_margin/cap).
 func TestBootstrap_Gate_WorkingCapitalFloor_BlocksAtBoundaryAndLogsFloor(t *testing.T) {
 	const price = int64(300000)
-	obs := gateFloorObs(price + defaultContractWorkingCapitalFloor - 1) // cushion = floor − 1
+	obs := gateFloorObs(price + contractWorkingCapitalFloor - 1) // cushion = floor − 1
 	acq := &fakeGateAcquirer{price: price, yard: "Y1", readable: true}
 	log := &capturingLogger{}
 	h := gateHandler(obs, &fakeConstruction{}, &fakeManufacturing{}, &fakeRepurposer{}, acq, &fakeHandoff{})
 	res, _ := h.reconcileOnce(ctxWithLogger(log), baseCmd())
 	if acq.buys != 0 || res.Blocker != "capital_gate" {
 		t.Fatalf("cushion 1 below the floor (treasury=%d price=%d floor=%d): must block, got buys=%d blocker=%q",
-			obs.Treasury, price, defaultContractWorkingCapitalFloor, acq.buys, res.Blocker)
+			obs.Treasury, price, contractWorkingCapitalFloor, acq.buys, res.Blocker)
 	}
 	dl, ok := log.find("bootstrap_gate_worker_buy_decision")
 	if !ok {
@@ -572,17 +550,17 @@ func TestBootstrap_Gate_WorkingCapitalFloor_BlocksAtBoundaryAndLogsFloor(t *test
 // bound, so bootstrap spend stays stricter than the line the autosizer/reconciler reserve. This pins the
 // split so a future edit cannot silently re-unify them or drop the contract cushion below the bound.
 func TestBootstrap_ContractCushion_IsDistinctFromAndAboveTheImmutableBound(t *testing.T) {
-	if defaultContractWorkingCapitalFloor != 150_000 {
+	if contractWorkingCapitalFloor != 150_000 {
 		t.Fatalf("bootstrap contract working-capital cushion (%d) must be the 150k contract-operating floor",
-			defaultContractWorkingCapitalFloor)
+			contractWorkingCapitalFloor)
 	}
 	if common.ImmutableReserveFloor != 50_000 {
 		t.Fatalf("the immutable anti-stall bound (%d) must remain 50k — unchanged by the cushion raise",
 			common.ImmutableReserveFloor)
 	}
-	if defaultContractWorkingCapitalFloor < common.ImmutableReserveFloor {
+	if contractWorkingCapitalFloor < common.ImmutableReserveFloor {
 		t.Fatalf("the contract cushion (%d) must never drop below the immutable anti-stall bound (%d)",
-			defaultContractWorkingCapitalFloor, common.ImmutableReserveFloor)
+			contractWorkingCapitalFloor, common.ImmutableReserveFloor)
 	}
 }
 
@@ -695,7 +673,7 @@ func TestBootstrap_Expansion_StickyAcrossTicks_GaugeHeartbeatAndNoPreGateActions
 		t.Fatalf("nextAction must handle EXPANSION (no unhandled fallthrough), got: %s", hb.msg)
 	}
 	if acq.buys != 0 || acq.priceChks != 0 {
-		t.Fatalf("EXPANSION must never run the DATA probe-buy machinery, got buys=%d priceChecks=%d", acq.buys, acq.priceChks)
+		t.Fatalf("EXPANSION must never run the probe-buy machinery, got buys=%d priceChecks=%d", acq.buys, acq.priceChks)
 	}
 }
 
@@ -716,7 +694,6 @@ func idleWorkers(symbols ...string) []GateWorkerSnapshot {
 // (byte-identical) at/below the shape or before the shape is revealed. Distinct from the dormant ReleaseShips
 // repurpose seam, which stays empty throughout.
 func TestBootstrap_PlanGateWorkers_ReleasesIdleManufacturingSurplus(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd(), nil)
 
 	cases := []struct {
 		name string
@@ -724,7 +701,7 @@ func TestBootstrap_PlanGateWorkers_ReleasesIdleManufacturingSurplus(t *testing.T
 		want []string
 	}{
 		{
-			// desired = gate_worker_target (4); 6 workers ⇒ 2 surplus. Symbols deliberately shuffled to prove sorting.
+			// desired = gateWorkerTarget (4); 6 workers ⇒ 2 surplus. Symbols deliberately shuffled to prove sorting.
 			"over-provisioned → the 2 lowest-symbol idle surplus, deterministic",
 			Observation{Haulers: nHaulers(10), GateMaterialChains: 3, GateWorkers: 6,
 				GateWorkerHulls: idleWorkers("M5", "M4", "M3", "M2", "M1", "M6")},
@@ -767,7 +744,7 @@ func TestBootstrap_PlanGateWorkers_ReleasesIdleManufacturingSurplus(t *testing.T
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			plan := planGateWorkers(tc.obs, cfg)
+			plan := planGateWorkers(tc.obs)
 			if !reflect.DeepEqual(plan.SurplusToUndedicate, tc.want) {
 				t.Fatalf("SurplusToUndedicate = %v, want %v", plan.SurplusToUndedicate, tc.want)
 			}
@@ -838,29 +815,29 @@ func TestBootstrap_Gate_ReleasesSurplusManufacturingHulls(t *testing.T) {
 
 // --- The era-5 cold-start retune: a SMALLER construction workforce that ramps from GATE ENTRY ---
 
-// The construction-worker cap is 4: the Admiral's era-5 cold-start target, reached by the tunable
-// gate_worker_target and by the resolved config when a launch leaves it unset.
-func TestBootstrap_GateWorkerTarget_DefaultsToFour(t *testing.T) {
-	if defaultGateWorkerTarget != 4 {
-		t.Fatalf("defaultGateWorkerTarget = %d, want 4 (the era-5 cold-start construction workforce)", defaultGateWorkerTarget)
+// The construction-worker cap is 4 — the Admiral's era-5 cold-start workforce, and the number the
+// sizing plan targets from GATE entry.
+func TestBootstrap_GateWorkerTarget_IsFour(t *testing.T) {
+	if gateWorkerTarget != 4 {
+		t.Fatalf("gateWorkerTarget = %d, want 4 (the era-5 cold-start construction workforce)", gateWorkerTarget)
 	}
-	if cfg := resolveBootstrapConfig(baseCmd(), nil); cfg.GateWorkerTarget != 4 {
-		t.Fatalf("an unset launch config must resolve gate_worker_target to 4, got %d", cfg.GateWorkerTarget)
+	obs := Observation{Haulers: nHaulers(3), GateWorkers: 0}
+	if got := planGateWorkers(obs).DesiredWorkers; got != 4 {
+		t.Fatalf("the sizing plan must target 4 gate workers, got %d", got)
 	}
 }
 
 // THE RAMP STARTS ON GATE ENTRY, NOT ON CHAIN REVELATION. A fresh GATE has revealed no material chains
 // yet (GateMaterialChains 0) — the pipeline has only just been created. The workforce target is the full
-// gate_worker_target immediately and the first hull is staged the same tick, so the construction fleet is
+// gateWorkerTarget immediately and the first hull is staged the same tick, so the construction fleet is
 // bought while the pipeline warms instead of idling until the chain shape appears.
 func TestBootstrap_PlanGateWorkers_RampsFromGateEntryWithNoChainsRevealed(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd(), nil)
 	obs := Observation{Haulers: nHaulers(3), GateWorkers: 0, GateMaterialChains: 0}
 
-	plan := planGateWorkers(obs, cfg)
+	plan := planGateWorkers(obs)
 
-	if plan.DesiredWorkers != cfg.GateWorkerTarget {
-		t.Fatalf("an unrevealed pipeline must still target the full workforce %d, got %d", cfg.GateWorkerTarget, plan.DesiredWorkers)
+	if plan.DesiredWorkers != gateWorkerTarget {
+		t.Fatalf("an unrevealed pipeline must still target the full workforce %d, got %d", gateWorkerTarget, plan.DesiredWorkers)
 	}
 	if plan.Buy != 1 {
 		t.Fatalf("the ramp must stage its first buy on GATE entry, got Buy=%d", plan.Buy)
@@ -872,11 +849,10 @@ func TestBootstrap_PlanGateWorkers_RampsFromGateEntryWithNoChainsRevealed(t *tes
 // count downward would make the hulls just bought read as surplus and release them, the buy/release
 // oscillation the bang-bang around `desired` exists to prevent.
 func TestBootstrap_PlanGateWorkers_RevealedChainsNeverShrinkTheTarget(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd(), nil)
 	for _, chains := range []int{0, 1, 2, 3, 9} {
 		obs := Observation{Haulers: nHaulers(3), GateWorkers: 0, GateMaterialChains: chains}
-		if got := planGateWorkers(obs, cfg).DesiredWorkers; got != cfg.GateWorkerTarget {
-			t.Fatalf("chains=%d: desired = %d, want the workforce cap %d (the shape never shrinks the target)", chains, got, cfg.GateWorkerTarget)
+		if got := planGateWorkers(obs).DesiredWorkers; got != gateWorkerTarget {
+			t.Fatalf("chains=%d: desired = %d, want the workforce cap %d (the shape never shrinks the target)", chains, got, gateWorkerTarget)
 		}
 	}
 }
@@ -885,17 +861,16 @@ func TestBootstrap_PlanGateWorkers_RevealedChainsNeverShrinkTheTarget(t *testing
 // tick (never a blind buy-all) and stops dead at the cap — and never releases while ramping, so the buy and
 // release paths stay mutually exclusive the whole way up.
 func TestBootstrap_PlanGateWorkers_BuysOnePerTickThenStopsAtTheCap(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd(), nil)
-	for have := 0; have <= cfg.GateWorkerTarget+2; have++ {
+	for have := 0; have <= gateWorkerTarget+2; have++ {
 		obs := Observation{
 			Haulers:         nHaulers(3),
 			GateWorkers:     have,
 			GateWorkerHulls: idleWorkers(workerSymbols(have)...),
 		}
-		plan := planGateWorkers(obs, cfg)
+		plan := planGateWorkers(obs)
 
 		wantBuy := 0
-		if have < cfg.GateWorkerTarget {
+		if have < gateWorkerTarget {
 			wantBuy = 1
 		}
 		if plan.Buy != wantBuy {
@@ -911,11 +886,10 @@ func TestBootstrap_PlanGateWorkers_BuysOnePerTickThenStopsAtTheCap(t *testing.T)
 // the same re-observed pool yields the same single staged buy, and a pool that has grown by the hull just
 // bought stages the NEXT one — so a restart part-way up the ramp never double-buys and never re-overshoots.
 func TestBootstrap_PlanGateWorkers_RestartMidRampDoesNotDoubleBuy(t *testing.T) {
-	cfg := resolveBootstrapConfig(baseCmd(), nil)
 	obs := Observation{Haulers: nHaulers(3), GateWorkers: 2, GateWorkerHulls: idleWorkers("M1", "M2")}
 
-	first := planGateWorkers(obs, cfg)
-	afterRestart := planGateWorkers(obs, cfg) // same observation, fresh process — same plan
+	first := planGateWorkers(obs)
+	afterRestart := planGateWorkers(obs) // same observation, fresh process — same plan
 	if !reflect.DeepEqual(first, afterRestart) {
 		t.Fatalf("the plan must be a pure function of the observation: %+v vs %+v", first, afterRestart)
 	}
@@ -926,12 +900,12 @@ func TestBootstrap_PlanGateWorkers_RestartMidRampDoesNotDoubleBuy(t *testing.T) 
 	// The bought hull is observed as a GateWorker next tick, so the deficit shrinks by one — never re-bought.
 	obs.GateWorkers = 3
 	obs.GateWorkerHulls = idleWorkers("M1", "M2", "M3")
-	if next := planGateWorkers(obs, cfg); next.Buy != 1 {
+	if next := planGateWorkers(obs); next.Buy != 1 {
 		t.Fatalf("the tick after a buy stages the next single hull, got %d", next.Buy)
 	}
-	obs.GateWorkers = cfg.GateWorkerTarget
-	obs.GateWorkerHulls = idleWorkers(workerSymbols(cfg.GateWorkerTarget)...)
-	if atCap := planGateWorkers(obs, cfg); atCap.Buy != 0 {
+	obs.GateWorkers = gateWorkerTarget
+	obs.GateWorkerHulls = idleWorkers(workerSymbols(gateWorkerTarget)...)
+	if atCap := planGateWorkers(obs); atCap.Buy != 0 {
 		t.Fatalf("the ramp stops at the cap and never re-buys, got %d", atCap.Buy)
 	}
 }
@@ -946,7 +920,7 @@ func TestBootstrap_Gate_RampBuyRefusedWhenCushionIsOneShortOfTheFloor(t *testing
 	obs.Haulers = nHaulers(3)
 	obs.GateWorkers = 0
 	obs.GateMaterialChains = 0 // the ramp is live from GATE entry — only the cushion can stop it
-	obs.Treasury = price + defaultContractWorkingCapitalFloor - 1
+	obs.Treasury = price + contractWorkingCapitalFloor - 1
 
 	acq := &fakeGateAcquirer{price: price, yard: "Y1", readable: true}
 	h := gateHandler(obs, &fakeConstruction{}, &fakeManufacturing{}, &fakeRepurposer{}, acq, &fakeHandoff{})
@@ -954,18 +928,18 @@ func TestBootstrap_Gate_RampBuyRefusedWhenCushionIsOneShortOfTheFloor(t *testing
 
 	if acq.buys != 0 || res.GateWorkersBought != 0 {
 		t.Fatalf("cushion=%d is one credit under the floor %d — the buy must be REFUSED, got buys=%d bought=%d",
-			obs.Treasury-price, defaultContractWorkingCapitalFloor, acq.buys, res.GateWorkersBought)
+			obs.Treasury-price, contractWorkingCapitalFloor, acq.buys, res.GateWorkersBought)
 	}
 	if res.Blocker != "capital_gate" {
 		t.Fatalf("expected blocker capital_gate, got %q", res.Blocker)
 	}
 
 	// Exactly at the floor the same ramp buys — proving the refusal above is the floor, not a dead ramp.
-	obs.Treasury = price + defaultContractWorkingCapitalFloor
+	obs.Treasury = price + contractWorkingCapitalFloor
 	acqAtFloor := &fakeGateAcquirer{price: price, yard: "Y1", readable: true}
 	hAtFloor := gateHandler(obs, &fakeConstruction{}, &fakeManufacturing{}, &fakeRepurposer{}, acqAtFloor, &fakeHandoff{})
 	if _, _ = hAtFloor.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd()); acqAtFloor.buys != 1 {
-		t.Fatalf("cushion exactly at the floor %d must buy, got %d buys", defaultContractWorkingCapitalFloor, acqAtFloor.buys)
+		t.Fatalf("cushion exactly at the floor %d must buy, got %d buys", contractWorkingCapitalFloor, acqAtFloor.buys)
 	}
 }
 

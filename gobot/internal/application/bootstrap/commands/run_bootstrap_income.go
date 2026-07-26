@@ -31,7 +31,7 @@ const tradeFleetTag = "trade"
 //     single CONTRACT_WORKFLOW worker), so there is no double-claim (RULINGS #7).
 //  4. Staged, capital-gated hull acquisition, ROUTED BY ORDER (sp-192k4): acquisition #1 → the contract
 //     fleet, #2 → the TRADE fleet (the trade-seed, held until the first contract hull exists), #3… →
-//     contract again. One light hauler per viable contract hub, capped at hauler_target. The COUNT guard
+//     contract again. One light hauler per viable contract hub, capped at haulerTarget. The COUNT guard
 //     (haulers < desired) is the double-buy protection; placement picks the top-ranked hub no hauler yet
 //     serves. At most one buy per tick (never a blind buy-all). The trade hull is decoupled — it does not
 //     count toward the contract scaler's ceiling, and all the phase logic lives HERE (the trade/contract
@@ -39,7 +39,7 @@ const tradeFleetTag = "trade"
 //
 // Each action is guarded "already done / in-flight?" against the FRESH observation, so re-evaluation —
 // including the first tick after a restart — never double-acts or double-buys.
-func (h *RunBootstrapCoordinatorHandler) actIncome(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
+func (h *RunBootstrapCoordinatorHandler) actIncome(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult) {
 	// CONTRACT GRADUATION (sp-difa.1): a graduated player has DURABLY retired contracts as the funding
 	// floor (the operator's manual, era-scoped decision). This whole workstream is contract-income
 	// — batch-contract, the frigate sole-earner loop, staged hauler buys — so when graduated it does
@@ -58,12 +58,12 @@ func (h *RunBootstrapCoordinatorHandler) actIncome(ctx context.Context, cmd *Run
 
 	// (1) Retire the frigate from contract work — only if it still carries the tag (idempotent).
 	if obs.CommandFrigateOnContract && obs.CommandFrigateID != "" {
-		h.retireFrigate(ctx, cmd, cfg, obs, res)
+		h.retireFrigate(ctx, cmd, obs, res)
 	}
 
 	// (2) Drive batch-contract so the fleet earns — only if not already running (idempotent).
 	if !obs.BatchContractRunning {
-		h.ensureBatchContract(ctx, cmd, cfg, res)
+		h.ensureBatchContract(ctx, cmd, res)
 	}
 
 	// (3) Put the command frigate on its OWN continuous contract loop once provisioning is done, so it
@@ -75,17 +75,17 @@ func (h *RunBootstrapCoordinatorHandler) actIncome(ctx context.Context, cmd *Run
 	// free the frigate as the purchaser; once a hauler exists the loop must NEVER (re)start (the hauler +
 	// the scaled fleet earn, and the frigate is retired to the exclusive purchasing role), so this gate is
 	// also what keeps the pivot durable across a restart.
-	if obs.CommandFrigateID != "" && obs.ProbeCount >= cfg.ProbeTarget && !obs.FrigateContractLoopRunning && len(obs.Haulers) == 0 && !obs.CommandFrigatePurchasing {
-		h.startFrigateContractLoop(ctx, cmd, cfg, obs, res)
+	if obs.CommandFrigateID != "" && obs.ProbeCount >= probeTarget && !obs.FrigateContractLoopRunning && len(obs.Haulers) == 0 && !obs.CommandFrigatePurchasing {
+		h.startFrigateContractLoop(ctx, cmd, obs, res)
 	}
 
-	// (4) Staged hull acquisition — one per viable hub, capped at hauler_target. Compute the viable hubs
+	// (4) Staged hull acquisition — one per viable hub, capped at haulerTarget. Compute the viable hubs
 	// (pure) and the desired count; the count guard is the double-buy protection.
 	hubs := selectContractHubs(obs.Markets, obs.ContractGoods)
 	res.ViableHubs = len(hubs)
 	desired := len(hubs)
-	if desired > cfg.HaulerTarget {
-		desired = cfg.HaulerTarget
+	if desired > haulerTarget {
+		desired = haulerTarget
 	}
 	contractHaulers := len(obs.Haulers)
 
@@ -97,7 +97,7 @@ func (h *RunBootstrapCoordinatorHandler) actIncome(ctx context.Context, cmd *Run
 	// (no stored flag). The trade hull is decoupled from the contract op: it does NOT count toward the
 	// contract scaler's ceiling, and the trade/contract coordinators + scaler stay phase-BLIND.
 	if contractHaulers >= 1 && obs.TradeHullCount == 0 {
-		h.maybeSeedTradeHull(ctx, cmd, cfg, obs, res)
+		h.maybeSeedTradeHull(ctx, cmd, obs, res)
 		return
 	}
 
@@ -106,24 +106,15 @@ func (h *RunBootstrapCoordinatorHandler) actIncome(ctx context.Context, cmd *Run
 	// contractHaulers==0 still buys contract #1 unchanged; once a trade hull exists contract buying resumes
 	// for #3…, capped at desired.
 	if contractHaulers < desired && (contractHaulers == 0 || obs.TradeHullCount >= 1) {
-		h.maybeBuyHauler(ctx, cmd, cfg, obs, hubs, res)
+		h.maybeBuyHauler(ctx, cmd, obs, hubs, res)
 	}
 }
 
 // retireFrigate clears the command frigate's contract-fleet dedication (reuses fleet unassign). The
-// caller has checked the frigate still carries the tag, so this always has an effect. Dry-run logs the
-// intent and takes no action.
-func (h *RunBootstrapCoordinatorHandler) retireFrigate(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
+// caller has checked the frigate still carries the tag, so this always has an effect.
+func (h *RunBootstrapCoordinatorHandler) retireFrigate(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
-	if cfg.DryRun {
-		logger.Log("INFO", fmt.Sprintf("Bootstrap DRY-RUN: WOULD retire command frigate %s from contract work (poor fuel/cargo) (took no action)", obs.CommandFrigateID), map[string]interface{}{
-			"action":       "bootstrap_would_retire_frigate",
-			"container_id": cmd.ContainerID,
-			"ship":         obs.CommandFrigateID,
-		})
-		return
-	}
 	if h.retirer == nil {
 		res.Blocker = "no_retirer"
 		logger.Log("WARN", "Bootstrap needs to retire the frigate from contracts but no retirer wired", map[string]interface{}{
@@ -150,18 +141,10 @@ func (h *RunBootstrapCoordinatorHandler) retireFrigate(ctx context.Context, cmd 
 }
 
 // ensureBatchContract launches the contract fleet coordinator (workflow batch-contract) so the fleet
-// earns. The caller has checked it is not already running, so this is the idempotent launch. Dry-run
-// logs the intent and takes no action.
-func (h *RunBootstrapCoordinatorHandler) ensureBatchContract(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, res *reconcileResult) {
+// earns. The caller has checked it is not already running, so this is the idempotent launch.
+func (h *RunBootstrapCoordinatorHandler) ensureBatchContract(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, res *reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
-	if cfg.DryRun {
-		logger.Log("INFO", "Bootstrap DRY-RUN: WOULD launch batch-contract on the contract fleet (took no action)", map[string]interface{}{
-			"action":       "bootstrap_would_run_batch_contract",
-			"container_id": cmd.ContainerID,
-		})
-		return
-	}
 	if h.contractRun == nil {
 		res.Blocker = "no_contract_runner"
 		logger.Log("WARN", "Bootstrap needs to run batch-contract but no contract runner wired", map[string]interface{}{
@@ -190,19 +173,11 @@ func (h *RunBootstrapCoordinatorHandler) ensureBatchContract(ctx context.Context
 // runs contracts as the pre-hauler sole earner (sp-rype, reusing the sp-ehg9 batch-contract --loop
 // primitive: BatchContractWorkflow with iterations=-1). The caller has checked provisioning is done
 // (probes≥target), the frigate is resolved, and no loop is already running — so this is the guarded,
-// idempotent start. Dry-run logs the intent and takes no action; a nil starter degrades to a logged
-// skip surfaced as a blocker (never a panic), matching the other contract collaborators' nil contract.
-func (h *RunBootstrapCoordinatorHandler) startFrigateContractLoop(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
+// idempotent start. A nil starter degrades to a logged skip surfaced as a blocker (never a panic),
+// matching the other contract collaborators' nil contract.
+func (h *RunBootstrapCoordinatorHandler) startFrigateContractLoop(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
-	if cfg.DryRun {
-		logger.Log("INFO", fmt.Sprintf("Bootstrap DRY-RUN: WOULD start the command frigate %s on its continuous contract loop (pre-hauler sole earner) (took no action)", obs.CommandFrigateID), map[string]interface{}{
-			"action":       "bootstrap_would_start_frigate_loop",
-			"container_id": cmd.ContainerID,
-			"ship":         obs.CommandFrigateID,
-		})
-		return
-	}
 	if h.frigateLoop == nil {
 		res.Blocker = "no_frigate_loop_starter"
 		logger.Log("WARN", "Bootstrap needs to start the frigate contract loop but no starter wired — the frigate would park idle after the probe buy (sp-rype)", map[string]interface{}{
@@ -232,16 +207,16 @@ func (h *RunBootstrapCoordinatorHandler) startFrigateContractLoop(ctx context.Co
 // maybeBuyHauler evaluates and (unless dry-run) executes ONE staged hauler buy behind the readiness
 // and capital gates, placing it on the highest-ranked viable hub no hauler yet serves. It emits the
 // same guardrail arithmetic as the probe buy (RULINGS #4, fail closed). Caller has checked "needed"
-// (haulers < desired = min(viable hubs, hauler_target)).
-func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, hubs []Hub, res *reconcileResult) {
+// (haulers < desired = min(viable hubs, haulerTarget)).
+func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, hubs []Hub, res *reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
 	// Placement: the top-ranked viable hub (within the cap) that no hauler already serves. Empty means
 	// every capped hub is served — shouldn't happen given the caller's count guard, but fail-closed.
-	hub := firstUnservedHub(hubs, obs.Haulers, cfg.HaulerTarget)
+	hub := firstUnservedHub(hubs, obs.Haulers, haulerTarget)
 	if hub == "" {
 		res.Blocker = "no_unserved_hub"
-		logger.Log("WARN", fmt.Sprintf("Bootstrap hauler needed (%d/%d haulers) but every viable hub is already served — no placement target", len(obs.Haulers), cfg.HaulerTarget), map[string]interface{}{
+		logger.Log("WARN", fmt.Sprintf("Bootstrap hauler needed (%d/%d haulers) but every viable hub is already served — no placement target", len(obs.Haulers), haulerTarget), map[string]interface{}{
 			"action":       "bootstrap_income_blocked",
 			"container_id": cmd.ContainerID,
 			"blocker":      "no_unserved_hub",
@@ -282,7 +257,7 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd
 	committedPurchaser := len(obs.Haulers) == 0 && obs.CommandFrigatePurchasing && obs.CommandFrigateID != ""
 	if !pivot && !committedPurchaser && !obs.HasIdlePurchaser {
 		res.Blocker = "no_purchaser"
-		logger.Log("WARN", fmt.Sprintf("Bootstrap hauler needed (%d/%d, hub %s) but BLOCKED: no idle hull to execute the purchase and the first-hauler pivot is unavailable (haulers=%d loop_running=%v cargo_empty=%v) — retry next tick", len(obs.Haulers), cfg.HaulerTarget, hub, len(obs.Haulers), obs.FrigateContractLoopRunning, obs.FrigateCargoEmpty), map[string]interface{}{
+		logger.Log("WARN", fmt.Sprintf("Bootstrap hauler needed (%d/%d, hub %s) but BLOCKED: no idle hull to execute the purchase and the first-hauler pivot is unavailable (haulers=%d loop_running=%v cargo_empty=%v) — retry next tick", len(obs.Haulers), haulerTarget, hub, len(obs.Haulers), obs.FrigateContractLoopRunning, obs.FrigateCargoEmpty), map[string]interface{}{
 			"action":       "bootstrap_income_blocked",
 			"container_id": cmd.ContainerID,
 			"blocker":      "no_purchaser",
@@ -292,7 +267,7 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd
 
 	// Price-check (reuse shipyard list — a live, PRESENCE-GATED GetShipyard). Unreadable ⇒ the capital gate
 	// cannot be evaluated, so nothing is bought this tick (RULINGS #4 fail-closed).
-	price, yard, readable, err := h.haulAcquirer.PriceCheck(ctx, cmd.PlayerID, cfg.HaulerShipType)
+	price, yard, readable, err := h.haulAcquirer.PriceCheck(ctx, cmd.PlayerID, haulerShipType)
 	if err != nil || !readable {
 		// sp-5nd2 fault-2: on cold start the price is unreadable because NOTHING is at the home shipyard (the
 		// frigate is on its loop, the probes are scouting), so the presence-gated live read returns no priced
@@ -300,7 +275,7 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd
 		// window and get it to the yard so the NEXT tick's read succeeds and the buy — which itself navigates +
 		// docks + reads + purchases (BatchPurchaseShips) — runs behind bootstrap's own working-capital floor,
 		// which stays HERE and is evaluated on the real price once it reads.
-		h.ensureHaulerPriceReadable(ctx, cmd, cfg, obs, res, pivot, err)
+		h.ensureHaulerPriceReadable(ctx, cmd, obs, res, pivot, err)
 		return
 	}
 
@@ -317,17 +292,17 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd
 	// RULINGS #4 fail-closed: an unreadable price already returned above, and a cushion below the floor
 	// does NOT buy — so after a permitted buy treasury ≥ floor by construction (the working-capital safety).
 	cushion := obs.Treasury - price
-	affordable := cushion >= cfg.ContractWorkingCapitalFloor
+	affordable := cushion >= contractWorkingCapitalFloor
 	floorNote := "clears the working-capital floor"
 	if !affordable {
 		floorNote = "BLOCKED by the working-capital floor (treasury−price below the contract working-capital floor)"
 	}
-	logger.Log("INFO", fmt.Sprintf("Bootstrap hauler buy decision: price=%d treasury=%d floor=%d cushion=(treasury−price)=%d affordable=(cushion≥floor)=%v hub=%s yard=%s — %s", price, obs.Treasury, cfg.ContractWorkingCapitalFloor, cushion, affordable, hub, yard, floorNote), map[string]interface{}{
+	logger.Log("INFO", fmt.Sprintf("Bootstrap hauler buy decision: price=%d treasury=%d floor=%d cushion=(treasury−price)=%d affordable=(cushion≥floor)=%v hub=%s yard=%s — %s", price, obs.Treasury, contractWorkingCapitalFloor, cushion, affordable, hub, yard, floorNote), map[string]interface{}{
 		"action":       "bootstrap_hauler_buy_decision",
 		"container_id": cmd.ContainerID,
 		"price":        price,
 		"treasury":     obs.Treasury,
-		"floor":        cfg.ContractWorkingCapitalFloor,
+		"floor":        contractWorkingCapitalFloor,
 		"cushion":      cushion,
 		"affordable":   affordable,
 		"hub":          hub,
@@ -335,19 +310,6 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd
 	})
 	if !affordable {
 		res.Blocker = "capital_gate"
-		return
-	}
-
-	if cfg.DryRun {
-		res.WouldBuy++
-		note := ""
-		if pivot {
-			note = fmt.Sprintf(" (WOULD first-hauler PIVOT: stop the frigate %s loop, dedicate it the exclusive purchasing ship, and buy with it)", obs.CommandFrigateID)
-		}
-		logger.Log("INFO", fmt.Sprintf("Bootstrap DRY-RUN: WOULD buy 1 %s at %s for %d and place it on hub %s%s (took no action)", cfg.HaulerShipType, yard, price, hub, note), map[string]interface{}{
-			"action":       "bootstrap_would_buy_hauler",
-			"container_id": cmd.ContainerID,
-		})
 		return
 	}
 
@@ -399,7 +361,7 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd
 	if pivot || committedPurchaser {
 		purchaser = obs.CommandFrigateID
 	}
-	bought, err := h.haulAcquirer.BuyAndPlace(ctx, cmd.PlayerID, cfg.HaulerShipType, yard, hub, purchaser)
+	bought, err := h.haulAcquirer.BuyAndPlace(ctx, cmd.PlayerID, haulerShipType, yard, hub, purchaser)
 	if err != nil {
 		res.Blocker = "purchase_error"
 		logger.Log("ERROR", fmt.Sprintf("Bootstrap hauler purchase failed: %v", err), map[string]interface{}{
@@ -412,7 +374,7 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd
 	if h.metrics != nil {
 		h.metrics.RecordHaulerPurchased()
 	}
-	logger.Log("INFO", fmt.Sprintf("Bootstrap bought contract hauler %s at %s for %d, dedicated + placed on hub %s (%d/%d haulers, %d viable hubs)", bought.ShipSymbol, yard, bought.Price, hub, len(obs.Haulers)+1, cfg.HaulerTarget, res.ViableHubs), map[string]interface{}{
+	logger.Log("INFO", fmt.Sprintf("Bootstrap bought contract hauler %s at %s for %d, dedicated + placed on hub %s (%d/%d haulers, %d viable hubs)", bought.ShipSymbol, yard, bought.Price, hub, len(obs.Haulers)+1, haulerTarget, res.ViableHubs), map[string]interface{}{
 		"action":       "bootstrap_bought_hauler",
 		"container_id": cmd.ContainerID,
 		"ship":         bought.ShipSymbol,
@@ -434,8 +396,8 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd
 // needed: by this point the command frigate is already the exclusive purchasing ship (established freeing it
 // for contract #1) and idle at the yard, so it is the deterministic purchaser. Both collaborators are required
 // UP FRONT (never buy a trade hull we cannot then manage) — a nil acquirer/launcher is a logged skip surfaced
-// as a blocker (like the maybeBuyHauler nil guards), never a panic. Dry-run-safe (WOULD-buy, no action).
-func (h *RunBootstrapCoordinatorHandler) maybeSeedTradeHull(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
+// as a blocker (like the maybeBuyHauler nil guards), never a panic.
+func (h *RunBootstrapCoordinatorHandler) maybeSeedTradeHull(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
 	if h.haulAcquirer == nil {
@@ -461,7 +423,7 @@ func (h *RunBootstrapCoordinatorHandler) maybeSeedTradeHull(ctx context.Context,
 	// Price-check (reuse shipyard list — a live, PRESENCE-GATED GetShipyard). Unreadable ⇒ the capital gate
 	// cannot be evaluated, so nothing is bought this tick (RULINGS #4 fail-closed). By the trade-seed point the
 	// purchasing frigate is at the yard from the contract-#1 buy, so the price normally reads.
-	price, yard, readable, err := h.haulAcquirer.PriceCheck(ctx, cmd.PlayerID, cfg.HaulerShipType)
+	price, yard, readable, err := h.haulAcquirer.PriceCheck(ctx, cmd.PlayerID, haulerShipType)
 	if err != nil || !readable {
 		res.Blocker = "price_unreadable"
 		logger.Log("WARN", fmt.Sprintf("Bootstrap trade-seed price unreadable — failing closed (no buy): err=%v", err), map[string]interface{}{
@@ -476,17 +438,17 @@ func (h *RunBootstrapCoordinatorHandler) maybeSeedTradeHull(ctx context.Context,
 	// floor the contract-hauler buy this slot displaces uses, so re-routing #2 to trade never weakens the money
 	// guard (RULINGS #4/#5). A cushion below the floor does NOT buy.
 	cushion := obs.Treasury - price
-	affordable := cushion >= cfg.ContractWorkingCapitalFloor
+	affordable := cushion >= contractWorkingCapitalFloor
 	floorNote := "clears the working-capital floor"
 	if !affordable {
 		floorNote = "BLOCKED by the working-capital floor (treasury−price below the contract working-capital floor)"
 	}
-	logger.Log("INFO", fmt.Sprintf("Bootstrap trade-seed buy decision: price=%d treasury=%d floor=%d cushion=(treasury−price)=%d affordable=(cushion≥floor)=%v yard=%s — %s", price, obs.Treasury, cfg.ContractWorkingCapitalFloor, cushion, affordable, yard, floorNote), map[string]interface{}{
+	logger.Log("INFO", fmt.Sprintf("Bootstrap trade-seed buy decision: price=%d treasury=%d floor=%d cushion=(treasury−price)=%d affordable=(cushion≥floor)=%v yard=%s — %s", price, obs.Treasury, contractWorkingCapitalFloor, cushion, affordable, yard, floorNote), map[string]interface{}{
 		"action":       "bootstrap_trade_seed_buy_decision",
 		"container_id": cmd.ContainerID,
 		"price":        price,
 		"treasury":     obs.Treasury,
-		"floor":        cfg.ContractWorkingCapitalFloor,
+		"floor":        contractWorkingCapitalFloor,
 		"cushion":      cushion,
 		"affordable":   affordable,
 		"yard":         yard,
@@ -496,19 +458,10 @@ func (h *RunBootstrapCoordinatorHandler) maybeSeedTradeHull(ctx context.Context,
 		return
 	}
 
-	if cfg.DryRun {
-		res.WouldBuy++
-		logger.Log("INFO", fmt.Sprintf("Bootstrap DRY-RUN: WOULD seed the 2nd cold-start hull to the TRADE fleet — buy 1 %s at %s for %d, dedicate it %q, and ensure the trade coordinator (took no action)", cfg.HaulerShipType, yard, price, tradeFleetTag), map[string]interface{}{
-			"action":       "bootstrap_would_seed_trade_hull",
-			"container_id": cmd.ContainerID,
-		})
-		return
-	}
-
 	// Buy + dedicate to the trade fleet (no hub). The purchaser is the command frigate — the exclusive
 	// purchasing ship established at the first-hauler pivot — so the buy is deterministic, not dependent on an
 	// incidentally-idle hull.
-	bought, err := h.haulAcquirer.BuyAndDedicate(ctx, cmd.PlayerID, cfg.HaulerShipType, yard, tradeFleetTag, obs.CommandFrigateID)
+	bought, err := h.haulAcquirer.BuyAndDedicate(ctx, cmd.PlayerID, haulerShipType, yard, tradeFleetTag, obs.CommandFrigateID)
 	if err != nil {
 		res.Blocker = "trade_seed_purchase_error"
 		logger.Log("ERROR", fmt.Sprintf("Bootstrap trade-seed purchase failed: %v", err), map[string]interface{}{
@@ -551,19 +504,11 @@ func (h *RunBootstrapCoordinatorHandler) maybeSeedTradeHull(ctx context.Context,
 // buy runs behind the working-capital floor. The buy itself (BatchPurchaseShips) navigates + docks + reads +
 // purchases; positioning just makes bootstrap's OWN pre-buy floor guard evaluable on the real price. It NEVER
 // buys and NEVER weakens the price guard (RULINGS #4) — the tick spends nothing while unreadable — and it
-// NEVER stops a frigate it cannot then position (no earner lost for nothing). Nil-scanner / dry-run:
-// byte-identical to the pre-fix fail-closed behavior.
-func (h *RunBootstrapCoordinatorHandler) ensureHaulerPriceReadable(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult, pivot bool, priceErr error) {
+// NEVER stops a frigate it cannot then position (no earner lost for nothing). With no scanner wired it
+// keeps the pre-fix fail-closed behavior exactly.
+func (h *RunBootstrapCoordinatorHandler) ensureHaulerPriceReadable(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult, pivot bool, priceErr error) {
 	logger := common.LoggerFromContext(ctx)
 
-	if cfg.DryRun {
-		res.Blocker = "price_unreadable"
-		logger.Log("INFO", "Bootstrap DRY-RUN: hauler price unreadable — WOULD free the command frigate at the inter-contract window and position it at the home shipyard to make the price readable (took no action)", map[string]interface{}{
-			"action":       "bootstrap_would_position_purchaser",
-			"container_id": cmd.ContainerID,
-		})
-		return
-	}
 	// Positioning needs the shipyard scanner. Without it, keep the pre-fix fail-closed behavior EXACTLY — and
 	// never stop the frigate's earning loop when we could not then position it (no earner lost for nothing).
 	if h.scanner == nil {
@@ -590,15 +535,15 @@ func (h *RunBootstrapCoordinatorHandler) ensureHaulerPriceReadable(ctx context.C
 		// (permanent stall). No money guard is weakened — this is the SAME cushion≥floor test as the capital
 		// gate on the readable path (RULINGS #4/#5); it only TIGHTENS *when* the frigate is freed. A 0/absent
 		// cache (first-ever read, e.g. a fresh boot before that seed) proceeds to the existing free+position.
-		if cached := h.cachedHaulerPrice(cmd.ContainerID); cached > 0 && obs.Treasury-cached < cfg.ContractWorkingCapitalFloor {
+		if cached := h.cachedHaulerPrice(cmd.ContainerID); cached > 0 && obs.Treasury-cached < contractWorkingCapitalFloor {
 			res.Blocker = "capital_gate"
-			logger.Log("INFO", fmt.Sprintf("Bootstrap first-hauler pivot HELD (not freeing the earner): cached hauler price=%d treasury=%d cushion=(treasury−price)=%d floor=%d — keeping the command frigate %s on its contract loop EARNING until the treasury clears the working-capital floor (sp-muc5x: never stop the sole earner while the hauler is unaffordable)", cached, obs.Treasury, obs.Treasury-cached, cfg.ContractWorkingCapitalFloor, obs.CommandFrigateID), map[string]interface{}{
+			logger.Log("INFO", fmt.Sprintf("Bootstrap first-hauler pivot HELD (not freeing the earner): cached hauler price=%d treasury=%d cushion=(treasury−price)=%d floor=%d — keeping the command frigate %s on its contract loop EARNING until the treasury clears the working-capital floor (sp-muc5x: never stop the sole earner while the hauler is unaffordable)", cached, obs.Treasury, obs.Treasury-cached, contractWorkingCapitalFloor, obs.CommandFrigateID), map[string]interface{}{
 				"action":       "bootstrap_pivot_held_unaffordable",
 				"container_id": cmd.ContainerID,
 				"blocker":      "capital_gate",
 				"cached_price": cached,
 				"treasury":     obs.Treasury,
-				"floor":        cfg.ContractWorkingCapitalFloor,
+				"floor":        contractWorkingCapitalFloor,
 				"ship":         obs.CommandFrigateID,
 			})
 			return
@@ -642,7 +587,7 @@ func (h *RunBootstrapCoordinatorHandler) ensureHaulerPriceReadable(ctx context.C
 	if !frigateReady {
 		// No frigate to free/position (e.g. a subsequent buy resting on an incidentally-idle probe that is
 		// not at the yard): reuse the sp-hh0h probe-path positioner for any idle undedicated hull.
-		h.ensureShipyardReadable(ctx, cmd, cfg, obs, res, priceErr)
+		h.ensureShipyardReadable(ctx, cmd, obs, res, priceErr)
 		return
 	}
 
@@ -680,22 +625,22 @@ func (h *RunBootstrapCoordinatorHandler) ensureHaulerPriceReadable(ctx context.C
 // buy — the money guard is untouched, RULINGS #4) and best-effort: a nil hauler acquirer or an unreadable
 // hauler listing caches nothing, and the guard then treats the cache as absent and preserves the existing
 // free+position behavior (this fix only ever TIGHTENS, never loosens).
-func (h *RunBootstrapCoordinatorHandler) seedHaulerPriceFromYard(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig) {
+func (h *RunBootstrapCoordinatorHandler) seedHaulerPriceFromYard(ctx context.Context, cmd *RunBootstrapCoordinatorCommand) {
 	if h.haulAcquirer == nil {
 		return
 	}
-	price, _, readable, err := h.haulAcquirer.PriceCheck(ctx, cmd.PlayerID, cfg.HaulerShipType)
+	price, _, readable, err := h.haulAcquirer.PriceCheck(ctx, cmd.PlayerID, haulerShipType)
 	if err != nil || !readable {
 		return
 	}
 	h.cacheHaulerPrice(cmd.ContainerID, price)
 }
 
-// firstUnservedHub returns the highest-ranked viable hub (within the hauler_target cap) that no
+// firstUnservedHub returns the highest-ranked viable hub (within the haulerTarget cap) that no
 // existing hauler is placed on, or "" when all capped hubs are served. A hub is "served" when some
 // hauler's Waypoint is on it (idle at, or heading to) — so a hauler bought last tick and still en
 // route keeps its hub from being re-selected. The reconciler's count guard caps total buys regardless,
-// so even a mis-placement (from a churned ranking) can never overshoot hauler_target.
+// so even a mis-placement (from a churned ranking) can never overshoot haulerTarget.
 func firstUnservedHub(hubs []Hub, haulers []HaulerSnapshot, hubCap int) string {
 	served := make(map[string]struct{}, len(haulers))
 	for _, hl := range haulers {

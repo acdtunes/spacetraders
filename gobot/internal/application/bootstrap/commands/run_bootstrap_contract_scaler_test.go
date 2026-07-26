@@ -11,26 +11,26 @@ import (
 // it ramps the exclusive contract fleet behind the 200000 cushion. The once-only guarantee lives in the
 // LAUNCHER, which skips a coordinator already RUNNING/PENDING — bootstrap holds no arbitration state.
 
-// contractScalerIncomeObs is an INCOME-phase observation (haulers at desired, autosizer running so the early
+// contractScalerColdStartObs is a cold-start observation (haulers at desired, autosizer running so the early
 // autosizer launch is an idempotent no-op). The 3 contract haulers put it in the POST-trade-seed state via
-// sjvvIncomeObs (TradeHullCount=1).
-func contractScalerIncomeObs() Observation {
-	return sjvvIncomeObs(true, 3) // 3 haulers = desired → no hauler buy; autosizer "running" → no autosizer launch
+// sjvvColdStartObs (TradeHullCount=1).
+func contractScalerColdStartObs() Observation {
+	return sjvvColdStartObs(true, 3) // 3 haulers = desired → no hauler buy; autosizer "running" → no autosizer launch
 }
 
 // --- ensured in the cold-start window, not in GATE ---
 
-// In INCOME: bootstrap ensures the contract scaler and surfaces it, without dragging in anything else.
-func TestBootstrap_ContractScaler_InIncome_Launches(t *testing.T) {
+// In cold start: bootstrap ensures the contract scaler and surfaces it, without dragging in anything else.
+func TestBootstrap_ContractScaler_InColdStart_Ensured(t *testing.T) {
 	ho := &fakeHandoff{}
-	h := sjvvHandler(contractScalerIncomeObs(), &fakeLiveConfig{snap: liveconfig.Snapshot{}}, ho, &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true})
+	h := sjvvHandler(contractScalerColdStartObs(), &fakeLiveConfig{snap: liveconfig.Snapshot{}}, ho, &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true})
 
 	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if err != nil {
 		t.Fatalf("reconcileOnce: %v", err)
 	}
 	if ho.contractScaler != 1 || !res.ContractScalerLaunchedEarly {
-		t.Fatalf("INCOME: must ensure the contract scaler (launches=%d early=%v)", ho.contractScaler, res.ContractScalerLaunchedEarly)
+		t.Fatalf("cold start: must ensure the contract scaler (launches=%d early=%v)", ho.contractScaler, res.ContractScalerLaunchedEarly)
 	}
 	// The contract-scaler launch must NOT drag in the standing coordinators; the autosizer is already running.
 	if ho.autosizer != 0 || ho.standing != 0 {
@@ -61,7 +61,7 @@ func TestBootstrap_ContractScaler_NotLaunchedDuringGate(t *testing.T) {
 // res.ContractScalerLaunchedEarly false, and never claims the blocker (its own ERROR line only).
 func TestBootstrap_ContractScaler_LaunchError_IsBackground(t *testing.T) {
 	ho := &fakeHandoff{scalerErr: errors.New("boom")}
-	h := sjvvHandler(contractScalerIncomeObs(), &fakeLiveConfig{snap: liveconfig.Snapshot{}}, ho, &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true})
+	h := sjvvHandler(contractScalerColdStartObs(), &fakeLiveConfig{snap: liveconfig.Snapshot{}}, ho, &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true})
 
 	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if err != nil {

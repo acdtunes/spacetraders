@@ -12,44 +12,39 @@ import (
 )
 
 const (
-	// Config defaults (RULINGS #5: every operational value is a config key, filled here only when
-	// the launch config leaves it unset — the Analyst/Admiral own the numbers). Documented on
-	// config.BootstrapConfig.
-	// defaultBootstrapTickSeconds is the cold-start reconcile cadence. SHORT on purpose (sp-lgo3):
-	// bootstrap runs ONLY during cold start — 1 frigate + 1-3 probes make <0.1 req/s vs the 2 req/s
-	// ACCOUNT limit (20x+ headroom) and it exits at EXPANSION (gate built) before the fleet is ever large, so a fast
-	// tick carries zero API-pacing concern for its whole lifetime. The old 300s injected up to 5min of
-	// dead time between a real event (frigate docks, scan/arrival completes) and the coordinator
-	// reacting — almost all of the observed ~11min probe-buy was poll latency, not travel. 45s cuts
-	// time-to-gate (→ more Phase-2 time → higher rank) with ample headroom. Made SAFE against the
-	// fresh-buy over-buy the short tick would otherwise expose by the sp-lgo3 count-sync bridge (PART 1).
-	// Live-tunable via the tick_secs knob (bounds 10..86400) with no restart. Event-driven reaction
-	// (react to arrival/scan-complete via the wake/watch model instead of a fixed poll) is a future
-	// follow-up — the tick drop is the scoped fix.
+	// defaultBootstrapTickSeconds is the cold-start reconcile cadence — the ONE live-tunable knob
+	// (tick_secs, bounds 10..86400, no restart). SHORT on purpose (sp-lgo3): bootstrap runs ONLY during
+	// cold start — 1 frigate + 1-3 probes make <0.1 req/s vs the 2 req/s ACCOUNT limit (20x+ headroom)
+	// and it exits at EXPANSION (gate built) before the fleet is ever large, so a fast tick carries zero
+	// API-pacing concern for its whole lifetime. A slow tick instead injects minutes of dead time between
+	// a real event (frigate docks, scan/arrival completes) and the coordinator reacting — almost all of
+	// the observed ~11min probe-buy was poll latency, not travel. 45s cuts time-to-gate (→ more Phase-2
+	// time → higher rank) with ample headroom, made SAFE against the fresh-buy over-buy a short tick
+	// would otherwise expose by the sp-lgo3 count-sync bridge.
 	defaultBootstrapTickSeconds = 45
-	defaultProbeTarget          = 3 // DATA target: 3 probes scouting so market data flows ASAP
-	// defaultProbeShipType is the shipyard ship-type symbol bought for a probe (RULINGS #5: even
-	// the asset is a knob).
-	defaultProbeShipType = "SHIP_PROBE"
 
-	// INCOME-phase defaults.
-	defaultHaulerTarget = 4 // INCOME hull cap: one hauler per viable contract hub, up to 4 (spec 4–5)
-	// defaultIncomeBar is the INCOME→GATE exit: realized NET credits/hour the contract fleet must
-	// clear before the arc drives gate construction. Deliberately CONSERVATIVE (a clearly-earning but
-	// not-huge bar): the Phase-1 objective is building the gate, so the worse failure is a bar set so
-	// HIGH the arc never reaches GATE — a lower bar only risks starting GATE with a still-warming
-	// fleet. This is the primary field-calibration knob (an open tuning question).
-	defaultIncomeBar = 10000.0
-	// defaultHaulerShipType is the shipyard ship-type bought for a contract hauler (RULINGS #5: the
-	// asset is a knob). A light hauler is the cold-start contract workhorse (cheap, adequate cargo).
-	defaultHaulerShipType = "SHIP_LIGHT_HAULER"
+	// The cold-start SIZES. Bootstrap seeds a fixed, known-good shape and the standing coordinators own
+	// everything above it, so these are the shape itself — not per-run knobs.
+	//
+	// probeTarget is the scouting seed: 3 probes so market data flows ASAP.
+	probeTarget = 3
+	// probeShipType is the shipyard ship-type symbol bought for a probe.
+	probeShipType = "SHIP_PROBE"
+	// haulerTarget caps the contract hull ramp: one hauler per viable contract hub, up to 4 (spec 4–5).
+	haulerTarget = 4
+	// haulerShipType is the ship-type bought for a contract hauler (and, reused, a gate worker). A light
+	// hauler is the cold-start workhorse: cheap, adequate cargo.
+	haulerShipType = "SHIP_LIGHT_HAULER"
+	// gateWorkerTarget is the gate-construction workforce: the size GATE ramps to, one hull per tick,
+	// from the moment the pipeline exists. The gate BUYS its own workers (the contract fleet is exclusive
+	// and never repurposed), so this is also the direct bound on the construction-worker spend — 4 keeps
+	// that spend small enough that the contract operation still funds the material bill alongside it.
+	gateWorkerTarget = 4
 
-	// defaultContractWorkingCapitalFloor is the ABSOLUTE cash cushion (whole credits) the treasury must
-	// still clear AFTER a staged bootstrap contract-op spend — the INCOME hauler buy (incl. the sp-7r7w
-	// first-hauler pivot) AND the GATE-phase gate-worker/construction spend (sp-bpdf): the spend is
-	// affordable when treasury−price ≥ this floor (sp-acv5, PLAYBOOK §3). It replaces the old PROPORTIONAL
-	// reserve_margin×treasury gate, which only bought once treasury grew past ~2× the price and so delayed
-	// the cash-flow scaling the hauler exists to provide.
+	// contractWorkingCapitalFloor is the ABSOLUTE cash cushion (whole credits) the treasury must still
+	// clear AFTER a staged bootstrap contract-op spend — the hauler buy (incl. the sp-7r7w first-hauler
+	// pivot) AND the GATE-phase gate-worker/construction spend (sp-bpdf): the spend is affordable when
+	// treasury−price ≥ this floor (sp-acv5, PLAYBOOK §3).
 	//
 	// 150k is the contract operation's OPERATING capital: a light-hauler contract cycle's goods+fuel plus
 	// enough headroom to keep several concurrent contract cycles funded through a treasury dip — a
@@ -61,32 +56,21 @@ const (
 	// every cushion move together and can never drift). The base common.ImmutableReserveFloor (50k) remains
 	// the SEPARATE immutable anti-stall backstop: the outer-max clamp that keeps mature tour/factory trade
 	// able to trade its way out of a low-treasury crunch, and the line the fleet autosizer clamps to
-	// directly. Both are hard constants — NOT live-tunable / config.yaml knobs, and no longer paced by a
-	// separate reserve_margin knob (sp-05glh scrapped the 40% proportional rule entirely — the DATA probe
-	// buy now gates on common.ImmutableReserveFloor too). The contract cushion is RAISED above the
-	// immutable bound (stricter), so no money guard is weakened (RULINGS #4/#5): a permitted contract-op
-	// buy leaves the op funded at 150k.
-	defaultContractWorkingCapitalFloor int64 = common.ContractReserveCushion
-
-	// GATE-phase defaults.
-	// defaultGateWorkerTarget is the gate-construction workforce: the size GATE ramps to, one hull per
-	// tick, from the moment the pipeline exists. The gate BUYS its own workers (the contract fleet is
-	// exclusive and never repurposed), so this is also the direct bound on the construction-worker spend —
-	// 4 keeps that spend small enough that the contract operation still funds the material bill alongside
-	// it. Tunable via gate_worker_target.
-	defaultGateWorkerTarget = 4
+	// directly. Both are hard constants — never config keys, never live-tunable. The contract cushion is
+	// RAISED above the immutable bound (stricter), so no money guard is weakened (RULINGS #4/#5): a
+	// permitted contract-op buy leaves the op funded at 150k.
+	contractWorkingCapitalFloor int64 = common.ContractReserveCushion
 
 	// GATE-entry gate — UNCONDITIONALLY ON (sp-1cbxz): GATE entry requires a genuinely SCALED contract op
 	// (the FULL fleet at the auto-scaler's live target) — closing the ktio deadlock where one contract
-	// payout spiked income past income_bar and drove GATE with ZERO haulers, latching on
-	// ConstructionStarted. Its always-consulted calibration floor follows.
+	// payout spiked realized income and drove GATE with ZERO haulers, latching on ConstructionStarted.
 	//
-	// defaultGateMinHaulers is the escape hatch's STARVED-EARNER floor (sp-gm7r repurposed it): a sticky GATE
+	// gateMinHaulers is the escape hatch's STARVED-EARNER floor (sp-gm7r repurposed it): a sticky GATE
 	// holding fewer than this many contract haulers reads as under-scaled and (with low progress, for the
-	// hysteresis streak) re-derives INCOME. GATE ENTRY no longer uses it — the full scaler-target bar is the
-	// entry gate — so it scopes only the release of a stuck latch: 2 clearly marks a starved op (a lone
-	// frigate spike latched GATE with ZERO haulers). Tunable via gate_min_haulers.
-	defaultGateMinHaulers = 2
+	// hysteresis streak) re-derives COLDSTART. GATE ENTRY no longer uses it — the full scaler-target bar is
+	// the entry gate — so it scopes only the release of a stuck latch: 2 clearly marks a starved op (a lone
+	// frigate spike latched GATE with ZERO haulers).
+	gateMinHaulers = 2
 
 	// The fleet autosizer and the dedicated contract auto-scaler are both LAUNCHED EARLY during the
 	// cold-start scaling window (sp-1cbxz): the autosizer so the capacity reconciler's emitted
@@ -100,31 +84,31 @@ const (
 	// surplus war chest (gateFunded); (2) GATE keeps the WHOLE contract fleet earning and never repurposes it
 	// to construction (sp-cdxy2: the contract fleet is EXCLUSIVE — the gate BUYS its own workers instead of
 	// cannibalizing contracts, which had churned buy→repurpose→buy against the scaler); (3) a sticky GATE that
-	// latched under-scaled with ~no construction re-derives INCOME (so the op re-scales) after an anti-thrash
-	// hysteresis streak. Gate entry only ever tightens, never loosens (RULINGS #4). The calibration knobs
-	// follow (tunable-only, no launch key).
+	// latched under-scaled with ~no construction re-derives COLDSTART (so the op re-scales) after an
+	// anti-thrash hysteresis streak. Gate entry only ever tightens, never loosens (RULINGS #4). Its
+	// calibration bars follow.
 	//
-	// defaultGateSurplusFloor is the treasury SURPLUS — over common.ImmutableReserveFloor (50k) — the op must
+	// gateSurplusFloor is the treasury SURPLUS — over common.ImmutableReserveFloor (50k) — the op must
 	// hold to enter GATE: a war chest for the jump-gate material bill (~1600 FAB_MATS + 400 ADVANCED_CIRCUITRY)
 	// so GATE is earned from contract surplus, never raced on a thin treasury its own material spend then
-	// crashes. 500k (⇒ treasury ≥ 550k to gate) is a CONSERVATIVE placeholder — tuned against the freshly-read
-	// gate bill. It is a PHASE-entry threshold, NOT a spend guard (RULINGS #5); the buy-time 150k
-	// working-capital floor is untouched. Base choice: the immutable 50k anti-stall bound; the 150k contract
-	// cushion is the stricter alternative if contract working capital should not count as surplus.
-	defaultGateSurplusFloor int64 = 500_000
-	// defaultGateReentryConstructionPct is the construction-progress ceiling (whole percent, 0..100) below
-	// which an under-scaled sticky GATE may re-derive INCOME (the escape hatch). 5% scopes the escape to a
+	// crashes. 500k (⇒ treasury ≥ 550k to gate) is sized against the freshly-read gate bill. It is a
+	// PHASE-entry threshold, NOT a spend guard (RULINGS #5); the buy-time 150k working-capital floor is
+	// untouched. Base choice: the immutable 50k anti-stall bound; the 150k contract cushion is the stricter
+	// alternative if contract working capital should not count as surplus.
+	gateSurplusFloor int64 = 500_000
+	// gateReentryConstructionPct is the construction-progress ceiling (whole percent, 0..100) below
+	// which an under-scaled sticky GATE may re-derive COLDSTART (the escape hatch). 5% scopes the escape to a
 	// GATE that latched but never really built — past it real materials are flowing (the manufacturing
 	// executor keeps delivering regardless of bootstrap's phase) and GATE is permanent.
-	defaultGateReentryConstructionPct = 5.0
-	// defaultGateReentryStreakTicks is how many CONSECUTIVE under-scaled + low-progress ticks must hold before
-	// the GATE→INCOME re-derive fires — anti-thrash hysteresis: a single dip never flips the phase, and the
+	gateReentryConstructionPct = 5.0
+	// gateReentryStreakTicks is how many CONSECUTIVE under-scaled + low-progress ticks must hold before
+	// the GATE→COLDSTART re-derive fires — anti-thrash hysteresis: a single dip never flips the phase, and the
 	// direction is asymmetric (SLOW to leave GATE over N ticks, immediate to resume it once the op re-scales),
 	// so the phase strongly prefers GATE and only escapes a genuinely, persistently starved latch. The streak
 	// is in-memory per-container and fails SAFE on restart: a dropped streak just re-accrues from 0 (delays the
 	// re-derive one window), never double-acts (the re-derive is a pure phase relabel — no spend, no
 	// assignment). 3 ticks ≈ 2.25 min at the 45s cold-start cadence.
-	defaultGateReentryStreakTicks = 3
+	gateReentryStreakTicks = 3
 
 	// expansionHandoffRetryTicks bounds how many CONSECUTIVE ticks the terminal EXPANSION phase
 	// re-attempts an UNCONFIRMED hand-off before exiting anyway. EXPANSION is terminal on the WORLD
@@ -182,7 +166,7 @@ type ProbeAcquirer interface {
 // can call it every tick. This REPLACES the old probe-holding scout-all-markets sweep, which
 // held the probes and starved the now-boot-standing coordinator (sp-pt7d, Admiral intent: bootstrap
 // buys probes but assigns them to nothing; the coordinator mans them). minHulls is the permanent
-// manning FLOOR (probe_target, sp-2ci9y) stamped on the home post so the freshsizer never sizes it
+// manning FLOOR (probeTarget, sp-2ci9y) stamped on the home post so the freshsizer never sizes it
 // below the probes bootstrap bought — passed through and applied idempotently.
 type ScoutPostDeclarer interface {
 	DeclareHomeScoutPost(ctx context.Context, playerID int, system string, minHulls int) error
@@ -362,8 +346,8 @@ type HandoffLauncher interface {
 
 // RunBootstrapCoordinatorCommand launches the standing bootstrap coordinator for a player.
 // Like the fleet-autosizer / siting coordinators it runs an infinite reconcile loop inside a single
-// Handle() call; the container wraps it. All knobs are launch-config keys (RULINGS #5); the zero
-// value falls back to the documented default, so the CLI/daemon passes only what it overrides.
+// Handle() call; the container wraps it. The cold-start shape is fixed in code, so the launch config
+// carries only the boot-gate and the cadence; a zero cadence falls back to the documented default.
 type RunBootstrapCoordinatorCommand struct {
 	PlayerID    int
 	ContainerID string
@@ -373,21 +357,9 @@ type RunBootstrapCoordinatorCommand struct {
 	// ENABLED — LIVE BY DEFAULT, Admiral no-dark-shipping). The container stays resident when
 	// disabled so a config flip + restart re-arms it, but it takes no action while stood down.
 	Disabled bool
-	// DryRun observes + logs the decisions it WOULD take and takes none. It WARNs every tick — not
-	// a silent no-op (the f5pr silent-dry-run lesson).
-	DryRun bool
 
+	// TickIntervalSecs is the reconcile cadence, live-overlaid each tick by the tick_secs tune.
 	TickIntervalSecs int
-	ProbeTarget      int
-	ProbeShipType    string
-
-	// INCOME-phase knobs (RULINGS #5; the zero value defers to the documented default).
-	HaulerTarget   int     // INCOME hull cap — actual = one per viable contract hub, up to this.
-	IncomeBar      float64 // INCOME→GATE exit: realized net credits/hour the fleet must clear.
-	HaulerShipType string  // the shipyard ship-type bought for a contract hauler.
-
-	// GATE-phase knob (RULINGS #5; the zero value defers to the documented default).
-	GateWorkerTarget int // GATE worker cap — actual = ~one per active gate-material chain + delivery.
 }
 
 // RunBootstrapCoordinatorResponse reports reconcile progress, observed on context cancellation
@@ -456,7 +428,7 @@ type RunBootstrapCoordinatorHandler struct {
 
 	// underScaledStreaks holds the per-container escape-hatch hysteresis counter: consecutive ticks a
 	// sticky-latched GATE has been under-scaled with ~no construction, so the GATE→COLDSTART re-derive fires only
-	// after gate_reentry_streak_ticks in a row (anti-thrash). Keyed by ContainerID for the same singleton
+	// after gateReentryStreakTicks in a row (anti-thrash). Keyed by ContainerID for the same singleton
 	// reason as buyBridges; underScaledStreakMu guards the MAP only (one container's ticks are
 	// sequential). Consulted every tick (sp-gm7r removed the flag); NOT a progress cursor — dropped on
 	// restart (the re-derive just re-accrues from 0, delaying one window, never double-acting).
@@ -611,10 +583,9 @@ func (h *RunBootstrapCoordinatorHandler) Handle(ctx context.Context, request com
 	// Startup log only — resolve from the launch command alone (nil live). Per-tick reconcile
 	// re-resolves WITH the live snapshot (sp-r6yq), so a later tune is reflected from that tick on.
 	cfg := resolveBootstrapConfig(cmd, nil)
-	logger.Log("INFO", fmt.Sprintf("Bootstrap coordinator starting (tick %s, dry_run=%v, disabled=%v, probe_target=%d, hauler_target=%d, income_bar=%.0f)", cfg.Tick, cfg.DryRun, cfg.Disabled, cfg.ProbeTarget, cfg.HaulerTarget, cfg.IncomeBar), map[string]interface{}{
+	logger.Log("INFO", fmt.Sprintf("Bootstrap coordinator starting (tick %s, disabled=%v, probes→%d, haulers→%d, gate workers→%d)", cfg.Tick, cfg.Disabled, probeTarget, haulerTarget, gateWorkerTarget), map[string]interface{}{
 		"action":       "bootstrap_start",
 		"container_id": cmd.ContainerID,
-		"dry_run":      cfg.DryRun,
 		"disabled":     cfg.Disabled,
 	})
 

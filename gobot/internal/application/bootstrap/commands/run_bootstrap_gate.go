@@ -36,7 +36,7 @@ type gateWorkerPlan struct {
 	// fleet exclusive, the BUY (plus any idle non-dedicated hull the executor claims on its own) is the SOLE
 	// source of the gate workforce — it sizes it from scratch.
 	Buy int
-	// DesiredWorkers is the sizing target: gate_worker_target, live from GATE entry.
+	// DesiredWorkers is the sizing target: gateWorkerTarget, live from GATE entry.
 	DesiredWorkers int
 	// KeptOnContract is how many haulers stay on contracts through GATE — the WHOLE contract delivery fleet
 	// now (sp-cdxy2), never a floored subset — carried for the decision log.
@@ -52,7 +52,7 @@ type gateWorkerPlan struct {
 //     contract→manufacturing re-tag dropped the scaler's ContractHullCount below its delivery target, so
 //     the scaler re-bought to refill and GATE repurposed again. Contracts fund the gate build at full
 //     scale (RULINGS #1); the depot warehouse/stocker hulls are separately tagged and likewise untouched.
-//  2. RAMP TO THE WORKFORCE TARGET FROM GATE ENTRY — target gate_worker_target workers as soon as the
+//  2. RAMP TO THE WORKFORCE TARGET FROM GATE ENTRY — target gateWorkerTarget workers as soon as the
 //     pipeline exists and BUY the staged delta (one hull per tick) while the executor's workers fall short.
 //     A bought hull is dedicated to the manufacturing fleet and shows up as a GateWorker next tick, so the
 //     deficit shrinks one per tick and the buy stops at the target — never an over-buy.
@@ -60,17 +60,17 @@ type gateWorkerPlan struct {
 // The target deliberately does NOT wait for, or track, the pipeline's revealed chain count: waiting would
 // stall the whole construction ramp behind revelation, and tracking would make the target non-monotone
 // inside GATE — a chain count that dropped would turn the hulls just bought into surplus and release them,
-// the buy/release oscillation the bang-bang around desired exists to prevent. gate_worker_target is the
+// the buy/release oscillation the bang-bang around desired exists to prevent. gateWorkerTarget is the
 // single operator-reachable size, and the working-capital floor (not the shape) is what bounds the spend.
 //
 // It is pure and idempotent: a restart mid-GATE re-derives the same plan from the re-observed pool, so no
 // ramp hull is double-bought.
-func planGateWorkers(obs Observation, cfg bootstrapRunConfig) gateWorkerPlan {
+func planGateWorkers(obs Observation) gateWorkerPlan {
 	// (1) The exclusive contract fleet is never repurposed — release nothing, keep the whole delivery fleet.
 	kept := len(obs.Haulers)
 
-	// (2) The workforce target, live from the moment GATE has a pipeline to work.
-	desired := cfg.GateWorkerTarget
+	// (2) The workforce target, applied from the moment GATE has a pipeline to work.
+	desired := gateWorkerTarget
 
 	// Buy the staged delta (at most one per tick) while the executor's already-claimed workers fall short.
 	// GateWorkers is the whole pool: a bought hull becomes a GateWorker next tick, so the deficit shrinks
@@ -144,7 +144,7 @@ func gateSiteOrNone(site string) string {
 //
 // The monitor→EXPANSION transition is derivePhase's job (obs.ConstructionComplete), so GATE has no explicit
 // "is it done?" branch — it just reconciles the construction drive each tick until the phase flips.
-func (h *RunBootstrapCoordinatorHandler) actGate(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
+func (h *RunBootstrapCoordinatorHandler) actGate(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
 	// (1) Gate-site discovery is the observer's job; without a site GATE cannot act (fail-closed).
@@ -161,30 +161,22 @@ func (h *RunBootstrapCoordinatorHandler) actGate(ctx context.Context, cmd *RunBo
 	// (2) Start the pipeline once. On the creating tick, do nothing else — the observation still reads
 	// !started, so adoption + sizing wait for next tick when the pipeline is real.
 	if !obs.ConstructionStarted {
-		h.startConstruction(ctx, cmd, cfg, obs, res)
+		h.startConstruction(ctx, cmd, obs, res)
 		return
 	}
 
 	// (3) Ensure the executor is running AND has adopted the pipeline (the L57 adoption bounce).
-	h.ensureExecutorAdopted(ctx, cmd, cfg, obs, res)
+	h.ensureExecutorAdopted(ctx, cmd, obs, res)
 
 	// (4) Size the gate workforce: buy the staged top-up if the executor's workers fall short.
-	h.sizeGateWorkers(ctx, cmd, cfg, obs, res)
+	h.sizeGateWorkers(ctx, cmd, obs, res)
 }
 
 // startConstruction drives `construction start <site>` once (idempotent at the adapter — it resumes an
 // existing pipeline). Caller has checked obs.ConstructionStarted is false.
-func (h *RunBootstrapCoordinatorHandler) startConstruction(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
+func (h *RunBootstrapCoordinatorHandler) startConstruction(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
-	if cfg.DryRun {
-		logger.Log("INFO", fmt.Sprintf("Bootstrap DRY-RUN: WOULD start construction pipeline for gate site %s (took no action)", obs.GateSite), map[string]interface{}{
-			"action":       "bootstrap_would_start_construction",
-			"container_id": cmd.ContainerID,
-			"site":         obs.GateSite,
-		})
-		return
-	}
 	if h.construction == nil {
 		res.Blocker = "no_construction_manager"
 		logger.Log("WARN", "Bootstrap GATE needs to start construction but no construction manager wired", map[string]interface{}{
@@ -216,7 +208,7 @@ func (h *RunBootstrapCoordinatorHandler) startConstruction(ctx context.Context, 
 // startup (captain L57), so: not running ⇒ start it (a fresh start adopts); running-but-not-adopted ⇒
 // bounce it (a restart adopts); running-and-adopted ⇒ nothing. Each branch is guarded on the observation,
 // so a restart mid-GATE re-derives the right one and never double-acts. Caller has checked the pipeline exists.
-func (h *RunBootstrapCoordinatorHandler) ensureExecutorAdopted(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
+func (h *RunBootstrapCoordinatorHandler) ensureExecutorAdopted(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
 	// Adoption short-circuits FIRST: if the pipeline is being worked (adopted), we are done regardless of
@@ -238,13 +230,6 @@ func (h *RunBootstrapCoordinatorHandler) ensureExecutorAdopted(ctx context.Conte
 	}
 
 	if !obs.ManufacturingRunning {
-		if cfg.DryRun {
-			logger.Log("INFO", "Bootstrap DRY-RUN: WOULD ensure the manufacturing coordinator (construction executor) is running — a fresh start adopts the pipeline (took no action)", map[string]interface{}{
-				"action":       "bootstrap_would_ensure_manufacturing",
-				"container_id": cmd.ContainerID,
-			})
-			return
-		}
 		if err := h.manufacturing.EnsureRunning(ctx, cmd.PlayerID); err != nil {
 			res.Blocker = "manufacturing_ensure_error"
 			logger.Log("ERROR", fmt.Sprintf("Bootstrap failed to ensure the manufacturing coordinator running: %v", err), map[string]interface{}{
@@ -262,13 +247,6 @@ func (h *RunBootstrapCoordinatorHandler) ensureExecutorAdopted(ctx context.Conte
 	}
 
 	// Running but not adopted ⇒ the L57 bounce: restart so it re-scans and adopts the fresh pipeline.
-	if cfg.DryRun {
-		logger.Log("INFO", "Bootstrap DRY-RUN: WOULD bounce the manufacturing coordinator so it ADOPTS the freshly-created gate pipeline (captain L57) (took no action)", map[string]interface{}{
-			"action":       "bootstrap_would_bounce_manufacturing",
-			"container_id": cmd.ContainerID,
-		})
-		return
-	}
 	if err := h.manufacturing.BounceForAdoption(ctx, cmd.PlayerID); err != nil {
 		res.Blocker = "manufacturing_bounce_error"
 		logger.Log("ERROR", fmt.Sprintf("Bootstrap failed to bounce the manufacturing coordinator for adoption: %v", err), map[string]interface{}{
@@ -290,26 +268,26 @@ func (h *RunBootstrapCoordinatorHandler) ensureExecutorAdopted(ctx context.Conte
 // hauler is ever repurposed; the loop stays only so a regression that reintroduced a release would still
 // route through the guarded, idempotent repurposer rather than a raw re-tag. Each step is independently
 // guarded, so a partial failure this tick simply retries next tick.
-func (h *RunBootstrapCoordinatorHandler) sizeGateWorkers(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
-	plan := planGateWorkers(obs, cfg)
+func (h *RunBootstrapCoordinatorHandler) sizeGateWorkers(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult) {
+	plan := planGateWorkers(obs)
 	res.DesiredWorkers = plan.DesiredWorkers
 
 	// (1) INERT (always empty, sp-cdxy2): the exclusive contract fleet is never repurposed. Retained as the
 	// guarded seam so a reintroduced release could never bypass the idempotent repurposer.
 	for _, ship := range plan.ReleaseShips {
-		h.repurposeHauler(ctx, cmd, cfg, ship, res)
+		h.repurposeHauler(ctx, cmd, ship, res)
 	}
 
 	// (1b) sp-mxflh: release the gate's OWN surplus IDLE manufacturing hulls to the UNDEDICATED idle pool so the
 	// contract scaler's reclaim-before-buy tier adopts them into the contract fleet — the zero-buy re-balance
 	// (which is also how the scaler's over-buying stops). Non-empty ONLY when over-provisioned; FREE (no spend).
 	if len(plan.SurplusToUndedicate) > 0 {
-		h.releaseGateSurplus(ctx, cmd, cfg, plan, res)
+		h.releaseGateSurplus(ctx, cmd, plan, res)
 	}
 
 	// (2) Staged ramp: buy the delta (at most one hull) only while the executor's workers are short of the target.
 	if plan.Buy > 0 {
-		h.maybeBuyGateWorker(ctx, cmd, cfg, obs, plan, res)
+		h.maybeBuyGateWorker(ctx, cmd, obs, plan, res)
 	}
 }
 
@@ -319,17 +297,10 @@ func (h *RunBootstrapCoordinatorHandler) sizeGateWorkers(ctx context.Context, cm
 // contract fleet before it buys — the zero-buy re-balance (sp-mxflh). FREE (un-dedicate spends nothing) ⇒ never
 // cushion-gated. Best-effort + fail-closed: a nil releaser or a partial release just re-balances fewer this
 // tick (retried next); the releaser re-guards each hull's idle status so one that started a task since the
-// observation is never yanked mid-task. Skipped under dry-run (observe-only, like the buy/repurpose paths).
-func (h *RunBootstrapCoordinatorHandler) releaseGateSurplus(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, plan gateWorkerPlan, res *reconcileResult) {
+// observation is never yanked mid-task.
+func (h *RunBootstrapCoordinatorHandler) releaseGateSurplus(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, plan gateWorkerPlan, res *reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
-	if cfg.DryRun {
-		logger.Log("INFO", fmt.Sprintf("Bootstrap DRY-RUN: WOULD release %d surplus idle gate worker(s) to the undedicated pool for the contract scaler to adopt: %v (took no action)", len(plan.SurplusToUndedicate), plan.SurplusToUndedicate), map[string]interface{}{
-			"action":       "bootstrap_would_release_gate_surplus",
-			"container_id": cmd.ContainerID,
-		})
-		return
-	}
 	if h.gateReleaser == nil {
 		res.Blocker = "no_gate_releaser"
 		logger.Log("WARN", "Bootstrap GATE has surplus gate workers to release but no gate-surplus releaser wired — holding the surplus", map[string]interface{}{
@@ -359,17 +330,9 @@ func (h *RunBootstrapCoordinatorHandler) releaseGateSurplus(ctx context.Context,
 // manufacturing coordinator claims it as a gate worker. INERT under sp-cdxy2 (the exclusive contract fleet is
 // never repurposed, so planGateWorkers hands it no ships) — retained as the guarded, idempotent seam. Idempotent
 // at the adapter (clearing an already-clear tag is a no-op), so a re-release across a laggy observation is harmless.
-func (h *RunBootstrapCoordinatorHandler) repurposeHauler(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, ship string, res *reconcileResult) {
+func (h *RunBootstrapCoordinatorHandler) repurposeHauler(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, ship string, res *reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
-	if cfg.DryRun {
-		logger.Log("INFO", fmt.Sprintf("Bootstrap DRY-RUN: WOULD repurpose contract hauler %s to gate construction (took no action)", ship), map[string]interface{}{
-			"action":       "bootstrap_would_repurpose",
-			"container_id": cmd.ContainerID,
-			"ship":         ship,
-		})
-		return
-	}
 	if h.repurposer == nil {
 		res.Blocker = "no_repurposer"
 		logger.Log("WARN", "Bootstrap GATE needs to repurpose a hauler to construction but no repurposer wired", map[string]interface{}{
@@ -398,9 +361,9 @@ func (h *RunBootstrapCoordinatorHandler) repurposeHauler(ctx context.Context, cm
 
 // maybeBuyGateWorker evaluates and (unless dry-run) executes ONE staged gate-worker buy behind the
 // readiness and capital gates, emitting the same guardrail arithmetic as the probe/hauler buys (RULINGS
-// #4, fail closed). Gate workers reuse the light-hauler asset (hauler_ship_type). Caller has checked the
+// #4, fail closed). Gate workers reuse the light-hauler asset (haulerShipType). Caller has checked the
 // plan calls for a buy (pool short of the workforce target).
-func (h *RunBootstrapCoordinatorHandler) maybeBuyGateWorker(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, plan gateWorkerPlan, res *reconcileResult) {
+func (h *RunBootstrapCoordinatorHandler) maybeBuyGateWorker(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, plan gateWorkerPlan, res *reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
 	// Readiness gate: an idle hull must exist to fly to the yard and execute the buy. No idle hull ⇒
@@ -426,7 +389,7 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyGateWorker(ctx context.Context,
 	}
 
 	// Price-check first (reuse shipyard list). Unreadable price ⇒ the capital gate fails CLOSED.
-	price, yard, readable, err := h.gateAcquirer.PriceCheck(ctx, cmd.PlayerID, cfg.HaulerShipType)
+	price, yard, readable, err := h.gateAcquirer.PriceCheck(ctx, cmd.PlayerID, haulerShipType)
 	if err != nil || !readable {
 		res.Blocker = "price_unreadable"
 		logger.Log("WARN", fmt.Sprintf("Bootstrap gate worker price unreadable — failing closed (no buy): err=%v", err), map[string]interface{}{
@@ -437,27 +400,27 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyGateWorker(ctx context.Context,
 		return
 	}
 
-	// Capital gate (sp-bpdf): the gate-worker buy is bootstrap's GATE-phase construction spend, so it now
+	// Capital gate (sp-bpdf): the gate-worker buy is bootstrap's GATE-phase construction spend, so it
 	// reserves the SAME absolute contract working-capital floor as the hauler buy (sp-acv5) — affordable ⇔
-	// cushion=(treasury−price) ≥ contract_working_capital_floor — NOT the old proportional reserve_margin×
-	// treasury cap. Gate construction therefore can never drive the treasury below the working-capital line
+	// cushion=(treasury−price) ≥ the contract working-capital floor. Gate construction therefore can never
+	// drive the treasury below the working-capital line
 	// the fleet autosizer also honors (common.ImmutableReserveFloor; the two-buyer safety, ktio-B). A worker
 	// that fails the gate this tick simply waits and re-checks (the whole contract fleet keeps earning
 	// through GATE to grow the treasury). RULINGS #4 fail-closed: an unreadable price already returned above, and a
 	// cushion below the floor does NOT buy — so after a permitted buy treasury ≥ floor by construction. The probe
 	// buy gates on the same shape against common.ImmutableReserveFloor (see run_bootstrap_reconcile.go).
 	cushion := obs.Treasury - price
-	affordable := cushion >= cfg.ContractWorkingCapitalFloor
+	affordable := cushion >= contractWorkingCapitalFloor
 	floorNote := "clears the working-capital floor"
 	if !affordable {
 		floorNote = "BLOCKED by the working-capital floor (treasury−price below the contract working-capital floor)"
 	}
-	logger.Log("INFO", fmt.Sprintf("Bootstrap gate worker buy decision: price=%d treasury=%d floor=%d cushion=(treasury−price)=%d affordable=(cushion≥floor)=%v desired=%d have=%d yard=%s — %s", price, obs.Treasury, cfg.ContractWorkingCapitalFloor, cushion, affordable, plan.DesiredWorkers, obs.GateWorkers, yard, floorNote), map[string]interface{}{
+	logger.Log("INFO", fmt.Sprintf("Bootstrap gate worker buy decision: price=%d treasury=%d floor=%d cushion=(treasury−price)=%d affordable=(cushion≥floor)=%v desired=%d have=%d yard=%s — %s", price, obs.Treasury, contractWorkingCapitalFloor, cushion, affordable, plan.DesiredWorkers, obs.GateWorkers, yard, floorNote), map[string]interface{}{
 		"action":       "bootstrap_gate_worker_buy_decision",
 		"container_id": cmd.ContainerID,
 		"price":        price,
 		"treasury":     obs.Treasury,
-		"floor":        cfg.ContractWorkingCapitalFloor,
+		"floor":        contractWorkingCapitalFloor,
 		"cushion":      cushion,
 		"affordable":   affordable,
 		"desired":      plan.DesiredWorkers,
@@ -469,16 +432,7 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyGateWorker(ctx context.Context,
 		return
 	}
 
-	if cfg.DryRun {
-		res.WouldBuy++
-		logger.Log("INFO", fmt.Sprintf("Bootstrap DRY-RUN: WOULD buy 1 %s at %s for %d as a gate-construction worker (took no action)", cfg.HaulerShipType, yard, price), map[string]interface{}{
-			"action":       "bootstrap_would_buy_gate_worker",
-			"container_id": cmd.ContainerID,
-		})
-		return
-	}
-
-	bought, err := h.gateAcquirer.BuyForConstruction(ctx, cmd.PlayerID, cfg.HaulerShipType, yard)
+	bought, err := h.gateAcquirer.BuyForConstruction(ctx, cmd.PlayerID, haulerShipType, yard)
 	if err != nil {
 		res.Blocker = "purchase_error"
 		logger.Log("ERROR", fmt.Sprintf("Bootstrap gate worker purchase failed: %v", err), map[string]interface{}{

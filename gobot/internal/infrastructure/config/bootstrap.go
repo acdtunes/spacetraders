@@ -1,56 +1,21 @@
 package config
 
-// BootstrapConfig holds the captain bootstrap coordinator's knobs (sp-3nbe). It nests under the
-// top-level [bootstrap] section and is injected into the bootstrap container's launch config on
-// every build — creation AND restart recovery, via resolveBootstrapConfig — so a captain retunes
-// the cold-start behaviour by editing config.yaml and restarting, with NO code redeploy (the
-// sp-ts82 live-config pattern, RULINGS #2/#5).
+// BootstrapConfig holds the captain bootstrap coordinator's two operator controls (sp-3nbe). It
+// nests under the top-level [bootstrap] section and is injected into the bootstrap container's
+// launch config on every build — creation AND restart recovery, via resolveBootstrapConfig — so a
+// captain changes them by editing config.yaml and restarting, with NO code redeploy (the sp-ts82
+// live-config pattern, RULINGS #2).
 //
-// Every knob follows the codebase idiom: a zero value means "unset" and defers to the coordinator's
-// documented default (resolved once in the handler's resolveBootstrapConfig). The Analyst/Admiral
-// own these numbers — they are all config, never call-site constants (RULINGS #5).
-//
-// Slice 1 + Slice 2 + Slice 3 knobs. The INCOME knobs (hauler_target, income_bar, hauler_ship_type)
-// landed with Slice 2; the GATE knob (gate_worker_target) landed with Slice 3, the last deferred
-// field, now that the GATE phase reads it.
+// The cold-start SHAPE — how many probes, haulers and gate workers, and which hulls — is fixed in
+// the coordinator: it is one known-good sequence, not a per-run configuration. Only the boot-gate
+// and the cadence live here; a zero value means "unset" and defers to the coordinator's documented
+// default.
 type BootstrapConfig struct {
 	// BootstrapDisabled stands the WHOLE coordinator down. Absent/false = ACTIVE, so an
 	// absent-config boots LIVE (pinned by test — Admiral: no dark-shipping). Set true only in an
 	// emergency; the container stays resident so a flip + restart re-arms it.
 	BootstrapDisabled bool `mapstructure:"bootstrap_disabled"`
-	// DryRun evaluates every decision and logs what it WOULD do (probe buys, scout assignments) but
-	// acts on nothing. NOT dark-shipping — it WARNs loudly every tick (no-silent-dry-run rule).
-	DryRun bool `mapstructure:"dry_run"`
-
-	// ProbeTarget is the DATA-phase probe count the coordinator ramps to (staged, capital-gated).
-	// 0/absent → 3.
-	ProbeTarget int `mapstructure:"probe_target"`
-	// TickSeconds is the reconcile cadence. 0/absent → 300 (5min); cold-start is a slow ramp.
+	// TickSeconds is the reconcile cadence. 0/absent → 45. Also live-tunable (tick_secs), which
+	// lands on the next tick with no restart.
 	TickSeconds int `mapstructure:"tick_seconds"`
-	// ProbeShipType is the shipyard ship-type symbol bought for a probe (RULINGS #5: even the asset
-	// is a knob). 0/absent → SHIP_PROBE.
-	ProbeShipType string `mapstructure:"probe_ship_type"`
-
-	// --- INCOME-phase knobs (Slice 2, sp-ysgb.1). ---
-
-	// HaulerTarget is the INCOME hull cap: the coordinator buys one light hauler per viable contract
-	// hub, up to this many (staged, capital-gated). 0/absent → 4 (spec range 4–5).
-	HaulerTarget int `mapstructure:"hauler_target"`
-	// IncomeBar is the INCOME→GATE exit: the realized NET credits/hour the contract fleet must clear
-	// before the arc drives gate construction. Deliberately conservative — the Phase-1 objective is
-	// building the gate, so a too-HIGH bar (arc never reaches GATE) is the worse failure. This is the
-	// primary field-calibration knob. 0/absent → 10000.
-	IncomeBar float64 `mapstructure:"income_bar"`
-	// HaulerShipType is the shipyard ship-type bought for a contract hauler (RULINGS #5: the asset is a
-	// knob). 0/absent → SHIP_LIGHT_HAULER.
-	HaulerShipType string `mapstructure:"hauler_ship_type"`
-
-	// --- GATE-phase knob (Slice 3, sp-ysgb.2). ---
-
-	// GateWorkerTarget is the GATE-phase worker cap: the coordinator sizes gate-construction workers to
-	// ~one per active gate-material chain + a delivery hauler, up to this many — BUYING the shortfall
-	// (staged, capital-gated) because the contract fleet is exclusive and is never drawn on. It caps the
-	// top-up so a wide pipeline never runs the treasury dry, while the whole contract fleet keeps earning
-	// to fund material acquisition. 0/absent → 6. Gate workers reuse hauler_ship_type.
-	GateWorkerTarget int `mapstructure:"gate_worker_target"`
 }

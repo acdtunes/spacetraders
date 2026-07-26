@@ -9,12 +9,12 @@ import "testing"
 // floor) the frigate was freed, stopped earning, and the treasury never grew → the hauler stayed
 // unaffordable forever → permanent deadlock (the frigate idle at the yard).
 //
-// The fix caches the last readable hauler price (seeded in DATA while a probe-buy hull is already at the
+// The fix caches the last readable hauler price (seeded in cold start while a probe-buy hull is already at the
 // yard, refreshed on every readable hauler PriceCheck) and gates the free on it: the frigate keeps EARNING
 // until treasury − haulerPrice ≥ ContractWorkingCapitalFloor, and only THEN is it freed to position+buy.
 // The money guard is unchanged (same cushion≥floor test) — the fix only changes WHEN the frigate is freed.
 
-// mucUnaffordableObs is the live deadlock (TORWIND_DEV12): a cold-start INCOME pivot observation with the
+// mucUnaffordableObs is the live deadlock (TORWIND_DEV12): a cold-start cold-start pivot observation with the
 // hauler price UNREADABLE (cold yard) and the treasury set so treasury − price is far below the 150k floor.
 func mucUnaffordableObs() Observation {
 	obs := pivotObs()      // 0 haulers, frigate on its loop, cargo empty, no idle purchaser, viable hubs
@@ -31,7 +31,7 @@ func TestBootstrap_Muc5x_ColdPrice_UnaffordableCached_KeepsFrigateEarning(t *tes
 	loop := &fakeFrigateLoop{}
 	scanner := &fakeScanner{positionDispatched: true}
 	h := pivotHandlerScanned(mucUnaffordableObs(), ret, acq, loop, scanner)
-	// Seed the cache exactly as the DATA phase would have (a hull at the yard read the hauler price earlier).
+	// Seed the cache exactly as cold start would have (a hull at the yard read the hauler price earlier).
 	h.cacheHaulerPrice("boot-1", 363_473)
 
 	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
@@ -88,7 +88,7 @@ func TestBootstrap_Muc5x_ColdPrice_AffordableCached_FreesAndPositionsAsBefore(t 
 	}
 }
 
-// NO cache yet (first-ever read, e.g. a fresh boot before the DATA seed) ⇒ the guard is INERT: the free
+// NO cache yet (first-ever read, e.g. a fresh boot before the probe-buy seed) ⇒ the guard is INERT: the free
 // proceeds to the existing free+position (byte-identical to pre-fix). The guard only tightens on a POSITIVE
 // cache, so an absent cache never changes behavior. (This is also the documented restart-residual boundary.)
 func TestBootstrap_Muc5x_ColdPrice_NoCache_ProceedsToFreeAsBefore(t *testing.T) {
@@ -108,39 +108,39 @@ func TestBootstrap_Muc5x_ColdPrice_NoCache_ProceedsToFreeAsBefore(t *testing.T) 
 	}
 }
 
-// The DATA seed: while a probe-buy hull is at the yard, bootstrap ALSO reads + caches the hauler price, so
-// INCOME knows affordability before it ever frees the frigate. Proves the seed populates the cache through a
-// real DATA-phase reconcile (probes under target, a readable yard) — the mechanism that closes the deadlock
+// The probe-buy seed: while a probe-buy hull is at the yard, bootstrap ALSO reads + caches the hauler price, so
+// the pivot knows affordability before it ever frees the frigate. Proves the seed populates the cache through a
+// real cold-start reconcile (probes under target, a readable yard) — the mechanism that closes the deadlock
 // on a normal cold start without ever freeing the frigate first.
-func TestBootstrap_Muc5x_DataPhase_SeedsHaulerPriceCache(t *testing.T) {
+func TestBootstrap_Muc5x_ProbeBuy_SeedsHaulerPriceCache(t *testing.T) {
 	obs := Observation{
-		HomeSystem: "X1-HQ", ProbeCount: 1, ProbesScouting: 1, // under target 3 ⇒ DATA, acquireProbesToTarget runs
+		HomeSystem: "X1-HQ", ProbeCount: 1, ProbesScouting: 1, // under target 3 ⇒ acquireProbesToTarget runs
 		HasIdlePurchaser: true, Treasury: 2_000_000,
 		BatchContractRunning: true, // isolate: don't also try to launch batch-contract (no runner wired)
 		Readable:             true,
 	}
-	probeAcq := &fakeAcquirer{price: 40_000, yard: "X1-HQ-YARD", readable: true}   // yard readable ⇒ a hull is present
+	probeAcq := &fakeAcquirer{price: 40_000, yard: "X1-HQ-YARD", readable: true}       // yard readable ⇒ a hull is present
 	haulAcq := &fakeHaulerAcquirer{price: 363_473, yard: "X1-HQ-YARD", readable: true} // same yard prices the hauler too
 	h := NewRunBootstrapCoordinatorHandler(nil)
 	h.SetShipRefresher(&fakeRefresher{})
 	h.SetWorldObserver(&fakeObserver{obs: obs})
 	h.SetProbeAcquirer(probeAcq)
 	h.SetScoutPostDeclarer(&fakeDeclarer{})
-	h.SetHaulerAcquirer(haulAcq) // wired so the DATA seed can read the hauler price at the yard
+	h.SetHaulerAcquirer(haulAcq) // wired so the probe-buy seed can read the hauler price at the yard
 
 	if _, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd()); err != nil {
 		t.Fatalf("reconcileOnce: %v", err)
 	}
 	if got := h.cachedHaulerPrice("boot-1"); got != 363_473 {
-		t.Fatalf("the DATA phase must seed the hauler-price cache from the yard read; cached=%d want=363473 (haulAcq priceChks=%d)", got, haulAcq.priceChks)
+		t.Fatalf("cold start must seed the hauler-price cache from the yard read; cached=%d want=363473 (haulAcq priceChks=%d)", got, haulAcq.priceChks)
 	}
 }
 
-// End-to-end (anti-theatre): the DATA seed feeds the INCOME guard within one handler. Tick 1 is a DATA tick
-// that seeds the cache from the yard; then an INCOME tick with an UNAFFORDABLE treasury must keep the frigate
+// End-to-end (anti-theatre): the probe-buy seed feeds the contract guard within one handler. Tick 1 is a tick
+// that seeds the cache from the yard; then a cold-start tick with an UNAFFORDABLE treasury must keep the frigate
 // earning (no free) purely off that seeded cache — no direct cache priming.
-func TestBootstrap_Muc5x_DataSeedFeedsIncomeGuard_EndToEnd(t *testing.T) {
-	// Tick 1: DATA — a probe-buy hull at the yard seeds the hauler price into the cache.
+func TestBootstrap_Muc5x_SeedFeedsPivotGuard_EndToEnd(t *testing.T) {
+	// Tick 1: a probe-buy hull at the yard seeds the hauler price into the cache.
 	dataObs := Observation{
 		HomeSystem: "X1-HQ", ProbeCount: 1, ProbesScouting: 1,
 		HasIdlePurchaser: true, Treasury: 2_000_000, BatchContractRunning: true, Readable: true,
@@ -164,13 +164,13 @@ func TestBootstrap_Muc5x_DataSeedFeedsIncomeGuard_EndToEnd(t *testing.T) {
 	h.SetShipyardScanner(scanner)
 
 	if _, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd()); err != nil {
-		t.Fatalf("tick 1 (DATA seed): %v", err)
+		t.Fatalf("tick 1 (probe-buy seed): %v", err)
 	}
 	if h.cachedHaulerPrice("boot-1") != 363_473 {
 		t.Fatalf("tick 1 must seed the cache; cached=%d", h.cachedHaulerPrice("boot-1"))
 	}
 
-	// Tick 2: INCOME — provisioned, viable hubs, cold hauler price, UNAFFORDABLE treasury. The seeded cache
+	// Tick 2: provisioned, viable hubs, cold hauler price, UNAFFORDABLE treasury. The seeded cache
 	// must hold the frigate on its loop (no free) with blocker=capital_gate.
 	haulAcq.readable = false // the yard is cold again for the hauler (frigate on its loop, probes scouting)
 	incomeObs := mucUnaffordableObs()
@@ -178,10 +178,10 @@ func TestBootstrap_Muc5x_DataSeedFeedsIncomeGuard_EndToEnd(t *testing.T) {
 
 	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if err != nil {
-		t.Fatalf("tick 2 (INCOME guard): %v", err)
+		t.Fatalf("tick 2 (contract guard): %v", err)
 	}
 	if loop.stopCalls != 0 || len(ret.dedications) != 0 || scanner.positionCalls != 0 {
-		t.Fatalf("tick 2 must keep the frigate earning off the DATA-seeded cache; stopCalls=%d dedications=%v positionCalls=%d (blocker=%q)", loop.stopCalls, ret.dedications, scanner.positionCalls, res.Blocker)
+		t.Fatalf("tick 2 must keep the frigate earning off the probe-buy-seeded cache; stopCalls=%d dedications=%v positionCalls=%d (blocker=%q)", loop.stopCalls, ret.dedications, scanner.positionCalls, res.Blocker)
 	}
 	if res.Blocker != "capital_gate" {
 		t.Fatalf("tick 2 must block capital_gate (frigate keeps earning), got %q", res.Blocker)

@@ -5,7 +5,7 @@ import "sort"
 // Hub is a selected contract hub: a waypoint a light hauler is pre-positioned on because contract
 // goods are densely + cheaply sourceable there, so the contract fleet's cycle-time drops. The selector
 // returns hubs in placement-priority order (best first); the caller places one hauler per hub, up to
-// hauler_target, skipping hubs already served.
+// haulerTarget, skipping hubs already served.
 type Hub struct {
 	Waypoint      string  // the placement target (where a hauler is staged)
 	System        string  // its system (intra-system clustering context)
@@ -47,7 +47,7 @@ const minHubSourceableGoods = 1
 //     ticks (the same data yields the same order, so re-observation never churns placements).
 //
 // It is a PURE function (no I/O, deterministic) so it is fixture-testable and the reconciler can call
-// it every tick. It does NOT apply hauler_target — the caller caps at min(len(hubs), hauler_target)
+// it every tick. It does NOT apply haulerTarget — the caller caps at min(len(hubs), haulerTarget)
 // and skips hubs a hauler already serves.
 func selectContractHubs(markets []MarketSnapshot, contractGoods []string) []Hub {
 	targetSet := make(map[string]struct{}, len(contractGoods))

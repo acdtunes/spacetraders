@@ -11,22 +11,11 @@ import (
 
 // These tests cover the scaled GATE-entry gate, driven by the sp-gm7r DYNAMIC bar (the full contract fleet
 // must reach the auto-scaler's live target) rather than a static hauler floor. THE ORIGINAL ktio DEADLOCK:
-// derivePhase entered GATE the instant realized income cleared the 10000 income_bar — trivially crossed by
+// derivePhase entered GATE the instant realized income cleared a fixed earnings bar — trivially crossed by
 // ONE contract payout — so bootstrap drove GATE with ZERO haulers and latched sticky on ConstructionStarted,
 // permanently. THE sp-gm7r FIX requires a genuinely SCALED AND FUNDED contract op to enter GATE: the FULL
 // fleet (delivery + depot) ≥ ContractScalerTarget AND a treasury surplus. Neither coverage nor realized
 // $/hr is a gate — both are continuous background readings.
-
-// scaledGateCfg resolves the coordinator config for the GATE-entry gate. gate_min_haulers (2) is the
-// escape-hatch starved-earner floor (GATE ENTRY uses the scaler target), carrying its documented default.
-func scaledGateCfg(t *testing.T) bootstrapRunConfig {
-	t.Helper()
-	cfg := resolveBootstrapConfig(baseCmd(), nil)
-	if cfg.GateMinHaulers != defaultGateMinHaulers {
-		t.Fatalf("scaled gate must carry the documented starved-earner floor: haulers=%d", cfg.GateMinHaulers)
-	}
-	return cfg
-}
 
 // gateSurplusTreasury is a treasury that clears the GATE-entry surplus floor (≥ 550k ⇒ surplus ≥ 500k).
 const gateSurplusTreasury = 600_000
@@ -36,13 +25,12 @@ const gateSurplusTreasury = 600_000
 // Both conditions met (full fleet ≥ target, a treasury surplus) → GATE: a genuinely scaled, funded contract
 // op is the legitimate entry.
 func TestBootstrap_ScaledGate_FullFleetAtTargetAndFunded_EntersGate(t *testing.T) {
-	cfg := scaledGateCfg(t)
 	obs := Observation{
 		Haulers:              []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}}, // 2 delivery
 		ContractScalerTarget: 2,                                                // full fleet (2) == target
 		Treasury:             gateSurplusTreasury,                              // surplus ≥ floor
 	}
-	if p := derivePhase(obs, cfg); p != PhaseGate {
+	if p := derivePhase(obs); p != PhaseGate {
 		t.Fatalf("full fleet at target + surplus → GATE, got %s", p)
 	}
 }
@@ -51,9 +39,8 @@ func TestBootstrap_ScaledGate_FullFleetAtTargetAndFunded_EntersGate(t *testing.T
 // op). Must NOT enter GATE — the full fleet (0) is below the scaler target, and no income reading can buy its
 // way past that.
 func TestBootstrap_ScaledGate_SpikeWithZeroHaulers_DoesNotGate(t *testing.T) {
-	cfg := scaledGateCfg(t)
 	obs := Observation{Haulers: nil, ContractScalerTarget: 2, IncomePerHour: 300000, Treasury: 2_000_000}
-	if p := derivePhase(obs, cfg); p == PhaseGate {
+	if p := derivePhase(obs); p == PhaseGate {
 		t.Fatalf("a 0-hauler income spike must NOT enter GATE (full fleet below target — the ktio deadlock), got %s", p)
 	}
 }
@@ -63,7 +50,6 @@ func TestBootstrap_ScaledGate_SpikeWithZeroHaulers_DoesNotGate(t *testing.T) {
 // and the SAME sweep on an op one hull SHORT of the target derives GATE at no reading at all. Income is a
 // heartbeat number, never a phase signal: it can neither open the gate nor hold it shut.
 func TestBootstrap_ScaledGate_IncomeIsNotAPhaseSignal(t *testing.T) {
-	cfg := scaledGateCfg(t)
 	funded := func(hulls int, income float64) Observation {
 		return Observation{
 			Haulers:              nHaulers(hulls),
@@ -73,10 +59,10 @@ func TestBootstrap_ScaledGate_IncomeIsNotAPhaseSignal(t *testing.T) {
 		}
 	}
 	for _, income := range []float64{-500_000, -55_000, 0, 9_999, 60_000, 1_000_000} {
-		if p := derivePhase(funded(2, income), cfg); p != PhaseGate {
+		if p := derivePhase(funded(2, income)); p != PhaseGate {
 			t.Errorf("a scaled, funded op at target must enter GATE at income %.0f, got %s", income, p)
 		}
-		if p := derivePhase(funded(1, income), cfg); p == PhaseGate {
+		if p := derivePhase(funded(1, income)); p == PhaseGate {
 			t.Errorf("an op one hull short of target must NOT enter GATE at income %.0f, got %s", income, p)
 		}
 	}
@@ -86,14 +72,13 @@ func TestBootstrap_ScaledGate_IncomeIsNotAPhaseSignal(t *testing.T) {
 // scanned (30% coverage). Scan-completeness runs as continuous background (the freshness sizer), never a phase
 // gate.
 func TestBootstrap_ScaledGate_LowCoverage_StillEntersGate(t *testing.T) {
-	cfg := scaledGateCfg(t)
 	obs := Observation{
 		MarketsTotal: 10, MarketsCovered: 3, // 30% coverage
 		Haulers:              []HaulerSnapshot{{Symbol: "H1"}, {Symbol: "H2"}},
 		ContractScalerTarget: 2,
 		Treasury:             gateSurplusTreasury,
 	}
-	if p := derivePhase(obs, cfg); p != PhaseGate {
+	if p := derivePhase(obs); p != PhaseGate {
 		t.Fatalf("a scaled, funded op must enter GATE regardless of coverage (30%%), got %s", p)
 	}
 }
@@ -102,10 +87,9 @@ func TestBootstrap_ScaledGate_LowCoverage_StillEntersGate(t *testing.T) {
 // restart), and — because construction can only START after a legit scaled+funded entry — this latch can never
 // be tripped by an unscaled op. Pins that the sticky branch is unchanged (checked before the entry gate).
 func TestBootstrap_ScaledGate_ConstructionStartedStaysGateEvenUnfunded(t *testing.T) {
-	cfg := scaledGateCfg(t)
 	// Repurposed haulers have pulled the op back under every entry condition, but a pipeline exists.
 	obs := Observation{MarketsTotal: 10, MarketsCovered: 10, Haulers: nil, ConstructionStarted: true}
-	if p := derivePhase(obs, cfg); p != PhaseGate {
+	if p := derivePhase(obs); p != PhaseGate {
 		t.Fatalf("a started pipeline must stay sticky-GATE regardless of fleet size or treasury, got %s", p)
 	}
 }
@@ -116,9 +100,9 @@ func TestBootstrap_ScaledGate_ConstructionStartedStaysGateEvenUnfunded(t *testin
 // deploy's fresh container BUILD (restart), which re-derives phase from live signals (no persisted phase
 // cursor). This pins that re-derive against a stuck-GATE live state: construction 0% (never started — blocked
 // on no_purchaser), ZERO haulers, income ≈68000/hr, coverage ≈0.89, probes at target & scouting. It must
-// re-derive INCOME — NOT GATE (the pre-fix wedge), NOT DATA (coverage is no longer a phase gate). GATES THE
+// re-derive COLDSTART, not the wedged GATE (coverage is not a phase gate either way). GATES THE
 // DEPLOY: if the restart did not cure the latch here, the live P1 would stay wedged.
-func TestBootstrap_ScaledGate_DefaultOnRestart_ReDerivesIncomeFromStuckGateLiveState(t *testing.T) {
+func TestBootstrap_ScaledGate_RestartReDerivesColdStartFromStuckGateLiveState(t *testing.T) {
 	// The live stuck-GATE observation, modeled faithfully. ConstructionStarted=false is load-bearing: the
 	// pipeline never actually started, so NO sticky latch fights the re-derive. The scanning workstream is
 	// mature (probes at target, all scouting; 89% coverage).
@@ -128,16 +112,16 @@ func TestBootstrap_ScaledGate_DefaultOnRestart_ReDerivesIncomeFromStuckGateLiveS
 		Haulers:              nil,   // ZERO haulers — the op never scaled past the sole frigate
 		ContractScalerTarget: 10,    // the scaler's live target; the full fleet (0) is far below it
 		IncomePerHour:        68000, // ≈ live realized $/hr — a healthy-looking number on a 0-hull op
-		ProbeCount:           3,     // == defaultProbeTarget: scanning workstream done
+		ProbeCount:           3,     // == probeTarget: scanning workstream done
 		ProbesScouting:       3,     // all scouting
 		MarketsTotal:         9,
-		MarketsCovered:       8, // coverage ≈ 0.89 — must NOT route to DATA (coverage is not a phase gate)
+		MarketsCovered:       8, // coverage ≈ 0.89 — coverage is not a phase gate
 	}
 
 	// gateFunded is FALSE — the full fleet (0) is below the scaler target (10), and the healthy 68000 $/hr
 	// buys no relief — and ConstructionStarted is false (no sticky latch), so the arc falls through to
-	// INCOME (probes at target & scouting). The cure the restart delivers.
-	if p := derivePhase(stuck, resolveBootstrapConfig(baseCmd(), nil)); p != PhaseColdStart {
+	// COLDSTART. The cure the restart delivers.
+	if p := derivePhase(stuck); p != PhaseColdStart {
 		t.Fatalf("restart must re-derive COLDSTART from the stuck-GATE live state (cure the latch), got %s", p)
 	}
 }
@@ -167,7 +151,7 @@ func TestBootstrap_ScaledGate_UnderScaledRidesOutSpike_AtTargetEntersGate(t *tes
 	cmd := baseCmd()
 
 	// The ktio trace: four net-negative spend ticks, one big contract payout, then spending again. An
-	// under-scaled op stays in INCOME through every one of them — the payout buys no entry.
+	// under-scaled op stays in cold start through every one of them — the payout buys no entry.
 	for i, income := range []float64{-55000, -55000, -55000, -55000, 105000, -55000} {
 		obsvr.obs.IncomePerHour = income
 		res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), cmd)
@@ -214,7 +198,6 @@ func TestBootstrap_ColdStartGate_EntryBarIsThreeContractHulls(t *testing.T) {
 // A funded operation at THREE hulls enters GATE — and the same operation one hull short does NOT. The
 // boundary is the whole point: the hull bar moved down, it did not disappear.
 func TestBootstrap_ColdStartGate_EntersAtThreeHullsNotTwo(t *testing.T) {
-	cfg := scaledGateCfg(t)
 	target := coldStartScalerTarget()
 
 	funded := func(hulls int) Observation {
@@ -224,10 +207,10 @@ func TestBootstrap_ColdStartGate_EntersAtThreeHullsNotTwo(t *testing.T) {
 			Treasury:             gateSurplusTreasury,
 		}
 	}
-	if p := derivePhase(funded(target), cfg); p != PhaseGate {
+	if p := derivePhase(funded(target)); p != PhaseGate {
 		t.Fatalf("a funded op at the %d-hull target must enter GATE, got %s", target, p)
 	}
-	if p := derivePhase(funded(target-1), cfg); p == PhaseGate {
+	if p := derivePhase(funded(target - 1)); p == PhaseGate {
 		t.Fatalf("a funded op one hull SHORT of the %d-hull target must NOT enter GATE, got %s", target, p)
 	}
 }
@@ -235,7 +218,6 @@ func TestBootstrap_ColdStartGate_EntersAtThreeHullsNotTwo(t *testing.T) {
 // The depot hulls count toward the bar exactly as the delivery haulers do — the bar is the FULL contract
 // fleet, so a mixed 2-delivery + 1-depot operation reaches GATE at the same three hulls.
 func TestBootstrap_ColdStartGate_FullFleetCountsDepotHulls(t *testing.T) {
-	cfg := scaledGateCfg(t)
 	target := coldStartScalerTarget()
 	obs := Observation{
 		Haulers:                nHaulers(target - 1),
@@ -243,7 +225,7 @@ func TestBootstrap_ColdStartGate_FullFleetCountsDepotHulls(t *testing.T) {
 		ContractScalerTarget:   target,
 		Treasury:               gateSurplusTreasury,
 	}
-	if p := derivePhase(obs, cfg); p != PhaseGate {
+	if p := derivePhase(obs); p != PhaseGate {
 		t.Fatalf("delivery+depot reaching the %d-hull target must enter GATE, got %s", target, p)
 	}
 }
@@ -252,14 +234,13 @@ func TestBootstrap_ColdStartGate_FullFleetCountsDepotHulls(t *testing.T) {
 // independently BLOCKS entry: an operation whose surplus over the immutable reserve floor is one credit
 // short does not gate. Lowering the hull bar must not become a way in on an unfunded operation.
 func TestBootstrap_ColdStartGate_ThreeHullsStillBlockedWhenUnfunded(t *testing.T) {
-	cfg := scaledGateCfg(t)
 	target := coldStartScalerTarget()
 
 	obs := Observation{
 		Haulers: nHaulers(target), ContractScalerTarget: target,
-		Treasury: common.ImmutableReserveFloor + int64(cfg.GateSurplusFloor) - 1,
+		Treasury: common.ImmutableReserveFloor + int64(gateSurplusFloor) - 1,
 	}
-	if p := derivePhase(obs, cfg); p == PhaseGate {
+	if p := derivePhase(obs); p == PhaseGate {
 		t.Fatalf("a %d-hull op whose surplus is under the gate war chest must NOT enter GATE, got %s", target, p)
 	}
 }

@@ -68,9 +68,9 @@ type Observation struct {
 	// unset reads as "contracts not started" and the scanning guards are unaffected. ---
 
 	// IncomePerHour is the contract fleet's realized net credits/hour over a trailing window — reported on
-	// the heartbeat against income_bar so an operator can watch the contract op warm up. Realized (booked
-	// ledger income), not projected. It is OBSERVABILITY ONLY: it drives no phase transition, because a
-	// single contract payout swings it from net-negative to a false all-clear in one tick.
+	// the heartbeat so an operator can watch the contract op warm up. Realized (booked ledger income), not
+	// projected. It is OBSERVABILITY ONLY: it drives no phase transition, because a single contract payout
+	// swings it from net-negative to a false all-clear in one tick.
 	IncomePerHour float64
 	// CommandFrigateID is the command frigate's ship symbol — the hull retired from contract work (a
 	// poor contract worker: low fuel/cargo). "" when no command hull is resolved.
@@ -87,7 +87,7 @@ type Observation struct {
 	CommandFrigatePurchasing bool
 	// Haulers is the contract-dedicated hauler pool NOW — each with the waypoint it is placed on (or
 	// heading to). Its length is the staged-buy count guard (buy while < one-per-viable-hub, capped at
-	// hauler_target); the waypoints are the "hub already served" placement guard.
+	// haulerTarget); the waypoints are the "hub already served" placement guard.
 	Haulers []HaulerSnapshot
 	// BatchContractRunning reports whether the contract fleet coordinator (workflow batch-contract) is
 	// already running for this player — the idempotency guard for the batch-contract launch (never

@@ -17,24 +17,16 @@ import (
 // buildCommandForType, so a config edit + restart retunes even a recovered coordinator.
 
 // BootstrapCoordinator starts the standing captain bootstrap coordinator (sp-3nbe): a recovery-safe
-// container that drives a cold agent through the cold-start arc to the jump gate. Slice 1 runs the
-// DATA phase (probes → target, scout every market) behind the fail-closed money-guard. LIVE BY
-// DEFAULT once launched. dryRun (the CLI --dry-run) launches it in watch mode: it evaluates + logs
-// every decision but acts on nothing.
-func (s *DaemonServer) BootstrapCoordinator(ctx context.Context, playerID int, agentSymbol string, dryRun bool) (string, error) {
+// container that drives a cold agent through the cold-start arc to the jump gate, behind the
+// fail-closed money guards. LIVE BY DEFAULT once launched.
+func (s *DaemonServer) BootstrapCoordinator(ctx context.Context, playerID int, agentSymbol string) (string, error) {
 	containerID := utils.GenerateContainerID("bootstrap", fmt.Sprintf("player-%d", playerID))
 
-	// Identity only — the [bootstrap] knobs are injected by resolveBootstrapConfig inside
+	// Identity only — the [bootstrap] keys are injected by resolveBootstrapConfig inside
 	// buildCommandForType, the single injection point shared by creation and recovery.
-	// bootstrap_launch_dry_run is an IDENTITY flag: the launch-time --dry-run decision, persisted so
-	// a recovered container stays in watch mode until it is stopped and relaunched (it is
-	// deliberately NOT a live-config key).
 	config := map[string]interface{}{
 		"container_id": containerID,
 		"agent_symbol": agentSymbol,
-	}
-	if dryRun {
-		config["bootstrap_launch_dry_run"] = true
 	}
 
 	cmd, err := s.buildCommandForType("bootstrap", config, playerID, containerID)
@@ -69,19 +61,11 @@ func (s *DaemonServer) BootstrapCoordinator(ctx context.Context, playerID int, a
 // bootstrapConfigKeys enumerates the LIVE [bootstrap] launch-config keys. resolveBootstrapConfig
 // clears these before re-injecting the live values, so a stale persisted copy from a prior boot can
 // never shadow the current config.yaml (the sp-ts82 live-config discipline). Keep in lockstep with
-// injectBootstrapConfig and buildBootstrapCommand's reads. container_id, agent_symbol and
-// bootstrap_launch_dry_run are IDENTITY (set once at creation) and are deliberately NOT in this list
-// — they must survive a rebuild.
+// injectBootstrapConfig and buildBootstrapCommand's reads. container_id and agent_symbol are
+// IDENTITY (set once at creation) and are deliberately NOT in this list — they must survive a rebuild.
 var bootstrapConfigKeys = []string{
 	"bootstrap_disabled",
-	"bootstrap_dry_run",
-	"bootstrap_probe_target",
 	"bootstrap_tick_secs",
-	"bootstrap_probe_ship_type",
-	"bootstrap_hauler_target",
-	"bootstrap_income_bar",
-	"bootstrap_hauler_ship_type",
-	"bootstrap_gate_worker_target",
 }
 
 // resolveBootstrapConfig makes config.yaml the single LIVE source of truth for the bootstrap
@@ -96,9 +80,9 @@ func (s *DaemonServer) resolveBootstrapConfig(config map[string]interface{}) {
 	s.injectBootstrapConfig(config)
 }
 
-// injectBootstrapConfig writes the [bootstrap] knobs from config.yaml (s.bootstrapConfig) into a
+// injectBootstrapConfig writes the [bootstrap] keys from config.yaml (s.bootstrapConfig) into a
 // coordinator container's launch config. Only keys the captain actually set (non-zero) are written,
-// so an unset knob defers to the coordinator's own documented default (RULINGS #5). bootstrap_disabled
+// so an unset cadence defers to the coordinator's own documented default. bootstrap_disabled
 // is written ONLY when the coordinator is off: an absent key therefore reads as ENABLED, so the
 // LIVE-BY-DEFAULT intent survives both a fresh start and a recovery from an old config that predates
 // the key (Admiral: no dark-shipping).
@@ -107,56 +91,24 @@ func (s *DaemonServer) injectBootstrapConfig(config map[string]interface{}) {
 	if b.BootstrapDisabled {
 		config["bootstrap_disabled"] = true
 	}
-	if b.DryRun {
-		config["bootstrap_dry_run"] = true
-	}
-	if b.ProbeTarget != 0 {
-		config["bootstrap_probe_target"] = b.ProbeTarget
-	}
 	if b.TickSeconds != 0 {
 		config["bootstrap_tick_secs"] = b.TickSeconds
-	}
-	if b.ProbeShipType != "" {
-		config["bootstrap_probe_ship_type"] = b.ProbeShipType
-	}
-	if b.HaulerTarget != 0 {
-		config["bootstrap_hauler_target"] = b.HaulerTarget
-	}
-	if b.IncomeBar != 0 {
-		config["bootstrap_income_bar"] = b.IncomeBar
-	}
-	if b.HaulerShipType != "" {
-		config["bootstrap_hauler_ship_type"] = b.HaulerShipType
-	}
-	if b.GateWorkerTarget != 0 {
-		config["bootstrap_gate_worker_target"] = b.GateWorkerTarget
 	}
 }
 
 // buildBootstrapCommand rebuilds the standing bootstrap command (sp-3nbe) from a persisted launch
-// config so a daemon restart re-adopts it. The [bootstrap] knobs are resolved LIVE from config.yaml
+// config so a daemon restart re-adopts it. The [bootstrap] keys are resolved LIVE from config.yaml
 // just before this runs (resolveBootstrapConfig in buildCommandForType), so the persisted
 // bootstrap_* keys are transient — the reads below see the current config.yaml. Disabled is
 // reconstructed from bootstrap_disabled directly (absent = false = ENABLED, so LIVE BY DEFAULT
-// survives a recovery from an old config that predates the key). DryRun ORs the live config knob
-// with the persisted launch-time --dry-run flag.
+// survives a recovery from an old config that predates the key).
 func buildBootstrapCommand(cfg *configReader, playerID int, containerID string) interface{} {
 	return &bootstrapCmd.RunBootstrapCoordinatorCommand{
 		PlayerID:    playerID,
 		ContainerID: containerID,
 		AgentSymbol: cfg.OptionalString("agent_symbol"),
 
-		Disabled: cfg.OptionalBool("bootstrap_disabled"),
-		DryRun:   cfg.OptionalBool("bootstrap_dry_run") || cfg.OptionalBool("bootstrap_launch_dry_run"),
-
+		Disabled:         cfg.OptionalBool("bootstrap_disabled"),
 		TickIntervalSecs: cfg.OptionalInt("bootstrap_tick_secs", 0),
-		ProbeTarget:      cfg.OptionalInt("bootstrap_probe_target", 0),
-		ProbeShipType:    cfg.OptionalString("bootstrap_probe_ship_type"),
-
-		HaulerTarget:   cfg.OptionalInt("bootstrap_hauler_target", 0),
-		IncomeBar:      cfg.OptionalFloat("bootstrap_income_bar", 0),
-		HaulerShipType: cfg.OptionalString("bootstrap_hauler_ship_type"),
-
-		GateWorkerTarget: cfg.OptionalInt("bootstrap_gate_worker_target", 0),
 	}
 }

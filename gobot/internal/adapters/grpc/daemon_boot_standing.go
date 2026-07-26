@@ -122,9 +122,8 @@ func (s *DaemonServer) ensureBootStandingCoordinators(ctx context.Context, playe
 // ensureBootstrapStanding launches the standing captain-bootstrap coordinator (sp-ov8z) when none is
 // already running for the player. Idempotent via the same containerTypeRunning pre-check the
 // market-freshness sizer uses, so a warm restart re-adopts the existing one (via
-// RecoverRunningContainers) instead of double-launching. Auto-armed (dryRun=false) — config.yaml
-// [bootstrap] dry_run can still force observe-only. The agent symbol is resolved from the player row
-// because the bootstrap threads it into the GATE hand-off. A launch failure is logged and non-fatal.
+// RecoverRunningContainers) instead of double-launching. The agent symbol is resolved from the player
+// row because the bootstrap threads it into the GATE hand-off. A launch failure is logged and non-fatal.
 func (s *DaemonServer) ensureBootstrapStanding(ctx context.Context, playerID int) {
 	running, err := containerTypeRunning(ctx, s.containerRepo, playerID, container.ContainerTypeBootstrapCoordinator)
 	if err != nil {
@@ -134,7 +133,7 @@ func (s *DaemonServer) ensureBootstrapStanding(ctx context.Context, playerID int
 	if running {
 		return
 	}
-	if _, lerr := s.BootstrapCoordinator(ctx, playerID, s.agentSymbolForPlayer(ctx, playerID), false); lerr != nil {
+	if _, lerr := s.BootstrapCoordinator(ctx, playerID, s.agentSymbolForPlayer(ctx, playerID)); lerr != nil {
 		fmt.Printf("Warning: failed to launch boot-standing bootstrap coordinator: %v\n", lerr)
 	}
 }
