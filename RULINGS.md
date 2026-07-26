@@ -131,6 +131,18 @@ This file exists so that class of miss cannot recur.)
   (their compile-time lockstep guard stays at 50k). The cushion is RAISED above the bound (stricter),
   never below it; both are documented hard constants, not live-tunable. (Origin: sp-7r7w / epic sp-ktio;
   the cushion previously equaled the 50k bound under sp-bpdf and was un-pinned here.)
+- **#5 bounded (2026-07-25):** the ruling reaches OPERATIONAL values — ones a human would plausibly
+  retune in response to something they saw on a live fleet — and a value is not operational merely
+  because it is a number. Where the game's own rules fix the shape of a decision it belongs in code as
+  a documented constant: the universe does not change between eras, so every cold start runs the same
+  arc, and a knob there is dead surface that drifts, misleads, and carries its own tests. The
+  discriminating test is "would an operator change this because of something they observed?" — API
+  pacing yes; "how many probes does a cold start need" no. This BOUNDS #5, it does not weaken it: #5's
+  hard-floor exemption, both non-tunable floors (50k anti-stall bound, 150k contract cushion) and every
+  money guard under #4 stand unchanged, and a genuinely operational value is still config, never a
+  constant. (Origin: the bootstrap simplification epic sp-7ie7i — the coordinator carried 17 knobs, 3
+  of them fully dead and 1 cosmetic, none ever retuned in the field; reduced to `tick_secs`, a real
+  API-pacing lever, plus `bootstrap_disabled`, an emergency stand-down.)
 - **#9 restated as intent:** strongest available model for command/judgment work; standing
   crew on the mid-tier; the shipwright picks the model per dispatch by task complexity;
   cross-model review panels for high-blast-radius work; review-class models are never

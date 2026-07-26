@@ -4,20 +4,22 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// bootstrapKnownPhases enumerates the phases the phase gauge tracks, so RecordPhase can zero the
-// others and leave exactly one series at 1 (the currently-derived phase). EXPANSION (sp-feiy7)
-// replaced COMPLETE as the terminal gate-built phase — dashboards keying on phase="COMPLETE" read
-// the EXPANSION series now.
-var bootstrapKnownPhases = []string{"DATA", "INCOME", "GATE", "EXPANSION"}
+// bootstrapKnownPhases enumerates EVERY phase the coordinator can derive, so RecordPhase can zero the
+// others and leave exactly one series at 1 (the currently-derived phase). The invariant: a derivable
+// phase missing from this list is never published at all — no series is created, which a dashboard
+// reads as a dead coordinator rather than as an active phase. A name here that the coordinator cannot
+// derive is the mirror fault: a permanently-zero series reads as a real phase simply never entered.
+// So this list and the Phase constants must stay in exact step.
+var bootstrapKnownPhases = []string{"COLDSTART", "GATE", "EXPANSION"}
 
 // BootstrapMetricsCollector houses the captain bootstrap coordinator's observation series:
 //
 //   - bootstrap_phase{phase}: a GAUGE set to 1 for the currently-derived phase and 0 for the others,
 //     so a dashboard shows which cold-start phase the reconciler is in (derived, never stored).
 //   - bootstrap_probes_total: a COUNTER incremented once per probe the coordinator actually buys in
-//     the DATA phase — real spend, real progress.
+//     the COLDSTART phase — real spend, real progress.
 //   - bootstrap_haulers_total: a COUNTER incremented once per contract hauler the coordinator buys in
-//     the INCOME phase (Slice 2) — the contract-fleet ramp made visible.
+//     the COLDSTART phase — the contract-fleet ramp made visible.
 //
 // Pure OBSERVATION (RULINGS #4): a recording miss must never touch a decision, so every method is
 // nil-safe and best-effort. The reconciler's guard/act paths run independently of this collector.
@@ -45,7 +47,7 @@ func NewBootstrapMetricsCollector() *BootstrapMetricsCollector {
 				Namespace: namespace,
 				Subsystem: subsystem,
 				Name:      "bootstrap_probes_total",
-				Help:      "Probes the bootstrap coordinator bought in the DATA phase, counted once per purchase (sp-3nbe)",
+				Help:      "Probes the bootstrap coordinator bought in the COLDSTART phase, counted once per purchase (sp-3nbe)",
 			},
 		),
 		haulersTotal: prometheus.NewCounter(
@@ -53,7 +55,7 @@ func NewBootstrapMetricsCollector() *BootstrapMetricsCollector {
 				Namespace: namespace,
 				Subsystem: subsystem,
 				Name:      "bootstrap_haulers_total",
-				Help:      "Contract haulers the bootstrap coordinator bought in the INCOME phase, counted once per purchase (sp-ysgb.1)",
+				Help:      "Contract haulers the bootstrap coordinator bought in the COLDSTART phase, counted once per purchase (sp-ysgb.1)",
 			},
 		),
 		constructionPct: prometheus.NewGauge(
@@ -100,7 +102,7 @@ func (c *BootstrapMetricsCollector) RecordPhase(phase string) {
 	}
 }
 
-// RecordProbePurchased increments the probe-purchase counter (called once per executed DATA buy).
+// RecordProbePurchased increments the probe-purchase counter (called once per executed COLDSTART buy).
 func (c *BootstrapMetricsCollector) RecordProbePurchased() {
 	if c == nil || c.probesTotal == nil {
 		return
@@ -108,7 +110,7 @@ func (c *BootstrapMetricsCollector) RecordProbePurchased() {
 	c.probesTotal.Inc()
 }
 
-// RecordHaulerPurchased increments the hauler-purchase counter (called once per executed INCOME buy).
+// RecordHaulerPurchased increments the hauler-purchase counter (called once per executed COLDSTART buy).
 func (c *BootstrapMetricsCollector) RecordHaulerPurchased() {
 	if c == nil || c.haulersTotal == nil {
 		return

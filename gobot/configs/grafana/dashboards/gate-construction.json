@@ -12,7 +12,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Currently active bootstrap phase (DATA / INCOME / GATE / COMPLETE) from spacetraders_daemon_bootstrap_phase.",
+      "description": "Currently active bootstrap phase (COLDSTART / GATE / EXPANSION) from spacetraders_daemon_bootstrap_phase.",
       "fieldConfig": {
         "defaults": {
           "color": {
