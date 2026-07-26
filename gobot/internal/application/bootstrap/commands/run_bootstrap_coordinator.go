@@ -76,12 +76,6 @@ const (
 	// it. Tunable via gate_worker_target.
 	defaultGateWorkerTarget = 4
 
-	// defaultDeferProbeToFreshsizer is the sp-tsn2 single-buyer-arbitration flag default: 0 = OFF
-	// (byte-identical — bootstrap and freshsizer each buy behind their own guards). Armed to 1 via
-	// `tune --operation bootstrap defer_probe_to_freshsizer 1`, bootstrap hands probe acquisition to
-	// the freshsizer once the first market is covered (coverage>0) and a freshsizer coordinator runs.
-	defaultDeferProbeToFreshsizer = 0
-
 	// GATE-entry gate — UNCONDITIONALLY ON (sp-1cbxz): GATE entry requires a genuinely SCALED contract op
 	// (the FULL fleet at the auto-scaler's live target) — closing the ktio deadlock where one contract
 	// payout spiked income past income_bar and drove GATE with ZERO haulers, latching on
@@ -94,13 +88,11 @@ const (
 	// frigate spike latched GATE with ZERO haulers). Tunable via gate_min_haulers.
 	defaultGateMinHaulers = 2
 
-	// The sp-sjvv cold-start contract-scaling feature and the dedicated contract auto-scaler are now
-	// UNCONDITIONALLY launched EARLY (sp-1cbxz) during the DATA/INCOME scaling window: (1) bootstrap
-	// LAUNCHES the fleet autosizer early so the capacity reconciler's emitted contract-delivery demand has
-	// a buyer, and DEFERS its own contract-hauler buys to it once running (single-buyer arbitration — the
-	// two never bid on one treasury); and (2) bootstrap LAUNCHES the standing dedicated contract auto-scaler
-	// early so it ramps the exclusive contract fleet behind the 200000 cushion. The arbitration + the ktio-A
-	// absolute treasury floor (sp-bpdf) are the load-bearing safety for running the autosizer during cold start.
+	// The fleet autosizer and the dedicated contract auto-scaler are both LAUNCHED EARLY during the
+	// cold-start scaling window (sp-1cbxz): the autosizer so the capacity reconciler's emitted
+	// contract-delivery demand has a buyer, the scaler so it ramps the exclusive contract fleet behind the
+	// 200000 cushion. The ktio-A absolute treasury floor (sp-bpdf) is the load-bearing safety for running
+	// the autosizer during cold start.
 
 	// Death-spiral cure (UNCONDITIONALLY ON, sp-gm7r removed the master flag). It replaces the premature
 	// GATE-entry gate with a three-part cure: (1) GATE entry requires the FULL contract fleet (delivery +

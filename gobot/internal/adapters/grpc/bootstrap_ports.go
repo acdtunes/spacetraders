@@ -294,12 +294,6 @@ func (o *bootstrapObserver) Observe(ctx context.Context, playerID int) (bootstra
 				obs.FrigateContractLoopRunning = running
 			}
 		}
-		// sp-tsn2 probe-buyer arbitration input: is a market-freshness-sizer coordinator running to take
-		// over probe acquisition? Best-effort — a read miss leaves it false, so bootstrap keeps buying
-		// (never defers into a vacuum). Inert unless defer_probe_to_freshsizer is armed.
-		if running, rerr := containerTypeRunning(ctx, o.containerRepo, playerID, container.ContainerTypeMarketFreshnessSizer); rerr == nil {
-			obs.FreshsizerActive = running
-		}
 	}
 
 	// GATE-phase reads (Slice 3). All best-effort: a miss leaves the field zero-valued, which the
@@ -320,12 +314,6 @@ func (o *bootstrapObserver) Observe(ctx context.Context, playerID int) (bootstra
 		}
 		if running, rerr := containerTypeRunning(ctx, o.containerRepo, playerID, container.ContainerTypeFleetAutosizer); rerr == nil {
 			obs.AutosizerRunning = running
-		}
-		// The dedicated contract auto-scaler's running-state — the idempotency signal for the (unconditional)
-		// early launch. Read every tick alongside the autosizer's (a lightweight indexed lookup); the early
-		// launch skips when it is already running.
-		if running, rerr := containerTypeRunning(ctx, o.containerRepo, playerID, container.ContainerTypeContractScaler); rerr == nil {
-			obs.ContractScalerRunning = running
 		}
 		// sp-gm7r GATE-entry bar input: the contract auto-scaler's live achievable fleet target
 		// (min(scaler plan slots, the scaler's live contract_fleet_max_hulls ceiling)). 0 when no scaler is

@@ -7,14 +7,14 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
 )
 
-// sp-sjvv (ktio-B): the cold-start contract-scaling feature, now UNCONDITIONALLY ON (sp-1cbxz). It couples
-// TWO behaviors so the capacity reconciler's emitted contract-delivery demand finally has a buyer during
-// cold start: (1) bootstrap LAUNCHES the fleet autosizer EARLY during the DATA/INCOME scaling window, and
-// (2) bootstrap DEFERS its own contract-hauler buys to that autosizer once it is running (single-buyer
-// arbitration — the sibling of the sp-tsn2 probe→freshsizer deferral).
+// sp-sjvv (ktio-B): the cold-start contract-scaling feature, now UNCONDITIONALLY ON (sp-1cbxz) —
+// bootstrap LAUNCHES the fleet autosizer EARLY during the cold-start scaling window so the capacity
+// reconciler's emitted contract-delivery demand finally has a buyer. Bootstrap's OWN buys are statically
+// owned: it seeds the cold-start hulls behind its capital gates regardless of which standing coordinators
+// happen to be up, so no runtime hand-off decision exists between the two.
 
 // sjvvHandler wires a bootstrap handler with the INCOME collaborators plus a hand-off launcher and a
-// live-config reader, so a single tick exercises both the hauler-defer arbitration and the early autosizer
+// live-config reader, so a single tick exercises both the staged hauler buy and the early autosizer
 // launch.
 func sjvvHandler(obs Observation, live *fakeLiveConfig, ho *fakeHandoff, haul *fakeHaulerAcquirer) *RunBootstrapCoordinatorHandler {
 	h := NewRunBootstrapCoordinatorHandler(nil)
@@ -36,9 +36,9 @@ func sjvvHandler(obs Observation, live *fakeLiveConfig, ho *fakeHandoff, haul *f
 	return h
 }
 
-// sjvvIncomeObs is an INCOME-phase observation (coverage met, income under the bar) with the autosizer
-// running-state and hauler pool set by the caller. BatchContractRunning=true isolates the hauler decision
-// (step 4) from the batch-contract launch (step 2).
+// sjvvIncomeObs is an INCOME-phase observation with the autosizer running-state and hauler pool set by
+// the caller. BatchContractRunning=true isolates the hauler decision (step 4) from the batch-contract
+// launch (step 2).
 func sjvvIncomeObs(autosizerRunning bool, haulers int) Observation {
 	o := incomeObs()
 	o.AutosizerRunning = autosizerRunning
@@ -53,79 +53,30 @@ func sjvvIncomeObs(autosizerRunning bool, haulers int) Observation {
 	return o
 }
 
-// --- single-buyer arbitration: bootstrap defers the contract-hauler buy to the autosizer ---
+// --- static ownership: a running standing coordinator never diverts bootstrap's own staged buy ---
 
-// Autosizer running but ZERO haulers: bootstrap does NOT defer — it seeds the cash-flow-critical FIRST
-// hauler. With an idle purchaser present it buys directly at acv5's cushion; the autosizer takes over only
-// at/above the tier (sp-mvo8 seeds 0→tier). The below-tier seed is what dissolves the arbitration bypass.
-func TestBootstrap_HaulerArbitration_AutosizerRunning_FirstHaulerKept(t *testing.T) {
+// The autosizer is RUNNING and the contract pool sits where the old runtime arbitration handed the buy
+// over. Bootstrap's ownership is STATIC, so it buys its staged hauler regardless: no observation of another
+// coordinator can suppress a seed acquisition, and no "deferred" blocker reaches the heartbeat.
+func TestBootstrap_StaticOwnership_AutosizerRunningStillBuysHauler(t *testing.T) {
 	acq := &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true}
-	h := sjvvHandler(sjvvIncomeObs(true, 0), &fakeLiveConfig{snap: liveconfig.Snapshot{}}, &fakeHandoff{}, acq) // 0 haulers ⇒ the first hauler
+	h := sjvvHandler(sjvvIncomeObs(true, 2), &fakeLiveConfig{snap: liveconfig.Snapshot{}}, &fakeHandoff{}, acq)
 
 	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if err != nil {
 		t.Fatalf("reconcileOnce: %v", err)
 	}
 	if acq.buys != 1 || res.HaulersBought != 1 {
-		t.Fatalf("autosizer running + 0 haulers: bootstrap must KEEP the first hauler (buys=%d haulers_bought=%d blocker=%q)", acq.buys, res.HaulersBought, res.Blocker)
+		t.Fatalf("autosizer running: bootstrap still owns its staged hauler buy (buys=%d haulers_bought=%d blocker=%q)", acq.buys, res.HaulersBought, res.Blocker)
 	}
-	if res.Blocker == "deferred_to_autosizer" {
-		t.Fatalf("the FIRST hauler must NOT be deferred (Option 1), got blocker=%q", res.Blocker)
-	}
-}
-
-// --- sp-mvo8: seed-tier ownership by range (bootstrap owns 0→tier, the autosizer owns tier→N) ---
-
-// Autosizer running but the pool is BELOW the tier (contractHaulerTierSaturation): bootstrap SEEDS the tier
-// ITSELF — it BUYS, it does NOT defer. Below the tier the reconciler withholds ALL contract-delivery demand
-// (ComputeDesired returns empty), so a deferral here would leave nobody to buy and the pool would stick at 1
-// — the two-buyer deadlock. The buy runs behind the existing capital gate (an idle purchaser executes it).
-// One hauler is strictly below the tier of 2.
-func TestBootstrap_SeedsHaulerTier_BuysBelowTier(t *testing.T) {
-	if contractHaulerTierSaturation < 2 {
-		t.Skip("test assumes a tier ≥ 2 so len==1 is strictly below it")
-	}
-	acq := &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true}
-	// One hauler = below the tier → bootstrap must seed (buy), not defer.
-	h := sjvvHandler(sjvvIncomeObs(true, contractHaulerTierSaturation-1), &fakeLiveConfig{snap: liveconfig.Snapshot{}}, &fakeHandoff{}, acq)
-
-	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
-	if err != nil {
-		t.Fatalf("reconcileOnce: %v", err)
-	}
-	if acq.buys != 1 || res.HaulersBought != 1 {
-		t.Fatalf("autosizer running + below tier: bootstrap must SEED the tier (buy), not defer (buys=%d haulers_bought=%d blocker=%q)", acq.buys, res.HaulersBought, res.Blocker)
-	}
-	if res.Blocker == "deferred_to_autosizer" {
-		t.Fatalf("below the tier bootstrap owns the buy (0→tier) — must NOT defer, got blocker=%q", res.Blocker)
+	if res.Blocker != "" {
+		t.Fatalf("a running autosizer must not surface any blocker on bootstrap's own buy, got %q", res.Blocker)
 	}
 }
 
-// Autosizer running + the pool AT the tier (contractHaulerTierSaturation): bootstrap DEFERS tier→N scaling
-// to the autosizer — the single buyer now that the reconciler emits demand (at the tier ComputeDesired stops
-// withholding). Anti-theatre half: the at-tier defer holds on BOTH the buggy and the fixed code (only the
-// below-tier path changed), so a green below-tier test is a validated flip, not a tautology.
-func TestBootstrap_DefersToAutosizer_AtOrAboveTier(t *testing.T) {
-	acq := &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true}
-	// At the tier → the autosizer owns scaling; bootstrap defers.
-	h := sjvvHandler(sjvvIncomeObs(true, contractHaulerTierSaturation), &fakeLiveConfig{snap: liveconfig.Snapshot{}}, &fakeHandoff{}, acq)
-
-	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
-	if err != nil {
-		t.Fatalf("reconcileOnce: %v", err)
-	}
-	if acq.buys != 0 || res.HaulersBought != 0 {
-		t.Fatalf("autosizer running + at tier: bootstrap must DEFER scaling (buys=%d haulers_bought=%d)", acq.buys, res.HaulersBought)
-	}
-	if res.Blocker != "deferred_to_autosizer" {
-		t.Fatalf("the deferral must be surfaced on the heartbeat, got blocker=%q", res.Blocker)
-	}
-}
-
-// Autosizer NOT running yet (the cold-start bootstrapping tick): bootstrap STILL buys its hauler — it never
-// defers into a vacuum, so the no_purchaser deadlock cannot wedge the cold start. On the SAME tick it
-// launches the autosizer early, so the NEXT tick will defer. This is the non-wedge dynamic.
-func TestBootstrap_HaulerArbitration_AutosizerDown_BuysAndLaunchesEarly(t *testing.T) {
+// Autosizer NOT running yet (the cold-start bootstrapping tick): bootstrap buys its hauler AND, on the SAME
+// tick, launches the autosizer early — the two are independent, so a down autosizer never stalls the seed.
+func TestBootstrap_EarlyAutosizer_AutosizerDown_BuysAndLaunchesEarly(t *testing.T) {
 	acq := &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true}
 	ho := &fakeHandoff{}
 	h := sjvvHandler(sjvvIncomeObs(false, 0), &fakeLiveConfig{snap: liveconfig.Snapshot{}}, ho, acq) // autosizer down
@@ -135,7 +86,7 @@ func TestBootstrap_HaulerArbitration_AutosizerDown_BuysAndLaunchesEarly(t *testi
 		t.Fatalf("reconcileOnce: %v", err)
 	}
 	if acq.buys != 1 || res.HaulersBought != 1 {
-		t.Fatalf("autosizer down: bootstrap must still buy its hauler (never defer into a vacuum) (buys=%d)", acq.buys)
+		t.Fatalf("autosizer down: bootstrap must still buy its hauler (buys=%d)", acq.buys)
 	}
 	if ho.autosizer != 1 || !res.AutosizerLaunchedEarly {
 		t.Fatalf("autosizer down + scaling window: bootstrap must launch the autosizer EARLY this tick (autosizer_launches=%d early=%v)", ho.autosizer, res.AutosizerLaunchedEarly)

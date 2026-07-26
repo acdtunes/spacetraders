@@ -64,13 +64,6 @@ type Observation struct {
 	// Treasury is live agent credits — the capital-gate input.
 	Treasury int64
 
-	// FreshsizerActive reports whether a market-freshness-sizer coordinator is RUNNING for this
-	// player — the sp-tsn2 probe-buyer-arbitration input. When the deferral knob is armed and the
-	// first market is covered, bootstrap hands probe acquisition to the freshsizer so exactly one
-	// buyer grows the shared fleet during the conflict window. false ⇒ bootstrap NEVER defers (it
-	// must not defer into a vacuum — a cold start would wedge if no buyer provisions probes).
-	FreshsizerActive bool
-
 	// --- INCOME-phase signals (Slice 2). Zero values are the cold-start default (no income yet, no
 	// haulers, frigate untagged, no market data), so a DATA-phase observation that leaves them unset
 	// reads as "INCOME not started" and the DATA guards are unaffected. ---
@@ -178,18 +171,13 @@ type Observation struct {
 	// AutosizerRunning reports whether the standing fleet-autosizer is already running — the EXPANSION
 	// launch-once hand-off guard (a restart post-gate re-observes it running ⇒ no re-launch, no exit loop).
 	AutosizerRunning bool
-	// ContractScalerRunning reports whether the standing dedicated contract auto-scaler is already
-	// running — the idempotency guard for the default-off early-launch arm (armed once, then RUNS
-	// FOREVER; a re-observe running ⇒ no re-launch). Consumed only when the arm is set.
-	ContractScalerRunning bool
 
 	// TradeHullCount is the number of 'trade'-fleet-dedicated hulls NOW — the observable trade-seeded
 	// signal (sp-192k4). The trade hull EXISTING is the durable "seeded" marker: idempotent by
 	// construction, auto-re-derived each tick from the live fleet (no stored flag), so it is restart-safe.
-	// It drives the INCOME hull-routing trade-seed (acquisition #2 → trade, held until a trade hull
-	// exists) AND the contract-scaler delay-launch (the scaler is not launched until TradeHullCount ≥ 1,
-	// so it never grabs acquisition #2 as a contract hull). Mirrors how obs.Haulers counts contract-
-	// dedicated hulls, filtering on the "trade" tag instead. 0 (the cold-start default) ⇒ not yet seeded.
+	// It drives the INCOME hull-routing trade-seed: acquisition #2 → trade, held until a trade hull
+	// exists. Mirrors how obs.Haulers counts contract-dedicated hulls, filtering on the "trade" tag
+	// instead. 0 (the cold-start default) ⇒ not yet seeded.
 	TradeHullCount int
 
 	// ContractDepotHullCount is the DEPOT half of the contract fleet NOW (sp-gm7r): hulls whose

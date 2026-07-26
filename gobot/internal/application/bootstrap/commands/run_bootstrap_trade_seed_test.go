@@ -9,11 +9,11 @@ import (
 // sp-192k4 INCOME hull-routing: cold-start light-hull acquisitions are routed by ORDER — #1 → the contract
 // fleet, #2 → the TRADE fleet (the trade-seed, held until the first contract hull exists), #3… → contract
 // again. The trade hull EXISTING (obs.TradeHullCount) is the durable, observable "seeded" signal — no stored
-// flag — which drives BOTH the trade-seed routing AND the contract-scaler delay-launch. The contract/trade
-// coordinators + the scaler stay phase-BLIND; all the phase logic lives in the bootstrap.
+// flag. The contract/trade coordinators + the scaler stay phase-BLIND; all the phase logic lives in the
+// bootstrap.
 
 // tradeSeedHandler wires an INCOME handler through sjvvHandler (INCOME collaborators + a hand-off launcher +
-// a live-config reader), so a single tick exercises the trade-seed routing and the scaler delay-launch.
+// a live-config reader), so a single tick exercises the trade-seed routing.
 func tradeSeedHandler(obs Observation, ho *fakeHandoff, acq *fakeHaulerAcquirer) *RunBootstrapCoordinatorHandler {
 	return sjvvHandler(obs, &fakeLiveConfig{snap: liveconfig.Snapshot{}}, ho, acq)
 }
@@ -113,13 +113,14 @@ func TestBootstrap_TradeSeed_ZeroContract_BuysContractFirstNotTrade(t *testing.T
 	}
 }
 
-// --- (b) the contract scaler is DELAY-LAUNCHED until the trade hull exists: HELD at 0 trade, launched at ≥1.
-// A paired flip on the same isolated fixture (no contract haulers, no markets → neither the trade-seed nor
-// the contract-buy branch fires), so only obs.TradeHullCount moves the scaler-launch gate. ---
+// --- (b) the contract scaler is ensured throughout cold start, INDEPENDENT of the trade seed: the hull
+// routing above is bootstrap's alone, so the scaler's launch is not coupled to it. A paired reading on the
+// same isolated fixture (no contract haulers, no markets → neither the trade-seed nor the contract-buy
+// branch fires) at both trade-hull counts. ---
 
-// scalerGateObs is an INCOME fixture isolated to the scaler-launch gate: 0 contract haulers (the trade-seed
+// scalerGateObs is an INCOME fixture isolated to the scaler launch: 0 contract haulers (the trade-seed
 // branch needs ≥1, so it never fires), no viable hubs (the contract-buy branch never fires), autosizer running
-// (the early autosizer launch is a no-op), scaler down. Only TradeHullCount decides the scaler launch.
+// (the early autosizer launch is a no-op).
 func scalerGateObs(tradeHulls int) Observation {
 	obs := incomeObs()
 	obs.BatchContractRunning = true
@@ -127,12 +128,11 @@ func scalerGateObs(tradeHulls int) Observation {
 	obs.Haulers = nil
 	obs.Markets = nil
 	obs.ContractGoods = nil
-	obs.ContractScalerRunning = false
 	obs.TradeHullCount = tradeHulls
 	return obs
 }
 
-func TestBootstrap_ContractScaler_HeldUntilTradeHullSeeded(t *testing.T) {
+func TestBootstrap_ContractScaler_EnsuredBeforeTradeHullSeeded(t *testing.T) {
 	ho := &fakeHandoff{}
 	h := tradeSeedHandler(scalerGateObs(0), ho, &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true})
 
@@ -143,12 +143,12 @@ func TestBootstrap_ContractScaler_HeldUntilTradeHullSeeded(t *testing.T) {
 	if res.Phase != PhaseIncome {
 		t.Fatalf("expected INCOME, got %s", res.Phase)
 	}
-	if ho.contractScaler != 0 || res.ContractScalerLaunchedEarly {
-		t.Fatalf("0 trade hulls: the contract scaler must be HELD (not launched early), got launches=%d early=%v", ho.contractScaler, res.ContractScalerLaunchedEarly)
+	if ho.contractScaler != 1 || !res.ContractScalerLaunchedEarly {
+		t.Fatalf("0 trade hulls: the contract scaler is still ensured (its launch is not coupled to the seed), got launches=%d early=%v", ho.contractScaler, res.ContractScalerLaunchedEarly)
 	}
 }
 
-func TestBootstrap_ContractScaler_LaunchesOnceTradeHullSeeded(t *testing.T) {
+func TestBootstrap_ContractScaler_EnsuredOnceTradeHullSeeded(t *testing.T) {
 	ho := &fakeHandoff{}
 	h := tradeSeedHandler(scalerGateObs(1), ho, &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true})
 
@@ -157,7 +157,7 @@ func TestBootstrap_ContractScaler_LaunchesOnceTradeHullSeeded(t *testing.T) {
 		t.Fatalf("reconcileOnce: %v", err)
 	}
 	if ho.contractScaler != 1 || !res.ContractScalerLaunchedEarly {
-		t.Fatalf("≥1 trade hull: the contract scaler must be launched early once, got launches=%d early=%v", ho.contractScaler, res.ContractScalerLaunchedEarly)
+		t.Fatalf("≥1 trade hull: the contract scaler must be ensured, got launches=%d early=%v", ho.contractScaler, res.ContractScalerLaunchedEarly)
 	}
 }
 
@@ -192,7 +192,7 @@ func TestBootstrap_TradeSeed_NilHandoff_SkipsBuyAndBlocks(t *testing.T) {
 
 // --- INCOME hull-routing acceptance: from a provisioned fixture the arc buys contract #1, seeds the TRADE
 // hull as acquisition #2 (+ ensures the trade coordinator), then resumes contract buying #3… — the trade hull
-// is DECOUPLED (it does not consume a contract slot), and the scaler launches only once the trade hull exists. ---
+// is DECOUPLED (it does not consume a contract slot). ---
 
 func TestBootstrap_TradeSeedAcceptance_RoutesSecondAcquisitionToTrade(t *testing.T) {
 	world := &incomeWorld{
@@ -241,8 +241,8 @@ func TestBootstrap_TradeSeedAcceptance_RoutesSecondAcquisitionToTrade(t *testing
 	if acq.buys != 3 {
 		t.Fatalf("acceptance: expected exactly 3 contract-hauler buys, got %d", acq.buys)
 	}
-	// The scaler is delay-launched: it launches only after the trade hull exists (≥1 launch across the run).
+	// The scaler is ensured throughout the run, independent of the hull routing above.
 	if ho.contractScaler < 1 {
-		t.Fatalf("acceptance: the contract scaler must launch once the trade hull is seeded, got %d", ho.contractScaler)
+		t.Fatalf("acceptance: the contract scaler must be ensured during cold start, got %d", ho.contractScaler)
 	}
 }

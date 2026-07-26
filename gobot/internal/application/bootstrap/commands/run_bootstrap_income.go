@@ -7,12 +7,6 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 )
 
-// contractHaulerTierSaturation is the contract-hauler pool size at/below which bootstrap OWNS the
-// contract-hauler buys itself (the "seed 0→tier" range of the sp-sjvv single-buyer arbitration). It was
-// the capacity planner's ContractHaulerTierSaturation; inlined here (sp-y2ptq, epic sp-9le3x) when the
-// capacity stack was deleted, preserving the exact prior threshold (byte-identical behavior).
-const contractHaulerTierSaturation = 2
-
 // tradeFleetTag is the dedicated-fleet tag the standing trade-fleet coordinator selects on (matches the
 // trading package's tradeFleet). The INCOME hull-routing trade-seed (sp-192k4) buys ONE hull and dedicates
 // it to this fleet so acquisition #2 becomes a trade hull, decoupled from the contract op — the trade
@@ -110,38 +104,10 @@ func (h *RunBootstrapCoordinatorHandler) actIncome(ctx context.Context, cmd *Run
 	// (4b) Staged contract-hauler acquisition — HELD at 1 contract hull until the trade hull is seeded
 	// (the (contractHaulers == 0 || TradeHullCount >= 1) guard), so acquisition #2 is the trade seed above:
 	// contractHaulers==0 still buys contract #1 unchanged; once a trade hull exists contract buying resumes
-	// for #3…, capped at desired. sp-sjvv: when the single-buyer arbitration is armed and the fleet autosizer
-	// has taken over (autosizer running), DEFER the buy to it so the two never bid on one treasury — this
-	// also dissolves the maybeBuyHauler no_purchaser deadlock (bootstrap just defers, as it does for probes).
-	if contractHaulers < desired && (contractHaulers == 0 || obs.TradeHullCount >= 1) && !h.deferHaulerBuyToAutosizer(ctx, cmd, cfg, obs, res) {
+	// for #3…, capped at desired.
+	if contractHaulers < desired && (contractHaulers == 0 || obs.TradeHullCount >= 1) {
 		h.maybeBuyHauler(ctx, cmd, cfg, obs, hubs, res)
 	}
-}
-
-// deferHaulerBuyToAutosizer reports whether bootstrap should hand THIS tick's contract-hauler buy to the
-// standing fleet autosizer (sp-sjvv single-buyer arbitration — the hauler sibling of the sp-tsn2
-// probe→freshsizer deferral). It engages when a fleet autosizer is actually running to take over
-// (obs.AutosizerRunning) AND the contract-hauler pool has reached the
-// tier (len(Haulers) >= contractHaulerTierSaturation). CLEAN OWNERSHIP BY RANGE: bootstrap SEEDS
-// 0→tier itself (it keeps buying below the tier behind its own capital gate), the sizer scales tier→N.
-// bootstrap never defers into a vacuum, so a cold start cannot wedge if the sizer is down (bootstrap keeps
-// buying until the early launch lands), and a deferral is surfaced on the heartbeat, never silent.
-//
-// sp-y2ptq (epic sp-9le3x): this is LEGACY single-buyer arbitration for the autosizer's now-DELETED
-// contract-delivery scaling path — the dedicated contract scaler supersedes it. Left in place,
-// byte-identical, rather than disentangled from the shared autosizer LaunchAutosizer/AutosizerRunning
-// machinery in this deletion lane; the tier constant is inlined.
-func (h *RunBootstrapCoordinatorHandler) deferHaulerBuyToAutosizer(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) bool {
-	if !obs.AutosizerRunning || len(obs.Haulers) < contractHaulerTierSaturation {
-		return false
-	}
-	res.Blocker = "deferred_to_autosizer"
-	common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf("Bootstrap contract hauler needed (%d/%d) but DEFERRING the buy to the running fleet autosizer — single-buyer arbitration (sp-sjvv): the sizer scales the contract op while the frigate keeps earning; the two never bid on one treasury", len(obs.Haulers), cfg.HaulerTarget), map[string]interface{}{
-		"action":       "bootstrap_hauler_deferred",
-		"container_id": cmd.ContainerID,
-		"blocker":      "deferred_to_autosizer",
-	})
-	return true
 }
 
 // retireFrigate clears the command frigate's contract-fleet dedication (reuses fleet unassign). The
@@ -301,7 +267,7 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd
 	// this pivot regardless of whether a stray hull happens to be idle, so the exclusive purchasing ship
 	// is always established. The pivot fires ONLY for the cash-flow-critical FIRST hauler and only at a
 	// SAFE point:
-	//   - len(Haulers)==0 (the first hauler; subsequent scaling defers to the autosizer),
+	//   - len(Haulers)==0 (the first hauler only — a later hauler buys off an incidentally-idle hull),
 	//   - the frigate loop is what holds it (FrigateContractLoopRunning) and the frigate is resolved,
 	//   - the frigate carries NO contract cargo (FrigateCargoEmpty) — stopping mid-delivery would lose
 	//     cargo, so a loaded frigate defers the pivot a tick (the loop delivers + empties), and

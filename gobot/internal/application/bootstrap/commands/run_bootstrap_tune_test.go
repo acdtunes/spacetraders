@@ -51,7 +51,6 @@ func TestBootstrapTunableDefaults_MirrorsCoordinatorConsts(t *testing.T) {
 		"income_bar":                    10000,                         // defaultIncomeBar 10000.0 → 10000 credits
 		"gate_worker_target":            defaultGateWorkerTarget,       // 6
 		"tick_secs":                     defaultBootstrapTickSeconds,   // 45 (sp-lgo3: short cold-start cadence)
-		"defer_probe_to_freshsizer":     defaultDeferProbeToFreshsizer, // 0 (off) — sp-tsn2 arbitration flag
 		"gate_min_haulers":              defaultGateMinHaulers,         // 2 — sp-gm7r escape-hatch starved-earner floor (GATE ENTRY uses the scaler target)
 		"gate_surplus_floor":            int(defaultGateSurplusFloor),  // 500000 — sp-gm7r GATE-entry treasury surplus war chest
 		"gate_reentry_construction_pct": 5,                             // defaultGateReentryConstructionPct 5.0 → 5 percent

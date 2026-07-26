@@ -30,8 +30,6 @@ func BootstrapTunableDefaults() map[string]int {
 		"income_bar":         int(math.Round(defaultIncomeBar)),
 		"gate_worker_target": defaultGateWorkerTarget,
 		"tick_secs":          defaultBootstrapTickSeconds,
-		// sp-tsn2 single-buyer arbitration flag (0=off default, 1=on). A tunable flag with no launch key.
-		"defer_probe_to_freshsizer": defaultDeferProbeToFreshsizer,
 		// The escape hatch's starved-earner floor (GATE ENTRY uses the scaler target, not a static hauler
 		// count). Tunable-only.
 		"gate_min_haulers": defaultGateMinHaulers,
@@ -70,12 +68,6 @@ type bootstrapRunConfig struct {
 
 	// GATE-phase knob, resolved to its documented default when unset.
 	GateWorkerTarget int
-
-	// DeferProbeToFreshsizer arms the sp-tsn2 single-buyer arbitration: when true, bootstrap DEFERS
-	// its DATA probe buy to the freshsizer once coverage>0 and a freshsizer coordinator is running, so
-	// exactly one buyer grows the shared fleet during the conflict window. Default false
-	// (byte-identical). A tunable flag (defer_probe_to_freshsizer) — armed live, no launch key.
-	DeferProbeToFreshsizer bool
 
 	// GATE-entry gate: GATE requires a genuinely SCALED AND FUNDED contract op (sp-gm7r). derivePhase enters
 	// GATE only once the FULL contract fleet has reached the auto-scaler's live target (obs.ContractScalerTarget,
@@ -135,11 +127,6 @@ func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand, live liveconfig
 		}
 		if v := live.PositiveIntOrZero("tick_secs"); v > 0 {
 			c.Tick = time.Duration(v) * time.Second
-		}
-		// sp-tsn2 arbitration flag: tunable-only (no launch key), default off. A positive value arms it;
-		// absent/zeroed reverts to off (byte-identical). Reused straight off the sp-r6yq live-read seam.
-		if v := live.PositiveIntOrZero("defer_probe_to_freshsizer"); v > 0 {
-			c.DeferProbeToFreshsizer = true
 		}
 		// The escape hatch's always-consulted starved-earner floor, tunable-only. Absent/zeroed ⇒ launch
 		// value; the <=0 fallback below fills its default.
@@ -451,26 +438,15 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 		h.actExpansion(ctx, cmd, cfg, obs, &res)
 	}
 
-	// sp-sjvv (ktio-B): during the cold-start SCALING window (DATA/INCOME), launch the fleet autosizer
-	// EARLY so the capacity reconciler's emitted contract-delivery demand finally has a buyer (steps 2-3
-	// of the Admiral cold-start sequence). Unconditional in the DATA/INCOME window. Idempotent (skips when
-	// already running). Deliberately NOT launched in GATE/EXPANSION: GATE repurposes haulers to construction
-	// (a running autosizer scaling the contract op would contend), and EXPANSION performs the normal hand-off.
+	// sp-sjvv (ktio-B): during the cold-start SCALING window, launch the fleet autosizer EARLY so the
+	// capacity reconciler's emitted contract-delivery demand finally has a buyer (steps 2-3 of the Admiral
+	// cold-start sequence), and ensure the standing dedicated contract auto-scaler so it ramps the exclusive
+	// contract fleet behind the 200000 cushion. Both are deliberately NOT launched in GATE/EXPANSION: GATE
+	// repurposes haulers to construction (a running autosizer scaling the contract op would contend), and
+	// EXPANSION performs the normal hand-off.
 	if phase == PhaseData || phase == PhaseIncome {
 		h.maybeLaunchAutosizerEarly(ctx, cmd, cfg, obs, &res)
-	}
-
-	// Launch the standing dedicated contract auto-scaler EARLY during the same DATA/INCOME scaling window so
-	// it ramps the exclusive contract fleet behind the 200000 cushion. Idempotent (skips when already
-	// running). Scoped to DATA/INCOME like the autosizer launch: GATE repurposes haulers to construction, and
-	// the scaler is launched once then RUNS FOREVER via restart recovery. DELAY-LAUNCHED until the trade hull
-	// exists (obs.TradeHullCount >= 1, sp-192k4): the scaler would otherwise grab acquisition #2 as a contract
-	// hull, racing the INCOME trade-seed for that slot. Holding the scaler until the trade hull is seeded lets
-	// the bootstrap own the #1-contract → #2-trade routing; the scaler then ramps #3… (it is cushion-gated, so
-	// a slightly later launch never delays real buying). The trade hull existing is the observable, restart-safe
-	// gate — no stored marker.
-	if (phase == PhaseData || phase == PhaseIncome) && obs.TradeHullCount >= 1 {
-		h.maybeLaunchContractScalerEarly(ctx, cmd, cfg, obs, &res)
+		h.ensureContractScalerEarly(ctx, cmd, cfg, &res)
 	}
 
 	// Fold any probes bought this tick into the count-sync bridge (sp-lgo3), so the NEXT tick counts
@@ -632,11 +608,10 @@ func (h *RunBootstrapCoordinatorHandler) resetUnderScaledStreak(containerID stri
 func (h *RunBootstrapCoordinatorHandler) actData(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
 	// (1) Capital-gated probe acquisition — buy to target in ONE pass (sp-hh0h: a fresh universe must
 	// reach probe_target fast, not one probe per 5-min tick). Guarded on the re-observed count, so a
-	// mid-purchase restart that already incremented the count simply buys the remainder. sp-tsn2: when
-	// the single-buyer arbitration is armed and the freshsizer has taken over (coverage>0 + freshsizer
-	// running), DEFER the buy to it so the two coordinators never grow one shared fleet past the ceiling
-	// (the era-3 multi-buyer lesson).
-	if obs.ProbeCount < cfg.ProbeTarget && !h.deferProbeBuyToFreshsizer(ctx, cmd, cfg, obs, res) {
+	// mid-purchase restart that already incremented the count simply buys the remainder. The seed is
+	// bootstrap's alone: it buys 0→probe_target and nothing beyond, so the standing freshsizer owns
+	// every probe above it with no runtime hand-off between the two.
+	if obs.ProbeCount < cfg.ProbeTarget {
 		h.acquireProbesToTarget(ctx, cmd, cfg, obs, res)
 	}
 
@@ -651,26 +626,6 @@ func (h *RunBootstrapCoordinatorHandler) actData(ctx context.Context, cmd *RunBo
 	if obs.HomeSystem != "" {
 		h.declareHomeScoutPost(ctx, cmd, cfg, obs, res)
 	}
-}
-
-// deferProbeBuyToFreshsizer reports whether bootstrap should hand THIS tick's probe buy to the
-// standing freshsizer (sp-tsn2 single-buyer arbitration). It engages ONLY when armed
-// (defer_probe_to_freshsizer) AND the first market is covered (coverage>0, so the freshsizer has
-// something to size against) AND a freshsizer coordinator is actually running to take over —
-// bootstrap never defers into a vacuum, so a cold start cannot wedge if the freshsizer is down. It is
-// BUY-ONLY: the caller still assigns scouting for the probes bootstrap already holds. Default off ⇒
-// always false (byte-identical to today). A deferral is surfaced on the heartbeat, never silent.
-func (h *RunBootstrapCoordinatorHandler) deferProbeBuyToFreshsizer(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) bool {
-	if !cfg.DeferProbeToFreshsizer || obs.CoverageFraction() <= 0 || !obs.FreshsizerActive {
-		return false
-	}
-	res.Blocker = "deferred_to_freshsizer"
-	common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf("Bootstrap probe needed (%d/%d) but DEFERRING the buy to the running freshsizer (coverage %.0f%%>0) — single-buyer arbitration, one fleet-grower during the conflict window (sp-tsn2)", obs.ProbeCount, cfg.ProbeTarget, obs.CoverageFraction()*100), map[string]interface{}{
-		"action":       "bootstrap_probe_deferred",
-		"container_id": cmd.ContainerID,
-		"blocker":      "deferred_to_freshsizer",
-	})
-	return true
 }
 
 // maybeLaunchAutosizerEarly launches the standing fleet autosizer DURING the cold-start scaling window
@@ -716,28 +671,24 @@ func (h *RunBootstrapCoordinatorHandler) maybeLaunchAutosizerEarly(ctx context.C
 		return
 	}
 	res.AutosizerLaunchedEarly = true
-	logger.Log("INFO", "Bootstrap launched the fleet autosizer EARLY (cold-start contract scaling armed, sp-sjvv) — the capacity reconciler's emitted contract-delivery demand now has a guard-gated buyer; bootstrap will DEFER its own contract-hauler buys to it (single-buyer arbitration)", map[string]interface{}{
+	logger.Log("INFO", "Bootstrap launched the fleet autosizer EARLY (cold-start contract scaling, sp-sjvv) — the capacity reconciler's emitted contract-delivery demand now has a guard-gated buyer", map[string]interface{}{
 		"action":       "bootstrap_autosizer_launched_early",
 		"container_id": cmd.ContainerID,
 	})
 }
 
-// maybeLaunchContractScalerEarly launches the standing dedicated contract auto-scaler DURING the
+// ensureContractScalerEarly ensures the standing dedicated contract auto-scaler is running DURING the
 // cold-start scaling window so it ramps the exclusive contract fleet behind the 200000 cushion. The
-// caller has already checked we are in the DATA/INCOME window. It mirrors maybeLaunchAutosizerEarly:
-//   - IDEMPOTENT: skips silently when the scaler is already running (obs.ContractScalerRunning) — the
-//     steady state once launched (launched once, then RUNS FOREVER via restart recovery);
+// caller has already checked we are in the cold-start window. It mirrors maybeLaunchAutosizerEarly:
+//   - IDEMPOTENCY lives in the LAUNCHER, which skips a coordinator already RUNNING/PENDING, so calling
+//     it every cold-start tick never double-launches a second ramp loop;
 //   - is nil-safe (no launcher wired ⇒ logged skip) and dry-run-safe (WOULD-launch, no action);
 //   - is a BACKGROUND launch: it never claims res.Blocker, surfacing itself via its own INFO/ERROR line.
-func (h *RunBootstrapCoordinatorHandler) maybeLaunchContractScalerEarly(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
+func (h *RunBootstrapCoordinatorHandler) ensureContractScalerEarly(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, res *reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
-	if obs.ContractScalerRunning {
-		return // already launched (armed once) — idempotent no-op
-	}
-
 	if cfg.DryRun {
-		logger.Log("INFO", "Bootstrap DRY-RUN: WOULD launch the dedicated contract auto-scaler EARLY to ramp the exclusive contract fleet (took no action)", map[string]interface{}{
+		logger.Log("INFO", "Bootstrap DRY-RUN: WOULD ensure the dedicated contract auto-scaler is running to ramp the exclusive contract fleet (took no action)", map[string]interface{}{
 			"action":       "bootstrap_would_launch_contract_scaler_early",
 			"container_id": cmd.ContainerID,
 		})
@@ -745,7 +696,7 @@ func (h *RunBootstrapCoordinatorHandler) maybeLaunchContractScalerEarly(ctx cont
 	}
 
 	if h.handoff == nil {
-		logger.Log("WARN", "Bootstrap has no hand-off launcher wired — cannot launch the contract scaler early", map[string]interface{}{
+		logger.Log("WARN", "Bootstrap has no hand-off launcher wired — cannot ensure the contract scaler", map[string]interface{}{
 			"action":       "bootstrap_no_handoff_launcher",
 			"container_id": cmd.ContainerID,
 		})
@@ -753,14 +704,14 @@ func (h *RunBootstrapCoordinatorHandler) maybeLaunchContractScalerEarly(ctx cont
 	}
 
 	if err := h.handoff.LaunchContractScaler(ctx, cmd.PlayerID, cmd.AgentSymbol); err != nil {
-		logger.Log("ERROR", fmt.Sprintf("Bootstrap failed to launch the contract auto-scaler early: %v", err), map[string]interface{}{
+		logger.Log("ERROR", fmt.Sprintf("Bootstrap failed to ensure the contract auto-scaler: %v", err), map[string]interface{}{
 			"action":       "bootstrap_contract_scaler_early_launch_error",
 			"container_id": cmd.ContainerID,
 		})
 		return
 	}
 	res.ContractScalerLaunchedEarly = true
-	logger.Log("INFO", "Bootstrap launched the dedicated contract auto-scaler EARLY — it ramps the exclusive contract fleet to the live ceiling behind the 200000 cushion", map[string]interface{}{
+	logger.Log("INFO", "Bootstrap ensured the dedicated contract auto-scaler — it ramps the exclusive contract fleet to the live ceiling behind the 200000 cushion", map[string]interface{}{
 		"action":       "bootstrap_contract_scaler_launched_early",
 		"container_id": cmd.ContainerID,
 	})
