@@ -115,19 +115,18 @@ func TestBootstrap_TradeSeed_ZeroContract_BuysContractFirstNotTrade(t *testing.T
 
 // --- (b) the contract scaler is ensured throughout cold start, INDEPENDENT of the trade seed: the hull
 // routing above is bootstrap's alone, so the scaler's launch is not coupled to it. A paired reading on the
-// same isolated fixture (no contract haulers, no markets → neither the trade-seed nor the contract-buy
-// branch fires) at both trade-hull counts. ---
+// same isolated fixture (no contract haulers, no delivery slots → neither the trade-seed nor the
+// contract-buy branch fires) at both trade-hull counts. ---
 
 // scalerGateObs is a cold-start fixture isolated to the scaler launch: 0 contract haulers (the trade-seed
-// branch needs ≥1, so it never fires), no viable hubs (the contract-buy branch never fires), autosizer running
-// (the early autosizer launch is a no-op).
+// branch needs ≥1, so it never fires), no delivery slots (the contract buy has nowhere to place, so it
+// fails closed), autosizer running (the early autosizer launch is a no-op).
 func scalerGateObs(tradeHulls int) Observation {
 	obs := incomeObs()
 	obs.BatchContractRunning = true
 	obs.AutosizerRunning = true
 	obs.Haulers = nil
-	obs.Markets = nil
-	obs.ContractGoods = nil
+	obs.ContractPlacementSlots = nil
 	obs.TradeHullCount = tradeHulls
 	return obs
 }
@@ -198,8 +197,8 @@ func TestBootstrap_TradeSeedAcceptance_RoutesSecondAcquisitionToTrade(t *testing
 	world := &incomeWorld{
 		treasury: 5000000, homeSystem: "X1", marketsTotal: 10, marketsCovered: 10,
 		frigateID: "FRIGATE-1", frigateOnContract: false, batchRunning: true,
-		probeCount: 3, // provisioned (probe_target 3) → COLDSTART-labeled
-		markets:    incomeHubs(), contractGoods: []string{"IRON", "ALUMINUM"},
+		probeCount:               3, // provisioned (probe_target 3) → COLDSTART-labeled
+		placementSlots:           incomeSlots(),
 		incomePerHour:            0,
 		hasPurchaser:             true,
 		commandFrigatePurchasing: true, // the exclusive purchasing ship (post first-hauler pivot)
@@ -222,10 +221,10 @@ func TestBootstrap_TradeSeedAcceptance_RoutesSecondAcquisitionToTrade(t *testing
 		}
 	}
 	final := world.snapshot()
-	// 3 viable hubs → 3 CONTRACT haulers, PLUS exactly 1 TRADE hull (acquisition #2) — the trade hull did not
-	// consume a contract slot (decoupled from the contract scaler's ceiling).
-	if len(final.Haulers) != 3 {
-		t.Fatalf("acceptance: expected 3 contract haulers (one per viable hub), got %d", len(final.Haulers))
+	// The contract ramp reaches its fixed target, PLUS exactly 1 TRADE hull (acquisition #2) — the trade hull
+	// did not consume a contract slot (decoupled from the contract scaler's ceiling).
+	if len(final.Haulers) != haulerTarget {
+		t.Fatalf("acceptance: expected %d contract haulers (the fixed target), got %d", haulerTarget, len(final.Haulers))
 	}
 	if final.TradeHullCount != 1 {
 		t.Fatalf("acceptance: expected exactly 1 trade hull (acquisition #2), got %d", final.TradeHullCount)
@@ -237,9 +236,9 @@ func TestBootstrap_TradeSeedAcceptance_RoutesSecondAcquisitionToTrade(t *testing
 	if ho.tradeCoord != 1 {
 		t.Fatalf("acceptance: the trade coordinator must be ensured exactly once, got %d", ho.tradeCoord)
 	}
-	// Exactly 3 CONTRACT buys — the trade hull is separate, not one of the three.
-	if acq.buys != 3 {
-		t.Fatalf("acceptance: expected exactly 3 contract-hauler buys, got %d", acq.buys)
+	// Exactly haulerTarget CONTRACT buys — the trade hull is separate, not one of them.
+	if acq.buys != haulerTarget {
+		t.Fatalf("acceptance: expected exactly %d contract-hauler buys, got %d", haulerTarget, acq.buys)
 	}
 	// The scaler is ensured throughout the run, independent of the hull routing above.
 	if ho.contractScaler < 1 {

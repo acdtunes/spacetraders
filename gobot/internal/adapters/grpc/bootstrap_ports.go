@@ -13,13 +13,12 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	bootstrapCmd "github.com/andrescamacho/spacetraders-go/internal/application/bootstrap/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	appContract "github.com/andrescamacho/spacetraders-go/internal/application/contract"
 	ledgerQuery "github.com/andrescamacho/spacetraders-go/internal/application/ledger/queries"
 	navCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	shipyardCmd "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/commands"
 	shipyardQueries "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/contract"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainScouting "github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -80,14 +79,16 @@ func NewBootstrapCoordinatorHandler(
 	med common.Mediator,
 	waypointRepo *persistence.GormWaypointRepository,
 	marketRepo *persistence.MarketRepositoryAdapter,
-	contractRepo contract.ContractRepository,
 ) *bootstrapCmd.RunBootstrapCoordinatorHandler {
 	h := bootstrapCmd.NewRunBootstrapCoordinatorHandler(nil)
 	h.SetShipRefresher(&bootstrapRefresher{shipRepo: shipRepo})
 	h.SetWorldObserver(&bootstrapObserver{
 		api: apiClient, shipRepo: shipRepo, waypointRepo: waypointRepo, marketRepo: marketRepo,
-		med: med, contractRepo: contractRepo, containerRepo: server.containerRepo, server: server,
+		med: med, containerRepo: server.containerRepo, server: server,
 		eraRepo: persistence.NewEraRepository(server.db),
+		// The ramp places hulls on the SAME fixed delivery slots the contract coordinator homes them to —
+		// one slot set for every positioning consumer, resolved from stationary home-system geometry.
+		placement: NewContractStandbyPlacementProvider(shipRepo, waypointRepo, marketRepo),
 	})
 	// One acquirer instance drives both the probe buy and (embedded) the hauler price-check
 	// + buy — the yard price-scan + batch-purchase plumbing is asset-agnostic (parameterised by shipType).
@@ -145,10 +146,10 @@ type bootstrapObserver struct {
 	shipRepo     navigation.ShipRepository
 	waypointRepo *persistence.GormWaypointRepository
 	marketRepo   *persistence.MarketRepositoryAdapter
-	// Contract-workstream reads (Slice 2). med runs the realized-$/hr ledger query; contractRepo lists the
-	// active contracts' demanded goods (hub bias); containerRepo answers "is batch-contract running?".
+	// Contract-workstream reads (Slice 2). med runs the realized-$/hr ledger query; placement resolves the
+	// era's fixed delivery slots; containerRepo answers "is batch-contract running?".
 	med           common.Mediator
-	contractRepo  contract.ContractRepository
+	placement     appContract.StandbyPlacementProvider
 	containerRepo *persistence.ContainerRepositoryGORM
 	// GATE-phase reads (Slice 3). server runs the construction-site discovery + status snapshot and the
 	// executor/autosizer container-running checks. All best-effort (a miss leaves the field zero-valued).
@@ -250,15 +251,12 @@ func (o *bootstrapObserver) Observe(ctx context.Context, playerID int) (bootstra
 
 	// Coverage — home-system marketplaces total vs those with (fresh) market data. A read miss on
 	// either leaves that count 0, which simply reads as uncovered on the heartbeat.
-	// The single ListMarketsInSystem read serves BOTH the coverage count AND the contract-hub
-	// selector's market snapshots (sourceable goods + prices).
 	if obs.HomeSystem != "" {
 		if wps, werr := o.waypointRepo.ListBySystemWithTrait(ctx, obs.HomeSystem, marketplaceTrait); werr == nil {
 			obs.MarketsTotal = len(wps)
 		}
 		if mkts, merr := o.marketRepo.ListMarketsInSystem(ctx, uint(playerID), obs.HomeSystem, bootstrapMarketFreshnessMin); merr == nil {
 			obs.MarketsCovered = len(mkts)
-			obs.Markets = toMarketSnapshots(mkts)
 		}
 	}
 
@@ -273,12 +271,16 @@ func (o *bootstrapObserver) Observe(ctx context.Context, playerID int) (bootstra
 	}
 
 	// Contract-workstream reads (Slice 2). Each is BEST-EFFORT: a miss leaves the field at its zero value,
-	// which the reconciler reads fail-safe — 0 $/hr never advances the arc (never premature GATE),
-	// empty Markets means no hubs (no hauler buys), empty ContractGoods falls back to density+cheapness.
+	// which the reconciler reads fail-safe — 0 $/hr never advances the arc (never premature GATE), and an
+	// empty slot set means no placement target (no hauler buys).
 	obs.IncomePerHour = o.readIncomePerHour(ctx, playerID)
-	if o.contractRepo != nil {
-		if contracts, cerr := o.contractRepo.FindActiveContracts(ctx, playerID); cerr == nil {
-			obs.ContractGoods = contractDemandGoods(contracts)
+	// The era's FIXED delivery placement slots — the SAME ≤6 set the contract auto-scaler buys against and
+	// the contract coordinator's homing zips hulls onto, so the ramp drops each hull where the standing op
+	// will keep it. Resolved from stationary home-system geometry + market roles, never from the live
+	// contract's goods, so the ramp's placements do not churn as contracts turn over.
+	if o.placement != nil {
+		if slots, perr := o.placement.StandbyPlacement(ctx, playerID); perr == nil {
+			obs.ContractPlacementSlots = slots
 		}
 	}
 	if o.containerRepo != nil {
@@ -348,60 +350,6 @@ func (o *bootstrapObserver) readIncomePerHour(ctx context.Context, playerID int)
 	}
 	// The window is exactly bootstrapIncomeWindow (1h), so NetProfit over it IS the net $/hr.
 	return float64(pl.NetProfit)
-}
-
-// toMarketSnapshots projects the persisted markets into the hub selector's input: per waypoint, the
-// goods a hauler can SOURCE (buy). Only EXPORT/EXCHANGE goods are sourceable (an IMPORT-only good is
-// one the market CONSUMES). The price is SellPrice() — the market ASK, i.e. what a ship PAYS to buy —
-// because this codebase's TradeGood swaps the API's purchase/sell prices (market_scanner.go). A
-// non-positive ask is dropped (fail-closed). Markets with no sourceable good are omitted.
-func toMarketSnapshots(mkts []market.Market) []bootstrapCmd.MarketSnapshot {
-	out := make([]bootstrapCmd.MarketSnapshot, 0, len(mkts))
-	for i := range mkts {
-		m := mkts[i]
-		snap := bootstrapCmd.MarketSnapshot{
-			Waypoint: m.WaypointSymbol(),
-			System:   shared.ExtractSystemSymbol(m.WaypointSymbol()),
-		}
-		for _, g := range m.TradeGoods() {
-			if tt := g.TradeType(); tt != market.TradeTypeExport && tt != market.TradeTypeExchange {
-				continue // IMPORT-only: the market consumes it — a hauler cannot source it here
-			}
-			ask := g.SellPrice() // domain-swapped: SellPrice() is what a ship PAYS to buy (the ask)
-			if ask <= 0 {
-				continue
-			}
-			snap.Goods = append(snap.Goods, bootstrapCmd.MarketGood{Symbol: g.Symbol(), PurchasePrice: int64(ask)})
-		}
-		if len(snap.Goods) > 0 {
-			out = append(out, snap)
-		}
-	}
-	return out
-}
-
-// contractDemandGoods collects the distinct trade symbols the player's active contracts require
-// delivered — the hub selector's contract-good bias. Empty when no accepted contract exists yet (the
-// selector then falls back to market density + cheapness), which is the normal state at cold-start.
-func contractDemandGoods(contracts []*contract.Contract) []string {
-	seen := map[string]struct{}{}
-	var goods []string
-	for _, c := range contracts {
-		if c == nil {
-			continue
-		}
-		for _, d := range c.Terms().Deliveries {
-			if d.TradeSymbol == "" {
-				continue
-			}
-			if _, ok := seen[d.TradeSymbol]; ok {
-				continue
-			}
-			seen[d.TradeSymbol] = struct{}{}
-			goods = append(goods, d.TradeSymbol)
-		}
-	}
-	return goods
 }
 
 // contractFleetCoordinatorRunning reports whether a contract fleet coordinator container is already

@@ -70,7 +70,7 @@ type reconcileResult struct {
 	FrigateLoopStarted bool // the command frigate's continuous contract loop was started this tick (sp-rype)
 	FrigatePivoted     bool // the first-hauler pivot fired this tick: frigate loop STOPPED + dedicated the exclusive purchasing ship (sp-7r7w). With a readable yard price the buy also runs this tick; on a COLD price it is a SEPARATE later tick once the freed frigate is positioned (sp-5nd2 fault-2)
 	TradeHullSeeded    bool // the cold-start hull-routing trade-seed fired this tick (sp-192k4): acquisition #2 bought + dedicated to the trade fleet + the trade coordinator ensured
-	ViableHubs         int  // viable contract hubs the selector found (for the heartbeat)
+	PlacementSlots     int  // fixed delivery slots this era resolves — where the ramp spreads its hulls (for the heartbeat)
 
 	// GATE tallies.
 	ConstructionStartRan bool // `construction start` ran this tick (created/resumed the pipeline)
@@ -741,8 +741,8 @@ func (h *RunBootstrapCoordinatorHandler) emitHeartbeat(ctx context.Context, cmd 
 		blockers = "none"
 	}
 
-	logger.Log("INFO", fmt.Sprintf("Bootstrap heartbeat: phase=%s probes=%d/%d scouting=%d coverage=%d/%d (%.0f%%) haulers=%d/%d hubs=%d income/hr=%.0f treasury=%d gate_site=%s construction=%.0f%% gate_workers=%d/%d · %s · next=%q · blockers=%s",
-		phase, obs.ProbeCount, probeTarget, obs.ProbesScouting, obs.MarketsCovered, obs.MarketsTotal, obs.CoverageFraction()*100, len(obs.Haulers), haulerTarget, res.ViableHubs, obs.IncomePerHour, obs.Treasury, gateSiteOrNone(obs.GateSite), obs.ConstructionPercent, obs.GateWorkers, res.DesiredWorkers, delta, next, blockers), map[string]interface{}{
+	logger.Log("INFO", fmt.Sprintf("Bootstrap heartbeat: phase=%s probes=%d/%d scouting=%d coverage=%d/%d (%.0f%%) haulers=%d/%d slots=%d income/hr=%.0f treasury=%d gate_site=%s construction=%.0f%% gate_workers=%d/%d · %s · next=%q · blockers=%s",
+		phase, obs.ProbeCount, probeTarget, obs.ProbesScouting, obs.MarketsCovered, obs.MarketsTotal, obs.CoverageFraction()*100, len(obs.Haulers), haulerTarget, res.PlacementSlots, obs.IncomePerHour, obs.Treasury, gateSiteOrNone(obs.GateSite), obs.ConstructionPercent, obs.GateWorkers, res.DesiredWorkers, delta, next, blockers), map[string]interface{}{
 		"action":             "bootstrap_heartbeat",
 		"container_id":       cmd.ContainerID,
 		"phase":              string(phase),
@@ -754,7 +754,7 @@ func (h *RunBootstrapCoordinatorHandler) emitHeartbeat(ctx context.Context, cmd 
 		"haulers":            len(obs.Haulers),
 		"hauler_target":      haulerTarget,
 		"trade_hulls":        obs.TradeHullCount,
-		"viable_hubs":        res.ViableHubs,
+		"placement_slots":    res.PlacementSlots,
 		"income_per_hour":    obs.IncomePerHour,
 		"treasury":           obs.Treasury,
 		"purchased":          res.Purchased,
@@ -795,12 +795,8 @@ func (h *RunBootstrapCoordinatorHandler) nextAction(phase Phase, obs Observation
 		if obs.CommandFrigateID != "" && !obs.FrigateContractLoopRunning && len(obs.Haulers) == 0 && !obs.CommandFrigatePurchasing {
 			return "start the command frigate's continuous contract loop (pre-hauler sole earner)"
 		}
-		desired := len(selectContractHubs(obs.Markets, obs.ContractGoods))
-		if desired > haulerTarget {
-			desired = haulerTarget
-		}
-		if len(obs.Haulers) < desired {
-			return fmt.Sprintf("buy contract hauler %d/%d (staged, capital-gated, hub-placed)", len(obs.Haulers)+1, desired)
+		if len(obs.Haulers) < haulerTarget {
+			return fmt.Sprintf("buy contract hauler %d/%d (staged, capital-gated, placed on a fixed delivery slot)", len(obs.Haulers)+1, haulerTarget)
 		}
 		return fmt.Sprintf("scan home system in parallel with contracts (coverage %.0f%%)", obs.CoverageFraction()*100)
 	case PhaseGate:

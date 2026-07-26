@@ -166,8 +166,7 @@ type incomeWorld struct {
 	frigateOnContract        bool
 	batchRunning             bool
 	haulers                  []HaulerSnapshot
-	markets                  []MarketSnapshot
-	contractGoods            []string
+	placementSlots           []string
 	incomePerHour            float64
 	hasPurchaser             bool
 	probeCount               int  // sp-rype: provisioning progress — the frigate-loop start gates on probes≥target
@@ -195,8 +194,7 @@ func (w *incomeWorld) snapshot() Observation {
 		CommandFrigatePurchasing:   w.commandFrigatePurchasing,
 		TradeHullCount:             w.tradeHullCount,
 		Haulers:                    append([]HaulerSnapshot(nil), w.haulers...),
-		Markets:                    w.markets,
-		ContractGoods:              w.contractGoods,
+		ContractPlacementSlots:     append([]string(nil), w.placementSlots...),
 		IncomePerHour:              w.incomePerHour,
 		HasIdlePurchaser:           w.hasPurchaser,
 		Readable:                   true,
@@ -269,13 +267,10 @@ func (f *fakeIncomeObserver) Observe(ctx context.Context, playerID int) (Observa
 	return f.world.snapshot(), nil
 }
 
-// incomeHubs is the standard 3-hub fixture (A cheapest/densest, then B, then C by coverage/cost).
-func incomeHubs() []MarketSnapshot {
-	return []MarketSnapshot{
-		mkt("X1-HUBA", "X1", map[string]int64{"IRON": 100, "ALUMINUM": 100, "COPPER": 100}),
-		mkt("X1-HUBB", "X1", map[string]int64{"IRON": 200, "ALUMINUM": 200}),
-		mkt("X1-HUBC", "X1", map[string]int64{"IRON": 300}),
-	}
+// incomeSlots is the standard fixed delivery-slot fixture: four distinct central parks in placement
+// order, so the ramp can spread one hull per slot all the way to the fixed hauler target.
+func incomeSlots() []string {
+	return []string{"X1-HUBA", "X1-HUBB", "X1-HUBC", "X1-HUBD"}
 }
 
 // newIncomeHandler wires a handler with a fixed observation + all contract collaborators, for the
@@ -299,8 +294,8 @@ func incomeObs() Observation {
 		HomeSystem: "X1", MarketsTotal: 10, MarketsCovered: 10,
 		ProbeCount: 3, ProbesScouting: 3, // provisioned (probe_target 3) + scouting → COLDSTART-labeled
 		Treasury: 2000000, HasIdlePurchaser: true, IncomePerHour: 0,
-		Markets: incomeHubs(), ContractGoods: []string{"IRON", "ALUMINUM"},
-		Readable: true,
+		ContractPlacementSlots: incomeSlots(),
+		Readable:               true,
 	}
 }
 
@@ -308,7 +303,7 @@ func incomeObs() Observation {
 
 func TestBootstrap_ContractShape_IsFixed(t *testing.T) {
 	if haulerTarget != 4 {
-		t.Fatalf("hauler cap = %d, want 4 (one per viable contract hub, up to 4)", haulerTarget)
+		t.Fatalf("hauler target = %d, want 4 (the fixed Phase-1 contract-hauler count)", haulerTarget)
 	}
 	if haulerShipType != "SHIP_LIGHT_HAULER" {
 		t.Fatalf("contract hauler asset = %q, want SHIP_LIGHT_HAULER", haulerShipType)
@@ -381,9 +376,9 @@ func TestBootstrap_Income_SkipsBatchContractWhenRunning(t *testing.T) {
 	}
 }
 
-// --- staged hauler buy: affordable → buy 1, placed on the top viable hub, metric recorded ---
+// --- staged hauler buy: affordable → buy 1, placed on the first fixed delivery slot, metric recorded ---
 
-func TestBootstrap_Income_BuysHaulerOnTopHub(t *testing.T) {
+func TestBootstrap_Income_BuysHaulerOnFirstSlot(t *testing.T) {
 	obs := incomeObs()
 	obs.BatchContractRunning = true // isolate the buy
 	acq := &fakeHaulerAcquirer{price: 300000, yard: "X1-YARD", readable: true}
@@ -395,7 +390,7 @@ func TestBootstrap_Income_BuysHaulerOnTopHub(t *testing.T) {
 		t.Fatalf("affordable hauler should buy exactly 1: buys=%d bought=%d (blocker=%q)", acq.buys, res.HaulersBought, res.Blocker)
 	}
 	if len(acq.placedOn) != 1 || acq.placedOn[0] != "X1-HUBA" {
-		t.Fatalf("hauler must be placed on the top-ranked hub X1-HUBA, got %v", acq.placedOn)
+		t.Fatalf("hauler must be placed on the first delivery slot X1-HUBA, got %v", acq.placedOn)
 	}
 	if m.haulers != 1 {
 		t.Fatalf("expected 1 hauler-purchase metric, got %d", m.haulers)
@@ -422,7 +417,7 @@ func TestBootstrap_Income_CapitalGateBlocksHauler(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected a hauler buy-decision line with the guardrail arithmetic")
 	}
-	for _, want := range []string{"price=300000", "treasury=150000", "floor=", "cushion=", "hub=X1-HUBA"} {
+	for _, want := range []string{"price=300000", "treasury=150000", "floor=", "cushion=", "slot=X1-HUBA"} {
 		if !strings.Contains(dl.msg, want) {
 			t.Fatalf("hauler decision line missing %q: %s", want, dl.msg)
 		}
@@ -490,74 +485,77 @@ func TestBootstrap_Income_NoPurchaserBlocksHauler(t *testing.T) {
 // --- at most ONE hauler per tick, even when short by more than one ---
 
 func TestBootstrap_Income_OneHaulerPerTick(t *testing.T) {
-	obs := incomeObs() // 3 viable hubs, 0 haulers, target 4 → desired 3
+	obs := incomeObs() // 0 haulers against the fixed target of 4
 	obs.BatchContractRunning = true
 	acq := &fakeHaulerAcquirer{price: 100000, yard: "Y", readable: true}
 	h := newIncomeHandler(obs, &fakeRetirer{}, acq, &fakeContractRunner{})
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if res.HaulersBought != 1 || acq.buys != 1 {
-		t.Fatalf("short by 3 but must buy exactly 1 per tick: bought=%d buys=%d", res.HaulersBought, acq.buys)
+		t.Fatalf("short by 4 but must buy exactly 1 per tick: bought=%d buys=%d", res.HaulersBought, acq.buys)
 	}
 }
 
-// --- placement skips a hub already served by a hauler (buys the next-ranked unserved hub) ---
+// --- placement skips a slot already served by a hauler (places on the next unserved slot) ---
 
-func TestBootstrap_Income_PlacementSkipsServedHub(t *testing.T) {
+func TestBootstrap_Income_PlacementSkipsServedSlot(t *testing.T) {
 	obs := incomeObs()
 	obs.BatchContractRunning = true
 	obs.TradeHullCount = 1                                              // sp-192k4: post-seed — a 2nd+ contract hull buys (not the trade-seed)
-	obs.Haulers = []HaulerSnapshot{{Symbol: "H1", Waypoint: "X1-HUBA"}} // top hub already served
+	obs.Haulers = []HaulerSnapshot{{Symbol: "H1", Waypoint: "X1-HUBA"}} // first slot already served
 	acq := &fakeHaulerAcquirer{price: 100000, yard: "Y", readable: true}
 	h := newIncomeHandler(obs, &fakeRetirer{}, acq, &fakeContractRunner{})
 	h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if len(acq.placedOn) != 1 || acq.placedOn[0] != "X1-HUBB" {
-		t.Fatalf("served top hub must be skipped; expected placement on X1-HUBB, got %v", acq.placedOn)
+		t.Fatalf("served first slot must be skipped; expected placement on X1-HUBB, got %v", acq.placedOn)
 	}
 }
 
-// --- cap: one hauler per viable hub, capped at min(hubs, haulerTarget) → no buy when met ---
+// --- the fixed hauler target is met → no buy ---
 
-func TestBootstrap_Income_NoBuyWhenPerHubCapMet(t *testing.T) {
-	obs := incomeObs() // 3 viable hubs
+func TestBootstrap_Income_NoBuyWhenTargetMet(t *testing.T) {
+	obs := incomeObs()
 	obs.BatchContractRunning = true
-	obs.TradeHullCount = 1          // sp-192k4: post-seed — isolate the per-hub cap (no trade-seed detour)
-	obs.Haulers = []HaulerSnapshot{ // 3 haulers, one per hub → desired 3 met
-		{Waypoint: "X1-HUBA"}, {Waypoint: "X1-HUBB"}, {Waypoint: "X1-HUBC"},
+	obs.TradeHullCount = 1          // sp-192k4: post-seed — isolate the target guard (no trade-seed detour)
+	obs.Haulers = []HaulerSnapshot{ // haulerTarget haulers, one per slot → the fixed target is met
+		{Waypoint: "X1-HUBA"}, {Waypoint: "X1-HUBB"}, {Waypoint: "X1-HUBC"}, {Waypoint: "X1-HUBD"},
 	}
 	acq := &fakeHaulerAcquirer{price: 100000, yard: "Y", readable: true}
 	h := newIncomeHandler(obs, &fakeRetirer{}, acq, &fakeContractRunner{})
 	h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if acq.buys != 0 {
-		t.Fatalf("per-hub cap met (3 haulers, 3 hubs): must not buy, got %d", acq.buys)
+		t.Fatalf("fixed target met (%d haulers): must not buy, got %d", haulerTarget, acq.buys)
 	}
 }
 
 // --- recovery: a restart with haulers already at the cap never double-buys ---
 
 func TestBootstrap_Income_Recovery_NoDoubleBuy(t *testing.T) {
-	obs := incomeObs() // 3 viable hubs → desired min(3, haulerTarget)=3
+	obs := incomeObs()
 	obs.BatchContractRunning = true
-	obs.TradeHullCount = 1 // sp-192k4: post-seed — isolate the recovery cap guard (no trade-seed detour)
-	obs.Haulers = []HaulerSnapshot{{Waypoint: "X1-HUBA"}, {Waypoint: "X1-HUBB"}, {Waypoint: "X1-HUBC"}}
+	obs.TradeHullCount = 1 // sp-192k4: post-seed — isolate the recovery count guard (no trade-seed detour)
+	obs.Haulers = []HaulerSnapshot{{Waypoint: "X1-HUBA"}, {Waypoint: "X1-HUBB"}, {Waypoint: "X1-HUBC"}, {Waypoint: "X1-HUBD"}}
 	acq := &fakeHaulerAcquirer{price: 100000, yard: "Y", readable: true}
 	h := newIncomeHandler(obs, &fakeRetirer{}, acq, &fakeContractRunner{})
 	h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if acq.buys != 0 {
-		t.Fatalf("cap met on restart: must not double-buy, got %d", acq.buys)
+		t.Fatalf("target met on restart: must not double-buy, got %d", acq.buys)
 	}
 }
 
-// --- no market data → no hubs → no hauler buy (fail closed) ---
+// --- an unresolved era (no delivery slots) → no placement target → no hauler buy (fail closed) ---
 
-func TestBootstrap_Income_NoMarketsNoHaulerBuy(t *testing.T) {
+func TestBootstrap_Income_NoPlacementSlotsNoHaulerBuy(t *testing.T) {
 	obs := incomeObs()
-	obs.Markets = nil
+	obs.ContractPlacementSlots = nil
 	obs.BatchContractRunning = true
 	acq := &fakeHaulerAcquirer{price: 100000, yard: "Y", readable: true}
 	h := newIncomeHandler(obs, &fakeRetirer{}, acq, &fakeContractRunner{})
-	h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if acq.buys != 0 {
-		t.Fatalf("no market data → no viable hubs → no buy, got %d", acq.buys)
+		t.Fatalf("no delivery slots → nowhere to place → no buy, got %d", acq.buys)
+	}
+	if res.Blocker != "no_placement_slot" {
+		t.Fatalf("expected the no_placement_slot blocker, got %q", res.Blocker)
 	}
 }
 
@@ -604,12 +602,10 @@ func frigateLoopObs() Observation {
 	obs.CommandFrigateID = "FRIGATE-1"
 	obs.FrigateContractLoopRunning = false
 	obs.BatchContractRunning = true // isolate: don't also launch the coordinator
-	// sp-7r7w: the frigate loop is the PRE-hauler earner — it starts only at 0 haulers. Isolate the
-	// loop-start from the hauler buy by leaving NO viable hubs (empty markets → desired=0 → not "needed"),
-	// so the loop-start pin is not perturbed by a first-hauler pivot.
+	// sp-7r7w: the frigate loop is the PRE-hauler earner — it starts only at 0 haulers. The staged buy
+	// therefore also runs on this fixture; it is left fully affordable and placeable so it completes
+	// without raising a blocker of its own, isolating these pins to the loop-start action.
 	obs.Haulers = nil
-	obs.Markets = nil
-	obs.ContractGoods = nil
 	return obs
 }
 
@@ -744,15 +740,15 @@ func TestBootstrap_Income_FrigateLoopStartedExactlyOnce(t *testing.T) {
 }
 
 // --- Contract acceptance (Slice 2): from a provisioned fixture, the arc retires the frigate, launches
-// batch-contract, and stages one hauler per viable hub (capped), one per tick, on distinct hubs. ---
+// batch-contract, and stages the fixed hauler target one per tick, spread across distinct slots. ---
 
 func TestBootstrap_IncomeAcceptance_RetiresLaunchesRampsHaulers(t *testing.T) {
 	world := &incomeWorld{
 		treasury: 3000000, homeSystem: "X1", marketsTotal: 10, marketsCovered: 10,
 		frigateID: "FRIGATE-1", frigateOnContract: true, batchRunning: false,
-		probeCount: 3, // provisioned (probe_target 3) → COLDSTART-labeled
-		markets:    incomeHubs(), contractGoods: []string{"IRON", "ALUMINUM"},
-		incomePerHour: 0, hasPurchaser: true,
+		probeCount:     3, // provisioned (probe_target 3) → COLDSTART-labeled
+		placementSlots: incomeSlots(),
+		incomePerHour:  0, hasPurchaser: true,
 		// sp-192k4: post-seed state (a trade hull already exists) so this test stays a PURE contract ramp;
 		// the #1-contract → #2-trade routing is covered by TestBootstrap_TradeSeedAcceptance.
 		tradeHullCount: 1,
@@ -785,9 +781,9 @@ func TestBootstrap_IncomeAcceptance_RetiresLaunchesRampsHaulers(t *testing.T) {
 	if !final.BatchContractRunning {
 		t.Fatalf("acceptance: batch-contract should be running")
 	}
-	// 3 viable hubs, target 4 → desired 3 haulers, one per distinct hub.
-	if len(final.Haulers) != 3 {
-		t.Fatalf("acceptance: expected 3 haulers (one per viable hub), got %d", len(final.Haulers))
+	// The ramp climbs to the fixed hauler target, one hull per distinct slot.
+	if len(final.Haulers) != haulerTarget {
+		t.Fatalf("acceptance: expected %d haulers (the fixed target), got %d", haulerTarget, len(final.Haulers))
 	}
 	if ret.calls != 1 {
 		t.Fatalf("acceptance: frigate retired exactly once, got %d", ret.calls)
@@ -798,11 +794,31 @@ func TestBootstrap_IncomeAcceptance_RetiresLaunchesRampsHaulers(t *testing.T) {
 	seen := map[string]bool{}
 	for _, hp := range acq.placedOn {
 		if seen[hp] {
-			t.Fatalf("acceptance: two haulers placed on the same hub %s (placements=%v)", hp, acq.placedOn)
+			t.Fatalf("acceptance: two haulers placed on the same slot %s (placements=%v)", hp, acq.placedOn)
 		}
 		seen[hp] = true
 	}
-	if acq.buys != 3 {
-		t.Fatalf("acceptance: expected exactly 3 staged buys, got %d", acq.buys)
+	if acq.buys != haulerTarget {
+		t.Fatalf("acceptance: expected exactly %d staged buys, got %d", haulerTarget, acq.buys)
+	}
+}
+
+// --- REGRESSION: the ramp's hauler target is the FIXED Phase-1 constant, NOT the size of whatever set the
+// tick happened to sense. A sparse read (here: two resolved parks, with both haulers out on deliveries
+// rather than sitting on them) must not shrink the fleet the ramp is climbing to — sizing the target from
+// the sensed set stalls the ramp at 2 forever, which is the stall this pins against. ---
+
+func TestBootstrap_Income_HaulerTargetIsFixed_NotTheSensedSetSize(t *testing.T) {
+	obs := incomeObs()
+	obs.BatchContractRunning = true
+	obs.TradeHullCount = 1 // post-seed: this is a contract buy, not the trade seed
+	obs.ContractPlacementSlots = []string{"X1-HUBA", "X1-HUBB"}
+	obs.Haulers = []HaulerSnapshot{{Symbol: "H1", Waypoint: "X1-SINK"}, {Symbol: "H2", Waypoint: "X1-SINK"}}
+	acq := &fakeHaulerAcquirer{price: 100000, yard: "Y", readable: true}
+	h := newIncomeHandler(obs, &fakeRetirer{}, acq, &fakeContractRunner{})
+	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
+	if acq.buys != 1 || res.HaulersBought != 1 {
+		t.Fatalf("2 haulers against the fixed target of %d must still buy (sensed slots=%d): buys=%d bought=%d blocker=%q",
+			haulerTarget, len(obs.ContractPlacementSlots), acq.buys, res.HaulersBought, res.Blocker)
 	}
 }

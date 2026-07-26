@@ -31,11 +31,11 @@ const tradeFleetTag = "trade"
 //     single CONTRACT_WORKFLOW worker), so there is no double-claim (RULINGS #7).
 //  4. Staged, capital-gated hull acquisition, ROUTED BY ORDER (sp-192k4): acquisition #1 → the contract
 //     fleet, #2 → the TRADE fleet (the trade-seed, held until the first contract hull exists), #3… →
-//     contract again. One light hauler per viable contract hub, capped at haulerTarget. The COUNT guard
-//     (haulers < desired) is the double-buy protection; placement picks the top-ranked hub no hauler yet
-//     serves. At most one buy per tick (never a blind buy-all). The trade hull is decoupled — it does not
-//     count toward the contract scaler's ceiling, and all the phase logic lives HERE (the trade/contract
-//     coordinators + scaler stay phase-blind).
+//     contract again. The ramp climbs to the FIXED Phase-1 hauler target, placing each hull on a distinct
+//     fixed delivery slot. The COUNT guard (haulers < haulerTarget) is the double-buy protection;
+//     placement picks the first slot no hauler yet serves. At most one buy per tick (never a blind
+//     buy-all). The trade hull is decoupled — it does not count toward the contract scaler's ceiling, and
+//     all the phase logic lives HERE (the trade/contract coordinators + scaler stay phase-blind).
 //
 // Each action is guarded "already done / in-flight?" against the FRESH observation, so re-evaluation —
 // including the first tick after a restart — never double-acts or double-buys.
@@ -79,14 +79,12 @@ func (h *RunBootstrapCoordinatorHandler) actIncome(ctx context.Context, cmd *Run
 		h.startFrigateContractLoop(ctx, cmd, obs, res)
 	}
 
-	// (4) Staged hull acquisition — one per viable hub, capped at haulerTarget. Compute the viable hubs
-	// (pure) and the desired count; the count guard is the double-buy protection.
-	hubs := selectContractHubs(obs.Markets, obs.ContractGoods)
-	res.ViableHubs = len(hubs)
-	desired := len(hubs)
-	if desired > haulerTarget {
-		desired = haulerTarget
-	}
+	// (4) Staged hull acquisition. The target is the FIXED Phase-1 hauler count — a constant of the plan,
+	// never a per-tick reading of markets or of whatever contract is live, so the ramp climbs to one size
+	// and stays there instead of resizing under it. The count guard is the double-buy protection; the
+	// era's fixed delivery slots decide only WHERE each hull lands.
+	res.PlacementSlots = len(obs.ContractPlacementSlots)
+	desired := haulerTarget
 	contractHaulers := len(obs.Haulers)
 
 	// (4a) HULL-ROUTING (sp-192k4): route cold-start light-hull acquisitions by order — #1 →
@@ -104,9 +102,9 @@ func (h *RunBootstrapCoordinatorHandler) actIncome(ctx context.Context, cmd *Run
 	// (4b) Staged contract-hauler acquisition — HELD at 1 contract hull until the trade hull is seeded
 	// (the (contractHaulers == 0 || TradeHullCount >= 1) guard), so acquisition #2 is the trade seed above:
 	// contractHaulers==0 still buys contract #1 unchanged; once a trade hull exists contract buying resumes
-	// for #3…, capped at desired.
+	// for #3…, capped at the fixed hauler target.
 	if contractHaulers < desired && (contractHaulers == 0 || obs.TradeHullCount >= 1) {
-		h.maybeBuyHauler(ctx, cmd, obs, hubs, res)
+		h.maybeBuyHauler(ctx, cmd, obs, res)
 	}
 }
 
@@ -205,21 +203,22 @@ func (h *RunBootstrapCoordinatorHandler) startFrigateContractLoop(ctx context.Co
 }
 
 // maybeBuyHauler evaluates and (unless dry-run) executes ONE staged hauler buy behind the readiness
-// and capital gates, placing it on the highest-ranked viable hub no hauler yet serves. It emits the
+// and capital gates, placing it on the first fixed delivery slot no hauler yet serves. It emits the
 // same guardrail arithmetic as the probe buy (RULINGS #4, fail closed). Caller has checked "needed"
-// (haulers < desired = min(viable hubs, haulerTarget)).
-func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, hubs []Hub, res *reconcileResult) {
+// (haulers < haulerTarget).
+func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
-	// Placement: the top-ranked viable hub (within the cap) that no hauler already serves. Empty means
-	// every capped hub is served — shouldn't happen given the caller's count guard, but fail-closed.
-	hub := firstUnservedHub(hubs, obs.Haulers, haulerTarget)
-	if hub == "" {
-		res.Blocker = "no_unserved_hub"
-		logger.Log("WARN", fmt.Sprintf("Bootstrap hauler needed (%d/%d haulers) but every viable hub is already served — no placement target", len(obs.Haulers), haulerTarget), map[string]interface{}{
+	// Placement: the first fixed slot (within the cap) no hauler already serves. Empty means the era's
+	// parks are unresolved, or the home system has fewer distinct parks than the target and all of them
+	// are served — either way there is nowhere to spread another hull, so fail closed and retry.
+	slot := firstUnservedSlot(obs.ContractPlacementSlots, obs.Haulers, haulerTarget)
+	if slot == "" {
+		res.Blocker = "no_placement_slot"
+		logger.Log("WARN", fmt.Sprintf("Bootstrap hauler needed (%d/%d haulers) but no free delivery slot to place it on (%d slot(s) resolved this era) — no placement target", len(obs.Haulers), haulerTarget, len(obs.ContractPlacementSlots)), map[string]interface{}{
 			"action":       "bootstrap_income_blocked",
 			"container_id": cmd.ContainerID,
-			"blocker":      "no_unserved_hub",
+			"blocker":      "no_placement_slot",
 		})
 		return
 	}
@@ -257,7 +256,7 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd
 	committedPurchaser := len(obs.Haulers) == 0 && obs.CommandFrigatePurchasing && obs.CommandFrigateID != ""
 	if !pivot && !committedPurchaser && !obs.HasIdlePurchaser {
 		res.Blocker = "no_purchaser"
-		logger.Log("WARN", fmt.Sprintf("Bootstrap hauler needed (%d/%d, hub %s) but BLOCKED: no idle hull to execute the purchase and the first-hauler pivot is unavailable (haulers=%d loop_running=%v cargo_empty=%v) — retry next tick", len(obs.Haulers), haulerTarget, hub, len(obs.Haulers), obs.FrigateContractLoopRunning, obs.FrigateCargoEmpty), map[string]interface{}{
+		logger.Log("WARN", fmt.Sprintf("Bootstrap hauler needed (%d/%d, slot %s) but BLOCKED: no idle hull to execute the purchase and the first-hauler pivot is unavailable (haulers=%d loop_running=%v cargo_empty=%v) — retry next tick", len(obs.Haulers), haulerTarget, slot, len(obs.Haulers), obs.FrigateContractLoopRunning, obs.FrigateCargoEmpty), map[string]interface{}{
 			"action":       "bootstrap_income_blocked",
 			"container_id": cmd.ContainerID,
 			"blocker":      "no_purchaser",
@@ -290,7 +289,7 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd
 	if !affordable {
 		floorNote = "BLOCKED by the working-capital floor (treasury−price below the contract working-capital floor)"
 	}
-	logger.Log("INFO", fmt.Sprintf("Bootstrap hauler buy decision: price=%d treasury=%d floor=%d cushion=(treasury−price)=%d affordable=(cushion≥floor)=%v hub=%s yard=%s — %s", price, obs.Treasury, contractWorkingCapitalFloor, cushion, affordable, hub, yard, floorNote), map[string]interface{}{
+	logger.Log("INFO", fmt.Sprintf("Bootstrap hauler buy decision: price=%d treasury=%d floor=%d cushion=(treasury−price)=%d affordable=(cushion≥floor)=%v slot=%s yard=%s — %s", price, obs.Treasury, contractWorkingCapitalFloor, cushion, affordable, slot, yard, floorNote), map[string]interface{}{
 		"action":       "bootstrap_hauler_buy_decision",
 		"container_id": cmd.ContainerID,
 		"price":        price,
@@ -298,7 +297,7 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd
 		"floor":        contractWorkingCapitalFloor,
 		"cushion":      cushion,
 		"affordable":   affordable,
-		"hub":          hub,
+		"slot":         slot,
 		"yard":         yard,
 	})
 	if !affordable {
@@ -354,7 +353,7 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd
 	if pivot || committedPurchaser {
 		purchaser = obs.CommandFrigateID
 	}
-	bought, err := h.haulAcquirer.BuyAndPlace(ctx, cmd.PlayerID, haulerShipType, yard, hub, purchaser)
+	bought, err := h.haulAcquirer.BuyAndPlace(ctx, cmd.PlayerID, haulerShipType, yard, slot, purchaser)
 	if err != nil {
 		res.Blocker = "purchase_error"
 		logger.Log("ERROR", fmt.Sprintf("Bootstrap hauler purchase failed: %v", err), map[string]interface{}{
@@ -367,12 +366,12 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd
 	if h.metrics != nil {
 		h.metrics.RecordHaulerPurchased()
 	}
-	logger.Log("INFO", fmt.Sprintf("Bootstrap bought contract hauler %s at %s for %d, dedicated + placed on hub %s (%d/%d haulers, %d viable hubs)", bought.ShipSymbol, yard, bought.Price, hub, len(obs.Haulers)+1, haulerTarget, res.ViableHubs), map[string]interface{}{
+	logger.Log("INFO", fmt.Sprintf("Bootstrap bought contract hauler %s at %s for %d, dedicated + placed on delivery slot %s (%d/%d haulers, %d slots)", bought.ShipSymbol, yard, bought.Price, slot, len(obs.Haulers)+1, haulerTarget, res.PlacementSlots), map[string]interface{}{
 		"action":       "bootstrap_bought_hauler",
 		"container_id": cmd.ContainerID,
 		"ship":         bought.ShipSymbol,
 		"price":        bought.Price,
-		"hub":          hub,
+		"slot":         slot,
 	})
 }
 
@@ -575,25 +574,25 @@ func (h *RunBootstrapCoordinatorHandler) awaitHaulerPrice(ctx context.Context, c
 	h.awaitReadablePrice(ctx, cmd, obs, res, purchaser, "hauler", priceErr)
 }
 
-// firstUnservedHub returns the highest-ranked viable hub (within the haulerTarget cap) that no
-// existing hauler is placed on, or "" when all capped hubs are served. A hub is "served" when some
-// hauler's Waypoint is on it (idle at, or heading to) — so a hauler bought last tick and still en
-// route keeps its hub from being re-selected. The reconciler's count guard caps total buys regardless,
-// so even a mis-placement (from a churned ranking) can never overshoot haulerTarget.
-func firstUnservedHub(hubs []Hub, haulers []HaulerSnapshot, hubCap int) string {
+// firstUnservedSlot returns the first fixed delivery slot (within the ramp's cap) that no existing
+// hauler is placed on, or "" when every capped slot is served. A slot is "served" when some hauler's
+// Waypoint is on it (idle at, or heading to) — so a hauler bought last tick and still en route keeps
+// its slot from being re-selected, which is what spreads the ramp's hulls one per park. The count
+// guard caps total buys regardless, so a placement can never overshoot the hauler target.
+func firstUnservedSlot(slots []string, haulers []HaulerSnapshot, slotCap int) string {
 	served := make(map[string]struct{}, len(haulers))
 	for _, hl := range haulers {
 		if hl.Waypoint != "" {
 			served[hl.Waypoint] = struct{}{}
 		}
 	}
-	limit := len(hubs)
-	if limit > hubCap {
-		limit = hubCap
+	limit := len(slots)
+	if limit > slotCap {
+		limit = slotCap
 	}
 	for i := 0; i < limit; i++ {
-		if _, ok := served[hubs[i].Waypoint]; !ok {
-			return hubs[i].Waypoint
+		if _, ok := served[slots[i]]; !ok {
+			return slots[i]
 		}
 	}
 	return ""

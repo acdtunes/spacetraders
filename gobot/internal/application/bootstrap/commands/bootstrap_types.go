@@ -86,8 +86,8 @@ type Observation struct {
 	// is off-limits to the contract op (never re-drafted).
 	CommandFrigatePurchasing bool
 	// Haulers is the contract-dedicated hauler pool NOW — each with the waypoint it is placed on (or
-	// heading to). Its length is the staged-buy count guard (buy while < one-per-viable-hub, capped at
-	// haulerTarget); the waypoints are the "hub already served" placement guard.
+	// heading to). Its length is the staged-buy count guard (buy while below haulerTarget); the waypoints
+	// are the "slot already served" placement guard.
 	Haulers []HaulerSnapshot
 	// BatchContractRunning reports whether the contract fleet coordinator (workflow batch-contract) is
 	// already running for this player — the idempotency guard for the batch-contract launch (never
@@ -108,15 +108,13 @@ type Observation struct {
 	// on an unresolved/unreadable frigate ⇒ the pivot is BLOCKED (fail-safe: never stop the earner on an
 	// unknown state), so the buy waits rather than risk losing cargo.
 	FrigateCargoEmpty bool
-	// Markets is the scouted market data for the home system(s) — the contract-hub selector's input
-	// (each marketplace's sourceable goods + purchase prices). Empty ⇒ no hubs selectable this tick
-	// (fail-closed: no hauler buys), which the first ticks before scouting completes read as.
-	Markets []MarketSnapshot
-	// ContractGoods is the set of goods the player's available/active contracts demand — the selector
-	// scores hubs by how cheaply they source THESE. Empty ⇒ the selector falls back to overall market
-	// density + cheapness (a dense, cheap market is a sound generic contract hub), so hub selection
-	// works even before the first contract is accepted.
-	ContractGoods []string
+	// ContractPlacementSlots is this era's FIXED delivery placement set: the ≤6 central parks the contract
+	// auto-scaler buys against and the contract coordinator's between-legs homing zips hulls onto — ONE
+	// slot set for every positioning consumer, so the ramp's placements never drift from where the standing
+	// op then homes them. It rests on STATIONARY inputs (home-system waypoint geometry + market role), so it
+	// does not move with whatever contract happens to be live. Empty ⇒ the era's parks are unresolved (an
+	// uncharted/unscanned home), which the ramp reads fail-closed: no placement target, no hauler buy.
+	ContractPlacementSlots []string
 	// ContractGraduated reports the durable per-player era-scoped contract-graduation flag (sp-difa.1):
 	// the operator has retired contracts as the funding floor. When true, the contract workstream (actIncome
 	// — batch-contract, the frigate sole-earner loop, staged hauler buys) does NOT run, DURABLY across
@@ -218,23 +216,6 @@ type HaulerSnapshot struct {
 type GateWorkerSnapshot struct {
 	Symbol string
 	Idle   bool
-}
-
-// MarketSnapshot is one scouted marketplace's tradable goods — the unit the contract-hub selector
-// ranks. It carries only what hub selection needs: the waypoint (the hauler's placement target), its
-// system (intra-system clustering context), and the goods a hauler can SOURCE here with their prices.
-type MarketSnapshot struct {
-	Waypoint string
-	System   string
-	Goods    []MarketGood
-}
-
-// MarketGood is one good a market can SELL to a hauler (a sourceable good), with the price the hauler
-// pays. PurchasePrice is the sourcing cost the hub selector minimizes; a good the market does not sell
-// (import-only) is simply omitted, so every MarketGood present is sourceable.
-type MarketGood struct {
-	Symbol        string
-	PurchasePrice int64
 }
 
 // CoverageFraction is MarketsCovered / MarketsTotal, and 0 when nothing is known yet (total 0) so

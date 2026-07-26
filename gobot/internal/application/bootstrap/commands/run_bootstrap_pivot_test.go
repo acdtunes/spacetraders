@@ -325,7 +325,7 @@ func TestBootstrap_Pivot_ColdPrice_EndToEnd_DeadlockToBuy(t *testing.T) {
 		treasury: 2000000, homeSystem: "X1", marketsTotal: 10, marketsCovered: 10,
 		frigateID: "FRIGATE-1", probeCount: 3, batchRunning: true,
 		frigateLoopRunning: true, frigateCargoEmpty: true, hasPurchaser: false,
-		markets: incomeHubs(), contractGoods: []string{"IRON", "ALUMINUM"},
+		placementSlots: incomeSlots(),
 	}
 	acq := &fakeHaulerAcquirer{price: 300000, yard: "X1-YARD", readable: false, world: world}
 	ret := &fakeRetirer{world: world}
