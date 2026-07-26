@@ -2204,7 +2204,23 @@ func (r *ShipRepository) SyncShipFromAPI(ctx context.Context, symbol string, pla
 	// Invalidate cache
 	r.shipListCache.Delete(playerID.Value())
 
-	return r.modelToDomain(ctx, model, playerID)
+	domainShip, err := r.modelToDomain(ctx, model, playerID)
+	if err != nil {
+		return nil, err
+	}
+
+	// A hull synced mid-transit needs its arrival timer armed here:
+	// ScheduleAllPending only runs at daemon boot, so without this the row
+	// would sit IN_TRANSIT with no timer and no ARRIVED event until the next
+	// restart, and every waiter would fall back to its slow park path.
+	// ScheduleArrival is idempotent (it replaces any existing timer).
+	if r.arrivalScheduler != nil &&
+		domainShip.NavStatus() == navigation.NavStatusInTransit &&
+		domainShip.ArrivalTime() != nil {
+		r.arrivalScheduler.ScheduleArrival(domainShip)
+	}
+
+	return domainShip, nil
 }
 
 // FindInTransitWithPastArrival finds ships that should have arrived (IN_TRANSIT with arrival_time in the past)

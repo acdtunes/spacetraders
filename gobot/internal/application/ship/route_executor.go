@@ -354,9 +354,38 @@ func (e *RouteExecutor) ensureShipInOrbit(ctx context.Context, ship *domainNavig
 		PlayerID: playerID,
 	}
 	if _, err := e.mediator.Send(ctx, orbitCmd); err != nil {
-		return fmt.Errorf("failed to orbit: %w", err)
+		err = e.retryOnceAfterAdoptedTransit(ctx, ship, playerID, err, func() error {
+			_, retryErr := e.mediator.Send(ctx, orbitCmd)
+			return retryErr
+		})
+		if err != nil {
+			return fmt.Errorf("failed to orbit: %w", err)
+		}
 	}
 	return nil
+}
+
+// retryOnceAfterAdoptedTransit resumes an op the server rejected with "ship is
+// in transit" (4214). By contract the rejecting handler has already adopted
+// the server's nav into ship, so the transit is real and bounded: wait it out
+// through the standard arrival machinery (a no-op when it already ended) and
+// give op exactly one more attempt. Any other error passes through untouched.
+// This keeps a routine desync from failing the command - each surfaced
+// failure burns a slot of the container's LIFETIME restart budget.
+func (e *RouteExecutor) retryOnceAfterAdoptedTransit(ctx context.Context, ship *domainNavigation.Ship, playerID shared.PlayerID, cause error, op func() error) error {
+	var transitErr *types.ErrShipInTransit
+	if !errors.As(cause, &transitErr) {
+		return cause
+	}
+	common.LoggerFromContext(ctx).Log("WARNING", "Ship action rejected: server shows the hull mid-transit - waiting out the adopted transit and retrying once", map[string]interface{}{
+		"ship_symbol":         ship.ShipSymbol(),
+		"action":              "adopted_transit_retry",
+		"transit_destination": transitErr.Destination,
+	})
+	if err := e.waitForCurrentTransit(ctx, ship, playerID); err != nil {
+		return err
+	}
+	return op()
 }
 
 func (e *RouteExecutor) handlePreDepartureRefuel(ctx context.Context, segment *domainNavigation.RouteSegment, ship *domainNavigation.Ship, playerID shared.PlayerID) error {
@@ -513,6 +542,13 @@ func (e *RouteExecutor) setShipFlightMode(ctx context.Context, ship *domainNavig
 }
 
 func (e *RouteExecutor) navigateToSegmentDestination(ctx context.Context, segment *domainNavigation.RouteSegment, ship *domainNavigation.Ship, playerID shared.PlayerID, flightMode shared.FlightMode) error {
+	return e.attemptSegmentNavigate(ctx, segment, ship, playerID, flightMode, true)
+}
+
+// attemptSegmentNavigate issues the segment's navigate and processes its
+// outcome. adoptTransitRecovery guards the in-transit recovery so a retried
+// attempt cannot recurse a second time.
+func (e *RouteExecutor) attemptSegmentNavigate(ctx context.Context, segment *domainNavigation.RouteSegment, ship *domainNavigation.Ship, playerID shared.PlayerID, flightMode shared.FlightMode, adoptTransitRecovery bool) error {
 	logger := common.LoggerFromContext(ctx)
 
 	navCmd := &types.NavigateDirectCommand{
@@ -524,6 +560,10 @@ func (e *RouteExecutor) navigateToSegmentDestination(ctx context.Context, segmen
 	}
 	navResp, err := e.mediator.Send(ctx, navCmd)
 	if err != nil {
+		var transitErr *types.ErrShipInTransit
+		if adoptTransitRecovery && errors.As(err, &transitErr) {
+			return e.resumeSegmentAfterAdoptedTransit(ctx, segment, ship, playerID, flightMode, transitErr)
+		}
 		return fmt.Errorf("failed to navigate: %w", err)
 	}
 
@@ -576,6 +616,54 @@ func (e *RouteExecutor) navigateToSegmentDestination(ctx context.Context, segmen
 	}
 
 	return nil
+}
+
+// resumeSegmentAfterAdoptedTransit resumes a segment whose navigate was
+// rejected because the SERVER shows the hull mid-transit. By contract the
+// rejecting handler has already adopted the server's nav into ship, so the
+// transit is real and bounded: wait it out through the standard arrival
+// machinery, then resume from wherever the hull actually landed:
+//   - the segment's destination => the transit WAS this leg, arrival
+//     completes it;
+//   - the segment's origin => the premises still hold, issue the navigate
+//     exactly once more;
+//   - anywhere else => the route's plan no longer applies; surface an error
+//     for the caller to re-plan - now from TRUTHFUL local state, so the
+//     re-plan succeeds instead of repeating the doomed navigate until the
+//     container's restart budget dies.
+func (e *RouteExecutor) resumeSegmentAfterAdoptedTransit(
+	ctx context.Context,
+	segment *domainNavigation.RouteSegment,
+	ship *domainNavigation.Ship,
+	playerID shared.PlayerID,
+	flightMode shared.FlightMode,
+	transitErr *types.ErrShipInTransit,
+) error {
+	common.LoggerFromContext(ctx).Log("WARNING", "Navigate rejected: server shows the hull mid-transit - waiting out the adopted transit before resuming the segment", map[string]interface{}{
+		"ship_symbol":         ship.ShipSymbol(),
+		"action":              "segment_adopted_transit",
+		"transit_destination": transitErr.Destination,
+		"segment_from":        segment.FromWaypoint.Symbol,
+		"segment_to":          segment.ToWaypoint.Symbol,
+	})
+	if err := e.waitForCurrentTransit(ctx, ship, playerID); err != nil {
+		return err
+	}
+
+	at := ship.CurrentLocation()
+	switch {
+	case at != nil && at.Symbol == segment.ToWaypoint.Symbol:
+		return nil
+	case at != nil && at.Symbol == segment.FromWaypoint.Symbol:
+		return e.attemptSegmentNavigate(ctx, segment, ship, playerID, flightMode, false)
+	default:
+		location := ""
+		if at != nil {
+			location = at.Symbol
+		}
+		return fmt.Errorf("hull %s landed at %s after an adopted transit; segment %s->%s no longer applies: %w",
+			ship.ShipSymbol(), location, segment.FromWaypoint.Symbol, segment.ToWaypoint.Symbol, transitErr)
+	}
 }
 
 func (e *RouteExecutor) handlePostArrivalRefueling(ctx context.Context, segment *domainNavigation.RouteSegment, ship *domainNavigation.Ship, playerID shared.PlayerID) error {
@@ -847,7 +935,13 @@ func (e *RouteExecutor) refuelShip(
 		PlayerID: playerID,
 	}
 	if _, err := e.mediator.Send(ctx, dockCmd); err != nil {
-		return fmt.Errorf("failed to dock for refuel: %w", err)
+		err = e.retryOnceAfterAdoptedTransit(ctx, ship, playerID, err, func() error {
+			_, retryErr := e.mediator.Send(ctx, dockCmd)
+			return retryErr
+		})
+		if err != nil {
+			return fmt.Errorf("failed to dock for refuel: %w", err)
+		}
 	}
 
 	refuelCmd := &types.RefuelShipCommand{

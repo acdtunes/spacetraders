@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
@@ -71,6 +72,15 @@ func (h *NavigateDirectHandler) Handle(ctx context.Context, request common.Reque
 		if isAlreadyAtDestinationError(err) {
 			return h.reconcileAtDestination(ctx, cmd, ship), nil
 		}
+		// 4214 "ship is in transit": the server holds a transit the local
+		// snapshot never recorded (typically a navigate whose response was
+		// lost after the server had applied it, silently re-sent by the
+		// client's network-error retry). The server nav is authoritative -
+		// reconcile from it instead of surfacing an error the container
+		// crash-loops on for the rest of the transit.
+		if types.IsShipInTransitAPIError(err) {
+			return h.reconcileInTransit(ctx, cmd, ship, err)
+		}
 		return nil, fmt.Errorf("failed to navigate: %w", err)
 	}
 
@@ -128,6 +138,84 @@ func (h *NavigateDirectHandler) reconcileAtDestination(ctx context.Context, cmd 
 		Status:       "already_at_destination",
 		FuelCurrent:  ship.Fuel().Current,
 		FuelCapacity: ship.Fuel().Capacity,
+	}
+}
+
+// reconcileInTransit handles a navigate rejected with 4214 ("ship is in
+// transit"). It pulls the authoritative nav from the server and adopts it into
+// the caller's ship (local state must never lead the server's):
+//   - transit already heading to THIS command's destination => the earlier
+//     send succeeded and only its response was lost; report the navigation as
+//     in progress with the SERVER's arrival so the caller waits it out;
+//   - hull already parked at the destination (the transit ended in the race
+//     window) => no-op success, mirroring the 4204 reconcile;
+//   - transit heading elsewhere => typed ErrShipInTransit so route-level
+//     callers wait out the adopted transit instead of failing the container.
+//
+// Without the authoritative read nothing is adopted and the original
+// rejection propagates unchanged - never fabricate nav state from a guess.
+func (h *NavigateDirectHandler) reconcileInTransit(ctx context.Context, cmd *types.NavigateDirectCommand, ship *navigation.Ship, cause error) (common.Response, error) {
+	fresh, syncErr := h.shipRepo.SyncShipFromAPI(ctx, ship.ShipSymbol(), cmd.PlayerID)
+	if syncErr != nil || fresh == nil {
+		common.LoggerFromContext(ctx).Log("WARNING", "Navigate rejected as in-transit (4214) but the authoritative resync failed - propagating the rejection", map[string]interface{}{
+			"ship_symbol": ship.ShipSymbol(),
+			"action":      "navigate_in_transit_resync_failed",
+			"destination": cmd.Destination,
+		})
+		return nil, fmt.Errorf("failed to navigate: %w", cause)
+	}
+	*ship = *fresh
+
+	atDestination := ship.CurrentLocation() != nil && ship.CurrentLocation().Symbol == cmd.Destination
+	if ship.NavStatus() != navigation.NavStatusInTransit {
+		if atDestination {
+			return &types.NavigateDirectResponse{
+				Status:       "already_at_destination",
+				FuelCurrent:  ship.Fuel().Current,
+				FuelCapacity: ship.Fuel().Capacity,
+			}, nil
+		}
+		return nil, fmt.Errorf("failed to navigate: %w", cause)
+	}
+
+	var arrival time.Time
+	arrivalStr := ""
+	if at := ship.ArrivalTime(); at != nil {
+		arrival = *at
+		arrivalStr = at.UTC().Format(time.RFC3339)
+	}
+	// While IN_TRANSIT, CurrentLocation() is the transit destination.
+	if atDestination {
+		common.LoggerFromContext(ctx).Log("WARNING", "Navigate rejected as in-transit (4214) toward this very destination - adopting the server transit and reporting the navigation in progress", map[string]interface{}{
+			"ship_symbol": ship.ShipSymbol(),
+			"action":      "navigate_in_transit_adopted_same_destination",
+			"destination": cmd.Destination,
+			"arrival":     arrivalStr,
+		})
+		return &types.NavigateDirectResponse{
+			Status:         "navigating",
+			ArrivalTimeStr: arrivalStr,
+			FuelCurrent:    ship.Fuel().Current,
+			FuelCapacity:   ship.Fuel().Capacity,
+		}, nil
+	}
+
+	transitDest := ""
+	if loc := ship.CurrentLocation(); loc != nil {
+		transitDest = loc.Symbol
+	}
+	common.LoggerFromContext(ctx).Log("WARNING", "Navigate rejected as in-transit (4214) toward another waypoint - adopted the server transit for the caller to wait out", map[string]interface{}{
+		"ship_symbol":         ship.ShipSymbol(),
+		"action":              "navigate_in_transit_adopted_elsewhere",
+		"requested":           cmd.Destination,
+		"transit_destination": transitDest,
+		"arrival":             arrivalStr,
+	})
+	return nil, &types.ErrShipInTransit{
+		ShipSymbol:  ship.ShipSymbol(),
+		Destination: transitDest,
+		Arrival:     arrival,
+		Cause:       cause,
 	}
 }
 
