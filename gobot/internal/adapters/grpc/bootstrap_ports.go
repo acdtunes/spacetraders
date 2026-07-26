@@ -22,6 +22,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainScouting "github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	domainShipyard "github.com/andrescamacho/spacetraders-go/internal/domain/shipyard"
 )
 
 // This file wires the captain bootstrap coordinator's concrete ports (sp-3nbe) to the daemon's live
@@ -92,7 +93,13 @@ func NewBootstrapCoordinatorHandler(
 	})
 	// One acquirer instance drives both the probe buy and (embedded) the hauler price-check
 	// + buy — the yard price-scan + batch-purchase plumbing is asset-agnostic (parameterised by shipType).
-	acq := &bootstrapAcquirer{med: med, shipRepo: shipRepo, waypointRepo: waypointRepo}
+	// savedYards is where a yard's ask outlives the process that read it: the same era-scoped shipyard
+	// inventory every scout scan writes, so a cold yard is still weighed against real evidence after a
+	// daemon restart (RULINGS #2).
+	acq := &bootstrapAcquirer{
+		med: med, shipRepo: shipRepo, waypointRepo: waypointRepo,
+		savedYards: persistence.NewShipyardInventoryRepository(server.db),
+	}
 	h.SetProbeAcquirer(acq)
 	h.SetHaulerAcquirer(&bootstrapHaulerAcquirer{bootstrapAcquirer: acq})
 	h.SetScoutPostDeclarer(&bootstrapScoutPostDeclarer{server: server})
@@ -418,13 +425,28 @@ func frigateContractLoopRunning(ctx context.Context, repo *persistence.Container
 type bootstrapAcquirer struct {
 	med          common.Mediator
 	shipRepo     navigation.ShipRepository
-	waypointRepo *persistence.GormWaypointRepository
+	waypointRepo waypointTraitLister
+	savedYards   savedYardReader
 
-	// lastAsks holds the most recent priced reading per player+ship type, so a cold yard can still
-	// report what it last charged. One instance backs the probe, hauler and gate-worker acquirers and
-	// serves every player, hence the mutex.
+	// lastAsks caches the most recent priced reading per player+ship type so a cold yard is answered
+	// without a store read. It is an accelerator over savedYards, never the record itself — it starts
+	// empty in every process. One instance backs the probe, hauler and gate-worker acquirers and serves
+	// every player, hence the mutex.
 	lastAskMu sync.Mutex
 	lastAsks  map[askKey]int64
+}
+
+// waypointTraitLister lists a system's waypoints carrying a trait — the shipyard search the price-check
+// walks.
+type waypointTraitLister interface {
+	ListBySystemWithTrait(ctx context.Context, systemSymbol, trait string) ([]*shared.Waypoint, error)
+}
+
+// savedYardReader is the persisted, era-scoped shipyard inventory every scanned yard writes: the durable
+// record of what a yard charged, cheapest first. Era scoping is the correct forgetting — a universe reset
+// retires the old asks along with the old universe.
+type savedYardReader interface {
+	ListSavedYards(ctx context.Context, playerID int, shipTypes []string) ([]domainShipyard.ShipTypeAvailability, error)
 }
 
 type askKey struct {
@@ -441,10 +463,46 @@ func (a *bootstrapAcquirer) rememberAsk(playerID int, shipType string, price int
 	a.lastAsks[askKey{playerID, shipType}] = price
 }
 
-func (a *bootstrapAcquirer) lastAsk(playerID int, shipType string) int64 {
+// lastAsk reports what a yard last charged for shipType, 0 only when none ever has. The cache answers
+// first; the persisted inventory answers whenever it cannot, so a reading outlives the process that took
+// it (RULINGS #2). That distinction is load-bearing: callers read 0 as "no yard has ever priced this, so
+// there is no evidence to act on", and a reading that died with a process would read as an absence of
+// yards rather than an absence of memory.
+func (a *bootstrapAcquirer) lastAsk(ctx context.Context, playerID int, shipType string) int64 {
+	if cached := a.cachedAsk(playerID, shipType); cached > 0 {
+		return cached
+	}
+	return a.savedAsk(ctx, playerID, shipType)
+}
+
+func (a *bootstrapAcquirer) cachedAsk(playerID int, shipType string) int64 {
 	a.lastAskMu.Lock()
 	defer a.lastAskMu.Unlock()
 	return a.lastAsks[askKey{playerID, shipType}]
+}
+
+// savedAsk returns the cheapest ask on record for shipType — the same cheapest-reachable-yard reading
+// PriceCheck computes live. Rows arrive price-ascending, and a 0 price marks a type that was listed but
+// carried no priced listing at scan time, so the first POSITIVE price is the cheapest real ask.
+func (a *bootstrapAcquirer) savedAsk(ctx context.Context, playerID int, shipType string) int64 {
+	if a.savedYards == nil {
+		return 0
+	}
+	rows, err := a.savedYards.ListSavedYards(ctx, playerID, []string{shipType})
+	if err != nil {
+		common.LoggerFromContext(ctx).Log("ERROR", fmt.Sprintf("Bootstrap could not read the %s asks on record — this tick weighs no yard evidence: %v", shipType, err), map[string]interface{}{
+			"action":    "bootstrap_saved_ask_read_error",
+			"player_id": playerID,
+			"ship_type": shipType,
+		})
+		return 0
+	}
+	for _, row := range rows {
+		if row.PurchasePrice > 0 {
+			return int64(row.PurchasePrice)
+		}
+	}
+	return 0
 }
 
 // PriceCheck finds the cheapest priced listing for shipType at a SHIPYARD-trait waypoint in a system
@@ -456,11 +514,11 @@ func (a *bootstrapAcquirer) lastAsk(playerID int, shipType string) int64 {
 func (a *bootstrapAcquirer) PriceCheck(ctx context.Context, playerID int, shipType string) (int64, string, bool, error) {
 	pid, err := shared.NewPlayerID(playerID)
 	if err != nil {
-		return a.lastAsk(playerID, shipType), "", false, nil
+		return a.lastAsk(ctx, playerID, shipType), "", false, nil
 	}
 	ships, err := a.shipRepo.FindAllByPlayer(ctx, pid)
 	if err != nil {
-		return a.lastAsk(playerID, shipType), "", false, nil
+		return a.lastAsk(ctx, playerID, shipType), "", false, nil
 	}
 	systems := map[string]struct{}{}
 	for _, s := range ships {
@@ -489,7 +547,7 @@ func (a *bootstrapAcquirer) PriceCheck(ctx context.Context, playerID int, shipTy
 		}
 	}
 	if cheapestYard == "" {
-		return a.lastAsk(playerID, shipType), "", false, nil
+		return a.lastAsk(ctx, playerID, shipType), "", false, nil
 	}
 	a.rememberAsk(playerID, shipType, cheapest)
 	return cheapest, cheapestYard, true, nil

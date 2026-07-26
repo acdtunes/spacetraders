@@ -87,9 +87,10 @@ func TestBootstrap_Muc5x_ColdPrice_AffordableCached_FreesAndPositionsAsBefore(t 
 	}
 }
 
-// NO ask on record yet (a fresh boot before any yard read) ⇒ the guard is INERT: the free proceeds. The
-// guard only tightens on a POSITIVE ask, so absent evidence never changes behavior. (This is also the
-// documented restart-residual boundary.)
+// NO ask on record yet (a first-ever cold start, before any yard has priced a hauler) ⇒ the guard is
+// INERT: the free proceeds, and the frigate goes to find out what the hull costs. The guard only tightens
+// on a POSITIVE ask, so absent evidence never changes behavior — the cold start must never wedge the
+// other way and leave hauler #1 unbought.
 func TestBootstrap_Muc5x_ColdPrice_NoCache_ProceedsToFreeAsBefore(t *testing.T) {
 	ret := &fakeRetirer{}
 	acq := &fakeHaulerAcquirer{price: 363_473, yard: "Y", readable: false} // no lastAsk: the yard has never priced
