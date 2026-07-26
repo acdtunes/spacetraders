@@ -32,6 +32,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/ledger"
 	domainScouting "github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
 const (
@@ -47,6 +48,7 @@ const (
 	defaultSensingWaitHighMs           = 1000 // limiter wait at or past this: scanning sheds toward the 0.5 floor
 	defaultSensingMaxSpend             = 500_000
 	defaultSensingSpendWindowSecs      = 3600
+	defaultSensingDiscoveryDeclares    = 4 // sweep-once frontier declares per tick — paces propagation, never floods the reconciler
 )
 
 // defaultSensingWhitelist is the era-invariant goods whitelist: a market is
@@ -73,6 +75,26 @@ type guardedBuyer interface {
 	MaybeBuy(ctx context.Context, playerID shared.PlayerID, demand, supply int, dryRun bool, target probebuy.ProbeTarget) probebuy.Outcome
 }
 
+// GateAdjacencyReader is the discovery pass's PURE STORE read of the gate
+// graph: one Adjacency query, zero live API — a system absent from the stored
+// adjacency is simply not counted, never fetched. The fetch-through
+// Connections family must never be wired here (topology is least cached
+// exactly where discovery looks). *gategraph.Service satisfies it.
+type GateAdjacencyReader interface {
+	Adjacency(ctx context.Context) (map[string][]system.GateEdge, error)
+}
+
+// WaypointCatalogReader is the discovery pass's swept-knowledge read: the
+// persisted waypoint catalog. BuildSystemGraph persists a system's ENTIRE
+// waypoint set the moment a probe sweeps it, while gate charting persists
+// edges only — so one persisted NON-gate waypoint proves a real sweep (the
+// frontier queue's Scanned discriminator). Market rows cannot carry this
+// signal: a swept system with no marketplace anywhere never writes one.
+// Satisfied by the GORM waypoint repository.
+type WaypointCatalogReader interface {
+	ListBySystem(ctx context.Context, systemSymbol string) ([]*shared.Waypoint, error)
+}
+
 // RunProbeSensingCoordinatorCommand launches the standing coordinator for a
 // player. All knobs are launch-config keys (RULINGS #5); the zero value falls
 // back to the documented default.
@@ -91,6 +113,10 @@ type RunProbeSensingCoordinatorCommand struct {
 	FreshnessTargetSecs  int
 	MaxSpendPerCycle     int
 	SpendWindowSecs      int
+
+	// DiscoveryDeclaresPerTick bounds the sweep-once frontier declares per
+	// tick (the discovery_declares_per_tick config key).
+	DiscoveryDeclaresPerTick int
 }
 
 // RunProbeSensingCoordinatorResponse reports reconcile progress. Because the
@@ -118,6 +144,16 @@ type RunProbeSensingCoordinatorHandler struct {
 	// dormancy writes need neither.
 	treasury  probebuy.TreasuryReader
 	purchaser probebuy.ProbePurchaser
+
+	// gateGraph is the discovery pass's stored-adjacency read, wired via
+	// setter like treasury/purchaser. Nil keeps discovery entirely inert:
+	// no sweep declares and no funded discovery demand.
+	gateGraph GateAdjacencyReader
+
+	// waypointCatalog is the discovery pass's swept-knowledge read, wired via
+	// setter like gateGraph. Nil disables only the swept-marketless exclusion
+	// (every not-in-census neighbour stays a candidate — the pre-seam shape).
+	waypointCatalog WaypointCatalogReader
 
 	// newBuyer builds the tick's guarded buyer from the resolved buy config.
 	// The default builds the real probebuy.GuardedProbeBuyer (guard stack
@@ -178,6 +214,21 @@ func (h *RunProbeSensingCoordinatorHandler) SetProbePurchaser(p probebuy.ProbePu
 	h.purchaser = p
 }
 
+// SetGateGraph wires the stored gate adjacency the discovery pass propagates
+// over (a pure store read — wire *gategraph.Service, never a fetch-through
+// resolver). Leaving it unset keeps discovery inert.
+func (h *RunProbeSensingCoordinatorHandler) SetGateGraph(g GateAdjacencyReader) {
+	h.gateGraph = g
+}
+
+// SetWaypointCatalog wires the persisted waypoint catalog the discovery pass
+// reads swept-knowledge from (wire the waypoint repository, in the same
+// breath as SetGateGraph). Leaving it unset keeps the swept-marketless
+// exclusion off — every not-in-census neighbour stays a candidate.
+func (h *RunProbeSensingCoordinatorHandler) SetWaypointCatalog(w WaypointCatalogReader) {
+	h.waypointCatalog = w
+}
+
 // SetEventRecorder wires the captain outbox for the reconcile error-loop event.
 func (h *RunProbeSensingCoordinatorHandler) SetEventRecorder(rec captain.EventRecorder) {
 	h.captainEvents = rec
@@ -203,6 +254,7 @@ type sensingConfig struct {
 	DepthFloor           int64
 	ProbeBudget          int
 	SecondProbeThreshold int
+	DiscoveryDeclares    int
 	FreshnessTarget      time.Duration
 	Tick                 time.Duration
 	WaitLow              time.Duration
@@ -227,6 +279,7 @@ func resolveSensingConfig(cmd *RunProbeSensingCoordinatorCommand) sensingConfig 
 		DepthFloor:           cmd.DepthFloor,
 		ProbeBudget:          cmd.ProbeBudget,
 		SecondProbeThreshold: cmd.SecondProbeThreshold,
+		DiscoveryDeclares:    cmd.DiscoveryDeclaresPerTick,
 		FreshnessTarget:      time.Duration(cmd.FreshnessTargetSecs) * time.Second,
 		Tick:                 time.Duration(cmd.TickSecs) * time.Second,
 		WaitLow:              time.Duration(cmd.WaitLowMs) * time.Millisecond,
@@ -250,6 +303,9 @@ func resolveSensingConfig(cmd *RunProbeSensingCoordinatorCommand) sensingConfig 
 	}
 	if c.SecondProbeThreshold <= 0 {
 		c.SecondProbeThreshold = defaultSensingSecondProbeThreshold
+	}
+	if c.DiscoveryDeclares <= 0 {
+		c.DiscoveryDeclares = defaultSensingDiscoveryDeclares
 	}
 	if c.FreshnessTarget <= 0 {
 		c.FreshnessTarget = defaultSensingFreshnessTargetSecs * time.Second
@@ -455,6 +511,16 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 		})
 	}
 
+	// Discovery pass: propagate the frontier over the STORED gate adjacency —
+	// census systems' uncharted neighbours become sweep-once declares, and
+	// every open sweep-once post is one probe of funded demand. Gated on the
+	// rotation's discovery verdict, so exploration sheds FIRST under pressure:
+	// no declares, no funded demand, not even the store read.
+	discoveryDemand, frontierSystem := 0, ""
+	if discovery {
+		discoveryDemand, frontierSystem = h.discoverFrontier(ctx, cmd, cfg, censusSystems(rows), sweepSystems, standingBySystem, now)
+	}
+
 	// Budgeted buy: demand is the plan total plus funded discovery, clamped by
 	// N — the single budget dial. Supply counts every scout-type hull available
 	// to scouting (idle, in-flight, or manning), so an en-route probe is never
@@ -463,36 +529,41 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 	if err != nil {
 		return err
 	}
-	discoveryDemand := 0 // discovery funds its own hulls from limiter headroom; unfunded until the discovery pass wires it
-	demand := plan.TotalHulls
-	if discovery {
-		demand += discoveryDemand
-	}
+	demand := plan.TotalHulls + discoveryDemand
 	if demand > cfg.ProbeBudget {
 		demand = cfg.ProbeBudget
 	}
 
+	// The buy hint serves the older demand first: an unmet standing post. Only
+	// when the plan is fully manned does the buy aim AT the frontier — the
+	// yard nearest a sweep candidate's parent, so the probe spawns one hop
+	// from the system it will sweep.
+	targetSystem := neediestSensingSystem(plan, standingBySystem)
+	if targetSystem == "" {
+		targetSystem = frontierSystem
+	}
 	buyer := h.newBuyer(cfg.Buy)
 	target := probebuy.ProbeTarget{
-		System:                    neediestSensingSystem(plan, standingBySystem),
+		System:                    targetSystem,
 		HopPenaltyCredits:         probebuy.DefaultHopPenaltyCredits,
 		SiblingPriceMarginCredits: probebuy.DefaultSiblingPriceMarginCredits,
 		ClaimOwnerContainerID:     cmd.ContainerID,
 	}
 	outcome := buyer.MaybeBuy(ctx, cmd.PlayerID, demand, supply, false, target)
 
-	logger.Log("INFO", fmt.Sprintf("Probe sensing cycle: %d in-scope systems, %d hulls desired, supply %d, share %.2f, %d dormant, discovery=%v — %s",
-		len(inScope), plan.TotalHulls, supply, share, len(dormant), discovery, outcome.Reason), map[string]interface{}{
-		"action":        "probe_sensing_cycle",
-		"in_scope":      len(inScope),
-		"hulls_desired": plan.TotalHulls,
-		"supply":        supply,
-		"share":         share,
-		"dormant":       len(dormant),
-		"discovery":     discovery,
-		"bought":        outcome.Bought,
-		"upserts":       upserts,
-		"removed":       removed,
+	logger.Log("INFO", fmt.Sprintf("Probe sensing cycle: %d in-scope systems, %d hulls desired (+%d discovery), supply %d, share %.2f, %d dormant, discovery=%v — %s",
+		len(inScope), plan.TotalHulls, discoveryDemand, supply, share, len(dormant), discovery, outcome.Reason), map[string]interface{}{
+		"action":           "probe_sensing_cycle",
+		"in_scope":         len(inScope),
+		"hulls_desired":    plan.TotalHulls,
+		"discovery_demand": discoveryDemand,
+		"supply":           supply,
+		"share":            share,
+		"dormant":          len(dormant),
+		"discovery":        discovery,
+		"bought":           outcome.Bought,
+		"upserts":          upserts,
+		"removed":          removed,
 	})
 	if outcome.Bought {
 		logger.Log("INFO", fmt.Sprintf("Probe sensing bought probe %s for %d at %s (demand %d > supply %d) — landed undedicated, reconciler will relay", outcome.Symbol, outcome.Price, outcome.Yard, demand, supply), map[string]interface{}{
@@ -525,6 +596,191 @@ func (h *RunProbeSensingCoordinatorHandler) probeSupply(ctx context.Context, cmd
 		supply++
 	}
 	return supply, nil
+}
+
+// discoverFrontier is the branching-discovery pass: every census system's
+// stored gate neighbour that is neither in census nor already postered becomes
+// a sweep-once declare (bounded per tick), and every OPEN sweep-once post is
+// one probe of discovery demand — the buyer funds one hull per open frontier
+// direction. Returns that demand plus the frontier buy hint: the parent census
+// system of the sorted-first open direction seen this walk, so the funded
+// probe is bought at the yard nearest the frontier it will cross.
+//
+// The adjacency is the PURE STORE read — zero live API. Its verdicts mirror
+// the stored-distance walk, no laxer than the strict resolver the relay
+// flies: an uncached system is simply not counted, an under-construction edge
+// is impassable, and a stale edge set (one Replace, one timestamp — one stale
+// row condemns it) is not expanded through. A neighbour holding ANY post is
+// excluded: Upsert is keyed by (player, system), so a sweep declare against a
+// posted system would replace that row and wipe its manning. A neighbour the
+// fleet has SWEPT (waypoint-catalog knowledge, checked last — it is the only
+// check that costs a read) is known ground even with zero market rows: a
+// swept-marketless system can never enter the market census, so without this
+// exclusion it would loop declare → man → tour → retire → redeclare forever.
+//
+// The pass is speculative by definition, so every input failure degrades it
+// to zero — no declares, no funded demand — without aborting the standing
+// reconcile around it (a value returned alongside an error is never
+// consumed). Sweeps already declared before a mid-walk failure stand: they
+// are durable open posts the next healthy tick counts and funds.
+func (h *RunProbeSensingCoordinatorHandler) discoverFrontier(
+	ctx context.Context,
+	cmd *RunProbeSensingCoordinatorCommand,
+	cfg sensingConfig,
+	census map[string]bool,
+	sweepSystems map[string]bool,
+	standingBySystem map[string]*domainScouting.ScoutPost,
+	now time.Time,
+) (demand int, frontierSystem string) {
+	if h.gateGraph == nil {
+		return 0, ""
+	}
+	logger := common.LoggerFromContext(ctx)
+	adjacency, err := h.gateGraph.Adjacency(ctx)
+	if err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Discovery pass skipped: failed to read stored gate adjacency: %v", err), nil)
+		return 0, ""
+	}
+
+	parentsSorted := make([]string, 0, len(census))
+	for parent := range census {
+		parentsSorted = append(parentsSorted, parent)
+	}
+	sort.Strings(parentsSorted)
+
+	declared := 0
+	declaredSet := make(map[string]bool)
+	sweptMemo := make(map[string]bool)     // per-pass catalog memo: two parents sharing a neighbour cost one read
+	openParents := make(map[string]string) // open sweep system → its census parent (buy-hint anchor)
+	for _, parent := range parentsSorted {
+		edges := append([]system.GateEdge(nil), adjacency[parent]...)
+		if sweepEdgeSetStale(edges) {
+			continue
+		}
+		sort.Slice(edges, func(i, j int) bool { return edges[i].ConnectedSystem < edges[j].ConnectedSystem })
+		for _, edge := range edges {
+			neighbour := edge.ConnectedSystem
+			if neighbour == "" || edge.UnderConstruction {
+				continue
+			}
+			if census[neighbour] {
+				continue // known ground whatever its depth — a sweep would re-scan it
+			}
+			if sweepSystems[neighbour] || declaredSet[neighbour] {
+				if _, known := openParents[neighbour]; !known {
+					openParents[neighbour] = parent
+				}
+				continue
+			}
+			if standingBySystem[neighbour] != nil {
+				continue
+			}
+			if declared >= cfg.DiscoveryDeclares {
+				continue // bounded per tick; the candidate re-derives next tick
+			}
+			swept, sweptErr := h.neighbourSwept(ctx, neighbour, sweptMemo)
+			if sweptErr != nil {
+				logger.Log("WARNING", fmt.Sprintf("Discovery pass stopped: failed to read waypoint catalog for %s: %v", neighbour, sweptErr), nil)
+				return 0, ""
+			}
+			if swept {
+				continue // swept and marketless: its markets were looked for and none exist
+			}
+			post := &domainScouting.ScoutPost{
+				PlayerID:        cmd.PlayerID.Value(),
+				SystemSymbol:    neighbour,
+				FreshnessTarget: cfg.FreshnessTarget,
+				Kind:            domainScouting.PostKindSweepOnce,
+				Hulls:           1,
+				CreatedAt:       now,
+			}
+			if err := h.postRepo.Upsert(ctx, post); err != nil {
+				logger.Log("WARNING", fmt.Sprintf("Failed to declare sweep-once discovery post %s: %v", neighbour, err), nil)
+				continue
+			}
+			declared++
+			declaredSet[neighbour] = true
+			openParents[neighbour] = parent
+			logger.Log("INFO", fmt.Sprintf("Declared sweep-once discovery post %s (frontier of %s) — reconciler relays a probe; its arrival scan is the first scan", neighbour, parent), map[string]interface{}{
+				"action":        "sensing_sweep_declared",
+				"system_symbol": neighbour,
+				"parent_system": parent,
+			})
+		}
+	}
+
+	openSweeps := make([]string, 0, len(openParents))
+	for sweep := range openParents {
+		openSweeps = append(openSweeps, sweep)
+	}
+	sort.Strings(openSweeps)
+	if len(openSweeps) > 0 {
+		frontierSystem = openParents[openSweeps[0]]
+	}
+	return len(sweepSystems) + declared, frontierSystem
+}
+
+// neighbourSwept reports whether the fleet has SWEPT the system, by the
+// frontier queue's waypoint-derived discriminator: BuildSystemGraph persists
+// a system's ENTIRE waypoint set the moment a probe sweeps it, while gate
+// charting persists edges only — so one persisted NON-gate waypoint proves a
+// real sweep (a lone jump-gate row is merely reachable, still frontier). An
+// unwired catalog reads as not-swept (the exclusion stays off, the pre-seam
+// shape); a read FAILURE surfaces so the caller declares nothing new — for a
+// speculative spend, unreadable is refused, never guessed.
+func (h *RunProbeSensingCoordinatorHandler) neighbourSwept(ctx context.Context, systemSymbol string, memo map[string]bool) (bool, error) {
+	if h.waypointCatalog == nil {
+		return false, nil
+	}
+	if swept, seen := memo[systemSymbol]; seen {
+		return swept, nil
+	}
+	waypoints, err := h.waypointCatalog.ListBySystem(ctx, systemSymbol)
+	if err != nil {
+		return false, err
+	}
+	swept := sweptWaypointSet(waypoints)
+	memo[systemSymbol] = swept
+	return swept, nil
+}
+
+// sweptWaypointSet mirrors the frontier scanner's hasNonGateWaypoint rule:
+// true iff at least one persisted waypoint is NOT a jump gate.
+func sweptWaypointSet(waypoints []*shared.Waypoint) bool {
+	for _, waypoint := range waypoints {
+		if !waypoint.IsJumpGate() {
+			return true
+		}
+	}
+	return false
+}
+
+// censusSystems is the charted+scanned set: every system with ANY market
+// cache row, whatever the good. The whitelist scopes STANDING sensing, not
+// discovery — an already-scanned ore-only system is known ground and must
+// never be re-swept (its goods never change, so a whitelist-filtered census
+// would re-declare it forever).
+func censusSystems(rows []domainScouting.MarketDepthRow) map[string]bool {
+	census := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		if row.System == "" {
+			continue
+		}
+		census[row.System] = true
+	}
+	return census
+}
+
+// sweepEdgeSetStale mirrors the stored-distance walk's staleness rule: a
+// system's edges are written in one Replace under a single timestamp, so one
+// stale row condemns the whole set — its onward gates are unverified.
+func sweepEdgeSetStale(edges []system.GateEdge) bool {
+	for _, e := range edges {
+		if e.Stale {
+			return true
+		}
+	}
+	return false
 }
 
 // neediestSensingSystem names the in-plan system with the largest unmet hull
