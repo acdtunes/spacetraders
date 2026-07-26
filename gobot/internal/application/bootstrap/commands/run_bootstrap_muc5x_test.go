@@ -2,17 +2,18 @@ package commands
 
 import "testing"
 
-// sp-muc5x — the cold-start hauler DEADLOCK guard. The first-hauler pivot (ensureHaulerPriceReadable)
-// frees the command frigate — STOP its sole-earner contract loop + dedicate it the exclusive purchasing
-// ship — to position it at the yard for the presence-gated price read. Before this fix it freed the frigate
-// BEFORE affordability was ever known, so on a real cold start (treasury below price + working-capital
-// floor) the frigate was freed, stopped earning, and the treasury never grew → the hauler stayed
-// unaffordable forever → permanent deadlock (the frigate idle at the yard).
+// sp-muc5x — the cold-start hauler DEADLOCK guard. The first-hauler pivot (awaitHaulerPrice) frees the
+// command frigate — STOP its sole-earner contract loop + dedicate it the exclusive purchasing ship — to
+// send it to the yard for the presence-gated price read. Freeing the frigate BEFORE affordability is
+// known deadlocks a real cold start (treasury below price + working-capital floor): the frigate stops
+// earning, the treasury never grows, the hauler stays unaffordable forever and the frigate sits idle at
+// the yard.
 //
-// The fix caches the last readable hauler price (seeded in cold start while a probe-buy hull is already at the
-// yard, refreshed on every readable hauler PriceCheck) and gates the free on it: the frigate keeps EARNING
-// until treasury − haulerPrice ≥ ContractWorkingCapitalFloor, and only THEN is it freed to position+buy.
-// The money guard is unchanged (same cushion≥floor test) — the fix only changes WHEN the frigate is freed.
+// The guard weighs the LAST ASK the yard gave for a hauler — taken in cold start while a probe-buy hull
+// is standing there, refreshed on every readable hauler read, and reported back by the cold read itself.
+// The frigate keeps EARNING until treasury − haulerPrice ≥ ContractWorkingCapitalFloor and only THEN is
+// it freed to go buy. The money guard is the same cushion≥floor test — this decides only WHEN the
+// frigate is freed.
 
 // mucUnaffordableObs is the live deadlock (TORWIND_DEV12): a cold-start cold-start pivot observation with the
 // hauler price UNREADABLE (cold yard) and the treasury set so treasury − price is far below the 150k floor.
@@ -22,17 +23,16 @@ func mucUnaffordableObs() Observation {
 	return obs
 }
 
-// UNAFFORDABLE + cached price present ⇒ the frigate is NEVER freed: no loop stop, no purchasing dedication,
-// no positioning. It stays on its contract loop earning; the buy blocks capital_gate and retries. This is
+// UNAFFORDABLE + a last ask on record ⇒ the frigate is NEVER freed: no loop stop, no purchasing dedication,
+// no hull sent. It stays on its contract loop earning; the buy blocks capital_gate and retries. This is
 // the invariant the deadlock violated (frigate freed while permanently unaffordable → no earner left).
 func TestBootstrap_Muc5x_ColdPrice_UnaffordableCached_KeepsFrigateEarning(t *testing.T) {
 	ret := &fakeRetirer{}
-	acq := &fakeHaulerAcquirer{price: 363_473, yard: "Y", readable: false} // presence-gated: unreadable at the yard
+	// Presence-gated: unreadable at the yard, but it last asked 363_473 (a hull read it earlier).
+	acq := &fakeHaulerAcquirer{price: 363_473, yard: "Y", readable: false, lastAsk: 363_473}
 	loop := &fakeFrigateLoop{}
-	scanner := &fakeScanner{positionDispatched: true}
+	scanner := &fakeScanner{dispatched: true}
 	h := pivotHandlerScanned(mucUnaffordableObs(), ret, acq, loop, scanner)
-	// Seed the cache exactly as cold start would have (a hull at the yard read the hauler price earlier).
-	h.cacheHaulerPrice("boot-1", 363_473)
 
 	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if err != nil {
@@ -44,8 +44,8 @@ func TestBootstrap_Muc5x_ColdPrice_UnaffordableCached_KeepsFrigateEarning(t *tes
 	if len(ret.dedications) != 0 {
 		t.Fatalf("an unaffordable hauler must NOT dedicate the frigate as purchaser (it is not freed); dedications=%v", ret.dedications)
 	}
-	if scanner.positionCalls != 0 {
-		t.Fatalf("an unaffordable hauler must NOT position a purchaser (the frigate is untouched); positionCalls=%d", scanner.positionCalls)
+	if scanner.calls != 0 {
+		t.Fatalf("an unaffordable hauler must send NO hull to the yard (the frigate is untouched); scanner calls=%d purchasers=%v", scanner.calls, scanner.purchasers)
 	}
 	if acq.buys != 0 {
 		t.Fatalf("an unaffordable hauler must not buy; buys=%d", acq.buys)
@@ -58,60 +58,58 @@ func TestBootstrap_Muc5x_ColdPrice_UnaffordableCached_KeepsFrigateEarning(t *tes
 	}
 }
 
-// AFFORDABLE + cached price present ⇒ byte-identical to the pre-fix happy path: the pivot FREES the frigate
-// (stop loop + dedicate purchaser) and positions it at the yard. Proves the guard only tightens the
-// unaffordable case and never blocks a legitimate free.
+// AFFORDABLE + a last ask on record ⇒ the pivot FREES the frigate (stop loop + dedicate purchaser) and
+// sends it to the yard by name. Proves the guard only tightens the unaffordable case and never blocks a
+// legitimate free.
 func TestBootstrap_Muc5x_ColdPrice_AffordableCached_FreesAndPositionsAsBefore(t *testing.T) {
 	ret := &fakeRetirer{}
-	acq := &fakeHaulerAcquirer{price: 300_000, yard: "Y", readable: false}
+	acq := &fakeHaulerAcquirer{price: 300_000, yard: "Y", readable: false, lastAsk: 300_000}
 	loop := &fakeFrigateLoop{}
-	scanner := &fakeScanner{positionDispatched: true}
+	scanner := &fakeScanner{dispatched: true}
 	obs := pivotObs() // treasury 2_000_000 ⇒ 2_000_000 − 300_000 = 1_700_000 ≥ 150k floor ⇒ affordable
 	h := pivotHandlerScanned(obs, ret, acq, loop, scanner)
-	h.cacheHaulerPrice("boot-1", 300_000) // cache present AND affordable
 
 	res, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
 	if err != nil {
 		t.Fatalf("reconcileOnce: %v", err)
 	}
 	if loop.stopCalls != 1 || len(loop.stopped) != 1 || loop.stopped[0] != "FRIGATE-1" {
-		t.Fatalf("an affordable cached price must FREE the frigate exactly as before; stopCalls=%d stopped=%v (blocker=%q)", loop.stopCalls, loop.stopped, res.Blocker)
+		t.Fatalf("an affordable last ask must FREE the frigate; stopCalls=%d stopped=%v (blocker=%q)", loop.stopCalls, loop.stopped, res.Blocker)
 	}
 	if len(ret.dedications) != 1 || ret.dedications[0] != "FRIGATE-1" {
-		t.Fatalf("an affordable cached price must dedicate the frigate as purchaser; dedications=%v", ret.dedications)
+		t.Fatalf("an affordable last ask must dedicate the frigate as purchaser; dedications=%v", ret.dedications)
 	}
-	if scanner.positionCalls != 1 || len(scanner.positioned) != 1 || scanner.positioned[0] != "FRIGATE-1" {
-		t.Fatalf("an affordable cached price must position the freed frigate; positionCalls=%d positioned=%v", scanner.positionCalls, scanner.positioned)
+	if scanner.calls != 1 || len(scanner.purchasers) != 1 || scanner.purchasers[0] != "FRIGATE-1" {
+		t.Fatalf("an affordable last ask must send the freed frigate by name; calls=%d purchasers=%v", scanner.calls, scanner.purchasers)
 	}
 	if !res.FrigatePivoted || res.Blocker != "positioning_purchaser_at_shipyard" {
-		t.Fatalf("an affordable cached price must record the pivot + position; FrigatePivoted=%v blocker=%q", res.FrigatePivoted, res.Blocker)
+		t.Fatalf("an affordable last ask must record the pivot + position; FrigatePivoted=%v blocker=%q", res.FrigatePivoted, res.Blocker)
 	}
 }
 
-// NO cache yet (first-ever read, e.g. a fresh boot before the probe-buy seed) ⇒ the guard is INERT: the free
-// proceeds to the existing free+position (byte-identical to pre-fix). The guard only tightens on a POSITIVE
-// cache, so an absent cache never changes behavior. (This is also the documented restart-residual boundary.)
+// NO ask on record yet (a fresh boot before any yard read) ⇒ the guard is INERT: the free proceeds. The
+// guard only tightens on a POSITIVE ask, so absent evidence never changes behavior. (This is also the
+// documented restart-residual boundary.)
 func TestBootstrap_Muc5x_ColdPrice_NoCache_ProceedsToFreeAsBefore(t *testing.T) {
 	ret := &fakeRetirer{}
-	acq := &fakeHaulerAcquirer{price: 363_473, yard: "Y", readable: false}
+	acq := &fakeHaulerAcquirer{price: 363_473, yard: "Y", readable: false} // no lastAsk: the yard has never priced
 	loop := &fakeFrigateLoop{}
-	scanner := &fakeScanner{positionDispatched: true}
+	scanner := &fakeScanner{dispatched: true}
 	h := pivotHandlerScanned(mucUnaffordableObs(), ret, acq, loop, scanner)
-	// NO cacheHaulerPrice call — the cache is empty (0 = no evidence).
 
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
-	if loop.stopCalls != 1 || scanner.positionCalls != 1 {
-		t.Fatalf("with no cache the free must proceed exactly as before (byte-identical); stopCalls=%d positionCalls=%d (blocker=%q)", loop.stopCalls, scanner.positionCalls, res.Blocker)
+	if loop.stopCalls != 1 || scanner.calls != 1 || scanner.purchasers[0] != "FRIGATE-1" {
+		t.Fatalf("with no ask on record the free must proceed; stopCalls=%d calls=%d purchasers=%v (blocker=%q)", loop.stopCalls, scanner.calls, scanner.purchasers, res.Blocker)
 	}
 	if !res.FrigatePivoted || res.Blocker != "positioning_purchaser_at_shipyard" {
-		t.Fatalf("with no cache the pivot's free step must fire + position; FrigatePivoted=%v blocker=%q", res.FrigatePivoted, res.Blocker)
+		t.Fatalf("with no ask on record the pivot's free step must fire + send the frigate; FrigatePivoted=%v blocker=%q", res.FrigatePivoted, res.Blocker)
 	}
 }
 
-// The probe-buy seed: while a probe-buy hull is at the yard, bootstrap ALSO reads + caches the hauler price, so
-// the pivot knows affordability before it ever frees the frigate. Proves the seed populates the cache through a
-// real cold-start reconcile (probes under target, a readable yard) — the mechanism that closes the deadlock
-// on a normal cold start without ever freeing the frigate first.
+// The probe-buy reading: while a probe-buy hull is standing at the yard, bootstrap ALSO reads the hauler
+// ask, so the pivot knows affordability before it ever frees the frigate. Proves the reading is taken
+// through a real cold-start reconcile (probes under target, a readable yard) — the mechanism that closes
+// the deadlock on a normal cold start without ever freeing the frigate first.
 func TestBootstrap_Muc5x_ProbeBuy_SeedsHaulerPriceCache(t *testing.T) {
 	obs := Observation{
 		HomeSystem: "X1-HQ", ProbeCount: 1, ProbesScouting: 1, // under target 3 ⇒ acquireProbesToTarget runs
@@ -131,16 +129,16 @@ func TestBootstrap_Muc5x_ProbeBuy_SeedsHaulerPriceCache(t *testing.T) {
 	if _, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd()); err != nil {
 		t.Fatalf("reconcileOnce: %v", err)
 	}
-	if got := h.cachedHaulerPrice("boot-1"); got != 363_473 {
-		t.Fatalf("cold start must seed the hauler-price cache from the yard read; cached=%d want=363473 (haulAcq priceChks=%d)", got, haulAcq.priceChks)
+	if haulAcq.priceChks != 1 {
+		t.Fatalf("cold start must read the hauler ask while the probe-buy hull is at the yard; hauler priceChks=%d want=1", haulAcq.priceChks)
 	}
 }
 
-// End-to-end (anti-theatre): the probe-buy seed feeds the contract guard within one handler. Tick 1 is a tick
-// that seeds the cache from the yard; then a cold-start tick with an UNAFFORDABLE treasury must keep the frigate
-// earning (no free) purely off that seeded cache — no direct cache priming.
+// End-to-end (anti-theatre): the probe-buy reading feeds the contract guard within one handler. Tick 1 reads
+// the hauler ask off a warm yard; then a cold-start tick with an UNAFFORDABLE treasury must keep the frigate
+// earning (no free) purely off that reading — nothing is put on record by hand.
 func TestBootstrap_Muc5x_SeedFeedsPivotGuard_EndToEnd(t *testing.T) {
-	// Tick 1: a probe-buy hull at the yard seeds the hauler price into the cache.
+	// Tick 1: a probe-buy hull at the yard puts the hauler ask on record.
 	dataObs := Observation{
 		HomeSystem: "X1-HQ", ProbeCount: 1, ProbesScouting: 1,
 		HasIdlePurchaser: true, Treasury: 2_000_000, BatchContractRunning: true, Readable: true,
@@ -149,7 +147,7 @@ func TestBootstrap_Muc5x_SeedFeedsPivotGuard_EndToEnd(t *testing.T) {
 	haulAcq := &fakeHaulerAcquirer{price: 363_473, yard: "X1-HQ-YARD", readable: true}
 	ret := &fakeRetirer{}
 	loop := &fakeFrigateLoop{}
-	scanner := &fakeScanner{positionDispatched: true}
+	scanner := &fakeScanner{dispatched: true}
 	obsSrc := &fakeObserver{obs: dataObs}
 
 	h := NewRunBootstrapCoordinatorHandler(nil)
@@ -164,14 +162,14 @@ func TestBootstrap_Muc5x_SeedFeedsPivotGuard_EndToEnd(t *testing.T) {
 	h.SetShipyardScanner(scanner)
 
 	if _, err := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd()); err != nil {
-		t.Fatalf("tick 1 (probe-buy seed): %v", err)
+		t.Fatalf("tick 1 (probe-buy reading): %v", err)
 	}
-	if h.cachedHaulerPrice("boot-1") != 363_473 {
-		t.Fatalf("tick 1 must seed the cache; cached=%d", h.cachedHaulerPrice("boot-1"))
+	if haulAcq.priceChks != 1 {
+		t.Fatalf("tick 1 must read the hauler ask at the yard; hauler priceChks=%d want=1", haulAcq.priceChks)
 	}
 
-	// Tick 2: provisioned, viable hubs, cold hauler price, UNAFFORDABLE treasury. The seeded cache
-	// must hold the frigate on its loop (no free) with blocker=capital_gate.
+	// Tick 2: provisioned, viable hubs, cold hauler price, UNAFFORDABLE treasury. The ask tick 1 put on
+	// record must hold the frigate on its loop (no free) with blocker=capital_gate.
 	haulAcq.readable = false // the yard is cold again for the hauler (frigate on its loop, probes scouting)
 	incomeObs := mucUnaffordableObs()
 	obsSrc.obs = incomeObs
@@ -180,8 +178,8 @@ func TestBootstrap_Muc5x_SeedFeedsPivotGuard_EndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tick 2 (contract guard): %v", err)
 	}
-	if loop.stopCalls != 0 || len(ret.dedications) != 0 || scanner.positionCalls != 0 {
-		t.Fatalf("tick 2 must keep the frigate earning off the probe-buy-seeded cache; stopCalls=%d dedications=%v positionCalls=%d (blocker=%q)", loop.stopCalls, ret.dedications, scanner.positionCalls, res.Blocker)
+	if loop.stopCalls != 0 || len(ret.dedications) != 0 || scanner.calls != 0 {
+		t.Fatalf("tick 2 must keep the frigate earning off tick 1's reading; stopCalls=%d dedications=%v scanner calls=%d (blocker=%q)", loop.stopCalls, ret.dedications, scanner.calls, res.Blocker)
 	}
 	if res.Blocker != "capital_gate" {
 		t.Fatalf("tick 2 must block capital_gate (frigate keeps earning), got %q", res.Blocker)

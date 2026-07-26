@@ -50,12 +50,19 @@ type fakeAcquirer struct {
 	buyErr    error
 	buys      int
 	priceChks int
+	lastAsk   int64          // what a cold yard reports: the last price it gave, 0 until one is read
 	world     *scriptedWorld // mutated on a successful buy
 }
 
+// PriceCheck models the presence-gated yard: it prices only while readable, and a cold read carries the
+// last ask it gave (0 when it never has) so the caller has evidence but no price to spend against.
 func (f *fakeAcquirer) PriceCheck(ctx context.Context, playerID int, shipType string) (int64, string, bool, error) {
 	f.priceChks++
-	return f.price, f.yard, f.readable, f.priceErr
+	if f.priceErr != nil || !f.readable {
+		return f.lastAsk, "", false, f.priceErr
+	}
+	f.lastAsk = f.price
+	return f.price, f.yard, true, nil
 }
 
 func (f *fakeAcquirer) Buy(ctx context.Context, playerID int, shipType, yard string) (BuyResult, error) {
@@ -86,52 +93,40 @@ func (f *fakeDeclarer) DeclareHomeScoutPost(ctx context.Context, playerID int, s
 	return f.err
 }
 
-// fakeScanner is the sp-hh0h shipyard-readability positioner port. dispatched/err are what it returns;
-// readyAcq (optional) is flipped readable when it "dispatches", modeling the hull arriving at the yard
-// so the NEXT tick's live price read succeeds.
+// fakeScanner is the shipyard-readability port. dispatched/err are what it returns; it records the
+// purchaser each call named ("" = the scanner picks a free hull itself). readyAcq/readyHaul (optional)
+// are flipped readable when it "dispatches", modeling the hull arriving at the yard so the NEXT tick's
+// live price read succeeds; world (optional) stands the named purchaser idle at the yard.
 type fakeScanner struct {
 	dispatched  bool
 	err         error
 	calls       int
 	homeSystems []string
-	readyAcq    *fakeAcquirer // if set, its readable is flipped true on a dispatch
-
-	// sp-5nd2 fault-2: the targeted first-hauler-pivot positioner (PositionPurchaserAtShipyard).
-	positionCalls      int
-	positioned         []string // ship symbols the pivot asked to position at the yard (order = call order)
-	positionErr        error
-	positionDispatched bool                // what PositionPurchaserAtShipyard returns
-	readyHaul          *fakeHaulerAcquirer // if set, its readable is flipped true on a position dispatch
-	world              *incomeWorld        // if set, a position dispatch marks the frigate idle at the yard
+	purchasers  []string // the hull each call was asked to send (order = call order)
+	readyAcq    *fakeAcquirer
+	readyHaul   *fakeHaulerAcquirer
+	world       *incomeWorld
 }
 
-func (f *fakeScanner) EnsureHomeShipyardReadable(ctx context.Context, playerID int, homeSystem string) (bool, error) {
+func (f *fakeScanner) EnsureShipyardReadable(ctx context.Context, playerID int, homeSystem, purchaser string) (bool, error) {
 	f.calls++
 	f.homeSystems = append(f.homeSystems, homeSystem)
+	f.purchasers = append(f.purchasers, purchaser)
 	if f.err != nil {
 		return false, f.err
 	}
-	if f.dispatched && f.readyAcq != nil {
-		f.readyAcq.readable = true // the hull reaches the yard → the live price becomes readable
-	}
-	return f.dispatched, nil
-}
-
-func (f *fakeScanner) PositionPurchaserAtShipyard(ctx context.Context, playerID int, shipSymbol, homeSystem string) (bool, error) {
-	f.positionCalls++
-	f.positioned = append(f.positioned, shipSymbol)
-	if f.positionErr != nil {
-		return false, f.positionErr
-	}
-	if f.positionDispatched {
+	if f.dispatched {
+		if f.readyAcq != nil {
+			f.readyAcq.readable = true // the hull reaches the yard → the live price becomes readable
+		}
 		if f.readyHaul != nil {
-			f.readyHaul.readable = true // the frigate reaches the yard → the live price becomes readable
+			f.readyHaul.readable = true
 		}
 		if f.world != nil {
-			f.world.purchaserAtYard() // the frigate now stands idle at the yard as the purchaser
+			f.world.purchaserAtYard() // the hull now stands idle at the yard as the purchaser
 		}
 	}
-	return f.positionDispatched, nil
+	return f.dispatched, nil
 }
 
 type fakeMetrics struct {
@@ -794,8 +789,8 @@ func newWiredHandler(obs Observation, acq ProbeAcquirer, declarer ScoutPostDecla
 // --- sp-hh0h: cold-start shipyard readability. An unreadable price positions a hull at the home yard
 // (does NOT weaken the guard — no buy this tick), then buys to target once the live price reads. ---
 
-// Price unreadable + scanner wired → the coordinator dispatches an idle hull to the yard (positioning),
-// surfaces it on the heartbeat, and buys nothing this tick.
+// Price unreadable + scanner wired → the coordinator sends a free hull to the yard (it names no purchaser,
+// so the scanner picks one), surfaces it on the heartbeat, and buys nothing this tick.
 func TestBootstrap_PriceUnreadable_PositionsHullAtShipyard(t *testing.T) {
 	obs := Observation{HomeSystem: "X1-HQ", ProbeCount: 1, ProbesScouting: 1, HasIdlePurchaser: true, Treasury: 150000, Readable: true}
 	acq := &fakeAcquirer{price: 0, yard: "", readable: false} // cold shipyard: no priced listing yet
@@ -808,7 +803,10 @@ func TestBootstrap_PriceUnreadable_PositionsHullAtShipyard(t *testing.T) {
 		t.Fatalf("unreadable price must buy nothing this tick, got %d buys", acq.buys)
 	}
 	if scanner.calls != 1 || len(scanner.homeSystems) != 1 || scanner.homeSystems[0] != "X1-HQ" {
-		t.Fatalf("unreadable price must dispatch the positioner once for the home system, got calls=%d systems=%v", scanner.calls, scanner.homeSystems)
+		t.Fatalf("unreadable price must consult the scanner once for the home system, got calls=%d systems=%v", scanner.calls, scanner.homeSystems)
+	}
+	if len(scanner.purchasers) != 1 || scanner.purchasers[0] != "" {
+		t.Fatalf("the probe buy names no purchaser — the scanner picks a free hull; purchasers=%v", scanner.purchasers)
 	}
 	if res.Blocker != "positioning_purchaser_at_shipyard" {
 		t.Fatalf("the positioning must be surfaced on the heartbeat, got blocker=%q", res.Blocker)

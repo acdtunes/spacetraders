@@ -49,6 +49,7 @@ type fakeHaulerAcquirer struct {
 	buyErr     error
 	buys       int
 	priceChks  int
+	lastAsk    int64    // what a cold yard reports: the last price it gave, 0 until one is read
 	placedOn   []string // the hub each BuyAndPlace was told to place on (order = buy order)
 	purchasers []string // sp-7r7w: the purchaser symbol each BuyAndPlace was told to use ("" = scan)
 	world      *incomeWorld
@@ -60,9 +61,15 @@ type fakeHaulerAcquirer struct {
 	dedicatePurch   []string // the purchaser symbol each BuyAndDedicate was told to use
 }
 
+// PriceCheck models the presence-gated yard: it prices only while readable, and a cold read carries the
+// last ask it gave (0 when it never has) so the pivot has evidence but no price to spend against.
 func (f *fakeHaulerAcquirer) PriceCheck(ctx context.Context, playerID int, shipType string) (int64, string, bool, error) {
 	f.priceChks++
-	return f.price, f.yard, f.readable, f.priceErr
+	if f.priceErr != nil || !f.readable {
+		return f.lastAsk, "", false, f.priceErr
+	}
+	f.lastAsk = f.price
+	return f.price, f.yard, true, nil
 }
 
 func (f *fakeHaulerAcquirer) BuyAndPlace(ctx context.Context, playerID int, shipType, yard, hubWaypoint, purchaserSymbol string) (BuyResult, error) {

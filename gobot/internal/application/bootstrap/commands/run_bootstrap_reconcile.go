@@ -154,32 +154,6 @@ func (h *RunBootstrapCoordinatorHandler) probeBridge(containerID string) *probeB
 	return b
 }
 
-// cachedHaulerPrice returns the last readable contract-hauler price cached for this container (sp-muc5x),
-// or 0 when none has been observed yet. The caller treats 0 as "no evidence" and proceeds unchanged (the
-// existing free+position path), so the guard only ever TIGHTENS behavior on a POSITIVE cache. Keyed by
-// ContainerID like the other per-container state (this handler is a REGISTERED SINGLETON); the mutex guards
-// the map, and one container's ticks are sequential so the value is only ever touched by a single goroutine.
-func (h *RunBootstrapCoordinatorHandler) cachedHaulerPrice(containerID string) int64 {
-	h.haulerPriceMu.Lock()
-	defer h.haulerPriceMu.Unlock()
-	return h.haulerPrices[containerID]
-}
-
-// cacheHaulerPrice records the last readable contract-hauler price for this container (sp-muc5x), so a later
-// cold-price tick can test the first-hauler capital gate BEFORE freeing the frigate's earning loop. A
-// non-positive price caches nothing (an unreadable read must not overwrite a good cache with 0).
-func (h *RunBootstrapCoordinatorHandler) cacheHaulerPrice(containerID string, price int64) {
-	if price <= 0 {
-		return
-	}
-	h.haulerPriceMu.Lock()
-	defer h.haulerPriceMu.Unlock()
-	if h.haulerPrices == nil {
-		h.haulerPrices = map[string]int64{}
-	}
-	h.haulerPrices[containerID] = price
-}
-
 // reconcileOnce runs one full pass: phantom-cache refresh → observe → derive phase → act on the
 // delta → heartbeat. It is the unit the tests drive directly; Handle just calls it on the tick.
 // Every side-effecting step is guarded "already done / in-flight?" and fails CLOSED on an
@@ -585,17 +559,18 @@ func (h *RunBootstrapCoordinatorHandler) acquireProbesToTarget(ctx context.Conte
 	// at the yard (sp-hh0h). Still fails CLOSED (no spend) — a genuinely unreadable price buys nothing.
 	price, yard, readable, err := h.acquirer.PriceCheck(ctx, cmd.PlayerID, probeShipType)
 	if err != nil || !readable {
-		h.ensureShipyardReadable(ctx, cmd, obs, res, err)
+		h.awaitReadablePrice(ctx, cmd, obs, res, "", fmt.Sprintf("probe (%d/%d)", obs.ProbeCount, probeTarget), err)
 		return
 	}
 
-	// sp-muc5x: a hull is at the yard NOW (the probe price just read), so the presence-gated hauler price is
-	// readable at this same GetShipyard moment. SEED the last-hauler-price cache so the contract workstream knows the
-	// first-hauler affordability BEFORE it ever frees the command frigate to position the buyer — the
-	// cold-start deadlock this bead fixes (the frigate freed while permanently unaffordable, no earner left).
-	// Read-only + best-effort (no spend — the price guard is untouched, RULINGS #4): a nil hauler acquirer or
-	// an unreadable hauler listing caches nothing and the seed simply retries on the next readable tick.
-	h.seedHaulerPriceFromYard(ctx, cmd)
+	// A yard prices the hauler only while something is standing at it, and the probe buy has a hull there
+	// right now. Take the hauler ask too, so the first-hauler pivot has evidence to weigh before it ever
+	// commits the sole earner — the cold yard it meets later gives it none. Read-only (no spend, so the
+	// price guard is untouched — RULINGS #4); a missed reading simply leaves the pivot with no evidence,
+	// which it treats as no reason to hold.
+	if h.haulAcquirer != nil {
+		_, _, _, _ = h.haulAcquirer.PriceCheck(ctx, cmd.PlayerID, haulerShipType)
+	}
 
 	// Capital-gated buy LOOP: buy up to (target-count) probes THIS tick, decrementing the treasury each
 	// iteration so the flat common.ImmutableReserveFloor gate reflects real remaining credits (sp-05glh:
@@ -647,53 +622,68 @@ func (h *RunBootstrapCoordinatorHandler) acquireProbesToTarget(ctx context.Conte
 	}
 }
 
-// ensureShipyardReadable breaks the cold-start deadlock (sp-hh0h): the home shipyard price is unreadable
-// because nothing has visited it yet, so — rather than fail closed forever — position an idle hull AT
-// the yard so the NEXT tick's live PriceCheck returns prices. It NEVER buys and NEVER weakens the price
-// guard: this tick still spends nothing. Nil-safe: with no scanner wired (or in dry-run) it preserves
-// the pre-hh0h fail-closed behavior (blocker=price_unreadable, no repositioning) — byte-identical. The
-// scanner is idempotent (a no-op when a hull is already positioned/en route), so calling it each
-// unreadable tick never re-navigates.
-func (h *RunBootstrapCoordinatorHandler) ensureShipyardReadable(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult, priceErr error) {
+// awaitReadablePrice answers a cold home shipyard: the yard prices its hulls only while a ship is
+// standing at it, so an unvisited yard reads unreadable and the buy would fail closed forever. Sending
+// a hull is what turns the read into evidence — and it is not a way around the price guard (RULINGS
+// #4): this tick still spends nothing either way, whichever branch it takes.
+//
+// purchaser names the committed buy ship when the caller has one, so a tick that sends nothing means
+// it is already there or on its way (still positioning); with no purchaser named, nothing sent means
+// the wait simply continues. subject names what the tick is blocked on, for the heartbeat log.
+func (h *RunBootstrapCoordinatorHandler) awaitReadablePrice(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult, purchaser, subject string, priceErr error) {
 	logger := common.LoggerFromContext(ctx)
 
 	if h.scanner == nil {
 		res.Blocker = "price_unreadable"
-		logger.Log("WARN", fmt.Sprintf("Bootstrap probe price unreadable and no shipyard scanner wired — failing closed (no buy): err=%v", priceErr), map[string]interface{}{
-			"action":       "bootstrap_buy_blocked",
+		logger.Log("WARN", fmt.Sprintf("Bootstrap %s price unreadable and no shipyard scanner wired — failing closed (no buy): err=%v", subject, priceErr), map[string]interface{}{
+			"action":       "bootstrap_price_blocked",
 			"container_id": cmd.ContainerID,
 			"blocker":      "price_unreadable",
 		})
 		return
 	}
 
-	dispatched, serr := h.scanner.EnsureHomeShipyardReadable(ctx, cmd.PlayerID, obs.HomeSystem)
+	dispatched, serr := h.scanner.EnsureShipyardReadable(ctx, cmd.PlayerID, obs.HomeSystem, purchaser)
 	if serr != nil {
 		res.Blocker = "price_unreadable"
-		logger.Log("WARN", fmt.Sprintf("Bootstrap probe price unreadable and shipyard positioning failed — failing closed (no buy): %v", serr), map[string]interface{}{
-			"action":       "bootstrap_buy_blocked",
+		logger.Log("WARN", fmt.Sprintf("Bootstrap %s price unreadable and sending a hull to the home shipyard failed — failing closed (no buy): %v", subject, serr), map[string]interface{}{
+			"action":       "bootstrap_price_blocked",
 			"container_id": cmd.ContainerID,
 			"blocker":      "price_unreadable",
 		})
 		return
 	}
-	if dispatched {
+
+	if dispatched || purchaser != "" {
 		res.Blocker = "positioning_purchaser_at_shipyard"
-		logger.Log("INFO", fmt.Sprintf("Bootstrap probe price unreadable (cold home shipyard) — dispatched an idle hull to the home-system shipyard so the next tick's live price read succeeds (sp-hh0h); probes %d/%d", obs.ProbeCount, probeTarget), map[string]interface{}{
+		logger.Log("INFO", fmt.Sprintf("Bootstrap %s price unreadable (cold home shipyard) — %s; no buy this tick", subject, positioningNote(purchaser, dispatched)), map[string]interface{}{
 			"action":       "bootstrap_positioning_purchaser",
 			"container_id": cmd.ContainerID,
 			"blocker":      "positioning_purchaser_at_shipyard",
+			"ship":         purchaser,
 		})
 		return
 	}
-	// Not dispatched: a hull is already present/en route at a shipyard (price should clear soon) or none
-	// is free to send. Keep price_unreadable so the heartbeat shows we are still waiting on the read.
+
+	// Nothing sent and no committed buy ship: a hull is already at or heading to the yard, or none is
+	// free to go. Keep price_unreadable so the heartbeat shows we are still waiting on the read.
 	res.Blocker = "price_unreadable"
-	logger.Log("INFO", fmt.Sprintf("Bootstrap probe price unreadable — a hull is already at/en route to the home shipyard, or none is free; awaiting a readable price (probes %d/%d)", obs.ProbeCount, probeTarget), map[string]interface{}{
-		"action":       "bootstrap_buy_blocked",
+	logger.Log("INFO", fmt.Sprintf("Bootstrap %s price unreadable — a hull is already at or heading to the home shipyard, or none is free to send; awaiting a readable price", subject), map[string]interface{}{
+		"action":       "bootstrap_price_blocked",
 		"container_id": cmd.ContainerID,
 		"blocker":      "price_unreadable",
 	})
+}
+
+// positioningNote says which hull the tick is waiting on and whether it had to be sent.
+func positioningNote(purchaser string, dispatched bool) string {
+	if purchaser == "" {
+		return "sent a free hull to the home shipyard so the next tick's price read succeeds"
+	}
+	if dispatched {
+		return fmt.Sprintf("sent the purchasing hull %s to the home shipyard so the next tick's price read succeeds", purchaser)
+	}
+	return fmt.Sprintf("the purchasing hull %s is already at or heading to the home shipyard", purchaser)
 }
 
 // buyBlockNote annotates the decision line with what would have blocked, so the one line carries

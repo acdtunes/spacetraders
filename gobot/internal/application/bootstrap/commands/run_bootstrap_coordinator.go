@@ -152,6 +152,11 @@ type WorldObserver interface {
 // ProbeAcquirer price-checks and buys probes (reuses shipyard list + shipyard purchase). PriceCheck
 // reads the cheapest reachable yard's ask for shipType; readable=false ⇒ the capital gate fails
 // closed (no buy). Buy purchases exactly one shipType at yard.
+//
+// A yard prices its hulls only while a ship is standing at it, so an unvisited yard reads unreadable.
+// An unreadable read still returns the LAST ASK the yard gave for shipType (0 when none ever has),
+// because it is the only evidence available while the yard is cold. It is evidence for policy — when
+// to commit a ship — and never a price to spend against: every buy path gates on readable first.
 type ProbeAcquirer interface {
 	PriceCheck(ctx context.Context, playerID int, shipType string) (price int64, yard string, readable bool, err error)
 	Buy(ctx context.Context, playerID int, shipType, yard string) (BuyResult, error)
@@ -172,28 +177,22 @@ type ScoutPostDeclarer interface {
 	DeclareHomeScoutPost(ctx context.Context, playerID int, system string, minHulls int) error
 }
 
-// ShipyardScanner positions an idle hull AT a home-system shipyard so the NEXT tick's live PriceCheck
-// returns priced listings (sp-hh0h). The cold-start deadlock it breaks: on a fresh universe nothing
-// has ever visited the home shipyard, its live ship listing is presence-gated (empty unless a hull is
-// there), so PriceCheck reads unreadable and every probe buy fails closed FOREVER — cold start never leaves
-// the ground without a captain. This does NOT weaken the price guard (RULINGS #4): a genuinely
-// unreadable price still buys nothing this tick; the scanner makes the price READABLE by getting a hull
-// to the yard, so the guard clears on evidence. EnsureHomeShipyardReadable is idempotent and
-// best-effort — dispatched=false when a hull is already present/en route at a shipyard (just wait) or no
-// idle hull is free to go — so re-evaluation each unreadable tick never re-navigates or thrashes. Unset
-// (nil) → the reconciler preserves the pre-hh0h fail-closed behavior (byte-identical).
+// ShipyardScanner makes a cold home shipyard readable. A yard's ship listing is presence-gated —
+// priced only while a hull stands at it — so on a fresh universe nothing has ever visited the home
+// yard, every PriceCheck reads unreadable, and cold start never leaves the ground. Sending a hull is
+// what turns the read into evidence; it does NOT weaken the price guard (RULINGS #4), because the
+// tick that sends a hull still buys nothing. Unset (nil) → the reconciler simply fails closed.
 type ShipyardScanner interface {
-	EnsureHomeShipyardReadable(ctx context.Context, playerID int, homeSystem string) (dispatched bool, err error)
-	// PositionPurchaserAtShipyard navigates the NAMED hull (the freed+dedicated command frigate at the
-	// sp-5nd2 first-hauler pivot) to a home-system shipyard so the NEXT tick's presence-gated hauler
-	// PriceCheck reads. It differs from EnsureHomeShipyardReadable in two load-bearing ways: it targets a
-	// SPECIFIC hull by symbol (so it does not depend on the frigate reading idle the instant after its
-	// loop-claim is released), and it positions the PURCHASING-dedicated frigate that EnsureHomeShipyardReadable
-	// deliberately skips (that one only repositions undedicated hulls, RULINGS #7). Idempotent + best-effort:
-	// dispatched=false (no re-nav) when the hull is already present (not in transit) at a home shipyard, already
-	// en route, or no home-system shipyard is known yet. It NEVER buys and NEVER weakens the price guard —
-	// the reconciler still spends nothing while the price is unreadable.
-	PositionPurchaserAtShipyard(ctx context.Context, playerID int, shipSymbol, homeSystem string) (dispatched bool, err error)
+	// EnsureShipyardReadable sends a hull to a home-system shipyard so the next tick's price read
+	// succeeds. purchaser names the hull to send — the committed purchasing frigate, whose dedication
+	// puts it outside the free-hull search; empty means "pick a free hull", which never takes one
+	// another controller owns (RULINGS #7). Presence is enough for the listing to price; the buy path
+	// docks.
+	//
+	// Idempotent and best-effort: dispatched=false is a WAIT, not a failure — a hull already standing
+	// at a yard, one already en route from an earlier tick, no free hull, or no home shipyard known
+	// yet — so calling it on every unreadable tick never re-navigates or thrashes.
+	EnsureShipyardReadable(ctx context.Context, playerID int, homeSystem, purchaser string) (dispatched bool, err error)
 }
 
 // MetricsSink records the bootstrap's observation series (spec §Observability). Pure observation:
@@ -228,7 +227,8 @@ type FrigateRetirer interface {
 // places it on its hub (reuses shipyard list/purchase + fleet assign + navigate). Mirrors
 // ProbeAcquirer but folds the dedicate+placement into the buy, because a contract hauler is a
 // dedicated, positioned hull — not a free scout. PriceCheck reads the cheapest reachable yard's ask
-// for shipType (readable=false ⇒ the capital gate fails closed).
+// for shipType (readable=false ⇒ the capital gate fails closed, and the price carries the last ask
+// the yard gave — see ProbeAcquirer).
 type HaulerAcquirer interface {
 	PriceCheck(ctx context.Context, playerID int, shipType string) (price int64, yard string, readable bool, err error)
 	// BuyAndPlace buys ONE hauler, dedicates it to the contract fleet, and places it on its hub.
@@ -444,19 +444,6 @@ type RunBootstrapCoordinatorHandler struct {
 	// (no spend, no assignment), so it can never double-act.
 	expansionHoldStreakMu sync.Mutex
 	expansionHoldStreaks  map[string]int
-
-	// haulerPrices holds the per-container LAST READABLE contract-hauler price (sp-muc5x): the most recent
-	// presence-gated hauler shipyard ask this coordinator observed. It is cached so the first-hauler
-	// pivot can test AFFORDABILITY *before* it frees the command frigate's earning loop to position the buyer
-	// — the cold-start deadlock where the frigate was freed while the hauler was permanently unaffordable,
-	// leaving no earner (treasury never grew → permanent stall). Seeded at the probe buy (a hull already at
-	// the yard reads the hauler price at the same GetShipyard moment) and refreshed on every readable hauler
-	// PriceCheck. Keyed by ContainerID for the same REGISTERED-SINGLETON reason as buyBridges; haulerPriceMu
-	// guards the MAP only (one container's ticks are sequential). NOT a progress cursor — dropped on restart
-	// (a re-seed re-populates it on a fresh cold start), so phase/progress stays derived purely from
-	// observation. A 0/absent cache reads as "no evidence yet" and preserves the existing free+position path.
-	haulerPriceMu sync.Mutex
-	haulerPrices  map[string]int64
 }
 
 // NewRunBootstrapCoordinatorHandler wires the coordinator. clock defaults to the real clock when

@@ -269,20 +269,13 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd
 	// cannot be evaluated, so nothing is bought this tick (RULINGS #4 fail-closed).
 	price, yard, readable, err := h.haulAcquirer.PriceCheck(ctx, cmd.PlayerID, haulerShipType)
 	if err != nil || !readable {
-		// sp-5nd2 fault-2: on cold start the price is unreadable because NOTHING is at the home shipyard (the
-		// frigate is on its loop, the probes are scouting), so the presence-gated live read returns no priced
-		// listing. Rather than fail closed forever (the deadlock), FREE the command frigate at the inter-contract
-		// window and get it to the yard so the NEXT tick's read succeeds and the buy — which itself navigates +
-		// docks + reads + purchases (BatchPurchaseShips) — runs behind bootstrap's own working-capital floor,
-		// which stays HERE and is evaluated on the real price once it reads.
-		h.ensureHaulerPriceReadable(ctx, cmd, obs, res, pivot, err)
+		// On cold start nothing is standing at the home shipyard — the frigate is on its loop, the probes are
+		// scouting — so the presence-gated read prices nothing. `price` is then the last ask the yard gave,
+		// the only evidence available for deciding whether to commit the earner to a trip to the yard. The
+		// working-capital floor stays HERE and is evaluated on the real price once it reads.
+		h.awaitHaulerPrice(ctx, cmd, obs, res, pivot, price, err)
 		return
 	}
-
-	// sp-muc5x: cache the just-read hauler price so a later COLD-price tick can test affordability BEFORE
-	// freeing the frigate's earning loop (the deadlock this bead fixes). This refreshes the probe-buy seed with
-	// the live price whenever the yard reads — it stores an already-read value (no extra API call).
-	h.cacheHaulerPrice(cmd.ContainerID, price)
 
 	// Capital gate (sp-acv5): buy as soon as the treasury AFTER the buy still clears the ABSOLUTE
 	// contract working-capital floor — affordable ⇔ cushion=(treasury−price) ≥ contract_working_capital_floor.
@@ -495,53 +488,46 @@ func (h *RunBootstrapCoordinatorHandler) maybeSeedTradeHull(ctx context.Context,
 	})
 }
 
-// ensureHaulerPriceReadable breaks the sp-5nd2 fault-2 cold-start deadlock: the first-hauler buy needs the
-// live LIGHT_SHUTTLE price, but the home shipyard listing is PRESENCE-GATED (GetShipyard returns a priced
-// listing only with a hull AT the yard) and on cold start nothing is there — the frigate is on its contract
-// loop, the probes are scouting. Rather than fail closed forever, it FREES the command frigate at the
-// inter-contract SAFE POINT (StopLoop + DedicateAsPurchaser — command duty per RULINGS #7; cargo-empty so no
-// in-flight contract is lost) and POSITIONS it at the home shipyard, so the NEXT tick's read succeeds and the
-// buy runs behind the working-capital floor. The buy itself (BatchPurchaseShips) navigates + docks + reads +
-// purchases; positioning just makes bootstrap's OWN pre-buy floor guard evaluable on the real price. It NEVER
-// buys and NEVER weakens the price guard (RULINGS #4) — the tick spends nothing while unreadable — and it
-// NEVER stops a frigate it cannot then position (no earner lost for nothing). With no scanner wired it
-// keeps the pre-fix fail-closed behavior exactly.
-func (h *RunBootstrapCoordinatorHandler) ensureHaulerPriceReadable(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult, pivot bool, priceErr error) {
+// awaitHaulerPrice answers a cold yard on the first-hauler buy. The buy needs a live LIGHT_SHUTTLE
+// price, but a yard prices its hulls only while a ship is standing at it and on cold start nothing is
+// — the frigate is on its contract loop, the probes are scouting. The only hull that can warm the yard
+// is the sole earner, so this decides whether to commit it: FREE it at the inter-contract SAFE POINT
+// (StopLoop + DedicateAsPurchaser — command duty per RULINGS #7; cargo-empty so no in-flight contract
+// is lost) and send it, or hold it on its loop. Either way the tick buys nothing (RULINGS #4): warming
+// the yard makes bootstrap's own pre-buy floor guard evaluable on a real price, it does not bypass it.
+//
+// lastAsk is the last price the yard gave for a hauler, 0 when it has never given one.
+func (h *RunBootstrapCoordinatorHandler) awaitHaulerPrice(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult, pivot bool, lastAsk int64, priceErr error) {
 	logger := common.LoggerFromContext(ctx)
 
-	// Positioning needs the shipyard scanner. Without it, keep the pre-fix fail-closed behavior EXACTLY — and
-	// never stop the frigate's earning loop when we could not then position it (no earner lost for nothing).
+	// Freeing the frigate is only worth it if something can then send it. With no scanner wired, fail
+	// closed without stopping it — an earning loop is never halted for a trip that cannot be made.
 	if h.scanner == nil {
-		res.Blocker = "price_unreadable"
-		logger.Log("WARN", fmt.Sprintf("Bootstrap hauler price unreadable and no shipyard scanner wired — failing closed (no buy): err=%v", priceErr), map[string]interface{}{
-			"action":       "bootstrap_income_blocked",
-			"container_id": cmd.ContainerID,
-			"blocker":      "price_unreadable",
-		})
+		h.awaitReadablePrice(ctx, cmd, obs, res, "", "hauler", priceErr)
 		return
 	}
 
-	// FREE the frigate at the inter-contract window when the pivot is warranted but it is still on its loop
-	// (it must idle before it can go to the yard). Once dedicated it is the committed purchaser, so a later
-	// unreadable tick (still en route) re-positions idempotently WITHOUT re-freeing.
-	frigateReady := obs.CommandFrigatePurchasing && obs.CommandFrigateID != ""
+	// The committed purchaser: a frigate an earlier tick already freed and dedicated, so it goes to the
+	// yard on later unreadable ticks without being freed again.
+	purchaser := ""
+	if obs.CommandFrigatePurchasing && obs.CommandFrigateID != "" {
+		purchaser = obs.CommandFrigateID
+	}
+
 	if pivot {
-		// sp-muc5x — NEVER free the frigate's earning loop while the hauler is UNAFFORDABLE. The live price is
-		// unreadable here (cold yard), so gate the free on the CACHED last-hauler-price seeded at the probe buy. When a
-		// cache exists AND the buy would breach the working-capital floor (treasury−price < floor), keep the
-		// frigate ON its contract loop EARNING (blocker=capital_gate) and return — it is freed to position+buy
-		// only once the treasury clears the floor. This restores the invariant the deadlock violated: the
-		// frigate was freed while permanently unaffordable, so no earner remained and the treasury never grew
-		// (permanent stall). No money guard is weakened — this is the SAME cushion≥floor test as the capital
-		// gate on the readable path (RULINGS #4/#5); it only TIGHTENS *when* the frigate is freed. A 0/absent
-		// cache (first-ever read, e.g. a fresh boot before that seed) proceeds to the existing free+position.
-		if cached := h.cachedHaulerPrice(cmd.ContainerID); cached > 0 && obs.Treasury-cached < contractWorkingCapitalFloor {
+		// NEVER free the earner while the hauler is out of reach. Stopping the only ship that earns to
+		// go buy something the treasury cannot cover leaves nothing earning, so the treasury never
+		// reaches the price and the frigate waits at the yard forever. The yard is cold, so weigh the
+		// last ask it gave against the SAME cushion≥floor test the readable path applies (RULINGS #4/#5)
+		// — the money guard is untouched, this only decides WHEN the frigate is freed. No ask means no
+		// evidence, and no evidence is no reason to hold.
+		if lastAsk > 0 && obs.Treasury-lastAsk < contractWorkingCapitalFloor {
 			res.Blocker = "capital_gate"
-			logger.Log("INFO", fmt.Sprintf("Bootstrap first-hauler pivot HELD (not freeing the earner): cached hauler price=%d treasury=%d cushion=(treasury−price)=%d floor=%d — keeping the command frigate %s on its contract loop EARNING until the treasury clears the working-capital floor (sp-muc5x: never stop the sole earner while the hauler is unaffordable)", cached, obs.Treasury, obs.Treasury-cached, contractWorkingCapitalFloor, obs.CommandFrigateID), map[string]interface{}{
+			logger.Log("INFO", fmt.Sprintf("Bootstrap first-hauler pivot HELD (not freeing the earner): last hauler ask=%d treasury=%d cushion=(treasury−price)=%d floor=%d — keeping the command frigate %s on its contract loop EARNING until the treasury clears the working-capital floor", lastAsk, obs.Treasury, obs.Treasury-lastAsk, contractWorkingCapitalFloor, obs.CommandFrigateID), map[string]interface{}{
 				"action":       "bootstrap_pivot_held_unaffordable",
 				"container_id": cmd.ContainerID,
 				"blocker":      "capital_gate",
-				"cached_price": cached,
+				"last_ask":     lastAsk,
 				"treasury":     obs.Treasury,
 				"floor":        contractWorkingCapitalFloor,
 				"ship":         obs.CommandFrigateID,
@@ -551,7 +537,7 @@ func (h *RunBootstrapCoordinatorHandler) ensureHaulerPriceReadable(ctx context.C
 		if h.retirer == nil {
 			res.Blocker = "price_unreadable"
 			logger.Log("WARN", "Bootstrap hauler price unreadable and no retirer wired to free the command frigate — failing closed (no buy)", map[string]interface{}{
-				"action":       "bootstrap_income_blocked",
+				"action":       "bootstrap_price_blocked",
 				"container_id": cmd.ContainerID,
 				"blocker":      "price_unreadable",
 			})
@@ -559,7 +545,7 @@ func (h *RunBootstrapCoordinatorHandler) ensureHaulerPriceReadable(ctx context.C
 		}
 		if err := h.frigateLoop.StopLoop(ctx, cmd.PlayerID, obs.CommandFrigateID); err != nil {
 			res.Blocker = "frigate_loop_stop_error"
-			logger.Log("ERROR", fmt.Sprintf("Bootstrap first-hauler pivot: stopping the command frigate %s contract loop to position it for the price read failed — retry next tick: %v", obs.CommandFrigateID, err), map[string]interface{}{
+			logger.Log("ERROR", fmt.Sprintf("Bootstrap first-hauler pivot: stopping the command frigate %s contract loop to send it for the price read failed — retry next tick: %v", obs.CommandFrigateID, err), map[string]interface{}{
 				"action":       "bootstrap_frigate_pivot_stop_error",
 				"container_id": cmd.ContainerID,
 				"ship":         obs.CommandFrigateID,
@@ -576,64 +562,17 @@ func (h *RunBootstrapCoordinatorHandler) ensureHaulerPriceReadable(ctx context.C
 			return
 		}
 		res.FrigatePivoted = true
-		frigateReady = true
-		logger.Log("INFO", fmt.Sprintf("Bootstrap first-hauler PIVOT: FREED the command frigate %s at the inter-contract window (loop stopped + dedicated the exclusive purchasing ship) — positioning it at the home shipyard so the presence-gated hauler price reads next tick (sp-5nd2 fault-2)", obs.CommandFrigateID), map[string]interface{}{
+		purchaser = obs.CommandFrigateID
+		logger.Log("INFO", fmt.Sprintf("Bootstrap first-hauler PIVOT: FREED the command frigate %s at the inter-contract window (loop stopped + dedicated the exclusive purchasing ship) — sending it to the home shipyard so the hauler price reads next tick", obs.CommandFrigateID), map[string]interface{}{
 			"action":       "bootstrap_frigate_pivot",
 			"container_id": cmd.ContainerID,
 			"ship":         obs.CommandFrigateID,
 		})
 	}
 
-	if !frigateReady {
-		// No frigate to free/position (e.g. a subsequent buy resting on an incidentally-idle probe that is
-		// not at the yard): reuse the sp-hh0h probe-path positioner for any idle undedicated hull.
-		h.ensureShipyardReadable(ctx, cmd, obs, res, priceErr)
-		return
-	}
-
-	// POSITION the freed+dedicated frigate at the home shipyard (idempotent: a no-op when it is already there
-	// / en route). The buy stays blocked THIS tick (fail closed) and fires next tick once the frigate arrives
-	// and the live price reads.
-	dispatched, serr := h.scanner.PositionPurchaserAtShipyard(ctx, cmd.PlayerID, obs.CommandFrigateID, obs.HomeSystem)
-	if serr != nil {
-		res.Blocker = "price_unreadable"
-		logger.Log("WARN", fmt.Sprintf("Bootstrap hauler price unreadable and positioning the purchasing frigate failed — failing closed (no buy): %v", serr), map[string]interface{}{
-			"action":       "bootstrap_income_blocked",
-			"container_id": cmd.ContainerID,
-			"blocker":      "price_unreadable",
-		})
-		return
-	}
-	res.Blocker = "positioning_purchaser_at_shipyard"
-	positionNote := fmt.Sprintf("purchasing frigate %s already at/heading to the home shipyard — awaiting a readable price", obs.CommandFrigateID)
-	if dispatched {
-		positionNote = fmt.Sprintf("navigated the purchasing frigate %s to the home shipyard so the presence-gated hauler price reads next tick", obs.CommandFrigateID)
-	}
-	logger.Log("INFO", fmt.Sprintf("Bootstrap first-hauler pivot: %s (no buy this tick — sp-5nd2 fault-2)", positionNote), map[string]interface{}{
-		"action":       "bootstrap_positioning_purchaser",
-		"container_id": cmd.ContainerID,
-		"blocker":      "positioning_purchaser_at_shipyard",
-		"ship":         obs.CommandFrigateID,
-	})
-}
-
-// seedHaulerPriceFromYard price-checks the contract-hauler ship type while a hull is already at the home
-// shipyard (the probe-buy moment, run_bootstrap_reconcile.go) and caches the readable price (sp-muc5x).
-// It exists so the first-hauler pivot can test the capital gate BEFORE freeing the command frigate's
-// earning loop — the cold-start deadlock where the frigate is freed while the hauler is unaffordable, so no
-// earner remains and the treasury never grows (permanent stall). It is READ-ONLY (a price-check, never a
-// buy — the money guard is untouched, RULINGS #4) and best-effort: a nil hauler acquirer or an unreadable
-// hauler listing caches nothing, and the guard then treats the cache as absent and preserves the existing
-// free+position behavior (this fix only ever TIGHTENS, never loosens).
-func (h *RunBootstrapCoordinatorHandler) seedHaulerPriceFromYard(ctx context.Context, cmd *RunBootstrapCoordinatorCommand) {
-	if h.haulAcquirer == nil {
-		return
-	}
-	price, _, readable, err := h.haulAcquirer.PriceCheck(ctx, cmd.PlayerID, haulerShipType)
-	if err != nil || !readable {
-		return
-	}
-	h.cacheHaulerPrice(cmd.ContainerID, price)
+	// With no purchaser to name — a subsequent buy resting on an incidentally-idle probe that is not at
+	// the yard — the scanner picks a free hull instead.
+	h.awaitReadablePrice(ctx, cmd, obs, res, purchaser, "hauler", priceErr)
 }
 
 // firstUnservedHub returns the highest-ranked viable hub (within the haulerTarget cap) that no
