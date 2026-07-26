@@ -212,7 +212,7 @@ func TestSelectOptimalFlightMode_DowngradesPlannedBurnWhenFuelInsufficient(t *te
 
 	executor := NewRouteExecutor(nil, nil, nil, nil, nil, nil, nil, stubSubscriber{})
 
-	got := executor.selectOptimalFlightMode(context.Background(), segment, ship)
+	got := executor.selectOptimalFlightMode(context.Background(), segment, ship, 0 /*no legs after this one*/)
 
 	if got != shared.FlightModeCruise {
 		t.Fatalf("expected CRUISE downgrade (fuelAvailable 180 < BURN fuelRequired %d for distance 114), got %s",
@@ -221,13 +221,16 @@ func TestSelectOptimalFlightMode_DowngradesPlannedBurnWhenFuelInsufficient(t *te
 }
 
 // TestExecuteRoute_BurnUpgradeDoesNotStrandLaterBurnLeg pins the end-to-end
-// divergence. leg1 (planned CRUISE, distance 110) gets upgraded to BURN on a full
-// tank, spending 220 instead of 110 and leaving 180 fuel. leg2 (planned BURN,
-// distance 114) then needs 228 but only 180 is available.
+// divergence against a fake that rejects an un-fuelable navigate exactly as the API
+// does (4203). leg1 (planned CRUISE, distance 110) is a candidate for the BURN
+// speed-up on a full tank, which would spend 220 instead of 110 and leave 180 fuel.
+// leg2 (planned BURN, distance 114) needs 228, and B sells no fuel, so there is no
+// way to make that back.
 //
-// Before the fix, leg2 is issued as BURN and the API rejects it with 4203
-// ("requires 48 more fuel"), failing the route. After the fix, leg2 is clamped to
-// the affordable CRUISE mode and the route completes.
+// The route must complete with no 4203 AND with no leg flown slower than the
+// planner budgeted it: leg1 holds its planned CRUISE so that leg2 can still fly its
+// planned BURN. Clamping leg2 down instead would also dodge the 4203 - that was the
+// earlier remedy - but it pays for the speed-up on one leg by slowing the next.
 func TestExecuteRoute_BurnUpgradeDoesNotStrandLaterBurnLeg(t *testing.T) {
 	a := mustWaypoint(t, "X1-TORWIND-A", 0, 0)
 	b := mustWaypoint(t, "X1-TORWIND-B", 110, 0) // A->B distance 110
@@ -266,8 +269,11 @@ func TestExecuteRoute_BurnUpgradeDoesNotStrandLaterBurnLeg(t *testing.T) {
 	if len(navCmds) != 2 {
 		t.Fatalf("expected 2 navigate commands (one per leg), got %d", len(navCmds))
 	}
-	if navCmds[1].FlightMode != shared.FlightModeCruise.Name() {
-		t.Fatalf("expected leg2 downgraded to CRUISE (ship holds 180, BURN needs 228), got %s", navCmds[1].FlightMode)
+	if navCmds[0].FlightMode != shared.FlightModeCruise.Name() {
+		t.Fatalf("expected leg1 to hold its planned CRUISE (a BURN upgrade spends 220 of 400 and strands leg2's planned 228), got %s", navCmds[0].FlightMode)
+	}
+	if navCmds[1].FlightMode != shared.FlightModeBurn.Name() {
+		t.Fatalf("expected leg2 to fly its planned BURN (290 fuel available, 228 required), got %s", navCmds[1].FlightMode)
 	}
 }
 

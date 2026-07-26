@@ -418,18 +418,8 @@ func (r *ShipRepository) Refuel(ctx context.Context, ship *navigation.Ship, play
 		return nil, fmt.Errorf("failed to refuel ship: %w", err)
 	}
 
-	// Update ship domain entity state
-	// If units specified, add that amount, otherwise refuel to full
-	if units != nil {
-		// Add specific amount
-		if err := ship.Refuel(*units); err != nil {
-			return nil, fmt.Errorf("failed to update ship fuel: %w", err)
-		}
-	} else {
-		// Refuel to full
-		if _, err := ship.RefuelToFull(); err != nil {
-			return nil, fmt.Errorf("failed to update ship fuel: %w", err)
-		}
+	if err := adoptRefuelledFuel(ship, refuelResult, units); err != nil {
+		return nil, fmt.Errorf("failed to update ship fuel: %w", err)
 	}
 
 	// Persist state to database
@@ -441,6 +431,22 @@ func (r *ShipRepository) Refuel(ctx context.Context, ship *navigation.Ship, play
 	r.shipListCache.Delete(playerID.Value())
 
 	return refuelResult, nil
+}
+
+// adoptRefuelledFuel folds the post-refuel tank into the ship. How much fuel a
+// refuel actually lands is the API's to decide - market supply and its 100-unit
+// blocks both bound it - so the response is authoritative over the requested fill,
+// the same way Navigate and Warp adopt their in-band fuel. A response carrying no
+// fuel state (mock/older API) falls back to what was asked for.
+func adoptRefuelledFuel(ship *navigation.Ship, result *navigation.RefuelResult, units *int) error {
+	if result.FuelCapacity > 0 {
+		return ship.UpdateFuelFromAPI(result.FuelCurrent, result.FuelCapacity)
+	}
+	if units != nil {
+		return ship.Refuel(*units)
+	}
+	_, err := ship.RefuelToFull()
+	return err
 }
 
 // SetFlightMode sets the ship's flight mode via API and persists state to database.

@@ -181,7 +181,7 @@ func (e *RouteExecutor) ExecuteRoute(
 			"to":            segment.ToWaypoint.Symbol,
 		})
 
-		if err := e.executeSegment(ctx, segment, ship, playerID); err != nil {
+		if err := e.executeSegment(ctx, segment, ship, playerID, route.FuelReserveAfterCurrentSegment()); err != nil {
 			return e.reactToSegmentFailure(ctx, route, ship, segment, segmentCount, err)
 		}
 
@@ -299,12 +299,16 @@ func (e *RouteExecutor) reactToSegmentFailure(
 	return err
 }
 
-// executeSegment executes a single route segment using atomic commands
+// executeSegment executes a single route segment using atomic commands.
+//
+// fuelReserve is the fuel the plan's remaining legs need after this one lands
+// (see Route.FuelReserveAfterCurrentSegment); the speed-up upgrade may not spend it.
 func (e *RouteExecutor) executeSegment(
 	ctx context.Context,
 	segment *domainNavigation.RouteSegment,
 	ship *domainNavigation.Ship,
 	playerID shared.PlayerID,
+	fuelReserve int,
 ) error {
 	// OPTIMIZATION: Only reload ship if it might be in transit
 	// The previous segment's waitForArrival already updated ship state
@@ -323,9 +327,9 @@ func (e *RouteExecutor) executeSegment(
 		return err
 	}
 
-	flightMode := e.selectOptimalFlightMode(ctx, segment, ship)
+	flightMode := e.selectOptimalFlightMode(ctx, segment, ship, fuelReserve)
 
-	flightMode, err := e.ensureAffordableFlightMode(ctx, segment, ship, playerID, flightMode)
+	flightMode, err := e.ensureAffordableFlightMode(ctx, segment, ship, playerID, flightMode, fuelReserve)
 	if err != nil {
 		return err
 	}
@@ -406,7 +410,7 @@ func (e *RouteExecutor) handlePreDepartureRefuel(ctx context.Context, segment *d
 	return nil
 }
 
-func (e *RouteExecutor) selectOptimalFlightMode(ctx context.Context, segment *domainNavigation.RouteSegment, ship *domainNavigation.Ship) shared.FlightMode {
+func (e *RouteExecutor) selectOptimalFlightMode(ctx context.Context, segment *domainNavigation.RouteSegment, ship *domainNavigation.Ship, fuelReserve int) shared.FlightMode {
 	logger := common.LoggerFromContext(ctx)
 
 	// Special case: Ships with 0 fuel capacity (e.g., probes) don't consume fuel
@@ -426,8 +430,16 @@ func (e *RouteExecutor) selectOptimalFlightMode(ctx context.Context, segment *do
 	fuelService := domainNavigation.NewShipFuelService()
 	optimalMode := fuelService.SelectOptimalFlightMode(ship.Fuel().Current, distance, domainNavigation.DefaultFuelSafetyMargin)
 
+	// The speed-up upgrade is a ONE-LEG decision against a WHOLE-ROUTE fuel budget,
+	// so it may only spend what the rest of the plan does not need: BURN costs 2x,
+	// and a leg upgraded out of a fuel station into a stop that sells none leaves
+	// the following leg — budgeted by the planner against the tank it was supposed
+	// to arrive with — unflyable, and it is then downgraded all the way to DRIFT.
+	// fuelReserve is that remaining need up to the next stop that can refuel; it is
+	// 0 whenever the tank refills on arrival, so the speed-up survives untouched
+	// wherever it is actually free.
 	flightMode := segment.FlightMode
-	if optimalMode > segment.FlightMode {
+	if optimalMode > segment.FlightMode && ship.Fuel().Current >= optimalMode.FuelCost(distance)+fuelReserve {
 		logger.Log("INFO", "Ship flight mode upgraded after refuel", map[string]interface{}{
 			"ship_symbol":   ship.ShipSymbol(),
 			"action":        "upgrade_flight_mode",
@@ -436,6 +448,7 @@ func (e *RouteExecutor) selectOptimalFlightMode(ctx context.Context, segment *do
 			"distance":      distance,
 			"fuel_current":  ship.Fuel().Current,
 			"fuel_capacity": ship.Fuel().Capacity,
+			"fuel_reserve":  fuelReserve,
 		})
 		flightMode = optimalMode
 	}
@@ -488,6 +501,7 @@ func (e *RouteExecutor) ensureAffordableFlightMode(
 	ship *domainNavigation.Ship,
 	playerID shared.PlayerID,
 	flightMode shared.FlightMode,
+	fuelReserve int,
 ) (shared.FlightMode, error) {
 	// Zero-capacity ships (e.g. probes) never consume fuel — nothing to guard.
 	if ship.Fuel().Capacity == 0 {
@@ -517,7 +531,7 @@ func (e *RouteExecutor) ensureAffordableFlightMode(
 
 	// Re-pick against the (possibly) replenished tank so a successful refuel still
 	// yields the fastest affordable mode rather than defaulting to DRIFT.
-	flightMode = e.selectOptimalFlightMode(ctx, segment, ship)
+	flightMode = e.selectOptimalFlightMode(ctx, segment, ship, fuelReserve)
 	if ship.Fuel().Current < flightMode.FuelCost(distance) {
 		// Genuinely stranded: no fuel station here and too little fuel to move.
 		return flightMode, fmt.Errorf(

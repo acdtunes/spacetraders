@@ -264,6 +264,25 @@ func (r *Route) NextSegment() *RouteSegment {
 	return nil
 }
 
+// FuelReserveAfterCurrentSegment is the fuel that must still be in the tank once
+// the current segment lands, for the plan's remaining legs to stay flyable at the
+// modes the planner budgeted them at.
+//
+// The tank is topped off on arrival at any fuel-capable waypoint, so the reserve
+// only accumulates the planned cost of the legs up to the first such stop; beyond
+// it the planner's own budget takes over and nothing spent here can starve it.
+func (r *Route) FuelReserveAfterCurrentSegment() int {
+	reserve := 0
+	for i := r.currentSegmentIndex; i >= 0 && i < len(r.segments)-1; i++ {
+		if r.segments[i].ToWaypoint.HasFuel {
+			break
+		}
+		next := r.segments[i+1]
+		reserve += next.FlightMode.FuelCost(next.Distance)
+	}
+	return reserve
+}
+
 func (r *Route) HasRefuelAtStart() bool {
 	return r.refuelBeforeDeparture
 }

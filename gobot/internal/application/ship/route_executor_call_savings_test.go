@@ -88,6 +88,9 @@ type tourShipRepo struct {
 	refuelCalls   int
 	navigateCalls int
 	setModeCalls  int
+
+	// navModes records the flight mode each Navigate was flown in, in order.
+	navModes []string
 }
 
 func (r *tourShipRepo) FindBySymbol(_ context.Context, _ string, _ shared.PlayerID) (*domainNavigation.Ship, error) {
@@ -138,9 +141,11 @@ func (r *tourShipRepo) Navigate(_ context.Context, ship *domainNavigation.Ship, 
 		return nil, fmt.Errorf(`API error (status 400): {"error":{"code":4236,"message":"Ship %s is not currently in orbit."}}`, ship.ShipSymbol())
 	}
 	r.navigateCalls++
-	// Consume a plausible amount of fuel and settle the ship at the destination
-	// in orbit (arrival), mirroring the real adapter's StartTransit+Arrive.
-	cost := shared.FlightModeCruise.FuelCost(ship.CurrentLocation().DistanceTo(destination))
+	r.navModes = append(r.navModes, ship.FlightMode())
+	// Charge the leg at the mode the ship is actually flying - BURN really costs
+	// 2x - and settle the ship at the destination in orbit (arrival), mirroring
+	// the real adapter's StartTransit+Arrive.
+	cost := flightModeNamed(ship.FlightMode()).FuelCost(ship.CurrentLocation().DistanceTo(destination))
 	if ship.Fuel().Current >= cost {
 		_ = ship.ConsumeFuel(cost)
 	}
