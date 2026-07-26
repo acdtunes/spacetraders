@@ -106,6 +106,19 @@ type GateAdjacencyReader interface {
 	Adjacency(ctx context.Context) (map[string][]system.GateEdge, error)
 }
 
+// expansionPhaseReader reports whether the bootstrap-derived lifecycle phase is
+// EXPANSION — the gate-built steady-state era demand-driven sensing belongs to.
+// The phase is DERIVED from the live world (EXPANSION ⇔ the home jump-gate
+// construction is COMPLETE), never read from a stored enum or a running
+// container: bootstrap EXITS after its hand-off, so there is nothing to ask. An
+// error means the phase could not be read, and this coordinator treats that
+// FAIL-CLOSED. expansion.BootstrapExpansionPhaseReader satisfies it — the same
+// reader the probe-buyer fleet gates on, so the two can never disagree about
+// which era it is.
+type expansionPhaseReader interface {
+	InExpansion(ctx context.Context, playerID shared.PlayerID) (bool, error)
+}
+
 // WaypointCatalogReader is the discovery pass's swept-knowledge read: the
 // persisted waypoint catalog. BuildSystemGraph persists a system's ENTIRE
 // waypoint set the moment a probe sweeps it, while gate charting persists
@@ -158,6 +171,7 @@ type RunProbeSensingCoordinatorHandler struct {
 	fleetRepo   FleetReader
 	pressure    domainScouting.PressureReader
 	ledgerRepo  ledger.TransactionRepository
+	phase       expansionPhaseReader
 	clock       shared.Clock
 
 	// treasury and purchaser are optional collaborators wired via setters (the
@@ -197,13 +211,17 @@ type RunProbeSensingCoordinatorHandler struct {
 
 // NewRunProbeSensingCoordinatorHandler wires the coordinator. clock defaults to
 // the real clock when nil (production). The treasury reader and probe purchaser
-// are optional and injected separately.
+// are optional and injected separately. phase is the EXPANSION gate — a REQUIRED
+// guard, deliberately a constructor parameter rather than an optional setter: a
+// nil reader holds the whole coordinator inert (surfaced loudly every tick),
+// never silently open.
 func NewRunProbeSensingCoordinatorHandler(
 	depthReader MarketDepthReader,
 	postRepo SensingPostRepository,
 	fleetRepo FleetReader,
 	pressure domainScouting.PressureReader,
 	ledgerRepo ledger.TransactionRepository,
+	phase expansionPhaseReader,
 	clock shared.Clock,
 ) *RunProbeSensingCoordinatorHandler {
 	if clock == nil {
@@ -215,6 +233,7 @@ func NewRunProbeSensingCoordinatorHandler(
 		fleetRepo:   fleetRepo,
 		pressure:    pressure,
 		ledgerRepo:  ledgerRepo,
+		phase:       phase,
 		clock:       clock,
 		cursors:     make(map[int]int),
 	}
@@ -398,6 +417,18 @@ func (h *RunProbeSensingCoordinatorHandler) Handle(ctx context.Context, request 
 // Pure inputs → diffs: census → plan → post diff → dormancy rotation → one
 // guarded buy → one heartbeat.
 func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, cmd *RunProbeSensingCoordinatorCommand) error {
+	// EXPANSION GATE. Demand-driven sensing sizes the footprint against the
+	// fleet's TRADING reach, and before the home jump gate is built there is no
+	// such reach — a cold start would read an empty whitelist scope, size the
+	// world to zero hulls, and write that over the posts bootstrap declared,
+	// starving the cold start of the scouting it just bought probes for. Until
+	// EXPANSION, provisioning is bootstrap's (a fixed probe target) and manning
+	// is the scout-post reconciler's. Checked FIRST so a pre-EXPANSION tick does
+	// nothing at all: no census read, no plan, no post write, no buy.
+	if !h.expansionReached(ctx, cmd) {
+		return nil
+	}
+
 	logger := common.LoggerFromContext(ctx)
 	cfg := resolveSensingConfig(cmd)
 	now := h.clock.Now()
@@ -621,6 +652,36 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 		})
 	}
 	return nil
+}
+
+// expansionReached reports whether the bootstrap-derived phase is EXPANSION,
+// naming the honest no-work reason when it is not (never a silent stall).
+// FAIL-CLOSED on every unverifiable input (RULINGS #4): an unwired reader
+// (mis-wire) and a read error both hold the coordinator inert, each with its own
+// loud line so the wedge is visible on the first look.
+func (h *RunProbeSensingCoordinatorHandler) expansionReached(ctx context.Context, cmd *RunProbeSensingCoordinatorCommand) bool {
+	logger := common.LoggerFromContext(ctx)
+	if h.phase == nil {
+		logger.Log("WARNING", "Probe sensing held (fail-closed): no bootstrap-phase reader wired — the EXPANSION phase cannot be verified, and a gate never defaults open", map[string]interface{}{
+			"action": "probe_sensing_phase_unreadable",
+		})
+		return false
+	}
+	inExpansion, err := h.phase.InExpansion(ctx, cmd.PlayerID)
+	if err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Probe sensing held (fail-closed): bootstrap phase unreadable — no sensing on an unknown phase: %v", err), map[string]interface{}{
+			"action": "probe_sensing_phase_unreadable",
+			"error":  err.Error(),
+		})
+		return false
+	}
+	if !inExpansion {
+		logger.Log("INFO", "Probe sensing deferred: bootstrap phase pre-EXPANSION (jump-gate construction incomplete — the world is still in DATA/INCOME/GATE); demand-driven sensing runs only in EXPANSION, bootstrap provisions probes until then", map[string]interface{}{
+			"action": "probe_sensing_phase_deferred",
+		})
+		return false
+	}
+	return true
 }
 
 // sameWaypointList reports element-wise equality of two waypoint lists (nil

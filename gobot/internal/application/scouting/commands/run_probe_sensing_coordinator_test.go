@@ -26,12 +26,16 @@ import (
 // error, so a coordinator that ignores the error and consumes the value is
 // caught by the write/buy assertions, never masked by a convenient nil.
 
+// fakeDepthReader is the census read. calls counts reads, so a gated tick can be
+// pinned as having touched nothing at all — not even the census.
 type fakeDepthReader struct {
-	rows []domainScouting.MarketDepthRow
-	err  error
+	rows  []domainScouting.MarketDepthRow
+	err   error
+	calls int
 }
 
 func (f *fakeDepthReader) MarketDepthRows(_ context.Context, _ int) ([]domainScouting.MarketDepthRow, error) {
+	f.calls++
 	return f.rows, f.err
 }
 
@@ -162,9 +166,11 @@ func (f *fakeSensingPostRepo) upsertsFor(system string) []*domainScouting.ScoutP
 type fakeSensingFleet struct {
 	ships []*navigation.Ship
 	err   error
+	calls int
 }
 
 func (f *fakeSensingFleet) FindAllByPlayer(_ context.Context, _ shared.PlayerID) ([]*navigation.Ship, error) {
+	f.calls++
 	return f.ships, f.err
 }
 
@@ -356,10 +362,17 @@ func sensingCmd() *RunProbeSensingCoordinatorCommand {
 }
 
 // newSensingHandler wires a handler whose buyer is the recording fake, so buy
-// tests assert the exact demand/supply the coordinator computed.
+// tests assert the exact demand/supply the coordinator computed. The world is in
+// EXPANSION — the era demand-driven sensing runs in, so every scope/rotation/buy
+// test below drives the coordinator's own model, not its phase gate.
 func newSensingHandler(dr *fakeDepthReader, pr *fakeSensingPostRepo, fl *fakeSensingFleet, press *fakePressure) (*RunProbeSensingCoordinatorHandler, *fakeSensingBuyer) {
+	return newSensingHandlerInPhase(dr, pr, fl, press, &fakeSensingPhase{inExpansion: true})
+}
+
+// newSensingHandlerInPhase is newSensingHandler with the era under test's control.
+func newSensingHandlerInPhase(dr *fakeDepthReader, pr *fakeSensingPostRepo, fl *fakeSensingFleet, press *fakePressure, phase expansionPhaseReader) (*RunProbeSensingCoordinatorHandler, *fakeSensingBuyer) {
 	clock := &shared.MockClock{CurrentTime: time.Now()}
-	h := NewRunProbeSensingCoordinatorHandler(dr, pr, fl, press, &fakeSensingLedger{}, clock)
+	h := NewRunProbeSensingCoordinatorHandler(dr, pr, fl, press, &fakeSensingLedger{}, phase, clock)
 	buyer := &fakeSensingBuyer{}
 	h.newBuyer = func(_ probebuy.Config) guardedBuyer { return buyer }
 	return h, buyer

@@ -1550,6 +1550,48 @@ func TestScoutPost_MultiHull_ConvergesInOneCycle(t *testing.T) {
 	}
 }
 
+// Cold start: bootstrap declares the home post at hulls=1 and stamps its PERMANENT
+// manning floor to probe_target, while demand-driven sensing is dormant before
+// EXPANSION — so the FLOOR alone has to man every probe bootstrap bought. Three idle
+// probes, one floored post, three disjoint tours: the shape 26 home markets need.
+func TestScoutPost_MinHullsFloorMansEveryBootstrapProbe(t *testing.T) {
+	clock := &shared.MockClock{CurrentTime: time.Now()}
+	post := &domainScouting.ScoutPost{
+		PlayerID: 1, SystemSymbol: "X1-KP23", Kind: domainScouting.PostKindStanding,
+		Hulls: 1, MinHulls: 3, FreshnessTarget: time.Hour,
+	}
+	postRepo := &fakeScoutPostRepo{posts: []*domainScouting.ScoutPost{post}}
+	sats := []*navigation.Ship{
+		newScoutTestSatellite(t, "TORWIND-2", "X1-KP23-A1"),
+		newScoutTestSatellite(t, "TORWIND-3", "X1-KP23-A2"),
+		newScoutTestSatellite(t, "TORWIND-4", "X1-KP23-A3"),
+	}
+	shipRepo := &fakeScoutShipRepo{ships: sats, clock: clock}
+	daemonClient := &fakeScoutDaemonClient{}
+	mp := &fakeMultiMarketProvider{markets: map[string][]string{
+		"X1-KP23": {"X1-KP23-M1", "X1-KP23-M2", "X1-KP23-M3", "X1-KP23-M4", "X1-KP23-M5", "X1-KP23-M6"},
+	}}
+	handler := &RunScoutPostCoordinatorHandler{
+		postRepo: postRepo, shipRepo: shipRepo, daemonClient: daemonClient,
+		containerQuery: &fakeContainerStatusQuery{}, marketProvider: mp, clock: clock,
+		routingClient: &fakeScoutRoutingClient{}, repositionBackoffUntil: map[string]time.Time{},
+	}
+
+	require.NoError(t, handler.reconcileOnce(context.Background(), scoutPostTestCmd()))
+
+	got := postRepo.find("X1-KP23")
+	require.Equal(t, 3, got.MannedCount(), "the manning floor is what mans the post — all 3 bootstrap probes fly")
+	require.True(t, got.IsFullyManned())
+	require.Len(t, daemonClient.started, 3, "3 disjoint tours started, not 1")
+
+	all, perSlot := partitionOf(got)
+	require.Equal(t, []string{"X1-KP23-M1", "X1-KP23-M2", "X1-KP23-M3", "X1-KP23-M4", "X1-KP23-M5", "X1-KP23-M6"}, all,
+		"the floored post partitions its whole market set, disjoint and complete")
+	for _, p := range perSlot {
+		require.Len(t, p, 2, "6 markets split evenly across the 3 floored probes")
+	}
+}
+
 // Partition STABILITY: with the hull budget unchanged, a second reconcile tick does
 // NOT re-partition — the frozen partitions are reused and the VRP is not called again.
 func TestScoutPost_MultiHull_PartitionStableAcrossTicks(t *testing.T) {

@@ -84,13 +84,14 @@ type ScoutPost struct {
 	// (HullBudget clamps it). RULINGS #5: a config/DB value, never a constant.
 	Hulls int
 
-	// MinHulls is a PERMANENT manning FLOOR: the freshsizer never sizes this post below
-	// it (it may size UP if the SLA genuinely demands more, but never below). 0 — the
-	// default for every post — means no floor, so a non-floored post is byte-identical.
+	// MinHulls is a PERMANENT manning FLOOR: the post is never manned below it (a sizer
+	// may size UP if the SLA genuinely demands more, but never below). 0 — the default
+	// for every post — means no floor, so a non-floored post is byte-identical.
 	// Bootstrap stamps the HOME post's floor to probe_target so the probes it bought for
-	// the home scan are never sized away and stranded (sp-2ci9y). It is a MANNING floor
-	// only: the freshsizer applies it when writing the budget, but its probe BUY-demand
-	// stays the un-floored SLA size, so the floor never double-buys against bootstrap.
+	// the home scan are never sized away and stranded. HullBudget applies it, so the
+	// floor holds even in the eras when no sizer runs. It is a MANNING floor only: a
+	// sizer's probe BUY-demand stays the un-floored SLA size, so the floor never
+	// double-buys against bootstrap.
 	MinHulls int
 
 	// Dormant marks a post whose scanning is shed this rotation under API
@@ -143,26 +144,33 @@ type ScoutPost struct {
 }
 
 // HullBudget is the number of manning slots the reconciler keeps filled — the
-// probe budget N, defaulting to 1. Sweep-once posts are ALWAYS single-hull: a
-// finite one-pass frontier sweep does not partition, and clamping here keeps the
-// multi-slot completion bookkeeping out of the sweep-once path. A zero/negative
-// Hulls (a legacy row, or a caller that never set it) is also a single-hull post.
+// sized probe budget N raised to the post's permanent manning floor, defaulting
+// to 1. Applying MinHulls HERE is what makes it a floor on MANNING rather than a
+// floor on whoever last wrote the sized budget: the floor holds through eras when
+// the sizer is dormant and no one writes the column at all (cold start), which is
+// exactly when bootstrap needs the probes it bought to fly. Sweep-once posts are
+// ALWAYS single-hull: a finite one-pass frontier sweep does not partition, and
+// clamping here keeps the multi-slot completion bookkeeping out of the sweep-once
+// path. A zero/negative Hulls (a legacy row, or a caller that never set it) with
+// no floor is a single-hull post.
 func (p *ScoutPost) HullBudget() int {
 	if p.Kind == PostKindSweepOnce {
 		return 1
 	}
-	if p.Hulls < 1 {
+	budget := p.FloorHulls(p.Hulls)
+	if budget < 1 {
 		return 1
 	}
-	return p.Hulls
+	return budget
 }
 
 // FloorHulls raises a desired hull count to this post's manning floor: max(desired,
 // MinHulls). A post with MinHulls 0 (the default for every post) returns desired
 // unchanged, so only a floored post — the home post — is affected, and every other
-// post stays byte-identical. A negative floor clamps to 0. This is the MANNING floor
-// the freshsizer applies when it writes the post budget; the probe BUY-demand it sums
-// stays un-floored, so a floored post never inflates a buy (sp-2ci9y).
+// post stays byte-identical. A negative floor clamps to 0. HullBudget applies it to
+// the post's own sized budget, and a sizer applies it to the size it is about to
+// write; the probe BUY-demand a sizer sums stays un-floored, so a floored post never
+// inflates a buy.
 func (p *ScoutPost) FloorHulls(desired int) int {
 	floor := p.MinHulls
 	if floor < 0 {

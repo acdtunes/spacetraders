@@ -1526,11 +1526,21 @@ func TestSizer_ChartedSizingDefaultDoesNotOverProvision(t *testing.T) {
 	})
 }
 
+// mannedBudget is the manning budget a sizer tick leaves on a post: the resize it wrote, else the
+// post's standing budget when the tick correctly wrote nothing (a post already AT its target — the
+// zero-write guard — including one held there by its own manning floor).
+func mannedBudget(pr *fakeSizerPostRepo, post *domainScouting.ScoutPost, systemSymbol string) int {
+	if hulls, resized := pr.hullUpdates[systemSymbol]; resized {
+		return hulls
+	}
+	return post.HullBudget()
+}
+
 // HOME MANNING FLOOR (sp-2ci9y): the home post carries a permanent MinHulls floor (probe_target)
 // so the freshsizer never sizes it below the probes bootstrap bought for the home scan. Same
 // fixture (26 markets, telemetry-starved → seed 180s cycle → SLA RequiredHulls=2) both ways: an
 // UN-floored post (MinHulls 0, every non-home post) sizes to the SLA minimum 2 — byte-identical to
-// pre-sp-2ci9y — while the floored home post is pinned UP to 3. On pre-fix code BOTH size to 2, so
+// pre-sp-2ci9y — while the floored home post is manned at 3. On pre-fix code BOTH man 2, so
 // the floored case is the reproduction of the strand (the 3rd bought probe left idle).
 func TestSizer_HomePostFlooredToProbeTarget(t *testing.T) {
 	cases := []struct {
@@ -1554,7 +1564,7 @@ func TestSizer_HomePostFlooredToProbeTarget(t *testing.T) {
 
 			require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
 
-			require.Equal(t, tc.wantHulls, pr.hullUpdates["X1-JC27"],
+			require.Equal(t, tc.wantHulls, mannedBudget(pr, home, "X1-JC27"),
 				"26 markets @ seed 180s / 3600s SLA = 2; the home floor raises manning to probe_target")
 			require.Empty(t, pr.upserts, "resize goes through the narrow UpdateHulls seam, never a full Upsert")
 		})
@@ -1602,7 +1612,7 @@ func TestSizer_HomeFloorDoesNotInflateBuyDemand(t *testing.T) {
 
 	require.Equal(t, 0, pu.buyCalls,
 		"the manning floor must not inflate buy-demand: SLA demand 2 == supply 2, so no probe is bought")
-	require.Equal(t, 3, pr.hullUpdates["X1-JC27"],
+	require.Equal(t, 3, mannedBudget(pr, home, "X1-JC27"),
 		"the post is still MANNED to the floor (3) — the floor drives manning, not the buy")
 }
 

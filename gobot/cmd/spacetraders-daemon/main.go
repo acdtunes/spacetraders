@@ -1050,6 +1050,18 @@ func run(cfg *config.Config) error {
 	// Shared by the probe-sensing coordinator and the probe-buyer fleet below.
 	probeYardFinder := shipyardQuery.NewReachableYardFinder(shipyardInventoryRepo, gateGraphService)
 
+	// EXPANSION phase gate, shared by the two coordinators that only belong to the
+	// gate-built steady-state era: probe SENSING (demand-driven sizing has no trading
+	// footprint to size against during cold start) and probe BUYING (sp-f3mcc, Admiral
+	// 2026-07-24 — never during DATA/INCOME/GATE, where it drained the contract
+	// working-capital band). ONE reader so the two can never disagree about which era it
+	// is. It re-derives the phase from the live world (ships → home system → jump-gate
+	// construction site, the same signal bootstrap's derivePhase reads) because the phase
+	// is never persisted and bootstrap exits after its hand-off. Fail-closed.
+	expansionPhase := expansionAdapters.NewBootstrapExpansionPhaseReader(
+		shipRepo, waypointRepo, api.NewConstructionSiteRepository(apiClient, playerRepo),
+	)
+
 	// Probe-sensing coordinator: the fleet's ONE standing sensing engine (successor of the
 	// market-freshness sizer + frontier expansion pair). Each tick it reconciles the
 	// whitelist-scoped footprint — standing posts sized by market depth (marketRepo's
@@ -1059,9 +1071,10 @@ func run(cfg *config.Config) error {
 	// (probebuy.GuardedProbeBuyer). It declares posts through the SAME scout-post repo
 	// the reconciler mans and partitions; it moves and claims NOTHING. shipRepo is the
 	// read-only FleetReader; transactionRepo the ledger-derived, restart-safe
-	// cooldown/spend window.
+	// cooldown/spend window; expansionPhase the era gate that holds the whole tick
+	// inert until the home jump gate is built.
 	probeSensingHandler := scoutingCmd.NewRunProbeSensingCoordinatorHandler(
-		marketRepo, scoutPostRepo, shipRepo, apiClient.LimiterPressure(), transactionRepo, nil, // nil = use RealClock
+		marketRepo, scoutPostRepo, shipRepo, apiClient.LimiterPressure(), transactionRepo, expansionPhase, nil, // nil = use RealClock
 	)
 	// Live treasury for the 25% guard — nil would fail-close every buy.
 	probeSensingHandler.SetTreasuryReader(expansionAdapters.NewTreasuryReader(apiClient))
@@ -1114,14 +1127,9 @@ func run(cfg *config.Config) error {
 	// sp-f3mcc EXPANSION phase gate (Admiral 2026-07-24): the coordinator is INERT outside the
 	// bootstrap-derived EXPANSION phase — probes are bought only once the home jump gate is BUILT
 	// (sp-feiy7), never during DATA/INCOME/GATE where the sp-f082y buyer drained ~500k of the
-	// contract working-capital band on staging. The reader re-derives the phase from the live world
-	// (ships → home system → jump-gate construction site, the same signal bootstrap's derivePhase
-	// reads) because the phase is never persisted and bootstrap exits after its hand-off. Fail-closed.
-	probeBuyerPhase := expansionAdapters.NewBootstrapExpansionPhaseReader(
-		shipRepo, waypointRepo, api.NewConstructionSiteRepository(apiClient, playerRepo),
-	)
+	// contract working-capital band on staging. Shares the one expansionPhase reader wired above.
 	probeBuyerHandler := probeBuyerFleetCmd.NewRunProbeBuyerFleetCoordinatorHandler(
-		shipRepo, probeBuyerGuardedBuyer, probeBuyerPositioner, probeYardFinder, probeBuyerPhase, nil, // nil = RealClock
+		shipRepo, probeBuyerGuardedBuyer, probeBuyerPositioner, probeYardFinder, expansionPhase, nil, // nil = RealClock
 	)
 	probeBuyerHandler.SetLiveConfigReader(grpc.NewContainerConfigReader(containerRepo))
 	if err := mediator.RegisterHandler[*probeBuyerFleetCmd.RunProbeBuyerFleetCoordinatorCommand](med, probeBuyerHandler); err != nil {
