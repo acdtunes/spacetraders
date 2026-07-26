@@ -12,10 +12,39 @@ package grpc
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
+
+// launchBootStandingAfterRecovery runs the boot-standing coordinator launches and the
+// depot-registry reload on their OWN bounded context, derived from runCtx — never from
+// the recovery phase's. Recovery of a large container fleet can exhaust its entire
+// shared budget, and boot-standing is the standing coordinators' ONLY activation path
+// (at a fresh-era boot, bootstrap's too): inheriting a spent deadline leaves them
+// stopped until the next restart. The loud per-launch warnings inside stay loud.
+func (s *DaemonServer) launchBootStandingAfterRecovery() {
+	ctx, cancel := context.WithTimeout(s.runCtx, 30*time.Second)
+	defer cancel()
+
+	// Launch the boot-standing coordinators (sp-382j): unconditional, every boot, regardless
+	// of whether a bootstrapper has ever run. Unlike RecoverRunningContainers, this is
+	// safely re-runnable every boot — each launch goes through the idempotent EnsureRunning
+	// path (skips if already RUNNING/PENDING), so a container just re-adopted by recovery
+	// is left alone; only a genuinely-never-launched (or previously-stopped) standing
+	// coordinator is started here.
+	playerID := s.primaryPlayerID(ctx)
+	s.ensureBootStandingCoordinators(ctx, playerID)
+
+	// sp-u9xa: reload the contract-depot routing registry from the durable store on
+	// boot (RULINGS #2). The Store owns no in-memory authority, so this re-derives the
+	// registry entirely from persisted rows — a restart reconstructs the identical
+	// routing the contract engine consults via LoadDepotRegistry. Pure read,
+	// fail-open, safely re-runnable every boot; runs here (after recovery) so the boot
+	// log reflects the same registry a re-adopted contract coordinator will route on.
+	s.reloadDepotRegistryAtBoot(ctx, playerID)
+}
 
 // bootStandingCoordinatorTypes are the container types launched unconditionally at every daemon
 // boot (Start()), regardless of whether a bootstrapper has ever run. Each launch reuses the

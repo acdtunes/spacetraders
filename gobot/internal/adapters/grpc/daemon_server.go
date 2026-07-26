@@ -726,21 +726,7 @@ func (s *DaemonServer) Start() error {
 		// logged and skipped) — RULINGS #1/#2, read-only re-registration (#3).
 		s.recoverStorageOperations(recoveryCtx)
 
-		// Launch the boot-standing coordinators (sp-382j): unconditional, every boot, regardless
-		// of whether a bootstrapper has ever run. Unlike RecoverRunningContainers above, this is
-		// safely re-runnable every boot — each launch goes through the idempotent EnsureRunning
-		// path (skips if already RUNNING/PENDING), so a container just re-adopted by the recovery
-		// call above is left alone; only a genuinely-never-launched (or previously-stopped)
-		// standing coordinator is started here.
-		s.ensureBootStandingCoordinators(recoveryCtx, s.primaryPlayerID(recoveryCtx))
-
-		// sp-u9xa: reload the contract-depot routing registry from the durable store on
-		// boot (RULINGS #2). The Store owns no in-memory authority, so this re-derives the
-		// registry entirely from persisted rows — a restart reconstructs the identical
-		// routing the contract engine consults via LoadDepotRegistry. Pure read,
-		// fail-open, safely re-runnable every boot; runs here (after recovery) so the boot
-		// log reflects the same registry a re-adopted contract coordinator will route on.
-		s.reloadDepotRegistryAtBoot(recoveryCtx, s.primaryPlayerID(recoveryCtx))
+		s.launchBootStandingAfterRecovery()
 	})
 
 	// Start shutdown handler

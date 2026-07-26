@@ -82,10 +82,11 @@ func TestSensing_HotSetChangeWritesExactlyOneDelta(t *testing.T) {
 
 	require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
 
-	require.Len(t, pr.upserts, 1, "only the hot set changed — exactly one delta write")
-	require.Equal(t, hotWaypointsFor("X1-AA1", 3), pr.upserts[0].HotWaypoints)
-	require.Equal(t, 1, pr.upserts[0].Hulls, "the rewrite carries the unchanged hull budget")
-	require.False(t, pr.upserts[0].Dormant)
+	require.Empty(t, pr.upserts, "a hot-set delta is a narrow write, never a full-row Upsert")
+	require.Len(t, pr.stateWrites, 1, "only the hot set changed — exactly one delta write")
+	require.Equal(t, hotWaypointsFor("X1-AA1", 3), pr.stateWrites[0].hotWaypoints)
+	require.Equal(t, 1, pr.stateWrites[0].hulls, "the delta carries the unchanged hull budget")
+	require.False(t, pr.stateWrites[0].dormant)
 }
 
 // The stage-2 safety property end-to-end: a garbled observation (zero volume,
@@ -119,11 +120,12 @@ func TestSensing_FlooredOutOfScopePostHotSetRefreshed(t *testing.T) {
 		require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
 
 		require.Empty(t, pr.removed, "a floored post is never removed")
-		require.Len(t, pr.upserts, 1)
-		require.Equal(t, []string{"X1-HOME-W0"}, pr.upserts[0].HotWaypoints)
-		require.Equal(t, 2, pr.upserts[0].Hulls, "the refresh preserves manning")
-		require.Equal(t, 2, pr.upserts[0].MinHulls, "the refresh preserves the floor")
-		require.False(t, pr.upserts[0].Dormant)
+		require.Empty(t, pr.upserts, "the refresh is a narrow delta, never a full-row Upsert")
+		require.Len(t, pr.stateWrites, 1)
+		require.Equal(t, []string{"X1-HOME-W0"}, pr.stateWrites[0].hotWaypoints)
+		require.Equal(t, 2, pr.stateWrites[0].hulls, "the refresh preserves the hull budget")
+		require.False(t, pr.stateWrites[0].dormant)
+		require.Equal(t, 2, pr.find("X1-HOME").MinHulls, "the narrow delta never touches the floor column")
 	})
 
 	t.Run("census-true set writes nothing", func(t *testing.T) {
@@ -138,5 +140,6 @@ func TestSensing_FlooredOutOfScopePostHotSetRefreshed(t *testing.T) {
 
 		require.Empty(t, pr.removed)
 		require.Empty(t, pr.upserts, "converged floored post ⇒ zero writes")
+		require.Empty(t, pr.stateWrites)
 	})
 }

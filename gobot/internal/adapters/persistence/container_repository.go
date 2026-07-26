@@ -323,6 +323,49 @@ type ContainerSummary struct {
 	Status        string
 }
 
+// ScoutWorkerSummary is one RUNNING scout worker container (tour or reposition
+// relay) with the coordinator_id its persisted config carries — empty for a
+// manually-launched tour, which no reconciler may ever stop.
+type ScoutWorkerSummary struct {
+	ID            string
+	CoordinatorID string
+}
+
+// scoutWorkerCommandTypes are the two container command types the scout-post
+// coordinator spawns as managed workers. Kept in lockstep with the Add calls in
+// PersistScoutTourWorker / PersistScoutRepositionWorker.
+var scoutWorkerCommandTypes = []string{"scout_tour", "scout_reposition"}
+
+// ListRunningScoutWorkers returns every RUNNING scout_tour / scout_reposition
+// container for the player, each with the coordinator_id parsed from its
+// persisted config. It is the scout-post reconciler's container-side view: the
+// slot-driven passes can only see workers a post references, so a worker whose
+// post was removed needs this read to be found at all. An unparseable config
+// reads as "" — the conservative side, since an unidentifiable worker must
+// never be stopped.
+func (r *ContainerRepositoryGORM) ListRunningScoutWorkers(
+	ctx context.Context,
+	playerID shared.PlayerID,
+) ([]ScoutWorkerSummary, error) {
+	var models []*ContainerModel
+	err := r.db.WithContext(ctx).
+		Where("status = ? AND player_id = ? AND command_type IN ?", containerStatusRunning, playerID.Value(), scoutWorkerCommandTypes).
+		Find(&models).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to list running scout workers: %w", err)
+	}
+
+	summaries := make([]ScoutWorkerSummary, 0, len(models))
+	for _, m := range models {
+		var cfg struct {
+			CoordinatorID string `json:"coordinator_id"`
+		}
+		_ = json.Unmarshal([]byte(m.Config), &cfg)
+		summaries = append(summaries, ScoutWorkerSummary{ID: m.ID, CoordinatorID: cfg.CoordinatorID})
+	}
+	return summaries, nil
+}
+
 // ListByStatusSimple returns simplified container info (for coordinators)
 func (r *ContainerRepositoryGORM) ListByStatusSimple(
 	ctx context.Context,

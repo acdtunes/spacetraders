@@ -68,6 +68,19 @@ type MarketDepthReader interface {
 	MarketDepthRows(ctx context.Context, playerID int) ([]domainScouting.MarketDepthRow, error)
 }
 
+// SensingPostRepository is the coordinator's posts-table surface: the shared
+// desired-state port plus the narrow live-post delta seam. EVERY live-post
+// delta — resize, dormancy flip, hot-set stamp — goes through
+// UpdateSensingState, which touches only the three sensing-owned columns, so a
+// write from this tick's snapshot can never clobber the manning/partition/
+// respawn columns the scout reconciler writes concurrently, nor the min_hulls
+// floor bootstrap stamps behind a once-latch. Upsert is for CREATES only.
+// Satisfied by the GORM scout-post repository.
+type SensingPostRepository interface {
+	domainScouting.ScoutPostRepository
+	UpdateSensingState(ctx context.Context, playerID int, systemSymbol string, hulls int, dormant bool, hotWaypoints []string) error
+}
+
 // guardedBuyer is the shared fail-closed buy engine (probebuy.GuardedProbeBuyer):
 // it runs the whole money-guard stack per call, so this coordinator never
 // re-derives a spend decision of its own.
@@ -132,7 +145,7 @@ type RunProbeSensingCoordinatorResponse struct {
 // the sole in-memory state.
 type RunProbeSensingCoordinatorHandler struct {
 	depthReader MarketDepthReader
-	postRepo    domainScouting.ScoutPostRepository
+	postRepo    SensingPostRepository
 	fleetRepo   FleetReader
 	pressure    domainScouting.PressureReader
 	ledgerRepo  ledger.TransactionRepository
@@ -178,7 +191,7 @@ type RunProbeSensingCoordinatorHandler struct {
 // are optional and injected separately.
 func NewRunProbeSensingCoordinatorHandler(
 	depthReader MarketDepthReader,
-	postRepo domainScouting.ScoutPostRepository,
+	postRepo SensingPostRepository,
 	fleetRepo FleetReader,
 	pressure domainScouting.PressureReader,
 	ledgerRepo ledger.TransactionRepository,
@@ -480,11 +493,10 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 		if existing.HullBudget() == hulls && existing.Dormant == wantDormant && sameWaypointList(existing.HotWaypoints, wantHot) {
 			continue
 		}
-		updated := *existing
-		updated.Hulls = hulls
-		updated.Dormant = wantDormant
-		updated.HotWaypoints = wantHot
-		if err := h.postRepo.Upsert(ctx, &updated); err != nil {
+		// Narrow delta, never a full-row Upsert: this snapshot is a tick old, and
+		// under saturation the rotation makes a delta land EVERY tick — a whole-row
+		// write would clobber whatever the reconciler/bootstrap wrote since the read.
+		if err := h.postRepo.UpdateSensingState(ctx, cmd.PlayerID.Value(), system, hulls, wantDormant, wantHot); err != nil {
 			logger.Log("WARNING", fmt.Sprintf("Failed to update sensing post %s: %v", system, err), nil)
 			continue
 		}
@@ -511,10 +523,9 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 			if !post.Dormant && sameWaypointList(post.HotWaypoints, wantHot) {
 				continue
 			}
-			kept := *post
-			kept.Dormant = false
-			kept.HotWaypoints = wantHot
-			if err := h.postRepo.Upsert(ctx, &kept); err != nil {
+			// Same narrow seam as the in-scope delta: the wake write may only touch
+			// the sensing-owned columns, and it never shrinks the post.
+			if err := h.postRepo.UpdateSensingState(ctx, cmd.PlayerID.Value(), post.SystemSymbol, post.HullBudget(), false, wantHot); err != nil {
 				logger.Log("WARNING", fmt.Sprintf("Failed to refresh floored sensing post %s: %v", post.SystemSymbol, err), nil)
 				continue
 			}

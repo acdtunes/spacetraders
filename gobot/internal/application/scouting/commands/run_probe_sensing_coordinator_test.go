@@ -35,14 +35,33 @@ func (f *fakeDepthReader) MarketDepthRows(_ context.Context, _ int) ([]domainSco
 	return f.rows, f.err
 }
 
-// fakeSensingPostRepo records every write AND applies Upserts/Removes to its
-// posts list (replace-by-system — the Upsert-never-merges contract), so a
+// sensingStateWrite is one recorded UpdateSensingState call — the narrow
+// live-post delta the coordinator writes for resizes, dormancy flips, and
+// hot-set stamps.
+type sensingStateWrite struct {
+	system       string
+	hulls        int
+	dormant      bool
+	hotWaypoints []string
+}
+
+// fakeSensingPostRepo records every write AND applies Upserts/Removes/state
+// updates to its posts list (replace-by-system — the Upsert-never-merges
+// contract; field-merge for UpdateSensingState, the narrow-seam contract), so a
 // multi-tick test observes the same state a real repository would serve.
 type fakeSensingPostRepo struct {
-	posts   []*domainScouting.ScoutPost
-	listErr error
-	upserts []*domainScouting.ScoutPost
-	removed []string
+	posts       []*domainScouting.ScoutPost
+	listErr     error
+	upserts     []*domainScouting.ScoutPost
+	removed     []string
+	stateWrites []sensingStateWrite
+
+	// afterList emulates the concurrent writer: it runs inside ListActive AFTER
+	// the returned view is snapshotted (copies), so a manning/floor write it
+	// applies to the STORE lands between the coordinator's read and its write —
+	// the exact race the narrow seam exists for. nil keeps the pre-seam
+	// live-pointer behavior for every other test.
+	afterList func()
 }
 
 func newSensingPostRepo(posts ...*domainScouting.ScoutPost) *fakeSensingPostRepo {
@@ -50,7 +69,57 @@ func newSensingPostRepo(posts ...*domainScouting.ScoutPost) *fakeSensingPostRepo
 }
 
 func (f *fakeSensingPostRepo) ListActive(_ context.Context, _ int) ([]*domainScouting.ScoutPost, error) {
-	return f.posts, f.listErr
+	if f.afterList == nil {
+		return f.posts, f.listErr
+	}
+	snapshot := make([]*domainScouting.ScoutPost, len(f.posts))
+	for i, post := range f.posts {
+		copied := *post
+		snapshot[i] = &copied
+	}
+	f.afterList()
+	return snapshot, f.listErr
+}
+
+func (f *fakeSensingPostRepo) find(system string) *domainScouting.ScoutPost {
+	for _, post := range f.posts {
+		if post.SystemSymbol == system {
+			return post
+		}
+	}
+	return nil
+}
+
+// UpdateSensingState mirrors the real repository's narrow-column contract: it
+// merges ONLY hulls/dormant/hot onto the stored ROW, preserving every other
+// field, and a missing post is a no-op. The store slot is replaced with a
+// merged COPY — never mutated in place — because a DB write does not reach the
+// post objects a caller already holds from an earlier read.
+func (f *fakeSensingPostRepo) UpdateSensingState(_ context.Context, _ int, systemSymbol string, hulls int, dormant bool, hotWaypoints []string) error {
+	f.stateWrites = append(f.stateWrites, sensingStateWrite{system: systemSymbol, hulls: hulls, dormant: dormant, hotWaypoints: hotWaypoints})
+	for i, post := range f.posts {
+		if post.SystemSymbol != systemSymbol {
+			continue
+		}
+		merged := *post
+		merged.Hulls = hulls
+		merged.Dormant = dormant
+		merged.HotWaypoints = hotWaypoints
+		f.posts[i] = &merged
+		break
+	}
+	return nil
+}
+
+// stateWritesFor filters the recorded narrow writes to one system, in order.
+func (f *fakeSensingPostRepo) stateWritesFor(system string) []sensingStateWrite {
+	var out []sensingStateWrite
+	for _, w := range f.stateWrites {
+		if w.system == system {
+			out = append(out, w)
+		}
+	}
+	return out
 }
 
 func (f *fakeSensingPostRepo) Upsert(_ context.Context, post *domainScouting.ScoutPost) error {
@@ -337,9 +406,10 @@ func TestSensing_SecondProbeAboveThreshold(t *testing.T) {
 
 		require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
 
-		require.Len(t, pr.upserts, 1)
-		require.Equal(t, "X1-AA1", pr.upserts[0].SystemSymbol)
-		require.Equal(t, 2, pr.upserts[0].Hulls)
+		require.Empty(t, pr.upserts, "a live-post resize is a narrow delta, never a full-row Upsert")
+		require.Len(t, pr.stateWrites, 1)
+		require.Equal(t, "X1-AA1", pr.stateWrites[0].system)
+		require.Equal(t, 2, pr.stateWrites[0].hulls)
 	})
 }
 
@@ -395,9 +465,10 @@ func TestSensing_MinHullsPostNeverShrunkOrRemoved(t *testing.T) {
 
 		require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
 
-		require.Len(t, pr.upserts, 1)
-		require.Equal(t, 3, pr.upserts[0].Hulls, "5 → floor 3, never below")
-		require.Equal(t, 3, pr.upserts[0].MinHulls, "Upsert never merges — the floor must survive the rewrite")
+		require.Empty(t, pr.upserts)
+		require.Len(t, pr.stateWrites, 1)
+		require.Equal(t, 3, pr.stateWrites[0].hulls, "5 → floor 3, never below")
+		require.Equal(t, 3, pr.find("X1-HOME").MinHulls, "the narrow delta never touches the floor column")
 	})
 
 	t.Run("out of scope while dormant: woken, still kept", func(t *testing.T) {
@@ -410,10 +481,11 @@ func TestSensing_MinHullsPostNeverShrunkOrRemoved(t *testing.T) {
 		require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
 
 		require.Empty(t, pr.removed)
-		homeWrites := pr.upsertsFor("X1-HOME")
+		require.Empty(t, pr.upsertsFor("X1-HOME"), "the wake write is a narrow delta, never a full-row Upsert")
+		homeWrites := pr.stateWritesFor("X1-HOME")
 		require.Len(t, homeWrites, 1, "a kept post outside the rotation must not stay parked forever")
-		require.False(t, homeWrites[0].Dormant)
-		require.Equal(t, 3, homeWrites[0].Hulls, "the wake write never shrinks the post")
+		require.False(t, homeWrites[0].dormant)
+		require.Equal(t, 3, homeWrites[0].hulls, "the wake write never shrinks the post")
 	})
 }
 
@@ -461,12 +533,13 @@ func TestSensing_DormancyWritesOnlyDeltas(t *testing.T) {
 		require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
 
 		require.Empty(t, pr.removed)
-		require.Len(t, pr.upserts, 2, "only the two posts whose Dormant bit changed are written")
+		require.Empty(t, pr.upserts, "a dormancy flip is a narrow delta, never a full-row Upsert")
+		require.Len(t, pr.stateWrites, 2, "only the two posts whose Dormant bit changed are written")
 		var flipped []string
-		for _, post := range pr.upserts {
-			require.True(t, post.Dormant)
-			require.Equal(t, 1, post.Hulls, "a dormancy flip never perturbs the hull budget")
-			flipped = append(flipped, post.SystemSymbol)
+		for _, w := range pr.stateWrites {
+			require.True(t, w.dormant)
+			require.Equal(t, 1, w.hulls, "a dormancy flip never perturbs the hull budget")
+			flipped = append(flipped, w.system)
 		}
 		sort.Strings(flipped)
 		require.Equal(t, []string{"X1-CC3", "X1-DD4"}, flipped)
@@ -482,6 +555,7 @@ func TestSensing_DormancyWritesOnlyDeltas(t *testing.T) {
 		require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
 
 		require.Empty(t, pr.upserts, "steady state under constant pressure ⇒ zero writes (write-amplification guard)")
+		require.Empty(t, pr.stateWrites)
 		require.Empty(t, pr.removed)
 	})
 
@@ -520,16 +594,17 @@ func TestSensing_RotationAdvancesAcrossTicks(t *testing.T) {
 	h, _ := newSensingHandler(&fakeDepthReader{rows: rows}, pr, calmFleet(t), &fakePressure{wait: 4 * time.Second})
 
 	require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
-	require.Len(t, pr.upserts, 1, "tick 1: cursor 0 keeps AA1 active, BB2 goes dormant")
-	require.Equal(t, "X1-BB2", pr.upserts[0].SystemSymbol)
-	require.True(t, pr.upserts[0].Dormant)
+	require.Empty(t, pr.upserts, "rotation flips are narrow deltas, never full-row Upserts")
+	require.Len(t, pr.stateWrites, 1, "tick 1: cursor 0 keeps AA1 active, BB2 goes dormant")
+	require.Equal(t, "X1-BB2", pr.stateWrites[0].system)
+	require.True(t, pr.stateWrites[0].dormant)
 
-	pr.upserts = nil
+	pr.stateWrites = nil
 	require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
-	require.Len(t, pr.upserts, 2, "tick 2: the cursor advanced, so BOTH bits flip (AA1 sheds, BB2 wakes)")
+	require.Len(t, pr.stateWrites, 2, "tick 2: the cursor advanced, so BOTH bits flip (AA1 sheds, BB2 wakes)")
 	bits := map[string]bool{}
-	for _, post := range pr.upserts {
-		bits[post.SystemSymbol] = post.Dormant
+	for _, w := range pr.stateWrites {
+		bits[w.system] = w.dormant
 	}
 	require.Equal(t, map[string]bool{"X1-AA1": true, "X1-BB2": false}, bits,
 		"round-robin: every system scans within ceil(1/share) cycles, none is starved")
@@ -544,9 +619,9 @@ func TestSensing_ExtremePressureNeverFullyDormant(t *testing.T) {
 
 	require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
 
-	require.Len(t, pr.upserts, 2, "share floor 0.5 keeps half the ring scanning at ANY wait")
-	for _, post := range pr.upserts {
-		require.True(t, post.Dormant)
+	require.Len(t, pr.stateWrites, 2, "share floor 0.5 keeps half the ring scanning at ANY wait")
+	for _, w := range pr.stateWrites {
+		require.True(t, w.dormant)
 	}
 }
 
@@ -644,8 +719,8 @@ func TestSensing_DemandStaysPlanOnlyWithoutGateGraph(t *testing.T) {
 				"no gate-adjacency reader ⇒ no discovery pass ⇒ buy demand is exactly the plan total")
 			require.Empty(t, sweepUpserts(pr))
 			dormantWrites := 0
-			for _, post := range pr.upserts {
-				if post.Dormant {
+			for _, w := range pr.stateWrites {
+				if w.dormant {
 					dormantWrites++
 				}
 			}

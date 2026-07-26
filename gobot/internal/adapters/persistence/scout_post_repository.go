@@ -123,6 +123,32 @@ func (r *GormScoutPostRepository) UpdateHulls(ctx context.Context, playerID int,
 	return nil
 }
 
+// UpdateSensingState updates ONLY the sensing-owned columns — hulls, dormant, and
+// hot_waypoints — of the (playerID, systemSymbol) post in the open era: the probe-sensing
+// coordinator's narrow live-post delta seam, mirroring UpdateHulls. A full-row Upsert here
+// would clobber the manning/partition/respawn columns the scout reconciler concurrently
+// writes and the min_hulls floor bootstrap stamps behind a once-latch (a revert it would
+// never repair). Updating a post that does not exist is a no-op, not an error — the caller
+// declares a missing post through Upsert instead.
+func (r *GormScoutPostRepository) UpdateSensingState(ctx context.Context, playerID int, systemSymbol string, hulls int, dormant bool, hotWaypoints []string) error {
+	openEra := r.openEraID(ctx)
+	if openEra == nil {
+		return fmt.Errorf("cannot update scout post sensing state: no open era")
+	}
+	result := r.db.WithContext(ctx).
+		Model(&ScoutPostModel{}).
+		Where("player_id = ? AND system_symbol = ? AND era_id = ?", playerID, systemSymbol, *openEra).
+		Updates(map[string]interface{}{
+			"hulls":         hulls,
+			"dormant":       dormant,
+			"hot_waypoints": marshalPartition(hotWaypoints),
+		})
+	if result.Error != nil {
+		return fmt.Errorf("failed to update scout post sensing state: %w", result.Error)
+	}
+	return nil
+}
+
 // UpdateMinHulls updates ONLY the manning-floor column of the (playerID, systemSymbol)
 // post in the open era: the narrow seam bootstrap uses to stamp the home post's permanent
 // probe_target floor (sp-2ci9y) without disturbing the freshsizer's Hulls resize or the

@@ -444,9 +444,11 @@ scouting:
 sensing:
   # goods_whitelist is the comma-separated set of goods whose market depth defines the
   # sensing footprint — a system earns standing probes only for depth in these goods.
-  # Empty/absent => the coordinator's era-goods default (medicine/equipment/uranite/
-  # microprocessors/ship-plating/machinery/electronics class goods).
-  # goods_whitelist: "MEDICINE,EQUIPMENT,URANITE,MICROPROCESSORS,SHIP_PLATING,MACHINERY,ELECTRONICS"
+  # Empty/absent => the coordinator's full 12-good era default (clothing/lab-instruments/
+  # fabrics/food/advanced-circuitry/medicine/equipment/uranite/microprocessors/
+  # ship-plating/machinery/electronics). Uncomment ONLY with the complete list — a
+  # partial copy silently drops the missing goods from the footprint.
+  # goods_whitelist: "CLOTHING,LAB_INSTRUMENTS,FABRICS,FOOD,ADVANCED_CIRCUITRY,MEDICINE,EQUIPMENT,URANITE,MICROPROCESSORS,SHIP_PLATING,MACHINERY,ELECTRONICS"
 
 # fleet_autosizer (sp-1txd): the standing fleet capacity autosizer — the buy-side twin of the
 # siting coordinator. It sizes the hull pool to demand each slow tick and AUTO-BUYS hulls when

@@ -253,10 +253,21 @@ func (c *fakeScoutDaemonClient) StopContainer(_ context.Context, containerID str
 // fakeContainerStatusQuery returns configured containers per status.
 type fakeContainerStatusQuery struct {
 	byStatus map[string][]persistence.ContainerSummary
+
+	// runningScoutWorkers backs ListRunningScoutWorkers — the zombie sweep's
+	// container-side view. Adversarial: listWorkersErr is returned ALONGSIDE the
+	// workers, so a sweep that consumes the list while ignoring the error stops
+	// hulls on unverified evidence and the no-stop assertions catch it.
+	runningScoutWorkers []persistence.ScoutWorkerSummary
+	listWorkersErr      error
 }
 
 func (q *fakeContainerStatusQuery) ListByStatusSimple(_ context.Context, status string, _ *int) ([]persistence.ContainerSummary, error) {
 	return q.byStatus[status], nil
+}
+
+func (q *fakeContainerStatusQuery) ListRunningScoutWorkers(_ context.Context, _ shared.PlayerID) ([]persistence.ScoutWorkerSummary, error) {
+	return q.runningScoutWorkers, q.listWorkersErr
 }
 
 // ContainerStatus resolves a single container's status from the SAME byStatus

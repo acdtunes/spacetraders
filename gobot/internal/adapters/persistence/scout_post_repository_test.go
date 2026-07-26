@@ -111,6 +111,61 @@ func TestScoutPostRepo_UpsertUpdatesInPlace(t *testing.T) {
 	require.Equal(t, "SAT-9", posts[0].AssignedHull)
 }
 
+// UpdateSensingState is the sensing coordinator's narrow live-post delta seam:
+// it may touch ONLY hulls, dormant, and hot_waypoints. Everything the scout
+// reconciler writes (assignment/relay/partitions/respawn state) and the
+// min_hulls floor bootstrap stamps must survive it — a full-row write here is
+// the per-tick clobber the seam exists to close.
+func TestScoutPostRepo_UpdateSensingStateTouchesOnlySensingColumns(t *testing.T) {
+	repo, _, playerID := newScoutPostTestRepo(t)
+	ctx := context.Background()
+
+	parked := time.Now().Add(20 * time.Minute).UTC()
+	post := &domainScouting.ScoutPost{
+		PlayerID:              playerID,
+		SystemSymbol:          "X1-GZ7",
+		FreshnessTarget:       time.Hour,
+		Kind:                  domainScouting.PostKindStanding,
+		AssignedHull:          "SAT-1",
+		TourContainerID:       "tour-1",
+		RepositionContainerID: "relay-1",
+		Hulls:                 2,
+		MinHulls:              1, // T9 post-hand-off state: the once-latched flip must survive
+		Dormant:               false,
+		HotWaypoints:          []string{"X1-GZ7-A1"},
+		PrimaryPartition:      []string{"X1-GZ7-A1", "X1-GZ7-B2"},
+		RespawnAttempts:       4,
+		RespawnParkedUntil:    parked,
+		CreatedAt:             time.Now(),
+	}
+	require.NoError(t, repo.Upsert(ctx, post))
+
+	require.NoError(t, repo.UpdateSensingState(ctx, playerID, "X1-GZ7", 3, true, []string{"X1-GZ7-A1", "X1-GZ7-C3"}))
+
+	posts, err := repo.ListActive(ctx, playerID)
+	require.NoError(t, err)
+	require.Len(t, posts, 1)
+	got := posts[0]
+	require.Equal(t, 3, got.Hulls, "the sensing-owned resize lands")
+	require.True(t, got.Dormant, "the sensing-owned dormancy bit lands")
+	require.Equal(t, []string{"X1-GZ7-A1", "X1-GZ7-C3"}, got.HotWaypoints, "the sensing-owned hot set lands")
+	require.Equal(t, "SAT-1", got.AssignedHull, "the reconciler's manning must survive a sensing delta")
+	require.Equal(t, "tour-1", got.TourContainerID)
+	require.Equal(t, "relay-1", got.RepositionContainerID)
+	require.Equal(t, []string{"X1-GZ7-A1", "X1-GZ7-B2"}, got.PrimaryPartition)
+	require.Equal(t, 1, got.MinHulls, "bootstrap's once-latched floor flip must survive — a revert is never re-stamped")
+	require.Equal(t, 4, got.RespawnAttempts)
+	require.WithinDuration(t, parked, got.RespawnParkedUntil, time.Second)
+
+	require.NoError(t, repo.UpdateSensingState(ctx, playerID, "X1-GZ7", 3, false, nil))
+	posts, err = repo.ListActive(ctx, playerID)
+	require.NoError(t, err)
+	require.Empty(t, posts[0].HotWaypoints, "an empty hot set clears the restriction (full circuit)")
+
+	require.NoError(t, repo.UpdateSensingState(ctx, playerID, "X1-NOPE", 1, false, nil),
+		"updating a missing post is a no-op, not an error")
+}
+
 func TestScoutPostRepo_Remove(t *testing.T) {
 	repo, _, playerID := newScoutPostTestRepo(t)
 	ctx := context.Background()

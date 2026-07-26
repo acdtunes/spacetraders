@@ -269,6 +269,13 @@ type ContainerStatusQuery interface {
 	// found=false means the row is gone. Satisfied by the GORM container repository's
 	// ContainerStatus (the same per-ID read refresh_ship's stale-claim reconciler uses).
 	ContainerStatus(ctx context.Context, containerID string, playerID shared.PlayerID) (string, bool, error)
+
+	// ListRunningScoutWorkers returns the player's RUNNING scout_tour /
+	// scout_reposition containers with each one's persisted coordinator_id ("" for
+	// a manual tour) — the zombie sweep's container-side view, since a worker whose
+	// post was removed is referenced by no slot and invisible to every post-driven
+	// pass. Satisfied by the GORM container repository.
+	ListRunningScoutWorkers(ctx context.Context, playerID shared.PlayerID) ([]persistence.ScoutWorkerSummary, error)
 }
 
 // MarketWaypointProvider lists the marketplace waypoints in a system — the tour a
@@ -750,6 +757,15 @@ func (h *RunScoutPostCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 	if err != nil {
 		return fmt.Errorf("failed to list scout posts: %w", err)
 	}
+
+	// Pass 0.5 (zombie-worker sweep): stop any RUNNING coordinator-spawned tour or
+	// relay that NO post slot references and reclaim its hull. Every other pass is
+	// post-driven and Pass 0 frees hulls only under a DEAD container, so a removed
+	// post's still-running tour (iterations=-1) would otherwise scan forever. Runs
+	// BEFORE the empty-table fast exit: removing the LAST post is exactly when its
+	// tour needs sweeping.
+	h.sweepZombieScoutWorkers(ctx, cmd, posts)
+
 	if len(posts) == 0 {
 		return nil
 	}
@@ -919,6 +935,67 @@ func (h *RunScoutPostCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 // freed the hull.
 const releaseReasonScoutOrphanSwept = "scout_orphan_swept"
 
+// releaseReasonScoutZombieSwept marks a hull reclaimed from a RUNNING
+// coordinator-spawned worker no post slot references — a removed post's tour or
+// relay, stopped by the zombie sweep.
+const releaseReasonScoutZombieSwept = "scout_zombie_swept"
+
+// postReferencedContainers collects every container ID some post slot owns — its
+// tour or its in-flight reposition relay. Both Pass 0 sweeps treat these as slot
+// territory: Pass 1 / Pass 1.5 reclaim them against their post, so a sweep must
+// never touch them.
+func postReferencedContainers(posts []*domainScouting.ScoutPost) map[string]bool {
+	referenced := make(map[string]bool)
+	for _, post := range posts {
+		for _, slot := range post.Slots() {
+			if t := slot.TourContainerID(); t != "" {
+				referenced[t] = true
+			}
+			if r := slot.RepositionContainerID(); r != "" {
+				referenced[r] = true
+			}
+		}
+	}
+	return referenced
+}
+
+// sweepZombieScoutWorkers stops every RUNNING coordinator-spawned scout worker —
+// tour or reposition relay, discriminated by a NON-EMPTY coordinator_id in its
+// persisted config — that no post slot references, and reclaims its hull. ANY
+// non-empty id qualifies (a prior coordinator instance's tours count); an empty
+// id is a manually-launched tour and is never the reconciler's to stop. Pure
+// best-effort: a list error skips the sweep this tick, never aborting the pass —
+// and never consuming a worker list returned alongside an error.
+func (h *RunScoutPostCoordinatorHandler) sweepZombieScoutWorkers(ctx context.Context, cmd *RunScoutPostCoordinatorCommand, posts []*domainScouting.ScoutPost) {
+	logger := common.LoggerFromContext(ctx)
+
+	workers, err := h.containerQuery.ListRunningScoutWorkers(ctx, cmd.PlayerID)
+	if err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Scout zombie sweep skipped: failed to list running scout workers: %v", err), nil)
+		return
+	}
+	if len(workers) == 0 {
+		return
+	}
+
+	referenced := postReferencedContainers(posts)
+	for _, worker := range workers {
+		if worker.CoordinatorID == "" {
+			continue // manual tour — an operator's hull, never swept
+		}
+		if referenced[worker.ID] {
+			continue // a post slot manages this worker — Pass 1 / Pass 1.5 territory
+		}
+		_ = h.daemonClient.StopContainer(ctx, worker.ID)
+		h.reclaimHullFromContainer(ctx, cmd, worker.ID, releaseReasonScoutZombieSwept)
+		logger.Log("INFO", fmt.Sprintf("Scout zombie swept: stopped running worker %s (no post references it) — hull reclaimed to the idle pool", worker.ID), map[string]interface{}{
+			"action":       "scout_zombie_swept",
+			"container_id": worker.ID,
+			"coordinator":  worker.CoordinatorID,
+		})
+	}
+}
+
 // sweepOrphanedScoutHulls frees scout hulls stranded active on an orphaned container
 // that NO post slot references — see the Pass 0 comment in reconcileOnce. It reuses
 // refresh_ship's IsClaimOrphaned verdict so the sweep and refresh-time reconciliation
@@ -927,22 +1004,11 @@ const releaseReasonScoutOrphanSwept = "scout_orphan_swept"
 func (h *RunScoutPostCoordinatorHandler) sweepOrphanedScoutHulls(ctx context.Context, cmd *RunScoutPostCoordinatorCommand, posts []*domainScouting.ScoutPost) {
 	logger := common.LoggerFromContext(ctx)
 
-	// Container IDs a post slot already owns — its tour OR its in-flight reposition relay.
-	// A hull claimed through one of these is Pass 1 / Pass 1.5 territory (they reclaim it
-	// against the post), so the sweep skips it regardless of that container's state: the
-	// sweep touches ONLY fleet orphans whose post is gone, and is a strict no-op for every
-	// post-referenced hull.
-	postContainers := make(map[string]bool)
-	for _, post := range posts {
-		for _, slot := range post.Slots() {
-			if t := slot.TourContainerID(); t != "" {
-				postContainers[t] = true
-			}
-			if r := slot.RepositionContainerID(); r != "" {
-				postContainers[r] = true
-			}
-		}
-	}
+	// A hull claimed through a slot-owned container is Pass 1 / Pass 1.5 territory
+	// (they reclaim it against the post), so the sweep skips it regardless of that
+	// container's state: the sweep touches ONLY fleet orphans whose post is gone,
+	// and is a strict no-op for every post-referenced hull.
+	postContainers := postReferencedContainers(posts)
 
 	actives, err := h.shipRepo.FindActiveByPlayer(ctx, cmd.PlayerID)
 	if err != nil {

@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -237,6 +238,36 @@ func TestEnsureBootStandingCoordinators_IdempotentForProbeSensing(t *testing.T) 
 
 	require.Equal(t, int64(1), countContainersOfType(t, db, playerID, container.ContainerTypeProbeSensingCoordinator),
 		"a warm restart must not launch a duplicate probe-sensing coordinator when one is already RUNNING")
+}
+
+// Boot-standing is the standing coordinators' ONLY activation path (at a fresh-era
+// boot, bootstrap's too), so it must run on its OWN budget: a recovery pass that
+// exhausts its shared 30s context (a ~200-container fleet re-adoption has done exactly
+// that) must not starve the launches. The launch context derives fresh from runCtx —
+// the recovery context's expiry, faked here as a fully spent deadline, is irrelevant
+// to it.
+func TestLaunchBootStandingAfterRecovery_SurvivesExhaustedRecoveryContext(t *testing.T) {
+	s, db, playerID := newRecoveryTestServer(t)
+	s.playerRepo = persistence.NewGormPlayerRepository(db)
+
+	// The launched standing coordinators spawn background runners that block on the
+	// (blocking) test mediator; a cancelable runCtx lets them exit when the test ends.
+	runCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.runCtx = runCtx
+
+	// Fake the exhausted recovery phase: its whole budget is spent before the
+	// launches run. The fix means this context reaches nothing below.
+	recoveryCtx, recoveryCancel := context.WithTimeout(runCtx, time.Nanosecond)
+	defer recoveryCancel()
+	<-recoveryCtx.Done()
+
+	s.launchBootStandingAfterRecovery()
+
+	require.Equal(t, int64(1), countContainersOfType(t, db, playerID, container.ContainerTypeBootstrapCoordinator),
+		"an exhausted recovery budget must not prevent the bootstrap launch — boot-standing is its only activation path")
+	require.Equal(t, int64(1), countContainersOfType(t, db, playerID, container.ContainerTypeProbeSensingCoordinator),
+		"an exhausted recovery budget must not prevent the sensing launch")
 }
 
 // sp-9ujl: idempotence — a warm restart must never double-launch. With a scout-post coordinator already
