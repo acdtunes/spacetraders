@@ -70,29 +70,6 @@ func (s *CruiseModeStrategy) Mode() FlightMode {
 	return FlightModeCruise
 }
 
-// DriftModeStrategy implements the strategy for DRIFT flight mode.
-//
-// DRIFT mode is the slowest but most fuel efficient and is the fallback when
-// fuel is too low for other modes.
-type DriftModeStrategy struct{}
-
-func NewDriftModeStrategy() *DriftModeStrategy {
-	return &DriftModeStrategy{}
-}
-
-func (s *DriftModeStrategy) CanUse(currentFuel, fuelCost, safetyMargin int) bool {
-	// DRIFT is always available as the most fuel-efficient fallback
-	return true
-}
-
-func (s *DriftModeStrategy) Priority() int {
-	return 1 // Lowest priority (slowest but most efficient)
-}
-
-func (s *DriftModeStrategy) Mode() FlightMode {
-	return FlightModeDrift
-}
-
 // FlightModeSelector selects the optimal flight mode based on available strategies.
 //
 // This implements the Strategy pattern with priority-based selection. Strategies
@@ -104,13 +81,14 @@ type FlightModeSelector struct {
 
 // NewFlightModeSelector creates a new flight mode selector with the given strategies.
 //
-// If no strategies are provided, it uses the default strategies (BURN, CRUISE, DRIFT).
+// If no strategies are provided, it uses the default strategies (BURN, CRUISE).
+// DRIFT is deliberately absent: a leg the tank cannot pay for is refuelled, never
+// degraded to a mode that takes ~7x as long.
 func NewFlightModeSelector(strategies ...FlightModeStrategy) *FlightModeSelector {
 	if len(strategies) == 0 {
 		strategies = []FlightModeStrategy{
 			NewBurnModeStrategy(),
 			NewCruiseModeStrategy(),
-			NewDriftModeStrategy(),
 		}
 	}
 
@@ -128,7 +106,7 @@ func NewFlightModeSelector(strategies ...FlightModeStrategy) *FlightModeSelector
 // Strategy: ALWAYS minimize travel time. Use fastest mode that leaves
 // at least safetyMargin fuel remaining.
 //
-// Priority order: BURN > CRUISE > DRIFT
+// Priority order: BURN > CRUISE.
 //
 // Parameters:
 //   - currentFuel: Ship's current fuel level
@@ -136,15 +114,15 @@ func NewFlightModeSelector(strategies ...FlightModeStrategy) *FlightModeSelector
 //   - safetyMargin: Minimum fuel to keep as reserve
 //
 // Returns:
-//   - Optimal flight mode (BURN, CRUISE, or DRIFT)
-func (s *FlightModeSelector) SelectOptimalMode(currentFuel, fuelCost, safetyMargin int) FlightMode {
+//   - Optimal flight mode (BURN or CRUISE)
+//   - Whether the tank can pay for it. When false the tank affords no mode at all,
+//     and the returned CRUISE is the floor the caller must refuel up to.
+func (s *FlightModeSelector) SelectOptimalMode(currentFuel, fuelCost, safetyMargin int) (FlightMode, bool) {
 	for _, strategy := range s.strategies {
 		if strategy.CanUse(currentFuel, fuelCost, safetyMargin) {
-			return strategy.Mode()
+			return strategy.Mode(), true
 		}
 	}
 
-	// Should never reach here if DRIFT strategy is included (it always returns true)
-	// But return DRIFT as safe default
-	return FlightModeDrift
+	return FlightModeCruise, false
 }

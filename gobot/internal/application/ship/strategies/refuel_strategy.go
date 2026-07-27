@@ -22,7 +22,8 @@ type RefuelStrategy interface {
 	// ShouldRefuelBeforeDeparture determines if the ship should refuel before
 	// departing from the current waypoint.
 	//
-	// This is typically used to prevent running out of fuel mid-flight (DRIFT mode).
+	// This is what keeps a leg flyable at the mode it was planned at, since a leg
+	// is never degraded to a slower mode to fit the tank.
 	ShouldRefuelBeforeDeparture(ship *navigation.Ship, segment *navigation.RouteSegment) bool
 
 	// ShouldRefuelAfterArrival determines if the ship should refuel after
@@ -72,12 +73,14 @@ func NewDefaultRefuelStrategy() *ConservativeRefuelStrategy {
 	return NewConservativeRefuelStrategy(0.9)
 }
 
-// ShouldRefuelBeforeDeparture checks if fuel would drop below threshold during flight.
+// ShouldRefuelBeforeDeparture checks if the leg ahead is unaffordable or fuel
+// would drop below threshold during flight.
 func (s *ConservativeRefuelStrategy) ShouldRefuelBeforeDeparture(ship *navigation.Ship, segment *navigation.RouteSegment) bool {
-	return s.fuelService.ShouldPreventDriftMode(
+	return s.fuelService.ShouldTopOffBeforeDeparture(
 		ship.Fuel(),
 		ship.FuelCapacity(),
 		segment.FlightMode,
+		segment.FromWaypoint.DistanceTo(segment.ToWaypoint),
 		segment.FromWaypoint.HasFuel,
 		s.threshold,
 	)
@@ -131,10 +134,11 @@ func NewMinimalRefuelStrategy() *MinimalRefuelStrategy {
 // ShouldRefuelBeforeDeparture only refuels if insufficient fuel to reach destination.
 func (s *MinimalRefuelStrategy) ShouldRefuelBeforeDeparture(ship *navigation.Ship, segment *navigation.RouteSegment) bool {
 	// Use a very low threshold (10% buffer only)
-	return s.fuelService.ShouldPreventDriftMode(
+	return s.fuelService.ShouldTopOffBeforeDeparture(
 		ship.Fuel(),
 		ship.FuelCapacity(),
 		segment.FlightMode,
+		segment.FromWaypoint.DistanceTo(segment.ToWaypoint),
 		segment.FromWaypoint.HasFuel,
 		0.1,
 	)

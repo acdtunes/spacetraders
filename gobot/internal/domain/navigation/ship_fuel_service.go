@@ -22,13 +22,13 @@ import (
 //
 // 2. Refueling Strategies:
 //   - Opportunistic: Refuel at fuel stations when below threshold
-//   - Preventive: Refuel before DRIFT mode to avoid emergencies
+//   - Preventive: Top off before a leg the tank cannot cover
 //   - Journey-based: Ensure sufficient fuel for planned routes
 //
 // 3. Flight Mode Selection:
 //   - Prioritizes BURN mode when fuel permits (fastest)
 //   - Falls back to CRUISE when fuel is moderate
-//   - Uses DRIFT only when fuel is critically low
+//   - Never degrades below CRUISE: a leg the tank cannot cover is refuelled
 //   - Maintains safety margin to prevent running out mid-flight
 //
 // 4. Fuel Percentage Calculations:
@@ -66,15 +66,16 @@ func (s *ShipFuelService) CalculateFuelRequired(
 	return mode.FuelCost(distance)
 }
 
-// CanShipNavigateTo checks if a ship has enough fuel to navigate to destination
-// using the most fuel-efficient mode (DRIFT).
+// CanShipNavigateTo checks if a ship has enough fuel to navigate to destination.
+// CRUISE is the slowest mode a leg is ever flown at, so its cost is the bar: a
+// tank that cannot clear it does not make the trip, it makes a refuel stop.
 func (s *ShipFuelService) CanShipNavigateTo(
 	currentFuel int,
 	from *shared.Waypoint,
 	to *shared.Waypoint,
 ) bool {
 	distance := from.DistanceTo(to)
-	minFuelRequired := shared.FlightModeDrift.FuelCost(distance)
+	minFuelRequired := shared.FlightModeCruise.FuelCost(distance)
 	return currentFuel >= minFuelRequired
 }
 
@@ -94,11 +95,12 @@ func (s *ShipFuelService) ShouldRefuelForJourney(
 
 // SelectOptimalFlightMode selects the best flight mode for a journey based on
 // available fuel. Prioritizes faster modes when fuel permits, with a safety margin.
+// The second return is false when the tank affords no mode at all.
 func (s *ShipFuelService) SelectOptimalFlightMode(
 	currentFuel int,
 	distance float64,
 	safetyMargin int,
-) shared.FlightMode {
+) (shared.FlightMode, bool) {
 	cruiseCost := shared.FlightModeCruise.FuelCost(distance)
 	return shared.SelectOptimalFlightMode(currentFuel, cruiseCost, safetyMargin)
 }
@@ -137,17 +139,18 @@ func (s *ShipFuelService) CalculateFuelNeededToFull(currentFuel int, fuelCapacit
 	return fuelNeeded
 }
 
-// ShouldPreventDriftMode determines if a ship should refuel before using DRIFT mode
-// to prevent unnecessary fuel emergencies at fuel stations.
+// ShouldTopOffBeforeDeparture determines if a ship must refuel at the waypoint it
+// is leaving. A leg is never degraded to a slower mode to fit the tank, so fuel the
+// leg ahead needs has to be bought where fuel is actually sold.
 //
-// Returns true if:
-//   - Segment uses DRIFT mode
-//   - Starting waypoint has fuel
-//   - Fuel is below safety threshold
-func (s *ShipFuelService) ShouldPreventDriftMode(
+// Returns true if the departure waypoint has fuel and either:
+//   - The tank cannot cover the leg ahead at its mode, plus the safety margin
+//   - Fuel is below the strategy's safety threshold
+func (s *ShipFuelService) ShouldTopOffBeforeDeparture(
 	fuel *shared.Fuel,
 	fuelCapacity int,
 	segmentFlightMode shared.FlightMode,
+	segmentDistance float64,
 	fromWaypointHasFuel bool,
 	safetyThreshold float64,
 ) bool {
@@ -155,14 +158,14 @@ func (s *ShipFuelService) ShouldPreventDriftMode(
 		return false
 	}
 
-	// Check if using DRIFT mode
-	if segmentFlightMode != shared.FlightModeDrift {
-		return false
-	}
-
 	// Check if departure waypoint has fuel
 	if !fromWaypointHasFuel {
 		return false
+	}
+
+	legMode := segmentFlightMode.ForRouteLeg()
+	if fuel.Current < legMode.FuelCost(segmentDistance)+DefaultFuelSafetyMargin {
+		return true
 	}
 
 	// Use Fuel.Percentage() for consistent fuel percentage calculations

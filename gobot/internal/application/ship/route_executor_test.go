@@ -278,19 +278,19 @@ func TestExecuteRoute_BurnUpgradeDoesNotStrandLaterBurnLeg(t *testing.T) {
 }
 
 // TestExecuteRoute_ZeroFuelStrandedFailsLocallyNotWith4203 pins the residual gap
-// the affordability clamp does not close. The clamp downgrades to the fuel-optimal
-// mode, but that mode's DRIFT fallback is never itself fuel-checked and DRIFT's
-// cost floors at 1 — so a ship drained to exactly 0 fuel is still handed a DRIFT
-// leg it cannot afford.
+// the affordability clamp does not close. The clamp can only pick among modes the
+// tank affords, and a leg is never degraded below CRUISE to fit the tank — so a
+// ship drained to exactly 0 fuel still arrives at the Navigate holding a mode it
+// cannot pay for.
 //
-// leg1 (DRIFT, distance 90, cost 1) drains the tank from 1 to 0. leg2 then departs
-// a no-fuel waypoint with 0 fuel and cannot afford even DRIFT (cost 1).
+// leg1 (CRUISE, distance 90, cost 90) drains the tank from 90 to 0. leg2 then
+// departs a no-fuel waypoint with 0 fuel.
 //
-// Before ensureAffordableFlightMode, leg2 is issued as DRIFT and the API rejects it
-// with 4203 ("requires 1 more fuel"), crash-looping the workflow container — the
-// exact class of failure sp-c2bc targets. After the backstop, no un-fuelable
-// Navigate is emitted: the executor fails the segment locally with a precise,
-// non-4203 error, and leg2 never reaches the API.
+// Without ensureAffordableFlightMode, leg2 is issued anyway and the API rejects it
+// with 4203, crash-looping the workflow container. With the backstop, no
+// un-fuelable Navigate is emitted: the executor refuels where it can (nowhere on
+// this route) and otherwise fails the segment locally with a precise, non-4203
+// error, so leg2 never reaches the API.
 func TestExecuteRoute_ZeroFuelStrandedFailsLocallyNotWith4203(t *testing.T) {
 	a := mustWaypoint(t, "X1-TORWIND-A", 0, 0)
 	b := mustWaypoint(t, "X1-TORWIND-B", 90, 0)  // A->B distance 90
@@ -298,10 +298,10 @@ func TestExecuteRoute_ZeroFuelStrandedFailsLocallyNotWith4203(t *testing.T) {
 	a.HasFuel = false                            // no fuel station anywhere on the route
 	b.HasFuel = false
 
-	ship := newExecutorTestShip(t, 1, 400, a) // one unit of fuel: exactly one DRIFT leg
+	ship := newExecutorTestShip(t, 90, 400, a) // exactly one CRUISE leg of fuel
 
-	leg1 := domainNavigation.NewRouteSegment(a, b, 90, 1, 0, shared.FlightModeDrift, false)
-	leg2 := domainNavigation.NewRouteSegment(b, c, 90, 1, 0, shared.FlightModeDrift, false)
+	leg1 := domainNavigation.NewRouteSegment(a, b, 90, 90, 0, shared.FlightModeCruise, false)
+	leg2 := domainNavigation.NewRouteSegment(b, c, 90, 90, 0, shared.FlightModeCruise, false)
 
 	route, err := domainNavigation.NewRoute(
 		"route-torwind-1", "TORWIND-1", 1,
@@ -312,7 +312,7 @@ func TestExecuteRoute_ZeroFuelStrandedFailsLocallyNotWith4203(t *testing.T) {
 	}
 
 	fake := &recordingMediator{
-		fuel:     1,
+		fuel:     90,
 		capacity: 400,
 		distByDest: map[string]float64{
 			b.Symbol: 90,
@@ -336,8 +336,8 @@ func TestExecuteRoute_ZeroFuelStrandedFailsLocallyNotWith4203(t *testing.T) {
 	if len(navCmds) != 1 {
 		t.Fatalf("expected exactly 1 navigate (leg1 only); leg2 must never reach the API, got %d", len(navCmds))
 	}
-	if navCmds[0].FlightMode != shared.FlightModeDrift.Name() {
-		t.Fatalf("expected leg1 to fly DRIFT, got %s", navCmds[0].FlightMode)
+	if navCmds[0].FlightMode != shared.FlightModeCruise.Name() {
+		t.Fatalf("expected leg1 to fly CRUISE, got %s", navCmds[0].FlightMode)
 	}
 }
 
@@ -492,6 +492,12 @@ func TestRefuelShipWithRetry_RetriesExhaustedReroutesToAlternateFuelStop(t *test
 	if navCmds[0].Destination != alt.Symbol {
 		t.Fatalf("expected reroute to the fuel-capable alternate %s (skipping no-fuel decoy %s), got destination %s",
 			alt.Symbol, noFuelMarket.Symbol, navCmds[0].Destination)
+	}
+	// The rescue is the one place DRIFT is right: the hull is already stranded, so
+	// the cheapest possible crawl to fuel beats not moving at all. Route legs never
+	// get this mode, but this path must keep it.
+	if navCmds[0].FlightMode != shared.FlightModeDrift.Name() {
+		t.Fatalf("expected the last-resort rescue to crawl to the alternate in DRIFT, got %s", navCmds[0].FlightMode)
 	}
 
 	if got := fake.refuelAttempts(); got != 4 {

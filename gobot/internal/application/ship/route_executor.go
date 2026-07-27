@@ -28,7 +28,7 @@ import (
 // 1. Handle IN_TRANSIT from previous command (idempotency)
 // 2. Refuel before departure if needed
 // 3. Execute each segment step-by-step
-// 4. Pre-departure refuel check (prevent DRIFT mode at fuel stations)
+// 4. Pre-departure refuel check (buy the fuel the leg ahead needs)
 // 5. Opportunistic refueling (configurable via strategy)
 // 6. Planned refueling (required by routing engine)
 // 7. Automatic market scanning at marketplace waypoints
@@ -124,7 +124,7 @@ func (e *RouteExecutor) WithWarpSupport(warpNavigator WarpNavigator, charter Sys
 //
 // This orchestrates all the atomic commands we created in Phase 2.1-2.3:
 // - Uses mediator.Send() to invoke commands
-// - Uses domain decision methods (ShouldRefuelOpportunistically, ShouldPreventDriftMode)
+// - Uses domain decision methods (ShouldRefuelOpportunistically, ShouldTopOffBeforeDeparture)
 // - Follows exact Python implementation logic
 //
 // The operation context (if any) should be added to ctx using shared.WithOperationContext()
@@ -427,23 +427,34 @@ func (e *RouteExecutor) selectOptimalFlightMode(ctx context.Context, segment *do
 	}
 
 	distance := segment.FromWaypoint.DistanceTo(segment.ToWaypoint)
+
+	// DRIFT is never flown as a route leg — ~7x CRUISE's travel time for fuel the
+	// ship can go and buy — so a leg planned for it flies CRUISE instead. Paying for
+	// that is handlePreDepartureRefuel's job, and ensureAffordableFlightMode's when
+	// the tank still falls short.
+	flightMode := segment.FlightMode.ForRouteLeg()
+
 	fuelService := domainNavigation.NewShipFuelService()
-	optimalMode := fuelService.SelectOptimalFlightMode(ship.Fuel().Current, distance, domainNavigation.DefaultFuelSafetyMargin)
+	optimalMode, affordable := fuelService.SelectOptimalFlightMode(ship.Fuel().Current, distance, domainNavigation.DefaultFuelSafetyMargin)
+	if !affordable {
+		// The tank affords no mode at all. Hold the leg's own mode so the
+		// affordability backstop refuels for it or fails the segment out loud.
+		return flightMode
+	}
 
 	// The speed-up upgrade is a ONE-LEG decision against a WHOLE-ROUTE fuel budget,
 	// so it may only spend what the rest of the plan does not need: BURN costs 2x,
 	// and a leg upgraded out of a fuel station into a stop that sells none leaves
 	// the following leg — budgeted by the planner against the tank it was supposed
-	// to arrive with — unflyable, and it is then downgraded all the way to DRIFT.
+	// to arrive with — unflyable, and it is then downgraded to a slower mode.
 	// fuelReserve is that remaining need up to the next stop that can refuel; it is
 	// 0 whenever the tank refills on arrival, so the speed-up survives untouched
 	// wherever it is actually free.
-	flightMode := segment.FlightMode
-	if optimalMode > segment.FlightMode && ship.Fuel().Current >= optimalMode.FuelCost(distance)+fuelReserve {
+	if optimalMode.IsFasterThan(flightMode) && ship.Fuel().Current >= optimalMode.FuelCost(distance)+fuelReserve {
 		logger.Log("INFO", "Ship flight mode upgraded after refuel", map[string]interface{}{
 			"ship_symbol":   ship.ShipSymbol(),
 			"action":        "upgrade_flight_mode",
-			"from_mode":     segment.FlightMode.Name(),
+			"from_mode":     flightMode.Name(),
 			"to_mode":       optimalMode.Name(),
 			"distance":      distance,
 			"fuel_current":  ship.Fuel().Current,
@@ -458,12 +469,9 @@ func (e *RouteExecutor) selectOptimalFlightMode(ctx context.Context, segment *do
 	// ship's projected fuel, but an earlier BURN upgrade (or a stale plan) can
 	// leave the ship unable to afford the planned mode by the time this leg runs
 	// — producing an un-fuelable BURN and an API 4203 crash. Downgrading to
-	// optimalMode turns an un-fuelable leg into a slower-but-successful one:
-	// optimalMode is affordable by construction for BURN/CRUISE (FlightModeSelector
-	// only picks them when fuel covers the cost plus margin). Its DRIFT fallback is
-	// the lone exception — DriftModeStrategy.CanUse is unconditional and DRIFT's
-	// FuelCost floors at 1 — so a tank drained to ~0 is NOT caught here; that
-	// residual is handled by ensureAffordableFlightMode before the Navigate.
+	// optimalMode turns an un-fuelable BURN into a flyable CRUISE; it can go no
+	// lower, since optimalMode is affordable by construction here (the selector
+	// reported it so) and never DRIFT.
 	// Runs AFTER the upgrade branch so an upgraded mode is validated too.
 	if required := flightMode.FuelCost(distance); ship.Fuel().Current < required {
 		logger.Log("WARNING", "Ship flight mode downgraded - insufficient fuel for planned mode", map[string]interface{}{
@@ -484,13 +492,11 @@ func (e *RouteExecutor) selectOptimalFlightMode(ctx context.Context, segment *do
 // ensureAffordableFlightMode is the last-resort affordability backstop: it guarantees
 // a Navigate is never emitted with fuelAvailable < fuelRequired.
 //
-// selectOptimalFlightMode downgrades to the fuel-optimal mode, which is affordable
-// by construction EXCEPT for its DRIFT fallback: DriftModeStrategy.CanUse always
-// returns true and FlightMode.FuelCost floors DRIFT at 1, so a ship that has
-// drained to (effectively) zero fuel is still handed a DRIFT leg it cannot pay
-// for. Emitting that Navigate makes the API reject it with error 4203.
+// A leg is never degraded below CRUISE to fit the tank, so a tank too small for
+// CRUISE reaches this point still holding a mode it cannot pay for. Emitting that
+// Navigate makes the API reject it with error 4203.
 //
-// When even the selected mode is unaffordable, refuel at the departure waypoint
+// The remedy is fuel, not a slower mode: refuel at the departure waypoint
 // (refuelShip no-ops when there is no fuel station) and re-pick the mode against
 // the replenished tank. If the ship still cannot afford to move, fail the segment
 // locally with a precise error instead of letting the opaque API 4203 surface and
@@ -530,7 +536,7 @@ func (e *RouteExecutor) ensureAffordableFlightMode(
 	}
 
 	// Re-pick against the (possibly) replenished tank so a successful refuel still
-	// yields the fastest affordable mode rather than defaulting to DRIFT.
+	// yields the fastest affordable mode rather than the floor.
 	flightMode = e.selectOptimalFlightMode(ctx, segment, ship, fuelReserve)
 	if ship.Fuel().Current < flightMode.FuelCost(distance) {
 		// Genuinely stranded: no fuel station here and too little fuel to move.

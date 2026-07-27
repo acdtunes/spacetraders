@@ -20,11 +20,14 @@ type flightModeConfig struct {
 	FuelRate       float64
 }
 
+// TimeMultiplier is seconds per unit of distance per unit of engine speed, so a
+// LOWER multiplier is a FASTER mode. DRIFT's is calibrated against a measured
+// production crossing: 885s over distance 123.81 at engine speed 30.
 var flightModeConfigs = map[FlightMode]flightModeConfig{
-	FlightModeCruise:  {"CRUISE", 31, 1.0},  // Fast, standard fuel
-	FlightModeDrift:   {"DRIFT", 26, 0.003}, // Slow, minimal fuel
-	FlightModeBurn:    {"BURN", 15, 2.0},    // Very fast, high fuel
-	FlightModeStealth: {"STEALTH", 50, 1.0}, // Very slow, stealthy
+	FlightModeCruise:  {"CRUISE", 31, 1.0},   // Fast, standard fuel
+	FlightModeDrift:   {"DRIFT", 214, 0.003}, // ~7x slower than CRUISE, minimal fuel
+	FlightModeBurn:    {"BURN", 15, 2.0},     // Very fast, high fuel
+	FlightModeStealth: {"STEALTH", 50, 1.0},  // Very slow, stealthy
 }
 
 func (f FlightMode) Name() string {
@@ -44,6 +47,34 @@ func (f FlightMode) FuelCost(distance float64) int {
 		return 1
 	}
 	return int(math.Ceil(cost))
+}
+
+// IsFasterThan reports whether f covers a given distance in less time than other.
+// The enum's declaration order is not speed order, so every ranking of modes goes
+// through this.
+func (f FlightMode) IsFasterThan(other FlightMode) bool {
+	return f.timeMultiplier() < other.timeMultiplier()
+}
+
+// ForRouteLeg is the mode a planned leg is actually flown at. DRIFT is a
+// last-resort rescue for a hull that is already stranded, never a route mode: at
+// ~7x CRUISE's travel time it costs far more than the fuel it saves. A leg planned
+// for it flies CRUISE, and the tank is filled to cover that.
+func (f FlightMode) ForRouteLeg() FlightMode {
+	if f == FlightModeDrift {
+		return FlightModeCruise
+	}
+	return f
+}
+
+// timeMultiplier reports f's seconds-per-distance-per-speed factor. An unrecognised
+// mode ranks as the slowest so it is never picked as the faster option.
+func (f FlightMode) timeMultiplier() int {
+	config, ok := flightModeConfigs[f]
+	if !ok {
+		return math.MaxInt
+	}
+	return config.TimeMultiplier
 }
 
 // TravelTime calculates travel time in seconds
@@ -73,7 +104,7 @@ func (f FlightMode) TravelTime(distance float64, engineSpeed int) int {
 //
 // Special case: If fuel exactly equals burn cost, select BURN (willing to use all fuel).
 //
-// Priority order: BURN > CRUISE > DRIFT
+// Priority order: BURN > CRUISE.
 //
 // Parameters:
 //   - currentFuel: Ship's current fuel level
@@ -81,8 +112,10 @@ func (f FlightMode) TravelTime(distance float64, engineSpeed int) int {
 //   - safetyMargin: Minimum fuel to keep as reserve
 //
 // Returns:
-//   - Optimal flight mode (BURN, CRUISE, or DRIFT)
-func SelectOptimalFlightMode(currentFuel, fuelCost, safetyMargin int) FlightMode {
+//   - Optimal flight mode (BURN or CRUISE)
+//   - Whether the tank can actually pay for it; when false the caller must refuel
+//     to fly the returned mode rather than settle for something slower.
+func SelectOptimalFlightMode(currentFuel, fuelCost, safetyMargin int) (FlightMode, bool) {
 	selector := NewFlightModeSelector()
 	return selector.SelectOptimalMode(currentFuel, fuelCost, safetyMargin)
 }
