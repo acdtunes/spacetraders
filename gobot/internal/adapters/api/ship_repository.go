@@ -327,7 +327,7 @@ func (r *ShipRepository) Navigate(ctx context.Context, ship *navigation.Ship, de
 	}
 
 	// Persist state to database
-	if err := r.Save(ctx, ship); err != nil {
+	if err := r.persistOwnedColumns(ctx, ship, navigateColumns(ship)); err != nil {
 		log.Printf("Warning: failed to persist ship %s after navigate: %v", ship.ShipSymbol(), err)
 	}
 
@@ -365,7 +365,7 @@ func (r *ShipRepository) Dock(ctx context.Context, ship *navigation.Ship, player
 	}
 
 	// Persist state to database
-	if err := r.Save(ctx, ship); err != nil {
+	if err := r.persistOwnedColumns(ctx, ship, navStatusColumns(ship)); err != nil {
 		log.Printf("Warning: failed to persist ship %s after dock: %v", ship.ShipSymbol(), err)
 	}
 
@@ -400,8 +400,11 @@ func (r *ShipRepository) Orbit(ctx context.Context, ship *navigation.Ship, playe
 	// Clear arrival time when ship arrives in orbit
 	ship.ClearArrivalTime()
 
-	// Persist state to database
-	if err := r.Save(ctx, ship); err != nil {
+	// Persist state to database. The arrival clock is owned here too: clearing it
+	// on the entity alone would leave the row claiming a transit that has landed.
+	columns := navStatusColumns(ship)
+	columns["arrival_time"] = ship.ArrivalTime()
+	if err := r.persistOwnedColumns(ctx, ship, columns); err != nil {
 		log.Printf("Warning: failed to persist ship %s after orbit: %v", ship.ShipSymbol(), err)
 	}
 
@@ -430,7 +433,7 @@ func (r *ShipRepository) Refuel(ctx context.Context, ship *navigation.Ship, play
 	}
 
 	// Persist state to database
-	if err := r.Save(ctx, ship); err != nil {
+	if err := r.persistOwnedColumns(ctx, ship, fuelColumns(ship)); err != nil {
 		log.Printf("Warning: failed to persist ship %s after refuel: %v", ship.ShipSymbol(), err)
 	}
 
@@ -478,7 +481,7 @@ func (r *ShipRepository) SetFlightMode(ctx context.Context, ship *navigation.Shi
 	ship.SetFlightMode(mode)
 
 	// Persist state to database
-	if err := r.Save(ctx, ship); err != nil {
+	if err := r.persistOwnedColumns(ctx, ship, map[string]interface{}{"flight_mode": ship.FlightMode()}); err != nil {
 		log.Printf("Warning: failed to persist ship %s after set flight mode: %v", ship.ShipSymbol(), err)
 	}
 
@@ -881,6 +884,112 @@ func (r *ShipRepository) shipToModel(ship *navigation.Ship) persistence.ShipMode
 	}
 
 	return model
+}
+
+// persistOwnedColumns writes ONLY the columns the calling operation just changed
+// at the server, leaving the rest of the row alone.
+//
+// The five operation methods above each call the API, mutate one or two fields of
+// a ship entity the caller may have held for an ENTIRE flight, and persist. A
+// whole-row upsert built from that snapshot rewrites cargo, ownership and
+// dedication from a view the operation has no reason to believe is current — the
+// mechanism behind a released hull coming back claimed and permanently orphaned,
+// and behind a delivered hold coming back full and drawing a liquidation worker
+// onto an empty ship. Scoping the write to what the operation owns removes the
+// source rather than defending each victim column as it is discovered.
+//
+// The ROW version is advanced: nav state is exactly what a concurrent whole-row
+// writer would otherwise clobber, so a snapshot older than this write must lose
+// its next CAS. The ENTITY's version is deliberately left where it is — the
+// entity is still not a trustworthy source for a whole-row write (its cargo and
+// ownership have moved on), and certifying it as current would let its next Save
+// win the CAS outright and bypass preserveAssignmentOwnership entirely.
+//
+// Read and write under one row lock, for the same reason ClaimShip is: a bare
+// read-then-update would leave a version TOCTOU where a writer committing in
+// between is silently absorbed into the version this write stamps.
+func (r *ShipRepository) persistOwnedColumns(ctx context.Context, ship *navigation.Ship, owned map[string]interface{}) error {
+	if r.db == nil {
+		return fmt.Errorf("database not configured")
+	}
+
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var persisted persistence.ShipModel
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("ship_symbol = ? AND player_id = ?", ship.ShipSymbol(), ship.PlayerID().Value()).
+			First(&persisted).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// Nothing persisted yet (a hull this daemon has never written): there is
+			// no row to scope a write to, and no other writer's columns to protect.
+			model := r.shipToModel(ship)
+			return r.upsertWholeRow(ctx, tx, ship, &model)
+		}
+		if err != nil {
+			return fmt.Errorf("failed to lock ship %s for a scoped write: %w", ship.ShipSymbol(), err)
+		}
+
+		columns := make(map[string]interface{}, len(owned)+2)
+		for column, value := range owned {
+			columns[column] = value
+		}
+		columns["version"] = persisted.Version + 1
+		columns["synced_at"] = r.clock.Now()
+
+		if err := tx.Model(&persistence.ShipModel{}).
+			Where("ship_symbol = ? AND player_id = ?", ship.ShipSymbol(), ship.PlayerID().Value()).
+			Updates(columns).Error; err != nil {
+			return fmt.Errorf("failed to persist ship %s: %w", ship.ShipSymbol(), err)
+		}
+
+		r.shipListCache.Delete(ship.PlayerID().Value())
+		return nil
+	})
+}
+
+// navStatusColumns is the single column a dock/orbit transition owns.
+func navStatusColumns(ship *navigation.Ship) map[string]interface{} {
+	return map[string]interface{}{"nav_status": string(ship.NavStatus())}
+}
+
+// fuelColumns is the tank, written as one pair. current alone could land against
+// a stale capacity and store a row violating current <= capacity; both come from
+// the same value object, so together they are always coherent.
+func fuelColumns(ship *navigation.Ship) map[string]interface{} {
+	if ship.Fuel() == nil {
+		return map[string]interface{}{}
+	}
+	return map[string]interface{}{
+		"fuel_current":  ship.Fuel().Current,
+		"fuel_capacity": ship.Fuel().Capacity,
+	}
+}
+
+// navigateColumns is what a completed navigate owns. The API has just moved the
+// hull, so its position, transit clock, flight mode and burnt fuel are this
+// operation's to state and nobody else's.
+//
+// Fuel is shared with Refuel, but the boundary is temporal rather than columnar:
+// burning and filling are the only two things that change a tank, they cannot
+// overlap on one hull (the server requires orbit to navigate and a dock to
+// refuel), and each writes the value the API just handed it. Dock, orbit and
+// flight-mode change no fuel at the server and so write none.
+//
+// origin/departure are NOT owned here: they describe where the current transit
+// began, and only the API nav.route sync (shipDataToModel) ever learns them.
+func navigateColumns(ship *navigation.Ship) map[string]interface{} {
+	columns := navStatusColumns(ship)
+	columns["arrival_time"] = ship.ArrivalTime()
+	columns["flight_mode"] = ship.FlightMode()
+	for column, value := range fuelColumns(ship) {
+		columns[column] = value
+	}
+	if location := ship.CurrentLocation(); location != nil {
+		columns["location_symbol"] = location.Symbol
+		columns["location_x"] = location.X
+		columns["location_y"] = location.Y
+		columns["system_symbol"] = shared.ExtractSystemSymbol(location.Symbol)
+	}
+	return columns
 }
 
 // Save persists ship aggregate state (including full state) to DB.
@@ -1631,14 +1740,12 @@ func (r *ShipRepository) PreemptForCaptain(ctx context.Context, shipSymbol strin
 		// when it writes back through the SaveWithRetry seam: the conflict
 		// forces it to RELOAD the fresh (captain-owned) row and re-apply only its
 		// nav/cargo mutation, so it cannot resurrect its stale container claim. This
-		// closes the clobber for every writer already migrated to SaveWithRetry
-		// (sell/purchase, siphon, mfg supply write-back, route-executor legs). NOTE:
-		// the plain-Save operation methods still on the un-migrated path (Navigate/
-		// Dock/Orbit/Refuel/SetFlightMode) fall back
-		// to last-write-wins on a version conflict and CAN still re-assert the claim
-		// within a single-operation window; that residual is not
-		// closed here. This is the "no lost update" half of
-		// RULING #7 for the migrated seam.
+		// closes the clobber for every writer going through SaveWithRetry
+		// (sell/purchase, siphon, mfg supply write-back, route-executor legs). The
+		// operation methods (Navigate/Dock/Orbit/Refuel/SetFlightMode) cannot
+		// re-assert a claim by any route: they persist only the columns they own
+		// and never carry ownership at all (persistOwnedColumns). This is the
+		// "no lost update" half of RULING #7.
 		now := r.clock.Now()
 		err = tx.Model(&model).Updates(map[string]interface{}{
 			"container_id":      nil,
@@ -1709,9 +1816,8 @@ func (r *ShipRepository) ReleaseContainerClaim(ctx context.Context, shipSymbol s
 		// version advanced for the same anti-clobber reason as PreemptForCaptain:
 		// a coordinator mid-operation on this hull loses the CAS race on its next
 		// SaveWithRetry write-back and reloads the fresh (idle) row, so it cannot
-		// re-assert the broken claim. Same residual as PreemptForCaptain: the
-		// un-migrated plain-Save operation methods can still re-assert
-		// within a single-operation window (RULING #7 for the migrated seam).
+		// re-assert the broken claim. The operation methods cannot re-assert it
+		// either — they never carry ownership (RULING #7).
 		now := r.clock.Now()
 		err = tx.Model(&model).Updates(map[string]interface{}{
 			"assignment_status": "idle",
