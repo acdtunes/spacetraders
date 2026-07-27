@@ -116,30 +116,38 @@ Where the engine automates a behavior, the book only says how to interpret or tu
 
 ### 4a. Tuning the fill so it actually delivers (hard-won runbook, torwind-2026-07-19)
 
-- **The single biggest knob is `construction start --depth`** — it selects fabricate-vs-harvest:
-  - **`--depth 0` (deep / full-fabrication):** buys raw → feeds the intermediate factories →
-    produces → buys the final good → delivers. Use to BUILD UP a scarce source factory's export
-    stock (feed the whole chain).
-  - **`--depth 3` (buy-final / harvest):** just buys the source factory's finished export and
-    hauls to the gate — no fabrication. Use once the source factory is well-stocked.
-  - **The pattern that works = FEED-THEN-HARVEST.** Run `--depth 0` first to stock the source
-    factory (its final-good supply climbs SCARCE→MODERATE→ABUNDANT), THEN switch to `--depth 3`
-    to deliver fast. **Running deep while the source is ALREADY abundant is the #1 gate stall:**
-    haulers waste every cycle over-feeding a full factory instead of harvesting it. Pick the
-    regime from the source's supply (`market get --waypoint <factory>`): SCARCE/LIMITED → stay
-    deep; MODERATE/HIGH/ABUNDANT → switch to `--depth 3`. `construction override --site <s>
-    --good <G> --strategy prefer-buy --min-supply SCARCE` (live, no restart) reinforces harvest.
-- **Right-size haulers to the SOURCE, not the demand (`--max-workers`, default 5).** One source
-  factory has a fixed per-cycle output; piling haulers on it just contends — most runs come back
-  `drained=false` (measured 84% failed runs at 13 haulers on one FAB_MATS source, for ZERO
-  throughput gain). ~5 at `--depth 3` on an abundant source saturates it. Deep needs enough to
-  feed AND deliver; too few starves the deliver leg. **More haulers never beat the source's
-  production rate** — if a material is source-capped, adding haulers is pure waste.
+- **Fabricate-vs-harvest is the engine's call, per good, every pass — there is no depth knob.**
+  `StrategySmart` — the fleet-wide default and the only strategy the CLI arms (sp-yfzi, sp-sxyx6) —
+  reads each material's live supply at its source and picks:
+  - **SCARCE/LIMITED and it HAS a factory → FABRICATE:** buy that factory's inputs elsewhere, feed
+    them in, produce. Relieves the scarcity instead of bidding against it.
+  - **MODERATE/HIGH/ABUNDANT → BUY the finished export and haul it** — no fabrication.
+  - **That IS feed-then-harvest**, re-decided per material every pass instead of by hand: a source
+    stocked SCARCE→MODERATE→ABUNDANT flips itself to harvest, and an all-abundant chain fabricates
+    nothing. The classic gate stall — haulers over-feeding an already-full factory instead of
+    harvesting it — now only happens if a `prefer-fabricate` override pins it there. Know the
+    physics to READ the fill (`market get --waypoint <factory>` says which regime a material is
+    in), not to command it.
+  - The surviving depth cap is a safety BACKSTOP bounding a genuinely-scarce sub-chain, never the
+    terminator: unset and 0 resolve to the same 3, and the target material is exempt from it
+    outright. Pinning ONE bottleneck good against the engine's read is a LAUNCH-time override —
+    `construction start --good-override <GOOD>:strategy=prefer-buy,minSupply=LIMITED` (or
+    `--overrides` JSON). `construction override --site <s> --good <G> --min-supply SCARCE` is live
+    (no restart) but tunes the sourcing floor and price ceiling ONLY — strategy is launch-time.
+- **Right-size haulers to the SOURCE, not the demand** — `construction workers <site> --count N`
+  (live, no restart; default 5). One source factory has a fixed per-cycle output; piling haulers on
+  it just contends — most runs come back `drained=false` (measured 84% failed runs at 13 haulers on
+  one FAB_MATS source, for ZERO throughput gain). ~5 harvesting an abundant source saturates it. A
+  fabricating chain needs enough to feed AND deliver; too few starves the deliver leg. **More
+  haulers never beat the source's production rate** — if a material is source-capped, adding haulers
+  is pure waste.
 - **Diagnose from the coordinator log + market BEFORE touching a knob:**
   - `END supply of <good> … drained=true` vs `drained=false` count = deliveries vs failures.
-    All-false = starved (over-feeding at depth-0) or contended (too many haulers on one source).
-  - **Treasury RISING while the gate count is FLAT** = haulers buying nothing (all-feeding / idle)
-    → prioritization problem → switch to `--depth 3`.
+    All-false = starved (over-feeding a full source) or contended (too many haulers on one).
+  - **Treasury RISING while the gate count is FLAT** = haulers buying nothing (all-feeding / idle).
+    Confirm against the source (`market get --waypoint <factory>`): SCARCE/LIMITED = feeding as
+    designed, let it stock. ABUNDANT and STILL feeding = stale market data or a `prefer-fabricate`
+    override pinning it deep — not a knob you are missing.
   - **Treasury FALLING + gate FLAT** = it's buying but the haul/deliver leg isn't landing.
   - Bursty climb with long flats between = normal deep-chain batch cadence, NOT a stall.
 - **The restart wedge is FIXED (sp-1jpiw) — a deploy is no longer a construction outage.**
@@ -155,11 +163,11 @@ Where the engine automates a behavior, the book only says how to interpret or tu
   confirmed wedge — a diagnostic fallback, never a post-deploy habit.
 - **Auto-managers re-inflate the gate fleet — they will undo a manual trim.** The capacity
   reconciler (gate-depot, sp-3idiw) BUYS haulers and the worker-rebalancer re-provisions the
-  manufacturing fleet to meet the pipeline's `--max-workers` demand. To hold a manual hauler
-  count: either lower `--max-workers` (drops the demand) OR `container stop` both coordinators and
-  then trim (= manual fleet management until they're restarted). At torwind-2026-07-19 the
-  reconciler bought ~10 idle haulers and cannibalized contracts — watch capex + contract-fleet
-  size when a gate depot is "settling".
+  manufacturing fleet to meet the pipeline's worker-cap demand. To hold a manual hauler count:
+  either lower the cap (`construction workers <site> --count N` — drops the demand) OR
+  `container stop` both coordinators and then trim (= manual fleet management until they're
+  restarted). At torwind-2026-07-19 the reconciler bought ~10 idle haulers and cannibalized
+  contracts — watch capex + contract-fleet size when a gate depot is "settling".
 
 ## 5. Fleet & scaling
 
