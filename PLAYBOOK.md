@@ -142,10 +142,17 @@ Where the engine automates a behavior, the book only says how to interpret or tu
     → prioritization problem → switch to `--depth 3`.
   - **Treasury FALLING + gate FLAT** = it's buying but the haul/deliver leg isn't landing.
   - Bursty climb with long flats between = normal deep-chain batch cadence, NOT a stall.
-- **The restart wedge (sp-1jpiw) — EVERY daemon deploy / pipeline restart re-wedges construction:**
-  it returns `EXECUTING` but logs "0 task(s) promoted to READY", gate count flat, haulers idle.
-  FIX, always, after any restart: `construction stop <site> && construction start <site> --depth N`.
-  Treat it as a required post-restart step until the shipwright lands the permanent fix.
+- **The restart wedge is FIXED (sp-1jpiw) — a deploy is no longer a construction outage.**
+  A restart re-queues an interrupted task PENDING with its retry budget untouched; do NOT
+  recycle the pipeline as a routine post-restart step. **`"0 task(s) promoted to READY"` is
+  not evidence of anything** — that counter is PENDING→READY only: a task already sitting in
+  READY is never "promoted", so a healthy tick logs 0 while dispatching supplies. Never
+  diagnose from it. There is no log signature for a wedge at all, and `construction status`
+  reports `EXECUTING` either way — the only honest one is a pipeline task left in terminal
+  FAILED with `retry_count` at the ceiling (3) in `manufacturing_tasks`, which the recovery
+  sweep then skips forever. Confirm THAT before acting. The recycle
+  (`construction stop <site> && construction start <site>`) is still the recovery for a
+  confirmed wedge — a diagnostic fallback, never a post-deploy habit.
 - **Auto-managers re-inflate the gate fleet — they will undo a manual trim.** The capacity
   reconciler (gate-depot, sp-3idiw) BUYS haulers and the worker-rebalancer re-provisions the
   manufacturing fleet to meet the pipeline's `--max-workers` demand. To hold a manual hauler
