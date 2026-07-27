@@ -232,12 +232,14 @@ func TestWaitForShipArrivalCore_ResyncStillInTransitFutureETA_KeepsWaitingUntilA
 	}
 }
 
-// TestWaitForShipArrivalCore_HealthyTransit_PollsAreETAAligned pins the
-// schedule contract: during a healthy transit the wait must NOT wake every
-// grace period; after the one fast first poll it sleeps to the ship's own
-// expected arrival in a single tick, costing exactly 2 resyncs regardless of
-// transit length (the fast first check + the one aimed at the ETA).
-func TestWaitForShipArrivalCore_HealthyTransit_PollsAreETAAligned(t *testing.T) {
+// TestWaitForShipArrivalCore_HealthyTransit_PollsAreBoundedNotGraceCadence pins
+// both sides of the schedule contract during a healthy transit: the wait must NOT
+// wake every grace period (40 resyncs for this transit), and it must NOT ride one
+// ETA-aligned sleep across the whole leg (2 resyncs) — that sleep is what leaves an
+// already-arrived hull unobserved when its ARRIVED event is lost. The re-check
+// ceiling is maxArrivalRecheckGracePeriods grace periods, so this 200ms transit
+// costs ~10 local reads.
+func TestWaitForShipArrivalCore_HealthyTransit_PollsAreBoundedNotGraceCadence(t *testing.T) {
 	ship := newArrivalWaitTestShip(t, domainNavigation.NavStatusInTransit)
 	sub := &fakeArrivalSubscriber{ch: make(chan domainNavigation.ShipArrivedEvent, 1)} // event lost; resync must still be cheap
 
@@ -257,10 +259,55 @@ func TestWaitForShipArrivalCore_HealthyTransit_PollsAreETAAligned(t *testing.T) 
 	if ship.NavStatus() != domainNavigation.NavStatusInOrbit {
 		t.Fatalf("expected ship to have Arrive()'d, got status %s", ship.NavStatus())
 	}
-	// The schedule contract: one fast first poll + one ETA-aligned poll. A few
-	// extra ticks of scheduler slop are tolerated.
-	if repo.calls > 4 {
-		t.Fatalf("expected ETA-aligned polling (~2 resyncs for this transit), got %d — the wait is ticking at the grace period during a healthy transit again", repo.calls)
+	// The schedule contract, both sides. Generous slop either way: the two failure
+	// modes it separates are an order of magnitude apart.
+	if repo.calls < 5 {
+		t.Fatalf("expected the bounded re-check to keep looking during the leg, got %d resyncs — one ETA-aligned sleep leaves an arrived hull unobserved for the whole transit", repo.calls)
+	}
+	if repo.calls > 20 {
+		t.Fatalf("expected polling bounded by the re-check ceiling (~10 resyncs for this transit), got %d — the wait is ticking at the grace period during a healthy transit again", repo.calls)
+	}
+}
+
+// TestWaitForShipArrivalCore_ArrivesDuringLongLeg_ConfirmsWithinBoundedRecheck
+// pins the bounded re-check: on a long leg the poll schedule aims at the ship's
+// own ETA, so an ARRIVED event lost mid-flight used to leave the wait blind for
+// the WHOLE remaining transit even though the hull was already parked at its
+// destination and readable by anyone who looked. Arrival is knowable at any
+// moment, so no single sleep may outlast the re-check ceiling.
+func TestWaitForShipArrivalCore_ArrivesDuringLongLeg_ConfirmsWithinBoundedRecheck(t *testing.T) {
+	ship := newArrivalWaitTestShip(t, domainNavigation.NavStatusInTransit)
+	sub := &fakeArrivalSubscriber{ch: make(chan domainNavigation.ShipArrivedEvent, 1)} // event lost for the whole wait
+
+	const longETA = 60 * time.Second
+	repo := &fakeShipQueryRepo{}
+	repo.findBySymbolFunc = func() (*domainNavigation.Ship, error) {
+		if repo.calls == 1 {
+			// Genuinely still in flight, with the arrival a long way ahead.
+			return newArrivalWaitTestShipWithArrival(t, domainNavigation.NavStatusInTransit, time.Now().Add(longETA)), nil
+		}
+		// The hull has landed at its destination — observable to anyone who looks.
+		return newArrivalWaitTestShip(t, domainNavigation.NavStatusInOrbit), nil
+	}
+
+	const gracePeriod = 5 * time.Millisecond
+	// The budget is far larger than the bound asserted below, so a pass proves the
+	// RE-CHECK is bounded rather than the overall budget deadline ending the wait.
+	start := time.Now()
+	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1),
+		int(longETA.Seconds()), noopLogger{}, gracePeriod, 2*time.Second)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("expected the wait to notice the already-arrived hull, got: %v", err)
+	}
+	if ship.NavStatus() != domainNavigation.NavStatusInOrbit {
+		t.Fatalf("expected ship to have Arrive()'d, got status %s", ship.NavStatus())
+	}
+	// 100 grace periods is two orders of magnitude of scheduler slack over the
+	// ceiling, and still far below the ETA-aligned sleep it replaces.
+	if bound := 100 * gracePeriod; elapsed > bound {
+		t.Fatalf("expected the arrival to be observed within %v, took %v — the wait slept past the re-check ceiling and went blind for the leg", bound, elapsed)
 	}
 }
 

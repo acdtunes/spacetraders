@@ -28,8 +28,9 @@ const (
 	// (or its ETA unknown), the delay of the FIRST safety poll (the fast check
 	// for an event lost before the subscription existed), and the slack added
 	// past the expected arrival before polling. While the arrival is still
-	// ahead, polls are ETA-ALIGNED — one sleep to arrival+grace — not fired
-	// every grace period: the event path is the norm, the poll the exception.
+	// ahead, polls are ETA-ALIGNED — aimed at arrival+grace, capped by
+	// maxArrivalRecheckGracePeriods — not fired every grace period: the event
+	// path is the norm, the poll the exception.
 	DefaultArrivalGracePeriod = 30 * time.Second
 
 	// DefaultArrivalMarginFactor and DefaultArrivalMinMargin size the safety
@@ -54,6 +55,17 @@ const (
 // decision is taken. It is a LOCAL DB re-read, never an API call, so tightening it
 // costs zero API budget.
 const requiredPastETAObservationsBeforePark = 2
+
+// maxArrivalRecheckGracePeriods bounds how long the wait may go without looking at
+// the ship, as a multiple of the gracePeriod (2 minutes at the production default).
+// The poll schedule aims at the ship's own ETA, which on a long leg is a single
+// sleep spanning the whole remaining transit — so an ARRIVED event lost mid-flight
+// left the wait blind until that one tick fired, even though the hull was already
+// parked at its destination and readable from its own row. Arrival is knowable at
+// any moment, so the re-check cannot be starved by a distant ETA. The wait stays
+// event-driven: the event still wins the select the instant it lands, and the
+// re-check is a LOCAL DB read, never an API call.
+const maxArrivalRecheckGracePeriods = 4
 
 // ErrArrivalWaitExhausted is returned when a ship-arrival wait gives up: the
 // ARRIVED event never arrived AND repeated resyncs against the ship
@@ -174,10 +186,12 @@ func waitForShipArrivalCore(
 	//
 	//   - the poll SCHEDULE: the first poll fires after one gracePeriod (the
 	//     fast check for an event lost BEFORE this subscription existed), then
-	//     each subsequent poll sleeps all the way to expectedArrival plus one
-	//     gracePeriod of slack in a single tick rather than waking on a fixed
-	//     cadence — the event, which the select still watches throughout,
-	//     interrupts any of these sleeps the instant it lands.
+	//     each subsequent poll aims at expectedArrival plus one gracePeriod of
+	//     slack rather than waking on a fixed cadence — capped at
+	//     maxArrivalRecheckGracePeriods so no single sleep can leave an
+	//     already-arrived hull unobserved for a whole transit. The event, which
+	//     the select still watches throughout, interrupts any of these sleeps
+	//     the instant it lands.
 	//   - the poll SEVERITY: a poll while the arrival is not yet due is routine
 	//     (INFO); only a poll past the expected arrival means the event is
 	//     genuinely overdue and worth a WARNING, so the real lost-event signal
@@ -359,15 +373,19 @@ func waitForShipArrivalCore(
 				return &ErrArrivalWaitExhausted{ShipSymbol: shipSymbol, Attempts: attempt}
 			}
 
-			// ETA-aligned schedule: while the arrival is still ahead, sleep to
-			// just past it in ONE tick — the event wins the select the moment
-			// it lands, so a long sleep never delays the happy path. Once
-			// at/past the ETA (or when it is unknown), poll at the gracePeriod
-			// cadence. Capped so a tick never sleeps far past the budget
-			// deadline — the check above must get its turn.
+			// ETA-aligned schedule: while the arrival is still ahead, aim the next
+			// tick just past it — the event wins the select the moment it lands, so
+			// a long sleep never delays the happy path. Once at/past the ETA (or
+			// when it is unknown), poll at the gracePeriod cadence. Two caps: the
+			// re-check ceiling, so a distant ETA can never starve the wait of a look
+			// at an already-arrived hull; and the budget deadline, so a tick never
+			// sleeps far past it — the check above must get its turn.
 			nextTick = gracePeriod
 			if remaining := time.Until(expectedArrival) + gracePeriod; remaining > nextTick {
 				nextTick = remaining
+			}
+			if ceiling := maxArrivalRecheckGracePeriods * gracePeriod; nextTick > ceiling {
+				nextTick = ceiling
 			}
 			if untilDeadline := time.Until(deadline) + gracePeriod; nextTick > untilDeadline {
 				nextTick = untilDeadline

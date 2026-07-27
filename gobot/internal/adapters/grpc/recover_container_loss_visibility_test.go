@@ -2,12 +2,15 @@ package grpc
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // syncRecorder is a race-safe captain.EventRecorder for the recovery-loss tests.
@@ -37,6 +40,55 @@ func (r *syncRecorder) lost() []*captain.Event {
 		}
 	}
 	return out
+}
+
+// recoveryBudgetExpiredShipRepo models the recovery budget running out mid-pass:
+// the first ship load cancels the recovery context — what its bounded deadline
+// does in production — and fails, so every bookkeeping write that follows would
+// ride a dead context. releaseCtxErr records the context state the ship-release
+// lookup actually saw.
+type recoveryBudgetExpiredShipRepo struct {
+	navigation.ShipRepository
+	cancel        context.CancelFunc
+	releaseCalls  int
+	releaseCtxErr error
+}
+
+func (r *recoveryBudgetExpiredShipRepo) FindBySymbol(_ context.Context, symbol string, _ shared.PlayerID) (*navigation.Ship, error) {
+	r.cancel()
+	return nil, fmt.Errorf("recovery budget expired before ship %s could be loaded", symbol)
+}
+
+func (r *recoveryBudgetExpiredShipRepo) FindByContainer(ctx context.Context, _ string, _ shared.PlayerID) ([]*navigation.Ship, error) {
+	r.releaseCalls++
+	r.releaseCtxErr = ctx.Err()
+	return nil, nil
+}
+
+// TestRecoveryTerminalizesContainerWhenItsOwnBudgetExpiresMidPass is the zombie
+// guard: recovery runs under a bounded context, and when that budget expires
+// mid-pass the adoption fails. The bookkeeping that marks the container FAILED
+// and releases its hull must NOT ride the same dead context — otherwise the write
+// silently fails and the row is left RUNNING with a claimed hull and no runner,
+// which `container list` reports as a healthy worker indefinitely.
+func TestRecoveryTerminalizesContainerWhenItsOwnBudgetExpiresMidPass(t *testing.T) {
+	s, db, playerID := newRecoveryTestServer(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	shipRepo := &recoveryBudgetExpiredShipRepo{cancel: cancel}
+	s.shipRepo = shipRepo
+
+	emptyParent := ""
+	insertRunningContainer(t, db, "zombie-1", "contract_workflow", "CONTRACT_WORKFLOW",
+		`{"ship_symbol":"SHIP-Z","coordinator_id":""}`, playerID, &emptyParent)
+
+	require.NoError(t, s.RecoverRunningContainers(ctx))
+
+	requireContainerState(t, db, "zombie-1", "FAILED", "recovery_failed")
+	require.Nil(t, s.registeredRunner("zombie-1"), "no runner owns this container")
+	require.Equal(t, 1, shipRepo.releaseCalls, "the hull release must still be attempted")
+	require.NoError(t, shipRepo.releaseCtxErr, "the hull release rode the dead recovery context")
 }
 
 // TestRecoveryEmitsNamedLostEventForFailedContainer is the sp-tit8 core guarantee:

@@ -1352,6 +1352,9 @@ func formatLostSummary(lost []recoveryLoss) string {
 // left untouched — they belong to the reset universe, and the startup zombie-release
 // path (ReleaseAllActive) deliberately scopes only to the open-era player.
 func (s *DaemonServer) markContainerDeadEra(ctx context.Context, containerModel *persistence.ContainerModel, openEra *persistence.EraModel) {
+	ctx, cancel := recoveryBookkeepingContext(ctx)
+	defer cancel()
+
 	livePlayer := "none (no open era)"
 	if openEra != nil {
 		livePlayer = fmt.Sprintf("player %d, era %q", openEra.PlayerID, openEra.Name)
@@ -1450,8 +1453,22 @@ func (s *DaemonServer) recoverContainer(ctx context.Context, containerModel *per
 	return nil
 }
 
+// recoveryBookkeepingContext detaches a recovery terminalization from the recovery
+// pass's own budget. The pass runs under a bounded context; when that budget expires
+// mid-pass the adoption fails AND — on the shared context — so does every write that
+// marks the container FAILED and releases its hull, leaving a RUNNING row with a
+// claimed hull and no runner behind it. Bookkeeping about a container that is already
+// not running must outlive the budget that stopped it, or recovery resurrects a corpse
+// that `container list` reports as healthy indefinitely.
+func recoveryBookkeepingContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), dbOperationTimeout)
+}
+
 // markContainerFailed marks a container as FAILED in the database
 func (s *DaemonServer) markContainerFailed(ctx context.Context, containerModel *persistence.ContainerModel, reason string, details string) {
+	ctx, cancel := recoveryBookkeepingContext(ctx)
+	defer cancel()
+
 	exitCode := 1
 	now := time.Now()
 
@@ -1501,6 +1518,9 @@ func (s *DaemonServer) markContainerFailed(ctx context.Context, containerModel *
 // The coordinator's recoverState() will handle the ship assignments when it resets tasks.
 // This is critical for SELL tasks where the ship still has cargo that needs to be sold.
 func (s *DaemonServer) markWorkerInterrupted(ctx context.Context, containerModel *persistence.ContainerModel, coordinatorID string) {
+	ctx, cancel := recoveryBookkeepingContext(ctx)
+	defer cancel()
+
 	exitCode := 1
 	now := time.Now()
 
