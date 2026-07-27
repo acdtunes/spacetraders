@@ -35,6 +35,26 @@ func (r *stopStubShipRepo) Save(_ context.Context, ship *navigation.Ship) error 
 	return nil
 }
 
+// SaveWithRetry mirrors the real repository's non-conflict path (load FRESH →
+// mutate → persist), the seam the pipeline releases its hulls through.
+func (r *stopStubShipRepo) SaveWithRetry(ctx context.Context, symbol string, playerID shared.PlayerID, mutate navigation.ShipMutation) (*navigation.Ship, bool, error) {
+	ship, err := r.FindBySymbol(ctx, symbol, playerID)
+	if err != nil {
+		return nil, false, err
+	}
+	changed, err := mutate(ship)
+	if err != nil {
+		return ship, false, err
+	}
+	if !changed {
+		return ship, false, nil
+	}
+	if err := r.Save(ctx, ship); err != nil {
+		return ship, false, err
+	}
+	return ship, true, nil
+}
+
 // newStopTestAssignedShip builds an idle ship at a fixed waypoint and
 // immediately assigns it to containerID, simulating a ship an in-flight
 // construction task claimed before the pipeline was stopped.

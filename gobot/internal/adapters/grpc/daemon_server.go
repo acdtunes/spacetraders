@@ -1393,15 +1393,20 @@ func (s *DaemonServer) recoverContainer(ctx context.Context, containerModel *per
 	if hasShip {
 		// Re-assign ship using Ship aggregate pattern
 		playerID := shared.MustNewPlayerID(containerModel.PlayerID)
-		ship, err := s.shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
-		if err != nil {
-			return fmt.Errorf("failed to load ship %s: %w", shipSymbol, err)
-		}
-		if err := ship.AssignToContainer(containerModel.ID, s.clock); err != nil {
+		// Re-assign on the FRESH row: a plain Save that loses the version race has
+		// its ownership columns taken from the row, so a claim persisted that way
+		// would silently not stick. Re-claiming a container's own hull is a no-op.
+		if _, _, err := s.shipRepo.SaveWithRetry(ctx, shipSymbol, playerID,
+			func(sh *navigation.Ship) (bool, error) {
+				if sh.IsAssigned() && sh.ContainerID() == containerModel.ID {
+					return false, nil
+				}
+				if err := sh.AssignToContainer(containerModel.ID, s.clock); err != nil {
+					return false, err
+				}
+				return true, nil
+			}); err != nil {
 			return fmt.Errorf("failed to reassign ship %s: %w", shipSymbol, err)
-		}
-		if err := s.shipRepo.Save(ctx, ship); err != nil {
-			return fmt.Errorf("failed to persist ship %s reassignment: %w", shipSymbol, err)
 		}
 	}
 

@@ -252,6 +252,74 @@ func TestStartLegacyClaimStillClaimsUndedicatedHull(t *testing.T) {
 	require.Equal(t, containerID, idle.ContainerID())
 }
 
+// claimRaceShipRepo models the write-time race the legacy (non-operation) claim path
+// has to survive: the runner's own load sees a free hull, but by the time the claim
+// reaches the row another container holds it. FindBySymbol serves the free snapshot
+// once — the load that opened the window — and the live, already-claimed row after.
+type claimRaceShipRepo struct {
+	navigation.ShipRepository
+	mu    sync.Mutex
+	free  *navigation.Ship // the snapshot the runner loads first
+	live  *navigation.Ship // the row as it actually stands: held by another container
+	finds int
+}
+
+func (r *claimRaceShipRepo) FindBySymbol(ctx context.Context, symbol string, playerID shared.PlayerID) (*navigation.Ship, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.finds++
+	if r.finds == 1 {
+		return r.free, nil
+	}
+	return r.live, nil
+}
+
+func (r *claimRaceShipRepo) SaveWithRetry(ctx context.Context, symbol string, playerID shared.PlayerID, mutate navigation.ShipMutation) (*navigation.Ship, bool, error) {
+	live, err := r.FindBySymbol(ctx, symbol, playerID)
+	if err != nil {
+		return nil, false, err
+	}
+	changed, err := mutate(live)
+	if err != nil {
+		return live, false, err
+	}
+	return live, changed, nil
+}
+
+func (r *claimRaceShipRepo) FindByContainer(ctx context.Context, containerID string, playerID shared.PlayerID) ([]*navigation.Ship, error) {
+	return nil, nil
+}
+
+// The legacy claim must never report success for a claim the row did not accept. Its
+// own load can only ever be a snapshot — a hull claimed between that load and the
+// write belongs to the other container — so the claim is applied where the row is,
+// and a hull that has moved on surfaces as the standing already-assigned rejection
+// (terminal row, no stolen hull) instead of a silent no-op the caller reads as a
+// working claim.
+func TestStartFailsLoudlyWhenTheHullIsClaimedBetweenLoadAndPersist(t *testing.T) {
+	s, db, playerID := newRecoveryTestServer(t)
+
+	free := newIdleTradeShip(t, "SHIP-RACED", playerID)
+	live := newIdleTradeShip(t, "SHIP-RACED", playerID)
+	require.NoError(t, live.AssignToContainer("worker-OTHER", shared.NewRealClock()))
+	repo := &claimRaceShipRepo{free: free, live: live}
+	s.shipRepo = repo
+
+	const containerID = "navigate-SHIP-RACED"
+	entity := container.NewContainer(containerID, container.ContainerTypeNavigate, playerID, 1, nil,
+		map[string]interface{}{"ship_symbol": "SHIP-RACED"}, nil)
+	require.NoError(t, s.containerRepo.Add(context.Background(), entity, "navigate_ship"))
+
+	runner := NewContainerRunner(entity, s.mediator, nil, s.logRepo, s.containerRepo, s.shipRepo, claimTestClock())
+
+	err := runner.Start()
+
+	require.Error(t, err, "a claim the row never accepted must fail loudly, never report success")
+	requireContainerState(t, db, containerID, "FAILED", "claim_failed")
+	require.Equal(t, "worker-OTHER", live.ContainerID(), "the holder's claim must be untouched")
+	require.Nil(t, s.registeredRunner(containerID))
+}
+
 // claimTestClock returns a MockClock whose Sleep advances virtual time instantly,
 // so the sp-ku8e claim-retry backoff adds no real delay to these tests while the
 // production RealClock still sleeps for real.
@@ -290,6 +358,25 @@ func (r *handoffRaceShipRepo) Save(ctx context.Context, ship *navigation.Ship) e
 	defer r.mu.Unlock()
 	r.saved = ship
 	return nil
+}
+
+// SaveWithRetry mirrors the real repository's non-conflict path: the mutation is
+// applied to a hull re-read at write time, not to the caller's snapshot. It records
+// the hull the claim landed on whether or not the mutation reported a change, so a
+// recovered container's idempotent re-claim is still observable.
+func (r *handoffRaceShipRepo) SaveWithRetry(ctx context.Context, symbol string, playerID shared.PlayerID, mutate navigation.ShipMutation) (*navigation.Ship, bool, error) {
+	ship, err := r.FindBySymbol(ctx, symbol, playerID)
+	if err != nil {
+		return nil, false, err
+	}
+	changed, err := mutate(ship)
+	if err != nil {
+		return ship, false, err
+	}
+	r.mu.Lock()
+	r.saved = ship
+	r.mu.Unlock()
+	return ship, changed, nil
 }
 
 // FindByContainer backs the release path; these tests never leave a ship assigned

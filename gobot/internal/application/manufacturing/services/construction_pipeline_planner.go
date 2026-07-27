@@ -465,13 +465,14 @@ func (p *ConstructionPipelinePlanner) releaseShip(ctx context.Context, shipSymbo
 	if p.shipRepo == nil {
 		return
 	}
-	ship, err := p.shipRepo.FindBySymbol(ctx, shipSymbol, shared.MustNewPlayerID(playerID))
-	if err != nil {
-		logger.Log("WARN", fmt.Sprintf("failed to load ship %s for release: %v", shipSymbol, err), nil)
-		return
-	}
-	ship.ForceRelease(reason, p.clock)
-	if err := p.shipRepo.Save(ctx, ship); err != nil {
+	// Release under CAS-retry: re-apply ForceRelease on the FRESH row. A plain Save
+	// that loses the version race takes its ownership columns from the row, so a
+	// release persisted that way would silently leave the claim standing.
+	if _, _, err := p.shipRepo.SaveWithRetry(ctx, shipSymbol, shared.MustNewPlayerID(playerID),
+		func(sh *navigation.Ship) (bool, error) {
+			sh.ForceRelease(reason, p.clock)
+			return true, nil
+		}); err != nil {
 		logger.Log("WARN", fmt.Sprintf("failed to save ship %s release: %v", shipSymbol, err), nil)
 	}
 }

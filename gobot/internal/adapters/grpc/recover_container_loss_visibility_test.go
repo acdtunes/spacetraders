@@ -65,6 +65,13 @@ func (r *recoveryBudgetExpiredShipRepo) FindByContainer(ctx context.Context, _ s
 	return nil, nil
 }
 
+// SaveWithRetry is the seam recovery re-assigns hulls through; it loads FRESH, so
+// the modeled budget expiry still fires on that first load.
+func (r *recoveryBudgetExpiredShipRepo) SaveWithRetry(ctx context.Context, symbol string, playerID shared.PlayerID, _ navigation.ShipMutation) (*navigation.Ship, bool, error) {
+	_, err := r.FindBySymbol(ctx, symbol, playerID)
+	return nil, false, err
+}
+
 // TestRecoveryTerminalizesContainerWhenItsOwnBudgetExpiresMidPass is the zombie
 // guard: recovery runs under a bounded context, and when that budget expires
 // mid-pass the adoption fails. The bookkeeping that marks the container FAILED

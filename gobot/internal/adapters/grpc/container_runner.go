@@ -1196,11 +1196,26 @@ func (r *ContainerRunner) attemptClaimShip(shipSymbol, operation string, captain
 		return nil
 	}
 
+	// Guard pass on the loaded snapshot: a hull already held by another container, or
+	// captain-reserved, is rejected here with the error type createShipAssignments
+	// classifies (transient handoff race vs standing rejection).
 	if err := ship.AssignToContainer(r.containerEntity.ID(), r.clock); err != nil {
 		return fmt.Errorf("failed to assign ship %s: %w", shipSymbol, err)
 	}
 
-	if err := r.shipRepo.Save(ctx, ship); err != nil {
+	// The claim itself is written on the FRESH row, never from the snapshot above: a
+	// plain Save that loses the version race has its ownership columns taken from the
+	// row, so a claim persisted that way would silently not stick.
+	if _, _, err := r.shipRepo.SaveWithRetry(ctx, shipSymbol, playerID,
+		func(fresh *navigation.Ship) (bool, error) {
+			if fresh.IsAssigned() && fresh.ContainerID() == r.containerEntity.ID() {
+				return false, nil
+			}
+			if err := fresh.AssignToContainer(r.containerEntity.ID(), r.clock); err != nil {
+				return false, err
+			}
+			return true, nil
+		}); err != nil {
 		return fmt.Errorf("failed to persist ship %s assignment: %w", shipSymbol, err)
 	}
 

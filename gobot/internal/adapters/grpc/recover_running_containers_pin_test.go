@@ -30,6 +30,13 @@ func (r *recoveryStubShipRepo) FindByContainer(ctx context.Context, containerID 
 	return nil, nil
 }
 
+// SaveWithRetry is the seam recovery re-assigns hulls through; it loads FRESH, so
+// the stub's unavailable-ship failure still surfaces exactly as before.
+func (r *recoveryStubShipRepo) SaveWithRetry(ctx context.Context, symbol string, playerID shared.PlayerID, _ navigation.ShipMutation) (*navigation.Ship, bool, error) {
+	_, err := r.FindBySymbol(ctx, symbol, playerID)
+	return nil, false, err
+}
+
 type blockingMediator struct{}
 
 func (m *blockingMediator) Send(ctx context.Context, request common.Request) (common.Response, error) {

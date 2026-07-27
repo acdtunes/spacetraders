@@ -436,13 +436,13 @@ func (h *RunGasCoordinatorHandler) spawnWorker(
 
 	workerContainerID := utils.GenerateContainerID(spec.idPrefix, shipSymbol)
 
-	var ship *navigation.Ship
 	if spec.acquire {
-		loaded, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
-		if err != nil {
+		// Pre-flight: refuse to persist a worker container for a hull that cannot be
+		// loaded. Ownership itself is written below on the fresh row, never from a
+		// snapshot taken here.
+		if _, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, playerID); err != nil {
 			return "", fmt.Errorf("failed to load ship: %w", err)
 		}
-		ship = loaded
 	}
 
 	logger.Log("INFO", spec.persistLogMsg, map[string]interface{}{
@@ -488,27 +488,28 @@ func (h *RunGasCoordinatorHandler) spawnWorker(
 		// Intra-operation handoff: the hull already belongs to this gas
 		// operation (claimed at the boundary by createPoolAssignments); moving
 		// it pool→worker is a transfer within the same owner, not a new
-		// acquisition, so it stays on the attach+Save path.
-		loaded, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
-		if err != nil {
-			_ = h.daemonClient.StopContainer(ctx, workerContainerID)
-			return "", fmt.Errorf("failed to load ship: %w", err)
-		}
-		ship = loaded
-
-		if err := spec.attach(ship, workerContainerID); err != nil {
-			_ = h.daemonClient.StopContainer(ctx, workerContainerID)
-			return "", err
-		}
-		if err := h.shipRepo.Save(ctx, ship); err != nil {
+		// acquisition, so it stays on the attach path. Applied to the FRESH row: a
+		// plain Save that loses the version race takes its ownership columns from
+		// the row, so a transfer persisted that way would silently not move the hull.
+		if _, _, err := h.shipRepo.SaveWithRetry(ctx, shipSymbol, playerID,
+			func(sh *navigation.Ship) (bool, error) {
+				if err := spec.attach(sh, workerContainerID); err != nil {
+					return false, err
+				}
+				return true, nil
+			}); err != nil {
 			_ = h.daemonClient.StopContainer(ctx, workerContainerID)
 			return "", fmt.Errorf("%s: %w", spec.saveErrContext, err)
 		}
 	}
 
 	if err := spec.start(ctx, workerContainerID); err != nil {
-		spec.rollback(ship)
-		_ = h.shipRepo.Save(ctx, ship)
+		// Roll the ownership change back on the fresh row, for the same reason.
+		_, _, _ = h.shipRepo.SaveWithRetry(ctx, shipSymbol, playerID,
+			func(sh *navigation.Ship) (bool, error) {
+				spec.rollback(sh)
+				return true, nil
+			})
 		_ = h.daemonClient.StopContainer(ctx, workerContainerID)
 		return "", fmt.Errorf("failed to start worker: %w", err)
 	}

@@ -79,6 +79,26 @@ func (r *tradeRouteShipRepo) Save(ctx context.Context, ship *navigation.Ship) er
 	return nil
 }
 
+// SaveWithRetry mirrors the real repository's non-conflict path (load FRESH →
+// mutate → persist), the seam the legacy claim now writes ownership through.
+func (r *tradeRouteShipRepo) SaveWithRetry(ctx context.Context, symbol string, playerID shared.PlayerID, mutate navigation.ShipMutation) (*navigation.Ship, bool, error) {
+	ship, err := r.FindBySymbol(ctx, symbol, playerID)
+	if err != nil {
+		return nil, false, err
+	}
+	changed, err := mutate(ship)
+	if err != nil {
+		return ship, false, err
+	}
+	if !changed {
+		return ship, false, nil
+	}
+	if err := r.Save(ctx, ship); err != nil {
+		return ship, false, err
+	}
+	return ship, true, nil
+}
+
 func (r *tradeRouteShipRepo) FindByContainer(ctx context.Context, containerID string, playerID shared.PlayerID) ([]*navigation.Ship, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

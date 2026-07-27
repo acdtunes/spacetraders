@@ -38,6 +38,13 @@ var shipVersionConflicts atomic.Int64
 // signal and tests can observe the prevention without scraping logs.
 var dedicatedFleetClobbersPrevented atomic.Int64
 
+// assignmentClobbersPrevented counts version-conflicted Save fallbacks that carried a
+// STALE assignment (ownership) snapshot and were prevented from rewriting the row's
+// live claim. Resurrecting a released claim orphans the hull under a container that no
+// longer exists; erasing a live one takes it out from under a running worker. Kept as a
+// package atomic so the WARN is not the only signal.
+var assignmentClobbersPrevented atomic.Int64
+
 // shipListCacheTTL defines how long ship list cache is valid
 // 15 seconds is enough to prevent redundant calls across coordinators
 // while still allowing fresh data for navigation decisions
@@ -880,8 +887,8 @@ func (r *ShipRepository) shipToModel(ship *navigation.Ship) persistence.ShipMode
 // When the entity carries a known row version, the upsert is guarded with
 // `DO UPDATE ... WHERE ships.version = <loaded>` (postgres and sqlite both
 // support upsert-where): RowsAffected == 0 means another writer committed
-// since this entity was loaded. That is DETECTION-ONLY telemetry: we count +
-// log, then apply the legacy last-write-wins upsert so behavior is unchanged.
+// since this entity was loaded, and the fallback keeps last-write-wins for every
+// column EXCEPT the assignment (ownership) group, which is re-read from the row.
 func (r *ShipRepository) Save(ctx context.Context, ship *navigation.Ship) error {
 	if r.db == nil {
 		return fmt.Errorf("database not configured")
@@ -895,14 +902,108 @@ func (r *ShipRepository) Save(ctx context.Context, ship *navigation.Ship) error 
 		if committed {
 			return nil
 		}
-		// Conflict: the row moved past our loaded version. Preserve today's
-		// last-write-wins behavior; SaveWithRetry is the opt-in path
-		// that re-applies on fresh state instead.
 		log.Printf("ERROR: ship %s save conflict — row version moved past %d (concurrent writer; sp-60ff probe); applying last-write-wins fallback",
 			ship.ShipSymbol(), loaded)
+		return r.saveStaleLastWriteWins(ctx, ship)
 	}
 
 	return r.saveLastWriteWins(ctx, ship)
+}
+
+// saveStaleLastWriteWins is Save's conflict-branch fallback: last-write-wins for
+// every column EXCEPT the assignment (ownership) group, which is taken from the
+// row under a write lock instead of from the entity.
+//
+// The entity reaching here has just been PROVEN stale by the version guard, so its
+// ownership snapshot may predate a claim or a release. Writing it back resurrects a
+// released claim — orphaning the hull under a container that no longer exists — or
+// erases a live one out from under a running worker. Ownership has its own atomic
+// writers (ClaimShip, ReserveForCaptain, PreemptForCaptain, ReleaseContainerClaim,
+// ReleaseCaptainReservation, and ForceRelease through SaveWithRetry), every one of
+// which advances ships.version; a snapshot that lost the version race is therefore
+// never the authority for these columns.
+//
+// Deliberately NOT folded into saveLastWriteWins: that is also SaveWithRetry's
+// exhaustion fallback, which re-applies its mutation on a FRESHLY loaded row and so
+// holds the authoritative ownership. Preserving there would make every release a
+// silent no-op.
+//
+// The read is a locked read in the same transaction as the write for the same reason
+// ClaimShip is: a bare read-then-upsert would leave the exact TOCTOU window this
+// exists to close.
+func (r *ShipRepository) saveStaleLastWriteWins(ctx context.Context, ship *navigation.Ship) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		model := r.shipToModel(ship)
+		r.preserveDedicatedFleetTag(ctx, tx, &model)
+
+		var persisted persistence.ShipModel
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("ship_symbol = ? AND player_id = ?", model.ShipSymbol, model.PlayerID).
+			First(&persisted).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// The row is gone (pruned under us): there is no live claim to defend,
+			// and the insert's own ownership is all there is.
+			return r.upsertWholeRow(ctx, tx, ship, &model)
+		}
+		if err != nil {
+			// Unlike the dedicated_fleet preserve, a read failure here cannot fall
+			// through: proceeding blindly is precisely the clobber. Fail the save and
+			// let the caller retry.
+			return fmt.Errorf("failed to lock ship %s for the stale write-back: %w", model.ShipSymbol, err)
+		}
+
+		r.preserveAssignmentOwnership(&model, &persisted)
+
+		// GREATEST(row, entity): a stale entity lowering the row version makes every
+		// later writer conflict against it, so one instant race turns into a run of
+		// re-stamps for the rest of the entity's flight.
+		if persisted.Version > model.Version {
+			model.Version = persisted.Version
+		}
+
+		if err := r.upsertWholeRow(ctx, tx, ship, &model); err != nil {
+			return err
+		}
+
+		// Heal the entity: it now agrees with the row on ownership, so its next
+		// version-guarded save is trustworthy for these columns rather than
+		// permanently conflicting.
+		ship.SetAssignment(r.modelToAssignment(&persisted))
+		return nil
+	})
+}
+
+// preserveAssignmentOwnership takes the whole assignment column group from the
+// persisted row so the outgoing upsert is a no-op for ownership. The copy is
+// unconditional (the group must stay internally coherent — a status from one writer
+// with a released_at from another is not a state any writer produced); only the
+// telemetry is conditional, on the ownership triplet the claim/release paths key on.
+func (r *ShipRepository) preserveAssignmentOwnership(model *persistence.ShipModel, persisted *persistence.ShipModel) {
+	if model.AssignmentStatus != persisted.AssignmentStatus ||
+		containerIDValue(model.ContainerID) != containerIDValue(persisted.ContainerID) ||
+		model.AssignmentOwner != persisted.AssignmentOwner {
+		assignmentClobbersPrevented.Add(1)
+		log.Printf("WARN: ship %s stale save carried assignment %s/%s/%q while the row holds %s/%s/%q — preserving the persisted claim rather than resurrecting a stale one",
+			model.ShipSymbol,
+			model.AssignmentStatus, model.AssignmentOwner, containerIDValue(model.ContainerID),
+			persisted.AssignmentStatus, persisted.AssignmentOwner, containerIDValue(persisted.ContainerID))
+	}
+
+	model.AssignmentStatus = persisted.AssignmentStatus
+	model.ContainerID = persisted.ContainerID
+	model.AssignedAt = persisted.AssignedAt
+	model.ReleasedAt = persisted.ReleasedAt
+	model.ReleaseReason = persisted.ReleaseReason
+	model.AssignmentOwner = persisted.AssignmentOwner
+	model.AssignmentReason = persisted.AssignmentReason
+}
+
+// containerIDValue flattens the nullable container_id for comparison and logging.
+func containerIDValue(containerID *string) string {
+	if containerID == nil {
+		return ""
+	}
+	return *containerID
 }
 
 // trySaveCAS attempts the version-guarded upsert for an entity that carries a
@@ -916,7 +1017,7 @@ func (r *ShipRepository) Save(ctx context.Context, ship *navigation.Ship) error 
 func (r *ShipRepository) trySaveCAS(ctx context.Context, ship *navigation.Ship) (committed bool, err error) {
 	loaded := ship.PersistedVersion()
 	model := r.shipToModel(ship)
-	r.preserveDedicatedFleetTag(ctx, &model)
+	r.preserveDedicatedFleetTag(ctx, r.db, &model)
 	res := r.db.WithContext(ctx).
 		Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "ship_symbol"}, {Name: "player_id"}},
@@ -945,13 +1046,20 @@ func (r *ShipRepository) trySaveCAS(ctx context.Context, ship *navigation.Ship) 
 // so behavior never regresses below the conflict-detection tripwire.
 func (r *ShipRepository) saveLastWriteWins(ctx context.Context, ship *navigation.Ship) error {
 	model := r.shipToModel(ship)
-	r.preserveDedicatedFleetTag(ctx, &model)
-	err := r.db.WithContext(ctx).
+	r.preserveDedicatedFleetTag(ctx, r.db, &model)
+	return r.upsertWholeRow(ctx, r.db, ship, &model)
+}
+
+// upsertWholeRow issues the unconditional whole-row upsert both last-write-wins
+// paths share, against the given executor (r.db, or the enclosing transaction when
+// the model was built under a row lock).
+func (r *ShipRepository) upsertWholeRow(ctx context.Context, tx *gorm.DB, ship *navigation.Ship, model *persistence.ShipModel) error {
+	err := tx.WithContext(ctx).
 		Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "ship_symbol"}, {Name: "player_id"}},
 			UpdateAll: true,
 		}).
-		Create(&model).Error
+		Create(model).Error
 
 	if err == nil {
 		ship.SetPersistedVersion(model.Version)
@@ -985,13 +1093,13 @@ func (r *ShipRepository) saveLastWriteWins(ctx context.Context, ship *navigation
 // model's own value (a fresh insert, normally "") is authoritative, left as-is.
 // Counted per upsert attempt, mirroring shipVersionConflicts, so a rare
 // version-conflict fallback (trySaveCAS then saveLastWriteWins) may tick twice.
-func (r *ShipRepository) preserveDedicatedFleetTag(ctx context.Context, model *persistence.ShipModel) {
+func (r *ShipRepository) preserveDedicatedFleetTag(ctx context.Context, tx *gorm.DB, model *persistence.ShipModel) {
 	if r.db == nil {
 		return
 	}
 
 	var persisted persistence.ShipModel
-	err := r.db.WithContext(ctx).
+	err := tx.WithContext(ctx).
 		Select("dedicated_fleet").
 		Where("ship_symbol = ? AND player_id = ?", model.ShipSymbol, model.PlayerID).
 		First(&persisted).Error
@@ -1091,7 +1199,7 @@ func (r *ShipRepository) SaveAll(ctx context.Context, ships []*navigation.Ship) 
 	playerIDs := make(map[int]bool)
 	for i, ship := range ships {
 		models[i] = r.shipToModel(ship)
-		r.preserveDedicatedFleetTag(ctx, &models[i])
+		r.preserveDedicatedFleetTag(ctx, r.db, &models[i])
 		playerIDs[ship.PlayerID().Value()] = true
 	}
 
@@ -1214,6 +1322,9 @@ func (r *ShipRepository) ReleaseAllActive(ctx context.Context, playerID shared.P
 			"container_id":      nil,
 			"released_at":       now,
 			"release_reason":    reason,
+			// Every ownership write advances the version, so a snapshot taken
+			// before the sweep can never re-assert its claim through a CAS save.
+			"version": gorm.Expr("version + 1"),
 		})
 
 	if result.Error != nil {
@@ -1305,7 +1416,12 @@ func (r *ShipRepository) ClaimShip(ctx context.Context, shipSymbol string, conta
 			return shared.NewShipDedicatedToOtherFleetError(shipSymbol, model.DedicatedFleet, operation)
 		}
 
-		// Assign ship to container
+		// Assign ship to container. version advanced for the same anti-clobber
+		// reason as ReleaseContainerClaim: an ownership write invisible to the
+		// version guard lets any entity loaded before the claim win its next CAS
+		// and rewrite these columns from a pre-claim snapshot, with no conflict
+		// logged. Every ownership writer advances the version, so a stale snapshot
+		// is always detected.
 		now := r.clock.Now()
 		err = tx.Model(&model).Updates(map[string]interface{}{
 			"container_id":      containerID,
@@ -1315,6 +1431,7 @@ func (r *ShipRepository) ClaimShip(ctx context.Context, shipSymbol string, conta
 			"release_reason":    "",
 			"assignment_owner":  string(navigation.AssignmentOwnerContainer),
 			"assignment_reason": "",
+			"version":           gorm.Expr("version + 1"),
 		}).Error
 
 		if err != nil {
@@ -1372,7 +1489,8 @@ func (r *ShipRepository) ReserveForCaptain(ctx context.Context, shipSymbol strin
 			return shared.NewShipAlreadyAssignedError(shipSymbol, *model.ContainerID)
 		}
 
-		// Reserve for the captain
+		// Reserve for the captain. version advanced so the reservation is visible to
+		// every entity's version guard, exactly as ClaimShip's claim is.
 		now := r.clock.Now()
 		err = tx.Model(&model).Updates(map[string]interface{}{
 			"container_id":      nil,
@@ -1382,6 +1500,7 @@ func (r *ShipRepository) ReserveForCaptain(ctx context.Context, shipSymbol strin
 			"release_reason":    "",
 			"assignment_owner":  string(navigation.AssignmentOwnerCaptain),
 			"assignment_reason": reason,
+			"version":           gorm.Expr("version + 1"),
 		}).Error
 
 		if err != nil {
@@ -1426,6 +1545,8 @@ func (r *ShipRepository) ReleaseCaptainReservation(ctx context.Context, shipSymb
 			return shared.NewShipNotReservedError(shipSymbol)
 		}
 
+		// version advanced so the release is visible to every entity's version
+		// guard, exactly as ReleaseContainerClaim's is.
 		now := r.clock.Now()
 		err = tx.Model(&model).Updates(map[string]interface{}{
 			"assignment_status": "idle",
@@ -1434,6 +1555,7 @@ func (r *ShipRepository) ReleaseCaptainReservation(ctx context.Context, shipSymb
 			"release_reason":    reason,
 			"assignment_owner":  string(navigation.AssignmentOwnerContainer),
 			"assignment_reason": "",
+			"version":           gorm.Expr("version + 1"),
 		}).Error
 
 		if err != nil {

@@ -43,6 +43,26 @@ func (r *recoveryLiveShipRepo) Save(_ context.Context, ship *navigation.Ship) er
 	return nil
 }
 
+// SaveWithRetry mirrors the real repository's non-conflict path (load FRESH →
+// mutate → persist), the seam recovery re-assigns the hull through.
+func (r *recoveryLiveShipRepo) SaveWithRetry(ctx context.Context, symbol string, playerID shared.PlayerID, mutate navigation.ShipMutation) (*navigation.Ship, bool, error) {
+	ship, err := r.FindBySymbol(ctx, symbol, playerID)
+	if err != nil {
+		return nil, false, err
+	}
+	changed, err := mutate(ship)
+	if err != nil {
+		return ship, false, err
+	}
+	if !changed {
+		return ship, false, nil
+	}
+	if err := r.Save(ctx, ship); err != nil {
+		return ship, false, err
+	}
+	return ship, true, nil
+}
+
 func (r *recoveryLiveShipRepo) FindByContainer(_ context.Context, containerID string, _ shared.PlayerID) ([]*navigation.Ship, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
