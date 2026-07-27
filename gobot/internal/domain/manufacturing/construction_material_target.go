@@ -53,3 +53,22 @@ func (m *ConstructionMaterialTarget) Progress() float64 {
 func (m *ConstructionMaterialTarget) RecordDelivery(units int) {
 	m.deliveredQuantity += units
 }
+
+// ReconcileDelivered RAISES the delivered count to observed and reports whether it moved. The
+// counter is a cache of what the construction site itself holds: it is written only after a supply
+// the server already accepted, so a lost write leaves it permanently BEHIND and the pipeline then
+// sources material the site no longer needs.
+//
+// Raise-only, deliberately. A lower observed value cannot be told apart from a site read that raced
+// a delivery landing between the read and this call, so lowering would drop units that really were
+// delivered — the same lost update RecordDelivery is serialized to prevent. Raise-only also makes
+// the operation monotonic and idempotent, so it converges to the same value under any interleaving
+// with RecordDelivery. A genuine local-ahead-of-site divergence is a different defect and belongs in
+// a log, not in a silent correction that erases its own evidence.
+func (m *ConstructionMaterialTarget) ReconcileDelivered(observed int) bool {
+	if observed <= m.deliveredQuantity {
+		return false
+	}
+	m.deliveredQuantity = observed
+	return true
+}

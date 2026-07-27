@@ -152,6 +152,11 @@ type RunConstructionCoordinatorHandler struct {
 	invStorage   storage.StorageCoordinator
 	invAPI       domainPorts.APIClient
 	invNavigator ConstructionNavigator
+	// siteSource reads the LIVE construction site so each tick can reconcile the pipeline's delivered
+	// counters against the server (sp-duxru). Wired by SetConstructionSiteSource; left nil the drain
+	// logs that reconciliation is OFF every tick rather than silently trusting a cache that only ever
+	// drifts one way.
+	siteSource manufacturing.ConstructionSiteRepository
 }
 
 // NewRunConstructionCoordinatorHandler builds the drain. clock defaults to a RealClock when nil.
@@ -175,6 +180,13 @@ func NewRunConstructionCoordinatorHandler(
 		clock:        clock,
 		taskTimeout:  constructionSupplyTaskDefaultTimeout,
 	}
+}
+
+// SetConstructionSiteSource wires the LIVE construction-site read used to reconcile the pipeline's
+// delivered counters each tick (sp-duxru). It is the SAME shared ConstructionSiteRepository the
+// planner reads site requirements through — not a second fetch path.
+func (h *RunConstructionCoordinatorHandler) SetConstructionSiteSource(source manufacturing.ConstructionSiteRepository) {
+	h.siteSource = source
 }
 
 // SetTreeResolver wires the scarcity-gated supply-chain resolver so the drain PRODUCES a
@@ -272,6 +284,12 @@ func (h *RunConstructionCoordinatorHandler) drainOnce(ctx context.Context, cmd *
 	if len(tasks) == 0 {
 		return &RunConstructionCoordinatorResponse{NoWorkReason: noWorkNoReadyConstruction}, nil
 	}
+
+	// Re-read the LIVE construction sites and correct the pipelines' delivered counters BEFORE any
+	// bill is consulted, so this tick sizes its buys against the server's outstanding requirement
+	// rather than a cache that only ever drifts downward. Placed here, ahead of the worker fan-out,
+	// so no worker of this tick is running while it applies.
+	h.reconcilePipelinesFromSite(ctx, tasks, cmd.PlayerID)
 
 	// Operating system: the launch system if given, else derived from the first ready task's
 	// construction site (gate-construction tasks share the home gate's system). This lets the
@@ -1230,6 +1248,102 @@ func (h *RunConstructionCoordinatorHandler) remainingBill(ctx context.Context, t
 		return remaining
 	}
 	return 0
+}
+
+// reconcilePipelinesFromSite corrects each EXECUTING pipeline's delivered counters against the LIVE
+// construction site — one site read per distinct pipeline per tick, and only on a tick that already
+// has work, so an idle drain adds no API cost.
+//
+// The counters are a cache written only AFTER the server has accepted a supply, so every
+// interruption in that gap leaves them permanently BEHIND: the drain then sources material the site
+// no longer needs and the surplus can never be delivered, because the server-side requirement is
+// already met. It also drives the operator's gate percentage, which reads the same row.
+//
+// A read failure is logged and skipped, never fatal — a stale counter over-sources, but a drain that
+// refuses to run delivers nothing at all.
+func (h *RunConstructionCoordinatorHandler) reconcilePipelinesFromSite(ctx context.Context, tasks []*manufacturing.ManufacturingTask, playerID int) {
+	logger := common.LoggerFromContext(ctx)
+	if h.siteSource == nil {
+		logger.Log("WARNING", "Construction drain: site reconciliation is DISABLED (no construction-site source wired) — delivered counters can only drift BEHIND the server, over-sourcing the gate", nil)
+		return
+	}
+	for _, site := range distinctConstructionSites(tasks) {
+		live, err := h.siteSource.FindByWaypoint(ctx, site.waypoint, playerID)
+		if err != nil || live == nil {
+			logger.Log("WARNING", fmt.Sprintf("Construction drain: could not read live construction site %s to reconcile delivered counters (this tick sizes buys off the cached row): %v", site.waypoint, err), nil)
+			continue
+		}
+		h.applySiteTruth(ctx, site.pipelineID, live)
+	}
+}
+
+// applySiteTruth folds one live site reading into one pipeline's material counters and persists it.
+// The load-modify-store runs under recordMu, the SAME lock recordDelivery holds, so a worker's
+// delivery and this correction cannot interleave mid-update. The site READ deliberately happens
+// outside the lock (an HTTP round trip must not block every worker's bill read), which is precisely
+// why the correction is raise-only: a reading is already stale when it lands, so it may only ever
+// close a gap, never erase a delivery recorded while it was in flight.
+func (h *RunConstructionCoordinatorHandler) applySiteTruth(ctx context.Context, pipelineID string, live *manufacturing.ConstructionSite) {
+	logger := common.LoggerFromContext(ctx)
+	h.recordMu.Lock()
+	defer h.recordMu.Unlock()
+
+	pipeline, err := h.pipelineRepo.FindByID(ctx, pipelineID)
+	if err != nil || pipeline == nil {
+		return
+	}
+	corrected := false
+	for _, liveMaterial := range live.Materials() {
+		target := pipeline.GetMaterial(liveMaterial.TradeSymbol())
+		if target == nil {
+			continue // a site material this pipeline does not carry (another pipeline's leg)
+		}
+		// The planner sizes targetQuantity to the site's REMAINING units at planning time, so this
+		// pipeline's own delivered total is its target minus what the site still wants — NOT the
+		// site's Fulfilled, which also counts units delivered before this pipeline existed.
+		observed := target.TargetQuantity() - liveMaterial.Remaining()
+		if observed < 0 {
+			observed = 0
+		}
+		recorded := target.DeliveredQuantity()
+		if target.ReconcileDelivered(observed) {
+			corrected = true
+			logger.Log("INFO", fmt.Sprintf("Construction drain: reconciled %s from %d to %d delivered against the live site (%d/%d) — the cached counter was behind the server", liveMaterial.TradeSymbol(), recorded, observed, liveMaterial.Fulfilled(), liveMaterial.Required()), map[string]interface{}{
+				"good": liveMaterial.TradeSymbol(), "was": recorded, "now": observed, "construction_site": live.WaypointSymbol(),
+			})
+			continue
+		}
+		if observed < recorded {
+			logger.Log("WARNING", fmt.Sprintf("Construction drain: %s records %d delivered but the live site accounts for only %d — the local counter is ahead of the live site and was LEFT ALONE (lowering it would drop delivered units); investigate a double-count", liveMaterial.TradeSymbol(), recorded, observed), map[string]interface{}{
+				"good": liveMaterial.TradeSymbol(), "recorded": recorded, "observed": observed, "construction_site": live.WaypointSymbol(),
+			})
+		}
+	}
+	if !corrected {
+		return
+	}
+	if err := h.pipelineRepo.Update(ctx, pipeline); err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Could not persist reconciled construction pipeline %s: %v", pipelineID, err), nil)
+	}
+}
+
+// constructionSiteRef pairs a pipeline with the waypoint whose live state governs it.
+type constructionSiteRef struct{ pipelineID, waypoint string }
+
+// distinctConstructionSites reduces the tick's ready tasks to one entry per pipeline, so a fan-out
+// of several tasks on one gate costs a single site read.
+func distinctConstructionSites(tasks []*manufacturing.ManufacturingTask) []constructionSiteRef {
+	seen := make(map[string]bool, len(tasks))
+	refs := make([]constructionSiteRef, 0, len(tasks))
+	for _, task := range tasks {
+		pipelineID := task.PipelineID()
+		if pipelineID == "" || task.ConstructionSite() == "" || seen[pipelineID] {
+			continue
+		}
+		seen[pipelineID] = true
+		refs = append(refs, constructionSiteRef{pipelineID: pipelineID, waypoint: task.ConstructionSite()})
+	}
+	return refs
 }
 
 // recordDelivery advances the pipeline's construction progress by the delivered units and

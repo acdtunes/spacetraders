@@ -746,6 +746,11 @@ func run(cfg *config.Config) error {
 	// intermediates that have a factory, buy abundant ones) instead of the flat one-level node —
 	// bounded by the pipeline's SupplyChainDepth + the resolver's cycle guard, config-reversible.
 	constructionCoordinatorHandler.SetTreeResolver(goodsResolver)
+	// sp-duxru: the SAME shared construction-site read the planner and the delivery terminal use, so
+	// each tick reconciles the pipeline's delivered counters against the server before sizing buys.
+	// Unwired, those counters can only drift BEHIND (they are written after the server already
+	// accepted a supply) and the drain over-sources material the gate no longer needs.
+	constructionCoordinatorHandler.SetConstructionSiteSource(api.NewConstructionSiteRepository(apiClient, playerRepo))
 	if err := mediator.RegisterHandler[*goodsCmd.RunConstructionCoordinatorCommand](med, constructionCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register ConstructionCoordinator handler: %w", err)
 	}
