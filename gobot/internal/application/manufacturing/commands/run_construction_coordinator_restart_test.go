@@ -113,19 +113,25 @@ func awaitCondition(t *testing.T, what string, cond func() bool) {
 	t.Fatalf("timed out waiting for %s", what)
 }
 
-// drainInterruptedTick runs one drain tick and cancels it the moment the producer is entered,
-// modelling the deploy that killed the daemon mid-supply. It returns once the tick has abandoned.
+// drainInterruptedTick runs one drain tick and cancels the supply it dispatched the moment that
+// supply is under way, modelling the deploy that killed the daemon mid-haul. The tick itself returns
+// long before — it hands the work off — so the cancellation is timed against the WORKER. It returns
+// once the interrupted worker has been abandoned and released.
 func drainInterruptedTick(t *testing.T, handler *RunConstructionCoordinatorHandler, producer *shutdownAbortingProducer, logger *capturingLogger) {
 	t.Helper()
+	cmd := newDrainCommand()
 	ctx, cancel := context.WithCancel(common.WithLogger(context.Background(), logger))
 	defer cancel()
-	go func() {
-		<-producer.entered
-		cancel()
-	}()
-	if _, err := handler.drainOnce(ctx, newDrainCommand()); err != nil {
+	if _, err := handler.drainOnce(ctx, cmd); err != nil {
 		t.Fatalf("an interrupted tick must not error the whole drain, got %v", err)
 	}
+	select {
+	case <-producer.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the tick never started its supply, so nothing was interrupted")
+	}
+	cancel()
+	handler.awaitSupplies(cmd.ContainerID)
 }
 
 // REGRESSION (B1): a supply cancelled mid-flight is RE-QUEUED for the next activation, not failed.
@@ -193,7 +199,7 @@ func TestConstructionDrain_InterruptedLadenHull_DeliversItsLoadOnTheNextTick(t *
 	// its collaborators; the drain re-polls persistence and resumes.
 	resumed := &fakeConstructionProducer{acquire: 20, delivered: 20}
 	h2 := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, resumed, staticActivator(&promotingConstructionActivator{repo: taskRepo}), &factoryFakeClock{})
-	resp, err := h2.drainOnce(context.Background(), newDrainCommand())
+	resp, err := drainSettled(t, h2, context.Background(), newDrainCommand())
 	if err != nil {
 		t.Fatalf("the tick after a restart must drain, got %v", err)
 	}
@@ -235,7 +241,7 @@ func TestConstructionDrain_PairsLadenHullWithItsOwnMaterialTask(t *testing.T) {
 	)
 
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
-	if _, err := handler.drainOnce(context.Background(), newDrainCommand()); err != nil {
+	if _, err := drainSettled(t, handler, context.Background(), newDrainCommand()); err != nil {
 		t.Fatalf("drainOnce: %v", err)
 	}
 
@@ -297,7 +303,7 @@ func TestConstructionDrain_DeadlineExceeded_StillReportedAsTimeoutAndFailed(t *t
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
 	handler.taskTimeout = 40 * time.Millisecond // the deadline fires; the parent ctx is never cancelled
 
-	if _, err := handler.drainOnce(common.WithLogger(context.Background(), logger), newDrainCommand()); err != nil {
+	if _, err := drainSettled(t, handler, common.WithLogger(context.Background(), logger), newDrainCommand()); err != nil {
 		t.Fatalf("drainOnce: %v", err)
 	}
 
@@ -351,7 +357,7 @@ func TestConstructionDrain_RepeatedInterruptions_LeaveTaskRequeueableNotWedged(t
 	// A fourth, uninterrupted tick still drains: the leg was never wedged.
 	resumed := &fakeConstructionProducer{acquire: 40, delivered: 40}
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, resumed, staticActivator(activator), &factoryFakeClock{})
-	resp, err := handler.drainOnce(context.Background(), newDrainCommand())
+	resp, err := drainSettled(t, handler, context.Background(), newDrainCommand())
 	if err != nil {
 		t.Fatalf("drainOnce after three restarts: %v", err)
 	}

@@ -62,7 +62,7 @@ func TestConstructionDrain_PrefersDedicatedFleetOverOpportunistic(t *testing.T) 
 	shipRepo := newDrainShipRepo(opportunistic, dedicated)
 
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
-	resp, err := handler.drainOnce(context.Background(), newDrainCommand())
+	resp, err := drainSettled(t, handler, context.Background(), newDrainCommand())
 	if err != nil {
 		t.Fatalf("drainOnce: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestConstructionDrain_NeverPoachesForeignPinnedHull(t *testing.T) {
 	shipRepo := newDrainShipRepo(tradePinned)
 
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
-	resp, err := handler.drainOnce(context.Background(), newDrainCommand())
+	resp, err := drainSettled(t, handler, context.Background(), newDrainCommand())
 	if err != nil {
 		t.Fatalf("drainOnce: %v", err)
 	}
@@ -122,7 +122,8 @@ func TestConstructionDrain_NeverPoachesForeignPinnedHull(t *testing.T) {
 // default prefer-then-fallback mode, not exclusive). Before the fix only the opportunistic hull was
 // visible, so the dedicated hull was never claimed.
 func TestConstructionDrain_FallsBackToOpportunisticWhenDedicatedInsufficient(t *testing.T) {
-	pipeline := newDrainPipeline(t, "FAB_MATS", 200)
+	// Two worker slots: the subject is DISCOVERY, so both hulls must be startable in one tick.
+	pipeline := newDrainPipelineWithWorkers(t, "FAB_MATS", 200, 2)
 	task1 := readyConstructionTask(t, pipeline, "FAB_MATS")
 	task2 := readyConstructionTask(t, pipeline, "FAB_MATS")
 
@@ -135,7 +136,7 @@ func TestConstructionDrain_FallsBackToOpportunisticWhenDedicatedInsufficient(t *
 	shipRepo := newDrainShipRepo(opportunistic, dedicated) // opportunistic listed first
 
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
-	resp, err := handler.drainOnce(context.Background(), newDrainCommand())
+	resp, err := drainSettled(t, handler, context.Background(), newDrainCommand())
 	if err != nil {
 		t.Fatalf("drainOnce: %v", err)
 	}
@@ -173,7 +174,7 @@ func TestConstructionDrain_ExclusiveModeNeverDraftsOpportunistic(t *testing.T) {
 
 	cmd := &RunConstructionCoordinatorCommand{PlayerID: 1, SystemSymbol: testSystem, ContainerID: "cc-1", ExclusiveDedicatedFleet: true}
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
-	resp, err := handler.drainOnce(context.Background(), cmd)
+	resp, err := drainSettled(t, handler, context.Background(), cmd)
 	if err != nil {
 		t.Fatalf("drainOnce: %v", err)
 	}
@@ -206,7 +207,7 @@ func TestConstructionDrain_NeverPoachesContractDedicatedHull(t *testing.T) {
 	shipRepo := newDrainShipRepo(contractReserve)
 
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
-	resp, err := handler.drainOnce(context.Background(), newDrainCommand())
+	resp, err := drainSettled(t, handler, context.Background(), newDrainCommand())
 	if err != nil {
 		t.Fatalf("drainOnce: %v", err)
 	}
