@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 	"time"
@@ -25,10 +26,16 @@ import (
 // spawnLiquidationWorker's FindBySymbol/ClaimShip, and the liquidation handler's
 // SyncShipFromAPI reconcile. The `ship` field is swappable so a test can flip the hull
 // from laden to empty, modelling the server state after the worker's sell.
+//
+// serverShip/syncErr model the SERVER's answer diverging from the persisted `ship`
+// the parking decision was made on — the hull emptying between decision and dispatch.
 type liquidationE2EShipRepo struct {
 	navigation.ShipRepository
-	ship   *navigation.Ship
-	claims []contractShipClaim
+	ship       *navigation.Ship
+	serverShip *navigation.Ship
+	syncErr    error
+	syncCalls  int
+	claims     []contractShipClaim
 }
 
 func (r *liquidationE2EShipRepo) FindAllByPlayer(_ context.Context, _ shared.PlayerID) ([]*navigation.Ship, error) {
@@ -38,6 +45,13 @@ func (r *liquidationE2EShipRepo) FindBySymbol(_ context.Context, _ string, _ sha
 	return r.ship, nil
 }
 func (r *liquidationE2EShipRepo) SyncShipFromAPI(_ context.Context, _ string, _ shared.PlayerID) (*navigation.Ship, error) {
+	r.syncCalls++
+	if r.syncErr != nil {
+		return nil, r.syncErr
+	}
+	if r.serverShip != nil {
+		return r.serverShip, nil
+	}
 	return r.ship, nil
 }
 func (r *liquidationE2EShipRepo) ClaimShip(_ context.Context, symbol, containerID string, _ shared.PlayerID, operation string) error {
@@ -194,7 +208,7 @@ func TestFleetCoordinator_ParkedHullSelfClearsAndReentersCandidacy(t *testing.T)
 	// STEP 1 — the coordinator self-clears it: dispatch auto-liquidation on the parked hull.
 	daemonClient := &liquidationCapturingDaemonClient{}
 	handler := newLiquidationDispatchHandler(repo, daemonClient, shared.NewRealClock())
-	handler.dispatchLiquidationForParked(context.Background(), liquidationCommand(false, 0), parked, map[string]time.Time{})
+	handler.dispatchLiquidationForParked(context.Background(), liquidationCommand(false, 0), parked, "IRON_ORE", map[string]time.Time{})
 
 	require.Equal(t, []daemon.ContainerKind{daemon.ContainerKindCargoLiquidation}, daemonClient.persistedKinds, "a cargo_liquidation worker is persisted for the parked hull")
 	require.Equal(t, []daemon.ContainerKind{daemon.ContainerKindCargoLiquidation}, daemonClient.startedKinds, "and started")
@@ -238,7 +252,7 @@ func TestFleetCoordinator_AutoLiquidationDisabled_NoDispatch(t *testing.T) {
 	daemonClient := &liquidationCapturingDaemonClient{}
 	handler := newLiquidationDispatchHandler(repo, daemonClient, shared.NewRealClock())
 
-	handler.dispatchLiquidationForParked(context.Background(), liquidationCommand(true, 0), []string{"TORWIND-3"}, map[string]time.Time{})
+	handler.dispatchLiquidationForParked(context.Background(), liquidationCommand(true, 0), []string{"TORWIND-3"}, "IRON_ORE", map[string]time.Time{})
 
 	require.Empty(t, daemonClient.persistedKinds, "no liquidation worker is spawned when the feature is disabled")
 	require.Empty(t, repo.claims)
@@ -256,15 +270,98 @@ func TestFleetCoordinator_LiquidationCooldown_SuppressesThenRetries(t *testing.T
 	cooldown := map[string]time.Time{}
 	cmd := liquidationCommand(false, 0)
 
-	handler.dispatchLiquidationForParked(context.Background(), cmd, []string{"TORWIND-5"}, cooldown)
+	handler.dispatchLiquidationForParked(context.Background(), cmd, []string{"TORWIND-5"}, "IRON_ORE", cooldown)
 	require.Len(t, daemonClient.persistedKinds, 1, "first pass dispatches")
 
 	// Immediately-following pass while still within the cooldown window: no re-dispatch.
-	handler.dispatchLiquidationForParked(context.Background(), cmd, []string{"TORWIND-5"}, cooldown)
+	handler.dispatchLiquidationForParked(context.Background(), cmd, []string{"TORWIND-5"}, "IRON_ORE", cooldown)
 	require.Len(t, daemonClient.persistedKinds, 1, "a hull within its cooldown is not re-dispatched (no storm)")
 
 	// After the cooldown elapses, the hull is retried.
 	clock.Advance(liquidationDispatchCooldown + time.Minute)
-	handler.dispatchLiquidationForParked(context.Background(), cmd, []string{"TORWIND-5"}, cooldown)
+	handler.dispatchLiquidationForParked(context.Background(), cmd, []string{"TORWIND-5"}, "IRON_ORE", cooldown)
 	require.Len(t, daemonClient.persistedKinds, 2, "after the cooldown elapses the stuck hull is retried, never permanently skipped")
+}
+
+// CONTRACT TURNOVER: delivery empties the hold and the next contract is accepted within
+// about a second of each other, so a hull parked for holding the OUTGOING contract's good
+// is already clear by the time the worker would run. The parking decision was right when
+// it was made and wrong when acted on — nothing may be spawned, and above all the hull
+// must not be claimed off contract work to run a no-op.
+func TestFleetCoordinator_HoldClearsBetweenParkingAndDispatch_NoWorkerSpawned(t *testing.T) {
+	playerID := shared.MustNewPlayerID(1)
+	// Persisted view: still holding contract 1's EQUIPMENT load.
+	repo := &liquidationE2EShipRepo{ship: ladenHull(t, "TORWIND-7", "EQUIPMENT", "X1-KA42-A1", 18)}
+
+	// Contract 2 was accepted requiring a different good, so the outgoing load reads as
+	// unrelated and the hull is parked out of candidacy.
+	claimable, parked, err := appContract.FilterUnrelatedCargo(context.Background(), playerID, repo, []string{"TORWIND-7"}, "IRON_ORE")
+	require.NoError(t, err)
+	require.Empty(t, claimable)
+	require.Equal(t, []string{"TORWIND-7"}, parked, "precondition: the parking decision fires on the outgoing load")
+
+	// The delivery that fulfilled contract 1 emptied the hold: the server now says clear.
+	repo.serverShip = ladenHull(t, "TORWIND-7", "EQUIPMENT", "X1-KA42-A1", 0)
+
+	daemonClient := &liquidationCapturingDaemonClient{}
+	handler := newLiquidationDispatchHandler(repo, daemonClient, shared.NewRealClock())
+	handler.dispatchLiquidationForParked(context.Background(), liquidationCommand(false, 0), parked, "IRON_ORE", map[string]time.Time{})
+
+	require.Empty(t, daemonClient.persistedKinds, "no liquidation worker is spawned for a hull that is no longer holding unrelated cargo")
+	require.Empty(t, daemonClient.startedKinds, "and none is started")
+	require.Empty(t, repo.claims, "and the hull is never claimed off contract work to run a no-op")
+}
+
+// The asymmetry that keeps the guard from becoming "never liquidate": when the server
+// CONFIRMS the strand is still aboard, the hull gets its worker. This is the tour-leftover
+// case auto-liquidation exists for.
+func TestFleetCoordinator_ServerConfirmsStrandedHold_WorkerStillSpawned(t *testing.T) {
+	playerID := shared.MustNewPlayerID(1)
+	hull := ladenHull(t, "TORWIND-6", "POLYNUCLEOTIDES", "X1-KA42-A1", 4)
+	repo := &liquidationE2EShipRepo{ship: hull, serverShip: hull}
+
+	claimable, parked, err := appContract.FilterUnrelatedCargo(context.Background(), playerID, repo, []string{"TORWIND-6"}, "IRON_ORE")
+	require.NoError(t, err)
+	require.Empty(t, claimable)
+	require.Equal(t, []string{"TORWIND-6"}, parked)
+
+	daemonClient := &liquidationCapturingDaemonClient{}
+	handler := newLiquidationDispatchHandler(repo, daemonClient, shared.NewRealClock())
+	handler.dispatchLiquidationForParked(context.Background(), liquidationCommand(false, 0), parked, "IRON_ORE", map[string]time.Time{})
+
+	require.Equal(t, []daemon.ContainerKind{daemon.ContainerKindCargoLiquidation}, daemonClient.persistedKinds, "a confirmed strand still gets its worker")
+	require.Equal(t, []daemon.ContainerKind{daemon.ContainerKindCargoLiquidation}, daemonClient.startedKinds)
+	require.Len(t, repo.claims, 1)
+	require.Equal(t, "TORWIND-6", repo.claims[0].symbol)
+	dispatched, ok := daemonClient.persistedCmds[0].(*liquidation.LiquidateCargoCommand)
+	require.True(t, ok)
+	require.Equal(t, "TORWIND-6", dispatched.ShipSymbol)
+}
+
+// Fails CLOSED: an unverifiable hold is not claimed. The cooldown still bounds the retry,
+// so a persistent verification failure cannot spin, and the hull is retried after it
+// (a deferral, never a permanent skip).
+func TestFleetCoordinator_HoldVerificationFails_NoSpawn_CooldownBoundsRetry(t *testing.T) {
+	repo := &liquidationE2EShipRepo{
+		ship:    ladenHull(t, "TORWIND-9", "FABRICS", "X1-KA42-A1", 54),
+		syncErr: errors.New("ship fetch failed: 503"),
+	}
+	daemonClient := &liquidationCapturingDaemonClient{}
+	clock := &shared.MockClock{}
+	handler := newLiquidationDispatchHandler(repo, daemonClient, clock)
+	cooldown := map[string]time.Time{}
+	cmd := liquidationCommand(false, 0)
+
+	handler.dispatchLiquidationForParked(context.Background(), cmd, []string{"TORWIND-9"}, "IRON_ORE", cooldown)
+	require.Empty(t, daemonClient.persistedKinds, "an unverifiable hold spawns nothing")
+	require.Empty(t, repo.claims, "and the hull is not claimed")
+	require.Equal(t, 1, repo.syncCalls)
+
+	handler.dispatchLiquidationForParked(context.Background(), cmd, []string{"TORWIND-9"}, "IRON_ORE", cooldown)
+	require.Equal(t, 1, repo.syncCalls, "a hull within its cooldown is not re-verified — a persistent failure cannot spin")
+
+	clock.Advance(liquidationDispatchCooldown + time.Minute)
+	repo.syncErr = nil
+	handler.dispatchLiquidationForParked(context.Background(), cmd, []string{"TORWIND-9"}, "IRON_ORE", cooldown)
+	require.Len(t, daemonClient.persistedKinds, 1, "once verification recovers the confirmed strand is dispatched — deferred, never skipped")
 }
