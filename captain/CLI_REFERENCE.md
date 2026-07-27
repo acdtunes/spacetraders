@@ -27,7 +27,6 @@ Available Commands:
   contract     Manage contract operations
   fleet        Manage dedicated fleets
   frontier     Standing frontier expansion: auto-buy probes and seed frontier scouts
-  goods        Manage automated goods production
   health       Check daemon health status
   help         Help about any command
   history      Cross-era priors: query history across universe resets
@@ -36,6 +35,7 @@ Available Commands:
   operations   Manage resource extraction operations
   player       Manage players and agents
   scout        Standing scout posts: keep systems' market data fresh
+  sensing      Parked-probe sensing: operator maintenance for the sensing ledger
   ship         Manage ships
   shipyard     Manage shipyard operations
   system       Inspect system-level topology
@@ -438,6 +438,7 @@ Available Commands:
   start       Start a pipeline to supply materials to a construction site
   status      Show status of a construction site and any active pipeline
   stop        Stop the active construction pipeline for a site
+  workers     Set a running construction pipeline's concurrent worker cap live (no restart)
 
 Flags:
   -h, --help   help for construction
@@ -462,14 +463,13 @@ daemon restart and applies to deferred-material recovery.
 
 Knobs (set only the ones you want to change; the rest stay as they are):
   --min-supply         EXPORT sourcing floor for this good (ABUNDANT|HIGH|MODERATE|LIMITED|SCARCE)
-  --strategy           acquisition strategy (prefer-buy|prefer-fabricate|smart)
   --price-ceiling-mult ladder-chase input-price ceiling multiplier (clamped to the domain cap)
 
 --clear removes the good's override entirely, reverting it to the pipeline's global default.
 A non-overridden good is always byte-identical to the global default.
 
 Examples:
-  spacetraders construction override --site X1-VB74-I55 --good FAB_MATS --min-supply LIMITED --strategy prefer-buy
+  spacetraders construction override --site X1-VB74-I55 --good FAB_MATS --min-supply LIMITED
   spacetraders construction override --site X1-VB74-I55 --good FAB_MATS --price-ceiling-mult 2.0
   spacetraders construction override --site X1-VB74-I55 --good FAB_MATS --clear
 
@@ -483,7 +483,6 @@ Flags:
       --min-supply string          Per-good EXPORT sourcing floor (ABUNDANT, HIGH, MODERATE, LIMITED, SCARCE)
       --price-ceiling-mult float   Per-good ladder-chase input-price ceiling multiplier (clamped to the domain cap)
       --site string                Construction site whose running pipeline to tune (required)
-      --strategy string            Per-good acquisition strategy (prefer-buy, prefer-fabricate, smart)
 
 Global Flags:
       --agent string    Agent symbol (alternative to player-id)
@@ -499,14 +498,7 @@ Start a pipeline to supply materials to a construction site.
 The pipeline will:
 - Fetch construction site requirements from the API
 - Create tasks for each required material
-- Produce/acquire materials based on supply chain depth
-- Deliver materials to the construction site
-
-Supply chain depth controls how much to produce:
-  0 - Full production (mine/produce everything from scratch)
-  1 - Buy raw materials only (produce intermediates)
-  2 - Buy intermediate goods (only final assembly)
-  3 - Buy final product (no production, just delivery)
+- Buy the final product (no production) and deliver it to the site
 
 --min-supply lowers the floor the sourcing locator will buy EXPORT
 materials down to (default floor: MODERATE). For example, --min-supply
@@ -532,7 +524,7 @@ an existing pipeline instead of creating a new one.
 
 Examples:
   spacetraders construction start X1-FB5-I61 --player-id 1
-  spacetraders construction start X1-FB5-I61 --system X1-FB5 --depth 3 --player-id 1
+  spacetraders construction start X1-FB5-I61 --system X1-FB5 --player-id 1
   spacetraders construction start X1-FB5-I61 --min-supply SCARCE --player-id 1
   spacetraders construction start X1-VB74-I55 --good-override FAB_MATS:minSupply=LIMITED,strategy=prefer-buy --player-id 1
 
@@ -540,10 +532,8 @@ Usage:
   spacetraders construction start <construction-site> [flags]
 
 Flags:
-      --depth int                   Supply chain depth (0=full, 1=raw, 2=intermediate, 3=buy final) (default 3)
       --good-override stringArray   Per-good buy-gating override (repeatable), e.g. FAB_MATS:minSupply=LIMITED,strategy=prefer-buy,priceCeilingMult=2.0 — loosens ONE good; others keep the global floor (sp-sdyo)
   -h, --help                        help for start
-      --max-workers int             Maximum parallel workers (default 5)
       --min-supply string           Lower the EXPORT sourcing floor below the default MODERATE (one of ABUNDANT, HIGH, MODERATE, LIMITED, SCARCE)
       --overrides string            Per-good buy-gating overrides as a JSON map, e.g. '{"FAB_MATS":{"minSupply":"LIMITED","strategy":"prefer-buy"}}' (alternative to repeated --good-override)
       --system string               System symbol for market lookups (defaults to deriving from construction site)
@@ -600,6 +590,34 @@ Usage:
 
 Flags:
   -h, --help   help for stop
+
+Global Flags:
+      --agent string    Agent symbol (alternative to player-id)
+      --player-id int   Player ID (required if agent not specified)
+      --socket string   Path to daemon Unix socket (default "/tmp/spacetraders-daemon.sock")
+  -v, --verbose         Enable verbose output
+```
+
+### spacetraders construction workers
+```
+Set the maximum number of haulers a RUNNING construction pipeline drains concurrently,
+without a restart. The construction drain re-reads its cap (max_workers) off the pipeline row every
+tick, so it converges the fan-out to the new count on the next tick — a hull already mid-haul finishes
+first, never force-killed. The cap is per-pipeline and persists across daemon restarts (RULINGS #2).
+
+This is the live way to scale a running pipeline's throughput: unlike stopping and restarting the
+pipeline, it never aborts in-flight hauls or risks the restart-wedge.
+
+Examples:
+  spacetraders construction workers X1-FB5-I56 --count 10
+  spacetraders construction workers X1-FB5-I56 --count 4
+
+Usage:
+  spacetraders construction workers <construction-site> [flags]
+
+Flags:
+      --count int   Maximum number of haulers the drain runs concurrently (required, >= 1)
+  -h, --help        help for workers
 
 Global Flags:
       --agent string    Agent symbol (alternative to player-id)
@@ -845,9 +863,12 @@ Use "spacetraders contract depot [command] --help" for more information about a 
 Show full detail for one contract, including per-delivery progress
 (good, units required, units fulfilled) and both payment components.
 
+Takes either the full contract id or the abbreviated id the contract list table
+prints. An abbreviation matching several contracts is reported, never guessed.
+
 Examples:
-  spacetraders contract get contract-abc123 --player-id 1
-  spacetraders contract get contract-abc123 --player-id 1 --json
+  spacetraders contract get cms1ww9it
+  spacetraders contract get cms1ww9it000108l4ce4gd2ka --json
 
 Usage:
   spacetraders contract get <id> [flags]
@@ -1247,19 +1268,17 @@ buying or declaring anything, then start it for real.
 Examples:
   spacetraders frontier start --agent ENDURANCE --dry-run
   spacetraders frontier start --agent ENDURANCE
-  spacetraders frontier start --player-id 1 --tick 60s --max-probe-fleet 40 --max-spend-per-cycle 100000
+  spacetraders frontier start --player-id 1 --tick 60s --max-probe-fleet 80
 
 Usage:
   spacetraders frontier start [flags]
 
 Flags:
-      --dry-run                      Log decisions without buying or declaring anything
-      --expansion-max-hops int       Gate-graph reach for the expansion queue; 0 uses the default (3)
-  -h, --help                         help for start
-      --max-probe-fleet int          Total satellite cap; 0 uses the default (40)
-      --max-spend-per-cycle int      Max probe spend per trailing window; 0 uses the default (100000)
-      --purchase-cooldown duration   Min time between probe buys (e.g. 10m); 0 uses the default
-      --tick duration                Reconcile cadence (e.g. 60s); 0 uses the coordinator default
+      --dry-run                  Log decisions without buying or declaring anything
+      --expansion-max-hops int   Gate-graph reach for the expansion queue; 0 uses the default (3)
+  -h, --help                     help for start
+      --max-probe-fleet int      Total satellite cap — the sole throttle; 0 uses the default (40). Tune reach + discover/scan live via 'spacetraders tune --operation frontier'
+      --tick duration            Reconcile cadence (e.g. 60s); 0 uses the coordinator default
 
 Global Flags:
       --agent string    Agent symbol (alternative to player-id)
@@ -1286,151 +1305,6 @@ Usage:
 Flags:
   -h, --help   help for status
       --json   Render the status as JSON for scripts
-
-Global Flags:
-      --agent string    Agent symbol (alternative to player-id)
-      --player-id int   Player ID (required if agent not specified)
-      --socket string   Path to daemon Unix socket (default "/tmp/spacetraders-daemon.sock")
-  -v, --verbose         Enable verbose output
-```
-
-## spacetraders goods
-```
-Manage automated goods production using supply chain fabrication.
-
-The goods factory system recursively produces any good in the SpaceTraders economy
-by building complete dependency trees, acquiring raw materials, and coordinating
-multi-ship production operations.
-
-Examples:
-  spacetraders goods produce ADVANCED_CIRCUITRY --system X1-GZ7
-  spacetraders goods status <factory-id>
-  spacetraders goods stop <factory-id>
-
-Usage:
-  spacetraders goods [command]
-
-Available Commands:
-  factory     Tune a running goods factory operation live (no restart)
-  produce     Produce a good using automated supply chain fabrication
-  status      Check the status of a goods factory
-  stop        Stop a running goods factory
-
-Flags:
-  -h, --help   help for goods
-
-Global Flags:
-      --agent string    Agent symbol (alternative to player-id)
-      --player-id int   Player ID (required if agent not specified)
-      --socket string   Path to daemon Unix socket (default "/tmp/spacetraders-daemon.sock")
-  -v, --verbose         Enable verbose output
-
-Use "spacetraders goods [command] --help" for more information about a command.
-```
-
-### spacetraders goods factory
-```
-Tune a RUNNING goods factory operation without restarting it.
-
-Examples:
-  spacetraders goods factory workers --container goods_factory-FAB_MATS-abcd --count 2
-
-Usage:
-  spacetraders goods factory [command]
-
-Available Commands:
-  workers     Set a running goods factory's concurrent-hull cap live (no restart)
-
-Flags:
-  -h, --help   help for factory
-
-Global Flags:
-      --agent string    Agent symbol (alternative to player-id)
-      --player-id int   Player ID (required if agent not specified)
-      --socket string   Path to daemon Unix socket (default "/tmp/spacetraders-daemon.sock")
-  -v, --verbose         Enable verbose output
-
-Use "spacetraders goods factory [command] --help" for more information about a command.
-```
-
-### spacetraders goods produce
-```
-Produce a good using automated supply chain fabrication.
-
-The goods factory will:
-- Build a complete dependency tree to raw materials
-- Identify what can be bought vs what must be fabricated
-- Use idle hauler ships to execute production
-- Acquire whatever quantity is available at markets
-- Poll for production completion at manufacturing waypoints
-
-The factory operates with a market-driven model - it acquires whatever quantity
-is available rather than producing fixed amounts.
-
-Examples:
-  spacetraders goods produce ADVANCED_CIRCUITRY --system X1-GZ7 --player-id 1
-  spacetraders goods produce MACHINERY --system X1-GZ7 --agent ENDURANCE
-
-Usage:
-  spacetraders goods produce <good> [flags]
-
-Flags:
-  -h, --help             help for produce
-      --inputs-only      Construction-support mode: feed the dependency tree but do NOT harvest the fabricated output — leave it in factory stock for a construction pipeline to source
-      --iterations int   Number of production iterations (-1 for infinite, 0 or 1 for single run, >1 for specific count) (default 1)
-      --system string    System symbol where production will occur (required)
-
-Global Flags:
-      --agent string    Agent symbol (alternative to player-id)
-      --player-id int   Player ID (required if agent not specified)
-      --socket string   Path to daemon Unix socket (default "/tmp/spacetraders-daemon.sock")
-  -v, --verbose         Enable verbose output
-```
-
-### spacetraders goods status
-```
-Check the status and progress of a goods factory.
-
-Displays detailed information about the factory including:
-- Current status (PENDING, ACTIVE, COMPLETED, FAILED, STOPPED)
-- Target good and system
-- Production progress (nodes completed vs total)
-- Quantity acquired and total cost
-- Dependency tree (with --tree flag)
-
-Examples:
-  spacetraders goods status factory_12345
-  spacetraders goods status factory_12345 --tree
-
-Usage:
-  spacetraders goods status <factory-id> [flags]
-
-Flags:
-  -h, --help   help for status
-      --tree   Display the full dependency tree with visual indicators
-
-Global Flags:
-      --agent string    Agent symbol (alternative to player-id)
-      --player-id int   Player ID (required if agent not specified)
-      --socket string   Path to daemon Unix socket (default "/tmp/spacetraders-daemon.sock")
-  -v, --verbose         Enable verbose output
-```
-
-### spacetraders goods stop
-```
-Stop a running goods factory.
-
-This will gracefully stop the factory coordinator and release any assigned ships
-back to the idle pool.
-
-Examples:
-  spacetraders goods stop factory_12345
-
-Usage:
-  spacetraders goods stop <factory-id> [flags]
-
-Flags:
-  -h, --help   help for stop
 
 Global Flags:
       --agent string    Agent symbol (alternative to player-id)
@@ -2294,6 +2168,86 @@ Global Flags:
   -v, --verbose         Enable verbose output
 ```
 
+## spacetraders sensing
+```
+Operator verbs for the parked-probe sensing model.
+
+A parked probe is bought for one waypoint, flown there once, and then stands
+still forever scanning its own market. Which waypoints earn a probe is decided by
+screening each system against the goods whitelist in config.yaml's [sensing]
+block — and those verdicts are durable, which is what makes the rescreen verb
+below necessary after the whitelist changes.
+
+Usage:
+  spacetraders sensing [command]
+
+Available Commands:
+  rescreen    Re-open every system verdict so the sweep re-judges under the current whitelist
+
+Flags:
+  -h, --help   help for sensing
+
+Global Flags:
+      --agent string    Agent symbol (alternative to player-id)
+      --player-id int   Player ID (required if agent not specified)
+      --socket string   Path to daemon Unix socket (default "/tmp/spacetraders-daemon.sock")
+  -v, --verbose         Enable verbose output
+
+Use "spacetraders sensing [command] --help" for more information about a command.
+```
+
+### spacetraders sensing rescreen
+```
+Return every sensing system verdict to PENDING for re-screening.
+
+WHEN YOU NEED THIS: after editing [sensing] goods_whitelist in config.yaml. Every
+verdict is stamped with the whitelist in force when it was written, and
+NO_WHITELIST is durable — only PENDING systems are ever re-screened — so a changed
+list does NOT re-open the systems it would now accept. Editing the config alone
+changes nothing about the existing map; this is what applies it.
+
+WHAT IT TOUCHES: sensing_systems.verdict, and nothing else. Placements, the hulls
+standing on them, the scan history and any in-flight charting errand all survive
+— a rescreen re-evaluates judgement, never ownership.
+
+WHAT YOU WILL SEE AFTERWARDS, so it does not read as a fault: every verdict is
+PENDING for a while, and until the sweep re-screens a system the buy queue treats
+it as out of scope. So probe buying pauses fleet-wide, buy_reaped spikes as the
+reaper hands back claims that are momentarily undrainable, and the queue looks
+stalled. That is the rescreen working, not failing — no hull is disturbed and no
+money guard is touched. It clears as the sweep works through at five systems per
+tick, which on a large map is tens of minutes.
+
+WHAT IT DOES NOT COVER: a market NO PROBE HAS EVER SCANNED is judged from the
+goods projection recorded on its slot, and this verb leaves that projection alone
+(clearing it would be permanent and would suppress the refetch that repopulates
+it — see sp-ysg8h). So a remotely-discovered placement keeps its old projection
+until a probe parks there and scans it, after which the market cache answers and
+the next re-screen judges it correctly on its own. Every market a probe HAS
+visited is already re-judged correctly from that cache — which is every parked
+placement, so nothing you are already paying for is affected.
+
+Safe to run at any time and safe to repeat — the cost of a needless run is one
+re-screen sweep, which the coordinator already paces at five systems per tick. The
+new verdicts land over the following ticks, not instantly.
+
+Examples:
+  spacetraders sensing rescreen --agent ENDURANCE
+  spacetraders sensing rescreen --player-id 1
+
+Usage:
+  spacetraders sensing rescreen [flags]
+
+Flags:
+  -h, --help   help for rescreen
+
+Global Flags:
+      --agent string    Agent symbol (alternative to player-id)
+      --player-id int   Player ID (required if agent not specified)
+      --socket string   Path to daemon Unix socket (default "/tmp/spacetraders-daemon.sock")
+  -v, --verbose         Enable verbose output
+```
+
 ## spacetraders ship
 ```
 Manage ships and view ship information.
@@ -2330,7 +2284,9 @@ Available Commands:
   reserved-cargo  Show a ship's cargo do-not-sell reservations
   route           Route a ship point-to-point to a waypoint in ANY reachable system
   sell            Sell cargo from a ship
+  transfer        Move cargo from one ship to another at the same waypoint
   unreserve-cargo Release a reserved cargo good for sale on a ship
+  warp            Warp a ship OFF the jump-gate network to a waypoint in another system
 
 Flags:
   -h, --help   help for ship
@@ -2827,6 +2783,47 @@ Global Flags:
   -v, --verbose         Enable verbose output
 ```
 
+### spacetraders ship transfer
+```
+Move cargo directly from one ship's hold into another's.
+
+Both ships must be parked at the same waypoint - the game requires it, and there
+is no in-flight handover. The daemon aligns their nav states (both docked or both
+in orbit) before the move, so they need not already match.
+
+A module removed with 'ship outfit remove' sits in the ship's cargo as an ordinary
+good, so this is how a module moves between hulls:
+
+  ship outfit remove   --ship EXPLORER-1 --module MODULE_WARP_DRIVE_I
+  ship transfer --from EXPLORER-1 --to FREIGHTER-1 --good MODULE_WARP_DRIVE_I --units 1
+  ship outfit install  --ship FREIGHTER-1 --module MODULE_WARP_DRIVE_I
+
+Two refusals are possible and both leave the cargo exactly where it is: the ships
+are at different waypoints (reported with each one's location), or the receiving
+ship has no cargo space left (reported with its capacity and load). The move is
+instantaneous, so either is printed here rather than in a container log.
+
+Examples:
+  spacetraders ship transfer --from TORWIND-F6 --to TORWIND-2 --good MODULE_WARP_DRIVE_I --units 1 --player-id 1
+  spacetraders ship transfer --from TORWIND-F6 --to TORWIND-2 --good ALUMINUM --units 40 --agent TORWIND
+
+Usage:
+  spacetraders ship transfer [flags]
+
+Flags:
+      --from string   Ship symbol the cargo leaves (required)
+      --good string   Good symbol to move, e.g. MODULE_WARP_DRIVE_I (required)
+  -h, --help          help for transfer
+      --to string     Ship symbol the cargo arrives on, at the same waypoint (required)
+      --units int     Units to move (required, must be greater than zero)
+
+Global Flags:
+      --agent string    Agent symbol (alternative to player-id)
+      --player-id int   Player ID (required if agent not specified)
+      --socket string   Path to daemon Unix socket (default "/tmp/spacetraders-daemon.sock")
+  -v, --verbose         Enable verbose output
+```
+
 ### spacetraders ship unreserve-cargo
 ```
 Release a good for sale, overriding the default do-not-sell reservation.
@@ -2854,6 +2851,44 @@ Global Flags:
   -v, --verbose         Enable verbose output
 ```
 
+### spacetraders ship warp
+```
+Warp a ship directly to a waypoint in another system, without a jump gate.
+
+Unlike 'ship route' (which crosses jump gates) and 'ship jump' (a single gate hop),
+warp reaches systems the gate network does not connect. The ship must have a warp
+drive module installed - only an explorer hull carries one.
+
+The daemon will automatically:
+- Orbit the ship if docked
+- Enforce the fuel-safety guard (topping off first when the origin sells fuel)
+- Warp to the destination and chart the arrival system
+- Return a container ID for tracking progress
+
+Two refusals are possible and both come BEFORE any warp is attempted, leaving the
+ship exactly where it is: the ship has no warp drive, or the leg would strand it
+(reported with the fuel required, available and tank capacity). Read either one with
+'spacetraders container logs <container-id>'.
+
+Examples:
+  spacetraders ship warp --ship TORWIND-F6 --destination X1-TY66-A1 --player-id 1
+  spacetraders ship warp --ship EXPLORER-1 --destination X1-FAR-A1 --agent ENDURANCE
+
+Usage:
+  spacetraders ship warp [flags]
+
+Flags:
+      --destination string   Destination waypoint symbol in another system (required)
+  -h, --help                 help for warp
+      --ship string          Ship symbol to warp - must have a warp drive (required)
+
+Global Flags:
+      --agent string    Agent symbol (alternative to player-id)
+      --player-id int   Player ID (required if agent not specified)
+      --socket string   Path to daemon Unix socket (default "/tmp/spacetraders-daemon.sock")
+  -v, --verbose         Enable verbose output
+```
+
 ## spacetraders shipyard
 ```
 Manage shipyard operations including listing available ships and purchasing ships.
@@ -2872,6 +2907,7 @@ Usage:
 Available Commands:
   list        List available ships at a shipyard
   purchase    Purchase ships from a shipyard
+  yards       List saved shipyards dealing in a ship type (current era only, no ship presence required)
 
 Flags:
   -h, --help   help for shipyard
@@ -2930,17 +2966,48 @@ Examples:
   spacetraders shipyard purchase --ship AGENT-1 --type SHIP_PROBE --player-id 1
   spacetraders shipyard purchase --ship AGENT-1 --type SHIP_PROBE --quantity 5 --budget 500000 --player-id 1
   spacetraders shipyard purchase --ship AGENT-1 --type SHIP_MINING_DRONE --quantity 10 --waypoint X1-GZ7-A1 --player-id 1
+  spacetraders shipyard purchase --ship AGENT-1 --type SHIP_HEAVY_FREIGHTER --quantity 5 --fleet trade --player-id 1  # atomic buy+dedicate to the trade fleet
 
 Usage:
   spacetraders shipyard purchase [flags]
 
 Flags:
-      --budget int        Maximum budget in credits (0 = no limit, default: 0)
-  -h, --help              help for purchase
-      --quantity int      Number of ships to purchase (default: 1) (default 1)
-      --ship string       Ship symbol to use for navigation (required)
-      --type string       Ship type to purchase (e.g., SHIP_PROBE, SHIP_MINING_DRONE) (required)
-      --waypoint string   Shipyard waypoint (optional - will auto-discover if not provided)
+      --budget int                   Maximum budget in credits (0 = no limit, default: 0)
+      --fleet fleet assign --fleet   Optional: dedicate each purchased hull to this fleet tag ATOMICALLY at purchase (same vocabulary as fleet assign --fleet), so it is never observable as an undedicated/reclaimable pool hull. Omitted = hull lands undedicated (current behavior).
+  -h, --help                         help for purchase
+      --quantity int                 Number of ships to purchase (default: 1) (default 1)
+      --ship string                  Ship symbol to use for navigation (required)
+      --type string                  Ship type to purchase (e.g., SHIP_PROBE, SHIP_MINING_DRONE) (required)
+      --waypoint string              Shipyard waypoint (optional - will auto-discover if not provided)
+
+Global Flags:
+      --agent string    Agent symbol (alternative to player-id)
+      --player-id int   Player ID (required if agent not specified)
+      --socket string   Path to daemon Unix socket (default "/tmp/spacetraders-daemon.sock")
+  -v, --verbose         Enable verbose output
+```
+
+### spacetraders shipyard yards
+```
+Query the SAVED shipyard_inventory scan cache for yards dealing in the given
+ship type(s) — the daemon's per-yard catalog written by the shipyard scanner.
+
+Unlike 'shipyard list', NO ship needs to be physically present and docked at
+the yard: this reads data already collected by prior scans. Results are
+scoped to the CURRENT open era (a yard whose only rows are from a closed era
+is excluded) and ordered by purchase price ascending.
+
+Examples:
+  spacetraders shipyard yards --type SHIP_HEAVY_FREIGHTER --player-id 1
+  spacetraders shipyard yards --type SHIP_HEAVY_FREIGHTER --type SHIP_PROBE --player-id 1
+  spacetraders shipyard yards --player-id 1   # every saved yard, any type
+
+Usage:
+  spacetraders shipyard yards [flags]
+
+Flags:
+  -h, --help           help for yards
+      --type strings   Ship type(s) to filter by (repeatable or comma-list; omit for every saved type)
 
 Global Flags:
       --agent string    Agent symbol (alternative to player-id)
@@ -3072,22 +3139,28 @@ WRITE (give a value):
 
 The daemon validates the (key, value) against its static bounds registry — an
 out-of-bounds or unknown-key tune is rejected before anything is written — then
-amends just the container's persisted config. The running coordinator re-reads
-its config at each tick start, so the change takes effect on the NEXT reconcile
-tick; it also survives daemon restarts (the config column is the recovery
-source). Every effective tune is recorded as a config.tuned captain audit event.
+amends just the container's persisted config. A coordinator with a live-config
+reader (bootstrap, contract, scoutpost, ...) re-reads its config at each tick
+start, so the change takes effect on the NEXT reconcile tick. The SENSING
+coordinator has no live reader yet: a sensing tune persists immediately but is
+applied at the coordinator's next REBUILD (daemon restart or relaunch) — until
+then the RUNNING loop keeps its launch values, so do not rely on a sensing tune
+(e.g. tightening max_spend_per_cycle) taking effect without a bounce. Every tune
+survives daemon restarts (the config column is the recovery source), and every
+effective tune is recorded as a config.tuned captain audit event.
 
 A value of 0 (or --reset) reverts the knob to its documented default.
-Currently tunable engines: the market-freshness sizer ("freshsizer") and the
-frontier expansion coordinator ("frontier").
+Tunable operations include the probe-sensing coordinator ("sensing"), the
+scout-post reconciler ("scoutpost"), bootstrap ("bootstrap"), and more — the
+daemon lists every supported alias when given an unknown one.
 
 Examples:
-  spacetraders tune --operation frontier                       # read all frontier knobs
-  spacetraders tune --operation frontier discovery_share        # read one knob's value + metadata
-  spacetraders tune --operation frontier discovery_share 60     # 60% discover / 40% scan
-  spacetraders tune --operation frontier --json                 # read all, as JSON
-  spacetraders tune --operation freshsizer purchase_cooldown_secs 60
-  spacetraders tune --operation frontier purchase_cooldown_secs --reset
+  spacetraders tune --operation sensing                        # read all sensing knobs
+  spacetraders tune --operation sensing probe_budget            # read one knob's value + metadata
+  spacetraders tune --operation sensing probe_budget 120        # size the probe fleet budget
+  spacetraders tune --operation sensing --json                  # read all, as JSON
+  spacetraders tune --operation sensing purchase_cooldown_secs 60
+  spacetraders tune --operation sensing purchase_cooldown_secs --reset
 
 Usage:
   spacetraders tune [container-id] [key] [value] [flags]
@@ -3095,7 +3168,7 @@ Usage:
 Flags:
   -h, --help               help for tune
       --json               Render the read/list output as JSON for scripts
-      --operation string   Resolve the target by coordinator type instead of container id (freshsizer, frontier)
+      --operation string   Resolve the target by coordinator type instead of container id (sensing, scoutpost, bootstrap, ...)
       --reset              Revert the knob to its documented default (same as value 0)
       --show               Force the read/list form (equivalent to omitting the value)
 
@@ -3366,22 +3439,20 @@ Usage:
   spacetraders workflow [command]
 
 Available Commands:
-  arb-run                       Fly one idle hull through a single captain-directed, guarded arbitrage leg (as a daemon container)
-  auto-outfit                   Start the standing guarded auto-outfit coordinator (installs the highest-marginal-value module upgrade on the most saturated hull, guarded)
-  batch-contract                Execute batch contract workflow
-  bootstrap                     Start the standing captain bootstrap coordinator (drives a cold agent through the cold-start arc to the jump gate)
-  capacity-reconciler           Start the standing capacity reconciler (drives actual contract-delivery topology toward the computed desired topology, capex-paced)
-  fleet-autosizer               Start the standing fleet capacity autosizer (sizes the hull pool to demand and auto-buys behind the money-guard stack)
-  scout-all-markets             Automatically assign all probe/satellite ships to scout all non-fuel-station markets
-  scout-markets                 Deploy fleet to scout markets with VRP optimization
-  shipyard-backfill             Start the standing shipyard-backfill sweep (backfills the charted-but-unscanned shipyard systems, deeper-first)
-  siting-coordinator            Start the standing factory-siting coordinator (automates factory discovery, placement, and capacity planning)
-  stocker                       Fly one dedicated hull as a warehouse-filling stocker loop (as a daemon container)
-  tour-run                      Fly one idle hull through planner-chosen, guarded multi-hop trade tours (as a daemon container)
-  trade-fleet-coordinator       Start the standing trade-fleet coordinator (keeps continuous tours alive on 'trade' hulls)
-  trade-route                   Fly one idle hull through the top-ranked arbitrage circuit (as a daemon container)
-  warehouse                     Park an idle hull as a passive inventory warehouse at a home waypoint (as a daemon container)
-  worker-rebalancer-coordinator Start the standing worker-rebalancer coordinator (ferries idle lights to worker-starved factory systems)
+  arb-run                 Fly one idle hull through a single captain-directed, guarded arbitrage leg (as a daemon container)
+  auto-outfit             Start the standing guarded auto-outfit coordinator (installs the highest-marginal-value module upgrade on the most saturated hull, guarded)
+  batch-contract          Execute batch contract workflow
+  bootstrap               Start the standing captain bootstrap coordinator (drives a cold agent through the cold-start arc to the jump gate)
+  fleet-autosizer         Start the standing fleet capacity autosizer (sizes the hull pool to demand and auto-buys behind the money-guard stack)
+  long-haul-coordinator   Arm the standing long-haul arb coordinator (captures out-of-horizon exotic lanes; inert until hulls are long-haul-tagged)
+  scout-all-markets       Automatically assign all probe/satellite ships to scout all non-fuel-station markets
+  scout-markets           Deploy fleet to scout markets with VRP optimization
+  shipyard-backfill       Start the standing shipyard-backfill sweep (backfills the charted-but-unscanned shipyard systems, deeper-first)
+  stocker                 Fly one dedicated hull as a warehouse-filling stocker loop (as a daemon container)
+  tour-run                Fly one idle hull through planner-chosen, guarded multi-hop trade tours (as a daemon container)
+  trade-fleet-coordinator Start the standing trade-fleet coordinator (keeps continuous tours alive on 'trade' hulls)
+  trade-route             Fly one idle hull through the top-ranked arbitrage circuit (as a daemon container)
+  warehouse               Park an idle hull as a passive inventory warehouse at a home waypoint (as a daemon container)
 
 Flags:
   -h, --help   help for workflow
@@ -3471,7 +3542,7 @@ Calibration is live-tunable with no restart:
   spacetraders tune --operation autooutfit --show
   spacetraders tune --operation autooutfit min_telemetry_samples 12
   (knobs: min_telemetry_samples, price_ceiling, max_installs_per_tick, payback_horizon_hours,
-   treasury_reserve, max_treasury_fraction_pct)
+   max_treasury_fraction_pct)
 
 Examples:
   spacetraders workflow auto-outfit --agent TORWIND --dry-run
@@ -3542,85 +3613,40 @@ never babysits. It OBSERVES the live world each tick, DERIVES the current phase 
 observation (never a stored cursor), and ACTS on the delta behind guards, so a restart re-observes
 and resumes at real state with no double-acting.
 
-Slice 1 runs the DATA phase (INCOME/GATE are later slices):
-  BUY     probes → probe_target (default 3), STAGED and capital-gated — at most one buy per tick,
-          and only when the price clears the money-guard (spend ≤ reserve_margin × treasury). Each
-          decision logs its full arithmetic (price, treasury, the cap, what would have blocked).
-  SCOUT   assign every probe to scout-all-markets (idempotent VRP assignment) so market data flows.
-  EXIT    hold at DATA-complete once market coverage ≥ coverage_bar (the later phases are stubs).
+COLDSTART runs scanning and contracts as PARALLEL workstreams (contracts are the funding floor and
+run from hour 0, never waiting on scanning); GATE follows, and EXPANSION is terminal:
+  BUY     probes → 3, STAGED and capital-gated — and only when the treasury left after the buy
+          still clears the immutable working-capital floor (cushion=(treasury−price) ≥
+          common.ImmutableReserveFloor, 50k). Each decision logs its full arithmetic (price,
+          treasury, cushion, floor, what would have blocked).
+  SCOUT   declare the home coverage post so the scout-post coordinator mans an idle probe and
+          market data flows.
+  EARN    retire the frigate, place one light hauler per viable contract hub (up to 4), seed the
+          trade hull, and run batch-contract — alongside the probe ramp, not after it.
+  GATE    once the contract op is genuinely SCALED AND FUNDED (the full fleet has reached the
+          auto-scaler's live target and the treasury holds a surplus), drive jump-gate
+          construction and size gate workers.
+  EXIT    at EXPANSION — the gate is BUILT, so it hands off to the standing coordinators and exits.
 
 It is LIVE BY DEFAULT: launched here it is ACTIVE immediately. Set [bootstrap] bootstrap_disabled=
-true to stand it down. Pass --dry-run (or set [bootstrap] dry_run=true) to evaluate + log every
-decision loudly while acting on nothing.
+true to stand it down.
 
-Tuning is config-driven (config.yaml [bootstrap], live on daemon restart):
-  bootstrap_disabled / dry_run                        escapes
-  probe_target / coverage_bar                         DATA target + exit
-  reserve_margin                                      the ≤-fraction-of-treasury money-guard + pacer
-  tick_seconds / probe_ship_type                      cadence + the asset bought
+Tuning is two controls only — the cold-start shape is fixed in code:
+  bootstrap_disabled   the escape (config.yaml, live on daemon restart)
+  tick_seconds         reconcile cadence; also live-tunable as tick_secs with no restart
+
+The working-capital money-guard itself (every buy leaves the treasury ≥ this floor) is the
+immutable common.ImmutableReserveFloor (50k, sp-05glh) — a hard constant, not a config.yaml knob.
 
 Examples:
   spacetraders workflow bootstrap --agent ENDURANCE
-  spacetraders workflow bootstrap --player-id 1 --dry-run
+  spacetraders workflow bootstrap --player-id 1
 
 Usage:
   spacetraders workflow bootstrap [flags]
 
 Flags:
-      --dry-run   Evaluate + log every decision but buy/assign nothing (watch mode)
-  -h, --help      help for bootstrap
-
-Global Flags:
-      --agent string    Agent symbol (alternative to player-id)
-      --player-id int   Player ID (required if agent not specified)
-      --socket string   Path to daemon Unix socket (default "/tmp/spacetraders-daemon.sock")
-  -v, --verbose         Enable verbose output
-```
-
-### spacetraders workflow capacity-reconciler
-```
-Start the STANDING capacity reconciler for a player (epic st-7zk) — the declarative
-actual → desired → diff → converge engine for the contract-delivery machine.
-
-Each tick (default 5min) it runs SENSE → PLAN → DIFF → GOVERN → CONVERGE:
-  SENSE     read-only signals: per-hub contract demand, accept→fulfill cycle-times, current
-            topology, per-hull utilization, treasury/economics.
-  PLAN      desired topology: covered hubs, buffered goods + caps per hub, warehouse/stocker/
-            worker counts + positions — every add ROI-gated on per-hull-$/hr.
-  DIFF      gap → ordered actions, cheapest-lever-first: 1 reuse idle hulls, 2 rebalance/
-            reposition, 3 buffer whitelist/caps, 4 add cluster/autobuy (capital).
-  GOVERN    capex pacing: reserve floor, surplus-fraction drain, 25%-per-decision cap, ROI gate.
-  CONVERGE  cheap tiers execute autonomously via the existing primitives; capital actions file
-            a PROPOSAL for approval (tiered autonomy v1 — nothing is auto-bought).
-
-The loop is stateless per tick (idempotent, restart-safe, self-healing) and honors the
-captain/DISABLED kill switch at the top of EVERY tick.
-
-Pass --dry-run (or set [capacity_reconciler] dry_run=true) to launch OBSERVE-ONLY: SENSE/PLAN/
-DIFF/GOVERN run as normal but CONVERGE actuates nothing and files no proposal — it logs what it
-WOULD do each tick (recommended first-start posture: watch a live cycle before arming). A
-dry-run launch stays dry-run across daemon restarts until stopped and relaunched.
-
-FOUNDATION STATE: the intelligence lanes land incrementally — with the no-op planner wired the
-engine provably emits ZERO actions, so starting it is safe and changes nothing yet.
-
-Calibration is config-driven (config.yaml [capacity_reconciler], live on daemon restart):
-  reserve_floor / surplus_fraction / per_decision_cap_pct (default 25)   capex governor
-  roi_payback_horizon_hours / add_threshold_per_hull_cr_hr               ROI gates
-  stocker_capacity_budget                                                buffer selection
-  tick_interval_secs (default 300) / approval_threshold (default 0 =     pacing + autonomy
-  every capital action needs approval)
-
-Examples:
-  spacetraders workflow capacity-reconciler --agent TORWIND
-  spacetraders workflow capacity-reconciler --player-id 1
-
-Usage:
-  spacetraders workflow capacity-reconciler [flags]
-
-Flags:
-      --dry-run   Evaluate + log every decision but actuate nothing and file no proposal (observe-only)
-  -h, --help      help for capacity-reconciler
+  -h, --help   help for bootstrap
 
 Global Flags:
       --agent string    Agent symbol (alternative to player-id)
@@ -3651,14 +3677,14 @@ Each slow tick (default 15min) it, per enabled hull class:
            purchase counter + a captain notice, and stops at the per-tick cap.
 
 It is LIVE BY DEFAULT: launched here it is ACTIVE immediately. Set [fleet_autosizer]
-autosizer_disabled=true to stand the whole thing down, or lights_disabled / heavies_disabled to
-freeze one class. Set dry_run=true to evaluate + log every buy loudly while spending nothing.
+dry_run=true to evaluate + log every buy loudly while spending nothing.
 
 Tuning is config-driven (config.yaml [fleet_autosizer], live on daemon restart):
-  autosizer_disabled / dry_run / lights_disabled / heavies_disabled   escapes
+  dry_run                                                             escape
   tick_interval_secs / purchase_cap_per_tick                          pacing
   fleet_ceiling_total / fleet_ceiling_{lights,heavies}                API-budget ceilings
-  purchase_margin_over_floor / reserve / reserve_treasury_pct         treasury guard
+  purchase_margin_over_floor                                          treasury guard (margin over the
+                                                                       immutable reserve floor)
   payback_safety_factor / purchase_cutoff_at_era_minus_hours          era-clock payback
   heavy_marginal_rate_floor / heavy_unserved_lanes_min                heavy economics
   max_price_{lights,heavies} / max_premium_over_cheapest_pct          price ceilings
@@ -3672,6 +3698,44 @@ Usage:
 
 Flags:
   -h, --help   help for fleet-autosizer
+
+Global Flags:
+      --agent string    Agent symbol (alternative to player-id)
+      --player-id int   Player ID (required if agent not specified)
+      --socket string   Path to daemon Unix socket (default "/tmp/spacetraders-daemon.sock")
+  -v, --verbose         Enable verbose output
+```
+
+### spacetraders workflow long-haul-coordinator
+```
+Arm the STANDING long-haul arb fleet coordinator for a player (sp-mepj) — the out-of-horizon
+single-good arb engine. sp-mtvg proved the exotic 'blind spot' is a 1-gate-hop DISCOVERY horizon
+shared by the tour solver and the arb scanner: source and sink of the richest exotic lanes sit 3+
+gate hops apart, so neither optimizer ever sees both in one snapshot. This engine prices the REAL
+multi-hop route and runs the top lanes by realized $/hr.
+
+Each tick, per idle long-haul-tagged hull, it launches a per-hull worker that:
+  DISCOVER  reads the global-best cross-system sink + cheapest source per good (out-of-horizon lanes)
+  PRICE     computes realized both-side price-impact economics over the REAL gate-graph route
+  SIZE      buys only the optimal tranche (marginal unit still clears the floor; never oversells)
+  EXECUTE   buy@source -> multi-jump -> per-tranche sell@sink -> opportunistic backhaul or deadhead
+  GUARD     every buy is fail-closed: within the per-haul cap AND leaving the 200k contract cushion
+            intact AND within the total in-flight exposure cap (all Admiral-authorized, aggressive)
+
+It is ARMED but INERT on arm: it touches ONLY hulls you tag long-haul. Populate the fleet with
+'fleet add --operation long-haul --ship X'; untag to remove a hull (no restart). There is NO
+feature flag — the tag is the on/off seam. The shared sp-m3122 liveness watchdog kills+relaunches
+a stalled worker; a legitimately-long multi-hop leg is IN_TRANSIT and never false-killed.
+
+Examples:
+  spacetraders workflow long-haul-coordinator --agent TORWIND
+  spacetraders workflow long-haul-coordinator --player-id 1
+
+Usage:
+  spacetraders workflow long-haul-coordinator [flags]
+
+Flags:
+  -h, --help   help for long-haul-coordinator
 
 Global Flags:
       --agent string    Agent symbol (alternative to player-id)
@@ -3785,57 +3849,6 @@ Flags:
   -h, --help                 help for shipyard-backfill
       --max-dispatches int   Per-cycle sweep-once declaration cap; 0 uses the coordinator default
       --tick duration        Reconcile cadence (e.g. 60s); 0 uses the coordinator default
-
-Global Flags:
-      --agent string    Agent symbol (alternative to player-id)
-      --player-id int   Player ID (required if agent not specified)
-      --socket string   Path to daemon Unix socket (default "/tmp/spacetraders-daemon.sock")
-  -v, --verbose         Enable verbose output
-```
-
-### spacetraders workflow siting-coordinator
-```
-Start the STANDING factory-siting coordinator for a player (sp-vdld) — the factory twin
-of 'trade-fleet-coordinator'. It is the standing "brain" that automates factory discovery,
-placement, and capacity planning, retiring the captain's manual expansion sweeps.
-
-Each slow tick (default 15min) it:
-  SCAN     enumerate candidate (good, system) factory sites that pass the export-site hard gate
-           (a factory is map-fixed — you cannot manufacture where a good only IMPORTs/EXCHANGEs),
-           in-system input eligibility (supply-first), and market-data freshness.
-  SCORE    branchPL projection x tour-alignment - input-competition - staleness.
-  MAINTAIN pick the top-K portfolio (K = floor(haulers / workers_per_chain)), subject to
-           per-system and per-input-market concentration caps.
-  ACT      launch missing top-K chains THROUGH the guard stack (each launched goods_factory
-           coordinator runs 2dv4 + a5j7 + C2 + r5a6 on its own passes — guards veto at zero
-           cost, never bypassed); retire chains that fall out of top-K via a clean stop, with
-           hysteresis to prevent thrash.
-  EMIT     post scout-demand for stale-but-promising sites so coverage refreshes them.
-
-It is LIVE BY DEFAULT: launched here it is ACTIVE immediately (no enablement flip). Set
-[manufacturing.siting] siting_disabled=true in config.yaml to stand the whole brain down.
-
-Ownership: it claims nothing itself — each goods_factory chain it launches claims its own
-hulls through the existing factory path. It composes with (never duplicates) the per-chain
-guards: it drives portfolio membership; each chain keeps its own safety.
-
-Tuning is config-driven (config.yaml [manufacturing.siting], live on daemon restart):
-  siting_disabled            emergency off-switch (default off = ACTIVE)
-  dry_run                    evaluate + log decisions but take no action (watch mode)
-  tick_interval_secs         reconcile cadence (default 900)
-  top_k / workers_per_chain  portfolio size (top_k pins it; else derived, default /3.5)
-  weight_* / max_chains_*    score weights and concentration caps
-  freshness_max_secs / emit_staleness_secs / retire_hysteresis_ticks / ...
-
-Examples:
-  spacetraders workflow siting-coordinator --agent TORWIND
-  spacetraders workflow siting-coordinator --player-id 1
-
-Usage:
-  spacetraders workflow siting-coordinator [flags]
-
-Flags:
-  -h, --help   help for siting-coordinator
 
 Global Flags:
       --agent string    Agent symbol (alternative to player-id)
@@ -4062,49 +4075,6 @@ Flags:
   -h, --help              help for warehouse
       --ship string       Idle hull to dedicate as the warehouse (required)
       --waypoint string   Home waypoint to park the warehouse hull at (required)
-
-Global Flags:
-      --agent string    Agent symbol (alternative to player-id)
-      --player-id int   Player ID (required if agent not specified)
-      --socket string   Path to daemon Unix socket (default "/tmp/spacetraders-daemon.sock")
-  -v, --verbose         Enable verbose output
-```
-
-### spacetraders workflow worker-rebalancer-coordinator
-```
-Start the STANDING worker-rebalancer coordinator for a player (sp-f5pr). It reconciles
-every tick: it finds worker-starved factory systems (a factory past its warm-up window with
-no in-system idle light and fewer lights than factory chains) and ferries the nearest idle
-undedicated light-hauler from a source system that can spare one — then reclaims the hull on
-arrival so the destination factory mans it in-system.
-
-Launch it once and worker starvation self-heals across daemon restarts; the coordinator
-holds no in-memory state (every clock/cap is derived from ship + container rows).
-
-Ownership: each ferry claims its own hull under operation="worker_ferry" (occupancy, not a
-dedication — the coordinator claims nothing directly, and never poaches a pinned or
-captain-reserved hull). Guards fail closed: any unreadable state ⇒ no ferry that tick.
-
-Tuning is config-driven (config.yaml [worker_rebalancer], live on daemon restart):
-  enabled                  on/off (default on)
-  tick_seconds             reconcile cadence (default 60)
-  vacancy_min_minutes      factory warm-up before a system counts as starved (default 15)
-  source_min_idle          idle lights a source must hold to donate one (default 2)
-  ferry_cooldown_seconds   per-system suppress window after a ferry (default 600)
-  max_concurrent_ferries   cap on simultaneous ferries (default 2)
-  max_lights_per_system    per-system light cap incl. in-flight (default 0 = uncapped)
-
-Examples:
-  spacetraders workflow worker-rebalancer-coordinator --agent TORWIND --dry-run
-  spacetraders workflow worker-rebalancer-coordinator --agent TORWIND
-  spacetraders workflow worker-rebalancer-coordinator --player-id 1
-
-Usage:
-  spacetraders workflow worker-rebalancer-coordinator [flags]
-
-Flags:
-      --dry-run   Decide and log the ferry it would dispatch, but ferry nothing
-  -h, --help      help for worker-rebalancer-coordinator
 
 Global Flags:
       --agent string    Agent symbol (alternative to player-id)

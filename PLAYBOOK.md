@@ -107,7 +107,9 @@ Where the engine automates a behavior, the book only says how to interpret or tu
   `construction start --min-supply SCARCE`, pay premium asks, proceed incrementally.
 - Diagnose WHICH cap binds before scaling: a supply-capped material gains nothing from more
   haulers.
-- Gate-support factories run `--inputs-only`; the construction pipeline is their sole
+- Construction-support feeding is automatic — there is no operator command for it. The
+  construction pipeline runs its own gate-support factories in inputs-only mode (it feeds
+  the dependency tree but leaves the fabricated output in factory stock) and is their sole
   buyer. Construction claims its workers from unassigned idle hulls under durable,
   restart-surviving dedications — expect idles to be absorbed when a fill starts.
 - During Phase-1 fill lulls, pre-harden Phase-2 tooling: at ~50% gate, shake down `ship jump`
