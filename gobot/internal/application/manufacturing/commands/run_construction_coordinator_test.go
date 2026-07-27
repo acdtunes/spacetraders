@@ -100,10 +100,29 @@ func staticActivator(a ConstructionActivator) func(int) ConstructionActivator {
 // safe for the concurrent drain workers (sp-01eh) that call Update in parallel.
 type drainStubTaskRepo struct {
 	manufacturing.TaskRepository
-	mu      sync.Mutex
-	tasks   []*manufacturing.ManufacturingTask
-	updated map[string]manufacturing.TaskStatus
-	created []*manufacturing.ManufacturingTask
+	mu        sync.Mutex
+	tasks     []*manufacturing.ManufacturingTask
+	updated   map[string]manufacturing.TaskStatus
+	snapshots map[string]persistedTask
+	created   []*manufacturing.ManufacturingTask
+}
+
+// persistedTask is what a task looked like when it was persisted, captured under r.mu. An abandoned
+// tick returns while its interrupted worker is still unwinding, so a test asserting on that task
+// must read it through this synchronised seam — touching the task object the worker still owns
+// would race.
+type persistedTask struct {
+	status     manufacturing.TaskStatus
+	retryCount int
+	deferred   bool
+}
+
+// snapshot returns how the task looked at its last persist, under lock.
+func (r *drainStubTaskRepo) snapshot(id string) (persistedTask, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	persisted, ok := r.snapshots[id]
+	return persisted, ok
 }
 
 func (r *drainStubTaskRepo) FindByStatus(_ context.Context, _ int, status manufacturing.TaskStatus) ([]*manufacturing.ManufacturingTask, error) {
@@ -124,7 +143,15 @@ func (r *drainStubTaskRepo) Update(_ context.Context, task *manufacturing.Manufa
 	if r.updated == nil {
 		r.updated = make(map[string]manufacturing.TaskStatus)
 	}
+	if r.snapshots == nil {
+		r.snapshots = make(map[string]persistedTask)
+	}
 	r.updated[task.ID()] = task.Status()
+	r.snapshots[task.ID()] = persistedTask{
+		status:     task.Status(),
+		retryCount: task.RetryCount(),
+		deferred:   task.IsDeferredConstruction(),
+	}
 	return nil
 }
 

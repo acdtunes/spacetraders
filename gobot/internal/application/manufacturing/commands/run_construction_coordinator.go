@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -464,7 +465,8 @@ type constructionLot struct {
 // material is never over-dispatched, and globally by the WHOLE idle pool up to the materials' total
 // remaining requirement (not just #materials or max_workers). Finally it assigns
 // each lot a buy cap so concurrent same-material lots never buy past the material's remaining requirement.
-// The returned lots are index-paired to distinct idle hulls (lots[i].ship == idleShips[i]); the caller's
+// The returned lots hold distinct idle hulls, each drawn from the pool by haulerPool so a hull already
+// laden with the lot's good takes that lot (adoption before re-buy); the caller's
 // errgroup SetLimit(max_workers) caps how many run at once, so surplus lots form a top-up queue that
 // keeps a slow lane from collapsing effective concurrency to 1.
 func (h *RunConstructionCoordinatorHandler) planDispatchLots(ctx context.Context, tasks []*manufacturing.ManufacturingTask, idleShips []*navigation.Ship) []constructionLot {
@@ -500,6 +502,7 @@ func (h *RunConstructionCoordinatorHandler) planDispatchLots(ctx context.Context
 
 	lots := make([]constructionLot, 0, lotCeiling)
 	assigned := make(map[string]int)
+	pool := newHaulerPool(idleShips)
 
 	// Pass 1: one lot per existing ready task, in order, skipping a material whose bill is already met
 	// (remaining<=0: a met/racing-replenishment leftover — dispatching it would buy against no demand) or
@@ -513,7 +516,11 @@ func (h *RunConstructionCoordinatorHandler) planDispatchLots(ctx context.Context
 		if remaining[key] <= 0 || assigned[key] >= ceilDiv(remaining[key], lotUnits) {
 			continue
 		}
-		lots = append(lots, constructionLot{task: task, ship: idleShips[len(lots)]})
+		hull := pool.take(task.Good())
+		if hull == nil {
+			break
+		}
+		lots = append(lots, constructionLot{task: task, ship: hull})
 		assigned[key]++
 	}
 
@@ -528,12 +535,57 @@ func (h *RunConstructionCoordinatorHandler) planDispatchLots(ctx context.Context
 		if err := clone.MarkReady(); err != nil {
 			break // cannot stage a clone lot-task; stop fanning (all originals are already dispatched)
 		}
-		lots = append(lots, constructionLot{task: clone, ship: idleShips[len(lots)], ephemeral: true})
+		hull := pool.take(clone.Good())
+		if hull == nil {
+			break
+		}
+		lots = append(lots, constructionLot{task: clone, ship: hull, ephemeral: true})
 		assigned[key]++
 	}
 
 	assignFillCaps(lots, remaining, lotUnits)
 	return lots
+}
+
+// haulerPool hands out each idle hull at most once, PREFERRING a hull that ALREADY HOLDS the lot's
+// good. An interrupted delivery leaves its load aboard, and pairing was pool-order and cargo-blind:
+// the laden hull drew whichever task came up while an empty one re-bought the same material at
+// market, so paid-for gate material rode along undelivered. Pairing on the hull's ACTUAL cargo
+// re-adopts that load with no cross-tick state to go stale — PHASE-1 deliver-on-hand then unloads it
+// before any buy. An all-empty pool hands out in pool order, so dedicated hulls still come first.
+type haulerPool struct {
+	ships []*navigation.Ship
+	taken []bool
+}
+
+func newHaulerPool(ships []*navigation.Ship) *haulerPool {
+	return &haulerPool{ships: ships, taken: make([]bool, len(ships))}
+}
+
+// take claims the next hull for a lot of good: the first untaken hull already carrying good, else
+// the first untaken hull. nil once the pool is exhausted.
+func (p *haulerPool) take(good string) *navigation.Ship {
+	next := -1
+	for i, ship := range p.ships {
+		if p.taken[i] {
+			continue
+		}
+		if onHandUnits(ship, good) > 0 {
+			return p.claim(i)
+		}
+		if next < 0 {
+			next = i
+		}
+	}
+	if next < 0 {
+		return nil
+	}
+	return p.claim(next)
+}
+
+func (p *haulerPool) claim(index int) *navigation.Ship {
+	p.taken[index] = true
+	return p.ships[index]
 }
 
 // neediestMaterial returns the material with the greatest unmet lot need (desired − assigned), where
@@ -989,6 +1041,16 @@ func (h *RunConstructionCoordinatorHandler) supplyTaskBounded(ctx context.Contex
 		})
 		return drained
 	case <-taskCtx.Done():
+		// taskCtx derives from the tick's ctx, so a daemon stop lands here too — as CANCELLED, not
+		// as the deadline. Reporting a deploy as "exceeded <timeout>" sends the next investigator
+		// hunting a slow haul that never happened. The interrupted worker re-queues its own task
+		// (requeueInterrupted) instead of failing it.
+		if errors.Is(taskCtx.Err(), context.Canceled) {
+			logger.Log("WARNING", fmt.Sprintf("Construction drain: supply of %s via %s INTERRUPTED by a stop — abandoning this tick; the task is re-queued for the next activation with no retry spent and the hull keeps its load: %v", task.Good(), ship.ShipSymbol(), taskCtx.Err()), map[string]interface{}{
+				"ship": ship.ShipSymbol(), "good": task.Good(), "construction_site": task.ConstructionSite(), "task": task.ID(),
+			})
+			return false
+		}
 		logger.Log("ERROR", fmt.Sprintf("Construction drain: supply of %s via %s exceeded %s — ABANDONING this tick (hull released, task retried next tick; the coordinator keeps ticking, never hangs): %v", task.Good(), ship.ShipSymbol(), timeout, taskCtx.Err()), map[string]interface{}{
 			"ship": ship.ShipSymbol(), "good": task.Good(), "construction_site": task.ConstructionSite(), "task": task.ID(), "timeout": timeout.String(),
 		})
@@ -1293,6 +1355,11 @@ func nextConstructionDeliveryTask(completed *manufacturing.ManufacturingTask) *m
 // source is cleared so it reads as IsDeferredConstruction and the SupplyMonitor re-sources it when
 // the market refills, instead of failing it toward death.
 func (h *RunConstructionCoordinatorHandler) deferTask(ctx context.Context, task *manufacturing.ManufacturingTask) {
+	// A stop is not a dry source: re-queue with the resolved source intact rather than clearing it
+	// and waiting on the SupplyMonitor to re-source a market that was never the problem.
+	if h.requeueInterrupted(ctx, task) {
+		return
+	}
 	logger := common.LoggerFromContext(ctx)
 	// Clear the dry source so the task reverts to the deferred signature (construction-only;
 	// harmless if it was already sourceless).
@@ -1365,7 +1432,43 @@ func (h *RunConstructionCoordinatorHandler) resyncShipCargo(ctx context.Context,
 	}
 }
 
+// requeueInterrupted returns a task whose run was CANCELLED — a daemon stop or a coordinator
+// restart, never a fault of the haul — to PENDING, so the next tick's activation promotes it back
+// to READY. It reports whether it took ownership of the task, so the fail/defer paths it fronts
+// stand down.
+//
+// A cancellation must not be charged to the retry budget: three deploys would otherwise spend a
+// leg's three lives and strand it terminal FAILED, holding whatever material the interrupted hull
+// had already paid for. ParkForResupply leaves the retry count untouched and releases the hull, and
+// the resolved source is deliberately NOT cleared (unlike a dry-source defer) because nothing about
+// the source failed. The write rides the detached cleanup ctx so it survives the very cancellation
+// that triggered it; if the process dies first the row is still the READY it was polled as — status
+// is never persisted mid-flight — so the next tick picks it up either way.
+func (h *RunConstructionCoordinatorHandler) requeueInterrupted(ctx context.Context, task *manufacturing.ManufacturingTask) bool {
+	if !errors.Is(ctx.Err(), context.Canceled) {
+		return false
+	}
+	logger := common.LoggerFromContext(ctx)
+	if err := task.ParkForResupply(); err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Could not re-queue interrupted construction task %s: %v", task.ID(), err), nil)
+		return false
+	}
+	wctx, cancel := persistCleanupCtx(ctx)
+	defer cancel()
+	if err := h.taskRepo.Update(wctx, task); err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Could not persist re-queued construction task %s: %v", task.ID(), err), nil)
+	}
+	logger.Log("INFO", fmt.Sprintf("Re-queued interrupted construction delivery of %s — the next activation promotes it back to READY, no retry spent", task.Good()), map[string]interface{}{
+		"good": task.Good(), "construction_site": task.ConstructionSite(), "task": task.ID(),
+	})
+	return true
+}
+
 func (h *RunConstructionCoordinatorHandler) failTask(ctx context.Context, task *manufacturing.ManufacturingTask, reason string) {
+	// A stop is not a task fault: re-queue rather than spend a retry on it.
+	if h.requeueInterrupted(ctx, task) {
+		return
+	}
 	logger := common.LoggerFromContext(ctx)
 	if err := task.Fail(reason); err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Could not fail construction task %s: %v", task.ID(), err), nil)

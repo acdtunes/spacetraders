@@ -159,20 +159,20 @@ func executingConstructionTask(t *testing.T, pipeline *manufacturing.Manufacturi
 	return task
 }
 
-// PART B — on abandon the supplyTask runs under a CANCELLED taskCtx; failTask then persisted the FAIL
-// through that cancelled ctx and failed ('Could not persist failed construction task ...: context
-// canceled'), leaving the task in limbo. The cleanup persist must use a DETACHED context so it
-// survives the abandon.
-func TestFailTask_PersistsThroughCancelledContext(t *testing.T) {
+// PART B — on abandon the supplyTask runs under an EXPIRED taskCtx; failTask then persisted the FAIL
+// through that dead ctx and failed ('Could not persist failed construction task ...: context
+// deadline exceeded'), leaving the task in limbo. The cleanup persist must use a DETACHED context so
+// it survives the abandon.
+func TestFailTask_PersistsThroughExpiredContext(t *testing.T) {
 	pipeline := newDrainPipeline(t, "FAB_MATS", 100)
 	task := executingConstructionTask(t, pipeline, "FAB_MATS")
 	repo := &ctxAwareTaskRepo{}
 	handler := NewRunConstructionCoordinatorHandler(repo, &drainStubPipelineRepo{}, newDrainShipRepo(), &fakeConstructionProducer{}, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
 
-	cancelled, cancel := context.WithCancel(context.Background())
-	cancel() // the abandon signature: the task/tick ctx is already cancelled
+	expired, cancel := expiredContext()
+	defer cancel() // the deadline-abandon signature: the task ctx outran its own budget
 
-	handler.failTask(cancelled, task, "sourcing exceeded the deadline")
+	handler.failTask(expired, task, "sourcing exceeded the deadline")
 
 	if repo.recorded[task.ID()] != manufacturing.TaskStatusFailed {
 		t.Fatalf("failTask must persist FAILED even when the incoming ctx is cancelled (detached cleanup ctx), got %q", repo.recorded[task.ID()])
@@ -182,22 +182,54 @@ func TestFailTask_PersistsThroughCancelledContext(t *testing.T) {
 // PART B — the sibling defer path: a timed-out unsourceable task must PARK (PENDING, deferred) via a
 // detached context so the SupplyMonitor re-activates it, instead of failing to persist and forcing a
 // blind restart.
-func TestDeferTask_PersistsThroughCancelledContext(t *testing.T) {
+func TestDeferTask_PersistsThroughExpiredContext(t *testing.T) {
 	pipeline := newDrainPipeline(t, "FAB_MATS", 100)
 	task := executingConstructionTask(t, pipeline, "FAB_MATS")
 	repo := &ctxAwareTaskRepo{}
 	handler := NewRunConstructionCoordinatorHandler(repo, &drainStubPipelineRepo{}, newDrainShipRepo(), &fakeConstructionProducer{}, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
 
-	cancelled, cancel := context.WithCancel(context.Background())
-	cancel()
+	expired, cancel := expiredContext()
+	defer cancel()
 
-	handler.deferTask(cancelled, task)
+	handler.deferTask(expired, task)
 
 	if repo.recorded[task.ID()] != manufacturing.TaskStatusPending {
 		t.Fatalf("deferTask must persist the parked PENDING status even when the incoming ctx is cancelled, got %q", repo.recorded[task.ID()])
 	}
 	if !task.IsDeferredConstruction() {
 		t.Fatal("deferTask must leave the task in the deferred-construction signature")
+	}
+}
+
+// expiredContext returns a ctx already past its deadline — Err() is context.DeadlineExceeded, the
+// signature of a task that outran its own budget, as opposed to the context.Canceled a daemon stop
+// raises. The two now take different recovery paths, so a cleanup test must say which it means.
+func expiredContext() (context.Context, context.CancelFunc) {
+	return context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+}
+
+// PART B — the interruption path's counterpart: a CANCELLED ctx re-queues rather than fails, and that
+// write must survive the same cancellation through the detached cleanup ctx. Without the detach the
+// re-queue would fail 'context canceled' and leave the row mid-flight.
+func TestRequeueInterrupted_PersistsThroughCancelledContext(t *testing.T) {
+	pipeline := newDrainPipeline(t, "FAB_MATS", 100)
+	task := executingConstructionTask(t, pipeline, "FAB_MATS")
+	repo := &ctxAwareTaskRepo{}
+	handler := NewRunConstructionCoordinatorHandler(repo, &drainStubPipelineRepo{}, newDrainShipRepo(), &fakeConstructionProducer{}, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel() // the stop signature: the tick ctx was cancelled out from under the task
+
+	handler.failTask(cancelled, task, "delivering FAB_MATS failed: context canceled")
+
+	if repo.recorded[task.ID()] != manufacturing.TaskStatusPending {
+		t.Fatalf("a stop must re-queue the task PENDING through a detached write, got %q", repo.recorded[task.ID()])
+	}
+	if task.RetryCount() != 0 {
+		t.Fatalf("a stop must spend no retry budget, got retryCount=%d", task.RetryCount())
+	}
+	if task.IsDeferredConstruction() {
+		t.Fatal("a stop leaves the resolved source intact — nothing about the source failed")
 	}
 }
 
