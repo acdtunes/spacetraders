@@ -140,6 +140,78 @@ func (h *RunTourCoordinatorHandler) maybeDistressLiquidate(
 	return true, nil
 }
 
+// liquidateStrandBeforeExit is the terminal enforcement of the hold invariant: a hull is NEVER
+// parked holding cargo THIS RUN bought while a bid in its current system will still take it.
+// Left unenforced, the container completes FAILED on the strand, the coordinator relaunches, the
+// same recovery is planned and killed the same way, and the hull churns on cargo a local market
+// would have bought. It runs from the honest-exit epilogue, so every terminal path — margins
+// death, denied capital, iterations exhausted, a fail-open no-plan — shares it; a resumable exit
+// never reaches it (the runner retries, and the purchase obligation is carried forward).
+//
+// Deliberately NOT gated on the stuck-laden threshold or the one-action-per-episode budget the
+// margins-death rescues share: those bound how often a hull may JUMP chasing better ground, and
+// this neither jumps between systems nor repeats — the run is ending either way, and one unit of
+// tour-bought cargo strands a hull exactly as a full hold does. Sell-side cash recovery only
+// (RULINGS #4 buy guards untouched), and every decline is fail-OPEN: the strand veto that follows
+// still reports honestly on whatever could not be sold.
+func (h *RunTourCoordinatorHandler) liquidateStrandBeforeExit(
+	ctx context.Context,
+	cmd *RunTourCoordinatorCommand,
+	response *RunTourCoordinatorResponse,
+	netBought map[string]int,
+) {
+	if ctx.Err() != nil {
+		return // a cancelled run is resumable — never trade on the way out of a shutdown
+	}
+	if len(netBought) == 0 {
+		return
+	}
+	ship, err := h.legs.loadShip(ctx, cmd.ShipSymbol, cmd.PlayerID)
+	if err != nil {
+		return // an unreadable hull cannot be proven laden; the veto fails closed on the ledger
+	}
+	// Scope to the outstanding purchase obligation the hull STILL holds: cargo the tour never
+	// bought is not this run's to dump, and an obligation the hold no longer carries is already
+	// discharged.
+	held := map[string]int{}
+	for good, bought := range netBought {
+		if units := min(bought, shipHeldUnits(ship, good)); units > 0 {
+			held[good] = units
+		}
+	}
+	if len(held) == 0 {
+		return
+	}
+	listings, err := h.legs.collectSystemListings(ctx, ship.CurrentLocation().SystemSymbol, cmd.PlayerID)
+	if err != nil {
+		return
+	}
+	sinks := bestLocalDistressSinks(freshListings(listings, h.clock.Now(), maxListingAge), held)
+	if len(sinks) == 0 {
+		return // nothing here bids on the load — the strand is real, and the veto reports it
+	}
+
+	goods := make([]string, 0, len(sinks))
+	for good := range sinks {
+		goods = append(goods, good)
+	}
+	sort.Strings(goods) // deterministic liquidation order (RULINGS #2)
+
+	logger := common.LoggerFromContext(ctx)
+	logger.Log("WARNING", fmt.Sprintf("%s is exiting holding tour-bought cargo with a live bid at %s - clearing the hold before release rather than stranding it (%v)", cmd.ShipSymbol, ship.CurrentLocation().SystemSymbol, goods), map[string]interface{}{
+		"ship_symbol": cmd.ShipSymbol, "system": ship.CurrentLocation().SystemSymbol,
+		"goods": goods, "action": "strand_liquidation",
+	})
+	for _, good := range goods {
+		if _, serr := h.distressSellGood(ctx, cmd, response, netBought, good, sinks[good]); serr != nil {
+			logger.Log("WARNING", fmt.Sprintf("Exit liquidation of %s aboard %s failed - the remaining units report as stranded: %v", good, cmd.ShipSymbol, serr), map[string]interface{}{
+				"ship_symbol": cmd.ShipSymbol, "good": good, "error": serr.Error(),
+			})
+			return
+		}
+	}
+}
+
 // distressSellGood liquidates one held good at its chosen current-system sink: move to the sink
 // waypoint if the hull is not already there, dock, and sell up to the market's traded volume via
 // the PLAIN floor-free sell() (RULINGS #4: sell-side cash recovery only, no buy guard touched).
@@ -195,7 +267,7 @@ func (h *RunTourCoordinatorHandler) distressSellGood(
 	response.TotalRevenue += int64(sellResp.TotalRevenue)
 	response.TradesExecuted++
 	dischargePurchaseObligation(netBought, good, sellResp.UnitsSold) // left the hull — no longer a stranded-veto candidate
-	logger.Log("WARNING", fmt.Sprintf("Distress liquidation (sp-2v69u): %s stuck laden with no fresh plan and no reachable sink - sold %d %s at %s for %d credits (bid %d/u, BELOW the profit floor) to free the hull; sunk-cost cash recovery, deliberate below-floor loss booked (sell-side only, RULINGS #4 buy guards untouched)", cmd.ShipSymbol, sellResp.UnitsSold, good, sink.waypoint, sellResp.TotalRevenue, sink.bid), map[string]interface{}{
+	logger.Log("WARNING", fmt.Sprintf("Distress liquidation: %s sold %d %s at %s for %d credits (bid %d/u, BELOW the profit floor) to free the hull; sunk-cost cash recovery, deliberate below-floor loss booked (sell-side only, RULINGS #4 buy guards untouched)", cmd.ShipSymbol, sellResp.UnitsSold, good, sink.waypoint, sellResp.TotalRevenue, sink.bid), map[string]interface{}{
 		"ship_symbol": cmd.ShipSymbol, "good": good, "waypoint": sink.waypoint,
 		"units_sold": sellResp.UnitsSold, "revenue": sellResp.TotalRevenue, "bid_per_unit": sink.bid,
 		"action": "distress_liquidation", "bead": "sp-2v69u",

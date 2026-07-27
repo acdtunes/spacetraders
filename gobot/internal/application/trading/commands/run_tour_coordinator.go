@@ -107,6 +107,10 @@ const (
 	// tourExitStarvation: tourStarvationLimit consecutive tours found no profitable
 	// tour (or flew zero trades) — margins died. An HONEST completion.
 	tourExitStarvation = "starvation"
+	// tourExitCapitalDenied: tourStarvationLimit tours found a profitable plan but a money
+	// guard refused the spend. The margin was there, the cash was not — deliberately NOT
+	// starvation, since nothing about the ground died. An HONEST completion.
+	tourExitCapitalDenied = "capital_denied"
 	// tourExitUnavailable: the very first tour found no plan and nothing was earned —
 	// the fail-open no-op (single-lane fallback stands).
 	tourExitUnavailable = "tour_unavailable"
@@ -366,6 +370,12 @@ type RunTourCoordinatorResponse struct {
 	// sunk-cost cash recovery — so it re-enters planning EMPTY instead of churning
 	// relaunch-after-relaunch full. Zero on every run that never strands a hull laden.
 	DistressLiquidations int
+
+	// CapitalDeniedBuys counts buys a MONEY GUARD refused: the working-capital floor, or a
+	// fail-closed unreadable balance. A tour that flew zero trades while this rose was
+	// DENIED CAPITAL — the planner found the margin, the treasury could not fund it — which
+	// is the opposite of margin death and must never feed the margins-death breaker.
+	CapitalDeniedBuys int
 
 	// TourUnavailable marks a fail-open exit: no trading happened, the single-lane
 	// fallback remains. A CLEAN completion (not a failure), never a phantom trade.
@@ -882,6 +892,10 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 		if err != nil {
 			return
 		}
+		// Enforce the hold invariant before the verdict is read: a hull is never parked
+		// holding cargo THIS RUN bought while a bid in its current system will still take
+		// it. The veto below then reports only the strands nothing would buy.
+		h.liquidateStrandBeforeExit(ctx, cmd, response, netBought)
 		h.vetoLadenExit(ctx, cmd, response, netBought)
 	}()
 
@@ -946,6 +960,13 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 	// means N tours actually flown, so a transient no-plan mid-run is retried (bounded
 	// by the starvation streak) rather than silently burning a tour slot.
 	noProgressStreak := 0
+
+	// capitalDeniedStreak counts the zero-trade tours a MONEY GUARD caused since the last
+	// productive one, kept apart from noProgressStreak because the two demand opposite
+	// responses: a dead margin means leave, denied capital means wait — the treasury crosses
+	// the working-capital floor constantly while contracts and hulls are being paid for, and
+	// the ground is still rich on the other side of the dip.
+	capitalDeniedStreak := 0
 
 	// episode tracks the current margins-death reposition: whether this run has already
 	// spent its ONE reposition since the last productive tour, and the systems involved
@@ -1036,6 +1057,7 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 		}
 
 		tradesBefore := response.TradesExecuted
+		deniedBefore := response.CapitalDeniedBuys
 		feasible, reason, terr := h.runOneTour(ctx, cmd, response, netBought, maxHops, tourMaxSpend, reserve, replanLimit, modelVersion)
 		if terr != nil {
 			return terr
@@ -1065,6 +1087,7 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 		// between).
 		if feasible && response.TradesExecuted > tradesBefore {
 			noProgressStreak = 0
+			capitalDeniedStreak = 0
 			response.ToursCompleted++
 			episode = repositionEpisode{}
 			// Rate-floor early-reposition (DEFAULT-OFF): a hull that just flew a
@@ -1101,6 +1124,35 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 			response.ExitReason = tourExitUnavailable
 			logger.Log("INFO", reason, map[string]interface{}{"ship_symbol": cmd.ShipSymbol, "model": modelVersion})
 			return nil
+		}
+
+		// This tour flew zero trades because a MONEY GUARD refused its spend, not because the
+		// ground had nothing to offer. The starvation breaker exists to detect dead margins;
+		// a treasury dip is the opposite diagnosis and gets the opposite response — wait, do
+		// not leave. Feeding it to the breaker parks a hull the market would still pay, and
+		// the relaunch re-plans the same trade and is killed the same way. The pause mirrors
+		// the unreadable-treasury guard trip above (which likewise leaves the streak alone);
+		// it is bounded so a treasury that never recovers still ends the run honestly, and
+		// the exit epilogue clears the hold on the way out.
+		if response.CapitalDeniedBuys > deniedBefore {
+			capitalDeniedStreak++
+			if capitalDeniedStreak < tourStarvationLimit {
+				logger.Log("WARNING", fmt.Sprintf("Tour denied capital by a money guard (%d since the last productive tour) - margins are intact, pausing %ds before re-planning", capitalDeniedStreak, int(tourTreasuryRetryBackoff.Seconds())), map[string]interface{}{
+					"ship_symbol": cmd.ShipSymbol, "tours_completed": response.ToursCompleted,
+					"capital_denied_streak": capitalDeniedStreak, "backoff_seconds": int(tourTreasuryRetryBackoff.Seconds()),
+				})
+				if werr := h.legs.sleepInterruptibly(ctx, tourTreasuryRetryBackoff); werr != nil {
+					return werr
+				}
+				continue
+			}
+			response.ExitReason = tourExitCapitalDenied
+			response.ExitDetail = fmt.Sprintf("denied capital (%d tours found a plan a money guard would not fund) after %d productive tour(s)", capitalDeniedStreak, response.ToursCompleted)
+			logger.Log("INFO", "Tour stopping - "+response.ExitDetail, map[string]interface{}{
+				"ship_symbol": cmd.ShipSymbol, "tours_completed": response.ToursCompleted,
+				"capital_denied_streak": capitalDeniedStreak,
+			})
+			break
 		}
 
 		// Already earned but this tour made no progress (no plan, or a feasible plan that
@@ -1362,6 +1414,13 @@ func (h *RunTourCoordinatorHandler) executePlan(
 	// warehouse deposit (exempt — a guaranteed sink).
 	dispositions := planDispositions(plan)
 
+	// discharging marks the plan's economics void but its ROUTE still worth flying: a leg has
+	// degraded, and a later leg can still sell cargo the hull is holding. Realising owned
+	// inventory only ever adds credits, so "this plan is broken" is never a reason to carry it
+	// home. Remaining legs run sells only — a fresh buy would re-open the exposure the broken
+	// plan was supposed to close.
+	discharging := false
+
 	for legIdx, leg := range plan.Legs {
 		ship, err := h.legs.loadShip(ctx, cmd.ShipSymbol, cmd.PlayerID)
 		if err != nil {
@@ -1403,7 +1462,7 @@ func (h *RunTourCoordinatorHandler) executePlan(
 		legSells := h.newLegSells()
 		// Sells before buys (errata): a leg that fills the hold both ways must free
 		// space before spending it, and sell tranches are ordered price-ascending.
-		for _, trade := range sellsBeforeBuys(leg.Trades) {
+		for _, trade := range legTradesToFly(leg.Trades, discharging) {
 			executed, terr := h.executeTrade(ctx, cmd, leg, legIdx, trade, shadowSinks, dispositions, response, netBought, cumulativeSpend, maxSpend, reserve, legSells)
 			if terr != nil {
 				return false, terr
@@ -1416,11 +1475,57 @@ func (h *RunTourCoordinatorHandler) executePlan(
 		// §2) — even on a degraded leg, so the tranches that DID sell shadow their crush.
 		h.convertLegShadows(ctx, cmd, leg.Waypoint, legSells)
 		response.LegsExecuted++
-		if legDegraded {
+		if !legDegraded && !discharging {
+			continue
+		}
+		discharging = true
+		// Re-asked after every discharge leg: the moment nothing ahead can take what is
+		// still aboard, stop and let the caller re-plan from here.
+		if !h.legsCanDischargeHold(ctx, cmd, plan.Legs[legIdx+1:]) {
 			return true, nil
 		}
 	}
-	return false, nil
+	return discharging, nil
+}
+
+// legTradesToFly orders a leg's trades sells-before-buys and, once the plan has degraded into a
+// discharge run, drops the buys: the tour is flying the rest of the route only to get cargo off
+// the hull, and the broken plan is no basis for acquiring more.
+func legTradesToFly(trades []routing.TourTrade, discharging bool) []routing.TourTrade {
+	ordered := sellsBeforeBuys(trades)
+	if !discharging {
+		return ordered
+	}
+	sells := make([]routing.TourTrade, 0, len(ordered))
+	for _, t := range ordered {
+		if !t.IsBuy {
+			sells = append(sells, t)
+		}
+	}
+	return sells
+}
+
+// legsCanDischargeHold reports whether any of legs sells (or deposits) a good the hull is
+// holding right now — the "reachable bid" test at plan scope. The hull is already standing at
+// the head of that route, so flying it is strictly cash-positive and cannot strand. An
+// unreadable hull proves nothing and answers no, degrading exactly as before.
+func (h *RunTourCoordinatorHandler) legsCanDischargeHold(ctx context.Context, cmd *RunTourCoordinatorCommand, legs []routing.TourLeg) bool {
+	if len(legs) == 0 {
+		return false
+	}
+	ship, err := h.legs.loadShip(ctx, cmd.ShipSymbol, cmd.PlayerID)
+	if err != nil {
+		return false
+	}
+	held := h.tourShipState(ship).Cargo // reserved cargo excluded: the executor refuses to sell it
+	for _, leg := range legs {
+		for _, trade := range leg.Trades {
+			if !trade.IsBuy && held[trade.Good] > 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // executeTrade live-re-verifies one trade against the plan and, if within tolerance,
@@ -1566,6 +1671,7 @@ func (h *RunTourCoordinatorHandler) executeBuy(
 	// residual; this binds the floor at execution, it does not lock it.
 	headroom, liveBalance, guardOn, readable := h.legs.reserveHeadroom(ctx, int(reserve))
 	if guardOn && !readable {
+		response.CapitalDeniedBuys++
 		logger.Log("WARNING", fmt.Sprintf("Tour leg %d: live balance unreadable at buy time for %d %s @ %d (reserve %d) - not spending, will re-plan (fail-closed)",
 			legIdx, units, trade.Good, liveAsk, reserve), map[string]interface{}{
 			"leg": legIdx, "good": trade.Good, "planned_units": units, "ask": liveAsk, "reserve": reserve,
@@ -1575,6 +1681,10 @@ func (h *RunTourCoordinatorHandler) executeBuy(
 	if guardOn {
 		floorMaxUnits := headroom / liveAsk // floor-respecting max; headroom may be <= 0 (skip)
 		if floorMaxUnits <= 0 {
+			// The guard is right to refuse and stays exactly as it is; what the run records
+			// here is the DIAGNOSIS — this tour was denied capital, so the loop must not read
+			// its zero trades as a dead ground.
+			response.CapitalDeniedBuys++
 			metrics.RecordTourReserveFloorEngagement(cmd.PlayerID, "skip") // floor bound the whole tranche
 			logger.Log("WARNING", fmt.Sprintf("Tour leg %d: buy of %d %s @ %d would breach working-capital floor - live balance %d, reserve %d, even 1 unit pierces - skipping, will re-plan",
 				legIdx, units, trade.Good, liveAsk, liveBalance, reserve), map[string]interface{}{
