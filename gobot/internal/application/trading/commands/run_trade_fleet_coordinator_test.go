@@ -194,6 +194,34 @@ func TestTradeReconcile_IdlePastCooldown_LaunchesContinuousTour(t *testing.T) {
 	require.True(t, logger.loggedContaining("Relaunched continuous tour", "TORWIND-19"))
 }
 
+// The fleet's configured working-capital reserve must ride EVERY relaunch spec: the
+// coordinator is the only path that carries the [trade_fleet] floor to a tour, and
+// StartTourRun stamps whatever arrives here as the tour's own working_capital_reserve —
+// the exact number the tour's buy-time check enforces on every tranche. A spec that
+// drops it hands the tour a 0, which resolves to the coordinator's own default instead,
+// silently trading the whole fleet on a floor nobody configured.
+func TestTradeReconcile_ConfiguredReserveRidesEveryTourLaunch(t *testing.T) {
+	repo := &fakeTradeShipRepo{ships: []*navigation.Ship{
+		parkedTradeHull(t, "TORWIND-19", 0, "margins_died_both_systems"),
+		tradeHull(t, "TORWIND-20"),
+	}}
+	launcher := &fakeTourLauncher{}
+	h := newTradeHandler(repo, launcher, clockAt(1000))
+
+	cmd := tradeCmd()
+	cmd.WorkingCapitalReserve = 300000
+
+	launched, err := h.reconcileOnce(tradeCtx(&tradeCaptureLogger{}), cmd)
+
+	require.NoError(t, err)
+	require.Equal(t, 2, launched)
+	require.Len(t, launcher.launches, 2)
+	for _, spec := range launcher.launches {
+		require.Equal(t, int64(300000), spec.WorkingCapitalReserve,
+			"tour launch for %s must carry the configured floor, not a dropped 0 that resolves to the coordinator's own default", spec.ShipSymbol)
+	}
+}
+
 // A fresh trade hull that never ran a tour has no cooldown anchor -> launched at once.
 func TestTradeReconcile_NeverTouredHull_LaunchesImmediately(t *testing.T) {
 	repo := &fakeTradeShipRepo{ships: []*navigation.Ship{tradeHull(t, "TORWIND-20")}}

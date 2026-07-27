@@ -287,6 +287,46 @@ func TestLoadConfig_ExternalityWeight_AbsentIsUnarmed(t *testing.T) {
 		"an absent externality_weight must be 0 — the solver then plans byte-identically to today")
 }
 
+// working_capital_reserve round-trip pin: the credit line every tour buy must leave
+// standing has to travel from config.yaml's [trade_fleet] section into the loaded config
+// unchanged — this is the ONE seam the grpc stamp/rebuild tests cannot cover (they set the
+// struct field directly), and a money guard is exactly where a silently-inert knob is
+// costly: a mapstructure typo would drop the captain's floor and resolve every tour to the
+// consumer's own default instead. An ABSENT key must stay the sentinel 0, never a
+// config-layer default, so the fallback lives in ONE place (the tour coordinator resolves
+// 0 -> common.NonContractWorkingCapitalFloor).
+func TestLoadConfig_WorkingCapitalReserve_RoundTrips(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		section string
+		want    int64
+	}{
+		{
+			name:    "configured reserve reaches the struct verbatim",
+			section: "trade_fleet:\n  enabled: true\n  working_capital_reserve: 300000\n",
+			want:    300000,
+		},
+		{
+			name:    "absent reserve is the sentinel 0",
+			section: "trade_fleet:\n  enabled: true\n",
+			want:    0,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("SPACETRADERS_CONFIG", "")
+			dir := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(tc.section), 0o644))
+			t.Chdir(dir)
+
+			cfg, err := LoadConfig("")
+
+			require.NoError(t, err)
+			require.Equal(t, tc.want, cfg.TradeFleet.WorkingCapitalReserve,
+				"trade_fleet.working_capital_reserve must reach the config struct so the captain retunes the tour spend floor by editing config.yaml + restarting")
+		})
+	}
+}
+
 // sp-o4wa cargo_blocklist round-trip pin: the noise-goods blocklist must travel from
 // config.yaml's [trade_fleet] section into the loaded config unchanged, so a captain arms
 // the FUEL/ALUMINUM/PLASTICS filter by editing config.yaml + restarting — no code redeploy.
