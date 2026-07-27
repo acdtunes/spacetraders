@@ -8,6 +8,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
@@ -187,6 +188,37 @@ func (r *GormWaypointRepository) Add(ctx context.Context, waypoint *shared.Waypo
 	}
 
 	return nil
+}
+
+// UpsertFromDetail writes a single waypoint's freshly-read detail into the
+// cache, stamped with the open era and a new sync time.
+//
+// It exists for the CHARTING path. Charting a waypoint publishes traits that
+// were invisible while it was UNCHARTED, and until that row is rewritten the
+// cache still reports the waypoint as uncharted — so a charting tour, which
+// picks its next stop from exactly that set, would chart it again on every pass.
+// This is where the loop is closed.
+//
+// The whole row is replaced rather than patched, which is why the detail carries
+// the full physical description and not just the trait list: a partial write
+// would blank the coordinates the router plans against.
+func (r *GormWaypointRepository) UpsertFromDetail(ctx context.Context, detail *ports.WaypointDetail) error {
+	if detail == nil {
+		return fmt.Errorf("cannot persist a nil waypoint detail")
+	}
+	waypoint, err := shared.NewWaypoint(detail.Symbol, detail.X, detail.Y)
+	if err != nil {
+		return fmt.Errorf("failed to build waypoint %s from detail: %w", detail.Symbol, err)
+	}
+	waypoint.Type = detail.Type
+	waypoint.Traits = detail.Traits
+	waypoint.Orbitals = detail.Orbitals
+	// Derived rather than carried: on-site fuel is a CONSEQUENCE of the traits,
+	// and the domain owns that rule. Restating it here would give the cache a
+	// second, drifting definition of which waypoints a router may refuel at.
+	waypoint.HasFuel = shared.TraitsGrantFuel(detail.Traits)
+
+	return r.Add(ctx, waypoint)
 }
 
 func (r *GormWaypointRepository) modelsToWaypoints(models []WaypointModel) ([]*shared.Waypoint, error) {

@@ -1,25 +1,34 @@
 package commands
 
-// The probe-sensing coordinator is the single budgeted sensing loop: it decides
-// WHERE standing scout posts exist (systems whose markets deal in whitelisted
-// goods above a depth floor), HOW MANY probes each post gets (1, or 2 past the
-// hot-market threshold), WHEN scanning sheds under API pressure (dormancy
-// rotation — probes park in place, they never move), and WHETHER to buy one
-// probe this tick (aggregate demand clamped by the probe budget N, spent only
-// through the fail-closed guarded buyer). Sensing cost is bounded by the chosen
-// budget, never by the size of the charted map: a system charted tomorrow adds
-// no obligation until it clears the whitelist and the floor.
+// The probe-sensing coordinator is the fleet's ONE budgeted sensing loop. Its
+// model is PARKED probes: a hull is bought for a waypoint, flown there once, and
+// then stands still forever, scanning its own market on a rotation the
+// coordinator paces against whatever API headroom the rest of the fleet leaves.
+// Nothing tours. Steady-state sensing therefore costs navigation nothing at all
+// — the only recurring spend is the scans themselves, which is the quantity this
+// loop actually sizes.
+//
+// The coordinator owns no algorithm of its own. Every decision belongs to an
+// engine in internal/application/parkedsensing, and this file is the composition
+// root that gives each engine its ports, orders them within a tick, and reports
+// what they did:
+//
+//	screen      — is this system worth watching, and which waypoints in it?
+//	buy queue   — can we afford a hull for that placement, and buy it
+//	placements  — fly the bought hulls out and stand them down on station
+//	expansion   — push the frontier outward, and run charting seeds
+//	scanner     — the single fleet-wide pacer that spends the scan budget
 //
 // The loop is idempotent and restart-safe (RULINGS #2): every decision is
-// re-derived from persisted state each tick (the market cache, the posts table,
-// the ledger-backed buy guards). The only in-memory state is the rotation
-// cursor, which a restart resets harmlessly (rotation re-starts from the top of
-// the ring). All movement, manning, and market partitioning stay with the scout
-// post reconciler; this coordinator's writes are the desired-state posts table
-// and the guarded probe buy.
+// re-derived each tick from the durable sensing ledger (sensing_systems,
+// sensing_slots) and the ships table. The only in-memory state is the scan
+// rotation, which a restart rebuilds from the ledger on the first tick, and the
+// emergency brake, which a restart resets to fully-released and which re-derives
+// within a few ticks from live limiter pressure.
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -27,37 +36,74 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/health"
-	"github.com/andrescamacho/spacetraders-go/internal/application/probebuy"
+	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
+	"github.com/andrescamacho/spacetraders-go/internal/application/parkedsensing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/ledger"
+	domainSensing "github.com/andrescamacho/spacetraders-go/internal/domain/parkedsensing"
 	domainScouting "github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
+	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/supervise"
 )
 
 const (
 	// Config defaults (RULINGS #5: every operational number is container config,
 	// filled here only when the launch config leaves it unset).
-	defaultSensingTickSeconds          = 30
-	defaultSensingDepthFloor           = 2_000_000 // whitelisted-goods depth below which a system earns no probe (~bottom quartile)
-	defaultSensingProbeBudget          = 150       // N — the single budget dial: the total probe count the fleet may hold
-	defaultSensingSecondProbeThreshold = 12        // hot markets above which a system earns a second probe
-	defaultSensingPurchaseCooldownSecs = 10
-	// defaultSensingFreshnessTargetSecs is stamped on every standing post; the
-	// reconciler's manning watchdog reads it, and the scout tour deliberately
-	// STRETCHES each circuit to the post's target — so it must stay comfortably
-	// UNDER the trade planner's 75-min firm-sink freshness cap (the [trade_fleet]
-	// sink_freshness_max_minutes default, sp-tgll8 item 2). A target at or past
-	// the cap paces every scanned market stale, and the fail-closed cap (RULINGS
-	// #4, never weakened) then refuses every trade buy fleet-wide — the
-	// outage, where adopted era-4 posts carried 3h targets. 3600 (1h) leaves a
-	// 15-minute margin for scan jitter and tour turnaround.
-	defaultSensingFreshnessTargetSecs = 3600
-	defaultSensingWaitLowMs           = 50   // limiter wait at or under this: full scanning, discovery allowed
-	defaultSensingWaitHighMs          = 1000 // limiter wait at or past this: scanning sheds toward the 0.5 floor
-	defaultSensingMaxSpend            = 500_000
-	defaultSensingSpendWindowSecs     = 3600
-	defaultSensingDiscoveryDeclares   = 4 // sweep-once frontier declares per tick — paces propagation, never floods the reconciler
+	defaultSensingTickSeconds = 30
+	defaultSensingWaitLowMs   = 50   // limiter wait at or under this: the brake recovers
+	defaultSensingWaitHighMs  = 1000 // limiter wait at or past this: the brake bites
+
+	// defaultParkedProbeCap is the hard ceiling on probe hulls the engine may
+	// own. It is deliberately far above any fleet we expect to build: parked
+	// probes are bought one placement at a time behind the dynamic buy floor,
+	// so the BINDING constraint on fleet size is money, not this number. The cap
+	// is the backstop against a runaway placement plan, not the growth dial.
+	defaultParkedProbeCap = 3000
+
+	// defaultExpansionEnabled is the expansion engine's master switch, encoded
+	// 1=on / 2=off. It is NOT a bool-as-0/1 because `tune <key> 0` means "revert
+	// to the default" fleet-wide — a 0/1 encoding would make "off" unexpressible.
+	defaultExpansionEnabled = 1
+	// expansionDisabled is the sentinel that switches expansion off.
+	expansionDisabled = 2
+
+	// defaultTargetUtilPct is the share of the rate-limiter ceiling the whole
+	// fleet aims to occupy, leaving the remainder as burst headroom.
+	defaultTargetUtilPct = 92
+	// defaultMinScanRateMilli is the floor the pacer is clamped up to, in
+	// thousandths of a request per second (100 = 0.1 req/s). It is what
+	// guarantees planner data never goes fully dark under pressure.
+	defaultMinScanRateMilli = 100
+	// defaultValueClampR is the ceiling on how much more attention the hottest
+	// market may earn than the baseline.
+	defaultValueClampR = 4
+	// defaultInflightCap bounds concurrent scans, and with it how hard a slow
+	// API can push back on the pacer.
+	defaultInflightCap = 3
+	// defaultCapitalMultiplierK is how many hours of the trading fleet's cargo
+	// runway the probe buy floor holds back on top of the immutable reserve.
+	defaultCapitalMultiplierK = 2
+	// defaultCapexReserveCredits is the credits held back for ship capex the
+	// operation has already committed to elsewhere.
+	defaultCapexReserveCredits = 100_000
+	// defaultQuartermasterCadenceSecs is a yard slot's re-read interval. It is a
+	// FLOOR on the scan interval, never a target: hull prices move on their own
+	// schedule, so the budget may slow a yard down but never speed it past this.
+	defaultQuartermasterCadenceSecs = 3600
+
+	// screenSweepBatch bounds how many PENDING systems one tick screens. A plain
+	// constant, deliberately not a knob: it paces API bursts (an unresolved
+	// market costs a remote fetch, and a catalog-unknown system costs a
+	// paginated waypoint sweep), not economics. The backlog is not lost — it is
+	// worked over more ticks, and every system left over is still PENDING.
+	screenSweepBatch = 5
+
+	// budgetWindow is the trailing window the API budget is measured over. It
+	// matches the tracker's own retention, so the reading is never diluted by
+	// time the tracker cannot answer for.
+	budgetWindow = 5 * time.Minute
+
+	// pacerGuardComponent labels the panic guard around the scan pacer goroutine.
+	pacerGuardComponent = "parked-sensing-pacer:"
 )
 
 // defaultSensingWhitelist is the era-invariant goods whitelist: a market is
@@ -71,39 +117,23 @@ func defaultSensingWhitelist() []string {
 	}
 }
 
-// MarketDepthReader is the narrow census read: one row per (waypoint, good)
-// from the market cache. Satisfied by the GORM market repository.
+// MarketDepthReader is the CUTOVER's census read: one row per (waypoint, good)
+// from the market cache. It exists solely to enumerate the systems the fleet
+// already has market rows for, so the one-time cutover can screen them offline
+// instead of rediscovering the map through the API. The steady-state loop never
+// touches it — the frontier propagates through the expansion engine. Satisfied
+// by the GORM market repository.
 type MarketDepthReader interface {
 	MarketDepthRows(ctx context.Context, playerID int) ([]domainScouting.MarketDepthRow, error)
 }
 
-// SensingPostRepository is the coordinator's posts-table surface: the shared
-// desired-state port plus the narrow live-post delta seam. EVERY live-post
-// delta — resize, dormancy flip, hot-set stamp, freshness-target refresh — goes
-// through UpdateSensingState, which touches only the four sensing-owned columns,
-// so a write from this tick's snapshot can never clobber the manning/partition/
-// respawn columns the scout reconciler writes concurrently, nor the min_hulls
-// floor bootstrap stamps behind a once-latch. Upsert is for CREATES only.
-// Satisfied by the GORM scout-post repository.
+// SensingPostRepository is the CUTOVER's posts-table surface. The parked model
+// declares no posts of its own — a probe stands on a waypoint, not in a system —
+// so the only thing this coordinator does with the posts table is retire the
+// touring model's rows once, at cutover, keeping the home post the bootstrap
+// scout-post coordinator still mans. Satisfied by the GORM scout-post repository.
 type SensingPostRepository interface {
 	domainScouting.ScoutPostRepository
-	UpdateSensingState(ctx context.Context, playerID int, systemSymbol string, hulls int, dormant bool, hotWaypoints []string, freshnessTarget time.Duration) error
-}
-
-// guardedBuyer is the shared fail-closed buy engine (probebuy.GuardedProbeBuyer):
-// it runs the whole money-guard stack per call, so this coordinator never
-// re-derives a spend decision of its own.
-type guardedBuyer interface {
-	MaybeBuy(ctx context.Context, playerID shared.PlayerID, demand, supply int, dryRun bool, target probebuy.ProbeTarget) probebuy.Outcome
-}
-
-// GateAdjacencyReader is the discovery pass's PURE STORE read of the gate
-// graph: one Adjacency query, zero live API — a system absent from the stored
-// adjacency is simply not counted, never fetched. The fetch-through
-// Connections family must never be wired here (topology is least cached
-// exactly where discovery looks). *gategraph.Service satisfies it.
-type GateAdjacencyReader interface {
-	Adjacency(ctx context.Context) (map[string][]system.GateEdge, error)
 }
 
 // expansionPhaseReader reports whether the bootstrap-derived lifecycle phase is
@@ -119,38 +149,235 @@ type expansionPhaseReader interface {
 	InExpansion(ctx context.Context, playerID shared.PlayerID) (bool, error)
 }
 
-// WaypointCatalogReader is the discovery pass's swept-knowledge read: the
-// persisted waypoint catalog. BuildSystemGraph persists a system's ENTIRE
-// waypoint set the moment a probe sweeps it, while gate charting persists
-// edges only — so one persisted NON-gate waypoint proves a real sweep (the
-// frontier queue's Scanned discriminator). Market rows cannot carry this
-// signal: a swept system with no marketplace anywhere never writes one.
-// Satisfied by the GORM waypoint repository.
-type WaypointCatalogReader interface {
-	ListBySystem(ctx context.Context, systemSymbol string) ([]*shared.Waypoint, error)
+// HomeSystemReader resolves the player's headquarters system from the DATABASE,
+// never the API. The cutover uses it to decide which single scout post survives
+// the retirement of the touring model, so a read that went to the network would
+// make an irreversible bulk delete depend on a call that can fail.
+type HomeSystemReader interface {
+	HomeSystem(ctx context.Context, playerID int) (string, error)
+}
+
+// BudgetRateReader is the coordinator's view of the shared API budget: how much
+// of the rate-limiter ceiling everyone else is already using. It is a port
+// rather than a direct read because the ceiling and the event tracker both live
+// in the adapter layer, which the application layer must not import.
+//
+// The two rates are measured over the same trailing window and answer different
+// questions. NonSensingRate is what the sensing residual is subtracted FROM;
+// ChartingRate is what the pacer concedes to charting out of that residual. A
+// reader that conflated them would double-count charting and walk the budget
+// downward tick by tick.
+type BudgetRateReader interface {
+	// NonSensingRate is the observed req/s of every source that is neither
+	// scanning nor charting.
+	NonSensingRate(window time.Duration) float64
+	// ChartingRate is the observed req/s spent on charting.
+	ChartingRate(window time.Duration) float64
+	// CeilingReqPerSec is the hard sustained rate-limiter ceiling.
+	CeilingReqPerSec() float64
+}
+
+// SensingLedger is the durable placement ledger, as the whole engine sees it: the
+// union of the narrow slices the engines declare, plus the one read this
+// coordinator makes on its own behalf.
+//
+// The engines keep their surfaces disjoint on purpose (the screen cannot spend,
+// the pacer cannot transition, the placement machine cannot count the fleet), and
+// that discipline is preserved here — each engine is still handed only its own
+// slice. This union exists so ONE adapter satisfies all of them, not so any
+// engine gains reach.
+//
+// Every slice is listed even where its methods are a subset of another's — the
+// reaper's three are all in ExpandLedger — because the list is what makes the
+// requirement compile-time rather than incidental: narrowing one engine's
+// interface must not silently take a method another still depends on.
+type SensingLedger interface {
+	parkedsensing.SlotLedger
+	parkedsensing.BuyLedger
+	parkedsensing.PlacementLedger
+	parkedsensing.ScanLedger
+	parkedsensing.ExpandLedger
+	parkedsensing.ReapLedger
+
+	// ParkedSlotViews returns every PARKED placement with the three columns the
+	// scan rotation paces on — the whitelist it watches, its smoothed spread and
+	// its last scan stamp — which the state-only QueuedSlot projection does not
+	// carry.
+	ParkedSlotViews(ctx context.Context, playerID int) ([]parkedsensing.SensingSlotView, error)
+}
+
+// SensingEnginePorts is the parked-probe engine's entire outbound surface,
+// injected as one struct rather than as a dozen setters: the ports are wired
+// together or not at all, and a half-wired engine is a wedge rather than a
+// degraded mode (a coordinator that could screen but not buy would plan
+// placements forever and fill none).
+//
+// It is built PER PLAYER (see SensingEnginePortsFactory). Two of the reads —
+// the shipyard inventory behind ListProbeYards, and the catalog sweep stamp
+// behind CatalogKnown — sit in player-scoped tables while their port signatures
+// carry no player, so the player has to be bound into the adapter. This handler
+// is a registered singleton serving every player's ticks, so binding it once at
+// wiring time would answer every player's questions with the first player's rows.
+type SensingEnginePorts struct {
+	Ledger       SensingLedger
+	Waypoints    parkedsensing.WaypointCatalog
+	MarketGoods  parkedsensing.MarketGoodsReader
+	RemoteMarket parkedsensing.RemoteMarketFetcher
+	Treasury     parkedsensing.TreasuryReader
+	CargoSpend   parkedsensing.CargoSpendReader
+	Purchaser    parkedsensing.ProbePurchaser
+	Ships        parkedsensing.ParkedShipReader
+	Fleet        parkedsensing.FleetTagger
+	Mover        parkedsensing.ShipMover
+	Gates        parkedsensing.GateNeighbours
+	Uncharted    parkedsensing.UnchartedCatalog
+	SeedShip     parkedsensing.SeedCommander
+	Scan         parkedsensing.MarketScanRunner
+	SpreadOf     parkedsensing.SpreadObserver
+	Home         HomeSystemReader
+	Budget       BudgetRateReader
+}
+
+// SensingEnginePortsFactory builds one player's engine surface. The daemon wires
+// a factory rather than a struct so the player-scoped adapters are bound to the
+// player whose tick is actually running.
+type SensingEnginePortsFactory func(playerID int) SensingEnginePorts
+
+// wired reports whether every port the reconcile depends on is present. It is
+// checked once per tick and fails the whole tick CLOSED, loudly: a nil port
+// discovered halfway through a tick would leave the ledger half-advanced.
+func (p SensingEnginePorts) wired() bool {
+	return p.Ledger != nil && p.Waypoints != nil && p.MarketGoods != nil && p.RemoteMarket != nil &&
+		p.Treasury != nil && p.CargoSpend != nil && p.Purchaser != nil && p.Ships != nil &&
+		p.Fleet != nil && p.Mover != nil && p.Gates != nil && p.Uncharted != nil &&
+		p.SeedShip != nil && p.Scan != nil && p.SpreadOf != nil && p.Home != nil && p.Budget != nil
+}
+
+// --- engine port bundles ------------------------------------------------------
+//
+// Each engine is handed its OWN narrow slice, cut from the single injected
+// surface. The bundles are what keep the engines' disjoint reach real at
+// composition time rather than merely documented in their interfaces: the
+// screen is given no way to spend, the placement machine no way to count the
+// fleet, the pacer no way to transition a slot.
+
+func (p SensingEnginePorts) screenPorts() parkedsensing.ScreenPorts {
+	return parkedsensing.ScreenPorts{
+		Waypoints:    p.Waypoints,
+		MarketGoods:  p.MarketGoods,
+		RemoteMarket: p.RemoteMarket,
+		Ledger:       p.Ledger,
+	}
+}
+
+func (p SensingEnginePorts) buyPorts() parkedsensing.BuyPorts {
+	return parkedsensing.BuyPorts{
+		Treasury:   p.Treasury,
+		CargoSpend: p.CargoSpend,
+		Purchaser:  p.Purchaser,
+		Ledger:     p.Ledger,
+		Yards:      p.Waypoints,
+		Ships:      p.Ships,
+		Fleet:      p.Fleet,
+	}
+}
+
+// reapPorts bundles the stranded-claim reaper's surface. It is the narrowest
+// slice cut here, and pointedly so: the reaper runs immediately before the drain
+// and rewrites the same rows, so it is handed no purchaser, no treasury and no
+// probe count — nothing that could turn a bookkeeping sweep into a spending path.
+func (p SensingEnginePorts) reapPorts() parkedsensing.ReapPorts {
+	return parkedsensing.ReapPorts{Ledger: p.Ledger}
+}
+
+func (p SensingEnginePorts) placementPorts() parkedsensing.PlacementPorts {
+	return parkedsensing.PlacementPorts{
+		Ledger: p.Ledger,
+		Ships:  p.Ships,
+		Mover:  p.Mover,
+		Fleet:  p.Fleet,
+	}
+}
+
+// expandPorts bundles the expansion engine's surface. Its Screen is a closure
+// over the screen's own ports, the player and the whitelist — the values fixed
+// for the life of a tick — so a finished charting seed can ask "what is this
+// system worth?" without the expansion engine acquiring the screen's
+// dependencies.
+func (p SensingEnginePorts) expandPorts(playerID int, whitelist map[string]bool) parkedsensing.ExpandPorts {
+	screen := p.screenPorts()
+	return parkedsensing.ExpandPorts{
+		Gates:       p.Gates,
+		Ledger:      p.Ledger,
+		SeedShip:    p.SeedShip,
+		Ships:       p.Ships,
+		MarketGoods: p.MarketGoods,
+		Yards:       p.Waypoints,
+		Uncharted:   p.Uncharted,
+		Screen: func(ctx context.Context, system string) (parkedsensing.ScreenResult, error) {
+			return parkedsensing.ScreenSystem(ctx, screen, playerID, system, whitelist)
+		},
+	}
+}
+
+// ParkedSensingRecorder is the metrics seam. Pure OBSERVATION (RULINGS #4): a
+// recording miss must never touch a decision path, so every implementation is
+// nil-safe and best-effort.
+type ParkedSensingRecorder interface {
+	RecordRate(playerID int, reqPerSec float64)
+	RecordStaleness(playerID int, tier string, seconds float64)
+	RecordSlots(playerID int, state string, count int)
 }
 
 // RunProbeSensingCoordinatorCommand launches the standing coordinator for a
 // player. All knobs are launch-config keys (RULINGS #5); the zero value falls
 // back to the documented default.
+//
+// The retired touring model's knobs are RETAINED as fields and IGNORED. They are
+// not dead weight: restart recovery rebuilds this command from the persisted
+// container config (RULINGS #2), and a config written by the old core still
+// carries them. Removing the fields would not fail loudly — configReader.OptionalInt
+// simply ignores keys it is not asked for — but keeping them documents that the
+// old keys are known-and-inert rather than accidentally dropped.
 type RunProbeSensingCoordinatorCommand struct {
 	PlayerID    shared.PlayerID
 	ContainerID string
 
-	GoodsWhitelist       []string
-	DepthFloor           int64
-	ProbeBudget          int // N — the total probe count the fleet may hold
-	SecondProbeThreshold int
-	PurchaseCooldownSecs int
-	TickSecs             int
-	WaitLowMs            int
-	WaitHighMs           int
-	FreshnessTargetSecs  int
-	MaxSpendPerCycle     int
-	SpendWindowSecs      int
+	GoodsWhitelist []string
+	TickSecs       int
+	WaitLowMs      int
+	WaitHighMs     int
 
-	// DiscoveryDeclaresPerTick bounds the sweep-once frontier declares per
-	// tick (the discovery_declares_per_tick config key).
+	// ProbeCap is the hard ceiling on probe hulls the engine may own.
+	ProbeCap int
+	// ExpansionEnabled switches the expansion engine on or off, encoded
+	// 1=on / 2=off. See defaultExpansionEnabled for why it is not 0/1.
+	ExpansionEnabled int
+	// TargetUtilPct is the share of the rate-limiter ceiling the fleet aims at.
+	TargetUtilPct int
+	// MinScanRateMilli is the pacer's floor, in thousandths of a request/sec.
+	MinScanRateMilli int
+	// ValueClampR bounds how much more attention the hottest market may earn
+	// than the baseline. 1 flattens the weighting entirely.
+	ValueClampR int
+	// InflightCap bounds concurrent scans.
+	InflightCap int
+	// CapitalMultiplierK is how many hours of cargo runway the buy floor holds.
+	CapitalMultiplierK int
+	// CapexReserveCredits is the committed-capex reserve the buy floor adds.
+	CapexReserveCredits int
+	// QuartermasterCadence is a yard slot's re-read floor, in seconds.
+	QuartermasterCadence int
+
+	// --- retired: read by the old touring core, ignored by this one -----------
+
+	DepthFloor               int64
+	ProbeBudget              int
+	SecondProbeThreshold     int
+	PurchaseCooldownSecs     int
+	FreshnessTargetSecs      int
+	MaxSpendPerCycle         int
+	SpendWindowSecs          int
 	DiscoveryDeclaresPerTick int
 }
 
@@ -161,40 +388,28 @@ type RunProbeSensingCoordinatorResponse struct {
 	Errors []string
 }
 
-// RunProbeSensingCoordinatorHandler reconciles the sensing scope, the dormancy
-// rotation, and the budgeted probe buy every tick. It is a registered singleton
-// (one instance serves every player's ticks); the per-player rotation cursor is
-// the sole in-memory state.
+// RunProbeSensingCoordinatorHandler composes the parked-probe engines into one
+// reconcile loop. It is a registered singleton (one instance serves every
+// player's ticks), so the per-container scan rotation and emergency brake are
+// held in maps behind a mutex.
 type RunProbeSensingCoordinatorHandler struct {
 	depthReader MarketDepthReader
 	postRepo    SensingPostRepository
 	fleetRepo   FleetReader
 	pressure    domainScouting.PressureReader
-	ledgerRepo  ledger.TransactionRepository
 	phase       expansionPhaseReader
 	clock       shared.Clock
 
-	// treasury and purchaser are optional collaborators wired via setters (the
-	// codebase's optional-injection idiom). A nil treasury or purchaser fails
-	// the PURCHASE path closed inside the guarded buyer; sensing-scope and
-	// dormancy writes need neither.
-	treasury  probebuy.TreasuryReader
-	purchaser probebuy.ProbePurchaser
+	// newPorts builds the engine's outbound surface for one player, wired as
+	// one unit after construction (the codebase's optional-injection idiom).
+	// An unwired coordinator holds every tick inert and says so.
+	newPorts SensingEnginePortsFactory
 
-	// gateGraph is the discovery pass's stored-adjacency read, wired via
-	// setter like treasury/purchaser. Nil keeps discovery entirely inert:
-	// no sweep declares and no funded discovery demand.
-	gateGraph GateAdjacencyReader
-
-	// waypointCatalog is the discovery pass's swept-knowledge read, wired via
-	// setter like gateGraph. Nil disables only the swept-marketless exclusion
-	// (every not-in-census neighbour stays a candidate — the pre-seam shape).
-	waypointCatalog WaypointCatalogReader
-
-	// newBuyer builds the tick's guarded buyer from the resolved buy config.
-	// The default builds the real probebuy.GuardedProbeBuyer (guard stack
-	// reused unmodified — RULINGS #4); it is a seam only for tests.
-	newBuyer func(cfg probebuy.Config) guardedBuyer
+	// liveConfig gives each tick a fresh view of the persisted container config,
+	// so `spacetraders tune` takes effect on the NEXT tick rather than at the
+	// next rebuild. A nil reader (or a failed snapshot) runs the tick on the
+	// launch command — never a half-applied config.
+	liveConfig liveconfig.Reader
 
 	// captainEvents emits the coordinator error-loop event when a reconcile
 	// pass fails with the identical error for DefaultStreakThreshold
@@ -202,77 +417,106 @@ type RunProbeSensingCoordinatorHandler struct {
 	// standing failure sensor. Optional-injection.
 	captainEvents captain.EventRecorder
 
-	// cursorMu guards cursors against the singleton-handler concurrency (many
-	// players' ticks share one handler). cursors holds each player's rotation
-	// cursor; memory-only by design — a restart merely restarts the rotation.
-	cursorMu sync.Mutex
-	cursors  map[int]int
+	// recorder publishes the sensing gauges. Optional; nil means metrics are off.
+	recorder ParkedSensingRecorder
+
+	// mu guards the per-container state against the singleton-handler
+	// concurrency (many containers' ticks share one handler).
+	mu sync.Mutex
+	// scanners holds each container's scan rotation. Memory-only by design: the
+	// rotation is rebuilt from the ledger by the first SyncMembership, and every
+	// slot's last_scan_at survives in the ledger, so a restart resumes with its
+	// pacing intact.
+	scanners map[string]*parkedsensing.Scanner
+	// brakes holds each container's emergency throttle. A restart resets it to
+	// fully released, which re-derives within a few ticks from live pressure.
+	brakes map[string]float64
+	// cutoverDone latches the one-time cutover per container, so a ledger that
+	// legitimately reads empty later (a fresh era) does not re-run the scout-post
+	// retirement it has no rows to justify.
+	cutoverDone map[string]bool
+	// portsByPlayer memoises each player's engine surface.
+	portsByPlayer map[int]SensingEnginePorts
+	// pacersRunning records which containers currently have a live scan pacer.
+	// It is what makes starting one IDEMPOTENT — see ensurePacer.
+	pacersRunning map[string]bool
+
+	// runPacer is the pacer's entry point, a seam only for tests: production
+	// runs the scanner's own loop, and a test substitutes one it can make exit
+	// on demand (the real loop returns only on ctx cancellation).
+	runPacer func(ctx context.Context, scanner *parkedsensing.Scanner)
 }
 
 // NewRunProbeSensingCoordinatorHandler wires the coordinator. clock defaults to
-// the real clock when nil (production). The treasury reader and probe purchaser
-// are optional and injected separately. phase is the EXPANSION gate — a REQUIRED
-// guard, deliberately a constructor parameter rather than an optional setter: a
-// nil reader holds the whole coordinator inert (surfaced loudly every tick),
-// never silently open.
+// the real clock when nil (production). The engine ports are injected separately
+// via SetEnginePortsFactory. phase is the EXPANSION gate — a REQUIRED guard,
+// deliberately a constructor parameter rather than an optional setter: a nil
+// reader holds the whole coordinator inert (surfaced loudly every tick), never
+// silently open.
 func NewRunProbeSensingCoordinatorHandler(
 	depthReader MarketDepthReader,
 	postRepo SensingPostRepository,
 	fleetRepo FleetReader,
 	pressure domainScouting.PressureReader,
-	ledgerRepo ledger.TransactionRepository,
 	phase expansionPhaseReader,
 	clock shared.Clock,
 ) *RunProbeSensingCoordinatorHandler {
 	if clock == nil {
 		clock = shared.NewRealClock()
 	}
-	h := &RunProbeSensingCoordinatorHandler{
-		depthReader: depthReader,
-		postRepo:    postRepo,
-		fleetRepo:   fleetRepo,
-		pressure:    pressure,
-		ledgerRepo:  ledgerRepo,
-		phase:       phase,
-		clock:       clock,
-		cursors:     make(map[int]int),
+	return &RunProbeSensingCoordinatorHandler{
+		depthReader:   depthReader,
+		postRepo:      postRepo,
+		fleetRepo:     fleetRepo,
+		pressure:      pressure,
+		phase:         phase,
+		clock:         clock,
+		scanners:      map[string]*parkedsensing.Scanner{},
+		brakes:        map[string]float64{},
+		cutoverDone:   map[string]bool{},
+		portsByPlayer: map[int]SensingEnginePorts{},
+		pacersRunning: map[string]bool{},
+		runPacer:      func(ctx context.Context, scanner *parkedsensing.Scanner) { scanner.RunPacer(ctx) },
 	}
-	h.newBuyer = func(cfg probebuy.Config) guardedBuyer {
-		return probebuy.NewGuardedProbeBuyer(h.treasury, h.purchaser, h.ledgerRepo, h.clock, cfg)
+}
+
+// SetEnginePortsFactory wires the parked-probe engine's outbound surface, as a
+// per-player factory. Leaving it unset holds every tick inert.
+func (h *RunProbeSensingCoordinatorHandler) SetEnginePortsFactory(f SensingEnginePortsFactory) {
+	h.newPorts = f
+}
+
+// portsFor resolves one player's engine surface, memoised so a tick does not
+// rebuild a dozen adapters it built last tick. The factory is called at most
+// once per player for the life of the process.
+func (h *RunProbeSensingCoordinatorHandler) portsFor(playerID int) (SensingEnginePorts, bool) {
+	if h.newPorts == nil {
+		return SensingEnginePorts{}, false
 	}
-	return h
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if ports, ok := h.portsByPlayer[playerID]; ok {
+		return ports, true
+	}
+	ports := h.newPorts(playerID)
+	h.portsByPlayer[playerID] = ports
+	return ports, true
 }
 
-// SetTreasuryReader wires the live-treasury source for the 25% guard. Leaving
-// it unset keeps the PURCHASE path fail-closed.
-func (h *RunProbeSensingCoordinatorHandler) SetTreasuryReader(t probebuy.TreasuryReader) {
-	h.treasury = t
-}
-
-// SetProbePurchaser wires the price-and-buy port over the existing
-// purchase_ship machinery. Leaving it unset keeps the PURCHASE path fail-closed.
-func (h *RunProbeSensingCoordinatorHandler) SetProbePurchaser(p probebuy.ProbePurchaser) {
-	h.purchaser = p
-}
-
-// SetGateGraph wires the stored gate adjacency the discovery pass propagates
-// over (a pure store read — wire *gategraph.Service, never a fetch-through
-// resolver). Leaving it unset keeps discovery inert.
-func (h *RunProbeSensingCoordinatorHandler) SetGateGraph(g GateAdjacencyReader) {
-	h.gateGraph = g
-}
-
-// SetWaypointCatalog wires the persisted waypoint catalog the discovery pass
-// reads swept-knowledge from (wire the waypoint repository, in the same
-// breath as SetGateGraph). Leaving it unset keeps the swept-marketless
-// exclusion off — every not-in-census neighbour stays a candidate.
-func (h *RunProbeSensingCoordinatorHandler) SetWaypointCatalog(w WaypointCatalogReader) {
-	h.waypointCatalog = w
+// SetLiveConfigReader wires the per-tick live view of the persisted container
+// config. Leaving it unset keeps the loop launch-frozen.
+func (h *RunProbeSensingCoordinatorHandler) SetLiveConfigReader(r liveconfig.Reader) {
+	h.liveConfig = r
 }
 
 // SetEventRecorder wires the captain outbox for the reconcile error-loop event.
 func (h *RunProbeSensingCoordinatorHandler) SetEventRecorder(rec captain.EventRecorder) {
 	h.captainEvents = rec
+}
+
+// SetMetricsRecorder wires the sensing gauges. Observation only.
+func (h *RunProbeSensingCoordinatorHandler) SetMetricsRecorder(rec ParkedSensingRecorder) {
+	h.recorder = rec
 }
 
 // noteReconcile records one reconcile pass at the streak checkpoint: a nil err
@@ -289,23 +533,41 @@ func (h *RunProbeSensingCoordinatorHandler) noteReconcile(ctx context.Context, c
 	}
 }
 
-// sensingConfig is the launch command with every default resolved.
+// sensingConfig is one tick's effective config, with every default resolved.
 type sensingConfig struct {
 	Whitelist            map[string]bool
-	DepthFloor           int64
-	ProbeBudget          int
-	SecondProbeThreshold int
-	DiscoveryDeclares    int
-	FreshnessTarget      time.Duration
 	Tick                 time.Duration
-	WaitLow              time.Duration
-	WaitHigh             time.Duration
-	Buy                  probebuy.Config
+	WaitLow, WaitHigh    time.Duration
+	ProbeCap             int
+	Expansion            bool
+	TargetUtilPct        int
+	MinScanRateMilli     int
+	ClampR               int
+	InflightCap          int
+	CapitalMultiplierK   int
+	CapexReserveCredits  int64
+	QuartermasterCadence time.Duration
 }
 
-// resolveSensingConfig resolves one launch's effective config: a zero/absent
-// knob means the documented default.
-func resolveSensingConfig(cmd *RunProbeSensingCoordinatorCommand) sensingConfig {
+// resolveSensingConfig resolves one tick's effective config from the launch
+// command overlaid with the live snapshot: a zero/absent knob means the
+// documented default, which is exactly the `tune <key> 0` revert.
+//
+// The two out-of-contract cases are treated differently on purpose:
+//
+//   - ZERO is the REVERT, and it is silent. `tune <key> 0` means "go back to the
+//     documented default" fleet-wide, and an absent key resolves to 0 too — which
+//     is the normal state of every default launch. Warning here would fire on
+//     every tick of most containers.
+//   - NEGATIVE is a MISWRITE, and it warns. The tune registry bounds every key,
+//     so a negative can only arrive from a hand-edited config row — and two of
+//     them are silently destructive if merely absorbed: a negative
+//     min_scan_rate_milli flows straight through to a NEGATIVE sensing rate (the
+//     pacer's floor becomes a ceiling), and a clamp below 1 collapses the
+//     weighting's optimistic prior so every unmeasured slot degrades to hourly
+//     scans. Both faults are invisible in behaviour — the rotation still runs —
+//     so the warning is the only trace they would otherwise leave.
+func resolveSensingConfig(ctx context.Context, cmd *RunProbeSensingCoordinatorCommand, live liveconfig.Snapshot) sensingConfig {
 	goods := cmd.GoodsWhitelist
 	if len(goods) == 0 {
 		goods = defaultSensingWhitelist()
@@ -315,42 +577,43 @@ func resolveSensingConfig(cmd *RunProbeSensingCoordinatorCommand) sensingConfig 
 		whitelist[good] = true
 	}
 
+	pick := func(key string, launch int) int {
+		if v, ok := live.PositiveInt(key); ok {
+			return v
+		}
+		return launch
+	}
+	warnNegative := func(key string, v, fallback int) {
+		if v >= 0 {
+			return
+		}
+		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
+			"Probe sensing knob %s is negative (%d) and has been replaced with its default (%d) — a negative here degrades the scan rotation silently, so it is never honoured",
+			key, v, fallback), map[string]interface{}{
+			"action": "parked_sensing_knob_rejected",
+			"knob":   key,
+			"value":  v,
+		})
+	}
+
 	c := sensingConfig{
 		Whitelist:            whitelist,
-		DepthFloor:           cmd.DepthFloor,
-		ProbeBudget:          cmd.ProbeBudget,
-		SecondProbeThreshold: cmd.SecondProbeThreshold,
-		DiscoveryDeclares:    cmd.DiscoveryDeclaresPerTick,
-		FreshnessTarget:      time.Duration(cmd.FreshnessTargetSecs) * time.Second,
-		Tick:                 time.Duration(cmd.TickSecs) * time.Second,
-		WaitLow:              time.Duration(cmd.WaitLowMs) * time.Millisecond,
-		WaitHigh:             time.Duration(cmd.WaitHighMs) * time.Millisecond,
-		Buy: probebuy.Config{
-			MaxProbeFleet:    cmd.ProbeBudget,
-			MaxSpendPerCycle: cmd.MaxSpendPerCycle,
-			PurchaseCooldown: time.Duration(cmd.PurchaseCooldownSecs) * time.Second,
-			SpendWindow:      time.Duration(cmd.SpendWindowSecs) * time.Second,
-			// Probe buys always leave the immutable working-capital reserve
-			// spendable (RULINGS #4/#5 — a hard floor, not a knob).
-			ReserveFloor: common.ImmutableReserveFloor,
-		},
+		Tick:                 time.Duration(pick("tick_secs", cmd.TickSecs)) * time.Second,
+		WaitLow:              time.Duration(pick("wait_low_ms", cmd.WaitLowMs)) * time.Millisecond,
+		WaitHigh:             time.Duration(pick("wait_high_ms", cmd.WaitHighMs)) * time.Millisecond,
+		ProbeCap:             pick("probe_cap", cmd.ProbeCap),
+		TargetUtilPct:        pick("target_util_pct", cmd.TargetUtilPct),
+		MinScanRateMilli:     pick("min_scan_rate_milli", cmd.MinScanRateMilli),
+		ClampR:               pick("value_clamp_r", cmd.ValueClampR),
+		InflightCap:          pick("inflight_cap", cmd.InflightCap),
+		CapitalMultiplierK:   pick("capital_multiplier_k", cmd.CapitalMultiplierK),
+		CapexReserveCredits:  int64(pick("capex_reserve_credits", cmd.CapexReserveCredits)),
+		QuartermasterCadence: time.Duration(pick("quartermaster_cadence_secs", cmd.QuartermasterCadence)) * time.Second,
 	}
-	if c.DepthFloor <= 0 {
-		c.DepthFloor = defaultSensingDepthFloor
-	}
-	if c.ProbeBudget <= 0 {
-		c.ProbeBudget = defaultSensingProbeBudget
-		c.Buy.MaxProbeFleet = defaultSensingProbeBudget
-	}
-	if c.SecondProbeThreshold <= 0 {
-		c.SecondProbeThreshold = defaultSensingSecondProbeThreshold
-	}
-	if c.DiscoveryDeclares <= 0 {
-		c.DiscoveryDeclares = defaultSensingDiscoveryDeclares
-	}
-	if c.FreshnessTarget <= 0 {
-		c.FreshnessTarget = defaultSensingFreshnessTargetSecs * time.Second
-	}
+
+	// 1=on, 2=off. Anything else — including the absent-key 0 — is the default.
+	c.Expansion = pick("expansion_enabled", cmd.ExpansionEnabled) != expansionDisabled
+
 	if c.Tick <= 0 {
 		c.Tick = defaultSensingTickSeconds * time.Second
 	}
@@ -360,19 +623,68 @@ func resolveSensingConfig(cmd *RunProbeSensingCoordinatorCommand) sensingConfig 
 	if c.WaitHigh <= 0 {
 		c.WaitHigh = defaultSensingWaitHighMs * time.Millisecond
 	}
-	if c.Buy.MaxSpendPerCycle <= 0 {
-		c.Buy.MaxSpendPerCycle = defaultSensingMaxSpend
+	if c.ProbeCap <= 0 {
+		c.ProbeCap = defaultParkedProbeCap
 	}
-	if c.Buy.PurchaseCooldown <= 0 {
-		c.Buy.PurchaseCooldown = defaultSensingPurchaseCooldownSecs * time.Second
+	if c.TargetUtilPct <= 0 {
+		c.TargetUtilPct = defaultTargetUtilPct
 	}
-	if c.Buy.SpendWindow <= 0 {
-		c.Buy.SpendWindow = defaultSensingSpendWindowSecs * time.Second
+	if c.MinScanRateMilli <= 0 {
+		warnNegative("min_scan_rate_milli", c.MinScanRateMilli, defaultMinScanRateMilli)
+		c.MinScanRateMilli = defaultMinScanRateMilli
+	}
+	if c.ClampR < 1 {
+		warnNegative("value_clamp_r", c.ClampR, defaultValueClampR)
+		c.ClampR = defaultValueClampR
+	}
+	if c.InflightCap <= 0 {
+		c.InflightCap = defaultInflightCap
+	}
+	if c.CapitalMultiplierK < 0 {
+		warnNegative("capital_multiplier_k", c.CapitalMultiplierK, defaultCapitalMultiplierK)
+		c.CapitalMultiplierK = defaultCapitalMultiplierK
+	}
+	if c.CapitalMultiplierK == 0 && cmd.CapitalMultiplierK == 0 {
+		// 0 is a legitimate operator choice (hold back no cargo runway at all),
+		// but it is indistinguishable from an absent key, so the documented
+		// default wins — matching every other knob's revert semantics.
+		c.CapitalMultiplierK = defaultCapitalMultiplierK
+	}
+	if c.CapexReserveCredits < 0 {
+		warnNegative("capex_reserve_credits", int(c.CapexReserveCredits), defaultCapexReserveCredits)
+		c.CapexReserveCredits = defaultCapexReserveCredits
+	}
+	if c.CapexReserveCredits == 0 && cmd.CapexReserveCredits == 0 {
+		c.CapexReserveCredits = defaultCapexReserveCredits
+	}
+	if c.QuartermasterCadence <= 0 {
+		c.QuartermasterCadence = defaultQuartermasterCadenceSecs * time.Second
 	}
 	return c
 }
 
-// Handle runs the reconcile loop until the context is cancelled.
+// liveSnapshot takes this tick's view of the persisted config. A missing reader
+// or a failed read yields a nil snapshot, which resolveSensingConfig reads as
+// "no live overrides" and runs entirely on the launch command — the fail-safe
+// launch behaviour, never a half-applied config (liveconfig.go).
+func (h *RunProbeSensingCoordinatorHandler) liveSnapshot(ctx context.Context, cmd *RunProbeSensingCoordinatorCommand) liveconfig.Snapshot {
+	if h.liveConfig == nil {
+		return nil
+	}
+	snapshot, err := h.liveConfig.Snapshot(ctx, cmd.ContainerID, cmd.PlayerID.Value())
+	if err != nil {
+		return nil
+	}
+	return snapshot
+}
+
+// Handle runs the reconcile loop until the context is cancelled, with the scan
+// pacer running alongside it.
+//
+// The pacer is started ONCE, before the first tick, and lives for the whole
+// container: it is a single long-lived rotation whose membership the reconcile
+// refreshes, not a per-tick job. Cancelling ctx stops both — the pacer drains
+// its in-flight workers on the way out.
 func (h *RunProbeSensingCoordinatorHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -381,12 +693,17 @@ func (h *RunProbeSensingCoordinatorHandler) Handle(ctx context.Context, request 
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	cfg := resolveSensingConfig(cmd)
+	cfg := resolveSensingConfig(ctx, cmd, h.liveSnapshot(ctx, cmd))
 	result := &RunProbeSensingCoordinatorResponse{Errors: []string{}}
-	logger.Log("INFO", fmt.Sprintf("Probe sensing coordinator starting (tick %s, budget %d probes)", cfg.Tick, cfg.ProbeBudget), map[string]interface{}{
+	logger.Log("INFO", fmt.Sprintf("Parked-probe sensing coordinator starting (tick %s, probe cap %d, expansion %v)", cfg.Tick, cfg.ProbeCap, cfg.Expansion), map[string]interface{}{
 		"action":       "probe_sensing_start",
 		"container_id": cmd.ContainerID,
 	})
+
+	// The pacer is NOT started here. It is started from the tick path
+	// (ensurePacer), which is what makes it both single and self-healing — see
+	// that function; the container runner can re-enter this Handle several times
+	// for one container, and a pacer that dies takes the fleet's scanning with it.
 
 	errMon := health.NewMonitor(health.DefaultStreakThreshold)
 
@@ -400,11 +717,14 @@ func (h *RunProbeSensingCoordinatorHandler) Handle(ctx context.Context, request 
 		err := h.ReconcileOnce(ctx, cmd)
 		if err != nil {
 			result.Errors = append(result.Errors, err.Error())
-			logger.Log("ERROR", fmt.Sprintf("Probe sensing reconcile failed: %v", err), nil)
+			logger.Log("ERROR", fmt.Sprintf("Parked-probe sensing reconcile failed: %v", err), nil)
 		}
 		h.noteReconcile(ctx, cmd, errMon, err)
 		result.Ticks++
 
+		// Re-resolved every tick so a tuned cadence takes effect on the next
+		// sleep rather than at the next rebuild.
+		cfg = resolveSensingConfig(ctx, cmd, h.liveSnapshot(ctx, cmd))
 		select {
 		case <-time.After(cfg.Tick):
 		case <-ctx.Done():
@@ -414,244 +734,711 @@ func (h *RunProbeSensingCoordinatorHandler) Handle(ctx context.Context, request 
 }
 
 // ReconcileOnce is one reconcile pass — the unit the tests drive directly.
-// Pure inputs → diffs: census → plan → post diff → dormancy rotation → one
-// guarded buy → one heartbeat.
+//
+// The stages run in dependency order (screen plans placements, the queue fills
+// them, the placement machine flies them, expansion finds the next system to
+// screen) and every stage's failure is COLLECTED rather than fatal. A tick that
+// cannot read the treasury must still advance the hulls already flying and must
+// still refresh the scan rotation — aborting on the first error would let one
+// unreadable port dark the whole fleet's market data.
 func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, cmd *RunProbeSensingCoordinatorCommand) error {
-	// EXPANSION GATE. Demand-driven sensing sizes the footprint against the
-	// fleet's TRADING reach, and before the home jump gate is built there is no
-	// such reach — a cold start would read an empty whitelist scope, size the
-	// world to zero hulls, and write that over the posts bootstrap declared,
-	// starving the cold start of the scouting it just bought probes for. Until
-	// EXPANSION, provisioning is bootstrap's (a fixed probe target) and manning
-	// is the scout-post reconciler's. Checked FIRST so a pre-EXPANSION tick does
-	// nothing at all: no census read, no plan, no post write, no buy.
+	// EXPANSION GATE. Parked sensing buys hulls and sizes its footprint against
+	// the fleet's trading reach; before the home jump gate is built there is no
+	// such reach, and bootstrap owns probe provisioning. Checked FIRST so a
+	// pre-EXPANSION tick does nothing at all — no ledger read, no cutover, no buy.
 	if !h.expansionReached(ctx, cmd) {
 		return nil
 	}
 
 	logger := common.LoggerFromContext(ctx)
-	cfg := resolveSensingConfig(cmd)
-	now := h.clock.Now()
-
-	rows, err := h.depthReader.MarketDepthRows(ctx, cmd.PlayerID.Value())
-	if err != nil {
-		return fmt.Errorf("failed to read market depth census: %w", err)
-	}
-	profiles := domainScouting.BuildSensingProfiles(rows, cfg.Whitelist)
-
-	// ERA-GAP FAIL-SAFE: an empty census (cold DB, fresh era, transient gap)
-	// carries no signal. Acting on it would mass-remove every standing post in
-	// one tick — a fleet-killer — so declare/remove NOTHING and wait for the
-	// census to repopulate.
-	if len(profiles) == 0 {
-		logger.Log("INFO", "Probe sensing cycle: empty census — era-gap fail-safe, declaring/removing/buying nothing", map[string]interface{}{
-			"action":   "probe_sensing_cycle",
-			"in_scope": 0,
+	playerID := cmd.PlayerID.Value()
+	ports, built := h.portsFor(playerID)
+	if !built || !ports.wired() {
+		logger.Log("WARNING", "Parked-probe sensing held (fail-closed): the engine ports are not wired — a half-wired engine plans placements it can never fill", map[string]interface{}{
+			"action": "parked_sensing_unwired",
 		})
 		return nil
 	}
 
-	plan := domainScouting.PlanSensing(profiles, cfg.DepthFloor, cfg.SecondProbeThreshold)
+	cfg := resolveSensingConfig(ctx, cmd, h.liveSnapshot(ctx, cmd))
 
-	// hotBySystem is each census system's stage-2 circuit, stamped onto every
-	// standing post below. Membership is goods-based only (see
-	// SystemSensingProfile.HotWaypoints): depth gates whether a post EXISTS,
-	// never which markets it circuits — a crushed market still deals its goods
-	// and stays in the circuit while its prices recover.
-	hotBySystem := make(map[string][]string, len(profiles))
-	for _, profile := range profiles {
-		hotBySystem[profile.System] = profile.HotWaypoints
-	}
+	// Started here rather than in Handle, and re-checked on every tick: the
+	// container runner can enter Handle several times for one container, and a
+	// pacer that dies would otherwise take all parked-market scanning with it
+	// while the heartbeat still looked healthy.
+	h.ensurePacer(ctx, cmd, cfg, ports)
 
-	posts, err := h.postRepo.ListActive(ctx, cmd.PlayerID.Value())
+	// The budget is recomputed FIRST: expansion gates on the sensing residual and
+	// the pacer runs at the floored rate, so both engines below need this tick's
+	// numbers rather than the last tick's.
+	budget := h.budgetInputs(cmd, cfg, ports)
+	sensingRate := domainSensing.SensingRate(budget)
+	pacerRate := domainSensing.PacerRate(budget)
+
+	systems, err := ports.Ledger.Systems(ctx, playerID)
 	if err != nil {
-		return fmt.Errorf("failed to list scout posts: %w", err)
-	}
-	// sweep_once posts are the frontier's, and Upsert is keyed by (player,
-	// system) — a standing write against a sweep system would clobber the sweep
-	// row, so those systems are untouchable this tick.
-	standingBySystem := make(map[string]*domainScouting.ScoutPost)
-	sweepSystems := make(map[string]bool)
-	for _, post := range posts {
-		if post.Kind == domainScouting.PostKindStanding {
-			standingBySystem[post.SystemSymbol] = post
-			continue
-		}
-		sweepSystems[post.SystemSymbol] = true
+		return fmt.Errorf("failed to read the sensing ledger: %w", err)
 	}
 
-	// Rotation: share is derived ONLY via ActiveShare — its 0.5 floor is what
-	// bounds degradation, and a raw share of 0 would park the ring forever.
-	inScope := make([]string, 0, len(plan.Hulls))
-	for system := range plan.Hulls {
-		inScope = append(inScope, system)
+	var failures []error
+	cutover, rotation := 0, 0
+	// cutoverPending is the cutover's own trigger, named because the adoption
+	// retry below gates on it too: while the cutover has not finished, adopting
+	// orphans is still ITS job (sp-0gp21).
+	cutoverPending := len(systems) == 0 && !h.cutoverAlreadyDone(cmd.ContainerID)
+	if cutoverPending {
+		count, cerr := h.cutover(ctx, cmd, cfg, ports)
+		cutover = count
+		if cerr != nil {
+			// A partial cutover is durable and resumable — every write it made
+			// stands — so the tick continues and the next one finishes the job.
+			failures = append(failures, cerr)
+		}
 	}
-	sort.Strings(inScope)
+
+	screened, serr := h.screenSweep(ctx, cmd, cfg, ports)
+	if serr != nil {
+		failures = append(failures, serr)
+	}
+
+	// BETWEEN THE SWEEP AND THE DRAIN, and both edges are the contract.
+	//
+	// After the sweep, so a verdict written by THIS tick is honoured by it: a
+	// system the sweep has just restored to IN_SCOPE keeps its claim, which the
+	// drain then re-works. Running the reaper first would read a stale map and
+	// revert claims the sweep was about to justify.
+	//
+	// Before the drain, so a claim released this tick is a WANTED placement the
+	// drain can fill immediately rather than one that waits a whole tick.
+	//
+	// The reaper re-reads the system table itself, and that RE-READ IS THE POINT.
+	// Do not pass it the `systems` slice loaded at the top of this tick, however
+	// much that looks like an obvious de-dup of a full-table read: that read
+	// happens BEFORE the screening sweep, so reusing it would hand the reaper a
+	// pre-sweep verdict map and silently restore exactly the stale-verdict
+	// reaping the ordering above exists to prevent.
+	reapRep, rerr := parkedsensing.ReapStrandedClaims(ctx, ports.reapPorts(), playerID, 0)
+	if rerr != nil {
+		failures = append(failures, rerr)
+	}
+
+	// The reaper's sibling, and also BEFORE the drain — for the same reason. A
+	// hull adopted this tick is a parked SPARE the buy queue can re-task instead
+	// of buying, so running it after the drain would spend money on a probe we
+	// already own and had just finished recording (sp-0gp21).
+	//
+	// GATED ON THE CUTOVER, NOT THE PHASE. Before the cutover a scout-tagged hull
+	// is not an orphan at all — the scout posts still stand and the scout-post
+	// coordinator is actively manning them and drawing from its idle pool — so a
+	// pass running then would take hulls out from under a LIVE coordinator. The
+	// cutover is precisely the event that turns "scout-tagged hull" into "orphan
+	// we failed to adopt", and while it is still pending (including while it
+	// retries after a failure) adoption remains its job.
+	adopted := 0
+	if !cutoverPending {
+		adopted = h.adoptStrandedProbes(ctx, cmd, ports, &failures)
+	}
+
+	buyRep, berr := parkedsensing.DrainBuyQueue(ctx, ports.buyPorts(), playerID, parkedsensing.BuyKnobs{
+		ProbeCap:     cfg.ProbeCap,
+		CapexReserve: cfg.CapexReserveCredits,
+		K:            cfg.CapitalMultiplierK,
+	}, h.clock)
+	if berr != nil {
+		failures = append(failures, berr)
+	}
+
+	placeRep, perr := parkedsensing.AdvancePlacements(ctx, ports.placementPorts(), playerID, 0)
+	if perr != nil {
+		failures = append(failures, perr)
+	}
+
+	// Expansion is gated on the SENSING residual, never the pacer rate: the
+	// emergency brake can legitimately drive the residual below the minimum scan
+	// rate, and the pacer re-imposes that floor — so gating on the pacer rate
+	// would make the brake invisible here and leave expansion charting away at
+	// full tilt through a rate-limit storm (budget.go:82-116).
+	expandRep, eerr := parkedsensing.AdvanceExpansion(ctx, ports.expandPorts(playerID, cfg.Whitelist), playerID, parkedsensing.ExpandKnobs{
+		Enabled:       cfg.Expansion,
+		MinBudgetRate: float64(cfg.MinScanRateMilli) / 1000.0,
+		Whitelist:     cfg.Whitelist,
+	}, sensingRate)
+	if eerr != nil {
+		failures = append(failures, eerr)
+	}
+
+	views, verr := ports.Ledger.ParkedSlotViews(ctx, playerID)
+	if verr != nil {
+		failures = append(failures, fmt.Errorf("failed to read the parked scan rotation: %w", verr))
+	} else {
+		// The pacer runs at the FLOORED rate, so market data never goes fully
+		// dark however hard the brake bites.
+		scanner := h.scannerFor(cmd, cfg, ports)
+		scanner.SyncMembership(h.stampCadence(views, cfg), pacerRate)
+		rotation, _ = scanner.RotationSize()
+		h.publish(ctx, playerID, pacerRate, views, ports)
+	}
+
+	h.heartbeat(ctx, cmd, cfg, heartbeat{
+		sensingRate: sensingRate,
+		pacerRate:   pacerRate,
+		brake:       budget.BrakeFactor,
+		cutover:     cutover,
+		screened:    screened,
+		adopted:     adopted,
+		reap:        reapRep,
+		buy:         buyRep,
+		place:       placeRep,
+		expand:      expandRep,
+		rotation:    rotation,
+	})
+	return errors.Join(failures...)
+}
+
+// budgetInputs takes this tick's reading of the shared API budget and advances
+// the emergency brake from live limiter pressure.
+//
+// The brake is per-container and multiplicative, so it is advanced exactly once
+// per tick — reading it twice would double-brake, and the scan pacer deliberately
+// has no pressure port of its own for the same reason (scanner.go's ScanPorts).
+func (h *RunProbeSensingCoordinatorHandler) budgetInputs(cmd *RunProbeSensingCoordinatorCommand, cfg sensingConfig, ports SensingEnginePorts) domainSensing.BudgetInputs {
 	wait := time.Duration(0)
 	if h.pressure != nil {
-		wait = h.pressure.Current(now)
+		wait = h.pressure.Current(h.clock.Now())
 	}
-	share, discovery := domainScouting.ActiveShare(wait, cfg.WaitLow, cfg.WaitHigh)
-	dormant, nextCursor := domainScouting.RotateDormant(inScope, share, h.cursor(cmd.PlayerID.Value()))
-	h.setCursor(cmd.PlayerID.Value(), nextCursor)
 
-	// Post diff. Writes are DELTAS only: a converged tick writes nothing, so
-	// steady state costs zero rows (write-amplification guard).
-	upserts := 0
-	for _, system := range inScope {
-		if sweepSystems[system] {
+	h.mu.Lock()
+	brake := domainSensing.ApplyBrake(h.brakes[cmd.ContainerID], wait, cfg.WaitLow, cfg.WaitHigh)
+	h.brakes[cmd.ContainerID] = brake
+	h.mu.Unlock()
+
+	return domainSensing.BudgetInputs{
+		CeilingReqPerSec: ports.Budget.CeilingReqPerSec(),
+		TargetUtilPct:    cfg.TargetUtilPct,
+		MinScanRateMilli: cfg.MinScanRateMilli,
+		NonSensingRate:   ports.Budget.NonSensingRate(budgetWindow),
+		ChartingRate:     ports.Budget.ChartingRate(budgetWindow),
+		BrakeFactor:      brake,
+	}
+}
+
+// screenSweep re-screens the PENDING systems, bounded to screenSweepBatch per
+// tick.
+//
+// PENDING is the ONLY verdict re-screened, and that is the whole cost model: a
+// system judged IN_SCOPE has its placements and never needs judging again, and
+// NO_WHITELIST is durable by design. Re-screening either would put the sweep's
+// cost on the size of the known map rather than on the size of the frontier.
+//
+// A PENDING system whose waypoint CATALOG has never been swept is swept first,
+// in-band. Without it the screen reads an unswept system's empty waypoint list
+// as a fully-examined barren one — the same reading, opposite meaning — and the
+// verdict it would record is durable AND makes the system a frontier propagation
+// origin, so one wrong write-off walks outward across the map. The sweep is a
+// paginated multi-call read metered under the charting envelope; it is bounded
+// here by the batch above and happens once per system, and the pacer concedes
+// charting's measured rate out of its own share (budgetInputs), so the spend is
+// accounted rather than merely tolerated.
+func (h *RunProbeSensingCoordinatorHandler) screenSweep(ctx context.Context, cmd *RunProbeSensingCoordinatorCommand, cfg sensingConfig, ports SensingEnginePorts) (int, error) {
+	playerID := cmd.PlayerID.Value()
+	pending, err := ports.Ledger.SystemsByVerdict(ctx, playerID, parkedsensing.VerdictPending)
+	if err != nil {
+		return 0, fmt.Errorf("failed to list systems awaiting screening: %w", err)
+	}
+	sort.Slice(pending, func(i, j int) bool { return pending[i].System < pending[j].System })
+
+	screen := ports.screenPorts()
+	screened := 0
+	var failures []error
+	for _, system := range pending {
+		if screened >= screenSweepBatch {
+			break
+		}
+		screened++
+
+		known, kerr := ports.Waypoints.CatalogKnown(ctx, system.System)
+		if kerr != nil {
+			failures = append(failures, fmt.Errorf("failed to read whether the waypoint catalog of %q is known: %w", system.System, kerr))
 			continue
 		}
-		wantDormant := dormant[system]
-		wantHot := hotBySystem[system]
-		existing := standingBySystem[system]
-		if existing == nil {
-			post := &domainScouting.ScoutPost{
-				PlayerID:        cmd.PlayerID.Value(),
-				SystemSymbol:    system,
-				FreshnessTarget: cfg.FreshnessTarget,
-				Kind:            domainScouting.PostKindStanding,
-				Hulls:           plan.Hulls[system],
-				Dormant:         wantDormant,
-				HotWaypoints:    wantHot,
-				CreatedAt:       now,
-			}
-			if err := h.postRepo.Upsert(ctx, post); err != nil {
-				logger.Log("WARNING", fmt.Sprintf("Failed to declare sensing post %s: %v", system, err), nil)
+		if !known {
+			if serr := ports.SeedShip.SyncWaypoints(ctx, playerID, system.System); serr != nil {
+				// Named, not silent: a repeating sweep failure is otherwise
+				// invisible and holds the system PENDING forever.
+				common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf("Failed to sweep the waypoint catalog of %s; it stays PENDING: %v", system.System, serr), map[string]interface{}{
+					"action":        "parked_sensing_catalog_sweep_failed",
+					"system_symbol": system.System,
+				})
 				continue
 			}
-			upserts++
-			logger.Log("INFO", fmt.Sprintf("Declared standing sensing post %s sized to %d probe(s) — reconciler will man and partition", system, post.Hulls), map[string]interface{}{
-				"action": "sensing_post_declared", "system_symbol": system, "hulls": post.Hulls,
-			})
-			continue
 		}
-		// Never sized below the post's manning floor: bootstrap floor-protects
-		// home with MinHulls, and honouring it here is what keeps the home
-		// probes manned through INCOME.
-		hulls := existing.FloorHulls(plan.Hulls[system])
-		if existing.HullBudget() == hulls && existing.Dormant == wantDormant && sameWaypointList(existing.HotWaypoints, wantHot) && existing.FreshnessTarget == cfg.FreshnessTarget {
-			continue
+
+		if _, serr := parkedsensing.ScreenSystem(ctx, screen, playerID, system.System, cfg.Whitelist); serr != nil {
+			failures = append(failures, serr)
 		}
-		// Narrow delta, never a full-row Upsert: this snapshot is a tick old, and
-		// under saturation the rotation makes a delta land EVERY tick — a whole-row
-		// write would clobber whatever the reconciler/bootstrap wrote since the read.
-		// FreshnessTarget rides the delta: an adopted post carrying a dead
-		// era's pacing target converges to the config target here — the scout tour
-		// paces circuits to the post's target, so a target past the trade planner's
-		// sink-freshness cap ages every market stale and trading fail-closes on the
-		// buy. A converged post writes nothing (the zero-write guard above).
-		if err := h.postRepo.UpdateSensingState(ctx, cmd.PlayerID.Value(), system, hulls, wantDormant, wantHot, cfg.FreshnessTarget); err != nil {
-			logger.Log("WARNING", fmt.Sprintf("Failed to update sensing post %s: %v", system, err), nil)
-			continue
-		}
-		upserts++
+	}
+	return screened, errors.Join(failures...)
+}
+
+// cutover retires the touring sensing model, once, on the first reconcile that
+// finds an empty ledger. It reports how many scout posts it removed.
+//
+// THE ORDER IS THE WHOLE SAFETY PROPERTY, and it is driven by one fact: the
+// re-fire trigger is an EMPTY sensing_systems table, and screening WRITES that
+// table — every verdict, PENDING included. So the screen is the step that
+// disarms the retry, and it therefore runs LAST, after everything irreversible
+// has already committed:
+//
+//  1. Retire every scout post EXCEPT the home one. Home is kept because the
+//     scout-post coordinator still mans it and bootstrap floor-protects it; the
+//     rest are the touring model's and have no owner once this engine runs.
+//  2. Adopt the orphaned probes those posts were manning as parked SPARE hulls
+//     where they stand. Second, so "orphaned" is read against the posts that
+//     actually survive rather than the ones about to be removed.
+//  3. Screen every system the fleet already has market rows for, OFFLINE. The
+//     map is already in the database; paying the API to rediscover it would cost
+//     a full sweep's worth of calls for information we already hold.
+//
+// Screening first — the obvious reading order — is the bug this ordering exists
+// to prevent. It commits the trigger-disarming write BEFORE the hulls are
+// accounted for, so ANY failure after it (an unlistable posts table, a partial
+// removal, an unreadable fleet, a crash) leaves scout-tagged hulls belonging to
+// no post and no slot, with the retry already dead. Those hulls are invisible to
+// the probe-cap count, so the engine buys replacements for probes it already
+// owns — permanently, with no path back (see adoptOrphanProbes).
+//
+// Both steps that now run first are IDEMPOTENT, which is what makes the retry
+// safe rather than merely possible: ListActive after a partial removal returns
+// what is left (and removing an absent post is explicitly not an error), and
+// adoption skips any hull already carrying the sensing tag.
+func (h *RunProbeSensingCoordinatorHandler) cutover(ctx context.Context, cmd *RunProbeSensingCoordinatorCommand, cfg sensingConfig, ports SensingEnginePorts) (int, error) {
+	logger := common.LoggerFromContext(ctx)
+	playerID := cmd.PlayerID.Value()
+
+	home, err := ports.Home.HomeSystem(ctx, playerID)
+	if err != nil {
+		// Without the home system every post looks retirable, including the one
+		// the scout-post coordinator is actively manning. Refuse the cutover
+		// rather than guess: nothing has been written, the ledger stays empty,
+		// and the next tick retries from the top.
+		return 0, fmt.Errorf("cutover refused: the home system is unreadable, so no scout post can be safely retired: %w", err)
 	}
 
-	// Out-of-scope standing posts: removed — freeing their probes — EXCEPT a
-	// MinHulls-floored post (home), which is kept as-is and woken if dormant so
-	// it can never be stranded parked outside the rotation.
+	var failures []error
+
+	posts, err := h.postRepo.ListActive(ctx, playerID)
+	if err != nil {
+		// Nothing has been committed yet, so this really is a refusal: the
+		// sensing ledger is still empty and the next tick re-enters here.
+		return 0, fmt.Errorf("cutover refused: failed to list scout posts: %w", err)
+	}
 	removed := 0
 	for _, post := range posts {
-		if post.Kind != domainScouting.PostKindStanding {
+		if post.SystemSymbol == home {
 			continue
 		}
-		if _, in := plan.Hulls[post.SystemSymbol]; in {
-			continue
-		}
-		if post.MinHulls > 0 {
-			// Kept, woken if dormant, and its hot set held census-true: a stale
-			// restriction on the kept post would blind exactly the markets
-			// stage 2 exists to watch (no whitelisted goods left ⇒ cleared ⇒
-			// the tour flies its full circuit again). Its freshness target
-			// converges too : a kept era-4 post pacing HOME's markets
-			// past the trade sink-freshness cap starves home trading the same way.
-			wantHot := hotBySystem[post.SystemSymbol]
-			if !post.Dormant && sameWaypointList(post.HotWaypoints, wantHot) && post.FreshnessTarget == cfg.FreshnessTarget {
-				continue
-			}
-			// Same narrow seam as the in-scope delta: the wake write may only touch
-			// the sensing-owned columns, and it never shrinks the post.
-			if err := h.postRepo.UpdateSensingState(ctx, cmd.PlayerID.Value(), post.SystemSymbol, post.HullBudget(), false, wantHot, cfg.FreshnessTarget); err != nil {
-				logger.Log("WARNING", fmt.Sprintf("Failed to refresh floored sensing post %s: %v", post.SystemSymbol, err), nil)
-				continue
-			}
-			upserts++
-			continue
-		}
-		if err := h.postRepo.Remove(ctx, cmd.PlayerID.Value(), post.SystemSymbol); err != nil {
-			logger.Log("WARNING", fmt.Sprintf("Failed to remove out-of-scope sensing post %s: %v", post.SystemSymbol, err), nil)
+		if rerr := h.postRepo.Remove(ctx, playerID, post.SystemSymbol); rerr != nil {
+			failures = append(failures, fmt.Errorf("failed to retire scout post %s: %w", post.SystemSymbol, rerr))
 			continue
 		}
 		removed++
-		logger.Log("INFO", fmt.Sprintf("Removed sensing post %s — out of sensing scope, probes freed to the pool", post.SystemSymbol), map[string]interface{}{
-			"action": "sensing_post_removed", "system_symbol": post.SystemSymbol,
+	}
+
+	adopted := h.adoptOrphanProbes(ctx, cmd, ports, &failures)
+
+	// The trigger-disarming write, last. A failure anywhere above has left the
+	// ledger empty, so the whole cutover is re-run next tick over the idempotent
+	// remains of this one.
+	if len(failures) > 0 {
+		return removed, errors.Join(append(failures,
+			errors.New("cutover incomplete: the offline screen was held back so the empty sensing ledger re-triggers it next tick"))...)
+	}
+	screened := h.cutoverScreen(ctx, cmd, cfg, ports, &failures)
+	if len(failures) > 0 {
+		// The screen itself failed. The done-mark must NOT latch: it is in
+		// memory, so latching it over an EMPTY ledger strands the engine until a
+		// daemon restart — nothing else recovers it, because the steady-state
+		// sweep re-screens only systems already carrying a PENDING row, and a
+		// census that failed OUTRIGHT wrote none. That case is real and is what
+		// this gate is for: a MarketDepthRows failure returns before a single
+		// system is iterated, so nothing is written at all.
+		//
+		// A PARTIALLY screened ledger MOSTLY no longer needs the gate. It already
+		// holds rows, so the cutover's own trigger will not re-enter whatever this
+		// gate does — and usually it need not, because a system whose screen failed
+		// carries a bare PENDING row of its own (sp-x665h, markAwaitingScreening),
+		// which is exactly what the steady-state sweep re-screens. Recovery is
+		// SAME-TICK, not next-tick: the sweep runs later in this very reconcile,
+		// so a system marked PENDING here is re-screened before the tick ends.
+		//
+		// The one system that stays uncovered is the one whose FALLBACK write also
+		// failed — it has no row, so the sweep cannot see it either, and only
+		// frontier propagation will reach it. That is rarer than the case this
+		// paragraph used to claim was impossible, but it is not impossible.
+		//
+		// A legitimately EMPTY census is not a failure and does latch: screened
+		// == 0 with no errors is a fleet that has simply not scanned anything
+		// yet, and the expansion frontier is what grows the map from there.
+		logger.Log("WARNING", fmt.Sprintf(
+			"Parked-probe cutover screened %d system(s) before failing; the done-mark is withheld. A system whose screen failed carries a PENDING row the sweep picks up later in this same tick — except where the census read itself failed (nothing was written at all, so the empty ledger re-triggers the cutover next tick) or the fallback write ALSO failed (that system is named in its own error above and carries no row, so only frontier propagation reaches it)",
+			screened), map[string]interface{}{
+			"action":           "parked_sensing_cutover_screen_failed",
+			"systems_screened": screened,
 		})
+		return removed, errors.Join(append(failures,
+			errors.New("cutover incomplete: the offline screen did not finish"))...)
 	}
 
-	// Discovery pass: propagate the frontier over the STORED gate adjacency —
-	// census systems' uncharted neighbours become sweep-once declares, and
-	// every open sweep-once post is one probe of funded demand. Gated on the
-	// rotation's discovery verdict, so exploration sheds FIRST under pressure:
-	// no declares, no funded demand, not even the store read.
-	discoveryDemand, frontierSystem := 0, ""
-	if discovery {
-		discoveryDemand, frontierSystem = h.discoverFrontier(ctx, cmd, cfg, censusSystems(rows), sweepSystems, standingBySystem, now)
-	}
-
-	// Budgeted buy: demand is the plan total plus funded discovery, clamped by
-	// N — the single budget dial. Supply counts every scout-type hull available
-	// to scouting (idle, in-flight, or manning), so an en-route probe is never
-	// double-bought.
-	supply, err := h.probeSupply(ctx, cmd)
-	if err != nil {
-		return err
-	}
-	demand := plan.TotalHulls + discoveryDemand
-	if demand > cfg.ProbeBudget {
-		demand = cfg.ProbeBudget
-	}
-
-	// The buy hint serves the older demand first: an unmet standing post. Only
-	// when the plan is fully manned does the buy aim AT the frontier — the
-	// yard nearest a sweep candidate's parent, so the probe spawns one hop
-	// from the system it will sweep.
-	targetSystem := neediestSensingSystem(plan, standingBySystem)
-	if targetSystem == "" {
-		targetSystem = frontierSystem
-	}
-	buyer := h.newBuyer(cfg.Buy)
-	target := probebuy.ProbeTarget{
-		System:                    targetSystem,
-		HopPenaltyCredits:         probebuy.DefaultHopPenaltyCredits,
-		SiblingPriceMarginCredits: probebuy.DefaultSiblingPriceMarginCredits,
-		ClaimOwnerContainerID:     cmd.ContainerID,
-	}
-	outcome := buyer.MaybeBuy(ctx, cmd.PlayerID, demand, supply, false, target)
-
-	logger.Log("INFO", fmt.Sprintf("Probe sensing cycle: %d in-scope systems, %d hulls desired (+%d discovery), supply %d, share %.2f, %d dormant, discovery=%v — %s",
-		len(inScope), plan.TotalHulls, discoveryDemand, supply, share, len(dormant), discovery, outcome.Reason), map[string]interface{}{
-		"action":           "probe_sensing_cycle",
-		"in_scope":         len(inScope),
-		"hulls_desired":    plan.TotalHulls,
-		"discovery_demand": discoveryDemand,
-		"supply":           supply,
-		"share":            share,
-		"dormant":          len(dormant),
-		"discovery":        discovery,
-		"bought":           outcome.Bought,
-		"upserts":          upserts,
-		"removed":          removed,
+	h.markCutoverDone(cmd.ContainerID)
+	logger.Log("INFO", fmt.Sprintf(
+		"Parked-probe cutover: screened %d system(s) offline, retired %d scout post(s) (home %s kept), adopted %d orphaned probe(s) as spares",
+		screened, removed, home, adopted), map[string]interface{}{
+		"action":           "parked_sensing_cutover",
+		"systems_screened": screened,
+		"posts_removed":    removed,
+		"home_system":      home,
+		"probes_adopted":   adopted,
 	})
-	if outcome.Bought {
-		logger.Log("INFO", fmt.Sprintf("Probe sensing bought probe %s for %d at %s (demand %d > supply %d) — landed undedicated, reconciler will relay", outcome.Symbol, outcome.Price, outcome.Yard, demand, supply), map[string]interface{}{
-			"action":      "sensing_probe_purchased",
-			"ship_symbol": outcome.Symbol,
-			"price":       outcome.Price,
-			"yard":        outcome.Yard,
-		})
+	// Every failure path returned above, so `failures` is necessarily empty here
+	// and there is nothing to join — returning nil says that outright rather than
+	// leaving a reader to check.
+	return removed, nil
+}
+
+// cutoverScreen screens every system the market cache already knows about,
+// without touching the API.
+//
+// The offline guarantee is enforced by SUBSTITUTION, not by convention: the
+// screen's remote gap-fill port is replaced with one that refuses, so a market
+// the cache cannot answer for leaves its system PENDING (verdictFor requires
+// every market to resolve before recording the durable rejection) instead of
+// firing a fetch. The steady-state sweep re-screens those PENDING systems with
+// the real fetcher wired.
+func (h *RunProbeSensingCoordinatorHandler) cutoverScreen(ctx context.Context, cmd *RunProbeSensingCoordinatorCommand, cfg sensingConfig, ports SensingEnginePorts, failures *[]error) int {
+	playerID := cmd.PlayerID.Value()
+	rows, err := h.depthReader.MarketDepthRows(ctx, playerID)
+	if err != nil {
+		*failures = append(*failures, fmt.Errorf("failed to read the market census for the cutover screen: %w", err))
+		return 0
 	}
-	return nil
+
+	seen := make(map[string]bool, len(rows))
+	systems := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if row.System == "" || seen[row.System] {
+			continue
+		}
+		seen[row.System] = true
+		systems = append(systems, row.System)
+	}
+	sort.Strings(systems)
+
+	offline := ports.screenPorts()
+	offline.RemoteMarket = offlineMarketFetcher{}
+
+	screened := 0
+	for _, system := range systems {
+		if _, serr := parkedsensing.ScreenSystem(ctx, offline, playerID, system, cfg.Whitelist); serr != nil {
+			*failures = append(*failures, serr)
+			markAwaitingScreening(ctx, ports, playerID, system, failures)
+			continue
+		}
+		screened++
+	}
+	return screened
+}
+
+// markAwaitingScreening leaves a bare PENDING row for a system whose screen
+// failed, so the steady-state sweep adopts it.
+//
+// WITHOUT THIS ROW THE SYSTEM FALLS THROUGH EVERY RECOVERY PATH. ScreenSystem
+// writes its sensing_systems row LAST and only on full success, so a failure
+// mid-census leaves that system with no row while its siblings have theirs. The
+// cutover's own re-fire trigger is an EMPTY ledger, which the siblings' rows
+// disarm; and the steady-state sweep re-screens only systems that ALREADY carry
+// a PENDING row, which this one does not. What is left is frontier propagation
+// happening to reach it, which depends on the map's topology rather than on
+// anything we control.
+//
+// THE ROW ASSERTS ONLY WHAT WE KNOW, WHICH IS NOTHING. Symbol and verdict, and
+// no third thing: a depth or an uncharted count invented here would be a
+// measurement we never took, and PENDING already means exactly "nobody has
+// judged this yet". It is the same shape the expansion engine writes for a
+// newly discovered frontier neighbour, and it is read the same way.
+//
+// It goes through UpsertSystem, the verdict-scoped writer, whose column list
+// structurally excludes seed_ship and seed_state — so this can never clear a
+// charting errand, however it is called (sensingSystemUpdateColumns).
+//
+// A fallback that ITSELF fails is collected rather than swallowed and rather
+// than fatal: there is nothing further to try for this system, and the systems
+// after it in the census are still perfectly screenable.
+func markAwaitingScreening(ctx context.Context, ports SensingEnginePorts, playerID int, system string, failures *[]error) {
+	if uerr := ports.Ledger.UpsertSystem(ctx, playerID, parkedsensing.SystemRecord{
+		System:  system,
+		Verdict: parkedsensing.VerdictPending,
+	}); uerr != nil {
+		*failures = append(*failures, fmt.Errorf(
+			"failed to record %q as awaiting screening after its cutover screen failed (it now carries no row, so only frontier propagation can reach it): %w",
+			system, uerr))
+	}
+}
+
+// offlineMarketFetcher is the cutover's stand-in for the API gap fill: it
+// refuses every call, which screenMarkets reads as "this market did not
+// resolve" and which leaves the system PENDING rather than rejected.
+type offlineMarketFetcher struct{}
+
+// errOfflineScreen names the refusal in the one place it could otherwise look
+// like a real outage.
+var errOfflineScreen = errors.New("cutover screens from the local market cache only; no remote market fetch is made")
+
+func (offlineMarketFetcher) FetchGoods(context.Context, int, string, string) ([]string, error) {
+	return nil, errOfflineScreen
+}
+
+// adoptOrphanProbes takes ownership of the probes the retired posts were
+// manning, as parked SPARE slots where each hull already stands.
+//
+// A scout-tagged hull that no surviving post names is otherwise stranded: no
+// coordinator drives it, and — the part that costs money — the probe cap counts
+// hulls through the ledger, so an unrecorded probe makes the fleet read SMALLER
+// than it is and authorises buying a replacement for a hull we already own.
+// Adopting as SPARE also puts them straight to work: the buy queue prefers
+// re-tasking a spare over buying, and expansion claims them as charting seeds.
+func (h *RunProbeSensingCoordinatorHandler) adoptOrphanProbes(ctx context.Context, cmd *RunProbeSensingCoordinatorCommand, ports SensingEnginePorts, failures *[]error) int {
+	logger := common.LoggerFromContext(ctx)
+	playerID := cmd.PlayerID.Value()
+	ships, err := h.fleetRepo.FindAllByPlayer(ctx, cmd.PlayerID)
+	if err != nil {
+		*failures = append(*failures, fmt.Errorf("failed to list the fleet for probe adoption: %w", err))
+		return 0
+	}
+
+	posts, err := h.postRepo.ListActive(ctx, playerID)
+	if err != nil {
+		*failures = append(*failures, fmt.Errorf("failed to re-list scout posts for probe adoption: %w", err))
+		return 0
+	}
+	manned := make(map[string]bool, len(posts))
+	for _, post := range posts {
+		if post.AssignedHull != "" {
+			manned[post.AssignedHull] = true
+		}
+	}
+
+	// The SAME occupancy index the standing adoption retry uses
+	// (probe_sensing_adoption.go), for the same reason and against the same
+	// hazard — see the guard inside the loop. Seeded from the LEDGER rather than
+	// built empty: this pass fires on a ledger the era scope reports as empty,
+	// but rows can legitimately already exist within it, and a loop-local set
+	// would only ever see what THIS loop wrote.
+	holds, herr := ledgerHoldings(ctx, ports, playerID)
+	if herr != nil {
+		*failures = append(*failures, herr)
+		return 0
+	}
+
+	adopted := 0
+	for _, ship := range ships {
+		if !ship.IsScoutType() || ship.DedicatedFleet() != freshnessScoutFleetTag {
+			continue
+		}
+		if manned[ship.ShipSymbol()] {
+			continue // still manning the home post the cutover kept
+		}
+		location := ship.CurrentLocation()
+		if location == nil || location.Symbol == "" {
+			continue // a hull we cannot place is a hull we must not record
+		}
+		// THE OCCUPANCY GUARD (sp-0gp21). sensing_slots is keyed on (player,
+		// waypoint) and UpsertSpareSlot's conflict set carries assigned_ship, so a
+		// write at a waypoint that already holds a row does not fail — it silently
+		// re-points that row at this hull. The hull it displaced then holds the
+		// sensing tag with NO row anywhere, which is UNRECOVERABLE: every adoption
+		// filter skips sensing_parked-tagged hulls, the spare re-task and the seed
+		// claim both read FROM the ledger, and DockedProbeAt will use such a hull
+		// as a purchasing buyer but never writes a row naming it. It is invisible
+		// to CountOwnedProbes for good, so the cap under-reads and buys a
+		// replacement for a probe we own (RULINGS #4) — with no error and a
+		// healthy heartbeat. Two co-located idle probes at the home shipyard is
+		// all it takes, on the one irreversible tick this pass ever runs.
+		//
+		// Skipping is the right answer: the displaced hull would be lost, while a
+		// skipped one stays untagged, unrecorded and therefore still recoverable.
+		if holds.occupied[location.Symbol] {
+			continue
+		}
+
+		// RECORD BEFORE TAGGING, for the reason recordPurchase gives in the buy
+		// queue: the two writes are ordered by what a failure between them costs.
+		// Recorded-but-untagged leaves a hull the probe cap COUNTS (it just is
+		// not yet claimed by this fleet), and the placement machine re-asserts
+		// the tag idempotently the first time the spare is used. Tagged-but-
+		// unrecorded is the opposite and is unrecoverable here: the tag makes the
+		// hull skip the adoption filter on every retry, so it would stay
+		// invisible to the cap forever and authorise buying a replacement for a
+		// probe we already own.
+		if uerr := ports.Ledger.UpsertSpareSlot(ctx, playerID, parkedsensing.SlotRecord{
+			Waypoint:     location.Symbol,
+			System:       location.SystemSymbol,
+			Kind:         parkedsensing.SlotKindSpare,
+			State:        parkedsensing.SlotStateParked,
+			AssignedShip: ship.ShipSymbol(),
+		}); uerr != nil {
+			*failures = append(*failures, fmt.Errorf("failed to adopt probe %s as a spare: %w", ship.ShipSymbol(), uerr))
+			continue
+		}
+		// The waypoint holds a row now, so a later co-located hull in this same
+		// sweep is skipped rather than overwriting what was just written.
+		holds.occupied[location.Symbol] = true
+
+		// The tag write is BEST-EFFORT, and deliberately not a failure of the
+		// cutover. It is the one write here that is not money-load-bearing: the
+		// probe cap counts ledger ROWS, and the row is already written, so a
+		// missing tag costs nothing the cap can see. The placement machine
+		// re-asserts it idempotently the first time the spare is used — the same
+		// reasoning recordPurchase gives for warning on its own tag failure
+		// rather than failing the purchase over it.
+		//
+		// Escalating it would be actively worse now that a failed cutover
+		// re-runs from the top: a persistently failing tag write would re-run
+		// the whole cutover on every tick, forever, over work that is already
+		// correctly recorded.
+		if terr := ports.Fleet.AssignFleet(ctx, playerID, ship.ShipSymbol(), parkedsensing.SensingParkedFleetTag); terr != nil {
+			logger.Log("WARNING", fmt.Sprintf(
+				"Adopted probe %s is recorded as a sensing spare but keeps its old fleet tag (the probe cap counts it; the placement machine re-tags it on first use): %v",
+				ship.ShipSymbol(), terr), map[string]interface{}{
+				"action":      "parked_sensing_adopt_tag_failed",
+				"ship_symbol": ship.ShipSymbol(),
+			})
+		}
+		adopted++
+	}
+	return adopted
+}
+
+// stampCadence projects the ledger's parked slots into the scan rotation,
+// applying the quartermaster cadence to yard slots. The cadence is a knob and
+// therefore resolved here rather than in the adapter, which reads columns only.
+func (h *RunProbeSensingCoordinatorHandler) stampCadence(views []parkedsensing.SensingSlotView, cfg sensingConfig) []parkedsensing.SensingSlotView {
+	out := make([]parkedsensing.SensingSlotView, 0, len(views))
+	for _, view := range views {
+		if view.Kind == parkedsensing.SlotKindYard {
+			view.YardCadence = cfg.QuartermasterCadence
+		}
+		out = append(out, view)
+	}
+	return out
+}
+
+// ensurePacer starts the container's scan pacer unless one is already running.
+// It is called from every reconcile, and both halves of that matter.
+//
+// IDEMPOTENT, because Handle can run more than once for a single container. The
+// container runner re-sends the SAME command — same container id, same
+// uncancelled context — after an error or a panic, up to MaxRestartAttempts, so
+// a pacer launched from Handle would be launched again on each retry. Two pacers
+// popping one heap issue scans at twice the rate the budget arithmetic computed,
+// and the heartbeat cannot show it: it reports the rate it HANDED to the
+// rotation, not the rate being spent. The fleet would simply overrun its share
+// of the rate limiter with nothing anywhere saying so.
+//
+// SELF-HEALING, because the panic guard around the pacer suppresses and returns
+// rather than restarting. A single panic would otherwise stop all parked-market
+// scanning for the life of the container while every heartbeat still reported a
+// healthy computed rate — the failure would surface only as market data ageing
+// without bound, hours later, on the staleness gauge. Re-checking here converts
+// that into a one-tick outage with a loud line naming it.
+func (h *RunProbeSensingCoordinatorHandler) ensurePacer(ctx context.Context, cmd *RunProbeSensingCoordinatorCommand, cfg sensingConfig, ports SensingEnginePorts) {
+	scanner := h.scannerFor(cmd, cfg, ports)
+
+	h.mu.Lock()
+	if h.pacersRunning[cmd.ContainerID] {
+		h.mu.Unlock()
+		return
+	}
+	h.pacersRunning[cmd.ContainerID] = true
+	run := h.runPacer
+	h.mu.Unlock()
+
+	go func() {
+		defer h.pacerStopped(ctx, cmd)
+		supervise.Guard(pacerGuardComponent+cmd.ContainerID, func() { run(ctx, scanner) })
+	}()
+}
+
+// pacerStopped releases the container's pacer slot and, when the coordinator is
+// still meant to be running, reports the death loudly.
+//
+// A cancelled context is an ordinary shutdown and says nothing. Anything else
+// means the pacer returned or panicked while the fleet still expected it to be
+// scanning, which is exactly the silent failure the re-check above exists to
+// bound — so it is logged at ERROR with the relaunch stated, rather than left to
+// be inferred from a staleness gauge.
+func (h *RunProbeSensingCoordinatorHandler) pacerStopped(ctx context.Context, cmd *RunProbeSensingCoordinatorCommand) {
+	h.mu.Lock()
+	delete(h.pacersRunning, cmd.ContainerID)
+	h.mu.Unlock()
+
+	if ctx.Err() != nil {
+		return // the coordinator is shutting down; the pacer stopping is correct
+	}
+	common.LoggerFromContext(ctx).Log("ERROR", fmt.Sprintf(
+		"Parked-probe scan pacer for %s stopped while the coordinator is still running — every parked market has stopped being scanned; the next reconcile relaunches it",
+		cmd.ContainerID), map[string]interface{}{
+		"action":       "parked_sensing_pacer_died",
+		"container_id": cmd.ContainerID,
+	})
+}
+
+// pacerLive reports whether the container currently holds a pacer.
+func (h *RunProbeSensingCoordinatorHandler) pacerLive(containerID string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.pacersRunning[containerID]
+}
+
+// scannerFor returns the container's scan rotation, creating it on first use.
+//
+// InflightCap and ClampR bind at construction, so a tune of either applies at
+// the coordinator's next rebuild rather than the next tick. That is deliberate:
+// both shape the rotation's normalisation, and swapping them under a live pacer
+// would re-pace every slot mid-flight. Every other knob is live.
+func (h *RunProbeSensingCoordinatorHandler) scannerFor(cmd *RunProbeSensingCoordinatorCommand, cfg sensingConfig, ports SensingEnginePorts) *parkedsensing.Scanner {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if scanner, ok := h.scanners[cmd.ContainerID]; ok {
+		return scanner
+	}
+	scanner := parkedsensing.NewScanner(cmd.PlayerID.Value(), parkedsensing.ScanPorts{
+		Scan:     ports.Scan,
+		Ledger:   ports.Ledger,
+		SpreadOf: ports.SpreadOf,
+	}, h.clock, parkedsensing.ScanKnobs{
+		InflightCap: cfg.InflightCap,
+		ClampR:      cfg.ClampR,
+	})
+	h.scanners[cmd.ContainerID] = scanner
+	return scanner
+}
+
+// cutoverAlreadyDone reports whether this container has already cut over.
+//
+// Named for what it RETURNS. It gates an irreversible bulk delete, and the
+// previous name said "pending" while returning "done" — so the call site read as
+// the opposite of what it did.
+func (h *RunProbeSensingCoordinatorHandler) cutoverAlreadyDone(containerID string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.cutoverDone[containerID]
+}
+
+func (h *RunProbeSensingCoordinatorHandler) markCutoverDone(containerID string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.cutoverDone[containerID] = true
 }
 
 // expansionReached reports whether the bootstrap-derived phase is EXPANSION,
@@ -676,270 +1463,10 @@ func (h *RunProbeSensingCoordinatorHandler) expansionReached(ctx context.Context
 		return false
 	}
 	if !inExpansion {
-		logger.Log("INFO", "Probe sensing deferred: bootstrap phase pre-EXPANSION (jump-gate construction incomplete — the world is still in DATA/INCOME/GATE); demand-driven sensing runs only in EXPANSION, bootstrap provisions probes until then", map[string]interface{}{
+		logger.Log("INFO", "Probe sensing deferred: bootstrap phase pre-EXPANSION (jump-gate construction incomplete — the world is still in DATA/INCOME/GATE); parked-probe sensing runs only in EXPANSION, bootstrap provisions probes until then", map[string]interface{}{
 			"action": "probe_sensing_phase_deferred",
 		})
 		return false
 	}
 	return true
-}
-
-// sameWaypointList reports element-wise equality of two waypoint lists (nil
-// and empty are equal) — the hot-set delta guard, so a converged tick writes
-// nothing. Both sides are coordinator-stamped sorted asc, so plain positional
-// comparison is exact.
-func sameWaypointList(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-// probeSupply is the sensing fleet count: every scout-type hull that is
-// undedicated or scout-tagged, in ANY nav state — the same reader and filter
-// the freshness supply count uses, so the two coordinators can never disagree
-// about what a probe is.
-func (h *RunProbeSensingCoordinatorHandler) probeSupply(ctx context.Context, cmd *RunProbeSensingCoordinatorCommand) (int, error) {
-	ships, err := h.fleetRepo.FindAllByPlayer(ctx, cmd.PlayerID)
-	if err != nil {
-		return 0, fmt.Errorf("failed to list fleet: %w", err)
-	}
-	supply := 0
-	for _, ship := range ships {
-		if !ship.IsScoutType() {
-			continue
-		}
-		if fleet := ship.DedicatedFleet(); fleet != "" && fleet != freshnessScoutFleetTag {
-			continue
-		}
-		supply++
-	}
-	return supply, nil
-}
-
-// discoverFrontier is the branching-discovery pass: every census system's
-// stored gate neighbour that is neither in census nor already postered becomes
-// a sweep-once declare (bounded per tick), and every OPEN sweep-once post is
-// one probe of discovery demand — the buyer funds one hull per open frontier
-// direction. Returns that demand plus the frontier buy hint: the parent census
-// system of the sorted-first open direction seen this walk, so the funded
-// probe is bought at the yard nearest the frontier it will cross.
-//
-// The adjacency is the PURE STORE read — zero live API. Its verdicts mirror
-// the stored-distance walk, no laxer than the strict resolver the relay
-// flies: an uncached system is simply not counted, an under-construction edge
-// is impassable, and a stale edge set (one Replace, one timestamp — one stale
-// row condemns it) is not expanded through. A neighbour holding ANY post is
-// excluded: Upsert is keyed by (player, system), so a sweep declare against a
-// posted system would replace that row and wipe its manning. A neighbour the
-// fleet has SWEPT (waypoint-catalog knowledge, checked last — it is the only
-// check that costs a read) is known ground even with zero market rows: a
-// swept-marketless system can never enter the market census, so without this
-// exclusion it would loop declare → man → tour → retire → redeclare forever.
-//
-// The pass is speculative by definition, so every input failure degrades it
-// to zero — no declares, no funded demand — without aborting the standing
-// reconcile around it (a value returned alongside an error is never
-// consumed). Sweeps already declared before a mid-walk failure stand: they
-// are durable open posts the next healthy tick counts and funds.
-func (h *RunProbeSensingCoordinatorHandler) discoverFrontier(
-	ctx context.Context,
-	cmd *RunProbeSensingCoordinatorCommand,
-	cfg sensingConfig,
-	census map[string]bool,
-	sweepSystems map[string]bool,
-	standingBySystem map[string]*domainScouting.ScoutPost,
-	now time.Time,
-) (demand int, frontierSystem string) {
-	if h.gateGraph == nil {
-		return 0, ""
-	}
-	logger := common.LoggerFromContext(ctx)
-	adjacency, err := h.gateGraph.Adjacency(ctx)
-	if err != nil {
-		logger.Log("WARNING", fmt.Sprintf("Discovery pass skipped: failed to read stored gate adjacency: %v", err), nil)
-		return 0, ""
-	}
-
-	parentsSorted := make([]string, 0, len(census))
-	for parent := range census {
-		parentsSorted = append(parentsSorted, parent)
-	}
-	sort.Strings(parentsSorted)
-
-	declared := 0
-	declaredSet := make(map[string]bool)
-	sweptMemo := make(map[string]bool)     // per-pass catalog memo: two parents sharing a neighbour cost one read
-	openParents := make(map[string]string) // open sweep system → its census parent (buy-hint anchor)
-	for _, parent := range parentsSorted {
-		edges := append([]system.GateEdge(nil), adjacency[parent]...)
-		if sweepEdgeSetStale(edges) {
-			continue
-		}
-		sort.Slice(edges, func(i, j int) bool { return edges[i].ConnectedSystem < edges[j].ConnectedSystem })
-		for _, edge := range edges {
-			neighbour := edge.ConnectedSystem
-			if neighbour == "" || edge.UnderConstruction {
-				continue
-			}
-			if census[neighbour] {
-				continue // known ground whatever its depth — a sweep would re-scan it
-			}
-			if sweepSystems[neighbour] || declaredSet[neighbour] {
-				if _, known := openParents[neighbour]; !known {
-					openParents[neighbour] = parent
-				}
-				continue
-			}
-			if standingBySystem[neighbour] != nil {
-				continue
-			}
-			if declared >= cfg.DiscoveryDeclares {
-				continue // bounded per tick; the candidate re-derives next tick
-			}
-			swept, sweptErr := h.neighbourSwept(ctx, neighbour, sweptMemo)
-			if sweptErr != nil {
-				logger.Log("WARNING", fmt.Sprintf("Discovery pass stopped: failed to read waypoint catalog for %s: %v", neighbour, sweptErr), nil)
-				return 0, ""
-			}
-			if swept {
-				continue // swept and marketless: its markets were looked for and none exist
-			}
-			post := &domainScouting.ScoutPost{
-				PlayerID:        cmd.PlayerID.Value(),
-				SystemSymbol:    neighbour,
-				FreshnessTarget: cfg.FreshnessTarget,
-				Kind:            domainScouting.PostKindSweepOnce,
-				Hulls:           1,
-				CreatedAt:       now,
-			}
-			if err := h.postRepo.Upsert(ctx, post); err != nil {
-				logger.Log("WARNING", fmt.Sprintf("Failed to declare sweep-once discovery post %s: %v", neighbour, err), nil)
-				continue
-			}
-			declared++
-			declaredSet[neighbour] = true
-			openParents[neighbour] = parent
-			logger.Log("INFO", fmt.Sprintf("Declared sweep-once discovery post %s (frontier of %s) — reconciler relays a probe; its arrival scan is the first scan", neighbour, parent), map[string]interface{}{
-				"action":        "sensing_sweep_declared",
-				"system_symbol": neighbour,
-				"parent_system": parent,
-			})
-		}
-	}
-
-	openSweeps := make([]string, 0, len(openParents))
-	for sweep := range openParents {
-		openSweeps = append(openSweeps, sweep)
-	}
-	sort.Strings(openSweeps)
-	if len(openSweeps) > 0 {
-		frontierSystem = openParents[openSweeps[0]]
-	}
-	return len(sweepSystems) + declared, frontierSystem
-}
-
-// neighbourSwept reports whether the fleet has SWEPT the system, by the
-// frontier queue's waypoint-derived discriminator: BuildSystemGraph persists
-// a system's ENTIRE waypoint set the moment a probe sweeps it, while gate
-// charting persists edges only — so one persisted NON-gate waypoint proves a
-// real sweep (a lone jump-gate row is merely reachable, still frontier). An
-// unwired catalog reads as not-swept (the exclusion stays off, the pre-seam
-// shape); a read FAILURE surfaces so the caller declares nothing new — for a
-// speculative spend, unreadable is refused, never guessed.
-func (h *RunProbeSensingCoordinatorHandler) neighbourSwept(ctx context.Context, systemSymbol string, memo map[string]bool) (bool, error) {
-	if h.waypointCatalog == nil {
-		return false, nil
-	}
-	if swept, seen := memo[systemSymbol]; seen {
-		return swept, nil
-	}
-	waypoints, err := h.waypointCatalog.ListBySystem(ctx, systemSymbol)
-	if err != nil {
-		return false, err
-	}
-	swept := sweptWaypointSet(waypoints)
-	memo[systemSymbol] = swept
-	return swept, nil
-}
-
-// sweptWaypointSet mirrors the frontier scanner's hasNonGateWaypoint rule:
-// true iff at least one persisted waypoint is NOT a jump gate.
-func sweptWaypointSet(waypoints []*shared.Waypoint) bool {
-	for _, waypoint := range waypoints {
-		if !waypoint.IsJumpGate() {
-			return true
-		}
-	}
-	return false
-}
-
-// censusSystems is the charted+scanned set: every system with ANY market
-// cache row, whatever the good. The whitelist scopes STANDING sensing, not
-// discovery — an already-scanned ore-only system is known ground and must
-// never be re-swept (its goods never change, so a whitelist-filtered census
-// would re-declare it forever).
-func censusSystems(rows []domainScouting.MarketDepthRow) map[string]bool {
-	census := make(map[string]bool, len(rows))
-	for _, row := range rows {
-		if row.System == "" {
-			continue
-		}
-		census[row.System] = true
-	}
-	return census
-}
-
-// sweepEdgeSetStale mirrors the stored-distance walk's staleness rule: a
-// system's edges are written in one Replace under a single timestamp, so one
-// stale row condemns the whole set — its onward gates are unverified.
-func sweepEdgeSetStale(edges []system.GateEdge) bool {
-	for _, e := range edges {
-		if e.Stale {
-			return true
-		}
-	}
-	return false
-}
-
-// neediestSensingSystem names the in-plan system with the largest unmet hull
-// gap — the demand-proximal buy hint, so a bought probe spawns near the demand
-// it will serve. Deterministic (systems iterated sorted); "" (the home-yard
-// path) when no gap is positive. A hint only: the money guards are unchanged.
-func neediestSensingSystem(plan domainScouting.SensingPlan, standingBySystem map[string]*domainScouting.ScoutPost) string {
-	systems := make([]string, 0, len(plan.Hulls))
-	for system := range plan.Hulls {
-		systems = append(systems, system)
-	}
-	sort.Strings(systems)
-	neediest, biggest := "", 0
-	for _, system := range systems {
-		current := 0
-		if post := standingBySystem[system]; post != nil {
-			current = post.HullBudget()
-		}
-		if gap := plan.Hulls[system] - current; gap > biggest {
-			neediest, biggest = system, gap
-		}
-	}
-	return neediest
-}
-
-// cursor returns the player's rotation cursor (memory-only by design: a
-// restart merely restarts the rotation from the top of the ring).
-func (h *RunProbeSensingCoordinatorHandler) cursor(playerID int) int {
-	h.cursorMu.Lock()
-	defer h.cursorMu.Unlock()
-	return h.cursors[playerID]
-}
-
-func (h *RunProbeSensingCoordinatorHandler) setCursor(playerID, cursor int) {
-	h.cursorMu.Lock()
-	defer h.cursorMu.Unlock()
-	h.cursors[playerID] = cursor
 }

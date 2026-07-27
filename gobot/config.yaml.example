@@ -435,19 +435,100 @@ scouting:
   # gate_reconcile_enabled: false
   # gate_reconcile_max_dispatch: 2
 
-# sensing: the standing probe-sensing coordinator's config.yaml-authoritative knobs.
+# sensing: the standing PARKED-PROBE sensing coordinator's config.yaml-authoritative knobs.
 # Injected into the probe_sensing_coordinator container on every build — creation AND
 # restart recovery — so a retune reaches the running fleet after a daemon restart, no
 # redeploy. Only strings live here (the int-only `tune --operation sensing` registry
 # carries every numeric knob); config.yaml is the whitelist's single source of truth —
 # a stale persisted copy never shadows it.
+#
+# THE MODEL. A probe is bought for a WAYPOINT, flown there once, and then stands still
+# scanning that market forever. Nothing tours, so steady-state sensing costs navigation
+# NOTHING — the only recurring spend is the scans themselves, issued by one fleet-wide
+# pacer that runs at whatever rate-limiter headroom the rest of the fleet leaves.
+#
+# THE NUMERIC KNOBS ARE ALL LIVE-TUNABLE and apply on the NEXT RECONCILE TICK (the
+# coordinator holds a liveconfig reader) — `spacetraders tune --operation sensing --show`
+# lists every one with its bounds, default, and current source. Two exceptions bind when
+# the scan rotation is CONSTRUCTED and therefore apply at the next coordinator rebuild:
+# value_clamp_r and inflight_cap. Their descriptions say so.
+#
+#   probe_cap                   hard ceiling on parked probe hulls. A BACKSTOP against a
+#                               runaway placement plan, not the growth dial — the binding
+#                               constraint on fleet size is the buy floor, i.e. money.
+#   expansion_enabled           1=on, 2=off. NOT 0/1: `tune <key> 0` means revert-to-default
+#                               fleet-wide, so 0 could not express "off". Off stops frontier
+#                               propagation and charting seeds; placed probes keep scanning.
+#   target_util_pct             share of the rate-limiter ceiling the WHOLE fleet aims at;
+#                               sensing takes what is left of it. The remainder is burst
+#                               headroom — raising this toward 100 spends the headroom that
+#                               absorbs traffic spikes.
+#   min_scan_rate_milli         the pacer's floor in thousandths of a req/s (100 = 0.1/s).
+#                               Guarantees planner market data never goes fully dark, and
+#                               doubles as the residual below which expansion pauses.
+#   value_clamp_r               how much more scan attention the hottest market may earn
+#                               than the baseline; 1 flattens the weighting entirely.
+#   inflight_cap                concurrent scans. The backpressure reflex: with every token
+#                               held the pacer BLOCKS rather than queueing, so a degraded
+#                               API throttles scan issuance at the source.
+#   capital_multiplier_k        hours of the TRADING fleet's measured cargo runway the probe
+#                               buy floor holds back, so a busier fleet raises its own floor.
+#   capex_reserve_credits       credits the buy floor holds for capex committed elsewhere.
+#   quartermaster_cadence_secs  a shipyard slot's re-read FLOOR (never a target): the budget
+#                               may slow a yard down but never speed it past this.
+#   tick_secs / wait_low_ms / wait_high_ms   reconcile cadence, and the limiter-wait band the
+#                               emergency brake recovers below / bites above.
+#
+# The buy floor itself is NOT tunable: the immutable 50k working-capital reserve is a
+# const (RULINGS #4). capital_multiplier_k and capex_reserve_credits only ADD to it.
+#
+# RETIRED with the touring model — tuning one now fails as an unknown key rather than
+# writing a value nothing reads: probe_budget, second_probe_threshold,
+# purchase_cooldown_secs, max_spend_per_cycle, spend_window_secs, freshness_target_secs,
+# depth_floor, discovery_declares_per_tick. A container persisted with them still
+# recovers; the values are simply inert.
+#
+# WATCH IT: the "Parked Sensing" panels on the SpaceTraders - Performance dashboard —
+# staleness by tier (cold/p90 is the number the trade planner's freshness cap binds on),
+# scan rate against rate-limit pressure, and the placement pipeline by state.
 sensing:
-  # goods_whitelist is the comma-separated set of goods whose market depth defines the
-  # sensing footprint — a system earns standing probes only for depth in these goods.
+  # goods_whitelist is the comma-separated set of goods a market must DEAL IN to be worth
+  # a parked probe — what the market trades, never what it is currently worth, because
+  # prices are volatile and would drop a crushed market right before it recovers.
   # Empty/absent => the coordinator's full 12-good era default (clothing/lab-instruments/
   # fabrics/food/advanced-circuitry/medicine/equipment/uranite/microprocessors/
   # ship-plating/machinery/electronics). Uncomment ONLY with the complete list — a
   # partial copy silently drops the missing goods from the footprint.
+  #
+  # EDITING THIS MID-ERA IS NOT A LIVE OPERATION, and editing it alone does NOTHING to the
+  # map already judged. Every screening verdict is stamped against the whitelist in force
+  # when it was written, and a NO_WHITELIST verdict is durable (only PENDING systems are
+  # ever re-screened) — so a changed list does not re-open the systems it would now accept,
+  # and does not close the ones it no longer wants.
+  #
+  # EXPECT A QUIET PERIOD AFTER RUNNING IT. Every verdict goes back to PENDING, and the buy
+  # queue treats a non-IN_SCOPE system as out of scope — so probe buying pauses fleet-wide and
+  # buy_reaped spikes while the reaper hands back claims that are momentarily undrainable. That
+  # is the rescreen working: no hull is disturbed, no money guard is touched, and it clears as
+  # the sweep re-screens at five systems per tick (tens of minutes on a large map).
+  #
+  # AFTER CHANGING THIS LIST, RUN:  spacetraders sensing rescreen --agent <AGENT>
+  # It returns every system verdict to PENDING so the coordinator re-judges them under the
+  # new list. Placements, the hulls standing on them, the scan history and any in-flight
+  # charting errand all survive — a rescreen re-evaluates judgement, never ownership. It is
+  # idempotent, and the new verdicts land over the following ticks (5 systems per tick), not
+  # instantly.
+  #
+  # WHAT IT FIXES, PLAINLY: verdicts. Every system is re-judged under the new list, which is
+  # what re-opens the ones it now accepts and closes the ones it no longer wants.
+  #
+  # ONE RESIDUAL, so it does not surprise you: a market NO PROBE HAS EVER SCANNED is judged
+  # from the goods projection recorded on its slot, and the rescreen leaves that projection
+  # alone (clearing it would be permanent and would suppress the refetch that repopulates it
+  # — sp-ysg8h). So a remotely-discovered placement keeps its old projection until a probe
+  # parks there and scans it, at which point the market cache answers and the next re-screen
+  # judges it correctly on its own. Every market a probe HAS visited is already re-judged
+  # correctly from that cache, which is every parked placement.
   # goods_whitelist: "CLOTHING,LAB_INSTRUMENTS,FABRICS,FOOD,ADVANCED_CIRCUITRY,MEDICINE,EQUIPMENT,URANITE,MICROPROCESSORS,SHIP_PLATING,MACHINERY,ELECTRONICS"
 
 # fleet_autosizer (sp-1txd): the standing fleet capacity autosizer — the buy-side twin of the

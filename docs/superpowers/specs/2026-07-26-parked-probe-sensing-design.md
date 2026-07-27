@@ -199,11 +199,11 @@ existing `apibudget.Purpose` seam — `trading`, `contract`, `navigation`, `boot
 `scanning`, extended as needed. From that single taxonomy:
 
 1. **Right-of-way (per-call):** the existing priority scheduler in the rate limiter — HIGH
-   acquires contended tokens ahead of LOW, bounded aging prevents starvation — **is armed by this
-   design**. Mapping: trading + contract-delivery = HIGH; navigation/dock/refuel = NORMAL,
-   promoted via the existing `WithPriority` when enabling an imminent trade; charting + scanning
-   = LOW. A sensing call already dispatched loses the next token to a trade call arriving a
-   moment later.
+   acquires contended tokens ahead of LOW, bounded aging prevents starvation — was **already
+   armed 2026-07-17**; this design tags sensing LOW. Mapping: trading + contract-delivery = HIGH;
+   navigation/dock/refuel = NORMAL, promoted via the existing `WithPriority` when enabling an
+   imminent trade; charting + scanning = LOW. A sensing call already dispatched loses the next
+   token to a trade call arriving a moment later.
 2. **Allocation (seconds):** the §6 residual arithmetic consumes the tag-derived non-sensing
    EWMA. Trading spend rises → sensing shrinks within ticks.
 

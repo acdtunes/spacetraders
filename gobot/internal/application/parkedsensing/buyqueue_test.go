@@ -1,0 +1,1105 @@
+package parkedsensing
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	domainSensing "github.com/andrescamacho/spacetraders-go/internal/domain/parkedsensing"
+)
+
+// --- fakes -------------------------------------------------------------------
+//
+// Every fail-closed fake returns its error ALONGSIDE the value that would be
+// most DANGEROUS if the guard read it anyway: a HIGH treasury (looks
+// affordable), a ZERO cargo spend (lowest possible floor), a ZERO probe count
+// (cap looks wide open). A guard that leaks its error therefore does not merely
+// misreport — it buys, and the test catches it.
+
+type transitionCall struct {
+	waypoint, from, to         string
+	assignedShip, purchaseYard *string
+}
+
+type fakeBuyLedger struct {
+	slots   []QueuedSlot
+	systems []ScreenedSystem
+	owned   int64
+
+	slotsErr, systemsErr, ownedErr error
+	transitionErr                  map[string]error
+
+	transitions  []transitionCall
+	systemsCalls int
+}
+
+func (f *fakeBuyLedger) SlotsByState(_ context.Context, _ int, states ...string) ([]QueuedSlot, error) {
+	if f.slotsErr != nil {
+		return nil, f.slotsErr
+	}
+	want := make(map[string]bool, len(states))
+	for _, s := range states {
+		want[s] = true
+	}
+	var out []QueuedSlot
+	for _, s := range f.slots {
+		if want[s.State] {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeBuyLedger) SlotsBySystem(_ context.Context, _ int, system string) ([]QueuedSlot, error) {
+	if f.slotsErr != nil {
+		return nil, f.slotsErr
+	}
+	var out []QueuedSlot
+	for _, s := range f.slots {
+		if s.System == system {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeBuyLedger) SystemsByVerdict(_ context.Context, _ int, _ string) ([]ScreenedSystem, error) {
+	f.systemsCalls++
+	if f.systemsErr != nil {
+		return nil, f.systemsErr
+	}
+	return f.systems, nil
+}
+
+func (f *fakeBuyLedger) CountOwnedProbes(_ context.Context, _ int) (int64, error) {
+	if f.ownedErr != nil {
+		return 0, f.ownedErr // adversarial: "no probes owned" reads as a wide-open cap
+	}
+	return f.owned, nil
+}
+
+// TransitionSlot keys its injected failures on the EDGE (waypoint→toState), not
+// the waypoint, so a test can break the claim and the record independently —
+// they sit on opposite sides of the purchase and fail in opposite directions.
+func (f *fakeBuyLedger) TransitionSlot(_ context.Context, _ int, waypoint, from, to string, set SlotFields) error {
+	f.transitions = append(f.transitions, transitionCall{waypoint, from, to, set.AssignedShip, set.PurchaseYard})
+	if err := f.transitionErr[waypoint+"→"+to]; err != nil {
+		return err
+	}
+	for i := range f.slots {
+		if f.slots[i].Waypoint != waypoint {
+			continue
+		}
+		if f.slots[i].State != from {
+			return errors.New("state conflict")
+		}
+		f.slots[i].State = to
+		if set.AssignedShip != nil {
+			f.slots[i].AssignedShip = *set.AssignedShip
+		}
+		if set.PurchaseYard != nil {
+			f.slots[i].PurchaseYard = *set.PurchaseYard
+		}
+		return nil
+	}
+	return errors.New("no such slot")
+}
+
+func (f *fakeBuyLedger) transitionsTo(state string) []transitionCall {
+	var out []transitionCall
+	for _, t := range f.transitions {
+		if t.to == state {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+type fakeTreasury struct {
+	credits int64
+	err     error
+	calls   int
+}
+
+func (f *fakeTreasury) LiveCredits(_ context.Context, _ int) (int64, error) {
+	f.calls++
+	if f.err != nil {
+		return 999_999_999, f.err // adversarial: a treasury that looks bottomless
+	}
+	return f.credits, nil
+}
+
+type fakeCargoSpend struct {
+	spend int64
+	err   error
+	since time.Time
+}
+
+func (f *fakeCargoSpend) AbsCargoBuySpendSince(_ context.Context, _ int, since time.Time) (int64, error) {
+	f.since = since
+	if f.err != nil {
+		return 0, f.err // adversarial: zero spend is the lowest possible floor
+	}
+	return f.spend, nil
+}
+
+type buyCall struct{ ship, yard string }
+
+type fakePurchaser struct {
+	price        int64
+	creditsAfter int64
+	quoteErr     error
+	buyErr       error
+
+	// reportNoPrice models a purchase path that completed but reported no price
+	// back, so the accounting has only the quote to work from.
+	reportNoPrice bool
+	// chargedPrice, when non-zero, is what the counter ACTUALLY bills —
+	// independent of the quote, so a test can model a market that moved between
+	// pricing and paying.
+	chargedPrice int64
+	// quoteErrAt and buyErrAt fail only at the named yards, so a test can make
+	// one counter unusable while leaving its neighbours healthy.
+	quoteErrAt map[string]error
+	buyErrAt   map[string]error
+
+	quotes []string
+	buys   []buyCall
+	nextID int
+}
+
+func (f *fakePurchaser) Quote(_ context.Context, _ int, yard string) (int64, error) {
+	f.quotes = append(f.quotes, yard)
+	if err := f.quoteErrAt[yard]; err != nil {
+		return 1, err // adversarial: a suspiciously cheap probe
+	}
+	if f.quoteErr != nil {
+		return 1, f.quoteErr
+	}
+	return f.price, nil
+}
+
+func (f *fakePurchaser) Buy(_ context.Context, _ int, ship, yard string) (BoughtProbe, error) {
+	f.buys = append(f.buys, buyCall{ship, yard})
+	if err := f.buyErrAt[yard]; err != nil {
+		return BoughtProbe{}, err
+	}
+	if f.buyErr != nil {
+		return BoughtProbe{}, f.buyErr
+	}
+	f.nextID++
+	charged := f.price
+	if f.chargedPrice != 0 {
+		charged = f.chargedPrice
+	}
+	if f.reportNoPrice {
+		charged = 0
+	}
+	return BoughtProbe{
+		ShipSymbol:   "PROBE-" + string(rune('A'+f.nextID-1)),
+		Price:        charged,
+		CreditsAfter: f.creditsAfter,
+	}, nil
+}
+
+type fakeYards struct {
+	yards map[string][]string // system → probe yards, cheapest first
+	err   error
+}
+
+func (f *fakeYards) ListProbeYards(_ context.Context, system string) ([]string, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.yards[system], nil
+}
+
+type fakeShipReader struct {
+	docked    map[string]string // waypoint → docked probe symbol
+	positions map[string]ShipPos
+	dockedErr error
+	atErr     error
+}
+
+func (f *fakeShipReader) DockedProbeAt(_ context.Context, _ int, waypoint string) (string, bool, error) {
+	if f.dockedErr != nil {
+		return "", false, f.dockedErr
+	}
+	s, ok := f.docked[waypoint]
+	return s, ok, nil
+}
+
+func (f *fakeShipReader) ShipAt(_ context.Context, _ int, ship string) (ShipPos, error) {
+	if f.atErr != nil {
+		return ShipPos{}, f.atErr
+	}
+	return f.positions[ship], nil
+}
+
+type fleetAssign struct{ ship, fleet string }
+
+type fakeFleet struct {
+	assigns []fleetAssign
+	err     error
+}
+
+func (f *fakeFleet) AssignFleet(_ context.Context, _ int, ship, fleet string) error {
+	f.assigns = append(f.assigns, fleetAssign{ship, fleet})
+	return f.err
+}
+
+type fixedClock struct{ now time.Time }
+
+func (c fixedClock) Now() time.Time        { return c.now }
+func (c fixedClock) Sleep(_ time.Duration) {}
+
+// --- helpers -----------------------------------------------------------------
+
+// oneFillPorts builds the minimal viable drain: one WANTED MARKET slot in an
+// IN_SCOPE system, one probe yard in that system with a docked probe of ours
+// standing on it (so the buy is executable).
+func oneFillPorts(treasury int64) (BuyPorts, *fakeBuyLedger, *fakePurchaser, *fakeCargoSpend) {
+	led := &fakeBuyLedger{
+		slots: []QueuedSlot{{
+			Waypoint: "X1-AA-M1", System: "X1-AA", Kind: SlotKindMarket, State: SlotStateWanted, DepthCredits: 900,
+		}},
+		systems: []ScreenedSystem{{System: "X1-AA", DepthCredits: 900}},
+	}
+	pur := &fakePurchaser{price: 23_540}
+	spend := &fakeCargoSpend{spend: 300_000}
+	return BuyPorts{
+		Treasury:   &fakeTreasury{credits: treasury},
+		CargoSpend: spend,
+		Purchaser:  pur,
+		Ledger:     led,
+		Yards:      &fakeYards{yards: map[string][]string{"X1-AA": {"X1-AA-Y1"}}},
+		Ships:      &fakeShipReader{docked: map[string]string{"X1-AA-Y1": "PROBE-OLD"}},
+		Fleet:      &fakeFleet{},
+	}, led, pur, spend
+}
+
+// capexKnobs are the Step-1 floor knobs: 50_000 immutable + 100_000 capex +
+// 2 × 300_000/h cargo runway = a 750_000 floor.
+var capexKnobs = BuyKnobs{ProbeCap: 100, CapexReserve: 100_000, K: 2}
+
+// --- Step 1: the dynamic floor, integrated -----------------------------------
+
+func TestDrain_RefusesBuyBelowDynamicFloor(t *testing.T) {
+	// 770_000 − 23_540 = 746_460 < 750_000 → the probe is unaffordable.
+	ports, _, pur, spend := oneFillPorts(770_000)
+
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, capexKnobs, fixedClock{time.Unix(1_700_000_000, 0)})
+	if err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if len(pur.buys) != 0 {
+		t.Fatalf("bought %d probes below the dynamic floor, want 0 (%v)", len(pur.buys), pur.buys)
+	}
+	if rep.Bought != 0 {
+		t.Fatalf("report says Bought=%d, want 0", rep.Bought)
+	}
+	if !rep.FloorHeld {
+		t.Fatalf("report does not flag FloorHeld: %+v", rep)
+	}
+	if want := time.Unix(1_700_000_000, 0).Add(-time.Hour); !spend.since.Equal(want) {
+		t.Fatalf("cargo spend window started %v, want %v (trailing hour)", spend.since, want)
+	}
+}
+
+func TestDrain_BuysAboveDynamicFloor(t *testing.T) {
+	// 780_000 − 23_540 = 756_460 ≥ 750_000 → affordable.
+	ports, led, pur, _ := oneFillPorts(780_000)
+
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, capexKnobs, fixedClock{time.Unix(1_700_000_000, 0)})
+	if err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if len(pur.buys) != 1 {
+		t.Fatalf("made %d purchases above the floor, want 1 (%v)", len(pur.buys), pur.buys)
+	}
+	if pur.buys[0].yard != "X1-AA-Y1" {
+		t.Fatalf("bought at yard %q, want the in-system probe yard X1-AA-Y1", pur.buys[0].yard)
+	}
+	if pur.buys[0].ship != "PROBE-OLD" {
+		t.Fatalf("purchasing ship %q, want the probe already docked at the yard", pur.buys[0].ship)
+	}
+	if rep.Bought != 1 {
+		t.Fatalf("report says Bought=%d, want 1", rep.Bought)
+	}
+	if got := led.transitionsTo(SlotStateBought); len(got) != 1 || got[0].assignedShip == nil {
+		t.Fatalf("slot did not reach BOUGHT with a recorded hull: %+v", led.transitions)
+	}
+}
+
+// TestDrain_FloorPinsImmutableReserve pins the cross-package constant the floor
+// is built on: with every dynamic term at zero the floor collapses to the flat
+// 50_000 working-capital reserve (RULINGS #5 — one immutable base, never a
+// second copy that can drift from common.ImmutableReserveFloor).
+func TestDrain_FloorPinsImmutableReserve(t *testing.T) {
+	if got := domainSensing.ProbeBuyFloor(common.ImmutableReserveFloor, 0, 0, 0); got != 50_000 {
+		t.Fatalf("ProbeBuyFloor(ImmutableReserveFloor,0,0,0) = %d, want 50000", got)
+	}
+}
+
+// --- Step 1: fail-closed money reads -----------------------------------------
+
+func TestDrain_FailsClosedOnTreasuryError(t *testing.T) {
+	ports, _, pur, _ := oneFillPorts(780_000)
+	ports.Treasury = &fakeTreasury{credits: 999_999_999, err: errors.New("api down")}
+
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, capexKnobs, fixedClock{time.Now()})
+	if err == nil {
+		t.Fatal("unreadable treasury did not surface an error")
+	}
+	if len(pur.buys) != 0 {
+		t.Fatalf("bought %d probes on an unreadable treasury, want 0", len(pur.buys))
+	}
+	if rep.Bought != 0 {
+		t.Fatalf("report says Bought=%d, want 0", rep.Bought)
+	}
+}
+
+func TestDrain_FailsClosedOnCargoSpendError(t *testing.T) {
+	ports, _, pur, _ := oneFillPorts(780_000)
+	ports.CargoSpend = &fakeCargoSpend{spend: 0, err: errors.New("ledger down")}
+
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, capexKnobs, fixedClock{time.Now()})
+	if err == nil {
+		t.Fatal("unreadable cargo spend did not surface an error")
+	}
+	if len(pur.buys) != 0 {
+		t.Fatalf("bought %d probes on an unknowable cargo spend, want 0", len(pur.buys))
+	}
+	if rep.Bought != 0 {
+		t.Fatalf("report says Bought=%d, want 0", rep.Bought)
+	}
+}
+
+func TestDrain_FailsClosedOnProbeCountError(t *testing.T) {
+	ports, led, pur, _ := oneFillPorts(780_000)
+	led.ownedErr = errors.New("db down")
+
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, capexKnobs, fixedClock{time.Now()})
+	if err == nil {
+		t.Fatal("unreadable probe count did not surface an error")
+	}
+	if len(pur.buys) != 0 {
+		t.Fatalf("bought %d probes on an unreadable probe cap, want 0", len(pur.buys))
+	}
+	if rep.Bought != 0 {
+		t.Fatalf("report says Bought=%d, want 0", rep.Bought)
+	}
+}
+
+// --- Step 4: priority order, spare reuse, and the cap -------------------------
+
+// multiSystemPorts wires four placements across four systems of descending
+// depth, each with a probe yard we already have a hull standing at, plus one
+// frontier SPARE seed in a system carrying no verdict at all.
+func multiSystemPorts() (BuyPorts, *fakeBuyLedger, *fakePurchaser) {
+	led := &fakeBuyLedger{
+		slots: []QueuedSlot{
+			{Waypoint: "X1-SHALLOW-M1", System: "X1-SHALLOW", Kind: SlotKindMarket, State: SlotStateWanted},
+			{Waypoint: "X1-DEEP-M1", System: "X1-DEEP", Kind: SlotKindMarket, State: SlotStateWanted},
+			{Waypoint: "X1-DEEP-M2", System: "X1-DEEP", Kind: SlotKindMarket, State: SlotStateWanted},
+			{Waypoint: "X1-FRONTIER-S1", System: "X1-FRONTIER", Kind: SlotKindSpare, State: SlotStateWanted},
+			{Waypoint: "X1-MID-M1", System: "X1-MID", Kind: SlotKindMarket, State: SlotStateWanted},
+		},
+		systems: []ScreenedSystem{
+			{System: "X1-SHALLOW", DepthCredits: 1_000},
+			{System: "X1-DEEP", DepthCredits: 5_000},
+			{System: "X1-MID", DepthCredits: 3_000},
+		},
+	}
+	pur := &fakePurchaser{price: 1_000}
+	return BuyPorts{
+		Treasury:   &fakeTreasury{credits: 10_000_000},
+		CargoSpend: &fakeCargoSpend{},
+		Purchaser:  pur,
+		Ledger:     led,
+		Yards: &fakeYards{yards: map[string][]string{
+			"X1-SHALLOW":  {"X1-SHALLOW-Y1"},
+			"X1-DEEP":     {"X1-DEEP-Y1"},
+			"X1-MID":      {"X1-MID-Y1"},
+			"X1-FRONTIER": {"X1-FRONTIER-Y1"},
+		}},
+		Ships: &fakeShipReader{docked: map[string]string{
+			"X1-SHALLOW-Y1":  "BUYER-SHALLOW",
+			"X1-DEEP-Y1":     "BUYER-DEEP",
+			"X1-MID-Y1":      "BUYER-MID",
+			"X1-FRONTIER-Y1": "BUYER-FRONTIER",
+		}},
+		Fleet: &fakeFleet{},
+	}, led, pur
+}
+
+func TestDrain_FillsDeepSystemsFirstThenSeeds(t *testing.T) {
+	ports, _, pur := multiSystemPorts()
+
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+
+	// Deepest system first, FIFO within it (the ledger's own ordering), then
+	// shallower fills, and only then the unscreened frontier seed.
+	want := []string{"X1-DEEP-Y1", "X1-DEEP-Y1", "X1-MID-Y1", "X1-SHALLOW-Y1", "X1-FRONTIER-Y1"}
+	if len(pur.buys) != len(want) {
+		t.Fatalf("made %d purchases, want %d: %v", len(pur.buys), len(want), pur.buys)
+	}
+	for i, w := range want {
+		if pur.buys[i].yard != w {
+			t.Fatalf("purchase %d was at %q, want %q (full order %v)", i, pur.buys[i].yard, w, pur.buys)
+		}
+	}
+}
+
+func TestDrain_SkipsPlacementsInSystemsNotInScope(t *testing.T) {
+	ports, led, pur := multiSystemPorts()
+	led.systems = []ScreenedSystem{{System: "X1-DEEP", DepthCredits: 5_000}}
+
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	for _, b := range pur.buys {
+		if b.yard != "X1-DEEP-Y1" && b.yard != "X1-FRONTIER-Y1" {
+			t.Fatalf("bought at %q for a system with no IN_SCOPE verdict (%v)", b.yard, pur.buys)
+		}
+	}
+}
+
+func TestDrain_ReusesParkedSpareInsteadOfBuying(t *testing.T) {
+	led := &fakeBuyLedger{
+		slots: []QueuedSlot{
+			{Waypoint: "X1-AA-M1", System: "X1-AA", Kind: SlotKindMarket, State: SlotStateWanted},
+			{Waypoint: "X1-AA-S1", System: "X1-AA", Kind: SlotKindSpare, State: SlotStateParked, AssignedShip: "PROBE-SPARE"},
+		},
+		systems: []ScreenedSystem{{System: "X1-AA", DepthCredits: 900}},
+	}
+	pur := &fakePurchaser{price: 1_000}
+	ports := BuyPorts{
+		Treasury:   &fakeTreasury{credits: 10_000_000},
+		CargoSpend: &fakeCargoSpend{},
+		Purchaser:  pur,
+		Ledger:     led,
+		Yards:      &fakeYards{yards: map[string][]string{"X1-AA": {"X1-AA-Y1"}}},
+		Ships:      &fakeShipReader{docked: map[string]string{"X1-AA-Y1": "BUYER"}},
+		Fleet:      &fakeFleet{},
+	}
+
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	if err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if len(pur.buys) != 0 {
+		t.Fatalf("bought %d probes when a spare was parked in-system, want 0 (%v)", len(pur.buys), pur.buys)
+	}
+	if rep.Reused != 1 {
+		t.Fatalf("report says Reused=%d, want 1: %+v", rep.Reused, rep)
+	}
+
+	// The two-row hand-off must CLAIM before it RELEASES: a crash between the
+	// writes then double-counts the hull (cap reads high, buys fewer) instead of
+	// losing it (cap reads low, buys a replacement we already own).
+	if len(led.transitions) != 2 {
+		t.Fatalf("want exactly 2 transitions for a spare hand-off, got %+v", led.transitions)
+	}
+	claim, release := led.transitions[0], led.transitions[1]
+	if claim.waypoint != "X1-AA-M1" || claim.to != SlotStateInTransit {
+		t.Fatalf("first transition was %+v, want the TARGET claimed to IN_TRANSIT", claim)
+	}
+	if claim.assignedShip == nil || *claim.assignedShip != "PROBE-SPARE" {
+		t.Fatalf("target claim did not record the reused hull: %+v", claim)
+	}
+	if release.waypoint != "X1-AA-S1" || release.to != SlotStateWanted {
+		t.Fatalf("second transition was %+v, want the SPARE released to WANTED", release)
+	}
+	if release.assignedShip == nil || *release.assignedShip != "" {
+		t.Fatalf("spare release did not CLEAR its hull reference: %+v", release)
+	}
+}
+
+func TestDrain_HoldsAtProbeCap(t *testing.T) {
+	ports, led, pur := multiSystemPorts()
+	led.owned = 4
+
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 4}, fixedClock{time.Now()})
+	if err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if len(pur.buys) != 0 {
+		t.Fatalf("bought %d probes at the cap, want 0 (%v)", len(pur.buys), pur.buys)
+	}
+	if !rep.CapHeld {
+		t.Fatalf("report does not flag CapHeld: %+v", rep)
+	}
+}
+
+func TestDrain_StopsWhenCapIsReachedMidTick(t *testing.T) {
+	ports, led, pur := multiSystemPorts()
+	led.owned = 2
+
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 4}, fixedClock{time.Now()})
+	if err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if len(pur.buys) != 2 {
+		t.Fatalf("bought %d probes with 2 of 4 cap headroom, want 2 (%v)", len(pur.buys), pur.buys)
+	}
+	if !rep.CapHeld {
+		t.Fatalf("report does not flag CapHeld after filling the cap mid-tick: %+v", rep)
+	}
+}
+
+// TestDrain_RechecksFloorAfterEachBuy proves the floor is re-evaluated against a
+// treasury that SHRANK: two identical placements, enough credits for the first
+// but not the second.
+func TestDrain_RechecksFloorAfterEachBuy(t *testing.T) {
+	ports, _, pur := multiSystemPorts()
+	pur.price = 20_000
+	ports.Treasury = &fakeTreasury{credits: 80_000} // floor is the flat 50_000 with K=0
+
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	if err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if len(pur.buys) != 1 {
+		t.Fatalf("bought %d probes on a treasury that affords one, want 1 (%v)", len(pur.buys), pur.buys)
+	}
+	if !rep.FloorHeld {
+		t.Fatalf("report does not flag FloorHeld after the treasury fell to the floor: %+v", rep)
+	}
+}
+
+// TestDrain_ShipyardBalanceNeverRelaxesTheFloor pins the conservative choice: a
+// shipyard reporting a HIGHER post-purchase balance than arithmetic allows is
+// not believed, so it cannot buy a second probe the floor forbids.
+func TestDrain_ShipyardBalanceNeverRelaxesTheFloor(t *testing.T) {
+	ports, _, pur := multiSystemPorts()
+	pur.price = 20_000
+	pur.creditsAfter = 5_000_000 // an implausibly generous settlement report
+	ports.Treasury = &fakeTreasury{credits: 80_000}
+
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if len(pur.buys) != 1 {
+		t.Fatalf("bought %d probes, want 1 — the shipyard's balance must not relax the floor (%v)", len(pur.buys), pur.buys)
+	}
+}
+
+func TestDrain_TagsBoughtProbeIntoTheSensingFleet(t *testing.T) {
+	ports, _, _, _ := oneFillPorts(10_000_000)
+	fleet := &fakeFleet{}
+	ports.Fleet = fleet
+
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if len(fleet.assigns) != 1 {
+		t.Fatalf("made %d fleet assignments after a purchase, want 1: %+v", len(fleet.assigns), fleet.assigns)
+	}
+	if fleet.assigns[0].fleet != SensingParkedFleetTag {
+		t.Fatalf("tagged the new probe %q, want %q", fleet.assigns[0].fleet, SensingParkedFleetTag)
+	}
+}
+
+// --- Step 4: adversarial paths -----------------------------------------------
+
+func TestDrain_SkipsPlacementWithNoReachableYard(t *testing.T) {
+	ports, _, pur, _ := oneFillPorts(10_000_000)
+	ports.Ships = &fakeShipReader{} // no hull standing at any yard
+
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	if err != nil {
+		t.Fatalf("no yard presence must not be an error, got: %v", err)
+	}
+	if len(pur.buys) != 0 {
+		t.Fatalf("bought %d probes with no hull at any yard, want 0 (%v)", len(pur.buys), pur.buys)
+	}
+	if rep.SkippedNoYard != 1 {
+		t.Fatalf("report says SkippedNoYard=%d, want 1: %+v", rep.SkippedNoYard, rep)
+	}
+}
+
+// TestDrain_UsesParkedProbeAtYardRegardlessOfSlotKind pins the waypoint-wise
+// presence contract: a yard that is also a whitelisted market carries a
+// MARKET-kind slot, and the probe parked under it is still a valid buyer.
+func TestDrain_UsesParkedProbeAtYardRegardlessOfSlotKind(t *testing.T) {
+	led := &fakeBuyLedger{
+		slots: []QueuedSlot{
+			{Waypoint: "X1-AA-M2", System: "X1-AA", Kind: SlotKindMarket, State: SlotStateWanted},
+			// The yard itself, slotted as MARKET because it also trades.
+			{Waypoint: "X1-AA-Y1", System: "X1-AA", Kind: SlotKindMarket, State: SlotStateParked, AssignedShip: "PROBE-ON-YARD"},
+		},
+		systems: []ScreenedSystem{{System: "X1-AA", DepthCredits: 900}},
+	}
+	pur := &fakePurchaser{price: 1_000}
+	ports := BuyPorts{
+		Treasury:   &fakeTreasury{credits: 10_000_000},
+		CargoSpend: &fakeCargoSpend{},
+		Purchaser:  pur,
+		Ledger:     led,
+		Yards:      &fakeYards{yards: map[string][]string{"X1-AA": {"X1-AA-Y1"}}},
+		Ships:      &fakeShipReader{}, // the ships table knows nothing; the ledger must answer
+		Fleet:      &fakeFleet{},
+	}
+
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if len(pur.buys) != 1 || pur.buys[0].ship != "PROBE-ON-YARD" {
+		t.Fatalf("did not buy through the MARKET-slotted probe standing on the yard: %v", pur.buys)
+	}
+}
+
+func TestDrain_FailedPurchaseLeavesSlotQueuedForRetry(t *testing.T) {
+	ports, led, pur, _ := oneFillPorts(10_000_000)
+	pur.buyErr = errors.New("shipyard refused")
+
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	if err != nil {
+		t.Fatalf("a failed purchase must not fail the tick, got: %v", err)
+	}
+	if rep.Bought != 0 {
+		t.Fatalf("report says Bought=%d after a failed purchase, want 0", rep.Bought)
+	}
+	if led.slots[0].State != SlotStateQueued {
+		t.Fatalf("slot is %q after a failed purchase, want %q so the next tick retries it", led.slots[0].State, SlotStateQueued)
+	}
+	if led.slots[0].PurchaseYard != "X1-AA-Y1" {
+		t.Fatalf("claim did not record the chosen yard: %+v", led.slots[0])
+	}
+}
+
+func TestDrain_RetriesAnAlreadyQueuedSlot(t *testing.T) {
+	ports, led, pur, _ := oneFillPorts(10_000_000)
+	led.slots[0].State = SlotStateQueued
+	led.slots[0].PurchaseYard = "X1-AA-Y1"
+
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if len(pur.buys) != 1 {
+		t.Fatalf("made %d purchases for a stranded QUEUED slot, want 1 (%v)", len(pur.buys), pur.buys)
+	}
+	// It was already claimed; re-claiming it would be a wasted write.
+	for _, tr := range led.transitions {
+		if tr.to == SlotStateQueued {
+			t.Fatalf("re-queued an already-QUEUED slot: %+v", led.transitions)
+		}
+	}
+}
+
+// TestDrain_HaltsWhenAPurchaseCannotBeRecorded pins the one unrecoverable shape:
+// money left the account but the hull was not written down. Spending further
+// against a ledger refusing writes would compound it.
+func TestDrain_HaltsWhenAPurchaseCannotBeRecorded(t *testing.T) {
+	ports, led, pur := multiSystemPorts()
+	led.transitionErr = map[string]error{"X1-DEEP-M1→" + SlotStateBought: errors.New("db down")}
+
+	_, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	if err == nil {
+		t.Fatal("an unrecordable purchase did not surface an error")
+	}
+	if len(pur.buys) != 1 {
+		t.Fatalf("kept spending after an unrecordable purchase: %v", pur.buys)
+	}
+}
+
+// TestDrain_SkipsSlotClaimedByAnotherWriter covers the ROUTINE half of a failed
+// claim: a concurrent tick got there first, which costs nothing and must not
+// stop the queue serving the placements behind it.
+func TestDrain_SkipsSlotClaimedByAnotherWriter(t *testing.T) {
+	ports, led, pur := multiSystemPorts()
+	led.transitionErr = map[string]error{"X1-DEEP-M1→" + SlotStateQueued: ErrSlotClaimed}
+
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
+		t.Fatalf("losing a claim race must not fail the tick, got: %v", err)
+	}
+	if len(pur.buys) != 4 {
+		t.Fatalf("made %d purchases after skipping one contested slot, want the other 4 (%v)", len(pur.buys), pur.buys)
+	}
+}
+
+// TestDrain_HaltsWhenTheLedgerRefusesTheClaim covers the OTHER half: a claim
+// that fails for any reason OTHER than contention is an outage, and retrying it
+// across every remaining placement would just multiply the failure.
+func TestDrain_HaltsWhenTheLedgerRefusesTheClaim(t *testing.T) {
+	ports, led, pur := multiSystemPorts()
+	led.transitionErr = map[string]error{"X1-DEEP-M1→" + SlotStateQueued: errors.New("db down")}
+
+	_, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	if err == nil {
+		t.Fatal("an unwritable ledger did not surface an error")
+	}
+	if len(pur.buys) != 0 {
+		t.Fatalf("bought %d probes against an unwritable ledger, want 0 (%v)", len(pur.buys), pur.buys)
+	}
+}
+
+func TestDrain_NoCandidatesCostsNoTreasuryRead(t *testing.T) {
+	treasury := &fakeTreasury{credits: 10_000_000}
+	ports := BuyPorts{
+		Treasury:   treasury,
+		CargoSpend: &fakeCargoSpend{},
+		Purchaser:  &fakePurchaser{},
+		Ledger:     &fakeBuyLedger{},
+		Yards:      &fakeYards{},
+		Ships:      &fakeShipReader{},
+		Fleet:      &fakeFleet{},
+	}
+
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if treasury.calls != 0 {
+		t.Fatalf("read the live treasury %d times with nothing to buy, want 0", treasury.calls)
+	}
+}
+
+// --- Step 4: yard fallback and the remaining fail-closed reads ----------------
+
+// TestDrain_FallsBackWhenTheRecordedYardLostItsPresence pins that a recorded
+// purchase yard is a preference, not a commitment. The hull that made a yard
+// executable belongs to the wider fleet and can be flown off at any time; if
+// that pinned the placement to a dead yard it would stall forever.
+func TestDrain_FallsBackWhenTheRecordedYardLostItsPresence(t *testing.T) {
+	ports, led, pur, _ := oneFillPorts(10_000_000)
+	led.slots[0].State = SlotStateQueued
+	led.slots[0].PurchaseYard = "X1-AA-GONE" // chosen last tick, now deserted
+	ports.Yards = &fakeYards{yards: map[string][]string{"X1-AA": {"X1-AA-GONE", "X1-AA-Y1"}}}
+
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if len(pur.buys) != 1 || pur.buys[0].yard != "X1-AA-Y1" {
+		t.Fatalf("did not fall back to the yard that still has presence: %v", pur.buys)
+	}
+	// The row must end up naming where the hull actually came from.
+	if led.slots[0].PurchaseYard != "X1-AA-Y1" {
+		t.Fatalf("slot records purchase yard %q, want the yard the hull was bought at", led.slots[0].PurchaseYard)
+	}
+}
+
+func TestDrain_PrefersTheRecordedYardWhenItStillHasPresence(t *testing.T) {
+	ports, led, pur, _ := oneFillPorts(10_000_000)
+	led.slots[0].State = SlotStateQueued
+	led.slots[0].PurchaseYard = "X1-AA-Y2"
+	ports.Yards = &fakeYards{yards: map[string][]string{"X1-AA": {"X1-AA-Y1", "X1-AA-Y2"}}}
+	ports.Ships = &fakeShipReader{docked: map[string]string{
+		"X1-AA-Y1": "BUYER-CHEAP", // cheapest-first would pick this
+		"X1-AA-Y2": "BUYER-CHOSEN",
+	}}
+
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if len(pur.buys) != 1 || pur.buys[0].yard != "X1-AA-Y2" {
+		t.Fatalf("abandoned a still-good recorded yard: %v", pur.buys)
+	}
+}
+
+func TestDrain_SkipsPlacementWhoseProbeCannotBePriced(t *testing.T) {
+	ports, _, pur, _ := oneFillPorts(10_000_000)
+	pur.quoteErr = errors.New("shipyard listing unreadable")
+
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	if err != nil {
+		t.Fatalf("an unpriceable yard must not fail the tick, got: %v", err)
+	}
+	if len(pur.buys) != 0 {
+		t.Fatalf("bought %d probes without a price to check the floor against, want 0 (%v)", len(pur.buys), pur.buys)
+	}
+	if rep.Bought != 0 {
+		t.Fatalf("report says Bought=%d, want 0", rep.Bought)
+	}
+}
+
+func TestDrain_FailsClosedOnYardPresenceReadError(t *testing.T) {
+	ports, _, pur, _ := oneFillPorts(10_000_000)
+	ports.Ships = &fakeShipReader{dockedErr: errors.New("db down")}
+
+	_, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	if err == nil {
+		t.Fatal("an unreadable ships table did not surface an error")
+	}
+	if len(pur.buys) != 0 {
+		t.Fatalf("bought %d probes without confirming a buyer exists, want 0 (%v)", len(pur.buys), pur.buys)
+	}
+}
+
+func TestDrain_FailsClosedOnSlotReadError(t *testing.T) {
+	ports, led, pur, _ := oneFillPorts(10_000_000)
+	led.slotsErr = errors.New("db down")
+
+	_, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	if err == nil {
+		t.Fatal("an unreadable slot ledger did not surface an error")
+	}
+	if len(pur.buys) != 0 {
+		t.Fatalf("bought %d probes against an unreadable ledger, want 0", len(pur.buys))
+	}
+}
+
+func TestDrain_FailsClosedOnVerdictReadError(t *testing.T) {
+	ports, led, pur, _ := oneFillPorts(10_000_000)
+	led.systemsErr = errors.New("db down")
+
+	_, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	if err == nil {
+		t.Fatal("unreadable system verdicts did not surface an error")
+	}
+	// Unknown verdicts must never be read as "in scope" — that would buy hulls
+	// for systems the screen may have rejected.
+	if len(pur.buys) != 0 {
+		t.Fatalf("bought %d probes without knowing which systems are in scope, want 0", len(pur.buys))
+	}
+}
+
+func TestDrain_FailsClosedOnYardCatalogError(t *testing.T) {
+	ports, _, pur, _ := oneFillPorts(10_000_000)
+	ports.Yards = &fakeYards{err: errors.New("waypoint cache down")}
+
+	_, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	if err == nil {
+		t.Fatal("an unreadable yard catalog did not surface an error")
+	}
+	if len(pur.buys) != 0 {
+		t.Fatalf("bought %d probes without a yard list, want 0", len(pur.buys))
+	}
+}
+
+// TestDrain_CompletesPurchaseEvenIfTheFleetTagFails pins the deliberate
+// asymmetry: the hull is already paid for and already recorded against the cap
+// by the time it is tagged, so abandoning the purchase over a tag write would
+// discard something we own. The placement machine re-asserts the tag.
+func TestDrain_CompletesPurchaseEvenIfTheFleetTagFails(t *testing.T) {
+	ports, led, pur, _ := oneFillPorts(10_000_000)
+	ports.Fleet = &fakeFleet{err: errors.New("tag write failed")}
+
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	if err != nil {
+		t.Fatalf("a failed fleet tag must not fail the tick, got: %v", err)
+	}
+	if rep.Bought != 1 || len(pur.buys) != 1 {
+		t.Fatalf("discarded a completed purchase over a tag write: Bought=%d buys=%v", rep.Bought, pur.buys)
+	}
+	if led.slots[0].State != SlotStateBought || led.slots[0].AssignedShip == "" {
+		t.Fatalf("hull was not recorded against the cap: %+v", led.slots[0])
+	}
+}
+
+// --- Fix round 1: the attempt budget, yard fallback, and price drift ---------
+
+// manyFailingPorts wires more placements than the tick's attempt budget, all in
+// one system whose single yard is executable but unpriceable — the shape of a
+// degraded API.
+func manyFailingPorts(slots int) (BuyPorts, *fakePurchaser) {
+	led := &fakeBuyLedger{
+		systems: []ScreenedSystem{{System: "X1-AA", DepthCredits: 900}},
+	}
+	for i := 0; i < slots; i++ {
+		led.slots = append(led.slots, QueuedSlot{
+			Waypoint: fmt.Sprintf("X1-AA-M%02d", i), System: "X1-AA",
+			Kind: SlotKindMarket, State: SlotStateWanted,
+		})
+	}
+	pur := &fakePurchaser{price: 1_000, quoteErr: errors.New("shipyard unreachable")}
+	return BuyPorts{
+		Treasury:   &fakeTreasury{credits: 10_000_000},
+		CargoSpend: &fakeCargoSpend{},
+		Purchaser:  pur,
+		Ledger:     led,
+		Yards:      &fakeYards{yards: map[string][]string{"X1-AA": {"X1-AA-Y1"}}},
+		Ships:      &fakeShipReader{docked: map[string]string{"X1-AA-Y1": "BUYER"}},
+		Fleet:      &fakeFleet{},
+	}, pur
+}
+
+// TestDrain_BoundsAttemptsNotOnlyPurchases is the API-storm guard. Every quote
+// is a LIVE, uncached shipyard read, so a budget that only decremented on
+// success would fire one per unfilled placement, every tick, forever — hardest
+// exactly when the API is already degraded.
+func TestDrain_BoundsAttemptsNotOnlyPurchases(t *testing.T) {
+	ports, pur := manyFailingPorts(20)
+
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	if err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if len(pur.quotes) > maxDrainAttempts {
+		t.Fatalf("made %d live price reads for 20 failing placements, want at most %d", len(pur.quotes), maxDrainAttempts)
+	}
+	if rep.Attempts != maxDrainAttempts {
+		t.Fatalf("report says Attempts=%d, want the full budget %d spent", rep.Attempts, maxDrainAttempts)
+	}
+	if rep.Bought != 0 {
+		t.Fatalf("report says Bought=%d against an unpriceable yard, want 0", rep.Bought)
+	}
+}
+
+func TestDrain_BoundsAttemptsWhenEveryCounterRefuses(t *testing.T) {
+	ports, pur := manyFailingPorts(20)
+	// Priceable, but every purchase is refused.
+	pur.quoteErr = nil
+	pur.buyErr = errors.New("shipyard refused")
+
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if len(pur.buys) > maxDrainAttempts {
+		t.Fatalf("made %d purchase attempts, want at most %d", len(pur.buys), maxDrainAttempts)
+	}
+}
+
+// TestDrain_TriesTheNextYardWhenACounterRefuses pins that a refusal is treated
+// as LOCAL to the counter. The placement is still fillable next door, and
+// abandoning it on the first refusal would leave it claimed and unfilled every
+// tick whenever its nearest yard is the unreliable one.
+func TestDrain_TriesTheNextYardWhenACounterRefuses(t *testing.T) {
+	ports, _, pur, _ := oneFillPorts(10_000_000)
+	ports.Yards = &fakeYards{yards: map[string][]string{"X1-AA": {"X1-AA-Y1", "X1-AA-Y2"}}}
+	ports.Ships = &fakeShipReader{docked: map[string]string{
+		"X1-AA-Y1": "BUYER-1",
+		"X1-AA-Y2": "BUYER-2",
+	}}
+	pur.buyErrAt = map[string]error{"X1-AA-Y1": errors.New("out of stock")}
+
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	if err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if rep.Bought != 1 {
+		t.Fatalf("report says Bought=%d, want 1 — the neighbouring yard could still sell", rep.Bought)
+	}
+	if len(pur.buys) != 2 || pur.buys[1].yard != "X1-AA-Y2" {
+		t.Fatalf("purchase attempts were %v, want a fallback to X1-AA-Y2", pur.buys)
+	}
+	// Both counters were tried, so both cost budget.
+	if rep.Attempts != 2 {
+		t.Fatalf("report says Attempts=%d, want 2 (one per counter tried)", rep.Attempts)
+	}
+}
+
+func TestDrain_TriesTheNextYardWhenACounterCannotBePriced(t *testing.T) {
+	ports, _, pur, _ := oneFillPorts(10_000_000)
+	ports.Yards = &fakeYards{yards: map[string][]string{"X1-AA": {"X1-AA-Y1", "X1-AA-Y2"}}}
+	ports.Ships = &fakeShipReader{docked: map[string]string{
+		"X1-AA-Y1": "BUYER-1",
+		"X1-AA-Y2": "BUYER-2",
+	}}
+	pur.quoteErrAt = map[string]error{"X1-AA-Y1": errors.New("listing unreadable")}
+
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if len(pur.buys) != 1 || pur.buys[0].yard != "X1-AA-Y2" {
+		t.Fatalf("purchase attempts were %v, want exactly one at the priceable yard", pur.buys)
+	}
+}
+
+// TestDrain_UnusableYardPresenceCostsNoAttempt pins the other half of the
+// foreign-hull fix: when the ships table reports no DRIVABLE hull at any yard,
+// the placement is skipped without touching the API at all.
+func TestDrain_UnusableYardPresenceCostsNoAttempt(t *testing.T) {
+	ports, _, pur, _ := oneFillPorts(10_000_000)
+	// A foreign-dedicated hull is filtered out at the port, so presence reads
+	// as absent here — no yard is executable.
+	ports.Ships = &fakeShipReader{}
+
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	if err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if len(pur.quotes) != 0 {
+		t.Fatalf("spent %d live price reads on a placement with no drivable hull, want 0", len(pur.quotes))
+	}
+	if rep.Attempts != 0 {
+		t.Fatalf("report says Attempts=%d, want 0 — no API was touched", rep.Attempts)
+	}
+	if rep.SkippedNoYard != 1 {
+		t.Fatalf("report says SkippedNoYard=%d, want 1", rep.SkippedNoYard)
+	}
+}
+
+// --- price drift --------------------------------------------------------------
+
+// driftPorts wires two identical affordable placements and a counter that bills
+// MORE than it quoted.
+func driftPorts() (BuyPorts, *fakeBuyLedger, *fakePurchaser) {
+	ports, led, pur := multiSystemPorts()
+	pur.price = 20_000
+	pur.chargedPrice = 35_000
+	ports.Treasury = &fakeTreasury{credits: 10_000_000}
+	return ports, led, pur
+}
+
+func TestDrain_RecordsTheHullEvenWhenItCostMoreThanQuoted(t *testing.T) {
+	ports, led, pur := driftPorts()
+
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	if err != nil {
+		t.Fatalf("a price overrun must not fail the tick, got: %v", err)
+	}
+	if rep.Bought != 1 {
+		t.Fatalf("report says Bought=%d, want 1 — an overrun cannot un-buy the hull", rep.Bought)
+	}
+	if len(pur.buys) != 1 {
+		t.Fatalf("kept spending after the market moved against our quotes: %v", pur.buys)
+	}
+	if !rep.HaltedPriceDrift {
+		t.Fatalf("report does not flag HaltedPriceDrift: %+v", rep)
+	}
+	// The hull must be recorded against the cap, or we own a probe nothing counts.
+	bought := led.transitionsTo(SlotStateBought)
+	if len(bought) != 1 || bought[0].assignedShip == nil || *bought[0].assignedShip == "" {
+		t.Fatalf("the overrun hull was not recorded against its placement: %+v", led.transitions)
+	}
+}
+
+func TestDrain_NextTickProceedsNormallyAfterAPriceDriftHalt(t *testing.T) {
+	ports, _, pur := driftPorts()
+	knobs := BuyKnobs{ProbeCap: 100}
+
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, knobs, fixedClock{time.Now()}); err != nil {
+		t.Fatalf("first tick returned error: %v", err)
+	}
+	// The market settles: the counter now bills what it quotes.
+	pur.chargedPrice = 0
+
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, knobs, fixedClock{time.Now()})
+	if err != nil {
+		t.Fatalf("second tick returned error: %v", err)
+	}
+	if rep.HaltedPriceDrift {
+		t.Fatalf("the halt persisted into a tick with fresh quotes: %+v", rep)
+	}
+	if rep.Bought == 0 {
+		t.Fatalf("the drain did not resume after a price-drift halt: %+v", rep)
+	}
+}
+
+// TestDrain_MissingActualPriceIsNotAFreeHull pins the conservative side of the
+// actual-price accounting: a purchase path that reports no price must fall back
+// to the quote, never read as a probe that cost nothing.
+func TestDrain_MissingActualPriceIsNotAFreeHull(t *testing.T) {
+	ports, _, pur := multiSystemPorts()
+	pur.price = 20_000
+	pur.reportNoPrice = true
+	// Affords exactly one probe above the flat 50_000 floor.
+	ports.Treasury = &fakeTreasury{credits: 80_000}
+
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	if err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if len(pur.buys) != 1 {
+		t.Fatalf("bought %d probes on a treasury that affords one, want 1 — an unreported price must not read as free (%v)", len(pur.buys), pur.buys)
+	}
+	if !rep.FloorHeld {
+		t.Fatalf("report does not flag FloorHeld: %+v", rep)
+	}
+}

@@ -725,30 +725,49 @@ func buildCargoLiquidationCommand(cfg *configReader, playerID int, containerID s
 	}
 }
 
-// buildProbeSensingCoordinatorCommand rebuilds the standing probe-sensing coordinator from
-// its persisted launch config so restart recovery re-adopts it byte-identically (RULINGS #2).
-// Like the scout-post coordinator it is a reconcile-loop coordinator (NOT a
+// buildProbeSensingCoordinatorCommand rebuilds the standing parked-probe sensing coordinator
+// from its persisted launch config so restart recovery re-adopts it byte-identically
+// (RULINGS #2). Like the scout-post coordinator it is a reconcile-loop coordinator (NOT a
 // CoordinatorOwnsIterations type). Every knob is optional (0/absent → the coordinator's own
 // documented default, RULINGS #5), so the creation op and recovery share one construction and
 // can never drift. goods_whitelist arrives as the [sensing] config.yaml CSV, injected by
 // resolveSensingConfig just before this runs (the int-only tune mechanism carries no
 // strings); an explicit slice is also accepted for forward compatibility.
+//
+// The touring model's keys are read into the retired command fields and IGNORED. That is the
+// recovery contract, not leftovers: a container persisted by the old core still carries
+// probe_budget and freshness_target_secs in its config column, and OptionalInt tolerates keys
+// nothing asks for — so an old container must still BUILD and come up on the new core's
+// defaults rather than failing recovery. They are read here so the tolerance is visible and
+// pinned by a test, instead of resting on a property of configReader.
 func buildProbeSensingCoordinatorCommand(cfg *configReader, playerID int, containerID string) interface{} {
 	goods := cfg.OptionalStringSlice("goods_whitelist")
 	if len(goods) == 0 {
 		goods = csvValues(cfg.OptionalString("goods_whitelist"))
 	}
 	return &scoutingCmd.RunProbeSensingCoordinatorCommand{
-		PlayerID:                 shared.MustNewPlayerID(playerID),
-		ContainerID:              cfg.RequiredNonEmptyString("container_id"),
-		GoodsWhitelist:           goods,
+		PlayerID:       shared.MustNewPlayerID(playerID),
+		ContainerID:    cfg.RequiredNonEmptyString("container_id"),
+		GoodsWhitelist: goods,
+		TickSecs:       cfg.OptionalInt("tick_secs", 0),
+		WaitLowMs:      cfg.OptionalInt("wait_low_ms", 0),
+		WaitHighMs:     cfg.OptionalInt("wait_high_ms", 0),
+
+		ProbeCap:             cfg.OptionalInt("probe_cap", 0),
+		ExpansionEnabled:     cfg.OptionalInt("expansion_enabled", 0),
+		TargetUtilPct:        cfg.OptionalInt("target_util_pct", 0),
+		MinScanRateMilli:     cfg.OptionalInt("min_scan_rate_milli", 0),
+		ValueClampR:          cfg.OptionalInt("value_clamp_r", 0),
+		InflightCap:          cfg.OptionalInt("inflight_cap", 0),
+		CapitalMultiplierK:   cfg.OptionalInt("capital_multiplier_k", 0),
+		CapexReserveCredits:  cfg.OptionalInt("capex_reserve_credits", 0),
+		QuartermasterCadence: cfg.OptionalInt("quartermaster_cadence_secs", 0),
+
+		// Retired: read for recovery tolerance, never consulted by the loop.
 		DepthFloor:               int64(cfg.OptionalInt("depth_floor", 0)),
 		ProbeBudget:              cfg.OptionalInt("probe_budget", 0),
 		SecondProbeThreshold:     cfg.OptionalInt("second_probe_threshold", 0),
 		PurchaseCooldownSecs:     cfg.OptionalInt("purchase_cooldown_secs", 0),
-		TickSecs:                 cfg.OptionalInt("tick_secs", 0),
-		WaitLowMs:                cfg.OptionalInt("wait_low_ms", 0),
-		WaitHighMs:               cfg.OptionalInt("wait_high_ms", 0),
 		FreshnessTargetSecs:      cfg.OptionalInt("freshness_target_secs", 0),
 		MaxSpendPerCycle:         cfg.OptionalInt("max_spend_per_cycle", 0),
 		SpendWindowSecs:          cfg.OptionalInt("spend_window_secs", 0),

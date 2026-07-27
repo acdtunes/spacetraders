@@ -86,7 +86,7 @@ const (
 func TestTune_RejectsInvalidTunes_NoWrite(t *testing.T) {
 	db, repo, playerID := tuneTestDB(t)
 	seedTuneContainer(t, db, playerID, tuneSensingContainerID, sensingContainerType, "probe_sensing_coordinator", "RUNNING", map[string]interface{}{
-		"container_id": tuneSensingContainerID, "purchase_cooldown_secs": 600,
+		"container_id": tuneSensingContainerID, "tick_secs": 600,
 	})
 	s := &DaemonServer{containerRepo: repo}
 	before := containerConfigJSON(t, repo, tuneSensingContainerID, playerID)
@@ -96,10 +96,10 @@ func TestTune_RejectsInvalidTunes_NoWrite(t *testing.T) {
 		key   string
 		value int
 	}{
-		{"cooldown below min (10s floor)", "purchase_cooldown_secs", 5},
-		{"cooldown above max (86400s ceiling)", "purchase_cooldown_secs", 90000},
-		{"spend cap above max (5M ceiling)", "max_spend_per_cycle", 6_000_000},
-		{"negative value", "max_spend_per_cycle", -1},
+		{"tick below min (10s floor)", "tick_secs", 5},
+		{"tick above max (86400s ceiling)", "tick_secs", 90000},
+		{"capex reserve above max (5M ceiling)", "capex_reserve_credits", 6_000_000},
+		{"negative value", "capex_reserve_credits", -1},
 		{"unknown key for this engine", "warp_speed", 42},
 	}
 	for _, tc := range cases {
@@ -123,25 +123,25 @@ func TestTune_RejectsUnresolvableTargets(t *testing.T) {
 	s := &DaemonServer{containerRepo: repo}
 	ctx := context.Background()
 
-	_, err := s.MutateContainerConfigKey(ctx, "", "bogus-operation", "max_spend_per_cycle", 1000, playerID)
+	_, err := s.MutateContainerConfigKey(ctx, "", "bogus-operation", "capex_reserve_credits", 1000, playerID)
 	require.Error(t, err, "an unknown operation alias must be rejected")
 
 	for _, retired := range []string{"freshsizer", "frontier"} {
-		_, err = s.MutateContainerConfigKey(ctx, "", retired, "max_spend_per_cycle", 1000, playerID)
+		_, err = s.MutateContainerConfigKey(ctx, "", retired, "capex_reserve_credits", 1000, playerID)
 		require.Error(t, err, "the retired %q operation alias must be rejected like any unknown alias", retired)
 		require.Contains(t, err.Error(), "no tunable coordinator")
 	}
 
-	_, err = s.MutateContainerConfigKey(ctx, "no-such-container", "", "max_spend_per_cycle", 1000, playerID)
+	_, err = s.MutateContainerConfigKey(ctx, "no-such-container", "", "capex_reserve_credits", 1000, playerID)
 	require.Error(t, err, "a missing container must be rejected")
 
-	_, err = s.MutateContainerConfigKey(ctx, "stopped-sensing", "", "max_spend_per_cycle", 1000, playerID)
+	_, err = s.MutateContainerConfigKey(ctx, "stopped-sensing", "", "capex_reserve_credits", 1000, playerID)
 	require.Error(t, err, "a STOPPED container must be rejected — tune targets RUNNING/PENDING work")
 
-	_, err = s.MutateContainerConfigKey(ctx, "gas-coord-1", "", "max_spend_per_cycle", 1000, playerID)
+	_, err = s.MutateContainerConfigKey(ctx, "gas-coord-1", "", "capex_reserve_credits", 1000, playerID)
 	require.Error(t, err, "an engine with no tunable-knob registry must be rejected")
 
-	_, err = s.MutateContainerConfigKey(ctx, "", "", "max_spend_per_cycle", 1000, playerID)
+	_, err = s.MutateContainerConfigKey(ctx, "", "", "capex_reserve_credits", 1000, playerID)
 	require.Error(t, err, "one of container id or operation is required")
 }
 
@@ -153,28 +153,28 @@ func TestTune_RejectsUnresolvableTargets(t *testing.T) {
 func TestTune_ZeroRevertsKnobToDocumentedDefault(t *testing.T) {
 	db, repo, playerID := tuneTestDB(t)
 	seedTuneContainer(t, db, playerID, tuneSensingContainerID, sensingContainerType, "probe_sensing_coordinator", "RUNNING", map[string]interface{}{
-		"container_id": tuneSensingContainerID, "purchase_cooldown_secs": 600,
+		"container_id": tuneSensingContainerID, "tick_secs": 600,
 	})
 	s := &DaemonServer{containerRepo: repo}
 	ctx := context.Background()
 
-	out, err := s.MutateContainerConfigKey(ctx, tuneSensingContainerID, "", "purchase_cooldown_secs", 0, playerID)
+	out, err := s.MutateContainerConfigKey(ctx, tuneSensingContainerID, "", "tick_secs", 0, playerID)
 	require.NoError(t, err)
 	require.True(t, out.Changed, "reverting a set knob is an effective change")
 	require.Equal(t, 600, out.OldEffective)
 	require.Equal(t, "live-config", out.OldSource)
-	require.Equal(t, 10, out.NewEffective, "the documented default (10s cooldown) applies after revert")
+	require.Equal(t, 30, out.NewEffective, "the documented default (30s reconcile cadence) applies after revert")
 	require.Equal(t, "default", out.NewSource)
 
 	// The column no longer carries a positive value for the key — the recovery
 	// rebuild (and any live reader) sees "no live value → default".
 	snap, err := NewContainerConfigReader(repo).Snapshot(ctx, tuneSensingContainerID, playerID)
 	require.NoError(t, err)
-	_, set := snap.PositiveInt("purchase_cooldown_secs")
+	_, set := snap.PositiveInt("tick_secs")
 	require.False(t, set, "revert must clear the key from the config column")
 
 	// Re-reverting an already-default knob is an honest no-op.
-	out, err = s.MutateContainerConfigKey(ctx, tuneSensingContainerID, "", "purchase_cooldown_secs", 0, playerID)
+	out, err = s.MutateContainerConfigKey(ctx, tuneSensingContainerID, "", "tick_secs", 0, playerID)
 	require.NoError(t, err)
 	require.False(t, out.Changed)
 }
@@ -188,13 +188,13 @@ func TestTune_ZeroRevertsKnobToDocumentedDefault(t *testing.T) {
 func TestTune_TunedValueSurvivesRestartRecovery(t *testing.T) {
 	db, repo, playerID := tuneTestDB(t)
 	seedTuneContainer(t, db, playerID, tuneSensingContainerID, sensingContainerType, "probe_sensing_coordinator", "RUNNING", map[string]interface{}{
-		"container_id": tuneSensingContainerID, "probe_budget": 0,
+		"container_id": tuneSensingContainerID, "probe_cap": 0,
 	})
 	s := &DaemonServer{containerRepo: repo, containerSpecs: map[string]ContainerSpec{}}
 	s.registerContainerSpecs()
 	ctx := context.Background()
 
-	_, err := s.MutateContainerConfigKey(ctx, tuneSensingContainerID, "", "max_spend_per_cycle", 350000, playerID)
+	_, err := s.MutateContainerConfigKey(ctx, tuneSensingContainerID, "", "capex_reserve_credits", 350000, playerID)
 	require.NoError(t, err)
 
 	// RESTART: reload the persisted config through the JSON round-trip recovery does
@@ -206,8 +206,8 @@ func TestTune_TunedValueSurvivesRestartRecovery(t *testing.T) {
 	cmd, ok := rebuilt.(*scoutingCmd.RunProbeSensingCoordinatorCommand)
 	require.True(t, ok)
 
-	require.Equal(t, 350000, cmd.MaxSpendPerCycle, "recovery must read the TUNED value from the config column, not the default")
-	require.Zero(t, cmd.ProbeBudget, "an untuned knob stays unset — the coordinator default chain applies")
+	require.Equal(t, 350000, cmd.CapexReserveCredits, "recovery must read the TUNED value from the config column, not the default")
+	require.Zero(t, cmd.ProbeCap, "an untuned knob stays unset — the coordinator default chain applies")
 }
 
 // ---- idempotency + audit ------------------------------------------------------
@@ -226,7 +226,7 @@ func TestTune_IdempotentNoOp_AndAuditOnEffectiveTunesOnly(t *testing.T) {
 	s := &DaemonServer{containerRepo: repo}
 	ctx := context.Background()
 
-	out, err := s.MutateContainerConfigKey(ctx, tuneSensingContainerID, "", "purchase_cooldown_secs", 120, playerID)
+	out, err := s.MutateContainerConfigKey(ctx, tuneSensingContainerID, "", "tick_secs", 120, playerID)
 	require.NoError(t, err)
 	require.True(t, out.Changed)
 	require.Len(t, rec.events, 1, "an effective tune must emit exactly one audit event")
@@ -235,18 +235,18 @@ func TestTune_IdempotentNoOp_AndAuditOnEffectiveTunesOnly(t *testing.T) {
 	var payload map[string]interface{}
 	require.NoError(t, json.Unmarshal([]byte(rec.events[0].Payload), &payload))
 	require.Equal(t, tuneSensingContainerID, payload["container_id"])
-	require.Equal(t, "purchase_cooldown_secs", payload["key"])
-	require.EqualValues(t, 10, payload["old_effective"], "the pre-tune effective value (default 10s) is audited")
+	require.Equal(t, "tick_secs", payload["key"])
+	require.EqualValues(t, 30, payload["old_effective"], "the pre-tune effective value (default 30s) is audited")
 	require.EqualValues(t, 120, payload["new_effective"])
 
 	// Idempotent re-tune: same value → no write, no audit.
-	out, err = s.MutateContainerConfigKey(ctx, tuneSensingContainerID, "", "purchase_cooldown_secs", 120, playerID)
+	out, err = s.MutateContainerConfigKey(ctx, tuneSensingContainerID, "", "tick_secs", 120, playerID)
 	require.NoError(t, err)
 	require.False(t, out.Changed, "re-tuning to the current value must be a no-op")
 	require.Len(t, rec.events, 1, "a no-op must not emit an audit event")
 
 	// Rejected tune: no write happened, so nothing to audit.
-	_, err = s.MutateContainerConfigKey(ctx, tuneSensingContainerID, "", "purchase_cooldown_secs", 5, playerID)
+	_, err = s.MutateContainerConfigKey(ctx, tuneSensingContainerID, "", "tick_secs", 5, playerID)
 	require.Error(t, err)
 	require.Len(t, rec.events, 1, "a rejected tune must not emit an audit event")
 }
@@ -317,7 +317,7 @@ func TestTuneRegistry_MatchesCoordinatorDefaults_AndNeverWeakensTreasuryGuard(t 
 func TestShowTunableConfig_ListsEffectiveValuesSourcesAndBounds(t *testing.T) {
 	db, repo, playerID := tuneTestDB(t)
 	seedTuneContainer(t, db, playerID, tuneSensingContainerID, sensingContainerType, "probe_sensing_coordinator", "RUNNING", map[string]interface{}{
-		"container_id": tuneSensingContainerID, "purchase_cooldown_secs": 120,
+		"container_id": tuneSensingContainerID, "tick_secs": 120,
 	})
 	s := &DaemonServer{containerRepo: repo}
 
@@ -332,21 +332,21 @@ func TestShowTunableConfig_ListsEffectiveValuesSourcesAndBounds(t *testing.T) {
 	for _, k := range out.Knobs {
 		byKey[k.Key] = k
 	}
-	cooldown := byKey["purchase_cooldown_secs"]
-	require.Equal(t, 120, cooldown.Effective)
-	require.Equal(t, "live-config", cooldown.Source)
-	require.Equal(t, 10, cooldown.Bound.Min)
-	require.Equal(t, 86400, cooldown.Bound.Max)
-	require.Equal(t, "seconds", cooldown.Bound.Unit)
+	tick := byKey["tick_secs"]
+	require.Equal(t, 120, tick.Effective)
+	require.Equal(t, "live-config", tick.Source)
+	require.Equal(t, 10, tick.Bound.Min)
+	require.Equal(t, 86400, tick.Bound.Max)
+	require.Equal(t, "seconds", tick.Bound.Unit)
 
-	spend := byKey["max_spend_per_cycle"]
-	require.Equal(t, 500000, spend.Effective, "an unset knob shows its documented default")
+	spend := byKey["capex_reserve_credits"]
+	require.Equal(t, 100000, spend.Effective, "an unset knob shows its documented default")
 	require.Equal(t, "default", spend.Source)
 	require.Equal(t, 5_000_000, spend.Bound.Max)
 
-	budget := byKey["probe_budget"]
-	require.Equal(t, 150, budget.Effective, "the budget dial's documented default is listed")
-	require.Equal(t, "default", budget.Source)
+	capKnob := byKey["probe_cap"]
+	require.Equal(t, 3000, capKnob.Effective, "the probe cap's documented default is listed")
+	require.Equal(t, "default", capKnob.Source)
 }
 
 // ---- bootstrap: the config.yaml-authoritative coordinator joins the registry (sp-r6yq) ----

@@ -1930,6 +1930,24 @@ func (s *daemonServiceImpl) StopConstructionPipeline(ctx context.Context, req *p
 	}, nil
 }
 
+// SensingRescreen re-opens every sensing system verdict for a player (sp-j2efq) — the supported
+// response to editing config.yaml's [sensing] goods_whitelist mid-era. It resolves the player and
+// delegates the write to the daemon, the single writer (RULINGS #3). The write is confined to
+// sensing_systems.verdict, so running it against a fleet of parked probes cannot disturb a hull the
+// probe cap is counting (RULINGS #4).
+func (s *daemonServiceImpl) SensingRescreen(ctx context.Context, req *pb.SensingRescreenRequest) (*pb.SensingRescreenResponse, error) {
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+
+	result, err := s.daemon.RescreenSensing(ctx, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to rescreen sensing verdicts: %w", err)
+	}
+	return &pb.SensingRescreenResponse{SystemsReopened: result.SystemsReopened}, nil
+}
+
 // ConstructionGoodOverride sets or clears one good's per-good buy-gating override on a running
 // construction pipeline live (sp-pdb3). It resolves the player, builds a patch from the optional
 // request knobs (a nil field leaves that dimension unchanged so an operator can tune one at a

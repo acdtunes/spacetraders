@@ -47,8 +47,8 @@ type priorityContextKey struct{}
 // WithPriority tags ctx with an explicit scheduling priority that OVERRIDES
 // endpoint-based classification. Callers on a known trade-critical path use it to
 // promote a call to HIGH even when its endpoint would otherwise classify LOW or
-// NORMAL (the "explicitly marked trade-blocking" case). The tag is completely
-// inert unless priority scheduling is enabled (default OFF).
+// NORMAL (the "explicitly marked trade-blocking" case). Priority scheduling is
+// armed unconditionally since 2026-07-17; the ctx tag orders acquisition.
 func WithPriority(ctx context.Context, p Priority) context.Context {
 	return context.WithValue(ctx, priorityContextKey{}, p)
 }
@@ -56,6 +56,16 @@ func WithPriority(ctx context.Context, p Priority) context.Context {
 func priorityFromContext(ctx context.Context) (Priority, bool) {
 	p, ok := ctx.Value(priorityContextKey{}).(Priority)
 	return p, ok
+}
+
+// PriorityForTest reads the explicit priority tag back out of a context, for
+// tests in OTHER packages. The second result distinguishes "no tag" (the caller
+// left classification to the endpoint) from an explicit tag that happens to
+// equal the zero value, PriorityLow — a distinction a caller deliberately
+// deprioritising itself very much cares about. See SourceForTest for why these
+// accessors exist at all; nothing but a test should call this.
+func PriorityForTest(ctx context.Context) (Priority, bool) {
+	return priorityFromContext(ctx)
 }
 
 // highPriorityEndpoints are the trade-critical calls that move credits: buying

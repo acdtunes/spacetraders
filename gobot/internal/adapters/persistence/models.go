@@ -899,6 +899,82 @@ func (ShipyardInventoryModel) TableName() string {
 	return "shipyard_inventory"
 }
 
+// SensingSystemModel is the per-system screening verdict of the parked-probe
+// sensing ledger (sp-k6v8z): has this system been judged worth placing probes
+// in, and what did the charting seed cost. Verdict is PENDING (not yet
+// screened), IN_SCOPE (deals in ≥1 whitelisted good — place slots here), or
+// NO_WHITELIST (screened and rejected). SeedShip/SeedState track the one-off
+// charting run that resolved UnchartedCount>0 (DISPATCHED → CHARTING → DONE);
+// both nullable because a fully-charted system never needs a seed.
+//
+// Composite primary key (player_id, system_symbol) makes duplicate screenings
+// structurally impossible — a re-screen updates the row in place. EraID mirrors
+// ScoutPostModel/ShipyardInventoryModel: planning reads are era-scoped so a
+// universe reset never resurrects a dead era's verdicts. No players foreign key
+// — like the other operational-state rows, player_id is a plain scoped column.
+type SensingSystemModel struct {
+	PlayerID       int        `gorm:"primaryKey;column:player_id"`
+	SystemSymbol   string     `gorm:"primaryKey;column:system_symbol;size:50"`
+	Verdict        string     `gorm:"column:verdict;size:20;not null;default:'PENDING'"` // PENDING|IN_SCOPE|NO_WHITELIST
+	ScreenedAt     *time.Time `gorm:"column:screened_at"`
+	UnchartedCount int        `gorm:"column:uncharted_count;not null;default:0"`
+	// CatalogSyncedAt records that the system's waypoint LIST has actually been
+	// swept. NULL means unswept, and that is the guard on the NO_WHITELIST
+	// verdict: a system nobody has visited has no waypoint rows, so it screens
+	// exactly like one that is charted through and deals in nothing — and that
+	// verdict is durable AND makes the system a frontier propagation origin, so
+	// a wrong one spreads. Screening records PENDING instead, and expansion
+	// sends a seed.
+	CatalogSyncedAt *time.Time `gorm:"column:catalog_synced_at"`
+	SeedShip        *string    `gorm:"column:seed_ship;size:50"`
+	SeedState       *string    `gorm:"column:seed_state;size:20"` // DISPATCHED|CHARTING|DONE
+	DepthCredits    int64      `gorm:"column:depth_credits;not null;default:0"`
+	EraID           *int       `gorm:"column:era_id;index"`
+	UpdatedAt       time.Time  `gorm:"column:updated_at"`
+}
+
+func (SensingSystemModel) TableName() string {
+	return "sensing_systems"
+}
+
+// SensingSlotModel is one probe PLACEMENT in the parked-probe sensing ledger
+// (sp-k6v8z) — the durable spine that makes the whole model re-derivable from
+// the database after a daemon restart (RULINGS #2). One row per (player,
+// waypoint): the slot we want a probe parked at, and how far along we are.
+//
+// State is the slot's lifecycle: WANTED (a placement we want) → QUEUED (chosen
+// for purchase) → BOUGHT (hull paid for) → IN_TRANSIT (flying to the waypoint)
+// → PARKED (on station, scanning). AssignedShip is the hull filling the slot,
+// nullable because WANTED/QUEUED slots have no hull yet — that distinction is
+// exactly what the probe_cap read counts, so a state alone never implies a
+// purchase. SlotKind is MARKET (a market to watch), YARD (a shipyard), or SPARE
+// (a parked reserve hull, still a probe we paid for).
+//
+// WhitelistGoods is the JSON-encoded set of whitelisted goods the waypoint
+// deals in (defaulted '[]' so a row is never NULL-parsed), SpreadEWMA the
+// smoothed price spread the scans feed, LastScanAt the freshness stamp.
+// Composite primary key (player_id, waypoint_symbol) makes duplicate placements
+// structurally impossible. EraID mirrors SensingSystemModel.
+type SensingSlotModel struct {
+	PlayerID       int        `gorm:"primaryKey;column:player_id"`
+	WaypointSymbol string     `gorm:"primaryKey;column:waypoint_symbol;size:50"`
+	SystemSymbol   string     `gorm:"column:system_symbol;size:50;index;not null"`
+	SlotKind       string     `gorm:"column:slot_kind;size:10;not null"`   // MARKET|YARD|SPARE
+	State          string     `gorm:"column:state;size:12;not null;index"` // WANTED|QUEUED|BOUGHT|IN_TRANSIT|PARKED
+	AssignedShip   *string    `gorm:"column:assigned_ship;size:50;index"`
+	PurchaseYard   *string    `gorm:"column:purchase_yard;size:50"`
+	WhitelistGoods string     `gorm:"column:whitelist_goods;type:text;not null;default:'[]'"` // JSON array
+	SpreadEWMA     float64    `gorm:"column:spread_ewma;not null;default:0"`
+	LastScanAt     *time.Time `gorm:"column:last_scan_at"`
+	DepthCredits   int64      `gorm:"column:depth_credits;not null;default:0"`
+	EraID          *int       `gorm:"column:era_id;index"`
+	UpdatedAt      time.Time  `gorm:"column:updated_at"`
+}
+
+func (SensingSlotModel) TableName() string {
+	return "sensing_slots"
+}
+
 // AllModels is the single canonical registry of every persisted model struct.
 // AutoMigrate and any test/tooling that needs the full model set must consume
 // this slice instead of maintaining a parallel hand-written list, so newly
@@ -934,5 +1010,7 @@ func AllModels() []any {
 		&WarehouseStockingModel{},
 		&ShipyardInventoryModel{},
 		&SystemCoordModel{},
+		&SensingSystemModel{},
+		&SensingSlotModel{},
 	}
 }

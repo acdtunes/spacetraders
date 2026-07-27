@@ -1,1328 +1,908 @@
 package commands
 
+// run_probe_sensing_coordinator_test.go covers the composition itself: the gate
+// in front of the tick, the order and budget the engines are driven with, the
+// bounded screening sweep, and how the knobs resolve.
+//
+// The engines' own behaviour is tested in internal/application/parkedsensing.
+// What is under test here is the wiring between them — which is where a mistake
+// is silent, because every engine still reports success while the fleet does the
+// wrong thing.
+
 import (
 	"context"
 	"errors"
-	"fmt"
-	"sort"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	"github.com/andrescamacho/spacetraders-go/internal/application/health"
-	"github.com/andrescamacho/spacetraders-go/internal/application/probebuy"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/ledger"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
-	domainScouting "github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
+	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
+	"github.com/andrescamacho/spacetraders-go/internal/application/parkedsensing"
+	domainSensing "github.com/andrescamacho/spacetraders-go/internal/domain/parkedsensing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
-// ---- fakes -----------------------------------------------------------------
-// Adversarial style: every fallible fake returns a WRONG value ALONGSIDE its
-// error, so a coordinator that ignores the error and consumes the value is
-// caught by the write/buy assertions, never masked by a convenient nil.
+// --- the EXPANSION gate --------------------------------------------------------
 
-// fakeDepthReader is the census read. calls counts reads, so a gated tick can be
-// pinned as having touched nothing at all — not even the census.
-type fakeDepthReader struct {
-	rows  []domainScouting.MarketDepthRow
-	err   error
-	calls int
+// Pre-EXPANSION the world is still building its jump gate: bootstrap owns probe
+// provisioning and the scout-post coordinator mans what it bought. The parked
+// model buys hulls and retires posts, so a tick before the hand-off does NOTHING
+// — not even the cutover, which would delete the posts the old world is still
+// running on.
+func TestSensing_PreExpansion_TakesNoAction(t *testing.T) {
+	world := newCutoverWorld(t)
+	phase := &fakePhase{inExpansion: false}
+	world.handler.phase = phase
+
+	require.NoError(t, world.handler.ReconcileOnce(world.ctx, world.cmd))
+
+	require.Equal(t, 1, phase.calls, "the phase is read once per tick")
+	require.Zero(t, world.depth.calls, "no census read — the gate is checked before any work")
+	require.Zero(t, world.fleet.calls, "no fleet read")
+	require.Empty(t, world.posts.removed, "no scout post is retired before the hand-off")
+	require.Empty(t, world.ledger.systems, "nothing is screened")
+	require.Zero(t, world.calls.total(), "not one outbound call")
 }
 
-func (f *fakeDepthReader) MarketDepthRows(_ context.Context, _ int) ([]domainScouting.MarketDepthRow, error) {
-	f.calls++
-	return f.rows, f.err
-}
-
-// sensingStateWrite is one recorded UpdateSensingState call — the narrow
-// live-post delta the coordinator writes for resizes, dormancy flips, hot-set
-// stamps, and freshness-target refreshes .
-type sensingStateWrite struct {
-	system          string
-	hulls           int
-	dormant         bool
-	hotWaypoints    []string
-	freshnessTarget time.Duration
-}
-
-// fakeSensingPostRepo records every write AND applies Upserts/Removes/state
-// updates to its posts list (replace-by-system — the Upsert-never-merges
-// contract; field-merge for UpdateSensingState, the narrow-seam contract), so a
-// multi-tick test observes the same state a real repository would serve.
-type fakeSensingPostRepo struct {
-	posts       []*domainScouting.ScoutPost
-	listErr     error
-	upserts     []*domainScouting.ScoutPost
-	removed     []string
-	stateWrites []sensingStateWrite
-
-	// afterList emulates the concurrent writer: it runs inside ListActive AFTER
-	// the returned view is snapshotted (copies), so a manning/floor write it
-	// applies to the STORE lands between the coordinator's read and its write —
-	// the exact race the narrow seam exists for. nil keeps the pre-seam
-	// live-pointer behavior for every other test.
-	afterList func()
-}
-
-func newSensingPostRepo(posts ...*domainScouting.ScoutPost) *fakeSensingPostRepo {
-	return &fakeSensingPostRepo{posts: posts}
-}
-
-func (f *fakeSensingPostRepo) ListActive(_ context.Context, _ int) ([]*domainScouting.ScoutPost, error) {
-	if f.afterList == nil {
-		return f.posts, f.listErr
+// A phase that cannot be verified is not a licence to run: an unreadable world
+// and an unwired reader both hold sensing inert, exactly as the probe buyer's
+// gate does. The fake reports IN EXPANSION alongside its error, so a gate that
+// read the bool and swallowed the error would run the whole tick and fail these
+// assertions rather than being masked by a convenient false.
+func TestSensing_PhaseUnverifiable_FailsClosed(t *testing.T) {
+	cases := []struct {
+		name  string
+		phase expansionPhaseReader
+	}{
+		{"phase read fails", &fakePhase{inExpansion: true, err: errors.New("construction site unreachable")}},
+		{"no reader wired", nil},
 	}
-	snapshot := make([]*domainScouting.ScoutPost, len(f.posts))
-	for i, post := range f.posts {
-		copied := *post
-		snapshot[i] = &copied
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			world := newCutoverWorld(t)
+			world.handler.phase = tc.phase
+
+			require.NoError(t, world.handler.ReconcileOnce(world.ctx, world.cmd))
+
+			require.Zero(t, world.depth.calls, "no census read on an unverifiable phase")
+			require.Empty(t, world.posts.removed, "no post retired on an unverifiable phase")
+			require.Empty(t, world.ledger.systems)
+			require.Zero(t, world.calls.total())
+		})
 	}
-	f.afterList()
-	return snapshot, f.listErr
 }
 
-func (f *fakeSensingPostRepo) find(system string) *domainScouting.ScoutPost {
-	for _, post := range f.posts {
-		if post.SystemSymbol == system {
-			return post
+// The phase FLIPS mid-run — the deploy lands before the gate is built, the gate
+// completes, and the coordinator keeps ticking through the transition. The
+// cutover must fire on the first EXPANSION tick and NEVER again, including on
+// the many ticks that follow.
+//
+// Phase-transition edges have bitten this fleet before, and the failure here
+// would be a second retirement sweep against posts that legitimately exist
+// again. The trigger is an empty ledger, and the first cutover fills it, so
+// re-firing should be structurally impossible — this pins that it actually is.
+func TestSensing_PhaseFlipsMidRun_CutsOverExactlyOnce(t *testing.T) {
+	world := newCutoverWorld(t)
+	phase := &fakePhase{inExpansion: false}
+	world.handler.phase = phase
+	ctx := world.ctx
+
+	// Three pre-EXPANSION ticks: the world is untouched.
+	for i := 0; i < 3; i++ {
+		require.NoError(t, world.handler.ReconcileOnce(ctx, world.cmd))
+	}
+	require.Empty(t, world.posts.removed, "nothing retired while the gate is still being built")
+
+	// The gate completes.
+	phase.inExpansion = true
+	require.NoError(t, world.handler.ReconcileOnce(ctx, world.cmd))
+
+	require.ElementsMatch(t, []string{"X1-AA1", "X1-BB2"}, world.posts.removed,
+		"the first EXPANSION tick performs the cutover")
+	censusReads := world.depth.calls
+	require.Equal(t, 1, censusReads, "the cutover census is read exactly once")
+
+	// Five more EXPANSION ticks: the cutover never runs again.
+	for i := 0; i < 5; i++ {
+		require.NoError(t, world.handler.ReconcileOnce(ctx, world.cmd))
+	}
+	require.Len(t, world.posts.removed, 2, "no second retirement sweep on any later tick")
+	require.Equal(t, censusReads, world.depth.calls, "and the census is never re-read")
+}
+
+// A half-wired engine is a wedge, not a degraded mode: it would plan placements
+// forever and fill none. The tick refuses whole and says so.
+func TestSensing_UnwiredPorts_HoldsTheTickInert(t *testing.T) {
+	world := newCutoverWorld(t)
+	world.handler.SetEnginePortsFactory(func(int) SensingEnginePorts {
+		return SensingEnginePorts{Ledger: world.ledger} // everything else nil
+	})
+
+	require.NoError(t, world.handler.ReconcileOnce(world.ctx, world.cmd))
+
+	require.Empty(t, world.posts.removed, "a half-wired engine retires nothing")
+	require.Empty(t, world.ledger.systems, "and screens nothing")
+	require.Zero(t, world.calls.total())
+}
+
+// --- the screening sweep -------------------------------------------------------
+
+// steadyWorld is a post-cutover world: the ledger already holds systems, so the
+// tick goes straight to the steady-state path.
+func steadyWorld(t *testing.T, systems map[string]string) *cutoverWorld {
+	t.Helper()
+	world := newCutoverWorld(t)
+	world.depth.rows = nil // the census is a cutover-only read
+	for system, verdict := range systems {
+		world.ledger.systems[system] = parkedsensing.ExpandSystem{
+			System: system, Verdict: verdict, CatalogKnown: true,
 		}
+		world.catalog.known[system] = true
+		world.catalog.markets[system] = []string{system + "-M1"}
 	}
-	return nil
+	return world
 }
 
-// UpdateSensingState mirrors the real repository's narrow-column contract: it
-// merges ONLY hulls/dormant/hot/freshness onto the stored ROW, preserving every
-// other field, and a missing post is a no-op. The store slot is replaced with a
-// merged COPY — never mutated in place — because a DB write does not reach the
-// post objects a caller already holds from an earlier read.
-func (f *fakeSensingPostRepo) UpdateSensingState(_ context.Context, _ int, systemSymbol string, hulls int, dormant bool, hotWaypoints []string, freshnessTarget time.Duration) error {
-	f.stateWrites = append(f.stateWrites, sensingStateWrite{system: systemSymbol, hulls: hulls, dormant: dormant, hotWaypoints: hotWaypoints, freshnessTarget: freshnessTarget})
-	for i, post := range f.posts {
-		if post.SystemSymbol != systemSymbol {
+// Only PENDING systems are re-screened, and at most five per tick.
+//
+// Both halves are cost properties. Re-screening a decided system would put the
+// sweep's cost on the size of the KNOWN map rather than the frontier; the batch
+// bound is what keeps a large PENDING backlog from firing a burst of remote
+// fetches and paginated catalog sweeps in one tick.
+func TestScreenSweep_PendingOnly_AndBounded(t *testing.T) {
+	verdicts := map[string]string{
+		"X1-IN1": parkedsensing.VerdictInScope,
+		"X1-IN2": parkedsensing.VerdictInScope,
+		"X1-NO1": parkedsensing.VerdictNoWhitelist,
+	}
+	// Seven PENDING systems, so the batch bound is genuinely exercised.
+	for _, s := range []string{"X1-P1", "X1-P2", "X1-P3", "X1-P4", "X1-P5", "X1-P6", "X1-P7"} {
+		verdicts[s] = parkedsensing.VerdictPending
+	}
+	world := steadyWorld(t, verdicts)
+
+	// Give every system a market the cache can answer for, so screening is free
+	// and what the test measures is WHICH systems were looked at.
+	for system := range verdicts {
+		world.goods.goods[system+"-M1"] = []string{"FOOD"}
+	}
+
+	require.NoError(t, world.handler.ReconcileOnce(world.ctx, world.cmd))
+
+	rescreened := 0
+	for system, verdict := range verdicts {
+		if verdict != parkedsensing.VerdictPending {
+			require.Equal(t, verdict, world.ledger.systems[system].Verdict,
+				"%s was already decided and must not be re-screened", system)
 			continue
 		}
-		merged := *post
-		merged.Hulls = hulls
-		merged.Dormant = dormant
-		merged.HotWaypoints = hotWaypoints
-		merged.FreshnessTarget = freshnessTarget
-		f.posts[i] = &merged
-		break
-	}
-	return nil
-}
-
-// stateWritesFor filters the recorded narrow writes to one system, in order.
-func (f *fakeSensingPostRepo) stateWritesFor(system string) []sensingStateWrite {
-	var out []sensingStateWrite
-	for _, w := range f.stateWrites {
-		if w.system == system {
-			out = append(out, w)
+		if world.ledger.systems[system].Verdict != parkedsensing.VerdictPending {
+			rescreened++
 		}
 	}
-	return out
+	require.Equal(t, screenSweepBatch, rescreened,
+		"exactly the batch bound of PENDING systems is screened, not all seven")
 }
 
-func (f *fakeSensingPostRepo) Upsert(_ context.Context, post *domainScouting.ScoutPost) error {
-	f.upserts = append(f.upserts, post)
-	for i, existing := range f.posts {
-		if existing.SystemSymbol == post.SystemSymbol {
-			f.posts[i] = post
-			return nil
-		}
+// A PENDING system whose waypoint CATALOG has never been swept is swept FIRST,
+// in-band, before it is screened.
+//
+// Without that, the screen reads an unswept system's empty waypoint list as a
+// fully-examined barren one — the same reading, opposite meaning — and the
+// NO_WHITELIST it would record is durable AND makes the system a frontier
+// propagation origin, so one wrong write-off walks outward across the map.
+func TestScreenSweep_CatalogUnknown_SweepsBeforeScreening(t *testing.T) {
+	world := steadyWorld(t, map[string]string{"X1-DARK": parkedsensing.VerdictPending})
+	world.catalog.known["X1-DARK"] = false
+	world.catalog.markets["X1-DARK"] = nil
+
+	require.NoError(t, world.handler.ReconcileOnce(world.ctx, world.cmd))
+
+	require.Equal(t, []string{"X1-DARK"}, world.seeds.synced,
+		"the unswept system's catalog is fetched before any verdict is recorded")
+	require.Equal(t, parkedsensing.VerdictPending, world.ledger.systems["X1-DARK"].Verdict,
+		"an unswept system stays PENDING rather than being written off on absent evidence")
+}
+
+// A repeating catalog-sweep failure is otherwise invisible: the system simply
+// stays PENDING forever while the sweep burns calls. It must not abort the tick
+// either — the rest of the reconcile is unaffected by one dark system.
+func TestScreenSweep_CatalogSweepFails_HoldsPendingAndContinues(t *testing.T) {
+	world := steadyWorld(t, map[string]string{"X1-DARK": parkedsensing.VerdictPending})
+	world.catalog.known["X1-DARK"] = false
+	world.seeds.syncErr = errors.New("api down")
+
+	require.NoError(t, world.handler.ReconcileOnce(world.ctx, world.cmd),
+		"one dark system does not fail the tick")
+	require.Equal(t, parkedsensing.VerdictPending, world.ledger.systems["X1-DARK"].Verdict)
+}
+
+// --- the budget ----------------------------------------------------------------
+
+// The two rates are NOT interchangeable and the composition must not swap them.
+//
+// Expansion gates on the SENSING residual, which the emergency brake can drive
+// BELOW the minimum scan rate; the pacer runs at the FLOORED rate so market data
+// never goes fully dark. Gating expansion on the pacer rate would make the brake
+// invisible to it and leave it charting at full tilt through a rate-limit storm.
+func TestBudget_ExpansionGetsTheResidual_PacerGetsTheFlooredRate(t *testing.T) {
+	world := steadyWorld(t, map[string]string{"X1-IN1": parkedsensing.VerdictInScope})
+	// Pressure well above the high-water mark, so the brake bites every tick.
+	world.handler.pressure = &fakePressure{wait: 5 * time.Second}
+	base := world.handler.newPorts
+	world.handler.SetEnginePortsFactory(func(playerID int) SensingEnginePorts {
+		ports := base(playerID)
+		ports.Budget = &fakeBudget{ceiling: 2.0, nonSensing: 1.8, charting: 0.05}
+		return ports
+	})
+
+	cfg := resolveSensingConfig(context.Background(), world.cmd, nil)
+	ports, _ := world.handler.portsFor(testPlayerID)
+
+	// Drive the brake down over several ticks, exactly as the loop would.
+	var budget domainSensing.BudgetInputs
+	for i := 0; i < 6; i++ {
+		budget = world.handler.budgetInputs(world.cmd, cfg, ports)
 	}
-	f.posts = append(f.posts, post)
-	return nil
+
+	sensingRate := domainSensing.SensingRate(budget)
+	pacerRate := domainSensing.PacerRate(budget)
+	floor := float64(cfg.MinScanRateMilli) / 1000.0
+
+	require.Less(t, budget.BrakeFactor, 1.0, "sustained pressure engages the emergency brake")
+	require.Less(t, sensingRate, floor,
+		"the residual is allowed BELOW the floor — that sub-floor value is what expansion yields on")
+	require.GreaterOrEqual(t, pacerRate, floor,
+		"the pacer re-imposes the floor, so parked market data never goes fully dark")
 }
 
-func (f *fakeSensingPostRepo) Remove(_ context.Context, _ int, systemSymbol string) error {
-	f.removed = append(f.removed, systemSymbol)
-	kept := f.posts[:0]
-	for _, existing := range f.posts {
-		if existing.SystemSymbol != systemSymbol {
-			kept = append(kept, existing)
-		}
-	}
-	f.posts = kept
-	return nil
+// The brake is advanced exactly ONCE per tick. It is multiplicative, so a second
+// read in the same tick would halve it twice and shed twice as hard as the
+// observed pressure justifies.
+func TestBudget_BrakeAdvancesOncePerTick(t *testing.T) {
+	world := steadyWorld(t, map[string]string{"X1-IN1": parkedsensing.VerdictInScope})
+	world.handler.pressure = &fakePressure{wait: 5 * time.Second}
+	cfg := resolveSensingConfig(context.Background(), world.cmd, nil)
+	ports, _ := world.handler.portsFor(testPlayerID)
+
+	first := world.handler.budgetInputs(world.cmd, cfg, ports)
+	second := world.handler.budgetInputs(world.cmd, cfg, ports)
+
+	require.InDelta(t, first.BrakeFactor*0.5, second.BrakeFactor, 1e-9,
+		"each call halves the brake exactly once")
 }
 
-// upsertsFor filters the recorded upserts to one system, in write order.
-func (f *fakeSensingPostRepo) upsertsFor(system string) []*domainScouting.ScoutPost {
-	var out []*domainScouting.ScoutPost
-	for _, post := range f.upserts {
-		if post.SystemSymbol == system {
-			out = append(out, post)
-		}
-	}
-	return out
-}
+// --- knob resolution -----------------------------------------------------------
 
-type fakeSensingFleet struct {
-	ships []*navigation.Ship
-	err   error
-	calls int
-}
-
-func (f *fakeSensingFleet) FindAllByPlayer(_ context.Context, _ shared.PlayerID) ([]*navigation.Ship, error) {
-	f.calls++
-	return f.ships, f.err
-}
-
-type fakePressure struct{ wait time.Duration }
-
-func (f *fakePressure) Current(_ time.Time) time.Duration { return f.wait }
-
-// fakeSensingGateGraph is the discovery pass's stored-adjacency fake.
-// Adversarial: on err it still returns its adjacency map ALONGSIDE the error —
-// a pass that consumes the map while ignoring the error declares sweeps it was
-// never allowed to, and the zero-declare asserts catch it. calls counts reads,
-// so pressure tests can pin that a shed pass never even touches the store.
-type fakeSensingGateGraph struct {
-	adjacency map[string][]system.GateEdge
-	err       error
-	calls     int
-}
-
-func (f *fakeSensingGateGraph) Adjacency(_ context.Context) (map[string][]system.GateEdge, error) {
-	f.calls++
-	return f.adjacency, f.err
-}
-
-// fakeSensingWaypointCatalog is the swept-knowledge fake. Adversarial: on err
-// it still returns the system's rows ALONGSIDE the error — a pass that reads
-// "not swept" out of the value while ignoring the error declares a sweep it
-// was never allowed to, and the zero-declare asserts catch it.
-type fakeSensingWaypointCatalog struct {
-	bySystem map[string][]*shared.Waypoint
-	err      error
-	calls    int
-}
-
-func (f *fakeSensingWaypointCatalog) ListBySystem(_ context.Context, systemSymbol string) ([]*shared.Waypoint, error) {
-	f.calls++
-	return f.bySystem[systemSymbol], f.err
-}
-
-type sensingBuyCall struct {
-	demand int
-	supply int
-	dryRun bool
-	target probebuy.ProbeTarget
-}
-
-type fakeSensingBuyer struct {
-	calls   []sensingBuyCall
-	outcome probebuy.Outcome
-}
-
-func (f *fakeSensingBuyer) MaybeBuy(_ context.Context, _ shared.PlayerID, demand, supply int, dryRun bool, target probebuy.ProbeTarget) probebuy.Outcome {
-	f.calls = append(f.calls, sensingBuyCall{demand: demand, supply: supply, dryRun: dryRun, target: target})
-	return f.outcome
-}
-
-// fakeSensingEventRecorder is adversarial: when err is set, Record FAILS yet
-// still appends — a coordinator that retried or gated on the write result
-// would double-record or go silent, and the exactly-one asserts would catch it.
-type fakeSensingEventRecorder struct {
-	recorded []*captain.Event
+// fakeLiveConfig is the per-tick view of the persisted container config.
+type fakeLiveConfig struct {
+	snapshot liveconfig.Snapshot
 	err      error
 }
 
-func (f *fakeSensingEventRecorder) Record(_ context.Context, e *captain.Event) error {
-	f.recorded = append(f.recorded, e)
-	return f.err
+func (f *fakeLiveConfig) Snapshot(context.Context, string, int) (liveconfig.Snapshot, error) {
+	return f.snapshot, f.err
 }
 
-func countSensingErrorLoops(rec *fakeSensingEventRecorder) int {
-	n := 0
-	for _, e := range rec.recorded {
-		if e.Type == captain.EventCoordinatorErrorLoop {
-			n++
-		}
-	}
-	return n
-}
-
-type fakeSensingLedger struct{ txns []*ledger.Transaction }
-
-func (f *fakeSensingLedger) Create(_ context.Context, _ *ledger.Transaction) error { return nil }
-func (f *fakeSensingLedger) FindByID(_ context.Context, _ ledger.TransactionID, _ shared.PlayerID) (*ledger.Transaction, error) {
-	return nil, nil
-}
-func (f *fakeSensingLedger) CountByPlayer(_ context.Context, _ shared.PlayerID, _ ledger.QueryOptions) (int, error) {
-	return len(f.txns), nil
-}
-func (f *fakeSensingLedger) FindByPlayer(_ context.Context, _ shared.PlayerID, _ ledger.QueryOptions) ([]*ledger.Transaction, error) {
-	return f.txns, nil
-}
-
-// ---- fixtures ----------------------------------------------------------------
-
-// sensingShip builds an era-5-realistic hull. IsScoutType() keys on ROLE
-// (SATELLITE), so the fixture must carry honest frames+roles: a COMMAND frigate
-// is NOT a scout no matter its frame.
-func sensingShip(t *testing.T, symbol, frame, role string, cargoCap int) *navigation.Ship {
-	t.Helper()
-	loc, err := shared.NewWaypoint("X1-AA1-A1", 0, 0)
-	require.NoError(t, err)
-	fuel, err := shared.NewFuel(100, 100)
-	require.NoError(t, err)
-	cargo, err := shared.NewCargo(cargoCap, 0, nil)
-	require.NoError(t, err)
-	ship, err := navigation.NewShip(symbol, shared.MustNewPlayerID(1), loc, fuel, 100, cargoCap, cargo, 30, frame, role, nil, navigation.NavStatusInOrbit)
-	require.NoError(t, err)
-	return ship
-}
-
-func sensingProbe(t *testing.T, symbol string) *navigation.Ship {
-	return sensingShip(t, symbol, "FRAME_PROBE", "SATELLITE", 0)
-}
-
-func sensingFrigate(t *testing.T, symbol string) *navigation.Ship {
-	return sensingShip(t, symbol, "FRAME_FRIGATE", "COMMAND", 40)
-}
-
-func depthRow(system, waypoint, good string, volume, mid int) domainScouting.MarketDepthRow {
-	return domainScouting.MarketDepthRow{System: system, Waypoint: waypoint, Good: good, TradeVolume: volume, MidPrice: mid}
-}
-
-// richRows makes `system` in-scope: `hot` distinct waypoints, each one
-// whitelisted good at 60×40000 = 2.4M depth (comfortably above the 2M floor).
-func richRows(system string, hot int) []domainScouting.MarketDepthRow {
-	rows := make([]domainScouting.MarketDepthRow, 0, hot)
-	for i := 0; i < hot; i++ {
-		rows = append(rows, depthRow(system, fmt.Sprintf("%s-W%d", system, i), "CLOTHING", 60, 40_000))
-	}
-	return rows
-}
-
-// thinRows makes `system` census-visible but BELOW the depth floor: one hot
-// market at 10×1000 = 10k depth.
-func thinRows(system string) []domainScouting.MarketDepthRow {
-	return []domainScouting.MarketDepthRow{depthRow(system, system+"-W0", "CLOTHING", 10, 1_000)}
-}
-
-func sensingPost(system string, hulls int) *domainScouting.ScoutPost {
-	return &domainScouting.ScoutPost{
-		PlayerID: 1, SystemSymbol: system, Kind: domainScouting.PostKindStanding,
-		Hulls: hulls, FreshnessTarget: time.Hour,
-	}
-}
-
-func sensingSweepPost(system string) *domainScouting.ScoutPost {
-	post := sensingPost(system, 1)
-	post.Kind = domainScouting.PostKindSweepOnce
-	return post
-}
-
-// sweepEdge is an era-5-realistic stored gate edge: built (not under
-// construction), fresh, tagged with the NEIGHBOUR's own gate waypoint.
-func sweepEdge(neighbour string) system.GateEdge {
-	return system.GateEdge{ConnectedSystem: neighbour, GateWaypoint: neighbour + "-I51"}
-}
-
-// catalogWaypoint is one persisted waypoint-catalog row (era-5-realistic:
-// typed, system derived from the symbol).
-func catalogWaypoint(t *testing.T, symbol, wpType string) *shared.Waypoint {
-	t.Helper()
-	wp, err := shared.NewWaypoint(symbol, 0, 0)
-	require.NoError(t, err)
-	wp.Type = wpType
-	return wp
-}
-
-// sweepUpserts filters the recorded writes to the sweep-once declares, in
-// write order.
-func sweepUpserts(pr *fakeSensingPostRepo) []*domainScouting.ScoutPost {
-	var out []*domainScouting.ScoutPost
-	for _, post := range pr.upserts {
-		if post.Kind == domainScouting.PostKindSweepOnce {
-			out = append(out, post)
-		}
-	}
-	return out
-}
-
-func sweepSystemsOf(posts []*domainScouting.ScoutPost) []string {
-	var out []string
-	for _, post := range posts {
-		out = append(out, post.SystemSymbol)
-	}
-	return out
-}
-
-func sensingCmd() *RunProbeSensingCoordinatorCommand {
-	return &RunProbeSensingCoordinatorCommand{PlayerID: shared.MustNewPlayerID(1), ContainerID: "sensing-1"}
-}
-
-// newSensingHandler wires a handler whose buyer is the recording fake, so buy
-// tests assert the exact demand/supply the coordinator computed. The world is in
-// EXPANSION — the era demand-driven sensing runs in, so every scope/rotation/buy
-// test below drives the coordinator's own model, not its phase gate.
-func newSensingHandler(dr *fakeDepthReader, pr *fakeSensingPostRepo, fl *fakeSensingFleet, press *fakePressure) (*RunProbeSensingCoordinatorHandler, *fakeSensingBuyer) {
-	return newSensingHandlerInPhase(dr, pr, fl, press, &fakeSensingPhase{inExpansion: true})
-}
-
-// newSensingHandlerInPhase is newSensingHandler with the era under test's control.
-func newSensingHandlerInPhase(dr *fakeDepthReader, pr *fakeSensingPostRepo, fl *fakeSensingFleet, press *fakePressure, phase expansionPhaseReader) (*RunProbeSensingCoordinatorHandler, *fakeSensingBuyer) {
-	clock := &shared.MockClock{CurrentTime: time.Now()}
-	h := NewRunProbeSensingCoordinatorHandler(dr, pr, fl, press, &fakeSensingLedger{}, phase, clock)
-	buyer := &fakeSensingBuyer{}
-	h.newBuyer = func(_ probebuy.Config) guardedBuyer { return buyer }
-	return h, buyer
-}
-
-func calmFleet(t *testing.T) *fakeSensingFleet {
-	return &fakeSensingFleet{ships: []*navigation.Ship{sensingProbe(t, "PROBE-A"), sensingProbe(t, "PROBE-B"), sensingProbe(t, "PROBE-C")}}
-}
-
-// ---- scope → posts diff ------------------------------------------------------
-
-func TestSensing_DeclaresNewInScopeSystem(t *testing.T) {
-	dr := &fakeDepthReader{rows: richRows("X1-AA1", 3)}
-	pr := newSensingPostRepo()
-	h, _ := newSensingHandler(dr, pr, calmFleet(t), &fakePressure{})
-
-	require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
-
-	require.Len(t, pr.upserts, 1, "one new in-scope system ⇒ exactly one declared post")
-	post := pr.upserts[0]
-	require.Equal(t, "X1-AA1", post.SystemSymbol)
-	require.Equal(t, domainScouting.PostKindStanding, post.Kind)
-	require.Equal(t, 1, post.Hulls, "at or under the second-probe threshold ⇒ one probe")
-	require.Equal(t, time.Hour, post.FreshnessTarget, "posts carry the config-default freshness target")
-	require.Equal(t, 1, post.PlayerID)
-	require.False(t, post.Dormant, "no API pressure ⇒ born active")
-	require.Empty(t, pr.removed)
-}
-
-func TestSensing_SecondProbeAboveThreshold(t *testing.T) {
-	t.Run("new system past the threshold declares two hulls", func(t *testing.T) {
-		dr := &fakeDepthReader{rows: richRows("X1-AA1", 13)} // 13 > threshold 12
-		pr := newSensingPostRepo()
-		h, _ := newSensingHandler(dr, pr, calmFleet(t), &fakePressure{})
-
-		require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
-
-		require.Len(t, pr.upserts, 1)
-		require.Equal(t, 2, pr.upserts[0].Hulls)
-	})
-
-	t.Run("existing post crossing the threshold resizes 1→2", func(t *testing.T) {
-		dr := &fakeDepthReader{rows: richRows("X1-AA1", 13)}
-		pr := newSensingPostRepo(sensingPost("X1-AA1", 1))
-		h, _ := newSensingHandler(dr, pr, calmFleet(t), &fakePressure{})
-
-		require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
-
-		require.Empty(t, pr.upserts, "a live-post resize is a narrow delta, never a full-row Upsert")
-		require.Len(t, pr.stateWrites, 1)
-		require.Equal(t, "X1-AA1", pr.stateWrites[0].system)
-		require.Equal(t, 2, pr.stateWrites[0].hulls)
-	})
-}
-
-func TestSensing_BelowFloorPostRemoved(t *testing.T) {
-	rows := append(richRows("X1-AA1", 3), thinRows("X1-TH1")...)
-	dr := &fakeDepthReader{rows: rows}
-	pr := newSensingPostRepo(hotSensingPost("X1-AA1", 1, 3), sensingPost("X1-TH1", 1))
-	h, _ := newSensingHandler(dr, pr, calmFleet(t), &fakePressure{})
-
-	require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
-
-	require.Equal(t, []string{"X1-TH1"}, pr.removed, "a system under the depth floor loses its standing post")
-	require.Empty(t, pr.upserts, "the stable in-scope post is not rewritten")
-}
-
-func TestSensing_MinHullsPostNeverShrunkOrRemoved(t *testing.T) {
-	home := func(hulls, minHulls int) *domainScouting.ScoutPost {
-		post := sensingPost("X1-HOME", hulls)
-		post.MinHulls = minHulls
-		return post
-	}
-
-	t.Run("out of scope: kept, not removed, not rewritten", func(t *testing.T) {
-		rows := append(richRows("X1-AA1", 3), thinRows("X1-HOME")...) // home below the floor
-		kept := home(3, 3)
-		kept.HotWaypoints = []string{"X1-HOME-W0"} // census-true under thinRows
-		pr := newSensingPostRepo(hotSensingPost("X1-AA1", 1, 3), kept)
-		h, _ := newSensingHandler(&fakeDepthReader{rows: rows}, pr, calmFleet(t), &fakePressure{})
-
-		require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
-
-		require.Empty(t, pr.removed, "a MinHulls-floored post survives dropping out of scope (the INCOME-phase home story)")
-		require.Empty(t, pr.upserts)
-	})
-
-	t.Run("in scope: never sized below the floor", func(t *testing.T) {
-		rows := append(richRows("X1-AA1", 3), richRows("X1-HOME", 3)...) // plan wants 1 at home
-		floored := home(3, 3)
-		floored.HotWaypoints = hotWaypointsFor("X1-HOME", 3)
-		pr := newSensingPostRepo(hotSensingPost("X1-AA1", 1, 3), floored)
-		h, _ := newSensingHandler(&fakeDepthReader{rows: rows}, pr, calmFleet(t), &fakePressure{})
-
-		require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
-
-		require.Empty(t, pr.upserts, "plan 1 floored to MinHulls 3 == current 3 ⇒ no write")
-		require.Empty(t, pr.removed)
-	})
-
-	t.Run("in scope: a shrink stops AT the floor", func(t *testing.T) {
-		rows := richRows("X1-HOME", 3)
-		pr := newSensingPostRepo(home(5, 3))
-		h, _ := newSensingHandler(&fakeDepthReader{rows: rows}, pr, calmFleet(t), &fakePressure{})
-
-		require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
-
-		require.Empty(t, pr.upserts)
-		require.Len(t, pr.stateWrites, 1)
-		require.Equal(t, 3, pr.stateWrites[0].hulls, "5 → floor 3, never below")
-		require.Equal(t, 3, pr.find("X1-HOME").MinHulls, "the narrow delta never touches the floor column")
-	})
-
-	t.Run("out of scope while dormant: woken, still kept", func(t *testing.T) {
-		dormantHome := home(3, 3)
-		dormantHome.Dormant = true
-		pr := newSensingPostRepo(sensingPost("X1-AA1", 1), dormantHome)
-		rows := append(richRows("X1-AA1", 3), thinRows("X1-HOME")...)
-		h, _ := newSensingHandler(&fakeDepthReader{rows: rows}, pr, calmFleet(t), &fakePressure{})
-
-		require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
-
-		require.Empty(t, pr.removed)
-		require.Empty(t, pr.upsertsFor("X1-HOME"), "the wake write is a narrow delta, never a full-row Upsert")
-		homeWrites := pr.stateWritesFor("X1-HOME")
-		require.Len(t, homeWrites, 1, "a kept post outside the rotation must not stay parked forever")
-		require.False(t, homeWrites[0].dormant)
-		require.Equal(t, 3, homeWrites[0].hulls, "the wake write never shrinks the post")
-	})
-}
-
-func TestSensing_SweepOncePostsUntouched(t *testing.T) {
-	sweep := func(system string) *domainScouting.ScoutPost {
-		post := sensingPost(system, 1)
-		post.Kind = domainScouting.PostKindSweepOnce
-		return post
-	}
-	rows := append(richRows("X1-AA1", 3), richRows("X1-BB2", 3)...)
-	pr := newSensingPostRepo(sweep("X1-AA1"), sweep("X1-CC3")) // one in scope, one out
-	h, _ := newSensingHandler(&fakeDepthReader{rows: rows}, pr, calmFleet(t), &fakePressure{})
-
-	require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
-
-	require.Empty(t, pr.removed, "sweep-once posts are the frontier's, in scope or not")
-	require.Empty(t, pr.upsertsFor("X1-AA1"), "declaring standing over a sweep-once row would clobber it (Upsert is keyed by system)")
-	require.Empty(t, pr.upsertsFor("X1-CC3"))
-	require.Len(t, pr.upserts, 1, "only the sweep-free in-scope system is declared")
-	require.Equal(t, "X1-BB2", pr.upserts[0].SystemSymbol)
-}
-
-// ---- dormancy rotation --------------------------------------------------------
-
-// fourRichSystems is a 4-system in-scope census with matching stable posts.
-func fourRichSystems() ([]domainScouting.MarketDepthRow, []*domainScouting.ScoutPost) {
-	systems := []string{"X1-AA1", "X1-BB2", "X1-CC3", "X1-DD4"}
-	var rows []domainScouting.MarketDepthRow
-	posts := make([]*domainScouting.ScoutPost, 0, len(systems))
-	for _, s := range systems {
-		rows = append(rows, richRows(s, 3)...)
-		posts = append(posts, hotSensingPost(s, 1, 3))
-	}
-	return rows, posts
-}
-
-func TestSensing_DormancyWritesOnlyDeltas(t *testing.T) {
-	t.Run("pressure flips exactly the rotated-out posts", func(t *testing.T) {
-		rows, posts := fourRichSystems()
-		pr := newSensingPostRepo(posts...)
-		// wait = 4×waitHigh ⇒ share 0.5 ⇒ 2 of 4 active from cursor 0: ring
-		// [AA1 BB2 CC3 DD4] ⇒ dormant {CC3, DD4}.
-		h, _ := newSensingHandler(&fakeDepthReader{rows: rows}, pr, calmFleet(t), &fakePressure{wait: 4 * time.Second})
-
-		require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
-
-		require.Empty(t, pr.removed)
-		require.Empty(t, pr.upserts, "a dormancy flip is a narrow delta, never a full-row Upsert")
-		require.Len(t, pr.stateWrites, 2, "only the two posts whose Dormant bit changed are written")
-		var flipped []string
-		for _, w := range pr.stateWrites {
-			require.True(t, w.dormant)
-			require.Equal(t, 1, w.hulls, "a dormancy flip never perturbs the hull budget")
-			flipped = append(flipped, w.system)
-		}
-		sort.Strings(flipped)
-		require.Equal(t, []string{"X1-CC3", "X1-DD4"}, flipped)
-	})
-
-	t.Run("bits already matching the rotation ⇒ zero writes", func(t *testing.T) {
-		rows, posts := fourRichSystems()
-		posts[2].Dormant = true // X1-CC3
-		posts[3].Dormant = true // X1-DD4
-		pr := newSensingPostRepo(posts...)
-		h, _ := newSensingHandler(&fakeDepthReader{rows: rows}, pr, calmFleet(t), &fakePressure{wait: 4 * time.Second})
-
-		require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
-
-		require.Empty(t, pr.upserts, "steady state under constant pressure ⇒ zero writes (write-amplification guard)")
-		require.Empty(t, pr.stateWrites)
-		require.Empty(t, pr.removed)
-	})
-
-	t.Run("new posts are born carrying the rotation's bit", func(t *testing.T) {
-		rows, _ := fourRichSystems()
-		pr := newSensingPostRepo()
-		h, _ := newSensingHandler(&fakeDepthReader{rows: rows}, pr, calmFleet(t), &fakePressure{wait: 4 * time.Second})
-
-		require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
-
-		require.Len(t, pr.upserts, 4, "declaration and dormancy land in ONE write per post")
-		bits := map[string]bool{}
-		for _, post := range pr.upserts {
-			bits[post.SystemSymbol] = post.Dormant
-		}
-		require.Equal(t, map[string]bool{"X1-AA1": false, "X1-BB2": false, "X1-CC3": true, "X1-DD4": true}, bits)
-	})
-}
-
-func TestSensing_SteadyStateZeroWrites(t *testing.T) {
-	rows := append(richRows("X1-AA1", 3), richRows("X1-BB2", 13)...)
-	pr := newSensingPostRepo(hotSensingPost("X1-AA1", 1, 3), hotSensingPost("X1-BB2", 2, 13))
-	h, buyer := newSensingHandler(&fakeDepthReader{rows: rows}, pr, calmFleet(t), &fakePressure{})
-
-	require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
-
-	require.Empty(t, pr.upserts, "a converged tick writes nothing")
-	require.Empty(t, pr.removed)
-	require.Len(t, buyer.calls, 1, "the guarded buyer is still consulted exactly once per tick")
-}
-
-func TestSensing_RotationAdvancesAcrossTicks(t *testing.T) {
-	rows := append(richRows("X1-AA1", 3), richRows("X1-BB2", 3)...)
-	pr := newSensingPostRepo(hotSensingPost("X1-AA1", 1, 3), hotSensingPost("X1-BB2", 1, 3))
-	// share 0.5 over 2 systems ⇒ 1 active per tick, round-robin.
-	h, _ := newSensingHandler(&fakeDepthReader{rows: rows}, pr, calmFleet(t), &fakePressure{wait: 4 * time.Second})
-
-	require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
-	require.Empty(t, pr.upserts, "rotation flips are narrow deltas, never full-row Upserts")
-	require.Len(t, pr.stateWrites, 1, "tick 1: cursor 0 keeps AA1 active, BB2 goes dormant")
-	require.Equal(t, "X1-BB2", pr.stateWrites[0].system)
-	require.True(t, pr.stateWrites[0].dormant)
-
-	pr.stateWrites = nil
-	require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
-	require.Len(t, pr.stateWrites, 2, "tick 2: the cursor advanced, so BOTH bits flip (AA1 sheds, BB2 wakes)")
-	bits := map[string]bool{}
-	for _, w := range pr.stateWrites {
-		bits[w.system] = w.dormant
-	}
-	require.Equal(t, map[string]bool{"X1-AA1": true, "X1-BB2": false}, bits,
-		"round-robin: every system scans within ceil(1/share) cycles, none is starved")
-}
-
-func TestSensing_ExtremePressureNeverFullyDormant(t *testing.T) {
-	rows, posts := fourRichSystems()
-	pr := newSensingPostRepo(posts...)
-	// 1000×waitHigh: ActiveShare floors at 0.5 — degradation is bounded, so a
-	// pressure spike can never park the whole sensing fleet.
-	h, _ := newSensingHandler(&fakeDepthReader{rows: rows}, pr, calmFleet(t), &fakePressure{wait: 1000 * time.Second})
-
-	require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
-
-	require.Len(t, pr.stateWrites, 2, "share floor 0.5 keeps half the ring scanning at ANY wait")
-	for _, w := range pr.stateWrites {
-		require.True(t, w.dormant)
-	}
-}
-
-// ---- era-gap fail-safe ---------------------------------------------------------
-
-func TestSensing_EmptyCensusFailSafe(t *testing.T) {
-	run := func(t *testing.T, rows []domainScouting.MarketDepthRow) {
-		pr := newSensingPostRepo(sensingPost("X1-OLD", 1), sensingPost("X1-AA1", 2))
-		h, buyer := newSensingHandler(&fakeDepthReader{rows: rows}, pr, calmFleet(t), &fakePressure{})
-
-		require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
-
-		require.Empty(t, pr.removed, "an empty census must never mass-retire standing posts (fleet-killer guard)")
-		require.Empty(t, pr.upserts)
-		require.Empty(t, buyer.calls, "no census ⇒ no demand signal ⇒ no buy attempt")
-	}
-
-	t.Run("no rows at all", func(t *testing.T) { run(t, nil) })
-	t.Run("rows exist but none whitelisted", func(t *testing.T) {
-		run(t, []domainScouting.MarketDepthRow{
-			depthRow("X1-ORE1", "X1-ORE1-W0", "QUARTZ_SAND", 200, 50),
-			depthRow("X1-ORE1", "X1-ORE1-W1", "IRON_ORE", 200, 50),
-		})
-	})
-}
-
-// ---- the budgeted buy -----------------------------------------------------------
-
-func TestSensing_DemandClampedAtBudget(t *testing.T) {
-	// Five systems past the second-probe threshold ⇒ the plan wants 10 hulls.
-	var rows []domainScouting.MarketDepthRow
-	for _, s := range []string{"X1-AA1", "X1-BB2", "X1-CC3", "X1-DD4", "X1-EE5"} {
-		rows = append(rows, richRows(s, 13)...)
-	}
-	dr := &fakeDepthReader{rows: rows}
-	fl := &fakeSensingFleet{ships: []*navigation.Ship{sensingProbe(t, "PROBE-A"), sensingProbe(t, "PROBE-B")}}
-	h, buyer := newSensingHandler(dr, newSensingPostRepo(), fl, &fakePressure{})
-
-	cmd := sensingCmd()
-	cmd.ProbeBudget = 3
-	require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
-
-	require.Len(t, buyer.calls, 1, "exactly one MaybeBuy per tick")
-	call := buyer.calls[0]
-	require.Equal(t, 3, call.demand, "demand = min(plan total 10, N 3) — N is the single budget dial")
-	require.Equal(t, 2, call.supply)
-	require.False(t, call.dryRun, "shipped ARMED — there is no dry-run seam")
-}
-
-func TestSensing_SupplyCountsOnlySatellites(t *testing.T) {
-	// Era-5 fleet: the COMMAND frigate is NOT scout-type (role, not frame,
-	// decides), and a contract-dedicated probe is not sensing supply.
-	pinned := sensingProbe(t, "PROBE-PINNED")
-	pinned.SetDedicatedFleet("contract")
-	fl := &fakeSensingFleet{ships: []*navigation.Ship{
-		sensingFrigate(t, "AGENT-1"),
-		sensingProbe(t, "PROBE-A"),
-		sensingProbe(t, "PROBE-B"),
-		pinned,
-	}}
-	h, buyer := newSensingHandler(&fakeDepthReader{rows: richRows("X1-AA1", 3)}, newSensingPostRepo(), fl, &fakePressure{})
-
-	require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
-
-	require.Len(t, buyer.calls, 1)
-	require.Equal(t, 2, buyer.calls[0].supply, "frigate and contract-pinned probe are excluded from supply")
-}
-
-func TestSensing_DemandStaysPlanOnlyWithoutGateGraph(t *testing.T) {
-	// The gate-adjacency seam is optional-injection: a handler with no reader
-	// wired keeps discovery entirely inert — demand is exactly the plan total
-	// in every pressure regime, even with an open sweep-once post in the table.
-	rows := append(richRows("X1-AA1", 3), richRows("X1-BB2", 3)...)
-	posts := []*domainScouting.ScoutPost{sensingPost("X1-AA1", 1), sensingPost("X1-BB2", 1)}
-
+// expansion_enabled is encoded 1=on / 2=off rather than 0/1, because
+// `tune <key> 0` means revert-to-default fleet-wide — a 0/1 encoding would make
+// "off" unexpressible.
+func TestKnobs_ExpansionEnabledEncoding(t *testing.T) {
 	cases := []struct {
-		name        string
-		wait        time.Duration
-		wantDormant int
+		name  string
+		value int
+		want  bool
 	}{
-		{"headroom (discovery allowed)", 0, 0},
-		{"mid pressure (discovery shed first)", 500 * time.Millisecond, 0},
-		{"high pressure (scanning sheds too)", 4 * time.Second, 1},
+		{"absent means the default, which is ON", 0, true},
+		{"1 is ON", 1, true},
+		{"2 is OFF", 2, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			pr := newSensingPostRepo(posts[0], posts[1], sensingSweepPost("X1-FF6"))
-			posts[0].Dormant, posts[1].Dormant = false, false
-			h, buyer := newSensingHandler(&fakeDepthReader{rows: rows}, pr, calmFleet(t), &fakePressure{wait: tc.wait})
-
-			require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
-
-			require.Len(t, buyer.calls, 1)
-			require.Equal(t, 2, buyer.calls[0].demand,
-				"no gate-adjacency reader ⇒ no discovery pass ⇒ buy demand is exactly the plan total")
-			require.Empty(t, sweepUpserts(pr))
-			dormantWrites := 0
-			for _, w := range pr.stateWrites {
-				if w.dormant {
-					dormantWrites++
-				}
-			}
-			require.Equal(t, tc.wantDormant, dormantWrites)
+			cmd := sensingTestCmd()
+			cmd.ExpansionEnabled = tc.value
+			cfg := resolveSensingConfig(context.Background(), cmd, nil)
+			require.Equal(t, tc.want, cfg.Expansion)
 		})
 	}
 }
 
-func TestSensing_BuyTargetNamesNeediestSystem(t *testing.T) {
-	// AA1 wants 2 and has no post (gap 2); BB2 wants 1 and has 1 (gap 0).
-	rows := append(richRows("X1-AA1", 13), richRows("X1-BB2", 3)...)
-	pr := newSensingPostRepo(sensingPost("X1-BB2", 1))
-	h, buyer := newSensingHandler(&fakeDepthReader{rows: rows}, pr, calmFleet(t), &fakePressure{})
+// A live tune takes effect on the NEXT tick, without a rebuild — and a launch
+// value stays in force until one is set.
+func TestKnobs_LiveConfigOverridesLaunch(t *testing.T) {
+	cmd := sensingTestCmd()
+	cmd.ProbeCap = 40
+	cmd.ExpansionEnabled = 1
 
-	cmd := sensingCmd()
-	require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
+	launched := resolveSensingConfig(context.Background(), cmd, nil)
+	require.Equal(t, 40, launched.ProbeCap, "with no live value the launch config governs")
+	require.True(t, launched.Expansion)
 
-	require.Len(t, buyer.calls, 1)
-	target := buyer.calls[0].target
-	require.Equal(t, "X1-AA1", target.System, "the buy hint names the largest unmet gap")
-	require.Equal(t, probebuy.DefaultHopPenaltyCredits, target.HopPenaltyCredits)
-	require.Equal(t, probebuy.DefaultSiblingPriceMarginCredits, target.SiblingPriceMarginCredits)
-	require.Equal(t, cmd.ContainerID, target.ClaimOwnerContainerID)
+	tuned := resolveSensingConfig(context.Background(), cmd, liveconfig.Snapshot{
+		"probe_cap":         float64(120), // float64: the JSON-recovery shape
+		"expansion_enabled": 2,
+	})
+	require.Equal(t, 120, tuned.ProbeCap, "a live value wins over the launch config")
+	require.False(t, tuned.Expansion, "and so does a live off-switch")
 }
 
-// ---- adversarial reader failures -------------------------------------------------
+// A failed snapshot runs the tick on the LAUNCH command rather than on an empty
+// config — never a half-applied one.
+func TestKnobs_UnreadableSnapshotFallsBackToLaunch(t *testing.T) {
+	world := steadyWorld(t, map[string]string{"X1-IN1": parkedsensing.VerdictInScope})
+	world.handler.SetLiveConfigReader(&fakeLiveConfig{err: errors.New("container row gone")})
+	cmd := sensingTestCmd()
+	cmd.ProbeCap = 55
 
-func TestSensing_ReaderFailuresFailClosed(t *testing.T) {
-	t.Run("depth read error aborts the tick", func(t *testing.T) {
-		dr := &fakeDepthReader{rows: richRows("X1-AA1", 3), err: errors.New("census down")}
-		pr := newSensingPostRepo(sensingPost("X1-OLD", 1))
-		h, buyer := newSensingHandler(dr, pr, calmFleet(t), &fakePressure{})
+	snapshot := world.handler.liveSnapshot(context.Background(), cmd)
+	require.Nil(t, snapshot, "an unreadable snapshot is nil, not a partial map")
+	require.Equal(t, 55, resolveSensingConfig(context.Background(), cmd, snapshot).ProbeCap)
+}
 
-		require.Error(t, h.ReconcileOnce(context.Background(), sensingCmd()))
-		require.Empty(t, pr.upserts, "rows returned alongside an error must never be consumed")
-		require.Empty(t, pr.removed)
-		require.Empty(t, buyer.calls)
+// Zero is the documented revert and resolves silently. A NEGATIVE is a miswrite
+// that can only come from a hand-edited config row, and two of them are silently
+// destructive if absorbed: a negative min_scan_rate_milli flows through to a
+// negative sensing rate, and a clamp below 1 collapses the weighting's
+// optimistic prior. Both take the default instead.
+func TestKnobs_NegativesTakeTheDefault(t *testing.T) {
+	cmd := sensingTestCmd()
+	cmd.MinScanRateMilli = -250
+	cmd.ValueClampR = -3
+	cmd.CapexReserveCredits = -1
+
+	cfg := resolveSensingConfig(context.Background(), cmd, nil)
+
+	require.Equal(t, defaultMinScanRateMilli, cfg.MinScanRateMilli)
+	require.Equal(t, defaultValueClampR, cfg.ClampR)
+	require.Equal(t, int64(defaultCapexReserveCredits), cfg.CapexReserveCredits)
+
+	// And the resolved values are actually SAFE, which is the property the
+	// clamping exists for: a negative floor would otherwise invert the pacer.
+	require.Positive(t, domainSensing.PacerRate(domainSensing.BudgetInputs{
+		CeilingReqPerSec: 2.0, TargetUtilPct: cfg.TargetUtilPct,
+		MinScanRateMilli: cfg.MinScanRateMilli, NonSensingRate: 10.0, BrakeFactor: 1,
+	}), "the pacer rate stays positive however starved the residual is")
+}
+
+// Every knob falls back to its documented const when the launch config is empty
+// (RULINGS #5), which is the shape every boot-standing launch actually has.
+func TestKnobs_EmptyLaunchResolvesToDocumentedDefaults(t *testing.T) {
+	cfg := resolveSensingConfig(context.Background(), sensingTestCmd(), nil)
+
+	require.Equal(t, defaultSensingTickSeconds*time.Second, cfg.Tick)
+	require.Equal(t, defaultParkedProbeCap, cfg.ProbeCap)
+	require.True(t, cfg.Expansion)
+	require.Equal(t, defaultTargetUtilPct, cfg.TargetUtilPct)
+	require.Equal(t, defaultMinScanRateMilli, cfg.MinScanRateMilli)
+	require.Equal(t, defaultValueClampR, cfg.ClampR)
+	require.Equal(t, defaultInflightCap, cfg.InflightCap)
+	require.Equal(t, defaultCapitalMultiplierK, cfg.CapitalMultiplierK)
+	require.Equal(t, int64(defaultCapexReserveCredits), cfg.CapexReserveCredits)
+	require.Equal(t, defaultQuartermasterCadenceSecs*time.Second, cfg.QuartermasterCadence)
+	require.Len(t, cfg.Whitelist, len(defaultSensingWhitelist()))
+}
+
+// The touring model's knobs are retained on the command and IGNORED. A container
+// persisted by the old core still carries them, and it must come up on the new
+// core's defaults rather than on a stale value that means nothing here.
+func TestKnobs_RetiredTouringKnobsAreInert(t *testing.T) {
+	cmd := sensingTestCmd()
+	cmd.ProbeBudget = 150
+	cmd.DepthFloor = 2_000_000
+	cmd.SecondProbeThreshold = 12
+	cmd.FreshnessTargetSecs = 10_800
+	cmd.MaxSpendPerCycle = 1
+	cmd.SpendWindowSecs = 1
+	cmd.PurchaseCooldownSecs = 1
+	cmd.DiscoveryDeclaresPerTick = 99
+
+	cfg := resolveSensingConfig(context.Background(), cmd, nil)
+
+	require.Equal(t, resolveSensingConfig(context.Background(), sensingTestCmd(), nil), cfg,
+		"a config full of retired knobs resolves identically to an empty one")
+}
+
+// --- the scan rotation ---------------------------------------------------------
+
+// The yard cadence is a KNOB, so the coordinator stamps it onto the rotation
+// rather than the adapter inventing one. Market slots never carry it: their
+// pacing is the spread weighting's job.
+func TestScanRotation_YardCadenceIsStampedFromConfig(t *testing.T) {
+	world := steadyWorld(t, nil)
+	cfg := resolveSensingConfig(context.Background(), world.cmd, liveconfig.Snapshot{
+		"quartermaster_cadence_secs": 900,
 	})
 
-	t.Run("post list error aborts the tick", func(t *testing.T) {
-		pr := newSensingPostRepo(sensingPost("X1-OLD", 1))
-		pr.listErr = errors.New("posts down")
-		h, buyer := newSensingHandler(&fakeDepthReader{rows: richRows("X1-AA1", 3)}, pr, calmFleet(t), &fakePressure{})
+	stamped := world.handler.stampCadence([]parkedsensing.SensingSlotView{
+		{Waypoint: "X1-A-Y1", Kind: parkedsensing.SlotKindYard},
+		{Waypoint: "X1-A-M1", Kind: parkedsensing.SlotKindMarket},
+	}, cfg)
 
-		require.Error(t, h.ReconcileOnce(context.Background(), sensingCmd()))
-		require.Empty(t, pr.upserts, "a posts view returned alongside an error is not a diff base — writing against it mass-declares")
-		require.Empty(t, pr.removed)
-		require.Empty(t, buyer.calls)
-	})
-
-	t.Run("fleet read error blocks the buy", func(t *testing.T) {
-		fl := &fakeSensingFleet{ships: []*navigation.Ship{sensingProbe(t, "PROBE-A")}, err: errors.New("fleet down")}
-		h, buyer := newSensingHandler(&fakeDepthReader{rows: richRows("X1-AA1", 3)}, newSensingPostRepo(), fl, &fakePressure{})
-
-		require.Error(t, h.ReconcileOnce(context.Background(), sensingCmd()))
-		require.Empty(t, buyer.calls, "an unverifiable supply must never reach the buyer (fail closed)")
-	})
+	require.Equal(t, 900*time.Second, stamped[0].YardCadence, "a yard carries the tuned cadence floor")
+	require.Zero(t, stamped[1].YardCadence, "a market's pacing is the weighting's, not a cadence")
 }
 
-// ---- error-streak health monitor ---------------------------------------------------
-
-// TestSensingStreak_ReconcileFailsRepeatedly_EmitsErrorLoopEvent pins the streak
-// wiring at the sensing reconcile checkpoint: a pass failing with the identical
-// error for DefaultStreakThreshold consecutive ticks crosses exactly once and
-// emits one interrupt-class coordinator error-loop event — under the wake model
-// that event is the ONLY standing sensor for a persistently failing loop.
-func TestSensingStreak_ReconcileFailsRepeatedly_EmitsErrorLoopEvent(t *testing.T) {
-	// Adversarial recorder: the outbox write FAILS every time yet still lands —
-	// emission must stay edge-triggered (exactly one), never retried or gated.
-	rec := &fakeSensingEventRecorder{err: errors.New("outbox flaky")}
-	h, _ := newSensingHandler(&fakeDepthReader{}, newSensingPostRepo(), calmFleet(t), &fakePressure{})
-	h.SetEventRecorder(rec)
-
-	ctx := context.Background()
-	cmd := sensingCmd()
-	errMon := health.NewMonitor(health.DefaultStreakThreshold)
-	sameErr := errors.New("failed to read market depth census: db down")
-
-	for i := 1; i < health.DefaultStreakThreshold; i++ {
-		h.noteReconcile(ctx, cmd, errMon, sameErr)
+// The rotation is refreshed from the ledger every tick, at the floored pacer
+// rate — that call is what keeps a restarted pacer scanning.
+func TestReconcile_RefreshesTheScanRotation(t *testing.T) {
+	world := steadyWorld(t, map[string]string{"X1-IN1": parkedsensing.VerdictInScope})
+	world.ledger.slots["X1-IN1-M1"] = parkedsensing.QueuedSlot{
+		Waypoint: "X1-IN1-M1", System: "X1-IN1",
+		Kind: parkedsensing.SlotKindMarket, State: parkedsensing.SlotStateParked,
+		AssignedShip: "PROBE-1",
 	}
-	require.Empty(t, rec.recorded, "no event before the streak threshold")
+	world.ledger.goods["X1-IN1-M1"] = []string{"FOOD"}
 
-	h.noteReconcile(ctx, cmd, errMon, sameErr)
-	require.Equal(t, 1, countSensingErrorLoops(rec), "exactly one error-loop event at the threshold (edge-triggered)")
-	event := rec.recorded[0]
-	require.Equal(t, captain.EventCoordinatorErrorLoop, event.Type)
-	require.Equal(t, cmd.ContainerID, event.Ship, "the event is container-scoped to this coordinator")
-	require.Equal(t, cmd.PlayerID.Value(), event.PlayerID)
+	require.NoError(t, world.handler.ReconcileOnce(world.ctx, world.cmd))
+
+	scanner := world.handler.scanners[world.cmd.ContainerID]
+	require.NotNil(t, scanner, "the reconcile builds the container's rotation on first use")
+	members, rate := scanner.RotationSize()
+	require.Equal(t, 1, members, "the parked placement joins the rotation")
+	require.Positive(t, rate, "and the rotation is paced at the rate this tick computed")
 }
 
-// TestSensingStreak_SuccessResetsStreak pins reset-on-success: a healthy pass
-// between failures restarts the streak, so an intermittent census gap never
-// falsely escalates to the captain.
-func TestSensingStreak_SuccessResetsStreak(t *testing.T) {
-	rec := &fakeSensingEventRecorder{}
-	h, _ := newSensingHandler(&fakeDepthReader{}, newSensingPostRepo(), calmFleet(t), &fakePressure{})
-	h.SetEventRecorder(rec)
+// --- metrics --------------------------------------------------------------------
 
-	ctx := context.Background()
-	cmd := sensingCmd()
-	errMon := health.NewMonitor(health.DefaultStreakThreshold)
-	sameErr := errors.New("failed to read market depth census: db down")
-
-	for i := 1; i < health.DefaultStreakThreshold; i++ {
-		h.noteReconcile(ctx, cmd, errMon, sameErr)
-	}
-	h.noteReconcile(ctx, cmd, errMon, nil) // success resets
-
-	for i := 1; i < health.DefaultStreakThreshold; i++ {
-		h.noteReconcile(ctx, cmd, errMon, sameErr)
-	}
-	require.Zero(t, countSensingErrorLoops(rec), "the success must have reset the streak (no event yet)")
-
-	h.noteReconcile(ctx, cmd, errMon, sameErr)
-	require.Equal(t, 1, countSensingErrorLoops(rec), "exactly one event after the post-reset streak re-crossed")
-}
-
-// ---- discovery: branching purchase + sweep-once propagation ------------------------
-
-func TestSensingDiscovery_DeclaresSweepOnceForUnchartedNeighbours(t *testing.T) {
-	t.Run("charted A with uncharted neighbours B and C ⇒ two sweep-once declares", func(t *testing.T) {
-		dr := &fakeDepthReader{rows: richRows("X1-AA1", 3)}
-		pr := newSensingPostRepo(sensingPost("X1-AA1", 1)) // standing side converged, so every write below is a sweep declare
-		gg := &fakeSensingGateGraph{adjacency: map[string][]system.GateEdge{
-			"X1-AA1": {sweepEdge("X1-CC3"), sweepEdge("X1-BB2")},
-		}}
-		h, buyer := newSensingHandler(dr, pr, calmFleet(t), &fakePressure{})
-		h.SetGateGraph(gg)
-
-		require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
-
-		sweeps := sweepUpserts(pr)
-		require.Equal(t, []string{"X1-BB2", "X1-CC3"}, sweepSystemsOf(sweeps),
-			"both uncharted neighbours become frontier sweeps, declared in sorted order")
-		for _, post := range sweeps {
-			require.Equal(t, domainScouting.PostKindSweepOnce, post.Kind)
-			require.Equal(t, 1, post.Hulls, "a frontier sweep is always single-hull")
-			require.Equal(t, time.Hour, post.FreshnessTarget, "sweeps carry the config freshness target (paces the tour's scan interval)")
-			require.Equal(t, 1, post.PlayerID)
-			require.False(t, post.CreatedAt.IsZero())
+// The gauges are published every tick, and the slot census reports every state
+// INCLUDING the empty ones — a gauge that stopped reporting a drained state
+// would leave its last non-zero value standing until the series went stale.
+func TestMetrics_PublishesRateStalenessAndSlots(t *testing.T) {
+	world := steadyWorld(t, map[string]string{"X1-IN1": parkedsensing.VerdictInScope})
+	now := time.Now()
+	world.handler.clock = &shared.MockClock{CurrentTime: now}
+	for i, age := range []time.Duration{time.Minute, 10 * time.Minute, time.Hour} {
+		waypoint := "X1-IN1-M" + string(rune('1'+i))
+		world.ledger.slots[waypoint] = parkedsensing.QueuedSlot{
+			Waypoint: waypoint, System: "X1-IN1",
+			Kind: parkedsensing.SlotKindMarket, State: parkedsensing.SlotStateParked,
+			AssignedShip: "PROBE-" + string(rune('1'+i)),
 		}
-		require.Empty(t, pr.removed)
-		require.Len(t, buyer.calls, 1)
-		require.Equal(t, 3, buyer.calls[0].demand,
-			"demand = plan total 1 + one probe per open frontier direction (2)")
-	})
-
-	t.Run("B already postered ⇒ one declare, but B still counts as an open direction", func(t *testing.T) {
-		dr := &fakeDepthReader{rows: richRows("X1-AA1", 3)}
-		pr := newSensingPostRepo(sensingPost("X1-AA1", 1), sensingSweepPost("X1-BB2"))
-		gg := &fakeSensingGateGraph{adjacency: map[string][]system.GateEdge{
-			"X1-AA1": {sweepEdge("X1-BB2"), sweepEdge("X1-CC3")},
-		}}
-		h, buyer := newSensingHandler(dr, pr, calmFleet(t), &fakePressure{})
-		h.SetGateGraph(gg)
-
-		require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
-
-		require.Equal(t, []string{"X1-CC3"}, sweepSystemsOf(sweepUpserts(pr)),
-			"an already-postered frontier is never redeclared (a second Upsert would reset its manning)")
-		require.Len(t, buyer.calls, 1)
-		require.Equal(t, 3, buyer.calls[0].demand,
-			"demand = plan 1 + open sweeps 2 (the pre-existing B post is an open direction too)")
-	})
-
-	t.Run("re-running a converged tick declares nothing new", func(t *testing.T) {
-		dr := &fakeDepthReader{rows: richRows("X1-AA1", 3)}
-		pr := newSensingPostRepo(sensingPost("X1-AA1", 1))
-		gg := &fakeSensingGateGraph{adjacency: map[string][]system.GateEdge{
-			"X1-AA1": {sweepEdge("X1-BB2")},
-		}}
-		h, buyer := newSensingHandler(dr, pr, calmFleet(t), &fakePressure{})
-		h.SetGateGraph(gg)
-
-		require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
-		require.Len(t, sweepUpserts(pr), 1)
-
-		pr.upserts = nil
-		require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
-		require.Empty(t, sweepUpserts(pr), "tick 2 sees the sweep row and re-declares nothing (idempotent)")
-		require.Equal(t, 2, buyer.calls[1].demand, "the open direction keeps its funding until the sweep completes")
-	})
-}
-
-func TestSensingDiscovery_PressureShedsDiscoveryFirst(t *testing.T) {
-	// The named brief case: pressure high ⇒ zero declares AND discoveryDemand 0.
-	// Mid pressure pins the shed-FIRST ordering — scanning still intact (no
-	// dormant writes) while discovery is already off.
-	cases := []struct {
-		name string
-		wait time.Duration
-	}{
-		{"mid pressure: scanning intact, discovery already shed", 500 * time.Millisecond},
-		{"high pressure: scanning sheds too", 4 * time.Second},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			dr := &fakeDepthReader{rows: richRows("X1-AA1", 3)}
-			// An OPEN sweep post exists, so a leak of discoveryDemand under
-			// pressure would be visible as demand 2.
-			pr := newSensingPostRepo(sensingPost("X1-AA1", 1), sensingSweepPost("X1-DD4"))
-			gg := &fakeSensingGateGraph{adjacency: map[string][]system.GateEdge{
-				"X1-AA1": {sweepEdge("X1-BB2")},
-			}}
-			h, buyer := newSensingHandler(dr, pr, calmFleet(t), &fakePressure{wait: tc.wait})
-			h.SetGateGraph(gg)
-
-			require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
-
-			require.Empty(t, sweepUpserts(pr), "pressure ⇒ zero declares — discovery sheds FIRST")
-			require.Zero(t, gg.calls, "a shed discovery pass never even reads the adjacency store")
-			require.Len(t, buyer.calls, 1)
-			require.Equal(t, 1, buyer.calls[0].demand,
-				"discoveryDemand is 0 under pressure: the open sweep post is not funded this tick")
-		})
-	}
-}
-
-func TestSensingDiscovery_DeclaresBoundedPerTick(t *testing.T) {
-	sixNeighbours := map[string][]system.GateEdge{
-		"X1-AA1": {
-			sweepEdge("X1-BB2"), sweepEdge("X1-CC3"), sweepEdge("X1-DD4"),
-			sweepEdge("X1-EE5"), sweepEdge("X1-FF6"), sweepEdge("X1-GG7"),
-		},
+		world.ledger.views[waypoint] = parkedsensing.SensingSlotView{LastScan: now.Add(-age)}
 	}
 
-	t.Run("default bound 4", func(t *testing.T) {
-		pr := newSensingPostRepo(sensingPost("X1-AA1", 1))
-		h, buyer := newSensingHandler(&fakeDepthReader{rows: richRows("X1-AA1", 3)}, pr, calmFleet(t), &fakePressure{})
-		h.SetGateGraph(&fakeSensingGateGraph{adjacency: sixNeighbours})
+	require.NoError(t, world.handler.ReconcileOnce(world.ctx, world.cmd))
 
-		require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
-
-		require.Equal(t, []string{"X1-BB2", "X1-CC3", "X1-DD4", "X1-EE5"}, sweepSystemsOf(sweepUpserts(pr)),
-			"declares are bounded per tick (default 4), sorted-first candidates win")
-		require.Equal(t, 5, buyer.calls[0].demand, "demand counts only the OPEN posts (plan 1 + 4 declared), never the unposted backlog")
-	})
-
-	t.Run("configured bound 2, backlog drains across ticks", func(t *testing.T) {
-		pr := newSensingPostRepo(sensingPost("X1-AA1", 1))
-		h, buyer := newSensingHandler(&fakeDepthReader{rows: richRows("X1-AA1", 3)}, pr, calmFleet(t), &fakePressure{})
-		h.SetGateGraph(&fakeSensingGateGraph{adjacency: sixNeighbours})
-
-		cmd := sensingCmd()
-		cmd.DiscoveryDeclaresPerTick = 2
-		require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
-		require.Equal(t, []string{"X1-BB2", "X1-CC3"}, sweepSystemsOf(sweepUpserts(pr)))
-		require.Equal(t, 3, buyer.calls[0].demand)
-
-		pr.upserts = nil
-		require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
-		require.Equal(t, []string{"X1-DD4", "X1-EE5"}, sweepSystemsOf(sweepUpserts(pr)),
-			"tick 2 skips the already-declared frontiers and drains the next two")
-		require.Equal(t, 5, buyer.calls[1].demand, "plan 1 + 4 open sweeps")
-	})
+	require.Len(t, world.recorder.rate, 1, "the pacer rate is published once per tick")
+	require.InDelta(t, 60.0, world.recorder.staleness[stalenessTierHot], 1, "p10 is the freshest slot")
+	require.InDelta(t, 3600.0, world.recorder.staleness[stalenessTierCold], 1, "p90 is the stalest")
+	require.Equal(t, 3, world.recorder.slots[parkedsensing.SlotStateParked])
+	require.Equal(t, 0, world.recorder.slots[parkedsensing.SlotStateQueued],
+		"an empty state is republished as zero, never left to go stale")
 }
 
-func TestSensingDiscovery_DemandClampedAtBudget(t *testing.T) {
-	// Plan wants 2 (two rich systems), three sweep posts are open ⇒ raw demand
-	// 5; N=4 ⇒ the single budget dial clamps the buyer's demand to 4.
-	rows := append(richRows("X1-AA1", 3), richRows("X1-BB2", 3)...)
-	pr := newSensingPostRepo(
-		sensingPost("X1-AA1", 1), sensingPost("X1-BB2", 1),
-		sensingSweepPost("X1-XX7"), sensingSweepPost("X1-YY8"), sensingSweepPost("X1-ZZ9"),
-	)
-	h, buyer := newSensingHandler(&fakeDepthReader{rows: rows}, pr, calmFleet(t), &fakePressure{})
-	h.SetGateGraph(&fakeSensingGateGraph{adjacency: map[string][]system.GateEdge{}})
+// A slot that has never been scanned has no meaningful age. Folding it in as an
+// unbounded one would peg the cold tier at the process's uptime and make the
+// gauge unreadable for exactly as long as the rotation is warming up.
+func TestMetrics_NeverScannedSlotsAreExcludedNotClamped(t *testing.T) {
+	now := time.Now()
+	hot, median, cold, ok := stalenessPercentiles([]parkedsensing.SensingSlotView{
+		{Waypoint: "A", LastScan: now.Add(-30 * time.Second)},
+		{Waypoint: "B"}, // never scanned
+		{Waypoint: "C", LastScan: now.Add(-90 * time.Second)},
+	}, now)
 
-	cmd := sensingCmd()
-	cmd.ProbeBudget = 4
-	require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
+	require.True(t, ok)
+	require.InDelta(t, 30.0, hot, 1)
+	require.InDelta(t, 30.0, median, 1)
+	require.InDelta(t, 90.0, cold, 1, "the never-scanned slot did not become the tail")
 
-	require.Len(t, buyer.calls, 1)
-	require.Equal(t, 4, buyer.calls[0].demand, "demand = min(plan 2 + discovery 3, N 4) — N caps discovery too")
+	_, _, _, none := stalenessPercentiles([]parkedsensing.SensingSlotView{{Waypoint: "A"}}, now)
+	require.False(t, none, "with nothing measured the tiers are not published at all")
 }
 
-func TestSensingDiscovery_InCensusNeighbourNeverRedeclared(t *testing.T) {
-	// The adversarial adjacency case: the store returns a neighbour that IS in
-	// census. Re-declaring it would burn a probe re-sweeping known ground.
-	t.Run("scanned sibling below the depth floor", func(t *testing.T) {
-		rows := append(richRows("X1-AA1", 3), thinRows("X1-BB2")...) // BB2 scanned, out of sensing scope
-		pr := newSensingPostRepo(sensingPost("X1-AA1", 1))
-		h, buyer := newSensingHandler(&fakeDepthReader{rows: rows}, pr, calmFleet(t), &fakePressure{})
-		h.SetGateGraph(&fakeSensingGateGraph{adjacency: map[string][]system.GateEdge{
-			"X1-AA1": {sweepEdge("X1-BB2"), sweepEdge("X1-CC3")},
-		}})
+// --- error handling -------------------------------------------------------------
 
-		require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
-
-		require.Equal(t, []string{"X1-CC3"}, sweepSystemsOf(sweepUpserts(pr)),
-			"a census system is known ground whatever its depth — only the uncharted neighbour is swept")
-		require.Equal(t, 2, buyer.calls[0].demand, "plan 1 + the one genuine frontier")
-	})
-
-	t.Run("scanned ore-only sibling: census is whitelist-BLIND", func(t *testing.T) {
-		// BB2's markets deal only in non-whitelisted goods, so it has no
-		// sensing profile — but it IS scanned. A whitelist-filtered census
-		// would re-sweep it forever (its goods never change).
-		rows := append(richRows("X1-AA1", 3),
-			depthRow("X1-BB2", "X1-BB2-W0", "QUARTZ_SAND", 200, 50),
-			depthRow("X1-BB2", "X1-BB2-W1", "IRON_ORE", 200, 50),
-		)
-		pr := newSensingPostRepo(sensingPost("X1-AA1", 1))
-		h, buyer := newSensingHandler(&fakeDepthReader{rows: rows}, pr, calmFleet(t), &fakePressure{})
-		h.SetGateGraph(&fakeSensingGateGraph{adjacency: map[string][]system.GateEdge{
-			"X1-AA1": {sweepEdge("X1-BB2"), sweepEdge("X1-CC3")},
-		}})
-
-		require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
-
-		require.Equal(t, []string{"X1-CC3"}, sweepSystemsOf(sweepUpserts(pr)),
-			"any market-cache row proves the system scanned — the whitelist scopes standing sensing, not discovery")
-		require.Equal(t, 2, buyer.calls[0].demand)
-	})
-}
-
-func TestSensingDiscovery_PostedNeighbourNeverClobbered(t *testing.T) {
-	// The home story: a MinHulls-floored standing post whose system carries no
-	// census rows (the removal pass keeps it). Upsert is keyed by (player,
-	// system), so a sweep declare against it would REPLACE the standing row —
-	// wiping the manning floor and the assignment columns.
-	home := sensingPost("X1-HOME", 3)
-	home.MinHulls = 3
-	pr := newSensingPostRepo(sensingPost("X1-AA1", 1), home)
-	h, _ := newSensingHandler(&fakeDepthReader{rows: richRows("X1-AA1", 3)}, pr, calmFleet(t), &fakePressure{})
-	h.SetGateGraph(&fakeSensingGateGraph{adjacency: map[string][]system.GateEdge{
-		"X1-AA1": {sweepEdge("X1-CC3"), sweepEdge("X1-HOME")},
-	}})
-
-	require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
-
-	require.Equal(t, []string{"X1-CC3"}, sweepSystemsOf(sweepUpserts(pr)),
-		"a neighbour holding ANY post is never sweep-declared — the write would clobber the standing row")
-	require.Empty(t, pr.upsertsFor("X1-HOME"))
-	require.Empty(t, pr.removed)
-}
-
-func TestSensingDiscovery_AdjacencyFailureDegradesToZero(t *testing.T) {
-	// Adversarial: the store returns a tempting adjacency ALONGSIDE the error.
-	// The speculative pass must contribute nothing — no declares, no funded
-	// demand — while the standing reconcile around it proceeds un-aborted.
-	pr := newSensingPostRepo(sensingPost("X1-AA1", 1), sensingSweepPost("X1-DD4"))
-	gg := &fakeSensingGateGraph{
-		adjacency: map[string][]system.GateEdge{"X1-AA1": {sweepEdge("X1-BB2")}},
-		err:       errors.New("gate store down"),
+// One failing stage does not abort the tick. A reconcile that could not read the
+// treasury must still advance the hulls already flying and still refresh the
+// scan rotation — aborting on the first error would let one unreadable port
+// dark the whole fleet's market data.
+func TestReconcile_OneFailingStageDoesNotDarkTheRest(t *testing.T) {
+	world := steadyWorld(t, map[string]string{"X1-IN1": parkedsensing.VerdictInScope})
+	world.ledger.slots["X1-IN1-M1"] = parkedsensing.QueuedSlot{
+		Waypoint: "X1-IN1-M1", System: "X1-IN1",
+		Kind: parkedsensing.SlotKindMarket, State: parkedsensing.SlotStateWanted,
 	}
-	h, buyer := newSensingHandler(&fakeDepthReader{rows: richRows("X1-AA1", 3)}, pr, calmFleet(t), &fakePressure{})
-	h.SetGateGraph(gg)
-
-	require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()),
-		"the standing loop is never hostage to the gate store")
-
-	require.Empty(t, sweepUpserts(pr), "an adjacency returned alongside an error must never be consumed")
-	require.Len(t, buyer.calls, 1)
-	require.Equal(t, 1, buyer.calls[0].demand, "discovery degrades to zero whole — the open sweep waits a tick")
-}
-
-func TestSensingDiscovery_ImpassableAndStaleEdgesNotCounted(t *testing.T) {
-	t.Run("under-construction edge is impassable", func(t *testing.T) {
-		pr := newSensingPostRepo(sensingPost("X1-AA1", 1))
-		h, buyer := newSensingHandler(&fakeDepthReader{rows: richRows("X1-AA1", 3)}, pr, calmFleet(t), &fakePressure{})
-		unbuilt := sweepEdge("X1-CC3")
-		unbuilt.UnderConstruction = true
-		h.SetGateGraph(&fakeSensingGateGraph{adjacency: map[string][]system.GateEdge{
-			"X1-AA1": {sweepEdge("X1-BB2"), unbuilt},
-		}})
-
-		require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
-
-		require.Equal(t, []string{"X1-BB2"}, sweepSystemsOf(sweepUpserts(pr)),
-			"a jump into an unbuilt gate fails at hop time — never a frontier candidate")
-		require.Equal(t, 2, buyer.calls[0].demand)
-	})
-
-	t.Run("one stale row condemns the whole edge set", func(t *testing.T) {
-		pr := newSensingPostRepo(sensingPost("X1-AA1", 1))
-		h, buyer := newSensingHandler(&fakeDepthReader{rows: richRows("X1-AA1", 3)}, pr, calmFleet(t), &fakePressure{})
-		stale := sweepEdge("X1-BB2")
-		stale.Stale = true
-		h.SetGateGraph(&fakeSensingGateGraph{adjacency: map[string][]system.GateEdge{
-			"X1-AA1": {stale, sweepEdge("X1-CC3")},
-		}})
-
-		require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
-
-		require.Empty(t, sweepUpserts(pr),
-			"edges are written in one Replace under one timestamp — a stale set's onward gates are unverified (mirrors the stored-distance walk)")
-		require.Equal(t, 1, buyer.calls[0].demand)
-	})
-
-	t.Run("an empty neighbour symbol is skipped", func(t *testing.T) {
-		pr := newSensingPostRepo(sensingPost("X1-AA1", 1))
-		h, buyer := newSensingHandler(&fakeDepthReader{rows: richRows("X1-AA1", 3)}, pr, calmFleet(t), &fakePressure{})
-		h.SetGateGraph(&fakeSensingGateGraph{adjacency: map[string][]system.GateEdge{
-			"X1-AA1": {{ConnectedSystem: "", GateWaypoint: "X1-???-I00"}},
-		}})
-
-		require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
-
-		require.Empty(t, sweepUpserts(pr), "a nameless edge can never become a post keyed by \"\"")
-		require.Equal(t, 1, buyer.calls[0].demand)
-	})
-}
-
-func TestSensingDiscovery_SweptMarketlessNeighbourNeverRedeclared(t *testing.T) {
-	// A system whose full waypoint sweep found ZERO marketplaces never writes a
-	// market row, so the market census can never absorb it: once its sweep post
-	// retires, a market-census-only discriminator redeclares it every tick —
-	// declare → man → tour → retire → redeclare, forever. Swept-knowledge is
-	// the frontier queue's waypoint-derived Scanned signal: one persisted
-	// NON-gate waypoint proves the sweep happened and nothing was found.
-	t.Run("swept-marketless neighbour is known ground, never redeclared", func(t *testing.T) {
-		pr := newSensingPostRepo(sensingPost("X1-AA1", 1))
-		h, buyer := newSensingHandler(&fakeDepthReader{rows: richRows("X1-AA1", 3)}, pr, calmFleet(t), &fakePressure{})
-		h.SetGateGraph(&fakeSensingGateGraph{adjacency: map[string][]system.GateEdge{
-			"X1-AA1": {sweepEdge("X1-BR5"), sweepEdge("X1-CC3")},
-		}})
-		h.SetWaypointCatalog(&fakeSensingWaypointCatalog{bySystem: map[string][]*shared.Waypoint{
-			// BR5 was fully swept — gate plus a real body — and holds no market
-			// anywhere (no census rows). CC3 has no catalog rows: never swept.
-			"X1-BR5": {
-				catalogWaypoint(t, "X1-BR5-I51", "JUMP_GATE"),
-				catalogWaypoint(t, "X1-BR5-A1", "PLANET"),
-			},
-		}})
-
-		require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
-
-		require.Equal(t, []string{"X1-CC3"}, sweepSystemsOf(sweepUpserts(pr)),
-			"a swept-marketless system's markets were looked for and none exist — known ground, not frontier")
-		require.Equal(t, 2, buyer.calls[0].demand, "plan 1 + the one genuine frontier — the barren direction is never funded")
-	})
-
-	t.Run("a gate-only-charted neighbour is still frontier", func(t *testing.T) {
-		// Only a NON-gate row proves a sweep: a lone jump-gate row means the
-		// system is merely reachable, its bodies and markets never looked at.
-		pr := newSensingPostRepo(sensingPost("X1-AA1", 1))
-		h, buyer := newSensingHandler(&fakeDepthReader{rows: richRows("X1-AA1", 3)}, pr, calmFleet(t), &fakePressure{})
-		h.SetGateGraph(&fakeSensingGateGraph{adjacency: map[string][]system.GateEdge{
-			"X1-AA1": {sweepEdge("X1-CC3")},
-		}})
-		h.SetWaypointCatalog(&fakeSensingWaypointCatalog{bySystem: map[string][]*shared.Waypoint{
-			"X1-CC3": {catalogWaypoint(t, "X1-CC3-I51", "JUMP_GATE")},
-		}})
-
-		require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
-
-		require.Equal(t, []string{"X1-CC3"}, sweepSystemsOf(sweepUpserts(pr)),
-			"gate-charted is not swept — the system stays a scout target")
-		require.Equal(t, 2, buyer.calls[0].demand)
-	})
-
-	t.Run("catalog read failure ⇒ the pass declares nothing new", func(t *testing.T) {
-		// Adversarial: the catalog returns rows (reading "not swept") ALONGSIDE
-		// the error. Consuming the value would declare CC3; the conservative
-		// side for a speculative spend is to declare nothing new this tick.
-		pr := newSensingPostRepo(sensingPost("X1-AA1", 1))
-		h, buyer := newSensingHandler(&fakeDepthReader{rows: richRows("X1-AA1", 3)}, pr, calmFleet(t), &fakePressure{})
-		h.SetGateGraph(&fakeSensingGateGraph{adjacency: map[string][]system.GateEdge{
-			"X1-AA1": {sweepEdge("X1-CC3")},
-		}})
-		h.SetWaypointCatalog(&fakeSensingWaypointCatalog{
-			bySystem: map[string][]*shared.Waypoint{"X1-CC3": {}},
-			err:      errors.New("waypoint catalog down"),
-		})
-
-		require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()),
-			"the standing loop is never hostage to the waypoint catalog")
-		require.Empty(t, sweepUpserts(pr), "an unreadable scanned-set must not redeclare")
-		require.Len(t, buyer.calls, 1)
-		require.Equal(t, 1, buyer.calls[0].demand, "the speculative pass contributes zero on any input failure")
-	})
-}
-
-func TestSensingDiscovery_BuyTargetAimsAtFrontier(t *testing.T) {
-	t.Run("no standing gap ⇒ the buy aims at the candidate's parent system", func(t *testing.T) {
-		pr := newSensingPostRepo(sensingPost("X1-AA1", 1)) // plan satisfied ⇒ no neediest standing system
-		h, buyer := newSensingHandler(&fakeDepthReader{rows: richRows("X1-AA1", 3)}, pr, calmFleet(t), &fakePressure{})
-		h.SetGateGraph(&fakeSensingGateGraph{adjacency: map[string][]system.GateEdge{
-			"X1-AA1": {sweepEdge("X1-BB2")},
-		}})
-
-		require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
-
-		require.Len(t, buyer.calls, 1)
-		require.Equal(t, "X1-AA1", buyer.calls[0].target.System,
-			"the probe is bought AT the frontier: nearest yard to the sweep candidate's parent")
-	})
-
-	t.Run("an open sweep from a prior tick still anchors the hint", func(t *testing.T) {
-		pr := newSensingPostRepo(sensingPost("X1-AA1", 1), sensingSweepPost("X1-BB2"))
-		h, buyer := newSensingHandler(&fakeDepthReader{rows: richRows("X1-AA1", 3)}, pr, calmFleet(t), &fakePressure{})
-		h.SetGateGraph(&fakeSensingGateGraph{adjacency: map[string][]system.GateEdge{
-			"X1-AA1": {sweepEdge("X1-BB2")},
-		}})
-
-		require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
-
-		require.Equal(t, "X1-AA1", buyer.calls[0].target.System,
-			"the hint re-derives from the walk every tick — it never depends on a same-tick declare")
-	})
-
-	t.Run("a standing gap outranks the frontier", func(t *testing.T) {
-		rows := append(richRows("X1-AA1", 3), richRows("X1-GG7", 13)...) // GG7 wants 2
-		pr := newSensingPostRepo(sensingPost("X1-AA1", 1), sensingPost("X1-GG7", 1))
-		h, buyer := newSensingHandler(&fakeDepthReader{rows: rows}, pr, calmFleet(t), &fakePressure{})
-		h.SetGateGraph(&fakeSensingGateGraph{adjacency: map[string][]system.GateEdge{
-			"X1-AA1": {sweepEdge("X1-BB2")},
-		}})
-
-		require.NoError(t, h.ReconcileOnce(context.Background(), sensingCmd()))
-
-		require.Equal(t, "X1-GG7", buyer.calls[0].target.System,
-			"an unmet standing post is the older demand — the frontier hint only fills the no-gap case")
-	})
-}
-
-// ---- config resolution -------------------------------------------------------------
-
-func TestSensing_ConfigDefaults(t *testing.T) {
-	cfg := resolveSensingConfig(&RunProbeSensingCoordinatorCommand{})
-
-	wantWhitelist := []string{
-		"CLOTHING", "LAB_INSTRUMENTS", "FABRICS", "FOOD", "ADVANCED_CIRCUITRY",
-		"MEDICINE", "EQUIPMENT", "URANITE", "MICROPROCESSORS", "SHIP_PLATING",
-		"MACHINERY", "ELECTRONICS",
+	world.ledger.slots["X1-IN1-M2"] = parkedsensing.QueuedSlot{
+		Waypoint: "X1-IN1-M2", System: "X1-IN1",
+		Kind: parkedsensing.SlotKindMarket, State: parkedsensing.SlotStateParked,
+		AssignedShip: "PROBE-1",
 	}
-	require.Len(t, cfg.Whitelist, len(wantWhitelist))
-	for _, good := range wantWhitelist {
-		require.True(t, cfg.Whitelist[good], "default whitelist must carry %s", good)
+	base := world.handler.newPorts
+	world.handler.SetEnginePortsFactory(func(playerID int) SensingEnginePorts {
+		ports := base(playerID)
+		ports.Treasury = &psTreasury{calls: world.calls, err: errors.New("credits unreadable")}
+		return ports
+	})
+
+	err := world.handler.ReconcileOnce(world.ctx, world.cmd)
+
+	require.Error(t, err, "the failure is surfaced, never swallowed")
+	require.Contains(t, err.Error(), "treasury unreadable")
+	scanner := world.handler.scanners[world.cmd.ContainerID]
+	require.NotNil(t, scanner)
+	members, _ := scanner.RotationSize()
+	require.Equal(t, 1, members,
+		"the rotation was still refreshed despite the buy queue failing — and holds only the PARKED slot")
+	require.Len(t, world.recorder.rate, 1, "and the gauges were still published")
+}
+
+// An unreadable ledger is different: every stage below reads from it, so there
+// is nothing to salvage and the tick stops at the top.
+func TestReconcile_UnreadableLedgerStopsTheTick(t *testing.T) {
+	world := steadyWorld(t, map[string]string{"X1-IN1": parkedsensing.VerdictInScope})
+	world.ledger.systemsErr = errors.New("database down")
+
+	err := world.handler.ReconcileOnce(world.ctx, world.cmd)
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "failed to read the sensing ledger")
+	require.Empty(t, world.recorder.rate, "nothing is published from a tick that never ran")
+}
+
+// The heartbeat is emitted on every tick, including one that did nothing, so a
+// quiet fleet is visibly quiet rather than silently dead.
+func TestReconcile_EmitsTheCycleHeartbeat(t *testing.T) {
+	world := steadyWorld(t, map[string]string{"X1-IN1": parkedsensing.VerdictInScope})
+	recorder := &capturingLogger{}
+	ctx := common.WithLogger(world.ctx, recorder)
+
+	require.NoError(t, world.handler.ReconcileOnce(ctx, world.cmd))
+
+	require.True(t, recorder.sawAction("parked_sensing_cycle"),
+		"every tick reports what it did under the parked_sensing_cycle action")
+}
+
+// capturingLogger records the structured actions a tick logged, and the payload
+// each one carried.
+//
+// Mutex-guarded because the pacer goroutine logs through the same logger the
+// test asserts on — its death notice comes from off the reconcile path, which is
+// the whole point of that line.
+type capturingLogger struct {
+	mu      sync.Mutex
+	actions []string
+	// payloads holds the last structured payload logged under each action. The
+	// heartbeat is what the wake model actually reads, so a field it fails to
+	// carry is a number nobody ever sees.
+	payloads map[string]map[string]interface{}
+}
+
+func (c *capturingLogger) Log(_ string, _ string, fields map[string]interface{}) {
+	if action, ok := fields["action"].(string); ok {
+		c.mu.Lock()
+		c.actions = append(c.actions, action)
+		if c.payloads == nil {
+			c.payloads = map[string]map[string]interface{}{}
+		}
+		c.payloads[action] = fields
+		c.mu.Unlock()
 	}
-	require.Equal(t, int64(2_000_000), cfg.DepthFloor)
-	require.Equal(t, 150, cfg.ProbeBudget)
-	require.Equal(t, 12, cfg.SecondProbeThreshold)
-	require.Equal(t, 4, cfg.DiscoveryDeclares, "discovery_declares_per_tick code default (RULINGS #5)")
-	require.Equal(t, time.Hour, cfg.FreshnessTarget)
-	require.Equal(t, 30*time.Second, cfg.Tick)
-	require.Equal(t, 50*time.Millisecond, cfg.WaitLow)
-	require.Equal(t, time.Second, cfg.WaitHigh)
-	require.Equal(t, 150, cfg.Buy.MaxProbeFleet, "N is also the buyer's satellite cap")
-	require.Equal(t, 10*time.Second, cfg.Buy.PurchaseCooldown)
-	require.Equal(t, 500_000, cfg.Buy.MaxSpendPerCycle)
-	require.Equal(t, time.Hour, cfg.Buy.SpendWindow)
-	require.Equal(t, int64(common.ImmutableReserveFloor), cfg.Buy.ReserveFloor,
-		"probe buys leave the immutable working-capital reserve spendable (RULINGS #4/#5)")
 }
 
-// TestSensing_DefaultFreshnessTargetUnderTradeSinkCap pins the outage
-// invariant: the code-default freshness target stamped on standing posts must sit
-// UNDER the trade planner's firm-sink freshness cap — 75 minutes, the
-// [trade_fleet] sink_freshness_max_minutes default (sp-tgll8 item 2; that const
-// is unexported in the config package, so the bar is pinned here by value). The
-// scout tour deliberately stretches each circuit to its post's target, so a
-// default at or past the cap paces EVERY scanned market stale, and the
-// fail-closed cap (RULINGS #4 — correct, never weakened) then refuses every
-// trade buy: zero transactions fleet-wide, the trade fleet start/kill-looping on
-// its stall watchdog. 3600 (1h) leaves a 15-minute margin for scan jitter and
-// tour turnaround.
-func TestSensing_DefaultFreshnessTargetUnderTradeSinkCap(t *testing.T) {
-	const tradeSinkFreshnessCap = 75 * time.Minute
-
-	require.Equal(t, 3600, defaultSensingFreshnessTargetSecs,
-		"the documented default is 1h — never revert toward the era-4 3h (10800s) shape that starved trading")
-	require.Less(t, time.Duration(defaultSensingFreshnessTargetSecs)*time.Second, tradeSinkFreshnessCap,
-		"a sensing freshness default at or past the sink-freshness cap is the trading-outage shape")
+// payload returns the last payload logged under an action, or nil.
+func (c *capturingLogger) payload(action string) map[string]interface{} {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.payloads[action]
 }
 
-func TestSensing_BuyerConfigFromCommand(t *testing.T) {
-	dr := &fakeDepthReader{rows: richRows("X1-AA1", 3)}
-	h, buyer := newSensingHandler(dr, newSensingPostRepo(), calmFleet(t), &fakePressure{})
-	var captured probebuy.Config
-	h.newBuyer = func(cfg probebuy.Config) guardedBuyer {
-		captured = cfg
-		return buyer
+func (c *capturingLogger) sawAction(want string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, action := range c.actions {
+		if action == want {
+			return true
+		}
+	}
+	return false
+}
+
+// --- pacer lifecycle -------------------------------------------------------------
+
+// countingPacer stands in for Scanner.RunPacer, which in production returns only
+// on context cancellation and so cannot be made to exit by a test.
+type countingPacer struct {
+	mu      sync.Mutex
+	release chan struct{} // closed/sent to make a running pacer return
+	// starts signals each launch AS IT HAPPENS. Counting alone is not enough:
+	// the launch is a goroutine, so a bare count read straight after a reconcile
+	// races the scheduler and can report 0 for a pacer that is about to run —
+	// a false RED. Receiving proves a launch happened; a receive that TIMES OUT
+	// proves one did not.
+	starts chan struct{}
+}
+
+func newCountingPacer() *countingPacer {
+	return &countingPacer{release: make(chan struct{}), starts: make(chan struct{}, 8)}
+}
+
+func (c *countingPacer) run(ctx context.Context, _ *parkedsensing.Scanner) {
+	c.starts <- struct{}{}
+	c.mu.Lock()
+	release := c.release
+	c.mu.Unlock()
+	select {
+	case <-ctx.Done():
+	case <-release:
+	}
+}
+
+// awaitStart blocks until one pacer launches, failing the test if none does.
+func (c *countingPacer) awaitStart(t *testing.T) {
+	t.Helper()
+	select {
+	case <-c.starts:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no pacer was launched")
+	}
+}
+
+// requireNoFurtherStart proves no ADDITIONAL pacer launches within the window —
+// the negative half, which a counter read cannot establish.
+func (c *countingPacer) requireNoFurtherStart(t *testing.T) {
+	t.Helper()
+	select {
+	case <-c.starts:
+		t.Fatal("a second pacer was launched onto the same rotation")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// rearm replaces the release channel so a relaunched pacer blocks again.
+func (c *countingPacer) rearm() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.release = make(chan struct{})
+}
+
+// ONE pacer per container, however many times the coordinator is entered.
+//
+// The container runner re-sends the SAME command — same container id, same
+// uncancelled context — after an error or a panic, up to MaxRestartAttempts. A
+// pacer launched unconditionally would therefore be launched again on every
+// retry, and two pacers popping one heap issue scans at twice the rate the
+// budget arithmetic computed. Nothing would report it: the heartbeat publishes
+// the rate HANDED to the rotation, not the rate being spent, so the fleet would
+// quietly overrun its share of the rate limiter.
+func TestPacer_RepeatedEntryStartsExactlyOne(t *testing.T) {
+	world := steadyWorld(t, map[string]string{"X1-IN1": parkedsensing.VerdictInScope})
+	pacer := newCountingPacer()
+	world.handler.runPacer = pacer.run
+
+	// Four reconciles for one container id — the restart ceiling plus the
+	// original entry.
+	for i := 0; i < 4; i++ {
+		require.NoError(t, world.handler.ReconcileOnce(world.ctx, world.cmd))
 	}
 
-	cmd := sensingCmd()
-	cmd.ProbeBudget = 40
-	cmd.PurchaseCooldownSecs = 25
-	cmd.MaxSpendPerCycle = 123_456
-	cmd.SpendWindowSecs = 777
-	require.NoError(t, h.ReconcileOnce(context.Background(), cmd))
+	pacer.awaitStart(t)
+	pacer.requireNoFurtherStart(t)
+	require.True(t, world.handler.pacerLive(world.cmd.ContainerID),
+		"a re-entered coordinator holds exactly one pacer on its rotation")
+}
 
-	require.Equal(t, 40, captured.MaxProbeFleet)
-	require.Equal(t, 25*time.Second, captured.PurchaseCooldown)
-	require.Equal(t, 123_456, captured.MaxSpendPerCycle)
-	require.Equal(t, 777*time.Second, captured.SpendWindow)
-	require.Equal(t, int64(common.ImmutableReserveFloor), captured.ReserveFloor)
+// A pacer that DIES is relaunched by the next tick, loudly.
+//
+// The panic guard around the pacer suppresses and returns rather than
+// restarting, so without this a single panic stops all parked-market scanning
+// for the life of the container — while every heartbeat still reports a healthy
+// computed rate. The failure would surface only as market data ageing without
+// bound, hours later, on the staleness gauge.
+func TestPacer_DeathIsRelaunchedNextTickAndReportedLoudly(t *testing.T) {
+	world := steadyWorld(t, map[string]string{"X1-IN1": parkedsensing.VerdictInScope})
+	pacer := newCountingPacer()
+	world.handler.runPacer = pacer.run
+	logger := &capturingLogger{}
+	ctx := common.WithLogger(world.ctx, logger)
+
+	require.NoError(t, world.handler.ReconcileOnce(ctx, world.cmd))
+	pacer.awaitStart(t)
+
+	// The pacer returns while the coordinator is still meant to be running.
+	//
+	// Waited on the LOG rather than the slot: the dying goroutine releases its
+	// slot first and logs second, so waiting on the slot can outrun the line this
+	// test is actually about. Once the log is observed the release has provably
+	// already happened, which makes the second assertion ordered rather than racy.
+	close(pacer.release)
+	require.Eventually(t, func() bool { return logger.sawAction("parked_sensing_pacer_died") },
+		2*time.Second, 5*time.Millisecond,
+		"a pacer dying under a live context is reported, not inferred from a staleness gauge hours later")
+	require.False(t, world.handler.pacerLive(world.cmd.ContainerID), "the dead pacer released its slot")
+
+	// The next tick brings it back — a one-tick outage rather than a permanent one.
+	pacer.rearm()
+	require.NoError(t, world.handler.ReconcileOnce(ctx, world.cmd))
+	pacer.awaitStart(t)
+	require.True(t, world.handler.pacerLive(world.cmd.ContainerID), "the next reconcile relaunches the pacer")
+}
+
+// An ordinary shutdown is silent. The pacer stopping because its context was
+// cancelled is correct behaviour, and reporting it would train the reader to
+// ignore the line that matters.
+func TestPacer_ShutdownIsNotReportedAsDeath(t *testing.T) {
+	world := steadyWorld(t, map[string]string{"X1-IN1": parkedsensing.VerdictInScope})
+	pacer := newCountingPacer()
+	world.handler.runPacer = pacer.run
+	logger := &capturingLogger{}
+	ctx, cancel := context.WithCancel(world.ctx)
+	ctx = common.WithLogger(ctx, logger)
+
+	require.NoError(t, world.handler.ReconcileOnce(ctx, world.cmd))
+	pacer.awaitStart(t)
+	cancel()
+
+	require.Eventually(t, func() bool { return !world.handler.pacerLive(world.cmd.ContainerID) },
+		2*time.Second, 5*time.Millisecond)
+	require.False(t, logger.sawAction("parked_sensing_pacer_died"),
+		"a cancelled context is a shutdown, not a failure")
+}
+
+// --- the stranded-claim reaper --------------------------------------------------
+
+// strandedClaim records one MARKET placement left QUEUED in the given system.
+func strandedClaim(world *cutoverWorld, system string) string {
+	waypoint := system + "-M1"
+	world.ledger.slots[waypoint] = parkedsensing.QueuedSlot{
+		Waypoint: waypoint, System: system, Kind: parkedsensing.SlotKindMarket,
+		State: parkedsensing.SlotStateQueued, PurchaseYard: system + "-Y1",
+	}
+	return waypoint
+}
+
+// The ledger events that identify each stage, assembled from the state constants
+// rather than spelled out. Spelling them would be worse here than anywhere else
+// in the suite: one of the assertions below is NEGATIVE, and a key that quietly
+// stopped matching would make "the reaper left this claim alone" pass by never
+// matching anything at all.
+func reapWriteEvent(waypoint string) string {
+	return "TransitionSlot:" + waypoint + ":" +
+		parkedsensing.SlotStateQueued + "→" + parkedsensing.SlotStateWanted
+}
+
+func reapReadEvent() string { return "SlotsByState:" + parkedsensing.SlotStateQueued }
+
+func drainReadEvent() string {
+	return "SlotsByState:" + parkedsensing.SlotStateWanted + "," + parkedsensing.SlotStateQueued
+}
+
+// THE REAPER'S POSITION IN THE TICK IS THE CONTRACT, not an implementation
+// detail, and both edges of it are load-bearing:
+//
+//   - AFTER the screening sweep, so a verdict written by THIS tick is honoured by
+//     THIS tick. Running first would read a stale map and revert claims for
+//     systems the sweep is about to restore to IN_SCOPE.
+//   - BEFORE the drain, so a claim released this tick is a WANTED placement the
+//     drain can work immediately rather than one that waits a full tick.
+//
+// Pinned through the ledger's own call sequence: SlotsByState is issued by four
+// stages and only its state list tells them apart, so the single-state QUEUED
+// read is unambiguously the reaper's and the WANTED+QUEUED read is the drain's.
+func TestReconcile_ReapRunsBetweenTheSweepAndTheDrain(t *testing.T) {
+	world := steadyWorld(t, map[string]string{"X1-GONE": parkedsensing.VerdictNoWhitelist})
+	waypoint := strandedClaim(world, "X1-GONE")
+
+	require.NoError(t, world.handler.ReconcileOnce(world.ctx, world.cmd))
+
+	sweep := world.ledger.indexOf("SystemsByVerdict:" + parkedsensing.VerdictPending)
+	reapRead := world.ledger.indexOf(reapReadEvent())
+	reapWrite := world.ledger.indexOf(reapWriteEvent(waypoint))
+	drainRead := world.ledger.indexOf(drainReadEvent())
+
+	require.NotEqual(t, -1, sweep, "the screening sweep ran")
+	require.NotEqual(t, -1, reapRead, "the reaper read the claimed placements")
+	require.NotEqual(t, -1, reapWrite, "the stranded claim was released")
+	require.NotEqual(t, -1, drainRead, "the buy queue ran")
+
+	require.Greater(t, reapRead, sweep, "the reaper runs AFTER the screening sweep, on this tick's verdicts")
+	require.Less(t, reapWrite, drainRead, "the reaper runs BEFORE the drain, so a released claim is workable this tick")
+
+	slot := world.ledger.slots[waypoint]
+	require.Equal(t, parkedsensing.SlotStateWanted, slot.State, "the claim is handed back")
+	require.Empty(t, slot.PurchaseYard, "and the yard chosen for a system we no longer watch goes with it")
+}
+
+// A system the sweep RESTORES to IN_SCOPE on this very tick keeps its claim. This
+// is the ordering above stated as behaviour: the reaper reads the verdict map
+// after the sweep has written to it, so a placement whose system just came back
+// is left for the drain — which is already reading QUEUED rows in IN_SCOPE
+// systems and will simply retry the purchase.
+func TestReconcile_VerdictRestoredThisTickIsNotReaped(t *testing.T) {
+	world := steadyWorld(t, map[string]string{"X1-BACK": parkedsensing.VerdictPending})
+	world.goods.goods["X1-BACK-M1"] = []string{"FOOD"}
+	waypoint := strandedClaim(world, "X1-BACK")
+
+	require.NoError(t, world.handler.ReconcileOnce(world.ctx, world.cmd))
+
+	require.Equal(t, parkedsensing.VerdictInScope, world.ledger.systems["X1-BACK"].Verdict,
+		"the sweep restored the system on this tick")
+	// The reaper RAN — otherwise "the claim survived" would be true for the
+	// uninteresting reason that nothing ever looked at it.
+	require.NotEqual(t, -1, world.ledger.indexOf(reapReadEvent()),
+		"the reaper read the claimed placements, so declining to reap is a decision")
+	require.Equal(t, -1, world.ledger.indexOf(reapWriteEvent(waypoint)),
+		"a claim whose system came back IN_SCOPE this tick is the drain's to work, not the reaper's")
+	require.Equal(t, parkedsensing.SlotStateQueued, world.ledger.slots[waypoint].State)
+}
+
+// Nobody watches this loop run, so a count the heartbeat does not carry is a
+// number nobody ever sees. The reap counts sit with the buy_* fields because
+// what they measure is the buy queue's own claims being handed back — buy_queued
+// going up and buy_reaped bringing it down is one story, told in one place.
+func TestReconcile_HeartbeatCarriesTheReapCounts(t *testing.T) {
+	world := steadyWorld(t, map[string]string{"X1-GONE": parkedsensing.VerdictNoWhitelist})
+	strandedClaim(world, "X1-GONE")
+	logger := &capturingLogger{}
+	ctx := common.WithLogger(world.ctx, logger)
+
+	require.NoError(t, world.handler.ReconcileOnce(ctx, world.cmd))
+
+	payload := logger.payload("parked_sensing_cycle")
+	require.NotNil(t, payload, "the tick emitted its cycle heartbeat")
+	require.Equal(t, 1, payload["buy_reaped"], "the released claim is reported")
+	require.Equal(t, 0, payload["buy_reap_skipped"], "and so is the contention count, at zero")
+}
+
+// --- the operator rescreen's engine-side effect (sp-j2efq) -----------------------
+
+// WHY THE RESCREEN VERB HAS TO EXIST, and that re-opening the verdict is enough
+// to change the answer.
+//
+// A verdict is stamped with the goods whitelist in force when it was written, and
+// NO_WHITELIST is durable — the sweep re-screens PENDING and nothing else. So an
+// operator who widens the whitelist gets no effect at all on the existing map:
+// the systems the new list would accept are exactly the ones that will never be
+// looked at again.
+//
+// The rescreen's write (sensing_systems.verdict → PENDING; pinned at the
+// persistence and daemon layers) is applied here directly, because what is under
+// test is the CONSEQUENCE: that the sweep then re-judges the system and can reach
+// a DIFFERENT verdict than the one it holds.
+func TestReconcile_RescreenLetsAWidenedWhitelistReopenASystem(t *testing.T) {
+	world := steadyWorld(t, map[string]string{"X1-ORE": parkedsensing.VerdictNoWhitelist})
+	// The market deals in URANITE, which the whitelist in force did not want.
+	world.goods.goods["X1-ORE-M1"] = []string{"URANITE"}
+	world.cmd.GoodsWhitelist = []string{"FOOD"}
+
+	require.NoError(t, world.handler.ReconcileOnce(world.ctx, world.cmd))
+	require.Equal(t, parkedsensing.VerdictNoWhitelist, world.ledger.systems["X1-ORE"].Verdict,
+		"a decided system is not re-screened, which is the whole point of the durable verdict")
+
+	// The operator widens the whitelist in config.yaml — and on its own that
+	// changes NOTHING about the map already judged.
+	world.cmd.GoodsWhitelist = []string{"FOOD", "URANITE"}
+	require.NoError(t, world.handler.ReconcileOnce(world.ctx, world.cmd))
+	require.Equal(t, parkedsensing.VerdictNoWhitelist, world.ledger.systems["X1-ORE"].Verdict,
+		"editing the whitelist alone does not re-open a system already written off")
+
+	// The rescreen verb's write, applied directly.
+	reopened := world.ledger.systems["X1-ORE"]
+	reopened.Verdict = parkedsensing.VerdictPending
+	world.ledger.systems["X1-ORE"] = reopened
+
+	require.NoError(t, world.handler.ReconcileOnce(world.ctx, world.cmd))
+	require.Equal(t, parkedsensing.VerdictInScope, world.ledger.systems["X1-ORE"].Verdict,
+		"re-opened, the sweep re-judges it under the CURRENT whitelist and reaches a different verdict")
+}
+
+// The other direction, which is the one that can strand hulls: a rotated
+// whitelist that no longer wants what a system deals in must be able to reach
+// NO_WHITELIST on a re-screen, rather than keeping a stale IN_SCOPE forever.
+func TestReconcile_RescreenLetsARotatedWhitelistCloseASystem(t *testing.T) {
+	world := steadyWorld(t, map[string]string{"X1-CC3": parkedsensing.VerdictInScope})
+	world.goods.goods["X1-CC3-M1"] = []string{"CLOTHING"}
+	world.cmd.GoodsWhitelist = []string{"FOOD"} // CLOTHING has been rotated out
+
+	reopened := world.ledger.systems["X1-CC3"]
+	reopened.Verdict = parkedsensing.VerdictPending
+	world.ledger.systems["X1-CC3"] = reopened
+
+	require.NoError(t, world.handler.ReconcileOnce(world.ctx, world.cmd))
+
+	require.Equal(t, parkedsensing.VerdictNoWhitelist, world.ledger.systems["X1-CC3"].Verdict,
+		"a system whose goods are no longer wanted is closed on the re-screen")
 }

@@ -526,6 +526,20 @@ func NewDaemonServer(
 		// Store reference for lifecycle management
 		server.scoutMetricsCollector = scoutCollector
 
+		// Parked-probe sensing collector (sp-k6v8z): the sensing coordinator's reconcile
+		// SETS all three gauges directly each tick — the pacer rate it just handed the scan
+		// rotation, the staleness percentiles of the parked fleet, and the placement census
+		// — so like the scout collector above this is event-driven and registration plus the
+		// global wire is the whole lifecycle. The coordinator reaches it through an adapter
+		// that resolves this global LAZILY per call, because handler wiring runs before this
+		// constructor does.
+		parkedSensingCollector := metrics.NewParkedSensingMetricsCollector()
+		if err := parkedSensingCollector.Register(); err != nil {
+			listener.Close()
+			return nil, fmt.Errorf("failed to register parked-sensing metrics collector: %w", err)
+		}
+		metrics.SetGlobalParkedSensingCollector(parkedSensingCollector)
+
 		// Create fleet-health collector (sp-686e): the tour coordinator's reposition exit
 		// path emits the stranded-hull counter (fleet_hull_stranded_total) through the global
 		// set here — the StrandedHull alert's source. Event-driven (no polling goroutine), so

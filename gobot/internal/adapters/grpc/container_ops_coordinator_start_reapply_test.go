@@ -45,10 +45,10 @@ func TestProbeSensingStart_RelaunchReAppliesPersistedTunes(t *testing.T) {
 	const oldID = "probe_sensing_coordinator-player-OLD"
 	const newID = "probe_sensing_coordinator-player-NEW"
 	seedTuneContainer(t, db, playerID, oldID, sensingContainerType, "probe_sensing_coordinator", "STOPPED", map[string]interface{}{
-		"container_id":        oldID,
-		"probe_budget":        90,      // tune-only — pure carry
-		"depth_floor":         3000000, // tune-only — pure carry
-		"max_spend_per_cycle": 250000,  // credit-moving; a no-flag relaunch must carry it
+		"container_id":          oldID,
+		"probe_cap":             90,     // tune-only — pure carry
+		"min_scan_rate_milli":   300,    // tune-only — pure carry
+		"capex_reserve_credits": 250000, // credit-moving; a no-flag relaunch must carry it
 	})
 	s := &DaemonServer{containerRepo: repo}
 	ctx := context.Background()
@@ -57,24 +57,24 @@ func TestProbeSensingStart_RelaunchReAppliesPersistedTunes(t *testing.T) {
 		"container_id": newID,
 	}, probeSensingStartSpec())
 	require.NoError(t, err)
-	require.Empty(t, warnings, "the sensing spend cap floors at a positive default — it can never come up uncapped, so no safety warning")
+	require.Empty(t, warnings, "every sensing knob floors at a positive documented default — none can come up permissive, so no safety warning")
 	require.Equal(t, newID, merged["container_id"], "the relaunch always takes the NEW container id")
 
 	seedTuneContainer(t, db, playerID, newID, sensingContainerType, "probe_sensing_coordinator", "RUNNING", merged)
 	show, err := s.ShowTunableConfig(ctx, "", "sensing", playerID)
 	require.NoError(t, err)
 
-	budget := reapplyKnob(t, show, "probe_budget")
-	require.Equal(t, 90, budget.Effective, "a tuned probe budget must survive the relaunch, not reset to default")
-	require.Equal(t, "live-config", budget.Source)
+	capKnob := reapplyKnob(t, show, "probe_cap")
+	require.Equal(t, 90, capKnob.Effective, "a tuned probe cap must survive the relaunch, not reset to default")
+	require.Equal(t, "live-config", capKnob.Source)
 
-	floor := reapplyKnob(t, show, "depth_floor")
-	require.Equal(t, 3000000, floor.Effective)
+	floor := reapplyKnob(t, show, "min_scan_rate_milli")
+	require.Equal(t, 300, floor.Effective)
 	require.Equal(t, "live-config", floor.Source)
 
-	spend := reapplyKnob(t, show, "max_spend_per_cycle")
-	require.Equal(t, 250000, spend.Effective, "the tuned spend cap must survive a no-flag relaunch")
-	require.Equal(t, "live-config", spend.Source)
+	reserve := reapplyKnob(t, show, "capex_reserve_credits")
+	require.Equal(t, 250000, reserve.Effective, "the tuned capex reserve must survive a no-flag relaunch")
+	require.Equal(t, "live-config", reserve.Source)
 }
 
 // The retired launch verbs answer honestly: both legacy engines' start paths return a clear

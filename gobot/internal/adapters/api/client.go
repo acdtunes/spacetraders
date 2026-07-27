@@ -586,8 +586,17 @@ func (c *SpaceTradersClient) GetWaypoint(ctx context.Context, systemSymbol, wayp
 
 	var response struct {
 		Data struct {
-			Symbol              string `json:"symbol"`
-			IsUnderConstruction bool   `json:"isUnderConstruction"`
+			Symbol              string  `json:"symbol"`
+			Type                string  `json:"type"`
+			X                   float64 `json:"x"`
+			Y                   float64 `json:"y"`
+			IsUnderConstruction bool    `json:"isUnderConstruction"`
+			Traits              []struct {
+				Symbol string `json:"symbol"`
+			} `json:"traits"`
+			Orbitals []struct {
+				Symbol string `json:"symbol"`
+			} `json:"orbitals"`
 		} `json:"data"`
 	}
 
@@ -595,9 +604,23 @@ func (c *SpaceTradersClient) GetWaypoint(ctx context.Context, systemSymbol, wayp
 		return nil, fmt.Errorf("failed to get waypoint %s: %w", waypointSymbol, err)
 	}
 
+	traits := make([]string, 0, len(response.Data.Traits))
+	for _, trait := range response.Data.Traits {
+		traits = append(traits, trait.Symbol)
+	}
+	orbitals := make([]string, 0, len(response.Data.Orbitals))
+	for _, orbital := range response.Data.Orbitals {
+		orbitals = append(orbitals, orbital.Symbol)
+	}
+
 	return &domainPorts.WaypointDetail{
 		Symbol:              response.Data.Symbol,
+		Type:                response.Data.Type,
+		X:                   response.Data.X,
+		Y:                   response.Data.Y,
 		IsUnderConstruction: response.Data.IsUnderConstruction,
+		Traits:              traits,
+		Orbitals:            orbitals,
 	}, nil
 }
 
@@ -1388,6 +1411,31 @@ func (c *SpaceTradersClient) GetMarket(ctx context.Context, systemSymbol, waypoi
 		exchangeGoods[x.Symbol] = true
 	}
 
+	// The goods CATALOGUE, mapped independently of the priced tradeGoods rows: a
+	// market GET made with no ship at the waypoint still returns the three symbol
+	// arrays but an empty tradeGoods, so a caller reading only tradeGoods sees an
+	// unvisited market as trading nothing. Deduped and kept in imports → exports →
+	// exchange order so the result is deterministic across calls.
+	catalogueSize := len(response.Data.Imports) + len(response.Data.Exports) + len(response.Data.Exchange)
+	seenSymbols := make(map[string]bool, catalogueSize)
+	tradedGoodSymbols := make([]string, 0, catalogueSize)
+	addSymbol := func(symbol string) {
+		if symbol == "" || seenSymbols[symbol] {
+			return
+		}
+		seenSymbols[symbol] = true
+		tradedGoodSymbols = append(tradedGoodSymbols, symbol)
+	}
+	for _, i := range response.Data.Imports {
+		addSymbol(i.Symbol)
+	}
+	for _, e := range response.Data.Exports {
+		addSymbol(e.Symbol)
+	}
+	for _, x := range response.Data.Exchange {
+		addSymbol(x.Symbol)
+	}
+
 	tradeGoods := make([]domainPorts.TradeGoodData, len(response.Data.TradeGoods))
 	for i, good := range response.Data.TradeGoods {
 		// Determine trade type based on which array contains this good
@@ -1412,8 +1460,9 @@ func (c *SpaceTradersClient) GetMarket(ctx context.Context, systemSymbol, waypoi
 	}
 
 	return &domainPorts.MarketData{
-		Symbol:     response.Data.Symbol,
-		TradeGoods: tradeGoods,
+		Symbol:            response.Data.Symbol,
+		TradeGoods:        tradeGoods,
+		TradedGoodSymbols: tradedGoodSymbols,
 	}, nil
 }
 

@@ -107,29 +107,39 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 			"payback_horizon_hours":     {Type: "int", Min: 1, Max: 8760, Default: autoOutfit["payback_horizon_hours"], Unit: "hours", Description: "absolute payback gate — cost must be recovered within this horizon (default 0 = off until per-hull throughput is wired)"},
 			"max_treasury_fraction_pct": {Type: "int", Min: 1, Max: 100, Default: autoOutfit["max_treasury_fraction_pct"], Unit: "percent", Description: "a single module never exceeds this fraction of live treasury"},
 		},
-		// The probe-sensing coordinator (`--operation sensing`): the ONE standing sensing engine,
-		// successor of the market-freshness sizer + frontier expansion pair. probe_budget is the
-		// single fleet-size dial; depth/threshold shape which systems earn probes; the wait band
-		// governs pressure shedding; every buy stays behind the reused fail-closed money-guard
-		// stack (25% treasury + immutable 50k floor + spend window) — consts, never knobs.
+		// The parked-probe sensing coordinator (`--operation sensing`): the ONE standing sensing
+		// engine. Probes are bought for a WAYPOINT, flown there once, and then stand still
+		// scanning forever — so there is no fleet-size dial and no tour pacing knob. What is
+		// tunable is the SHAPE OF THE BUDGET (how much of the rate-limiter ceiling sensing may
+		// take, and its floor), the shape of the ROTATION (how much more attention a hot market
+		// earns, how many scans fly at once), and the money the buy floor holds back. Every buy
+		// stays behind the fail-closed floor (immutable 50k reserve + committed capex + K hours
+		// of cargo runway) — the 50k is a const, never a knob.
 		// goods_whitelist is a string and therefore lives in the [sensing] config.yaml section
 		// (the tune mechanism is int-only), injected at container construction.
-		// REBUILD LATENCY (every key below says so): the sensing handler has no liveconfig
-		// reader, so a tune persists immediately but the RUNNING loop applies it only at the
-		// coordinator's next rebuild (daemon restart or relaunch) — never mid-run.
+		// LATENCY: the coordinator holds a liveconfig reader, so a tune applies on the NEXT
+		// RECONCILE TICK — except inflight_cap and value_clamp_r, which bind when the scan
+		// rotation is constructed and therefore apply at the next rebuild (each says so).
+		// RETIRED KEYS: probe_budget, second_probe_threshold, purchase_cooldown_secs,
+		// max_spend_per_cycle, spend_window_secs, freshness_target_secs, depth_floor and
+		// discovery_declares_per_tick belonged to the touring model and are GONE — tuning one now
+		// fails as an unknown key rather than writing a value nothing reads.
 		string(container.ContainerTypeProbeSensingCoordinator): {
-			"depth_floor":                 {Type: "int", Min: 1, Max: 100_000_000, Default: sensing["depth_floor"], Unit: "credits", Description: "whitelisted-goods market depth below which a system earns no standing probe (~bottom quartile at the default); applies at coordinator rebuild (restart/relaunch), not next tick"},
-			"probe_budget":                {Type: "int", Min: 1, Max: 200, Default: sensing["probe_budget"], Unit: "hulls", Description: "N — the single budget dial: the total probe count the fleet may hold; sizing, rotation, and the guarded buy all reconcile toward it; applies at coordinator rebuild (restart/relaunch), not next tick"},
-			"second_probe_threshold":      {Type: "int", Min: 1, Max: 200, Default: sensing["second_probe_threshold"], Unit: "markets", Description: "hot-market count above which a system earns a second probe; applies at coordinator rebuild (restart/relaunch), not next tick"},
-			"purchase_cooldown_secs":      {Type: "int", Min: 10, Max: 86_400, Default: sensing["purchase_cooldown_secs"], Unit: "seconds", Description: "min wall-clock between probe buys; applies at coordinator rebuild (restart/relaunch), not next tick"},
-			"tick_secs":                   {Type: "int", Min: 10, Max: 86_400, Default: sensing["tick_secs"], Unit: "seconds", Description: "reconcile cadence; applies at coordinator rebuild (restart/relaunch), not next tick"},
-			"wait_low_ms":                 {Type: "int", Min: 1, Max: 60_000, Default: sensing["wait_low_ms"], Unit: "milliseconds", Description: "smoothed limiter wait at or under this: full scanning, discovery allowed; applies at coordinator rebuild (restart/relaunch), not next tick"},
-			"wait_high_ms":                {Type: "int", Min: 1, Max: 600_000, Default: sensing["wait_high_ms"], Unit: "milliseconds", Description: "smoothed limiter wait at or past this: scanning sheds toward the dormancy floor; applies at coordinator rebuild (restart/relaunch), not next tick"},
-			"freshness_target_secs":       {Type: "int", Min: 60, Max: 86_400, Default: sensing["freshness_target_secs"], Unit: "seconds", Description: "freshness target stamped on every standing sensing post AND converged onto any live post whose stored target differs (so adopted/stale posts pick up the current value within one tick of the rebuild); the scout reconciler's manning watchdog reads it; MUST stay under the trade planner's 75-min sink-freshness cap or scouts pace every market stale and trading fail-closes; the tuned value applies at coordinator rebuild (restart/relaunch), not next tick"},
-			"max_spend_per_cycle":         {Type: "int", Min: 0, Max: 5_000_000, Default: sensing["max_spend_per_cycle"], Unit: "credits", Description: "max probe spend within the trailing spend window; applies at coordinator rebuild (restart/relaunch), not next tick — a tightened cap does NOT bind the running loop until a bounce"},
-			"spend_window_secs":           {Type: "int", Min: 10, Max: 86_400, Default: sensing["spend_window_secs"], Unit: "seconds", Description: "trailing window the spend cap sums over; applies at coordinator rebuild (restart/relaunch), not next tick"},
-			"discovery_declares_per_tick": {Type: "int", Min: 1, Max: 100, Default: sensing["discovery_declares_per_tick"], Unit: "posts", Description: "sweep-once frontier declares per tick — paces propagation so discovery never floods the scout reconciler; applies at coordinator rebuild (restart/relaunch), not next tick"},
-			"pressure_half_life_secs":     {Type: "int", Min: 1, Max: 3_600, Default: sensing["pressure_half_life_secs"], Unit: "seconds", Description: "smoothing half-life of the API limiter-pressure EWMA the dormancy rotation sheds against. Boot value comes from config.yaml [daemon] limiter_pressure_half_life_seconds; a tuned value persists and is applied whenever the coordinator is rebuilt (restart/relaunch)"},
+			"tick_secs":    {Type: "int", Min: 10, Max: 86_400, Default: sensing["tick_secs"], Unit: "seconds", Description: "reconcile cadence — how often placements advance, the queue drains and the scan rotation is refreshed. Applies next tick"},
+			"wait_low_ms":  {Type: "int", Min: 1, Max: 60_000, Default: sensing["wait_low_ms"], Unit: "milliseconds", Description: "smoothed limiter wait BELOW which the emergency brake recovers (x1.2/tick toward fully released). Applies next tick"},
+			"wait_high_ms": {Type: "int", Min: 1, Max: 600_000, Default: sensing["wait_high_ms"], Unit: "milliseconds", Description: "smoothed limiter wait ABOVE which the emergency brake bites (halves per tick, floored at 0.1). Braking is deliberately faster than recovery. Applies next tick"},
+
+			"probe_cap":                  {Type: "int", Min: 1, Max: 10_000, Default: sensing["probe_cap"], Unit: "hulls", Description: "hard ceiling on parked probe hulls the engine may own. A BACKSTOP against a runaway placement plan, not the growth dial — the binding constraint on fleet size is the buy floor, i.e. money. Applies next tick"},
+			"expansion_enabled":          {Type: "int", Min: 1, Max: 2, Default: sensing["expansion_enabled"], Unit: "flag", Description: "expansion engine master switch: 1=on, 2=off. NOT 0/1 — `tune <key> 0` means revert-to-default fleet-wide, so 0 would make 'off' unexpressible. Off stops frontier propagation, charting seeds and seed requests; already-placed probes keep scanning. Applies next tick"},
+			"target_util_pct":            {Type: "int", Min: 50, Max: 95, Default: sensing["target_util_pct"], Unit: "percent", Description: "share of the rate-limiter ceiling the WHOLE fleet aims to occupy; sensing takes what is left of it after every other source. The remainder is burst headroom — raising this toward 100 spends the headroom that absorbs traffic spikes. Applies next tick"},
+			"min_scan_rate_milli":        {Type: "int", Min: 10, Max: 2_000, Default: sensing["min_scan_rate_milli"], Unit: "milli-req/sec", Description: "floor the scan pacer is clamped up to, in thousandths of a request/sec (100 = 0.1 req/s). It is what guarantees planner market data never goes fully dark under API pressure, and it doubles as the residual below which expansion pauses. Applies next tick"},
+			"value_clamp_r":              {Type: "int", Min: 1, Max: 16, Default: sensing["value_clamp_r"], Unit: "ratio", Description: "ceiling on how much more scan attention the hottest market may earn than the baseline; 1 flattens the weighting entirely. Binds when the scan rotation is built, so it applies at coordinator rebuild (restart/relaunch), not next tick"},
+			"inflight_cap":               {Type: "int", Min: 1, Max: 8, Default: sensing["inflight_cap"], Unit: "scans", Description: "concurrent parked scans. It is the backpressure reflex: with every token held the pacer BLOCKS rather than queueing, so a degraded API throttles scan issuance at the source. Binds when the scan rotation is built, so it applies at coordinator rebuild (restart/relaunch), not next tick"},
+			"capital_multiplier_k":       {Type: "int", Min: 0, Max: 10, Default: sensing["capital_multiplier_k"], Unit: "hours", Description: "hours of the TRADING fleet's measured cargo runway the probe buy floor holds back on top of the immutable 50k reserve — so a busier fleet automatically raises the floor. Applies next tick"},
+			"capex_reserve_credits":      {Type: "int", Min: 0, Max: 5_000_000, Default: sensing["capex_reserve_credits"], Unit: "credits", Description: "credits the probe buy floor holds back for ship capex already committed elsewhere. Adds to the immutable 50k reserve; it never weakens it. Applies next tick"},
+			"quartermaster_cadence_secs": {Type: "int", Min: 300, Max: 86_400, Default: sensing["quartermaster_cadence_secs"], Unit: "seconds", Description: "a YARD slot's re-read interval. A FLOOR on its scan interval, never a target: hull prices move on their own schedule, so the budget may slow a yard down but never speed it past this. Applies next tick"},
+
+			"pressure_half_life_secs": {Type: "int", Min: 1, Max: 3_600, Default: sensing["pressure_half_life_secs"], Unit: "seconds", Description: "smoothing half-life of the API limiter-pressure EWMA the emergency brake reads. Boot value comes from config.yaml [daemon] limiter_pressure_half_life_seconds; a tuned value persists and is applied whenever the coordinator is rebuilt (restart/relaunch)"},
 		},
 		string(container.ContainerTypeScoutPostCoordinator): {
 			"manning_stall_cycles":             {Type: "int", Min: 1, Max: 1440, Default: scoutPost["manning_stall_cycles"], Unit: "cycles", Description: "MINIMUM consecutive stale reconcile cycles before a silent fully-manned post is re-manned; each post's window is raised to its own circuit period (the soonest its worst-case market age could improve), so tuning this only ever lengthens the wait"},

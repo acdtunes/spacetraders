@@ -28,12 +28,41 @@ const (
 	PurposeRetry    Purpose = "retry"
 )
 
+// Source classifies which fleet activity drove an API request. Where Purpose
+// splits requests by HTTP shape (poll/transact/retry), Source splits them by
+// the work being done, so the sensing budget can be derived as the residual
+// the other consumers leave under the ceiling.
+//
+// The taxonomy is deliberately coarse and quota-free: sensing is the only
+// source with unbounded appetite, while trading, contracts, navigation and
+// bootstrap are intrinsically bounded by fleet size and tour structure.
+// Bounded sources need right-of-way, not rations.
+type Source string
+
+const (
+	SourceScanning   Source = "scanning"
+	SourceCharting   Source = "charting"
+	SourceTrading    Source = "trading"
+	SourceContract   Source = "contract"
+	SourceNavigation Source = "navigation"
+	SourceBootstrap  Source = "bootstrap"
+
+	// SourceUnspecified is the zero value: an attempt made on a call path that
+	// carries no source tag. Residual arithmetic counts it as non-sensing, so
+	// an untagged caller can only ever shrink the sensing budget, never
+	// inflate it.
+	SourceUnspecified Source = ""
+)
+
 // Event is one observed HTTP attempt against the SpaceTraders API.
 type Event struct {
 	// Hull is the ship symbol this request concerned, or "" if the request was
 	// not ship-scoped (e.g. GET /my/agent, GET /systems/*).
-	Hull        string
-	Purpose     Purpose
+	Hull    string
+	Purpose Purpose
+	// Source is the fleet activity that drove the request, or
+	// SourceUnspecified on a call path that carries no tag.
+	Source      Source
 	Timestamp   time.Time
 	RateLimited bool // true if this attempt received a 429
 }

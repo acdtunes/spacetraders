@@ -64,8 +64,8 @@ func TestAutosizerAPIUtilReader_AbsentSurface_FailsClosed(t *testing.T) {
 func TestAutosizerAPIUtilReader_RealTracker_IsReadable(t *testing.T) {
 	clock := &shared.MockClock{CurrentTime: shared.NewRealClock().Now()}
 	tracker := metrics.NewAPIBudgetTracker(2.0, clock) // 2 req/s ceiling — the live limiter's rate
-	tracker.Record("SHIP-1", apibudget.PurposePoll, false)
-	tracker.Record("SHIP-1", apibudget.PurposeTransact, false)
+	tracker.Record("SHIP-1", apibudget.PurposePoll, apibudget.SourceUnspecified, false)
+	tracker.Record("SHIP-1", apibudget.PurposeTransact, apibudget.SourceUnspecified, false)
 
 	reader := &autosizerAPIUtilReader{reporter: tracker}
 	pct, readable, err := reader.UtilizationPct(context.Background())

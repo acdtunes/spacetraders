@@ -13,6 +13,8 @@ import (
 	expansionAdapters "github.com/andrescamacho/spacetraders-go/internal/adapters/expansion"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/graph"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/grpc"
+	metricsAdapter "github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
+	parkedSensingAdapters "github.com/andrescamacho/spacetraders-go/internal/adapters/parkedsensing"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/routing"
 	autooutfitCmd "github.com/andrescamacho/spacetraders-go/internal/application/autooutfit"
@@ -1067,33 +1069,80 @@ func run(cfg *config.Config) error {
 		shipRepo, waypointRepo, api.NewConstructionSiteRepository(apiClient, playerRepo),
 	)
 
-	// Probe-sensing coordinator: the fleet's ONE standing sensing engine (successor of the
-	// market-freshness sizer + frontier expansion pair). Each tick it reconciles the
-	// whitelist-scoped footprint — standing posts sized by market depth (marketRepo's
-	// depth census), the pressure-driven dormancy rotation (the API client's live
-	// limiter-pressure EWMA), sweep-once discovery declares over the stored gate graph,
-	// and the budgeted probe buy behind the SHARED money-guard stack
-	// (probebuy.GuardedProbeBuyer). It declares posts through the SAME scout-post repo
-	// the reconciler mans and partitions; it moves and claims NOTHING. shipRepo is the
-	// read-only FleetReader; transactionRepo the ledger-derived, restart-safe
-	// cooldown/spend window; expansionPhase the era gate that holds the whole tick
-	// inert until the home jump gate is built.
+	// Parked-probe sensing coordinator: the fleet's ONE standing sensing engine. Its model
+	// is PARKED probes — a hull is bought for a WAYPOINT, flown there once, and then stands
+	// still scanning forever — so steady-state sensing costs navigation nothing and the only
+	// recurring spend is the scans, paced fleet-wide by a single rotation against whatever
+	// rate-limiter headroom the rest of the fleet leaves. It owns no algorithm: each tick it
+	// composes the five engines in internal/application/parkedsensing (screen → buy queue →
+	// placements → expansion → scan rotation) over the durable sensing ledger, and on its
+	// FIRST tick it cuts over from the retired touring model (screening the known map offline,
+	// retiring every scout post but home, adopting the orphaned probes as spares).
+	//
+	// expansionPhase is the era gate that holds the whole tick inert — cutover included —
+	// until the home jump gate is built; before then bootstrap provisions probes and the
+	// scout-post coordinator mans them. marketRepo serves the cutover's offline census only.
 	probeSensingHandler := scoutingCmd.NewRunProbeSensingCoordinatorHandler(
-		marketRepo, scoutPostRepo, shipRepo, apiClient.LimiterPressure(), transactionRepo, expansionPhase, nil, // nil = use RealClock
+		marketRepo, scoutPostRepo, shipRepo, apiClient.LimiterPressure(), expansionPhase, nil, // nil = use RealClock
 	)
-	// Live treasury for the 25% guard — nil would fail-close every buy.
-	probeSensingHandler.SetTreasuryReader(expansionAdapters.NewTreasuryReader(apiClient))
-	// Price-and-buy over the existing purchase_ship machinery, demand-proximal via the
-	// shared probeYardFinder (sp-hej4), landing the probe undedicated for the reconciler
-	// to relay; the ledger-backed purchaser keeps the per-yard price-impact term.
-	probeSensingHandler.SetProbePurchaser(expansionAdapters.NewProbePurchaser(med, shipRepo, probeYardFinder, transactionRepo, nil))
-	// The discovery pair, wired together or not at all: the stored gate adjacency the
-	// sweep-once propagation walks, and the persisted waypoint catalog whose swept
-	// knowledge excludes marketless systems — the gate graph without the catalog would
-	// re-declare swept-marketless neighbours forever.
-	probeSensingHandler.SetGateGraph(gateGraphService)
-	probeSensingHandler.SetWaypointCatalog(waypointRepo)
+	// The engine's outbound surface, wired as ONE unit: a half-wired engine is a wedge
+	// rather than a degraded mode (it would plan placements forever and fill none), so the
+	// coordinator checks the bundle is complete and holds the tick fail-closed if it is not.
+	// Every adapter here is thin — the money guards, the purchase machinery, the movement
+	// verbs and the market scanner are all reused unmodified.
+	//
+	// Built PER PLAYER, like constructionActivatorFactory above: two of the reads sit in
+	// player-scoped tables while their port signatures carry no player (the shipyard
+	// inventory behind ListProbeYards, and the catalog sweep stamp behind CatalogKnown), so
+	// the player has to be bound into the adapter — and this handler is a registered
+	// singleton serving every player's ticks. The factory result is memoised per player.
+	sensingLedgerPort := parkedSensingAdapters.NewLedgerPort(persistence.NewSensingLedgerRepository(db))
+	sensingMarketGoods := parkedSensingAdapters.NewMarketGoodsPort(db)
+	probeSensingHandler.SetEnginePortsFactory(func(sensingPlayerID int) scoutingCmd.SensingEnginePorts {
+		// One catalog adapter instance serves the screen, the buy queue's yard lookup and
+		// expansion's uncharted walk, so the three can never disagree about what is in a
+		// system. DB-only by contract — ListProbeYards especially, whose locality the
+		// drain's free-skip accounting depends on.
+		catalog := parkedSensingAdapters.NewWaypointCatalogPort(waypointRepo, db, sensingPlayerID)
+		return scoutingCmd.SensingEnginePorts{
+			Ledger:    sensingLedgerPort,
+			Waypoints: catalog,
+			Uncharted: catalog,
+			// The market cache: what a market deals in, how deep it is, and the
+			// two-sided quotes the spread weighting reads (columns CROSSED — see
+			// MarketPrices, where an uncrossed wiring fails silently).
+			MarketGoods: sensingMarketGoods,
+			SpreadOf:    sensingMarketGoods,
+			// The screen's only genuine API spend: the goods CATALOGUE of a charted
+			// market no hull has visited, which survives a presence-less GET.
+			RemoteMarket: parkedSensingAdapters.NewRemoteMarketPort(apiClient, playerRepo),
+			// Money: the same live-treasury reader every other guard uses, and the
+			// trading fleet's measured cargo outflow, which is what makes the probe
+			// buy floor dynamic rather than a fixed number.
+			Treasury:   parkedSensingAdapters.NewTreasuryPort(expansionAdapters.NewTreasuryReader(apiClient)),
+			CargoSpend: parkedSensingAdapters.NewCargoSpendPort(transactionRepo),
+			Purchaser:  parkedSensingAdapters.NewProbePurchasePort(med, shipRepo),
+			Ships:      parkedSensingAdapters.NewShipPositionPort(db),
+			Fleet:      parkedSensingAdapters.NewFleetTagPort(shipRepo),
+			Mover:      parkedSensingAdapters.NewMoverPort(med),
+			// Per-system stored gate adjacency — never the whole-map read, and never a
+			// fetch-through resolver.
+			Gates:    parkedSensingAdapters.NewGateNeighbourPort(gateEdgeRepo),
+			SeedShip: parkedSensingAdapters.NewSeedCommandPort(med, apiClient, playerRepo, waypointRepo, marketScanner),
+			Scan:     parkedSensingAdapters.NewScanRunnerPort(marketScanner),
+			Home:     parkedSensingAdapters.NewHomeSystemPort(db),
+			// The budget the whole model is sized against: sensing is the RESIDUAL
+			// consumer, so it reads how much of the ceiling everyone else is using.
+			Budget: parkedSensingAdapters.NewBudgetRatePort(metricsAdapter.GetGlobalAPIBudgetTracker(), api.RateLimitPerSecond),
+		}
+	})
+	// Per-tick live view of the persisted config, so `tune --operation sensing` takes
+	// effect on the NEXT reconcile rather than at the next rebuild (mirrors probeBuyer).
+	probeSensingHandler.SetLiveConfigReader(grpc.NewContainerConfigReader(containerRepo))
 	probeSensingHandler.SetEventRecorder(captainEventRepo) // emit coordinator error-loop events on reconcile streak breach
+	// Resolves the collector lazily per call: the metrics collectors are installed by
+	// NewDaemonServer, which runs after this wiring, so a captured reference would be nil.
+	probeSensingHandler.SetMetricsRecorder(parkedSensingAdapters.NewMetricsPort())
 	if err := mediator.RegisterHandler[*scoutingCmd.RunProbeSensingCoordinatorCommand](med, probeSensingHandler); err != nil {
 		return fmt.Errorf("failed to register ProbeSensingCoordinator handler: %w", err)
 	}

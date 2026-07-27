@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"slices"
 	"sync"
 	"time"
 
@@ -42,7 +43,7 @@ func NewAPIBudgetTracker(ceilingReqPerSec float64, clock shared.Clock) *APIBudge
 }
 
 // Record appends one observed API attempt. Safe to call on a nil receiver.
-func (t *APIBudgetTracker) Record(hull string, purpose apibudget.Purpose, rateLimited bool) {
+func (t *APIBudgetTracker) Record(hull string, purpose apibudget.Purpose, source apibudget.Source, rateLimited bool) {
 	if t == nil {
 		return
 	}
@@ -53,10 +54,50 @@ func (t *APIBudgetTracker) Record(hull string, purpose apibudget.Purpose, rateLi
 	t.events = append(t.events, apibudget.Event{
 		Hull:        hull,
 		Purpose:     purpose,
+		Source:      source,
 		Timestamp:   now,
 		RateLimited: rateLimited,
 	})
 	t.pruneLocked(now)
+}
+
+// NonSourceRate is the observed request rate (req/s) of every attempt whose
+// Source is NOT in excluded, over the trailing window. It answers "how much of
+// the ceiling is everyone else using", which is the residual the sensing budget
+// is sized against.
+//
+// Untagged attempts (apibudget.SourceUnspecified) always count as
+// non-excluded, so an untagged call path can only shrink the sensing budget,
+// never inflate it. window is clamped to retentionWindow — the tracker cannot
+// answer for a span longer than it retains, and silently reporting a rate
+// diluted by unretained time would understate the competition. Safe to call on
+// a nil receiver (returns 0).
+func (t *APIBudgetTracker) NonSourceRate(window time.Duration, excluded ...apibudget.Source) float64 {
+	if t == nil || window <= 0 {
+		return 0
+	}
+	if window > retentionWindow {
+		window = retentionWindow
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	now := t.clock.Now()
+	t.pruneLocked(now)
+
+	cutoff := now.Add(-window)
+	count := 0
+	for _, e := range t.events {
+		if e.Timestamp.Before(cutoff) || e.Timestamp.After(now) {
+			continue
+		}
+		if slices.Contains(excluded, e.Source) {
+			continue
+		}
+		count++
+	}
+	return float64(count) / window.Seconds()
 }
 
 // Report computes the current DualReport snapshot from retained events. Safe

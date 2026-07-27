@@ -264,6 +264,13 @@ service DaemonService {
   // StopConstructionPipeline cancels the active construction pipeline for a site (sp-yzrv)
   rpc StopConstructionPipeline(StopConstructionPipelineRequest) returns (StopConstructionPipelineResponse);
 
+  // SensingRescreen re-opens every sensing system verdict for a player (sp-j2efq): the supported
+  // response to editing config.yaml's [sensing] goods_whitelist mid-era. Verdicts are stamped with
+  // the whitelist in force when they were written and NO_WHITELIST is durable, so without this a
+  // changed list never re-opens the systems it would now accept. Writes sensing_systems.verdict and
+  // nothing else — the placements, their hulls and their scan history are untouched (RULINGS #4).
+  rpc SensingRescreen(SensingRescreenRequest) returns (SensingRescreenResponse);
+
   // ConstructionGoodOverride sets or clears one good's per-good buy-gating override (the sp-sdyo
   // override map) on a RUNNING construction pipeline live, with no restart (sp-pdb3). The
   // coordinator / task activator re-read the persisted overrides on their next discovery pass.
@@ -1699,6 +1706,20 @@ message StopConstructionPipelineResponse {
   string status = 3;         // pipeline status after cancellation (CANCELLED)
   int32 tasks_cancelled = 4;
   string message = 5;
+}
+
+// SensingRescreenRequest re-opens every sensing verdict for one player (sp-j2efq). No knobs: the
+// verb is all-or-nothing by design — a partial rescreen would leave the ledger judged under two
+// different whitelists at once, which is the very state it exists to resolve.
+message SensingRescreenRequest {
+  int32 player_id = 1;
+  optional string agent_symbol = 2;
+}
+
+// SensingRescreenResponse reports how many system verdicts were returned to PENDING for the
+// steady-state sweep to re-judge under the current whitelist.
+message SensingRescreenResponse {
+  int64 systems_reopened = 1;
 }
 
 // ConstructionGoodOverrideRequest sets or clears ONE good's per-good buy-gating override on a

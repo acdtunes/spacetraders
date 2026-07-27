@@ -1163,6 +1163,19 @@ func (c *DaemonClient) ConstructionWorkerCap(ctx context.Context, constructionSi
 	return resp, nil
 }
 
+// SensingRescreen re-opens every sensing system verdict for a player (sp-j2efq),
+// so the steady-state sweep re-judges them under the CURRENT goods whitelist.
+func (c *DaemonClient) SensingRescreen(ctx context.Context, playerID int32, agentSymbol *string) (*pb.SensingRescreenResponse, error) {
+	resp, err := c.client.SensingRescreen(ctx, &pb.SensingRescreenRequest{
+		PlayerId:    playerID,
+		AgentSymbol: agentSymbol,
+	})
+	if err != nil {
+		return nil, fmt.Errorf(grpcCallFailed, err)
+	}
+	return resp, nil
+}
+
 // TuneContainerConfig sets (or, with value 0, reverts) one live knob on a running
 // container's persisted config, with no container restart (sp-vwek).
 func (c *DaemonClient) TuneContainerConfig(ctx context.Context, containerID, operation, key string, value int64, playerID *int32, agentSymbol *string) (*pb.TuneContainerConfigResponse, error) {

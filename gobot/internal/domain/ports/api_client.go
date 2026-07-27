@@ -245,12 +245,32 @@ type JumpGateData struct {
 type WaypointDetail struct {
 	Symbol              string
 	IsUnderConstruction bool
+	// Type, X, Y, Traits and Orbitals are the waypoint's physical description,
+	// decoded so a caller that has just CHARTED a waypoint can write what it
+	// revealed back to the waypoint cache. That write is what clears the
+	// UNCHARTED trait: a charting tour picks its next stop from the stored
+	// uncharted set, so a chart whose result is never persisted leaves the
+	// waypoint looking uncharted forever and the tour charting it on every tick.
+	//
+	// The gate graph reads none of these and is unaffected by them.
+	Type     string
+	X, Y     float64
+	Traits   []string
+	Orbitals []string
 }
 
 // Market DTOs
 type MarketData struct {
-	Symbol     string
+	Symbol string
+	// TradeGoods are the PRICED rows, which the API only returns when the player
+	// has a ship present at the waypoint.
 	TradeGoods []TradeGoodData
+	// TradedGoodSymbols is the market's goods CATALOGUE — the union of its
+	// imports, exports and exchange lists, deduped and in that declaration order.
+	// Unlike TradeGoods it survives a presence-less GET, so a caller that only
+	// needs to know WHAT a market deals in (the parked-probe whitelist screen)
+	// can read an unvisited market without mistaking "no prices" for "no goods".
+	TradedGoodSymbols []string
 }
 
 type TradeGoodData struct {
