@@ -247,6 +247,22 @@ Where the engine automates a behavior, the book only says how to interpret or tu
 - **Merged is not proven.** Verify every deploy live at the EFFECT point, against the FAILING
   case named on the bead — never a healthy neighbor sharing its label. Visual features are
   proven on screen, never by backing-store queries.
+- **Broken is not proven either — find the CURRENT design before declaring a defect.** Grep
+  every bead for the subsystem, closed ones included (`.beads/issues.jsonl`), newest first: a
+  closed bead that SHIPPED supersedes an open DESIGN bead that only described the plan, and
+  supersession is PARTIAL — premise and guards can stand while one mechanism section is dead.
+  Absence is not evidence: a null config value is expected wherever RULINGS #2/#3 recompute
+  from durable inputs, and a zero counter often means "nothing to do". Prove it at the
+  behaviour, never at the config row.
+- **Worked example — contract standby homing.** Authority is sp-ojp32 + sp-yv230 (closed,
+  shipped); sp-9le3x STEP 1's greedy weighted p-median and its demand-ranked homing are DEAD,
+  ripped out for concentrating hulls on the top hub. `standby_stations` is always null by
+  design — `isCentralSink()` recomputes the era-invariant central bands from the durable
+  MARKETPLACE trait every pass. `0 hull(s) re-homed this pass` means already correctly placed.
+  Scattered idle hulls are the TARGET, one per distinct central band: read the BAND letter,
+  never the symbol — symbols regenerate each era, bands do not. Never `fleet hub add` to "fix"
+  perceived clustering; the spread is 1.51× against 1.28× for a single standby point, and a
+  hand-set hub overwrites a correct runtime resolution with a worse one.
 - Three or more bugs sharing one root cause means you are fighting the architecture — file
   the structural fix instead of patch N+1. When a fix unblocks a previously-masked code
   path, the newly-reachable path is exactly where the next bug hides — verify it. One
