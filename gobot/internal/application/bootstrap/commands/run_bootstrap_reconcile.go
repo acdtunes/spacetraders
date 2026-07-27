@@ -82,8 +82,9 @@ type reconcileResult struct {
 	DesiredWorkers       int  // the tick's gate-worker sizing target (for the heartbeat)
 
 	// COMPLETE tallies.
-	HandoffLaunched bool // the autosizer + standing coordinators were launched this tick (the hand-off)
-	Done            bool // terminal: COMPLETE reached and handed off — the reconcile loop may exit
+	HandoffLaunched          bool // the autosizer + standing coordinators were launched this tick (the hand-off)
+	ConstructionHullsToTrade int  // gate construction hulls re-dedicated to the TRADE fleet this tick (sp-hv4f6): the gate is built, so its workers stop earning until they are put back to work
+	Done                     bool // terminal: COMPLETE reached and handed off — the reconcile loop may exit
 
 	// sp-sjvv: the fleet autosizer was launched EARLY this tick (armed cold-start scaling). Test-only
 	// observability — deliberately NOT in the heartbeat delta (keeping the flag-off log byte-identical);
@@ -735,7 +736,7 @@ func (h *RunBootstrapCoordinatorHandler) declareHomeScoutPost(ctx context.Contex
 func (h *RunBootstrapCoordinatorHandler) emitHeartbeat(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, phase Phase, obs Observation, res reconcileResult) {
 	logger := common.LoggerFromContext(ctx)
 
-	delta := fmt.Sprintf("bought=%d home_post=%v haulers_bought=%d trade_seeded=%v frigate_retired=%v batch_contract=%v frigate_loop=%v purchaser_released=%v construction_started=%v mfg_ensured=%v mfg_bounced=%v workers_released=%d gate_workers_bought=%d handoff=%v", res.Purchased, res.HomePostDeclared, res.HaulersBought, res.TradeHullSeeded, res.FrigateRetired, res.ContractRun, res.FrigateLoopStarted, res.PurchaserReleased, res.ConstructionStartRan, res.MfgEnsured, res.MfgBounced, res.WorkersReleased, res.GateWorkersBought, res.HandoffLaunched)
+	delta := fmt.Sprintf("bought=%d home_post=%v haulers_bought=%d trade_seeded=%v frigate_retired=%v batch_contract=%v frigate_loop=%v purchaser_released=%v construction_started=%v mfg_ensured=%v mfg_bounced=%v workers_released=%d gate_workers_bought=%d construction_hulls_to_trade=%d handoff=%v", res.Purchased, res.HomePostDeclared, res.HaulersBought, res.TradeHullSeeded, res.FrigateRetired, res.ContractRun, res.FrigateLoopStarted, res.PurchaserReleased, res.ConstructionStartRan, res.MfgEnsured, res.MfgBounced, res.WorkersReleased, res.GateWorkersBought, res.ConstructionHullsToTrade, res.HandoffLaunched)
 	next := h.nextAction(phase, obs)
 	blockers := res.Blocker
 	if blockers == "" {

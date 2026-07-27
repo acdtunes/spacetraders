@@ -495,6 +495,13 @@ func (h *RunBootstrapCoordinatorHandler) actExpansion(ctx context.Context, cmd *
 	// EXPANSION tick reaches it; its own guard makes repeats write-free.
 	h.releaseHomeScoutReinforcement(ctx, cmd, cfg, obs, res)
 
+	// ...and REDIRECTS the gate's construction hulls to trade, on the same world signal and for the same
+	// reason: the gate reads BUILT, so its workers have no work left. Placed here with the home release
+	// so both fire on every EXPANSION tick, confirmed hand-off or bounded-WARN alike. The destination is
+	// ENSURED FIRST, so the hulls are handed into a fleet somebody is actually working.
+	h.ensureTradeFleetCoordinator(ctx, cmd, cfg)
+	h.redirectConstructionHullsToTrade(ctx, cmd, cfg, obs, res)
+
 	if !handedOff {
 		// Hold and retry while the fault could still be transient, so a fleet that has only just finished
 		// its gate exits with the standing economy confirmed live rather than on the bounded path.
@@ -577,6 +584,155 @@ func (h *RunBootstrapCoordinatorHandler) releaseHomeScoutReinforcement(ctx conte
 		"container_id": cmd.ContainerID,
 		"system":       obs.HomeSystem,
 		"min_hulls":    expansionHomeMinHulls,
+	})
+}
+
+// selectConstructionHullsForTrade picks the gate-construction hulls to hand to the trade fleet (sp-hv4f6):
+// every manufacturing-dedicated hull the observation reports as genuinely FREE — idle and not in transit
+// (GateWorkerSnapshot.Idle is exactly that conjunction) — in deterministic symbol order so the hand-over
+// is stable and logs read the same across ticks.
+//
+// A BUSY hull is deliberately left construction-dedicated: it is mid-delivery, and a hull yanked into
+// trade with an unfinished construction leg is the strand this selection exists to prevent. It is not
+// written off, either — the selection is re-derived from the fresh observation on every EXPANSION tick,
+// so a hull that lands and goes idle is picked up by a later tick or by the next daemon boot (bootstrap
+// is boot-standing and EXPANSION is monotone, so it re-observes and re-runs).
+//
+// Returning nil — nothing free to redirect — is the ordinary case on an already-redirected fleet, and
+// the caller turns it into zero port calls.
+func selectConstructionHullsForTrade(obs Observation) []string {
+	free := make([]string, 0, len(obs.GateWorkerHulls))
+	for _, worker := range obs.GateWorkerHulls {
+		if worker.Idle {
+			free = append(free, worker.Symbol)
+		}
+	}
+	if len(free) == 0 {
+		return nil
+	}
+	sort.Strings(free) // deterministic (lowest-symbol first), mirroring selectGateSurplus
+	return free
+}
+
+// ensureTradeFleetCoordinator makes the standing trade-fleet coordinator RUNNING at EXPANSION, so the
+// hulls the redirect hands over are actually worked instead of pinned to an unmanaged fleet.
+//
+// Nothing else guarantees this at EXPANSION. LaunchStandingCoordinators is a no-op since the factory
+// retirement (sp-hoj8u); ContainerTypeTradeFleetCoordinator is NOT a member of
+// bootStandingCoordinatorTypes, so it has no unconditional boot launch; and the only other caller of
+// LaunchTradeFleetCoordinator is the INCOME-phase trade-seed, which a MATURE fleet restarting into a
+// built world never reaches — it derives EXPANSION on its first tick. That fleet would otherwise
+// inherit whatever RecoverRunningContainers happened to re-adopt from a persisted RUNNING row.
+//
+// It runs UNCONDITIONALLY, not only when there are hulls to redirect: on a fleet whose hulls an earlier
+// run already re-tagged there is nothing left to hand over, and that restart is precisely the one that
+// must confirm somebody is working them. Calling it every tick is safe because the launcher is
+// idempotent (it skips a coordinator already RUNNING/PENDING) — the same contract the standing-
+// coordinator launch beside it already relies on, and the EXPANSION tick budget is bounded by
+// expansionHandoffRetryTicks.
+//
+// Best-effort, like everything else on this path: it never claims res.Blocker and never affects Done. A
+// failed launch must NOT suppress the redirect either — a trade-tagged hull waiting for a coordinator is
+// strictly better than a construction-tagged hull that idles forever — so the caller runs the redirect
+// regardless and this reports on its own line.
+func (h *RunBootstrapCoordinatorHandler) ensureTradeFleetCoordinator(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig) {
+	logger := common.LoggerFromContext(ctx)
+
+	if cfg.DryRun {
+		logger.Log("INFO", "Bootstrap DRY-RUN: WOULD ensure the standing trade-fleet coordinator so the redirected gate hulls are worked (took no action)", map[string]interface{}{
+			"action":       "bootstrap_would_ensure_trade_coordinator",
+			"container_id": cmd.ContainerID,
+		})
+		return
+	}
+	if h.handoff == nil {
+		logger.Log("WARN", "Bootstrap EXPANSION has no hand-off launcher wired — cannot ensure the trade-fleet coordinator, so redirected hulls wait for one to be launched", map[string]interface{}{
+			"action":       "bootstrap_trade_coordinator_expansion_skipped",
+			"container_id": cmd.ContainerID,
+		})
+		return
+	}
+	if err := h.handoff.LaunchTradeFleetCoordinator(ctx, cmd.PlayerID, cmd.AgentSymbol); err != nil {
+		logger.Log("ERROR", fmt.Sprintf("Bootstrap EXPANSION failed to ensure the trade-fleet coordinator (the redirect still runs; retried next tick/boot, and the exit is not held on it): %v", err), map[string]interface{}{
+			"action":       "bootstrap_trade_coordinator_expansion_error",
+			"container_id": cmd.ContainerID,
+		})
+		return
+	}
+	logger.Log("INFO", "Bootstrap EXPANSION ensured the standing trade-fleet coordinator — the gate hulls handed to trade are put on continuous tours", map[string]interface{}{
+		"action":       "bootstrap_trade_coordinator_ensured_expansion",
+		"container_id": cmd.ContainerID,
+	})
+}
+
+// redirectConstructionHullsToTrade hands the gate's construction hulls to the TRADE fleet once the arc
+// reaches EXPANSION (sp-hv4f6). The gate is built, and gate construction is the SOLE consumer of the
+// "manufacturing" dedication — the goods-factory coordinator that also drew on it was retired with the
+// factories (sp-hoj8u) — so every hull still carrying that tag is a large-cargo hull polling a finished
+// site. Trade is where it earns again.
+//
+// It ASSIGNS rather than un-dedicates, and that distinction is load-bearing. Clearing the tag to "" (what
+// the GATE-phase surplus re-balance does) works during GATE only because the contract scaler's
+// reclaim-before-buy tier is mid-ramp and adopts from the idle pool. At EXPANSION there is no such
+// adopter for trade: the trade coordinator partitions on hulls ALREADY tagged "trade", the fleet
+// autosizer tags only hulls it BUYS, and the capacity reconciler that once auto-pinned idle hulls was
+// deleted (sp-y2ptq). An un-dedicated gate hull would simply idle — strictly worse than leaving it alone.
+//
+// IDEMPOTENCE IS DERIVED, NOT STORED. There is no "already done" flag: the selection comes from the live
+// observation, and a redirected hull carries "trade", so the observer stops counting it as a gate worker
+// and the next tick selects an empty set and calls nothing. That is restart-safe for free (a dropped
+// in-memory flag cannot desync from the world) and strictly better than a latch, which would write off
+// any hull that happened to be mid-delivery on the one tick it fired. The adapter re-guards each hull at
+// write time as well, so even a stale observation performs zero writes.
+//
+// Best-effort, exactly like the home-floor release beside it: it NEVER sets res.Blocker and never affects
+// Done. A mature fleet must not be pinned in the per-tick full-fleet re-read over a fleet re-tag, and a
+// failure leaves the hulls construction-dedicated, so the next tick — or the next daemon boot — retries.
+func (h *RunBootstrapCoordinatorHandler) redirectConstructionHullsToTrade(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, cfg bootstrapRunConfig, obs Observation, res *reconcileResult) {
+	logger := common.LoggerFromContext(ctx)
+
+	hulls := selectConstructionHullsForTrade(obs)
+	if len(hulls) == 0 {
+		return // nothing free to redirect (the steady state once the hand-over has happened)
+	}
+	if cfg.DryRun {
+		logger.Log("INFO", fmt.Sprintf("Bootstrap DRY-RUN: WOULD redirect %d idle gate-construction hull(s) to the trade fleet now the gate is built: %v (took no action)", len(hulls), hulls), map[string]interface{}{
+			"action":       "bootstrap_would_redirect_construction_hulls",
+			"container_id": cmd.ContainerID,
+			"ships":        hulls,
+		})
+		return
+	}
+	if h.gateReleaser == nil {
+		logger.Log("WARN", fmt.Sprintf("Bootstrap EXPANSION could not redirect %d idle gate-construction hull(s) to trade: no gate releaser wired — they keep the construction dedication until the next boot", len(hulls)), map[string]interface{}{
+			"action":       "bootstrap_construction_hulls_to_trade_skipped",
+			"container_id": cmd.ContainerID,
+			"ships":        hulls,
+		})
+		return
+	}
+
+	redirected, err := h.gateReleaser.ReleaseGateWorkersToTrade(ctx, cmd.PlayerID, hulls)
+	if err != nil {
+		// The count is untrustworthy alongside an error, so nothing is tallied from a failed call — the
+		// hulls stay construction-dedicated and the next tick/boot re-derives and retries.
+		logger.Log("ERROR", fmt.Sprintf("Bootstrap EXPANSION failed to redirect gate-construction hulls to trade (retried next tick/boot; the exit is not held on it): %v", err), map[string]interface{}{
+			"action":       "bootstrap_construction_hulls_to_trade_error",
+			"container_id": cmd.ContainerID,
+			"ships":        hulls,
+		})
+		return
+	}
+	if redirected == 0 {
+		return // every candidate was re-guarded away at write time — nothing landed, nothing to report
+	}
+	res.ConstructionHullsToTrade += redirected
+	logger.Log("INFO", fmt.Sprintf("Bootstrap EXPANSION redirected %d of %d idle gate-construction hull(s) to the trade fleet — the gate is built, so its workers go back to earning instead of polling a finished site", redirected, len(hulls)), map[string]interface{}{
+		"action":       "bootstrap_construction_hulls_to_trade",
+		"container_id": cmd.ContainerID,
+		"redirected":   redirected,
+		"candidates":   len(hulls),
+		"ships":        hulls,
 	})
 }
 

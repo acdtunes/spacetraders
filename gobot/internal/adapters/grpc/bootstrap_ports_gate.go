@@ -23,6 +23,7 @@ import (
 	bootstrapCmd "github.com/andrescamacho/spacetraders-go/internal/application/bootstrap/commands"
 	contractScalerCmd "github.com/andrescamacho/spacetraders-go/internal/application/contractscaler/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contractscaler"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -276,7 +277,34 @@ type bootstrapGateSurplusReleaser struct{ shipRepo navigation.ShipRepository }
 // ReleaseSurplusGateWorkers un-dedicates the requested manufacturing hulls that are still idle, returning how
 // many it released. A fleet-read error surfaces (hold the release fail-closed); an AssignFleet error stops
 // early and returns the partial count (a hull left dedicated is safe — re-balanced a later tick).
+//
+// It does NOT require cargo capacity, because the destination does its own check: the contract scaler's
+// isReclaimable — the adopter of everything this drops in the idle pool — already refuses a 0-cargo hull.
+// The trade redirect below has no such downstream filter and therefore carries the guard itself.
 func (r *bootstrapGateSurplusReleaser) ReleaseSurplusGateWorkers(ctx context.Context, playerID int, shipSymbols []string) (int, error) {
+	return r.retagGateWorkers(ctx, playerID, shipSymbols, "", false)
+}
+
+// ReleaseGateWorkersToTrade re-dedicates the requested manufacturing hulls to the TRADE fleet — the
+// EXPANSION hand-off's redirect (sp-hv4f6). It names a destination rather than clearing to the idle pool
+// because at EXPANSION nothing would pick them up: the trade coordinator partitions on hulls ALREADY
+// tagged "trade", the fleet autosizer tags only hulls it BUYS, and the capacity reconciler that once
+// auto-pinned idle hulls was deleted (sp-y2ptq) — an un-dedicated gate hull would idle indefinitely
+// unless the contract scaler happened to be mid-ramp. Same guards as the surplus release, plus the
+// cargo-capacity floor (a 0-cargo hull cannot trade, and unlike the idle pool the trade fleet has no
+// downstream predicate to reject it).
+func (r *bootstrapGateSurplusReleaser) ReleaseGateWorkersToTrade(ctx context.Context, playerID int, shipSymbols []string) (int, error) {
+	return r.retagGateWorkers(ctx, playerID, shipSymbols, tradeFleetTag, true)
+}
+
+// retagGateWorkers is the one guarded write both gate-worker re-dedications share, so their safety
+// guards can never drift apart. It RE-GUARDS every requested hull against the LIVE fleet — still
+// manufacturing-dedicated (never touch one re-tagged since the observation), still idle and not in
+// transit (never yank a hull mid-delivery) — and writes through the single AssignFleet path (RULINGS
+// #3). requireCargo additionally skips cargo-incapable hulls. Fail-closed on a fleet-read error (write
+// nothing on an unknown fleet); an AssignFleet error stops early and returns the PARTIAL count, since a
+// hull left construction-dedicated is safe and is retried on a later tick.
+func (r *bootstrapGateSurplusReleaser) retagGateWorkers(ctx context.Context, playerID int, shipSymbols []string, targetFleet string, requireCargo bool) (int, error) {
 	if len(shipSymbols) == 0 {
 		return 0, nil
 	}
@@ -295,7 +323,7 @@ func (r *bootstrapGateSurplusReleaser) ReleaseSurplusGateWorkers(ctx context.Con
 	released := 0
 	for _, ship := range ships {
 		if !requested[ship.ShipSymbol()] {
-			continue // never touch a hull outside the selected surplus set
+			continue // never touch a hull outside the selected set
 		}
 		if ship.DedicatedFleet() != manufacturingFleetTag {
 			continue // re-tagged/adopted since the observation → skip
@@ -303,8 +331,14 @@ func (r *bootstrapGateSurplusReleaser) ReleaseSurplusGateWorkers(ctx context.Con
 		if !ship.IsIdle() || ship.IsInTransit() {
 			continue // picked up a construction task since the observation → never yank mid-task
 		}
-		if err := r.shipRepo.AssignFleet(ctx, ship.ShipSymbol(), "", pid); err != nil {
-			return released, fmt.Errorf("release surplus gate worker %s → undedicated: %w", ship.ShipSymbol(), err)
+		if requireCargo && ship.CargoCapacity() <= 0 {
+			continue // cargo-incapable: a probe pinned to a hauling fleet can never earn there
+		}
+		if contract.IsCommandHull(ship) {
+			continue // RULINGS #7: the flagship is excluded from every re-dedication path
+		}
+		if err := r.shipRepo.AssignFleet(ctx, ship.ShipSymbol(), targetFleet, pid); err != nil {
+			return released, fmt.Errorf("re-dedicate gate worker %s → %q: %w", ship.ShipSymbol(), targetFleet, err)
 		}
 		released++
 	}

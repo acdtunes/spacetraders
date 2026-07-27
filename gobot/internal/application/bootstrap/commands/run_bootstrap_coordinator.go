@@ -327,6 +327,17 @@ type GateSurplusReleaser interface {
 	// is never yanked mid-task; an AssignFleet error stops early and returns the partial count (a hull left
 	// dedicated is safe — re-balanced a later tick). A fleet-read error surfaces (release nothing, fail-closed).
 	ReleaseSurplusGateWorkers(ctx context.Context, playerID int, shipSymbols []string) (int, error)
+
+	// ReleaseGateWorkersToTrade re-dedicates the given manufacturing hulls to the TRADE fleet at the
+	// EXPANSION hand-off (sp-hv4f6), returning how many it actually re-tagged. It is the same guarded
+	// write as ReleaseSurplusGateWorkers but names a DESTINATION instead of clearing to the idle pool,
+	// because at EXPANSION there is no adopter to clear them to: the trade coordinator works only hulls
+	// ALREADY tagged "trade", the fleet autosizer tags only hulls it BUYS, and the capacity reconciler
+	// that once auto-pinned idle hulls was deleted (sp-y2ptq) — so an un-dedicated gate hull would sit
+	// idle indefinitely unless the contract scaler happened to have a ramp deficit. It carries the same
+	// re-guards (still manufacturing-dedicated, still idle, not in transit) plus a cargo-capacity guard,
+	// so a hull mid-delivery is never yanked and a 0-cargo hull never lands in the trade pool.
+	ReleaseGateWorkersToTrade(ctx context.Context, playerID int, shipSymbols []string) (int, error)
 }
 
 // GateWorkerAcquirer price-checks and buys ONE gate-construction worker hull and dedicates it to
