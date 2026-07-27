@@ -1688,7 +1688,18 @@ func (e *ProductionExecutor) redockFromAPI(
 	return nil
 }
 
-// deliverInputs sells all cargo (inputs) at the current location
+// deliverInputs sells the hauled inputs to the factory the ship is docked at.
+//
+// Only goods this market actually takes are offered (marketBuys), and every good is
+// independent: a refused sell is held aboard and the rest of the hold still delivers.
+// A hold carrying ONE good the factory won't take used to abort the whole sourcing
+// step on the first rejection — and, because nothing reconciles a hold between lots,
+// that hold stays poisoned and the hull is disabled permanently. The revenue of
+// whatever did sell is returned in full; the old hard-return discarded it.
+//
+// Nothing sellable is a no-op, not an error: it is indistinguishable from docking with
+// an empty hold, which this step has always accepted, and the production poll
+// downstream carries its own bounds.
 func (e *ProductionExecutor) deliverInputs(
 	ctx context.Context,
 	ship *navigation.Ship,
@@ -1697,9 +1708,25 @@ func (e *ProductionExecutor) deliverInputs(
 ) (int, error) {
 	logger := common.LoggerFromContext(ctx)
 	totalRevenue := 0
+	deliveredGoods := 0
 
-	// Sell each cargo item
+	// The market the sell will actually transact against is the one the hull is docked
+	// at, so the eligibility read is anchored to the ship's own location — the same
+	// waypoint the cargo handler resolves its trade volume from.
+	waypointSymbol := ship.CurrentLocation().Symbol
+	var listings *market.Market
+	if data, err := e.marketRepo.GetMarketData(ctx, waypointSymbol, playerID.Value()); err == nil {
+		listings = data
+	}
+
 	for _, item := range ship.Cargo().Inventory {
+		if !marketBuys(listings, item.Symbol) {
+			logger.Log("INFO", fmt.Sprintf("Holding %d units of %s aboard at %s — this market does not buy it", item.Units, item.Symbol, waypointSymbol), map[string]interface{}{
+				"good": item.Symbol, "ship": ship.ShipSymbol(), "waypoint": waypointSymbol,
+			})
+			continue
+		}
+
 		sellCmd := &shipCargo.SellCargoCommand{
 			ShipSymbol: ship.ShipSymbol(),
 			GoodSymbol: item.Symbol,
@@ -1709,15 +1736,23 @@ func (e *ProductionExecutor) deliverInputs(
 
 		sellResp, err := e.mediator.Send(ctx, sellCmd)
 		if err != nil {
-			return 0, fmt.Errorf("failed to sell %s: %w", item.Symbol, err)
+			// Cause in the MESSAGE: the container-log renderer drops metadata.
+			logger.Log("WARNING", fmt.Sprintf("Could not deliver %d units of %s at %s — held aboard, delivering the rest of the hold: %v", item.Units, item.Symbol, waypointSymbol, err), map[string]interface{}{
+				"good": item.Symbol, "ship": ship.ShipSymbol(), "waypoint": waypointSymbol, "error": err.Error(),
+			})
+			continue
 		}
 
 		response, ok := sellResp.(*shipCargo.SellCargoResponse)
 		if !ok {
-			return 0, fmt.Errorf("unexpected response type from sell command")
+			logger.Log("WARNING", fmt.Sprintf("Unexpected response type delivering %s at %s — held aboard", item.Symbol, waypointSymbol), map[string]interface{}{
+				"good": item.Symbol, "ship": ship.ShipSymbol(), "waypoint": waypointSymbol,
+			})
+			continue
 		}
 
 		totalRevenue += response.TotalRevenue
+		deliveredGoods++
 
 		logger.Log("INFO", fmt.Sprintf("Delivered input: %d units of %s (revenue: %d credits)", response.UnitsSold, item.Symbol, response.TotalRevenue), map[string]interface{}{
 			"input_good": item.Symbol,
@@ -1726,16 +1761,44 @@ func (e *ProductionExecutor) deliverInputs(
 		})
 	}
 
+	if deliveredGoods == 0 && !ship.Cargo().IsEmpty() {
+		logger.Log("WARNING", fmt.Sprintf("Delivered nothing at %s: none of the %d onboard good(s) are bought here — the hold rides on and production runs on factory stock", waypointSymbol, len(ship.Cargo().Inventory)), map[string]interface{}{
+			"ship": ship.ShipSymbol(), "waypoint": waypointSymbol, "onboard_goods": len(ship.Cargo().Inventory),
+		})
+	}
+
 	return totalRevenue, nil
+}
+
+// marketBuys reports whether the market described by listings will take good off a
+// hull: it must be listed there, as an IMPORT (a consumer) or an EXCHANGE (a trader) —
+// the same sell-destination eligibility SellMarketDistributor applies. An EXPORT
+// listing is the market's own product, and selling into it ladders its own bid down;
+// that is the resale-sink divergence SellFabricatedOutputAtSink exists to prevent, so
+// a factory's own output is never dumped back at the factory.
+//
+// Unreadable listings answer true: with nothing to read there is no basis to withhold
+// a delivery, a sell spends nothing, and the caller tolerates the refusal if the market
+// does reject it. Withholding on a stale row would stall a fabrication over a data gap.
+func marketBuys(listings *market.Market, good string) bool {
+	if listings == nil {
+		return true
+	}
+	tradeGood := listings.FindGood(good)
+	if tradeGood == nil {
+		return false
+	}
+	return tradeGood.TradeType() != market.TradeTypeExport
 }
 
 // freeCargoSpace sells whatever is currently in the ship's hold at its current
 // docked market so a full hold does not block an input purchase (sp-mu6u).
-// Unlike deliverInputs (which hard-fails on the first item this market won't
-// buy), this is best-effort: an item this market doesn't import is skipped
+// Best-effort like deliverInputs: an item this market doesn't import is skipped
 // rather than aborting the whole attempt, since the goal here is only to make
-// room, not to guarantee every item sells. Returns the reloaded ship
-// reflecting whatever did sell.
+// room, not to guarantee every item sells. It offers the hold unfiltered — a
+// rejection costs one call and the goal is space at any price — where
+// deliverInputs pre-filters on the listing to avoid dumping into an export bid.
+// Returns the reloaded ship reflecting whatever did sell.
 //
 // protectGood (sp-rqwm) is a good this make-room path must NEVER sell here — the
 // fabricated OUTPUT. The output is sold ONLY at the guard's resale sink
