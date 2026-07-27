@@ -55,12 +55,11 @@ func TestConstructionDrain_FansMaterialsToLiftHaulerCeiling(t *testing.T) {
 
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
 
-	cmd := newDrainCommand()
-	// The tick hands its lot-tasks off and returns; the workers rendezvous at the barrier behind it.
-	resp, err := handler.drainOnce(context.Background(), cmd)
-	if err != nil {
-		t.Fatalf("drainOnce: %v", err)
-	}
+	done := make(chan *RunConstructionCoordinatorResponse, 1)
+	go func() {
+		resp, _ := handler.drainOnce(context.Background(), newDrainCommand())
+		done <- resp
+	}()
 
 	timedOut := false
 	select {
@@ -69,7 +68,7 @@ func TestConstructionDrain_FansMaterialsToLiftHaulerCeiling(t *testing.T) {
 		timedOut = true
 	}
 	close(producer.release)
-	resp.TasksDrained += handler.awaitSupplies(cmd.ContainerID)
+	resp := <-done
 
 	if timedOut {
 		t.Fatalf("expected %d haulers dispatched concurrently for 2 materials; the drain stayed capped at #materials (peak in-flight=%d) — the --max-workers-is-dead ceiling", workers, producer.peakInFlight())
@@ -134,7 +133,7 @@ func TestConstructionDrain_FanoutDoesNotOverSupplyPastRequirement(t *testing.T) 
 	shipRepo := newDrainShipRepo(nDrainHaulers(t, 5)...)
 
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
-	resp, err := drainSettled(t, handler, context.Background(), newDrainCommand())
+	resp, err := handler.drainOnce(context.Background(), newDrainCommand())
 	if err != nil {
 		t.Fatalf("drainOnce: %v", err)
 	}

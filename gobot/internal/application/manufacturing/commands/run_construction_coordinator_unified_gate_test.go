@@ -60,7 +60,7 @@ func TestConstructionDrain_UnifiedGateFill_ShortCircuitsFrozenBuyFinal(t *testin
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
 	handler.SetTreeResolver(resolver)
 
-	if _, err := drainSettled(t, handler, context.Background(), newDrainCommand()); err != nil {
+	if _, err := handler.drainOnce(context.Background(), newDrainCommand()); err != nil {
 		t.Fatalf("drainOnce: %v", err)
 	}
 
@@ -87,7 +87,7 @@ func TestConstructionDrain_UnifiedGateFill_StampsGateModeOnProduceContext(t *tes
 
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
 
-	if _, err := drainSettled(t, handler, context.Background(), newDrainCommand()); err != nil {
+	if _, err := handler.drainOnce(context.Background(), newDrainCommand()); err != nil {
 		t.Fatalf("drainOnce: %v", err)
 	}
 

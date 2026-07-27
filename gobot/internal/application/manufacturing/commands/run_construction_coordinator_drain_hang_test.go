@@ -51,7 +51,7 @@ func TestConstructionDrain_PhantomCargo4219_ResyncsAndDefersWithoutFailing(t *te
 	shipRepo := newDrainShipRepo(ladenHauler(t, "HAULER-7", "ADVANCED_CIRCUITRY", 40))
 
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
-	resp, err := drainSettled(t, handler, context.Background(), newDrainCommand())
+	resp, err := handler.drainOnce(context.Background(), newDrainCommand())
 	if err != nil {
 		t.Fatalf("a 4219 phantom-cargo rejection must not fail the tick, got %v", err)
 	}
@@ -78,11 +78,10 @@ func TestConstructionDrain_PhantomCargo4219_ResyncsAndDefersWithoutFailing(t *te
 // already at the gate wedged group.Wait() and the whole tick went silent; now each task is bounded and
 // isolated, so a bad task defers while its peers drain.
 func TestConstructionDrain_PhantomCargo4219_KeepsTickingToOtherTasks(t *testing.T) {
-	// Two distinct pipelines/materials so each task drains on its own hull under the concurrent
-	// dispatch, with two worker slots so both are startable in the SAME tick.
-	badPipeline := newDrainPipelineWithWorkers(t, "ADVANCED_CIRCUITRY", 200, 2)
+	// Two distinct pipelines/materials so each task drains on its own hull under the concurrent dispatch.
+	badPipeline := newDrainPipeline(t, "ADVANCED_CIRCUITRY", 200)
 	badTask := readyConstructionTask(t, badPipeline, "ADVANCED_CIRCUITRY")
-	goodPipeline := newDrainPipelineWithWorkers(t, "FAB_MATS", 100, 2)
+	goodPipeline := newDrainPipeline(t, "FAB_MATS", 100)
 	goodTask := readyConstructionTask(t, goodPipeline, "FAB_MATS")
 
 	// The producer 4219s ONLY the phantom good; the healthy good sources + delivers normally.
@@ -104,7 +103,7 @@ func TestConstructionDrain_PhantomCargo4219_KeepsTickingToOtherTasks(t *testing.
 	)
 
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
-	resp, err := drainSettled(t, handler, context.Background(), newDrainCommand())
+	resp, err := handler.drainOnce(context.Background(), newDrainCommand())
 	if err != nil {
 		t.Fatalf("drainOnce must not error when one task 4219s, got %v", err)
 	}
@@ -135,7 +134,7 @@ func TestConstructionDrain_EmptyHull_NotRoutedToReDeliver(t *testing.T) {
 	shipRepo := newDrainShipRepo(newTestHauler(t, "HAULER-7", nil)) // cargo 0 (honest, post-write-back)
 
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
-	if _, err := drainSettled(t, handler, context.Background(), newDrainCommand()); err != nil {
+	if _, err := handler.drainOnce(context.Background(), newDrainCommand()); err != nil {
 		t.Fatalf("drainOnce: %v", err)
 	}
 
@@ -151,11 +150,10 @@ func TestConstructionDrain_EmptyHull_NotRoutedToReDeliver(t *testing.T) {
 }
 
 // sp-6zkg (REPRO — the hang, the incident): a WEDGED supply task (a downstream op that never returns,
-// even one that ignores ctx — the "silent for hours until a daemon bounce" signature) must NOT hold
-// its worker forever. The tick no longer joins its workers, so the hang it can cause is subtler and
-// no less fatal: a wedged supply permanently retires a slot under max_workers, and enough of them
-// starve the drain of dispatch capacity while it still reports RUNNING. The per-task timeout
-// ABANDONS the wedge and gives the slot back; without it the worker never retires.
+// even one that ignores ctx — the "silent for hours until a daemon bounce" signature) must NOT freeze
+// the whole drain. With a per-task timeout, drainOnce ABANDONS the wedged task and returns; without it
+// group.Wait() blocks forever. The watchdog proves the coordinator goroutine is freed (a bounded step),
+// not left hung — pre-fix this test times out on the watchdog instead of the per-task deadline.
 func TestConstructionDrain_WedgedSupplyTask_TimesOutInsteadOfHanging(t *testing.T) {
 	pipeline := newDrainPipeline(t, "FAB_MATS", 100)
 	task := readyConstructionTask(t, pipeline, "FAB_MATS")
@@ -171,30 +169,23 @@ func TestConstructionDrain_WedgedSupplyTask_TimesOutInsteadOfHanging(t *testing.
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
 	handler.taskTimeout = 40 * time.Millisecond // tiny bound keeps the test fast
 
-	cmd := newDrainCommand()
-	if _, err := handler.drainOnce(context.Background(), cmd); err != nil {
-		t.Fatalf("drainOnce: %v", err)
+	returned := make(chan struct{})
+	go func() {
+		_, _ = handler.drainOnce(context.Background(), newDrainCommand())
+		close(returned)
+	}()
+
+	select {
+	case <-returned:
+		// drainOnce returned despite the wedged task — the coordinator goroutine was NOT frozen.
+	case <-time.After(2 * time.Second):
+		t.Fatal("drainOnce did NOT return — a wedged supply task hung the whole drain (no per-task timeout): the sp-6zkg silent hang")
 	}
 
 	// Confirm the producer's sourcing was actually entered and blocked (the task genuinely wedged),
 	// so the pass is due to the timeout bounding it, not the task never starting.
-	select {
-	case <-producer.entered:
-	case <-time.After(2 * time.Second):
-		t.Fatal("expected the wedged supply task to have started")
-	}
-
-	freed := make(chan struct{})
-	go func() {
-		handler.awaitSupplies(cmd.ContainerID)
-		close(freed)
-	}()
-
-	select {
-	case <-freed:
-		// The worker retired despite the wedged task — its slot came back.
-	case <-time.After(2 * time.Second):
-		t.Fatal("the wedged supply task never released its worker slot (no per-task timeout): the sp-6zkg silent hang, now as a permanently spent max_workers slot")
+	if !producer.wasEntered() {
+		t.Fatal("expected the wedged supply task to have started before the timeout abandoned it")
 	}
 }
 

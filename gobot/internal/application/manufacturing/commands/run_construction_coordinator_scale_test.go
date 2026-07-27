@@ -59,11 +59,11 @@ func TestConstructionDrain_ScalesConcurrencyToMaxWorkersAcrossDedicatedPool(t *t
 
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
 
-	cmd := newDrainCommand()
-	resp, err := handler.drainOnce(context.Background(), cmd)
-	if err != nil {
-		t.Fatalf("drainOnce: %v", err)
-	}
+	done := make(chan *RunConstructionCoordinatorResponse, 1)
+	go func() {
+		resp, _ := handler.drainOnce(context.Background(), newDrainCommand())
+		done <- resp
+	}()
 
 	timedOut := false
 	select {
@@ -72,7 +72,7 @@ func TestConstructionDrain_ScalesConcurrencyToMaxWorkersAcrossDedicatedPool(t *t
 		timedOut = true
 	}
 	close(producer.release)
-	resp.TasksDrained += handler.awaitSupplies(cmd.ContainerID)
+	resp := <-done
 
 	if timedOut {
 		t.Fatalf("expected %d dedicated haulers dispatched concurrently for 2 materials; the drain never saw its dedicated fleet / stayed capped (peak in-flight=%d) — the sp-e55b+sp-vr9q incident", workers, producer.peakInFlight())
@@ -80,10 +80,8 @@ func TestConstructionDrain_ScalesConcurrencyToMaxWorkersAcrossDedicatedPool(t *t
 	if peak := producer.peakInFlight(); peak != workers {
 		t.Fatalf("expected concurrency lifted to max_workers=%d across the dedicated pool (not ~1-2), got peak %d", workers, peak)
 	}
-	// max_workers, not the pool, is the ceiling: 8 of the 9 dedicated hulls work this tick and the 9th
-	// takes the first slot a haul gives back.
-	if got := shipRepo.claimCount(); got != workers {
-		t.Fatalf("expected the dedicated pool tapped up to max_workers=%d, got %d claims", workers, got)
+	if got := shipRepo.claimCount(); got != 9 {
+		t.Fatalf("expected the whole 9-hull dedicated pool tapped (lots minted to min(pool, remaining)), got %d claims", got)
 	}
 	if resp.TasksDrained <= 2 {
 		t.Fatalf("expected >2 lot-tasks drained (fan-out past #materials=2 across the pool), got %d", resp.TasksDrained)
@@ -136,16 +134,12 @@ func (p *slowLaneTopUpProducer) totalDelivered() int {
 	return p.deliveredSum
 }
 
-// sp-vr9q #2 (SLOW HULL DOES NOT STARVE THE LANES): one material with a 6-hull-load bill, 6 idle
-// haulers, max_workers 3. The FIRST hull's source blocks (a long ADV feed) and holds its slot for the
-// whole test. The other five lanes must STILL all be worked — successive ticks keep refilling the two
-// slots the slow hull leaves free — so five non-slow deliveries land while it is still blocked.
+// sp-vr9q #2 (SLOW HULL DOES NOT STARVE THE LANES — continuous top-up): one material with a
+// 6-hull-load bill, 6 idle haulers, max_workers 3. The FIRST hull's source blocks (a long ADV feed).
+// The other five lanes must STILL be dispatched — the two free worker slots keep pulling the next lot
+// as each fast hull frees — so five non-slow deliveries land while the slow hull is still blocked.
 // Before the fix the ceiling capped lots at max_workers=3, so only two fast lanes ran and then the pool
 // idled behind the slow hull (concurrency held at 1); the test times out waiting for the 3rd delivery.
-//
-// The top-up is now ACROSS ticks rather than inside one: a tick starts what the running hauls leave
-// free and returns, and the next tick re-derives the fan-out from live hulls instead of from a plan
-// made before the haul began. A freed slot therefore waits at most one tick interval.
 func TestConstructionDrain_SlowHullDoesNotStarveOtherLanes_TopUpContinues(t *testing.T) {
 	const remaining = 240 // 6 hull-loads (hull cap 40)
 	pipeline := newDrainPipelineWithWorkers(t, "FAB_MATS", remaining, 3)
@@ -160,48 +154,45 @@ func TestConstructionDrain_SlowHullDoesNotStarveOtherLanes_TopUpContinues(t *tes
 	taskRepo := &drainStubTaskRepo{tasks: []*manufacturing.ManufacturingTask{task}}
 	pipelineRepo := &drainStubPipelineRepo{pipelines: map[string]*manufacturing.ManufacturingPipeline{pipeline.ID(): pipeline}}
 
-	// The slow hull sits SECOND, so the first wave pairs a fast hull with the material's real ready task
-	// and hands the slow hull a fan-out clone. It genuinely holds one of the three slots for the whole
-	// test while the fast lanes have to keep being refilled around it.
-	ships := []*navigation.Ship{newTestHauler(t, "GATE-HAULER-2", nil), newTestHauler(t, "GATE-HAULER-SLOW", nil)}
-	for i := 0; i < 4; i++ {
-		ships = append(ships, newTestHauler(t, fmt.Sprintf("GATE-HAULER-%d", i+3), nil))
+	// The slow hull is listed FIRST, so it is paired with the original ready task's lot and dispatched
+	// in the first worker wave (it genuinely holds a slot while the fast lanes must top up around it).
+	ships := []*navigation.Ship{newTestHauler(t, "GATE-HAULER-SLOW", nil)}
+	for i := 0; i < 5; i++ {
+		ships = append(ships, newTestHauler(t, fmt.Sprintf("GATE-HAULER-%d", i+2), nil))
 	}
 	shipRepo := newDrainShipRepo(ships...)
 
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
 
-	// While the slow hull is blocked, the five OTHER lanes must all be worked. Each tick starts what
-	// the slow lane leaves free and returns; the per-wave wait bounds the sequence, so a drain that
-	// stopped refilling fails here instead of hanging.
-	cmd := newDrainCommand()
-	drained, fast := 0, 0
-	for tick := 0; tick < 12 && fast < 5; tick++ {
-		resp, err := handler.drainOnce(context.Background(), cmd)
-		if err != nil {
-			t.Fatalf("tick %d drainOnce: %v", tick, err)
-		}
-		drained += resp.TasksDrained
-		for wave := true; wave && fast < 5; {
-			select {
-			case <-producer.fastDelivered:
-				fast++
-			case <-time.After(100 * time.Millisecond):
-				wave = false // this wave's fast lanes are spent; the next tick refills their slots
-			}
+	done := make(chan *RunConstructionCoordinatorResponse, 1)
+	go func() {
+		resp, _ := handler.drainOnce(context.Background(), newDrainCommand())
+		done <- resp
+	}()
+
+	// While the slow hull is blocked, the five OTHER lanes must all be dispatched via top-up.
+	deadline := time.After(2 * time.Second)
+	fast := 0
+collect:
+	for fast < 5 {
+		select {
+		case <-producer.fastDelivered:
+			fast++
+		case <-deadline:
+			break collect
 		}
 	}
-	close(producer.release) // release the slow lane
-	drained += handler.awaitSupplies(cmd.ContainerID)
+	close(producer.release) // release the slow lane so drainOnce can finish
+	resp := <-done
 
 	if fast < 5 {
-		t.Fatalf("a slow hull starved the other lanes: only %d of 5 non-slow lanes were worked while it blocked — the drain held concurrency at 1 instead of refilling the freed slots", fast)
+		t.Fatalf("a slow hull starved the other lanes: only %d of 5 non-slow lanes were dispatched while it blocked — the drain held concurrency at 1 instead of topping up the freed slots", fast)
 	}
-	// Over-supply guard preserved: the fanned lots together never buy past the 240-unit requirement.
+	// Over-supply guard preserved: the concurrent lots together never buy past the 240-unit requirement.
 	if got := producer.totalDelivered(); got > remaining {
 		t.Fatalf("over-supply: the fanned lots delivered %d units past the %d-unit requirement", got, remaining)
 	}
-	if drained < 5 {
-		t.Fatalf("expected the freed lanes to keep draining (≥5 lot-tasks), got %d", drained)
+	if resp.TasksDrained < 5 {
+		t.Fatalf("expected the freed lanes to keep draining (≥5 lot-tasks), got %d", resp.TasksDrained)
 	}
 }

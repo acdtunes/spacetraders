@@ -159,11 +159,15 @@ func TestConstructionDrain_DispatchesConcurrently(t *testing.T) {
 
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
 
-	cmd := newDrainCommand()
-	resp, err := handler.drainOnce(context.Background(), cmd)
-	if err != nil {
-		t.Fatalf("drainOnce: %v", err)
+	type result struct {
+		resp *RunConstructionCoordinatorResponse
+		err  error
 	}
+	done := make(chan result, 1)
+	go func() {
+		resp, err := handler.drainOnce(context.Background(), newDrainCommand())
+		done <- result{resp, err}
+	}()
 
 	timedOut := false
 	select {
@@ -172,28 +176,28 @@ func TestConstructionDrain_DispatchesConcurrently(t *testing.T) {
 		timedOut = true
 	}
 	close(producer.release)
-	resp.TasksDrained += handler.awaitSupplies(cmd.ContainerID)
+	res := <-done
 
 	if timedOut {
 		t.Fatalf("expected %d supplyTask workers in flight at once; the drain serialized on one hull (peak in-flight=%d)", workers, producer.peakInFlight())
 	}
+	if res.err != nil {
+		t.Fatalf("drainOnce: %v", res.err)
+	}
 	if peak := producer.peakInFlight(); peak != workers {
 		t.Fatalf("expected peak concurrency %d, got %d", workers, peak)
 	}
-	if resp.TasksDrained != 3 {
-		t.Fatalf("expected all 3 tasks drained concurrently, got %d", resp.TasksDrained)
+	if res.resp.TasksDrained != 3 {
+		t.Fatalf("expected all 3 tasks drained concurrently, got %d", res.resp.TasksDrained)
 	}
 	if got := shipRepo.claimCount(); got != 3 {
 		t.Fatalf("expected 3 distinct hull claims, got %d", got)
 	}
 }
 
-// #2 — max_workers CAPS the supplies IN FLIGHT. With 5 ready tasks and 5 idle haulers but a pipeline
-// max_workers of 2, at most 2 supplies may run at once. Because a worker now outlives the tick that
-// started it, the cap has to hold ACROSS ticks: a tick may only start what the hauls still running
-// leave free, so a second tick against two blocked supplies must start NOTHING. The barrier of 2
-// proves 2 really run in parallel; the peak proves no third ever joins them, while successive ticks
-// still drive all 5 tasks to completion.
+// #2 — max_workers CAPS concurrency (it was vestigial). With 5 ready tasks and 5 idle haulers but
+// a pipeline max_workers of 2, at most 2 workers may run at once. The barrier of 2 proves >=2 run
+// in parallel; the cap proves no more than 2 ever overlap (peak stays 2 while all 5 are drained).
 func TestConstructionDrain_CapsConcurrencyAtMaxWorkers(t *testing.T) {
 	const workers = 2
 	pipeline := newDrainPipelineWithWorkers(t, "FAB_MATS", 100000, workers)
@@ -206,10 +210,11 @@ func TestConstructionDrain_CapsConcurrencyAtMaxWorkers(t *testing.T) {
 
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
 
-	cmd := newDrainCommand()
-	if _, err := handler.drainOnce(context.Background(), cmd); err != nil {
-		t.Fatalf("first drainOnce: %v", err)
-	}
+	done := make(chan *RunConstructionCoordinatorResponse, 1)
+	go func() {
+		resp, _ := handler.drainOnce(context.Background(), newDrainCommand())
+		done <- resp
+	}()
 
 	timedOut := false
 	select {
@@ -217,38 +222,17 @@ func TestConstructionDrain_CapsConcurrencyAtMaxWorkers(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		timedOut = true
 	}
+	close(producer.release)
+	resp := <-done
+
 	if timedOut {
 		t.Fatalf("expected at least %d workers to run in parallel; peak in-flight=%d", workers, producer.peakInFlight())
 	}
-
-	// Both slots are held by supplies still hauling. Three idle haulers and three ready tasks remain,
-	// and the tick must still refuse to start any of them.
-	saturated, err := handler.drainOnce(context.Background(), cmd)
-	if err != nil {
-		t.Fatalf("saturated drainOnce: %v", err)
-	}
-	if saturated.NoWorkReason != noWorkWorkersSaturated {
-		t.Fatalf("a tick with every slot in flight must report %q, got %q", noWorkWorkersSaturated, saturated.NoWorkReason)
-	}
-	if got := shipRepo.claimCount(); got != workers {
-		t.Fatalf("max_workers=%d must bound the hulls claimed while %d supplies are in flight, got %d claims", workers, workers, got)
-	}
-
-	close(producer.release)
-	drained := handler.awaitSupplies(cmd.ContainerID)
-	for tick := 0; tick < 10 && drained < 5; tick++ {
-		resp, err := drainSettled(t, handler, context.Background(), cmd)
-		if err != nil {
-			t.Fatalf("tick %d drainOnce: %v", tick, err)
-		}
-		drained += resp.TasksDrained
-	}
-
 	if peak := producer.peakInFlight(); peak != workers {
 		t.Fatalf("max_workers=%d must cap concurrency at %d, but peak in-flight was %d", workers, workers, peak)
 	}
-	if drained < 5 {
-		t.Fatalf("expected all 5 tasks eventually drained under the cap across ticks, got %d", drained)
+	if resp.TasksDrained != 5 {
+		t.Fatalf("expected all 5 tasks eventually drained under the cap, got %d", resp.TasksDrained)
 	}
 }
 
@@ -266,7 +250,7 @@ func TestConstructionDrain_PerWorkerSourcingAndProgress_NoRace(t *testing.T) {
 	shipRepo := newDrainShipRepo(nDrainHaulers(t, 3)...)
 
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
-	resp, err := drainSettled(t, handler, context.Background(), newDrainCommand())
+	resp, err := handler.drainOnce(context.Background(), newDrainCommand())
 	if err != nil {
 		t.Fatalf("drainOnce: %v", err)
 	}

@@ -98,7 +98,7 @@ func TestConstructionDrain_FabricateMaterial_ResolvesScarcityGatedTree(t *testin
 	handler.SetTreeResolver(scarceChainResolver())
 
 	cmd := newDrainCommand()
-	if _, err := drainSettled(t, handler, context.Background(), cmd); err != nil {
+	if _, err := handler.drainOnce(context.Background(), cmd); err != nil {
 		t.Fatalf("drainOnce: %v", err)
 	}
 
@@ -153,7 +153,7 @@ func TestConstructionDrain_BuyFinalMaterial_FallsBackToBuyWhenResolverCannotBuil
 	handler.SetTreeResolver(resolver)
 
 	cmd := newDrainCommand()
-	if _, err := drainSettled(t, handler, context.Background(), cmd); err != nil {
+	if _, err := handler.drainOnce(context.Background(), cmd); err != nil {
 		t.Fatalf("drainOnce: %v", err)
 	}
 
@@ -187,7 +187,7 @@ func TestConstructionDrain_ResolverError_FallsBackToOneLevelNode(t *testing.T) {
 	handler.SetTreeResolver(resolver)
 
 	cmd := newDrainCommand()
-	if _, err := drainSettled(t, handler, context.Background(), cmd); err != nil {
+	if _, err := handler.drainOnce(context.Background(), cmd); err != nil {
 		t.Fatalf("drainOnce: %v", err)
 	}
 
