@@ -933,11 +933,79 @@ func TestDrain_BoundsAttemptsNotOnlyPurchases(t *testing.T) {
 	if len(pur.quotes) > maxDrainAttempts {
 		t.Fatalf("made %d live price reads for 20 failing placements, want at most %d", len(pur.quotes), maxDrainAttempts)
 	}
-	if rep.Attempts != maxDrainAttempts {
-		t.Fatalf("report says Attempts=%d, want the full budget %d spent", rep.Attempts, maxDrainAttempts)
+	// All 20 placements share ONE yard, so they all meet the SAME counter. The
+	// bound this test exists to defend is on LIVE READS, and re-asking one
+	// counter twenty times is the thing it was written to stop — so a single
+	// read here is the guard working harder, not a weakened budget. The
+	// all-distinct-counters case is what still pins the full cap; see
+	// TestDrain_CapsAttemptsWhenEveryCounterIsADifferentOne.
+	if len(pur.quotes) != 1 {
+		t.Fatalf("made %d live price reads of the SAME counter, want 1 (the refusal is the counter's, not each placement's)", len(pur.quotes))
+	}
+	if rep.Attempts > maxDrainAttempts {
+		t.Fatalf("report says Attempts=%d, want at most the budget %d", rep.Attempts, maxDrainAttempts)
 	}
 	if rep.Bought != 0 {
 		t.Fatalf("report says Bought=%d against an unpriceable yard, want 0", rep.Bought)
+	}
+	// Whatever the budget arithmetic, the reason must survive to the operator.
+	if len(rep.Refusals) != 1 || rep.Refusals[0].Step != BuyStepQuote {
+		t.Fatalf("20 blocked placements left no single readable quote refusal: %+v", rep.Refusals)
+	}
+	if rep.Refusals[0].Count != 20 {
+		t.Fatalf("refusal blocked %d placements, want 20 — the count is what says this counter is holding the whole queue", rep.Refusals[0].Count)
+	}
+}
+
+// TestDrain_CapsAttemptsWhenEveryCounterIsADifferentOne is the API-storm guard
+// proper, and it is the one that survives the per-tick refusal memo.
+//
+// The memo collapses REPEATS of one counter; it must not be able to collapse
+// distinct ones. So this fixture gives every candidate its own yard and its own
+// buyer — nothing is deduplicable — and the full budget must still cap the live
+// reads. Without this test the memo could silently become the only thing
+// bounding the burst, and a system full of genuinely distinct dead yards would
+// fire one live read per yard per tick, forever.
+func TestDrain_CapsAttemptsWhenEveryCounterIsADifferentOne(t *testing.T) {
+	const yards = 20
+	led := &fakeBuyLedger{
+		slots: []QueuedSlot{{
+			Waypoint: "X1-AA-M1", System: "X1-AA", Kind: SlotKindMarket, State: SlotStateWanted,
+		}},
+		systems: []ScreenedSystem{{System: "X1-AA", DepthCredits: 900}},
+	}
+	yardList := make([]string, 0, yards)
+	docked := make(map[string]string, yards)
+	for i := 0; i < yards; i++ {
+		yard := fmt.Sprintf("X1-AA-Y%02d", i)
+		yardList = append(yardList, yard)
+		docked[yard] = fmt.Sprintf("BUYER-%02d", i)
+	}
+	pur := &fakePurchaser{price: 1_000, quoteErr: errors.New("shipyard unreachable")}
+	ports := BuyPorts{
+		Treasury:   &fakeTreasury{credits: 10_000_000},
+		CargoSpend: &fakeCargoSpend{},
+		Purchaser:  pur,
+		Ledger:     led,
+		Yards:      &fakeYards{yards: map[string][]string{"X1-AA": yardList}},
+		Ships:      &fakeShipReader{docked: docked},
+		Fleet:      &fakeFleet{},
+	}
+
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	if err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if len(pur.quotes) != maxDrainAttempts {
+		t.Fatalf("made %d live price reads across %d distinct dead yards, want exactly the budget %d",
+			len(pur.quotes), yards, maxDrainAttempts)
+	}
+	if rep.Attempts != maxDrainAttempts {
+		t.Fatalf("report says Attempts=%d, want the full budget %d spent on distinct counters", rep.Attempts, maxDrainAttempts)
+	}
+	if len(rep.Refusals) != maxDrainAttempts {
+		t.Fatalf("recorded %d refusals for %d distinct refusing counters, want %d",
+			len(rep.Refusals), maxDrainAttempts, maxDrainAttempts)
 	}
 }
 
@@ -1323,5 +1391,150 @@ func TestDrain_ReserveMatchesTheSharedPredicate(t *testing.T) {
 	expected := domainSensing.ProbeBuyFloor(common.ImmutableReserveFloor, capexKnobs.CapexReserve+common.HeavyReserve(in), 0, 0)
 	if got != expected {
 		t.Fatalf("floor built from the sensing path = %d, from the shared predicate = %d — the two have diverged", got, expected)
+	}
+}
+
+// --- the silent refusal (sp-l50w1) -------------------------------------------
+//
+// THE LIVE SHAPE THESE FIXTURES COPY. On 2026-07-28 the drain logged
+// "bought 0 reused 0 queued 0 (6 attempts)" every tick for 37 consecutive ticks
+// with no reason recorded anywhere. Three claimed placements each tried the same
+// two yards; every one of the six refused inside Purchaser.Buy and was swallowed
+// by a bare `continue`. An operator could not tell "out of stock" from "the hull
+// is not docked" from "the API is down", and the whole attempt budget was spent
+// re-asking two counters the same question three times.
+//
+// The fixtures below deliberately give the two yards DIFFERENT failure shapes —
+// one refuses at the quote, one at the buy — because the repo's recurring defect
+// is a fixture that makes two paths indistinguishable. A test whose yards fail
+// identically would pass against code that cannot tell them apart.
+
+// refusingYardPorts builds the live shape: two placements in one IN_SCOPE system
+// and two yards, each with a purchasing hull of ours standing on it. Which yard
+// refuses, and at which step, is left to the caller.
+func refusingYardPorts(treasury int64) (BuyPorts, *fakeBuyLedger, *fakePurchaser) {
+	led := &fakeBuyLedger{
+		slots: []QueuedSlot{
+			{Waypoint: "X1-AA-M1", System: "X1-AA", Kind: SlotKindMarket, State: SlotStateWanted, DepthCredits: 900},
+			{Waypoint: "X1-AA-M2", System: "X1-AA", Kind: SlotKindMarket, State: SlotStateWanted, DepthCredits: 900},
+		},
+		systems: []ScreenedSystem{{System: "X1-AA", DepthCredits: 900}},
+	}
+	pur := &fakePurchaser{
+		price:      20_012,
+		quoteErrAt: map[string]error{},
+		buyErrAt:   map[string]error{},
+	}
+	return BuyPorts{
+		Treasury:   &fakeTreasury{credits: treasury},
+		CargoSpend: &fakeCargoSpend{},
+		Purchaser:  pur,
+		Ledger:     led,
+		Yards:      &fakeYards{yards: map[string][]string{"X1-AA": {"X1-AA-ORBIT", "X1-AA-DOCK"}}},
+		Ships: &fakeShipReader{docked: map[string]string{
+			"X1-AA-ORBIT": "PROBE-ORBITING",
+			"X1-AA-DOCK":  "PROBE-DOCKED",
+		}},
+		Fleet: &fakeFleet{},
+	}, led, pur
+}
+
+// wideKnobs put the floor far below the treasury, so nothing here is ever a
+// money-guard outcome dressed up as a refusal.
+var wideKnobs = BuyKnobs{ProbeCap: 100, CapexReserve: 0, KMilli: 0}
+
+func TestDrain_RecordsWhyEachYardRefused(t *testing.T) {
+	ports, _, pur := refusingYardPorts(1_321_274)
+	// Two DIFFERENT failures, one per step, so a report that collapses them is caught.
+	pur.quoteErrAt["X1-AA-ORBIT"] = errors.New("shipyard at X1-AA-ORBIT has no priced SHIP_PROBE listing")
+	pur.buyErrAt["X1-AA-DOCK"] = errors.New("sensing probe buyer PROBE-DOCKED claim failed")
+
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, wideKnobs, fixedClock{time.Unix(1_700_000_000, 0)})
+	if err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if rep.Bought != 0 {
+		t.Fatalf("report says Bought=%d, want 0 (both yards refuse)", rep.Bought)
+	}
+	if len(rep.Refusals) == 0 {
+		t.Fatalf("drain refused every yard and recorded NO reason: %+v", rep)
+	}
+
+	var sawQuote, sawBuy bool
+	for _, r := range rep.Refusals {
+		switch r.Step {
+		case BuyStepQuote:
+			sawQuote = true
+			if r.Yard != "X1-AA-ORBIT" {
+				t.Fatalf("quote refusal names yard %q, want X1-AA-ORBIT", r.Yard)
+			}
+			if r.Reason == "" {
+				t.Fatalf("quote refusal at %s carries no reason an operator can read", r.Yard)
+			}
+		case BuyStepBuy:
+			sawBuy = true
+			if r.Yard != "X1-AA-DOCK" {
+				t.Fatalf("buy refusal names yard %q, want X1-AA-DOCK", r.Yard)
+			}
+			// The buyer is the whole point of a buy-step refusal: it is what
+			// tells "this counter is out of stock" from "this hull cannot buy".
+			if r.Buyer != "PROBE-DOCKED" {
+				t.Fatalf("buy refusal names buyer %q, want PROBE-DOCKED", r.Buyer)
+			}
+			if r.Reason == "" {
+				t.Fatalf("buy refusal at %s carries no reason an operator can read", r.Yard)
+			}
+		default:
+			t.Fatalf("refusal carries unknown step %q", r.Step)
+		}
+	}
+	if !sawQuote {
+		t.Fatalf("the unpriceable yard was not recorded as a QUOTE refusal: %+v", rep.Refusals)
+	}
+	if !sawBuy {
+		t.Fatalf("the refusing counter was not recorded as a BUY refusal: %+v", rep.Refusals)
+	}
+}
+
+func TestDrain_ARefusingYardIsNotReAskedForEveryPlacement(t *testing.T) {
+	// Both yards refuse, exactly as they do live. Two placements are queued.
+	// Re-asking each counter once per placement is what burned the whole budget.
+	ports, _, pur := refusingYardPorts(1_321_274)
+	pur.buyErrAt["X1-AA-ORBIT"] = errors.New("purchasing hull is not docked")
+	pur.buyErrAt["X1-AA-DOCK"] = errors.New("purchasing hull claim failed")
+
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, wideKnobs, fixedClock{time.Unix(1_700_000_000, 0)})
+	if err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if len(pur.buys) != 2 {
+		t.Fatalf("asked the two refusing counters %d times, want 2 (once each): %v", len(pur.buys), pur.buys)
+	}
+	if rep.Attempts > 2 {
+		t.Fatalf("a refusal already known this tick still cost an attempt: Attempts=%d, want <=2", rep.Attempts)
+	}
+}
+
+func TestDrain_ARefusingYardDoesNotStarveAWorkingOne(t *testing.T) {
+	// The yard listed FIRST refuses; the one behind it works. The placement must
+	// still be filled, and the working counter must be the one that sold it.
+	ports, _, pur := refusingYardPorts(1_321_274)
+	pur.buyErrAt["X1-AA-ORBIT"] = errors.New("purchasing hull is not docked")
+
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, wideKnobs, fixedClock{time.Unix(1_700_000_000, 0)})
+	if err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if rep.Bought == 0 {
+		t.Fatalf("a working yard sat unused behind a refusing one: %+v", rep)
+	}
+	for _, b := range pur.buys {
+		if b.yard == "X1-AA-DOCK" && b.ship != "PROBE-DOCKED" {
+			t.Fatalf("bought at %s through %q, want PROBE-DOCKED", b.yard, b.ship)
+		}
+	}
+	// The refusal still has to be legible even on a tick that ended in a purchase.
+	if len(rep.Refusals) == 0 {
+		t.Fatalf("the refusing yard left no trace on a tick that also bought: %+v", rep)
 	}
 }

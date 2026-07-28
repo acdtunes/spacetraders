@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
@@ -90,9 +91,9 @@ func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *
 	}
 
 	common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf(
-		"Parked sensing cycle: %.3f req/s pacer (%.3f residual, brake %.2f), %d parked, screened %d, bought %d reused %d queued %d (%d attempts%s), reaped %d adopted %d idle-reused %d, dispatched %d docking %d parked %d, expansion %s",
+		"Parked sensing cycle: %.3f req/s pacer (%.3f residual, brake %.2f), %d parked, screened %d, bought %d reused %d queued %d (%d attempts%s%s), reaped %d adopted %d idle-reused %d, dispatched %d docking %d parked %d, expansion %s",
 		hb.pacerRate, hb.sensingRate, hb.brake, hb.rotation, hb.screened,
-		hb.buy.Bought, hb.buy.Reused, hb.buy.Queued, hb.buy.Attempts, heldSuffix(held),
+		hb.buy.Bought, hb.buy.Reused, hb.buy.Queued, hb.buy.Attempts, heldSuffix(held), refusalSuffix(hb.buy.Refusals),
 		hb.reap.Reaped, hb.adopted, hb.dispatched,
 		hb.place.Dispatched, hb.place.Docking, hb.place.Parked, expansionSummary(hb.expand)),
 		map[string]interface{}{
@@ -113,8 +114,12 @@ func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *
 			"buy_queued":          hb.buy.Queued,
 			"buy_attempts":        hb.buy.Attempts,
 			"buy_skipped_no_yard": hb.buy.SkippedNoYard,
-			"buy_cap_held":        hb.buy.CapHeld,
-			"buy_floor_held":      hb.buy.FloorHeld,
+			// Why the counters that refused refused, one entry per distinct
+			// refusal. attempts > 0 with bought == 0 and this empty is a
+			// contradiction — every attempt-burning path records one.
+			"buy_refusals":   refusalPayload(hb.buy.Refusals),
+			"buy_cap_held":   hb.buy.CapHeld,
+			"buy_floor_held": hb.buy.FloorHeld,
 			// Credits held back for the NEXT heavy. Non-zero beside buy_floor_held
 			// means "saving for a heavy", NOT "sensing is broken" — the one signal
 			// that tells those two apart (spec risk 3).
@@ -155,6 +160,73 @@ func heldSuffix(held string) string {
 		return ""
 	}
 	return ", held at the " + held
+}
+
+// refusalPayload renders the refusals as structured rows for the log payload.
+//
+// Unlike the human-readable suffix this is NOT truncated: the message line has a
+// reader with finite patience, the payload has a query engine. Truncating here
+// would mean the one refusal an operator is hunting could be the one dropped.
+func refusalPayload(refusals []parkedsensing.BuyRefusal) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(refusals))
+	for _, r := range refusals {
+		out = append(out, map[string]interface{}{
+			"step": string(r.Step),
+			"yard": r.Yard,
+			// Empty on a quote refusal: no hull was engaged.
+			"buyer":              r.Buyer,
+			"reason":             r.Reason,
+			"placements_blocked": r.Count,
+		})
+	}
+	return out
+}
+
+// maxLoggedRefusals bounds how many distinct refusals reach the cycle line. The
+// drain can try at most maxDrainAttempts counters per tick so the list is
+// already short, but the bound is explicit because this line is emitted every
+// ~30s forever and a summary that can grow without limit is its own defect.
+const maxLoggedRefusals = 3
+
+// refusalSuffix renders why the counters that refused this tick refused.
+//
+// This is the line that used to read "(6 attempts)" and nothing else. Six silent
+// failures per tick, forever, with no way to tell an out-of-stock yard from a
+// hull that cannot dock from an API outage — so the underlying reason is
+// reported VERBATIM rather than mapped to a category, because the category is
+// exactly what nobody could work out from the outside.
+//
+// Aggregated, never per attempt: one row per distinct refusal with the number of
+// placements it blocked. A count well above one is the signature of a single
+// counter holding up the whole queue, which is a different fault from several
+// counters each having a bad minute.
+func refusalSuffix(refusals []parkedsensing.BuyRefusal) string {
+	if len(refusals) == 0 {
+		return ""
+	}
+	shown := refusals
+	if len(shown) > maxLoggedRefusals {
+		shown = shown[:maxLoggedRefusals]
+	}
+	parts := make([]string, 0, len(shown))
+	for _, r := range shown {
+		who := r.Yard
+		// The buyer is only carried on a BUY refusal, and its presence is what
+		// separates "this counter refused" from "this hull could not buy".
+		if r.Buyer != "" {
+			who += " via " + r.Buyer
+		}
+		blocked := ""
+		if r.Count > 1 {
+			blocked = fmt.Sprintf(" ×%d", r.Count)
+		}
+		parts = append(parts, fmt.Sprintf("%s at %s%s: %s", r.Step, who, blocked, r.Reason))
+	}
+	more := ""
+	if len(refusals) > len(shown) {
+		more = fmt.Sprintf(" (+%d more)", len(refusals)-len(shown))
+	}
+	return ", refused: " + strings.Join(parts, "; ") + more
 }
 
 // expansionSummary states why expansion did nothing, or what it did. The Skipped
