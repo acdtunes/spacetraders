@@ -358,7 +358,7 @@ func AdvanceExpansion(
 	// actually fly. One memo for the whole tick, shared by all four consumers —
 	// supply, the spare claim, staging and the retarget — so none of them can
 	// disagree about what is reachable. See gateReach.
-	reach := newGateReach(p.Gates, neighbours)
+	reach := newGateReach(p.Gates, neighbours, MaxSeedFlightHops)
 
 	// Nearest first: a one-hop errand is one flight, a two-hop errand two, and
 	// the probe is held for the whole of it. Ordering here rather than in each
@@ -923,6 +923,42 @@ func markFrontier(
 
 // --- gate reach ---------------------------------------------------------------
 
+// MaxSeedFlightHops is how far a CHARTING SEED may be sent: the number of traversable gate hops
+// between the yard a seed is bought at and the target it is bought for.
+//
+// IT IS NOT MaxWalkRings, AND THAT SEPARATION IS THE POINT. Staging used to reuse the placement
+// walk's bound, which welded two independent concerns together — where the fleet can TRANSACT (a
+// yard with a hull of ours standing at it, a real money constraint) and what is NEAR THE TARGET.
+// Welded, they produce a structural dead zone: a target whose in-reach systems all happen to lack a
+// shipyard can never be seeded, however many staffed yards the fleet owns elsewhere — and since a
+// system with no shipyard can never itself be staffed, the dead zone propagates outward. The staffed
+// test stays exactly as it was; only the target-adjacency coupling is gone.
+//
+// WHY NINE, measured rather than chosen. Of 23 unseeded uncharted targets on the live fleet, by hop
+// distance from the nearest STAFFED system over traversable (non-under-construction) gates:
+//
+//	1:3  2:2  3:1  4:1  5:2  6:3  7:4  8:5  9:2      unreachable at any depth: 0
+//
+// Nine is where the graph SATURATES — a bound of 10 serves not one additional target — and it is the
+// distance to X1-KP42 and X1-UV56, the only two systems in the fleet with an unmapped jump gate and
+// therefore the only two whose charting can add new systems to the ledger. Every one of their gate
+// neighbours (X1-AM61, X1-PA58, X1-SU95, X1-UT77) has zero shipyards, which is the dead zone exactly.
+// A bound of 6 would have more than doubled coverage (5 → 12) and still left the case this exists
+// for unreachable.
+//
+// IT BOUNDS THE FLIGHT, NOT THE MAP. A gate jump costs no fuel — it is instantaneous at the API with
+// only a reactor cooldown — so what a longer stage really spends is TICKS: one crossing is two
+// dispatch steps, so nine hops is roughly eighteen. That is affordable against a parked-probe surplus
+// and a frontier that cannot otherwise grow, and it stays a real bound as the map widens past the
+// current diameter.
+//
+// THE SEED'S OWN WALK READS THE SAME NUMBER. nextHopToward resolves one hop at a time by breadth-first
+// search over the same stored adjacency, and a destination beyond ITS bound names no next system —
+// the errand then fails every step while the hull counts against the probe cap and charts nothing.
+// So the adapter's resolver is bounded by this constant too (see adapters/parkedsensing), and there
+// is no second copy to drift.
+const MaxSeedFlightHops = 9
+
 // gateReach answers "how many gate hops is it from here to there?", bounded by
 // MaxWalkRings, from STORED adjacency alone.
 //
@@ -958,6 +994,14 @@ func markFrontier(
 // keeps the cost from growing with the frontier exactly as the frontier
 // succeeds.
 type gateReach struct {
+	// maxHops is THIS walker's reach, per-instance rather than a package constant
+	// because the two engines that walk this graph ask different questions. Seed
+	// staging asks "how far may a CHARTING SEED be flown" (MaxSeedFlightHops); the
+	// foothold pass asks "how far may a surplus SCANNING HULL be drawn to fill a
+	// placement" (MaxWalkRings), which is deliberately much shorter. Sharing one
+	// number would mean widening the seed's reach silently lengthened every
+	// placement draw too — which it did, until this field existed.
+	maxHops int
 	// gates is the gate-adjacency STORE read, narrowed from the ports struct it
 	// used to hold so this walker can serve any caller that has one — the buy
 	// queue's foothold path reaches for it through BuyPorts.Gates. Narrowing is
@@ -973,13 +1017,14 @@ type gateReach struct {
 	// would change which systems this tick claims to have discovered.
 	fetched map[string][]string
 	// hopsFrom memoises one BFS per origin: system -> hops, for the systems
-	// within MaxWalkRings. The origin itself is absent, so any entry present is
+	// within maxHops. The origin itself is absent, so any entry present is
 	// both reachable AND at least one hop away.
 	hopsFrom map[string]map[string]int
 }
 
-func newGateReach(gates GateNeighbours, neighbours map[string][]string) *gateReach {
+func newGateReach(gates GateNeighbours, neighbours map[string][]string, maxHops int) *gateReach {
 	return &gateReach{
+		maxHops:  maxHops,
 		gates:    gates,
 		known:    neighbours,
 		fetched:  map[string][]string{},
@@ -1025,7 +1070,7 @@ func (r *gateReach) from(ctx context.Context, origin string) (map[string]int, er
 	seen := map[string]bool{origin: true}
 	frontier := []string{origin}
 
-	for ring := 1; ring <= MaxWalkRings && len(frontier) > 0; ring++ {
+	for ring := 1; ring <= r.maxHops && len(frontier) > 0; ring++ {
 		var next []string
 		for _, system := range frontier {
 			adjacent, err := r.adjacent(ctx, system)
@@ -1069,9 +1114,11 @@ func (r *gateReach) canReach(ctx context.Context, origin, target string) (bool, 
 	return within, err
 }
 
-// beyondReach sorts after every reachable distance, so an unreachable target
-// keeps its place at the back of the queue rather than jumping it.
-const beyondReach = MaxWalkRings + 1
+// beyondReach sorts after every reachable distance for THIS walker, so an
+// unreachable target keeps its place at the back of the queue rather than
+// jumping it. Derived from the walker's own bound, not a package constant, for
+// the same reason maxHops is.
+func (r *gateReach) beyondReach() int { return r.maxHops + 1 }
 
 // orderByReach puts the CHEAP frontier first: targets nearest the systems we
 // actually hold, since a one-hop errand is one flight and a two-hop errand two,
@@ -1101,7 +1148,7 @@ func orderByReach(
 
 	distance := make(map[string]int, len(targets))
 	for _, target := range targets {
-		nearest := beyondReach
+		nearest := reach.beyondReach()
 		for _, origin := range held {
 			hops, within, err := reach.hops(ctx, origin, target.System)
 			if err != nil {
@@ -1255,7 +1302,7 @@ func takeReachableSpare(
 	book *slotBook,
 	target string,
 ) (QueuedSlot, bool, error) {
-	best, nearest := -1, beyondReach
+	best, nearest := -1, reach.beyondReach()
 	for i, spare := range book.parkedSpares {
 		hops, within, err := reach.hops(ctx, spare.System, target)
 		if err != nil {
@@ -1349,18 +1396,26 @@ func requestSeeds(
 }
 
 // stagingYardFor picks where a seed for target should be bought: a probe-selling
-// yard, in one of our own systems WITHIN GATE REACH of the target, that carries
+// yard, in any of our own systems FROM WHICH THE TARGET IS ROUTABLE, that carries
 // no SPARE placement of its own.
 //
-// REACH IS NOT THE SAME QUESTION AS WHERE WE BUY, and keeping them apart is what
-// makes widening the first one safe. The origin may now be up to MaxWalkRings
-// hops out instead of exactly one — a seed walks the difference, a hop per tick
-// — but the PURCHASE is unmoved: it still happens at a yard staffedAt says we
-// hold, funded by the buy queue under the same floor and probe cap as every
-// other placement. Only the destination got further away. Nearest origin first,
-// since a one-hop errand is one flight and a two-hop errand two; the staffed
-// test still decides eligibility, so a nearer yard we do not stand at is skipped
-// for a further one we do.
+// WHERE WE CAN TRANSACT AND WHAT IS NEAR THE TARGET ARE TWO DIFFERENT QUESTIONS,
+// and this used to weld them: a yard had to be staffed AND sit within the
+// placement walk's couple of rings OF THE TARGET. The second half produced a
+// structural dead zone rather than a mere inefficiency — a target whose in-reach
+// systems all happen to lack a shipyard could never be seeded, however many
+// staffed yards the fleet owned elsewhere, and because a system with no shipyard
+// can never itself be staffed the dead zone propagated outward. Measured live it
+// left 18 of 23 unseeded targets unservable, including the only two systems whose
+// charting could add anything to the ledger.
+//
+// SO THE COUPLING IS GONE AND THE MONEY CONSTRAINT IS NOT. Eligibility is
+// routability — can a seed bought here actually fly to that target, bounded by
+// MaxSeedFlightHops, which is the bound the seed's own walk resolves under — and
+// candidates are ordered NEAREST FIRST, because a shorter flight is fewer ticks
+// holding probe-cap headroom. The staffedAt test below is untouched: the buy
+// queue can only transact where a hull of ours stands, so a nearer yard we do not
+// hold is still skipped for a further one we do.
 //
 // "OUR OWN" IS ENFORCED, not merely intended. It used to be neither: the origins
 // this walks are every system carrying a screening VERDICT, and a verdict says

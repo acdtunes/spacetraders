@@ -549,13 +549,28 @@ func (p *MoverPort) NavigateWithin(ctx context.Context, playerID int, shipSymbol
 
 // maxWalkRings bounds how far the cross-system walk will look for a route.
 //
-// NOT A NUMBER, A REFERENCE. The bound is declared once beside the RouteAcross
-// contract it describes, because the walk is not its only reader: the caller that
-// picks destinations for idle hulls has to refuse anything this walk cannot
-// resolve, and a second copy of the number here is what would let the two drift
-// into handing out unreachable errands. See appSensing.MaxWalkRings for what the
-// bound is and why it is two.
-const maxWalkRings = appSensing.MaxWalkRings
+// NOT A NUMBER, A REFERENCE. The bound is declared once beside the contract it
+// describes, because the walk is not its only reader: the callers that pick
+// destinations have to refuse anything this walk cannot resolve, and a second
+// copy of the number here is what would let the two drift into handing out
+// unreachable errands.
+//
+// IT READS THE WIDEST BOUND ANY CALLER STAGES AT, which is the charting seed's
+// (appSensing.MaxSeedFlightHops, currently 9) rather than the placement walk's
+// (appSensing.MaxWalkRings, still 2). The resolver has to cover the longest
+// journey anything is actually sent on: a seed staged nine hops out needs a next
+// system named on its FIRST step, and a resolver that gave up at two would name
+// none, failing every step while the hull counted against the probe cap and
+// charted nothing.
+//
+// WIDENING THE RESOLVER DOES NOT WIDEN WHAT PLACEMENTS ATTEMPT, and that is why
+// this is safe rather than a quiet loosening of a second engine. What a placement
+// is asked to fly is decided upstream by the callers that choose destinations —
+// foothold's systemsWithinReach still draws a surplus hull from within
+// MaxWalkRings, and the buy queue still buys in the slot's own system — so the
+// only change here is that a route within those bounds was always resolvable and
+// still is. This verb answers questions; it does not ask them.
+const maxWalkRings = appSensing.MaxSeedFlightHops
 
 // RouteAcross advances a hull ONE STEP of its gate walk toward destination, and
 // returns either way. It NEVER waits.

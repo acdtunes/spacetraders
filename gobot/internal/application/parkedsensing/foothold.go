@@ -136,7 +136,11 @@ func (b *footholdBroker) fill(
 	// placements sharing a neighbourhood reads the topology once per source rather
 	// than once per placement — and every read is the gate STORE, never the API.
 	if b.reach == nil {
-		b.reach = newGateReach(p.Gates, nil)
+		// MaxWalkRings, NOT the seed's MaxSeedFlightHops: this walker decides how far a
+		// surplus SCANNING HULL may be drawn to fill a placement, which is a different and
+		// much shorter journey than a charting seed's. The seed bound widened; this one
+		// deliberately did not.
+		b.reach = newGateReach(p.Gates, nil, MaxWalkRings)
 	}
 	reach, err := sourcesWithinReach(ctx, b.reach, b.pool, target.System)
 	if err != nil {

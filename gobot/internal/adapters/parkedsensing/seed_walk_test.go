@@ -2,12 +2,14 @@ package parkedsensing_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
 	adapterSensing "github.com/andrescamacho/spacetraders-go/internal/adapters/parkedsensing"
+	appSensing "github.com/andrescamacho/spacetraders-go/internal/application/parkedsensing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 )
 
@@ -127,14 +129,22 @@ func TestSeedCommandPort_JumpTo_FailsClosedWithoutMovingWhenUnroutable(t *testin
 // adapter half of the bound the application layer enforces at staging time.
 func TestSeedCommandPort_JumpTo_RefusesATargetBeyondTheWalk(t *testing.T) {
 	world := seedWorldAt("X1-AA-J1")
-	gates := stubGateNeighbours{edges: map[string][]string{
-		"X1-AA": {"X1-BB"},
-		"X1-BB": {"X1-CC"},
-		"X1-CC": {"X1-DD"}, // three hops from X1-AA
-	}}
+	// A chain ONE HOP LONGER than the resolver's bound, built FROM the constant so the fixture
+	// cannot rot when the bound moves. It used to hard-code three hops, which stopped being "beyond"
+	// the moment seed staging widened to MaxSeedFlightHops and the resolver widened with it.
+	edges := map[string][]string{}
+	prev := "X1-AA"
+	for i := 0; i <= appSensing.MaxSeedFlightHops; i++ {
+		next := fmt.Sprintf("X1-H%02d", i)
+		edges[prev] = []string{next}
+		world.gateOf[next] = next + "-J1"
+		prev = next
+	}
+	gates := stubGateNeighbours{edges: edges}
 
-	require.Error(t, runJump(t, world, gates, "X1-AA-J1", "X1-DD"),
-		"a target three hops out was accepted; the hull would be walked partway and stranded")
+	require.Error(t, runJump(t, world, gates, "X1-AA-J1", prev),
+		"a target %d hops out was accepted; the hull would be walked partway and stranded",
+		appSensing.MaxSeedFlightHops+1)
 	require.False(t, world.sentAny("JumpShipCommand"), "commands: %v", world.commands())
 	require.False(t, world.sentAny("NavigateDirectCommand"), "commands: %v", world.commands())
 }

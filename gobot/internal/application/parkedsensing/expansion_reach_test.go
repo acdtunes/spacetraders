@@ -82,14 +82,18 @@ func TestAdvanceExpansion_TargetTwoGateHopsAwayIsStaged(t *testing.T) {
 // would hold probe-cap headroom, re-issue a failing step every tick, and chart
 // nothing — strictly worse than never dispatching it.
 func TestAdvanceExpansion_TargetBeyondTheWalkIsNeverStaged(t *testing.T) {
+	// SUPERSEDED FIXTURE, KEPT AS A PROPERTY. This used a hard-coded three-hop chain, which was
+	// "beyond the walk" only while the bound was two; once seed staging moved to MaxSeedFlightHops
+	// the fixture stopped reproducing anything. The property it protects — a target the walk cannot
+	// route to is never staged — is now pinned bound-relatively by
+	// TestAdvanceExpansion_ATargetBeyondTheFlightBound, which builds its chain FROM the constant and
+	// therefore cannot rot the same way. What is left here is the other half of the original test,
+	// which never depended on the distance: an unroutable target is skipped QUIETLY.
 	h := twoHopWorld()
 	h.ledger.systems = append(h.ledger.systems,
 		ExpandSystem{System: "X1-OUT", Verdict: VerdictPending, UnchartedCount: 9})
-	// X1-OUT is three hops: HOME -> MID -> FAR -> OUT. It carries the DEEPEST
-	// dark of any target, so an engine that had merely stopped bounding the walk
-	// would reach for it FIRST and this assertion would catch it.
-	h.gates.adjacency["X1-FAR"] = []string{"X1-OUT"}
-	// Only X1-OUT is left needing charting, so nothing else can absorb the tick.
+	// Deliberately connected to NOTHING: no gate edge names X1-OUT, so no walk of any depth
+	// reaches it. That is a property of the graph rather than of the bound.
 	h.ledger.systems[2].UnchartedCount = 0
 	h.ledger.systems[2].CatalogKnown = true
 
@@ -97,10 +101,8 @@ func TestAdvanceExpansion_TargetBeyondTheWalkIsNeverStaged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a target beyond the walk must be skipped quietly, not fail the tick: %v", err)
 	}
-
 	if rep.SeedsRequested != 0 {
-		t.Fatalf("SeedsRequested = %d, want 0 — X1-OUT is 3 hops out and MaxWalkRings=%d, so a seed "+
-			"stamped for it could never route there", rep.SeedsRequested, MaxWalkRings)
+		t.Fatalf("SeedsRequested = %d, want 0 — no gate edge reaches X1-OUT at any depth", rep.SeedsRequested)
 	}
 	for _, slot := range h.ledger.upsertedSlots {
 		if slot.Kind == SlotKindSpare {
@@ -221,10 +223,13 @@ func TestAdvanceExpansion_SpareTwoHopsFromTheTargetIsClaimed(t *testing.T) {
 // demand it cannot serve.
 func TestAdvanceExpansion_SpareBeyondTheWalkIsNeitherClaimedNorCountedAsSupply(t *testing.T) {
 	h := twoHopWorld()
-	// X1-EDGE is three hops from X1-FAR (EDGE -> HOME -> MID -> FAR).
+	// X1-EDGE can reach NOTHING: it has no outbound gate edge, so X1-FAR is unroutable from it at
+	// any depth. It used to sit three hops away, which stopped meaning "out of reach" when seed
+	// staging moved to MaxSeedFlightHops — a distance-based fixture rots with the bound, an
+	// unroutable one does not.
 	h.ledger.systems = append(h.ledger.systems,
 		ExpandSystem{System: "X1-EDGE", Verdict: VerdictInScope})
-	h.gates.adjacency["X1-EDGE"] = []string{"X1-HOME"}
+	h.gates.adjacency["X1-EDGE"] = []string{}
 	h.ledger.slots = append(h.ledger.slots, QueuedSlot{
 		Waypoint: "X1-EDGE-A", System: "X1-EDGE", Kind: SlotKindSpare,
 		State: SlotStateParked, AssignedShip: "PROBE-EDGE",
@@ -235,7 +240,7 @@ func TestAdvanceExpansion_SpareBeyondTheWalkIsNeitherClaimedNorCountedAsSupply(t
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if rep.SeedsClaimed != 0 {
-		t.Fatalf("SeedsClaimed = %d, want 0 — X1-EDGE is 3 hops from X1-FAR", rep.SeedsClaimed)
+		t.Fatalf("SeedsClaimed = %d, want 0 — no gate route leaves X1-EDGE", rep.SeedsClaimed)
 	}
 	if rep.SeedsRequested != 1 {
 		t.Fatalf("SeedsRequested = %d, want 1 — a spare that cannot reach X1-FAR is not a seed for it, "+
