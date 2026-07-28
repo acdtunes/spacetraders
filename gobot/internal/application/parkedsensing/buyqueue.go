@@ -107,7 +107,17 @@ type ProbePurchaser interface {
 	// Buy purchases exactly one probe at yardWaypoint. purchasingShip is a hull
 	// of ours already standing at that yard — the purchase machinery navigates
 	// and docks it itself, so it must genuinely be able to reach the counter.
-	Buy(ctx context.Context, playerID int, purchasingShip, yardWaypoint string) (BoughtProbe, error)
+	//
+	// claimOwnerContainerID is the DRIVING coordinator's container id, and it
+	// must be a REAL one. The implementation holds an exclusive single-writer
+	// claim on purchasingShip for the length of the buy, and that claim writes
+	// ships.container_id — a column carrying a foreign key to containers(id).
+	// A descriptive label here is not merely imprecise, it is unwritable: the
+	// database rejects the row, the claim fails closed, and the purchase never
+	// happens. This is why the value travels per-call rather than being bound
+	// into the adapter — a coordinator relaunch mints a new container id, and a
+	// value captured at construction time would go stale into the same failure.
+	Buy(ctx context.Context, playerID int, purchasingShip, yardWaypoint, claimOwnerContainerID string) (BoughtProbe, error)
 }
 
 // ProbeYardCatalog lists the shipyards in a system that sell probes, cheapest
@@ -232,6 +242,17 @@ type BuyPorts struct {
 	// pinned: TestDrain_ErroringReserveReaderStillFailsClosed for this branch,
 	// TestDrain_BlindReserveReadsZeroAndBuyingProceeds for what the shipped reader actually does.
 	HeavyReserve HeavyReserveReader
+
+	// ClaimOwnerContainerID is the driving coordinator's container id, handed to
+	// Purchaser.Buy as the owner of the purchasing hull's claim. It is IDENTITY,
+	// not a port: the drain never reads it, it only carries it, because the claim
+	// is the adapter's to make and a real container id is the only value that can
+	// legally own one (see ProbePurchaser.Buy).
+	//
+	// It rides here rather than as a DrainBuyQueue parameter so the existing drain
+	// call sites stay untouched. The adapter fails the buy CLOSED when it arrives
+	// empty, so an unset field can never reach the database as a claim.
+	ClaimOwnerContainerID string
 }
 
 // HeavyReserveReader reports the derived hold-back for the next heavy purchase. The value is
@@ -557,7 +578,7 @@ func fillSlot(
 			return true, nil
 		}
 
-		probe, err := p.Purchaser.Buy(ctx, playerID, candidate.buyer, candidate.yard)
+		probe, err := p.Purchaser.Buy(ctx, playerID, candidate.buyer, candidate.yard, p.ClaimOwnerContainerID)
 		if err != nil || probe.ShipSymbol == "" {
 			// This counter refused; the placement is still fillable elsewhere.
 			// The buyer IS named here: "the yard is out of stock" and "this hull

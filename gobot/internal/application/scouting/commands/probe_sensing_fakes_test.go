@@ -553,6 +553,9 @@ type psPurchaser struct {
 	calls *callCounter
 	price int64
 	next  int
+	// owners records the claim owner each buy was handed, so a test can prove the
+	// coordinator passes its REAL container id down to the purchase adapter.
+	owners []string
 }
 
 func (f *psPurchaser) Quote(context.Context, int, string) (int64, error) {
@@ -560,8 +563,9 @@ func (f *psPurchaser) Quote(context.Context, int, string) (int64, error) {
 	return f.price, nil
 }
 
-func (f *psPurchaser) Buy(context.Context, int, string, string) (parkedsensing.BoughtProbe, error) {
+func (f *psPurchaser) Buy(_ context.Context, _ int, _, _, owner string) (parkedsensing.BoughtProbe, error) {
 	f.calls.hit("buy")
+	f.owners = append(f.owners, owner)
 	f.next++
 	return parkedsensing.BoughtProbe{ShipSymbol: "PROBE-BOUGHT-" + string(rune('A'+f.next-1)), Price: f.price}, nil
 }

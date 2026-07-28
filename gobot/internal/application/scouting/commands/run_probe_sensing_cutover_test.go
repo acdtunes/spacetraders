@@ -56,6 +56,10 @@ type cutoverWorld struct {
 	seeds    *fakeSeedCommander
 	mover    *fakeMover
 	recorder *fakeRecorder
+	// purchaser is the probe-buy port, exposed so a test can assert WHAT the
+	// coordinator hands it — specifically the claim owner, which must be this
+	// tick's real container id (see the ships.container_id foreign key).
+	purchaser *psPurchaser
 	// shipPos is the ships-TABLE read the placement machine locates hulls
 	// through, which is a different port from `fleet` (the whole-fleet
 	// enumeration adoption and the orphan dispatch use). A hull present in one
@@ -160,7 +164,7 @@ func newCutoverWorld(t *testing.T) *cutoverWorld {
 		handler: handler, cmd: sensingTestCmd(), ctx: ctx, calls: calls, ledger: ledger,
 		posts: posts, fleet: fleet, tagger: tagger, depth: depth,
 		catalog: catalog, goods: goods, remote: remote, seeds: seeds,
-		mover: mover, recorder: recorder, shipPos: ships,
+		mover: mover, recorder: recorder, shipPos: ships, purchaser: purchaser,
 	}
 }
 

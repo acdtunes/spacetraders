@@ -59,11 +59,21 @@ const (
 	// a hull eligible to stand in as a purchasing ship at a yard.
 	satelliteRole = "SATELLITE"
 
-	// sensingBuyClaimOwner and sensingBuyClaimReason label the exclusive
-	// single-writer claim held over a purchasing hull for the length of a buy.
-	// A claim stranded by a crash is freed by the daemon's boot-time release
-	// sweep, so cleanup never depends on these values.
-	sensingBuyClaimOwner  = "parked_sensing_buy"
+	// sensingBuyClaimReason labels the release of the exclusive single-writer
+	// claim held over a purchasing hull for the length of a buy, for the audit
+	// trail. A claim stranded by a crash is freed by the daemon's boot-time
+	// release sweep, so cleanup never depends on this value.
+	//
+	// THERE IS DELIBERATELY NO COMPANION OWNER CONSTANT. The claim's OWNER is
+	// ships.container_id, which carries a foreign key to containers(id): only a
+	// real, live container id can be written there. This constant block used to
+	// carry `sensingBuyClaimOwner = "parked_sensing_buy"`, a descriptive label
+	// passed straight into ClaimShip's containerID parameter, and Postgres
+	// rejected every such claim with fk_ships_container (23503). The claim fails
+	// CLOSED, so the effect was total: this engine never completed a single probe
+	// purchase in its existence, and the fleet stopped discovering new systems.
+	// The owner now arrives per-call from the driving coordinator — see
+	// claimBuyer. Do not reintroduce a constant here.
 	sensingBuyClaimReason = "parked_sensing_buy_complete"
 
 	// marketplaceTrait is the waypoint trait that makes a charted waypoint worth
@@ -239,14 +249,14 @@ func (p *ProbePurchasePort) Quote(ctx context.Context, playerID int, yardWaypoin
 // echoed ship type is verified — a yard that substituted a different hull for
 // the one asked for has taken money for something we did not want, and that must
 // surface as an error rather than be recorded as a probe.
-func (p *ProbePurchasePort) Buy(ctx context.Context, playerID int, purchasingShip, yardWaypoint string) (appSensing.BoughtProbe, error) {
+func (p *ProbePurchasePort) Buy(ctx context.Context, playerID int, purchasingShip, yardWaypoint, claimOwnerContainerID string) (appSensing.BoughtProbe, error) {
 	pid, err := shared.NewPlayerID(playerID)
 	if err != nil {
 		return appSensing.BoughtProbe{}, err
 	}
 	ctx = sensingCtx(ctx)
 
-	release, err := p.claimBuyer(ctx, pid, purchasingShip)
+	release, err := p.claimBuyer(ctx, pid, purchasingShip, claimOwnerContainerID)
 	if err != nil {
 		return appSensing.BoughtProbe{}, err
 	}
@@ -280,8 +290,23 @@ func (p *ProbePurchasePort) Buy(ctx context.Context, playerID int, purchasingShi
 // is idempotent). The claim operation is the sensing fleet tag, so the ship
 // repository's dedication guard accepts a hull this engine already owns instead
 // of rejecting it as another fleet's.
-func (p *ProbePurchasePort) claimBuyer(ctx context.Context, playerID shared.PlayerID, buyer string) (func(), error) {
-	if err := p.shipRepo.ClaimShip(ctx, buyer, sensingBuyClaimOwner, playerID, appSensing.SensingParkedFleetTag); err != nil {
+//
+// owner MUST be the driving coordinator's real container id. ClaimShip's second
+// parameter is written to ships.container_id, which carries a foreign key to
+// containers(id) — a descriptive label has no row to reference and the database
+// refuses the write. Passing one is precisely the defect that kept this engine
+// from ever completing a purchase; the empty-owner guard below is what stops it
+// silently returning, in any form.
+func (p *ProbePurchasePort) claimBuyer(ctx context.Context, playerID shared.PlayerID, buyer, owner string) (func(), error) {
+	// Fail CLOSED, before any claim is attempted and before any money moves. An
+	// unnamed owner cannot own a claim, and there is no safe default to fall back
+	// to: every candidate is a label, and a label is exactly what the foreign key
+	// rejects. Refusing here costs one unfilled placement that the next tick
+	// retries for free.
+	if strings.TrimSpace(owner) == "" {
+		return nil, fmt.Errorf("sensing probe buyer %s claim refused (fail-closed): no owning container id was supplied, and the claim's owner must be a real container row", buyer)
+	}
+	if err := p.shipRepo.ClaimShip(ctx, buyer, owner, playerID, appSensing.SensingParkedFleetTag); err != nil {
 		return nil, fmt.Errorf("sensing probe buyer %s claim failed (fail-closed, no concurrent driver): %w", buyer, err)
 	}
 	return func() {

@@ -146,7 +146,7 @@ func (f *fakeCargoSpend) AbsCargoBuySpendSince(_ context.Context, _ int, since t
 	return f.spend, nil
 }
 
-type buyCall struct{ ship, yard string }
+type buyCall struct{ ship, yard, owner string }
 
 type fakePurchaser struct {
 	price        int64
@@ -182,8 +182,8 @@ func (f *fakePurchaser) Quote(_ context.Context, _ int, yard string) (int64, err
 	return f.price, nil
 }
 
-func (f *fakePurchaser) Buy(_ context.Context, _ int, ship, yard string) (BoughtProbe, error) {
-	f.buys = append(f.buys, buyCall{ship, yard})
+func (f *fakePurchaser) Buy(_ context.Context, _ int, ship, yard, owner string) (BoughtProbe, error) {
+	f.buys = append(f.buys, buyCall{ship, yard, owner})
 	if err := f.buyErrAt[yard]; err != nil {
 		return BoughtProbe{}, err
 	}

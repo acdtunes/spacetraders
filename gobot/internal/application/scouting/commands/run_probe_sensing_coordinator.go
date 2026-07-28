@@ -281,7 +281,13 @@ func (p SensingEnginePorts) screenPorts() parkedsensing.ScreenPorts {
 	}
 }
 
-func (p SensingEnginePorts) buyPorts() parkedsensing.BuyPorts {
+// buyPorts bundles the drain's surface. It takes the container id rather than
+// reading one off the (per-PLAYER, process-lifetime memoised) port struct: the
+// purchasing hull's claim is written to ships.container_id under a foreign key to
+// containers(id), so it must name the container that is actually driving THIS
+// tick. A relaunched coordinator gets a fresh container id, and binding one into
+// the memoised adapters would hand the database a row that no longer exists.
+func (p SensingEnginePorts) buyPorts(claimOwnerContainerID string) parkedsensing.BuyPorts {
 	return parkedsensing.BuyPorts{
 		Treasury:   p.Treasury,
 		CargoSpend: p.CargoSpend,
@@ -291,7 +297,8 @@ func (p SensingEnginePorts) buyPorts() parkedsensing.BuyPorts {
 		Ships:      p.Ships,
 		Fleet:      p.Fleet,
 		// nil-safe: an unwired reserve means no hold-back, not a stalled drain.
-		HeavyReserve: p.HeavyReserve,
+		HeavyReserve:          p.HeavyReserve,
+		ClaimOwnerContainerID: claimOwnerContainerID,
 	}
 }
 
@@ -878,7 +885,7 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 		dispatchedOrphans = h.dispatchIdleOrphans(ctx, cmd, ports, &failures)
 	}
 
-	buyRep, berr := parkedsensing.DrainBuyQueue(ctx, ports.buyPorts(), playerID, parkedsensing.BuyKnobs{
+	buyRep, berr := parkedsensing.DrainBuyQueue(ctx, ports.buyPorts(cmd.ContainerID), playerID, parkedsensing.BuyKnobs{
 		ProbeCap:     cfg.ProbeCap,
 		CapexReserve: cfg.CapexReserveCredits,
 		KMilli:       cfg.CapitalMultiplierKMilli,
