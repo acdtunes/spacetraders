@@ -227,7 +227,7 @@ func TestPlacementTick_HullInFlightDoesNotStarveTheHullsBehindIt(t *testing.T) {
 	ports := appSensing.PlacementPorts{
 		Ledger: ledger,
 		Ships:  stubShipReader{positions: positions},
-		Mover:  adapterSensing.NewMoverPort(med),
+		Mover:  adapterSensing.NewMoverPort(med, stubGateNeighbours{}),
 		Fleet:  stubFleetTagger{},
 	}
 
@@ -278,7 +278,7 @@ func TestPlacementTick_HullInFlightDoesNotStarveTheHullsBehindIt(t *testing.T) {
 // arrival scheduler to record the landing for a later tick to read.
 func TestMoverPort_NavigateWithin_DispatchesAndReturns(t *testing.T) {
 	med := newJourneyMediator()
-	mover := adapterSensing.NewMoverPort(med)
+	mover := adapterSensing.NewMoverPort(med, stubGateNeighbours{})
 
 	done := make(chan error, 1)
 	go func() {
@@ -301,36 +301,19 @@ func TestMoverPort_NavigateWithin_DispatchesAndReturns(t *testing.T) {
 		"NavigateWithin issued the whole-journey navigate, which blocks until arrival: %v", med.commands())
 }
 
-// TestMoverPort_RouteAcross_RefusesRatherThanBlocks pins the cross-gate verb.
+// The cross-gate verb's contract lives in gate_walk_test.go.
 //
-// The only gate-crossing machinery available resolves a whole multi-jump path and
-// flies it, waiting out every leg and every jump cooldown — so sending it from a
-// tick is the same defect as the in-system case and worse, since one hull could
-// hold the sensing engine shut for hours. It refuses instead, which returns the
-// placement to its ordinary free retry with the hull still named by the row (an
-// over-count, the money-safe direction) and the tick still running.
-func TestMoverPort_RouteAcross_RefusesRatherThanBlocks(t *testing.T) {
-	med := newJourneyMediator()
-	mover := adapterSensing.NewMoverPort(med)
-
-	done := make(chan error, 1)
-	go func() {
-		done <- mover.RouteAcross(context.Background(), testPlayerID, "PROBE-A", "X1-ZZ-M1")
-	}()
-
-	select {
-	case err := <-done:
-		require.Error(t, err, "RouteAcross reported success without moving anything")
-	case <-time.After(tickDeadline):
-		close(med.release)
-		<-done
-		t.Fatalf("RouteAcross was still waiting after %v — it sent a command that flies "+
-			"the whole gate path: %v", tickDeadline, med.commands())
-	}
-
-	require.False(t, med.sentAny("RouteShipCommand"),
-		"RouteAcross issued the multi-jump route, which waits out every leg: %v", med.commands())
-}
+// RouteAcross used to REFUSE every crossing, and a test here pinned that refusal.
+// The refusal was safe but it was a wall: a probe could never leave the system it
+// was bought in, so only that system's yards were ever usable and the frontier
+// could not widen. It now WALKS the crossing a step per tick instead.
+//
+// The property that test was really protecting — the tick never waits on a
+// flight or a cooldown — did not go away with it; it moved next door and got
+// stronger, because proving it of a WALK takes consecutive ticks rather than one
+// call. See TestPlacementWalk_HullCrossesAGateOverConsecutiveTicks, and
+// TestMoverPort_RouteAcross_FailsClosedWithoutMovingWhenUnroutable for the
+// money-safe hold this refusal used to provide.
 
 // TestSeedCommandPort_JumpTo_WalksTheGateHopOneStepPerTick is the seed's version
 // of the headline case, and it is on the critical path rather than latent: seeds

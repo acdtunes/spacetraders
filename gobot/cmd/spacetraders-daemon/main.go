@@ -1114,6 +1114,11 @@ func run(cfg *config.Config) error {
 		// system. DB-only by contract — ListProbeYards especially, whose locality the
 		// drain's free-skip accounting depends on.
 		catalog := parkedSensingAdapters.NewWaypointCatalogPort(waypointRepo, db, sensingPlayerID)
+		// One gate-adjacency adapter serves expansion's frontier walk AND the
+		// placement mover's cross-system gate walk, so the two can never disagree
+		// about which systems border which — the mover walks toward a placement
+		// over the same edges expansion used to decide the placement was reachable.
+		gateNeighbours := parkedSensingAdapters.NewGateNeighbourPort(gateEdgeRepo)
 		return scoutingCmd.SensingEnginePorts{
 			Ledger:    sensingLedgerPort,
 			Waypoints: catalog,
@@ -1134,10 +1139,10 @@ func run(cfg *config.Config) error {
 			Purchaser:  parkedSensingAdapters.NewProbePurchasePort(med, shipRepo),
 			Ships:      parkedSensingAdapters.NewShipPositionPort(db),
 			Fleet:      parkedSensingAdapters.NewFleetTagPort(shipRepo),
-			Mover:      parkedSensingAdapters.NewMoverPort(med),
+			Mover:      parkedSensingAdapters.NewMoverPort(med, gateNeighbours),
 			// Per-system stored gate adjacency — never the whole-map read, and never a
 			// fetch-through resolver.
-			Gates:    parkedSensingAdapters.NewGateNeighbourPort(gateEdgeRepo),
+			Gates:    gateNeighbours,
 			SeedShip: parkedSensingAdapters.NewSeedCommandPort(med, apiClient, playerRepo, waypointRepo, marketScanner),
 			Scan:     parkedSensingAdapters.NewScanRunnerPort(marketScanner),
 			Home:     parkedSensingAdapters.NewHomeSystemPort(db),

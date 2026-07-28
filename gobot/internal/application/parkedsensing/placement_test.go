@@ -24,7 +24,7 @@ func (f *fakeMover) NavigateWithin(_ context.Context, _ int, ship, destination s
 	return f.navErr
 }
 
-func (f *fakeMover) RouteAcross(_ context.Context, _ int, ship, destination string) error {
+func (f *fakeMover) RouteAcross(_ context.Context, _ int, ship, _, destination string) error {
 	f.routes = append(f.routes, moveCall{ship, destination})
 	return f.routeErr
 }

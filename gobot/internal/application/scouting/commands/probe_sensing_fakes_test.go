@@ -620,7 +620,7 @@ func (f *fakeMover) NavigateWithin(_ context.Context, _ int, shipSymbol, destina
 	return nil
 }
 
-func (f *fakeMover) RouteAcross(_ context.Context, _ int, shipSymbol, destination string) error {
+func (f *fakeMover) RouteAcross(_ context.Context, _ int, shipSymbol, _, destination string) error {
 	f.calls.hit("route")
 	f.moves = append(f.moves, shipSymbol+"→"+destination)
 	return nil

@@ -34,13 +34,29 @@ const DefaultMaxPlacementActions = 10
 // ShipMover issues the movement commands. The two navigation verbs are
 // genuinely different machinery, not one with a flag: the in-system planner
 // resolves a route inside a single system's waypoint graph, while the
-// cross-system router resolves a multi-jump gate path. Sending an in-system hop
-// through the router, or a cross-gate hop through the planner, fails.
+// cross-system walk crosses a gate. Sending an in-system hop through the walk,
+// or a cross-gate hop through the planner, fails.
 type ShipMover interface {
 	// NavigateWithin moves a hull to a waypoint in the system it is already in.
 	NavigateWithin(ctx context.Context, playerID int, shipSymbol, destination string) error
-	// RouteAcross moves a hull to a waypoint in any reachable system.
-	RouteAcross(ctx context.Context, playerID int, shipSymbol, destination string) error
+	// RouteAcross advances a hull ONE STEP of the gate walk toward destination
+	// and returns — it does not fly the journey. A crossing is a sequence of
+	// steps (onto the gate, then off it, once per gate on the way), and this
+	// verb performs exactly the one step the hull's current position calls for.
+	//
+	// fromWaypoint is where the ships table says the hull is STANDING, and the
+	// caller passes it because it has already read it this tick. It is the
+	// step discriminator, and it is a SYMBOL rather than a distance on purpose:
+	// orbitals share coordinates with the body they orbit, so a hull can read
+	// zero distance from a gate it is not standing on.
+	//
+	// The walk therefore needs no progress column of its own. The durable pair
+	// this machine already keeps — the slot row naming the destination and the
+	// hull, and the ships table naming where that hull now is — is a complete
+	// description of how far the crossing has got, and the next tick resumes
+	// from it by re-reading both. See dispatchClaim, which is what re-issues
+	// the next step once the slot is IN_TRANSIT.
+	RouteAcross(ctx context.Context, playerID int, shipSymbol, fromWaypoint, destination string) error
 	// Dock docks a hull where it currently sits.
 	Dock(ctx context.Context, playerID int, shipSymbol string) error
 }
@@ -285,14 +301,21 @@ func warnIfTagFailed(ctx context.Context, pl PlacementPorts, playerID int, shipS
 }
 
 // flyToSlot issues the movement that takes a hull to its slot, choosing the
-// in-system planner or the cross-system router by comparing the hull's current
-// system against the slot's. The two are separate machinery, not one verb with
-// a flag, and sending a hop through the wrong one fails.
+// in-system planner or the cross-system gate walk by comparing the hull's
+// current system against the slot's. The two are separate machinery, not one
+// verb with a flag, and sending a hop through the wrong one fails.
+//
+// Neither branch waits. The in-system verb dispatches one hop; the cross-system
+// one advances the walk by a single step. So a hull several gates from its slot
+// costs this tick exactly one dispatch, and the ticks that follow carry it the
+// rest of the way — each of them re-reading pos and re-deciding from scratch,
+// which is also what makes the walk self-correcting when a hull ends up
+// somewhere the last tick did not send it.
 func flyToSlot(ctx context.Context, pl PlacementPorts, playerID int, slot QueuedSlot, pos ShipPos) error {
 	if shared.ExtractSystemSymbol(pos.Waypoint) == slot.System {
 		return pl.Mover.NavigateWithin(ctx, playerID, slot.AssignedShip, slot.Waypoint)
 	}
-	return pl.Mover.RouteAcross(ctx, playerID, slot.AssignedShip, slot.Waypoint)
+	return pl.Mover.RouteAcross(ctx, playerID, slot.AssignedShip, pos.Waypoint, slot.Waypoint)
 }
 
 // transitionInFlight advances a placement, treating a lost race as a normal
