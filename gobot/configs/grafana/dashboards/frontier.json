@@ -21,254 +21,634 @@
   "links": [],
   "panels": [
     {
-      "collapsed": false,
+      "type": "stat",
+      "id": 101,
+      "title": "Bootstrap Phase",
+      "description": "Live bootstrap phase from spacetraders_daemon_bootstrap_phase (the gauge is one series per phase, 1=active; this folds them to a single ordinal so the phase name and its colour render in one tile). Phase context changes what every other panel on this dashboard means.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
       "gridPos": {
-        "h": 1,
-        "w": 24,
+        "h": 4,
+        "w": 4,
         "x": 0,
         "y": 0
       },
-      "id": 1,
-      "panels": [],
-      "title": "Coverage Now",
-      "type": "row"
-    },
-    {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "postgresql"
-      },
-      "description": "Distinct systems with at least one priced market (system prefix of market_data.waypoint_symbol).",
       "fieldConfig": {
         "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "unit": "none",
-          "decimals": 0,
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "UNKNOWN",
+                  "color": "#898781",
+                  "index": 0
+                },
+                "1": {
+                  "text": "COLDSTART",
+                  "color": "#3987e5",
+                  "index": 1
+                },
+                "2": {
+                  "text": "GATE",
+                  "color": "#d95926",
+                  "index": 2
+                },
+                "3": {
+                  "text": "EXPANSION",
+                  "color": "#199e70",
+                  "index": 3
+                }
+              }
+            }
+          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "text",
                 "value": null
               }
             ]
-          }
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "none",
+          "noValue": "NO DAEMON DATA"
         },
         "overrides": []
       },
-      "gridPos": {
-        "h": 5,
-        "w": 4,
-        "x": 0,
-        "y": 1
-      },
-      "id": 2,
       "options": {
-        "colorMode": "value",
+        "colorMode": "background",
         "graphMode": "none",
         "justifyMode": "auto",
         "orientation": "auto",
+        "textMode": "value",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
           ],
           "fields": "",
           "values": false
-        },
-        "textMode": "value",
-        "wideLayout": true
+        }
       },
+      "pluginVersion": "13.1.0",
       "targets": [
         {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(spacetraders_daemon_bootstrap_phase{phase=\"COLDSTART\"}) * 1 + sum(spacetraders_daemon_bootstrap_phase{phase=\"GATE\"}) * 2 + sum(spacetraders_daemon_bootstrap_phase{phase=\"EXPANSION\"}) * 3",
+          "editorMode": "code",
+          "legendFormat": "__auto",
+          "range": false,
+          "instant": true
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 102,
+      "title": "Home System",
+      "description": "Headquarters system from players.metadata, falling back to the system holding the most hulls. Every 'beyond home' number on this dashboard is relative to this.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 4,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "none",
+          "noValue": "UNKNOWN"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "value",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
           "datasource": {
             "type": "grafana-postgresql-datasource",
             "uid": "postgresql"
           },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COUNT(DISTINCT split_part(waypoint_symbol,'-',1)||'-'||split_part(waypoint_symbol,'-',2)) FROM market_data WHERE player_id=(SELECT MAX(id) FROM players)",
-          "refId": "A"
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players),\n     cur_era AS (SELECT COALESCE((SELECT era_id FROM eras WHERE closed_at IS NULL ORDER BY era_id DESC LIMIT 1),\n                                 (SELECT MAX(era_id) FROM eras)) AS eid),\n     home AS (SELECT COALESCE(\n                (SELECT split_part(p.metadata->>'headquarters','-',1)||'-'||split_part(p.metadata->>'headquarters','-',2)\n                   FROM players p, me WHERE p.id=me.pid AND p.metadata->>'headquarters' IS NOT NULL),\n                (SELECT s.system_symbol FROM ships s, me\n                  WHERE s.player_id=me.pid AND COALESCE(s.system_symbol,'')<>''\n                  GROUP BY 1 ORDER BY COUNT(*) DESC, 1 LIMIT 1)) AS sys),\n     nb AS (SELECT DISTINCT ge.connected_system AS sys\n              FROM gate_edges ge, home, cur_era\n             WHERE ge.system_symbol=home.sys AND ge.era_id=cur_era.eid\n               AND COALESCE(ge.connected_system,'')<>''),\n     priced AS (SELECT w.system_symbol AS sys,\n                       COUNT(DISTINCT m.waypoint_symbol) AS markets,\n                       MAX(m.last_updated) AS last_priced\n                  FROM market_data m\n                  JOIN waypoints w ON w.waypoint_symbol=m.waypoint_symbol, me\n                 WHERE m.player_id=me.pid GROUP BY 1)\nSELECT (SELECT sys FROM home) AS \"home\";",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
         }
-      ],
-      "title": "Systems Priced",
-      "type": "stat"
+      ]
     },
     {
+      "type": "stat",
+      "id": 103,
+      "title": "Systems Priced",
+      "description": "Distinct systems with any cached market_data this era. Trade can only plan inside these systems - this is the ceiling on where the fleet can go. 1 means the bot is confined to its home system.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
       },
-      "description": "Ships with role='SATELLITE' (the coordinator's own IsScoutType() check — ship.go:284 — is exactly this role filter, no other predicate). Threshold marks the compiled default max_probe_fleet (40). LIVE CONFIG CHECK: the running frontier_expansion_coordinator container's persisted launch config has max_probe_fleet=0, i.e. it IS using the compiled default of 40 — not an override. The fleet already exceeds it. The purchase gate (satCount >= cfg.MaxProbeFleet) only blocks NEW probe purchases once at/above cap; it does not shrink an already-over-cap fleet, so this is expected ratchet behavior, not a broken gate.",
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 7,
+        "y": 0
+      },
       "fieldConfig": {
         "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
           "mappings": [],
-          "unit": "none",
-          "decimals": 0,
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "#d03b3b",
                 "value": null
               },
               {
-                "color": "red",
-                "value": 40
+                "color": "#ec835a",
+                "value": 2
+              },
+              {
+                "color": "#fab219",
+                "value": 3
+              },
+              {
+                "color": "#0ca30c",
+                "value": 5
               }
             ]
-          }
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "none",
+          "noValue": "0"
         },
         "overrides": []
       },
-      "gridPos": {
-        "h": 5,
-        "w": 4,
-        "x": 4,
-        "y": 1
-      },
-      "id": 3,
       "options": {
-        "colorMode": "value",
+        "colorMode": "background",
         "graphMode": "none",
         "justifyMode": "auto",
         "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
           ],
           "fields": "",
           "values": false
-        },
-        "textMode": "value",
-        "wideLayout": true
+        }
       },
+      "pluginVersion": "13.1.0",
       "targets": [
         {
+          "refId": "A",
           "datasource": {
             "type": "grafana-postgresql-datasource",
             "uid": "postgresql"
           },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COUNT(*) FROM ships WHERE role='SATELLITE' AND player_id=(SELECT MAX(id) FROM players)",
-          "refId": "A"
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players),\n     cur_era AS (SELECT COALESCE((SELECT era_id FROM eras WHERE closed_at IS NULL ORDER BY era_id DESC LIMIT 1),\n                                 (SELECT MAX(era_id) FROM eras)) AS eid),\n     home AS (SELECT COALESCE(\n                (SELECT split_part(p.metadata->>'headquarters','-',1)||'-'||split_part(p.metadata->>'headquarters','-',2)\n                   FROM players p, me WHERE p.id=me.pid AND p.metadata->>'headquarters' IS NOT NULL),\n                (SELECT s.system_symbol FROM ships s, me\n                  WHERE s.player_id=me.pid AND COALESCE(s.system_symbol,'')<>''\n                  GROUP BY 1 ORDER BY COUNT(*) DESC, 1 LIMIT 1)) AS sys),\n     nb AS (SELECT DISTINCT ge.connected_system AS sys\n              FROM gate_edges ge, home, cur_era\n             WHERE ge.system_symbol=home.sys AND ge.era_id=cur_era.eid\n               AND COALESCE(ge.connected_system,'')<>''),\n     priced AS (SELECT w.system_symbol AS sys,\n                       COUNT(DISTINCT m.waypoint_symbol) AS markets,\n                       MAX(m.last_updated) AS last_priced\n                  FROM market_data m\n                  JOIN waypoints w ON w.waypoint_symbol=m.waypoint_symbol, me\n                 WHERE m.player_id=me.pid GROUP BY 1)\nSELECT COUNT(*)::int AS \"systems priced\" FROM priced;",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
         }
-      ],
-      "title": "Probe Fleet Size (cap: 40 default)",
-      "type": "stat"
+      ]
     },
     {
+      "type": "stat",
+      "id": 104,
+      "title": "Neighbours Priced",
+      "description": "Jump-reachable neighbour systems that have cached market data. This is the expansion scoreboard: at 0 the tour coordinator's reposition fallback rejects every neighbour as 'no-cached-market' and trade parks when home sinks saturate.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
       },
-      "description": "Scout post slots (primary + materialized extra_slots) with no assigned_hull and no reposition_container_id — the exact predicate the frontier coordinator's countUnmannedSlots() uses (run_frontier_expansion_coordinator.go) to size demand for new posts/probes.",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 10,
+        "y": 0
+      },
       "fieldConfig": {
         "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
           "mappings": [],
-          "unit": "none",
-          "decimals": 0,
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "#d03b3b",
                 "value": null
+              },
+              {
+                "color": "#fab219",
+                "value": 1
+              },
+              {
+                "color": "#0ca30c",
+                "value": 2
               }
             ]
-          }
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "none",
+          "noValue": "0"
         },
         "overrides": []
       },
-      "gridPos": {
-        "h": 5,
-        "w": 4,
-        "x": 8,
-        "y": 1
-      },
-      "id": 4,
       "options": {
-        "colorMode": "value",
+        "colorMode": "background",
         "graphMode": "none",
         "justifyMode": "auto",
         "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
           ],
           "fields": "",
           "values": false
-        },
-        "textMode": "value",
-        "wideLayout": true
+        }
       },
+      "pluginVersion": "13.1.0",
       "targets": [
         {
+          "refId": "A",
           "datasource": {
             "type": "grafana-postgresql-datasource",
             "uid": "postgresql"
           },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH slots AS (\n  SELECT id AS post_id, assigned_hull, reposition_container_id\n  FROM scout_posts WHERE player_id=(SELECT MAX(id) FROM players)\n  UNION ALL\n  SELECT sp.id AS post_id,\n         elem->>'assigned_hull' AS assigned_hull,\n         elem->>'reposition_container_id' AS reposition_container_id\n  FROM scout_posts sp, jsonb_array_elements(NULLIF(sp.extra_slots,'')::jsonb) elem\n  WHERE sp.player_id=(SELECT MAX(id) FROM players)\n)\nSELECT COUNT(*) FILTER (WHERE COALESCE(assigned_hull,'')='' AND COALESCE(reposition_container_id,'')='') FROM slots",
-          "refId": "A"
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players),\n     cur_era AS (SELECT COALESCE((SELECT era_id FROM eras WHERE closed_at IS NULL ORDER BY era_id DESC LIMIT 1),\n                                 (SELECT MAX(era_id) FROM eras)) AS eid),\n     home AS (SELECT COALESCE(\n                (SELECT split_part(p.metadata->>'headquarters','-',1)||'-'||split_part(p.metadata->>'headquarters','-',2)\n                   FROM players p, me WHERE p.id=me.pid AND p.metadata->>'headquarters' IS NOT NULL),\n                (SELECT s.system_symbol FROM ships s, me\n                  WHERE s.player_id=me.pid AND COALESCE(s.system_symbol,'')<>''\n                  GROUP BY 1 ORDER BY COUNT(*) DESC, 1 LIMIT 1)) AS sys),\n     nb AS (SELECT DISTINCT ge.connected_system AS sys\n              FROM gate_edges ge, home, cur_era\n             WHERE ge.system_symbol=home.sys AND ge.era_id=cur_era.eid\n               AND COALESCE(ge.connected_system,'')<>''),\n     priced AS (SELECT w.system_symbol AS sys,\n                       COUNT(DISTINCT m.waypoint_symbol) AS markets,\n                       MAX(m.last_updated) AS last_priced\n                  FROM market_data m\n                  JOIN waypoints w ON w.waypoint_symbol=m.waypoint_symbol, me\n                 WHERE m.player_id=me.pid GROUP BY 1)\nSELECT COUNT(*)::int AS \"neighbours priced\"\n  FROM nb WHERE EXISTS (SELECT 1 FROM priced WHERE priced.sys = nb.sys);",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
         }
-      ],
-      "title": "Unmanned Slots (Coverage Demand)",
-      "type": "stat"
+      ]
     },
     {
+      "type": "stat",
+      "id": 105,
+      "title": "Neighbours Reachable",
+      "description": "Systems directly jump-reachable from home via a gate edge in the current era. The denominator for 'Neighbours Priced' - read the two tiles together.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
       },
-      "description": "Scout posts by kind (standing/sweep_once), unnesting primary slot + materialized extra_slots. Manned = assigned_hull set. Unmanned (demand) = the coordinator's countUnmannedSlots() predicate (no hull, no reposition in flight). \"Manned, Tour Not Running\" is a ghost-slot diagnostic: hull assigned with a tour_container_id that isn't currently a RUNNING container (stale assignment / restart gap).",
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 14,
+        "y": 0
+      },
       "fieldConfig": {
         "defaults": {
-          "color": {
-            "mode": "palette-classic"
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
           },
-          "mappings": []
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "none",
+          "noValue": "0"
         },
         "overrides": []
       },
-      "gridPos": {
-        "h": 5,
-        "w": 12,
-        "x": 12,
-        "y": 1
-      },
-      "id": 5,
       "options": {
-        "cellHeight": "sm",
-        "footer": {
-          "show": false
-        },
-        "showHeader": true
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
       },
+      "pluginVersion": "13.1.0",
       "targets": [
         {
+          "refId": "A",
           "datasource": {
             "type": "grafana-postgresql-datasource",
             "uid": "postgresql"
           },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH slots AS (\n  SELECT id AS post_id, kind, assigned_hull, tour_container_id, reposition_container_id\n  FROM scout_posts WHERE player_id=(SELECT MAX(id) FROM players)\n  UNION ALL\n  SELECT sp.id AS post_id, sp.kind,\n         elem->>'assigned_hull' AS assigned_hull,\n         elem->>'tour_container_id' AS tour_container_id,\n         elem->>'reposition_container_id' AS reposition_container_id\n  FROM scout_posts sp, jsonb_array_elements(NULLIF(sp.extra_slots,'')::jsonb) elem\n  WHERE sp.player_id=(SELECT MAX(id) FROM players)\n)\nSELECT\n  kind AS \"Kind\",\n  COUNT(*) AS \"Slots\",\n  COUNT(*) FILTER (WHERE COALESCE(assigned_hull,'') != '') AS \"Manned\",\n  COUNT(*) FILTER (WHERE COALESCE(assigned_hull,'')='' AND COALESCE(reposition_container_id,'')='') AS \"Unmanned (demand)\",\n  COUNT(*) FILTER (WHERE COALESCE(assigned_hull,'') != '' AND COALESCE(tour_container_id,'') != '' AND NOT EXISTS (SELECT 1 FROM containers c WHERE c.id = slots.tour_container_id AND c.status='RUNNING')) AS \"Manned, Tour Not Running\"\nFROM slots\nGROUP BY kind\nORDER BY kind",
-          "refId": "A"
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players),\n     cur_era AS (SELECT COALESCE((SELECT era_id FROM eras WHERE closed_at IS NULL ORDER BY era_id DESC LIMIT 1),\n                                 (SELECT MAX(era_id) FROM eras)) AS eid),\n     home AS (SELECT COALESCE(\n                (SELECT split_part(p.metadata->>'headquarters','-',1)||'-'||split_part(p.metadata->>'headquarters','-',2)\n                   FROM players p, me WHERE p.id=me.pid AND p.metadata->>'headquarters' IS NOT NULL),\n                (SELECT s.system_symbol FROM ships s, me\n                  WHERE s.player_id=me.pid AND COALESCE(s.system_symbol,'')<>''\n                  GROUP BY 1 ORDER BY COUNT(*) DESC, 1 LIMIT 1)) AS sys),\n     nb AS (SELECT DISTINCT ge.connected_system AS sys\n              FROM gate_edges ge, home, cur_era\n             WHERE ge.system_symbol=home.sys AND ge.era_id=cur_era.eid\n               AND COALESCE(ge.connected_system,'')<>''),\n     priced AS (SELECT w.system_symbol AS sys,\n                       COUNT(DISTINCT m.waypoint_symbol) AS markets,\n                       MAX(m.last_updated) AS last_priced\n                  FROM market_data m\n                  JOIN waypoints w ON w.waypoint_symbol=m.waypoint_symbol, me\n                 WHERE m.player_id=me.pid GROUP BY 1)\nSELECT COUNT(*)::int AS \"reachable\" FROM nb;",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
         }
-      ],
-      "title": "Scout Posts by Kind",
-      "type": "table"
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 106,
+      "title": "Unpriced Markets In Reach",
+      "description": "Marketplaces we already know exist in reachable neighbour systems but have never priced. This is the size of the prize sitting one jump away - and the cost of the current stall.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 17,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              },
+              {
+                "color": "#fab219",
+                "value": 1
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "none",
+          "noValue": "0"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players),\n     cur_era AS (SELECT COALESCE((SELECT era_id FROM eras WHERE closed_at IS NULL ORDER BY era_id DESC LIMIT 1),\n                                 (SELECT MAX(era_id) FROM eras)) AS eid),\n     home AS (SELECT COALESCE(\n                (SELECT split_part(p.metadata->>'headquarters','-',1)||'-'||split_part(p.metadata->>'headquarters','-',2)\n                   FROM players p, me WHERE p.id=me.pid AND p.metadata->>'headquarters' IS NOT NULL),\n                (SELECT s.system_symbol FROM ships s, me\n                  WHERE s.player_id=me.pid AND COALESCE(s.system_symbol,'')<>''\n                  GROUP BY 1 ORDER BY COUNT(*) DESC, 1 LIMIT 1)) AS sys),\n     nb AS (SELECT DISTINCT ge.connected_system AS sys\n              FROM gate_edges ge, home, cur_era\n             WHERE ge.system_symbol=home.sys AND ge.era_id=cur_era.eid\n               AND COALESCE(ge.connected_system,'')<>''),\n     priced AS (SELECT w.system_symbol AS sys,\n                       COUNT(DISTINCT m.waypoint_symbol) AS markets,\n                       MAX(m.last_updated) AS last_priced\n                  FROM market_data m\n                  JOIN waypoints w ON w.waypoint_symbol=m.waypoint_symbol, me\n                 WHERE m.player_id=me.pid GROUP BY 1)\nSELECT COALESCE(SUM(known),0)::int AS \"unpriced markets in reach\" FROM (\n  SELECT COUNT(*) FILTER (WHERE w.traits LIKE '%MARKETPLACE%') AS known\n    FROM waypoints w JOIN nb ON nb.sys = w.system_symbol\n   WHERE NOT EXISTS (SELECT 1 FROM priced WHERE priced.sys = w.system_symbol)\n   GROUP BY w.system_symbol) t;",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 107,
+      "title": "Fleet Beyond Home",
+      "description": "Hulls currently outside the home system. 0 means the entire fleet is confined to home - the physical signature of a stalled expansion.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 21,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#d03b3b",
+                "value": null
+              },
+              {
+                "color": "#fab219",
+                "value": 1
+              },
+              {
+                "color": "#0ca30c",
+                "value": 3
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "none",
+          "noValue": "0"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players),\n     cur_era AS (SELECT COALESCE((SELECT era_id FROM eras WHERE closed_at IS NULL ORDER BY era_id DESC LIMIT 1),\n                                 (SELECT MAX(era_id) FROM eras)) AS eid),\n     home AS (SELECT COALESCE(\n                (SELECT split_part(p.metadata->>'headquarters','-',1)||'-'||split_part(p.metadata->>'headquarters','-',2)\n                   FROM players p, me WHERE p.id=me.pid AND p.metadata->>'headquarters' IS NOT NULL),\n                (SELECT s.system_symbol FROM ships s, me\n                  WHERE s.player_id=me.pid AND COALESCE(s.system_symbol,'')<>''\n                  GROUP BY 1 ORDER BY COUNT(*) DESC, 1 LIMIT 1)) AS sys),\n     nb AS (SELECT DISTINCT ge.connected_system AS sys\n              FROM gate_edges ge, home, cur_era\n             WHERE ge.system_symbol=home.sys AND ge.era_id=cur_era.eid\n               AND COALESCE(ge.connected_system,'')<>''),\n     priced AS (SELECT w.system_symbol AS sys,\n                       COUNT(DISTINCT m.waypoint_symbol) AS markets,\n                       MAX(m.last_updated) AS last_priced\n                  FROM market_data m\n                  JOIN waypoints w ON w.waypoint_symbol=m.waypoint_symbol, me\n                 WHERE m.player_id=me.pid GROUP BY 1)\nSELECT COUNT(*) FILTER (WHERE s.system_symbol IS DISTINCT FROM (SELECT sys FROM home))::int\n         AS \"hulls beyond home\"\n  FROM ships s, me WHERE s.player_id = me.pid;",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
     },
     {
       "collapsed": false,
@@ -276,696 +656,2724 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 6
+        "y": 4
       },
-      "id": 6,
+      "id": 108,
       "panels": [],
-      "title": "Expansion Cadence",
+      "title": "Where expansion is blocked",
       "type": "row"
     },
     {
+      "type": "table",
+      "id": 109,
+      "title": "Jump-Reachable Neighbours - pricing status",
+      "description": "Every system one jump from home, ranked so the highest-yield unpriced target sits at the top. 'Markets Known' comes from waypoint traits we have already surveyed, so an UNPRICED row with a high count is a probe that pays for itself immediately. 'Priced Age' is blank where a system has never been priced.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
       },
-      "description": "Cumulative count of systems by first-priced hour (MIN(market_data.last_updated) per system, bucketed). Shows FULL history unconditionally — a cumulative-since-start curve would be misleading if clipped to the dashboard time picker, so this query does not use $__timeFilter.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "mappings": [],
-          "unit": "none",
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "lineWidth": 2,
-            "pointSize": 5,
-            "showPoints": "never",
-            "spanNulls": true
-          }
-        },
-        "overrides": []
-      },
       "gridPos": {
-        "h": 8,
-        "w": 12,
+        "h": 9,
+        "w": 14,
         "x": 0,
-        "y": 7
+        "y": 5
       },
-      "id": 7,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "postgresql"
-          },
-          "format": "time_series",
-          "rawQuery": true,
-          "rawSql": "SELECT bucket, SUM(cnt) OVER (ORDER BY bucket) AS \"systems priced (cumulative)\"\nFROM (\n  SELECT date_trunc('hour', first_priced) AS bucket, COUNT(*) AS cnt\n  FROM (\n    SELECT split_part(waypoint_symbol,'-',1)||'-'||split_part(waypoint_symbol,'-',2) AS system_symbol, MIN(last_updated) AS first_priced\n    FROM market_data WHERE player_id=(SELECT MAX(id) FROM players) GROUP BY 1\n  ) s GROUP BY 1\n) b ORDER BY 1",
-          "refId": "A"
-        }
-      ],
-      "title": "Systems Priced Over Time (Cumulative, All History)",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "postgresql"
-      },
-      "description": "Scout posts created per hour, by kind (scout_posts.created_at — confirmed present, no proxy needed). Respects the dashboard time range.",
       "fieldConfig": {
         "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "mappings": [],
-          "unit": "none",
           "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "lineWidth": 2,
-            "pointSize": 5,
-            "showPoints": "never",
-            "spanNulls": true
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 7
-      },
-      "id": 8,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "postgresql"
-          },
-          "format": "time_series",
-          "rawQuery": true,
-          "rawSql": "SELECT $__timeGroupAlias(created_at, '1h'), kind AS metric, COUNT(*) AS \"posts\" FROM scout_posts WHERE $__timeFilter(created_at) AND player_id=(SELECT MAX(id) FROM players) GROUP BY 1, 2 ORDER BY 1",
-          "refId": "A"
-        }
-      ],
-      "title": "Posts Declared Over Time (by kind)",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "postgresql"
-      },
-      "description": "Probe (SHIP_PROBE) purchase transactions per hour — operation_type='fleet expansion' AND category='SHIP_INVESTMENTS' AND metadata->>'ship_type'='SHIP_PROBE'. That last filter matters: the same operation_type/category also covers heavy freighters, light haulers and siphon drones, so an unfiltered count would overstate probe spend. Respects the dashboard time range.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false,
+            "filterable": false
           },
           "mappings": [],
-          "unit": "none",
-          "custom": {
-            "drawStyle": "bars",
-            "fillOpacity": 40,
-            "lineWidth": 1,
-            "pointSize": 5,
-            "showPoints": "never",
-            "spanNulls": false
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 15
-      },
-      "id": 9,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "postgresql"
-          },
-          "format": "time_series",
-          "rawQuery": true,
-          "rawSql": "SELECT $__timeGroupAlias(created_at, '1h'), COUNT(*) AS \"probe purchases\" FROM transactions WHERE $__timeFilter(created_at) AND operation_type='fleet expansion' AND category='SHIP_INVESTMENTS' AND metadata->>'ship_type'='SHIP_PROBE' AND player_id=(SELECT MAX(id) FROM players) GROUP BY 1 ORDER BY 1",
-          "refId": "A"
-        }
-      ],
-      "title": "Probe Purchases Over Time",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "postgresql"
-      },
-      "description": "Cumulative credits spent on SHIP_PROBE purchases (same metadata filter as \"Probe Purchases Over Time\"). Shows FULL history unconditionally, same rationale as the Systems Priced cumulative curve — no $__timeFilter.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "mappings": [],
-          "unit": "locale",
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "lineWidth": 2,
-            "pointSize": 5,
-            "showPoints": "never",
-            "spanNulls": true
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 15
-      },
-      "id": 10,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "postgresql"
-          },
-          "format": "time_series",
-          "rawQuery": true,
-          "rawSql": "SELECT bucket, SUM(spend) OVER (ORDER BY bucket) AS \"cumulative probe capex\"\nFROM (\n  SELECT date_trunc('hour', created_at) AS bucket, SUM(-amount) AS spend\n  FROM transactions\n  WHERE operation_type='fleet expansion' AND category='SHIP_INVESTMENTS' AND metadata->>'ship_type'='SHIP_PROBE' AND player_id=(SELECT MAX(id) FROM players)\n  GROUP BY 1\n) b ORDER BY 1",
-          "refId": "A"
-        }
-      ],
-      "title": "Cumulative Probe Capex (All History)",
-      "type": "timeseries"
-    },
-    {
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 23
-      },
-      "id": 11,
-      "panels": [],
-      "title": "Probe Economics",
-      "type": "row"
-    },
-    {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "postgresql"
-      },
-      "description": "All-time probe capex (metadata->>'ship_type'='SHIP_PROBE' purchases) divided by systems priced. A blended efficiency figure, not a marginal cost — it mixes early cheap wins with later harder-to-reach systems.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "unit": "locale",
-          "decimals": 0,
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "text",
                 "value": null
               }
             ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 6,
-        "x": 0,
-        "y": 24
-      },
-      "id": 12,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "value",
-        "wideLayout": true
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "postgresql"
           },
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT ROUND(\n  (SELECT COALESCE(SUM(-amount),0) FROM transactions WHERE operation_type='fleet expansion' AND category='SHIP_INVESTMENTS' AND metadata->>'ship_type'='SHIP_PROBE' AND player_id=(SELECT MAX(id) FROM players))::numeric\n  /\n  NULLIF((SELECT COUNT(DISTINCT split_part(waypoint_symbol,'-',1)||'-'||split_part(waypoint_symbol,'-',2)) FROM market_data WHERE player_id=(SELECT MAX(id) FROM players)),0)\n,0)",
-          "refId": "A"
-        }
-      ],
-      "title": "Cost per System Priced (all-time)",
-      "type": "stat"
-    },
-    {
-      "gridPos": {
-        "h": 6,
-        "w": 18,
-        "x": 6,
-        "y": 24
-      },
-      "id": 13,
-      "options": {
-        "code": {
-          "language": "plaintext",
-          "showLineNumbers": false,
-          "showMiniMap": false
-        },
-        "content": "### Per-cycle expansion ranking is log-only today\n\nThe frontier expansion coordinator scores and ranks candidate systems every reconcile cycle (frontier hop distance, freshness demand, cap/cooldown/spend-window gates) before deciding whether to buy a probe and where to send it. That ranking and its inputs are **not persisted** to Postgres or Prometheus — today it only exists in the container's log lines.\n\nThe panels in this row and the Expansion Cadence row above are the best available **proxy**: probe-purchase events over time, cumulative capex, and probe fleet size vs. the compiled cap. They show the *outcome* of each cycle's decision, not the *reasoning*.\n\n**Follow-up (named on this bead):** P15 — instrument the coordinator with a `frontier_expansion_decisions_total{action}` counter (or equivalent) so the per-cycle ranking becomes queryable instead of log-only.",
-        "mode": "markdown"
-      },
-      "title": "Ranking Visibility (Instrumentation Gap)",
-      "type": "text"
-    },
-    {
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 30
-      },
-      "id": 14,
-      "panels": [],
-      "title": "Freshness / Health",
-      "type": "row"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "Live scout freshness per system (sp-s0nx): seconds since each system's market data was last refreshed. Duplicated from navigation.json — this is the promQL feed the tour-lane eligibility gate reads from in real time, relevant here because frontier expansion depends on freshly-scouted systems.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "mappings": [],
-          "unit": "s",
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "lineWidth": 2,
-            "pointSize": 5,
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            }
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 31
-      },
-      "id": 15,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "spacetraders_daemon_scout_freshness_actual_seconds",
-          "legendFormat": "{{system}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Scout Freshness (live, by system)",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "Rate of tour lanes excluded for stale scout data, by system (sp-s0nx). Duplicated from navigation.json. A lane goes stale here precisely when its system's freshness (left panel) has drifted past the post target.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "mappings": [],
-          "unit": "none",
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "lineWidth": 2,
-            "pointSize": 5,
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            }
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 31
-      },
-      "id": 16,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum by (system) (rate(spacetraders_daemon_tour_lanes_stale_excluded_total[$__rate_interval]))",
-          "legendFormat": "{{system}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Stale Lanes Excluded (rate by system)",
-      "type": "timeseries"
-    },
-    {
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 39
-      },
-      "id": 17,
-      "panels": [],
-      "title": "Gate Graph",
-      "type": "row"
-    },
-    {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "postgresql"
-      },
-      "description": "Total rows in gate_edges. This table has no player_id column — it is a global/shared galaxy map, not scoped per player.",
-      "fieldConfig": {
-        "defaults": {
           "color": {
             "mode": "thresholds"
           },
-          "mappings": [],
-          "unit": "none",
-          "decimals": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 4,
-        "x": 0,
-        "y": 40
-      },
-      "id": 18,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "value",
-        "wideLayout": true
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "postgresql"
-          },
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT COUNT(*) FROM gate_edges",
-          "refId": "A"
-        }
-      ],
-      "title": "Gate Edges (total)",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "postgresql"
-      },
-      "description": "gate_edges rows flagged under_construction. Global/shared, no player_id.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "unit": "none",
-          "decimals": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 4,
-        "x": 4,
-        "y": 40
-      },
-      "id": 19,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "value",
-        "wideLayout": true
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "postgresql"
-          },
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT COUNT(*) FILTER (WHERE under_construction) FROM gate_edges",
-          "refId": "A"
-        }
-      ],
-      "title": "Gate Edges Under Construction",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "postgresql"
-      },
-      "description": "Marker rows on gate_edges (connected_system=''). sp-ikx1 backoff: gates whose waypoint 400s on read get a marker instead of a real edge, carrying unreadable_since and attempt_count, so the gate-graph builder stops re-probing them every 30s tick until the backoff window (5m -> 30m -> 2h) elapses. Global/shared, no player_id.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "unit": "none",
-          "decimals": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 4,
-        "x": 8,
-        "y": 40
-      },
-      "id": 20,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "value",
-        "wideLayout": true
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "postgresql"
-          },
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT COUNT(*) FROM gate_edges WHERE connected_system=''",
-          "refId": "A"
-        }
-      ],
-      "title": "Gates Currently in Probe-Backoff (sp-ikx1 markers)",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "postgresql"
-      },
-      "description": "Per-system detail for gate_edges marker rows (connected_system=''). attempt_count is the sp-ikx1 backoff tier (5m -> 30m -> 2h between re-probes); \"Unreadable For\" is elapsed time since unreadable_since (RFC3339 text, cast to timestamptz).",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "mappings": []
+          "noValue": "No gate edges from home this era - the gate graph has not been read yet"
         },
         "overrides": [
           {
             "matcher": {
               "id": "byName",
-              "options": "Unreadable For (s)"
+              "options": "State"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "PRICED": {
+                        "color": "#0ca30c",
+                        "index": 0
+                      },
+                      "PROBE POSTED": {
+                        "color": "#fab219",
+                        "index": 1
+                      },
+                      "UNPRICED": {
+                        "color": "#d03b3b",
+                        "index": 2
+                      },
+                      "UNSURVEYED": {
+                        "color": "#ec835a",
+                        "index": 3
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "gradient"
+                }
+              },
+              {
+                "id": "custom.width",
+                "value": 132
+              },
+              {
+                "id": "custom.align",
+                "value": "center"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "System"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 96
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Markets Known"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "gauge",
+                  "mode": "gradient",
+                  "valueDisplayMode": "text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "#898781",
+                      "value": null
+                    },
+                    {
+                      "color": "#3987e5",
+                      "value": 1
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "max",
+                "value": 30
+              },
+              {
+                "id": "min",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Markets Priced"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "#d03b3b",
+                      "value": null
+                    },
+                    {
+                      "color": "#0ca30c",
+                      "value": 1
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Priced Age"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "noValue",
+                "value": "never"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "#0ca30c",
+                      "value": null
+                    },
+                    {
+                      "color": "#fab219",
+                      "value": 3600
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Gate"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "OPEN": {
+                        "color": "#0ca30c",
+                        "index": 0
+                      },
+                      "UNDER CONSTRUCTION": {
+                        "color": "#fab219",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Shipyards"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "#898781",
+                      "value": null
+                    },
+                    {
+                      "color": "#199e70",
+                      "value": 1
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false,
+          "fields": ""
+        },
+        "sortBy": [
+          {
+            "displayName": "Markets Priced",
+            "desc": false
+          }
+        ]
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players),\n     cur_era AS (SELECT COALESCE((SELECT era_id FROM eras WHERE closed_at IS NULL ORDER BY era_id DESC LIMIT 1),\n                                 (SELECT MAX(era_id) FROM eras)) AS eid),\n     home AS (SELECT COALESCE(\n                (SELECT split_part(p.metadata->>'headquarters','-',1)||'-'||split_part(p.metadata->>'headquarters','-',2)\n                   FROM players p, me WHERE p.id=me.pid AND p.metadata->>'headquarters' IS NOT NULL),\n                (SELECT s.system_symbol FROM ships s, me\n                  WHERE s.player_id=me.pid AND COALESCE(s.system_symbol,'')<>''\n                  GROUP BY 1 ORDER BY COUNT(*) DESC, 1 LIMIT 1)) AS sys),\n     nb AS (SELECT DISTINCT ge.connected_system AS sys\n              FROM gate_edges ge, home, cur_era\n             WHERE ge.system_symbol=home.sys AND ge.era_id=cur_era.eid\n               AND COALESCE(ge.connected_system,'')<>''),\n     priced AS (SELECT w.system_symbol AS sys,\n                       COUNT(DISTINCT m.waypoint_symbol) AS markets,\n                       MAX(m.last_updated) AS last_priced\n                  FROM market_data m\n                  JOIN waypoints w ON w.waypoint_symbol=m.waypoint_symbol, me\n                 WHERE m.player_id=me.pid GROUP BY 1),\n     geo AS (SELECT w.system_symbol AS sys,\n                    COUNT(*) FILTER (WHERE w.traits LIKE '%MARKETPLACE%') AS markets_known,\n                    COUNT(*) FILTER (WHERE w.traits LIKE '%SHIPYARD%')    AS shipyards,\n                    COUNT(*) AS waypoints_known\n               FROM waypoints w GROUP BY 1),\n     posts AS (SELECT sp.system_symbol AS sys, COUNT(*) AS n\n                 FROM scout_posts sp, me WHERE sp.player_id=me.pid GROUP BY 1),\n     edge AS (SELECT ge.connected_system AS sys, MIN(ge.gate_waypoint) AS gate,\n                     bool_or(ge.under_construction) AS uc\n                FROM gate_edges ge, home, cur_era\n               WHERE ge.system_symbol=home.sys AND ge.era_id=cur_era.eid\n                 AND COALESCE(ge.connected_system,'')<>'' GROUP BY 1)\nSELECT nb.sys                                     AS \"System\",\n       CASE WHEN COALESCE(priced.markets,0) > 0        THEN 'PRICED'\n            WHEN COALESCE(posts.n,0) > 0               THEN 'PROBE POSTED'\n            WHEN COALESCE(geo.markets_known,0) > 0     THEN 'UNPRICED'\n            ELSE 'UNSURVEYED' END                  AS \"State\",\n       COALESCE(geo.markets_known,0)::int          AS \"Markets Known\",\n       COALESCE(priced.markets,0)::int             AS \"Markets Priced\",\n       COALESCE(geo.shipyards,0)::int              AS \"Shipyards\",\n       COALESCE(geo.waypoints_known,0)::int        AS \"Waypoints Known\",\n       EXTRACT(EPOCH FROM (now() - priced.last_priced))::bigint AS \"Priced Age\",\n       CASE WHEN edge.uc THEN 'UNDER CONSTRUCTION' ELSE 'OPEN' END AS \"Gate\",\n       edge.gate                                   AS \"Gate Waypoint\"\n  FROM nb\n  LEFT JOIN priced ON priced.sys = nb.sys\n  LEFT JOIN geo    ON geo.sys    = nb.sys\n  LEFT JOIN posts  ON posts.sys  = nb.sys\n  LEFT JOIN edge   ON edge.sys   = nb.sys\n ORDER BY COALESCE(priced.markets,0) ASC, COALESCE(geo.markets_known,0) DESC, nb.sys;",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 110,
+      "title": "Expansion Reach - priced vs reachable",
+      "description": "The expansion scoreboard over time. The gap between the two lines is unexploited reach; a flat 'systems priced' line means expansion is stalled, not slow. Cumulative from the first time each system was priced this era.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 10,
+        "x": 14,
+        "y": 5
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 8,
+            "spanNulls": true,
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisSoftMin": 0,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "axisBorderShow": false,
+            "axisColorMode": "text",
+            "barAlignment": 0,
+            "insertNulls": false,
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
+          },
+          "mappings": [],
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "min": 0,
+          "decimals": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "systems priced"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#3987e5"
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 18
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "reachable (home + neighbours)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#898781"
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    8,
+                    6
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none",
+          "hideZeros": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players),\n     cur_era AS (SELECT COALESCE((SELECT era_id FROM eras WHERE closed_at IS NULL ORDER BY era_id DESC LIMIT 1),\n                                 (SELECT MAX(era_id) FROM eras)) AS eid),\n     home AS (SELECT COALESCE(\n                (SELECT split_part(p.metadata->>'headquarters','-',1)||'-'||split_part(p.metadata->>'headquarters','-',2)\n                   FROM players p, me WHERE p.id=me.pid AND p.metadata->>'headquarters' IS NOT NULL),\n                (SELECT s.system_symbol FROM ships s, me\n                  WHERE s.player_id=me.pid AND COALESCE(s.system_symbol,'')<>''\n                  GROUP BY 1 ORDER BY COUNT(*) DESC, 1 LIMIT 1)) AS sys),\n     nb AS (SELECT DISTINCT ge.connected_system AS sys\n              FROM gate_edges ge, home, cur_era\n             WHERE ge.system_symbol=home.sys AND ge.era_id=cur_era.eid\n               AND COALESCE(ge.connected_system,'')<>''),\n     priced AS (SELECT w.system_symbol AS sys,\n                       COUNT(DISTINCT m.waypoint_symbol) AS markets,\n                       MAX(m.last_updated) AS last_priced\n                  FROM market_data m\n                  JOIN waypoints w ON w.waypoint_symbol=m.waypoint_symbol, me\n                 WHERE m.player_id=me.pid GROUP BY 1),\n     firsts AS (SELECT sys, MIN(last_priced) AS t FROM priced GROUP BY 1),\n     buckets AS (SELECT generate_series(date_trunc('hour', $__timeFrom()::timestamptz),\n                                        date_trunc('hour', $__timeTo()::timestamptz),\n                                        interval '1 hour') AS b)\nSELECT b AS \"time\",\n       (SELECT COUNT(*) FROM firsts WHERE firsts.t <= b)::int AS \"systems priced\",\n       ((SELECT COUNT(*) FROM nb) + 1)::int                   AS \"reachable (home + neighbours)\"\n  FROM buckets ORDER BY 1;",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 14
+      },
+      "id": 111,
+      "panels": [],
+      "title": "Phase & handoff",
+      "type": "row"
+    },
+    {
+      "type": "state-timeline",
+      "id": 112,
+      "title": "Phase Timeline (COLDSTART -> GATE -> EXPANSION)",
+      "description": "Which bootstrap phase was active when. Each band is named and coloured directly, so a re-entry into an earlier phase (GATE falling back to COLDSTART) is visible as a colour reversal rather than something to decode off an axis. The band ends where bootstrap hands off and exits.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 14,
+        "x": 0,
+        "y": 15
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "lineWidth": 0,
+            "fillOpacity": 85,
+            "spanNulls": false,
+            "insertNulls": false,
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "none",
+                  "color": "#898781",
+                  "index": 0
+                },
+                "1": {
+                  "text": "COLDSTART",
+                  "color": "#3987e5",
+                  "index": 1
+                },
+                "2": {
+                  "text": "GATE",
+                  "color": "#d95926",
+                  "index": 2
+                },
+                "3": {
+                  "text": "EXPANSION",
+                  "color": "#199e70",
+                  "index": 3
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#898781",
+                "value": null
+              }
+            ]
+          },
+          "max": 3,
+          "min": 0,
+          "noValue": "no daemon phase samples in range"
+        },
+        "overrides": []
+      },
+      "options": {
+        "mergeValues": true,
+        "showValue": "auto",
+        "alignValue": "center",
+        "rowHeight": 0.9,
+        "perPage": 20,
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none",
+          "hideZeros": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(spacetraders_daemon_bootstrap_phase{phase=\"COLDSTART\"}) * 1 + sum(spacetraders_daemon_bootstrap_phase{phase=\"GATE\"}) * 2 + sum(spacetraders_daemon_bootstrap_phase{phase=\"EXPANSION\"}) * 3",
+          "editorMode": "code",
+          "legendFormat": "phase",
+          "range": true,
+          "instant": false
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "id": 113,
+      "title": "Coordinator Handoff - bootstrap exit & standing crew",
+      "description": "The phase's defining event: BOOTSTRAP_COORDINATOR reaching COMPLETED is the handoff to the standing crew. Every other row is a coordinator bootstrap launched on its way out - a RUNNING row here is what keeps the fleet working now.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 10,
+        "x": 14,
+        "y": 15
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false,
+            "filterable": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "No coordinator containers this era"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Status"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "RUNNING": {
+                        "color": "#0ca30c",
+                        "index": 0
+                      },
+                      "COMPLETED": {
+                        "color": "#3987e5",
+                        "index": 1
+                      },
+                      "STOPPED": {
+                        "color": "#898781",
+                        "index": 2
+                      },
+                      "FAILED": {
+                        "color": "#d03b3b",
+                        "index": 3
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "gradient"
+                }
+              },
+              {
+                "id": "custom.width",
+                "value": 110
+              },
+              {
+                "id": "custom.align",
+                "value": "center"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Restarts"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "text",
+                      "value": null
+                    },
+                    {
+                      "color": "#fab219",
+                      "value": 3
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false,
+          "fields": ""
+        },
+        "sortBy": []
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players),\n     cur_era AS (SELECT COALESCE((SELECT era_id FROM eras WHERE closed_at IS NULL ORDER BY era_id DESC LIMIT 1),\n                                 (SELECT MAX(era_id) FROM eras)) AS eid),\n     home AS (SELECT COALESCE(\n                (SELECT split_part(p.metadata->>'headquarters','-',1)||'-'||split_part(p.metadata->>'headquarters','-',2)\n                   FROM players p, me WHERE p.id=me.pid AND p.metadata->>'headquarters' IS NOT NULL),\n                (SELECT s.system_symbol FROM ships s, me\n                  WHERE s.player_id=me.pid AND COALESCE(s.system_symbol,'')<>''\n                  GROUP BY 1 ORDER BY COUNT(*) DESC, 1 LIMIT 1)) AS sys),\n     nb AS (SELECT DISTINCT ge.connected_system AS sys\n              FROM gate_edges ge, home, cur_era\n             WHERE ge.system_symbol=home.sys AND ge.era_id=cur_era.eid\n               AND COALESCE(ge.connected_system,'')<>''),\n     priced AS (SELECT w.system_symbol AS sys,\n                       COUNT(DISTINCT m.waypoint_symbol) AS markets,\n                       MAX(m.last_updated) AS last_priced\n                  FROM market_data m\n                  JOIN waypoints w ON w.waypoint_symbol=m.waypoint_symbol, me\n                 WHERE m.player_id=me.pid GROUP BY 1)\nSELECT c.container_type AS \"Coordinator\",\n       c.status         AS \"Status\",\n       COALESCE(to_char(c.stopped_at,'YYYY-MM-DD HH24:MI'),\n                to_char(c.started_at,'YYYY-MM-DD HH24:MI')) AS \"Since\",\n       c.restart_count::int AS \"Restarts\"\n  FROM containers c, me\n WHERE c.player_id = me.pid\n   AND (c.container_type LIKE '%COORDINATOR%')\n ORDER BY CASE WHEN c.container_type='BOOTSTRAP_COORDINATOR' THEN 0 ELSE 1 END,\n          c.status, c.container_type;",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 22
+      },
+      "id": 114,
+      "panels": [],
+      "title": "Coverage & scouting",
+      "type": "row"
+    },
+    {
+      "type": "stat",
+      "id": 115,
+      "title": "Probe Fleet",
+      "description": "Hulls with the SATELLITE role - the probes that produce market data. Compiled cap is 40 by default.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 23
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "none",
+          "noValue": "0"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players),\n     cur_era AS (SELECT COALESCE((SELECT era_id FROM eras WHERE closed_at IS NULL ORDER BY era_id DESC LIMIT 1),\n                                 (SELECT MAX(era_id) FROM eras)) AS eid),\n     home AS (SELECT COALESCE(\n                (SELECT split_part(p.metadata->>'headquarters','-',1)||'-'||split_part(p.metadata->>'headquarters','-',2)\n                   FROM players p, me WHERE p.id=me.pid AND p.metadata->>'headquarters' IS NOT NULL),\n                (SELECT s.system_symbol FROM ships s, me\n                  WHERE s.player_id=me.pid AND COALESCE(s.system_symbol,'')<>''\n                  GROUP BY 1 ORDER BY COUNT(*) DESC, 1 LIMIT 1)) AS sys),\n     nb AS (SELECT DISTINCT ge.connected_system AS sys\n              FROM gate_edges ge, home, cur_era\n             WHERE ge.system_symbol=home.sys AND ge.era_id=cur_era.eid\n               AND COALESCE(ge.connected_system,'')<>''),\n     priced AS (SELECT w.system_symbol AS sys,\n                       COUNT(DISTINCT m.waypoint_symbol) AS markets,\n                       MAX(m.last_updated) AS last_priced\n                  FROM market_data m\n                  JOIN waypoints w ON w.waypoint_symbol=m.waypoint_symbol, me\n                 WHERE m.player_id=me.pid GROUP BY 1)\nSELECT COUNT(*)::int AS \"probes\" FROM ships s, me\n WHERE s.player_id = me.pid AND s.role = 'SATELLITE';",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 116,
+      "title": "Unmanned Slots",
+      "description": "Declared scout slots with no hull assigned and no reposition in flight. This is unmet coverage demand: slots the fleet has asked for but cannot fill.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 23
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#0ca30c",
+                "value": null
+              },
+              {
+                "color": "#fab219",
+                "value": 1
+              },
+              {
+                "color": "#d03b3b",
+                "value": 4
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "none",
+          "noValue": "0"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players),\n     cur_era AS (SELECT COALESCE((SELECT era_id FROM eras WHERE closed_at IS NULL ORDER BY era_id DESC LIMIT 1),\n                                 (SELECT MAX(era_id) FROM eras)) AS eid),\n     home AS (SELECT COALESCE(\n                (SELECT split_part(p.metadata->>'headquarters','-',1)||'-'||split_part(p.metadata->>'headquarters','-',2)\n                   FROM players p, me WHERE p.id=me.pid AND p.metadata->>'headquarters' IS NOT NULL),\n                (SELECT s.system_symbol FROM ships s, me\n                  WHERE s.player_id=me.pid AND COALESCE(s.system_symbol,'')<>''\n                  GROUP BY 1 ORDER BY COUNT(*) DESC, 1 LIMIT 1)) AS sys),\n     nb AS (SELECT DISTINCT ge.connected_system AS sys\n              FROM gate_edges ge, home, cur_era\n             WHERE ge.system_symbol=home.sys AND ge.era_id=cur_era.eid\n               AND COALESCE(ge.connected_system,'')<>''),\n     priced AS (SELECT w.system_symbol AS sys,\n                       COUNT(DISTINCT m.waypoint_symbol) AS markets,\n                       MAX(m.last_updated) AS last_priced\n                  FROM market_data m\n                  JOIN waypoints w ON w.waypoint_symbol=m.waypoint_symbol, me\n                 WHERE m.player_id=me.pid GROUP BY 1),\n     slots AS (\n       SELECT sp.assigned_hull, sp.reposition_container_id FROM scout_posts sp, me\n        WHERE sp.player_id = me.pid\n       UNION ALL\n       SELECT elem->>'assigned_hull', elem->>'reposition_container_id'\n         FROM scout_posts sp, me, jsonb_array_elements(NULLIF(sp.extra_slots,'')::jsonb) elem\n        WHERE sp.player_id = me.pid)\nSELECT COUNT(*) FILTER (WHERE COALESCE(assigned_hull,'')=''\n                          AND COALESCE(reposition_container_id,'')='')::int AS \"unmanned\"\n  FROM slots;",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 117,
+      "title": "Scout Sweep Age (worst)",
+      "description": "Seconds since the worst-served scout post completed a sweep, live from the daemon. This is sweep cadence, not row age in market_data - trading scans keep last_updated fresh even when the scout itself is overdue. Default post target is 3600s.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 23
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#0ca30c",
+                "value": null
+              },
+              {
+                "color": "#fab219",
+                "value": 3600
+              },
+              {
+                "color": "#d03b3b",
+                "value": 7200
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "s",
+          "noValue": "no posts"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(spacetraders_daemon_scout_freshness_actual_seconds{player_id=\"$player\"})",
+          "editorMode": "code",
+          "legendFormat": "__auto",
+          "range": false,
+          "instant": true
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 118,
+      "title": "Scout Posts",
+      "description": "Declared scout posts this era. One post means coverage is being maintained in a single system only - no standing presence anywhere else.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 23
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#d03b3b",
+                "value": null
+              },
+              {
+                "color": "#fab219",
+                "value": 2
+              },
+              {
+                "color": "#0ca30c",
+                "value": 3
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "none",
+          "noValue": "0"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players),\n     cur_era AS (SELECT COALESCE((SELECT era_id FROM eras WHERE closed_at IS NULL ORDER BY era_id DESC LIMIT 1),\n                                 (SELECT MAX(era_id) FROM eras)) AS eid),\n     home AS (SELECT COALESCE(\n                (SELECT split_part(p.metadata->>'headquarters','-',1)||'-'||split_part(p.metadata->>'headquarters','-',2)\n                   FROM players p, me WHERE p.id=me.pid AND p.metadata->>'headquarters' IS NOT NULL),\n                (SELECT s.system_symbol FROM ships s, me\n                  WHERE s.player_id=me.pid AND COALESCE(s.system_symbol,'')<>''\n                  GROUP BY 1 ORDER BY COUNT(*) DESC, 1 LIMIT 1)) AS sys),\n     nb AS (SELECT DISTINCT ge.connected_system AS sys\n              FROM gate_edges ge, home, cur_era\n             WHERE ge.system_symbol=home.sys AND ge.era_id=cur_era.eid\n               AND COALESCE(ge.connected_system,'')<>''),\n     priced AS (SELECT w.system_symbol AS sys,\n                       COUNT(DISTINCT m.waypoint_symbol) AS markets,\n                       MAX(m.last_updated) AS last_priced\n                  FROM market_data m\n                  JOIN waypoints w ON w.waypoint_symbol=m.waypoint_symbol, me\n                 WHERE m.player_id=me.pid GROUP BY 1)\nSELECT COUNT(*)::int AS \"posts\" FROM scout_posts sp, me WHERE sp.player_id = me.pid;",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 119,
+      "title": "Scout Sweep Age by System",
+      "description": "Live scout freshness per system (sp-s0nx) - the feed the tour-lane eligibility gate reads. A system climbing past its post target stops being usable for tour planning.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 27
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 8,
+            "spanNulls": true,
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisSoftMin": 0,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "dashed"
+            },
+            "axisBorderShow": false,
+            "axisColorMode": "text",
+            "barAlignment": 0,
+            "insertNulls": false,
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
+          },
+          "mappings": [],
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#0ca30c",
+                "value": null
+              },
+              {
+                "color": "#fab219",
+                "value": 3600
+              },
+              {
+                "color": "#d03b3b",
+                "value": 7200
+              }
+            ]
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none",
+          "hideZeros": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "spacetraders_daemon_scout_freshness_actual_seconds{player_id=\"$player\"}",
+          "editorMode": "code",
+          "legendFormat": "{{system}}",
+          "range": true,
+          "instant": false
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "id": 120,
+      "title": "Scout Posts by Kind",
+      "description": "Slot-level coverage per post kind, counting extra_slots as well as the primary slot. 'Tour Not Running' is a manned slot whose tour container has died - a silent coverage hole.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 27
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false,
+            "filterable": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "No scout posts declared this era"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Unmanned"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "#0ca30c",
+                      "value": null
+                    },
+                    {
+                      "color": "#fab219",
+                      "value": 1
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Tour Not Running"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "#0ca30c",
+                      "value": null
+                    },
+                    {
+                      "color": "#d03b3b",
+                      "value": 1
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Manned"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "#898781",
+                      "value": null
+                    },
+                    {
+                      "color": "#0ca30c",
+                      "value": 1
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false,
+          "fields": ""
+        },
+        "sortBy": []
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players),\n     cur_era AS (SELECT COALESCE((SELECT era_id FROM eras WHERE closed_at IS NULL ORDER BY era_id DESC LIMIT 1),\n                                 (SELECT MAX(era_id) FROM eras)) AS eid),\n     home AS (SELECT COALESCE(\n                (SELECT split_part(p.metadata->>'headquarters','-',1)||'-'||split_part(p.metadata->>'headquarters','-',2)\n                   FROM players p, me WHERE p.id=me.pid AND p.metadata->>'headquarters' IS NOT NULL),\n                (SELECT s.system_symbol FROM ships s, me\n                  WHERE s.player_id=me.pid AND COALESCE(s.system_symbol,'')<>''\n                  GROUP BY 1 ORDER BY COUNT(*) DESC, 1 LIMIT 1)) AS sys),\n     nb AS (SELECT DISTINCT ge.connected_system AS sys\n              FROM gate_edges ge, home, cur_era\n             WHERE ge.system_symbol=home.sys AND ge.era_id=cur_era.eid\n               AND COALESCE(ge.connected_system,'')<>''),\n     priced AS (SELECT w.system_symbol AS sys,\n                       COUNT(DISTINCT m.waypoint_symbol) AS markets,\n                       MAX(m.last_updated) AS last_priced\n                  FROM market_data m\n                  JOIN waypoints w ON w.waypoint_symbol=m.waypoint_symbol, me\n                 WHERE m.player_id=me.pid GROUP BY 1),\n     slots AS (\n       SELECT sp.id AS post_id, sp.kind, sp.assigned_hull, sp.tour_container_id,\n              sp.reposition_container_id\n         FROM scout_posts sp, me WHERE sp.player_id = me.pid\n       UNION ALL\n       SELECT sp.id, sp.kind, elem->>'assigned_hull', elem->>'tour_container_id',\n              elem->>'reposition_container_id'\n         FROM scout_posts sp, me, jsonb_array_elements(NULLIF(sp.extra_slots,'')::jsonb) elem\n        WHERE sp.player_id = me.pid)\nSELECT kind AS \"Kind\",\n       COUNT(*)::int AS \"Slots\",\n       COUNT(*) FILTER (WHERE COALESCE(assigned_hull,'') <> '')::int AS \"Manned\",\n       COUNT(*) FILTER (WHERE COALESCE(assigned_hull,'')=''\n                          AND COALESCE(reposition_container_id,'')='')::int AS \"Unmanned\",\n       COUNT(*) FILTER (WHERE COALESCE(assigned_hull,'') <> ''\n                          AND COALESCE(tour_container_id,'') <> ''\n                          AND NOT EXISTS (SELECT 1 FROM containers c\n                                           WHERE c.id = slots.tour_container_id\n                                             AND c.status = 'RUNNING'))::int AS \"Tour Not Running\"\n  FROM slots GROUP BY kind ORDER BY kind;",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 35
+      },
+      "id": 121,
+      "panels": [],
+      "title": "Probe economics",
+      "type": "row"
+    },
+    {
+      "type": "stat",
+      "id": 122,
+      "title": "Probes Bought",
+      "description": "Probe hull purchases booked this era.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 36
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "none",
+          "noValue": "0"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players),\n     cur_era AS (SELECT COALESCE((SELECT era_id FROM eras WHERE closed_at IS NULL ORDER BY era_id DESC LIMIT 1),\n                                 (SELECT MAX(era_id) FROM eras)) AS eid),\n     home AS (SELECT COALESCE(\n                (SELECT split_part(p.metadata->>'headquarters','-',1)||'-'||split_part(p.metadata->>'headquarters','-',2)\n                   FROM players p, me WHERE p.id=me.pid AND p.metadata->>'headquarters' IS NOT NULL),\n                (SELECT s.system_symbol FROM ships s, me\n                  WHERE s.player_id=me.pid AND COALESCE(s.system_symbol,'')<>''\n                  GROUP BY 1 ORDER BY COUNT(*) DESC, 1 LIMIT 1)) AS sys),\n     nb AS (SELECT DISTINCT ge.connected_system AS sys\n              FROM gate_edges ge, home, cur_era\n             WHERE ge.system_symbol=home.sys AND ge.era_id=cur_era.eid\n               AND COALESCE(ge.connected_system,'')<>''),\n     priced AS (SELECT w.system_symbol AS sys,\n                       COUNT(DISTINCT m.waypoint_symbol) AS markets,\n                       MAX(m.last_updated) AS last_priced\n                  FROM market_data m\n                  JOIN waypoints w ON w.waypoint_symbol=m.waypoint_symbol, me\n                 WHERE m.player_id=me.pid GROUP BY 1)\nSELECT COUNT(*)::int AS \"probes bought\" FROM transactions t, me\n WHERE t.player_id = me.pid AND operation_type='fleet expansion' AND category='SHIP_INVESTMENTS' AND metadata->>'ship_type'='SHIP_PROBE';",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 123,
+      "title": "Probe Capex",
+      "description": "Total credits spent on probe hulls this era.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 36
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "none",
+          "noValue": "0"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players),\n     cur_era AS (SELECT COALESCE((SELECT era_id FROM eras WHERE closed_at IS NULL ORDER BY era_id DESC LIMIT 1),\n                                 (SELECT MAX(era_id) FROM eras)) AS eid),\n     home AS (SELECT COALESCE(\n                (SELECT split_part(p.metadata->>'headquarters','-',1)||'-'||split_part(p.metadata->>'headquarters','-',2)\n                   FROM players p, me WHERE p.id=me.pid AND p.metadata->>'headquarters' IS NOT NULL),\n                (SELECT s.system_symbol FROM ships s, me\n                  WHERE s.player_id=me.pid AND COALESCE(s.system_symbol,'')<>''\n                  GROUP BY 1 ORDER BY COUNT(*) DESC, 1 LIMIT 1)) AS sys),\n     nb AS (SELECT DISTINCT ge.connected_system AS sys\n              FROM gate_edges ge, home, cur_era\n             WHERE ge.system_symbol=home.sys AND ge.era_id=cur_era.eid\n               AND COALESCE(ge.connected_system,'')<>''),\n     priced AS (SELECT w.system_symbol AS sys,\n                       COUNT(DISTINCT m.waypoint_symbol) AS markets,\n                       MAX(m.last_updated) AS last_priced\n                  FROM market_data m\n                  JOIN waypoints w ON w.waypoint_symbol=m.waypoint_symbol, me\n                 WHERE m.player_id=me.pid GROUP BY 1)\nSELECT COALESCE(SUM(-t.amount),0)::bigint AS \"probe capex\" FROM transactions t, me\n WHERE t.player_id = me.pid AND operation_type='fleet expansion' AND category='SHIP_INVESTMENTS' AND metadata->>'ship_type'='SHIP_PROBE';",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 124,
+      "title": "Capex per System Priced",
+      "description": "Probe capex divided by systems priced. With coverage confined to one system this is the whole probe budget attributed to a single system - the efficiency argument for pushing a probe outward.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 36
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#0ca30c",
+                "value": null
+              },
+              {
+                "color": "#fab219",
+                "value": 100000
+              },
+              {
+                "color": "#d03b3b",
+                "value": 250000
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "none",
+          "noValue": "no systems priced"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players),\n     cur_era AS (SELECT COALESCE((SELECT era_id FROM eras WHERE closed_at IS NULL ORDER BY era_id DESC LIMIT 1),\n                                 (SELECT MAX(era_id) FROM eras)) AS eid),\n     home AS (SELECT COALESCE(\n                (SELECT split_part(p.metadata->>'headquarters','-',1)||'-'||split_part(p.metadata->>'headquarters','-',2)\n                   FROM players p, me WHERE p.id=me.pid AND p.metadata->>'headquarters' IS NOT NULL),\n                (SELECT s.system_symbol FROM ships s, me\n                  WHERE s.player_id=me.pid AND COALESCE(s.system_symbol,'')<>''\n                  GROUP BY 1 ORDER BY COUNT(*) DESC, 1 LIMIT 1)) AS sys),\n     nb AS (SELECT DISTINCT ge.connected_system AS sys\n              FROM gate_edges ge, home, cur_era\n             WHERE ge.system_symbol=home.sys AND ge.era_id=cur_era.eid\n               AND COALESCE(ge.connected_system,'')<>''),\n     priced AS (SELECT w.system_symbol AS sys,\n                       COUNT(DISTINCT m.waypoint_symbol) AS markets,\n                       MAX(m.last_updated) AS last_priced\n                  FROM market_data m\n                  JOIN waypoints w ON w.waypoint_symbol=m.waypoint_symbol, me\n                 WHERE m.player_id=me.pid GROUP BY 1)\nSELECT ROUND(\n    (SELECT COALESCE(SUM(-t.amount),0) FROM transactions t, me\n      WHERE t.player_id = me.pid AND operation_type='fleet expansion' AND category='SHIP_INVESTMENTS' AND metadata->>'ship_type'='SHIP_PROBE')::numeric\n    / NULLIF((SELECT COUNT(*) FROM priced), 0), 0)::bigint AS \"cr per system\";",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 125,
+      "title": "Capex per Market Priced",
+      "description": "Probe capex divided by individual marketplaces priced - the finer-grained companion to capex per system.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 36
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "none",
+          "noValue": "no markets priced"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players),\n     cur_era AS (SELECT COALESCE((SELECT era_id FROM eras WHERE closed_at IS NULL ORDER BY era_id DESC LIMIT 1),\n                                 (SELECT MAX(era_id) FROM eras)) AS eid),\n     home AS (SELECT COALESCE(\n                (SELECT split_part(p.metadata->>'headquarters','-',1)||'-'||split_part(p.metadata->>'headquarters','-',2)\n                   FROM players p, me WHERE p.id=me.pid AND p.metadata->>'headquarters' IS NOT NULL),\n                (SELECT s.system_symbol FROM ships s, me\n                  WHERE s.player_id=me.pid AND COALESCE(s.system_symbol,'')<>''\n                  GROUP BY 1 ORDER BY COUNT(*) DESC, 1 LIMIT 1)) AS sys),\n     nb AS (SELECT DISTINCT ge.connected_system AS sys\n              FROM gate_edges ge, home, cur_era\n             WHERE ge.system_symbol=home.sys AND ge.era_id=cur_era.eid\n               AND COALESCE(ge.connected_system,'')<>''),\n     priced AS (SELECT w.system_symbol AS sys,\n                       COUNT(DISTINCT m.waypoint_symbol) AS markets,\n                       MAX(m.last_updated) AS last_priced\n                  FROM market_data m\n                  JOIN waypoints w ON w.waypoint_symbol=m.waypoint_symbol, me\n                 WHERE m.player_id=me.pid GROUP BY 1)\nSELECT ROUND(\n    (SELECT COALESCE(SUM(-t.amount),0) FROM transactions t, me\n      WHERE t.player_id = me.pid AND operation_type='fleet expansion' AND category='SHIP_INVESTMENTS' AND metadata->>'ship_type'='SHIP_PROBE')::numeric\n    / NULLIF((SELECT COALESCE(SUM(markets),0) FROM priced), 0), 0)::bigint AS \"cr per market\";",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 126,
+      "title": "Probe Purchases",
+      "description": "Probe hull purchases over time. Gaps are cycles where the coordinator declined to buy - cap, cooldown, or spend window.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 40
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#3987e5"
+          },
+          "custom": {
+            "drawStyle": "bars",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 70,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 8,
+            "spanNulls": true,
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisSoftMin": 0,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "axisBorderShow": false,
+            "axisColorMode": "text",
+            "barAlignment": 0,
+            "insertNulls": false,
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
+          },
+          "mappings": [],
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "min": 0,
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "hidden",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none",
+          "hideZeros": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players),\n     cur_era AS (SELECT COALESCE((SELECT era_id FROM eras WHERE closed_at IS NULL ORDER BY era_id DESC LIMIT 1),\n                                 (SELECT MAX(era_id) FROM eras)) AS eid),\n     home AS (SELECT COALESCE(\n                (SELECT split_part(p.metadata->>'headquarters','-',1)||'-'||split_part(p.metadata->>'headquarters','-',2)\n                   FROM players p, me WHERE p.id=me.pid AND p.metadata->>'headquarters' IS NOT NULL),\n                (SELECT s.system_symbol FROM ships s, me\n                  WHERE s.player_id=me.pid AND COALESCE(s.system_symbol,'')<>''\n                  GROUP BY 1 ORDER BY COUNT(*) DESC, 1 LIMIT 1)) AS sys),\n     nb AS (SELECT DISTINCT ge.connected_system AS sys\n              FROM gate_edges ge, home, cur_era\n             WHERE ge.system_symbol=home.sys AND ge.era_id=cur_era.eid\n               AND COALESCE(ge.connected_system,'')<>''),\n     priced AS (SELECT w.system_symbol AS sys,\n                       COUNT(DISTINCT m.waypoint_symbol) AS markets,\n                       MAX(m.last_updated) AS last_priced\n                  FROM market_data m\n                  JOIN waypoints w ON w.waypoint_symbol=m.waypoint_symbol, me\n                 WHERE m.player_id=me.pid GROUP BY 1)\nSELECT $__timeGroupAlias(t.created_at, '1h'), COUNT(*)::int AS \"probe purchases\"\n  FROM transactions t, me\n WHERE $__timeFilter(t.created_at) AND t.player_id = me.pid AND operation_type='fleet expansion' AND category='SHIP_INVESTMENTS' AND metadata->>'ship_type'='SHIP_PROBE'\n GROUP BY 1 ORDER BY 1;",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 127,
+      "title": "Cumulative Probe Capex",
+      "description": "Running probe spend this era, all history (not clipped to the dashboard range).",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 40
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#d95926"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 15,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 8,
+            "spanNulls": true,
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisSoftMin": 0,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "axisBorderShow": false,
+            "axisColorMode": "text",
+            "barAlignment": 0,
+            "insertNulls": false,
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
+          },
+          "mappings": [],
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "hidden",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none",
+          "hideZeros": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players),\n     cur_era AS (SELECT COALESCE((SELECT era_id FROM eras WHERE closed_at IS NULL ORDER BY era_id DESC LIMIT 1),\n                                 (SELECT MAX(era_id) FROM eras)) AS eid),\n     home AS (SELECT COALESCE(\n                (SELECT split_part(p.metadata->>'headquarters','-',1)||'-'||split_part(p.metadata->>'headquarters','-',2)\n                   FROM players p, me WHERE p.id=me.pid AND p.metadata->>'headquarters' IS NOT NULL),\n                (SELECT s.system_symbol FROM ships s, me\n                  WHERE s.player_id=me.pid AND COALESCE(s.system_symbol,'')<>''\n                  GROUP BY 1 ORDER BY COUNT(*) DESC, 1 LIMIT 1)) AS sys),\n     nb AS (SELECT DISTINCT ge.connected_system AS sys\n              FROM gate_edges ge, home, cur_era\n             WHERE ge.system_symbol=home.sys AND ge.era_id=cur_era.eid\n               AND COALESCE(ge.connected_system,'')<>''),\n     priced AS (SELECT w.system_symbol AS sys,\n                       COUNT(DISTINCT m.waypoint_symbol) AS markets,\n                       MAX(m.last_updated) AS last_priced\n                  FROM market_data m\n                  JOIN waypoints w ON w.waypoint_symbol=m.waypoint_symbol, me\n                 WHERE m.player_id=me.pid GROUP BY 1),\n     b AS (SELECT date_trunc('hour', t.created_at) AS bucket, SUM(-t.amount) AS spend\n             FROM transactions t, me\n            WHERE t.player_id = me.pid AND operation_type='fleet expansion' AND category='SHIP_INVESTMENTS' AND metadata->>'ship_type'='SHIP_PROBE'\n            GROUP BY 1)\nSELECT bucket AS \"time\", SUM(spend) OVER (ORDER BY bucket)::bigint AS \"cumulative probe capex\"\n  FROM b ORDER BY 1;",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "type": "text",
+      "id": 128,
+      "title": "What this dashboard cannot show you (instrumentation gaps)",
+      "datasource": {
+        "type": "datasource",
+        "uid": "grafana"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 47
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "Two decisions that drive expansion are **log-only** today. Nothing on this dashboard infers them, because a fabricated series is worse than an absent one.\n\n**Per-cycle expansion ranking.** The frontier expansion coordinator scores candidate systems every reconcile cycle (frontier hop distance, freshness demand, cap / cooldown / spend-window gates) before deciding whether to buy a probe and where to send it. That ranking is not persisted to Postgres or Prometheus. The probe-economics panels above are the best available **proxy** - they show the *outcome* of each cycle's decision, not the *reasoning*. Follow-up: a `frontier_expansion_decisions_total{action}` counter.\n\n**Per-operation capital budget (sp-ftqgp).** The 60/40 split of deployable capital between trade and construction emits log lines only - there is no gauge for the budget, its utilisation, or a denial. The *Capital Flow* row below is derived honestly from the `transactions` table: it is **realised** capital movement per operation, which is the outcome the budget governs, not the planned split itself. Do not read it as budget adherence. Follow-up bead filed for the gauge.",
+        "code": {
+          "language": "plaintext",
+          "showLineNumbers": false,
+          "showMiniMap": false
+        }
+      }
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 53
+      },
+      "id": 129,
+      "panels": [],
+      "title": "Capital flow (realised, not budgeted)",
+      "type": "row"
+    },
+    {
+      "type": "table",
+      "id": 130,
+      "title": "Realised Capital by Operation",
+      "description": "Where capital actually went this era, straight from the transactions ledger. This is realised flow - it is NOT the sp-ftqgp planned budget, which is log-only. 'construction_supply' running deeply negative while 'contract' carries the surplus is the signature of the gate build.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 11,
+        "x": 0,
+        "y": 54
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false,
+            "filterable": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "No transactions booked this era"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Net"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "#d03b3b",
+                      "value": null
+                    },
+                    {
+                      "color": "#0ca30c",
+                      "value": 0
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Operation"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 170
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "In"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "#898781",
+                      "value": null
+                    },
+                    {
+                      "color": "#0ca30c",
+                      "value": 1
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false,
+          "fields": ""
+        },
+        "sortBy": [
+          {
+            "displayName": "Net",
+            "desc": true
+          }
+        ]
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players),\n     cur_era AS (SELECT COALESCE((SELECT era_id FROM eras WHERE closed_at IS NULL ORDER BY era_id DESC LIMIT 1),\n                                 (SELECT MAX(era_id) FROM eras)) AS eid),\n     home AS (SELECT COALESCE(\n                (SELECT split_part(p.metadata->>'headquarters','-',1)||'-'||split_part(p.metadata->>'headquarters','-',2)\n                   FROM players p, me WHERE p.id=me.pid AND p.metadata->>'headquarters' IS NOT NULL),\n                (SELECT s.system_symbol FROM ships s, me\n                  WHERE s.player_id=me.pid AND COALESCE(s.system_symbol,'')<>''\n                  GROUP BY 1 ORDER BY COUNT(*) DESC, 1 LIMIT 1)) AS sys),\n     nb AS (SELECT DISTINCT ge.connected_system AS sys\n              FROM gate_edges ge, home, cur_era\n             WHERE ge.system_symbol=home.sys AND ge.era_id=cur_era.eid\n               AND COALESCE(ge.connected_system,'')<>''),\n     priced AS (SELECT w.system_symbol AS sys,\n                       COUNT(DISTINCT m.waypoint_symbol) AS markets,\n                       MAX(m.last_updated) AS last_priced\n                  FROM market_data m\n                  JOIN waypoints w ON w.waypoint_symbol=m.waypoint_symbol, me\n                 WHERE m.player_id=me.pid GROUP BY 1)\nSELECT t.operation_type AS \"Operation\",\n       COALESCE(SUM(t.amount) FILTER (WHERE t.amount > 0), 0)::bigint AS \"In\",\n       COALESCE(SUM(t.amount) FILTER (WHERE t.amount < 0), 0)::bigint AS \"Out\",\n       COALESCE(SUM(t.amount), 0)::bigint                             AS \"Net\",\n       COUNT(*)::int                                                  AS \"Txns\"\n  FROM transactions t, me\n WHERE t.player_id = me.pid AND COALESCE(t.operation_type,'') <> ''\n GROUP BY 1 ORDER BY 4 DESC;",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 131,
+      "title": "Cumulative Net Capital by Operation",
+      "description": "Running net credits per operation this era. Divergence between construction_supply and contract shows which activity is funding the other.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 13,
+        "x": 11,
+        "y": 54
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 8,
+            "spanNulls": true,
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisSoftMin": 0,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "axisBorderShow": false,
+            "axisColorMode": "text",
+            "barAlignment": 0,
+            "insertNulls": false,
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
+          },
+          "mappings": [],
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none",
+          "hideZeros": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players),\n     cur_era AS (SELECT COALESCE((SELECT era_id FROM eras WHERE closed_at IS NULL ORDER BY era_id DESC LIMIT 1),\n                                 (SELECT MAX(era_id) FROM eras)) AS eid),\n     home AS (SELECT COALESCE(\n                (SELECT split_part(p.metadata->>'headquarters','-',1)||'-'||split_part(p.metadata->>'headquarters','-',2)\n                   FROM players p, me WHERE p.id=me.pid AND p.metadata->>'headquarters' IS NOT NULL),\n                (SELECT s.system_symbol FROM ships s, me\n                  WHERE s.player_id=me.pid AND COALESCE(s.system_symbol,'')<>''\n                  GROUP BY 1 ORDER BY COUNT(*) DESC, 1 LIMIT 1)) AS sys),\n     nb AS (SELECT DISTINCT ge.connected_system AS sys\n              FROM gate_edges ge, home, cur_era\n             WHERE ge.system_symbol=home.sys AND ge.era_id=cur_era.eid\n               AND COALESCE(ge.connected_system,'')<>''),\n     priced AS (SELECT w.system_symbol AS sys,\n                       COUNT(DISTINCT m.waypoint_symbol) AS markets,\n                       MAX(m.last_updated) AS last_priced\n                  FROM market_data m\n                  JOIN waypoints w ON w.waypoint_symbol=m.waypoint_symbol, me\n                 WHERE m.player_id=me.pid GROUP BY 1),\n     b AS (SELECT date_trunc('hour', t.created_at) AS bucket, t.operation_type AS op,\n                  SUM(t.amount) AS net\n             FROM transactions t, me\n            WHERE t.player_id = me.pid AND COALESCE(t.operation_type,'') <> ''\n            GROUP BY 1, 2)\nSELECT bucket AS \"time\", op AS metric,\n       SUM(net) OVER (PARTITION BY op ORDER BY bucket)::bigint AS \"cumulative net\"\n  FROM b ORDER BY 1;",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 62
+      },
+      "id": 132,
+      "panels": [],
+      "title": "Gate graph",
+      "type": "row"
+    },
+    {
+      "type": "stat",
+      "id": 133,
+      "title": "Gate Edges (this era)",
+      "description": "Gate edges discovered in the current era only. gate_edges is keyed by era_id and retains every prior era - an unscoped count here reads roughly 28x high.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 63
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "none",
+          "noValue": "0"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*)::int AS \"gate edges\" FROM gate_edges ge WHERE ge.era_id = (SELECT COALESCE((SELECT era_id FROM eras WHERE closed_at IS NULL ORDER BY era_id DESC LIMIT 1),(SELECT MAX(era_id) FROM eras)));",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 134,
+      "title": "Systems in Gate Graph",
+      "description": "Distinct systems appearing anywhere in this era's gate graph - the outer bound of what is known to be reachable, several jumps out. Compare with 'Systems Priced'.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 63
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "none",
+          "noValue": "0"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(DISTINCT s)::int AS \"systems\" FROM (\n  SELECT ge.system_symbol AS s FROM gate_edges ge WHERE ge.era_id = (SELECT COALESCE((SELECT era_id FROM eras WHERE closed_at IS NULL ORDER BY era_id DESC LIMIT 1),(SELECT MAX(era_id) FROM eras))) AND COALESCE(ge.system_symbol,'') <> ''\n  UNION\n  SELECT ge.connected_system FROM gate_edges ge WHERE ge.era_id = (SELECT COALESCE((SELECT era_id FROM eras WHERE closed_at IS NULL ORDER BY era_id DESC LIMIT 1),(SELECT MAX(era_id) FROM eras))) AND COALESCE(ge.connected_system,'') <> '') t;",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 135,
+      "title": "Edges Under Construction",
+      "description": "Gate edges whose gate is still being built. These are not traversable yet.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 63
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "none",
+          "noValue": "0"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) FILTER (WHERE ge.under_construction)::int AS \"under construction\" FROM gate_edges ge WHERE ge.era_id = (SELECT COALESCE((SELECT era_id FROM eras WHERE closed_at IS NULL ORDER BY era_id DESC LIMIT 1),(SELECT MAX(era_id) FROM eras)));",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 136,
+      "title": "Gates in Probe-Backoff",
+      "description": "Gate rows the probe could not read (sp-ikx1 markers), now in exponential backoff. Each one is a neighbour we cannot even enumerate, let alone price.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 63
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#0ca30c",
+                "value": null
+              },
+              {
+                "color": "#fab219",
+                "value": 1
+              },
+              {
+                "color": "#d03b3b",
+                "value": 5
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "none",
+          "noValue": "0"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) FILTER (WHERE ge.connected_system = '')::int AS \"backoff\" FROM gate_edges ge WHERE ge.era_id = (SELECT COALESCE((SELECT era_id FROM eras WHERE closed_at IS NULL ORDER BY era_id DESC LIMIT 1),(SELECT MAX(era_id) FROM eras)));",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "id": 137,
+      "title": "Probe-Backoff Detail",
+      "description": "Systems whose gate could not be read this era, with backoff tier and age. Empty is the healthy state.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 67
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false,
+            "filterable": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "No gates in probe-backoff - every known gate edge read cleanly"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Unreadable For"
             },
             "properties": [
               {
@@ -973,39 +3381,246 @@
                 "value": "s"
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Attempts"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "#fab219",
+                      "value": null
+                    },
+                    {
+                      "color": "#d03b3b",
+                      "value": 5
+                    }
+                  ]
+                }
+              }
+            ]
           }
         ]
       },
-      "gridPos": {
-        "h": 6,
-        "w": 12,
-        "x": 12,
-        "y": 40
-      },
-      "id": 21,
       "options": {
+        "showHeader": true,
         "cellHeight": "sm",
         "footer": {
-          "show": false
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false,
+          "fields": ""
         },
-        "showHeader": true
+        "sortBy": []
       },
+      "pluginVersion": "13.1.0",
       "targets": [
         {
+          "refId": "A",
           "datasource": {
             "type": "grafana-postgresql-datasource",
             "uid": "postgresql"
           },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT system_symbol AS \"System\", attempt_count AS \"Attempts (Backoff Tier)\", EXTRACT(EPOCH FROM (NOW() - unreadable_since::timestamptz))::int AS \"Unreadable For (s)\" FROM gate_edges WHERE connected_system='' ORDER BY attempt_count DESC, unreadable_since ASC",
-          "refId": "A"
+          "rawSql": "SELECT ge.system_symbol AS \"System\",\n       ge.attempt_count::int AS \"Attempts\",\n       EXTRACT(EPOCH FROM (NOW() - ge.unreadable_since::timestamptz))::bigint AS \"Unreadable For\"\n  FROM gate_edges ge WHERE ge.era_id = (SELECT COALESCE((SELECT era_id FROM eras WHERE closed_at IS NULL ORDER BY era_id DESC LIMIT 1),(SELECT MAX(era_id) FROM eras))) AND ge.connected_system = ''\n ORDER BY ge.attempt_count DESC, ge.unreadable_since ASC;",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
         }
-      ],
-      "title": "Backoff Detail by System (attempt_count / age)",
-      "type": "table"
+      ]
+    },
+    {
+      "type": "table",
+      "id": 138,
+      "title": "Gate Graph Frontier - most-connected known systems",
+      "description": "The best-connected systems in this era's known gate graph, whether or not they are adjacent to home. High edge count plus UNPRICED marks a future hub worth reaching once a first hop lands.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 67
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false,
+            "filterable": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "No gate edges recorded this era"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "State"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "PRICED": {
+                        "color": "#0ca30c",
+                        "index": 0
+                      },
+                      "UNPRICED": {
+                        "color": "#d03b3b",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "custom.align",
+                "value": "center"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Gate Edges"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "gauge",
+                  "mode": "gradient",
+                  "valueDisplayMode": "text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "#898781",
+                      "value": null
+                    },
+                    {
+                      "color": "#3987e5",
+                      "value": 1
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "min",
+                "value": 0
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false,
+          "fields": ""
+        },
+        "sortBy": []
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH e AS (\n  SELECT ge.system_symbol AS a, ge.connected_system AS b FROM gate_edges ge WHERE ge.era_id = (SELECT COALESCE((SELECT era_id FROM eras WHERE closed_at IS NULL ORDER BY era_id DESC LIMIT 1),(SELECT MAX(era_id) FROM eras)))\n     AND COALESCE(ge.system_symbol,'') <> '' AND COALESCE(ge.connected_system,'') <> ''),\n     deg AS (SELECT a AS sys, COUNT(*) AS edges FROM e GROUP BY 1),\n     me AS (SELECT MAX(id) AS pid FROM players),\n     priced AS (SELECT DISTINCT w.system_symbol AS sys\n                  FROM market_data m JOIN waypoints w ON w.waypoint_symbol = m.waypoint_symbol, me\n                 WHERE m.player_id = me.pid)\nSELECT deg.sys AS \"System\",\n       deg.edges::int AS \"Gate Edges\",\n       COALESCE((SELECT COUNT(*) FILTER (WHERE w.traits LIKE '%MARKETPLACE%')\n                   FROM waypoints w WHERE w.system_symbol = deg.sys), 0)::int AS \"Markets Known\",\n       CASE WHEN EXISTS (SELECT 1 FROM priced WHERE priced.sys = deg.sys)\n            THEN 'PRICED' ELSE 'UNPRICED' END AS \"State\"\n  FROM deg ORDER BY deg.edges DESC, deg.sys LIMIT 20;",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
     }
   ],
+  "preload": false,
   "refresh": "1m",
   "schemaVersion": 41,
   "tags": [
@@ -1014,7 +3629,29 @@
     "expansion"
   ],
   "templating": {
-    "list": []
+    "list": [
+      {
+        "current": {},
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "postgresql"
+        },
+        "definition": "SELECT MAX(id) FROM players",
+        "description": "Current era's player id. Scopes the Prometheus panels the same way every SQL panel scopes itself, so dead eras never leak in.",
+        "hide": 2,
+        "includeAll": false,
+        "label": "Player",
+        "multi": false,
+        "name": "player",
+        "options": [],
+        "query": "SELECT MAX(id) FROM players",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 0,
+        "type": "query"
+      }
+    ]
   },
   "time": {
     "from": "now-7d",
@@ -1024,5 +3661,7 @@
   "timezone": "browser",
   "title": "SpaceTraders - Frontier Expansion",
   "uid": "spacetraders-frontier",
-  "version": 1
+  "description": "Operator console for the frontier expansion phase: what the bot can reach, what it has priced, and what is blocking the next hop.",
+  "version": 1,
+  "weekStart": ""
 }
