@@ -99,6 +99,10 @@ type psLedger struct {
 	// upsertErr fails the slot write, which is how a half-done adoption is
 	// driven: the posts are already retired, the hulls are not yet recorded.
 	upsertErr error
+	// transitionErr fails TransitionSlot for ONE waypoint, which is how a torn
+	// two-write sequence is driven: it is the only way to observe which of the
+	// two writes a pass performs FIRST, and that order is a money guard.
+	transitionErr map[string]error
 
 	// systemUpserts is every SystemRecord handed to UpsertSystem, kept raw so a
 	// test can assert the WRITE SET rather than only its effect — which is what
@@ -321,6 +325,9 @@ func (f *psLedger) TransitionSlot(_ context.Context, _ int, waypoint, fromState,
 	defer f.mu.Unlock()
 
 	f.record("TransitionSlot:" + waypoint + ":" + fromState + "→" + toState)
+	if err := f.transitionErr[waypoint]; err != nil {
+		return err
+	}
 	slot, ok := f.slots[waypoint]
 	if !ok || slot.State != fromState {
 		return parkedsensing.ErrSlotClaimed
@@ -593,15 +600,25 @@ func (f *fakeFleetTagger) AssignFleet(_ context.Context, _ int, shipSymbol, flee
 }
 
 // fakeMover issues movement commands. Counted.
-type fakeMover struct{ calls *callCounter }
+type fakeMover struct {
+	calls *callCounter
+	// moves records "ship→destination" for every movement command issued. The
+	// counter alone cannot answer "was THIS hull actually flown to THAT
+	// placement?", which is the end-to-end question a claim path has to settle:
+	// writing IN_TRANSIT for a hull nothing ever told to move is precisely the
+	// bug dispatchClaim exists to fix.
+	moves []string
+}
 
-func (f *fakeMover) NavigateWithin(context.Context, int, string, string) error {
+func (f *fakeMover) NavigateWithin(_ context.Context, _ int, shipSymbol, destination string) error {
 	f.calls.hit("navigate")
+	f.moves = append(f.moves, shipSymbol+"→"+destination)
 	return nil
 }
 
-func (f *fakeMover) RouteAcross(context.Context, int, string, string) error {
+func (f *fakeMover) RouteAcross(_ context.Context, _ int, shipSymbol, destination string) error {
 	f.calls.hit("route")
+	f.moves = append(f.moves, shipSymbol+"→"+destination)
 	return nil
 }
 

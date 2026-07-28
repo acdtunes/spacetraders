@@ -853,9 +853,29 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 	// cutover is precisely the event that turns "scout-tagged hull" into "orphan
 	// we failed to adopt", and while it is still pending (including while it
 	// retries after a failure) adoption remains its job.
-	adopted := 0
+	// AFTER ADOPTION AND BEFORE THE DRAIN, and both edges are money.
+	//
+	// After adoption, so a hull adoption can absorb WHERE IT STANDS is absorbed
+	// there rather than flown somewhere. Adoption's in-place fill costs a row
+	// write and no movement; running the dispatch first would fly a hull to a
+	// placement adoption was about to fill for free, and leave the placement
+	// under that hull's feet still open. The dispatch re-reads the ledger, so
+	// everything adoption just did is visible to it.
+	//
+	// Before the drain, and this is the whole economic point: a placement filled
+	// here is a placement the drain does NOT buy a hull for. Running it after the
+	// drain would spend money on a probe we already own and had standing idle —
+	// the same argument that puts adoption before the drain (sp-0gp21), except
+	// that here the hull is not merely counted but actually put to work.
+	//
+	// GATED ON THE CUTOVER for adoption's reason exactly: before the cutover a
+	// scout-tagged hull is not an orphan at all, the scout posts still stand, and
+	// the scout-post coordinator is actively drawing from its idle pool. Flying
+	// one then would take a hull out from under a LIVE coordinator.
+	adopted, dispatchedOrphans := 0, 0
 	if !cutoverPending {
 		adopted = h.adoptStrandedProbes(ctx, cmd, ports, &failures)
+		dispatchedOrphans = h.dispatchIdleOrphans(ctx, cmd, ports, &failures)
 	}
 
 	buyRep, berr := parkedsensing.DrainBuyQueue(ctx, ports.buyPorts(), playerID, parkedsensing.BuyKnobs{
@@ -905,6 +925,7 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 		cutover:     cutover,
 		screened:    screened,
 		adopted:     adopted,
+		dispatched:  dispatchedOrphans,
 		reap:        reapRep,
 		buy:         buyRep,
 		place:       placeRep,

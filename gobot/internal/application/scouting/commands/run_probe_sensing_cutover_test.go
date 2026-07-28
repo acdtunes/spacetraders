@@ -56,6 +56,13 @@ type cutoverWorld struct {
 	seeds    *fakeSeedCommander
 	mover    *fakeMover
 	recorder *fakeRecorder
+	// shipPos is the ships-TABLE read the placement machine locates hulls
+	// through, which is a different port from `fleet` (the whole-fleet
+	// enumeration adoption and the orphan dispatch use). A hull present in one
+	// and absent from the other is a legitimate state, so any test asserting a
+	// hull was actually FLOWN has to populate this one too — the placement
+	// machine refuses to command a hull it cannot locate.
+	shipPos *fakeShipPositions
 }
 
 // newCutoverWorld builds the old-world fixture the brief describes: three scout
@@ -153,7 +160,7 @@ func newCutoverWorld(t *testing.T) *cutoverWorld {
 		handler: handler, cmd: sensingTestCmd(), ctx: ctx, calls: calls, ledger: ledger,
 		posts: posts, fleet: fleet, tagger: tagger, depth: depth,
 		catalog: catalog, goods: goods, remote: remote, seeds: seeds,
-		mover: mover, recorder: recorder,
+		mover: mover, recorder: recorder, shipPos: ships,
 	}
 }
 

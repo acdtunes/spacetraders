@@ -41,10 +41,16 @@ type heartbeat struct {
 	// adopted counts stranded scout probes recorded this tick — hulls the
 	// one-shot cutover could not place because they were in transit.
 	adopted int
-	reap    parkedsensing.ReapReport
-	buy     parkedsensing.BuyReport
-	place   parkedsensing.PlacementReport
-	expand  parkedsensing.ExpandReport
+	// dispatched counts idle probes WE ALREADY OWN sent to open placements this
+	// tick. Never a purchase. Distinct from place.Dispatched below, which counts
+	// movement commands issued by the placement machine — one hull shows up in
+	// both, one tick apart, and conflating them would double-count the fleet's
+	// activity.
+	dispatched int
+	reap       parkedsensing.ReapReport
+	buy        parkedsensing.BuyReport
+	place      parkedsensing.PlacementReport
+	expand     parkedsensing.ExpandReport
 	// rotation is how many slots the scan pacer is ACTUALLY watching, which is
 	// not the ledger's parked count: the rotation drops anything unscannable.
 	rotation int
@@ -84,10 +90,10 @@ func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *
 	}
 
 	common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf(
-		"Parked sensing cycle: %.3f req/s pacer (%.3f residual, brake %.2f), %d parked, screened %d, bought %d reused %d queued %d (%d attempts%s), reaped %d adopted %d, dispatched %d docking %d parked %d, expansion %s",
+		"Parked sensing cycle: %.3f req/s pacer (%.3f residual, brake %.2f), %d parked, screened %d, bought %d reused %d queued %d (%d attempts%s), reaped %d adopted %d idle-reused %d, dispatched %d docking %d parked %d, expansion %s",
 		hb.pacerRate, hb.sensingRate, hb.brake, hb.rotation, hb.screened,
 		hb.buy.Bought, hb.buy.Reused, hb.buy.Queued, hb.buy.Attempts, heldSuffix(held),
-		hb.reap.Reaped, hb.adopted,
+		hb.reap.Reaped, hb.adopted, hb.dispatched,
 		hb.place.Dispatched, hb.place.Docking, hb.place.Parked, expansionSummary(hb.expand)),
 		map[string]interface{}{
 			"action":                "parked_sensing_cycle",
@@ -122,6 +128,11 @@ func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *
 			// — never a purchase. A non-zero value long after the cutover means
 			// probes are being stranded somewhere, not that the fleet grew.
 			"adopted_stranded": hb.adopted,
+			// Idle hulls we already OWNED, sent to open placements this tick at
+			// zero credits — never a purchase, and never a hull taken from a live
+			// container or post. Non-zero beside a held buy floor is the healthy
+			// reading: the fleet is filling placements it cannot afford to buy for.
+			"dispatched_orphans": hb.dispatched,
 
 			// Bought-and-sent + re-tasked spares + seed-claimed hulls, together.
 			"dispatched": hb.place.Dispatched,
