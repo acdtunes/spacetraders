@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"gorm.io/gorm"
 
@@ -250,6 +251,53 @@ func (p *WaypointCatalogPort) ListHeavyYards(ctx context.Context, system string)
 		out = append(out, row.WaypointSymbol)
 	}
 	return out, nil
+}
+
+// LastListingScan reports what the stored shipyard inventory says about ONE
+// yard's probe stock, and when that reading was taken.
+//
+// DATABASE-ONLY, like every other read on this port: it exists to REMOVE an API
+// call, so it must never make one. The row set is written by the sensing quote
+// path (ProbePurchasePort.persistListings) and by the shipyard scanner; both go
+// through the same ReplaceScan, so a waypoint's rows are always a complete
+// snapshot of one reading rather than an accumulation across several.
+//
+// A probe row at price 0 does NOT count as selling a probe. ShipTypeAvailability
+// documents price 0 as "listed, but carried no priced listing at scan time", and
+// the drain's quote refuses such a yard for exactly that reason — so counting it
+// here would keep re-quoting a counter we already know cannot price the hull,
+// which is the loop this whole path exists to break.
+//
+// known=false when the waypoint has no rows at all, which the caller must read as
+// "ask once" and never as "no probe".
+func (p *WaypointCatalogPort) LastListingScan(ctx context.Context, playerID int, waypoint string) (bool, time.Time, bool, error) {
+	var rows []struct {
+		ShipType      string
+		PurchasePrice int
+		LastScanned   time.Time
+	}
+	err := p.db.WithContext(ctx).
+		Table("shipyard_inventory").
+		Select("ship_type, purchase_price, last_scanned").
+		Where("player_id = ? AND waypoint_symbol = ?", playerID, waypoint).
+		Scan(&rows).Error
+	if err != nil {
+		return false, time.Time{}, false, fmt.Errorf("failed to read stored listings for %q: %w", waypoint, err)
+	}
+	if len(rows) == 0 {
+		return false, time.Time{}, false, nil
+	}
+	sellsProbe := false
+	var scannedAt time.Time
+	for _, row := range rows {
+		if row.ShipType == probeShipType && row.PurchasePrice > 0 {
+			sellsProbe = true
+		}
+		if row.LastScanned.After(scannedAt) {
+			scannedAt = row.LastScanned
+		}
+	}
+	return sellsProbe, scannedAt, true, nil
 }
 
 func (p *WaypointCatalogPort) ListProbeYards(ctx context.Context, system string) ([]string, error) {

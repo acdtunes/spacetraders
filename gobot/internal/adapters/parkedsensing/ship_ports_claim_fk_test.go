@@ -154,7 +154,9 @@ func newSensingBuyWorld(t *testing.T) (*adapterSensing.ProbePurchasePort, *sensi
 
 	med := &sensingBuyMediator{db: db}
 	shipRepo := api.NewShipRepository(nil, nil, nil, nil, db, shared.NewRealClock())
-	return adapterSensing.NewProbePurchasePort(med, shipRepo), med, db
+	// nil listing store: this fixture is about the claim foreign key, and an
+	// unwired persister leaves Quote byte-identical to its pre-memo behaviour.
+	return adapterSensing.NewProbePurchasePort(med, shipRepo, nil), med, db
 }
 
 // THE REGRESSION PROOF. The buy must claim its purchasing hull to the DRIVING

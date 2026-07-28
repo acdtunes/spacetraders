@@ -34,6 +34,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/application/logging"
 	appSensing "github.com/andrescamacho/spacetraders-go/internal/application/parkedsensing"
 	"github.com/andrescamacho/spacetraders-go/internal/application/probebuy"
 	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
@@ -47,6 +48,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	shipyardDomain "github.com/andrescamacho/spacetraders-go/internal/domain/shipyard"
 	domainSystem "github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
@@ -207,11 +209,71 @@ func (p *CargoSpendPort) AbsCargoBuySpendSince(ctx context.Context, playerID int
 type ProbePurchasePort struct {
 	mediator common.Mediator
 	shipRepo navigation.ShipRepository
+	// listings persists what a quote learns about a yard's stock. OPTIONAL: a nil
+	// writer quotes exactly as before and simply records nothing.
+	listings shipyardDomain.InventoryRepository
 }
 
 // NewProbePurchasePort wires the price-and-buy port.
-func NewProbePurchasePort(mediator common.Mediator, shipRepo navigation.ShipRepository) *ProbePurchasePort {
-	return &ProbePurchasePort{mediator: mediator, shipRepo: shipRepo}
+//
+// listings may be nil, in which case nothing is persisted and every quote costs a
+// live call, which is the behaviour that existed before the listing memo.
+func NewProbePurchasePort(mediator common.Mediator, shipRepo navigation.ShipRepository, listings shipyardDomain.InventoryRepository) *ProbePurchasePort {
+	return &ProbePurchasePort{mediator: mediator, shipRepo: shipRepo, listings: listings}
+}
+
+// persistListings records the whole shipyard listing set a quote just read.
+//
+// THE WHOLE SET, not a "no probe" marker. It is the same API response either way,
+// it is what shipyard_inventory already stores for every other consumer (the
+// autosizer's yard price signal and ListProbeYards both read it), and a bespoke
+// negative marker would be a second store to keep in step with this one.
+//
+// Rows are derived from ShipTypes rather than from the priced Listings, because
+// the two differ and the difference is load-bearing: SpaceTraders returns priced
+// listings only where a hull is present, while the type list is always given. A
+// type with no priced listing is stored at price 0, which ShipTypeAvailability
+// documents as "listed, availability known, never usable by a price guard" — so
+// the memo can tell "this yard does not sell probes" from "this yard sells probes
+// we could not price", and only the first is a reason to stop asking.
+//
+// BEST-EFFORT: a write failure is logged and swallowed. The quote itself succeeded
+// and the caller needs its price; failing the purchase path because a cache write
+// missed would trade a real buy for a bookkeeping error. The only cost of a missed
+// write is that the yard is asked again next tick — exactly today's behaviour.
+func (p *ProbePurchasePort) persistListings(ctx context.Context, playerID int, yardWaypoint string, yard shipyardDomain.Shipyard, now time.Time) {
+	if p.listings == nil {
+		return
+	}
+	priced := make(map[string]int, len(yard.Listings))
+	for _, listing := range yard.Listings {
+		if listing.PurchasePrice > priced[listing.ShipType] {
+			priced[listing.ShipType] = listing.PurchasePrice
+		}
+	}
+	system := shared.ExtractSystemSymbol(yardWaypoint)
+	rows := make([]shipyardDomain.ShipTypeAvailability, 0, len(yard.ShipTypes))
+	for _, shipType := range yard.ShipTypes {
+		rows = append(rows, shipyardDomain.ShipTypeAvailability{
+			SystemSymbol:   system,
+			WaypointSymbol: yardWaypoint,
+			ShipType:       shipType,
+			PurchasePrice:  priced[shipType],
+			LastScanned:    now,
+		})
+	}
+	if len(rows) == 0 {
+		// A shipyard that lists no types at all tells us nothing we can act on, and
+		// writing zero rows would read back as "never scanned" anyway. Left alone
+		// rather than written, so the distinction stays honest.
+		return
+	}
+	if err := p.listings.ReplaceScan(ctx, playerID, system, yardWaypoint, rows, now); err != nil {
+		logging.LoggerFromContext(ctx).Log("WARN", fmt.Sprintf(
+			"Sensing quote at %s could not persist the shipyard's listings; the yard will be re-quoted next tick: %v", yardWaypoint, err), map[string]interface{}{
+			"action": "parked_sensing_listing_persist_failed", "waypoint": yardWaypoint,
+		})
+	}
 }
 
 // Quote reads the live SHIP_PROBE price at a yard. An unreadable or unpriced
@@ -234,6 +296,12 @@ func (p *ProbePurchasePort) Quote(ctx context.Context, playerID int, yardWaypoin
 	if !ok {
 		return 0, fmt.Errorf("shipyard at %s returned no listings", yardWaypoint)
 	}
+	// Persisted BEFORE the probe check, so the yards that teach us the MOST — the
+	// ones that sell no probe and are about to fail this quote — are exactly the
+	// ones whose answer is recorded. Recording only on success would leave the
+	// re-quote loop this memo exists to break running forever.
+	p.persistListings(ctx, playerID, yardWaypoint, listings.Shipyard, time.Now())
+
 	listing, found := listings.Shipyard.FindListingByType(probeShipType)
 	if !found || listing.PurchasePrice <= 0 {
 		return 0, fmt.Errorf("shipyard at %s has no priced %s listing", yardWaypoint, probeShipType)

@@ -1667,3 +1667,205 @@ func TestDrain_ARefusingYardDoesNotStarveAWorkingOne(t *testing.T) {
 		t.Fatalf("the refusing yard left no trace on a tick that also bought: %+v", rep)
 	}
 }
+
+// --- the persisted probe-listing memo (stop re-quoting yards that sell no probe) ---
+
+// fakeListingMemo answers what a PREVIOUS quote persisted about a yard.
+//
+// On error it claims the yard sells NO probe, which is the adversarial value: a
+// caller that read the answer and ignored the error would SKIP the yard, so only a
+// genuinely fail-OPEN caller still quotes it.
+type fakeListingMemo struct {
+	sells     map[string]bool
+	scannedAt map[string]time.Time
+	err       error
+	asked     []string
+	// unknownStamp is the timestamp returned ALONGSIDE known=false. Default zero
+	// time, which is what a real adapter returns — but a test can set it RECENT to
+	// prove the caller honours `known` on its own rather than getting the right
+	// answer by accident, because a zero timestamp always reads as infinitely
+	// stale and would mask a caller that ignored the flag entirely.
+	unknownStamp time.Time
+}
+
+func (f *fakeListingMemo) LastListingScan(_ context.Context, _ int, waypoint string) (bool, time.Time, bool, error) {
+	f.asked = append(f.asked, waypoint)
+	if f.err != nil {
+		return false, time.Now(), true, f.err
+	}
+	at, known := f.scannedAt[waypoint]
+	if !known {
+		return false, f.unknownStamp, false, nil
+	}
+	return f.sells[waypoint], at, true, nil
+}
+
+// oneYardPorts wires a single placement whose system has ONE yard, with a hull
+// standing at it — so the only thing deciding whether a quote call happens is the
+// listing memo.
+func oneYardPorts(now time.Time) (BuyPorts, *fakeBuyLedger, *fakePurchaser, *fakeListingMemo) {
+	led := &fakeBuyLedger{
+		slots: []QueuedSlot{
+			{Waypoint: "X1-AA-M1", System: "X1-AA", Kind: SlotKindMarket, State: SlotStateWanted},
+		},
+		systems: []ScreenedSystem{{System: "X1-AA", DepthCredits: 900}},
+	}
+	pur := &fakePurchaser{price: 1_000}
+	memo := &fakeListingMemo{sells: map[string]bool{}, scannedAt: map[string]time.Time{}}
+	return BuyPorts{
+		Treasury:    &fakeTreasury{credits: 10_000_000},
+		CargoSpend:  &fakeCargoSpend{},
+		Purchaser:   pur,
+		Ledger:      led,
+		Yards:       &fakeYards{yards: map[string][]string{"X1-AA": {"X1-AA-Y1"}}},
+		Ships:       &fakeShipReader{docked: map[string]string{"X1-AA-Y1": "BUYER-AA"}},
+		Fleet:       &fakeFleet{},
+		ListingMemo: memo,
+	}, led, pur, memo
+}
+
+func TestDrain_YardKnownNotToSellProbesIsNeverQuotedAgain(t *testing.T) {
+	// THE POINT OF THE WHOLE CHANGE, and it is asserted on the CALL COUNT rather
+	// than the outcome: this fixture's yard sells no probe either way, so "skipped"
+	// and "quoted, then refused" produce an identical zero-purchase report. Only the
+	// quote count tells them apart.
+	now := time.Now()
+	ports, _, pur, memo := oneYardPorts(now)
+	memo.scannedAt["X1-AA-Y1"] = now.Add(-time.Minute) // read a minute ago
+	memo.sells["X1-AA-Y1"] = false                     // and it sells no probe
+
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{now}); err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if len(pur.quotes) != 0 {
+		t.Fatalf("quoted %v — a yard we have already learned sells no probe must cost no API call", pur.quotes)
+	}
+}
+
+func TestDrain_UnknownYardIsQuotedOnceSoWeCanLearn(t *testing.T) {
+	// Fail OPEN on unknown: a yard nothing has ever read must still be asked, or the
+	// memo could never be populated and the fleet would freeze its own knowledge.
+	now := time.Now()
+	ports, _, pur, _ := oneYardPorts(now) // memo knows nothing about the yard
+
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{now}); err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if len(pur.quotes) != 1 || pur.quotes[0] != "X1-AA-Y1" {
+		t.Fatalf("quotes = %v, want exactly one quote at the unread yard", pur.quotes)
+	}
+}
+
+func TestDrain_AnUnreadYardIsQuotedEvenWhenItsTimestampLooksFresh(t *testing.T) {
+	// `known` must be honoured ON ITS OWN. The obvious fixture — an unread yard
+	// carrying the ZERO timestamp — cannot prove that: zero reads as infinitely
+	// stale, so the TTL check quotes the yard even for a caller that ignored the
+	// flag entirely. Handing back a RECENT timestamp with known=false removes that
+	// second reason, leaving the flag as the only thing that can produce a quote.
+	//
+	// This matters because "absent means ask once" is the property that lets the
+	// memo ever be populated. A caller that read absence as a negative would write
+	// off every yard nothing had happened to read yet, permanently.
+	now := time.Now()
+	ports, _, pur, memo := oneYardPorts(now)
+	memo.unknownStamp = now.Add(-time.Minute)
+
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{now}); err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if len(pur.quotes) != 1 {
+		t.Fatalf("quotes = %v, want the never-read yard quoted — an absent reading is not a negative one", pur.quotes)
+	}
+}
+
+func TestDrain_KnownNegativeYardIsRequotedOnceTheReadGoesStale(t *testing.T) {
+	// A permanent write-off would be wrong — shipyards restock. The stored negative
+	// is trusted only for probeListingMemoTTL.
+	now := time.Now()
+	ports, _, pur, memo := oneYardPorts(now)
+	memo.scannedAt["X1-AA-Y1"] = now.Add(-probeListingMemoTTL - time.Minute)
+	memo.sells["X1-AA-Y1"] = false
+
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{now}); err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if len(pur.quotes) != 1 {
+		t.Fatalf("quotes = %v, want the stale negative re-checked exactly once", pur.quotes)
+	}
+}
+
+func TestDrain_AnUnreadableMemoStillQuotes(t *testing.T) {
+	// The memo is an API-budget optimisation, NOT a money guard, so it fails OPEN —
+	// the inverse of this queue's usual direction and deliberately so. Failing closed
+	// would let one unhealthy read starve probe buying entirely, and the worst an open
+	// failure costs is the single call we already make today. Every money guard is
+	// untouched either way.
+	now := time.Now()
+	ports, _, pur, memo := oneYardPorts(now)
+	memo.err = errors.New("listing store unavailable")
+
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{now}); err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if len(pur.quotes) != 1 {
+		t.Fatalf("quotes = %v, want the yard still quoted when the memo cannot be read", pur.quotes)
+	}
+}
+
+func TestDrain_ASkippedYardStaysLegibleInTheReport(t *testing.T) {
+	// This defect was found by reading the refusal diagnostics. A yard that stops
+	// being queried must not also stop being reported, or the next such defect is
+	// invisible.
+	now := time.Now()
+	ports, _, _, memo := oneYardPorts(now)
+	memo.scannedAt["X1-AA-Y1"] = now.Add(-time.Minute)
+	memo.sells["X1-AA-Y1"] = false
+
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{now})
+	if err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if len(rep.Refusals) != 1 {
+		t.Fatalf("refusals = %+v, want the skipped yard recorded", rep.Refusals)
+	}
+	if rep.Refusals[0].Yard != "X1-AA-Y1" || rep.Refusals[0].Step != BuyStepMemo {
+		t.Fatalf("refusal = %+v, want a memo-step refusal naming the skipped yard", rep.Refusals[0])
+	}
+}
+
+func TestDrain_AYardTheMemoSaysSellsProbesStillClearsEveryMoneyGuard(t *testing.T) {
+	// The memo removes candidates; it never waves one through. A yard it reports as
+	// probe-selling is quoted and floor-checked exactly as before — here the treasury
+	// is below the floor, so nothing may be bought.
+	now := time.Now()
+	ports, _, pur, memo := oneYardPorts(now)
+	memo.scannedAt["X1-AA-Y1"] = now.Add(-time.Minute)
+	memo.sells["X1-AA-Y1"] = true
+	ports.Treasury = &fakeTreasury{credits: 50_100} // under the floor once the probe is priced
+
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{now})
+	if err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if len(pur.quotes) != 1 {
+		t.Fatalf("quotes = %v, want the probe-selling yard still quoted", pur.quotes)
+	}
+	if rep.Bought != 0 || !rep.FloorHeld {
+		t.Fatalf("report = %+v, want the buy floor to hold — the memo must never bypass a money guard", rep)
+	}
+}
+
+func TestDrain_ANilListingMemoBehavesExactlyAsBefore(t *testing.T) {
+	// The port is optional. An unwired memo must quote everything, so the drain is
+	// byte-identical to its pre-memo behaviour wherever it is not wired.
+	now := time.Now()
+	ports, _, pur, _ := oneYardPorts(now)
+	ports.ListingMemo = nil
+
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{now}); err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if len(pur.quotes) != 1 {
+		t.Fatalf("quotes = %v, want an unwired memo to change nothing", pur.quotes)
+	}
+}

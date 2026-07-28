@@ -1123,6 +1123,9 @@ func run(cfg *config.Config) error {
 			Ledger:    sensingLedgerPort,
 			Waypoints: catalog,
 			Uncharted: catalog,
+			// The same catalog instance again: it owns the shipyard_inventory reads,
+			// so the yard lookup and the listing memo read one store.
+			ListingMemo: catalog,
 			// The market cache: what a market deals in, how deep it is, and the
 			// two-sided quotes the spread weighting reads (columns CROSSED — see
 			// MarketPrices, where an uncrossed wiring fails silently).
@@ -1136,10 +1139,13 @@ func run(cfg *config.Config) error {
 			// buy floor dynamic rather than a fixed number.
 			Treasury:   parkedSensingAdapters.NewTreasuryPort(expansionAdapters.NewTreasuryReader(apiClient)),
 			CargoSpend: parkedSensingAdapters.NewCargoSpendPort(transactionRepo),
-			Purchaser:  parkedSensingAdapters.NewProbePurchasePort(med, shipRepo),
-			Ships:      parkedSensingAdapters.NewShipPositionPort(db),
-			Fleet:      parkedSensingAdapters.NewFleetTagPort(shipRepo),
-			Mover:      parkedSensingAdapters.NewMoverPort(med, gateNeighbours),
+			// The purchaser PERSISTS every shipyard listing set its quote reads, which
+			// is what populates the memo above — without the writer the memo can never
+			// learn and every dead yard is re-quoted forever.
+			Purchaser: parkedSensingAdapters.NewProbePurchasePort(med, shipRepo, persistence.NewShipyardInventoryRepository(db)),
+			Ships:     parkedSensingAdapters.NewShipPositionPort(db),
+			Fleet:     parkedSensingAdapters.NewFleetTagPort(shipRepo),
+			Mover:     parkedSensingAdapters.NewMoverPort(med, gateNeighbours),
 			// Per-system stored gate adjacency — never the whole-map read, and never a
 			// fetch-through resolver.
 			Gates: gateNeighbours,

@@ -127,6 +127,54 @@ type ProbeYardCatalog interface {
 	ListProbeYards(ctx context.Context, system string) ([]string, error)
 }
 
+// probeListingMemoTTL is how long a PERSISTED shipyard listing set is trusted
+// before the yard is asked again.
+//
+// THE WASTE IT REMOVES. ListProbeYards falls back to shipyard-TRAIT waypoints
+// whenever a system has no stored probe listing, and that fallback is the normal
+// path — only a handful of true probe yards are known fleet-wide. Those waypoints
+// are real shipyards that simply do not sell probes, so every one of them that a
+// hull happens to stand at costs one live quote per drain tick, forever, and the
+// answer is discarded each time. The per-tick refusalMemo already stops the
+// REPEATS within a tick; nothing carried the fact ACROSS ticks.
+//
+// WHY SIX HOURS. At ~57 drain cycles an hour a dead yard costs ~57 calls/hour
+// today; trusting a stored reading for six hours costs one call per six hours per
+// yard, a ~99.7% reduction, while still re-checking each yard ~20 times inside a
+// ~120-hour era. A shorter interval does not scale with the thing that creates
+// these yards: charting toward the 300-system target keeps adding shipyard-trait
+// waypoints, and at one call/hour each a few dozen of them would re-create the
+// very cost this removes. A longer one buys little more — the second six hours
+// saves a further 0.08 calls/hour per yard — while widening the window in which a
+// restocked yard is wrongly written off.
+//
+// BEING WRONG IS CHEAP AND SELF-HEALING, which is what makes six hours defensible
+// rather than merely convenient: a yard that starts selling probes is simply not
+// bought from until the interval elapses. It blocks nothing else — seed staging
+// tests hull PRESENCE (staffedAt), not probe stock, so expansion is unaffected —
+// and any other yard in the system still serves the placement.
+//
+// A plain constant, deliberately not a knob, in the manner of maxDrainAttempts:
+// it paces how long one local fact is trusted, and nothing downstream benefits
+// from tuning it.
+const probeListingMemoTTL = 6 * time.Hour
+
+// ProbeListingMemo reports what a PREVIOUS shipyard read persisted about a yard's
+// stock, so the drain can stop paying to re-learn a standing fact.
+//
+// OPTIONAL: a nil memo quotes everything, which is exactly the behaviour that
+// existed before this port, so an unwired deployment is unchanged.
+type ProbeListingMemo interface {
+	// LastListingScan reports whether the yard's STORED listings include a priced
+	// probe, and when that reading was taken.
+	//
+	// known=false means the yard has never been read, which the caller must treat
+	// as "ask once" and never as "no probe" — an absent reading is how a yard
+	// enters the memo at all, so reading it as a negative would freeze the fleet's
+	// knowledge permanently.
+	LastListingScan(ctx context.Context, playerID int, waypoint string) (sellsProbe bool, scannedAt time.Time, known bool, err error)
+}
+
 // ShipPos is where one hull is, read from the ships table.
 type ShipPos struct {
 	Waypoint  string
@@ -244,7 +292,11 @@ type BuyPorts struct {
 	Ledger     BuyLedger
 	Yards      ProbeYardCatalog
 	Ships      ParkedShipReader
-	Fleet      FleetTagger
+	// ListingMemo answers what a previous shipyard read learned about a yard's
+	// stock, so a yard already known to sell no probe costs no live quote.
+	// OPTIONAL: nil quotes everything, exactly as the drain did before it existed.
+	ListingMemo ProbeListingMemo
+	Fleet       FleetTagger
 	// HeavyReserve reports the credits held back for the NEXT heavy purchase. OPTIONAL:
 	// a nil reader means no reserve and byte-identical behaviour, so the sensing engine
 	// runs unchanged before the heavy feature is wired.
@@ -326,6 +378,15 @@ const (
 	BuyStepQuote BuyStep = "quote"
 	// BuyStepBuy is a refusal at the counter, after the price cleared the floor.
 	BuyStepBuy BuyStep = "buy"
+	// BuyStepMemo is a yard passed over WITHOUT being asked, because a stored
+	// listing read already says it sells no probe.
+	//
+	// It is reported separately from BuyStepQuote precisely because it costs no
+	// API call: an operator reading the cycle summary must be able to tell "this
+	// counter refused us today" from "we did not ask, and here is why". Conflating
+	// them would hide the very saving this step exists to make, and would make the
+	// next defect of this shape as invisible as this one was.
+	BuyStepMemo BuyStep = "memo"
 )
 
 // BuyRefusal is one counter's refusal this tick, with the number of placements
@@ -551,7 +612,7 @@ func DrainBuyQueue(
 			continue
 		}
 
-		buys, err := resolvePurchaseCandidates(ctx, p, playerID, slot, inSystem)
+		buys, err := resolvePurchaseCandidates(ctx, p, playerID, slot, inSystem, clock.Now(), &rep, memo)
 		if err != nil {
 			return rep, err
 		}
@@ -1030,7 +1091,16 @@ type purchaseCandidate struct{ yard, buyer string }
 //
 // Nothing here ever looks outside the placement's own system: a cross-map buy
 // would strand a fresh probe several gate hops from the slot it was bought for.
-func resolvePurchaseCandidates(ctx context.Context, p BuyPorts, playerID int, slot QueuedSlot, inSystem []QueuedSlot) ([]purchaseCandidate, error) {
+func resolvePurchaseCandidates(
+	ctx context.Context,
+	p BuyPorts,
+	playerID int,
+	slot QueuedSlot,
+	inSystem []QueuedSlot,
+	now time.Time,
+	rep *BuyReport,
+	memo *refusalMemo,
+) ([]purchaseCandidate, error) {
 	listed, err := p.Yards.ListProbeYards(ctx, slot.System)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list probe yards in %q: %w", slot.System, err)
@@ -1048,6 +1118,11 @@ func resolvePurchaseCandidates(ctx context.Context, p BuyPorts, playerID int, sl
 
 	candidates := make([]purchaseCandidate, 0, len(yards))
 	for _, yard := range yards {
+		// Asked BEFORE buyerAt so a dead yard costs neither the ships read nor the
+		// live quote behind it. This is a LOCAL read; it never touches the API.
+		if skipKnownProbeless(ctx, p, playerID, yard, now, rep, memo) {
+			continue
+		}
 		buyer, found, err := buyerAt(ctx, p, playerID, yard, inSystem)
 		if err != nil {
 			return nil, err
@@ -1057,6 +1132,57 @@ func resolvePurchaseCandidates(ctx context.Context, p BuyPorts, playerID int, sl
 		}
 	}
 	return candidates, nil
+}
+
+// skipKnownProbeless reports whether a yard may be passed over WITHOUT a live
+// quote, because a stored listing read already says it sells no probe.
+//
+// THE THREE ANSWERS, and only the middle one skips:
+//
+//   - never read (known=false) → ASK. This is how a yard enters the memo at all;
+//     treating an absent reading as a negative would freeze the fleet's knowledge
+//     and permanently write off every yard nothing had happened to read yet.
+//   - read recently, sells no probe → SKIP. The standing fact this change exists
+//     to stop paying for.
+//   - read recently, sells a probe → ASK. The memo removes candidates; it never
+//     waves one through, so a yard it likes is quoted and floor-checked exactly as
+//     before. NOTHING here can approve a purchase.
+//
+// A STALE reading is treated as never-read, so a restocked yard is re-checked
+// every probeListingMemoTTL rather than written off for the era.
+//
+// FAILS OPEN, which inverts this queue's usual direction and is deliberate. The
+// memo is an API-budget optimisation, not a money guard: the worst an open failure
+// costs is the single call the drain already makes today, whereas failing closed
+// would let one unhealthy local read starve probe buying across the whole fleet.
+// RULINGS #4 is untouched either way — every money guard sits downstream of this
+// and judges the purchase unchanged.
+//
+// The skip is RECORDED, through the same per-tick memo that aggregates refusals,
+// so a yard that stops being queried does not also stop being reported.
+func skipKnownProbeless(
+	ctx context.Context,
+	p BuyPorts,
+	playerID int,
+	yard string,
+	now time.Time,
+	rep *BuyReport,
+	memo *refusalMemo,
+) bool {
+	if p.ListingMemo == nil {
+		return false
+	}
+	sellsProbe, scannedAt, known, err := p.ListingMemo.LastListingScan(ctx, playerID, yard)
+	if err != nil || !known || sellsProbe {
+		return false
+	}
+	if now.Sub(scannedAt) >= probeListingMemoTTL {
+		return false // the reading has gone stale; re-check the counter
+	}
+	memo.record(rep, BuyStepMemo, yard, "", fmt.Sprintf(
+		"stored listings show no probe (read %s ago; re-checked after %s)",
+		now.Sub(scannedAt).Truncate(time.Second), probeListingMemoTTL))
+	return true
 }
 
 // buyerAt finds a hull of ours standing at one waypoint: first a parked sensing

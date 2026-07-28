@@ -226,8 +226,13 @@ type SensingLedger interface {
 // is a registered singleton serving every player's ticks, so binding it once at
 // wiring time would answer every player's questions with the first player's rows.
 type SensingEnginePorts struct {
-	Ledger       SensingLedger
-	Waypoints    parkedsensing.WaypointCatalog
+	Ledger    SensingLedger
+	Waypoints parkedsensing.WaypointCatalog
+	// ListingMemo answers what a previous shipyard read persisted about a yard's
+	// stock, so the drain can skip yards already known to sell no probe without
+	// spending a live quote on each one, every tick. OPTIONAL: nil quotes
+	// everything, which is the pre-memo behaviour.
+	ListingMemo  parkedsensing.ProbeListingMemo
 	MarketGoods  parkedsensing.MarketGoodsReader
 	RemoteMarket parkedsensing.RemoteMarketFetcher
 	Treasury     parkedsensing.TreasuryReader
@@ -322,6 +327,9 @@ func (p SensingEnginePorts) buyPorts(claimOwnerContainerID string, posts Sensing
 		Yards:      p.Waypoints,
 		Ships:      p.Ships,
 		Fleet:      p.Fleet,
+		// Same instance the yard lookup uses, so the two can never disagree about
+		// what the stored inventory says.
+		ListingMemo: p.ListingMemo,
 		// The foothold path's two guard ports. Gates is the same topology store
 		// expansion walks, so "how far may a hull be sent" is answered from one
 		// place. The post reader is built here rather than memoised onto the port
