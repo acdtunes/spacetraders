@@ -30,6 +30,15 @@ func (r *recoveryStubShipRepo) FindByContainer(ctx context.Context, containerID 
 	return nil, nil
 }
 
+// FindAllByPlayer is needed because the boot path now sweeps the fleet to release hulls of the
+// retired probe-buyer coordinator. The embedded ShipRepository is a NIL interface, so an
+// unimplemented method does not fail the call — it panics the daemon boot, which is how this
+// stub's gap first surfaced. An empty fleet is the honest answer for a recovery fixture that
+// declares no ships.
+func (r *recoveryStubShipRepo) FindAllByPlayer(ctx context.Context, playerID shared.PlayerID) ([]*navigation.Ship, error) {
+	return nil, nil
+}
+
 // SaveWithRetry is the seam recovery re-assigns hulls through; it loads FRESH, so
 // the stub's unavailable-ship failure still surfaces exactly as before.
 func (r *recoveryStubShipRepo) SaveWithRetry(ctx context.Context, symbol string, playerID shared.PlayerID, _ navigation.ShipMutation) (*navigation.Ship, bool, error) {

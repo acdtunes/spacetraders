@@ -61,6 +61,14 @@ func (s *DaemonServer) launchBootStandingAfterRecovery() {
 	// Running after costs at most ONE failed sensing tick on a cold row: the engine re-reconciles
 	// every 30s, the read is idempotent, and the error it logs now names the key and the remedy.
 	s.syncAgentIdentityAtBoot(ctx, playerID)
+
+	// Release any hull still dedicated to the DELETED probe-buyer fleet. Retiring a coordinator does
+	// not rewrite a ships row, so its recruits would otherwise stay tagged for a fleet that no longer
+	// exists — driven by nobody, and invisible to sensing's buy path, which admits only "" and
+	// sensing_parked. Idempotent (after the first boot nothing matches) and fail-open. Runs here,
+	// after the launches, for the same reason the identity sync does: a repair must never be able to
+	// starve the coordinators of the shared boot budget.
+	s.releaseRetiredProbeBuyerHulls(ctx, playerID)
 }
 
 // bootStandingCoordinatorTypes are the container types launched unconditionally at every daemon
