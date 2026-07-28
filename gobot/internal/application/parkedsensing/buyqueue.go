@@ -512,6 +512,11 @@ func DrainBuyQueue(
 	// placements cannot both be handed the same hull.
 	footholds := &footholdBroker{}
 
+	// How many attempts the FILLS may spend before standing aside for the seeds
+	// queued behind them — the whole budget when no seed is outstanding. It
+	// SPLITS maxDrainAttempts rather than adding to it. See seedshare.go.
+	fillBudget := fillAttemptBudget(candidates)
+
 	for _, slot := range candidates {
 		if rep.Attempts >= maxDrainAttempts {
 			break
@@ -519,6 +524,11 @@ func DrainBuyQueue(
 		if st.owned >= st.cap {
 			rep.CapHeld = true
 			break
+		}
+		// Checked BEFORE any read, so a fill standing aside costs nothing: the
+		// loop runs past the remaining fills to reach the seeds behind them.
+		if yieldsToSeeds(slot, rep.Attempts, fillBudget) {
+			continue
 		}
 
 		// The system's slots serve both the spare-reuse scan and the
