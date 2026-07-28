@@ -39,8 +39,51 @@ import (
 	"strings"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
+
+// liquidationLegIndexBase is the LegIndex floor stamped on a telemetry row for a liquidation
+// sale — the exit sweep and the margins-death distress dump both (sp-xfrfw). Like the look-back
+// buy's lookbackLegIndex sentinel it is NOT a solver-plan leg, and the two sit on opposite sides
+// of the plan for the same reason: the visualizer's lane aggregator sorts a tour's legs by
+// leg_index and draws a directed lane between CONSECUTIVE legs, so a sentinel's SIGN decides
+// which way the hop is drawn. A look-back manifest buy happens before the plan and sorts first
+// (-1); a liquidation happens after the plan is exhausted and must sort last, or its hop would be
+// drawn backwards — a fabricated lane, which is worse than the missing one. The base sits far
+// above any plan length (tours run a handful of legs), and the sweep offsets from it per SINK
+// VISITED, not per sale, so goods dumped at one waypoint collapse into one leg exactly as
+// several trades at one plan leg do.
+const liquidationLegIndexBase = 1_000_000
+
+// liquidationLegIndex hands out the telemetry leg position for a liquidation sweep. A sweep sells
+// its goods one at a time and flies between sinks, so the unit of a "leg" is the SINK VISIT, not
+// the sale: goods dumped at one waypoint share an index (the lane aggregator folds them into a
+// single stop, as it does several trades at one plan leg), and moving to a different sink opens
+// the next one. Only a sale that actually landed advances the position — a decline never moved
+// the hull, so the next sink still departs from where it really is.
+type liquidationLegIndex struct {
+	idx  int
+	last string // the sink the hull has actually sold at, "" before the first sale
+}
+
+func newLiquidationLegIndex() *liquidationLegIndex {
+	return &liquidationLegIndex{idx: liquidationLegIndexBase}
+}
+
+// at returns the leg position a sale at waypoint would occupy.
+func (l *liquidationLegIndex) at(waypoint string) int {
+	if l.last != "" && waypoint != l.last {
+		return l.idx + 1
+	}
+	return l.idx
+}
+
+// arrived commits a landed sale at waypoint, opening a new position if it was a new sink.
+func (l *liquidationLegIndex) arrived(waypoint string) {
+	l.idx = l.at(waypoint)
+	l.last = waypoint
+}
 
 // distressSink is the chosen liquidation target for one held good: the CURRENT-system market
 // waypoint with the highest non-EXPORT bid, the bid itself (for the honest below-floor log), and
@@ -136,12 +179,17 @@ func (h *RunTourCoordinatorHandler) maybeDistressLiquidate(
 	sort.Strings(goods) // deterministic liquidation order (RULINGS #2)
 
 	soldAny := false
+	legs := newLiquidationLegIndex()
 	for _, good := range goods {
-		sold, serr := h.distressSellGood(ctx, cmd, response, netBought, good, sinks[good])
+		sink := sinks[good]
+		sold, serr := h.distressSellGood(ctx, cmd, response, netBought, good, sink, legs.at(sink.waypoint))
 		if serr != nil {
 			// A partial dump may already be booked; return the resumable error so the runner
 			// retries and the run re-plans cargo-aware from the lighter hold on the next pass.
 			return false, serr
+		}
+		if sold {
+			legs.arrived(sink.waypoint)
 		}
 		soldAny = soldAny || sold
 	}
@@ -235,8 +283,10 @@ func (h *RunTourCoordinatorHandler) liquidateStrandBeforeExit(
 		"ship_symbol": cmd.ShipSymbol, "system": ship.CurrentLocation().SystemSymbol,
 		"goods": goods, "action": "strand_liquidation",
 	})
+	legs := newLiquidationLegIndex()
 	for _, good := range goods {
-		sold, serr := h.distressSellGood(ctx, cmd, response, netBought, good, sinks[good])
+		sink := sinks[good]
+		sold, serr := h.distressSellGood(ctx, cmd, response, netBought, good, sink, legs.at(sink.waypoint))
 		if serr != nil {
 			logger.Log("WARNING", fmt.Sprintf("Exit liquidation of %s aboard %s failed - the remaining units report as stranded: %v", good, cmd.ShipSymbol, serr), map[string]interface{}{
 				"ship_symbol": cmd.ShipSymbol, "good": good, "error": serr.Error(),
@@ -244,6 +294,7 @@ func (h *RunTourCoordinatorHandler) liquidateStrandBeforeExit(
 			break
 		}
 		if sold {
+			legs.arrived(sink.waypoint)
 			response.ExitHoldLiquidations++
 		}
 	}
@@ -287,6 +338,8 @@ func (h *RunTourCoordinatorHandler) reportResidualHold(
 // stays accurate (a good sold here is no longer aboard), and logs the deliberate below-floor
 // recovery explicitly. Reserved cargo (a staged module / operator-protected good) is never sold
 // (mirrors executeSell). It returns true only when units actually left the hull.
+//
+// legIdx is the telemetry leg position for the sink being sold at (see liquidationLegIndexBase).
 func (h *RunTourCoordinatorHandler) distressSellGood(
 	ctx context.Context,
 	cmd *RunTourCoordinatorCommand,
@@ -294,6 +347,7 @@ func (h *RunTourCoordinatorHandler) distressSellGood(
 	netBought map[string]int,
 	good string,
 	sink distressSink,
+	legIdx int,
 ) (bool, error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -324,6 +378,7 @@ func (h *RunTourCoordinatorHandler) distressSellGood(
 		return false, fmt.Errorf("distress liquidation dock of %s at %s failed: %w", cmd.ShipSymbol, sink.waypoint, err)
 	}
 
+	plannedAt := h.clock.Now() // stamped immediately before the sale, exactly as executeSell does
 	sellResp, err := h.legs.sell(ctx, cmd.ShipSymbol, good, units, cmd.PlayerID)
 	if err != nil {
 		return false, fmt.Errorf("distress liquidation sell of %d %s at %s failed: %w", units, good, sink.waypoint, err)
@@ -335,6 +390,24 @@ func (h *RunTourCoordinatorHandler) distressSellGood(
 	response.TotalRevenue += int64(sellResp.TotalRevenue)
 	response.TradesExecuted++
 	dischargePurchaseObligation(netBought, good, sellResp.UnitsSold) // left the hull — no longer a stranded-veto candidate
+	// sp-xfrfw: record the liquidation in tour telemetry exactly as executeSell records a plan
+	// leg, so this path stays 1:1 with the SELL_CARGO transactions it just wrote. It was the one
+	// sell path that did not, and it cost a quarter of all tour sell legs (55 of 222 over 24h),
+	// leaving the galaxy view's lane aggregation blind to every liquidation hop. A synthetic
+	// single-stop leg carries the SINK waypoint — where the cargo actually changed hands, which
+	// is what the lane must be drawn from. There is no solver plan behind a liquidation, so the
+	// plan basis is left at zero rather than invented: the drift readers skip a non-positive
+	// basis, so a fabricated one would silently corrupt planned-vs-realized. recordLeg is
+	// nil-safe and swallows its own error into a WARNING, so a recording miss stays a recording
+	// miss and never touches the sale (RULINGS #4).
+	h.recordLeg(ctx, cmd,
+		routing.TourLeg{Waypoint: sink.waypoint},
+		legIdx,
+		routing.TourTrade{Good: good, IsBuy: false},
+		sellResp.UnitsSold,
+		realizedUnitPrice(sellResp.TotalRevenue, sellResp.UnitsSold),
+		plannedAt,
+	)
 	logger.Log("WARNING", fmt.Sprintf("Distress liquidation: %s sold %d %s at %s for %d credits (bid %d/u, BELOW the profit floor) to free the hull; sunk-cost cash recovery, deliberate below-floor loss booked (sell-side only, RULINGS #4 buy guards untouched)", cmd.ShipSymbol, sellResp.UnitsSold, good, sink.waypoint, sellResp.TotalRevenue, sink.bid), map[string]interface{}{
 		"ship_symbol": cmd.ShipSymbol, "good": good, "waypoint": sink.waypoint,
 		"units_sold": sellResp.UnitsSold, "revenue": sellResp.TotalRevenue, "bid_per_unit": sink.bid,
