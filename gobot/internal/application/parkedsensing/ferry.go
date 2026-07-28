@@ -65,6 +65,43 @@ import (
 // while capping one placement's share of the budget at half.
 const maxFerryCandidates = 3
 
+// maxFerryHops is how far a BOUGHT hull may be flown to reach the placement it
+// was bought for.
+//
+// IT IS THE ROUTER'S BOUND, and that is the whole derivation. A ferried hull is
+// carried by the placement machine's RouteAcross, which resolves one hop at a
+// time through nextHopToward — a breadth-first search that returns an ERROR when
+// the destination is not found inside its own ring limit. The adapter pins that
+// limit to MaxSeedFlightHops (`const maxWalkRings = appSensing.MaxSeedFlightHops`
+// in adapters/parkedsensing), so nine hops is exactly what the router can
+// actually deliver. Buying for anything further does not stretch the walk, it
+// strands the hull: the step errors every tick, the slot sits IN_TRANSIT naming a
+// hull that never arrives, and the probe cap is held the whole time.
+//
+// SO THIS IS DERIVED, NEVER CHOSEN. Reading it from MaxSeedFlightHops is what
+// keeps the buy and the walk from drifting apart — the failure MaxWalkRings' own
+// doc warns about, where a caller works from a private copy of a bound and hands
+// out errands the resolver cannot serve. A literal 9 here would be that copy.
+//
+// WHY NOT MaxWalkRings, WHICH THIS USED TO READ. That constant bounds the
+// FOOTHOLD path's draw of an already-parked scanning hull off a working market —
+// a different and deliberately shorter journey, and one whose cost is real
+// (a market stops being watched). It was the right conservative default when
+// cross-system buying was first restored, but it is not the router's reach and
+// never was. Measured live, it stranded 143 of 238 pending placements that sit
+// 3-9 hops from their nearest funder: routable, and refused by a bound borrowed
+// from another concern. MaxWalkRings is deliberately left where it is; giving the
+// ferry its own bound is the per-instance separation sp-9fdc258d established.
+//
+// WHAT NINE COSTS IS TICKS, NOT CREDITS. A gate jump burns no fuel — it is
+// instantaneous at the API with only a reactor cooldown — and one crossing is two
+// dispatch steps, so nine hops is roughly eighteen. A probe in transit is not
+// scanning; but the placements this reaches were not going to be bought at all,
+// so the comparison is against nothing, not against a faster purchase. Nine is
+// also where this graph SATURATES (see MaxSeedFlightHops): a bound of ten serves
+// not one additional placement, and five sit unreachable at any depth.
+const maxFerryHops = MaxSeedFlightHops
+
 // ferryBroker is one tick's cross-system buying state: where our hulls actually
 // stand, and the gate walker that decides which of those places can reach a given
 // placement.
@@ -122,11 +159,10 @@ func (b *ferryBroker) load(ctx context.Context, p BuyPorts, playerID int) bool {
 		b.systems = append(b.systems, row.System)
 	}
 	sort.Strings(b.systems)
-	// MaxWalkRings, NOT the seed's MaxSeedFlightHops: this walker decides how far a
-	// bought SCANNING HULL is flown to reach its placement, which is the placement
-	// machine's own walk — the same journey the foothold path bounds, and a much
-	// shorter one than a charting seed's.
-	b.reach = newGateReach(p.Gates, nil, MaxWalkRings)
+	// maxFerryHops, which is the ROUTER's reach rather than the foothold path's.
+	// See the constant: a bought hull is flown by RouteAcross, and buying beyond
+	// what nextHopToward can resolve strands it.
+	b.reach = newGateReach(p.Gates, nil, maxFerryHops)
 	b.loaded = true
 	return true
 }

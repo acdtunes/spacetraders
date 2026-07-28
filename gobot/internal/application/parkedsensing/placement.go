@@ -31,25 +31,31 @@ import (
 // it. The backlog is not lost — it is simply worked over more ticks.
 const DefaultMaxPlacementActions = 10
 
-// MaxWalkRings is how many gate jumps of stored adjacency RouteAcross will look
-// through to name its next system — and therefore exactly how far a hull may be
-// sent. IT IS THE WALK'S REACH, and it is declared here, beside the verb whose
-// reach it is, so that the one adapter that implements the walk and the one
-// caller that hands it destinations read the SAME number rather than two copies
-// that can drift.
+// MaxWalkRings is how far the FOOTHOLD path may draw an already-parked scanning
+// hull off a working market to fill a placement elsewhere.
 //
-// THAT SHARING IS LOAD-BEARING, not tidiness. A destination further out than
-// this is not refused loudly — nextHopToward simply names no next system, so the
-// step returns an error, the slot stays IN_TRANSIT still naming the hull, and
-// the hull goes on counting against the probe cap while never arriving. A caller
-// working from its own private copy of this bound is one edit away from handing
-// out exactly that stall, so there is no second copy to edit.
+// IT IS NO LONGER THE WALK'S REACH, and that correction matters. This constant
+// was originally the bound nextHopToward resolved under, so it genuinely was "how
+// far a hull may be sent" — but the adapter's resolver now reads
+// MaxSeedFlightHops instead (`const maxWalkRings = appSensing.MaxSeedFlightHops`
+// in adapters/parkedsensing), because a charting seed had to be flyable further
+// than a staging walk. What is left here is a SELECTION bound: how far this
+// engine chooses to reach when picking a source, not how far the router can
+// deliver.
 //
-// WHY TWO. This is a STAGING walk, not a router. Every placement it serves is
-// staged from a system we already hold toward one at or near its border —
-// stagingYardFor picks a yard in a system BORDERING the target, and the buy queue
-// buys in the slot's own system — so the honest reach is a neighbour, or a
-// neighbour's neighbour once a conversion has moved the frontier.
+// The distinction is easy to lose and expensive to lose. A destination beyond the
+// ROUTER's bound is not refused loudly — nextHopToward names no next system, the
+// step returns an error, the slot stays IN_TRANSIT still naming the hull, and the
+// hull goes on counting against the probe cap while never arriving. So a
+// selection bound may sit at or below the router's, never above it; anything that
+// wants to reach further must read the router's own number, as maxFerryHops does.
+//
+// WHY TWO, FOR THE FOOTHOLD. Its cost is not ticks but COVERAGE: the hull it
+// takes was watching a market, and that market stops being watched until a
+// replacement is bought. Drawing one from the far side of the map to serve a
+// placement is a poor trade even when the router could carry it, so this bound
+// stays deliberately short while the ferry — which buys a NEW hull and takes
+// nothing away — reads the router's.
 //
 // The bound is also what keeps resolution cheap: each ring costs one stored read
 // per system on the frontier, so a step costs one read plus the current system's

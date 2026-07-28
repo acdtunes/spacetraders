@@ -2,6 +2,7 @@ package parkedsensing
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -198,5 +199,108 @@ func TestDrain_APlacementAlreadyInFlightIsNeverBoughtASecondHull(t *testing.T) {
 	}
 	if got := slotAt(t, led, "X1-TGT-M1", SlotKindMarket); got.AssignedShip != "ALREADY-BOUGHT" {
 		t.Fatalf("in-flight slot was disturbed: %+v", got)
+	}
+}
+
+// --- reach: the buy must walk as far as the ROUTER can actually deliver ---
+
+// chainGates builds a one-way chain X1-F -> X1-H1 -> X1-H2 -> ... -> X1-Hn.
+// The funder X1-F sits at the head; the placement sits at the tail, n hops out.
+//
+// ONE-WAY THROUGHOUT, deliberately: it keeps the direction fix honest at every
+// ring, so a search that ever walked backwards out of the target would find
+// nothing rather than accidentally succeeding on a symmetric edge.
+func chainGates(n int) *fakeGates {
+	adj := map[string][]string{"X1-F": {"X1-H1"}}
+	for i := 1; i < n; i++ {
+		adj[fmt.Sprintf("X1-H%d", i)] = []string{fmt.Sprintf("X1-H%d", i+1)}
+	}
+	adj[fmt.Sprintf("X1-H%d", n)] = []string{}
+	return &fakeGates{adjacency: adj}
+}
+
+// chainPorts puts the only funder at the head of an n-hop chain and the only
+// pending placement at its tail.
+func chainPorts(n int) (BuyPorts, *fakeBuyLedger, *fakePurchaser) {
+	target := fmt.Sprintf("X1-H%d", n)
+	led := &fakeBuyLedger{
+		slots: []QueuedSlot{
+			{Waypoint: target + "-M1", System: target, Kind: SlotKindMarket, State: SlotStateWanted},
+			{Waypoint: "X1-F-M1", System: "X1-F", Kind: SlotKindMarket, State: SlotStateParked,
+				AssignedShip: "F-PROBE", WhitelistGoods: []string{"FUEL"}},
+		},
+		systems: []ScreenedSystem{{System: target, DepthCredits: 900}},
+	}
+	pur := &fakePurchaser{price: 24_356}
+	return BuyPorts{
+		Treasury:   &fakeTreasury{credits: 3_800_000},
+		CargoSpend: &fakeCargoSpend{},
+		Purchaser:  pur,
+		Ledger:     led,
+		Yards:      &fakeYards{yards: map[string][]string{"X1-F": {"X1-F-Y1"}}},
+		Ships:      &fakeShipReader{docked: map[string]string{"X1-F-Y1": "F-PROBE"}},
+		Fleet:      &fakeFleet{},
+		Gates:      chainGates(n),
+	}, led, pur
+}
+
+func TestDrain_BuysForAPlacementBeyondThePlacementWalksOwnRing(t *testing.T) {
+	// FOUR hops: past MaxWalkRings (2), well inside the router's real reach.
+	//
+	// The bound this path needs is not "how far does the foothold draw a scanning
+	// hull" but "how far can nextHopToward actually name a next system" — and the
+	// adapter resolves that at MaxSeedFlightHops. Measured live, 143 of 238 pending
+	// placements sit at 3-9 hops from their nearest funder: routable, and refused
+	// only by a bound that was never the router's.
+	ports, led, pur := chainPorts(4)
+
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	if err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if rep.Attempts == 0 {
+		t.Fatalf("Attempts = 0 — a placement 4 hops from the only funder never reached a counter; report %+v", rep)
+	}
+	if len(pur.buys) != 1 || pur.buys[0].yard != "X1-F-Y1" {
+		t.Fatalf("buys = %v, want one purchase at the 4-hop-distant funder X1-F-Y1", pur.buys)
+	}
+	if rep.Ferried != 1 {
+		t.Fatalf("Ferried = %d, want 1", rep.Ferried)
+	}
+	if got := slotAt(t, led, "X1-H4-M1", SlotKindMarket); got.State != SlotStateBought || got.AssignedShip == "" {
+		t.Fatalf("target slot = %+v, want BOUGHT naming the hull the placement machine will fly", got)
+	}
+}
+
+func TestDrain_BuysAtTheOuterEdgeOfTheRoutersReach(t *testing.T) {
+	// Exactly MaxSeedFlightHops. The boundary is asserted from inside so the bound
+	// is a real threshold rather than an artefact of a short fixture.
+	ports, _, pur := chainPorts(MaxSeedFlightHops)
+
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if len(pur.buys) != 1 {
+		t.Fatalf("buys = %v, want a purchase for a placement exactly %d hops out — the router resolves that far",
+			pur.buys, MaxSeedFlightHops)
+	}
+}
+
+func TestDrain_RefusesAPlacementBeyondWhatTheRouterCanResolve(t *testing.T) {
+	// One hop past the router's reach. nextHopToward would name NO next system,
+	// so the hull would sit IN_TRANSIT forever holding probe-cap headroom while
+	// never arriving — strictly worse than not buying. The tick must continue.
+	ports, led, pur := chainPorts(MaxSeedFlightHops + 1)
+
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	if err != nil {
+		t.Fatalf("a placement beyond reach must not error the tick: %v", err)
+	}
+	if len(pur.buys) != 0 || rep.Bought != 0 {
+		t.Fatalf("bought %v for a placement the router cannot route to — that hull would strand", pur.buys)
+	}
+	target := fmt.Sprintf("X1-H%d-M1", MaxSeedFlightHops+1)
+	if got := slotAt(t, led, target, SlotKindMarket); got.State != SlotStateWanted {
+		t.Fatalf("target slot = %+v, want it left WANTED rather than claimed for an unroutable buy", got)
 	}
 }
