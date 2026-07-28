@@ -193,10 +193,12 @@ type ExpandLedger interface {
 	// reason as SetSeed: it lands mid-tour, while the screening sweep may be
 	// re-screening the very same row.
 	StampCatalogSynced(ctx context.Context, playerID int, system string) error
-	// DeleteSlot removes a placement row outright.
-	DeleteSlot(ctx context.Context, playerID int, waypoint string) error
+	// DeleteSlot removes ONE placement row outright: the one of the given kind.
+	// A waypoint can carry a MARKET row and a SPARE row at once, so releasing by
+	// waypoint alone would take a working placement down with the intended one.
+	DeleteSlot(ctx context.Context, playerID int, waypoint, kind string) error
 	// TransitionSlot advances one placement, guarded on its current state.
-	TransitionSlot(ctx context.Context, playerID int, waypoint, fromState, toState string, set SlotFields) error
+	TransitionSlot(ctx context.Context, playerID int, waypoint, kind, fromState, toState string, set SlotFields) error
 }
 
 // ExpandPorts is everything AdvanceExpansion needs from the outside world.
@@ -331,17 +333,33 @@ func AdvanceExpansion(
 
 // --- the ledger's working view ----------------------------------------------
 
+// slotKey addresses ONE placement row, and it mirrors the ledger's primary key
+// exactly (sp-dpfp8). A waypoint on its own stopped being an address the moment a
+// yard could be scanning as a MARKET placement and staging a seed as a SPARE at
+// the same time; keyed on the waypoint alone this book collapsed the two into
+// one entry and reported whichever row it read last.
+type slotKey struct {
+	waypoint string
+	kind     string
+}
+
 // slotBook is the tick's picture of the placement ledger, mutated as it writes.
 // Two seeds finishing in the same system must not claim the same placement, and
 // two seed requests must not land on the same yard, so every write is reflected
 // here immediately rather than being re-read.
 type slotBook struct {
-	// state holds every occupied waypoint's placement state. Occupancy is what
-	// keeps a write MEANINGFUL: placement rows are keyed on the waypoint, so a
-	// declaration aimed at a filled placement is a write with nothing to say.
+	// state holds every occupied (waypoint, KIND) placement's state. Occupancy is
+	// what keeps a write MEANINGFUL: a declaration aimed at a placement that is
+	// already there is a write with nothing to say.
 	// It is no longer what keeps a write SAFE — the ledger's per-column
 	// ownership (sp-wgjb7) is what prevents a declaration reassigning a hull.
-	state map[string]string
+	//
+	// KEYED ON THE PAIR, and that is the whole fix for the expansion freeze. A
+	// waypoint-keyed occupancy test answered "something is here" when the question
+	// the caller was actually asking is "is there a placement OF MY KIND here" —
+	// and for the seed-staging caller the answer to the second was always no while
+	// the answer to the first was always yes.
+	state map[slotKey]string
 	// wanted lists the unfilled placements in each system.
 	wanted map[string][]QueuedSlot
 	// spares lists every SPARE placement in any state — the seed SUPPLY. A spare
@@ -363,11 +381,11 @@ type slotBook struct {
 // ONE HULL TO ONE ERRAND across ticks — see the parkedSpares filter below.
 func newSlotBook(rows []QueuedSlot, onErrand map[string]bool) *slotBook {
 	b := &slotBook{
-		state:  make(map[string]string, len(rows)),
+		state:  make(map[slotKey]string, len(rows)),
 		wanted: make(map[string][]QueuedSlot),
 	}
 	for _, row := range rows {
-		b.state[row.Waypoint] = row.State
+		b.state[slotKey{row.Waypoint, row.Kind}] = row.State
 		if row.State == SlotStateWanted {
 			b.wanted[row.System] = append(b.wanted[row.System], row)
 		}
@@ -458,9 +476,18 @@ func (b *slotBook) takeSupplyFor(target string, neighbours map[string][]string) 
 	return false
 }
 
-// occupied reports whether a waypoint already carries a placement row.
-func (b *slotBook) occupied(waypoint string) bool {
-	_, held := b.state[waypoint]
+// occupied reports whether a waypoint already carries a placement row OF THIS
+// KIND.
+//
+// The kind is the whole question (sp-dpfp8). A probe-selling yard is very often
+// already a parked MARKET placement — that is what a yard worth buying at looks
+// like — and under a waypoint-only test that made it permanently ineligible to
+// stage a SPARE. The fleet's only two probe yards were both in exactly that
+// state, so requestSeeds found no free yard on any tick and expansion sat at two
+// charting seeds with no way to ever order a third. A scanning yard and a staging
+// yard are two different claims on the same waypoint, and they do not conflict.
+func (b *slotBook) occupied(waypoint, kind string) bool {
+	_, held := b.state[slotKey{waypoint, kind}]
 	return held
 }
 
@@ -494,11 +521,15 @@ func (b *slotBook) wantedAt(system, waypoint string) (QueuedSlot, bool) {
 }
 
 // take marks a placement as filled by this tick.
-func (b *slotBook) take(system, waypoint, state string) {
-	b.state[waypoint] = state
+//
+// The wanted list is pruned by WAYPOINT AND KIND for the same reason the state
+// map is keyed on both: two unfilled placements can share a waypoint, and filling
+// the market one does not fill the spare one.
+func (b *slotBook) take(system, waypoint, kind, state string) {
+	b.state[slotKey{waypoint, kind}] = state
 	remaining := b.wanted[system][:0]
 	for _, row := range b.wanted[system] {
-		if row.Waypoint != waypoint {
+		if row.Waypoint != waypoint || row.Kind != kind {
 			remaining = append(remaining, row)
 		}
 	}
@@ -507,8 +538,11 @@ func (b *slotBook) take(system, waypoint, state string) {
 
 // addSpare records a SPARE placement written by this tick. It joins the supply
 // pool so a second target in the same neighbourhood does not order another.
+//
+// It writes the SPARE half of the waypoint only: a MARKET placement standing at
+// the same yard is untouched, still occupied, and still scanning.
 func (b *slotBook) addSpare(system, waypoint, state string) {
-	b.state[waypoint] = state
+	b.state[slotKey{waypoint, SlotKindSpare}] = state
 	b.spares = append(b.spares, QueuedSlot{
 		Waypoint: waypoint, System: system, Kind: SlotKindSpare, State: state,
 	})
@@ -517,8 +551,12 @@ func (b *slotBook) addSpare(system, waypoint, state string) {
 // dropSpare records a SPARE placement this tick handed to a mission: the hull
 // belongs to the errand now, so the row is gone and the supply it represented is
 // spent.
+//
+// Only the SPARE half is dropped, mirroring the kind-scoped DeleteSlot this
+// shadows. Forgetting the whole waypoint here would let the tick's later writes
+// re-declare a MARKET placement that is still very much on the books.
 func (b *slotBook) dropSpare(waypoint string) {
-	delete(b.state, waypoint)
+	delete(b.state, slotKey{waypoint, SlotKindSpare})
 	for i, spare := range b.spares {
 		if spare.Waypoint == waypoint {
 			b.spares = append(b.spares[:i], b.spares[i+1:]...)
@@ -685,7 +723,14 @@ func claimSpares(
 		// branch of a tour ends in a placement row naming the hull again), and
 		// the alternative — leaving a stale spare row behind — would have the
 		// buy queue re-task a hull that has already left.
-		if err := p.Ledger.DeleteSlot(ctx, playerID, spare.Waypoint); err != nil {
+		//
+		// RELEASED BY KIND, not by waypoint (sp-dpfp8). The spare was very likely
+		// staged AT A YARD that is also a parked market — that co-location is the
+		// entire point of the wider key — and a waypoint-wide delete would take
+		// the MARKET row with it, dropping the probe scanning there out of the cap
+		// while it is still on station. This engine's under-count is deliberate
+		// and bounded; that one would be neither.
+		if err := p.Ledger.DeleteSlot(ctx, playerID, spare.Waypoint, spare.Kind); err != nil {
 			return fmt.Errorf(
 				"spare %s sent to chart %q but its placement %s was not released (hull now double-counted, probe cap reads high): %w",
 				spare.AssignedShip, target.System, spare.Waypoint, err)
@@ -805,7 +850,10 @@ func stagingYardFor(
 			yardsByOrigin[origin] = yards
 		}
 		for _, yard := range yards {
-			if !book.occupied(yard) {
+			// Asked of the SPARE half only. A yard that is also a parked market is
+			// a perfectly good place to stage a seed — it is, in fact, the normal
+			// case, since the yards worth buying at are the ones we already watch.
+			if !book.occupied(yard, SlotKindSpare) {
 				return yard, origin, nil
 			}
 		}
@@ -1039,7 +1087,7 @@ func recordSeedMarket(
 	book *slotBook,
 	rep *ExpandReport,
 ) error {
-	if book.occupied(waypoint) {
+	if book.occupied(waypoint, SlotKindMarket) {
 		return nil // already placed; the existing row holds the live state
 	}
 	goods, known, err := p.MarketGoods.GoodsAt(ctx, playerID, waypoint)
@@ -1068,7 +1116,7 @@ func recordSeedMarket(
 	}); err != nil {
 		return fmt.Errorf("failed to record the market a seed found at %q: %w", waypoint, err)
 	}
-	book.take(system, waypoint, SlotStateWanted)
+	book.take(system, waypoint, SlotKindMarket, SlotStateWanted)
 	rep.MarketsFound++
 	return nil
 }
@@ -1137,7 +1185,7 @@ func fillPlacement(
 		// on the waypoint: PARKED is recorded only on a CONFIRMED docked
 		// reading, and the placement machine is the only thing that takes it.
 		hull := s.SeedShip
-		err := p.Ledger.TransitionSlot(ctx, playerID, want.Waypoint, SlotStateWanted, SlotStateInTransit,
+		err := p.Ledger.TransitionSlot(ctx, playerID, want.Waypoint, want.Kind, SlotStateWanted, SlotStateInTransit,
 			SlotFields{AssignedShip: &hull})
 		switch {
 		case errors.Is(err, ErrSlotClaimed):
@@ -1148,7 +1196,7 @@ func fillPlacement(
 			// down as a spare — writing to the very ledger that just failed.
 			return false, fmt.Errorf("failed to hand seed %s to placement %s: %w", hull, want.Waypoint, err)
 		}
-		book.take(current, want.Waypoint, SlotStateInTransit)
+		book.take(current, want.Waypoint, want.Kind, SlotStateInTransit)
 		if err := p.Ledger.SetSeed(ctx, playerID, s.System, "", ""); err != nil {
 			return true, fmt.Errorf(
 				"seed %s filled placement %s but its errand on %q was not cleared: %w",
@@ -1296,8 +1344,15 @@ func standDownAsSpare(
 		}
 	}
 
-	if book.occupied(pos.Waypoint) {
-		logging.LoggerFromContext(ctx).Log("WARN", "charting seed finished on a waypoint that already holds a placement; standing it down without a slot", map[string]interface{}{
+	// Asked of the SPARE half only (sp-dpfp8). This branch strands a hull — it
+	// stands the seed down with NO placement row, so the probe cap stops counting
+	// a probe we own, which is the money-unsafe direction and is why it is logged
+	// rather than passed over. Under the old waypoint-wide test a seed finishing
+	// on any placement at all landed here, including the common case of a market
+	// it had just charted. Now only a genuine SPARE-on-SPARE collision does, and
+	// everything else parks properly and stays counted.
+	if book.occupied(pos.Waypoint, SlotKindSpare) {
+		logging.LoggerFromContext(ctx).Log("WARN", "charting seed finished on a waypoint that already holds a spare placement; standing it down without a slot", map[string]interface{}{
 			"action":      "parked_sensing_seed_standdown_blocked",
 			"ship_symbol": s.SeedShip,
 			"waypoint":    pos.Waypoint,

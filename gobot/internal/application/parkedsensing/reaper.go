@@ -61,7 +61,7 @@ type ReapLedger interface {
 	SlotsByState(ctx context.Context, playerID int, states ...string) ([]QueuedSlot, error)
 	// TransitionSlot advances one slot's state, guarded on it still being in
 	// fromState so a concurrent drain and this pass cannot both move one row.
-	TransitionSlot(ctx context.Context, playerID int, waypoint, fromState, toState string, set SlotFields) error
+	TransitionSlot(ctx context.Context, playerID int, waypoint, kind, fromState, toState string, set SlotFields) error
 }
 
 // ReapPorts is everything ReapStrandedClaims needs from the outside world.
@@ -143,7 +143,7 @@ func ReapStrandedClaims(ctx context.Context, p ReapPorts, playerID int, maxReaps
 			continue
 		}
 
-		err := p.Ledger.TransitionSlot(ctx, playerID, slot.Waypoint, SlotStateQueued, SlotStateWanted,
+		err := p.Ledger.TransitionSlot(ctx, playerID, slot.Waypoint, slot.Kind, SlotStateQueued, SlotStateWanted,
 			SlotFields{PurchaseYard: &cleared})
 		switch {
 		case errors.Is(err, ErrSlotClaimed):

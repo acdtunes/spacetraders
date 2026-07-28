@@ -297,7 +297,7 @@ func TestCutover_RunsOnlyOnce(t *testing.T) {
 
 	// Wipe the ledger, which is what a fresh era looks like from here.
 	world.ledger.systems = map[string]parkedsensing.ExpandSystem{}
-	world.ledger.slots = map[string]parkedsensing.QueuedSlot{}
+	world.ledger.slots = map[psSlotKey]parkedsensing.QueuedSlot{}
 	censusReadsBefore := world.depth.calls
 
 	require.NoError(t, world.handler.ReconcileOnce(world.ctx, world.cmd))

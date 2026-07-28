@@ -77,7 +77,13 @@ var sensingSystemUpdateColumns = []string{
 //	MarkScanned         what the market last showed  — last_scan_at, spread_ewma
 //	TransitionSlot      how far along the placement is — state, assigned_ship, purchase_yard
 //	UpsertSlotMetadata  what the screen measured      — whitelist_goods, depth_credits
-//	UpsertSpareSlot     which hull is standing here   — state, assigned_ship, slot_kind
+//	UpsertSpareSlot     which hull is standing here   — state, assigned_ship
+//
+// NOBODY owns slot_kind: it is part of the primary key (sp-dpfp8) and therefore
+// immutable. A row's kind is decided when it is inserted and can only change by
+// deleting the row, which is why every writer that names a waypoint now names a
+// kind alongside it — the pair is the address, and half an address addresses an
+// ambiguous set.
 //
 // This used to be ONE blanket list naming every column, which meant every writer
 // re-asserted the whole row from whatever it had loaded and the last commit won.
@@ -109,7 +115,7 @@ var sensingSlotMetadataUpdateColumns = []string{
 }
 
 // sensingSlotSpareUpdateColumns are what recording a HULL standing at a waypoint
-// refreshes on conflict: which hull, in what state, as what kind of slot.
+// refreshes on conflict: which hull, and in what state.
 //
 // It deliberately does NOT carry whitelist_goods or depth_credits. A hull-bearing
 // write measures nothing — the caller knows where a ship is standing, not what
@@ -118,8 +124,18 @@ var sensingSlotMetadataUpdateColumns = []string{
 // set entirely. era_id IS refreshed: the planning reads are era-scoped, so a row
 // left stamped with a dead era would carry a live hull that no planner can see
 // while CountOwnedProbes (era-agnostic) still counts it.
+//
+// slot_kind LEFT THIS SET when it joined the primary key (sp-dpfp8). It is no
+// longer assignable in any meaningful sense — a conflict only fires on a row
+// whose kind already equals the incoming one — and keeping it would advertise a
+// capability the key has removed. The capability it used to provide was
+// converting a MARKET placement into a SPARE in place, which is exactly the
+// silent eviction that took working market placements out of the scan rotation
+// (see the occupancy guard in probe_sensing_adoption.go). A kind change is now a
+// different ROW, which is the honest representation: the yard is still scanning
+// AND is now staging a seed.
 var sensingSlotSpareUpdateColumns = []string{
-	"system_symbol", "slot_kind", "state", "assigned_ship", "era_id", "updated_at",
+	"system_symbol", "state", "assigned_ship", "era_id", "updated_at",
 }
 
 // UpsertSystem writes a system's screening verdict, stamped with the open era.
@@ -255,20 +271,30 @@ func (r *SensingLedgerRepository) StampCatalogSynced(ctx context.Context, player
 	return nil
 }
 
-// DeleteSlot removes a placement row outright.
+// DeleteSlot removes ONE placement row outright: the one of the given KIND.
 //
 // It exists for ONE transition: a parked spare being handed to a charting
 // errand. The hull stops belonging to the ledger and starts belonging to the
 // mission, and leaving the row behind would have the buy queue re-task a hull
 // that has already flown away.
 //
+// THE KIND IS A MONEY GUARD, not a filter for tidiness (sp-dpfp8, RULINGS #4).
+// A waypoint may now carry a MARKET row and a SPARE row at once, and the caller
+// is releasing exactly one of them. Deleting by waypoint alone would take BOTH —
+// so claiming a spare staged at a yard would also delete the MARKET placement of
+// the probe parked there scanning. That probe is named by the row the delete just
+// destroyed, so it vanishes from CountOwnedProbes while still flying: the cap
+// under-reads and authorises buying a replacement for a hull we already own. That
+// is the precise failure the narrow key used to make impossible for free, and
+// naming the kind is what replaces it.
+//
 // A missing row is NOT an error — the delete is idempotent by design, because
 // its caller has already stamped the errand and cannot usefully unwind.
-func (r *SensingLedgerRepository) DeleteSlot(ctx context.Context, playerID int, waypoint string) error {
+func (r *SensingLedgerRepository) DeleteSlot(ctx context.Context, playerID int, waypoint, kind string) error {
 	if err := r.db.WithContext(ctx).
-		Where("player_id = ? AND waypoint_symbol = ?", playerID, waypoint).
+		Where("player_id = ? AND waypoint_symbol = ? AND slot_kind = ?", playerID, waypoint, kind).
 		Delete(&SensingSlotModel{}).Error; err != nil {
-		return fmt.Errorf("failed to delete sensing slot %q: %w", waypoint, err)
+		return fmt.Errorf("failed to delete sensing slot %q (%s): %w", waypoint, kind, err)
 	}
 	return nil
 }
@@ -297,8 +323,23 @@ func (r *SensingLedgerRepository) UpsertSpareSlot(ctx context.Context, m Sensing
 }
 
 // upsertSlot is the shared write behind the two variants above. Keyed on
-// (player_id, waypoint_symbol), so re-declaring a placement updates the row in
-// place — one slot per waypoint is a structural guarantee, not a convention.
+// (player_id, waypoint_symbol, slot_kind), so re-declaring a placement OF THE
+// SAME KIND updates the row in place — one slot per waypoint PER KIND is a
+// structural guarantee, not a convention.
+//
+// THE KEY AND THE CONFLICT SETS ARE ORTHOGONAL, which is what let the key widen
+// (sp-dpfp8) without disturbing the column-ownership split (sp-wgjb7). The key
+// decides WHICH ROW a write lands on; the conflict set decides WHICH COLUMNS it
+// may assert once it lands. Both callers share this one target and keep their own
+// disjoint set, so neither can reach a column the other owns.
+//
+// WHAT THE WIDER KEY CHANGES FOR CALLERS: a kind is now part of a row's identity
+// and therefore IMMUTABLE. UpsertSpareSlot used to be able to convert a MARKET
+// placement into a SPARE in place, through slot_kind in its conflict set; it now
+// INSERTS a separate SPARE row and leaves the MARKET row scanning. That is the
+// intended behaviour — a yard that is scanning can also be staging — and it is
+// strictly safer than the rewrite it replaces, which silently evicted a working
+// market placement from the scan rotation.
 //
 // It is unexported ON PURPOSE: the conflict set is the whole safety property
 // here, so there is no way to reach this table with a caller-chosen one.
@@ -307,7 +348,7 @@ func (r *SensingLedgerRepository) upsertSlot(ctx context.Context, m SensingSlotM
 	m.UpdatedAt = time.Now().UTC()
 	if err := r.db.WithContext(ctx).
 		Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "player_id"}, {Name: "waypoint_symbol"}},
+			Columns:   []clause.Column{{Name: "player_id"}, {Name: "waypoint_symbol"}, {Name: "slot_kind"}},
 			DoUpdates: clause.AssignmentColumns(onConflict),
 		}).
 		Create(&m).Error; err != nil {
@@ -383,21 +424,30 @@ func (r *SensingLedgerRepository) SlotsBySystem(ctx context.Context, playerID in
 // Both statements run in one transaction and BOTH carry the state guard, so a
 // concurrent transition committing between the load and the update still loses
 // the race (the UPDATE matches zero rows) rather than overwriting.
+// THE KIND IS PART OF THE ADDRESS (sp-dpfp8). A waypoint may now carry a MARKET
+// row and a SPARE row at once, and they are frequently in the SAME state — a yard
+// that is both a whitelisted market awaiting a probe and a staging post awaiting
+// a seed holds two WANTED rows. Matched on the waypoint and state alone, the load
+// would pick one of them arbitrarily while the UPDATE hit BOTH, so a single
+// WANTED→QUEUED claim would queue two placements off one purchase. Naming the
+// kind makes the pair addressable and keeps the optimistic guard honest: the
+// row this transition guards on is the row it writes.
 func (r *SensingLedgerRepository) TransitionSlot(
 	ctx context.Context,
 	playerID int,
-	waypoint, fromState, toState string,
+	waypoint, kind, fromState, toState string,
 	mutate func(*SensingSlotModel),
 ) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var m SensingSlotModel
-		err := tx.Where("player_id = ? AND waypoint_symbol = ? AND state = ?", playerID, waypoint, fromState).
+		err := tx.Where("player_id = ? AND waypoint_symbol = ? AND slot_kind = ? AND state = ?",
+			playerID, waypoint, kind, fromState).
 			First(&m).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return fmt.Errorf("slot %q: want state %q: %w", waypoint, fromState, ErrSlotStateConflict)
+			return fmt.Errorf("slot %q (%s): want state %q: %w", waypoint, kind, fromState, ErrSlotStateConflict)
 		}
 		if err != nil {
-			return fmt.Errorf("failed to load sensing slot %q for transition: %w", waypoint, err)
+			return fmt.Errorf("failed to load sensing slot %q (%s) for transition: %w", waypoint, kind, err)
 		}
 
 		// Snapshot the owned columns by VALUE before handing the row over. A
@@ -421,13 +471,14 @@ func (r *SensingLedgerRepository) TransitionSlot(
 		}
 
 		res := tx.Model(&SensingSlotModel{}).
-			Where("player_id = ? AND waypoint_symbol = ? AND state = ?", playerID, waypoint, fromState).
+			Where("player_id = ? AND waypoint_symbol = ? AND slot_kind = ? AND state = ?",
+				playerID, waypoint, kind, fromState).
 			Updates(updates)
 		if res.Error != nil {
-			return fmt.Errorf("failed to transition sensing slot %q from %q to %q: %w", waypoint, fromState, toState, res.Error)
+			return fmt.Errorf("failed to transition sensing slot %q (%s) from %q to %q: %w", waypoint, kind, fromState, toState, res.Error)
 		}
 		if res.RowsAffected == 0 {
-			return fmt.Errorf("slot %q: want state %q: %w", waypoint, fromState, ErrSlotStateConflict)
+			return fmt.Errorf("slot %q (%s): want state %q: %w", waypoint, kind, fromState, ErrSlotStateConflict)
 		}
 		return nil
 	})
@@ -519,19 +570,27 @@ func (r *SensingLedgerRepository) ResetVerdictsToPending(ctx context.Context, pl
 // the smoothed spread, and nothing else — the state machine and the slot's hull
 // assignment are untouched. A missing slot is an error, never an upsert: a
 // phantom row would later be read back as a real placement and dispatched to.
-func (r *SensingLedgerRepository) MarkScanned(ctx context.Context, playerID int, waypoint string, at time.Time, spreadEWMA float64) error {
+//
+// Scoped to the scanning row's KIND (sp-dpfp8). The scan is a fact about one
+// placement — the probe standing at that waypoint watching that market — and a
+// waypoint may now also carry a SPARE row for a seed staged there, which has
+// scanned nothing. Stamping by waypoint alone would mark both, backdating the
+// rotation's staleness ordering with a scan the spare never performed, and would
+// leave RowsAffected unable to answer the question this method asks it: whether
+// the slot being scanned still exists.
+func (r *SensingLedgerRepository) MarkScanned(ctx context.Context, playerID int, waypoint, kind string, at time.Time, spreadEWMA float64) error {
 	res := r.db.WithContext(ctx).Model(&SensingSlotModel{}).
-		Where("player_id = ? AND waypoint_symbol = ?", playerID, waypoint).
+		Where("player_id = ? AND waypoint_symbol = ? AND slot_kind = ?", playerID, waypoint, kind).
 		Updates(map[string]any{
 			"last_scan_at": at,
 			"spread_ewma":  spreadEWMA,
 			"updated_at":   time.Now().UTC(),
 		})
 	if res.Error != nil {
-		return fmt.Errorf("failed to mark sensing slot %q scanned: %w", waypoint, res.Error)
+		return fmt.Errorf("failed to mark sensing slot %q (%s) scanned: %w", waypoint, kind, res.Error)
 	}
 	if res.RowsAffected == 0 {
-		return fmt.Errorf("sensing slot %q for player %d: %w", waypoint, playerID, gorm.ErrRecordNotFound)
+		return fmt.Errorf("sensing slot %q (%s) for player %d: %w", waypoint, kind, playerID, gorm.ErrRecordNotFound)
 	}
 	return nil
 }

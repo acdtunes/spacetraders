@@ -89,7 +89,13 @@ type psLedger struct {
 	mu sync.Mutex
 
 	systems map[string]parkedsensing.ExpandSystem
-	slots   map[string]parkedsensing.QueuedSlot
+	// slots is keyed on (waypoint, KIND), mirroring the real table's primary key
+	// (sp-dpfp8). Keyed on the waypoint alone this fake could not hold a MARKET
+	// placement and a SPARE placement at the same yard — the state the whole
+	// widening exists to make representable — so any test about that co-location
+	// would have been unfalsifiable against it, passing whether the code handled
+	// the case or silently collapsed the two rows.
+	slots map[psSlotKey]parkedsensing.QueuedSlot
 	// goods and depth ride alongside the slot rows, which QueuedSlot does not
 	// carry — the real adapter reads them from the same row.
 	goods map[string][]string
@@ -149,7 +155,7 @@ func (f *psLedger) indexOf(event string) int {
 func newPSLedger() *psLedger {
 	return &psLedger{
 		systems: map[string]parkedsensing.ExpandSystem{},
-		slots:   map[string]parkedsensing.QueuedSlot{},
+		slots:   map[psSlotKey]parkedsensing.QueuedSlot{},
 		goods:   map[string][]string{},
 		views:   map[string]parkedsensing.SensingSlotView{},
 	}
@@ -185,14 +191,15 @@ func (f *psLedger) UpsertSlotMetadata(_ context.Context, _ int, slot parkedsensi
 		return f.upsertErr
 	}
 	f.upserted = append(f.upserted, slot)
-	if existing, held := f.slots[slot.Waypoint]; held {
+	key := psSlotKey{slot.Waypoint, slot.Kind}
+	if existing, held := f.slots[key]; held {
 		existing.System = slot.System
 		existing.DepthCredits = slot.DepthCredits
-		f.slots[slot.Waypoint] = existing
+		f.slots[key] = existing
 		f.goods[slot.Waypoint] = slot.WhitelistGoods
 		return nil
 	}
-	f.slots[slot.Waypoint] = parkedsensing.QueuedSlot{
+	f.slots[key] = parkedsensing.QueuedSlot{
 		Waypoint:     slot.Waypoint,
 		System:       slot.System,
 		Kind:         slot.Kind,
@@ -216,15 +223,19 @@ func (f *psLedger) UpsertSpareSlot(_ context.Context, _ int, slot parkedsensing.
 		return f.upsertErr
 	}
 	f.upserted = append(f.upserted, slot)
-	if existing, held := f.slots[slot.Waypoint]; held {
+	// A conflict can only fire on a row of the SAME KIND now, so this no longer
+	// rewrites slot_kind — matching the real conflict set, which dropped that
+	// column when it joined the key (sp-dpfp8). A spare write at a waypoint that
+	// holds a MARKET placement INSERTS beside it rather than converting it.
+	key := psSlotKey{slot.Waypoint, slot.Kind}
+	if existing, held := f.slots[key]; held {
 		existing.System = slot.System
-		existing.Kind = slot.Kind
 		existing.State = slot.State
 		existing.AssignedShip = slot.AssignedShip
-		f.slots[slot.Waypoint] = existing
+		f.slots[key] = existing
 		return nil
 	}
-	f.slots[slot.Waypoint] = parkedsensing.QueuedSlot{
+	f.slots[key] = parkedsensing.QueuedSlot{
 		Waypoint:     slot.Waypoint,
 		System:       slot.System,
 		Kind:         slot.Kind,
@@ -321,7 +332,7 @@ func (f *psLedger) CountOwnedProbes(_ context.Context, _ int) (int64, error) {
 	return owned, nil
 }
 
-func (f *psLedger) TransitionSlot(_ context.Context, _ int, waypoint, fromState, toState string, set parkedsensing.SlotFields) error {
+func (f *psLedger) TransitionSlot(_ context.Context, _ int, waypoint, kind, fromState, toState string, set parkedsensing.SlotFields) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -329,7 +340,8 @@ func (f *psLedger) TransitionSlot(_ context.Context, _ int, waypoint, fromState,
 	if err := f.transitionErr[waypoint]; err != nil {
 		return err
 	}
-	slot, ok := f.slots[waypoint]
+	key := psSlotKey{waypoint, kind}
+	slot, ok := f.slots[key]
 	if !ok || slot.State != fromState {
 		return parkedsensing.ErrSlotClaimed
 	}
@@ -340,11 +352,11 @@ func (f *psLedger) TransitionSlot(_ context.Context, _ int, waypoint, fromState,
 	if set.PurchaseYard != nil {
 		slot.PurchaseYard = *set.PurchaseYard
 	}
-	f.slots[waypoint] = slot
+	f.slots[key] = slot
 	return nil
 }
 
-func (f *psLedger) MarkScanned(_ context.Context, _ int, waypoint string, at time.Time, spreadEWMA float64) error {
+func (f *psLedger) MarkScanned(_ context.Context, _ int, waypoint, _ string, at time.Time, spreadEWMA float64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -384,11 +396,15 @@ func (f *psLedger) StampCatalogSynced(_ context.Context, _ int, system string) e
 	return nil
 }
 
-func (f *psLedger) DeleteSlot(_ context.Context, _ int, waypoint string) error {
+func (f *psLedger) DeleteSlot(_ context.Context, _ int, waypoint, kind string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	delete(f.slots, waypoint)
+	// Only the row of this kind, as the real DELETE is. A waypoint-wide delete
+	// here would let a caller that forgot the kind pass, while in production it
+	// would take a co-located MARKET placement down with the spare and drop a paid
+	// hull out of the probe cap.
+	delete(f.slots, psSlotKey{waypoint, kind})
 	return nil
 }
 
@@ -949,17 +965,45 @@ func containsSystem(values []string, want string) bool {
 	return false
 }
 
-func sortedSlots(m map[string]parkedsensing.QueuedSlot) []parkedsensing.QueuedSlot {
+func sortedSlots(m map[psSlotKey]parkedsensing.QueuedSlot) []parkedsensing.QueuedSlot {
 	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
+	index := make(map[string]parkedsensing.QueuedSlot, len(m))
+	for k, v := range m {
+		// Waypoint THEN kind, so a yard carrying both a market and a spare orders
+		// deterministically instead of by map iteration.
+		ordinal := k.waypoint + "\x00" + k.kind
+		keys = append(keys, ordinal)
+		index[ordinal] = v
 	}
 	sortStrings(keys)
 	out := make([]parkedsensing.QueuedSlot, 0, len(keys))
 	for _, k := range keys {
-		out = append(out, m[k])
+		out = append(out, index[k])
 	}
 	return out
+}
+
+// psSlotKey mirrors the sensing_slots primary key (sp-dpfp8): one placement per
+// waypoint PER KIND.
+type psSlotKey struct {
+	waypoint string
+	kind     string
+}
+
+// putSlot seeds a placement, keyed the way the real table keys it. Tests use this
+// rather than assigning into the map so that a fixture naming two kinds at one
+// waypoint produces two rows, exactly as production would.
+func (f *psLedger) putSlot(slot parkedsensing.QueuedSlot) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.slots[psSlotKey{slot.Waypoint, slot.Kind}] = slot
+}
+
+// slotAt reads back one placement.
+func (f *psLedger) slotAt(waypoint, kind string) parkedsensing.QueuedSlot {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.slots[psSlotKey{waypoint, kind}]
 }
 
 func sortedSystems(m map[string]parkedsensing.ExpandSystem) []parkedsensing.ExpandSystem {

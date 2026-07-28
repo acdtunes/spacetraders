@@ -84,13 +84,15 @@ func (f *fakeBuyLedger) CountOwnedProbes(_ context.Context, _ int) (int64, error
 // TransitionSlot keys its injected failures on the EDGE (waypoint→toState), not
 // the waypoint, so a test can break the claim and the record independently —
 // they sit on opposite sides of the purchase and fail in opposite directions.
-func (f *fakeBuyLedger) TransitionSlot(_ context.Context, _ int, waypoint, from, to string, set SlotFields) error {
+func (f *fakeBuyLedger) TransitionSlot(_ context.Context, _ int, waypoint, kind, from, to string, set SlotFields) error {
 	f.transitions = append(f.transitions, transitionCall{waypoint, from, to, set.AssignedShip, set.PurchaseYard})
 	if err := f.transitionErr[waypoint+"→"+to]; err != nil {
 		return err
 	}
 	for i := range f.slots {
-		if f.slots[i].Waypoint != waypoint {
+		// Matched on the KIND too, as the real ledger is (sp-dpfp8): a waypoint can
+		// carry a MARKET and a SPARE row, and they are often in the same state.
+		if f.slots[i].Waypoint != waypoint || f.slots[i].Kind != kind {
 			continue
 		}
 		if f.slots[i].State != from {

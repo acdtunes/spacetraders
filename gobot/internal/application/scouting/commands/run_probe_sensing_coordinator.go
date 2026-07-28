@@ -1298,28 +1298,32 @@ func (h *RunProbeSensingCoordinatorHandler) adoptOrphanProbes(ctx context.Contex
 		if location == nil || location.Symbol == "" {
 			continue // a hull we cannot place is a hull we must not record
 		}
-		// THE OCCUPANCY GUARD (sp-0gp21). sensing_slots is keyed on (player,
-		// waypoint) and UpsertSpareSlot's conflict set carries assigned_ship, so a
-		// write at a waypoint that already holds a row does not fail — it silently
-		// re-points that row at this hull. The hull it displaced then holds the
-		// sensing tag with NO row anywhere, which is UNRECOVERABLE: every adoption
-		// filter skips sensing_parked-tagged hulls, the spare re-task and the seed
-		// claim both read FROM the ledger, and DockedProbeAt will use such a hull
-		// as a purchasing buyer but never writes a row naming it. It is invisible
-		// to CountOwnedProbes for good, so the cap under-reads and buys a
-		// replacement for a probe we own (RULINGS #4) — with no error and a
-		// healthy heartbeat. Two co-located idle probes at the home shipyard is
-		// all it takes, on the one irreversible tick this pass ever runs.
+		// THE OCCUPANCY GUARD (sp-0gp21). UpsertSpareSlot's conflict set carries
+		// assigned_ship, so a write at a waypoint that already holds a SPARE row
+		// does not fail — it silently re-points that row at this hull. The hull it
+		// displaced then holds the sensing tag with NO row anywhere, which is
+		// UNRECOVERABLE: every adoption filter skips sensing_parked-tagged hulls,
+		// the spare re-task and the seed claim both read FROM the ledger, and
+		// DockedProbeAt will use such a hull as a purchasing buyer but never writes
+		// a row naming it. It is invisible to CountOwnedProbes for good, so the cap
+		// under-reads and buys a replacement for a probe we own (RULINGS #4) — with
+		// no error and a healthy heartbeat. Two co-located idle probes at the home
+		// shipyard is all it takes, on the one irreversible tick this pass ever
+		// runs.
 		//
 		// Skipping is the right answer: the displaced hull would be lost, while a
 		// skipped one stays untagged, unrecorded and therefore still recoverable.
+		//
+		// STILL KIND-BLIND after the key widened (sp-dpfp8), and deliberately: this
+		// is the ONE irreversible tick, so it keeps the widest guard available and
+		// leaves every judgement call to the passes that retry. See occupiedAt.
 		//
 		// sp-0eufi softened one clause above: adoption's filter is now an ALLOWLIST that INCLUDES
 		// sensing_parked, so a tagged-but-unrecorded hull is no longer unrecoverable — the standing
 		// pass picks it up. The displacement is still not worth risking here, and this remains a
 		// plain skip: this is the ONE irreversible tick, while the standing pass retries every tick
 		// and, unlike this path, knows how to fill a hull-less placement in place.
-		if _, occupied := holds.rows[location.Symbol]; occupied {
+		if holds.occupiedAt(location.Symbol) {
 			continue
 		}
 
@@ -1342,15 +1346,17 @@ func (h *RunProbeSensingCoordinatorHandler) adoptOrphanProbes(ctx context.Contex
 			*failures = append(*failures, fmt.Errorf("failed to adopt probe %s as a spare: %w", ship.ShipSymbol(), uerr))
 			continue
 		}
-		// The waypoint holds a row now, so a later co-located hull in this same
-		// sweep is skipped rather than overwriting what was just written.
-		holds.rows[location.Symbol] = parkedsensing.QueuedSlot{
+		// The waypoint holds a SPARE row now, so a later co-located hull in this
+		// same sweep is skipped rather than overwriting what was just written.
+		// APPENDED, not assigned: any MARKET placement already indexed here is
+		// still on the books and must stay visible to the rest of the sweep.
+		holds.rows[location.Symbol] = append(holds.rows[location.Symbol], parkedsensing.QueuedSlot{
 			Waypoint:     location.Symbol,
 			System:       location.SystemSymbol,
 			Kind:         parkedsensing.SlotKindSpare,
 			State:        parkedsensing.SlotStateParked,
 			AssignedShip: ship.ShipSymbol(),
-		}
+		})
 
 		// The tag write is BEST-EFFORT, and deliberately not a failure of the
 		// cutover. It is the one write here that is not money-load-bearing: the

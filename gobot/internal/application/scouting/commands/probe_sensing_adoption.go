@@ -173,63 +173,30 @@ func (h *RunProbeSensingCoordinatorHandler) adoptStrandedProbes(
 			// entire point of it existing.
 			continue
 		}
-		// THE OCCUPANCY GUARD, and it is a money guard. sensing_slots is keyed on
-		// the WAYPOINT, and UpsertSpareSlot's conflict set carries slot_kind,
-		// state AND assigned_ship — so a second write here does not fail, it
-		// silently REWRITES the row that is already there. Three ways that bites,
-		// all with every call succeeding and the heartbeat reporting success:
+		// A HULL-LESS *WANTED* PLACEMENT THE ORPHAN IS STANDING ON IS NOT A CONFLICT — IT IS
+		// THE ANSWER. The screen declared "a probe should stand here"; a probe is standing
+		// here. Filling the row in place is strictly better than adding a second one, and it is
+		// what takes this pass from absorbing one live hull to absorbing the ones that matter:
+		// seven idle probes sit on X1-KP23-A2, the yard that sold them, and that waypoint
+		// already carried a hull-less WANTED/MARKET row. Under the old plain occupancy skip
+		// every one of them stayed invisible to the probe cap while the drain tried to buy
+		// another.
 		//
-		//   - Two orphans standing at one waypoint: the second overwrites the
-		//     first, leaving the first tagged with NO row. It then fails the
-		//     scout-tag filter above on every later tick — invisible to
-		//     CountOwnedProbes forever, and re-bought (RULINGS #4).
-		//   - An orphan standing on a FILLED placement: the incumbent probe is
-		//     evicted from its own row, dropping out of the cap, and the row's
-		//     kind/state become SPARE/PARKED so a working market placement quietly
-		//     leaves the scan rotation.
-		//   - An orphan standing on an UNFILLED placement (WANTED, or QUEUED):
-		//     same rewrite, same rotation loss, and a QUEUED row additionally
-		//     loses the claim its later TransitionSlot(QUEUED→BOUGHT) is guarded
-		//     on, which then fails with ErrSlotClaimed.
+		// It goes through the GUARDED transition rather than an upsert: kind is never touched,
+		// so a MARKET row stays MARKET and keeps scanning, and the write is conditional on the
+		// row still being WANTED, so a racing writer cannot be overwritten.
 		//
-		// That third case is why this index is keyed on ROW EXISTENCE and not on
-		// hull presence: a hull-less row is still a row, and the conflict set does
-		// not care that it names no ship. The hull index above answers a different
-		// question — "is this HULL already recorded?" — and neither substitutes
-		// for the other.
-		//
-		// A hull skipped here is not lost: it stays untagged and unrecorded, which
-		// is the recoverable state, and it is reconsidered on every later tick.
-		// See the residual note on ledgerHolds for what it costs meanwhile.
-		if row, occupied := holds.rows[location.Symbol]; occupied {
-			// A HULL-LESS *WANTED* PLACEMENT THE ORPHAN IS STANDING ON IS NOT A CONFLICT — IT IS
-			// THE ANSWER. The screen declared "a probe should stand here"; a probe is standing
-			// here. Filling the row in place is strictly better than skipping it, and it is what
-			// takes this pass from absorbing one live hull to absorbing the ones that matter:
-			// seven idle probes sit on X1-KP23-A2, the yard that sold them, and that waypoint
-			// already carried a hull-less WANTED/MARKET row. Under the plain occupancy skip every
-			// one of them stayed invisible to the probe cap while the drain tried to buy another.
-			//
-			// This is NOT the destructive rewrite the occupancy guard exists to prevent, and the
-			// difference is exact: UpsertSpareSlot rewrites slot_kind and state through a conflict
-			// set, which is how a MARKET placement silently became a SPARE and left the scan
-			// rotation. This goes through the GUARDED transition instead — kind is never touched,
-			// so a MARKET row stays MARKET and keeps scanning, and the write is conditional on the
-			// row still being WANTED, so a racing writer cannot be overwritten.
-			//
-			// Refused in every other shape:
-			//   - AssignedShip != "": the row names an incumbent. Evicting it would drop a working
-			//     probe out of the cap and hand its placement away.
-			//   - QUEUED: the drain has claimed it for purchase, and its later
-			//     TransitionSlot(QUEUED->BOUGHT) is guarded on that state — filling it here breaks
-			//     a claim that money is already riding on.
-			//   - anything else (BOUGHT / IN_TRANSIT / PARKED): already somebody's.
-			if row.State != parkedsensing.SlotStateWanted || row.AssignedShip != "" {
-				continue
-			}
+		// Refused in every other shape, by fillableAt declining to return them:
+		//   - AssignedShip != "": the row names an incumbent. Evicting it would drop a working
+		//     probe out of the cap and hand its placement away.
+		//   - QUEUED: the drain has claimed it for purchase, and its later
+		//     TransitionSlot(QUEUED->BOUGHT) is guarded on that state — filling it here breaks
+		//     a claim that money is already riding on.
+		//   - anything else (BOUGHT / IN_TRANSIT / PARKED): already somebody's.
+		if row, fillable := holds.fillableAt(location.Symbol); fillable {
 			hull := ship.ShipSymbol()
 			writes++ // counted before the write, as below: a failed write costs the database the same
-			terr := ports.Ledger.TransitionSlot(ctx, playerID, location.Symbol,
+			terr := ports.Ledger.TransitionSlot(ctx, playerID, location.Symbol, row.Kind,
 				parkedsensing.SlotStateWanted, parkedsensing.SlotStateParked,
 				parkedsensing.SlotFields{AssignedShip: &hull})
 			switch {
@@ -254,6 +221,29 @@ func (h *RunProbeSensingCoordinatorHandler) adoptStrandedProbes(
 			}
 			holds.hulls[hull] = true
 			adopted++
+			continue
+		}
+
+		// THE OCCUPANCY GUARD, and it is a money guard. UpsertSpareSlot's conflict
+		// set carries state and assigned_ship, so a second SPARE write at a
+		// waypoint that already holds one does not fail — it silently REWRITES it,
+		// leaving the hull that row named tagged but recorded nowhere. It then
+		// fails the scout-tag filter above on every later tick: invisible to
+		// CountOwnedProbes forever, and re-bought (RULINGS #4).
+		//
+		// Keyed on ROW EXISTENCE rather than hull presence: a hull-less WANTED or
+		// QUEUED row is still a row, and a QUEUED one additionally carries a claim
+		// its later TransitionSlot(QUEUED→BOUGHT) is guarded on. The hull index
+		// above answers a different question — "is this HULL already recorded?" —
+		// and neither substitutes for the other.
+		//
+		// Still KIND-BLIND after the key widened; see occupiedAt for why that is a
+		// deliberate choice about which pass gets the hull rather than a leftover.
+		//
+		// A hull skipped here is not lost: it stays untagged and unrecorded, which
+		// is the recoverable state, and the orphan-dispatch pass below sends it to
+		// an open placement elsewhere in reach.
+		if holds.occupiedAt(location.Symbol) {
 			continue
 		}
 
@@ -293,18 +283,17 @@ func (h *RunProbeSensingCoordinatorHandler) adoptStrandedProbes(
 				"ship_symbol": ship.ShipSymbol(),
 			})
 		}
-		// The waypoint holds a row now, so a later candidate standing on it is
-		// skipped rather than overwriting what this tick just wrote. Recorded as the row this tick
-		// actually wrote — a PARKED spare naming this hull — so a second orphan at the same
-		// waypoint sees a filled row and is refused by the same test that refuses an incumbent,
-		// rather than by a bare "occupied" flag that cannot say why.
-		holds.rows[location.Symbol] = parkedsensing.QueuedSlot{
+		// The waypoint holds a SPARE row now, so a later candidate standing on it is
+		// skipped rather than overwriting what this tick just wrote. APPENDED rather than
+		// assigned: the waypoint may already carry a MARKET placement, and dropping that from
+		// the index would let this same tick treat the yard as unplaced.
+		holds.rows[location.Symbol] = append(holds.rows[location.Symbol], parkedsensing.QueuedSlot{
 			Waypoint:     location.Symbol,
 			System:       location.SystemSymbol,
 			Kind:         parkedsensing.SlotKindSpare,
 			State:        parkedsensing.SlotStateParked,
 			AssignedShip: ship.ShipSymbol(),
-		}
+		})
 		holds.hulls[ship.ShipSymbol()] = true
 		adopted++
 	}
@@ -335,31 +324,23 @@ func (h *RunProbeSensingCoordinatorHandler) adoptStrandedProbes(
 // hull-keyed index, yet overwriting it is just as destructive.
 //
 // THE RESIDUAL THIS LEAVES, stated because it is structural rather than a bug to
-// be found later. sensing_slots holds ONE row per (player, waypoint), so a hull
-// standing where a row already exists can never be recorded while that row does.
-// Skipping is the right behaviour — the alternative is the destructive rewrite
-// above — but the probe cap under-reads by one for as long as it lasts, and that
-// is the money-UNSAFE direction (an under-count authorises a re-buy). How long it
-// lasts depends on what is in the way, and neither case resolves on its own:
+// be found later. A hull standing where a row already exists is never recorded
+// HERE while that row does. Skipping is the right behaviour — the alternative is
+// a destructive rewrite — but the probe cap under-reads by one for as long as it
+// lasts, and that is the money-UNSAFE direction (an under-count authorises a
+// re-buy).
 //
-//   - Blocked by ANOTHER ORPHAN'S row (two hulls at one waypoint): the waypoint
-//     frees when that first hull is put to work — re-tasked by the buy queue's
-//     spare reuse, or claimed as a charting seed. An orphan is driven by nobody,
-//     so it does not wander off by itself; something else has to consume it.
-//   - Blocked by a PLACEMENT row (WANTED or QUEUED, hull-less): there is no
-//     "first hull" to put to work at all, and it gets WORSE rather than better —
-//     when the drain eventually fills that placement the row becomes
-//     BOUGHT/IN_TRANSIT/PARKED and STAYS, so the waypoint is occupied
-//     indefinitely and the orphan is skipped, and uncounted, indefinitely.
+// What closes it is the ORPHAN-DISPATCH pass, not this one: it takes exactly the
+// hulls this guard declines and sends them to open placements elsewhere in reach,
+// which both records them and puts them to work. That division of labour is why
+// the guard below stays kind-blind even though the wider key (sp-dpfp8) would now
+// permit a narrower one — see occupiedAt.
 //
-// Nothing else picks the hull up meanwhile: it keeps the `scout` tag, and the buy
-// queue's buyerAt path reads DockedProbeAt, which selects only hulls whose
-// dedicated_fleet is empty or already sensing_parked. So a scout-tagged orphan is
-// invisible there too.
-//
-// Closing this needs DIFFERENT ACCOUNTING, not a wider write here: a row-counting
-// cap cannot represent two hulls on one waypoint at any width. Tracked as
-// sp-dpfp8.
+// sp-dpfp8 DID change what a skip costs at a shared waypoint, in the safe
+// direction. The old key meant a hull-less MARKET row and a staged SPARE want
+// could not coexist, so the expansion engine could never stage a seed at a yard
+// it was already watching; that is fixed in the ledger and the expansion engine,
+// and this pass simply keeps its hands off.
 //
 // ONE INVARIANT NOW HELD BY CONVENTION RATHER THAN CONSTRUCTION: `hulls` used to
 // align with CountOwnedProbes structurally, both reading the same three
@@ -370,12 +351,54 @@ func (h *RunProbeSensingCoordinatorHandler) adoptStrandedProbes(
 // money-unsafe direction. No writer produces that combination today.
 type ledgerHolds struct {
 	hulls map[string]bool
-	// rows is the occupancy index, and it carries the ROW rather than a bare bool: presence still
-	// answers "does this WAYPOINT hold a row at all?", but the pass now also has to ask WHICH row,
-	// because a hull-less WANTED placement the orphan is standing on is filled in place while every
-	// other occupied shape is skipped. A bool cannot distinguish "somebody's placement" from "a
-	// placement asking for exactly this hull".
-	rows map[string]parkedsensing.QueuedSlot
+	// rows indexes every placement at a waypoint, as a SLICE, because a waypoint
+	// can now hold more than one (sp-dpfp8). It carried a single row when the key
+	// guaranteed there was only ever one; keeping that shape here would have let
+	// two rows collapse into whichever the query happened to return last, and the
+	// two questions this pass asks would then have been answered about an
+	// arbitrary one of them.
+	rows map[string][]parkedsensing.QueuedSlot
+}
+
+// fillableAt returns a hull-less WANTED placement the orphan standing at this
+// waypoint could fill in place, if there is one.
+//
+// Non-SPARE placements are preferred, and the preference is deterministic rather
+// than incidental: a MARKET placement is a scan post the screen actually asked
+// for, while a SPARE is a staging intent the expansion engine re-requests freely.
+// Filling either is money-safe — both are hull-less, so no incumbent is displaced
+// — but filling the market one puts the hull to work.
+func (h ledgerHolds) fillableAt(waypoint string) (parkedsensing.QueuedSlot, bool) {
+	var fallback parkedsensing.QueuedSlot
+	found := false
+	for _, row := range h.rows[waypoint] {
+		if row.State != parkedsensing.SlotStateWanted || row.AssignedShip != "" {
+			continue
+		}
+		if row.Kind != parkedsensing.SlotKindSpare {
+			return row, true
+		}
+		if !found {
+			fallback, found = row, true
+		}
+	}
+	return fallback, found
+}
+
+// occupiedAt reports whether the waypoint carries ANY placement row.
+//
+// DELIBERATELY KIND-BLIND, even though the wider key (sp-dpfp8) means a spare
+// adoption could now only ever conflict with a SPARE row. Narrowing it to SPARE
+// would be safe against the LEDGER but wrong for the FLEET: the orphan-dispatch
+// pass exists specifically to put these stacked hulls to work at open placements
+// elsewhere, and it runs after this one. An orphan absorbed here as a spare where
+// it stands is an orphan that pass never sees, so narrowing this guard would
+// quietly convert "fly the idle probe to a market that wants one" into "park it
+// where it already is". Leaving the guard wide keeps that division of labour
+// exactly as it was; the hull is not lost, it is picked up a few lines later by
+// the pass built for it.
+func (h ledgerHolds) occupiedAt(waypoint string) bool {
+	return len(h.rows[waypoint]) > 0
 }
 
 // ledgerHoldings builds both indexes from the single query the pass makes.
@@ -393,10 +416,10 @@ func ledgerHoldings(ctx context.Context, ports SensingEnginePorts, playerID int)
 	}
 	held := ledgerHolds{
 		hulls: make(map[string]bool, len(slots)),
-		rows:  make(map[string]parkedsensing.QueuedSlot, len(slots)),
+		rows:  make(map[string][]parkedsensing.QueuedSlot, len(slots)),
 	}
 	for _, slot := range slots {
-		held.rows[slot.Waypoint] = slot
+		held.rows[slot.Waypoint] = append(held.rows[slot.Waypoint], slot)
 		if slot.AssignedShip != "" {
 			held.hulls[slot.AssignedShip] = true
 		}

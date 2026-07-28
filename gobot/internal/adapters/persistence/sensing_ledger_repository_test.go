@@ -139,7 +139,7 @@ func TestSensingLedger_TransitionSlot_SecondStaleTransitionConflicts(t *testing.
 
 	require.NoError(t, repo.UpsertSlotMetadata(ctx, slot("X1-AA-M1", "WANTED")))
 
-	err := repo.TransitionSlot(ctx, 1, "X1-AA-M1", "WANTED", "QUEUED", func(m *persistence.SensingSlotModel) {
+	err := repo.TransitionSlot(ctx, 1, "X1-AA-M1", "MARKET", "WANTED", "QUEUED", func(m *persistence.SensingSlotModel) {
 		m.PurchaseYard = strptr("X1-AA-Y1")
 	})
 	require.NoError(t, err)
@@ -153,7 +153,7 @@ func TestSensingLedger_TransitionSlot_SecondStaleTransitionConflicts(t *testing.
 	require.Equal(t, "X1-AA-Y1", *queued[0].PurchaseYard)
 
 	// Second writer, stale fromState.
-	err = repo.TransitionSlot(ctx, 1, "X1-AA-M1", "WANTED", "QUEUED", func(m *persistence.SensingSlotModel) {
+	err = repo.TransitionSlot(ctx, 1, "X1-AA-M1", "MARKET", "WANTED", "QUEUED", func(m *persistence.SensingSlotModel) {
 		m.PurchaseYard = strptr("X1-AA-Y2")
 	})
 	require.ErrorIs(t, err, persistence.ErrSlotStateConflict)
@@ -172,7 +172,7 @@ func TestSensingLedger_TransitionSlot_MissingRowConflicts(t *testing.T) {
 	repo := persistence.NewSensingLedgerRepository(db)
 	ctx := context.Background()
 
-	err := repo.TransitionSlot(ctx, 1, "X1-AA-GHOST", "WANTED", "QUEUED", nil)
+	err := repo.TransitionSlot(ctx, 1, "X1-AA-GHOST", "MARKET", "WANTED", "QUEUED", nil)
 	require.ErrorIs(t, err, persistence.ErrSlotStateConflict)
 
 	var count int64
@@ -188,7 +188,7 @@ func TestSensingLedger_TransitionSlot_IsolatedPerPlayer(t *testing.T) {
 
 	require.NoError(t, repo.UpsertSlotMetadata(ctx, slot("X1-AA-M1", "WANTED")))
 
-	err := repo.TransitionSlot(ctx, 2, "X1-AA-M1", "WANTED", "QUEUED", nil)
+	err := repo.TransitionSlot(ctx, 2, "X1-AA-M1", "MARKET", "WANTED", "QUEUED", nil)
 	require.ErrorIs(t, err, persistence.ErrSlotStateConflict)
 
 	still, err := repo.SlotsByState(ctx, 1, "WANTED")
@@ -255,7 +255,7 @@ func TestSensingLedger_MarkScanned_UpdatesOnlyScanFields(t *testing.T) {
 	require.NoError(t, repo.UpsertSpareSlot(ctx, parked))
 
 	at := time.Date(2026, 7, 26, 10, 0, 0, 0, time.UTC)
-	require.NoError(t, repo.MarkScanned(ctx, 1, "X1-AA-M1", at, 42.5))
+	require.NoError(t, repo.MarkScanned(ctx, 1, "X1-AA-M1", "MARKET", at, 42.5))
 
 	found, err := repo.SlotsByState(ctx, 1, "PARKED")
 	require.NoError(t, err)
@@ -274,7 +274,7 @@ func TestSensingLedger_MarkScanned_MissingRowErrsWithoutUpsert(t *testing.T) {
 	repo := persistence.NewSensingLedgerRepository(db)
 	ctx := context.Background()
 
-	err := repo.MarkScanned(ctx, 1, "X1-AA-GHOST", time.Now().UTC(), 1.0)
+	err := repo.MarkScanned(ctx, 1, "X1-AA-GHOST", "MARKET", time.Now().UTC(), 1.0)
 	require.Error(t, err)
 	require.True(t, errors.Is(err, gorm.ErrRecordNotFound), "want a wrapped gorm.ErrRecordNotFound, got %v", err)
 

@@ -213,7 +213,7 @@ type BuyLedger interface {
 	CountOwnedProbes(ctx context.Context, playerID int) (int64, error)
 	// TransitionSlot advances one slot's state, guarded on it still being in
 	// fromState so two writers racing the same slot cannot both proceed.
-	TransitionSlot(ctx context.Context, playerID int, waypoint, fromState, toState string, set SlotFields) error
+	TransitionSlot(ctx context.Context, playerID int, waypoint, kind, fromState, toState string, set SlotFields) error
 }
 
 // BuyPorts is everything DrainBuyQueue needs from the outside world.
@@ -802,7 +802,7 @@ func reuseSpareHull(ctx context.Context, p BuyPorts, playerID int, target Queued
 		// machine's dispatchClaim branch is what notices that and flies it. That
 		// branch is load-bearing for this path, not an edge case: without it the
 		// hull stands where it is forever while the slot reads as in-flight.
-		err := p.Ledger.TransitionSlot(ctx, playerID, target.Waypoint, target.State, SlotStateInTransit,
+		err := p.Ledger.TransitionSlot(ctx, playerID, target.Waypoint, target.Kind, target.State, SlotStateInTransit,
 			SlotFields{AssignedShip: &hull})
 		switch {
 		case errors.Is(err, ErrSlotClaimed):
@@ -818,7 +818,7 @@ func reuseSpareHull(ctx context.Context, p BuyPorts, playerID int, target Queued
 		// reserve is spent, and the row must stop counting a hull that now
 		// belongs to the target.
 		cleared := ""
-		if err := p.Ledger.TransitionSlot(ctx, playerID, spare.Waypoint, SlotStateParked, SlotStateWanted,
+		if err := p.Ledger.TransitionSlot(ctx, playerID, spare.Waypoint, spare.Kind, SlotStateParked, SlotStateWanted,
 			SlotFields{AssignedShip: &cleared}); err != nil {
 			return true, fmt.Errorf(
 				"spare hull %s re-tasked to %s but its slot %s was not released (hull now double-counted, cap reads high): %w",
@@ -913,7 +913,7 @@ func claimForPurchase(ctx context.Context, p BuyPorts, playerID int, slot Queued
 	if slot.State != SlotStateWanted {
 		return true, nil
 	}
-	err := p.Ledger.TransitionSlot(ctx, playerID, slot.Waypoint, SlotStateWanted, SlotStateQueued,
+	err := p.Ledger.TransitionSlot(ctx, playerID, slot.Waypoint, slot.Kind, SlotStateWanted, SlotStateQueued,
 		SlotFields{PurchaseYard: &yard})
 	switch {
 	case errors.Is(err, ErrSlotClaimed):
@@ -946,7 +946,7 @@ func claimForPurchase(ctx context.Context, p BuyPorts, playerID int, slot Queued
 // to a different one than the claim chose. Leaving the original would leave the
 // row asserting a provenance the purchase did not have.
 func recordPurchase(ctx context.Context, p BuyPorts, playerID int, slot QueuedSlot, yard string, probe BoughtProbe) error {
-	if err := p.Ledger.TransitionSlot(ctx, playerID, slot.Waypoint, SlotStateQueued, SlotStateBought,
+	if err := p.Ledger.TransitionSlot(ctx, playerID, slot.Waypoint, slot.Kind, SlotStateQueued, SlotStateBought,
 		SlotFields{AssignedShip: &probe.ShipSymbol, PurchaseYard: &yard}); err != nil {
 		return fmt.Errorf(
 			"bought probe %s for slot %s but could not record it (hull unaccounted, drain halted): %w",

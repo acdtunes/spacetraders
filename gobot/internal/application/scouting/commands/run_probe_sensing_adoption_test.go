@@ -441,7 +441,7 @@ func TestAdoption_TwoOrphansAtOneWaypoint_AdoptsExactlyOne(t *testing.T) {
 func TestAdoption_OrphanOnALivePlacement_LeavesTheIncumbentAlone(t *testing.T) {
 	world := steadyWorld(t, map[string]string{"X1-IN1": parkedsensing.VerdictInScope})
 	world.posts.posts = nil
-	world.ledger.slots["X1-IN1-M1"] = parkedsensing.QueuedSlot{
+	world.ledger.slots[psSlotKey{"X1-IN1-M1", parkedsensing.SlotKindMarket}] = parkedsensing.QueuedSlot{
 		Waypoint: "X1-IN1-M1", System: "X1-IN1", Kind: parkedsensing.SlotKindMarket,
 		State: parkedsensing.SlotStateParked, AssignedShip: "PROBE-INCUMBENT",
 	}
@@ -452,7 +452,7 @@ func TestAdoption_OrphanOnALivePlacement_LeavesTheIncumbentAlone(t *testing.T) {
 
 	require.NoError(t, world.handler.ReconcileOnce(ctx, world.cmd))
 
-	incumbent := world.ledger.slots["X1-IN1-M1"]
+	incumbent := world.ledger.slots[psSlotKey{"X1-IN1-M1", parkedsensing.SlotKindMarket}]
 	require.Equal(t, "PROBE-INCUMBENT", incumbent.AssignedShip,
 		"the live placement still names its own hull — evicting it drops a paid-for probe out of the cap")
 	require.Equal(t, parkedsensing.SlotKindMarket, incumbent.Kind,
@@ -498,7 +498,7 @@ func TestAdoption_OrphanOnAQueuedPlacement_LeavesTheRowAlone(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			world := steadyWorld(t, map[string]string{"X1-IN1": parkedsensing.VerdictInScope})
 			world.posts.posts = nil
-			world.ledger.slots["X1-IN1-M1"] = parkedsensing.QueuedSlot{
+			world.ledger.slots[psSlotKey{"X1-IN1-M1", parkedsensing.SlotKindMarket}] = parkedsensing.QueuedSlot{
 				Waypoint: "X1-IN1-M1", System: "X1-IN1", Kind: parkedsensing.SlotKindMarket,
 				State: tc.state, // no AssignedShip — the row names no hull
 			}
@@ -508,7 +508,7 @@ func TestAdoption_OrphanOnAQueuedPlacement_LeavesTheRowAlone(t *testing.T) {
 
 			require.NoError(t, world.handler.ReconcileOnce(ctx, world.cmd))
 
-			row := world.ledger.slots["X1-IN1-M1"]
+			row := world.ledger.slots[psSlotKey{"X1-IN1-M1", parkedsensing.SlotKindMarket}]
 			require.Equal(t, parkedsensing.SlotKindMarket, row.Kind,
 				"the placement is still a MARKET slot — rewriting it to SPARE drops it out of the scan rotation")
 			require.Equal(t, tc.state, row.State, "and still in its own state")

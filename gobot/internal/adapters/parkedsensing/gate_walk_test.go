@@ -231,7 +231,7 @@ func (l *walkLedger) SlotsByState(_ context.Context, _ int, states ...string) ([
 	return out, nil
 }
 
-func (l *walkLedger) TransitionSlot(_ context.Context, _ int, waypoint, from, to string, _ appSensing.SlotFields) error {
+func (l *walkLedger) TransitionSlot(_ context.Context, _ int, waypoint, _, from, to string, _ appSensing.SlotFields) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	slot, ok := l.slots[waypoint]

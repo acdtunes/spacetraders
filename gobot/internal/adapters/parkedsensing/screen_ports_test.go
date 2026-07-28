@@ -356,7 +356,7 @@ func TestParkedSlotViews_CarryTheRotationColumns(t *testing.T) {
 		Kind: appSensing.SlotKindMarket, State: appSensing.SlotStateWanted,
 	}))
 	scannedAt := time.Now().UTC().Truncate(time.Second)
-	require.NoError(t, port.MarkScanned(ctx, testPlayerID, "X1-AA1-M1", scannedAt, 0.042))
+	require.NoError(t, port.MarkScanned(ctx, testPlayerID, "X1-AA1-M1", appSensing.SlotKindMarket, scannedAt, 0.042))
 
 	views, err := port.ParkedSlotViews(ctx, testPlayerID)
 	require.NoError(t, err)

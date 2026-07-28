@@ -234,7 +234,7 @@ func TestSensingLedger_DeleteSlot_RemovesTheRowAndTheProbeItCounted(t *testing.T
 	require.NoError(t, err)
 	require.Equal(t, int64(1), owned)
 
-	require.NoError(t, repo.DeleteSlot(ctx, 1, "X1-AA-Y1"))
+	require.NoError(t, repo.DeleteSlot(ctx, 1, "X1-AA-Y1", "SPARE"))
 
 	found, err := repo.SlotsByState(ctx, 1, "PARKED")
 	require.NoError(t, err)
@@ -254,14 +254,14 @@ func TestSensingLedger_DeleteSlot_IsIdempotentAndPlayerScoped(t *testing.T) {
 	repo := persistence.NewSensingLedgerRepository(db)
 	ctx := context.Background()
 
-	require.NoError(t, repo.DeleteSlot(ctx, 1, "X1-AA-GONE"))
+	require.NoError(t, repo.DeleteSlot(ctx, 1, "X1-AA-GONE", "SPARE"))
 
 	other := slot("X1-AA-M1", "PARKED")
 	other.PlayerID = 2
 	other.AssignedShip = strptr("PROBE-OTHER")
 	require.NoError(t, repo.UpsertSpareSlot(ctx, other))
 
-	require.NoError(t, repo.DeleteSlot(ctx, 1, "X1-AA-M1"))
+	require.NoError(t, repo.DeleteSlot(ctx, 1, "X1-AA-M1", "SPARE"))
 
 	var survivors []persistence.SensingSlotModel
 	require.NoError(t, db.Where("player_id = ?", 2).Find(&survivors).Error)

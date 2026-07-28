@@ -940,7 +940,7 @@ func (SensingSystemModel) TableName() string {
 // SensingSlotModel is one probe PLACEMENT in the parked-probe sensing ledger
 // (sp-k6v8z) — the durable spine that makes the whole model re-derivable from
 // the database after a daemon restart (RULINGS #2). One row per (player,
-// waypoint): the slot we want a probe parked at, and how far along we are.
+// waypoint, KIND): the slot we want a probe parked at, and how far along we are.
 //
 // State is the slot's lifecycle: WANTED (a placement we want) → QUEUED (chosen
 // for purchase) → BOUGHT (hull paid for) → IN_TRANSIT (flying to the waypoint)
@@ -953,14 +953,29 @@ func (SensingSystemModel) TableName() string {
 // WhitelistGoods is the JSON-encoded set of whitelisted goods the waypoint
 // deals in (defaulted '[]' so a row is never NULL-parsed), SpreadEWMA the
 // smoothed price spread the scans feed, LastScanAt the freshness stamp.
-// Composite primary key (player_id, waypoint_symbol) makes duplicate placements
-// structurally impossible. EraID mirrors SensingSystemModel.
+// EraID mirrors SensingSystemModel.
+//
+// SLOT_KIND IS IN THE PRIMARY KEY (sp-dpfp8), and that is load-bearing rather
+// than incidental. A waypoint can be two things at once: a market a probe is
+// parked at scanning (MARKET), and a probe-selling yard where a seed is staged
+// for purchase (SPARE). Keyed on the waypoint alone those two claims collided,
+// and the collision froze expansion outright — the fleet's only two probe yards
+// both held MARKET placements, so no SPARE want could ever be written and no
+// charting seed could ever be bought.
+//
+// The consequence for every WRITER: a kind is part of a row's identity, so it is
+// IMMUTABLE. Re-declaring a placement under a different kind inserts a second
+// row rather than converting the first, and any write that names a waypoint must
+// name a kind too or it addresses an ambiguous set. That is not a convention —
+// DeleteSlot, TransitionSlot and MarkScanned all take a kind for exactly this
+// reason, and it is what replaces the "one row per waypoint" guarantee this key
+// gave away.
 type SensingSlotModel struct {
 	PlayerID       int        `gorm:"primaryKey;column:player_id"`
 	WaypointSymbol string     `gorm:"primaryKey;column:waypoint_symbol;size:50"`
 	SystemSymbol   string     `gorm:"column:system_symbol;size:50;index;not null"`
-	SlotKind       string     `gorm:"column:slot_kind;size:10;not null"`   // MARKET|YARD|SPARE
-	State          string     `gorm:"column:state;size:12;not null;index"` // WANTED|QUEUED|BOUGHT|IN_TRANSIT|PARKED
+	SlotKind       string     `gorm:"primaryKey;column:slot_kind;size:10;not null"` // MARKET|YARD|SPARE
+	State          string     `gorm:"column:state;size:12;not null;index"`          // WANTED|QUEUED|BOUGHT|IN_TRANSIT|PARKED
 	AssignedShip   *string    `gorm:"column:assigned_ship;size:50;index"`
 	PurchaseYard   *string    `gorm:"column:purchase_yard;size:50"`
 	WhitelistGoods string     `gorm:"column:whitelist_goods;type:text;not null;default:'[]'"` // JSON array

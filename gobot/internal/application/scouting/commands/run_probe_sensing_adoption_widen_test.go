@@ -65,7 +65,7 @@ func TestAdoption_AbsorbsOrphansOfEveryLegacyTag(t *testing.T) {
 
 			require.Equal(t, 1, logger.payload("parked_sensing_cycle")["adopted_stranded"],
 				"an orphaned probe tagged %q must be absorbed", tc.fleet)
-			row := world.ledger.slots["X1-IN1-FREE"]
+			row := world.ledger.slots[psSlotKey{"X1-IN1-FREE", parkedsensing.SlotKindSpare}]
 			require.Equal(t, "PROBE-ORPHAN", row.AssignedShip, "the ledger now accounts for the hull")
 			require.Equal(t, parkedsensing.SlotKindSpare, row.Kind)
 			require.Equal(t, parkedsensing.SlotStateParked, row.State)
@@ -88,7 +88,7 @@ func TestAdoption_NeverPoachesAHullDedicatedToALiveForeignFleet(t *testing.T) {
 
 			require.Equal(t, 0, logger.payload("parked_sensing_cycle")["adopted_stranded"],
 				"a hull dedicated to %q belongs to that fleet", fleet)
-			require.Empty(t, world.ledger.slots["X1-IN1-FREE"].AssignedShip)
+			require.Empty(t, world.ledger.slots[psSlotKey{"X1-IN1-FREE", parkedsensing.SlotKindSpare}].AssignedShip)
 			require.NotContains(t, world.tagger.tagged, "PROBE-FOREIGN")
 		})
 	}
@@ -104,7 +104,7 @@ func TestAdoption_IgnoresNonProbeFrames(t *testing.T) {
 	require.NoError(t, world.handler.ReconcileOnce(common.WithLogger(world.ctx, logger), world.cmd))
 
 	require.Equal(t, 0, logger.payload("parked_sensing_cycle")["adopted_stranded"])
-	require.Empty(t, world.ledger.slots["X1-IN1-FREE"].AssignedShip)
+	require.Empty(t, world.ledger.slots[psSlotKey{"X1-IN1-FREE", parkedsensing.SlotKindSpare}].AssignedShip)
 }
 
 // MID-TOUR POLICY. Three live probes are `active` on scout_tour containers. A hull an active
@@ -124,7 +124,7 @@ func TestAdoption_LeavesAHullAnActiveContainerIsDriving(t *testing.T) {
 
 	require.Equal(t, 0, logger.payload("parked_sensing_cycle")["adopted_stranded"],
 		"a hull mid-tour must not be taken out from under its container")
-	require.Empty(t, world.ledger.slots["X1-IN1-FREE"].AssignedShip)
+	require.Empty(t, world.ledger.slots[psSlotKey{"X1-IN1-FREE", parkedsensing.SlotKindSpare}].AssignedShip)
 	require.NotContains(t, world.tagger.tagged, "PROBE-TOURING")
 }
 
@@ -142,7 +142,7 @@ func TestAdoption_LeavesAHullAnActiveContainerIsDriving(t *testing.T) {
 func TestAdoption_FillsAHullLessWantedPlacementTheOrphanIsStandingOn(t *testing.T) {
 	world := steadyWorld(t, map[string]string{"X1-IN1": parkedsensing.VerdictInScope})
 	world.posts.posts = nil
-	world.ledger.slots["X1-IN1-M1"] = parkedsensing.QueuedSlot{
+	world.ledger.slots[psSlotKey{"X1-IN1-M1", parkedsensing.SlotKindMarket}] = parkedsensing.QueuedSlot{
 		Waypoint: "X1-IN1-M1", System: "X1-IN1", Kind: parkedsensing.SlotKindMarket,
 		State: parkedsensing.SlotStateWanted, // names no hull
 	}
@@ -151,7 +151,7 @@ func TestAdoption_FillsAHullLessWantedPlacementTheOrphanIsStandingOn(t *testing.
 
 	require.NoError(t, world.handler.ReconcileOnce(common.WithLogger(world.ctx, logger), world.cmd))
 
-	row := world.ledger.slots["X1-IN1-M1"]
+	row := world.ledger.slots[psSlotKey{"X1-IN1-M1", parkedsensing.SlotKindMarket}]
 	require.Equal(t, "PROBE-ONSITE", row.AssignedShip, "the placement is filled by the hull standing on it")
 	require.Equal(t, parkedsensing.SlotKindMarket, row.Kind,
 		"kind must stay MARKET — rewriting it to SPARE is what drops it out of the scan rotation")
@@ -164,7 +164,7 @@ func TestAdoption_FillsAHullLessWantedPlacementTheOrphanIsStandingOn(t *testing.
 func TestAdoption_NeverFillsAQueuedPlacement(t *testing.T) {
 	world := steadyWorld(t, map[string]string{"X1-IN1": parkedsensing.VerdictInScope})
 	world.posts.posts = nil
-	world.ledger.slots["X1-IN1-M1"] = parkedsensing.QueuedSlot{
+	world.ledger.slots[psSlotKey{"X1-IN1-M1", parkedsensing.SlotKindMarket}] = parkedsensing.QueuedSlot{
 		Waypoint: "X1-IN1-M1", System: "X1-IN1", Kind: parkedsensing.SlotKindMarket,
 		State: parkedsensing.SlotStateQueued, PurchaseYard: "X1-IN1-Y1",
 	}
@@ -173,7 +173,7 @@ func TestAdoption_NeverFillsAQueuedPlacement(t *testing.T) {
 
 	require.NoError(t, world.handler.ReconcileOnce(common.WithLogger(world.ctx, logger), world.cmd))
 
-	row := world.ledger.slots["X1-IN1-M1"]
+	row := world.ledger.slots[psSlotKey{"X1-IN1-M1", parkedsensing.SlotKindMarket}]
 	require.Equal(t, parkedsensing.SlotStateQueued, row.State, "an in-flight purchase claim is untouched")
 	require.Empty(t, row.AssignedShip)
 	require.Equal(t, 0, logger.payload("parked_sensing_cycle")["adopted_stranded"])
@@ -183,7 +183,7 @@ func TestAdoption_NeverFillsAQueuedPlacement(t *testing.T) {
 func TestAdoption_NeverEvictsAnIncumbentFromAFilledPlacement(t *testing.T) {
 	world := steadyWorld(t, map[string]string{"X1-IN1": parkedsensing.VerdictInScope})
 	world.posts.posts = nil
-	world.ledger.slots["X1-IN1-M1"] = parkedsensing.QueuedSlot{
+	world.ledger.slots[psSlotKey{"X1-IN1-M1", parkedsensing.SlotKindMarket}] = parkedsensing.QueuedSlot{
 		Waypoint: "X1-IN1-M1", System: "X1-IN1", Kind: parkedsensing.SlotKindMarket,
 		State: parkedsensing.SlotStateParked, AssignedShip: "PROBE-INCUMBENT",
 	}
@@ -192,7 +192,7 @@ func TestAdoption_NeverEvictsAnIncumbentFromAFilledPlacement(t *testing.T) {
 
 	require.NoError(t, world.handler.ReconcileOnce(common.WithLogger(world.ctx, logger), world.cmd))
 
-	require.Equal(t, "PROBE-INCUMBENT", world.ledger.slots["X1-IN1-M1"].AssignedShip,
+	require.Equal(t, "PROBE-INCUMBENT", world.ledger.slots[psSlotKey{"X1-IN1-M1", parkedsensing.SlotKindMarket}].AssignedShip,
 		"the incumbent keeps its row; evicting it drops a working probe out of the cap")
 	require.Equal(t, 0, logger.payload("parked_sensing_cycle")["adopted_stranded"])
 }
@@ -202,7 +202,7 @@ func TestAdoption_NeverEvictsAnIncumbentFromAFilledPlacement(t *testing.T) {
 func TestAdoption_TwoOrphansOnOnePlacement_FillsExactlyOne(t *testing.T) {
 	world := steadyWorld(t, map[string]string{"X1-IN1": parkedsensing.VerdictInScope})
 	world.posts.posts = nil
-	world.ledger.slots["X1-IN1-M1"] = parkedsensing.QueuedSlot{
+	world.ledger.slots[psSlotKey{"X1-IN1-M1", parkedsensing.SlotKindMarket}] = parkedsensing.QueuedSlot{
 		Waypoint: "X1-IN1-M1", System: "X1-IN1", Kind: parkedsensing.SlotKindMarket,
 		State: parkedsensing.SlotStateWanted,
 	}
@@ -216,7 +216,7 @@ func TestAdoption_TwoOrphansOnOnePlacement_FillsExactlyOne(t *testing.T) {
 
 	require.Equal(t, 1, logger.payload("parked_sensing_cycle")["adopted_stranded"],
 		"one row per waypoint: the second hull waits (sp-dpfp8)")
-	require.Contains(t, []string{"PROBE-A", "PROBE-B"}, world.ledger.slots["X1-IN1-M1"].AssignedShip)
+	require.Contains(t, []string{"PROBE-A", "PROBE-B"}, world.ledger.slots[psSlotKey{"X1-IN1-M1", parkedsensing.SlotKindMarket}].AssignedShip)
 }
 
 // Idempotence survives the widening: a settled fleet still costs zero writes, however many ticks
@@ -249,7 +249,7 @@ func TestAdoption_WidenedFilterIsStillIdempotent(t *testing.T) {
 func TestAdoption_NeverStealsAWantedPlacementThatAlreadyNamesAHull(t *testing.T) {
 	world := steadyWorld(t, map[string]string{"X1-IN1": parkedsensing.VerdictInScope})
 	world.posts.posts = nil
-	world.ledger.slots["X1-IN1-M1"] = parkedsensing.QueuedSlot{
+	world.ledger.slots[psSlotKey{"X1-IN1-M1", parkedsensing.SlotKindMarket}] = parkedsensing.QueuedSlot{
 		Waypoint: "X1-IN1-M1", System: "X1-IN1", Kind: parkedsensing.SlotKindMarket,
 		State: parkedsensing.SlotStateWanted, AssignedShip: "PROBE-PROMISED",
 	}
@@ -258,7 +258,7 @@ func TestAdoption_NeverStealsAWantedPlacementThatAlreadyNamesAHull(t *testing.T)
 
 	require.NoError(t, world.handler.ReconcileOnce(common.WithLogger(world.ctx, logger), world.cmd))
 
-	require.Equal(t, "PROBE-PROMISED", world.ledger.slots["X1-IN1-M1"].AssignedShip,
+	require.Equal(t, "PROBE-PROMISED", world.ledger.slots[psSlotKey{"X1-IN1-M1", parkedsensing.SlotKindMarket}].AssignedShip,
 		"a row that already names a hull is never re-pointed, whatever state it is in")
 	require.Equal(t, 0, logger.payload("parked_sensing_cycle")["adopted_stranded"])
 	require.NotContains(t, world.tagger.tagged, "PROBE-INTRUDER")

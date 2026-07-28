@@ -188,7 +188,7 @@ func (h *RunProbeSensingCoordinatorHandler) dispatchIdleOrphans(
 		// dispatchClaim branch is what notices a still hull on an in-flight row and flies it; that
 		// branch is load-bearing for this path, not an edge case — without it the hull would stand
 		// where it is forever while the row read as in-flight.
-		err := ports.Ledger.TransitionSlot(ctx, playerID, target.Waypoint,
+		err := ports.Ledger.TransitionSlot(ctx, playerID, target.Waypoint, target.Kind,
 			parkedsensing.SlotStateWanted, parkedsensing.SlotStateInTransit,
 			parkedsensing.SlotFields{AssignedShip: &hull})
 		switch {
@@ -277,12 +277,11 @@ func idleOrphans(ships []*navigation.Ship, manned map[string]bool, holds ledgerH
 
 		standing[location.Symbol] = true
 
-		// ADOPTION'S, NOT OURS. The predicate is adoption's exactly — including that it ignores the
-		// slot KIND, because adoption's in-place fill does too — so every hull adoption can absorb
-		// where it stands is left for it, and this pass only ever picks up what adoption structurally
-		// cannot reach.
-		if row, occupied := holds.rows[location.Symbol]; occupied &&
-			row.State == parkedsensing.SlotStateWanted && row.AssignedShip == "" {
+		// ADOPTION'S, NOT OURS. The predicate is adoption's exactly — it IS adoption's, called
+		// directly, so the two cannot drift — and it ignores the slot KIND because adoption's
+		// in-place fill does too. Every hull adoption can absorb where it stands is left for it,
+		// and this pass only ever picks up what adoption structurally cannot reach.
+		if _, fillable := holds.fillableAt(location.Symbol); fillable {
 			continue
 		}
 		orphans = append(orphans, idleOrphanHull{ship: ship, waypoint: location.Symbol})
@@ -314,14 +313,20 @@ func idleOrphans(ships []*navigation.Ship, manned map[string]bool, holds ledgerH
 //   - a waypoint an idle orphan is standing on: adoption fills it in place for free.
 func openPlacements(holds ledgerHolds, standing map[string]bool) map[string][]parkedsensing.QueuedSlot {
 	targets := map[string][]parkedsensing.QueuedSlot{}
-	for _, row := range holds.rows {
-		if row.State != parkedsensing.SlotStateWanted || row.AssignedShip != "" {
-			continue
+	// Two loops because a waypoint can carry more than one placement now
+	// (sp-dpfp8) — the SPARE filter below is exactly what keeps the extra row from
+	// becoming a target, so both have to be looked at rather than whichever one an
+	// index happened to keep.
+	for _, rows := range holds.rows {
+		for _, row := range rows {
+			if row.State != parkedsensing.SlotStateWanted || row.AssignedShip != "" {
+				continue
+			}
+			if row.Kind == parkedsensing.SlotKindSpare || standing[row.Waypoint] {
+				continue
+			}
+			targets[row.System] = append(targets[row.System], row)
 		}
-		if row.Kind == parkedsensing.SlotKindSpare || standing[row.Waypoint] {
-			continue
-		}
-		targets[row.System] = append(targets[row.System], row)
 	}
 	for system := range targets {
 		open := targets[system]

@@ -429,7 +429,7 @@ func TestScanRotation_YardCadenceIsStampedFromConfig(t *testing.T) {
 // rate — that call is what keeps a restarted pacer scanning.
 func TestReconcile_RefreshesTheScanRotation(t *testing.T) {
 	world := steadyWorld(t, map[string]string{"X1-IN1": parkedsensing.VerdictInScope})
-	world.ledger.slots["X1-IN1-M1"] = parkedsensing.QueuedSlot{
+	world.ledger.slots[psSlotKey{"X1-IN1-M1", parkedsensing.SlotKindMarket}] = parkedsensing.QueuedSlot{
 		Waypoint: "X1-IN1-M1", System: "X1-IN1",
 		Kind: parkedsensing.SlotKindMarket, State: parkedsensing.SlotStateParked,
 		AssignedShip: "PROBE-1",
@@ -456,7 +456,7 @@ func TestMetrics_PublishesRateStalenessAndSlots(t *testing.T) {
 	world.handler.clock = &shared.MockClock{CurrentTime: now}
 	for i, age := range []time.Duration{time.Minute, 10 * time.Minute, time.Hour} {
 		waypoint := "X1-IN1-M" + string(rune('1'+i))
-		world.ledger.slots[waypoint] = parkedsensing.QueuedSlot{
+		world.ledger.slots[psSlotKey{waypoint, parkedsensing.SlotKindMarket}] = parkedsensing.QueuedSlot{
 			Waypoint: waypoint, System: "X1-IN1",
 			Kind: parkedsensing.SlotKindMarket, State: parkedsensing.SlotStateParked,
 			AssignedShip: "PROBE-" + string(rune('1'+i)),
@@ -502,11 +502,11 @@ func TestMetrics_NeverScannedSlotsAreExcludedNotClamped(t *testing.T) {
 // dark the whole fleet's market data.
 func TestReconcile_OneFailingStageDoesNotDarkTheRest(t *testing.T) {
 	world := steadyWorld(t, map[string]string{"X1-IN1": parkedsensing.VerdictInScope})
-	world.ledger.slots["X1-IN1-M1"] = parkedsensing.QueuedSlot{
+	world.ledger.slots[psSlotKey{"X1-IN1-M1", parkedsensing.SlotKindMarket}] = parkedsensing.QueuedSlot{
 		Waypoint: "X1-IN1-M1", System: "X1-IN1",
 		Kind: parkedsensing.SlotKindMarket, State: parkedsensing.SlotStateWanted,
 	}
-	world.ledger.slots["X1-IN1-M2"] = parkedsensing.QueuedSlot{
+	world.ledger.slots[psSlotKey{"X1-IN1-M2", parkedsensing.SlotKindMarket}] = parkedsensing.QueuedSlot{
 		Waypoint: "X1-IN1-M2", System: "X1-IN1",
 		Kind: parkedsensing.SlotKindMarket, State: parkedsensing.SlotStateParked,
 		AssignedShip: "PROBE-1",
@@ -747,7 +747,7 @@ func TestPacer_ShutdownIsNotReportedAsDeath(t *testing.T) {
 // strandedClaim records one MARKET placement left QUEUED in the given system.
 func strandedClaim(world *cutoverWorld, system string) string {
 	waypoint := system + "-M1"
-	world.ledger.slots[waypoint] = parkedsensing.QueuedSlot{
+	world.ledger.slots[psSlotKey{waypoint, parkedsensing.SlotKindMarket}] = parkedsensing.QueuedSlot{
 		Waypoint: waypoint, System: system, Kind: parkedsensing.SlotKindMarket,
 		State: parkedsensing.SlotStateQueued, PurchaseYard: system + "-Y1",
 	}
@@ -801,7 +801,7 @@ func TestReconcile_ReapRunsBetweenTheSweepAndTheDrain(t *testing.T) {
 	require.Greater(t, reapRead, sweep, "the reaper runs AFTER the screening sweep, on this tick's verdicts")
 	require.Less(t, reapWrite, drainRead, "the reaper runs BEFORE the drain, so a released claim is workable this tick")
 
-	slot := world.ledger.slots[waypoint]
+	slot := world.ledger.slots[psSlotKey{waypoint, parkedsensing.SlotKindMarket}]
 	require.Equal(t, parkedsensing.SlotStateWanted, slot.State, "the claim is handed back")
 	require.Empty(t, slot.PurchaseYard, "and the yard chosen for a system we no longer watch goes with it")
 }
@@ -826,7 +826,7 @@ func TestReconcile_VerdictRestoredThisTickIsNotReaped(t *testing.T) {
 		"the reaper read the claimed placements, so declining to reap is a decision")
 	require.Equal(t, -1, world.ledger.indexOf(reapWriteEvent(waypoint)),
 		"a claim whose system came back IN_SCOPE this tick is the drain's to work, not the reaper's")
-	require.Equal(t, parkedsensing.SlotStateQueued, world.ledger.slots[waypoint].State)
+	require.Equal(t, parkedsensing.SlotStateQueued, world.ledger.slots[psSlotKey{waypoint, parkedsensing.SlotKindMarket}].State)
 }
 
 // Nobody watches this loop run, so a count the heartbeat does not carry is a

@@ -125,7 +125,7 @@ type SpreadObserver interface {
 // the pacer run concurrently with the reconcile without either fighting the
 // other for a row.
 type ScanLedger interface {
-	MarkScanned(ctx context.Context, playerID int, waypoint string, at time.Time, spreadEWMA float64) error
+	MarkScanned(ctx context.Context, playerID int, waypoint, kind string, at time.Time, spreadEWMA float64) error
 }
 
 // ScanPorts is everything the scanner needs from the outside world.
@@ -440,7 +440,7 @@ func (s *Scanner) runScan(ctx context.Context, slot SensingSlotView) {
 		spread = domainSensing.UpdateSpreadEWMA(slot.SpreadEWMA, observed)
 	}
 
-	if err := s.ports.Ledger.MarkScanned(ctx, s.playerID, slot.Waypoint, at, spread); err != nil {
+	if err := s.ports.Ledger.MarkScanned(ctx, s.playerID, slot.Waypoint, slot.Kind, at, spread); err != nil {
 		// Logged, never fatal to the slot. MarkScanned records freshness; losing
 		// that write costs one stale stamp, while dropping the slot for it would
 		// cost the waypoint every future scan.

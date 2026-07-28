@@ -153,7 +153,7 @@ func (l *stubPlacementLedger) SlotsByState(context.Context, int, ...string) ([]a
 	return append([]appSensing.QueuedSlot(nil), l.slots...), nil
 }
 
-func (l *stubPlacementLedger) TransitionSlot(_ context.Context, _ int, waypoint, from, to string, _ appSensing.SlotFields) error {
+func (l *stubPlacementLedger) TransitionSlot(_ context.Context, _ int, waypoint, _, from, to string, _ appSensing.SlotFields) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.transitions = append(l.transitions, waypoint+":"+from+"->"+to)

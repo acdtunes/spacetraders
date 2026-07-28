@@ -88,7 +88,7 @@ func TestLedgerPort_MarkScannedTouchesOnlyTheScanColumns(t *testing.T) {
 
 	port := adapterSensing.NewLedgerPort(persistence.NewSensingLedgerRepository(db))
 	at := time.Now().UTC().Truncate(time.Second)
-	require.NoError(t, port.MarkScanned(context.Background(), testPlayerID, "X1-AA-M1", at, 0.42))
+	require.NoError(t, port.MarkScanned(context.Background(), testPlayerID, "X1-AA-M1", appSensing.SlotKindMarket, at, 0.42))
 
 	var got persistence.SensingSlotModel
 	require.NoError(t, db.Where("player_id = ? AND waypoint_symbol = ?", testPlayerID, "X1-AA-M1").First(&got).Error)
@@ -106,7 +106,7 @@ func TestLedgerPort_MarkScannedOnAMissingSlotFails(t *testing.T) {
 	db := newShipPortsDB(t)
 	port := adapterSensing.NewLedgerPort(persistence.NewSensingLedgerRepository(db))
 
-	require.Error(t, port.MarkScanned(context.Background(), testPlayerID, "X1-AA-GHOST", time.Now().UTC(), 1.0))
+	require.Error(t, port.MarkScanned(context.Background(), testPlayerID, "X1-AA-GHOST", appSensing.SlotKindMarket, time.Now().UTC(), 1.0))
 
 	var count int64
 	require.NoError(t, db.Model(&persistence.SensingSlotModel{}).Count(&count).Error)

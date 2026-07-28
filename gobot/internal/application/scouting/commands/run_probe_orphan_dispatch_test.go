@@ -88,7 +88,7 @@ func liveFleetWorld(t *testing.T) *cutoverWorld {
 		{Waypoint: "X1-KP23-J55", System: "X1-KP23", Kind: parkedsensing.SlotKindSpare,
 			State: parkedsensing.SlotStateWanted},
 	} {
-		world.ledger.slots[slot.Waypoint] = slot
+		world.ledger.slots[psSlotKey{slot.Waypoint, slot.Kind}] = slot
 	}
 
 	// Ships in the order the repository returns them, so the pairing below is reproducible.
@@ -145,7 +145,7 @@ func TestOrphanDispatch_LiveFleetShape_PutsEveryStackedIdleOrphanToWork(t *testi
 		"TORWIND-F":  "X1-KP23-F46",
 		"TORWIND-4":  "X1-KP23-G48",
 	} {
-		row := world.ledger.slots[waypoint]
+		row := world.ledger.slots[psSlotKey{waypoint, parkedsensing.SlotKindMarket}]
 		require.Equal(t, hull, row.AssignedShip, "%s answers the placement at %s", hull, waypoint)
 		require.Equal(t, parkedsensing.SlotStateInTransit, row.State,
 			"the hull is already ours: straight to IN_TRANSIT, with no BOUGHT state and nothing bought")
@@ -156,16 +156,16 @@ func TestOrphanDispatch_LiveFleetShape_PutsEveryStackedIdleOrphanToWork(t *testi
 	// End to end: the placement machine's dispatchClaim branch actually flew them. Without it the
 	// rows would read in-flight forever while the hulls stood still.
 	for _, hull := range []string{"TORWIND-14", "TORWIND-15", "TORWIND-F", "TORWIND-4"} {
-		require.Contains(t, world.mover.moves, hull+"→"+world.ledger.slots[dispatchTargetOf(world, hull)].Waypoint,
+		require.Contains(t, world.mover.moves, hull+"→"+world.ledger.slots[psSlotKey{dispatchTargetOf(world, hull), parkedsensing.SlotKindMarket}].Waypoint,
 			"%s was commanded to fly to its placement", hull)
 	}
 }
 
 // dispatchTargetOf finds the waypoint whose row now names hull.
 func dispatchTargetOf(world *cutoverWorld, hull string) string {
-	for waypoint, slot := range world.ledger.slots {
+	for key, slot := range world.ledger.slots {
 		if slot.AssignedShip == hull {
-			return waypoint
+			return key.waypoint
 		}
 	}
 	return ""
@@ -232,9 +232,9 @@ func TestOrphanDispatch_NeverRepointsAHullTheLedgerAlreadyRecords(t *testing.T) 
 
 	require.NoError(t, world.handler.ReconcileOnce(common.WithLogger(world.ctx, logger), world.cmd))
 
-	require.Equal(t, "TORWIND-E", world.ledger.slots["X1-KP23-A2"].AssignedShip,
+	require.Equal(t, "TORWIND-E", world.ledger.slots[psSlotKey{"X1-KP23-A2", parkedsensing.SlotKindMarket}].AssignedShip,
 		"the incumbent keeps its row")
-	require.Equal(t, "TORWIND-11", world.ledger.slots["X1-KP23-C38"].AssignedShip)
+	require.Equal(t, "TORWIND-11", world.ledger.slots[psSlotKey{"X1-KP23-C38", parkedsensing.SlotKindMarket}].AssignedShip)
 	for hull, waypoint := range map[string]string{"TORWIND-E": "X1-KP23-A2", "TORWIND-11": "X1-KP23-C38",
 		"TORWIND-D": "X1-KP23-A3", "TORWIND-2": "X1-KP23-A1"} {
 		require.Equal(t, waypoint, dispatchTargetOf(world, hull),
@@ -272,9 +272,9 @@ func TestOrphanDispatch_NeverPoachesAHullDedicatedToALiveForeignFleet(t *testing
 func TestOrphanDispatch_EachHullGetsItsOwnDistinctPlacement(t *testing.T) {
 	world := steadyWorld(t, map[string]string{"X1-KP23": parkedsensing.VerdictInScope})
 	world.posts.posts = nil
-	world.ledger.slots["X1-KP23-A2"] = parkedAt("X1-KP23-A2", "TORWIND-E")
+	world.ledger.slots[psSlotKey{"X1-KP23-A2", parkedsensing.SlotKindMarket}] = parkedAt("X1-KP23-A2", "TORWIND-E")
 	for _, waypoint := range []string{"X1-KP23-D40", "X1-KP23-D41", "X1-KP23-F46"} {
-		world.ledger.slots[waypoint] = wantedAt(waypoint)
+		world.ledger.slots[psSlotKey{waypoint, parkedsensing.SlotKindMarket}] = wantedAt(waypoint)
 	}
 	world.fleet.ships = []*navigation.Ship{
 		probeWithFleet(t, "TORWIND-E", "X1-KP23-A2", parkedsensing.SensingParkedFleetTag),
@@ -288,9 +288,9 @@ func TestOrphanDispatch_EachHullGetsItsOwnDistinctPlacement(t *testing.T) {
 
 	require.Equal(t, 3, dispatchedCount(t, logger),
 		"three hulls and three open placements: all three move, not just the first")
-	require.Equal(t, "TORWIND-14", world.ledger.slots["X1-KP23-D40"].AssignedShip)
-	require.Equal(t, "TORWIND-15", world.ledger.slots["X1-KP23-D41"].AssignedShip)
-	require.Equal(t, "TORWIND-F", world.ledger.slots["X1-KP23-F46"].AssignedShip)
+	require.Equal(t, "TORWIND-14", world.ledger.slots[psSlotKey{"X1-KP23-D40", parkedsensing.SlotKindMarket}].AssignedShip)
+	require.Equal(t, "TORWIND-15", world.ledger.slots[psSlotKey{"X1-KP23-D41", parkedsensing.SlotKindMarket}].AssignedShip)
+	require.Equal(t, "TORWIND-F", world.ledger.slots[psSlotKey{"X1-KP23-F46", parkedsensing.SlotKindMarket}].AssignedShip)
 }
 
 // ONE PLACEMENT TAKES EXACTLY ONE HULL. Three idle orphans share X1-KP23-A2 and exactly one
@@ -303,8 +303,8 @@ func TestOrphanDispatch_EachHullGetsItsOwnDistinctPlacement(t *testing.T) {
 func TestOrphanDispatch_OnePlacementTakesExactlyOneHull(t *testing.T) {
 	world := steadyWorld(t, map[string]string{"X1-KP23": parkedsensing.VerdictInScope})
 	world.posts.posts = nil
-	world.ledger.slots["X1-KP23-A2"] = parkedAt("X1-KP23-A2", "TORWIND-E")
-	world.ledger.slots["X1-KP23-D40"] = wantedAt("X1-KP23-D40")
+	world.ledger.slots[psSlotKey{"X1-KP23-A2", parkedsensing.SlotKindMarket}] = parkedAt("X1-KP23-A2", "TORWIND-E")
+	world.ledger.slots[psSlotKey{"X1-KP23-D40", parkedsensing.SlotKindMarket}] = wantedAt("X1-KP23-D40")
 	world.fleet.ships = []*navigation.Ship{
 		probeWithFleet(t, "TORWIND-E", "X1-KP23-A2", parkedsensing.SensingParkedFleetTag),
 		idleOrphan(t, "TORWIND-14", "X1-KP23-A2"),
@@ -316,7 +316,7 @@ func TestOrphanDispatch_OnePlacementTakesExactlyOneHull(t *testing.T) {
 	require.NoError(t, world.handler.ReconcileOnce(common.WithLogger(world.ctx, logger), world.cmd))
 
 	require.Equal(t, 1, dispatchedCount(t, logger), "one placement, one hull")
-	require.Equal(t, "TORWIND-14", world.ledger.slots["X1-KP23-D40"].AssignedShip)
+	require.Equal(t, "TORWIND-14", world.ledger.slots[psSlotKey{"X1-KP23-D40", parkedsensing.SlotKindMarket}].AssignedShip)
 	require.Empty(t, dispatchTargetOf(world, "TORWIND-15"), "the second hull waits for the next open placement")
 	require.Empty(t, dispatchTargetOf(world, "TORWIND-F"))
 }
@@ -327,9 +327,9 @@ func TestOrphanDispatch_OnePlacementTakesExactlyOneHull(t *testing.T) {
 func TestOrphanDispatch_OneHullAnswersExactlyOnePlacement(t *testing.T) {
 	world := steadyWorld(t, map[string]string{"X1-KP23": parkedsensing.VerdictInScope})
 	world.posts.posts = nil
-	world.ledger.slots["X1-KP23-A2"] = parkedAt("X1-KP23-A2", "TORWIND-E")
-	world.ledger.slots["X1-KP23-D40"] = wantedAt("X1-KP23-D40")
-	world.ledger.slots["X1-KP23-D41"] = wantedAt("X1-KP23-D41")
+	world.ledger.slots[psSlotKey{"X1-KP23-A2", parkedsensing.SlotKindMarket}] = parkedAt("X1-KP23-A2", "TORWIND-E")
+	world.ledger.slots[psSlotKey{"X1-KP23-D40", parkedsensing.SlotKindMarket}] = wantedAt("X1-KP23-D40")
+	world.ledger.slots[psSlotKey{"X1-KP23-D41", parkedsensing.SlotKindMarket}] = wantedAt("X1-KP23-D41")
 	world.fleet.ships = []*navigation.Ship{
 		probeWithFleet(t, "TORWIND-E", "X1-KP23-A2", parkedsensing.SensingParkedFleetTag),
 		idleOrphan(t, "TORWIND-14", "X1-KP23-A2"),
@@ -339,8 +339,8 @@ func TestOrphanDispatch_OneHullAnswersExactlyOnePlacement(t *testing.T) {
 	require.NoError(t, world.handler.ReconcileOnce(common.WithLogger(world.ctx, logger), world.cmd))
 
 	require.Equal(t, 1, dispatchedCount(t, logger))
-	require.Equal(t, "TORWIND-14", world.ledger.slots["X1-KP23-D40"].AssignedShip)
-	require.Empty(t, world.ledger.slots["X1-KP23-D41"].AssignedShip,
+	require.Equal(t, "TORWIND-14", world.ledger.slots[psSlotKey{"X1-KP23-D40", parkedsensing.SlotKindMarket}].AssignedShip)
+	require.Empty(t, world.ledger.slots[psSlotKey{"X1-KP23-D41", parkedsensing.SlotKindMarket}].AssignedShip,
 		"the second placement is not also written with a hull already spoken for")
 }
 
@@ -363,8 +363,8 @@ func TestOrphanDispatch_NeverDispatchesToASystemTheGateGraphCannotReach(t *testi
 		"X1-BT49": parkedsensing.VerdictInScope,
 	})
 	world.posts.posts = nil
-	world.ledger.slots["X1-KP23-A2"] = parkedAt("X1-KP23-A2", "TORWIND-E")
-	world.ledger.slots["X1-BT49-AA9E"] = wantedAt("X1-BT49-AA9E") // the biggest open system, and no edge to it
+	world.ledger.slots[psSlotKey{"X1-KP23-A2", parkedsensing.SlotKindMarket}] = parkedAt("X1-KP23-A2", "TORWIND-E")
+	world.ledger.slots[psSlotKey{"X1-BT49-AA9E", parkedsensing.SlotKindMarket}] = wantedAt("X1-BT49-AA9E") // the biggest open system, and no edge to it
 	world.fleet.ships = []*navigation.Ship{
 		probeWithFleet(t, "TORWIND-E", "X1-KP23-A2", parkedsensing.SensingParkedFleetTag),
 		idleOrphan(t, "TORWIND-14", "X1-KP23-A2"),
@@ -375,7 +375,7 @@ func TestOrphanDispatch_NeverDispatchesToASystemTheGateGraphCannotReach(t *testi
 
 	require.Equal(t, 0, dispatchedCount(t, logger),
 		"with no stored edge to confirm the crossing, the reach is empty and the hull stays put")
-	require.Empty(t, world.ledger.slots["X1-BT49-AA9E"].AssignedShip)
+	require.Empty(t, world.ledger.slots[psSlotKey{"X1-BT49-AA9E", parkedsensing.SlotKindMarket}].AssignedShip)
 }
 
 // An orphan standing ON a hull-less placement is ADOPTION's, filled in place for free. Flying it
@@ -389,7 +389,7 @@ func TestOrphanDispatch_LeavesAnOrphanStandingOnItsOwnOpenPlacement(t *testing.T
 
 	require.Equal(t, "X1-KP23-E43", dispatchTargetOf(world, "TORWIND-3"),
 		"TORWIND-3 fills the placement it is already standing on rather than flying to another")
-	require.Equal(t, parkedsensing.SlotStateParked, world.ledger.slots["X1-KP23-E43"].State,
+	require.Equal(t, parkedsensing.SlotStateParked, world.ledger.slots[psSlotKey{"X1-KP23-E43", parkedsensing.SlotKindMarket}].State,
 		"adoption parks it in place — no flight, no IN_TRANSIT")
 }
 
@@ -398,8 +398,8 @@ func TestOrphanDispatch_LeavesAnOrphanStandingOnItsOwnOpenPlacement(t *testing.T
 func TestOrphanDispatch_NeverTargetsAPlacementAnIdleOrphanIsAlreadyStandingOn(t *testing.T) {
 	world := steadyWorld(t, map[string]string{"X1-KP23": parkedsensing.VerdictInScope})
 	world.posts.posts = nil
-	world.ledger.slots["X1-KP23-A2"] = parkedAt("X1-KP23-A2", "TORWIND-E")
-	world.ledger.slots["X1-KP23-E43"] = wantedAt("X1-KP23-E43") // TORWIND-3 stands here
+	world.ledger.slots[psSlotKey{"X1-KP23-A2", parkedsensing.SlotKindMarket}] = parkedAt("X1-KP23-A2", "TORWIND-E")
+	world.ledger.slots[psSlotKey{"X1-KP23-E43", parkedsensing.SlotKindMarket}] = wantedAt("X1-KP23-E43") // TORWIND-3 stands here
 	world.fleet.ships = []*navigation.Ship{
 		probeWithFleet(t, "TORWIND-E", "X1-KP23-A2", parkedsensing.SensingParkedFleetTag),
 		idleOrphan(t, "TORWIND-14", "X1-KP23-A2"),
@@ -409,7 +409,7 @@ func TestOrphanDispatch_NeverTargetsAPlacementAnIdleOrphanIsAlreadyStandingOn(t 
 
 	require.NoError(t, world.handler.ReconcileOnce(common.WithLogger(world.ctx, logger), world.cmd))
 
-	require.Equal(t, "TORWIND-3", world.ledger.slots["X1-KP23-E43"].AssignedShip,
+	require.Equal(t, "TORWIND-3", world.ledger.slots[psSlotKey{"X1-KP23-E43", parkedsensing.SlotKindMarket}].AssignedShip,
 		"the hull already standing there gets it, not the one that would have to fly")
 	require.Equal(t, 0, dispatchedCount(t, logger))
 }
@@ -428,7 +428,7 @@ func TestOrphanDispatch_NeverFliesAHullToAPlacementAnotherOrphanIsWaitingOn(t *t
 	world.posts.posts = nil
 
 	// One dispatch-eligible orphan, stuck behind an incumbent's row.
-	world.ledger.slots["X1-KP23-A2"] = parkedAt("X1-KP23-A2", "TORWIND-E")
+	world.ledger.slots[psSlotKey{"X1-KP23-A2", parkedsensing.SlotKindMarket}] = parkedAt("X1-KP23-A2", "TORWIND-E")
 	world.fleet.ships = []*navigation.Ship{
 		probeWithFleet(t, "TORWIND-E", "X1-KP23-A2", parkedsensing.SensingParkedFleetTag),
 		idleOrphan(t, "TORWIND-14", "X1-KP23-A2"),
@@ -437,7 +437,7 @@ func TestOrphanDispatch_NeverFliesAHullToAPlacementAnotherOrphanIsWaitingOn(t *t
 	// is still standing on a WANTED row when this pass runs. That row is the only one open.
 	for i := 0; i <= DefaultMaxAdoptions; i++ {
 		waypoint := fmt.Sprintf("X1-KP23-W%02d", i)
-		world.ledger.slots[waypoint] = wantedAt(waypoint)
+		world.ledger.slots[psSlotKey{waypoint, parkedsensing.SlotKindMarket}] = wantedAt(waypoint)
 		world.fleet.ships = append(world.fleet.ships,
 			idleOrphan(t, fmt.Sprintf("TORWIND-B%02d", i), waypoint))
 	}
@@ -446,11 +446,11 @@ func TestOrphanDispatch_NeverFliesAHullToAPlacementAnotherOrphanIsWaitingOn(t *t
 
 	require.NoError(t, world.handler.ReconcileOnce(common.WithLogger(world.ctx, logger), world.cmd))
 
-	require.Equal(t, parkedsensing.SlotStateWanted, world.ledger.slots[stranded].State,
+	require.Equal(t, parkedsensing.SlotStateWanted, world.ledger.slots[psSlotKey{stranded, parkedsensing.SlotKindMarket}].State,
 		"precondition: adoption's budget ran out before this row, so it is still open")
 	require.Equal(t, 0, dispatchedCount(t, logger),
 		"the only open placement has an idle probe standing on it — nobody is flown to it")
-	require.Empty(t, world.ledger.slots[stranded].AssignedShip)
+	require.Empty(t, world.ledger.slots[psSlotKey{stranded, parkedsensing.SlotKindMarket}].AssignedShip)
 	require.NotContains(t, world.mover.moves, "TORWIND-14→"+stranded)
 }
 
@@ -459,8 +459,8 @@ func TestOrphanDispatch_NeverFliesAHullToAPlacementAnotherOrphanIsWaitingOn(t *t
 func TestOrphanDispatch_NeverFillsACharteringSeedRequest(t *testing.T) {
 	world := steadyWorld(t, map[string]string{"X1-KP23": parkedsensing.VerdictInScope})
 	world.posts.posts = nil
-	world.ledger.slots["X1-KP23-A2"] = parkedAt("X1-KP23-A2", "TORWIND-E")
-	world.ledger.slots["X1-KP23-J55"] = parkedsensing.QueuedSlot{
+	world.ledger.slots[psSlotKey{"X1-KP23-A2", parkedsensing.SlotKindMarket}] = parkedAt("X1-KP23-A2", "TORWIND-E")
+	world.ledger.slots[psSlotKey{"X1-KP23-J55", parkedsensing.SlotKindSpare}] = parkedsensing.QueuedSlot{
 		Waypoint: "X1-KP23-J55", System: "X1-KP23",
 		Kind: parkedsensing.SlotKindSpare, State: parkedsensing.SlotStateWanted,
 	}
@@ -473,7 +473,7 @@ func TestOrphanDispatch_NeverFillsACharteringSeedRequest(t *testing.T) {
 	require.NoError(t, world.handler.ReconcileOnce(common.WithLogger(world.ctx, logger), world.cmd))
 
 	require.Equal(t, 0, dispatchedCount(t, logger))
-	require.Empty(t, world.ledger.slots["X1-KP23-J55"].AssignedShip,
+	require.Empty(t, world.ledger.slots[psSlotKey{"X1-KP23-J55", parkedsensing.SlotKindSpare}].AssignedShip,
 		"a seed staging request is the expansion engine's, not a placement to fill")
 }
 
@@ -489,12 +489,12 @@ func TestOrphanDispatch_NeverFillsACharteringSeedRequest(t *testing.T) {
 func TestOrphanDispatch_NeverFillsAQueuedPlacement(t *testing.T) {
 	world := steadyWorld(t, map[string]string{"X1-KP23": parkedsensing.VerdictInScope})
 	world.posts.posts = nil
-	world.ledger.slots["X1-KP23-A2"] = parkedAt("X1-KP23-A2", "TORWIND-E")
-	world.ledger.slots["X1-KP23-A4"] = parkedsensing.QueuedSlot{
+	world.ledger.slots[psSlotKey{"X1-KP23-A2", parkedsensing.SlotKindMarket}] = parkedAt("X1-KP23-A2", "TORWIND-E")
+	world.ledger.slots[psSlotKey{"X1-KP23-A4", parkedsensing.SlotKindMarket}] = parkedsensing.QueuedSlot{
 		Waypoint: "X1-KP23-A4", System: "X1-KP23",
 		Kind: parkedsensing.SlotKindMarket, State: parkedsensing.SlotStateQueued,
 	}
-	world.ledger.slots["X1-KP23-D40"] = wantedAt("X1-KP23-D40") // sorts AFTER the claim
+	world.ledger.slots[psSlotKey{"X1-KP23-D40", parkedsensing.SlotKindMarket}] = wantedAt("X1-KP23-D40") // sorts AFTER the claim
 	world.fleet.ships = []*navigation.Ship{
 		probeWithFleet(t, "TORWIND-E", "X1-KP23-A2", parkedsensing.SensingParkedFleetTag),
 		idleOrphan(t, "TORWIND-14", "X1-KP23-A2"),
@@ -503,12 +503,12 @@ func TestOrphanDispatch_NeverFillsAQueuedPlacement(t *testing.T) {
 
 	require.NoError(t, world.handler.ReconcileOnce(common.WithLogger(world.ctx, logger), world.cmd))
 
-	require.Equal(t, parkedsensing.SlotStateQueued, world.ledger.slots["X1-KP23-A4"].State,
+	require.Equal(t, parkedsensing.SlotStateQueued, world.ledger.slots[psSlotKey{"X1-KP23-A4", parkedsensing.SlotKindMarket}].State,
 		"the purchase claim is untouched")
-	require.Empty(t, world.ledger.slots["X1-KP23-A4"].AssignedShip)
+	require.Empty(t, world.ledger.slots[psSlotKey{"X1-KP23-A4", parkedsensing.SlotKindMarket}].AssignedShip)
 	require.Equal(t, 1, dispatchedCount(t, logger),
 		"and the hull is not wasted on it: it goes to the placement that is genuinely open")
-	require.Equal(t, "TORWIND-14", world.ledger.slots["X1-KP23-D40"].AssignedShip)
+	require.Equal(t, "TORWIND-14", world.ledger.slots[psSlotKey{"X1-KP23-D40", parkedsensing.SlotKindMarket}].AssignedShip)
 }
 
 // THE WRITE ORDER IS A MONEY GUARD, and this is what pins it.
@@ -532,7 +532,7 @@ func TestOrphanDispatch_AFailedRowWriteLeavesTheHullUntagged(t *testing.T) {
 	err := world.handler.ReconcileOnce(common.WithLogger(world.ctx, logger), world.cmd)
 
 	require.Error(t, err, "a failed dispatch is surfaced, not swallowed")
-	require.Empty(t, world.ledger.slots["X1-KP23-D40"].AssignedShip, "the row was not written")
+	require.Empty(t, world.ledger.slots[psSlotKey{"X1-KP23-D40", parkedsensing.SlotKindMarket}].AssignedShip, "the row was not written")
 	require.NotContains(t, world.tagger.tagged, "TORWIND-14",
 		"tagged-but-unrecorded is the shape that buys a probe we already own — the tag must come SECOND")
 }
@@ -546,7 +546,7 @@ func TestOrphanDispatch_LosingTheRaceForAPlacementIsNotAFailure(t *testing.T) {
 
 	require.NoError(t, world.handler.ReconcileOnce(common.WithLogger(world.ctx, logger), world.cmd),
 		"a lost race is not an error")
-	require.Empty(t, world.ledger.slots["X1-KP23-D40"].AssignedShip)
+	require.Empty(t, world.ledger.slots[psSlotKey{"X1-KP23-D40", parkedsensing.SlotKindMarket}].AssignedShip)
 }
 
 // IDEMPOTENT. A settled fleet costs reads and no writes, however many ticks run. Once dispatched a
@@ -563,9 +563,9 @@ func TestOrphanDispatch_IsIdempotentAcrossTicks(t *testing.T) {
 	require.NoError(t, world.handler.ReconcileOnce(common.WithLogger(world.ctx, second), world.cmd))
 
 	require.Equal(t, 0, dispatchedCount(t, second), "a settled fleet dispatches nothing")
-	require.Equal(t, "TORWIND-14", world.ledger.slots["X1-KP23-D40"].AssignedShip,
+	require.Equal(t, "TORWIND-14", world.ledger.slots[psSlotKey{"X1-KP23-D40", parkedsensing.SlotKindMarket}].AssignedShip,
 		"and the first tick's placements are untouched")
-	require.Equal(t, "TORWIND-4", world.ledger.slots["X1-KP23-G48"].AssignedShip)
+	require.Equal(t, "TORWIND-4", world.ledger.slots[psSlotKey{"X1-KP23-G48", parkedsensing.SlotKindMarket}].AssignedShip)
 }
 
 // BOUNDED PER TICK, in the class of DefaultMaxAdoptions and DefaultMaxPlacementActions: a plain
@@ -574,14 +574,14 @@ func TestOrphanDispatch_IsIdempotentAcrossTicks(t *testing.T) {
 func TestOrphanDispatch_BoundedPerTick(t *testing.T) {
 	world := steadyWorld(t, map[string]string{"X1-KP23": parkedsensing.VerdictInScope})
 	world.posts.posts = nil
-	world.ledger.slots["X1-KP23-A2"] = parkedAt("X1-KP23-A2", "TORWIND-E")
+	world.ledger.slots[psSlotKey{"X1-KP23-A2", parkedsensing.SlotKindMarket}] = parkedAt("X1-KP23-A2", "TORWIND-E")
 	world.fleet.ships = []*navigation.Ship{
 		probeWithFleet(t, "TORWIND-E", "X1-KP23-A2", parkedsensing.SensingParkedFleetTag),
 	}
 	// Twice the bound in hulls, and a placement for every one of them.
 	for i := 0; i < DefaultMaxOrphanDispatches*2; i++ {
 		waypoint := fmt.Sprintf("X1-KP23-W%02d", i)
-		world.ledger.slots[waypoint] = wantedAt(waypoint)
+		world.ledger.slots[psSlotKey{waypoint, parkedsensing.SlotKindMarket}] = wantedAt(waypoint)
 		world.fleet.ships = append(world.fleet.ships,
 			idleOrphan(t, fmt.Sprintf("TORWIND-B%02d", i), "X1-KP23-A2"))
 	}
@@ -604,10 +604,10 @@ func TestOrphanDispatch_BoundedPerTick(t *testing.T) {
 func TestOrphanDispatch_NeverTargetsAWantedPlacementThatAlreadyNamesAHull(t *testing.T) {
 	world := steadyWorld(t, map[string]string{"X1-KP23": parkedsensing.VerdictInScope})
 	world.posts.posts = nil
-	world.ledger.slots["X1-KP23-A2"] = parkedAt("X1-KP23-A2", "TORWIND-E")
+	world.ledger.slots[psSlotKey{"X1-KP23-A2", parkedsensing.SlotKindMarket}] = parkedAt("X1-KP23-A2", "TORWIND-E")
 	promised := wantedAt("X1-KP23-D40")
 	promised.AssignedShip = "PROBE-PROMISED"
-	world.ledger.slots["X1-KP23-D40"] = promised
+	world.ledger.slots[psSlotKey{"X1-KP23-D40", parkedsensing.SlotKindMarket}] = promised
 	world.fleet.ships = []*navigation.Ship{
 		probeWithFleet(t, "TORWIND-E", "X1-KP23-A2", parkedsensing.SensingParkedFleetTag),
 		idleOrphan(t, "TORWIND-14", "X1-KP23-A2"),
@@ -616,7 +616,7 @@ func TestOrphanDispatch_NeverTargetsAWantedPlacementThatAlreadyNamesAHull(t *tes
 
 	require.NoError(t, world.handler.ReconcileOnce(common.WithLogger(world.ctx, logger), world.cmd))
 
-	require.Equal(t, "PROBE-PROMISED", world.ledger.slots["X1-KP23-D40"].AssignedShip,
+	require.Equal(t, "PROBE-PROMISED", world.ledger.slots[psSlotKey{"X1-KP23-D40", parkedsensing.SlotKindMarket}].AssignedShip,
 		"a row that already names a hull is never re-pointed, whatever state it is in")
 	require.Equal(t, 0, dispatchedCount(t, logger))
 }
@@ -637,14 +637,14 @@ func TestOrphanDispatch_LeavesTheOrphansAdoptionsBudgetCouldNotReach(t *testing.
 	// Two more orphans-on-their-own-placement than adoption can absorb in one tick.
 	for i := 0; i < DefaultMaxAdoptions+2; i++ {
 		waypoint := fmt.Sprintf("X1-KP23-W%02d", i)
-		world.ledger.slots[waypoint] = wantedAt(waypoint)
+		world.ledger.slots[psSlotKey{waypoint, parkedsensing.SlotKindMarket}] = wantedAt(waypoint)
 		world.fleet.ships = append(world.fleet.ships,
 			idleOrphan(t, fmt.Sprintf("TORWIND-B%02d", i), waypoint))
 	}
 	// Open placements nobody is standing on, which is where the leftovers would wrongly be sent.
 	for i := 0; i < 5; i++ {
 		waypoint := fmt.Sprintf("X1-KP23-Z%02d", i)
-		world.ledger.slots[waypoint] = wantedAt(waypoint)
+		world.ledger.slots[psSlotKey{waypoint, parkedsensing.SlotKindMarket}] = wantedAt(waypoint)
 	}
 	logger := &capturingLogger{}
 
@@ -655,7 +655,7 @@ func TestOrphanDispatch_LeavesTheOrphansAdoptionsBudgetCouldNotReach(t *testing.
 	require.Equal(t, 0, dispatchedCount(t, logger),
 		"the hulls adoption could not reach are still ADOPTION's — they are standing on open placements")
 	for i := 0; i < 5; i++ {
-		require.Empty(t, world.ledger.slots[fmt.Sprintf("X1-KP23-Z%02d", i)].AssignedShip,
+		require.Empty(t, world.ledger.slots[psSlotKey{fmt.Sprintf("X1-KP23-Z%02d", i), parkedsensing.SlotKindMarket}].AssignedShip,
 			"no leftover was flown to a placement it did not need to fly to")
 	}
 }
@@ -673,7 +673,7 @@ func buyableWorld(t *testing.T) *cutoverWorld {
 	world.posts.posts = nil
 	world.catalog.yards["X1-KP23"] = []string{"X1-KP23-Y1"}
 	world.shipPos.docked["X1-KP23-Y1"] = "TORWIND-BUYER"
-	world.ledger.slots["X1-KP23-D40"] = wantedAt("X1-KP23-D40")
+	world.ledger.slots[psSlotKey{"X1-KP23-D40", parkedsensing.SlotKindMarket}] = wantedAt("X1-KP23-D40")
 	return world
 }
 
@@ -694,12 +694,12 @@ func TestOrphanDispatch_RunsBeforeTheDrain_SoAFilledPlacementIsNeverAlsoBought(t
 
 		require.Equal(t, 1, logger.payload("parked_sensing_cycle")["buy_bought"],
 			"precondition: this fixture really can buy")
-		require.Contains(t, world.ledger.slots["X1-KP23-D40"].AssignedShip, "PROBE-BOUGHT")
+		require.Contains(t, world.ledger.slots[psSlotKey{"X1-KP23-D40", parkedsensing.SlotKindMarket}].AssignedShip, "PROBE-BOUGHT")
 	})
 
 	t.Run("an idle orphan answers it first, and nothing is bought", func(t *testing.T) {
 		world := buyableWorld(t)
-		world.ledger.slots["X1-KP23-A2"] = parkedAt("X1-KP23-A2", "TORWIND-E")
+		world.ledger.slots[psSlotKey{"X1-KP23-A2", parkedsensing.SlotKindMarket}] = parkedAt("X1-KP23-A2", "TORWIND-E")
 		world.fleet.ships = []*navigation.Ship{
 			probeWithFleet(t, "TORWIND-E", "X1-KP23-A2", parkedsensing.SensingParkedFleetTag),
 			idleOrphan(t, "TORWIND-14", "X1-KP23-A2"),
@@ -711,7 +711,7 @@ func TestOrphanDispatch_RunsBeforeTheDrain_SoAFilledPlacementIsNeverAlsoBought(t
 
 		require.NoError(t, world.handler.ReconcileOnce(common.WithLogger(world.ctx, logger), world.cmd))
 
-		require.Equal(t, "TORWIND-14", world.ledger.slots["X1-KP23-D40"].AssignedShip,
+		require.Equal(t, "TORWIND-14", world.ledger.slots[psSlotKey{"X1-KP23-D40", parkedsensing.SlotKindMarket}].AssignedShip,
 			"the hull we already own answers the placement")
 		require.Equal(t, 0, logger.payload("parked_sensing_cycle")["buy_bought"],
 			"and the drain buys NOTHING: running this pass after it would spend credits on a probe "+
@@ -724,12 +724,12 @@ func TestOrphanDispatch_RunsBeforeTheDrain_SoAFilledPlacementIsNeverAlsoBought(t
 func TestOrphanDispatch_SkipsAHullWithNoRecordedLocation(t *testing.T) {
 	world := steadyWorld(t, map[string]string{"X1-KP23": parkedsensing.VerdictInScope})
 	world.posts.posts = nil
-	world.ledger.slots["X1-KP23-D40"] = wantedAt("X1-KP23-D40")
+	world.ledger.slots[psSlotKey{"X1-KP23-D40", parkedsensing.SlotKindMarket}] = wantedAt("X1-KP23-D40")
 	world.fleet.ships = []*navigation.Ship{flyingScoutProbe(t, "TORWIND-14")}
 	logger := &capturingLogger{}
 
 	require.NoError(t, world.handler.ReconcileOnce(common.WithLogger(world.ctx, logger), world.cmd))
 
 	require.Equal(t, 0, dispatchedCount(t, logger))
-	require.Empty(t, world.ledger.slots["X1-KP23-D40"].AssignedShip)
+	require.Empty(t, world.ledger.slots[psSlotKey{"X1-KP23-D40", parkedsensing.SlotKindMarket}].AssignedShip)
 }

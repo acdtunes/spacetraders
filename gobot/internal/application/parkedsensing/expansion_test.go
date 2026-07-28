@@ -192,7 +192,7 @@ func (f *fakeExpandLedger) UpsertSlotMetadata(_ context.Context, _ int, slot Slo
 	if f.upsertSlotErr != nil {
 		return f.upsertSlotErr
 	}
-	if i := f.slotIndex(slot.Waypoint); i >= 0 {
+	if i := f.slotIndex(slot.Waypoint, slot.Kind); i >= 0 {
 		f.slots[i].System = slot.System
 		f.slots[i].DepthCredits = slot.DepthCredits
 		return nil
@@ -209,9 +209,8 @@ func (f *fakeExpandLedger) UpsertSpareSlot(_ context.Context, _ int, slot SlotRe
 	if f.upsertSlotErr != nil {
 		return f.upsertSlotErr
 	}
-	if i := f.slotIndex(slot.Waypoint); i >= 0 {
+	if i := f.slotIndex(slot.Waypoint, slot.Kind); i >= 0 {
 		f.slots[i].System = slot.System
-		f.slots[i].Kind = slot.Kind
 		f.slots[i].State = slot.State
 		f.slots[i].AssignedShip = slot.AssignedShip
 		return nil
@@ -223,15 +222,31 @@ func (f *fakeExpandLedger) UpsertSpareSlot(_ context.Context, _ int, slot SlotRe
 	return nil
 }
 
-// slotIndex finds an existing placement by waypoint — the real ledger is keyed on
-// it, so a second write to the same waypoint is a CONFLICT, never a second row.
-func (f *fakeExpandLedger) slotIndex(waypoint string) int {
+// slotIndex finds an existing placement by (waypoint, KIND) — the real ledger is
+// keyed on the pair (sp-dpfp8), so a second write of the SAME KIND at a waypoint
+// is a CONFLICT while a write of a different kind is a NEW ROW.
+//
+// This used to match on the waypoint alone, which made the fake structurally
+// unable to hold the co-located pair the whole widening exists to allow: a seed
+// staged at a yard that is also a parked market would have been folded into the
+// market's row here and every assertion about the two of them would have been
+// meaningless. A fake that cannot represent the bug cannot witness the fix.
+func (f *fakeExpandLedger) slotIndex(waypoint, kind string) int {
 	for i := range f.slots {
-		if f.slots[i].Waypoint == waypoint {
+		if f.slots[i].Waypoint == waypoint && f.slots[i].Kind == kind {
 			return i
 		}
 	}
 	return -1
+}
+
+// slotAt reads back one placement, so a test can assert that a write aimed at one
+// kind left the other kind's row at the same waypoint alone.
+func (f *fakeExpandLedger) slotAt(waypoint, kind string) (QueuedSlot, bool) {
+	if i := f.slotIndex(waypoint, kind); i >= 0 {
+		return f.slots[i], true
+	}
+	return QueuedSlot{}, false
 }
 
 // SetSeed keys its injected failures on system+hull rather than system alone, so
@@ -269,13 +284,17 @@ func (f *fakeExpandLedger) StampCatalogSynced(_ context.Context, _ int, system s
 	return nil
 }
 
-func (f *fakeExpandLedger) DeleteSlot(_ context.Context, _ int, waypoint string) error {
+// DeleteSlot removes the row of THIS KIND, mirroring the real ledger's key
+// (sp-dpfp8). Matching on the waypoint alone would delete a co-located MARKET row
+// too — the exact money bug the kind argument exists to prevent — and a fake that
+// did that would let the bug pass its own test.
+func (f *fakeExpandLedger) DeleteSlot(_ context.Context, _ int, waypoint, kind string) error {
 	f.deleted = append(f.deleted, waypoint)
 	if f.deleteErr != nil {
 		return f.deleteErr
 	}
 	for i := range f.slots {
-		if f.slots[i].Waypoint == waypoint {
+		if f.slots[i].Waypoint == waypoint && f.slots[i].Kind == kind {
 			f.slots = append(f.slots[:i], f.slots[i+1:]...)
 			return nil
 		}
@@ -283,13 +302,13 @@ func (f *fakeExpandLedger) DeleteSlot(_ context.Context, _ int, waypoint string)
 	return nil
 }
 
-func (f *fakeExpandLedger) TransitionSlot(_ context.Context, _ int, waypoint, from, to string, set SlotFields) error {
+func (f *fakeExpandLedger) TransitionSlot(_ context.Context, _ int, waypoint, kind, from, to string, set SlotFields) error {
 	f.transitions = append(f.transitions, transitionCall{waypoint, from, to, set.AssignedShip, set.PurchaseYard})
 	if f.transitionErr != nil {
 		return f.transitionErr
 	}
 	for i := range f.slots {
-		if f.slots[i].Waypoint != waypoint {
+		if f.slots[i].Waypoint != waypoint || f.slots[i].Kind != kind {
 			continue
 		}
 		if f.slots[i].State != from {
@@ -628,7 +647,18 @@ func TestAdvanceExpansion_UnseededSystemEnqueuesOneSpareAtTheYard(t *testing.T) 
 	}
 }
 
-func TestAdvanceExpansion_SeedRequestNeverOverwritesAnExistingSlot(t *testing.T) {
+// A yard that already holds a placement of ANOTHER kind is a perfectly good place
+// to stage a seed, and the seed goes there rather than walking on to the next
+// yard (sp-dpfp8).
+//
+// This test used to assert the opposite — that the request skipped to X1-A-YARD2
+// — on the grounds that writing over the PARKED slot at X1-A-YARD would drop
+// PROBE-1 out of the probe-cap count. That reasoning was sound while a waypoint
+// held ONE row: the SPARE want and the YARD placement were the same row, so one
+// had to destroy the other. They are now separate rows, so the money guard is
+// kept by CONSTRUCTION rather than by avoidance, which is what the second half of
+// this test pins: PROBE-1's placement must come through the write untouched.
+func TestAdvanceExpansion_SeedRequestStagesAtAYardThatAlreadyHoldsAPlacement(t *testing.T) {
 	h := newExpandHarness()
 	h.ledger.systems = []ExpandSystem{
 		{System: "X1-A", Verdict: VerdictInScope},
@@ -649,13 +679,33 @@ func TestAdvanceExpansion_SeedRequestNeverOverwritesAnExistingSlot(t *testing.T)
 	if len(h.ledger.upsertedSlots) != 1 {
 		t.Fatalf("wrote %d slots, want 1: %v", len(h.ledger.upsertedSlots), h.ledger.upsertedSlots)
 	}
-	if h.ledger.upsertedSlots[0].Waypoint != "X1-A-YARD2" {
-		t.Fatalf("seed request landed on %s — overwriting the PARKED slot at X1-A-YARD would drop PROBE-1 out of the probe-cap count and authorise re-buying it",
-			h.ledger.upsertedSlots[0].Waypoint)
+	got := h.ledger.upsertedSlots[0]
+	if got.Waypoint != "X1-A-YARD" {
+		t.Fatalf("seed request landed on %s, want X1-A-YARD — a yard already carrying a placement of another kind is still available to stage a seed",
+			got.Waypoint)
+	}
+	if got.Kind != SlotKindSpare || got.State != SlotStateWanted {
+		t.Fatalf("seed request recorded as %s/%s, want SPARE/WANTED", got.Kind, got.State)
+	}
+
+	// THE MONEY GUARD, now structural: the incumbent row is a different row, so
+	// the write cannot have reached it.
+	incumbent, found := h.ledger.slotAt("X1-A-YARD", SlotKindYard)
+	if !found {
+		t.Fatalf("PROBE-1's YARD placement disappeared; it would drop out of the probe cap and authorise re-buying a hull we own")
+	}
+	if incumbent.AssignedShip != "PROBE-1" || incumbent.State != SlotStateParked {
+		t.Fatalf("PROBE-1's placement was disturbed: %+v", incumbent)
 	}
 }
 
-func TestAdvanceExpansion_SeedRequestIsSkippedWhenEveryYardIsAlreadySlotted(t *testing.T) {
+// THE PRODUCTION FREEZE, reproduced. The fleet's only probe-selling yards were
+// both parked MARKET placements, so under the old key every tick found no free
+// yard, wrote no SPARE want, and expansion sat at two charting seeds with no way
+// to ever order a third — zero rows in (SPARE, WANTED), permanently.
+//
+// This test asserted that skip as correct behaviour. It is the bug.
+func TestAdvanceExpansion_SeedRequestStagesAtTheOnlyYardEvenWhenItIsAParkedMarket(t *testing.T) {
 	h := newExpandHarness()
 	h.ledger.systems = []ExpandSystem{
 		{System: "X1-A", Verdict: VerdictInScope},
@@ -672,11 +722,20 @@ func TestAdvanceExpansion_SeedRequestIsSkippedWhenEveryYardIsAlreadySlotted(t *t
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(h.ledger.upsertedSlots) != 0 {
-		t.Fatalf("no slot may be written when every yard is taken, got %v", h.ledger.upsertedSlots)
+	if rep.SeedsRequested != 1 {
+		t.Fatalf("SeedsRequested = %d, want 1 — the only yard being a parked market is exactly the live fleet's shape, and it froze expansion outright",
+			rep.SeedsRequested)
 	}
-	if rep.SeedsRequested != 0 {
-		t.Fatalf("SeedsRequested = %d, want 0", rep.SeedsRequested)
+	if len(h.ledger.upsertedSlots) != 1 {
+		t.Fatalf("wrote %d slots, want 1: %v", len(h.ledger.upsertedSlots), h.ledger.upsertedSlots)
+	}
+	if got := h.ledger.upsertedSlots[0]; got.Waypoint != "X1-A-YARD" || got.Kind != SlotKindSpare {
+		t.Fatalf("seed request recorded as %s/%s, want a SPARE at X1-A-YARD", got.Waypoint, got.Kind)
+	}
+
+	market, found := h.ledger.slotAt("X1-A-YARD", SlotKindMarket)
+	if !found || market.AssignedShip != "PROBE-1" || market.State != SlotStateParked {
+		t.Fatalf("the parked market at the same waypoint must be untouched and still scanning, got %+v (found=%v)", market, found)
 	}
 }
 
@@ -1771,10 +1830,17 @@ func TestAdvanceExpansion_LooseEndClaimsAWantedSlotUnderfootInsteadOfParking(t *
 	}
 }
 
-func TestAdvanceExpansion_SpareParkNeverOverwritesAnOccupiedWaypoint(t *testing.T) {
-	// Should never happen — a waypoint the seed had to chart cannot already
-	// hold a filled placement — but overwriting one would drop its hull out of
-	// the probe-cap count, so the branch fails closed instead.
+// A seed finishing where ANOTHER hull's placement already stands now parks as a
+// spare beside it instead of standing down with no row at all (sp-dpfp8).
+//
+// The old behaviour was the money-UNSAFE one and the original comment said so:
+// the seed was stood down DONE with no placement written, so PROBE-7 — a probe we
+// paid for, sitting right there — stopped being counted by CountOwnedProbes and
+// the cap authorised buying a replacement for it. That was accepted only because
+// the alternative under a waypoint-keyed table was overwriting PROBE-OTHER's row,
+// which is worse. With the kinds separated there is no such trade: both hulls keep
+// a row, and both stay counted.
+func TestAdvanceExpansion_SpareParkStandsDownBesideAnotherHullsPlacement(t *testing.T) {
 	h := newExpandHarness()
 	h.ledger.systems = []ExpandSystem{
 		{System: "X1-B", Verdict: VerdictPending,
@@ -1793,15 +1859,27 @@ func TestAdvanceExpansion_SpareParkNeverOverwritesAnOccupiedWaypoint(t *testing.
 	if _, err := h.run(t, &fakeUncharted{bySystem: map[string][]string{}}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(h.ledger.upsertedSlots) != 0 {
-		t.Fatalf("PROBE-OTHER's placement must survive, got %v", h.ledger.upsertedSlots)
+
+	if len(h.ledger.upsertedSlots) != 1 {
+		t.Fatalf("wrote %d slots, want 1 — PROBE-7 must keep a row or it leaves the probe cap and is re-bought: %v",
+			len(h.ledger.upsertedSlots), h.ledger.upsertedSlots)
 	}
-	if len(h.ledger.setSeeds) != 1 || h.ledger.setSeeds[0].state != SeedStateDone {
-		t.Fatalf("seed writes = %v, want the seed stood down DONE with its hull still named by the row",
+	parked := h.ledger.upsertedSlots[0]
+	if parked.Waypoint != "X1-B-A1" || parked.Kind != SlotKindSpare || parked.AssignedShip != "PROBE-7" {
+		t.Fatalf("seed parked as %+v, want a SPARE at X1-B-A1 naming PROBE-7", parked)
+	}
+
+	// PROBE-OTHER's placement is a different row and must be untouched.
+	incumbent, found := h.ledger.slotAt("X1-B-A1", SlotKindMarket)
+	if !found || incumbent.AssignedShip != "PROBE-OTHER" || incumbent.State != SlotStateParked {
+		t.Fatalf("PROBE-OTHER's placement must survive intact, got %+v (found=%v)", incumbent, found)
+	}
+
+	// The errand is cleared rather than marked DONE: the hull is a spare again,
+	// named by its own placement row.
+	if len(h.ledger.setSeeds) != 1 || h.ledger.setSeeds[0].ship != "" {
+		t.Fatalf("seed writes = %v, want the errand cleared now that a placement row names the hull",
 			h.ledger.setSeeds)
-	}
-	if h.ledger.setSeeds[0].ship != "PROBE-7" {
-		t.Fatalf("the hull must stay attributable, got ship=%q", h.ledger.setSeeds[0].ship)
 	}
 }
 

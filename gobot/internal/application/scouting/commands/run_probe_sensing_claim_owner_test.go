@@ -28,7 +28,7 @@ func TestReconcile_HandsThePurchaserThisTicksContainerID(t *testing.T) {
 	world := steadyWorld(t, map[string]string{"X1-IN1": parkedsensing.VerdictInScope})
 
 	// An unfilled placement in the in-scope system: the thing a probe is bought FOR.
-	world.ledger.slots["X1-IN1-M1"] = parkedsensing.QueuedSlot{
+	world.ledger.slots[psSlotKey{"X1-IN1-M1", parkedsensing.SlotKindMarket}] = parkedsensing.QueuedSlot{
 		Waypoint: "X1-IN1-M1", System: "X1-IN1",
 		Kind: parkedsensing.SlotKindMarket, State: parkedsensing.SlotStateWanted,
 	}

@@ -95,7 +95,7 @@ type ShipMover interface {
 // to the probe count or the system verdicts that gate spending.
 type PlacementLedger interface {
 	SlotsByState(ctx context.Context, playerID int, states ...string) ([]QueuedSlot, error)
-	TransitionSlot(ctx context.Context, playerID int, waypoint, fromState, toState string, set SlotFields) error
+	TransitionSlot(ctx context.Context, playerID int, waypoint, kind, fromState, toState string, set SlotFields) error
 }
 
 // PlacementPorts is everything AdvancePlacements needs from the outside world.
@@ -205,7 +205,7 @@ func dispatch(ctx context.Context, pl PlacementPorts, playerID int, slot QueuedS
 		// Bought at the very waypoint it was wanted at (a yard that is also the
 		// slot). No movement to perform: hand it to the arrival branch, which
 		// docks and parks it on the next tick.
-		if err := transitionInFlight(ctx, pl, playerID, slot.Waypoint, SlotStateBought, SlotStateInTransit); err != nil {
+		if err := transitionInFlight(ctx, pl, playerID, slot, SlotStateBought, SlotStateInTransit); err != nil {
 			return false, err
 		}
 		rep.Dispatched++
@@ -219,7 +219,7 @@ func dispatch(ctx context.Context, pl PlacementPorts, playerID int, slot QueuedS
 		return true, nil
 	}
 
-	if err := transitionInFlight(ctx, pl, playerID, slot.Waypoint, SlotStateBought, SlotStateInTransit); err != nil {
+	if err := transitionInFlight(ctx, pl, playerID, slot, SlotStateBought, SlotStateInTransit); err != nil {
 		return false, err
 	}
 	rep.Dispatched++
@@ -257,7 +257,7 @@ func standDown(ctx context.Context, pl PlacementPorts, playerID int, slot Queued
 		return true, nil
 
 	case navigation.NavStatusDocked:
-		if err := transitionInFlight(ctx, pl, playerID, slot.Waypoint, SlotStateInTransit, SlotStateParked); err != nil {
+		if err := transitionInFlight(ctx, pl, playerID, slot, SlotStateInTransit, SlotStateParked); err != nil {
 			return false, err
 		}
 		rep.Parked++
@@ -349,10 +349,14 @@ func flyToSlot(ctx context.Context, pl PlacementPorts, playerID int, slot Queued
 // transitionInFlight advances a placement, treating a lost race as a normal
 // outcome. These edges move no money and buy nothing — if another writer got
 // there first, the placement is already where this tick wanted to put it.
-func transitionInFlight(ctx context.Context, pl PlacementPorts, playerID int, waypoint, from, to string) error {
-	err := pl.Ledger.TransitionSlot(ctx, playerID, waypoint, from, to, SlotFields{})
+//
+// It takes the SLOT rather than a bare waypoint because a waypoint no longer
+// identifies a placement on its own (sp-dpfp8): a yard can hold a MARKET row and
+// a SPARE row at once, and this hull is flying to exactly one of them.
+func transitionInFlight(ctx context.Context, pl PlacementPorts, playerID int, slot QueuedSlot, from, to string) error {
+	err := pl.Ledger.TransitionSlot(ctx, playerID, slot.Waypoint, slot.Kind, from, to, SlotFields{})
 	if err == nil || errors.Is(err, ErrSlotClaimed) {
 		return nil
 	}
-	return fmt.Errorf("failed to advance sensing placement %s from %s to %s: %w", waypoint, from, to, err)
+	return fmt.Errorf("failed to advance sensing placement %s (%s) from %s to %s: %w", slot.Waypoint, slot.Kind, from, to, err)
 }

@@ -1126,13 +1126,16 @@ func (p *LedgerPort) CountOwnedProbes(ctx context.Context, playerID int) (int64,
 // must be able to tell routine contention (skip the placement) from a ledger
 // that is refusing writes (stop), and it cannot import the persistence error to
 // do it.
+// The KIND is part of the placement's address (sp-dpfp8): a waypoint can carry a
+// MARKET row and a SPARE row at once, and they are often in the same state, so a
+// transition that named only the waypoint would guard on one row and write both.
 func (p *LedgerPort) TransitionSlot(
 	ctx context.Context,
 	playerID int,
-	waypoint, fromState, toState string,
+	waypoint, kind, fromState, toState string,
 	set appSensing.SlotFields,
 ) error {
-	err := p.repo.TransitionSlot(ctx, playerID, waypoint, fromState, toState, func(m *persistence.SensingSlotModel) {
+	err := p.repo.TransitionSlot(ctx, playerID, waypoint, kind, fromState, toState, func(m *persistence.SensingSlotModel) {
 		if set.AssignedShip != nil {
 			m.AssignedShip = nullableString(*set.AssignedShip)
 		}
@@ -1141,7 +1144,7 @@ func (p *LedgerPort) TransitionSlot(
 		}
 	})
 	if errors.Is(err, persistence.ErrSlotStateConflict) {
-		return fmt.Errorf("%s: %w", waypoint, appSensing.ErrSlotClaimed)
+		return fmt.Errorf("%s (%s): %w", waypoint, kind, appSensing.ErrSlotClaimed)
 	}
 	return err
 }
@@ -1172,8 +1175,8 @@ func (p *LedgerPort) TransitionSlot(
 //
 // The kind-based separation still holds and is still worth keeping as
 // defence in depth, but it is no longer what makes this safe.
-func (p *LedgerPort) MarkScanned(ctx context.Context, playerID int, waypoint string, at time.Time, spreadEWMA float64) error {
-	return p.repo.MarkScanned(ctx, playerID, waypoint, at, spreadEWMA)
+func (p *LedgerPort) MarkScanned(ctx context.Context, playerID int, waypoint, kind string, at time.Time, spreadEWMA float64) error {
+	return p.repo.MarkScanned(ctx, playerID, waypoint, kind, at, spreadEWMA)
 }
 
 // Systems returns every system row the player holds, carrying the uncharted
@@ -1284,10 +1287,16 @@ func (p *LedgerPort) SetSeed(ctx context.Context, playerID int, system, shipSymb
 	return p.repo.SetSeed(ctx, playerID, system, shipSymbol, seedState)
 }
 
-// DeleteSlot removes a placement row outright — the one write that hands a
+// DeleteSlot removes ONE placement row outright — the one write that hands a
 // parked spare's hull from the ledger to a charting errand.
-func (p *LedgerPort) DeleteSlot(ctx context.Context, playerID int, waypoint string) error {
-	return p.repo.DeleteSlot(ctx, playerID, waypoint)
+//
+// The KIND is required and is a money guard (sp-dpfp8): a yard can hold a SPARE
+// row being released here AND a MARKET row whose probe is parked there scanning.
+// Releasing by waypoint alone would delete both and drop that probe out of the
+// cap while it is still flying, authorising a replacement purchase for a hull we
+// already own (RULINGS #4).
+func (p *LedgerPort) DeleteSlot(ctx context.Context, playerID int, waypoint, kind string) error {
+	return p.repo.DeleteSlot(ctx, playerID, waypoint, kind)
 }
 
 // queuedSlots flattens ledger rows into the engine's placement view.

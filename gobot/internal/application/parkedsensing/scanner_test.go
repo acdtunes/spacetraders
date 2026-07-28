@@ -301,7 +301,7 @@ type fakeScanLedger struct {
 	err   error
 }
 
-func (f *fakeScanLedger) MarkScanned(_ context.Context, _ int, waypoint string, at time.Time, spreadEWMA float64) error {
+func (f *fakeScanLedger) MarkScanned(_ context.Context, _ int, waypoint, _ string, at time.Time, spreadEWMA float64) error {
 	f.mu.Lock()
 	f.calls = append(f.calls, markScannedCall{waypoint, at, spreadEWMA})
 	f.mu.Unlock()

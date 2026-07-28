@@ -50,7 +50,7 @@ func crossingWorld(t *testing.T, systems ...string) *cutoverWorld {
 	// The incumbent that blocks in-place adoption, and the orphan stacked behind it. This stacking
 	// IS the bug class: sensing_slots is keyed (player, waypoint), so the second hull on a spoken-for
 	// waypoint can never be recorded where it stands.
-	world.ledger.slots["X1-KP23-A2"] = parkedAt("X1-KP23-A2", "TORWIND-E")
+	world.ledger.slots[psSlotKey{"X1-KP23-A2", parkedsensing.SlotKindMarket}] = parkedAt("X1-KP23-A2", "TORWIND-E")
 	world.fleet.ships = []*navigation.Ship{
 		probeWithFleet(t, "TORWIND-E", "X1-KP23-A2", parkedsensing.SensingParkedFleetTag),
 		idleOrphan(t, "TORWIND-14", "X1-KP23-A2"),
@@ -90,7 +90,7 @@ func systemOf(world *cutoverWorld, hull string) string {
 func TestOrphanDispatch_WalksAnIdleProbeAcrossAGateAndBerthsIt(t *testing.T) {
 	world := crossingWorld(t, "X1-GF41")
 	world.gates.link("X1-KP23", "X1-GF41")
-	world.ledger.slots["X1-GF41-M7"] = wantedAt("X1-GF41-M7")
+	world.ledger.slots[psSlotKey{"X1-GF41-M7", parkedsensing.SlotKindMarket}] = wantedAt("X1-GF41-M7")
 
 	require.Equal(t, "X1-KP23", systemOf(world, "TORWIND-14"), "precondition: it starts at home")
 
@@ -100,9 +100,9 @@ func TestOrphanDispatch_WalksAnIdleProbeAcrossAGateAndBerthsIt(t *testing.T) {
 		"the hull actually LEFT its home system — the one thing a same-system test can never show")
 	require.Equal(t, "X1-GF41-M7", world.shipPos.at["TORWIND-14"].Waypoint,
 		"and arrived at the placement itself, not merely somewhere in that system")
-	require.Equal(t, parkedsensing.SlotStateParked, world.ledger.slots["X1-GF41-M7"].State,
+	require.Equal(t, parkedsensing.SlotStateParked, world.ledger.slots[psSlotKey{"X1-GF41-M7", parkedsensing.SlotKindMarket}].State,
 		"the placement is FILLED: the walk finished and the machine berthed the hull")
-	require.Equal(t, "TORWIND-14", world.ledger.slots["X1-GF41-M7"].AssignedShip)
+	require.Equal(t, "TORWIND-14", world.ledger.slots[psSlotKey{"X1-GF41-M7", parkedsensing.SlotKindMarket}].AssignedShip)
 }
 
 // TWO RINGS, so the walk carries the hull across TWO gates on consecutive ticks.
@@ -116,14 +116,14 @@ func TestOrphanDispatch_CarriesAHullAcrossTwoGatesToAPlacementTwoRingsOut(t *tes
 	world := crossingWorld(t, "X1-MY3", "X1-BT49")
 	world.gates.link("X1-KP23", "X1-MY3")
 	world.gates.link("X1-MY3", "X1-BT49") // BT49 is TWO jumps from home, exactly as on the live map
-	world.ledger.slots["X1-BT49-AA9E"] = wantedAt("X1-BT49-AA9E")
+	world.ledger.slots[psSlotKey{"X1-BT49-AA9E", parkedsensing.SlotKindMarket}] = wantedAt("X1-BT49-AA9E")
 
 	runTicks(t, world, 8)
 
 	require.Equal(t, "X1-BT49", systemOf(world, "TORWIND-14"),
 		"two gates crossed on consecutive ticks, each step decided from where the hull actually was")
-	require.Equal(t, parkedsensing.SlotStateParked, world.ledger.slots["X1-BT49-AA9E"].State)
-	require.Equal(t, "TORWIND-14", world.ledger.slots["X1-BT49-AA9E"].AssignedShip)
+	require.Equal(t, parkedsensing.SlotStateParked, world.ledger.slots[psSlotKey{"X1-BT49-AA9E", parkedsensing.SlotKindMarket}].State)
+	require.Equal(t, "TORWIND-14", world.ledger.slots[psSlotKey{"X1-BT49-AA9E", parkedsensing.SlotKindMarket}].AssignedShip)
 }
 
 // AND NOT ONE SYSTEM FURTHER. A placement three jumps out is refused, because the walk cannot
@@ -139,13 +139,13 @@ func TestOrphanDispatch_RefusesAPlacementBeyondTheWalksReach(t *testing.T) {
 	world.gates.link("X1-KP23", "X1-MY3")
 	world.gates.link("X1-MY3", "X1-BT49")
 	world.gates.link("X1-BT49", "X1-FAR9") // three jumps out: one ring past what the walk can name
-	world.ledger.slots["X1-FAR9-M1"] = wantedAt("X1-FAR9-M1")
+	world.ledger.slots[psSlotKey{"X1-FAR9-M1", parkedsensing.SlotKindMarket}] = wantedAt("X1-FAR9-M1")
 
 	runTicks(t, world, 4)
 
-	require.Empty(t, world.ledger.slots["X1-FAR9-M1"].AssignedShip,
+	require.Empty(t, world.ledger.slots[psSlotKey{"X1-FAR9-M1", parkedsensing.SlotKindMarket}].AssignedShip,
 		"a placement the walk cannot route to is never handed a hull")
-	require.Equal(t, parkedsensing.SlotStateWanted, world.ledger.slots["X1-FAR9-M1"].State,
+	require.Equal(t, parkedsensing.SlotStateWanted, world.ledger.slots[psSlotKey{"X1-FAR9-M1", parkedsensing.SlotKindMarket}].State,
 		"and the placement stays openly WANTED rather than being locked IN_TRANSIT behind a hull that never arrives")
 	require.Equal(t, "X1-KP23", systemOf(world, "TORWIND-14"), "the hull never left")
 }
@@ -174,8 +174,8 @@ func TestOrphanDispatch_ReachIsExactlyTheWalksSharedRingBound(t *testing.T) {
 	world.gates.link("X1-KP23", "X1-R1")
 	world.gates.link("X1-R1", atBound)
 	world.gates.link(atBound, pastBound)
-	world.ledger.slots[pastBound+"-M1"] = wantedAt(pastBound + "-M1")
-	world.ledger.slots[atBound+"-M1"] = wantedAt(atBound + "-M1")
+	world.ledger.slots[psSlotKey{pastBound + "-M1", parkedsensing.SlotKindMarket}] = wantedAt(pastBound + "-M1")
+	world.ledger.slots[psSlotKey{atBound + "-M1", parkedsensing.SlotKindMarket}] = wantedAt(atBound + "-M1")
 	world.fleet.ships = append(world.fleet.ships, idleOrphan(t, "TORWIND-15", "X1-KP23-A2"))
 	world.shipPos.at["TORWIND-15"] = parkedsensing.ShipPos{
 		Waypoint: "X1-KP23-A2", NavStatus: navigation.NavStatusDocked,
@@ -183,9 +183,9 @@ func TestOrphanDispatch_ReachIsExactlyTheWalksSharedRingBound(t *testing.T) {
 
 	runTicks(t, world, 8)
 
-	require.Equal(t, "TORWIND-14", world.ledger.slots[atBound+"-M1"].AssignedShip,
+	require.Equal(t, "TORWIND-14", world.ledger.slots[psSlotKey{atBound + "-M1", parkedsensing.SlotKindMarket}].AssignedShip,
 		"a placement AT the walk's reach is dispatched")
-	require.Empty(t, world.ledger.slots[pastBound+"-M1"].AssignedShip,
+	require.Empty(t, world.ledger.slots[psSlotKey{pastBound + "-M1", parkedsensing.SlotKindMarket}].AssignedShip,
 		"a placement one ring PAST it is not, even with an idle hull left over and nothing nearer to give it")
 	require.Equal(t, "X1-KP23", systemOf(world, "TORWIND-15"),
 		"and that spare hull stays home rather than being walked toward a system the walk cannot route to")
@@ -201,30 +201,30 @@ func TestOrphanDispatch_PrefersTheNearestOpenPlacement(t *testing.T) {
 	t.Run("its own system beats a neighbour", func(t *testing.T) {
 		world := crossingWorld(t, "X1-GF41")
 		world.gates.link("X1-KP23", "X1-GF41")
-		world.ledger.slots["X1-GF41-M7"] = wantedAt("X1-GF41-M7")
-		world.ledger.slots["X1-KP23-D40"] = wantedAt("X1-KP23-D40") // open, and no gate to reach it
+		world.ledger.slots[psSlotKey{"X1-GF41-M7", parkedsensing.SlotKindMarket}] = wantedAt("X1-GF41-M7")
+		world.ledger.slots[psSlotKey{"X1-KP23-D40", parkedsensing.SlotKindMarket}] = wantedAt("X1-KP23-D40") // open, and no gate to reach it
 		logger := &capturingLogger{}
 
 		require.NoError(t, world.handler.ReconcileOnce(common.WithLogger(world.ctx, logger), world.cmd))
 
-		require.Equal(t, "TORWIND-14", world.ledger.slots["X1-KP23-D40"].AssignedShip,
+		require.Equal(t, "TORWIND-14", world.ledger.slots[psSlotKey{"X1-KP23-D40", parkedsensing.SlotKindMarket}].AssignedShip,
 			"the in-system placement is taken: a hop that crosses no gate is always the cheaper answer")
-		require.Empty(t, world.ledger.slots["X1-GF41-M7"].AssignedShip)
+		require.Empty(t, world.ledger.slots[psSlotKey{"X1-GF41-M7", parkedsensing.SlotKindMarket}].AssignedShip)
 	})
 
 	t.Run("a neighbour beats a neighbour's neighbour", func(t *testing.T) {
 		world := crossingWorld(t, "X1-MY3", "X1-BT49")
 		world.gates.link("X1-KP23", "X1-MY3")
 		world.gates.link("X1-MY3", "X1-BT49")
-		world.ledger.slots["X1-BT49-AA9E"] = wantedAt("X1-BT49-AA9E") // two jumps
-		world.ledger.slots["X1-MY3-M1"] = wantedAt("X1-MY3-M1")       // one jump
+		world.ledger.slots[psSlotKey{"X1-BT49-AA9E", parkedsensing.SlotKindMarket}] = wantedAt("X1-BT49-AA9E") // two jumps
+		world.ledger.slots[psSlotKey{"X1-MY3-M1", parkedsensing.SlotKindMarket}] = wantedAt("X1-MY3-M1")       // one jump
 		logger := &capturingLogger{}
 
 		require.NoError(t, world.handler.ReconcileOnce(common.WithLogger(world.ctx, logger), world.cmd))
 
-		require.Equal(t, "TORWIND-14", world.ledger.slots["X1-MY3-M1"].AssignedShip,
+		require.Equal(t, "TORWIND-14", world.ledger.slots[psSlotKey{"X1-MY3-M1", parkedsensing.SlotKindMarket}].AssignedShip,
 			"the one-jump placement is taken ahead of the two-jump one")
-		require.Empty(t, world.ledger.slots["X1-BT49-AA9E"].AssignedShip)
+		require.Empty(t, world.ledger.slots[psSlotKey{"X1-BT49-AA9E", parkedsensing.SlotKindMarket}].AssignedShip)
 	})
 }
 
@@ -239,7 +239,7 @@ func TestOrphanDispatch_AnUnreadableGateGraphRefusesToCross(t *testing.T) {
 	world := crossingWorld(t, "X1-GF41")
 	world.gates.link("X1-KP23", "X1-GF41")
 	world.gates.unreadable = map[string]bool{"X1-KP23": true}
-	world.ledger.slots["X1-GF41-M7"] = wantedAt("X1-GF41-M7")
+	world.ledger.slots[psSlotKey{"X1-GF41-M7", parkedsensing.SlotKindMarket}] = wantedAt("X1-GF41-M7")
 	logger := &capturingLogger{}
 
 	err := world.handler.ReconcileOnce(common.WithLogger(world.ctx, logger), world.cmd)
@@ -247,7 +247,7 @@ func TestOrphanDispatch_AnUnreadableGateGraphRefusesToCross(t *testing.T) {
 	require.Error(t, err,
 		"a topology read that keeps failing must be visible: swallowed, it looks exactly like a map with no gates in it")
 	require.Contains(t, err.Error(), "gate neighbours")
-	require.Empty(t, world.ledger.slots["X1-GF41-M7"].AssignedShip,
+	require.Empty(t, world.ledger.slots[psSlotKey{"X1-GF41-M7", parkedsensing.SlotKindMarket}].AssignedShip,
 		"and NOTHING is dispatched on a reach we could not confirm")
 }
 
@@ -259,13 +259,13 @@ func TestOrphanDispatch_AnUnreadableGateGraphRefusesToCross(t *testing.T) {
 // nowhere.
 func TestOrphanDispatch_NoStoredAdjacencyIsQuietAndDispatchesNothingAcross(t *testing.T) {
 	world := crossingWorld(t, "X1-GF41") // no link() call: the graph is empty, not broken
-	world.ledger.slots["X1-GF41-M7"] = wantedAt("X1-GF41-M7")
+	world.ledger.slots[psSlotKey{"X1-GF41-M7", parkedsensing.SlotKindMarket}] = wantedAt("X1-GF41-M7")
 	logger := &capturingLogger{}
 
 	require.NoError(t, world.handler.ReconcileOnce(common.WithLogger(world.ctx, logger), world.cmd))
 
 	require.Equal(t, 0, dispatchedCount(t, logger))
-	require.Empty(t, world.ledger.slots["X1-GF41-M7"].AssignedShip)
+	require.Empty(t, world.ledger.slots[psSlotKey{"X1-GF41-M7", parkedsensing.SlotKindMarket}].AssignedShip)
 }
 
 // THE TICK NEVER BLOCKS, and it is asserted on the crossing ticks specifically.
@@ -279,7 +279,7 @@ func TestOrphanDispatch_NoStoredAdjacencyIsQuietAndDispatchesNothingAcross(t *te
 func TestOrphanDispatch_ACrossingNeverBlocksATick(t *testing.T) {
 	world := crossingWorld(t, "X1-GF41")
 	world.gates.link("X1-KP23", "X1-GF41")
-	world.ledger.slots["X1-GF41-M7"] = wantedAt("X1-GF41-M7")
+	world.ledger.slots[psSlotKey{"X1-GF41-M7", parkedsensing.SlotKindMarket}] = wantedAt("X1-GF41-M7")
 
 	var perTick []int
 	for tick := 1; tick <= 4; tick++ {
@@ -304,8 +304,8 @@ func TestOrphanDispatch_DispatchesAHullOnceEvenWhileItIsStillCrossing(t *testing
 	world := crossingWorld(t, "X1-GF41", "X1-QG29")
 	world.gates.link("X1-KP23", "X1-GF41")
 	world.gates.link("X1-KP23", "X1-QG29")
-	world.ledger.slots["X1-GF41-M7"] = wantedAt("X1-GF41-M7")
-	world.ledger.slots["X1-QG29-M1"] = wantedAt("X1-QG29-M1") // a second open placement, still open
+	world.ledger.slots[psSlotKey{"X1-GF41-M7", parkedsensing.SlotKindMarket}] = wantedAt("X1-GF41-M7")
+	world.ledger.slots[psSlotKey{"X1-QG29-M1", parkedsensing.SlotKindMarket}] = wantedAt("X1-QG29-M1") // a second open placement, still open
 
 	dispatchedTotal := 0
 	for tick := 1; tick <= 5; tick++ {
@@ -319,7 +319,7 @@ func TestOrphanDispatch_DispatchesAHullOnceEvenWhileItIsStillCrossing(t *testing
 
 	named := 0
 	for _, waypoint := range []string{"X1-GF41-M7", "X1-QG29-M1"} {
-		if world.ledger.slots[waypoint].AssignedShip == "TORWIND-14" {
+		if world.ledger.slots[psSlotKey{waypoint, parkedsensing.SlotKindMarket}].AssignedShip == "TORWIND-14" {
 			named++
 		}
 	}
@@ -335,8 +335,8 @@ func TestOrphanDispatch_DispatchesAHullOnceEvenWhileItIsStillCrossing(t *testing
 func TestOrphanDispatch_TwoHullsTakeTwoDistinctCrossGatePlacements(t *testing.T) {
 	world := crossingWorld(t, "X1-GF41")
 	world.gates.link("X1-KP23", "X1-GF41")
-	world.ledger.slots["X1-GF41-M7"] = wantedAt("X1-GF41-M7")
-	world.ledger.slots["X1-GF41-M8"] = wantedAt("X1-GF41-M8")
+	world.ledger.slots[psSlotKey{"X1-GF41-M7", parkedsensing.SlotKindMarket}] = wantedAt("X1-GF41-M7")
+	world.ledger.slots[psSlotKey{"X1-GF41-M8", parkedsensing.SlotKindMarket}] = wantedAt("X1-GF41-M8")
 	world.fleet.ships = append(world.fleet.ships, idleOrphan(t, "TORWIND-15", "X1-KP23-A2"))
 	world.shipPos.at["TORWIND-15"] = parkedsensing.ShipPos{
 		Waypoint: "X1-KP23-A2", NavStatus: navigation.NavStatusDocked,
@@ -347,8 +347,8 @@ func TestOrphanDispatch_TwoHullsTakeTwoDistinctCrossGatePlacements(t *testing.T)
 
 	require.Equal(t, 2, dispatchedCount(t, logger), "both idle hulls are put to work in the same tick")
 	require.NotEqual(t,
-		world.ledger.slots["X1-GF41-M7"].AssignedShip,
-		world.ledger.slots["X1-GF41-M8"].AssignedShip,
+		world.ledger.slots[psSlotKey{"X1-GF41-M7", parkedsensing.SlotKindMarket}].AssignedShip,
+		world.ledger.slots[psSlotKey{"X1-GF41-M8", parkedsensing.SlotKindMarket}].AssignedShip,
 		"and onto DISTINCT placements — the same hull answering both is the bug consuming prevents")
 }
 
@@ -384,14 +384,14 @@ func TestOrphanDispatch_OwnershipGuardsStillHoldForCrossGateTargets(t *testing.T
 		t.Run(name, func(t *testing.T) {
 			world := crossingWorld(t, "X1-GF41")
 			world.gates.link("X1-KP23", "X1-GF41")
-			world.ledger.slots["X1-GF41-M7"] = wantedAt("X1-GF41-M7")
+			world.ledger.slots[psSlotKey{"X1-GF41-M7", parkedsensing.SlotKindMarket}] = wantedAt("X1-GF41-M7")
 			breakIt(t, world)
 			logger := &capturingLogger{}
 
 			require.NoError(t, world.handler.ReconcileOnce(common.WithLogger(world.ctx, logger), world.cmd))
 
 			require.Equal(t, 0, dispatchedCount(t, logger))
-			require.Empty(t, world.ledger.slots["X1-GF41-M7"].AssignedShip,
+			require.Empty(t, world.ledger.slots[psSlotKey{"X1-GF41-M7", parkedsensing.SlotKindMarket}].AssignedShip,
 				"an open placement across a gate is not a reason to take a hull that is not ours")
 		})
 	}
@@ -407,7 +407,7 @@ func TestOrphanDispatch_OwnershipGuardsStillHoldForCrossGateTargets(t *testing.T
 func TestOrphanDispatch_AFailedCrossGateRowWriteLeavesTheHullUntagged(t *testing.T) {
 	world := crossingWorld(t, "X1-GF41")
 	world.gates.link("X1-KP23", "X1-GF41")
-	world.ledger.slots["X1-GF41-M7"] = wantedAt("X1-GF41-M7")
+	world.ledger.slots[psSlotKey{"X1-GF41-M7", parkedsensing.SlotKindMarket}] = wantedAt("X1-GF41-M7")
 	world.ledger.transitionErr = map[string]error{"X1-GF41-M7": errors.New("ledger unavailable")}
 	logger := &capturingLogger{}
 

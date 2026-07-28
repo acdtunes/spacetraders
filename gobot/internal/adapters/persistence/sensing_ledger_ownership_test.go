@@ -67,10 +67,10 @@ func TestSensingLedger_TransitionSlot_LeavesTheScanColumnsAlone(t *testing.T) {
 	require.NoError(t, repo.UpsertSpareSlot(ctx, parked))
 
 	// The scan the pacer committed while the transition was in flight.
-	require.NoError(t, repo.MarkScanned(ctx, 1, "X1-AA-M1", scanEpoch, 42.5))
+	require.NoError(t, repo.MarkScanned(ctx, 1, "X1-AA-M1", "MARKET", scanEpoch, 42.5))
 
 	cleared := ""
-	require.NoError(t, repo.TransitionSlot(ctx, 1, "X1-AA-M1", "PARKED", "WANTED",
+	require.NoError(t, repo.TransitionSlot(ctx, 1, "X1-AA-M1", "MARKET", "PARKED", "WANTED",
 		func(m *persistence.SensingSlotModel) {
 			// The legal write: this transition releases the hull.
 			m.AssignedShip = &cleared
@@ -113,10 +113,10 @@ func TestSensingLedger_TransitionSlot_WritesNothingOutsideItsOwnedColumns(t *tes
 	original.WhitelistGoods = `["FUEL"]`
 	original.DepthCredits = 4200
 	require.NoError(t, repo.UpsertSpareSlot(ctx, original))
-	require.NoError(t, repo.MarkScanned(ctx, 1, "X1-AA-M1", scanEpoch, 42.5))
+	require.NoError(t, repo.MarkScanned(ctx, 1, "X1-AA-M1", "MARKET", scanEpoch, 42.5))
 
 	yard := "X1-AA-Y1"
-	require.NoError(t, repo.TransitionSlot(ctx, 1, "X1-AA-M1", "PARKED", "QUEUED",
+	require.NoError(t, repo.TransitionSlot(ctx, 1, "X1-AA-M1", "MARKET", "PARKED", "QUEUED",
 		func(m *persistence.SensingSlotModel) {
 			m.PurchaseYard = &yard // owned: must land
 
@@ -162,9 +162,15 @@ func TestSensingLedger_TransitionSlot_StateOnlyWriteNamesOnlyState(t *testing.T)
 
 	statements := captureUpdates(t, db)
 
-	require.NoError(t, repo.TransitionSlot(ctx, 1, "X1-AA-M1", "PARKED", "WANTED", nil))
+	require.NoError(t, repo.TransitionSlot(ctx, 1, "X1-AA-M1", "MARKET", "PARKED", "WANTED", nil))
 
-	sql := statements.onlySlotUpdate(t)
+	// Only the SET clause is examined. Column OWNERSHIP is about what a statement
+	// WRITES, and the WHERE clause names columns for a different reason entirely —
+	// slot_kind is in it because it is part of the row's address (sp-dpfp8), which
+	// narrows what this write can touch rather than widening it. Asserting over the
+	// whole statement conflated the two and would fail on a predicate that made the
+	// write strictly safer.
+	sql := setClauseOf(t, statements.onlySlotUpdate(t))
 	require.Contains(t, sql, "state", "the state flip IS the transition")
 	require.Contains(t, sql, "updated_at")
 	require.NotContains(t, sql, "assigned_ship",
@@ -176,6 +182,16 @@ func TestSensingLedger_TransitionSlot_StateOnlyWriteNamesOnlyState(t *testing.T)
 	require.NotContains(t, sql, "depth_credits")
 	require.NotContains(t, sql, "slot_kind")
 	require.NotContains(t, sql, "system_symbol")
+}
+
+// setClauseOf returns the assignment half of an UPDATE — everything before the
+// WHERE — so an ownership assertion reads what the statement writes and not what
+// it matches on.
+func setClauseOf(t *testing.T, sql string) string {
+	t.Helper()
+	where := strings.Index(sql, " WHERE ")
+	require.Greater(t, where, 0, "an ownership-checked UPDATE always carries a WHERE: %s", sql)
+	return sql[:where]
 }
 
 // Naming a column only when the callback CHANGED it must not depend on HOW the
@@ -195,7 +211,7 @@ func TestSensingLedger_TransitionSlot_HonoursAnInPlaceFieldWrite(t *testing.T) {
 	seed.AssignedShip = strptr("ORION-1")
 	require.NoError(t, repo.UpsertSpareSlot(ctx, seed))
 
-	require.NoError(t, repo.TransitionSlot(ctx, 1, "X1-AA-M1", "PARKED", "IN_TRANSIT",
+	require.NoError(t, repo.TransitionSlot(ctx, 1, "X1-AA-M1", "MARKET", "PARKED", "IN_TRANSIT",
 		func(m *persistence.SensingSlotModel) {
 			*m.AssignedShip = "ORION-2" // through the pointer, not replacing it
 		}))
@@ -224,7 +240,7 @@ func TestSensingLedger_UpsertSlotMetadata_CannotClobberAFilledPlacement(t *testi
 	filled.AssignedShip = strptr("ORION-1")
 	filled.PurchaseYard = strptr("X1-AA-Y1")
 	require.NoError(t, repo.UpsertSpareSlot(ctx, filled))
-	require.NoError(t, repo.MarkScanned(ctx, 1, "X1-AA-M1", scanEpoch, 42.5))
+	require.NoError(t, repo.MarkScanned(ctx, 1, "X1-AA-M1", "MARKET", scanEpoch, 42.5))
 
 	// The screen re-declares the waypoint as an unfilled want, with fresh goods.
 	rescreen := slot("X1-AA-M1", "WANTED")
@@ -265,7 +281,7 @@ func TestSensingLedger_UpsertSpareSlot_RefreshesTheHullAndLeavesTheScreensColumn
 	existing.WhitelistGoods = `["FUEL"]`
 	existing.DepthCredits = 4200
 	require.NoError(t, repo.UpsertSpareSlot(ctx, existing))
-	require.NoError(t, repo.MarkScanned(ctx, 1, "X1-AA-Y1", scanEpoch, 42.5))
+	require.NoError(t, repo.MarkScanned(ctx, 1, "X1-AA-Y1", "SPARE", scanEpoch, 42.5))
 
 	// A second seed finishes on the same waypoint and stands down there.
 	standDown := persistence.SensingSlotModel{
