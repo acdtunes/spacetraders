@@ -1,0 +1,3429 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "panels": [
+    {
+      "type": "stat",
+      "id": 101,
+      "title": "Treasury",
+      "description": "Latest credit balance on the newest transaction for the current era's player. Moves on every operation, not just trading.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "no transactions yet",
+          "unit": "locale",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players)\nSELECT COALESCE((SELECT t.balance_after FROM transactions t CROSS JOIN me\n                  WHERE t.player_id = me.pid ORDER BY t.created_at DESC LIMIT 1), 0) AS \"treasury\";",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 102,
+      "title": "Trade Net (realised)",
+      "description": "Cargo sales minus cargo purchases for operation_type='tour' inside the selected window. Realised only: cargo still in a hold has been paid for but not yet sold, so this understates mid-run. See 'Capital in Cargo' beside it.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#d03b3b",
+                "value": null
+              },
+              {
+                "color": "#0ca30c",
+                "value": 0
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "0",
+          "unit": "locale",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players)\nSELECT COALESCE(SUM(t.amount), 0) AS \"trade net\"\n  FROM transactions t CROSS JOIN me\n WHERE t.player_id = me.pid AND t.operation_type = 'tour'\n       AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n       AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n   AND $__timeFilter(t.created_at);",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 103,
+      "title": "Trade Revenue",
+      "description": "Gross credits received from SELL_CARGO on tour operations in the window.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "0",
+          "unit": "locale",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players)\nSELECT COALESCE(SUM(t.amount) FILTER (WHERE t.transaction_type = 'SELL_CARGO'), 0) AS \"revenue\"\n  FROM transactions t CROSS JOIN me\n WHERE t.player_id = me.pid AND t.operation_type = 'tour'\n       AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n       AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n   AND $__timeFilter(t.created_at);",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 104,
+      "title": "Trade Spend",
+      "description": "Gross credits paid for PURCHASE_CARGO on tour operations in the window.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "0",
+          "unit": "locale",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players)\nSELECT COALESCE(SUM(-t.amount) FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0) AS \"spend\"\n  FROM transactions t CROSS JOIN me\n WHERE t.player_id = me.pid AND t.operation_type = 'tour'\n       AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n       AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n   AND $__timeFilter(t.created_at);",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 105,
+      "title": "Gross Margin",
+      "description": "Realised trade net as a percentage of cargo spend in the window. NULL-safe: shows the empty-state string rather than dividing by zero when nothing was bought.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#d03b3b",
+                "value": null
+              },
+              {
+                "color": "#0ca30c",
+                "value": 0
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "no buys in window",
+          "unit": "percent",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players)\nSELECT ROUND(100.0 * COALESCE(SUM(t.amount), 0)\n             / NULLIF(SUM(-t.amount) FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0), 1) AS \"margin\"\n  FROM transactions t CROSS JOIN me\n WHERE t.player_id = me.pid AND t.operation_type = 'tour'\n       AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n       AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n   AND $__timeFilter(t.created_at);",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 106,
+      "title": "Realised Net / Hour",
+      "description": "Trade net divided by the length of the selected window, so 30m / 2h / 24h are comparable. Rate over the window, not an instantaneous reading.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#d03b3b",
+                "value": null
+              },
+              {
+                "color": "#0ca30c",
+                "value": 0
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "0",
+          "unit": "locale",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players)\nSELECT ROUND(COALESCE(SUM(t.amount), 0)\n       / NULLIF(EXTRACT(epoch FROM ($__timeTo()::timestamptz - $__timeFrom()::timestamptz)) / 3600.0, 0))::bigint\n       AS \"net per hour\"\n  FROM transactions t CROSS JOIN me\n WHERE t.player_id = me.pid AND t.operation_type = 'tour'\n       AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n       AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n   AND $__timeFilter(t.created_at);",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 107,
+      "title": "Trade Hulls",
+      "description": "Ships whose dedicated_fleet is 'trade' right now. Live fleet state, not filtered by the time window.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "0",
+          "unit": "short",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players)\nSELECT COUNT(*)::bigint AS \"trade hulls\"\n  FROM ships s CROSS JOIN me\n WHERE s.player_id = me.pid AND s.dedicated_fleet = 'trade';",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 108,
+      "title": "Capital in Cargo (at cost)",
+      "description": "Credits spent in this window on cargo that has not been sold yet, valued at purchase price (no profit assumed). This is the counterweight to a negative realised net: money that is deployed, not lost.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 4,
+        "y": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#3987e5",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "0",
+          "unit": "locale",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players),\ntx AS (SELECT t.metadata->>'ship_symbol' AS hull,\n              MAX(t.created_at) FILTER (WHERE t.transaction_type = 'SELL_CARGO') AS last_sell\n         FROM transactions t CROSS JOIN me\n        WHERE t.player_id = me.pid AND t.operation_type = 'tour'\n       AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n       AND COALESCE(t.metadata->>'ship_symbol','') <> '' AND $__timeFilter(t.created_at)\n        GROUP BY 1)\nSELECT COALESCE(SUM(-t.amount), 0) AS \"in cargo\"\n  FROM transactions t CROSS JOIN me\n  LEFT JOIN tx ON tx.hull = t.metadata->>'ship_symbol'\n WHERE t.player_id = me.pid AND t.operation_type = 'tour'\n   AND t.transaction_type = 'PURCHASE_CARGO'\n   AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n   AND $__timeFilter(t.created_at)\n   AND t.created_at > COALESCE(tx.last_sell, $__timeFrom()::timestamptz);",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 109,
+      "title": "Best Hull",
+      "description": "Highest realised net in the window. Credits are pre-formatted server-side with to_char comma grouping because the field is a string, not a number.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 9,
+        "y": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "no hull traded in window"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "value",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players),\ntx AS (SELECT t.metadata->>'ship_symbol' AS hull, COALESCE(SUM(t.amount), 0) AS net\n         FROM transactions t CROSS JOIN me\n        WHERE t.player_id = me.pid AND t.operation_type = 'tour'\n       AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n       AND COALESCE(t.metadata->>'ship_symbol','') <> '' AND $__timeFilter(t.created_at)\n        GROUP BY 1)\nSELECT COALESCE((SELECT hull || '   ' || to_char(net, 'FM999G999G999') || ' CR'\n                   FROM tx ORDER BY net DESC LIMIT 1), 'no hull traded in window') AS \"best hull\";",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 110,
+      "title": "Worst Hull",
+      "description": "Lowest realised net in the window. A MID-RUN hull can appear here purely because it has bought and not yet sold -- cross-check 'Net @ Cost' in the table below before reading it as a loss.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 14,
+        "y": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "no hull traded in window"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "value",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players),\ntx AS (SELECT t.metadata->>'ship_symbol' AS hull, COALESCE(SUM(t.amount), 0) AS net\n         FROM transactions t CROSS JOIN me\n        WHERE t.player_id = me.pid AND t.operation_type = 'tour'\n       AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n       AND COALESCE(t.metadata->>'ship_symbol','') <> '' AND $__timeFilter(t.created_at)\n        GROUP BY 1)\nSELECT COALESCE((SELECT hull || '   ' || to_char(net, 'FM999G999G999') || ' CR'\n                   FROM tx ORDER BY net ASC LIMIT 1), 'no hull traded in window') AS \"worst hull\";",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 111,
+      "title": "Contract Net (all ops)",
+      "description": "Net credits across every contract transaction in the window: advances plus payouts minus cargo and fuel. Kept separate from trade because CONTRACT_FULFILLED carries no ship_symbol and cannot be attributed to a hull.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 19,
+        "y": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#d03b3b",
+                "value": null
+              },
+              {
+                "color": "#0ca30c",
+                "value": 0
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "0",
+          "unit": "locale",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players)\nSELECT COALESCE(SUM(t.amount), 0) AS \"contract net\"\n  FROM transactions t CROSS JOIN me\n WHERE t.player_id = me.pid AND t.operation_type = 'contract'\n   AND $__timeFilter(t.created_at);",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "id": 112,
+      "title": "Per-hull trading P&L  (tour operations only)",
+      "collapsed": false,
+      "datasource": {
+        "type": "datasource",
+        "uid": "grafana"
+      },
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 8
+      }
+    },
+    {
+      "type": "table",
+      "id": 113,
+      "title": "Per-Hull P&L - realised, deployed, and honest net",
+      "description": "The centrepiece. One row per hull in the trade fleet, plus any hull that traded in the window and has since been released. Scoped to operation_type='tour'.\n\n**Realised Net** = sells - buys settled in the window. **In Cargo** is what the hull has paid for and not yet sold, at purchase price. **Net @ Cost** = Realised Net + In Cargo, which is the honest position of a hull caught mid-run: a freshly-bought hull reads ~0 there, not a loss. **Margin %** is blank until the hull has actually sold something.\n\nMoney columns honour the time picker. **State, Hold, Cap, System, Nav and Tour are live fleet state** - the `ships` table keeps no history, so those columns read 'now' even when the window is historical.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 13,
+        "w": 24,
+        "x": 0,
+        "y": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false,
+            "filterable": true
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "No trade-fleet hulls and no tour cargo transactions in this window"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Hull"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 110
+              },
+              {
+                "id": "links",
+                "value": []
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "State"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "TRADING": {
+                        "color": "#0ca30c",
+                        "index": 0
+                      },
+                      "MID-RUN": {
+                        "color": "#fab219",
+                        "index": 1
+                      },
+                      "IDLE": {
+                        "color": "#898781",
+                        "index": 2
+                      },
+                      "RELEASED": {
+                        "color": "#3987e5",
+                        "index": 3
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "gradient"
+                }
+              },
+              {
+                "id": "custom.align",
+                "value": "center"
+              },
+              {
+                "id": "custom.width",
+                "value": 96
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Buys"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.width",
+                "value": 70
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Sells"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.width",
+                "value": 70
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Spent"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "locale"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.width",
+                "value": 110
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Earned"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "locale"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.width",
+                "value": 110
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Realised Net"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "locale"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "#d03b3b",
+                      "value": null
+                    },
+                    {
+                      "color": "#0ca30c",
+                      "value": 0
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "custom.width",
+                "value": 130
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "In Cargo"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "locale"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.width",
+                "value": 110
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Net @ Cost"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "locale"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "#d03b3b",
+                      "value": null
+                    },
+                    {
+                      "color": "#0ca30c",
+                      "value": 0
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "custom.width",
+                "value": 125
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Margin %"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.width",
+                "value": 95
+              },
+              {
+                "id": "noValue",
+                "value": "mid-run"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "#d03b3b",
+                      "value": null
+                    },
+                    {
+                      "color": "#0ca30c",
+                      "value": 0
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Hold"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.width",
+                "value": 70
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "gauge",
+                  "mode": "gradient",
+                  "valueDisplayMode": "text"
+                }
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "max",
+                "value": 80
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "#898781",
+                      "value": null
+                    },
+                    {
+                      "color": "#3987e5",
+                      "value": 1
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Cap"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.width",
+                "value": 60
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "System"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 100
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Nav"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 105
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "IN_TRANSIT": {
+                        "color": "#3987e5",
+                        "index": 0
+                      },
+                      "IN_ORBIT": {
+                        "color": "#0ca30c",
+                        "index": 1
+                      },
+                      "DOCKED": {
+                        "color": "#898781",
+                        "index": 2
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Tour"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 95
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false,
+          "fields": ""
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players),\ntx AS (\n  SELECT t.metadata->>'ship_symbol' AS hull,\n         COUNT(*) FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO')            AS buys,\n         COALESCE(SUM(-t.amount) FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0) AS spent,\n         COUNT(*) FILTER (WHERE t.transaction_type = 'SELL_CARGO')                AS sells,\n         COALESCE(SUM(t.amount) FILTER (WHERE t.transaction_type = 'SELL_CARGO'), 0)      AS earned,\n         COALESCE(SUM(t.amount), 0)                                               AS net,\n         MAX(t.created_at) FILTER (WHERE t.transaction_type = 'SELL_CARGO')       AS last_sell\n    FROM transactions t CROSS JOIN me\n   WHERE t.player_id = me.pid AND t.operation_type = 'tour'\n       AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n       AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n     AND $__timeFilter(t.created_at)\n   GROUP BY 1),\nopen_cargo AS (\n  SELECT t.metadata->>'ship_symbol' AS hull, COALESCE(SUM(-t.amount), 0) AS open_cost\n    FROM transactions t CROSS JOIN me\n    LEFT JOIN tx ON tx.hull = t.metadata->>'ship_symbol'\n   WHERE t.player_id = me.pid AND t.operation_type = 'tour'\n     AND t.transaction_type = 'PURCHASE_CARGO'\n     AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n     AND $__timeFilter(t.created_at)\n     AND t.created_at > COALESCE(tx.last_sell, $__timeFrom()::timestamptz)\n   GROUP BY 1),\nfleet AS (SELECT s.* FROM ships s CROSS JOIN me\n           WHERE s.player_id = me.pid AND s.dedicated_fleet = 'trade')\nSELECT COALESCE(f.ship_symbol, tx.hull)                              AS \"Hull\",\n       CASE WHEN f.ship_symbol IS NULL              THEN 'RELEASED'\n            WHEN COALESCE(tx.sells,0) > 0           THEN 'TRADING'\n            WHEN COALESCE(f.cargo_units,0) > 0      THEN 'MID-RUN'\n            WHEN COALESCE(tx.buys,0)  > 0           THEN 'MID-RUN'\n            ELSE 'IDLE' END                                          AS \"State\",\n       COALESCE(tx.buys, 0)                                          AS \"Buys\",\n       COALESCE(tx.sells, 0)                                         AS \"Sells\",\n       COALESCE(tx.spent, 0)                                         AS \"Spent\",\n       COALESCE(tx.earned, 0)                                        AS \"Earned\",\n       COALESCE(tx.net, 0)                                           AS \"Realised Net\",\n       COALESCE(oc.open_cost, 0)                                     AS \"In Cargo\",\n       COALESCE(tx.net, 0) + COALESCE(oc.open_cost, 0)               AS \"Net @ Cost\",\n       CASE WHEN COALESCE(tx.sells,0) > 0 AND COALESCE(tx.spent,0) > 0\n            THEN ROUND(100.0 * tx.net / tx.spent, 1) END             AS \"Margin %\",\n       COALESCE(f.cargo_units, 0)                                    AS \"Hold\",\n       COALESCE(f.cargo_capacity, 0)                                 AS \"Cap\",\n       COALESCE(f.system_symbol, '-')                                AS \"System\",\n       COALESCE(f.nav_status, '-')                                   AS \"Nav\",\n       COALESCE(substring(f.container_id from '[0-9a-f]{8}$'), '-') AS \"Tour\"\n  FROM tx\n  FULL OUTER JOIN fleet f ON f.ship_symbol = tx.hull\n  LEFT JOIN open_cargo oc ON oc.hull = COALESCE(f.ship_symbol, tx.hull)\n ORDER BY COALESCE(tx.net, 0) DESC;",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "id": 114,
+      "title": "Per-hull trends",
+      "collapsed": false,
+      "datasource": {
+        "type": "datasource",
+        "uid": "grafana"
+      },
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 22
+      }
+    },
+    {
+      "type": "barchart",
+      "id": 115,
+      "title": "Realised Net by Hull",
+      "description": "Realised tour net per hull over the window, worst to best. Bars below zero are hulls that have bought and not yet sold -- compare with 'Net @ Cost' above before calling them unprofitable.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 23
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 80,
+            "gradientMode": "none",
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "axisCenteredZero": false,
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#d03b3b",
+                "value": null
+              },
+              {
+                "color": "#0ca30c",
+                "value": 0
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "locale",
+          "decimals": 0,
+          "noValue": "No hull traded on a tour in this window"
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "xTickLabelRotation": 0,
+        "xTickLabelSpacing": 0,
+        "showValue": "auto",
+        "stacking": "none",
+        "groupWidth": 0.7,
+        "barWidth": 0.8,
+        "barRadius": 0,
+        "fullHighlight": false,
+        "xField": "Hull",
+        "tooltip": {
+          "mode": "single",
+          "sort": "none",
+          "hideZeros": false
+        },
+        "legend": {
+          "showLegend": false,
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": []
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players)\nSELECT t.metadata->>'ship_symbol' AS \"Hull\", COALESCE(SUM(t.amount), 0) AS \"Realised Net\"\n  FROM transactions t CROSS JOIN me\n WHERE t.player_id = me.pid AND t.operation_type = 'tour'\n       AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n       AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n   AND $__timeFilter(t.created_at)\n GROUP BY 1 ORDER BY 2 ASC;",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 116,
+      "title": "Cumulative Net by Hull",
+      "description": "Running realised net per hull across the window. A flat line is a hull in transit or loading; a step up is a sale landing. Divergence between lines is the per-hull spread the fleet is actually earning.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 23
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "gradientMode": "opacity",
+            "spanNulls": true,
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "axisCenteredZero": false,
+            "barAlignment": 0,
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "insertNulls": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "locale",
+          "decimals": 0,
+          "noValue": "No hull traded on a tour in this window"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc",
+          "hideZeros": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players),\nb AS (SELECT $__timeGroupAlias(t.created_at, $__interval),\n             t.metadata->>'ship_symbol' AS metric,\n             COALESCE(SUM(t.amount), 0) AS v\n        FROM transactions t CROSS JOIN me\n       WHERE t.player_id = me.pid AND t.operation_type = 'tour'\n       AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n       AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n         AND $__timeFilter(t.created_at)\n       GROUP BY 1, 2)\nSELECT time, metric, SUM(v) OVER (PARTITION BY metric ORDER BY time) AS value\n  FROM b ORDER BY 1, 2;",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "id": 117,
+      "title": "Fleet aggregates",
+      "collapsed": false,
+      "datasource": {
+        "type": "datasource",
+        "uid": "grafana"
+      },
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 32
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 118,
+      "title": "Revenue vs Spend vs Net",
+      "description": "Tour cargo flow bucketed by the dashboard interval. Spend is plotted positive so the two gross flows are directly comparable; Net is the signed difference.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 33
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "gradientMode": "opacity",
+            "spanNulls": true,
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "axisCenteredZero": false,
+            "barAlignment": 0,
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "insertNulls": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "locale",
+          "decimals": 0,
+          "noValue": "No tour cargo transactions in this window"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Revenue"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#0ca30c"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Spend"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#d03b3b"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Net"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#3987e5"
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 3
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc",
+          "hideZeros": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players)\nSELECT $__timeGroupAlias(t.created_at, $__interval),\n       COALESCE(SUM(t.amount) FILTER (WHERE t.transaction_type = 'SELL_CARGO'), 0)      AS \"Revenue\",\n       COALESCE(SUM(-t.amount) FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0) AS \"Spend\",\n       COALESCE(SUM(t.amount), 0)                                                       AS \"Net\"\n  FROM transactions t CROSS JOIN me\n WHERE t.player_id = me.pid AND t.operation_type = 'tour'\n       AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n       AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n   AND $__timeFilter(t.created_at)\n GROUP BY 1 ORDER BY 1;",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 119,
+      "title": "Cumulative Trade Net vs Treasury",
+      "description": "Cumulative realised trade net in the window against the actual credit balance. The gap between them is everything trading does not control -- ship purchases above all. If trade net climbs while treasury falls, capex is outspending the trade engine.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 33
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "gradientMode": "opacity",
+            "spanNulls": true,
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "axisCenteredZero": false,
+            "barAlignment": 0,
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "insertNulls": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "locale",
+          "decimals": 0,
+          "noValue": "No transactions in this window"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Cumulative Trade Net"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#0ca30c"
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 12
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Treasury"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#fab219"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 3
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc",
+          "hideZeros": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players),\nspine AS (\n  SELECT $__timeGroupAlias(t.created_at, $__interval),\n         COALESCE(SUM(t.amount) FILTER (\n             WHERE t.operation_type = 'tour'\n               AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n               AND COALESCE(t.metadata->>'ship_symbol','') <> ''), 0) AS trade_v,\n         (array_agg(t.balance_after ORDER BY t.created_at DESC))[1]   AS treasury\n    FROM transactions t CROSS JOIN me\n   WHERE t.player_id = me.pid\n     AND $__timeFilter(t.created_at)\n   GROUP BY 1)\nSELECT time,\n       SUM(trade_v) OVER (ORDER BY time) AS \"Cumulative Trade Net\",\n       treasury                          AS \"Treasury\"\n  FROM spine ORDER BY 1;",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "id": 120,
+      "title": "Goods and lanes",
+      "collapsed": false,
+      "datasource": {
+        "type": "datasource",
+        "uid": "grafana"
+      },
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 41
+      }
+    },
+    {
+      "type": "table",
+      "id": 121,
+      "title": "Profitability by Good",
+      "description": "Tour cargo grouped by good. Net is meaningful here because a good is bought and sold as the same commodity -- but it is still window-clipped: a good sold in this window from cargo bought before it shows revenue with no matching spend, and vice versa.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 42
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false,
+            "filterable": true
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "No tour cargo transactions in this window"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Good"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 175
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Spent"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "locale"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Earned"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "locale"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Net"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "locale"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "#d03b3b",
+                      "value": null
+                    },
+                    {
+                      "color": "#0ca30c",
+                      "value": 0
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Units Sold"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Margin %"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "noValue",
+                "value": "not bought here"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "#d03b3b",
+                      "value": null
+                    },
+                    {
+                      "color": "#0ca30c",
+                      "value": 0
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false,
+          "fields": ""
+        },
+        "sortBy": [
+          {
+            "displayName": "Net",
+            "desc": true
+          }
+        ]
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players)\nSELECT COALESCE(NULLIF(t.metadata->>'good_symbol',''), '(unknown)')                      AS \"Good\",\n       COALESCE(SUM(-t.amount) FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0)  AS \"Spent\",\n       COALESCE(SUM(t.amount) FILTER (WHERE t.transaction_type = 'SELL_CARGO'), 0)       AS \"Earned\",\n       COALESCE(SUM(t.amount), 0)                                                        AS \"Net\",\n       COALESCE(SUM((t.metadata->>'units')::bigint)\n                FILTER (WHERE t.transaction_type = 'SELL_CARGO'), 0)                     AS \"Units Sold\",\n       CASE WHEN SUM(-t.amount) FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO') > 0\n            THEN ROUND(100.0 * SUM(t.amount)\n                 / SUM(-t.amount) FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 1) END AS \"Margin %\"\n  FROM transactions t CROSS JOIN me\n WHERE t.player_id = me.pid AND t.operation_type = 'tour'\n       AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n       AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n   AND $__timeFilter(t.created_at)\n GROUP BY 1 ORDER BY 4 DESC;",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "id": 122,
+      "title": "Buy-side vs Sell-side by System",
+      "description": "Where cargo is sourced and where it is vended, by the system owning each transaction waypoint. **There is deliberately no net column here**: goods are bought in one system and sold in another, so a per-system net would be an artefact of the route, not a profit or a loss. 'Flow' is sell-side minus buy-side volume, i.e. whether a system is a source or a sink.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 42
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false,
+            "filterable": true
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "No tour cargo transactions in this window"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "System"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 150
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Bought Here"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "locale"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Sold Here"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "locale"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Buys"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.width",
+                "value": 70
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Sells"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.width",
+                "value": 70
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Flow"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "locale"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "#d03b3b",
+                      "value": null
+                    },
+                    {
+                      "color": "#0ca30c",
+                      "value": 0
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false,
+          "fields": ""
+        },
+        "sortBy": [
+          {
+            "displayName": "Sold Here",
+            "desc": true
+          }
+        ]
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players)\nSELECT COALESCE(w.system_symbol, '(unmapped waypoint)')                                 AS \"System\",\n       COALESCE(SUM(-t.amount) FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0) AS \"Bought Here\",\n       COALESCE(SUM(t.amount) FILTER (WHERE t.transaction_type = 'SELL_CARGO'), 0)      AS \"Sold Here\",\n       COUNT(*) FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO')                    AS \"Buys\",\n       COUNT(*) FILTER (WHERE t.transaction_type = 'SELL_CARGO')                        AS \"Sells\",\n       COALESCE(SUM(t.amount) FILTER (WHERE t.transaction_type = 'SELL_CARGO'), 0)\n       - COALESCE(SUM(-t.amount) FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0) AS \"Flow\"\n  FROM transactions t CROSS JOIN me\n  LEFT JOIN waypoints w ON w.waypoint_symbol = t.metadata->>'waypoint'\n WHERE t.player_id = me.pid AND t.operation_type = 'tour'\n       AND t.transaction_type IN ('PURCHASE_CARGO','SELL_CARGO')\n       AND COALESCE(t.metadata->>'ship_symbol','') <> ''\n   AND $__timeFilter(t.created_at)\n GROUP BY 1 ORDER BY 3 DESC;",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "id": 123,
+      "title": "Where the money actually goes",
+      "collapsed": false,
+      "datasource": {
+        "type": "datasource",
+        "uid": "grafana"
+      },
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 52
+      }
+    },
+    {
+      "type": "table",
+      "id": 124,
+      "title": "Realised Capital by Operation",
+      "description": "Every transaction in the window grouped by operation_type -- the honest answer to 'why did treasury move'. Trading can be strongly positive while the balance falls, because 'fleet expansion' (ship purchases) is capex booked in the same ledger.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 11,
+        "x": 0,
+        "y": 53
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false,
+            "filterable": true
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "No transactions in this window"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Operation"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 150
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Txns"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.width",
+                "value": 75
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Outflow"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "locale"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Inflow"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "locale"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Net"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "locale"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "#d03b3b",
+                      "value": null
+                    },
+                    {
+                      "color": "#0ca30c",
+                      "value": 0
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false,
+          "fields": ""
+        },
+        "sortBy": [
+          {
+            "displayName": "Net",
+            "desc": true
+          }
+        ]
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players)\nSELECT COALESCE(NULLIF(t.operation_type,''), '(unattributed)')      AS \"Operation\",\n       COUNT(*)                                                     AS \"Txns\",\n       COALESCE(SUM(-t.amount) FILTER (WHERE t.amount < 0), 0)      AS \"Outflow\",\n       COALESCE(SUM(t.amount) FILTER (WHERE t.amount > 0), 0)       AS \"Inflow\",\n       COALESCE(SUM(t.amount), 0)                                   AS \"Net\"\n  FROM transactions t CROSS JOIN me\n WHERE t.player_id = me.pid\n   AND $__timeFilter(t.created_at)\n GROUP BY 1 ORDER BY 5 DESC;",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 125,
+      "title": "Cumulative Net by Operation",
+      "description": "Running net per operation_type. The downward line is almost always 'fleet expansion': capex, not a trading loss.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 13,
+        "x": 11,
+        "y": 53
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "gradientMode": "opacity",
+            "spanNulls": true,
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "axisCenteredZero": false,
+            "barAlignment": 0,
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "insertNulls": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "locale",
+          "decimals": 0,
+          "noValue": "No transactions in this window"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc",
+          "hideZeros": false
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players),\nb AS (SELECT $__timeGroupAlias(t.created_at, $__interval),\n             COALESCE(NULLIF(t.operation_type,''), '(unattributed)') AS metric,\n             COALESCE(SUM(t.amount), 0) AS v\n        FROM transactions t CROSS JOIN me\n       WHERE t.player_id = me.pid\n         AND $__timeFilter(t.created_at)\n       GROUP BY 1, 2)\nSELECT time, metric, SUM(v) OVER (PARTITION BY metric ORDER BY time) AS value\n  FROM b ORDER BY 1, 2;",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "id": 126,
+      "title": "Contract Economics (fleet level - not attributable per hull)",
+      "description": "Contract money in full. CONTRACT_ACCEPTED is the advance, CONTRACT_FULFILLED the payout; **neither carries a ship_symbol**, so contract revenue can never be split per hull. The cargo and fuel costs below *are* per-hull attributable, which is exactly why a naive per-hull net would show every contract hull deeply negative. That is why the P&L table above is scoped to tours.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 11,
+        "x": 0,
+        "y": 60
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false,
+            "filterable": true
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "No contract activity in this window"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Advances"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "locale"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Payouts"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "locale"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Cargo Cost"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "locale"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Fuel"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "locale"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Net"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "locale"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "#d03b3b",
+                      "value": null
+                    },
+                    {
+                      "color": "#0ca30c",
+                      "value": 0
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false,
+          "fields": ""
+        }
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players)\nSELECT COALESCE(SUM(t.amount) FILTER (WHERE t.transaction_type = 'CONTRACT_ACCEPTED'), 0)  AS \"Advances\",\n       COALESCE(SUM(t.amount) FILTER (WHERE t.transaction_type = 'CONTRACT_FULFILLED'), 0) AS \"Payouts\",\n       COALESCE(SUM(-t.amount) FILTER (WHERE t.transaction_type = 'PURCHASE_CARGO'), 0)    AS \"Cargo Cost\",\n       COALESCE(SUM(-t.amount) FILTER (WHERE t.transaction_type = 'REFUEL'), 0)            AS \"Fuel\",\n       COALESCE(SUM(t.amount), 0)                                                          AS \"Net\"\n  FROM transactions t CROSS JOIN me\n WHERE t.player_id = me.pid AND t.operation_type = 'contract'\n   AND $__timeFilter(t.created_at);",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "id": 127,
+      "title": "Fuel by Operation (fleet level only)",
+      "description": "Refuelling spend per operation. REFUEL rows store ship_symbol as an **empty string**, so fuel cannot be attributed to a hull -- it is deliberately absent from the per-hull table rather than guessed at.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 13,
+        "x": 11,
+        "y": 60
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false,
+            "filterable": true
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "No refuelling in this window"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Operation"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 160
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Refuels"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.width",
+                "value": 100
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Fuel Spend"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "locale"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Avg per Refuel"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "locale"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false,
+          "fields": ""
+        },
+        "sortBy": [
+          {
+            "displayName": "Fuel Spend",
+            "desc": true
+          }
+        ]
+      },
+      "pluginVersion": "13.1.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH me AS (SELECT MAX(id) AS pid FROM players)\nSELECT COALESCE(NULLIF(t.operation_type,''), '(unattributed)') AS \"Operation\",\n       COUNT(*)                                                AS \"Refuels\",\n       COALESCE(SUM(-t.amount), 0)                             AS \"Fuel Spend\",\n       COALESCE(ROUND(AVG(-t.amount)), 0)::bigint              AS \"Avg per Refuel\"\n  FROM transactions t CROSS JOIN me\n WHERE t.player_id = me.pid AND t.transaction_type = 'REFUEL'\n   AND $__timeFilter(t.created_at)\n GROUP BY 1 ORDER BY 3 DESC;",
+          "editorMode": "code",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ]
+    },
+    {
+      "type": "text",
+      "id": 128,
+      "title": "What this dashboard cannot show you (attribution limits)",
+      "datasource": {
+        "type": "datasource",
+        "uid": "grafana"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 66
+      },
+      "options": {
+        "mode": "markdown",
+        "code": {
+          "language": "plaintext",
+          "showLineNumbers": false,
+          "showMiniMap": false
+        },
+        "content": "Four limits are structural in the `transactions` ledger. Nothing here infers around them, because a fabricated number is worse than an absent one.\n\n**Contract revenue has no hull.** `CONTRACT_ACCEPTED` and `CONTRACT_FULFILLED` carry no `ship_symbol` in their metadata - only `contract_id` and `faction`. Their cargo purchases *do* carry one. Any per-hull net spanning both would show every contract hull deeply negative, so the P&L table is scoped to `operation_type='tour'` and contract money is reported whole, at fleet level, in *Contract Economics*. Contract hulls are correctly absent from the per-hull table, not hidden.\n\n**Fuel has no hull.** Every `REFUEL` row stores `ship_symbol` as an **empty string**, not null - so the usual `IS NOT NULL` guard lets them through and silently creates a phantom blank-named hull that absorbs all fuel spend. Every query here filters on `<> ''` instead. Fuel is therefore shown per operation only, and per-hull net is *before* fuel.\n\n**Held cargo has no cost basis.** `ships.cargo_inventory` records goods and units but no purchase price. *In Cargo* is reconstructed from purchases made after a hull's last sale inside the window, valued at cost with no profit assumed. It is a sound floor, not a mark-to-market: a hull that bought before the window opened contributes nothing to it.\n\n**The window clips open positions at both ends.** A sale settling just inside the window from cargo bought just outside it shows revenue with no matching spend, inflating both margin and net; the mirror case deflates them. Widen the range until the figures stop moving before drawing a conclusion from a short window.\n\n*Per-tour planned-vs-actual profit is not modelled here at all - the tour planner's expected margin is not persisted alongside the realised transactions. `SpaceTraders - Heavy Trading` (uid `spacetraders-trading`) carries the tour-lifecycle and guard diagnostics; this dashboard is deliberately the P&L view and does not duplicate it.*"
+      },
+      "pluginVersion": "13.1.0"
+    }
+  ],
+  "preload": false,
+  "refresh": "30s",
+  "schemaVersion": 41,
+  "tags": [
+    "spacetraders",
+    "trading",
+    "per-hull",
+    "pnl"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {},
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "postgresql"
+        },
+        "definition": "SELECT MAX(id) FROM players",
+        "description": "Current era's player id. Every panel scopes itself with it so dead eras never leak in.",
+        "hide": 2,
+        "includeAll": false,
+        "label": "Player",
+        "multi": false,
+        "name": "player",
+        "options": [],
+        "query": "SELECT MAX(id) FROM players",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 0,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-2h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "SpaceTraders - Trading P&L by Hull",
+  "uid": "spacetraders-trading-hulls",
+  "description": "Per-hull trading profit and loss with fleet aggregations. Realised net, capital deployed in cargo, and the operation split that explains treasury movement. Complements 'SpaceTraders - Heavy Trading' (tour lifecycle and guard diagnostics).",
+  "version": 1,
+  "weekStart": ""
+}
