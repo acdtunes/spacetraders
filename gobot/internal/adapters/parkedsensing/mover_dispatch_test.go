@@ -38,8 +38,10 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/mediator"
 	appSensing "github.com/andrescamacho/spacetraders-go/internal/application/parkedsensing"
 	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
+	shipQueries "github.com/andrescamacho/spacetraders-go/internal/application/ship/queries"
 	shipTypes "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // tickDeadline bounds how long one placement tick may take with a hull in
@@ -57,6 +59,13 @@ type journeyMediator struct {
 	mu   sync.Mutex
 	sent []string
 
+	// gate is the jump gate FindNearestJumpGateQuery reports, and shipAt is
+	// where the hull actually stands. They are separate because the ONLY
+	// question the gate-hop seam turns on is whether those two are the same
+	// waypoint.
+	gate   string
+	shipAt string
+
 	// release is never closed while a test body runs. A journey command parks on
 	// it exactly as WaitForShipArrival parks on the arrival event.
 	release chan struct{}
@@ -71,14 +80,37 @@ func (m *journeyMediator) Send(ctx context.Context, request mediator.Request) (m
 	m.sent = append(m.sent, reflect.TypeOf(request).String())
 	m.mu.Unlock()
 
-	switch request.(type) {
-	case *shipNav.NavigateRouteCommand, *shipNav.RouteShipCommand:
-		// The whole journey: plan the route, fly it, and WAIT for the arrival
-		// before returning. This is the real blocking behaviour, reproduced.
+	// The whole journey: plan the route, fly it, and WAIT for the arrival before
+	// returning. This is the real blocking behaviour, reproduced.
+	waitOutTheFlight := func() {
 		select {
 		case <-m.release:
 		case <-ctx.Done():
 		}
+	}
+
+	if _, ok := request.(*shipQueries.FindNearestJumpGateQuery); ok {
+		gate, err := shared.NewWaypoint(m.gate, 0, 0)
+		if err != nil {
+			return nil, err
+		}
+		gate.Type = "JUMP_GATE"
+		return &shipQueries.FindNearestJumpGateResponse{JumpGate: gate}, nil
+	}
+
+	switch request.(type) {
+	case *shipNav.JumpShipCommand:
+		// Models the real handler faithfully. A hull already standing on the
+		// gate jumps immediately — the API jump is instantaneous. A hull that is
+		// NOT on the gate makes the handler navigate it there first, through
+		// NavigateRouteCommand, which waits out that whole flight. So reaching
+		// this command off-gate is itself the defect.
+		if m.shipAt != m.gate {
+			waitOutTheFlight()
+		}
+		return &shipNav.JumpShipResponse{Success: true, JumpGateSymbol: m.gate}, nil
+	case *shipNav.NavigateRouteCommand, *shipNav.RouteShipCommand:
+		waitOutTheFlight()
 		return &shipNav.NavigateRouteResponse{Status: "completed"}, nil
 	case *shipTypes.NavigateDirectCommand:
 		// Dispatch only: the API has accepted the move and the hull is now
@@ -298,6 +330,112 @@ func TestMoverPort_RouteAcross_RefusesRatherThanBlocks(t *testing.T) {
 
 	require.False(t, med.sentAny("RouteShipCommand"),
 		"RouteAcross issued the multi-jump route, which waits out every leg: %v", med.commands())
+}
+
+// TestSeedCommandPort_JumpTo_WalksTheGateHopOneStepPerTick is the seed's version
+// of the headline case, and it is on the critical path rather than latent: seeds
+// launching is the whole point of unblocking the tick, and 13 systems have never
+// had one.
+//
+// A gate hop is TWO physical moves — fly to the gate, then jump off it — and only
+// the first is a flight. JumpShipCommand does both, so it waits out that flight
+// inside the tick. The fix is to do the flight leg here, dispatch-only, and send
+// the jump command only once the hull is standing on the gate, where its navigate
+// branch is unreachable.
+//
+// The two subtests are consecutive ticks of one errand, so together they prove the
+// seed actually CROSSES rather than merely failing to block.
+func TestSeedCommandPort_JumpTo_WalksTheGateHopOneStepPerTick(t *testing.T) {
+	const gate = "X1-AA-J1"
+
+	t.Run("tick 1: off the gate, dispatches the hop and returns", func(t *testing.T) {
+		med := newJourneyMediator()
+		med.gate, med.shipAt = gate, "X1-AA-M1" // parked at its old slot, not the gate
+		seed := adapterSensing.NewSeedCommandPort(med, nil, nil, nil, nil)
+
+		done := make(chan error, 1)
+		go func() {
+			done <- seed.JumpTo(context.Background(), testPlayerID, "PROBE-A", med.shipAt, "X1-BB")
+		}()
+
+		select {
+		case err := <-done:
+			require.NoError(t, err)
+		case <-time.After(tickDeadline):
+			close(med.release)
+			<-done
+			t.Fatalf("the seed's gate hop was still waiting after %v — the tick is parked "+
+				"inside the flight to the gate, so expansion never finishes and no seed "+
+				"ever charts: %v", tickDeadline, med.commands())
+		}
+
+		require.True(t, med.sentAny("NavigateDirectCommand"),
+			"the hop to the gate was not dispatched: %v", med.commands())
+		require.False(t, med.sentAny("JumpShipCommand"),
+			"sent the jump from off the gate, which makes the handler fly the hull there "+
+				"and wait: %v", med.commands())
+		require.False(t, med.sentAny("NavigateRouteCommand"),
+			"used the whole-journey navigate for the hop to the gate: %v", med.commands())
+	})
+
+	t.Run("tick 2: standing on the gate, jumps", func(t *testing.T) {
+		med := newJourneyMediator()
+		med.gate, med.shipAt = gate, gate // the hop above has landed
+		seed := adapterSensing.NewSeedCommandPort(med, nil, nil, nil, nil)
+
+		done := make(chan error, 1)
+		go func() {
+			done <- seed.JumpTo(context.Background(), testPlayerID, "PROBE-A", gate, "X1-BB")
+		}()
+
+		select {
+		case err := <-done:
+			require.NoError(t, err)
+		case <-time.After(tickDeadline):
+			close(med.release)
+			<-done
+			t.Fatalf("the jump was still waiting after %v: %v", tickDeadline, med.commands())
+		}
+
+		require.True(t, med.sentAny("JumpShipCommand"),
+			"a hull standing on the gate did not jump: %v", med.commands())
+		require.False(t, med.sentAny("NavigateDirectCommand"),
+			"moved a hull that was already on its gate: %v", med.commands())
+	})
+}
+
+// TestSeedCommandPort_JumpTo_UsesPositionNotDistance pins the discriminator.
+//
+// Orbitals share coordinates with the body they orbit, so a hull can be ZERO
+// distance from a gate it is not standing on. An implementation that read the
+// query's Distance instead of comparing waypoints would send the jump from
+// off-gate, and the handler would fly the hull there and wait — the exact defect,
+// reintroduced through a plausible shortcut.
+func TestSeedCommandPort_JumpTo_UsesPositionNotDistance(t *testing.T) {
+	med := newJourneyMediator()
+	// Co-located with the gate (an orbital of the same body) but NOT on it.
+	med.gate, med.shipAt = "X1-AA-J1", "X1-AA-J1-MOON"
+	seed := adapterSensing.NewSeedCommandPort(med, nil, nil, nil, nil)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- seed.JumpTo(context.Background(), testPlayerID, "PROBE-A", med.shipAt, "X1-BB")
+	}()
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(tickDeadline):
+		close(med.release)
+		<-done
+		t.Fatalf("a hull co-located with its gate but not on it blocked the tick after %v: %v",
+			tickDeadline, med.commands())
+	}
+
+	require.True(t, med.sentAny("NavigateDirectCommand"),
+		"a hull beside the gate was not moved onto it: %v", med.commands())
+	require.False(t, med.sentAny("JumpShipCommand"),
+		"jumped from beside the gate rather than on it: %v", med.commands())
 }
 
 // TestSeedCommandPort_NavigateTo_DispatchesAndReturns pins the same seam on the

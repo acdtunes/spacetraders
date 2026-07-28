@@ -27,6 +27,10 @@ type seedCall struct{ verb, ship, arg string }
 
 type fakeSeedCommander struct {
 	calls []seedCall
+	// jumpFrom records the hull position each gate-hop step was handed, which
+	// is what an implementation uses to tell "move to the gate" from "jump off
+	// it".
+	jumpFrom []string
 
 	isMarket  map[string]bool
 	jumpErr   error
@@ -37,8 +41,9 @@ type fakeSeedCommander struct {
 	syncErr   error
 }
 
-func (f *fakeSeedCommander) JumpTo(_ context.Context, _ int, ship, system string) error {
+func (f *fakeSeedCommander) JumpTo(_ context.Context, _ int, ship, fromWaypoint, system string) error {
 	f.calls = append(f.calls, seedCall{"jump", ship, system})
+	f.jumpFrom = append(f.jumpFrom, fromWaypoint)
 	return f.jumpErr
 }
 
@@ -943,6 +948,35 @@ func TestAdvanceExpansion_DispatchedSeedJumpsTowardItsTarget(t *testing.T) {
 	}
 	if len(h.ledger.setSeeds) != 0 {
 		t.Fatalf("the state advances only on the SHIP ROW showing arrival, not on the command returning: %v", h.ledger.setSeeds)
+	}
+}
+
+// TestAdvanceExpansion_DispatchedSeedHandsTheHopItsOwnPosition pins the argument
+// the gate hop turns on.
+//
+// A gate crossing is two moves — onto the gate, then off it — and only the hull's
+// own waypoint separates them. The implementation compares it against the gate
+// symbol, so handing down the wrong waypoint (or, worse, leaving it to be guessed
+// from distance, which orbitals make ambiguous) puts the jump back on the branch
+// that flies the hull there and waits. Nothing else in this file would catch it:
+// every other assertion here is satisfied by a jump command being issued at all.
+func TestAdvanceExpansion_DispatchedSeedHandsTheHopItsOwnPosition(t *testing.T) {
+	h := newExpandHarness()
+	h.ledger.systems = []ExpandSystem{
+		{System: "X1-B", Verdict: VerdictPending, UnchartedCount: 3,
+			SeedShip: "PROBE-7", SeedState: SeedStateDispatched},
+	}
+	h.ships.positions = map[string]ShipPos{
+		"PROBE-7": {Waypoint: "X1-A-YARD", NavStatus: navigation.NavStatusDocked, Found: true},
+	}
+
+	if _, err := h.run(t, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if got := h.seed.jumpFrom; len(got) != 1 || got[0] != "X1-A-YARD" {
+		t.Fatalf("the gate hop was handed %v, want exactly the hull's own waypoint [X1-A-YARD] — "+
+			"without it the step cannot tell 'move onto the gate' from 'jump off it'", got)
 	}
 }
 

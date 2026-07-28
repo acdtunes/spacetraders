@@ -95,8 +95,20 @@ type SystemScreener func(ctx context.Context, system string) (ScreenResult, erro
 // normally for a rate-limit token, unlike the parked scans, which are the one
 // class that yields to everyone.
 type SeedCommander interface {
-	// JumpTo sends a hull one gate hop to targetSystem.
-	JumpTo(ctx context.Context, playerID int, shipSymbol, targetSystem string) error
+	// JumpTo advances a hull ONE step of the gate hop to targetSystem: the
+	// in-system move to the gate, or the jump off it.
+	//
+	// fromWaypoint is the hull's CURRENT waypoint, and it is passed rather than
+	// re-read because it is the exact discriminator between those two steps —
+	// "is this hull standing on the gate it leaves from?". The tick has already
+	// read it from the ships table, and an implementation deriving it from
+	// distance instead would be wrong: orbitals share coordinates with the body
+	// they orbit, so a hull can be zero distance from a gate it is not on.
+	//
+	// Two steps rather than one because a gate hop is two physical moves and the
+	// first is a flight. Collapsing them means waiting out that flight inside
+	// the tick, which is the one thing this interface forbids.
+	JumpTo(ctx context.Context, playerID int, shipSymbol, fromWaypoint, targetSystem string) error
 	// NavigateTo moves a hull to a waypoint inside the system it is in.
 	NavigateTo(ctx context.Context, playerID int, shipSymbol, waypoint string) error
 	// Chart publicly charts the waypoint the hull is currently standing on. A
@@ -232,6 +244,11 @@ type ExpandReport struct {
 	// SeedsClaimed counts parked spares turned into charting errands.
 	SeedsClaimed int
 	// Jumped, Navigated and Charted count the seed steps actually commanded.
+	//
+	// Jumped counts GATE-CROSSING steps, not gates crossed: a hop is the move to
+	// the gate and then the jump off it, one per tick, so one crossing normally
+	// counts two. Stated rather than corrected because the counter's job is to
+	// show the engine doing work, and both steps are work.
 	Jumped, Navigated, Charted int
 	// MarketsFound counts seed-revealed markets recorded as placements.
 	MarketsFound int
@@ -873,7 +890,12 @@ func dispatchSeed(
 		return true, nil
 	}
 
-	if err := p.SeedShip.JumpTo(ctx, playerID, s.SeedShip, s.System); err != nil {
+	// ONE STEP of the gate hop — the move to the gate, or the jump off it. Which
+	// one is decided by the hull's own position, which is why it is handed down
+	// rather than re-derived. A hull mid-move is never here at all: advanceSeed
+	// has already returned on the IN_TRANSIT reading above, so the step issued
+	// is always the next one actually available.
+	if err := p.SeedShip.JumpTo(ctx, playerID, s.SeedShip, pos.Waypoint, s.System); err != nil {
 		// The hull did not leave. Holding the errand at DISPATCHED is what makes
 		// the retry free: the next tick re-reads the position and re-issues.
 		return true, nil

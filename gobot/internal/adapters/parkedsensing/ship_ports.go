@@ -37,6 +37,7 @@ import (
 	appSensing "github.com/andrescamacho/spacetraders-go/internal/application/parkedsensing"
 	"github.com/andrescamacho/spacetraders-go/internal/application/probebuy"
 	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
+	shipQueries "github.com/andrescamacho/spacetraders-go/internal/application/ship/queries"
 	shipTypes "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
 	shipyardCmd "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/commands"
 	shipyardQueries "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
@@ -572,15 +573,53 @@ func NewSeedCommandPort(
 	return &SeedCommandPort{mediator: mediator, api: api, players: players, waypoints: waypoints, scanner: scanner}
 }
 
-// JumpTo sends a hull one gate hop to targetSystem. The jump machinery navigates
-// the hull to its own gate first, so the caller only names the destination.
-func (p *SeedCommandPort) JumpTo(ctx context.Context, playerID int, shipSymbol, targetSystem string) error {
+// JumpTo advances a hull ONE step of its gate hop to targetSystem: the in-system
+// move onto the gate, or the jump off it. It returns either way.
+//
+// WHY THE HOP IS SPLIT. A gate crossing is two physical moves, and only the first
+// is a flight. JumpShipCommand does both — it finds the nearest gate, flies the
+// hull there with NavigateRouteCommand, and only then jumps — so sending it from
+// off-gate waits out that flight inside the tick. That is the same defect as the
+// placement mover's, one layer in, and it lands on the stage this engine exists
+// for: expansion is where charting seeds launch, so a seed blocking here stops
+// the fleet discovering new systems at all.
+//
+// Split, each step is a command that returns, and the ships table carries the
+// hull between them exactly as it does everywhere else in this engine: the hop is
+// dispatched, ShipStateScheduler records the landing, and the NEXT tick reads a
+// hull standing on the gate and jumps it. The seed's own machine already skips a
+// hull the ships table reports IN_TRANSIT, so the intervening ticks cost nothing.
+//
+// THE DISCRIMINATOR IS THE WAYPOINT, NEVER THE DISTANCE. fromWaypoint is compared
+// to the gate symbol, because orbitals share coordinates with the body they orbit
+// — a hull can sit at zero distance from a gate it is not standing on, and
+// jumping "from" there would put us straight back on the blocking branch.
+//
+// The jump itself needs no wait: it is instantaneous at the API, leaving only a
+// reactor cooldown, which gates the next JUMP rather than the navigate that
+// follows it — and a cooldown-rejected jump is just the free retry every step in
+// this engine already gets.
+func (p *SeedCommandPort) JumpTo(ctx context.Context, playerID int, shipSymbol, fromWaypoint, targetSystem string) error {
 	pid, err := shared.NewPlayerID(playerID)
 	if err != nil {
 		return err
 	}
 	id := pid.Value()
-	if _, err := p.mediator.Send(sensingCtx(ctx), &shipNav.JumpShipCommand{
+	mctx := sensingCtx(ctx)
+
+	gate, err := p.gateToLeaveFrom(mctx, id, shipSymbol)
+	if err != nil {
+		return err
+	}
+	if gate != fromWaypoint {
+		// Step one: get it onto the gate, dispatch-only. Holding the errand at
+		// DISPATCHED is what makes the next tick pick up where this left off.
+		return dispatchHop(ctx, p.mediator, pid, shipSymbol, gate)
+	}
+
+	// Step two. The hull is ON the gate, so JumpShipCommand's navigate branch is
+	// unreachable and the command is the bare jump it was named for.
+	if _, err := p.mediator.Send(mctx, &shipNav.JumpShipCommand{
 		ShipSymbol:        shipSymbol,
 		DestinationSystem: targetSystem,
 		PlayerID:          &id,
@@ -588,6 +627,28 @@ func (p *SeedCommandPort) JumpTo(ctx context.Context, playerID int, shipSymbol, 
 		return fmt.Errorf("failed to jump %s to %s: %w", shipSymbol, targetSystem, err)
 	}
 	return nil
+}
+
+// gateToLeaveFrom names the jump gate in the hull's CURRENT system that a hop
+// leaves from. Reuses the same query JumpShipCommand uses to pick one, so the
+// gate this port moves the hull to is by construction the gate that command
+// would have chosen — there is no window in which the two disagree and the hull
+// is flown to one gate and jumped from another.
+func (p *SeedCommandPort) gateToLeaveFrom(ctx context.Context, playerID int, shipSymbol string) (string, error) {
+	res, err := p.mediator.Send(ctx, &shipQueries.FindNearestJumpGateQuery{
+		ShipSymbol: shipSymbol,
+		PlayerID:   &playerID,
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to find the jump gate %s leaves from: %w", shipSymbol, err)
+	}
+	resp, ok := res.(*shipQueries.FindNearestJumpGateResponse)
+	if !ok || resp.JumpGate == nil || resp.JumpGate.Symbol == "" {
+		// Fail closed: never move a hull toward a gate we cannot name. The
+		// errand holds and the next tick asks again.
+		return "", fmt.Errorf("no jump gate could be named for %s", shipSymbol)
+	}
+	return resp.JumpGate.Symbol, nil
 }
 
 // NavigateTo dispatches a hull to a waypoint inside the system it is already in

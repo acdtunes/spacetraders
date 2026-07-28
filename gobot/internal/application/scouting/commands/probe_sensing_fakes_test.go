@@ -635,7 +635,7 @@ type fakeSeedCommander struct {
 	hasMkt  map[string]bool
 }
 
-func (f *fakeSeedCommander) JumpTo(context.Context, int, string, string) error {
+func (f *fakeSeedCommander) JumpTo(context.Context, int, string, string, string) error {
 	f.calls.hit("jump")
 	return nil
 }
