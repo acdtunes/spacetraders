@@ -135,11 +135,18 @@ func TestMarketReads_AreStrictlyPlayerScoped(t *testing.T) {
 // --- the catalog ----------------------------------------------------------------
 
 func waypointRow(symbol, system string, traits []string) persistence.WaypointModel {
+	return typedWaypointRow(symbol, system, "PLANET", traits)
+}
+
+// typedWaypointRow writes a waypoint whose TYPE matters. Type is visible without
+// charting — only traits are withheld — which is what lets the charting tour
+// filter and order by it.
+func typedWaypointRow(symbol, system, waypointType string, traits []string) persistence.WaypointModel {
 	encoded, _ := json.Marshal(traits)
 	return persistence.WaypointModel{
 		WaypointSymbol: symbol,
 		SystemSymbol:   system,
-		Type:           "PLANET",
+		Type:           waypointType,
 		Traits:         string(encoded),
 		SyncedAt:       time.Now().UTC().Format(time.RFC3339),
 	}
@@ -254,6 +261,131 @@ func TestListUnchartedCount_AndOrder(t *testing.T) {
 // because the answer came from local rows. An implementation that reached for the
 // API would turn every unbuyable placement into a live call — hardest exactly
 // when the API is already degraded.
+// liveShapedSystem mirrors the waypoint mix of the systems actually being
+// charted: mostly ASTEROID, one ORBITAL_STATION, and a handful of other bodies
+// including the lone FUEL_STATION that is the live X1-AJ10 case.
+//
+// THE STATION IS NAMED LAST ON PURPOSE. Under the old flat alphabetical order
+// X1-AA2-Z9 sorted behind every other waypoint here, so an ordering assertion
+// against a fixture where the station happened to sort early would pass without
+// the priority rule existing at all. Named this way, only a real shipyard-first
+// ordering can put it in front.
+func liveShapedSystem() []persistence.WaypointModel {
+	uncharted := []string{"UNCHARTED"}
+	return []persistence.WaypointModel{
+		typedWaypointRow("X1-AA2-A1", "X1-AA2", "ASTEROID", uncharted),
+		typedWaypointRow("X1-AA2-A2", "X1-AA2", "ASTEROID", uncharted),
+		typedWaypointRow("X1-AA2-A3", "X1-AA2", "ASTEROID", uncharted),
+		typedWaypointRow("X1-AA2-B1", "X1-AA2", "MOON", uncharted),
+		typedWaypointRow("X1-AA2-C1", "X1-AA2", "PLANET", uncharted),
+		typedWaypointRow("X1-AA2-D1", "X1-AA2", "GAS_GIANT", uncharted),
+		typedWaypointRow("X1-AA2-F1", "X1-AA2", "FUEL_STATION", uncharted),
+		typedWaypointRow("X1-AA2-Z9", "X1-AA2", "ORBITAL_STATION", uncharted),
+		// Already charted: never charting work, whatever its type.
+		typedWaypointRow("X1-AA2-M1", "X1-AA2", "MOON", []string{"MARKETPLACE"}),
+	}
+}
+
+// THE REORDER, with the whole set still present.
+//
+// Both halves of this assertion matter and neither is sufficient alone. The
+// ORDER is the speedup: the station comes first because a charted yard makes
+// the system buyable, then the market types so a parked scanner can be placed
+// on them and start producing trade data while the tour continues, then the
+// rest. The COMPLETENESS is the safety: all eight uncharted waypoints are still
+// handed to the seed, so the map still finishes.
+func TestUnchartedWaypoints_OrdersByValueWithoutDroppingAnyWaypoint(t *testing.T) {
+	db := newShipPortsDB(t)
+	require.NoError(t, db.Create(liveShapedSystem()).Error)
+
+	order, err := newCatalogPort(db).UnchartedWaypoints(context.Background(), "X1-AA2")
+	require.NoError(t, err)
+
+	require.Equal(t, []string{
+		"X1-AA2-Z9", // ORBITAL_STATION — 523 of the 567 shipyards ever seen
+		"X1-AA2-B1", // MOON        \
+		"X1-AA2-C1", // PLANET       > market-bearing, alphabetical within the tier
+		"X1-AA2-F1", // FUEL_STATION/  (1129 of 1129 carry a market)
+		"X1-AA2-D1", // GAS_GIANT — 72 of 546, unproven
+		"X1-AA2-A1", // ASTEROID  \
+		"X1-AA2-A2", // ASTEROID   > 0 of 3297, so last — but still charted
+		"X1-AA2-A3", // ASTEROID  /
+	}, order,
+		"the station must be visited FIRST despite sorting last alphabetically, and every asteroid must still be in the list")
+
+	require.Len(t, order, 8, "the tour is still EXHAUSTIVE: reordering must never drop a waypoint from it")
+}
+
+// A system of nothing but asteroids is still a full tour. Barren is a sorting
+// tier, not an exemption — this is the shape of X1-KC84 (51 asteroids) and five
+// others, and every one of those waypoints is still charted.
+func TestUnchartedWaypoints_AnAllAsteroidSystemIsStillFullyToured(t *testing.T) {
+	db := newShipPortsDB(t)
+	require.NoError(t, db.Create(&[]persistence.WaypointModel{
+		typedWaypointRow("X1-AA3-A2", "X1-AA3", "ASTEROID", []string{"UNCHARTED"}),
+		typedWaypointRow("X1-AA3-A1", "X1-AA3", "ASTEROID", []string{"UNCHARTED"}),
+	}).Error)
+	port := newCatalogPort(db)
+
+	order, err := port.UnchartedWaypoints(context.Background(), "X1-AA3")
+	require.NoError(t, err)
+	require.Equal(t, []string{"X1-AA3-A1", "X1-AA3-A2"}, order,
+		"both asteroids are toured, in a deterministic order — the seed still has work here")
+
+	count, err := port.ListUnchartedCount(context.Background(), "X1-AA3")
+	require.NoError(t, err)
+	require.Equal(t, 2, count, "and the completion signal still counts them")
+}
+
+// THE COHERENCE INVARIANT, asserted directly rather than inferred.
+//
+// ListUnchartedCount is the tour's COMPLETION SIGNAL and UnchartedWaypoints is
+// its WORK LIST. The engine treats them as two views of one set: the screen
+// stores the count in uncharted_count and verdictFor will not write a system off
+// durably until it reads zero, while the tour ends only when the list is empty.
+// If the count ever exceeded the list, the tour would finish and the count would
+// never reach zero — the system pinned PENDING forever, seedlessTargets sending
+// it probes endlessly, and since only IN_SCOPE/NO_WHITELIST systems propagate
+// the frontier, expansion stalled there permanently.
+//
+// A pure reorder cannot break this — the two reads see identical rows and differ
+// only in sequence — and that is precisely why it is worth pinning: it is the
+// property that would silently die the moment anyone turned this ordering into a
+// filter.
+func TestUnchartedReads_CountAndWorkListCoverTheSameSet(t *testing.T) {
+	db := newShipPortsDB(t)
+	require.NoError(t, db.Create(liveShapedSystem()).Error)
+	port := newCatalogPort(db)
+
+	order, err := port.UnchartedWaypoints(context.Background(), "X1-AA2")
+	require.NoError(t, err)
+	count, err := port.ListUnchartedCount(context.Background(), "X1-AA2")
+	require.NoError(t, err)
+
+	require.Equal(t, len(order), count,
+		"the completion signal must count exactly the waypoints a seed will be sent to, and nothing else")
+	require.Equal(t, 8, count, "eight uncharted waypoints, and the tour visits all eight")
+}
+
+// The barren tier must match the type EXACTLY. ASTEROID_BASE and
+// ENGINEERED_ASTEROID share its prefix and are 100% market-bearing — 345 of 345
+// and 22 of 22 — so a prefix test would bury 367 guaranteed markets behind every
+// barren rock in the system while still looking like a working ordering.
+func TestUnchartedWaypoints_AsteroidPrefixedTypesRankWithTheMarkets(t *testing.T) {
+	db := newShipPortsDB(t)
+	require.NoError(t, db.Create(&[]persistence.WaypointModel{
+		// Named so that alphabetical order would put the bare asteroid FIRST.
+		typedWaypointRow("X1-AA4-A1", "X1-AA4", "ASTEROID", []string{"UNCHARTED"}),
+		typedWaypointRow("X1-AA4-B1", "X1-AA4", "ASTEROID_BASE", []string{"UNCHARTED"}),
+		typedWaypointRow("X1-AA4-E1", "X1-AA4", "ENGINEERED_ASTEROID", []string{"UNCHARTED"}),
+	}).Error)
+
+	order, err := newCatalogPort(db).UnchartedWaypoints(context.Background(), "X1-AA4")
+	require.NoError(t, err)
+	require.Equal(t, []string{"X1-AA4-B1", "X1-AA4-E1", "X1-AA4-A1"}, order,
+		"only the bare ASTEROID is barren; its two prefix-sharing cousins always carry a market and must be reached first")
+}
+
 func TestListProbeYards_PricedFirstThenTraitFallback(t *testing.T) {
 	t.Run("priced inventory, cheapest first", func(t *testing.T) {
 		db := newShipPortsDB(t)

@@ -73,9 +73,22 @@ type GateNeighbours interface {
 type UnchartedCatalog interface {
 	// UnchartedWaypoints returns the system's uncharted waypoints IN THE ORDER
 	// THEY SHOULD BE VISITED. A seed charts the first one it is given, so an
-	// implementation is free to order them by proximity to shorten the tour;
-	// any deterministic order is correct, because the tour is exhaustive and
-	// ordering changes its length rather than its outcome.
+	// implementation is free to order them by proximity or by expected value;
+	// any deterministic order is correct, because the tour is EXHAUSTIVE —
+	// ordering decides WHEN each waypoint is reached, never WHETHER it is.
+	//
+	// EVERY WAYPOINT IS RETURNED. An implementation must not omit one on the
+	// grounds that it looks unrewarding: the same set is what
+	// WaypointCatalog.ListUnchartedCount counts, and that count is this tour's
+	// completion signal. A list narrower than the count would leave the tour
+	// finished while the count never reached zero — the system never written
+	// off, and never stopping being sent seeds.
+	//
+	// The ordering freedom is not cosmetic, though. It decides how long the
+	// fleet waits for the shipyards and markets a system holds: a seed working
+	// an arbitrary order can spend fifty hours on barren waypoints before
+	// revealing the one market a parked scanner could have been sitting on the
+	// whole time.
 	UnchartedWaypoints(ctx context.Context, system string) ([]string, error)
 }
 

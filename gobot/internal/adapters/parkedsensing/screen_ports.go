@@ -113,23 +113,47 @@ func (p *WaypointCatalogPort) ListUnchartedCount(ctx context.Context, system str
 }
 
 // UnchartedWaypoints returns the system's uncharted waypoints in the order a
-// charting seed should visit them.
+// charting seed should visit them: SHIPYARD-BEARING TYPES FIRST, then
+// market-bearing ones, then the rest, alphabetically inside each tier.
 //
-// The order is alphabetical, which is arbitrary but DETERMINISTIC — and
-// determinism is what the tour needs, not optimality. A seed charts the first
-// waypoint it is handed and re-derives the list next tick, so an unstable order
-// would let it oscillate between two waypoints and never finish; a suboptimal
-// order only makes the exhaustive tour longer.
+// THE SET IS UNCHANGED AND THE TOUR IS STILL EXHAUSTIVE. Every uncharted
+// waypoint in the system is returned, asteroids included — this reorders the
+// same list the tour always walked. That is what keeps ListUnchartedCount above
+// a valid completion signal without any coordination between the two: they read
+// the same rows, so the count still falls to zero exactly when the tour runs
+// out of stops.
+//
+// The tier is the point and the alphabet is only the tie-break. A charted
+// shipyard makes its system buyable, which funds local spares, which stage more
+// seeds; a charted market lets a parked scanner be placed on it and start
+// producing trade data while the tour continues. The old flat alphabetical order
+// left both to chance, which is how a seed comes to spend fifty hours on
+// asteroids before revealing the one market in the system. Type is the only
+// evidence available before the flight, because the SHIPYARD and MARKETPLACE
+// traits are themselves hidden until the waypoint is charted; see
+// shared.ChartPriority.
+//
+// The order remains totally deterministic, which is what the tour requires: a
+// seed charts the head of this list and re-derives it next tick, so an unstable
+// order would let it oscillate between two waypoints and never finish. Sorting
+// on the pair (priority, symbol) — rather than by priority alone — is what keeps
+// that true regardless of the order the rows arrive in.
 func (p *WaypointCatalogPort) UnchartedWaypoints(ctx context.Context, system string) ([]string, error) {
 	waypoints, err := p.waypoints.ListBySystemWithTrait(ctx, system, unchartedTrait)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list uncharted waypoints in %q: %w", system, err)
 	}
+	sort.Slice(waypoints, func(i, j int) bool {
+		left, right := shared.ChartPriority(waypoints[i].Type), shared.ChartPriority(waypoints[j].Type)
+		if left != right {
+			return left < right
+		}
+		return waypoints[i].Symbol < waypoints[j].Symbol
+	})
 	out := make([]string, 0, len(waypoints))
 	for _, waypoint := range waypoints {
 		out = append(out, waypoint.Symbol)
 	}
-	sort.Strings(out)
 	return out, nil
 }
 

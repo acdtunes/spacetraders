@@ -33,6 +33,12 @@ type WaypointCatalog interface {
 	ListMarketWaypoints(ctx context.Context, system string) ([]string, error)
 	// ListUnchartedCount reports how many waypoints in the system remain
 	// uncharted. Non-zero means the screen has not seen the whole system yet.
+	//
+	// It counts exactly the set UnchartedCatalog.UnchartedWaypoints hands a seed
+	// to visit — the charting tour's completion signal, which verdictFor
+	// requires to read zero before it may write a system off durably. The two
+	// must never disagree about WHICH waypoints are outstanding; they are free
+	// to disagree about the order.
 	ListUnchartedCount(ctx context.Context, system string) (int, error)
 	// ListProbeYards returns the system's shipyards that sell probes, cheapest
 	// first. Resolving "sells probes" — priced inventory, falling back to a bare
