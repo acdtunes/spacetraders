@@ -444,9 +444,13 @@ func TestScreenSystemStaysPendingWhenRemoteFetchFails(t *testing.T) {
 
 // --- yards -------------------------------------------------------------------
 
-// (e) An in-scope system with a probe-selling yard gets one YARD slot, at the
-// first yard the catalogue offers.
-func TestScreenSystemPlansYardSlot(t *testing.T) {
+// (e) An in-scope system gets a YARD slot for EVERY shipyard it offers, in the
+// catalogue's cheapest-first order — not just the first one.
+//
+// Buying any hull requires a ship already standing at that shipyard, so a yard
+// we never place at is a counter we can never buy from. Slotting only yards[0]
+// left every other shipyard in the system permanently unbuyable.
+func TestScreenSystemPlansAYardSlotForEveryYard(t *testing.T) {
 	h := newHarness()
 	h.catalog.markets = []string{"X1-AA11-A1"}
 	h.catalog.yards = []string{"X1-AA11-Y1", "X1-AA11-Y2"}
@@ -457,9 +461,101 @@ func TestScreenSystemPlansYardSlot(t *testing.T) {
 	want := []PlannedSlot{
 		{Waypoint: "X1-AA11-A1", Kind: SlotKindMarket, WhitelistGoods: []string{"IRON_ORE"}},
 		{Waypoint: "X1-AA11-Y1", Kind: SlotKindYard},
+		{Waypoint: "X1-AA11-Y2", Kind: SlotKindYard},
 	}
 	if !reflect.DeepEqual(result.Slots, want) {
 		t.Fatalf("Slots =\n %+v\nwant %+v", result.Slots, want)
+	}
+}
+
+// A system with exactly ONE shipyard is planned exactly as it always was: one
+// MARKET slot, one YARD slot. The every-yard change must be a pure extension —
+// if it moved the single-yard case at all it would be re-planning the 500-odd
+// one-yard systems the fleet already holds.
+func TestScreenSystemSingleYardSystemIsUnchanged(t *testing.T) {
+	h := newHarness()
+	h.catalog.markets = []string{"X1-AA11-A1"}
+	h.catalog.yards = []string{"X1-AA11-Y1"}
+	h.goods.goods["X1-AA11-A1"] = []string{"IRON_ORE"}
+
+	result := h.screen(t, whitelistOf("IRON_ORE"))
+
+	want := []PlannedSlot{
+		{Waypoint: "X1-AA11-A1", Kind: SlotKindMarket, WhitelistGoods: []string{"IRON_ORE"}},
+		{Waypoint: "X1-AA11-Y1", Kind: SlotKindYard},
+	}
+	if !reflect.DeepEqual(result.Slots, want) {
+		t.Fatalf("Slots =\n %+v\nwant %+v", result.Slots, want)
+	}
+}
+
+// A waypoint listed TWICE by the yard catalogue still claims exactly one slot.
+//
+// No adapter returns duplicates today (the probe read is primary-keyed per
+// waypoint, the heavy read dedupes explicitly, the trait fallback lists distinct
+// waypoints), but nothing in the PORT CONTRACT promises it, and the cost of the
+// invariant failing is a duplicate placement for one waypoint — which is a
+// duplicate probe purchase. The guard is cheap; this pins that it is real.
+func TestScreenSystemSlotsADuplicatedYardOnlyOnce(t *testing.T) {
+	h := newHarness()
+	h.catalog.markets = []string{"X1-AA11-A1"}
+	h.catalog.yards = []string{"X1-AA11-Y1", "X1-AA11-Y1"}
+	h.goods.goods["X1-AA11-A1"] = []string{"IRON_ORE"}
+
+	result := h.screen(t, whitelistOf("IRON_ORE"))
+
+	want := []PlannedSlot{
+		{Waypoint: "X1-AA11-A1", Kind: SlotKindMarket, WhitelistGoods: []string{"IRON_ORE"}},
+		{Waypoint: "X1-AA11-Y1", Kind: SlotKindYard},
+	}
+	if !reflect.DeepEqual(result.Slots, want) {
+		t.Fatalf("a duplicated yard must claim one slot, got\n %+v\nwant %+v", result.Slots, want)
+	}
+}
+
+// THE CASE THE OWNER'S RULE TURNS ON: three shipyards in one system, one of
+// which is ALSO a whitelisted market.
+//
+// All three waypoints must end up covered — two fresh YARD slots plus the MARKET
+// slot that already covers the third — and no waypoint may claim two slots. The
+// collision half is load-bearing: the ledger is waypoint-keyed, so a second slot
+// on the co-located yard would overwrite the MARKET row (losing the goods list)
+// rather than add a placement, and would authorise buying a second probe for a
+// waypoint already covered.
+func TestScreenSystemCoversEveryYardWithoutDoubleSlottingTheMarketYard(t *testing.T) {
+	h := newHarness()
+	// Y2 is the yard that is also a whitelisted market.
+	h.catalog.markets = []string{"X1-AA11-Y2"}
+	h.catalog.yards = []string{"X1-AA11-Y1", "X1-AA11-Y2", "X1-AA11-Y3"}
+	h.goods.goods["X1-AA11-Y2"] = []string{"IRON_ORE"}
+
+	result := h.screen(t, whitelistOf("IRON_ORE"))
+
+	byWaypoint := map[string][]string{}
+	for _, slot := range result.Slots {
+		byWaypoint[slot.Waypoint] = append(byWaypoint[slot.Waypoint], slot.Kind)
+	}
+	for _, yard := range []string{"X1-AA11-Y1", "X1-AA11-Y2", "X1-AA11-Y3"} {
+		kinds, covered := byWaypoint[yard]
+		if !covered {
+			t.Fatalf("shipyard %q got no placement at all — it can never be bought at: %+v", yard, result.Slots)
+		}
+		if len(kinds) != 1 {
+			t.Fatalf("shipyard %q claimed %d slots (%v), want exactly 1 — a waypoint-keyed ledger would overwrite, not add", yard, len(kinds), kinds)
+		}
+	}
+	// The co-located yard keeps the MARKET kind, which is the one carrying goods.
+	if got := byWaypoint["X1-AA11-Y2"][0]; got != SlotKindMarket {
+		t.Fatalf("the yard that is also a market must stay kind %q, got %q", SlotKindMarket, got)
+	}
+	// The two shipyard-only waypoints are the new YARD rows.
+	for _, yard := range []string{"X1-AA11-Y1", "X1-AA11-Y3"} {
+		if got := byWaypoint[yard][0]; got != SlotKindYard {
+			t.Fatalf("shipyard %q should be kind %q, got %q", yard, SlotKindYard, got)
+		}
+	}
+	if len(result.Slots) != 3 {
+		t.Fatalf("expected exactly 3 placements for 3 waypoints, got %d: %+v", len(result.Slots), result.Slots)
 	}
 }
 

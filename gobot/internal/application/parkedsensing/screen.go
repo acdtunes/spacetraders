@@ -441,7 +441,8 @@ func verdictFor(hasMatch, allResolved, catalogKnown bool, unchartedCount int) st
 }
 
 // planSlots turns the surviving markets into placements: one MARKET slot each,
-// plus at most one YARD slot for the system's first probe-selling yard.
+// plus a YARD slot for EVERY shipyard in the system that no market slot already
+// covers.
 func planSlots(ctx context.Context, p ScreenPorts, system string, hits []screenedMarket) ([]PlannedSlot, error) {
 	slots := make([]PlannedSlot, 0, len(hits)+1)
 	placed := make(map[string]bool, len(hits))
@@ -459,9 +460,20 @@ func planSlots(ctx context.Context, p ScreenPorts, system string, hits []screene
 	if err != nil {
 		return nil, fmt.Errorf("failed to list probe yards in %q: %w", system, err)
 	}
-	// One yard per system, and only if nothing is placed there already: the
-	// ledger holds one slot per waypoint, so a second slot on the same waypoint
-	// would overwrite the first rather than place another probe.
+	// EVERY yard the system offers, and only where nothing is placed there
+	// already: the ledger holds one slot per waypoint, so a second slot on the
+	// same waypoint would overwrite the first rather than place another probe.
+	//
+	// EVERY yard rather than the cheapest one, because buying ANY hull requires a
+	// ship of ours already standing at that shipyard. A yard we never place at is
+	// a counter we can never buy from, however cheap it is — and seed probes, the
+	// hulls this engine explores with, can only be ordered at a staffed
+	// probe-selling yard. Slotting only the first left every other shipyard in the
+	// system permanently unbuyable, which is what capped exploration.
+	//
+	// `placed` is CARRIED THROUGH this loop, not just read from it: it is what
+	// keeps the one-slot-per-waypoint invariant when a waypoint appears twice in
+	// the yard list, and it is why the loop cannot be collapsed into an append.
 	//
 	// CONTRACT — probe presence at a yard is WAYPOINT-wise, never KIND-wise.
 	// When a probe-selling yard is also a whitelisted market, the MARKET slot
@@ -472,9 +484,10 @@ func planSlots(ctx context.Context, p ScreenPorts, system string, hits []screene
 	// filtering for kind == YARD would miss the probe standing right there and
 	// buy a second one for the same waypoint.
 	// Heavy-selling yards earn a quartermaster too (spec §6): a parked probe makes a
-	// future HEAVY purchase there instant. They are a FALLBACK behind probe yards, not an
+	// future HEAVY purchase there instant. They remain a FALLBACK behind probe yards, not an
 	// override — probes are what this engine buys, so the probe-priced ordering above keeps
-	// precedence, and the one-yard-per-system rule is unchanged.
+	// precedence and a system offering any probe yard never consults the heavy list at all.
+	// Only the ONE-yard limit is lifted here; the probe-first precedence is untouched.
 	if len(yards) == 0 {
 		heavy, err := p.Waypoints.ListHeavyYards(ctx, system)
 		if err != nil {
@@ -482,8 +495,12 @@ func planSlots(ctx context.Context, p ScreenPorts, system string, hits []screene
 		}
 		yards = heavy
 	}
-	if len(yards) > 0 && !placed[yards[0]] {
-		slots = append(slots, PlannedSlot{Waypoint: yards[0], Kind: SlotKindYard})
+	for _, yard := range yards {
+		if placed[yard] {
+			continue
+		}
+		slots = append(slots, PlannedSlot{Waypoint: yard, Kind: SlotKindYard})
+		placed[yard] = true
 	}
 	return slots, nil
 }
