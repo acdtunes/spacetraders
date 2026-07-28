@@ -194,15 +194,24 @@ func (p *WaypointCatalogPort) UnchartedWaypoints(ctx context.Context, system str
 // unbuyable placement into a live call, hardest exactly when the API is already
 // degraded, which is the failure mode the attempt cap exists to prevent.
 //
-// Two sources, in order:
+// Two sources, UNIONED — never either/or:
 //
 //  1. shipyard_inventory rows offering SHIP_PROBE, ordered by the price last
 //     scanned. These are yards we have priced and can rank.
-//  2. failing that, the system's bare SHIPYARD-trait waypoints, as UNPRICED
+//  2. ALONGSIDE them, the system's bare SHIPYARD-trait waypoints, as UNPRICED
 //     candidates. A yard nobody has scanned still sells probes; excluding it
-//     would leave a system with exactly one, never-visited shipyard permanently
-//     unbuyable, and the drain prices every candidate live before it spends
-//     anyway.
+//     would leave a never-visited shipyard permanently unbuyable, and the drain
+//     prices every candidate live before it spends anyway.
+//
+// Source 2 is NOT conditional on source 1 being empty, and that is the whole
+// point. It used to be: one priced yard anywhere in the system switched the trait
+// fallback off for every waypoint in it, so each yard we had not yet priced went
+// missing — 81 of 614 charted shipyards, measured live. Whether one yard is
+// priced is evidence about THAT yard and says nothing about its neighbour.
+//
+// Membership is decided per waypoint by appSensing.ProbeYardIsCandidate, the shared
+// probe-stock rule, so a yard priced and found probe-less is excluded here on the
+// same reading the buy queue would refuse it on.
 //
 // ListHeavyYards returns the system's shipyards that sell HEAVY hulls, cheapest
 // first — the quartermaster-coverage half of the heavy-trade design (spec §6): a
@@ -314,26 +323,79 @@ func (p *WaypointCatalogPort) ListProbeYards(ctx context.Context, system string)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list probe yards in %q: %w", system, err)
 	}
-	if len(rows) > 0 {
-		out := make([]string, 0, len(rows))
-		for _, row := range rows {
-			out = append(out, row.WaypointSymbol)
-		}
-		return out, nil
-	}
-
-	waypoints, err := p.waypoints.ListBySystemWithTrait(ctx, system, shipyardTrait)
+	// THE CANDIDATE UNIVERSE, built PER WAYPOINT rather than per system: every
+	// waypoint already carrying a probe row, plus every charted SHIPYARD-trait
+	// waypoint. The union is what makes the two halves independent.
+	//
+	// This used to be an either/or — `if len(rows) > 0 { return priced }`, and the
+	// trait fallback only when the system held NOT ONE probe row anywhere. One
+	// priced yard therefore switched the fallback off for the WHOLE system, and
+	// every yard we had not yet priced became invisible: not merely unranked,
+	// absent. Measured live, 81 of 614 charted shipyards were lost that way, and a
+	// yard nothing can see is a counter we can never buy at, because buying needs a
+	// hull already standing there. The evidence a yard IS priced says nothing about
+	// its neighbour, so the decision belongs to each waypoint on its own.
+	traitYards, err := p.waypoints.ListBySystemWithTrait(ctx, system, shipyardTrait)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list shipyards in %q: %w", system, err)
 	}
-	out := make([]string, 0, len(waypoints))
-	for _, waypoint := range waypoints {
-		if hasTrait(waypoint, unchartedTrait) {
+	seen := make(map[string]bool, len(rows)+len(traitYards))
+	universe := make([]string, 0, len(rows)+len(traitYards))
+	// Priced first, so the cheapest-first order the query already applied survives
+	// into the evidenced half below.
+	for _, row := range rows {
+		if seen[row.WaypointSymbol] {
 			continue
 		}
-		out = append(out, waypoint.Symbol)
+		seen[row.WaypointSymbol] = true
+		universe = append(universe, row.WaypointSymbol)
 	}
-	sort.Strings(out)
+	// Then the trait yards, in symbol order, as the fallback always returned them.
+	// UNCHARTED is not yet a yard — its traits are a guess until someone charts it.
+	// Note the priced half above is NOT trait-filtered: a yard we have actually
+	// priced is evidenced by the reading itself, and may have no waypoint row at
+	// all.
+	traitOnly := make([]string, 0, len(traitYards))
+	for _, waypoint := range traitYards {
+		if seen[waypoint.Symbol] || hasTrait(waypoint, unchartedTrait) {
+			continue
+		}
+		seen[waypoint.Symbol] = true
+		traitOnly = append(traitOnly, waypoint.Symbol)
+	}
+	sort.Strings(traitOnly)
+	universe = append(universe, traitOnly...)
+
+	// THE SHARED RULE DECIDES, not this query. appSensing.ProbeYardIsCandidate is
+	// the exported face of readProbeStock — the same classification the buy queue's
+	// skipKnownProbeless and seed staging's stagedProbeStockAccepts consult — so a
+	// yard priced and found probe-less is dropped here for exactly the reason the
+	// drain would refuse it, and a STALE probe-less reading degrades to "never
+	// priced" and is reconsidered. Re-deriving that in SQL is what would let the
+	// three engines drift.
+	//
+	// EVIDENCE-FIRST ORDER COMES FROM THE UNION ABOVE, not from a second sort.
+	// universe is priced rows (cheapest first) followed by trait-only yards (symbol
+	// order), and each half can classify only one way: a yard drawn from a priced
+	// probe row is SELLS or NONE, a trait-only yard is UNREAD or NONE. So every
+	// survivor of the first half is evidence and every survivor of the second is a
+	// guess, and filtering IN PLACE preserves both the ranking and the
+	// cheapest-first order inside it. A partition here would re-sort nothing.
+	//
+	// Ranking a guess last must never mean dropping it — an unpriced yard is how
+	// the fleet learns where probes are sold at all.
+	now := time.Now()
+	out := make([]string, 0, len(universe))
+	for _, yard := range universe {
+		candidate, err := appSensing.ProbeYardIsCandidate(ctx, p, p.playerID, yard, now)
+		if err != nil {
+			return nil, fmt.Errorf("failed to classify probe stock at %q: %w", yard, err)
+		}
+		if !candidate {
+			continue
+		}
+		out = append(out, yard)
+	}
 	return out, nil
 }
 

@@ -430,6 +430,84 @@ func TestListProbeYards_PricedFirstThenTraitFallback(t *testing.T) {
 	})
 }
 
+// THE PER-WAYPOINT RULE, and the regression this whole change exists for.
+//
+// A single priced yard used to switch the SHIPYARD-trait fallback off for the
+// WHOLE system, so every yard we had not yet priced went missing — not ranked
+// last, absent. A yard nothing can see is a counter we can never buy at, because
+// buying requires a hull already standing there. Measured live: 81 of 614 charted
+// shipyards were invisible to both yard ports for this reason.
+//
+// Whether Y1 is priced is evidence about Y1. It says nothing about Y2.
+func TestListProbeYards_UnpricedYardSurvivesAPricedNeighbour(t *testing.T) {
+	db := newShipPortsDB(t)
+	require.NoError(t, db.Create(&[]persistence.WaypointModel{
+		waypointRow("X1-DD4-Y1", "X1-DD4", []string{"SHIPYARD"}),
+		waypointRow("X1-DD4-Y2", "X1-DD4", []string{"SHIPYARD"}),
+	}).Error)
+	require.NoError(t, db.Create(&persistence.ShipyardInventoryModel{
+		PlayerID: testPlayerID, SystemSymbol: "X1-DD4", WaypointSymbol: "X1-DD4-Y1",
+		ShipType: "SHIP_PROBE", PurchasePrice: 40_000, LastScanned: time.Now().UTC(),
+	}).Error)
+
+	yards, err := newCatalogPort(db).ListProbeYards(context.Background(), "X1-DD4")
+	require.NoError(t, err)
+	require.Equal(t, []string{"X1-DD4-Y1", "X1-DD4-Y2"}, yards,
+		"both shipyards are candidates; the priced one leads because it is evidence, the other is a guess we still have to be able to see")
+}
+
+// A yard priced and found PROBE-LESS stays out, even though the fallback is now
+// unconditional. That exclusion is correct and predates this change: it is the
+// standing fact the buy queue's skipKnownProbeless already refuses on, and
+// readmitting it would write wants that are scanned, learn nothing, and are
+// refused for the memo's whole TTL.
+func TestListProbeYards_PricedAndProbelessYardStaysExcluded(t *testing.T) {
+	db := newShipPortsDB(t)
+	require.NoError(t, db.Create(&[]persistence.WaypointModel{
+		waypointRow("X1-EE5-Y1", "X1-EE5", []string{"SHIPYARD"}),
+		waypointRow("X1-EE5-Y2", "X1-EE5", []string{"SHIPYARD"}),
+	}).Error)
+	require.NoError(t, db.Create(&[]persistence.ShipyardInventoryModel{
+		{PlayerID: testPlayerID, SystemSymbol: "X1-EE5", WaypointSymbol: "X1-EE5-Y1",
+			ShipType: "SHIP_PROBE", PurchasePrice: 40_000, LastScanned: time.Now().UTC()},
+		// Read RECENTLY, and it carries no probe listing.
+		{PlayerID: testPlayerID, SystemSymbol: "X1-EE5", WaypointSymbol: "X1-EE5-Y2",
+			ShipType: "SHIP_EXPLORER", PurchasePrice: 10, LastScanned: time.Now().UTC()},
+	}).Error)
+
+	yards, err := newCatalogPort(db).ListProbeYards(context.Background(), "X1-EE5")
+	require.NoError(t, err)
+	require.Equal(t, []string{"X1-EE5-Y1"}, yards,
+		"a yard we priced and found probe-less is a standing fact, not a gap to fill")
+}
+
+// A STALE probe-less reading is reconsidered, because membership is decided by
+// the shared probe-stock rule and that rule degrades a stale NONE to UNREAD.
+//
+// This is what proves the adapter CONSULTS readProbeStock rather than re-deriving
+// "has a probe row" in SQL: a hand-rolled query would keep Y2 excluded forever and
+// write off every counter that has since restocked.
+func TestListProbeYards_StaleProbelessReadingIsReconsidered(t *testing.T) {
+	db := newShipPortsDB(t)
+	require.NoError(t, db.Create(&[]persistence.WaypointModel{
+		waypointRow("X1-FF6-Y1", "X1-FF6", []string{"SHIPYARD"}),
+		waypointRow("X1-FF6-Y2", "X1-FF6", []string{"SHIPYARD"}),
+	}).Error)
+	require.NoError(t, db.Create(&[]persistence.ShipyardInventoryModel{
+		{PlayerID: testPlayerID, SystemSymbol: "X1-FF6", WaypointSymbol: "X1-FF6-Y1",
+			ShipType: "SHIP_PROBE", PurchasePrice: 40_000, LastScanned: time.Now().UTC()},
+		// Last read well beyond the memo TTL: no longer a fact worth acting on.
+		{PlayerID: testPlayerID, SystemSymbol: "X1-FF6", WaypointSymbol: "X1-FF6-Y2",
+			ShipType: "SHIP_EXPLORER", PurchasePrice: 10,
+			LastScanned: time.Now().UTC().Add(-24 * time.Hour)},
+	}).Error)
+
+	yards, err := newCatalogPort(db).ListProbeYards(context.Background(), "X1-FF6")
+	require.NoError(t, err)
+	require.Equal(t, []string{"X1-FF6-Y1", "X1-FF6-Y2"}, yards,
+		"a stale probe-less reading degrades to never-priced, so a restocked counter is reconsidered")
+}
+
 // --- the ledger's goods column ---------------------------------------------------
 
 // ExistingSlots must SUPPLY the recorded goods, not merely report that a slot

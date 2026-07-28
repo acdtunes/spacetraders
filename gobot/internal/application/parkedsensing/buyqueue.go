@@ -217,6 +217,46 @@ func readProbeStock(ctx context.Context, memo ProbeListingMemo, playerID int, ya
 	}
 }
 
+// ProbeYardIsCandidate answers the one question a probe-yard CANDIDATE LIST has
+// to ask of each waypoint: may this yard appear at all?
+//
+// It is the exported face of readProbeStock — the FOURTH consumer of that one
+// rule, not a fifth notion. It derives nothing of its own: the three-way
+// classification, the staleness degrade and the nil-memo default all stay in
+// readProbeStock, and this only names the projection a yard list needs.
+//
+//   - SELLS  → candidate. Priced evidence.
+//   - UNREAD → candidate. Never priced, so it is a guess — but it is also how the
+//     fleet LEARNS where probes are sold, so ranking it last must never mean
+//     dropping it.
+//   - NONE   → NOT a candidate. Priced, and it sells no probe: the standing fact
+//     the buy queue already refuses on. (A STALE reading is not this case —
+//     readProbeStock degrades it to UNREAD, so a restocked counter is
+//     reconsidered rather than written off for the era.)
+//
+// EVIDENCE vs GUESS is deliberately NOT returned. The only caller — the adapter
+// behind ListProbeYards — already gets that ranking from the order it unions its
+// two sources in, so returning it here would be a second, unreachable way to say
+// the same thing.
+//
+// Without this the adapter would have to re-derive "does this yard sell probes"
+// in SQL, which is precisely the drift stagedProbeStockAccepts and
+// skipKnownProbeless were written to prevent — three engines answering one
+// question three ways.
+func ProbeYardIsCandidate(
+	ctx context.Context,
+	memo ProbeListingMemo,
+	playerID int,
+	yard string,
+	now time.Time,
+) (bool, error) {
+	stock, _, err := readProbeStock(ctx, memo, playerID, yard, now)
+	if err != nil {
+		return false, err
+	}
+	return stock != probeStockNone, nil
+}
+
 // ShipPos is where one hull is, read from the ships table.
 type ShipPos struct {
 	Waypoint  string
