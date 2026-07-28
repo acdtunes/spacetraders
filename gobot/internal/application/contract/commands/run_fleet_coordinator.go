@@ -352,6 +352,14 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 	// already-cleared hold).
 	liquidationCooldown := make(map[string]time.Time)
 
+	// deliverHeldAttempted bounds the sp-5jce2 cycle split to ONE zero-travel
+	// deliver-held run per (contract, hull), in-memory for this run only (like gov
+	// and liquidationCooldown). If a hull comes back still holding its load, the
+	// next pass runs the FULL source+deliver leg rather than re-dispatching the
+	// same no-op forever. A restart clears it deliberately: the split is cheap and
+	// re-earning it once is safer than persisting a stale suppression.
+	deliverHeldAttempted := make(map[string]bool)
+
 	// Executes one contract at a time (game constraint: one active contract per player).
 	for {
 		select {
@@ -762,6 +770,9 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		// source-nearest idle-hull selection below.
 		var selectedShip string
 		var distance float64
+		// DELIVER-HELD dispatch (sp-5jce2): set only when the holder short-circuit
+		// below fires on a badly-placed PARTIAL holder standing on the delivery.
+		deliverHeldOnly := false
 
 		// DETERMINISTIC HOLDER SHORT-CIRCUIT (sp-zve2q): an IDLE hull that already
 		// holds the contract good delivers that EXISTING load — so it MUST win over
@@ -781,14 +792,39 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		}
 		if holder != "" {
 			selectedShip = holder
-			logger.Log("INFO", fmt.Sprintf(
-				"Idle hull %s already holds %s for contract %s - selecting it to complete its load instead of sourcing a duplicate onto the closest empty hull (sp-zve2q deterministic single-hull)",
-				holder, requiredCargo, contract.ContractID()), map[string]interface{}{
-				"action":       "select_cargo_holder",
-				"contract_id":  contract.ContractID(),
-				"ship_symbol":  holder,
-				"trade_symbol": requiredCargo,
-			})
+
+			// WEIGHED, NOT ABSOLUTE (sp-5jce2): the short-circuit above is
+			// unconditional, and a hull ends every cycle AT THE DELIVERY — the point
+			// maximally far from the source — so "any holder wins" re-picks the
+			// worst-placed hull for the next source run, every cycle. When the held
+			// load is only a partial and a spawnable hull sits decisively closer to
+			// the source, split the cycle instead: this hull still runs, but only to
+			// register what it is standing on (zero travel), and the next pass sources
+			// the remainder with the near hull. The held load is neither stranded nor
+			// re-bought, so sp-zve2q's duplicate-sourcing defense is intact.
+			deliverHeldOnly = h.decideDeliverHeldFirst(ctx, contract.ContractID(), holder, spawnableShips,
+				purchaseMarket, deliveryDestination, requiredCargo, unitsNeeded, cmd.PlayerID.Value(), deliverHeldAttempted)
+
+			if deliverHeldOnly {
+				logger.Log("INFO", fmt.Sprintf(
+					"Idle hull %s already holds %s for contract %s - dispatching it to DELIVER what it holds where it stands, then sourcing the remainder with the hull nearest the source (sp-zve2q single-hull, weighed by sp-5jce2)",
+					holder, requiredCargo, contract.ContractID()), map[string]interface{}{
+					"action":            "select_cargo_holder",
+					"contract_id":       contract.ContractID(),
+					"ship_symbol":       holder,
+					"trade_symbol":      requiredCargo,
+					"deliver_held_only": true,
+				})
+			} else {
+				logger.Log("INFO", fmt.Sprintf(
+					"Idle hull %s already holds %s for contract %s - selecting it to complete its load instead of sourcing a duplicate onto the closest empty hull (sp-zve2q deterministic single-hull)",
+					holder, requiredCargo, contract.ContractID()), map[string]interface{}{
+					"action":       "select_cargo_holder",
+					"contract_id":  contract.ContractID(),
+					"ship_symbol":  holder,
+					"trade_symbol": requiredCargo,
+				})
+			}
 		} else if hullRoute := resolveContractHullRoute(route, routeMatched, plan); hullRoute.UseDepotHull {
 			selectedShip = hullRoute.DepotHull
 			logger.Log("INFO", fmt.Sprintf(
@@ -924,7 +960,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		// authorized here rather than benched, matching readoptInterruptedDeliveries.
 		commandDraftAllowed := holder != "" || !hasRegularHaulerCandidate(generalShipEntities)
 
-		workerContainerID, err := h.spawnContractWorker(ctx, cmd, selectedShip, commandDraftAllowed)
+		workerContainerID, err := h.spawnContractWorker(ctx, cmd, selectedShip, commandDraftAllowed, deliverHeldOnly)
 		if err != nil {
 			logger.Log("ERROR", err.Error(), nil)
 			result.Errors = append(result.Errors, err.Error())
@@ -1372,7 +1408,10 @@ func (h *RunFleetCoordinatorHandler) readoptInterruptedDeliveries(
 	// A resume is never a fresh last-resort decision: the frigate (if this hull
 	// is the command frigate) was already mid-contract, so re-orphaning it here
 	// would be wrong. Always authorize the command draft here.
-	workerContainerID, err := h.spawnContractWorker(ctx, cmd, shipSymbol, true)
+	// A resume runs the FULL leg (source the remainder, then deliver), never
+	// deliver-held: re-adoption exists to finish an interrupted delivery, and the
+	// coordinator has not weighed this hull's placement here.
+	workerContainerID, err := h.spawnContractWorker(ctx, cmd, shipSymbol, true, false)
 	if err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Failed to re-adopt in-flight delivery for ship %s (falling back to discovery): %v", shipSymbol, err), nil)
 		return ""
@@ -1399,6 +1438,7 @@ func (h *RunFleetCoordinatorHandler) spawnContractWorker(
 	cmd *RunFleetCoordinatorCommand,
 	selectedShip string,
 	commandDraftAllowed bool,
+	deliverHeldOnly bool,
 ) (string, error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -1409,6 +1449,9 @@ func (h *RunFleetCoordinatorHandler) spawnContractWorker(
 		PlayerID:      cmd.PlayerID,
 		ContainerID:   workerContainerID,
 		CoordinatorID: cmd.ContainerID,
+		// DELIVER-HELD mode (sp-5jce2) — set only when this hull is a badly-placed
+		// partial holder standing on the delivery; see weighHolderPlacement.
+		DeliverHeldOnly: deliverHeldOnly,
 	}
 
 	logger.Log("INFO", fmt.Sprintf("Persisting worker container %s for %s", workerContainerID, selectedShip), nil)
@@ -1827,6 +1870,155 @@ func (h *RunFleetCoordinatorHandler) idleContractCargoHolder(ctx context.Context
 		}
 	}
 	return bestSymbol, nil
+}
+
+// weighHolderPlacement measures the ONE comparison the holder-vs-source decision
+// needs: how far the idle holder sits from the SOURCE market versus the nearest
+// spawnable candidate, plus whether the holder is standing on the delivery (so
+// its held units can be registered without travel). dist(source,destination) is
+// identical for every candidate and cancels out, so this is a scalar sweep of
+// already-loaded ship positions — never a routing solve.
+//
+// Only hulls in the SOURCE's system are compared: Waypoint.DistanceTo is a plain
+// Euclidean coordinate distance and is meaningless across systems, and a hull
+// outside the contract's home system could reach neither the source nor the
+// delivery anyway (RULINGS #14). Candidates are taken from the pass's already
+// dedication-filtered, cargo-filtered, governor-filtered spawnable pool, so this
+// never reaches into another fleet's hulls. Errors (and a nil graph provider)
+// return a placement with no alternative named, which the decision reads as
+// "keep the holder" — fail-closed onto sp-zve2q's behaviour.
+func (h *RunFleetCoordinatorHandler) weighHolderPlacement(
+	ctx context.Context,
+	holder string,
+	candidates []string,
+	sourceWaypoint string,
+	deliveryDestination string,
+	requiredCargo string,
+	unitsNeeded int,
+	playerID int,
+) (domainContract.HolderPlacement, error) {
+	placement := domainContract.HolderPlacement{Holder: holder, UnitsNeeded: unitsNeeded}
+	if holder == "" || sourceWaypoint == "" || h.graphProvider == nil {
+		return placement, nil
+	}
+
+	ships, err := h.shipRepo.FindAllByPlayer(ctx, shared.MustNewPlayerID(playerID))
+	if err != nil {
+		return placement, fmt.Errorf("failed to load ships for holder placement: %w", err)
+	}
+
+	sourceSystem := shared.ExtractSystemSymbol(sourceWaypoint)
+	graphResult, err := h.graphProvider.GetGraph(ctx, sourceSystem, false, playerID)
+	if err != nil {
+		return placement, fmt.Errorf("failed to load system graph for holder placement: %w", err)
+	}
+	source, ok := graphResult.Graph.Waypoints[sourceWaypoint]
+	if !ok {
+		return placement, fmt.Errorf("source waypoint %s not found in graph", sourceWaypoint)
+	}
+
+	candidateSet := make(map[string]bool, len(candidates))
+	for _, symbol := range candidates {
+		candidateSet[symbol] = true
+	}
+
+	nearestDist := 0.0
+	for _, ship := range ships {
+		location := ship.CurrentLocation()
+		if location == nil || shared.ExtractSystemSymbol(location.Symbol) != sourceSystem {
+			continue
+		}
+
+		if ship.ShipSymbol() == holder {
+			placement.HeldUnits = ship.Cargo().GetItemUnits(requiredCargo)
+			placement.HolderSourceDist = location.DistanceTo(source)
+			placement.HolderAtDestination = location.Symbol == deliveryDestination
+			continue
+		}
+
+		if !candidateSet[ship.ShipSymbol()] {
+			continue // not claimable for this contract on this pass
+		}
+		if ship.NavStatus() == navigation.NavStatusInTransit {
+			continue // its position is already stale — never rank a moving hull
+		}
+
+		if distance := location.DistanceTo(source); placement.NearestHull == "" || distance < nearestDist {
+			placement.NearestHull = ship.ShipSymbol()
+			nearestDist = distance
+		}
+	}
+	placement.NearestSourceDist = nearestDist
+
+	return placement, nil
+}
+
+// decideDeliverHeldFirst weighs the sp-zve2q holder short-circuit against source
+// proximity and reports whether the holder should be dispatched in DELIVER-HELD
+// mode — registering the load it is standing on at zero travel and stopping, so
+// the next pass hands the sourcing run to the hull near the source instead of
+// flying this one to the source and back.
+//
+// attempted bounds it to ONE zero-travel delivery per (contract, hull) for this
+// coordinator's lifetime. If the hull comes back still holding its load — an API
+// refusal, or a daemon restart that rebuilt the worker as an ordinary run — the
+// next pass runs the FULL leg rather than re-dispatching the same no-op forever.
+func (h *RunFleetCoordinatorHandler) decideDeliverHeldFirst(
+	ctx context.Context,
+	contractID string,
+	holder string,
+	candidates []string,
+	sourceWaypoint string,
+	deliveryDestination string,
+	requiredCargo string,
+	unitsNeeded int,
+	playerID int,
+	attempted map[string]bool,
+) bool {
+	logger := common.LoggerFromContext(ctx)
+
+	placement, err := h.weighHolderPlacement(ctx, holder, candidates, sourceWaypoint, deliveryDestination, requiredCargo, unitsNeeded, playerID)
+	if err != nil {
+		logger.Log("WARNING", fmt.Sprintf(
+			"Failed to measure holder placement for %s (keeping the single-hull short-circuit unchanged): %v", holder, err), nil)
+		return false
+	}
+
+	decision := domainContract.WeighHolderAgainstSource(placement)
+	if !decision.DeliverHeldFirst {
+		return false
+	}
+
+	key := contractID + "|" + holder
+	if attempted[key] {
+		logger.Log("INFO", fmt.Sprintf(
+			"Hull %s already had its zero-travel deliver-held run this coordinator lifetime and still holds %s - running the FULL source+deliver leg instead of re-dispatching it (sp-5jce2 one-shot)",
+			holder, requiredCargo), map[string]interface{}{
+			"action":      "deliver_held_already_attempted",
+			"contract_id": contractID,
+			"ship_symbol": holder,
+		})
+		return false
+	}
+	attempted[key] = true
+
+	logger.Log("INFO", fmt.Sprintf(
+		"Holder %s sits %.1f units from source %s holding only %d of %d needed, while %s sits %.1f units away - dispatching %s to register its load where it stands (zero travel), then sourcing the remainder with the near hull instead of a %.1f-unit round trip (sp-5jce2): %s",
+		holder, placement.HolderSourceDist, sourceWaypoint, placement.HeldUnits, placement.UnitsNeeded,
+		placement.NearestHull, placement.NearestSourceDist, holder,
+		2*placement.HolderSourceDist, decision.Reason), map[string]interface{}{
+		"action":              "deliver_held_split",
+		"contract_id":         contractID,
+		"ship_symbol":         holder,
+		"trade_symbol":        requiredCargo,
+		"held_units":          placement.HeldUnits,
+		"units_needed":        placement.UnitsNeeded,
+		"holder_source_dist":  placement.HolderSourceDist,
+		"nearest_hull":        placement.NearestHull,
+		"nearest_source_dist": placement.NearestSourceDist,
+		"source":              sourceWaypoint,
+	})
+	return true
 }
 
 // recordErrorLoopEvent emits the captain outbox event for a checkpoint's

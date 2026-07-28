@@ -190,7 +190,7 @@ func TestSpawnContractWorker_UndedicatedCommandFrigate_NotLastResort_Refused(t *
 	daemonClient := &spawnContractFakeDaemonClient{}
 	handler := newContractSpawnHandler(repo, daemonClient)
 
-	_, err := handler.spawnContractWorker(context.Background(), contractSpawnCommand(), "TORWIND-1", false)
+	_, err := handler.spawnContractWorker(context.Background(), contractSpawnCommand(), "TORWIND-1", false, false)
 	if err == nil {
 		t.Fatalf("expected the undedicated command frigate draft to be refused while a hauler is available")
 	}
@@ -221,7 +221,7 @@ func TestSpawnContractWorker_CommandFrigate_LastResort_Drafted(t *testing.T) {
 	daemonClient := &spawnContractFakeDaemonClient{}
 	handler := newContractSpawnHandler(repo, daemonClient)
 
-	id, err := handler.spawnContractWorker(context.Background(), contractSpawnCommand(), "TORWIND-1", true)
+	id, err := handler.spawnContractWorker(context.Background(), contractSpawnCommand(), "TORWIND-1", true, false)
 	if err != nil {
 		t.Fatalf("the command frigate must be draftable as a last resort, got error: %v", err)
 	}
@@ -239,7 +239,7 @@ func TestSpawnContractWorker_HappyPath_PersistsAssignsStarts(t *testing.T) {
 	daemonClient := &spawnContractFakeDaemonClient{}
 	handler := newContractSpawnHandler(repo, daemonClient)
 
-	id, err := handler.spawnContractWorker(context.Background(), contractSpawnCommand(), "TORWIND-3", true)
+	id, err := handler.spawnContractWorker(context.Background(), contractSpawnCommand(), "TORWIND-3", true, false)
 	if err != nil {
 		t.Fatalf("expected happy path, got error: %v", err)
 	}
@@ -276,7 +276,7 @@ func TestSpawnContractWorker_PersistFails_NothingToRollBack(t *testing.T) {
 	daemonClient := &spawnContractFakeDaemonClient{persistErr: errors.New("db down")}
 	handler := newContractSpawnHandler(repo, daemonClient)
 
-	_, err := handler.spawnContractWorker(context.Background(), contractSpawnCommand(), "TORWIND-3", true)
+	_, err := handler.spawnContractWorker(context.Background(), contractSpawnCommand(), "TORWIND-3", true, false)
 	if err == nil {
 		t.Fatalf("expected error when persist fails")
 	}
@@ -297,7 +297,7 @@ func TestSpawnContractWorker_ClaimFails_ContainerStoppedNoShipLeak(t *testing.T)
 	daemonClient := &spawnContractFakeDaemonClient{}
 	handler := newContractSpawnHandler(repo, daemonClient)
 
-	_, err := handler.spawnContractWorker(context.Background(), contractSpawnCommand(), "TORWIND-3", true)
+	_, err := handler.spawnContractWorker(context.Background(), contractSpawnCommand(), "TORWIND-3", true, false)
 	if err == nil {
 		t.Fatalf("expected error when claim fails")
 	}
@@ -318,7 +318,7 @@ func TestSpawnContractWorker_StartFails_ShipReleased(t *testing.T) {
 	daemonClient := &spawnContractFakeDaemonClient{startErr: errors.New("start boom")}
 	handler := newContractSpawnHandler(repo, daemonClient)
 
-	_, err := handler.spawnContractWorker(context.Background(), contractSpawnCommand(), "TORWIND-3", true)
+	_, err := handler.spawnContractWorker(context.Background(), contractSpawnCommand(), "TORWIND-3", true, false)
 	if err == nil {
 		t.Fatalf("expected error when start fails")
 	}
@@ -348,7 +348,7 @@ func TestSpawnContractWorker_CommandPinnedFrigate_RejectedNotPoached(t *testing.
 	daemonClient := &spawnContractFakeDaemonClient{}
 	handler := newContractSpawnHandler(repo, daemonClient)
 
-	_, err := handler.spawnContractWorker(context.Background(), contractSpawnCommand(), "TORWIND-3", true)
+	_, err := handler.spawnContractWorker(context.Background(), contractSpawnCommand(), "TORWIND-3", true, false)
 	if err == nil {
 		t.Fatalf("expected the command-pin dedication to fail the spawn")
 	}

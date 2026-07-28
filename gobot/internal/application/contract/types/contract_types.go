@@ -102,6 +102,20 @@ type RunWorkflowCommand struct {
 	// persists iterations=-1 so a daemon restart rebuilds this flag true
 	// (recovery-safe); see buildContractWorkflowCommand.
 	Loop bool
+
+	// DeliverHeldOnly runs this worker in DELIVER-HELD mode (sp-5jce2): register
+	// the contract load already aboard and stop, with NO source trip. The fleet
+	// coordinator asks for it when the hull is a badly-placed PARTIAL holder
+	// standing on the delivery waypoint and another hull sits decisively closer to
+	// the source — the held units reach the contract at zero travel, and the next
+	// coordinator pass hands the remainder to the well-placed hull instead of
+	// flying this one to the source and back.
+	//
+	// NOT rebuilt on daemon restart (the contract_workflow container config carries
+	// only ship/coordinator/iterations), so a recovered container resumes as an
+	// ORDINARY source+deliver run. That is deliberate and fail-safe: the worst case
+	// is the pre-fix behaviour for one cycle, never a stranded or duplicated load.
+	DeliverHeldOnly bool
 }
 
 // RunWorkflowResponse contains workflow execution results.

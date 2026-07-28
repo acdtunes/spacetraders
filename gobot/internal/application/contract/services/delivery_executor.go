@@ -121,7 +121,13 @@ func NewDeliveryExecutor(
 	return e
 }
 
-// ProcessAllDeliveries processes all deliveries in a contract
+// ProcessAllDeliveries processes all deliveries in a contract.
+//
+// deliverHeldOnly runs the DELIVER-HELD mode (sp-5jce2): register the load
+// already aboard and stop, without a source trip. The fleet coordinator asks for
+// it when the hull is a badly-placed partial holder standing on the delivery
+// waypoint, so that load reaches the contract at zero travel and the well-placed
+// hull takes the sourcing run. Ordinary runs pass false and are unaffected.
 func (e *DeliveryExecutor) ProcessAllDeliveries(
 	ctx context.Context,
 	shipSymbol string,
@@ -130,6 +136,7 @@ func (e *DeliveryExecutor) ProcessAllDeliveries(
 	profitabilityResp common.Response,
 	result *RunWorkflowResponse,
 	containerID string, // Container ID for operation context linking
+	deliverHeldOnly bool,
 ) (*domainContract.Contract, error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -173,7 +180,7 @@ func (e *DeliveryExecutor) ProcessAllDeliveries(
 		})
 
 		var err error
-		contract, err = e.ProcessSingleDelivery(ctx, shipSymbol, playerID, contract, delivery, profitabilityResp, result, nil)
+		contract, err = e.processSingleDelivery(ctx, shipSymbol, playerID, contract, delivery, profitabilityResp, result, nil, deliverHeldOnly)
 		if err != nil {
 			return nil, err
 		}
@@ -207,6 +214,23 @@ func (e *DeliveryExecutor) ProcessSingleDelivery(
 	result *RunWorkflowResponse,
 	opContext *shared.OperationContext, // Operation context for transaction linking
 ) (*domainContract.Contract, error) {
+	return e.processSingleDelivery(ctx, shipSymbol, playerID, contract, delivery, profitabilityResp, result, opContext, false)
+}
+
+// processSingleDelivery is ProcessSingleDelivery's implementation plus the
+// DELIVER-HELD mode switch (sp-5jce2). deliverHeldOnly=false is the original leg,
+// unchanged.
+func (e *DeliveryExecutor) processSingleDelivery(
+	ctx context.Context,
+	shipSymbol string,
+	playerID shared.PlayerID,
+	contract *domainContract.Contract,
+	delivery domainContract.Delivery,
+	profitabilityResp common.Response,
+	result *RunWorkflowResponse,
+	opContext *shared.OperationContext,
+	deliverHeldOnly bool,
+) (*domainContract.Contract, error) {
 	logger := common.LoggerFromContext(ctx)
 
 	// currentDelivery holds the good's live delivered/required. It starts from
@@ -232,6 +256,25 @@ func (e *DeliveryExecutor) ProcessSingleDelivery(
 		}
 
 		unitsToPurchase := e.cargoManager.CalculatePurchaseNeeds(ctx, shipSymbol, currentDelivery.TradeSymbol, unitsRemaining, currentUnits)
+
+		// DELIVER-HELD MODE (sp-5jce2): this hull was dispatched only to register
+		// the load it is already standing on, because a hull far closer to the
+		// source is taking the sourcing run. Suppress the source trip — sourcing
+		// from here is exactly the round trip the split exists to avoid — and let
+		// the delivery below hand over what is aboard.
+		if deliverHeldOnly && unitsToPurchase > 0 {
+			logger.Log("INFO", fmt.Sprintf(
+				"Deliver-held run for %s: registering the %d unit(s) of %s already aboard and skipping the %d-unit source trip — a hull closer to the source takes the remainder (sp-5jce2)",
+				shipSymbol, currentUnits, currentDelivery.TradeSymbol, unitsToPurchase), map[string]interface{}{
+				"ship_symbol":       shipSymbol,
+				"action":            "deliver_held_skip_sourcing",
+				"trade_symbol":      currentDelivery.TradeSymbol,
+				"units_aboard":      currentUnits,
+				"units_not_sourced": unitsToPurchase,
+				"units_remaining":   unitsRemaining,
+			})
+			unitsToPurchase = 0
+		}
 
 		sourcingHalted := false
 		if unitsToPurchase > 0 {
@@ -319,6 +362,25 @@ func (e *DeliveryExecutor) ProcessSingleDelivery(
 		}
 
 		if currentDelivery.UnitsFulfilled >= currentDelivery.UnitsRequired {
+			return contract, nil
+		}
+
+		// DELIVER-HELD MODE (sp-5jce2): the held load is registered, so this hull's
+		// job is done — return WITHOUT looping into a source trip. Looping here
+		// would re-source the remainder from the delivery waypoint, which is the
+		// long round trip the split exists to avoid. The remainder is not skipped:
+		// the coordinator's next pass sees this hull empty, stops short-circuiting
+		// on it, and selects the source-nearest hull for what is left.
+		if deliverHeldOnly {
+			logger.Log("INFO", fmt.Sprintf(
+				"Deliver-held run complete for %s: %d/%d units of %s registered at zero travel; the remainder re-selects onto the source-nearest hull next coordinator pass (sp-5jce2)",
+				shipSymbol, currentDelivery.UnitsFulfilled, currentDelivery.UnitsRequired, currentDelivery.TradeSymbol), map[string]interface{}{
+				"ship_symbol":     shipSymbol,
+				"action":          "deliver_held_complete",
+				"trade_symbol":    currentDelivery.TradeSymbol,
+				"units_fulfilled": currentDelivery.UnitsFulfilled,
+				"units_required":  currentDelivery.UnitsRequired,
+			})
 			return contract, nil
 		}
 
