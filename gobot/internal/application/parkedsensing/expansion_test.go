@@ -923,6 +923,146 @@ func TestAdvanceExpansion_SpareIsOnlyClaimedFromASystemAdjacentToTheTarget(t *te
 	}
 }
 
+// --- one hull, one errand, across ticks --------------------------------------
+//
+// Both tests below drive CONSECUTIVE ticks against the same ledger, because a
+// single-tick test cannot reach this class of bug at all: claimSpares consumes
+// the spare from the book, so one tick can only ever claim it once. The
+// duplication happens on the LEDGER ROUND TRIP, when the next tick rebuilds the
+// book from rows that still name a hull already out on an errand.
+
+// seedSystemsOf lists the systems whose row names this hull, which is the shape
+// the bug takes: not a bad write, but the same good write repeated onto system
+// after system.
+func seedSystemsOf(systems []ExpandSystem, hull string) []string {
+	var out []string
+	for _, s := range systems {
+		if s.SeedShip == hull {
+			out = append(out, s.System)
+		}
+	}
+	return out
+}
+
+func TestAdvanceExpansion_AReParkedHullOnAnErrandIsNotClaimedAgainNextTick(t *testing.T) {
+	// THE FOUR-SYSTEM SEED, from live production. One probe was stamped onto four
+	// systems roughly thirty seconds apart — one per tick — while a second, idle
+	// probe sat parked and unclaimed, because those systems now looked covered.
+	//
+	// The claim itself is correct: it stamps the errand and deletes the placement
+	// row. What brings the row back is PROBE ADOPTION, which indexes hulls by
+	// placement row alone and never reads the seed columns. A hull that has not
+	// physically departed yet — the mission so far is only a ledger stamp — still
+	// looks like an unrecorded probe standing at a waypoint, so adoption writes it
+	// a fresh SPARE/PARKED row. The next tick reads that row back and claims the
+	// same hull for the next uncovered system, and so on until it finally leaves.
+	h := newExpandHarness()
+	h.ledger.systems = []ExpandSystem{
+		{System: "X1-HOME", Verdict: VerdictInScope},
+		{System: "X1-T1", Verdict: VerdictPending, UnchartedCount: 9},
+		{System: "X1-T2", Verdict: VerdictPending, UnchartedCount: 5},
+	}
+	h.gates.adjacency = map[string][]string{"X1-HOME": {"X1-T1", "X1-T2"}}
+	h.ledger.slots = []QueuedSlot{{
+		Waypoint: "X1-HOME-I53", System: "X1-HOME", Kind: SlotKindSpare,
+		State: SlotStateParked, AssignedShip: "PROBE-18",
+	}}
+	// The hull is deliberately absent from the ships table, so nothing here turns
+	// on where it is. hullsOnErrand reads the SYSTEM rows, never the ship rows —
+	// a claim must be refused because the ledger says the hull is busy, not
+	// because the fleet happens to report it in flight.
+
+	// Tick one: the deepest-dark target takes the only spare there is.
+	rep, err := h.run(t, nil)
+	if err != nil {
+		t.Fatalf("tick 1: unexpected error: %v", err)
+	}
+	if rep.SeedsClaimed != 1 || len(seedSystemsOf(h.ledger.systems, "PROBE-18")) != 1 {
+		t.Fatalf("tick 1: SeedsClaimed=%d, PROBE-18 on %v, want one claim on X1-T1",
+			rep.SeedsClaimed, seedSystemsOf(h.ledger.systems, "PROBE-18"))
+	}
+	if len(h.ledger.deleted) != 1 || h.ledger.deleted[0] != "X1-HOME-I53" {
+		t.Fatalf("tick 1: deleted = %v, want the spare row released to the mission", h.ledger.deleted)
+	}
+
+	// BETWEEN TICKS: adoption re-parks the hull it can no longer account for, and
+	// a genuinely idle probe is adopted alongside it. This is the ledger the next
+	// tick actually reads — the resurrected row FIRST, so a book that still
+	// trusts it picks PROBE-18 over the hull that is really free.
+	h.ledger.slots = []QueuedSlot{
+		{Waypoint: "X1-HOME-I53", System: "X1-HOME", Kind: SlotKindSpare,
+			State: SlotStateParked, AssignedShip: "PROBE-18"},
+		{Waypoint: "X1-HOME-J55", System: "X1-HOME", Kind: SlotKindSpare,
+			State: SlotStateParked, AssignedShip: "PROBE-19"},
+	}
+	h.ledger.deleted = nil
+
+	rep, err = h.run(t, nil)
+	if err != nil {
+		t.Fatalf("tick 2: unexpected error: %v", err)
+	}
+
+	if got := seedSystemsOf(h.ledger.systems, "PROBE-18"); len(got) != 1 {
+		t.Fatalf("PROBE-18 is on the errand for %v — a probe can only fly one mission, "+
+			"and every extra system it names is a system nothing is actually charting", got)
+	}
+	// The second half of the damage, and the reason this is a stall and not just
+	// bad bookkeeping: the phantom errands mark their systems covered, so the
+	// hull that could have served them is never asked.
+	if got := seedSystemsOf(h.ledger.systems, "PROBE-19"); len(got) != 1 || got[0] != "X1-T2" {
+		t.Fatalf("PROBE-19 is on the errand for %v, want exactly X1-T2 — the idle hull must take the uncovered target", got)
+	}
+	if rep.SeedsClaimed != 1 {
+		t.Fatalf("tick 2: SeedsClaimed = %d, want 1 — one target left, one free hull", rep.SeedsClaimed)
+	}
+	if len(h.ledger.deleted) != 1 || h.ledger.deleted[0] != "X1-HOME-J55" {
+		t.Fatalf("tick 2: deleted = %v, want only the FREE hull's row released", h.ledger.deleted)
+	}
+}
+
+func TestAdvanceExpansion_AClaimStrandedByAFailedReleaseIsNotRepeatedNextTick(t *testing.T) {
+	// The claim's write order leaves a deliberate window: the errand is stamped
+	// first and the row released second, so a failure between them leaves one hull
+	// named by both. That direction is chosen on purpose — it over-counts, and an
+	// over-count only ever buys FEWER probes — but it is only tolerable because it
+	// is TRANSIENT, and it is transient only if the next tick declines to claim
+	// the hull a second time. Nothing else unwinds it.
+	h := newExpandHarness()
+	h.ledger.systems = []ExpandSystem{
+		{System: "X1-HOME", Verdict: VerdictInScope},
+		{System: "X1-T1", Verdict: VerdictPending, UnchartedCount: 9},
+		{System: "X1-T2", Verdict: VerdictPending, UnchartedCount: 5},
+	}
+	h.gates.adjacency = map[string][]string{"X1-HOME": {"X1-T1", "X1-T2"}}
+	h.ledger.slots = []QueuedSlot{{
+		Waypoint: "X1-HOME-I53", System: "X1-HOME", Kind: SlotKindSpare,
+		State: SlotStateParked, AssignedShip: "PROBE-18",
+	}}
+	h.ledger.deleteErr = errors.New("ledger refusing writes")
+
+	if _, err := h.run(t, nil); err == nil {
+		t.Fatal("tick 1: a failed release must surface loudly, not be swallowed")
+	}
+	if got := seedSystemsOf(h.ledger.systems, "PROBE-18"); len(got) != 1 {
+		t.Fatalf("tick 1: PROBE-18 on %v, want the errand already stamped when the release failed", got)
+	}
+
+	// The row survived the failure, exactly as the write order intends.
+	h.ledger.deleteErr = nil
+	rep, err := h.run(t, nil)
+	if err != nil {
+		t.Fatalf("tick 2: unexpected error: %v", err)
+	}
+
+	if got := seedSystemsOf(h.ledger.systems, "PROBE-18"); len(got) != 1 {
+		t.Fatalf("PROBE-18 is on the errand for %v — the stranded row must not be re-claimed, "+
+			"or the safe half of the write order becomes a permanent duplicate-mission loop", got)
+	}
+	if rep.SeedsClaimed != 0 {
+		t.Fatalf("tick 2: SeedsClaimed = %d, want 0 — the only hull in the book is already flying", rep.SeedsClaimed)
+	}
+}
+
 // --- seed lifecycle ----------------------------------------------------------
 
 func TestAdvanceExpansion_DispatchedSeedJumpsTowardItsTarget(t *testing.T) {

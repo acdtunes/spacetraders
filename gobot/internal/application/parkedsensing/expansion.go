@@ -297,7 +297,7 @@ func AdvanceExpansion(
 	if err != nil {
 		return rep, fmt.Errorf("failed to list sensing placements: %w", err)
 	}
-	book := newSlotBook(slotRows)
+	book := newSlotBook(slotRows, hullsOnErrand(systems))
 	known := knownSystems(systems)
 
 	// The neighbour map is read before anything is written, so a gate store that
@@ -350,12 +350,18 @@ type slotBook struct {
 	// errand right now.
 	//
 	// Both pools are consumed as the tick allocates them, so one spare can only
-	// ever answer one target.
+	// ever answer one target WITHIN a tick. Across ticks the pools are rebuilt
+	// from the ledger, and consuming one here says nothing about the next — what
+	// holds the invariant there is newSlotBook's onErrand filter, which keeps a
+	// hull that is already out on a mission out of parkedSpares entirely.
 	spares       []QueuedSlot
 	parkedSpares []QueuedSlot
 }
 
-func newSlotBook(rows []QueuedSlot) *slotBook {
+// newSlotBook builds the tick's view of the placement ledger. onErrand names the
+// hulls a system row already has out on a charting mission, and it is what keeps
+// ONE HULL TO ONE ERRAND across ticks — see the parkedSpares filter below.
+func newSlotBook(rows []QueuedSlot, onErrand map[string]bool) *slotBook {
 	b := &slotBook{
 		state:  make(map[string]string, len(rows)),
 		wanted: make(map[string][]QueuedSlot),
@@ -368,12 +374,57 @@ func newSlotBook(rows []QueuedSlot) *slotBook {
 		if row.Kind != SlotKindSpare {
 			continue
 		}
+		// The row stays in the SUPPLY pool even when the hull is away. Supply
+		// answers "is a seed already on order for this neighbourhood?", and a
+		// stale row saying yes only ever suppresses a purchase — the safe
+		// direction, and the same one the claim's write order is chosen for.
 		b.spares = append(b.spares, row)
-		if row.State == SlotStateParked && row.AssignedShip != "" {
+		// But it is NOT claimable. A placement row naming a hull that a system
+		// row already has on an errand is a hull the ledger has lost track of,
+		// not a spare standing by, and claiming it stamps a SECOND mission on a
+		// probe that can only fly one.
+		//
+		// THE ROW OUTLIVING THE CLAIM IS NORMAL, NOT AN ANOMALY. Two ways it
+		// comes back, and neither is a bug this engine can fix from here:
+		//
+		//   - The claim's own documented crash window. The errand is stamped
+		//     first and the row released second, so a failure between them
+		//     leaves the hull named by both. That is the deliberate, money-safe
+		//     failure direction (it over-counts, which buys FEWER probes), and
+		//     it is only transient if the NEXT tick declines to re-claim.
+		//   - Probe adoption re-parks it. The adoption pass indexes hulls by
+		//     placement row alone and never reads the seed columns, so a hull
+		//     whose row we just deleted still looks like an unrecorded probe
+		//     standing at a waypoint — it has not physically left yet, because
+		//     the mission so far is only a ledger stamp — and gets a fresh
+		//     SPARE/PARKED row written for it. Every tick, until it departs.
+		//
+		// Without this filter the second case is a loop: re-park, re-claim, one
+		// hull stamped onto system after system while the errands it already
+		// holds mark those systems covered and the idle hulls that could have
+		// served them stay parked.
+		if row.State == SlotStateParked && row.AssignedShip != "" && !onErrand[row.AssignedShip] {
 			b.parkedSpares = append(b.parkedSpares, row)
 		}
 	}
 	return b
+}
+
+// hullsOnErrand indexes the hulls that system rows already have out charting.
+//
+// Keyed on the hull rather than the system because that is the invariant being
+// protected: a system may be re-targeted, but a probe cannot be in two places.
+// DONE is deliberately absent — hasActiveSeed treats a finished errand as over,
+// and a hull whose mission ended is a spare again the moment one is recorded
+// for it.
+func hullsOnErrand(systems []ExpandSystem) map[string]bool {
+	hulls := make(map[string]bool, len(systems))
+	for _, s := range systems {
+		if hasActiveSeed(s) {
+			hulls[s.SeedShip] = true
+		}
+	}
+	return hulls
 }
 
 // takeSupplyFor consumes a spare that could serve target — one parked in a
