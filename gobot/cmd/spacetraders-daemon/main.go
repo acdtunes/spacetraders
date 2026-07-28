@@ -33,9 +33,8 @@ import (
 	goodsCmd "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/commands"
 	goodsServices "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
 	"github.com/andrescamacho/spacetraders-go/internal/application/mediator"
+	playerCmd "github.com/andrescamacho/spacetraders-go/internal/application/player/commands"
 	playerQuery "github.com/andrescamacho/spacetraders-go/internal/application/player/queries"
-	"github.com/andrescamacho/spacetraders-go/internal/application/probebuy"
-	probeBuyerFleetCmd "github.com/andrescamacho/spacetraders-go/internal/application/probebuyerfleet/commands"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
 	scoutingQuery "github.com/andrescamacho/spacetraders-go/internal/application/scouting/queries"
 	ship "github.com/andrescamacho/spacetraders-go/internal/application/ship"
@@ -404,6 +403,17 @@ func run(cfg *config.Config) error {
 	getPlayerHandler := playerQuery.NewGetPlayerHandler(playerRepo, apiClient)
 	if err := mediator.RegisterHandler[*playerQuery.GetPlayerQuery](med, getPlayerHandler); err != nil {
 		return fmt.Errorf("failed to register GetPlayer handler: %w", err)
+	}
+
+	// Player identity sync (sp-0eufi). This handler is the ONLY writer of
+	// players.metadata.headquarters and was previously registered nowhere and dispatched by
+	// nothing — so the key was never written, and the parked-sensing cutover (which reads it
+	// ahead of expansion in every tick) aborted the whole sensing reconcile every 30s. The
+	// daemon's boot hook dispatches it per player; registering it here is what makes that
+	// dispatch resolve instead of failing with "no handler registered for type".
+	syncPlayerHandler := playerCmd.NewSyncPlayerHandler(playerRepo, apiClient)
+	if err := mediator.RegisterHandler[*playerCmd.SyncPlayerCommand](med, syncPlayerHandler); err != nil {
+		return fmt.Errorf("failed to register SyncPlayer handler: %w", err)
 	}
 
 	// Ship query handlers
@@ -1057,14 +1067,6 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register CargoLiquidation handler: %w", err)
 	}
 
-	// Reachable probe-yard finder for demand-proximal probe buys (sp-hej4): given a target
-	// system it selects the scout-scanned probe-yard NEAREST it (fewest gate hops, arbitrated
-	// against price) instead of always the home yard. Reads the SAME sp-42ow shipyard-inventory
-	// scans + stored gate graph the heavy-yard fallback uses; a sparse/empty scan store fails
-	// OPEN to the home yard. Lands the probe undedicated for the scout reconciler to relay.
-	// Shared by the probe-sensing coordinator and the probe-buyer fleet below.
-	probeYardFinder := shipyardQuery.NewReachableYardFinder(shipyardInventoryRepo, gateGraphService)
-
 	// EXPANSION phase gate, shared by the two coordinators that only belong to the
 	// gate-built steady-state era: probe SENSING (demand-driven sizing has no trading
 	// footprint to size against during cold start) and probe BUYING (sp-f3mcc, Admiral
@@ -1164,48 +1166,10 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register ProbeSensingCoordinator handler: %w", err)
 	}
 
-	// Probe-buyer-fleet coordinator (sp-f082y): the standing coordinator that maintains K dedicated
-	// (dedicated_fleet="probe-buyer") buyer hulls stationed at probe-yards so the probe fleet keeps
-	// GROWING when freshness/scout demand outruns supply and no idle undedicated hull is left to buy
-	// through — the catch-22 the frontier/freshness buy path deadlocks on. It orchestrates the SAME
-	// machinery, forking nothing: the shared GuardedProbeBuyer guard stack (25% treasury +
-	// working-capital floor + fleet cap + price ceiling) drives the shared ProbePurchaser
-	// .resolveInPlaceBuy, and the shared ProbeBuyerPositioner stations/rotates — both wired
-	// ownFleet="probe-buyer" so they select the dedicated buyers and claim them under their own fleet
-	// operation (every other coordinator keeps skipping those hulls). Recruitment tags the nearest
-	// reachable idle undedicated satellite through the single AssignFleet write path. Boot-standing +
-	// ARMED (daemon_boot_standing.go). PurchaseCooldown=0 + a large spend window so the fleet grows as
-	// fast as the reused money guards allow (K buys/tick); the fleet CAP is the binding growth bound,
-	// enforced authoritatively by the coordinator's own live cap gate (the buyer's internal cap is a
-	// redundant backstop). The shared 50k working-capital floor is injected via ReserveFloor.
-	probeBuyerPurchaser := expansionAdapters.NewProbePurchaser(med, shipRepo, probeYardFinder, transactionRepo, nil).
-		SetOwnFleet(probeBuyerFleetCmd.ProbeBuyerFleet)
-	probeBuyerPositioner := expansionAdapters.NewProbeBuyerPositioner(med, shipRepo, probeYardFinder).
-		SetOwnFleet(probeBuyerFleetCmd.ProbeBuyerFleet)
-	probeBuyerGuardedBuyer := probebuy.NewGuardedProbeBuyer(
-		expansionAdapters.NewTreasuryReader(apiClient),
-		probeBuyerPurchaser,
-		transactionRepo,
-		nil, // RealClock
-		probebuy.Config{
-			MaxProbeFleet:    probeBuyerFleetCmd.DefaultProbeBuyerMaxFleet, // redundant backstop; the coordinator's live cap gate binds first
-			MaxSpendPerCycle: 1_000_000_000,                                // effectively non-binding: the cap + 25% + floor are the real bounds
-			PurchaseCooldown: 0,                                            // no pacing — grow as fast as the guards allow
-			SpendWindow:      time.Hour,
-			ReserveFloor:     common.ImmutableReserveFloor, // the shared 50k working-capital floor (RULINGS #4)
-		},
-	)
-	// sp-f3mcc EXPANSION phase gate (Admiral 2026-07-24): the coordinator is INERT outside the
-	// bootstrap-derived EXPANSION phase — probes are bought only once the home jump gate is BUILT
-	// (sp-feiy7), never during DATA/INCOME/GATE where the sp-f082y buyer drained ~500k of the
-	// contract working-capital band on staging. Shares the one expansionPhase reader wired above.
-	probeBuyerHandler := probeBuyerFleetCmd.NewRunProbeBuyerFleetCoordinatorHandler(
-		shipRepo, probeBuyerGuardedBuyer, probeBuyerPositioner, probeYardFinder, expansionPhase, nil, // nil = RealClock
-	)
-	probeBuyerHandler.SetLiveConfigReader(grpc.NewContainerConfigReader(containerRepo))
-	if err := mediator.RegisterHandler[*probeBuyerFleetCmd.RunProbeBuyerFleetCoordinatorCommand](med, probeBuyerHandler); err != nil {
-		return fmt.Errorf("failed to register ProbeBuyerFleetCoordinator handler: %w", err)
-	}
+	// The probe-buyer-fleet coordinator (sp-f082y) was RETIRED and DELETED here (Admiral 2026-07-28).
+	// The probe-sensing coordinator owns probe supply: its drain buys what its own placements need,
+	// behind a floor and a cap, and reuses hulls it already owns first. A second engine buying into
+	// the same fleet could only double-spend, and did — 245,316 credits on 9 hulls in five minutes.
 
 	// Shipyard-backfill sweep (sp-rhju): the standing catch-up coordinator that closes the
 	// charted-but-unscanned shipyard blind spot the market-tour-only scan (sp-42ow) left behind.

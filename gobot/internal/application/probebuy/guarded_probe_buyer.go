@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/ledger"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -117,12 +118,23 @@ type Config struct {
 	PurchaseCooldown time.Duration // min wall-clock between probe buys
 	SpendWindow      time.Duration // trailing window the spend cap sums over
 	// ReserveFloor is the working-capital reserve a probe buy must leave spendable: the buy is
-	// refused when credits − price < ReserveFloor (RULINGS #4, fail-closed, never weakened). 0 (the
-	// default) DISABLES it — byte-identical for every pre-existing caller (the freshness sizer sets no
-	// floor). The stationed probe-buyer coordinator (sp-f082y) sets it to common.ImmutableReserveFloor
-	// (the flat 50k the frontier/tour/factory/trade all enforce) so its buys can never drain the
-	// treasury below the standing reserve. Kept as an int64 config value (not a common import) so the
-	// guard package stays dependency-free; the caller injects the constant.
+	// refused when credits − price < ReserveFloor, and the budget handed to the purchase is bounded
+	// by the same headroom so the ACTUAL charge cannot breach it either (RULINGS #4, fail-closed,
+	// never weakened). 0 (the default) DISABLES it — byte-identical for every pre-existing caller
+	// (the freshness sizer sets no floor).
+	//
+	// The VALUE is the caller's policy decision and it is NOT interchangeable, which is the whole
+	// lesson of sp-f3mcc. A probe hull is non-contract capex, so a caller that governs working
+	// capital must inject common.NonContractWorkingCapitalFloor (150k) — NOT the 50k
+	// common.ImmutableReserveFloor, which is the CONTRACT base. sp-q8bon reserves the 50k–150k band
+	// for the contract engine alone, and wiring the 50k base here is exactly what let the retired
+	// probe-buyer coordinator drain a live treasury to 90,842 with the guard passing on every buy.
+	// The comparison itself is the shared common.ReserveFloorGate, so only the tier ever differs.
+	//
+	// NO CALLER SETS THIS TODAY. The coordinator that did was deleted with the probe-buyer
+	// retirement (2026-07-28); the remaining caller, the retired market-freshness sizer, leaves it 0
+	// and is byte-identical. The guard is kept because the tier mistake it now refuses is the one
+	// this package exists to make impossible for whoever wires the next probe buyer.
 	ReserveFloor int64
 }
 
@@ -216,11 +228,20 @@ func (b *GuardedProbeBuyer) MaybeBuy(ctx context.Context, playerID shared.Player
 	}
 
 	// Working-capital floor (RULINGS #4/#5): a buy must leave AT LEAST the configured reserve
-	// spendable — the SAME flat 50k the frontier/tour/factory/trade enforce, injected by the caller as
-	// ReserveFloor. It fails CLOSED on the treasury already read above and is never weakened. 0
-	// disables it, so every pre-existing caller is byte-identical; only a caller that governs
-	// working capital (the sp-f082y probe-buyer coordinator) sets it.
-	if b.cfg.ReserveFloor > 0 && int64(credits)-int64(price) < b.cfg.ReserveFloor {
+	// spendable, injected by the caller as ReserveFloor. It fails CLOSED on the treasury already read
+	// above and is never weakened. 0 disables it, so every pre-existing caller is byte-identical; only
+	// a caller that governs working capital (the sp-f082y probe-buyer coordinator) sets it.
+	//
+	// The comparison is the SHARED common.ReserveFloorGate — the one copy of "would this spend drop
+	// treasury below Floor?", already used by idle-arb and the long-haul envelope — rather than a
+	// fourth hand-rolled subtraction. Only the Floor value differs per caller, which is the whole
+	// point of the shared gate: the tier is a policy decision the caller makes, the comparison is not.
+	floorGate := common.ReserveFloorGate{
+		Active:   b.cfg.ReserveFloor > 0,
+		Treasury: int64(credits),
+		Floor:    b.cfg.ReserveFloor,
+	}
+	if floorGate.Holds(0 /*committed*/, int64(price)) {
 		return Outcome{Reason: fmt.Sprintf("no purchase: working-capital floor (treasury %d − price %d = %d < floor %d)", credits, price, int64(credits)-int64(price), b.cfg.ReserveFloor)}
 	}
 
@@ -233,9 +254,30 @@ func (b *GuardedProbeBuyer) MaybeBuy(ctx context.Context, playerID shared.Player
 		return Outcome{Reason: fmt.Sprintf("no purchase: spend cap (window %d + price %d > %d)", windowSpend, price, b.cfg.MaxSpendPerCycle)}
 	}
 
-	// The hard MaxBudget handed to the buy is the 25% treasury ceiling — a slight price
-	// move up to (never past) the line still fills (RULINGS #6).
+	// The hard MaxBudget handed to the buy is the TIGHTER of the 25% treasury ceiling (RULINGS #6)
+	// and the working-capital floor's headroom — so a slight price move up to (never past) either
+	// line still fills.
+	//
+	// Bounding by the floor is what makes the floor bind on what is actually CHARGED rather than
+	// only on what was quoted. The two numbers differ, and on a thin treasury the 25% ceiling is the
+	// looser of them: at 180,000 credits it permits 45,000, which would settle at 135,000 — below a
+	// 150,000 floor the quote check had just passed. That gap is not theoretical for this caller.
+	// The sp-f3mcc burst climbed 23,021 → 32,648 over five minutes as it drained the local yard,
+	// which is precisely the regime where the price at the dock outruns the price at the quote.
+	// expansion.ProbePurchaser.BuyProbe refuses `price > maxBudget`, so this is the binding edge.
 	treasuryCap := credits * maxTreasuryFractionPercent / 100
+	if floorGate.Active {
+		// Reaching here means the floor gate already passed for `price`, so the headroom is at
+		// least `price` and cannot be negative. Clamped at zero regardless: a money guard derives
+		// nothing permissive from an impossible input (RULINGS #4).
+		headroom := int64(credits) - b.cfg.ReserveFloor
+		if headroom < 0 {
+			headroom = 0
+		}
+		if headroom < int64(treasuryCap) {
+			treasuryCap = int(headroom)
+		}
+	}
 
 	if dryRun {
 		return Outcome{Reason: fmt.Sprintf("would buy probe at %s for ~%d (dry-run)", yard, price), Price: price, Yard: yard}

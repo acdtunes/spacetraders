@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
@@ -45,6 +46,42 @@ import (
 // writes, not an economic choice. A backlog is not lost — the hulls left over are
 // still orphaned and still first in line next tick.
 const DefaultMaxAdoptions = 10
+
+// legacyProbeBuyerFleetTag is the dedicated_fleet tag the RETIRED probe-buyer coordinator wrote on
+// the hulls it recruited. The coordinator is deleted; its tag is not — it is persisted on live
+// ships rows and nothing rewrites it, so adoption must still recognise those hulls as orphans.
+// Declared here, as a plain string rather than an import, precisely BECAUSE the package that
+// defined it is gone: this is the tag's last remaining reader.
+const legacyProbeBuyerFleetTag = "probe-buyer"
+
+// adoptableFleetTag reports whether a hull's dedicated_fleet marks it as an ORPHAN this pass may
+// absorb, rather than a hull that belongs to somebody.
+//
+// An ALLOWLIST, not a denylist, and that direction is the guard (RULINGS #7). Adoption used to
+// require exactly freshnessScoutFleetTag — a tag no live hull carries, which is why the pass had
+// never adopted anything — so the fix is to widen it. But "widen" must not become "take any probe
+// you find": a hull dedicated to a live foreign fleet already has a single writer, and absorbing it
+// would give one hull two. Listing what is adoptable means a fleet tag invented later is refused by
+// default and has to be added deliberately; a denylist would silently absorb it the day it appears.
+//
+// The four members are the only ways a probe can be nobody's:
+//
+//   - ""                        never tagged (the ten live hulls the freshness sizer left bare)
+//   - freshnessScoutFleetTag    the retired touring model's tag
+//   - legacyProbeBuyerFleetTag  the retired buyer coordinator's tag
+//   - SensingParkedFleetTag     OUR tag, present on a hull with no row — the other half of a
+//     failed write (recorded-then-tag-failed leaves a row, so
+//     holds.hulls strikes it off; tagged-then-record-failed leaves
+//     none, and used to be unrecoverable because the old filter
+//     rejected our own tag forever)
+func adoptableFleetTag(fleet string) bool {
+	switch fleet {
+	case "", freshnessScoutFleetTag, legacyProbeBuyerFleetTag, parkedsensing.SensingParkedFleetTag:
+		return true
+	default:
+		return false
+	}
+}
 
 // adoptStrandedProbes records every scout-tagged hull the ledger has no row for
 // as a parked SPARE where it stands, and reports how many it adopted.
@@ -101,8 +138,23 @@ func (h *RunProbeSensingCoordinatorHandler) adoptStrandedProbes(
 		if writes >= DefaultMaxAdoptions {
 			break
 		}
-		if !ship.IsScoutType() || ship.DedicatedFleet() != freshnessScoutFleetTag {
-			continue // not a touring-model probe; an adopted one already carries the sensing tag
+		if !ship.IsScoutType() || !adoptableFleetTag(ship.DedicatedFleet()) {
+			continue // not a probe frame, or dedicated to a fleet that is not ours to take
+		}
+		if !ship.IsIdle() {
+			// DRIVEN BY A LIVE CONTAINER — leave it alone (RULINGS #3, single writer).
+			//
+			// Three live probes sit `active` on scout_tour containers. Recording one here would let
+			// the placement machine re-task a hull mid-flight while its tour still believes it owns
+			// it: two writers, one hull, and a moving ship stranded between two intentions. The
+			// `manned` map below does NOT cover this — it reads scout POSTS, and a tour is not a
+			// post.
+			//
+			// Nothing is lost by waiting. This pass is a standing per-tick retry (that is the whole
+			// reason it exists rather than living in the cutover), so the hull is absorbed on the
+			// first tick after its tour releases it. Grabbing it early buys one tick and risks a
+			// desynced hull; the trade is not close.
+			continue
 		}
 		if manned[ship.ShipSymbol()] {
 			continue // still manning a surviving post — that post's hull, not ours to take
@@ -149,7 +201,59 @@ func (h *RunProbeSensingCoordinatorHandler) adoptStrandedProbes(
 		// A hull skipped here is not lost: it stays untagged and unrecorded, which
 		// is the recoverable state, and it is reconsidered on every later tick.
 		// See the residual note on ledgerHolds for what it costs meanwhile.
-		if holds.occupied[location.Symbol] {
+		if row, occupied := holds.rows[location.Symbol]; occupied {
+			// A HULL-LESS *WANTED* PLACEMENT THE ORPHAN IS STANDING ON IS NOT A CONFLICT — IT IS
+			// THE ANSWER. The screen declared "a probe should stand here"; a probe is standing
+			// here. Filling the row in place is strictly better than skipping it, and it is what
+			// takes this pass from absorbing one live hull to absorbing the ones that matter:
+			// seven idle probes sit on X1-KP23-A2, the yard that sold them, and that waypoint
+			// already carried a hull-less WANTED/MARKET row. Under the plain occupancy skip every
+			// one of them stayed invisible to the probe cap while the drain tried to buy another.
+			//
+			// This is NOT the destructive rewrite the occupancy guard exists to prevent, and the
+			// difference is exact: UpsertSpareSlot rewrites slot_kind and state through a conflict
+			// set, which is how a MARKET placement silently became a SPARE and left the scan
+			// rotation. This goes through the GUARDED transition instead — kind is never touched,
+			// so a MARKET row stays MARKET and keeps scanning, and the write is conditional on the
+			// row still being WANTED, so a racing writer cannot be overwritten.
+			//
+			// Refused in every other shape:
+			//   - AssignedShip != "": the row names an incumbent. Evicting it would drop a working
+			//     probe out of the cap and hand its placement away.
+			//   - QUEUED: the drain has claimed it for purchase, and its later
+			//     TransitionSlot(QUEUED->BOUGHT) is guarded on that state — filling it here breaks
+			//     a claim that money is already riding on.
+			//   - anything else (BOUGHT / IN_TRANSIT / PARKED): already somebody's.
+			if row.State != parkedsensing.SlotStateWanted || row.AssignedShip != "" {
+				continue
+			}
+			hull := ship.ShipSymbol()
+			writes++ // counted before the write, as below: a failed write costs the database the same
+			terr := ports.Ledger.TransitionSlot(ctx, playerID, location.Symbol,
+				parkedsensing.SlotStateWanted, parkedsensing.SlotStateParked,
+				parkedsensing.SlotFields{AssignedShip: &hull})
+			switch {
+			case errors.Is(terr, parkedsensing.ErrSlotClaimed):
+				// Another writer took the placement between the read and the write. Routine
+				// contention, nothing spent — the hull is still an orphan and still first in line
+				// next tick.
+				continue
+			case terr != nil:
+				*failures = append(*failures, fmt.Errorf("failed to fill placement %s with the probe standing on it (%s): %w", location.Symbol, hull, terr))
+				continue
+			}
+			// Same order as the spare path: the row is what the cap counts, so it is written first
+			// and the tag is best-effort behind it.
+			if tagErr := ports.Fleet.AssignFleet(ctx, playerID, hull, parkedsensing.SensingParkedFleetTag); tagErr != nil {
+				logger.Log("WARNING", fmt.Sprintf(
+					"Probe %s now fills placement %s but keeps its old fleet tag (the probe cap counts it; the placement machine re-tags it on first use): %v",
+					hull, location.Symbol, tagErr), map[string]interface{}{
+					"action":      "parked_sensing_adopt_tag_failed",
+					"ship_symbol": hull,
+				})
+			}
+			holds.hulls[hull] = true
+			adopted++
 			continue
 		}
 
@@ -190,8 +294,18 @@ func (h *RunProbeSensingCoordinatorHandler) adoptStrandedProbes(
 			})
 		}
 		// The waypoint holds a row now, so a later candidate standing on it is
-		// skipped rather than overwriting what this tick just wrote.
-		holds.occupied[location.Symbol] = true
+		// skipped rather than overwriting what this tick just wrote. Recorded as the row this tick
+		// actually wrote — a PARKED spare naming this hull — so a second orphan at the same
+		// waypoint sees a filled row and is refused by the same test that refuses an incumbent,
+		// rather than by a bare "occupied" flag that cannot say why.
+		holds.rows[location.Symbol] = parkedsensing.QueuedSlot{
+			Waypoint:     location.Symbol,
+			System:       location.SystemSymbol,
+			Kind:         parkedsensing.SlotKindSpare,
+			State:        parkedsensing.SlotStateParked,
+			AssignedShip: ship.ShipSymbol(),
+		}
+		holds.hulls[ship.ShipSymbol()] = true
 		adopted++
 	}
 
@@ -255,8 +369,13 @@ func (h *RunProbeSensingCoordinatorHandler) adoptStrandedProbes(
 // hull would make this pass skip a hull the cap does not count, which is the
 // money-unsafe direction. No writer produces that combination today.
 type ledgerHolds struct {
-	hulls    map[string]bool
-	occupied map[string]bool
+	hulls map[string]bool
+	// rows is the occupancy index, and it carries the ROW rather than a bare bool: presence still
+	// answers "does this WAYPOINT hold a row at all?", but the pass now also has to ask WHICH row,
+	// because a hull-less WANTED placement the orphan is standing on is filled in place while every
+	// other occupied shape is skipped. A bool cannot distinguish "somebody's placement" from "a
+	// placement asking for exactly this hull".
+	rows map[string]parkedsensing.QueuedSlot
 }
 
 // ledgerHoldings builds both indexes from the single query the pass makes.
@@ -273,11 +392,11 @@ func ledgerHoldings(ctx context.Context, ports SensingEnginePorts, playerID int)
 		return ledgerHolds{}, fmt.Errorf("failed to read what the sensing ledger already holds: %w", err)
 	}
 	held := ledgerHolds{
-		hulls:    make(map[string]bool, len(slots)),
-		occupied: make(map[string]bool, len(slots)),
+		hulls: make(map[string]bool, len(slots)),
+		rows:  make(map[string]parkedsensing.QueuedSlot, len(slots)),
 	}
 	for _, slot := range slots {
-		held.occupied[slot.Waypoint] = true
+		held.rows[slot.Waypoint] = slot
 		if slot.AssignedShip != "" {
 			held.hulls[slot.AssignedShip] = true
 		}

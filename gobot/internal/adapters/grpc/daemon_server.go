@@ -1098,6 +1098,10 @@ var retiredCommandTypes = map[string]bool{
 	// alarming as unexplained losses; the registry refuses to build them either way.
 	"market_freshness_sizer_coordinator": true,
 	"frontier_expansion_coordinator":     true,
+	// The probe-buyer retirement (Admiral 2026-07-28): a second engine buying into the same probe
+	// fleet the sensing drain already supplies. It spent 245,316 credits on 9 hulls in five minutes
+	// on the live fleet before it was stopped by hand. Deleted outright, not disabled.
+	"probe_buyer_coordinator": true,
 }
 
 // RecoverRunningContainers recovers containers that were RUNNING or INTERRUPTED when daemon stopped

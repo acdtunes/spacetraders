@@ -150,14 +150,14 @@ const (
 	// composing the reused arb executor. Coordinator-managed, continuous (-1) until the worker
 	// finds no lane; recovery-safe (stateless re-derive from the DB on restart).
 	ContainerTypeLongHaulArb ContainerType = "LONGHAUL_ARB"
-	// ContainerTypeProbeBuyerCoordinator is the standing probe-buyer-fleet coordinator (sp-f082y): a
-	// per-player coordinator that loops forever inside one Handle() maintaining K dedicated
-	// (dedicated_fleet="probe-buyer") hulls stationed at probe-yards doing movement-free in-place buys,
-	// so the probe fleet grows even when freshness demand outruns supply and no idle undedicated hull is
-	// left to buy through. Like the scout-post/freshness coordinators it is NOT a
-	// CoordinatorOwnsIterations type; it re-derives its buyers from the persisted dedicated_fleet tag
-	// each tick and survives restarts via the persisted-container recovery idiom.
-	ContainerTypeProbeBuyerCoordinator ContainerType = "PROBE_BUYER_COORDINATOR"
+	// ContainerTypeProbeBuyerCoordinator (PROBE_BUYER_COORDINATOR, sp-f082y) was REMOVED with the
+	// probe-buyer retirement (Admiral 2026-07-28). Probe supply belongs to the sensing coordinator.
+	//
+	// Persisted rows carrying the old string are not orphaned: recovery matches on COMMAND type, and
+	// "probe_buyer_coordinator" is listed in retiredCommandTypes (daemon_server.go), so a stale row is
+	// marked terminated on the first post-retirement boot rather than alarming as an unexplained loss.
+	// Nothing validates the container_type column against this list, so removing the constant cannot
+	// make an existing row unreadable.
 )
 
 const (

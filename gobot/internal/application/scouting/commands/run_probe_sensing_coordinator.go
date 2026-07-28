@@ -1272,7 +1272,13 @@ func (h *RunProbeSensingCoordinatorHandler) adoptOrphanProbes(ctx context.Contex
 		//
 		// Skipping is the right answer: the displaced hull would be lost, while a
 		// skipped one stays untagged, unrecorded and therefore still recoverable.
-		if holds.occupied[location.Symbol] {
+		//
+		// sp-0eufi softened one clause above: adoption's filter is now an ALLOWLIST that INCLUDES
+		// sensing_parked, so a tagged-but-unrecorded hull is no longer unrecoverable — the standing
+		// pass picks it up. The displacement is still not worth risking here, and this remains a
+		// plain skip: this is the ONE irreversible tick, while the standing pass retries every tick
+		// and, unlike this path, knows how to fill a hull-less placement in place.
+		if _, occupied := holds.rows[location.Symbol]; occupied {
 			continue
 		}
 
@@ -1297,7 +1303,13 @@ func (h *RunProbeSensingCoordinatorHandler) adoptOrphanProbes(ctx context.Contex
 		}
 		// The waypoint holds a row now, so a later co-located hull in this same
 		// sweep is skipped rather than overwriting what was just written.
-		holds.occupied[location.Symbol] = true
+		holds.rows[location.Symbol] = parkedsensing.QueuedSlot{
+			Waypoint:     location.Symbol,
+			System:       location.SystemSymbol,
+			Kind:         parkedsensing.SlotKindSpare,
+			State:        parkedsensing.SlotStateParked,
+			AssignedShip: ship.ShipSymbol(),
+		}
 
 		// The tag write is BEST-EFFORT, and deliberately not a failure of the
 		// cutover. It is the one write here that is not money-load-bearing: the

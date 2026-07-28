@@ -20,6 +20,8 @@ import (
 
 	"gorm.io/gorm"
 
+	domainPlayer "github.com/andrescamacho/spacetraders-go/internal/domain/player"
+
 	appSensing "github.com/andrescamacho/spacetraders-go/internal/application/parkedsensing"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
@@ -535,9 +537,17 @@ func (p *HomeSystemPort) HomeSystem(ctx context.Context, playerID int) (string, 
 	if uerr := json.Unmarshal([]byte(raw), &metadata); uerr != nil {
 		return "", fmt.Errorf("failed to decode player %d metadata: %w", playerID, uerr)
 	}
-	headquarters, _ := metadata["headquarters"].(string)
-	if headquarters == "" {
-		return "", fmt.Errorf("player %d has no recorded headquarters", playerID)
+	// sp-0eufi: this failure used to read "player N has no recorded headquarters" and surface four
+	// layers up as a sensing CUTOVER refusal, which aborts the entire reconcile — screen, reaper,
+	// adoption, drain, placements and expansion — every 30 seconds. Nothing in that chain named the
+	// key, said which of the many things sensing reads was missing, or hinted at how it gets
+	// populated, so the visible symptom ("0 parked, screened 0, bought 0, expansion +0 discovered")
+	// looked like an idle engine rather than a broken one. The error now carries all three.
+	headquarters, ok := domainPlayer.HeadquartersFrom(metadata)
+	if !ok {
+		return "", fmt.Errorf(
+			"player %d has no %s in players.metadata, so the home system is unknown and sensing cannot cut over: %s",
+			playerID, domainPlayer.MetadataKeyHeadquarters, domainPlayer.MissingHeadquartersHint)
 	}
 	return shared.ExtractSystemSymbol(headquarters), nil
 }

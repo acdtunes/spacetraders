@@ -476,12 +476,23 @@ func TestAdoption_OrphanOnALivePlacement_LeavesTheIncumbentAlone(t *testing.T) {
 // Two shapes, both hull-less: a screen-declared WANTED placement, and a QUEUED
 // claim (whose later TransitionSlot(QUEUED→BOUGHT) would then fail with
 // ErrSlotClaimed, having lost its claim to a write that was never about it).
-func TestAdoption_OrphanOnAHullLessPlacement_LeavesTheRowAlone(t *testing.T) {
+// sp-0eufi NARROWED THIS. The WANTED case moved to
+// TestAdoption_FillsAHullLessWantedPlacementTheOrphanIsStandingOn: a hull standing on a placement
+// that is asking for a hull is now used to FILL it rather than skipped, which is what took the pass
+// from absorbing one live orphan to absorbing the ones that were stranding 245k of paid-for hulls.
+//
+// What this test was protecting is NOT weakened, and the distinction is exact: the danger was
+// UpsertSpareSlot's conflict set rewriting a MARKET placement's slot_kind to SPARE and dropping it
+// out of the scan rotation. The fill path never touches kind and goes through the guarded
+// WANTED->PARKED transition instead, so that assertion still holds — it just holds in the new test.
+//
+// QUEUED remains here, unchanged and still a hard skip: the drain has claimed that row for purchase
+// and its TransitionSlot(QUEUED->BOUGHT) is guarded on the state, so money is already riding on it.
+func TestAdoption_OrphanOnAQueuedPlacement_LeavesTheRowAlone(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		state string
 	}{
-		{"a screen-declared placement not yet filled", parkedsensing.SlotStateWanted},
 		{"a placement already claimed for purchase", parkedsensing.SlotStateQueued},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

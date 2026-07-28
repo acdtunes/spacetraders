@@ -882,8 +882,14 @@ func (s *ExpansionScanner) ExpansionCandidates(ctx context.Context, playerID int
 func (s *ExpansionScanner) anchorSystems(ctx context.Context, playerID int) map[string]bool {
 	anchors := make(map[string]bool)
 
+	// sp-0eufi: read through the shared player.HeadquartersFrom so this and the sensing
+	// HomeSystemPort cannot disagree about which key holds the home waypoint or what counts as
+	// present. Note this reader DEGRADES rather than failing: with no headquarters it silently
+	// falls back to ship locations alone, so hop distance is measured from wherever the fleet
+	// happens to be instead of from home. That is quieter than the sensing cutover's refusal and
+	// therefore easier to miss — the anchor set simply looks smaller than it should.
 	if p, err := s.playerRepo.FindByID(ctx, shared.MustNewPlayerID(playerID)); err == nil && p != nil {
-		if hq, ok := p.Metadata["headquarters"].(string); ok && hq != "" {
+		if hq, ok := player.HeadquartersFrom(p.Metadata); ok {
 			anchors[shared.ExtractSystemSymbol(hq)] = true
 		}
 	}

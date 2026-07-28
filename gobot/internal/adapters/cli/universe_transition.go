@@ -179,7 +179,7 @@ func runUniverseTransition(ctx context.Context, deps transitionDeps, opts transi
 		AgentSymbol: symbol,
 		Token:       token,
 		CreatedAt:   now,
-		Metadata:    factionMetadata(agentData.StartingFaction),
+		Metadata:    agentIdentityMetadata(agentData),
 	}
 	newEra := &persistence.EraModel{
 		Name:              newEraName,
@@ -288,11 +288,25 @@ func previewPendingMint(ctx context.Context, deps transitionDeps, opts transitio
 	return nil
 }
 
-func factionMetadata(faction string) string {
-	if faction == "" {
-		return ""
+// agentIdentityMetadata builds the new era row's metadata column from the agent payload the
+// rollover already fetched to validate the token (sp-0eufi).
+//
+// It replaces the former factionMetadata, which persisted starting_faction and dropped everything
+// else — including headquarters, which was sitting right there in the same struct. That omission
+// is what left every players row without the key: three engines read it, nothing wrote it, and
+// the parked-sensing cutover therefore refused every 30s and took all frontier expansion down
+// with it.
+//
+// The merge is the shared player.MergeAgentIdentity, so "which keys are identity" has ONE
+// definition rather than one here and another in the sync handler. Empty fields are omitted
+// rather than written blank (the merge's fail-closed rule), so an agent payload with nothing
+// usable yields an empty column exactly as before — no downstream reader sees a new shape.
+func agentIdentityMetadata(agent *player.AgentData) string {
+	metadata, changed := player.MergeAgentIdentity(nil, agent)
+	if !changed || len(metadata) == 0 {
+		return "" // nothing knowable — persist no metadata at all, as the faction-only path did
 	}
-	raw, err := json.Marshal(map[string]string{"starting_faction": faction})
+	raw, err := json.Marshal(metadata)
 	if err != nil {
 		return ""
 	}

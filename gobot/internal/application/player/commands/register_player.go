@@ -7,6 +7,9 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
+	// The local `player` variable in Handle shadows the package name, so identity helpers are
+	// reached through an alias rather than renaming a variable used throughout the file.
+	domainPlayer "github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -76,11 +79,20 @@ type SyncPlayerResponse struct {
 	Updated bool
 }
 
+// agentIdentityReader is the ONE method this handler needs from the API client: the /my/agent
+// read that carries the agent's durable identity. Narrowed from the full domainPorts.APIClient
+// (which the constructor still accepts, and which satisfies this) so the sync can be exercised
+// against a small fake instead of a ~50-method stub — the reason this handler had no tests while
+// it was the sole writer of players.metadata.headquarters.
+type agentIdentityReader interface {
+	GetAgent(ctx context.Context, token string) (*player.AgentData, error)
+}
+
 // SyncPlayerHandler handles the SyncPlayer command
 // This syncs player credits and metadata from the SpaceTraders API
 type SyncPlayerHandler struct {
 	playerRepo player.PlayerRepository
-	apiClient  domainPorts.APIClient
+	apiClient  agentIdentityReader
 }
 
 // NewSyncPlayerHandler creates a new SyncPlayerHandler
@@ -127,14 +139,24 @@ func (h *SyncPlayerHandler) Handle(ctx context.Context, request common.Request) 
 		updated = true
 	}
 
-	if player.Metadata == nil {
-		player.Metadata = make(map[string]interface{})
+	// Durable identity (headquarters / starting_faction / account_id) goes through the ONE shared
+	// merge in the player domain: it preserves every other key in the row and reports whether
+	// anything actually changed.
+	//
+	// The write is now CONDITIONAL on that answer (sp-0eufi requirement 3). It used to be
+	// unconditional — `updated = true` was assigned outright, and a last_synced stamp refreshed on
+	// every call guaranteed the row differed — so this handler could not be run on a schedule
+	// without rewriting an unchanged row every time. Because the durable fix re-asserts identity on
+	// EVERY daemon boot, that thrash is no longer hypothetical.
+	metadata, identityChanged := domainPlayer.MergeAgentIdentity(player.Metadata, agentData)
+	player.Metadata = metadata
+	if identityChanged {
+		// last_synced is an operator-facing breadcrumb (displayed by `player show`), deliberately
+		// excluded from the change decision above and stamped only when a real change is being
+		// persisted — a timestamp that moved on every call would defeat the idempotency it sits next to.
+		player.Metadata["last_synced"] = time.Now().UTC().Format(time.RFC3339)
+		updated = true
 	}
-	player.Metadata["account_id"] = agentData.AccountID
-	player.Metadata["headquarters"] = agentData.Headquarters
-	player.Metadata["starting_faction"] = agentData.StartingFaction
-	player.Metadata["last_synced"] = time.Now().UTC().Format(time.RFC3339)
-	updated = true
 
 	if updated {
 		if err := h.playerRepo.Add(ctx, player); err != nil {

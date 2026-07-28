@@ -44,6 +44,23 @@ func (s *DaemonServer) launchBootStandingAfterRecovery() {
 	// fail-open, safely re-runnable every boot; runs here (after recovery) so the boot
 	// log reflects the same registry a re-adopted contract coordinator will route on.
 	s.reloadDepotRegistryAtBoot(ctx, playerID)
+
+	// sp-0eufi: re-assert the player's durable agent identity (headquarters / starting_faction /
+	// account_id) into players.metadata, so a row created by any path — including one that predates
+	// the identity write entirely — heals itself from its own /my/agent.
+	//
+	// Deliberately runs LAST, and on its OWN bounded context. The obvious placement is ahead of the
+	// launches, since probe-sensing reads players.metadata.headquarters in its CUTOVER and a missing
+	// key aborts its whole first tick. That ordering is WRONG, and
+	// TestLaunchBootStandingAfterRecovery_SurvivesExhaustedRecoveryContext proves it: this is a live
+	// API call, boot-standing shares one 30s budget, and a slow or hung /my/agent ahead of the
+	// launches consumes it — leaving ensureBootStandingCoordinators an expired context and launching
+	// NOTHING. Buying one clean sensing tick at the risk of starting no coordinators at all is a bad
+	// trade, and it would break the very sensing engine this fix exists to revive.
+	//
+	// Running after costs at most ONE failed sensing tick on a cold row: the engine re-reconciles
+	// every 30s, the read is idempotent, and the error it logs now names the key and the remedy.
+	s.syncAgentIdentityAtBoot(ctx, playerID)
 }
 
 // bootStandingCoordinatorTypes are the container types launched unconditionally at every daemon
@@ -94,14 +111,12 @@ var bootStandingCoordinatorTypes = []container.ContainerType{
 	// already RUNNING/PENDING, and its creation path's own double-launch guard (sp-9ujl) refuses a twin
 	// whose second reconcile loop would fight the first over the same posts and idle probes.
 	container.ContainerTypeScoutPostCoordinator,
-	// sp-f082y: the probe-buyer-fleet coordinator is genuinely STANDING — it must continuously
-	// maintain K dedicated buyer hulls so the probe fleet keeps growing when freshness/scout demand
-	// outruns supply (and no idle undedicated hull is left to buy through) — so it boot-launches
-	// unconditionally like the scout-post/freshness coordinators. Launch is idempotent (skips if
-	// already RUNNING/PENDING), and every buy is bounded by the REUSED money guards (25% treasury +
-	// working-capital floor + fleet cap) and a small K, so an armed auto-start is safe. Shipped ARMED
-	// (money guards are not a feature flag).
-	container.ContainerTypeProbeBuyerCoordinator,
+	// The probe-buyer-fleet coordinator (sp-f082y) was a member here until it was RETIRED and
+	// DELETED (Admiral 2026-07-28). Boot-standing it is precisely what made its cost unbounded:
+	// nothing had to launch it, so nothing had to notice it, and the first tick after bootstrap
+	// reached EXPANSION it bought 9 probes for 245,316 credits in five minutes. Probe supply belongs
+	// to the sensing coordinator above, which buys only what its own placements need and reuses
+	// hulls it already owns first.
 }
 
 // ensureBootStandingCoordinators launches every boot-standing coordinator type not already
@@ -133,8 +148,6 @@ func (s *DaemonServer) ensureBootStandingCoordinators(ctx context.Context, playe
 			s.ensureBootstrapStanding(ctx, playerID)
 		case container.ContainerTypeScoutPostCoordinator:
 			s.ensureScoutPostStanding(ctx, playerID)
-		case container.ContainerTypeProbeBuyerCoordinator:
-			s.ensureProbeBuyerStanding(ctx, playerID)
 		}
 	}
 }
@@ -195,26 +208,6 @@ func (s *DaemonServer) ensureScoutPostStanding(ctx context.Context, playerID int
 	}
 	if _, lerr := s.ScoutPostCoordinator(ctx, playerID, 0); lerr != nil {
 		fmt.Printf("Warning: failed to launch boot-standing scout-post coordinator: %v\n", lerr)
-	}
-}
-
-// ensureProbeBuyerStanding launches the standing probe-buyer-fleet coordinator (sp-f082y) when none
-// is already running for the player. Idempotent via the containerTypeRunning pre-check (the factory's
-// own double-launch guard is the backstop), so a warm restart re-adopts the existing one via
-// RecoverRunningContainers instead of double-launching. tickIntervalSecs=0 uses the coordinator's
-// documented default (RULINGS #5); probe_buyer_count / max_probe_fleet are injected in
-// buildCommandForType from the persisted/tuned config. A launch failure is logged and non-fatal.
-func (s *DaemonServer) ensureProbeBuyerStanding(ctx context.Context, playerID int) {
-	running, err := containerTypeRunning(ctx, s.containerRepo, playerID, container.ContainerTypeProbeBuyerCoordinator)
-	if err != nil {
-		fmt.Printf("Warning: failed to check probe-buyer coordinator state: %v\n", err)
-		return
-	}
-	if running {
-		return
-	}
-	if _, lerr := s.ProbeBuyerFleetCoordinator(ctx, playerID, 0); lerr != nil {
-		fmt.Printf("Warning: failed to launch boot-standing probe-buyer coordinator: %v\n", lerr)
 	}
 }
 
