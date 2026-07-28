@@ -283,7 +283,7 @@ func oneFillPorts(treasury int64) (BuyPorts, *fakeBuyLedger, *fakePurchaser, *fa
 
 // capexKnobs are the Step-1 floor knobs: 50_000 immutable + 100_000 capex +
 // 2 × 300_000/h cargo runway = a 750_000 floor.
-var capexKnobs = BuyKnobs{ProbeCap: 100, CapexReserve: 100_000, K: 2}
+var capexKnobs = BuyKnobs{ProbeCap: 100, CapexReserve: 100_000, KMilli: 2000}
 
 // --- Step 1: the dynamic floor, integrated -----------------------------------
 

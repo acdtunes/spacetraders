@@ -17,7 +17,7 @@ func TestProbeBuyFloor(t *testing.T) {
 		immutable         int64
 		capexReserve      int64
 		cargoSpendPerHour int64
-		k                 int
+		kMilli            int
 		want              int64
 	}{
 		{
@@ -27,7 +27,7 @@ func TestProbeBuyFloor(t *testing.T) {
 			immutable:         immutableFloor,
 			capexReserve:      100_000,
 			cargoSpendPerHour: 300_000,
-			k:                 2,
+			kMilli:            2000,
 			want:              750_000,
 		},
 		{
@@ -37,7 +37,7 @@ func TestProbeBuyFloor(t *testing.T) {
 			immutable:         immutableFloor,
 			capexReserve:      100_000,
 			cargoSpendPerHour: 0,
-			k:                 2,
+			kMilli:            2000,
 			want:              150_000,
 		},
 		{
@@ -45,7 +45,7 @@ func TestProbeBuyFloor(t *testing.T) {
 			immutable:         immutableFloor,
 			capexReserve:      100_000,
 			cargoSpendPerHour: 300_000,
-			k:                 0,
+			kMilli:            0,
 			want:              150_000,
 		},
 		{
@@ -53,7 +53,7 @@ func TestProbeBuyFloor(t *testing.T) {
 			immutable:         immutableFloor,
 			capexReserve:      0,
 			cargoSpendPerHour: 300_000,
-			k:                 1,
+			kMilli:            1000,
 			want:              350_000,
 		},
 		{
@@ -61,7 +61,7 @@ func TestProbeBuyFloor(t *testing.T) {
 			immutable:         immutableFloor,
 			capexReserve:      0,
 			cargoSpendPerHour: 0,
-			k:                 2,
+			kMilli:            2000,
 			want:              immutableFloor,
 		},
 		{
@@ -69,17 +69,17 @@ func TestProbeBuyFloor(t *testing.T) {
 			immutable:         immutableFloor,
 			capexReserve:      0,
 			cargoSpendPerHour: 250_000,
-			k:                 4,
+			kMilli:            4000,
 			want:              1_050_000,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := ProbeBuyFloor(tc.immutable, tc.capexReserve, tc.cargoSpendPerHour, tc.k)
+			got := ProbeBuyFloor(tc.immutable, tc.capexReserve, tc.cargoSpendPerHour, tc.kMilli)
 			if got != tc.want {
 				t.Errorf("ProbeBuyFloor(%d, %d, %d, %d) = %d, want %d",
-					tc.immutable, tc.capexReserve, tc.cargoSpendPerHour, tc.k, got, tc.want)
+					tc.immutable, tc.capexReserve, tc.cargoSpendPerHour, tc.kMilli, got, tc.want)
 			}
 		})
 	}
@@ -94,7 +94,7 @@ func TestProbeBuyFloor(t *testing.T) {
 func TestProbeBuyFloor_NeverBelowImmutable(t *testing.T) {
 	capexes := []int64{-1_000_000, -1, 0, 1, 100_000}
 	cargoSpends := []int64{-1_000_000, -1, 0, 1, 300_000}
-	ks := []int{-100, -1, 0, 1, 2}
+	ks := []int{-100000, -1, 0, 1, 400, 2000}
 
 	for _, capex := range capexes {
 		for _, cargo := range cargoSpends {
@@ -144,5 +144,68 @@ func TestCargoSpendPerHour(t *testing.T) {
 				t.Errorf("CargoSpendPerHour(%d) = %d, want %d", tc.sum, got, tc.want)
 			}
 		})
+	}
+}
+
+// A FRACTIONAL hour of runway is reachable, and is the reason this knob is in
+// milli-hours rather than hours (2026-07-28).
+//
+// The live fleet measured 1,820,649/hr of cargo spend against a 773,106
+// treasury. In whole hours the operator's only choices were k=1 — a floor of
+// ~1.87M, so no 30k probe was ever affordable — and k=0, which removes the
+// runway guard entirely. There was no setting between "blocked" and
+// "unguarded", so the knob could not express the intent "hold back a bit of
+// runway, but let probes through".
+//
+// This pins that the in-between now exists AND that it lands where arithmetic
+// says it should, so a future refactor cannot quietly restore whole-hour
+// granularity while still compiling.
+func TestProbeBuyFloor_SubHourRunwayIsExpressible(t *testing.T) {
+	const (
+		liveCargoSpendPerHour = int64(1_820_649)
+		noCapex               = int64(0)
+	)
+
+	fullHour := ProbeBuyFloor(immutableFloor, noCapex, liveCargoSpendPerHour, 1000)
+	fourTenths := ProbeBuyFloor(immutableFloor, noCapex, liveCargoSpendPerHour, 400)
+	noRunway := ProbeBuyFloor(immutableFloor, noCapex, liveCargoSpendPerHour, 0)
+
+	// 0.4h is genuinely BETWEEN the two whole-hour settings — the property that
+	// did not exist before. Asserting the ordering rather than only the values
+	// is what catches a rounding change that collapses 400 onto a neighbour.
+	if !(noRunway < fourTenths && fourTenths < fullHour) {
+		t.Fatalf("0.4h must sit strictly between 0h and 1h: 0h=%d, 0.4h=%d, 1h=%d",
+			noRunway, fourTenths, fullHour)
+	}
+
+	if want := immutableFloor + liveCargoSpendPerHour*400/1000; fourTenths != want {
+		t.Errorf("0.4h runway = %d, want %d", fourTenths, want)
+	}
+
+	// The operating consequence, stated as money. NOTE the exact numbers: at the
+	// live treasury 0.4h is NOT enough to afford a probe — the break-even is
+	// ~0.38h — so this pins that a WORKABLE setting exists strictly below one
+	// hour, not that 0.4 specifically unblocks buying. Asserting the latter is a
+	// mistake worth naming: it is intuitive, it is wrong, and a test that
+	// enshrined it would hand an operator a knob value that silently does
+	// nothing.
+	const liveTreasury, probePrice = int64(773_106), int64(30_000)
+	const affordableMilli = 350
+
+	affordable := ProbeBuyFloor(immutableFloor, noCapex, liveCargoSpendPerHour, affordableMilli)
+	if liveTreasury-probePrice < affordable {
+		t.Errorf("0.35h must leave a probe affordable: treasury %d - price %d < floor %d",
+			liveTreasury, probePrice, affordable)
+	}
+	if liveTreasury-probePrice >= fullHour {
+		t.Errorf("1h must NOT leave a probe affordable — this is the state that motivated milli-hours: treasury %d - price %d >= floor %d",
+			liveTreasury, probePrice, fullHour)
+	}
+	// And 0.4h, the value that looks obviously sufficient, is still short. This
+	// is the assertion that documents WHY the operator must read the arithmetic
+	// rather than guess a round number.
+	if liveTreasury-probePrice >= fourTenths {
+		t.Errorf("0.4h was expected to still block at this treasury (break-even ~0.38h): treasury %d - price %d >= floor %d",
+			liveTreasury, probePrice, fourTenths)
 	}
 }

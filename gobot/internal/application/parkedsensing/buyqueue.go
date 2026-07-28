@@ -248,9 +248,13 @@ type BuyKnobs struct {
 	// CapexReserve is the credits held back for ship capex the operation has
 	// already committed to elsewhere.
 	CapexReserve int64
-	// K is how many hours of the trading fleet's cargo runway the floor holds
-	// back on top of the immutable reserve.
-	K int
+	// KMilli is how many MILLI-hours of the trading fleet's cargo runway the
+	// floor holds back on top of the immutable reserve: 2000 = 2h, 400 = 0.4h.
+	// Milli rather than a float because sub-hour runway is the operating range
+	// and this coordinator's tunable registry is integer end to end — see
+	// domain/parkedsensing.ProbeBuyFloor for why a float would put NaN inside a
+	// money guard.
+	KMilli int
 }
 
 // BuyReport is one drain tick's outcome, for the heartbeat.
@@ -381,7 +385,7 @@ func DrainBuyQueue(
 			common.ImmutableReserveFloor,
 			k.CapexReserve+heavyReserve,
 			domainSensing.CargoSpendPerHour(spend),
-			k.K,
+			k.KMilli,
 		),
 	}
 

@@ -58,7 +58,7 @@ func TestSensingTune_LiveKnobSet(t *testing.T) {
 		"tick_secs", "wait_low_ms", "wait_high_ms", "pressure_half_life_secs",
 		// the parked model's own
 		"probe_cap", "expansion_enabled", "target_util_pct", "min_scan_rate_milli",
-		"value_clamp_r", "inflight_cap", "capital_multiplier_k",
+		"value_clamp_r", "inflight_cap", "capital_multiplier_k_milli",
 		"capex_reserve_credits", "quartermaster_cadence_secs",
 	}
 	for _, key := range live {
@@ -113,7 +113,7 @@ func TestSensingTune_RebuildLatencyKnobsSayTheyAreRebuildScoped(t *testing.T) {
 		require.Contains(t, bounds[key].Description, "rebuild",
 			"%s binds at rotation construction and must document that latency", key)
 	}
-	for _, key := range []string{"probe_cap", "target_util_pct", "min_scan_rate_milli", "capital_multiplier_k"} {
+	for _, key := range []string{"probe_cap", "target_util_pct", "min_scan_rate_milli", "capital_multiplier_k_milli"} {
 		require.Contains(t, bounds[key].Description, "next tick",
 			"%s is live-tunable and must say so", key)
 	}
@@ -165,7 +165,7 @@ func TestSensingRecovery_OldCoreConfigStillBuildsOnDefaults(t *testing.T) {
 	require.Zero(t, cmd.MinScanRateMilli)
 	require.Zero(t, cmd.ValueClampR)
 	require.Zero(t, cmd.InflightCap)
-	require.Zero(t, cmd.CapitalMultiplierK)
+	require.Zero(t, cmd.CapitalMultiplierKMilli)
 	require.Zero(t, cmd.CapexReserveCredits)
 	require.Zero(t, cmd.QuartermasterCadence)
 
@@ -190,7 +190,7 @@ func TestSensingRecovery_NewKnobsSurviveTheJSONBoundary(t *testing.T) {
 		"min_scan_rate_milli":        250,
 		"value_clamp_r":              8,
 		"inflight_cap":               5,
-		"capital_multiplier_k":       4,
+		"capital_multiplier_k_milli": 4,
 		"capex_reserve_credits":      750_000,
 		"quartermaster_cadence_secs": 1800,
 	}), 8, "probe_sensing_coordinator-player-8")
@@ -205,7 +205,7 @@ func TestSensingRecovery_NewKnobsSurviveTheJSONBoundary(t *testing.T) {
 	require.Equal(t, 250, cmd.MinScanRateMilli)
 	require.Equal(t, 8, cmd.ValueClampR)
 	require.Equal(t, 5, cmd.InflightCap)
-	require.Equal(t, 4, cmd.CapitalMultiplierK)
+	require.Equal(t, 4, cmd.CapitalMultiplierKMilli)
 	require.Equal(t, 750_000, cmd.CapexReserveCredits)
 	require.Equal(t, 1800, cmd.QuartermasterCadence)
 }

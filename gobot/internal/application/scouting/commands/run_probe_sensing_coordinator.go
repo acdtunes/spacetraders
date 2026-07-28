@@ -79,9 +79,16 @@ const (
 	// defaultInflightCap bounds concurrent scans, and with it how hard a slow
 	// API can push back on the pacer.
 	defaultInflightCap = 3
-	// defaultCapitalMultiplierK is how many hours of the trading fleet's cargo
-	// runway the probe buy floor holds back on top of the immutable reserve.
-	defaultCapitalMultiplierK = 2
+	// defaultCapitalMultiplierKMilli is how many MILLI-hours of the trading
+	// fleet's cargo runway the probe buy floor holds back on top of the
+	// immutable reserve. 2000 = 2h, preserving the prior default exactly.
+	//
+	// Milli-hours because sub-hour runway is the real operating range: at a
+	// measured 1.8M/hr cargo spend, whole hours move the floor 1.8M per step,
+	// which left no setting between "no probe is ever affordable" and "no
+	// runway guard at all". 400 = 0.4h. Same convention as
+	// defaultMinScanRateMilli above.
+	defaultCapitalMultiplierKMilli = 2000
 	// defaultCapexReserveCredits is the credits held back for ship capex the
 	// operation has already committed to elsewhere.
 	defaultCapexReserveCredits = 100_000
@@ -368,8 +375,9 @@ type RunProbeSensingCoordinatorCommand struct {
 	ValueClampR int
 	// InflightCap bounds concurrent scans.
 	InflightCap int
-	// CapitalMultiplierK is how many hours of cargo runway the buy floor holds.
-	CapitalMultiplierK int
+	// CapitalMultiplierKMilli is how many MILLI-hours of cargo runway the buy
+	// floor holds. 2000 = 2h, 400 = 0.4h.
+	CapitalMultiplierKMilli int
 	// CapexReserveCredits is the committed-capex reserve the buy floor adds.
 	CapexReserveCredits int
 	// QuartermasterCadence is a yard slot's re-read floor, in seconds.
@@ -541,18 +549,18 @@ func (h *RunProbeSensingCoordinatorHandler) noteReconcile(ctx context.Context, c
 
 // sensingConfig is one tick's effective config, with every default resolved.
 type sensingConfig struct {
-	Whitelist            map[string]bool
-	Tick                 time.Duration
-	WaitLow, WaitHigh    time.Duration
-	ProbeCap             int
-	Expansion            bool
-	TargetUtilPct        int
-	MinScanRateMilli     int
-	ClampR               int
-	InflightCap          int
-	CapitalMultiplierK   int
-	CapexReserveCredits  int64
-	QuartermasterCadence time.Duration
+	Whitelist               map[string]bool
+	Tick                    time.Duration
+	WaitLow, WaitHigh       time.Duration
+	ProbeCap                int
+	Expansion               bool
+	TargetUtilPct           int
+	MinScanRateMilli        int
+	ClampR                  int
+	InflightCap             int
+	CapitalMultiplierKMilli int
+	CapexReserveCredits     int64
+	QuartermasterCadence    time.Duration
 }
 
 // resolveSensingConfig resolves one tick's effective config from the launch
@@ -603,18 +611,18 @@ func resolveSensingConfig(ctx context.Context, cmd *RunProbeSensingCoordinatorCo
 	}
 
 	c := sensingConfig{
-		Whitelist:            whitelist,
-		Tick:                 time.Duration(pick("tick_secs", cmd.TickSecs)) * time.Second,
-		WaitLow:              time.Duration(pick("wait_low_ms", cmd.WaitLowMs)) * time.Millisecond,
-		WaitHigh:             time.Duration(pick("wait_high_ms", cmd.WaitHighMs)) * time.Millisecond,
-		ProbeCap:             pick("probe_cap", cmd.ProbeCap),
-		TargetUtilPct:        pick("target_util_pct", cmd.TargetUtilPct),
-		MinScanRateMilli:     pick("min_scan_rate_milli", cmd.MinScanRateMilli),
-		ClampR:               pick("value_clamp_r", cmd.ValueClampR),
-		InflightCap:          pick("inflight_cap", cmd.InflightCap),
-		CapitalMultiplierK:   pick("capital_multiplier_k", cmd.CapitalMultiplierK),
-		CapexReserveCredits:  int64(pick("capex_reserve_credits", cmd.CapexReserveCredits)),
-		QuartermasterCadence: time.Duration(pick("quartermaster_cadence_secs", cmd.QuartermasterCadence)) * time.Second,
+		Whitelist:               whitelist,
+		Tick:                    time.Duration(pick("tick_secs", cmd.TickSecs)) * time.Second,
+		WaitLow:                 time.Duration(pick("wait_low_ms", cmd.WaitLowMs)) * time.Millisecond,
+		WaitHigh:                time.Duration(pick("wait_high_ms", cmd.WaitHighMs)) * time.Millisecond,
+		ProbeCap:                pick("probe_cap", cmd.ProbeCap),
+		TargetUtilPct:           pick("target_util_pct", cmd.TargetUtilPct),
+		MinScanRateMilli:        pick("min_scan_rate_milli", cmd.MinScanRateMilli),
+		ClampR:                  pick("value_clamp_r", cmd.ValueClampR),
+		InflightCap:             pick("inflight_cap", cmd.InflightCap),
+		CapitalMultiplierKMilli: pick("capital_multiplier_k_milli", cmd.CapitalMultiplierKMilli),
+		CapexReserveCredits:     int64(pick("capex_reserve_credits", cmd.CapexReserveCredits)),
+		QuartermasterCadence:    time.Duration(pick("quartermaster_cadence_secs", cmd.QuartermasterCadence)) * time.Second,
 	}
 
 	// 1=on, 2=off. Anything else — including the absent-key 0 — is the default.
@@ -646,15 +654,20 @@ func resolveSensingConfig(ctx context.Context, cmd *RunProbeSensingCoordinatorCo
 	if c.InflightCap <= 0 {
 		c.InflightCap = defaultInflightCap
 	}
-	if c.CapitalMultiplierK < 0 {
-		warnNegative("capital_multiplier_k", c.CapitalMultiplierK, defaultCapitalMultiplierK)
-		c.CapitalMultiplierK = defaultCapitalMultiplierK
+	if c.CapitalMultiplierKMilli < 0 {
+		warnNegative("capital_multiplier_k_milli", c.CapitalMultiplierKMilli, defaultCapitalMultiplierKMilli)
+		c.CapitalMultiplierKMilli = defaultCapitalMultiplierKMilli
 	}
-	if c.CapitalMultiplierK == 0 && cmd.CapitalMultiplierK == 0 {
+	if c.CapitalMultiplierKMilli == 0 && cmd.CapitalMultiplierKMilli == 0 {
 		// 0 is a legitimate operator choice (hold back no cargo runway at all),
 		// but it is indistinguishable from an absent key, so the documented
 		// default wins — matching every other knob's revert semantics.
-		c.CapitalMultiplierK = defaultCapitalMultiplierK
+		//
+		// This is exactly why milli-units matter rather than being cosmetic: in
+		// whole hours the only sub-1h setting WAS 0, which this branch then
+		// reverts to the default — so a fractional runway was unreachable, not
+		// merely awkward. 400 (=0.4h) is a distinct, settable value.
+		c.CapitalMultiplierKMilli = defaultCapitalMultiplierKMilli
 	}
 	if c.CapexReserveCredits < 0 {
 		warnNegative("capex_reserve_credits", int(c.CapexReserveCredits), defaultCapexReserveCredits)
@@ -848,7 +861,7 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 	buyRep, berr := parkedsensing.DrainBuyQueue(ctx, ports.buyPorts(), playerID, parkedsensing.BuyKnobs{
 		ProbeCap:     cfg.ProbeCap,
 		CapexReserve: cfg.CapexReserveCredits,
-		K:            cfg.CapitalMultiplierK,
+		KMilli:       cfg.CapitalMultiplierKMilli,
 	}, h.clock)
 	if berr != nil {
 		failures = append(failures, berr)

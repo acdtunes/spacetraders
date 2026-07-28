@@ -26,7 +26,7 @@ func SensingTunableDefaults() map[string]int {
 		"min_scan_rate_milli":        defaultMinScanRateMilli,
 		"value_clamp_r":              defaultValueClampR,
 		"inflight_cap":               defaultInflightCap,
-		"capital_multiplier_k":       defaultCapitalMultiplierK,
+		"capital_multiplier_k_milli": defaultCapitalMultiplierKMilli,
 		"capex_reserve_credits":      defaultCapexReserveCredits,
 		"quartermaster_cadence_secs": defaultQuartermasterCadenceSecs,
 

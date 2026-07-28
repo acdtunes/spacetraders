@@ -379,7 +379,7 @@ func TestKnobs_EmptyLaunchResolvesToDocumentedDefaults(t *testing.T) {
 	require.Equal(t, defaultMinScanRateMilli, cfg.MinScanRateMilli)
 	require.Equal(t, defaultValueClampR, cfg.ClampR)
 	require.Equal(t, defaultInflightCap, cfg.InflightCap)
-	require.Equal(t, defaultCapitalMultiplierK, cfg.CapitalMultiplierK)
+	require.Equal(t, defaultCapitalMultiplierKMilli, cfg.CapitalMultiplierKMilli)
 	require.Equal(t, int64(defaultCapexReserveCredits), cfg.CapexReserveCredits)
 	require.Equal(t, defaultQuartermasterCadenceSecs*time.Second, cfg.QuartermasterCadence)
 	require.Len(t, cfg.Whitelist, len(defaultSensingWhitelist()))
