@@ -28,6 +28,9 @@ type fakeCatalog struct {
 	// — so a test using the shared field would never reach this branch and would
 	// silently duplicate the market-listing failure test instead.
 	catalogKnownErr error
+	// heavyYards are the system's HEAVY-selling shipyards (sp-fwk8z T3). Separate from
+	// yards so a test can model a system whose heavy yard is NOT a probe yard.
+	heavyYards []string
 }
 
 func (f *fakeCatalog) ListMarketWaypoints(_ context.Context, _ string) ([]string, error) {
@@ -35,6 +38,9 @@ func (f *fakeCatalog) ListMarketWaypoints(_ context.Context, _ string) ([]string
 }
 func (f *fakeCatalog) ListUnchartedCount(_ context.Context, _ string) (int, error) {
 	return f.uncharted, f.err
+}
+func (f *fakeCatalog) ListHeavyYards(_ context.Context, _ string) ([]string, error) {
+	return f.heavyYards, f.err
 }
 func (f *fakeCatalog) ListProbeYards(_ context.Context, _ string) ([]string, error) {
 	return f.yards, f.err
@@ -772,5 +778,63 @@ func TestScreenSystemPropagatesLedgerError(t *testing.T) {
 
 	if _, err := ScreenSystem(context.Background(), h.ports(), testPlayerID, "X1-AA11", whitelistOf("IRON_ORE")); err == nil {
 		t.Fatal("expected the ledger error to propagate")
+	}
+}
+
+// --- quartermaster coverage at heavy-selling yards (sp-fwk8z T3) --------------
+
+// A system whose shipyard sells HEAVIES but no probes still earns a YARD slot: a parked
+// quartermaster there is what makes a future heavy purchase instant instead of requiring a hull to
+// fly in first.
+func TestPlanSlots_HeavyOnlyYardStillEarnsASlot(t *testing.T) {
+	cat := &fakeCatalog{heavyYards: []string{"X1-AA-H1"}}
+	slots, err := planSlots(context.Background(), ScreenPorts{Waypoints: cat}, "X1-AA", nil)
+	if err != nil {
+		t.Fatalf("planSlots error: %v", err)
+	}
+	if len(slots) != 1 {
+		t.Fatalf("a heavy-only yard must earn one slot, got %d (%+v)", len(slots), slots)
+	}
+	if slots[0].Waypoint != "X1-AA-H1" || slots[0].Kind != SlotKindYard {
+		t.Fatalf("expected a YARD slot at the heavy yard, got %+v", slots[0])
+	}
+}
+
+// THE COLLISION CONTRACT. A yard that is ALSO a whitelisted market gets exactly ONE slot, and it is
+// the MARKET one — the ledger is waypoint-keyed, so a second slot would overwrite rather than add,
+// and a YARD slot would have to drop the goods list that is the reason the waypoint is watched.
+// Consumers asking "is there a probe at this yard?" match on waypoint + PARKED, never on kind.
+func TestPlanSlots_HeavyYardCoLocatedWithAMarketClaimsNoSecondRow(t *testing.T) {
+	cat := &fakeCatalog{heavyYards: []string{"X1-AA-M1"}}
+	hits := []screenedMarket{{waypoint: "X1-AA-M1", goods: []string{"FUEL"}, depth: 1000}}
+
+	slots, err := planSlots(context.Background(), ScreenPorts{Waypoints: cat}, "X1-AA", hits)
+	if err != nil {
+		t.Fatalf("planSlots error: %v", err)
+	}
+	if len(slots) != 1 {
+		t.Fatalf("a heavy yard co-located with a market must not claim a second row, got %d slots (%+v)", len(slots), slots)
+	}
+	if slots[0].Kind != SlotKindMarket {
+		t.Fatalf("MARKET must win the collision, got kind %q", slots[0].Kind)
+	}
+	if len(slots[0].WhitelistGoods) != 1 {
+		t.Fatalf("the winning MARKET slot must keep its goods list, got %+v", slots[0])
+	}
+}
+
+// A probe yard still wins when both exist: probes are what sensing actually buys, so the
+// probe-priced ordering keeps its precedence and the heavy list is a FALLBACK, not an override.
+func TestPlanSlots_ProbeYardKeepsPrecedenceOverHeavyYard(t *testing.T) {
+	cat := &fakeCatalog{yards: []string{"X1-AA-P1"}, heavyYards: []string{"X1-AA-H1"}}
+	slots, err := planSlots(context.Background(), ScreenPorts{Waypoints: cat}, "X1-AA", nil)
+	if err != nil {
+		t.Fatalf("planSlots error: %v", err)
+	}
+	if len(slots) != 1 {
+		t.Fatalf("one yard slot per system, got %d (%+v)", len(slots), slots)
+	}
+	if slots[0].Waypoint != "X1-AA-P1" {
+		t.Fatalf("the probe yard must keep precedence, got %q", slots[0].Waypoint)
 	}
 }

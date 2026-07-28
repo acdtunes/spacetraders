@@ -11,6 +11,7 @@ import (
 	autooutfitCmd "github.com/andrescamacho/spacetraders-go/internal/application/autooutfit"
 	bootstrapCmd "github.com/andrescamacho/spacetraders-go/internal/application/bootstrap/commands"
 	contractScalerCmd "github.com/andrescamacho/spacetraders-go/internal/application/contractscaler/commands"
+	fleetCmd "github.com/andrescamacho/spacetraders-go/internal/application/fleet/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
 	probeBuyerFleetCmd "github.com/andrescamacho/spacetraders-go/internal/application/probebuyerfleet/commands"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
@@ -72,6 +73,7 @@ var tuneOperationCoordinatorTypes = map[string]string{
 	"bootstrap":        string(container.ContainerTypeBootstrapCoordinator),
 	"contractscaler":   string(container.ContainerTypeContractScaler),
 	"probebuyer":       string(container.ContainerTypeProbeBuyerCoordinator),
+	"autosizer":        string(container.ContainerTypeFleetAutosizer),
 }
 
 func tunableKnobsByContainerType() map[string]map[string]TuneBound {
@@ -83,6 +85,7 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 	bootstrap := bootstrapCmd.BootstrapTunableDefaults()
 	contractScaler := contractScalerCmd.ContractScalerTunableDefaults()
 	probeBuyer := probeBuyerFleetCmd.ProbeBuyerTunableDefaults()
+	fleetAutosizer := fleetCmd.FleetAutosizerTunableDefaults()
 	return map[string]map[string]TuneBound{
 		// sp-f082y probe-buyer-fleet coordinator: two live knobs — K (how many dedicated buyers to
 		// maintain) and the total satellite cap it grows toward. Every buy stays behind the reused,
@@ -91,6 +94,15 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 		string(container.ContainerTypeProbeBuyerCoordinator): {
 			"probe_buyer_count": {Type: "int", Min: 0, Max: 20, Default: probeBuyer["probe_buyer_count"], Unit: "hulls", Description: "K — dedicated probe-buyer hulls stationed at yards to keep the fleet growing (default 2; 0 reverts to default)"},
 			"max_probe_fleet":   {Type: "int", Min: 0, Max: 200, Default: probeBuyer["max_probe_fleet"], Unit: "hulls", Description: "total satellite cap the coordinator grows the fleet toward, then stops buying"},
+		},
+		// The fleet capacity autosizer. heavy_cap is its FIRST live-tunable knob — every other
+		// autosizer knob stays config.yaml + restart, so this is a deliberate exception rather
+		// than a new pattern. It bounds CAPITAL EXPOSURE in heavy hulls and is DISTINCT from
+		// fleet_ceiling_heavies, which caps the trade POOL by dedicated_fleet tag; both apply.
+		// The money guards beside it (the immutable 50k floor, the 25%-treasury rule, the
+		// era-payback gate) are compile-time consts and are deliberately NOT tunable.
+		string(container.ContainerTypeFleetAutosizer): {
+			"heavy_cap": {Type: "int", Min: 0, Max: 50, Default: fleetAutosizer["heavy_cap"], Unit: "hulls", Description: "ceiling on owned HEAVY HULLS (capital exposure), counted tag-independently — distinct from fleet_ceiling_heavies, which caps the trade pool by tag; both bind. Default 5. NOTE: `tune heavy_cap 0` DELETES the key and reverts to the default — to HOLD at zero (own no heavies) set heavy_cap: 0 in config.yaml and restart. Applies next tick"},
 		},
 		string(container.ContainerTypeContractScaler): {
 			// The single operator lever on the dedicated contract auto-scaler: the contract operation's hull

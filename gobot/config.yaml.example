@@ -538,11 +538,10 @@ sensing:
 # purchase decision logs its full arithmetic, so retune the blocking knob from the log, not guesswork.
 fleet_autosizer:
   # Escapes. autosizer_disabled stands the WHOLE thing down (absent/false = ACTIVE, no dark-shipping);
-  # lights_disabled / heavies_disabled freeze one class while the other runs; dry_run evaluates + logs
-  # every buy LOUDLY but spends nothing (the zero-effect alarm still fires). warehouse_hulls_enabled
-  # is opt-IN (the warehouse class is not live by default).
+  # lights_disabled / heavies_disabled freeze one class while the other runs. warehouse_hulls_enabled
+  # is opt-IN (the warehouse class is not live by default). There is NO observe-only mode: the
+  # autosizer buys whenever its guard stack clears, and every decision logs its full arithmetic.
   # autosizer_disabled: false
-  # dry_run: false
   # lights_disabled: false
   # heavies_disabled: false
   # warehouse_hulls_enabled: false
@@ -559,6 +558,27 @@ fleet_autosizer:
   # fleet_ceiling_lights: 35
   # fleet_ceiling_heavies: 15
   # fleet_ceiling_warehouse: 8
+
+  # heavy_cap (sp-fwk8z): the maximum HEAVY HULLS the fleet may own. This is a DIFFERENT dial from
+  # fleet_ceiling_heavies above and BOTH apply — do not conflate them:
+  #   * fleet_ceiling_heavies counts hulls tagged dedicated_fleet="trade", so it caps the TRADE
+  #     POOL. A light hauler tagged trade counts against it; a heavy tagged contract does not.
+  #   * heavy_cap counts HEAVY HULLS fleet-wide regardless of tag, so it caps CAPITAL EXPOSURE in
+  #     large hulls. Under-counting here is what would authorise re-buying a hull we already own.
+  # Default 5.
+  #
+  # TWO KEYS, and which gesture you use matters:
+  #   * THIS FILE writes the launch key (autosizer_heavy_cap) — applied at container build, so it
+  #     needs a daemon restart to take effect.
+  #   * `spacetraders tune --operation autosizer heavy_cap <n>` writes the LIVE key (heavy_cap) —
+  #     applied on the NEXT tick, no restart. A live value WINS over this file while it is set.
+  #   * `tune heavy_cap 0` DELETES the live key: that is the fleet-wide revert-to-default gesture,
+  #     so it reverts to whatever this file (or the default 5) says. It does NOT mean "hold".
+  #
+  # 0 IS A HOLD, NOT A DISABLE — and it is only expressible HERE. Setting heavy_cap: 0 below and
+  # restarting means "own no heavies": the autosizer buys none, and the sensing buy floor correctly
+  # reserves nothing for one. It is a legitimate operator choice, not an off switch for a feature.
+  # heavy_cap: 5
 
   # Treasury guard: a buy fires only if live treasury − the flat, immutable reserve floor
   # (common.ImmutableReserveFloor, 50000, RULINGS #5, not configurable) >= price +
@@ -604,9 +624,9 @@ fleet_autosizer:
   # above this sustained request-utilization percent (0 => 85). Fails OPEN when unreadable.
   # api_utilization_ceiling_pct: 85
 
-  # Zero-effect alarm: when demand persists this many consecutive ticks with NO purchase (blocked every
-  # tick, or silent dry-run), emit ONE edge-triggered WARN naming the blocker (0 => 4). The mechanized
-  # no-silent-dry-run lesson.
+  # Zero-effect alarm: when demand persists this many consecutive ticks with NO purchase (blocked
+  # every tick), emit ONE edge-triggered WARN naming the blocker (0 => 4). The mechanized
+  # no-silent-no-op lesson.
   # zero_effect_alarm_ticks: 4
 
   # WAREHOUSE hull class (sp-1txd M7/M8, opt-in via warehouse_hulls_enabled). Gate warehouse placement

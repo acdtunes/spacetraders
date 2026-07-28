@@ -26,6 +26,15 @@ type FleetAutosizerMetricsCollector struct {
 	demandHulls     *prometheus.GaugeVec
 	currentHulls    *prometheus.GaugeVec
 	zeroEffectTotal prometheus.Counter
+
+	// The heavy-trade series (sp-fwk8z). Labelled by player_id ONLY: these are per-player
+	// fleet facts, not per-class ones, and the reservation in particular must be readable
+	// as a single number — an operator asking "why has nothing bought?" wants one series,
+	// not a sum over classes.
+	heavyReserveCredits *prometheus.GaugeVec
+	heaviesOwned        *prometheus.GaugeVec
+	heavyCap            *prometheus.GaugeVec
+	heavyPricePremium   *prometheus.SummaryVec
 }
 
 // NewFleetAutosizerMetricsCollector creates a new autosizer metrics collector.
@@ -67,6 +76,42 @@ func NewFleetAutosizerMetricsCollector() *FleetAutosizerMetricsCollector {
 			},
 			[]string{"class"},
 		),
+		heavyReserveCredits: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: namespace,
+				Subsystem: subsystem,
+				Name:      "autosizer_heavy_reserve_credits",
+				Help:      "Credits held back for the NEXT heavy purchase, derived per tick (sp-fwk8z). A non-zero value beside stalled probe/light buying means the fleet is SAVING for a heavy, not broken — it is the series that tells accumulation from failure",
+			},
+			[]string{"player_id"},
+		),
+		heaviesOwned: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: namespace,
+				Subsystem: subsystem,
+				Name:      "autosizer_heavies_owned",
+				Help:      "Owned HEAVY hulls counted tag-independently (frame list primary, cargo-capacity safety net) — capital exposure, NOT the trade-pool count behind fleet_ceiling_heavies (sp-fwk8z)",
+			},
+			[]string{"player_id"},
+		),
+		heavyCap: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: namespace,
+				Subsystem: subsystem,
+				Name:      "autosizer_heavy_cap",
+				Help:      "The operator's heavy-hull cap in force this tick, after the live-config read. 0 is a deliberate HOLD, not an unset knob (sp-fwk8z)",
+			},
+			[]string{"player_id"},
+		),
+		heavyPricePremium: prometheus.NewSummaryVec(
+			prometheus.SummaryOpts{
+				Namespace: namespace,
+				Subsystem: subsystem,
+				Name:      "autosizer_heavy_price_premium_percent",
+				Help:      "Per heavy purchase: how far above the cheapest KNOWN yard ask we actually paid, in percent (spec measurement 3 — the price of buying at the cheapest yard WITH PRESENCE rather than the cheapest absolutely). 0 means we paid the best known price; a persistent positive is what presence-lag costs",
+			},
+			[]string{"player_id"},
+		),
 		zeroEffectTotal: prometheus.NewCounter(
 			prometheus.CounterOpts{
 				Namespace: namespace,
@@ -94,6 +139,18 @@ func (c *FleetAutosizerMetricsCollector) Register() error {
 		return err
 	}
 	if err := Registry.Register(c.currentHulls); err != nil {
+		return err
+	}
+	if err := Registry.Register(c.heavyReserveCredits); err != nil {
+		return err
+	}
+	if err := Registry.Register(c.heaviesOwned); err != nil {
+		return err
+	}
+	if err := Registry.Register(c.heavyCap); err != nil {
+		return err
+	}
+	if err := Registry.Register(c.heavyPricePremium); err != nil {
 		return err
 	}
 	return Registry.Register(c.zeroEffectTotal)
@@ -134,4 +191,34 @@ func (c *FleetAutosizerMetricsCollector) RecordZeroEffectAlarm() {
 		return
 	}
 	c.zeroEffectTotal.Inc()
+}
+
+// RecordHeavyReserve sets the per-tick heavy-trade gauges: the derived reservation, the
+// tag-independent owned-heavy census, and the cap in force. Called once per tick, whatever the
+// outcome — a reserve that is only recorded when something happens is exactly the series an
+// operator cannot use to tell "saving" from "stuck".
+func (c *FleetAutosizerMetricsCollector) RecordHeavyReserve(playerID string, reserve int64, owned, cap int) {
+	if c == nil {
+		return
+	}
+	if c.heavyReserveCredits != nil {
+		c.heavyReserveCredits.WithLabelValues(playerID).Set(float64(reserve))
+	}
+	if c.heaviesOwned != nil {
+		c.heaviesOwned.WithLabelValues(playerID).Set(float64(owned))
+	}
+	if c.heavyCap != nil {
+		c.heavyCap.WithLabelValues(playerID).Set(float64(cap))
+	}
+}
+
+// ObserveHeavyPricePremium records what one heavy purchase cost ABOVE the cheapest known yard ask,
+// in percent. A non-positive cheapest basis is skipped rather than divided by (mirroring
+// ObserveLegPriceDrift): an unknown basis is not a 0% premium.
+func (c *FleetAutosizerMetricsCollector) ObserveHeavyPricePremium(playerID string, paid, cheapestKnown int64) {
+	if c == nil || c.heavyPricePremium == nil || cheapestKnown <= 0 {
+		return
+	}
+	premium := float64(paid-cheapestKnown) / float64(cheapestKnown) * 100
+	c.heavyPricePremium.WithLabelValues(playerID).Observe(premium)
 }

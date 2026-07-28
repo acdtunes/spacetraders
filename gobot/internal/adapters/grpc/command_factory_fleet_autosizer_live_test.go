@@ -170,3 +170,20 @@ func TestAutosizerProximalYardExplicitFalseRoundTrips(t *testing.T) {
 	require.NotNil(t, cmd.PreferDemandProximalYard, "explicit false must round-trip as a non-nil *bool")
 	require.False(t, *cmd.PreferDemandProximalYard, "the captain's explicit opt-out must survive, not collapse into the default")
 }
+
+// The heavy_cap tune key must stay OUT of fleetAutosizerConfigKeys.
+//
+// resolveFleetAutosizerConfig CLEARS every key in that list and re-injects it from config.yaml on
+// each container build. The live-tunable knob is the BARE key "heavy_cap"; adding it to the
+// clear-list — the well-meaning "add it for consistency" edit — would wipe every tuned value on the
+// next daemon bounce, so `tune heavy_cap 12` would appear to work and then silently revert.
+//
+// The registry anti-drift test catches a RENAME of heavyCapKey to the prefixed form; it cannot
+// catch an ADDITION here. This is that assertion.
+func TestFleetAutosizerConfigKeys_ExcludeTheBareHeavyCapTuneKey(t *testing.T) {
+	for _, key := range fleetAutosizerConfigKeys {
+		if key == "heavy_cap" {
+			t.Fatal("the bare tune key \"heavy_cap\" must NOT be in fleetAutosizerConfigKeys — resolveFleetAutosizerConfig clears that list on every rebuild, so a tuned value would be silently wiped on the next daemon bounce")
+		}
+	}
+}

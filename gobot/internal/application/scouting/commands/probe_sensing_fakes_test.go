@@ -405,11 +405,12 @@ func (f *psLedger) ParkedSlotViews(_ context.Context, _ int) ([]parkedsensing.Se
 
 // fakeCatalog is the persisted waypoint catalog and shipyard inventory.
 type fakeCatalog struct {
-	markets   map[string][]string // system → charted marketplace waypoints
-	uncharted map[string][]string // system → uncharted waypoints
-	yards     map[string][]string // system → probe-selling yards
-	known     map[string]bool     // system → is the waypoint list swept?
-	knownErr  error
+	markets    map[string][]string // system → charted marketplace waypoints
+	uncharted  map[string][]string // system → uncharted waypoints
+	yards      map[string][]string // system → probe-selling yards
+	heavyYards map[string][]string // system → heavy-selling yards (sp-fwk8z T3)
+	known      map[string]bool     // system → is the waypoint list swept?
+	knownErr   error
 	// marketsErr fails the market list for ONE system, which is how a single
 	// system's screen is made to fail while its siblings succeed. It is the
 	// first read ScreenSystem makes, so the error propagates out of the whole
@@ -447,6 +448,13 @@ func (f *fakeCatalog) UnchartedWaypoints(_ context.Context, system string) ([]st
 
 func (f *fakeCatalog) ListProbeYards(_ context.Context, system string) ([]string, error) {
 	return f.yards[system], nil
+}
+
+// ListHeavyYards is the heavy-selling-yard fallback (sp-fwk8z T3). Empty by default: these
+// coordinator tests are about probe yards, and the screen only consults this when no probe
+// yard exists, so an empty map keeps every existing expectation intact.
+func (f *fakeCatalog) ListHeavyYards(_ context.Context, system string) ([]string, error) {
+	return f.heavyYards[system], nil
 }
 
 func (f *fakeCatalog) CatalogKnown(_ context.Context, system string) (bool, error) {

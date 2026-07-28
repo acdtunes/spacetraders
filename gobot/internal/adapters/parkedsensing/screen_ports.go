@@ -24,6 +24,7 @@ import (
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	shipyardDomain "github.com/andrescamacho/spacetraders-go/internal/domain/shipyard"
 	domainSystem "github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
@@ -149,6 +150,56 @@ func (p *WaypointCatalogPort) UnchartedWaypoints(ctx context.Context, system str
 //     would leave a system with exactly one, never-visited shipyard permanently
 //     unbuyable, and the drain prices every candidate live before it spends
 //     anyway.
+//
+// ListHeavyYards returns the system's shipyards that sell HEAVY hulls, cheapest
+// first — the quartermaster-coverage half of the heavy-trade design (spec §6): a
+// probe parked at a heavy yard makes every future heavy purchase there instant
+// instead of requiring a hull to fly in first.
+//
+// DATABASE-ONLY for the same load-bearing reason as ListProbeYards: the screen
+// runs this per system on every pass, and reaching for the API would turn yard
+// discovery into live calls exactly when the API is most degraded.
+//
+// NOT ERA-SCOPED, and that is a KNOWN INCONSISTENCY rather than a decision (sp-fwk8z T3 review
+// Minor 4). The sibling heavy read behind the reservation — ShipyardInventoryRepositoryGORM's
+// CheapestPricedYard — IS era-scoped, so the two answer "which yards sell heavies" under different
+// era rules and a stale pre-reset row can still plan a quartermaster here. It is left unaligned
+// deliberately: ListProbeYards beside it is equally unscoped, so era-scoping only THIS read would
+// trade a cross-package inconsistency for a worse one inside this file. The pair should be aligned
+// together, which is a change to this file's local convention and belongs in its own pass.
+//
+// Unlike ListProbeYards there is NO bare-SHIPYARD-trait fallback. An unscanned
+// shipyard is already returned by ListProbeYards' fallback and therefore already
+// earns a quartermaster; claiming an unscanned yard as heavy-selling as well
+// would assert something we have not observed. Only PRICED heavy rows count
+// here, so this list is evidence, never assumption.
+func (p *WaypointCatalogPort) ListHeavyYards(ctx context.Context, system string) ([]string, error) {
+	var rows []struct {
+		WaypointSymbol string
+		PurchasePrice  int
+	}
+	err := p.db.WithContext(ctx).
+		Table("shipyard_inventory").
+		Select("waypoint_symbol, purchase_price").
+		Where("player_id = ? AND system_symbol = ? AND ship_type IN ?", p.playerID, system, shipyardDomain.DefaultHeavyShipTypes).
+		Where("purchase_price > 0").
+		Order("purchase_price ASC, waypoint_symbol ASC").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to list heavy yards in %q: %w", system, err)
+	}
+	seen := make(map[string]bool, len(rows))
+	out := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if seen[row.WaypointSymbol] {
+			continue // one waypoint may sell both heavy classes; it is still one yard
+		}
+		seen[row.WaypointSymbol] = true
+		out = append(out, row.WaypointSymbol)
+	}
+	return out, nil
+}
+
 func (p *WaypointCatalogPort) ListProbeYards(ctx context.Context, system string) ([]string, error) {
 	var rows []struct {
 		WaypointSymbol string

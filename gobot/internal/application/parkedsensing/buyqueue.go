@@ -215,6 +215,30 @@ type BuyPorts struct {
 	Yards      ProbeYardCatalog
 	Ships      ParkedShipReader
 	Fleet      FleetTagger
+	// HeavyReserve reports the credits held back for the NEXT heavy purchase. OPTIONAL:
+	// a nil reader means no reserve and byte-identical behaviour, so the sensing engine
+	// runs unchanged before the heavy feature is wired.
+	//
+	// A read ERROR fails CLOSED here. That is DEFENCE IN DEPTH, not this queue's claim about
+	// what an unreadable reserve means: the shipped reader answers ZERO (loudly) when it
+	// cannot see its inputs, matching the fleet autosizer's direction on the same blind
+	// signal, so nothing in production reaches the error branch today.
+	//
+	// It is kept DELIBERATELY. HeavyReserveReader is an exported interface carrying an error
+	// in its contract, and this field is a swappable seam — a nil reader is already a
+	// supported wiring — so the drain cannot assume which implementation it holds. Dropping
+	// the branch would make the drain treat an erroring reader's zero as authoritative, which
+	// is the silent-zero outcome the reserve's own rules exist to prevent. Both halves are
+	// pinned: TestDrain_ErroringReserveReaderStillFailsClosed for this branch,
+	// TestDrain_BlindReserveReadsZeroAndBuyingProceeds for what the shipped reader actually does.
+	HeavyReserve HeavyReserveReader
+}
+
+// HeavyReserveReader reports the derived hold-back for the next heavy purchase. The value is
+// computed by common.HeavyReserve — the ONE definition, shared with the fleet autosizer. This
+// port carries the answer; it must never re-derive it.
+type HeavyReserveReader interface {
+	Reserve(ctx context.Context, playerID int) (int64, error)
 }
 
 // BuyKnobs are the operator-set economics of the queue.
@@ -243,6 +267,12 @@ type BuyReport struct {
 	// Attempts counts every trip through the buy path, successful or not,
 	// against maxDrainAttempts.
 	Attempts int
+	// HeavyReserve is the credits held back for the next heavy this tick. It is on
+	// the report for ONE reason (spec risk 3): while a heavy accumulates, probe
+	// buying stops, and on a thin treasury that looks identical to sensing having
+	// died. A non-zero value here beside FloorHeld says "saving for a heavy",
+	// which is the difference between an operator waiting and an operator paging.
+	HeavyReserve int64
 	// CapHeld and FloorHeld report which ceiling stopped the drain.
 	CapHeld, FloorHeld bool
 	// HaltedPriceDrift reports that a yard charged MORE than it had just
@@ -288,6 +318,29 @@ func DrainBuyQueue(
 		clock = shared.NewRealClock()
 	}
 
+	// The heavy reservation is read FIRST, ahead of every gate, so rep.HeavyReserve is populated
+	// on EVERY return path — including the two that stop before a floor is ever built (nothing
+	// queued, and the probe cap held). The heartbeat publishes this number beside the autosizer's
+	// own per-tick gauge, and an operator correlating the two must never see them disagree merely
+	// because this tick took a short path. The probe cap makes that concrete: it is a long-lived
+	// steady state, so the heartbeat would otherwise read 0 for hours with a reserve genuinely
+	// outstanding, and "the two halves disagree" is the one signal these diagnostics exist to keep
+	// trustworthy.
+	//
+	// It does not break the cheapest-first ordering below: all three reads behind this port are
+	// LOCAL DB queries (containers, ships, shipyard_inventory), never an API call.
+	heavyReserve := int64(0)
+	if p.HeavyReserve != nil {
+		r, err := p.HeavyReserve.Reserve(ctx, playerID)
+		if err != nil {
+			return rep, fmt.Errorf("heavy reserve unreadable, buying nothing this tick: %w", err)
+		}
+		if r > 0 {
+			heavyReserve = r
+		}
+	}
+	rep.HeavyReserve = heavyReserve
+
 	// Cheapest-first gate order: the ledger reads are local, the treasury and
 	// price reads are network. A tick with nothing to buy — the overwhelmingly
 	// common case once the map is placed — must not cost an API call.
@@ -316,13 +369,17 @@ func DrainBuyQueue(
 		// available exactly when we understand the least.
 		return rep, fmt.Errorf("cargo spend unreadable, buying nothing this tick: %w", err)
 	}
+	// The heavy reservation (read at the top of the tick) is capex in the literal sense
+	// CapexReserve documents: credits held back for ship capex committed elsewhere. Folding it
+	// into that term is what makes probe buying stand down while a heavy accumulates, and resume
+	// the moment it lands.
 	st := drainState{
 		credits: credits,
 		owned:   owned,
 		cap:     int64(k.ProbeCap),
 		floor: domainSensing.ProbeBuyFloor(
 			common.ImmutableReserveFloor,
-			k.CapexReserve,
+			k.CapexReserve+heavyReserve,
 			domainSensing.CargoSpendPerHour(spend),
 			k.K,
 		),

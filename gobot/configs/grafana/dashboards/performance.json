@@ -1563,6 +1563,275 @@
       "title": "Parked Sensing - Placement Pipeline",
       "type": "timeseries",
       "description": "Probe placements by lifecycle state. WANTED piling up with nothing moving to BOUGHT means the buy floor or the probe cap is holding; QUEUED means CLAIMED for purchase \u2014 including claims whose yard then quoted above the floor \u2014 and is NOT a count of purchases in flight. PARKED is the fleet actually earning its keep."
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Hulls / placements",
+            "axisPlacement": "right",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "custom.axisPlacement",
+                "value": "left"
+              },
+              {
+                "id": "custom.axisLabel",
+                "value": "Credits reserved"
+              },
+              {
+                "id": "unit",
+                "value": "short"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 63
+      },
+      "id": 22,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.0.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "spacetraders_daemon_autosizer_heavy_reserve_credits",
+          "legendFormat": "heavy reserve (credits)",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "spacetraders_daemon_autosizer_heavies_owned",
+          "legendFormat": "heavies owned",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "spacetraders_daemon_autosizer_heavy_cap",
+          "legendFormat": "heavy cap",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(spacetraders_daemon_autosizer_purchases_total{class=\"light\"}[$__range]))",
+          "legendFormat": "light hulls bought",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "spacetraders_daemon_parked_sensing_slots{state=\"PARKED\"}",
+          "legendFormat": "probes parked (terminal state)",
+          "range": true,
+          "refId": "E"
+        }
+      ],
+      "title": "Heavy reservation vs probe buying \u2014 is the fleet SAVING or STUCK?",
+      "type": "timeseries",
+      "description": "When the heavy reserve is non-zero, probe and light buying deliberately stand down so treasury can accumulate toward the next heavy freighter. That is the design working, but it looks identical to a broken buyer, so read them together here.\n\nSAVING: reserve > 0 and probes-parked flat \u2014 expected; it resolves when the heavy lands or the capability closes.\nSTUCK: reserve == 0 and probes-parked flat \u2014 something else is holding; check the autosizer decision log.\n\nPARKED is a LEVEL, not a rate, so it also flat-lines when the fleet is fully provisioned and every wanted waypoint is covered \u2014 a healthy state that reads as STUCK. The decision log tells the two apart: no unmet demand means covered, not stuck.\n\nAXES: credits (the reserve) read on the LEFT, hull and placement counts on the RIGHT. They differ by roughly six orders of magnitude, so on one axis every count sits flat on zero and cannot be told from no-data.\n\n\"probes parked\" is the TERMINAL placement state: it grows when probe buying succeeds and flat-lines when the reserve holds it down. The other half of the fingerprint \u2014 WANTED piling up \u2014 is on \"Parked Sensing - Placement Pipeline\" directly above; a total across all states would RISE during the hold and read as healthy.\n\nNote the reserve alone does not mean a heavy is imminent: a heavy is not LEGAL until treasury clears the 25%-of-treasury rule (~6.26M at a 1,565,500 ask), so a long non-zero reserve below that is normal. See docs/runbooks/heavy-trade.md."
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "% above cheapest known ask",
+            "axisPlacement": "auto",
+            "axisSoftMin": 0,
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 71
+      },
+      "id": 23,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.0.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "spacetraders_daemon_autosizer_heavy_price_premium_percent_sum / spacetraders_daemon_autosizer_heavy_price_premium_percent_count",
+          "legendFormat": "premium mean, all-time",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "increase(spacetraders_daemon_autosizer_heavy_price_premium_percent_sum[$__range]) / increase(spacetraders_daemon_autosizer_heavy_price_premium_percent_count[$__range])",
+          "legendFormat": "premium mean, over window",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Heavy price premium \u2014 what buying WITH presence costs",
+      "type": "timeseries",
+      "description": "What presence-lag costs: how far above the cheapest KNOWN yard ask the autosizer actually paid, because it buys at the cheapest yard WITH PRESENCE rather than the cheapest absolutely. 0 means we paid the best known price.\n\nMEAN ONLY, deliberately. The underlying summary declares no quantile objectives, so Prometheus exports only _sum and _count and there is no _percent{quantile=...} series to graph. A heavy is bought a handful of times per era; quantiles over a sliding window at that sample count are noisy and stale, and the mean is the honest read.\n\n\"all-time\" is the plain _sum/_count ratio since the daemon started \u2014 it is populated as soon as ONE heavy has ever been bought, and is the series to read first. \"over window\" respects the dashboard time range and goes empty when no heavy was bought inside it; empty there means no purchases, not a broken metric.\n\nBoth are blank until the first heavy purchase ever. See docs/runbooks/heavy-trade.md."
     }
   ],
   "preload": false,

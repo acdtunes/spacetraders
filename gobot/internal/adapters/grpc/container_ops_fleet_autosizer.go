@@ -61,12 +61,16 @@ func (s *DaemonServer) FleetAutosizerCoordinator(ctx context.Context, playerID i
 // buildFleetAutosizerCommand's reads. container_id and agent_symbol are IDENTITY (set once at
 // creation) and are deliberately NOT in this list — they must survive a rebuild.
 var fleetAutosizerConfigKeys = []string{
-	"autosizer_dry_run",
 	"autosizer_tick_secs",
 	"autosizer_purchase_cap_per_tick",
 	"autosizer_fleet_ceiling_total",
 	"autosizer_fleet_ceiling_lights",
 	"autosizer_fleet_ceiling_heavies",
+	// NOTE: the live-tunable knob is the BARE key "heavy_cap", NOT this prefixed launch key.
+	// resolveFleetAutosizerConfig CLEARS and re-injects every autosizer_* key from config.yaml on
+	// each rebuild, so a tune written to a prefixed key would be wiped on the next daemon bounce.
+	// The bare key is untouched by that cycle and therefore survives (the bootstrap precedent).
+	"autosizer_heavy_cap",
 	"autosizer_purchase_margin_over_floor",
 	"autosizer_light_rotation_slots",
 	"autosizer_heavy_marginal_rate_floor",
@@ -110,9 +114,6 @@ func (s *DaemonServer) resolveFleetAutosizerConfig(config map[string]interface{}
 // documented default (RULINGS #5 — the daemon never hardcodes the operational values).
 func (s *DaemonServer) injectFleetAutosizerConfig(config map[string]interface{}) {
 	fa := s.fleetAutosizerConfig
-	if fa.DryRun {
-		config["autosizer_dry_run"] = true
-	}
 	if fa.TickIntervalSecs != 0 {
 		config["autosizer_tick_secs"] = fa.TickIntervalSecs
 	}
@@ -127,6 +128,12 @@ func (s *DaemonServer) injectFleetAutosizerConfig(config map[string]interface{})
 	}
 	if fa.FleetCeilingHeavies != 0 {
 		config["autosizer_fleet_ceiling_heavies"] = fa.FleetCeilingHeavies
+	}
+	// Injected whenever CONFIGURED — including an explicit 0, which is a legitimate operator
+	// HOLD ("own no heavies"), not an unset knob. This is why the config field is a *int and why
+	// this check is `!= nil` rather than the `!= 0` used by the knobs above.
+	if fa.HeavyCap != nil {
+		config["autosizer_heavy_cap"] = *fa.HeavyCap
 	}
 	if fa.PurchaseMarginOverFloor != 0 {
 		config["autosizer_purchase_margin_over_floor"] = int(fa.PurchaseMarginOverFloor)
@@ -209,14 +216,13 @@ func buildFleetAutosizerCommand(cfg *configReader, playerID int, containerID str
 		ContainerID: containerID,
 		AgentSymbol: cfg.OptionalString("agent_symbol"),
 
-		DryRun: cfg.OptionalBool("autosizer_dry_run"),
-
 		TickIntervalSecs:   cfg.OptionalInt("autosizer_tick_secs", 0),
 		PurchaseCapPerTick: cfg.OptionalInt("autosizer_purchase_cap_per_tick", 0),
 
 		FleetCeilingTotal:   cfg.OptionalInt("autosizer_fleet_ceiling_total", 0),
 		FleetCeilingLights:  cfg.OptionalInt("autosizer_fleet_ceiling_lights", 0),
 		FleetCeilingHeavies: cfg.OptionalInt("autosizer_fleet_ceiling_heavies", 0),
+		HeavyCap:            presentIntPtr(cfg, "autosizer_heavy_cap"),
 
 		PurchaseMarginOverFloor: int64(cfg.OptionalInt("autosizer_purchase_margin_over_floor", 0)),
 
@@ -253,4 +259,15 @@ func buildFleetAutosizerCommand(cfg *configReader, playerID int, containerID str
 		cmd.PreferDemandProximalYard = &v
 	}
 	return cmd
+}
+
+// presentIntPtr reads an optional int knob as a POINTER so an explicit 0 survives the round trip
+// through container config. OptionalInt would flatten absent and 0 to the same value, which for
+// heavy_cap would turn an operator's deliberate "own no heavies" hold into "unset, use the
+// default 5" — silently buying hulls the operator asked us not to buy.
+func presentIntPtr(cfg *configReader, key string) *int {
+	if v, ok := cfg.PresentInt(key); ok {
+		return &v
+	}
+	return nil
 }

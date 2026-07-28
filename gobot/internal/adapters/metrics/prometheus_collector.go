@@ -699,6 +699,21 @@ func RecordAutosizerZeroEffectAlarm() {
 	}
 }
 
+// RecordAutosizerHeavyReserve sets the per-tick heavy-trade gauges (sp-fwk8z).
+func RecordAutosizerHeavyReserve(playerID string, reserve int64, owned, cap int) {
+	if globalFleetAutosizerCollector != nil {
+		globalFleetAutosizerCollector.RecordHeavyReserve(playerID, reserve, owned, cap)
+	}
+}
+
+// ObserveAutosizerHeavyPricePremium records one heavy purchase's premium over the cheapest known
+// yard ask, in percent (sp-fwk8z).
+func ObserveAutosizerHeavyPricePremium(playerID string, paid, cheapestKnown int64) {
+	if globalFleetAutosizerCollector != nil {
+		globalFleetAutosizerCollector.ObserveHeavyPricePremium(playerID, paid, cheapestKnown)
+	}
+}
+
 // SetGlobalAPIBudgetTracker sets the global API request-budget tracker.
 // Pass nil to clear it (e.g. in test cleanup).
 func SetGlobalAPIBudgetTracker(tracker *APIBudgetTracker) {

@@ -22,11 +22,96 @@ type ShipTypeAvailability struct {
 	LastScanned    time.Time
 }
 
+// heavyHullClasses is the SINGLE source of truth for what "heavy" means, pairing
+// each heavy shipyard ship type with the frame symbol that same hull reports once
+// it is owned. The two identifiers name the same hull class in two different
+// tables — shipyard_inventory keys on ship_type, the ships table carries only
+// frame_symbol (there is no ship_type column on ships and no ship-type→frame
+// mapping anywhere else in the tree) — so a heavy census over owned hulls and a
+// heavy-yard query over inventory MUST agree on the pairing or they silently
+// disagree about the same fleet.
+//
+// ONE table, two projections (DefaultHeavyShipTypes / DefaultHeavyFrameSymbols),
+// the RULINGS #5 "one base, derived tiers" idiom the reserve floors use: adding a
+// heavy class means adding one row here, and it is not possible to add it to only
+// one side. TestHeavyHullClassPairing pins that neither projection is empty and
+// that every row carries both halves, so a half-filled row fails the suite LOUD
+// rather than under-counting owned heavies — the direction that would authorise
+// buying a hull we already own.
+var heavyHullClasses = []struct {
+	ShipType    string
+	FrameSymbol string
+}{
+	{ShipType: "SHIP_HEAVY_FREIGHTER", FrameSymbol: "FRAME_HEAVY_FREIGHTER"},
+	{ShipType: "SHIP_BULK_FREIGHTER", FrameSymbol: "FRAME_BULK_FREIGHTER"},
+}
+
 // DefaultHeavyShipTypes is the default heavy-freight hull set: the
 // classes whose first discovered yard is fleet-strategy news (the autosizer's
 // heavy branch fails closed until one is known and reachable). Overridable via
-// [scouting] heavy_ship_types in config.yaml (RULINGS #5).
-var DefaultHeavyShipTypes = []string{"SHIP_HEAVY_FREIGHTER", "SHIP_BULK_FREIGHTER"}
+// [scouting] heavy_ship_types in config.yaml (RULINGS #5). Projected from
+// heavyHullClasses so it can never drift from the frame set.
+var DefaultHeavyShipTypes = func() []string {
+	out := make([]string, 0, len(heavyHullClasses))
+	for _, c := range heavyHullClasses {
+		out = append(out, c.ShipType)
+	}
+	return out
+}()
+
+// DefaultHeavyFrameSymbols is the owned-hull projection of the same table: the
+// frame symbols an owned heavy reports. This is what an owned-heavy census keys
+// on, because the ships table stores frame_symbol and not ship_type.
+var DefaultHeavyFrameSymbols = func() []string {
+	out := make([]string, 0, len(heavyHullClasses))
+	for _, c := range heavyHullClasses {
+		out = append(out, c.FrameSymbol)
+	}
+	return out
+}()
+
+// HeavyCargoCapacityThreshold is the cargo hold at or above which a hull counts as
+// heavy REGARDLESS of its frame — the safety net under the frame list.
+//
+// Why a net is needed: the frame symbols above are INFERRED from SpaceTraders'
+// SHIP_/FRAME_ naming symmetry, not observed. The fleet owns no heavy hull to read
+// one from (verified 2026-07-27: FRAME_LIGHT_FREIGHTER ×8 at 80 cargo, FRAME_FRIGATE
+// ×1 at 40, FRAME_PROBE ×3 at 0), and a wrong symbol would UNDER-count — the
+// money-unsafe direction, since an invisible heavy leaves the reservation open and
+// authorises re-buying a hull we already own.
+//
+// Why 120: it sits in the wide, empirically-verified gap between the largest hull the
+// fleet owns (80) and a heavy freighter's hold (~225). Both bounds matter and are
+// pinned by test. Too LOW and ordinary fleet growth would classify working haulers as
+// heavy, close the capability and stall heavy buying entirely; too HIGH and a real
+// heavy slips under the net, which is exactly the under-count the net exists to stop.
+// Sitting mid-gap is the most defensible position against both errors.
+//
+// The net deliberately OVER-counts in the ambiguous case (an unrecognised large hull
+// counts as heavy), which buys FEWER heavies — the safe direction.
+const HeavyCargoCapacityThreshold = 120
+
+// IsHeavyHull classifies one owned hull for the heavy census. The frame list is
+// PRIMARY and authoritative: a known-heavy frame counts whatever its cargo capacity,
+// so a heavy that reports an unexpected hold is never missed.
+//
+// unrecognisedFrame reports the safety net FIRING: the hull is large enough to be a
+// heavy but its frame is not in the known list. The caller MUST log that loudly — it
+// is the only signal available that the inferred frame list is incomplete, because no
+// owned heavy exists to check it against. The first such line in production is the
+// list asking to be corrected; the frame list stays authoritative and gets amended
+// from it. A hull matched by frame is NOT flagged (nothing was inferred).
+func IsHeavyHull(frameSymbol string, cargoCapacity int) (heavy bool, unrecognisedFrame bool) {
+	for _, c := range heavyHullClasses {
+		if c.FrameSymbol == frameSymbol {
+			return true, false
+		}
+	}
+	if cargoCapacity >= HeavyCargoCapacityThreshold {
+		return true, true
+	}
+	return false, false
+}
 
 // HeavyShipTypeSet is the configured set of ship types that count as heavy
 // freight for yard discovery. An empty configuration resolves to

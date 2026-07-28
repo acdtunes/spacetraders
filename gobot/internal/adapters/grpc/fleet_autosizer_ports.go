@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
@@ -22,6 +23,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	shipyardDomain "github.com/andrescamacho/spacetraders-go/internal/domain/shipyard"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
 
@@ -69,6 +71,7 @@ func NewFleetAutosizerCoordinatorHandler(
 	tourTelemetry tourTelemetryReader,
 	scannedYards scannedYardRanker,
 	offGateDemand fleetCmd.OffGateDemandSource,
+	heavyYards heavyYardInventory,
 ) *fleetCmd.RunFleetAutosizerCoordinatorHandler {
 	h := fleetCmd.NewRunFleetAutosizerCoordinatorHandler(nil)
 
@@ -108,6 +111,22 @@ func NewFleetAutosizerCoordinatorHandler(
 		yardPriceReader.waypointRepo = waypointRepo
 	}
 	h.SetYardPriceReader(yardPriceReader)
+
+	// The heavy-hull census and the cheapest-heavy-price read: together they derive the heavy
+	// reservation each tick and feed the heavy_cap guard. BOTH fail closed when unwired, so an
+	// unwired census STOPS heavy buying — hence the loud WARN below rather than a silent skip.
+	if counter, ok := shipRepo.(heavyHullCounter); ok {
+		h.SetHeavyCensusReader(&autosizerHeavyCensus{counter: counter})
+	} else {
+		log.Printf("WARNING: fleet autosizer heavy census UNWIRED — the ship repository does not implement CountHeavyHulls, so the heavy_cap guard fails closed and NO heavy will be bought")
+	}
+	if heavyYards != nil {
+		h.SetHeavyYardReader(&autosizerHeavyYardReader{yards: heavyYards})
+	} else {
+		log.Printf("WARNING: fleet autosizer heavy-yard reader UNWIRED — the heavy reservation will always be 0, so expansion spending is never held back for a heavy")
+	}
+	// heavy_cap is the autosizer's ONE live-tunable knob (Pattern-C hot reload).
+	h.SetHeavyCapReader(NewContainerConfigReader(server.containerRepo))
 	h.SetPurchaser(&autosizerPurchaser{med: med, shipRepo: shipRepo})
 	h.SetPurchaseNotifier(&autosizerNotifier{store: eventStore})
 	h.SetMetricsSink(&autosizerMetricsSink{})
@@ -476,6 +495,12 @@ func (m *autosizerMetricsSink) RecordBlocked(class fleetCmd.HullClass, guard fle
 func (m *autosizerMetricsSink) RecordZeroEffectAlarm() {
 	metrics.RecordAutosizerZeroEffectAlarm()
 }
+func (m *autosizerMetricsSink) RecordHeavyReserve(playerID string, reserve int64, owned, cap int) {
+	metrics.RecordAutosizerHeavyReserve(playerID, reserve, owned, cap)
+}
+func (m *autosizerMetricsSink) ObserveHeavyPricePremium(playerID string, paid, cheapestKnown int64) {
+	metrics.ObserveAutosizerHeavyPricePremium(playerID, paid, cheapestKnown)
+}
 
 // --- LIGHT demand sources ---
 
@@ -695,4 +720,50 @@ func countShips(ctx context.Context, shipRepo navigation.ShipRepository, playerI
 		}
 	}
 	return n, nil
+}
+
+// --- heavy census + heavy yard (the reservation's two inputs) ---
+
+// heavyHullCounter is the concrete ship-repository capability the heavy census needs. It is
+// asserted rather than added to navigation.ShipRepository so the broad interface (and every fake
+// implementing it) stays untouched; the wiring WARNs loudly if the assertion fails, because a
+// missing census fails closed and silently stops heavy buying.
+type heavyHullCounter interface {
+	CountHeavyHulls(ctx context.Context, playerID shared.PlayerID) (int, error)
+}
+
+// autosizerHeavyCensus adapts the ship repository's tag-INDEPENDENT owned-heavy count. This is
+// deliberately NOT autosizerHeavySources.HeavyCount, which counts DedicatedFleet=="trade" and
+// therefore measures the trade POOL: a heavy tagged elsewhere would be invisible to it, leaving
+// the reservation open and authorising a re-buy of a hull we already own.
+type autosizerHeavyCensus struct {
+	counter heavyHullCounter
+}
+
+func (c *autosizerHeavyCensus) HeaviesOwned(ctx context.Context, playerID int) (int, error) {
+	pid, err := shared.NewPlayerID(playerID)
+	if err != nil {
+		return 0, err
+	}
+	return c.counter.CountHeavyHulls(ctx, pid)
+}
+
+// heavyYardInventory is the shipyard-inventory read behind the reservation's price term.
+type heavyYardInventory interface {
+	CheapestPricedYard(ctx context.Context, playerID int, shipTypes []string) (shipyardDomain.ShipTypeAvailability, bool, error)
+}
+
+// autosizerHeavyYardReader reports the cheapest KNOWN, PRICED heavy yard ask across the configured
+// heavy ship types. found=false ⇒ the capability is CLOSED (no known yard sells a heavy at a usable
+// price) and nothing is reserved.
+type autosizerHeavyYardReader struct {
+	yards heavyYardInventory
+}
+
+func (r *autosizerHeavyYardReader) CheapestHeavyPrice(ctx context.Context, playerID int) (int64, bool, error) {
+	row, found, err := r.yards.CheapestPricedYard(ctx, playerID, shipyardDomain.DefaultHeavyShipTypes)
+	if err != nil || !found {
+		return 0, false, err
+	}
+	return int64(row.PurchasePrice), true, nil
 }

@@ -13,13 +13,6 @@ package config
 // never call-site constants (RULINGS #5). Every purchase decision logs which knob would have
 // blocked at what value, so the captain retunes from evidence (the iv65 park-line idiom).
 type FleetAutosizerConfig struct {
-	// --- master + per-class escapes (LIVE BY DEFAULT; Admiral: no dark-shipping) ---
-
-	// DryRun evaluates every buy decision and logs what it WOULD purchase (with full
-	// arithmetic) but spends nothing. NOT dark-shipping — it WARNs loudly every tick
-	// (no-silent-dry-run rule) and the zero-effect alarm still fires.
-	DryRun bool `mapstructure:"dry_run"`
-
 	// --- cadence + purchase pacing ---
 
 	// TickIntervalSecs is the slow autosizer cadence (sizing is strategic). 0/absent → 900s.
@@ -62,6 +55,19 @@ type FleetAutosizerConfig struct {
 	// HeavyTreasuryPctPerPurchase is the analyst's 25%-treasury affordability rule for a heavy
 	// buy (a single heavy must cost ≤ this percent of live treasury). 0/absent → 25.
 	HeavyTreasuryPctPerPurchase int `mapstructure:"heavy_treasury_pct_per_purchase"`
+	// HeavyCap is the maximum HEAVY HULLS the fleet may own — capital exposure in large
+	// hulls. It is a SEPARATE dial from FleetCeilingHeavies and both apply:
+	// FleetCeilingHeavies is enforced against a count of hulls tagged DedicatedFleet=="trade"
+	// and therefore caps the TRADE POOL (a light hauler tagged trade counts against it; a
+	// heavy tagged contract does not count at all), while this counts heavy hulls fleet-wide
+	// regardless of tag.
+	//
+	// *int, not int, so an explicit 0 can be told from unset: heavy_cap: 0 in config.yaml is
+	// a legitimate operator HOLD ("own no heavies"), not an unset knob deferring to the
+	// default. nil/absent → defaultHeavyCap (5). NOTE: the `tune` path cannot express the
+	// hold — `tune <key> 0` DELETES the key fleet-wide (revert-to-default semantics), so a
+	// tuned 0 reads as absent. Holding at zero is a config.yaml + restart operation.
+	HeavyCap *int `mapstructure:"heavy_cap"`
 	// DecliningRateUnservedFloor (sp-zbe6) is the near-zero unserved-lane count at/below which a
 	// DECLINING aggregate realized tour-rate is treated as genuine absorption saturation and STOPS
 	// a heavy buy. Above it a declining aggregate is a hull-CONCENTRATION artifact (the fleet
@@ -108,11 +114,11 @@ type FleetAutosizerConfig struct {
 	ShipTypeLights  string `mapstructure:"ship_type_lights"`
 	ShipTypeHeavies string `mapstructure:"ship_type_heavies"`
 
-	// --- zero-effect alarm (no-silent-dry-run corollary) ---
+	// --- zero-effect alarm (a buyer that never buys must say so) ---
 
 	// ZeroEffectAlarmTicks: when demand persists this many consecutive ticks with NO purchase
-	// attempted (blocked every tick, or silently dry-running), emit ONE edge-triggered WARN
-	// naming the persistent blocker (the f5pr silent-dry-run lesson). 0/absent → 4.
+	// attempted (a guard blocking every tick, or an unwired purchaser), emit ONE edge-triggered
+	// WARN naming the persistent blocker (the f5pr lesson). 0/absent → 4.
 	ZeroEffectAlarmTicks int `mapstructure:"zero_effect_alarm_ticks"`
 
 	// --- explorer hull class (sp-a3yn slice C of sp-4imi) ---

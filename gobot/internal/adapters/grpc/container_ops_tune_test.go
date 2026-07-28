@@ -13,6 +13,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	bootstrapCmd "github.com/andrescamacho/spacetraders-go/internal/application/bootstrap/commands"
 	contractScalerCmd "github.com/andrescamacho/spacetraders-go/internal/application/contractscaler/commands"
+	fleetCmd "github.com/andrescamacho/spacetraders-go/internal/application/fleet/commands"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
@@ -273,6 +274,7 @@ func TestTuneRegistry_MatchesCoordinatorDefaults_AndNeverWeakensTreasuryGuard(t 
 		{contractCoordinatorType, ContractCoordinatorTunableDefaults()},
 		{bootstrapContainerType, bootstrapCmd.BootstrapTunableDefaults()},
 		{string(container.ContainerTypeContractScaler), contractScalerCmd.ContractScalerTunableDefaults()},
+		{string(container.ContainerTypeFleetAutosizer), fleetCmd.FleetAutosizerTunableDefaults()},
 	}
 	for _, engine := range engines {
 		knobs, ok := registry[engine.containerType]

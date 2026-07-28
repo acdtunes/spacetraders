@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 )
@@ -15,8 +16,8 @@ import (
 // blocking knob from evidence. Purchases are bounded per tick by
 // purchase_cap_per_tick; the heavy class additionally requires its unserved-lane shortfall to
 // persist heavy_unserved_lanes_min consecutive ticks (anti-thrash). A tick that has demand but buys
-// nothing for zero_effect_alarm_ticks consecutive passes raises ONE edge-triggered alarm (the
-// no-silent-dry-run corollary).
+// nothing for zero_effect_alarm_ticks consecutive passes raises ONE edge-triggered alarm — a buyer
+// that never buys must say so.
 
 // --- buy-path ports (wired by setters at boot; every one nil-safe, fail-closed on unread) ---
 
@@ -24,6 +25,21 @@ import (
 // closed (a buy must never proceed on an unknown balance).
 type TreasuryReader interface {
 	Treasury(ctx context.Context, playerID int) (credits int64, readable bool, err error)
+}
+
+// HeavyCensusReader counts the player's owned HEAVY HULLS — every one of them, regardless of
+// which fleet they are tagged to. This is deliberately NOT the autosizer's trade-pool count
+// (DedicatedFleet=="trade"): that one caps pool size, this one bounds capital exposure in large
+// hulls, and a tag-scoped count would make a heavy tagged elsewhere invisible and authorise
+// re-buying a hull we already own. An error ⇒ the heavy cap guard fails CLOSED.
+type HeavyCensusReader interface {
+	HeaviesOwned(ctx context.Context, playerID int) (int, error)
+}
+
+// HeavyYardReader reports the cheapest KNOWN, PRICED heavy yard ask. found=false means no known
+// yard sells a heavy at a usable price — the capability is CLOSED and nothing is reserved.
+type HeavyYardReader interface {
+	CheapestHeavyPrice(ctx context.Context, playerID int) (price int64, found bool, err error)
 }
 
 // EraClockReader reads the hours remaining until the universe reset (era end). readable=false ⇒
@@ -86,6 +102,14 @@ type MetricsSink interface {
 	// RecordZeroEffectAlarm fires when demand persisted but the coordinator bought nothing for
 	// zero_effect_alarm_ticks consecutive ticks — a fleet-level "stuck" signal, not per-class.
 	RecordZeroEffectAlarm()
+	// RecordHeavyReserve reports the per-tick heavy-trade facts (sp-fwk8z): the derived
+	// reservation, the tag-independent owned-heavy census, and the cap in force. Emitted
+	// EVERY tick, whatever happens — a reserve recorded only when something changes cannot
+	// answer "is the fleet saving for a heavy, or stuck?".
+	RecordHeavyReserve(playerID string, reserve int64, owned, cap int)
+	// ObserveHeavyPricePremium reports what one heavy purchase paid above the cheapest KNOWN
+	// yard ask, in percent — the measured cost of buying at the cheapest yard WITH PRESENCE.
+	ObserveHeavyPricePremium(playerID string, paid, cheapestKnown int64)
 }
 
 // tickInputs are the per-tick shared reads the guard stack needs for every class.
@@ -98,14 +122,40 @@ type tickInputs struct {
 	apiOK      bool
 	totalHulls int
 	totalOK    bool
+	// heaviesOwned is the BROAD, tag-independent heavy-hull census (frame list primary,
+	// cargo-capacity safety net). heaviesOwnedOK=false ⇒ the heavy cap guard fails CLOSED.
+	heaviesOwned   int
+	heaviesOwnedOK bool
+	// heavyReserve is the derived hold-back for the NEXT heavy, computed ONCE per tick by
+	// common.HeavyReserve so every class in the tick judges the same number.
+	heavyReserve int64
 }
 
 // readTickInputs reads the shared inputs once per tick. Every read is fail-safe: a nil reader or an
 // error yields readable=false, and the guards fail closed on that (API-util included).
 // totalOK=false (nil/erroring fleet-size reader) blocks all buys — the ceiling cannot be judged
 // without the total.
-func (h *RunFleetAutosizerCoordinatorHandler) readTickInputs(ctx context.Context, playerID int) tickInputs {
+func (h *RunFleetAutosizerCoordinatorHandler) readTickInputs(ctx context.Context, playerID int, cfg autosizerRunConfig) tickInputs {
 	in := tickInputs{}
+	if h.heavyCensus != nil {
+		if n, err := h.heavyCensus.HeaviesOwned(ctx, playerID); err == nil {
+			in.heaviesOwned, in.heaviesOwnedOK = n, true
+		}
+	}
+	// The reservation is DERIVED once per tick from durable facts, never stored, so every
+	// class in this tick judges the SAME number. common.HeavyReserve is the ONE definition —
+	// the arithmetic is never re-derived here (spec §3: a second copy is how a reservation
+	// silently drifts).
+	if h.heavyYard != nil && in.heaviesOwnedOK {
+		if price, found, err := h.heavyYard.CheapestHeavyPrice(ctx, playerID); err == nil {
+			in.heavyReserve = common.HeavyReserve(common.HeavyReserveInputs{
+				CapabilityOpen:     found,
+				HeaviesOwned:       in.heaviesOwned,
+				HeavyCap:           cfg.HeavyCap,
+				CheapestKnownPrice: price,
+			})
+		}
+	}
 	if h.treasury != nil {
 		if c, ok, err := h.treasury.Treasury(ctx, playerID); err == nil {
 			in.treasury, in.treasuryOK = c, ok
@@ -226,14 +276,8 @@ func (h *RunFleetAutosizerCoordinatorHandler) sizeClass(
 		return false, true
 	}
 
-	// No-silent-dry-run: a dry run (config) or an unwired purchaser evaluates + logs the APPROVED
-	// buy but spends nothing — loudly, and still counting toward the zero-effect alarm.
-	if cfg.DryRun {
-		logger.Log("WARN", fmt.Sprintf("Autosizer %s DRY-RUN: WOULD BUY %s @ %d at %s (set dry_run=false to arm)", class, req.ShipType, req.Price, yard), map[string]interface{}{
-			"action": "autosizer_dry_run_would_buy", "container_id": cmd.ContainerID, "class": string(class), "price": req.Price,
-		})
-		return false, true
-	}
+	// An unwired purchaser evaluates + logs the APPROVED buy but spends nothing — loudly, and
+	// still counting toward the zero-effect alarm.
 	if h.purchaser == nil {
 		logger.Log("WARN", fmt.Sprintf("Autosizer %s APPROVED but no purchaser wired — WOULD BUY %s @ %d at %s (mis-wire: the coordinator is armed but cannot spend)", class, req.ShipType, req.Price, yard), map[string]interface{}{
 			"action": "autosizer_no_purchaser", "container_id": cmd.ContainerID, "class": string(class),
@@ -251,6 +295,11 @@ func (h *RunFleetAutosizerCoordinatorHandler) sizeClass(
 
 	if h.metrics != nil {
 		h.metrics.RecordPurchase(class)
+		if class == HullClassHeavy {
+			// Bind on the ACTUAL price paid, not the quote: the premium is only honest if it
+			// measures what left the treasury.
+			h.metrics.ObserveHeavyPricePremium(strconv.Itoa(cmd.PlayerID), res.Price, req.CheapestKnownPrice)
+		}
 	}
 	if h.notifier != nil {
 		note := fmt.Sprintf("autosizer bought %s (%s) @ %d, dedicated=%v — demand %d/%d", res.ShipSymbol, req.ShipType, res.Price, res.Dedicated, d.Demand, d.Current)
@@ -298,6 +347,17 @@ func (h *RunFleetAutosizerCoordinatorHandler) buildPurchaseRequest(
 		ClassCeiling:      classCeiling,
 		CurrentTotalCount: in.totalHulls,
 		TotalCeiling:      cfg.FleetCeilingTotal,
+
+		// The heavy-hull cap: a SEPARATE bound from ClassCeiling above (which counts the
+		// trade pool by tag). Both are judged; guardHeavyCap is heavy-scoped and passes
+		// for every other class.
+		HeaviesOwned:         in.heaviesOwned,
+		HeavyCap:             cfg.HeavyCap,
+		HeaviesOwnedReadable: in.heaviesOwnedOK,
+
+		// The derived hold-back for the NEXT heavy. guardTreasuryFloor waives it for the
+		// heavy purchase itself (it would otherwise reserve against itself).
+		HeavyReserve: in.heavyReserve,
 
 		PurchasesThisTick: purchasesThisTick,
 		PerTickCap:        cfg.PurchaseCapPerTick,

@@ -29,6 +29,7 @@ const (
 	GuardEraPayback     GuardName = "era_payback"     // buy pays back before era reset; hard T-cutoff
 	GuardRealizedRate   GuardName = "realized_rate"   // marginal $/hr clears the floor, not decaying
 	GuardExplorerExempt GuardName = "explorer_exempt" // exploration-justified — REPLACES the two income guards for the explorer ONLY
+	GuardHeavyCap       GuardName = "heavy_cap"       // owned HEAVY HULLS below the operator's heavy cap
 	GuardTreasuryPct    GuardName = "treasury_pct"    // a single hull ≤ pct% of live treasury (analyst rule)
 	GuardAPIUtil        GuardName = "api_util"        // sustained request-utilization below ceiling (fail-closed)
 	GuardTreasuryFloor  GuardName = "treasury_floor"  // treasury net of the reserve floor covers price+margin
@@ -57,6 +58,23 @@ type PurchaseRequest struct {
 	ClassCeiling      int
 	CurrentTotalCount int
 	TotalCeiling      int
+
+	// The HEAVY-HULL cap — a SEPARATE dial from ClassCeiling, deliberately.
+	// ClassCeiling for HullClassHeavy is enforced against a count of hulls tagged
+	// DedicatedFleet=="trade", so it caps the TRADE POOL: a light hauler tagged trade
+	// counts against it, and a heavy freighter tagged contract or untagged does not
+	// count at all. These two therefore answer different questions — trade-pool size
+	// versus capital exposure in large hulls — and BOTH must pass.
+	//
+	// HeaviesOwned is the broad, tag-INDEPENDENT heavy census (frame list primary,
+	// cargo-capacity safety net). HeavyCap is the operator dial; 0 is a legitimate
+	// hold ("own no heavies"), not an unset knob.
+	HeaviesOwned int
+	HeavyCap     int
+	// HeaviesOwnedReadable reports whether the census could be read at all. false ⇒
+	// fail-CLOSED (RULINGS #4): an unreadable census that silently read as 0 would say
+	// "no heavies owned" and authorise buying a hull we already own.
+	HeaviesOwnedReadable bool
 
 	// Per-tick pacing.
 	PurchasesThisTick int
@@ -99,6 +117,16 @@ type PurchaseRequest struct {
 	TreasuryReadable  bool
 	MarginOverFloor   int64 // credits of headroom required above the reserve floor after the buy.
 	TreasuryPctPerBuy int   // analyst affordability rule: a single hull ≤ this pct% of treasury (0 = not applied).
+	// HeavyReserve is the derived hold-back for the NEXT heavy purchase, computed by
+	// common.HeavyReserve (the ONE definition — never re-derive the arithmetic here).
+	// It raises this buy's effective floor so treasury being accumulated toward a heavy
+	// is not spent on something else first; without it the continuous small spender wins
+	// every tick and the heavy never accumulates.
+	//
+	// WAIVED for HullClassHeavy: the reserve exists FOR that purchase, so charging it
+	// against the buy it is saving for would demand ~2× the hull's price — the buyer
+	// reserving against itself, which spec §4 names as circular.
+	HeavyReserve int64
 
 	// API utilization (dynamic; fails CLOSED when unreadable). Holds concurrency growth
 	// when sustained utilization is at/over the ceiling OR the signal cannot be read.
@@ -165,6 +193,7 @@ func EvaluateGuards(req PurchaseRequest) PurchaseDecision {
 		verdicts = append(verdicts, guardEraPayback(req), guardRealizedRate(req))
 	}
 	verdicts = append(verdicts,
+		guardHeavyCap(req),
 		guardTreasuryPct(req),
 		guardAPIUtil(req),
 		guardTreasuryFloor(req),
@@ -194,6 +223,38 @@ func guardFleetCeiling(req PurchaseRequest) GuardVerdict {
 		Guard:  GuardFleetCeiling,
 		Passed: passed,
 		Detail: fmt.Sprintf("class %d/%d, total %d/%d", req.CurrentClassCount, req.ClassCeiling, req.CurrentTotalCount, req.TotalCeiling),
+	}
+}
+
+// guardHeavyCap bounds CAPITAL EXPOSURE in large hulls — a separate question from
+// guardFleetCeiling's trade-pool size, and both must pass.
+//
+// It is HEAVY-SCOPED: every other class passes untouched, because the census it reads
+// (HeaviesOwned) counts heavy hulls fleet-wide and would otherwise starve the light
+// worker pool and the explorer for reasons that have nothing to do with them.
+//
+// Written >= so an over-cap fleet (a heavy acquired outside this path, or the cap
+// tuned down below what is already owned) also blocks. A cap of 0 is a legitimate
+// operator hold, so it correctly blocks every heavy buy rather than reading as unset.
+func guardHeavyCap(req PurchaseRequest) GuardVerdict {
+	if req.Class != HullClassHeavy {
+		return GuardVerdict{
+			Guard:  GuardHeavyCap,
+			Passed: true,
+			Detail: fmt.Sprintf("n/a for class %s", req.Class),
+		}
+	}
+	if !req.HeaviesOwnedReadable {
+		return GuardVerdict{
+			Guard:  GuardHeavyCap,
+			Passed: false,
+			Detail: fmt.Sprintf("heavy census unreadable (cap %d) — fail closed", req.HeavyCap),
+		}
+	}
+	return GuardVerdict{
+		Guard:  GuardHeavyCap,
+		Passed: req.HeaviesOwned < req.HeavyCap,
+		Detail: fmt.Sprintf("heavies owned %d/%d (cap)", req.HeaviesOwned, req.HeavyCap),
 	}
 }
 
@@ -354,11 +415,25 @@ func guardTreasuryFloor(req PurchaseRequest) GuardVerdict {
 		return GuardVerdict{Guard: GuardTreasuryFloor, Passed: false, Detail: "treasury unreadable"}
 	}
 	const floor = common.ImmutableReserveFloor
-	spendable := req.LiveTreasury - floor
+	// The heavy reservation raises this buy's effective floor — EXCEPT for the heavy
+	// purchase it is saving for, which would otherwise have to clear roughly twice the
+	// hull's price (spec §4: "deliberately not including its own reserve, which would be
+	// circular"). The waiver is enforced HERE, in the pure guard, rather than left to
+	// each caller to remember to zero: a caller that forgot would deadlock heavy buying
+	// silently, and this is the one place that can never be bypassed.
+	heavyReserve := req.HeavyReserve
+	reserveNote := fmt.Sprintf(" − heavy reserve %d", heavyReserve)
+	if req.Class == HullClassHeavy {
+		heavyReserve = 0
+		// Still NAMED in the arithmetic so the decision log distinguishes "waived because
+		// this IS the heavy buy" from "reserve silently dropped".
+		reserveNote = fmt.Sprintf(" (own reserve waived: %d)", req.HeavyReserve)
+	}
+	spendable := req.LiveTreasury - floor - heavyReserve
 	need := req.Price + req.MarginOverFloor
 	return GuardVerdict{
 		Guard:  GuardTreasuryFloor,
 		Passed: spendable >= need,
-		Detail: fmt.Sprintf("treasury %d − floor %d = %d >= price %d + margin %d = %d", req.LiveTreasury, floor, spendable, req.Price, req.MarginOverFloor, need),
+		Detail: fmt.Sprintf("treasury %d − floor %d%s = %d >= price %d + margin %d = %d", req.LiveTreasury, floor, reserveNote, spendable, req.Price, req.MarginOverFloor, need),
 	}
 }

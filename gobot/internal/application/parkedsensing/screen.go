@@ -38,6 +38,12 @@ type WaypointCatalog interface {
 	// first. Resolving "sells probes" — priced inventory, falling back to a bare
 	// SHIPYARD trait when nothing has been scanned — belongs to the adapter.
 	ListProbeYards(ctx context.Context, system string) ([]string, error)
+	// ListHeavyYards returns the system's shipyards that sell HEAVY hulls, cheapest
+	// first. A heavy yard earns a quartermaster for the same reason a probe yard does:
+	// a parked hull makes a future purchase there instant instead of requiring one to
+	// fly in first (spec §6). Used as a FALLBACK behind ListProbeYards — probes are what
+	// this engine actually buys, so the probe-priced ordering keeps precedence.
+	ListHeavyYards(ctx context.Context, system string) ([]string, error)
 	// CatalogKnown reports whether the system's waypoint LIST has ever been
 	// swept — whether we know what is in it at all, as distinct from knowing
 	// what those waypoints hold.
@@ -459,6 +465,17 @@ func planSlots(ctx context.Context, p ScreenPorts, system string, hits []screene
 	// MUST therefore match on waypoint + PARKED and ignore slot_kind entirely —
 	// filtering for kind == YARD would miss the probe standing right there and
 	// buy a second one for the same waypoint.
+	// Heavy-selling yards earn a quartermaster too (spec §6): a parked probe makes a
+	// future HEAVY purchase there instant. They are a FALLBACK behind probe yards, not an
+	// override — probes are what this engine buys, so the probe-priced ordering above keeps
+	// precedence, and the one-yard-per-system rule is unchanged.
+	if len(yards) == 0 {
+		heavy, err := p.Waypoints.ListHeavyYards(ctx, system)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list heavy yards in %q: %w", system, err)
+		}
+		yards = heavy
+	}
 	if len(yards) > 0 && !placed[yards[0]] {
 		slots = append(slots, PlannedSlot{Waypoint: yards[0], Kind: SlotKindYard})
 	}

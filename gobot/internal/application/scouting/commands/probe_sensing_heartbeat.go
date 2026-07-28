@@ -75,6 +75,8 @@ func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *
 	switch {
 	case hb.buy.CapHeld:
 		held = "probe cap"
+	case hb.buy.FloorHeld && hb.buy.HeavyReserve > 0:
+		held = fmt.Sprintf("buy floor, %d reserved for the next heavy", hb.buy.HeavyReserve)
 	case hb.buy.FloorHeld:
 		held = "buy floor"
 	case hb.buy.HaltedPriceDrift:
@@ -107,7 +109,11 @@ func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *
 			"buy_skipped_no_yard": hb.buy.SkippedNoYard,
 			"buy_cap_held":        hb.buy.CapHeld,
 			"buy_floor_held":      hb.buy.FloorHeld,
-			"buy_price_drift":     hb.buy.HaltedPriceDrift,
+			// Credits held back for the NEXT heavy. Non-zero beside buy_floor_held
+			// means "saving for a heavy", NOT "sensing is broken" — the one signal
+			// that tells those two apart (spec risk 3).
+			"buy_heavy_reserve": hb.buy.HeavyReserve,
+			"buy_price_drift":   hb.buy.HaltedPriceDrift,
 			// Claims handed back because their system lost IN_SCOPE — the other
 			// half of buy_queued, not a count of abandoned placements.
 			"buy_reaped":       hb.reap.Reaped,

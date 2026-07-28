@@ -47,11 +47,10 @@ Each slow tick (default 15min) it, per enabled hull class:
            (dedicate-at-purchase, so no coordinator poaches a heavy/warehouse hull), emits the
            purchase counter + a captain notice, and stops at the per-tick cap.
 
-It is LIVE BY DEFAULT: launched here it is ACTIVE immediately. Set [fleet_autosizer]
-dry_run=true to evaluate + log every buy loudly while spending nothing.
+It is LIVE BY DEFAULT: launched here it is ACTIVE immediately, and it buys whenever the guard
+stack clears. Watch it through the per-decision arithmetic in the log.
 
 Tuning is config-driven (config.yaml [fleet_autosizer], live on daemon restart):
-  dry_run                                                             escape
   tick_interval_secs / purchase_cap_per_tick                          pacing
   fleet_ceiling_total / fleet_ceiling_{lights,heavies}                API-budget ceilings
   purchase_margin_over_floor                                          treasury guard (margin over the
@@ -87,7 +86,7 @@ Examples:
 			fmt.Printf("  Container ID: %s\n", containerID)
 			fmt.Printf("  Agent:        %s (player %d)\n", playerIdent.AgentSymbol, playerIdent.PlayerID)
 			fmt.Println("\n  It sizes the hull pool to demand and auto-buys behind the money-guard stack (LIVE by default).")
-			fmt.Println("  Tune it in config.yaml [fleet_autosizer] (live on daemon restart); dry_run=true to watch first.")
+			fmt.Println("  Tune it in config.yaml [fleet_autosizer] (live on daemon restart); every decision logs its arithmetic.")
 			fmt.Println("  Stop with 'spacetraders container stop " + containerID + "'.")
 			return nil
 		},

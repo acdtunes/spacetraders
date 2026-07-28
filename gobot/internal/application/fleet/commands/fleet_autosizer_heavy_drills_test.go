@@ -23,13 +23,18 @@ func armedForHeavy(p *HeavyDemandProvider) (*RunFleetAutosizerCoordinatorHandler
 	h, purchaser, metrics, notifier := armedHandler(p)
 	h.SetTreasuryReader(&fakeTreasury{credits: 8000000, ok: true})
 	h.SetYardPriceReader(&fakeYardPrice{price: 1400000, cheapest: 1400000, yard: "KA42-A2", ok: true})
+	// The heavy census must be READABLE or the heavy cap guard fails closed. These drills own
+	// no heavy HULL yet (the provider's count is the tag-scoped TRADE POOL, a different fact),
+	// so the cap has room and the drills keep isolating the guard each one is about.
+	h.SetHeavyCensusReader(&fakeHeavyCensus{owned: 0})
+	h.SetHeavyYardReader(&fakeHeavyYard{price: 1400000, found: true})
 	return h, purchaser, metrics, notifier
 }
 
 // heavyCmd is a launch command with the anti-thrash streak satisfied on the first tick (min 1) so the
 // drills isolate the GUARD under test, not the streak.
 func heavyCmd() *RunFleetAutosizerCoordinatorCommand {
-	return &RunFleetAutosizerCoordinatorCommand{PlayerID: 1, ContainerID: "c1", HeavyUnservedLanesMin: 1}
+	return &RunFleetAutosizerCoordinatorCommand{PlayerID: 1, ContainerID: "c1", HeavyUnservedLanesMin: 1, HeavyCap: intPtr(50)}
 }
 
 // THE MONEY PATH: readable unserved-lane demand + a clearing economy + the streak satisfied ⇒ ONE

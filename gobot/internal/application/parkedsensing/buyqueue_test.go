@@ -1103,3 +1103,225 @@ func TestDrain_MissingActualPriceIsNotAFreeHull(t *testing.T) {
 		t.Fatalf("report does not flag FloorHeld: %+v", rep)
 	}
 }
+
+// --- the heavy reservation in the probe-buy floor (sp-fwk8z T3) ---------------
+
+// fakeHeavyReserve is the derived hold-back for the next heavy. err ⇒ unreadable ⇒ fail closed:
+// buying probes against an unknown reserve could spend the treasury a heavy is accumulating.
+type fakeHeavyReserve struct {
+	reserve int64
+	err     error
+	calls   int
+}
+
+func (f *fakeHeavyReserve) Reserve(_ context.Context, _ int) (int64, error) {
+	f.calls++
+	return f.reserve, f.err
+}
+
+// THE PARTITION, END TO END. This is the accumulate-then-resume cycle the whole design exists for:
+// while a heavy is being saved for, probe buying stands down and treasury builds; the moment the
+// reserve clears (heavy bought, or capability closed) the same treasury buys probes again.
+//
+// Without the reserve term the small continuous spender wins every tick — the probe queue drains
+// the surplus below the heavy's threshold before it can ever accumulate, and the heavy is never
+// bought. That is the asymmetry §"Asymmetry, stated plainly" describes.
+func TestDrain_HeavyReserveRaisesTheFloorThenReleasesIt(t *testing.T) {
+	// capexKnobs floor = 750_000; treasury 780_000 − 23_540 probe = 756_460, which clears it.
+	// A 10_000 reserve lifts the floor to 760_000 and the same buy no longer clears.
+	held, _, heldPur, _ := oneFillPorts(780_000)
+	held.HeavyReserve = &fakeHeavyReserve{reserve: 10_000}
+
+	rep, err := DrainBuyQueue(context.Background(), held, testPlayerID, capexKnobs, fixedClock{time.Unix(1_700_000_000, 0)})
+	if err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if len(heldPur.buys) != 0 {
+		t.Fatalf("bought %d probes while a heavy reserve was outstanding, want 0 — the partition is not holding", len(heldPur.buys))
+	}
+	if !rep.FloorHeld {
+		t.Fatalf("report does not flag FloorHeld while the reserve holds: %+v", rep)
+	}
+
+	// Reserve cleared (heavy landed, or no yard sells one) ⇒ the SAME treasury buys again. This
+	// half is what proves the treasury was never the blocker — expansion resumes, it is not
+	// permanently taxed.
+	released, _, releasedPur, _ := oneFillPorts(780_000)
+	released.HeavyReserve = &fakeHeavyReserve{reserve: 0}
+
+	if _, err := DrainBuyQueue(context.Background(), released, testPlayerID, capexKnobs, fixedClock{time.Unix(1_700_000_000, 0)}); err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if len(releasedPur.buys) != 1 {
+		t.Fatalf("with the reserve cleared the probe buy must resume, got %d buys", len(releasedPur.buys))
+	}
+}
+
+// The floor rises by EXACTLY the reserve — pinned at the boundary, one credit either side.
+func TestDrain_HeavyReserveRaisesFloorExactly(t *testing.T) {
+	// Treasury 780_000 − 23_540 = 756_460 spendable against a 750_000 base floor: 6_460 of slack.
+	// A 6_460 reserve is exactly affordable; 6_461 is one credit too much.
+	exact, _, exactPur, _ := oneFillPorts(780_000)
+	exact.HeavyReserve = &fakeHeavyReserve{reserve: 6_460}
+	if _, err := DrainBuyQueue(context.Background(), exact, testPlayerID, capexKnobs, fixedClock{time.Unix(1_700_000_000, 0)}); err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if len(exactPur.buys) != 1 {
+		t.Fatalf("a reserve leaving EXACTLY enough must still buy, got %d buys", len(exactPur.buys))
+	}
+
+	oneShort, _, shortPur, _ := oneFillPorts(780_000)
+	oneShort.HeavyReserve = &fakeHeavyReserve{reserve: 6_461}
+	if _, err := DrainBuyQueue(context.Background(), oneShort, testPlayerID, capexKnobs, fixedClock{time.Unix(1_700_000_000, 0)}); err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if len(shortPur.buys) != 0 {
+		t.Fatalf("one credit too much reserved must block the buy, got %d buys", len(shortPur.buys))
+	}
+}
+
+// THE RULED BEHAVIOUR, from the drain's side. A reader that cannot see its inputs answers ZERO
+// (see HeavyReservePort.Reserve — a blind read reserves nothing and WARNs), and the drain must then
+// buy normally. This is the whole point of the ruling: an unreadable census must not stop probe
+// buying, because the fleet autosizer keeps spending on light hulls either way, and halting only
+// this half starves expansion on a blind signal.
+//
+// The treasury is the discriminator, not decoration: 780_000 − 23_540 = 756_460 clears the 750_000
+// floor, but the 1,565,500 a reserve would hold does not. So the buy happens BECAUSE the blind read
+// reserved zero.
+//
+// The WARN that makes this state visible belongs to the port and is asserted there
+// (TestHeavyReservePort_CensusErrorReservesNothingAndWarns and its yard twin). It is structurally
+// unobservable from here — this test substitutes the port wholesale, so Reserve never runs.
+func TestDrain_BlindReserveReadsZeroAndBuyingProceeds(t *testing.T) {
+	ports, _, pur, _ := oneFillPorts(780_000)
+	ports.HeavyReserve = &fakeHeavyReserve{reserve: 0}
+
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, capexKnobs, fixedClock{time.Unix(1_700_000_000, 0)})
+	if err != nil {
+		t.Fatalf("a blind reserve must not halt the drain: %v", err)
+	}
+	if len(pur.buys) != 1 {
+		t.Fatalf("bought %d probes on a zero reserve, want 1 — probe buying must proceed when the reserve cannot be computed", len(pur.buys))
+	}
+	if rep.HeavyReserve != 0 {
+		t.Fatalf("report says HeavyReserve=%d, want 0 — the heartbeat must show nothing held, which is what the port's WARN explains", rep.HeavyReserve)
+	}
+	if rep.FloorHeld {
+		t.Fatalf("a zero reserve must not hold the floor: %+v", rep)
+	}
+}
+
+// DEFENCE IN DEPTH, deliberately kept. The shipped reader never returns an error — it answers zero
+// when blind (the test above) — so this path is unreachable in production today. It is retained
+// because HeavyReserveReader is an exported interface with an error in its contract and the port is
+// a swappable seam (a nil reader is already a supported wiring), so the drain cannot assume which
+// implementation it has. Without this branch the drain would treat an erroring reader's zero as
+// authoritative, which is the silent-zero outcome the whole ruling exists to prevent.
+//
+// The fake's message deliberately does NOT say "census": the census no longer reaches here.
+func TestDrain_ErroringReserveReaderStillFailsClosed(t *testing.T) {
+	ports, _, pur, _ := oneFillPorts(5_000_000)
+	ports.HeavyReserve = &fakeHeavyReserve{err: errors.New("reserve reader refused")}
+
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, capexKnobs, fixedClock{time.Unix(1_700_000_000, 0)}); err == nil {
+		t.Fatal("a reader that ERRORS must still fail the drain closed, got nil error")
+	}
+	if len(pur.buys) != 0 {
+		t.Fatalf("bought %d probes against an erroring reserve reader, want 0", len(pur.buys))
+	}
+}
+
+// An UNWIRED reader is byte-identical to today: no reserve, no behaviour change. This is what lets
+// the sensing engine run before/without the heavy feature rather than stalling on a nil port.
+func TestDrain_NilHeavyReserveReaderIsInert(t *testing.T) {
+	ports, _, pur, _ := oneFillPorts(780_000)
+	ports.HeavyReserve = nil
+
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, capexKnobs, fixedClock{time.Unix(1_700_000_000, 0)}); err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if len(pur.buys) != 1 {
+		t.Fatalf("an unwired reserve reader must not change behaviour, got %d buys want 1", len(pur.buys))
+	}
+}
+
+// The heartbeat's buy_heavy_reserve must agree with the autosizer's per-tick gauge on EVERY tick,
+// including the ones that return before the floor is ever built. An operator correlating the two
+// halves sees them disagree otherwise — and "the two halves disagree" is the exact signal this
+// feature's diagnostics exist to make trustworthy.
+//
+// The probe-cap path is the one that matters most: it is a long-lived steady state, so the
+// heartbeat would read 0 for hours on end while a reserve was genuinely outstanding.
+func TestDrain_ReportsHeavyReserveOnEveryEarlyReturn(t *testing.T) {
+	t.Run("probe cap held", func(t *testing.T) {
+		ports, led, pur, _ := oneFillPorts(5_000_000)
+		led.owned = int64(capexKnobs.ProbeCap) // at the cap ⇒ returns before the floor is built
+		ports.HeavyReserve = &fakeHeavyReserve{reserve: 1_565_500}
+
+		rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, capexKnobs, fixedClock{time.Unix(1_700_000_000, 0)})
+		if err != nil {
+			t.Fatalf("DrainBuyQueue returned error: %v", err)
+		}
+		if !rep.CapHeld {
+			t.Fatalf("this test does not exercise the cap-held early return: %+v", rep)
+		}
+		if len(pur.buys) != 0 {
+			t.Fatalf("bought %d probes at the probe cap, want 0", len(pur.buys))
+		}
+		if rep.HeavyReserve != 1_565_500 {
+			t.Fatalf("report says HeavyReserve=%d at the probe cap, want 1565500 — the heartbeat reads 0 while a reserve is outstanding and disagrees with the autosizer gauge", rep.HeavyReserve)
+		}
+	})
+
+	t.Run("no candidates", func(t *testing.T) {
+		ports, led, pur, _ := oneFillPorts(5_000_000)
+		led.slots = nil // nothing WANTED or QUEUED ⇒ returns before any money read
+		ports.HeavyReserve = &fakeHeavyReserve{reserve: 1_565_500}
+
+		rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, capexKnobs, fixedClock{time.Unix(1_700_000_000, 0)})
+		if err != nil {
+			t.Fatalf("DrainBuyQueue returned error: %v", err)
+		}
+		if led.systemsCalls != 0 {
+			t.Fatalf("this test does not exercise the no-candidates early return (verdicts were read %d times)", led.systemsCalls)
+		}
+		if len(pur.buys) != 0 {
+			t.Fatalf("bought %d probes with nothing queued, want 0", len(pur.buys))
+		}
+		if rep.HeavyReserve != 1_565_500 {
+			t.Fatalf("report says HeavyReserve=%d on an empty queue, want 1565500", rep.HeavyReserve)
+		}
+	})
+}
+
+// ONE DEFINITION. The value sensing holds back must be the value common.HeavyReserve computes for
+// the same facts.
+//
+// TWO TESTS PROTECT THAT, and neither is a compile-time guard — nothing stops a second copy of the
+// predicate from COMPILING, because HeavyReserveInputs and every field on it are exported:
+//
+//   - TestHeavyReserveLockstep (internal/application/common) pins the ARITHMETIC, so a divergent
+//     second copy fails the suite rather than the economics;
+//   - TestDrain_ReserveMatchesTheSharedPredicate — this test — pins the CALLER, so nobody can
+//     massage the number on its way into the floor.
+func TestDrain_ReserveMatchesTheSharedPredicate(t *testing.T) {
+	in := common.HeavyReserveInputs{
+		CapabilityOpen:     true,
+		HeaviesOwned:       1,
+		HeavyCap:           5,
+		CheapestKnownPrice: 1_565_500,
+	}
+	want := common.HeavyReserve(in)
+	if want != 1_565_500 {
+		t.Fatalf("shared predicate returned %d, want the cheapest ask 1565500", want)
+	}
+
+	// The floor the queue builds with that reserve must equal the floor built by adding the
+	// shared predicate's own answer to the capex term — no scaling, no rounding, no second rule.
+	got := domainSensing.ProbeBuyFloor(common.ImmutableReserveFloor, capexKnobs.CapexReserve+want, 0, 0)
+	expected := domainSensing.ProbeBuyFloor(common.ImmutableReserveFloor, capexKnobs.CapexReserve+common.HeavyReserve(in), 0, 0)
+	if got != expected {
+		t.Fatalf("floor built from the sensing path = %d, from the shared predicate = %d — the two have diverged", got, expected)
+	}
+}

@@ -179,6 +179,11 @@ func heavyRequest() PurchaseRequest {
 	r := passingRequest()
 	r.Class = HullClassHeavy
 	r.ShipType = "SHIP_HEAVY_FREIGHTER"
+	// The heavy-hull cap is a separate dial with its own tests (heavy_cap_test.go); open it
+	// here with a readable census so this file keeps pinning the realized-rate behaviour.
+	r.HeaviesOwned = 1
+	r.HeavyCap = 5
+	r.HeaviesOwnedReadable = true
 	return r
 }
 

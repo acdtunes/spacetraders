@@ -236,6 +236,10 @@ type SensingEnginePorts struct {
 	SpreadOf     parkedsensing.SpreadObserver
 	Home         HomeSystemReader
 	Budget       BudgetRateReader
+	// HeavyReserve holds treasury back for the next heavy so probe buying stands down
+	// while one accumulates (sp-fwk8z). OPTIONAL: nil is byte-identical to no reserve,
+	// which is what a deployment without the fleet autosizer should see.
+	HeavyReserve parkedsensing.HeavyReserveReader
 }
 
 // SensingEnginePortsFactory builds one player's engine surface. The daemon wires
@@ -279,6 +283,8 @@ func (p SensingEnginePorts) buyPorts() parkedsensing.BuyPorts {
 		Yards:      p.Waypoints,
 		Ships:      p.Ships,
 		Fleet:      p.Fleet,
+		// nil-safe: an unwired reserve means no hold-back, not a stalled drain.
+		HeavyReserve: p.HeavyReserve,
 	}
 }
 

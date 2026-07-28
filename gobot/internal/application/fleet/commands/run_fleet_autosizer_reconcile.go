@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
@@ -13,14 +14,15 @@ import (
 // holds ALL knobs so resolveFleetAutosizerConfig is written once and the guard/demand math reads
 // resolved values directly.
 type autosizerRunConfig struct {
-	DryRun bool
-
 	Tick               time.Duration
 	PurchaseCapPerTick int
 
 	FleetCeilingTotal   int
 	FleetCeilingLights  int
 	FleetCeilingHeavies int
+	// HeavyCap is the resolved heavy-HULL cap (capital exposure), distinct from
+	// FleetCeilingHeavies (trade-pool size). Both bind.
+	HeavyCap int
 
 	PurchaseMarginOverFloor int64
 
@@ -58,7 +60,6 @@ type autosizerRunConfig struct {
 
 func resolveFleetAutosizerConfig(cmd *RunFleetAutosizerCoordinatorCommand) autosizerRunConfig {
 	c := autosizerRunConfig{
-		DryRun:                      cmd.DryRun,
 		Tick:                        time.Duration(cmd.TickIntervalSecs) * time.Second,
 		PurchaseCapPerTick:          cmd.PurchaseCapPerTick,
 		FleetCeilingTotal:           cmd.FleetCeilingTotal,
@@ -69,6 +70,7 @@ func resolveFleetAutosizerConfig(cmd *RunFleetAutosizerCoordinatorCommand) autos
 		HeavyMarginalRateFloor:      cmd.HeavyMarginalRateFloor,
 		HeavyUnservedLanesMin:       cmd.HeavyUnservedLanesMin,
 		HeavyTreasuryPctPerPurchase: cmd.HeavyTreasuryPctPerPurchase,
+		HeavyCap:                    resolveHeavyCap(cmd.HeavyCap),
 		DecliningRateUnservedFloor:  cmd.DecliningRateUnservedFloor,
 		APIUtilizationCeilingPct:    cmd.APIUtilizationCeilingPct,
 		PaybackSafetyFactor:         cmd.PaybackSafetyFactor,
@@ -179,19 +181,20 @@ type reconcileResult struct {
 // updated fleet size). It is the unit the tests drive directly; Handle just calls it on the tick.
 func (h *RunFleetAutosizerCoordinatorHandler) reconcileOnce(ctx context.Context, cmd *RunFleetAutosizerCoordinatorCommand) (reconcileResult, error) {
 	cfg := resolveFleetAutosizerConfig(cmd)
+	// The ONE live-tunable knob: re-read from persisted config each tick so a `tune` applies
+	// on the next reconcile with no container rebuild.
+	cfg.HeavyCap = h.liveHeavyCap(ctx, cmd, cfg.HeavyCap)
 	logger := common.LoggerFromContext(ctx)
 	res := reconcileResult{}
 
-	// No-silent-dry-run: dry-run WARNs every tick — it is opt-in watch mode, not a silent no-op.
-	if cfg.DryRun {
-		logger.Log("WARN", "Fleet autosizer in DRY-RUN — every buy decision is evaluated and logged but NOTHING is spent (set dry_run=false to arm)", map[string]interface{}{
-			"action":       "autosizer_dry_run",
-			"container_id": cmd.ContainerID,
-		})
-	}
-
 	st := h.coordinatorState(cmd.ContainerID)
-	in := h.readTickInputs(ctx, cmd.PlayerID)
+	in := h.readTickInputs(ctx, cmd.PlayerID, cfg)
+	// Emitted every tick regardless of outcome: this is the series that distinguishes
+	// "saving for a heavy" from "the buyer is stuck", and it is only useful if it is
+	// always present.
+	if h.metrics != nil {
+		h.metrics.RecordHeavyReserve(strconv.Itoa(cmd.PlayerID), in.heavyReserve, in.heaviesOwned, cfg.HeavyCap)
+	}
 
 	// The live-resolved params every provider reads this tick (the live-config discipline): the
 	// providers are constructed once at boot but see the current config.yaml value through here.
@@ -239,7 +242,7 @@ func (h *RunFleetAutosizerCoordinatorHandler) reconcileOnce(ctx context.Context,
 		}
 	}
 
-	// Zero-effect alarm (no-silent-dry-run corollary): demand persisted but nothing was bought.
+	// Zero-effect alarm: demand persisted but nothing was bought.
 	h.runZeroEffectAlarm(ctx, cmd, cfg, st, anyUnmetNoBuy, res.Purchased)
 
 	logger.Log("INFO", fmt.Sprintf("Autosizer tick: %d classes evaluated, %d with shortfall, %d purchased", res.ClassesEvaluated, res.ShortfallClasses, res.Purchased), map[string]interface{}{
@@ -268,10 +271,27 @@ func (h *RunFleetAutosizerCoordinatorHandler) runZeroEffectAlarm(ctx context.Con
 		if h.metrics != nil {
 			h.metrics.RecordZeroEffectAlarm()
 		}
-		logger.Log("WARN", fmt.Sprintf("Autosizer ZERO-EFFECT ALARM: unmet demand has produced NO purchase for %d consecutive ticks — a guard is persistently blocking (see the per-decision arithmetic above) or the purchaser is unwired/dry-run", st.noEffectStreak), map[string]interface{}{
+		logger.Log("WARN", fmt.Sprintf("Autosizer ZERO-EFFECT ALARM: unmet demand has produced NO purchase for %d consecutive ticks — a guard is persistently blocking (see the per-decision arithmetic above) or the purchaser is unwired", st.noEffectStreak), map[string]interface{}{
 			"action":       "autosizer_zero_effect_alarm",
 			"container_id": cmd.ContainerID,
 			"streak":       st.noEffectStreak,
 		})
 	}
+}
+
+// resolveHeavyCap applies the heavy cap's pointer semantics: nil (absent) defers to the
+// documented default, while an explicit value — INCLUDING 0 — is the operator's choice.
+// 0 is a legitimate hold ("own no heavies"), not an unset knob, which is exactly why the
+// field is a *int rather than following the codebase's usual "<=0 ⇒ default" resolve.
+//
+// A negative value is nonsense rather than a hold; it resolves to the default so a typo
+// cannot silently disable heavy buying in a way that reads as intentional.
+func resolveHeavyCap(configured *int) int {
+	if configured == nil {
+		return defaultHeavyCap
+	}
+	if *configured < 0 {
+		return defaultHeavyCap
+	}
+	return *configured
 }

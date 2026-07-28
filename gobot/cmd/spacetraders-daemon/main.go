@@ -869,6 +869,7 @@ func run(cfg *config.Config) error {
 		marketRepo, persistence.NewTourTelemetryRepository(db),
 		shipyardQuery.NewReachableYardFinder(shipyardInventoryRepo, gateGraphService),
 		explorerOffGateBridge, // sp-a3yn: explorer demand provider reads off-gate demand through this bridge
+		shipyardInventoryRepo, // sp-fwk8z: cheapest KNOWN PRICED heavy yard — the reservation's price term
 	)
 	if err := mediator.RegisterHandler[*fleetCmd.RunFleetAutosizerCoordinatorCommand](med, fleetAutosizerHandler); err != nil {
 		return fmt.Errorf("failed to register FleetAutosizerCoordinator handler: %w", err)
@@ -1131,6 +1132,15 @@ func run(cfg *config.Config) error {
 			SeedShip: parkedSensingAdapters.NewSeedCommandPort(med, apiClient, playerRepo, waypointRepo, marketScanner),
 			Scan:     parkedSensingAdapters.NewScanRunnerPort(marketScanner),
 			Home:     parkedSensingAdapters.NewHomeSystemPort(db),
+			// The heavy reservation: probe buying stands down while treasury accumulates
+			// toward the next heavy, and resumes the moment it lands. heavy_cap is read
+			// from the fleet autosizer's OWN persisted config — one dial, one enforcer —
+			// and an absent autosizer simply reserves nothing.
+			HeavyReserve: parkedSensingAdapters.NewHeavyReservePort(
+				parkedSensingAdapters.NewShipRepoCensus(shipRepo),
+				persistence.NewShipyardInventoryRepository(db),
+				parkedSensingAdapters.NewAutosizerCapPort(db),
+			),
 			// The budget the whole model is sized against: sensing is the RESIDUAL
 			// consumer, so it reads how much of the ceiling everyone else is using.
 			Budget: parkedSensingAdapters.NewBudgetRatePort(metricsAdapter.GetGlobalAPIBudgetTracker(), api.RateLimitPerSecond),

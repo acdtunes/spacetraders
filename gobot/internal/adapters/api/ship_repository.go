@@ -16,11 +16,13 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
+	"github.com/andrescamacho/spacetraders-go/internal/application/logging"
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shipyard"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
@@ -1384,6 +1386,84 @@ func (r *ShipRepository) FindActiveByPlayer(ctx context.Context, playerID shared
 	}
 
 	return result, nil
+}
+
+// CountHeavyHulls counts the player's owned HEAVY hulls — the census behind both
+// the heavy_cap guard and the derived heavy reservation (common.HeavyReserve).
+//
+// Counting is DELIBERATELY BROAD: every owned heavy, regardless of which fleet it
+// is tagged to, whether it is idle, assigned, or in transit. The cap this feeds
+// bounds CAPITAL EXPOSURE, not trade-fleet size, and under-counting is the
+// dangerous direction — it is what would authorise buying a hull we already own.
+// Do not narrow this with a dedicated_fleet or assignment_status filter; the
+// autosizer's own tag-scoped trade-pool count (DedicatedFleet=="trade", which
+// backs fleet_ceiling_heavies) is a SEPARATE question with a separate method.
+//
+// A hull is heavy when shipyard.IsHeavyHull says so: its frame is in the known
+// heavy list, OR its cargo capacity is at/above the heavy threshold. The frame
+// list is primary; the capacity net is the fallback, because the ships table has
+// NO ship_type column and the heavy frame symbols are INFERRED from SpaceTraders'
+// naming symmetry rather than observed (the fleet owns no heavy to read one from).
+// A wrong frame symbol would under-count, so the net catches large hulls whatever
+// frame they report — over-counting instead, which buys FEWER heavies.
+//
+// A hull matched only by the net (unrecognised frame) is logged at WARNING: that
+// line is the only signal available that the frame list is incomplete, and the
+// list gets corrected from it. shipyard.DefaultHeavyFrameSymbols is the frame
+// projection of the same table the yard query's ship types come from, so the two
+// sides cannot drift (see TestHeavyHullClassPairing).
+//
+// Ships are live API state and carry no era_id, so this is player-scoped only —
+// unlike the era-scoped shipyard_inventory reads.
+func (r *ShipRepository) CountHeavyHulls(ctx context.Context, playerID shared.PlayerID) (int, error) {
+	if r.db == nil {
+		// NEVER a silent zero: zero reads as "no heavies owned" and would authorise a
+		// buy against an unreadable fleet (RULINGS #4 fail-closed).
+		return 0, fmt.Errorf("database not configured")
+	}
+
+	// Narrow the scan to plausible candidates in SQL, then classify in Go so the
+	// capacity net's firing can be detected and logged. The OR is what makes the
+	// frame list non-authoritative for exclusion: a large hull is a candidate even
+	// when its frame is unknown to us.
+	var rows []persistence.ShipModel
+	err := r.db.WithContext(ctx).
+		Model(&persistence.ShipModel{}).
+		Where("player_id = ?", playerID.Value()).
+		Where("frame_symbol IN ? OR cargo_capacity >= ?",
+			shipyard.DefaultHeavyFrameSymbols, shipyard.HeavyCargoCapacityThreshold).
+		Find(&rows).Error
+	if err != nil {
+		return 0, fmt.Errorf("failed to read hulls for the heavy census: %w", err)
+	}
+
+	logger := logging.LoggerFromContext(ctx)
+	count := 0
+	for _, row := range rows {
+		heavy, unrecognisedFrame := shipyard.IsHeavyHull(row.FrameSymbol, row.CargoCapacity)
+		if !heavy {
+			continue
+		}
+		count++
+		if unrecognisedFrame {
+			// The ONLY signal available that the inferred frame list is incomplete: this
+			// hull is large enough to be a heavy but its frame is not in the known list,
+			// and the fleet owns no heavy to check the list against. Treat the first such
+			// line in production as the frame list asking to be corrected.
+			logger.Log("WARNING", fmt.Sprintf(
+				"Heavy census: hull %s has UNRECOGNISED frame %s with cargo capacity %d (>= heavy threshold %d) — counted as heavy by the capacity safety net. The known-heavy frame list is likely incomplete; add this frame to heavyHullClasses.",
+				row.ShipSymbol, row.FrameSymbol, row.CargoCapacity, shipyard.HeavyCargoCapacityThreshold,
+			), map[string]interface{}{
+				"action":         "heavy_census_unrecognised_frame",
+				"ship_symbol":    row.ShipSymbol,
+				"frame_symbol":   row.FrameSymbol,
+				"cargo_capacity": row.CargoCapacity,
+				"threshold":      shipyard.HeavyCargoCapacityThreshold,
+			})
+		}
+	}
+
+	return count, nil
 }
 
 // CountByContainerPrefix counts active assignments where container ID starts with prefix

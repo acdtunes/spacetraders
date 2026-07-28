@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
@@ -29,6 +30,11 @@ const (
 	defaultHeavyMarginalRateFloor      = 0.7
 	defaultHeavyUnservedLanesMin       = 3
 	defaultHeavyTreasuryPctPerPurchase = 25
+	// defaultHeavyCap bounds CAPITAL EXPOSURE in heavy hulls — a separate question from
+	// defaultFleetCeilingHeavies, which caps the TRADE POOL by dedicated_fleet tag. Both apply.
+	// 5 per the Admiral. An explicit 0 in config.yaml is a legitimate operator HOLD, which is why
+	// the config field is a *int (see config.FleetAutosizerConfig.HeavyCap).
+	defaultHeavyCap = 5
 	// defaultDecliningRateUnservedFloor is the near-zero unserved-lane count at/below
 	// which a DECLINING aggregate realized-rate is a genuine heavy stop-buy; above it the decline is
 	// hull concentration and the buy proceeds. "A couple of lanes" — the resolver never lets it reach
@@ -98,8 +104,6 @@ type RunFleetAutosizerCoordinatorCommand struct {
 	ContainerID string
 	AgentSymbol string
 
-	DryRun bool
-
 	TickIntervalSecs   int
 	PurchaseCapPerTick int
 
@@ -114,7 +118,10 @@ type RunFleetAutosizerCoordinatorCommand struct {
 	HeavyMarginalRateFloor      float64
 	HeavyUnservedLanesMin       int
 	HeavyTreasuryPctPerPurchase int
-	DecliningRateUnservedFloor  int
+	// HeavyCap is the heavy-HULL cap. *int so an explicit 0 (operator hold) is told from
+	// unset; nil ⇒ defaultHeavyCap.
+	HeavyCap                   *int
+	DecliningRateUnservedFloor int
 
 	APIUtilizationCeilingPct int
 
@@ -168,9 +175,16 @@ type RunFleetAutosizerCoordinatorHandler struct {
 	apiUtil   APIUtilizationReader
 	fleetSize FleetSizeReader
 	yardPrice YardPriceReader
-	purchaser Purchaser
-	notifier  PurchaseNotifier
-	metrics   MetricsSink
+	// heavyCensus counts owned heavy HULLS (tag-independent); heavyYard reports the cheapest
+	// known priced heavy ask. Together they derive the heavy reservation each tick.
+	heavyCensus HeavyCensusReader
+	heavyYard   HeavyYardReader
+	// heavyCapCfg is the per-tick live-config snapshot for heavy_cap (the autosizer's only
+	// live-tunable knob). nil ⇒ launch-frozen behaviour.
+	heavyCapCfg liveconfig.Reader
+	purchaser   Purchaser
+	notifier    PurchaseNotifier
+	metrics     MetricsSink
 
 	mu    sync.Mutex
 	state map[string]*autosizerState // keyed by container ID
@@ -181,8 +195,8 @@ type autosizerState struct {
 	// heavyShortfallStreak counts consecutive ticks the heavy class has shown unmet demand
 	// (the heavy_unserved_lanes_min anti-thrash gate). Reset when the shortfall clears.
 	heavyShortfallStreak int
-	// noEffectStreak counts consecutive ticks with demand-but-zero-purchase (blocked every
-	// tick, or silent dry-run); noEffectPaged marks the one WARN already emitted this episode.
+	// noEffectStreak counts consecutive ticks with demand-but-zero-purchase (a guard blocking
+	// every tick); noEffectPaged marks the one WARN already emitted this episode.
 	noEffectStreak int
 	noEffectPaged  bool
 }
@@ -228,8 +242,16 @@ func (h *RunFleetAutosizerCoordinatorHandler) SetFleetSizeReader(r FleetSizeRead
 // guards fail closed.
 func (h *RunFleetAutosizerCoordinatorHandler) SetYardPriceReader(r YardPriceReader) { h.yardPrice = r }
 
+// SetHeavyCensusReader wires the tag-independent owned-heavy census (heavy_cap's input).
+func (h *RunFleetAutosizerCoordinatorHandler) SetHeavyCensusReader(r HeavyCensusReader) {
+	h.heavyCensus = r
+}
+
+// SetHeavyYardReader wires the cheapest-known-heavy-price read (the reservation's input).
+func (h *RunFleetAutosizerCoordinatorHandler) SetHeavyYardReader(r HeavyYardReader) { h.heavyYard = r }
+
 // SetPurchaser wires the buy+dedicate collaborator. Unset → the coordinator evaluates and
-// logs but never spends (an implicit dry-run, surfaced loudly and by the zero-effect alarm).
+// logs but never spends, which is a MIS-WIRE and is surfaced loudly and by the zero-effect alarm.
 func (h *RunFleetAutosizerCoordinatorHandler) SetPurchaser(p Purchaser) { h.purchaser = p }
 
 // SetPurchaseNotifier wires the captain purchase-notice channel. Optional.
@@ -248,10 +270,9 @@ func (h *RunFleetAutosizerCoordinatorHandler) Handle(ctx context.Context, reques
 	}
 
 	cfg := resolveFleetAutosizerConfig(cmd)
-	logger.Log("INFO", fmt.Sprintf("Fleet autosizer starting (tick %s, dry_run=%v)", cfg.Tick, cfg.DryRun), map[string]interface{}{
+	logger.Log("INFO", fmt.Sprintf("Fleet autosizer starting (tick %s)", cfg.Tick), map[string]interface{}{
 		"action":       "autosizer_start",
 		"container_id": cmd.ContainerID,
-		"dry_run":      cfg.DryRun,
 	})
 
 	result := &RunFleetAutosizerCoordinatorResponse{Errors: []string{}}

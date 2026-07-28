@@ -84,6 +84,14 @@ type recordingMetrics struct {
 	blocked       int
 	alarm         int
 	blockedGuards []GuardName
+	// The heavy-trade observations (sp-fwk8z). heavyReserveCalls counts EVERY tick's
+	// emission, which is the property that matters: the series only distinguishes
+	// "saving" from "stuck" if it is always present.
+	heavyReserveCalls int
+	lastReserve       int64
+	lastOwned         int
+	lastCap           int
+	pricePremiums     [][2]int64
 }
 
 func (m *recordingMetrics) RecordDemand(class HullClass, demand, current int) { m.demand++ }
@@ -93,6 +101,13 @@ func (m *recordingMetrics) RecordBlocked(class HullClass, guard GuardName) {
 	m.blockedGuards = append(m.blockedGuards, guard)
 }
 func (m *recordingMetrics) RecordZeroEffectAlarm() { m.alarm++ }
+func (m *recordingMetrics) RecordHeavyReserve(_ string, reserve int64, owned, cap int) {
+	m.heavyReserveCalls++
+	m.lastReserve, m.lastOwned, m.lastCap = reserve, owned, cap
+}
+func (m *recordingMetrics) ObserveHeavyPricePremium(_ string, paid, cheapestKnown int64) {
+	m.pricePremiums = append(m.pricePremiums, [2]int64{paid, cheapestKnown})
+}
 
 // armedHandler wires a coordinator with all buy-path readers healthy (so a shortfall class buys),
 // returning the handler plus the purchaser/metrics/notifier for assertions.
@@ -106,6 +121,10 @@ func armedHandler(providers ...ClassDemandProvider) (*RunFleetAutosizerCoordinat
 	h.SetAPIUtilizationReader(&fakeAPIUtil{pct: 40, ok: true})
 	h.SetFleetSizeReader(&fakeFleetSize{total: 20})
 	h.SetYardPriceReader(&fakeYardPrice{price: 437000, cheapest: 400000, yard: "KA42-A2", ok: true})
+	// The owned-heavy census must be READABLE or the heavy cap guard fails closed on every
+	// heavy candidate. The harness owns no heavy hull, so the cap has room and each test keeps
+	// pinning the guard it is about.
+	h.SetHeavyCensusReader(&fakeHeavyCensus{owned: 0})
 	purchaser := &recordingPurchaser{}
 	metrics := &recordingMetrics{}
 	notifier := &recordingNotifier{}
@@ -155,22 +174,13 @@ func TestReconcile_PerTickCap_BoundsBuys(t *testing.T) {
 	}}
 	h, purchaser, _, _ := armedHandler(light, heavy)
 	// Heavy needs its streak; give it enough ticks, but the CAP must still bound each tick to 1.
-	cmd := &RunFleetAutosizerCoordinatorCommand{PlayerID: 1, ContainerID: "c1", HeavyUnservedLanesMin: 1}
+	cmd := &RunFleetAutosizerCoordinatorCommand{PlayerID: 1, ContainerID: "c1", HeavyUnservedLanesMin: 1, HeavyCap: intPtr(50)}
 	res, _ := h.reconcileOnce(context.Background(), cmd)
 	if res.Purchased != 1 {
 		t.Fatalf("per-tick cap 1 must bound buys to 1 even with two shortfall classes, got %d", res.Purchased)
 	}
 	if len(purchaser.orders) != 1 {
 		t.Fatalf("expected exactly 1 buy under the cap, got %d", len(purchaser.orders))
-	}
-}
-
-// Dry-run evaluates and logs the APPROVED buy but spends nothing.
-func TestReconcile_DryRun_NoSpend(t *testing.T) {
-	h, purchaser, _, _ := armedHandler(lightShortfall())
-	res, _ := h.reconcileOnce(context.Background(), &RunFleetAutosizerCoordinatorCommand{PlayerID: 1, ContainerID: "c1", DryRun: true})
-	if res.Purchased != 0 || len(purchaser.orders) != 0 {
-		t.Fatalf("dry-run must not spend: purchased=%d orders=%d", res.Purchased, len(purchaser.orders))
 	}
 }
 
@@ -204,7 +214,7 @@ func TestReconcile_HeavyStreakGate(t *testing.T) {
 		Demand: 9, Current: 6, MarginalRate: 450000, FleetAvgRate: 500000, RateReadable: true, Readable: true,
 	}}
 	h, purchaser, _, _ := armedHandler(heavy)
-	cmd := &RunFleetAutosizerCoordinatorCommand{PlayerID: 1, ContainerID: "c1", HeavyUnservedLanesMin: 3}
+	cmd := &RunFleetAutosizerCoordinatorCommand{PlayerID: 1, ContainerID: "c1", HeavyUnservedLanesMin: 3, HeavyCap: intPtr(50)}
 
 	for tick := 1; tick <= 2; tick++ {
 		h.reconcileOnce(context.Background(), cmd)
@@ -375,3 +385,29 @@ func TestReconcile_HeavyDecliningRateSaturated_StillStops(t *testing.T) {
 		t.Fatalf("expected a realized_rate block metered on the saturated declining market, got %v", metrics.blockedGuards)
 	}
 }
+
+// fakeHeavyCensus is the tag-independent owned-heavy census. err ⇒ unreadable ⇒ the heavy cap
+// guard fails closed.
+type fakeHeavyCensus struct {
+	owned int
+	err   error
+}
+
+func (f *fakeHeavyCensus) HeaviesOwned(_ context.Context, _ int) (int, error) {
+	return f.owned, f.err
+}
+
+// fakeHeavyYard is the cheapest-known-priced-heavy-yard read behind the reservation.
+type fakeHeavyYard struct {
+	price int64
+	found bool
+	err   error
+}
+
+func (f *fakeHeavyYard) CheapestHeavyPrice(_ context.Context, _ int) (int64, bool, error) {
+	return f.price, f.found, f.err
+}
+
+// intPtr is the *int helper for HeavyCap, whose pointer-ness is what lets an explicit 0
+// (operator hold) be told from unset.
+func intPtr(v int) *int { return &v }

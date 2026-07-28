@@ -189,6 +189,53 @@ func (r *ShipyardInventoryRepositoryGORM) ListSavedYards(ctx context.Context, pl
 	return out, nil
 }
 
+// CheapestPricedYard returns the era-scoped row with the LOWEST POSITIVE
+// purchase_price among the player's known yards selling one of shipTypes, and
+// whether any such row exists. It is the price half of the derived heavy
+// reservation (common.HeavyReserve): found=false means the capability is CLOSED
+// (no known yard sells the class at a usable price) and nothing is reserved.
+//
+// POSITIVE prices only. A purchase_price of 0 means the type was LISTED
+// (availability known) but carried no priced listing at scan time; such a row
+// proves availability but can never feed a money guard, so including it would
+// report a "cheapest" price of zero and collapse the reservation to nothing
+// while a real, buyable yard sat one row away. Availability-only questions keep
+// using HasAnyOfTypes, which deliberately counts unpriced rows.
+//
+// Era-scoped like every other read here, so a dead era's yards never leak into a
+// live buy signal. Ordered (price, waypoint) so the answer is deterministic when
+// two yards ask the same price. Empty shipTypes returns not-found rather than
+// scanning every type — a caller that lost its heavy-type set must not silently
+// reserve against an unrelated hull.
+func (r *ShipyardInventoryRepositoryGORM) CheapestPricedYard(ctx context.Context, playerID int, shipTypes []string) (shipyard.ShipTypeAvailability, bool, error) {
+	if len(shipTypes) == 0 {
+		return shipyard.ShipTypeAvailability{}, false, nil
+	}
+	predicate, args := eraScopePredicate(r.openEraID(ctx))
+	var models []ShipyardInventoryModel
+	if err := r.db.WithContext(ctx).Model(&ShipyardInventoryModel{}).
+		Where("player_id = ? AND ship_type IN ?", playerID, shipTypes).
+		Where("purchase_price > 0").
+		Where(predicate, args...).
+		Order("purchase_price ASC, waypoint_symbol ASC").
+		Limit(1).
+		Find(&models).Error; err != nil {
+		return shipyard.ShipTypeAvailability{}, false, fmt.Errorf("failed to read cheapest priced yard: %w", err)
+	}
+	if len(models) == 0 {
+		return shipyard.ShipTypeAvailability{}, false, nil
+	}
+	m := models[0]
+	return shipyard.ShipTypeAvailability{
+		SystemSymbol:   m.SystemSymbol,
+		WaypointSymbol: m.WaypointSymbol,
+		ShipType:       m.ShipType,
+		PurchasePrice:  m.PurchasePrice,
+		Supply:         m.Supply,
+		LastScanned:    m.LastScanned,
+	}, true, nil
+}
+
 // openEraID mirrors GormGateEdgeRepository.openEraID: the open era is the
 // highest era_id with no closed_at. nil (no open era yet) scopes reads/writes
 // to NULL era_id rows, matching the pre-close transition window.
