@@ -626,11 +626,35 @@ func takeSupplyFor(
 			continue
 		}
 		if spare.AssignedShip == "" {
-			// No hull behind it, so it is only supply if the queue could still
-			// buy one for it.
+			// No hull behind it, so it is only supply if the queue could still buy one
+			// for it — and "could buy" now means BOTH halves of what staging requires.
+			//
+			// THE THIRD CALLER OF ONE RULE. staffedAt alone was the whole definition of
+			// fundable when this was written; staging has since learned that a yard must
+			// also not be known to sell no probe, and this is the third consumer of that
+			// rule. Left on the old half it reads a want at a staffed, probe-less yard as
+			// a seed already on order, skips the target, and so the row that blocks the
+			// target is the row that can never be filled — the suppression loop closed in
+			// 554878e2, reopened because the DEFINITION of fundable moved underneath it.
+			//
+			// Reached through the trait pass rather than through a mistake: staging
+			// deliberately still stages at never-priced yards (that is how the fleet
+			// learns), the queue scans one, and the memo records a probe-less answer.
 			fundable, err := staffedAt(ctx, p, playerID, book, spare.Waypoint, staffed)
 			if err != nil {
 				return false, err
+			}
+			if fundable {
+				// DELEGATED, never re-derived: the same readProbeStock the buy queue's
+				// skipKnownProbeless and staging's own pass read, so there is no fourth
+				// notion of buyable and no second copy of the TTL. A NEVER-PRICED yard
+				// stays supply — the queue will scan it and may well buy there, and
+				// discounting it would order a duplicate on a guess.
+				stock, _, stockErr := readProbeStock(ctx, p.ListingMemo, playerID, spare.Waypoint, time.Now())
+				if stockErr != nil {
+					return false, stockErr
+				}
+				fundable = stock != probeStockNone
 			}
 			if !fundable {
 				continue
