@@ -583,3 +583,106 @@ func TestUpsertSystem_ScreenedAtMovesOnReScreen(t *testing.T) {
 		"the re-screen must advance screened_at, not leave the insert's value frozen")
 	require.Equal(t, appSensing.VerdictInScope, second.Verdict, "and the verdict advances with it")
 }
+
+// gatedSystem is liveShapedSystem plus the one waypoint type that grows the MAP
+// rather than the trade data: a JUMP_GATE.
+//
+// THE GATE IS NAMED LAST ON PURPOSE, and it is the whole point of the fixture.
+// X1-AA4-ZZ9 sorts after every other waypoint here — after the asteroids, after
+// the market bodies, and after the station. Under the old ordering the gate sat
+// in the market tier and therefore came out FIFTH, behind B1/C1/F1. If its symbol
+// happened to sort early the old and new orders would coincide and the assertion
+// would pass without a gate tier existing at all.
+func gatedSystem() []persistence.WaypointModel {
+	uncharted := []string{"UNCHARTED"}
+	return []persistence.WaypointModel{
+		typedWaypointRow("X1-AA4-A1", "X1-AA4", "ASTEROID", uncharted),
+		typedWaypointRow("X1-AA4-A2", "X1-AA4", "ASTEROID", uncharted),
+		typedWaypointRow("X1-AA4-B1", "X1-AA4", "MOON", uncharted),
+		typedWaypointRow("X1-AA4-C1", "X1-AA4", "PLANET", uncharted),
+		typedWaypointRow("X1-AA4-D1", "X1-AA4", "GAS_GIANT", uncharted),
+		typedWaypointRow("X1-AA4-F1", "X1-AA4", "FUEL_STATION", uncharted),
+		typedWaypointRow("X1-AA4-Z9", "X1-AA4", "ORBITAL_STATION", uncharted),
+		typedWaypointRow("X1-AA4-ZZ9", "X1-AA4", "JUMP_GATE", uncharted),
+	}
+}
+
+// THE GATE IS CHARTED SECOND — after the shipyard, ahead of every market.
+//
+// A jump gate is the only waypoint type that grows the MAP: charting it reveals
+// the system's gate adjacency, which frontier propagation turns into new PENDING
+// rows, which is where the next ring of reachable systems comes from. Every other
+// market-bearing type yields at best one market. Measured live, 51 systems under
+// charting had an uncharted gate queued behind 1,787 other waypoints while the
+// reachable-target ring stood at zero.
+//
+// The shipyard still goes first, and that is deliberate rather than incidental: a
+// charted yard makes its system buyable, which funds local spares, which stage
+// the very seeds that fly to the gates. Demoting it would starve the mechanism
+// this ordering exists to accelerate.
+func TestUnchartedWaypoints_ChartsTheJumpGateBeforeAnyMarket(t *testing.T) {
+	db := newShipPortsDB(t)
+	require.NoError(t, db.Create(gatedSystem()).Error)
+
+	order, err := newCatalogPort(db).UnchartedWaypoints(context.Background(), "X1-AA4")
+	require.NoError(t, err)
+
+	require.Equal(t, []string{
+		"X1-AA4-Z9",  // ORBITAL_STATION — the yard still comes first
+		"X1-AA4-ZZ9", // JUMP_GATE — sorts LAST alphabetically, so only a tier can lift it here
+		"X1-AA4-B1",  // MOON        \
+		"X1-AA4-C1",  // PLANET       > market-bearing, alphabetical within the tier
+		"X1-AA4-F1",  // FUEL_STATION/
+		"X1-AA4-D1",  // GAS_GIANT — unproven
+		"X1-AA4-A1",  // ASTEROID \  0 of 3297, last — but still charted
+		"X1-AA4-A2",  // ASTEROID /
+	}, order,
+		"the jump gate must be charted straight after the shipyard: it is the only waypoint that adds new SYSTEMS")
+
+	require.Len(t, order, 8, "the tour is still EXHAUSTIVE: a reorder must never drop a waypoint")
+}
+
+// The set is a property of the rows, not of the ordering. Pinned separately from
+// the order above so a future tier change cannot quietly turn the reorder into a
+// filter — the owner asked for everything charted, not only the interesting parts.
+func TestUnchartedWaypoints_TheGateTierChangesOrderNotMembership(t *testing.T) {
+	db := newShipPortsDB(t)
+	rows := gatedSystem()
+	require.NoError(t, db.Create(rows).Error)
+	port := newCatalogPort(db)
+
+	order, err := port.UnchartedWaypoints(context.Background(), "X1-AA4")
+	require.NoError(t, err)
+
+	want := make([]string, 0, len(rows))
+	for _, row := range rows {
+		want = append(want, row.WaypointSymbol)
+	}
+	require.ElementsMatch(t, want, order,
+		"every uncharted waypoint must still be handed to the seed, gate tier or not")
+
+	// The completion signal and the work list read the same rows with no
+	// coordination between them, so the count must still equal the tour length —
+	// that equality is what makes uncharted_count fall to zero exactly when the
+	// seed runs out of stops.
+	count, err := port.ListUnchartedCount(context.Background(), "X1-AA4")
+	require.NoError(t, err)
+	require.Equal(t, len(order), count,
+		"ListUnchartedCount must still agree with the tour, or the tour never reads as finished")
+}
+
+// Determinism, asserted across two calls. A seed charts the head of this list and
+// re-derives it next tick; if the order were unstable it could oscillate between
+// two waypoints and never finish the system.
+func TestUnchartedWaypoints_TheGatedOrderIsStableAcrossCalls(t *testing.T) {
+	db := newShipPortsDB(t)
+	require.NoError(t, db.Create(gatedSystem()).Error)
+	port := newCatalogPort(db)
+
+	first, err := port.UnchartedWaypoints(context.Background(), "X1-AA4")
+	require.NoError(t, err)
+	second, err := port.UnchartedWaypoints(context.Background(), "X1-AA4")
+	require.NoError(t, err)
+
+	require.Equal(t, first, second, "two derivations of the same system must agree exactly")
+}

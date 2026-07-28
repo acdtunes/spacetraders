@@ -33,6 +33,11 @@ func TestChartPriority_ShipyardsThenMarketsThenTheRestThenBarren(t *testing.T) {
 // Every type the census shows reliably carrying a market belongs in ONE tier
 // together, behind the shipyards and ahead of everything unproven. Asserting
 // them individually is what stops one being quietly dropped to the tail later.
+//
+// JUMP_GATE is deliberately absent: it is 373-for-373 market-bearing like the
+// rest, but it is the only type that also grows the MAP, so it has been promoted
+// to its own tier ahead of these. See TestChartPriority_JumpGateIsChartedBefore
+// TheOtherMarketBearingTypes, which pins that promotion.
 func TestChartPriority_AllMarketBearingTypesShareTheMarketTier(t *testing.T) {
 	station := ChartPriority(WaypointTypeOrbitalStation)
 	unproven := ChartPriority(WaypointTypeGasGiant)
@@ -41,7 +46,6 @@ func TestChartPriority_AllMarketBearingTypesShareTheMarketTier(t *testing.T) {
 		WaypointTypeMoon,               // 1521 markets, and the only 44 yards not on a station
 		WaypointTypePlanet,             // 1252 of 1501
 		WaypointTypeFuelStation,        // 1129 of 1129
-		WaypointTypeJumpGate,           // 373 of 373
 		WaypointTypeAsteroidBase,       // 345 of 345
 		WaypointTypeEngineeredAsteroid, // 22 of 22
 	} {
@@ -97,6 +101,40 @@ func TestChartPriority_AnUnknownTypeIsNotTreatedAsBarren(t *testing.T) {
 		}
 		if got <= market {
 			t.Fatalf("ChartPriority(%s) = %d, want > the market tier(%d): it has not earned a scanner's priority either", name, got, market)
+		}
+	}
+}
+
+// THE GATE TIER. A jump gate carries a market as reliably as a fuel station, but
+// that is not why it is ranked above one: charting a gate reveals the system's
+// GATE ADJACENCY, which frontier propagation turns into new PENDING rows. It is
+// the only waypoint type whose charting adds SYSTEMS rather than trade data, and
+// reach is what the expansion engine runs out of first — measured live, 24 active
+// seeds were chasing 4 reachable targets while 51 uncharted gates sat behind
+// 1,787 other waypoints.
+//
+// IT STAYS BEHIND THE SHIPYARD, and that gap is load-bearing in the other
+// direction: a charted yard makes its system buyable, which funds local spares,
+// which stage the seeds that fly to the gates. Promoting the gate over the yard
+// would starve the mechanism this ordering exists to accelerate.
+func TestChartPriority_JumpGateIsChartedBeforeTheOtherMarketBearingTypes(t *testing.T) {
+	station := ChartPriority(WaypointTypeOrbitalStation)
+	gate := ChartPriority(WaypointTypeJumpGate)
+
+	if !(station < gate) {
+		t.Fatalf("ORBITAL_STATION(%d) must still sort before JUMP_GATE(%d): yards fund the spares that stage the seeds which fly to the gates",
+			station, gate)
+	}
+	for _, marketType := range []string{
+		WaypointTypeMoon,
+		WaypointTypePlanet,
+		WaypointTypeFuelStation,
+		WaypointTypeAsteroidBase,
+		WaypointTypeEngineeredAsteroid,
+	} {
+		if got := ChartPriority(marketType); !(gate < got) {
+			t.Fatalf("JUMP_GATE(%d) must sort before %s(%d): a gate adds SYSTEMS, a market adds trade data",
+				gate, marketType, got)
 		}
 	}
 }

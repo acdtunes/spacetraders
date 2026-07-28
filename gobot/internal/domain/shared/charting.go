@@ -42,23 +42,49 @@ const (
 	// early only adds trade data. ORBITAL_STATION holds 523 of the 567 shipyards
 	// ever seen.
 	chartPriorityShipyard = 0
+	// chartPriorityGate is the JUMP GATE, and it is the only tier here justified
+	// by something other than what the waypoint HOLDS.
+	//
+	// Every other tier ranks a type by its odds of carrying a market or a yard —
+	// facts about ONE system. A gate is 373-for-373 market-bearing, which would
+	// place it in the tier below on that evidence alone. It is ranked above
+	// because charting it reveals the system's GATE ADJACENCY, which frontier
+	// propagation turns into new PENDING rows: it is the only waypoint type whose
+	// charting adds SYSTEMS rather than trade data, and therefore the only one
+	// that feeds back into what the fleet can reach at all.
+	//
+	// Reach is what the expansion engine runs out of first. Measured live: 24
+	// active seeds chasing 4 reachable targets, 0 within one gate hop, while 51
+	// systems under charting held an uncharted gate queued behind 1,787 other
+	// waypoints. Seeds were not the constraint and money was not the constraint.
+	//
+	// IT SITS BEHIND THE SHIPYARD DELIBERATELY. A charted yard makes its system
+	// buyable, which funds local spares, which stage the very seeds that fly to
+	// the gates — so promoting the gate over the yard would starve the mechanism
+	// this tier exists to accelerate. Second, not first.
+	chartPriorityGate = 1
 	// chartPriorityMarket is the market-bearing remainder. Charting these early
 	// is what lets a parked scanning probe be placed on them and start producing
 	// trade data WHILE the tour continues — the whole reason the sequence
 	// matters. MOON also carries the only 44 shipyards not on a station.
-	chartPriorityMarket = 1
+	chartPriorityMarket = 2
 	// chartPriorityUnproven is for a type that does sometimes hold a market but
 	// rarely, and for any type this file does not recognise. An unknown type
 	// sorts HERE rather than last: not being recognised is not evidence of being
 	// worthless, and burying it behind fifty asteroids would be a guess in the
 	// costly direction.
-	chartPriorityUnproven = 2
+	chartPriorityUnproven = 3
 	// chartPriorityBarren is for a type never once observed to hold anything.
-	chartPriorityBarren = 3
+	chartPriorityBarren = 4
 )
 
 // ChartPriority orders a system's uncharted waypoints by what charting them
 // UNLOCKS. Lower is visited first.
+//
+// The order is: shipyard-bearing, JUMP GATE, market-bearing, unproven, barren.
+// The gate's place in it is the one ranking not decided by the census below —
+// see chartPriorityGate, which explains why the only waypoint that grows the MAP
+// outranks the ones that merely grow the trade data.
 //
 // THE TOUR REMAINS EXHAUSTIVE — this decides SEQUENCE ONLY. Every waypoint in
 // the system is still charted, asteroids included, and the set being ordered is
@@ -95,10 +121,11 @@ func ChartPriority(waypointType string) int {
 	switch waypointType {
 	case WaypointTypeOrbitalStation:
 		return chartPriorityShipyard
+	case WaypointTypeJumpGate:
+		return chartPriorityGate
 	case WaypointTypeMoon,
 		WaypointTypePlanet,
 		WaypointTypeFuelStation,
-		WaypointTypeJumpGate,
 		WaypointTypeAsteroidBase,
 		WaypointTypeEngineeredAsteroid:
 		return chartPriorityMarket
