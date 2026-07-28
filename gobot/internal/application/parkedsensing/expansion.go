@@ -387,6 +387,24 @@ type slotBook struct {
 	// hull that is already out on a mission out of parkedSpares entirely.
 	spares       []QueuedSlot
 	parkedSpares []QueuedSlot
+	// staffed names every waypoint where a hull of ours is STANDING — a PARKED
+	// placement naming a ship. It is what lets seed staging tell a system we have
+	// merely SCREENED from one we actually HOLD.
+	//
+	// KEYED ON WAYPOINT ALONE, NEVER ON KIND, and that is the whole point of the
+	// index rather than a reuse of `state`. The question is "is one of our hulls
+	// standing at this counter?", which is exactly what buyerAt asks in the buy
+	// queue, and states.go is explicit that it must ignore slot_kind: a
+	// probe-selling yard that is also a whitelisted market is slotted MARKET, so
+	// the hull standing on a yard is normally recorded under a MARKET row. A
+	// kind-filtered read would call the fleet's best staging yards empty.
+	//
+	// PARKED AND NAMING A HULL, both. A row in any earlier state names a hull
+	// that has not arrived — it cannot be bought through — and a PARKED row with
+	// no ship is a torn or released row, not a presence. Either read the other
+	// way would stage a purchase that can never happen, which is the bug this
+	// index exists to prevent.
+	staffed map[string]bool
 }
 
 // newSlotBook builds the tick's view of the placement ledger. onErrand names the
@@ -394,13 +412,18 @@ type slotBook struct {
 // ONE HULL TO ONE ERRAND across ticks — see the parkedSpares filter below.
 func newSlotBook(rows []QueuedSlot, onErrand map[string]bool) *slotBook {
 	b := &slotBook{
-		state:  make(map[slotKey]string, len(rows)),
-		wanted: make(map[string][]QueuedSlot),
+		state:   make(map[slotKey]string, len(rows)),
+		wanted:  make(map[string][]QueuedSlot),
+		staffed: make(map[string]bool),
 	}
 	for _, row := range rows {
 		b.state[slotKey{row.Waypoint, row.Kind}] = row.State
 		if row.State == SlotStateWanted {
 			b.wanted[row.System] = append(b.wanted[row.System], row)
+		}
+		if row.State == SlotStateParked && row.AssignedShip != "" {
+			// Recorded for EVERY kind, before the SPARE-only narrowing below.
+			b.staffed[row.Waypoint] = true
 		}
 		if row.Kind != SlotKindSpare {
 			continue
@@ -478,15 +501,50 @@ func hullsOnErrand(systems []ExpandSystem) map[string]bool {
 // row is exactly that. The buy queue re-drains QUEUED placements every tick, so
 // writing a second row for the same target would only duplicate an intent it is
 // already working.
-func (b *slotBook) takeSupplyFor(target string, neighbours map[string][]string) bool {
-	for i, spare := range b.spares {
+//
+// BUT A WANT NOTHING CAN FUND IS NOT AN OUTSTANDING REQUEST. That is the second
+// half of the mis-staging bug, and the half that made the first half permanent:
+// a SPARE want written at a yard we do not hold is refused by the buy queue on
+// every tick forever and is retired by nothing, so counting it as supply blocked
+// the correct request for the very target it was meant to serve — indefinitely,
+// and precisely for the targets that most needed one. Such a row is skipped here
+// and left in the pool, because it was never supply to consume.
+//
+// THE HULL TEST COMES FIRST, AND IT IS A MONEY GUARD. A SPARE row that already
+// NAMES a hull is a seed genuinely on order — bought, flying, or parked — and its
+// waypoint is frequently not staffed by anything else, so a fundability test
+// applied to it would stop counting a hull already on its way and order a SECOND
+// one for a target already served. Naming a hull therefore ends the question
+// before fundability is ever asked (RULINGS #4: the doubt resolves toward NOT
+// spending).
+func takeSupplyFor(
+	ctx context.Context,
+	p ExpandPorts,
+	playerID int,
+	book *slotBook,
+	target string,
+	neighbours map[string][]string,
+	staffed map[string]bool,
+) (bool, error) {
+	for i, spare := range book.spares {
 		if !contains(neighbours[spare.System], target) {
 			continue
 		}
-		b.spares = append(b.spares[:i], b.spares[i+1:]...)
-		return true
+		if spare.AssignedShip == "" {
+			// No hull behind it, so it is only supply if the queue could still
+			// buy one for it.
+			fundable, err := staffedAt(ctx, p, playerID, book, spare.Waypoint, staffed)
+			if err != nil {
+				return false, err
+			}
+			if !fundable {
+				continue
+			}
+		}
+		book.spares = append(book.spares[:i], book.spares[i+1:]...)
+		return true, nil
 	}
-	return false
+	return false, nil
 }
 
 // occupied reports whether a waypoint already carries a placement row OF THIS
@@ -502,6 +560,74 @@ func (b *slotBook) takeSupplyFor(target string, neighbours map[string][]string) 
 func (b *slotBook) occupied(waypoint, kind string) bool {
 	_, held := b.state[slotKey{waypoint, kind}]
 	return held
+}
+
+// staffedYard reports whether a hull of ours is STANDING at this waypoint, and
+// therefore whether the buy queue could actually buy through it.
+//
+// It answers the same question buyerAt answers in the buy queue, from the ledger
+// rows this tick has already read — no extra call, and no second definition of
+// "we are here". It is deliberately the STRICTER half of buyerAt: that verb will
+// also accept a probe the ships table shows docked at the waypoint but which no
+// placement row accounts for, and this does not. Missing such a hull only ever
+// DELAYS a seed request by a tick or two (the placement machine parks the hull
+// and records the row), whereas accepting a presence we cannot prove writes a
+// permanent want nothing can fund — so the conservative reading is the safe one.
+func (b *slotBook) staffedYard(waypoint string) bool {
+	return b.staffed[waypoint]
+}
+
+// staffedAt reports whether a hull of ours is STANDING at waypoint, answering
+// exactly the question buyerAt answers in the buy queue — and answering it the
+// same two ways, in the same order.
+//
+// ONE PREDICATE, TWO CALLERS. Seed staging must not write a want the buy queue
+// will refuse, and takeSupplyFor must not treat such a want as a seed on order.
+// Both reduce to "could the queue buy here?", so both ask this, and there is no
+// second definition of "we are here" to drift.
+//
+// The ledger half is free — the tick has already read every slot row — and the
+// ships half is consulted only when it misses, because a hull can genuinely be
+// standing at a counter before this engine has written a row for it. That is the
+// same fallback buyerAt makes, and skipping it would decline yards the queue
+// would in fact have funded.
+//
+// IT STOPS AT DOCKED, deliberately. PurchaseShipCommand will dock a hull it
+// finds in orbit, so the purchase itself would tolerate one — but buyerAt is
+// what SELECTS the buyer, and it reads DOCKED only. Staging on an orbiting hull
+// would therefore write a want the queue still refuses, which is the exact bug
+// this predicate exists to prevent, one layer down. Widening buyerAt is a
+// separate change with its own blocking-wait question to answer first.
+//
+// A READ FAILURE PROPAGATES rather than being read as "not here". Fail-closed on
+// a per-yard basis would silently stop staging seeds for as long as the ships
+// table was unhappy, and silence is the failure mode this whole area has been
+// bitten by; the tick is idempotent and re-derived from scratch, so failing it
+// loudly costs one cycle and nothing else.
+//
+// Memoised for the TICK: several targets share a bordering system, and the
+// answer cannot change while the tick runs.
+func staffedAt(
+	ctx context.Context,
+	p ExpandPorts,
+	playerID int,
+	book *slotBook,
+	waypoint string,
+	memo map[string]bool,
+) (bool, error) {
+	if known, cached := memo[waypoint]; cached {
+		return known, nil
+	}
+	staffed := book.staffedYard(waypoint)
+	if !staffed {
+		_, found, err := p.Ships.DockedProbeAt(ctx, playerID, waypoint)
+		if err != nil {
+			return false, fmt.Errorf("failed to look for a hull standing at %q: %w", waypoint, err)
+		}
+		staffed = found
+	}
+	memo[waypoint] = staffed
+	return staffed, nil
 }
 
 // wantedIn returns the system's unfilled placements, the one the hull is already
@@ -814,6 +940,11 @@ func requestSeeds(
 	// Yards are resolved once per origin and reused: several frontier targets
 	// usually border the same system of ours.
 	yardsByOrigin := map[string][]string{}
+	// Whether a hull of ours stands at a waypoint, memoised for the same reason
+	// and with the same lifetime: several targets border the same system of
+	// ours, and the answer cannot change while the tick runs. Shared by BOTH
+	// consumers below so supply and staging can never disagree about it.
+	staffed := map[string]bool{}
 	for _, target := range targets {
 		if rep.Actions >= MaxExpansionActions {
 			return nil
@@ -821,22 +952,27 @@ func requestSeeds(
 		if covered[target.System] {
 			continue
 		}
-		if book.takeSupplyFor(target.System, neighbours) {
+		supplied, err := takeSupplyFor(ctx, p, playerID, book, target.System, neighbours, staffed)
+		if err != nil {
+			return err
+		}
+		if supplied {
 			// A seed for this target is already somewhere in the pipeline. That
 			// is what keeps a frontier several ticks away from being re-ordered
 			// on every one of them.
 			continue
 		}
 
-		yard, system, err := stagingYardFor(ctx, p, target.System, neighbours, book, yardsByOrigin)
+		yard, system, err := stagingYardFor(ctx, p, playerID, target.System, neighbours, book, yardsByOrigin, staffed)
 		if err != nil {
 			return err
 		}
 		if yard == "" {
 			// Nowhere to stage a purchase this tick: no bordering system of ours
-			// has a probe-selling yard free of a placement. Expected while the
-			// map is thin, and it costs nothing — the target simply waits, and
-			// takes nothing from the targets we CAN reach on its way past.
+			// holds a probe-selling yard that is both STAFFED by one of our hulls
+			// and free of a SPARE placement. Expected while the map is thin, and
+			// it costs nothing — the target simply waits, and takes nothing from
+			// the targets we CAN reach on its way past.
 			continue
 		}
 		if err := p.Ledger.UpsertSlotMetadata(ctx, playerID, SlotRecord{
@@ -855,8 +991,29 @@ func requestSeeds(
 }
 
 // stagingYardFor picks where a seed for target should be bought: a probe-selling
-// yard, in one of our own systems bordering the target, that carries no
+// yard, in one of our own systems bordering the target, that carries no SPARE
 // placement of its own.
+//
+// "OUR OWN" IS ENFORCED, not merely intended. It used to be neither: the origins
+// this walks are every system carrying a screening VERDICT, and a verdict says
+// "screened and worth trading with", never "we have a hull there". So a seed was
+// happily staged at a yard in a system we had never visited, the buy queue —
+// which only buys where one of our hulls is already at the counter — refused it
+// on that tick and every tick after, and the target never got eyes. Measured on
+// the live fleet, every outstanding SPARE want sat in a system with zero probes.
+//
+// The fix is the staffedYard test below, and it belongs HERE rather than in the
+// origin set. `neighbours` is shared with frontier propagation, which needs
+// every system whose gate adjacency we have measured precisely BECAUSE it has no
+// verdict yet; narrowing that map to occupied systems would silently collapse
+// the frontier back to one fully-charted ring at a time. Occupancy is a
+// requirement of STAGING A PURCHASE, not of believing a gate edge, so it is
+// applied at the yard and the map is left whole.
+//
+// Writing nothing is strictly better than writing an unfundable want: nothing
+// retires a WANTED SPARE row, and through takeSupplyFor a stale one goes on
+// suppressing the correct request that could be made once a bordering system
+// finally is occupied. One bad row poisons its target indefinitely.
 //
 // The free-waypoint requirement started as a money guard: placement rows are
 // keyed on the waypoint, and writing a SPARE want over the yard's existing row
@@ -871,10 +1028,12 @@ func requestSeeds(
 func stagingYardFor(
 	ctx context.Context,
 	p ExpandPorts,
+	playerID int,
 	target string,
 	neighbours map[string][]string,
 	book *slotBook,
 	yardsByOrigin map[string][]string,
+	staffed map[string]bool,
 ) (string, string, error) {
 	for _, origin := range sortedKeys(neighbours) {
 		if !contains(neighbours[origin], target) {
@@ -889,6 +1048,18 @@ func stagingYardFor(
 			yardsByOrigin[origin] = yards
 		}
 		for _, yard := range yards {
+			// A hull of ours must be STANDING at this counter. Without it the
+			// buy queue cannot fund the want at all — it only ever buys where one
+			// of our hulls is already docked — so staging here would write a row
+			// that is refused every tick forever. See staffedAt, which is the
+			// same predicate the supply test above applies.
+			manned, err := staffedAt(ctx, p, playerID, book, yard, staffed)
+			if err != nil {
+				return "", "", err
+			}
+			if !manned {
+				continue
+			}
 			// Asked of the SPARE half only. A yard that is also a parked market is
 			// a perfectly good place to stage a seed — it is, in fact, the normal
 			// case, since the yards worth buying at are the ones we already watch.

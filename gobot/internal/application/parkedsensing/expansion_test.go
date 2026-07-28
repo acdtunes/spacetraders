@@ -325,12 +325,23 @@ func (f *fakeExpandLedger) TransitionSlot(_ context.Context, _ int, waypoint, ki
 
 type fakeExpandShips struct {
 	positions map[string]ShipPos
+	// docked maps a waypoint to the probe of ours standing at it, mirroring the
+	// ships-table read buyerAt falls back to. Seed staging consults the same
+	// question, so it is no longer a stub.
+	docked    map[string]string
+	dockedErr error
 	err       error
 	calls     int
 }
 
-func (f *fakeExpandShips) DockedProbeAt(_ context.Context, _ int, _ string) (string, bool, error) {
-	return "", false, nil
+func (f *fakeExpandShips) DockedProbeAt(_ context.Context, _ int, waypoint string) (string, bool, error) {
+	if f.dockedErr != nil {
+		// Adversarial: a usable hull alongside the error, so a caller that
+		// ignores the error stages a purchase it cannot prove is fundable.
+		return "PROBE-GHOST", true, f.dockedErr
+	}
+	s, ok := f.docked[waypoint]
+	return s, ok, nil
 }
 
 func (f *fakeExpandShips) ShipAt(_ context.Context, _ int, ship string) (ShipPos, error) {
@@ -707,6 +718,7 @@ func TestAdvanceExpansion_UnseededSystemEnqueuesOneSpareAtTheYard(t *testing.T) 
 	}
 	h.gates.adjacency = map[string][]string{"X1-A": {"X1-B"}, "X1-B": {"X1-A"}}
 	h.yards.bySystem = map[string][]string{"X1-A": {"X1-A-YARD"}}
+	h.ledger.slots = []QueuedSlot{staffedYardRow("X1-A", "X1-A-YARD")}
 
 	rep, err := h.run(t, nil)
 	if err != nil {
@@ -859,6 +871,7 @@ func TestAdvanceExpansion_AnUnstageableTargetIsSkippedWithoutBlockingAReachableO
 	}
 	h.gates.adjacency = map[string][]string{"X1-A": {"X1-NEAR"}}
 	h.yards.bySystem = map[string][]string{"X1-A": {"X1-A-YARD"}}
+	h.ledger.slots = []QueuedSlot{staffedYardRow("X1-A", "X1-A-YARD")}
 
 	rep, err := h.run(t, nil)
 	if err != nil {
@@ -886,9 +899,11 @@ func TestAdvanceExpansion_ASpareOnlySuppressesDemandItCouldActuallyServe(t *test
 	}
 	h.gates.adjacency = map[string][]string{"X1-A": {"X1-N1"}, "X1-B": {"X1-N2"}}
 	h.yards.bySystem = map[string][]string{"X1-A": {"X1-A-YARD"}, "X1-B": {"X1-B-YARD"}}
-	h.ledger.slots = []QueuedSlot{{
-		Waypoint: "X1-A-YARD", System: "X1-A", Kind: SlotKindSpare, State: SlotStateQueued,
-	}}
+	h.ledger.slots = []QueuedSlot{
+		{Waypoint: "X1-A-YARD", System: "X1-A", Kind: SlotKindSpare, State: SlotStateQueued},
+		staffedYardRow("X1-A", "X1-A-YARD"),
+		staffedYardRow("X1-B", "X1-B-YARD"),
+	}
 
 	rep, err := h.run(t, nil)
 	if err != nil {
@@ -920,6 +935,7 @@ func TestAdvanceExpansion_AStaleUnreachableSpareNeverStallsExpansion(t *testing.
 	h.ledger.slots = []QueuedSlot{
 		{Waypoint: "X1-OLD-Y1", System: "X1-OLD", Kind: SlotKindSpare, State: SlotStateWanted},
 		{Waypoint: "X1-OLD-Y2", System: "X1-OLD", Kind: SlotKindSpare, State: SlotStateQueued},
+		staffedYardRow("X1-A", "X1-A-YARD"),
 	}
 
 	rep, err := h.run(t, nil)
@@ -1044,10 +1060,11 @@ func TestAdvanceExpansion_SpareIsOnlyClaimedFromASystemAdjacentToTheTarget(t *te
 	}
 	h.gates.adjacency = map[string][]string{"X1-A": {"X1-B"}, "X1-FAR": {}}
 	h.yards.bySystem = map[string][]string{"X1-A": {"X1-A-YARD"}}
-	h.ledger.slots = []QueuedSlot{{
-		Waypoint: "X1-FAR-YARD", System: "X1-FAR", Kind: SlotKindSpare,
-		State: SlotStateParked, AssignedShip: "PROBE-FAR",
-	}}
+	h.ledger.slots = []QueuedSlot{
+		{Waypoint: "X1-FAR-YARD", System: "X1-FAR", Kind: SlotKindSpare,
+			State: SlotStateParked, AssignedShip: "PROBE-FAR"},
+		staffedYardRow("X1-A", "X1-A-YARD"),
+	}
 
 	rep, err := h.run(t, nil)
 	if err != nil {
@@ -1364,6 +1381,7 @@ func TestAdvanceExpansion_ANeverSweptSystemIsASeedTargetDespiteZeroUncharted(t *
 	h.unswept = map[string]bool{"X1-B": true}
 	h.gates.adjacency = map[string][]string{"X1-A": {"X1-B"}}
 	h.yards.bySystem = map[string][]string{"X1-A": {"X1-A-YARD"}}
+	h.ledger.slots = []QueuedSlot{staffedYardRow("X1-A", "X1-A-YARD")}
 
 	rep, err := h.run(t, nil)
 	if err != nil {
