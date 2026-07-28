@@ -193,6 +193,16 @@ type QueuedSlot struct {
 type ScreenedSystem struct {
 	System       string
 	DepthCredits int64
+	// ScreenedAt is when this system was last looked at, or NIL for one that
+	// never has been. It is what lets the sweep rotate least-recently-screened
+	// first instead of re-screening a fixed alphabetical head forever.
+	//
+	// NIL IS MEANINGFUL AND MUST NOT COLLAPSE TO THE ZERO TIME. A never-screened
+	// system is the newly-discovered frontier — the case the sweep most needs to
+	// reach — and the zero time would merely make it sort first by accident,
+	// leaving any reader that dereferences the pointer to panic instead. The
+	// pointer keeps "never" a case a comparator has to answer for explicitly.
+	ScreenedAt *time.Time
 }
 
 // SlotFields carries the field writes a transition applies ATOMICALLY with the

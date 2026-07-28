@@ -1025,7 +1025,40 @@ func (h *RunProbeSensingCoordinatorHandler) screenSweep(ctx context.Context, cmd
 	if err != nil {
 		return 0, fmt.Errorf("failed to list systems awaiting screening: %w", err)
 	}
-	sort.Slice(pending, func(i, j int) bool { return pending[i].System < pending[j].System })
+	// LEAST-RECENTLY-SCREENED FIRST. This ordering is the whole fairness
+	// property, because the batch below is a fixed cap over a queue that DOES
+	// NOT DRAIN: a system still being charted screens back to PENDING, so it
+	// stays in this list. Any order that is stable across ticks therefore gives
+	// the list a PERMANENT head — the same batch re-screened forever, and
+	// everything behind it never screened at all. Sorting by symbol did exactly
+	// that: measured live, the five alphabetically-first PENDING systems were
+	// the five most-recently-screened, 18 seconds old, while the alphabetic tail
+	// had gone 12.2 hours untouched. An unscreened system is never judged.
+	//
+	// Because screened_at is restamped on EVERY verdict write (PENDING
+	// included), screening a system moves it to the back, so this rotates: N
+	// systems are fully covered in ceil(N/batch) ticks at unchanged cost per
+	// tick.
+	//
+	// A NEVER-screened system sorts before every screened one. That is the
+	// newly-discovered frontier, the case this sweep most needs to reach, and it
+	// is why ScreenedAt is a pointer: NULL is answered here explicitly rather
+	// than collapsing to the zero time and being ordered correctly by accident.
+	//
+	// The symbol tie-break makes the order TOTAL. sort.Slice is not stable, and
+	// equal timestamps are readily produced, so without it the sweep's pick
+	// would vary between runs on the same data — untestable, and starvation
+	// creeps back the moment a group of systems shares a stamp.
+	sort.Slice(pending, func(i, j int) bool {
+		a, b := pending[i], pending[j]
+		if (a.ScreenedAt == nil) != (b.ScreenedAt == nil) {
+			return a.ScreenedAt == nil
+		}
+		if a.ScreenedAt != nil && !a.ScreenedAt.Equal(*b.ScreenedAt) {
+			return a.ScreenedAt.Before(*b.ScreenedAt)
+		}
+		return a.System < b.System
+	})
 
 	screen := ports.screenPorts()
 	screened := 0

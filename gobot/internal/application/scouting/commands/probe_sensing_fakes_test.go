@@ -118,6 +118,22 @@ type psLedger struct {
 	// systemUpsertErr fails the verdict write for ONE system.
 	systemUpsertErr map[string]error
 
+	// screenedAt mirrors the real adapter's screened_at column: UpsertSystem
+	// stamps it on EVERY verdict write, PENDING included, because that call IS
+	// the screening (see LedgerPort.UpsertSystem). A fake that did not restamp
+	// would make the sweep's rotation unfalsifiable — every tick would re-read
+	// the same stamps and "screens a disjoint set next tick" would pass or fail
+	// for reasons that have nothing to do with the comparator under test.
+	//
+	// A system absent from this map has never been screened, which is the NULL
+	// the real column carries and a case the sweep's order must answer for.
+	screenedAt map[string]*time.Time
+	// stampSeq makes those stamps STRICTLY INCREASING and deterministic. Wall
+	// time would let two upserts inside one tick land on the same instant, and
+	// an equal-timestamp fixture is exactly the trap that makes alphabetical and
+	// oldest-first indistinguishable — the test would prove nothing.
+	stampSeq int
+
 	// order is the sequence of ledger calls this tick made, for the tests that
 	// pin WHERE a stage runs rather than what it did. Each call is tagged with
 	// the arguments that identify its stage: SlotsByState is issued by several
@@ -154,10 +170,11 @@ func (f *psLedger) indexOf(event string) int {
 
 func newPSLedger() *psLedger {
 	return &psLedger{
-		systems: map[string]parkedsensing.ExpandSystem{},
-		slots:   map[psSlotKey]parkedsensing.QueuedSlot{},
-		goods:   map[string][]string{},
-		views:   map[string]parkedsensing.SensingSlotView{},
+		systems:    map[string]parkedsensing.ExpandSystem{},
+		slots:      map[psSlotKey]parkedsensing.QueuedSlot{},
+		goods:      map[string][]string{},
+		views:      map[string]parkedsensing.SensingSlotView{},
+		screenedAt: map[string]*time.Time{},
 	}
 }
 
@@ -255,6 +272,14 @@ func (f *psLedger) UpsertSystem(_ context.Context, _ int, record parkedsensing.S
 	if err := f.systemUpsertErr[record.System]; err != nil {
 		return err
 	}
+	// Stamped AFTER the error check, as the real adapter is: a write that failed
+	// never reached the column, so a system whose screen keeps failing keeps its
+	// OLD stamp. That is not an incidental detail of the fake — it is the reason
+	// a persistently failing system stays at the head of an oldest-first sweep.
+	f.stampSeq++
+	stamp := time.Unix(0, 0).UTC().Add(time.Duration(f.stampSeq) * time.Minute)
+	f.screenedAt[record.System] = &stamp
+
 	existing := f.systems[record.System]
 	f.systems[record.System] = parkedsensing.ExpandSystem{
 		System:         record.System,
@@ -312,7 +337,7 @@ func (f *psLedger) SystemsByVerdict(_ context.Context, _ int, verdict string) ([
 	out := []parkedsensing.ScreenedSystem{}
 	for _, system := range sortedSystems(f.systems) {
 		if system.Verdict == verdict {
-			out = append(out, parkedsensing.ScreenedSystem{System: system.System})
+			out = append(out, parkedsensing.ScreenedSystem{System: system.System, ScreenedAt: f.screenedAt[system.System]})
 		}
 	}
 	return out, nil

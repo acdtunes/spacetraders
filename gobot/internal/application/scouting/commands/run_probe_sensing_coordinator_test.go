@@ -187,6 +187,148 @@ func TestScreenSweep_PendingOnly_AndBounded(t *testing.T) {
 		"exactly the batch bound of PENDING systems is screened, not all seven")
 }
 
+// stillChartingWorld builds a PENDING backlog that STAYS PENDING, which is the
+// only fixture in which the sweep's ordering is observable at all.
+//
+// A system with uncharted waypoints left screens to PENDING again (verdictFor:
+// no whitelist match, catalog known, uncharted > 0), so screening does not drain
+// it from the queue. That is the live case — X1-XD91 sat PENDING with 62
+// uncharted waypoints for 12 hours — and it is what makes the head of an
+// unrotated queue PERMANENT rather than merely first.
+//
+// The stamps run OPPOSITE to the alphabet on purpose: least-recently-screened
+// order is then the exact reverse of alphabetical, so the two comparators cannot
+// agree by accident. A fixture with equal or alphabetically-ascending stamps
+// would pass under both and prove nothing.
+func stillChartingWorld(t *testing.T, systems []string) *cutoverWorld {
+	t.Helper()
+	verdicts := map[string]string{}
+	for _, s := range systems {
+		verdicts[s] = parkedsensing.VerdictPending
+	}
+	world := steadyWorld(t, verdicts)
+	for i, s := range systems {
+		// One uncharted waypoint is enough to hold the verdict at PENDING.
+		world.catalog.uncharted[s] = []string{s + "-UNCHARTED"}
+		// systems[0] gets the OLDEST stamp and is screened first; the last name
+		// gets the newest. Callers pass reverse-alphabetical order to make the
+		// two comparators disagree on every single pick.
+		stamp := time.Unix(0, 0).UTC().Add(time.Duration(i+1) * time.Minute)
+		world.ledger.screenedAt[s] = &stamp
+	}
+	// The fake's own stamps continue past the seeded ones, so a re-screen always
+	// moves a system to the BACK of the queue.
+	world.ledger.stampSeq = len(systems)
+	return world
+}
+
+// screenedDuring runs one reconcile and reports which systems it screened,
+// observed as the verdict writes the tick performed.
+func screenedDuring(t *testing.T, world *cutoverWorld) map[string]bool {
+	t.Helper()
+	before := len(world.ledger.systemUpserts)
+	require.NoError(t, world.handler.ReconcileOnce(world.ctx, world.cmd))
+	got := map[string]bool{}
+	for _, rec := range world.ledger.systemUpserts[before:] {
+		got[rec.System] = true
+	}
+	return got
+}
+
+// The sweep ROTATES: consecutive ticks screen disjoint sets, and every PENDING
+// system is reached within ceil(N/batch) ticks.
+//
+// This is the property the alphabetical sort destroyed. Sorting a queue that
+// does not drain gives it a PERMANENT head: the same five systems are re-screened
+// every tick forever and the tail is never screened at all. Measured live before
+// this fix, the five alphabetically-first PENDING systems were EXACTLY the five
+// most-recently-screened (5 of 5 overlap), 18 seconds old, while the sixth was
+// 26 minutes stale and the two systems beginning "X" had gone 12.2 hours
+// untouched. An unscreened system is never judged, and an unjudged system can
+// never contribute the freighter shipyard the income ceiling is waiting on.
+//
+// Asserting only "the oldest is screened first" would NOT catch this: a
+// comparator that picks the oldest and then re-picks the same five next tick
+// still starves the tail. The disjointness of CONSECUTIVE ticks is the property
+// that separates a rotating queue from a stuck one.
+func TestScreenSweep_RotatesAcrossTicks_ReachingEveryPendingSystem(t *testing.T) {
+	// Twelve systems against a batch of five: more than 2x the batch, so the
+	// third tick's behaviour is observable rather than inferred.
+	all := []string{
+		"X1-L", "X1-K", "X1-J", "X1-I", "X1-H", "X1-G",
+		"X1-F", "X1-E", "X1-D", "X1-C", "X1-B", "X1-A",
+	}
+	world := stillChartingWorld(t, all)
+
+	first := screenedDuring(t, world)
+	second := screenedDuring(t, world)
+	third := screenedDuring(t, world)
+
+	require.Len(t, first, screenSweepBatch, "a tick screens exactly the batch")
+	require.Len(t, second, screenSweepBatch, "a tick screens exactly the batch")
+
+	// The head must MOVE. Under the alphabetical sort these two sets are
+	// identical, because screening a still-charting system leaves it PENDING.
+	for system := range first {
+		require.False(t, second[system],
+			"%s was screened twice in a row while systems waited: the sweep is not rotating", system)
+	}
+	for system := range second {
+		require.False(t, third[system],
+			"%s was screened twice in a row while systems waited: the sweep is not rotating", system)
+	}
+
+	// Full coverage in ceil(12/5) = 3 ticks. Under the alphabetical sort this
+	// reaches 5 of 12 and then stops forever.
+	covered := map[string]bool{}
+	for _, tick := range []map[string]bool{first, second, third} {
+		for system := range tick {
+			covered[system] = true
+		}
+	}
+	for _, system := range all {
+		require.True(t, covered[system],
+			"%s was never screened in ceil(N/batch) ticks; the frontier tail is starving", system)
+	}
+
+	// The oldest really did go first: the reverse-alphabetical stamps mean tick
+	// one is the alphabetic TAIL, which the old comparator could never reach.
+	require.True(t, first["X1-L"] && first["X1-K"] && first["X1-J"] && first["X1-I"] && first["X1-H"],
+		"the five least-recently-screened systems are screened first, not the five alphabetically first")
+}
+
+// A NEVER-screened system is screened before every already-screened one.
+//
+// This is the newly-discovered-system path and the one that matters most: a
+// system just added to the map has NULL screened_at, and it is the whole reason
+// the field is a POINTER. A comparator that dereferences it panics; one that
+// lets it collapse to the zero time gets the right answer for the wrong reason
+// and stops being safe the moment the mapping changes. NULL must be an explicit
+// case, ordered FIRST.
+//
+// The never-screened system is deliberately last in the alphabet, so nothing but
+// the NULL rule can pull it into a full batch.
+func TestScreenSweep_NeverScreenedSystemIsScreenedFirst(t *testing.T) {
+	screened := []string{"X1-A", "X1-B", "X1-C", "X1-D", "X1-E", "X1-F"}
+	world := stillChartingWorld(t, screened)
+
+	// The newcomer: alphabetically last, and never screened.
+	const newcomer = "X1-ZZZ"
+	world.ledger.systems[newcomer] = parkedsensing.ExpandSystem{
+		System: newcomer, Verdict: parkedsensing.VerdictPending, CatalogKnown: true,
+	}
+	world.catalog.known[newcomer] = true
+	world.catalog.markets[newcomer] = []string{newcomer + "-M1"}
+	world.catalog.uncharted[newcomer] = []string{newcomer + "-UNCHARTED"}
+	require.Nil(t, world.ledger.screenedAt[newcomer], "the newcomer has never been screened")
+
+	first := screenedDuring(t, world)
+
+	require.True(t, first[newcomer],
+		"a never-screened system must be screened before any already-screened one, "+
+			"however late its name sorts: this is the newly-discovered frontier")
+}
+
 // A PENDING system whose waypoint CATALOG has never been swept is swept FIRST,
 // in-band, before it is screened.
 //

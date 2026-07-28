@@ -1108,7 +1108,7 @@ func (p *LedgerPort) SystemsByVerdict(ctx context.Context, playerID int, verdict
 	}
 	out := make([]appSensing.ScreenedSystem, 0, len(models))
 	for _, m := range models {
-		out = append(out, appSensing.ScreenedSystem{System: m.SystemSymbol, DepthCredits: m.DepthCredits})
+		out = append(out, appSensing.ScreenedSystem{System: m.SystemSymbol, DepthCredits: m.DepthCredits, ScreenedAt: m.ScreenedAt})
 	}
 	return out, nil
 }
