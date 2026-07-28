@@ -595,6 +595,91 @@ func TestAdvanceExpansion_AlreadyEvaluatedNeighbourIsNotRewritten(t *testing.T) 
 	}
 }
 
+// A PENDING system is the ONLY origin in this fixture, which is the whole point
+// of it: under a judged-only origin filter there is nothing here to propagate
+// from and the tick discovers nothing. Judging needs screening, screening needs
+// charting, and charting is flight-bound — so waiting for a verdict advanced the
+// frontier one fully-charted ring at a time. A charted gate is the evidence that
+// matters, and it arrives ~50 waypoints sooner.
+func TestAdvanceExpansion_PendingSystemWithAChartedGatePropagatesItsNeighbours(t *testing.T) {
+	h := newExpandHarness()
+	h.ledger.systems = []ExpandSystem{{System: "X1-PEND", Verdict: VerdictPending}}
+	h.gates.adjacency = map[string][]string{"X1-PEND": {"X1-NEW1", "X1-NEW2"}}
+
+	rep, err := h.run(t, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if rep.Discovered != 2 {
+		t.Fatalf("Discovered = %d, want 2 — a PENDING system whose gate is charted must propagate its neighbours", rep.Discovered)
+	}
+	got := map[string]string{}
+	for _, record := range h.ledger.upsertedSystem {
+		got[record.System] = record.Verdict
+	}
+	for _, want := range []string{"X1-NEW1", "X1-NEW2"} {
+		if got[want] != VerdictPending {
+			t.Fatalf("neighbour %s landed as %q, want a new PENDING ledger row; wrote %v", want, got[want], h.ledger.upsertedSystem)
+		}
+	}
+	if len(h.seed.calls) != 0 {
+		t.Fatalf("propagating from a PENDING system must cost no ship work, got %v", h.seed.verbs())
+	}
+	if rep.Actions != 0 {
+		t.Fatalf("Actions = %d, want 0 — a free ledger write must not consume the per-tick budget", rep.Actions)
+	}
+}
+
+// The gate store is the gate. Propagation is loosened from JUDGED to
+// GATE-ADJACENCY-KNOWN, not to everything: a system whose jump gate we have
+// never charted has no stored edges, and must still contribute nothing.
+func TestAdvanceExpansion_PendingSystemWithNoChartedGatePropagatesNothing(t *testing.T) {
+	h := newExpandHarness()
+	h.ledger.systems = []ExpandSystem{{System: "X1-PEND", Verdict: VerdictPending}}
+	h.gates.adjacency = map[string][]string{} // gate not charted: the store knows nothing
+
+	rep, err := h.run(t, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rep.Discovered != 0 || len(h.ledger.upsertedSystem) != 0 {
+		t.Fatalf("a system with no measured gate adjacency must propagate nothing, got Discovered=%d %v",
+			rep.Discovered, h.ledger.upsertedSystem)
+	}
+}
+
+// The ordering invariant that keeps the widened frontier from thrashing seed
+// targeting: a freshly-discovered system carries an HONEST count of zero — we
+// have never looked — and must sort BEHIND every system with measured uncharted
+// waypoints, however many of them arrive at once.
+//
+// The fixture is built so that a symbol-first sort fails it: the unscreened
+// arrivals sort FIRST alphabetically and the deepest measured system sorts LAST,
+// so only a count-first ordering puts the measured work at the head.
+func TestSeedlessTargets_FreshlyDiscoveredSystemsSortBehindMeasuredWork(t *testing.T) {
+	targets := seedlessTargets([]ExpandSystem{
+		{System: "X1-AAA1", Verdict: VerdictPending, UnchartedCount: 0, CatalogKnown: false},
+		{System: "X1-AAA2", Verdict: VerdictPending, UnchartedCount: 0, CatalogKnown: false},
+		{System: "X1-MID", Verdict: VerdictInScope, UnchartedCount: 5, CatalogKnown: true},
+		{System: "X1-ZZZ", Verdict: VerdictInScope, UnchartedCount: 30, CatalogKnown: true},
+	})
+
+	var order []string
+	for _, target := range targets {
+		order = append(order, target.System)
+	}
+	want := []string{"X1-ZZZ", "X1-MID", "X1-AAA1", "X1-AAA2"}
+	if len(order) != len(want) {
+		t.Fatalf("targets = %v, want %v", order, want)
+	}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Fatalf("targets = %v, want %v — measured uncharted counts must outrank an unscreened system's honest zero", order, want)
+		}
+	}
+}
+
 func TestAdvanceExpansion_UnreadableGateGraphFailsTheTickWithoutCommandingAHull(t *testing.T) {
 	h := newExpandHarness()
 	h.ledger.systems = []ExpandSystem{{System: "X1-A", Verdict: VerdictInScope}}
