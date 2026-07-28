@@ -196,6 +196,15 @@ func (r *ContainerRunner) Container() *container.Container {
 	return r.containerEntity
 }
 
+// Command returns the built command this runner executes. Its concrete type is
+// what identifies the program a container is running (the flow feed reads it to
+// tell a tour from an arb without parsing launch metadata).
+func (r *ContainerRunner) Command() interface{} {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.command
+}
+
 // Start begins container execution
 func (r *ContainerRunner) Start() error {
 	r.mu.Lock()

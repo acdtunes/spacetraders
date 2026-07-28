@@ -22,6 +22,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	storageApp "github.com/andrescamacho/spacetraders-go/internal/application/storage"
+	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -368,7 +369,7 @@ func NewDaemonServer(
 	// executors always have a publish target (the HTTP route is only served
 	// when metrics are enabled). RULINGS #4: exposure only — no decision code
 	// reads this, and a missed publish can never touch the trade path.
-	flowRegistry := flowfeed.New()
+	flowRegistry := newFlowRegistry(server)
 	flowfeed.SetGlobal(flowRegistry)
 	server.flowRegistry = flowRegistry
 
@@ -778,6 +779,63 @@ func (s *DaemonServer) Start() error {
 // mux, beside /metrics (same localhost trust boundary; no auth change).
 func registerFlowsRoute(mux *http.ServeMux, reg *flowfeed.Registry) {
 	mux.Handle("/api/flows", flowfeed.NewFlowsHandler(reg))
+}
+
+// newFlowRegistry builds the daemon's flow registry with its live source wired.
+//
+// The live source is what makes the feed honest across a restart (sp-2uvec):
+// published snapshots die with the process and executors only re-publish at their
+// next plan adoption or leg arrival, so without it every hull is invisible for as
+// long as it takes to adopt a plan — tens of minutes while repositioning or
+// replanning, which is how the feed came to report 5 of 13 running tours. This
+// wiring is load-bearing, not decoration: a registry built without it
+// under-reports the fleet. It lives in its own function so a test can build the
+// registry the daemon actually builds.
+func newFlowRegistry(s *DaemonServer) *flowfeed.Registry {
+	reg := flowfeed.New()
+	reg.SetLiveSource(s.liveTradingRuns)
+	return reg
+}
+
+// liveTradingRuns enumerates the trading containers that are RUNNING right now,
+// off the SAME in-memory runner map ListContainers reads — so the flow feed can
+// never disagree with `spacetraders container list`, which is the source that was
+// right when the feed was wrong (sp-2uvec: feed 5, container list 13).
+//
+// The program is read off the command's concrete type rather than launch
+// metadata: the command is what the runner actually executes, and restart
+// recovery rebuilds it from persisted config, so this survives a restart with no
+// separate re-registration step (RULINGS #2). Non-trading containers publish no
+// flows and are skipped.
+func (s *DaemonServer) liveTradingRuns() []flowfeed.LiveRun {
+	s.containersMu.RLock()
+	defer s.containersMu.RUnlock()
+
+	runs := make([]flowfeed.LiveRun, 0, len(s.containers))
+	for id, runner := range s.containers {
+		if runner == nil {
+			continue
+		}
+		cont := runner.Container()
+		if cont == nil || !cont.IsRunning() {
+			continue
+		}
+		switch cmd := runner.Command().(type) {
+		case *tradingCmd.RunTourCoordinatorCommand:
+			runs = append(runs, flowfeed.LiveRun{
+				ContainerID: id, Program: flowfeed.ProgramTour, Ship: cmd.ShipSymbol, Closed: cmd.ClosedTours,
+			})
+		case *tradingCmd.RunTradeRouteCoordinatorCommand:
+			runs = append(runs, flowfeed.LiveRun{
+				ContainerID: id, Program: flowfeed.ProgramTradeRoute, Ship: cmd.ShipSymbol,
+			})
+		case *tradingCmd.RunArbCoordinatorCommand:
+			runs = append(runs, flowfeed.LiveRun{
+				ContainerID: id, Program: flowfeed.ProgramArb, Ship: cmd.ShipSymbol,
+			})
+		}
+	}
+	return runs
 }
 
 // startMetricsServerOrFail starts the Prometheus metrics server when enabled and
