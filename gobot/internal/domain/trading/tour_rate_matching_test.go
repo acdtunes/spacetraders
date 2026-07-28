@@ -280,29 +280,59 @@ func TestComputeFleetTourRate_DecliningIsComputedFromMatchedNets(t *testing.T) {
 	}
 }
 
-// MedianTourRate is DELIBERATELY LEFT ON THE OLD MATH, and this pins that split so a later edit
-// cannot quietly change it.
+// β NOW USES MATCHED NETS TOO. This replaces TestMedianTourRate_IsDeliberatelyLeftOnUnmatchedNets,
+// which pinned the opposite while β's two consumers were still unassessed.
 //
-// It is the placement engine's beta, a different consumer with a different failure mode: an
-// unreadable beta falls back to the legacy static-floor engine rather than refusing to spend. The
-// same artifact distorts it — measured live, the window's median tour rate moves -8,303 -> +97,206
-// under matched nets, a sign change — but correcting it changes placement behaviour, which is a
-// separate decision from correcting an autosizer guard's input. See the report.
-func TestMedianTourRate_IsDeliberatelyLeftOnUnmatchedNets(t *testing.T) {
+// They have now been measured, and the assessment inverted the call. BOTH consumers fail CLOSED on a
+// non-positive β — the placement engine falls back to the legacy static-floor reposition, and the
+// rate-floor relocation trigger does nothing at all — so an unmatched-net β never accepts a bad
+// tour; it silences a mechanism. Correcting it is a noise reduction, not a policy change. And
+// leaving β on a different netting rule from ComputeFleetTourRate would mean two live definitions of
+// "the realized tour rate" free to drift apart.
+func TestMedianTourRate_UsesMatchedNets(t *testing.T) {
 	h := hourly(matchBase)
 	rows := []TourLegTelemetry{
 		mleg("t1", "A", "FUEL", true, 20, 1000, h(0), h(0)),
 		mleg("t1", "A", "FUEL", false, 20, 3000, h(0), h(1)),
-		mleg("t1", "A", "MACHINERY", true, 40, 5000, h(0), h(1)), // orphan cost, still counted here
+		// Orphan cost: bought, not sold inside the window. Under the old rule this dragged the tour
+		// to -160,000/hr; the tour is in fact earning +40,000/hr on the trade it completed.
+		mleg("t1", "A", "MACHINERY", true, 40, 5000, h(0), h(1)),
 	}
 
 	got, ok := MedianTourRate(rows)
 	if !ok {
 		t.Fatalf("expected a computable median")
 	}
-	// Net over ALL legs = 40,000 - 200,000 = -160,000 over 1h.
-	if got != -160000 {
-		t.Fatalf("median = %v, want -160000 — MedianTourRate must keep netting every leg until its own "+
-			"consumer is assessed; a silent change here alters placement economics", got)
+	if got != 40000 {
+		t.Fatalf("median = %v, want 40000 — the MACHINERY purchase has no sale inside the window, so its "+
+			"-200,000 is not this tour's result; -160000 is the old unmatched reading", got)
+	}
+}
+
+// β's FAIL-CLOSED CONTRACT SURVIVES, and it is the one property both consumers depend on: ok=false
+// when nothing is computable, never a fabricated readable zero. The placement caller falls back to
+// the legacy engine on it and the rate-floor trigger stays silent, so a fabricated zero would have
+// both of them deciding off an invented rate.
+//
+// Matching makes this reachable in a NEW way — a window holding only unmatched activity used to
+// yield a number and is now uncomputable — so it is pinned on exactly that shape.
+func TestMedianTourRate_FailsClosedWhenOnlyUnmatchedActivityIsInTheWindow(t *testing.T) {
+	h := hourly(matchBase)
+	rows := []TourLegTelemetry{
+		// Bought, never sold in-window.
+		mleg("t1", "A", "MACHINERY", true, 40, 5000, h(0), h(1)),
+		// Sold, never bought in-window — the mirror: a windfall with no cost. Measured live, this
+		// direction DOMINATES on β's 60-minute window, which is why correcting it moves β DOWN.
+		mleg("t2", "B", "GOLD", false, 100, 9000, h(0), h(1)),
+	}
+
+	got, ok := MedianTourRate(rows)
+	if ok {
+		t.Fatalf("ok=true (median %v) — a window with no completed trade must be UNREADABLE so the "+
+			"placement engine falls back and the rate-floor trigger stays silent; a readable value here "+
+			"is a rate nobody measured", got)
+	}
+	if got != 0 {
+		t.Fatalf("unreadable median returned %v, want the zero value", got)
 	}
 }

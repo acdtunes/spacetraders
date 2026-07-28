@@ -321,16 +321,32 @@ func meanRate(tours []tourRatePoint) float64 {
 // unreadable rather than deciding off a fabricated rate. The window is applied by the caller at
 // the repository read (ListByPlayer's since bound); this function is pure over the rows it sees.
 //
-// DELIBERATELY STILL ON countEveryLeg, unlike ComputeFleetTourRate. The same unmatched-cargo
-// artifact distorts β — measured on the live window its median moves -8,303 → +97,206 under matched
-// nets, which is a sign change, not a nudge — but β is a DIFFERENT consumer with a different failure mode: an
-// unreadable β falls back to the legacy static-floor placement engine rather than refusing to spend,
-// so correcting it changes WHERE PROBES GO rather than whether a hull is bought. That is a separate
-// decision from correcting an autosizer guard's input, and it is measured and recommended rather
-// than taken here. TestMedianTourRate_IsDeliberatelyLeftOnUnmatchedNets pins the split so a later
-// edit cannot make the change silently.
+// ON MATCHED NETS, the same rule ComputeFleetTourRate uses. It was deliberately left on
+// countEveryLeg while its consumers were unassessed; they have since been measured and the
+// assessment inverted the call.
+//
+// WHAT THE CONSUMERS ACTUALLY DO. β feeds two paths, and NEITHER of them accepts or refuses a tour:
+//
+//   - the placement engine (senseBeta) scores relocation candidates as E_x − β·D_x, and on a
+//     non-positive β falls back to the legacy static-floor reposition;
+//   - the rate-floor relocation trigger (senseRateFloor) flags a hull earning below
+//     rate_floor_pct% of β as an under-earner and MAY relocate it — behind five further gates.
+//
+// Both fail CLOSED on a non-positive β, so an unmatched-net β never licences a bad tour: it SILENCES
+// a mechanism. Correcting it is a noise reduction, not a loosening.
+//
+// MEASURED ON β's OWN 60-MINUTE WINDOW, which is a different sample from the autosizer's 12-hour one
+// and behaves quite differently. Across 37 rolling windows in 24h, β is readable-and-positive in 32
+// of 37 under BOTH rules — it is NOT persistently negative, and neither consumer is dormant.
+// Correcting it moves β DOWN slightly in aggregate (median 338,883 → 248,158: higher in 9 windows,
+// unchanged in 12, lower in 12), because on a one-hour window the dominant artifact is the MIRROR
+// one — cargo sold whose purchase fell in an earlier window, i.e. revenue with no cost. The
+// practical effect is fewer spurious under-earner flags: 21 of 77 hull-evaluations before, 13 of 67
+// after.
+//
+// One netting rule, one definition of "the realized tour rate". Two would drift.
 func MedianTourRate(rows []TourLegTelemetry) (float64, bool) {
-	rates := computableRates(groupLegs(rows, byTour, countEveryLeg))
+	rates := computableRates(groupLegs(rows, byTour, matchedTradesOnly(rows)))
 	if len(rates) == 0 {
 		return 0, false // no computable tour → fail closed (never a readable 0)
 	}

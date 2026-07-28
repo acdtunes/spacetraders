@@ -156,17 +156,30 @@ func TestMedianTourRate_NetsBuyLegs_NotSellsOnlyInflated(t *testing.T) {
 	}
 
 	// The dropped-buy pathology: the SAME tours with the BUY legs MISSING (what tour_leg_telemetry
-	// looked like before sp-rd21). Net = sells only = 200k/hr — 2x the true rate.
+	// looked like before sp-rd21). Netting alone read this as 200k/hr — 2x the true rate.
 	sellsOnly := []TourLegTelemetry{
 		tleg("t1", "S1", false, 100, 2000, base, end),
 		tleg("t2", "S2", false, 100, 2000, base, end),
 	}
-	inflatedMedian, _ := MedianTourRate(sellsOnly)
-	if inflatedMedian != 200000 {
-		t.Fatalf("sells-only median = %.0f, want 200000 (the inflated shape)", inflatedMedian)
+
+	// IT IS NOW REFUSED OUTRIGHT, not merely netted down, and that is strictly stronger than what
+	// this test used to assert. Under matched nets a sell with no purchase inside the window is an
+	// unpriceable half-trade — the window cannot say what it cost — so no tour is computable and β is
+	// UNREADABLE. Both β consumers fail closed on that (the placement engine falls back to the legacy
+	// reposition, the rate-floor trigger stays silent), so the inflated 200k/hr can no longer reach a
+	// decision at all rather than reaching it at half strength.
+	inflatedMedian, inflatedOK := MedianTourRate(sellsOnly)
+	if inflatedOK {
+		t.Fatalf("sells-only median = %.0f (ok=true), want UNREADABLE — a sale whose purchase is outside "+
+			"the window has no cost basis, so it must not produce a rate at all", inflatedMedian)
 	}
-	if trueMedian >= inflatedMedian {
-		t.Fatalf("the netted (true) median %.0f must be below the sells-only inflated %.0f", trueMedian, inflatedMedian)
+	if inflatedMedian != 0 {
+		t.Fatalf("unreadable sells-only median returned %.0f, want the zero value", inflatedMedian)
+	}
+	// The true, fully-matched shape is still readable — the refusal above is about the missing half,
+	// not about being strict with everything.
+	if trueMedian != 100000 {
+		t.Fatalf("netted median = %.0f, want 100000", trueMedian)
 	}
 }
 
