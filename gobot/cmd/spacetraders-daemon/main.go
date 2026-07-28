@@ -33,6 +33,7 @@ import (
 	goodsCmd "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/commands"
 	goodsServices "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
 	"github.com/andrescamacho/spacetraders-go/internal/application/mediator"
+	parkedsensing "github.com/andrescamacho/spacetraders-go/internal/application/parkedsensing"
 	playerCmd "github.com/andrescamacho/spacetraders-go/internal/application/player/commands"
 	playerQuery "github.com/andrescamacho/spacetraders-go/internal/application/player/queries"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
@@ -875,11 +876,35 @@ func run(cfg *config.Config) error {
 	// yards ranked by stored-gate-graph hops then price. Signal-only: with no scan data the price
 	// guard fails closed exactly as before, and every other guard still gates the buy.
 	// The cross-coordinator off-gate demand bridge the FLEET autosizer's explorer BUY path
-	// reads (sp-a3yn). Its only writer was the retired frontier coordinator, so the bridge is
-	// currently always empty and the explorer path dormant — retained because the autosizer
-	// registers its demand provider at construction, and a future off-gate emitter (the
-	// probe-sensing discovery pass is the natural candidate) reconnects the write side here.
+	// reads (sp-a3yn). Its only writer WAS the retired frontier coordinator, which left the bridge
+	// permanently empty and the explorer path dormant. The probe-sensing expansion pass — the
+	// candidate this comment used to nominate — is now that writer: see offGateSelector /
+	// idleExplorerPort / explorerWarpDispatcher below, handed to the sensing coordinator's
+	// SensingEnginePorts.OffGate. The read side is unchanged.
 	explorerOffGateBridge := expansionAdapters.NewExplorerOffGateBridge()
+
+	// OFF-GATE WARP EXPANSION, write side. The fleet's 56-system ledger sits behind 50 outbound
+	// gate edges of which ALL 50 are under construction, so gate expansion is finished and warp is
+	// the only exit. Every piece below already existed and was already tested; what did not exist
+	// was anything alive to drive them.
+	//
+	//   - offGateSelector ranks gate-unreachable systems by exploration value against warp fuel,
+	//     joining the universe roster against the stored gate graph. Its roster read is a cached
+	//     whole-universe crawl (long TTL), NOT a per-tick fetch.
+	//   - idleExplorerPort finds the bought+dedicated explorer to warp — idle-only, which is what
+	//     makes the dispatch idempotent without any cross-tick state.
+	//   - explorerWarpDispatcher resolves an arrival waypoint FIRST (fail-closed: an uncharted
+	//     destination warps nothing) and then runs the warp on a background goroutine, so the
+	//     sensing tick never waits out a flight.
+	//
+	// The dispatcher is handed the daemon's lifetime context by the sensing coordinator, so a warp
+	// survives the tick that launched it and is cancelled only on shutdown.
+	offGateSelector := expansionAdapters.NewOffGateWarpTargetSelector(
+		expansionAdapters.NewUniverseSystemsCache(apiClient, playerRepo, nil, 0),
+		gateGraphService,
+	)
+	idleExplorerPort := expansionAdapters.NewIdleExplorerPort(shipRepo)
+	explorerWarpDispatcher := expansionAdapters.NewExplorerWarpDispatcher(routeExecutor, shipRepo, warpWaypointSource)
 
 	fleetAutosizerHandler := grpc.NewFleetAutosizerCoordinatorHandler(
 		daemonServer, apiClient, shipRepo, med, persistence.NewGormChainPnLRepository(db), waypointRepo, captainEventRepo,
@@ -1123,6 +1148,15 @@ func run(cfg *config.Config) error {
 			Ledger:    sensingLedgerPort,
 			Waypoints: catalog,
 			Uncharted: catalog,
+			// Off-gate warp expansion (write side of the explorer demand bridge). Wired here
+			// rather than behind a knob: the retired frontier coordinator is what a dormant,
+			// separately-armed expansion engine looks like, and this ships driving the live tick.
+			OffGate: parkedsensing.OffGatePorts{
+				Select:   offGateSelector,
+				Demand:   explorerOffGateBridge,
+				Explorer: idleExplorerPort,
+				Warp:     explorerWarpDispatcher,
+			},
 			// The same catalog instance again: it owns the shipyard_inventory reads,
 			// so the yard lookup and the listing memo read one store.
 			ListingMemo: catalog,

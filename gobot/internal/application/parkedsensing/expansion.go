@@ -224,6 +224,9 @@ type ExpandPorts struct {
 	MarketGoods MarketGoodsReader
 	Yards       ProbeYardCatalog
 	Uncharted   UnchartedCatalog
+	// OffGate is the warp-expansion slice: the ports that raise explorer demand and warp an
+	// explorer past a sealed gate frontier. See offgate.go.
+	OffGate OffGatePorts
 }
 
 // ExpandKnobs are the operator-set controls on expansion.
@@ -272,6 +275,17 @@ type ExpandReport struct {
 	Retargeted, Parked int
 	// Actions counts everything charged against MaxExpansionActions.
 	Actions int
+	// OffGateDemanded reports that the gate-reachable frontier was exhausted this tick and
+	// explorer demand was raised; OffGateTarget names the system selected to warp to (empty when
+	// none was reachable), and OffGateWarped counts warps actually dispatched.
+	//
+	// A warp is NOT charged against MaxExpansionActions: that budget paces API command bursts, and
+	// a dispatch is one command handed to a background goroutine at most once per tick, gated on
+	// owning an idle explorer at all. Counting it would let the rarest and most valuable action in
+	// the engine be crowded out by routine seed steps.
+	OffGateDemanded bool
+	OffGateTarget   string
+	OffGateWarped   int
 }
 
 // AdvanceExpansion runs one expansion tick.
@@ -363,7 +377,21 @@ func AdvanceExpansion(
 	if err := claimSpares(ctx, p, playerID, targets, covered, book, reach, &rep); err != nil {
 		return rep, err
 	}
-	return rep, requestSeeds(ctx, p, playerID, targets, covered, book, reach, probeYards, &rep)
+	if err := requestSeeds(ctx, p, playerID, targets, covered, book, reach, probeYards, &rep); err != nil {
+		return rep, err
+	}
+
+	// OFF-GATE, LAST, and only once the gate passes have had their turn. Warp is the expensive
+	// fallback: a 769k hull and a multi-system flight against a probe that walks a gate for free, so
+	// a single gate-reachable target suppresses it entirely. A read failure here fails the tick
+	// rather than being read as "the frontier is exhausted" — that reading would raise explorer
+	// demand off a database hiccup.
+	gateReachable, err := anyGateReachable(ctx, reach, targets, book)
+	if err != nil {
+		return rep, err
+	}
+	advanceOffGate(ctx, p, playerID, targets, gateReachable, &rep)
+	return rep, nil
 }
 
 // --- the ledger's working view ----------------------------------------------

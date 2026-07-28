@@ -243,11 +243,16 @@ type SensingEnginePorts struct {
 	Mover        parkedsensing.ShipMover
 	Gates        parkedsensing.GateNeighbours
 	Uncharted    parkedsensing.UnchartedCatalog
-	SeedShip     parkedsensing.SeedCommander
-	Scan         parkedsensing.MarketScanRunner
-	SpreadOf     parkedsensing.SpreadObserver
-	Home         HomeSystemReader
-	Budget       BudgetRateReader
+	// OffGate is the warp-expansion slice: the ports that raise explorer demand onto the fleet
+	// autosizer's buy bridge and warp an explorer past a sealed gate frontier. Deliberately NOT in
+	// the ready() check below — the gate passes must keep running on a daemon whose off-gate
+	// collaborators are absent, and the slice is inert until all four are present.
+	OffGate  parkedsensing.OffGatePorts
+	SeedShip parkedsensing.SeedCommander
+	Scan     parkedsensing.MarketScanRunner
+	SpreadOf parkedsensing.SpreadObserver
+	Home     HomeSystemReader
+	Budget   BudgetRateReader
 	// HeavyReserve holds treasury back for the next heavy so probe buying stands down
 	// while one accumulates (sp-fwk8z). OPTIONAL: nil is byte-identical to no reserve,
 	// which is what a deployment without the fleet autosizer should see.
@@ -375,6 +380,7 @@ func (p SensingEnginePorts) expandPorts(playerID int, whitelist map[string]bool)
 		MarketGoods: p.MarketGoods,
 		Yards:       p.Waypoints,
 		Uncharted:   p.Uncharted,
+		OffGate:     p.OffGate,
 		Screen: func(ctx context.Context, system string) (parkedsensing.ScreenResult, error) {
 			return parkedsensing.ScreenSystem(ctx, screen, playerID, system, whitelist)
 		},
