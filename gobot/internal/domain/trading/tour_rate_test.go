@@ -200,3 +200,117 @@ func TestMedianTourRate_FailsClosedWhenNoComputableTour(t *testing.T) {
 		t.Fatalf("a zero-wall-clock-span tour is not computable — must be unreadable")
 	}
 }
+
+// --- the minimum-span floor (a near-zero span makes the rate meaningless) ---
+
+// A tour whose whole span is under a minute has no computable rate. Dividing by a
+// near-zero wall clock does not measure productivity, it amplifies whatever the
+// timestamps happened to be: LIVE, a 0.56-second single-leg tour on TORWIND-6
+// netting 29,772 reported 189,883,886/hr, and the fleet's worst such reading was
+// 836,660,303/hr.
+//
+// The median lens survives one outlier, but the PER-HULL rate does not when the
+// hull has a single tour in the window — there the outlier IS the hull's rate, and
+// it is what the under-earner relocation trigger reads. Four of nine hulls on the
+// live fleet currently have exactly one computable tour.
+func TestMedianTourRate_ADegenerateSpanIsUnreadableNotAstronomical(t *testing.T) {
+	base := time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)
+	rows := []TourLegTelemetry{
+		// A MATCHED trade — both halves realized, so matchedTradesOnly counts it and
+		// the SPAN is the only thing left that can exclude it. A lone sell would be
+		// dropped by the matching rule instead and this test would pass with no floor
+		// at all.
+		tleg("degenerate", "A", true, 100, 1000, base, base),
+		tleg("degenerate", "A", false, 100, 1297, base, base.Add(560*time.Millisecond)),
+	}
+
+	if rate, ok := MedianTourRate(rows); ok {
+		t.Fatalf("MedianTourRate = %v, ok=true — a sub-floor span must be UNREADABLE, never a rate", rate)
+	}
+}
+
+// The floor must never fabricate a readable ZERO, which is the failure mode both
+// consumers are built to avoid: the relocation trigger and the autosizer guards
+// each fail closed on unreadable, and a zero would instead read as "this hull earns
+// nothing" and flag it permanently.
+func TestMedianTourRate_ASubFloorTourYieldsNoRateRatherThanZero(t *testing.T) {
+	base := time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)
+	rows := []TourLegTelemetry{
+		tleg("t1", "A", true, 100, 1000, base, base),
+		tleg("t1", "A", false, 100, 2000, base, base.Add(time.Second)),
+	}
+
+	rate, ok := MedianTourRate(rows)
+	if ok {
+		t.Fatalf("MedianTourRate = %v, ok=true — one second of wall clock proves nothing", rate)
+	}
+	if rate != 0 {
+		t.Fatalf("rate = %v, want the zero VALUE alongside ok=false (never a readable zero)", rate)
+	}
+}
+
+// The boundary, asserted from both sides so the floor is a real threshold rather
+// than an accident of the fixture. A tour spanning exactly the floor is computable;
+// one a moment short of it is not.
+func TestMedianTourRate_TheFloorIsInclusiveAtItsBoundary(t *testing.T) {
+	base := time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)
+	tour := func(id string, span time.Duration) []TourLegTelemetry {
+		return []TourLegTelemetry{
+			tleg(id, "A", true, 100, 1000, base, base),
+			tleg(id, "A", false, 100, 2000, base, base.Add(span)),
+		}
+	}
+
+	if _, ok := MedianTourRate(tour("at", MinTourSpan)); !ok {
+		t.Fatalf("a tour spanning exactly MinTourSpan (%s) must be computable", MinTourSpan)
+	}
+	if _, ok := MedianTourRate(tour("under", MinTourSpan-time.Millisecond)); ok {
+		t.Fatalf("a tour one millisecond short of MinTourSpan (%s) must not be", MinTourSpan)
+	}
+}
+
+// A legitimate tour is untouched. Live, the shortest real tour spans 74.8s and the
+// median 25.5 minutes, so the floor discards exactly the degenerate reading and
+// nothing a hull actually earned.
+func TestMedianTourRate_ARealTourIsUnaffectedByTheFloor(t *testing.T) {
+	base := time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)
+	rows := []TourLegTelemetry{
+		tleg("real", "A", true, 100, 1000, base, base),
+		tleg("real", "A", false, 100, 2000, base, base.Add(time.Hour)),
+	}
+
+	rate, ok := MedianTourRate(rows)
+	if !ok {
+		t.Fatalf("an hour-long tour must still be computable")
+	}
+	if rate != 100000 {
+		t.Fatalf("rate = %v, want 100000 — the floor must not change the arithmetic", rate)
+	}
+}
+
+// One degenerate tour must not be able to drag a MIXED set either: it is dropped
+// from the sample rather than included at an absurd value, so the median is taken
+// over the tours that actually mean something.
+func TestMedianTourRate_TheDegenerateTourIsDroppedFromTheSample(t *testing.T) {
+	base := time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)
+	rows := []TourLegTelemetry{
+		// Two real tours at 100k/hr and 60k/hr.
+		tleg("r1", "A", true, 100, 1000, base, base),
+		tleg("r1", "A", false, 100, 2000, base, base.Add(time.Hour)),
+		tleg("r2", "A", true, 100, 1000, base.Add(2*time.Hour), base.Add(2*time.Hour)),
+		tleg("r2", "A", false, 100, 1600, base.Add(2*time.Hour), base.Add(3*time.Hour)),
+		// ...and the 190M/hr artefact — MATCHED, so only its span can exclude it.
+		tleg("bad", "A", true, 100, 1000, base.Add(4*time.Hour), base.Add(4*time.Hour)),
+		tleg("bad", "A", false, 100, 1297, base.Add(4*time.Hour), base.Add(4*time.Hour).Add(560*time.Millisecond)),
+	}
+
+	rate, ok := MedianTourRate(rows)
+	if !ok {
+		t.Fatalf("two real tours remain, so the median is still readable")
+	}
+	// Median of exactly {100000, 60000} — three computable tours would have made
+	// this 100000 and hidden the drop.
+	if rate != 80000 {
+		t.Fatalf("median = %v, want mean(100000,60000)=80000 over the TWO real tours only", rate)
+	}
+}

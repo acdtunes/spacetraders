@@ -32,9 +32,10 @@ import (
 // contributes no money.
 //
 // Readable is FALSE (fail-closed, RULINGS #4) whenever no ship has a computable realized rate — no
-// telemetry, all-skipped legs, or hulls with no completed trade in the window. A guard that cannot
-// see the economics must not spend; a readable zero is reserved for genuinely-earning-zero, which
-// the data here can never assert (a computable rate needs a matched sell).
+// telemetry, all-skipped legs, hulls with no completed trade in the window, or a span too short to
+// divide by (see MinTourSpan). A guard that cannot see the economics must not spend; a readable zero
+// is reserved for genuinely-earning-zero, which the data here can never assert (a computable rate
+// needs a matched sell).
 
 // FleetTourRateResult is the realized fleet-tour-rate summary. Readable=false means no
 // computable rate existed — the heavy realized-rate/payback guards then fail closed on their own.
@@ -45,8 +46,8 @@ type FleetTourRateResult struct {
 	Marginal float64
 	// Declining is true when the per-tour realized rate trends down across the window (newer < older).
 	Declining bool
-	// Readable is true iff at least one ship had a computable realized rate (hours > 0 AND a realized
-	// sell). false ⇒ the heavy realized-rate and era-payback guards fail closed.
+	// Readable is true iff at least one ship had a computable realized rate (a realized sell over a
+	// span of at least MinTourSpan). false ⇒ the heavy realized-rate and era-payback guards fail closed.
 	Readable bool
 }
 
@@ -152,17 +153,62 @@ func matchedTradesOnly(rows []TourLegTelemetry) legCounts {
 	}
 }
 
-// rate returns the group's realized $/hr and whether it is computable (a realized sell over a
-// positive wall-clock span). A group with no sell, or a non-positive span, is not computable.
+// MinTourSpan is the shortest wall clock over which a realized $/hr means anything.
+// A group spanning less than this has NO computable rate — it reads UNREADABLE, never
+// a number.
+//
+// WHY A FLOOR AT ALL. The rate is net ÷ span, so the span is a DIVISOR and a
+// near-zero one does not measure productivity, it amplifies whatever the timestamps
+// happened to be. Live, a 0.56-second single-leg tour netting 29,772 computed to
+// 189,883,886/hr, and the worst reading on the fleet was 836,660,303/hr. The
+// pre-existing `hours <= 0` test caught only an exactly-zero or inverted span, which
+// is the one case that could not arise from a real tour.
+//
+// BOTH DIRECTIONS ARE REAL, which is why this is a correctness fix and not a
+// cosmetic one. MedianTourRate survives an outlier because a median is robust — but
+// the PER-HULL rate behind the under-earner relocation trigger is a median over ONE
+// hull's tours, and when that hull has a single tour in the window the outlier IS
+// its rate. An astronomical reading makes a hull permanently un-relocatable; the
+// mirror case, a near-zero span on a LOSS, makes it permanently relocatable. Four of
+// the nine hulls carrying telemetry today have exactly one computable tour.
+//
+// WHY SIXTY SECONDS. Two independent arguments landing on the same number:
+//
+//   - AMPLIFICATION. A fixed timestamp discrepancy ε contributes a relative rate
+//     error of ε/span. Taking ε ≈ 1s as a conservative bound on write-path skew and
+//     rounding, a 60s span holds that under 2%, where a 1s span puts it at 100%.
+//   - THE MEASURED DISTRIBUTION. Across the 31 computable tours on the live fleet,
+//     floors of 10s, 30s and 60s all discard exactly ONE tour — the 0.56s artefact —
+//     and cost NO hull its rate. 120s discards five, cutting real tours at 74.8s,
+//     78.2s, 94.6s and 97.0s. Sixty is therefore the TOP of the safe plateau:
+//     maximal protection at zero cost to anything a hull actually earned, with the
+//     nearest legitimate tour a comfortable 25% beyond it.
+//
+// UNREADABLE IS STRICTLY SAFER THAN GUESSED, and both consumers are already built
+// for it: the relocation trigger fails closed on an uncomputable hull rate (no
+// proof of under-earning, so the hull stays) and the autosizer's realized-rate and
+// era-payback guards fail closed on Readable=false (no proof of payback, so nothing
+// is bought). Dropping a group therefore only ever makes a guard STRICTER, which is
+// the one direction RULINGS #4 permits.
+//
+// It bites on the per-TOUR lens, where degeneracy lives. On the per-SHIP lens the
+// span runs from a hull's earliest planned leg to its latest realized one — hours in
+// practice — so this is a no-op there rather than a second policy.
+const MinTourSpan = 60 * time.Second
+
+// rate returns the group's realized $/hr and whether it is computable: a realized
+// sell over a wall-clock span of at least MinTourSpan. A group with no sell, or too
+// short a span to divide by, is not computable — and reports the zero VALUE with
+// ok=false rather than a readable zero, which callers distinguish.
 func (g legGroup) rate() (float64, bool) {
 	if !g.hasSell {
 		return 0, false
 	}
-	hours := g.latest.Sub(g.earliest).Hours()
-	if hours <= 0 {
+	span := g.latest.Sub(g.earliest)
+	if span < MinTourSpan {
 		return 0, false
 	}
-	return float64(g.net) / hours, true
+	return float64(g.net) / span.Hours(), true
 }
 
 // groupLegs folds telemetry rows into legGroups keyed by groupKey — ship symbol for
@@ -315,7 +361,9 @@ func meanRate(tours []tourRatePoint) float64 {
 // (a realized sell over a positive wall-clock span) — then returns the MEDIAN of those per-tour
 // rates (an even count averages the two middle values). The median, not the mean, is deliberate:
 // on a small fleet (2-3 live tours) a single blowout tour must not drag β, and a single dead one
-// must not crater it. ok=false when NO tour is computable (empty rows, buys-only, or zero-span),
+// must not crater it. A tour spanning less than MinTourSpan is dropped from the sample entirely, so
+// one near-zero-span reading can neither BE the median nor drag it. ok=false when NO tour is
+// computable (empty rows, buys-only, or every span under MinTourSpan),
 // mirroring FleetTourRateResult.Readable's fail-closed contract — a readable zero is never
 // invented, because the placement caller falls back to the legacy static-floor engine when β is
 // unreadable rather than deciding off a fabricated rate. The window is applied by the caller at
