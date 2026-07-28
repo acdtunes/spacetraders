@@ -90,6 +90,10 @@ type footholdBroker struct {
 	// will attempt no foothold at all. Both are latched so a failure costs one
 	// read rather than one per placement.
 	loaded, blocked bool
+	// reach is the tick's gate walker, shared across every placement this broker
+	// serves so each source system's walk is computed once. Built lazily on first
+	// use; nil between ticks, because the broker itself is per-tick (RULINGS #2).
+	reach *gateReach
 }
 
 // fill tries to establish a foothold for a placement no local counter can fund,
@@ -127,7 +131,14 @@ func (b *footholdBroker) fill(
 		}
 	}
 
-	reach, err := systemsWithinReach(ctx, p.Gates, target.System)
+	// ONE walker per tick, built after the pool so it is only paid for when there
+	// is something to draw from. It memoises each source's walk, so a burst of
+	// placements sharing a neighbourhood reads the topology once per source rather
+	// than once per placement — and every read is the gate STORE, never the API.
+	if b.reach == nil {
+		b.reach = newGateReach(p.Gates, nil)
+	}
+	reach, err := sourcesWithinReach(ctx, b.reach, b.pool, target.System)
 	if err != nil {
 		// The topology store could not answer for this system. Blocking the
 		// whole tick would be wrong — another placement's neighbourhood may read
@@ -256,6 +267,23 @@ func newSurplusPool(parked []QueuedSlot, manned map[string]bool) *surplusPool {
 	return pool
 }
 
+// systems lists the systems still holding a candidate hull, in symbol order.
+//
+// Symbol order rather than map order because it is the input to a reachability
+// ranking whose ties are broken by symbol: an unordered candidate list would make
+// two equally-distant sources swap places between ticks for no reason.
+//
+// It reflects the pool as it stands NOW, so a system drained by an earlier
+// placement in the same tick stops being offered to the next one.
+func (p *surplusPool) systems() []string {
+	out := make([]string, 0, len(p.bySystem))
+	for system := range p.bySystem {
+		out = append(out, system)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // take removes and returns the least valuable releasable hull in system, if
 // there is one.
 //
@@ -321,50 +349,37 @@ func observedElsewhere(good, exclude string, rows []QueuedSlot) bool {
 	return false
 }
 
-// systemsWithinReach lists the systems a hull could be flown FROM to arrive at
-// origin, nearest ring first.
+// sourcesWithinReach lists the systems holding a surplus hull that could actually
+// be flown TO target, nearest ring first.
 //
-// BOUNDED BY MaxWalkRings, and it must be: that constant is the reach of the
-// walk the placement machine will actually fly, and a claim written for a hull
-// further out than it stalls silently — nextHopToward names no next system, the
-// step errors, and the row sits IN_TRANSIT naming a hull that never arrives
-// while still counting against the probe cap. The bound is read from the same
-// declaration the walk reads, so the two cannot drift.
+// IT ASKS THE RIGHT QUESTION, which the walk it replaced did not. The old search
+// walked FORWARD OUT OF THE TARGET and treated the result as valid sources —
+// correct only if a gate edge always has a reverse, and on the live map 624 of
+// 5,488 edges (11.4%) do not. For a target reachable only by a one-way edge that
+// search returns precisely the systems a hull CANNOT arrive from: it would
+// dispatch onto a route nextHopToward cannot resolve, and the row sits IN_TRANSIT
+// naming a hull that never arrives while still counting against the probe cap.
+// That is the stranding sp-9fdc258d was written to prevent, in a function it did
+// not touch.
 //
-// The walk is symmetric in the only sense used here: a gate edge is traversable
-// either way, so a system within N rings of origin can be flown to origin in N
-// hops. Origin itself is excluded — a hull already in the target's system is
-// reuseSpareHull's business, not this path's.
+// THE CANDIDATE SET IS THE SURPLUS POOL, not the graph. Only a system actually
+// holding a takeable hull can answer this placement, so walking from those — and
+// only those — keeps the cost proportional to the pool rather than to the map,
+// and shrinks as the tick spends it.
+//
+// BOUNDED BY MaxWalkRings through the shared walker, and it must be: that
+// constant is the reach of the walk the placement machine will actually fly, and
+// a claim written for a hull further out stalls silently. The bound is read from
+// the same declaration the walk reads, so the two cannot drift. The target's own
+// system is never returned — reach.hops reports false for origin==target, and a
+// hull already there is reuseSpareHull's business, not this path's.
 //
 // A read failure is returned rather than swallowed. An empty reach read
 // permissively would be indistinguishable from a genuinely isolated system, and
 // this is the one caller that must not silently conclude "nowhere to draw from"
 // when the truth is "the topology store did not answer".
-func systemsWithinReach(ctx context.Context, gates GateNeighbours, origin string) ([]string, error) {
-	seen := map[string]bool{origin: true}
-	frontier := []string{origin}
-	var reach []string
-
-	for ring := 0; ring < MaxWalkRings && len(frontier) > 0; ring++ {
-		var next []string
-		for _, system := range frontier {
-			adjacent, err := gates.Neighbours(ctx, system)
-			if err != nil {
-				return nil, fmt.Errorf("failed to read gate neighbours of %q: %w", system, err)
-			}
-			for _, neighbour := range adjacent {
-				if neighbour == "" || seen[neighbour] {
-					continue
-				}
-				seen[neighbour] = true
-				next = append(next, neighbour)
-			}
-		}
-		sort.Strings(next) // deterministic within a ring
-		reach = append(reach, next...)
-		frontier = next
-	}
-	return reach, nil
+func sourcesWithinReach(ctx context.Context, reach *gateReach, pool *surplusPool, target string) ([]string, error) {
+	return originsWithinReach(ctx, reach, pool.systems(), target)
 }
 
 // footholdFromSurplus fills a SPARE placement no local counter can fund by

@@ -582,3 +582,106 @@ func TestFoothold_DoesNothingWhenTheGuardPortsAreUnwired(t *testing.T) {
 		}
 	}
 }
+
+// --- gate direction: the reach search must follow the edges the hull will fly ---
+
+// asymGates is a DELIBERATELY ONE-WAY neighbourhood around the target, and the
+// asymmetry is the entire test.
+//
+// Every other fixture in this file is symmetric, so a forward walk from the target
+// and a reverse walk into it return the SAME set and neither can tell the two
+// apart. Live, 624 of 5,488 gate edges (11.4%) have no reverse row, so that
+// symmetry is a property of the fixtures, not of the map.
+//
+//	X1-AAA  ->  X1-GF41      (and NOT back: a hull in AAA CAN arrive)
+//	X1-GF41 ->  X1-BBB       (and NOT back: a hull in BBB can NEVER arrive)
+//
+// A search that walks FORWARD FROM THE TARGET finds BBB and offers it as a source,
+// which dispatches a hull that can never arrive — it holds probe-cap headroom and
+// does no work. A search that asks "who can reach the target" finds AAA.
+func asymGates() *fakeGates {
+	return &fakeGates{adjacency: map[string][]string{
+		"X1-AAA":  {"X1-GF41"},
+		"X1-GF41": {"X1-BBB"},
+		"X1-BBB":  {},
+	}}
+}
+
+// asymSurplus puts a redundant, takeable pair in BOTH one-way systems.
+//
+// The BBB pair is deliberately CHEAPER (depth 1/2 against AAA's 10/20), so a rule
+// that ranked candidates by sacrifice cost rather than by reachability would pick
+// the stranding source. Reachability has to be the only thing that decides.
+func asymSurplus() []QueuedSlot {
+	return []QueuedSlot{
+		{Waypoint: "X1-AAA-M1", System: "X1-AAA", Kind: SlotKindMarket, State: SlotStateParked,
+			AssignedShip: "AAA-A", DepthCredits: 10, WhitelistGoods: []string{"FUEL"}},
+		{Waypoint: "X1-AAA-M2", System: "X1-AAA", Kind: SlotKindMarket, State: SlotStateParked,
+			AssignedShip: "AAA-B", DepthCredits: 20, WhitelistGoods: []string{"FUEL"}},
+		{Waypoint: "X1-BBB-M1", System: "X1-BBB", Kind: SlotKindMarket, State: SlotStateParked,
+			AssignedShip: "BBB-A", DepthCredits: 1, WhitelistGoods: []string{"FUEL"}},
+		{Waypoint: "X1-BBB-M2", System: "X1-BBB", Kind: SlotKindMarket, State: SlotStateParked,
+			AssignedShip: "BBB-B", DepthCredits: 2, WhitelistGoods: []string{"FUEL"}},
+	}
+}
+
+func asymPorts(t *testing.T) (BuyPorts, *fakeBuyLedger) {
+	t.Helper()
+	ports, led, world := footholdPorts(liveManned())
+	ports.Gates = asymGates()
+	led.slots = append([]QueuedSlot{
+		{Waypoint: "X1-GF41-Y1", System: "X1-GF41", Kind: SlotKindSpare, State: SlotStateWanted},
+	}, asymSurplus()...)
+	// Every candidate hull is parked and docked, so range and direction are the
+	// only things left that can hold any of them — the same trap
+	// TestFoothold_DrawsNoHullFromBeyondTheWalksReach documents.
+	for _, row := range asymSurplus() {
+		world.park(row.AssignedShip, row.Waypoint)
+	}
+	return ports, led
+}
+
+func TestFoothold_DrawsFromASystemThatCanReachTheTargetOverAOneWayEdge(t *testing.T) {
+	ports, led := asymPorts(t)
+
+	rep := drainOnce(t, ports)
+
+	if rep.Footholds != 1 {
+		t.Fatalf("Footholds = %d, want 1 — X1-AAA reaches the target over a one-way edge; report %+v", rep.Footholds, rep)
+	}
+	if got := slotAt(t, led, "X1-GF41-Y1", SlotKindSpare); got.AssignedShip != "AAA-A" {
+		t.Fatalf("foothold hull = %q, want AAA-A from the system that can actually arrive", got.AssignedShip)
+	}
+	// The converse, and the half that catches the live defect: X1-BBB is reachable
+	// FROM the target and so appears in a forward walk, but a hull there can never
+	// arrive. Neither of its markets may be released.
+	for _, waypoint := range []string{"X1-BBB-M1", "X1-BBB-M2"} {
+		if got := slotAt(t, led, waypoint, SlotKindMarket); got.State != SlotStateParked {
+			t.Fatalf("%s was released to fly an unreachable route (state %s) — that hull would strand", waypoint, got.State)
+		}
+	}
+}
+
+func TestFoothold_SendsNothingWhenOnlyAnUnreachableSystemHasSurplus(t *testing.T) {
+	// The pure negative. Without it, a rule that simply drew from nowhere would
+	// satisfy the test above — and a stranding dispatch is worse than no foothold,
+	// because the hull keeps holding probe-cap headroom while doing no work.
+	ports, led, world := footholdPorts(liveManned())
+	ports.Gates = asymGates()
+	onlyUnreachable := asymSurplus()[2:] // the X1-BBB pair alone
+	led.slots = append([]QueuedSlot{
+		{Waypoint: "X1-GF41-Y1", System: "X1-GF41", Kind: SlotKindSpare, State: SlotStateWanted},
+	}, onlyUnreachable...)
+	for _, row := range onlyUnreachable {
+		world.park(row.AssignedShip, row.Waypoint)
+	}
+
+	rep := drainOnce(t, ports)
+
+	if rep.Footholds != 0 {
+		t.Fatalf("Footholds = %d, want 0 — the only surplus sits where no hull can reach the target", rep.Footholds)
+	}
+	if got := slotAt(t, led, "X1-GF41-Y1", SlotKindSpare); got.State != SlotStateWanted {
+		t.Fatalf("target claimed for an unreachable source: %+v", got)
+	}
+}

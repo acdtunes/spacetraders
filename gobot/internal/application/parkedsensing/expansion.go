@@ -344,7 +344,7 @@ func AdvanceExpansion(
 	// actually fly. One memo for the whole tick, shared by all four consumers —
 	// supply, the spare claim, staging and the retarget — so none of them can
 	// disagree about what is reachable. See gateReach.
-	reach := newGateReach(p, neighbours)
+	reach := newGateReach(p.Gates, neighbours)
 
 	// Nearest first: a one-hop errand is one flight, a two-hop errand two, and
 	// the probe is held for the whole of it. Ordering here rather than in each
@@ -930,7 +930,11 @@ func markFrontier(
 // keeps the cost from growing with the frontier exactly as the frontier
 // succeeds.
 type gateReach struct {
-	ports ExpandPorts
+	// gates is the gate-adjacency STORE read, narrowed from the ports struct it
+	// used to hold so this walker can serve any caller that has one — the buy
+	// queue's foothold path reaches for it through BuyPorts.Gates. Narrowing is
+	// what makes reuse possible without a second traversal of the same graph.
+	gates GateNeighbours
 	// known is the tick's neighbour map, already read by readNeighbours. It
 	// covers every system in the ledger, which is nearly everything the search
 	// touches.
@@ -946,9 +950,9 @@ type gateReach struct {
 	hopsFrom map[string]map[string]int
 }
 
-func newGateReach(p ExpandPorts, neighbours map[string][]string) *gateReach {
+func newGateReach(gates GateNeighbours, neighbours map[string][]string) *gateReach {
 	return &gateReach{
-		ports:    p,
+		gates:    gates,
 		known:    neighbours,
 		fetched:  map[string][]string{},
 		hopsFrom: map[string]map[string]int{},
@@ -974,7 +978,7 @@ func (r *gateReach) adjacent(ctx context.Context, system string) ([]string, erro
 	if cached, ok := r.fetched[system]; ok {
 		return cached, nil
 	}
-	adjacent, err := r.ports.Gates.Neighbours(ctx, system)
+	adjacent, err := r.gates.Neighbours(ctx, system)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read gate neighbours of %q: %w", system, err)
 	}
@@ -1371,7 +1375,7 @@ func stagingYardFor(
 	yardsByOrigin map[string][]string,
 	staffed map[string]bool,
 ) (string, string, error) {
-	origins, err := originsWithinReach(ctx, reach, target)
+	origins, err := originsWithinReach(ctx, reach, reach.origins(), target)
 	if err != nil {
 		return "", "", err
 	}
@@ -1404,21 +1408,36 @@ func stagingYardFor(
 	return "", "", nil
 }
 
-// originsWithinReach lists the systems a seed for target could be staged from,
-// NEAREST RING FIRST and in symbol order inside each ring.
+// originsWithinReach filters candidates down to the systems a hull could be
+// flown FROM to arrive at target, NEAREST RING FIRST and in symbol order inside
+// each ring.
 //
-// The candidate set is the tick's neighbour map — every system whose gate
-// adjacency we have measured — exactly as it was before; only the test applied
-// to it widened, from "borders the target" to "can be walked to it". Symbol
-// order is kept as the tie-break so two origins the same distance out are
-// chosen between reproducibly, tick after tick.
-func originsWithinReach(ctx context.Context, reach *gateReach, target string) ([]string, error) {
+// THE DIRECTION IS THE POINT, and it is why every candidate is tested with its
+// OWN forward walk rather than one walk out of the target. Those two agree only
+// on a symmetric graph, and the gate map is not one — measured live, 624 of 5,488
+// edges (11.4%) have no reverse row. Walking forward out of the target answers
+// "where could a hull AT the target go", which for a one-way edge into the target
+// is the exact opposite of the question, and a hull staged on that answer is
+// dispatched onto a route nextHopToward cannot resolve: it sits IN_TRANSIT
+// forever, holding probe-cap headroom and doing no work.
+//
+// Testing each candidate forward — the same direction the placement machine will
+// actually traverse — means a system is offered only if the walk it will really
+// fly exists. That is the discipline sp-9fdc258d established for the seed reach,
+// applied to the same graph by the same walker.
+//
+// CALLERS SUPPLY THEIR OWN CANDIDATE SET, which keeps the cost proportional to
+// the work: seed staging passes the tick's neighbour map (every system whose
+// adjacency we have measured), while the foothold path passes only the systems
+// actually holding a surplus hull. Symbol order is kept as the tie-break so two
+// origins the same distance out are chosen between reproducibly, tick after tick.
+func originsWithinReach(ctx context.Context, reach *gateReach, candidates []string, target string) ([]string, error) {
 	type candidate struct {
 		system string
 		hops   int
 	}
 	var found []candidate
-	for _, origin := range reach.origins() {
+	for _, origin := range candidates {
 		hops, within, err := reach.hops(ctx, origin, target)
 		if err != nil {
 			return nil, err
