@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/logging"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -239,6 +240,13 @@ type ExpandPorts struct {
 	MarketGoods MarketGoodsReader
 	Yards       ProbeYardCatalog
 	Uncharted   UnchartedCatalog
+	// ListingMemo is the STORED shipyard listings — the same read the buy queue's
+	// probe-listing memo makes, wired here so staging can prefer a yard we have
+	// EVIDENCE sells probes over one the trait fallback merely guessed at.
+	//
+	// OPTIONAL: a nil memo leaves staging choosing the nearest staffed yard exactly
+	// as it did before this port existed.
+	ListingMemo ProbeListingMemo
 	// OffGate is the warp-expansion slice: the ports that raise explorer demand and warp an
 	// explorer past a sealed gate frontier. See offgate.go.
 	OffGate OffGatePorts
@@ -1425,6 +1433,9 @@ func requestSeeds(
 	// ours, and the answer cannot change while the tick runs. Shared by BOTH
 	// consumers below so supply and staging can never disagree about it.
 	staffed := map[string]bool{}
+	// What the stored listings say about each candidate yard, memoised for the same reason and with
+	// the same lifetime: several targets share a yard, and the answer cannot change while the tick runs.
+	listings := map[string]probeStock{}
 	for _, target := range targets {
 		if rep.Actions >= MaxExpansionActions {
 			return nil
@@ -1443,7 +1454,7 @@ func requestSeeds(
 			continue
 		}
 
-		yard, system, err := stagingYardFor(ctx, p, playerID, target.System, reach, book, probeYards, staffed)
+		yard, system, err := stagingYardFor(ctx, p, playerID, target.System, reach, book, probeYards, staffed, listings)
 		if err != nil {
 			return err
 		}
@@ -1533,17 +1544,58 @@ func stagingYardFor(
 	book *slotBook,
 	yardsByOrigin map[string][]string,
 	staffed map[string]bool,
+	listings map[string]probeStock,
 ) (string, string, error) {
 	origins, err := originsWithinReach(ctx, reach, reach.origins(), target)
 	if err != nil {
 		return "", "", err
 	}
+	// TWO PASSES, EVIDENCE FIRST. Within each pass the origins keep the nearest-first
+	// order above, so this adds a condition to the routability selection rather than
+	// replacing it. See stagedProbeStockAccepts for what each pass admits.
+	for _, wantEvidence := range []bool{true, false} {
+		yard, origin, err := stagingYardPass(ctx, p, playerID, origins, book, yardsByOrigin, staffed, listings, wantEvidence)
+		if err != nil || yard != "" {
+			return yard, origin, err
+		}
+	}
+	return "", "", nil
+}
+
+// stagingYardPass walks the reachable origins once, admitting only yards whose stored listings match
+// this pass — evidenced first, then the never-priced trait guesses.
+func stagingYardPass(
+	ctx context.Context,
+	p ExpandPorts,
+	playerID int,
+	origins []string,
+	book *slotBook,
+	yardsByOrigin map[string][]string,
+	staffed map[string]bool,
+	listings map[string]probeStock,
+	wantEvidence bool,
+) (string, string, error) {
 	for _, origin := range origins {
 		yards, err := probeYardsIn(ctx, p, origin, yardsByOrigin)
 		if err != nil {
 			return "", "", err
 		}
 		for _, yard := range yards {
+			// EVIDENCE THAT THIS COUNTER SELLS THE HULL WE NEED. ListProbeYards falls
+			// back to every shipyard-TRAIT waypoint when a system holds no SHIP_PROBE
+			// row, so a yard we have already priced and found probe-less comes back
+			// looking exactly like one we have never looked at. Staging one of those
+			// writes a want the buy queue scans, learns nothing from, and then
+			// correctly refuses for the memo's whole TTL — measured live, 14 of the
+			// outstanding wants sat on such yards while 8 evidenced ones existed
+			// elsewhere in the fleet.
+			stock, err := stagedProbeStock(ctx, p, playerID, yard, listings)
+			if err != nil {
+				return "", "", err
+			}
+			if !stagedProbeStockAccepts(stock, wantEvidence) {
+				continue
+			}
 			// A hull of ours must be STANDING at this counter. Without it the
 			// buy queue cannot fund the want at all — it only ever buys where one
 			// of our hulls is already docked — so staging here would write a row
@@ -1565,6 +1617,46 @@ func stagingYardFor(
 		}
 	}
 	return "", "", nil
+}
+
+// stagedProbeStock reads what the stored listings say about one yard, memoised for the TICK.
+//
+// The same yard is offered for several targets in a neighbourhood, and the answer cannot change
+// while the tick runs, so a re-read per target would scale with the frontier exactly as the frontier
+// succeeds. It is a local store read either way — zero API calls — but the memo is what keeps it one
+// read per yard rather than one per (yard, target) pair.
+//
+// A READ FAILURE PROPAGATES. Staging onto a yard we could not read is how the unfundable want gets
+// written in the first place; the tick is idempotent and re-derived, so failing loudly costs a cycle.
+func stagedProbeStock(ctx context.Context, p ExpandPorts, playerID int, yard string, memo map[string]probeStock) (probeStock, error) {
+	if stock, cached := memo[yard]; cached {
+		return stock, nil
+	}
+	stock, _, err := readProbeStock(ctx, p.ListingMemo, playerID, yard, time.Now())
+	if err != nil {
+		return probeStockUnread, err
+	}
+	memo[yard] = stock
+	return stock, nil
+}
+
+// stagedProbeStockAccepts reports whether a yard belongs to this staging pass.
+//
+// THREE ANSWERS, TWO PASSES, AND ONE YARD ADMITTED BY NEITHER:
+//
+//   - SELLS — evidence. Taken on the FIRST pass, ahead of any trait guess however near, because a
+//     want written here can actually be funded.
+//   - UNREAD — never priced. Taken on the SECOND pass only. It is a guess, but it is also how the
+//     fleet LEARNS where probes are sold, so ranking it last must not mean removing it.
+//   - NONE — priced, and it sells no probe. Admitted by NEITHER pass. This is the standing fact the
+//     buy queue's memo already refuses on; staging onto it writes a want that is scanned, learns
+//     nothing, and is refused for the whole TTL. (A STALE reading is not this case — readProbeStock
+//     degrades it to UNREAD, so a restocked counter is reconsidered.)
+func stagedProbeStockAccepts(stock probeStock, wantEvidence bool) bool {
+	if wantEvidence {
+		return stock == probeStockSells
+	}
+	return stock == probeStockUnread
 }
 
 // originsWithinReach filters candidates down to the systems a hull could be

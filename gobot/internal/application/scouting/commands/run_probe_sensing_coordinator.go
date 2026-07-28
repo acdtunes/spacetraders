@@ -380,6 +380,11 @@ func (p SensingEnginePorts) expandPorts(playerID int, whitelist map[string]bool)
 		MarketGoods: p.MarketGoods,
 		Yards:       p.Waypoints,
 		Uncharted:   p.Uncharted,
+		// The SAME stored-listing read the buy queue's memo makes, so staging can prefer a
+		// yard we have EVIDENCE sells probes over one the trait fallback merely guessed at —
+		// and never stage onto one the memo has already answered probe-less. Without this
+		// line the engine below has no evidence to rank on and behaves as it did before.
+		ListingMemo: p.ListingMemo,
 		OffGate:     p.OffGate,
 		Screen: func(ctx context.Context, system string) (parkedsensing.ScreenResult, error) {
 			return parkedsensing.ScreenSystem(ctx, screen, playerID, system, whitelist)

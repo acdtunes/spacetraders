@@ -175,6 +175,48 @@ type ProbeListingMemo interface {
 	LastListingScan(ctx context.Context, playerID int, waypoint string) (sellsProbe bool, scannedAt time.Time, known bool, err error)
 }
 
+// probeStock is what a yard's STORED listings say about whether it sells a probe. It is the memo's
+// three answers named, so the two engines that consult them cannot drift into different rules.
+type probeStock int
+
+const (
+	// probeStockUnread — no listing has ever been persisted for this yard. It is how a yard ENTERS
+	// the memo, so it must never be read as a negative: doing so would freeze the fleet's knowledge
+	// and permanently write off every counter nothing had happened to look at yet.
+	probeStockUnread probeStock = iota
+	// probeStockSells — a stored, priced SHIP_PROBE listing. Evidence, not a trait guess.
+	probeStockSells
+	// probeStockNone — read recently, and it sells no probe. The standing fact worth acting on.
+	probeStockNone
+)
+
+// readProbeStock classifies one yard from the stored listings, applying the memo's staleness rule in
+// ONE place.
+//
+// A STALE probe-less reading degrades to UNREAD, so a restocked counter is reconsidered rather than
+// written off for the era — the same rule skipKnownProbeless applies, and it is written here so the
+// buy queue and seed staging cannot drift apart on it. A nil memo answers UNREAD, which is exactly
+// the behaviour both callers had before the port existed.
+func readProbeStock(ctx context.Context, memo ProbeListingMemo, playerID int, yard string, now time.Time) (probeStock, time.Time, error) {
+	if memo == nil {
+		return probeStockUnread, time.Time{}, nil
+	}
+	sellsProbe, scannedAt, known, err := memo.LastListingScan(ctx, playerID, yard)
+	if err != nil {
+		return probeStockUnread, time.Time{}, fmt.Errorf("failed to read the stored listings of %q: %w", yard, err)
+	}
+	switch {
+	case !known:
+		return probeStockUnread, scannedAt, nil
+	case sellsProbe:
+		return probeStockSells, scannedAt, nil
+	case now.Sub(scannedAt) >= probeListingMemoTTL:
+		return probeStockUnread, scannedAt, nil // gone stale; ask again
+	default:
+		return probeStockNone, scannedAt, nil
+	}
+}
+
 // ShipPos is where one hull is, read from the ships table.
 type ShipPos struct {
 	Waypoint  string
@@ -1169,15 +1211,11 @@ func skipKnownProbeless(
 	rep *BuyReport,
 	memo *refusalMemo,
 ) bool {
-	if p.ListingMemo == nil {
+	stock, scannedAt, err := readProbeStock(ctx, p.ListingMemo, playerID, yard, now)
+	if err != nil || stock != probeStockNone {
+		// FAILS OPEN on the read error, unchanged: the memo is an API-budget
+		// optimisation, not a money guard, and every money guard sits downstream.
 		return false
-	}
-	sellsProbe, scannedAt, known, err := p.ListingMemo.LastListingScan(ctx, playerID, yard)
-	if err != nil || !known || sellsProbe {
-		return false
-	}
-	if now.Sub(scannedAt) >= probeListingMemoTTL {
-		return false // the reading has gone stale; re-check the counter
 	}
 	memo.record(rep, BuyStepMemo, yard, "", fmt.Sprintf(
 		"stored listings show no probe (read %s ago; re-checked after %s)",
