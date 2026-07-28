@@ -479,6 +479,16 @@ type BuyReport struct {
 	// leaves that market unwatched until it is re-bought. An operator must be
 	// able to see the second happening without inferring it.
 	Footholds int
+	// Ferried counts purchases made at a counter in ANOTHER system, with the hull
+	// then flown to the placement. See ferry.go.
+	//
+	// A SUBSET of Bought, reported separately for the same reason Footholds is
+	// reported separately from Reused: the two spend the same money but deliver on
+	// very different timescales. A local purchase is scanning within a tick or two;
+	// a ferried one is several gate steps away, counting against the probe cap the
+	// whole time. An operator watching a tick that bought three probes must be able
+	// to see which of them will not report a price for a while.
+	Ferried int
 	// Attempts counts every trip through the buy path, successful or not,
 	// against maxDrainAttempts.
 	Attempts int
@@ -615,6 +625,12 @@ func DrainBuyQueue(
 	// placements cannot both be handed the same hull.
 	footholds := &footholdBroker{}
 
+	// One cross-system buying broker per TICK, for the same reason and with the
+	// same lifetime: it holds where our hulls stand and the gate walker deciding
+	// which of those places can reach a placement, so a burst of placements reads
+	// the ledger once and each source's walk once.
+	ferry := &ferryBroker{}
+
 	// How many attempts the FILLS may spend before standing aside for the seeds
 	// queued behind them — the whole budget when no seed is outstanding. It
 	// SPLITS maxDrainAttempts rather than adding to it. See seedshare.go.
@@ -654,7 +670,7 @@ func DrainBuyQueue(
 			continue
 		}
 
-		buys, err := resolvePurchaseCandidates(ctx, p, playerID, slot, inSystem, clock.Now(), &rep, memo)
+		buys, err := resolvePurchaseCandidates(ctx, p, playerID, slot, inSystem, clock.Now(), &rep, memo, ferry)
 		if err != nil {
 			return rep, err
 		}
@@ -769,6 +785,11 @@ func fillSlot(
 			return true, err
 		}
 		rep.Bought++
+		if candidate.ferried {
+			// A subset of Bought, counted here rather than inferred later: this is
+			// the only point that still knows which counter actually sold.
+			rep.Ferried++
+		}
 		st.owned++
 
 		// Account with what was actually CHARGED, not what was quoted. The
@@ -1106,7 +1127,27 @@ func reuseSpareHull(ctx context.Context, p BuyPorts, playerID int, target Queued
 
 // purchaseCandidate is one executable place to buy: a yard, and a hull of ours
 // standing at it to buy through.
-type purchaseCandidate struct{ yard, buyer string }
+type purchaseCandidate struct {
+	yard, buyer string
+	// ferried reports that this counter is in a DIFFERENT system from the
+	// placement, so the hull will have to be flown across a gate to reach it.
+	//
+	// Derived from the two symbols rather than from which resolver produced the
+	// candidate, so it stays honest on every path — including a retry, where a
+	// remote yard recorded by an earlier tick is re-offered through the
+	// recorded-yard preference rather than through the cross-system search.
+	ferried bool
+}
+
+// newPurchaseCandidate pairs a counter with its buyer, deciding from the symbols
+// alone whether reaching it means crossing a gate.
+func newPurchaseCandidate(system, yard, buyer string) purchaseCandidate {
+	return purchaseCandidate{
+		yard:    yard,
+		buyer:   buyer,
+		ferried: shared.ExtractSystemSymbol(yard) != system,
+	}
+}
 
 // resolvePurchaseCandidates lists every executable place to buy for a placement,
 // best first.
@@ -1131,9 +1172,34 @@ type purchaseCandidate struct{ yard, buyer string }
 // filtering for kind == YARD would miss it and buy a second hull for a waypoint
 // that already has one.
 //
-// Nothing here ever looks outside the placement's own system: a cross-map buy
-// would strand a fresh probe several gate hops from the slot it was bought for.
+// LOCAL FIRST, AND ONLY THEN ACROSS A GATE. If the placement's own system can
+// fund it, that is the answer and nothing else is read — no topology, no remote
+// yard list, no cross-system purchase. That short-circuit is what keeps the
+// ordinary fill exactly as cheap and exactly as fast as it was before the ferry
+// existed. Only a placement its own system genuinely cannot fund falls through to
+// ferryCandidates, which is where the reasoning about crossing a gate lives.
 func resolvePurchaseCandidates(
+	ctx context.Context,
+	p BuyPorts,
+	playerID int,
+	slot QueuedSlot,
+	inSystem []QueuedSlot,
+	now time.Time,
+	rep *BuyReport,
+	memo *refusalMemo,
+	ferry *ferryBroker,
+) ([]purchaseCandidate, error) {
+	local, err := candidatesInSystem(ctx, p, playerID, slot, inSystem, now, rep, memo)
+	if err != nil || len(local) > 0 {
+		return local, err
+	}
+	return ferryCandidates(ctx, p, playerID, slot, ferry)
+}
+
+// candidatesInSystem lists the executable counters inside the placement's OWN
+// system — the whole of the buy path before cross-system buying existed, and
+// still the only path taken whenever it can answer.
+func candidatesInSystem(
 	ctx context.Context,
 	p BuyPorts,
 	playerID int,
@@ -1170,7 +1236,7 @@ func resolvePurchaseCandidates(
 			return nil, err
 		}
 		if found {
-			candidates = append(candidates, purchaseCandidate{yard: yard, buyer: buyer})
+			candidates = append(candidates, newPurchaseCandidate(slot.System, yard, buyer))
 		}
 	}
 	return candidates, nil
