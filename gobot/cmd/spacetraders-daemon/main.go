@@ -1142,8 +1142,12 @@ func run(cfg *config.Config) error {
 			Mover:      parkedSensingAdapters.NewMoverPort(med, gateNeighbours),
 			// Per-system stored gate adjacency — never the whole-map read, and never a
 			// fetch-through resolver.
-			Gates:    gateNeighbours,
-			SeedShip: parkedSensingAdapters.NewSeedCommandPort(med, apiClient, playerRepo, waypointRepo, marketScanner),
+			Gates: gateNeighbours,
+			// The same stored adjacency the placement mover walks: a seed's target
+			// may now be up to MaxWalkRings hops out, so the crossing resolves its
+			// next system from the gate graph rather than jumping at the errand's
+			// final system, which the API rejects when it is not connected.
+			SeedShip: parkedSensingAdapters.NewSeedCommandPort(med, apiClient, playerRepo, waypointRepo, marketScanner, gateNeighbours),
 			Scan:     parkedSensingAdapters.NewScanRunnerPort(marketScanner),
 			Home:     parkedSensingAdapters.NewHomeSystemPort(db),
 			// The heavy reservation: probe buying stands down while treasury accumulates

@@ -340,16 +340,30 @@ func AdvanceExpansion(
 	// waypoints are yards.
 	probeYards := map[string][]string{}
 
+	// How far every system is from every other, out to the reach a seed can
+	// actually fly. One memo for the whole tick, shared by all four consumers —
+	// supply, the spare claim, staging and the retarget — so none of them can
+	// disagree about what is reachable. See gateReach.
+	reach := newGateReach(p, neighbours)
+
+	// Nearest first: a one-hop errand is one flight, a two-hop errand two, and
+	// the probe is held for the whole of it. Ordering here rather than in each
+	// consumer is what makes the choice consistent across all three of them.
+	targets, err = orderByReach(ctx, reach, targets, book)
+	if err != nil {
+		return rep, err
+	}
+
 	// Seeds move BEFORE spares are claimed, so an errand stamped this tick is
 	// not also flown by it: the ship row has not caught up yet, and the next
 	// tick reads it. Same discipline as the placement machine's single pass.
-	if err := advanceSeeds(ctx, p, playerID, k, systems, targets, covered, book, neighbours, probeYards, &rep); err != nil {
+	if err := advanceSeeds(ctx, p, playerID, k, systems, targets, covered, book, reach, probeYards, &rep); err != nil {
 		return rep, err
 	}
-	if err := claimSpares(ctx, p, playerID, targets, covered, book, neighbours, &rep); err != nil {
+	if err := claimSpares(ctx, p, playerID, targets, covered, book, reach, &rep); err != nil {
 		return rep, err
 	}
-	return rep, requestSeeds(ctx, p, playerID, targets, covered, book, neighbours, probeYards, &rep)
+	return rep, requestSeeds(ctx, p, playerID, targets, covered, book, reach, probeYards, &rep)
 }
 
 // --- the ledger's working view ----------------------------------------------
@@ -489,13 +503,22 @@ func hullsOnErrand(systems []ExpandSystem) map[string]bool {
 	return hulls
 }
 
-// takeSupplyFor consumes a spare that could serve target — one parked in a
-// system BORDERING it — and reports whether it found one. A match means a seed
-// for that target already exists somewhere in the pipeline, so no second one
-// should be ordered.
+// takeSupplyFor consumes a spare that could serve target — one parked WITHIN
+// GATE REACH of it — and reports whether it found one. A match means a seed for
+// that target already exists somewhere in the pipeline, so no second one should
+// be ordered.
 //
-// The adjacency test is the whole point. A blanket count of every SPARE row in
-// the ledger suppresses demand it cannot possibly serve: a spare parked three
+// THE REACH TEST HERE AND THE ONE IN stagingYardFor MUST MOVE TOGETHER, and this
+// is the failure if they do not. Widen staging alone and tick 1 writes a want at
+// a yard two hops from the target; tick 2 rebuilds the book, this test still
+// asks for direct adjacency, does not recognise that want as supply, falls
+// through to staging — which now DOES reach — finds the first yard taken and
+// stages at the NEXT one. A second probe, bought for a target already served,
+// every tick until the yards run out. They share gateReach so there is no second
+// notion of reach to drift.
+//
+// The reach test is the whole point. A blanket count of every SPARE row in
+// the ledger suppresses demand it cannot possibly serve: a spare parked five
 // systems from the frontier is not a seed for that frontier, and nothing will
 // ever turn it into one (the buy queue's spare re-task only scans within a
 // single system). Counted bluntly, one such idle hull stalls expansion
@@ -531,11 +554,15 @@ func takeSupplyFor(
 	playerID int,
 	book *slotBook,
 	target string,
-	neighbours map[string][]string,
+	reach *gateReach,
 	staffed map[string]bool,
 ) (bool, error) {
 	for i, spare := range book.spares {
-		if !contains(neighbours[spare.System], target) {
+		within, err := reach.canReach(ctx, spare.System, target)
+		if err != nil {
+			return false, err
+		}
+		if !within {
 			continue
 		}
 		if spare.AssignedShip == "" {
@@ -866,6 +893,219 @@ func markFrontier(
 	return nil
 }
 
+// --- gate reach ---------------------------------------------------------------
+
+// gateReach answers "how many gate hops is it from here to there?", bounded by
+// MaxWalkRings, from STORED adjacency alone.
+//
+// WHY IT EXISTS. Seed supply used to require DIRECT adjacency at both gates —
+// stagingYardFor would only stage at a yard in a system BORDERING the target,
+// and takeReachableSpare would only claim a spare parked in one. Gate
+// connectivity is sparse, so that exhausted almost immediately: measured on the
+// live fleet, 33 unseeded systems carried uncharted waypoints and exactly ONE
+// was a direct neighbour of a system we occupied. Seven are within MaxWalkRings.
+// The frontier had run out of ring, and no amount of money, hulls or per-tick
+// budget could buy another one.
+//
+// THE BOUND IS THE WALK'S, NOT A PREFERENCE. A seed further out than
+// MaxWalkRings is not merely expensive, it is UNROUTABLE: the adapter's
+// next-hop search gives up at the same ring, so the errand's every step fails,
+// the hull holds probe-cap headroom, and it charts nothing — strictly worse
+// than never dispatching it. Reading the bound from the same declaration the
+// walk reads is what keeps the two from drifting into handing out that stall.
+//
+// FORWARD, AND THAT IS A CORRECTNESS PROPERTY RATHER THAN A DETAIL. The search
+// follows Neighbours(x) in the same direction the walk traverses it. The stored
+// graph is genuinely asymmetric — measured live, 617 of 5463 edges have no
+// reverse row, because a gate charted from one end names a system whose own gate
+// we have not charted yet — so a search that assumed symmetry would report
+// routes the walk cannot resolve, and every one of them would strand a probe.
+// Physical gates are two-way; our KNOWLEDGE of them is not, and this reads the
+// knowledge.
+//
+// PURE STORE READS, and no more of them than the tick already makes. Neighbours
+// is a store read by contract, never a fetch-through resolver, so widening reach
+// spends no API budget at all. Each origin is walked at most once per tick and
+// memoised, so a second target in the same neighbourhood is free — which is what
+// keeps the cost from growing with the frontier exactly as the frontier
+// succeeds.
+type gateReach struct {
+	ports ExpandPorts
+	// known is the tick's neighbour map, already read by readNeighbours. It
+	// covers every system in the ledger, which is nearly everything the search
+	// touches.
+	known map[string][]string
+	// fetched memoises the systems `known` does not cover. It is kept SEPARATE
+	// rather than written back into the tick's map because markFrontier iterates
+	// that map to decide what to record as PENDING, and quietly growing it here
+	// would change which systems this tick claims to have discovered.
+	fetched map[string][]string
+	// hopsFrom memoises one BFS per origin: system -> hops, for the systems
+	// within MaxWalkRings. The origin itself is absent, so any entry present is
+	// both reachable AND at least one hop away.
+	hopsFrom map[string]map[string]int
+}
+
+func newGateReach(p ExpandPorts, neighbours map[string][]string) *gateReach {
+	return &gateReach{
+		ports:    p,
+		known:    neighbours,
+		fetched:  map[string][]string{},
+		hopsFrom: map[string]map[string]int{},
+	}
+}
+
+// origins lists the systems the tick may propagate from, in symbol order — the
+// same set and the same order readNeighbours built.
+func (r *gateReach) origins() []string { return sortedKeys(r.known) }
+
+// adjacent reads one system's gate neighbours, from the tick's map where it can
+// and the gate store where it cannot.
+//
+// The fallback is load-bearing rather than defensive: a two-hop search passes
+// THROUGH intermediate systems, and an intermediate only entered the ledger when
+// this tick's own markFrontier recorded it — after the neighbour map was built.
+// Without the fallback the second ring would be empty on exactly the ticks that
+// first open a new neighbourhood.
+func (r *gateReach) adjacent(ctx context.Context, system string) ([]string, error) {
+	if known, ok := r.known[system]; ok {
+		return known, nil
+	}
+	if cached, ok := r.fetched[system]; ok {
+		return cached, nil
+	}
+	adjacent, err := r.ports.Gates.Neighbours(ctx, system)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read gate neighbours of %q: %w", system, err)
+	}
+	r.fetched[system] = adjacent
+	return adjacent, nil
+}
+
+// from returns every system reachable from origin within MaxWalkRings, mapped to
+// the number of hops it takes. Breadth-first, so the recorded hop count is the
+// SHORTEST one — which is what makes "prefer the nearer" mean anything.
+func (r *gateReach) from(ctx context.Context, origin string) (map[string]int, error) {
+	if cached, ok := r.hopsFrom[origin]; ok {
+		return cached, nil
+	}
+	hops := map[string]int{}
+	seen := map[string]bool{origin: true}
+	frontier := []string{origin}
+
+	for ring := 1; ring <= MaxWalkRings && len(frontier) > 0; ring++ {
+		var next []string
+		for _, system := range frontier {
+			adjacent, err := r.adjacent(ctx, system)
+			if err != nil {
+				// Propagated, never swallowed. An empty reach read permissively
+				// is indistinguishable from a genuinely isolated system, and
+				// this is the read that decides whether a hull is dispatched at
+				// all. The tick is idempotent, so failing loudly costs a cycle.
+				return nil, err
+			}
+			for _, neighbour := range adjacent {
+				if neighbour == "" || seen[neighbour] {
+					continue
+				}
+				seen[neighbour] = true
+				hops[neighbour] = ring
+				next = append(next, neighbour)
+			}
+		}
+		sort.Strings(next) // deterministic within a ring
+		frontier = next
+	}
+	r.hopsFrom[origin] = hops
+	return hops, nil
+}
+
+// hops reports how far target is from origin, and whether it is within reach at
+// all. A system that is not reachable — or IS origin — reports false.
+func (r *gateReach) hops(ctx context.Context, origin, target string) (int, bool, error) {
+	reachable, err := r.from(ctx, origin)
+	if err != nil {
+		return 0, false, err
+	}
+	distance, within := reachable[target]
+	return distance, within, nil
+}
+
+// canReach reports whether a hull in origin could be walked to target.
+func (r *gateReach) canReach(ctx context.Context, origin, target string) (bool, error) {
+	_, within, err := r.hops(ctx, origin, target)
+	return within, err
+}
+
+// beyondReach sorts after every reachable distance, so an unreachable target
+// keeps its place at the back of the queue rather than jumping it.
+const beyondReach = MaxWalkRings + 1
+
+// orderByReach puts the CHEAP frontier first: targets nearest the systems we
+// actually hold, since a one-hop errand is one flight and a two-hop errand two,
+// and the probe is held for the whole of it.
+//
+// IT IS A RE-SORT, NOT A REPLACEMENT. seedlessTargets' deepest-dark-first order
+// is preserved WITHIN each ring, so the rule it encodes — resolve the biggest
+// known unknown soonest — still decides between targets that cost the same to
+// reach. Distance only outranks it across rings, where the comparison is
+// genuinely between different prices rather than different prizes.
+//
+// Distance is measured from the systems a seed could actually set out from: the
+// waypoints where a hull of ours is standing. That is the same index staffedAt
+// reads, so "the frontier we hold" means one thing here and at the yard. With
+// nothing held — a cold fleet — every target measures the same and the order is
+// left exactly as it was.
+func orderByReach(
+	ctx context.Context,
+	reach *gateReach,
+	targets []ExpandSystem,
+	book *slotBook,
+) ([]ExpandSystem, error) {
+	held := heldSystems(book)
+	if len(held) == 0 || len(targets) < 2 {
+		return targets, nil
+	}
+
+	distance := make(map[string]int, len(targets))
+	for _, target := range targets {
+		nearest := beyondReach
+		for _, origin := range held {
+			hops, within, err := reach.hops(ctx, origin, target.System)
+			if err != nil {
+				return nil, err
+			}
+			if within && hops < nearest {
+				nearest = hops
+			}
+		}
+		distance[target.System] = nearest
+	}
+
+	ordered := append([]ExpandSystem(nil), targets...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return distance[ordered[i].System] < distance[ordered[j].System]
+	})
+	return ordered, nil
+}
+
+// heldSystems names the systems a seed could set out from — those holding a
+// waypoint one of our hulls is standing at — in symbol order.
+func heldSystems(book *slotBook) []string {
+	systems := make(map[string]bool, len(book.staffed))
+	for waypoint := range book.staffed {
+		if system := shared.ExtractSystemSymbol(waypoint); system != "" {
+			systems[system] = true
+		}
+	}
+	out := make([]string, 0, len(systems))
+	for system := range systems {
+		out = append(out, system)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // --- seed supply -------------------------------------------------------------
 
 // seedlessTargets are the systems with charting work and no hull on the way.
@@ -906,10 +1146,11 @@ func hasActiveSeed(s ExpandSystem) bool {
 
 // claimSpares turns parked spare hulls into charting errands.
 //
-// A spare is only usable for a target it can actually REACH: a seed crosses to
-// its target in one gate hop, so the spare must be sitting in a system that
-// borders it. A spare parked three systems away is left where it is for the
-// placement machinery to re-task.
+// A spare is only usable for a target it can actually REACH: a seed walks to its
+// target one gate hop per tick, so the spare must be sitting within MaxWalkRings
+// of it. A spare parked further out is left where it is for the placement
+// machinery to re-task — an errand it could never complete would hold the hull
+// out of the probe cap while charting nothing.
 //
 // THE WRITE ORDER IS A MONEY GUARD. One hull is named by two rows for an
 // instant, and choosing which instant decides which way a crash miscounts. The
@@ -925,14 +1166,17 @@ func claimSpares(
 	targets []ExpandSystem,
 	covered map[string]bool,
 	book *slotBook,
-	neighbours map[string][]string,
+	reach *gateReach,
 	rep *ExpandReport,
 ) error {
 	for _, target := range targets {
 		if covered[target.System] {
 			continue
 		}
-		spare, found := takeReachableSpare(book, target.System, neighbours)
+		spare, found, err := takeReachableSpare(ctx, reach, book, target.System)
+		if err != nil {
+			return err
+		}
 		if !found {
 			continue
 		}
@@ -966,16 +1210,36 @@ func claimSpares(
 	return nil
 }
 
-// takeReachableSpare removes and returns a parked spare that borders target.
-func takeReachableSpare(book *slotBook, target string, neighbours map[string][]string) (QueuedSlot, bool) {
+// takeReachableSpare removes and returns the parked spare NEAREST to target,
+// among those within gate reach of it.
+//
+// Nearest rather than first: a spare one hop out reaches the target in a single
+// crossing, one two hops out takes two, and both the flying time and the risk of
+// the walk being interrupted scale with it. The ledger's own order breaks a tie,
+// so the choice stays reproducible tick to tick.
+func takeReachableSpare(
+	ctx context.Context,
+	reach *gateReach,
+	book *slotBook,
+	target string,
+) (QueuedSlot, bool, error) {
+	best, nearest := -1, beyondReach
 	for i, spare := range book.parkedSpares {
-		if !contains(neighbours[spare.System], target) {
+		hops, within, err := reach.hops(ctx, spare.System, target)
+		if err != nil {
+			return QueuedSlot{}, false, err
+		}
+		if !within || hops >= nearest {
 			continue
 		}
-		book.parkedSpares = append(book.parkedSpares[:i], book.parkedSpares[i+1:]...)
-		return spare, true
+		best, nearest = i, hops
 	}
-	return QueuedSlot{}, false
+	if best < 0 {
+		return QueuedSlot{}, false, nil
+	}
+	spare := book.parkedSpares[best]
+	book.parkedSpares = append(book.parkedSpares[:best], book.parkedSpares[best+1:]...)
+	return spare, true, nil
 }
 
 // requestSeeds enqueues SPARE placements for the targets no hull covers yet.
@@ -993,14 +1257,14 @@ func requestSeeds(
 	targets []ExpandSystem,
 	covered map[string]bool,
 	book *slotBook,
-	neighbours map[string][]string,
+	reach *gateReach,
 	probeYards map[string][]string,
 	rep *ExpandReport,
 ) error {
 	// Yards are resolved once per origin and reused: several frontier targets
-	// usually border the same system of ours. The memo arrives from the tick
-	// rather than being made here, so a system whose yards the finishing seed
-	// already read is not read again.
+	// usually sit within reach of the same system of ours. The memo arrives from
+	// the tick rather than being made here, so a system whose yards the finishing
+	// seed already read is not read again.
 	// Whether a hull of ours stands at a waypoint, memoised for the same reason
 	// and with the same lifetime: several targets border the same system of
 	// ours, and the answer cannot change while the tick runs. Shared by BOTH
@@ -1013,7 +1277,7 @@ func requestSeeds(
 		if covered[target.System] {
 			continue
 		}
-		supplied, err := takeSupplyFor(ctx, p, playerID, book, target.System, neighbours, staffed)
+		supplied, err := takeSupplyFor(ctx, p, playerID, book, target.System, reach, staffed)
 		if err != nil {
 			return err
 		}
@@ -1024,14 +1288,15 @@ func requestSeeds(
 			continue
 		}
 
-		yard, system, err := stagingYardFor(ctx, p, playerID, target.System, neighbours, book, probeYards, staffed)
+		yard, system, err := stagingYardFor(ctx, p, playerID, target.System, reach, book, probeYards, staffed)
 		if err != nil {
 			return err
 		}
 		if yard == "" {
-			// Nowhere to stage a purchase this tick: no bordering system of ours
-			// holds a probe-selling yard that is both STAFFED by one of our hulls
-			// and free of a SPARE placement. Expected while the map is thin, and
+			// Nowhere to stage a purchase this tick: no system of ours within
+			// gate reach holds a probe-selling yard that is both STAFFED by one
+			// of our hulls and free of a SPARE placement. Expected while the map
+			// is thin, and
 			// it costs nothing — the target simply waits, and takes nothing from
 			// the targets we CAN reach on its way past.
 			continue
@@ -1052,8 +1317,18 @@ func requestSeeds(
 }
 
 // stagingYardFor picks where a seed for target should be bought: a probe-selling
-// yard, in one of our own systems bordering the target, that carries no SPARE
-// placement of its own.
+// yard, in one of our own systems WITHIN GATE REACH of the target, that carries
+// no SPARE placement of its own.
+//
+// REACH IS NOT THE SAME QUESTION AS WHERE WE BUY, and keeping them apart is what
+// makes widening the first one safe. The origin may now be up to MaxWalkRings
+// hops out instead of exactly one — a seed walks the difference, a hop per tick
+// — but the PURCHASE is unmoved: it still happens at a yard staffedAt says we
+// hold, funded by the buy queue under the same floor and probe cap as every
+// other placement. Only the destination got further away. Nearest origin first,
+// since a one-hop errand is one flight and a two-hop errand two; the staffed
+// test still decides eligibility, so a nearer yard we do not stand at is skipped
+// for a further one we do.
 //
 // "OUR OWN" IS ENFORCED, not merely intended. It used to be neither: the origins
 // this walks are every system carrying a screening VERDICT, and a verdict says
@@ -1091,15 +1366,16 @@ func stagingYardFor(
 	p ExpandPorts,
 	playerID int,
 	target string,
-	neighbours map[string][]string,
+	reach *gateReach,
 	book *slotBook,
 	yardsByOrigin map[string][]string,
 	staffed map[string]bool,
 ) (string, string, error) {
-	for _, origin := range sortedKeys(neighbours) {
-		if !contains(neighbours[origin], target) {
-			continue
-		}
+	origins, err := originsWithinReach(ctx, reach, target)
+	if err != nil {
+		return "", "", err
+	}
+	for _, origin := range origins {
 		yards, err := probeYardsIn(ctx, p, origin, yardsByOrigin)
 		if err != nil {
 			return "", "", err
@@ -1128,6 +1404,38 @@ func stagingYardFor(
 	return "", "", nil
 }
 
+// originsWithinReach lists the systems a seed for target could be staged from,
+// NEAREST RING FIRST and in symbol order inside each ring.
+//
+// The candidate set is the tick's neighbour map — every system whose gate
+// adjacency we have measured — exactly as it was before; only the test applied
+// to it widened, from "borders the target" to "can be walked to it". Symbol
+// order is kept as the tie-break so two origins the same distance out are
+// chosen between reproducibly, tick after tick.
+func originsWithinReach(ctx context.Context, reach *gateReach, target string) ([]string, error) {
+	type candidate struct {
+		system string
+		hops   int
+	}
+	var found []candidate
+	for _, origin := range reach.origins() {
+		hops, within, err := reach.hops(ctx, origin, target)
+		if err != nil {
+			return nil, err
+		}
+		if within {
+			found = append(found, candidate{origin, hops})
+		}
+	}
+	sort.SliceStable(found, func(i, j int) bool { return found[i].hops < found[j].hops })
+
+	out := make([]string, 0, len(found))
+	for _, c := range found {
+		out = append(out, c.system)
+	}
+	return out, nil
+}
+
 // --- seed lifecycle ----------------------------------------------------------
 
 // advanceSeeds moves every running errand one step, up to the tick's budget.
@@ -1145,7 +1453,7 @@ func advanceSeeds(
 	targets []ExpandSystem,
 	covered map[string]bool,
 	book *slotBook,
-	neighbours map[string][]string,
+	reach *gateReach,
 	probeYards map[string][]string,
 	rep *ExpandReport,
 ) error {
@@ -1161,7 +1469,7 @@ func advanceSeeds(
 		if rep.Actions >= MaxExpansionActions {
 			return nil
 		}
-		acted, err := advanceSeed(ctx, p, playerID, k, s, targets, covered, book, neighbours, probeYards, rep)
+		acted, err := advanceSeed(ctx, p, playerID, k, s, targets, covered, book, reach, probeYards, rep)
 		if err != nil {
 			return err
 		}
@@ -1183,7 +1491,7 @@ func advanceSeed(
 	targets []ExpandSystem,
 	covered map[string]bool,
 	book *slotBook,
-	neighbours map[string][]string,
+	reach *gateReach,
 	probeYards map[string][]string,
 	rep *ExpandReport,
 ) (bool, error) {
@@ -1201,7 +1509,7 @@ func advanceSeed(
 	if s.SeedState == SeedStateDispatched {
 		return dispatchSeed(ctx, p, playerID, s, pos, rep)
 	}
-	return chartSeed(ctx, p, playerID, k, s, pos, targets, covered, book, neighbours, probeYards, rep)
+	return chartSeed(ctx, p, playerID, k, s, pos, targets, covered, book, reach, probeYards, rep)
 }
 
 // dispatchSeed gets a hull to its target system, one gate hop at a time.
@@ -1283,7 +1591,7 @@ func chartSeed(
 	targets []ExpandSystem,
 	covered map[string]bool,
 	book *slotBook,
-	neighbours map[string][]string,
+	reach *gateReach,
 	probeYards map[string][]string,
 	rep *ExpandReport,
 ) (bool, error) {
@@ -1292,7 +1600,7 @@ func chartSeed(
 		return false, nil // unreadable: leave the tour alone and retry next tick
 	}
 	if len(remaining) == 0 {
-		return finishTour(ctx, p, playerID, s, pos, targets, covered, book, neighbours, probeYards, rep)
+		return finishTour(ctx, p, playerID, s, pos, targets, covered, book, reach, probeYards, rep)
 	}
 
 	if !contains(remaining, pos.Waypoint) {
@@ -1415,7 +1723,7 @@ func finishTour(
 	targets []ExpandSystem,
 	covered map[string]bool,
 	book *slotBook,
-	neighbours map[string][]string,
+	reach *gateReach,
 	probeYards map[string][]string,
 	rep *ExpandReport,
 ) (bool, error) {
@@ -1444,7 +1752,7 @@ func finishTour(
 		}
 	}
 
-	retargeted, err := retargetSeed(ctx, p, playerID, s, current, targets, covered, neighbours, rep)
+	retargeted, err := retargetSeed(ctx, p, playerID, s, current, targets, covered, reach, rep)
 	if err != nil || retargeted {
 		return true, err
 	}
@@ -1494,7 +1802,15 @@ func fillPlacement(
 // retargetSeed sends a finished seed on to the next system reachable from where
 // it stands that still needs charting, and reports whether it found one.
 //
-// Reachability is ONE gate hop, because that is what a dispatched seed executes.
+// Reachability is MaxWalkRings gate hops, because that is what a dispatched seed
+// now executes — the errand is re-stamped onto the new target and the seed walks
+// there a hop per tick, exactly as it walked to this one. It was one hop while
+// JumpTo was single-hop by construction, and leaving it there afterwards would
+// have made this the one place in the engine that refused reach the rest of it
+// grants: a finished hull standing two hops from a dark system would be parked
+// as a spare and a FRESH probe bought to cover the very target it was already
+// next to.
+//
 // The candidate must also be a system the ledger says has charting work: this is
 // the same seedless-target list the spare claim and the purchase request draw
 // from, so a system covered by a retarget cannot also be sent a hull it does not
@@ -1526,15 +1842,18 @@ func retargetSeed(
 	current string,
 	targets []ExpandSystem,
 	covered map[string]bool,
-	neighbours map[string][]string,
+	reach *gateReach,
 	rep *ExpandReport,
 ) (bool, error) {
-	adjacent, err := neighboursOf(ctx, p, current, neighbours)
-	if err != nil {
-		return false, err
-	}
 	for _, target := range targets {
-		if covered[target.System] || target.System == s.System || !contains(adjacent, target.System) {
+		if covered[target.System] || target.System == s.System {
+			continue
+		}
+		within, err := reach.canReach(ctx, current, target.System)
+		if err != nil {
+			return false, err
+		}
+		if !within {
 			continue
 		}
 		if err := p.Ledger.SetSeed(ctx, playerID, s.System, "", ""); err != nil {
@@ -1576,20 +1895,12 @@ func restoreErrand(ctx context.Context, p ExpandPorts, playerID int, s ExpandSys
 		s.SeedShip, target, s.System, cause)
 }
 
-// neighboursOf reads a system's gate neighbours from the tick's map, falling
-// back to the gate store for a system the map does not cover — a tour usually
-// ends in a system that was still PENDING when the map was built, and PENDING
-// systems are deliberately not walked.
-func neighboursOf(ctx context.Context, p ExpandPorts, system string, neighbours map[string][]string) ([]string, error) {
-	if adjacent, resolved := neighbours[system]; resolved {
-		return adjacent, nil
-	}
-	adjacent, err := p.Gates.Neighbours(ctx, system)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read gate neighbours of %q: %w", system, err)
-	}
-	return adjacent, nil
-}
+// neighboursOf's job — reading a system's gate neighbours from the tick's map
+// and falling back to the store for one the map does not cover — is now
+// gateReach.adjacent, which does the same thing and memoises the fallback. A
+// tour still usually ends in a system that was PENDING when the map was built,
+// so the fallback is as load-bearing as it ever was; it just lives beside the
+// search that needs it.
 
 // standDownAsSpare parks a finished seed where it stands, as a reserve hull the
 // buy queue can re-task for free.

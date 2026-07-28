@@ -542,7 +542,7 @@ func (p *MoverPort) RouteAcross(ctx context.Context, playerID int, shipSymbol, f
 
 	// Resolved before any movement, so an unreachable destination never buys a
 	// wasted flight to a gate.
-	nextSystem, err := p.nextHopToward(ctx, currentSystem, shared.ExtractSystemSymbol(destination))
+	nextSystem, err := nextHopToward(ctx, p.neighbours, currentSystem, shared.ExtractSystemSymbol(destination))
 	if err != nil {
 		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
 			"Sensing placement wants %s walked from %s to %s, but no gate route could be named within %d jumps of stored adjacency — the placement is held and retried, and the hull keeps counting against the probe cap: %v",
@@ -555,16 +555,37 @@ func (p *MoverPort) RouteAcross(ctx context.Context, playerID int, shipSymbol, f
 		})
 		return fmt.Errorf("failed to name the next system for %s walking to %s: %w", shipSymbol, destination, err)
 	}
+	return stepThroughGate(ctx, p.mediator, pid, shipSymbol, fromWaypoint, nextSystem)
+}
 
-	gate, err := gateToLeaveFrom(sensingCtx(ctx), p.mediator, pid.Value(), shipSymbol)
+// stepThroughGate performs the ONE physical move a gate crossing calls for from
+// where the hull is standing: onto the gate, or off it into nextSystem.
+//
+// Shared by both walkers — the placement mover's and the charting seed's — for
+// the same reason dispatchHop and gateToLeaveFrom are. They perform the same two
+// steps under the same no-waiting contract, and two copies of the sequence could
+// drift into moving a hull to one gate and jumping it from another.
+//
+// nextSystem must already be ADJACENT to the hull's current system: naming a
+// system the gate does not connect to is a jump the API rejects, and the hull
+// would sit on the gate re-issuing it forever. Resolving that is the caller's
+// job, and both callers do it BEFORE reaching here, which is what keeps an
+// unroutable destination from buying a wasted flight to a gate.
+func stepThroughGate(
+	ctx context.Context,
+	med common.Mediator,
+	pid shared.PlayerID,
+	shipSymbol, fromWaypoint, nextSystem string,
+) error {
+	gate, err := gateToLeaveFrom(sensingCtx(ctx), med, pid.Value(), shipSymbol)
 	if err != nil {
 		return err
 	}
 	if gate != fromWaypoint {
-		// Step one: get it onto the gate, dispatch-only. The slot holding where
-		// it is — BOUGHT, or IN_TRANSIT once dispatched — is what makes the next
+		// Step one: get it onto the gate, dispatch-only. The durable row holding
+		// where it is — the slot, or the seed's errand — is what makes the next
 		// tick pick up from here.
-		return dispatchHop(ctx, p.mediator, pid, shipSymbol, gate)
+		return dispatchHop(ctx, med, pid, shipSymbol, gate)
 	}
 
 	// Step two. The hull is ON the gate, so JumpShipCommand's navigate branch is
@@ -573,18 +594,18 @@ func (p *MoverPort) RouteAcross(ctx context.Context, playerID int, shipSymbol, f
 	// next JUMP rather than this navigate, and a cooldown-rejected jump is just
 	// the free retry every step in this engine already gets.
 	id := pid.Value()
-	if _, err := p.mediator.Send(sensingCtx(ctx), &shipNav.JumpShipCommand{
+	if _, err := med.Send(sensingCtx(ctx), &shipNav.JumpShipCommand{
 		ShipSymbol:        shipSymbol,
 		DestinationSystem: nextSystem,
 		PlayerID:          &id,
 	}); err != nil {
-		return fmt.Errorf("failed to jump %s from %s to %s: %w", shipSymbol, currentSystem, nextSystem, err)
+		return fmt.Errorf("failed to jump %s to %s: %w", shipSymbol, nextSystem, err)
 	}
 	return nil
 }
 
-// nextHopToward names the ADJACENT system the walk should jump to next to get
-// from fromSystem toward toSystem, by breadth-first search over the stored gate
+// nextHopToward names the ADJACENT system a walk should jump to next to get from
+// fromSystem toward toSystem, by breadth-first search over the stored gate
 // adjacency out to maxWalkRings.
 //
 // It returns the FIRST-RING system, not the path: the only thing a single step
@@ -595,8 +616,14 @@ func (p *MoverPort) RouteAcross(ctx context.Context, playerID int, shipSymbol, f
 // PURE STORE READS. Neighbours already drops under-construction and stale edges
 // and answers an unknown system with nothing, so a topology we are unsure of
 // ends the search rather than routing a hull into a gate that will reject it.
-func (p *MoverPort) nextHopToward(ctx context.Context, fromSystem, toSystem string) (string, error) {
-	if p.neighbours == nil {
+//
+// A PACKAGE FUNCTION rather than a method, because it has two callers now: the
+// placement mover and the charting seed walk the same graph under the same bound
+// and must agree about what is reachable. The application layer stages seeds
+// against its own search bounded by the same MaxWalkRings, so a second copy here
+// is what would let staging hand out errands this cannot resolve.
+func nextHopToward(ctx context.Context, neighbours appSensing.GateNeighbours, fromSystem, toSystem string) (string, error) {
+	if neighbours == nil {
 		return "", fmt.Errorf("no stored gate adjacency is wired to name a next system toward %s", toSystem)
 	}
 
@@ -610,7 +637,7 @@ func (p *MoverPort) nextHopToward(ctx context.Context, fromSystem, toSystem stri
 	for ring := 0; ring < maxWalkRings && len(frontier) > 0; ring++ {
 		var next []reached
 		for _, cur := range frontier {
-			systems, err := p.neighbours.Neighbours(ctx, cur.system)
+			systems, err := neighbours.Neighbours(ctx, cur.system)
 			if err != nil {
 				return "", fmt.Errorf("failed to read the gate neighbours of %q: %w", cur.system, err)
 			}
@@ -713,21 +740,54 @@ type SeedCommandPort struct {
 	players   playerTokenReader
 	waypoints waypointCacheWriter
 	scanner   marketScanAPI
+	// neighbours is the stored gate adjacency the crossing picks its next system
+	// from — the SAME store, read the same direction, that the placement mover
+	// walks and that seed staging measures reach against. A nil store names no
+	// next system, so the crossing fails closed without moving anything.
+	neighbours appSensing.GateNeighbours
 }
 
 // NewSeedCommandPort wires the charting-seed verbs.
+//
+// neighbours may be nil, in which case every gate crossing fails closed rather
+// than guessing — the same contract NewMoverPort's has, and for the same reason:
+// a hull flown toward a gate it has no route out of is fuel spent to put it
+// further from anywhere useful.
 func NewSeedCommandPort(
 	mediator common.Mediator,
 	api seedChartAPI,
 	players playerTokenReader,
 	waypoints waypointCacheWriter,
 	scanner marketScanAPI,
+	neighbours appSensing.GateNeighbours,
 ) *SeedCommandPort {
-	return &SeedCommandPort{mediator: mediator, api: api, players: players, waypoints: waypoints, scanner: scanner}
+	return &SeedCommandPort{
+		mediator: mediator, api: api, players: players,
+		waypoints: waypoints, scanner: scanner, neighbours: neighbours,
+	}
 }
 
-// JumpTo advances a hull ONE step of its gate hop to targetSystem: the in-system
-// move onto the gate, or the jump off it. It returns either way.
+// JumpTo advances a hull ONE step of its gate CROSSING to targetSystem: the
+// in-system move onto the gate, or the jump off it. It returns either way.
+//
+// TARGETSYSTEM IS A DESTINATION, NOT A NEIGHBOUR. It used to be both — this verb
+// named targetSystem as the jump's destination directly, which is correct only
+// while a seed's errand is a system next door. Seed staging now reaches
+// MaxWalkRings, so the errand's target is routinely NOT connected to the gate
+// the hull is standing on, and a jump naming an unconnected system is rejected
+// by the API: the hull would sit on the gate re-issuing a refused command every
+// tick, indistinguishable from a reactor cooldown, charting nothing while
+// holding probe-cap headroom.
+//
+// So the crossing is WALKED, through exactly the search and the step the
+// placement mover uses. The next system is resolved from stored adjacency BEFORE
+// anything moves, which is what keeps an unroutable errand from buying a wasted
+// flight to a gate, and the hop is dispatched and returned from. Nothing about
+// how far the crossing has got is persisted here and nothing needs to be: the
+// seed's errand row names the target and the ships table names where the hull
+// stands, so the next tick re-reads both and re-derives the next hop from where
+// it ACTUALLY is — which is what makes the walk resume across a restart and
+// self-correct when a hull ends up somewhere the last step did not send it.
 //
 // WHY THE HOP IS SPLIT. A gate crossing is two physical moves, and only the first
 // is a flight. JumpShipCommand does both — it finds the nearest gate, flies the
@@ -757,29 +817,34 @@ func (p *SeedCommandPort) JumpTo(ctx context.Context, playerID int, shipSymbol, 
 	if err != nil {
 		return err
 	}
-	id := pid.Value()
-	mctx := sensingCtx(ctx)
 
-	gate, err := gateToLeaveFrom(mctx, p.mediator, id, shipSymbol)
+	currentSystem := shared.ExtractSystemSymbol(fromWaypoint)
+	if currentSystem == targetSystem {
+		// Already arrived. Defensive — dispatchSeed reads the position and hands
+		// the errand to its arrival branch in this case — but it costs nothing
+		// and keeps the verb correct on its own.
+		return nil
+	}
+
+	// Resolved before any movement, so an errand the stored graph cannot route
+	// never buys a wasted flight to a gate. Staging applies the same bound to
+	// the same store before an errand is ever stamped, so reaching this branch
+	// means the topology changed under us — the errand holds, the hull stays
+	// where it is, and the next tick retries for free.
+	nextSystem, err := nextHopToward(ctx, p.neighbours, currentSystem, targetSystem)
 	if err != nil {
-		return err
+		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
+			"Charting seed %s is bound for %s from %s, but no gate route could be named within %d jumps of stored adjacency — the errand is held and retried, and the hull keeps counting against the probe cap: %v",
+			shipSymbol, targetSystem, currentSystem, maxWalkRings, err), map[string]interface{}{
+			"action":         "parked_sensing_seed_walk_unroutable",
+			"ship_symbol":    shipSymbol,
+			"from_system":    currentSystem,
+			"target_system":  targetSystem,
+			"max_walk_rings": maxWalkRings,
+		})
+		return fmt.Errorf("failed to name the next system for seed %s bound for %s: %w", shipSymbol, targetSystem, err)
 	}
-	if gate != fromWaypoint {
-		// Step one: get it onto the gate, dispatch-only. Holding the errand at
-		// DISPATCHED is what makes the next tick pick up where this left off.
-		return dispatchHop(ctx, p.mediator, pid, shipSymbol, gate)
-	}
-
-	// Step two. The hull is ON the gate, so JumpShipCommand's navigate branch is
-	// unreachable and the command is the bare jump it was named for.
-	if _, err := p.mediator.Send(mctx, &shipNav.JumpShipCommand{
-		ShipSymbol:        shipSymbol,
-		DestinationSystem: targetSystem,
-		PlayerID:          &id,
-	}); err != nil {
-		return fmt.Errorf("failed to jump %s to %s: %w", shipSymbol, targetSystem, err)
-	}
-	return nil
+	return stepThroughGate(ctx, p.mediator, pid, shipSymbol, fromWaypoint, nextSystem)
 }
 
 // gateToLeaveFrom names the jump gate in the hull's CURRENT system that a hop

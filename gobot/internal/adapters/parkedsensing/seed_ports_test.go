@@ -102,7 +102,7 @@ func (s *stubPlayerRepo) FindByID(_ context.Context, id shared.PlayerID) (*playe
 }
 
 func newSeedPort(api *fakeChartAPI, cache *fakeWaypointCache, scanner *fakeSeedScanner) *adapterSensing.SeedCommandPort {
-	return adapterSensing.NewSeedCommandPort(nil, api, &stubPlayerRepo{}, cache, scanner)
+	return adapterSensing.NewSeedCommandPort(nil, api, &stubPlayerRepo{}, cache, scanner, nil)
 }
 
 func TestSeedCommandPort_Chart_TreatsAnAlreadyChartedWaypointAsSuccess(t *testing.T) {

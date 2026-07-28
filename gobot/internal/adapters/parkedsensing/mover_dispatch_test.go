@@ -334,7 +334,7 @@ func TestSeedCommandPort_JumpTo_WalksTheGateHopOneStepPerTick(t *testing.T) {
 	t.Run("tick 1: off the gate, dispatches the hop and returns", func(t *testing.T) {
 		med := newJourneyMediator()
 		med.gate, med.shipAt = gate, "X1-AA-M1" // parked at its old slot, not the gate
-		seed := adapterSensing.NewSeedCommandPort(med, nil, nil, nil, nil)
+		seed := adapterSensing.NewSeedCommandPort(med, nil, nil, nil, nil, seedHopGates)
 
 		done := make(chan error, 1)
 		go func() {
@@ -364,7 +364,7 @@ func TestSeedCommandPort_JumpTo_WalksTheGateHopOneStepPerTick(t *testing.T) {
 	t.Run("tick 2: standing on the gate, jumps", func(t *testing.T) {
 		med := newJourneyMediator()
 		med.gate, med.shipAt = gate, gate // the hop above has landed
-		seed := adapterSensing.NewSeedCommandPort(med, nil, nil, nil, nil)
+		seed := adapterSensing.NewSeedCommandPort(med, nil, nil, nil, nil, seedHopGates)
 
 		done := make(chan error, 1)
 		go func() {
@@ -397,8 +397,19 @@ func TestSeedCommandPort_JumpTo_WalksTheGateHopOneStepPerTick(t *testing.T) {
 func TestSeedCommandPort_JumpTo_UsesPositionNotDistance(t *testing.T) {
 	med := newJourneyMediator()
 	// Co-located with the gate (an orbital of the same body) but NOT on it.
-	med.gate, med.shipAt = "X1-AA-J1", "X1-AA-J1-MOON"
-	seed := adapterSensing.NewSeedCommandPort(med, nil, nil, nil, nil)
+	//
+	// A REAL THREE-SEGMENT SYMBOL, as X1-KP23-A2 is in the placement walk's
+	// version of this test. It used to read "X1-AA-J1-MOON", which expressed
+	// co-location by suffix and cannot occur: every one of the 25,208 waypoints
+	// in the live cache has exactly three segments, and ExtractSystemSymbol —
+	// which strips everything after the LAST hyphen — reads that shape as the
+	// system "X1-AA-J1". Harmless while JumpTo never asked what system the hull
+	// was in; the moment the crossing resolved a route it was asking about a
+	// system that does not exist. The discriminator under test is untouched:
+	// gate != fromWaypoint still separates "on the gate" from "beside it", and
+	// the mediator still hangs if a jump is sent from off-gate.
+	med.gate, med.shipAt = "X1-AA-J1", "X1-AA-J2"
+	seed := adapterSensing.NewSeedCommandPort(med, nil, nil, nil, nil, seedHopGates)
 
 	done := make(chan error, 1)
 	go func() {
@@ -428,7 +439,7 @@ func TestSeedCommandPort_JumpTo_UsesPositionNotDistance(t *testing.T) {
 // hop buys nothing and holds the tick open for a whole leg of the tour.
 func TestSeedCommandPort_NavigateTo_DispatchesAndReturns(t *testing.T) {
 	med := newJourneyMediator()
-	seed := adapterSensing.NewSeedCommandPort(med, nil, nil, nil, nil)
+	seed := adapterSensing.NewSeedCommandPort(med, nil, nil, nil, nil, seedHopGates)
 
 	done := make(chan error, 1)
 	go func() {
