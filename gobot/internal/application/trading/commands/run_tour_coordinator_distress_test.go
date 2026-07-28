@@ -123,8 +123,17 @@ func TestTour_MarginsDeath_ReachableSink_OffloadsNotDistress(t *testing.T) {
 	if r.DistressLiquidations != 0 {
 		t.Fatalf("distress must NOT fire when the offload can rescue the hull, got %d distress liquidations", r.DistressLiquidations)
 	}
-	if fx.sells != 0 {
-		t.Fatalf("no distress sale must occur while the offload rescue path is available, got %d sells", fx.sells)
+	// The one sale here is the sp-8zhit EXIT sweep, not a distress dump: the offload jumped the
+	// hull to X1-O2 precisely because that market buys the PARTS it is stuck holding, and the run
+	// then ends there. Flying a hull to its buyer and releasing it still loaded was the whole
+	// sp-8zhit defect — the load must leave the hold before the hull does. DistressLiquidations
+	// above is the assertion that distress did not pre-empt the offload; this one pins WHICH
+	// mechanism sold.
+	if r.ExitHoldLiquidations != 1 || fx.sells != 1 {
+		t.Fatalf("the offloaded PARTS must be sold at the sink the hull was flown to, got ExitHoldLiquidations=%d / %d sells", r.ExitHoldLiquidations, fx.sells)
+	}
+	if fx.cargo["PARTS"] != 0 {
+		t.Fatalf("the hull must not be released still holding the load the offload flew it to sell, got %+v", fx.cargo)
 	}
 }
 

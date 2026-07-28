@@ -371,6 +371,13 @@ type RunTourCoordinatorResponse struct {
 	// relaunch-after-relaunch full. Zero on every run that never strands a hull laden.
 	DistressLiquidations int
 
+	// ExitHoldLiquidations counts the goods the sp-8zhit exit sweep cleared out of the hold on
+	// the way to release: cargo that had a live local bid and would otherwise have been marooned
+	// on an idle hull the instant releaseShipAssignments ran. It is the falsifier for that sweep
+	// — a run whose hold emptied for any OTHER reason leaves this at zero — so a regression that
+	// stops consulting the invariant shows up as a flat counter, not just a changed row.
+	ExitHoldLiquidations int
+
 	// CapitalDeniedBuys counts buys a MONEY GUARD refused: the working-capital floor, or a
 	// fail-closed unreadable balance. A tour that flew zero trades while this rose was
 	// DENIED CAPITAL — the planner found the margin, the treasury could not fund it — which
