@@ -788,12 +788,38 @@ func postBuyCredits(before, price int64, probe BoughtProbe) int64 {
 }
 
 // drainCandidates returns the placements to work this tick, in priority order:
-// every IN_SCOPE fill sorted by system depth descending, then the seeds.
+// every IN_SCOPE fill sorted by COVERAGE ascending with depth as the tiebreak,
+// then the seeds.
+//
+// COVERAGE FIRST, BECAUSE A BUDGET OF SIX IS SPENT ON THE HEAD OF THIS LIST.
+// Sorting on depth alone let the richest system's placements occupy the whole
+// head of every tick, so a poorer system never got a turn however long it
+// waited — measured on the live fleet as 67% of parked probes sitting in three
+// systems while covered systems held one each. Depth is still the tiebreak, so
+// once coverage is even this degenerates to the old ordering exactly.
+//
+// EVERY SLOT CARRIES ITS OWN COVERAGE, which is the part that would otherwise be
+// got wrong. Ranking purely on probes already parked would tie a 0-probe
+// system's twenty-two outstanding placements at rank 0 together, and that system
+// would take the whole tick — reproducing the concentration one tier down. So
+// the i-th outstanding placement of a system ranks at parked + i: its first slot
+// competes at 0, its second at 1, and a second system on 0 outranks the first
+// system's second slot.
+//
+// The index is taken walking the list in the order the LEDGER returned it, before
+// any sort, because that order is FIFO per system and the sort below is stable —
+// which is what keeps a placement from being overtaken by a newer one in its own
+// system, tick after tick.
+//
+// The hulls a system already holds come from a separate narrow read — see
+// coverageBySystem for why they are not simply folded into the query below.
 //
 // QUEUED slots are drained alongside WANTED ones. A slot reaches QUEUED when a
 // previous tick claimed it and its purchase then failed; without re-reading
 // QUEUED here that claim would be a one-way door and the placement would never
-// be retried.
+// be retried. A QUEUED slot is a candidate AND consumes a coverage index, which
+// is right both ways round: it still needs working, and a claim already made is
+// a probe already spoken for.
 func drainCandidates(ctx context.Context, p BuyPorts, playerID int) ([]QueuedSlot, error) {
 	slots, err := p.Ledger.SlotsByState(ctx, playerID, SlotStateWanted, SlotStateQueued)
 	if err != nil {
@@ -830,13 +856,85 @@ func drainCandidates(ctx context.Context, p BuyPorts, playerID int) ([]QueuedSlo
 		// one purchase this queue must never make.
 	}
 
-	// Stable, so the ledger's own waypoint ordering survives as the within-
-	// system tiebreak — which makes the queue FIFO per system and its output
+	if len(fills) == 0 {
+		return seeds, nil
+	}
+	covered, err := coverageBySystem(ctx, p, playerID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Each fill's effective coverage, taken in the ledger's own order so the
+	// per-system index is FIFO.
+	ranked := make([]rankedFill, len(fills))
+	outstanding := make(map[string]int, len(fills))
+	for i, fill := range fills {
+		ranked[i] = rankedFill{slot: fill, coverage: covered[fill.System] + outstanding[fill.System]}
+		outstanding[fill.System]++
+	}
+
+	// Stable, so the ledger's own waypoint ordering survives as the last
+	// tiebreak — which makes the queue FIFO per system and its output
 	// reproducible tick to tick.
-	sort.SliceStable(fills, func(i, j int) bool {
-		return depth[fills[i].System] > depth[fills[j].System]
+	sort.SliceStable(ranked, func(i, j int) bool {
+		if ranked[i].coverage != ranked[j].coverage {
+			return ranked[i].coverage < ranked[j].coverage
+		}
+		return depth[ranked[i].slot.System] > depth[ranked[j].slot.System]
 	})
-	return append(fills, seeds...), nil
+
+	out := make([]QueuedSlot, 0, len(ranked)+len(seeds))
+	for _, r := range ranked {
+		out = append(out, r.slot)
+	}
+	return append(out, seeds...), nil
+}
+
+// rankedFill is one fill beside the coverage it competes at — the count of hulls
+// its system already holds, plus its own position among that system's
+// outstanding placements.
+type rankedFill struct {
+	slot     QueuedSlot
+	coverage int
+}
+
+// coverageBySystem counts the hulls each system already has or has coming.
+//
+// The states are exactly the ones states.go calls hull-bearing — "from BOUGHT
+// onwards a hull exists and counts against the probe cap" — because coverage
+// asks the same question the cap does. Counting only PARKED would read a system
+// with five probes in flight as empty and pile a sixth onto it.
+//
+// A SEPARATE READ RATHER THAN A WIDER CANDIDATE QUERY, and that is not a
+// stylistic choice. Four stages of the tick call SlotsByState and the STATE LIST
+// is the only thing that tells them apart — the reconcile ordering tests
+// fingerprint each stage by it. Widening the candidate query to cover these
+// states would have spelled `allSlotStates` exactly, making the drain's read
+// indistinguishable from the expansion tick's and the adoption sweep's, so an
+// ordering assertion would silently match the wrong stage. The narrow read keeps
+// both fingerprints unique, and it keeps the filled rows structurally incapable
+// of reaching the candidate list — a filled row worked as a candidate would buy
+// a second probe for a waypoint that already holds one.
+//
+// It costs one local ledger query, taken only once the tick has fills to order,
+// so a tick with nothing to buy still costs nothing. It is never an API call.
+//
+// FAILS CLOSED, like every other read in this queue. Reading an unavailable
+// ledger as "no coverage anywhere" would not merely mis-order — it would rank
+// every system at zero and hand the whole budget to whichever one sorts deepest,
+// which is the concentration this ordering exists to prevent, arriving silently
+// and exactly when the ledger is unwell. Nothing has been spent at this point in
+// the tick, so stopping costs no requests and one cycle.
+func coverageBySystem(ctx context.Context, p BuyPorts, playerID int) (map[string]int, error) {
+	filled, err := p.Ledger.SlotsByState(ctx, playerID, SlotStateBought, SlotStateInTransit, SlotStateParked)
+	if err != nil {
+		return nil, fmt.Errorf("sensing coverage unreadable, buying nothing this tick: %w", err)
+	}
+	covered := make(map[string]int, len(filled))
+	for _, slot := range filled {
+		covered[slot.System]++
+	}
+	return covered, nil
 }
 
 // reuseSpareHull re-tasks a spare probe already parked in the target's system,

@@ -30,7 +30,11 @@ type fakeBuyLedger struct {
 	owned   int64
 
 	slotsErr, systemsErr, ownedErr error
-	transitionErr                  map[string]error
+	// coverageErr fails ONLY the hull-bearing read coverageBySystem makes, so a
+	// test can exercise that guard without also breaking the candidate read that
+	// runs before it.
+	coverageErr   error
+	transitionErr map[string]error
 
 	transitions  []transitionCall
 	systemsCalls int
@@ -43,6 +47,11 @@ func (f *fakeBuyLedger) SlotsByState(_ context.Context, _ int, states ...string)
 	want := make(map[string]bool, len(states))
 	for _, s := range states {
 		want[s] = true
+	}
+	if f.coverageErr != nil && !want[SlotStateWanted] {
+		// Adversarial: a populated coverage map alongside the error, so a guard
+		// that leaks it orders on numbers it could not read.
+		return []QueuedSlot{{Waypoint: "X1-GHOST-P1", System: "X1-GHOST", State: SlotStateParked}}, f.coverageErr
 	}
 	var out []QueuedSlot
 	for _, s := range f.slots {
@@ -438,16 +447,23 @@ func multiSystemPorts() (BuyPorts, *fakeBuyLedger, *fakePurchaser) {
 	}, led, pur
 }
 
-func TestDrain_FillsDeepSystemsFirstThenSeeds(t *testing.T) {
+func TestDrain_SpreadsAcrossSystemsBeforeDeepeningOne(t *testing.T) {
+	// Coverage first, depth as the tiebreak WITHIN a coverage tier. X1-DEEP holds
+	// two placements: its FIRST is served ahead of everything (deepest at coverage
+	// 0), but its SECOND ranks at coverage 1 and therefore waits behind every
+	// system still on 0 — so one drain reaches three systems instead of spending
+	// its head on the richest one.
+	//
+	// This test previously asserted DEEP, DEEP, MID, SHALLOW: pure depth order,
+	// which is the concentration this ordering exists to remove.
 	ports, _, pur := multiSystemPorts()
 
 	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
 
-	// Deepest system first, FIFO within it (the ledger's own ordering), then
-	// shallower fills, and only then the unscreened frontier seed.
-	want := []string{"X1-DEEP-Y1", "X1-DEEP-Y1", "X1-MID-Y1", "X1-SHALLOW-Y1", "X1-FRONTIER-Y1"}
+	// ...and only then the unscreened frontier seed, which still sorts last.
+	want := []string{"X1-DEEP-Y1", "X1-MID-Y1", "X1-SHALLOW-Y1", "X1-DEEP-Y1", "X1-FRONTIER-Y1"}
 	if len(pur.buys) != len(want) {
 		t.Fatalf("made %d purchases, want %d: %v", len(pur.buys), len(want), pur.buys)
 	}
@@ -455,6 +471,117 @@ func TestDrain_FillsDeepSystemsFirstThenSeeds(t *testing.T) {
 		if pur.buys[i].yard != w {
 			t.Fatalf("purchase %d was at %q, want %q (full order %v)", i, pur.buys[i].yard, w, pur.buys)
 		}
+	}
+}
+
+func TestDrain_AlreadyParkedProbesPushARichSystemDownTheOrder(t *testing.T) {
+	// X1-DEEP is the deeper system AND its placement is FIRST in ledger order, so
+	// both of the old sort's keys point at it. It already holds two parked probes;
+	// X1-MID holds none. Only effective coverage puts X1-MID first.
+	led := &fakeBuyLedger{
+		slots: []QueuedSlot{
+			{Waypoint: "X1-DEEP-M1", System: "X1-DEEP", Kind: SlotKindMarket, State: SlotStateWanted},
+			{Waypoint: "X1-DEEP-P1", System: "X1-DEEP", Kind: SlotKindMarket, State: SlotStateParked, AssignedShip: "PROBE-D1"},
+			{Waypoint: "X1-DEEP-P2", System: "X1-DEEP", Kind: SlotKindMarket, State: SlotStateParked, AssignedShip: "PROBE-D2"},
+			{Waypoint: "X1-MID-M1", System: "X1-MID", Kind: SlotKindMarket, State: SlotStateWanted},
+		},
+		systems: []ScreenedSystem{
+			{System: "X1-DEEP", DepthCredits: 5_000},
+			{System: "X1-MID", DepthCredits: 3_000},
+		},
+	}
+	pur := &fakePurchaser{price: 1_000}
+	ports := BuyPorts{
+		Treasury:   &fakeTreasury{credits: 10_000_000},
+		CargoSpend: &fakeCargoSpend{},
+		Purchaser:  pur,
+		Ledger:     led,
+		Yards: &fakeYards{yards: map[string][]string{
+			"X1-DEEP": {"X1-DEEP-Y1"},
+			"X1-MID":  {"X1-MID-Y1"},
+		}},
+		Ships: &fakeShipReader{docked: map[string]string{
+			"X1-DEEP-Y1": "BUYER-DEEP",
+			"X1-MID-Y1":  "BUYER-MID",
+		}},
+		Fleet: &fakeFleet{},
+	}
+
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+
+	want := []string{"X1-MID-Y1", "X1-DEEP-Y1"}
+	if len(pur.buys) != len(want) {
+		t.Fatalf("made %d purchases, want %d: %v", len(pur.buys), len(want), pur.buys)
+	}
+	for i, w := range want {
+		if pur.buys[i].yard != w {
+			t.Fatalf("purchase %d was at %q, want %q (full order %v)", i, pur.buys[i].yard, w, pur.buys)
+		}
+	}
+}
+
+func TestDrain_FilledRowsAreCountedAsCoverageButNeverBoughtFor(t *testing.T) {
+	// The candidate query reads the FILLED states so coverage can be measured
+	// from them. Not one of them may fall through into the candidate list: every
+	// such row already names a hull we have paid for, so working it would buy a
+	// second probe for a waypoint that has one — the money-unsafe direction.
+	//
+	// The PARKED SPARE is the sharpest case: spares are seeds, and a seed skips
+	// the scope filter entirely, so a missing state guard would carry it straight
+	// into the queue.
+	led := &fakeBuyLedger{
+		slots: []QueuedSlot{
+			{Waypoint: "X1-AA-S1", System: "X1-AA", Kind: SlotKindSpare, State: SlotStateParked, AssignedShip: "PROBE-SPARE"},
+			{Waypoint: "X1-AA-P1", System: "X1-AA", Kind: SlotKindMarket, State: SlotStateParked, AssignedShip: "PROBE-M1"},
+			{Waypoint: "X1-AA-T1", System: "X1-AA", Kind: SlotKindMarket, State: SlotStateInTransit, AssignedShip: "PROBE-M2"},
+			{Waypoint: "X1-AA-B1", System: "X1-AA", Kind: SlotKindMarket, State: SlotStateBought, AssignedShip: "PROBE-M3"},
+		},
+		systems: []ScreenedSystem{{System: "X1-AA", DepthCredits: 900}},
+	}
+	pur := &fakePurchaser{price: 1_000}
+	treasury := &fakeTreasury{credits: 10_000_000}
+	ports := BuyPorts{
+		Treasury:   treasury,
+		CargoSpend: &fakeCargoSpend{},
+		Purchaser:  pur,
+		Ledger:     led,
+		Yards:      &fakeYards{yards: map[string][]string{"X1-AA": {"X1-AA-Y1"}}},
+		Ships:      &fakeShipReader{docked: map[string]string{"X1-AA-Y1": "BUYER-AA"}},
+		Fleet:      &fakeFleet{},
+	}
+
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	if err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+	if len(pur.buys) != 0 {
+		t.Fatalf("bought %v for placements that already hold a hull", pur.buys)
+	}
+	if rep.Bought != 0 || rep.Reused != 0 || rep.Queued != 0 || rep.Attempts != 0 {
+		t.Fatalf("report = %+v, want an entirely idle tick", rep)
+	}
+	// The cheapest-first gate returns before the treasury is read when nothing is
+	// queued, so an untouched treasury is proof no candidate was produced.
+	if treasury.calls != 0 {
+		t.Fatalf("treasury read %d times, want 0 — a filled row became a candidate", treasury.calls)
+	}
+}
+
+func TestDrain_UnreadableCoverageBuysNothingThisTick(t *testing.T) {
+	// Reading an unavailable ledger as "no coverage anywhere" would rank every
+	// system at zero and hand the whole budget to whichever sorts deepest — the
+	// concentration this ordering exists to prevent, arriving silently and
+	// exactly when the ledger is unwell.
+	ports, led, pur := multiSystemPorts()
+	led.coverageErr = errors.New("ledger unavailable")
+
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()}); err == nil {
+		t.Fatal("an unreadable coverage read must stop the drain, not order on a blind zero")
+	}
+	if len(pur.buys) != 0 {
+		t.Fatalf("bought %v against coverage we could not read", pur.buys)
 	}
 }
 

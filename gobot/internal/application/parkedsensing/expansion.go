@@ -332,16 +332,24 @@ func AdvanceExpansion(
 	targets := seedlessTargets(systems)
 	covered := make(map[string]bool, len(targets))
 
+	// A system's probe-selling yards, resolved at most once per TICK and shared
+	// by both consumers: the finishing seed picking which placement to fill, and
+	// seed staging picking where a neighbour's probe can be bought. The two ask
+	// about overlapping sets of systems, and sharing the memo is what keeps them
+	// from reading the same catalog twice — and from ever disagreeing about which
+	// waypoints are yards.
+	probeYards := map[string][]string{}
+
 	// Seeds move BEFORE spares are claimed, so an errand stamped this tick is
 	// not also flown by it: the ship row has not caught up yet, and the next
 	// tick reads it. Same discipline as the placement machine's single pass.
-	if err := advanceSeeds(ctx, p, playerID, k, systems, targets, covered, book, neighbours, &rep); err != nil {
+	if err := advanceSeeds(ctx, p, playerID, k, systems, targets, covered, book, neighbours, probeYards, &rep); err != nil {
 		return rep, err
 	}
 	if err := claimSpares(ctx, p, playerID, targets, covered, book, neighbours, &rep); err != nil {
 		return rep, err
 	}
-	return rep, requestSeeds(ctx, p, playerID, targets, covered, book, neighbours, &rep)
+	return rep, requestSeeds(ctx, p, playerID, targets, covered, book, neighbours, probeYards, &rep)
 }
 
 // --- the ledger's working view ----------------------------------------------
@@ -630,23 +638,74 @@ func staffedAt(
 	return staffed, nil
 }
 
-// wantedIn returns the system's unfilled placements, the one the hull is already
-// standing on first. A seed that can fill the placement under its own feet costs
-// no movement at all.
-func (b *slotBook) wantedIn(system, standingOn string) []QueuedSlot {
+// wantedIn returns the system's unfilled placements in the order a finishing
+// seed should try to claim them: the system's SHIPYARDS first, and within each
+// half the placement the hull is already standing on.
+//
+// YARD-FIRST IS THE OUTER KEY, and it is what makes expansion compound. A probe
+// standing at a system's shipyard is the whole difference between a system we
+// merely watch and one that can seed its NEIGHBOURS: stagingYardFor stages a
+// seed only at a yard staffedAt says we hold, and buyerAt buys only through a
+// hull already standing at the counter. So a system with ten probes spread over
+// its markets and none at its yard is a dead end — it can neither extend the
+// frontier nor buy its own next probe — while a system with one probe on its
+// yard does both. Nothing else in the engine prioritises the yard, so before
+// this ordering existed staffing one was coincidental.
+//
+// It therefore outranks the standing-on preference rather than tying with it.
+// That trade is deliberate and it is not close: the cost is ONE intra-system
+// flight, which the placement machine was going to make for some other placement
+// anyway, and the gain is the system becoming a staging origin at all. The
+// standing-on rule is kept as the INNER key, so a hull already berthed on the
+// yard still fills it for free and a system with no yard behaves exactly as it
+// did before.
+//
+// yards is the system's probe-selling shipyards. MATCHED ON WAYPOINT, NEVER ON
+// KIND, which is the one way to get this wrong: planSlots emits a YARD-kind slot
+// only for a yard that is not already a placed market, and in practice every
+// probe-selling yard we screen is also a whitelisted market, so the MARKET slot
+// wins and there are no YARD-kind rows at all. A `Kind == SlotKindYard` test
+// would order an empty set and change nothing. states.go says the same thing as
+// a contract: probe presence at a yard is waypoint-wise.
+func (b *slotBook) wantedIn(system, standingOn string, yards []string) []QueuedSlot {
 	rows := b.wanted[system]
-	out := make([]QueuedSlot, 0, len(rows))
-	for _, row := range rows {
-		if row.Waypoint == standingOn {
-			out = append(out, row)
-		}
+	isYard := make(map[string]bool, len(yards))
+	for _, yard := range yards {
+		isYard[yard] = true
 	}
-	for _, row := range rows {
-		if row.Waypoint != standingOn {
-			out = append(out, row)
+	// Four passes rather than a sort, so the ledger's own order survives inside
+	// each tier and the result is reproducible tick to tick — the same stability
+	// the rest of this engine's ordering depends on.
+	out := make([]QueuedSlot, 0, len(rows))
+	for _, tier := range []struct{ yard, underfoot bool }{
+		{true, true}, {true, false}, {false, true}, {false, false},
+	} {
+		for _, row := range rows {
+			if isYard[row.Waypoint] == tier.yard && (row.Waypoint == standingOn) == tier.underfoot {
+				out = append(out, row)
+			}
 		}
 	}
 	return out
+}
+
+// probeYardsIn lists a system's probe-selling shipyards, memoised for the TICK.
+//
+// One map is shared by every consumer in the tick — the finishing seed's
+// placement choice and seed staging both ask about the systems we hold, and they
+// overlap heavily — so a system's yards are read at most once however many times
+// they are wanted. The read is a local catalog query, never an API call, and the
+// answer cannot change while the tick runs.
+func probeYardsIn(ctx context.Context, p ExpandPorts, system string, memo map[string][]string) ([]string, error) {
+	if yards, cached := memo[system]; cached {
+		return yards, nil
+	}
+	yards, err := p.Yards.ListProbeYards(ctx, system)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list probe yards in %q: %w", system, err)
+	}
+	memo[system] = yards
+	return yards, nil
 }
 
 // wantedAt returns the unfilled placement on one waypoint, if there is one.
@@ -935,11 +994,13 @@ func requestSeeds(
 	covered map[string]bool,
 	book *slotBook,
 	neighbours map[string][]string,
+	probeYards map[string][]string,
 	rep *ExpandReport,
 ) error {
 	// Yards are resolved once per origin and reused: several frontier targets
-	// usually border the same system of ours.
-	yardsByOrigin := map[string][]string{}
+	// usually border the same system of ours. The memo arrives from the tick
+	// rather than being made here, so a system whose yards the finishing seed
+	// already read is not read again.
 	// Whether a hull of ours stands at a waypoint, memoised for the same reason
 	// and with the same lifetime: several targets border the same system of
 	// ours, and the answer cannot change while the tick runs. Shared by BOTH
@@ -963,7 +1024,7 @@ func requestSeeds(
 			continue
 		}
 
-		yard, system, err := stagingYardFor(ctx, p, playerID, target.System, neighbours, book, yardsByOrigin, staffed)
+		yard, system, err := stagingYardFor(ctx, p, playerID, target.System, neighbours, book, probeYards, staffed)
 		if err != nil {
 			return err
 		}
@@ -1039,13 +1100,9 @@ func stagingYardFor(
 		if !contains(neighbours[origin], target) {
 			continue
 		}
-		yards, cached := yardsByOrigin[origin]
-		if !cached {
-			var err error
-			if yards, err = p.Yards.ListProbeYards(ctx, origin); err != nil {
-				return "", "", fmt.Errorf("failed to list probe yards in %q: %w", origin, err)
-			}
-			yardsByOrigin[origin] = yards
+		yards, err := probeYardsIn(ctx, p, origin, yardsByOrigin)
+		if err != nil {
+			return "", "", err
 		}
 		for _, yard := range yards {
 			// A hull of ours must be STANDING at this counter. Without it the
@@ -1089,6 +1146,7 @@ func advanceSeeds(
 	covered map[string]bool,
 	book *slotBook,
 	neighbours map[string][]string,
+	probeYards map[string][]string,
 	rep *ExpandReport,
 ) error {
 	active := make([]ExpandSystem, 0, len(systems))
@@ -1103,7 +1161,7 @@ func advanceSeeds(
 		if rep.Actions >= MaxExpansionActions {
 			return nil
 		}
-		acted, err := advanceSeed(ctx, p, playerID, k, s, targets, covered, book, neighbours, rep)
+		acted, err := advanceSeed(ctx, p, playerID, k, s, targets, covered, book, neighbours, probeYards, rep)
 		if err != nil {
 			return err
 		}
@@ -1126,6 +1184,7 @@ func advanceSeed(
 	covered map[string]bool,
 	book *slotBook,
 	neighbours map[string][]string,
+	probeYards map[string][]string,
 	rep *ExpandReport,
 ) (bool, error) {
 	pos, err := p.Ships.ShipAt(ctx, playerID, s.SeedShip)
@@ -1142,7 +1201,7 @@ func advanceSeed(
 	if s.SeedState == SeedStateDispatched {
 		return dispatchSeed(ctx, p, playerID, s, pos, rep)
 	}
-	return chartSeed(ctx, p, playerID, k, s, pos, targets, covered, book, neighbours, rep)
+	return chartSeed(ctx, p, playerID, k, s, pos, targets, covered, book, neighbours, probeYards, rep)
 }
 
 // dispatchSeed gets a hull to its target system, one gate hop at a time.
@@ -1225,6 +1284,7 @@ func chartSeed(
 	covered map[string]bool,
 	book *slotBook,
 	neighbours map[string][]string,
+	probeYards map[string][]string,
 	rep *ExpandReport,
 ) (bool, error) {
 	remaining, err := p.Uncharted.UnchartedWaypoints(ctx, s.System)
@@ -1232,7 +1292,7 @@ func chartSeed(
 		return false, nil // unreadable: leave the tour alone and retry next tick
 	}
 	if len(remaining) == 0 {
-		return finishTour(ctx, p, playerID, s, pos, targets, covered, book, neighbours, rep)
+		return finishTour(ctx, p, playerID, s, pos, targets, covered, book, neighbours, probeYards, rep)
 	}
 
 	if !contains(remaining, pos.Waypoint) {
@@ -1339,7 +1399,9 @@ func recordSeedMarket(
 //
 //  1. fill a placement in this system — the errand ended somewhere we want
 //     watched, and a hull already standing there is the cheapest probe we will
-//     ever place;
+//     ever place. The system's SHIPYARD is taken ahead of any market, because
+//     that is the placement which turns the system into a staging origin and
+//     lets it buy its own next probe; see wantedIn;
 //  2. otherwise push on to the next frontier system reachable from here, which
 //     is a free extension of an errand already paid for;
 //  3. otherwise stand down as a spare, staying on the books for the buy queue to
@@ -1354,6 +1416,7 @@ func finishTour(
 	covered map[string]bool,
 	book *slotBook,
 	neighbours map[string][]string,
+	probeYards map[string][]string,
 	rep *ExpandReport,
 ) (bool, error) {
 	result, err := p.Screen(ctx, s.System)
@@ -1365,7 +1428,17 @@ func finishTour(
 
 	current := shared.ExtractSystemSymbol(pos.Waypoint)
 	if result.Verdict == VerdictInScope {
-		filled, err := fillPlacement(ctx, p, playerID, s, current, book.wantedIn(current, pos.Waypoint), book, rep)
+		// A catalog that cannot answer stops the tick rather than falling back to
+		// an unordered fill. Reading the failure as "no yards here" would silently
+		// hand the hull to a market and leave the system unable to seed its
+		// neighbours — for good, since the seed is consumed by the placement it
+		// takes and no later tick revisits the choice. The tick is idempotent, so
+		// failing loudly costs one cycle.
+		yards, err := probeYardsIn(ctx, p, current, probeYards)
+		if err != nil {
+			return true, err
+		}
+		filled, err := fillPlacement(ctx, p, playerID, s, current, book.wantedIn(current, pos.Waypoint, yards), book, rep)
 		if err != nil || filled {
 			return true, err
 		}

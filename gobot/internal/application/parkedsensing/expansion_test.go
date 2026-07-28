@@ -1748,6 +1748,102 @@ func TestAdvanceExpansion_ALedgerRefusingWritesStopsTheTickRatherThanParkingASpa
 	}
 }
 
+func TestAdvanceExpansion_TourEndTakesTheShipyardPlacementBeforeAnyMarket(t *testing.T) {
+	// A probe standing at a system's shipyard is what turns a charted system into
+	// a STAGING ORIGIN — stagingYardFor will only stage a seed for a neighbour at
+	// a yard a hull of ours is standing at, and buyerAt will only buy through one.
+	// So the yard placement outranks every market in the system, including the one
+	// under the hull's own feet.
+	h := newExpandHarness()
+	h.ledger.systems = []ExpandSystem{
+		{System: "X1-B", Verdict: VerdictPending,
+			SeedShip: "PROBE-7", SeedState: SeedStateCharting},
+	}
+	// The hull stands on a MARKET placement, so the old "under its own feet" rule
+	// and plain ledger order BOTH point away from the yard. Without yard-first
+	// this fixture fills X1-B-C3.
+	h.ships.positions = map[string]ShipPos{
+		"PROBE-7": {Waypoint: "X1-B-C3", NavStatus: navigation.NavStatusDocked, Found: true},
+	}
+	h.screen.verdicts = map[string]string{"X1-B": VerdictInScope}
+	h.yards.bySystem = map[string][]string{"X1-B": {"X1-B-Y9"}}
+	h.ledger.slots = []QueuedSlot{
+		{Waypoint: "X1-B-A1", System: "X1-B", Kind: SlotKindMarket, State: SlotStateWanted},
+		{Waypoint: "X1-B-C3", System: "X1-B", Kind: SlotKindMarket, State: SlotStateWanted},
+		// LAST in ledger order and not under the hull's feet, so only a yard-first
+		// rule can reach it. Slotted MARKET deliberately: every probe-selling yard
+		// we screen is also a whitelisted market, so the screen emits a MARKET row
+		// and YARD-kind rows do not occur in practice. Matching on kind here would
+		// order an empty set.
+		{Waypoint: "X1-B-Y9", System: "X1-B", Kind: SlotKindMarket, State: SlotStateWanted},
+	}
+
+	if _, err := h.run(t, &fakeUncharted{bySystem: map[string][]string{}}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(h.ledger.transitions) != 1 || h.ledger.transitions[0].waypoint != "X1-B-Y9" {
+		t.Fatalf("transitions = %v, want the shipyard placement X1-B-Y9 claimed first", h.ledger.transitions)
+	}
+}
+
+func TestAdvanceExpansion_ShipyardPlacementUnderTheHullsFeetBeatsAnotherYard(t *testing.T) {
+	// Yard-first is the OUTER key, not the only one: among the system's yards the
+	// hull still prefers the one it is already standing on, which costs no flight.
+	// Ledger order points the other way, so only the two-key ordering passes.
+	h := newExpandHarness()
+	h.ledger.systems = []ExpandSystem{
+		{System: "X1-B", Verdict: VerdictPending,
+			SeedShip: "PROBE-7", SeedState: SeedStateCharting},
+	}
+	h.ships.positions = map[string]ShipPos{
+		"PROBE-7": {Waypoint: "X1-B-Y2", NavStatus: navigation.NavStatusDocked, Found: true},
+	}
+	h.screen.verdicts = map[string]string{"X1-B": VerdictInScope}
+	h.yards.bySystem = map[string][]string{"X1-B": {"X1-B-Y1", "X1-B-Y2"}}
+	h.ledger.slots = []QueuedSlot{
+		{Waypoint: "X1-B-Y1", System: "X1-B", Kind: SlotKindMarket, State: SlotStateWanted},
+		{Waypoint: "X1-B-Y2", System: "X1-B", Kind: SlotKindMarket, State: SlotStateWanted},
+		{Waypoint: "X1-B-A1", System: "X1-B", Kind: SlotKindMarket, State: SlotStateWanted},
+	}
+
+	if _, err := h.run(t, &fakeUncharted{bySystem: map[string][]string{}}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(h.ledger.transitions) != 1 || h.ledger.transitions[0].waypoint != "X1-B-Y2" {
+		t.Fatalf("transitions = %v, want the yard under the hull's own feet (X1-B-Y2)", h.ledger.transitions)
+	}
+}
+
+func TestAdvanceExpansion_AnUnreadableYardCatalogStopsTheTourRatherThanFillingBlind(t *testing.T) {
+	// The choice is one-way: the seed is CONSUMED by the placement it takes, and
+	// no later tick revisits it. So a catalog that cannot say which waypoint is
+	// the yard must stop the tick rather than fall back to an unordered fill that
+	// leaves the system permanently unable to seed its neighbours. The tick is
+	// idempotent and re-derived, so failing loudly costs one cycle.
+	h := newExpandHarness()
+	h.ledger.systems = []ExpandSystem{
+		{System: "X1-B", Verdict: VerdictPending,
+			SeedShip: "PROBE-7", SeedState: SeedStateCharting},
+	}
+	h.ships.positions = map[string]ShipPos{
+		"PROBE-7": {Waypoint: "X1-B-C3", NavStatus: navigation.NavStatusDocked, Found: true},
+	}
+	h.screen.verdicts = map[string]string{"X1-B": VerdictInScope}
+	h.yards.err = errors.New("waypoint catalog unavailable")
+	h.ledger.slots = []QueuedSlot{
+		{Waypoint: "X1-B-C3", System: "X1-B", Kind: SlotKindMarket, State: SlotStateWanted},
+		{Waypoint: "X1-B-Y9", System: "X1-B", Kind: SlotKindMarket, State: SlotStateWanted},
+	}
+
+	_, err := h.run(t, &fakeUncharted{bySystem: map[string][]string{}})
+	if err == nil {
+		t.Fatal("an unreadable yard catalog must stop the tick, not fill a placement blind")
+	}
+	if len(h.ledger.transitions) != 0 {
+		t.Fatalf("transitions = %v, want none — an unordered fill here is not recoverable", h.ledger.transitions)
+	}
+}
+
 func TestAdvanceExpansion_TourEndPrefersThePlacementUnderTheSeedsOwnFeet(t *testing.T) {
 	h := newExpandHarness()
 	h.ledger.systems = []ExpandSystem{
