@@ -1,0 +1,308 @@
+package trading
+
+import (
+	"testing"
+	"time"
+)
+
+// tour_rate_matching_test.go pins the MATCHING rule: a window may only score a trade whose buy and
+// sell both fall inside it.
+//
+// THE DEFECT, measured on the live fleet. The trailing window admits a leg by planned_at, and a
+// tour's legs are planned incrementally as it runs (25 of 27 live tours spread their planned_at by
+// more than a minute, one by 3.6 hours). So a window routinely holds a ship's PURCHASES with none of
+// the revenue they earn, and the ship is scored on the cost alone. Measured end-to-end on the live
+// 12h window, three hulls read -240,510/hr, -165,541/hr and -37,023/hr on a profitable fleet where
+// nothing was losing money; corrected, the same three read +35,314, +13,260 and +104,618.
+//
+// The existing hasSell guard catches only the pure case — a ship with no realized sell at all. It
+// does not catch the PARTIAL case, which is the one that actually fires: live tour
+// tour-run-TORWIND-40-9d349727 earned +48,820 on ADVANCED_CIRCUITRY and +44,320 on LAB_INSTRUMENTS,
+// both bought and sold inside the window, while MACHINERY and MICROPROCESSORS sat bought-but-unsold
+// in the hold for -185,360. Netted together that tour reads as a deep loss. It is in fact making money.
+//
+// THE UNIT IS (tour, good), and the fixtures below are built so the old rule and the new one
+// DISAGREE. A fixture whose every good is bought and sold makes this fix invisible — both rules
+// return the same number and nothing is proven.
+
+// mleg builds one telemetry row WITH a good, which is what makes a trade matchable. The existing
+// tleg helper leaves Good empty, so every leg of a tour shares one trade there; these tests need
+// several goods per tour to express a partial match at all.
+func mleg(tour, ship, good string, isBuy bool, units, price int, planned, realized time.Time) TourLegTelemetry {
+	return TourLegTelemetry{
+		TourID:            tour,
+		ShipSymbol:        ship,
+		Good:              good,
+		IsBuy:             isBuy,
+		RealizedUnits:     units,
+		RealizedUnitPrice: price,
+		PlannedAt:         planned,
+		RealizedAt:        realized,
+		PlayerID:          1,
+	}
+}
+
+func hourly(base time.Time) func(int) time.Time {
+	return func(n int) time.Time { return base.Add(time.Duration(n) * time.Hour) }
+}
+
+var matchBase = time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)
+
+// THE HEADLINE CASE. A ship whose window holds a completed trade AND a purchase whose sale falls
+// outside is scored on the completed trade, not on the orphan cost.
+//
+// Shaped on live tour tour-run-TORWIND-40-9d349727: one good bought and sold at a profit, another
+// bought and still in the hold. Under the old rule the orphan cost swamps the profit and the hull
+// reads as a large negative; nothing about that number describes the hull.
+func TestComputeFleetTourRate_InWindowPurchaseWithSaleOutsideIsNotAFakeNegative(t *testing.T) {
+	h := hourly(matchBase)
+	rows := []TourLegTelemetry{
+		// MATCHED: buy 20@1000, sell 20@3000 -> +40,000.
+		mleg("t1", "A", "ADVANCED_CIRCUITRY", true, 20, 1000, h(0), h(0)),
+		mleg("t1", "A", "ADVANCED_CIRCUITRY", false, 20, 3000, h(0), h(1)),
+		// UNMATCHED: bought 40@5000 = 200,000 still in the hold; its sale is outside the window.
+		mleg("t1", "A", "MICROPROCESSORS", true, 40, 5000, h(0), h(1)),
+		// A second ship so the sample is not the vacuous n=1 case.
+		mleg("t2", "B", "FUEL", true, 10, 1000, h(0), h(0)),
+		mleg("t2", "B", "FUEL", false, 10, 3000, h(0), h(1)),
+	}
+
+	r := ComputeFleetTourRate(rows)
+	if !r.Readable {
+		t.Fatalf("a ship with a completed trade must be readable")
+	}
+	// Span h(0)->h(1) = 1h, so ship A's honest rate is its matched net: +40,000/hr.
+	if r.Marginal < 0 {
+		t.Fatalf("marginal = %v, want a non-negative rate — the -200,000 orphan purchase has no revenue "+
+			"inside the window and must not be scored as a loss", r.Marginal)
+	}
+	if r.Marginal != 20000 {
+		// mean(A=40000, B=20000) -> marginal is B at 20000; A must NOT be -160000.
+		t.Fatalf("marginal = %v, want 20000 (ship B) — ship A's orphan purchase dragged it below B", r.Marginal)
+	}
+	if r.FleetAvg != 30000 {
+		t.Fatalf("fleet-avg = %v, want mean(40000, 20000)=30000", r.FleetAvg)
+	}
+}
+
+// A ship whose window holds ONLY unmatched activity has no rate at all. It is EXCLUDED — never
+// scored as a readable zero, which the contract reserves for genuinely-earning-zero, and never
+// scored on its purchases.
+func TestComputeFleetTourRate_ShipWithNoMatchedTradeIsExcludedNotScoredZero(t *testing.T) {
+	h := hourly(matchBase)
+	rows := []TourLegTelemetry{
+		// Two measurable ships, so the exclusion below cannot be blamed on the arity guard.
+		mleg("t1", "A", "FUEL", true, 10, 1000, h(0), h(0)),
+		mleg("t1", "A", "FUEL", false, 10, 3000, h(0), h(1)),
+		mleg("t2", "B", "FUEL", true, 10, 1000, h(0), h(0)),
+		mleg("t2", "B", "FUEL", false, 10, 2000, h(0), h(1)),
+		// Ship C: bought only. Its sale is outside the window.
+		mleg("t3", "C", "MACHINERY", true, 40, 5000, h(0), h(1)),
+	}
+
+	r := ComputeFleetTourRate(rows)
+	if !r.Readable {
+		t.Fatalf("two measurable ships must be readable")
+	}
+	if r.FleetAvg != 15000 {
+		t.Fatalf("fleet-avg = %v, want mean(20000, 10000)=15000 — ship C must be absent from the sample "+
+			"entirely, neither as a negative nor as a zero", r.FleetAvg)
+	}
+	if r.Marginal != 10000 {
+		t.Fatalf("marginal = %v, want 10000 (ship B) — ship C has no rate to be the minimum of", r.Marginal)
+	}
+}
+
+// A SKIPPED LEG IS NOT HALF A MATCH. A sell leg that was planned and then skipped carries zero
+// realized units — no cargo moved — so it cannot be the sold side of a trade.
+//
+// This is the route by which the whole artifact leaks back in through a side door: the tour planner
+// emits a sell leg for every good it buys, so if leg PRESENCE counted rather than realized units,
+// EVERY purchase would look matched and the fix would do nothing at all. The orphan cost would be
+// scored again, exactly as before, while the code read as though it were matching.
+func TestComputeFleetTourRate_ASkippedSellLegDoesNotMatchAPurchase(t *testing.T) {
+	h := hourly(matchBase)
+	rows := []TourLegTelemetry{
+		// Ship A: one genuinely completed trade worth +40,000 over 1h.
+		mleg("t1", "A", "FUEL", true, 20, 1000, h(0), h(0)),
+		mleg("t1", "A", "FUEL", false, 20, 3000, h(0), h(1)),
+		// …and MACHINERY bought for 200,000 whose sell leg was PLANNED but skipped: the leg exists,
+		// the units are zero. The cargo is still in the hold.
+		mleg("t1", "A", "MACHINERY", true, 40, 5000, h(0), h(1)),
+		mleg("t1", "A", "MACHINERY", false, 0, 6000, h(0), h(1)),
+		mleg("t2", "B", "FUEL", true, 10, 1000, h(0), h(0)),
+		mleg("t2", "B", "FUEL", false, 10, 3000, h(0), h(1)),
+	}
+
+	r := ComputeFleetTourRate(rows)
+	if !r.Readable {
+		t.Fatalf("readable expected")
+	}
+	if r.FleetAvg != 30000 {
+		t.Fatalf("fleet-avg = %v, want mean(A=40000, B=20000)=30000 — the skipped sell moved no cargo, so "+
+			"MACHINERY is still an unmatched purchase and its -200,000 must stay out of the net", r.FleetAvg)
+	}
+	if r.Marginal != 20000 {
+		t.Fatalf("marginal = %v, want 20000 (ship B) — ship A read below it, so the skipped leg was "+
+			"accepted as the sold half of a trade that never happened", r.Marginal)
+	}
+}
+
+// THE MIRROR ARTIFACT, and it moves the number the other way. A good SOLD inside the window whose
+// purchase happened before it starts is revenue with no cost, which reads as a fake HIGH rate.
+//
+// Excluding it is the stricter direction and the same rule: the trade's other half is outside the
+// measurement, so the window cannot price it. This case is reachable for the same reason the
+// negative one is — a tour's legs are planned incrementally, so a tour straddles the boundary.
+func TestComputeFleetTourRate_SellWhoseBuyPrecedesTheWindowIsNotFreeRevenue(t *testing.T) {
+	h := hourly(matchBase)
+	rows := []TourLegTelemetry{
+		mleg("t1", "A", "FUEL", true, 10, 1000, h(0), h(0)),
+		mleg("t1", "A", "FUEL", false, 10, 3000, h(0), h(1)),
+		// Ship B: one matched trade, plus a windfall sale of cargo bought before the window.
+		mleg("t2", "B", "FUEL", true, 10, 1000, h(0), h(0)),
+		mleg("t2", "B", "FUEL", false, 10, 2000, h(0), h(1)),
+		mleg("t2", "B", "GOLD", false, 100, 9000, h(0), h(1)), // +900,000 with no cost recorded
+	}
+
+	r := ComputeFleetTourRate(rows)
+	if !r.Readable {
+		t.Fatalf("readable expected")
+	}
+	if r.FleetAvg != 15000 {
+		t.Fatalf("fleet-avg = %v, want mean(20000, 10000)=15000 — the 900,000 sale has no matching "+
+			"purchase inside the window and must not be counted as earnings", r.FleetAvg)
+	}
+}
+
+// AN UNMATCHED LEG STILL WIDENS THE SPAN. The hull was working during those hours — flying out to
+// buy the cargo it is still carrying — so the time counts even though the money does not.
+//
+// This is deliberately the CONSERVATIVE choice and it is load-bearing: dropping the orphan leg from
+// the span too would divide the same net by fewer hours and report a HIGHER rate, which is the
+// direction RULINGS #4 forbids a measurement to drift on its own.
+func TestComputeFleetTourRate_UnmatchedLegsStillWidenTheSpan(t *testing.T) {
+	h := hourly(matchBase)
+	rows := []TourLegTelemetry{
+		// Ship A: matched trade over h0->h1 worth +40,000, then an orphan purchase realized at h3.
+		mleg("t1", "A", "FUEL", true, 20, 1000, h(0), h(0)),
+		mleg("t1", "A", "FUEL", false, 20, 3000, h(0), h(1)),
+		mleg("t1", "A", "MACHINERY", true, 40, 5000, h(2), h(3)),
+		mleg("t2", "B", "FUEL", true, 10, 1000, h(0), h(0)),
+		mleg("t2", "B", "FUEL", false, 10, 3000, h(0), h(1)),
+	}
+
+	r := ComputeFleetTourRate(rows)
+	// Ship A: net 40,000 over the FULL span h0->h3 = 3h -> 13,333.33/hr, not 40,000/hr over 1h.
+	want := 40000.0 / 3.0
+	if r.Marginal < want-0.01 || r.Marginal > want+0.01 {
+		t.Fatalf("marginal = %v, want %v — the orphan purchase's hours must stay in the denominator, "+
+			"or excluding it would inflate the rate", r.Marginal, want)
+	}
+}
+
+// THE SAFETY PROPERTY. Excluding unmeasurable ships must never shrink the sample into one the guard
+// reads as unanimous.
+//
+// The autosizer compares MIN per-ship against 0.7 x MEAN. At n=1 those are the same number, so the
+// comparison is a tautology and the guard stops being a guard — a fleet that fails the test at n=6
+// would PASS it at n=1. If this rule's own exclusions are what took the sample there, the honest
+// answer is that the window cannot be read, not that everything is fine.
+func TestComputeFleetTourRate_ExclusionMayNotShrinkTheSampleIntoAVacuousOne(t *testing.T) {
+	h := hourly(matchBase)
+	rows := []TourLegTelemetry{
+		// One genuinely measurable ship.
+		mleg("t1", "A", "FUEL", true, 10, 1000, h(0), h(0)),
+		mleg("t1", "A", "FUEL", false, 10, 3000, h(0), h(1)),
+	}
+	// Five ships the OLD sell-only rule would have kept — each has a realized sell — but whose
+	// purchases are outside the window, so the new rule finds no matched trade for any of them.
+	for _, ship := range []string{"B", "C", "D", "E", "F"} {
+		rows = append(rows, mleg("t-"+ship, ship, "GOLD", false, 100, 9000, h(0), h(1)))
+	}
+
+	r := ComputeFleetTourRate(rows)
+	if r.Readable {
+		t.Fatalf("readable=true with FleetAvg=%v marginal=%v — five of six ships were excluded and the "+
+			"survivor's min equals its own mean, so the 0.7x floor is satisfied by arithmetic rather "+
+			"than by economics; that is a spending loosening arriving through the back door",
+			r.FleetAvg, r.Marginal)
+	}
+}
+
+// …but a fleet that genuinely has one measurable ship is left exactly as it was. The arity concern
+// is about EXCLUSION creating a vacuous sample, not about small fleets, and tightening the
+// pre-existing n=1 behaviour is a policy decision this measurement change does not get to make.
+//
+// Measured on live history: of the 12h windows in the last five days that had any measurable ship at
+// all, four of seven had exactly one — so failing those closed unconditionally would block the
+// autosizer in a common real state, which is a threshold change, not a measurement fix.
+func TestComputeFleetTourRate_AGenuineSingleShipFleetIsUnchanged(t *testing.T) {
+	h := hourly(matchBase)
+	rows := []TourLegTelemetry{
+		mleg("t1", "A", "FUEL", true, 10, 1000, h(0), h(0)),
+		mleg("t1", "A", "FUEL", false, 10, 3000, h(0), h(1)),
+	}
+
+	r := ComputeFleetTourRate(rows)
+	if !r.Readable {
+		t.Fatalf("a one-ship fleet with a completed trade must stay readable — no ship was excluded, so " +
+			"nothing here is this rule's doing")
+	}
+	if r.FleetAvg != 20000 || r.Marginal != 20000 {
+		t.Fatalf("fleet-avg=%v marginal=%v, want 20000 both", r.FleetAvg, r.Marginal)
+	}
+}
+
+// The decline trend reads the same matched nets. Per-tour rates are computed from the same fold, so
+// a tour carrying unsold cargo must not be scored as a collapsing one.
+//
+// The fixture is adverse: unmatched cargo sits on the OLDER tour, so under the old rule the older
+// half reads as a deep loss and the trend looks like it is IMPROVING. Under matched nets both tours
+// are honest and the newer one is genuinely worse.
+func TestComputeFleetTourRate_DecliningIsComputedFromMatchedNets(t *testing.T) {
+	h := hourly(matchBase)
+	rows := []TourLegTelemetry{
+		// Older tour: +40,000 matched, plus 200,000 of cargo still in the hold.
+		mleg("t1", "A", "FUEL", true, 20, 1000, h(0), h(0)),
+		mleg("t1", "A", "FUEL", false, 20, 3000, h(0), h(1)),
+		mleg("t1", "A", "MACHINERY", true, 40, 5000, h(0), h(1)),
+		// Newer tour: +10,000 matched over the same one-hour span — genuinely worse.
+		mleg("t2", "B", "FUEL", true, 10, 1000, h(2), h(2)),
+		mleg("t2", "B", "FUEL", false, 10, 2000, h(2), h(3)),
+	}
+
+	r := ComputeFleetTourRate(rows)
+	if !r.Declining {
+		t.Fatalf("declining=false — on matched nets the older tour earned 40,000/hr and the newer 10,000/hr, " +
+			"so the trend is down; the old rule scored the older tour at -160,000/hr and called that an " +
+			"improvement")
+	}
+}
+
+// MedianTourRate is DELIBERATELY LEFT ON THE OLD MATH, and this pins that split so a later edit
+// cannot quietly change it.
+//
+// It is the placement engine's beta, a different consumer with a different failure mode: an
+// unreadable beta falls back to the legacy static-floor engine rather than refusing to spend. The
+// same artifact distorts it — measured live, the window's median tour rate moves -8,303 -> +97,206
+// under matched nets, a sign change — but correcting it changes placement behaviour, which is a
+// separate decision from correcting an autosizer guard's input. See the report.
+func TestMedianTourRate_IsDeliberatelyLeftOnUnmatchedNets(t *testing.T) {
+	h := hourly(matchBase)
+	rows := []TourLegTelemetry{
+		mleg("t1", "A", "FUEL", true, 20, 1000, h(0), h(0)),
+		mleg("t1", "A", "FUEL", false, 20, 3000, h(0), h(1)),
+		mleg("t1", "A", "MACHINERY", true, 40, 5000, h(0), h(1)), // orphan cost, still counted here
+	}
+
+	got, ok := MedianTourRate(rows)
+	if !ok {
+		t.Fatalf("expected a computable median")
+	}
+	// Net over ALL legs = 40,000 - 200,000 = -160,000 over 1h.
+	if got != -160000 {
+		t.Fatalf("median = %v, want -160000 — MedianTourRate must keep netting every leg until its own "+
+			"consumer is assessed; a silent change here alters placement economics", got)
+	}
+}

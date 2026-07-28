@@ -23,10 +23,18 @@ import (
 //     absorption saturating (guard G7 stop-buy). Per-tour (not per-ship) so the trend tracks tour
 //     quality over wall-clock, independent of how tours distribute across hulls.
 //
+// ONLY MATCHED TRADES ARE SCORED (see matchedTradesOnly). The window admits a leg by planned_at, so
+// it routinely holds a ship's PURCHASES with none of the revenue they earn — the sale lands after
+// the window closes, or the cargo is still in the hold. Netted whole, that scores cost against no
+// income and reports a profitable hull as a large negative: measured live at -240,510/hr and
+// -165,541/hr on a fleet where nothing was losing money. A trade is therefore scored only when the
+// window holds BOTH of its halves; an unmatched leg still widens the span (the hull was working) but
+// contributes no money.
+//
 // Readable is FALSE (fail-closed, RULINGS #4) whenever no ship has a computable realized rate — no
-// telemetry, all-skipped legs, or bought-but-never-sold hulls. A guard that cannot see the economics
-// must not spend; a readable zero is reserved for genuinely-earning-zero, which the data here can
-// never assert (a computable rate needs a realized sell).
+// telemetry, all-skipped legs, or hulls with no completed trade in the window. A guard that cannot
+// see the economics must not spend; a readable zero is reserved for genuinely-earning-zero, which
+// the data here can never assert (a computable rate needs a matched sell).
 
 // FleetTourRateResult is the realized fleet-tour-rate summary. Readable=false means no
 // computable rate existed — the heavy realized-rate/payback guards then fail closed on their own.
@@ -48,19 +56,32 @@ type legGroup struct {
 	earliest time.Time // min PlannedAt seen (the span start)
 	latest   time.Time // max RealizedAt seen (the span end)
 	hasStart bool
-	hasSell  bool // at least one realized sell — required for a meaningful (non-all-buy) rate
+	hasSell  bool // at least one COUNTED realized sell — required for a meaningful (non-all-buy) rate
 }
 
 // add folds one leg into the group: sells add revenue, buys subtract cost, and the span widens to
 // cover PlannedAt→RealizedAt.
-func (g *legGroup) add(r TourLegTelemetry) {
-	value := int64(r.RealizedUnits) * int64(r.RealizedUnitPrice)
-	if r.IsBuy {
-		g.net -= value
-	} else {
-		g.net += value
-		if r.RealizedUnits > 0 {
-			g.hasSell = true
+//
+// countValue decides whether the leg's MONEY moves the net. The span widens either way, and that
+// asymmetry is the whole of the matching rule: a leg whose other half lies outside the window
+// describes hours the hull genuinely worked, but a price the window cannot pair with anything. See
+// matchedTradesOnly.
+//
+// KEEPING AN UNCOUNTED LEG IN THE SPAN IS THE CONSERVATIVE CHOICE, and it is deliberate. Dropping
+// it from the denominator too would divide the same net by fewer hours and report a HIGHER rate —
+// the direction RULINGS #4 forbids a measurement to drift on its own — and it would also be untrue:
+// the hull was flying out to buy that cargo, so the time is real work even though the money is not
+// yet realized.
+func (g *legGroup) add(r TourLegTelemetry, countValue bool) {
+	if countValue {
+		value := int64(r.RealizedUnits) * int64(r.RealizedUnitPrice)
+		if r.IsBuy {
+			g.net -= value
+		} else {
+			g.net += value
+			if r.RealizedUnits > 0 {
+				g.hasSell = true
+			}
 		}
 	}
 	if !g.hasStart || r.PlannedAt.Before(g.earliest) {
@@ -69,6 +90,65 @@ func (g *legGroup) add(r TourLegTelemetry) {
 	}
 	if r.RealizedAt.After(g.latest) {
 		g.latest = r.RealizedAt
+	}
+}
+
+// --- trade matching -----------------------------------------------------------------------------
+
+// tradeKey addresses one TRADE: a good bought and sold inside a single tour. It is the unit a $/hr
+// figure can actually be computed over — a buy and the sale that realizes it — and it is finer than
+// the tour, because a tour routinely completes some of its goods and carries the rest.
+//
+// Measured live: tour-run-TORWIND-40-9d349727 earned +48,820 on ADVANCED_CIRCUITRY and +44,320 on
+// LAB_INSTRUMENTS (both bought and sold in-window) while MACHINERY and MICROPROCESSORS sat
+// bought-but-unsold for -185,360. Netted whole the tour reads as a deep loss; matched, it is
+// making money. Only the second describes anything.
+type tradeKey struct{ tour, good string }
+
+// legCounts decides whether one leg's money counts toward a group's net.
+type legCounts func(TourLegTelemetry) bool
+
+// countEveryLeg is the pre-matching rule: every leg's money counts, whether or not the window holds
+// its other half. MedianTourRate still uses it — see that function for why the split exists.
+func countEveryLeg(TourLegTelemetry) bool { return true }
+
+// matchedTradesOnly returns a legCounts admitting only legs whose (tour, good) trade has realized
+// units on BOTH sides inside these rows.
+//
+// SYMMETRIC, AND BOTH DIRECTIONS MATTER. A good bought but not yet sold is cost without revenue and
+// reads as a fake LOSS — the artifact this exists for. A good sold whose purchase happened before
+// the window opened is revenue without cost and reads as a fake WINDFALL. The window can price
+// neither, and admitting the second while excluding the first would trade one bias for a worse one.
+//
+// The window admits legs by planned_at and a tour's legs are planned incrementally as it runs (25 of
+// 27 live tours spread their planned_at by more than a minute, one by 3.6 hours), so a tour
+// straddling either boundary is the normal case rather than an edge.
+//
+// REALIZED UNITS, NOT LEG PRESENCE. A leg that was planned and then skipped carries zero realized
+// units and moved no cargo; counting it as half a match would let a trade that never happened
+// license scoring the half that did.
+func matchedTradesOnly(rows []TourLegTelemetry) legCounts {
+	type sides struct{ bought, sold bool }
+	seen := map[tradeKey]*sides{}
+	for _, r := range rows {
+		if r.RealizedUnits <= 0 {
+			continue
+		}
+		key := tradeKey{r.TourID, r.Good}
+		s := seen[key]
+		if s == nil {
+			s = &sides{}
+			seen[key] = s
+		}
+		if r.IsBuy {
+			s.bought = true
+		} else {
+			s.sold = true
+		}
+	}
+	return func(r TourLegTelemetry) bool {
+		s := seen[tradeKey{r.TourID, r.Good}]
+		return s != nil && s.bought && s.sold
 	}
 }
 
@@ -86,8 +166,8 @@ func (g legGroup) rate() (float64, bool) {
 }
 
 // groupLegs folds telemetry rows into legGroups keyed by groupKey — ship symbol for
-// per-ship rates, tour id for per-tour rates.
-func groupLegs(rows []TourLegTelemetry, groupKey func(TourLegTelemetry) string) map[string]*legGroup {
+// per-ship rates, tour id for per-tour rates — counting each leg's money only when counts admits it.
+func groupLegs(rows []TourLegTelemetry, groupKey func(TourLegTelemetry) string, counts legCounts) map[string]*legGroup {
 	groups := map[string]*legGroup{}
 	for _, r := range rows {
 		key := groupKey(r)
@@ -96,10 +176,14 @@ func groupLegs(rows []TourLegTelemetry, groupKey func(TourLegTelemetry) string) 
 			g = &legGroup{}
 			groups[key] = g
 		}
-		g.add(r)
+		g.add(r, counts(r))
 	}
 	return groups
 }
+
+// byShip and byTour are the two grouping keys, named so a call site reads as the lens it is using.
+func byShip(r TourLegTelemetry) string { return r.ShipSymbol }
+func byTour(r TourLegTelemetry) string { return r.TourID }
 
 // computableRates collects the realized $/hr of every group with a computable rate
 // (unordered — callers take mean/min or sort for the median, all order-insensitive).
@@ -113,14 +197,57 @@ func computableRates(groups map[string]*legGroup) []float64 {
 	return rates
 }
 
+// minDispersionSample is the smallest per-ship sample the marginal-vs-average comparison can say
+// anything with.
+//
+// The autosizer's realized-rate guard tests MIN against a fraction of MEAN. At n=1 those are the
+// same number, so the test is `x >= 0.7x` — true for every positive rate, whatever the economics.
+// A fleet that fails the test at six hulls PASSES it at one. That is not a threshold, it is the
+// arity below which the statistic has no content, which is why it lives here beside the statistic
+// rather than beside the 0.7.
+//
+// It is applied ONLY to a sample this rule's own exclusions shrank — see ComputeFleetTourRate.
+const minDispersionSample = 2
+
 // ComputeFleetTourRate summarises the realized fleet-tour rate from per-leg telemetry. It
 // is pure and window-agnostic — the caller passes only the rows inside its read window (the port
 // applies `since` at the repository read), and the computation derives its own span from those rows.
+//
+// ONLY MATCHED TRADES ARE SCORED. A ship is measured on the goods it both bought and sold inside the
+// window; a purchase whose sale falls outside contributes its hours but not its price. Without that
+// the window scores cost with none of the revenue it earns, and reports a profitable hull as a large
+// negative — measured live at -240,510/hr and -165,541/hr on a fleet where nothing was losing money.
+// A ship with no matched trade at all is EXCLUDED, exactly as the older sell-only rule excluded a
+// ship with no sell: an unmeasurable hull is dropped, never imputed and never scored as a readable
+// zero (that value stays reserved for genuinely-earning-zero, which this data can never assert).
 func ComputeFleetTourRate(rows []TourLegTelemetry) FleetTourRateResult {
+	matched := matchedTradesOnly(rows)
+
 	// Per-ship realized rates → FleetAvg (mean) and Marginal (min).
-	shipRates := computableRates(groupLegs(rows, func(r TourLegTelemetry) string { return r.ShipSymbol }))
+	shipRates := computableRates(groupLegs(rows, byShip, matched))
 	if len(shipRates) == 0 {
 		return FleetTourRateResult{Readable: false} // no computable rate → fail closed
+	}
+
+	// THE BACK DOOR, CLOSED. Every exclusion above removes a ship from the sample, and removing
+	// ships can only ever make the guard's dispersion test EASIER — a dropped hull cannot be the
+	// minimum, and dropping a fake-high one lowers the mean and with it the floor. Taken to n=1 the
+	// test becomes a tautology and stops gating the spend at all.
+	//
+	// So when this rule's own exclusions are what took the sample below minDispersionSample, the
+	// honest answer is that the window cannot be read (the guard then fails closed on its own,
+	// RULINGS #4) rather than that everything is fine.
+	//
+	// GATED ON "THIS RULE CAUSED IT", not on arity alone, and that is the difference between a
+	// measurement fix and a policy change. A fleet that genuinely has one measurable hull was
+	// already read that way before matching existed, and is left exactly as it was — measured on
+	// live history, four of the seven 12h windows in the last five days that had any measurable ship
+	// had exactly one, so failing those closed unconditionally would block the autosizer in a common
+	// real state. That the n=1 sample is vacuous even then is a real hole, but it is the owner's
+	// threshold to move, not this function's.
+	if len(shipRates) < minDispersionSample &&
+		len(computableRates(groupLegs(rows, byShip, countEveryLeg))) > len(shipRates) {
+		return FleetTourRateResult{Readable: false}
 	}
 	var sum, marginal float64
 	for i, rate := range shipRates {
@@ -148,11 +275,18 @@ type tourRatePoint struct {
 // computes each completed tour's $/hr, orders them by completion time, and compares the mean of the
 // newer half against the older half. Fewer than two computable tours cannot establish a trend
 // (returns false — never a spurious stop-buy).
+//
+// IT READS THE SAME MATCHED NETS the per-ship rates do, and it must: the artifact lands hardest
+// here, because a tour is exactly the thing that carries unsold cargo. Measured on the live 12h
+// window (12 computable tours), the trend halves move from older 62,938 / newer -15,350 to older
+// 169,666 / newer 91,461 once unmatched goods stop being scored — the newer half stops reading as a
+// fleet losing money per hour. This signal drives a STOP-BUY, so a tour that is quietly profitable
+// must not be read as a collapsing one.
 func tourRateDeclining(rows []TourLegTelemetry) bool {
-	byTour := groupLegs(rows, func(r TourLegTelemetry) string { return r.TourID })
+	byTourID := groupLegs(rows, byTour, matchedTradesOnly(rows))
 
 	var tours []tourRatePoint
-	for _, g := range byTour {
+	for _, g := range byTourID {
 		if rate, ok := g.rate(); ok {
 			tours = append(tours, tourRatePoint{rate: rate, complete: g.latest})
 		}
@@ -186,8 +320,17 @@ func meanRate(tours []tourRatePoint) float64 {
 // invented, because the placement caller falls back to the legacy static-floor engine when β is
 // unreadable rather than deciding off a fabricated rate. The window is applied by the caller at
 // the repository read (ListByPlayer's since bound); this function is pure over the rows it sees.
+//
+// DELIBERATELY STILL ON countEveryLeg, unlike ComputeFleetTourRate. The same unmatched-cargo
+// artifact distorts β — measured on the live window its median moves -8,303 → +97,206 under matched
+// nets, which is a sign change, not a nudge — but β is a DIFFERENT consumer with a different failure mode: an
+// unreadable β falls back to the legacy static-floor placement engine rather than refusing to spend,
+// so correcting it changes WHERE PROBES GO rather than whether a hull is bought. That is a separate
+// decision from correcting an autosizer guard's input, and it is measured and recommended rather
+// than taken here. TestMedianTourRate_IsDeliberatelyLeftOnUnmatchedNets pins the split so a later
+// edit cannot make the change silently.
 func MedianTourRate(rows []TourLegTelemetry) (float64, bool) {
-	rates := computableRates(groupLegs(rows, func(r TourLegTelemetry) string { return r.TourID }))
+	rates := computableRates(groupLegs(rows, byTour, countEveryLeg))
 	if len(rates) == 0 {
 		return 0, false // no computable tour → fail closed (never a readable 0)
 	}
