@@ -394,6 +394,26 @@ func (p *FleetTagPort) AssignFleet(ctx context.Context, playerID int, shipSymbol
 // MoverPort issues movement commands through the mediator. The two navigation
 // verbs are separate machinery, and the caller picks between them by comparing
 // systems — this type does not second-guess that choice.
+//
+// EVERY VERB HERE DISPATCHES AND RETURNS. The placement machine behind this port
+// is a tick machine: it takes one action per placement per tick, holds nothing in
+// memory between ticks, and reads the ships table on a LATER tick to see what
+// happened ("a hull dispatched by this tick is not also examined for arrival by
+// it", placement.go). A verb that waited out the flight would hold the whole tick
+// open for the length of a journey, starving every placement behind it in the
+// ledger read and every stage after it in the coordinator — the buy-queue drain,
+// the reaper, adoption, and the expansion pass where charting seeds launch.
+//
+// So the command choice is load-bearing, not incidental. NavigateRouteCommand
+// plans and FLIES a whole route, ending in WaitForShipArrival;
+// NavigateDirectCommand hands one hop to the API and returns with the arrival
+// time. Only the second is admissible here, and the arrival it does not wait for
+// is recorded anyway: ShipRepository.Navigate persists the IN_TRANSIT row with
+// its arrival clock and arms ShipStateScheduler, whose timer (backed by a
+// 60-second sweeper, and re-armed for every in-flight hull on daemon restart)
+// writes the landing back to the ships table. That row IS how the next tick
+// reconciles the arrival, which is exactly what the placement machine already
+// reads.
 type MoverPort struct{ mediator common.Mediator }
 
 // NewMoverPort wires the movement verbs.
@@ -401,34 +421,84 @@ func NewMoverPort(mediator common.Mediator) *MoverPort {
 	return &MoverPort{mediator: mediator}
 }
 
-// NavigateWithin moves a hull to a waypoint inside its current system.
+// NavigateWithin dispatches a hull toward a waypoint inside its current system
+// and returns as soon as the API has accepted the move.
+//
+// The orbit first is not a precaution, it is the API's precondition: a DOCKED
+// hull cannot navigate, and a parked sensing probe is docked by definition — the
+// placement machine docks it on arrival and re-tasked spares are taken straight
+// off a berth. OrbitShipCommand is free for a hull already in orbit (it answers
+// "already_in_orbit" off the local row without touching the network), so the
+// common case costs nothing, and issuing it explicitly keeps the navigate off
+// NavigateDirectCommand's not-in-orbit self-heal path — which would otherwise
+// spend a REJECTED live call plus a warning on every single docked dispatch.
+//
+// Both commands together are ONE placement action: the pair either starts the
+// hull moving or leaves it exactly where it was, and the caller's free retry
+// (hold the slot, re-read the position next tick) covers the failure either way.
 func (p *MoverPort) NavigateWithin(ctx context.Context, playerID int, shipSymbol, destination string) error {
 	pid, err := shared.NewPlayerID(playerID)
 	if err != nil {
 		return err
 	}
-	if _, err := p.mediator.Send(sensingCtx(ctx), &shipNav.NavigateRouteCommand{
+	return dispatchHop(ctx, p.mediator, pid, shipSymbol, destination)
+}
+
+// RouteAcross is the cross-gate verb, and it REFUSES rather than blocks.
+//
+// There is no dispatch-and-return primitive for a gate crossing. The only
+// machinery that crosses gates — RouteShipCommand, delegating to the shared
+// multi-jump travel() — resolves a whole gate path and flies it, waiting out
+// every leg AND every jump cooldown in between. Sending it from inside a tick is
+// the very failure this port exists to prevent, and worse than the in-system
+// version of it: one hull could hold the sensing engine shut for hours.
+//
+// Refusing costs nothing that is reachable today. Every writer of an in-flight
+// placement picks a hull in the placement's OWN system by construction — the buy
+// queue buys at a yard in slot.System and re-tasks spares out of SlotsBySystem,
+// expansion's fillPlacement offers a seed only the wants in the system it is
+// standing in, and the idle-orphan dispatch matches flyToSlot's own predicate on
+// purpose so that "a target this pass will accept" is exactly "a target the
+// in-system planner will reach". So the cross-system branch is reached only when
+// a hull DRIFTS out of its errand's system after the row was written, which on
+// this fleet means it was poached while untagged.
+//
+// The refusal is the safe direction for that case. The placement keeps its hull
+// (so the probe cap still counts it — an over-count, the direction RULINGS #4
+// requires) and the next tick retries for free, while the tick itself keeps
+// running. A hull genuinely needing a gate crossing is a routing and fuel
+// decision this engine already declines to make elsewhere for the same reason;
+// giving it a non-blocking one means teaching the placement machine to walk a
+// gate path a hop per tick, which is its own piece of work.
+func (p *MoverPort) RouteAcross(ctx context.Context, _ int, shipSymbol, destination string) error {
+	common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
+		"Sensing placement wants %s flown across a gate to %s, which no dispatch-and-return command can do — the placement is held and retried, and the hull keeps counting against the probe cap. A sensing hull outside its placement's system has drifted there (typically poached while untagged); it needs re-homing by hand.",
+		shipSymbol, destination), map[string]interface{}{
+		"action":      "parked_sensing_cross_system_placement_refused",
+		"ship_symbol": shipSymbol,
+		"destination": destination,
+	})
+	return fmt.Errorf("refusing to route %s across a gate to %s from inside a sensing tick: the cross-system move blocks until arrival", shipSymbol, destination)
+}
+
+// dispatchHop orbits a hull and hands it ONE in-system hop, returning as soon as
+// the API has accepted the move. Shared by the placement mover and the charting
+// seed's tour hop, which have the same contract for the same reason: both are
+// driven by tick machines that re-read the ships table rather than wait.
+func dispatchHop(ctx context.Context, med common.Mediator, pid shared.PlayerID, shipSymbol, destination string) error {
+	mctx := sensingCtx(ctx)
+	if _, err := med.Send(mctx, &shipTypes.OrbitShipCommand{
+		ShipSymbol: shipSymbol,
+		PlayerID:   pid,
+	}); err != nil {
+		return fmt.Errorf("failed to orbit %s before sending it to %s: %w", shipSymbol, destination, err)
+	}
+	if _, err := med.Send(mctx, &shipTypes.NavigateDirectCommand{
 		ShipSymbol:  shipSymbol,
 		Destination: destination,
 		PlayerID:    pid,
 	}); err != nil {
 		return fmt.Errorf("failed to navigate %s to %s: %w", shipSymbol, destination, err)
-	}
-	return nil
-}
-
-// RouteAcross moves a hull to a waypoint in any reachable system.
-func (p *MoverPort) RouteAcross(ctx context.Context, playerID int, shipSymbol, destination string) error {
-	pid, err := shared.NewPlayerID(playerID)
-	if err != nil {
-		return err
-	}
-	if _, err := p.mediator.Send(sensingCtx(ctx), &shipNav.RouteShipCommand{
-		ShipSymbol:  shipSymbol,
-		Destination: destination,
-		PlayerID:    pid,
-	}); err != nil {
-		return fmt.Errorf("failed to route %s to %s: %w", shipSymbol, destination, err)
 	}
 	return nil
 }
@@ -520,20 +590,25 @@ func (p *SeedCommandPort) JumpTo(ctx context.Context, playerID int, shipSymbol, 
 	return nil
 }
 
-// NavigateTo moves a hull to a waypoint inside the system it is already in.
+// NavigateTo dispatches a hull to a waypoint inside the system it is already in
+// and returns as soon as the API has accepted the move.
+//
+// DISPATCH, NOT JOURNEY, and SeedCommander says so in its own words: "every
+// method is a single command with no retry and no waiting: the tick issues one
+// and returns, and the next tick reads the ships table to see what happened".
+// The pass that drives this already opens by skipping any seed the ships table
+// reports IN_TRANSIT ("already flying, under this or an earlier tick's
+// command"), so waiting here buys nothing at all — it only holds the tick open
+// for a leg of the tour, starving the rest of the tick behind it.
+//
+// Shares dispatchHop with the placement mover, including its orbit-first step:
+// a seed charts from a berth, so it is docked at the waypoint it just finished.
 func (p *SeedCommandPort) NavigateTo(ctx context.Context, playerID int, shipSymbol, waypoint string) error {
 	pid, err := shared.NewPlayerID(playerID)
 	if err != nil {
 		return err
 	}
-	if _, err := p.mediator.Send(sensingCtx(ctx), &shipNav.NavigateRouteCommand{
-		ShipSymbol:  shipSymbol,
-		Destination: waypoint,
-		PlayerID:    pid,
-	}); err != nil {
-		return fmt.Errorf("failed to navigate %s to %s: %w", shipSymbol, waypoint, err)
-	}
-	return nil
+	return dispatchHop(ctx, p.mediator, pid, shipSymbol, waypoint)
 }
 
 // Chart publicly charts the waypoint the hull is standing on.
