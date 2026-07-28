@@ -730,6 +730,13 @@ func run(cfg *config.Config) error {
 	// The constructor also defaults a nil clock (defense in depth).
 	constructionExecutor := goodsServices.NewProductionExecutor(med, shipRepo, marketRepoAdapter, goodsMarketLocator, shared.NewRealClock(), apiClient)
 	constructionExecutor.SetConstructionRepo(api.NewConstructionSiteRepository(apiClient, playerRepo))
+	// sp-ftqgp per-operation capital budget: ONE sensor, shared by BOTH spend guards (the
+	// construction executor below and the tour coordinator further down), so their two views of
+	// the trade/construction split are always resolved from the same source and can never each
+	// conclude "the other side is idle" and both take 100%. Wired UNCONDITIONALLY — there is no
+	// config key and no arming step; the budget is live the moment the daemon boots.
+	capitalWorkSensor := common.NewContainerCapitalWorkSensor(containerRepo)
+	constructionExecutor.SetCapitalWorkSensor(capitalWorkSensor)
 	// The activator is the SURVIVING SupplyMonitor: NO new
 	// activation logic. Built per-player because it bakes in the playerID; the poll-loop-only
 	// collaborators (factory tracker/state, sell distributor, storage, container reader, event
@@ -1391,6 +1398,12 @@ func run(cfg *config.Config) error {
 	// this). Ships ARMED at the 75-min default (matching maxListingAge); [trade_fleet].
 	// sink_freshness_max_minutes retunes it, restart to apply. Byte-identical for fresh sinks.
 	tourCoordinatorHandler.SetSinkFreshness(cfg.TradeFleet.ResolvedSinkFreshnessMaxAge())
+	// sp-ftqgp: the TRADE half of the per-operation capital budget, on the SAME sensor the
+	// construction executor holds. The dynamic (--max-spend 0) cap is clamped to trade's share of
+	// deployable capital, and graceful degradation hands trade the WHOLE pool whenever the
+	// construction drain is not running — so a stopped gate never leaves capital idle. Wired
+	// UNCONDITIONALLY: no config key, no default-off, no arming step.
+	tourCoordinatorHandler.SetCapitalWorkSensor(capitalWorkSensor)
 	if err := mediator.RegisterHandler[*tradeRouteCmd.RunTourCoordinatorCommand](med, tourCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register TourCoordinator handler: %w", err)
 	}

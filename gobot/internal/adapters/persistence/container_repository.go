@@ -366,6 +366,41 @@ func (r *ContainerRepositoryGORM) ListRunningScoutWorkers(
 	return summaries, nil
 }
 
+// HasActiveContainerOfType reports whether any container of the given types is currently RUNNING
+// or PENDING for the player. It backs the per-operation capital budget's hasWork sensor
+// (common.ContainerCapitalWorkSensor, sp-ftqgp): the trade and construction spend guards each ask
+// whether the OTHER side is live before sizing their own share of deployable capital.
+//
+// PENDING counts alongside RUNNING for the same reason the bootstrap gate's containerTypeRunning
+// counts it: a container about to start is a side about to spend, so treating it as idle would
+// briefly hand the asking side 100% of the treasury during every launch window. An empty type
+// list matches nothing (false) rather than everything — a caller that resolved no types must
+// never be told the whole fleet is busy.
+func (r *ContainerRepositoryGORM) HasActiveContainerOfType(
+	ctx context.Context,
+	playerID int,
+	containerTypes ...string,
+) (bool, error) {
+	if len(containerTypes) == 0 {
+		return false, nil
+	}
+
+	var count int64
+	err := r.db.WithContext(ctx).
+		Model(&ContainerModel{}).
+		Where("player_id = ?", playerID).
+		Where("status IN ?", []string{
+			string(container.ContainerStatusRunning),
+			string(container.ContainerStatusPending),
+		}).
+		Where("container_type IN ?", containerTypes).
+		Count(&count).Error
+	if err != nil {
+		return false, fmt.Errorf("failed to check for active containers by type: %w", err)
+	}
+	return count > 0, nil
+}
+
 // ListByStatusSimple returns simplified container info (for coordinators)
 func (r *ContainerRepositoryGORM) ListByStatusSimple(
 	ctx context.Context,

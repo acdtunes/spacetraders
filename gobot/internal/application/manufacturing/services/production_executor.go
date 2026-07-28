@@ -90,6 +90,54 @@ func effectiveReserveFloor(ctx context.Context) int {
 	return defaultWorkingCapitalReserve
 }
 
+// budgetedReserveFloor is the floor a construction/factory buy is ACTUALLY guarded against
+// (sp-ftqgp): the flat effectiveReserveFloor RAISED by the share of deployable capital reserved
+// for the trade side. Before this bead the two non-contract engines drew on a shared pool with no
+// allocation between them, and because construction carried no proportional cap while trade caps
+// itself at 25% of treasury, construction consumed everything above its floor — including the
+// whole band trade needs to function.
+//
+// It can only ever RAISE the floor (common.BudgetedSpendFloor is >= floor for every input), so
+// this ADDS a constraint and weakens nothing (RULINGS #4), and it derives the deployable pool
+// from THIS engine's own floor rather than a second constant (RULINGS #5).
+//
+// Three resolutions, deliberately different:
+//
+//   - No sensor wired -> the flat floor, unchanged. The optional-port contract for the package's
+//     fixtures; the daemon always wires one.
+//   - Sensor says trade is idle -> graceful degradation hands construction the WHOLE deployable
+//     pool, and BudgetedSpendFloor returns exactly the flat floor. Capital never idles because
+//     no trade hull is live.
+//   - Sensor errors -> fail CONSERVATIVE, not open: assume trade IS working and take only the
+//     proportional share. A blind read must never hand construction 100% of the treasury, which
+//     is precisely the failure this bead exists to remove.
+//
+// Note that construction passes `true` for its OWN side unconditionally — an executor asking this
+// question is an executor about to buy — so a sensor miss can never budget construction to zero
+// and park the gate.
+func (e *ProductionExecutor) budgetedReserveFloor(ctx context.Context, playerID, treasury int) int {
+	floor := effectiveReserveFloor(ctx)
+	if e.workSensor == nil {
+		return floor
+	}
+
+	logger := common.LoggerFromContext(ctx)
+	tradeHasWork := true
+	if has, err := e.workSensor.TradeHasWork(ctx, playerID); err != nil {
+		// Numbers/cause in the MESSAGE (sp-iqyq): the container log renderer drops the
+		// metadata map, so a conservative resolution must name its cause in the text.
+		logger.Log("WARNING", fmt.Sprintf("Could not sense whether trade is live for the capital budget — assuming it is and taking only construction's %d%% share (fail-conservative): %v", 100-common.TradeCapitalSharePct, err), map[string]interface{}{
+			"error": err.Error(),
+		})
+	} else {
+		tradeHasWork = has
+	}
+
+	deployable := common.CapitalDeployable(int64(treasury), int64(floor))
+	_, constructionBudget := common.CapitalSplit(common.TradeCapitalSharePct, deployable, tradeHasWork, true)
+	return int(common.BudgetedSpendFloor(int64(floor), deployable, constructionBudget))
+}
+
 // defaultHullFillFraction is the fraction of a hauler's hold the construction-supply drain fills
 // per trip when no fraction is configured (sp-2me2). 1.0 = fill the whole hull — the fix's intent:
 // a construction buy tops the hold up toward capacity instead of stopping at one trade-volume
@@ -195,6 +243,14 @@ type ProductionExecutor struct {
 	// the real API-backed repo via SetConstructionRepo, and only the construction-supply drain
 	// ever calls the terminal, so every other caller is unaffected.
 	constructionRepo manufacturing.ConstructionSiteRepository
+	// workSensor backs the per-operation capital budget (sp-ftqgp): it answers whether the TRADE
+	// side is live, which is what sizes construction's share of deployable capital. nil disables
+	// the budget and leaves the flat reserve floor guarding alone — the SAME optional-port
+	// fail-OPEN contract as apiClient/spendLedger/priceHistory (the package's fixtures wire
+	// nothing; the daemon wires the container-backed sensor unconditionally via
+	// SetCapitalWorkSensor, with no config gate between). A wired-but-erroring sensor does NOT
+	// fail open: see budgetedReserveFloor.
+	workSensor common.CapitalWorkSensor
 }
 
 // SetSpendLedger wires the cross-container concurrent spend cap (sp-w3he). The daemon calls
@@ -202,6 +258,15 @@ type ProductionExecutor struct {
 // cap fail-open, which is exactly what every non-daemon caller wants.
 func (e *ProductionExecutor) SetSpendLedger(ledger SpendReservationLedger) {
 	e.spendLedger = ledger
+}
+
+// SetCapitalWorkSensor wires the per-operation capital budget's hasWork sensor (sp-ftqgp). The
+// daemon calls this UNCONDITIONALLY when it builds the construction executor — there is no config
+// key, no default-off and no arming step between the sensor and a live budget. Leaving it unset
+// is the test-fixture path only, and keeps the flat reserve floor as the sole guard exactly as
+// before this bead.
+func (e *ProductionExecutor) SetCapitalWorkSensor(sensor common.CapitalWorkSensor) {
+	e.workSensor = sensor
 }
 
 // SetConstructionRepo wires the construction supply API the DeliverToConstructionSite terminal
@@ -503,14 +568,14 @@ func (e *ProductionExecutor) buyGood(
 		// at the coordinator. The park cause goes IN THE MESSAGE (sp-iqyq) — the container log
 		// renderer drops the metadata map.
 		projectedCost := trancheQty * ask
-		if e.spendFloorBreached(ctx, projectedCost) {
+		if breached, enforcedFloor := e.spendFloorBreached(ctx, playerID, projectedCost); breached {
 			if acquired == 0 {
-				logger.Log("WARNING", fmt.Sprintf("Parked input purchase of %s at %s — would breach working-capital reserve (projected cost %d, reserve %d)", node.Good, marketResult.WaypointSymbol, projectedCost, effectiveReserveFloor(ctx)), map[string]interface{}{
+				logger.Log("WARNING", fmt.Sprintf("Parked input purchase of %s at %s — would breach working-capital reserve (projected cost %d, reserve %d)", node.Good, marketResult.WaypointSymbol, projectedCost, enforcedFloor), map[string]interface{}{
 					"good": node.Good, "market": marketResult.WaypointSymbol, "projected_cost": projectedCost,
 					"action": "factory_parked", "reason": "spend_floor",
 				})
 			} else {
-				logger.Log("WARNING", fmt.Sprintf("Stopping purchase of %s at %s after %d units — next tranche would breach the working-capital reserve (projected cost %d, reserve %d)", node.Good, marketResult.WaypointSymbol, acquired, projectedCost, effectiveReserveFloor(ctx)), map[string]interface{}{
+				logger.Log("WARNING", fmt.Sprintf("Stopping purchase of %s at %s after %d units — next tranche would breach the working-capital reserve (projected cost %d, reserve %d)", node.Good, marketResult.WaypointSymbol, acquired, projectedCost, enforcedFloor), map[string]interface{}{
 					"good": node.Good, "market": marketResult.WaypointSymbol, "projected_cost": projectedCost, "acquired": acquired,
 					"action": "factory_parked", "reason": "spend_floor",
 				})
@@ -588,10 +653,17 @@ func (e *ProductionExecutor) buyGood(
 	}, nil
 }
 
-// spendFloorBreached reports whether buying an input tranche costing projectedCost
-// would drop live treasury below defaultWorkingCapitalReserve. It mirrors bp6f's trade
-// floor (spendFloorBreached in run_trade_route_coordinator.go): a live GetAgent read
-// checked right before the buy commits, so the caller can PARK instead of spending.
+// spendFloorBreached reports whether buying an input tranche costing projectedCost would drop
+// live treasury below the floor this buy is guarded against, and returns that floor so the caller
+// can name the ACTUAL enforced number in its park log rather than re-deriving a base that the
+// capital budget may have raised. It mirrors bp6f's trade floor (spendFloorBreached in
+// run_trade_route_coordinator.go): a live GetAgent read checked right before the buy commits, so
+// the caller can PARK instead of spending.
+//
+// The floor is budgetedReserveFloor (sp-ftqgp): the flat non-contract reserve, raised by the share
+// of deployable capital reserved for the trade side. Layering the budget HERE covers both spend
+// paths at once — raw input buys (buyGood) and fabricated-output harvests both funnel through
+// this one primitive — with no second guard to drift.
 //
 // Fails OPEN when no apiClient is wired (e.apiClient == nil): the guard is simply
 // unavailable — the optional-port contract the package's test fixtures rely on (they
@@ -601,15 +673,11 @@ func (e *ProductionExecutor) buyGood(
 // itself erroring): a guard whose whole job is keeping treasury above the reserve must
 // never let a buy through just because it went blind. An API hiccup here parks the
 // input rather than spending unseen — the factory-side analogue of bp6f's fail-closed.
-func (e *ProductionExecutor) spendFloorBreached(ctx context.Context, projectedCost int) bool {
+func (e *ProductionExecutor) spendFloorBreached(ctx context.Context, playerID, projectedCost int) (bool, int) {
 	logger := common.LoggerFromContext(ctx)
 	if e.apiClient == nil {
-		return false
+		return false, effectiveReserveFloor(ctx)
 	}
-
-	// Flat immutable floor (sp-05glh): no per-run override, no proportional-of-treasury
-	// shrink — 50k always, RULINGS #5.
-	reserve := effectiveReserveFloor(ctx)
 
 	token, err := common.PlayerTokenFromContext(ctx)
 	if err != nil {
@@ -618,7 +686,7 @@ func (e *ProductionExecutor) spendFloorBreached(ctx context.Context, projectedCo
 		logger.Log("WARNING", fmt.Sprintf("Could not resolve player token for factory spend-floor check — parking input buy (fail-closed): %v", err), map[string]interface{}{
 			"error": err.Error(),
 		})
-		return true
+		return true, effectiveReserveFloor(ctx)
 	}
 
 	agentData, err := e.apiClient.GetAgent(ctx, token)
@@ -626,17 +694,22 @@ func (e *ProductionExecutor) spendFloorBreached(ctx context.Context, projectedCo
 		logger.Log("WARNING", fmt.Sprintf("Could not read live treasury for factory spend-floor check — parking input buy (fail-closed): %v", err), map[string]interface{}{
 			"error": err.Error(),
 		})
-		return true
+		return true, effectiveReserveFloor(ctx)
 	}
+
+	// The flat non-contract floor (sp-05glh/sp-q8bon), RAISED by trade's reserved share of
+	// deployable capital (sp-ftqgp). Resolved against the SAME live treasury the breach test
+	// uses, so the budget and the check can never disagree about the balance they are sizing.
+	reserve := e.budgetedReserveFloor(ctx, playerID, agentData.Credits)
 
 	if agentData.Credits-projectedCost < reserve {
 		logger.Log("WARNING", fmt.Sprintf("Factory input buy would breach the working-capital reserve — treasury %d, projected cost %d, reserve %d", agentData.Credits, projectedCost, reserve), map[string]interface{}{
 			"treasury": agentData.Credits, "projected_cost": projectedCost, "reserve": reserve,
 		})
-		return true
+		return true, reserve
 	}
 
-	return false
+	return false, reserve
 }
 
 // reserveConcurrentSpendOrPark records this input buy's spend intent in the shared ledger
@@ -660,11 +733,6 @@ func (e *ProductionExecutor) reserveConcurrentSpendOrPark(ctx context.Context, p
 		return "", false
 	}
 
-	// Same flat immutable floor as the per-buy check (sp-agzj/sp-05glh): the concurrent cap
-	// must serialize against the SAME reserve the per-container floor enforces, or the two
-	// guards would disagree on where the line is. 50k, immutable (RULINGS #5).
-	reserve := effectiveReserveFloor(ctx)
-
 	token, err := common.PlayerTokenFromContext(ctx)
 	if err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Could not resolve player token for factory concurrent-spend-cap check — parking input buy (fail-closed): %v", err), map[string]interface{}{
@@ -680,6 +748,13 @@ func (e *ProductionExecutor) reserveConcurrentSpendOrPark(ctx context.Context, p
 		})
 		return "", true
 	}
+
+	// Same floor as the per-buy check: the concurrent cap must serialize against the SAME
+	// reserve the per-container floor enforces, or the two guards would disagree on where the
+	// line is (sp-agzj/sp-05glh). That reserve is now the BUDGETED floor (sp-ftqgp) — the flat
+	// non-contract base raised by trade's reserved share — resolved against this call's own live
+	// treasury read, so a construction buy cannot slip past the budget by taking the ledger path.
+	reserve := e.budgetedReserveFloor(ctx, playerID, agentData.Credits)
 
 	// Container id attributes the reservation to the owning factory (already threaded into
 	// ctx by the coordinator, sp-9aoc's operation context). Best-effort: the staleness sweep
@@ -1163,8 +1238,8 @@ func (e *ProductionExecutor) purchaseFabricatedOutput(
 	// picked up on a later pass (same as the full-hold skip above). The park cause goes IN THE MESSAGE
 	// (sp-iqyq) — the container-log renderer drops the metadata map.
 	projectedCost := purchaseQty * unitPrice
-	if e.spendFloorBreached(ctx, projectedCost) {
-		logger.Log("WARNING", fmt.Sprintf("Parked fabricated-output harvest of %s at %s — would breach the working-capital reserve (projected cost %d, reserve %d)", good, waypointSymbol, projectedCost, effectiveReserveFloor(ctx)), map[string]interface{}{
+	if breached, enforcedFloor := e.spendFloorBreached(ctx, playerID.Value(), projectedCost); breached {
+		logger.Log("WARNING", fmt.Sprintf("Parked fabricated-output harvest of %s at %s — would breach the working-capital reserve (projected cost %d, reserve %d)", good, waypointSymbol, projectedCost, enforcedFloor), map[string]interface{}{
 			"good": good, "market": waypointSymbol, "projected_cost": projectedCost,
 			"action": "factory_parked", "reason": "spend_floor",
 		})
