@@ -70,6 +70,51 @@ var DefaultHeavyFrameSymbols = func() []string {
 	return out
 }()
 
+// lightFreightClass is the freight hull class BELOW the heavy classes: the one the
+// fleet actually owns and flies its trade lanes with today.
+//
+// Unlike the heavy pairings above, this one is OBSERVED rather than inferred — the
+// live trade pool is FRAME_LIGHT_FREIGHTER at 80 cargo, bought as SHIP_LIGHT_HAULER
+// (verified 2026-07-28: 10 trade-tagged + 3 contract-tagged hulls, all 80 cargo).
+// It is deliberately NOT added to heavyHullClasses: 80 cargo is far below
+// HeavyCargoCapacityThreshold and calling it heavy would both inflate the owned-heavy
+// census and close the heavy capability against hulls that are not heavies.
+var lightFreightClass = struct{ ShipType, FrameSymbol string }{
+	ShipType: "SHIP_LIGHT_HAULER", FrameSymbol: "FRAME_LIGHT_FREIGHTER",
+}
+
+// TradeHullPreferenceOrder is every hull class that can fly a TRADE LANE, BEST FIRST
+// — the heavy freight classes, then the light freighter.
+//
+// ORDERED BY FREIGHT CAPABILITY, NOT BY NAME. A trade lane's value scales with the
+// cargo carried per round trip, so the largest freight hull that can actually be
+// priced is the right substitute when the preferred one cannot be. The heavy classes
+// are projected from heavyHullClasses — the same single source of truth the census
+// and the yard query use — so this list cannot drift from them, and a newly-added
+// heavy class automatically outranks the light tier here too.
+//
+// SELF-CORRECTING BY CONSTRUCTION: the heavies sort FIRST, so a consumer that walks
+// this order and takes the first priceable type returns to the preferred hull the
+// moment a heavy yard is discovered, with no intervention and no config change.
+//
+// WHAT IS DELIBERATELY EXCLUDED, and why it is not an oversight. SHIP_LIGHT_SHUTTLE,
+// SHIP_PROBE, SHIP_MINING_DRONE, SHIP_SIPHON_DRONE, SHIP_SURVEYOR and SHIP_EXPLORER
+// are all priceable at yards we have discovered, and none belongs here: a shuttle's
+// hold is a courier's rather than a trader's, and the rest carry no useful freight at
+// all. The exclusion matters because the autosizer's realized-rate guards judge the
+// FLEET's rate, not the candidate hull's capability — they cannot tell that a
+// substituted hull is too small to earn, so an undersized substitute would be bought
+// and only discovered later. Keeping the list to genuine freight hulls is what makes
+// the substitution safe; when nothing here can be priced the caller buys nothing,
+// which is the correct fail-closed outcome.
+var TradeHullPreferenceOrder = func() []string {
+	out := make([]string, 0, len(heavyHullClasses)+1)
+	for _, c := range heavyHullClasses {
+		out = append(out, c.ShipType)
+	}
+	return append(out, lightFreightClass.ShipType)
+}()
+
 // HeavyCargoCapacityThreshold is the cargo hold at or above which a hull counts as
 // heavy REGARDLESS of its frame — the safety net under the frame list.
 //

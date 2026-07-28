@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shipyard"
 )
 
 // The ACT step: the coordinator reads the tick's shared inputs (treasury, era clock,
@@ -328,12 +329,7 @@ func (h *RunFleetAutosizerCoordinatorHandler) buildPurchaseRequest(
 	class := d.Class
 	shipType, classCeiling, maxPrice, treasuryPct := classGuardConfig(class, cfg)
 
-	price, cheapest, yard, priceOK := int64(0), int64(0), "", false
-	if h.yardPrice != nil {
-		if p, c, y, ok, err := h.yardPrice.PriceFor(ctx, cmd.PlayerID, class, shipType, cfg.PreferDemandProximalYard); err == nil {
-			price, cheapest, yard, priceOK = p, c, y, ok
-		}
-	}
+	shipType, price, cheapest, yard, priceOK := h.resolveHullPrice(ctx, cmd, cfg, class, shipType)
 
 	rateFloor := cfg.HeavyMarginalRateFloor * d.FleetAvgRate
 
@@ -388,6 +384,77 @@ func (h *RunFleetAutosizerCoordinatorHandler) buildPurchaseRequest(
 		APIUtilReadable: in.apiOK,
 		APIUtilCeiling:  cfg.APIUtilizationCeilingPct,
 	}, yard
+}
+
+// resolveHullPrice prices the class's PREFERRED hull and, for the TRADE pool only,
+// falls back to the best priceable trade-capable hull when the preferred one cannot be
+// priced at any reachable yard. It returns the type actually resolved, so the guard
+// stack, the buy order and the decision log all name the same hull.
+//
+// WHY THIS EXISTS. The trade pool buys autosizer_ship_type_heavies, which defaults to
+// SHIP_HEAVY_FREIGHTER — and no shipyard discovered this era sells one. price_read
+// therefore blocked every tick while profitable lanes sat unflown, and the pool refused
+// to buy the very hull it is already made of (its own hulls are light freighters).
+// Falling back to a priceable trade-capable hull is what lets the demand be served at
+// all; the preferred type stays the operator's choice and simply wins whenever it can
+// be priced.
+//
+// IT CHANGES ONLY WHICH HULL IS OFFERED TO THE GUARDS — never whether a guard runs.
+// The caller passes the resolved type and its OWN price and cheapest-known ask into the
+// same PurchaseRequest, so the price ceiling compares like with like (a premium check
+// against the preferred type's cheapest ask would be meaningless for a different hull),
+// and every other guard — realized rate, era payback, treasury floor and percentage,
+// heavy cap, fleet ceilings, per-tick cap — judges the substitute exactly as it judges
+// the preferred hull. If they then refuse the cheaper hull on economics, that refusal
+// stands: this function has no power to approve anything.
+//
+// TRADE-SCOPED, DELIBERATELY. The explorer buys REACH — a freighter cannot warp off the
+// gate network, so substituting one would silently defeat the class — and the light
+// worker pool's own type is priceable. Only HullClassHeavy substitutes.
+//
+// SELF-CORRECTING: the preferred type is asked FIRST every tick, and
+// shipyard.TradeHullPreferenceOrder lists the heavy classes ahead of the light one, so
+// the moment exploration finds a heavy yard the preferred hull wins back with no
+// intervention. Nothing is remembered between ticks.
+//
+// FAILS CLOSED: when no trade-capable type can be priced, readable stays false and the
+// price guards block exactly as they do today. The substitution is logged once per
+// decision, naming the preferred type and what replaced it, because an operator must
+// never have to discover a changed hull type from a ship list.
+func (h *RunFleetAutosizerCoordinatorHandler) resolveHullPrice(
+	ctx context.Context,
+	cmd *RunFleetAutosizerCoordinatorCommand,
+	cfg autosizerRunConfig,
+	class HullClass,
+	preferred string,
+) (shipType string, price, cheapest int64, yard string, readable bool) {
+	if h.yardPrice == nil {
+		return preferred, 0, 0, "", false
+	}
+	if p, c, y, ok, err := h.yardPrice.PriceFor(ctx, cmd.PlayerID, class, preferred, cfg.PreferDemandProximalYard); err == nil && ok {
+		return preferred, p, c, y, true
+	}
+	if class != HullClassHeavy {
+		return preferred, 0, 0, "", false
+	}
+	for _, alt := range shipyard.TradeHullPreferenceOrder {
+		if alt == preferred {
+			continue // already asked, and it could not be priced
+		}
+		p, c, y, ok, err := h.yardPrice.PriceFor(ctx, cmd.PlayerID, class, alt, cfg.PreferDemandProximalYard)
+		if err != nil || !ok {
+			continue
+		}
+		common.LoggerFromContext(ctx).Log("WARN", fmt.Sprintf(
+			"Autosizer trade pool: preferred hull %s cannot be priced at any reachable yard — substituting %s @ %d at %s for this decision (the preferred type wins back automatically once a yard selling it is found)",
+			preferred, alt, p, y), map[string]interface{}{
+			"action": "autosizer_trade_hull_substituted", "container_id": cmd.ContainerID,
+			"class": string(class), "preferred_ship_type": preferred, "ship_type": alt,
+			"price": p, "yard": y,
+		})
+		return alt, p, c, y, true
+	}
+	return preferred, 0, 0, "", false
 }
 
 func decisionWord(d PurchaseDecision) string {

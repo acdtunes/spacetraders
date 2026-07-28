@@ -411,3 +411,146 @@ func (f *fakeHeavyYard) CheapestHeavyPrice(_ context.Context, _ int) (int64, boo
 // intPtr is the *int helper for HeavyCap, whose pointer-ness is what lets an explicit 0
 // (operator hold) be told from unset.
 func intPtr(v int) *int { return &v }
+
+// --- the trade-hull fallback (the preferred type cannot be priced anywhere) ---
+
+// fakeTypedYardPrice prices ONE named set of ship types and refuses every other, which is
+// the whole point: a fake that answers the same price for any type makes the preferred
+// type and the fallback INDISTINGUISHABLE, and a fallback that never fired would still
+// pass. Every asked-for type is recorded so a test can pin the ORDER of the attempts.
+type fakeTypedYardPrice struct {
+	byType map[string]int64
+	asked  []string
+}
+
+func (f *fakeTypedYardPrice) PriceFor(_ context.Context, _ int, _ HullClass, shipType string, _ bool) (int64, int64, string, bool, error) {
+	f.asked = append(f.asked, shipType)
+	price, priced := f.byType[shipType]
+	if !priced {
+		return 0, 0, "", false, nil // unpriceable at every reachable yard
+	}
+	return price, price, shipType + "-YARD", true, nil
+}
+
+// tradeShortfall is a heavy (trade) class with unserved lanes and healthy economics, so the
+// only thing left to decide the outcome is which hull the price step resolves.
+func tradeShortfall() *fakeDemandProvider {
+	return &fakeDemandProvider{class: HullClassHeavy, demand: ClassDemand{
+		Demand: 9, Current: 6, MarginalRate: 450000, FleetAvgRate: 500000, RateReadable: true, Readable: true,
+	}}
+}
+
+func tradeCmd() *RunFleetAutosizerCoordinatorCommand {
+	return &RunFleetAutosizerCoordinatorCommand{
+		PlayerID: 1, ContainerID: "c1", HeavyUnservedLanesMin: 1, HeavyCap: intPtr(50),
+	}
+}
+
+func TestReconcile_TradeHullFallback_BuysThePriceableTypeWhenThePreferredCannotBePriced(t *testing.T) {
+	// The live defect: the trade pool is configured to buy SHIP_HEAVY_FREIGHTER and no
+	// shipyard discovered this era sells one, so price_read blocked every tick while 8
+	// profitable lanes sat unflown. Only the light hauler is priceable here.
+	h, purchaser, _, _ := armedHandler(tradeShortfall())
+	yards := &fakeTypedYardPrice{byType: map[string]int64{"SHIP_LIGHT_HAULER": 374176}}
+	h.SetYardPriceReader(yards)
+
+	res, err := h.reconcileOnce(context.Background(), tradeCmd())
+	if err != nil {
+		t.Fatalf("reconcileOnce error: %v", err)
+	}
+	if res.Purchased != 1 || len(purchaser.orders) != 1 {
+		t.Fatalf("purchased=%d orders=%d, want one buy on the fallback hull", res.Purchased, len(purchaser.orders))
+	}
+	o := purchaser.orders[0]
+	if o.ShipType != "SHIP_LIGHT_HAULER" {
+		t.Fatalf("bought %q, want the priceable fallback SHIP_LIGHT_HAULER", o.ShipType)
+	}
+	if o.Class != HullClassHeavy {
+		t.Fatalf("class = %s, want HullClassHeavy — the fallback hull still joins the TRADE pool", o.Class)
+	}
+	if o.ExpectedPrice != 374176 || o.Yard != "SHIP_LIGHT_HAULER-YARD" {
+		t.Fatalf("order = %+v, want the fallback type's OWN price and yard, not the preferred type's", o)
+	}
+	// The preferred type must be tried FIRST, or the fallback is not a fallback.
+	if len(yards.asked) == 0 || yards.asked[0] != defaultShipTypeHeavies {
+		t.Fatalf("price attempts = %v, want the preferred %s asked first", yards.asked, defaultShipTypeHeavies)
+	}
+}
+
+func TestReconcile_TradeHullFallback_PreferredTypeWinsAgainOnceItIsPriceable(t *testing.T) {
+	// Self-correction: exploration is actively hunting a heavy yard, and the moment one is
+	// found the preferred type must win back with no intervention. BOTH types are priceable
+	// here — a fixture that priced only one could not tell a fallback from a downgrade.
+	h, purchaser, _, _ := armedHandler(tradeShortfall())
+	h.SetYardPriceReader(&fakeTypedYardPrice{byType: map[string]int64{
+		// Priced so every OTHER guard passes: the only thing this test may turn on is
+		// which of the two priceable types the resolver picks.
+		"SHIP_HEAVY_FREIGHTER": 900000,
+		"SHIP_LIGHT_HAULER":    374176,
+	}})
+
+	if _, err := h.reconcileOnce(context.Background(), tradeCmd()); err != nil {
+		t.Fatalf("reconcileOnce error: %v", err)
+	}
+	if len(purchaser.orders) != 1 {
+		t.Fatalf("orders = %d, want 1", len(purchaser.orders))
+	}
+	if got := purchaser.orders[0].ShipType; got != defaultShipTypeHeavies {
+		t.Fatalf("bought %q, want the preferred %s — the fallback must not become a permanent downgrade", got, defaultShipTypeHeavies)
+	}
+}
+
+func TestReconcile_TradeHullFallback_NothingPriceableBuysNothing(t *testing.T) {
+	// Fail CLOSED, exactly as today: no trade-capable type priceable → no buy, blocked on
+	// price_read. The fallback widens WHICH hulls are offered to the guards; it never
+	// invents a purchase.
+	h, purchaser, metrics, _ := armedHandler(tradeShortfall())
+	h.SetYardPriceReader(&fakeTypedYardPrice{byType: map[string]int64{}})
+
+	res, _ := h.reconcileOnce(context.Background(), tradeCmd())
+	if res.Purchased != 0 || len(purchaser.orders) != 0 {
+		t.Fatalf("purchased=%d orders=%d, want no buy when nothing can be priced", res.Purchased, len(purchaser.orders))
+	}
+	if len(metrics.blockedGuards) == 0 || metrics.blockedGuards[0] != GuardPriceRead {
+		t.Fatalf("blocked guards = %v, want price_read", metrics.blockedGuards)
+	}
+}
+
+func TestReconcile_TradeHullFallback_StillRunsEveryGuard(t *testing.T) {
+	// The fallback decides only WHICH hull is offered to the guard stack. Here the fallback
+	// hull IS priceable, so price_read passes — and the treasury is unreadable, so the money
+	// guard must still refuse. A fallback that bypassed a guard would buy.
+	h, purchaser, metrics, _ := armedHandler(tradeShortfall())
+	h.SetYardPriceReader(&fakeTypedYardPrice{byType: map[string]int64{"SHIP_LIGHT_HAULER": 374176}})
+	h.SetTreasuryReader(&fakeTreasury{ok: false})
+
+	res, _ := h.reconcileOnce(context.Background(), tradeCmd())
+	if res.Purchased != 0 || len(purchaser.orders) != 0 {
+		t.Fatalf("purchased=%d orders=%d, want the money guard to refuse the fallback hull", res.Purchased, len(purchaser.orders))
+	}
+	// treasury_pct, not treasury_floor: the trade class carries the 25% big-ticket
+	// affordability rule (lights do not) and it is judged first, so it is the guard an
+	// unreadable treasury trips for a heavy candidate.
+	if len(metrics.blockedGuards) == 0 || metrics.blockedGuards[0] != GuardTreasuryPct {
+		t.Fatalf("blocked guards = %v, want treasury_pct — every guard still applies to the fallback type", metrics.blockedGuards)
+	}
+}
+
+func TestReconcile_TradeHullFallback_DoesNotSubstituteForNonTradeClasses(t *testing.T) {
+	// The fallback is TRADE-scoped. The explorer buys REACH — a substituted freighter cannot
+	// warp off the gate network — and the light pool's own type is already priceable, so
+	// neither may ever be silently swapped. An unpriceable light simply does not buy.
+	h, purchaser, _, _ := armedHandler(lightShortfall())
+	yards := &fakeTypedYardPrice{byType: map[string]int64{"SHIP_HEAVY_FREIGHTER": 2000000}}
+	h.SetYardPriceReader(yards)
+
+	res, _ := h.reconcileOnce(context.Background(), &RunFleetAutosizerCoordinatorCommand{PlayerID: 1, ContainerID: "c1"})
+	if res.Purchased != 0 || len(purchaser.orders) != 0 {
+		t.Fatalf("purchased=%d orders=%d, want no substitution outside the trade pool", res.Purchased, len(purchaser.orders))
+	}
+	for _, asked := range yards.asked {
+		if asked != defaultShipTypeLights {
+			t.Fatalf("light class priced %q — only its own configured type may be asked for", asked)
+		}
+	}
+}
