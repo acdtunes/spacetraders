@@ -31,6 +31,34 @@ import (
 // it. The backlog is not lost — it is simply worked over more ticks.
 const DefaultMaxPlacementActions = 10
 
+// MaxWalkRings is how many gate jumps of stored adjacency RouteAcross will look
+// through to name its next system — and therefore exactly how far a hull may be
+// sent. IT IS THE WALK'S REACH, and it is declared here, beside the verb whose
+// reach it is, so that the one adapter that implements the walk and the one
+// caller that hands it destinations read the SAME number rather than two copies
+// that can drift.
+//
+// THAT SHARING IS LOAD-BEARING, not tidiness. A destination further out than
+// this is not refused loudly — nextHopToward simply names no next system, so the
+// step returns an error, the slot stays IN_TRANSIT still naming the hull, and
+// the hull goes on counting against the probe cap while never arriving. A caller
+// working from its own private copy of this bound is one edit away from handing
+// out exactly that stall, so there is no second copy to edit.
+//
+// WHY TWO. This is a STAGING walk, not a router. Every placement it serves is
+// staged from a system we already hold toward one at or near its border —
+// stagingYardFor picks a yard in a system BORDERING the target, and the buy queue
+// buys in the slot's own system — so the honest reach is a neighbour, or a
+// neighbour's neighbour once a conversion has moved the frontier.
+//
+// The bound is also what keeps resolution cheap: each ring costs one stored read
+// per system on the frontier, so a step costs one read plus the current system's
+// fanout — a handful — rather than something that grows with everything the fleet
+// has ever charted. A destination further out is not refused forever; the
+// frontier advances by CONVERTING systems, and each conversion brings the next
+// ones inside this reach.
+const MaxWalkRings = 2
+
 // ShipMover issues the movement commands. The two navigation verbs are
 // genuinely different machinery, not one with a flag: the in-system planner
 // resolves a route inside a single system's waypoint graph, while the

@@ -481,20 +481,13 @@ func (p *MoverPort) NavigateWithin(ctx context.Context, playerID int, shipSymbol
 
 // maxWalkRings bounds how far the cross-system walk will look for a route.
 //
-// This is a STAGING walk, not a router. Every placement it serves is staged from
-// a system we already hold toward one at or near its border — stagingYardFor
-// picks a yard in a system BORDERING the target, and the buy queue buys in the
-// slot's own system — so the honest reach is a neighbour, or a neighbour's
-// neighbour once a conversion has moved the frontier. Two rings covers that
-// with room to spare.
-//
-// The bound is also what keeps the resolution cheap. Each ring costs one stored
-// read per system on the frontier, so the cost of a step is one read plus the
-// current system's fanout — a handful — rather than something that grows with
-// everything the fleet has ever charted. A destination further out is not
-// refused forever: the frontier advances by CONVERTING systems, and each
-// conversion brings the next ones inside this reach.
-const maxWalkRings = 2
+// NOT A NUMBER, A REFERENCE. The bound is declared once beside the RouteAcross
+// contract it describes, because the walk is not its only reader: the caller that
+// picks destinations for idle hulls has to refuse anything this walk cannot
+// resolve, and a second copy of the number here is what would let the two drift
+// into handing out unreachable errands. See appSensing.MaxWalkRings for what the
+// bound is and why it is two.
+const maxWalkRings = appSensing.MaxWalkRings
 
 // RouteAcross advances a hull ONE STEP of its gate walk toward destination, and
 // returns either way. It NEVER waits.

@@ -344,18 +344,27 @@ func TestOrphanDispatch_OneHullAnswersExactlyOnePlacement(t *testing.T) {
 		"the second placement is not also written with a hull already spoken for")
 }
 
-// SAME SYSTEM ONLY. 66 of the 74 open placements are in OTHER systems, and sending an idle probe
-// across a gate is a routing and fuel decision this pass does not make (see the file header for
-// why in-system is the whole reason it is tractable). The hull waits for a placement it can reach
-// with an in-system hop.
-func TestOrphanDispatch_NeverDispatchesAcrossASystemBoundary(t *testing.T) {
+// A SYSTEM THE GATE GRAPH CANNOT REACH IS NOT A TARGET, whatever is open in it.
+//
+// This test used to read "same system only", and that WAS the rule: RouteAcross refused outright
+// (the sp-uwxwo stopgap, because routing a whole crossing blocked the tick), so a cross-gate errand
+// was one nothing could perform. The walk now advances a step per tick, and the rule is the walk's
+// reach — see run_probe_orphan_dispatch_xsys_test.go, where a hull is carried across one and two
+// gates to a berth.
+//
+// What survives unchanged is the FAIL-CLOSED edge, which is what this fixture still pins: this world
+// has no stored adjacency at all, so nothing can confirm X1-BT49 is reachable, and an unconfirmed
+// reach sends nobody. Reading "we cannot see any gates" as "everything is reachable" is what leaves a
+// hull IN_TRANSIT forever, holding a placement and counting against the probe cap while never
+// arriving.
+func TestOrphanDispatch_NeverDispatchesToASystemTheGateGraphCannotReach(t *testing.T) {
 	world := steadyWorld(t, map[string]string{
 		"X1-KP23": parkedsensing.VerdictInScope,
 		"X1-BT49": parkedsensing.VerdictInScope,
 	})
 	world.posts.posts = nil
 	world.ledger.slots["X1-KP23-A2"] = parkedAt("X1-KP23-A2", "TORWIND-E")
-	world.ledger.slots["X1-BT49-AA9E"] = wantedAt("X1-BT49-AA9E") // the biggest open system, a gate away
+	world.ledger.slots["X1-BT49-AA9E"] = wantedAt("X1-BT49-AA9E") // the biggest open system, and no edge to it
 	world.fleet.ships = []*navigation.Ship{
 		probeWithFleet(t, "TORWIND-E", "X1-KP23-A2", parkedsensing.SensingParkedFleetTag),
 		idleOrphan(t, "TORWIND-14", "X1-KP23-A2"),
@@ -365,7 +374,7 @@ func TestOrphanDispatch_NeverDispatchesAcrossASystemBoundary(t *testing.T) {
 	require.NoError(t, world.handler.ReconcileOnce(common.WithLogger(world.ctx, logger), world.cmd))
 
 	require.Equal(t, 0, dispatchedCount(t, logger),
-		"a placement a gate hop away is not this pass's to fill")
+		"with no stored edge to confirm the crossing, the reach is empty and the hull stays put")
 	require.Empty(t, world.ledger.slots["X1-BT49-AA9E"].AssignedShip)
 }
 

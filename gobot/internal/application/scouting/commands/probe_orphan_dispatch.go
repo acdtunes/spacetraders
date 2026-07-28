@@ -59,8 +59,9 @@ type idleOrphanHull struct {
 	waypoint string
 }
 
-// dispatchIdleOrphans sends idle probes the ledger has no row for to open placements elsewhere in
-// their own system, and reports how many it dispatched.
+// dispatchIdleOrphans sends idle probes the ledger has no row for to open placements — in their own
+// system where there is one, otherwise as far across the gates as the walk can carry them — and
+// reports how many it dispatched.
 //
 // Idempotent by construction: a dispatched hull is named by the placement's row from the first
 // write onward, so the next tick's ledger read strikes it off as already recorded. A settled fleet
@@ -110,6 +111,9 @@ func (h *RunProbeSensingCoordinatorHandler) dispatchIdleOrphans(
 	if len(targets) == 0 {
 		return 0
 	}
+	// One walker per tick, so the topology behind a burst of dispatches is read once per distinct
+	// system the hulls are standing in rather than once per hull.
+	reach := newGateReach(ports.Gates, failures)
 
 	dispatched, writes := 0, 0
 	for _, orphan := range orphans {
@@ -122,15 +126,37 @@ func (h *RunProbeSensingCoordinatorHandler) dispatchIdleOrphans(
 			break
 		}
 
-		// SAME SYSTEM ONLY, and the predicate is deliberately the one flyToSlot uses to choose
-		// NavigateWithin over RouteAcross. Matching it exactly means "a target this pass will
-		// accept" is precisely "a target the placement machine will reach with the in-system
-		// planner" — there is no window in which this pass hands out an errand that turns into a
-		// multi-jump gate route. Sending an idle probe across a gate is a routing and fuel decision,
-		// and it is not this pass's to make: resolvePurchaseCandidates refuses the cross-map case
-		// for the same reason, and claimSpares will only take a spare that BORDERS its target.
+		// AS FAR AS THE WALK REACHES, AND NOT ONE SYSTEM FURTHER.
+		//
+		// This was same-system-only, and the restriction was honest when it was written: it matched
+		// the predicate flyToSlot uses to choose NavigateWithin over RouteAcross, because RouteAcross
+		// REFUSED outright — the stopgap from sp-uwxwo, since routing a whole crossing meant blocking
+		// the tick on multi-jump and cooldown waits. Handing out a cross-gate errand then would have
+		// been handing out an errand nothing could perform.
+		//
+		// THAT PREMISE IS GONE. RouteAcross now advances one step per tick and never waits, so the
+		// placement machine carries a hull across gates as readily as across a system. What is left
+		// of the old restriction is not caution, it is a wall: on the live map there is not ONE open
+		// placement in a system holding an idle hull — all 66 are in the eight systems next door — so
+		// same-system-only makes this pass a no-op by construction, not a conservative version of
+		// itself.
+		//
+		// THE BOUND THAT REPLACES IT IS THE WALK'S OWN. reachableSystems runs the same bounded
+		// breadth-first search over the same stored adjacency that nextHopToward runs, out to the
+		// same shared MaxWalkRings, so "a target this pass will hand out" stays exactly "a target the
+		// walk can resolve". Overshooting is not a loud failure: the walk would name no next system,
+		// return an error, and leave the slot IN_TRANSIT naming a hull that never arrives and never
+		// stops counting against the probe cap.
+		//
+		// MULTI-CROSSING IS FINE, and it is why the bound is the walk's reach rather than one gate.
+		// The walk re-derives its next jump each tick from where the hull ACTUALLY is, and BFS names
+		// a system on a SHORTEST route — so distance to the destination strictly decreases: a target
+		// two rings out is one ring out after a jump and an in-system hop after the next. A target
+		// admitted here therefore stays inside the walk's reach at every step of the crossing.
+		//
+		// NEAREST FIRST, so a hull never crosses a gate while its own system has an open placement.
 		system := shared.ExtractSystemSymbol(orphan.waypoint)
-		target, found := takeOpenPlacement(targets, system)
+		target, found := takeOpenPlacement(targets, system, reach.from(ctx, system))
 		if !found {
 			continue // nothing open it can reach; it waits, and takes nothing from the hulls that can
 		}
@@ -267,11 +293,13 @@ func idleOrphans(ships []*navigation.Ship, manned map[string]bool, holds ledgerH
 // openPlacements is the target pool: every unfilled placement, grouped by system and ordered by
 // waypoint within it.
 //
-// DETERMINISTIC BY WAYPOINT. Every candidate is in the hull's own system by the time it is chosen,
-// so proximity ordering would be picking between hops of comparable cost with no information to do
-// it well — and it would buy a dependency on the waypoint graph this pass otherwise does not need.
-// Waypoint order is reproducible tick to tick, which is what makes a re-run of a tick land the same
-// hulls on the same placements.
+// DETERMINISTIC BY WAYPOINT, and the pool stays GROUPED BY SYSTEM because that grouping is what the
+// reach is expressed in: a hull is offered its own system's rows, then a neighbour's, then a
+// neighbour's neighbour's, and the ring a system sits in is the only distance this pass measures.
+// Within a system, waypoint order — proximity ordering there would be choosing between hops of
+// comparable cost with no information to do it well, and would buy a dependency on the waypoint
+// graph this pass otherwise does not need. Both orders are reproducible tick to tick, which is what
+// makes a re-run of a tick land the same hulls on the same placements.
 //
 // WHAT IS EXCLUDED, and why each would be a mistake:
 //
@@ -302,8 +330,93 @@ func openPlacements(holds ledgerHolds, standing map[string]bool) map[string][]pa
 	return targets
 }
 
-// takeOpenPlacement removes and returns the next placement in system, CONSUMING it — the same
-// allocate-by-consuming discipline slotBook keeps.
+// gateReach answers "which systems can the walk carry a hull to from here?", once per system per
+// tick.
+//
+// MEMOISED, because the answer is a property of the MAP and the tick reads it repeatedly: the live
+// fleet's idle hulls are stacked in one or two systems, so a dozen dispatches ask the same question
+// a dozen times. The cache is per-tick and per-call — built at the top of the dispatch and dropped
+// with it — so it can never serve a topology the fleet has since re-charted.
+//
+// A FAILED READ IS AN EMPTY REACH, and that is the fail-closed direction. Not knowing the topology
+// must never read as "everything is reachable": that is precisely how a hull is sent toward a system
+// the walk cannot resolve, where it sits IN_TRANSIT forever, still named by the row and still
+// counting against the probe cap. An empty reach costs nothing — same-system dispatch needs no
+// topology at all and is unaffected — so a dark gate graph degrades this pass to exactly the
+// behaviour it had before the walk existed.
+type gateReach struct {
+	gates    parkedsensing.GateNeighbours
+	failures *[]error
+	cache    map[string][]string
+}
+
+func newGateReach(gates parkedsensing.GateNeighbours, failures *[]error) *gateReach {
+	return &gateReach{gates: gates, failures: failures, cache: map[string][]string{}}
+}
+
+// from returns the systems within the walk's reach of origin, NEAREST RING FIRST and alphabetically
+// within a ring. origin itself is not included — the caller has already offered it.
+//
+// The ORDER is the allocation policy, so it is fixed rather than incidental. Nearest-first means a
+// hull crosses the fewest gates that will reach an open placement, which is both the cheapest
+// crossing and the soonest arrival; sorting within a ring makes a re-run of a tick land the same
+// hulls on the same placements, which is the same reproducibility openPlacements sorts for.
+func (r *gateReach) from(ctx context.Context, origin string) []string {
+	if reachable, done := r.cache[origin]; done {
+		return reachable
+	}
+	reachable := r.walk(ctx, origin)
+	r.cache[origin] = reachable
+	return reachable
+}
+
+// walk is nextHopToward's search with its answer widened: the same breadth-first sweep over the same
+// stored adjacency, bounded by the same shared MaxWalkRings, reporting every system it reaches
+// rather than the first jump toward one of them. Running the same search under the same bound is
+// what makes "this pass will offer it" and "the walk can resolve it" the same set.
+func (r *gateReach) walk(ctx context.Context, origin string) []string {
+	if r.gates == nil {
+		return nil // unwired topology: same-system only, exactly as before the walk existed
+	}
+
+	var reachable []string
+	seen := map[string]bool{origin: true}
+	frontier := []string{origin}
+
+	for ring := 0; ring < parkedsensing.MaxWalkRings && len(frontier) > 0; ring++ {
+		var next []string
+		for _, current := range frontier {
+			systems, err := r.gates.Neighbours(ctx, current)
+			if err != nil {
+				// Named rather than swallowed: a topology read that keeps failing otherwise looks
+				// exactly like a map with no gates in it, and this pass would quietly go on
+				// dispatching nowhere. The reach built so far is kept — it was read successfully,
+				// and every system in it is genuinely within the bound.
+				*r.failures = append(*r.failures, fmt.Errorf(
+					"failed to read the gate neighbours of %s while sizing the reach of idle probes standing in %s: %w",
+					current, origin, err))
+				continue
+			}
+			for _, candidate := range systems {
+				if candidate == "" || seen[candidate] {
+					continue
+				}
+				seen[candidate] = true
+				next = append(next, candidate)
+			}
+		}
+		// Within a ring, alphabetically — the port's ordering is not part of its contract, so the
+		// determinism this pass needs is established here rather than assumed.
+		sort.Strings(next)
+		reachable = append(reachable, next...)
+		frontier = next
+	}
+	return reachable
+}
+
+// takeOpenPlacement removes and returns the next placement CONSUMING it — the same
+// allocate-by-consuming discipline slotBook keeps — searching system first and then each system in
+// reachable, which arrives nearest-ring-first.
 //
 // WHAT CONSUMING ACTUALLY BUYS, stated precisely because the obvious answer is wrong. It is NOT what
 // stops two hulls being written onto one placement: the ledger already refuses that, because the
@@ -321,11 +434,21 @@ func openPlacements(holds ledgerHolds, standing map[string]bool) map[string][]pa
 //
 // A consumed placement is not returned to the pool even when its write LOSES the race, because in
 // that case it is genuinely gone: another writer holds it.
-func takeOpenPlacement(targets map[string][]parkedsensing.QueuedSlot, system string) (parkedsensing.QueuedSlot, bool) {
-	open := targets[system]
-	if len(open) == 0 {
-		return parkedsensing.QueuedSlot{}, false
+func takeOpenPlacement(
+	targets map[string][]parkedsensing.QueuedSlot,
+	system string,
+	reachable []string,
+) (parkedsensing.QueuedSlot, bool) {
+	// The hull's own system first, ALWAYS, whatever the reach says. An in-system hop crosses no
+	// gate, so a hull that can be placed where it stands never spends a crossing to be placed
+	// somewhere else — and the pass keeps its pre-walk behaviour exactly wherever that is possible.
+	for _, candidate := range append([]string{system}, reachable...) {
+		open := targets[candidate]
+		if len(open) == 0 {
+			continue
+		}
+		targets[candidate] = open[1:]
+		return open[0], true
 	}
-	targets[system] = open[1:]
-	return open[0], true
+	return parkedsensing.QueuedSlot{}, false
 }

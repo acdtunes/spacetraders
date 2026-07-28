@@ -56,6 +56,11 @@ type cutoverWorld struct {
 	seeds    *fakeSeedCommander
 	mover    *fakeMover
 	recorder *fakeRecorder
+	// gates is the stored gate adjacency. It starts EMPTY, which is the
+	// fail-closed reading — a map with no known edges reaches nowhere — so every
+	// fixture that does not wire topology gets same-system behaviour, and a test
+	// that means to exercise a crossing has to say so.
+	gates *fakeGates
 	// purchaser is the probe-buy port, exposed so a test can assert WHAT the
 	// coordinator hands it — specifically the claim owner, which must be this
 	// tick's real container id (see the ships.container_id foreign key).
@@ -130,6 +135,7 @@ func newCutoverWorld(t *testing.T) *cutoverWorld {
 	purchaser := &psPurchaser{calls: calls, price: 40_000}
 	ships := &fakeShipPositions{at: map[string]parkedsensing.ShipPos{}, docked: map[string]string{}}
 	budget := &fakeBudget{ceiling: 2.0}
+	gates := &fakeGates{edges: map[string][]string{}}
 
 	handler := NewRunProbeSensingCoordinatorHandler(
 		depth, posts, fleet, &fakePressure{}, &fakePhase{inExpansion: true}, &shared.MockClock{CurrentTime: time.Now()},
@@ -149,7 +155,7 @@ func newCutoverWorld(t *testing.T) *cutoverWorld {
 			Ships:        ships,
 			Fleet:        tagger,
 			Mover:        mover,
-			Gates:        &fakeGates{},
+			Gates:        gates,
 			SeedShip:     seeds,
 			Scan:         &fakeScanRunner{calls: calls},
 			Home:         &fakeHome{system: testHomeSystem},
@@ -164,7 +170,7 @@ func newCutoverWorld(t *testing.T) *cutoverWorld {
 		handler: handler, cmd: sensingTestCmd(), ctx: ctx, calls: calls, ledger: ledger,
 		posts: posts, fleet: fleet, tagger: tagger, depth: depth,
 		catalog: catalog, goods: goods, remote: remote, seeds: seeds,
-		mover: mover, recorder: recorder, shipPos: ships, purchaser: purchaser,
+		mover: mover, recorder: recorder, shipPos: ships, purchaser: purchaser, gates: gates,
 	}
 }
 

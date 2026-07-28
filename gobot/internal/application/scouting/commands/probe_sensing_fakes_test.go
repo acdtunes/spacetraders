@@ -13,6 +13,7 @@ package commands
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -502,13 +503,34 @@ func (f *fakeMarketGoods) MarketPrices(_ context.Context, _ int, waypoint string
 }
 
 // fakeGates is the stored gate adjacency — a database read in production.
-type fakeGates struct{ edges map[string][]string }
+type fakeGates struct {
+	edges map[string][]string
+	// unreadable makes one system's edge read FAIL, which is a different thing
+	// from a system with no edges: the first says "we do not know", the second
+	// says "we know, and there are none". Anything sizing how far a hull can be
+	// sent has to treat them the same way (send it nowhere) and say so out loud
+	// only for the first.
+	unreadable map[string]bool
+}
 
 func (f *fakeGates) Neighbours(_ context.Context, system string) ([]string, error) {
+	if f.unreadable[system] {
+		return nil, fmt.Errorf("gate adjacency for %s is unreadable", system)
+	}
 	if f.edges == nil {
 		return nil, nil
 	}
 	return f.edges[system], nil
+}
+
+// link wires a BIDIRECTIONAL gate between two systems, because a real jump gate
+// is one object appearing in both systems' edge lists — a fixture with a
+// one-way gate would let a hull be sent somewhere the walk could never bring it
+// back from, and would quietly pass a search that only ever looks outward.
+func (f *fakeGates) link(a, b string) *fakeGates {
+	f.edges[a] = append(f.edges[a], b)
+	f.edges[b] = append(f.edges[b], a)
+	return f
 }
 
 // --- the network-reaching ports ----------------------------------------------
@@ -612,23 +634,133 @@ type fakeMover struct {
 	// writing IN_TRANSIT for a hull nothing ever told to move is precisely the
 	// bug dispatchClaim exists to fix.
 	moves []string
+	// walk, when wired, makes this mover actually MOVE hulls in the ships table
+	// instead of only recording that it was asked to. Recording alone cannot
+	// answer the only question a multi-tick crossing raises — did the hull get
+	// there? — because a walk that never advances issues an identical command
+	// every tick forever and looks, to a recorder, exactly like one that works.
+	// Left nil, the mover records and nothing moves, which is what every
+	// single-tick fixture wants.
+	walk *walkingShips
 }
 
 func (f *fakeMover) NavigateWithin(_ context.Context, _ int, shipSymbol, destination string) error {
 	f.calls.hit("navigate")
 	f.moves = append(f.moves, shipSymbol+"→"+destination)
+	f.walk.arrive(shipSymbol, destination)
 	return nil
 }
 
-func (f *fakeMover) RouteAcross(_ context.Context, _ int, shipSymbol, _, destination string) error {
+func (f *fakeMover) RouteAcross(ctx context.Context, _ int, shipSymbol, fromWaypoint, destination string) error {
 	f.calls.hit("route")
 	f.moves = append(f.moves, shipSymbol+"→"+destination)
+	return f.walk.step(ctx, shipSymbol, fromWaypoint, destination)
+}
+
+func (f *fakeMover) Dock(_ context.Context, _ int, shipSymbol string) error {
+	f.calls.hit("dock")
+	f.walk.dock(shipSymbol)
 	return nil
 }
 
-func (f *fakeMover) Dock(context.Context, int, string) error {
-	f.calls.hit("dock")
+// walkingShips is the production gate walk's behaviour, modelled: ONE step per
+// call, resolved from where the hull actually is.
+//
+// It mirrors RouteAcross deliberately rather than approximating it, because the
+// properties under test are the ones the two share — a crossing takes several
+// ticks, each step is decided from the LIVE position, the next system is
+// resolved (and failure taken) BEFORE any movement, and the on-gate/off-gate
+// discriminator is the gate SYMBOL rather than a distance, since orbitals share
+// coordinates with what they orbit.
+type walkingShips struct {
+	ships *fakeShipPositions
+	gates *fakeGates
+}
+
+// gateOf names a system's jump gate. One gate per system is all the walk needs
+// to be exercised: the branch under test is "standing on it or not".
+func gateOf(system string) string { return system + "-GATE" }
+
+// arrive lands a hull IN ORBIT, which is where a navigate genuinely leaves it —
+// so the placement machine's dock-then-park arrival path is exercised rather
+// than short-circuited by a fixture that pretends hulls berth themselves.
+func (w *walkingShips) arrive(shipSymbol, waypoint string) {
+	if w == nil {
+		return
+	}
+	w.ships.at[shipSymbol] = parkedsensing.ShipPos{
+		Waypoint: waypoint, NavStatus: navigation.NavStatusInOrbit,
+	}
+}
+
+func (w *walkingShips) dock(shipSymbol string) {
+	if w == nil {
+		return
+	}
+	pos := w.ships.at[shipSymbol]
+	pos.NavStatus = navigation.NavStatusDocked
+	w.ships.at[shipSymbol] = pos
+}
+
+// step advances the hull exactly one leg toward destination.
+func (w *walkingShips) step(ctx context.Context, shipSymbol, fromWaypoint, destination string) error {
+	if w == nil {
+		return nil
+	}
+	current := shared.ExtractSystemSymbol(fromWaypoint)
+	if current == shared.ExtractSystemSymbol(destination) {
+		w.arrive(shipSymbol, destination) // gates behind it; one in-system hop left
+		return nil
+	}
+
+	// Resolved BEFORE moving, exactly as the real walk does it: a destination the
+	// stored graph cannot reach must cost no flight at all.
+	next, err := w.nextHopToward(ctx, current, shared.ExtractSystemSymbol(destination))
+	if err != nil {
+		return err
+	}
+	if gate := gateOf(current); fromWaypoint != gate {
+		w.arrive(shipSymbol, gate) // step one: onto this system's gate
+		return nil
+	}
+	w.arrive(shipSymbol, gateOf(next)) // step two: through it
 	return nil
+}
+
+// nextHopToward is the production search: breadth-first over stored adjacency,
+// bounded by the SHARED ring bound, answering with the first-ring system to jump
+// to — never a further one, which is a jump the API rejects outright.
+func (w *walkingShips) nextHopToward(ctx context.Context, from, to string) (string, error) {
+	type reached struct{ system, via string }
+	seen := map[string]bool{from: true}
+	frontier := []reached{{system: from}}
+
+	for ring := 0; ring < parkedsensing.MaxWalkRings && len(frontier) > 0; ring++ {
+		var next []reached
+		for _, current := range frontier {
+			systems, err := w.gates.Neighbours(ctx, current.system)
+			if err != nil {
+				return "", err
+			}
+			for _, candidate := range systems {
+				if seen[candidate] {
+					continue
+				}
+				seen[candidate] = true
+				via := current.via
+				if via == "" {
+					via = candidate
+				}
+				if candidate == to {
+					return via, nil
+				}
+				next = append(next, reached{system: candidate, via: via})
+			}
+		}
+		frontier = next
+	}
+	return "", fmt.Errorf("no stored gate route from %s to %s within %d jumps",
+		from, to, parkedsensing.MaxWalkRings)
 }
 
 // fakeSeedCommander drives charting seeds. Every verb is an API call. Counted.
