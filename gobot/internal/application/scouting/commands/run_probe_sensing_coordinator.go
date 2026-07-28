@@ -287,7 +287,33 @@ func (p SensingEnginePorts) screenPorts() parkedsensing.ScreenPorts {
 // containers(id), so it must name the container that is actually driving THIS
 // tick. A relaunched coordinator gets a fresh container id, and binding one into
 // the memoised adapters would hand the database a row that no longer exists.
-func (p SensingEnginePorts) buyPorts(claimOwnerContainerID string) parkedsensing.BuyPorts {
+// mannedHulls satisfies parkedsensing.MannedHullReader over the scout-post
+// repository, so the drain's foothold path can tell a hull that is merely parked
+// on a market from one that is MANNING A POST somewhere.
+//
+// It reads every slot of every post — ScoutPost.MannedHulls covers the primary
+// hull and the extra slots — because a hull in an extra slot is manning the post
+// exactly as much as the primary one is, and enumerating only the primary would
+// leave the multi-hull posts' hulls looking free to take.
+type mannedHulls struct {
+	posts SensingPostRepository
+}
+
+func (m mannedHulls) MannedHulls(ctx context.Context, playerID int) (map[string]bool, error) {
+	posts, err := m.posts.ListActive(ctx, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list scout posts for the foothold guard: %w", err)
+	}
+	manned := make(map[string]bool, len(posts))
+	for _, post := range posts {
+		for _, hull := range post.MannedHulls() {
+			manned[hull] = true
+		}
+	}
+	return manned, nil
+}
+
+func (p SensingEnginePorts) buyPorts(claimOwnerContainerID string, posts SensingPostRepository) parkedsensing.BuyPorts {
 	return parkedsensing.BuyPorts{
 		Treasury:   p.Treasury,
 		CargoSpend: p.CargoSpend,
@@ -296,6 +322,13 @@ func (p SensingEnginePorts) buyPorts(claimOwnerContainerID string) parkedsensing
 		Yards:      p.Waypoints,
 		Ships:      p.Ships,
 		Fleet:      p.Fleet,
+		// The foothold path's two guard ports. Gates is the same topology store
+		// expansion walks, so "how far may a hull be sent" is answered from one
+		// place. The post reader is built here rather than memoised onto the port
+		// struct for the same reason claimOwnerContainerID is passed: it is
+		// handler state, not a per-player adapter.
+		Gates:       p.Gates,
+		MannedHulls: mannedHulls{posts: posts},
 		// nil-safe: an unwired reserve means no hold-back, not a stalled drain.
 		HeavyReserve:          p.HeavyReserve,
 		ClaimOwnerContainerID: claimOwnerContainerID,
@@ -885,7 +918,7 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 		dispatchedOrphans = h.dispatchIdleOrphans(ctx, cmd, ports, &failures)
 	}
 
-	buyRep, berr := parkedsensing.DrainBuyQueue(ctx, ports.buyPorts(cmd.ContainerID), playerID, parkedsensing.BuyKnobs{
+	buyRep, berr := parkedsensing.DrainBuyQueue(ctx, ports.buyPorts(cmd.ContainerID, h.postRepo), playerID, parkedsensing.BuyKnobs{
 		ProbeCap:     cfg.ProbeCap,
 		CapexReserve: cfg.CapexReserveCredits,
 		KMilli:       cfg.CapitalMultiplierKMilli,

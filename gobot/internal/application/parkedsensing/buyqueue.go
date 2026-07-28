@@ -177,6 +177,16 @@ type QueuedSlot struct {
 	AssignedShip string
 	PurchaseYard string
 	DepthCredits int64
+	// WhitelistGoods is the whitelisted goods this placement was recorded as
+	// watching. It is what lets the foothold path prove that releasing a hull
+	// leaves its system's goods coverage intact (see coveredByOthers).
+	//
+	// EMPTY MEANS UNKNOWN, NEVER "WATCHES NOTHING". The adapter yields an empty
+	// list both for a row that genuinely records no goods and for one whose
+	// goods column will not decode, and every reader here must treat the two
+	// alike: as an absence of evidence that can only ever make a hull LESS
+	// eligible to be moved, never more.
+	WhitelistGoods []string
 }
 
 // ScreenedSystem is one screened system's identity and size.
@@ -242,6 +252,19 @@ type BuyPorts struct {
 	// pinned: TestDrain_ErroringReserveReaderStillFailsClosed for this branch,
 	// TestDrain_BlindReserveReadsZeroAndBuyingProceeds for what the shipped reader actually does.
 	HeavyReserve HeavyReserveReader
+
+	// Gates and MannedHulls serve the foothold path ONLY (foothold.go): the gate
+	// topology names which systems a surplus hull could be flown from, and the
+	// post reader names the hulls that are manning a scout post and are
+	// therefore not this engine's to take.
+	//
+	// FAIL-CLOSED WHEN EITHER IS NIL. The path needs both to be safe — reach
+	// without the manned set would strip the scouting fleet, and the manned set
+	// without reach has nowhere to draw from — so an unwired port yields no
+	// foothold rather than a partly-guarded one. Both are wired in the sensing
+	// coordinator; nil is a test wiring, not a deployment one.
+	Gates       GateNeighbours
+	MannedHulls MannedHullReader
 
 	// ClaimOwnerContainerID is the driving coordinator's container id, handed to
 	// Purchaser.Buy as the owner of the purchasing hull's claim. It is IDENTITY,
@@ -333,6 +356,16 @@ type BuyReport struct {
 	// system had a hull of ours standing at it to buy through. Expected and
 	// benign — the placement waits for expansion to establish presence.
 	SkippedNoYard int
+	// Footholds counts SPARE placements filled by flying a surplus hull across
+	// a gate — the path that establishes presence in a system that could not
+	// fund one for itself. See foothold.go.
+	//
+	// It is reported SEPARATELY from Reused, which it otherwise resembles,
+	// because the two spend different things: a reuse moves an idle spare and
+	// costs nothing, while a foothold takes a hull off a working market and
+	// leaves that market unwatched until it is re-bought. An operator must be
+	// able to see the second happening without inferring it.
+	Footholds int
 	// Attempts counts every trip through the buy path, successful or not,
 	// against maxDrainAttempts.
 	Attempts int
@@ -464,6 +497,11 @@ func DrainBuyQueue(
 	// 30 seconds later rather than blacklisted.
 	memo := newRefusalMemo()
 
+	// One foothold broker per TICK, for the same reason and with the same
+	// lifetime: it holds the surplus pool the tick allocates from, so two
+	// placements cannot both be handed the same hull.
+	footholds := &footholdBroker{}
+
 	for _, slot := range candidates {
 		if rep.Attempts >= maxDrainAttempts {
 			break
@@ -498,10 +536,26 @@ func DrainBuyQueue(
 			return rep, err
 		}
 		if len(buys) == 0 {
-			// No yard in this system has a hull of ours we can buy through. Not
-			// an error and not worth a log line per tick: the placement waits
-			// until expansion puts a usable probe within reach. Never a blind
-			// cross-map buy. Costs no attempt because it touched no API.
+			// No yard in this system has a hull of ours we can buy through.
+			//
+			// For a SPARE placement this IS the buying deadlock: expansion asked
+			// for a foothold in a system we have judged but never occupied, and
+			// the only way to buy there is to already be there. The foothold path
+			// is the one thing that breaks it — it flies a surplus hull in from
+			// within gate reach, after which the system funds itself. It spends
+			// no money and issues no API call, so it costs no attempt.
+			foothold, ferr := footholds.fill(ctx, p, playerID, slot, &rep)
+			if ferr != nil {
+				return rep, ferr
+			}
+			if foothold {
+				continue
+			}
+
+			// Everything else simply waits until expansion puts a usable probe
+			// within reach. Not an error and not worth a log line per tick, and
+			// never a blind cross-map buy. Costs no attempt because it touched
+			// no API.
 			rep.SkippedNoYard++
 			continue
 		}

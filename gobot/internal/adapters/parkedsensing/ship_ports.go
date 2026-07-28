@@ -1300,17 +1300,34 @@ func (p *LedgerPort) DeleteSlot(ctx context.Context, playerID int, waypoint, kin
 }
 
 // queuedSlots flattens ledger rows into the engine's placement view.
+//
+// A GOODS DECODE FAILURE YIELDS AN EMPTY LIST rather than an error, and that is
+// a deliberate divergence from ExistingSlots, which treats the same failure as
+// fatal. The two readers need opposite things from a row they cannot parse. The
+// screen SUPPLIES goods from the recorded list, so an empty one there silently
+// drops a market out of the plan and has it rediscovered forever — it must fail
+// loudly. The placement view only ever asks whether a hull's coverage is
+// REDUNDANT, and every reader of the field treats an empty list as "unknown",
+// which can only make a hull less eligible to be moved (see
+// QueuedSlot.WhitelistGoods and coveredByOthers). Failing the whole read here
+// would stop the drain — and therefore all probe buying — over a row that
+// merely cannot be given away.
 func queuedSlots(models []persistence.SensingSlotModel) []appSensing.QueuedSlot {
 	out := make([]appSensing.QueuedSlot, 0, len(models))
 	for _, m := range models {
+		goods, err := decodeWhitelistGoods(m.WhitelistGoods)
+		if err != nil {
+			goods = nil
+		}
 		out = append(out, appSensing.QueuedSlot{
-			Waypoint:     m.WaypointSymbol,
-			System:       m.SystemSymbol,
-			Kind:         m.SlotKind,
-			State:        m.State,
-			AssignedShip: derefString(m.AssignedShip),
-			PurchaseYard: derefString(m.PurchaseYard),
-			DepthCredits: m.DepthCredits,
+			Waypoint:       m.WaypointSymbol,
+			System:         m.SystemSymbol,
+			Kind:           m.SlotKind,
+			State:          m.State,
+			AssignedShip:   derefString(m.AssignedShip),
+			PurchaseYard:   derefString(m.PurchaseYard),
+			DepthCredits:   m.DepthCredits,
+			WhitelistGoods: goods,
 		})
 	}
 	return out
