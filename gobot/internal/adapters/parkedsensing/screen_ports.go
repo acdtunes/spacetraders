@@ -102,10 +102,36 @@ func (p *WaypointCatalogPort) ListMarketWaypoints(ctx context.Context, system st
 	return out, nil
 }
 
+// unchartedIn is the system's outstanding charting work: every waypoint still
+// carrying the UNCHARTED trait, in whatever order the store hands them back.
+//
+// THE SINGLE SOURCE FOR BOTH UNCHARTED READS. Today the two callers below could
+// each issue this query themselves and get identical rows, so this exists for
+// what it PREVENTS rather than for what it currently does.
+//
+// ListUnchartedCount is the charting tour's COMPLETION SIGNAL and
+// UnchartedWaypoints is its WORK LIST, and the engine treats them as two views
+// of one set: the screen writes the count to uncharted_count, verdictFor will
+// not durably write a system off until it reads zero, and the tour ends only
+// when the list comes back empty. Narrow ONE of them — by type, by distance, by
+// anything — and the tour finishes while the count never reaches zero. The
+// system is then pinned PENDING forever, seedlessTargets keeps re-dispatching
+// probes to it, and because only IN_SCOPE/NO_WHITELIST systems propagate the
+// frontier, expansion stalls permanently behind the first system holding an
+// excluded waypoint.
+//
+// That is not hypothetical: it is the failure the rejected skip design would
+// have shipped. Routing both reads through here means a future filter lands in
+// ONE place and applies to both, so the two can never disagree about WHICH
+// waypoints are outstanding. They are free to disagree about order — and do.
+func (p *WaypointCatalogPort) unchartedIn(ctx context.Context, system string) ([]*shared.Waypoint, error) {
+	return p.waypoints.ListBySystemWithTrait(ctx, system, unchartedTrait)
+}
+
 // ListUnchartedCount reports how many of the system's waypoints are still
 // uncharted.
 func (p *WaypointCatalogPort) ListUnchartedCount(ctx context.Context, system string) (int, error) {
-	waypoints, err := p.waypoints.ListBySystemWithTrait(ctx, system, unchartedTrait)
+	waypoints, err := p.unchartedIn(ctx, system)
 	if err != nil {
 		return 0, fmt.Errorf("failed to count uncharted waypoints in %q: %w", system, err)
 	}
@@ -139,7 +165,7 @@ func (p *WaypointCatalogPort) ListUnchartedCount(ctx context.Context, system str
 // on the pair (priority, symbol) — rather than by priority alone — is what keeps
 // that true regardless of the order the rows arrive in.
 func (p *WaypointCatalogPort) UnchartedWaypoints(ctx context.Context, system string) ([]string, error) {
-	waypoints, err := p.waypoints.ListBySystemWithTrait(ctx, system, unchartedTrait)
+	waypoints, err := p.unchartedIn(ctx, system)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list uncharted waypoints in %q: %w", system, err)
 	}

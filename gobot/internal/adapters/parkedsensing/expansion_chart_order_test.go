@@ -138,23 +138,28 @@ func unchartedSymbols(t *testing.T, db *gorm.DB, system string) []string {
 	return out
 }
 
-// everyUnchartedWaypoint is the full work set the tour must cover — the eight
+// everyUnchartedWaypoint is the full work set the tour must cover — the nine
 // uncharted waypoints of tourFixture, in no particular order.
 func everyUnchartedWaypoint() []string {
 	return []string{
 		"X1-T-A1", "X1-T-A2", "X1-T-A3", "X1-T-A4",
-		"X1-T-B1", "X1-T-C1", "X1-T-F1", "X1-T-Z9",
+		"X1-T-B1", "X1-T-C1", "X1-T-D1", "X1-T-F1", "X1-T-Z9",
 	}
 }
 
-// tourFixture builds a system with the live shape: mostly asteroids, one orbital
-// station, a moon, a planet, and the lone fuel station that is the live X1-AJ10
-// case — TORWIND-18 sat on an asteroid there with 54 asteroids and one
-// FUEL_STATION left, and a FUEL_STATION is 1129-for-1129 a market.
+// tourFixture builds a system with the live shape and ALL FOUR TIERS present:
+// mostly asteroids, one orbital station, a moon, a planet, a gas giant, and the
+// lone fuel station that is the live X1-AJ10 case — TORWIND-18 sat on an
+// asteroid there with 54 asteroids and one FUEL_STATION left, and a FUEL_STATION
+// is 1129-for-1129 a market.
+//
+// EVERY TIER IS REPRESENTED ON PURPOSE. A fixture missing the gas giant could
+// not distinguish "market types come before the unproven ones" from "market
+// types come before asteroids", and would pass either way.
 //
 // THE STATION SORTS LAST ALPHABETICALLY (Z9). Under the old order it was the
-// final stop of an eight-waypoint tour; it must now be the first. A fixture
-// whose station happened to sort early could not tell the two rules apart.
+// final stop of a nine-waypoint tour; it must now be the first. A fixture whose
+// station happened to sort early could not tell the two rules apart.
 func tourFixture(t *testing.T) (*gorm.DB, *tourShips, *tourSeedCommander, appSensing.ExpandPorts) {
 	t.Helper()
 	db := newShipPortsDB(t)
@@ -166,6 +171,7 @@ func tourFixture(t *testing.T) (*gorm.DB, *tourShips, *tourSeedCommander, appSen
 		typedWaypointRow("X1-T-A4", "X1-T", "ASTEROID", uncharted),
 		typedWaypointRow("X1-T-B1", "X1-T", "MOON", uncharted),
 		typedWaypointRow("X1-T-C1", "X1-T", "PLANET", uncharted),
+		typedWaypointRow("X1-T-D1", "X1-T", "GAS_GIANT", uncharted),
 		typedWaypointRow("X1-T-F1", "X1-T", "FUEL_STATION", uncharted),
 		typedWaypointRow("X1-T-Z9", "X1-T", "ORBITAL_STATION", uncharted),
 		typedWaypointRow("X1-T-GATE", "X1-T", "JUMP_GATE", []string{"MARKETPLACE"}),
@@ -174,7 +180,7 @@ func tourFixture(t *testing.T) (*gorm.DB, *tourShips, *tourSeedCommander, appSen
 	repo := persistence.NewSensingLedgerRepository(db)
 	require.NoError(t, repo.UpsertSystem(context.Background(), persistence.SensingSystemModel{
 		PlayerID: testPlayerID, SystemSymbol: "X1-T",
-		Verdict: appSensing.VerdictPending, UnchartedCount: 8,
+		Verdict: appSensing.VerdictPending, UnchartedCount: 9,
 	}))
 	require.NoError(t, repo.SetSeed(
 		context.Background(), testPlayerID, "X1-T", "PROBE-SEED", appSensing.SeedStateCharting))
@@ -230,21 +236,23 @@ func TestReorderedTour_ChartsShipyardThenMarketsThenAsteroidsAndCoversEverything
 	require.Equal(t, everyUnchartedWaypoint(), covered,
 		"the tour must remain EXHAUSTIVE — every waypoint charted, asteroids included")
 
-	// (b) and (c) THE SEQUENCE. Shipyard type first, then the market-bearing
-	// types a scanner can be parked on, then the barren rock. The station is
-	// first despite sorting LAST alphabetically, which is what the old order gave
-	// us and the reason a seed could burn fifty hours before revealing a market.
+	// (b) and (c) THE SEQUENCE, across all four tiers. Shipyard type first, then
+	// the market-bearing types a scanner can be parked on, then the unproven gas
+	// giant, then the barren rock. The station is first despite sorting LAST
+	// alphabetically — which is what the old order gave us, and the reason a seed
+	// could burn dozens of hours before revealing a market.
 	require.Equal(t, []string{
 		"X1-T-Z9", // ORBITAL_STATION — 523 of the 567 known shipyards
 		"X1-T-B1", // MOON         \
 		"X1-T-C1", // PLANET        > market-bearing: a scanner can sit here
 		"X1-T-F1", // FUEL_STATION /  and start producing trade data
+		"X1-T-D1", // GAS_GIANT — 72 of 546, unproven, so behind the markets
 		"X1-T-A1", // ASTEROID \
 		"X1-T-A2", // ASTEROID  > 0 of 3297, charted last
 		"X1-T-A3", // ASTEROID /
 		"X1-T-A4",
 	}, commander.charted,
-		"the shipyard type must be charted before the markets, and the markets before the asteroids")
+		"shipyard type before the markets, markets before the gas giant, and everything before the asteroids")
 
 	// (d) THE TOUR TERMINATES AND THE SEED STANDS DOWN. The errand is cleared and
 	// the hull is parked as a spare, so it stays counted by the probe cap and can
@@ -287,6 +295,7 @@ func TestReorderedTour_ASeedOnAnAsteroidTakesTheFreeChartThenResumesByPriority(t
 		"X1-T-B1",
 		"X1-T-C1",
 		"X1-T-F1",
+		"X1-T-D1", // gas giant behind the markets
 		"X1-T-A1", // and the remaining asteroids last
 		"X1-T-A3",
 		"X1-T-A4",
