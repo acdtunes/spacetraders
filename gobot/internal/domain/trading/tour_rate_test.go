@@ -70,16 +70,23 @@ func TestComputeFleetTourRate_OnlyBuysNoRealization_Unreadable(t *testing.T) {
 // A single completed tour is readable but cannot establish a TREND -> not declining.
 func TestComputeFleetTourRate_SingleTour_NotDeclining(t *testing.T) {
 	base := time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC)
+	// TWO SHIPS, one tour each. The subject here is the DECLINE trend — a single tour cannot
+	// establish one — and that is unchanged. What changed is that a one-SHIP sample is now
+	// unreadable regardless (min and mean are the same number, so the realized-rate guard would be
+	// comparing a value with itself), so this fixture needs a second hull to reach the trend
+	// assertion at all. The trend still has only ONE computable tour per ship to work from.
 	rows := []TourLegTelemetry{
 		tleg("a1", "A", true, 100, 1000, base, base),
 		tleg("a1", "A", false, 100, 2000, base, base.Add(time.Hour)),
+		tleg("b1", "B", true, 100, 1000, base, base),
+		tleg("b1", "B", false, 100, 2000, base, base.Add(time.Hour)),
 	}
 	r := ComputeFleetTourRate(rows)
 	if !r.Readable {
-		t.Fatalf("a completed tour must be readable")
+		t.Fatalf("two completed tours on two hulls must be readable")
 	}
 	if r.Declining {
-		t.Fatalf("a single tour cannot establish a declining trend")
+		t.Fatalf("two tours of identical rate cannot establish a declining trend")
 	}
 }
 

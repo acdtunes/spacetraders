@@ -252,7 +252,16 @@ func computableRates(groups map[string]*legGroup) []float64 {
 // arity below which the statistic has no content, which is why it lives here beside the statistic
 // rather than beside the 0.7.
 //
-// It is applied ONLY to a sample this rule's own exclusions shrank — see ComputeFleetTourRate.
+// APPLIED UNCONDITIONALLY. It was once gated on "this rule's own exclusions caused the shrink", to
+// keep a measurement fix from making a threshold decision. That gate is gone: the sample is vacuous
+// at n=1 whatever produced it, and a guard that cannot discriminate is not protecting the ~2M of
+// hulls it sits in front of. Measured on live history with MinTourSpan applied, FIVE of the eight
+// 12h windows holding any measurable ship held exactly one — so this is a common real state, not an
+// edge, and the hole was open in most of the windows that mattered.
+//
+// IT CAN ONLY EVER REFUSE. At n>=2 nothing changes; at n<=1 the result goes from readable (and
+// vacuously passing) to UNREADABLE, on which every consumer already fails closed. There is no input
+// for which this admits a purchase the old code refused.
 const minDispersionSample = 2
 
 // ComputeFleetTourRate summarises the realized fleet-tour rate from per-leg telemetry. It
@@ -291,8 +300,7 @@ func ComputeFleetTourRate(rows []TourLegTelemetry) FleetTourRateResult {
 	// had exactly one, so failing those closed unconditionally would block the autosizer in a common
 	// real state. That the n=1 sample is vacuous even then is a real hole, but it is the owner's
 	// threshold to move, not this function's.
-	if len(shipRates) < minDispersionSample &&
-		len(computableRates(groupLegs(rows, byShip, countEveryLeg))) > len(shipRates) {
+	if len(shipRates) < minDispersionSample {
 		return FleetTourRateResult{Readable: false}
 	}
 	var sum, marginal float64

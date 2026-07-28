@@ -230,27 +230,59 @@ func TestComputeFleetTourRate_ExclusionMayNotShrinkTheSampleIntoAVacuousOne(t *t
 	}
 }
 
-// …but a fleet that genuinely has one measurable ship is left exactly as it was. The arity concern
-// is about EXCLUSION creating a vacuous sample, not about small fleets, and tightening the
-// pre-existing n=1 behaviour is a policy decision this measurement change does not get to make.
+// A ONE-SHIP SAMPLE IS UNREADABLE, however it came to be one.
 //
-// Measured on live history: of the 12h windows in the last five days that had any measurable ship at
-// all, four of seven had exactly one — so failing those closed unconditionally would block the
-// autosizer in a common real state, which is a threshold change, not a measurement fix.
-func TestComputeFleetTourRate_AGenuineSingleShipFleetIsUnchanged(t *testing.T) {
+// This replaces TestComputeFleetTourRate_AGenuineSingleShipFleetIsUnchanged, which pinned the
+// opposite while the arity floor was gated on "this rule's own exclusions caused the shrink". That
+// gate existed so a measurement fix would not quietly make a threshold decision; the decision has
+// since been taken deliberately.
+//
+// WHY IT HAD TO GO. The autosizer's realized-rate guard tests MIN against 0.7 x MEAN. At n=1 they are
+// the same number, so the test is `x >= 0.7x` — true for every positive rate, whatever the economics.
+// The guard was not lenient there, it was ABSENT, in front of roughly 2M of hulls. Measured on live
+// history with MinTourSpan applied, five of the eight 12h windows holding any measurable ship held
+// exactly one.
+//
+// IT IS A TIGHTENING AND ONLY A TIGHTENING: at n>=2 nothing changes, and at n<=1 a readable
+// vacuous pass becomes an unreadable fail-closed. No input is admitted that was previously refused.
+func TestComputeFleetTourRate_ASingleShipSampleIsUnreadableHoweverItArose(t *testing.T) {
 	h := hourly(matchBase)
+	// A genuinely single-hull fleet with a real, healthy completed trade — nothing excluded, nothing
+	// artificial. The old rule read this as readable BECAUSE nothing was excluded; that is exactly
+	// the case the guard could not evaluate.
 	rows := []TourLegTelemetry{
 		mleg("t1", "A", "FUEL", true, 10, 1000, h(0), h(0)),
 		mleg("t1", "A", "FUEL", false, 10, 3000, h(0), h(1)),
 	}
 
 	r := ComputeFleetTourRate(rows)
-	if !r.Readable {
-		t.Fatalf("a one-ship fleet with a completed trade must stay readable — no ship was excluded, so " +
-			"nothing here is this rule's doing")
+	if r.Readable {
+		t.Fatalf("readable=true with avg=%v marginal=%v — min and mean are the same number here, so "+
+			"min >= 0.7*mean is satisfied by arithmetic rather than by economics and the guard is not "+
+			"evaluating anything at all", r.FleetAvg, r.Marginal)
 	}
-	if r.FleetAvg != 20000 || r.Marginal != 20000 {
-		t.Fatalf("fleet-avg=%v marginal=%v, want 20000 both", r.FleetAvg, r.Marginal)
+	if r.FleetAvg != 0 || r.Marginal != 0 {
+		t.Fatalf("unreadable result carried avg=%v marginal=%v, want the zero values", r.FleetAvg, r.Marginal)
+	}
+}
+
+// TWO measurable ships stay readable, so the floor closes a hole rather than disabling the guard.
+func TestComputeFleetTourRate_TwoShipsAreStillReadable(t *testing.T) {
+	h := hourly(matchBase)
+	rows := []TourLegTelemetry{
+		mleg("t1", "A", "FUEL", true, 10, 1000, h(0), h(0)),
+		mleg("t1", "A", "FUEL", false, 10, 3000, h(0), h(1)),
+		mleg("t2", "B", "FUEL", true, 10, 1000, h(0), h(0)),
+		mleg("t2", "B", "FUEL", false, 10, 2000, h(0), h(1)),
+	}
+
+	r := ComputeFleetTourRate(rows)
+	if !r.Readable {
+		t.Fatalf("two measurable ships must stay readable — the floor is the arity at which min-vs-mean " +
+			"starts to mean something, not a way to switch the guard off")
+	}
+	if r.FleetAvg != 15000 || r.Marginal != 10000 {
+		t.Fatalf("avg=%v marginal=%v, want 15000 / 10000", r.FleetAvg, r.Marginal)
 	}
 }
 
