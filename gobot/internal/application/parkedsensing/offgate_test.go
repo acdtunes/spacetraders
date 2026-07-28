@@ -383,6 +383,9 @@ func (f *selectiveFailGates) Neighbours(_ context.Context, system string) ([]str
 	return f.adjacency[system], nil
 }
 
+// Mapped reports every system as already mapped — neutral for the gate-priority tier.
+func (f *selectiveFailGates) Mapped(_ context.Context, _ string) (bool, error) { return true, nil }
+
 // AN UNREADABLE GATE GRAPH NEVER RAISES EXPLORER DEMAND. A database hiccup must not present as an
 // exhausted frontier — that misreading is the expensive one: on a fleet with the treasury to afford
 // it, it buys a 769k hull to escape a pocket it was never actually sealed in.

@@ -60,6 +60,9 @@ func (s stubGateNeighbours) Neighbours(_ context.Context, system string) ([]stri
 	return s.edges[system], nil
 }
 
+// Mapped reports every system as already mapped — neutral for the gate-priority tier.
+func (s stubGateNeighbours) Mapped(_ context.Context, _ string) (bool, error) { return true, nil }
+
 // walkWorld stands in for the two durable rows the walk resumes from: where the
 // ships table says each hull is, and what the ledger says each placement is
 // doing. It is MUTABLE and shared across ticks on purpose — a tick that cannot

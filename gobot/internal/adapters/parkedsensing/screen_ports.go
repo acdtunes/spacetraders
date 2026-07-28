@@ -599,6 +599,25 @@ func (p *GateNeighbourPort) Neighbours(ctx context.Context, system string) ([]st
 	return out, nil
 }
 
+// Mapped reports whether we hold ANY stored gate adjacency for this system.
+//
+// IT READS THE `ok` THE EDGE STORE ALREADY RETURNS and Neighbours discards — the same round trip,
+// answering the different question. Neighbours filters under-construction and stale edges out of its
+// ANSWER while the rows remain, so "Neighbours returned nothing" cannot distinguish a system whose
+// exits are all under construction (fully mapped: we know where it connects and simply cannot pass)
+// from one we have never read at all. Only the second can add systems to the ledger when charted.
+//
+// A read failure PROPAGATES rather than defaulting. Read as mapped it would demote genuine frontier
+// territory to the back of the seed queue and the fleet would quietly stop growing; read as unmapped
+// it would promote every ordinary target at once.
+func (p *GateNeighbourPort) Mapped(ctx context.Context, system string) (bool, error) {
+	_, ok, err := p.edges.Edges(ctx, system)
+	if err != nil {
+		return false, fmt.Errorf("failed to read whether the gate of %q has been mapped: %w", system, err)
+	}
+	return ok, nil
+}
+
 // HomeSystemPort resolves the player's headquarters system from the players
 // table.
 //

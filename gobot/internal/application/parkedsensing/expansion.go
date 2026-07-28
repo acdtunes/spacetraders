@@ -67,6 +67,21 @@ var allSlotStates = []string{
 // simply not expanded through.
 type GateNeighbours interface {
 	Neighbours(ctx context.Context, system string) ([]string, error)
+	// Mapped reports whether we hold ANY stored gate adjacency for this system —
+	// whether its gate has ever been read, not whether it can be passed.
+	//
+	// IT IS A DIFFERENT QUESTION FROM "Neighbours returned nothing", and the
+	// difference is the whole reason it exists. Neighbours filters
+	// under-construction and stale edges out of its answer while the ROWS remain,
+	// so a system whose every exit is under construction reports no neighbours and
+	// is nonetheless fully mapped: we know exactly where it connects, we simply
+	// cannot pass. Charting such a system reveals no adjacency we do not already
+	// hold. A system with NO rows is the opposite — genuinely unread territory,
+	// and the only kind whose charting can add systems to the ledger.
+	//
+	// A PURE STORE read, like Neighbours, and for the same reason: the ordering
+	// asks this of every candidate on every tick.
+	Mapped(ctx context.Context, system string) (bool, error)
 }
 
 // UnchartedCatalog reads which waypoints in a system are still uncharted.
@@ -364,6 +379,15 @@ func AdvanceExpansion(
 	// the probe is held for the whole of it. Ordering here rather than in each
 	// consumer is what makes the choice consistent across all three of them.
 	targets, err = orderByReach(ctx, reach, targets, book)
+	if err != nil {
+		return rep, err
+	}
+
+	// THE OUTER KEY: systems whose gate we have never read come first. Applied as a
+	// second stable pass rather than folded into orderByReach so each sort stays one
+	// idea, and so the compound key reads in the order it is written — gate mapping,
+	// then distance, then the depth ordering seedlessTargets established.
+	targets, err = orderByGateMapping(ctx, p, targets)
 	if err != nil {
 		return rep, err
 	}
@@ -1164,6 +1188,58 @@ func orderByReach(
 	ordered := append([]ExpandSystem(nil), targets...)
 	sort.SliceStable(ordered, func(i, j int) bool {
 		return distance[ordered[i].System] < distance[ordered[j].System]
+	})
+	return ordered, nil
+}
+
+// orderByGateMapping puts the targets whose gate adjacency we have NEVER READ at the front.
+//
+// IT IS THE ONLY PROPERTY THAT GROWS THE LEDGER. Charting a system whose gate we already hold rows
+// for fills in its markets — real income, and worth doing — but the map stays the size it was: its
+// neighbours are already recorded and already chased. A system with no rows is the only kind that
+// can name somewhere we do not hold, and markFrontier turns exactly those names into the PENDING
+// rows the seed machinery works through.
+//
+// MEASURED LIVE: of 21 unseeded targets, 2 had an unmapped gate and they ranked TWENTIETH and
+// TWENTY-FIRST. The mechanism was distance — orderByReach makes hop count the primary key and both
+// sat nine hops out — so the two systems that could actually extend the map sorted behind every
+// nearer one and never got a seed. One of them carried the second-deepest uncharted count in the set
+// and it still came last.
+//
+// A WEIGHT, NOT A FILTER, and that distinction is load-bearing rather than stylistic. This reorders
+// and never truncates: with no unmapped-gate target in play the queue is exactly the order
+// orderByReach produced, and once the unmapped ones are covered the mapped ones are served
+// unchanged. A filter would trade the income side away for the growth side; the fleet needs both.
+//
+// STABLE, so everything already decided survives inside each tier: distance first, then the deepest
+// dark, then symbol. A deep unmapped-gate target still beats a shallow one.
+//
+// A READ FAILURE FAILS THE TICK rather than defaulting either way. Read as "mapped" it would demote
+// genuine frontier territory to the back of the queue and the fleet would quietly stop growing; read
+// as "unmapped" it would promote every ordinary target at once. The tick is idempotent and
+// re-derived from scratch, so failing loudly costs one cycle.
+func orderByGateMapping(ctx context.Context, p ExpandPorts, targets []ExpandSystem) ([]ExpandSystem, error) {
+	if len(targets) < 2 {
+		return targets, nil
+	}
+	// RESOLVED ONCE PER TARGET, UP FRONT, and never from inside the comparator. It is a pure store
+	// read, but sort calls its less function O(n log n) times — asking the store there would turn a
+	// linear pass into a superlinear one that grows with the frontier exactly as the frontier
+	// succeeds. (A same-system short-circuit lived here briefly; it was removed because targets are
+	// distinct systems by construction, so it could never fire — dead code with a plausible-sounding
+	// rationale is worse than none.)
+	unmapped := make(map[string]bool, len(targets))
+	for _, target := range targets {
+		mapped, err := p.Gates.Mapped(ctx, target.System)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read whether the gate of %q has been mapped: %w", target.System, err)
+		}
+		unmapped[target.System] = !mapped
+	}
+
+	ordered := append([]ExpandSystem(nil), targets...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return unmapped[ordered[i].System] && !unmapped[ordered[j].System]
 	})
 	return ordered, nil
 }

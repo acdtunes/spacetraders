@@ -110,6 +110,12 @@ func (f *fakeGates) Neighbours(_ context.Context, system string) ([]string, erro
 	return f.adjacency[system], nil
 }
 
+// Mapped reports every system as ALREADY MAPPED, which keeps every test in this file ordering
+// exactly as it did before the gate-priority tier existed. The tier only reorders when some target
+// is unmapped, so a uniform "mapped" is the neutral answer; the tests that exercise the tier use
+// gateMap in expansion_gate_priority_test.go, which can express both.
+func (f *fakeGates) Mapped(_ context.Context, _ string) (bool, error) { return true, nil }
+
 type fakeUncharted struct {
 	bySystem map[string][]string
 	err      error

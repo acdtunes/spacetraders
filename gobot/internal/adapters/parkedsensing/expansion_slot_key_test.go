@@ -49,6 +49,9 @@ func (g keyTestGates) Neighbours(_ context.Context, system string) ([]string, er
 	return g.adjacency[system], nil
 }
 
+// Mapped reports every system as already mapped — neutral for the gate-priority tier.
+func (g keyTestGates) Mapped(_ context.Context, _ string) (bool, error) { return true, nil }
+
 type keyTestYards struct{ bySystem map[string][]string }
 
 func (y keyTestYards) ListProbeYards(_ context.Context, system string) ([]string, error) {

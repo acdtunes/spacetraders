@@ -564,6 +564,10 @@ func (f *fakeGates) Neighbours(_ context.Context, system string) ([]string, erro
 	return f.edges[system], nil
 }
 
+// Mapped reports every system as already mapped — the neutral answer that leaves seed ordering
+// exactly as it was (see the parkedsensing fake for the reasoning).
+func (f *fakeGates) Mapped(_ context.Context, _ string) (bool, error) { return true, nil }
+
 // link wires a BIDIRECTIONAL gate between two systems, because a real jump gate
 // is one object appearing in both systems' edge lists — a fixture with a
 // one-way gate would let a hull be sent somewhere the walk could never bring it
