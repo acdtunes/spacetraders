@@ -1,6 +1,9 @@
 package parkedsensing
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 // expansion_staging_reach_test.go pins the decoupling of WHERE WE CAN TRANSACT from WHAT IS NEAR THE
 // TARGET.
@@ -161,20 +164,30 @@ func TestAdvanceExpansion_AnUnroutableTargetStagesNothingAndDoesNotFailTheTick(t
 	}
 }
 
-// THE BOUND IS THE SEED'S FLIGHT, AND IT REACHES THE WORKED EXAMPLE. Nine hops is not an arbitrary
-// ring count: it is where the live traversable graph SATURATES (a bound of 10 serves no additional
-// target), and it is the distance to X1-KP42 and X1-UV56 — the only two systems that can add new
-// systems to the ledger. A bound of 6 would have doubled coverage and still left the lane's own
-// headline example unreachable.
-func TestAdvanceExpansion_StagingReachesNineHopsTheDistanceToTheUnmappedGateSystems(t *testing.T) {
+// THE BOUND IS THE GRAPH, NOT A NUMBER — and this is the case that forced it.
+//
+// X1-TD22 sits TEN hops from the nearest staffed system, reachable only through X1-KP42 at nine, and
+// it is the last system in the fleet with an unmapped jump gate: the only one whose charting can add
+// systems at all. The previous bound was nine, honestly derived — the graph saturated there — and it
+// went stale within a day, because charting an unmapped gate is precisely the act that reveals
+// systems past it. A number tuned to today's furthest target is guaranteed wrong tomorrow.
+//
+// The chain here is deliberately LONGER than any bound this engine ever carried, and it is built from
+// a loop rather than a literal so it cannot rot the way the nine-hop fixture did.
+func TestAdvanceExpansion_StagesAtAnyDistanceTheGraphActuallyConnects(t *testing.T) {
 	h := newExpandHarness()
-	// A nine-hop chain from the only staffed yard to the target, mirroring the live measurement.
-	systems := []string{"X1-YARD", "X1-H1", "X1-H2", "X1-H3", "X1-H4", "X1-H5", "X1-H6", "X1-H7", "X1-H8", "X1-TARGET"}
+	const hops = 14 // well past the old 9, and past TD22's 10
+	systems := []string{"X1-YARD"}
+	for i := 1; i < hops; i++ {
+		systems = append(systems, fmt.Sprintf("X1-H%02d", i))
+	}
+	systems = append(systems, "X1-TARGET")
+
 	h.gates.adjacency = map[string][]string{}
 	for i, sys := range systems {
 		row := ExpandSystem{System: sys, Verdict: VerdictInScope}
 		if sys == "X1-TARGET" {
-			row = ExpandSystem{System: sys, Verdict: VerdictPending, UnchartedCount: 7}
+			row = ExpandSystem{System: sys, Verdict: VerdictPending, UnchartedCount: 50}
 		}
 		h.ledger.systems = append(h.ledger.systems, row)
 		if i+1 < len(systems) {
@@ -191,46 +204,44 @@ func TestAdvanceExpansion_StagingReachesNineHopsTheDistanceToTheUnmappedGateSyst
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if rep.SeedsRequested != 1 {
-		t.Fatalf("SeedsRequested = %d, want 1 — the target is exactly %d hops out, which is the measured "+
-			"distance to the only two systems that can grow the ledger", rep.SeedsRequested, MaxSeedFlightHops)
+		t.Fatalf("SeedsRequested = %d, want 1 — the target is %d gate hops out and every hop is "+
+			"traversable, so a seed can genuinely get there; refusing it is refusing the only kind of "+
+			"system that can still grow the map", rep.SeedsRequested, hops)
 	}
 	if got := h.ledger.upsertedSlots[0].Waypoint; got != "X1-YARD-A" {
 		t.Fatalf("seed staged at %s, want X1-YARD-A", got)
 	}
 }
 
-// …and the bound still BOUNDS. A target beyond it is not staged: the seed's own walk resolves its
-// next hop over the same bound, so a want written past it would stamp an errand the walk can never
-// route, holding probe-cap headroom while charting nothing.
-func TestAdvanceExpansion_ATargetBeyondTheFlightBoundIsNotStaged(t *testing.T) {
+// …and the refusal still exists, reached from the GRAPH rather than from a count: a target no chain
+// of traversable edges connects is not staged, at any depth.
+//
+// That is the same protection the numeric bound gave — a seed is never sent somewhere the router
+// cannot name a next hop for — expressed as the property that actually matters. It cannot go stale,
+// because there is nothing to tune.
+func TestAdvanceExpansion_ATargetInAnotherComponentIsNotStaged(t *testing.T) {
 	h := newExpandHarness()
-	// One hop further than the bound.
-	var systems []string
-	for i := 0; i <= MaxSeedFlightHops+1; i++ {
-		systems = append(systems, "X1-H"+string(rune('A'+i)))
+	h.ledger.systems = []ExpandSystem{
+		{System: "X1-YARD", Verdict: VerdictInScope},
+		{System: "X1-NEXT", Verdict: VerdictInScope},
+		{System: "X1-ISLAND", Verdict: VerdictPending, UnchartedCount: 50},
 	}
-	h.gates.adjacency = map[string][]string{}
-	for i, sys := range systems {
-		row := ExpandSystem{System: sys, Verdict: VerdictInScope}
-		if i == len(systems)-1 {
-			row = ExpandSystem{System: sys, Verdict: VerdictPending, UnchartedCount: 7}
-		}
-		h.ledger.systems = append(h.ledger.systems, row)
-		if i+1 < len(systems) {
-			h.gates.adjacency[sys] = []string{systems[i+1]}
-		} else {
-			h.gates.adjacency[sys] = []string{}
-		}
+	// X1-ISLAND is named by nobody: a separate component, unreachable at any depth.
+	h.gates.adjacency = map[string][]string{
+		"X1-YARD":   {"X1-NEXT"},
+		"X1-NEXT":   {"X1-YARD"},
+		"X1-ISLAND": {},
 	}
-	h.yards.bySystem = map[string][]string{systems[0]: {systems[0] + "-YARD"}}
-	h.ledger.slots = []QueuedSlot{staffedYardRow(systems[0], systems[0]+"-YARD")}
+	h.yards.bySystem = map[string][]string{"X1-YARD": {"X1-YARD-A"}}
+	h.ledger.slots = []QueuedSlot{staffedYardRow("X1-YARD", "X1-YARD-A")}
 
 	rep, err := h.run(t, nil)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("an unreachable target must be skipped quietly, not fail the tick: %v", err)
 	}
 	if rep.SeedsRequested != 0 {
-		t.Fatalf("SeedsRequested = %d, want 0 — the target is %d hops out and the seed's walk resolves "+
-			"only %d, so the errand could never route", rep.SeedsRequested, MaxSeedFlightHops+1, MaxSeedFlightHops)
+		t.Fatalf("SeedsRequested = %d, want 0 — no traversable edge chain reaches X1-ISLAND, so an "+
+			"errand stamped for it could never route and the hull would hold probe-cap headroom "+
+			"forever without arriving", rep.SeedsRequested)
 	}
 }

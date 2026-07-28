@@ -98,9 +98,19 @@ const maxFerryCandidates = 3
 // dispatch steps, so nine hops is roughly eighteen. A probe in transit is not
 // scanning; but the placements this reaches were not going to be bought at all,
 // so the comparison is against nothing, not against a faster purchase. Nine is
-// also where this graph SATURATES (see MaxSeedFlightHops): a bound of ten serves
-// not one additional placement, and five sit unreachable at any depth.
-const maxFerryHops = MaxSeedFlightHops
+// also where this graph saturated when this bound was chosen.
+//
+// ITS OWN NUMBER NOW, not the seed's. It used to read MaxSeedFlightHops, and that
+// constant has since become SeedFlightUnbounded — a seed's reach is bounded by the
+// graph rather than by a count, because the one system that can still grow the map
+// sits past any number we would have picked. A FERRY is a different journey with a
+// different justification: it carries a hull to a remote COUNTER so a placement in
+// a yardless system can be bought, and nine hops of transit to make one purchase is
+// already a long way to send a scanner. Inheriting the seed's unbounded reach would
+// have widened the buy path silently, on the strength of a decision taken about
+// charting. So the number stays, explicitly, until someone measures the ferry on its
+// own terms — exactly as foothold's MaxWalkRings stayed at two.
+const maxFerryHops = 9
 
 // ferryBroker is one tick's cross-system buying state: where our hulls actually
 // stand, and the gate walker that decides which of those places can reach a given

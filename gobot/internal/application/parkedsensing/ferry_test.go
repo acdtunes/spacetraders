@@ -249,7 +249,7 @@ func TestDrain_BuysForAPlacementBeyondThePlacementWalksOwnRing(t *testing.T) {
 	//
 	// The bound this path needs is not "how far does the foothold draw a scanning
 	// hull" but "how far can nextHopToward actually name a next system" — and the
-	// adapter resolves that at MaxSeedFlightHops. Measured live, 143 of 238 pending
+	// adapter resolves that at maxFerryHops. Measured live, 143 of 238 pending
 	// placements sit at 3-9 hops from their nearest funder: routable, and refused
 	// only by a bound that was never the router's.
 	ports, led, pur := chainPorts(4)
@@ -273,16 +273,16 @@ func TestDrain_BuysForAPlacementBeyondThePlacementWalksOwnRing(t *testing.T) {
 }
 
 func TestDrain_BuysAtTheOuterEdgeOfTheRoutersReach(t *testing.T) {
-	// Exactly MaxSeedFlightHops. The boundary is asserted from inside so the bound
+	// Exactly maxFerryHops. The boundary is asserted from inside so the bound
 	// is a real threshold rather than an artefact of a short fixture.
-	ports, _, pur := chainPorts(MaxSeedFlightHops)
+	ports, _, pur := chainPorts(maxFerryHops)
 
 	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
 	if len(pur.buys) != 1 {
 		t.Fatalf("buys = %v, want a purchase for a placement exactly %d hops out — the router resolves that far",
-			pur.buys, MaxSeedFlightHops)
+			pur.buys, maxFerryHops)
 	}
 }
 
@@ -290,7 +290,7 @@ func TestDrain_RefusesAPlacementBeyondWhatTheRouterCanResolve(t *testing.T) {
 	// One hop past the router's reach. nextHopToward would name NO next system,
 	// so the hull would sit IN_TRANSIT forever holding probe-cap headroom while
 	// never arriving — strictly worse than not buying. The tick must continue.
-	ports, led, pur := chainPorts(MaxSeedFlightHops + 1)
+	ports, led, pur := chainPorts(maxFerryHops + 1)
 
 	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
 	if err != nil {
@@ -299,7 +299,7 @@ func TestDrain_RefusesAPlacementBeyondWhatTheRouterCanResolve(t *testing.T) {
 	if len(pur.buys) != 0 || rep.Bought != 0 {
 		t.Fatalf("bought %v for a placement the router cannot route to — that hull would strand", pur.buys)
 	}
-	target := fmt.Sprintf("X1-H%d-M1", MaxSeedFlightHops+1)
+	target := fmt.Sprintf("X1-H%d-M1", maxFerryHops+1)
 	if got := slotAt(t, led, target, SlotKindMarket); got.State != SlotStateWanted {
 		t.Fatalf("target slot = %+v, want it left WANTED rather than claimed for an unroutable buy", got)
 	}

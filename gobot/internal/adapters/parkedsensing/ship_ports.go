@@ -570,7 +570,7 @@ func (p *MoverPort) NavigateWithin(ctx context.Context, playerID int, shipSymbol
 // MaxWalkRings, and the buy queue still buys in the slot's own system — so the
 // only change here is that a route within those bounds was always resolvable and
 // still is. This verb answers questions; it does not ask them.
-const maxWalkRings = appSensing.MaxSeedFlightHops
+const maxWalkRings = appSensing.SeedFlightUnbounded
 
 // RouteAcross advances a hull ONE STEP of its gate walk toward destination, and
 // returns either way. It NEVER waits.
@@ -717,7 +717,10 @@ func nextHopToward(ctx context.Context, neighbours appSensing.GateNeighbours, fr
 	seen := map[string]bool{fromSystem: true}
 	frontier := []reached{{system: fromSystem}}
 
-	for ring := 0; ring < maxWalkRings && len(frontier) > 0; ring++ {
+	// Non-positive maxWalkRings means "until the component is exhausted" — the same
+	// rule seed SELECTION applies, read from the same declaration, so a destination
+	// selection accepts is always one this resolver can name a next system for.
+	for ring := 0; (maxWalkRings <= 0 || ring < maxWalkRings) && len(frontier) > 0; ring++ {
 		var next []reached
 		for _, cur := range frontier {
 			systems, err := neighbours.Neighbours(ctx, cur.system)

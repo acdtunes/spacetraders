@@ -9,7 +9,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	adapterSensing "github.com/andrescamacho/spacetraders-go/internal/adapters/parkedsensing"
-	appSensing "github.com/andrescamacho/spacetraders-go/internal/application/parkedsensing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 )
 
@@ -127,24 +126,23 @@ func TestSeedCommandPort_JumpTo_FailsClosedWithoutMovingWhenUnroutable(t *testin
 
 // A target beyond MaxWalkRings is refused for the same reason, and this is the
 // adapter half of the bound the application layer enforces at staging time.
-func TestSeedCommandPort_JumpTo_RefusesATargetBeyondTheWalk(t *testing.T) {
+func TestSeedCommandPort_JumpTo_RefusesATargetOutsideTheGateComponent(t *testing.T) {
 	world := seedWorldAt("X1-AA-J1")
-	// A chain ONE HOP LONGER than the resolver's bound, built FROM the constant so the fixture
-	// cannot rot when the bound moves. It used to hard-code three hops, which stopped being "beyond"
-	// the moment seed staging widened to MaxSeedFlightHops and the resolver widened with it.
-	edges := map[string][]string{}
-	prev := "X1-AA"
-	for i := 0; i <= appSensing.MaxSeedFlightHops; i++ {
-		next := fmt.Sprintf("X1-H%02d", i)
-		edges[prev] = []string{next}
-		world.gateOf[next] = next + "-J1"
-		prev = next
-	}
-	gates := stubGateNeighbours{edges: edges}
+	// A target in a DIFFERENT component: no chain of stored edges reaches it at any depth.
+	//
+	// This used to build a chain one hop longer than a numeric bound. That bound is gone — a seed's
+	// reach is now the traversable component itself — so "beyond the walk" no longer means "too many
+	// rings", it means "not connected". The refusal is unchanged and so is what it protects: naming
+	// no next system leaves the hull standing still rather than flown partway and stranded.
+	gates := stubGateNeighbours{edges: map[string][]string{
+		"X1-AA": {"X1-BB"},
+		"X1-BB": {"X1-CC"},
+		"X1-CC": {"X1-AA"},
+		// X1-ZZ appears nowhere: another component entirely.
+	}}
 
-	require.Error(t, runJump(t, world, gates, "X1-AA-J1", prev),
-		"a target %d hops out was accepted; the hull would be walked partway and stranded",
-		appSensing.MaxSeedFlightHops+1)
+	require.Error(t, runJump(t, world, gates, "X1-AA-J1", "X1-ZZ"),
+		"a target outside the gate component was accepted; the hull would be walked partway and stranded")
 	require.False(t, world.sentAny("JumpShipCommand"), "commands: %v", world.commands())
 	require.False(t, world.sentAny("NavigateDirectCommand"), "commands: %v", world.commands())
 }
@@ -179,4 +177,36 @@ func TestSeedCommandPort_JumpTo_CrossesTwoGatesOverConsecutiveTicks(t *testing.T
 	require.NoError(t, runJump(t, world, seedHopGates, world.positionOf("PROBE-A"), "X1-CC"))
 	require.Equal(t, []string{"X1-BB", "X1-CC"}, world.jumps(),
 		"the second leg did not re-derive from where the hull actually is: %v", world.commands())
+}
+
+// SELECTION MAY NEVER OUTRUN DELIVERY, and this pins it at the seam rather than by inspection.
+//
+// A destination past the ROUTER's reach fails SILENTLY, which is why this is worth a test of its own:
+// nextHopToward names no next system, the step errors, and the slot stays IN_TRANSIT still naming a
+// hull that counts against the probe cap and never arrives. Nothing logs a refusal loud enough to
+// notice; the fleet just quietly holds a probe forever.
+//
+// The two sides read ONE declaration — the adapter's resolver bound IS appSensing.SeedFlightUnbounded
+// — so they cannot drift into disagreement by editing a number. This test fails the moment someone
+// gives the resolver a bound of its own while selection keeps walking the whole component.
+func TestSeedWalk_TheResolverIsNeverNarrowerThanSelection(t *testing.T) {
+	// A chain far longer than any ring bound this engine has carried. Selection stages targets
+	// anywhere the component connects, so the resolver must name a next hop at the same distance.
+	edges := map[string][]string{}
+	const hops = 14
+	prev := "X1-AA"
+	for i := 1; i <= hops; i++ {
+		next := fmt.Sprintf("X1-H%02d", i)
+		edges[prev] = []string{next}
+		prev = next
+	}
+	world := seedWorldAt("X1-AA-J1")
+	world.gateOf["X1-AA"] = "X1-AA-J1"
+
+	require.NoError(t, runJump(t, world, stubGateNeighbours{edges: edges}, "X1-AA-J1", prev),
+		"the resolver refused a destination %d hops out while seed selection would stage it — a "+
+			"destination past the router's reach strands the hull silently, holding probe-cap "+
+			"headroom forever without ever arriving", hops)
+	require.Equal(t, []string{"X1-H01"}, world.jumps(),
+		"the resolver must name the FIRST hop toward a distant target: %v", world.commands())
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"time"
 
@@ -381,7 +382,7 @@ func AdvanceExpansion(
 	// actually fly. One memo for the whole tick, shared by all four consumers —
 	// supply, the spare claim, staging and the retarget — so none of them can
 	// disagree about what is reachable. See gateReach.
-	reach := newGateReach(p.Gates, neighbours, MaxSeedFlightHops)
+	reach := newGateReach(p.Gates, neighbours, SeedFlightUnbounded)
 
 	// Nearest first: a one-hop errand is one flight, a two-hop errand two, and
 	// the probe is held for the whole of it. Ordering here rather than in each
@@ -979,41 +980,41 @@ func markFrontier(
 
 // --- gate reach ---------------------------------------------------------------
 
-// MaxSeedFlightHops is how far a CHARTING SEED may be sent: the number of traversable gate hops
-// between the yard a seed is bought at and the target it is bought for.
+// SeedFlightUnbounded means a charting seed's reach is bounded by THE GRAPH, not by a number: the
+// search walks until the traversable component is exhausted.
 //
-// IT IS NOT MaxWalkRings, AND THAT SEPARATION IS THE POINT. Staging used to reuse the placement
-// walk's bound, which welded two independent concerns together — where the fleet can TRANSACT (a
-// yard with a hull of ours standing at it, a real money constraint) and what is NEAR THE TARGET.
-// Welded, they produce a structural dead zone: a target whose in-reach systems all happen to lack a
-// shipyard can never be seeded, however many staffed yards the fleet owns elsewhere — and since a
-// system with no shipyard can never itself be staffed, the dead zone propagates outward. The staffed
-// test stays exactly as it was; only the target-adjacency coupling is gone.
+// WHY THERE IS NO LONGER A NUMBER. This was MaxSeedFlightHops = 9, and 9 was honestly derived — the
+// traversable graph saturated there, so a bound of 10 served no additional target. It went stale in
+// under a day. X1-TD22 was discovered at TEN hops, reachable only through X1-KP42 at nine, and it is
+// the last system in the fleet with an unmapped jump gate — the only one whose charting can add
+// systems at all. A bound tuned to today's furthest system is guaranteed to be wrong tomorrow,
+// because charting an unmapped gate is precisely the act that reveals systems beyond it. The bound
+// was re-tuning itself into staleness by succeeding.
 //
-// WHY NINE, measured rather than chosen. Of 23 unseeded uncharted targets on the live fleet, by hop
-// distance from the nearest STAFFED system over traversable (non-under-construction) gates:
+// SO THE BOUND IS THE COMPONENT, AND IT IS SELF-LIMITING. A breadth-first search over stored
+// adjacency terminates when it runs out of frontier — a destination in another component is simply
+// never found, which is the same refusal the ring bound gave, reached by the graph's own shape
+// instead of a guess. It cannot go stale because there is nothing to tune: the answer is "can a seed
+// actually get there", which is the question that always mattered.
 //
-//	1:3  2:2  3:1  4:1  5:2  6:3  7:4  8:5  9:2      unreachable at any depth: 0
+// IT STAYS CHEAP AS THE MAP GROWS because it is bounded by OUR OWN LEDGER, not the universe. The
+// walk visits each known system at most once — 57 today, 300 at the owner's target — reading a map
+// the tick has already built, with a memoised store fallback for the few systems it does not cover.
+// That is linear in the map we hold and it does not grow with anything we have not charted.
 //
-// Nine is where the graph SATURATES — a bound of 10 serves not one additional target — and it is the
-// distance to X1-KP42 and X1-UV56, the only two systems in the fleet with an unmapped jump gate and
-// therefore the only two whose charting can add new systems to the ledger. Every one of their gate
-// neighbours (X1-AM61, X1-PA58, X1-SU95, X1-UT77) has zero shipyards, which is the dead zone exactly.
-// A bound of 6 would have more than doubled coverage (5 → 12) and still left the case this exists
-// for unreachable.
+// WHAT IT COSTS IS TICKS, NOT CREDITS. A gate jump burns no fuel; a crossing is two dispatch steps,
+// so TD22 at ten hops is roughly twenty ticks of transit. The honest ceiling is the graph's
+// eccentricity from our staffed systems — 10 today, measured — and it grows only as the frontier
+// does. That is inherent in charting a distant system at all, not a cost this choice introduces.
 //
-// IT BOUNDS THE FLIGHT, NOT THE MAP. A gate jump costs no fuel — it is instantaneous at the API with
-// only a reactor cooldown — so what a longer stage really spends is TICKS: one crossing is two
-// dispatch steps, so nine hops is roughly eighteen. That is affordable against a parked-probe surplus
-// and a frontier that cannot otherwise grow, and it stays a real bound as the map widens past the
-// current diameter.
-//
-// THE SEED'S OWN WALK READS THE SAME NUMBER. nextHopToward resolves one hop at a time by breadth-first
-// search over the same stored adjacency, and a destination beyond ITS bound names no next system —
-// the errand then fails every step while the hull counts against the probe cap and charts nothing.
-// So the adapter's resolver is bounded by this constant too (see adapters/parkedsensing), and there
-// is no second copy to drift.
-const MaxSeedFlightHops = 9
+// SELECTION AND THE ROUTER READ THE SAME RULE, which is the invariant that makes this safe rather
+// than merely permissive. A destination past the ROUTER's reach fails silently: nextHopToward names
+// no next system, the step errors, and the slot stays IN_TRANSIT still naming a hull that counts
+// against the probe cap and never arrives. The adapter's resolver therefore takes its bound from
+// this same declaration (see adapters/parkedsensing), so selection can never outrun delivery — and
+// with both unbounded-within-the-component, "reachable" means the same thing on both sides by
+// construction rather than by two numbers agreeing.
+const SeedFlightUnbounded = 0
 
 // gateReach answers "how many gate hops is it from here to there?", bounded by
 // MaxWalkRings, from STORED adjacency alone.
@@ -1126,7 +1127,10 @@ func (r *gateReach) from(ctx context.Context, origin string) (map[string]int, er
 	seen := map[string]bool{origin: true}
 	frontier := []string{origin}
 
-	for ring := 1; ring <= r.maxHops && len(frontier) > 0; ring++ {
+	// A NON-POSITIVE maxHops means "until the component is exhausted": the frontier
+	// empties on its own when there is nowhere further to go, which is the same
+	// refusal a ring bound gave, reached from the graph rather than from a guess.
+	for ring := 1; (r.maxHops <= 0 || ring <= r.maxHops) && len(frontier) > 0; ring++ {
 		var next []string
 		for _, system := range frontier {
 			adjacent, err := r.adjacent(ctx, system)
@@ -1174,7 +1178,13 @@ func (r *gateReach) canReach(ctx context.Context, origin, target string) (bool, 
 // unreachable target keeps its place at the back of the queue rather than
 // jumping it. Derived from the walker's own bound, not a package constant, for
 // the same reason maxHops is.
-func (r *gateReach) beyondReach() int { return r.maxHops + 1 }
+func (r *gateReach) beyondReach() int {
+	if r.maxHops <= 0 {
+		// Unbounded: no real hop count can reach this, and it is far below overflow.
+		return math.MaxInt32
+	}
+	return r.maxHops + 1
+}
 
 // orderByReach puts the CHEAP frontier first: targets nearest the systems we
 // actually hold, since a one-hop errand is one flight and a two-hop errand two,
