@@ -299,6 +299,14 @@ func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *
 	ceilingAborted := false
 	ceilingObservedAsk := 0
 
+	// serverGoodUnits (sp-wbcil) is the AUTHORITATIVE on-hand count of cmd.GoodSymbol
+	// once this transaction is done, learned from a 4219 cargo-shortfall rejection.
+	// -1 means the server never corrected us, so the persist applies its own delta as
+	// before. shortfallExhausted stops the tranche loop after a clamped retry: the
+	// server told us the hold's true depth and we just sold it.
+	serverGoodUnits := -1
+	shortfallExhausted := false
+
 	// OPTIMIZATION: Skip balance fetch (saves 1 API call)
 	// Ledger entries will have balance=0 but transaction amounts are still tracked
 	// Always pass 0: the ledger handler derives and serializes the running
@@ -356,9 +364,42 @@ func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *
 
 		result, err := h.strategy.Execute(ctx, cmd.ShipSymbol, cmd.GoodSymbol, unitsToProcess, token)
 		if err != nil {
-			// Return error but partial success is already recorded in ledger
-			return nil, fmt.Errorf("partial failure: failed to %s cargo after %d successful transactions (%d units processed, %d credits): %w",
-				transactionType, transactionCount, unitsProcessed, totalAmount, err)
+			// SERVER-CARGO RECONCILE (sp-wbcil): a sell the API rejects with 4219
+			// ("cargo does not contain N unit(s) ... Ship has M unit(s)") states the
+			// hull's true on-hand count in the payload. Before this, that correction
+			// was discarded and the whole sale aborted at zero transactions — which
+			// killed the tour and released a fully laden hull whose hold was then
+			// dumped below the profit floor. Now the tranche is clamped DOWN to what
+			// the server says is aboard and retried once, so a 71→11 rejection still
+			// books 11 units of revenue instead of none.
+			shortfall := h.retrySellClampedToServerCargo(ctx, cmd, token, unitsToProcess, err)
+			if shortfall.known {
+				// Heal the cache to the count the server just gave us even when no
+				// retry was possible or the retry failed — the stale belief that
+				// produced this rejection is exactly what must not survive it.
+				serverGoodUnits = shortfall.onHand
+			}
+			if shortfall.units == 0 || shortfall.err != nil {
+				// Nothing sellable aboard, an unreadable rejection, or (b) a clamped
+				// retry that failed on its own merits: the transaction fails, but the
+				// units earlier tranches DID sell are written back first.
+				failure := err
+				if shortfall.err != nil {
+					failure = shortfall.err
+				}
+				h.persistCargoDelta(ctx, cmd, transactionType, unitsProcessed, serverGoodUnits)
+				return nil, fmt.Errorf("partial failure: failed to %s cargo after %d successful transactions (%d units processed, %d credits): %w",
+					transactionType, transactionCount, unitsProcessed, totalAmount, failure)
+			}
+			// The clamped retry sold what the server said was aboard, so this good is
+			// now exhausted: account this tranche and stop — never ask for another.
+			result = shortfall.result
+			unitsToProcess = shortfall.units
+			serverGoodUnits = shortfall.onHand - result.UnitsProcessed
+			if serverGoodUnits < 0 {
+				serverGoodUnits = 0
+			}
+			shortfallExhausted = true
 		}
 
 		totalAmount += result.TotalAmount
@@ -376,30 +417,13 @@ func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *
 			TransactionCount: 1,
 		}
 		h.recordCargoTransaction(ctx, cmd, waypointSymbol, batchResponse, runningBalance, result.AgentCredits)
+
+		if shortfallExhausted {
+			break
+		}
 	}
 
-	// Persist the cargo delta this transaction produced onto the FRESH ship row
-	// under CAS-retry (sp-wa7c): on a concurrent-writer version conflict the
-	// closure re-loads the fresh row and re-applies ONLY this op's own cargo
-	// delta for cmd.GoodSymbol, so a colliding writer's nav/fuel/other-cargo
-	// update survives instead of being last-write-wins clobbered (the reported
-	// cargo desync). This is the single field this transaction owns; the closure
-	// touches nothing else. A zero-unit transaction (e.g. floor/ceiling-aborted
-	// before any tranche) is not persisted — no spurious version bump. The
-	// persist error is intentionally not fatal: the API transaction already
-	// committed and the daemon cache reconciles from the API on the next sync
-	// (unchanged from the prior best-effort Save).
-	if unitsProcessed > 0 {
-		_, _, _ = h.shipRepo.SaveWithRetry(ctx, cmd.ShipSymbol, cmd.PlayerID,
-			func(sh *navigation.Ship) (bool, error) {
-				if transactionType == "purchase" {
-					_ = sh.ReceiveCargo(&shared.CargoItem{Symbol: cmd.GoodSymbol, Units: unitsProcessed})
-				} else {
-					_ = sh.RemoveCargo(cmd.GoodSymbol, unitsProcessed)
-				}
-				return true, nil
-			})
-	}
+	h.persistCargoDelta(ctx, cmd, transactionType, unitsProcessed, serverGoodUnits)
 
 	// Refresh market data once after all batches complete (not per-batch)
 	// This reduces API calls from 2N to N+1 for N batches
@@ -414,6 +438,138 @@ func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *
 		CeilingAborted:     ceilingAborted,
 		CeilingObservedAsk: ceilingObservedAsk,
 	}, nil
+}
+
+// persistCargoDelta writes this transaction's cargo change onto the FRESH ship row
+// under CAS-retry (sp-wa7c): on a concurrent-writer version conflict the closure
+// re-loads the fresh row and re-applies ONLY this op's own cargo state for
+// cmd.GoodSymbol, so a colliding writer's nav/fuel/other-cargo update survives
+// instead of being last-write-wins clobbered (the reported cargo desync). This is
+// the single field this transaction owns; the closure touches nothing else. A
+// transaction with nothing to write (e.g. floor/ceiling-aborted before any tranche)
+// is not persisted — no spurious version bump. The persist error is intentionally
+// not fatal: the API transaction already committed and the daemon cache reconciles
+// from the API on the next sync.
+//
+// It runs on the FAILURE path too (sp-wbcil). A multi-tranche sell whose later
+// tranche errored used to return before this write, orphaning the units its EARLIER
+// tranches had really sold: the ledger recorded them, the hold did not, and the
+// cached count stayed permanently ahead of the server. That drift is what makes a
+// hull ask to sell 71 units it no longer has, so healing it here removes a standing
+// producer of the very rejection the clamp above contains.
+func (h *CargoTransactionHandler) persistCargoDelta(ctx context.Context, cmd *CargoTransactionCommand, transactionType string, unitsProcessed, serverGoodUnits int) {
+	if unitsProcessed <= 0 && serverGoodUnits < 0 {
+		return
+	}
+	_, _, _ = h.shipRepo.SaveWithRetry(ctx, cmd.ShipSymbol, cmd.PlayerID,
+		func(sh *navigation.Ship) (bool, error) {
+			// SERVER TRUTH WINS (sp-wbcil): when a 4219 told us exactly how many units
+			// the hull holds, reconcile the cache to that count ABSOLUTELY rather than
+			// applying our own delta to a belief the rejection just disproved —
+			// deducting the 11 units we sold from a phantom 71 would leave 60 phantom
+			// units behind, re-arming the identical failure on the next leg.
+			//
+			// DOWNWARD ONLY: the server count may shrink a phantom hold but must never
+			// inflate one, so a cache already at or below server truth is left untouched.
+			// Believing we hold LESS than we do costs an under-sized sell; believing we
+			// hold more is what strands hulls, so the asymmetry fails closed (RULINGS #4).
+			if serverGoodUnits >= 0 {
+				held := 0
+				if c := sh.Cargo(); c != nil {
+					held = c.GetItemUnits(cmd.GoodSymbol)
+				}
+				if held <= serverGoodUnits {
+					return false, nil
+				}
+				_ = sh.RemoveCargo(cmd.GoodSymbol, held-serverGoodUnits)
+				return true, nil
+			}
+			if transactionType == "purchase" {
+				_ = sh.ReceiveCargo(&shared.CargoItem{Symbol: cmd.GoodSymbol, Units: unitsProcessed})
+			} else {
+				_ = sh.RemoveCargo(cmd.GoodSymbol, unitsProcessed)
+			}
+			return true, nil
+		})
+}
+
+// sellShortfallOutcome reports what a 4219 cargo-shortfall reconcile learned and did.
+//
+// known is true only when the rejection yielded a TRUSTWORTHY server count for this
+// good; the caller heals its cached count from onHand whenever it is set, including
+// when no retry could be attempted. units is the clamped tranche actually re-sent (0
+// when none was), and result/err are that retry's outcome.
+type sellShortfallOutcome struct {
+	known  bool
+	onHand int
+	units  int
+	result *strategies.TransactionResult
+	err    error
+}
+
+// retrySellClampedToServerCargo reconciles a sell tranche the API rejected as a cargo
+// shortfall (4219) and re-sends it clamped to the hull's true depth, exactly once.
+//
+// The rejection is the only authoritative statement about the hold in the exchange:
+// our planned size is precisely what it disproved. So the retry is min(planned,
+// onHand) and NEVER anything larger — this must not become a path to asking for units
+// we do not hold. Concretely it refuses to act, leaving the API's original verdict
+// standing, when:
+//   - the transaction is not a sell (a purchase 4219 says nothing about our hold);
+//   - the payload is not a readable 4219 naming this good (serverCargoUnits fails closed);
+//   - the reported count is at or above what we asked for — a "shortfall" that is not
+//     short is self-contradictory, so the count is distrusted entirely rather than
+//     used to re-request the same size the server just refused.
+//
+// A count of zero IS trusted (the hull genuinely holds none of this good): no retry is
+// possible, but the caller still heals its cache and then fails the transaction.
+//
+// The per-tranche sell floor is deliberately not re-checked: it already cleared this
+// tranche at this market moments ago, and the retry is strictly smaller, so re-reading
+// the live bid would spend an extra market scan to re-answer a question just answered.
+func (h *CargoTransactionHandler) retrySellClampedToServerCargo(
+	ctx context.Context,
+	cmd *CargoTransactionCommand,
+	token string,
+	planned int,
+	rejection error,
+) sellShortfallOutcome {
+	if h.strategy.GetTransactionType() != "sell" {
+		return sellShortfallOutcome{}
+	}
+	onHand, ok := domainPorts.CargoShortfallUnits(rejection, cmd.GoodSymbol)
+	if !ok {
+		return sellShortfallOutcome{}
+	}
+	if onHand >= planned {
+		return sellShortfallOutcome{}
+	}
+
+	logger := logging.LoggerFromContext(ctx)
+	if onHand <= 0 {
+		logger.Log("WARNING", fmt.Sprintf(
+			"Sell of %d %s on %s rejected: server reports 0 units aboard - cached hold was phantom, resyncing (no retry possible)",
+			planned, cmd.GoodSymbol, cmd.ShipSymbol), map[string]interface{}{
+			"action": "cargo_shortfall_phantom", "ship_symbol": cmd.ShipSymbol, "good": cmd.GoodSymbol,
+			"planned_units": planned, "server_units": onHand,
+		})
+		return sellShortfallOutcome{known: true, onHand: onHand}
+	}
+
+	logger.Log("WARNING", fmt.Sprintf(
+		"Sell of %d %s on %s rejected: server reports only %d units aboard - clamping to %d and retrying once (cache was %d ahead)",
+		planned, cmd.GoodSymbol, cmd.ShipSymbol, onHand, onHand, planned-onHand), map[string]interface{}{
+		"action": "cargo_shortfall_clamp", "ship_symbol": cmd.ShipSymbol, "good": cmd.GoodSymbol,
+		"planned_units": planned, "server_units": onHand, "clamped_units": onHand,
+	})
+
+	result, err := h.strategy.Execute(ctx, cmd.ShipSymbol, cmd.GoodSymbol, onHand, token)
+	if err == nil && result == nil {
+		// A strategy that reports neither outcome is unusable; treat it as a failed
+		// retry so the caller fails the transaction rather than accounting a nil sale.
+		err = fmt.Errorf("clamped sell of %d %s returned no result", onHand, cmd.GoodSymbol)
+	}
+	return sellShortfallOutcome{known: true, onHand: onHand, units: onHand, result: result, err: err}
 }
 
 // liveBidForFloor reads the current per-unit bid for good at waypoint for the
