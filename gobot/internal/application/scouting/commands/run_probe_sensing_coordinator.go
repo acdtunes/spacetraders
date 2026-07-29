@@ -242,7 +242,16 @@ type SensingEnginePorts struct {
 	Fleet        parkedsensing.FleetTagger
 	Mover        parkedsensing.ShipMover
 	Gates        parkedsensing.GateNeighbours
-	Uncharted    parkedsensing.UnchartedCatalog
+	// GateRead is the DELIBERATE, bounded fetch-through jump-gate read — the pass that learns where a
+	// system connects without waiting for a hull to fly there. It is a SECOND port beside Gates
+	// rather than a widening of it, because Gates is a pure store read by contract and asked of every
+	// known system on every tick.
+	//
+	// Deliberately NOT in the ready() check below, for the same reason OffGate is not: the rest of
+	// the tick must keep running on a daemon whose gate resolver is absent, and the pass is inert
+	// until it is present. The daemon wires it unconditionally.
+	GateRead  parkedsensing.GateReader
+	Uncharted parkedsensing.UnchartedCatalog
 	// OffGate is the warp-expansion slice: the ports that raise explorer demand onto the fleet
 	// autosizer's buy bridge and warp an explorer past a sealed gate frontier. Deliberately NOT in
 	// the ready() check below — the gate passes must keep running on a daemon whose off-gate
@@ -373,7 +382,10 @@ func (p SensingEnginePorts) placementPorts() parkedsensing.PlacementPorts {
 func (p SensingEnginePorts) expandPorts(playerID int, whitelist map[string]bool) parkedsensing.ExpandPorts {
 	screen := p.screenPorts()
 	return parkedsensing.ExpandPorts{
-		Gates:       p.Gates,
+		Gates: p.Gates,
+		// The deliberate fetch-through gate read. Gates above stays the pure per-tick store read;
+		// this is the separate, bounded seam the gate-read pass spends API budget through.
+		GateRead:    p.GateRead,
 		Ledger:      p.Ledger,
 		SeedShip:    p.SeedShip,
 		Ships:       p.Ships,

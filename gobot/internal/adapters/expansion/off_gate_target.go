@@ -101,55 +101,12 @@ func (s *OffGateWarpTargetSelector) SelectTarget(ctx context.Context, playerID i
 }
 
 // gateConnectedSet is the set of system symbols ON the gate network: every adjacency key
-// plus every system those keys connect to THROUGH A GATE THAT EXISTS. A universe system not
-// in this set is off-gate.
-//
-// AN UNBUILT GATE CONNECTS NOTHING. GateEdge.UnderConstruction means the neighbour's own gate
-// is still being built, and the domain type says it outright: a route "must never traverse INTO
-// such an edge — a jump to an unbuilt gate fails at hop time". Counting such a neighbour as
-// on-network excluded it from off-gate selection, which is exactly backwards: a system whose
-// only inbound gate can never be used is the single most valuable warp target there is. That
-// misclassification is what made the whole off-gate slice unable to see the systems it exists
-// to reach — measured live, every one of the 53 exits from this fleet's pocket is an
-// under-construction edge, so the entire ring beyond the wall read as "already connected".
-//
-// STALE EDGES STAY CONNECTED, DELIBERATELY. Stale means UnderConstruction is UNVERIFIED
-// (synced_at expired), so an unbuilt verdict cannot be trusted. Warping is the expensive move —
-// a 769k hull burning fuel to cross interstellar distance — so the unverified case resolves the
-// CONSERVATIVE way: treated as connected, hence not a target. Only a VERIFIED unbuilt gate
-// promotes its neighbour to a warp candidate. That reading is not local taste, it is what the
-// rest of the codebase already does with an unverified row: the escape reader refuses to call a
-// stale edge a built gate (warp_escape_reader.hasBuiltGate), the chosen-path verify spends a live
-// re-probe on one rather than trust it, and the store-only distance walk refuses to route through
-// a stale system at all. A stale row is never an authoritative verdict anywhere, and it is not one
-// here either.
-//
-// THIS SET IS NOT ONE-DIRECTIONAL, so do not read it as a money guard. Membership does two
-// opposite things: it EXCLUDES a system as a warp target (a refusal to spend) and it ADMITS that
-// system as a frontier origin in frontierEdges (nearestEdgeWarp minimises over origins, so an extra
-// origin can only lower the computed fuel, which can only let MORE candidates past
-// params.WarpRangeFuel). The stale rule therefore buys a refusal on one side and pays for it with a
-// possible fuel understatement on the other, and pretending otherwise would be the dangerous
-// comment to leave here. It is acceptable because of where the real guard lives: FromSystem and
-// WarpFuelCost are OBSERVABILITY ONLY — nothing navigates to FromSystem, the dispatcher warps the
-// hull from wherever it actually is, and slice-A's ExecuteWarpRoute independently refuses an
-// unaffordable or stranding leg (ErrWarpWouldStrand) before a drop of fuel is burned. WarpRangeFuel
-// is the cheap first filter; the strand check is the safety one, and it is untouched by any of this.
-//
-// An adjacency KEY is always on-network regardless of its edges. A key exists only because we
-// successfully read that system's OWN jump gate (gategraph writes the key after GetJumpGate
-// returns), which is the same fact the gate-walking machinery treats as membership in the network.
-// Note it is NOT the stronger claim that a hull of ours stood there — GateWaypointOf exists
-// precisely so an uncharted neighbour's gate can be read from a neighbour's connection list — but
-// membership in the gate graph is the question being asked, and a read gate answers it.
+// plus every system those keys connect to. A universe system not in this set is off-gate.
 func gateConnectedSet(adjacency map[string][]system.GateEdge) map[string]bool {
 	set := make(map[string]bool, len(adjacency))
 	for systemSymbol, edges := range adjacency {
 		set[systemSymbol] = true
 		for _, edge := range edges {
-			if edge.UnderConstruction && !edge.Stale {
-				continue // verified unbuilt: this gate connects nothing, so the neighbour is off-gate
-			}
 			set[edge.ConnectedSystem] = true
 		}
 	}

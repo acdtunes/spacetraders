@@ -1183,6 +1183,18 @@ func run(cfg *config.Config) error {
 			// Per-system stored gate adjacency — never the whole-map read, and never a
 			// fetch-through resolver.
 			Gates: gateNeighbours,
+			// The DELIBERATE fetch-through gate read, over the SAME gategraph service the
+			// `spacetraders system gates --system X1-…` CLI verb drives and every router already
+			// resolves through — so there is one live gate fetcher in the codebase, one persistence
+			// path, and one negative-result backoff for a gate the API refuses.
+			//
+			// It is a SECOND port beside Gates rather than a widening of it: Gates is asked of every
+			// known system on every tick and must stay a pure store read, while this is asked of a
+			// bounded, ordered handful (MaxGateReads) of systems the store has already said it cannot
+			// answer for. Without it the engine could only learn a system's adjacency by flying a
+			// probe to it, which left the fleet sealed inside a 57-system pocket whose one built,
+			// passable exit nobody had ever read.
+			GateRead: parkedSensingAdapters.NewGateReadPort(gateGraphService),
 			// The same stored adjacency the placement mover walks: a seed's target
 			// may now be up to MaxWalkRings hops out, so the crossing resolves its
 			// next system from the gate graph rather than jumping at the errand's
