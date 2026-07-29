@@ -39,6 +39,11 @@ import (
 // Everything is driven off two durable facts — the sensing_systems row and the
 // hull's row in the ships table — and nothing is held between ticks. A restart
 // mid-tour resumes from the ledger with no state to rebuild.
+//
+// FRONTIER IS FREE AND THE OTHER TWO ARE NOT, which is why the operator's switch
+// cuts between them rather than around all three. Marking a neighbour PENDING
+// costs a row write; SEEDS and TOURS fly hulls, and asking for the hull to fly is
+// asking the buy queue to buy one. See ExpandKnobs.SpendEnabled.
 
 // MaxExpansionActions bounds how much this engine may do in one tick: seed steps
 // and seed requests together. A plain constant, deliberately not a knob — it
@@ -263,8 +268,31 @@ type ExpandPorts struct {
 
 // ExpandKnobs are the operator-set controls on expansion.
 type ExpandKnobs struct {
-	// Enabled switches the whole engine off.
-	Enabled bool
+	// SpendEnabled controls whether this engine may ASK FOR MONEY. It does not
+	// switch the engine off, and the difference is the whole point of the field.
+	//
+	// WHAT IT USED TO BE, AND WHAT THAT COST. This was `Enabled`, and it returned
+	// the tick before its first port call — so an operator who wanted to stop
+	// BUYING PROBES also stopped markFrontier, which is a ledger write off stored
+	// adjacency and costs neither a credit nor an API call. Measured live: with the
+	// switch off, new systems priced per hour fell to 1, 1, 5 across three hours
+	// against 20 in the first hour back on, while 308 idle probes we already owned
+	// stood unused. They were not blocked from moving — dispatchIdleOrphans and the
+	// placement machine never read this knob at all — they had simply run out of
+	// DESTINATIONS, because the one pass that names new ones had been switched off
+	// alongside the one that spends.
+	//
+	// SO THE LINE IS DRAWN AT PURCHASE INTENT, not at activity. Paused, the engine
+	// still records frontier systems and reads charted jump gates: both are free,
+	// and both are what keep already-bought hulls supplied with somewhere to go. It
+	// commands no hull, writes no SPARE want and emits no off-gate demand — the
+	// three ways this engine can reach the treasury, all of them through another
+	// engine (see AdvanceExpansion's own gate).
+	//
+	// It is NOT the money guard. ProbeBuyFloor and the probe cap are, they are
+	// applied by the buy queue and the autosizer, and they are unchanged either way
+	// (RULINGS #4). This only ever narrows what may be requested of them.
+	SpendEnabled bool
 	// MinBudgetRate is the sensing rate below which expansion pauses for the
 	// tick, in requests per second.
 	//
@@ -287,6 +315,16 @@ type ExpandKnobs struct {
 type ExpandReport struct {
 	// Skipped names the gate that held the whole tick, and is empty when it ran.
 	Skipped string
+	// SpendingPaused reports that the tick ran its FREE passes and stopped before
+	// the ones that ask another engine for money (SpendEnabled off).
+	//
+	// A SEPARATE FIELD RATHER THAN A Skipped VALUE, and that is not cosmetic. Skipped
+	// means "this tick did nothing", and the stall verdict reads it that way — so
+	// reporting a pause there would file a tick that discovered twenty systems as
+	// idle, which is precisely the silent-stall shape the verdict exists to catch. A
+	// paused tick reports its real work in Discovered and GatesRead and is graded on
+	// it; this flag says only why it stopped where it did.
+	SpendingPaused bool
 	// Discovered counts never-evaluated neighbour systems recorded as PENDING.
 	Discovered int
 	// SeedsRequested counts SPARE placements enqueued for the buy queue to fund.
@@ -339,10 +377,34 @@ type ExpandReport struct {
 // AdvanceExpansion runs one expansion tick.
 //
 // budgetRate is the sensing residual in requests per second (see
-// ExpandKnobs.MinBudgetRate). A disabled or budget-starved tick returns
-// immediately having touched NOTHING — not one port call — because this is the
-// engine that yields first when the API is under pressure, and an engine that
-// still reads its ledger to decide it should not run is not really yielding.
+// ExpandKnobs.MinBudgetRate). A budget-starved tick returns immediately having
+// touched NOTHING — not one port call — because this is the engine that yields
+// first when the API is under pressure, and an engine that still reads its
+// ledger to decide it should not run is not really yielding. THAT GATE IS THE
+// OUTERMOST ONE and stays so: a spend pause is an operator's economic choice,
+// while the budget floor is the fleet protecting its own API budget, and the
+// second must not be reachable past the first.
+//
+// THE TICK IS IN TWO HALVES, split at purchase intent (see ExpandKnobs.SpendEnabled):
+//
+//   - FREE, and always run. Frontier marking and the deliberate gate read. Both
+//     work from facts we already hold or can read without a hull, both write
+//     nothing but topology, and together they are what keeps the placement
+//     machine supplied with somewhere to put the probes we have already bought.
+//   - SPEND-INTENT, run only when SpendEnabled. The seed machinery and the
+//     off-gate fallback. None of them spends a credit DIRECTLY — this engine
+//     cannot price a hull or read the treasury — but each asks an engine that
+//     can: requestSeeds writes a SPARE want the buy queue funds by buying a
+//     probe, advanceOffGate raises the explorer demand the autosizer funds by
+//     buying a 769k explorer, and claimSpares deletes a placement row, which is
+//     a deliberate UNDER-count of the probe fleet and therefore cap headroom
+//     that authorises a purchase. advanceSeeds sustains that under-count for as
+//     long as an errand runs. Under RULINGS #4 the doubt resolves toward NOT
+//     spending, so all four sit on the far side of the pause.
+//
+// A PAUSED TICK IS NOT A SKIPPED TICK. It does real work, reports it in
+// Discovered and GatesRead, and is graded on it — Skipped stays empty and
+// SpendingPaused carries the reason.
 func AdvanceExpansion(
 	ctx context.Context,
 	p ExpandPorts,
@@ -351,9 +413,6 @@ func AdvanceExpansion(
 	budgetRate float64,
 ) (ExpandReport, error) {
 	var rep ExpandReport
-	if !k.Enabled {
-		return ExpandReport{Skipped: "disabled"}, nil
-	}
 	if budgetRate < k.MinBudgetRate {
 		return ExpandReport{Skipped: "budget"}, nil
 	}
@@ -408,6 +467,31 @@ func AdvanceExpansion(
 	// tick is a candidate on this tick rather than the next. See gateread.go.
 	if err := readUnmappedGates(ctx, p, playerID, known, mapping, reach, book, &rep); err != nil {
 		return rep, err
+	}
+
+	// THE PAUSE, and everything above it is free while everything below asks for
+	// money. Placed HERE rather than at the top of the function because the two
+	// halves were welded together and the weld is the defect: markFrontier is a
+	// ledger write off adjacency we have already measured, and switching it off to
+	// stop a purchase starved 308 already-bought probes of anywhere to go.
+	//
+	// AFTER THE GATE READ, DELIBERATELY. That pass spends API budget and no
+	// credits, and it is what keeps the adjacency store growing — without it
+	// markFrontier can only ever re-walk the neighbours we already hold, so the
+	// discovery half would drain and stall exactly as the whole engine used to.
+	//
+	// EVERYTHING BELOW THIS LINE EITHER COMMANDS A HULL OR RAISES A PURCHASE
+	// INTENT. That is the invariant to preserve when adding a pass: if it can move
+	// a ship, write a SPARE want, delete a placement row, or emit demand, it goes
+	// below. If it only reads stored facts and records topology, it may go above.
+	if !k.SpendEnabled {
+		// RETRACTED, NOT MERELY UNRAISED. The explorer-demand bridge latches, so a
+		// pause that just stopped calling advanceOffGate would leave a `Demanded:
+		// true` from the tick before the switch standing forever, and the autosizer
+		// would buy against it (see retractOffGateDemand).
+		retractOffGateDemand(p, playerID)
+		rep.SpendingPaused = true
+		return rep, nil
 	}
 
 	// The systems needing a hull are resolved ONCE, before anything moves, and

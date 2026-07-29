@@ -160,8 +160,9 @@ func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *
 			"docking":    hb.place.Docking,
 			"parked":     hb.place.Parked,
 
-			"expansion_skipped":    hb.expand.Skipped,
-			"expansion_discovered": hb.expand.Discovered,
+			"expansion_skipped":         hb.expand.Skipped,
+			"expansion_spending_paused": hb.expand.SpendingPaused,
+			"expansion_discovered":      hb.expand.Discovered,
 			"seeds_requested":      hb.expand.SeedsRequested,
 			"seeds_claimed":        hb.expand.SeedsClaimed,
 			"charted":              hb.expand.Charted,
@@ -246,14 +247,23 @@ func refusalSuffix(refusals []parkedsensing.BuyRefusal) string {
 }
 
 // expansionSummary states why expansion did nothing, or what it did. The Skipped
-// reason is reported verbatim because "disabled" and "budget" are operationally
-// different: one is an operator choice, the other is the API under pressure.
+// reason is reported verbatim because the gates behind it are operationally
+// different, and the API being under pressure is the one worth reading twice.
+//
+// A SPEND PAUSE IS REPORTED ALONGSIDE THE WORK, NOT INSTEAD OF IT. The paused
+// tick still discovers, so printing "skipped" for it would hide the very number
+// the operator turned the switch to watch — whether coverage keeps growing on
+// hulls already bought.
 func expansionSummary(rep parkedsensing.ExpandReport) string {
 	if rep.Skipped != "" {
 		return "skipped (" + rep.Skipped + ")"
 	}
-	return fmt.Sprintf("+%d discovered, %d seed(s) requested, %d claimed, %d charted",
+	summary := fmt.Sprintf("+%d discovered, %d seed(s) requested, %d claimed, %d charted",
 		rep.Discovered, rep.SeedsRequested, rep.SeedsClaimed, rep.Charted)
+	if rep.SpendingPaused {
+		return summary + " (spending paused: no seed purchase, no explorer demand)"
+	}
+	return summary
 }
 
 // publish sets the sensing gauges for one tick. Observation only (RULINGS #4):

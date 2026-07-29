@@ -130,7 +130,7 @@ func (o *offGateHarness) run(t *testing.T) (ExpandReport, error) {
 		Select: o.selector, Demand: o.sink, Explorer: o.explorers, Warp: o.warp,
 	}
 	return AdvanceExpansion(context.Background(), p, 1, ExpandKnobs{
-		Enabled: true, MinBudgetRate: 0.05, Whitelist: o.whitelist,
+		SpendEnabled: true, MinBudgetRate: 0.05, Whitelist: o.whitelist,
 	}, 1.0)
 }
 
@@ -348,7 +348,7 @@ func TestAdvanceExpansion_AnUnwiredOffGateSliceIsInert(t *testing.T) {
 	}
 	p := h.ports() // OffGate left zero-valued
 	rep, err := AdvanceExpansion(context.Background(), p, 1, ExpandKnobs{
-		Enabled: true, MinBudgetRate: 0.05, Whitelist: h.whitelist,
+		SpendEnabled: true, MinBudgetRate: 0.05, Whitelist: h.whitelist,
 	}, 1.0)
 	if err != nil {
 		t.Fatalf("an unwired off-gate slice must not fail the tick: %v", err)
@@ -415,7 +415,7 @@ func TestAdvanceExpansion_AnUnreadableGateGraphNeverRaisesExplorerDemand(t *test
 	p.OffGate = OffGatePorts{Select: h.selector, Demand: h.sink, Explorer: h.explorers, Warp: h.warp}
 
 	_, err := AdvanceExpansion(context.Background(), p, 1, ExpandKnobs{
-		Enabled: true, MinBudgetRate: 0.05, Whitelist: h.whitelist,
+		SpendEnabled: true, MinBudgetRate: 0.05, Whitelist: h.whitelist,
 	}, 1.0)
 	if err == nil {
 		t.Fatalf("the tick succeeded on an unreadable gate graph — an unread graph must never present " +

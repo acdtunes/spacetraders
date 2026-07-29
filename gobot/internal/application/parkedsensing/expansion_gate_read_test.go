@@ -131,7 +131,7 @@ func runGateRead(t *testing.T, h *expandHarness, gates *gateStore) (ExpandReport
 	p.Gates = gates
 	p.GateRead = gates
 	return AdvanceExpansion(context.Background(), p, 1, ExpandKnobs{
-		Enabled: true, MinBudgetRate: 0.05, Whitelist: h.whitelist,
+		SpendEnabled: true, MinBudgetRate: 0.05, Whitelist: h.whitelist,
 	}, 1.0)
 }
 
@@ -537,7 +537,7 @@ func TestAdvanceExpansion_WithNoGateReaderWiredTheTickIsUnchanged(t *testing.T) 
 	p.Gates = gates // GateRead deliberately left nil
 
 	rep, err := AdvanceExpansion(context.Background(), p, 1, ExpandKnobs{
-		Enabled: true, MinBudgetRate: 0.05, Whitelist: h.whitelist,
+		SpendEnabled: true, MinBudgetRate: 0.05, Whitelist: h.whitelist,
 	}, 1.0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

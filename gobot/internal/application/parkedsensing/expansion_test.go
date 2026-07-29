@@ -473,7 +473,7 @@ func (h *expandHarness) run(t *testing.T, uncharted *fakeUncharted) (ExpandRepor
 		p.Uncharted = uncharted
 	}
 	return AdvanceExpansion(context.Background(), p, 1, ExpandKnobs{
-		Enabled: true, MinBudgetRate: 0.05, Whitelist: h.whitelist,
+		SpendEnabled: true, MinBudgetRate: 0.05, Whitelist: h.whitelist,
 	}, 1.0)
 }
 
@@ -499,21 +499,32 @@ func (h *expandHarness) assertIdle(t *testing.T) {
 
 // --- gating ------------------------------------------------------------------
 
-func TestAdvanceExpansion_DisabledTickIsAZeroCallNoOp(t *testing.T) {
+// A SPEND PAUSE IS NOT A SKIP, and this is the assertion that used to say the
+// opposite. It asserted `Skipped == "disabled"` and a zero-call tick, which is
+// exactly the behaviour that idled 308 already-bought probes: the operator meant
+// "stop buying" and got "stop looking" as well. The pause's own contract lives in
+// expansion_spend_pause_test.go; what is pinned here is that the OLD contract is
+// gone — the tick runs, and it does not report itself skipped.
+func TestAdvanceExpansion_SpendPausedTickIsNotReportedAsSkipped(t *testing.T) {
 	h := newExpandHarness()
 	h.ledger.systems = []ExpandSystem{{System: "X1-A", Verdict: VerdictInScope, UnchartedCount: 4}}
 
 	rep, err := AdvanceExpansion(context.Background(), h.ports(), 1, ExpandKnobs{
-		Enabled: false, MinBudgetRate: 0.05, Whitelist: h.whitelist,
+		SpendEnabled: false, MinBudgetRate: 0.05, Whitelist: h.whitelist,
 	}, 1.0)
 
 	if err != nil {
-		t.Fatalf("a disabled tick must not error: %v", err)
+		t.Fatalf("a spend-paused tick must not error: %v", err)
 	}
-	if rep.Skipped != "disabled" {
-		t.Fatalf("Skipped = %q, want \"disabled\"", rep.Skipped)
+	if rep.Skipped != "" {
+		t.Fatalf("Skipped = %q, want empty — the tick ran, and filing it as skipped is what makes a discovering tick read as idle to the stall verdict", rep.Skipped)
 	}
-	h.assertIdle(t)
+	if !rep.SpendingPaused {
+		t.Fatal("SpendingPaused = false, want true — the heartbeat has no other way to say why the tick stopped where it did")
+	}
+	if h.ledger.systemsCalls == 0 {
+		t.Fatal("the tick made no ledger read at all — a spend pause must still look at the map, or the frontier cannot grow on hulls we already own")
+	}
 }
 
 func TestAdvanceExpansion_BudgetStarvedTickIsAZeroCallNoOp(t *testing.T) {
@@ -522,7 +533,7 @@ func TestAdvanceExpansion_BudgetStarvedTickIsAZeroCallNoOp(t *testing.T) {
 
 	// The brake has pushed the SENSING residual below the expansion floor.
 	rep, err := AdvanceExpansion(context.Background(), h.ports(), 1, ExpandKnobs{
-		Enabled: true, MinBudgetRate: 0.05, Whitelist: h.whitelist,
+		SpendEnabled: true, MinBudgetRate: 0.05, Whitelist: h.whitelist,
 	}, 0.04)
 
 	if err != nil {
@@ -538,7 +549,7 @@ func TestAdvanceExpansion_BudgetExactlyAtTheFloorRuns(t *testing.T) {
 	h := newExpandHarness()
 
 	rep, err := AdvanceExpansion(context.Background(), h.ports(), 1, ExpandKnobs{
-		Enabled: true, MinBudgetRate: 0.05, Whitelist: h.whitelist,
+		SpendEnabled: true, MinBudgetRate: 0.05, Whitelist: h.whitelist,
 	}, 0.05)
 
 	if err != nil {
@@ -554,7 +565,7 @@ func TestAdvanceExpansion_EmptyWhitelistRefusesTheTick(t *testing.T) {
 	h.ledger.systems = []ExpandSystem{{System: "X1-A", Verdict: VerdictInScope, UnchartedCount: 4}}
 
 	_, err := AdvanceExpansion(context.Background(), h.ports(), 1, ExpandKnobs{
-		Enabled: true, MinBudgetRate: 0.05, Whitelist: nil,
+		SpendEnabled: true, MinBudgetRate: 0.05, Whitelist: nil,
 	}, 1.0)
 
 	if !errors.Is(err, ErrEmptyWhitelist) {

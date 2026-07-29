@@ -733,3 +733,39 @@ func TestOrphanDispatch_SkipsAHullWithNoRecordedLocation(t *testing.T) {
 	require.Equal(t, 0, dispatchedCount(t, logger))
 	require.Empty(t, world.ledger.slots[psSlotKey{"X1-KP23-D40", parkedsensing.SlotKindMarket}].AssignedShip)
 }
+
+// THE OPERATOR'S QUESTION, ANSWERED AT THE COORDINATOR (sp-3sc46). "Expansion off = don't buy any
+// probe, keep sensing with the existing ones." This is the same live fleet with the switch OFF: the
+// four stacked idle hulls we already own still reach their placements, and nothing is bought.
+//
+// IT PASSES ON THE PRE-FIX CODE TOO, and that is the point rather than a weakness. The dispatch has
+// never read this knob — the defect was one layer up, in the pass that produces the placements it
+// fills — so this pins the half of the operator's sentence that was ALREADY true, and would catch
+// the plausible-looking future change that "consistently" gates the dispatch on expansion as well.
+// The half that was broken is pinned in the domain, where the fix lives:
+// parkedsensing.TestAdvanceExpansion_SpendPaused_StillMarksTheFrontier.
+func TestOrphanDispatch_ExpansionOff_StillPlacesOwnedProbesAndBuysNothing(t *testing.T) {
+	world := liveFleetWorld(t)
+	world.cmd.ExpansionEnabled = 2 // the off-switch, as the operator sets it
+	logger := &capturingLogger{}
+
+	require.NoError(t, world.handler.ReconcileOnce(common.WithLogger(world.ctx, logger), world.cmd))
+
+	require.Equal(t, 4, dispatchedCount(t, logger),
+		"the switch stops SPENDING, not the free placement of hulls already paid for")
+	for hull, waypoint := range map[string]string{
+		"TORWIND-14": "X1-KP23-D40",
+		"TORWIND-15": "X1-KP23-D41",
+		"TORWIND-F":  "X1-KP23-F46",
+		"TORWIND-4":  "X1-KP23-G48",
+	} {
+		row := world.ledger.slots[psSlotKey{waypoint, parkedsensing.SlotKindMarket}]
+		require.Equal(t, hull, row.AssignedShip, "%s still answers the placement at %s with expansion off", hull, waypoint)
+		require.Equal(t, parkedsensing.SlotStateInTransit, row.State)
+	}
+
+	// RULINGS #4, asserted at the port that actually moves money rather than inferred from a
+	// counter. Nothing was bought and nothing was even priced.
+	require.Zero(t, world.calls.count("buy"), "expansion off must reach no purchase")
+	require.Empty(t, world.purchaser.owners, "no probe purchase was claimed while expansion is off")
+}

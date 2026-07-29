@@ -110,7 +110,7 @@ func runWithGates(t *testing.T, h *expandHarness, gates *gateMap) (ExpandReport,
 	p := h.ports()
 	p.Gates = gates
 	return AdvanceExpansion(context.Background(), p, 1, ExpandKnobs{
-		Enabled: true, MinBudgetRate: 0.05, Whitelist: h.whitelist,
+		SpendEnabled: true, MinBudgetRate: 0.05, Whitelist: h.whitelist,
 	}, 1.0)
 }
 

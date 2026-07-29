@@ -447,7 +447,7 @@ func TestKnobs_ExpansionEnabledEncoding(t *testing.T) {
 			cmd := sensingTestCmd()
 			cmd.ExpansionEnabled = tc.value
 			cfg := resolveSensingConfig(context.Background(), cmd, nil)
-			require.Equal(t, tc.want, cfg.Expansion)
+			require.Equal(t, tc.want, cfg.ExpansionSpend)
 		})
 	}
 }
@@ -461,14 +461,14 @@ func TestKnobs_LiveConfigOverridesLaunch(t *testing.T) {
 
 	launched := resolveSensingConfig(context.Background(), cmd, nil)
 	require.Equal(t, 40, launched.ProbeCap, "with no live value the launch config governs")
-	require.True(t, launched.Expansion)
+	require.True(t, launched.ExpansionSpend)
 
 	tuned := resolveSensingConfig(context.Background(), cmd, liveconfig.Snapshot{
 		"probe_cap":         float64(120), // float64: the JSON-recovery shape
 		"expansion_enabled": 2,
 	})
 	require.Equal(t, 120, tuned.ProbeCap, "a live value wins over the launch config")
-	require.False(t, tuned.Expansion, "and so does a live off-switch")
+	require.False(t, tuned.ExpansionSpend, "and so does a live off-switch")
 }
 
 // A failed snapshot runs the tick on the LAUNCH command rather than on an empty
@@ -516,7 +516,7 @@ func TestKnobs_EmptyLaunchResolvesToDocumentedDefaults(t *testing.T) {
 
 	require.Equal(t, defaultSensingTickSeconds*time.Second, cfg.Tick)
 	require.Equal(t, defaultParkedProbeCap, cfg.ProbeCap)
-	require.True(t, cfg.Expansion)
+	require.True(t, cfg.ExpansionSpend)
 	require.Equal(t, defaultTargetUtilPct, cfg.TargetUtilPct)
 	require.Equal(t, defaultMinScanRateMilli, cfg.MinScanRateMilli)
 	require.Equal(t, defaultValueClampR, cfg.ClampR)

@@ -114,6 +114,31 @@ const (
 	offGateFuelWeight    = 1
 )
 
+// retractOffGateDemand withdraws any standing explorer demand, and it is what a spend pause does
+// INSTEAD OF simply not running advanceOffGate.
+//
+// THE BRIDGE LATCHES, and that is the whole reason this exists. ExplorerOffGateBridge keeps the last
+// signal it was handed and answers the autosizer from it on every read, forever, until something
+// overwrites it. So a pause that merely SKIPPED the emit would leave a `Demanded: true` raised
+// moments earlier standing indefinitely — and the autosizer, reading it, would buy a 769k explorer
+// while the operator had just said stop spending. Not emitting is not the same as not demanding, and
+// the difference is a purchase.
+//
+// So the pause retracts. It is the one write the paused half of the tick makes, it costs a map
+// assignment, and it moves strictly in the money-safe direction (RULINGS #4): a zero signal can only
+// ever cause FEWER purchases than the one it replaces.
+//
+// GUARDED ON THE SINK ALONE, not on wired(). A retraction needs nothing but somewhere to write, and
+// requiring the selector, the finder and the dispatcher too would mean a partial wiring gap left a
+// latched demand standing — the exact failure this function prevents, reintroduced through the
+// nil-check. The other three are only needed to RAISE demand, which the pause never does.
+func retractOffGateDemand(p ExpandPorts, playerID int) {
+	if p.OffGate.Demand == nil {
+		return
+	}
+	p.OffGate.Demand.EmitOffGateDemand(playerID, expansionCmd.OffGateDemandSignal{})
+}
+
 // advanceOffGate is the off-gate slice: one call from AdvanceExpansion, after the gate-based passes
 // have had their turn.
 //

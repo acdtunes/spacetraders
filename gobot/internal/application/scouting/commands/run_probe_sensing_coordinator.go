@@ -666,7 +666,13 @@ type sensingConfig struct {
 	Tick                    time.Duration
 	WaitLow, WaitHigh       time.Duration
 	ProbeCap                int
-	Expansion               bool
+	// ExpansionSpend is whether the expansion engine may ask another engine to
+	// BUY — a charting seed from the buy queue, an explorer from the autosizer.
+	// It was `Expansion`, and the rename is the fix: the old name said the engine
+	// was off, while what the operator wanted off was the spending, and the
+	// difference cost the fleet its free frontier discovery. See
+	// parkedsensing.ExpandKnobs.SpendEnabled.
+	ExpansionSpend          bool
 	TargetUtilPct           int
 	MinScanRateMilli        int
 	ClampR                  int
@@ -739,7 +745,7 @@ func resolveSensingConfig(ctx context.Context, cmd *RunProbeSensingCoordinatorCo
 	}
 
 	// 1=on, 2=off. Anything else — including the absent-key 0 — is the default.
-	c.Expansion = pick("expansion_enabled", cmd.ExpansionEnabled) != expansionDisabled
+	c.ExpansionSpend = pick("expansion_enabled", cmd.ExpansionEnabled) != expansionDisabled
 
 	if c.Tick <= 0 {
 		c.Tick = defaultSensingTickSeconds * time.Second
@@ -827,7 +833,7 @@ func (h *RunProbeSensingCoordinatorHandler) Handle(ctx context.Context, request 
 
 	cfg := resolveSensingConfig(ctx, cmd, h.liveSnapshot(ctx, cmd))
 	result := &RunProbeSensingCoordinatorResponse{Errors: []string{}}
-	logger.Log("INFO", fmt.Sprintf("Parked-probe sensing coordinator starting (tick %s, probe cap %d, expansion %v)", cfg.Tick, cfg.ProbeCap, cfg.Expansion), map[string]interface{}{
+	logger.Log("INFO", fmt.Sprintf("Parked-probe sensing coordinator starting (tick %s, probe cap %d, expansion spending %v — frontier discovery runs either way)", cfg.Tick, cfg.ProbeCap, cfg.ExpansionSpend), map[string]interface{}{
 		"action":       "probe_sensing_start",
 		"container_id": cmd.ContainerID,
 	})
@@ -1040,7 +1046,7 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 	// would make the brake invisible here and leave expansion charting away at
 	// full tilt through a rate-limit storm (budget.go:82-116).
 	expandRep, eerr := parkedsensing.AdvanceExpansion(ctx, ports.expandPorts(playerID, cfg.Whitelist), playerID, parkedsensing.ExpandKnobs{
-		Enabled:       cfg.Expansion,
+		SpendEnabled:  cfg.ExpansionSpend,
 		MinBudgetRate: float64(cfg.MinScanRateMilli) / 1000.0,
 		Whitelist:     cfg.Whitelist,
 	}, sensingRate)

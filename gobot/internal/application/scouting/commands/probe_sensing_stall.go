@@ -53,11 +53,14 @@ const (
 	stallReasonOffGateNoTarget health.StallReason = "off_gate_no_target"
 	// stallReasonExpansionSkippedPrefix labels a pass held by its own gate. The sentinel is
 	// appended (expansion_budget), so the reason stays stable tick to tick and can escalate.
+	//
+	// EVERY REMAINING SKIP IS THE ENGINE BEING HELD BACK FROM WORK IT WANTED TO DO, which is
+	// what makes blocking the right verdict for all of them. There used to be an exception —
+	// "disabled", the operator's own switch — and it is gone because the switch no longer skips
+	// the tick: a spend-paused tick still marks the frontier and reads gates, reports that work
+	// in Discovered and GatesRead, and is graded on it like any other. Reading it as skipped
+	// would file a tick that discovered twenty systems as idle.
 	stallReasonExpansionSkippedPrefix = "expansion_"
-	// expansionSkippedDisabled is the ONE skip sentinel that means "nothing to do, correctly":
-	// the operator turned expansion off. Every other skip is the engine being held back from work
-	// it wanted to do.
-	expansionSkippedDisabled = "disabled"
 )
 
 // sensingTickTally is everything one parked-sensing tick accomplished, as the reconcile already
@@ -127,9 +130,6 @@ func sensingTickVerdict(t sensingTickTally) health.TickOutcome {
 func expansionStallVerdict(rep parkedsensing.ExpandReport, err error) health.TickOutcome {
 	if err != nil {
 		return health.TickBlocked(stallReasonExpansionError, err.Error())
-	}
-	if rep.Skipped == expansionSkippedDisabled {
-		return health.TickIdle()
 	}
 	if rep.Skipped != "" {
 		return health.TickBlocked(health.StallReason(stallReasonExpansionSkippedPrefix+rep.Skipped),
