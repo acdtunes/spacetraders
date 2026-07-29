@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/application/health"
 	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -176,6 +177,11 @@ type RunFleetAutosizerCoordinatorHandler struct {
 	purchaser   Purchaser
 	notifier    PurchaseNotifier
 	metrics     MetricsSink
+	// stall is the WRITE-ONLY stall-escalation seam (health.StallObserver): each class's tick
+	// reports PROGRESS / IDLE / BLOCKED(first failing guard) so a coordinator that refuses every
+	// tick stops looking identical to one with nothing to do. Its single method returns nothing,
+	// so no sizing decision can read the streak it accumulates (RULINGS #2 — see stall.go).
+	stall health.StallObserver
 
 	mu    sync.Mutex
 	state map[string]*autosizerState // keyed by container ID
@@ -254,6 +260,12 @@ func (h *RunFleetAutosizerCoordinatorHandler) SetPurchaseNotifier(n PurchaseNoti
 
 // SetMetricsSink wires the metrics recorder. Optional and nil-safe (pure observation).
 func (h *RunFleetAutosizerCoordinatorHandler) SetMetricsSink(m MetricsSink) { h.metrics = m }
+
+// SetStallObserver wires the coordinator-stall escalation seam. Optional and nil-safe: an
+// unwired observer simply reports nothing, because observability is never a precondition for
+// sizing the fleet. The seam is write-only by type (its one method returns nothing), so wiring it
+// cannot give any sizing decision something new to branch on.
+func (h *RunFleetAutosizerCoordinatorHandler) SetStallObserver(o health.StallObserver) { h.stall = o }
 
 // Handle runs the reconcile loop until the context is cancelled.
 func (h *RunFleetAutosizerCoordinatorHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {

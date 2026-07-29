@@ -3,11 +3,17 @@ package captain
 import "testing"
 
 // TestDefaultInterruptTypesIsExactlyTheApprovedSet locks the default interrupt
-// set to exactly the eleven approved event types: everything else
+// set to exactly the twelve approved event types: everything else
 // (workflow.finished, contract.completed, credits.threshold, ship.idle, and the
 // self-healing single container.crashed) is deferred and rides the next wake's
 // batch instead of forcing one. The actionable crash signal is the crash LOOP
 // (container.crashloop), not the single death.
+//
+// coordinator.stalled joined the set as the twelfth: a coordinator BLOCKED on the
+// same reason for N consecutive ticks is stuck-but-silent in the one way
+// coordinator.error_loop cannot see — it is refusing, not erroring — and the
+// measured production failure was HOURS of unnoticed wedge, which a deferred
+// event would have extended rather than ended.
 func TestDefaultInterruptTypesIsExactlyTheApprovedSet(t *testing.T) {
 	want := map[EventType]bool{
 		EventWorkflowFailed:           true,
@@ -19,6 +25,7 @@ func TestDefaultInterruptTypesIsExactlyTheApprovedSet(t *testing.T) {
 		EventIncomeStalled:            true,
 		EventStreamDown:               true,
 		EventCoordinatorErrorLoop:     true,
+		EventCoordinatorStalled:       true,
 		EventDaemonComponentCrashLoop: true,
 		EventPrometheusAlertFiring:    true,
 	}
@@ -53,6 +60,7 @@ func TestIsInterruptUnderDefaultSet(t *testing.T) {
 		{"income.stalled interrupts", EventIncomeStalled, true},
 		{"stream.down interrupts", EventStreamDown, true},
 		{"prometheus.alert_firing interrupts (revenue/capacity-critical page, sp-y0f6)", EventPrometheusAlertFiring, true},
+		{"coordinator.stalled interrupts (BLOCKED on one reason for N consecutive ticks)", EventCoordinatorStalled, true},
 		{"container.crashed defers (self-healing single, sp-no9i)", EventContainerCrashed, false},
 		{"workflow.finished defers", EventWorkflowFinished, false},
 		{"contract.completed defers", EventContractCompleted, false},

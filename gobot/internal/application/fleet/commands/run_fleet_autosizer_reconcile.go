@@ -205,6 +205,10 @@ func (h *RunFleetAutosizerCoordinatorHandler) reconcileOnce(ctx context.Context,
 				"container_id": cmd.ContainerID,
 				"class":        string(class),
 			})
+			// A class that could not even read its demand did NOT get to decide: BLOCKED, not
+			// idle. Reported before the continue so a permanently broken provider escalates
+			// instead of reading as a fleet with nothing to buy.
+			h.observeClassStall(ctx, cmd, class, classStallVerdict(d, err, false, false, "", false))
 			continue
 		}
 		res.ClassesEvaluated++
@@ -212,7 +216,13 @@ func (h *RunFleetAutosizerCoordinatorHandler) reconcileOnce(ctx context.Context,
 			res.ShortfallClasses++
 		}
 
+		// Claim this class's tap slot so the blocking guard the ACT step publishes on the
+		// metrics seam can be named in this tick's stall verdict. Pure observation: the claim
+		// touches no port and no guard.
+		h.expectBlockedGuard(cmd, class)
 		bought, unmetNoBuy := h.sizeClass(ctx, cmd, cfg, d, in, st, purchasesThisTick)
+		guard, guardKnown := h.takeBlockedGuard(cmd, class)
+		h.observeClassStall(ctx, cmd, class, classStallVerdict(d, nil, bought, unmetNoBuy, guard, guardKnown))
 		if bought {
 			purchasesThisTick++
 			res.Purchased++

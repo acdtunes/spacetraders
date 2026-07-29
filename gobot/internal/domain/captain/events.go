@@ -47,6 +47,19 @@ const (
 	// a stuck-but-silent loop must force a wake.
 	EventCoordinatorErrorLoop EventType = "coordinator.error_loop"
 
+	// EventCoordinatorStalled fires when a coordinator tick has reported BLOCKED —
+	// "there was work to do and it could not be done" — with the SAME machine-readable
+	// reason for health.StallEscalationTicks consecutive ticks. It is the sibling of
+	// coordinator.error_loop for the loop that is not erroring at all: every layer of this
+	// fleet fails CLOSED correctly and then reports the refusal as an INFO line nobody
+	// consumes, so a healthy idle tick and a permanently wedged tick produced identical
+	// output for hours. Interrupt class for exactly that reason — a wedge that only rides
+	// the next cadence wake is the silence this event exists to end. Edge-triggered ONCE
+	// per streak (never per tick past the threshold), and a cleared or changed block
+	// restarts the streak, so a transient refusal can never accumulate into a page. The
+	// payload carries the coordinator, container, scope, reason, streak and threshold.
+	EventCoordinatorStalled EventType = "coordinator.stalled"
+
 	// EventDaemonComponentCrashLoop fires when a supervised daemon background
 	// component (ship-state sweeper, container recovery, samplers — NOT containers,
 	// which have container.crashloop) has crashed and been restarted
@@ -201,6 +214,11 @@ func DefaultInterruptTypes() []EventType {
 		EventIncomeStalled,
 		EventStreamDown,
 		EventCoordinatorErrorLoop,
+		// A coordinator BLOCKED on the same reason for N consecutive ticks is stuck-but-
+		// silent in the one way the error-loop detector above cannot see: it is not
+		// erroring, it is refusing. Interrupt class alongside its sibling — the measured
+		// failure mode is HOURS of unnoticed wedge, which a deferred event would extend.
+		EventCoordinatorStalled,
 		// A firing Prometheus alert (EarnerDark/BurstSaturation/ApproachCeiling/
 		// StarvationWave) is by definition revenue-critical or capacity-critical.
 		// Interrupt class.

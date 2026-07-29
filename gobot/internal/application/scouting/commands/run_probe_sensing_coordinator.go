@@ -523,6 +523,13 @@ type RunProbeSensingCoordinatorHandler struct {
 	// recorder publishes the sensing gauges. Optional; nil means metrics are off.
 	recorder ParkedSensingRecorder
 
+	// stall is the WRITE-ONLY stall-escalation seam (health.StallObserver): each tick reports
+	// PROGRESS / IDLE / BLOCKED(reason) for the sensing pass and for the off-gate/expansion pass
+	// separately, so a wedge stops looking identical to a quiet fleet. Its single method returns
+	// nothing, so no sensing decision can read the streak it accumulates (RULINGS #2 — see
+	// internal/application/health/stall.go).
+	stall health.StallObserver
+
 	// mu guards the per-container state against the singleton-handler
 	// concurrency (many containers' ticks share one handler).
 	mu sync.Mutex
@@ -621,6 +628,11 @@ func (h *RunProbeSensingCoordinatorHandler) SetEventRecorder(rec captain.EventRe
 func (h *RunProbeSensingCoordinatorHandler) SetMetricsRecorder(rec ParkedSensingRecorder) {
 	h.recorder = rec
 }
+
+// SetStallObserver wires the coordinator-stall escalation seam. Optional and nil-safe. The seam
+// is write-only by type (its one method returns nothing), so wiring it cannot give any sensing
+// decision something new to branch on.
+func (h *RunProbeSensingCoordinatorHandler) SetStallObserver(o health.StallObserver) { h.stall = o }
 
 // noteReconcile records one reconcile pass at the streak checkpoint: a nil err
 // resets the streak; a non-nil err repeating identically for
@@ -855,6 +867,10 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 	// such reach, and bootstrap owns probe provisioning. Checked FIRST so a
 	// pre-EXPANSION tick does nothing at all — no ledger read, no cutover, no buy.
 	if !h.expansionReached(ctx, cmd) {
+		// Correctly gated, not wedged: bootstrap owns probes before the home gate is built.
+		// Reported as IDLE so this stays silent for as many ticks as it takes, and so a stall
+		// streak from before the gate does not survive across the phase change.
+		h.observeStall(ctx, cmd, sensingStallCoordinator, health.TickIdle())
 		return nil
 	}
 
@@ -865,6 +881,11 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 		logger.Log("WARNING", "Parked-probe sensing held (fail-closed): the engine ports are not wired — a half-wired engine plans placements it can never fill", map[string]interface{}{
 			"action": "parked_sensing_unwired",
 		})
+		// A permanent wedge that produces the same silence as a quiet fleet. The expansion key
+		// is deliberately left untouched: the pass did not run, so this tick is no evidence
+		// about it either way, and a frozen streak neither escalates nor falsely clears.
+		h.observeStall(ctx, cmd, sensingStallCoordinator, health.TickBlocked(stallReasonPortsUnwired,
+			"the parked-sensing engine surface is incomplete — the tick holds fail-closed and can never fill a placement"))
 		return nil
 	}
 
@@ -885,6 +906,9 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 
 	systems, err := ports.Ledger.Systems(ctx, playerID)
 	if err != nil {
+		// The tick cannot even see its own world. Reported before the return so an unreadable
+		// ledger escalates instead of presenting as a fleet with nothing to do.
+		h.observeStall(ctx, cmd, sensingStallCoordinator, health.TickBlocked(stallReasonLedgerUnreadable, err.Error()))
 		return fmt.Errorf("failed to read the sensing ledger: %w", err)
 	}
 
@@ -1039,6 +1063,24 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 		rotation:    rotation,
 		yard:        yardRep,
 	})
+
+	// The tick's three-way verdict, on the two keys that stall independently. Reported ONCE per
+	// tick each — the streak IS the tick count — and derived purely from tallies this tick
+	// already produced, so nothing here can influence what the tick did.
+	h.observeStall(ctx, cmd, sensingStallCoordinator, sensingTickVerdict(sensingTickTally{
+		cutover:    cutover,
+		screened:   screened,
+		adopted:    adopted,
+		dispatched: dispatchedOrphans,
+		rotation:   rotation,
+		reap:       reapRep,
+		buy:        buyRep,
+		place:      placeRep,
+		expand:     expandRep,
+		failures:   len(failures),
+	}))
+	h.observeStall(ctx, cmd, expansionStallCoordinator, expansionStallVerdict(expandRep, eerr))
+
 	return errors.Join(failures...)
 }
 

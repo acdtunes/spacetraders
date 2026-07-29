@@ -11,6 +11,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	fleetCmd "github.com/andrescamacho/spacetraders-go/internal/application/fleet/commands"
+	"github.com/andrescamacho/spacetraders-go/internal/application/health"
 	navCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	shipyardCmd "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/commands"
 	shipyardQueries "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
@@ -129,7 +130,16 @@ func NewFleetAutosizerCoordinatorHandler(
 	h.SetHeavyCapReader(NewContainerConfigReader(server.containerRepo))
 	h.SetPurchaser(&autosizerPurchaser{med: med, shipRepo: shipRepo})
 	h.SetPurchaseNotifier(&autosizerNotifier{store: eventStore})
-	h.SetMetricsSink(&autosizerMetricsSink{})
+	// The metrics sink is wrapped in the blocked-guard tap: it forwards every recording
+	// unchanged AND lets the reconcile loop name the FIRST FAILING GUARD in the tick's stall
+	// verdict. The guard is read off the seam sizeClass already publishes it on, so nothing is
+	// re-evaluated and no port is read twice.
+	h.SetMetricsSink(fleetCmd.NewBlockedGuardTap(&autosizerMetricsSink{}))
+	// Stall escalation: a class BLOCKED on the SAME guard for health.StallEscalationTicks
+	// consecutive ticks raises a coordinator.stalled captain event and a Prometheus escalation
+	// counter, instead of the INFO line that went unread for hours. Write-only by type — the
+	// streak it accumulates is unreadable by any sizing decision (RULINGS #2).
+	h.SetStallObserver(health.NewStallEscalator(metrics.NewStallMetricsPort(), eventStore))
 	// sp-y2ptq: the contract_delivery graduation gate was removed with the autosizer's contract class
 	// (the dedicated scaler owns contract capacity + its own graduation handling).
 	return h

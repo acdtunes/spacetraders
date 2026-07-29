@@ -27,6 +27,7 @@ import (
 	fleetCmd "github.com/andrescamacho/spacetraders-go/internal/application/fleet/commands"
 	gasCmd "github.com/andrescamacho/spacetraders-go/internal/application/gas/commands"
 	gasQuery "github.com/andrescamacho/spacetraders-go/internal/application/gas/queries"
+	"github.com/andrescamacho/spacetraders-go/internal/application/health"
 	ledgerCmd "github.com/andrescamacho/spacetraders-go/internal/application/ledger/commands"
 	ledgerQuery "github.com/andrescamacho/spacetraders-go/internal/application/ledger/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/application/liquidation"
@@ -1241,6 +1242,13 @@ func run(cfg *config.Config) error {
 	// Resolves the collector lazily per call: the metrics collectors are installed by
 	// NewDaemonServer, which runs after this wiring, so a captured reference would be nil.
 	probeSensingHandler.SetMetricsRecorder(parkedSensingAdapters.NewMetricsPort())
+	// Stall escalation: the sensing tick and its off-gate/expansion pass each report
+	// PROGRESS / IDLE / BLOCKED(reason) every tick, and a block sustained on one reason for
+	// health.StallEscalationTicks consecutive ticks raises a coordinator.stalled captain event
+	// beside a Prometheus escalation counter. These are the two passes that reported "0
+	// discovered" for hours while a 33-system region sat behind one unread jump gate. The seam
+	// is write-only by type, so no sensing decision can read the streak (RULINGS #2).
+	probeSensingHandler.SetStallObserver(health.NewStallEscalator(metricsAdapter.NewStallMetricsPort(), captainEventRepo))
 	if err := mediator.RegisterHandler[*scoutingCmd.RunProbeSensingCoordinatorCommand](med, probeSensingHandler); err != nil {
 		return fmt.Errorf("failed to register ProbeSensingCoordinator handler: %w", err)
 	}

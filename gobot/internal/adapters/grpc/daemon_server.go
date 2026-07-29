@@ -605,6 +605,21 @@ func NewDaemonServer(
 			return nil, fmt.Errorf("failed to register bootstrap metrics collector: %w", err)
 		}
 		metrics.SetGlobalBootstrapCollector(bootstrapCollector)
+
+		// Coordinator-stall collector: the Prometheus half of the stall-escalation layer
+		// (internal/application/health/stall.go). Coordinators report a three-way tick verdict
+		// — PROGRESS / IDLE / BLOCKED(reason) — and a block sustained on one reason for
+		// StallEscalationTicks consecutive ticks lands here as an escalation counter plus a
+		// live streak gauge, beside the captain_events row. Event-driven (no polling
+		// goroutine), so registration + the global wire is the whole lifecycle; the
+		// coordinators reach it through a port that resolves this global LAZILY per call,
+		// because handler wiring runs before this constructor does.
+		stallCollector := metrics.NewStallMetricsCollector()
+		if err := stallCollector.Register(); err != nil {
+			listener.Close()
+			return nil, fmt.Errorf("failed to register coordinator-stall metrics collector: %w", err)
+		}
+		metrics.SetGlobalStallCollector(stallCollector)
 	}
 
 	// Register container specs for launch and recovery
