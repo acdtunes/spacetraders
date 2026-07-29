@@ -20,12 +20,38 @@ var _ absorption.Ledger = (*AbsorptionLedgerGORM)(nil)
 // zero value.
 const (
 	// DefaultExecutedHardCap bounds how long an EXECUTED recovery shadow may block
-	// before the sweep wipes it regardless of decay. 12h, NOT 24h — 24h is >half the
-	// remaining era, so a stuck shadow would embargo a sink for most of the game; 12h
-	// ≈ two half-lives of the slowest TAGGED tier (RESTRICTED, ~6.9h) and, with probes
-	// re-reading hourly, the cap should almost never be what clears a shadow. It is
-	// the belt to the decay curve's suspenders.
-	DefaultExecutedHardCap = 12 * time.Hour
+	// before the sweep wipes it regardless of decay.
+	//
+	// 4h (sp-brr68), recalibrated from 12h. The 12h was derived as "≈ two half-lives of the
+	// slowest TAGGED tier (RESTRICTED, ~6.9h)", with the cap intended as "the belt to the decay
+	// curve's suspenders" — a backstop that should almost never be what clears a shadow.
+	// sp-ircfy's era-07-19 re-fit raised every half-life 4-6x (RESTRICTED 6.9h → 39.4h, WEAK →
+	// 26.6h) and INVERTED that: 12h became well under ONE half-life for every tier, so decay can
+	// no longer clear anything first and the cap became the ONLY release mechanism. Measured
+	// live: 1042 EXECUTED rows at an average life of 12.4h — pinned at the cap, not decaying out.
+	//
+	// So this constant is no longer a backstop above the decay curve; it IS the embargo duration,
+	// and it is therefore calibrated against MEASURED sink recovery rather than re-derived from
+	// half-lives. Those two are not in conflict — a half-life is the decay RATE of a price
+	// displacement, and ours are ~1% — so the absolute time to economic recovery is short even
+	// though the rate is slow. Live era-5 telemetry (player 5, 2026-07-29):
+	//   * repeat sales into the same (sink, good) at MEDIAN 1.15h apart; realized price 99.2% of
+	//     the previous sale at <2h, 100.3% at 2-6h, 100.9% at 6-12h — recovery completes by ~2h;
+	//   * 255 of 386 revisits went into sinks HOLDING an active EXECUTED shadow and returned
+	//     99.7% of the previous price vs 99.6% for unshadowed sinks — the shadow tracks no
+	//     economically real depletion. That comparison is the de-confounder: the price evidence
+	//     is not just a selection effect of the embargo doing its job;
+	//   * realized sell price is 101.6% of the market's currently-quoted bid — no depression.
+	// 4h is ~2x the ~2h full-recovery time and ~3.5x the median revisit gap, leaving margin for a
+	// genuinely large sale (a 6-11x larger fleet will displace more than today's ~1%) without
+	// re-creating the embargo. RETUNE THIS when the half-lives are re-fitted or the fleet grows
+	// enough to move realized-vs-quoted price off ~100%; the pinning test names that trigger.
+	//
+	// NOT removable (RULINGS #4): it is the fail-CLOSED outer bound on a shadow whose decay data
+	// is missing or stale — an untagged sink with no pooled fit stays UNDECAYED until this sweep.
+	// Shortening frees depth sooner; removing uncaps the failure mode. config.yaml's
+	// absorption.executed_hard_cap still overrides without a rebuild.
+	DefaultExecutedHardCap = 4 * time.Hour
 	// DefaultShadowFloorFraction is the fraction of one tranche (trade_volume) of
 	// still-occupied depth below which a recovering shadow STOPS blocking a new sell.
 	// 0.5 — at 50% of a tranche recovered a new sell takes the recovered half-tranche
