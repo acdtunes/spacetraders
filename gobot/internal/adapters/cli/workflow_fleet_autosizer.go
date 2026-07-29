@@ -50,7 +50,9 @@ stack clears. Watch it through the per-decision arithmetic in the log.
 
 Tuning is config-driven (config.yaml [fleet_autosizer], live on daemon restart):
   tick_interval_secs / purchase_cap_per_tick                          pacing
-  fleet_ceiling_{lights,heavies}                                      per-class API-budget ceilings
+  heavy_cap                                                           owned HEAVY HULLS, fleet-wide —
+                                                                       the ONLY count-based bound
+                                                                       (also live-tunable, no restart)
   purchase_margin_over_floor                                          treasury guard (margin over the
                                                                        immutable reserve floor)
   heavy_unserved_lanes_min                                            heavy anti-thrash streak

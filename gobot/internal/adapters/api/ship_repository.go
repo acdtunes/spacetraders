@@ -1402,7 +1402,9 @@ func (r *ShipRepository) FindActiveByPlayer(ctx context.Context, playerID shared
 // dangerous direction — it is what would authorise buying a hull we already own.
 // Do not narrow this with a dedicated_fleet or assignment_status filter; the
 // autosizer's own tag-scoped trade-pool count (DedicatedFleet=="trade", which
-// backs fleet_ceiling_heavies) is a SEPARATE question with a separate method.
+// backs the heavy class's DEMAND signal) is a SEPARATE question with a separate
+// method — and since sp-r7eiu removed class_ceiling, this census is the ONLY
+// count that can refuse a heavy purchase.
 //
 // A hull is heavy when shipyard.IsHeavyHull says so: its frame is in the known
 // heavy list, OR its cargo capacity is at/above the heavy threshold. The frame

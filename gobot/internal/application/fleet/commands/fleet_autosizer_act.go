@@ -175,24 +175,28 @@ func (h *RunFleetAutosizerCoordinatorHandler) readTickInputs(ctx context.Context
 }
 
 // classGuardConfig resolves the per-class guard knobs from the run config.
-func classGuardConfig(class HullClass, cfg autosizerRunConfig) (shipType string, classCeiling int, maxPrice int64, treasuryPct int) {
+//
+// sp-r7eiu removed the classCeiling return with the class_ceiling guard. The explorer's HARD CAP
+// of 1 did NOT go with it: that cap lives in ExplorerDemandProvider, which clamps its want to
+// MaxExplorerHulls, so the class is still capped — by its demand, one layer instead of two.
+func classGuardConfig(class HullClass, cfg autosizerRunConfig) (shipType string, maxPrice int64, treasuryPct int) {
 	switch class {
 	case HullClassLight:
 		// Lights are protected by the treasury-floor guard; the analyst %-affordability rule is a
 		// big-ticket cap applied to heavies/warehouse, not the worker pool.
-		return cfg.ShipTypeLights, cfg.FleetCeilingLights, cfg.MaxPriceLights, 0
+		return cfg.ShipTypeLights, cfg.MaxPriceLights, 0
 	case HullClassHeavy:
-		return cfg.ShipTypeHeavies, cfg.FleetCeilingHeavies, cfg.MaxPriceHeavies, cfg.HeavyTreasuryPctPerPurchase
+		return cfg.ShipTypeHeavies, cfg.MaxPriceHeavies, cfg.HeavyTreasuryPctPerPurchase
 	case HullClassExplorer:
-		// The explorer's ship type (SHIP_EXPLORER), its HARD-CAP-1 class ceiling, its price
-		// ceiling (~819k+premium — a REAL cap, not 0=off), and the 25% big-ticket affordability rule.
-		// The realized-$/hr payback exemption is applied class-gated INSIDE EvaluateGuards, not here —
-		// every knob returned here is a REAL guard bound the explorer must still clear.
-		return cfg.ShipTypeExplorer, cfg.FleetCeilingExplorer, cfg.MaxPriceExplorer, cfg.ExplorerTreasuryPctPerPurchase
+		// The explorer's ship type (SHIP_EXPLORER), its price ceiling (~819k+premium — a REAL cap,
+		// not 0=off), and the 25% big-ticket affordability rule. The realized-$/hr payback exemption
+		// is applied class-gated INSIDE EvaluateGuards, not here — every knob returned here is a REAL
+		// guard bound the explorer must still clear.
+		return cfg.ShipTypeExplorer, cfg.MaxPriceExplorer, cfg.ExplorerTreasuryPctPerPurchase
 	default:
 		// sp-y2ptq: HullClassContractDelivery's guard config was removed with the autosizer's contract
 		// class (the dedicated scaler owns it). An unhandled class yields no buy config.
-		return "", 0, 0, 0
+		return "", 0, 0
 	}
 }
 
@@ -317,7 +321,7 @@ func (h *RunFleetAutosizerCoordinatorHandler) buildPurchaseRequest(
 	purchasesThisTick int,
 ) (PurchaseRequest, string) {
 	class := d.Class
-	shipType, classCeiling, maxPrice, treasuryPct := classGuardConfig(class, cfg)
+	shipType, maxPrice, treasuryPct := classGuardConfig(class, cfg)
 
 	shipType, price, cheapest, yard, priceOK := h.resolveHullPrice(ctx, cmd, cfg, class, shipType)
 
@@ -337,12 +341,9 @@ func (h *RunFleetAutosizerCoordinatorHandler) buildPurchaseRequest(
 		ShortfallStreak:    streak,
 		ShortfallStreakMin: streakMin,
 
-		CurrentClassCount: d.Current,
-		ClassCeiling:      classCeiling,
-
-		// The heavy-hull cap: a SEPARATE bound from ClassCeiling above (which counts the
-		// trade pool by tag). Both are judged; guardHeavyCap is heavy-scoped and passes
-		// for every other class.
+		// The heavy-hull cap: since sp-r7eiu removed the per-class pool ceiling this is the
+		// only count-based bound left. guardHeavyCap is heavy-scoped and passes for every
+		// other class.
 		HeaviesOwned:         in.heaviesOwned,
 		HeavyCap:             cfg.HeavyCap,
 		HeaviesOwnedReadable: in.heaviesOwnedOK,

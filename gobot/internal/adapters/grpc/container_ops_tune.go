@@ -84,14 +84,14 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 	contractScaler := contractScalerCmd.ContractScalerTunableDefaults()
 	fleetAutosizer := fleetCmd.FleetAutosizerTunableDefaults()
 	return map[string]map[string]TuneBound{
-		// The fleet capacity autosizer. heavy_cap is its FIRST live-tunable knob — every other
+		// The fleet capacity autosizer. heavy_cap is its ONLY live-tunable knob — every other
 		// autosizer knob stays config.yaml + restart, so this is a deliberate exception rather
-		// than a new pattern. It bounds CAPITAL EXPOSURE in heavy hulls and is DISTINCT from
-		// fleet_ceiling_heavies, which caps the trade POOL by dedicated_fleet tag; both apply.
-		// The money guards beside it (the immutable 50k floor, the 25%-treasury rule, the
-		// era-payback gate) are compile-time consts and are deliberately NOT tunable.
+		// than a new pattern. Since sp-r7eiu removed the class_ceiling guard it is also the only
+		// count-based bound left on any class. The money guards beside it (the immutable 50k
+		// floor, the 25%-treasury rule, the per-tick cap) are compile-time consts and are
+		// deliberately NOT tunable.
 		string(container.ContainerTypeFleetAutosizer): {
-			"heavy_cap": {Type: "int", Min: 0, Max: 50, Default: fleetAutosizer["heavy_cap"], Unit: "hulls", Description: "ceiling on owned HEAVY HULLS (capital exposure), counted tag-independently — distinct from fleet_ceiling_heavies, which caps the trade pool by tag; both bind. Default 5. NOTE: `tune heavy_cap 0` DELETES the key and reverts to the default — to HOLD at zero (own no heavies) set heavy_cap: 0 in config.yaml and restart. Applies next tick"},
+			"heavy_cap": {Type: "int", Min: 0, Max: 50, Default: fleetAutosizer["heavy_cap"], Unit: "hulls", Description: "ceiling on owned HEAVY HULLS (capital exposure), counted FLEET-WIDE regardless of dedicated_fleet tag. Since sp-r7eiu removed class_ceiling this is the ONLY count-based bound on any hull class — every other bound is economic (demand, affordability, the per-tick cap). Default 5. NOTE: `tune heavy_cap 0` DELETES the key and reverts to the default — to HOLD at zero (own no heavies) set heavy_cap: 0 in config.yaml and restart. Applies next tick"},
 		},
 		string(container.ContainerTypeContractScaler): {
 			// The single operator lever on the dedicated contract auto-scaler: the contract operation's hull

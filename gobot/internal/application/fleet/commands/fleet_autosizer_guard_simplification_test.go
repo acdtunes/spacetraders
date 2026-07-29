@@ -42,7 +42,6 @@ func TestProductionRegression_HeavyBuysDespiteHugeProbeFleetAndUnreadableRate(t 
 		PlayerID: 1, ContainerID: "c1",
 		HeavyUnservedLanesMin:   1,         // streak satisfied on the first tick
 		HeavyCap:                intPtr(5), // heavies owned 0/5 — open
-		FleetCeilingHeavies:     15,        // class 13/15 — open
 		PurchaseMarginOverFloor: 200000,
 	}
 

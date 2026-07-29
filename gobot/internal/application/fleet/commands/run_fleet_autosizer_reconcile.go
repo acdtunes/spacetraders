@@ -17,10 +17,8 @@ type autosizerRunConfig struct {
 	Tick               time.Duration
 	PurchaseCapPerTick int
 
-	FleetCeilingLights  int
-	FleetCeilingHeavies int
-	// HeavyCap is the resolved heavy-HULL cap (capital exposure), distinct from
-	// FleetCeilingHeavies (trade-pool size). Both bind.
+	// HeavyCap is the resolved heavy-HULL cap (capital exposure) — the only count-based bound
+	// left since sp-r7eiu removed the per-class pool ceilings with the class_ceiling guard.
 	HeavyCap int
 
 	PurchaseMarginOverFloor int64
@@ -56,8 +54,6 @@ func resolveFleetAutosizerConfig(cmd *RunFleetAutosizerCoordinatorCommand) autos
 	c := autosizerRunConfig{
 		Tick:                        time.Duration(cmd.TickIntervalSecs) * time.Second,
 		PurchaseCapPerTick:          cmd.PurchaseCapPerTick,
-		FleetCeilingLights:          cmd.FleetCeilingLights,
-		FleetCeilingHeavies:         cmd.FleetCeilingHeavies,
 		PurchaseMarginOverFloor:     cmd.PurchaseMarginOverFloor,
 		LightRotationSlots:          cmd.LightRotationSlots,
 		HeavyUnservedLanesMin:       cmd.HeavyUnservedLanesMin,
@@ -83,12 +79,6 @@ func resolveFleetAutosizerConfig(cmd *RunFleetAutosizerCoordinatorCommand) autos
 	}
 	if c.PurchaseCapPerTick <= 0 {
 		c.PurchaseCapPerTick = defaultPurchaseCapPerTick
-	}
-	if c.FleetCeilingLights <= 0 {
-		c.FleetCeilingLights = defaultFleetCeilingLights
-	}
-	if c.FleetCeilingHeavies <= 0 {
-		c.FleetCeilingHeavies = defaultFleetCeilingHeavies
 	}
 	if c.PurchaseMarginOverFloor <= 0 {
 		c.PurchaseMarginOverFloor = defaultPurchaseMarginOverFloor

@@ -21,15 +21,11 @@ type FleetAutosizerConfig struct {
 	// treasury from a runaway multi-buy on one tick). 0/absent → 1.
 	PurchaseCapPerTick int `mapstructure:"purchase_cap_per_tick"`
 
-	// --- per-class ceilings (the HARD API-request-budget bound: each hull adds request load) ---
-
-	// FleetCeiling{Lights,Heavies} cap each class; 0/absent → that class's documented default.
-	// There is deliberately NO fleet-wide total: an absolute cap across all classes starves every
-	// other class the moment the probe frontier grows (see guardClassCeiling). A `fleet_ceiling_total`
-	// key left behind in an existing config.yaml is simply IGNORED on read — viper's non-strict
-	// unmarshal (config.go's plain v.Unmarshal, no ErrorUnused) drops keys with no matching field.
-	FleetCeilingLights  int `mapstructure:"fleet_ceiling_lights"`
-	FleetCeilingHeavies int `mapstructure:"fleet_ceiling_heavies"`
+	// sp-r7eiu: FleetCeiling{Lights,Heavies} were removed with the class_ceiling guard they fed.
+	// A `fleet_ceiling_lights`/`fleet_ceiling_heavies` key left behind in an existing config.yaml is
+	// simply IGNORED on read — viper's non-strict unmarshal (config.go's plain v.Unmarshal, no
+	// ErrorUnused) drops keys with no matching field, so a stale config.yaml still boots.
+	// FleetCeilingExplorer SURVIVES below: it is the explorer's demand-side hard cap, not a guard input.
 
 	// --- treasury guard ---
 
@@ -54,11 +50,9 @@ type FleetAutosizerConfig struct {
 	// buy (a single heavy must cost ≤ this percent of live treasury). 0/absent → 25.
 	HeavyTreasuryPctPerPurchase int `mapstructure:"heavy_treasury_pct_per_purchase"`
 	// HeavyCap is the maximum HEAVY HULLS the fleet may own — capital exposure in large
-	// hulls. It is a SEPARATE dial from FleetCeilingHeavies and both apply:
-	// FleetCeilingHeavies is enforced against a count of hulls tagged DedicatedFleet=="trade"
-	// and therefore caps the TRADE POOL (a light hauler tagged trade counts against it; a
-	// heavy tagged contract does not count at all), while this counts heavy hulls fleet-wide
-	// regardless of tag.
+	// hulls, counted fleet-wide regardless of dedicated_fleet tag. Since sp-r7eiu removed the
+	// class_ceiling guard and its per-class pool ceilings, this is the ONLY count-based bound
+	// on any hull class.
 	//
 	// *int, not int, so an explicit 0 can be told from unset: heavy_cap: 0 in config.yaml is
 	// a legitimate operator HOLD ("own no heavies"), not an unset knob deferring to the

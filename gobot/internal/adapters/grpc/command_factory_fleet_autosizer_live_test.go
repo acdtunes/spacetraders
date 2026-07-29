@@ -59,7 +59,6 @@ func TestAutosizerResolvesKnobsFromLiveConfig(t *testing.T) {
 	s := newFleetAutosizerTestServer(config.FleetAutosizerConfig{
 		TickIntervalSecs:        120,
 		PurchaseCapPerTick:      2,
-		FleetCeilingHeavies:     12,
 		PurchaseMarginOverFloor: 500000,
 		LightRotationSlots:      4.0,
 		ShipTypeHeavies:         "SHIP_REFINING_FREIGHTER",
@@ -67,7 +66,6 @@ func TestAutosizerResolvesKnobsFromLiveConfig(t *testing.T) {
 	cmd := buildRecoveredAutosizerCommand(t, s, autosizerLaunchConfig(nil))
 	require.Equal(t, 120, cmd.TickIntervalSecs)
 	require.Equal(t, 2, cmd.PurchaseCapPerTick)
-	require.Equal(t, 12, cmd.FleetCeilingHeavies)
 	require.Equal(t, int64(500000), cmd.PurchaseMarginOverFloor)
 	require.Equal(t, 4.0, cmd.LightRotationSlots)
 	require.Equal(t, "SHIP_REFINING_FREIGHTER", cmd.ShipTypeHeavies)
@@ -77,12 +75,12 @@ func TestAutosizerResolvesKnobsFromLiveConfig(t *testing.T) {
 // value on the recovery rebuild.
 func TestAutosizerLiveKnobOverridesStalePersisted(t *testing.T) {
 	s := newFleetAutosizerTestServer(config.FleetAutosizerConfig{
-		FleetCeilingHeavies: 40,
+		TickIntervalSecs: 40,
 	})
 	cmd := buildRecoveredAutosizerCommand(t, s, autosizerLaunchConfig(map[string]interface{}{
-		"autosizer_fleet_ceiling_heavies": 999, // stale copy from a prior boot
+		"autosizer_tick_secs": 999, // stale copy from a prior boot
 	}))
-	require.Equal(t, 40, cmd.FleetCeilingHeavies, "live 40 must override the stale persisted 999")
+	require.Equal(t, 40, cmd.TickIntervalSecs, "live 40 must override the stale persisted 999")
 }
 
 // Unset live leaves the numeric knobs at the 0 sentinel (resolved to defaults downstream in
@@ -92,7 +90,7 @@ func TestAutosizerUnsetKnobsAreZeroSentinel(t *testing.T) {
 	s := newFleetAutosizerTestServer(config.FleetAutosizerConfig{})
 	cmd := buildRecoveredAutosizerCommand(t, s, autosizerLaunchConfig(nil))
 	require.Equal(t, 0, cmd.TickIntervalSecs, "unset tick must stay the 0 sentinel, not a hardcoded default")
-	require.Equal(t, 0, cmd.FleetCeilingHeavies)
+	require.Equal(t, 0, cmd.PurchaseCapPerTick)
 	require.Nil(t, cmd.PreferDemandProximalYard, "unset proximal-yard must stay nil so the coordinator applies its true default")
 }
 

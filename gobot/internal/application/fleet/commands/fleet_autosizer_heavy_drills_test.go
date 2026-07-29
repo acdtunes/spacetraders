@@ -81,16 +81,57 @@ func TestHeavyBuy_BlockedByTreasuryFloor(t *testing.T) {
 	}
 }
 
-// G2 per-class ceiling: heavies already at the class ceiling block the buy despite unserved demand.
-func TestHeavyBuy_BlockedByCeiling(t *testing.T) {
-	// 15 heavies = the default FleetCeilingHeavies; demand 17, shortfall 2, but the ceiling binds.
+// G2 — sp-r7eiu, THE REMOVAL ITSELF. A pool of 15 trade hulls used to sit exactly on the old
+// fleet_ceiling_heavies default and block on class_ceiling despite readable unserved-lane demand.
+// With the guard gone, pool SIZE no longer refuses anything: the buy proceeds on its economics.
+//
+// This is the test that fails if class_ceiling is ever reintroduced.
+func TestHeavyBuy_PoolSizeNoLongerBlocks(t *testing.T) {
+	h, purchaser, metrics, _ := armedForHeavy(heavyProvider(15, 2)) // demand 17, current 15, shortfall 2
+	res, _ := h.reconcileOnce(context.Background(), heavyCmd())
+	if res.Purchased != 1 || len(purchaser.orders) != 1 {
+		t.Fatalf("a 15-hull pool must no longer block on size, bought %d (blocked by %v)", res.Purchased, metrics.blockedGuards)
+	}
+}
+
+// THE GUARD-NOT-WEAKENED PROOF, end-to-end and at heavy magnitude. The SAME oversized pool that
+// TestHeavyBuy_PoolSizeNoLongerBlocks buys through is refused the moment the money guard bites: a
+// treasury too thin for the 25%-per-hull rule blocks on AFFORDABILITY, not on any ceiling.
+//
+// Removing a refusing guard necessarily permits the purchases that guard alone was blocking — that
+// is the Admiral's intent. What must NOT change is which purchases the MONEY guards refuse, and
+// this pins exactly that: with the pool bound deleted, an unaffordable hull is still not bought.
+// Reaching affordability at all is what proves no ceiling silently short-circuited ahead of it.
+func TestHeavyBuy_CeilingRemovalDoesNotWeakenAffordability(t *testing.T) {
 	h, purchaser, metrics, _ := armedForHeavy(heavyProvider(15, 2))
+	// A 1.4M hull needs > 5.6M treasury to clear price <= 25% x treasury; 5M yields a 1.25M cap.
+	// The floor term still passes (5M - 50k >= 1.4M + 200k), so this pins the PERCENTAGE rule.
+	h.SetTreasuryReader(&fakeTreasury{credits: 5_000_000, ok: true})
+
 	res, _ := h.reconcileOnce(context.Background(), heavyCmd())
 	if res.Purchased != 0 || len(purchaser.orders) != 0 {
-		t.Fatalf("heavies at the class ceiling must not buy, bought %d", res.Purchased)
+		t.Fatalf("the 25%% affordability rule must still refuse this buy, bought %d", res.Purchased)
 	}
-	if len(metrics.blockedGuards) == 0 || metrics.blockedGuards[0] != GuardClassCeiling {
-		t.Fatalf("expected class_ceiling block, got %v", metrics.blockedGuards)
+	if len(metrics.blockedGuards) == 0 || metrics.blockedGuards[0] != GuardAffordability {
+		t.Fatalf("expected an affordability block (proving no ceiling short-circuits ahead of it), got %v", metrics.blockedGuards)
+	}
+}
+
+// The same, for the OTHER count bound that survived: heavy_cap. With class_ceiling gone it is the
+// only thing standing between a demand signal and unbounded heavy growth, so a fleet at its cap
+// must still refuse — whatever the pool size says.
+func TestHeavyBuy_CeilingRemovalDoesNotWeakenHeavyCap(t *testing.T) {
+	h, purchaser, metrics, _ := armedForHeavy(heavyProvider(15, 2))
+	h.SetHeavyCensusReader(&fakeHeavyCensus{owned: 3})
+	cmd := heavyCmd()
+	cmd.HeavyCap = intPtr(3) // owned == cap
+
+	res, _ := h.reconcileOnce(context.Background(), cmd)
+	if res.Purchased != 0 || len(purchaser.orders) != 0 {
+		t.Fatalf("heavy_cap must still refuse at the cap, bought %d", res.Purchased)
+	}
+	if len(metrics.blockedGuards) == 0 || metrics.blockedGuards[0] != GuardHeavyCap {
+		t.Fatalf("expected a heavy_cap block, got %v", metrics.blockedGuards)
 	}
 }
 

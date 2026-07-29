@@ -63,8 +63,6 @@ func (s *DaemonServer) FleetAutosizerCoordinator(ctx context.Context, playerID i
 var fleetAutosizerConfigKeys = []string{
 	"autosizer_tick_secs",
 	"autosizer_purchase_cap_per_tick",
-	"autosizer_fleet_ceiling_lights",
-	"autosizer_fleet_ceiling_heavies",
 	// NOTE: the live-tunable knob is the BARE key "heavy_cap", NOT this prefixed launch key.
 	// resolveFleetAutosizerConfig CLEARS and re-injects every autosizer_* key from config.yaml on
 	// each rebuild, so a tune written to a prefixed key would be wiped on the next daemon bounce.
@@ -114,12 +112,6 @@ func (s *DaemonServer) injectFleetAutosizerConfig(config map[string]interface{})
 	}
 	if fa.PurchaseCapPerTick != 0 {
 		config["autosizer_purchase_cap_per_tick"] = fa.PurchaseCapPerTick
-	}
-	if fa.FleetCeilingLights != 0 {
-		config["autosizer_fleet_ceiling_lights"] = fa.FleetCeilingLights
-	}
-	if fa.FleetCeilingHeavies != 0 {
-		config["autosizer_fleet_ceiling_heavies"] = fa.FleetCeilingHeavies
 	}
 	// Injected whenever CONFIGURED — including an explicit 0, which is a legitimate operator
 	// HOLD ("own no heavies"), not an unset knob. This is why the config field is a *int and why
@@ -199,9 +191,7 @@ func buildFleetAutosizerCommand(cfg *configReader, playerID int, containerID str
 		TickIntervalSecs:   cfg.OptionalInt("autosizer_tick_secs", 0),
 		PurchaseCapPerTick: cfg.OptionalInt("autosizer_purchase_cap_per_tick", 0),
 
-		FleetCeilingLights:  cfg.OptionalInt("autosizer_fleet_ceiling_lights", 0),
-		FleetCeilingHeavies: cfg.OptionalInt("autosizer_fleet_ceiling_heavies", 0),
-		HeavyCap:            presentIntPtr(cfg, "autosizer_heavy_cap"),
+		HeavyCap: presentIntPtr(cfg, "autosizer_heavy_cap"),
 
 		PurchaseMarginOverFloor: int64(cfg.OptionalInt("autosizer_purchase_margin_over_floor", 0)),
 

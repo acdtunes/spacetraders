@@ -69,10 +69,11 @@ func addHull(t *testing.T, r *ShipRepository, playerID int, symbol, frame string
 
 // THE MONEY-GUARD PIN. The census must be independent of dedicated_fleet.
 //
-// FleetCeilingHeavies is enforced by countShips(..., DedicatedFleet() == "trade") — a TRADE-POOL
+// The heavy class's DEMAND signal uses countShips(..., DedicatedFleet() == "trade") — a TRADE-POOL
 // count. Reusing that predicate here would make a heavy tagged anything else invisible, leaving the
 // reservation open and authorising a re-buy of a hull we already own (spec C2). This census asks a
-// different question: how much capital is tied up in large hulls, whatever they are doing.
+// different question: how much capital is tied up in large hulls, whatever they are doing — and
+// since sp-r7eiu removed class_ceiling it is the ONLY count that can refuse a heavy purchase.
 func TestCountHeavyHulls_IsIndependentOfFleetTag(t *testing.T) {
 	repo, p, _, ctx := censusRepo(t)
 

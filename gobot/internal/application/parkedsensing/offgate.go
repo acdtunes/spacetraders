@@ -170,7 +170,7 @@ func advanceOffGate(
 
 	signal := expansionCmd.OffGateDemandSignal{
 		Demanded:      true,
-		ExplorerCount: 1, // hard cap of one; the autosizer enforces it again at ClassCeiling
+		ExplorerCount: 1, // hard cap of one; ExplorerDemandProvider clamps its want to this (sp-r7eiu removed the second enforcement at class_ceiling)
 		Reason:        fmt.Sprintf("gate-reachable frontier exhausted (%d target(s) outstanding, none within %d gate hops)", len(targets), MaxWalkRings),
 	}
 

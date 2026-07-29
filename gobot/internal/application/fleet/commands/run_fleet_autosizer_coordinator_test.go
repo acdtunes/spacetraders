@@ -132,9 +132,6 @@ func TestResolveConfig_Defaults(t *testing.T) {
 	if cfg.PurchaseCapPerTick != defaultPurchaseCapPerTick {
 		t.Errorf("purchase cap default = %d, want %d", cfg.PurchaseCapPerTick, defaultPurchaseCapPerTick)
 	}
-	if cfg.FleetCeilingLights != defaultFleetCeilingLights || cfg.FleetCeilingHeavies != defaultFleetCeilingHeavies {
-		t.Errorf("per-class ceiling defaults = %d/%d, want %d/%d", cfg.FleetCeilingLights, cfg.FleetCeilingHeavies, defaultFleetCeilingLights, defaultFleetCeilingHeavies)
-	}
 	if cfg.PurchaseMarginOverFloor != defaultPurchaseMarginOverFloor {
 		t.Errorf("purchase margin default = %d, want %d", cfg.PurchaseMarginOverFloor, defaultPurchaseMarginOverFloor)
 	}
@@ -160,19 +157,15 @@ func TestResolveConfig_ExplicitFalseProximalYard(t *testing.T) {
 
 func TestResolveConfig_OverridesRespected(t *testing.T) {
 	cfg := resolveFleetAutosizerConfig(&RunFleetAutosizerCoordinatorCommand{
-		TickIntervalSecs:    60,
-		PurchaseCapPerTick:  3,
-		FleetCeilingHeavies: 100,
-		LightRotationSlots:  4.0,
+		TickIntervalSecs:   60,
+		PurchaseCapPerTick: 3,
+		LightRotationSlots: 4.0,
 	})
 	if cfg.Tick != 60*time.Second {
 		t.Errorf("tick override = %v, want 60s", cfg.Tick)
 	}
 	if cfg.PurchaseCapPerTick != 3 {
 		t.Errorf("cap override = %d, want 3", cfg.PurchaseCapPerTick)
-	}
-	if cfg.FleetCeilingHeavies != 100 {
-		t.Errorf("ceiling override = %d, want 100", cfg.FleetCeilingHeavies)
 	}
 	if cfg.LightRotationSlots != 4.0 {
 		t.Errorf("rotation override = %v, want 4.0", cfg.LightRotationSlots)

@@ -17,11 +17,10 @@ import (
 // (reading treasury / price / census) lives in the coordinator's ACT step; keeping the
 // judgement pure makes every guard's refusal unit-testable in isolation.
 //
-// SEVEN GUARDS, ONE QUESTION EACH. The chain was twelve and asked three questions three times over
+// SIX GUARDS, ONE QUESTION EACH. The chain was twelve and asked three questions three times over
 // (affordability twice, overpaying twice, payback three times). It is now one guard per question:
 //
 //	demand         — is there a real, SETTLED need? (shortfall + the anti-thrash streak)
-//	class_ceiling  — does this class have room in its OWN pool?
 //	per_tick_cap   — have we already spent this tick?
 //	price          — is the ask readable, and are we overpaying? (abs cap + premium cap)
 //	heavy_cap      — is capital exposure in large hulls within the operator's cap?
@@ -38,24 +37,36 @@ import (
 // shortfall — which for heavies IS the unserved profitable-lane count — is the remaining economic
 // input, and it must be > 0.
 //
-// WHY heavy_cap DID NOT MERGE INTO class_ceiling, though both are "over a limit" questions. They
-// count DIFFERENT things and fail differently: class_ceiling counts the trade pool by
-// DedicatedFleet tag, heavy_cap counts heavy HULLS fleet-wide regardless of tag (see guardHeavyCap),
-// and only heavy_cap has a census that can be UNREADABLE and must fail closed. Merging them would
-// have made the guard NAME lie — a block reported as "class_ceiling" when the real bound was the
-// heavy census sends the operator to raise fleet_ceiling_heavies, which would not unblock anything —
-// and would have collapsed two distinct block reasons into one autosizer_blocked label, destroying
-// the operator's ability to tell "trade pool full" from "capital exposure capped". That is the same
-// class of papering-over that made the fleet-wide total ceiling a recurring outage. Seven guards,
-// deliberately, not six.
+// class_ceiling IS GONE (sp-r7eiu, Admiral's order). It was a flat per-class POOL-SIZE cap —
+// fleet_ceiling_{lights,heavies} — that refused a purchase purely for being the Nth hull, with no
+// reference to whether the fleet could afford it or had work for it. It was the last descendant of
+// the fleet-wide total ceiling that had already been deleted for the same reason: a bound that must
+// be re-raised by hand every time the fleet legitimately grows is not a bound, it is a recurring
+// outage. It bound at 14/15 while the operator was expanding the heavy fleet, and raising it was a
+// config.yaml edit plus a daemon restart.
+//
+// WHAT BOUNDS EACH CLASS NOW — a pool cap was never the thing keeping spending honest:
+//
+//	every class — demand (no shortfall, no buy), affordability, per_tick_cap (1/tick), price, api_util
+//	heavy       — heavy_cap, the fleet-wide heavy-HULL census (capital exposure), plus the
+//	              3-tick anti-thrash streak on its unserved-lane shortfall
+//	explorer    — its HARD CAP of 1, enforced in the demand provider itself (ExplorerDemandProvider
+//	              clamps want to MaxExplorerHulls), so the class stays capped without this guard
+//	light       — the factory-chain rotation math ALONE (ceil(chains × rotation_slots) + vacancies).
+//	              There is no light pool cap left. This is a DELIBERATE consequence of the removal,
+//	              not an oversight: the operator was told, and the money guards below are what hold.
+//
+// NOTHING IN THE MONEY PATH MOVED with this removal. A ceiling only ever REFUSED a purchase the
+// money guards had already permitted, so deleting it cannot authorise a spend they refuse
+// (RULINGS #4). The removal is pinned by tests that hold every one of them firing with the ceiling
+// gone.
 
 // GuardName identifies a purchase guard for the decision log and the autosizer_blocked metric.
 type GuardName string
 
 const (
-	GuardDemand        GuardName = "demand"        // unmet demand for the class AND it survived the anti-thrash streak
-	GuardClassCeiling  GuardName = "class_ceiling" // this class's pool is below its OWN ceiling
-	GuardPerTickCap    GuardName = "per_tick_cap"  // hulls already bought this tick
+	GuardDemand        GuardName = "demand"       // unmet demand for the class AND it survived the anti-thrash streak
+	GuardPerTickCap    GuardName = "per_tick_cap" // hulls already bought this tick
 	GuardPrice         GuardName = "price"         // yard ask readable (fail-closed) AND within both ceilings
 	GuardHeavyCap      GuardName = "heavy_cap"     // owned HEAVY HULLS below the operator's heavy cap
 	GuardAffordability GuardName = "affordability" // BOTH treasury tests: the pct-per-buy rule AND the reserve floor+margin
@@ -97,27 +108,19 @@ type PurchaseRequest struct {
 	ShortfallStreak    int
 	ShortfallStreakMin int
 
-	// The PER-CLASS ceiling (the hard API-budget bound). There is deliberately NO fleet-wide
-	// total term: 244 of the fleet's 277 hulls are probes and that count is meant to grow into
-	// the thousands, so a single absolute cap across all classes starves every other class
-	// permanently the moment the probe frontier expands. It was papered over once already
-	// (raised 50 → 150 in config.yaml on 2026-07-15 for exactly this reason) and the probe fleet
-	// blew past it again — a bound that must be re-raised every time an unrelated class grows is
-	// not a bound, it is a recurring outage. Each class carries its OWN ceiling instead, which is
-	// the number an operator can actually reason about.
-	CurrentClassCount int
-	ClassCeiling      int
+	// sp-r7eiu: CurrentClassCount and ClassCeiling were removed with the class_ceiling guard —
+	// they were its inputs and nothing else read them. The per-class pool counts still reach the
+	// decision log through each class's ClassDemand (Demand/Current), which is where an operator
+	// reads pool size now.
 
-	// The HEAVY-HULL cap — a SEPARATE dial from ClassCeiling, deliberately.
-	// ClassCeiling for HullClassHeavy is enforced against a count of hulls tagged
-	// DedicatedFleet=="trade", so it caps the TRADE POOL: a light hauler tagged trade
-	// counts against it, and a heavy freighter tagged contract or untagged does not
-	// count at all. These two therefore answer different questions — trade-pool size
-	// versus capital exposure in large hulls — and BOTH must pass.
+	// The HEAVY-HULL cap — the ONLY remaining count-based bound on any class, and the reason
+	// removing the pool ceiling did not leave heavies unbounded.
 	//
 	// HeaviesOwned is the broad, tag-INDEPENDENT heavy census (frame list primary,
-	// cargo-capacity safety net). HeavyCap is the operator dial; 0 is a legitimate
-	// hold ("own no heavies"), not an unset knob.
+	// cargo-capacity safety net): it counts heavy hulls fleet-wide whatever their
+	// DedicatedFleet tag, so a heavy tagged contract or untagged still counts against
+	// capital exposure. HeavyCap is the operator dial; 0 is a legitimate hold ("own no
+	// heavies"), not an unset knob.
 	HeaviesOwned int
 	HeavyCap     int
 	// HeaviesOwnedReadable reports whether the census could be read at all. false ⇒
@@ -191,7 +194,6 @@ func (d PurchaseDecision) Arithmetic() string {
 func EvaluateGuards(req PurchaseRequest) PurchaseDecision {
 	verdicts := []GuardVerdict{
 		guardDemand(req),
-		guardClassCeiling(req),
 		guardPerTickCap(req),
 		guardPrice(req),
 	}
@@ -238,23 +240,9 @@ func guardDemand(req PurchaseRequest) GuardVerdict {
 	}
 }
 
-// guardClassCeiling bounds THIS CLASS's pool against its OWN ceiling — and nothing else.
-//
-// The fleet-wide total term this guard used to carry was DELETED, not defaulted off. Removing
-// the config key alone would have blocked HARDER, not less: with no key the resolver falls back
-// to the compiled default (50), tighter than the 150 the live config had already been raised to.
-// The only way to stop a fleet-wide cap starving the trade pool every time the probe frontier
-// grows is for the term not to exist.
-func guardClassCeiling(req PurchaseRequest) GuardVerdict {
-	return GuardVerdict{
-		Guard:  GuardClassCeiling,
-		Passed: req.CurrentClassCount < req.ClassCeiling,
-		Detail: fmt.Sprintf("class %d/%d", req.CurrentClassCount, req.ClassCeiling),
-	}
-}
-
-// guardHeavyCap bounds CAPITAL EXPOSURE in large hulls — a separate question from
-// guardClassCeiling's trade-pool size, and both must pass.
+// guardHeavyCap bounds CAPITAL EXPOSURE in large hulls. Since sp-r7eiu removed the per-class pool
+// ceiling it is the ONLY count-based bound left on any class, so it is the whole answer to "how
+// many heavies may this fleet own".
 //
 // It is HEAVY-SCOPED: every other class passes untouched, because the census it reads
 // (HeaviesOwned) counts heavy hulls fleet-wide and would otherwise starve the light

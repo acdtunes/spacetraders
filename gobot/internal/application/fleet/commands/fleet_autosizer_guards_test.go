@@ -16,9 +16,6 @@ func passingRequest() PurchaseRequest {
 
 		Shortfall: 3,
 
-		CurrentClassCount: 10,
-		ClassCeiling:      35,
-
 		PurchasesThisTick: 0,
 		PerTickCap:        1,
 
@@ -99,12 +96,6 @@ func TestGuard_Demand_StreakIsANoOpForClassesThatDoNotUseIt(t *testing.T) {
 	if strings.Contains(d.Arithmetic(), "anti-thrash") {
 		t.Errorf("a class with no streak must not print a streak term: %s", d.Arithmetic())
 	}
-}
-
-func TestGuard_ClassCeiling_ClassFull(t *testing.T) {
-	r := passingRequest()
-	r.CurrentClassCount = 35 // == ceiling
-	assertBlockedBy(t, r, GuardClassCeiling)
 }
 
 func TestGuard_PerTickCap_Exhausted(t *testing.T) {
@@ -241,7 +232,7 @@ func TestGuard_Affordability_UnreadableTreasuryFailsClosed(t *testing.T) {
 func TestDecision_ArithmeticLogsEveryGuard(t *testing.T) {
 	d := EvaluateGuards(passingRequest())
 	arith := d.Arithmetic()
-	for _, name := range []GuardName{GuardDemand, GuardClassCeiling, GuardPerTickCap, GuardPrice, GuardHeavyCap, GuardAffordability, GuardAPIUtil} {
+	for _, name := range []GuardName{GuardDemand, GuardPerTickCap, GuardPrice, GuardHeavyCap, GuardAffordability, GuardAPIUtil} {
 		if !strings.Contains(arith, string(name)) {
 			t.Errorf("arithmetic log missing guard %q: %s", name, arith)
 		}
@@ -255,8 +246,8 @@ func TestDecision_ArithmeticLogsEveryGuard(t *testing.T) {
 // BlockedBy names the FIRST failing guard in evaluation order even when several would block.
 func TestDecision_BlockedByFirstFailure(t *testing.T) {
 	r := passingRequest()
-	r.Shortfall = 0          // demand (first) blocks
-	r.CurrentClassCount = 99 // fleet ceiling (later) would also block
+	r.Shortfall = 0         // demand (first) blocks
+	r.PurchasesThisTick = 1 // per_tick_cap (later) would also block
 	d := EvaluateGuards(r)
 	if d.BlockedBy != GuardDemand {
 		t.Fatalf("expected first blocker = demand, got %q", d.BlockedBy)
@@ -274,9 +265,6 @@ func explorerPassingRequest() PurchaseRequest {
 		ShipType: "SHIP_EXPLORER",
 
 		Shortfall: 1,
-
-		CurrentClassCount: 0, // no explorer owned yet
-		ClassCeiling:      1, // HARD CAP 1
 
 		PurchasesThisTick: 0,
 		PerTickCap:        1,
@@ -298,13 +286,12 @@ func explorerPassingRequest() PurchaseRequest {
 	}
 }
 
-// The HARD CAP is enforced by the reused fleet-ceiling guard with ClassCeiling=1: a second explorer
-// (one already owned) is refused. The exemption did not disable the ceiling.
-func TestGuard_Explorer_HardCapCeilingRefusesSecond(t *testing.T) {
-	r := explorerPassingRequest()
-	r.CurrentClassCount = 1 // one explorer already owned; ceiling is 1
-	assertBlockedBy(t, r, GuardClassCeiling)
-}
+// sp-r7eiu: the explorer's HARD CAP of 1 is no longer enforced in the guard stack — class_ceiling is
+// gone. It is enforced ONCE, in ExplorerDemandProvider, which clamps its want to MaxExplorerHulls so a
+// second explorer yields Shortfall 0 and guardDemand refuses it. The equivalent of THIS test — one
+// explorer owned, the signal wanting more — is TestExplorer_HardCap_NoSecondBuyWhenSignalWantsMoreThanCap
+// in fleet_autosizer_explorer_test.go, backed by TestExplorer_SignalCountClampedToHardCap. There is
+// no guard-level equivalent to keep here.
 
 // The PRICE CEILING still bites: an explorer priced above the ~819k+premium cap is refused.
 func TestGuard_Explorer_PriceCeilingRefusesOverpriced(t *testing.T) {

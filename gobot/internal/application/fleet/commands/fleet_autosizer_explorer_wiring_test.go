@@ -43,16 +43,15 @@ func TestExplorer_ResolveDefaults_NothingBootArms(t *testing.T) {
 	}
 }
 
-// classGuardConfig hands the explorer its REAL guard bounds — the hard-cap-1 ceiling, the price
-// ceiling, and the 25% rule. (The payback exemption is applied inside EvaluateGuards, not here.)
+// classGuardConfig hands the explorer its REAL guard bounds — the price ceiling and the 25% rule.
+// (The payback exemption is applied inside EvaluateGuards, not here.) sp-r7eiu removed the class
+// ceiling from this return; the explorer's hard cap of 1 now lives solely in ExplorerDemandProvider,
+// pinned by TestExplorer_HardCap_NoSecondBuyWhenPoolAtCap.
 func TestExplorer_ClassGuardConfig_RealBounds(t *testing.T) {
 	cfg := resolveFleetAutosizerConfig(&RunFleetAutosizerCoordinatorCommand{ExplorerHullsEnabled: true})
-	shipType, ceiling, maxPrice, treasuryPct := classGuardConfig(HullClassExplorer, cfg)
+	shipType, maxPrice, treasuryPct := classGuardConfig(HullClassExplorer, cfg)
 	if shipType != "SHIP_EXPLORER" {
 		t.Errorf("explorer ship type = %q, want SHIP_EXPLORER", shipType)
-	}
-	if ceiling != 1 {
-		t.Errorf("explorer class ceiling (hard cap) = %d, want 1", ceiling)
 	}
 	if maxPrice != defaultMaxPriceExplorer {
 		t.Errorf("explorer price ceiling = %d, want %d", maxPrice, defaultMaxPriceExplorer)

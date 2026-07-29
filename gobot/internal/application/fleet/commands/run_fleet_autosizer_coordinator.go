@@ -19,22 +19,21 @@ const (
 	defaultAutosizerTickSeconds = 900 // 15min — sizing is strategic, not per-second
 	defaultPurchaseCapPerTick   = 1
 
-	// Protective PER-CLASS ceilings (the HARD API-request-budget bound — each hull adds request
-	// load). Deliberately conservative: an auto-buyer that surprises the treasury is worse than
-	// one that stops early, and the captain raises these from evidence. There is deliberately no
-	// fleet-wide total — see guardClassCeiling for why an absolute cap across all classes is a
-	// recurring outage rather than a bound.
-	defaultFleetCeilingLights  = 35
-	defaultFleetCeilingHeavies = 15
+	// sp-r7eiu: defaultFleetCeiling{Lights,Heavies} were removed with the class_ceiling guard —
+	// a flat per-class pool cap refused a purchase for being the Nth hull without asking whether
+	// the fleet could afford it or had work for it, and had to be re-raised by hand every time the
+	// fleet legitimately grew. See fleet_autosizer_guards.go for what bounds each class now.
+	// defaultFleetCeilingExplorer SURVIVES below: it is the explorer's demand-side hard cap, not a
+	// guard input.
 
 	defaultPurchaseMarginOverFloor     = 200000
 	defaultLightRotationSlots          = 3.5
 	defaultHeavyUnservedLanesMin       = 3
 	defaultHeavyTreasuryPctPerPurchase = 25
-	// defaultHeavyCap bounds CAPITAL EXPOSURE in heavy hulls — a separate question from
-	// defaultFleetCeilingHeavies, which caps the TRADE POOL by dedicated_fleet tag. Both apply.
-	// 5 per the Admiral. An explicit 0 in config.yaml is a legitimate operator HOLD, which is why
-	// the config field is a *int (see config.FleetAutosizerConfig.HeavyCap).
+	// defaultHeavyCap bounds CAPITAL EXPOSURE in heavy hulls, counted fleet-wide regardless of
+	// dedicated_fleet tag. Since sp-r7eiu removed the pool ceilings it is the ONLY count-based
+	// bound on any class. 5 per the Admiral. An explicit 0 in config.yaml is a legitimate operator
+	// HOLD, which is why the config field is a *int (see config.FleetAutosizerConfig.HeavyCap).
 	defaultHeavyCap                  = 5
 	defaultAPIUtilCeilingPct         = 85
 	defaultMaxPremiumOverCheapestPct = 50
@@ -100,9 +99,6 @@ type RunFleetAutosizerCoordinatorCommand struct {
 
 	TickIntervalSecs   int
 	PurchaseCapPerTick int
-
-	FleetCeilingLights  int
-	FleetCeilingHeavies int
 
 	PurchaseMarginOverFloor int64
 

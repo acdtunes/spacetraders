@@ -90,7 +90,7 @@ func NewFleetAutosizerMetricsCollector() *FleetAutosizerMetricsCollector {
 				Namespace: namespace,
 				Subsystem: subsystem,
 				Name:      "autosizer_heavies_owned",
-				Help:      "Owned HEAVY hulls counted tag-independently (frame list primary, cargo-capacity safety net) — capital exposure, NOT the trade-pool count behind fleet_ceiling_heavies (sp-fwk8z)",
+				Help:      "Owned HEAVY hulls counted tag-independently (frame list primary, cargo-capacity safety net) — capital exposure, NOT the tag-scoped trade-pool count behind heavy DEMAND (sp-fwk8z); since sp-r7eiu this is the only count-based purchase bound",
 			},
 			[]string{"player_id"},
 		),

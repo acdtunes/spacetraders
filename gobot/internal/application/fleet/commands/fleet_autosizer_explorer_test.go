@@ -77,7 +77,8 @@ func TestExplorer_NoOffGateDemand_ZeroDemandEvenArmed(t *testing.T) {
 }
 
 // HARD CAP via the pool: one explorer already owned ⇒ Demand capped at 1 and Current=1, so Shortfall
-// is 0 (no second buy). The guard-stack fleet ceiling is the belt; this is the suspenders.
+// is 0 (no second buy). Since sp-r7eiu removed class_ceiling this is the ONLY enforcement of the
+// explorer hard cap — belt, with no suspenders behind it.
 func TestExplorer_HardCap_NoSecondBuyWhenPoolAtCap(t *testing.T) {
 	p := NewExplorerDemandProvider(&fakeOffGateSource{demanded: true, wantCount: 1, ok: true}, &fakeExplorerFleet{count: 1})
 	d, err := p.Demand(context.Background(), 1, armedParams())
@@ -86,6 +87,24 @@ func TestExplorer_HardCap_NoSecondBuyWhenPoolAtCap(t *testing.T) {
 	}
 	if d.Current != 1 || d.Shortfall() != 0 {
 		t.Fatalf("pool at cap must yield Shortfall 0 (no second explorer), got Demand=%d Current=%d Shortfall=%d", d.Demand, d.Current, d.Shortfall())
+	}
+}
+
+// THE SECOND-EXPLORER PIN (sp-r7eiu). One explorer owned AND a signal wanting more: the clamp is
+// the only thing between that and a second ~819k hull, because class_ceiling — which used to refuse
+// this at the guard stack with ClassCeiling=1 — is gone.
+//
+// TestExplorer_HardCap_NoSecondBuyWhenPoolAtCap does NOT cover this: its signal wants exactly 1, so
+// the clamp is a no-op there and it survives the clamp being deleted. This fixture is the one that
+// bites.
+func TestExplorer_HardCap_NoSecondBuyWhenSignalWantsMoreThanCap(t *testing.T) {
+	p := NewExplorerDemandProvider(&fakeOffGateSource{demanded: true, wantCount: 2, ok: true}, &fakeExplorerFleet{count: 1})
+	d, err := p.Demand(context.Background(), 1, armedParams())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if d.Shortfall() != 0 {
+		t.Fatalf("a signal wanting %d with 1 explorer owned must still yield Shortfall 0 (hard cap 1), got Demand=%d Current=%d Shortfall=%d", 2, d.Demand, d.Current, d.Shortfall())
 	}
 }
 
