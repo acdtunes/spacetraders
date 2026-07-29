@@ -132,6 +132,47 @@ func eraScopePredicate(openEraID *int) (string, []any) {
 	return "(era_id = ? OR era_id IS NULL)", []any{*openEraID}
 }
 
+// OpenEraScope is eraScopePredicate's FAIL-CLOSED face, for readers that must
+// read NOTHING rather than guess when the open era cannot be resolved.
+//
+// On the resolved path it returns exactly what every era-scoped repository here
+// already applies — the same predicate from the same helper — so a read wired
+// through this and a read wired through openEraID + eraScopePredicate produce
+// identical SQL and can never disagree about which rows are live.
+//
+// THE DIFFERENCE IS THE UNRESOLVED PATH, and it is the whole reason this exists.
+// openEraID collapses two very different facts into one nil — "the eras table
+// could not be read" and "every era is closed" — and eraScopePredicate then turns
+// that nil into `era_id IS NULL`, which is a FALLBACK: it still answers, from the
+// pre-backfill rows. For a reader whose answer costs API budget that is the wrong
+// direction. sp-l0aqy: the sensing engine's yard sweep built its work list from an
+// unscoped `waypoints` read and spent ten hours at ~290 failures/hour asking the
+// API about systems from universes that no longer exist, while utilisation sat at
+// 88% against an 85% ceiling — and because the sweep's per-tick bound counts
+// ATTEMPTS rather than successes, each dead-era yard consumed a slot a live yard
+// needed. Refusing outright is the safe direction: a missing yard costs discovery
+// latency, a dead-era yard costs budget the live fleet needs.
+//
+// Both unresolved cases therefore refuse, and deliberately share one error path:
+// a closed universe has no live rows to offer, so "all eras closed" is not a
+// milder condition than "the ledger is unreadable" — it is the same answer.
+//
+// Rows with a NULL era_id remain live on the resolved path, matching every sibling
+// read (pre-close transition, not yet backfilled). Measured against production
+// before shipping: `waypoints` holds ZERO NULL-era rows, so the allowance costs
+// nothing today and is kept only so this read cannot disagree with the others.
+func OpenEraScope(ctx context.Context, db *gorm.DB) (string, []any, error) {
+	var era EraModel
+	if err := db.WithContext(ctx).
+		Where("closed_at IS NULL").
+		Order("era_id DESC").
+		First(&era).Error; err != nil {
+		return "", nil, fmt.Errorf("failed to resolve the open universe era, so nothing can be era-scoped: %w", err)
+	}
+	predicate, args := eraScopePredicate(&era.EraID)
+	return predicate, args, nil
+}
+
 // ListWithTrait retrieves EVERY cached waypoint bearing the given trait across ALL
 // systems, read as the IMMUTABLE physical fact it is: era-AGNOSTIC and TTL-agnostic,
 // exactly like HasWaypointTrait. This is the backfill's charted-shipyard
@@ -151,6 +192,45 @@ func (r *GormWaypointRepository) ListWithTrait(ctx context.Context, trait string
 		Find(&models)
 	if result.Error != nil {
 		return nil, fmt.Errorf("failed to list waypoints with trait %s: %w", trait, result.Error)
+	}
+	return r.modelsToWaypoints(models)
+}
+
+// ListWithTraitInOpenEra is ListWithTrait's ERA-SCOPED sibling: every cached
+// waypoint bearing the trait, restricted to the universe currently open, and
+// FAILING CLOSED when that universe cannot be resolved.
+//
+// TWO CALLERS, TWO GENUINELY DIFFERENT ERA CONTRACTS — which is why this is a
+// second method rather than a filter added to ListWithTrait:
+//
+//   - the shipyard BACKFILL enumerator wants the era-agnostic set, because a
+//     prior-era row is still proof a system physically holds a shipyard and it
+//     intersects that set with the CURRENT gate-reachable frontier afterwards.
+//     That downstream intersection is what makes era-agnosticism safe there.
+//     ListWithTrait stays exactly as it was for it.
+//   - the sensing engine's free catalogue sweep has NO such downstream filter: it
+//     takes the enumeration and calls the API with it. For that caller an
+//     unscoped row is not a harmless extra candidate, it is a guaranteed 404
+//     against a system that no longer exists, charged against a per-tick bound
+//     that counts attempts (sp-l0aqy: ~290 failures/hour for ten hours).
+//
+// A physical SHIPYARD trait really is immutable across eras, so nothing here
+// contradicts ListWithTrait's reasoning. What era_id records is narrower and is
+// the fact that matters to a caller about to spend a call: which universe's API
+// last confirmed this waypoint exists. Still a cheap local read — no API budget.
+func (r *GormWaypointRepository) ListWithTraitInOpenEra(ctx context.Context, trait string) ([]*shared.Waypoint, error) {
+	predicate, args, err := OpenEraScope(ctx, r.db)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list waypoints with trait %s: %w", trait, err)
+	}
+	pattern := fmt.Sprintf("%%\"%s\"%%", trait)
+	var models []WaypointModel
+	result := r.db.WithContext(ctx).
+		Where("traits LIKE ?", pattern).
+		Where(predicate, args...).
+		Find(&models)
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to list open-era waypoints with trait %s: %w", trait, result.Error)
 	}
 	return r.modelsToWaypoints(models)
 }

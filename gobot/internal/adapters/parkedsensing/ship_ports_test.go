@@ -27,7 +27,8 @@ const testPlayerID = 1
 
 // newShipPortsDB returns a test DB with the two player rows the ships table's
 // foreign key requires — the player under test, and a second one used to prove
-// cross-player isolation.
+// cross-player isolation — standing in a universe that has ALREADY BEEN RESET
+// TWICE (see installEraUniverse).
 func newShipPortsDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	db, err := database.NewTestConnection()
@@ -37,7 +38,75 @@ func newShipPortsDB(t *testing.T) *gorm.DB {
 			ID: id, AgentSymbol: fmt.Sprintf("AGENT-%d", id), Token: "t", CreatedAt: time.Now().UTC(),
 		}).Error)
 	}
+	installEraUniverse(t, db)
 	return db
+}
+
+// eraUniverse names the three era generations every test in this package stands
+// in: two CLOSED eras (dead universes a reset left behind) and one OPEN era (the
+// universe the API will actually answer for).
+type eraUniverse struct{ FirstDead, SecondDead, Live int }
+
+// installEraUniverse gives the test world an era ledger shaped like production's.
+//
+// EVERY test DB gets one, because production always has an open era and a read
+// that FAILS CLOSED on an unresolvable era would otherwise be indistinguishable
+// from a read that returns nothing for a real reason. A test that wants the
+// unresolvable case closes the open era explicitly (closeEveryEra), which is the
+// genuine post-reset shape rather than a fixture that merely forgot.
+//
+// TWO dead eras rather than one, and that is load-bearing for the era-scoped yard
+// reads: with a single dead era, a predicate written as "not the dead era" is
+// indistinguishable from the correct "is the live era". Two make the difference
+// observable.
+func installEraUniverse(t *testing.T, db *gorm.DB) eraUniverse {
+	t.Helper()
+	closedLongAgo := time.Now().UTC().Add(-90 * 24 * time.Hour)
+	closedRecently := time.Now().UTC().Add(-7 * 24 * time.Hour)
+	first := &persistence.EraModel{
+		Name: "era-first-dead", AgentSymbol: "DEAD-1", PlayerID: testPlayerID, ClosedAt: &closedLongAgo,
+	}
+	second := &persistence.EraModel{
+		Name: "era-second-dead", AgentSymbol: "DEAD-2", PlayerID: testPlayerID, ClosedAt: &closedRecently,
+	}
+	live := &persistence.EraModel{
+		Name: "era-live", AgentSymbol: "LIVE", PlayerID: testPlayerID,
+	}
+	require.NoError(t, db.Create(first).Error)
+	require.NoError(t, db.Create(second).Error)
+	require.NoError(t, db.Create(live).Error)
+	return eraUniverse{FirstDead: first.EraID, SecondDead: second.EraID, Live: live.EraID}
+}
+
+// eras reads back the era universe newShipPortsDB installed, so a test names the
+// generations it stamps rows with rather than assuming autoincrement values.
+func eras(t *testing.T, db *gorm.DB) eraUniverse {
+	t.Helper()
+	var rows []persistence.EraModel
+	require.NoError(t, db.Order("era_id ASC").Find(&rows).Error)
+	require.Len(t, rows, 3, "the test world stands in the three-generation era universe")
+	universe := eraUniverse{}
+	for _, row := range rows {
+		switch row.Name {
+		case "era-first-dead":
+			universe.FirstDead = row.EraID
+		case "era-second-dead":
+			universe.SecondDead = row.EraID
+		case "era-live":
+			universe.Live = row.EraID
+		}
+	}
+	require.NotZero(t, universe.Live)
+	return universe
+}
+
+// closeEveryEra reproduces the one state in which the open era CANNOT be
+// resolved: the universe has reset and no new era has been registered yet.
+func closeEveryEra(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	require.NoError(t, db.Model(&persistence.EraModel{}).
+		Where("closed_at IS NULL").
+		Update("closed_at", time.Now().UTC()).Error)
 }
 
 // probeRow builds a docked SATELLITE at a waypoint, carrying a fleet tag.

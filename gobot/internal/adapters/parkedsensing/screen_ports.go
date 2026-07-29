@@ -23,6 +23,7 @@ import (
 
 	domainPlayer "github.com/andrescamacho/spacetraders-go/internal/domain/player"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	appSensing "github.com/andrescamacho/spacetraders-go/internal/application/parkedsensing"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
@@ -58,14 +59,20 @@ var (
 type waypointLister interface {
 	ListBySystem(ctx context.Context, systemSymbol string) ([]*shared.Waypoint, error)
 	ListBySystemWithTrait(ctx context.Context, systemSymbol, trait string) ([]*shared.Waypoint, error)
-	// ListWithTrait is the FLEET-WIDE trait read, and the one exception to this
-	// file's per-system cost rule. The free shipyard-catalogue pass is the only
+	// ListWithTraitInOpenEra is the FLEET-WIDE trait read, and the one exception to
+	// this file's per-system cost rule. The free shipyard-catalogue pass is the only
 	// caller: its whole job is to find the yards no system-scoped read ever reaches,
 	// so it must ask about the map rather than about one system. It is bounded by
-	// the count of CHARTED yards (76, measured live), which is a number that grows
-	// with what the fleet has explored and not with how often it ticks — and the set
-	// it feeds shrinks to nothing as the reads land.
-	ListWithTrait(ctx context.Context, trait string) ([]*shared.Waypoint, error)
+	// the count of CHARTED yards in the OPEN era (1,219 measured live, against 1,772
+	// across all eras), which is a number that grows with what the fleet has explored
+	// and not with how often it ticks — and the set it feeds shrinks to nothing as
+	// the reads land.
+	//
+	// ERA-SCOPED, and FAIL-CLOSED when the open era cannot be resolved. The
+	// repository's era-AGNOSTIC ListWithTrait is deliberately not used here; see
+	// OutstandingYards for why the distinction is the difference between a cheap
+	// local enumeration and ~290 API failures an hour.
+	ListWithTraitInOpenEra(ctx context.Context, trait string) ([]*shared.Waypoint, error)
 }
 
 // WaypointCatalogPort answers "what is in this system?" from the persisted
@@ -231,13 +238,14 @@ func (p *WaypointCatalogPort) UnchartedWaypoints(ctx context.Context, system str
 // runs this per system on every pass, and reaching for the API would turn yard
 // discovery into live calls exactly when the API is most degraded.
 //
-// NOT ERA-SCOPED, and that is a KNOWN INCONSISTENCY rather than a decision (sp-fwk8z T3 review
-// Minor 4). The sibling heavy read behind the reservation — ShipyardInventoryRepositoryGORM's
-// CheapestPricedYard — IS era-scoped, so the two answer "which yards sell heavies" under different
-// era rules and a stale pre-reset row can still plan a quartermaster here. It is left unaligned
-// deliberately: ListProbeYards beside it is equally unscoped, so era-scoping only THIS read would
-// trade a cross-package inconsistency for a worse one inside this file. The pair should be aligned
-// together, which is a change to this file's local convention and belongs in its own pass.
+// ERA-SCOPED, closing what was a KNOWN INCONSISTENCY rather than a decision (sp-fwk8z T3
+// review Minor 4, resolved by sp-l0aqy). The sibling heavy read behind the reservation —
+// ShipyardInventoryRepositoryGORM's CheapestPricedYard — was already era-scoped, so the two
+// answered "which yards sell heavies" under different era rules and a stale pre-reset row
+// could still plan a quartermaster here. The pair is now aligned with each other, with
+// ListProbeYards, and with OutstandingYards: ALL FOUR answer under the open era only, and
+// all fail closed when it cannot be resolved. Scoping one alone was what the deferral was
+// avoiding, and it is no longer a reason to leave any of them unscoped.
 //
 // Unlike ListProbeYards there is NO bare-SHIPYARD-trait fallback. An unscanned
 // shipyard is already returned by ListProbeYards' fallback and therefore already
@@ -245,15 +253,20 @@ func (p *WaypointCatalogPort) UnchartedWaypoints(ctx context.Context, system str
 // would assert something we have not observed. Only PRICED heavy rows count
 // here, so this list is evidence, never assumption.
 func (p *WaypointCatalogPort) ListHeavyYards(ctx context.Context, system string) ([]string, error) {
+	eraPredicate, eraArgs, err := persistence.OpenEraScope(ctx, p.db)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list heavy yards in %q: %w", system, err)
+	}
 	var rows []struct {
 		WaypointSymbol string
 		PurchasePrice  int
 	}
-	err := p.db.WithContext(ctx).
+	err = p.db.WithContext(ctx).
 		Table("shipyard_inventory").
 		Select("waypoint_symbol, purchase_price").
 		Where("player_id = ? AND system_symbol = ? AND ship_type IN ?", p.playerID, system, shipyardDomain.DefaultHeavyShipTypes).
 		Where("purchase_price > 0").
+		Where(eraPredicate, eraArgs...).
 		Order("purchase_price ASC, waypoint_symbol ASC").
 		Scan(&rows).Error
 	if err != nil {
@@ -279,22 +292,53 @@ func (p *WaypointCatalogPort) ListHeavyYards(ctx context.Context, system string)
 // REMOVE presence from shipyard discovery, so an enumeration that spent a call per
 // candidate would reintroduce the cost it is trying to delete.
 //
-//   - The candidate half is the fleet-wide SHIPYARD-trait set, era-AGNOSTIC because a
-//     shipyard is an immutable physical fact and a prior-era row is still proof one is
-//     there (the same reading ChartedShipyardEnumerator takes). UNCHARTED waypoints are
-//     excluded: their traits are a guess until somebody charts them, so a SHIPYARD trait
-//     on one is not yet evidence of a shipyard.
+//   - The candidate half is the fleet-wide SHIPYARD-trait set in the OPEN ERA.
+//     UNCHARTED waypoints are excluded: their traits are a guess until somebody charts
+//     them, so a SHIPYARD trait on one is not yet evidence of a shipyard.
 //   - The exclusion half is every waypoint already carrying a shipyard_inventory row.
 //     "We hold a catalogue" is exactly "there is a row", which is what makes the pass
 //     SELF-QUIESCING: a yard read once never appears here again, so the backlog drains
 //     and the pass then costs one query per tick and nothing else.
 //
-// NOT ERA-SCOPED, matching ListProbeYards and ListHeavyYards above rather than the
-// repository's era-scoped reads — this file's local convention, and its known
-// inconsistency (sp-fwk8z T3 review Minor 4). Aligning the three belongs in one pass;
-// era-scoping only this one would trade a cross-package inconsistency for a worse one
-// inside this file. The direction it errs in after a reset is UNDER-reading (a dead
-// era's row suppresses a re-read), which costs discovery latency and never a wrong buy.
+// ERA-SCOPED, on the row's OWN era stamp, and this is the correction of a measured
+// production bleed rather than a tidy-up (sp-l0aqy).
+//
+// It used to read the era-AGNOSTIC trait set, on the reasoning that a shipyard is an
+// immutable physical fact so a prior-era row is still proof one is there, and that the
+// worst case after a reset was UNDER-reading — discovery latency, never a wrong buy. The
+// first half is true; the second described the wrong direction of error. `waypoints`
+// holds 1,772 SHIPYARD rows across 862 systems and only 1,219 across 587 carry the open
+// era's stamp, so the unscoped work list was mostly waypoints in universes that no
+// longer exist. The API does not merely decline those, it 404s their whole SYSTEM
+// ("System X1-AF2 not found"), and this pass burned ~290 such failures an hour for ten
+// hours, flat and not converging, with utilisation at 88% against an 85% ceiling.
+// Because the per-tick bound counts ATTEMPTS and not successes — correctly, so a
+// refusing API cannot become an unbounded retry storm — every dead-era yard consumed a
+// slot a live yard needed. The sweep built to find heavy shipyards spent most of its
+// budget on systems that were gone.
+//
+// WHY THE ROW'S era_id AND NOT LEDGER MEMBERSHIP. The alternative was to intersect
+// against sensing_systems for the player. It is neither sufficient nor free: measured
+// live, 11 dead-era-stamped yard waypoints sit in systems that ARE in this era's ledger,
+// so a ledger intersection admits exactly the class being removed, while one open-era
+// yard system is absent from the ledger, so it would also delete real frontier work.
+// Ledger membership is already used here, and correctly — as the frontier RANK below,
+// never as a gate. This pass exists to reach yards in systems the screen has not
+// reached, so promoting that rank to a gate would invert its purpose. era_id is stamped
+// by GormWaypointRepository.Add at write time and so records the one fact a caller about
+// to spend a call needs: which universe's API last confirmed this waypoint exists.
+//
+// FAIL-CLOSED. An unresolvable open era refuses rather than falling back to unscoped,
+// because unscoped IS the bug. The pass above treats a failure to enumerate as fatal to
+// itself and reports an empty backlog rather than a drained one, and the reconcile
+// collects that failure without aborting the tick — so refusing costs one tick of
+// discovery latency and nothing else.
+//
+// The immutability argument still holds where it was load-bearing: the shipyard BACKFILL
+// enumerator keeps the era-agnostic read, because it intersects its result with the
+// current gate-reachable frontier before anything is spent. This pass has no such
+// downstream filter — it hands the enumeration straight to the API — and that is the
+// whole difference between the two callers.
 //
 // FRONTIER RANK IS "DO WE ALREADY WATCH THIS SYSTEM", greater first: a yard in a system
 // holding no sensing placement gets 1, one in a system we already watch gets 0. That is
@@ -305,9 +349,9 @@ func (p *WaypointCatalogPort) ListHeavyYards(ctx context.Context, system string)
 // gate-hop depth: that needs a graph walk per tick, and for a read that flies nothing and
 // spends nothing, distance ranks the wrong thing.
 func (p *WaypointCatalogPort) OutstandingYards(ctx context.Context, playerID int) ([]appSensing.OutstandingYard, error) {
-	yards, err := p.waypoints.ListWithTrait(ctx, shipyardTrait)
+	yards, err := p.waypoints.ListWithTraitInOpenEra(ctx, shipyardTrait)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list the charted shipyards: %w", err)
+		return nil, fmt.Errorf("failed to list the charted shipyards of the open era: %w", err)
 	}
 
 	var readSymbols []string
@@ -403,6 +447,22 @@ func (p *WaypointCatalogPort) OutstandingYards(ctx context.Context, playerID int
 //
 // known=false when the waypoint has no rows at all, which the caller must read as
 // "ask once" and never as "no probe".
+//
+// DELIBERATELY NOT ERA-SCOPED, and it is the one read in this file that stays that way
+// after sp-l0aqy aligned the three yard reads. The distinction is which QUESTION the
+// read answers. The yard reads build a candidate UNIVERSE and hand it to something that
+// spends — so a dead-era row there manufactures work, and scoping them strictly REMOVES
+// candidates. This read is a per-waypoint stock MEMO consulted by ProbeYardIsCandidate,
+// and its rows are the reason a yard is refused: era-scoping it would turn a yard we
+// priced and found probe-less into a yard we have never priced, ADMITTING it to the buy
+// queue and paying live quotes at a counter we already know cannot sell us a probe.
+// That direction loosens a guard the drain spends against (RULINGS #4 — money guards may
+// only get stricter), so it is left alone. The two choices point the same way: both keep
+// the spending path narrower, not wider.
+//
+// It is also harmless in combination. A yard only reaches this read by surviving the
+// era-scoped universe above, so a dead-era row can no longer ADD a yard; all it can do is
+// exclude one, which is the fail-closed direction.
 func (p *WaypointCatalogPort) LastListingScan(ctx context.Context, playerID int, waypoint string) (bool, time.Time, bool, error) {
 	var rows []struct {
 		ShipType      string
@@ -442,15 +502,27 @@ func (p *WaypointCatalogPort) LastListingScan(ctx context.Context, playerID int,
 	return sellsProbe, scannedAt, true, nil
 }
 
+// ERA-SCOPED on BOTH halves of the union, and fail-closed when the open era cannot be
+// resolved (sp-l0aqy). The trait half already was, through the repository's
+// ListBySystemWithTrait; the priced half read shipyard_inventory unscoped, so a
+// pre-reset row could put a yard from a dead universe at the head of the
+// cheapest-first ranking — the position the drain quotes from first. The whole file
+// now answers under one era rule: see OutstandingYards for the measured bleed that
+// made the alignment urgent and for why the row's own era stamp is the predicate.
 func (p *WaypointCatalogPort) ListProbeYards(ctx context.Context, system string) ([]string, error) {
+	eraPredicate, eraArgs, err := persistence.OpenEraScope(ctx, p.db)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list probe yards in %q: %w", system, err)
+	}
 	var rows []struct {
 		WaypointSymbol string
 		PurchasePrice  int
 	}
-	err := p.db.WithContext(ctx).
+	err = p.db.WithContext(ctx).
 		Table("shipyard_inventory").
 		Select("waypoint_symbol, purchase_price").
 		Where("player_id = ? AND system_symbol = ? AND ship_type = ?", p.playerID, system, probeShipType).
+		Where(eraPredicate, eraArgs...).
 		Order("purchase_price ASC, waypoint_symbol ASC").
 		Scan(&rows).Error
 	if err != nil {
