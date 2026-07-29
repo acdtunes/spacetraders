@@ -2,8 +2,6 @@ package navigation
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -66,11 +64,6 @@ type ContainerRepository interface {
 type JumpTopologyStore interface {
 	StoredGateWaypoint(ctx context.Context, fromSystem, toSystem string) (string, bool, error)
 	RecordedBuiltGate(ctx context.Context, gateWaypoint string) (bool, error)
-	// PruneContradictedEdges reconciles systemSymbol's stored edges against the server's
-	// authoritative connection set, deleting the ones it contradicts and returning how many
-	// went. It is REMOVAL-ONLY by contract — an edge the set names but we do not hold is
-	// never created — so it can only ever shrink the routable graph (RULINGS #4).
-	PruneContradictedEdges(ctx context.Context, systemSymbol string, authoritativeConnections []string) (int, error)
 }
 
 // JumpShipHandler handles the JumpShip command with auto-navigation
@@ -374,12 +367,6 @@ func (h *JumpShipHandler) Handle(ctx context.Context, request common.Request) (c
 		if isDestinationGateUnderConstructionError(err) {
 			return nil, fmt.Errorf("cannot jump to %s: destination jump gate is still under construction", cmd.DestinationSystem)
 		}
-		// The server refused because the gate we asked for is not adjacent to where the hull
-		// ACTUALLY is (4255). That is first-hand proof our believed position is wrong, and the
-		// refusal carries the truth — re-anchor on it instead of discarding it into a string.
-		if connections, ok := notConnectedTruth(err); ok {
-			return nil, h.reAnchorAfterNotConnected(ctx, cmd, playerID, connections, err)
-		}
 		return nil, fmt.Errorf("failed to execute jump: %w", err)
 	}
 
@@ -478,136 +465,6 @@ func isDestinationGateUnderConstructionError(err error) bool {
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "4262") || strings.Contains(msg, "under construction")
-}
-
-// notConnectedCode is the SpaceTraders verdict that the waypoint we asked to jump to is not
-// adjacent to the hull's ACTUAL current location. Its payload carries data.connections — the
-// complete gate set of the system the hull is really standing on — which is the only first-hand
-// evidence we ever get that our believed position is wrong.
-const notConnectedCode = 4255
-
-// notConnectedTruth reports whether err is a not-connected refusal (4255) and, if so, returns
-// whatever authoritative connection set the server attached to it.
-//
-// The two results are deliberately independent. The VERDICT alone is position evidence — it
-// says the gate we asked for is not adjacent to where the hull IS — and that is what drives the
-// re-anchor, with or without a connection list. The list is the separate, optional evidence
-// that drives the adjacency reconcile; an absent one simply means there is nothing to reconcile
-// against (the jump-gate endpoint is known to return empty reads, sp-hguq3/sp-dmxy5).
-//
-// It reads the TYPED *ports.APIError body rather than string-matching the wrapped message, so
-// it cannot be fooled by an unrelated error that happens to mention a code, and it survives the
-// adapter's %w wrapping. The code — not the payload SHAPE — is the verdict: another refusal
-// carrying a connections blob is not a position correction.
-func notConnectedTruth(err error) ([]string, bool) {
-	var apiErr *ports.APIError
-	if !errors.As(err, &apiErr) {
-		return nil, false
-	}
-	var payload struct {
-		Error struct {
-			Code int `json:"code"`
-			Data struct {
-				Connections []string `json:"connections"`
-			} `json:"data"`
-		} `json:"error"`
-	}
-	if json.Unmarshal([]byte(apiErr.Body), &payload) != nil {
-		return nil, false
-	}
-	if payload.Error.Code != notConnectedCode {
-		return nil, false
-	}
-	return payload.Error.Data.Connections, true
-}
-
-// reAnchorAfterNotConnected is the root-cause fix for the live TORWIND-41 incident. The
-// planner had routed a hull standing on X1-KC84's gate as though it were at X1-GF41: the
-// persisted row said GF41, so candidate discovery, the BFS and finally
-// StoredGateWaypoint("X1-GF41","X1-KP23") all resolved faithfully off that one stale fact and
-// posted X1-KP23-I53, a gate KC84 does not reach. Nothing reconciled that belief against the
-// server, so the next tick re-derived the SAME impossible jump — four crashes in 27 minutes.
-//
-// A 4255 refusal settles it: the server is telling us where the hull is NOT. So re-read the
-// hull and write it through to durable state, which is what the next tick re-derives from
-// (RULINGS #2 — the correction lives in the durable row, no routing state is carried across
-// ticks). Then, knowing at last which system the hull actually occupies, reconcile THAT
-// system's stored edges against the connection set the refusal handed us.
-//
-// Attribution is the whole subtlety, and getting it wrong is worse than doing nothing: the
-// connection set describes the gate the hull is STANDING ON, not the system we mistakenly
-// planned from. In the incident GF41's stored edges were perfectly correct; charging them with
-// this evidence would have corrupted healthy topology on every crash. So if the re-anchor
-// cannot tell us where the hull really is, the evidence is unattributable and the adjacency is
-// left completely alone — fail closed.
-//
-// It ALWAYS returns an error (the jump did fail), wrapping the original cause so the existing
-// failure path, retries and operator triage are unchanged.
-func (h *JumpShipHandler) reAnchorAfterNotConnected(
-	ctx context.Context,
-	cmd *JumpShipCommand,
-	playerID shared.PlayerID,
-	connections []string,
-	cause error,
-) error {
-	logger := common.LoggerFromContext(ctx)
-
-	fresh, err := h.shipRepo.SyncShipFromAPI(ctx, cmd.ShipSymbol, playerID)
-	if err != nil || fresh == nil || fresh.CurrentLocation() == nil {
-		logger.Log("WARNING", "Jump refused as not-connected but the hull could not be re-anchored — the server's connection set is unattributable, so the stored adjacency is left untouched (fail closed)", map[string]interface{}{
-			"action":             "jump_not_connected_reanchor_failed",
-			"ship_symbol":        cmd.ShipSymbol,
-			"destination_system": cmd.DestinationSystem,
-			"connections":        connections,
-		})
-		return fmt.Errorf("failed to execute jump: %w", cause)
-	}
-
-	trueSystem := fresh.CurrentLocation().SystemSymbol
-	logger.Log("WARNING", fmt.Sprintf("Jump refused as not-connected — the hull is really in %s, not where routing believed; re-anchored on the server so the next tick re-plans from its true position", trueSystem), map[string]interface{}{
-		"action":             "jump_not_connected_reanchored",
-		"ship_symbol":        cmd.ShipSymbol,
-		"destination_system": cmd.DestinationSystem,
-		"true_system":        trueSystem,
-		"true_waypoint":      fresh.CurrentLocation().Symbol,
-		"connections":        connections,
-	})
-
-	h.reconcileAdjacencyAgainstTruth(ctx, trueSystem, connections, logger)
-
-	return fmt.Errorf("jump of %s to %s refused: the hull is actually in %s (re-anchored on the server; next tick re-plans from there): %w",
-		cmd.ShipSymbol, cmd.DestinationSystem, trueSystem, cause)
-}
-
-// reconcileAdjacencyAgainstTruth deletes any stored edge for trueSystem that the server's
-// connection set contradicts, so the phantom hop can never be replanned. REMOVAL-ONLY: an
-// unheld connection is never created (it carries no verified build state), so this can only
-// ever shrink the routable graph and never authorise a jump that would otherwise be refused
-// (RULINGS #4). Best-effort — the jump has already failed and a reconcile problem must not
-// change that outcome, so a store failure or an unwired store is logged and swallowed.
-func (h *JumpShipHandler) reconcileAdjacencyAgainstTruth(ctx context.Context, trueSystem string, connections []string, logger common.ContainerLogger) {
-	// No list means no evidence: the re-anchor above still stands, but there is nothing to
-	// reconcile against and an absent set must never be read as "connects nowhere".
-	if h.topologyStore == nil || trueSystem == "" || len(connections) == 0 {
-		return
-	}
-	removed, err := h.topologyStore.PruneContradictedEdges(ctx, trueSystem, connections)
-	if err != nil {
-		logger.Log("WARNING", "Could not reconcile the stored adjacency against the server's connection set (non-fatal)", map[string]interface{}{
-			"action": "jump_adjacency_reconcile_failed",
-			"system": trueSystem,
-			"error":  err.Error(),
-		})
-		return
-	}
-	if removed > 0 {
-		logger.Log("WARNING", fmt.Sprintf("Reconciled %s against the server's gate connections — %d contradicted edge(s) removed so the refused hop cannot be replanned", trueSystem, removed), map[string]interface{}{
-			"action":        "jump_adjacency_reconciled",
-			"system":        trueSystem,
-			"removed_edges": removed,
-			"authoritative": connections,
-		})
-	}
 }
 
 // isNotInOrbitError reports whether the API rejected an action because the ship
