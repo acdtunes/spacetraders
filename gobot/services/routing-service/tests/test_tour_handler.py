@@ -86,11 +86,14 @@ def test_golden_tour(tmp_path):
     assert resp.model_version == "1@goldene"
 
     legs = [(l.waypoint_symbol, l.system_symbol) for l in resp.legs]
-    # Exact chosen sequence (golden): buy 80 G at A, then run the D<->E lane TWICE —
-    # sp-2v69u's per-visit absorption cap lets each dock (D for G, E for H) lift only one
-    # trade_volume per visit, so the second tranche of each good rides a second D/E round
-    # trip (the same total load, spread across visits) rather than a single-visit dump.
-    assert legs == [("A", "S1"), ("D", "S2"), ("E", "S1"), ("D", "S2"), ("E", "S1")]
+    # Exact chosen sequence (golden): buy 80 G at A, then run the D<->E lane ONCE.
+    # sp-28lw9 recalibrated the per-visit absorption cap from 1 to 2.5 trade_volumes, so both
+    # tranches of each good now clear in a SINGLE visit to their dock. Under sp-2v69u's 1.0 cap
+    # each dock lifted one trade_volume per visit and the second tranche rode a second D/E round
+    # trip: [A, D, E, D, E]. THIS COLLAPSE IS THE FEATURE — identical total load and identical
+    # per-price trade set (asserted below), carried in one round trip instead of two, which is
+    # exactly the "same nav/dock overhead" throughput claim the bead is built on.
+    assert legs == [("A", "S1"), ("D", "S2"), ("E", "S1")]
 
     # Aggregated by (waypoint, good, side, price): the total load is unchanged (80 G sold
     # cross-gate at D across two visits, 80 H sold back home at E across two visits) —
@@ -153,7 +156,10 @@ def test_handler_forwards_inter_system_hops(tmp_path):
     # Baseline: no map -> every crossing defaults to 1 hop = 1800 (byte-identical wire).
     base = handler.OptimizeTradeTour(request(), None)
     assert base.feasible
-    assert [l.travel_seconds_from_prev for l in base.legs[1:]] == [1800, 1800, 1800, 1800]
+    # Two crossings, not four: sp-28lw9's per-visit cap of 2.5 trade_volumes lets the golden
+    # board's load clear in ONE D/E round trip instead of two (see test_golden_tour), so the
+    # same cargo now costs 2 x 1800s of crossing time rather than 4 x 1800s.
+    assert [l.travel_seconds_from_prev for l in base.legs[1:]] == [1800, 1800]
 
     # Armed: S1<->S2 declared as 2 gate hops -> each crossing prices at 2 x 1800 = 3600.
     req = request()
@@ -163,7 +169,7 @@ def test_handler_forwards_inter_system_hops(tmp_path):
     assert armed.feasible
     assert [(l.waypoint_symbol, l.system_symbol) for l in armed.legs] == \
         [(l.waypoint_symbol, l.system_symbol) for l in base.legs]
-    assert [l.travel_seconds_from_prev for l in armed.legs[1:]] == [3600, 3600, 3600, 3600]
+    assert [l.travel_seconds_from_prev for l in armed.legs[1:]] == [3600, 3600]
 
 
 def test_handler_forwards_closure_fields(tmp_path):

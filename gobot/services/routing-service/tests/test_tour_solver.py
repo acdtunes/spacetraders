@@ -827,11 +827,14 @@ def test_netting_zero_absorption_is_byte_identical():
         out = solve_tour(board, ship, cons, MODEL, absorption=absorption)
         assert out == baseline, (absorption, out, baseline)
     # And the baseline really does take BOTH tranches (so the netting tests above are
-    # cutting real depth, not a degenerate single-tranche plan). Under the sp-2v69u
-    # per-visit absorption cap (one trade_volume per dock) an 80-hold hull lifts the
-    # second tranche via a SECOND visit to B (A->B->A->B, empty middle A pruned), so the
-    # sells emit in VISIT order: step 0 (1000) at the first dock, step 1 (900) at the second.
-    assert _b_sells(baseline) == [(40, 1000), (40, 900)], baseline
+    # cutting real depth, not a degenerate single-tranche plan). That is the invariant this
+    # line guards, and it is asserted ORDER-INSENSITIVELY on purpose: under the sp-2v69u
+    # per-visit cap (1 x trade_volume) an 80-hold hull had to lift the second tranche via a
+    # SECOND visit to B, so the sells emitted in visit order [(40,1000), (40,900)]; under the
+    # sp-28lw9 calibration (2.5 x tv) both tranches clear in ONE visit and the emission order
+    # within the leg is an allocator detail, not a contract. Pinning the order here re-pinned
+    # the old calibration through the back door.
+    assert sorted(_b_sells(baseline)) == sorted([(40, 1000), (40, 900)]), baseline
 
 
 def test_netting_fully_absorbed_market_reroutes():

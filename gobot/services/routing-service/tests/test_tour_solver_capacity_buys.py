@@ -13,11 +13,33 @@
 # realized per-visit sink absorption bounds the per-good BUY commitment to what the reachable sink
 # graph can actually take (net of fleet-wide absorption, which nets the pools upstream).
 
-from utils.tour_solver import solve_tour
+# sp-28lw9 RECALIBRATION. The bound above is unchanged and still the point of this file; its
+# NUMBER moved from 1.0 to 2.5 trade_volumes per visit, so the two tests that pinned the 1.0
+# figure are re-pinned at 2.5 below. Overwriting a shipped test's expected values is normally a
+# cardinal sin — it is correct here only because raising exactly this calibration IS the bead,
+# and the *property* each test guards (a per-visit ceiling exists; a hull still spreads across
+# the reachable sink graph rather than stranding an absorbable load) is preserved, not deleted.
+#
+# These tests also read a SECOND bound that they never pinned: the per-(market,good,side) pool
+# ladder, max_planned_tranches x tv. They silently inherited whatever the ambient environment
+# exported, so they passed at the code default of 2 and FAILED at the production run.sh value of
+# 3 — a latent fragility this change exposed. The fixture below pins it to the production value
+# so the file is deterministic either way.
+
+import pytest
+
+from utils.tour_solver import MAX_PLANNED_TRANCHES_ENV_VAR, solve_tour
 
 MODEL = {"fit_version": 1, "era": "e", "impact":
          {"LIMITED|WEAK": {"sell_decay_per_step": 0.9, "buy_growth_per_step": 1.1, "n_obs": 9}},
          "recovery": {}}
+
+
+@pytest.fixture(autouse=True)
+def _production_pool_depth(monkeypatch):
+    """Pin the pool ladder to the production run.sh value so these fixtures measure the
+    per-visit cap and not the ambient environment."""
+    monkeypatch.setenv(MAX_PLANNED_TRANCHES_ENV_VAR, "3")
 
 
 def snap(wp, sys_, good, ask, bid, tv=90, supply="LIMITED", activity="WEAK"):
@@ -56,33 +78,44 @@ def _total_buy(out, good):
 
 
 def test_heavy_hull_per_good_buy_capped_to_realized_sink_absorption():
-    """A 225-cargo heavy against a single tv=90 sink must NOT plan the modeled 180-unit
-    (two-tranche) dump. One sink visit realizes at most one trade_volume (90), so the per-good BUY
-    commitment is capped to 90 — the reachable sink's realized absorption. max_hops=2 forbids a
-    revisit, so the whole tour's reach is that single dock."""
+    """A 225-cargo heavy against a single tv=90 sink is bounded by that dock's per-visit
+    absorption. max_hops=2 forbids a revisit, so the whole tour's reach is that single dock and
+    the per-good BUY commitment can only be what the dock realizes: int(2.5 * 90) = 225
+    (sp-28lw9; this figure was 1 x 90 = 90 under the sp-2v69u calibration)."""
     snapshot = [snap("A", "S1", "G", ask=100, bid=0, tv=90),    # deep cheap source
                 snap("B", "S1", "G", ask=0, bid=300, tv=90)]    # single shallow sink
     out = solve_tour(snapshot, ship(225), cons(max_hops=2), MODEL, objective="profit")
     assert out["feasible"], out
-    # The reachable sink graph is one tv=90 dock -> it can absorb 90, not 180.
-    assert _total_buy(out, "G") == 90, out
-    assert _sells(out).get(("B", "G")) == 90, out
-    # The pre-fix defect planned the full two-tranche 180-unit dump; never again.
-    assert _total_buy(out, "G") != 180, out
+    assert _total_buy(out, "G") == 225, out
+    assert _sells(out).get(("B", "G")) == 225, out
+
+
+def test_heavy_hull_per_visit_ceiling_still_binds_on_a_shallow_dock():
+    """The ORIGINAL sp-2v69u property, re-pinned at the new calibration: the ceiling still
+    EXISTS. Against a tv=20 dock the same 225 heavy is held to int(2.5 * 20) = 50, nowhere near
+    its hold — so the raise moved the bound, it did not remove it. Without a live cap this plans
+    the hull's full capacity into one shallow dock, which is the sp-2v69u defect returning."""
+    snapshot = [snap("A", "S1", "G", ask=100, bid=0, tv=200),
+                snap("B", "S1", "G", ask=0, bid=300, tv=20)]
+    out = solve_tour(snapshot, ship(225), cons(max_hops=2), MODEL, objective="profit")
+    assert out["feasible"], out
+    assert _total_buy(out, "G") == 50, out
+    assert _sells(out).get(("B", "G")) == 50, out
 
 
 def test_heavy_hull_spreads_full_load_across_reachable_sink_graph():
-    """The cap is per reachable sink VISIT, not a blanket per-good ceiling: a 225 heavy may still
-    load 180 of a good when the reachable graph offers TWO tv=90 sinks (90 into each). Guards
+    """The cap is per reachable sink VISIT, not a blanket per-good ceiling: when ONE dock cannot
+    absorb the hull, the load spreads across the graph instead of stranding. Two tv=40 docks each
+    take int(2.5 * 40) = 100, so a 225 heavy lifts 200 — more than either dock alone. Guards
     against an over-aggressive implementation that would strand a genuinely absorbable load."""
-    snapshot = [snap("A", "S1", "G", ask=100, bid=0, tv=90),
-                snap("B", "S1", "G", ask=0, bid=300, tv=90),
-                snap("C", "S1", "G", ask=0, bid=290, tv=90)]
+    snapshot = [snap("A", "S1", "G", ask=100, bid=0, tv=200),
+                snap("B", "S1", "G", ask=0, bid=300, tv=40),
+                snap("C", "S1", "G", ask=0, bid=290, tv=40)]
     out = solve_tour(snapshot, ship(225), cons(max_hops=3), MODEL, objective="profit")
     assert out["feasible"], out
-    assert _total_buy(out, "G") == 180, out            # full load, absorbed by the graph
-    assert _sells(out).get(("B", "G")) == 90, out      # one trade_volume per dock
-    assert _sells(out).get(("C", "G")) == 90, out
+    assert _total_buy(out, "G") == 200, out            # spread across the graph, nothing stranded
+    assert _sells(out).get(("B", "G")) == 100, out     # 2.5 trade_volumes per dock
+    assert _sells(out).get(("C", "G")) == 100, out
 
 
 def test_light_hull_against_deep_sinks_is_unchanged():

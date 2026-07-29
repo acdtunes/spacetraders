@@ -190,18 +190,22 @@ def test_unresolvable_anchor_is_infeasible(anchor, keep_s2_rows, reason):
 
 # --------------------------------------------------------------- selection honesty
 def test_rate_objective_honestly_charges_the_return_leg():
-    # Two lanes from source A: far/rich B (bid 240, x=600) vs near/thin C (bid 120,
+    # Two lanes from source A: far/rich B (bid 184, x=600) vs near/thin C (bid 120,
     # x=1). Open rate: B's richer single-dock lane still out-clocks near C — B wins.
     # Closed (floating anchor A) charges the 620s return, which flips the honest rate
-    # ordering to C. (B's bid is 240, not the pre-sp-2v69u 177: under the per-visit
-    # absorption cap each dock lifts ONE trade_volume, halving what the far lane earns
-    # per trip, so B needs the richer margin to still win OPEN before the return re-ranks
-    # it closed — the flip window is bid_B in ~(222, 256).) Every market also bids for
-    # the held token L (A strictly best at 12) so EVERY candidate carries a real sell leg
-    # => seconds>0 => the _sort_scored zero-time degrade can never silently knock this
-    # fixture back to profit ordering.
+    # ordering to C.
+    # B's bid is a TUNED MARGINAL value and has been re-tuned twice as the per-visit
+    # depth cap moved, because how much the far lane earns per trip decides whether the
+    # return charge can re-rank it: 177 pre-sp-2v69u, 240 under the 1.0 cap (each dock
+    # lifted ONE trade_volume, halving the far lane's take), and 184 under sp-28lw9's 2.5
+    # cap (the deeper single visit restores most of that take, so B must be POORER again
+    # to stay marginal). Flip window measured by sweep at the current calibration:
+    # bid_B in [176, 192]; 184 is its midpoint.
+    # Every market also bids for the held token L (A strictly best at 12) so EVERY
+    # candidate carries a real sell leg => seconds>0 => the _sort_scored zero-time degrade
+    # can never silently knock this fixture back to profit ordering.
     snapshot = [snap("A", "S1", "G", ask=100, bid=0),
-                snap("B", "S1", "G", ask=0, bid=240),
+                snap("B", "S1", "G", ask=0, bid=184),
                 snap("C", "S1", "G", ask=0, bid=120),
                 snap("A", "S1", "L", ask=0, bid=12),
                 snap("B", "S1", "L", ask=0, bid=10),

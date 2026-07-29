@@ -304,10 +304,13 @@ def test_ortools_visits_pure_buy_source_from_neutral_start(monkeypatch):
     monkeypatch.setenv("TOUR_SOLVER_ORTOOLS_TIME_VALUE", "0")
     best, cands = _best_direct_profit(snapshot, ship, cons)
     assert cands, "ortools produced no candidates"
-    # Single-visit optimum = one tranche: 40 * (150 - 50). Proves ortools BOOKS the
-    # intermediate buy (anti-skip); beam's larger union profit is the revisit ladder the
-    # single-visit prize space structurally cannot reach under the sp-2v69u per-visit cap.
-    assert best == 40 * (150 - 50), (best, cands)
+    # Single-visit optimum = TWO tranches under sp-28lw9's 2.5-trade_volume per-visit cap:
+    # 40 * (150 - 50) at the live quote, plus 40 * (135 - 55) one decay step in
+    # (sell x0.9, buy x1.1). It was ONE tranche (4000) under the sp-2v69u 1.0 cap. The
+    # binding constraint here is now the 80-unit HOLD, not the cap (2.5 * 40 = 100), which
+    # is the intended post-raise ordering: capacity binds before the sink allowance.
+    # What this still proves is unchanged — ortools BOOKS the intermediate buy (anti-skip).
+    assert best == 40 * (150 - 50) + 40 * (135 - 55), (best, cands)
 
 
 # --- T6 (F2 blocker): crossing-ladder ordering --------------------------------

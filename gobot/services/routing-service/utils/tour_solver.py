@@ -166,11 +166,33 @@ MAX_PLANNED_TRANCHES_MAX = 6   # ceiling: well above the analyst's {2,3,4} sweep
 # BUY commitment to what the reachable sink graph can actually take — net of fleet-wide absorption,
 # which net_absorption already nets out of each pool upstream. Revisits and multiple sinks are
 # unaffected: each dock still absorbs its tranche, so a diverse or repeat-visit tour (with real
-# travel-time recovery between visits) realizes its full spread. Byte-identical only where capacity
-# is not the binding constraint (hold_capacity <= trade_volume — a hull that cannot carry more than
-# one tranche to a dock never trips it). A named const (RULINGS #5); caps PLANNED units downward
-# only, never weakening a spend guard (RULINGS #4).
-REALIZED_SINK_TRANCHES_PER_VISIT = 1
+# travel-time recovery between visits) realizes its full spread. A named const (RULINGS #5); caps
+# PLANNED units downward only, never weakening a spend guard (RULINGS #4).
+#
+# sp-28lw9 RECALIBRATION 1 -> 2.5, and the knob. sp-2v69u set this to ONE trade_volume to stop a
+# heavy dumping an unrealizable load into a shallow dock. That bound is right; the NUMBER was far
+# too tight, and it is now THE binding depth constraint. Measured in era 5 (player 5, 24h,
+# tour_leg_telemetry JOIN market_data):
+#   * 42.4% of planned sell legs sit pinned at exactly 1.0 x trade_volume (211/498)
+#   * 496 of 499 planned sell legs realized EXACTLY the planned units — ZERO stranded, so the
+#     strand sp-2v69u guarded against is not observable at the boundary
+#   * avg realized depth 0.668 tranches/visit against 225-cargo heavies => ~23% hull utilization
+# and the tiers that carry the volume decay only ~1-2% per tranche in the live era-07-19 fit
+# (SCARCE|WEAK 0.9888 n_obs=3189, LIMITED|WEAK 0.9783 n=944, SCARCE|GROWING 0.9886 n=718), so a
+# second and third tranche keep almost all of their spread. Depth is bounded ELSEWHERE too and
+# those bounds are untouched: hull capacity (`slack`), the spend cap (`afford`), the per-(market,
+# good,side) pool ladder (MAX_PLANNED_TRANCHES, armed at 3 in run.sh), and the fleet-wide
+# absorption netting that shrinks each pool upstream.
+# Env-overridable so a sweep — or a revert — needs no code change, mirroring
+# TOUR_SOLVER_MAX_PLANNED_TRANCHES. Resolved ONCE per solve_tour
+# (_resolve_realized_sink_tranches) and threaded to the read site. Disarm to the sp-2v69u
+# behaviour exactly: TOUR_SOLVER_REALIZED_SINK_TRANCHES=1 + restart routing. FLOOR IS 1.0, NEVER
+# 0: a 0 cap plans no sells at all and would silently halt trading (the MAX_PLANNED_TRANCHES
+# floor reasoning). Fractional allowances floor to whole units — cargo is integral.
+REALIZED_SINK_TRANCHES_PER_VISIT = 2.5  # env TOUR_SOLVER_REALIZED_SINK_TRANCHES, clamp [1.0, 6.0]
+REALIZED_SINK_TRANCHES_ENV_VAR = "TOUR_SOLVER_REALIZED_SINK_TRANCHES"
+REALIZED_SINK_TRANCHES_MIN = 1.0   # floor: one tranche still trades; 0 would plan no sells
+REALIZED_SINK_TRANCHES_MAX = 6.0   # ceiling: matches MAX_PLANNED_TRANCHES_MAX (the pool bound)
 CRUISE_TIME_MULTIPLIER = 31   # mirrors utils/routing_engine.FlightMode.CRUISE
 GATE_HOP_ALLOWANCE_SECONDS = 450   # to-gate / from-gate hop (gate coords not carried)
 JUMP_COOLDOWN_SECONDS = 900        # gate jump + cooldown
@@ -677,7 +699,8 @@ def _make_travel_fn(constraints, markets, ship, waypoints=None):
 
 
 def score_sequence(seq, markets, ship, constraints, model, travel_fn, deposit_sinks=None,
-                   absorption_index=None, stock_sources=None, max_planned_tranches=None):
+                   absorption_index=None, stock_sources=None, max_planned_tranches=None,
+                   realized_sink_tranches=None):
     """Greedy tranche allocation over one hop sequence (the LP stage).
 
     Returns dict(profit, spend, seconds, cph, legs, held_liquidation,
@@ -715,6 +738,8 @@ def score_sequence(seq, markets, ship, constraints, model, travel_fn, deposit_si
     stock_sources = stock_sources or {}
     if max_planned_tranches is None:   # sp-acb8: env-resolve for direct callers; solve_tour threads it
         max_planned_tranches = _resolve_max_planned_tranches()
+    if realized_sink_tranches is None:  # sp-28lw9: same contract as max_planned_tranches
+        realized_sink_tranches = _resolve_realized_sink_tranches()
     n = len(seq)
     hold_cap = ship["hold_capacity"]
     initial = {}
@@ -892,8 +917,11 @@ def score_sequence(seq, markets, ship, constraints, model, travel_fn, deposit_si
             # The pool head is already fleet-absorption-netted; this is the binding single-sink
             # depth constraint, superseding MAX_PLANNED_TRANCHES per visit where they conflict.
             if kind != "deposit":
-                visit_rem = (REALIZED_SINK_TRANCHES_PER_VISIT
-                             * markets[seq[j]]["goods"][good]["trade_volume"]
+                # sp-28lw9: the allowance is a FRACTION of a trade_volume, floored to whole
+                # units — cargo is integral, and flooring keeps the cap from ever rounding UP
+                # past the modeled absorption.
+                visit_rem = (int(realized_sink_tranches
+                                 * markets[seq[j]]["goods"][good]["trade_volume"])
                              - sold_this_visit.get((j, good), 0))
                 if units > visit_rem:
                     units = visit_rem
@@ -1313,6 +1341,23 @@ def _resolve_max_planned_tranches():
                                  MAX_PLANNED_TRANCHES_PER_MARKET_GOOD_SIDE,
                                  MAX_PLANNED_TRANCHES_MIN,
                                  MAX_PLANNED_TRANCHES_MAX, int)
+
+
+def _resolve_realized_sink_tranches():
+    """Per-solve env override for the realized per-visit sink depth cap
+    (TOUR_SOLVER_REALIZED_SINK_TRANCHES, sp-28lw9). Delegates to _sequencer_env_scalar, so it
+    clamps to [REALIZED_SINK_TRANCHES_MIN, REALIZED_SINK_TRANCHES_MAX] and falls back to the
+    REALIZED_SINK_TRANCHES_PER_VISIT default (2.5) on absent/unset/non-float. Cast is FLOAT (not
+    int, unlike the tranche-count knobs): the calibration is a fraction of a trade_volume, and
+    the read site floors the product to whole units. The floor is 1.0 (NEVER 0: a 0 cap plans no
+    sells and would silently halt trading). Setting it to 1 restores the sp-2v69u calibration
+    exactly — the documented disarm. Resolved ONCE at the top of solve_tour and threaded to
+    score_sequence so a single solve is internally consistent, the same discipline as
+    _resolve_max_planned_tranches."""
+    return _sequencer_env_scalar(REALIZED_SINK_TRANCHES_ENV_VAR,
+                                 REALIZED_SINK_TRANCHES_PER_VISIT,
+                                 REALIZED_SINK_TRANCHES_MIN,
+                                 REALIZED_SINK_TRANCHES_MAX, float)
 
 
 def _resolve_full_score_top_n():
@@ -1780,6 +1825,10 @@ def solve_tour(snapshot, ship, constraints, model, waypoints=None,
     # TOUR_SOLVER_MAX_PLANNED_TRANCHES, default 2 == byte-identical) and thread the
     # single value to every stage so this solve is internally consistent.
     max_planned_tranches = _resolve_max_planned_tranches()
+    # sp-28lw9: resolve the realized per-visit sink depth cap ONCE per solve (env
+    # TOUR_SOLVER_REALIZED_SINK_TRANCHES, default 2.5; =1 restores the sp-2v69u calibration)
+    # and thread the single value to score_sequence, so one solve is internally consistent.
+    realized_sink_tranches = _resolve_realized_sink_tranches()
     # sp-7q5t/sp-fguo widening unlock: resolve the stage-2 full-scoring cut ONCE per
     # solve (env TOUR_SOLVER_FULL_SCORE_TOP_N, default 20 == byte-identical) so the
     # widened beam candidates can actually survive to full scoring.
@@ -1821,7 +1870,8 @@ def solve_tour(snapshot, ship, constraints, model, waypoints=None,
     for seq in pool:
         result = score_sequence(seq, markets, ship, constraints, model, travel_fn,
                                 deposit_sinks, absorption_index, stock_source_idx,
-                                max_planned_tranches=max_planned_tranches)
+                                max_planned_tranches=max_planned_tranches,
+                                realized_sink_tranches=realized_sink_tranches)
         signature = tuple((l["waypoint_symbol"],
                            tuple((t["good_symbol"], t["units"], t["is_buy"],
                                   t["is_deposit"], t["is_stock"], t["expected_unit_price"])
