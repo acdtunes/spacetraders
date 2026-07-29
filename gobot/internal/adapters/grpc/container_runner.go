@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/flowfeed"
@@ -134,6 +135,13 @@ type ContainerRunner struct {
 	heartbeatStop chan struct{} // Signal to stop heartbeat goroutine
 	heartbeatDone chan struct{} // Signal that heartbeat goroutine has stopped
 	heartbeatOnce sync.Once     // Ensures heartbeat is only stopped once
+	// heartbeatStarted records that Start actually launched the heartbeat goroutine, so
+	// stopHeartbeat knows whether heartbeatDone can ever close. Without it, stopping a
+	// runner whose heartbeat never started (Start's claim-failure exit, and every test
+	// that drives execute directly) blocks the full 2s timeout waiting on a channel with
+	// nobody to close it. Atomic rather than mu-guarded: stopHeartbeat is reached from
+	// paths that must not contend for the runner lock.
+	heartbeatStarted atomic.Bool
 
 	// Event publisher for completion notifications
 	// Publishes WorkerCompletedEvent when container completes or fails
@@ -253,6 +261,7 @@ func (r *ContainerRunner) Start() error {
 	// Guarded (sp-i01z): a heartbeat panic is logged + suppressed — a dead
 	// heartbeat is already surfaced by the watchkeeper's container.heartbeat_lost,
 	// and the container itself keeps running.
+	r.heartbeatStarted.Store(true)
 	go supervise.Guard("container-heartbeat:"+r.containerEntity.ID(), r.runHeartbeat)
 
 	// Execute the container operation
@@ -389,7 +398,18 @@ func (r *ContainerRunner) runHeartbeat() {
 func (r *ContainerRunner) stopHeartbeat() {
 	r.heartbeatOnce.Do(func() {
 		close(r.heartbeatStop)
-		// Wait for heartbeat goroutine to finish (with timeout)
+		// Nothing ever ran, so heartbeatDone will never close — waiting would burn the
+		// full timeout for no signal. Closing the stop channel above is still correct
+		// (a no-op for absent receivers) and keeps the Once semantics.
+		if !r.heartbeatStarted.Load() {
+			return
+		}
+		// WAIT for the goroutine to return, don't just signal it. This is what orders a
+		// heartbeat write BEFORE the terminal status write that follows (sp-b79f1): an
+		// in-flight UpdateContainerHeartbeat completes before runHeartbeat's deferred
+		// close fires, so heartbeat_at cannot post-date stopped_at. The timeout bounds a
+		// wedged write rather than hanging shutdown — on that path the ordering is
+		// best-effort, which is the honest limit of this guarantee.
 		select {
 		case <-r.heartbeatDone:
 			// Heartbeat goroutine stopped
@@ -921,6 +941,24 @@ func (r *ContainerRunner) handleError(err error) {
 // truly gives up (always alongside the workflow.failed event). Mirrors the
 // UpdateStatus shape of terminalizeClaimFailure and finishCleanExit's COMPLETED write.
 func (r *ContainerRunner) persistFailed(reason string) {
+	// sp-b79f1: STOP THE HEARTBEAT BEFORE STAMPING THE ROW DEAD. The crash path
+	// (execute's unrecoverable-error branch) reached here without stopping it, so the
+	// heartbeat goroutine outlived the container it was reporting on and kept writing
+	// heartbeat_at to a FAILED row until the daemon itself died — up to 2h39m of
+	// post-mortem liveness, on 16 live rows. Any consumer reading a fresh heartbeat as
+	// proof of life was being lied to by a corpse.
+	//
+	// Placed HERE rather than at the call site so every terminal-FAILED writer inherits
+	// it, present and future. Idempotent (sync.Once), so finishCleanExit's veto path —
+	// which already stopped the heartbeat before calling this — is unaffected, and the
+	// ordering it establishes is what makes heartbeat_at <= stopped_at hold: stopHeartbeat
+	// waits for the goroutine to return, so an in-flight heartbeat write completes BEFORE
+	// the status write below rather than landing after it.
+	//
+	// This does NOT make liveness depend on the heartbeat: nothing here infers life from a
+	// beat. It only stops the runner emitting a signal it knows to be false.
+	r.stopHeartbeat()
+
 	if r.containerRepo == nil {
 		return
 	}
