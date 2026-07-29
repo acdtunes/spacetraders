@@ -7,10 +7,10 @@
 //
 // The feed has TWO inputs and is assembled at request time (sp-2uvec):
 //
-//	1. the published snapshots executors write at plan adoption and leg arrival —
-//	   process-memory, so empty right after a daemon restart, and
-//	2. the LIVE set of RUNNING trading containers, read from the daemon's runner
-//	   map on every Snapshot.
+//  1. the published snapshots executors write at plan adoption and leg arrival —
+//     process-memory, so empty right after a daemon restart, and
+//  2. the LIVE set of RUNNING trading containers, read from the daemon's runner
+//     map on every Snapshot.
 //
 // Input 2 is what makes the feed honest. Publishing is event-sparse: a hull is
 // silent while it repositions, replans, or flies a long first leg, and every hull

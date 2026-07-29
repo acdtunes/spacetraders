@@ -17,7 +17,6 @@ type autosizerRunConfig struct {
 	Tick               time.Duration
 	PurchaseCapPerTick int
 
-	FleetCeilingTotal   int
 	FleetCeilingLights  int
 	FleetCeilingHeavies int
 	// HeavyCap is the resolved heavy-HULL cap (capital exposure), distinct from
@@ -28,15 +27,10 @@ type autosizerRunConfig struct {
 
 	LightRotationSlots float64
 
-	HeavyMarginalRateFloor      float64
 	HeavyUnservedLanesMin       int
 	HeavyTreasuryPctPerPurchase int
-	DecliningRateUnservedFloor  int
 
 	APIUtilizationCeilingPct int
-
-	PaybackSafetyFactor      float64
-	PurchaseCutoffAtEraMinus time.Duration
 
 	MaxPriceLights            int64
 	MaxPriceHeavies           int64
@@ -62,19 +56,14 @@ func resolveFleetAutosizerConfig(cmd *RunFleetAutosizerCoordinatorCommand) autos
 	c := autosizerRunConfig{
 		Tick:                        time.Duration(cmd.TickIntervalSecs) * time.Second,
 		PurchaseCapPerTick:          cmd.PurchaseCapPerTick,
-		FleetCeilingTotal:           cmd.FleetCeilingTotal,
 		FleetCeilingLights:          cmd.FleetCeilingLights,
 		FleetCeilingHeavies:         cmd.FleetCeilingHeavies,
 		PurchaseMarginOverFloor:     cmd.PurchaseMarginOverFloor,
 		LightRotationSlots:          cmd.LightRotationSlots,
-		HeavyMarginalRateFloor:      cmd.HeavyMarginalRateFloor,
 		HeavyUnservedLanesMin:       cmd.HeavyUnservedLanesMin,
 		HeavyTreasuryPctPerPurchase: cmd.HeavyTreasuryPctPerPurchase,
 		HeavyCap:                    resolveHeavyCap(cmd.HeavyCap),
-		DecliningRateUnservedFloor:  cmd.DecliningRateUnservedFloor,
 		APIUtilizationCeilingPct:    cmd.APIUtilizationCeilingPct,
-		PaybackSafetyFactor:         cmd.PaybackSafetyFactor,
-		PurchaseCutoffAtEraMinus:    time.Duration(cmd.PurchaseCutoffAtEraMinusHours * float64(time.Hour)),
 		MaxPriceLights:              cmd.MaxPriceLights,
 		MaxPriceHeavies:             cmd.MaxPriceHeavies,
 		MaxPremiumOverCheapestPct:   cmd.MaxPremiumOverCheapestPct,
@@ -95,9 +84,6 @@ func resolveFleetAutosizerConfig(cmd *RunFleetAutosizerCoordinatorCommand) autos
 	if c.PurchaseCapPerTick <= 0 {
 		c.PurchaseCapPerTick = defaultPurchaseCapPerTick
 	}
-	if c.FleetCeilingTotal <= 0 {
-		c.FleetCeilingTotal = defaultFleetCeilingTotal
-	}
 	if c.FleetCeilingLights <= 0 {
 		c.FleetCeilingLights = defaultFleetCeilingLights
 	}
@@ -110,26 +96,14 @@ func resolveFleetAutosizerConfig(cmd *RunFleetAutosizerCoordinatorCommand) autos
 	if c.LightRotationSlots <= 0 {
 		c.LightRotationSlots = defaultLightRotationSlots
 	}
-	if c.HeavyMarginalRateFloor <= 0 {
-		c.HeavyMarginalRateFloor = defaultHeavyMarginalRateFloor
-	}
 	if c.HeavyUnservedLanesMin <= 0 {
 		c.HeavyUnservedLanesMin = defaultHeavyUnservedLanesMin
 	}
 	if c.HeavyTreasuryPctPerPurchase <= 0 {
 		c.HeavyTreasuryPctPerPurchase = defaultHeavyTreasuryPctPerPurchase
 	}
-	if c.DecliningRateUnservedFloor <= 0 {
-		c.DecliningRateUnservedFloor = defaultDecliningRateUnservedFloor
-	}
 	if c.APIUtilizationCeilingPct <= 0 {
 		c.APIUtilizationCeilingPct = defaultAPIUtilCeilingPct
-	}
-	if c.PaybackSafetyFactor <= 0 {
-		c.PaybackSafetyFactor = defaultPaybackSafetyFactor
-	}
-	if c.PurchaseCutoffAtEraMinus <= 0 {
-		c.PurchaseCutoffAtEraMinus = time.Duration(defaultPurchaseCutoffEraMinusHours * float64(time.Hour))
 	}
 	if c.MaxPremiumOverCheapestPct <= 0 {
 		c.MaxPremiumOverCheapestPct = defaultMaxPremiumOverCheapestPct
@@ -177,8 +151,7 @@ type reconcileResult struct {
 
 // reconcileOnce runs one full sizing pass: read the tick's shared inputs once, then for every
 // enabled class read demand and buy the shortfall through the fail-closed guard stack (bounded by
-// the per-tick cap, accounting each in-tick buy against the total so the next class sees the
-// updated fleet size). It is the unit the tests drive directly; Handle just calls it on the tick.
+// the per-tick cap). It is the unit the tests drive directly; Handle just calls it on the tick.
 func (h *RunFleetAutosizerCoordinatorHandler) reconcileOnce(ctx context.Context, cmd *RunFleetAutosizerCoordinatorCommand) (reconcileResult, error) {
 	cfg := resolveFleetAutosizerConfig(cmd)
 	// The ONE live-tunable knob: re-read from persisted config each tick so a `tune` applies
@@ -235,7 +208,6 @@ func (h *RunFleetAutosizerCoordinatorHandler) reconcileOnce(ctx context.Context,
 		if bought {
 			purchasesThisTick++
 			res.Purchased++
-			in.totalHulls++ // account for the in-tick buy so the next class sees the updated total
 		}
 		if unmetNoBuy {
 			anyUnmetNoBuy = true

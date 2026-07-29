@@ -5,14 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	fleetCmd "github.com/andrescamacho/spacetraders-go/internal/application/fleet/commands"
-	goodsServices "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
 	shipyardCmd "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/commands"
 	shipyardQueries "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
 	tradingQueries "github.com/andrescamacho/spacetraders-go/internal/application/trading/queries"
@@ -24,7 +22,6 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	shipyardDomain "github.com/andrescamacho/spacetraders-go/internal/domain/shipyard"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
 
 // This file wires the fleet capacity autosizer's application ports (sp-1txd M6) to the concrete
@@ -46,14 +43,10 @@ import (
 // fail-open stub. Vacancies are 0 for now (the rebalancer hub-vacancy query is a later enrichment;
 // a 0 leaves the chain-derived base demand intact).
 
-// agentReader / serverStatusReader are the narrow slices of *api.SpaceTradersClient the money
-// guards need (treasury + era clock). Declared here so the ports depend on behaviour, not the
-// whole client.
+// agentReader is the narrow slice of *api.SpaceTradersClient the money guards need (treasury).
+// Declared here so the ports depend on behaviour, not the whole client.
 type agentReader interface {
 	GetAgent(ctx context.Context, token string) (*player.AgentData, error)
-}
-type serverStatusReader interface {
-	GetServerStatus(ctx context.Context) (*api.ServerStatus, error)
 }
 
 // NewFleetAutosizerCoordinatorHandler assembles the autosizer handler (sp-1txd M6), wiring every
@@ -64,11 +57,9 @@ func NewFleetAutosizerCoordinatorHandler(
 	apiClient *api.SpaceTradersClient,
 	shipRepo navigation.ShipRepository,
 	med common.Mediator,
-	chainPnL goodsServices.ChainPnLReader,
 	waypointRepo *persistence.GormWaypointRepository,
 	eventStore captain.EventStore,
 	marketRepo market.MarketRepository,
-	tourTelemetry tourTelemetryReader,
 	scannedYards scannedYardRanker,
 	offGateDemand fleetCmd.OffGateDemandSource,
 	heavyYards heavyYardInventory,
@@ -77,7 +68,7 @@ func NewFleetAutosizerCoordinatorHandler(
 
 	// Demand providers.
 	h.AddDemandProvider(fleetCmd.NewLightDemandProvider(&autosizerLightSources{
-		shipRepo: shipRepo, server: server, chainPnL: chainPnL,
+		shipRepo: shipRepo, server: server,
 	}))
 	// HEAVIES ARE NOW LIVE (sp-4ewi): the unserved-lane signal reads the profitable-lane surface
 	// off the persisted market cache (tradingQueries.ProfitableLaneReader, read-only — the same pure
@@ -87,8 +78,6 @@ func NewFleetAutosizerCoordinatorHandler(
 	h.AddDemandProvider(fleetCmd.NewHeavyDemandProvider(&autosizerHeavySources{
 		shipRepo:   shipRepo,
 		laneReader: tradingQueries.NewProfitableLaneReader(marketRepo),
-		tourRates:  tourTelemetry,
-		clock:      shared.NewRealClock(),
 	}))
 
 	// Explorer class (sp-a3yn slice C): reads slice-B off-gate demand through the cross-coordinator
@@ -100,9 +89,7 @@ func NewFleetAutosizerCoordinatorHandler(
 
 	// Buy-path readers + writers.
 	h.SetTreasuryReader(&autosizerTreasuryReader{api: apiClient})
-	h.SetEraClockReader(&autosizerEraReader{api: apiClient})
 	h.SetAPIUtilizationReader(&autosizerAPIUtilReader{reporter: metrics.GetGlobalAPIBudgetTracker()})
-	h.SetFleetSizeReader(&autosizerFleetSizeReader{shipRepo: shipRepo})
 	// The concrete waypoint repo is assigned only when non-nil: a typed-nil
 	// pointer inside the interface field would defeat the reader's nil guard
 	// (fail-closed on an unwired waypoint surface) with a runtime panic instead.
@@ -151,22 +138,6 @@ func (r *autosizerTreasuryReader) Treasury(ctx context.Context, playerID int) (i
 	return int64(agent.Credits), true, nil
 }
 
-// --- era clock ---
-
-type autosizerEraReader struct{ api serverStatusReader }
-
-func (r *autosizerEraReader) HoursToEraEnd(ctx context.Context) (float64, bool, error) {
-	status, err := r.api.GetServerStatus(ctx)
-	if err != nil || status == nil || status.ServerResets.Next == "" {
-		return 0, false, nil // unreadable → the era-payback guard fails closed
-	}
-	next, perr := time.Parse(time.RFC3339, status.ServerResets.Next)
-	if perr != nil {
-		return 0, false, nil
-	}
-	return time.Until(next).Hours(), true, nil
-}
-
 // --- API utilization (sp-a5dq: live read off the sp-51ti budget tracker; fail CLOSED) ---
 
 // apiBudgetReporter is the narrow read the API-util guard needs — the rolling utilization snapshot.
@@ -198,22 +169,6 @@ func (r *autosizerAPIUtilReader) UtilizationPct(ctx context.Context) (float64, b
 		return 0, false, nil
 	}
 	return rolling.UtilizationPct, true, nil
-}
-
-// --- fleet size ---
-
-type autosizerFleetSizeReader struct{ shipRepo navigation.ShipRepository }
-
-func (r *autosizerFleetSizeReader) TotalHulls(ctx context.Context, playerID int) (int, error) {
-	pid, err := shared.NewPlayerID(playerID)
-	if err != nil {
-		return 0, err
-	}
-	ships, err := r.shipRepo.FindAllByPlayer(ctx, pid)
-	if err != nil {
-		return 0, err
-	}
-	return len(ships), nil
 }
 
 // --- yard price (cheapest known shipyard ask for the type across the player's systems) ---
@@ -507,7 +462,6 @@ func (m *autosizerMetricsSink) ObserveHeavyPricePremium(playerID string, paid, c
 type autosizerLightSources struct {
 	shipRepo navigation.ShipRepository
 	server   *DaemonServer
-	chainPnL goodsServices.ChainPnLReader
 }
 
 const autosizerHaulerRole = "HAULER"
@@ -547,36 +501,6 @@ func (s *autosizerLightSources) Vacancies(ctx context.Context, playerID int) (in
 	return 0, nil
 }
 
-func (s *autosizerLightSources) MarginalWorkerRate(ctx context.Context, playerID int) (float64, float64, bool, bool, error) {
-	if s.chainPnL == nil {
-		return 0, 0, false, false, nil
-	}
-	const windowHours = 2.0
-	raw, err := s.chainPnL.ReadRealizedPnL(ctx, playerID, time.Now().Add(-time.Duration(windowHours*float64(time.Hour))))
-	if err != nil {
-		return 0, 0, false, false, nil
-	}
-	results := goodsServices.ComputeChainPnL(raw, windowHours)
-	var sum float64
-	var count int
-	marginal := 0.0
-	haveMarginal := false
-	for _, res := range results {
-		if !res.HasRealization {
-			continue
-		}
-		sum += res.NetPerHour
-		count++
-		if !haveMarginal || res.NetPerHour < marginal {
-			marginal, haveMarginal = res.NetPerHour, true
-		}
-	}
-	if count == 0 {
-		return 0, 0, false, false, nil // pre-realization: no rate signal → guard fails the rate gate closed
-	}
-	return marginal, sum / float64(count), false, true, nil
-}
-
 // --- HEAVY demand sources (sp-4ewi: the wired seam) ---
 
 // profitableLaneCounter counts the profitable, feasible trade lanes ranked across the given systems,
@@ -585,24 +509,9 @@ type profitableLaneCounter interface {
 	CountProfitableLanes(ctx context.Context, playerID int, systems []string) (count int, readable bool, err error)
 }
 
-// tourTelemetryReader reads the persisted per-leg tour telemetry the realized-rate computation
-// consumes, read-only. Satisfied by *persistence.TourTelemetryRepositoryGORM.
-type tourTelemetryReader interface {
-	ListByPlayer(ctx context.Context, playerID int, since time.Time) ([]trading.TourLegTelemetry, error)
-}
-
-// heavyTourRateWindow is the trailing window the realized fleet-tour rate is measured over. It is a
-// READ window (how far back to pull realized tours), the heavy twin of the light path's 2h chain-P&L
-// window — not a guard-policy knob, so it lives here rather than on the config surface (RULINGS #5).
-// Wide enough to span several multi-hop tours (so the decline trend has ≥2 tours to compare) while
-// staying fresh; the realized-rate guard reads the RESULT, and an empty window simply fails closed.
-const heavyTourRateWindow = 12 * time.Hour
-
 type autosizerHeavySources struct {
 	shipRepo   navigation.ShipRepository
 	laneReader profitableLaneCounter
-	tourRates  tourTelemetryReader
-	clock      shared.Clock
 }
 
 func (s *autosizerHeavySources) HeavyCount(ctx context.Context, playerID int) (int, error) {
@@ -641,31 +550,6 @@ func (s *autosizerHeavySources) UnservedLaneCount(ctx context.Context, playerID 
 		unserved = 0 // never a negative demand (the pool already covers the lanes)
 	}
 	return unserved, true, nil
-}
-
-// FleetTourRate computes the realized fleet-tour rate over the trailing window (sp-4ewi): the
-// fleet-average realized $/hr, the marginal (lowest-earning) heavy's realized $/hr, and whether the
-// per-tour trend is declining (absorption saturating). It reads persisted tour telemetry and defers
-// to the pure trading.ComputeFleetTourRate. Fails CLOSED (readable=false) on a telemetry read
-// failure or when no ship has a computable realized rate — the heavy realized-rate/payback guards
-// then block on their own, never buying against an unseen rate.
-//
-// sp-461l (epic sp-g9td) cash-true audit: this MONEY-GUARD source STAYS on telemetry. The autosizer's
-// realized_rate + era_payback guards need PER-HULL rates — the MIN per-ship marginal (a deliberately
-// conservative next-hull proxy) and the fleet-average floor basis — which the transactions ledger has
-// NO ship column to produce; deriving a per-hull figure by dividing an aggregate cash rate by hull
-// count would RAISE the min-based marginal and thereby WEAKEN era_payback (RULINGS #4 forbids). What
-// fixed the ~2x inflation was sp-rd21's write-path repair: the dropped buy legs are now recorded, so
-// ComputeFleetTourRate's per-ship netting reconciles 1.00x and the marginal this feeds the guard is
-// the TRUE rate. (Guard-level proof: fleet/commands TestGuard_EraPayback_FiresOnCashTrueRateNotInflatedTelemetry.)
-func (s *autosizerHeavySources) FleetTourRate(ctx context.Context, playerID int) (float64, float64, bool, bool, error) {
-	since := s.clock.Now().Add(-heavyTourRateWindow)
-	rows, err := s.tourRates.ListByPlayer(ctx, playerID, since)
-	if err != nil {
-		return 0, 0, false, false, err // genuine telemetry read failure → fail closed
-	}
-	res := trading.ComputeFleetTourRate(rows)
-	return res.FleetAvg, res.Marginal, res.Declining, res.Readable, nil
 }
 
 // distinctShipSystems returns the distinct systems the player's hulls are located in — the trading

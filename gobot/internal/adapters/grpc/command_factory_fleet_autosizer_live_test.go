@@ -59,51 +59,30 @@ func TestAutosizerResolvesKnobsFromLiveConfig(t *testing.T) {
 	s := newFleetAutosizerTestServer(config.FleetAutosizerConfig{
 		TickIntervalSecs:        120,
 		PurchaseCapPerTick:      2,
-		FleetCeilingTotal:       80,
 		FleetCeilingHeavies:     12,
 		PurchaseMarginOverFloor: 500000,
 		LightRotationSlots:      4.0,
-		HeavyMarginalRateFloor:  0.8,
-		PaybackSafetyFactor:     0.6,
 		ShipTypeHeavies:         "SHIP_REFINING_FREIGHTER",
 	})
 	cmd := buildRecoveredAutosizerCommand(t, s, autosizerLaunchConfig(nil))
 	require.Equal(t, 120, cmd.TickIntervalSecs)
 	require.Equal(t, 2, cmd.PurchaseCapPerTick)
-	require.Equal(t, 80, cmd.FleetCeilingTotal)
 	require.Equal(t, 12, cmd.FleetCeilingHeavies)
 	require.Equal(t, int64(500000), cmd.PurchaseMarginOverFloor)
 	require.Equal(t, 4.0, cmd.LightRotationSlots)
-	require.Equal(t, 0.8, cmd.HeavyMarginalRateFloor)
-	require.Equal(t, 0.6, cmd.PaybackSafetyFactor)
 	require.Equal(t, "SHIP_REFINING_FREIGHTER", cmd.ShipTypeHeavies)
-}
-
-// sp-zbe6: the declining-rate unserved floor round-trips config.yaml → the built command, so a
-// captain retunes the concentration-vs-saturation threshold by editing config.yaml and restarting
-// (the sp-ts82 live-config discipline). It also clears a stale persisted copy in favor of the
-// current config.yaml value.
-func TestAutosizerResolvesDecliningRateUnservedFloorFromLiveConfig(t *testing.T) {
-	s := newFleetAutosizerTestServer(config.FleetAutosizerConfig{
-		DecliningRateUnservedFloor: 4,
-	})
-	cmd := buildRecoveredAutosizerCommand(t, s, autosizerLaunchConfig(map[string]interface{}{
-		"autosizer_declining_rate_unserved_floor": 99, // stale copy from a prior boot
-	}))
-	require.Equal(t, 4, cmd.DecliningRateUnservedFloor,
-		"live config.yaml value must be plumbed into the command and override the stale persisted 99")
 }
 
 // sp-ts82: a STALE persisted knob from a prior boot must be discarded for the current config.yaml
 // value on the recovery rebuild.
 func TestAutosizerLiveKnobOverridesStalePersisted(t *testing.T) {
 	s := newFleetAutosizerTestServer(config.FleetAutosizerConfig{
-		FleetCeilingTotal: 40,
+		FleetCeilingHeavies: 40,
 	})
 	cmd := buildRecoveredAutosizerCommand(t, s, autosizerLaunchConfig(map[string]interface{}{
-		"autosizer_fleet_ceiling_total": 999, // stale copy from a prior boot
+		"autosizer_fleet_ceiling_heavies": 999, // stale copy from a prior boot
 	}))
-	require.Equal(t, 40, cmd.FleetCeilingTotal, "live 40 must override the stale persisted 999")
+	require.Equal(t, 40, cmd.FleetCeilingHeavies, "live 40 must override the stale persisted 999")
 }
 
 // Unset live leaves the numeric knobs at the 0 sentinel (resolved to defaults downstream in
@@ -113,8 +92,7 @@ func TestAutosizerUnsetKnobsAreZeroSentinel(t *testing.T) {
 	s := newFleetAutosizerTestServer(config.FleetAutosizerConfig{})
 	cmd := buildRecoveredAutosizerCommand(t, s, autosizerLaunchConfig(nil))
 	require.Equal(t, 0, cmd.TickIntervalSecs, "unset tick must stay the 0 sentinel, not a hardcoded default")
-	require.Equal(t, 0, cmd.FleetCeilingTotal)
-	require.Equal(t, 0.0, cmd.PaybackSafetyFactor)
+	require.Equal(t, 0, cmd.FleetCeilingHeavies)
 	require.Nil(t, cmd.PreferDemandProximalYard, "unset proximal-yard must stay nil so the coordinator applies its true default")
 }
 

@@ -45,9 +45,6 @@ func TestExplorer_ArmedAndDemandFired_WantsExactlyOne(t *testing.T) {
 	if d.Demand != 1 || d.Current != 0 || d.Shortfall() != 1 {
 		t.Fatalf("want Demand=1 Current=0 Shortfall=1, got Demand=%d Current=%d Shortfall=%d", d.Demand, d.Current, d.Shortfall())
 	}
-	if d.RateReadable || d.MarginalRate != 0 {
-		t.Fatalf("explorer must leave realized-rate UNSET (payback-exempt), got RateReadable=%v MarginalRate=%v", d.RateReadable, d.MarginalRate)
-	}
 	if d.Class != HullClassExplorer {
 		t.Fatalf("class must be explorer, got %q", d.Class)
 	}

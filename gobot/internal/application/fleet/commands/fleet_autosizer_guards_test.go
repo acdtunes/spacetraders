@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -17,8 +18,6 @@ func passingRequest() PurchaseRequest {
 
 		CurrentClassCount: 10,
 		ClassCeiling:      35,
-		CurrentTotalCount: 20,
-		TotalCeiling:      50,
 
 		PurchasesThisTick: 0,
 		PerTickCap:        1,
@@ -28,17 +27,6 @@ func passingRequest() PurchaseRequest {
 		CheapestKnownPrice: 400000,
 		MaxPriceClass:      0, // no absolute cap
 		MaxPremiumPct:      50,
-
-		HoursToEraEnd:  20,
-		EraReadable:    true,
-		EraCutoffHours: 3,
-		PaybackSafety:  0.5,
-
-		MarginalRate:        80000,
-		RateFloor:           56000,
-		RateReadable:        true,
-		RateDeclining:       false,
-		UnservedDemandFloor: 2,
 
 		LiveTreasury:      5000000,
 		TreasuryReadable:  true,
@@ -67,16 +55,56 @@ func TestGuard_Demand_ZeroShortfallBlocks(t *testing.T) {
 	assertBlockedBy(t, r, GuardDemand)
 }
 
-func TestGuard_FleetCeiling_ClassFull(t *testing.T) {
-	r := passingRequest()
-	r.CurrentClassCount = 35 // == ceiling
-	assertBlockedBy(t, r, GuardFleetCeiling)
+// THE ANTI-THRASH STREAK, now part of demand's verdict. A real shortfall that has NOT yet persisted
+// StreakMin consecutive ticks must still refuse the buy — a transient spike in the lane ranking must
+// not spend ~1.4M. Parametrized over the boundary (Mandate 5: one behaviour, input variations).
+//
+// Deleting the streak term from guardDemand makes the mid-streak rows approve a purchase the fleet
+// deliberately holds.
+func TestGuard_Demand_BlocksUntilTheShortfallPersistsTheStreak(t *testing.T) {
+	cases := []struct {
+		streak    int
+		wantBlock bool
+	}{
+		{streak: 0, wantBlock: true},  // first tick of the episode
+		{streak: 1, wantBlock: true},  // mid-streak
+		{streak: 2, wantBlock: true},  // one short of the minimum
+		{streak: 3, wantBlock: false}, // == minimum → the need is settled, buy
+		{streak: 9, wantBlock: false}, // long-standing
+	}
+	for _, tc := range cases {
+		r := heavyRequest()
+		r.Shortfall = 17
+		r.ShortfallStreak = tc.streak
+		r.ShortfallStreakMin = 3
+		d := EvaluateGuards(r)
+		if blocked := d.BlockedBy == GuardDemand; blocked != tc.wantBlock {
+			t.Errorf("streak %d/3: demand blocked=%v, want %v — arithmetic: %s", tc.streak, blocked, tc.wantBlock, d.Arithmetic())
+		}
+		// The whole go/no-go must be readable on the ONE line — the streak used to log separately.
+		if !strings.Contains(d.Arithmetic(), fmt.Sprintf("persisting %d/3 ticks", tc.streak)) {
+			t.Errorf("streak %d/3: the demand term must carry the streak arithmetic, got: %s", tc.streak, d.Arithmetic())
+		}
+	}
 }
 
-func TestGuard_FleetCeiling_TotalFull(t *testing.T) {
+// A class that does not use the streak (StreakMin 0) is unaffected: a light with a shortfall and no
+// streak history buys immediately. The fold must not impose a heavy-only hold on every class.
+func TestGuard_Demand_StreakIsANoOpForClassesThatDoNotUseIt(t *testing.T) {
+	r := passingRequest() // HullClassLight: ShortfallStreak 0, ShortfallStreakMin 0
+	d := EvaluateGuards(r)
+	if !d.Approved {
+		t.Fatalf("a light with a shortfall and no streak configured must not be held; blocked by %q: %s", d.BlockedBy, d.Arithmetic())
+	}
+	if strings.Contains(d.Arithmetic(), "anti-thrash") {
+		t.Errorf("a class with no streak must not print a streak term: %s", d.Arithmetic())
+	}
+}
+
+func TestGuard_ClassCeiling_ClassFull(t *testing.T) {
 	r := passingRequest()
-	r.CurrentTotalCount = 50 // == total ceiling
-	assertBlockedBy(t, r, GuardFleetCeiling)
+	r.CurrentClassCount = 35 // == ceiling
+	assertBlockedBy(t, r, GuardClassCeiling)
 }
 
 func TestGuard_PerTickCap_Exhausted(t *testing.T) {
@@ -85,204 +113,66 @@ func TestGuard_PerTickCap_Exhausted(t *testing.T) {
 	assertBlockedBy(t, r, GuardPerTickCap)
 }
 
-func TestGuard_PriceRead_UnreadableFailsClosed(t *testing.T) {
+// price FAILS CLOSED on an unreadable yard ask (RULINGS #4) — the merge kept price_read's whole
+// job. An unpriceable hull is never bought.
+func TestGuard_Price_UnreadableFailsClosed(t *testing.T) {
 	r := passingRequest()
 	r.PriceReadable = false
-	// price_read is evaluated before price_ceiling, so it is the first (and named) blocker.
-	assertBlockedBy(t, r, GuardPriceRead)
+	assertBlockedBy(t, r, GuardPrice)
 }
 
-func TestGuard_PriceCeiling_AbsoluteCap(t *testing.T) {
+func TestGuard_Price_AbsoluteCap(t *testing.T) {
 	r := passingRequest()
 	r.MaxPriceClass = 400000 // price 437000 exceeds the absolute cap
-	assertBlockedBy(t, r, GuardPriceCeiling)
+	assertBlockedBy(t, r, GuardPrice)
 }
 
-func TestGuard_PriceCeiling_PremiumOverCheapest(t *testing.T) {
+func TestGuard_Price_PremiumOverCheapest(t *testing.T) {
 	r := passingRequest()
 	r.CheapestKnownPrice = 200000 // cap = 200000 * 1.5 = 300000 < price 437000
-	assertBlockedBy(t, r, GuardPriceCeiling)
+	assertBlockedBy(t, r, GuardPrice)
 }
 
-func TestGuard_EraPayback_PastHardCutoff(t *testing.T) {
-	r := passingRequest()
-	r.HoursToEraEnd = 2 // inside the T-3h last-buy window
-	assertBlockedBy(t, r, GuardEraPayback)
-}
-
-func TestGuard_EraPayback_TooExpensiveToPayBack(t *testing.T) {
-	r := passingRequest()
-	// rate 80000 × 4h × 0.5 = 160000 < price 437000 → cannot pay back in the remaining era.
-	r.HoursToEraEnd = 4
-	assertBlockedBy(t, r, GuardEraPayback)
-}
-
-func TestGuard_EraPayback_EraUnreadableFailsClosed(t *testing.T) {
-	r := passingRequest()
-	r.EraReadable = false
-	assertBlockedBy(t, r, GuardEraPayback)
-}
-
-func TestGuard_EraPayback_RateUnreadableFailsClosed(t *testing.T) {
-	r := passingRequest()
-	// The era clock reads fine, but without a marginal rate we cannot prove payback → fail-closed.
-	// (guardRealizedRate would also block, but era_payback is evaluated first.)
-	r.RateReadable = false
-	assertBlockedBy(t, r, GuardEraPayback)
-}
-
-func TestGuard_RealizedRate_BelowFloor(t *testing.T) {
-	r := passingRequest()
-	r.MarginalRate = 50000 // below floor 56000 (era payback still passes: 50000×20×0.5=500000 ≥ 437000)
-	assertBlockedBy(t, r, GuardRealizedRate)
-}
-
-// sp-461l (epic sp-g9td) — the era-payback MONEY GUARD fires on the CASH-TRUE marginal rate, not the
-// ~2x-inflated telemetry-netting rate sp-rd21 diagnosed. The autosizer feeds this guard a MarginalRate
-// from fleet_autosizer_ports.FleetTourRate → trading.ComputeFleetTourRate, which reads PER-HULL
-// telemetry (the min per-ship realized $/hr). That per-hull attribution is why this consumer stays on
-// telemetry rather than the transactions-cash rate: the transactions ledger has NO ship column, so it
-// cannot yield a per-hull marginal, AND dividing an aggregate cash rate by hull count would raise the
-// min-based marginal and WEAKEN this guard (RULINGS #4 forbids). sp-rd21's write-path fix (dropped buy
-// legs now recorded) makes ComputeFleetTourRate reconcile 1.00x, so the marginal the guard reads is now
-// the TRUE rate. This test pins the consequence at the guard boundary: only the marginal source differs
-// between the two requests, and the money guard now REFUSES the overpriced hull the inflated speedo
-// would have APPROVED. The threshold arithmetic is unchanged — only the rate it reads is now honest.
-func TestGuard_EraPayback_FiresOnCashTrueRateNotInflatedTelemetry(t *testing.T) {
-	base := heavyRequest()
-	base.HoursToEraEnd = 10
-	base.PaybackSafety = 0.5
-	base.Price = 300000
-	base.MaxPriceClass = 0           // no absolute cap → isolate era_payback as the flip
-	base.CheapestKnownPrice = 300000 // premium cap 450k ≥ price → price_ceiling passes both cases
-	base.RateFloor = 30000           // both marginals clear the floor → realized_rate is not the flip
-
-	// TRUE (rd21-netted) marginal 40k/hr: maxAffordable = 40k × 10h × 0.5 = 200k < price 300k → REFUSE.
-	trueRate := base
-	trueRate.MarginalRate = 40000
-	assertBlockedBy(t, trueRate, GuardEraPayback)
-
-	// INFLATED (dropped-buy) marginal 80k/hr: maxAffordable = 80k × 10h × 0.5 = 400k ≥ 300k → the
-	// overpriced hull would have been APPROVED. This is the exact over-buy the cash-true fix prevents.
-	inflated := base
-	inflated.MarginalRate = 80000
-	if d := EvaluateGuards(inflated); !d.Approved {
-		t.Fatalf("the inflated 80k/hr marginal should have (wrongly) APPROVED the 300k hull — proving the guard's sensitivity to the rate — but blocked by %q: %s", d.BlockedBy, d.Arithmetic())
-	}
-}
-
-// heavyRequest is a HEAVY (trade) candidate where every guard passes — the class the sp-zbe6
-// concentration carve-out applies to (its Shortfall is the unserved profitable-lane count). Based on
-// the all-pass light request with the class flipped and the rate headroom kept (marginal 80000 ≥
-// floor 56000), so flipping ONE realized-rate field pins exactly the declining-stop-buy behaviour.
+// heavyRequest is a HEAVY (trade) candidate where every guard passes — the all-pass light request
+// with the class flipped, so a test that flips ONE field pins exactly one heavy-path refusal.
 func heavyRequest() PurchaseRequest {
 	r := passingRequest()
 	r.Class = HullClassHeavy
 	r.ShipType = "SHIP_HEAVY_FREIGHTER"
 	// The heavy-hull cap is a separate dial with its own tests (heavy_cap_test.go); open it
-	// here with a readable census so this file keeps pinning the realized-rate behaviour.
+	// here with a readable census so this file keeps pinning the guard each test is about.
 	r.HeaviesOwned = 1
 	r.HeavyCap = 5
 	r.HeaviesOwnedReadable = true
 	return r
 }
 
-// REGRESSION (the guard that prevents over-buying into a saturated market): a genuinely
-// saturated TRADE market — realized rate DECLINING with unserved lanes AT or BELOW the floor (the
-// fleet has already spread to nearly every profitable lane) — STILL stops buying, even though the
-// marginal clears the rate floor. The concentration carve-out must not loosen this away.
-func TestGuard_RealizedRate_DecliningStopsBuy(t *testing.T) {
-	r := heavyRequest()
-	r.RateDeclining = true
-	r.Shortfall = 2 // == the near-zero floor: genuine saturation, no fresh lane for the next heavy
-	assertBlockedBy(t, r, GuardRealizedRate)
-}
-
-// A DECLINING aggregate tour-rate does NOT stop a HEAVY buy when unserved lanes sit ABOVE
-// the floor — that decline is hull CONCENTRATION (the fleet compressed a few fat lanes), not
-// absorption saturation; the next heavy flies a FRESH unserved lane. The buy proceeds (the marginal
-// still clears the floor). The decision-log detail names the unserved-lane count so it is auditable.
-func TestGuard_RealizedRate_DecliningWithUnservedInventory_Proceeds(t *testing.T) {
-	r := heavyRequest()
-	r.RateDeclining = true
-	r.Shortfall = 28 // 28 profitable lanes unflown, floor 2
-	d := EvaluateGuards(r)
-	if !d.Approved {
-		t.Fatalf("a declining rate with 28 unserved lanes (> floor 2) must NOT block — concentration, not saturation; blocked by %q: %s", d.BlockedBy, d.Arithmetic())
-	}
-	arith := d.Arithmetic()
-	if !strings.Contains(arith, "28 unserved") {
-		t.Errorf("realized_rate detail must name the unserved-lane count for audit, got: %s", arith)
-	}
-	if !strings.Contains(arith, "concentration") {
-		t.Errorf("realized_rate detail must explain the decline is concentration not saturation, got: %s", arith)
-	}
-}
-
-// Off-by-one boundary + mutation anchor (heavy): with the floor at 2, the declining stop-buy
-// fires for unserved lanes AT or BELOW 2 (genuine near-zero saturation) and is bypassed ABOVE 2
-// (unserved inventory present). Input variations of one behavior → one parametrized test (Mandate 5).
-func TestGuard_RealizedRate_DecliningStopBuyFloorBoundary(t *testing.T) {
-	cases := []struct {
-		shortfall  int
-		wantBlock  bool
-		wantDetail string
-	}{
-		{shortfall: 1, wantBlock: true, wantDetail: "stop-buy"},       // below floor → saturated
-		{shortfall: 2, wantBlock: true, wantDetail: "stop-buy"},       // == floor → still saturated
-		{shortfall: 3, wantBlock: false, wantDetail: "concentration"}, // floor+1 → inventory present
-		{shortfall: 28, wantBlock: false, wantDetail: "concentration"},
-	}
-	for _, tc := range cases {
-		r := heavyRequest()
-		r.RateDeclining = true
-		r.UnservedDemandFloor = 2
-		r.Shortfall = tc.shortfall
-		d := EvaluateGuards(r)
-		blocked := d.BlockedBy == GuardRealizedRate
-		if blocked != tc.wantBlock {
-			t.Errorf("shortfall %d (floor 2): realized_rate blocked=%v, want %v — arithmetic: %s", tc.shortfall, blocked, tc.wantBlock, d.Arithmetic())
-		}
-		if !strings.Contains(d.Arithmetic(), tc.wantDetail) {
-			t.Errorf("shortfall %d: detail must contain %q, got: %s", tc.shortfall, tc.wantDetail, d.Arithmetic())
-		}
-	}
-}
-
-// Class-scope guard ("no behavior change to non-trade classes" + class-gate mutation
-// anchor): the concentration carve-out is TRADE-ONLY. A NON-heavy class (light) with a declining
-// realized rate STILL stops buying even with a large shortfall — a light's Shortfall is worker slots,
-// not unserved lanes, so it carries no concentration story and keeps the unconditional stop-buy.
-// Dropping the class gate (making the carve-out generic) makes this fail — proving it trade-scoped.
-func TestGuard_RealizedRate_NonHeavyDecliningAlwaysStops(t *testing.T) {
-	r := passingRequest() // HullClassLight
-	r.RateDeclining = true
-	r.Shortfall = 28          // a large shortfall must NOT buy the light out of a declining rate
-	r.UnservedDemandFloor = 2 // the heavy floor is irrelevant to a non-heavy class
-	assertBlockedBy(t, r, GuardRealizedRate)
-	if strings.Contains(EvaluateGuards(r).Arithmetic(), "concentration") {
-		t.Errorf("a non-heavy declining rate must NOT get the concentration carve-out: %s", EvaluateGuards(r).Arithmetic())
-	}
-}
-
-func TestGuard_TreasuryPct_TooExpensive(t *testing.T) {
+// CONJUNCTIVE MERGE, TERM 1 OF 2: affordability refuses on the PERCENT term ALONE.
+//
+// The floor+margin term is deliberately SATISFIED here (spendable 950000 >= 537000), so the only
+// thing that can refuse this purchase is the analyst's 25%-of-treasury single-hull rule. Deleting
+// the percent term from the merged guard makes this test pass a purchase it must refuse — which is
+// exactly the loosening a structural merge must never introduce. This test and its floor twin are
+// separate on purpose: one test cannot prove a conjunction kept both of its terms.
+func TestGuard_Affordability_RefusesOnThePercentTermAlone(t *testing.T) {
 	r := passingRequest()
-	// 25% of a 1M treasury = 250000 < price 437000. Keep the floor guard satisfied by a large
-	// reserve headroom so ONLY treasury_pct blocks.
-	r.LiveTreasury = 1000000
-	r.MarginOverFloor = 100000 // flat floor 50000, spendable 950000 ≥ 437000+100000 = 537000 (treasury_floor passes)
-	assertBlockedBy(t, r, GuardTreasuryPct)
+	r.LiveTreasury = 1000000   // 25% = 250000 < price 437000 → the percent rule refuses
+	r.MarginOverFloor = 100000 // floor term PASSES: 1000000 − 50000 = 950000 >= 437000+100000
+	assertBlockedBy(t, r, GuardAffordability)
 }
 
-func TestGuard_TreasuryPct_NotAppliedWhenZero(t *testing.T) {
+// The percent rule is per-class and OFF for lights (pct=0). "Off" must mean this TERM does not
+// refuse — never that the merged guard waves the buy through: the floor+margin term below is
+// satisfied here, and its own test proves it still bites when it is not.
+func TestGuard_Affordability_PercentTermNotAppliedWhenZero(t *testing.T) {
 	r := passingRequest()
 	r.TreasuryPctPerBuy = 0   // lights: affordability-% rule off
 	r.LiveTreasury = 600000   // would fail a 25% rule, but the rule is off
 	r.MarginOverFloor = 50000 // flat floor 50000, spendable 550000 ≥ 437000+50000 = 487000
 	d := EvaluateGuards(r)
 	for _, v := range d.Verdicts {
-		if v.Guard == GuardTreasuryPct && !v.Passed {
-			t.Fatalf("treasury_pct must PASS when the rule is off (pct=0), got block: %s", v.Detail)
+		if v.Guard == GuardAffordability && !v.Passed {
+			t.Fatalf("the percent term must not refuse when the rule is off (pct=0), got block: %s", v.Detail)
 		}
 	}
 }
@@ -321,28 +211,37 @@ func TestGuard_APIUtil_UnderCeilingPasses(t *testing.T) {
 	}
 }
 
-func TestGuard_TreasuryFloor_InsufficientAfterFloor(t *testing.T) {
+// CONJUNCTIVE MERGE, TERM 2 OF 2: affordability refuses on the FLOOR+MARGIN term ALONE.
+//
+// The percent term is deliberately SATISFIED and LEFT ON (pct=25, cap 25% × 2,000,000 = 500000 >=
+// price 437000), so the percent rule has no objection to this buy — only the immutable reserve
+// floor plus the required margin does. Deleting the floor term from the merged guard makes this
+// test approve a purchase that would leave the treasury under its reserve.
+func TestGuard_Affordability_RefusesOnTheFloorAndMarginTermAlone(t *testing.T) {
 	r := passingRequest()
-	// Low treasury: even the immutable 50k floor leaves too little for price+margin.
-	r.LiveTreasury = 300000 // spendable 300000 − 50000(flat floor) = 250000 < 437000+200000
-	r.TreasuryPctPerBuy = 0 // isolate the floor guard (25% rule off so it isn't the first blocker)
-	assertBlockedBy(t, r, GuardTreasuryFloor)
+	r.LiveTreasury = 2000000    // percent term PASSES: 25% = 500000 >= price 437000
+	r.MarginOverFloor = 1600000 // floor term REFUSES: 2000000 − 50000 = 1950000 < 437000+1600000
+	assertBlockedBy(t, r, GuardAffordability)
 }
 
-func TestGuard_TreasuryFloor_UnreadableFailsClosed(t *testing.T) {
-	r := passingRequest()
-	r.TreasuryReadable = false
-	// treasury_pct is applied (pct=25) and also fail-closes on unreadable treasury, and is
-	// evaluated first — so it is the named blocker. Turn it off to isolate the floor guard.
-	r.TreasuryPctPerBuy = 0
-	assertBlockedBy(t, r, GuardTreasuryFloor)
+// RULINGS #4: an unreadable treasury fails CLOSED — a buy must never proceed on an unknown balance.
+// Pinned with the percent rule BOTH on and off, because the merged guard hoisted the readability
+// check above both terms: with pct=0 the old treasury_pct passed vacuously and only treasury_floor
+// refused, so the pair's refusal had to survive the hoist in that case too.
+func TestGuard_Affordability_UnreadableTreasuryFailsClosed(t *testing.T) {
+	for _, pct := range []int{25, 0} {
+		r := passingRequest()
+		r.TreasuryReadable = false
+		r.TreasuryPctPerBuy = pct
+		assertBlockedBy(t, r, GuardAffordability)
+	}
 }
 
 // The decision log carries the full arithmetic for every guard (the park-line idiom).
 func TestDecision_ArithmeticLogsEveryGuard(t *testing.T) {
 	d := EvaluateGuards(passingRequest())
 	arith := d.Arithmetic()
-	for _, name := range []GuardName{GuardDemand, GuardFleetCeiling, GuardPerTickCap, GuardPriceRead, GuardPriceCeiling, GuardEraPayback, GuardRealizedRate, GuardTreasuryPct, GuardAPIUtil, GuardTreasuryFloor} {
+	for _, name := range []GuardName{GuardDemand, GuardClassCeiling, GuardPerTickCap, GuardPrice, GuardHeavyCap, GuardAffordability, GuardAPIUtil} {
 		if !strings.Contains(arith, string(name)) {
 			t.Errorf("arithmetic log missing guard %q: %s", name, arith)
 		}
@@ -364,14 +263,11 @@ func TestDecision_BlockedByFirstFailure(t *testing.T) {
 	}
 }
 
-// --- The EXPLORER payback exemption (the crux) ----------------------
+// --- The EXPLORER class runs the SAME guard stack as everything else ----------------------
 
-// explorerPassingRequest is an EXPLORER candidate where every REUSED guard passes and the
-// realized-rate inputs are UNSET (MarginalRate=0, RateReadable=false, EraReadable=false) — exactly
-// what an explorer looks like (it buys REACH, not income, so it has no marginal rate). A non-
-// explorer with these same unset rate inputs would fail the era-payback + realized-rate guards
-// CLOSED; the explorer is EXEMPT, so this request must be APPROVED. Each explorer test flips ONE
-// field to pin exactly one reused guard's refusal, proving the exemption did NOT open any other gate.
+// explorerPassingRequest is an EXPLORER candidate where every REUSED guard passes. Each explorer
+// test flips ONE field to pin exactly one reused guard's refusal, proving the exemption did NOT open
+// any other gate.
 func explorerPassingRequest() PurchaseRequest {
 	return PurchaseRequest{
 		Class:    HullClassExplorer,
@@ -381,8 +277,6 @@ func explorerPassingRequest() PurchaseRequest {
 
 		CurrentClassCount: 0, // no explorer owned yet
 		ClassCeiling:      1, // HARD CAP 1
-		CurrentTotalCount: 20,
-		TotalCeiling:      50,
 
 		PurchasesThisTick: 0,
 		PerTickCap:        1,
@@ -392,16 +286,6 @@ func explorerPassingRequest() PurchaseRequest {
 		CheapestKnownPrice: 819000,
 		MaxPriceClass:      900000, // ~819k + premium price ceiling
 		MaxPremiumPct:      50,
-
-		// Realized-rate inputs deliberately UNSET — the explorer has none.
-		HoursToEraEnd:  0,
-		EraReadable:    false,
-		EraCutoffHours: 3,
-		PaybackSafety:  0.5,
-		MarginalRate:   0,
-		RateFloor:      0,
-		RateReadable:   false,
-		RateDeclining:  false,
 
 		LiveTreasury:      10000000,
 		TreasuryReadable:  true,
@@ -414,55 +298,19 @@ func explorerPassingRequest() PurchaseRequest {
 	}
 }
 
-// The exemption itself: an explorer with NO provable payback (era + rate unreadable) is APPROVED —
-// it is exploration-justified, not income-justified. This is the whole point of the feature.
-func TestGuard_Explorer_ExemptFromRealizedRatePaybackGuards(t *testing.T) {
-	d := EvaluateGuards(explorerPassingRequest())
-	if !d.Approved {
-		t.Fatalf("explorer must be APPROVED despite unset payback/rate (exploration-justified); blocked by %q: %s", d.BlockedBy, d.Arithmetic())
-	}
-}
-
-// THE CRITICAL REGRESSION + class-gate mutation guard: a NON-explorer (light) with the SAME unset
-// payback inputs is STILL REFUSED. If the class-gate on the exemption is removed (exemption applied
-// to every class), this test fails — proving the carve-out is scoped to HullClassExplorer ONLY.
-func TestGuard_NonExplorer_UnprovablePayback_StillRefused(t *testing.T) {
-	r := explorerPassingRequest()
-	r.Class = HullClassLight // a light with no provable payback must NOT get the exemption
-	d := EvaluateGuards(r)
-	if d.Approved {
-		t.Fatalf("a NON-explorer with unprovable payback must be REFUSED — the exemption leaked to %q; arithmetic: %s", r.Class, d.Arithmetic())
-	}
-	if d.BlockedBy != GuardEraPayback {
-		t.Fatalf("a non-explorer with unreadable era clock must block on era_payback first, got %q: %s", d.BlockedBy, d.Arithmetic())
-	}
-}
-
-// The explorer decision log carries an explicit explorer_exempt verdict and does NOT run the two
-// income guards — the captain reading the log sees exactly why the payback proof was waived.
-func TestGuard_Explorer_ExemptVerdictLoggedAndIncomeGuardsSkipped(t *testing.T) {
-	arith := EvaluateGuards(explorerPassingRequest()).Arithmetic()
-	if !strings.Contains(arith, string(GuardExplorerExempt)) {
-		t.Errorf("explorer arithmetic must carry the explorer_exempt verdict: %s", arith)
-	}
-	if strings.Contains(arith, string(GuardEraPayback)) || strings.Contains(arith, string(GuardRealizedRate)) {
-		t.Errorf("explorer must NOT run the era_payback/realized_rate income guards: %s", arith)
-	}
-}
-
 // The HARD CAP is enforced by the reused fleet-ceiling guard with ClassCeiling=1: a second explorer
 // (one already owned) is refused. The exemption did not disable the ceiling.
 func TestGuard_Explorer_HardCapCeilingRefusesSecond(t *testing.T) {
 	r := explorerPassingRequest()
 	r.CurrentClassCount = 1 // one explorer already owned; ceiling is 1
-	assertBlockedBy(t, r, GuardFleetCeiling)
+	assertBlockedBy(t, r, GuardClassCeiling)
 }
 
 // The PRICE CEILING still bites: an explorer priced above the ~819k+premium cap is refused.
 func TestGuard_Explorer_PriceCeilingRefusesOverpriced(t *testing.T) {
 	r := explorerPassingRequest()
 	r.Price = 950000 // above the 900000 class cap
-	assertBlockedBy(t, r, GuardPriceCeiling)
+	assertBlockedBy(t, r, GuardPrice)
 }
 
 // The DEMAND gate still bites: no shortfall ⇒ no buy (the explorer is not exempt from needing demand).
@@ -478,11 +326,11 @@ func TestGuard_Explorer_ReusedTreasuryGuardsStillBite(t *testing.T) {
 	unreadable := explorerPassingRequest()
 	unreadable.TreasuryReadable = false
 	// treasury_pct (25%, applied to the explorer) fail-closes on unreadable treasury and is first.
-	assertBlockedBy(t, unreadable, GuardTreasuryPct)
+	assertBlockedBy(t, unreadable, GuardAffordability)
 
 	tooExpensive := explorerPassingRequest()
 	tooExpensive.LiveTreasury = 2000000 // 25% = 500000 < price 819000 → affordability rule blocks
-	assertBlockedBy(t, tooExpensive, GuardTreasuryPct)
+	assertBlockedBy(t, tooExpensive, GuardAffordability)
 
 	apiSaturated := explorerPassingRequest()
 	apiSaturated.APIUtilReadable = false // fail-closed still holds for the explorer

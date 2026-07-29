@@ -199,7 +199,7 @@ built-in defaults (`config/defaults.go`). Sections (root `Config` struct):
 | `worker_rebalancer` | worker ferrying (`ferry_cooldown_secs`, `max_concurrent_ferries`, `vacancy_min_minutes`) | **B** |
 | `manufacturing` (+ `manufacturing.siting`) | factories (`working_capital_reserve`, `chain_pnl_kill_threshold_per_hour`/`_window_hours`, `input_price_ceiling_multiplier`, feed bounds; siting = 12 weights/caps) | **B** |
 | `scouting` | scout-post thresholds/cooldowns | A (+ some B) |
-| `fleet_autosizer` | hull-pool sizing (`fleet_ceiling_total/lights/heavies/warehouse`, `heavy_treasury_pct_per_purchase`, purchase margins) | **B** |
+| `fleet_autosizer` | hull-pool sizing (`fleet_ceiling_lights/heavies` — per-class only, no fleet-wide total; `heavy_treasury_pct_per_purchase`, purchase margins) | **B** |
 | `bootstrap` | cold-start (`probe_target`, `coverage_bar`, `reserve_margin`, `bootstrap_disabled`, `dry_run`) | **B** |
 | `capacity_reconciler` | contract-topology reconciler (`reserve_floor_credits`) | B |
 | `ship_resync` | ship-state resync cadence | BOOT/A |

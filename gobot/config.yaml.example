@@ -552,9 +552,14 @@ fleet_autosizer:
   # tick_interval_secs: 900
   # purchase_cap_per_tick: 1
 
-  # Fleet ceilings — the HARD API-request-budget bound (each hull adds request load). 0 => the
-  # protective defaults (total 50, lights 35, heavies 15, warehouse 8). Raise from evidence.
-  # fleet_ceiling_total: 50
+  # PER-CLASS ceilings — the HARD API-request-budget bound (each hull adds request load). 0 => the
+  # protective defaults (lights 35, heavies 15). Raise from evidence.
+  #
+  # There is deliberately NO fleet_ceiling_total. A single absolute cap across ALL classes starves
+  # every other class the moment the probe frontier grows: 244 of 277 live hulls are probes and that
+  # count is meant to reach the thousands, so the total was already raised 50 -> 150 once and blown
+  # past again. A `fleet_ceiling_total:` key left over from an older config is IGNORED on read
+  # (viper's non-strict unmarshal drops unknown keys) — it neither blocks nor errors.
   # fleet_ceiling_lights: 35
   # fleet_ceiling_heavies: 15
   # fleet_ceiling_warehouse: 8
@@ -591,20 +596,12 @@ fleet_autosizer:
   # C3 rotation math). 0 => 3.5.
   # light_rotation_slots: 3.5
 
-  # HEAVY (trade) demand. heavy_marginal_rate_floor is the fraction of the class's fleet-average
-  # realized $/hr the marginal hull must clear (0 => 0.7). heavy_unserved_lanes_min is how many
-  # CONSECUTIVE ticks the profitable-lanes-beyond-hulls shortfall must persist before a heavy is bought
-  # (0 => 3, anti-thrash). heavy_treasury_pct_per_purchase is the analyst 25%-of-treasury affordability
-  # rule per big-ticket buy (0 => 25).
-  # heavy_marginal_rate_floor: 0.7
+  # HEAVY (trade) demand. heavy_unserved_lanes_min is how many CONSECUTIVE ticks the
+  # profitable-lanes-beyond-hulls shortfall must persist before a heavy is bought (0 => 3,
+  # anti-thrash — it is part of the `demand` guard's verdict). heavy_treasury_pct_per_purchase is the
+  # analyst 25%-of-treasury affordability rule per big-ticket buy (0 => 25).
   # heavy_unserved_lanes_min: 3
   # heavy_treasury_pct_per_purchase: 25
-
-  # ERA-CLOCK payback guard — hulls evaporate at reset, so a buy must pay back in-era. Buy only if
-  # price <= expected_marginal_rate x hours_to_era_end x payback_safety_factor (0 => 0.5), and NEVER
-  # inside the hard last-buy window purchase_cutoff_at_era_minus_hours before reset (0 => 3.0 = T-3h).
-  # payback_safety_factor: 0.5
-  # purchase_cutoff_at_era_minus_hours: 3.0
 
   # PRICE ceilings + yard preference. max_price_lights / max_price_heavies cap the absolute price paid
   # (0 => no absolute cap). max_premium_over_cheapest_pct caps the premium over the cheapest known yard

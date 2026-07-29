@@ -132,28 +132,14 @@ func TestResolveConfig_Defaults(t *testing.T) {
 	if cfg.PurchaseCapPerTick != defaultPurchaseCapPerTick {
 		t.Errorf("purchase cap default = %d, want %d", cfg.PurchaseCapPerTick, defaultPurchaseCapPerTick)
 	}
-	if cfg.FleetCeilingTotal != defaultFleetCeilingTotal {
-		t.Errorf("fleet ceiling total default = %d, want %d", cfg.FleetCeilingTotal, defaultFleetCeilingTotal)
+	if cfg.FleetCeilingLights != defaultFleetCeilingLights || cfg.FleetCeilingHeavies != defaultFleetCeilingHeavies {
+		t.Errorf("per-class ceiling defaults = %d/%d, want %d/%d", cfg.FleetCeilingLights, cfg.FleetCeilingHeavies, defaultFleetCeilingLights, defaultFleetCeilingHeavies)
 	}
 	if cfg.PurchaseMarginOverFloor != defaultPurchaseMarginOverFloor {
 		t.Errorf("purchase margin default = %d, want %d", cfg.PurchaseMarginOverFloor, defaultPurchaseMarginOverFloor)
 	}
 	if cfg.LightRotationSlots != defaultLightRotationSlots {
 		t.Errorf("light rotation default = %v, want %v", cfg.LightRotationSlots, defaultLightRotationSlots)
-	}
-	if cfg.HeavyMarginalRateFloor != defaultHeavyMarginalRateFloor {
-		t.Errorf("heavy marginal rate floor default = %v, want %v", cfg.HeavyMarginalRateFloor, defaultHeavyMarginalRateFloor)
-	}
-	// The declining-rate unserved floor must resolve to its documented default (never 0 — a 0 floor
-	// would silently disable the declining stop-buy since the demand guard forces Shortfall>0).
-	if cfg.DecliningRateUnservedFloor != defaultDecliningRateUnservedFloor {
-		t.Errorf("declining-rate unserved floor default = %d, want %d", cfg.DecliningRateUnservedFloor, defaultDecliningRateUnservedFloor)
-	}
-	if cfg.PaybackSafetyFactor != defaultPaybackSafetyFactor {
-		t.Errorf("payback safety default = %v, want %v", cfg.PaybackSafetyFactor, defaultPaybackSafetyFactor)
-	}
-	if cfg.PurchaseCutoffAtEraMinus != time.Duration(defaultPurchaseCutoffEraMinusHours*float64(time.Hour)) {
-		t.Errorf("era cutoff default = %v, want %v", cfg.PurchaseCutoffAtEraMinus, time.Duration(defaultPurchaseCutoffEraMinusHours*float64(time.Hour)))
 	}
 	if cfg.ShipTypeLights != defaultShipTypeLights || cfg.ShipTypeHeavies != defaultShipTypeHeavies {
 		t.Errorf("ship type defaults = %q/%q, want %q/%q", cfg.ShipTypeLights, cfg.ShipTypeHeavies, defaultShipTypeLights, defaultShipTypeHeavies)
@@ -174,23 +160,19 @@ func TestResolveConfig_ExplicitFalseProximalYard(t *testing.T) {
 
 func TestResolveConfig_OverridesRespected(t *testing.T) {
 	cfg := resolveFleetAutosizerConfig(&RunFleetAutosizerCoordinatorCommand{
-		TickIntervalSecs:           60,
-		PurchaseCapPerTick:         3,
-		FleetCeilingTotal:          100,
-		LightRotationSlots:         4.0,
-		DecliningRateUnservedFloor: 5,
+		TickIntervalSecs:    60,
+		PurchaseCapPerTick:  3,
+		FleetCeilingHeavies: 100,
+		LightRotationSlots:  4.0,
 	})
-	if cfg.DecliningRateUnservedFloor != 5 {
-		t.Errorf("declining-rate unserved floor override = %d, want 5", cfg.DecliningRateUnservedFloor)
-	}
 	if cfg.Tick != 60*time.Second {
 		t.Errorf("tick override = %v, want 60s", cfg.Tick)
 	}
 	if cfg.PurchaseCapPerTick != 3 {
 		t.Errorf("cap override = %d, want 3", cfg.PurchaseCapPerTick)
 	}
-	if cfg.FleetCeilingTotal != 100 {
-		t.Errorf("ceiling override = %d, want 100", cfg.FleetCeilingTotal)
+	if cfg.FleetCeilingHeavies != 100 {
+		t.Errorf("ceiling override = %d, want 100", cfg.FleetCeilingHeavies)
 	}
 	if cfg.LightRotationSlots != 4.0 {
 		t.Errorf("rotation override = %v, want 4.0", cfg.LightRotationSlots)

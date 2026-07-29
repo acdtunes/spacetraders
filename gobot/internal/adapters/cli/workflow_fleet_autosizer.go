@@ -17,13 +17,12 @@ import (
 // recovery-safe coordinator container and returns its id. The coordinator survives daemon restarts
 // (it re-adopts from its persisted launch config). It is LIVE BY DEFAULT: launched here it is ACTIVE
 // immediately (no enablement flip) — every purchase runs the full guard stack, so a buy fires only
-// when live treasury (net of the reserve floor), the era-clock payback window, the realized-$/hr
-// floor, the price ceilings, the per-tick cap, and the fleet ceilings all clear.
+// when live treasury (net of the reserve floor), the price ceilings, the per-tick cap, and the
+// class ceilings all clear.
 //
-// All tuning lives in config.yaml's [fleet_autosizer] section (the disables, the per-class ceilings,
-// the era-clock payback + price + realized-rate knobs, the purchase margin/cap), resolved LIVE on
-// every build — so a retune is `edit config.yaml + restart daemon`, no code redeploy. This command
-// only names the player/agent.
+// All tuning lives in config.yaml's [fleet_autosizer] section (the per-class ceilings, the price
+// knobs, the purchase margin/cap), resolved LIVE on every build — so a retune is `edit config.yaml
+// + restart daemon`, no code redeploy. This command only names the player/agent.
 func newWorkflowFleetAutosizerCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "fleet-autosizer",
@@ -38,11 +37,10 @@ Each slow tick (default 15min) it, per enabled hull class:
            HEAVIES = one hull per profitable-but-unflown solver lane beyond the trade-hull count
                     (fail-closed until that lane-count read path lands).
   GUARD    a candidate buy passes ONLY if EVERY guard clears (fail-closed — any unreadable input
-           blocks): demand>current, per-class + absolute fleet ceiling, per-tick cap, price
-           readable, per-class price ceiling, era-clock payback (price <= rate x hours-to-reset x
-           safety, hard T-3h cutoff), realized-$/hr floor + decline stop-buy, treasury-% rule, and
-           treasury net of the reserve floor >= price + margin. API-utilization fails OPEN (the
-           ceilings are the hard budget bound). Every decision logs its full arithmetic.
+           blocks): demand>current, the class's own ceiling, per-tick cap, price
+           readable, per-class price ceiling, treasury-% rule, and treasury net of the reserve
+           floor >= price + margin. API-utilization fails CLOSED (an unreadable utilization holds
+           growth). Every decision logs its arithmetic.
   BUY      on approval it buys ONE hull and DEDICATES it to its class fleet in the same breath
            (dedicate-at-purchase, so no coordinator poaches a heavy/warehouse hull), emits the
            purchase counter + a captain notice, and stops at the per-tick cap.
@@ -52,11 +50,10 @@ stack clears. Watch it through the per-decision arithmetic in the log.
 
 Tuning is config-driven (config.yaml [fleet_autosizer], live on daemon restart):
   tick_interval_secs / purchase_cap_per_tick                          pacing
-  fleet_ceiling_total / fleet_ceiling_{lights,heavies}                API-budget ceilings
+  fleet_ceiling_{lights,heavies}                                      per-class API-budget ceilings
   purchase_margin_over_floor                                          treasury guard (margin over the
                                                                        immutable reserve floor)
-  payback_safety_factor / purchase_cutoff_at_era_minus_hours          era-clock payback
-  heavy_marginal_rate_floor / heavy_unserved_lanes_min                heavy economics
+  heavy_unserved_lanes_min                                            heavy anti-thrash streak
   max_price_{lights,heavies} / max_premium_over_cheapest_pct          price ceilings
 
 Examples:

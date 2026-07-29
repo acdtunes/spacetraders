@@ -18,7 +18,7 @@ func TestGuard_TreasuryFloor_HeavyReserveRaisesTheFloor(t *testing.T) {
 	// treasury 5,000,000 − floor 50,000 = 4,950,000 spendable vs price 437,000 + margin 200,000.
 	// A 4,500,000 reserve leaves 450,000 — no longer enough for the 637,000 needed.
 	r.HeavyReserve = 4_500_000
-	assertBlockedBy(t, r, GuardTreasuryFloor)
+	assertBlockedBy(t, r, GuardAffordability)
 }
 
 // ...and when the reserve clears (heavy bought, or capability closed), the same buy proceeds.
@@ -46,7 +46,7 @@ func TestGuard_TreasuryFloor_HeavyReserveIsExact(t *testing.T) {
 
 	oneShort := base
 	oneShort.HeavyReserve = spendable - need + 1 // one credit too much reserved
-	assertBlockedBy(t, oneShort, GuardTreasuryFloor)
+	assertBlockedBy(t, oneShort, GuardAffordability)
 }
 
 // THE ANTI-CIRCULARITY PIN. The reserve is held for the NEXT heavy; the heavy purchase it is
@@ -78,7 +78,7 @@ func TestGuard_TreasuryFloor_HeavyArithmeticNamesTheWaivedReserve(t *testing.T) 
 	d := EvaluateGuards(r)
 	var floorDetail string
 	for _, v := range d.Verdicts {
-		if v.Guard == GuardTreasuryFloor {
+		if v.Guard == GuardAffordability {
 			floorDetail = v.Detail
 		}
 	}
@@ -94,7 +94,7 @@ func TestGuard_TreasuryFloor_ArithmeticNamesTheHeldReserve(t *testing.T) {
 	d := EvaluateGuards(r)
 	var floorDetail string
 	for _, v := range d.Verdicts {
-		if v.Guard == GuardTreasuryFloor {
+		if v.Guard == GuardAffordability {
 			floorDetail = v.Detail
 		}
 	}
@@ -201,7 +201,7 @@ func (f *slippingPurchaser) BuyAndDedicate(_ context.Context, order BuyOrder) (B
 // recordingPurchaser (which echoes the quote back) this assertion held for `res.Price` and
 // `req.Price` alike — it could not fail, and its comment claimed a property nothing tested.
 func TestReconcile_HeavyPremiumBindsOnTheExecutedPriceNotTheQuote(t *testing.T) {
-	h, _, metrics, _ := armedForHeavy(heavyProvider(6, 2, 500000, 450000, false))
+	h, _, metrics, _ := armedForHeavy(heavyProvider(6, 2))
 	purchaser := &slippingPurchaser{slippage: heavyExecutionSlippage}
 	h.SetPurchaser(purchaser)
 

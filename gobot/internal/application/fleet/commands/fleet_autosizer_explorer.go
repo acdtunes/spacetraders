@@ -111,7 +111,6 @@ func (p *ExplorerDemandProvider) Demand(ctx context.Context, playerID int, param
 		Demand:   want,
 		Current:  current,
 		Readable: true,
-		// MarginalRate/RateReadable LEFT UNSET — the explorer is payback-exempt (see EvaluateGuards).
-		Reason: fmt.Sprintf("off-gate demand firing (signal wants %d, hard cap %d); explorer pool %d — exploration-justified, payback-exempt", wantCount, hardCap, current),
+		Reason:   fmt.Sprintf("off-gate demand firing (signal wants %d, hard cap %d); explorer pool %d — exploration-justified, payback-exempt", wantCount, hardCap, current),
 	}, nil
 }

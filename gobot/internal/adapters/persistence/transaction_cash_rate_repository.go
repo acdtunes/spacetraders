@@ -9,9 +9,9 @@ import (
 )
 
 // transaction_cash_rate_repository.go — the DEFINITIVE transactions-cash realized $/hr
-// reader. It is the cash-true counterpart of the telemetry read
-// the autosizer uses (fleet_autosizer_ports.FleetTourRate → trading.ComputeFleetTourRate):
-// a thin windowed SQL sum over the transactions ledger + a deferral to the pure
+// reader. It is the cash-true counterpart of the per-leg telemetry read the tour
+// coordinator uses (trading.MedianTourRate): a thin windowed SQL sum over the
+// transactions ledger + a deferral to the pure
 // trading.ComputeCashRealizedRate for the arithmetic.
 //
 // It sums the signed amount over the three cash-flow transaction types a trade round-trip

@@ -12,21 +12,18 @@ import (
 //
 //	demand_heavies = current_heavies + unserved_profitable_lanes
 //
-// The ECONOMIC gate is applied by the guard stack, not here: the provider reports the fleet-average
-// realized tour $/hr and the MARGINAL heavy's realized rate, plus whether the fleet-average trend
-// is declining (absorption saturating). The realized-rate guard buys only while the marginal rate
-// holds near the fleet average, and stops on decay; the coordinator additionally requires the
-// unserved-lane shortfall to persist heavy_unserved_lanes_min consecutive ticks before buying
-// (that anti-thrash streak lives in the coordinator's ACT step, where the tick state is).
+// The SPEND gate is applied by the guard stack, not here (price ceilings, class ceiling, heavy cap,
+// affordability); the coordinator additionally requires the unserved-lane shortfall to persist
+// heavy_unserved_lanes_min consecutive ticks before buying (that anti-thrash streak lives in the
+// coordinator's ACT step, where the tick state is).
 //
-// SEAM (banked): the unserved-lane count and the realized tour-rate read paths are
-// the heavy-demand data risk. This provider is fail-CLOSED on an unreadable lane count — no lane
+// SEAM (banked): the unserved-lane count read path is the heavy-demand data risk. This provider is fail-CLOSED on an unreadable lane count — no lane
 // signal, no buy — so a concrete source that cannot yet surface the count leaves heavies un-bought
 // (never wrongly bought) until the seam is wired (the vdld TourAlignmentProvider precedent).
 
 // HeavyDemandSources are the reads the heavy-demand model consumes. Concrete impls wrap the
-// ship repo (DedicatedFleet=="trade" count), the trade solver's profitable-lane surface, and the
-// tour telemetry realized-rate reader; tests inject fakes.
+// ship repo (DedicatedFleet=="trade" count) and the trade solver's profitable-lane surface;
+// tests inject fakes.
 type HeavyDemandSources interface {
 	// HeavyCount is the current trade-dedicated hull count.
 	HeavyCount(ctx context.Context, playerID int) (int, error)
@@ -34,10 +31,6 @@ type HeavyDemandSources interface {
 	// the current heavy count — the capacity-short signal. readable=false when the solver surface
 	// has no read path yet (the banked seam): the provider then fails closed (no buy).
 	UnservedLaneCount(ctx context.Context, playerID int) (count int, readable bool, err error)
-	// FleetTourRate returns the fleet-average realized tour $/hr, the MARGINAL (lowest-earning)
-	// heavy's realized rate, whether the fleet-average trend is declining (absorption saturating),
-	// and whether any of it was readable.
-	FleetTourRate(ctx context.Context, playerID int) (fleetAvg, marginal float64, declining, readable bool, err error)
 }
 
 // HeavyDemandProvider sizes the trade-tour pool to unserved trade demand.
@@ -56,8 +49,7 @@ func (p *HeavyDemandProvider) Class() HullClass { return HullClassHeavy }
 // Demand reads the heavy count and the unserved-lane count and returns the sized heavy demand. It
 // fails CLOSED (Readable=false, no buy) when the heavy count or the unserved-lane signal cannot be
 // read — buying trade hulls against a demand signal we cannot see is exactly the runaway the guard
-// stack exists to prevent. An unreadable realized rate is surfaced as RateReadable=false so the
-// guard fails the rate gate closed on its own, without blocking demand sizing.
+// stack exists to prevent.
 func (p *HeavyDemandProvider) Demand(ctx context.Context, playerID int, params DemandParams) (ClassDemand, error) {
 	heavies, err := p.sources.HeavyCount(ctx, playerID)
 	if err != nil {
@@ -71,17 +63,9 @@ func (p *HeavyDemandProvider) Demand(ctx context.Context, playerID int, params D
 		}
 		return unreadableHeavy(reason), nil
 	}
-	fleetAvg, marginal, declining, rateReadable, rerr := p.sources.FleetTourRate(ctx, playerID)
-	if rerr != nil {
-		rateReadable = false
-	}
 	return computeHeavyDemand(heavyDemandInputs{
 		CurrentHeavies: heavies,
 		UnservedLanes:  lanes,
-		MarginalRate:   marginal,
-		FleetAvgRate:   fleetAvg,
-		RateDeclining:  declining,
-		RateReadable:   rateReadable,
 	}), nil
 }
 
@@ -89,10 +73,6 @@ func (p *HeavyDemandProvider) Demand(ctx context.Context, playerID int, params D
 type heavyDemandInputs struct {
 	CurrentHeavies int
 	UnservedLanes  int
-	MarginalRate   float64
-	FleetAvgRate   float64
-	RateDeclining  bool
-	RateReadable   bool
 }
 
 // computeHeavyDemand is the pure heavy-sizing math: one wanted hull per unserved profitable lane
@@ -104,15 +84,11 @@ func computeHeavyDemand(in heavyDemandInputs) ClassDemand {
 		unserved = 0
 	}
 	return ClassDemand{
-		Class:         HullClassHeavy,
-		Demand:        in.CurrentHeavies + unserved,
-		Current:       in.CurrentHeavies,
-		MarginalRate:  in.MarginalRate,
-		FleetAvgRate:  in.FleetAvgRate,
-		RateDeclining: in.RateDeclining,
-		RateReadable:  in.RateReadable,
-		Readable:      true,
-		Reason:        fmt.Sprintf("%d heavies + %d unserved profitable lanes = %d (marginal %.0f vs fleet-avg %.0f, declining=%v)", in.CurrentHeavies, unserved, in.CurrentHeavies+unserved, in.MarginalRate, in.FleetAvgRate, in.RateDeclining),
+		Class:    HullClassHeavy,
+		Demand:   in.CurrentHeavies + unserved,
+		Current:  in.CurrentHeavies,
+		Readable: true,
+		Reason:   fmt.Sprintf("%d heavies + %d unserved profitable lanes = %d", in.CurrentHeavies, unserved, in.CurrentHeavies+unserved),
 	}
 }
 

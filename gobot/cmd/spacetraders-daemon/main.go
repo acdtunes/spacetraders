@@ -907,8 +907,8 @@ func run(cfg *config.Config) error {
 	explorerWarpDispatcher := expansionAdapters.NewExplorerWarpDispatcher(routeExecutor, shipRepo, warpWaypointSource)
 
 	fleetAutosizerHandler := grpc.NewFleetAutosizerCoordinatorHandler(
-		daemonServer, apiClient, shipRepo, med, persistence.NewGormChainPnLRepository(db), waypointRepo, captainEventRepo,
-		marketRepo, persistence.NewTourTelemetryRepository(db),
+		daemonServer, apiClient, shipRepo, med, waypointRepo, captainEventRepo,
+		marketRepo,
 		shipyardQuery.NewReachableYardFinder(shipyardInventoryRepo, gateGraphService),
 		explorerOffGateBridge, // sp-a3yn: explorer demand provider reads off-gate demand through this bridge
 		shipyardInventoryRepo, // sp-fwk8z: cheapest KNOWN PRICED heavy yard — the reservation's price term

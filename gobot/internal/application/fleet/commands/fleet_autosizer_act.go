@@ -10,7 +10,7 @@ import (
 )
 
 // The ACT step: the coordinator reads the tick's shared inputs (treasury, era clock,
-// API utilization, total fleet size) once, then for each class with unmet demand assembles a fully
+// API utilization, owned-heavy census) once, then for each class with unmet demand assembles a fully
 // -resolved PurchaseRequest, runs it through the fail-closed guard stack, and on approval buys
 // ONE hull and dedicates it to its class fleet IN THE SAME BREATH (dedicate-at-purchase). Every
 // decision logs its full arithmetic (the park-line idiom), so the captain retunes the
@@ -43,21 +43,10 @@ type HeavyYardReader interface {
 	CheapestHeavyPrice(ctx context.Context, playerID int) (price int64, found bool, err error)
 }
 
-// EraClockReader reads the hours remaining until the universe reset (era end). readable=false ⇒
-// the era-payback guard fails closed (a hull must pay back before it evaporates at reset).
-type EraClockReader interface {
-	HoursToEraEnd(ctx context.Context) (hours float64, readable bool, err error)
-}
-
 // APIUtilizationReader reads the sustained request-utilization percent. readable=false ⇒ the
 // API-util guard fails CLOSED: an unreadable/absent utilization surface holds concurrency growth.
 type APIUtilizationReader interface {
 	UtilizationPct(ctx context.Context) (pct float64, readable bool, err error)
-}
-
-// FleetSizeReader reads the player's total hull count for the absolute fleet ceiling.
-type FleetSizeReader interface {
-	TotalHulls(ctx context.Context, playerID int) (int, error)
 }
 
 // YardPriceReader reads the purchase price for a ship type at the preferred yard (demand-proximal
@@ -117,12 +106,8 @@ type MetricsSink interface {
 type tickInputs struct {
 	treasury   int64
 	treasuryOK bool
-	eraHours   float64
-	eraOK      bool
 	apiUtil    float64
 	apiOK      bool
-	totalHulls int
-	totalOK    bool
 	// heaviesOwned is the BROAD, tag-independent heavy-hull census (frame list primary,
 	// cargo-capacity safety net). heaviesOwnedOK=false ⇒ the heavy cap guard fails CLOSED.
 	heaviesOwned   int
@@ -134,8 +119,6 @@ type tickInputs struct {
 
 // readTickInputs reads the shared inputs once per tick. Every read is fail-safe: a nil reader or an
 // error yields readable=false, and the guards fail closed on that (API-util included).
-// totalOK=false (nil/erroring fleet-size reader) blocks all buys — the ceiling cannot be judged
-// without the total.
 func (h *RunFleetAutosizerCoordinatorHandler) readTickInputs(ctx context.Context, playerID int, cfg autosizerRunConfig) tickInputs {
 	in := tickInputs{}
 	if h.heavyCensus != nil {
@@ -162,19 +145,9 @@ func (h *RunFleetAutosizerCoordinatorHandler) readTickInputs(ctx context.Context
 			in.treasury, in.treasuryOK = c, ok
 		}
 	}
-	if h.era != nil {
-		if hrs, ok, err := h.era.HoursToEraEnd(ctx); err == nil {
-			in.eraHours, in.eraOK = hrs, ok
-		}
-	}
 	if h.apiUtil != nil {
 		if u, ok, err := h.apiUtil.UtilizationPct(ctx); err == nil {
 			in.apiUtil, in.apiOK = u, ok
-		}
-	}
-	if h.fleetSize != nil {
-		if n, err := h.fleetSize.TotalHulls(ctx, playerID); err == nil {
-			in.totalHulls, in.totalOK = n, true
 		}
 	}
 	return in
@@ -233,7 +206,8 @@ func (h *RunFleetAutosizerCoordinatorHandler) sizeClass(
 	shortfall := d.Shortfall()
 
 	// Heavy anti-thrash streak: the unserved-lane shortfall must persist N consecutive ticks before
-	// a heavy is bought. Tracked in per-container state; reset the moment the shortfall clears.
+	// a heavy is bought. Tracked in per-container state; reset the moment the shortfall clears. The
+	// count is advanced HERE (where the tick state lives) and JUDGED by guardDemand.
 	if class == HullClassHeavy {
 		if shortfall > 0 {
 			st.heavyShortfallStreak++
@@ -246,13 +220,6 @@ func (h *RunFleetAutosizerCoordinatorHandler) sizeClass(
 		return false, false
 	}
 
-	if class == HullClassHeavy && st.heavyShortfallStreak < cfg.HeavyUnservedLanesMin {
-		logger.Log("INFO", fmt.Sprintf("Autosizer heavy: shortfall %d persisting %d/%d ticks — holding for the anti-thrash streak", shortfall, st.heavyShortfallStreak, cfg.HeavyUnservedLanesMin), map[string]interface{}{
-			"action": "autosizer_heavy_streak", "container_id": cmd.ContainerID, "streak": st.heavyShortfallStreak, "min": cfg.HeavyUnservedLanesMin,
-		})
-		return false, true // unmet demand, deliberately not bought yet (streak) — counts toward the alarm
-	}
-
 	// Per-tick cap: bound total buys per tick across all classes.
 	if purchasesThisTick >= cfg.PurchaseCapPerTick {
 		logger.Log("INFO", fmt.Sprintf("Autosizer %s: shortfall %d but per-tick cap %d reached — deferring to next tick", class, shortfall, cfg.PurchaseCapPerTick), map[string]interface{}{
@@ -261,8 +228,10 @@ func (h *RunFleetAutosizerCoordinatorHandler) sizeClass(
 		return false, true
 	}
 
-	// Assemble the fully-resolved guard request.
-	req, yard := h.buildPurchaseRequest(ctx, cmd, cfg, d, in, purchasesThisTick)
+	// Assemble the fully-resolved guard request. The anti-thrash streak rides IN it (guardDemand
+	// judges it) rather than short-circuiting above, so a streak hold now appears in the decision
+	// line alongside everything else instead of on a separate log line.
+	req, yard := h.buildPurchaseRequest(ctx, cmd, cfg, d, in, st, purchasesThisTick)
 	decision := EvaluateGuards(req)
 
 	logger.Log("INFO", fmt.Sprintf("Autosizer %s buy-decision (%s): %s", class, decisionWord(decision), decision.Arithmetic()), map[string]interface{}{
@@ -316,14 +285,14 @@ func (h *RunFleetAutosizerCoordinatorHandler) sizeClass(
 }
 
 // buildPurchaseRequest resolves a class's candidate purchase from the demand, the run config, and
-// the tick's shared reads. The realized-rate floor is a fraction (heavy_marginal_rate_floor) of the
-// class's fleet-average realized rate — buy only while the marginal hull clears that fraction.
+// the tick's shared reads.
 func (h *RunFleetAutosizerCoordinatorHandler) buildPurchaseRequest(
 	ctx context.Context,
 	cmd *RunFleetAutosizerCoordinatorCommand,
 	cfg autosizerRunConfig,
 	d ClassDemand,
 	in tickInputs,
+	st *autosizerState,
 	purchasesThisTick int,
 ) (PurchaseRequest, string) {
 	class := d.Class
@@ -331,18 +300,24 @@ func (h *RunFleetAutosizerCoordinatorHandler) buildPurchaseRequest(
 
 	shipType, price, cheapest, yard, priceOK := h.resolveHullPrice(ctx, cmd, cfg, class, shipType)
 
-	rateFloor := cfg.HeavyMarginalRateFloor * d.FleetAvgRate
+	// The anti-thrash streak applies to the HEAVY class only: its Shortfall is the unserved
+	// profitable-lane count, which spikes transiently as the solver re-ranks. Every other class
+	// passes streakMin=0, which makes the streak term a no-op in guardDemand.
+	streak, streakMin := 0, 0
+	if class == HullClassHeavy {
+		streak, streakMin = st.heavyShortfallStreak, cfg.HeavyUnservedLanesMin
+	}
 
 	return PurchaseRequest{
 		Class:    class,
 		ShipType: shipType,
 
-		Shortfall: d.Shortfall(),
+		Shortfall:          d.Shortfall(),
+		ShortfallStreak:    streak,
+		ShortfallStreakMin: streakMin,
 
 		CurrentClassCount: d.Current,
 		ClassCeiling:      classCeiling,
-		CurrentTotalCount: in.totalHulls,
-		TotalCeiling:      cfg.FleetCeilingTotal,
 
 		// The heavy-hull cap: a SEPARATE bound from ClassCeiling above (which counts the
 		// trade pool by tag). Both are judged; guardHeavyCap is heavy-scoped and passes
@@ -359,21 +334,10 @@ func (h *RunFleetAutosizerCoordinatorHandler) buildPurchaseRequest(
 		PerTickCap:        cfg.PurchaseCapPerTick,
 
 		Price:              price,
-		PriceReadable:      priceOK && in.totalOK, // total unreadable also blocks (ceiling unjudgeable)
+		PriceReadable:      priceOK,
 		CheapestKnownPrice: cheapest,
 		MaxPriceClass:      maxPrice,
 		MaxPremiumPct:      cfg.MaxPremiumOverCheapestPct,
-
-		HoursToEraEnd:  in.eraHours,
-		EraReadable:    in.eraOK,
-		EraCutoffHours: cfg.PurchaseCutoffAtEraMinus.Hours(),
-		PaybackSafety:  cfg.PaybackSafetyFactor,
-
-		MarginalRate:        d.MarginalRate,
-		RateFloor:           rateFloor,
-		RateReadable:        d.RateReadable,
-		RateDeclining:       d.RateDeclining,
-		UnservedDemandFloor: cfg.DecliningRateUnservedFloor,
 
 		LiveTreasury:      in.treasury,
 		TreasuryReadable:  in.treasuryOK,
@@ -392,7 +356,7 @@ func (h *RunFleetAutosizerCoordinatorHandler) buildPurchaseRequest(
 // stack, the buy order and the decision log all name the same hull.
 //
 // WHY THIS EXISTS. The trade pool buys autosizer_ship_type_heavies, which defaults to
-// SHIP_HEAVY_FREIGHTER — and no shipyard discovered this era sells one. price_read
+// SHIP_HEAVY_FREIGHTER — and no shipyard discovered this era sells one. The price guard
 // therefore blocked every tick while profitable lanes sat unflown, and the pool refused
 // to buy the very hull it is already made of (its own hulls are light freighters).
 // Falling back to a priceable trade-capable hull is what lets the demand be served at
@@ -403,9 +367,8 @@ func (h *RunFleetAutosizerCoordinatorHandler) buildPurchaseRequest(
 // The caller passes the resolved type and its OWN price and cheapest-known ask into the
 // same PurchaseRequest, so the price ceiling compares like with like (a premium check
 // against the preferred type's cheapest ask would be meaningless for a different hull),
-// and every other guard — realized rate, era payback, treasury floor and percentage,
-// heavy cap, fleet ceilings, per-tick cap — judges the substitute exactly as it judges
-// the preferred hull. If they then refuse the cheaper hull on economics, that refusal
+// and every other guard — treasury floor and percentage, heavy cap, class ceiling,
+// per-tick cap — judges the substitute exactly as it judges the preferred hull. If they then refuse the cheaper hull on economics, that refusal
 // stands: this function has no power to approve anything.
 //
 // TRADE-SCOPED, DELIBERATELY. The explorer buys REACH — a freighter cannot warp off the

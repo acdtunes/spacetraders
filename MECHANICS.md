@@ -398,15 +398,21 @@ Each entry: **what · logic (formulas/thresholds) · armed · hands off · sourc
 - **Logic** (`run_fleet_autosizer_coordinator.go` + `fleet_autosizer_{lights,heavies,guards,act}.go`).
   Tick 900s, ≤1 buy/tick. LIGHT demand: `ceil(DesiredChains × LightRotationSlots) + Vacancies`
   (`LightRotationSlots = 3.5`, `Vacancies` from the worker-rebalancer). HEAVY demand:
-  `CurrentHeavies + UnservedLanes` (autosizer only grows). Ceilings: total 50 / lights 35 /
-  heavies 15 / warehouse 8. Guard stack (`EvaluateGuards`, every unreadable input BLOCKS):
-  demand → fleet_ceiling → per_tick_cap → price_read → price_ceiling (`≤ MaxPriceClass` AND
-  `≤ cheapest + 50%`) → era_payback (`price ≤ marginalRate × hoursToEraEnd × 0.5`; hard cutoff
-  3h before era end) → realized_rate (`marginalRate ≥ HeavyMarginalRateFloor(0.7) × fleetAvg`;
-  a declining rate stops buys unless the heavy-concentration carve-out) → treasury_pct
-  (`price ≤ 25% × treasury`, heavies/warehouse/explorer/contract-delivery only, NOT lights) →
-  api_util (`< 85%`) → treasury_floor (`treasury − EffectiveReserveFloor ≥ price + 200000`).
-  Heavy anti-thrash: shortfall must persist 3 consecutive ticks before a heavy buy.
+  `CurrentHeavies + UnservedLanes` (autosizer only grows). PER-CLASS ceilings: lights 35 /
+  heavies 15 — there is deliberately **no fleet-wide total** (an absolute cap starves every class
+  as the probe frontier grows). SEVEN guards (`EvaluateGuards`, every unreadable input BLOCKS),
+  one question each: demand (`shortfall > 0` **and** the heavy anti-thrash streak — shortfall must
+  persist 3 consecutive ticks) → class_ceiling → per_tick_cap → price (ask readable **and**
+  `≤ MaxPriceClass` **and** `≤ cheapest + 50%`) → heavy_cap (owned heavy hulls, tag-independent;
+  fail-closed on an unreadable census) → affordability (`price ≤ 25% × treasury` for
+  heavies/explorer, NOT lights, **and** `treasury − ImmutableReserveFloor − heavyReserve ≥
+  price + 200000`) → api_util (`< 85%`).
+  The autosizer forms **no opinion on whether a hull will earn**: the `era_payback` and
+  `realized_rate` income guards were deleted (the first could never read its own marginal-rate
+  input and so refused every buy; the second refused on a declining aggregate rate while its own
+  detail conceded the case did not apply), along with `explorer_exempt`, which existed only to
+  cancel them for one class. Demand shortfall — for heavies, the unserved profitable-lane count —
+  is the remaining economic input.
 - **Armed.** GATE hand-off (`LaunchAutosizer` → `FleetAutosizerCoordinator`). DELIBERATELY not
   boot-standing (would fire prematurely during DATA/INCOME). Also captain
   `workflow fleet-autosizer`.

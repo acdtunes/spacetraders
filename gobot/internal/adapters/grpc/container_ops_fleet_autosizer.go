@@ -63,7 +63,6 @@ func (s *DaemonServer) FleetAutosizerCoordinator(ctx context.Context, playerID i
 var fleetAutosizerConfigKeys = []string{
 	"autosizer_tick_secs",
 	"autosizer_purchase_cap_per_tick",
-	"autosizer_fleet_ceiling_total",
 	"autosizer_fleet_ceiling_lights",
 	"autosizer_fleet_ceiling_heavies",
 	// NOTE: the live-tunable knob is the BARE key "heavy_cap", NOT this prefixed launch key.
@@ -73,13 +72,9 @@ var fleetAutosizerConfigKeys = []string{
 	"autosizer_heavy_cap",
 	"autosizer_purchase_margin_over_floor",
 	"autosizer_light_rotation_slots",
-	"autosizer_heavy_marginal_rate_floor",
 	"autosizer_heavy_unserved_lanes_min",
 	"autosizer_heavy_treasury_pct_per_purchase",
-	"autosizer_declining_rate_unserved_floor",
 	"autosizer_api_utilization_ceiling_pct",
-	"autosizer_payback_safety_factor",
-	"autosizer_purchase_cutoff_at_era_minus_hours",
 	"autosizer_max_price_lights",
 	"autosizer_max_price_heavies",
 	"autosizer_max_premium_over_cheapest_pct",
@@ -120,9 +115,6 @@ func (s *DaemonServer) injectFleetAutosizerConfig(config map[string]interface{})
 	if fa.PurchaseCapPerTick != 0 {
 		config["autosizer_purchase_cap_per_tick"] = fa.PurchaseCapPerTick
 	}
-	if fa.FleetCeilingTotal != 0 {
-		config["autosizer_fleet_ceiling_total"] = fa.FleetCeilingTotal
-	}
 	if fa.FleetCeilingLights != 0 {
 		config["autosizer_fleet_ceiling_lights"] = fa.FleetCeilingLights
 	}
@@ -141,26 +133,14 @@ func (s *DaemonServer) injectFleetAutosizerConfig(config map[string]interface{})
 	if fa.LightRotationSlots != 0 {
 		config["autosizer_light_rotation_slots"] = fa.LightRotationSlots
 	}
-	if fa.HeavyMarginalRateFloor != 0 {
-		config["autosizer_heavy_marginal_rate_floor"] = fa.HeavyMarginalRateFloor
-	}
 	if fa.HeavyUnservedLanesMin != 0 {
 		config["autosizer_heavy_unserved_lanes_min"] = fa.HeavyUnservedLanesMin
 	}
 	if fa.HeavyTreasuryPctPerPurchase != 0 {
 		config["autosizer_heavy_treasury_pct_per_purchase"] = fa.HeavyTreasuryPctPerPurchase
 	}
-	if fa.DecliningRateUnservedFloor != 0 {
-		config["autosizer_declining_rate_unserved_floor"] = fa.DecliningRateUnservedFloor
-	}
 	if fa.APIUtilizationCeilingPct != 0 {
 		config["autosizer_api_utilization_ceiling_pct"] = fa.APIUtilizationCeilingPct
-	}
-	if fa.PaybackSafetyFactor != 0 {
-		config["autosizer_payback_safety_factor"] = fa.PaybackSafetyFactor
-	}
-	if fa.PurchaseCutoffAtEraMinusHours != 0 {
-		config["autosizer_purchase_cutoff_at_era_minus_hours"] = fa.PurchaseCutoffAtEraMinusHours
 	}
 	if fa.MaxPriceLights != 0 {
 		config["autosizer_max_price_lights"] = int(fa.MaxPriceLights)
@@ -219,7 +199,6 @@ func buildFleetAutosizerCommand(cfg *configReader, playerID int, containerID str
 		TickIntervalSecs:   cfg.OptionalInt("autosizer_tick_secs", 0),
 		PurchaseCapPerTick: cfg.OptionalInt("autosizer_purchase_cap_per_tick", 0),
 
-		FleetCeilingTotal:   cfg.OptionalInt("autosizer_fleet_ceiling_total", 0),
 		FleetCeilingLights:  cfg.OptionalInt("autosizer_fleet_ceiling_lights", 0),
 		FleetCeilingHeavies: cfg.OptionalInt("autosizer_fleet_ceiling_heavies", 0),
 		HeavyCap:            presentIntPtr(cfg, "autosizer_heavy_cap"),
@@ -228,15 +207,10 @@ func buildFleetAutosizerCommand(cfg *configReader, playerID int, containerID str
 
 		LightRotationSlots: cfg.OptionalFloat("autosizer_light_rotation_slots", 0),
 
-		HeavyMarginalRateFloor:      cfg.OptionalFloat("autosizer_heavy_marginal_rate_floor", 0),
 		HeavyUnservedLanesMin:       cfg.OptionalInt("autosizer_heavy_unserved_lanes_min", 0),
 		HeavyTreasuryPctPerPurchase: cfg.OptionalInt("autosizer_heavy_treasury_pct_per_purchase", 0),
-		DecliningRateUnservedFloor:  cfg.OptionalInt("autosizer_declining_rate_unserved_floor", 0),
 
 		APIUtilizationCeilingPct: cfg.OptionalInt("autosizer_api_utilization_ceiling_pct", 0),
-
-		PaybackSafetyFactor:           cfg.OptionalFloat("autosizer_payback_safety_factor", 0),
-		PurchaseCutoffAtEraMinusHours: cfg.OptionalFloat("autosizer_purchase_cutoff_at_era_minus_hours", 0),
 
 		MaxPriceLights:            int64(cfg.OptionalInt("autosizer_max_price_lights", 0)),
 		MaxPriceHeavies:           int64(cfg.OptionalInt("autosizer_max_price_heavies", 0)),

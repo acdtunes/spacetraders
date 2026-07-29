@@ -29,9 +29,6 @@ func (f *fakeLightSources) DesiredChains(ctx context.Context, playerID int) (int
 func (f *fakeLightSources) Vacancies(ctx context.Context, playerID int) (int, error) {
 	return f.vacancies, f.vacErr
 }
-func (f *fakeLightSources) MarginalWorkerRate(ctx context.Context, playerID int) (float64, float64, bool, bool, error) {
-	return f.marginal, f.fleetAvg, f.declining, f.rateOK, f.rateErr
-}
 
 // The core C3-inverted math: K chains need K × rotation workers, plus rebalancer vacancies.
 func TestComputeLightDemand_RotationPlusVacancies(t *testing.T) {
@@ -40,7 +37,6 @@ func TestComputeLightDemand_RotationPlusVacancies(t *testing.T) {
 		DesiredChains:  5,
 		Vacancies:      2,
 		RotationSlots:  3.5,
-		RateReadable:   true,
 	})
 	// ceil(5 × 3.5) = ceil(17.5) = 18, + 2 vacancies = 20.
 	if d.Demand != 20 {
@@ -94,9 +90,6 @@ func TestLightProvider_ReadsAndSizes(t *testing.T) {
 	if d.Demand != 15 || d.Current != 10 {
 		t.Fatalf("demand/current = %d/%d, want 15/10", d.Demand, d.Current)
 	}
-	if d.MarginalRate != 72000 || d.FleetAvgRate != 90000 || !d.RateReadable {
-		t.Fatalf("rate signals not threaded: marginal=%v fleetAvg=%v readable=%v", d.MarginalRate, d.FleetAvgRate, d.RateReadable)
-	}
 	if !d.Readable {
 		t.Fatalf("expected Readable=true")
 	}
@@ -134,19 +127,5 @@ func TestLightProvider_VacancyReadError_TreatedAsZero(t *testing.T) {
 	}
 	if d.Demand != 7 { // ceil(2 × 3.5) = 7 + 0 vacancies
 		t.Fatalf("demand = %d, want 7 (vacancies treated as 0 on read miss)", d.Demand)
-	}
-}
-
-// An unreadable realized rate does NOT block sizing — the demand is still Readable — but it is
-// surfaced as RateReadable=false so the guard stack fails the realized-rate gate closed on its own.
-func TestLightProvider_RateUnreadable_DemandStillReadable(t *testing.T) {
-	src := &fakeLightSources{workers: 5, chains: 2, rateErr: errors.New("no pnl yet")}
-	p := NewLightDemandProvider(src)
-	d, _ := p.Demand(context.Background(), 1, DemandParams{LightRotationSlots: 3.5})
-	if !d.Readable {
-		t.Fatalf("an unreadable rate must not fail-close DEMAND sizing")
-	}
-	if d.RateReadable {
-		t.Fatalf("an unreadable rate must set RateReadable=false so the guard fails the rate gate closed")
 	}
 }

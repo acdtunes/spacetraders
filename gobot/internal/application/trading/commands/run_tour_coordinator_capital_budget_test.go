@@ -51,18 +51,18 @@ func TestApplyCapitalBudget(t *testing.T) {
 			// LIVE ACCEPTANCE CASE. deployable 140,000; construction idle -> trade holds all
 			// of it, which is above the 110,000 (25%) cap, so the cap is untouched. Anything
 			// less than the full cap here would be capital left idle by a stopped gate.
-			name:     "construction idle leaves the whole dynamic cap intact",
-			sensor:   &tourFakeCapitalWorkSensor{constructionWork: false},
-			reserve:  300_000, treasury: 440_000, spendCap: 110_000,
+			name:    "construction idle leaves the whole dynamic cap intact",
+			sensor:  &tourFakeCapitalWorkSensor{constructionWork: false},
+			reserve: 300_000, treasury: 440_000, spendCap: 110_000,
 			want: 110_000,
 		},
 		{
 			// Same treasury with the gate running: trade takes its 60% of 140,000 = 84,000.
 			// Construction's 56,000 is now genuinely reserved instead of being a floor it can
 			// spend straight through.
-			name:     "construction live clamps the cap to trade's share",
-			sensor:   &tourFakeCapitalWorkSensor{constructionWork: true},
-			reserve:  300_000, treasury: 440_000, spendCap: 110_000,
+			name:    "construction live clamps the cap to trade's share",
+			sensor:  &tourFakeCapitalWorkSensor{constructionWork: true},
+			reserve: 300_000, treasury: 440_000, spendCap: 110_000,
 			want: 84_000,
 		},
 		{
@@ -71,32 +71,32 @@ func TestApplyCapitalBudget(t *testing.T) {
 			// mid-tour (343,093 − 85,773 = 257,320, below 300,000) — which is exactly the
 			// observed "shrinking buy ... to respect working-capital floor" log. Deriving the
 			// budget from the run's reserve makes the cumulative cap self-consistent.
-			name:     "the cap can no longer exceed what the run's own reserve permits",
-			sensor:   &tourFakeCapitalWorkSensor{constructionWork: false},
-			reserve:  300_000, treasury: 343_093, spendCap: 85_773,
+			name:    "the cap can no longer exceed what the run's own reserve permits",
+			sensor:  &tourFakeCapitalWorkSensor{constructionWork: false},
+			reserve: 300_000, treasury: 343_093, spendCap: 85_773,
 			want: 43_093,
 		},
 		{
-			name:     "the same dip with the gate running splits 60/40",
-			sensor:   &tourFakeCapitalWorkSensor{constructionWork: true},
-			reserve:  300_000, treasury: 343_093, spendCap: 85_773,
+			name:    "the same dip with the gate running splits 60/40",
+			sensor:  &tourFakeCapitalWorkSensor{constructionWork: true},
+			reserve: 300_000, treasury: 343_093, spendCap: 85_773,
 			want: 25_856, // round(0.6 x 43,093)
 		},
 		{
 			// FAIL CONSERVATIVE: a blind sensor read must not be read as "construction is
 			// idle" and hand trade the whole pool.
-			name:     "an unreadable sensor takes only trade's share",
-			sensor:   &tourFakeCapitalWorkSensor{err: errors.New("container registry unreadable")},
-			reserve:  300_000, treasury: 440_000, spendCap: 110_000,
+			name:    "an unreadable sensor takes only trade's share",
+			sensor:  &tourFakeCapitalWorkSensor{err: errors.New("container registry unreadable")},
+			reserve: 300_000, treasury: 440_000, spendCap: 110_000,
 			want: 84_000,
 		},
 		{
 			// A treasury at or under the run's reserve deploys nothing. The cap collapses to
 			// 0 and the planner reports infeasible rather than planning a tour the floor
 			// would refuse buy by buy.
-			name:     "a treasury at the reserve deploys nothing",
-			sensor:   &tourFakeCapitalWorkSensor{constructionWork: true},
-			reserve:  300_000, treasury: 300_000, spendCap: 75_000,
+			name:    "a treasury at the reserve deploys nothing",
+			sensor:  &tourFakeCapitalWorkSensor{constructionWork: true},
+			reserve: 300_000, treasury: 300_000, spendCap: 75_000,
 			want: 0,
 		},
 	}

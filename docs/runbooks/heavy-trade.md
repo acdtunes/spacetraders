@@ -67,16 +67,21 @@ what is already owned) also blocks.
 The same guard **fails closed** when the heavy census cannot be read — a different situation with the
 same "not buying" symptom. See "Genuinely broken instead".
 
-### 2. `treasury_pct`: below ~6.26M treasury the heavy is not yet *legal*
+### 2. `affordability`, percent term: below ~6.26M treasury the heavy is not yet *legal*
+
+`treasury_pct` and `treasury_floor` are now ONE guard, `affordability`, carrying both terms in one
+bracket. Nothing about either test changed — the merge is conjunctive, so a buy either of them used
+to refuse is still refused — but the log line you match on is now a single term.
 
 A single hull must cost ≤25% of live treasury (`heavy_treasury_pct_per_purchase`, default 25). At a
 **live cheapest heavy ask of 1,565,500** that means no heavy is purchasable until treasury reaches
 4 × 1,565,500 = **~6,262,000**, however healthy everything else looks.
 
-- **Log signature:** `treasury_pct[BLOCK: price … <= 25% × treasury … = …]`
+- **Log signature:** `affordability[BLOCK: price … <= 25% × treasury … = …; treasury … − floor …]` —
+  the FIRST clause is the percent term.
 - **Action:** none. Wait, or lower the price basis by discovering a cheaper yard.
 
-### 3. `treasury_floor`: the reserve holds *other* buying down — **below** a threshold, not between two
+### 3. `affordability`, floor term: the reserve holds *other* buying down — **below** a threshold, not between two
 
 This guard is:
 
@@ -121,29 +126,33 @@ So, at a given treasury:
 | above that, up to ~6.26M | lights and probes buy normally; still no heavy | yes — the heavy is not legal yet (guard 2) |
 | above ~6.26M | the heavy becomes purchasable; the reserve clears when it lands | yes |
 
-- **Log signature:** the light class blocked by `treasury_floor` with `− heavy reserve N` **inside
-  its arithmetic**, while the heavy class is blocked by `treasury_pct`. On the heavy's own line the
+- **Log signature:** the light class blocked by `affordability` with `− heavy reserve N` **inside
+  its arithmetic** (the SECOND clause, after the `;`), while the heavy class is blocked by the
+  percent term of its own `affordability` line. On the heavy's own line the
   same guard reads `(own reserve waived: N)` — that is the waiver, not a dropped reserve.
-- **This is the distinction that matters.** `treasury_floor` with a reserve in it = *saving*.
-  `treasury_pct` = *not yet affordable*. Both at once = the low-treasury case above, and it resolves
-  itself as treasury grows.
+- **This is the distinction that matters.** The floor clause with a reserve in it = *saving*.
+  The percent clause = *not yet affordable*. Both at once = the low-treasury case above, and it
+  resolves itself as treasury grows. Read WHICH clause of the `affordability` bracket carries the
+  failing arithmetic — the guard name alone no longer tells them apart.
 - **Confirming series:** `spacetraders_daemon_autosizer_heavy_reserve_credits` non-zero, and the
   sensing heartbeat reading `buy floor, N reserved for the next heavy`.
 - **Action:** none, unless you want expansion to resume sooner — see "Releasing the reserve
   deliberately".
 
-### 4. `era_payback`: near an era boundary, payback becomes impossible
+### 4. ~~`era_payback`~~ — DELETED, and it is not coming back
 
-A buy must pay back before the universe resets:
-`price ≤ marginal_rate × hours_to_era_end × payback_safety_factor` (default 0.5). At 20h remaining a
-1,565,500 hull needs a marginal realized rate above 1,565,500 / (20 × 0.5) = **~156,550/hr**, and the
-bar **rises as the era shortens** until a hard cutoff at **T-3h**
-(`purchase_cutoff_at_era_minus_hours`, default 3.0 when unset), where nothing is bought at any
-treasury.
+There is no longer an era-clock payback guard, and no `payback_safety_factor` /
+`purchase_cutoff_at_era_minus_hours` knob. It required a marginal realized $/hr it could never
+actually read in production (`marginal rate unreadable/zero — cannot prove payback`), so instead of
+refusing bad buys near an era boundary it refused **every** buy, forever. The `realized_rate` guard
+went with it for the same class of reason (it blocked on a declining aggregate rate while its own
+detail conceded the case did not apply). If you are triaging an old log that shows either name, you
+are reading history — the current chain is
+`demand → class_ceiling → per_tick_cap → price → heavy_cap → affordability → api_util`.
 
-- **Log signature:** `era_payback[BLOCK: price … <= rate … × …h × safety 0.50 …]`, and inside the
-  cutoff itself `era_payback[BLOCK: …h to era-end <= cutoff 3.00h (last-buy window)]`.
-- **Action:** none. This is the guard working; hulls evaporate at reset.
+**Consequence to know:** the autosizer no longer forms any opinion on whether a heavy will EARN, or
+on whether it can pay back before a universe reset. Near an era boundary it will still buy if demand,
+price and treasury permit. If that matters for a given reset, stop the coordinator.
 
 ## Releasing the reserve deliberately
 
@@ -217,12 +226,10 @@ top to bottom; each rung is cheaper than the one after it.
    wait for. If `heavies_owned` reads **0**
    *alongside* `heavy_cap[BLOCK: heavy census unreadable …]`, the read failed — see "Genuinely
    broken instead".
-5. **Is the heavy simply not legal yet?** Read the heavy class's `treasury_pct` line; it prints
-   `price P <= 25% × treasury T = C`. While C < P no other guard's opinion matters. At a 1,565,500
-   ask that clears at ~6,262,000 of treasury. Expected — wait.
-6. **Is the era too short?** `era_payback` on the heavy's line; nothing is bought inside T-3h at any
-   treasury.
-7. **Only if every rung above is clean** is the buyer genuinely stuck. Escalate with the heavy
+5. **Is the heavy simply not legal yet?** Read the percent clause of the heavy class's
+   `affordability` line; it prints `price P <= 25% × treasury T = C`. While C < P no other guard's
+   opinion matters. At a 1,565,500 ask that clears at ~6,262,000 of treasury. Expected — wait.
+6. **Only if every rung above is clean** is the buyer genuinely stuck. Escalate with the heavy
    class's full `Autosizer heavy buy-decision (…)` line, which carries every guard's arithmetic.
 
 ## Genuinely broken instead

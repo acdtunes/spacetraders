@@ -11,7 +11,7 @@
 package commands
 
 // HullClass identifies an autosized hull pool. Each class has its own demand provider, fleet
-// ceiling, price ceiling, realized-rate gate, purchased ship type, and dedicated-fleet name.
+// ceiling, price ceiling, purchased ship type, and dedicated-fleet name.
 type HullClass string
 
 const (
@@ -20,12 +20,12 @@ const (
 	// HullClassHeavy is the trade-tour pool (DedicatedFleet "trade"), sized to trade demand.
 	HullClassHeavy HullClass = "heavy"
 	// HullClassExplorer is the off-gate warp-exploration pool (DedicatedFleet "explorer").
-	// It is sized to slice-B off-gate demand and is the ONE class EXEMPT from
-	// the realized-$/hr payback guards: an explorer buys REACH (it charts new systems so the cheap
-	// probe frontier resumes via growFrontierGraph), NOT income, so it has no marginal realized
-	// rate. That exemption is REPLACED — not dropped — by three explorer-only bounds enforced in
-	// EvaluateGuards: the demand-gate (buys only when off-gate demand fires AND the class is armed),
-	// a HARD CAP of 1 (the class fleet ceiling), and a price ceiling (~819k SHIP_EXPLORER + premium).
+	// It is sized to slice-B off-gate demand: an explorer buys REACH (it charts new systems so the
+	// cheap probe frontier resumes via growFrontierGraph), NOT income. It runs the SAME guard stack
+	// as every other class — there is no longer any class-gated carve-out, because the two income
+	// guards the explorer had to be exempted FROM are gone. Its ~819k spend is bounded by the
+	// demand-gate (buys only when off-gate demand fires AND the class is armed), a HARD CAP of 1
+	// (the class fleet ceiling), and a price ceiling (~819k SHIP_EXPLORER + premium).
 	// Opt-IN (explorer_hulls_enabled, default OFF) and double-gated, so a bare deploy buys nothing.
 	HullClassExplorer HullClass = "explorer"
 	// HullClassContractDelivery is the capacity reconciler's contract-delivery capital pool
@@ -34,17 +34,14 @@ const (
 	// arming it routes ROUTINE early-game hauler scaling through this coordinator's SINGLE
 	// money-guard stack — guard-gated AUTO, not captain-approval-gated (RULINGS #6: the guards are
 	// the gate). Opt-IN (contract_delivery_hulls_enabled, default OFF) exactly like the
-	// warehouse/explorer classes, so a bare deploy keeps it dormant (byte-identical). It runs the
-	// FULL realized-$/hr income guards (NOT explorer-exempt): a routine buy is a measured-demand
-	// buy. The canonical constant lives here (the fleetCmd package the guard switches read); the
+	// warehouse/explorer classes, so a bare deploy keeps it dormant (byte-identical).
+	// The canonical constant lives here (the fleetCmd package the guard switches read); the
 	// adapter-layer bridge aliases it to avoid a second string literal drifting.
 	HullClassContractDelivery HullClass = "contract_delivery"
 )
 
 // ClassDemand is one class's demand read for a tick: how many hulls the demand model wants
-// (Demand) vs how many exist now (Current), plus the marginal realized rate the era-clock
-// payback and realized-rate guards judge, and whether that rate is decaying (heavies stop
-// buying when absorption saturates). A demand model that cannot read its inputs sets
+// (Demand) vs how many exist now (Current). A demand model that cannot read its inputs sets
 // Readable=false, which the coordinator treats as fail-closed: NO buy (a missing signal must
 // never trigger a spend).
 type ClassDemand struct {
@@ -53,21 +50,6 @@ type ClassDemand struct {
 	Demand int
 	// Current is how many hulls of this class exist now.
 	Current int
-	// MarginalRate is the expected marginal realized credits/hour the NEXT hull of this class
-	// would earn — the number the era-clock payback and realized-rate-floor guards judge. 0
-	// when no rate signal is available (then the realized-rate guard fails closed).
-	MarginalRate float64
-	// FleetAvgRate is the fleet-average realized rate for this class, the reference the
-	// realized-rate floor is a fraction of (heavies: fleet-avg tour $/hr). 0 when unavailable.
-	FleetAvgRate float64
-	// RateDeclining is true when the class's realized rate is trending down (absorption
-	// saturating) — the heavy stop-buy signal.
-	RateDeclining bool
-	// RateReadable reports whether the realized-rate signal (MarginalRate/FleetAvgRate) was
-	// readable. It is distinct from Readable: the DEMAND can be sized (Readable=true) while the
-	// rate is not yet available (RateReadable=false, e.g. a pre-realization chain) — the coordinator
-	// maps this into the guard request so the realized-rate guard fails closed on its own.
-	RateReadable bool
 	// Readable reports whether the demand model read all its inputs. false ⇒ fail-closed (no
 	// buy this tick), with Reason naming what could not be read.
 	Readable bool

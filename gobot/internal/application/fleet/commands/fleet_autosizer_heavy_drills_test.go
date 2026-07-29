@@ -10,10 +10,9 @@ import (
 // clean heavy buy fires + dedicates, and (2) each guard still BLOCKS a bad heavy buy.
 
 // heavyProvider builds the real provider over readable heavy sources (the wired-seam happy state).
-func heavyProvider(heavies, unservedLanes int, fleetAvg, marginal float64, declining bool) *HeavyDemandProvider {
+func heavyProvider(heavies, unservedLanes int) *HeavyDemandProvider {
 	return NewHeavyDemandProvider(&fakeHeavySources{
 		heavies: heavies, lanes: unservedLanes, lanesOK: true,
-		fleetAvg: fleetAvg, marginal: marginal, declining: declining, rateOK: true,
 	})
 }
 
@@ -40,7 +39,7 @@ func heavyCmd() *RunFleetAutosizerCoordinatorCommand {
 // THE MONEY PATH: readable unserved-lane demand + a clearing economy + the streak satisfied ⇒ ONE
 // heavy is bought and dedicated to the trade fleet through the unchanged guard stack.
 func TestHeavyBuy_FiresThroughGuardStack_WhenDemandAndEconomicsClear(t *testing.T) {
-	h, purchaser, metrics, notifier := armedForHeavy(heavyProvider(6, 2, 500000, 450000, false))
+	h, purchaser, metrics, notifier := armedForHeavy(heavyProvider(6, 2))
 	res, err := h.reconcileOnce(context.Background(), heavyCmd())
 	if err != nil {
 		t.Fatalf("reconcileOnce error: %v", err)
@@ -63,52 +62,10 @@ func TestHeavyBuy_FiresThroughGuardStack_WhenDemandAndEconomicsClear(t *testing.
 	}
 }
 
-// G6 era-clock payback: an expensive heavy whose price exceeds marginalRate × hoursRemaining ×
-// payback_safety is BLOCKED (it cannot pay back before the reset).
-func TestHeavyBuy_BlockedByEraPayback(t *testing.T) {
-	h, purchaser, metrics, _ := armedForHeavy(heavyProvider(6, 2, 500000, 450000, false))
-	// 5h left (> the 3h hard cutoff, so the payback MATH is what blocks): 450k × 5h × 0.5 = 1.125M < 1.4M.
-	h.SetEraClockReader(&fakeEra{hours: 5, ok: true})
-	res, _ := h.reconcileOnce(context.Background(), heavyCmd())
-	if res.Purchased != 0 || len(purchaser.orders) != 0 {
-		t.Fatalf("a heavy that cannot pay back before reset must be blocked, bought %d", res.Purchased)
-	}
-	if len(metrics.blockedGuards) == 0 || metrics.blockedGuards[0] != GuardEraPayback {
-		t.Fatalf("expected era_payback block, got %v", metrics.blockedGuards)
-	}
-}
-
-// G7 decay stop: a DECLINING fleet-average rate (absorption saturating) blocks the buy even with the
-// marginal above the floor.
-func TestHeavyBuy_BlockedByDecayingRate(t *testing.T) {
-	h, purchaser, metrics, _ := armedForHeavy(heavyProvider(6, 2, 500000, 450000, true)) // declining
-	res, _ := h.reconcileOnce(context.Background(), heavyCmd())
-	if res.Purchased != 0 || len(purchaser.orders) != 0 {
-		t.Fatalf("a declining rate must stop the buy, bought %d", res.Purchased)
-	}
-	if len(metrics.blockedGuards) == 0 || metrics.blockedGuards[0] != GuardRealizedRate {
-		t.Fatalf("expected realized_rate (decay) block, got %v", metrics.blockedGuards)
-	}
-}
-
-// G7 floor: a marginal rate BELOW heavy_marginal_rate_floor × fleet-avg is blocked (the lowest heavy
-// no longer clears the floor).
-func TestHeavyBuy_BlockedByMarginalRateFloor(t *testing.T) {
-	// marginal 300k vs floor 0.7 × 500k = 350k → below floor.
-	h, purchaser, metrics, _ := armedForHeavy(heavyProvider(6, 2, 500000, 300000, false))
-	res, _ := h.reconcileOnce(context.Background(), heavyCmd())
-	if res.Purchased != 0 || len(purchaser.orders) != 0 {
-		t.Fatalf("a marginal below the rate floor must block, bought %d", res.Purchased)
-	}
-	if len(metrics.blockedGuards) == 0 || metrics.blockedGuards[0] != GuardRealizedRate {
-		t.Fatalf("expected realized_rate (floor) block, got %v", metrics.blockedGuards)
-	}
-}
-
 // G9 treasury-net-of-floor: when live treasury net of the flat reserve floor cannot cover
 // price+margin, the buy is blocked (the 25% rule passes but the floor+margin stack does not).
 func TestHeavyBuy_BlockedByTreasuryFloor(t *testing.T) {
-	h, purchaser, metrics, _ := armedForHeavy(heavyProvider(6, 2, 500000, 450000, false))
+	h, purchaser, metrics, _ := armedForHeavy(heavyProvider(6, 2))
 	h.SetTreasuryReader(&fakeTreasury{credits: 6000000, ok: true})
 	// Floor is flat (sp-05glh): spendable = 6,000,000 − 50,000(ImmutableReserveFloor) = 5,950,000.
 	// A high margin-over-floor requirement pushes need to 1,400,000 + 4,600,000 = 6,000,000 >
@@ -119,21 +76,21 @@ func TestHeavyBuy_BlockedByTreasuryFloor(t *testing.T) {
 	if res.Purchased != 0 || len(purchaser.orders) != 0 {
 		t.Fatalf("treasury net of the reserve floor cannot cover the buy — must block, bought %d", res.Purchased)
 	}
-	if len(metrics.blockedGuards) == 0 || metrics.blockedGuards[0] != GuardTreasuryFloor {
-		t.Fatalf("expected treasury_floor block, got %v", metrics.blockedGuards)
+	if len(metrics.blockedGuards) == 0 || metrics.blockedGuards[0] != GuardAffordability {
+		t.Fatalf("expected affordability block, got %v", metrics.blockedGuards)
 	}
 }
 
 // G2 per-class ceiling: heavies already at the class ceiling block the buy despite unserved demand.
 func TestHeavyBuy_BlockedByCeiling(t *testing.T) {
 	// 15 heavies = the default FleetCeilingHeavies; demand 17, shortfall 2, but the ceiling binds.
-	h, purchaser, metrics, _ := armedForHeavy(heavyProvider(15, 2, 500000, 450000, false))
+	h, purchaser, metrics, _ := armedForHeavy(heavyProvider(15, 2))
 	res, _ := h.reconcileOnce(context.Background(), heavyCmd())
 	if res.Purchased != 0 || len(purchaser.orders) != 0 {
 		t.Fatalf("heavies at the class ceiling must not buy, bought %d", res.Purchased)
 	}
-	if len(metrics.blockedGuards) == 0 || metrics.blockedGuards[0] != GuardFleetCeiling {
-		t.Fatalf("expected fleet_ceiling block, got %v", metrics.blockedGuards)
+	if len(metrics.blockedGuards) == 0 || metrics.blockedGuards[0] != GuardClassCeiling {
+		t.Fatalf("expected class_ceiling block, got %v", metrics.blockedGuards)
 	}
 }
 
@@ -142,7 +99,7 @@ func TestHeavyBuy_BlockedByCeiling(t *testing.T) {
 // yard price so the light clears (a heavy-magnitude price would block the light on era-payback); the
 // cap gates the heavy BEFORE any guard, so the heavy's price is irrelevant here.
 func TestHeavyBuy_BlockedByPerTickCap(t *testing.T) {
-	h, purchaser, _, _ := armedHandler(lightShortfall(), heavyProvider(6, 2, 500000, 450000, false))
+	h, purchaser, _, _ := armedHandler(lightShortfall(), heavyProvider(6, 2))
 	cmd := heavyCmd()
 	cmd.PurchaseCapPerTick = 1
 	res, _ := h.reconcileOnce(context.Background(), cmd)
@@ -157,7 +114,7 @@ func TestHeavyBuy_BlockedByPerTickCap(t *testing.T) {
 // The anti-thrash streak: the unserved-lane shortfall must persist heavy_unserved_lanes_min
 // consecutive ticks before a heavy is bought — the readable seam does not bypass it.
 func TestHeavyBuy_BlockedByAntiThrashStreak(t *testing.T) {
-	h, purchaser, _, _ := armedForHeavy(heavyProvider(6, 2, 500000, 450000, false))
+	h, purchaser, _, _ := armedForHeavy(heavyProvider(6, 2))
 	cmd := &RunFleetAutosizerCoordinatorCommand{PlayerID: 1, ContainerID: "c1", HeavyUnservedLanesMin: 3}
 	for tick := 1; tick <= 2; tick++ {
 		h.reconcileOnce(context.Background(), cmd)

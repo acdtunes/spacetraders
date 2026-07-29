@@ -21,12 +21,13 @@ type FleetAutosizerConfig struct {
 	// treasury from a runaway multi-buy on one tick). 0/absent → 1.
 	PurchaseCapPerTick int `mapstructure:"purchase_cap_per_tick"`
 
-	// --- fleet ceilings (the HARD API-request-budget bound: each hull adds request load) ---
+	// --- per-class ceilings (the HARD API-request-budget bound: each hull adds request load) ---
 
-	// FleetCeilingTotal caps the absolute fleet size the autosizer will grow to. 0/absent →
-	// defaultFleetCeilingTotal. FleetCeiling{Lights,Heavies} cap each class; 0/absent
-	// → that class's documented default.
-	FleetCeilingTotal   int `mapstructure:"fleet_ceiling_total"`
+	// FleetCeiling{Lights,Heavies} cap each class; 0/absent → that class's documented default.
+	// There is deliberately NO fleet-wide total: an absolute cap across all classes starves every
+	// other class the moment the probe frontier grows (see guardClassCeiling). A `fleet_ceiling_total`
+	// key left behind in an existing config.yaml is simply IGNORED on read — viper's non-strict
+	// unmarshal (config.go's plain v.Unmarshal, no ErrorUnused) drops keys with no matching field.
 	FleetCeilingLights  int `mapstructure:"fleet_ceiling_lights"`
 	FleetCeilingHeavies int `mapstructure:"fleet_ceiling_heavies"`
 
@@ -45,9 +46,6 @@ type FleetAutosizerConfig struct {
 
 	// --- heavy (trade) demand ---
 
-	// HeavyMarginalRateFloor is the fraction of fleet-average realized tour $/hr the marginal
-	// (next) heavy must be expected to clear before it is bought. 0/absent → 0.7.
-	HeavyMarginalRateFloor float64 `mapstructure:"heavy_marginal_rate_floor"`
 	// HeavyUnservedLanesMin is how many CONSECUTIVE ticks the profitable-lanes-beyond-hulls
 	// shortfall must persist before a heavy is bought (anti-thrash on a transient spike).
 	// 0/absent → 3.
@@ -68,14 +66,6 @@ type FleetAutosizerConfig struct {
 	// hold — `tune <key> 0` DELETES the key fleet-wide (revert-to-default semantics), so a
 	// tuned 0 reads as absent. Holding at zero is a config.yaml + restart operation.
 	HeavyCap *int `mapstructure:"heavy_cap"`
-	// DecliningRateUnservedFloor (sp-zbe6) is the near-zero unserved-lane count at/below which a
-	// DECLINING aggregate realized tour-rate is treated as genuine absorption saturation and STOPS
-	// a heavy buy. Above it a declining aggregate is a hull-CONCENTRATION artifact (the fleet
-	// compressed a few fat lanes while profitable lanes sit unflown) and the next heavy flies a fresh
-	// lane, so the buy proceeds. Trade-scoped (keys off the heavy class's unserved-lane Shortfall);
-	// other classes keep the unconditional declining stop-buy. 0/absent → 2. The resolver forbids 0,
-	// so the stop-buy can never be silently disabled.
-	DecliningRateUnservedFloor int `mapstructure:"declining_rate_unserved_floor"`
 
 	// --- API-utilization ceiling (dynamic rate protection; fleet ceilings are the hard bound) ---
 
@@ -83,15 +73,6 @@ type FleetAutosizerConfig struct {
 	// 0/absent → 85. This guard fails OPEN (a buy proceeds) with a WARN when utilization is
 	// unreadable — it is a dynamic protection, and the fleet ceilings are the hard budget bound.
 	APIUtilizationCeilingPct int `mapstructure:"api_utilization_ceiling_pct"`
-
-	// --- era-clock payback guard (hulls evaporate at reset — a buy must pay back in-era) ---
-
-	// PaybackSafetyFactor: buy only if price ≤ expected_marginal_rate × hours_to_era_end × this.
-	// 0/absent → 0.5.
-	PaybackSafetyFactor float64 `mapstructure:"payback_safety_factor"`
-	// PurchaseCutoffAtEraMinusHours is the hard last-buy cutoff before era end (no buys inside
-	// this window whatever the payback math says). 0/absent → 3.0 (T-3h).
-	PurchaseCutoffAtEraMinusHours float64 `mapstructure:"purchase_cutoff_at_era_minus_hours"`
 
 	// --- per-class price ceilings + demand-proximal yard preference ---
 
@@ -123,8 +104,8 @@ type FleetAutosizerConfig struct {
 
 	// --- explorer hull class (sp-a3yn slice C of sp-4imi) ---
 	//
-	// The explorer auto-buys an ~819k SHIP_EXPLORER that is EXEMPT from the realized-$/hr payback
-	// gate (it buys REACH, not income). Because that spend is ROI-exempt and captain-reviewed, it is
+	// The explorer auto-buys an ~819k SHIP_EXPLORER for REACH, not income (it charts new systems so
+	// the cheap probe frontier resumes). Because that spend is large and captain-reviewed, it is
 	// DEPLOY-INERT: ExplorerHullsEnabled defaults OFF and NOTHING boot-arms it — the buy requires BOTH
 	// (a) this flag armed AND (b) slice-B off-gate demand firing. Config+restart arming (not a live
 	// `tune`) is deliberate: a runtime tune cannot flip it. It is the sole opt-IN autosizer class.
@@ -139,7 +120,7 @@ type FleetAutosizerConfig struct {
 	ExplorerTreasuryPctPerPurchase int `mapstructure:"explorer_treasury_pct_per_purchase"`
 	// MaxPriceExplorer is the explorer PRICE CEILING (~819k SHIP_EXPLORER + premium). Unlike
 	// MaxPrice{Lights,Heavies} it resolves to a REAL default (never 0=no-cap): the ceiling is a
-	// required guard on the ROI-exempt buy. 0/absent → 900000.
+	// required guard on this large buy. 0/absent → 900000.
 	MaxPriceExplorer int64 `mapstructure:"max_price_explorer"`
 	// ShipTypeExplorer is the shipyard ship-type bought for the explorer class. 0/absent →
 	// "SHIP_EXPLORER" (the only warp-drive-carrying hull).

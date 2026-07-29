@@ -4,13 +4,11 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
 
 // --- fakes for the heavy-demand seam ports ----------------------------------------------------
@@ -35,17 +33,6 @@ type fakeLaneCounter struct {
 func (f *fakeLaneCounter) CountProfitableLanes(ctx context.Context, playerID int, systems []string) (int, bool, error) {
 	f.gotSystems = systems
 	return f.count, f.readable, f.err
-}
-
-type fakeTourTelemetryReader struct {
-	rows     []trading.TourLegTelemetry
-	err      error
-	gotSince time.Time
-}
-
-func (f *fakeTourTelemetryReader) ListByPlayer(ctx context.Context, playerID int, since time.Time) ([]trading.TourLegTelemetry, error) {
-	f.gotSince = since
-	return f.rows, f.err
 }
 
 // tradeShipAt builds a trade-dedicated hull parked at waypoint (its system is the discovery signal).
@@ -76,7 +63,7 @@ func TestUnservedLaneCount_ReadableCountBeyondHeavies(t *testing.T) {
 		tradeShipAt(t, "TR-2", 1, "X1-BB-1"),
 	}}
 	lanes := &fakeLaneCounter{count: 5, readable: true}
-	src := &autosizerHeavySources{shipRepo: shipRepo, laneReader: lanes, clock: shared.NewRealClock()}
+	src := &autosizerHeavySources{shipRepo: shipRepo, laneReader: lanes}
 
 	unserved, readable, err := src.UnservedLaneCount(context.Background(), 1)
 	require.NoError(t, err)
@@ -93,7 +80,7 @@ func TestUnservedLaneCount_MoreHeaviesThanLanes_ZeroButReadable(t *testing.T) {
 		tradeShipAt(t, "TR-3", 1, "X1-AA-3"),
 	}}
 	lanes := &fakeLaneCounter{count: 2, readable: true}
-	src := &autosizerHeavySources{shipRepo: shipRepo, laneReader: lanes, clock: shared.NewRealClock()}
+	src := &autosizerHeavySources{shipRepo: shipRepo, laneReader: lanes}
 
 	unserved, readable, err := src.UnservedLaneCount(context.Background(), 1)
 	require.NoError(t, err)
@@ -110,7 +97,6 @@ func TestUnservedLaneCount_GenuineReadFailure_FailsClosed(t *testing.T) {
 	src := &autosizerHeavySources{
 		shipRepo:   &fakeHeavyShipRepo{all: ships},
 		laneReader: &fakeLaneCounter{readable: false},
-		clock:      shared.NewRealClock(),
 	}
 	_, readable, err := src.UnservedLaneCount(context.Background(), 1)
 	require.NoError(t, err)
@@ -125,52 +111,8 @@ func TestUnservedLaneCount_GenuineReadFailure_FailsClosed(t *testing.T) {
 	src = &autosizerHeavySources{
 		shipRepo:   &fakeHeavyShipRepo{err: errors.New("db down")},
 		laneReader: &fakeLaneCounter{count: 9, readable: true},
-		clock:      shared.NewRealClock(),
 	}
 	_, readable, err = src.UnservedLaneCount(context.Background(), 1)
 	require.Error(t, err)
 	require.False(t, readable)
-}
-
-// --- FleetTourRate -----------------------------------------------------------------------------
-
-// The port reads a telemetry window and returns the computed fleet-average, marginal, and decline —
-// in the (fleetAvg, marginal, declining, readable) order the heavy provider consumes.
-func TestFleetTourRate_ComputesFleetAvgMarginalAndDecline(t *testing.T) {
-	base := time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC)
-	h := func(n int) time.Time { return base.Add(time.Duration(n) * time.Hour) }
-	rows := []trading.TourLegTelemetry{
-		// Ship A tour a1: net 100k / 1h = 100k/hr (completes h1).
-		{TourID: "a1", ShipSymbol: "A", IsBuy: true, RealizedUnits: 100, RealizedUnitPrice: 1000, PlannedAt: h(0), RealizedAt: h(0), PlayerID: 1},
-		{TourID: "a1", ShipSymbol: "A", IsBuy: false, RealizedUnits: 100, RealizedUnitPrice: 2000, PlannedAt: h(0), RealizedAt: h(1), PlayerID: 1},
-		// Ship B tour b1: net 60k / 1h = 60k/hr (completes h3).
-		{TourID: "b1", ShipSymbol: "B", IsBuy: true, RealizedUnits: 100, RealizedUnitPrice: 1000, PlannedAt: h(2), RealizedAt: h(2), PlayerID: 1},
-		{TourID: "b1", ShipSymbol: "B", IsBuy: false, RealizedUnits: 100, RealizedUnitPrice: 1600, PlannedAt: h(2), RealizedAt: h(3), PlayerID: 1},
-	}
-	tele := &fakeTourTelemetryReader{rows: rows}
-	src := &autosizerHeavySources{tourRates: tele, clock: shared.NewRealClock()}
-
-	fleetAvg, marginal, declining, readable, err := src.FleetTourRate(context.Background(), 1)
-	require.NoError(t, err)
-	require.True(t, readable)
-	require.Equal(t, 80000.0, fleetAvg)
-	require.Equal(t, 60000.0, marginal)
-	require.True(t, declining)
-	require.True(t, tele.gotSince.Before(time.Now()), "the port reads a trailing window, not all history")
-}
-
-// RULINGS #4: a telemetry read failure fails the realized-rate signal CLOSED (RateReadable=false),
-// so the heavy realized-rate/payback guards block on their own.
-func TestFleetTourRate_UnreadableTelemetry_FailsClosed(t *testing.T) {
-	// (a) repo error.
-	src := &autosizerHeavySources{tourRates: &fakeTourTelemetryReader{err: errors.New("db down")}, clock: shared.NewRealClock()}
-	_, _, _, readable, err := src.FleetTourRate(context.Background(), 1)
-	require.Error(t, err)
-	require.False(t, readable)
-
-	// (b) no computable rate (empty window).
-	src = &autosizerHeavySources{tourRates: &fakeTourTelemetryReader{rows: nil}, clock: shared.NewRealClock()}
-	_, _, _, readable, err = src.FleetTourRate(context.Background(), 1)
-	require.NoError(t, err)
-	require.False(t, readable, "an empty telemetry window has no computable rate → fail closed")
 }

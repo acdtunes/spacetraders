@@ -18,33 +18,26 @@ const (
 	defaultAutosizerTickSeconds = 900 // 15min — sizing is strategic, not per-second
 	defaultPurchaseCapPerTick   = 1
 
-	// Protective fleet ceilings (the HARD API-request-budget bound — each hull adds request
+	// Protective PER-CLASS ceilings (the HARD API-request-budget bound — each hull adds request
 	// load). Deliberately conservative: an auto-buyer that surprises the treasury is worse than
-	// one that stops early, and the captain raises these from evidence.
-	defaultFleetCeilingTotal   = 50
+	// one that stops early, and the captain raises these from evidence. There is deliberately no
+	// fleet-wide total — see guardClassCeiling for why an absolute cap across all classes is a
+	// recurring outage rather than a bound.
 	defaultFleetCeilingLights  = 35
 	defaultFleetCeilingHeavies = 15
 
 	defaultPurchaseMarginOverFloor     = 200000
 	defaultLightRotationSlots          = 3.5
-	defaultHeavyMarginalRateFloor      = 0.7
 	defaultHeavyUnservedLanesMin       = 3
 	defaultHeavyTreasuryPctPerPurchase = 25
 	// defaultHeavyCap bounds CAPITAL EXPOSURE in heavy hulls — a separate question from
 	// defaultFleetCeilingHeavies, which caps the TRADE POOL by dedicated_fleet tag. Both apply.
 	// 5 per the Admiral. An explicit 0 in config.yaml is a legitimate operator HOLD, which is why
 	// the config field is a *int (see config.FleetAutosizerConfig.HeavyCap).
-	defaultHeavyCap = 5
-	// defaultDecliningRateUnservedFloor is the near-zero unserved-lane count at/below
-	// which a DECLINING aggregate realized-rate is a genuine heavy stop-buy; above it the decline is
-	// hull concentration and the buy proceeds. "A couple of lanes" — the resolver never lets it reach
-	// 0, so the declining stop-buy can never be silently disabled (the demand guard forces Shortfall>0).
-	defaultDecliningRateUnservedFloor  = 2
-	defaultAPIUtilCeilingPct           = 85
-	defaultPaybackSafetyFactor         = 0.5
-	defaultPurchaseCutoffEraMinusHours = 3.0
-	defaultMaxPremiumOverCheapestPct   = 50
-	defaultZeroEffectAlarmTicks        = 4
+	defaultHeavyCap                  = 5
+	defaultAPIUtilCeilingPct         = 85
+	defaultMaxPremiumOverCheapestPct = 50
+	defaultZeroEffectAlarmTicks      = 4
 
 	// Default shipyard ship-type symbols per class (RULINGS #5: even the asset is a knob).
 	defaultShipTypeLights  = "SHIP_LIGHT_HAULER"
@@ -107,7 +100,6 @@ type RunFleetAutosizerCoordinatorCommand struct {
 	TickIntervalSecs   int
 	PurchaseCapPerTick int
 
-	FleetCeilingTotal   int
 	FleetCeilingLights  int
 	FleetCeilingHeavies int
 
@@ -115,18 +107,13 @@ type RunFleetAutosizerCoordinatorCommand struct {
 
 	LightRotationSlots float64
 
-	HeavyMarginalRateFloor      float64
 	HeavyUnservedLanesMin       int
 	HeavyTreasuryPctPerPurchase int
 	// HeavyCap is the heavy-HULL cap. *int so an explicit 0 (operator hold) is told from
 	// unset; nil ⇒ defaultHeavyCap.
-	HeavyCap                   *int
-	DecliningRateUnservedFloor int
+	HeavyCap *int
 
 	APIUtilizationCeilingPct int
-
-	PaybackSafetyFactor           float64
-	PurchaseCutoffAtEraMinusHours float64
 
 	MaxPriceLights            int64
 	MaxPriceHeavies           int64
@@ -171,9 +158,7 @@ type RunFleetAutosizerCoordinatorHandler struct {
 	// yields an unreadable input, which the guard stack fails CLOSED on (no buy) — the API-utilization
 	// reader included (an absent/unreadable utilization holds concurrency growth rather than permitting it).
 	treasury  TreasuryReader
-	era       EraClockReader
 	apiUtil   APIUtilizationReader
-	fleetSize FleetSizeReader
 	yardPrice YardPriceReader
 	// heavyCensus counts owned heavy HULLS (tag-independent); heavyYard reports the cheapest
 	// known priced heavy ask. Together they derive the heavy reservation each tick.
@@ -223,20 +208,12 @@ func (h *RunFleetAutosizerCoordinatorHandler) AddDemandProvider(p ClassDemandPro
 // treasury guards fail closed (no buy).
 func (h *RunFleetAutosizerCoordinatorHandler) SetTreasuryReader(r TreasuryReader) { h.treasury = r }
 
-// SetEraClockReader wires the era-clock source. Unset → era unreadable → the era-payback
-// guard fails closed.
-func (h *RunFleetAutosizerCoordinatorHandler) SetEraClockReader(r EraClockReader) { h.era = r }
-
 // SetAPIUtilizationReader wires the API-utilization source. Unset → utilization unreadable →
 // the API-util guard fails CLOSED: a mis-wired coordinator holds concurrency growth rather
 // than silently permitting unbounded growth into a saturated API.
 func (h *RunFleetAutosizerCoordinatorHandler) SetAPIUtilizationReader(r APIUtilizationReader) {
 	h.apiUtil = r
 }
-
-// SetFleetSizeReader wires the total-hull-count source for the absolute fleet ceiling. Unset
-// or erroring → total unreadable → no buy (fail closed).
-func (h *RunFleetAutosizerCoordinatorHandler) SetFleetSizeReader(r FleetSizeReader) { h.fleetSize = r }
 
 // SetYardPriceReader wires the shipyard price source. Unset → price unreadable → the price
 // guards fail closed.

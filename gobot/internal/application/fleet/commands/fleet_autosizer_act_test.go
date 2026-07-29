@@ -17,16 +17,6 @@ func (f *fakeTreasury) Treasury(ctx context.Context, playerID int) (int64, bool,
 	return f.credits, f.ok, f.err
 }
 
-type fakeEra struct {
-	hours float64
-	ok    bool
-	err   error
-}
-
-func (f *fakeEra) HoursToEraEnd(ctx context.Context) (float64, bool, error) {
-	return f.hours, f.ok, f.err
-}
-
 type fakeAPIUtil struct {
 	pct float64
 	ok  bool
@@ -35,15 +25,6 @@ type fakeAPIUtil struct {
 
 func (f *fakeAPIUtil) UtilizationPct(ctx context.Context) (float64, bool, error) {
 	return f.pct, f.ok, f.err
-}
-
-type fakeFleetSize struct {
-	total int
-	err   error
-}
-
-func (f *fakeFleetSize) TotalHulls(ctx context.Context, playerID int) (int, error) {
-	return f.total, f.err
 }
 
 type fakeYardPrice struct {
@@ -117,9 +98,7 @@ func armedHandler(providers ...ClassDemandProvider) (*RunFleetAutosizerCoordinat
 		h.AddDemandProvider(p)
 	}
 	h.SetTreasuryReader(&fakeTreasury{credits: 5000000, ok: true})
-	h.SetEraClockReader(&fakeEra{hours: 20, ok: true})
 	h.SetAPIUtilizationReader(&fakeAPIUtil{pct: 40, ok: true})
-	h.SetFleetSizeReader(&fakeFleetSize{total: 20})
 	h.SetYardPriceReader(&fakeYardPrice{price: 437000, cheapest: 400000, yard: "KA42-A2", ok: true})
 	// The owned-heavy census must be READABLE or the heavy cap guard fails closed on every
 	// heavy candidate. The harness owns no heavy hull, so the cap has room and each test keeps
@@ -136,7 +115,7 @@ func armedHandler(providers ...ClassDemandProvider) (*RunFleetAutosizerCoordinat
 
 func lightShortfall() *fakeDemandProvider {
 	return &fakeDemandProvider{class: HullClassLight, demand: ClassDemand{
-		Demand: 5, Current: 2, MarginalRate: 80000, FleetAvgRate: 90000, RateReadable: true, Readable: true,
+		Demand: 5, Current: 2, Readable: true,
 	}}
 }
 
@@ -170,7 +149,7 @@ func TestReconcile_HappyPath_BuysAndDedicates(t *testing.T) {
 func TestReconcile_PerTickCap_BoundsBuys(t *testing.T) {
 	light := lightShortfall()
 	heavy := &fakeDemandProvider{class: HullClassHeavy, demand: ClassDemand{
-		Demand: 9, Current: 6, MarginalRate: 450000, FleetAvgRate: 500000, RateReadable: true, Readable: true,
+		Demand: 9, Current: 6, Readable: true,
 	}}
 	h, purchaser, _, _ := armedHandler(light, heavy)
 	// Heavy needs its streak; give it enough ticks, but the CAP must still bound each tick to 1.
@@ -192,8 +171,8 @@ func TestReconcile_TreasuryUnreadable_FailsClosed(t *testing.T) {
 	if res.Purchased != 0 || len(purchaser.orders) != 0 {
 		t.Fatalf("unreadable treasury must fail closed: purchased=%d", res.Purchased)
 	}
-	if metrics.blocked == 0 || metrics.blockedGuards[0] != GuardTreasuryFloor {
-		t.Fatalf("expected a treasury_floor block metered, got %v", metrics.blockedGuards)
+	if metrics.blocked == 0 || metrics.blockedGuards[0] != GuardAffordability {
+		t.Fatalf("expected an affordability block metered, got %v", metrics.blockedGuards)
 	}
 }
 
@@ -211,7 +190,7 @@ func TestReconcile_NoPurchaser_NoSpend(t *testing.T) {
 // consecutive ticks before a heavy is bought.
 func TestReconcile_HeavyStreakGate(t *testing.T) {
 	heavy := &fakeDemandProvider{class: HullClassHeavy, demand: ClassDemand{
-		Demand: 9, Current: 6, MarginalRate: 450000, FleetAvgRate: 500000, RateReadable: true, Readable: true,
+		Demand: 9, Current: 6, Readable: true,
 	}}
 	h, purchaser, _, _ := armedHandler(heavy)
 	cmd := &RunFleetAutosizerCoordinatorCommand{PlayerID: 1, ContainerID: "c1", HeavyUnservedLanesMin: 3, HeavyCap: intPtr(50)}
@@ -236,7 +215,7 @@ func TestReconcile_HeavyStreakGate(t *testing.T) {
 // zero_effect_alarm_ticks consecutive ticks.
 func TestReconcile_ZeroEffectAlarm_EdgeTriggered(t *testing.T) {
 	h, _, metrics, _ := armedHandler(lightShortfall())
-	h.SetTreasuryReader(&fakeTreasury{ok: false}) // every tick blocks on treasury_floor
+	h.SetTreasuryReader(&fakeTreasury{ok: false}) // every tick blocks on affordability
 	cmd := &RunFleetAutosizerCoordinatorCommand{PlayerID: 1, ContainerID: "c1", ZeroEffectAlarmTicks: 4}
 
 	for tick := 1; tick <= 3; tick++ {
@@ -301,30 +280,6 @@ func TestReconcile_APIUtilReaderUnwired_HoldsGrowth(t *testing.T) {
 	}
 }
 
-// In-tick total accounting: a buy advances the total hull count so a later class in the SAME tick
-// sees the updated fleet size and is blocked by the absolute ceiling.
-func TestReconcile_InTickTotalAccounting(t *testing.T) {
-	light := lightShortfall()
-	heavy := &fakeDemandProvider{class: HullClassHeavy, demand: ClassDemand{
-		Demand: 9, Current: 6, MarginalRate: 450000, FleetAvgRate: 500000, RateReadable: true, Readable: true,
-	}}
-	h, purchaser, metrics, _ := armedHandler(light, heavy)
-	h.SetFleetSizeReader(&fakeFleetSize{total: 49}) // one below the total ceiling (default 50)
-	cmd := &RunFleetAutosizerCoordinatorCommand{PlayerID: 1, ContainerID: "c1", PurchaseCapPerTick: 2, HeavyUnservedLanesMin: 1}
-
-	res, _ := h.reconcileOnce(context.Background(), cmd)
-	if res.Purchased != 1 {
-		t.Fatalf("only 1 buy should fit under the absolute ceiling (49→50), got %d", res.Purchased)
-	}
-	if len(purchaser.orders) != 1 || purchaser.orders[0].Class != HullClassLight {
-		t.Fatalf("the first class (light) should take the last ceiling slot")
-	}
-	// The heavy must have been blocked by the fleet ceiling once the total hit 50 in-tick.
-	if !containsGuard(metrics.blockedGuards, GuardFleetCeiling) {
-		t.Fatalf("heavy must be blocked by fleet_ceiling after the in-tick buy filled the total, got %v", metrics.blockedGuards)
-	}
-}
-
 func containsGuard(gs []GuardName, want GuardName) bool {
 	for _, g := range gs {
 		if g == want {
@@ -332,58 +287,6 @@ func containsGuard(gs []GuardName, want GuardName) bool {
 		}
 	}
 	return false
-}
-
-// --- The declining-aggregate-rate stop-buy is a CONCENTRATION false-positive when
-// profitable unserved lanes sit unflown -----------------------------------------------------------
-
-// A heavy-freighter buy where every other guard passes and the aggregate realized tour-rate is
-// DECLINING, but 28 profitable trade lanes are UNSERVED. The declining aggregate is a
-// hull-CONCENTRATION artifact (the fleet piled onto a few fat lanes and compressed them) — the NEXT
-// heavy flies a FRESH unserved lane at fresh economics, so the buy MUST proceed.
-func TestReconcile_HeavyDecliningRateWithUnservedLanes_StillBuys(t *testing.T) {
-	// Demand 34, current 6 → shortfall 28 unserved profitable lanes; aggregate rate DECLINING;
-	// marginal 80000 clears the 0.7×fleet-avg floor (0.7 × 100000 = 70000).
-	heavy := &fakeDemandProvider{class: HullClassHeavy, demand: ClassDemand{
-		Demand: 34, Current: 6, MarginalRate: 80000, FleetAvgRate: 100000,
-		RateDeclining: true, RateReadable: true, Readable: true,
-	}}
-	h, purchaser, _, _ := armedHandler(heavy)
-	// Streak of 1 so the anti-thrash gate is met on the first tick; the default declining-rate
-	// unserved floor (2) is far below the 28 unserved lanes, so the buy proceeds.
-	cmd := &RunFleetAutosizerCoordinatorCommand{PlayerID: 3, ContainerID: "c-zbe6", HeavyUnservedLanesMin: 1}
-	res, err := h.reconcileOnce(context.Background(), cmd)
-	if err != nil {
-		t.Fatalf("reconcileOnce error: %v", err)
-	}
-	if res.Purchased != 1 {
-		t.Fatalf("a declining aggregate rate with 28 UNSERVED lanes must NOT block the buy (concentration, not saturation), got Purchased=%d", res.Purchased)
-	}
-	if len(purchaser.orders) != 1 || purchaser.orders[0].Class != HullClassHeavy {
-		t.Fatalf("expected one HEAVY buy (the next hull flies a fresh unserved lane), got %+v", purchaser.orders)
-	}
-}
-
-// REGRESSION (critical): a genuinely saturated heavy market — aggregate rate DECLINING and
-// unserved demand near-zero (shortfall 1, at or below the floor) — STILL stops buying. This is the
-// whole point of the declining-rate stop-buy; it must not be loosened away.
-func TestReconcile_HeavyDecliningRateSaturated_StillStops(t *testing.T) {
-	heavy := &fakeDemandProvider{class: HullClassHeavy, demand: ClassDemand{
-		Demand: 7, Current: 6, MarginalRate: 80000, FleetAvgRate: 100000, // shortfall 1 (near-zero)
-		RateDeclining: true, RateReadable: true, Readable: true,
-	}}
-	h, purchaser, metrics, _ := armedHandler(heavy)
-	cmd := &RunFleetAutosizerCoordinatorCommand{PlayerID: 3, ContainerID: "c-zbe6b", HeavyUnservedLanesMin: 1}
-	res, err := h.reconcileOnce(context.Background(), cmd)
-	if err != nil {
-		t.Fatalf("reconcileOnce error: %v", err)
-	}
-	if res.Purchased != 0 || len(purchaser.orders) != 0 {
-		t.Fatalf("a saturated market (declining + near-zero unserved) MUST still stop buying, got Purchased=%d orders=%d", res.Purchased, len(purchaser.orders))
-	}
-	if !containsGuard(metrics.blockedGuards, GuardRealizedRate) {
-		t.Fatalf("expected a realized_rate block metered on the saturated declining market, got %v", metrics.blockedGuards)
-	}
 }
 
 // fakeHeavyCensus is the tag-independent owned-heavy census. err ⇒ unreadable ⇒ the heavy cap
@@ -436,7 +339,7 @@ func (f *fakeTypedYardPrice) PriceFor(_ context.Context, _ int, _ HullClass, shi
 // only thing left to decide the outcome is which hull the price step resolves.
 func tradeShortfall() *fakeDemandProvider {
 	return &fakeDemandProvider{class: HullClassHeavy, demand: ClassDemand{
-		Demand: 9, Current: 6, MarginalRate: 450000, FleetAvgRate: 500000, RateReadable: true, Readable: true,
+		Demand: 9, Current: 6, Readable: true,
 	}}
 }
 
@@ -448,7 +351,7 @@ func tradeCmd() *RunFleetAutosizerCoordinatorCommand {
 
 func TestReconcile_TradeHullFallback_BuysThePriceableTypeWhenThePreferredCannotBePriced(t *testing.T) {
 	// The live defect: the trade pool is configured to buy SHIP_HEAVY_FREIGHTER and no
-	// shipyard discovered this era sells one, so price_read blocked every tick while 8
+	// shipyard discovered this era sells one, so the price guard blocked every tick while 8
 	// profitable lanes sat unflown. Only the light hauler is priceable here.
 	h, purchaser, _, _ := armedHandler(tradeShortfall())
 	yards := &fakeTypedYardPrice{byType: map[string]int64{"SHIP_LIGHT_HAULER": 374176}}
@@ -502,7 +405,7 @@ func TestReconcile_TradeHullFallback_PreferredTypeWinsAgainOnceItIsPriceable(t *
 
 func TestReconcile_TradeHullFallback_NothingPriceableBuysNothing(t *testing.T) {
 	// Fail CLOSED, exactly as today: no trade-capable type priceable → no buy, blocked on
-	// price_read. The fallback widens WHICH hulls are offered to the guards; it never
+	// the price guard. The fallback widens WHICH hulls are offered to the guards; it never
 	// invents a purchase.
 	h, purchaser, metrics, _ := armedHandler(tradeShortfall())
 	h.SetYardPriceReader(&fakeTypedYardPrice{byType: map[string]int64{}})
@@ -511,14 +414,14 @@ func TestReconcile_TradeHullFallback_NothingPriceableBuysNothing(t *testing.T) {
 	if res.Purchased != 0 || len(purchaser.orders) != 0 {
 		t.Fatalf("purchased=%d orders=%d, want no buy when nothing can be priced", res.Purchased, len(purchaser.orders))
 	}
-	if len(metrics.blockedGuards) == 0 || metrics.blockedGuards[0] != GuardPriceRead {
-		t.Fatalf("blocked guards = %v, want price_read", metrics.blockedGuards)
+	if len(metrics.blockedGuards) == 0 || metrics.blockedGuards[0] != GuardPrice {
+		t.Fatalf("blocked guards = %v, want price", metrics.blockedGuards)
 	}
 }
 
 func TestReconcile_TradeHullFallback_StillRunsEveryGuard(t *testing.T) {
 	// The fallback decides only WHICH hull is offered to the guard stack. Here the fallback
-	// hull IS priceable, so price_read passes — and the treasury is unreadable, so the money
+	// hull IS priceable, so price passes — and the treasury is unreadable, so the money
 	// guard must still refuse. A fallback that bypassed a guard would buy.
 	h, purchaser, metrics, _ := armedHandler(tradeShortfall())
 	h.SetYardPriceReader(&fakeTypedYardPrice{byType: map[string]int64{"SHIP_LIGHT_HAULER": 374176}})
@@ -531,8 +434,8 @@ func TestReconcile_TradeHullFallback_StillRunsEveryGuard(t *testing.T) {
 	// treasury_pct, not treasury_floor: the trade class carries the 25% big-ticket
 	// affordability rule (lights do not) and it is judged first, so it is the guard an
 	// unreadable treasury trips for a heavy candidate.
-	if len(metrics.blockedGuards) == 0 || metrics.blockedGuards[0] != GuardTreasuryPct {
-		t.Fatalf("blocked guards = %v, want treasury_pct — every guard still applies to the fallback type", metrics.blockedGuards)
+	if len(metrics.blockedGuards) == 0 || metrics.blockedGuards[0] != GuardAffordability {
+		t.Fatalf("blocked guards = %v, want affordability — every guard still applies to the fallback type", metrics.blockedGuards)
 	}
 }
 

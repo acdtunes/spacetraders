@@ -9,30 +9,57 @@ import (
 
 // The MONEY-GUARD HEART. A purchase fires ONLY when every guard passes; this is the
 // fail-CLOSED inversion of vdld's fail-open kill-switch — spending is irreversible, not-buying is
-// safe, so any UNREADABLE input (price, era clock, realized rate, treasury, API utilization) BLOCKS.
+// safe, so any UNREADABLE input (price, treasury, heavy census, API utilization) BLOCKS.
 //
 // EvaluateGuards is PURE: it judges a fully-populated PurchaseRequest and reports every guard's
 // verdict plus the full arithmetic (the park-line idiom — the captain reads one line and
 // knows exactly which knob to retune and to what value). The I/O that populates the request
-// (reading treasury / era / price / rate) lives in the coordinator's ACT step; keeping the
+// (reading treasury / price / census) lives in the coordinator's ACT step; keeping the
 // judgement pure makes every guard's refusal unit-testable in isolation.
+//
+// SEVEN GUARDS, ONE QUESTION EACH. The chain was twelve and asked three questions three times over
+// (affordability twice, overpaying twice, payback three times). It is now one guard per question:
+//
+//	demand         — is there a real, SETTLED need? (shortfall + the anti-thrash streak)
+//	class_ceiling  — does this class have room in its OWN pool?
+//	per_tick_cap   — have we already spent this tick?
+//	price          — is the ask readable, and are we overpaying? (abs cap + premium cap)
+//	heavy_cap      — is capital exposure in large hulls within the operator's cap?
+//	affordability  — can the treasury bear it? (pct-per-buy rule + reserve floor & margin)
+//	api_util       — is there request budget to fly another hull?
+//
+// WHAT WAS DELETED, and why it is not a hole. era_payback required a marginal $/hr it could never
+// read in production ("marginal rate unreadable/zero — cannot prove payback"), so it refused every
+// buy unconditionally rather than refusing bad ones. realized_rate refused on a declining aggregate
+// rate while its own detail conceded the case did not apply (hull concentration, not absorption
+// saturation — the next hull flies a fresh lane). explorer_exempt existed solely to cancel those two
+// for one class and could never itself block. The autosizer therefore no longer forms an opinion on
+// whether a hull will EARN; it judges whether the fleet can afford it and has room for it. Demand
+// shortfall — which for heavies IS the unserved profitable-lane count — is the remaining economic
+// input, and it must be > 0.
+//
+// WHY heavy_cap DID NOT MERGE INTO class_ceiling, though both are "over a limit" questions. They
+// count DIFFERENT things and fail differently: class_ceiling counts the trade pool by
+// DedicatedFleet tag, heavy_cap counts heavy HULLS fleet-wide regardless of tag (see guardHeavyCap),
+// and only heavy_cap has a census that can be UNREADABLE and must fail closed. Merging them would
+// have made the guard NAME lie — a block reported as "class_ceiling" when the real bound was the
+// heavy census sends the operator to raise fleet_ceiling_heavies, which would not unblock anything —
+// and would have collapsed two distinct block reasons into one autosizer_blocked label, destroying
+// the operator's ability to tell "trade pool full" from "capital exposure capped". That is the same
+// class of papering-over that made the fleet-wide total ceiling a recurring outage. Seven guards,
+// deliberately, not six.
 
 // GuardName identifies a purchase guard for the decision log and the autosizer_blocked metric.
 type GuardName string
 
 const (
-	GuardDemand         GuardName = "demand"          // there is unmet demand for the class
-	GuardFleetCeiling   GuardName = "fleet_ceiling"   // per-class + absolute fleet-size ceilings
-	GuardPerTickCap     GuardName = "per_tick_cap"    // hulls already bought this tick
-	GuardPriceRead      GuardName = "price_read"      // the yard ask was readable (fail-closed)
-	GuardPriceCeiling   GuardName = "price_ceiling"   // per-class absolute + premium-over-cheapest cap
-	GuardEraPayback     GuardName = "era_payback"     // buy pays back before era reset; hard T-cutoff
-	GuardRealizedRate   GuardName = "realized_rate"   // marginal $/hr clears the floor, not decaying
-	GuardExplorerExempt GuardName = "explorer_exempt" // exploration-justified — REPLACES the two income guards for the explorer ONLY
-	GuardHeavyCap       GuardName = "heavy_cap"       // owned HEAVY HULLS below the operator's heavy cap
-	GuardTreasuryPct    GuardName = "treasury_pct"    // a single hull ≤ pct% of live treasury (analyst rule)
-	GuardAPIUtil        GuardName = "api_util"        // sustained request-utilization below ceiling (fail-closed)
-	GuardTreasuryFloor  GuardName = "treasury_floor"  // treasury net of the reserve floor covers price+margin
+	GuardDemand        GuardName = "demand"        // unmet demand for the class AND it survived the anti-thrash streak
+	GuardClassCeiling  GuardName = "class_ceiling" // this class's pool is below its OWN ceiling
+	GuardPerTickCap    GuardName = "per_tick_cap"  // hulls already bought this tick
+	GuardPrice         GuardName = "price"         // yard ask readable (fail-closed) AND within both ceilings
+	GuardHeavyCap      GuardName = "heavy_cap"     // owned HEAVY HULLS below the operator's heavy cap
+	GuardAffordability GuardName = "affordability" // BOTH treasury tests: the pct-per-buy rule AND the reserve floor+margin
+	GuardAPIUtil       GuardName = "api_util"      // sustained request-utilization below ceiling (fail-closed)
 )
 
 // GuardVerdict is one guard's outcome plus the arithmetic behind it (Detail), so the decision log
@@ -50,14 +77,36 @@ type PurchaseRequest struct {
 	Class    HullClass
 	ShipType string
 
-	// Demand.
-	Shortfall int // unmet demand for the class (Demand − Current); must be > 0 to buy.
+	// Demand. Shortfall is the unmet demand for the class (Demand − Current) and must be > 0.
+	//
+	// ShortfallStreak / ShortfallStreakMin are the ANTI-THRASH streak, folded into this guard so
+	// the whole go/no-go is one line. The heavy class must show its unserved-lane shortfall for
+	// StreakMin CONSECUTIVE ticks before a ~1.4M hull is bought, so a transient spike in the lane
+	// ranking cannot trigger a purchase. StreakMin is 0 for classes that do not use it, which makes
+	// the term a no-op.
+	//
+	// RULINGS #2 (re-derive each tick, hold no cross-tick state) is satisfied exactly as it was
+	// before this fold — the MECHANISM is unchanged, only where its verdict is reported. The
+	// counter is the coordinator's existing per-container edge-trigger bookkeeping
+	// (autosizerState.heavyShortfallStreak): not config, not a cached decision, but a count of
+	// CONSECUTIVE ticks, which by definition cannot be re-derived from one tick's store read. It is
+	// reset the moment the shortfall clears, and every other input on this request is still read
+	// fresh from the ports each pass. The guard stays PURE: it is HANDED the count, it never keeps
+	// one.
+	Shortfall          int
+	ShortfallStreak    int
+	ShortfallStreakMin int
 
-	// Fleet ceilings (the hard API-budget bound).
+	// The PER-CLASS ceiling (the hard API-budget bound). There is deliberately NO fleet-wide
+	// total term: 244 of the fleet's 277 hulls are probes and that count is meant to grow into
+	// the thousands, so a single absolute cap across all classes starves every other class
+	// permanently the moment the probe frontier expands. It was papered over once already
+	// (raised 50 → 150 in config.yaml on 2026-07-15 for exactly this reason) and the probe fleet
+	// blew past it again — a bound that must be re-raised every time an unrelated class grows is
+	// not a bound, it is a recurring outage. Each class carries its OWN ceiling instead, which is
+	// the number an operator can actually reason about.
 	CurrentClassCount int
 	ClassCeiling      int
-	CurrentTotalCount int
-	TotalCeiling      int
 
 	// The HEAVY-HULL cap — a SEPARATE dial from ClassCeiling, deliberately.
 	// ClassCeiling for HullClassHeavy is enforced against a count of hulls tagged
@@ -89,28 +138,6 @@ type PurchaseRequest struct {
 	CheapestKnownPrice int64
 	MaxPriceClass      int64
 	MaxPremiumPct      int
-
-	// Era-clock payback.
-	HoursToEraEnd  float64
-	EraReadable    bool
-	EraCutoffHours float64
-	PaybackSafety  float64
-
-	// Realized-rate gate.
-	MarginalRate  float64 // expected marginal realized credits/hour for the next hull.
-	RateFloor     float64 // absolute $/hr floor the class must clear (fraction × fleet-avg, resolved upstream).
-	RateReadable  bool
-	RateDeclining bool // realized rate trending down (heavy stop-buy).
-	// UnservedDemandFloor is the near-zero unserved-lane count — the heavy class's OWN
-	// Shortfall — at or BELOW which a DECLINING aggregate realized-rate is treated as genuine
-	// absorption saturation and STOPS the buy. ABOVE it, a declining aggregate rate is a hull-
-	// CONCENTRATION artifact (the fleet piled onto a few fat lanes and compressed their realized
-	// rate while profitable lanes sit UNFLOWN) — the next heavy flies a FRESH lane at fresh
-	// economics, so the declining signal must NOT stop the buy. For heavies Shortfall is the
-	// unserved profitable-lane count. Resolved from autosizer_declining_rate_unserved_floor
-	// (default 2); the config resolver never lets it reach 0, so the stop-buy can never be silently
-	// disabled (the demand guard already forces Shortfall>0).
-	UnservedDemandFloor int
 
 	// Treasury.
 	LiveTreasury      int64
@@ -164,39 +191,14 @@ func (d PurchaseDecision) Arithmetic() string {
 func EvaluateGuards(req PurchaseRequest) PurchaseDecision {
 	verdicts := []GuardVerdict{
 		guardDemand(req),
-		guardFleetCeiling(req),
+		guardClassCeiling(req),
 		guardPerTickCap(req),
-		guardPriceRead(req),
-		guardPriceCeiling(req),
-	}
-	// THE EXPLORER PAYBACK EXEMPTION — the single, class-gated carve-out.
-	//
-	// The explorer buys REACH, not income: it warps off the gate network to chart new systems so
-	// the cheap probe frontier resumes (growFrontierGraph picks up the charted cluster next cycle).
-	// It therefore has NO marginal realized $/hr, so req.MarginalRate/req.RateReadable are unset —
-	// which means the two realized-rate INCOME guards (era_payback: price must pay back before the
-	// era reset; realized_rate: marginal $/hr clears the fleet-avg floor) would BOTH fail CLOSED and
-	// the explorer could never buy. For the explorer ONLY we REPLACE that payback proof with the
-	// explorer_exempt verdict. The proof is not dropped — it is replaced by three explorer-only
-	// bounds ALREADY enforced above: the demand-gate (guardDemand; the provider emits demand only
-	// when slice-B off-gate demand fires AND the class is armed), the HARD CAP of 1 (guardFleetCeiling
-	// with ClassCeiling=1), and the price ceiling (guardPriceCeiling, MaxPriceClass ~= 819k+premium).
-	//
-	// The carve-out is gated to HullClassExplorer and NOTHING else: every other class still runs BOTH
-	// income guards, so a non-explorer with an unprovable payback is STILL refused (regression-tested,
-	// and the class-gate is mutation-verified — dropping it makes that test fail). Every OTHER guard
-	// (demand, fleet ceiling, per-tick, price read+ceiling, 25%-treasury, api-util, reserve/spend)
-	// applies to the explorer unchanged.
-	if req.Class == HullClassExplorer {
-		verdicts = append(verdicts, guardExplorerExempt(req))
-	} else {
-		verdicts = append(verdicts, guardEraPayback(req), guardRealizedRate(req))
+		guardPrice(req),
 	}
 	verdicts = append(verdicts,
 		guardHeavyCap(req),
-		guardTreasuryPct(req),
+		guardAffordability(req),
 		guardAPIUtil(req),
-		guardTreasuryFloor(req),
 	)
 	d := PurchaseDecision{Approved: true, Verdicts: verdicts}
 	for _, v := range verdicts {
@@ -209,7 +211,26 @@ func EvaluateGuards(req PurchaseRequest) PurchaseDecision {
 	return d
 }
 
+// guardDemand answers the whole "is there a real, settled need?" question in ONE verdict: an unmet
+// shortfall AND — where the class uses one — that shortfall having PERSISTED the anti-thrash streak.
+//
+// The streak used to hold the buy OUTSIDE the guard chain, on its own log line
+// ("shortfall 17 persisting 2/3 ticks — holding for the anti-thrash streak") while the decision log
+// printed nothing at all for that tick. An operator had to correlate two lines to learn why a heavy
+// did not buy. It is a demand condition, so it belongs to the demand guard's verdict.
+//
+// NON-LOOSENING: the streak term is unchanged (streak >= min, same counter, same reset rule) and is
+// now ANDed with the shortfall test rather than short-circuiting ahead of it. A tick that used to
+// hold for the streak still does not buy — it now says so in the decision line and meters a
+// `demand` block, where before it was invisible to the autosizer_blocked series.
 func guardDemand(req PurchaseRequest) GuardVerdict {
+	if req.ShortfallStreakMin > 0 {
+		return GuardVerdict{
+			Guard:  GuardDemand,
+			Passed: req.Shortfall > 0 && req.ShortfallStreak >= req.ShortfallStreakMin,
+			Detail: fmt.Sprintf("shortfall=%d persisting %d/%d ticks (anti-thrash)", req.Shortfall, req.ShortfallStreak, req.ShortfallStreakMin),
+		}
+	}
 	return GuardVerdict{
 		Guard:  GuardDemand,
 		Passed: req.Shortfall > 0,
@@ -217,17 +238,23 @@ func guardDemand(req PurchaseRequest) GuardVerdict {
 	}
 }
 
-func guardFleetCeiling(req PurchaseRequest) GuardVerdict {
-	passed := req.CurrentClassCount < req.ClassCeiling && req.CurrentTotalCount < req.TotalCeiling
+// guardClassCeiling bounds THIS CLASS's pool against its OWN ceiling — and nothing else.
+//
+// The fleet-wide total term this guard used to carry was DELETED, not defaulted off. Removing
+// the config key alone would have blocked HARDER, not less: with no key the resolver falls back
+// to the compiled default (50), tighter than the 150 the live config had already been raised to.
+// The only way to stop a fleet-wide cap starving the trade pool every time the probe frontier
+// grows is for the term not to exist.
+func guardClassCeiling(req PurchaseRequest) GuardVerdict {
 	return GuardVerdict{
-		Guard:  GuardFleetCeiling,
-		Passed: passed,
-		Detail: fmt.Sprintf("class %d/%d, total %d/%d", req.CurrentClassCount, req.ClassCeiling, req.CurrentTotalCount, req.TotalCeiling),
+		Guard:  GuardClassCeiling,
+		Passed: req.CurrentClassCount < req.ClassCeiling,
+		Detail: fmt.Sprintf("class %d/%d", req.CurrentClassCount, req.ClassCeiling),
 	}
 }
 
 // guardHeavyCap bounds CAPITAL EXPOSURE in large hulls — a separate question from
-// guardFleetCeiling's trade-pool size, and both must pass.
+// guardClassCeiling's trade-pool size, and both must pass.
 //
 // It is HEAVY-SCOPED: every other class passes untouched, because the census it reads
 // (HeaviesOwned) counts heavy hulls fleet-wide and would otherwise starve the light
@@ -266,21 +293,31 @@ func guardPerTickCap(req PurchaseRequest) GuardVerdict {
 	}
 }
 
-func guardPriceRead(req PurchaseRequest) GuardVerdict {
-	return GuardVerdict{
-		Guard:  GuardPriceRead,
-		Passed: req.PriceReadable, // fail-closed: an unreadable yard ask never buys.
-		Detail: fmt.Sprintf("price=%d readable=%v", req.Price, req.PriceReadable),
-	}
-}
-
-func guardPriceCeiling(req PurchaseRequest) GuardVerdict {
-	// Unreadable price is caught by guardPriceRead; here treat an unreadable price as a fail so the
-	// ceiling never "passes" on a zero price.
+// guardPrice answers the whole "are we overpaying?" question in ONE verdict: it merges the former
+// price_read and price_ceiling guards, which asked it twice.
+//
+// STRUCTURAL MERGE, NOT A LOOSENING. It is exactly the conjunction of the two originals:
+//   - price_read passed iff PriceReadable;
+//   - price_ceiling ALREADY returned false when !PriceReadable (so it never "passed" on a zero
+//     price), and otherwise required the absolute cap AND the premium-over-cheapest cap.
+//
+// So old = PriceReadable && absOK && premiumOK, which is precisely what this returns. Every price
+// the pair refused, this refuses.
+//
+// STILL FAILS CLOSED on an unreadable ask (RULINGS #4): an unpriceable hull is never bought, and
+// the verdict says so rather than reporting a vacuous 0 <= cap.
+//
+// The detail carries BOTH ceiling terms plus the readability, so the one bracketed term still holds
+// every number an operator would retune from (max_price_<class>, max_premium_over_cheapest_pct).
+func guardPrice(req PurchaseRequest) GuardVerdict {
 	if !req.PriceReadable {
-		return GuardVerdict{Guard: GuardPriceCeiling, Passed: false, Detail: "price unreadable"}
+		return GuardVerdict{Guard: GuardPrice, Passed: false, Detail: "yard ask UNREADABLE — fail-CLOSED (never buy an unpriceable hull)"}
 	}
 	absOK := req.MaxPriceClass <= 0 || req.Price <= req.MaxPriceClass
+	absDetail := "no abs cap"
+	if req.MaxPriceClass > 0 {
+		absDetail = fmt.Sprintf("price %d <= max %d", req.Price, req.MaxPriceClass)
+	}
 	premiumOK := true
 	premiumDetail := "no cheapest ref"
 	if req.CheapestKnownPrice > 0 {
@@ -288,106 +325,10 @@ func guardPriceCeiling(req PurchaseRequest) GuardVerdict {
 		premiumOK = req.Price <= premiumCap
 		premiumDetail = fmt.Sprintf("price %d <= cheapest %d +%d%% = %d", req.Price, req.CheapestKnownPrice, req.MaxPremiumPct, premiumCap)
 	}
-	absDetail := "no abs cap"
-	if req.MaxPriceClass > 0 {
-		absDetail = fmt.Sprintf("price %d <= max %d", req.Price, req.MaxPriceClass)
-	}
 	return GuardVerdict{
-		Guard:  GuardPriceCeiling,
+		Guard:  GuardPrice,
 		Passed: absOK && premiumOK,
-		Detail: absDetail + "; " + premiumDetail,
-	}
-}
-
-func guardEraPayback(req PurchaseRequest) GuardVerdict {
-	// Fail-closed on an unreadable era clock or an unreadable/zero marginal rate: without both we
-	// cannot prove the hull pays back before it evaporates at reset.
-	if !req.EraReadable {
-		return GuardVerdict{Guard: GuardEraPayback, Passed: false, Detail: "era clock unreadable"}
-	}
-	if !req.RateReadable || req.MarginalRate <= 0 {
-		return GuardVerdict{Guard: GuardEraPayback, Passed: false, Detail: "marginal rate unreadable/zero — cannot prove payback"}
-	}
-	// Hard cutoff: no buys inside the last-buy window whatever the payback math says.
-	if req.HoursToEraEnd <= req.EraCutoffHours {
-		return GuardVerdict{
-			Guard:  GuardEraPayback,
-			Passed: false,
-			Detail: fmt.Sprintf("%.2fh to era-end <= cutoff %.2fh (last-buy window)", req.HoursToEraEnd, req.EraCutoffHours),
-		}
-	}
-	maxAffordable := req.MarginalRate * req.HoursToEraEnd * req.PaybackSafety
-	return GuardVerdict{
-		Guard:  GuardEraPayback,
-		Passed: float64(req.Price) <= maxAffordable,
-		Detail: fmt.Sprintf("price %d <= rate %.0f × %.2fh × safety %.2f = %.0f", req.Price, req.MarginalRate, req.HoursToEraEnd, req.PaybackSafety, maxAffordable),
-	}
-}
-
-// guardExplorerExempt is the explorer's exploration-justification verdict that REPLACES the two
-// realized-rate income guards (era_payback + realized_rate) — see the carve-out in EvaluateGuards.
-// It ALWAYS passes: the payback proof is waived because the explorer buys REACH not income. It is
-// reached ONLY for HullClassExplorer, so it can never waive an income guard for any other class.
-// The detail names the three explorer-only bounds that replace the waived proof, so the decision
-// log tells the captain exactly what still gates the ~819k spend.
-func guardExplorerExempt(req PurchaseRequest) GuardVerdict {
-	return GuardVerdict{
-		Guard:  GuardExplorerExempt,
-		Passed: true,
-		Detail: fmt.Sprintf("exploration-justified: explorer buys REACH not income — payback proof WAIVED; replaced by demand-gate + hard cap %d + price ceiling %d (all still gating above)", req.ClassCeiling, req.MaxPriceClass),
-	}
-}
-
-func guardRealizedRate(req PurchaseRequest) GuardVerdict {
-	// Fail-closed on an unreadable rate: buying to a demand signal whose economics we cannot see is
-	// exactly the "hidden loser" the rh2z gate exists to stop.
-	if !req.RateReadable {
-		return GuardVerdict{Guard: GuardRealizedRate, Passed: false, Detail: "realized rate unreadable"}
-	}
-	if req.RateDeclining {
-		// The CONCENTRATION carve-out applies to the TRADE (heavy) pool ONLY: for a heavy,
-		// req.Shortfall IS the count of profitable trade lanes that sit UNFLOWN. When that
-		// count is ABOVE the floor, a DECLINING aggregate tour-rate is a hull-CONCENTRATION artifact —
-		// the fleet piled onto a few fat lanes and compressed THEIR realized rate — not true absorption
-		// saturation: the next heavy flies a FRESH unserved lane at fresh economics, so the decline must
-		// NOT stop the buy. Every OTHER class keeps the unconditional declining stop-buy unchanged (a
-		// light's Shortfall is worker slots, not lanes, and carries no lane-concentration story), so
-		// this loosens NOTHING off the trade path. Either way the marginal must still clear the rate
-		// floor below (never over-loosen a capital buy). The unserved-lane count is named in the detail
-		// so the gate is auditable in the daemon log.
-		concentration := req.Class == HullClassHeavy && req.Shortfall > req.UnservedDemandFloor
-		if !concentration {
-			detail := fmt.Sprintf("marginal %.0f but rate DECLINING (absorption saturating — stop-buy)", req.MarginalRate)
-			if req.Class == HullClassHeavy {
-				detail = fmt.Sprintf("marginal %.0f, rate DECLINING with only %d unserved lanes <= floor %d (absorption saturating — stop-buy)", req.MarginalRate, req.Shortfall, req.UnservedDemandFloor)
-			}
-			return GuardVerdict{Guard: GuardRealizedRate, Passed: false, Detail: detail}
-		}
-		return GuardVerdict{
-			Guard:  GuardRealizedRate,
-			Passed: req.MarginalRate >= req.RateFloor,
-			Detail: fmt.Sprintf("rate DECLINING but %d unserved lanes > floor %d (concentration not saturation — next heavy flies a fresh lane); marginal %.0f >= floor %.0f", req.Shortfall, req.UnservedDemandFloor, req.MarginalRate, req.RateFloor),
-		}
-	}
-	return GuardVerdict{
-		Guard:  GuardRealizedRate,
-		Passed: req.MarginalRate >= req.RateFloor,
-		Detail: fmt.Sprintf("marginal %.0f >= floor %.0f", req.MarginalRate, req.RateFloor),
-	}
-}
-
-func guardTreasuryPct(req PurchaseRequest) GuardVerdict {
-	if req.TreasuryPctPerBuy <= 0 {
-		return GuardVerdict{Guard: GuardTreasuryPct, Passed: true, Detail: "not applied for this class"}
-	}
-	if !req.TreasuryReadable {
-		return GuardVerdict{Guard: GuardTreasuryPct, Passed: false, Detail: "treasury unreadable"}
-	}
-	treasuryCap := int64(req.TreasuryPctPerBuy) * req.LiveTreasury / 100
-	return GuardVerdict{
-		Guard:  GuardTreasuryPct,
-		Passed: req.Price <= treasuryCap,
-		Detail: fmt.Sprintf("price %d <= %d%% × treasury %d = %d", req.Price, req.TreasuryPctPerBuy, req.LiveTreasury, treasuryCap),
+		Detail: fmt.Sprintf("price=%d readable; %s; %s", req.Price, absDetail, premiumDetail),
 	}
 }
 
@@ -407,33 +348,72 @@ func guardAPIUtil(req PurchaseRequest) GuardVerdict {
 	}
 }
 
-func guardTreasuryFloor(req PurchaseRequest) GuardVerdict {
+// guardAffordability answers the whole "can the fleet afford this hull?" question in ONE verdict.
+// It merges the former treasury_pct and treasury_floor guards, which read the SAME live treasury
+// and asked it twice.
+//
+// CONJUNCTIVE — every condition from BOTH originals must still hold. This is a structural merge,
+// never a behavioural loosening:
+//
+//	treasury_pct   : pct<=0 ? pass : (TreasuryReadable && Price <= pct% × treasury)
+//	treasury_floor : TreasuryReadable && (treasury − floor − heavyReserve) >= price + margin
+//	merged         : TreasuryReadable && pctTerm && floorTerm
+//
+// The unreadable case is identical to the pair's: treasury_pct passed vacuously when the rule was
+// off (pct<=0) but treasury_floor blocked regardless, so the PAIR always refused an unreadable
+// treasury — and so does this. Fail-CLOSED on an unknown balance (RULINGS #4).
+//
+// Two separate tests pin the two terms independently (percent-only refusal, floor-only refusal),
+// because a single test cannot prove a conjunctive merge kept both.
+//
+// The detail carries BOTH terms' arithmetic so the one bracketed term still holds every number an
+// operator retunes from (heavy_treasury_pct_per_purchase, purchase_margin_over_floor) and still
+// distinguishes "own reserve waived because this IS the heavy buy" from "reserve silently dropped".
+func guardAffordability(req PurchaseRequest) GuardVerdict {
 	// Fail-closed on an unreadable treasury: a buy must never proceed on an unknown balance
-	// (RULINGS #4). The floor is the flat, immutable common.ImmutableReserveFloor (sp-05glh
-	// scrapped the prior proportional-of-treasury computation) — no config/tune seam.
+	// (RULINGS #4). Checked FIRST, exactly as the pair did — treasury_floor refused this case
+	// unconditionally, so hoisting it changes nothing.
 	if !req.TreasuryReadable {
-		return GuardVerdict{Guard: GuardTreasuryFloor, Passed: false, Detail: "treasury unreadable"}
+		return GuardVerdict{Guard: GuardAffordability, Passed: false, Detail: "treasury UNREADABLE — fail-CLOSED"}
 	}
+
+	// TERM 1 — the analyst's single-hull percentage-of-treasury rule. 0 means the rule is not
+	// applied to this class (lights are protected by the floor term alone), which is a PASS for
+	// this term only; it never waives the floor term below.
+	pctOK := true
+	pctDetail := "pct rule n/a for this class"
+	if req.TreasuryPctPerBuy > 0 {
+		treasuryCap := int64(req.TreasuryPctPerBuy) * req.LiveTreasury / 100
+		pctOK = req.Price <= treasuryCap
+		pctDetail = fmt.Sprintf("price %d <= %d%% × treasury %d = %d", req.Price, req.TreasuryPctPerBuy, req.LiveTreasury, treasuryCap)
+	}
+
+	// TERM 2 — treasury net of the immutable reserve floor must still cover price + margin.
+	// The floor is the flat, immutable common.ImmutableReserveFloor (sp-05glh scrapped the prior
+	// proportional-of-treasury computation) — no config/tune seam.
 	const floor = common.ImmutableReserveFloor
-	// The heavy reservation raises this buy's effective floor — EXCEPT for the heavy
-	// purchase it is saving for, which would otherwise have to clear roughly twice the
-	// hull's price (spec §4: "deliberately not including its own reserve, which would be
-	// circular"). The waiver is enforced HERE, in the pure guard, rather than left to
-	// each caller to remember to zero: a caller that forgot would deadlock heavy buying
-	// silently, and this is the one place that can never be bypassed.
+	// The heavy reservation raises this buy's effective floor — EXCEPT for the heavy purchase it
+	// is saving for, which would otherwise have to clear roughly twice the hull's price (spec §4:
+	// "deliberately not including its own reserve, which would be circular"). The waiver is
+	// enforced HERE, in the pure guard, rather than left to each caller to remember to zero: a
+	// caller that forgot would deadlock heavy buying silently, and this is the one place that can
+	// never be bypassed.
 	heavyReserve := req.HeavyReserve
 	reserveNote := fmt.Sprintf(" − heavy reserve %d", heavyReserve)
 	if req.Class == HullClassHeavy {
 		heavyReserve = 0
-		// Still NAMED in the arithmetic so the decision log distinguishes "waived because
-		// this IS the heavy buy" from "reserve silently dropped".
+		// Still NAMED in the arithmetic so the decision log distinguishes "waived because this IS
+		// the heavy buy" from "reserve silently dropped".
 		reserveNote = fmt.Sprintf(" (own reserve waived: %d)", req.HeavyReserve)
 	}
 	spendable := req.LiveTreasury - floor - heavyReserve
 	need := req.Price + req.MarginOverFloor
+	floorOK := spendable >= need
+	floorDetail := fmt.Sprintf("treasury %d − floor %d%s = %d >= price %d + margin %d = %d", req.LiveTreasury, floor, reserveNote, spendable, req.Price, req.MarginOverFloor, need)
+
 	return GuardVerdict{
-		Guard:  GuardTreasuryFloor,
-		Passed: spendable >= need,
-		Detail: fmt.Sprintf("treasury %d − floor %d%s = %d >= price %d + margin %d = %d", req.LiveTreasury, floor, reserveNote, spendable, req.Price, req.MarginOverFloor, need),
+		Guard:  GuardAffordability,
+		Passed: pctOK && floorOK,
+		Detail: pctDetail + "; " + floorDetail,
 	}
 }
