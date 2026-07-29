@@ -15,6 +15,7 @@ import (
 	navCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	shipyardCmd "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/commands"
 	shipyardQueries "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
+	"github.com/andrescamacho/spacetraders-go/internal/application/system/gategraph"
 	tradingQueries "github.com/andrescamacho/spacetraders-go/internal/application/trading/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/apibudget"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
@@ -690,13 +691,39 @@ type heavyYardRanker interface {
 	AllYardsSelling(ctx context.Context, playerID int, shipTypes []string, fromSystems []string) ([]shipyardQueries.YardCandidate, error)
 }
 
+// heavyYardReachBoundHops is the gate-jump bound a heavy-yard candidate must lie within to be
+// flyable — the SAME bound the ranker's own BFS is capped at (ReachableYardFinder is constructed
+// with gategraph.MaxJumpPath), named here so the two can be read against each other instead of
+// merely believed to agree.
+//
+// A const, not a knob (RULINGS #5): it is the reach heavies are held to everywhere else — the strict
+// path/routability bound the pre-buy guard runs — and a second, looser copy of it living in an
+// adapter is exactly how an errand gets dispatched to a yard the purchase can never route to.
+const heavyYardReachBoundHops = gategraph.MaxJumpPath
+
+// heavyYardReachable derives whether a ranked candidate is inside the heavy reach bound FROM THE
+// ROW'S OWN HOP COUNT, which is the only reachability evidence the candidate actually carries.
+//
+// This used to be the literal `true`, justified by "rows the ranker returns are reachable by
+// construction". That is true of *ReachableYardFinder — rankYardsSelling drops every row whose
+// system is absent from the bounded multi-source BFS, so a returned row's Hops is a real distance in
+// [0, gategraph.MaxJumpPath] — but it was a claim about an implementation this adapter does not own.
+// The port depends on the narrow heavyYardRanker interface, and a literal cannot tell the difference
+// between a rank that filtered and one that did not. Deriving the flag costs nothing, changes no
+// verdict for the real ranker (every row it emits satisfies the bound), and fails CLOSED for any
+// row that does not: an out-of-bound yard is dropped by the errand policy rather than flown to.
+//
+// A negative hop count is not evidence of nearness — it is nonsense, and nonsense reads as
+// unreachable rather than as "0 hops away".
+func heavyYardReachable(hops int) bool {
+	return hops >= 0 && hops <= heavyYardReachBoundHops
+}
+
 // autosizerHeavyYardCatalog reports every KNOWN heavy yard — priced or not — with its gate reach
 // from the systems the fleet currently stands in.
 //
 // Reachability is measured from WHERE OUR HULLS ARE, never from where a hull is parked on station:
-// the errand has to fly, so a yard outside the jump bound is not a candidate at any price. Rows the
-// ranker returns are reachable by construction (it drops the rest during the BFS), which is why
-// Reachable is set true here rather than re-derived.
+// the errand has to fly, so a yard outside the jump bound is not a candidate at any price.
 type autosizerHeavyYardCatalog struct {
 	ranker   heavyYardRanker
 	shipRepo navigation.ShipRepository
@@ -726,7 +753,7 @@ func (c *autosizerHeavyYardCatalog) KnownHeavyYards(ctx context.Context, playerI
 			ShipType:       y.ShipType,
 			PurchasePrice:  int64(y.PurchasePrice),
 			Hops:           y.Hops,
-			Reachable:      true,
+			Reachable:      heavyYardReachable(y.Hops),
 		})
 	}
 	return out, nil
