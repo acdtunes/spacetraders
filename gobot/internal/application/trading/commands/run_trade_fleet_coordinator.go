@@ -559,6 +559,33 @@ func (h *RunTradeFleetCoordinatorHandler) reconcileOnce(ctx context.Context, cmd
 		// is exempt from BOTH the sleep ramp and the movement escalation.
 		cooldown, reachEscalated := h.cooldownFor(ship, baseCooldown, backoffMax, massParkExempt[ship.ShipSymbol()], logger)
 
+		// A hull the honest-completion veto sent back is the definitive dead-ground case:
+		// its run did not merely trade badly, it ended unable to sell what it was holding
+		// where it stands. The tour's exit sweep can only sell in the hull's CURRENT
+		// system, so a hold nothing local bids on leaves it nothing to do — and relaunching
+		// onto those same markets re-inherits the same unsold obligation and is refused
+		// again, burning a container per turn while the cargo never moves.
+		//
+		// Arm reposition-reach so the relaunch can reach the 2-4-gate-hop systems it could
+		// not otherwise see. This is the sp-nxrt machinery already wired end to end; it was
+		// simply never pointed at this case, because the veto's exit was indistinguishable
+		// from any other failure until it started stamping its own release reason.
+		//
+		// Derived per pass from the hull's persisted release reason — no cross-tick state
+		// (RULINGS #2). It only widens where the hull may LOOK for a buyer; it relaxes no
+		// margin, spend or sell guard (RULINGS #4), and it does not touch the veto, which
+		// still refuses to report the failed run as a success.
+		if !reachEscalated && priorExitReason(ship) == common.ReleaseReasonHonestCompletionVeto {
+			reachEscalated = true
+			logger.Log("INFO", fmt.Sprintf(
+				"Trade hull %s came back from the honest-completion veto (cargo it could not sell where it stands) — relaunching with reposition-reach ARMED instead of onto the ground that just refused it",
+				ship.ShipSymbol()), map[string]interface{}{
+				"action":            "trade_fleet_stranded_reach_escalation",
+				"ship_symbol":       ship.ShipSymbol(),
+				"prior_exit_reason": priorExitReason(ship),
+			})
+		}
+
 		if remaining := cooldownRemaining(ship, now, cooldown); remaining > 0 {
 			logger.Log("INFO", fmt.Sprintf(
 				"Trade hull %s parked %s ago — cooling down %s more before relaunch (letting the ground breathe)",

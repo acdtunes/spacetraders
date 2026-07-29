@@ -586,11 +586,14 @@ func (a *bootstrapAcquirer) buyWith(ctx context.Context, playerID int, shipType,
 	if err != nil {
 		return bootstrapCmd.BuyResult{}, err
 	}
+	// One roster read serves BOTH the search and the ownership guard below. It was
+	// previously taken only on the search path, which is exactly why a NAMED purchaser
+	// was never checked against anything.
+	ships, err := a.shipRepo.FindAllByPlayer(ctx, pid)
+	if err != nil {
+		return bootstrapCmd.BuyResult{}, err
+	}
 	if purchaser == "" {
-		ships, err := a.shipRepo.FindAllByPlayer(ctx, pid)
-		if err != nil {
-			return bootstrapCmd.BuyResult{}, err
-		}
 		// sp-7r7w: PREFER the exclusive purchasing ship (the pivoted command frigate) when it is idle, so
 		// every cold-start + scaling buy runs through the deterministic, protected buy ship rather than an
 		// incidentally-idle hull. Fall back to any idle hull before the pivot exists (e.g. the probe
@@ -614,6 +617,27 @@ func (a *bootstrapAcquirer) buyWith(ctx context.Context, playerID int, shipType,
 		}
 	}
 
+	// OWNERSHIP GATE (RULINGS #3 single-writer, #7 "do not code around ... the claim tx").
+	// The buy below runs IN-PROCESS through the mediator — BatchPurchaseShipsCommand ->
+	// PurchaseShipCommand -> NavigateRouteCommand/DockShipCommand — and NOT ONE of those
+	// handlers consults the ship claim. Without this gate a buy issued against a hull
+	// another container is actively running flies it to a shipyard and docks it out from
+	// under the live worker, and nothing anywhere reports it: the loud "already assigned"
+	// collision the CONTAINER claim path raises has a silent twin on this path, and a
+	// silent one never appears in any failure count.
+	//
+	// The search path above already refuses a held hull (it only takes s.IsIdle(), which is
+	// false for anything ClaimShip'd — AssignToContainer makes the hull IsAssigned). The gap
+	// was the NAMED purchaser, which skipped the search and every check in it. Applied to
+	// BOTH paths so a future caller cannot reopen the hole, and it is a pure REFUSAL: it can
+	// only prevent a spend, never enable one, so no money guard is loosened (RULINGS #4).
+	//
+	// Fails CLOSED on a purchaser absent from the roster: ownership that cannot be read
+	// cannot be cleared, and a hull we cannot see is one we must not fly.
+	if err := ownedByAnotherContainer(ships, purchaser); err != nil {
+		return bootstrapCmd.BuyResult{}, err
+	}
+
 	resp, err := a.med.Send(ctx, &shipyardCmd.BatchPurchaseShipsCommand{
 		PurchasingShipSymbol: purchaser,
 		ShipType:             shipType,
@@ -631,6 +655,26 @@ func (a *bootstrapAcquirer) buyWith(ctx context.Context, playerID int, shipType,
 	}
 	bought := batch.PurchasedShips[0]
 	return bootstrapCmd.BuyResult{ShipSymbol: bought.ShipSymbol(), Price: int64(batch.TotalCost)}, nil
+}
+
+// ownedByAnotherContainer reports the buy-blocking reason when `purchaser` is not the
+// bootstrap's to fly: a hull carrying a live container claim (a running workflow, or a
+// captain reservation — both are ACTIVE assignments) has another writer, and a hull the
+// roster does not carry cannot be shown to be free. nil means the hull is unowned and the
+// buy may proceed. Read-only: it never releases, never clobbers, and never retries — a
+// contested hull simply does not get bought with this tick, and the next tick re-derives
+// the answer from durable state (RULINGS #2).
+func ownedByAnotherContainer(ships []*navigation.Ship, purchaser string) error {
+	for _, s := range ships {
+		if s == nil || s.ShipSymbol() != purchaser {
+			continue
+		}
+		if s.IsAssigned() {
+			return fmt.Errorf("purchaser %s is assigned to container %q — refusing to fly a hull another writer owns", purchaser, s.ContainerID())
+		}
+		return nil
+	}
+	return fmt.Errorf("purchaser %s is not in the fleet roster — refusing to fly a hull whose ownership cannot be read", purchaser)
 }
 
 // --- hauler acquirer (reuse the probe price-check + buy, then dedicate + place on the hub) ---
@@ -911,9 +955,22 @@ func hullToSend(ships []*navigation.Ship, isYard map[string]struct{}, purchaser 
 			if atYard(sh) || sh.IsInTransit() {
 				return "", false
 			}
-			break
+			// OWNERSHIP GATE (RULINGS #3 single-writer, #7 claim tx). Being committed to a
+			// buy excuses this hull from the FREE-hull search above; it does not make it
+			// ours to fly. A live container claim means another writer is running it, and
+			// this navigate leg — like the buy it precedes — consults no claim of its own,
+			// so without this the daemon flies a hull out from under a running workflow and
+			// reports nothing. Declining costs nothing: EnsureShipyardReadable is
+			// idempotent and best-effort, so the trip simply happens on a later tick once
+			// the claim clears (RULINGS #2 — re-derived, never remembered).
+			if sh.IsAssigned() {
+				return "", false
+			}
+			return purchaser, true
 		}
-		return purchaser, true
+		// Fail CLOSED on a purchaser the roster does not carry: ownership that cannot be
+		// read cannot be cleared.
+		return "", false
 	}
 
 	var free *navigation.Ship

@@ -618,7 +618,18 @@ func (r *ContainerRunner) finishCleanExit() {
 		// Release before signaling, mirroring the completed path's ordering
 		// (the coordinator must never discover a still-claimed hull after the
 		// completion event lands).
-		r.releaseShipAssignments("failed")
+		//
+		// The reason NAMES the veto rather than the generic "failed" every other
+		// failure stamps. The runner knows exactly why this run was refused — the
+		// veto reason is in hand right above — and the hull's release reason is the
+		// only channel that survives the container's death. Stamped generically, a
+		// hull that came back holding cargo it could not sell is indistinguishable
+		// from one whose lane merely had a routing blip, so the fleet coordinator
+		// relaunches an identical run onto the identical dead ground, which
+		// re-inherits the unsold obligation and is refused again. Naming it lets the
+		// next tick route the hull out instead (RULINGS #2 — the decision is derived
+		// from durable state; nothing is held between ticks).
+		r.releaseShipAssignments(common.ReleaseReasonHonestCompletionVeto)
 		r.signalCompletionWithStatus(false, incompleteReason)
 		return
 	}

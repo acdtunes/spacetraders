@@ -5,8 +5,28 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
+
+// operationPurchasing is the fleet identity every PURCHASE container claims its
+// purchaser under. It is the SAME tag the first-hauler pivot writes onto the command
+// frigate when it retires it from contracts and reserves it as the exclusive buy ship
+// (bootstrapFrigateRetirer.DedicateAsPurchaser -> navigation.PurchasingFleet), so the
+// two sides of that dedication can never drift.
+//
+// Without it a purchase carried NO fleet identity at all: the claim fell to the legacy
+// read-modify-write path, where the standing dedication guard refused the flagship to
+// "an undeclared operation" (7 claim_failed containers on the live fleet). The
+// dedication that exists to reserve the frigate FOR buying was the one thing stopping
+// it from buying, and the exclusive purchaser could never execute a purchase.
+//
+// Declaring it routes the claim through the atomic operation-checked ClaimShip
+// instead, which admits the hull only because the claiming fleet IS the fleet the hull
+// is dedicated to — the ownership model honoured, not circumvented (RULINGS #7). Every
+// other pin still refuses a purchase: a "contract"/"trade"/depot hull does not match
+// this identity, and the command frigate's depot-role rejection is untouched.
+const operationPurchasing = navigation.PurchasingFleet
 
 // PurchaseShip purchases a single ship from a shipyard
 func (s *DaemonServer) PurchaseShip(ctx context.Context, purchasingShipSymbol, shipType string, playerID int, shipyardWaypoint *string) (string, string, int32, int32, string, error) {
@@ -21,6 +41,10 @@ func (s *DaemonServer) PurchaseShip(ctx context.Context, purchasingShipSymbol, s
 		"ship_symbol": purchasingShipSymbol,
 		"ship_type":   shipType,
 		"shipyard":    shipyard,
+		// The buying identity, persisted in the launch config so a daemon restart
+		// re-adopts it and the recovered container claims under the same fleet
+		// (RULINGS #2 — derived from durable state, never held in memory).
+		"operation": operationPurchasing,
 	}
 
 	// Create purchase command from the launch config
@@ -83,6 +107,10 @@ func (s *DaemonServer) BatchPurchaseShips(ctx context.Context, purchasingShipSym
 		"max_budget":     maxBudget,
 		"shipyard":       shipyard,
 		"dedicate_fleet": dedicateFleet,
+		// The buying identity (see operationPurchasing). Distinct from
+		// dedicate_fleet, which is the tag stamped onto the hulls this container
+		// BUYS; this is the fleet the container claims its PURCHASER under.
+		"operation": operationPurchasing,
 	}
 
 	// Create batch purchase command from the launch config
