@@ -91,7 +91,7 @@ func (r *hwMarketRepo) GetMarketData(ctx context.Context, waypointSymbol string,
 
 	switch waypointSymbol {
 	case hwThinSource:
-		good, err := market.NewTradeGood(hwThinGood, &supply, &activity, hwThinAsk-100, hwThinAsk, hwThinVolume, market.TradeTypeExport)
+		good, err := market.NewTradeGood(hwThinGood, &supply, &activity, hwThinAsk, hwThinAsk-100, hwThinVolume, market.TradeTypeExport)
 		if err != nil {
 			return nil, err
 		}
@@ -101,13 +101,13 @@ func (r *hwMarketRepo) GetMarketData(ctx context.Context, waypointSymbol string,
 		if decayed {
 			bid -= hwThinDecay
 		}
-		good, err := market.NewTradeGood(hwThinGood, &supply, &activity, bid, hwThinStartBid+100, hwThinVolume, market.TradeTypeImport)
+		good, err := market.NewTradeGood(hwThinGood, &supply, &activity, hwThinStartBid+100, bid, hwThinVolume, market.TradeTypeImport)
 		if err != nil {
 			return nil, err
 		}
 		return market.NewMarket(waypointSymbol, []market.TradeGood{*good}, time.Now())
 	case hwDeepSource:
-		good, err := market.NewTradeGood(hwDeepGood, &supply, &activity, hwDeepAsk-100, hwDeepAsk, hwDeepVolume, market.TradeTypeExport)
+		good, err := market.NewTradeGood(hwDeepGood, &supply, &activity, hwDeepAsk, hwDeepAsk-100, hwDeepVolume, market.TradeTypeExport)
 		if err != nil {
 			return nil, err
 		}
@@ -117,7 +117,7 @@ func (r *hwMarketRepo) GetMarketData(ctx context.Context, waypointSymbol string,
 		if decayed {
 			bid -= hwDeepDecay
 		}
-		good, err := market.NewTradeGood(hwDeepGood, &supply, &activity, bid, hwDeepStartBid+100, hwDeepVolume, market.TradeTypeImport)
+		good, err := market.NewTradeGood(hwDeepGood, &supply, &activity, hwDeepStartBid+100, bid, hwDeepVolume, market.TradeTypeImport)
 		if err != nil {
 			return nil, err
 		}

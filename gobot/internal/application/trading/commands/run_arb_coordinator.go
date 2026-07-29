@@ -430,7 +430,7 @@ func (h *RunArbCoordinatorHandler) execute(
 	}
 	if quotedBid <= 0 {
 		if g, oerr := h.legs.observeGood(ctx, cmd.SellAt, cmd.Good, cmd.PlayerID); oerr == nil {
-			quotedBid = g.PurchasePrice()
+			quotedBid = g.SellPrice() // the BID is sell_price — what the market pays us (sp-en5h7)
 		}
 	}
 	minBidPerUnit := 0
@@ -618,8 +618,43 @@ func (h *RunArbCoordinatorHandler) guardAndBuy(
 		return 0, nil
 	}
 
-	sourceAsk := srcGood.SellPrice()   // what the hull PAYS to buy at the source
-	destBid := dstGood.PurchasePrice() // what the hull RECEIVES selling at the destination
+	// A market whose own ask sits BELOW its own bid is impossible data, and it is the
+	// one shape that defeats the margin guard below by making the spread look BIGGER
+	// instead of smaller — so it must be refused BEFORE the subtraction, not by it.
+	//
+	// Every market_data row written before sp-en5h7 has exactly this shape (the
+	// scanner persisted the two prices transposed), and this command's source and
+	// destination are chosen upstream by the long-haul engine rather than by
+	// RankSpreads, so trading.GoodListing.IsCrossed never inspects them. Fail closed
+	// here instead (RULINGS #4): refusing can only ever remove a buy, never add one.
+	for _, side := range []struct {
+		label    string
+		waypoint string
+		good     *market.TradeGood
+	}{
+		{"source", cmd.BuyAt, srcGood},
+		{"destination", cmd.SellAt, dstGood},
+	} {
+		if side.good.PurchasePrice() >= side.good.SellPrice() {
+			continue
+		}
+		response.Aborted = true
+		response.MarginAbort = true
+		response.AbortReason = fmt.Sprintf(
+			"%s market %s quotes %s with an ask (%d) below its bid (%d) - impossible data, "+
+				"aborting before buy (fail-closed): a stale pre-sp-en5h7 row reads as a phantom spread",
+			side.label, side.waypoint, cmd.Good, side.good.PurchasePrice(), side.good.SellPrice())
+		logger.Log("WARNING", response.AbortReason, map[string]interface{}{
+			"good": cmd.Good, "waypoint": side.waypoint, "side": side.label,
+			"ask": side.good.PurchasePrice(), "bid": side.good.SellPrice(),
+		})
+		return 0, nil
+	}
+
+	// purchase_price is what the hull PAYS, sell_price what it RECEIVES. These read
+	// the other way round until sp-en5h7, correct only against transposed rows.
+	sourceAsk := srcGood.PurchasePrice() // what the hull PAYS to buy at the source
+	destBid := dstGood.SellPrice()       // what the hull RECEIVES selling at the destination
 	marginPerUnit := destBid - sourceAsk
 	response.SourceAsk = sourceAsk
 	response.DestBid = destBid

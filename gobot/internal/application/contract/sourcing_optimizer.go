@@ -206,11 +206,11 @@ func candidateOrNil(m *market.CheapestMarketResult, units int) *SourcingPlan {
 	if m == nil {
 		return nil
 	}
-	goods := m.SellPrice * units
+	goods := m.Ask * units
 	return &SourcingPlan{
 		Good:           m.TradeSymbol,
 		Market:         m.WaypointSymbol,
-		UnitAsk:        m.SellPrice,
+		UnitAsk:        m.Ask,
 		UnitsRemaining: units,
 		GoodsCost:      goods,
 		EffectiveCost:  goods,

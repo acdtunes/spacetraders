@@ -55,7 +55,8 @@ func (r *samplingFakeMarketRepo) GetMarketData(_ context.Context, _ string, _ in
 		return nil, nil
 	}
 	supply, activity := "MODERATE", "WEAK"
-	g, err := market.NewTradeGood(r.good, &supply, &activity, 100, 200, 1000, market.TradeTypeExport)
+	// ask 200 / bid 100 — PurchasePrice (4th) is the ASK, the larger (sp-en5h7).
+	g, err := market.NewTradeGood(r.good, &supply, &activity, 200, 100, 1000, market.TradeTypeExport)
 	if err != nil {
 		return nil, err
 	}

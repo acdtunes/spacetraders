@@ -154,7 +154,7 @@ func (r *autoOutfitCatalogReader) ReadCatalog(ctx context.Context, playerID int,
 		offers = append(offers, domainOutfit.ModuleOffer{
 			Symbol:         symbol,
 			Class:          domainOutfit.ClassifyModule(symbol),
-			Price:          best.SellPrice,
+			Price:          best.Ask,
 			CapacityGained: domainOutfit.KnownModuleCapacity(symbol),
 			Waypoint:       best.WaypointSymbol,
 			System:         bestSystem,
@@ -174,7 +174,7 @@ func (r *autoOutfitCatalogReader) cheapestAcrossSystems(ctx context.Context, sym
 		if err != nil || res == nil {
 			continue
 		}
-		if best == nil || res.SellPrice < best.SellPrice {
+		if best == nil || res.Ask < best.Ask {
 			best, bestSystem = res, system
 		}
 	}

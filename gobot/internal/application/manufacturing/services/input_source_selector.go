@@ -283,7 +283,7 @@ func (e *ProductionExecutor) perNodeSupplyFloor(ctx context.Context, good string
 	)
 }
 
-// trailingMedianAsk returns the trailing-window median SELL price (ask) for a good at a waypoint
+// trailingMedianAsk returns the trailing-window median ASK (purchase_price — what WE PAY, sp-en5h7) for a good at a waypoint
 // from the price-history reader, or ok=false when the reader is unwired, errors, or has no
 // samples in the window. Extracted so the rescue cap and any history-based check share one
 // median source with identical fail-open (nil reader) / fail-closed (no samples) semantics.
@@ -298,7 +298,7 @@ func (e *ProductionExecutor) trailingMedianAsk(ctx context.Context, waypoint, go
 	}
 	asks := make([]int, 0, len(history))
 	for _, h := range history {
-		asks = append(asks, h.SellPrice())
+		asks = append(asks, h.PurchasePrice())
 	}
 	return medianInt(asks), true
 }

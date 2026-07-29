@@ -57,15 +57,17 @@ func (r *arbCooldownMarketRepo) GetMarketData(ctx context.Context, waypointSymbo
 	activity := "STRONG"
 	switch waypointSymbol {
 	case arbCdSource:
-		// Exporter: SellPrice (the ask we pay) is trSourceAsk (2000).
-		good, err := market.NewTradeGood(trGood, &supply, &activity, 1900, trSourceAsk, 60, market.TradeTypeExport)
+		// Exporter: purchasePrice (the ask we pay) is trSourceAsk (2000); sellPrice (its low
+		// sellback bid) is 1900 — sp-en5h7.
+		good, err := market.NewTradeGood(trGood, &supply, &activity, trSourceAsk, 1900, 60, market.TradeTypeExport)
 		if err != nil {
 			return nil, err
 		}
 		return market.NewMarket(waypointSymbol, []market.TradeGood{*good}, time.Now())
 	case arbCdDest:
-		// Importer: PurchasePrice (the bid we receive) is trStartDestBid (4000).
-		good, err := market.NewTradeGood(trGood, &supply, &activity, trStartDestBid, 4100, 30, market.TradeTypeImport)
+		// Importer: sellPrice (the bid we receive) is trStartDestBid (4000); purchasePrice
+		// (its buy-back ask) is 4100 — sp-en5h7.
+		good, err := market.NewTradeGood(trGood, &supply, &activity, 4100, trStartDestBid, 30, market.TradeTypeImport)
 		if err != nil {
 			return nil, err
 		}

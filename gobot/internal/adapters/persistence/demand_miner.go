@@ -247,7 +247,7 @@ func (m *DemandMiner) Mine(ctx context.Context, homeSystem string, playerID int,
 			ContractRewardPerUnit: d.RewardPerUnit, // true contract-reward signal, carried for the depot buffer
 			ForeignMarket:         source.WaypointSymbol,
 			ForeignSystem:         shared.ExtractSystemSymbol(source.WaypointSymbol),
-			ForeignAsk:            source.SellPrice,
+			ForeignAsk:            source.Ask,
 		}
 
 		home, err := m.markets.FindCheapestMarketSelling(ctx, d.Good, homeSystem, playerID)
@@ -260,9 +260,9 @@ func (m *DemandMiner) Mine(ctx context.Context, homeSystem string, playerID int,
 			// cheapest source anywhere and pre-positions centrally. When the cheapest source
 			// IS the home system, the differential is 0 and the buy-leg alone carries the
 			// value (in-system pre-positioning is worthwhile, fail OPEN).
-			c.HomeAsk = home.SellPrice
+			c.HomeAsk = home.Ask
 			c.HomeAskKnown = true
-			c.ProjectedSavingsPerUnit = home.SellPrice + buyLeg - source.SellPrice
+			c.ProjectedSavingsPerUnit = home.Ask + buyLeg - source.Ask
 			c.StockEligible = c.ProjectedSavingsPerUnit > 0
 		}
 
@@ -361,7 +361,8 @@ func (m *DemandMiner) cheapestSourceMarket(ctx context.Context, good string, pla
 	if len(all) == 0 {
 		return nil, nil // no market sells it anywhere
 	}
-	// Results are cheapest-first (sell_price ASC), so the first is the cheapest source.
+	// Results are cheapest-ASK-first (purchase_price ASC — what WE PAY; sp-en5h7), so the
+	// first is the cheapest source.
 	return &all[0], nil
 }
 

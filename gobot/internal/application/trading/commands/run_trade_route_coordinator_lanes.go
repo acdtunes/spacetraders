@@ -134,6 +134,14 @@ func (h *RunTradeRouteCoordinatorHandler) scanLanes(
 // collectSystemListings reads every cached market in one system into flat
 // GoodListing rows, the shared building block scanLanes aggregates across the
 // home system and its jump-gate neighbors before ranking.
+//
+// The accessor→field mapping is a RENAME, not a swap: SellPrice() is what we
+// receive (the Bid), PurchasePrice() is what we pay (the Ask). It read the other
+// way round until sp-en5h7, which was correct only because market_data itself was
+// transposed — two wrongs that cancelled here and nowhere else, which is why the
+// planner never surfaced the corruption. Crossed rows are refused downstream by
+// GoodListing.IsCrossed rather than filtered here, so every ranking caller gets
+// that guard whether or not it remembers to ask for it.
 func (h *RunTradeRouteCoordinatorHandler) collectSystemListings(
 	ctx context.Context,
 	systemSymbol string,
@@ -155,8 +163,8 @@ func (h *RunTradeRouteCoordinatorHandler) collectSystemListings(
 				Good:      g.Symbol(),
 				Waypoint:  mkt.WaypointSymbol(),
 				TradeType: string(g.TradeType()),
-				Bid:       g.PurchasePrice(), // market BUY column = what we receive selling TO it
-				Ask:       g.SellPrice(),     // market SELL column = what we pay buying FROM it
+				Bid:       g.SellPrice(),     // sell_price = what we RECEIVE selling TO it
+				Ask:       g.PurchasePrice(), // purchase_price = what we PAY buying FROM it
 				Supply:    derefString(g.Supply()),
 				Activity:  derefString(g.Activity()),
 				Volume:    g.TradeVolume(),

@@ -224,7 +224,7 @@ func TestFleetCoordinator_ParkedHullSelfClearsAndReentersCandidacy(t *testing.T)
 	// best in-system bid. Driving the REAL handler with the coordinator's command proves
 	// the dispatch is wired to a worker that actually clears the hold.
 	mkt := &liquidationE2EMarket{byGood: map[string]*market.BestMarketBuyingResult{
-		"SILICON_CRYSTALS": {WaypointSymbol: "X1-KA42-B7", PurchasePrice: 2200},
+		"SILICON_CRYSTALS": {WaypointSymbol: "X1-KA42-B7", Bid: 2200},
 	}}
 	med := &liquidationE2EMediator{sellPrice: 2200}
 	worker := liquidation.NewLiquidateCargoHandler(repo, mkt, med)

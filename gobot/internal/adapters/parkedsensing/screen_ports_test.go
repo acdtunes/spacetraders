@@ -7,9 +7,13 @@ package parkedsensing_test
 // its own — a wrong answer produces a working, silent, subtly-wrong fleet rather
 // than an error:
 //
-//   - MarketPrices maps its columns CROSSED. Uncrossed, every quote inverts, the
-//     spread weighting flattens, and the rotation simply stops preferring the
-//     markets worth watching.
+//   - MarketPrices RENAMES its columns rather than passing them through: Bid comes
+//     from sell_price and Ask from purchase_price, because the columns are named
+//     from our side of the trade and GoodPrice from the market's. Wire them by
+//     name and every quote inverts, the spread weighting flattens, and the
+//     rotation simply stops preferring the markets worth watching. This mapping
+//     was correct all along, and it is what detected sp-en5h7 — the fault was in
+//     the SCANNER, which persisted both prices transposed.
 //   - CatalogKnown must be MONOTONE once a system is swept. A flicker to false
 //     NULLs the very stamp that proves the sweep, because the screen writes this
 //     value back through its column list.
@@ -33,7 +37,9 @@ import (
 
 // marketRow writes one persisted quote. The argument names are the PERSISTED
 // column meanings — from OUR side of the trade — which is exactly the naming the
-// crossed mapping exists to survive.
+// rename in MarketPrices exists to survive. purchasePrice is the ask and must be
+// the LARGER of the two; a fixture built the other way round is the sp-en5h7
+// corruption, not a market.
 func marketRow(waypoint, good string, purchasePrice, sellPrice, volume int) persistence.MarketData {
 	return persistence.MarketData{
 		WaypointSymbol: waypoint,

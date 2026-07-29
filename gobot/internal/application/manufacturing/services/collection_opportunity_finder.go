@@ -207,14 +207,14 @@ type factoryEntry struct {
 	waypointSymbol string
 	supply         string
 	activity       string // Activity level (WEAK preferred for buying)
-	sellPrice      int    // Price we'd pay to buy from factory
+	ask            int    // the ASK: what WE PAY to buy from the factory (purchase_price, the larger; sp-en5h7)
 }
 
 type buyerEntry struct {
 	waypointSymbol string
 	supply         string
 	activity       string
-	purchasePrice  int // Price buyer pays us
+	bid            int // the BID: what the buyer PAYS us (sell_price, the smaller; sp-en5h7)
 }
 
 func (f *CollectionOpportunityFinder) buildFactoryAndBuyerIndices(
@@ -248,7 +248,7 @@ func (f *CollectionOpportunityFinder) buildFactoryAndBuyerIndices(
 					waypointSymbol: waypointSymbol,
 					supply:         supply,
 					activity:       activity,
-					sellPrice:      tradeGood.SellPrice(), // Price we pay
+					ask:            tradeGood.PurchasePrice(), // the ASK — what we pay
 				})
 			}
 
@@ -260,7 +260,7 @@ func (f *CollectionOpportunityFinder) buildFactoryAndBuyerIndices(
 					waypointSymbol: waypointSymbol,
 					supply:         supply,
 					activity:       activity,
-					purchasePrice:  tradeGood.PurchasePrice(), // Price we receive
+					bid:            tradeGood.SellPrice(), // the BID — what we receive
 				})
 			}
 		}
@@ -284,13 +284,13 @@ func bestOpportunityForGood(
 				continue
 			}
 
-			profit := buyer.purchasePrice - factory.sellPrice
+			profit := buyer.bid - factory.ask
 
-			if factory.sellPrice > 0 {
-				margin := float64(profit) / float64(factory.sellPrice)
+			if factory.ask > 0 {
+				margin := float64(profit) / float64(factory.ask)
 				if margin < config.MinProfitMargin {
 					fmt.Printf("[CollectionFinder] %s: margin %.2f%% < min %.2f%% (buy=%d, sell=%d), skipping\n",
-						good, margin*100, config.MinProfitMargin*100, factory.sellPrice, buyer.purchasePrice)
+						good, margin*100, config.MinProfitMargin*100, factory.ask, buyer.bid)
 					continue
 				}
 			}
@@ -309,8 +309,8 @@ func bestOpportunityForGood(
 				FactoryActivity:    factory.activity,
 				SellMarketSupply:   buyer.supply,
 				SellMarketActivity: buyer.activity,
-				SellPrice:          buyer.purchasePrice,
-				BuyPrice:           factory.sellPrice,
+				SellPrice:          buyer.bid,
+				BuyPrice:           factory.ask,
 				ExpectedProfit:     profit,
 			}
 
@@ -386,7 +386,7 @@ func (f *CollectionOpportunityFinder) FindStorageOpportunities(
 			goodSymbol := tradeGood.Symbol()
 			buyerIndex[goodSymbol] = append(buyerIndex[goodSymbol], &buyerEntry{
 				waypointSymbol: waypointSymbol,
-				purchasePrice:  tradeGood.PurchasePrice(),
+				bid:            tradeGood.SellPrice(),
 				activity:       activityOrEmpty(&tradeGood),
 			})
 		}
@@ -415,17 +415,17 @@ func (f *CollectionOpportunityFinder) FindStorageOpportunities(
 			// Find best buyer: highest price, with STRONG activity as tiebreaker
 			bestBuyer := highestPayingBuyer(buyers)
 
-			if bestBuyer != nil && bestBuyer.purchasePrice > 0 {
+			if bestBuyer != nil && bestBuyer.bid > 0 {
 				opportunities = append(opportunities, &StorageCollectionOpportunity{
 					Good:               good,
 					StorageOperationID: op.ID(),
 					StorageWaypoint:    op.WaypointSymbol(),
 					SellMarket:         bestBuyer.waypointSymbol,
-					SellPrice:          bestBuyer.purchasePrice,
-					ExpectedProfit:     bestBuyer.purchasePrice, // Storage goods are "free" (already extracted)
+					SellPrice:          bestBuyer.bid,
+					ExpectedProfit:     bestBuyer.bid, // Storage goods are "free" (already extracted)
 				})
 				fmt.Printf("[StorageOpportunityFinder] Found opportunity for %s: sell at %s for %d credits\n",
-					good, bestBuyer.waypointSymbol, bestBuyer.purchasePrice)
+					good, bestBuyer.waypointSymbol, bestBuyer.bid)
 			}
 		}
 	}
@@ -445,11 +445,11 @@ func highestPayingBuyer(buyers []*buyerEntry) *buyerEntry {
 			bestBuyer = buyer
 			continue
 		}
-		if buyer.purchasePrice > bestBuyer.purchasePrice {
+		if buyer.bid > bestBuyer.bid {
 			bestBuyer = buyer
 			continue
 		}
-		if buyer.purchasePrice == bestBuyer.purchasePrice &&
+		if buyer.bid == bestBuyer.bid &&
 			ImportActivityScore(buyer.activity) > ImportActivityScore(bestBuyer.activity) {
 			bestBuyer = buyer
 		}

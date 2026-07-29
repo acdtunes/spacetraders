@@ -58,7 +58,7 @@ func FindPurchaseMarket(
 			"action":       "find_cheapest_market",
 			"trade_symbol": delivery.TradeSymbol,
 			"market":       cheapestMarket.WaypointSymbol,
-			"sell_price":   cheapestMarket.SellPrice,
+			"sell_price":   cheapestMarket.Ask,
 		})
 
 		return cheapestMarket.WaypointSymbol, nil

@@ -84,7 +84,7 @@ func (r *dwellMarketRepo) GetMarketData(ctx context.Context, waypointSymbol stri
 	}
 	supply := "MODERATE"
 	activity := "GROWING"
-	good, err := market.NewTradeGood(dockRaceGood, &supply, &activity, 80, 100, 20, market.TradeTypeExport)
+	good, err := market.NewTradeGood(dockRaceGood, &supply, &activity, 100, 80, 20, market.TradeTypeExport)
 	if err != nil {
 		return nil, err
 	}

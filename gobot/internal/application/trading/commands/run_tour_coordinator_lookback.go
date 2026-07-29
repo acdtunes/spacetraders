@@ -324,7 +324,7 @@ func (h *RunTourCoordinatorHandler) buyLookbackItem(
 	if oerr != nil {
 		return 0 // no live price → cannot verify → don't buy (fail closed on the load)
 	}
-	liveAsk := live.SellPrice()
+	liveAsk := live.PurchasePrice() // the ASK is purchase_price — what we pay (sp-en5h7)
 	if liveAsk <= 0 {
 		return 0
 	}

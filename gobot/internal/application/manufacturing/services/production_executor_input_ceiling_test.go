@@ -26,9 +26,9 @@ import (
 // fakePriceHistoryReader returns a scripted trailing ask series (or an error) — the trailing
 // median source for the sourcing RESCUE cap (a depleted-market buy is validated against it).
 type fakePriceHistoryReader struct {
-	sellPrices []int
-	err        error
-	calls      int
+	asks  []int
+	err   error
+	calls int
 }
 
 func (r *fakePriceHistoryReader) GetPriceHistory(ctx context.Context, waypointSymbol, goodSymbol string, since time.Time, limit int) ([]*market.MarketPriceHistory, error) {
@@ -36,9 +36,11 @@ func (r *fakePriceHistoryReader) GetPriceHistory(ctx context.Context, waypointSy
 	if r.err != nil {
 		return nil, r.err
 	}
-	out := make([]*market.MarketPriceHistory, 0, len(r.sellPrices))
-	for _, sp := range r.sellPrices {
-		h, err := market.NewMarketPriceHistory(waypointSymbol, goodSymbol, shared.MustNewPlayerID(1), sp, sp, nil, nil, 10)
+	out := make([]*market.MarketPriceHistory, 0, len(r.asks))
+	for _, ask := range r.asks {
+		// ask in the purchase_price slot, a distinctly smaller bid in the sell_price slot:
+		// a real market's spread, and it makes reading the wrong column observable (sp-en5h7).
+		h, err := market.NewMarketPriceHistory(waypointSymbol, goodSymbol, shared.MustNewPlayerID(1), ask, ask/2, nil, nil, 10)
 		if err != nil {
 			return nil, err
 		}

@@ -136,13 +136,13 @@ func (r *staleMarketRepo) GetMarketData(ctx context.Context, waypointSymbol stri
 	activity := "STRONG"
 	switch waypointSymbol {
 	case staleSrc:
-		good, err := market.NewTradeGood(staleGood, &supply, &activity, r.fixture.srcAsk()-20, r.fixture.srcAsk(), staleVol, market.TradeTypeExport)
+		good, err := market.NewTradeGood(staleGood, &supply, &activity, r.fixture.srcAsk(), r.fixture.srcAsk()-20, staleVol, market.TradeTypeExport)
 		if err != nil {
 			return nil, err
 		}
 		return market.NewMarket(waypointSymbol, []market.TradeGood{*good}, time.Now())
 	case staleDst:
-		good, err := market.NewTradeGood(staleGood, &supply, &activity, r.fixture.destBid(), staleDstAsk, staleVol, market.TradeTypeImport)
+		good, err := market.NewTradeGood(staleGood, &supply, &activity, staleDstAsk, r.fixture.destBid(), staleVol, market.TradeTypeImport)
 		if err != nil {
 			return nil, err
 		}

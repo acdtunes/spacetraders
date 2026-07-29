@@ -140,7 +140,7 @@ func (h *RunTradeRouteCoordinatorHandler) staleAskAborts(
 		return false
 	}
 
-	liveAsk := liveSrc.SellPrice()
+	liveAsk := liveSrc.PurchasePrice() // the ASK is purchase_price — what we pay (sp-en5h7)
 	if trading.AskMovedBeyondTolerance(liveAsk, lane.SourceAsk) {
 		response.StaleAskAbort = true
 		response.RankedSourceAsk = lane.SourceAsk

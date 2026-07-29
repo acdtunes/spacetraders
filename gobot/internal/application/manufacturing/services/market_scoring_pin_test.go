@@ -84,7 +84,7 @@ func TestApplySourceSupplyPriority_AbundantHighThenFloorOfTen(t *testing.T) {
 	}
 }
 
-func newExportMarket(t *testing.T, waypointSymbol, good, supply, activity string, sellPrice int) *market.Market {
+func newExportMarket(t *testing.T, waypointSymbol, good, supply, activity string, bid int) *market.Market {
 	t.Helper()
 	var supplyPtr, activityPtr *string
 	if supply != "" {
@@ -93,7 +93,7 @@ func newExportMarket(t *testing.T, waypointSymbol, good, supply, activity string
 	if activity != "" {
 		activityPtr = &activity
 	}
-	tradeGood, err := market.NewTradeGood(good, supplyPtr, activityPtr, sellPrice+10, sellPrice, 40, market.TradeTypeExport)
+	tradeGood, err := market.NewTradeGood(good, supplyPtr, activityPtr, bid+10, bid, 40, market.TradeTypeExport)
 	if err != nil {
 		t.Fatalf("NewTradeGood(%s): %v", good, err)
 	}

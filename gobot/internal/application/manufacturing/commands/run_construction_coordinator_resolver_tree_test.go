@@ -51,8 +51,8 @@ func scarceChainResolver() *mfgServices.SupplyChainResolver {
 			"ELECTRONICS":        {WaypointSymbol: "X1-GT-EL", Supply: "SCARCE", Activity: "STRONG"},
 		},
 		buyable: map[string]*market.BestBuyingMarketResult{
-			"ELECTRONICS":      {WaypointSymbol: "X1-GT-EL", Supply: "SCARCE", Activity: "STRONG", SellPrice: 2595},
-			"SILICON_CRYSTALS": {WaypointSymbol: "X1-GT-SC", Supply: "ABUNDANT", Activity: "STRONG", SellPrice: 50},
+			"ELECTRONICS":      {WaypointSymbol: "X1-GT-EL", Supply: "SCARCE", Activity: "STRONG", Ask: 2595},
+			"SILICON_CRYSTALS": {WaypointSymbol: "X1-GT-SC", Supply: "ABUNDANT", Activity: "STRONG", Ask: 50},
 		},
 	}
 	return mfgServices.NewSupplyChainResolver(supplyChainMap, repo)

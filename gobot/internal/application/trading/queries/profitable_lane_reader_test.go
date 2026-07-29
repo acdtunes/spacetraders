@@ -36,13 +36,19 @@ func (f *fakeLaneMarketReader) GetMarketData(ctx context.Context, waypointSymbol
 	return f.markets[waypointSymbol], nil
 }
 
-// good builds one TradeGood. Recall the market-perspective columns: purchasePrice is the market's
-// BUY column (Bid — what a ship RECEIVES selling TO it); sellPrice is the market's SELL column (Ask —
-// what a ship PAYS buying FROM it). A profitable lane BUYS at a low exporter Ask and SELLS at a high
-// importer Bid: spread/unit = destBid − sourceAsk.
+// good builds one TradeGood from a (bid, ask) pair. The columns are named from OUR side, so the
+// mapping is a rename and not a swap: purchase_price is the ASK — what a ship PAYS buying FROM the
+// market — and sell_price is the BID — what a ship RECEIVES selling TO it. A real market charges
+// more than it pays, so ask > bid on every fixture here. A profitable lane BUYS at a low exporter
+// Ask and SELLS at a high importer Bid: spread/unit = destBid − sourceAsk.
+//
+// This helper passed bid into the purchasePrice slot and ask into sellPrice until sp-en5h7, matching
+// the transposed rows the market scanner was writing. Under the corrected readers those fixtures
+// quote ask < bid, which GoodListing.IsCrossed refuses outright — so the inversion now shows up as a
+// zero lane count rather than as prices that cancel out.
 func good(t *testing.T, symbol string, bid, ask, volume int, tradeType market.TradeType) market.TradeGood {
 	t.Helper()
-	g, err := market.NewTradeGood(symbol, nil, nil, bid, ask, volume, tradeType)
+	g, err := market.NewTradeGood(symbol, nil, nil, ask, bid, volume, tradeType)
 	require.NoError(t, err)
 	return *g
 }

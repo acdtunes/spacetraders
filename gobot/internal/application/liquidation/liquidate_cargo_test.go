@@ -161,7 +161,7 @@ func TestLiquidateCargo_SellsAtBestInSystemBid_NavigatingWhenElsewhere(t *testin
 	ship := shipWithCargo(t, "TORWIND-7", "X1-KA42-A1", []*shared.CargoItem{item(t, "SILICON_CRYSTALS", 66)})
 	repo := &fakeSyncShipRepo{ship: ship}
 	mkt := &fakeMarketRepo{byGood: map[string]*market.BestMarketBuyingResult{
-		"SILICON_CRYSTALS": {WaypointSymbol: "X1-KA42-B7", TradeSymbol: "SILICON_CRYSTALS", PurchasePrice: 2200},
+		"SILICON_CRYSTALS": {WaypointSymbol: "X1-KA42-B7", TradeSymbol: "SILICON_CRYSTALS", Bid: 2200},
 	}}
 	med := &recordingMediator{sellPricePerUnit: 2200}
 	h := NewLiquidateCargoHandler(repo, mkt, med)
@@ -194,7 +194,7 @@ func TestLiquidateCargo_SellsInPlace_WhenCurrentWaypointIsBest(t *testing.T) {
 	ship := shipWithCargo(t, "TORWIND-3", "X1-KA42-B7", []*shared.CargoItem{item(t, "PLASTICS", 67)})
 	repo := &fakeSyncShipRepo{ship: ship}
 	mkt := &fakeMarketRepo{byGood: map[string]*market.BestMarketBuyingResult{
-		"PLASTICS": {WaypointSymbol: "X1-KA42-B7", PurchasePrice: 1800},
+		"PLASTICS": {WaypointSymbol: "X1-KA42-B7", Bid: 1800},
 	}}
 	med := &recordingMediator{sellPricePerUnit: 1800}
 	h := NewLiquidateCargoHandler(repo, mkt, med)
@@ -271,7 +271,7 @@ func TestLiquidateCargo_ValuableLot_SoldNotJettisoned_EvenWithThreshold(t *testi
 	ship := shipWithCargo(t, "TORWIND-11", "X1-KA42-A1", []*shared.CargoItem{item(t, "PLASTICS", 67)})
 	repo := &fakeSyncShipRepo{ship: ship}
 	mkt := &fakeMarketRepo{byGood: map[string]*market.BestMarketBuyingResult{
-		"PLASTICS": {WaypointSymbol: "X1-KA42-B7", PurchasePrice: 2300}, // 67*2300 = 154,100
+		"PLASTICS": {WaypointSymbol: "X1-KA42-B7", Bid: 2300}, // 67*2300 = 154,100
 	}}
 	med := &recordingMediator{sellPricePerUnit: 2300}
 	h := NewLiquidateCargoHandler(repo, mkt, med)
@@ -291,7 +291,7 @@ func TestLiquidateCargo_NavigateFails_HoldsNeverDumps(t *testing.T) {
 	ship := shipWithCargo(t, "TORWIND-2", "X1-KA42-A1", []*shared.CargoItem{item(t, "ALUMINUM", 56)})
 	repo := &fakeSyncShipRepo{ship: ship}
 	mkt := &fakeMarketRepo{byGood: map[string]*market.BestMarketBuyingResult{
-		"ALUMINUM": {WaypointSymbol: "X1-KA42-Z9", PurchasePrice: 900},
+		"ALUMINUM": {WaypointSymbol: "X1-KA42-Z9", Bid: 900},
 	}}
 	med := &recordingMediator{navErr: fmt.Errorf("insufficient fuel and no affordable refuel"), sellPricePerUnit: 900}
 	h := NewLiquidateCargoHandler(repo, mkt, med)
@@ -314,8 +314,8 @@ func TestLiquidateCargo_MultipleGoods_LiquidatesEach(t *testing.T) {
 	})
 	repo := &fakeSyncShipRepo{ship: ship}
 	mkt := &fakeMarketRepo{byGood: map[string]*market.BestMarketBuyingResult{
-		"SILICON_CRYSTALS": {WaypointSymbol: "X1-KA42-B7", PurchasePrice: 1000},
-		"FABRICS":          {WaypointSymbol: "X1-KA42-B7", PurchasePrice: 1000},
+		"SILICON_CRYSTALS": {WaypointSymbol: "X1-KA42-B7", Bid: 1000},
+		"FABRICS":          {WaypointSymbol: "X1-KA42-B7", Bid: 1000},
 	}}
 	med := &recordingMediator{sellPricePerUnit: 1000}
 	h := NewLiquidateCargoHandler(repo, mkt, med)

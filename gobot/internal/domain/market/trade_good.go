@@ -8,15 +8,28 @@ import (
 )
 
 // TradeGood represents a single commodity available at a market (immutable value object).
-// Prices follow the market's perspective:
-// - PurchasePrice: What the market PAYS when buying from ships (market bids)
-// - SellPrice: What the market CHARGES when selling to ships (market asks)
+//
+// Prices follow OUR side of the trade, identically to the SpaceTraders API field
+// of the same name — one convention, end to end, from the API DTO through this
+// value object to the market_data columns:
+//
+//   - PurchasePrice: what WE PAY to buy a unit FROM the market (the market's ASK)
+//   - SellPrice: what WE RECEIVE for selling a unit TO the market (the market's BID)
+//
+// PurchasePrice therefore EXCEEDS SellPrice at every real market — that gap is
+// the market's rake, and it is how a market makes money. A good quoting the
+// reverse is impossible data, not a bargain.
+//
+// This comment previously described the MARKET's perspective, inverting both
+// meanings, and the scanner was written to match it (sp-en5h7): every persisted
+// row in the project's history held the two prices transposed. The doc was the
+// root of it, so it is the one thing that must not drift again.
 type TradeGood struct {
 	symbol        string
 	supply        *string   // SCARCE, LIMITED, MODERATE, HIGH, ABUNDANT (or nil)
 	activity      *string   // WEAK, GROWING, STRONG, RESTRICTED (or nil)
-	purchasePrice int       // What ship RECEIVES when selling to market
-	sellPrice     int       // What ship PAYS when buying from market
+	purchasePrice int       // What ship PAYS when buying from market (ask; the larger)
+	sellPrice     int       // What ship RECEIVES when selling to market (bid; the smaller)
 	tradeVolume   int       // Trading volume
 	tradeType     TradeType // EXPORT, IMPORT, or EXCHANGE
 }

@@ -1139,7 +1139,7 @@ func (d *IdleArbDispatcher) pickHubLocalLane(ctx context.Context, hull *navigati
 		}
 
 		for _, hubGood := range hubMarket.TradeGoods() {
-			ask := hubGood.SellPrice() // what the hull pays at the hub
+			ask := hubGood.PurchasePrice() // what the hull pays at the hub
 			if ask <= 0 {
 				continue
 			}
@@ -1154,7 +1154,7 @@ func (d *IdleArbDispatcher) pickHubLocalLane(ctx context.Context, hull *navigati
 			if destGood.TradeType() == market.TradeTypeExport {
 				continue
 			}
-			bid := destGood.PurchasePrice() // what the hull receives at the destination
+			bid := destGood.SellPrice() // what the hull receives at the destination
 			margin := bid - ask
 			if margin < d.cfg.MinMarginPerUnit {
 				continue

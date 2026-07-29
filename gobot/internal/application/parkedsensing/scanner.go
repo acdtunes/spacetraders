@@ -523,13 +523,17 @@ func (s *Scanner) observe(ctx context.Context, slot SensingSlotView) (float64, b
 
 	spread, inverted := RelativeSpread(prices, slot.Whitelist)
 	if inverted > 0 {
-		// One line per scan, not per good. An inverted quote is impossible
-		// market data, and the overwhelmingly likely cause is a GoodPrice wired
-		// from the persisted columns without crossing them — a fault whose only
-		// other symptom is a rotation that quietly stops preferring anything.
+		// One line per scan, not per good. An inverted quote is impossible market
+		// data with two possible causes, and sp-en5h7 proved the SECOND one is the
+		// likelier: either GoodPrice was wired from the persisted columns by name,
+		// or the persisted row itself is transposed. Name both, writer first — the
+		// previous wording named only the wiring and sent readers to a file that
+		// was already correct.
 		s.warn(ctx, "parked_sensing_inverted_quote", slot.Waypoint,
 			fmt.Sprintf("%d good(s) at %s quote an ask below their bid and were skipped; "+
-				"check the GoodPrice wiring (Bid<-sell_price, Ask<-purchase_price)", inverted, slot.Waypoint))
+				"check what the scanner persisted (market_data.purchase_price must EXCEED "+
+				"sell_price), then the GoodPrice wiring (Bid<-sell_price, Ask<-purchase_price)",
+				inverted, slot.Waypoint))
 	}
 	return spread, true
 }

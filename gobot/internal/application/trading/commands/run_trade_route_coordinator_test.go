@@ -103,16 +103,18 @@ func (r *trFakeMarketRepo) GetMarketData(ctx context.Context, waypointSymbol str
 	activity := "STRONG"
 	switch waypointSymbol {
 	case trSource:
-		// Exporter: ask (SellPrice) 2000 is what we pay; bid (PurchasePrice) is low.
-		good, err := market.NewTradeGood(trGood, &supply, &activity, 1900, trSourceAsk, 60, market.TradeTypeExport)
+		// Exporter: its ask 2000 is what we PAY (purchasePrice); its bid 1900 is the low
+		// sellback we would RECEIVE (sellPrice). ask > bid — sp-en5h7.
+		good, err := market.NewTradeGood(trGood, &supply, &activity, trSourceAsk, 1900, 60, market.TradeTypeExport)
 		if err != nil {
 			return nil, err
 		}
 		return market.NewMarket(waypointSymbol, []market.TradeGood{*good}, time.Now())
 	case trDest:
-		// Importer: bid (PurchasePrice) is what we receive and decays with fills.
+		// Importer: its bid (sellPrice) is what we RECEIVE and decays with fills; its ask
+		// 4100 (purchasePrice) is what buying back would cost. ask > bid — sp-en5h7.
 		bid := r.fixture.currentDestBid()
-		good, err := market.NewTradeGood(trGood, &supply, &activity, bid, 4100, 30, market.TradeTypeImport)
+		good, err := market.NewTradeGood(trGood, &supply, &activity, 4100, bid, 30, market.TradeTypeImport)
 		if err != nil {
 			return nil, err
 		}

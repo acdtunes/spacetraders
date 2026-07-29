@@ -19,14 +19,19 @@ import "sort"
 //	Bid ← market_data.sell_price      (what the market PAYS us — its bid)
 //	Ask ← market_data.purchase_price  (what the market CHARGES us — its ask)
 //
-// The names are crossed because the persisted columns are named from OUR side
-// of the trade and these are named from the market's. Wire them uncrossed and
+// The names are renamed, not swapped: the persisted columns are named from OUR
+// side of the trade and these are named from the market's. Wire them by name and
 // every quote comes back inverted: each good is skipped by the guard in
 // RelativeSpread, every market observes a spread of zero, the fleet median
 // collapses to its 1.0 fallback, and every slot lands on the same optimistic
 // prior weight. The rotation still runs, still scans, and reports no error — it
 // simply stops preferring the markets worth watching. That silence is why the
 // inversion is guarded and logged rather than merely documented.
+//
+// The guard earned its keep: it is what surfaced sp-en5h7, where the fault was
+// not this mapping but the SCANNER, which persisted both prices transposed for
+// the project's entire history. An inverted quote means the stored row is wrong
+// at least as often as the wiring is.
 type GoodPrice struct {
 	Good string
 	// Bid is what the market pays for the good.

@@ -37,7 +37,7 @@ func NewSellMarketDistributor(
 // EligibleMarket represents a potential sell market with its metrics
 type EligibleMarket struct {
 	WaypointSymbol string
-	PurchasePrice  int    // What the market pays us
+	Bid            int    // the BID: what the market PAYS us (sell_price, the smaller; sp-en5h7)
 	Supply         string // SCARCE, LIMITED, MODERATE, HIGH, ABUNDANT
 	Activity       string // WEAK, GROWING, STRONG, RESTRICTED
 	PendingTasks   int    // Number of pending COLLECT_SELL tasks for this market
@@ -96,7 +96,7 @@ func (d *SellMarketDistributor) SelectSellMarket(
 		"selected_market": selectedMarket.WaypointSymbol,
 		"supply":          selectedMarket.Supply,
 		"pending_tasks":   selectedMarket.PendingTasks,
-		"purchase_price":  selectedMarket.PurchasePrice,
+		"bid":             selectedMarket.Bid,
 		"eligible_count":  len(eligibleMarkets),
 	})
 
@@ -160,7 +160,7 @@ func (d *SellMarketDistributor) findEligibleSellMarkets(
 
 		eligible = append(eligible, &EligibleMarket{
 			WaypointSymbol: waypointSymbol,
-			PurchasePrice:  tradeGood.PurchasePrice(),
+			Bid:            tradeGood.SellPrice(),
 			Supply:         supply,
 			Activity:       activity,
 			PendingTasks:   0, // Will be filled in next step
@@ -238,8 +238,8 @@ func (d *SellMarketDistributor) selectBestMarket(markets []*EligibleMarket) *Eli
 			continue
 		}
 
-		// Tertiary: higher purchase price wins
-		if m.PurchasePrice > best.PurchasePrice {
+		// Tertiary: higher bid wins
+		if m.Bid > best.Bid {
 			best = m
 		}
 	}

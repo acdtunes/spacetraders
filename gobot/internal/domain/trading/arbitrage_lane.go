@@ -11,24 +11,31 @@ import (
 // package into this pure-domain ranking code.
 const tradeTypeExport = "EXPORT"
 
-// GoodListing is one cached market's trade data for a single good, expressed in
-// SpaceTraders' MARKET-perspective column semantics — the "inverted-margin trap"
-// that overstates every spread ~2x when read backwards (market-doctrine):
+// GoodListing is one cached market's trade data for a single good. Bid and Ask
+// are named from the MARKET's side; the columns they come from are named from
+// OURS, so the mapping is a rename and NOT a swap — getting it backwards is the
+// "inverted-margin trap" that overstates every spread ~2x (market-doctrine):
 //
-//   - Bid = the market's BUY price (the BUY / PurchasePrice column) = what a ship
-//     RECEIVES per unit when SELLING this good TO the market.
-//   - Ask = the market's SELL price (the SELL / SellPrice column) = what a ship
-//     PAYS per unit when BUYING this good FROM the market.
+//   - Bid = what a ship RECEIVES per unit when SELLING this good TO the market
+//     = the market_data.sell_price column = TradeGood.SellPrice().
+//   - Ask = what a ship PAYS per unit when BUYING this good FROM the market
+//     = the market_data.purchase_price column = TradeGood.PurchasePrice().
+//
+// Ask therefore exceeds Bid at any one market. A listing quoting the reverse is
+// impossible data (see IsCrossed) and is refused, not ranked.
 //
 // A profitable lane BUYS at a source market's Ask and SELLS at a destination
 // market's Bid, so profit per unit = destination.Bid − source.Ask. Buy at
 // exporters (low Ask), sell at importers (high Bid).
+//
+// This doc named the two columns the other way round until sp-en5h7. It was
+// consistent with the data only because the data itself was transposed.
 type GoodListing struct {
 	Good      string
 	Waypoint  string
 	TradeType string // EXPORT, IMPORT, or EXCHANGE
-	Bid       int    // market BUY price (PurchasePrice): received selling TO it
-	Ask       int    // market SELL price (SellPrice): paid buying FROM it
+	Bid       int    // sell_price column: what we RECEIVE selling TO it
+	Ask       int    // purchase_price column: what we PAY buying FROM it
 	Supply    string
 	Activity  string
 	Volume    int
@@ -39,6 +46,29 @@ type GoodListing struct {
 	// stale prices. Zero value means "unknown age" — treated as fresh so
 	// callers that don't populate it (older tests) rank unchanged.
 	ObservedAt time.Time
+}
+
+// IsCrossed reports whether this listing quotes an ask BELOW its bid — buy a unit
+// and sell it straight back to the same market at a profit. No real market does
+// that, so a crossed listing is bad data and never a bargain.
+//
+// It is the tradeability precondition RankSpreads applies before any pair is
+// considered, and it exists because of sp-en5h7: every market_data row written
+// before that fix holds its two prices transposed, so reading one with the
+// CORRECTED mapping yields exactly this shape. Two such rows at different
+// waypoints would otherwise rank as a lane worth roughly twice the true spread —
+// real money spent chasing a spread that is not there.
+//
+// Refusing them makes the correction safe in either deploy order: legacy rows
+// produce no lane at all rather than a phantom one. The predicate can only ever
+// REMOVE lanes, never admit one that was previously refused (RULINGS #4).
+//
+// Equality is allowed: a zero-rake EXCHANGE quote is unusual but not impossible,
+// and it yields no positive spread anyway. The threshold matches the sensing
+// model's own inverted-quote guard (parkedsensing.RelativeSpread) so the codebase
+// states "impossible quote" exactly once.
+func (l GoodListing) IsCrossed() bool {
+	return l.Ask < l.Bid
 }
 
 // ArbitrageLane is the best buy-here / sell-there circuit for a single good
@@ -103,6 +133,9 @@ func FirstDisciplinedLane(lanes []ArbitrageLane) (ArbitrageLane, bool) {
 func RankSpreads(listings []GoodListing) []ArbitrageLane {
 	byGood := make(map[string][]GoodListing)
 	for _, l := range listings {
+		if l.IsCrossed() {
+			continue
+		}
 		byGood[l.Good] = append(byGood[l.Good], l)
 	}
 

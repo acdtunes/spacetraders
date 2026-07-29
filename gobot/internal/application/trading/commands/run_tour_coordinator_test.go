@@ -40,10 +40,15 @@ type tourFixture struct {
 	location string
 	cargoCap int
 
-	markets map[string][]string       // system -> market waypoints
-	bid     map[string]map[string]int // waypoint -> good -> bid (PurchasePrice, sell revenue)
-	ask     map[string]map[string]int // waypoint -> good -> ask (SellPrice, buy cost)
-	tv      map[string]map[string]int // waypoint -> good -> tradeVolume
+	markets map[string][]string // system -> market waypoints
+	// bid/ask carry the market's two prices under the sp-en5h7 convention: the ask is
+	// what WE PAY to buy (the market_data.purchase_price column, TradeGood.PurchasePrice)
+	// and the bid is what WE RECEIVE selling to it (sell_price, TradeGood.SellPrice), so
+	// ask > bid at every market. These maps always held the two values with those
+	// meanings; before sp-en5h7 the fixture fed them to NewTradeGood transposed.
+	bid map[string]map[string]int // waypoint -> good -> bid (sell_price, sell revenue)
+	ask map[string]map[string]int // waypoint -> good -> ask (purchase_price, buy cost)
+	tv  map[string]map[string]int // waypoint -> good -> tradeVolume
 	// staleMarkets marks waypoints whose cached market reads are >maxListingAge old (sp-z7ng): a
 	// listed waypoint here gets an ObservedAt 2h in the past, so freshListings drops it and the
 	// reposition/placement staleness gate excludes it. Absent (nil) → every market reads fresh
@@ -342,8 +347,9 @@ func (r *tourFakeMarketRepo) GetMarketData(ctx context.Context, waypointSymbol s
 				tt = market.TradeTypeExchange
 			}
 		}
+		// purchasePrice = the ask (what we pay), sellPrice = the bid (what we receive) — sp-en5h7.
 		g, err := market.NewTradeGood(good, &supply, &activity,
-			r.fx.bid[waypointSymbol][good], r.fx.ask[waypointSymbol][good], r.fx.tv[waypointSymbol][good], tt)
+			r.fx.ask[waypointSymbol][good], r.fx.bid[waypointSymbol][good], r.fx.tv[waypointSymbol][good], tt)
 		if err != nil {
 			r.t.Fatalf("trade good: %v", err)
 		}

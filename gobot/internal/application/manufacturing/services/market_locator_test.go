@@ -58,9 +58,9 @@ func TestFindBestExportMarket_AllWaypointsUnscanned_ReturnsError(t *testing.T) {
 
 // newTradeTypeMarket builds a single-good market with an explicit trade type so
 // import/exchange sources (not just exports) can be exercised.
-func newTradeTypeMarket(t *testing.T, waypointSymbol, good, supply, activity string, tradeType market.TradeType, sellPrice int) *market.Market {
+func newTradeTypeMarket(t *testing.T, waypointSymbol, good, supply, activity string, tradeType market.TradeType, bid int) *market.Market {
 	t.Helper()
-	tradeGood, err := market.NewTradeGood(good, &supply, &activity, sellPrice+10, sellPrice, 40, tradeType)
+	tradeGood, err := market.NewTradeGood(good, &supply, &activity, bid+10, bid, 40, tradeType)
 	if err != nil {
 		t.Fatalf("NewTradeGood(%s): %v", good, err)
 	}

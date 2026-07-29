@@ -673,14 +673,17 @@ type marketSystemListingsFinder interface {
 }
 
 // systemListingsToGoodListings maps cached market rows into the trading domain's
-// GoodListing, translating SpaceTraders' MARKET-perspective columns exactly once,
-// at this adapter boundary:
+// GoodListing, renaming the persisted columns to the market-side names exactly
+// once, at this adapter boundary:
 //
-//	PurchasePrice (the market's BUY column) → Bid  (what we RECEIVE selling TO it)
-//	SellPrice     (the market's SELL column) → Ask  (what we PAY buying FROM it)
+//	SellPrice     (what we RECEIVE selling TO the market) → Bid
+//	PurchasePrice (what we PAY buying FROM the market)    → Ask
 //
 // Getting this mapping backwards is the inverted-margin trap that overstates
 // every spread ~2x (market-doctrine); RankSpreads then computes destBid−sourceAsk.
+// It WAS backwards here until sp-en5h7 — harmlessly, because market_data was
+// itself transposed, so this adapter and the writer were wrong in opposite
+// directions and the displayed spreads came out right.
 func systemListingsToGoodListings(listings []persistence.SystemMarketGoodListing) []trading.GoodListing {
 	out := make([]trading.GoodListing, len(listings))
 	for i, l := range listings {
@@ -688,8 +691,8 @@ func systemListingsToGoodListings(listings []persistence.SystemMarketGoodListing
 			Good:      l.GoodSymbol,
 			Waypoint:  l.WaypointSymbol,
 			TradeType: l.TradeType,
-			Bid:       l.PurchasePrice,
-			Ask:       l.SellPrice,
+			Bid:       l.SellPrice,
+			Ask:       l.PurchasePrice,
 			Supply:    l.Supply,
 			Activity:  l.Activity,
 			Volume:    l.TradeVolume,

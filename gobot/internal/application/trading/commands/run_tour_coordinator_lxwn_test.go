@@ -31,11 +31,17 @@ func TestReposition_FreshListings_ExcludesStaleBestLane(t *testing.T) {
 
 	// A FAT stale lane (spread 500 x vol 300 = 150000) and a MODEST fresh lane (spread 50 x
 	// vol 100 = 5000), both non-EXPORT so they are eligible sell destinations.
+	//
+	// Every row quotes Ask >= Bid, the only shape a real market can have (sp-en5h7): the
+	// X1-C-1 rows are the lane SOURCES, so their Ask (100) is the load-bearing price, and the
+	// X1-C-2 rows are the lane SINKS, so their Bid (600 / 150) is. A sink's Ask sits just
+	// above its own Bid — high enough that it can never become a cheaper source and invent a
+	// reverse lane, which keeps both scores below exactly as intended.
 	listings := []trading.GoodListing{
 		{Good: "STALEGOOD", Waypoint: "X1-C-1", TradeType: "IMPORT", Ask: 100, Bid: 100, Volume: 300, ObservedAt: stale},
-		{Good: "STALEGOOD", Waypoint: "X1-C-2", TradeType: "IMPORT", Ask: 100, Bid: 600, Volume: 300, ObservedAt: stale},
+		{Good: "STALEGOOD", Waypoint: "X1-C-2", TradeType: "IMPORT", Ask: 650, Bid: 600, Volume: 300, ObservedAt: stale},
 		{Good: "FRESHGOOD", Waypoint: "X1-C-1", TradeType: "IMPORT", Ask: 100, Bid: 100, Volume: 100, ObservedAt: fresh},
-		{Good: "FRESHGOOD", Waypoint: "X1-C-2", TradeType: "IMPORT", Ask: 100, Bid: 150, Volume: 100, ObservedAt: fresh},
+		{Good: "FRESHGOOD", Waypoint: "X1-C-2", TradeType: "IMPORT", Ask: 200, Bid: 150, Volume: 100, ObservedAt: fresh},
 	}
 
 	// Precondition (the bug): the UNFILTERED pre-rank scores the stale fat lane — the mirage.

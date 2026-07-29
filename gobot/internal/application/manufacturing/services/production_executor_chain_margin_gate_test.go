@@ -51,7 +51,7 @@ func (r *chainGateMarketRepo) FindBestMarketBuying(ctx context.Context, goodSymb
 		return &market.BestMarketBuyingResult{
 			WaypointSymbol: cgSinkWP,
 			TradeSymbol:    goodSymbol,
-			PurchasePrice:  r.sinkBid,
+			Bid:            r.sinkBid,
 			Supply:         "HIGH",
 		}, nil
 	}

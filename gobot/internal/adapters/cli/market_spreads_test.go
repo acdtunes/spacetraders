@@ -27,30 +27,41 @@ func (f *fakeSystemListingsFinder) FindAllGoodListingsInSystem(
 
 // spreadsFixtureListings mirrors the domain hand-computed fixture, but as cached
 // persistence rows, so the CLI test exercises the full adapter path: column
-// mapping (PurchasePrice→Bid, SellPrice→Ask) + RankSpreads.
+// mapping (PurchasePrice→Ask, SellPrice→Bid) + RankSpreads.
+//
+// Every row quotes purchase_price ABOVE sell_price, because a real market charges
+// more to sell us a unit than it pays to buy one — that gap is its rake. The rows
+// carried the two prices transposed until sp-en5h7, matching market_data's own
+// corruption; read through the corrected mapping they were crossed listings, which
+// RankSpreads refuses outright, so the scan ranked nothing at all.
+//
+// Prices are unchanged from the domain fixture (E41 pays 250 / charges 300, J56
+// pays 900 / charges 950, and so on) — only the column each one sits in was wrong.
 func spreadsFixtureListings() []persistence.SystemMarketGoodListing {
 	now := time.Now()
 	return []persistence.SystemMarketGoodListing{
-		{WaypointSymbol: "X1-SYS-E41", GoodSymbol: "FIREARMS", TradeType: "EXPORT", PurchasePrice: 250, SellPrice: 300, TradeVolume: 60, LastUpdated: now},
-		{WaypointSymbol: "X1-SYS-J56", GoodSymbol: "FIREARMS", TradeType: "IMPORT", PurchasePrice: 900, SellPrice: 950, TradeVolume: 20, LastUpdated: now},
-		{WaypointSymbol: "X1-SYS-A1", GoodSymbol: "GADGETS", TradeType: "EXPORT", PurchasePrice: 80, SellPrice: 100, TradeVolume: 2, LastUpdated: now},
-		{WaypointSymbol: "X1-SYS-B2", GoodSymbol: "GADGETS", TradeType: "IMPORT", PurchasePrice: 1100, SellPrice: 1150, TradeVolume: 40, LastUpdated: now},
+		{WaypointSymbol: "X1-SYS-E41", GoodSymbol: "FIREARMS", TradeType: "EXPORT", PurchasePrice: 300, SellPrice: 250, TradeVolume: 60, LastUpdated: now},
+		{WaypointSymbol: "X1-SYS-J56", GoodSymbol: "FIREARMS", TradeType: "IMPORT", PurchasePrice: 950, SellPrice: 900, TradeVolume: 20, LastUpdated: now},
+		{WaypointSymbol: "X1-SYS-A1", GoodSymbol: "GADGETS", TradeType: "EXPORT", PurchasePrice: 100, SellPrice: 80, TradeVolume: 2, LastUpdated: now},
+		{WaypointSymbol: "X1-SYS-B2", GoodSymbol: "GADGETS", TradeType: "IMPORT", PurchasePrice: 1150, SellPrice: 1100, TradeVolume: 40, LastUpdated: now},
 	}
 }
 
 // TestSystemListingsToGoodListings_MapsMarketColumns is the adapter-boundary
-// inverted-column guard: the market's BUY column (PurchasePrice) must become the
-// domain Bid (what we receive) and the SELL column (SellPrice) must become Ask
-// (what we pay). Swapping them here would silently overstate every spread ~2x.
+// inverted-column guard: purchase_price is the ASK — what we PAY buying FROM the
+// market, the LARGER of the two — and must become the domain Ask; sell_price is
+// the BID — what we RECEIVE selling TO it, the smaller — and must become Bid.
+// Swapping them here would silently overstate every spread ~2x. This guard named
+// the two columns the other way round until sp-en5h7.
 func TestSystemListingsToGoodListings_MapsMarketColumns(t *testing.T) {
 	got := systemListingsToGoodListings([]persistence.SystemMarketGoodListing{
-		{WaypointSymbol: "X1-SYS-E41", GoodSymbol: "FIREARMS", TradeType: "EXPORT", PurchasePrice: 250, SellPrice: 300, TradeVolume: 60},
+		{WaypointSymbol: "X1-SYS-E41", GoodSymbol: "FIREARMS", TradeType: "EXPORT", PurchasePrice: 300, SellPrice: 250, TradeVolume: 60},
 	})
 
 	require.Len(t, got, 1)
 	g := got[0]
-	require.Equal(t, 250, g.Bid, "market BUY price (PurchasePrice) must map to Bid = what we receive selling TO it")
-	require.Equal(t, 300, g.Ask, "market SELL price (SellPrice) must map to Ask = what we pay buying FROM it")
+	require.Equal(t, 250, g.Bid, "market sell_price (the BID: what we receive selling TO it) must map to Bid")
+	require.Equal(t, 300, g.Ask, "market purchase_price (the ASK: what we pay buying FROM it) must map to Ask")
 	require.Equal(t, "FIREARMS", g.Good)
 	require.Equal(t, "X1-SYS-E41", g.Waypoint)
 	require.Equal(t, 60, g.Volume)

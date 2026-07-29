@@ -320,7 +320,7 @@ func (r *dockRaceMarketRepo) FindCheapestMarketSelling(ctx context.Context, good
 		return &market.CheapestMarketResult{
 			WaypointSymbol: dockRaceMarketWP,
 			TradeSymbol:    goodSymbol,
-			SellPrice:      10,
+			Ask:            10,
 			Supply:         "HIGH",
 		}, nil
 	}
@@ -340,7 +340,7 @@ func (r *dockRaceMarketRepo) GetMarketData(ctx context.Context, waypointSymbol s
 	}
 	supply := "HIGH"
 	activity := "STRONG"
-	good, err := market.NewTradeGood(dockRaceGood, &supply, &activity, 8, 10, 10, market.TradeTypeExport)
+	good, err := market.NewTradeGood(dockRaceGood, &supply, &activity, 10, 8, 10, market.TradeTypeExport)
 	if err != nil {
 		return nil, err
 	}
@@ -357,7 +357,7 @@ func (r *dockRaceMarketRepo) FindBestMarketBuying(ctx context.Context, goodSymbo
 		return &market.BestMarketBuyingResult{
 			WaypointSymbol: dockRaceMarketWP,
 			TradeSymbol:    goodSymbol,
-			PurchasePrice:  100,
+			Bid:            100,
 			Supply:         "HIGH",
 		}, nil
 	}

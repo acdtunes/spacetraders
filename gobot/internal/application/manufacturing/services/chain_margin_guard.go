@@ -213,7 +213,7 @@ func (g *ChainMarginGuard) branchPL(
 		if fabImport == nil {
 			return 0, 0, fmt.Errorf("fab %s does not import feed %s (unpriceable delivery leg)", fab.WaypointSymbol, child.Good)
 		}
-		childPL, childFeed, cerr := g.branchPL(ctx, child, fabImport.PurchasePrice(), fabImport.TradeVolume(), systemSymbol, playerID, stages)
+		childPL, childFeed, cerr := g.branchPL(ctx, child, fabImport.SellPrice(), fabImport.TradeVolume(), systemSymbol, playerID, stages)
 		if cerr != nil {
 			return 0, 0, cerr
 		}

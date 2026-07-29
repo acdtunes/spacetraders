@@ -44,7 +44,7 @@ func (r *sinkTestMarketRepo) FindBestMarketBuying(ctx context.Context, good, sys
 	return &market.BestMarketBuyingResult{
 		WaypointSymbol: r.sinkWP,
 		TradeSymbol:    good,
-		PurchasePrice:  r.sinkBid,
+		Bid:            r.sinkBid,
 		Supply:         "HIGH",
 	}, nil
 }

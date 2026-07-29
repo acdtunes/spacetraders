@@ -136,7 +136,7 @@ func NewMarketMetricsCollector(db *gorm.DB) *MarketMetricsCollector {
 				Namespace: namespace,
 				Subsystem: subsystem,
 				Name:      "market_price_spread",
-				Help:      "Distribution of price spreads (sellPrice - purchasePrice)",
+				Help:      "Distribution of price spreads, the market rake (purchasePrice - sellPrice, i.e. ask - bid)",
 				Buckets:   []float64{10, 50, 100, 500, 1000, 5000, 10000},
 			},
 			[]string{"player_id", "good_symbol"},
@@ -157,7 +157,7 @@ func NewMarketMetricsCollector(db *gorm.DB) *MarketMetricsCollector {
 				Namespace: namespace,
 				Subsystem: subsystem,
 				Name:      "market_efficiency_percent",
-				Help:      "Spread as percentage of sell price ((spread / sellPrice) * 100)",
+				Help:      "Spread as percentage of the ask ((spread / purchasePrice) * 100)",
 				Buckets:   []float64{5, 10, 25, 50, 75, 100},
 			},
 			[]string{"player_id", "good_symbol"},
@@ -416,7 +416,10 @@ func (c *MarketMetricsCollector) updatePriceMetrics(playerID int, systemSymbol s
 	bestSpreads := make(map[string]int)
 
 	for _, record := range records {
-		spread := record.SellPrice - record.PurchasePrice
+		// The market's rake: ASK - BID = purchase_price - sell_price. purchase_price is
+		// what WE PAY (the larger), sell_price what the market PAYS us (sp-en5h7), so a
+		// real market always yields spread >= 0.
+		spread := record.PurchasePrice - record.SellPrice
 
 		// Record spread distribution
 		c.marketPriceSpread.WithLabelValues(playerIDStr, record.GoodSymbol).Observe(float64(spread))
@@ -426,9 +429,9 @@ func (c *MarketMetricsCollector) updatePriceMetrics(playerID int, systemSymbol s
 			bestSpreads[record.GoodSymbol] = spread
 		}
 
-		// Calculate efficiency percentage
-		if record.SellPrice > 0 {
-			efficiencyPercent := float64(spread) / float64(record.SellPrice) * 100
+		// Calculate efficiency percentage: the rake as a share of the ASK we would pay.
+		if record.PurchasePrice > 0 {
+			efficiencyPercent := float64(spread) / float64(record.PurchasePrice) * 100
 			c.marketEfficiencyPercent.WithLabelValues(playerIDStr, record.GoodSymbol).Observe(efficiencyPercent)
 		}
 	}
@@ -518,31 +521,34 @@ func (c *MarketMetricsCollector) updateSupplyDemandMetrics(playerID int, systemS
 func (c *MarketMetricsCollector) updateTradingOpportunities(playerID int, systemSymbol string) {
 	playerIDStr := strconv.Itoa(playerID)
 
-	// Get best buy and sell prices for each good
+	// Get the cheapest ASK (where we BUY) and the best BID (where we SELL) for each good.
+	// sp-en5h7: purchase_price is the ask (what WE PAY, the larger), sell_price the bid
+	// (what the market PAYS us, the smaller) — so the cheapest buy is MIN(purchase_price)
+	// and the best sell is MAX(sell_price).
 	var priceData []struct {
-		GoodSymbol       string
-		MinSellPrice     int
-		MaxPurchasePrice int
-		MinWaypoint      string
-		MaxWaypoint      string
+		GoodSymbol  string
+		MinAsk      int
+		MaxBid      int
+		MinWaypoint string
+		MaxWaypoint string
 	}
 
 	// PostgreSQL-compatible: Include player_id in GROUP BY to avoid ungrouped column error
 	err := c.db.Raw(`
 		SELECT
 			good_symbol,
-			MIN(sell_price) as min_sell_price,
-			MAX(purchase_price) as max_purchase_price,
+			MIN(purchase_price) as min_ask,
+			MAX(sell_price) as max_bid,
 			(SELECT waypoint_symbol FROM market_data md2
 			 WHERE md2.good_symbol = md1.good_symbol
 			 AND md2.player_id = ?
 			 AND md2.waypoint_symbol LIKE ?
-			 ORDER BY sell_price ASC LIMIT 1) as min_waypoint,
+			 ORDER BY purchase_price ASC LIMIT 1) as min_waypoint,
 			(SELECT waypoint_symbol FROM market_data md3
 			 WHERE md3.good_symbol = md1.good_symbol
 			 AND md3.player_id = ?
 			 AND md3.waypoint_symbol LIKE ?
-			 ORDER BY purchase_price DESC LIMIT 1) as max_waypoint
+			 ORDER BY sell_price DESC LIMIT 1) as max_waypoint
 		FROM market_data md1
 		WHERE player_id = ? AND waypoint_symbol LIKE ?
 		GROUP BY good_symbol
@@ -560,14 +566,14 @@ func (c *MarketMetricsCollector) updateTradingOpportunities(playerID int, system
 	}
 
 	for _, record := range priceData {
-		// Set best buy price (lowest sell price - where we buy FROM)
-		c.marketBestPrice.WithLabelValues(playerIDStr, record.GoodSymbol, systemSymbol, "buy").Set(float64(record.MinSellPrice))
+		// Set best buy price (the lowest ASK - where we buy FROM)
+		c.marketBestPrice.WithLabelValues(playerIDStr, record.GoodSymbol, systemSymbol, "buy").Set(float64(record.MinAsk))
 
-		// Set best sell price (highest purchase price - where we sell TO)
-		c.marketBestPrice.WithLabelValues(playerIDStr, record.GoodSymbol, systemSymbol, "sell").Set(float64(record.MaxPurchasePrice))
+		// Set best sell price (the highest BID - where we sell TO)
+		c.marketBestPrice.WithLabelValues(playerIDStr, record.GoodSymbol, systemSymbol, "sell").Set(float64(record.MaxBid))
 
-		// Calculate profit margin
-		profit := record.MaxPurchasePrice - record.MinSellPrice
+		// Calculate profit margin: best sell (bid) minus cheapest buy (ask)
+		profit := record.MaxBid - record.MinAsk
 
 		// Count opportunities by threshold
 		for _, threshold := range c.marginThresholds {

@@ -879,7 +879,7 @@ func (h *RunStockerCoordinatorHandler) pickPinned(
 		considered++
 
 		cheapest, err := h.marketRepo.FindCheapestMarketSelling(ctx, good, homeSystem, cmd.PlayerID)
-		if err != nil || cheapest == nil || cheapest.SellPrice <= 0 {
+		if err != nil || cheapest == nil || cheapest.Ask <= 0 {
 			continue // no home-system seller found this pass - retry next pass (RULINGS #2)
 		}
 
@@ -892,9 +892,9 @@ func (h *RunStockerCoordinatorHandler) pickPinned(
 
 		units := min(unitsShort, hold)
 		units = min(units, freeSpace)
-		units = min(units, int(ceiling/int64(cheapest.SellPrice)))
+		units = min(units, int(ceiling/int64(cheapest.Ask)))
 		if cmd.BudgetPerLeg > 0 {
-			units = min(units, cmd.BudgetPerLeg/cheapest.SellPrice)
+			units = min(units, cmd.BudgetPerLeg/cheapest.Ask)
 		}
 		if units <= 0 {
 			continue // ceiling/budget/space exhausted for this good
@@ -905,7 +905,7 @@ func (h *RunStockerCoordinatorHandler) pickPinned(
 			best = stockerPick{
 				Good:          good,
 				ForeignMarket: cheapest.WaypointSymbol,
-				ForeignAsk:    cheapest.SellPrice,
+				ForeignAsk:    cheapest.Ask,
 				UnitsShort:    unitsShort,
 				Units:         units,
 			}

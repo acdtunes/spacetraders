@@ -179,7 +179,9 @@ func (r *MarketRepositoryGORM) ListMarketsInSystem(
 	return markets, nil
 }
 
-// FindCheapestMarketSelling finds the market with the lowest sell price for a specific good in a system.
+// FindCheapestMarketSelling finds the market with the lowest ASK for a specific good in a
+// system — the cheapest place for US to BUY it. The ask is market_data.purchase_price (what
+// we PAY, the larger of the two prices); sell_price is the bid the market pays us (sp-en5h7).
 // Note: This returns any market with the good - the caller must check supply level at execution time.
 // For manufacturing, the COLLECT task checks supply is HIGH/ABUNDANT before buying.
 func (r *MarketRepositoryGORM) FindCheapestMarketSelling(
@@ -191,17 +193,17 @@ func (r *MarketRepositoryGORM) FindCheapestMarketSelling(
 	var result struct {
 		WaypointSymbol string
 		TradeSymbol    string
-		SellPrice      int
+		PurchasePrice  int
 		Supply         *string
 	}
 
 	err := r.db.WithContext(ctx).
 		Table(marketDataTable).
-		Select("waypoint_symbol, good_symbol as trade_symbol, sell_price, supply").
+		Select("waypoint_symbol, good_symbol as trade_symbol, purchase_price, supply").
 		Where("player_id = ?", playerID).
 		Where("waypoint_symbol LIKE ?", systemSymbol+"-%").
 		Where("good_symbol = ?", goodSymbol).
-		Order("sell_price ASC").
+		Order("purchase_price ASC").
 		Limit(1).
 		Scan(&result).Error
 
@@ -218,13 +220,14 @@ func (r *MarketRepositoryGORM) FindCheapestMarketSelling(
 	return &market.CheapestMarketResult{
 		WaypointSymbol: result.WaypointSymbol,
 		TradeSymbol:    result.TradeSymbol,
-		SellPrice:      result.SellPrice,
+		Ask:            result.PurchasePrice,
 		Supply:         supply,
 	}, nil
 }
 
 // FindCheapestMarketsSellingAllSystems returns up to limit markets selling the
-// good across ALL systems with scanned data, cheapest first. Scouts only scan
+// good across ALL systems with scanned data, cheapest ASK first (purchase_price —
+// what we PAY, the larger of the two prices; sp-en5h7). Scouts only scan
 // systems the fleet can fly, so "has market data" doubles as the reachability
 // filter. Used by the trade engine's demand miner (its local marketAskFinder
 // port) to price cross-system SOURCE asks — NOT by contract sourcing, which is
@@ -239,16 +242,16 @@ func (r *MarketRepositoryGORM) FindCheapestMarketsSellingAllSystems(
 	var rows []struct {
 		WaypointSymbol string
 		TradeSymbol    string
-		SellPrice      int
+		PurchasePrice  int
 		Supply         *string
 	}
 
 	err := r.db.WithContext(ctx).
 		Table(marketDataTable).
-		Select("waypoint_symbol, good_symbol as trade_symbol, sell_price, supply").
+		Select("waypoint_symbol, good_symbol as trade_symbol, purchase_price, supply").
 		Where("player_id = ?", playerID).
 		Where("good_symbol = ?", goodSymbol).
-		Order("sell_price ASC").
+		Order("purchase_price ASC").
 		Limit(limit).
 		Scan(&rows).Error
 
@@ -261,7 +264,7 @@ func (r *MarketRepositoryGORM) FindCheapestMarketsSellingAllSystems(
 		results = append(results, market.CheapestMarketResult{
 			WaypointSymbol: row.WaypointSymbol,
 			TradeSymbol:    row.TradeSymbol,
-			SellPrice:      row.SellPrice,
+			Ask:            row.PurchasePrice,
 			Supply:         derefString(row.Supply),
 		})
 	}
@@ -269,7 +272,8 @@ func (r *MarketRepositoryGORM) FindCheapestMarketsSellingAllSystems(
 	return results, nil
 }
 
-// FindCheapestMarketSellingWithSupply finds the cheapest market with a specific supply level.
+// FindCheapestMarketSellingWithSupply finds the lowest-ASK market with a specific supply level
+// (the ask is purchase_price — what we PAY, the larger price; sp-en5h7).
 // This enables supply-priority selection for raw materials: ABUNDANT > HIGH > MODERATE.
 // Returns nil if no market exists with the specified supply level.
 func (r *MarketRepositoryGORM) FindCheapestMarketSellingWithSupply(
@@ -282,18 +286,18 @@ func (r *MarketRepositoryGORM) FindCheapestMarketSellingWithSupply(
 	var result struct {
 		WaypointSymbol string
 		TradeSymbol    string
-		SellPrice      int
+		PurchasePrice  int
 		Supply         *string
 	}
 
 	err := r.db.WithContext(ctx).
 		Table(marketDataTable).
-		Select("waypoint_symbol, good_symbol as trade_symbol, sell_price, supply").
+		Select("waypoint_symbol, good_symbol as trade_symbol, purchase_price, supply").
 		Where("player_id = ?", playerID).
 		Where("waypoint_symbol LIKE ?", systemSymbol+"-%").
 		Where("good_symbol = ?", goodSymbol).
 		Where("supply = ?", supplyLevel).
-		Order("sell_price ASC").
+		Order("purchase_price ASC").
 		Limit(1).
 		Scan(&result).Error
 
@@ -310,13 +314,15 @@ func (r *MarketRepositoryGORM) FindCheapestMarketSellingWithSupply(
 	return &market.CheapestMarketResult{
 		WaypointSymbol: result.WaypointSymbol,
 		TradeSymbol:    result.TradeSymbol,
-		SellPrice:      result.SellPrice,
+		Ask:            result.PurchasePrice,
 		Supply:         supply,
 	}, nil
 }
 
-// FindBestMarketBuying finds the market with the highest purchase price for a specific good in a system
-// This returns the best market to sell to (where we get paid the most)
+// FindBestMarketBuying finds the market with the highest BID for a specific good in a system —
+// the best market to SELL to (where we get paid the most). The bid is market_data.sell_price
+// (what the market PAYS us, the smaller of the two prices); purchase_price is the ask we would
+// pay to buy (sp-en5h7).
 func (r *MarketRepositoryGORM) FindBestMarketBuying(
 	ctx context.Context,
 	goodSymbol string,
@@ -326,17 +332,17 @@ func (r *MarketRepositoryGORM) FindBestMarketBuying(
 	var result struct {
 		WaypointSymbol string
 		TradeSymbol    string
-		PurchasePrice  int
+		SellPrice      int
 		Supply         *string
 	}
 
 	err := r.db.WithContext(ctx).
 		Table(marketDataTable).
-		Select("waypoint_symbol, good_symbol as trade_symbol, purchase_price, supply").
+		Select("waypoint_symbol, good_symbol as trade_symbol, sell_price, supply").
 		Where("player_id = ?", playerID).
 		Where("waypoint_symbol LIKE ?", systemSymbol+"-%").
 		Where("good_symbol = ?", goodSymbol).
-		Order("purchase_price DESC").
+		Order("sell_price DESC").
 		Limit(1).
 		Scan(&result).Error
 
@@ -354,7 +360,7 @@ func (r *MarketRepositoryGORM) FindBestMarketBuying(
 	return &market.BestMarketBuyingResult{
 		WaypointSymbol: result.WaypointSymbol,
 		TradeSymbol:    result.TradeSymbol,
-		PurchasePrice:  result.PurchasePrice,
+		Bid:            result.SellPrice,
 		Supply:         supply,
 	}, nil
 }
@@ -433,7 +439,8 @@ func (r *MarketRepositoryGORM) BestSinksAcrossSystems(
 	maxAge time.Duration,
 	now time.Time,
 ) (map[string]market.GlobalSinkResult, error) {
-	rows, err := r.bestAcrossSystems(ctx, goods, playerID, maxAge, now, "purchase_price", "DESC", string(market.TradeTypeExport))
+	// The BID is sell_price — what the market PAYS us (sp-en5h7); highest first.
+	rows, err := r.bestAcrossSystems(ctx, goods, playerID, maxAge, now, "sell_price", "DESC", string(market.TradeTypeExport))
 	if err != nil {
 		return nil, fmt.Errorf("failed to find best sinks across systems: %w", err)
 	}
@@ -463,7 +470,8 @@ func (r *MarketRepositoryGORM) BestSourcesAcrossSystems(
 	maxAge time.Duration,
 	now time.Time,
 ) (map[string]market.GlobalSourceResult, error) {
-	rows, err := r.bestAcrossSystems(ctx, goods, playerID, maxAge, now, "sell_price", "ASC", string(market.TradeTypeImport))
+	// The ASK is purchase_price — what WE PAY to buy (sp-en5h7); cheapest first.
+	rows, err := r.bestAcrossSystems(ctx, goods, playerID, maxAge, now, "purchase_price", "ASC", string(market.TradeTypeImport))
 	if err != nil {
 		return nil, fmt.Errorf("failed to find best sources across systems: %w", err)
 	}
@@ -783,6 +791,8 @@ func (r *MarketRepositoryGORM) openEraID(ctx context.Context) *int {
 }
 
 // FindBestMarketForBuying finds the best market to buy a good from, scoring by trade type, supply, and activity.
+// Because this is the BUY side, the price it reports is the ASK — market_data.purchase_price,
+// what WE PAY (the larger of the two prices; sp-en5h7).
 // Preference order for trade type (best to worst): EXPORT > EXCHANGE > IMPORT > NULL
 // Preference order for supply (best to worst): ABUNDANT > HIGH > MODERATE > LIMITED > SCARCE
 // Preference order for activity (best to worst): RESTRICTED > WEAK > GROWING > STRONG
@@ -797,7 +807,7 @@ func (r *MarketRepositoryGORM) FindBestMarketForBuying(
 	var results []struct {
 		WaypointSymbol string
 		GoodSymbol     string
-		SellPrice      int
+		PurchasePrice  int
 		Supply         *string
 		Activity       *string
 		TradeType      *string
@@ -805,7 +815,7 @@ func (r *MarketRepositoryGORM) FindBestMarketForBuying(
 
 	err := r.db.WithContext(ctx).
 		Table(marketDataTable).
-		Select("waypoint_symbol, good_symbol, sell_price, supply, activity, trade_type").
+		Select("waypoint_symbol, good_symbol, purchase_price, supply, activity, trade_type").
 		Where("player_id = ?", playerID).
 		Where("waypoint_symbol LIKE ?", systemSymbol+"-%").
 		Where("good_symbol = ?", goodSymbol).
@@ -836,7 +846,7 @@ func (r *MarketRepositoryGORM) FindBestMarketForBuying(
 			bestResult = &market.BestBuyingMarketResult{
 				WaypointSymbol: r.WaypointSymbol,
 				TradeSymbol:    r.GoodSymbol,
-				SellPrice:      r.SellPrice,
+				Ask:            r.PurchasePrice,
 				Supply:         supply,
 				Activity:       activity,
 				TradeType:      market.TradeType(tradeType),
@@ -945,13 +955,15 @@ func (r *MarketRepositoryGORM) FindMarketsTradingGood(
 
 // SystemMarketGoodListing is one cached (market, good) row within a system,
 // carrying the good symbol so callers can rank cross-market spreads without a
-// per-good round trip. Prices keep the market's perspective (see MarketGoodListing).
+// per-good round trip. Prices are carried straight through from market_data
+// (see MarketGoodListing) under the sp-en5h7 convention: purchase_price is the
+// ASK (the larger), sell_price the BID (the smaller).
 type SystemMarketGoodListing struct {
 	WaypointSymbol string
 	GoodSymbol     string
 	TradeType      string
-	PurchasePrice  int // market BUY price: what a ship RECEIVES selling TO this market
-	SellPrice      int // market SELL price: what a ship PAYS buying FROM this market
+	PurchasePrice  int // the ASK: what a ship PAYS buying FROM this market (the larger)
+	SellPrice      int // the BID: what a ship RECEIVES selling TO this market (the smaller)
 	Supply         string
 	Activity       string
 	TradeVolume    int
@@ -1009,6 +1021,8 @@ func (r *MarketRepositoryGORM) FindAllGoodListingsInSystem(
 
 // FindFactoryForGood finds a market that EXPORTS a specific good (i.e., a factory that produces it).
 // Only returns markets where trade_type = 'EXPORT', meaning the market produces this good.
+// We BUY from a factory, so the price it reports is the ASK — market_data.purchase_price, what
+// WE PAY (the larger of the two prices; sp-en5h7).
 // Returns nil if no factory exists for this good in the system.
 func (r *MarketRepositoryGORM) FindFactoryForGood(
 	ctx context.Context,
@@ -1019,7 +1033,7 @@ func (r *MarketRepositoryGORM) FindFactoryForGood(
 	var result struct {
 		WaypointSymbol string
 		GoodSymbol     string
-		SellPrice      int
+		PurchasePrice  int
 		Supply         *string
 		Activity       *string
 	}
@@ -1027,12 +1041,12 @@ func (r *MarketRepositoryGORM) FindFactoryForGood(
 	// Only select markets where trade_type = 'EXPORT' (factories that produce this good)
 	err := r.db.WithContext(ctx).
 		Table(marketDataTable).
-		Select("waypoint_symbol, good_symbol, sell_price, supply, activity").
+		Select("waypoint_symbol, good_symbol, purchase_price, supply, activity").
 		Where("player_id = ?", playerID).
 		Where("waypoint_symbol LIKE ?", systemSymbol+"-%").
 		Where("good_symbol = ?", goodSymbol).
 		Where("trade_type = ?", "EXPORT").
-		Order("sell_price ASC"). // Prefer cheapest factory
+		Order("purchase_price ASC"). // Prefer cheapest factory (lowest ask)
 		Limit(1).
 		Scan(&result).Error
 
@@ -1051,7 +1065,7 @@ func (r *MarketRepositoryGORM) FindFactoryForGood(
 	return &market.FactoryResult{
 		WaypointSymbol: result.WaypointSymbol,
 		TradeSymbol:    result.GoodSymbol,
-		SellPrice:      result.SellPrice,
+		Ask:            result.PurchasePrice,
 		Supply:         supply,
 		Activity:       activity,
 	}, nil

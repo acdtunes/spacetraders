@@ -25,7 +25,7 @@ type MarketRepository interface {
 type FactoryResult struct {
 	WaypointSymbol string
 	TradeSymbol    string
-	SellPrice      int // Price to buy from factory
+	Ask            int // the ASK: what WE PAY to buy from the factory (market_data.purchase_price, the larger; sp-en5h7)
 	Supply         string
 	Activity       string
 }
@@ -99,19 +99,22 @@ type TradeGoodData struct {
 	TradeType     TradeType // EXPORT, IMPORT, or EXCHANGE
 }
 
-// CheapestMarketResult represents the result of finding the cheapest market
+// CheapestMarketResult represents the result of finding the cheapest market to BUY from
 type CheapestMarketResult struct {
 	WaypointSymbol string
 	TradeSymbol    string
-	SellPrice      int
-	Supply         string
+	// Ask is what WE PAY to buy here (market_data.purchase_price, the larger of the
+	// two prices). It was called SellPrice until sp-en5h7 — a leftover of the price
+	// transposition, when the ask really did live in the sell_price column.
+	Ask    int
+	Supply string
 }
 
 // BestMarketBuyingResult represents the result of finding the best market to sell to
 type BestMarketBuyingResult struct {
 	WaypointSymbol string
 	TradeSymbol    string
-	PurchasePrice  int // What the market pays us
+	Bid            int // the BID: what the market PAYS us (market_data.sell_price, the smaller; sp-en5h7)
 	Supply         string
 }
 
@@ -124,7 +127,7 @@ type BestMarketBuyingResult struct {
 type GlobalSinkResult struct {
 	WaypointSymbol string
 	SystemSymbol   string
-	Bid            int // What the market pays us (purchase_price), the sell-side quote
+	Bid            int // What the market pays us (sell_price, the smaller; sp-en5h7), the sell-side quote
 	// TradeVolume is the sink's per-tranche depth (trade_volume) — half of a lane's
 	// VolumeCap (min of source and sink), needed by the long-haul engine's realized
 	// price-impact pricing (sp-mepj). Additive: the tour diagnostic caller ignores it.
@@ -140,7 +143,7 @@ type GlobalSinkResult struct {
 type GlobalSourceResult struct {
 	WaypointSymbol string
 	SystemSymbol   string
-	Ask            int // What we pay to buy here (sell_price), the buy-side quote
+	Ask            int // What we pay to buy here (purchase_price, the larger; sp-en5h7), the buy-side quote
 	TradeVolume    int // the source's per-tranche depth (supply side of a lane's VolumeCap)
 }
 
@@ -149,7 +152,7 @@ type GlobalSourceResult struct {
 type BestBuyingMarketResult struct {
 	WaypointSymbol string
 	TradeSymbol    string
-	SellPrice      int // What we pay
+	Ask            int // the ASK: what WE PAY (market_data.purchase_price, the larger; sp-en5h7)
 	Supply         string
 	Activity       string
 	TradeType      TradeType // EXPORT, IMPORT, or EXCHANGE

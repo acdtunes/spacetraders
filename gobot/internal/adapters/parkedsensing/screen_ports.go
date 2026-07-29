@@ -741,7 +741,8 @@ func (p *MarketGoodsPort) DepthRowsAt(ctx context.Context, playerID int, waypoin
 // MarketPrices returns the two-sided quotes a scan just persisted, for the
 // spread weighting.
 //
-// THE COLUMN MAPPING IS CROSSED, AND MUST STAY CROSSED:
+// The column names and the field names come from opposite sides of the trade, so
+// the mapping is a RENAME rather than a pass-through:
 //
 //	Bid ← market_data.sell_price      (what the market PAYS us — its bid)
 //	Ask ← market_data.purchase_price  (what the market CHARGES us — its ask)
@@ -752,8 +753,16 @@ func (p *MarketGoodsPort) DepthRowsAt(ctx context.Context, playerID int, waypoin
 // market observes a spread of zero, the fleet median collapses to its cold-start
 // fallback, and every slot lands on the same prior weight. The rotation keeps
 // running and reports no error — it just stops preferring the markets worth
-// watching. The scanner logs a warning when it sees inverted quotes, but a
-// warning is a symptom; this mapping is the fix.
+// watching.
+//
+// This mapping is CORRECT and was correct all along. It is also what DETECTED
+// sp-en5h7: the scanner had been persisting the two prices transposed since the
+// project's first era, so this port computed ask<bid at nearly every market and
+// RelativeSpread skipped the goods. An earlier version of this comment claimed
+// the resulting warning was "a symptom" and that this mapping was "the fix" —
+// that sent the next reader to the wrong file. The warning was the true signal
+// and the bug was in the WRITER (application/ship/market_scanner.go). Do not
+// re-explain a warning from here; check what the scanner persisted.
 func (p *MarketGoodsPort) MarketPrices(ctx context.Context, playerID int, waypoint string) ([]appSensing.GoodPrice, error) {
 	rows, err := p.rowsAt(ctx, playerID, waypoint)
 	if err != nil {
@@ -763,8 +772,8 @@ func (p *MarketGoodsPort) MarketPrices(ctx context.Context, playerID int, waypoi
 	for _, row := range rows {
 		out = append(out, appSensing.GoodPrice{
 			Good: row.GoodSymbol,
-			Bid:  row.SellPrice,     // crossed on purpose — see the doc above
-			Ask:  row.PurchasePrice, // crossed on purpose — see the doc above
+			Bid:  row.SellPrice,     // renamed, not swapped — see the doc above
+			Ask:  row.PurchasePrice, // renamed, not swapped — see the doc above
 		})
 	}
 	return out, nil

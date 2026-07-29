@@ -145,7 +145,8 @@ func tradeGood(t *testing.T, symbol string, bid, ask int) market.TradeGood {
 // remaining unreserved depth can't fit the leg's tranche.
 func tradeGoodVol(t *testing.T, symbol string, bid, ask, volume int) market.TradeGood {
 	t.Helper()
-	g, err := market.NewTradeGood(symbol, nil, nil, bid, ask, volume, market.TradeType("EXCHANGE"))
+	// sp-en5h7: PurchasePrice (4th) is the ASK (the larger); SellPrice (5th) is the BID.
+	g, err := market.NewTradeGood(symbol, nil, nil, ask, bid, volume, market.TradeType("EXCHANGE"))
 	if err != nil {
 		t.Fatalf("trade good %s: %v", symbol, err)
 	}

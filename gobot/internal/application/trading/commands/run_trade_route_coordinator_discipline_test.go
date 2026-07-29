@@ -124,13 +124,13 @@ func (r *discMarketRepo) GetMarketData(ctx context.Context, waypointSymbol strin
 	switch waypointSymbol {
 	case discSrc:
 		goods := []market.TradeGood{}
-		food, err := market.NewTradeGood(discFoodGood, &supply, &activity, discFoodSrcBid, discFoodSrcAsk, discFoodVol, market.TradeTypeExport)
+		food, err := market.NewTradeGood(discFoodGood, &supply, &activity, discFoodSrcAsk, discFoodSrcBid, discFoodVol, market.TradeTypeExport)
 		if err != nil {
 			return nil, err
 		}
 		goods = append(goods, *food)
 		if !r.subFloorOnly {
-			rifles, err := market.NewTradeGood(discRiflesGood, &supply, &activity, discRiflesSrcBid, discRiflesSrcAsk, discRiflesVol, market.TradeTypeExport)
+			rifles, err := market.NewTradeGood(discRiflesGood, &supply, &activity, discRiflesSrcAsk, discRiflesSrcBid, discRiflesVol, market.TradeTypeExport)
 			if err != nil {
 				return nil, err
 			}
@@ -139,13 +139,13 @@ func (r *discMarketRepo) GetMarketData(ctx context.Context, waypointSymbol strin
 		return market.NewMarket(waypointSymbol, goods, time.Now())
 	case discDst:
 		goods := []market.TradeGood{}
-		food, err := market.NewTradeGood(discFoodGood, &supply, &activity, discFoodDstBid, discFoodDstAsk, discFoodVol, market.TradeTypeImport)
+		food, err := market.NewTradeGood(discFoodGood, &supply, &activity, discFoodDstAsk, discFoodDstBid, discFoodVol, market.TradeTypeImport)
 		if err != nil {
 			return nil, err
 		}
 		goods = append(goods, *food)
 		if !r.subFloorOnly {
-			rifles, err := market.NewTradeGood(discRiflesGood, &supply, &activity, r.fixture.riflesDestBid(), discRiflesDstAsk, discRiflesVol, market.TradeTypeImport)
+			rifles, err := market.NewTradeGood(discRiflesGood, &supply, &activity, discRiflesDstAsk, r.fixture.riflesDestBid(), discRiflesVol, market.TradeTypeImport)
 			if err != nil {
 				return nil, err
 			}

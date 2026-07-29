@@ -53,9 +53,10 @@ type floorFakeMarketRepo struct {
 func (r *floorFakeMarketRepo) GetMarketData(_ context.Context, _ string, _ int) (*market.Market, error) {
 	supply := "MODERATE"
 	activity := "STRONG"
-	// PurchasePrice = the bid we RECEIVE selling; the 6th arg is the transaction
-	// (tranche) limit GetTransactionLimit reads.
-	g, err := market.NewTradeGood(r.good, &supply, &activity, r.fix.bid(), r.fix.bid()+100, r.fix.limit, market.TradeTypeImport)
+	// SellPrice (5th arg) = the bid we RECEIVE selling; PurchasePrice (4th) = the
+	// ask, the larger (sp-en5h7). The 6th arg is the transaction (tranche) limit
+	// GetTransactionLimit reads.
+	g, err := market.NewTradeGood(r.good, &supply, &activity, r.fix.bid()+100, r.fix.bid(), r.fix.limit, market.TradeTypeImport)
 	if err != nil {
 		return nil, err
 	}

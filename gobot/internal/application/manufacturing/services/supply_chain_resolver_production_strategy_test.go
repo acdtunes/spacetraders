@@ -48,9 +48,9 @@ func scarceIntermediateResolver(electronicsSupply string, electronicsHasFactory 
 	repo := &depthCapMarketRepo{
 		factories: factories,
 		buyable: map[string]*market.BestBuyingMarketResult{
-			"ELECTRONICS":      {WaypointSymbol: "X1-PS-EL", Supply: electronicsSupply, Activity: "STRONG", SellPrice: 2595},
-			"SILICON_CRYSTALS": {WaypointSymbol: "X1-PS-SC", Supply: supplyAbundant, Activity: "STRONG", SellPrice: 50},
-			"COPPER":           {WaypointSymbol: "X1-PS-CU", Supply: supplyAbundant, Activity: "STRONG", SellPrice: 40},
+			"ELECTRONICS":      {WaypointSymbol: "X1-PS-EL", Supply: electronicsSupply, Activity: "STRONG", Ask: 2595},
+			"SILICON_CRYSTALS": {WaypointSymbol: "X1-PS-SC", Supply: supplyAbundant, Activity: "STRONG", Ask: 50},
+			"COPPER":           {WaypointSymbol: "X1-PS-CU", Supply: supplyAbundant, Activity: "STRONG", Ask: 40},
 		},
 	}
 	return NewSupplyChainResolver(supplyChainMap, repo)
@@ -133,8 +133,8 @@ func TestProductionStrategy_CycleTerminatesViaVisitedGuard(t *testing.T) {
 			"IRON":      {WaypointSymbol: "X1-CY-IR", Supply: supplyScarce, Activity: "STRONG"},
 		},
 		buyable: map[string]*market.BestBuyingMarketResult{
-			"MACHINERY": {WaypointSymbol: "X1-CY-MA", Supply: supplyScarce, Activity: "STRONG", SellPrice: 1000},
-			"IRON":      {WaypointSymbol: "X1-CY-IR", Supply: supplyScarce, Activity: "STRONG", SellPrice: 900},
+			"MACHINERY": {WaypointSymbol: "X1-CY-MA", Supply: supplyScarce, Activity: "STRONG", Ask: 1000},
+			"IRON":      {WaypointSymbol: "X1-CY-IR", Supply: supplyScarce, Activity: "STRONG", Ask: 900},
 		},
 	}
 	resolver := NewSupplyChainResolver(supplyChainMap, repo)
@@ -159,7 +159,7 @@ func TestProductionStrategy_DepthThreeBackstopBoundsDeepChain(t *testing.T) {
 	buyable := map[string]*market.BestBuyingMarketResult{}
 	for _, g := range []string{"A", "B", "C", "D", "E"} {
 		factories[g] = &market.FactoryResult{WaypointSymbol: "X1-DP-" + g, Supply: supplyScarce, Activity: "STRONG"}
-		buyable[g] = &market.BestBuyingMarketResult{WaypointSymbol: "X1-DP-" + g, Supply: supplyScarce, Activity: "STRONG", SellPrice: 100}
+		buyable[g] = &market.BestBuyingMarketResult{WaypointSymbol: "X1-DP-" + g, Supply: supplyScarce, Activity: "STRONG", Ask: 100}
 	}
 	resolver := NewSupplyChainResolver(supplyChainMap, &depthCapMarketRepo{factories: factories, buyable: buyable})
 

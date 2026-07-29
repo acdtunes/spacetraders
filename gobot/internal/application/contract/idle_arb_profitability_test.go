@@ -22,9 +22,9 @@ import (
 // profitFixture builds a dispatcher over hub(0,0) + sink(0,50) trading one good,
 // on a MUTABLE market map so a test can inflate the hub ask (self-inflation) or
 // decay the sink bid (dump decay) between passes and drive the per-trip re-price.
-// hubAsk is what the hull PAYS to buy at the hub (hub SellPrice); sinkBid is what
-// it RECEIVES selling at the sink (sink PurchasePrice) — the only two prices the
-// hub->sink lane turns on.
+// hubAsk is what the hull PAYS to buy at the hub (hub PurchasePrice); sinkBid is
+// what it RECEIVES selling at the sink (sink SellPrice, sp-en5h7) — the only two
+// prices the hub->sink lane turns on.
 type profitFixture struct {
 	d        *IdleArbDispatcher
 	repo     *idleArbFakeShipRepo

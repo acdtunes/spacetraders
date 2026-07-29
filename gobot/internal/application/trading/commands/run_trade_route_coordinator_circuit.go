@@ -157,8 +157,10 @@ func (h *RunTradeRouteCoordinatorHandler) flyVisits(
 			return ship, held
 		}
 
-		basis := srcGood.SellPrice()       // ask: what we PAY buying from the source
-		destBid := dstGood.PurchasePrice() // bid: what we RECEIVE selling to the dest
+		// purchase_price is what we PAY, sell_price what we RECEIVE. These read the
+		// other way round until sp-en5h7, correct only against transposed rows.
+		basis := srcGood.PurchasePrice() // ask: what we PAY buying from the source
+		destBid := dstGood.SellPrice()   // bid: what we RECEIVE selling to the dest
 
 		// Bid-floor discipline: the edge is gone once the dest bid stops clearing
 		// basis+1000. Stop here rather than grind the spread to nothing.

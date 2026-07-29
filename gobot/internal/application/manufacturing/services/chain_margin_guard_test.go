@@ -53,7 +53,7 @@ func (r *guardMarketRepo) FindCheapestMarketSelling(_ context.Context, good, _ s
 	if !ok {
 		return nil, nil
 	}
-	return &market.CheapestMarketResult{WaypointSymbol: q.waypoint, TradeSymbol: good, SellPrice: q.price, Supply: "MODERATE"}, nil
+	return &market.CheapestMarketResult{WaypointSymbol: q.waypoint, TradeSymbol: good, Ask: q.price, Supply: "MODERATE"}, nil
 }
 
 func (r *guardMarketRepo) FindBestMarketBuying(_ context.Context, good, _ string, _ int) (*market.BestMarketBuyingResult, error) {
@@ -64,7 +64,7 @@ func (r *guardMarketRepo) FindBestMarketBuying(_ context.Context, good, _ string
 	if !ok {
 		return nil, nil
 	}
-	return &market.BestMarketBuyingResult{WaypointSymbol: q.waypoint, TradeSymbol: good, PurchasePrice: q.price, Supply: "HIGH"}, nil
+	return &market.BestMarketBuyingResult{WaypointSymbol: q.waypoint, TradeSymbol: good, Bid: q.price, Supply: "HIGH"}, nil
 }
 
 func (r *guardMarketRepo) GetMarketData(_ context.Context, wp string, _ int) (*market.Market, error) {
@@ -72,29 +72,38 @@ func (r *guardMarketRepo) GetMarketData(_ context.Context, wp string, _ int) (*m
 		return nil, err
 	}
 	bySym := map[string]market.TradeGood{}
-	add := func(sym string, purchase, sell, vol int, tt market.TradeType) {
+	// ask ALWAYS exceeds bid (sp-en5h7). The named q.price is the quote the fake's own
+	// repo results expose — CheapestMarketResult.Ask for a sell/source, and
+	// BestMarketBuyingResult.Bid for a buy/sink — so it goes in the matching slot here
+	// and the spread is taken off the other side. Previously both branches were inverted
+	// (source ask = price-1 < bid, sink bid = price+1 > ask), which is an impossible market.
+	add := func(sym string, ask, bid, vol int, tt market.TradeType) {
 		supply := "MODERATE"
 		activity := "STRONG"
-		if g, err := market.NewTradeGood(sym, &supply, &activity, purchase, sell, vol, tt); err == nil {
+		if g, err := market.NewTradeGood(sym, &supply, &activity, ask, bid, vol, tt); err == nil {
 			bySym[sym] = *g
 		}
 	}
+	spreadBelow := func(p int) int {
+		if p-1 < 0 {
+			return 0
+		}
+		return p - 1
+	}
 	for good, q := range r.sell {
 		if q.waypoint == wp {
-			purchase := q.price - 1
-			if purchase < 0 {
-				purchase = 0
-			}
-			add(good, purchase, q.price, q.volume, market.TradeTypeExport)
+			// source: q.price IS the ask we pay.
+			add(good, q.price, spreadBelow(q.price), q.volume, market.TradeTypeExport)
 		}
 	}
 	for good, q := range r.buy {
 		if q.waypoint == wp {
-			add(good, q.price, q.price+1, q.volume, market.TradeTypeImport)
+			// sink: q.price IS the bid we receive.
+			add(good, q.price+1, q.price, q.volume, market.TradeTypeImport)
 		}
 	}
 	for good, q := range r.imports[wp] {
-		add(good, q.price, q.price+1, q.volume, market.TradeTypeImport)
+		add(good, q.price+1, q.price, q.volume, market.TradeTypeImport)
 	}
 	goodsList := make([]market.TradeGood, 0, len(bySym))
 	for _, g := range bySym {

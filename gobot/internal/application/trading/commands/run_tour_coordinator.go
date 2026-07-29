@@ -1590,9 +1590,11 @@ func (h *RunTourCoordinatorHandler) executeTrade(
 	if planned <= 0 {
 		return false, nil
 	}
-	livePrice := live.PurchasePrice() // sell: what the market pays us
+	// sell_price is the bid we receive, purchase_price the ask we pay. Read the
+	// other way round until sp-en5h7, correct only against transposed rows.
+	livePrice := live.SellPrice() // sell: what the market pays us
 	if trade.IsBuy {
-		livePrice = live.SellPrice() // buy: what we pay
+		livePrice = live.PurchasePrice() // buy: what we pay
 	}
 	degradationPct := math.Abs(float64(livePrice-planned)) / float64(planned) * 100
 	if degradationPct > tourPriceTolerancePct {
@@ -1629,7 +1631,7 @@ func (h *RunTourCoordinatorHandler) executeBuy(
 	if err != nil {
 		return false, err
 	}
-	liveAsk := live.SellPrice()
+	liveAsk := live.PurchasePrice() // the ASK is purchase_price — what we pay (sp-en5h7)
 	if liveAsk <= 0 {
 		return false, nil
 	}

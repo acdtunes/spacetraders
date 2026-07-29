@@ -88,7 +88,7 @@ func homeAsk(price int) *market.CheapestMarketResult {
 	return &market.CheapestMarketResult{
 		WaypointSymbol: "X1-HOME-H51",
 		TradeSymbol:    "ELECTRONICS",
-		SellPrice:      price,
+		Ask:            price,
 		Supply:         "SCARCE",
 	}
 }
@@ -124,8 +124,8 @@ func TestPlanSourcing_NeverSelectsCrossSystemSource_EvenWhenCheaper(t *testing.T
 			"X1-HOME": homeAsk(6000), // dearer home ask
 		}},
 		allSystems: []market.CheapestMarketResult{
-			{WaypointSymbol: "X1-GQ92-F44", TradeSymbol: "ELECTRONICS", SellPrice: 2367}, // far cheaper, FOREIGN
-			{WaypointSymbol: "X1-HOME-H51", TradeSymbol: "ELECTRONICS", SellPrice: 6000},
+			{WaypointSymbol: "X1-GQ92-F44", TradeSymbol: "ELECTRONICS", Ask: 2367}, // far cheaper, FOREIGN
+			{WaypointSymbol: "X1-HOME-H51", TradeSymbol: "ELECTRONICS", Ask: 6000},
 		},
 	}
 	c := testContract(t, 120_000, "2026-07-16T00:00:00Z", 804)
@@ -151,7 +151,7 @@ func TestPlanSourcing_NoHomeMarket_ErrorsRatherThanReturnForeign(t *testing.T) {
 	repo := &fakeCrossSystemRepo{
 		fakeMarketRepo: fakeMarketRepo{inSystem: map[string]*market.CheapestMarketResult{}}, // none in home system
 		allSystems: []market.CheapestMarketResult{
-			{WaypointSymbol: "X1-GQ92-F44", TradeSymbol: "ELECTRONICS", SellPrice: 2367},
+			{WaypointSymbol: "X1-GQ92-F44", TradeSymbol: "ELECTRONICS", Ask: 2367},
 		},
 	}
 	c := testContract(t, 120_000, "2026-07-16T00:00:00Z", 200)
@@ -182,8 +182,8 @@ func TestPlanSourcing_NegativeReprojectsOnHomeAsk(t *testing.T) {
 			"X1-HOME": homeAsk(6000),
 		}},
 		allSystems: []market.CheapestMarketResult{
-			{WaypointSymbol: "X1-GQ92-F44", TradeSymbol: "ELECTRONICS", SellPrice: 2367}, // excluded — foreign
-			{WaypointSymbol: "X1-HOME-H51", TradeSymbol: "ELECTRONICS", SellPrice: 6000},
+			{WaypointSymbol: "X1-GQ92-F44", TradeSymbol: "ELECTRONICS", Ask: 2367}, // excluded — foreign
+			{WaypointSymbol: "X1-HOME-H51", TradeSymbol: "ELECTRONICS", Ask: 6000},
 		},
 	}
 	c := testContract(t, 120_000, "2026-07-16T00:00:00Z", 804)

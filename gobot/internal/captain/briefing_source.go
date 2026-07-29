@@ -345,12 +345,15 @@ func (b *Briefing) readInventory(ctx context.Context) *inventoryData {
 
 // inventoryValue runs the mark-to-bid jsonb rollup with an optional extra
 // ship-scope predicate (e.g. stored-only). Postgres-only by construction.
+// The BID is market_data.sell_price — what we would actually RECEIVE selling the
+// cargo (the smaller of the two prices; sp-en5h7), so the valuation stays
+// conservative rather than marking the hold at the ask we would have to pay.
 func (b *Briefing) inventoryValue(ctx context.Context, shipScope string) (int, bool) {
 	q := fmt.Sprintf(`WITH fleet_inv AS (
 		SELECT g->>'symbol' AS good, (g->>'units')::int AS units
 		FROM ships s, jsonb_array_elements(s.cargo_inventory::jsonb) g
 		WHERE s.cargo_units > 0 AND s.player_id = ? %s),
-	px AS (SELECT good_symbol, MAX(purchase_price) AS best_bid FROM market_data WHERE player_id = ? GROUP BY 1)
+	px AS (SELECT good_symbol, MAX(sell_price) AS best_bid FROM market_data WHERE player_id = ? GROUP BY 1)
 	SELECT COALESCE(SUM(f.units*COALESCE(p.best_bid,0)),0) AS value
 	FROM fleet_inv f LEFT JOIN px p ON p.good_symbol = f.good`, shipScope)
 	var value int64

@@ -243,7 +243,7 @@ func (r *SupplyChainResolver) findFactory(
 		WaypointSymbol: factory.WaypointSymbol,
 		Activity:       factory.Activity,
 		Supply:         factory.Supply,
-		Price:          factory.SellPrice,
+		Price:          factory.Ask,
 	}, nil
 }
 
@@ -273,7 +273,7 @@ func (r *SupplyChainResolver) findBestMarketToBuyFrom(
 		WaypointSymbol: bestMarket.WaypointSymbol,
 		Activity:       bestMarket.Activity,
 		Supply:         bestMarket.Supply,
-		Price:          bestMarket.SellPrice,
+		Price:          bestMarket.Ask,
 	}, nil
 }
 

@@ -149,12 +149,18 @@ func (s *MarketScanner) ScanAndSaveMarketFresh(ctx context.Context, playerID uin
 func (s *MarketScanner) convertAPIGoodsToDomain(apiGoods []domainPorts.TradeGoodData, logger common.ContainerLogger) ([]market.TradeGood, error) {
 	tradeGoods := make([]market.TradeGood, 0, len(apiGoods))
 	for _, apiGood := range apiGoods {
+		// Each price keeps its own name across the boundary: the API's
+		// purchasePrice is the domain's purchasePrice. They are two adjacent ints,
+		// so passing them in the wrong order compiles silently — which is exactly
+		// what sp-en5h7 was: every persisted row, every era, held the two prices
+		// transposed, and TradeGoodData happens to DECLARE SellPrice first, which
+		// made the wrong order look like the natural one. Keep them named.
 		good, err := market.NewTradeGood(
 			apiGood.Symbol,
 			&apiGood.Supply,
 			&apiGood.Activity,
-			apiGood.SellPrice,
 			apiGood.PurchasePrice,
+			apiGood.SellPrice,
 			apiGood.TradeVolume,
 			market.TradeType(apiGood.TradeType),
 		)

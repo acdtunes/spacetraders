@@ -50,6 +50,10 @@ func (m *msMediator) Register(requestType reflect.Type, handler common.RequestHa
 func (m *msMediator) RegisterMiddleware(middleware common.Middleware) {}
 
 // msGood is one waypoint's single-good listing for the multi-system fixtures.
+//
+// ask is what WE PAY to buy from this market (the market_data.purchase_price column)
+// and bid is what WE RECEIVE selling to it (sell_price), so ask > bid at every market
+// — the sp-en5h7 convention.
 type msGood struct {
 	symbol    string
 	bid, ask  int
@@ -89,7 +93,8 @@ func (r *msMarketRepo) GetMarketData(ctx context.Context, waypointSymbol string,
 	if activity == "" {
 		activity = "STRONG"
 	}
-	good, err := market.NewTradeGood(g.symbol, &supply, &activity, g.bid, g.ask, g.volume, g.tradeType)
+	// purchasePrice = the ask (what we pay), sellPrice = the bid (what we receive) — sp-en5h7.
+	good, err := market.NewTradeGood(g.symbol, &supply, &activity, g.ask, g.bid, g.volume, g.tradeType)
 	if err != nil {
 		return nil, err
 	}

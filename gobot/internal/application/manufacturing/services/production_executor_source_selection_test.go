@@ -25,7 +25,7 @@ import (
 type srcSpec struct {
 	waypoint    string
 	supply      string // SCARCE/LIMITED/MODERATE/HIGH/ABUNDANT
-	ask         int    // sell_price = what we pay to buy
+	ask         int    // the ASK (purchase_price) = what we pay to buy
 	tradeVolume int    // 0 -> 10
 	activity    string // "" -> STRONG
 	tradeType   market.TradeType
@@ -191,7 +191,7 @@ func TestSelectSource_RescueWithinCapBuys(t *testing.T) {
 	repo := &multiSourceMarketRepo{sources: []srcSpec{
 		{waypoint: "X1-DR-SCARCE", supply: supplyScarce, ask: 5000},
 	}}
-	reader := &fakePriceHistoryReader{sellPrices: []int{4800, 4800, 4800}} // median 4800 -> cap 5760
+	reader := &fakePriceHistoryReader{asks: []int{4800, 4800, 4800}} // median 4800 -> cap 5760
 	executor, shipRepo, mediator := newMultiSourceExecutor(t, repo, reader)
 	logger := &dwellCapturingLogger{}
 	ctx := common.WithLogger(context.Background(), logger)
@@ -211,7 +211,7 @@ func TestSelectSource_RescueOverCapParks(t *testing.T) {
 	repo := &multiSourceMarketRepo{sources: []srcSpec{
 		{waypoint: "X1-DR-SCARCE", supply: supplyScarce, ask: 19000},
 	}}
-	reader := &fakePriceHistoryReader{sellPrices: []int{4800, 4800, 4800}} // median 4800 -> cap 5760
+	reader := &fakePriceHistoryReader{asks: []int{4800, 4800, 4800}} // median 4800 -> cap 5760
 	executor, shipRepo, mediator := newMultiSourceExecutor(t, repo, reader)
 	logger := &dwellCapturingLogger{}
 	ctx := common.WithLogger(context.Background(), logger)

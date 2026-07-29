@@ -37,9 +37,14 @@ func (r *snapFakeWaypointRepo) ListBySystem(ctx context.Context, systemSymbol st
 	return r.byS[systemSymbol], nil
 }
 
+// mustGood builds one TradeGood from a (bid, ask) pair. purchase_price carries the ASK (what we PAY
+// buying FROM the market, the larger of the two); sell_price carries the BID (what we RECEIVE selling
+// TO it, the smaller). Every fixture below therefore quotes ask > bid, the only shape a real market
+// takes. This helper fed bid into purchasePrice and ask into sellPrice until sp-en5h7; BuildTourSnapshot
+// now refuses an ask-below-bid good outright, so that inversion drops every row instead of cancelling out.
 func mustGood(t *testing.T, sym string, bid, ask, tv int, supply, activity string, tt market.TradeType) market.TradeGood {
 	t.Helper()
-	g, err := market.NewTradeGood(sym, &supply, &activity, bid, ask, tv, tt)
+	g, err := market.NewTradeGood(sym, &supply, &activity, ask, bid, tv, tt)
 	if err != nil {
 		t.Fatalf("NewTradeGood(%s): %v", sym, err)
 	}

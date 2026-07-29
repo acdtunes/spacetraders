@@ -67,7 +67,7 @@ func TestLiquidateCargo_SellLeg_CarriesLiquidationOperationContext(t *testing.T)
 	ship := shipWithCargo(t, "TORWIND-OPTYPE-1", "X1-KA42-A1", []*shared.CargoItem{item(t, "SILICON_CRYSTALS", 66)})
 	repo := &fakeSyncShipRepo{ship: ship}
 	mkt := &fakeMarketRepo{byGood: map[string]*market.BestMarketBuyingResult{
-		"SILICON_CRYSTALS": {WaypointSymbol: "X1-KA42-B7", TradeSymbol: "SILICON_CRYSTALS", PurchasePrice: 2200},
+		"SILICON_CRYSTALS": {WaypointSymbol: "X1-KA42-B7", TradeSymbol: "SILICON_CRYSTALS", Bid: 2200},
 	}}
 	med := &liquidationOpCtxMediator{sellPricePerUnit: 2200}
 	h := NewLiquidateCargoHandler(repo, mkt, med)
@@ -94,7 +94,7 @@ func TestLiquidateCargo_NoCoordinatorID_StaysManual(t *testing.T) {
 	ship := shipWithCargo(t, "TORWIND-OPTYPE-2", "X1-KA42-B7", []*shared.CargoItem{item(t, "PLASTICS", 40)})
 	repo := &fakeSyncShipRepo{ship: ship}
 	mkt := &fakeMarketRepo{byGood: map[string]*market.BestMarketBuyingResult{
-		"PLASTICS": {WaypointSymbol: "X1-KA42-B7", PurchasePrice: 1800},
+		"PLASTICS": {WaypointSymbol: "X1-KA42-B7", Bid: 1800},
 	}}
 	med := &liquidationOpCtxMediator{sellPricePerUnit: 1800}
 	h := NewLiquidateCargoHandler(repo, mkt, med)

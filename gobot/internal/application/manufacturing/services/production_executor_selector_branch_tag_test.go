@@ -42,7 +42,7 @@ func TestSelectorBranchTag_RescueBuyTagsRescue(t *testing.T) {
 	repo := &multiSourceMarketRepo{sources: []srcSpec{
 		{waypoint: "X1-DR-SCARCE", supply: supplyScarce, ask: 5000},
 	}}
-	reader := &fakePriceHistoryReader{sellPrices: []int{4800, 4800, 4800}} // median 4800 -> cap 5760, ask 5000 within
+	reader := &fakePriceHistoryReader{asks: []int{4800, 4800, 4800}} // median 4800 -> cap 5760, ask 5000 within
 	executor, shipRepo, mediator := newMultiSourceExecutor(t, repo, reader)
 	ctx := common.WithLogger(context.Background(), &dwellCapturingLogger{})
 

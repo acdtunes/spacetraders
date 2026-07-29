@@ -59,8 +59,8 @@ func twoLevelChainResolver() *SupplyChainResolver {
 			"ELECTRONICS":        {WaypointSymbol: "X1-AA-EL", Supply: "MODERATE", Activity: "STRONG"},
 		},
 		buyable: map[string]*market.BestBuyingMarketResult{
-			"SILICON_CRYSTALS": {WaypointSymbol: "X1-AA-SC", Supply: "ABUNDANT", Activity: "STRONG", SellPrice: 10},
-			"COPPER":           {WaypointSymbol: "X1-AA-CU", Supply: "ABUNDANT", Activity: "STRONG", SellPrice: 12},
+			"SILICON_CRYSTALS": {WaypointSymbol: "X1-AA-SC", Supply: "ABUNDANT", Activity: "STRONG", Ask: 10},
+			"COPPER":           {WaypointSymbol: "X1-AA-CU", Supply: "ABUNDANT", Activity: "STRONG", Ask: 12},
 		},
 	}
 	return NewSupplyChainResolver(supplyChainMap, repo)

@@ -71,10 +71,11 @@ func (r *ProfitableLaneReader) CountProfitableLanes(ctx context.Context, playerI
 }
 
 // collectSystemListings reads every cached market in one system into flat trading.GoodListing rows —
-// the read-only mirror of the trade-route coordinator's own collectSystemListings, in
-// market-perspective column semantics (Bid = the market's PurchasePrice column, Ask = its SellPrice
-// column). A system's market-list read error propagates (fail-closed); an individual unreadable
-// waypoint market simply contributes no listings.
+// the read-only mirror of the trade-route coordinator's own collectSystemListings, and it must keep
+// that mirror EXACT: Bid = SellPrice() (what we receive), Ask = PurchasePrice() (what we pay). Both
+// read the other way round until sp-en5h7; a divergence here makes this reader's lane COUNT disagree
+// with the lanes the coordinator will actually fly. A system's market-list read error propagates
+// (fail-closed); an individual unreadable waypoint market simply contributes no listings.
 func (r *ProfitableLaneReader) collectSystemListings(ctx context.Context, systemSymbol string, playerID int) ([]trading.GoodListing, error) {
 	waypoints, err := r.markets.FindAllMarketsInSystem(ctx, systemSymbol, playerID)
 	if err != nil {
@@ -91,8 +92,8 @@ func (r *ProfitableLaneReader) collectSystemListings(ctx context.Context, system
 				Good:       g.Symbol(),
 				Waypoint:   mkt.WaypointSymbol(),
 				TradeType:  string(g.TradeType()),
-				Bid:        g.PurchasePrice(), // market BUY column = received selling TO it
-				Ask:        g.SellPrice(),     // market SELL column = paid buying FROM it
+				Bid:        g.SellPrice(),     // sell_price = what we RECEIVE selling TO it
+				Ask:        g.PurchasePrice(), // purchase_price = what we PAY buying FROM it
 				Supply:     derefString(g.Supply()),
 				Activity:   derefString(g.Activity()),
 				Volume:     g.TradeVolume(),

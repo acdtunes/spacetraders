@@ -56,10 +56,10 @@ type ceilingFakeMarketRepo struct {
 func (r *ceilingFakeMarketRepo) GetMarketData(_ context.Context, _ string, _ int) (*market.Market, error) {
 	supply := "MODERATE"
 	activity := "WEAK"
-	// SellPrice (5th arg) = the ASK we pay buying; PurchasePrice (4th) = the bid.
+	// PurchasePrice (4th arg) = the ASK we pay buying; SellPrice (5th) = the bid (sp-en5h7).
 	// The 6th arg is the transaction (tranche) limit GetTransactionLimit reads.
 	// EXPORT: this is a buy SOURCE.
-	g, err := market.NewTradeGood(r.good, &supply, &activity, r.fix.ask()-100, r.fix.ask(), r.fix.limit, market.TradeTypeExport)
+	g, err := market.NewTradeGood(r.good, &supply, &activity, r.fix.ask(), r.fix.ask()-100, r.fix.limit, market.TradeTypeExport)
 	if err != nil {
 		return nil, err
 	}

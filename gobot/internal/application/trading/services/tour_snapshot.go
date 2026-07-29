@@ -93,7 +93,21 @@ func BuildTourSnapshot(
 				// (sell_market_distributor) uses. This applies the trade_type sink filter at
 				// the snapshot boundary, so no trade_type field need thread through the
 				// routing proto/solver.
-				bid := g.PurchasePrice() // market BUY column = what we receive selling
+				// sell_price = what we RECEIVE selling; purchase_price = what we PAY
+				// buying. These read the other way round until sp-en5h7, correct only
+				// against the transposed rows that bug wrote.
+				bid, ask := g.SellPrice(), g.PurchasePrice()
+				if ask < bid {
+					// A market asking less than it bids is impossible data, and this
+					// snapshot feeds the tour solver directly — it never passes through
+					// RankSpreads, so GoodListing.IsCrossed cannot cover it. Every row
+					// written before sp-en5h7 has exactly this shape, and to the solver it
+					// looks like free money at a single waypoint. Refuse the good outright
+					// (RULINGS #4: fail closed — a dropped good yields no tour leg).
+					// Checked on the RAW quote, BEFORE the EXPORT bid is zeroed, or a
+					// crossed exporter would slip through as ask<0.
+					continue
+				}
 				if g.TradeType() == market.TradeTypeExport {
 					bid = 0
 				}
@@ -103,7 +117,7 @@ func BuildTourSnapshot(
 					Good:        g.Symbol(),
 					Supply:      derefString(g.Supply()),
 					Activity:    activity,
-					Ask:         g.SellPrice(), // market SELL column = what we pay buying
+					Ask:         ask,
 					Bid:         bid,
 					TradeVolume: g.TradeVolume(),
 					ObservedAt:  observed,

@@ -33,7 +33,7 @@ type stkFixture struct {
 	cargo     map[string]int
 	location  string
 	cargoCap  int
-	ask       map[string]map[string]int // waypoint -> good -> ask (SellPrice, buy cost)
+	ask       map[string]map[string]int // waypoint -> good -> ask (purchase_price, buy cost — sp-en5h7)
 	marketAge map[string]time.Duration  // waypoint -> how old the cached data is (0 = fresh/now)
 	buys      int
 	buyUnits  int
@@ -152,7 +152,8 @@ func (r *stkFakeMarketRepo) GetMarketData(ctx context.Context, waypointSymbol st
 	supply, activity := "MODERATE", "STRONG"
 	var tgs []market.TradeGood
 	for good, ask := range goods {
-		g, err := market.NewTradeGood(good, &supply, &activity, ask-10, ask, 1000, market.TradeTypeExport)
+		// purchasePrice = the ask we pay; sellPrice = the market's lower sellback bid (sp-en5h7).
+		g, err := market.NewTradeGood(good, &supply, &activity, ask, ask-10, 1000, market.TradeTypeExport)
 		if err != nil {
 			r.t.Fatalf("trade good: %v", err)
 		}
@@ -181,8 +182,8 @@ func (r *stkFakeMarketRepo) FindCheapestMarketSelling(ctx context.Context, good,
 		if !ok {
 			continue
 		}
-		if best == nil || ask < best.SellPrice {
-			best = &market.CheapestMarketResult{WaypointSymbol: waypoint, TradeSymbol: good, SellPrice: ask, Supply: "MODERATE"}
+		if best == nil || ask < best.Ask {
+			best = &market.CheapestMarketResult{WaypointSymbol: waypoint, TradeSymbol: good, Ask: ask, Supply: "MODERATE"}
 		}
 	}
 	return best, nil
@@ -872,10 +873,10 @@ func TestStocker_StocksInSystemGood(t *testing.T) {
 		}},
 		&stkFakeMarketAsks{
 			cross: map[string][]market.CheapestMarketResult{
-				"FUEL": {{WaypointSymbol: "X1-VB74-EXPORT", SellPrice: 40}},
+				"FUEL": {{WaypointSymbol: "X1-VB74-EXPORT", Ask: 40}},
 			},
 			home: map[string]*market.CheapestMarketResult{
-				"FUEL": {WaypointSymbol: "X1-VB74-EXPORT", SellPrice: 40},
+				"FUEL": {WaypointSymbol: "X1-VB74-EXPORT", Ask: 40},
 			},
 		},
 	)
@@ -1433,10 +1434,10 @@ func stkHomeVsForeignMiner() *persistence.DemandMiner {
 		&stkFakeMarketAsks{
 			// cheapest-first across ALL systems: the foreign X1-FOREIGN-M @2000 undercuts the home X1-S1-M @2500.
 			cross: map[string][]market.CheapestMarketResult{
-				"MEDICINE": {{WaypointSymbol: "X1-FOREIGN-M", SellPrice: 2000}, {WaypointSymbol: "X1-S1-M", SellPrice: 2500}},
+				"MEDICINE": {{WaypointSymbol: "X1-FOREIGN-M", Ask: 2000}, {WaypointSymbol: "X1-S1-M", Ask: 2500}},
 			},
 			home: map[string]*market.CheapestMarketResult{
-				"MEDICINE": {WaypointSymbol: "X1-S1-M", SellPrice: 2500},
+				"MEDICINE": {WaypointSymbol: "X1-S1-M", Ask: 2500},
 			},
 		},
 	)

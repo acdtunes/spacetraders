@@ -44,12 +44,15 @@ type MarketLocatorResult struct {
 	WaypointSymbol string
 	Activity       string // WEAK, GROWING, STRONG, RESTRICTED
 	Supply         string // SCARCE, LIMITED, MODERATE, HIGH, ABUNDANT
-	Price          int    // sell_price (for exports) or purchase_price (for imports)
-	TradeVolume    int    // Maximum units per transaction
+	// Price is the side-appropriate quote (sp-en5h7): the ASK (purchase_price, what WE
+	// PAY, the larger) for a market we BUY from, or the BID (sell_price, what the market
+	// PAYS us, the smaller) for a market we SELL to.
+	Price       int
+	TradeVolume int // Maximum units per transaction
 }
 
 // FindImportMarket finds a market that wants to buy a good (imports it).
-// Returns the market with the highest purchase price, preferring STRONG activity.
+// Returns the market with the highest BID, preferring STRONG activity.
 func (l *MarketLocator) FindImportMarket(
 	ctx context.Context,
 	good string,
@@ -75,7 +78,7 @@ func (l *MarketLocator) FindImportMarket(
 		WaypointSymbol: bestMarket.WaypointSymbol,
 		Activity:       activityOrEmpty(tradeGood),
 		Supply:         bestMarket.Supply,
-		Price:          bestMarket.PurchasePrice,
+		Price:          bestMarket.Bid,
 		TradeVolume:    tradeGood.TradeVolume(),
 	}, nil
 }
@@ -176,8 +179,8 @@ func (l *MarketLocator) scannedTradeGood(ctx context.Context, waypointSymbol str
 // market for the good.
 //
 // sp-9mkf (Bug 1): an IMPORT market is NEVER a buy source. A consumer market (e.g. a
-// FOOD factory) lists a sell_price for the FERTILIZERS it consumes, so the old
-// trade-type-blind "cheapest sell_price" query could return the consuming factory
+// FOOD factory) lists a purchase_price for the FERTILIZERS it consumes, so the old
+// trade-type-blind "cheapest ask" query could return the consuming factory
 // itself as the feed's "source" when no real exporter existed in-system. The feed was
 // then bought AND delivered (sold back) at that same waypoint — a guaranteed
 // round-trip loss (FERTILIZERS bought at ask 470 and sold at bid 235 at FF5F, four
@@ -219,7 +222,7 @@ func (l *MarketLocator) FindExportMarket(
 		if tradeGood.TradeType() == market.TradeTypeImport {
 			continue
 		}
-		price := tradeGood.SellPrice()
+		price := tradeGood.PurchasePrice()
 		if price <= 0 {
 			continue // not actually purchasable here
 		}
@@ -314,7 +317,7 @@ func (l *MarketLocator) FindExportMarketBySupplyPriority(
 			waypointSymbol: waypointSymbol,
 			supply:         supply,
 			activity:       activity,
-			price:          tradeGood.SellPrice(),
+			price:          tradeGood.PurchasePrice(),
 			tradeVolume:    tradeGood.TradeVolume(),
 			supplyScore:    supplyScore,
 			activityScore:  ExportActivityScore(activity),
@@ -346,7 +349,7 @@ func (l *MarketLocator) FindExportMarketBySupplyPriority(
 	}, nil
 }
 
-// EligibleSourceMedianAsk returns the median SELL price (ask) across all ELIGIBLE
+// EligibleSourceMedianAsk returns the median ASK (purchase_price — what WE PAY) across all ELIGIBLE
 // (MODERATE+ supply) EXPORT markets for a good in a system, plus how many such sources
 // exist. This is the poison-proof ceiling baseline (sp-a5j7 Phase 2 / hzz5 X4): the iv65
 // ceiling's per-waypoint trailing median drags itself up behind a ladder (a laddering source
@@ -388,7 +391,7 @@ func (l *MarketLocator) EligibleSourceMedianAsk(
 		if !isModeratePlusSupply(supplyOrEmpty(tradeGood)) {
 			continue
 		}
-		price := tradeGood.SellPrice()
+		price := tradeGood.PurchasePrice()
 		if price <= 0 {
 			continue
 		}
@@ -444,7 +447,7 @@ func (l *MarketLocator) InputSourceEligibility(
 		if tradeGood == nil || tradeGood.TradeType() != market.TradeTypeExport {
 			continue
 		}
-		if tradeGood.SellPrice() <= 0 {
+		if tradeGood.PurchasePrice() <= 0 {
 			continue // unpriceable listing — not a usable source
 		}
 		hasReadableSource = true
@@ -525,7 +528,7 @@ func (l *MarketLocator) FindConstructionSource(
 			WaypointSymbol: waypointSymbol,
 			Activity:       activity,
 			Supply:         supply,
-			Price:          tradeGood.SellPrice(),
+			Price:          tradeGood.PurchasePrice(),
 			TradeVolume:    tradeGood.TradeVolume(),
 		}
 
@@ -541,7 +544,7 @@ func (l *MarketLocator) FindConstructionSource(
 				result:        result,
 				supplyScore:   supplyScore,
 				activityScore: ExportActivityScore(activity),
-				price:         tradeGood.SellPrice(),
+				price:         tradeGood.PurchasePrice(),
 			})
 		case market.TradeTypeImport, market.TradeTypeExchange:
 			// FALLBACK: only oversupplied importers/exchanges (HIGH/ABUNDANT) can
@@ -552,7 +555,7 @@ func (l *MarketLocator) FindConstructionSource(
 			importCandidates = append(importCandidates, sourceCandidate{
 				result:      result,
 				supplyScore: manufacturing.SupplyLevel(supply).Order(),
-				price:       tradeGood.SellPrice(),
+				price:       tradeGood.PurchasePrice(),
 			})
 		}
 	}
@@ -653,11 +656,11 @@ func (l *MarketLocator) FindExportMarketWithGoodSupply(
 				WaypointSymbol: waypointSymbol,
 				Activity:       activity,
 				Supply:         supply,
-				Price:          tradeGood.SellPrice(),
+				Price:          tradeGood.PurchasePrice(),
 				TradeVolume:    tradeGood.TradeVolume(),
 			},
 			supply: supply,
-			price:  tradeGood.SellPrice(),
+			price:  tradeGood.PurchasePrice(),
 		})
 	}
 
@@ -720,7 +723,7 @@ func (l *MarketLocator) FindBestExportMarket(
 				WaypointSymbol: waypointSymbol,
 				Activity:       activity,
 				Supply:         supply,
-				Price:          tradeGood.SellPrice(),
+				Price:          tradeGood.PurchasePrice(),
 				TradeVolume:    tradeGood.TradeVolume(),
 			}
 		}
@@ -827,7 +830,7 @@ func (l *MarketLocator) FindFactoryForProduction(
 				WaypointSymbol: waypointSymbol,
 				Activity:       activity,
 				Supply:         supply,
-				Price:          outputTradeGood.SellPrice(),
+				Price:          outputTradeGood.PurchasePrice(),
 				TradeVolume:    outputTradeGood.TradeVolume(),
 			}
 		}

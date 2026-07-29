@@ -1,10 +1,13 @@
 package expansion
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
@@ -96,4 +99,48 @@ func TestUnchartedNeighborsFrom_ReturnsOnlyUnchartedReachableNeighbors(t *testin
 
 	require.Empty(t, unchartedNeighborsFrom(adj, "X1-VIRGIN1", charted),
 		"a still-virgin system has no adjacency entry -> no walk (self-gated)")
+}
+
+// ---- MarketSystemValueReader: the ASK is the valuation leg (sp-en5h7) --------
+
+// fakeValueMarketReader serves one good per waypoint; a waypoint absent from goods
+// stands in for an unreadable market (contributes 0 rather than failing the read).
+type fakeValueMarketReader struct {
+	waypoints []string
+	goods     map[string]market.TradeGood
+}
+
+func (f *fakeValueMarketReader) FindAllMarketsInSystem(_ context.Context, _ string, _ int) ([]string, error) {
+	return f.waypoints, nil
+}
+
+func (f *fakeValueMarketReader) GetMarketData(_ context.Context, waypointSymbol string, _ int) (*market.Market, error) {
+	g, ok := f.goods[waypointSymbol]
+	if !ok {
+		return nil, nil
+	}
+	return market.NewMarket(waypointSymbol, []market.TradeGood{g}, time.Now())
+}
+
+// SystemTradeValue values a system's depth at the ASK (TradeGood.PurchasePrice, the
+// LARGER of the pair — sp-en5h7), never at the bid. This is load-bearing for
+// RULINGS #4: pickReusableProbe borrows a probe only when systemValue < ceiling, so
+// valuing at the smaller bid would shrink every total by the market's rake and
+// LOOSEN the depth-vs-freshness guard into cannibalizing markets it had protected.
+func TestSystemTradeValue_ValuesAtTheAskNotTheBid(t *testing.T) {
+	const ask, bid, volume = 500, 100, 10
+	g, err := market.NewTradeGood("FUEL", nil, nil, ask, bid, volume, market.TradeType("EXCHANGE"))
+	require.NoError(t, err)
+
+	reader := NewMarketSystemValueReader(&fakeValueMarketReader{
+		waypoints: []string{"X1-A-1", "X1-A-UNREADABLE"},
+		goods:     map[string]market.TradeGood{"X1-A-1": *g},
+	})
+
+	got, err := reader.SystemTradeValue(context.Background(), "X1-A", 1)
+	require.NoError(t, err)
+	require.Equal(t, ask*volume, got,
+		"depth is valued at the ask (PurchasePrice) × volume; the unreadable market adds 0")
+	require.Greater(t, got, bid*volume,
+		"the ask-based total must EXCEED the bid-based one, so the reuse ceiling stays stricter, never looser")
 }

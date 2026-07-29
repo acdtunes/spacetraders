@@ -8,7 +8,7 @@ import (
 )
 
 // sp-9mkf (Bug 1): FindExportMarket must never source a good from an IMPORT market.
-// A FOOD factory that IMPORTS fertilizers still lists a fertilizers sell_price, so the
+// A FOOD factory that IMPORTS fertilizers still lists a fertilizers purchase_price, so the
 // old trade-type-blind cheapest-ask query returned the factory itself as the "source";
 // the feed was then bought and delivered (sold back) at that same waypoint — a
 // guaranteed round-trip loss (−75k at FF5F). Only EXPORT/EXCHANGE markets can source.

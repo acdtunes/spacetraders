@@ -69,9 +69,9 @@ func (r *diMarketRepo) listings() []market.TradeGood {
 	}
 }
 
-func mustTradeGood(symbol, supply string, bid, ask, volume int, tradeType market.TradeType) *market.TradeGood {
+func mustTradeGood(symbol, supply string, ask, bid, volume int, tradeType market.TradeType) *market.TradeGood {
 	activity := "STRONG"
-	good, err := market.NewTradeGood(symbol, &supply, &activity, bid, ask, volume, tradeType)
+	good, err := market.NewTradeGood(symbol, &supply, &activity, ask, bid, volume, tradeType)
 	if err != nil {
 		panic(err)
 	}

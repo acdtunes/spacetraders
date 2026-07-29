@@ -93,7 +93,9 @@ func (r *shortfallMarketRepo) GetMarketData(_ context.Context, _ string, _ int) 
 		return nil, nil
 	}
 	supply, activity := "MODERATE", "STRONG"
-	g, err := market.NewTradeGood(shortfallGood, &supply, &activity, 100, 200, r.limit, market.TradeTypeImport)
+	// ask 200 / bid 100 — PurchasePrice (4th) is the ASK, the larger; the bid the
+	// hull receives selling into this sink is SellPrice=100 (sp-en5h7).
+	g, err := market.NewTradeGood(shortfallGood, &supply, &activity, 200, 100, r.limit, market.TradeTypeImport)
 	if err != nil {
 		return nil, err
 	}

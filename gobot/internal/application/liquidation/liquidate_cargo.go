@@ -144,10 +144,10 @@ func (h *LiquidateCargoHandler) Handle(ctx context.Context, request common.Reque
 			best = nil
 		}
 
-		hasBid := best != nil && best.PurchasePrice > 0
+		hasBid := best != nil && best.Bid > 0
 		recoverableValue := 0
 		if hasBid {
-			recoverableValue = best.PurchasePrice * units
+			recoverableValue = best.Bid * units
 		}
 		// Jettison is a last resort, and only when the captain has set a floor: a lot
 		// is dump-eligible only if its recoverable value is BELOW that floor (an

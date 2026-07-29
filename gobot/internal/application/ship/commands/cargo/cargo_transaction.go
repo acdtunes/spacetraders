@@ -593,7 +593,7 @@ func (h *CargoTransactionHandler) liveBidForFloor(ctx context.Context, waypoint,
 	if g == nil {
 		return 0, false
 	}
-	return g.PurchasePrice(), true
+	return g.SellPrice(), true // market SELL price = the BID the hull receives selling (sp-en5h7)
 }
 
 // liveAskForCeiling reads the current per-unit ask for good at waypoint for the
@@ -617,7 +617,7 @@ func (h *CargoTransactionHandler) liveAskForCeiling(ctx context.Context, waypoin
 	if g == nil {
 		return 0, false
 	}
-	return g.SellPrice(), true // market SELL price = the ASK the hull pays to buy
+	return g.PurchasePrice(), true // market PURCHASE price = the ASK the hull pays to buy (sp-en5h7)
 }
 
 // recordCargoTransaction records the cargo transaction in the ledger

@@ -141,21 +141,21 @@ func (r *loopMarketRepo) GetMarketData(ctx context.Context, waypointSymbol strin
 	activity := "STRONG"
 	switch waypointSymbol {
 	case loopSrc:
-		widget, err := market.NewTradeGood(loopWidgetGood, &supply, &activity, loopWidgetSrcBid, loopWidgetSrcAsk, loopWidgetVol, market.TradeTypeExport)
+		widget, err := market.NewTradeGood(loopWidgetGood, &supply, &activity, loopWidgetSrcAsk, loopWidgetSrcBid, loopWidgetVol, market.TradeTypeExport)
 		if err != nil {
 			return nil, err
 		}
-		gadget, err := market.NewTradeGood(loopGadgetGood, &supply, &activity, loopGadgetSrcBid, loopGadgetSrcAsk, loopGadgetVol, market.TradeTypeExport)
+		gadget, err := market.NewTradeGood(loopGadgetGood, &supply, &activity, loopGadgetSrcAsk, loopGadgetSrcBid, loopGadgetVol, market.TradeTypeExport)
 		if err != nil {
 			return nil, err
 		}
 		return market.NewMarket(waypointSymbol, []market.TradeGood{*widget, *gadget}, time.Now())
 	case loopDst:
-		widget, err := market.NewTradeGood(loopWidgetGood, &supply, &activity, r.fixture.widgetDestBid(), loopWidgetDstAsk, loopWidgetVol, market.TradeTypeImport)
+		widget, err := market.NewTradeGood(loopWidgetGood, &supply, &activity, loopWidgetDstAsk, r.fixture.widgetDestBid(), loopWidgetVol, market.TradeTypeImport)
 		if err != nil {
 			return nil, err
 		}
-		gadget, err := market.NewTradeGood(loopGadgetGood, &supply, &activity, r.fixture.gadgetDestBid(), loopGadgetDstAsk, loopGadgetVol, market.TradeTypeImport)
+		gadget, err := market.NewTradeGood(loopGadgetGood, &supply, &activity, loopGadgetDstAsk, r.fixture.gadgetDestBid(), loopGadgetVol, market.TradeTypeImport)
 		if err != nil {
 			return nil, err
 		}

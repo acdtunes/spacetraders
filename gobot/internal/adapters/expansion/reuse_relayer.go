@@ -256,7 +256,11 @@ type valueMarketReader interface {
 }
 
 // MarketSystemValueReader implements SystemValueReader as the summed trade depth of a system: over
-// every market waypoint, over every listed good, sell-price × trade-volume. It is a PROXY for "how
+// every market waypoint, over every listed good, ask × trade-volume. The ask (TradeGood.PurchasePrice,
+// the LARGER of the pair — sp-en5h7) is the deliberately CONSERVATIVE leg: a higher total keeps more
+// systems at/above the reuse ceiling, so the depth-vs-freshness guard in pickReusableProbe refuses to
+// cannibalize rather than permits it. Valuing at the bid would shrink every total by the market's rake
+// and silently LOOSEN that guard. It is a PROXY for "how
 // much this system is worth keeping fresh" — higher means a deeper, more valuable market the reuse
 // ceiling protects from cannibalization; a sparse deep-edge system sums low and is borrowable. A
 // missing/unreadable market contributes 0 rather than failing the whole read.
@@ -271,7 +275,7 @@ func NewMarketSystemValueReader(markets valueMarketReader) *MarketSystemValueRea
 
 var _ SystemValueReader = (*MarketSystemValueReader)(nil)
 
-// SystemTradeValue sums sell-price × trade-volume across every good in every market of the system.
+// SystemTradeValue sums ask × trade-volume across every good in every market of the system.
 func (r *MarketSystemValueReader) SystemTradeValue(ctx context.Context, systemSymbol string, playerID int) (int, error) {
 	waypoints, err := r.markets.FindAllMarketsInSystem(ctx, systemSymbol, playerID)
 	if err != nil {
@@ -284,7 +288,7 @@ func (r *MarketSystemValueReader) SystemTradeValue(ctx context.Context, systemSy
 			continue
 		}
 		for _, good := range data.TradeGoods() {
-			total += good.SellPrice() * good.TradeVolume()
+			total += good.PurchasePrice() * good.TradeVolume()
 		}
 	}
 	return total, nil

@@ -233,13 +233,13 @@ func (r *lowVolMarketRepo) GetMarketData(_ context.Context, waypointSymbol strin
 	activity := "STRONG"
 	switch waypointSymbol {
 	case zvSrc:
-		good, err := market.NewTradeGood(zvGood, &supply, &activity, zvSrcAsk-20, zvSrcAsk, zvSrcVol, market.TradeTypeExport)
+		good, err := market.NewTradeGood(zvGood, &supply, &activity, zvSrcAsk, zvSrcAsk-20, zvSrcVol, market.TradeTypeExport)
 		if err != nil {
 			return nil, err
 		}
 		return market.NewMarket(waypointSymbol, []market.TradeGood{*good}, time.Now())
 	case zvDst:
-		good, err := market.NewTradeGood(zvGood, &supply, &activity, zvStartBid, zvDstAsk, r.dstVolume, market.TradeTypeImport)
+		good, err := market.NewTradeGood(zvGood, &supply, &activity, zvDstAsk, zvStartBid, r.dstVolume, market.TradeTypeImport)
 		if err != nil {
 			return nil, err
 		}

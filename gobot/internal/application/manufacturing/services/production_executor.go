@@ -177,7 +177,7 @@ func HullFillTargetFromContext(ctx context.Context) (billRemaining int, fraction
 	return 0, 0, false
 }
 
-// liveAsk re-reads the current EXPORT ask (sell price) of good at waypoint from the market DB — the
+// liveAsk re-reads the current EXPORT ask (purchase_price — what WE PAY, sp-en5h7) of good at waypoint from the market DB — the
 // per-iteration price the hull-fill loop re-checks its guards against, so a laddering market is not
 // chased tranche-by-tranche (sp-2me2). ok is false when the market/good is unreadable or the ask is
 // non-positive; the loop treats that as fail-CLOSED (stop, deliver what is aboard), never buying at
@@ -191,7 +191,7 @@ func (e *ProductionExecutor) liveAsk(ctx context.Context, waypoint, good string,
 	if tradeGood == nil {
 		return 0, false
 	}
-	ask := tradeGood.SellPrice()
+	ask := tradeGood.PurchasePrice()
 	if ask <= 0 {
 		return 0, false
 	}
@@ -911,12 +911,12 @@ func (e *ProductionExecutor) fabricateGood(
 	// Step 2: Navigate to factory (already found above in Step 0)
 	// CRITICAL: We need an EXPORT market (factory that produces and sells cheap),
 	// NOT an import market (consumer that buys at high price).
-	// The factory EXPORTS the finished good (low sell price) and IMPORTS the inputs.
+	// The factory EXPORTS the finished good (a low ASK) and IMPORTS the inputs.
 
 	logger.Log("INFO", fmt.Sprintf("Found factory (export market) for %s at %s", node.Good, factoryMarket.WaypointSymbol), map[string]interface{}{
-		"good":       node.Good,
-		"waypoint":   factoryMarket.WaypointSymbol,
-		"sell_price": factoryMarket.Price, // Factory's sell price (what we pay to buy)
+		"good":     node.Good,
+		"waypoint": factoryMarket.WaypointSymbol,
+		"ask":      factoryMarket.Price, // the factory's ASK — what we pay to harvest (sp-en5h7)
 	})
 
 	// Step 3: Navigate to factory and dock (playerIDValue already created in Step 0)
@@ -1056,7 +1056,7 @@ func (e *ProductionExecutor) PollForProduction(
 				"good":          good,
 				"waypoint":      waypointSymbol,
 				"poll_attempts": attempt + 1,
-				"sell_price":    tradeGood.SellPrice(),
+				"ask":           tradeGood.PurchasePrice(),
 			})
 
 			// Construction-support (inputs-only) mode: production is confirmed and the
@@ -1076,7 +1076,7 @@ func (e *ProductionExecutor) PollForProduction(
 			// home sinks - e.g. D40 ADV_CIRC's bid fell 7000->2191 - so factories kept
 			// harvesting output and reselling it below their own harvest cost:
 			// loss-making production on every cycle. Compare the downstream resale bid
-			// against what we're about to pay to harvest (tradeGood.SellPrice, the
+			// against what we're about to pay to harvest (tradeGood.PurchasePrice, the
 			// factory's own ask). Fail OPEN (harvest anyway) if no sink can be found at
 			// all - that's normal for goods with no direct resale market, not a signal
 			// to stop production.
@@ -1090,7 +1090,7 @@ func (e *ProductionExecutor) PollForProduction(
 			// the gate fill.
 			if !shared.ConstructionSupplyFromContext(ctx) && !IsUnifiedGateNode(ctx) {
 				if sink, sinkErr := e.marketLocator.FindImportMarket(ctx, good, systemSymbol, playerID.Value()); sinkErr == nil && sink != nil {
-					harvestCost := tradeGood.SellPrice()
+					harvestCost := tradeGood.PurchasePrice()
 					if sink.Price < harvestCost {
 						logger.Log("WARNING", fmt.Sprintf(
 							"Parking %s at %s: crushed sink - resale bid %d at %s is below harvest cost %d, producing would lose money",
@@ -1109,7 +1109,7 @@ func (e *ProductionExecutor) PollForProduction(
 				}
 			}
 
-			return e.purchaseFabricatedOutput(ctx, good, waypointSymbol, shipSymbol, playerID, tradeGood.TradeVolume(), tradeGood.SellPrice())
+			return e.purchaseFabricatedOutput(ctx, good, waypointSymbol, shipSymbol, playerID, tradeGood.TradeVolume(), tradeGood.PurchasePrice())
 		}
 
 		// Log polling attempt. Past productionDwellWarnThreshold, escalate to a
@@ -1168,7 +1168,7 @@ func (e *ProductionExecutor) purchaseFabricatedOutput(
 	shipSymbol string,
 	playerID shared.PlayerID,
 	tradeVolume int,
-	unitPrice int, // per-unit harvest cost (the factory's ask = tradeGood.SellPrice()) — the working-capital-floor basis
+	unitPrice int, // per-unit harvest cost (the factory's ask = tradeGood.PurchasePrice()) — the working-capital-floor basis
 ) (int, int, error) {
 	logger := common.LoggerFromContext(ctx)
 

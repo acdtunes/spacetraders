@@ -19,9 +19,9 @@ import (
 // harvesting fabricated output and reselling it into a sink priced BELOW
 // their own input/harvest cost: loss-making production on every cycle. This
 // guard compares the downstream resale bid (FindImportMarket) against the
-// factory's own harvest cost (the TradeGood's SellPrice - what we pay to buy
+// factory's own harvest cost (the TradeGood's PurchasePrice - what we pay to buy
 // FROM the factory, the same idiom collection_opportunity_finder.go already
-// uses: profit = buyer.purchasePrice - factory.sellPrice) right when
+// uses: profit = buyer bid - factory ask) right when
 // production is confirmed, and PARKS (skips the harvest, returns (0,0,nil) -
 // the same graceful-skip idiom already used by the inputsOnly bypass and
 // purchaseInputWithEmptyTrancheGuard's exhaustion case) instead of harvesting
@@ -36,7 +36,7 @@ import (
 // its own fake rather than reusing newDockRaceExecutor.
 type crushedSinkMarketRepo struct {
 	market.MarketRepository
-	harvestSellPrice    int   // factory's own ask - what we pay to harvest (GetMarketData)
+	harvestAsk          int   // factory's own ask - what we pay to harvest (GetMarketData)
 	sinkBidPrice        int   // downstream sink's bid - what we'd receive reselling (FindBestMarketBuying)
 	findBestMarketErr   error // when set, FindImportMarket fails -> guard must fail OPEN and harvest anyway
 	findBestMarketCalls int
@@ -48,7 +48,7 @@ func (r *crushedSinkMarketRepo) GetMarketData(ctx context.Context, waypointSymbo
 	}
 	supply := "HIGH"
 	activity := "STRONG"
-	good, err := market.NewTradeGood(dockRaceGood, &supply, &activity, r.harvestSellPrice-2, r.harvestSellPrice, 10, market.TradeTypeExport)
+	good, err := market.NewTradeGood(dockRaceGood, &supply, &activity, r.harvestAsk, r.harvestAsk-2, 10, market.TradeTypeExport)
 	if err != nil {
 		return nil, err
 	}
@@ -63,7 +63,7 @@ func (r *crushedSinkMarketRepo) FindBestMarketBuying(ctx context.Context, goodSy
 	return &market.BestMarketBuyingResult{
 		WaypointSymbol: dockRaceMarketWP,
 		TradeSymbol:    goodSymbol,
-		PurchasePrice:  r.sinkBidPrice,
+		Bid:            r.sinkBidPrice,
 		Supply:         "HIGH",
 	}, nil
 }
@@ -72,7 +72,7 @@ func (r *crushedSinkMarketRepo) FindBestMarketBuying(ctx context.Context, goodSy
 // crushedSinkMarketRepo (configurable harvest cost / sink bid) for the fixed
 // dockRaceMarketRepo, since this scenario needs independent control over both
 // prices that the shared harness does not expose.
-func newCrushedSinkExecutor(t *testing.T, harvestSellPrice, sinkBidPrice int, findBestMarketErr error) (*ProductionExecutor, *dockRaceShipRepo, *dockRaceMediator) {
+func newCrushedSinkExecutor(t *testing.T, harvestAsk, sinkBidPrice int, findBestMarketErr error) (*ProductionExecutor, *dockRaceShipRepo, *dockRaceMediator) {
 	t.Helper()
 
 	repo := &dockRaceShipRepo{
@@ -85,7 +85,7 @@ func newCrushedSinkExecutor(t *testing.T, harvestSellPrice, sinkBidPrice int, fi
 		dockHandler: tactics.NewDockShipHandler(repo),
 	}
 	marketRepo := &crushedSinkMarketRepo{
-		harvestSellPrice:  harvestSellPrice,
+		harvestAsk:        harvestAsk,
 		sinkBidPrice:      sinkBidPrice,
 		findBestMarketErr: findBestMarketErr,
 	}

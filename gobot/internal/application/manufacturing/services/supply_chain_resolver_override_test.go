@@ -37,10 +37,10 @@ func overrideChainResolver() *SupplyChainResolver {
 			"COPPER":             {WaypointSymbol: "X1-OV-CU", Supply: "MODERATE", Activity: "STRONG"},
 		},
 		buyable: map[string]*market.BestBuyingMarketResult{
-			"ELECTRONICS":      {WaypointSymbol: "X1-OV-EL", Supply: supplyScarce, Activity: "STRONG", SellPrice: 5000},
-			"COPPER":           {WaypointSymbol: "X1-OV-CU", Supply: supplyModerate, Activity: "STRONG", SellPrice: 300},
-			"SILICON_CRYSTALS": {WaypointSymbol: "X1-OV-SC", Supply: supplyAbundant, Activity: "STRONG", SellPrice: 50},
-			"COPPER_ORE":       {WaypointSymbol: "X1-OV-CO", Supply: supplyAbundant, Activity: "STRONG", SellPrice: 40},
+			"ELECTRONICS":      {WaypointSymbol: "X1-OV-EL", Supply: supplyScarce, Activity: "STRONG", Ask: 5000},
+			"COPPER":           {WaypointSymbol: "X1-OV-CU", Supply: supplyModerate, Activity: "STRONG", Ask: 300},
+			"SILICON_CRYSTALS": {WaypointSymbol: "X1-OV-SC", Supply: supplyAbundant, Activity: "STRONG", Ask: 50},
+			"COPPER_ORE":       {WaypointSymbol: "X1-OV-CO", Supply: supplyAbundant, Activity: "STRONG", Ask: 40},
 		},
 	}
 	return NewSupplyChainResolver(supplyChainMap, repo)

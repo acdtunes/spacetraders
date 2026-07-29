@@ -55,8 +55,8 @@ func TestDemandMiner_CarriesMaxContractUnits(t *testing.T) {
 	row := ContractGoodDemand{Good: "DRUGS", ContractCount: 3, UnitsRequired: 90, MaxContractUnits: 40, FirstSeen: now.Add(-24 * time.Hour), LastSeen: now}
 	src := &fakeDemandSource{rows: []ContractGoodDemand{row}}
 	markets := &fakeMarketAsks{
-		crossByGood: map[string][]market.CheapestMarketResult{"DRUGS": {{WaypointSymbol: "X1-J58-SRC", SellPrice: 300}}},
-		homeByGood:  map[string]*market.CheapestMarketResult{"DRUGS": {WaypointSymbol: "X1-VB74-M", SellPrice: 500}},
+		crossByGood: map[string][]market.CheapestMarketResult{"DRUGS": {{WaypointSymbol: "X1-J58-SRC", Ask: 300}}},
+		homeByGood:  map[string]*market.CheapestMarketResult{"DRUGS": {WaypointSymbol: "X1-VB74-M", Ask: 500}},
 	}
 	miner := &DemandMiner{demand: src, markets: markets}
 
@@ -77,8 +77,8 @@ func TestDemandMiner_CarriesContractRewardPerUnit(t *testing.T) {
 	row := ContractGoodDemand{Good: "CLOTHING", ContractCount: 3, UnitsRequired: 60, MaxContractUnits: 30, RewardPerUnit: 250, FirstSeen: now.Add(-24 * time.Hour), LastSeen: now}
 	src := &fakeDemandSource{rows: []ContractGoodDemand{row}}
 	markets := &fakeMarketAsks{
-		crossByGood: map[string][]market.CheapestMarketResult{"CLOTHING": {{WaypointSymbol: "X1-J58-SRC", SellPrice: 300}}},
-		homeByGood:  map[string]*market.CheapestMarketResult{"CLOTHING": {WaypointSymbol: "X1-VB74-M", SellPrice: 500}},
+		crossByGood: map[string][]market.CheapestMarketResult{"CLOTHING": {{WaypointSymbol: "X1-J58-SRC", Ask: 300}}},
+		homeByGood:  map[string]*market.CheapestMarketResult{"CLOTHING": {WaypointSymbol: "X1-VB74-M", Ask: 500}},
 	}
 	miner := &DemandMiner{demand: src, markets: markets}
 
@@ -101,10 +101,10 @@ func TestDemandMiner_SingleSystem_IncludesHomeExport(t *testing.T) {
 	// Only home-system markets exist for FUEL — no foreign source anywhere.
 	markets := &fakeMarketAsks{
 		crossByGood: map[string][]market.CheapestMarketResult{
-			"FUEL": {{WaypointSymbol: "X1-VB74-EXPORT", SellPrice: 40}},
+			"FUEL": {{WaypointSymbol: "X1-VB74-EXPORT", Ask: 40}},
 		},
 		homeByGood: map[string]*market.CheapestMarketResult{
-			"FUEL": {WaypointSymbol: "X1-VB74-EXPORT", SellPrice: 40},
+			"FUEL": {WaypointSymbol: "X1-VB74-EXPORT", Ask: 40},
 		},
 	}
 	miner := &DemandMiner{demand: src, markets: markets}
@@ -137,10 +137,10 @@ func TestDemandMiner_SavingsVsContractSourceAlternative(t *testing.T) {
 	markets := &fakeMarketAsks{
 		crossByGood: map[string][]market.CheapestMarketResult{
 			// cheapest-first: a foreign source @40 undercuts the home ask @90.
-			"IRON_ORE": {{WaypointSymbol: "X1-FOREIGN-B1", SellPrice: 40}, {WaypointSymbol: "X1-VB74-A9", SellPrice: 90}},
+			"IRON_ORE": {{WaypointSymbol: "X1-FOREIGN-B1", Ask: 40}, {WaypointSymbol: "X1-VB74-A9", Ask: 90}},
 		},
 		homeByGood: map[string]*market.CheapestMarketResult{
-			"IRON_ORE": {WaypointSymbol: "X1-VB74-A9", SellPrice: 90},
+			"IRON_ORE": {WaypointSymbol: "X1-VB74-A9", Ask: 90},
 		},
 	}
 	miner := &DemandMiner{demand: src, markets: markets}
@@ -166,10 +166,10 @@ func TestDemandMiner_ForeignStillPreferredWhenCheaper(t *testing.T) {
 	markets := &fakeMarketAsks{
 		crossByGood: map[string][]market.CheapestMarketResult{
 			// foreign @40 is cheaper than the home ask @50 → foreign is the source.
-			"ALUMINUM": {{WaypointSymbol: "X1-FOREIGN-Z1", SellPrice: 40}, {WaypointSymbol: "X1-VB74-Y1", SellPrice: 50}},
+			"ALUMINUM": {{WaypointSymbol: "X1-FOREIGN-Z1", Ask: 40}, {WaypointSymbol: "X1-VB74-Y1", Ask: 50}},
 		},
 		homeByGood: map[string]*market.CheapestMarketResult{
-			"ALUMINUM": {WaypointSymbol: "X1-VB74-Y1", SellPrice: 50},
+			"ALUMINUM": {WaypointSymbol: "X1-VB74-Y1", Ask: 50},
 		},
 	}
 	miner := &DemandMiner{demand: src, markets: markets}
@@ -194,10 +194,10 @@ func TestDemandMiner_BuyLegDefaultApplied(t *testing.T) {
 	src := &fakeDemandSource{rows: []ContractGoodDemand{demand("COPPER_ORE", 2, 40, now.Add(-6*time.Hour), now)}}
 	markets := &fakeMarketAsks{
 		crossByGood: map[string][]market.CheapestMarketResult{
-			"COPPER_ORE": {{WaypointSymbol: "X1-VB74-C1", SellPrice: 30}},
+			"COPPER_ORE": {{WaypointSymbol: "X1-VB74-C1", Ask: 30}},
 		},
 		homeByGood: map[string]*market.CheapestMarketResult{
-			"COPPER_ORE": {WaypointSymbol: "X1-VB74-C1", SellPrice: 30},
+			"COPPER_ORE": {WaypointSymbol: "X1-VB74-C1", Ask: 30},
 		},
 	}
 	miner := &DemandMiner{demand: src, markets: markets}
@@ -218,7 +218,7 @@ func TestDemandMiner_HomeUnknownForeignKnownRetainedNotEligible(t *testing.T) {
 	src := &fakeDemandSource{rows: []ContractGoodDemand{demand("PLATINUM", 2, 15, now.Add(-6*time.Hour), now)}}
 	markets := &fakeMarketAsks{
 		crossByGood: map[string][]market.CheapestMarketResult{
-			"PLATINUM": {{WaypointSymbol: "X1-FOREIGN-P1", SellPrice: 20}},
+			"PLATINUM": {{WaypointSymbol: "X1-FOREIGN-P1", Ask: 20}},
 		},
 		homeByGood: map[string]*market.CheapestMarketResult{}, // home does not sell PLATINUM
 	}
@@ -249,10 +249,10 @@ func TestDemandMiner_NoMarketAnywhereDropped(t *testing.T) {
 	}}
 	markets := &fakeMarketAsks{
 		crossByGood: map[string][]market.CheapestMarketResult{
-			"FUEL": {{WaypointSymbol: "X1-VB74-EXPORT", SellPrice: 40}},
+			"FUEL": {{WaypointSymbol: "X1-VB74-EXPORT", Ask: 40}},
 		},
 		homeByGood: map[string]*market.CheapestMarketResult{
-			"FUEL": {WaypointSymbol: "X1-VB74-EXPORT", SellPrice: 40},
+			"FUEL": {WaypointSymbol: "X1-VB74-EXPORT", Ask: 40},
 		},
 	}
 	miner := &DemandMiner{demand: src, markets: markets}
@@ -281,13 +281,13 @@ func TestDemandMiner_RanksEligibleFirstThenBySavings(t *testing.T) {
 	}}
 	markets := &fakeMarketAsks{
 		crossByGood: map[string][]market.CheapestMarketResult{
-			"IRON_ORE": {{WaypointSymbol: "X1-FOREIGN-B1", SellPrice: 40}},
-			"FUEL":     {{WaypointSymbol: "X1-VB74-EXPORT", SellPrice: 40}},
-			"PLATINUM": {{WaypointSymbol: "X1-FOREIGN-P1", SellPrice: 20}},
+			"IRON_ORE": {{WaypointSymbol: "X1-FOREIGN-B1", Ask: 40}},
+			"FUEL":     {{WaypointSymbol: "X1-VB74-EXPORT", Ask: 40}},
+			"PLATINUM": {{WaypointSymbol: "X1-FOREIGN-P1", Ask: 20}},
 		},
 		homeByGood: map[string]*market.CheapestMarketResult{
-			"IRON_ORE": {WaypointSymbol: "X1-VB74-A9", SellPrice: 90},     // savings (90+5)-40=55 ×200
-			"FUEL":     {WaypointSymbol: "X1-VB74-EXPORT", SellPrice: 40}, // savings 5 ×50
+			"IRON_ORE": {WaypointSymbol: "X1-VB74-A9", Ask: 90},     // savings (90+5)-40=55 ×200
+			"FUEL":     {WaypointSymbol: "X1-VB74-EXPORT", Ask: 40}, // savings 5 ×50
 		},
 	}
 	miner := &DemandMiner{demand: src, markets: markets}
@@ -313,12 +313,12 @@ func TestDemandMiner_RespectsMinRecurrence(t *testing.T) {
 	}}
 	markets := &fakeMarketAsks{
 		crossByGood: map[string][]market.CheapestMarketResult{
-			"IRON_ORE": {{WaypointSymbol: "X1-VB74-A9", SellPrice: 40}},
-			"FUEL":     {{WaypointSymbol: "X1-VB74-EXPORT", SellPrice: 40}},
+			"IRON_ORE": {{WaypointSymbol: "X1-VB74-A9", Ask: 40}},
+			"FUEL":     {{WaypointSymbol: "X1-VB74-EXPORT", Ask: 40}},
 		},
 		homeByGood: map[string]*market.CheapestMarketResult{
-			"IRON_ORE": {WaypointSymbol: "X1-VB74-A9", SellPrice: 40},
-			"FUEL":     {WaypointSymbol: "X1-VB74-EXPORT", SellPrice: 40},
+			"IRON_ORE": {WaypointSymbol: "X1-VB74-A9", Ask: 40},
+			"FUEL":     {WaypointSymbol: "X1-VB74-EXPORT", Ask: 40},
 		},
 	}
 	miner := &DemandMiner{demand: src, markets: markets}
@@ -338,12 +338,12 @@ func TestDemandMiner_AppliesTopNCap(t *testing.T) {
 	}}
 	markets := &fakeMarketAsks{
 		crossByGood: map[string][]market.CheapestMarketResult{
-			"IRON_ORE": {{WaypointSymbol: "X1-VB74-A9", SellPrice: 40}},
-			"FUEL":     {{WaypointSymbol: "X1-VB74-EXPORT", SellPrice: 40}},
+			"IRON_ORE": {{WaypointSymbol: "X1-VB74-A9", Ask: 40}},
+			"FUEL":     {{WaypointSymbol: "X1-VB74-EXPORT", Ask: 40}},
 		},
 		homeByGood: map[string]*market.CheapestMarketResult{
-			"IRON_ORE": {WaypointSymbol: "X1-VB74-A9", SellPrice: 90},
-			"FUEL":     {WaypointSymbol: "X1-VB74-EXPORT", SellPrice: 40},
+			"IRON_ORE": {WaypointSymbol: "X1-VB74-A9", Ask: 90},
+			"FUEL":     {WaypointSymbol: "X1-VB74-EXPORT", Ask: 40},
 		},
 	}
 	miner := &DemandMiner{demand: src, markets: markets}
@@ -388,11 +388,11 @@ func rewardVsSavingsMiner() *DemandMiner {
 	}}
 	markets := &fakeMarketAsks{
 		crossByGood: map[string][]market.CheapestMarketResult{
-			"POLYNUCLEOTIDES": {{WaypointSymbol: "X1-FOREIGN-P1", SellPrice: 40}},
-			"MEDICINE":        {{WaypointSymbol: "X1-FOREIGN-M1", SellPrice: 40}},
+			"POLYNUCLEOTIDES": {{WaypointSymbol: "X1-FOREIGN-P1", Ask: 40}},
+			"MEDICINE":        {{WaypointSymbol: "X1-FOREIGN-M1", Ask: 40}},
 		},
 		homeByGood: map[string]*market.CheapestMarketResult{
-			"POLYNUCLEOTIDES": {WaypointSymbol: "X1-VB74-P", SellPrice: 500}, // high home ask => big savings, stock-eligible
+			"POLYNUCLEOTIDES": {WaypointSymbol: "X1-VB74-P", Ask: 500}, // high home ask => big savings, stock-eligible
 			// MEDICINE: no home ask => savings 0 => stock-ineligible => ranked last by the savings cull
 		},
 	}
@@ -438,10 +438,10 @@ func TestDemandMiner_HomeSystemOnly_SourcesHomeNotCheaperForeign(t *testing.T) {
 	markets := &fakeMarketAsks{
 		crossByGood: map[string][]market.CheapestMarketResult{
 			// cheapest-first: a FOREIGN source @40 undercuts the home export @90.
-			"IRON_ORE": {{WaypointSymbol: "X1-FOREIGN-B1", SellPrice: 40}, {WaypointSymbol: "X1-VB74-A9", SellPrice: 90}},
+			"IRON_ORE": {{WaypointSymbol: "X1-FOREIGN-B1", Ask: 40}, {WaypointSymbol: "X1-VB74-A9", Ask: 90}},
 		},
 		homeByGood: map[string]*market.CheapestMarketResult{
-			"IRON_ORE": {WaypointSymbol: "X1-VB74-A9", SellPrice: 90},
+			"IRON_ORE": {WaypointSymbol: "X1-VB74-A9", Ask: 90},
 		},
 	}
 	miner := &DemandMiner{demand: src, markets: markets}
@@ -470,7 +470,7 @@ func TestDemandMiner_HomeSystemOnly_NoHomeMarket_DropsCandidate(t *testing.T) {
 	markets := &fakeMarketAsks{
 		// A FOREIGN market sells DRUGS, but the home system does not (homeByGood has no entry → nil).
 		crossByGood: map[string][]market.CheapestMarketResult{
-			"DRUGS": {{WaypointSymbol: "X1-FOREIGN-D1", SellPrice: 200}},
+			"DRUGS": {{WaypointSymbol: "X1-FOREIGN-D1", Ask: 200}},
 		},
 		homeByGood: map[string]*market.CheapestMarketResult{},
 	}

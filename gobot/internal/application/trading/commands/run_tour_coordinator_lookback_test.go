@@ -46,8 +46,10 @@ func TestBuildLookbackManifest_PairsDepartureExportToDestinationImport(t *testin
 // would reintroduce the C37 dump the tour snapshot filter exists to prevent.
 func TestBuildLookbackManifest_NeverSellsIntoAnExporterBid(t *testing.T) {
 	src := []trading.GoodListing{gl("PARTS", "HU21-D46", "EXPORT", 40, 100, 30)}
-	// The destination only EXPORTS PARTS (its bid is a sellback, not a demand).
-	dest := []trading.GoodListing{gl("PARTS", "UQ16-D9", "EXPORT", 300, 120, 20)}
+	// The destination only EXPORTS PARTS (its bid is a sellback, not a demand). Its ask still
+	// sits above its own bid, the only shape a real market can have (sp-en5h7), so the EXPORT
+	// trade type is unambiguously what rejects it — not an impossible crossed quote.
+	dest := []trading.GoodListing{gl("PARTS", "UQ16-D9", "EXPORT", 300, 320, 20)}
 
 	manifest := buildLookbackManifest(src, dest, 100, 10)
 
