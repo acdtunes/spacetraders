@@ -101,12 +101,35 @@ func (s *OffGateWarpTargetSelector) SelectTarget(ctx context.Context, playerID i
 }
 
 // gateConnectedSet is the set of system symbols ON the gate network: every adjacency key
-// plus every system those keys connect to. A universe system not in this set is off-gate.
+// plus every system those keys connect to THROUGH A GATE THAT EXISTS. A universe system not
+// in this set is off-gate.
+//
+// AN UNBUILT GATE CONNECTS NOTHING. GateEdge.UnderConstruction means the neighbour's own gate
+// is still being built, and the domain type says it outright: a route "must never traverse INTO
+// such an edge — a jump to an unbuilt gate fails at hop time". Counting such a neighbour as
+// on-network excluded it from off-gate selection, which is exactly backwards: a system whose
+// only inbound gate can never be used is the single most valuable warp target there is. That
+// misclassification is what made the whole off-gate slice unable to see the systems it exists
+// to reach — measured live, every one of the 53 exits from this fleet's pocket is an
+// under-construction edge, so the entire ring beyond the wall read as "already connected".
+//
+// STALE EDGES STAY CONNECTED, DELIBERATELY. Stale means UnderConstruction is UNVERIFIED
+// (synced_at expired), so an unbuilt verdict cannot be trusted. Warping is the expensive move —
+// a 769k hull burning fuel to cross interstellar distance — so the unverified case resolves the
+// CONSERVATIVE way: treated as connected, hence not a target. Only a VERIFIED unbuilt gate
+// promotes its neighbour to a warp candidate, which keeps this guard strictly one-directional
+// (it can only ever refuse to spend, never invent a reason to).
+//
+// An adjacency KEY is always on-network regardless of its edges: reading a system's gate means
+// a hull of ours stood there, so it is somewhere we reach by definition.
 func gateConnectedSet(adjacency map[string][]system.GateEdge) map[string]bool {
 	set := make(map[string]bool, len(adjacency))
 	for systemSymbol, edges := range adjacency {
 		set[systemSymbol] = true
 		for _, edge := range edges {
+			if edge.UnderConstruction && !edge.Stale {
+				continue // verified unbuilt: this gate connects nothing, so the neighbour is off-gate
+			}
 			set[edge.ConnectedSystem] = true
 		}
 	}
