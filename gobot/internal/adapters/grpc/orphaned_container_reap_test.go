@@ -21,6 +21,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
@@ -168,4 +169,97 @@ func TestReapOrphanedContainer_UnknownContainerIsSilent(t *testing.T) {
 		s.ReapOrphanedContainer(context.Background(), "tour-run-GONE-deadbeef",
 			shared.MustNewPlayerID(playerID), "fleet unassign")
 	}, "reaping a container that no longer exists must never fail the unassign that triggered it")
+}
+
+// staleIndexShipRepo hands the STALE container's hull back from FindByContainer even though the
+// hull has already moved on to a new container. That is deliberately adversarial: in production
+// the hull's container_id was cleared by the claim break, so FindByContainer returns nothing and
+// the question never arises. This fixture removes that first barrier so the SECOND one — the
+// CAS closure's re-check on the fresh row — is the only thing standing between a late reap and
+// the hull's new owner. Without an empty-handed FindByContainer the guard is never consulted, and
+// a test that relied on it would pass while proving nothing.
+type staleIndexShipRepo struct {
+	navigation.ShipRepository
+	hull      *navigation.Ship
+	staleID   string // the container FindByContainer pretends still owns the hull
+	saveCalls int
+}
+
+func (r *staleIndexShipRepo) FindByContainer(_ context.Context, containerID string, _ shared.PlayerID) ([]*navigation.Ship, error) {
+	if containerID == r.staleID {
+		return []*navigation.Ship{r.hull}, nil
+	}
+	return nil, nil
+}
+
+func (r *staleIndexShipRepo) FindBySymbol(_ context.Context, _ string, _ shared.PlayerID) (*navigation.Ship, error) {
+	return r.hull, nil
+}
+
+func (r *staleIndexShipRepo) SaveWithRetry(_ context.Context, _ string, _ shared.PlayerID, mutate navigation.ShipMutation) (*navigation.Ship, bool, error) {
+	changed, err := mutate(r.hull) // the FRESH row — already claimed by the NEW container
+	if err != nil {
+		return r.hull, false, err
+	}
+	if changed {
+		r.saveCalls++
+	}
+	return r.hull, changed, nil
+}
+
+// RULINGS #7. Reaping at reassignment time makes the release/re-claim race TIGHTER than the
+// restart sweep's, so the guard that stops a late reap yanking the hull out from under its new
+// owner has to be explicit, not incidental.
+//
+// The exact production shape: TORWIND-61 was flown by tour-run-...-f0c2c82f, the claim was broken,
+// and tour-run-...-2821d983 re-claimed the hull. When the orphan is finally stopped, its release
+// must be a NO-OP — the hull belongs to 2821d983 now, and releasing it would strand a live tour.
+func TestReapedOrphansReleaseNeverTakesTheHullFromItsNewOwner(t *testing.T) {
+	const stale = "tour-run-TORWIND-61-f0c2c82f"
+	const newOwner = "tour-run-TORWIND-61-2821d983"
+	playerID := 5
+
+	hull := newIdleTradeShip(t, "TORWIND-61", playerID)
+	require.NoError(t, hull.AssignToContainer(newOwner, shared.NewRealClock()),
+		"precondition: the coordinator has already re-claimed the hull into a new container")
+
+	repo := &staleIndexShipRepo{hull: hull, staleID: stale}
+	entity := container.NewContainer(stale, container.ContainerTypeTrading, playerID, 1, nil,
+		map[string]interface{}{"ship_symbol": "TORWIND-61"}, nil)
+	require.NoError(t, entity.Start())
+	runner := NewContainerRunner(entity, nilCleanMediator{}, nil, noopLogRepo{}, nil, repo, nil)
+
+	// The reap stops the orphan, and Stop()'s last act is this release.
+	runner.releaseShipAssignments("stopped")
+
+	require.True(t, hull.IsAssigned(),
+		"the reaped orphan's release must not free a hull that now belongs to a live container")
+	require.Equal(t, newOwner, hull.ContainerID(),
+		"the hull must still belong to the container that re-claimed it — a late reap that releases it strands a running tour (RULINGS #7)")
+	require.Zero(t, repo.saveCalls,
+		"the release must not WRITE at all once the fresh row shows another owner")
+}
+
+// The same guard must not over-fire: an orphan that genuinely still holds its hull (the claim
+// break failed, or the reap raced ahead of any re-claim) must still release it on the way out, or
+// the reap would leak the claim it was meant to clean up.
+func TestReapedOrphanStillReleasesAHullItGenuinelyHolds(t *testing.T) {
+	const stale = "tour-run-TORWIND-61-f0c2c82f"
+	playerID := 5
+
+	hull := newIdleTradeShip(t, "TORWIND-61", playerID)
+	require.NoError(t, hull.AssignToContainer(stale, shared.NewRealClock()),
+		"precondition: the orphan still holds its own claim")
+
+	repo := &staleIndexShipRepo{hull: hull, staleID: stale}
+	entity := container.NewContainer(stale, container.ContainerTypeTrading, playerID, 1, nil,
+		map[string]interface{}{"ship_symbol": "TORWIND-61"}, nil)
+	require.NoError(t, entity.Start())
+	runner := NewContainerRunner(entity, nilCleanMediator{}, nil, noopLogRepo{}, nil, repo, nil)
+
+	runner.releaseShipAssignments("stopped")
+
+	require.False(t, hull.IsAssigned(),
+		"a hull the orphan really does own must still be released — otherwise the reap leaks the very claim it exists to clean up")
+	require.Equal(t, 1, repo.saveCalls, "the genuine release must be persisted")
 }
