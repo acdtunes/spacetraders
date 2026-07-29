@@ -56,6 +56,7 @@ type ReserveShipResponse struct {
 type ReserveShipHandler struct {
 	shipRepo       navigation.ShipRepository
 	playerResolver *common.PlayerResolver
+	reaper         OrphanedContainerReaper
 }
 
 // NewReserveShipHandler creates a new ReserveShipHandler.
@@ -64,6 +65,13 @@ func NewReserveShipHandler(shipRepo navigation.ShipRepository, playerRepo player
 		shipRepo:       shipRepo,
 		playerResolver: common.NewPlayerResolver(playerRepo),
 	}
+}
+
+// SetOrphanedContainerReaper wires the reaper post-construction (see
+// AssignShipFleetHandler.SetOrphanedContainerReaper). A nil reaper leaves the
+// preempt byte-identical to its pre-sp-h8mbb behavior.
+func (h *ReserveShipHandler) SetOrphanedContainerReaper(reaper OrphanedContainerReaper) {
+	h.reaper = reaper
 }
 
 // Handle executes the ReserveShip command.
@@ -90,6 +98,15 @@ func (h *ReserveShipHandler) Handle(ctx context.Context, request common.Request)
 		preemptedFrom, err = h.shipRepo.PreemptForCaptain(ctx, cmd.ShipSymbol, cmd.Reason, playerID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to preempt ship for captain: %w", err)
+		}
+		// Reap the container the preempt orphaned (sp-h8mbb). Revoking the claim hands the
+		// hull to the captain, but leaves the coordinator's container RUNNING and still
+		// flying it — so a hull the captain believes is theirs keeps being navigated and
+		// traded by a container nobody can see, until a restart's recovery sweep fails it
+		// hours later. The preempt itself stands; only the loser is cleaned up.
+		if h.reaper != nil {
+			h.reaper.ReapOrphanedContainer(ctx, preemptedFrom, playerID,
+				fmt.Sprintf("captain preempt of %s (ship reserve --force)", cmd.ShipSymbol))
 		}
 	} else if err := h.shipRepo.ReserveForCaptain(ctx, cmd.ShipSymbol, cmd.Reason, playerID); err != nil {
 		// Non-force: a live coordinator claim is rejected.

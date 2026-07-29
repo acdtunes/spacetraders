@@ -253,7 +253,7 @@ func TestNavOperations_PersistOnlyTheColumnsTheyOwn(t *testing.T) {
 			// Everything the entity cannot know about, while it is in the air.
 			released, err := repo.ReleaseContainerClaim(context.Background(), "TORWIND-40", playerID, "container_stopped")
 			require.NoError(t, err)
-			require.True(t, released)
+			require.Equal(t, "contract-worker-9", released, "the break names the container that lost the hull (sp-h8mbb)")
 			require.NoError(t, repo.AssignFleet(context.Background(), "TORWIND-40", "manufacturing", playerID))
 			deliverCargoOnRow(t, db, "TORWIND-40")
 			refuelOnRow(t, db, "TORWIND-40")
@@ -306,7 +306,8 @@ func TestNavOperations_AReleasedHullStaysReleasedThroughAnArrival(t *testing.T) 
 
 	released, err := repo.ReleaseContainerClaim(context.Background(), "TORWIND-41", playerID, "container_stopped")
 	require.NoError(t, err)
-	require.True(t, released, "precondition: the release actually freed the hull")
+	require.Equal(t, "cargo-liquidation-48887734", released,
+		"precondition: the release freed the hull AND named the container that lost it (sp-h8mbb)")
 
 	prevented := assignmentClobbersPrevented.Load()
 
@@ -413,7 +414,7 @@ func TestNavOperations_ScopedWriteLeavesTheEntityUntrustedForAWholeRowSave(t *te
 	// stale entity. The ownership guard must still be the one that catches it.
 	released, err := repo.ReleaseContainerClaim(context.Background(), "TORWIND-43", playerID, "container_stopped")
 	require.NoError(t, err)
-	require.True(t, released)
+	require.Equal(t, "contract-worker-10", released, "the break names the container that lost the hull (sp-h8mbb)")
 
 	prevented := assignmentClobbersPrevented.Load()
 	require.NoError(t, repo.Save(context.Background(), inFlight))

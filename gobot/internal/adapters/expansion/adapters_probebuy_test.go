@@ -132,13 +132,13 @@ func (r *probeFakeShipRepo) ClaimShip(_ context.Context, shipSymbol, containerID
 	return nil
 }
 
-func (r *probeFakeShipRepo) ReleaseContainerClaim(_ context.Context, shipSymbol string, _ shared.PlayerID, _ string) (bool, error) {
-	_, held := r.claims[shipSymbol]
+func (r *probeFakeShipRepo) ReleaseContainerClaim(_ context.Context, shipSymbol string, _ shared.PlayerID, _ string) (string, error) {
+	heldBy := r.claims[shipSymbol]
 	delete(r.claims, shipSymbol)
 	if r.events != nil {
 		*r.events = append(*r.events, "release:"+shipSymbol)
 	}
-	return held, nil
+	return heldBy, nil
 }
 
 // probeFakeYardFinder is the ReachableYardFinder double: it returns the scanned

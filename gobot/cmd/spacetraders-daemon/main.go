@@ -704,6 +704,17 @@ func run(cfg *config.Config) error {
 	// loop. It claims nothing itself; each tour it spawns claims its own hull under
 	// operation="trade" through the daemon server (SetTourLauncher), the SAME StartTourRun
 	// path `workflow tour-run` uses. Tuning is resolved live from config.yaml [trade_fleet].
+	// sp-h8mbb: every path that SEVERS a live work-claim must also reap the container that
+	// lost the hull. Breaking the claim frees the hull atomically and correctly, but does
+	// nothing to the container flying it — which keeps navigating, buying and selling on a
+	// hull it no longer owns while the coordinator, reading ownership from the hull's single
+	// assignment row, launches a SECOND container onto it. The orphan's RUNNING row then
+	// survives until a daemon restart's recovery sweep fails it (measured: 4.0h and 2.9h).
+	// Wired post-construction because both handlers are registered with the mediator above,
+	// before NewDaemonServer exists.
+	assignShipFleetHandler.SetOrphanedContainerReaper(daemonServer) // `fleet unassign`
+	reserveShipHandler.SetOrphanedContainerReaper(daemonServer)     // `ship reserve --force`
+
 	tradeFleetCoordinatorHandler := tradeRouteCmd.NewRunTradeFleetCoordinatorHandler(shipRepo, nil) // nil = use RealClock
 	tradeFleetCoordinatorHandler.SetTourLauncher(daemonServer)
 	tradeFleetCoordinatorHandler.SetEventRecorder(captainEventRepo) // sp-6wxq: emit coordinator error-loop events on reconcile streak breach

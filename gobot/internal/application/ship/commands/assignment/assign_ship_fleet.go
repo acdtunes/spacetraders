@@ -8,6 +8,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contract/depot"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // AssignShipFleetCommand dedicates a ship to a named fleet — the SINGLE write
@@ -116,11 +117,25 @@ var DefaultFleetCargoRequirement = FleetCargoRequirement{
 	depot.DeliveryHullFleet: 1, // "depot-delivery" — the reconciler's GapWorkerShort pin (sp-pt7d)
 }
 
+// OrphanedContainerReaper terminalizes the container a severed work-claim just orphaned
+// (sp-h8mbb). Breaking a live claim frees the HULL, but the container that was flying it keeps
+// running — still navigating, buying and selling on a hull it no longer owns — and its row stays
+// RUNNING until a daemon restart's recovery sweep finally fails it. Reaping it here is what makes
+// `fleet unassign` mean what it says.
+//
+// Implemented by the daemon (only it owns the runner registry). Best-effort and non-erroring by
+// design: the authoritative claim write has already committed by the time this runs, so cleanup
+// must never fail the unassign.
+type OrphanedContainerReaper interface {
+	ReapOrphanedContainer(ctx context.Context, containerID string, playerID shared.PlayerID, reason string)
+}
+
 // AssignShipFleetHandler handles the AssignShipFleet command.
 type AssignShipFleetHandler struct {
 	shipRepo       navigation.ShipRepository
 	playerResolver *common.PlayerResolver
 	fleetCargoReq  FleetCargoRequirement
+	reaper         OrphanedContainerReaper
 }
 
 // NewAssignShipFleetHandler creates a new AssignShipFleetHandler with the
@@ -131,6 +146,15 @@ func NewAssignShipFleetHandler(shipRepo navigation.ShipRepository, playerRepo pl
 		playerResolver: common.NewPlayerResolver(playerRepo),
 		fleetCargoReq:  DefaultFleetCargoRequirement,
 	}
+}
+
+// SetOrphanedContainerReaper wires the reaper post-construction, mirroring
+// SetTourLauncher: the handler is registered with the mediator before
+// NewDaemonServer runs, so the daemon cannot be passed to the constructor. A nil
+// reaper (any wiring that never sets one) leaves the claim break byte-identical
+// to its pre-sp-h8mbb behavior rather than panicking.
+func (h *AssignShipFleetHandler) SetOrphanedContainerReaper(reaper OrphanedContainerReaper) {
+	h.reaper = reaper
 }
 
 // Handle executes the AssignShipFleet command.
@@ -238,19 +262,35 @@ func (h *AssignShipFleetHandler) Handle(ctx context.Context, request common.Requ
 	// false), and a captain reservation is left untouched by the break (that is
 	// `ship release`'s job). Best-effort audit: a broken claim logs one line.
 	if cmd.BreakWorkClaim {
-		broke, err := h.shipRepo.ReleaseContainerClaim(ctx, cmd.ShipSymbol, playerID, "fleet unassign (sp-w3yd)")
+		brokenFrom, err := h.shipRepo.ReleaseContainerClaim(ctx, cmd.ShipSymbol, playerID, "fleet unassign (sp-w3yd)")
 		if err != nil {
 			return nil, fmt.Errorf("failed to break live work-claim on unassign: %w", err)
 		}
-		if broke {
+		if brokenFrom != "" {
 			logger.Log("INFO", fmt.Sprintf(
 				"Broke live coordinator work-claim on %s during unassign — coordinator will stop routing it [assigner=%s]",
 				cmd.ShipSymbol, assigner),
 				map[string]interface{}{
-					"action":      "break_work_claim_on_unassign",
-					"ship_symbol": cmd.ShipSymbol,
-					"assigner":    assigner,
+					"action":       "break_work_claim_on_unassign",
+					"ship_symbol":  cmd.ShipSymbol,
+					"assigner":     assigner,
+					"container_id": brokenFrom,
 				})
+
+			// Reap the container the break just orphaned (sp-h8mbb). Freeing the hull is
+			// only half of unassign: the container that was flying it is untouched by the
+			// claim write and keeps navigating, buying and selling on a hull it no longer
+			// owns, invisible to the coordinator (which reads ownership from the hull's
+			// single assignment row) — so the coordinator launches a SECOND container onto
+			// the same hull, and nothing reconciles the two until a restart's recovery
+			// sweep fails the orphan hours later. Measured: 4.0h and 2.9h.
+			//
+			// The reassignment itself is CORRECT and stands; only the loser is cleaned up,
+			// so no claim guard is weakened (RULINGS #4/#7).
+			if h.reaper != nil {
+				h.reaper.ReapOrphanedContainer(ctx, brokenFrom, playerID,
+					fmt.Sprintf("fleet unassign of %s [assigner=%s]", cmd.ShipSymbol, assigner))
+			}
 		}
 	}
 

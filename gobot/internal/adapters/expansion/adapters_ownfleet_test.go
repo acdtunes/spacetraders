@@ -63,10 +63,10 @@ func (r *ownFleetShipRepo) ClaimShip(_ context.Context, shipSymbol, containerID 
 	return nil
 }
 
-func (r *ownFleetShipRepo) ReleaseContainerClaim(_ context.Context, shipSymbol string, _ shared.PlayerID, _ string) (bool, error) {
-	_, held := r.claims[shipSymbol]
+func (r *ownFleetShipRepo) ReleaseContainerClaim(_ context.Context, shipSymbol string, _ shared.PlayerID, _ string) (string, error) {
+	heldBy := r.claims[shipSymbol]
 	delete(r.claims, shipSymbol)
-	return held, nil
+	return heldBy, nil
 }
 
 // probeBuyerHull is a probe (satellite) dedicated to a named fleet — a stationed probe-buyer, or a

@@ -169,8 +169,14 @@ type ShipRepository interface {
 	// extra step `fleet unassign` performs beyond clearing the DedicatedFleet tag.
 	// Scoped to a container claim: a captain reservation is left
 	// untouched (that is `ship release`'s job) and an idle hull is a no-op.
-	// Returns whether a live claim was actually broken.
-	ReleaseContainerClaim(ctx context.Context, shipSymbol string, playerID shared.PlayerID, reason string) (bool, error)
+	//
+	// Returns the container id the claim was revoked from, or "" if the hull was
+	// idle and nothing was broken — mirroring PreemptForCaptain above. The id is
+	// read inside the same row lock as the write, so it names the container that
+	// actually lost the hull with no TOCTOU gap. Callers need it because breaking
+	// the claim does nothing to that container: it keeps running the hull until
+	// something reaps it (sp-h8mbb).
+	ReleaseContainerClaim(ctx context.Context, shipSymbol string, playerID shared.PlayerID, reason string) (string, error)
 
 	// Sync methods (API -> Database)
 	SyncAllFromAPI(ctx context.Context, playerID shared.PlayerID) (int, error)

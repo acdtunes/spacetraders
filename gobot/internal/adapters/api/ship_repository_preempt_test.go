@@ -279,7 +279,8 @@ func TestReleaseContainerClaim_BreaksLiveContainerClaim(t *testing.T) {
 
 	released, err := repo.ReleaseContainerClaim(context.Background(), "TORWIND-8", playerID, "fleet unassign")
 	require.NoError(t, err)
-	require.True(t, released, "breaking a live container claim reports that it acted")
+	require.Equal(t, "factory-1", released,
+		"breaking a live container claim reports WHICH container lost the hull, so the caller can reap it (sp-h8mbb)")
 
 	var model persistence.ShipModel
 	require.NoError(t, db.Where("ship_symbol = ?", "TORWIND-8").First(&model).Error)
@@ -301,7 +302,7 @@ func TestReleaseContainerClaim_LeavesCaptainReservationUntouched(t *testing.T) {
 
 	released, err := repo.ReleaseContainerClaim(context.Background(), "TORWIND-8", playerID, "fleet unassign")
 	require.NoError(t, err)
-	require.False(t, released, "unassign must not break a captain reservation")
+	require.Empty(t, released, "unassign must not break a captain reservation")
 
 	var model persistence.ShipModel
 	require.NoError(t, db.Where("ship_symbol = ?", "TORWIND-8").First(&model).Error)
@@ -318,5 +319,5 @@ func TestReleaseContainerClaim_IdleHullNoOp(t *testing.T) {
 
 	released, err := repo.ReleaseContainerClaim(context.Background(), "TORWIND-8", playerID, "fleet unassign")
 	require.NoError(t, err)
-	require.False(t, released)
+	require.Empty(t, released, "an idle hull orphans no container, so there is nothing to name")
 }

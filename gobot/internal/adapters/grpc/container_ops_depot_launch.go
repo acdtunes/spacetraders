@@ -455,10 +455,16 @@ func (s *DaemonServer) positionDepotElementHull(
 		if err = s.shipRepo.AssignFleet(ctx, shipSymbol, fleetTag, pid); err != nil {
 			return nil, false, fmt.Errorf("failed to re-dedicate depot hull %s to %q: %w", shipSymbol, fleetTag, err)
 		}
-		if _, err = s.shipRepo.ReleaseContainerClaim(ctx, shipSymbol, pid,
-			fmt.Sprintf("re-dedicated as depot %s hull for %s (sp-3l64)", fleetTag, targetWaypoint)); err != nil {
-			return nil, false, fmt.Errorf("failed to release prior work-claim on depot hull %s: %w", shipSymbol, err)
+		brokenFrom, rerr := s.shipRepo.ReleaseContainerClaim(ctx, shipSymbol, pid,
+			fmt.Sprintf("re-dedicated as depot %s hull for %s (sp-3l64)", fleetTag, targetWaypoint))
+		if rerr != nil {
+			return nil, false, fmt.Errorf("failed to release prior work-claim on depot hull %s: %w", shipSymbol, rerr)
 		}
+		// Reap the container that just lost the hull (sp-h8mbb). Freeing a MID-TASK hull's
+		// claim leaves its container running the hull it no longer owns, and a phantom
+		// RUNNING row that only a restart's recovery sweep clears.
+		s.ReapOrphanedContainer(ctx, brokenFrom, pid,
+			fmt.Sprintf("re-dedicated as depot %s hull for %s", fleetTag, targetWaypoint))
 		// Reload so the idle / location gates below observe the post-release state.
 		ship, err = s.shipRepo.FindBySymbol(ctx, shipSymbol, pid)
 		if err != nil {
@@ -715,8 +721,13 @@ func (s *DaemonServer) evictStrandedDepotElement(ctx context.Context, shipSymbol
 	if err := s.releaseDepotHull(ctx, shipSymbol, playerID); err != nil {
 		fmt.Printf("depot %s eviction: failed to un-dedicate stranded hull %s: %v\n", role, shipSymbol, err)
 	}
-	if _, err := s.shipRepo.ReleaseContainerClaim(ctx, shipSymbol, shared.MustNewPlayerID(playerID), claimReason); err != nil {
+	if brokenFrom, err := s.shipRepo.ReleaseContainerClaim(ctx, shipSymbol, shared.MustNewPlayerID(playerID), claimReason); err != nil {
 		fmt.Printf("depot %s eviction: failed to release work-claim on stranded hull %s: %v\n", role, shipSymbol, err)
+	} else {
+		// Reap the container the eviction orphaned (sp-h8mbb) — otherwise it keeps running
+		// the evicted hull, and its RUNNING row survives until a restart sweep fails it.
+		s.ReapOrphanedContainer(ctx, brokenFrom, shared.MustNewPlayerID(playerID),
+			fmt.Sprintf("evicted as an unreachable depot %s hull", role))
 	}
 	fmt.Printf("depot %s eviction: evicted stranded %s hull %s (%s) — the scaler ramp re-grows on a home-viable hull next tick\n", role, role, shipSymbol, cause)
 }

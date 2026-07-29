@@ -32,7 +32,8 @@ func TestSave_StaleEntityDoesNotResurrectAReleasedClaim(t *testing.T) {
 	// The container exits and its release lands.
 	released, err := repo.ReleaseContainerClaim(context.Background(), "TORWIND-30", playerID, "container_stopped")
 	require.NoError(t, err)
-	require.True(t, released, "precondition: the release actually freed the hull")
+	require.Equal(t, "cargo-liquidation-48887734", released,
+		"precondition: the release freed the hull AND named the container that lost it (sp-h8mbb)")
 
 	before := assignmentClobbersPrevented.Load()
 

@@ -1870,14 +1870,20 @@ func (r *ShipRepository) PreemptForCaptain(ctx context.Context, shipSymbol strin
 //
 // Scoped to a CONTAINER claim: a captain reservation is left untouched (breaking
 // it is `ship release`'s job, not unassign's — unassign must never silently drop
-// a reservation), and an already-idle hull is a harmless no-op. Returns whether a
-// live claim was actually broken.
-func (r *ShipRepository) ReleaseContainerClaim(ctx context.Context, shipSymbol string, playerID shared.PlayerID, reason string) (bool, error) {
+// a reservation), and an already-idle hull is a harmless no-op.
+//
+// Returns the container id the claim was revoked from, or "" when nothing was
+// broken — mirroring PreemptForCaptain. Breaking the claim frees the HULL but
+// does nothing to that container, which keeps flying it until reaped (sp-h8mbb),
+// so the caller is handed the id it needs to do exactly that. Read inside the
+// same row lock as the write, so there is no TOCTOU gap between the id reported
+// and the claim actually revoked.
+func (r *ShipRepository) ReleaseContainerClaim(ctx context.Context, shipSymbol string, playerID shared.PlayerID, reason string) (string, error) {
 	if r.db == nil {
-		return false, fmt.Errorf("database not configured")
+		return "", fmt.Errorf("database not configured")
 	}
 
-	var released bool
+	var releasedFrom string
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var model persistence.ShipModel
 
@@ -1900,6 +1906,12 @@ func (r *ShipRepository) ReleaseContainerClaim(ctx context.Context, shipSymbol s
 			return nil
 		}
 
+		// Capture the losing container BEFORE the write: Updates writes its map back
+		// onto the model, so reading model.ContainerID afterwards would dereference
+		// the nil this very update sets. Same order PreemptForCaptain records
+		// preemptedFrom in.
+		brokenFrom := *model.ContainerID
+
 		// version advanced for the same anti-clobber reason as PreemptForCaptain:
 		// a coordinator mid-operation on this hull loses the CAS race on its next
 		// SaveWithRetry write-back and reloads the fresh (idle) row, so it cannot
@@ -1918,7 +1930,7 @@ func (r *ShipRepository) ReleaseContainerClaim(ctx context.Context, shipSymbol s
 			return fmt.Errorf("failed to release container claim: %w", err)
 		}
 
-		released = true
+		releasedFrom = brokenFrom
 
 		// Invalidate cache since assignment changed
 		r.shipListCache.Delete(playerID.Value())
@@ -1926,9 +1938,9 @@ func (r *ShipRepository) ReleaseContainerClaim(ctx context.Context, shipSymbol s
 		return nil
 	})
 	if err != nil {
-		return false, err
+		return "", err
 	}
-	return released, nil
+	return releasedFrom, nil
 }
 
 // AssignFleet atomically sets the ship's DedicatedFleet tag — the single

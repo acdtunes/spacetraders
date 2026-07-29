@@ -62,14 +62,15 @@ func (r *depotLaunchShipRepo) AssignFleet(ctx context.Context, shipSymbol, fleet
 	return nil
 }
 
-func (r *depotLaunchShipRepo) ReleaseContainerClaim(ctx context.Context, shipSymbol string, playerID shared.PlayerID, reason string) (bool, error) {
+func (r *depotLaunchShipRepo) ReleaseContainerClaim(ctx context.Context, shipSymbol string, playerID shared.PlayerID, reason string) (string, error) {
 	r.releasedClaims = append(r.releasedClaims, shipSymbol)
 	r.releaseReasons = append(r.releaseReasons, reason)
 	if ship, ok := r.ships[shipSymbol]; ok && ship.IsAssigned() {
+		brokenFrom := ship.ContainerID()
 		ship.ForceRelease(reason, shared.NewRealClock())
-		return true, nil
+		return brokenFrom, nil
 	}
-	return false, nil
+	return "", nil
 }
 
 // hasStocker reports whether shipSymbol is bound as a stocker element anywhere in reg — the

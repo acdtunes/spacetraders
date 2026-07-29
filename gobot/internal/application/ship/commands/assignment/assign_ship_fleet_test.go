@@ -32,15 +32,16 @@ type assignStubShipRepo struct {
 	assignCalled   int
 
 	// ReleaseContainerClaim behavior + capture (the `fleet unassign`
-	// work-claim break). releaseClaimReleased is what the repo reports it did.
-	releaseClaimReleased bool
+	// work-claim break). releaseClaimReleased is the container id the repo reports
+	// it broke the claim from, or "" for a no-op (sp-h8mbb).
+	releaseClaimReleased string
 	releaseClaimErr      error
 	releaseClaimSymbol   string
 	releaseClaimReason   string
 	releaseClaimCalled   int
 }
 
-func (s *assignStubShipRepo) ReleaseContainerClaim(_ context.Context, shipSymbol string, _ shared.PlayerID, reason string) (bool, error) {
+func (s *assignStubShipRepo) ReleaseContainerClaim(_ context.Context, shipSymbol string, _ shared.PlayerID, reason string) (string, error) {
 	s.releaseClaimCalled++
 	s.releaseClaimSymbol = shipSymbol
 	s.releaseClaimReason = reason
@@ -203,7 +204,7 @@ func TestAssignShipFleet_EmptyFleetClearsDedication(t *testing.T) {
 func TestAssignShipFleet_UnassignWithBreakWorkClaimBreaksContainerClaim(t *testing.T) {
 	repo := &assignStubShipRepo{
 		ship:                 newFleetTestShip(t, "TORWIND-8", "FRAME_FREIGHTER", "HAULER", 40, "goods_factory"),
-		releaseClaimReleased: true, // the hull was live-claimed; the break acted
+		releaseClaimReleased: "tour-run-TORWIND-9-abc123", // the hull was live-claimed; the break acted
 	}
 	handler := NewAssignShipFleetHandler(repo, nil)
 
