@@ -747,7 +747,12 @@ func run(cfg *config.Config) error {
 	// the trade/construction split are always resolved from the same source and can never each
 	// conclude "the other side is idle" and both take 100%. Wired UNCONDITIONALLY — there is no
 	// config key and no arming step; the budget is live the moment the daemon boots.
-	capitalWorkSensor := common.NewContainerCapitalWorkSensor(containerRepo)
+	// The construction side is sensed as DEMAND, not liveness (sp-bzvu2): the drain keeps ticking
+	// after its gate is filled, and reserving 40% of deployable capital for a finished bill funds
+	// nothing. The pipeline repo supplies the bill; without it the sensor degrades conservatively
+	// to the old liveness-only reading, so a wiring slip can never hand trade the whole treasury.
+	capitalWorkSensor := common.NewEngineCapitalWorkSensor(containerRepo).
+		WithConstructionDemand(goodsServices.NewConstructionDemandReader(constructionPipelineRepo))
 	constructionExecutor.SetCapitalWorkSensor(capitalWorkSensor)
 	// The activator is the SURVIVING SupplyMonitor: NO new
 	// activation logic. Built per-player because it bakes in the playerID; the poll-loop-only

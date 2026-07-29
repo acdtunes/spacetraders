@@ -135,8 +135,10 @@ type CapitalWorkSensor interface {
 	// TradeHasWork reports whether any trade engine is live for the player. Read by the
 	// CONSTRUCTION side to size its own budget.
 	TradeHasWork(ctx context.Context, playerID int) (bool, error)
-	// ConstructionHasWork reports whether the construction-supply drain is live for the
-	// player. Read by the TRADE side to size its own budget.
+	// ConstructionHasWork reports whether the construction-supply drain is live AND still
+	// owes material to a construction site. Read by the TRADE side to size its own budget.
+	// It is DEMAND, not liveness: a drain whose bill is filled keeps ticking forever, and
+	// answering "live" there reserves capital that funds nothing (sp-bzvu2).
 	ConstructionHasWork(ctx context.Context, playerID int) (bool, error)
 }
 
@@ -166,34 +168,95 @@ type ActiveContainerTypeReader interface {
 	HasActiveContainerOfType(ctx context.Context, playerID int, containerTypes ...string) (bool, error)
 }
 
-// ContainerCapitalWorkSensor resolves both hasWork signals from the container registry: an engine
-// "has work" exactly when a container that runs it is live. That is the operationally correct
-// reading for capital allocation — a stopped construction drain cannot spend a credit no matter
-// what its pipeline rows say, and a live one re-polls its worklist every tick.
-type ContainerCapitalWorkSensor struct {
+// ConstructionDemandReader reports whether construction holds capital-consuming DEMAND for a
+// player: an EXECUTING construction pipeline whose material bill is not yet filled.
+//
+// Liveness is not demand. The construction drain is a standing coordinator — it keeps ticking
+// after the gate it was launched for is finished, polling a worklist that will never produce
+// another task. Measured live (era 5): with the jump gate at 1600/1600 and both pipelines
+// CANCELLED, the drain logged "activation done (0 task(s) promoted to READY)" every 30s for
+// hours while every tour was still held to trade's 60% share, so 40% of deployable capital was
+// reserved for an engine with nothing to buy.
+//
+// This reads the BILL, not the tick. Promotion counts are a symptom: a coordinator between
+// ticks, or one whose tasks are queued but not yet READY, has real demand and zero promotions.
+// An unfilled material target is demand whatever the task table is doing this instant, and it
+// survives a daemon restart because it lives in the pipeline row rather than in a tick counter.
+type ConstructionDemandReader interface {
+	HasOutstandingConstructionDemand(ctx context.Context, playerID int) (bool, error)
+}
+
+// EngineCapitalWorkSensor answers both hasWork signals for the per-operation capital budget.
+//
+// The two sides are asymmetric because the engines are:
+//
+//   - CONSTRUCTION has a completion condition. Its drain fills a finite bill and then idles,
+//     so liveness alone over-reports and must be ANDed with outstanding demand.
+//   - TRADE has none. A trading worker is never "done" — it re-plans and buys every tick — so a
+//     live worker IS demand, and there is no bill to read.
+//
+// Liveness stays NECESSARY on the construction side: a stopped drain cannot spend a credit
+// however large its bill, so a dead coordinator still reports no work.
+type EngineCapitalWorkSensor struct {
 	containers ActiveContainerTypeReader
+	demand     ConstructionDemandReader
 }
 
-// NewContainerCapitalWorkSensor builds the container-backed sensor the daemon wires into both
-// spend guards.
-func NewContainerCapitalWorkSensor(containers ActiveContainerTypeReader) *ContainerCapitalWorkSensor {
-	return &ContainerCapitalWorkSensor{containers: containers}
+// NewEngineCapitalWorkSensor builds the sensor the daemon wires into both spend guards. The
+// construction demand reader is attached separately (WithConstructionDemand) so a caller that
+// omits it degrades CONSERVATIVELY to the liveness-only reading rather than failing to compile.
+func NewEngineCapitalWorkSensor(containers ActiveContainerTypeReader) *EngineCapitalWorkSensor {
+	return &EngineCapitalWorkSensor{containers: containers}
 }
 
-// TradeHasWork reports whether any trade container is live for the player.
-func (s *ContainerCapitalWorkSensor) TradeHasWork(ctx context.Context, playerID int) (bool, error) {
+// WithConstructionDemand attaches the bill reader that turns ConstructionHasWork from a liveness
+// probe into a demand probe. Returns the sensor so the daemon can wire it in one expression.
+func (s *EngineCapitalWorkSensor) WithConstructionDemand(demand ConstructionDemandReader) *EngineCapitalWorkSensor {
+	if s != nil {
+		s.demand = demand
+	}
+	return s
+}
+
+// TradeHasWork reports whether any trade container is live for the player. Liveness is the
+// honest signal here precisely because trade has no completion condition — see the type doc.
+func (s *EngineCapitalWorkSensor) TradeHasWork(ctx context.Context, playerID int) (bool, error) {
 	return s.hasActive(ctx, playerID, tradeCapitalContainerTypes)
 }
 
-// ConstructionHasWork reports whether the construction-supply drain is live for the player.
-func (s *ContainerCapitalWorkSensor) ConstructionHasWork(ctx context.Context, playerID int) (bool, error) {
-	return s.hasActive(ctx, playerID, constructionCapitalContainerTypes)
+// ConstructionHasWork reports whether the construction-supply drain is BOTH live AND holding an
+// unfilled material bill. Both conjuncts are load-bearing: a stopped drain cannot spend, and a
+// running drain with a filled bill has nothing left to spend on.
+//
+// Every fail-conservative property of the liveness-only version survives (RULINGS #4):
+//   - no container reader wired -> hasActive returns true, and with no demand reader wired the
+//     result stays true, so a blind sensor never hands trade 100%;
+//   - a container read error -> surfaced, and the caller keeps its proportional share;
+//   - a demand read error -> surfaced for the same reason, never swallowed into "idle".
+//
+// Only a POSITIVE, successful read of "live but nothing outstanding" releases the reservation.
+func (s *EngineCapitalWorkSensor) ConstructionHasWork(ctx context.Context, playerID int) (bool, error) {
+	// A BLIND liveness read must dominate the bill. hasActive answers "busy" for an unwired
+	// reader, and that answer is a confession of ignorance, not an observation — going on to
+	// consult the bill would let a successful "nothing outstanding" release a reservation the
+	// sensor never actually verified was releasable. The conservative answer wins outright.
+	if s == nil || s.containers == nil {
+		return true, nil
+	}
+	live, err := s.containers.HasActiveContainerOfType(ctx, playerID, constructionCapitalContainerTypes...)
+	if err != nil || !live {
+		return live, err
+	}
+	if s.demand == nil {
+		return true, nil // no bill reader wired -> conservative, exactly the pre-sp-bzvu2 answer
+	}
+	return s.demand.HasOutstandingConstructionDemand(ctx, playerID)
 }
 
 // hasActive answers CONSERVATIVELY when no reader is wired (a construction-time bug, not a
 // supported mode): "the other side is busy", which costs the asking engine its proportional share
 // and never hands it 100% of the treasury on a blind read.
-func (s *ContainerCapitalWorkSensor) hasActive(ctx context.Context, playerID int, types []string) (bool, error) {
+func (s *EngineCapitalWorkSensor) hasActive(ctx context.Context, playerID int, types []string) (bool, error) {
 	if s == nil || s.containers == nil {
 		return true, nil
 	}

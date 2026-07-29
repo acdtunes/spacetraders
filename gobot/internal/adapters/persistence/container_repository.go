@@ -368,7 +368,7 @@ func (r *ContainerRepositoryGORM) ListRunningScoutWorkers(
 
 // HasActiveContainerOfType reports whether any container of the given types is currently RUNNING
 // or PENDING for the player. It backs the per-operation capital budget's hasWork sensor
-// (common.ContainerCapitalWorkSensor, sp-ftqgp): the trade and construction spend guards each ask
+// (common.EngineCapitalWorkSensor, sp-ftqgp): the trade and construction spend guards each ask
 // whether the OTHER side is live before sizing their own share of deployable capital.
 //
 // PENDING counts alongside RUNNING for the same reason the bootstrap gate's containerTypeRunning

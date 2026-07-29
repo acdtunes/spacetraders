@@ -186,10 +186,10 @@ func (f *fakeActiveContainerReader) HasActiveContainerOfType(_ context.Context, 
 	return false, nil
 }
 
-// TestContainerCapitalWorkSensorAsksForTheRightContainerTypes pins the mapping from "engine" to
+// TestEngineCapitalWorkSensorAsksForTheRightContainerTypes pins the mapping from "engine" to
 // the container types that actually spend that engine's capital. A wrong or stale type string
 // here is invisible at compile time and would silently hand one side 100% forever.
-func TestContainerCapitalWorkSensorAsksForTheRightContainerTypes(t *testing.T) {
+func TestEngineCapitalWorkSensorAsksForTheRightContainerTypes(t *testing.T) {
 	cases := []struct {
 		name    string
 		active  string
@@ -208,7 +208,7 @@ func TestContainerCapitalWorkSensorAsksForTheRightContainerTypes(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			reader := &fakeActiveContainerReader{active: map[string]bool{tc.active: true}}
-			sensor := NewContainerCapitalWorkSensor(reader)
+			sensor := NewEngineCapitalWorkSensor(reader)
 
 			gotTrade, err := sensor.TradeHasWork(context.Background(), 1)
 			if err != nil {
@@ -226,11 +226,11 @@ func TestContainerCapitalWorkSensorAsksForTheRightContainerTypes(t *testing.T) {
 	}
 }
 
-// TestContainerCapitalWorkSensorSurfacesReadErrors pins that a failed read is REPORTED rather than
+// TestEngineCapitalWorkSensorSurfacesReadErrors pins that a failed read is REPORTED rather than
 // silently answered "idle" — the callers turn an error into the conservative "the other side is
 // busy", which they can only do if the error reaches them.
-func TestContainerCapitalWorkSensorSurfacesReadErrors(t *testing.T) {
-	sensor := NewContainerCapitalWorkSensor(&fakeActiveContainerReader{err: errors.New("db down")})
+func TestEngineCapitalWorkSensorSurfacesReadErrors(t *testing.T) {
+	sensor := NewEngineCapitalWorkSensor(&fakeActiveContainerReader{err: errors.New("db down")})
 	if _, err := sensor.TradeHasWork(context.Background(), 1); err == nil {
 		t.Fatal("TradeHasWork swallowed a read error — the caller can no longer fail conservative")
 	}
@@ -239,11 +239,11 @@ func TestContainerCapitalWorkSensorSurfacesReadErrors(t *testing.T) {
 	}
 }
 
-// TestContainerCapitalWorkSensorWithoutReaderAnswersConservatively pins the wiring-bug path: with
+// TestEngineCapitalWorkSensorWithoutReaderAnswersConservatively pins the wiring-bug path: with
 // no reader the sensor claims the other side IS busy, so the asking engine takes its proportional
 // share and never grabs the whole treasury on a blind read.
-func TestContainerCapitalWorkSensorWithoutReaderAnswersConservatively(t *testing.T) {
-	sensor := NewContainerCapitalWorkSensor(nil)
+func TestEngineCapitalWorkSensorWithoutReaderAnswersConservatively(t *testing.T) {
+	sensor := NewEngineCapitalWorkSensor(nil)
 	for _, c := range []struct {
 		name string
 		call func() (bool, error)
@@ -259,4 +259,124 @@ func TestContainerCapitalWorkSensorWithoutReaderAnswersConservatively(t *testing
 			t.Fatalf("%s: an unwired reader must answer TRUE (the other side is busy), got false — the asking engine would take 100%%", c.name)
 		}
 	}
+}
+
+// --- construction demand (sp-bzvu2) ---
+
+type fakeConstructionDemand struct {
+	has    bool
+	err    error
+	called int
+}
+
+func (f *fakeConstructionDemand) HasOutstandingConstructionDemand(_ context.Context, _ int) (bool, error) {
+	f.called++
+	if f.err != nil {
+		return false, f.err
+	}
+	return f.has, nil
+}
+
+// TestConstructionHasWorkIsDemandNotLiveness is the headline proof for sp-bzvu2, run BOTH ways
+// through the real CapitalSplit so what is asserted is the credits each engine actually gets.
+//
+// The second case is the one that stops the naive fix: construction is live and holds an
+// outstanding bill, and trade must STAY held to its 60% share. A fix keyed on "tasks promoted
+// last tick" would report idle in exactly that state — the coordinator is between ticks — and
+// hand trade the whole treasury while construction still owes material.
+func TestConstructionHasWorkIsDemandNotLiveness(t *testing.T) {
+	const deployable = int64(1132719)
+
+	cases := []struct {
+		name             string
+		drainLive        bool
+		demand           bool
+		wantHasWork      bool
+		wantTradeBudget  int64
+		wantConstruction int64
+	}{
+		{
+			name: "live drain with a FILLED bill releases the whole pool to trade",
+			// The live era-5 state: gate at 1600/1600, drain still ticking every 30s.
+			drainLive: true, demand: false, wantHasWork: false,
+			wantTradeBudget: deployable, wantConstruction: 0,
+		},
+		{
+			name: "live drain with an OUTSTANDING bill holds trade to its share even with zero promotions",
+			drainLive: true, demand: true, wantHasWork: true,
+			wantTradeBudget: 679631, wantConstruction: deployable - 679631,
+		},
+		{
+			name: "a STOPPED drain has no work whatever its bill says — it cannot spend a credit",
+			drainLive: false, demand: true, wantHasWork: false,
+			wantTradeBudget: deployable, wantConstruction: 0,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reader := &fakeActiveContainerReader{active: map[string]bool{}}
+			if tc.drainLive {
+				reader.active["CONSTRUCTION_COORDINATOR"] = true
+			}
+			demand := &fakeConstructionDemand{has: tc.demand}
+			sensor := NewEngineCapitalWorkSensor(reader).WithConstructionDemand(demand)
+
+			got, err := sensor.ConstructionHasWork(context.Background(), 5)
+			if err != nil {
+				t.Fatalf("ConstructionHasWork: unexpected error %v", err)
+			}
+			if got != tc.wantHasWork {
+				t.Fatalf("ConstructionHasWork = %v, want %v (drainLive=%v demand=%v)", got, tc.wantHasWork, tc.drainLive, tc.demand)
+			}
+			// A stopped drain must never cost a pipeline read — liveness short-circuits.
+			if !tc.drainLive && demand.called != 0 {
+				t.Fatalf("consulted the bill for a stopped drain %d time(s)", demand.called)
+			}
+
+			trade, construction := CapitalSplit(TradeCapitalSharePct, deployable, true, got)
+			if trade != tc.wantTradeBudget || construction != tc.wantConstruction {
+				t.Fatalf("split = (trade %d, construction %d), want (trade %d, construction %d)",
+					trade, construction, tc.wantTradeBudget, tc.wantConstruction)
+			}
+		})
+	}
+}
+
+// TestConstructionHasWorkKeepsEveryFailConservativeProperty pins that the demand conjunct never
+// creates a NEW way to release the reservation blind (RULINGS #4). Each case is a sensing
+// failure, and each must still report "construction is busy".
+func TestConstructionHasWorkKeepsEveryFailConservativeProperty(t *testing.T) {
+	live := func() *fakeActiveContainerReader {
+		return &fakeActiveContainerReader{active: map[string]bool{"CONSTRUCTION_COORDINATOR": true}}
+	}
+
+	t.Run("no demand reader wired falls back to the liveness-only answer", func(t *testing.T) {
+		sensor := NewEngineCapitalWorkSensor(live())
+		has, err := sensor.ConstructionHasWork(context.Background(), 5)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !has {
+			t.Fatal("an unwired demand reader released the reservation — a wiring slip must never hand trade 100%")
+		}
+	})
+
+	t.Run("no container reader wired stays conservative", func(t *testing.T) {
+		sensor := NewEngineCapitalWorkSensor(nil).WithConstructionDemand(&fakeConstructionDemand{has: false})
+		has, err := sensor.ConstructionHasWork(context.Background(), 5)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !has {
+			t.Fatal("a blind container read released the reservation")
+		}
+	})
+
+	t.Run("a demand read error is surfaced so the caller keeps its proportional share", func(t *testing.T) {
+		sensor := NewEngineCapitalWorkSensor(live()).WithConstructionDemand(&fakeConstructionDemand{err: errors.New("db down")})
+		if _, err := sensor.ConstructionHasWork(context.Background(), 5); err == nil {
+			t.Fatal("swallowed a demand read error — the caller can no longer fail conservative")
+		}
+	})
 }
