@@ -1,10 +1,15 @@
-import { useEffect, useState } from 'react';
+// The Trade Flows page: the Living Nebula scene (pixi) plus the HTML overlay
+// chrome — window switch, layer toggles, detail panel, tour roster, feed-lost
+// chip, fill ticker, and the shared hover tooltip. The old Konva galaxy scene
+// and its modal drilldown retired in Task 13; the SYSTEM band (orb tap) is the
+// in-place drilldown now.
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFlowStore } from '../store/flowStore';
 import { useFlowsPolling } from '../hooks/useFlowsPolling';
-import FlowGalaxyScene from '../components/flows/FlowGalaxyScene';
+import { NebulaScene, type HoverTarget, type NebulaApi } from '../nebula/NebulaScene';
+import { buildSceneData } from '../nebula/sceneData';
 import { FlowDetailPanel } from '../components/flows/FlowDetailPanel';
 import { TourRoster } from '../components/flows/TourRoster';
-import { SystemDrilldown } from '../components/flows/SystemDrilldown';
 import { FeedLostChip } from '../components/flows/FeedLostChip';
 import { FillTicker } from '../components/flows/FillTicker';
 import { FlowTooltip } from '../components/flows/FlowTooltip';
@@ -24,13 +29,10 @@ export function TradeFlowsView() {
   const selectedFlowId = useFlowStore((s) => s.selectedFlowId);
   const selectFlow = useFlowStore((s) => s.selectFlow);
   const hoveredFlowId = useFlowStore((s) => s.hoveredFlowId);
-  const requestFocus = useFlowStore((s) => s.requestFocus);
   const layerToggles = useFlowStore((s) => s.layerToggles);
   const toggleLayer = useFlowStore((s) => s.toggleLayer);
-  const drilldownSystem = useFlowStore((s) => s.drilldownSystem);
-  const closeDrilldown = useFlowStore((s) => s.closeDrilldown);
   const error = useFlowStore((s) => s.error);
-  const freshness = useFlowStore((s) => s.freshness);
+  const setTooltip = useFlowStore((s) => s.setTooltip);
 
   const [nowMs, setNowMs] = useState(() => Date.now());
   useEffect(() => {
@@ -38,13 +40,58 @@ export function TradeFlowsView() {
     return () => clearInterval(id);
   }, []);
 
+  // Scene-reported focus (orb tap → symbol; wheel-out/Escape → null): drives
+  // the roster auto-filter and gives the detail-error chip its subject.
+  const [focusedSystem, setFocusedSystem] = useState<string | null>(null);
+  // The focused system's waypoint-fetch failure (useSystemDetail's channel) —
+  // shown as a one-line chip so a dark SYSTEM band is never silent.
+  const [detailError, setDetailError] = useState<string | null>(null);
+
+  const nebulaApiRef = useRef<NebulaApi | null>(null);
+
+  // One SceneData frame per poll delivery (identity change on any slice);
+  // between polls the scene dead-reckons, so no rAF rebuild is needed here.
+  const sceneData = useMemo(
+    () => buildSceneData(topology, lanes, live, Date.now()),
+    [topology, lanes, live],
+  );
+
+  // Scene hover → the shared tooltip card. Systems and lanes have cards;
+  // cluster→cluster currents don't (their $/hr labels are on-canvas).
+  const onHover = useCallback(
+    (t: HoverTarget | null) => {
+      if (t == null || t.kind === 'current') {
+        setTooltip(null);
+        return;
+      }
+      setTooltip({ kind: t.kind, key: t.key, x: t.clientX, y: t.clientY });
+    },
+    [setTooltip],
+  );
+
+  const onSelectSystem = useCallback((sym: string | null) => {
+    setFocusedSystem(sym);
+  }, []);
+
   const flows = live?.flows ?? [];
   const selectedFlow = flows.find((f) => f.containerId === selectedFlowId) ?? null;
   const hoveredFlow = flows.find((f) => f.containerId === hoveredFlowId) ?? null;
+  // Focused system → the roster narrows to its resident hulls.
+  const rosterFlows =
+    focusedSystem == null ? flows : flows.filter((f) => f.shipNav?.systemSymbol === focusedSystem);
 
   return (
     <div className="relative w-full h-full" style={{ background: NOIR.bg0 }}>
-      <FlowGalaxyScene />
+      <div className="absolute inset-0">
+        <NebulaScene
+          data={sceneData}
+          onSelectSystem={onSelectSystem}
+          onHover={onHover}
+          apiRef={nebulaApiRef}
+          layerToggles={layerToggles}
+          onDetailError={setDetailError}
+        />
+      </div>
 
       {/* Window switch */}
       <div className="absolute bottom-4 left-4 flex gap-1 rounded p-1" style={{ background: NOIR.panel }}>
@@ -82,29 +129,28 @@ export function TradeFlowsView() {
 
       <FlowDetailPanel flow={hoveredFlow ?? selectedFlow} />
       <TourRoster
-        flows={flows}
+        flows={rosterFlows}
         lanes={lanes}
         selectedFlowId={selectedFlowId}
-        onRowClick={(id) => { selectFlow(id); requestFocus(id); }}
+        onRowClick={(id) => {
+          selectFlow(id);
+          nebulaApiRef.current?.focusTour(id);
+        }}
       />
-      {drilldownSystem && (
-        <SystemDrilldown
-          systemSymbol={drilldownSystem}
-          lanes={lanes?.lanes ?? []}
-          flows={flows}
-          homeSystem={topology?.homeSystem ?? null}
-          feedLost={live?.feedLost ?? false}
-          selectedFlowId={selectedFlowId}
-          onSelectFlow={selectFlow}
-          onClose={closeDrilldown}
-          freshness={freshness?.systems.find((s) => s.system === drilldownSystem) ?? null}
-        />
-      )}
       <FeedLostChip feedLost={live?.feedLost ?? false} lastPlanAt={lastPlanAt} nowMs={nowMs} />
 
-      {error && (
-        <div className="absolute bottom-4 right-4 px-3 py-1.5 rounded text-xs" style={{ background: NOIR.panel, color: NOIR.bad }}>
-          {error}
+      {(error != null || detailError != null) && (
+        <div className="absolute bottom-4 right-4 flex flex-col items-end gap-1">
+          {error && (
+            <div className="px-3 py-1.5 rounded text-xs" style={{ background: NOIR.panel, color: NOIR.bad }}>
+              {error}
+            </div>
+          )}
+          {detailError && (
+            <div className="px-3 py-1.5 rounded text-xs" style={{ background: NOIR.panel, color: NOIR.bad }}>
+              {focusedSystem ? `${focusedSystem}: ${detailError}` : detailError}
+            </div>
+          )}
         </div>
       )}
 

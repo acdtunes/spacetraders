@@ -3,27 +3,26 @@ import { render, screen, waitFor, act } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { TradeFlowsView } from '../TradeFlowsView';
 import { useFlowStore } from '../../store/flowStore';
-import { mockTopology, mockLanes, mockLiveFlows, mockSystemWaypoints } from '../../mocks/mockFlows';
+import { mockTopology, mockLanes, mockLiveFlows } from '../../mocks/mockFlows';
 
-// The Konva galaxy scene draws to a real <canvas>, which jsdom has no 2D context
-// for (node-canvas is not installed). This test covers only the HTML overlay
-// layer (window switch, detail panel, drilldown header/badge, FEED LOST chip) —
-// the on-canvas render (galaxy home marker, drilldown waypoint scene) is verified
-// by the mandatory screenshot step (Task 10). Stub the scene.
-vi.mock('../../components/flows/FlowGalaxyScene', () => ({
-  default: () => null,
+// The pixi NebulaScene needs WebGL, which jsdom lacks. This test covers only
+// the HTML overlay layer (window switch, layer toggles, detail panel, roster
+// auto-filter, FEED LOST chip, detail-error chip) — the on-canvas render is
+// verified by the mandatory screenshot step. Stub the scene but CAPTURE its
+// props so the scene→page channels (onSelectSystem, onDetailError) can be
+// driven from the tests.
+const nebulaProps = vi.hoisted(() => ({ current: null as any }));
+vi.mock('../../nebula/NebulaScene', () => ({
+  NebulaScene: (props: unknown) => {
+    nebulaProps.current = props;
+    return null;
+  },
 }));
-
-// The drilldown fetches this system's waypoints; serve the demo fixture so the
-// header count + HOME badge render without a live server.
-const { getWaypointsMock } = vi.hoisted(() => ({ getWaypointsMock: vi.fn() }));
-vi.mock('../../services/api/systems', () => ({ getWaypoints: getWaypointsMock }));
 
 // Seed the store directly (bypass the network/poll) so layout is deterministic.
 beforeEach(() => {
   useFlowStore.setState(useFlowStore.getInitialState());
-  vi.spyOn(useFlowStore.getState(), 'setError');
-  getWaypointsMock.mockImplementation(async (sym: string) => mockSystemWaypoints(sym) ?? []);
+  nebulaProps.current = null;
 });
 
 function seed() {
@@ -42,14 +41,27 @@ describe('TradeFlowsView layout (demo, fleet-stopped)', () => {
     }
   });
 
+  it('renders the four layer-toggle buttons wired through to the scene', async () => {
+    render(<MemoryRouter><TradeFlowsView /></MemoryRouter>);
+    act(() => seed());
+    const lanesBtn = screen.getByRole('button', { name: 'lanes' });
+    expect(screen.getByRole('button', { name: 'paths' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'ships' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'freshness' })).toBeInTheDocument();
+    act(() => lanesBtn.click());
+    expect(useFlowStore.getState().layerToggles.lanes).toBe(false);
+    // ...and the scene receives the store's toggles as a prop.
+    expect(nebulaProps.current.layerToggles.lanes).toBe(false);
+  });
+
   it('shows the detail panel when a flow is selected', async () => {
     render(<MemoryRouter><TradeFlowsView /></MemoryRouter>);
     act(() => {
       seed();
       useFlowStore.getState().selectFlow('tour-run-TORWIND-3-galaxyA');
     });
-    // The Task 12 roster also lists TORWIND-3, so the ship symbol is no longer
-    // unique to the panel; the first match still proves it rendered, and the
+    // The roster also lists TORWIND-3, so the ship symbol is no longer unique
+    // to the panel; the first match still proves it rendered, and the
     // detail-panel-only tranche good below confirms the panel specifically.
     await waitFor(() => expect(screen.getAllByText('TORWIND-3')[0]).toBeInTheDocument());
     expect(screen.getByText(/ADVANCED_CIRCUITRY/)).toBeInTheDocument();
@@ -64,24 +76,32 @@ describe('TradeFlowsView layout (demo, fleet-stopped)', () => {
     await waitFor(() => expect(screen.getByText(/FEED LOST/)).toBeInTheDocument());
   });
 
-  it('opens the drilldown with the HOME badge + waypoint count for the home system', async () => {
+  it('auto-filters the roster to the scene-focused system and restores on unfocus', async () => {
     render(<MemoryRouter><TradeFlowsView /></MemoryRouter>);
-    act(() => {
-      seed();
-      useFlowStore.getState().openDrilldown('X1-NK36'); // the demo home system
-    });
-    await waitFor(() => expect(screen.getByLabelText('home system')).toBeInTheDocument());
-    expect(screen.getByText('X1-NK36')).toBeInTheDocument();
-    expect(screen.getByText(/5 waypoints/)).toBeInTheDocument(); // fixture ships 5 for X1-NK36
+    act(() => seed());
+    // Demo flows roster up unfiltered.
+    expect(screen.getByText('TORWIND-3')).toBeInTheDocument(); // in X1-NK36
+    expect(screen.getByText('TORWIND-7')).toBeInTheDocument(); // dwelling in X1-KA42
+
+    // The scene reports a focused system (orb tap) → only its resident hulls.
+    act(() => nebulaProps.current.onSelectSystem('X1-KA42'));
+    expect(screen.getByText('TORWIND-7')).toBeInTheDocument();
+    expect(screen.queryByText('TORWIND-3')).not.toBeInTheDocument();
+
+    // Unfocus (wheel-out / Escape reports null) → the full roster returns.
+    act(() => nebulaProps.current.onSelectSystem(null));
+    expect(screen.getByText('TORWIND-3')).toBeInTheDocument();
   });
 
-  it('drilldown for a non-home system shows no HOME badge', async () => {
+  it('surfaces the focused system detail-fetch error as a one-line chip, cleared on recovery', async () => {
     render(<MemoryRouter><TradeFlowsView /></MemoryRouter>);
     act(() => {
       seed();
-      useFlowStore.getState().openDrilldown('X1-KA42');
+      nebulaProps.current.onSelectSystem('X1-KA42');
+      nebulaProps.current.onDetailError('failed to load waypoints');
     });
-    await waitFor(() => expect(screen.getByText('X1-KA42')).toBeInTheDocument());
-    expect(screen.queryByLabelText('home system')).not.toBeInTheDocument();
+    expect(screen.getByText('X1-KA42: failed to load waypoints')).toBeInTheDocument();
+    act(() => nebulaProps.current.onDetailError(null));
+    expect(screen.queryByText(/failed to load waypoints/)).not.toBeInTheDocument();
   });
 });
