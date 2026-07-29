@@ -129,6 +129,53 @@ func TestNearestYardsSelling_EmptyStoreEmptyRank_ReadFailuresSurface(t *testing.
 	})
 }
 
+// THE ERRAND'S READ. AllYardsSelling keeps the availability-only rows every
+// money-facing rank correctly discards, and pricedOnly is the ONLY difference
+// between the two surfaces.
+//
+// Written because a mutation that made this read filter unpriced rows too — i.e.
+// made it identical to NearestYardsSelling — passed the entire suite. In
+// production that mutation is fatal and silent: a shipyard prices its hulls only
+// while a ship stands there, so a heavy yard discovered without presence persists
+// at purchase_price 0, and that row is the ONLY thing the pricing errand has to
+// fly to. Filter it here and the errand sees an empty catalogue forever, no
+// reservation ever forms, and no heavy is ever bought — while every test stays
+// green. The contrast is asserted in one place so the two surfaces cannot quietly
+// converge.
+func TestAllYardsSelling_KeepsTheAvailabilityOnlyRowsTheBuyRankDiscards(t *testing.T) {
+	gates := &fakeAdjacency{adj: map[string][]system.GateEdge{
+		"X1-HOME": edges("X1-NEAR"),
+		"X1-NEAR": edges("X1-HOME"),
+	}}
+	inventory := &fakeInventoryRows{rows: []shipyard.ShipTypeAvailability{
+		yardRow("X1-HOME", "X1-HOME-Y2", 0),         // known, ask never read — the errand's whole reason to exist
+		yardRow("X1-NEAR", "X1-NEAR-Y1", 1_200_000), // priced, one jump out
+		yardRow("X1-LOST", "X1-LOST-Y1", 0),         // unpriced AND unroutable — a hull cannot fly there at any price
+	}}
+	f := NewReachableYardFinder(inventory, gates)
+	waypointsOf := func(cs []YardCandidate) []string {
+		out := make([]string, 0, len(cs))
+		for _, c := range cs {
+			out = append(out, c.WaypointSymbol)
+		}
+		return out
+	}
+
+	priced, err := f.NearestYardsSelling(context.Background(), 1, []string{"SHIP_HEAVY_FREIGHTER"}, []string{"X1-HOME"})
+	require.NoError(t, err)
+	require.Equal(t, []string{"X1-NEAR-Y1"}, waypointsOf(priced),
+		"the money-facing rank must still discard the availability-only row — a zero can never feed a price guard")
+
+	all, err := f.AllYardsSelling(context.Background(), 1, []string{"SHIP_HEAVY_FREIGHTER"}, []string{"X1-HOME"})
+	require.NoError(t, err)
+	require.Equal(t, []string{"X1-HOME-Y2", "X1-NEAR-Y1"}, waypointsOf(all),
+		"the errand's read must KEEP the availability-only row — filtering it leaves the errand nothing to fly to")
+	require.Zero(t, all[0].PurchasePrice,
+		"the unpriced row surfaces with its unread ask, never with an invented one")
+	require.Equal(t, 0, all[0].Hops, "reach and rank are the buy path's own — nearest first")
+	require.Equal(t, 1, all[1].Hops)
+}
+
 // Unpriced rows (availability known, price 0) prove discovery but can never
 // feed a price guard — the buy-signal rank excludes them.
 func TestNearestYardsSelling_ExcludesUnpricedRows(t *testing.T) {

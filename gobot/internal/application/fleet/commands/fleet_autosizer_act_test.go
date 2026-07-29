@@ -300,15 +300,31 @@ func (f *fakeHeavyCensus) HeaviesOwned(_ context.Context, _ int) (int, error) {
 	return f.owned, f.err
 }
 
-// fakeHeavyYard is the cheapest-known-priced-heavy-yard read behind the reservation.
+// fakeHeavyYard is the SHARED heavy-target read behind the reservation: the yard the purchase
+// path would target and its ask, NOT the cheapest ask on the map (sp-fwk8z).
+//
+// found doubles as both halves of the real answer — a priced target implies an open capability —
+// because every existing test that sets it means "a heavy is buyable". The capability-open-but-
+// unpriced state, which found cannot express, is exercised explicitly where it matters.
 type fakeHeavyYard struct {
 	price int64
 	found bool
-	err   error
+	// capabilityOpenUnpriced is the production state a priced-only fake cannot reach: a known
+	// heavy yard whose ask nobody has read. It opens the capability with no usable price.
+	capabilityOpenUnpriced bool
+	err                    error
 }
 
-func (f *fakeHeavyYard) CheapestHeavyPrice(_ context.Context, _ int) (int64, bool, error) {
-	return f.price, f.found, f.err
+// The target comes back ALONGSIDE any error, mirroring fakeHeavyCensus (which returns owned
+// alongside its own). A fake that zeroed its answer on failure would make the coordinator's
+// `err == nil` gate untestable: with a zero target the reserve is 0 by ARITHMETIC rather than by
+// the guard, so swallowing the error would leave the suite green while a blind price read held
+// treasury against a number nobody could see.
+func (f *fakeHeavyYard) HeavyTarget(_ context.Context, _ int) (HeavyTargetYard, error) {
+	if !f.found {
+		return HeavyTargetYard{CapabilityOpen: f.capabilityOpenUnpriced}, f.err
+	}
+	return HeavyTargetYard{CapabilityOpen: true, Priced: true, WaypointSymbol: "X1-QR78-AE4F", PurchasePrice: f.price}, f.err
 }
 
 // intPtr is the *int helper for HeavyCap, whose pointer-ness is what lets an explicit 0

@@ -3,17 +3,39 @@ package common
 // HeavyReserveInputs are the three derived facts the predicate needs. All come
 // from durable tables; nothing here is stored or cached.
 //
-// CapabilityOpen and CheapestKnownPrice both derive from the era-scoped
-// shipyard_inventory read (a known yard selling a heavy hull type, at a positive
-// ask); HeaviesOwned is the BROAD owned-heavy census — every owned heavy hull,
+// CapabilityOpen and TargetYardPrice both derive from the era-scoped
+// shipyard_inventory read, but they answer DIFFERENT questions and the gap
+// between them is load-bearing. CapabilityOpen is pure AVAILABILITY — does any
+// known yard sell a heavy hull type at all — and it counts availability-only
+// rows (purchase_price 0), the catalogue a presence-less shipyard read leaves
+// behind. TargetYardPrice is what the yard we would actually buy at is asking.
+// A yard can be known for days with the capability open and no price to reserve
+// against; that state is real, it is what the heavy-yard pricing errand exists
+// to resolve, and collapsing the two would hide it.
+//
+// HeaviesOwned is the BROAD owned-heavy census — every owned heavy hull,
 // regardless of which fleet it is tagged to. The breadth is deliberate: the cap
 // bounds capital exposure, and under-counting is the direction that would
 // authorise buying a hull we already own.
 type HeavyReserveInputs struct {
-	CapabilityOpen     bool  // any known yard sells the heavy hull type
-	HeaviesOwned       int   // every owned heavy, regardless of fleet tag
-	HeavyCap           int   // operator dial
-	CheapestKnownPrice int64 // min positive purchase_price across known heavy yards
+	CapabilityOpen bool // any known yard sells the heavy hull type, PRICED OR NOT
+	HeaviesOwned   int  // every owned heavy, regardless of fleet tag
+	HeavyCap       int  // operator dial
+	// TargetYardPrice is the ask at the yard the purchase path would TARGET —
+	// the nearest reachable priced yard for the preferred heavy class — not the
+	// cheapest ask on the map.
+	//
+	// WHY THE TARGET AND NOT THE CHEAPEST (sp-fwk8z). The purchase path buys
+	// NEAREST, not cheapest. Reserving the cheapest therefore UNDER-reserves
+	// whenever the two differ: treasury tops out at floor + cheapest, the
+	// nearer yard asks more, the guard never clears, and the heavy is never
+	// bought — the exact stall this reservation exists to prevent. Reserving
+	// the target's ask holds back at least what we will be asked, which is the
+	// stricter direction and the only one that can complete a purchase
+	// (RULINGS #4: a money guard may only ever get stricter). It is resolved by
+	// ONE shared implementation both callers consume, so the two can never
+	// disagree about which yard they are saving toward.
+	TargetYardPrice int64
 }
 
 // HeavyReserve is the ONE definition of how much treasury is held back for the
@@ -70,11 +92,14 @@ func HeavyReserve(in HeavyReserveInputs) int64 {
 	if in.HeaviesOwned >= in.HeavyCap {
 		return 0
 	}
-	// A listed-but-unpriced yard (purchase_price 0) proves availability but can
-	// never feed a money guard, so it reserves nothing — holding treasury against
-	// a price we cannot see would stall expansion indefinitely.
-	if in.CheapestKnownPrice <= 0 {
+	// The capability is open on availability alone, so this rung is REACHED in
+	// normal operation rather than being a defensive check: a known yard whose
+	// ask nobody has ever read (purchase_price 0) proves availability and can
+	// never feed a money guard. It reserves nothing — holding treasury against a
+	// price we cannot see would stall expansion indefinitely — and the heavy-yard
+	// pricing errand is what resolves that state by sending a hull to read the ask.
+	if in.TargetYardPrice <= 0 {
 		return 0
 	}
-	return in.CheapestKnownPrice
+	return in.TargetYardPrice
 }

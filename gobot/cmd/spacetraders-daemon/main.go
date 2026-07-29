@@ -906,12 +906,24 @@ func run(cfg *config.Config) error {
 	idleExplorerPort := expansionAdapters.NewIdleExplorerPort(shipRepo)
 	explorerWarpDispatcher := expansionAdapters.NewExplorerWarpDispatcher(routeExecutor, shipRepo, warpWaypointSource)
 
+	// THE SHARED HEAVY TARGET (sp-fwk8z). ONE instance, two consumers: the fleet autosizer (which
+	// SPENDS the accumulation) and the sensing buy-floor (which WITHHOLDS it) both read the heavy
+	// target through this, so they can never end up saving toward different yards. The reservation's
+	// arithmetic already has a single definition in common.HeavyReserve; this gives its price term
+	// one too. Constructed here, at the composition root, precisely so a second one is conspicuous.
+	heavyTargetFinder := shipyardQuery.NewHeavyTargetFinder(
+		shipyardInventoryRepo, // availability — HasAnyOfTypes, the read with NO price predicate
+		shipyardQuery.NewReachableYardFinder(shipyardInventoryRepo, gateGraphService), // the buy path's own priced rank
+		shipRepo, // reach is measured from the systems the fleet actually holds
+		nil,      // nil ⇒ the documented heavy classes
+	)
+
 	fleetAutosizerHandler := grpc.NewFleetAutosizerCoordinatorHandler(
 		daemonServer, apiClient, shipRepo, med, waypointRepo, captainEventRepo,
 		marketRepo,
 		shipyardQuery.NewReachableYardFinder(shipyardInventoryRepo, gateGraphService),
 		explorerOffGateBridge, // sp-a3yn: explorer demand provider reads off-gate demand through this bridge
-		shipyardInventoryRepo, // sp-fwk8z: cheapest KNOWN PRICED heavy yard — the reservation's price term
+		heavyTargetFinder,     // sp-fwk8z: the SHARED heavy target — the reservation price term, one definition
 	)
 	if err := mediator.RegisterHandler[*fleetCmd.RunFleetAutosizerCoordinatorCommand](med, fleetAutosizerHandler); err != nil {
 		return fmt.Errorf("failed to register FleetAutosizerCoordinator handler: %w", err)
@@ -1208,9 +1220,13 @@ func run(cfg *config.Config) error {
 			// toward the next heavy, and resumes the moment it lands. heavy_cap is read
 			// from the fleet autosizer's OWN persisted config — one dial, one enforcer —
 			// and an absent autosizer simply reserves nothing.
+			//
+			// The price term is heavyTargetFinder — the SAME instance the autosizer reads,
+			// not a second query that happens to agree — so the spender and the withholder
+			// cannot end up saving toward different yards (sp-fwk8z).
 			HeavyReserve: parkedSensingAdapters.NewHeavyReservePort(
 				parkedSensingAdapters.NewShipRepoCensus(shipRepo),
-				persistence.NewShipyardInventoryRepository(db),
+				heavyTargetFinder,
 				parkedSensingAdapters.NewAutosizerCapPort(db),
 			),
 			// The budget the whole model is sized against: sensing is the RESIDUAL

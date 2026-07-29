@@ -164,6 +164,12 @@ type RunFleetAutosizerCoordinatorHandler struct {
 	// known priced heavy ask. Together they derive the heavy reservation each tick.
 	heavyCensus HeavyCensusReader
 	heavyYard   HeavyYardReader
+	// heavyYardCatalog and heavyErrand drive the heavy-yard PRICING ERRAND: a shipyard prices
+	// its hulls only while a ship stands there, so a known-but-unpriced heavy yard needs a hull
+	// sent to it before any reservation can ever form. Both nil-safe: unwired ⇒ no errand, and
+	// the coordinator behaves exactly as it did before the errand existed.
+	heavyYardCatalog HeavyYardCatalogReader
+	heavyErrand      HeavyPricingErrandPort
 	// heavyCapCfg is the per-tick live-config snapshot for heavy_cap (the autosizer's only
 	// live-tunable knob). nil ⇒ launch-frozen behaviour.
 	heavyCapCfg liveconfig.Reader
@@ -226,6 +232,18 @@ func (h *RunFleetAutosizerCoordinatorHandler) SetHeavyCensusReader(r HeavyCensus
 
 // SetHeavyYardReader wires the cheapest-known-heavy-price read (the reservation's input).
 func (h *RunFleetAutosizerCoordinatorHandler) SetHeavyYardReader(r HeavyYardReader) { h.heavyYard = r }
+
+// SetHeavyYardCatalogReader wires the known-heavy-yard catalogue — the ONE read that can see
+// availability-only (unpriced) rows, which is what the pricing errand acts on. Unset ⇒ no errand.
+func (h *RunFleetAutosizerCoordinatorHandler) SetHeavyYardCatalogReader(r HeavyYardCatalogReader) {
+	h.heavyYardCatalog = r
+}
+
+// SetHeavyPricingErrandPort wires the pricing errand's fleet read and dispatch. Unset ⇒ no errand,
+// so an unpriced heavy yard simply stays unpriced (the pre-errand behaviour).
+func (h *RunFleetAutosizerCoordinatorHandler) SetHeavyPricingErrandPort(p HeavyPricingErrandPort) {
+	h.heavyErrand = p
+}
 
 // SetPurchaser wires the buy+dedicate collaborator. Unset → the coordinator evaluates and
 // logs but never spends, which is a MIS-WIRE and is surfaced loudly and by the zero-effect alarm.

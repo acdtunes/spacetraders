@@ -169,6 +169,14 @@ func (h *RunFleetAutosizerCoordinatorHandler) reconcileOnce(ctx context.Context,
 		h.metrics.RecordHeavyReserve(strconv.Itoa(cmd.PlayerID), in.heavyReserve, in.heaviesOwned, cfg.HeavyCap)
 	}
 
+	// The heavy-yard PRICING ERRAND, run BEFORE any class sizes.
+	//
+	// It is deliberately not part of the class loop: it is not a purchase and has no demand
+	// signal, it spends no credits, and its whole job is to make a LATER tick's price readable.
+	// Running it first also means a tick that dispatches an errand still evaluates every class
+	// normally — the errand never displaces a buy that could happen today.
+	h.runHeavyPricingErrand(ctx, cmd, cfg, in)
+
 	// The live-resolved params every provider reads this tick (the live-config discipline): the
 	// providers are constructed once at boot but see the current config.yaml value through here.
 	params := DemandParams{

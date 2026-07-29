@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -245,5 +246,120 @@ func TestReconcile_LightPurchaseObservesNoHeavyPremium(t *testing.T) {
 	}
 	if len(metrics.pricePremiums) != 0 {
 		t.Fatalf("a light buy must not emit a heavy price premium, got %d", len(metrics.pricePremiums))
+	}
+}
+
+// THE TARGET'S ASK, NOT THE CHEAPEST ON THE MAP (sp-fwk8z).
+//
+// The purchase path buys at the NEAREST reachable yard. Reserving the cheapest ask anywhere
+// under-reserves whenever the two differ: treasury tops out at floor + cheapest, the nearer yard
+// asks more, the guard never clears, and the heavy is never bought — the exact stall the
+// reservation exists to prevent. The coordinator must hold back what the TARGET asks.
+//
+// The shared query resolves which yard that is (TestHeavyTarget_PicksTheNearestPricedYardWithNoPresenceAndNotTheCheapest);
+// this pins that the coordinator reserves the number it is handed rather than re-deriving one.
+func TestReconcile_ReserveIsTheTargetYardAsk(t *testing.T) {
+	h, _, metrics, _ := armedHandler()
+	h.SetHeavyCensusReader(&fakeHeavyCensus{owned: 0})
+	// The target is the NEAREST yard at 2,400,000; a cheaper 1,565,500 yard exists further out
+	// and is deliberately not what the shared query returns.
+	h.SetHeavyYardReader(&fakeHeavyYard{price: 2_400_000, found: true})
+
+	if _, err := h.reconcileOnce(context.Background(), &RunFleetAutosizerCoordinatorCommand{PlayerID: 1, ContainerID: "c1", HeavyCap: intPtr(5)}); err != nil {
+		t.Fatalf("reconcileOnce error: %v", err)
+	}
+	if metrics.lastReserve != 2_400_000 {
+		t.Fatalf("reserve = %d, want the target yard's ask 2400000 — reserving less than we will be asked can never complete a purchase", metrics.lastReserve)
+	}
+}
+
+// A KNOWN heavy yard whose ask nobody has ever read reserves NOTHING, while still reporting the
+// capability as open. This is the live production state: a shipyard prices its hulls only while a
+// ship stands there, so a yard discovered without presence is known and unpriceable at once.
+//
+// Both halves matter. Reserving against a price we cannot see would stall expansion indefinitely
+// on a number we invented; and closing the capability instead would hide the yard from the pricing
+// errand that is supposed to go read its ask.
+func TestReconcile_KnownButUnpricedHeavyYardReservesNothing(t *testing.T) {
+	h, _, metrics, _ := armedHandler()
+	h.SetHeavyCensusReader(&fakeHeavyCensus{owned: 0})
+	h.SetHeavyYardReader(&fakeHeavyYard{found: false, capabilityOpenUnpriced: true})
+
+	if _, err := h.reconcileOnce(context.Background(), &RunFleetAutosizerCoordinatorCommand{PlayerID: 1, ContainerID: "c1", HeavyCap: intPtr(5)}); err != nil {
+		t.Fatalf("reconcileOnce error: %v", err)
+	}
+	if metrics.lastReserve != 0 {
+		t.Fatalf("reserve = %d, want 0 — a yard whose ask has never been read is not a number to hold treasury against", metrics.lastReserve)
+	}
+}
+
+// A BLIND RESERVE INPUT RESERVES NOTHING — the same direction the sensing buy-floor takes, and the
+// claim its own test already makes about THIS side.
+//
+// TestHeavyReservePort_CensusErrorReservesNothingAndWarns cites fleet_autosizer_act.go by name
+// ("the reserve is computed only when heaviesOwnedOK, so a census error leaves it at 0 and light
+// buying continues") — and nothing here pinned it. No test set either reader to fail, so deleting
+// `in.heaviesOwnedOK` or the `err == nil` on the heavy-target read left the entire suite green
+// while the coordinator held back a full heavy against a signal it could not read. A reserve held
+// on a blind input starves expansion on nothing, which is the failure direction the shared
+// predicate's own rationale rules out.
+//
+// Both fixtures are ADVERSARIAL: 0 owned under a cap of 5 against a 1,565,500 target reserves
+// 1,565,500 if the failure is swallowed, so a swallowed failure cannot pass as the required 0.
+func TestReconcile_BlindReserveInputsReserveNothing(t *testing.T) {
+	cases := map[string]struct {
+		census *fakeHeavyCensus
+		yard   *fakeHeavyYard
+	}{
+		"owned-heavy census unreadable": {
+			census: &fakeHeavyCensus{owned: 0, err: errors.New("ships table unreadable")},
+			yard:   &fakeHeavyYard{price: 1_565_500, found: true},
+		},
+		"heavy target unreadable": {
+			census: &fakeHeavyCensus{owned: 0},
+			yard:   &fakeHeavyYard{price: 1_565_500, found: true, err: errors.New("shipyard inventory unreadable")},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			h, _, metrics, _ := armedHandler()
+			h.SetHeavyCensusReader(tc.census)
+			h.SetHeavyYardReader(tc.yard)
+
+			if _, err := h.reconcileOnce(context.Background(), &RunFleetAutosizerCoordinatorCommand{PlayerID: 1, ContainerID: "c1", HeavyCap: intPtr(5)}); err != nil {
+				t.Fatalf("a blind reserve input must not fail the tick: %v", err)
+			}
+			if metrics.lastReserve != 0 {
+				t.Fatalf("reserve = %d, want 0 — treasury must not be held back against an input we could not read", metrics.lastReserve)
+			}
+		})
+	}
+}
+
+// SINGLE SLOT AT THE TICK, not just in the predicate.
+//
+// The predicate's own lockstep test pins that HeavyReserve returns one heavy's ask at every level
+// of headroom; this pins that the COORDINATOR publishes that number rather than scaling it. A
+// cap−owned reservation would hold back five heavies' worth from the first tick and stop expansion
+// until the whole heavy fleet was bought, which is "protecting" heavies by starving expansion
+// outright — the asymmetry the design explicitly rejects (§3).
+//
+// The walk is what makes it falsifiable: with a fixed ask, the published reserve must be a FLAT
+// LINE across every level of headroom. A cap−owned reservation starts at 5× and tapers; a
+// per-purchase one grows. Only single-slot is flat.
+func TestReconcile_ReserveIsOneHeavyAtEveryLevelOfHeadroom(t *testing.T) {
+	const ask = int64(1_565_500)
+	for owned := 0; owned < 5; owned++ {
+		h, _, metrics, _ := armedHandler()
+		h.SetHeavyCensusReader(&fakeHeavyCensus{owned: owned})
+		h.SetHeavyYardReader(&fakeHeavyYard{price: ask, found: true})
+
+		if _, err := h.reconcileOnce(context.Background(), &RunFleetAutosizerCoordinatorCommand{PlayerID: 1, ContainerID: "c1", HeavyCap: intPtr(5)}); err != nil {
+			t.Fatalf("reconcileOnce error: %v", err)
+		}
+		if metrics.lastReserve != ask {
+			t.Fatalf("owned=%d (headroom %d): reserve = %d, want exactly one heavy at %d — expansion needs a spending window between purchases",
+				owned, 5-owned, metrics.lastReserve, ask)
+		}
 	}
 }

@@ -66,6 +66,27 @@ func NewReachableYardFinder(inventory inventoryByTypeReader, gates gateAdjacency
 // rows (availability known, price 0) are excluded — they can prove discovery
 // but never feed a price guard.
 func (f *ReachableYardFinder) NearestYardsSelling(ctx context.Context, playerID int, shipTypes []string, fromSystems []string) ([]YardCandidate, error) {
+	return f.rankYardsSelling(ctx, playerID, shipTypes, fromSystems, true)
+}
+
+// AllYardsSelling is NearestYardsSelling WITHOUT the priced-only filter: it also returns the
+// availability-only rows (purchase_price 0) that every money-facing read correctly discards.
+//
+// It exists for exactly one caller — the heavy-yard PRICING ERRAND — and the distinction is the
+// whole point of that errand. A SpaceTraders shipyard prices its hulls only while a ship stands
+// there, so a yard read without presence persists its catalogue at price 0: proof that the yard
+// sells a heavy, and an ask nobody has ever read. Those rows are invisible to NearestYardsSelling
+// by design (a zero can never feed a price guard), which is precisely why a fleet can know where
+// to buy a heavy and still never form a reservation. This read is what lets a hull be sent to fix
+// that, and it must never be used to price anything.
+func (f *ReachableYardFinder) AllYardsSelling(ctx context.Context, playerID int, shipTypes []string, fromSystems []string) ([]YardCandidate, error) {
+	return f.rankYardsSelling(ctx, playerID, shipTypes, fromSystems, false)
+}
+
+// rankYardsSelling is the shared read+reach+rank both surfaces run, so the reachability bound, the
+// BFS semantics and the tiebreak order can never differ between "yards we can buy at" and "yards
+// we should go price". pricedOnly is the ONLY difference between them.
+func (f *ReachableYardFinder) rankYardsSelling(ctx context.Context, playerID int, shipTypes []string, fromSystems []string, pricedOnly bool) ([]YardCandidate, error) {
 	if len(shipTypes) == 0 || len(fromSystems) == 0 {
 		return nil, nil
 	}
@@ -73,8 +94,10 @@ func (f *ReachableYardFinder) NearestYardsSelling(ctx context.Context, playerID 
 	if err != nil {
 		return nil, fmt.Errorf("reachable yards: failed to read shipyard inventory: %w", err)
 	}
-	priced := pricedRows(rows)
-	if len(priced) == 0 {
+	if pricedOnly {
+		rows = pricedRows(rows)
+	}
+	if len(rows) == 0 {
 		return nil, nil
 	}
 
@@ -83,8 +106,8 @@ func (f *ReachableYardFinder) NearestYardsSelling(ctx context.Context, playerID 
 		return nil, err
 	}
 
-	candidates := make([]YardCandidate, 0, len(priced))
-	for _, row := range priced {
+	candidates := make([]YardCandidate, 0, len(rows))
+	for _, row := range rows {
 		distance, reachable := hops[row.SystemSymbol]
 		if !reachable {
 			continue

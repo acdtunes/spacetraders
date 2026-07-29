@@ -3,6 +3,7 @@ package parkedsensing
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 
@@ -13,9 +14,9 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	fleetCmd "github.com/andrescamacho/spacetraders-go/internal/application/fleet/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/application/logging"
+	shipyardQueries "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
-	shipyardDomain "github.com/andrescamacho/spacetraders-go/internal/domain/shipyard"
 )
 
 // HeavyReservePort computes the credits sensing holds back for the next heavy purchase, so probe
@@ -40,9 +41,18 @@ type heavyCensusCounter interface {
 	CountHeavyHulls(ctx context.Context, playerID int) (int, error)
 }
 
-// heavyYardPricer reports the cheapest KNOWN, PRICED heavy yard.
+// heavyYardPricer reports the heavy yard the PURCHASE PATH would target, and its ask.
+//
+// It is the SAME implementation the fleet autosizer consumes (shipyardQueries.HeavyTargetFinder),
+// not a second query that happens to agree. That is the whole point: the reservation's arithmetic
+// already has exactly one definition (common.HeavyReserve), and its price term now has exactly one
+// too, so the spender and the withholder cannot end up saving toward different yards.
+//
+// It is deliberately NOT "the cheapest priced yard" any more (sp-fwk8z). The buy targets the
+// NEAREST reachable yard; reserving the cheapest ask on the map under-reserves whenever the two
+// differ, and treasury then tops out below what we will actually be asked.
 type heavyYardPricer interface {
-	CheapestPricedYard(ctx context.Context, playerID int, shipTypes []string) (shipyardDomain.ShipTypeAvailability, bool, error)
+	HeavyTarget(ctx context.Context, playerID int) (shipyardQueries.HeavyTarget, error)
 }
 
 // heavyCapSource resolves the autosizer's heavy_cap. It reports three things separately because
@@ -59,13 +69,16 @@ func NewHeavyReservePort(census heavyCensusCounter, yards heavyYardPricer, caps 
 
 // Reserve returns the credits to hold back for the next heavy.
 //
-// ALL THREE INPUTS ANSWER ONE RULE: an unreadable input reserves ZERO, loudly. The cap read
-// (resolveHeavyCap, below) has always worked that way — it returns zero and WARNs with the reason.
-// The census and the yard-price reads now follow the same shape, so this function has one policy
-// rather than three. The two DB reads matter together, not separately: they hit the same database
-// and therefore fail in the same window, so converting one and not the other would leave the
-// divergence alive in half — worse than either consistent policy, because the next reader would
-// reasonably assume the whole function had been converted.
+// THE TWO DATA READS ANSWER ONE RULE: an unreadable input reserves ZERO, loudly. Both the census
+// and the yard-target reads follow the same shape, so this function has one policy rather than
+// two. They matter together, not separately: they hit the same database and therefore fail in the
+// same window, so converting one and not the other would leave the divergence alive in half.
+//
+// THE CAP IS DIFFERENT, and deliberately so (sp-fwk8z). It is not a datum the reservation is
+// computed FROM so much as a bound it is computed WITHIN, and an unreadable bound has a
+// well-defined answer that an unreadable price does not: the documented default, which is exactly
+// what the autosizer itself falls back to when its own read of the same knob fails. See
+// resolveHeavyCap for why reading it as zero was a live divergence rather than a safe default.
 //
 // It is the rule for three reasons:
 //
@@ -98,7 +111,7 @@ func NewHeavyReservePort(census heavyCensusCounter, yards heavyYardPricer, caps 
 func (p *HeavyReservePort) Reserve(ctx context.Context, playerID int) (int64, error) {
 	cap, capOK := p.resolveHeavyCap(ctx, playerID)
 	if !capOK {
-		// No autosizer (nothing to save for), or the cap could not be resolved (already warned).
+		// No autosizer, or one that cannot spend ⇒ no heavy buyer ⇒ nothing to save for.
 		return 0, nil
 	}
 
@@ -108,17 +121,17 @@ func (p *HeavyReservePort) Reserve(ctx context.Context, playerID int) (int64, er
 		return 0, nil
 	}
 
-	row, found, err := p.yards.CheapestPricedYard(ctx, playerID, shipyardDomain.DefaultHeavyShipTypes)
+	target, err := p.yards.HeavyTarget(ctx, playerID)
 	if err != nil {
 		warnBlindReserve(ctx, playerID, "yard prices", err)
 		return 0, nil
 	}
 
 	return common.HeavyReserve(common.HeavyReserveInputs{
-		CapabilityOpen:     found,
-		HeaviesOwned:       owned,
-		HeavyCap:           cap,
-		CheapestKnownPrice: int64(row.PurchasePrice),
+		CapabilityOpen:  target.CapabilityOpen,
+		HeaviesOwned:    owned,
+		HeavyCap:        cap,
+		TargetYardPrice: target.PurchasePrice,
 	}), nil
 }
 
@@ -128,7 +141,14 @@ func (p *HeavyReservePort) Reserve(ctx context.Context, playerID int) (int64, er
 // reserve is invisible: the fleet looks healthy and simply never accumulates a heavy. This line is
 // the only thing that tells "not saving because we are blind" apart from "not saving because there
 // is nothing to save for".
+//
+// SILENT on an abandoned tick, and only there. A daemon shutdown cancels every read at once, so
+// without this the one alarm that means "this feature is broken" would fire on every restart until
+// nobody read it any more. The reserve is zero either way; only the noise is suppressed.
 func warnBlindReserve(ctx context.Context, playerID int, input string, err error) {
+	if abandoned(ctx, err) {
+		return
+	}
 	logging.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
 		"Sensing heavy reserve: could not read the heavy %s (%v) — reserving NOTHING this tick, so probe buying is NOT standing down for a heavy. Treasury will not accumulate toward one while this persists.",
 		input, err,
@@ -140,23 +160,80 @@ func warnBlindReserve(ctx context.Context, playerID int, input string, err error
 	})
 }
 
+// abandoned reports that a read failed because the WORK WAS CALLED OFF, not because anything is
+// broken — the tick's context is done, or the read came back cancelled.
+//
+// THIS IS THE sp-fwk8z FALSE-ALARM FIX, and it is not cosmetic. Every occurrence of the live
+// "could not resolve the autosizer's heavy_cap (... context canceled)" warning landed within two
+// seconds of a whole-process shutdown, in the same millisecond as every other container's "Context
+// canceled, stopping container" — daemon restarts, roughly one an hour, never a healthy tick. On
+// such a tick nothing works and nothing is bought, so reserving zero is not merely harmless, it is
+// correct; the warning was pure noise.
+//
+// Noise here is expensive in one specific way. This warning is the ONLY signal that distinguishes
+// "not saving because we are blind" from "not saving because there is nothing to save for", and a
+// line that cries wolf once per restart is a line operators learn to scroll past — which is exactly
+// how the genuine failure would go unnoticed. Suppressing the abandoned-work case is what keeps the
+// remaining warnings meaningful.
+//
+// It suppresses only the LOG. The reserve still resolves to zero on an abandoned tick, so no money
+// guard is touched (RULINGS #4) and nothing is spent that would not otherwise have been.
+//
+// Both the context and the error are consulted. ctx.Err() is authoritative for the tick, and a
+// cancelled error carried up from an inner context means the same thing to an operator either way:
+// the work was called off, and there is nothing here to act on.
+func abandoned(ctx context.Context, err error) bool {
+	if ctx != nil && ctx.Err() != nil {
+		return true
+	}
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
 // resolveHeavyCap walks the fallback ladder. ok=false means "reserve nothing".
 func (p *HeavyReservePort) resolveHeavyCap(ctx context.Context, playerID int) (int, bool) {
 	value, present, containerExists, err := p.caps.HeavyCap(ctx, playerID)
 	switch {
 	case err != nil:
-		// LOUD, and not optional. An un-held reserve is invisible: the fleet looks healthy and
-		// simply never accumulates a heavy. This line is the only thing distinguishing that from
-		// a fleet that is correctly not saving for one.
+		// AN UNREADABLE CAP IS NOT A CAP OF ZERO — it resolves to the SAME documented default an
+		// UNSET cap resolves to, one rung below.
+		//
+		// This used to reserve nothing, and that was a real divergence rather than a stylistic
+		// choice: the fleet autosizer, reading THE SAME KNOB from THE SAME TABLE, explicitly
+		// refuses to read a failed read as zero — liveHeavyCap falls back to its launch value on a
+		// snapshot error, documented as "NEVER 0, which would read as an operator hold and
+		// silently stop all heavy buying". Sensing doing the opposite meant the two consumers of
+		// one shared predicate disagreed about the cap in precisely the window where they are
+		// otherwise guaranteed to agree.
+		//
+		// It cannot wrongly hold treasury for long, which was the original objection. The census
+		// and the yard reads that follow hit the SAME database, so a persistent database fault
+		// still reserves zero through them; the only window this rung changes is the narrow one
+		// where the containers table alone is unreadable — and in that window the autosizer is
+		// itself running on its compiled default, so agreeing with it is the correct answer.
+		//
+		// No money guard is touched (RULINGS #4): this predicate authorises no spend, it only
+		// withholds, and the reserve still requires a positive target price and an under-cap
+		// census before a single credit is held back.
+		//
+		// AN ABANDONED TICK IS NOT AN UNREADABLE CAP. When the work was called off (see abandoned)
+		// the honest answer is not a default but "we did not look": the tick is over, every other
+		// read in it is failing too, and nothing will be bought either way. It reserves nothing,
+		// silently — the inert answer, and the one that cannot leave a stale number on a heartbeat
+		// gauge for a tick that never completed.
+		if abandoned(ctx, err) {
+			return 0, false
+		}
+		// LOUD, and not optional. An un-held or wrongly-held reserve is invisible: the fleet looks
+		// healthy either way.
 		logging.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
-			"Sensing heavy reserve: could not resolve the autosizer's heavy_cap (%v) — reserving NOTHING this tick, so probe buying is NOT standing down for a heavy. Treasury will not accumulate toward one while this persists.",
-			err,
+			"Sensing heavy reserve: could not resolve the autosizer's heavy_cap (%v) — falling back to the documented default %d, the same value the autosizer itself resolves to when its own read fails, so the two cannot disagree about the cap. Investigate the container config read.",
+			err, fleetCmd.FleetAutosizerTunableDefaults()[heavyCapKey],
 		), map[string]interface{}{
 			"action":    "sensing_heavy_cap_unresolved",
 			"player_id": playerID,
 			"error":     err.Error(),
 		})
-		return 0, false
+		return fleetCmd.FleetAutosizerTunableDefaults()[heavyCapKey], true
 	case !containerExists:
 		// No autosizer, or one that cannot spend (terminal) ⇒ no heavy buyer ⇒ nothing to save
 		// for. Both are expected configurations rather than faults, so this rung is deliberately
@@ -165,7 +242,7 @@ func (p *HeavyReservePort) resolveHeavyCap(ctx context.Context, playerID int) (i
 	case !present:
 		// The knob is unset on a live autosizer, so both sides resolve the SAME documented
 		// default and cannot disagree about a cap.
-		return fleetCmd.FleetAutosizerTunableDefaults()["heavy_cap"], true
+		return fleetCmd.FleetAutosizerTunableDefaults()[heavyCapKey], true
 	default:
 		return value, true
 	}

@@ -1504,14 +1504,14 @@ func TestDrain_ReportsHeavyReserveOnEveryEarlyReturn(t *testing.T) {
 //     massage the number on its way into the floor.
 func TestDrain_ReserveMatchesTheSharedPredicate(t *testing.T) {
 	in := common.HeavyReserveInputs{
-		CapabilityOpen:     true,
-		HeaviesOwned:       1,
-		HeavyCap:           5,
-		CheapestKnownPrice: 1_565_500,
+		CapabilityOpen:  true,
+		HeaviesOwned:    1,
+		HeavyCap:        5,
+		TargetYardPrice: 1_565_500,
 	}
 	want := common.HeavyReserve(in)
 	if want != 1_565_500 {
-		t.Fatalf("shared predicate returned %d, want the cheapest ask 1565500", want)
+		t.Fatalf("shared predicate returned %d, want the target yard ask 1565500", want)
 	}
 
 	// The floor the queue builds with that reserve must equal the floor built by adding the

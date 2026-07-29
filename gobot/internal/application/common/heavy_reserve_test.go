@@ -3,7 +3,7 @@ package common
 import "testing"
 
 func TestHeavyReserve(t *testing.T) {
-	base := HeavyReserveInputs{CapabilityOpen: true, HeaviesOwned: 0, HeavyCap: 5, CheapestKnownPrice: 1_200_000}
+	base := HeavyReserveInputs{CapabilityOpen: true, HeaviesOwned: 0, HeavyCap: 5, TargetYardPrice: 1_200_000}
 	cases := []struct {
 		name string
 		in   HeavyReserveInputs
@@ -14,8 +14,8 @@ func TestHeavyReserve(t *testing.T) {
 		{"at cap reserves nothing", func() HeavyReserveInputs { c := base; c.HeaviesOwned = 5; return c }(), 0},
 		{"over cap reserves nothing", func() HeavyReserveInputs { c := base; c.HeaviesOwned = 9; return c }(), 0},
 		{"zero cap is a legitimate hold", func() HeavyReserveInputs { c := base; c.HeavyCap = 0; return c }(), 0},
-		{"unpriced yard reserves nothing", func() HeavyReserveInputs { c := base; c.CheapestKnownPrice = 0; return c }(), 0},
-		{"negative price reserves nothing", func() HeavyReserveInputs { c := base; c.CheapestKnownPrice = -5; return c }(), 0},
+		{"unpriced yard reserves nothing", func() HeavyReserveInputs { c := base; c.TargetYardPrice = 0; return c }(), 0},
+		{"negative price reserves nothing", func() HeavyReserveInputs { c := base; c.TargetYardPrice = -5; return c }(), 0},
 		{"room for four still reserves only one", func() HeavyReserveInputs { c := base; c.HeaviesOwned = 1; return c }(), 1_200_000},
 	}
 	for _, tc := range cases {
@@ -42,19 +42,22 @@ func TestHeavyReserveLockstep(t *testing.T) {
 	t.Run("always exactly one heavy regardless of headroom", func(t *testing.T) {
 		const price = int64(1_200_000)
 		for owned := 0; owned < 5; owned++ {
-			in := HeavyReserveInputs{CapabilityOpen: true, HeaviesOwned: owned, HeavyCap: 5, CheapestKnownPrice: price}
+			in := HeavyReserveInputs{CapabilityOpen: true, HeaviesOwned: owned, HeavyCap: 5, TargetYardPrice: price}
 			if got := HeavyReserve(in); got != price {
 				t.Fatalf("owned=%d (headroom %d): reserve = %d, want exactly one heavy at %d", owned, 5-owned, got, price)
 			}
 		}
 	})
 
-	// The reserve TRACKS the cheapest known price rather than any stored or
-	// remembered figure: a newly-discovered cheaper yard immediately lowers the
-	// reservation and hands the difference back to expansion.
-	t.Run("tracks the cheapest known price exactly", func(t *testing.T) {
+	// The reserve TRACKS the TARGET yard's ask exactly, rather than any stored or
+	// remembered figure: the target is recomputed every tick, so a newly-discovered
+	// nearer yard immediately re-prices the reservation and hands any difference
+	// back to expansion. It is deliberately the target's ask and not the cheapest
+	// on the map — the purchase path buys NEAREST, so reserving the cheapest would
+	// under-reserve and the heavy would never clear its guard.
+	t.Run("tracks the target yard ask exactly", func(t *testing.T) {
 		for _, price := range []int64{1, 23_500, 900_000, 1_200_000, 4_000_000} {
-			in := HeavyReserveInputs{CapabilityOpen: true, HeaviesOwned: 0, HeavyCap: 5, CheapestKnownPrice: price}
+			in := HeavyReserveInputs{CapabilityOpen: true, HeaviesOwned: 0, HeavyCap: 5, TargetYardPrice: price}
 			if got := HeavyReserve(in); got != price {
 				t.Fatalf("price %d: reserve = %d, want the price itself", price, got)
 			}
@@ -66,15 +69,15 @@ func TestHeavyReserveLockstep(t *testing.T) {
 	// indefinitely; the heavy buy itself stays gated by the autosizer's own
 	// fail-closed guard stack, so releasing here weakens no money guard.
 	t.Run("every cannot-buy condition releases the treasury", func(t *testing.T) {
-		open := HeavyReserveInputs{CapabilityOpen: true, HeaviesOwned: 0, HeavyCap: 5, CheapestKnownPrice: 1_200_000}
+		open := HeavyReserveInputs{CapabilityOpen: true, HeaviesOwned: 0, HeavyCap: 5, TargetYardPrice: 1_200_000}
 		blocked := map[string]HeavyReserveInputs{
 			"capability closed": func() HeavyReserveInputs { c := open; c.CapabilityOpen = false; return c }(),
 			"at cap":            func() HeavyReserveInputs { c := open; c.HeaviesOwned = 5; return c }(),
 			"over cap":          func() HeavyReserveInputs { c := open; c.HeaviesOwned = 500; return c }(),
 			"zero cap":          func() HeavyReserveInputs { c := open; c.HeavyCap = 0; return c }(),
 			"negative cap":      func() HeavyReserveInputs { c := open; c.HeavyCap = -3; return c }(),
-			"unpriced yard":     func() HeavyReserveInputs { c := open; c.CheapestKnownPrice = 0; return c }(),
-			"negative price":    func() HeavyReserveInputs { c := open; c.CheapestKnownPrice = -1; return c }(),
+			"unpriced yard":     func() HeavyReserveInputs { c := open; c.TargetYardPrice = 0; return c }(),
+			"negative price":    func() HeavyReserveInputs { c := open; c.TargetYardPrice = -1; return c }(),
 		}
 		for name, in := range blocked {
 			if got := HeavyReserve(in); got != 0 {
@@ -86,7 +89,7 @@ func TestHeavyReserveLockstep(t *testing.T) {
 	// PURE: same inputs, same answer, no clock and no hidden state. A predicate
 	// two containers evaluate independently must agree between them.
 	t.Run("pure and repeatable", func(t *testing.T) {
-		in := HeavyReserveInputs{CapabilityOpen: true, HeaviesOwned: 2, HeavyCap: 5, CheapestKnownPrice: 987_654}
+		in := HeavyReserveInputs{CapabilityOpen: true, HeaviesOwned: 2, HeavyCap: 5, TargetYardPrice: 987_654}
 		first := HeavyReserve(in)
 		for i := 0; i < 100; i++ {
 			if got := HeavyReserve(in); got != first {

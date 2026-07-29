@@ -37,10 +37,31 @@ type HeavyCensusReader interface {
 	HeaviesOwned(ctx context.Context, playerID int) (int, error)
 }
 
-// HeavyYardReader reports the cheapest KNOWN, PRICED heavy yard ask. found=false means no known
-// yard sells a heavy at a usable price — the capability is CLOSED and nothing is reserved.
+// HeavyYardReader reports the heavy yard the purchase path would TARGET this tick, and its ask.
+//
+// It is deliberately NOT "the cheapest known heavy price" any more (sp-fwk8z). The buy targets the
+// NEAREST reachable yard, so reserving the cheapest ask on the map under-reserves whenever the two
+// differ: treasury tops out below what the nearer yard asks and the purchase never clears. The
+// reservation must track the yard we will actually buy at.
+//
+// The same read backs the sensing buy-floor, through ONE shared implementation, so the two
+// spenders can never disagree about which yard they are saving toward.
 type HeavyYardReader interface {
-	CheapestHeavyPrice(ctx context.Context, playerID int) (price int64, found bool, err error)
+	HeavyTarget(ctx context.Context, playerID int) (HeavyTargetYard, error)
+}
+
+// HeavyTargetYard is the heavy purchase target as the reservation sees it.
+//
+// CapabilityOpen and Priced are SEPARATE on purpose. CapabilityOpen is availability — a known yard
+// sells a heavy hull type, PRICED OR NOT — because a shipyard prices its hulls only while a ship
+// stands there, so a yard discovered without presence is known and unpriceable at the same time.
+// Priced is whether a money guard can act on it. The gap between them is exactly the state the
+// heavy-yard pricing errand resolves.
+type HeavyTargetYard struct {
+	CapabilityOpen bool
+	Priced         bool
+	WaypointSymbol string
+	PurchasePrice  int64
 }
 
 // APIUtilizationReader reads the sustained request-utilization percent. readable=false ⇒ the
@@ -131,12 +152,12 @@ func (h *RunFleetAutosizerCoordinatorHandler) readTickInputs(ctx context.Context
 	// the arithmetic is never re-derived here (spec §3: a second copy is how a reservation
 	// silently drifts).
 	if h.heavyYard != nil && in.heaviesOwnedOK {
-		if price, found, err := h.heavyYard.CheapestHeavyPrice(ctx, playerID); err == nil {
+		if target, err := h.heavyYard.HeavyTarget(ctx, playerID); err == nil {
 			in.heavyReserve = common.HeavyReserve(common.HeavyReserveInputs{
-				CapabilityOpen:     found,
-				HeaviesOwned:       in.heaviesOwned,
-				HeavyCap:           cfg.HeavyCap,
-				CheapestKnownPrice: price,
+				CapabilityOpen:  target.CapabilityOpen,
+				HeaviesOwned:    in.heaviesOwned,
+				HeavyCap:        cfg.HeavyCap,
+				TargetYardPrice: target.PurchasePrice,
 			})
 		}
 	}
