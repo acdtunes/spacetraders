@@ -845,3 +845,131 @@ func TestScannerSyncMembership_WakesAPacerParkedOnAnEmptyRotation(t *testing.T) 
 		t.Fatal("RunPacer did not stop and drain after cancellation")
 	}
 }
+
+// --- the shipyard under a market sensor's feet -------------------------------
+//
+// THE BLIND SPOT THIS CLOSES. A waypoint can be two things at once, and the
+// engine only ever sensed it as one: a probe-selling yard that is also a
+// whitelisted market is placed as a MARKET slot (only that kind carries the goods
+// list), so the hull standing there was a market sensor and nothing ever asked it
+// about the counter under its feet. Measured live, NINE shipyards had one of our
+// hulls parked on them and no recorded inventory at all — while the fleet was
+// hunting a hull one of them sells.
+
+// fakeYardReader is the shipyard as the WORLD holds it, not a call log.
+//
+// It models the production adapter's own first move — read the waypoint's cached
+// SHIPYARD trait, and no-op if it is not one — so a waypoint that is only a
+// market records nothing here and a waypoint that is both records its catalogue.
+// That is what makes the assertion below behavioural: it distinguishes the two
+// cases rather than counting calls that would be made either way.
+type fakeYardReader struct {
+	mu sync.Mutex
+	// sells is the world: waypoint → what that shipyard offers. A waypoint absent
+	// from this map is not a shipyard at all.
+	sells map[string][]string
+	// recorded is what the reads persisted, keyed by waypoint.
+	recorded map[string][]string
+	err      error
+}
+
+func newFakeYardReader(sells map[string][]string) *fakeYardReader {
+	return &fakeYardReader{sells: sells, recorded: map[string][]string{}}
+}
+
+func (f *fakeYardReader) ReadCatalog(_ context.Context, _ int, waypoint string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return f.err
+	}
+	offers, isYard := f.sells[waypoint]
+	if !isYard {
+		return nil // a cached-trait no-op, exactly as the adapter behaves
+	}
+	f.recorded[waypoint] = append([]string(nil), offers...)
+	return nil
+}
+
+func (f *fakeYardReader) catalogueAt(waypoint string) ([]string, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	offers, ok := f.recorded[waypoint]
+	return offers, ok
+}
+
+// THE REGRESSION, reproducing X1-QR78-AE4F exactly: a waypoint that is BOTH a
+// whitelisted market AND a shipyard selling a heavy hull. Its slot is a MARKET
+// slot — that is the collision contract and it is not changing — and after the
+// parked probe takes its turn the SHIPYARD must be recorded too.
+//
+// This is the read that carries PRICES. The free catalogue sweep can learn what
+// AE4F sells from across the map, but only a hull standing at the counter sees
+// the `ships` array, and an unpriced heavy yard can never feed a money guard.
+func TestScannerRunScan_MarketYardRecordsTheShipyardToo(t *testing.T) {
+	runner := &fakeScanRunner{}
+	yards := newFakeYardReader(map[string][]string{
+		"X1-QR78-AE4F": {"SHIP_PROBE", "SHIP_HEAVY_FREIGHTER"},
+	})
+	sc := NewScanner(1, ScanPorts{
+		Scan: runner, Ledger: &fakeScanLedger{}, SpreadOf: &fakeSpreadObserver{}, Yard: yards,
+	}, scanClock(), ScanKnobs{InflightCap: 2, ClampR: 4})
+
+	// A MARKET slot, because that is what the screen plans for a yard that is also
+	// a whitelisted market.
+	sc.SyncMembership([]SensingSlotView{dueMarket("X1-QR78-AE4F", 0.2)}, 1.0)
+	takeAndLaunch(t, context.Background(), sc)
+	sc.workers.Wait()
+
+	catalogue, recorded := yards.catalogueAt("X1-QR78-AE4F")
+	if !recorded {
+		t.Fatal("the shipyard at the market waypoint was never read — a MARKET slot must still sense the yard")
+	}
+	if !sellsType(catalogue, "SHIP_HEAVY_FREIGHTER") {
+		t.Fatalf("recorded catalogue = %v, want the heavy hull the yard sells", catalogue)
+	}
+}
+
+// The other half of the same rule: a waypoint that is ONLY a market costs no
+// shipyard row. The trait check lives in the adapter (a cached local read, no API
+// call), so this layer asks about every scanned waypoint and the world answers.
+func TestScannerRunScan_APlainMarketRecordsNoShipyard(t *testing.T) {
+	runner := &fakeScanRunner{}
+	yards := newFakeYardReader(map[string][]string{"X1-QR78-AE4F": {"SHIP_PROBE"}})
+	sc := NewScanner(1, ScanPorts{
+		Scan: runner, Ledger: &fakeScanLedger{}, SpreadOf: &fakeSpreadObserver{}, Yard: yards,
+	}, scanClock(), ScanKnobs{InflightCap: 2, ClampR: 4})
+
+	sc.SyncMembership([]SensingSlotView{dueMarket("X1-QR78-PLAIN", 0.2)}, 1.0)
+	takeAndLaunch(t, context.Background(), sc)
+	sc.workers.Wait()
+
+	if catalogue, recorded := yards.catalogueAt("X1-QR78-PLAIN"); recorded {
+		t.Fatalf("a waypoint that is not a shipyard recorded %v", catalogue)
+	}
+}
+
+// A refused shipyard read costs the yard's reading and NOTHING ELSE. The market
+// scan has already succeeded and its prices are already persisted, so failing the
+// slot here would cost the waypoint its whole market rotation to recover a
+// reading the free catalogue sweep takes again next tick anyway.
+func TestScannerRunScan_AFailedYardReadKeepsTheMarketScan(t *testing.T) {
+	runner := &fakeScanRunner{}
+	yards := newFakeYardReader(map[string][]string{"X1-QR78-AE4F": {"SHIP_PROBE"}})
+	yards.err = errors.New("shipyard read refused")
+	ledger := &fakeScanLedger{}
+	sc := NewScanner(1, ScanPorts{
+		Scan: runner, Ledger: ledger, SpreadOf: &fakeSpreadObserver{prices: []GoodPrice{{Good: "FUEL", Bid: 90, Ask: 110}}}, Yard: yards,
+	}, scanClock(), ScanKnobs{InflightCap: 2, ClampR: 4})
+
+	sc.SyncMembership([]SensingSlotView{dueMarket("X1-QR78-AE4F", 0.2)}, 1.0)
+	takeAndLaunch(t, context.Background(), sc)
+	sc.workers.Wait()
+
+	if marks := ledger.marks(); len(marks) != 1 {
+		t.Fatalf("MarkScanned calls = %d, want the market scan still recorded", len(marks))
+	}
+	if pending := sc.pendingWaypoints(); len(pending) != 1 {
+		t.Fatalf("rotation = %v, want the slot still scanning after a refused yard read", pending)
+	}
+}

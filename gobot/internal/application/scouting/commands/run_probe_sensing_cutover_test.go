@@ -61,6 +61,12 @@ type cutoverWorld struct {
 	// fixture that does not wire topology gets same-system behaviour, and a test
 	// that means to exercise a crossing has to say so.
 	gates *fakeGates
+	// yards is the shipyard blind spot as the store holds it: which yards we have
+	// never asked about, and which ones a tick actually read.
+	yards *fakeYardCatalog
+	// ports is the COMPLETE engine surface this world wires, held so a test can
+	// remove one port from a copy and re-wire the handler with it.
+	ports SensingEnginePorts
 	// purchaser is the probe-buy port, exposed so a test can assert WHAT the
 	// coordinator hands it — specifically the claim owner, which must be this
 	// tick's real container id (see the ships.container_id foreign key).
@@ -136,32 +142,42 @@ func newCutoverWorld(t *testing.T) *cutoverWorld {
 	ships := &fakeShipPositions{at: map[string]parkedsensing.ShipPos{}, docked: map[string]string{}}
 	budget := &fakeBudget{ceiling: 2.0}
 	gates := &fakeGates{edges: map[string][]string{}}
+	// The shipyard reads. Empty outstanding set by default: a fixture that means to
+	// exercise the catalogue sweep says so, and every other test sees a pass that
+	// enumerates nothing and reads nothing — which is also the steady state in
+	// production once the blind spot has drained.
+	yards := &fakeYardCatalog{calls: calls}
 
 	handler := NewRunProbeSensingCoordinatorHandler(
 		depth, posts, fleet, &fakePressure{}, &fakePhase{inExpansion: true}, &shared.MockClock{CurrentTime: time.Now()},
 	)
 	handler.SetMetricsRecorder(recorder)
-	handler.SetEnginePortsFactory(func(int) SensingEnginePorts {
-		return SensingEnginePorts{
-			Ledger:       ledger,
-			Waypoints:    catalog,
-			Uncharted:    catalog,
-			MarketGoods:  goods,
-			SpreadOf:     goods,
-			RemoteMarket: remote,
-			Treasury:     treasury,
-			CargoSpend:   &fakeCargoSpend{},
-			Purchaser:    purchaser,
-			Ships:        ships,
-			Fleet:        tagger,
-			Mover:        mover,
-			Gates:        gates,
-			SeedShip:     seeds,
-			Scan:         &fakeScanRunner{calls: calls},
-			Home:         &fakeHome{system: testHomeSystem},
-			Budget:       budget,
-		}
-	})
+	// Held as a value rather than built inside the closure so a test can take the
+	// COMPLETE surface, remove exactly one port and re-wire it — which is the only
+	// way to prove a specific port is genuinely required rather than merely present.
+	enginePorts := SensingEnginePorts{
+		Ledger:       ledger,
+		Waypoints:    catalog,
+		Uncharted:    catalog,
+		MarketGoods:  goods,
+		SpreadOf:     goods,
+		RemoteMarket: remote,
+		Treasury:     treasury,
+		CargoSpend:   &fakeCargoSpend{},
+		Purchaser:    purchaser,
+		Ships:        ships,
+		Fleet:        tagger,
+		Mover:        mover,
+		Gates:        gates,
+		SeedShip:     seeds,
+		Scan:         &fakeScanRunner{calls: calls},
+		YardCatalog:  yards,
+		YardRead:     yards,
+		YardScan:     yards,
+		Home:         &fakeHome{system: testHomeSystem},
+		Budget:       budget,
+	}
+	handler.SetEnginePortsFactory(func(int) SensingEnginePorts { return enginePorts })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -171,6 +187,7 @@ func newCutoverWorld(t *testing.T) *cutoverWorld {
 		posts: posts, fleet: fleet, tagger: tagger, depth: depth,
 		catalog: catalog, goods: goods, remote: remote, seeds: seeds,
 		mover: mover, recorder: recorder, shipPos: ships, purchaser: purchaser, gates: gates,
+		yards: yards, ports: enginePorts,
 	}
 }
 
@@ -728,4 +745,68 @@ func TestCutover_TwoOrphansAtOneWaypoint_AdoptsExactlyOne(t *testing.T) {
 	require.NoError(t, world.handler.ReconcileOnce(ctx, world.cmd))
 	require.Equal(t, 1, rowsWithHulls(), "the later tick did not overwrite the row either")
 	require.Equal(t, 1, taggedOrphans(), "and no later tick tags the hull it could not record")
+}
+
+// --- the shipyard blind spot, from the live tick ---------------------------------
+
+// CLOSED IS NOT ARMED. The free catalogue sweep is worth nothing if the reconcile
+// never calls it, and a discovery pass that silently does not run looks exactly
+// like a fleet that has already read everything — the heartbeat would report zero
+// outstanding either way.
+//
+// So this drives the REAL ReconcileOnce and asserts the blind spot actually
+// shrank: yards outstanding at the start of the tick, read by the end of it, and
+// reported on the one line the wake model reads.
+func TestReconcile_ReadsTheOutstandingShipyardCatalogues(t *testing.T) {
+	world := newCutoverWorld(t)
+	world.yards.outstanding = []parkedsensing.OutstandingYard{
+		{Waypoint: "X1-QR78-AE4F", System: "X1-QR78", Frontier: 1},
+		{Waypoint: "X1-QR78-FE8C", System: "X1-QR78", Frontier: 1},
+	}
+	logger := &capturingLogger{}
+
+	require.NoError(t, world.handler.ReconcileOnce(common.WithLogger(world.ctx, logger), world.cmd))
+
+	require.ElementsMatch(t, []string{"X1-QR78-AE4F", "X1-QR78-FE8C"}, world.yards.yardsRead(),
+		"the tick must read the shipyards nobody has ever asked about")
+	require.Empty(t, world.yards.yardsOutstanding(), "and the blind spot must actually shrink")
+
+	payload := logger.payload("parked_sensing_cycle")
+	require.Equal(t, 2, payload["yards_read"])
+	require.Equal(t, 2, payload["yards_outstanding"],
+		"outstanding reports the backlog the tick STARTED with — the number an operator watches fall")
+}
+
+// THE SHIPYARD READS ARE REQUIRED, NOT OPTIONAL-INJECTION.
+//
+// The distinction is the whole difference between a shipped feature and a dormant
+// one. A nil-tolerant yard read would leave the coordinator ticking along
+// reporting healthy while never learning what a single shipyard sells — which is
+// indistinguishable, from the heartbeat, from a fleet that has already read them
+// all. So the engine is held fail-closed and LOUD instead, exactly as it is for
+// every other port it cannot work without.
+//
+// Every OTHER port is present here, so this fails only if the yard clause is gone
+// from wired().
+func TestSensing_MissingYardPorts_HoldsTheTickInert(t *testing.T) {
+	for _, missing := range []struct {
+		name string
+		drop func(*SensingEnginePorts)
+	}{
+		{"the outstanding-yard enumeration", func(p *SensingEnginePorts) { p.YardCatalog = nil }},
+		{"the free catalogue read", func(p *SensingEnginePorts) { p.YardRead = nil }},
+		{"the parked-probe yard read", func(p *SensingEnginePorts) { p.YardScan = nil }},
+	} {
+		t.Run(missing.name, func(t *testing.T) {
+			world := newCutoverWorld(t)
+			ports := world.ports
+			missing.drop(&ports)
+			world.handler.SetEnginePortsFactory(func(int) SensingEnginePorts { return ports })
+
+			require.NoError(t, world.handler.ReconcileOnce(world.ctx, world.cmd))
+
+			require.Empty(t, world.posts.removed, "an engine that cannot read a shipyard retires nothing")
+			require.Empty(t, world.ledger.systems, "and screens nothing")
+		})
+	}
 }

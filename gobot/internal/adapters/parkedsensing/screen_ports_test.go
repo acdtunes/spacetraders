@@ -764,3 +764,154 @@ func TestUnchartedWaypoints_TheGatedOrderIsStableAcrossCalls(t *testing.T) {
 
 	require.Equal(t, first, second, "two derivations of the same system must agree exactly")
 }
+
+// --- the free shipyard-catalogue sweep -------------------------------------------
+//
+// The blind spot these pin: 76 waypoints carried a SHIPYARD trait, 23 appeared in
+// shipyard_inventory, 44 had never been read at all, and NOT ONE of the reads that
+// were taken happened without a hull standing on the waypoint for unrelated
+// reasons. `shipTypes` needs no presence, so all 44 were free the whole time.
+
+// OutstandingYards is the SET DIFFERENCE: every charted shipyard, minus the ones we
+// already hold a reading for. The exclusion is what makes the pass self-quiescing —
+// and it is also what stops an unpriced sweep from stomping a PRICED reading a
+// parked hull recorded, because a priced reading is a catalogue we hold.
+func TestOutstandingYards_ExcludesTheYardsWeHaveAlreadyRead(t *testing.T) {
+	db := newShipPortsDB(t)
+	require.NoError(t, db.Create(&[]persistence.WaypointModel{
+		waypointRow("X1-QR78-AE4F", "X1-QR78", []string{"SHIPYARD", "MARKETPLACE"}),
+		waypointRow("X1-QR78-FE8C", "X1-QR78", []string{"SHIPYARD"}),
+		waypointRow("X1-QR78-READ", "X1-QR78", []string{"SHIPYARD"}),
+		waypointRow("X1-QR78-M1", "X1-QR78", []string{"MARKETPLACE"}),
+	}).Error)
+	// One yard already carries a reading. It must never be enumerated again.
+	require.NoError(t, db.Create(&persistence.ShipyardInventoryModel{
+		PlayerID: testPlayerID, SystemSymbol: "X1-QR78", WaypointSymbol: "X1-QR78-READ",
+		ShipType: "SHIP_PROBE", PurchasePrice: 40_000, LastScanned: time.Now().UTC(),
+	}).Error)
+
+	outstanding, err := newCatalogPort(db).OutstandingYards(context.Background(), testPlayerID)
+	require.NoError(t, err)
+
+	symbols := make([]string, 0, len(outstanding))
+	for _, yard := range outstanding {
+		symbols = append(symbols, yard.Waypoint)
+	}
+	require.ElementsMatch(t, []string{"X1-QR78-AE4F", "X1-QR78-FE8C"}, symbols,
+		"only the yards we hold no reading for; a plain market is not a yard and a read one is done")
+}
+
+// An UNCHARTED waypoint is not yet a shipyard. Its traits are a guess until somebody
+// charts it, so reading it would spend a call on a waypoint the API cannot answer for
+// — and would then record the answer as though it were evidence.
+func TestOutstandingYards_ExcludesUncharted(t *testing.T) {
+	db := newShipPortsDB(t)
+	require.NoError(t, db.Create(&[]persistence.WaypointModel{
+		waypointRow("X1-AA1-Y1", "X1-AA1", []string{"SHIPYARD"}),
+		waypointRow("X1-AA1-Y9", "X1-AA1", []string{"SHIPYARD", "UNCHARTED"}),
+	}).Error)
+
+	outstanding, err := newCatalogPort(db).OutstandingYards(context.Background(), testPlayerID)
+	require.NoError(t, err)
+	require.Len(t, outstanding, 1)
+	require.Equal(t, "X1-AA1-Y1", outstanding[0].Waypoint)
+}
+
+// FRONTIER RANK is "is this pass the ONLY route to the answer". A yard in a system we
+// already watch will eventually have a hull parked in it, and that hull's scan reads
+// the yard under its feet; a yard in a system we watch nothing in has no other route
+// at all, so it outranks.
+func TestOutstandingYards_RanksUnwatchedSystemsAhead(t *testing.T) {
+	db := newShipPortsDB(t)
+	require.NoError(t, db.Create(&[]persistence.WaypointModel{
+		waypointRow("X1-WATCHED-Y1", "X1-WATCHED", []string{"SHIPYARD"}),
+		waypointRow("X1-DARK-Y1", "X1-DARK", []string{"SHIPYARD"}),
+	}).Error)
+	require.NoError(t, db.Create(&persistence.SensingSlotModel{
+		PlayerID: testPlayerID, WaypointSymbol: "X1-WATCHED-M1", SystemSymbol: "X1-WATCHED",
+		SlotKind: appSensing.SlotKindMarket, State: appSensing.SlotStateParked,
+	}).Error)
+
+	outstanding, err := newCatalogPort(db).OutstandingYards(context.Background(), testPlayerID)
+	require.NoError(t, err)
+
+	rank := map[string]int{}
+	for _, yard := range outstanding {
+		rank[yard.Waypoint] = yard.Frontier
+	}
+	require.Greater(t, rank["X1-DARK-Y1"], rank["X1-WATCHED-Y1"],
+		"a system we watch nothing in has no other route to its yards' catalogues")
+}
+
+// --- the catalogue-only reading -------------------------------------------------
+
+// THE FLEET-KILLER THIS GUARD STOPS.
+//
+// A presence-less read persists every listed type at price 0, because the priced
+// `ships` array only appears when a hull is at the counter. Read naively that says
+// "this yard sells no probe", which classifies it probeStockNone, drops it out of
+// ListProbeYards, and makes a counter we could have bought our next probe at
+// invisible for six hours. Turning the free sweep on would then have SHRUNK the
+// probe-yard universe it exists to grow.
+//
+// An unpriced reading is all the evidence there is, and it says the yard lists the
+// hull.
+func TestLastListingScan_CatalogueOnlyProbeRowCountsAsSellingProbes(t *testing.T) {
+	db := newShipPortsDB(t)
+	require.NoError(t, db.Create(&[]persistence.ShipyardInventoryModel{
+		{PlayerID: testPlayerID, SystemSymbol: "X1-AA1", WaypointSymbol: "X1-AA1-Y1",
+			ShipType: "SHIP_PROBE", PurchasePrice: 0, LastScanned: time.Now().UTC()},
+		{PlayerID: testPlayerID, SystemSymbol: "X1-AA1", WaypointSymbol: "X1-AA1-Y1",
+			ShipType: "SHIP_HEAVY_FREIGHTER", PurchasePrice: 0, LastScanned: time.Now().UTC()},
+	}).Error)
+
+	sellsProbe, _, known, err := newCatalogPort(db).LastListingScan(context.Background(), testPlayerID, "X1-AA1-Y1")
+	require.NoError(t, err)
+	require.True(t, known)
+	require.True(t, sellsProbe,
+		"a reading that priced NOTHING is a catalogue, and the catalogue lists SHIP_PROBE")
+
+	// And the consequence that actually matters: the yard is still buyable-from.
+	require.NoError(t, db.Create(&[]persistence.WaypointModel{
+		waypointRow("X1-AA1-Y1", "X1-AA1", []string{"SHIPYARD"}),
+	}).Error)
+	yards, err := newCatalogPort(db).ListProbeYards(context.Background(), "X1-AA1")
+	require.NoError(t, err)
+	require.Equal(t, []string{"X1-AA1-Y1"}, yards,
+		"the free catalogue sweep must never remove a probe yard from the buy queue's reach")
+}
+
+// The loop-break the memo exists for is PRESERVED. A reading that priced something
+// carried the `ships` array, so a probe row left at 0 in it genuinely is "listed but
+// not purchasable" — and re-quoting such a counter is exactly what the memo stops.
+func TestLastListingScan_PricedReadingStillRefusesAnUnpricedProbe(t *testing.T) {
+	db := newShipPortsDB(t)
+	require.NoError(t, db.Create(&[]persistence.ShipyardInventoryModel{
+		{PlayerID: testPlayerID, SystemSymbol: "X1-BB2", WaypointSymbol: "X1-BB2-Y1",
+			ShipType: "SHIP_PROBE", PurchasePrice: 0, LastScanned: time.Now().UTC()},
+		// Something in the same reading DID price, so this was a hull-present read.
+		{PlayerID: testPlayerID, SystemSymbol: "X1-BB2", WaypointSymbol: "X1-BB2-Y1",
+			ShipType: "SHIP_EXPLORER", PurchasePrice: 90_000, LastScanned: time.Now().UTC()},
+	}).Error)
+
+	sellsProbe, _, known, err := newCatalogPort(db).LastListingScan(context.Background(), testPlayerID, "X1-BB2-Y1")
+	require.NoError(t, err)
+	require.True(t, known)
+	require.False(t, sellsProbe,
+		"a reading that priced other hulls but not the probe is evidence the probe cannot be bought there")
+}
+
+// A catalogue-only reading that lists NO probe is the tightening this change buys:
+// positive evidence the yard sells none, so the drain stops paying live quotes there.
+func TestLastListingScan_CatalogueOnlyWithoutAProbeIsEvidenceOfNone(t *testing.T) {
+	db := newShipPortsDB(t)
+	require.NoError(t, db.Create(&persistence.ShipyardInventoryModel{
+		PlayerID: testPlayerID, SystemSymbol: "X1-CC3", WaypointSymbol: "X1-CC3-Y1",
+		ShipType: "SHIP_HEAVY_FREIGHTER", PurchasePrice: 0, LastScanned: time.Now().UTC(),
+	}).Error)
+
+	sellsProbe, _, known, err := newCatalogPort(db).LastListingScan(context.Background(), testPlayerID, "X1-CC3-Y1")
+	require.NoError(t, err)
+	require.True(t, known)
+	require.False(t, sellsProbe, "the catalogue is complete and it does not list a probe")
+}

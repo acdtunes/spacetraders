@@ -919,18 +919,52 @@ func TestPlanSlots_HeavyYardCoLocatedWithAMarketClaimsNoSecondRow(t *testing.T) 
 	}
 }
 
-// A probe yard still wins when both exist: probes are what sensing actually buys, so the
-// probe-priced ordering keeps its precedence and the heavy list is a FALLBACK, not an override.
-func TestPlanSlots_ProbeYardKeepsPrecedenceOverHeavyYard(t *testing.T) {
+// PRECEDENCE IS AN ORDERING, NOT AN EXCLUSION — and this test used to assert the
+// exclusion, which was the defect.
+//
+// Probes are what sensing actually buys, so a probe yard is still the FIRST
+// placement the system offers and the probe-priced cheapest-first order is
+// untouched. What is no longer true is that offering a probe yard hides the heavy
+// list entirely: the heavy read used to happen only when the system sold no probe
+// at all, so a system selling both never consulted it. Measured live, X1-QR78-AE4F
+// sells probes AND heavy freighters, so X1-QR78 never looked at its heavy list and
+// its second heavy yard X1-QR78-FE8C — which sells no probe, so nothing else would
+// ever place there — was invisible as a heavy yard while the fleet hunted one.
+func TestPlanSlots_HeavyYardIsConsideredEvenWhenTheSystemSellsProbes(t *testing.T) {
 	cat := &fakeCatalog{yards: []string{"X1-AA-P1"}, heavyYards: []string{"X1-AA-H1"}}
 	slots, err := planSlots(context.Background(), ScreenPorts{Waypoints: cat}, "X1-AA", nil)
 	if err != nil {
 		t.Fatalf("planSlots error: %v", err)
 	}
-	if len(slots) != 1 {
-		t.Fatalf("one yard slot per system, got %d (%+v)", len(slots), slots)
+	want := []PlannedSlot{
+		{Waypoint: "X1-AA-P1", Kind: SlotKindYard},
+		{Waypoint: "X1-AA-H1", Kind: SlotKindYard},
 	}
-	if slots[0].Waypoint != "X1-AA-P1" {
-		t.Fatalf("the probe yard must keep precedence, got %q", slots[0].Waypoint)
+	if !reflect.DeepEqual(slots, want) {
+		t.Fatalf("Slots =\n %+v\nwant the probe yard FIRST and the heavy yard still covered %+v", slots, want)
+	}
+}
+
+// A waypoint that sells BOTH classes appears in both catalogue lists and still
+// claims exactly ONE slot, in its probe-priced position. The ledger keys a slot on
+// (waypoint, kind), so a second YARD row here would not add a placement — but it
+// would be a second WANTED placement for one counter, which is a second probe
+// bought for a waypoint already covered.
+func TestPlanSlots_AYardSellingBothClassesClaimsOneSlot(t *testing.T) {
+	cat := &fakeCatalog{
+		yards:      []string{"X1-AA-P1", "X1-AA-BOTH"},
+		heavyYards: []string{"X1-AA-BOTH", "X1-AA-H1"},
+	}
+	slots, err := planSlots(context.Background(), ScreenPorts{Waypoints: cat}, "X1-AA", nil)
+	if err != nil {
+		t.Fatalf("planSlots error: %v", err)
+	}
+	want := []PlannedSlot{
+		{Waypoint: "X1-AA-P1", Kind: SlotKindYard},
+		{Waypoint: "X1-AA-BOTH", Kind: SlotKindYard},
+		{Waypoint: "X1-AA-H1", Kind: SlotKindYard},
+	}
+	if !reflect.DeepEqual(slots, want) {
+		t.Fatalf("Slots =\n %+v\nwant one slot per waypoint, dual-class yard in its probe position %+v", slots, want)
 	}
 }

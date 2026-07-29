@@ -139,6 +139,30 @@ type ScanPorts struct {
 	Scan     MarketScanRunner
 	Ledger   ScanLedger
 	SpreadOf SpreadObserver
+	// Yard reads the SHIPYARD standing at the same waypoint the scan just read,
+	// which is how a waypoint that is both a market and a shipyard comes to be
+	// sensed as BOTH.
+	//
+	// It closes the blind spot the slot KIND created. A probe-selling yard that is
+	// also a whitelisted market is placed as a MARKET slot (that kind carries the
+	// goods list; YARD does not), so the hull standing there was a market sensor
+	// and nothing ever asked it about the counter under its feet — measured live,
+	// nine shipyards had one of our hulls parked on them and no recorded
+	// inventory at all. The fix is to stop deciding by kind: EVERY parked scan
+	// also reads the yard, and the adapter's cached SHIPYARD-trait check makes
+	// that free at the waypoints that are only markets.
+	//
+	// It is the SAME port the free catalogue pass drives (yardcatalog.go), so a
+	// reading taken from a parked hull and one taken from across the map write
+	// through one code path. The difference is what they get back: a presence-less
+	// read learns only what the yard SELLS, while this one — issued from a hull
+	// standing at the counter — also carries the PRICES, which is the only way a
+	// yard becomes buyable rather than merely known.
+	//
+	// Nil-safe so the pacing tests can drive a scanner over no ports at all. It is
+	// NOT an arming seam: the coordinator's wired() check requires it, so a
+	// production tick cannot run without it.
+	Yard YardCatalogReader
 }
 
 // ScanKnobs are the operator-set shape of the scanner.
@@ -440,12 +464,41 @@ func (s *Scanner) runScan(ctx context.Context, slot SensingSlotView) {
 		spread = domainSensing.UpdateSpreadEWMA(slot.SpreadEWMA, observed)
 	}
 
+	// The second half of a parked probe's turn: whatever else this waypoint is,
+	// if it is ALSO a shipyard the hull standing here can price it, and nothing
+	// else in the fleet will. See ScanPorts.Yard.
+	s.readYard(ctx, slot)
+
 	if err := s.ports.Ledger.MarkScanned(ctx, s.playerID, slot.Waypoint, slot.Kind, at, spread); err != nil {
 		// Logged, never fatal to the slot. MarkScanned records freshness; losing
 		// that write costs one stale stamp, while dropping the slot for it would
 		// cost the waypoint every future scan.
 		s.warn(ctx, "parked_sensing_mark_scanned_failed", slot.Waypoint,
 			fmt.Sprintf("failed to record sensing scan of %s: %v", slot.Waypoint, err))
+	}
+}
+
+// readYard records what the shipyard at this waypoint sells and what it charges,
+// riding the turn the market scan just took.
+//
+// IT DECIDES NOTHING ABOUT WHAT THE WAYPOINT IS, deliberately. Whether the
+// waypoint carries a SHIPYARD trait is a cached, era-agnostic local fact the
+// adapter already reads before it spends anything, so a market that is only a
+// market costs one map lookup here and no API call — while a kind test in this
+// layer would reproduce the very mistake this exists to fix, deciding by the
+// slot's kind what the waypoint actually is.
+//
+// FAULTS ARE LOGGED AND SWALLOWED, matching MarkScanned beside it. The market
+// scan has already succeeded and its prices are already persisted; failing the
+// slot for a shipyard read would cost the waypoint its whole market rotation to
+// recover a reading the free catalogue pass will take again next tick anyway.
+func (s *Scanner) readYard(ctx context.Context, slot SensingSlotView) {
+	if s.ports.Yard == nil {
+		return
+	}
+	if err := s.ports.Yard.ReadCatalog(ctx, s.playerID, slot.Waypoint); err != nil {
+		s.warn(ctx, "parked_sensing_yard_read_failed", slot.Waypoint,
+			fmt.Sprintf("failed to read the shipyard at %s while scanning it: %v", slot.Waypoint, err))
 	}
 }
 

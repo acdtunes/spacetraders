@@ -858,6 +858,75 @@ func (f *fakeScanRunner) Run(context.Context, int, string) error {
 	return nil
 }
 
+// fakeYardCatalog is the free shipyard-catalogue sweep's pair of ports in one
+// fake: the outstanding-yard enumeration AND the read that drains it.
+//
+// It models the STORE the pass re-derives from, not the pass: a read moves its
+// waypoint out of `outstanding` and into `read`, which is exactly what recording
+// a catalogue does to the set difference the adapter computes. That is what lets
+// a test assert the pass is self-quiescing without reaching into it.
+// It is MUTEX-GUARDED, and that is a property of the fixture rather than of the
+// code: one instance is wired to BOTH yard ports, so the reconcile goroutine's
+// sweep and the scan pacer's worker goroutines drive it at the same time. The
+// production adapter is stateless (YardReadPort holds only its collaborators), so
+// there is nothing there to race — this store has state precisely because it is
+// pretending to be a database.
+type fakeYardCatalog struct {
+	mu    sync.Mutex
+	calls *callCounter
+	// outstanding is the yards whose catalogue we do not hold, in the arbitrary
+	// order a store would hand them back.
+	outstanding []parkedsensing.OutstandingYard
+	// read records the waypoints whose catalogue was recorded, in read order.
+	read []string
+	// listErr fails the enumeration; readErr fails EVERY read.
+	listErr, readErr error
+}
+
+func (f *fakeYardCatalog) OutstandingYards(context.Context, int) ([]parkedsensing.OutstandingYard, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	return append([]parkedsensing.OutstandingYard(nil), f.outstanding...), nil
+}
+
+func (f *fakeYardCatalog) ReadCatalog(_ context.Context, _ int, waypoint string) error {
+	if f.calls != nil {
+		f.calls.hit("yard_catalog_read")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.readErr != nil {
+		return f.readErr
+	}
+	f.read = append(f.read, waypoint)
+	remaining := make([]parkedsensing.OutstandingYard, 0, len(f.outstanding))
+	for _, yard := range f.outstanding {
+		if yard.Waypoint != waypoint {
+			remaining = append(remaining, yard)
+		}
+	}
+	f.outstanding = remaining
+	return nil
+}
+
+// yardsRead is the recorded read order, copied under the lock — the pacer may
+// still be reading yards while a test asserts.
+func (f *fakeYardCatalog) yardsRead() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.read...)
+}
+
+// yardsOutstanding is what the store still holds no catalogue for.
+func (f *fakeYardCatalog) yardsOutstanding() []parkedsensing.OutstandingYard {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]parkedsensing.OutstandingYard(nil), f.outstanding...)
+}
+
 // --- the coordinator's own ports ----------------------------------------------
 
 // fakeHome resolves the headquarters system. Database-only.

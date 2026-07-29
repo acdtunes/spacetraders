@@ -235,23 +235,26 @@ type SensingEnginePorts struct {
 	ListingMemo  parkedsensing.ProbeListingMemo
 	MarketGoods  parkedsensing.MarketGoodsReader
 	RemoteMarket parkedsensing.RemoteMarketFetcher
-	Treasury     parkedsensing.TreasuryReader
-	CargoSpend   parkedsensing.CargoSpendReader
-	Purchaser    parkedsensing.ProbePurchaser
-	Ships        parkedsensing.ParkedShipReader
-	Fleet        parkedsensing.FleetTagger
-	Mover        parkedsensing.ShipMover
-	Gates        parkedsensing.GateNeighbours
-	// GateRead is the DELIBERATE, bounded fetch-through jump-gate read — the pass that learns where a
-	// system connects without waiting for a hull to fly there. It is a SECOND port beside Gates
-	// rather than a widening of it, because Gates is a pure store read by contract and asked of every
-	// known system on every tick.
-	//
-	// Deliberately NOT in the ready() check below, for the same reason OffGate is not: the rest of
-	// the tick must keep running on a daemon whose gate resolver is absent, and the pass is inert
-	// until it is present. The daemon wires it unconditionally.
-	GateRead  parkedsensing.GateReader
-	Uncharted parkedsensing.UnchartedCatalog
+	// YardCatalog enumerates the charted shipyards whose catalogue we do not hold
+	// — the free pass's work list, re-derived from the store every tick.
+	YardCatalog parkedsensing.YardCatalogFrontier
+	// YardRead is the free pass's reader: it learns what a shipyard SELLS with no
+	// hull anywhere near it. Billed to the charting envelope, like the screen's
+	// remote market fetch.
+	YardRead parkedsensing.YardCatalogReader
+	// YardScan is the SAME read taken from a parked probe's own turn, which is what
+	// prices the yards we occupy and what finally records the shipyard under a
+	// market sensor's feet. Billed to the scanning envelope, like the market scan
+	// it rides.
+	YardScan   parkedsensing.YardCatalogReader
+	Treasury   parkedsensing.TreasuryReader
+	CargoSpend parkedsensing.CargoSpendReader
+	Purchaser  parkedsensing.ProbePurchaser
+	Ships      parkedsensing.ParkedShipReader
+	Fleet      parkedsensing.FleetTagger
+	Mover      parkedsensing.ShipMover
+	Gates      parkedsensing.GateNeighbours
+	Uncharted  parkedsensing.UnchartedCatalog
 	// OffGate is the warp-expansion slice: the ports that raise explorer demand onto the fleet
 	// autosizer's buy bridge and warp an explorer past a sealed gate frontier. Deliberately NOT in
 	// the ready() check below — the gate passes must keep running on a daemon whose off-gate
@@ -280,7 +283,13 @@ func (p SensingEnginePorts) wired() bool {
 	return p.Ledger != nil && p.Waypoints != nil && p.MarketGoods != nil && p.RemoteMarket != nil &&
 		p.Treasury != nil && p.CargoSpend != nil && p.Purchaser != nil && p.Ships != nil &&
 		p.Fleet != nil && p.Mover != nil && p.Gates != nil && p.Uncharted != nil &&
-		p.SeedShip != nil && p.Scan != nil && p.SpreadOf != nil && p.Home != nil && p.Budget != nil
+		p.SeedShip != nil && p.Scan != nil && p.SpreadOf != nil && p.Home != nil && p.Budget != nil &&
+		// The shipyard reads are REQUIRED, not optional-injection like ListingMemo or
+		// HeavyReserve beside them. A nil-tolerant yard read is what a dormant feature
+		// looks like: the engine would tick along reporting healthy while never learning
+		// what a single shipyard sells, which is precisely the blind spot these ports
+		// exist to close. Held fail-closed and LOUD instead.
+		p.YardCatalog != nil && p.YardRead != nil && p.YardScan != nil
 }
 
 // --- engine port bundles ------------------------------------------------------
@@ -297,6 +306,18 @@ func (p SensingEnginePorts) screenPorts() parkedsensing.ScreenPorts {
 		MarketGoods:  p.MarketGoods,
 		RemoteMarket: p.RemoteMarket,
 		Ledger:       p.Ledger,
+	}
+}
+
+// yardCatalogPorts bundles the free shipyard-catalogue sweep's surface. Two
+// reads and nothing else: it can enumerate the yards nobody has asked about, and
+// it can ask. It is handed no ledger, no purchaser and no mover — a discovery
+// pass that could write a placement or spend a credit would be a different
+// engine.
+func (p SensingEnginePorts) yardCatalogPorts() parkedsensing.YardCatalogPorts {
+	return parkedsensing.YardCatalogPorts{
+		Frontier: p.YardCatalog,
+		Catalog:  p.YardRead,
 	}
 }
 
@@ -382,10 +403,7 @@ func (p SensingEnginePorts) placementPorts() parkedsensing.PlacementPorts {
 func (p SensingEnginePorts) expandPorts(playerID int, whitelist map[string]bool) parkedsensing.ExpandPorts {
 	screen := p.screenPorts()
 	return parkedsensing.ExpandPorts{
-		Gates: p.Gates,
-		// The deliberate fetch-through gate read. Gates above stays the pure per-tick store read;
-		// this is the separate, bounded seam the gate-read pass spends API budget through.
-		GateRead:    p.GateRead,
+		Gates:       p.Gates,
 		Ledger:      p.Ledger,
 		SeedShip:    p.SeedShip,
 		Ships:       p.Ships,
@@ -891,6 +909,23 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 		failures = append(failures, serr)
 	}
 
+	// The free shipyard-catalogue sweep, run on EVERY tick and gated on nothing.
+	//
+	// It sits outside the screen sweep deliberately. Screening only ever revisits
+	// PENDING systems (an IN_SCOPE one is never re-screened, by design), so a yard
+	// in a system we have already judged would never be reached from there — and
+	// that is most of the map. This pass asks about yards, not systems, and its
+	// work list shrinks to nothing on its own as the reads land.
+	//
+	// AFTER the screen so a system charted by this tick's sweep already has its
+	// waypoint rows, and its yards are enumerable on this same tick rather than the
+	// next one. BEFORE the drain because the drain's yard lookup reads the very
+	// rows this pass writes.
+	yardRep, yerr := parkedsensing.ReadYardCatalogues(ctx, ports.yardCatalogPorts(), playerID)
+	if yerr != nil {
+		failures = append(failures, yerr)
+	}
+
 	// BETWEEN THE SWEEP AND THE DRAIN, and both edges are the contract.
 	//
 	// After the sweep, so a verdict written by THIS tick is honoured by it: a
@@ -1002,6 +1037,7 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 		place:       placeRep,
 		expand:      expandRep,
 		rotation:    rotation,
+		yard:        yardRep,
 	})
 	return errors.Join(failures...)
 }
@@ -1578,6 +1614,10 @@ func (h *RunProbeSensingCoordinatorHandler) scannerFor(cmd *RunProbeSensingCoord
 		Scan:     ports.Scan,
 		Ledger:   ports.Ledger,
 		SpreadOf: ports.SpreadOf,
+		// The scanning-tagged yard read, so a parked probe records the shipyard
+		// under its feet on the same turn it reads the market there. It is the only
+		// path that ever PRICES a yard we occupy.
+		Yard: ports.YardScan,
 	}, h.clock, parkedsensing.ScanKnobs{
 		InflightCap: cfg.InflightCap,
 		ClampR:      cfg.ClampR,

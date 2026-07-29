@@ -248,14 +248,6 @@ type ExpandPorts struct {
 	// OPTIONAL: a nil memo leaves staging choosing the nearest staffed yard exactly
 	// as it did before this port existed.
 	ListingMemo ProbeListingMemo
-	// GateRead is the DELIBERATE, bounded, fetch-through jump-gate read — the pass that learns
-	// where a system connects WITHOUT waiting for a hull to fly there. See gateread.go.
-	//
-	// It is a SECOND port beside Gates rather than a widening of it, because Gates is a pure store
-	// read by contract and must stay one. A nil reader is a WIRING GAP, not a feature switch: the
-	// pass does nothing and the tick behaves exactly as it did before the port existed, in the same
-	// spirit as OffGatePorts. The daemon wires it.
-	GateRead GateReader
 	// OffGate is the warp-expansion slice: the ports that raise explorer demand and warp an
 	// explorer past a sealed gate frontier. See offgate.go.
 	OffGate OffGatePorts
@@ -307,22 +299,6 @@ type ExpandReport struct {
 	Retargeted, Parked int
 	// Actions counts everything charged against MaxExpansionActions.
 	Actions int
-	// GatesRead counts jump gates this tick READ LIVE and persisted; GatesUnread is the size of the
-	// whole outstanding backlog BEFORE the per-tick cap truncated it, so the heartbeat shows how much
-	// topology is still unknown rather than only how much this tick happened to absorb.
-	//
-	// GatesUnreadable and GatesFailed are kept APART, and the split is the whole point of matching a
-	// sentinel rather than any-error. An uncharted gate is the API answering honestly — this one
-	// genuinely needs a hull — and on a young frontier it is the common case; a store fault, an
-	// expired token or a 5xx is not, and folding the two into one counter would hide a broken
-	// dependency inside a number that is SUPPOSED to be large.
-	//
-	// Gate reads are NOT charged against MaxExpansionActions. That budget paces the seed machinery's
-	// hull commands; this pass commands no hull, spends no credits, and carries its own bound
-	// (MaxGateReads). Sharing one budget would let routine seed steps crowd out the one pass that can
-	// tell the fleet it is not actually sealed in — which is exactly how the fleet came to sit inside
-	// a 57-system pocket believing every exit was under construction.
-	GatesRead, GatesUnread, GatesUnreadable, GatesFailed int
 	// OffGateDemanded reports that the gate-reachable frontier was exhausted this tick and
 	// explorer demand was raised; OffGateTarget names the system selected to warp to (empty when
 	// none was reachable), and OffGateWarped counts warps actually dispatched.
@@ -387,29 +363,6 @@ func AdvanceExpansion(
 		return rep, err
 	}
 
-	// How far every system is from every other, out to the reach a seed can
-	// actually fly. One memo for the whole tick, shared by all five consumers —
-	// the gate read, supply, the spare claim, staging and the retarget — so none
-	// of them can disagree about what is reachable. See gateReach.
-	reach := newGateReach(p.Gates, neighbours, SeedFlightUnbounded)
-
-	// Whether the store holds ANY gate adjacency for a system, read at most once per system per tick
-	// and shared by its two consumers: the gate-read pass below, which uses it to find the systems
-	// whose adjacency we lack, and orderByGateMapping, which uses it to rank unknown territory first.
-	// One read, one answer, no drift within a tick. See gateMapping.
-	mapping := newGateMapping(p.Gates)
-
-	// THE DELIBERATE GATE READ, placed here with markFrontier because both are TOPOLOGY: learn the
-	// map, then fly it. A charted gate is readable with no hull present, so waiting for a probe to
-	// physically arrive before asking a system where it connects was never necessary — and it is what
-	// left the fleet sealed inside a 57-system pocket with a built, passable exit nobody had read.
-	//
-	// IT TAKES `known`, WHICH markFrontier HAS JUST GROWN, so a neighbour named for the first time this
-	// tick is a candidate on this tick rather than the next. See gateread.go.
-	if err := readUnmappedGates(ctx, p, playerID, known, mapping, reach, book, &rep); err != nil {
-		return rep, err
-	}
-
 	// The systems needing a hull are resolved ONCE, before anything moves, and
 	// every branch that covers one strikes it off. That is what keeps a seed
 	// retargeted onto a system from also being sent a spare, and a spare claimed
@@ -425,6 +378,12 @@ func AdvanceExpansion(
 	// waypoints are yards.
 	probeYards := map[string][]string{}
 
+	// How far every system is from every other, out to the reach a seed can
+	// actually fly. One memo for the whole tick, shared by all four consumers —
+	// supply, the spare claim, staging and the retarget — so none of them can
+	// disagree about what is reachable. See gateReach.
+	reach := newGateReach(p.Gates, neighbours, SeedFlightUnbounded)
+
 	// Nearest first: a one-hop errand is one flight, a two-hop errand two, and
 	// the probe is held for the whole of it. Ordering here rather than in each
 	// consumer is what makes the choice consistent across all three of them.
@@ -437,7 +396,7 @@ func AdvanceExpansion(
 	// second stable pass rather than folded into orderByReach so each sort stays one
 	// idea, and so the compound key reads in the order it is written — gate mapping,
 	// then distance, then the depth ordering seedlessTargets established.
-	targets, err = orderByGateMapping(ctx, mapping, targets)
+	targets, err = orderByGateMapping(ctx, p, targets)
 	if err != nil {
 		return rep, err
 	}
@@ -1301,7 +1260,7 @@ func orderByReach(
 // genuine frontier territory to the back of the queue and the fleet would quietly stop growing; read
 // as "unmapped" it would promote every ordinary target at once. The tick is idempotent and
 // re-derived from scratch, so failing loudly costs one cycle.
-func orderByGateMapping(ctx context.Context, mapping *gateMapping, targets []ExpandSystem) ([]ExpandSystem, error) {
+func orderByGateMapping(ctx context.Context, p ExpandPorts, targets []ExpandSystem) ([]ExpandSystem, error) {
 	if len(targets) < 2 {
 		return targets, nil
 	}
@@ -1311,16 +1270,11 @@ func orderByGateMapping(ctx context.Context, mapping *gateMapping, targets []Exp
 	// succeeds. (A same-system short-circuit lived here briefly; it was removed because targets are
 	// distinct systems by construction, so it could never fire — dead code with a plausible-sounding
 	// rationale is worse than none.)
-	//
-	// THROUGH THE TICK'S SHARED MEMO rather than straight at the port, because the gate-read pass asks
-	// the identical question of the identical store earlier in the same tick. Two consumers reading it
-	// twice would not merely double a per-system store read; it would let them observe different
-	// answers within one tick, and the pass that reads gates is the one that CHANGES the answer.
 	unmapped := make(map[string]bool, len(targets))
 	for _, target := range targets {
-		mapped, err := mapping.mapped(ctx, target.System)
+		mapped, err := p.Gates.Mapped(ctx, target.System)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to read whether the gate of %q has been mapped: %w", target.System, err)
 		}
 		unmapped[target.System] = !mapped
 	}

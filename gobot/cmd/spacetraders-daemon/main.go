@@ -1160,6 +1160,20 @@ func run(cfg *config.Config) error {
 			// The same catalog instance again: it owns the shipyard_inventory reads,
 			// so the yard lookup and the listing memo read one store.
 			ListingMemo: catalog,
+			// And once more for the shipyard blind spot: the set difference between
+			// the charted SHIPYARD-trait waypoints and the ones already carrying a
+			// stored reading. Same instance, so "which yards exist" and "which yards
+			// have we read" are answered from one place.
+			YardCatalog: catalog,
+			// The two halves of a shipyard read, wired as ONE scanner behind two
+			// budget tags. The free half learns what a yard SELLS with no hull
+			// anywhere near it (`shipTypes` survives a presence-less GET, exactly like
+			// the market catalogue above); the scan half rides a parked probe's turn
+			// and additionally carries the PRICES, which only a hull at the counter
+			// can see. Both persist through the fleet's one shipyard scanner, so the
+			// heavy-yard milestone fires from either.
+			YardRead: parkedSensingAdapters.NewYardCatalogPort(shipyardScanner, playerRepo),
+			YardScan: parkedSensingAdapters.NewYardScanPort(shipyardScanner, playerRepo),
 			// The market cache: what a market deals in, how deep it is, and the
 			// two-sided quotes the spread weighting reads (columns CROSSED — see
 			// MarketPrices, where an uncrossed wiring fails silently).
@@ -1183,18 +1197,6 @@ func run(cfg *config.Config) error {
 			// Per-system stored gate adjacency — never the whole-map read, and never a
 			// fetch-through resolver.
 			Gates: gateNeighbours,
-			// The DELIBERATE fetch-through gate read, over the SAME gategraph service the
-			// `spacetraders system gates --system X1-…` CLI verb drives and every router already
-			// resolves through — so there is one live gate fetcher in the codebase, one persistence
-			// path, and one negative-result backoff for a gate the API refuses.
-			//
-			// It is a SECOND port beside Gates rather than a widening of it: Gates is asked of every
-			// known system on every tick and must stay a pure store read, while this is asked of a
-			// bounded, ordered handful (MaxGateReads) of systems the store has already said it cannot
-			// answer for. Without it the engine could only learn a system's adjacency by flying a
-			// probe to it, which left the fleet sealed inside a 57-system pocket whose one built,
-			// passable exit nobody had ever read.
-			GateRead: parkedSensingAdapters.NewGateReadPort(gateGraphService),
 			// The same stored adjacency the placement mover walks: a seed's target
 			// may now be up to MaxWalkRings hops out, so the crossing resolves its
 			// next system from the gate graph rather than jumping at the errand's

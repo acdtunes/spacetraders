@@ -52,6 +52,11 @@ type heartbeat struct {
 	buy        parkedsensing.BuyReport
 	place      parkedsensing.PlacementReport
 	expand     parkedsensing.ExpandReport
+	// yard is the free shipyard-catalogue sweep's accounting. Outstanding is the
+	// number an operator watches fall to zero: it is the count of KNOWN shipyards
+	// the fleet has never asked what they sell, and while it is non-zero the fleet
+	// is hunting hulls it may already be able to see.
+	yard parkedsensing.YardCatalogReport
 	// rotation is how many slots the scan pacer is ACTUALLY watching, which is
 	// not the ledger's parked count: the rotation drops anything unscannable.
 	rotation int
@@ -91,8 +96,9 @@ func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *
 	}
 
 	common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf(
-		"Parked sensing cycle: %.3f req/s pacer (%.3f residual, brake %.2f), %d parked, screened %d, bought %d reused %d queued %d (%d attempts%s%s), reaped %d adopted %d idle-reused %d, dispatched %d docking %d parked %d, expansion %s",
+		"Parked sensing cycle: %.3f req/s pacer (%.3f residual, brake %.2f), %d parked, screened %d, yards read %d of %d outstanding, bought %d reused %d queued %d (%d attempts%s%s), reaped %d adopted %d idle-reused %d, dispatched %d docking %d parked %d, expansion %s",
 		hb.pacerRate, hb.sensingRate, hb.brake, hb.rotation, hb.screened,
+		hb.yard.Read, hb.yard.Outstanding,
 		hb.buy.Bought, hb.buy.Reused, hb.buy.Queued, hb.buy.Attempts, heldSuffix(held), refusalSuffix(hb.buy.Refusals),
 		hb.reap.Reaped, hb.adopted, hb.dispatched,
 		hb.place.Dispatched, hb.place.Docking, hb.place.Parked, expansionSummary(hb.expand)),
@@ -106,6 +112,16 @@ func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *
 			"rotation_slots":        hb.rotation,
 			"screened":              hb.screened,
 			"cutover_posts_removed": hb.cutover,
+
+			// The shipyard blind spot, as a number. yards_outstanding is every KNOWN
+			// shipyard whose catalogue we have never read; while it is non-zero the
+			// fleet cannot answer "where does this hull sell" for that many counters.
+			// It drains on its own and then stays at zero forever, so a value that
+			// stops falling is the signal — either the reads are failing (see
+			// yards_failed) or new territory is being charted faster than it is read.
+			"yards_read":        hb.yard.Read,
+			"yards_failed":      hb.yard.Failed,
+			"yards_outstanding": hb.yard.Outstanding,
 
 			"buy_bought": hb.buy.Bought,
 			"buy_reused": hb.buy.Reused,

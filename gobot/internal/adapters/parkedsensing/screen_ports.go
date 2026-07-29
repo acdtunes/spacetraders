@@ -46,6 +46,7 @@ var (
 	_ appSensing.WaypointCatalog     = (*WaypointCatalogPort)(nil)
 	_ appSensing.ProbeYardCatalog    = (*WaypointCatalogPort)(nil)
 	_ appSensing.UnchartedCatalog    = (*WaypointCatalogPort)(nil)
+	_ appSensing.YardCatalogFrontier = (*WaypointCatalogPort)(nil)
 	_ appSensing.MarketGoodsReader   = (*MarketGoodsPort)(nil)
 	_ appSensing.SpreadObserver      = (*MarketGoodsPort)(nil)
 	_ appSensing.RemoteMarketFetcher = (*RemoteMarketPort)(nil)
@@ -57,6 +58,14 @@ var (
 type waypointLister interface {
 	ListBySystem(ctx context.Context, systemSymbol string) ([]*shared.Waypoint, error)
 	ListBySystemWithTrait(ctx context.Context, systemSymbol, trait string) ([]*shared.Waypoint, error)
+	// ListWithTrait is the FLEET-WIDE trait read, and the one exception to this
+	// file's per-system cost rule. The free shipyard-catalogue pass is the only
+	// caller: its whole job is to find the yards no system-scoped read ever reaches,
+	// so it must ask about the map rather than about one system. It is bounded by
+	// the count of CHARTED yards (76, measured live), which is a number that grows
+	// with what the fleet has explored and not with how often it ticks — and the set
+	// it feeds shrinks to nothing as the reads land.
+	ListWithTrait(ctx context.Context, trait string) ([]*shared.Waypoint, error)
 }
 
 // WaypointCatalogPort answers "what is in this system?" from the persisted
@@ -262,6 +271,93 @@ func (p *WaypointCatalogPort) ListHeavyYards(ctx context.Context, system string)
 	return out, nil
 }
 
+// OutstandingYards lists every CHARTED shipyard whose catalogue we do not hold —
+// the work list for the free, presence-less catalogue pass (appSensing.ReadYardCatalogues).
+//
+// It is a SET DIFFERENCE over two local reads and never touches the API, which is
+// the same contract every other read on this port carries: the pass exists to
+// REMOVE presence from shipyard discovery, so an enumeration that spent a call per
+// candidate would reintroduce the cost it is trying to delete.
+//
+//   - The candidate half is the fleet-wide SHIPYARD-trait set, era-AGNOSTIC because a
+//     shipyard is an immutable physical fact and a prior-era row is still proof one is
+//     there (the same reading ChartedShipyardEnumerator takes). UNCHARTED waypoints are
+//     excluded: their traits are a guess until somebody charts them, so a SHIPYARD trait
+//     on one is not yet evidence of a shipyard.
+//   - The exclusion half is every waypoint already carrying a shipyard_inventory row.
+//     "We hold a catalogue" is exactly "there is a row", which is what makes the pass
+//     SELF-QUIESCING: a yard read once never appears here again, so the backlog drains
+//     and the pass then costs one query per tick and nothing else.
+//
+// NOT ERA-SCOPED, matching ListProbeYards and ListHeavyYards above rather than the
+// repository's era-scoped reads — this file's local convention, and its known
+// inconsistency (sp-fwk8z T3 review Minor 4). Aligning the three belongs in one pass;
+// era-scoping only this one would trade a cross-package inconsistency for a worse one
+// inside this file. The direction it errs in after a reset is UNDER-reading (a dead
+// era's row suppresses a re-read), which costs discovery latency and never a wrong buy.
+//
+// FRONTIER RANK IS "DO WE ALREADY WATCH THIS SYSTEM", greater first: a yard in a system
+// holding no sensing placement gets 1, one in a system we already watch gets 0. That is
+// the ordering that matters for a FREE read, because it ranks by whether this pass is
+// the ONLY route to the answer — a system we already watch will have a hull parked in it
+// sooner or later, and that hull's scan reads the yard under its feet (scanner.go), while
+// a system we watch nothing in has no other route at all. It is deliberately not a
+// gate-hop depth: that needs a graph walk per tick, and for a read that flies nothing and
+// spends nothing, distance ranks the wrong thing.
+func (p *WaypointCatalogPort) OutstandingYards(ctx context.Context, playerID int) ([]appSensing.OutstandingYard, error) {
+	yards, err := p.waypoints.ListWithTrait(ctx, shipyardTrait)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list the charted shipyards: %w", err)
+	}
+
+	var readSymbols []string
+	if err := p.db.WithContext(ctx).
+		Table("shipyard_inventory").
+		Distinct("waypoint_symbol").
+		Where("player_id = ?", playerID).
+		Pluck("waypoint_symbol", &readSymbols).Error; err != nil {
+		return nil, fmt.Errorf("failed to read which shipyard catalogues we already hold: %w", err)
+	}
+	held := make(map[string]bool, len(readSymbols))
+	for _, symbol := range readSymbols {
+		held[symbol] = true
+	}
+
+	var watchedSystems []string
+	if err := p.db.WithContext(ctx).
+		Table("sensing_slots").
+		Distinct("system_symbol").
+		Where("player_id = ?", playerID).
+		Pluck("system_symbol", &watchedSystems).Error; err != nil {
+		return nil, fmt.Errorf("failed to read which systems we already watch: %w", err)
+	}
+	watched := make(map[string]bool, len(watchedSystems))
+	for _, system := range watchedSystems {
+		watched[system] = true
+	}
+
+	out := make([]appSensing.OutstandingYard, 0, len(yards))
+	for _, yard := range yards {
+		if yard == nil || held[yard.Symbol] || hasTrait(yard, unchartedTrait) {
+			continue
+		}
+		system := yard.SystemSymbol
+		if system == "" {
+			system = shared.ExtractSystemSymbol(yard.Symbol)
+		}
+		frontier := 1
+		if watched[system] {
+			frontier = 0
+		}
+		out = append(out, appSensing.OutstandingYard{
+			Waypoint: yard.Symbol,
+			System:   system,
+			Frontier: frontier,
+		})
+	}
+	return out, nil
+}
+
 // LastListingScan reports what the stored shipyard inventory says about ONE
 // yard's probe stock, and when that reading was taken.
 //
@@ -271,11 +367,39 @@ func (p *WaypointCatalogPort) ListHeavyYards(ctx context.Context, system string)
 // through the same ReplaceScan, so a waypoint's rows are always a complete
 // snapshot of one reading rather than an accumulation across several.
 //
-// A probe row at price 0 does NOT count as selling a probe. ShipTypeAvailability
-// documents price 0 as "listed, but carried no priced listing at scan time", and
-// the drain's quote refuses such a yard for exactly that reason — so counting it
-// here would keep re-quoting a counter we already know cannot price the hull,
-// which is the loop this whole path exists to break.
+// THE READING IS INTERPRETED AGAINST WHAT KIND OF READING IT WAS, and getting
+// that wrong is a fleet-killer rather than a mis-report. A stored row set is one
+// of two things:
+//
+//   - a PRICED reading, taken with a hull at the counter: the `ships` array came
+//     back, so at least one row carries a price. Here a probe row at price 0 does
+//     NOT count as selling a probe — ShipTypeAvailability documents price 0 as
+//     "listed, but carried no priced listing at scan time", the drain's quote
+//     refuses such a yard for exactly that reason, and counting it would keep
+//     re-quoting a counter we already know cannot price the hull. That is the loop
+//     the memo exists to break, and it is preserved untouched.
+//   - a CATALOGUE-ONLY reading, taken with no hull anywhere: `shipTypes` came back
+//     and `ships` did not, so EVERY row is price 0 by construction. Reading an
+//     unpriced probe row as "sells no probe" here is simply false — the yard sells
+//     probes, we have not priced them — and the consequence is not cosmetic: it
+//     classifies the yard probeStockNone, ProbeYardIsCandidate drops it out of
+//     ListProbeYards, and a counter the fleet could have bought its next probe at
+//     becomes invisible for six hours. The free catalogue pass writes exactly this
+//     shape at every yard it reads, so without this branch turning the pass on
+//     would have SHRUNK the probe-yard universe it was built to grow.
+//
+// The two are told apart by the reading itself, with no schema change and no
+// flag: a reading that priced ANYTHING is a priced reading. persistListings in
+// ship_ports.go already states this distinction as the intent ("the memo can tell
+// 'this yard does not sell probes' from 'this yard sells probes we could not
+// price', and only the first is a reason to stop asking") — it just had no way to
+// express it while every reading carried prices.
+//
+// DIRECTION CHECK. Against the behaviour before the catalogue pass existed, this
+// LOOSENS nothing: a yard with no rows was already UNREAD and already a
+// candidate, and it stays one. What it does add is a genuine TIGHTENING — a
+// catalogue-only reading that lists no probe at all is now positive evidence the
+// yard sells none, so the drain stops paying live quotes there.
 //
 // known=false when the waypoint has no rows at all, which the caller must read as
 // "ask once" and never as "no probe".
@@ -296,16 +420,25 @@ func (p *WaypointCatalogPort) LastListingScan(ctx context.Context, playerID int,
 	if len(rows) == 0 {
 		return false, time.Time{}, false, nil
 	}
-	sellsProbe := false
+	priced, pricedProbe, listedProbe := false, false, false
 	var scannedAt time.Time
 	for _, row := range rows {
-		if row.ShipType == probeShipType && row.PurchasePrice > 0 {
-			sellsProbe = true
+		if row.PurchasePrice > 0 {
+			priced = true
+		}
+		if row.ShipType == probeShipType {
+			listedProbe = true
+			if row.PurchasePrice > 0 {
+				pricedProbe = true
+			}
 		}
 		if row.LastScanned.After(scannedAt) {
 			scannedAt = row.LastScanned
 		}
 	}
+	// A priced reading is judged on its price; an unpriced one is all the evidence
+	// there is, and it says the yard lists the hull.
+	sellsProbe := pricedProbe || (!priced && listedProbe)
 	return sellsProbe, scannedAt, true, nil
 }
 

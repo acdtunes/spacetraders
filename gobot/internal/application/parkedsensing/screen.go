@@ -456,7 +456,7 @@ func planSlots(ctx context.Context, p ScreenPorts, system string, hits []screene
 		placed[hit.waypoint] = true
 	}
 
-	yards, err := p.Waypoints.ListProbeYards(ctx, system)
+	probeYards, err := p.Waypoints.ListProbeYards(ctx, system)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list probe yards in %q: %w", system, err)
 	}
@@ -484,17 +484,36 @@ func planSlots(ctx context.Context, p ScreenPorts, system string, hits []screene
 	// filtering for kind == YARD would miss the probe standing right there and
 	// buy a second one for the same waypoint.
 	// Heavy-selling yards earn a quartermaster too (spec §6): a parked probe makes a
-	// future HEAVY purchase there instant. They remain a FALLBACK behind probe yards, not an
-	// override — probes are what this engine buys, so the probe-priced ordering above keeps
-	// precedence and a system offering any probe yard never consults the heavy list at all.
-	// Only the ONE-yard limit is lifted here; the probe-first precedence is untouched.
-	if len(yards) == 0 {
-		heavy, err := p.Waypoints.ListHeavyYards(ctx, system)
-		if err != nil {
-			return nil, fmt.Errorf("failed to list heavy yards in %q: %w", system, err)
-		}
-		yards = heavy
+	// future HEAVY purchase there instant instead of requiring a hull to fly in first.
+	//
+	// PRECEDENCE, NOT EXCLUSION. The heavy list is appended BEHIND the probe list, so
+	// the probe-priced cheapest-first ordering above keeps its precedence untouched —
+	// probes are what this engine actually buys, and a probe yard is still the first
+	// placement the system offers. What changed is that the heavy list is now
+	// CONSULTED ALWAYS. It used to be read only when the system offered no probe yard
+	// at all, on the reasoning that probes come first; but "first" is an ordering
+	// claim and this made it an exclusion, so a system that sold both simply never
+	// looked. Measured live: X1-QR78-AE4F sells probes AND heavy freighters, so
+	// X1-QR78 never consulted its heavy list, and its SECOND heavy yard X1-QR78-FE8C
+	// — which sells no probe — was invisible as a heavy yard entirely. The engine was
+	// hunting a SHIP_HEAVY_FREIGHTER at the time.
+	//
+	// The `placed` map below is what makes the concatenation safe: a waypoint selling
+	// both classes appears in both lists and still claims exactly one slot, in its
+	// probe-priced position.
+	//
+	// The joined list is built into a FRESH slice rather than appended onto the one
+	// the port handed back. A port's return is the adapter's own buffer, and appending
+	// into its spare capacity would write through into whatever the adapter still
+	// holds — a defect that only appears once an adapter starts reusing its slice, and
+	// then appears as a corrupted yard list rather than as a build failure.
+	heavyYards, err := p.Waypoints.ListHeavyYards(ctx, system)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list heavy yards in %q: %w", system, err)
 	}
+	yards := make([]string, 0, len(probeYards)+len(heavyYards))
+	yards = append(yards, probeYards...)
+	yards = append(yards, heavyYards...)
 	for _, yard := range yards {
 		if placed[yard] {
 			continue
