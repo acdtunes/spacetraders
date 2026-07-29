@@ -275,6 +275,18 @@ func NewDaemonServer(
 		concreteRepo.SetArrivalScheduler(shipStateScheduler)
 	}
 
+	// Wire the position re-anchor observer: a sync that writes a position CONTRADICTING
+	// the row it replaced is first-hand proof a completed move was never persisted, and
+	// it must reach the captain outbox and Prometheus rather than being corrected in
+	// silence (ship_position_reanchor_observer.go). Unconditional — this is the signal
+	// that hands the next occurrence its own evidence, and an alarm behind a condition
+	// is the failure it exists to end.
+	if concreteRepo, ok := shipRepo.(interface {
+		SetPositionReanchorObserver(api.PositionReanchorObserver)
+	}); ok {
+		concreteRepo.SetPositionReanchorObserver(shipPositionReanchorObserver{})
+	}
+
 	server := &DaemonServer{
 		mediator:               mediator,
 		db:                     db,
@@ -620,6 +632,16 @@ func NewDaemonServer(
 			return nil, fmt.Errorf("failed to register coordinator-stall metrics collector: %w", err)
 		}
 		metrics.SetGlobalStallCollector(stallCollector)
+
+		// Ship-position re-anchor collector: the Prometheus half of the lost-write signal.
+		// Same lifecycle and same lazy-global reasoning as the stall collector above — the
+		// ship repository is wired well before this constructor runs.
+		reanchorCollector := metrics.NewPositionReanchorCollector()
+		if err := reanchorCollector.Register(); err != nil {
+			listener.Close()
+			return nil, fmt.Errorf("failed to register ship-position re-anchor metrics collector: %w", err)
+		}
+		metrics.SetGlobalPositionReanchorCollector(reanchorCollector)
 	}
 
 	// Register container specs for launch and recovery

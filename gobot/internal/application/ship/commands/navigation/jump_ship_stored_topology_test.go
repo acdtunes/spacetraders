@@ -21,6 +21,7 @@ type stubJumpTopologyStore struct {
 	missValue      string // returned alongside ok=false, to prove the miss flag is honoured
 	waypointLookup int
 	builtLookup    int
+	pruneCalls     int
 }
 
 func (s *stubJumpTopologyStore) StoredGateWaypoint(_ context.Context, fromSystem, toSystem string) (string, bool, error) {
@@ -44,6 +45,14 @@ func (s *stubJumpTopologyStore) RecordedBuiltGate(_ context.Context, gateWaypoin
 		return true, s.builtErr
 	}
 	return s.built[gateWaypoint], nil
+}
+
+// PruneContradictedEdges is only ever reached from a not-connected (4255) refusal. None of the
+// scenarios in this file produce one, so the counter stays at zero and simply records that
+// ordinary jumps never rewrite topology.
+func (s *stubJumpTopologyStore) PruneContradictedEdges(_ context.Context, _ string, _ []string) (int, error) {
+	s.pruneCalls++
+	return 0, nil
 }
 
 // countingJumpConstructionRepo counts the live construction reads a jump costs.

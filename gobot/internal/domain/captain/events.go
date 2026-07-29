@@ -60,6 +60,21 @@ const (
 	// payload carries the coordinator, container, scope, reason, streak and threshold.
 	EventCoordinatorStalled EventType = "coordinator.stalled"
 
+	// EventShipPositionReanchored fires when a sync writes a ship position that
+	// CONTRADICTS the row it replaced — the hull is in a different SYSTEM from the one we
+	// had durably recorded. That is first-hand proof a completed move was never persisted,
+	// and it is the evidence the TORWIND-41 hunt did not have: the row said X1-GF41 while
+	// the hull stood in X1-KC84, routine syncs corrected it silently, and the only trace
+	// the fleet ever produced was a downstream jump refusal (4255) hours later pointing at
+	// the router rather than at the lost write. The payload carries the hull, the system we
+	// believed and the system it is actually in, so the next occurrence names its own cause.
+	//
+	// DEFERRED class, deliberately (NOT in DefaultInterruptTypes): the sync has ALREADY
+	// corrected the row, so the fleet is recovering by the time this is written — it is
+	// evidence to read on the next wake, not a reason to force one. Waypoint-level drift
+	// within a system is ordinary traffic and never emits; only a changed SYSTEM does.
+	EventShipPositionReanchored EventType = "ship.position_reanchored"
+
 	// EventDaemonComponentCrashLoop fires when a supervised daemon background
 	// component (ship-state sweeper, container recovery, samplers — NOT containers,
 	// which have container.crashloop) has crashed and been restarted

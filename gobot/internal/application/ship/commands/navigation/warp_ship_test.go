@@ -125,17 +125,72 @@ func warpTestHull(t *testing.T, symbol string, fuelCurrent, fuelCapacity int, lo
 	return hull
 }
 
+// warpRowRepo is the persistence boundary the warp verb's executor writes through. It
+// holds the DURABLE row — deliberately a different object from the hull the handler is
+// mutating — so "the new position was recorded" is observable here rather than being
+// confused with an in-memory mutation. Until the write existed, warp was the one
+// cross-system mover that reached this boundary not at all.
+type warpRowRepo struct {
+	domainNavigation.ShipRepository // embedded: any unstubbed method panics if reached
+
+	rowLocation string
+	rowStatus   domainNavigation.NavStatus
+	saves       int
+}
+
+func newWarpRowRepo(hull *domainNavigation.Ship) *warpRowRepo {
+	return &warpRowRepo{rowLocation: hull.CurrentLocation().Symbol, rowStatus: hull.NavStatus()}
+}
+
+func (r *warpRowRepo) FindBySymbol(_ context.Context, symbol string, _ shared.PlayerID) (*domainNavigation.Ship, error) {
+	waypoint, err := shared.NewWaypoint(r.rowLocation, 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	fuel, err := shared.NewFuel(800, 800)
+	if err != nil {
+		return nil, err
+	}
+	cargo, err := shared.NewCargo(40, 0, nil)
+	if err != nil {
+		return nil, err
+	}
+	return domainNavigation.NewShip(
+		symbol, shared.MustNewPlayerID(1), waypoint, fuel, 800, 40, cargo, 9,
+		"FRAME_EXPLORER", "EXPLORER", nil, r.rowStatus,
+	)
+}
+
+func (r *warpRowRepo) SaveWithRetry(ctx context.Context, symbol string, playerID shared.PlayerID, mutate domainNavigation.ShipMutation) (*domainNavigation.Ship, bool, error) {
+	fresh, err := r.FindBySymbol(ctx, symbol, playerID)
+	if err != nil {
+		return nil, false, err
+	}
+	changed, err := mutate(fresh)
+	if err != nil {
+		return nil, false, err
+	}
+	if !changed {
+		return fresh, false, nil
+	}
+	r.saves++
+	r.rowLocation = fresh.CurrentLocation().Symbol
+	r.rowStatus = fresh.NavStatus()
+	return fresh, true, nil
+}
+
 // warpTestHandler wires the verb over a REAL RouteExecutor carrying warp support,
 // returning the handler plus the API-boundary double for call-log assertions. The
 // destination is stated leavable so these scenarios exercise the verb, not the
 // onward-viability guard.
-func warpTestHandler(t *testing.T, hull *domainNavigation.Ship, destinations map[string][]*shared.Waypoint, fuelAfter map[string]int, refusals ...error) (*WarpShipHandler, *fakeWarpAPI) {
+func warpTestHandler(t *testing.T, hull *domainNavigation.Ship, destinations map[string][]*shared.Waypoint, fuelAfter map[string]int, refusals ...error) (*WarpShipHandler, *fakeWarpAPI, *warpRowRepo) {
 	t.Helper()
 	warpAPI := &fakeWarpAPI{fuelAfter: fuelAfter, refusals: refusals}
-	executor := shipApp.NewRouteExecutor(nil, warpOrbitMediator{}, nil, nil, nil, nil, nil, shipApp.NewShipEventBus()).
+	repo := newWarpRowRepo(hull)
+	executor := shipApp.NewRouteExecutor(repo, warpOrbitMediator{}, nil, nil, nil, nil, nil, shipApp.NewShipEventBus()).
 		WithWarpSupport(warpAPI, nil, stubEscapeReader{leavable: true})
 	loader := &stubWarpShipLoader{ships: map[string]*domainNavigation.Ship{hull.ShipSymbol(): hull}}
-	return NewWarpShipHandler(executor, loader, &stubWaypointSource{bySystem: destinations}), warpAPI
+	return NewWarpShipHandler(executor, loader, &stubWaypointSource{bySystem: destinations}), warpAPI, repo
 }
 
 // A warp-capable hull with fuel to spare reaches a waypoint in ANOTHER system: the
@@ -146,7 +201,7 @@ func TestWarpShip_WarpCapableHullReachesDestinationInAnotherSystem(t *testing.T)
 	destination := warpTestWaypoint(t, "X1-TY66-A1", 100, 0)
 	hull := warpTestHull(t, "TORWIND-F6", 800, 800, origin, true)
 
-	handler, warpAPI := warpTestHandler(t,
+	handler, warpAPI, repo := warpTestHandler(t,
 		hull,
 		map[string][]*shared.Waypoint{"X1-TY66": {destination}},
 		map[string]int{destination.Symbol: 700},
@@ -163,6 +218,11 @@ func TestWarpShip_WarpCapableHullReachesDestinationInAnotherSystem(t *testing.T)
 	require.Equal(t, "X1-TY66-A1", hull.CurrentLocation().Symbol)
 	require.Equal(t, "X1-TY66", hull.CurrentLocation().SystemSymbol, "the hull ends physically IN the destination system")
 	require.Equal(t, 700, hull.Fuel().Current, "the post-warp fuel state is folded back onto the hull")
+	// The durable row is what the NEXT tick re-derives from (RULINGS #2). Asserting the
+	// in-memory hull alone is exactly the blind spot that let a warp move a ship across
+	// systems while the ships row went on naming the origin forever.
+	require.Equal(t, "X1-TY66-A1", repo.rowLocation,
+		"the completed warp is recorded durably — otherwise the next tick plans a route out of the system the hull has left")
 
 	warped, ok := response.(*WarpShipResponse)
 	require.True(t, ok, "returns a WarpShipResponse")
@@ -179,7 +239,7 @@ func TestWarpShip_DrivelessHullRefused_TypedErrorReachesCaller(t *testing.T) {
 	destination := warpTestWaypoint(t, "X1-TY66-A1", 100, 0)
 	hull := warpTestHull(t, "TORWIND-19", 800, 800, origin, false)
 
-	handler, warpAPI := warpTestHandler(t,
+	handler, warpAPI, _ := warpTestHandler(t,
 		hull,
 		map[string][]*shared.Waypoint{"X1-TY66": {destination}},
 		nil,
@@ -210,7 +270,7 @@ func TestWarpShip_ServerFuelRefusalSurfacesTypedFieldsToTheOperator(t *testing.T
 	destination := warpTestWaypoint(t, "X1-TY66-A1", 900, 0)
 	hull := warpTestHull(t, "TORWIND-F6", 800, 800, origin, true)
 
-	handler, warpAPI := warpTestHandler(t,
+	handler, warpAPI, _ := warpTestHandler(t,
 		hull,
 		map[string][]*shared.Waypoint{"X1-TY66": {destination}},
 		nil,
@@ -250,7 +310,7 @@ func TestWarpShip_DeadEndDestinationRefusedBeforeAnyWarpCall(t *testing.T) {
 	hull := warpTestHull(t, "TORWIND-F6", 800, 800, origin, true)
 
 	warpAPI := &fakeWarpAPI{}
-	executor := shipApp.NewRouteExecutor(nil, warpOrbitMediator{}, nil, nil, nil, nil, nil, shipApp.NewShipEventBus()).
+	executor := shipApp.NewRouteExecutor(newWarpRowRepo(hull), warpOrbitMediator{}, nil, nil, nil, nil, nil, shipApp.NewShipEventBus()).
 		WithWarpSupport(warpAPI, nil, stubEscapeReader{leavable: false})
 	handler := NewWarpShipHandler(
 		executor,
@@ -279,7 +339,7 @@ func TestWarpShip_UnresolvableDestinationFailsClosed(t *testing.T) {
 	origin := warpTestWaypoint(t, "X1-YY85-ZD2D", 0, 0)
 	hull := warpTestHull(t, "TORWIND-F6", 800, 800, origin, true)
 
-	handler, warpAPI := warpTestHandler(t, hull, map[string][]*shared.Waypoint{}, nil)
+	handler, warpAPI, _ := warpTestHandler(t, hull, map[string][]*shared.Waypoint{}, nil)
 
 	_, err := handler.Handle(context.Background(), &WarpShipCommand{
 		ShipSymbol:  "TORWIND-F6",
@@ -296,7 +356,7 @@ func TestWarpShip_UnresolvableDestinationFailsClosed(t *testing.T) {
 // FAILS honestly instead of claiming a move that never happened.
 func TestWarpShip_UnloadableHullReportedHonestly(t *testing.T) {
 	handler := NewWarpShipHandler(
-		shipApp.NewRouteExecutor(nil, warpOrbitMediator{}, nil, nil, nil, nil, nil, shipApp.NewShipEventBus()).
+		shipApp.NewRouteExecutor(&warpRowRepo{}, warpOrbitMediator{}, nil, nil, nil, nil, nil, shipApp.NewShipEventBus()).
 			WithWarpSupport(&fakeWarpAPI{}, nil, stubEscapeReader{leavable: true}),
 		&stubWarpShipLoader{err: fmt.Errorf("db unavailable")},
 		&stubWaypointSource{},
@@ -316,7 +376,7 @@ func TestWarpShip_UnloadableHullReportedHonestly(t *testing.T) {
 // is total, exactly as for the sibling route verb.
 func TestWarpShip_RejectsWrongRequestType(t *testing.T) {
 	handler := NewWarpShipHandler(
-		shipApp.NewRouteExecutor(nil, warpOrbitMediator{}, nil, nil, nil, nil, nil, shipApp.NewShipEventBus()).
+		shipApp.NewRouteExecutor(&warpRowRepo{}, warpOrbitMediator{}, nil, nil, nil, nil, nil, shipApp.NewShipEventBus()).
 			WithWarpSupport(&fakeWarpAPI{}, nil, stubEscapeReader{leavable: true}),
 		&stubWarpShipLoader{},
 		&stubWaypointSource{},

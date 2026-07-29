@@ -78,6 +78,11 @@ type ShipRepository struct {
 	// Optional arrival scheduler - notified after navigation to schedule state transition
 	arrivalScheduler navigation.ArrivalScheduler
 
+	// positionReanchors is notified whenever a sync writes a position that CONTRADICTS
+	// the row it replaced — proof a completed move was never persisted. Optional
+	// (setter-injected); see ship_position_reanchor.go.
+	positionReanchors PositionReanchorObserver
+
 	// CAS-retry knob. maxCASRetries<=0 means "use defaultMaxCASRetries". Defaults
 	// to its zero value so retry is LIVE by default across every construction path
 	// (RULINGS #5); the daemon overrides it from DaemonConfig via SetCASRetryPolicy.
@@ -2333,6 +2338,10 @@ func (r *ShipRepository) SyncAllFromAPI(ctx context.Context, playerID shared.Pla
 
 	now := r.clock.Now()
 	models := make([]persistence.ShipModel, 0, len(shipsData))
+	// reanchors accumulates the hulls this pass found in a DIFFERENT system from the one
+	// their row claimed. Published only after the batch commits, so nothing is announced
+	// that was not actually written.
+	var reanchors []PositionReanchor
 
 	for _, data := range shipsData {
 		model, err := r.shipDataToModel(ctx, data, playerID, now)
@@ -2343,9 +2352,10 @@ func (r *ShipRepository) SyncAllFromAPI(ctx context.Context, playerID shared.Pla
 
 		// Preserve existing assignment data
 		var existingModel persistence.ShipModel
-		if err := r.db.WithContext(ctx).
+		hadRow := r.db.WithContext(ctx).
 			Where("ship_symbol = ? AND player_id = ?", model.ShipSymbol, model.PlayerID).
-			First(&existingModel).Error; err == nil {
+			First(&existingModel).Error == nil
+		if hadRow {
 			// Preserve assignment data
 			model.ContainerID = existingModel.ContainerID
 			model.AssignmentStatus = existingModel.AssignmentStatus
@@ -2380,6 +2390,15 @@ func (r *ShipRepository) SyncAllFromAPI(ctx context.Context, playerID shared.Pla
 			model.ReservationOverrides = existingModel.ReservationOverrides
 		}
 
+		// The periodic full-fleet resync is the broadest detector the fleet has: it sees
+		// EVERY hull on a fixed cadence without needing a coordinator to happen to
+		// re-anchor one.
+		if reanchor, diverged := divergedPosition(hadRow, existingModel.SystemSymbol, existingModel.LocationSymbol, model.SystemSymbol, model.LocationSymbol); diverged {
+			reanchor.ShipSymbol = model.ShipSymbol
+			reanchor.PlayerID = model.PlayerID
+			reanchors = append(reanchors, reanchor)
+		}
+
 		models = append(models, *model)
 	}
 
@@ -2394,6 +2413,10 @@ func (r *ShipRepository) SyncAllFromAPI(ctx context.Context, playerID shared.Pla
 		if err != nil {
 			return 0, fmt.Errorf("failed to upsert ships: %w", err)
 		}
+	}
+
+	for _, reanchor := range reanchors {
+		r.reportPositionReanchor(ctx, reanchor)
 	}
 
 	// reconcile the persisted fleet to the live source of truth. The
@@ -2481,9 +2504,10 @@ func (r *ShipRepository) SyncShipFromAPI(ctx context.Context, symbol string, pla
 
 	// Preserve existing assignment data
 	var existingModel persistence.ShipModel
-	if err := r.db.WithContext(ctx).
+	hadRow := r.db.WithContext(ctx).
 		Where("ship_symbol = ? AND player_id = ?", model.ShipSymbol, model.PlayerID).
-		First(&existingModel).Error; err == nil {
+		First(&existingModel).Error == nil
+	if hadRow {
 		// Preserve assignment data
 		model.ContainerID = existingModel.ContainerID
 		model.AssignmentStatus = existingModel.AssignmentStatus
@@ -2513,6 +2537,16 @@ func (r *ShipRepository) SyncShipFromAPI(ctx context.Context, symbol string, pla
 		Create(model).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to persist ship: %w", err)
+	}
+
+	// The write landed. If it CONTRADICTS the row it replaced, we have just discovered
+	// that our durable position was wrong — a completed move that was never persisted.
+	// Publish it (ship_position_reanchor.go); a silent correction is exactly how the
+	// original write-loss survived an entire incident.
+	if reanchor, diverged := divergedPosition(hadRow, existingModel.SystemSymbol, existingModel.LocationSymbol, model.SystemSymbol, model.LocationSymbol); diverged {
+		reanchor.ShipSymbol = model.ShipSymbol
+		reanchor.PlayerID = model.PlayerID
+		r.reportPositionReanchor(ctx, reanchor)
 	}
 
 	// Invalidate cache

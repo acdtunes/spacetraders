@@ -199,7 +199,7 @@ func TestExecuteWarpLeg_WarpsToReachableSystemWithAdequateFuel(t *testing.T) {
 
 	warp := &fakeWarpNavigator{fuelAfter: map[string]int{dest.Symbol: 700}}
 	mediator := &warpRefuelMediator{}
-	executor := NewRouteExecutor(nil, mediator, nil, nil, nil, nil, nil, stubSubscriber{}).
+	executor := NewRouteExecutor(warpRepoFor(ship), mediator, nil, nil, nil, nil, nil, stubSubscriber{}).
 		WithWarpSupport(warp, &spyCharter{}, escapableSystems("X1-SYSB"))
 
 	err := executor.ExecuteWarpLeg(context.Background(), ship, dest, shared.MustNewPlayerID(1))
@@ -289,7 +289,7 @@ func TestExecuteWarpLeg_TakesTheFuelVerdictFromTheServer(t *testing.T) {
 				refusals:  []error{warpInsufficientFuel(tc.required, tc.available)},
 			}
 			mediator := &warpRefuelMediator{fillTo: tc.fillTo}
-			executor := NewRouteExecutor(nil, mediator, nil, nil, nil, nil, nil, stubSubscriber{}).
+			executor := NewRouteExecutor(warpRepoFor(ship), mediator, nil, nil, nil, nil, nil, stubSubscriber{}).
 				WithWarpSupport(warp, &spyCharter{}, escapableSystems("X1-SYSB"))
 
 			err := executor.ExecuteWarpLeg(context.Background(), ship, dest, shared.MustNewPlayerID(1))
@@ -337,7 +337,7 @@ func TestExecuteWarpLeg_RefuelsToTheServersRequirementAndRetriesOnce(t *testing.
 		refusals:  []error{warpInsufficientFuel(700, 600)},
 	}
 	mediator := &warpRefuelMediator{fillTo: []int{600, 800}} // market restocks between refuels
-	executor := NewRouteExecutor(nil, mediator, nil, nil, nil, nil, nil, stubSubscriber{}).
+	executor := NewRouteExecutor(warpRepoFor(ship), mediator, nil, nil, nil, nil, nil, stubSubscriber{}).
 		WithWarpSupport(warp, &spyCharter{}, escapableSystems("X1-SYSB"))
 
 	err := executor.ExecuteWarpLeg(context.Background(), ship, dest, shared.MustNewPlayerID(1))
@@ -392,7 +392,7 @@ func TestExecuteWarpLeg_RefusesDestinationTheHullCouldNeverLeave(t *testing.T) {
 			ship := newWarpExplorerShip(t, 800, 800, origin)
 
 			warp := &fakeWarpNavigator{fuelAfter: map[string]int{}}
-			executor := NewRouteExecutor(nil, &warpRefuelMediator{}, nil, nil, nil, nil, nil, stubSubscriber{})
+			executor := NewRouteExecutor(warpRepoFor(ship), &warpRefuelMediator{}, nil, nil, nil, nil, nil, stubSubscriber{})
 			if tc.wired {
 				executor = executor.WithWarpSupport(warp, &spyCharter{}, tc.escape)
 			} else {
@@ -436,7 +436,7 @@ func TestExecuteWarpLeg_AllowsDestinationWithAWayOut(t *testing.T) {
 
 			warp := &fakeWarpNavigator{fuelAfter: map[string]int{dest.Symbol: 700}}
 			escape := &fakeEscapeReader{escapes: map[string]WarpDestinationEscape{"X1-SYSB": tc.escape}}
-			executor := NewRouteExecutor(nil, &warpRefuelMediator{}, nil, nil, nil, nil, nil, stubSubscriber{}).
+			executor := NewRouteExecutor(warpRepoFor(ship), &warpRefuelMediator{}, nil, nil, nil, nil, nil, stubSubscriber{}).
 				WithWarpSupport(warp, &spyCharter{}, escape)
 
 			err := executor.ExecuteWarpLeg(context.Background(), ship, dest, shared.MustNewPlayerID(1))
@@ -471,7 +471,7 @@ func TestExecuteWarpRoute_MultiHopRefuelsBetweenLegs(t *testing.T) {
 		hop2.Symbol: 100, // after leg 2 (from a topped-off tank)
 	}}
 	mediator := &warpRefuelMediator{}
-	executor := NewRouteExecutor(nil, mediator, nil, nil, nil, nil, nil, stubSubscriber{}).
+	executor := NewRouteExecutor(warpRepoFor(ship), mediator, nil, nil, nil, nil, nil, stubSubscriber{}).
 		WithWarpSupport(warp, &spyCharter{}, escapableSystems("X1-SYSB", "X1-SYSC"))
 
 	err := executor.ExecuteWarpRoute(context.Background(), ship, []*shared.Waypoint{hop1, hop2}, shared.MustNewPlayerID(1))
@@ -508,7 +508,7 @@ func TestExecuteWarpLeg_ChartsDestinationSystemOnArrival(t *testing.T) {
 
 	warp := &fakeWarpNavigator{fuelAfter: map[string]int{dest.Symbol: 680}}
 	charter := &spyCharter{}
-	executor := NewRouteExecutor(nil, &warpRefuelMediator{}, nil, nil, nil, nil, nil, stubSubscriber{}).
+	executor := NewRouteExecutor(warpRepoFor(ship), &warpRefuelMediator{}, nil, nil, nil, nil, nil, stubSubscriber{}).
 		WithWarpSupport(warp, charter, escapableSystems("X1-SYSB"))
 
 	err := executor.ExecuteWarpLeg(context.Background(), ship, dest, shared.MustNewPlayerID(1))
@@ -535,7 +535,7 @@ func TestExecuteWarpLeg_RefusesShipWithoutWarpDrive(t *testing.T) {
 	ship := newExecutorTestShip(t, 800, 800, origin) // no modules => no warp drive
 
 	warp := &fakeWarpNavigator{fuelAfter: map[string]int{dest.Symbol: 700}}
-	executor := NewRouteExecutor(nil, &warpRefuelMediator{}, nil, nil, nil, nil, nil, stubSubscriber{}).
+	executor := NewRouteExecutor(warpRepoFor(ship), &warpRefuelMediator{}, nil, nil, nil, nil, nil, stubSubscriber{}).
 		WithWarpSupport(warp, &spyCharter{}, escapableSystems("X1-SYSB"))
 
 	err := executor.ExecuteWarpLeg(context.Background(), ship, dest, shared.MustNewPlayerID(1))

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	domainNavigation "github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -133,6 +134,13 @@ func (e *RouteExecutor) ensureWarpCapable(ship *domainNavigation.Ship) error {
 	if e.warpEscapeReader == nil {
 		return fmt.Errorf("warp onward-viability reader not configured on this RouteExecutor (call WithWarpSupport)")
 	}
+	// A warp with nowhere to RECORD where the hull went is the original defect stated as
+	// a precondition: the move happens, the row keeps naming the origin, and every later
+	// tick plans out of a system the hull has left. Refuse rather than fly a move we
+	// cannot write down.
+	if e.shipRepo == nil {
+		return fmt.Errorf("warp cannot be recorded: no ship repository configured on this RouteExecutor")
+	}
 	if !ship.HasWarpDrive() {
 		return &ErrShipHasNoWarpDrive{ShipSymbol: ship.ShipSymbol()}
 	}
@@ -183,8 +191,14 @@ func (e *RouteExecutor) executeWarpLeg(
 	return nil
 }
 
-// settleWarpArrival brings the ship to rest at the destination and folds the
-// post-warp fuel state back onto the hull.
+// settleWarpArrival brings the ship to rest at the destination, folds the
+// post-warp fuel state back onto the hull, and writes both through to the ships
+// row.
+//
+// The fuel is adopted FIRST, before any write, so the departure record carries the
+// tank the server actually left the hull with rather than the pre-warp figure. That
+// direction is the safe one under RULINGS #4: a lower recorded fuel can only make a
+// downstream range or strand check stricter, never looser.
 func (e *RouteExecutor) settleWarpArrival(
 	ctx context.Context,
 	ship *domainNavigation.Ship,
@@ -192,9 +206,19 @@ func (e *RouteExecutor) settleWarpArrival(
 	result *domainNavigation.Result,
 	playerID shared.PlayerID,
 ) error {
-	if err := e.landShipAtDestination(ctx, ship, destination, result, playerID); err != nil {
+	if err := adoptWarpFuel(ship, destination, result); err != nil {
 		return err
 	}
+	return e.landShipAtDestination(ctx, ship, destination, result, playerID)
+}
+
+// adoptWarpFuel folds the server's post-warp tank onto the hull. A response carrying
+// neither figure says nothing about fuel and is left alone.
+func adoptWarpFuel(
+	ship *domainNavigation.Ship,
+	destination *shared.Waypoint,
+	result *domainNavigation.Result,
+) error {
 	if result.FuelCurrent == 0 && result.FuelCapacity == 0 {
 		return nil
 	}
@@ -204,10 +228,24 @@ func (e *RouteExecutor) settleWarpArrival(
 	return nil
 }
 
-// landShipAtDestination settles the ship's location/nav-status after the warp.
-// When the response carries no arrival time the ship has already arrived, so it
-// lands directly; otherwise it really is IN_TRANSIT and waits out the transit via
-// the same event path a navigate leg uses before coming to rest in orbit.
+// landShipAtDestination settles the ship's location/nav-status after the warp AND
+// records it durably. When the response carries no arrival time the ship has already
+// arrived, so it lands directly; otherwise it really is IN_TRANSIT and waits out the
+// transit via the same event path a navigate leg uses before coming to rest in orbit.
+//
+// THE DEPARTURE WRITE IS THE FIX. Until it existed, a warp mutated only the in-memory
+// hull the caller happened to be holding and NOTHING reached the ships row: warp was
+// the one cross-system mover with no durable write at all, so a hull that warped out
+// of X1-GF41 into X1-KC84 left a row still naming X1-GF41 forever. Every later tick
+// re-derived from that row (RULINGS #2), planned a jump to a gate adjacent to the
+// system the hull had already left, and the API refused it (4255) — the TORWIND-41
+// loop, faithfully correct from one wrong fact.
+//
+// It mirrors ShipRepository.Navigate, which persists navigateColumns the moment the
+// navigate API returns. Recording the transit — not just the final rest — is
+// load-bearing twice over: it is what makes the hull visible to ShipStateScheduler's
+// stuck-ship sweeper (which selects on nav_status='IN_TRANSIT' AND arrival_time<=now)
+// and what stops a daemon restart mid-warp from losing the hull entirely.
 func (e *RouteExecutor) landShipAtDestination(
 	ctx context.Context,
 	ship *domainNavigation.Ship,
@@ -217,21 +255,112 @@ func (e *RouteExecutor) landShipAtDestination(
 ) error {
 	if result.ArrivalTimeStr == "" {
 		ship.SetLocation(destination)
-		return nil
+		return e.persistWarpPosition(ctx, ship, playerID)
 	}
 	if err := ship.StartTransit(destination); err != nil {
 		return fmt.Errorf("failed to enter warp transit to %s: %w", destination.Symbol, err)
 	}
+	if arrivalTime, err := time.Parse(time.RFC3339, result.ArrivalTimeStr); err == nil {
+		ship.SetArrivalTime(arrivalTime)
+	}
+	if err := e.persistWarpPosition(ctx, ship, playerID); err != nil {
+		return err
+	}
 	if err := e.waitForArrival(ctx, ship, result.ArrivalTimeStr, playerID); err != nil {
 		return err
 	}
-	if !ship.IsInTransit() {
-		return nil
+	return e.settleWarpTransitEnd(ctx, ship, destination, playerID)
+}
+
+// settleWarpTransitEnd brings the hull to rest and records the landing.
+//
+// Unlike the departure write this one is best-effort, and the asymmetry is deliberate.
+// A failed DEPARTURE write leaves the row wrong about WHERE the hull is, which nothing
+// else reconciles — that is the original defect and it must fail closed. A failed
+// ARRIVAL write leaves a row that is already correct about position and merely still
+// says IN_TRANSIT; the stuck-ship sweeper transitions exactly that row within one
+// sweep, so aborting a multi-leg route over a condition that self-heals in a minute
+// would trade a real capability for no safety.
+func (e *RouteExecutor) settleWarpTransitEnd(
+	ctx context.Context,
+	ship *domainNavigation.Ship,
+	destination *shared.Waypoint,
+	playerID shared.PlayerID,
+) error {
+	if ship.IsInTransit() {
+		if err := ship.Arrive(); err != nil {
+			return fmt.Errorf("failed to settle warp arrival at %s: %w", destination.Symbol, err)
+		}
 	}
-	if err := ship.Arrive(); err != nil {
-		return fmt.Errorf("failed to settle warp arrival at %s: %w", destination.Symbol, err)
+	ship.ClearArrivalTime()
+	if err := e.persistWarpPosition(ctx, ship, playerID); err != nil {
+		common.LoggerFromContext(ctx).Log("WARNING", "Warp landed but the arrival state could not be recorded — the row already names the destination and the stuck-ship sweeper will settle it", map[string]interface{}{
+			"action":      "warp_arrival_persist_failed",
+			"ship_symbol": ship.ShipSymbol(),
+			"waypoint":    destination.Symbol,
+			"error":       err.Error(),
+		})
 	}
 	return nil
+}
+
+// persistWarpPosition writes the position the SERVER has just put the hull at through to
+// the ships row under CAS re-apply. The row — not the in-memory pointer this goroutine
+// happens to hold — is what the next tick re-derives from (RULINGS #2), so it is the only
+// place a completed move actually counts.
+//
+// The closure re-applies ONLY the columns this operation owns onto the FRESH row: where
+// the server put the hull, the state it left it in, its transit clock and the tank it
+// reported. A concurrent writer's cargo or assignment update on the same hull therefore
+// survives instead of being clobbered by this goroutine's pre-warp snapshot — the same
+// shape jump_ship and the arrival scheduler already write in.
+//
+// SetNavStatus rather than StartTransit/Arrive is deliberate: the server has ALREADY made
+// the transition and this is a RECORDING of it, not a request for it. A guarded
+// transition would refuse on a fresh row that had raced into some other state, turning a
+// bookkeeping write into a failed warp for a hull that has physically moved.
+func (e *RouteExecutor) persistWarpPosition(
+	ctx context.Context,
+	ship *domainNavigation.Ship,
+	playerID shared.PlayerID,
+) error {
+	location := ship.CurrentLocation()
+	navStatus := ship.NavStatus()
+	arrivalTime := ship.ArrivalTime()
+	fuel := ship.Fuel()
+
+	_, _, err := e.shipRepo.SaveWithRetry(ctx, ship.ShipSymbol(), playerID,
+		func(fresh *domainNavigation.Ship) (bool, error) {
+			fresh.SetLocation(location)
+			fresh.SetNavStatus(navStatus)
+			applyArrivalClock(fresh, arrivalTime)
+			if err := applyReportedFuel(fresh, fuel); err != nil {
+				return false, err
+			}
+			return true, nil
+		})
+	if err != nil {
+		return fmt.Errorf("failed to record warp position of %s at %s: %w", ship.ShipSymbol(), location.Symbol, err)
+	}
+	return nil
+}
+
+// applyArrivalClock mirrors the hull's transit clock onto the fresh row: a hull in
+// transit carries its ETA, a landed one carries none.
+func applyArrivalClock(ship *domainNavigation.Ship, arrivalTime *time.Time) {
+	if arrivalTime == nil {
+		ship.ClearArrivalTime()
+		return
+	}
+	ship.SetArrivalTime(*arrivalTime)
+}
+
+// applyReportedFuel mirrors the server-reported tank onto the fresh row.
+func applyReportedFuel(ship *domainNavigation.Ship, fuel *shared.Fuel) error {
+	if fuel == nil {
+		return nil
+	}
+	return ship.UpdateFuelFromAPI(fuel.Current, fuel.Capacity)
 }
 
 // ensureOnwardViability is the strand-prevention guard, and the only warp check the
