@@ -316,6 +316,44 @@ func (f *psLedger) SlotsByState(_ context.Context, _ int, states ...string) ([]p
 	return out, nil
 }
 
+// PlacementWorklist is the placement machine's order-carrying read, tagged
+// separately from SlotsByState because it IS a separate stage — and because the
+// state list no longer tells them apart now that two reads share BOUGHT and
+// IN_TRANSIT.
+//
+// The order here is by waypoint, not by attempt stamp. These are coordinator
+// wiring tests; the rotation is covered in the repository that implements it and
+// in the placement engine that depends on it. A fake that faked the ordering too
+// would let those two disagree without any test noticing.
+func (f *psLedger) PlacementWorklist(_ context.Context, _ int, states ...string) ([]parkedsensing.QueuedSlot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.record("PlacementWorklist:" + strings.Join(states, ","))
+	if f.slotsErr != nil {
+		return nil, f.slotsErr
+	}
+	wanted := map[string]bool{}
+	for _, s := range states {
+		wanted[s] = true
+	}
+	out := []parkedsensing.QueuedSlot{}
+	for _, slot := range sortedSlots(f.slots) {
+		if wanted[slot.State] {
+			out = append(out, slot)
+		}
+	}
+	return out, nil
+}
+
+func (f *psLedger) MarkPlacementAttempt(_ context.Context, _ int, waypoint, kind string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.record("MarkPlacementAttempt:" + waypoint + "/" + kind)
+	return nil
+}
+
 func (f *psLedger) SlotsBySystem(_ context.Context, _ int, system string) ([]parkedsensing.QueuedSlot, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

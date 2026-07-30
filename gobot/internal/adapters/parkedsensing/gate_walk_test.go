@@ -213,6 +213,7 @@ type walkLedger struct {
 	mu          sync.Mutex
 	slots       map[string]*appSensing.QueuedSlot
 	transitions []string
+	attempts    []string
 }
 
 func newWalkLedger(slot appSensing.QueuedSlot) *walkLedger {
@@ -232,6 +233,22 @@ func (l *walkLedger) SlotsByState(_ context.Context, _ int, states ...string) ([
 		}
 	}
 	return out, nil
+}
+
+// PlacementWorklist is the placement machine's order-carrying read. The walk
+// tests drive a single slot, so insertion order is the whole order; the rotation
+// is covered in the repository, where it is implemented.
+func (l *walkLedger) PlacementWorklist(ctx context.Context, playerID int, states ...string) ([]appSensing.QueuedSlot, error) {
+	return l.SlotsByState(ctx, playerID, states...)
+}
+
+// MarkPlacementAttempt records the turn. It PERSISTS like the transitions above,
+// so a walk that burns an attempt per tick is visible to the test as such.
+func (l *walkLedger) MarkPlacementAttempt(_ context.Context, _ int, waypoint, kind string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.attempts = append(l.attempts, waypoint+"/"+kind)
+	return nil
 }
 
 func (l *walkLedger) TransitionSlot(_ context.Context, _ int, waypoint, _, from, to string, _ appSensing.SlotFields) error {

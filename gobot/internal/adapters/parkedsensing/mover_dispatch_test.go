@@ -145,12 +145,29 @@ type stubPlacementLedger struct {
 	mu          sync.Mutex
 	slots       []appSensing.QueuedSlot
 	transitions []string
+	attempts    []string
 }
 
 func (l *stubPlacementLedger) SlotsByState(context.Context, int, ...string) ([]appSensing.QueuedSlot, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return append([]appSensing.QueuedSlot(nil), l.slots...), nil
+}
+
+// PlacementWorklist is the order-carrying read the placement machine uses. This
+// stub returns insertion order: these tests assert the ADAPTER's movement
+// behaviour, and the rotation itself is covered where it lives, in the repository.
+func (l *stubPlacementLedger) PlacementWorklist(context.Context, int, ...string) ([]appSensing.QueuedSlot, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]appSensing.QueuedSlot(nil), l.slots...), nil
+}
+
+func (l *stubPlacementLedger) MarkPlacementAttempt(_ context.Context, _ int, waypoint, kind string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.attempts = append(l.attempts, waypoint+"/"+kind)
+	return nil
 }
 
 func (l *stubPlacementLedger) TransitionSlot(_ context.Context, _ int, waypoint, _, from, to string, _ appSensing.SlotFields) error {

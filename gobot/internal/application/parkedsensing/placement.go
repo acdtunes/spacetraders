@@ -29,7 +29,41 @@ import (
 // backlog from firing a burst of navigation commands in a single tick, not to
 // express any economic preference, and nothing downstream benefits from tuning
 // it. The backlog is not lost — it is simply worked over more ticks.
+//
+// IT BOUNDS ACCEPTED COMMANDS, NOT ATTEMPTS (sp-cwnwb). That was always what the
+// paragraph above described — a "burst of navigation commands" is a burst of
+// commands the API took — and it is what PlacementReport.Actions was always
+// documented as counting ("everything above", all three of which are successes).
+// The code nonetheless charged a REFUSED move to this budget too, and that one
+// discrepancy was the starvation: the worklist is a fixed cap over a queue that
+// does not drain, so ten slots whose move fails every tick, read in the same
+// order every tick, spent the entire budget before any healthy slot behind them
+// was examined. Measured live: 266 BOUGHT + 52 IN_TRANSIT, zero dispatches over
+// ~40 available actions, and one slot 22.5 hours old that had never been tried
+// once. Refusals are bounded separately — see placementFailureBudgetMultiple.
 const DefaultMaxPlacementActions = 10
+
+// placementFailureBudgetMultiple sizes the SEPARATE budget a tick gives to moves
+// that are refused, as a multiple of the accepted-command budget.
+//
+// A refusal needs its own bound rather than no bound: it leaves the slot where it
+// was and costs no navigation, but it is not free — the walk's second step issues
+// a jump the API can reject, so an unbounded sweep of a 300-slot backlog could
+// fire 300 rejected commands in one tick. Nor may it share the accepted-command
+// budget, which is the defect above.
+//
+// WHY A MULTIPLE, AND WHY THREE. Refusals are the toll paid walking to the
+// healthy slots, and the dominant refusal today is free: an unroutable gate walk
+// is decided entirely from stored adjacency and never reaches the API at all
+// (RouteAcross resolves the next system BEFORE it moves anything, exactly so a
+// wall costs no flight). So the toll can afford to be larger than the work it
+// buys, and making it larger is what shortens the sweep — with the
+// least-recently-attempted order below, a backlog of N failing slots is walked in
+// ceil(N/failureBudget) ticks, so three times the budget covers 300 walled slots
+// in ~10 ticks instead of ~30. Three, not thirty: the worst case, where every
+// refusal is a rejected jump, still has to stay a bounded amount of wasted API
+// traffic per tick.
+const placementFailureBudgetMultiple = 3
 
 // MaxWalkRings is how far the FOOTHOLD path may draw an already-parked scanning
 // hull off a working market to fill a placement elsewhere.
@@ -96,12 +130,31 @@ type ShipMover interface {
 }
 
 // PlacementLedger is the placement machine's slice of the ledger: read the
-// in-flight placements, advance one. It is narrower than the buy queue's
-// BuyLedger on purpose — the machine spends nothing, so it is given no access
-// to the probe count or the system verdicts that gate spending.
+// in-flight placements, advance one, record that one was tried. It is narrower
+// than the buy queue's BuyLedger on purpose — the machine spends nothing, so it
+// is given no access to the probe count or the system verdicts that gate
+// spending.
 type PlacementLedger interface {
-	SlotsByState(ctx context.Context, playerID int, states ...string) ([]QueuedSlot, error)
+	// PlacementWorklist returns the in-flight placements in the given states,
+	// LEAST RECENTLY ATTEMPTED FIRST, with never-attempted slots ahead of every
+	// attempted one and a total tie-break behind that.
+	//
+	// The order is part of the contract, not an implementation detail, and this is
+	// a separate read from SlotsByState for exactly that reason: every other
+	// caller of that method wants a stable alphabetical list, and this one must
+	// have the opposite (sp-cwnwb). A tick-stable order over a queue that does not
+	// drain gives the list a permanent head, and a fixed budget then means
+	// everything behind that head is never examined at all.
+	PlacementWorklist(ctx context.Context, playerID int, states ...string) ([]QueuedSlot, error)
 	TransitionSlot(ctx context.Context, playerID int, waypoint, kind, fromState, toState string, set SlotFields) error
+	// MarkPlacementAttempt records that a slot consumed one of a tick's budgets,
+	// which is what moves it to the back of the worklist above.
+	//
+	// It writes ONLY the attempt stamp. It must not touch state or the assigned
+	// hull: those two columns are what the probe cap counts (CountOwnedProbes),
+	// and a fairness stamp that could drop a slot out of that count would let the
+	// engine buy a hull it already owns.
+	MarkPlacementAttempt(ctx context.Context, playerID int, waypoint, kind string) error
 }
 
 // PlacementPorts is everything AdvancePlacements needs from the outside world.
@@ -120,9 +173,42 @@ type PlacementReport struct {
 	Docking int
 	// Parked counts hulls confirmed on station and now scanning.
 	Parked int
-	// Actions counts everything above against the per-tick budget.
+	// Actions counts everything above against the per-tick budget. SUCCESSES
+	// ONLY — a refused move is counted in Failures and nowhere else.
+	//
+	// That distinction reaches beyond this budget. The tick verdict reads
+	// Actions > 0 as "a placement advanced" (see anyEffect in
+	// probe_sensing_stall.go), so while a refusal landed here, a tick that
+	// refused ten moves and accomplished nothing was filed as PROGRESS — which
+	// is how 318 frozen slots stayed invisible to the stall detector for 22.5
+	// hours. Ticks that only fail now read as idle, which is the truth.
 	Actions int
+	// Failures counts moves that were issued and REFUSED, against their own
+	// separate budget. A refusal leaves the slot exactly as it was, to be retried
+	// next tick; it is counted because it is not free, and kept apart from
+	// Actions because charging the two alike is what starved the worklist.
+	Failures int
 }
+
+// placementOutcome is what one slot's turn cost the tick.
+//
+// The split between the last two values is the whole of sp-cwnwb. Both leave the
+// slot in the state it was already in, so to the state machine they are
+// indistinguishable — but one bought a step toward a probe standing on station and
+// the other bought nothing, and charging them to the same ten-slot budget let a
+// permanently-failing head freeze the 300 slots behind it.
+type placementOutcome int
+
+const (
+	// outcomeIdle: nothing was commanded and nothing is owed. A hull genuinely in
+	// flight, or a slot in a state this machine does not drive.
+	outcomeIdle placementOutcome = iota
+	// outcomeAdvanced: a command was ACCEPTED, or a state edge moved. This is what
+	// DefaultMaxPlacementActions bounds.
+	outcomeAdvanced
+	// outcomeFailed: a command was issued and REFUSED.
+	outcomeFailed
+)
 
 // AdvancePlacements moves every in-flight placement one step closer to a probe
 // standing on station, up to maxActions steps per tick. A non-positive
@@ -133,19 +219,47 @@ type PlacementReport struct {
 // it — the next tick does that, by which time the ships table has caught up.
 // That is what keeps the machine from issuing a dock command against a position
 // its own navigate call just invalidated.
+//
+// TWO BUDGETS, AND A ROTATING ORDER (sp-cwnwb). Accepted commands are bounded by
+// maxActions and refused ones by their own larger bound, because a refusal buys
+// no progress and must not be able to spend the budget that does. And the
+// worklist arrives least-recently-attempted first, with every slot that consumes
+// a budget stamped as it goes, so no set of slots can hold the head across ticks.
+//
+// Neither half is sufficient alone, which is why both are here. Separate budgets
+// with a fixed order still hand the same head the same turn every tick — it just
+// takes more of them to exhaust the tick. A rotating order with one shared budget
+// still lets a wall of refusals spend it. Together they give the property that
+// matters: a backlog of N slots is fully covered in a bounded number of ticks
+// whatever fraction of it is failing.
+//
+// This is the same fix the screening sweep already made for itself — see the
+// screened_at rotation in run_probe_sensing_coordinator.go, whose comment sets
+// out why a fixed cap over a queue that does not drain must not be read in a
+// tick-stable order.
 func AdvancePlacements(ctx context.Context, pl PlacementPorts, playerID int, maxActions int) (PlacementReport, error) {
 	var rep PlacementReport
 	if maxActions <= 0 {
 		maxActions = DefaultMaxPlacementActions
 	}
 
-	slots, err := pl.Ledger.SlotsByState(ctx, playerID, SlotStateBought, SlotStateInTransit)
+	slots, err := pl.Ledger.PlacementWorklist(ctx, playerID, SlotStateBought, SlotStateInTransit)
 	if err != nil {
 		return rep, fmt.Errorf("failed to list in-flight sensing placements: %w", err)
 	}
 
+	maxFailures := maxActions * placementFailureBudgetMultiple
+
 	for _, slot := range slots {
 		if rep.Actions >= maxActions {
+			// The accepted-command budget is spent. Walking further can only issue
+			// commands there is no budget left to keep.
+			break
+		}
+		if rep.Failures >= maxFailures {
+			// The toll is spent. The slots not reached this tick are not lost: they
+			// carry the OLDEST attempt stamps now, so the next tick's worklist
+			// begins with them.
 			break
 		}
 		if slot.AssignedShip == "" {
@@ -163,32 +277,67 @@ func AdvancePlacements(ctx context.Context, pl PlacementPorts, playerID int, max
 			continue
 		}
 
-		acted, err := advanceOne(ctx, pl, playerID, slot, pos, &rep)
+		outcome, err := advanceOne(ctx, pl, playerID, slot, pos, &rep)
 		if err != nil {
 			return rep, err
 		}
-		if acted {
+		switch outcome {
+		case outcomeAdvanced:
 			rep.Actions++
+		case outcomeFailed:
+			rep.Failures++
+		}
+		if outcome != outcomeIdle {
+			// This slot was charged for a turn, whichever way it went, so it goes
+			// to the BACK of the next tick's worklist. Stamping both outcomes is
+			// what makes the order rotate: stamping only successes would leave the
+			// failing slots permanently oldest and hand them the head forever —
+			// the very monopoly this is here to break.
+			markAttempt(ctx, pl, playerID, slot)
 		}
 	}
 	return rep, nil
 }
 
+// markAttempt records that a slot consumed one of this tick's budgets, and
+// reports nothing but a warning if it cannot.
+//
+// The stamp is a FAIRNESS HINT, not a state transition: it moves no money, buys
+// nothing, and leaves the state machine untouched, so a write that fails must not
+// fail the tick over a slot that was genuinely advanced. It degrades safely — a
+// slot with no stamp sorts as never-attempted, so the worst a lost write can do is
+// give that slot another early turn, and a ledger that cannot take the stamp at
+// all falls back to exactly the fixed waypoint order that shipped before.
+//
+// It is never silent, though. Stamps failing wholesale is starvation coming back,
+// and the symptom (a head that never rotates) looks identical to the bug it fixes.
+func markAttempt(ctx context.Context, pl PlacementPorts, playerID int, slot QueuedSlot) {
+	if err := pl.Ledger.MarkPlacementAttempt(ctx, playerID, slot.Waypoint, slot.Kind); err != nil {
+		logging.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
+			"Sensing placement %s (%s) consumed a tick's placement budget but its attempt stamp could not be recorded, so it will not rotate to the back of the worklist and may take another slot's turn: %v",
+			slot.Waypoint, slot.Kind, err), map[string]interface{}{
+			"action":    "parked_sensing_attempt_stamp_failed",
+			"waypoint":  slot.Waypoint,
+			"slot_kind": slot.Kind,
+		})
+	}
+}
+
 // advanceOne applies the single transition available to one placement, and
-// reports whether it consumed an action.
-func advanceOne(ctx context.Context, pl PlacementPorts, playerID int, slot QueuedSlot, pos ShipPos, rep *PlacementReport) (bool, error) {
+// reports what it cost the tick.
+func advanceOne(ctx context.Context, pl PlacementPorts, playerID int, slot QueuedSlot, pos ShipPos, rep *PlacementReport) (placementOutcome, error) {
 	switch slot.State {
 	case SlotStateBought:
 		return dispatch(ctx, pl, playerID, slot, pos, rep)
 	case SlotStateInTransit:
 		return standDown(ctx, pl, playerID, slot, pos, rep)
 	default:
-		return false, nil
+		return outcomeIdle, nil
 	}
 }
 
 // dispatch sends a freshly-bought hull toward its slot.
-func dispatch(ctx context.Context, pl PlacementPorts, playerID int, slot QueuedSlot, pos ShipPos, rep *PlacementReport) (bool, error) {
+func dispatch(ctx context.Context, pl PlacementPorts, playerID int, slot QueuedSlot, pos ShipPos, rep *PlacementReport) (placementOutcome, error) {
 	// Re-assert the fleet tag before anything else. The purchase already wrote
 	// it, but that write is best-effort — it happens after the money has moved,
 	// where failing the whole purchase would be worse than an untagged hull. So
@@ -204,7 +353,7 @@ func dispatch(ctx context.Context, pl PlacementPorts, playerID int, slot QueuedS
 	if pos.NavStatus == navigation.NavStatusInTransit {
 		// Already flying — under this or a previous tick's command. Issuing
 		// another move now would be refused anyway.
-		return false, nil
+		return outcomeIdle, nil
 	}
 
 	if pos.Waypoint == slot.Waypoint {
@@ -212,24 +361,29 @@ func dispatch(ctx context.Context, pl PlacementPorts, playerID int, slot QueuedS
 		// slot). No movement to perform: hand it to the arrival branch, which
 		// docks and parks it on the next tick.
 		if err := transitionInFlight(ctx, pl, playerID, slot, SlotStateBought, SlotStateInTransit); err != nil {
-			return false, err
+			return outcomeIdle, err
 		}
 		rep.Dispatched++
-		return true, nil
+		return outcomeAdvanced, nil
 	}
 
 	if moveErr := flyToSlot(ctx, pl, playerID, slot, pos); moveErr != nil {
-		// The hull did not leave. Holding the slot at BOUGHT is what makes the
-		// retry free: the next tick re-reads the position and re-issues, with no
-		// stuck state to unwind.
-		return true, nil
+		// The hull did not leave. Holding the slot at BOUGHT keeps the retry
+		// CORRECT — the next tick re-reads the position and re-issues, with no
+		// stuck state to unwind — but it is not free, and the comment that used to
+		// stand here said it was. It costs a turn: at minimum the read that got
+		// here, and at most a command the API rejected. Charging that turn to the
+		// same budget as an accepted command is what let a wall of refusals freeze
+		// the whole worklist (sp-cwnwb), so it is charged to the refusal budget
+		// instead and the slot is stamped as attempted.
+		return outcomeFailed, nil
 	}
 
 	if err := transitionInFlight(ctx, pl, playerID, slot, SlotStateBought, SlotStateInTransit); err != nil {
-		return false, err
+		return outcomeIdle, err
 	}
 	rep.Dispatched++
-	return true, nil
+	return outcomeAdvanced, nil
 }
 
 // standDown docks an arrived hull and, once the ships table confirms it is
@@ -241,10 +395,10 @@ func dispatch(ctx context.Context, pl PlacementPorts, playerID int, slot QueuedS
 // to buy another hull for a waypoint reads exactly that — so a placement parked
 // on a hull that never actually docked would suppress a purchase it should have
 // allowed, and leave the waypoint unwatched indefinitely.
-func standDown(ctx context.Context, pl PlacementPorts, playerID int, slot QueuedSlot, pos ShipPos, rep *PlacementReport) (bool, error) {
+func standDown(ctx context.Context, pl PlacementPorts, playerID int, slot QueuedSlot, pos ShipPos, rep *PlacementReport) (placementOutcome, error) {
 	if pos.Waypoint != slot.Waypoint {
 		if pos.NavStatus == navigation.NavStatusInTransit {
-			return false, nil // genuinely flying; leave it alone
+			return outcomeIdle, nil // genuinely flying; leave it alone
 		}
 		// Sitting still, somewhere that is not the slot. This placement reached
 		// IN_TRANSIT without anything ever having been told to move, so nothing
@@ -257,20 +411,20 @@ func standDown(ctx context.Context, pl PlacementPorts, playerID int, slot Queued
 		// Arrived but not berthed. Stay IN_TRANSIT: the next tick reads the
 		// docked row and parks it.
 		if err := pl.Mover.Dock(ctx, playerID, slot.AssignedShip); err != nil {
-			return true, nil // retried next tick
+			return outcomeFailed, nil // retried next tick, off the refusal budget
 		}
 		rep.Docking++
-		return true, nil
+		return outcomeAdvanced, nil
 
 	case navigation.NavStatusDocked:
 		if err := transitionInFlight(ctx, pl, playerID, slot, SlotStateInTransit, SlotStateParked); err != nil {
-			return false, err
+			return outcomeIdle, err
 		}
 		rep.Parked++
-		return true, nil
+		return outcomeAdvanced, nil
 
 	default:
-		return false, nil
+		return outcomeIdle, nil
 	}
 }
 
@@ -295,8 +449,9 @@ func standDown(ctx context.Context, pl PlacementPorts, playerID int, slot Queued
 //
 // The slot is ALREADY IN_TRANSIT, so there is no state to advance here — only a
 // command to issue. A failure leaves it IN_TRANSIT and the next tick re-issues,
-// which is the same free retry the purchase path gets.
-func dispatchClaim(ctx context.Context, pl PlacementPorts, playerID int, slot QueuedSlot, pos ShipPos, rep *PlacementReport) (bool, error) {
+// which is the same bounded retry the purchase path gets: correct, but charged to
+// the refusal budget rather than free (sp-cwnwb).
+func dispatchClaim(ctx context.Context, pl PlacementPorts, playerID int, slot QueuedSlot, pos ShipPos, rep *PlacementReport) (placementOutcome, error) {
 	// Claims that bypass the purchase path also bypass the tag write that
 	// happens there, so this is the first and only place such a hull is tagged.
 	// Idempotent, so it costs nothing for the hulls that already carry it.
@@ -307,10 +462,10 @@ func dispatchClaim(ctx context.Context, pl PlacementPorts, playerID int, slot Qu
 	warnIfTagFailed(ctx, pl, playerID, slot.AssignedShip, slot.Waypoint, "parked_sensing_claim_tag_failed")
 
 	if err := flyToSlot(ctx, pl, playerID, slot, pos); err != nil {
-		return true, nil // retried next tick
+		return outcomeFailed, nil // retried next tick, off the refusal budget
 	}
 	rep.Dispatched++
-	return true, nil
+	return outcomeAdvanced, nil
 }
 
 // warnIfTagFailed asserts the sensing fleet tag and reports a failure without

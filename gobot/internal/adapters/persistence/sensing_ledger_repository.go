@@ -377,6 +377,81 @@ func (r *SensingLedgerRepository) SlotsByState(ctx context.Context, playerID int
 	return models, nil
 }
 
+// PlacementWorklist returns the player's era-scoped slots in any of the given
+// states, LEAST RECENTLY ATTEMPTED FIRST. Like SlotsByState, an EMPTY states list
+// matches NOTHING.
+//
+// WHY THIS IS NOT JUST SlotsByState WITH ANOTHER ORDER BY. Its order — waypoint
+// symbol — is what nine other callers want, and it is the wrong one for exactly
+// one of them. The placement machine works a FIXED CAP OVER A QUEUE THAT DOES NOT
+// DRAIN: a slot whose move is refused stays in the state it was in, so it is back
+// on the list next tick, in the same position. Any order that is stable across
+// ticks therefore gives the list a PERMANENT head, and the cap means everything
+// behind that head is never read at all. Measured live before this existed: 266
+// BOUGHT + 52 IN_TRANSIT slots, ~40 actions' worth of ticks, zero dispatches, and
+// a slot 22.5 hours old that had never been attempted once because its waypoint
+// sorted behind a hundred others that were failing every tick (sp-cwnwb).
+//
+// The screening sweep hit the identical defect and fixed it the identical way —
+// see the screened_at rotation in run_probe_sensing_coordinator.go. This is that
+// rotation for placements, moved into SQL because it is pure recency with no
+// policy mixed in, and because an order is the kind of guarantee this file already
+// publishes for its sibling read.
+//
+// THREE CLAUSES, ALL LOAD-BEARING:
+//
+//   - Never-attempted slots first. A slot the machine has never tried is the case
+//     the rotation most needs to reach, and it is the shape the live defect took.
+//     Written as `(last_attempt_at IS NULL) DESC` rather than `NULLS FIRST`
+//     because the two engines disagree on where NULLs land by default — Postgres
+//     sorts them last on ASC, SQLite first — and this must not depend on that.
+//   - Oldest attempt next: stamping a slot when it consumes a budget sends it to
+//     the back, so N slots are fully covered in ceil(N/budget) ticks at unchanged
+//     cost per tick.
+//   - Waypoint symbol last, to make the order TOTAL. Slots stamped inside one
+//     tick readily share a timestamp, and without a tie-break the order among
+//     them is unspecified — which reintroduces a stable head among the ties and,
+//     with it, the bug.
+func (r *SensingLedgerRepository) PlacementWorklist(ctx context.Context, playerID int, states ...string) ([]SensingSlotModel, error) {
+	if len(states) == 0 {
+		return nil, nil
+	}
+	predicate, args := eraScopePredicate(r.openEraID(ctx))
+	var models []SensingSlotModel
+	if err := r.db.WithContext(ctx).
+		Where("player_id = ? AND state IN ?", playerID, states).
+		Where(predicate, args...).
+		Order("(last_attempt_at IS NULL) DESC, last_attempt_at ASC, waypoint_symbol ASC").
+		Find(&models).Error; err != nil {
+		return nil, fmt.Errorf("failed to list the sensing placement worklist: %w", err)
+	}
+	return models, nil
+}
+
+// MarkPlacementAttempt stamps one slot as having just consumed a placement
+// tick's budget, which is what moves it to the back of PlacementWorklist.
+//
+// IT WRITES ONE COLUMN, and that is a safety property rather than tidiness. The
+// probe cap counts slots by state and assigned_ship (CountOwnedProbes), so a
+// fairness stamp that touched either could drop a hull out of the count and
+// authorise re-buying a probe the player already owns. Naming last_attempt_at in
+// a map — never a struct, which GORM would fill from every non-zero field —
+// makes that impossible by construction rather than by inspection.
+//
+// A MISS IS NOT AN ERROR. The slot may have been transitioned or reaped between
+// the worklist read and this write, and the stamp is a hint about ordering, not a
+// claim about the row's existence; nothing is owed if it has moved on. Only a
+// genuine write failure is reported, and the caller logs rather than aborts —
+// see markAttempt.
+func (r *SensingLedgerRepository) MarkPlacementAttempt(ctx context.Context, playerID int, waypoint, kind string) error {
+	if err := r.db.WithContext(ctx).Model(&SensingSlotModel{}).
+		Where("player_id = ? AND waypoint_symbol = ? AND slot_kind = ?", playerID, waypoint, kind).
+		Updates(map[string]any{"last_attempt_at": time.Now().UTC()}).Error; err != nil {
+		return fmt.Errorf("failed to stamp the placement attempt on sensing slot %q (%s): %w", waypoint, kind, err)
+	}
+	return nil
+}
+
 // SlotsBySystem returns every era-scoped slot the player holds in one system,
 // in any state, ordered by waypoint symbol.
 func (r *SensingLedgerRepository) SlotsBySystem(ctx context.Context, playerID int, system string) ([]SensingSlotModel, error) {

@@ -984,6 +984,27 @@ type SensingSlotModel struct {
 	DepthCredits   int64      `gorm:"column:depth_credits;not null;default:0"`
 	EraID          *int       `gorm:"column:era_id;index"`
 	UpdatedAt      time.Time  `gorm:"column:updated_at"`
+	// LastAttemptAt is when the placement machine last spent one of a tick's
+	// budgets on this slot, or NULL for a slot it has never tried. It is what lets
+	// the placement worklist rotate least-recently-attempted first instead of
+	// working a fixed alphabetical head forever (sp-cwnwb). AutoMigrate adds the
+	// column in place; every existing row reads it as NULL, i.e. never attempted.
+	//
+	// IT IS DELIBERATELY NOT updated_at, and the difference is the whole point.
+	// updated_at moves only on a SUCCESSFUL transition, so a slot whose move fails
+	// every tick carries the oldest one — ordering by it would have entrenched a
+	// failing head rather than breaking it. Restamping updated_at on failures
+	// instead would have been worse: it is the only record of how long a slot has
+	// sat in one state, and a stuck placement that reads as freshly updated is
+	// invisible. This column answers "when was it last tried", that one answers
+	// "when did it last move", and a starving slot is exactly the row where those
+	// two must be allowed to disagree.
+	//
+	// NULL IS MEANINGFUL AND MUST NOT COLLAPSE TO THE ZERO TIME, for the reason
+	// ScreenedAt is a pointer too: a never-attempted slot is the case the rotation
+	// most needs to reach first, and the zero time would merely sort it there by
+	// accident while leaving any reader that dereferences the pointer to panic.
+	LastAttemptAt *time.Time `gorm:"column:last_attempt_at"`
 }
 
 func (SensingSlotModel) TableName() string {

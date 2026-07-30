@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"testing"
 	"time"
 
@@ -38,7 +39,21 @@ type fakeBuyLedger struct {
 
 	transitions  []transitionCall
 	systemsCalls int
+
+	// attempts records every MarkPlacementAttempt in call order, and attemptSeq
+	// the order slots were LAST charged a turn — a monotonic counter rather than a
+	// clock, because a real clock's granularity would tie slots stamped inside one
+	// tick and the tie is exactly what the ordering has to resolve. A slot absent
+	// from the map has never been attempted.
+	attempts    []attemptCall
+	attemptSeq  map[string]int
+	attemptTick int
+	attemptErr  error
 }
+
+type attemptCall struct{ waypoint, kind string }
+
+func attemptKey(waypoint, kind string) string { return waypoint + "/" + kind }
 
 func (f *fakeBuyLedger) SlotsByState(_ context.Context, _ int, states ...string) ([]QueuedSlot, error) {
 	if f.slotsErr != nil {
@@ -60,6 +75,42 @@ func (f *fakeBuyLedger) SlotsByState(_ context.Context, _ int, states ...string)
 		}
 	}
 	return out, nil
+}
+
+// PlacementWorklist honours the port's documented order — never-attempted slots
+// first, then least recently attempted, then waypoint — so the app-layer tests
+// exercise the rotation the real ledger provides in SQL rather than assuming it.
+// Without that, every multi-tick fairness assertion here would be vacuous.
+func (f *fakeBuyLedger) PlacementWorklist(ctx context.Context, playerID int, states ...string) ([]QueuedSlot, error) {
+	out, err := f.SlotsByState(ctx, playerID, states...)
+	if err != nil {
+		return nil, err
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		ai, aok := f.attemptSeq[attemptKey(out[i].Waypoint, out[i].Kind)]
+		bi, bok := f.attemptSeq[attemptKey(out[j].Waypoint, out[j].Kind)]
+		if aok != bok {
+			return !aok // never attempted sorts ahead of ever attempted
+		}
+		if aok && ai != bi {
+			return ai < bi
+		}
+		return out[i].Waypoint < out[j].Waypoint
+	})
+	return out, nil
+}
+
+func (f *fakeBuyLedger) MarkPlacementAttempt(_ context.Context, _ int, waypoint, kind string) error {
+	f.attempts = append(f.attempts, attemptCall{waypoint, kind})
+	if f.attemptErr != nil {
+		return f.attemptErr
+	}
+	if f.attemptSeq == nil {
+		f.attemptSeq = map[string]int{}
+	}
+	f.attemptTick++
+	f.attemptSeq[attemptKey(waypoint, kind)] = f.attemptTick
+	return nil
 }
 
 func (f *fakeBuyLedger) SlotsBySystem(_ context.Context, _ int, system string) ([]QueuedSlot, error) {

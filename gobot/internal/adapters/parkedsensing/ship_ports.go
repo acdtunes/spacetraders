@@ -643,7 +643,35 @@ func (p *MoverPort) RouteAcross(ctx context.Context, playerID int, shipSymbol, f
 		})
 		return fmt.Errorf("failed to name the next system for %s walking to %s: %w", shipSymbol, destination, err)
 	}
-	return stepThroughGate(ctx, p.mediator, pid, shipSymbol, fromWaypoint, nextSystem)
+
+	// The step is named too, and not only for symmetry with the unroutable case
+	// above. A route that RESOLVES and then cannot be walked was the engine's one
+	// completely silent failure: the error propagated back through flyToSlot to
+	// dispatch, which held the slot for the next tick and logged nothing, so a hull
+	// could spend one placement attempt per tick indefinitely and produce no
+	// diagnostics at all. That is the state TORWIND-15F was found in — 22.5 hours
+	// BOUGHT with ZERO lines in the log naming it — and it is why the freeze had to
+	// be diagnosed from the database instead of from the logs (sp-cwnwb).
+	//
+	// The two warnings are deliberately distinct actions. Unroutable means the
+	// stored graph names no way there and the fix is a gate re-probe; a refused
+	// step means the graph was right and the MOVE failed, which is a cooldown, a
+	// fuel state, or a gate that will not take the hull. Reading one as the other
+	// sends the next reader to the wrong subsystem.
+	if err := stepThroughGate(ctx, p.mediator, pid, shipSymbol, fromWaypoint, nextSystem); err != nil {
+		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
+			"Sensing placement resolved a gate route for %s from %s toward %s, but the step from %s into %s was refused — the placement is held and retried, and the hull keeps counting against the probe cap: %v",
+			shipSymbol, currentSystem, destination, fromWaypoint, nextSystem, err), map[string]interface{}{
+			"action":        "parked_sensing_gate_step_failed",
+			"ship_symbol":   shipSymbol,
+			"from_system":   currentSystem,
+			"from_waypoint": fromWaypoint,
+			"next_system":   nextSystem,
+			"destination":   destination,
+		})
+		return err
+	}
+	return nil
 }
 
 // stepThroughGate performs the ONE physical move a gate crossing calls for from
@@ -1165,6 +1193,25 @@ func (p *LedgerPort) SlotsByState(ctx context.Context, playerID int, states ...s
 		return nil, err
 	}
 	return queuedSlots(models), nil
+}
+
+// PlacementWorklist returns the placements in any of the given states, least
+// recently attempted first. Deliberately a different read from SlotsByState
+// rather than a re-sort of it: the ORDER is the contract the placement machine
+// depends on, and it is the opposite of the one every other caller wants. See the
+// repository method for why a tick-stable order starves the list.
+func (p *LedgerPort) PlacementWorklist(ctx context.Context, playerID int, states ...string) ([]appSensing.QueuedSlot, error) {
+	models, err := p.repo.PlacementWorklist(ctx, playerID, states...)
+	if err != nil {
+		return nil, err
+	}
+	return queuedSlots(models), nil
+}
+
+// MarkPlacementAttempt stamps a slot as having just consumed a placement tick's
+// budget, sending it to the back of the worklist.
+func (p *LedgerPort) MarkPlacementAttempt(ctx context.Context, playerID int, waypoint, kind string) error {
+	return p.repo.MarkPlacementAttempt(ctx, playerID, waypoint, kind)
 }
 
 // SlotsBySystem returns every placement in one system, in any state.
