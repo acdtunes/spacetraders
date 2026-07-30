@@ -51,7 +51,15 @@ export TOUR_SOLVER_FULL_SCORE_TOP_N="${TOUR_SOLVER_FULL_SCORE_TOP_N:-35}"
 # the 2-5s anytime wall (ORTOOLS_TIME_BUDGET_SECONDS) that bounds per-model solve cost, so p99 tour-solve
 # latency is protected — a larger jump waits on a latency sweep. Disarm: `export TOUR_SOLVER_ORTOOLS_MAX_NODES=80`.
 export TOUR_SOLVER_ORTOOLS_MAX_NODES="${TOUR_SOLVER_ORTOOLS_MAX_NODES:-160}"
-export TOUR_SOLVER_INTER_SYSTEM_TRAVEL_SECONDS="${TOUR_SOLVER_INTER_SYSTEM_TRAVEL_SECONDS:-1200}"  # sp-kab1c
+# sp-smbgd: the inter-system crossing charge is AFFINE in gate hops — total = base + per_hop*hops.
+# These exports pin the live values to the fitted defaults already compiled into tour_solver.py, so
+# the live config is self-documenting; deleting them changes nothing (the model is armed in code).
+# The retired flat knob (TOUR_SOLVER_INTER_SYSTEM_TRAVEL_SECONDS=1200, sp-kab1c) is deliberately
+# GONE rather than reused: it meant "whole-crossing charge", and feeding 1200 to the marginal term
+# would price total(h) = 750 + 1200*h — dearer than the flat model at every depth. Retune either
+# term with a plain export + deploy-routing; clamp [300, 1800] each.
+export TOUR_SOLVER_INTER_SYSTEM_TRAVEL_BASE_SECONDS="${TOUR_SOLVER_INTER_SYSTEM_TRAVEL_BASE_SECONDS:-750}"
+export TOUR_SOLVER_INTER_SYSTEM_TRAVEL_PER_HOP_SECONDS="${TOUR_SOLVER_INTER_SYSTEM_TRAVEL_PER_HOP_SECONDS:-650}"
 
 echo "Starting Routing Service..."
 echo "Host: $HOST"

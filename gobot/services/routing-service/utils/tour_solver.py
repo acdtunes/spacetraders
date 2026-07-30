@@ -12,9 +12,11 @@ Two-stage solve per the approved design (spec decision #4):
    Gate-adjacency itself is delegated to `allowed_systems` — the Go caller
    computes gate neighbors; the solver never sees the jump-gate graph.
    Crossing COUNT is not hard-capped: each crossing costs
-   INTER_SYSTEM_TRAVEL_SECONDS in the $/hr objective, which prices
-   ping-ponging out naturally (env-tunable via
-   TOUR_SOLVER_INTER_SYSTEM_TRAVEL_SECONDS; sp-kab1 part c).
+   INTER_SYSTEM_TRAVEL_BASE_SECONDS + gate_hops x
+   INTER_SYSTEM_TRAVEL_PER_HOP_SECONDS in the $/hr objective, which prices
+   ping-ponging out naturally — the fixed base is what makes a second
+   crossing dearer than one deeper crossing (sp-smbgd; both terms
+   env-tunable, see the constants for the fit).
 
 2. `score_sequence` — greedy tranche allocation over the fitted impact
    curves. Greedy over sorted marginal-profit (buy-tranche, sell-tranche)
@@ -197,19 +199,49 @@ CRUISE_TIME_MULTIPLIER = 31   # mirrors utils/routing_engine.FlightMode.CRUISE
 GATE_HOP_ALLOWANCE_SECONDS = 450   # to-gate / from-gate hop (gate coords not carried)
 JUMP_COOLDOWN_SECONDS = 900        # gate jump + cooldown
 INTRA_SYSTEM_TRAVEL_SECONDS = 300   # flat fallback when no coords in the request
-# Flat inter-system crossing charge: named allowances around the fitted-scale jump
-# cooldown. = 2*GATE_HOP + JUMP_COOLDOWN = 1800 (byte-identical to the pre-sp-kab1
-# inline recompute the crossing branch used). sp-kab1 part (c) makes this the SINGLE
-# wired source of truth (it was previously a dead documentation-only constant) AND
-# env-tunable via TOUR_SOLVER_INTER_SYSTEM_TRAVEL_SECONDS: the sp-acb8 duration audit
-# (n=163) found the EMPIRICAL per-crossing cost ~1,148s vs 1,800s modeled (solver 1.6x
-# pessimistic, t=+4.1), so the default over-penalizes and SUPPRESSES profitable
-# crossing tours; arming to ~1200 admits them. Absent env == 1800 == today; arming is
-# an explicit run.sh export, like the other TOUR_SOLVER_* knobs.
-INTER_SYSTEM_TRAVEL_SECONDS = 2 * GATE_HOP_ALLOWANCE_SECONDS + JUMP_COOLDOWN_SECONDS  # 1800
-INTER_SYSTEM_TRAVEL_SECONDS_ENV_VAR = "TOUR_SOLVER_INTER_SYSTEM_TRAVEL_SECONDS"
-INTER_SYSTEM_TRAVEL_SECONDS_MIN = 600    # floor: below this a crossing is near-free -> ping-ponging returns
-INTER_SYSTEM_TRAVEL_SECONDS_MAX = 3600   # ceiling: 2x the historical charge bounds the tunable
+# AFFINE inter-system crossing charge (sp-smbgd): total(hops) = BASE + PER_HOP x hops.
+#
+# The two named allowances above already describe an affine cost, and the flat model
+# multiplied BOTH by the hop count — so every extra gate hop re-charged the to-gate and
+# from-gate legs that are paid exactly ONCE per crossing. That is the whole defect: a
+# crossing's endpoint legs are FIXED and amortize over depth, while only the gate-to-gate
+# jump+cooldown is marginal. Hence base ~ 2*GATE_HOP_ALLOWANCE (the endpoint legs) and
+# per_hop ~ JUMP_COOLDOWN (the jump itself), which is what the constants meant all along.
+#
+# Constants are FITTED, not theoretical, and they are the ACTIVE defaults — this model is
+# armed on deploy, with no flat-equivalent default path (Admiral standing order). Refit
+# 2026-07-30 over tour_leg_telemetry: consecutive realized legs whose system changes, dt in
+# [120s, 3h], hop depth by BFS over the SAME graph the Go caller feeds the solver from
+# (open-era gate_edges, marker rows excluded, under-construction edges NOT traversable —
+# gategraph.storedDistances). Median crossing seconds by depth, last 24h (n=567):
+#   hops   1      2      3      4      5      6
+#   med  1376   2105   2732   3571   3786   4161
+# Weighted OLS on those medians => total(h) = 749 + 661*h; the fit is stable across
+# 12h/24h/48h/72h windows (base 642-833, per_hop 632-723), so 750 + 650 is the fitted
+# level rounded, and it lands within 6% of every measured median at depth 1-5.
+#
+# What this changes against the previously live flat 1200/hop: 1 hop 1200 -> 1400 (the flat
+# charge was 13% UNDER-priced there, so near-lane ping-ponging gets DEARER, not cheaper),
+# 2 hop 2400 -> 2050, 3 hop 3600 -> 2700, 4 hop 4800 -> 3350, 5 hop 6000 -> 4000. Deep
+# crossings stop being over-priced ~30-60% and the long lanes the sensing expansion made
+# visible can finally win on $/hr.
+#
+# Both terms stay env-tunable for operational retuning. The env var is deliberately RENAMED
+# away from TOUR_SOLVER_INTER_SYSTEM_TRAVEL_SECONDS: that name meant "whole-crossing flat
+# charge", and reusing it for the MARGINAL term would let a stale `=1200` export outside
+# this repo silently price total(h) = 750 + 1200*h — worse than the model it replaced at
+# every depth. Under the new names a stale old-name export is inert.
+INTER_SYSTEM_TRAVEL_BASE_SECONDS = 750       # fixed per-crossing cost (~ the 2 endpoint legs)
+INTER_SYSTEM_TRAVEL_PER_HOP_SECONDS = 650    # marginal cost of each gate hop (~ jump + cooldown)
+INTER_SYSTEM_TRAVEL_BASE_ENV_VAR = "TOUR_SOLVER_INTER_SYSTEM_TRAVEL_BASE_SECONDS"
+INTER_SYSTEM_TRAVEL_PER_HOP_ENV_VAR = "TOUR_SOLVER_INTER_SYSTEM_TRAVEL_PER_HOP_SECONDS"
+# One clamp for both terms. The floor is POSITIVE on purpose, twice over: a crossing's
+# endpoint legs and its jump are both real costs that physically exist, and a 0 floor on the
+# base would let an operator silently restore the flat model this fit exists to remove. The
+# bounds are chosen so the 1-hop TOTAL still spans exactly [600, 3600] — the same ping-pong
+# floor and ceiling the old single-term clamp guaranteed.
+INTER_SYSTEM_TRAVEL_TERM_MIN = 300
+INTER_SYSTEM_TRAVEL_TERM_MAX = 1800
 DWELL_SECONDS_PER_LEG = 60          # dock + transact allowance per market stop
 
 # Stage-1 sequencer selection (sp-y05b): "beam" = the proven beam search
@@ -654,11 +686,10 @@ def _make_travel_fn(constraints, markets, ship, waypoints=None):
 
     coords = {w["symbol"]: (w["x"], w["y"]) for w in (waypoints or [])}
     engine_speed = max(1, ship.get("engine_speed") or 1)
-    # sp-kab1 part (c): resolve the flat PER-crossing charge ONCE per build (default 1800 ==
-    # 2*GATE_HOP + JUMP_COOLDOWN, byte-identical) so every crossing in this solve is priced
-    # consistently; TOUR_SOLVER_INTER_SYSTEM_TRAVEL_SECONDS arms it. Under sp-tp5c3 this is the
-    # PER-HOP unit (multiplied by the real gate-hop count below), not the whole-crossing charge.
-    inter_system_seconds = _resolve_inter_system_travel_seconds()
+    # sp-smbgd: resolve BOTH affine terms ONCE per build so every crossing in this solve is
+    # priced by the same model — the discipline the single flat charge already followed.
+    inter_system_base = _resolve_inter_system_travel_base_seconds()
+    inter_system_per_hop = _resolve_inter_system_travel_per_hop_seconds()
     # sp-tp5c3: the per-pair gate-hop distance map. Empty (un-widened default / no feed) -> {} ->
     # every crossing prices at 1 hop = the flat charge, byte-identical to today.
     inter_system_hops = _build_inter_system_hop_index(constraints)
@@ -675,13 +706,16 @@ def _make_travel_fn(constraints, markets, ship, waypoints=None):
             return 0
         sys_a, sys_b = system_of(a), system_of(b)
         if sys_a and sys_b and sys_a != sys_b:
-            # Gate positions are not request-carried: price the crossing as the REAL gate-hop
-            # count x the flat per-crossing charge (sp-tp5c3 multi-hop travel model). gate_hops
-            # comes from the fed distance map, DEFAULTING to 1 hop (today's flat charge,
-            # INTER_SYSTEM_TRAVEL_SECONDS, env-tunable per sp-kab1) when the pair is absent — so a
-            # 1-hop lane is byte-equal to the pre-fix baseline and a 3-hop lane costs the honest 3x.
+            # Gate positions are not request-carried: price the crossing AFFINELY in the REAL
+            # gate-hop count (sp-smbgd) — a fixed base for the to-gate/from-gate endpoint legs,
+            # paid once per crossing, plus the marginal jump+cooldown per hop. The flat
+            # gate_hops x charge model this replaces re-charged the endpoint legs on every hop,
+            # over-pricing a 3-hop crossing ~32% and a 5-hop one ~58% against realized telemetry.
+            # gate_hops comes from the fed distance map, DEFAULTING to 1 hop when the pair is
+            # absent — the shallowest (cheapest) crossing, so an incomplete feed under-prices
+            # rather than refuses, exactly as before.
             gate_hops = inter_system_hops.get((sys_a, sys_b), 1)
-            return gate_hops * inter_system_seconds
+            return inter_system_base + gate_hops * inter_system_per_hop
         if a in coords and b in coords:
             distance = math.hypot(coords[b][0] - coords[a][0],
                                   coords[b][1] - coords[a][1])
@@ -1390,22 +1424,33 @@ def _resolve_ortools_max_nodes():
                                  ORTOOLS_MAX_NODES_MAX, int)
 
 
-def _resolve_inter_system_travel_seconds():
-    """Per-solve env override for the flat inter-system crossing charge
-    (TOUR_SOLVER_INTER_SYSTEM_TRAVEL_SECONDS, sp-kab1 part c). Delegates to
-    _sequencer_env_scalar, so it clamps to [INTER_SYSTEM_TRAVEL_SECONDS_MIN,
-    INTER_SYSTEM_TRAVEL_SECONDS_MAX] and falls back to INTER_SYSTEM_TRAVEL_SECONDS
-    (1800 = 2*GATE_HOP + JUMP_COOLDOWN) on absent/unset/non-int — byte-identical to the
-    pre-sp-kab1 inline crossing charge when the env is not set. Evidence (sp-acb8
-    duration audit, n=163): empirical per-crossing cost ~1,148s vs 1,800s modeled
-    (solver 1.6x pessimistic, t=+4.1) suppresses profitable crossing tours; arming to
-    ~1200 admits them. Resolved ONCE per _make_travel_fn build so every crossing charge
-    in a single solve is internally consistent — the same discipline as
+def _resolve_inter_system_travel_base_seconds():
+    """Per-solve env override for the FIXED term of the affine crossing charge
+    (TOUR_SOLVER_INTER_SYSTEM_TRAVEL_BASE_SECONDS, sp-smbgd). Delegates to
+    _sequencer_env_scalar, so it clamps to [INTER_SYSTEM_TRAVEL_TERM_MIN,
+    INTER_SYSTEM_TRAVEL_TERM_MAX] and falls back to the FITTED default
+    INTER_SYSTEM_TRAVEL_BASE_SECONDS (750) on absent/unset/non-int. The fitted value is
+    the ACTIVE default: absent env is the armed affine model, not a flat-equivalent
+    fallback. Resolved ONCE per _make_travel_fn build alongside the per-hop term so every
+    crossing in a single solve is priced by one model — the same discipline as
     _resolve_max_planned_tranches."""
-    return _sequencer_env_scalar(INTER_SYSTEM_TRAVEL_SECONDS_ENV_VAR,
-                                 INTER_SYSTEM_TRAVEL_SECONDS,
-                                 INTER_SYSTEM_TRAVEL_SECONDS_MIN,
-                                 INTER_SYSTEM_TRAVEL_SECONDS_MAX, int)
+    return _sequencer_env_scalar(INTER_SYSTEM_TRAVEL_BASE_ENV_VAR,
+                                 INTER_SYSTEM_TRAVEL_BASE_SECONDS,
+                                 INTER_SYSTEM_TRAVEL_TERM_MIN,
+                                 INTER_SYSTEM_TRAVEL_TERM_MAX, int)
+
+
+def _resolve_inter_system_travel_per_hop_seconds():
+    """Per-solve env override for the MARGINAL per-gate-hop term of the affine crossing
+    charge (TOUR_SOLVER_INTER_SYSTEM_TRAVEL_PER_HOP_SECONDS, sp-smbgd). Same clamp and
+    fallback discipline as _resolve_inter_system_travel_base_seconds; fitted default
+    INTER_SYSTEM_TRAVEL_PER_HOP_SECONDS (650). NOT the old
+    TOUR_SOLVER_INTER_SYSTEM_TRAVEL_SECONDS under a new meaning — that name is retired
+    precisely so a stale export of it cannot be read as this term."""
+    return _sequencer_env_scalar(INTER_SYSTEM_TRAVEL_PER_HOP_ENV_VAR,
+                                 INTER_SYSTEM_TRAVEL_PER_HOP_SECONDS,
+                                 INTER_SYSTEM_TRAVEL_TERM_MIN,
+                                 INTER_SYSTEM_TRAVEL_TERM_MAX, int)
 
 
 def ortools_sequences(markets, ship, constraints, travel_fn, deposit_sinks=None,

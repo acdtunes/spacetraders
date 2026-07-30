@@ -121,68 +121,151 @@ def test_effective_tour_systems_clamps_to_sane_range():
     assert _effective_tour_systems({"max_tour_systems": 10_000}) == MAX_HOPS_DEFAULT  # huge -> ceiling
 
 
-# ── sp-kab1 part (c): env-tunable inter-system crossing charge ────────────────
-# Evidence (sp-acb8 duration audit, n=163): the flat inter-system crossing cost is
-# MODELED at 1,800s but the EMPIRICAL per-crossing cost is ~1,148s (solver 1.6x
-# pessimistic, t=+4.1), which SUPPRESSES profitable crossing tours. The charge is
-# now env-tunable (TOUR_SOLVER_INTER_SYSTEM_TRAVEL_SECONDS) so arming to ~1200 is an
-# EXPLICIT, byte-identical-by-default deploy knob mirroring the other TOUR_SOLVER_*.
-# Before sp-kab1 the named INTER_SYSTEM_TRAVEL_SECONDS constant was dead (documented
-# but never read); the crossing branch recomputed 2*GATE_HOP + JUMP_COOLDOWN inline.
+# ── sp-smbgd: AFFINE inter-system crossing charge (replaces the flat per-hop model) ──
+# The flat model charged gate_hops x one whole-crossing constant, so every extra gate hop
+# re-charged the to-gate and from-gate endpoint legs that are paid ONCE per crossing.
+# Refit over tour_leg_telemetry (24h, n=567, dt 120s-3h, BFS depth over the open-era
+# traversable gate graph) gives medians 1376/2105/2732/3571/3786s at 1-5 hops, i.e.
+# total(h) = 749 + 661*h; shipped as the ACTIVE default 750 + 650*h. Against the flat
+# 1200/hop that was live, deep crossings were over-priced +32% (3 hop) to +58% (5 hop)
+# while a 1-hop crossing was 13% UNDER-priced.
+#
+# These constants ARE the default — there is no flat-equivalent fallback path to arm.
 
-def _crossing_hop():
+def _crossing_hop(inter_system_hops=None):
     """A default (coords-less) travel fn over two markets in DIFFERENT systems, so
-    _make_travel_fn's hop() takes the inter-system branch (the flat crossing charge)."""
+    _make_travel_fn's hop() takes the inter-system branch (the affine crossing charge).
+    `inter_system_hops=None` omits the field entirely (the un-widened wire, 1 hop)."""
     from utils.tour_solver import _make_travel_fn, _build_markets
     markets = _build_markets([snap("A", "S1", "G", ask=100, bid=90),
                               snap("B", "S2", "G", ask=999, bid=300)])
     ship = dict(ship_symbol="H", current_waypoint="A", current_system="S1",
                 hold_capacity=80, fuel_current=400, fuel_capacity=400,
                 engine_speed=30, cargo=[])
-    return _make_travel_fn(dict(allowed_systems=["S1", "S2"]), markets, ship)
+    cons = dict(allowed_systems=["S1", "S2"])
+    if inter_system_hops is not None:
+        cons["inter_system_hops"] = inter_system_hops
+    return _make_travel_fn(cons, markets, ship)
 
 
-def test_inter_system_crossing_default_is_1800_byte_identical(monkeypatch):
-    # Absent env => unchanged from the historical 2*GATE_HOP + JUMP_COOLDOWN = 1800.
-    from utils.tour_solver import INTER_SYSTEM_TRAVEL_SECONDS_ENV_VAR
-    monkeypatch.delenv(INTER_SYSTEM_TRAVEL_SECONDS_ENV_VAR, raising=False)
-    assert _crossing_hop()("A", "B") == 1800
+def _clear_affine_env(monkeypatch):
+    from utils.tour_solver import (INTER_SYSTEM_TRAVEL_BASE_ENV_VAR,
+                                   INTER_SYSTEM_TRAVEL_PER_HOP_ENV_VAR)
+    monkeypatch.delenv(INTER_SYSTEM_TRAVEL_BASE_ENV_VAR, raising=False)
+    monkeypatch.delenv(INTER_SYSTEM_TRAVEL_PER_HOP_ENV_VAR, raising=False)
 
 
-def test_inter_system_crossing_env_override_lowers_cost(monkeypatch):
-    # sp-kab1 part (c) RED: the env knob must LOWER the flat crossing charge to the
-    # ~empirical 1200 so crossing tours stop being over-penalized. Pre-fix code
-    # ignores the env and returns 1800.
-    from utils.tour_solver import INTER_SYSTEM_TRAVEL_SECONDS_ENV_VAR
-    monkeypatch.setenv(INTER_SYSTEM_TRAVEL_SECONDS_ENV_VAR, "1200")
-    assert _crossing_hop()("A", "B") == 1200
+def test_crossing_charge_is_affine_in_gate_hops_by_default(monkeypatch):
+    # THE pinned law, with NO env set: total(hops) = 750 + 650*hops. Two properties that a
+    # flat model of ANY per-hop constant cannot satisfy simultaneously:
+    #   (a) the 1-hop charge is base+per_hop = 1400 (not per_hop alone), and
+    #   (b) the increment per extra hop (650) is strictly LESS than the 1-hop charge (1400),
+    #       i.e. per-hop cost FALLS with depth — the amortization the fit measured.
+    _clear_affine_env(monkeypatch)
+    hops = lambda n: _crossing_hop([dict(from_system="S1", to_system="S2", gate_hops=n)])("A", "B")
+    assert hops(1) == 1400          # 750 + 650*1
+    assert hops(2) == 2050          # 750 + 650*2
+    assert hops(3) == 2700          # 750 + 650*3
+    assert hops(4) == 3350
+    assert hops(5) == 4000
+    # (b): a flat model has increment == 1-hop charge; affine has increment < 1-hop charge.
+    increment = hops(3) - hops(2)
+    assert increment == 650
+    assert increment < hops(1), "per-hop cost must fall with depth (affine, not flat)"
+    # Per-hop AVERAGE strictly decreases with depth — the mechanism, stated directly.
+    per_hop_avg = [hops(n) / n for n in (1, 2, 3, 4, 5)]
+    assert per_hop_avg == sorted(per_hop_avg, reverse=True)
+    assert per_hop_avg[0] > per_hop_avg[-1]
 
 
-def test_inter_system_crossing_invalid_env_falls_back_to_1800(monkeypatch):
-    from utils.tour_solver import INTER_SYSTEM_TRAVEL_SECONDS_ENV_VAR
-    monkeypatch.setenv(INTER_SYSTEM_TRAVEL_SECONDS_ENV_VAR, "not-an-int")
-    assert _crossing_hop()("A", "B") == 1800
+def test_deep_crossing_is_cheaper_than_the_flat_model_it_replaces(monkeypatch):
+    # The suppression being fixed, in absolute seconds: against the flat 1200/hop that was
+    # LIVE, a 3-hop crossing drops 3600 -> 2700 and a 5-hop 6000 -> 4000. A 1-hop crossing
+    # gets DEARER (1200 -> 1400) because the flat charge under-priced it — this change is
+    # not a blanket cheapening, so the ping-pong guard is strengthened at depth 1.
+    _clear_affine_env(monkeypatch)
+    hops = lambda n: _crossing_hop([dict(from_system="S1", to_system="S2", gate_hops=n)])("A", "B")
+    assert hops(1) > 1200 * 1
+    assert hops(3) < 1200 * 3
+    assert hops(5) < 1200 * 5
 
 
-def test_resolve_inter_system_travel_seconds_clamps_to_sane_range(monkeypatch):
-    # Mirrors _sequencer_env_scalar discipline: absent -> default (1800), in-range
-    # passthrough, out-of-range clamped to [MIN, MAX]. Floor guards against a near-free
-    # crossing that would re-introduce the ping-ponging the charge exists to price.
-    from utils.tour_solver import (_resolve_inter_system_travel_seconds,
-                                   INTER_SYSTEM_TRAVEL_SECONDS,
-                                   INTER_SYSTEM_TRAVEL_SECONDS_ENV_VAR,
-                                   INTER_SYSTEM_TRAVEL_SECONDS_MIN,
-                                   INTER_SYSTEM_TRAVEL_SECONDS_MAX)
-    env = INTER_SYSTEM_TRAVEL_SECONDS_ENV_VAR
-    assert INTER_SYSTEM_TRAVEL_SECONDS == 1800                                        # 2*GATE_HOP + JUMP_COOLDOWN
-    monkeypatch.delenv(env, raising=False)
-    assert _resolve_inter_system_travel_seconds() == INTER_SYSTEM_TRAVEL_SECONDS      # absent -> 1800
-    monkeypatch.setenv(env, "1200")
-    assert _resolve_inter_system_travel_seconds() == 1200                             # armed target passthrough
-    monkeypatch.setenv(env, "1")
-    assert _resolve_inter_system_travel_seconds() == INTER_SYSTEM_TRAVEL_SECONDS_MIN  # floored
-    monkeypatch.setenv(env, "999999")
-    assert _resolve_inter_system_travel_seconds() == INTER_SYSTEM_TRAVEL_SECONDS_MAX  # ceilinged
+def test_crossing_absent_or_missing_pair_prices_as_one_hop(monkeypatch):
+    # No map, an empty map, and a present-but-incomplete map that omits this pair ALL price
+    # the crossing at 1 gate hop — the shallowest, cheapest charge (750 + 650). Unchanged
+    # degrade semantics; only the number moved (1200 -> 1400 under the live flat charge).
+    _clear_affine_env(monkeypatch)
+    assert _crossing_hop(None)("A", "B") == 1400
+    assert _crossing_hop([])("A", "B") == 1400
+    assert _crossing_hop([dict(from_system="S3", to_system="S4", gate_hops=3)])("A", "B") == 1400
+
+
+def test_crossing_charge_is_symmetric(monkeypatch):
+    _clear_affine_env(monkeypatch)
+    three = [dict(from_system="S1", to_system="S2", gate_hops=3)]
+    assert _crossing_hop(three)("A", "B") == _crossing_hop(three)("B", "A") == 2700
+
+
+def test_affine_terms_are_independently_env_tunable(monkeypatch):
+    # Operational retuning: each term moves the charge on its own axis — the base shifts every
+    # crossing by a constant, the per-hop term changes only the slope.
+    from utils.tour_solver import (INTER_SYSTEM_TRAVEL_BASE_ENV_VAR,
+                                   INTER_SYSTEM_TRAVEL_PER_HOP_ENV_VAR)
+    hops = lambda n: _crossing_hop([dict(from_system="S1", to_system="S2", gate_hops=n)])("A", "B")
+    monkeypatch.setenv(INTER_SYSTEM_TRAVEL_BASE_ENV_VAR, "900")
+    monkeypatch.delenv(INTER_SYSTEM_TRAVEL_PER_HOP_ENV_VAR, raising=False)
+    assert hops(1) == 1550 and hops(3) == 2850          # base only: +150 at every depth
+    monkeypatch.delenv(INTER_SYSTEM_TRAVEL_BASE_ENV_VAR, raising=False)
+    monkeypatch.setenv(INTER_SYSTEM_TRAVEL_PER_HOP_ENV_VAR, "900")
+    assert hops(1) == 1650 and hops(3) == 3450          # slope only: +250 per hop
+
+
+def test_affine_terms_clamp_and_fall_back_to_the_fitted_defaults(monkeypatch):
+    # Mirrors _sequencer_env_scalar discipline for BOTH terms: absent/garbage -> the FITTED
+    # default (not a flat-equivalent value), in-range passthrough, out-of-range clamped. The
+    # floor is POSITIVE so neither real cost can be zeroed away — base=0 would silently
+    # restore the flat model this fit replaced.
+    from utils.tour_solver import (_resolve_inter_system_travel_base_seconds,
+                                   _resolve_inter_system_travel_per_hop_seconds,
+                                   INTER_SYSTEM_TRAVEL_BASE_SECONDS,
+                                   INTER_SYSTEM_TRAVEL_PER_HOP_SECONDS,
+                                   INTER_SYSTEM_TRAVEL_BASE_ENV_VAR,
+                                   INTER_SYSTEM_TRAVEL_PER_HOP_ENV_VAR,
+                                   INTER_SYSTEM_TRAVEL_TERM_MIN,
+                                   INTER_SYSTEM_TRAVEL_TERM_MAX)
+    assert INTER_SYSTEM_TRAVEL_BASE_SECONDS == 750       # fitted, and ACTIVE by default
+    assert INTER_SYSTEM_TRAVEL_PER_HOP_SECONDS == 650
+    assert INTER_SYSTEM_TRAVEL_TERM_MIN > 0, "a zero floor would permit the flat degenerate"
+    # The 1-hop TOTAL still spans exactly the old single-term clamp [600, 3600].
+    assert 2 * INTER_SYSTEM_TRAVEL_TERM_MIN == 600
+    assert 2 * INTER_SYSTEM_TRAVEL_TERM_MAX == 3600
+    for resolve, env, default in (
+            (_resolve_inter_system_travel_base_seconds,
+             INTER_SYSTEM_TRAVEL_BASE_ENV_VAR, INTER_SYSTEM_TRAVEL_BASE_SECONDS),
+            (_resolve_inter_system_travel_per_hop_seconds,
+             INTER_SYSTEM_TRAVEL_PER_HOP_ENV_VAR, INTER_SYSTEM_TRAVEL_PER_HOP_SECONDS)):
+        monkeypatch.delenv(env, raising=False)
+        assert resolve() == default                                  # absent -> fitted default
+        monkeypatch.setenv(env, "not-an-int")
+        assert resolve() == default                                  # garbage -> fitted default
+        monkeypatch.setenv(env, "700")
+        assert resolve() == 700                                      # in-range passthrough
+        monkeypatch.setenv(env, "0")
+        assert resolve() == INTER_SYSTEM_TRAVEL_TERM_MIN             # floored, never 0
+        monkeypatch.setenv(env, "999999")
+        assert resolve() == INTER_SYSTEM_TRAVEL_TERM_MAX             # ceilinged
+
+
+def test_retired_flat_env_var_is_gone(monkeypatch):
+    # The old whole-crossing knob meant something DIFFERENT. Reusing the name for the marginal
+    # term would let a stale `=1200` export price total(h) = 750 + 1200*h — dearer than the
+    # flat model at every depth. The name must not be readable by the solver at all.
+    import utils.tour_solver as ts
+    assert not hasattr(ts, "INTER_SYSTEM_TRAVEL_SECONDS_ENV_VAR")
+    assert not hasattr(ts, "_resolve_inter_system_travel_seconds")
+    monkeypatch.setenv("TOUR_SOLVER_INTER_SYSTEM_TRAVEL_SECONDS", "1200")
+    _clear_affine_env(monkeypatch)
+    assert _crossing_hop(None)("A", "B") == 1400, "stale flat export must be inert"
 
 def test_out_of_horizon_lane_invisible_until_sink_system_allowed():
     # sp-mtvg mechanism lock (the live-replay result, distilled): a good sourced cheap
@@ -1423,67 +1506,13 @@ def test_env_knobs_resolve_from_boot_environment():
 
 
 # ── sp-tp5c3: real multi-hop (gate-graph) travel model ────────────────────────
-# The load-bearing correctness change: the tour solver priced EVERY inter-system
-# crossing as ONE gate hop (flat INTER_SYSTEM_TRAVEL_SECONDS), so a 3-hop lane was
-# ~3x under-priced and cph selection corrupted — which is why the 1-hop horizon
+# The tour solver priced EVERY inter-system crossing as ONE gate hop, so a 3-hop lane
+# was ~3x under-priced and cph selection corrupted — which is why the 1-hop horizon
 # could never safely widen (sp-mtvg/sp-mepj). The fix carries a per-pair gate-hop
 # distance map (`inter_system_hops`, computed Go-side over the SAME gate graph the
-# reposition/candidate walk uses) and prices a crossing at gate_hops x per-crossing
-# charge. Absent map / missing pair -> 1 hop -> byte-identical to today. The per-hop
-# unit stays the existing env-tunable charge, so a 1-hop lane is byte-equal to the
-# flat baseline (near-lane cph NOT degraded) while a >1-hop lane costs the honest
-# multiple (true $/hr). Mirrors the sp-z7ng reposition deadhead model (hops x charge).
-
-def _crossing_hop_with_map(inter_system_hops):
-    """A default (coords-less) travel fn over two markets in DIFFERENT systems, carrying a
-    fed gate-hop distance map, so _make_travel_fn's hop() takes the inter-system branch and
-    prices the crossing at gate_hops x per-crossing charge. inter_system_hops=None omits
-    the field entirely (the un-widened / pre-fix wire)."""
-    from utils.tour_solver import _make_travel_fn, _build_markets
-    markets = _build_markets([snap("A", "S1", "G", ask=100, bid=90),
-                              snap("B", "S2", "G", ask=999, bid=300)])
-    ship = dict(ship_symbol="H", current_waypoint="A", current_system="S1",
-                hold_capacity=80, fuel_current=400, fuel_capacity=400,
-                engine_speed=30, cargo=[])
-    cons = dict(allowed_systems=["S1", "S2"])
-    if inter_system_hops is not None:
-        cons["inter_system_hops"] = inter_system_hops
-    return _make_travel_fn(cons, markets, ship)
-
-
-def test_crossing_multihop_scales_by_fed_gate_hops(monkeypatch):
-    # The core pricing law: crossing = gate_hops x per-crossing seconds. A 1-hop lane is
-    # byte-equal to the historical flat 1800 (near-lane undegraded); a 3-hop lane is 3x.
-    from utils.tour_solver import INTER_SYSTEM_TRAVEL_SECONDS_ENV_VAR
-    monkeypatch.delenv(INTER_SYSTEM_TRAVEL_SECONDS_ENV_VAR, raising=False)
-    one_hop = [dict(from_system="S1", to_system="S2", gate_hops=1)]
-    three_hop = [dict(from_system="S1", to_system="S2", gate_hops=3)]
-    assert _crossing_hop_with_map(one_hop)("A", "B") == 1800      # near-lane byte-equal
-    assert _crossing_hop_with_map(three_hop)("A", "B") == 5400    # 3 x 1800, honest multi-hop
-    # Distance is symmetric: the reverse crossing (S2->S1) prices the same 3 hops.
-    assert _crossing_hop_with_map(three_hop)("B", "A") == 5400
-
-
-def test_crossing_absent_or_missing_pair_defaults_to_one_hop_byte_identical(monkeypatch):
-    # No map at all, AND a present-but-incomplete map that omits this pair, BOTH default the
-    # crossing to 1 hop = today's flat charge (byte-identical wire / safe degrade — a partial
-    # feed can never silently under-price a real lane below today's baseline).
-    from utils.tour_solver import INTER_SYSTEM_TRAVEL_SECONDS_ENV_VAR
-    monkeypatch.delenv(INTER_SYSTEM_TRAVEL_SECONDS_ENV_VAR, raising=False)
-    assert _crossing_hop_with_map(None)("A", "B") == 1800
-    assert _crossing_hop_with_map([])("A", "B") == 1800
-    unrelated = [dict(from_system="S3", to_system="S4", gate_hops=3)]
-    assert _crossing_hop_with_map(unrelated)("A", "B") == 1800
-
-
-def test_crossing_multihop_multiplies_the_env_per_hop_charge(monkeypatch):
-    # The per-hop unit is the SAME env-tunable charge; multi-hop multiplies it, so the model
-    # stays consistent when the empirical ~1200 charge is armed: 3 hops -> 3 x 1200 = 3600.
-    from utils.tour_solver import INTER_SYSTEM_TRAVEL_SECONDS_ENV_VAR
-    monkeypatch.setenv(INTER_SYSTEM_TRAVEL_SECONDS_ENV_VAR, "1200")
-    three_hop = [dict(from_system="S1", to_system="S2", gate_hops=3)]
-    assert _crossing_hop_with_map(three_hop)("A", "B") == 3600
-
+# reposition/candidate walk uses) and prices the crossing in that real hop count.
+# sp-smbgd then made that pricing AFFINE rather than flat-per-hop, so the depth
+# scaling below is 750 + 650*hops, not hops x one whole-crossing charge.
 
 def _tp5c3_cons(**over):
     base = dict(max_hops=4, max_spend=100_000, min_margin_per_unit=1,
@@ -1493,11 +1522,11 @@ def _tp5c3_cons(**over):
     return base
 
 
-def test_near_lane_cph_undegraded_vs_flat_baseline():
-    # THE load-bearing A/B (lead's stop-ship gate): on the SAME 1-gate-hop lane, arming the
-    # multi-hop model with the crossing declared as 1 hop produces a plan byte-equal to the
-    # pre-fix flat-charge baseline — identical cph AND identical crossing trip_time. Near-lane
-    # selection is NOT degraded by the multi-hop travel model.
+def test_near_lane_cph_matches_the_unfed_default():
+    # On the SAME 1-gate-hop lane, feeding the distance map with the crossing declared as 1 hop
+    # produces a plan identical to the un-fed default — identical cph AND identical crossing
+    # trip_time. The depth-1 charge is the un-widened baseline by construction under the affine
+    # model too, so a widened feed cannot perturb a near lane it agrees with.
     snapshot = [snap("A", "S1", "G", ask=100, bid=90, tv=40),
                 snap("B", "S2", "G", ask=999, bid=300, tv=40)]
     ship = dict(ship_symbol="H", current_waypoint="A", current_system="S1",
@@ -1517,9 +1546,9 @@ def test_near_lane_cph_undegraded_vs_flat_baseline():
 
 
 def test_far_lane_crossing_trip_time_reflects_actual_hops():
-    # A >1-hop lane's crossing trip_time is the REAL hop count x per-crossing charge (the true
-    # $/hr denominator), not a flat 1 hop nor an inflated multiple. Raising max_tour_systems +
-    # feeding the 3-hop distance lets the solver plan the tour to a sink 3 gate hops out.
+    # A >1-hop lane's crossing trip_time is the affine charge at the REAL hop count (the true
+    # $/hr denominator), not a flat 1 hop nor hops x a whole-crossing charge. Raising
+    # max_tour_systems + feeding the 3-hop distance lets the solver plan to a sink 3 gate hops out.
     snapshot = [snap("SRC", "S1", "G", ask=100, bid=0, tv=40),
                 snap("SINK", "S2", "G", ask=0, bid=900, tv=40)]
     ship = dict(ship_symbol="H", current_waypoint="SRC", current_system="S1",
@@ -1530,14 +1559,14 @@ def test_far_lane_crossing_trip_time_reflects_actual_hops():
     out = solve_tour(snapshot, ship, cons, MODEL)
     assert out["feasible"], out
     sink_leg = [l for l in out["legs"] if l["waypoint_symbol"] == "SINK"][0]
-    assert sink_leg["travel_seconds_from_prev"] == 5400   # 3 hops x 1800, not a flat 1800
+    assert sink_leg["travel_seconds_from_prev"] == 2700   # 750 + 650*3, not a flat 1 hop nor 3x1400
 
 
-def test_multihop_cph_is_lower_than_flat_for_the_same_far_lane():
-    # Selection integrity: the SAME far (3-hop) lane scores a strictly LOWER cph under the honest
-    # multi-hop cost than under the old flat-1-hop cost — the ~3x under-pricing the flat model hid
-    # (and that corrupted cph ranking) is gone. Same board, same objective; only the travel model
-    # differs, so the cph gap isolates the pricing fix.
+def test_multihop_cph_is_lower_than_one_hop_for_the_same_far_lane():
+    # Selection integrity, still intact under the affine model: the SAME far (3-hop) lane scores a
+    # strictly LOWER cph once its real depth is priced than when it is mis-read as 1 hop. Making
+    # deep crossings cheaper must not make them FREE — depth still costs monotonically. Same
+    # board, same objective; only the fed depth differs, so the cph gap isolates the pricing.
     snapshot = [snap("SRC", "S1", "G", ask=100, bid=0, tv=40),
                 snap("SINK", "S2", "G", ask=0, bid=900, tv=40)]
     ship = dict(ship_symbol="H", current_waypoint="SRC", current_system="S1",
@@ -1552,3 +1581,115 @@ def test_multihop_cph_is_lower_than_flat_for_the_same_far_lane():
     assert flat["feasible"] and honest["feasible"]
     assert honest["projected_profit"] == flat["projected_profit"]         # same trade, same profit
     assert honest["projected_credits_per_hour"] < flat["projected_credits_per_hour"]  # honest time
+
+
+# ── sp-smbgd: the affine model must actually CHANGE A CHOICE ──────────────────
+# Pricing arithmetic is necessary but not sufficient: the reason this ships is that the
+# flat model SUPPRESSED profitable deep lanes (the named case: MERITIUM X1-XC31 -> X1-AS39,
+# 3 gate hops, ~450k/load, zero crossings observed in 24h of telemetry). This board makes a
+# deep lane genuinely WIN under affine pricing and genuinely LOSE under the flat model it
+# replaces — so the test exercises the selection, not just the formula.
+
+_DEEP_BOARD_SYSTEM = {"SRC": "S1", "NEAR": "S2", "FAR": "S3"}
+_DEEP_BOARD_HOPS = {("S1", "S2"): 1, ("S1", "S3"): 3, ("S2", "S3"): 4}
+
+
+def _deep_board_gate_hops(a, b):
+    return _DEEP_BOARD_HOPS[tuple(sorted((a, b)))]
+
+
+def _flat_travel_fn(per_hop=1200):
+    """The RETIRED flat model, as a `_travel_fn` hook: crossing = gate_hops x one whole-crossing
+    charge, at the 1200 that was live. Kept only as the A/B baseline for the selection flip —
+    the solver itself no longer contains this path."""
+    def hop(a, b):
+        if a == b:
+            return 0
+        sys_a, sys_b = _DEEP_BOARD_SYSTEM[a], _DEEP_BOARD_SYSTEM[b]
+        if sys_a != sys_b:
+            return _deep_board_gate_hops(sys_a, sys_b) * per_hop
+        return 300      # INTRA_SYSTEM_TRAVEL_SECONDS (coords-less board)
+    return hop
+
+
+def _deep_lane_board(far_bid=560):
+    # One cheap source in S1; two sinks for good G. NEAR (S2) is 1 gate hop; FAR (S3) is 3 gate
+    # hops and pays 2.3x the margin. hold fits exactly one trade_volume of G, so each plan moves
+    # one UNDECAYED tranche and the profit difference is purely the bid spread — no decay noise.
+    #
+    # BALLAST ("B", one unit of launch cargo every market bids for) exists for a mechanical
+    # reason, not an economic one: _sort_scored's zero-time pin drops the WHOLE selection back to
+    # PROFIT ordering if ANY scored candidate has seconds <= 0, and a lone-sink candidate plans no
+    # trades at all, so it is legless and 0-second. Under profit ordering travel time cannot
+    # affect selection and the flip is untestable. One tradable unit at every stop gives every
+    # candidate a leg, so cph ordering — what live runs with (TOUR_SOLVER_OBJECTIVE=rate) —
+    # actually engages. Its 2 credits are noise against the 8k-18k lanes.
+    snapshot = [snap("SRC", "S1", "G", ask=100, bid=0, tv=40),
+                snap("NEAR", "S2", "G", ask=0, bid=300, tv=40),
+                snap("FAR", "S3", "G", ask=0, bid=far_bid, tv=40),
+                snap("SRC", "S1", "B", ask=0, bid=2, tv=40),
+                snap("NEAR", "S2", "B", ask=0, bid=2, tv=40),
+                snap("FAR", "S3", "B", ask=0, bid=2, tv=40)]
+    ship = dict(ship_symbol="H", current_waypoint="SRC", current_system="S1",
+                hold_capacity=41, fuel_current=4000, fuel_capacity=4000,
+                engine_speed=30, cargo=[dict(good_symbol="B", units=1)])
+    cons = dict(max_hops=2, max_spend=1_000_000, min_margin_per_unit=1,
+                working_capital_reserve=0, allowed_systems=["S1", "S2", "S3"],
+                max_snapshot_age_minutes=75, expected_model_version="1@e",
+                max_tour_systems=2,
+                inter_system_hops=[
+                    dict(from_system="S1", to_system="S2", gate_hops=1),
+                    dict(from_system="S1", to_system="S3", gate_hops=3),
+                    dict(from_system="S2", to_system="S3", gate_hops=4)])
+    return snapshot, ship, cons
+
+
+def _sold_at(out):
+    """Where good G was sold — the lane the solver CHOSE. Ballast sales are excluded."""
+    return {l["waypoint_symbol"] for l in out["legs"] for t in l["trades"]
+            if not t["is_buy"] and t["good_symbol"] == "G"}
+
+
+def test_affine_pricing_admits_a_deep_lane_the_flat_model_suppressed(monkeypatch):
+    # THE regression test for sp-smbgd. Same board, same objective, same profit-per-load —
+    # only the travel model differs:
+    #   flat 1200/hop : FAR costs 3600s vs NEAR 1200s, so the 2.3x-richer deep lane loses on
+    #                   $/hr and the solver ships to NEAR (the observed suppression).
+    #   affine        : FAR costs 2700s vs NEAR 1400s, the deep lane's extra margin now clears
+    #                   its honest time cost, and the solver ships to FAR.
+    _clear_affine_env(monkeypatch)
+    snapshot, ship, cons = _deep_lane_board(far_bid=560)
+
+    flat = solve_tour(snapshot, ship, dict(cons, _travel_fn=_flat_travel_fn(1200)),
+                      MODEL, objective="rate")
+    affine = solve_tour(snapshot, ship, cons, MODEL, objective="rate")
+    assert flat["feasible"] and affine["feasible"], (flat, affine)
+
+    # The flip itself. Both halves are load-bearing: without the flat half the fixture would
+    # not prove the deep lane was ever suppressed, and the bound would go unexercised.
+    assert _sold_at(flat) == {"NEAR"}, f"flat model should suppress the deep lane, got {flat}"
+    assert _sold_at(affine) == {"FAR"}, f"affine model should admit the deep lane, got {affine}"
+
+    # And the deep lane really is the richer one — it was losing on TIME, not on margin.
+    assert affine["projected_profit"] > flat["projected_profit"]
+
+    # The crossing the deep lane pays is the affine charge at its real depth, not the flat 3x.
+    far_leg = [l for l in affine["legs"] if l["waypoint_symbol"] == "FAR"][0]
+    assert far_leg["travel_seconds_from_prev"] == 2700          # 750 + 650*3
+    assert far_leg["travel_seconds_from_prev"] < 3 * 1200       # what the flat model charged
+
+
+def test_affine_pricing_still_prefers_the_near_lane_when_margin_does_not_justify_depth(monkeypatch):
+    # The other side of the bound: cheapening deep crossings must not make DEPTH ITSELF
+    # attractive. Same board with the far sink only 1.2x richer — below the ~1.9x its honest
+    # affine time cost demands — and the solver must still choose NEAR. This is what stops the
+    # test above from being satisfied by a crossing charge that collapses toward zero.
+    _clear_affine_env(monkeypatch)
+    snapshot, ship, cons = _deep_lane_board(far_bid=340)
+    out = solve_tour(snapshot, ship, cons, MODEL, objective="rate")
+    assert out["feasible"], out
+    assert _sold_at(out) == {"NEAR"}, f"depth must still cost, got {out}"
+    # ... and it IS the crossing charge doing the work: make crossings free and the deep lane wins.
+    free = solve_tour(snapshot, ship, dict(cons, _travel_fn=_flat_travel_fn(0)),
+                      MODEL, objective="rate")
+    assert _sold_at(free) == {"FAR"}, f"fixture is inert — free crossings must flip it, got {free}"

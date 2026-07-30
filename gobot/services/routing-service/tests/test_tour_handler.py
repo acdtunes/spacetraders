@@ -147,21 +147,21 @@ def test_handler_forwards_max_tour_systems(tmp_path):
 
 def test_handler_forwards_inter_system_hops(tmp_path):
     # sp-tp5c3: the pb TourConstraints.inter_system_hops must be BRIDGED into the solver
-    # constraints dict so a cross-system crossing is priced at gate_hops x the per-crossing
-    # charge. On the golden board every S1<->S2 crossing is a flat 1800 by default; declaring
-    # S1<->S2 as 2 gate hops doubles each crossing's trip_time to 3600 (honest multi-hop),
+    # constraints dict so a cross-system crossing is priced in its REAL gate-hop count.
+    # sp-smbgd made that price AFFINE — 750 + 650*hops — so on the golden board an undeclared
+    # S1<->S2 crossing prices at the 1-hop charge 1400, and declaring it as 2 gate hops raises
+    # each crossing to 2050 (NOT 2x1400: the fixed base is paid once per crossing, not per hop),
     # WITHOUT changing the profit-primary tour shape (declaring hops changes time, not profit).
     handler = RoutingServiceHandler(tour_artifact_path=_artifact(tmp_path))
 
-    # Baseline: no map -> every crossing defaults to 1 hop = 1800 (byte-identical wire).
+    # Baseline: no map -> every crossing defaults to 1 hop = 750 + 650 = 1400.
     base = handler.OptimizeTradeTour(request(), None)
     assert base.feasible
     # Two crossings, not four: sp-28lw9's per-visit cap of 2.5 trade_volumes lets the golden
-    # board's load clear in ONE D/E round trip instead of two (see test_golden_tour), so the
-    # same cargo now costs 2 x 1800s of crossing time rather than 4 x 1800s.
-    assert [l.travel_seconds_from_prev for l in base.legs[1:]] == [1800, 1800]
+    # board's load clear in ONE D/E round trip instead of two (see test_golden_tour).
+    assert [l.travel_seconds_from_prev for l in base.legs[1:]] == [1400, 1400]
 
-    # Armed: S1<->S2 declared as 2 gate hops -> each crossing prices at 2 x 1800 = 3600.
+    # Armed: S1<->S2 declared as 2 gate hops -> each crossing prices at 750 + 650*2 = 2050.
     req = request()
     req.constraints.inter_system_hops.append(
         routing_pb2.InterSystemHopDistance(from_system="S1", to_system="S2", gate_hops=2))
@@ -169,7 +169,9 @@ def test_handler_forwards_inter_system_hops(tmp_path):
     assert armed.feasible
     assert [(l.waypoint_symbol, l.system_symbol) for l in armed.legs] == \
         [(l.waypoint_symbol, l.system_symbol) for l in base.legs]
-    assert [l.travel_seconds_from_prev for l in armed.legs[1:]] == [3600, 3600]
+    assert [l.travel_seconds_from_prev for l in armed.legs[1:]] == [2050, 2050]
+    # The affine shape, asserted at the bridge: a 2-hop crossing costs LESS than two 1-hop ones.
+    assert armed.legs[1].travel_seconds_from_prev < 2 * base.legs[1].travel_seconds_from_prev
 
 
 def test_handler_forwards_closure_fields(tmp_path):
