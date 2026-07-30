@@ -932,3 +932,64 @@ func TestOpportunityRelocatorShould_LeaveAnInterruptedMoveInFlightWhenItsReReadI
 		t.Fatal("a transient re-read failure ABANDONED a valid in-flight relocation; only a hull that is definitely taken may be abandoned")
 	}
 }
+
+// --- reconcile cadence (sp-fjvlm) ----------------------------------------------
+
+// shortestMeasuredIdleWindowSeconds is the SHORTEST gap ever observed between one tour
+// ending and the same hull's next tour starting, and it is the number the reconcile
+// cadence has to fit inside.
+//
+// Measured over 12h of tour containers, 195 samples of
+// lead(started_at) - stopped_at per hull:
+//
+//	under 3 min      0      min     183s
+//	3-15 min       184      p05     185s
+//	over 15 min     11      median  206s
+//
+// NO HULL IS EVER IDLE FOR LESS THAN THREE MINUTES. That is what makes a cadence fix
+// sufficient and an event-driven redesign unnecessary: the windows are wide, and a tick
+// that fits inside the narrowest of them catches essentially all of them.
+const shortestMeasuredIdleWindowSeconds = 183
+
+// TestResolveRelocatorTickSeconds_DefaultFitsInsideTheShortestIdleWindow pins the cadence
+// to the measurement rather than to a number.
+//
+// A periodic tick of period T lands inside an idle window of length W whenever T <= W, so
+// a cadence longer than the shortest observed window will sleep straight through some of
+// the releases it exists to catch. At 900s against a 206s median it slept through ~86% of
+// them: the live tick read `1 relocated, 0 resumed, 1 evaluated, skipped[mid_tour=32]` —
+// one eligible hull out of 33, not because 32 were ineligible but because the tick landed
+// mid-tour for all of them.
+//
+// Asserted as an INEQUALITY against the measurement, not an equality against 120, so the
+// test states the constraint instead of restating the constant. Raising the cadence back
+// above the shortest measured window fails here with the reason attached.
+func TestResolveRelocatorTickSeconds_DefaultFitsInsideTheShortestIdleWindow(t *testing.T) {
+	got := resolveRelocatorTickSeconds(0)
+
+	if got > shortestMeasuredIdleWindowSeconds {
+		t.Fatalf("default reconcile cadence is %ds, which is longer than the shortest idle window ever measured (%ds). "+
+			"A tick period longer than the window sleeps through it: at 900s the relocator evaluated 1 of 33 hulls, "+
+			"skipping 32 as mid_tour. The cadence must fit inside the window it is meant to land in.",
+			got, shortestMeasuredIdleWindowSeconds)
+	}
+	if got <= 0 {
+		t.Fatalf("default reconcile cadence resolved to %ds — a non-positive cadence would spin the reconcile loop", got)
+	}
+}
+
+// TestResolveRelocatorTickSeconds_OperatorOverrideStillWins proves the faster default did
+// not become a hard-coded cadence. TickSeconds remains the override; sp-fjvlm moved only
+// what it falls back to.
+func TestResolveRelocatorTickSeconds_OperatorOverrideStillWins(t *testing.T) {
+	if got := resolveRelocatorTickSeconds(600); got != 600 {
+		t.Fatalf("explicit TickSeconds=600 resolved to %d, want 600 — the override must outrank the default", got)
+	}
+	// The 0/absent -> documented default idiom (RULINGS #5), including the negative case a
+	// malformed config can produce.
+	for _, absent := range []int{0, -1} {
+		if got := resolveRelocatorTickSeconds(absent); got != defaultRelocatorTickSeconds {
+			t.Fatalf("TickSeconds=%d resolved to %d, want the default %d", absent, got, defaultRelocatorTickSeconds)
+		}
+	}
+}

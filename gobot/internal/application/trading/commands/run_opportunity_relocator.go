@@ -49,10 +49,46 @@ import (
 )
 
 const (
-	// defaultRelocatorTickSeconds is the reconcile cadence: ~15 minutes. Slower than a tour, so a
-	// hull is normally evaluated at a genuine release rather than mid-flight; fast enough that a
-	// region the sensing fleet has newly priced is scored within a tour of appearing.
-	defaultRelocatorTickSeconds = 900
+	// defaultRelocatorTickSeconds is the reconcile cadence: 2 minutes. It is sized to LAND INSIDE
+	// the idle window between one tour ending and the same hull's next tour starting, because that
+	// window is the only moment a hull can be relocated at all.
+	//
+	// IT WAS 900 (~15 min), on the reasoning that a cadence slower than a tour would catch hulls at
+	// a genuine release rather than mid-flight. The second half of that is right and unchanged — the
+	// mid_tour guard is what enforces it, not the cadence — but the first half had the arithmetic
+	// backwards: a tick SLOWER than the window sleeps through it. Measured over 12h of tour
+	// containers, 195 samples of lead(started_at) - stopped_at per hull:
+	//
+	//	under 3 min      0      min     183s
+	//	3-15 min       184      p05     185s
+	//	over 15 min     11      median  206s
+	//
+	// No hull is ever idle for less than three minutes, and at 900s the relocator slept through
+	// ~86% of those windows: a live tick read `1 relocated, 0 resumed, 1 evaluated,
+	// skipped[mid_tour=32]` — one eligible hull out of 33, because the tick landed mid-tour for the
+	// other 32 rather than because they were ineligible.
+	//
+	// WHY 120 AND NOT LOWER. A periodic tick of period T lands inside a window of length W whenever
+	// T <= W, so 183 would already catch every window observed. 120 leaves a 1.5x margin under the
+	// narrowest one for windows shorter than any yet measured, and going below that buys no capture
+	// at all — only more ticks.
+	//
+	// COST. Cadence does not drive API cost; ELIGIBLE HULLS do. ~29 hulls come free per hour, so
+	// there are ~29 evaluations to perform however often we look, and the cadence only decides
+	// whether we catch them. A tick with nothing eligible issues ZERO API calls: hullEligibility
+	// returns mid_tour and `continue`s before scoreHull, which is the only path that reaches
+	// ObserveRegions or the planner. What such a tick does cost is three DB reads — the fleet
+	// observation, the persisted intents, and a 4h telemetry window (968 rows, 0.79ms on
+	// idx_tour_leg_telemetry_player) — plus a no-op era read. 7x the rate of that is nothing, and
+	// the per-hull pre-flight stays separately bounded by relocationRegionCandidateBudget so a
+	// burst of simultaneously-free hulls cannot spike either.
+	//
+	// The anti-thrash bounds are cadence-INDEPENDENT and unaffected: the per-hull cooldown is
+	// wall-clock against DecidedAt (see hullEligibility) rather than a count of ticks, and
+	// concurrency is capped by max_concurrent_relocations minus what is already in flight. Nor can
+	// a faster tick re-enter a running relocation — Handle runs one tick to completion and only
+	// then starts the timer, so the period is tick duration PLUS this cadence, never less.
+	defaultRelocatorTickSeconds = 120
 
 	// defaultRelocatorNPVThresholdCredits is the credit floor a relocation's NPV must clear. A heavy
 	// freighter baselines ~300k/hr, so a move onto genuinely better ground over a 24h horizon prices
