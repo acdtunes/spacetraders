@@ -60,10 +60,6 @@ func TestSensingTune_LiveKnobSet(t *testing.T) {
 		"probe_cap", "expansion_enabled", "target_util_pct", "min_scan_rate_milli",
 		"value_clamp_r", "inflight_cap", "capital_multiplier_k_milli",
 		"capex_reserve_credits", "quartermaster_cadence_secs",
-		// The sensing surge's standing in-flight bound (sp-zvywu). It is a CAP, not a
-		// switch: `tune surge_inflight_cap 0` reverts to the documented default, so the
-		// surge cannot be turned off through the tune surface at all.
-		"surge_inflight_cap",
 	}
 	for _, key := range live {
 		require.Contains(t, bounds, key, "%s must be tunable", key)

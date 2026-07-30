@@ -50,7 +50,7 @@ import (
 const (
 	// defaultRelocatorTickSeconds is the reconcile cadence: ~15 minutes. Slower than a tour, so a
 	// hull is normally evaluated at a genuine release rather than mid-flight; fast enough that a
-	// region newly priced by the sensing surge is scored within a tour of appearing.
+	// region the sensing fleet has newly priced is scored within a tour of appearing.
 	defaultRelocatorTickSeconds = 900
 
 	// defaultRelocatorNPVThresholdCredits is the credit floor a relocation's NPV must clear. A heavy

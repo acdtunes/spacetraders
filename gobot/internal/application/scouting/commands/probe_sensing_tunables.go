@@ -29,7 +29,6 @@ func SensingTunableDefaults() map[string]int {
 		"capital_multiplier_k_milli": defaultCapitalMultiplierKMilli,
 		"capex_reserve_credits":      defaultCapexReserveCredits,
 		"quartermaster_cadence_secs": defaultQuartermasterCadenceSecs,
-		"surge_inflight_cap":         defaultSurgeInFlightCap,
 
 		// The API client's limiter-pressure EWMA half-life. 30 mirrors the
 		// client's own default (api.defaultLimiterPressureHalfLife); the
