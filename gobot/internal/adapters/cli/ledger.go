@@ -37,6 +37,7 @@ Examples:
 
 	// Add subcommands
 	cmd.AddCommand(newLedgerListCommand())
+	cmd.AddCommand(newLedgerPositionsCommand())
 	cmd.AddCommand(newLedgerReportCommand())
 
 	return cmd
