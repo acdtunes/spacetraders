@@ -290,8 +290,20 @@ func run(cfg *config.Config) error {
 	waypointEnricher := ship.NewWaypointEnricher(waypointRepo)
 	routePlanner := ship.NewRoutePlanner(routingClient)
 
-	// Market scanner for automatic market data collection during navigation
+	// Market scanner for automatic market data collection during navigation.
+	//
+	// ONE scanner instance, shared by every coordinator container, which is what
+	// makes its market-scan budget a fleet budget rather than a per-container one
+	// that would multiply by the container count (sp-ntgfj). The budget is enforced
+	// by construction; this only replaces the built-in default with the configured
+	// rate and value clamp.
 	marketScanner := ship.NewMarketScanner(apiClient, marketRepo, playerRepo, priceHistoryRepo)
+	marketScanner.SetScanBudget(ship.NewScanBudget(
+		cfg.MarketScan.ResolvedBudgetReqPerSec(),
+		cfg.MarketScan.ResolvedValueClampR(),
+	))
+	fmt.Printf("Market-scan budget: %.3f req/s shared by every market reader, value clamp %dx\n",
+		cfg.MarketScan.ResolvedBudgetReqPerSec(), cfg.MarketScan.ResolvedValueClampR())
 
 	// Ship event bus for pub/sub of ship state changes (arrival, cooldown, etc.)
 	// Used by ShipStateScheduler (publisher) and RouteExecutor (subscriber)
@@ -1170,6 +1182,12 @@ func run(cfg *config.Config) error {
 	// nil-tolerated pool read is what a dormant feature looks like, and this ships
 	// driving the live tick.
 	sensingUnpricedPool := parkedSensingAdapters.NewUnpricedPoolPort(db)
+
+	// The screen's catalogue gap fill is the one market API read that cannot pass
+	// through MarketScanner, so it is charged to the same allowance directly
+	// (sp-ntgfj) — metered for attribution, never deniable.
+	remoteMarketPort := parkedSensingAdapters.NewRemoteMarketPort(apiClient, playerRepo)
+	remoteMarketPort.SetScanBudget(marketScanner.ScanBudget())
 	probeSensingHandler.SetEnginePortsFactory(func(sensingPlayerID int) scoutingCmd.SensingEnginePorts {
 		// One catalog adapter instance serves the screen, the buy queue's yard lookup and
 		// expansion's uncharted walk, so the three can never disagree about what is in a
@@ -1217,8 +1235,10 @@ func run(cfg *config.Config) error {
 			MarketGoods: sensingMarketGoods,
 			SpreadOf:    sensingMarketGoods,
 			// The screen's only genuine API spend: the goods CATALOGUE of a charted
-			// market no hull has visited, which survives a presence-less GET.
-			RemoteMarket: parkedSensingAdapters.NewRemoteMarketPort(apiClient, playerRepo),
+			// market no hull has visited, which survives a presence-less GET. It is
+			// CHARGED to the fleet market-scan budget but never gated by it — there is
+			// no store to serve a cache gap from (sp-ntgfj).
+			RemoteMarket: remoteMarketPort,
 			// Money: the same live-treasury reader every other guard uses, and the
 			// trading fleet's measured cargo outflow, which is what makes the probe
 			// buy floor dynamic rather than a fixed number.

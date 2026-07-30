@@ -9,6 +9,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	scoutingQuery "github.com/andrescamacho/spacetraders-go/internal/application/scouting/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/marketscan"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -20,22 +21,58 @@ type MarketScanner struct {
 	marketRepo       scoutingQuery.MarketRepository
 	playerRepo       player.PlayerRepository
 	priceHistoryRepo market.MarketPriceHistoryRepository
+
+	// budget is the fleet's ONE market-scan allowance, and it is never nil —
+	// see NewMarketScanner. Every market read in the daemon that costs an API
+	// request reaches ScanAndSaveMarket, so this field is the single place the
+	// server's unraisable 2.00 req/s ceiling is defended (sp-ntgfj).
+	budget *ScanBudget
 }
 
-// NewMarketScanner creates a new market scanner service
+// NewMarketScanner creates a new market scanner service.
+//
+// The scan budget is constructed here rather than injected, and that is
+// deliberate: it means there is no way to build a scanner that does not enforce
+// it. A composition root with configured knobs replaces the default via
+// SetScanBudget; a caller that forgets still gets a paced scanner, so the
+// failure mode of forgetting is "paced at the default rate", never "unmetered".
 func NewMarketScanner(
 	apiClient domainPorts.APIClient,
 	marketRepo scoutingQuery.MarketRepository,
 	playerRepo player.PlayerRepository,
 	priceHistoryRepo market.MarketPriceHistoryRepository,
 ) *MarketScanner {
-	return &MarketScanner{
+	s := &MarketScanner{
 		apiClient:        apiClient,
 		marketRepo:       marketRepo,
 		playerRepo:       playerRepo,
 		priceHistoryRepo: priceHistoryRepo,
+		budget:           NewScanBudget(defaultBudgetReqPerSec, defaultValueClampR),
 	}
+	// The production market repository can count charted markets, which is the
+	// budget's denominator; narrow test fakes cannot, and fall back to counting
+	// the markets the budget has been asked about.
+	if counter, ok := marketRepo.(ChartedMarketCounter); ok {
+		s.budget.SetChartedMarketCounter(counter)
+	}
+	return s
 }
+
+// SetScanBudget replaces the default market-scan allowance with a configured
+// one. A nil budget is ignored: there is no supported way to run this scanner
+// unpaced.
+func (s *MarketScanner) SetScanBudget(b *ScanBudget) {
+	if b == nil {
+		return
+	}
+	if counter, ok := s.marketRepo.(ChartedMarketCounter); ok {
+		b.SetChartedMarketCounter(counter)
+	}
+	s.budget = b
+}
+
+// ScanBudget exposes the allowance for metrics and the operator report.
+func (s *MarketScanner) ScanBudget() *ScanBudget { return s.budget }
 
 // ScanAndSaveMarket scans a market at the given waypoint and saves the data to the database.
 // This is a non-fatal operation - errors are logged but do not fail the caller's operation.
@@ -45,8 +82,37 @@ func (s *MarketScanner) ScanAndSaveMarket(ctx context.Context, playerID uint, wa
 	// Start timing for metrics
 	startTime := time.Now()
 
-	// Get existing market data for price history comparison
-	existingMarket, _ := s.marketRepo.GetMarketData(ctx, waypointSymbol, int(playerID))
+	// Get existing market data for price history comparison — and, at no extra
+	// query, for the scan budget's freshness test and value weight.
+	existingMarket, cacheErr := s.marketRepo.GetMarketData(ctx, waypointSymbol, int(playerID))
+
+	// A CACHE WE COULD NOT READ IS NOT EVIDENCE OF FRESHNESS. The repository can
+	// return a non-nil market ALONGSIDE an error, so handing that row to the budget
+	// would let a failed read look like a just-scanned market and decline the scan —
+	// silently serving from a store we just failed to read. Nil it for the budget
+	// decision, which makes the market read as never-scanned and therefore always
+	// admitted. This is the same rule ScanAndSaveMarketFresh already applies to its
+	// own gate; the price-history diff below keeps whatever it was given, unchanged.
+	cached := existingMarket
+	if cacheErr != nil {
+		cached = nil
+	}
+
+	// The fleet's ONE market-scan budget (sp-ntgfj). Declining is a SUCCESS: the
+	// caller's next act is to read this waypoint from the store, which is exactly
+	// what it would have done after a scan, so it proceeds on prices that are
+	// current to within the budget's own rotation interval instead of spending a
+	// request the ceiling cannot afford. Returning an error here would instead
+	// trip the fail-closed money guards, which is why the four call paths that
+	// cannot tolerate a cached price stamp WithLiveScanRequired and are never
+	// declined.
+	if s.budget.Admit(ctx, waypointSymbol, cached, scanClassOf(ctx)) == marketscan.ServeFromStore {
+		logger.Log("DEBUG", fmt.Sprintf(
+			"[MarketScanner] Serving %s from store - market-scan budget", waypointSymbol), map[string]interface{}{
+			"action": "scan_served_from_store", "waypoint": waypointSymbol,
+		})
+		return nil
+	}
 
 	token, err := common.PlayerTokenFromContext(ctx)
 	if err != nil {
@@ -82,6 +148,10 @@ func (s *MarketScanner) ScanAndSaveMarket(ctx context.Context, playerID uint, wa
 	if s.priceHistoryRepo != nil && existingMarket != nil {
 		s.recordPriceChanges(ctx, existingMarket, waypointSymbol, tradeGoods, int(playerID), logger)
 	}
+
+	// Fold what we just paid to learn into the budget's value estimate, so this
+	// market's next interval reflects the spread it is quoting NOW.
+	s.budget.Observe(waypointSymbol, tradeGoods)
 
 	logger.Log("INFO", fmt.Sprintf("[MarketScanner] Successfully scanned and saved market data for %s (%d goods)", waypointSymbol, len(tradeGoods)), nil)
 
@@ -257,4 +327,21 @@ func (s *MarketScanner) pricesChanged(oldGood, newGood *market.TradeGood) bool {
 	}
 
 	return false
+}
+
+// scanClassOf reads the market read's budget class off the context.
+//
+// The mapping is one-way on purpose: only a caller that has explicitly stamped
+// WithLiveScanRequired — the four pre-commit money-guard verifications — is
+// Earning, and everything else is Discretionary. An unrecognised or unstamped
+// caller is therefore paced, which is the direction that keeps the budget the
+// honest total as new call sites appear.
+func scanClassOf(ctx context.Context) marketscan.Class {
+	if shared.LiveScanRequiredFromContext(ctx) {
+		return marketscan.Earning
+	}
+	if shared.PairedScanFromContext(ctx) {
+		return marketscan.Paired
+	}
+	return marketscan.Discretionary
 }

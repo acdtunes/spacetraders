@@ -581,7 +581,10 @@ func (h *CargoTransactionHandler) retrySellClampedToServerCargo(
 // the caller holds the remainder rather than dump it blind.
 func (h *CargoTransactionHandler) liveBidForFloor(ctx context.Context, waypoint, good string, playerID shared.PlayerID) (int, bool) {
 	if h.marketRefresher != nil {
-		if err := h.marketRefresher.ScanAndSaveMarket(ctx, uint(playerID.Value()), waypoint); err != nil {
+		// LIVE, not budgeted: this guard fails CLOSED, so a bid served from the
+		// market-scan budget's cache would either strand the tranche or price it
+		// off a stale bid — the exact thing the floor exists to prevent (sp-ntgfj).
+		if err := h.marketRefresher.ScanAndSaveMarket(shared.WithLiveScanRequired(ctx), uint(playerID.Value()), waypoint); err != nil {
 			return 0, false
 		}
 	}
@@ -605,7 +608,8 @@ func (h *CargoTransactionHandler) liveBidForFloor(ctx context.Context, waypoint,
 // caller holds the remainder (does not buy) rather than purchase blind above the ceiling.
 func (h *CargoTransactionHandler) liveAskForCeiling(ctx context.Context, waypoint, good string, playerID shared.PlayerID) (int, bool) {
 	if h.marketRefresher != nil {
-		if err := h.marketRefresher.ScanAndSaveMarket(ctx, uint(playerID.Value()), waypoint); err != nil {
+		// LIVE, not budgeted — the exact mirror of liveBidForFloor's exemption.
+		if err := h.marketRefresher.ScanAndSaveMarket(shared.WithLiveScanRequired(ctx), uint(playerID.Value()), waypoint); err != nil {
 			return 0, false
 		}
 	}
@@ -763,11 +767,21 @@ func (h *CargoTransactionHandler) refreshMarketData(ctx context.Context, cmd *Ca
 
 	// sp-v34b sampling + recent-scan freshness gate: a non-sampled trade at a
 	// freshly-scanned market reuses the cache instead of re-scanning.
-	if !h.impactScanWanted(ctx, cmd, waypointSymbol) {
+	wanted, paired := h.impactScanWanted(ctx, cmd, waypointSymbol)
+	if !wanted {
 		logger.Log("DEBUG", "Post-trade impact scan sampled out (cache fresh) - skipping", map[string]interface{}{
 			"action": "impact_scan_skipped", "waypoint": waypointSymbol, "ship": cmd.ShipSymbol,
 		})
 		return
+	}
+
+	// A SAMPLED trade's scan is the "after" half of the sp-tl68 impact pair, so it
+	// is exempt from the market-scan budget's freshness veto — arriving right after
+	// the "before" observation is the whole point of it (sp-ntgfj). It still draws
+	// a token and still faces the value bar. The stale-cache branch is left
+	// unstamped and is paced as an ordinary discretionary decision scan.
+	if paired {
+		ctx = shared.WithPairedScan(ctx)
 	}
 
 	err := h.marketRefresher.ScanAndSaveMarket(ctx, uint(cmd.PlayerID.Value()), waypointSymbol)
@@ -792,17 +806,23 @@ func (h *CargoTransactionHandler) refreshMarketData(ctx context.Context, cmd *Ca
 //   - otherwise the recent-scan freshness gate governs: a cache scanned within MaxScanAge
 //     is reused (skip the scan), a stale or never-scanned market is still scanned so the
 //     next decision has fresh-enough prices.
-func (h *CargoTransactionHandler) impactScanWanted(ctx context.Context, cmd *CargoTransactionCommand, waypointSymbol string) bool {
+func (h *CargoTransactionHandler) impactScanWanted(ctx context.Context, cmd *CargoTransactionCommand, waypointSymbol string) (wanted, paired bool) {
 	policy, ok := shared.ScanPolicyFromContext(ctx)
 	if !ok {
-		return true
+		// No policy stamped (manufacturing, contract delivery, refuel, CLI): the scan
+		// fires, but it is not a MEASUREMENT pair — there is no sampling decision
+		// behind it — so it stays budgeted like any other decision scan.
+		return true, false
 	}
 	nonce := h.impactNonce.Add(1)
 	key := fmt.Sprintf("%s|%s|%s|%d", cmd.ShipSymbol, cmd.GoodSymbol, waypointSymbol, nonce)
 	if sampleImpact(key, policy.ImpactSampleRate) {
-		return true
+		// The sampled branch, and the ONLY paired one: this scan exists to record
+		// dP/P against the cached "before" row, so its freshness is the precondition
+		// rather than a reason to skip (sp-ntgfj).
+		return true, true
 	}
-	return !h.marketFreshWithin(ctx, cmd.PlayerID, waypointSymbol, policy.MaxScanAge)
+	return !h.marketFreshWithin(ctx, cmd.PlayerID, waypointSymbol, policy.MaxScanAge), false
 }
 
 // marketFreshWithin reports whether the cached market at waypoint was scanned within

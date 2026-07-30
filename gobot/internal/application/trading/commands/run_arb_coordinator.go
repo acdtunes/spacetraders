@@ -590,7 +590,9 @@ func (h *RunArbCoordinatorHandler) guardAndBuy(
 	// another visit to recover; this run gets one shot). No refresher wired → the
 	// guard's live-refresh is simply inactive and the gate runs on the cached basis.
 	if h.marketRefresher != nil {
-		if rerr := h.marketRefresher.ScanAndSaveMarket(ctx, uint(cmd.PlayerID), cmd.BuyAt); rerr != nil {
+		// LIVE, not budgeted: this guard fails CLOSED and this run gets one shot,
+		// so a cached basis would be verified against itself (sp-ntgfj).
+		if rerr := h.marketRefresher.ScanAndSaveMarket(shared.WithLiveScanRequired(ctx), uint(cmd.PlayerID), cmd.BuyAt); rerr != nil {
 			response.Aborted = true
 			response.MarginAbort = true
 			response.AbortReason = fmt.Sprintf("could not live-refresh source market %s to verify margin - aborting before buy (fail-closed): %v", cmd.BuyAt, rerr)

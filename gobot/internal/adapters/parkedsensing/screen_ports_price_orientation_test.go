@@ -31,6 +31,7 @@ import (
 	appSensing "github.com/andrescamacho/spacetraders-go/internal/application/parkedsensing"
 	appShip "github.com/andrescamacho/spacetraders-go/internal/application/ship"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
+	domainShared "github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // orientationAPI serves one market read. It is the only test double here: the
@@ -120,11 +121,17 @@ func TestScanToSensing_PriceHistoryRecordsSameOrientation(t *testing.T) {
 		ScanAndSaveMarket(ctx, uint(testPlayerID), waypoint))
 
 	// Second scan at moved prices — still a normal market, still ask above bid.
+	//
+	// Stamped as a PAIRED read (sp-ntgfj): back-to-back scans of one market are what
+	// the fleet market-scan budget's freshness rule declines, and the "after" half of
+	// a before/after pair is the one read that exemption exists for. The production
+	// path that records a price move — the sampled post-trade impact scan — stamps
+	// exactly this, so the fixture matches how the history is really collected.
 	moved := []domainPorts.TradeGoodData{
 		{Symbol: "MACHINERY", Supply: "SCARCE", Activity: "GROWING", PurchasePrice: 6500, SellPrice: 3200, TradeVolume: 20, TradeType: "IMPORT"},
 	}
 	require.NoError(t, appShip.NewMarketScanner(&orientationAPI{goods: moved}, repo, nil, historyRepo).
-		ScanAndSaveMarket(ctx, uint(testPlayerID), waypoint))
+		ScanAndSaveMarket(domainShared.WithPairedScan(ctx), uint(testPlayerID), waypoint))
 
 	var rows []persistence.MarketPriceHistoryModel
 	require.NoError(t, db.Where("player_id = ? AND good_symbol = ?", testPlayerID, "MACHINERY").

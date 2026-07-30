@@ -44,6 +44,11 @@ type Config struct {
 	// jitter ceiling — injected live into scout_tour and scout_post_coordinator
 	// containers on every build.
 	Scouting ScoutingConfig `mapstructure:"scouting"`
+	// MarketScan holds the fleet's ONE market-scan budget (sp-ntgfj) — the total
+	// market-read rate every reader in the daemon shares, and the value clamp that
+	// allocates it. Read at daemon start into the shared MarketScanner. Absent
+	// section defers to the armed defaults, so the budget is enforced regardless.
+	MarketScan MarketScanConfig `mapstructure:"market_scan"`
 	// Sensing holds the probe-sensing coordinator's config.yaml-authoritative knobs
 	// (the goods whitelist — a string the int-only tune registry cannot carry),
 	// injected live into the probe_sensing_coordinator container on every build.

@@ -785,17 +785,36 @@ type marketFetchAPI interface {
 	GetMarket(ctx context.Context, systemSymbol, waypointSymbol, token string) (*domainPorts.MarketData, error)
 }
 
+// scanDebiter charges a market read to the fleet's one market-scan budget.
+//
+// It has no "may I" counterpart on purpose — see FetchGoods for why this read is
+// metered but never deniable. *ship.ScanBudget satisfies it.
+type scanDebiter interface {
+	Debit(waypoint string)
+}
+
 // RemoteMarketPort fills a market-cache gap from the API — the screen's only
 // genuine spend, and the reason a charted-but-never-visited market can be judged
 // without sending a hull to it.
 type RemoteMarketPort struct {
 	client marketFetchAPI
 	tokens playerTokenReader
+	budget scanDebiter
 }
 
 // NewRemoteMarketPort wires the remote gap fill.
 func NewRemoteMarketPort(client marketFetchAPI, tokens playerTokenReader) *RemoteMarketPort {
 	return &RemoteMarketPort{client: client, tokens: tokens}
+}
+
+// SetScanBudget wires the fleet market-scan budget this port charges its reads to
+// (sp-ntgfj). Nil leaves the read unmetered, which is a test-only shape: the
+// composition root always wires it.
+func (p *RemoteMarketPort) SetScanBudget(b scanDebiter) {
+	if b == nil {
+		return
+	}
+	p.budget = b
 }
 
 // FetchGoods returns what a market DEALS IN, read remotely.
@@ -811,6 +830,18 @@ func (p *RemoteMarketPort) FetchGoods(ctx context.Context, playerID int, system,
 	if err != nil {
 		return nil, err
 	}
+	// Charged to the fleet market-scan budget, but never gated by it (sp-ntgfj).
+	// There is no store to serve this from — filling the gap is the point — and a
+	// declined catalogue read makes the screen record a durable rejection of a
+	// market it never managed to look at, which costs more than the request saves.
+	// The spend is bounded by the rate of CHARTING rather than by the size of the
+	// map, so admitting it does not put the fixed-budget invariant at risk; metering
+	// it keeps the budget the honest total, since the allowance it consumes is
+	// allowance discretionary scanning then cannot.
+	if p.budget != nil {
+		p.budget.Debit(waypoint)
+	}
+
 	market, err := p.client.GetMarket(sensingCtx(ctx), system, waypoint, token)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch the market at %q: %w", waypoint, err)

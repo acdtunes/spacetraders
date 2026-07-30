@@ -130,14 +130,26 @@ func TestArrivalScan_NeverScannedMarket_ScansGetMarket(t *testing.T) {
 	require.Equal(t, 1, gets, "a never-scanned market must be scanned on arrival")
 }
 
-// Deploy-safety: with NO policy stamped (the freshness-scout recovery path and every
-// pre-sp-v34b caller) the arrival scan is unconditional — byte-for-byte pre-sp-v34b —
-// so the recovery/decay dataset the scout collects is untouched. And the mutation
-// (MaxScanAge=0) proves the gate is load-bearing: turn it off and every arrival scans
-// even at a freshly-cached market.
-func TestArrivalScan_UngatedPaths_AlwaysScan(t *testing.T) {
-	require.Equal(t, 1, runArrivalScan(t, time.Now(), nil),
-		"no policy (scout recovery path / pre-sp-v34b) must scan unconditionally on arrival")
-	require.Equal(t, 1, runArrivalScan(t, time.Now(), &shared.ScanPolicy{MaxScanAge: 0}),
-		"mutation: MaxScanAge=0 disables the gate — a fresh market still scans (gate is load-bearing)")
+// SUPERSEDED BY sp-ntgfj, and the change of claim is the point. This test used to
+// assert that an arrival scan with no ScanPolicy stamped (the freshness-scout
+// recovery path, and every pre-sp-v34b caller) was UNCONDITIONAL. There is no
+// longer any unconditional market scan in the daemon: the fleet's one market-scan
+// budget paces every reader, so a hull arriving at a market whose cached row is
+// seconds old is served from store whether or not a caller-level window is wired.
+//
+// That is the defect this budget exists to close — an "ungated path" was precisely
+// how total market reads reached 0.644 req/s against a 0.100 req/s budgeted
+// scanner. The caller-level sp-v34b window is still load-bearing where it is
+// TIGHTER than the budget's own interval; what it can no longer do is opt a caller
+// out of pacing altogether.
+func TestArrivalScan_UngatedPaths_AreStillPacedByTheFleetBudget(t *testing.T) {
+	require.Equal(t, 0, runArrivalScan(t, time.Now(), nil),
+		"no policy no longer means no pacing: a freshly-cached market is served from store")
+	require.Equal(t, 0, runArrivalScan(t, time.Now(), &shared.ScanPolicy{MaxScanAge: 0}),
+		"disabling the caller-level window cannot opt a caller out of the fleet budget")
+
+	// And the budget is not simply refusing everything: a market past its interval
+	// is still scanned on arrival by both of those same ungated paths.
+	require.Equal(t, 1, runArrivalScan(t, time.Now().Add(-30*time.Minute), nil))
+	require.Equal(t, 1, runArrivalScan(t, time.Now().Add(-30*time.Minute), &shared.ScanPolicy{MaxScanAge: 0}))
 }

@@ -14,6 +14,8 @@ const (
 	selectorBranchKey                // Factory input-source selector branch, tagged onto the buy's ledger row
 	constructionSupplyKey            // Marks a ProduceGood run as construction supply, exempt from resale-margin guards
 	scanPolicyKey                    // Tour-scan load policy: recent-scan freshness gate + impact-sample rate
+	liveScanRequiredKey              // Marks a market read as pre-commit money-guard verification, exempt from being served from store
+	pairedScanKey                    // Marks a market read as the "after" half of an impact-measurement pair, exempt from the freshness veto
 )
 
 // OperationContext provides traceability from high-level operations (containers)
@@ -215,4 +217,67 @@ func WithScanPolicy(ctx context.Context, policy ScanPolicy) context.Context {
 func ScanPolicyFromContext(ctx context.Context) (ScanPolicy, bool) {
 	policy, ok := ctx.Value(scanPolicyKey).(ScanPolicy)
 	return policy, ok
+}
+
+// WithLiveScanRequired marks a market read as pre-commit verification for a money
+// guard, which exempts it from the fleet's market-scan budget declining it into a
+// cache read (sp-ntgfj).
+//
+// Only FOUR call paths stamp it, and every one of them re-reads a price
+// immediately before a buy or a sell commits and fails CLOSED if it cannot:
+//
+//   - the per-tranche sell floor (sp-lbbm) and buy ceiling (sp-9mkf), which hold
+//     the remainder rather than trade on a bid or ask they could not verify;
+//   - the trade circuit's stale-ask abort, which exists because executing on a
+//     cache that had moved realised large losses;
+//   - the one-shot arb coordinator's min-margin guard, which aborts before the buy
+//     when the source market cannot be re-read.
+//
+// Those guards exist PRECISELY because a cached price is not trustworthy enough to
+// trade on. Serving one from store would not save a request — it would silently
+// convert a live money guard into a stale one and re-open the losses each was
+// written to stop, which RULINGS #4 forbids. So these reads are never declined.
+// They are still METERED against the same allowance, so trade-critical
+// verification squeezes discretionary scanning rather than being added on top of
+// it, and one budget remains the honest total.
+//
+// Absent (every scouting, charting, manufacturing, contract, tour-arrival and CLI
+// read) the market read is budgeted, which is the default that makes the budget
+// hold for call sites nobody thought to classify.
+func WithLiveScanRequired(ctx context.Context) context.Context {
+	return context.WithValue(ctx, liveScanRequiredKey, true)
+}
+
+// LiveScanRequiredFromContext reports whether this market read is pre-commit money
+// guard verification. Absent it returns false, so an unstamped read is paced.
+func LiveScanRequiredFromContext(ctx context.Context) bool {
+	required, ok := ctx.Value(liveScanRequiredKey).(bool)
+	return ok && required
+}
+
+// WithPairedScan marks a market read as the "after" half of the scan-buy-scan
+// price-impact pair the sp-tl68 model is fitted from, which exempts it from the
+// market-scan budget's freshness veto (sp-ntgfj).
+//
+// It exempts that ONE rule and nothing else. For a paired measurement a fresh
+// cache is not evidence the read is redundant — the cached row is the "before"
+// observation the "after" is measured against, so freshness is the read's
+// precondition. The read still needs an allowance token and still faces the
+// value bar, because instrumentation is what a budget under pressure should shed
+// first, and it is separately sampled upstream by impact_sample_rate.
+//
+// Only the SAMPLED post-trade impact scan stamps it. The same call site's other
+// branch — re-scanning because the cached market went stale — is an ordinary
+// budgeted decision scan and is left unstamped, so it is paced like every other
+// discretionary read.
+func WithPairedScan(ctx context.Context) context.Context {
+	return context.WithValue(ctx, pairedScanKey, true)
+}
+
+// PairedScanFromContext reports whether this market read is the "after" half of
+// an impact-measurement pair. Absent it returns false, so an unstamped read is
+// subject to the freshness veto like every other budgeted read.
+func PairedScanFromContext(ctx context.Context) bool {
+	paired, ok := ctx.Value(pairedScanKey).(bool)
+	return ok && paired
 }

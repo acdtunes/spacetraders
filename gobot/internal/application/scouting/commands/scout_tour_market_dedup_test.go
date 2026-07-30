@@ -161,14 +161,21 @@ func TestScoutTour_UnreadableCache_StillScans(t *testing.T) {
 	require.Equal(t, 1, api.marketGets, "an unreadable cache must not grant a skip")
 }
 
-// With no window wired the scout path is byte-for-byte its prior self: every
-// visit scans, however fresh the cache.
-func TestScoutTour_NoWindowConfigured_AlwaysScans(t *testing.T) {
-	store := &dedupMarketStore{waypoint: scoutedYard, lastUpdated: time.Now()}
+// SUPERSEDED BY sp-ntgfj. With no window wired the scout path used to scan on
+// every visit however fresh the cache; it is now paced by the fleet's one
+// market-scan budget like every other reader, so a just-scanned market is served
+// from store. An unset caller-level window no longer means an ungated scan —
+// there is no ungated market scan left in the daemon.
+func TestScoutTour_NoWindowConfigured_IsStillPacedByTheFleetBudget(t *testing.T) {
+	fresh := &dedupMarketStore{waypoint: scoutedYard, lastUpdated: time.Now()}
+	api, _ := runStationaryScout(t, fresh, 0)
+	require.Equal(t, 0, api.marketGets,
+		"an unset window cannot opt the scout out of the fleet market-scan budget")
 
-	api, _ := runStationaryScout(t, store, 0)
-
-	require.Equal(t, 1, api.marketGets, "an unset window must leave every scan ungated")
+	stale := &dedupMarketStore{waypoint: scoutedYard, lastUpdated: time.Now().Add(-30 * time.Minute)}
+	staleAPI, _ := runStationaryScout(t, stale, 0)
+	require.Equal(t, 1, staleAPI.marketGets,
+		"and a market past its interval is still scouted, so the budget is pacing rather than blocking")
 }
 
 // The multi-market tour does not scan in the handler at all — it navigates and

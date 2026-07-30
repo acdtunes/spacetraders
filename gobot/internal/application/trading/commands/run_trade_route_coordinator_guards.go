@@ -6,6 +6,7 @@ import (
 	"context"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
 
@@ -125,7 +126,11 @@ func (h *RunTradeRouteCoordinatorHandler) staleAskAborts(
 		return false
 	}
 
-	if err := h.marketRefresher.ScanAndSaveMarket(ctx, uint(playerID), lane.SourceWaypoint); err != nil {
+	// LIVE, not budgeted: the whole point of this guard is that the RANKED basis
+	// came from a cache that can be many minutes stale, and executing on a moved
+	// basis has realised large losses. A budgeted cache read here would verify the
+	// basis against itself (sp-ntgfj).
+	if err := h.marketRefresher.ScanAndSaveMarket(shared.WithLiveScanRequired(ctx), uint(playerID), lane.SourceWaypoint); err != nil {
 		logger.Log("WARNING", "Could not refresh source market to live-verify basis - proceeding on ranked basis", map[string]interface{}{
 			"waypoint": lane.SourceWaypoint, "good": lane.Good, "error": err.Error(),
 		})
