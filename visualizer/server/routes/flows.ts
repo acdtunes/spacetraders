@@ -1,7 +1,10 @@
 import { Router } from 'express';
 import pkg from 'pg';
 const { Pool } = pkg;
-import { computeGalaxyLayout, layoutWithAnchors, type AnchoredNode } from '../utils/galaxyLayout.js';
+// Only the node SHAPE is used now: /topology serves placeable systems verbatim
+// from system_coords, so neither force layout runs here any more (galaxyLayout.ts
+// keeps its own tests; it is no longer referenced by this route).
+import { type AnchoredNode } from '../utils/galaxyLayout.js';
 import { aggregateLanes, rollupSystemLanes, rollupSystemActivity } from '../utils/laneAggregation.js';
 import { mergeFills } from '../utils/fills.js';
 import { homeSystemFromHeadquarters } from '../utils/homeSystem.js';
@@ -118,27 +121,57 @@ router.get('/topology', async (_req, res) => {
       systemSet.add(e.from);
       systemSet.add(e.to);
     }
-    // Real coordinates, era-scoped, lazily filled from the live API. ANY
-    // failure in this block (e.g. system_coords not yet AutoMigrated by the
-    // daemon, or no resolvable era — the snapshot is era-keyed) degrades to
-    // the classic all-force layout — never a 503.
-    let systems: AnchoredNode[];
+    // Real coordinates, era-scoped, lazily filled from the live API. ANY failure
+    // here (e.g. system_coords not yet AutoMigrated by the daemon, or no
+    // resolvable era — the snapshot is era-keyed) leaves the map EMPTY for this
+    // cycle rather than 503-ing; the coverage counts below say so out loud.
+    //
+    // We deliberately resolve over the FULL system set, not the placeable subset:
+    // resolveSystemCoords is also the lazy backfill (bounded per call, see its
+    // own comments about the ~2 req/s API limit), so passing everything is what
+    // lets coverage grow by another batch on each ~5-minute cache rebuild.
+    let placed = new Map<string, { x: number; y: number }>();
     try {
       if (eraId === null) throw new Error('no resolvable era for system_coords');
-      const real = await resolveSystemCoords(client, fetchSystemXY, [...systemSet], eraId);
-      systems = layoutWithAnchors(real, [...systemSet], edges.map((e) => ({ from: e.from, to: e.to })));
+      placed = await resolveSystemCoords(client, fetchSystemXY, [...systemSet], eraId);
     } catch (coordError: any) {
-      console.error('system_coords unavailable, using force layout:', coordError?.message ?? coordError);
-      systems = computeGalaxyLayout([...systemSet], edges.map((e) => ({ from: e.from, to: e.to })))
-        .map((n) => ({ ...n, layout: 'force' as const }));
+      console.error('system_coords unavailable, rendering no systems:', coordError?.message ?? coordError);
     }
+
+    // ---- Honest-knowledge filter (Admiral directive: "only show the waypoints
+    // known to us"). We serve ONLY systems we can place truthfully.
+    //
+    // Previously the unplaceable remainder was force-placed and shipped anyway:
+    // 1,080 of 1,293 systems (84%) arrived at simulation-derived positions where
+    // geometry carried no information. That is what made a genuinely SPARSE gate
+    // graph (max degree 9) read as "every system connected to every system" —
+    // the edges radiated in every direction because the endpoints were scattered
+    // by a force sim, not because the graph was dense. Inferred existence from a
+    // neighbour's gate read is not knowledge, and a system we cannot place
+    // cannot be drawn honestly.
+    //
+    // Edges need BOTH endpoints placeable, otherwise the line runs to nowhere.
+    // Nothing is hard-coded: as system_coords fills in, systems reappear on
+    // their own.
+    const systems: AnchoredNode[] = [...placed.entries()]
+      .map(([symbol, p]) => ({ symbol, x: Math.round(p.x), y: Math.round(p.y), layout: 'real' as const }))
+      .sort((a, b) => (a.symbol < b.symbol ? -1 : a.symbol > b.symbol ? 1 : 0));
+    const drawnEdges = edges.filter((e) => placed.has(e.from) && placed.has(e.to));
 
     const homeSystem = await deriveHomeSystem(client);
 
     const payload = {
       systems,
-      edges,
+      edges: drawnEdges,
       ...(homeSystem ? { homeSystem } : {}),
+      // The omission, stated rather than hidden: an operator must not conclude
+      // the galaxy IS `positioned` systems, nor that it is fully connected.
+      coverage: {
+        positioned: systems.length,
+        known: systemSet.size,
+        omittedEdges: edges.length - drawnEdges.length,
+        eraId,
+      },
       generatedAt: new Date().toISOString(),
     };
     topologyCache = { payload, builtAtMs: Date.now() };

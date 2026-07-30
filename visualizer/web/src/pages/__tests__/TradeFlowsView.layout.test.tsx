@@ -69,6 +69,37 @@ describe('TradeFlowsView layout (demo, fleet-stopped)', () => {
     expect(nebulaProps.current.layerToggles.lattice).toBe(true);
   });
 
+  it('shows the map-coverage notice when topology omits unplaceable systems (sp-fw6a2)', async () => {
+    render(<MemoryRouter><TradeFlowsView /></MemoryRouter>);
+    act(() => {
+      seed();
+      // Same payload, now carrying the server's coverage counts: 4 of the era's
+      // 1,293 systems could be placed, so the notice must say the galaxy is bigger.
+      useFlowStore.getState().setTopology({
+        ...mockTopology,
+        coverage: { positioned: 4, known: 1293, omittedEdges: 5169, eraId: 5 },
+      });
+    });
+    expect(screen.getByTestId('coverage-notice')).toHaveTextContent('4 of 1,293 systems positioned (0%)');
+  });
+
+  it('hides the coverage notice when nothing is omitted', async () => {
+    render(<MemoryRouter><TradeFlowsView /></MemoryRouter>);
+    act(() => {
+      seed();
+      useFlowStore.getState().setTopology({
+        ...mockTopology,
+        coverage: { positioned: 4, known: 4, omittedEdges: 0, eraId: 5 },
+      });
+      // Park every demo hull in a system that IS on the map, so no off-map count
+      // keeps the notice alive for an unrelated reason.
+      useFlowStore.getState().setLive({
+        flows: [], generatedAt: new Date(0).toISOString(), feedLost: false, lastPlanAt: null,
+      });
+    });
+    expect(screen.queryByTestId('coverage-notice')).not.toBeInTheDocument();
+  });
+
   it('shows the detail panel when a flow is selected', async () => {
     render(<MemoryRouter><TradeFlowsView /></MemoryRouter>);
     act(() => {

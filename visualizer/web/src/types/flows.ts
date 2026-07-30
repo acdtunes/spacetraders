@@ -127,10 +127,24 @@ export interface TopologyEdge {
   underConstruction: boolean;
 }
 
+// How much of the era's gate graph the map is actually able to draw. /topology
+// serves only systems with real era-scoped coordinates (a system we cannot place
+// cannot be drawn honestly), so these counts are how an operator learns that the
+// galaxy is BIGGER than what is on screen — rather than inferring it isn't.
+export interface TopologyCoverage {
+  positioned: number;   // systems with real coordinates — exactly what `systems` holds
+  known: number;        // systems the era's gate graph names (positioned + omitted)
+  omittedEdges: number; // gate edges dropped for having an unplaceable endpoint
+  eraId: number | null; // null when era resolution failed (then positioned is 0)
+}
+
 export interface TopologyResponse {
   systems: TopologySystem[];
   edges: TopologyEdge[];
   homeSystem?: string;   // server-derived from /my/agent; absent when unknown (never guessed)
+  // Optional so a cached/older payload (or a fixture) still type-checks; the
+  // notice simply stays hidden when it is absent.
+  coverage?: TopologyCoverage;
   generatedAt: string;
 }
 

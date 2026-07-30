@@ -13,6 +13,7 @@ import { TourRoster } from '../components/flows/TourRoster';
 import { FeedLostChip } from '../components/flows/FeedLostChip';
 import { FillTicker } from '../components/flows/FillTicker';
 import { FlowTooltip } from '../components/flows/FlowTooltip';
+import { coverageNotice } from '../components/flows/coverageNotice';
 import { NOIR } from '../theme/noir';
 import type { FlowWindow } from '../types/flows';
 
@@ -74,6 +75,9 @@ export function TradeFlowsView() {
   }, []);
 
   const flows = live?.flows ?? [];
+  // What the map cannot draw, stated out loud — /topology serves only systems it
+  // can place truthfully, so the omission needs a voice (sp-fw6a2).
+  const coverage = useMemo(() => coverageNotice(topology, flows), [topology, flows]);
   const selectedFlow = flows.find((f) => f.containerId === selectedFlowId) ?? null;
   const hoveredFlow = flows.find((f) => f.containerId === hoveredFlowId) ?? null;
   // Focused system → the roster narrows to its resident hulls.
@@ -126,6 +130,19 @@ export function TradeFlowsView() {
           </button>
         ))}
       </div>
+
+      {/* Map-coverage notice: the galaxy is bigger than what is drawn. Sits top-left
+          where the eye lands, muted so it informs without crying error. */}
+      {coverage && (
+        <div
+          className="absolute top-4 left-4 px-3 py-1.5 rounded text-xs"
+          style={{ background: NOIR.panel, color: NOIR.muted }}
+          data-testid="coverage-notice"
+          title="Only systems with real coordinates for the current era are drawn — the rest are known to exist from a neighbour's gate read but cannot be placed truthfully. Coverage grows on its own as coordinates are fetched, so this fraction should climb."
+        >
+          {coverage.text}
+        </div>
+      )}
 
       <FlowDetailPanel flow={hoveredFlow ?? selectedFlow} />
       <TourRoster
