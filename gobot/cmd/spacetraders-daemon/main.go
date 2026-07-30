@@ -1470,6 +1470,13 @@ func run(cfg *config.Config) error {
 	// system+waypoint) into the container config so a restart-rebuilt resume completes the
 	// jump toward the same ground instead of re-planning at an intermediate hop (RULINGS #2).
 	tourCoordinatorHandler.SetRepositionPersister(grpc.NewTourRepositionConfigPersister(containerRepo))
+	// sp-e8d92 FIRST REFUSAL: the same config-backed persister also records the relocation OFFER a tour
+	// writes at its boundary, which is how the relocator gets a hull BEFORE the tour re-anchors it
+	// locally. The fleet occupies 23 of 373 tradeable systems because a tour is planned from wherever the
+	// hull stands, so the envelope never leaves its neighbourhood; the relocator is the only thing that
+	// moves a hull to new ground and it only ever sees the 2.6% of time a hull is idle. Unwired, no offer
+	// is ever written and the fleet tours exactly as it does today (fail-open).
+	tourCoordinatorHandler.SetRelocationOfferPersister(grpc.NewTourRepositionConfigPersister(containerRepo))
 	// sp-78ai L3: wire the SAME absorption ledger the idle-arb/arb engines use so the
 	// tour reserves its planned tranches (fleet-wide A-cap), nets outstanding depth into
 	// each plan, and converts sold sinks into recovery shadows — the flagship writer/reader

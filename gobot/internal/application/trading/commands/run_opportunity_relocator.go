@@ -196,6 +196,15 @@ type RelocatorHull struct {
 	// OnTour is true while the hull is executing a tour. Only a hull at honest release is a
 	// candidate; a touring hull is skipped and reconsidered on a later tick.
 	OnTour bool
+	// Offered marks a hull whose tour has reached a boundary and has DURABLY offered it for
+	// relocation until a deadline (sp-e8d92 first refusal). Its tour container is still RUNNING — it is
+	// waiting — so the hull reads OnTour and would otherwise be excluded as mid_tour, which is exactly
+	// the 38..40 exclusions the fleet reports while occupying 23 of 373 tradeable systems.
+	//
+	// AN OFFER IS PERMISSION, NOT OWNERSHIP. It says "this hull's tour will wait for you until T", never
+	// "ownership is waived": a protected hull stays protected, and an offer that lapses before the move
+	// commits is abandoned through the counted actuation re-check like any other lost hull.
+	Offered bool
 }
 
 // RelocatorRegion is one candidate region: an anchor system plus the neighbourhood a tour planned
@@ -673,7 +682,14 @@ func (h *RunOpportunityRelocatorHandler) scoreCandidates(
 		result.Evaluated++
 		candidates = append(candidates, h.scoreHull(ctx, cmd, hull, currentRate, remainingEra, eraKnown, state, result)...)
 	}
+	// OFFERED FIRST, then by NPV. An offered hull's tour is STALLED and its window is closing; an
+	// un-offered idle hull is under no clock and will still be here next tick. Ranking purely by NPV
+	// would spend a scarce concurrency budget on the unhurried hull and let the offer lapse — wasting
+	// the very window the offer exists to create, and paying the tour's idle time for nothing.
 	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].hull.Offered != candidates[j].hull.Offered {
+			return candidates[i].hull.Offered
+		}
 		return candidates[i].valuation.NPV > candidates[j].valuation.NPV
 	})
 	return candidates
@@ -696,8 +712,12 @@ func hullProtected(hull RelocatorHull) (string, bool) {
 		return "command_frigate_protected", true // RULINGS #7
 	case hull.Pinned:
 		return "pinned_hull_protected", true // RULINGS #7
-	case hull.OnTour:
-		return "mid_tour", true // only at honest tour release
+	case hull.OnTour && !hull.Offered:
+		// Only at honest tour release — OR at a boundary its tour has explicitly offered. The offer is
+		// the ONE exemption here, and it is deliberately narrow: it lifts the mid-tour rule and nothing
+		// else, because a stalled tour is a hull nobody is using, whereas the two cases above are
+		// ownership and are never waived.
+		return "mid_tour", true
 	}
 	return "", false
 }

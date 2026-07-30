@@ -325,6 +325,26 @@ type RunTourCoordinatorCommand struct {
 	// 0/absent → no charge → the solver ranks on raw margin exactly as today, which is
 	// also the documented revert.
 	ExternalityWeight float64
+	// --- sp-e8d92 FIRST REFUSAL knobs. Every one is 0/absent -> a documented default (RULINGS #5). ---
+
+	// RelocationOfferWindowSeconds is how long the tour waits for the relocator at its boundary.
+	// 0/absent -> defaultRelocationOfferWindowSeconds (150s), which is longer than the relocator's own
+	// tick (an offer shorter than that can lapse between two observations and never be seen) and shorter
+	// than the measured 224s median inter-tour gap.
+	RelocationOfferWindowSeconds int
+	// RelocationOfferMinHulls is the herd gate: offer only a hull whose system already holds at least
+	// this many trade hulls. 0/absent -> defaultRelocationOfferMinHullsInSystem (2).
+	RelocationOfferMinHulls int
+	// RelocationOfferBackoffMinutes is how long a hull whose offer LAPSED waits before being offered
+	// again. 0/absent -> defaultRelocationOfferBackoffMinutes (30).
+	RelocationOfferBackoffMinutes int
+	// RelocationOfferUntil is the restart-durable OFFER deadline, reloaded from the container config so a
+	// restart mid-offer honours the same deadline instead of opening a fresh one.
+	RelocationOfferUntil time.Time
+	// RelocationOfferBackoffUntil is the restart-durable backoff instant, reloaded from the container
+	// config so a restart does not forget that this hull's last offer went unclaimed and immediately pay
+	// another window (RULINGS #2).
+	RelocationOfferBackoffUntil time.Time
 }
 
 // RunTourCoordinatorResponse reports the realised tour economics and — via
@@ -499,6 +519,16 @@ type RunTourCoordinatorHandler struct {
 	// contract). The daemon injects a container-config-backed persister via
 	// SetRepositionPersister.
 	repositionPersister RepositionStatePersister
+
+	// offerPersister durably records the sp-e8d92 relocation OFFER into this container's own config, so
+	// the relocator can take a hull at its tour boundary instead of losing the race for the 2.6% of time
+	// a hull is idle. Optional and nil-safe: unset, no offer is ever written and the fleet tours exactly
+	// as it does today.
+	offerPersister RelocationOfferPersister
+	// offerPollInterval overrides how often the sp-e8d92 hold re-reads the hull's position. Zero uses
+	// the production constant; a test sets it small so the real waiting loop can be exercised at speed
+	// instead of being replaced by something that does not.
+	offerPollInterval time.Duration
 
 	// mediator dispatches the cargo TransferCargoCommand for haul-to-storage deposit
 	// legs. Same mediator the delegated legs use.
@@ -1007,6 +1037,13 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 	// bound only stops hop-scotching WITHOUT trading in between.
 	var episode repositionEpisode
 
+	// sp-e8d92 FIRST REFUSAL. relocationOfferUntil is the deadline this run wrote at its last boundary;
+	// the loop top waits it out before planning again, so the relocator gets the hull BEFORE the tour
+	// re-anchors it locally. Seeded from the container config so a restart mid-offer honours the SAME
+	// deadline rather than opening a fresh one (RULINGS #2) — an offer that renewed itself across
+	// restarts is precisely the unexpiring hold that would strand a trade hull.
+	relocationOfferUntil := cmd.RelocationOfferUntil
+
 	// RULINGS #2 restart-resume: a continuous run re-adopted mid-jump (the reposition was
 	// in flight when the daemon restarted) resumes toward the SAME destination through the
 	// shared cooldown-riding travel machinery, then clears the persisted flag — so the
@@ -1046,6 +1083,22 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 		// from the recovery set and the hull is lost).
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+
+		// FIRST REFUSAL (sp-e8d92): if this hull was offered to the relocator at the last boundary, wait
+		// the offer out before planning here again. This is the whole mechanism — the fleet occupies 23
+		// of 373 tradeable systems because the instant a hull is free its tour re-plans it locally, and
+		// the relocator only ever sees the 2.6% of time a hull is idle. Holding removes the race instead
+		// of trying to win it faster.
+		//
+		// BOUNDED BY CONSTRUCTION: holdForRelocationOffer ends at the deadline whatever the config says,
+		// and returns immediately on a cancelled context. A taken offer clears and the loop simply plans
+		// at the hull's NEW ground; a lapsed one backs off and plans locally exactly as today.
+		if relocationOfferStands(relocationOfferUntil, h.clock.Now()) {
+			if ship, serr := h.legs.loadShip(ctx, cmd.ShipSymbol, cmd.PlayerID); serr == nil && ship != nil && ship.CurrentLocation() != nil {
+				h.holdForRelocationOffer(ctx, cmd, relocationOfferUntil, ship.CurrentLocation().SystemSymbol)
+			}
+			relocationOfferUntil = time.Time{}
 		}
 
 		// RULINGS #6: an explicit --max-spend is a constant per-tour cap; --max-spend
@@ -1132,6 +1185,16 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 			if continuous && cmd.RepositionRateFloorEnabled {
 				if rerr := h.maybeRepositionRateFloor(ctx, cmd, response, netBought, maxHops, tourMaxSpend, reserve, modelVersion); rerr != nil {
 					return rerr
+				}
+			}
+			// FIRST REFUSAL (sp-e8d92): offer this hull to the relocator before touring here again — but
+			// only when it SHARES its system, because a hull alone in its system is already spreading and
+			// stalling it would cost a window of earning for nothing. Continuous runs only: a finite run
+			// flies exactly the tours it was asked for. Fail-open throughout — no persister, an unreadable
+			// fleet, or a failed write all yield no offer and today's behaviour.
+			if continuous {
+				if ship, serr := h.legs.loadShip(ctx, cmd.ShipSymbol, cmd.PlayerID); serr == nil && ship != nil && ship.CurrentLocation() != nil {
+					relocationOfferUntil = h.maybeOfferForRelocation(ctx, cmd, ship.CurrentLocation().SystemSymbol)
 				}
 			}
 			continue

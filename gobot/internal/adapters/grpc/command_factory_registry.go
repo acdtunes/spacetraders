@@ -1198,9 +1198,19 @@ func buildTourCoordinatorCommand(cfg *configReader, playerID int, containerID st
 		// reposition{MinMargin,MaxCandidates}Default. reposition_in_progress / _target_*
 		// are RUNTIME state the coordinator persists mid-jump (RULINGS #2), reloaded here
 		// so a restart resumes the jump instead of re-planning at an intermediate hop.
-		RepositionDisabled:      cfg.OptionalBool("reposition_disabled"),
-		RepositionMinMargin:     cfg.OptionalInt("reposition_min_margin", 0),
-		RepositionMaxCandidates: cfg.OptionalInt("reposition_max_candidates", 0),
+		RepositionDisabled: cfg.OptionalBool("reposition_disabled"),
+		// sp-e8d92 FIRST REFUSAL. The two deadlines are restart-durable: a run rebuilt mid-offer must
+		// honour the SAME deadline rather than open a fresh one (an offer that renewed itself across
+		// restarts is exactly the unexpiring hold that would strand a trade hull), and must remember that
+		// this hull's last offer went unclaimed rather than immediately pay another window (RULINGS #2).
+		// An absent or unparseable value reads as the zero time = no offer, which is today's behaviour.
+		RelocationOfferWindowSeconds:  cfg.OptionalInt("relocation_offer_window_secs", 0),
+		RelocationOfferMinHulls:       cfg.OptionalInt("relocation_offer_min_hulls", 0),
+		RelocationOfferBackoffMinutes: cfg.OptionalInt("relocation_offer_backoff_minutes", 0),
+		RelocationOfferUntil:          parseRelocationOfferInstant(cfg.OptionalString("relocation_offer_until")),
+		RelocationOfferBackoffUntil:   parseRelocationOfferInstant(cfg.OptionalString("relocation_offer_backoff_until")),
+		RepositionMinMargin:           cfg.OptionalInt("reposition_min_margin", 0),
+		RepositionMaxCandidates:       cfg.OptionalInt("reposition_max_candidates", 0),
 		// sp-kl16: the stored-adjacency reposition jump bound (0/absent → the coordinator's own
 		// default 12). This is the READ side, paired with the container_ops_tour.go WRITE side —
 		// together they make the bound survive the launch-config → rebuild round-trip a recovery
@@ -1296,4 +1306,18 @@ func buildStockerCoordinatorCommand(cfg *configReader, playerID int, containerID
 		// byte-identical.
 		HomeSystemOnly: cfg.OptionalBool("home_system_only"),
 	}
+}
+
+// parseRelocationOfferInstant reads a persisted sp-e8d92 offer deadline, or the zero time when the value
+// is absent, empty, or unparseable. Unparseable reads as NO OFFER (fail-safe): ignoring a real offer
+// costs one missed relocation, whereas honouring a corrupt one holds a hull out of touring.
+func parseRelocationOfferInstant(value string) time.Time {
+	if value == "" {
+		return time.Time{}
+	}
+	at, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}
+	}
+	return at.UTC()
 }

@@ -38,6 +38,11 @@ const (
 	// TourRepositionConfigPersister keeps its in-flight reposition keys in the tour container's own
 	// config.
 	relocationIntentsConfigKey = "relocation_intents"
+	// relocationOfferUntilConfigKey / relocationOfferBackoffConfigKey are the sp-e8d92 first-refusal keys
+	// the TOUR writes into its own container config and the relocator reads back. Absolute RFC 3339
+	// instants; an empty value means no offer.
+	relocationOfferUntilConfigKey   = "relocation_offer_until"
+	relocationOfferBackoffConfigKey = "relocation_offer_backoff_until"
 )
 
 // --- RelocatorFleetObserver: the live trade hulls with the facts RULINGS #7 is enforced on ---
@@ -193,13 +198,39 @@ func (o *RelocatorFleetObserverAdapter) ObserveHull(ctx context.Context, playerI
 // copy of this is how the two gates end up disagreeing about what a protected hull is.
 func relocatorHullFrom(ship *navigation.Ship, systemSymbol string, tours tourOccupancy) tradingCmd.RelocatorHull {
 	onTour := ship.IsInTransit() || tours.holds(ship)
+	// An OFFERED hull is still OnTour — its container is running, it is simply waiting — and the
+	// reconciler lifts the mid-tour exclusion for it. A hull IN TRANSIT is never offered whatever the row
+	// says: it is physically flying, so no offer can make it available.
+	offered := !ship.IsInTransit() && tours.offeredHulls[ship.ShipSymbol()]
 	return tradingCmd.RelocatorHull{
 		ShipSymbol:       ship.ShipSymbol(),
 		CurrentSystem:    systemSymbol,
 		IsCommandFrigate: ship.Role() == commandRole,
 		Pinned:           ship.IsReservedByCaptain() || (ship.IsAssigned() && !onTour),
 		OnTour:           onTour,
+		Offered:          offered,
 	}
+}
+
+// relocationOfferDeadline reads the offer deadline a tour row carries, or the zero time when the key is
+// absent, empty, or unparseable. Unparseable reads as NO OFFER (fail-safe): the cost of ignoring a real
+// offer is one missed relocation, while the cost of honouring a corrupt one is a hull held out of
+// touring.
+func relocationOfferDeadline(configJSON string) time.Time {
+	if configJSON == "" {
+		return time.Time{}
+	}
+	var config struct {
+		OfferedUntil string `json:"relocation_offer_until"`
+	}
+	if err := json.Unmarshal([]byte(configJSON), &config); err != nil || config.OfferedUntil == "" {
+		return time.Time{}
+	}
+	at, err := time.Parse(time.RFC3339Nano, config.OfferedUntil)
+	if err != nil {
+		return time.Time{}
+	}
+	return at.UTC()
 }
 
 // tourOccupancy is what the live container rows say about which hulls are out on a tour, in the TWO
@@ -220,6 +251,10 @@ type tourOccupancy struct {
 	// declaredHulls are the hulls tour rows NAME in config["ship_symbol"] — the DECLARED
 	// representation, and the only evidence that exists before the claim.
 	declaredHulls map[string]bool
+	// offeredHulls are the hulls whose tour has DURABLY offered them for relocation and whose offer has
+	// not yet lapsed (sp-e8d92 first refusal). Read from the very same rows, so first refusal costs no
+	// extra query and makes no API call.
+	offeredHulls map[string]bool
 }
 
 // holds reports whether a live tour row accounts for this hull, by either representation.
@@ -250,7 +285,8 @@ func (o *RelocatorFleetObserverAdapter) tourOccupancy(ctx context.Context, playe
 	if o.containers == nil {
 		return tourOccupancy{}, fmt.Errorf("opportunity relocator fleet observer is not wired to a container repository, so a touring hull cannot be told from an idle one")
 	}
-	tours := tourOccupancy{containerIDs: map[string]bool{}, declaredHulls: map[string]bool{}}
+	tours := tourOccupancy{containerIDs: map[string]bool{}, declaredHulls: map[string]bool{}, offeredHulls: map[string]bool{}}
+	now := time.Now().UTC()
 	for _, status := range []container.ContainerStatus{container.ContainerStatusRunning, container.ContainerStatusPending} {
 		models, err := o.containers.ListByStatus(ctx, status, &playerID)
 		if err != nil {
@@ -261,8 +297,17 @@ func (o *RelocatorFleetObserverAdapter) tourOccupancy(ctx context.Context, playe
 				continue
 			}
 			tours.containerIDs[model.ID] = true
-			if hull := declaredContainerHull(model.Config); hull != "" {
-				tours.declaredHulls[hull] = true
+			hull := declaredContainerHull(model.Config)
+			if hull == "" {
+				continue
+			}
+			tours.declaredHulls[hull] = true
+			// sp-e8d92 first refusal: a tour that has reached its boundary offers its hull for
+			// relocation until a deadline. THE DEADLINE IS RE-CHECKED HERE, against now, rather than
+			// trusted as a boolean — a stale "offered" flag would keep a hull out of touring forever,
+			// which is a stranded trade hull and strictly worse than one that never spread.
+			if relocationOfferDeadline(model.Config).After(now) {
+				tours.offeredHulls[hull] = true
 			}
 		}
 	}

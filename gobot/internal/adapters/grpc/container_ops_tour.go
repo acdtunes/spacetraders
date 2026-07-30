@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
@@ -274,6 +275,51 @@ func NewTourRepositionConfigPersister(containerRepo *persistence.ContainerReposi
 // writes the cleared state (empty target) so a restart after the jump landed does NOT
 // re-resume a completed reposition. A missing container row (already terminalized) is an
 // error the caller logs and swallows: this is resume durability, never a movement guard.
+// PersistRelocationOffer merges the sp-e8d92 relocation OFFER into the tour container's own config —
+// the SAME map the relocator already reads to decide whether a hull is on tour, so the read side costs
+// no extra query and makes no API call.
+//
+// Absolute RFC 3339 instants, never durations: a restart must not silently extend a hold, and a relative
+// value would do exactly that. A ZERO OfferedUntil writes the empty string, which is how an offer is
+// CLEARED — the waiter treats an absent deadline as no offer, so clearing degrades to today's behaviour
+// rather than to a hull held forever.
+//
+// Guarded to its two keys, like its sibling above, so it never clobbers a launch knob the recovery
+// rebuild reads. A returned error is advisory: the offer is an optimisation, never a movement guard, so
+// the caller logs it and keeps touring.
+func (p *TourRepositionConfigPersister) PersistRelocationOffer(ctx context.Context, containerID string, playerID int, offer tradingCmd.RelocationOffer) error {
+	model, err := p.containerRepo.Get(ctx, containerID, playerID)
+	if err != nil {
+		return fmt.Errorf("load container %s to persist the relocation offer: %w", containerID, err)
+	}
+	if model == nil {
+		return fmt.Errorf("container %s not found - cannot persist the relocation offer", containerID)
+	}
+	config := map[string]interface{}{}
+	if model.Config != "" {
+		if uerr := json.Unmarshal([]byte(model.Config), &config); uerr != nil {
+			return fmt.Errorf("deserialize container %s config to persist the relocation offer: %w", containerID, uerr)
+		}
+	}
+	config[relocationOfferUntilConfigKey] = formatRelocationOfferInstant(offer.OfferedUntil)
+	config[relocationOfferBackoffConfigKey] = formatRelocationOfferInstant(offer.BackoffUntil)
+
+	merged, err := json.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("serialize container %s config after merging the relocation offer: %w", containerID, err)
+	}
+	return p.containerRepo.UpdateContainerConfig(ctx, containerID, playerID, string(merged))
+}
+
+// formatRelocationOfferInstant renders a deadline for the config, or "" for a zero time so an absent
+// offer reads as absent rather than as the year 1.
+func formatRelocationOfferInstant(at time.Time) string {
+	if at.IsZero() {
+		return ""
+	}
+	return at.UTC().Format(time.RFC3339Nano)
+}
+
 func (p *TourRepositionConfigPersister) PersistRepositionState(ctx context.Context, containerID string, playerID int, ep tradingCmd.RepositionEpisode) error {
 	model, err := p.containerRepo.Get(ctx, containerID, playerID)
 	if err != nil {
