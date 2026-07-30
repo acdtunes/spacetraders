@@ -784,3 +784,265 @@ func (l *recordingPlacementLogger) withAction(action string) []struct {
 	}
 	return out
 }
+
+// --- arrival-first scheduling (sp-ygovs) ---------------------------------------
+
+// mixedWorklist builds a worklist whose CROSSING slots all sit ahead of its
+// ARRIVAL slots in worklist order, which is the shape the live backlog has: 287
+// hulls still walking gates and a handful already standing on their target.
+//
+// The crossing count must EXCEED the action cap on its own, or the arrivals are
+// reached anyway by simple exhaustion and the ordering is never consulted — the
+// same fixture rule the sp-cwnwb starvation test states.
+//
+// Arrivals are IN_TRANSIT with the hull IN ORBIT AT the slot, which is the one
+// shape standDown turns into a dock. Crossings are BOUGHT with the hull standing
+// in a foreign system, which is the shape flyToSlot walks across a gate.
+func mixedWorklist(crossings, arrivals int) (PlacementPorts, *fakeBuyLedger, *fakeMover) {
+	led := &fakeBuyLedger{}
+	positions := map[string]ShipPos{}
+
+	for i := 0; i < crossings; i++ {
+		ship := fmt.Sprintf("CROSSING-%02d", i)
+		led.slots = append(led.slots, QueuedSlot{
+			Waypoint: fmt.Sprintf("X1-A%02d-M1", i), System: fmt.Sprintf("X1-A%02d", i),
+			Kind: SlotKindMarket, State: SlotStateBought, AssignedShip: ship,
+		})
+		positions[ship] = ShipPos{Waypoint: "X1-RJ93-Y1", NavStatus: navigation.NavStatusDocked, Found: true}
+	}
+	for i := 0; i < arrivals; i++ {
+		ship := fmt.Sprintf("ARRIVED-%02d", i)
+		wp := fmt.Sprintf("X1-K%02d-M1", i)
+		led.slots = append(led.slots, QueuedSlot{
+			Waypoint: wp, System: fmt.Sprintf("X1-K%02d", i),
+			Kind: SlotKindMarket, State: SlotStateInTransit, AssignedShip: ship,
+		})
+		// Standing ON the slot, in orbit: one dock away from becoming coverage.
+		positions[ship] = ShipPos{Waypoint: wp, NavStatus: navigation.NavStatusInOrbit, Found: true}
+	}
+
+	mover := &fakeMover{}
+	return PlacementPorts{
+		Ledger: led,
+		Ships:  &fakeShipReader{positions: positions},
+		Mover:  mover,
+		Fleet:  &fakeFleet{},
+	}, led, mover
+}
+
+// TestAdvance_PrefersArrivalsOverGateHops is sp-ygovs. An arrival CONVERTS a hull
+// into coverage and removes it from the worklist; a gate hop only moves it one
+// ring closer and leaves it competing for the same budget next tick. So when both
+// are eligible the arrival must be spent on first — it costs no extra API budget,
+// it is the same ten actions in a better order.
+//
+// Live shape this reproduces: three consecutive ticks read `dispatched 10 docking
+// 0 parked 0` while 13 hulls sat ON their target waypoints, because the 270
+// still-crossing slots reached the budget first every tick.
+func TestAdvance_PrefersArrivalsOverGateHops(t *testing.T) {
+	ports, _, mover := mixedWorklist(12, 3)
+
+	rep, err := AdvancePlacements(context.Background(), ports, testPlayerID, DefaultMaxPlacementActions)
+	if err != nil {
+		t.Fatalf("AdvancePlacements returned error: %v", err)
+	}
+
+	if len(mover.docks) != 3 {
+		t.Fatalf("docked %d hulls, want 3 — every hull already standing on its slot must be berthed before the budget is spent on gate hops. "+
+			"docks=%v report=%+v", len(mover.docks), mover.docks, rep)
+	}
+	if rep.Docking != 3 {
+		t.Fatalf("report says Docking=%d, want 3", rep.Docking)
+	}
+	// The budget is not enlarged, only reordered: the remaining seven actions still
+	// go to crossings, so the tick still spends exactly its ten.
+	if rep.Actions != DefaultMaxPlacementActions {
+		t.Fatalf("report says Actions=%d, want %d — reordering must not shrink the tick", rep.Actions, DefaultMaxPlacementActions)
+	}
+	if rep.Dispatched != DefaultMaxPlacementActions-3 {
+		t.Fatalf("report says Dispatched=%d, want %d — the leftover budget still belongs to the crossings",
+			rep.Dispatched, DefaultMaxPlacementActions-3)
+	}
+}
+
+// TestAdvance_ArrivalPreferenceStillLetsACrossingAdvance is the starvation guard,
+// and it is the same shape as the bug sp-cwnwb fixed: a class of slot that always
+// wins starves the rest.
+//
+// The rotation cannot protect the crossings here, and that is the point. Rotation
+// orders slots WITHIN the worklist; a class preference re-orders ACROSS it, so an
+// arrival that keeps re-qualifying (a hull whose dock succeeds but whose ships row
+// never flips to docked would re-dock every tick forever) sits at the head of every
+// tick no matter how recently it was attempted. With more arrival work than budget
+// there must still be a floor reserved for crossings, or the 287 hulls walking
+// gates stop moving entirely.
+func TestAdvance_ArrivalPreferenceStillLetsACrossingAdvance(t *testing.T) {
+	// Strictly MORE arrivals than the whole action budget, so the preference alone
+	// would consume every action and the reserve is the only thing that can let a
+	// crossing through.
+	ports, _, mover := mixedWorklist(5, DefaultMaxPlacementActions+5)
+
+	rep, err := AdvancePlacements(context.Background(), ports, testPlayerID, DefaultMaxPlacementActions)
+	if err != nil {
+		t.Fatalf("AdvancePlacements returned error: %v", err)
+	}
+
+	moved := movedShips(mover)
+	if len(moved) == 0 {
+		t.Fatalf("not one crossing advanced while %d arrivals competed for a %d-action budget — "+
+			"preferring arrivals has re-created the starvation sp-cwnwb fixed, in the other direction. docks=%d report=%+v",
+			DefaultMaxPlacementActions+5, DefaultMaxPlacementActions, len(mover.docks), rep)
+	}
+	if len(mover.docks) >= DefaultMaxPlacementActions {
+		t.Fatalf("arrivals took %d of %d actions, leaving no floor for crossings", len(mover.docks), DefaultMaxPlacementActions)
+	}
+	if rep.Actions != DefaultMaxPlacementActions {
+		t.Fatalf("report says Actions=%d, want %d — the reserve reallocates the budget, it does not shrink it", rep.Actions, DefaultMaxPlacementActions)
+	}
+}
+
+// TestAdvance_ArrivalsTakeTheWholeBudgetWhenNothingIsCrossing proves the crossing
+// reserve is a floor for work that EXISTS, not a permanent carve-out. A tick with
+// nothing to cross must spend every action on arrivals rather than idling two of
+// them against an empty class.
+func TestAdvance_ArrivalsTakeTheWholeBudgetWhenNothingIsCrossing(t *testing.T) {
+	ports, _, mover := mixedWorklist(0, DefaultMaxPlacementActions+3)
+
+	rep, err := AdvancePlacements(context.Background(), ports, testPlayerID, DefaultMaxPlacementActions)
+	if err != nil {
+		t.Fatalf("AdvancePlacements returned error: %v", err)
+	}
+	if len(mover.docks) != DefaultMaxPlacementActions {
+		t.Fatalf("docked %d hulls, want the full %d — with no crossing work the reserve must release", len(mover.docks), DefaultMaxPlacementActions)
+	}
+	if rep.Actions != DefaultMaxPlacementActions {
+		t.Fatalf("report says Actions=%d, want %d", rep.Actions, DefaultMaxPlacementActions)
+	}
+}
+
+// TestAdvance_AClaimAwaitingItsFirstMoveIsNotAnArrival closes the gap between
+// "IN_TRANSIT" and "arrived".
+//
+// Not every IN_TRANSIT slot has a hull standing on its destination. The two claim
+// paths — this package's spare re-tasking and the coordinator's seed claims — write
+// IN_TRANSIT directly for a hull that has never been told to move, and dispatchClaim
+// is what finally flies it. Such a slot costs a gate hop, not a dock, so counting it
+// as an arrival would promote crossing work to the front of the queue under the
+// arrival banner and undo the whole reordering.
+//
+// The discriminator is the hull's POSITION, not the slot's state. Twelve claims
+// (more than the budget) sit ahead of three genuine arrivals, so a classifier that
+// keys on state alone serves twelve gate hops and berths nobody.
+func TestAdvance_AClaimAwaitingItsFirstMoveIsNotAnArrival(t *testing.T) {
+	led := &fakeBuyLedger{}
+	positions := map[string]ShipPos{}
+
+	// Claims: IN_TRANSIT, but the hull is standing still in a FOREIGN system and has
+	// never been dispatched. These need RouteAcross, not Dock.
+	for i := 0; i < 12; i++ {
+		ship := fmt.Sprintf("CLAIMED-%02d", i)
+		led.slots = append(led.slots, QueuedSlot{
+			Waypoint: fmt.Sprintf("X1-A%02d-M1", i), System: fmt.Sprintf("X1-A%02d", i),
+			Kind: SlotKindMarket, State: SlotStateInTransit, AssignedShip: ship,
+		})
+		positions[ship] = ShipPos{Waypoint: "X1-RJ93-Y1", NavStatus: navigation.NavStatusDocked, Found: true}
+	}
+	// Genuine arrivals: standing ON the slot, one dock from coverage.
+	for i := 0; i < 3; i++ {
+		ship := fmt.Sprintf("ARRIVED-%02d", i)
+		wp := fmt.Sprintf("X1-K%02d-M1", i)
+		led.slots = append(led.slots, QueuedSlot{
+			Waypoint: wp, System: fmt.Sprintf("X1-K%02d", i),
+			Kind: SlotKindMarket, State: SlotStateInTransit, AssignedShip: ship,
+		})
+		positions[ship] = ShipPos{Waypoint: wp, NavStatus: navigation.NavStatusInOrbit, Found: true}
+	}
+
+	mover := &fakeMover{}
+	ports := PlacementPorts{
+		Ledger: led, Ships: &fakeShipReader{positions: positions},
+		Mover: mover, Fleet: &fakeFleet{},
+	}
+
+	rep, err := AdvancePlacements(context.Background(), ports, testPlayerID, DefaultMaxPlacementActions)
+	if err != nil {
+		t.Fatalf("AdvancePlacements returned error: %v", err)
+	}
+	if len(mover.docks) != 3 {
+		t.Fatalf("docked %d hulls, want 3 — a claim whose hull has not left is a gate hop wearing an IN_TRANSIT label, "+
+			"and treating it as an arrival puts twelve crossings at the head of the queue. docks=%v routes=%d report=%+v",
+			len(mover.docks), mover.docks, len(mover.routes), rep)
+	}
+	if len(mover.routes) != DefaultMaxPlacementActions-3 {
+		t.Fatalf("issued %d gate hops, want %d — the claims are still crossings and still get the leftover budget",
+			len(mover.routes), DefaultMaxPlacementActions-3)
+	}
+}
+
+// TestAdvance_AHullStillFlyingIsNotAnArrival is the other half of the arrival
+// predicate, and it fails QUIETLY rather than loudly, which is why it needs its own
+// test.
+//
+// A hull whose ships row still reads IN_TRANSIT is not standing anywhere yet, even
+// when its recorded waypoint already matches the slot — standDown leaves it alone
+// (its switch has no case for that nav status) and it costs the tick nothing. So a
+// classifier that keys only on the waypoint promotes a batch of slots that will buy
+// NOTHING to the front of the arrival queue, pushing the arrivals that would have
+// berthed past the reserve cap and out behind every crossing. Nothing errors; the
+// tick simply spends its ten actions on gate hops again, which is the exact symptom
+// the reordering exists to remove.
+func TestAdvance_AHullStillFlyingIsNotAnArrival(t *testing.T) {
+	led := &fakeBuyLedger{}
+	positions := map[string]ShipPos{}
+
+	// Eight hulls whose recorded waypoint IS the slot but which are still flying —
+	// enough to fill the arrival cap on their own if they were counted as arrivals.
+	for i := 0; i < 8; i++ {
+		ship := fmt.Sprintf("FLYING-%02d", i)
+		wp := fmt.Sprintf("X1-A%02d-M1", i)
+		led.slots = append(led.slots, QueuedSlot{
+			Waypoint: wp, System: fmt.Sprintf("X1-A%02d", i),
+			Kind: SlotKindMarket, State: SlotStateInTransit, AssignedShip: ship,
+		})
+		positions[ship] = ShipPos{Waypoint: wp, NavStatus: navigation.NavStatusInTransit, Found: true}
+	}
+	// Three hulls that have genuinely arrived, behind them in worklist order.
+	for i := 0; i < 3; i++ {
+		ship := fmt.Sprintf("ARRIVED-%02d", i)
+		wp := fmt.Sprintf("X1-K%02d-M1", i)
+		led.slots = append(led.slots, QueuedSlot{
+			Waypoint: wp, System: fmt.Sprintf("X1-K%02d", i),
+			Kind: SlotKindMarket, State: SlotStateInTransit, AssignedShip: ship,
+		})
+		positions[ship] = ShipPos{Waypoint: wp, NavStatus: navigation.NavStatusInOrbit, Found: true}
+	}
+	// Twelve crossings, so the budget is genuinely contested.
+	for i := 0; i < 12; i++ {
+		ship := fmt.Sprintf("CROSSING-%02d", i)
+		led.slots = append(led.slots, QueuedSlot{
+			Waypoint: fmt.Sprintf("X1-C%02d-M1", i), System: fmt.Sprintf("X1-C%02d", i),
+			Kind: SlotKindMarket, State: SlotStateBought, AssignedShip: ship,
+		})
+		positions[ship] = ShipPos{Waypoint: "X1-RJ93-Y1", NavStatus: navigation.NavStatusDocked, Found: true}
+	}
+
+	mover := &fakeMover{}
+	ports := PlacementPorts{
+		Ledger: led, Ships: &fakeShipReader{positions: positions},
+		Mover: mover, Fleet: &fakeFleet{},
+	}
+
+	rep, err := AdvancePlacements(context.Background(), ports, testPlayerID, DefaultMaxPlacementActions)
+	if err != nil {
+		t.Fatalf("AdvancePlacements returned error: %v", err)
+	}
+	if len(mover.docks) != 3 {
+		t.Fatalf("docked %d hulls, want 3 — eight hulls still in flight filled the arrival cap and pushed the real "+
+			"arrivals behind every crossing. A hull that is not STANDING anywhere cannot be berthed. docks=%v report=%+v",
+			len(mover.docks), mover.docks, rep)
+	}
+	// The flying hulls must cost nothing at all — they are idle, not refused.
+	if rep.Failures != 0 {
+		t.Fatalf("report says Failures=%d, want 0 — a hull genuinely in flight is left alone, not charged", rep.Failures)
+	}
+}

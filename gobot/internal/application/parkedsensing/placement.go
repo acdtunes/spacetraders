@@ -65,6 +65,32 @@ const DefaultMaxPlacementActions = 10
 // traffic per tick.
 const placementFailureBudgetMultiple = 3
 
+// placementCrossingReserve is the number of a tick's accepted-command budget held
+// back for hulls still travelling, when arrival work would otherwise take it all.
+//
+// WHY A RESERVE IS NEEDED AT ALL (sp-ygovs). Arrivals are spent first because an
+// arrival CONVERTS a hull into coverage and removes the slot from the worklist,
+// while a gate hop only moves it one ring closer and leaves it competing next tick.
+// But a class that always wins is precisely how sp-cwnwb's starvation worked, and
+// the least-recently-attempted rotation CANNOT protect against it: rotation orders
+// slots WITHIN the worklist, and a class preference re-orders ACROSS it, so a slot
+// that keeps re-qualifying as an arrival sits at the head of every tick however
+// recently it was stamped. That is not hypothetical — a hull whose dock command
+// succeeds but whose ships row never flips to docked re-docks every tick forever,
+// and ten such hulls would stop the other 287 moving at all.
+//
+// TWO, OUT OF TEN. Small enough that the reordering keeps almost all of its value
+// (the backlog is ~287 crossing against ~13 arriving, so arrivals rarely want more
+// than a fraction of the budget anyway), and large enough that the crossing class
+// always makes progress, which is what keeps producing the arrivals in the first
+// place.
+//
+// It is a floor for work that EXISTS, not a permanent carve-out: arrivals held back
+// by it are DEFERRED behind the crossings rather than dropped, so a tick with
+// nothing to cross — or whose crossings all turn out idle or refused — spends the
+// whole budget on arrivals anyway. See arrivalsFirst.
+const placementCrossingReserve = 2
+
 // MaxWalkRings is how far the FOOTHOLD path may draw an already-parked scanning
 // hull off a working market to fill a placement elsewhere.
 //
@@ -250,7 +276,7 @@ func AdvancePlacements(ctx context.Context, pl PlacementPorts, playerID int, max
 
 	maxFailures := maxActions * placementFailureBudgetMultiple
 
-	for _, slot := range slots {
+	for _, w := range arrivalsFirst(ctx, pl, playerID, slots, maxActions) {
 		if rep.Actions >= maxActions {
 			// The accepted-command budget is spent. Walking further can only issue
 			// commands there is no budget left to keep.
@@ -262,22 +288,9 @@ func AdvancePlacements(ctx context.Context, pl PlacementPorts, playerID int, max
 			// begins with them.
 			break
 		}
-		if slot.AssignedShip == "" {
-			// A BOUGHT slot with no hull recorded is a torn write, not a
-			// placement: there is nothing to fly. The buy queue owns repairing
-			// it; commanding a ship whose symbol we do not have is impossible.
-			continue
-		}
+		slot := w.slot
 
-		pos, err := pl.Ships.ShipAt(ctx, playerID, slot.AssignedShip)
-		if err != nil || !pos.Found {
-			// Never command a hull we cannot locate. Both an unreadable row and
-			// an absent one leave the slot exactly as it is, to be retried once
-			// the ships table can answer.
-			continue
-		}
-
-		outcome, err := advanceOne(ctx, pl, playerID, slot, pos, &rep)
+		outcome, err := advanceOne(ctx, pl, playerID, slot, w.pos, &rep)
 		if err != nil {
 			return rep, err
 		}
@@ -297,6 +310,109 @@ func AdvancePlacements(ctx context.Context, pl PlacementPorts, playerID int, max
 		}
 	}
 	return rep, nil
+}
+
+// placementWork is one slot paired with the hull position already read for it, so
+// the position is read ONCE per slot per tick rather than again when the slot's
+// turn comes. Re-reading would be safe but wasteful: one slot gets one action per
+// tick, so nothing this tick can move a hull between the two reads.
+type placementWork struct {
+	slot QueuedSlot
+	pos  ShipPos
+}
+
+// arrivalsFirst reorders one tick's worklist so hulls that have ARRIVED are served
+// before hulls still travelling, and reads each hull's position once on the way.
+//
+// THE ORDERING IS THE WHOLE OF sp-ygovs. An arrival converts a hull into coverage
+// and takes its slot out of the worklist for good; a gate hop moves it one ring
+// closer and leaves it competing for the same budget next tick. Serving arrivals
+// first therefore shortens the queue, which speeds everything behind it — and it
+// costs no extra API budget at all, because it spends the SAME accepted-command
+// budget in a better order. Live, the old order read `dispatched 10 docking 0
+// parked 0` for three consecutive ticks while 13 hulls stood on their targets: 287
+// crossing slots reached the budget first every tick, so hulls that were already
+// physically at their destination took ~30 minutes to berth.
+//
+// THE RESERVE IS NOT OPTIONAL, see placementCrossingReserve. A preference that
+// always wins is how the sp-cwnwb starvation worked, and the rotation cannot undo
+// it, so the crossing class keeps a floor whenever it has work.
+//
+// Order within each class is left exactly as the ledger returned it — least
+// recently attempted first — because that is the rotation that keeps any one slot
+// from holding its class's head across ticks. This function only groups; it never
+// sorts.
+//
+// Slots that cannot be acted on at all are dropped here rather than costing a turn
+// later: a slot with no recorded hull is a torn write with nothing to fly (the buy
+// queue owns repairing it, and commanding a ship whose symbol we do not have is
+// impossible), and a hull the ships table cannot locate must never be commanded —
+// both leave the slot exactly as it is, to be retried once the ledger can answer.
+//
+// COST. One indexed position read per in-flight slot per tick, against the database
+// and never the API (see ParkedShipReader). The previous shape read only as far as
+// the budget reached — around 40 slots — so this is roughly a 300-read tick at the
+// current backlog, on a 756-row table keyed by the exact lookup. That is the price
+// of knowing which slots have arrived BEFORE choosing which to serve, and it buys
+// the reordering without touching the API budget that is actually scarce.
+func arrivalsFirst(ctx context.Context, pl PlacementPorts, playerID int, slots []QueuedSlot, maxActions int) []placementWork {
+	arrived := make([]placementWork, 0, len(slots))
+	travelling := make([]placementWork, 0, len(slots))
+
+	for _, slot := range slots {
+		if slot.AssignedShip == "" {
+			continue
+		}
+		pos, err := pl.Ships.ShipAt(ctx, playerID, slot.AssignedShip)
+		if err != nil || !pos.Found {
+			continue
+		}
+		w := placementWork{slot: slot, pos: pos}
+		if hasArrived(slot, pos) {
+			arrived = append(arrived, w)
+			continue
+		}
+		travelling = append(travelling, w)
+	}
+
+	// The reserve needs no "is anything crossing?" test of its own: the arrivals it
+	// holds back are re-appended below, so with nothing to cross the deferred
+	// arrivals simply flow back into the same tick and the budget is spent in full.
+	// A guard here would be dead logic — a mutation probe that made it bind
+	// unconditionally changed no observable behaviour, which is how it was found.
+	arrivalCap := len(arrived)
+	if maxActions-placementCrossingReserve < arrivalCap {
+		arrivalCap = maxActions - placementCrossingReserve
+	}
+	if arrivalCap < 0 {
+		// A budget smaller than the reserve: hand the whole tick to the crossings
+		// rather than let a negative bound drop the arrivals silently.
+		arrivalCap = 0
+	}
+
+	out := make([]placementWork, 0, len(arrived)+len(travelling))
+	out = append(out, arrived[:arrivalCap]...)
+	out = append(out, travelling...)
+	// Arrivals held back by the reserve are not dropped, only deferred: if the
+	// crossings turn out to be idle or refused, the budget returns to them in this
+	// same tick rather than going unspent.
+	out = append(out, arrived[arrivalCap:]...)
+	return out
+}
+
+// hasArrived reports whether a slot's hull is standing ON its destination in a
+// state standDown can turn into an accepted command — in orbit (one dock away) or
+// docked (one ledger edge away from PARKED).
+//
+// It must stay in lockstep with standDown's own branches: a slot counted as arrived
+// here that standDown then treats as idle would be promoted ahead of real work and
+// buy nothing. Anything else — still crossing, genuinely in flight, or standing
+// somewhere that is not the slot — is travelling.
+func hasArrived(slot QueuedSlot, pos ShipPos) bool {
+	if slot.State != SlotStateInTransit || pos.Waypoint != slot.Waypoint {
+		return false
+	}
+	return pos.NavStatus == navigation.NavStatusInOrbit || pos.NavStatus == navigation.NavStatusDocked
 }
 
 // markAttempt records that a slot consumed one of this tick's budgets, and
