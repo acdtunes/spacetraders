@@ -927,6 +927,41 @@ func (f *fakeYardCatalog) yardsOutstanding() []parkedsensing.OutstandingYard {
 	return append([]parkedsensing.OutstandingYard(nil), f.outstanding...)
 }
 
+// fakeUnpricedPool is the sensing surge's work list as the STORE would hand it
+// back: the era-scoped set difference between charted systems and priced ones.
+//
+// It models the difference rather than the query, which is the only honest thing a
+// fake can do here — the era predicate and the market_data anti-join live in SQL and
+// are pinned by the adapter's own integration tests. What this fake is FOR is the
+// pass's arithmetic: how many hulls fly, which systems they are ranked into, and
+// what happens when the read refuses.
+//
+// EMPTY BY DEFAULT, so every fixture that does not mean to exercise the surge sees a
+// pass that reads once, finds nothing to do and writes nothing — which is also the
+// steady state in production once the pool has drained.
+type fakeUnpricedPool struct {
+	mu     sync.Mutex
+	pool   []commandsUnpricedSystem
+	err    error
+	reads  int
+	player int
+}
+
+// commandsUnpricedSystem is an alias kept local so the fixtures below read as data
+// rather than as package-qualified noise.
+type commandsUnpricedSystem = UnpricedSystem
+
+func (f *fakeUnpricedPool) UnpricedSystems(_ context.Context, playerID int) ([]UnpricedSystem, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reads++
+	f.player = playerID
+	if f.err != nil {
+		return nil, f.err
+	}
+	return append([]UnpricedSystem(nil), f.pool...), nil
+}
+
 // --- the coordinator's own ports ----------------------------------------------
 
 // fakeHome resolves the headquarters system. Database-only.

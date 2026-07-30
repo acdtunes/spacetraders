@@ -71,6 +71,9 @@ type cutoverWorld struct {
 	// coordinator hands it — specifically the claim owner, which must be this
 	// tick's real container id (see the ships.container_id foreign key).
 	purchaser *psPurchaser
+	// pool is the sensing surge's charted-but-unpriced work list, exposed so a test
+	// can fill it (or make it refuse).
+	pool *fakeUnpricedPool
 	// shipPos is the ships-TABLE read the placement machine locates hulls
 	// through, which is a different port from `fleet` (the whole-fleet
 	// enumeration adoption and the orphan dispatch use). A hull present in one
@@ -147,6 +150,10 @@ func newCutoverWorld(t *testing.T) *cutoverWorld {
 	// enumerates nothing and reads nothing — which is also the steady state in
 	// production once the blind spot has drained.
 	yards := &fakeYardCatalog{calls: calls}
+	// The sensing surge's pool. Empty by default: a fixture that means to exercise
+	// the surge says so, and every other test sees a pass that reads once and finds
+	// nothing to price.
+	pool := &fakeUnpricedPool{}
 
 	handler := NewRunProbeSensingCoordinatorHandler(
 		depth, posts, fleet, &fakePressure{}, &fakePhase{inExpansion: true}, &shared.MockClock{CurrentTime: time.Now()},
@@ -176,6 +183,7 @@ func newCutoverWorld(t *testing.T) *cutoverWorld {
 		YardScan:     yards,
 		Home:         &fakeHome{system: testHomeSystem},
 		Budget:       budget,
+		UnpricedPool: pool,
 	}
 	handler.SetEnginePortsFactory(func(int) SensingEnginePorts { return enginePorts })
 
@@ -187,7 +195,7 @@ func newCutoverWorld(t *testing.T) *cutoverWorld {
 		posts: posts, fleet: fleet, tagger: tagger, depth: depth,
 		catalog: catalog, goods: goods, remote: remote, seeds: seeds,
 		mover: mover, recorder: recorder, shipPos: ships, purchaser: purchaser, gates: gates,
-		yards: yards, ports: enginePorts,
+		yards: yards, pool: pool, ports: enginePorts,
 	}
 }
 
@@ -786,9 +794,9 @@ func TestReconcile_ReadsTheOutstandingShipyardCatalogues(t *testing.T) {
 // all. So the engine is held fail-closed and LOUD instead, exactly as it is for
 // every other port it cannot work without.
 //
-// Every OTHER port is present here, so this fails only if the yard clause is gone
-// from wired().
-func TestSensing_MissingYardPorts_HoldsTheTickInert(t *testing.T) {
+// Every OTHER port is present here, so this fails only if the clause under test is
+// gone from wired().
+func TestSensing_MissingRequiredPorts_HoldsTheTickInert(t *testing.T) {
 	for _, missing := range []struct {
 		name string
 		drop func(*SensingEnginePorts)
@@ -796,6 +804,11 @@ func TestSensing_MissingYardPorts_HoldsTheTickInert(t *testing.T) {
 		{"the outstanding-yard enumeration", func(p *SensingEnginePorts) { p.YardCatalog = nil }},
 		{"the free catalogue read", func(p *SensingEnginePorts) { p.YardRead = nil }},
 		{"the parked-probe yard read", func(p *SensingEnginePorts) { p.YardScan = nil }},
+		// The sensing surge's pool read (sp-zvywu), REQUIRED for exactly the reason
+		// above: nil-tolerated, the tick would report healthy forever while ~300 surplus
+		// probes stood idle against 1,067 systems the fleet has never priced — the same
+		// dormant-feature shape, and just as invisible from the heartbeat.
+		{"the charted-but-unpriced pool read", func(p *SensingEnginePorts) { p.UnpricedPool = nil }},
 	} {
 		t.Run(missing.name, func(t *testing.T) {
 			world := newCutoverWorld(t)

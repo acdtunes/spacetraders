@@ -48,7 +48,14 @@ type heartbeat struct {
 	// both, one tick apart, and conflating them would double-count the fleet's
 	// activity.
 	dispatched int
-	reap       parkedsensing.ReapReport
+	// surged counts surplus probes sent into CHARTED-BUT-UNPRICED systems this tick
+	// (sp-zvywu). Kept apart from dispatched above because the two answer different
+	// questions about coverage: dispatched fills placements the screen already
+	// declared, while this one is the fleet reaching systems no placement exists for
+	// — the number an operator watches to see the 90% of charted space that has never
+	// been priced actually shrinking.
+	surged int
+	reap   parkedsensing.ReapReport
 	buy        parkedsensing.BuyReport
 	place      parkedsensing.PlacementReport
 	expand     parkedsensing.ExpandReport
@@ -96,11 +103,11 @@ func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *
 	}
 
 	common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf(
-		"Parked sensing cycle: %.3f req/s pacer (%.3f residual, brake %.2f), %d parked, screened %d, yards read %d of %d outstanding, bought %d reused %d queued %d (%d attempts%s%s), reaped %d adopted %d idle-reused %d, dispatched %d docking %d parked %d, expansion %s",
+		"Parked sensing cycle: %.3f req/s pacer (%.3f residual, brake %.2f), %d parked, screened %d, yards read %d of %d outstanding, bought %d reused %d queued %d (%d attempts%s%s), reaped %d adopted %d idle-reused %d surged %d, dispatched %d docking %d parked %d, expansion %s",
 		hb.pacerRate, hb.sensingRate, hb.brake, hb.rotation, hb.screened,
 		hb.yard.Read, hb.yard.Outstanding,
 		hb.buy.Bought, hb.buy.Reused, hb.buy.Queued, hb.buy.Attempts, heldSuffix(held), refusalSuffix(hb.buy.Refusals),
-		hb.reap.Reaped, hb.adopted, hb.dispatched,
+		hb.reap.Reaped, hb.adopted, hb.dispatched, hb.surged,
 		hb.place.Dispatched, hb.place.Docking, hb.place.Parked, expansionSummary(hb.expand)),
 		map[string]interface{}{
 			"action":                "parked_sensing_cycle",
@@ -154,6 +161,12 @@ func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *
 			// container or post. Non-zero beside a held buy floor is the healthy
 			// reading: the fleet is filling placements it cannot afford to buy for.
 			"dispatched_orphans": hb.dispatched,
+			// Surplus hulls sent into CHARTED-BUT-UNPRICED systems this tick, at zero
+			// credits (sp-zvywu). This is the coverage number: it counts systems the
+			// fleet has never held a price for that now have a probe on the way, which
+			// dispatched_orphans structurally cannot — that pass can only fill
+			// placements the screen already declared.
+			"surged_unpriced": hb.surged,
 
 			// Bought-and-sent + re-tasked spares + seed-claimed hulls, together.
 			"dispatched": hb.place.Dispatched,

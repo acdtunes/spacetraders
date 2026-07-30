@@ -353,10 +353,27 @@ type gateReach struct {
 	gates    parkedsensing.GateNeighbours
 	failures *[]error
 	cache    map[string][]string
+	// hopCache is the SAME walk's answer expressed as GATE CROSSINGS rather than as
+	// an order: origin at 0, its neighbours at 1, theirs at 2. Filled by the same
+	// sweep and memoised beside it, so asking both questions about one origin costs
+	// one walk (sp-zvywu).
+	//
+	// IT IS NOT DERIVABLE FROM `cache`, and assuming it was is a real defect this
+	// field exists to remove. Position in that slice is monotone in hops ACROSS
+	// rings but strictly increasing WITHIN one, so using it as a distance invents an
+	// ordering between systems that are equally far away — and any comparator that
+	// applies distance as a tie-break then has its earlier keys silently overridden
+	// by the alphabet.
+	hopCache map[string]map[string]int
 }
 
 func newGateReach(gates parkedsensing.GateNeighbours, failures *[]error) *gateReach {
-	return &gateReach{gates: gates, failures: failures, cache: map[string][]string{}}
+	return &gateReach{
+		gates:    gates,
+		failures: failures,
+		cache:    map[string][]string{},
+		hopCache: map[string]map[string]int{},
+	}
 }
 
 // from returns the systems within the walk's reach of origin, NEAREST RING FIRST and alphabetically
@@ -370,21 +387,44 @@ func (r *gateReach) from(ctx context.Context, origin string) []string {
 	if reachable, done := r.cache[origin]; done {
 		return reachable
 	}
-	reachable := r.walk(ctx, origin)
+	reachable, hops := r.walk(ctx, origin)
 	r.cache[origin] = reachable
+	r.hopCache[origin] = hops
 	return reachable
+}
+
+// hopsFrom returns how many GATE CROSSINGS separate origin from each system the walk
+// reaches, origin itself at 0. A system absent from the map is beyond the walk's
+// reach and must be refused rather than treated as merely distant — see walk.
+//
+// It shares from()'s memo, so the two answers about one origin always come from the
+// same sweep of the same adjacency and can never disagree about what is reachable.
+func (r *gateReach) hopsFrom(ctx context.Context, origin string) map[string]int {
+	if hops, done := r.hopCache[origin]; done {
+		return hops
+	}
+	reachable, hops := r.walk(ctx, origin)
+	r.cache[origin] = reachable
+	r.hopCache[origin] = hops
+	return hops
 }
 
 // walk is nextHopToward's search with its answer widened: the same breadth-first sweep over the same
 // stored adjacency, bounded by the same shared MaxWalkRings, reporting every system it reaches
 // rather than the first jump toward one of them. Running the same search under the same bound is
 // what makes "this pass will offer it" and "the walk can resolve it" the same set.
-func (r *gateReach) walk(ctx context.Context, origin string) []string {
+// It reports the reach TWICE over: as the nearest-ring-first order the allocation
+// policy is expressed in, and as the ring count each system sits at. One sweep, two
+// views, so no caller has to reconstruct one from the other.
+func (r *gateReach) walk(ctx context.Context, origin string) ([]string, map[string]int) {
 	if r.gates == nil {
-		return nil // unwired topology: same-system only, exactly as before the walk existed
+		// Unwired topology: same-system only, exactly as before the walk existed. The hop
+		// map still names the origin, so "where the hull stands" stays reachable at zero.
+		return nil, map[string]int{origin: 0}
 	}
 
 	var reachable []string
+	hops := map[string]int{origin: 0}
 	seen := map[string]bool{origin: true}
 	frontier := []string{origin}
 
@@ -407,6 +447,7 @@ func (r *gateReach) walk(ctx context.Context, origin string) []string {
 					continue
 				}
 				seen[candidate] = true
+				hops[candidate] = ring + 1
 				next = append(next, candidate)
 			}
 		}
@@ -416,7 +457,7 @@ func (r *gateReach) walk(ctx context.Context, origin string) []string {
 		reachable = append(reachable, next...)
 		frontier = next
 	}
-	return reachable
+	return reachable, hops
 }
 
 // takeOpenPlacement removes and returns the next placement CONSUMING it — the same
