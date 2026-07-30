@@ -37,9 +37,15 @@ import (
 // buy (sp-rd21). It is NOT a solver-plan leg — it is an opportunistic pre-jump load at the
 // reposition seam — so it carries a sentinel index rather than a 0..N plan position, making
 // look-back buys greppable in tour_leg_telemetry while still reconciling with the
-// PURCHASE_CARGO transactions they write. LegIndex is informational only (rows read back in
-// insertion order by id; the netting readers group by good/tour, never by leg_index).
-const lookbackLegIndex = -1
+// PURCHASE_CARGO transactions they write.
+//
+// LegIndex IS NOW LOAD-BEARING, and the domain constant is the single source of truth for
+// the sentinel. It was informational when only the netting readers consumed these rows (they
+// group by good/tour and never by leg_index), but sp-fpgl2 made it the discriminator for
+// PLAN BASIS: this index is what separates a cached-ask leg from a solver leg in both the
+// drift metric's basis label and the sp-1ek0 graduation report. Changing it silently
+// re-pools two populations that must not be averaged together.
+const lookbackLegIndex = trading.LookbackLegIndex
 
 // lookbackExportType is the GoodListing.TradeType value a look-back destination must NOT
 // carry: an exporter's Bid is a low sellback price, not a real import demand (sp-9mkf). It

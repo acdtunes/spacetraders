@@ -1,7 +1,9 @@
 package metrics
 
 import (
+	"fmt"
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -79,51 +81,12 @@ func gatherHistogramCount(t *testing.T, reg *prometheus.Registry, name string, l
 	return 0, false
 }
 
-// gatherSummary reads one SummaryVec series off the registry via Gather() — the same
-// path promhttp serves on /metrics — returning the exported _sum and _count (a
-// no-objectives summary exports exactly those). ok=false means the series is absent
-// (never registered, or never observed and therefore never exported).
-func gatherSummary(t *testing.T, reg *prometheus.Registry, name string, labels map[string]string) (sampleSum float64, sampleCount uint64, ok bool) {
-	t.Helper()
-	families, err := reg.Gather()
-	if err != nil {
-		t.Fatalf("Gather() error: %v", err)
-	}
-	for _, f := range families {
-		if f.GetName() != name {
-			continue
-		}
-		for _, m := range f.GetMetric() {
-			got := map[string]string{}
-			for _, lp := range m.GetLabel() {
-				got[lp.GetName()] = lp.GetValue()
-			}
-			if len(got) != len(labels) {
-				continue
-			}
-			match := true
-			for k, v := range labels {
-				if got[k] != v {
-					match = false
-					break
-				}
-			}
-			if match {
-				s := m.GetSummary()
-				return s.GetSampleSum(), s.GetSampleCount(), true
-			}
-		}
-	}
-	return 0, 0, false
-}
-
-// TestTourMetrics_LegPriceDrift pins the Plan-vs-Realized drift metric feeding
-// panel 16: each realized leg observes SIGNED drift (realized-planned)/planned*100 under
-// its side; the metric exports the _sum/_count pair the panel's
-// rate(_sum[$smooth])/rate(_count[$smooth]) windowed-average reads (so two buys sum to
-// their combined drift over a count of two = their average); buy and sell are
-// independent series; and a non-positive planned basis is skipped (no basis to divide by,
-// mirroring the SQL NULLIF(planned,0)).
+// TestTourMetrics_LegPriceDrift pins the Plan-vs-Realized drift metric feeding panel 16:
+// each realized leg's SIGNED drift (realized-planned)/planned*100 is decomposed into the
+// over-plan and under-plan totals plus a leg count, so the panel recovers the windowed
+// average as (over-under)/legs; buy and sell are independent; solver and look-back carry a
+// distinct basis; and a non-positive planned basis is skipped on all three series (no basis
+// to divide by, mirroring the SQL NULLIF(planned,0)).
 func TestTourMetrics_LegPriceDrift(t *testing.T) {
 	prev := Registry
 	t.Cleanup(func() { Registry = prev })
@@ -134,58 +97,335 @@ func TestTourMetrics_LegPriceDrift(t *testing.T) {
 		t.Fatalf("Register() error: %v", err)
 	}
 
-	const name = "spacetraders_daemon_tour_leg_price_drift_percent"
+	// Two buy legs realized ABOVE plan → the over-plan total accumulates 15 points over 2
+	// legs, so the panel's (over-under)/legs is their average, +7.5%.
+	c.ObserveLegPriceDrift("buy", PlanBasisSolver, 1000, 1100) // (1100-1000)/1000*100 = +10
+	c.ObserveLegPriceDrift("buy", PlanBasisSolver, 1000, 1050) // (1050-1000)/1000*100 = +5
 
-	// Two buy legs realized ABOVE plan → positive drift on side=buy. They accumulate so
-	// the _sum/_count pair is the AVERAGE drift the panel divides for: +10% and +5% →
-	// sum 15 over count 2 (avg 7.5).
-	c.ObserveLegPriceDrift("buy", 1000, 1100) // (1100-1000)/1000*100 = +10
-	c.ObserveLegPriceDrift("buy", 1000, 1050) // (1050-1000)/1000*100 = +5
+	// A sell leg realized BELOW plan → its MAGNITUDE lands in the under-plan total, and the
+	// recovered average is negative. The sign survives without any series ever falling.
+	c.ObserveLegPriceDrift("sell", PlanBasisSolver, 2000, 1800) // (1800-2000)/2000*100 = -10
 
-	// A sell leg realized BELOW plan → negative drift on a distinct side=sell series.
-	c.ObserveLegPriceDrift("sell", 2000, 1800) // (1800-2000)/2000*100 = -10
+	// A non-positive planned basis is skipped on BOTH sides — nothing recorded anywhere,
+	// including the leg count, which would otherwise dilute the average toward zero.
+	c.ObserveLegPriceDrift("buy", PlanBasisSolver, 0, 500)
+	c.ObserveLegPriceDrift("sell", PlanBasisSolver, -50, 500)
 
-	// A non-positive planned basis is skipped on BOTH sides — no observation recorded.
-	c.ObserveLegPriceDrift("buy", 0, 500)
-	c.ObserveLegPriceDrift("sell", -50, 500)
-
-	buySum, buyCount, ok := gatherSummary(t, Registry, name, map[string]string{"side": "buy"})
-	if !ok {
-		t.Fatalf("side=buy series not exported")
+	buy := gatherRateInputs(t, Registry, driftFamilyPrefix, map[string]string{"side": "buy"})
+	if got := buy[driftFamilyPrefix+"_legs_total"]; got != 2 {
+		t.Errorf("side=buy legs = %v, want 2 (two buys; the planned=0 buy is skipped)", got)
 	}
-	if buyCount != 2 {
-		t.Errorf("side=buy count = %d, want 2 (two buys; the planned=0 buy is skipped)", buyCount)
+	if got := buy[driftFamilyPrefix+"_over_plan_pct_total"]; math.Abs(got-15) > 1e-9 {
+		t.Errorf("side=buy over-plan total = %v, want 15 (+10 and +5)", got)
 	}
-	if math.Abs(buySum-15) > 1e-9 {
-		t.Errorf("side=buy sum = %v, want 15 (+10 and +5); rate(_sum)/rate(_count) is the avg drift", buySum)
+	if got := buy[driftFamilyPrefix+"_under_plan_pct_total"]; got != 0 {
+		t.Errorf("side=buy under-plan total = %v, want 0 (neither buy came in below plan)", got)
 	}
-	if buySum <= 0 {
-		t.Errorf("side=buy drift sum = %v, want positive (realized above plan)", buySum)
+	if mean, ok := recoverSignedMeanDrift(t, Registry, map[string]string{"side": "buy"}); !ok {
+		t.Errorf("side=buy mean drift not recoverable")
+	} else if math.Abs(mean-7.5) > 1e-9 {
+		t.Errorf("side=buy mean drift = %v, want +7.5 (realized above plan)", mean)
 	}
 
-	sellSum, sellCount, ok := gatherSummary(t, Registry, name, map[string]string{"side": "sell"})
-	if !ok {
-		t.Fatalf("side=sell series not exported")
+	sell := gatherRateInputs(t, Registry, driftFamilyPrefix, map[string]string{"side": "sell"})
+	if got := sell[driftFamilyPrefix+"_legs_total"]; got != 1 {
+		t.Errorf("side=sell legs = %v, want 1 (the planned<=0 sell is skipped)", got)
 	}
-	if sellCount != 1 {
-		t.Errorf("side=sell count = %d, want 1 (the planned<=0 sell is skipped)", sellCount)
+	if got := sell[driftFamilyPrefix+"_under_plan_pct_total"]; math.Abs(got-10) > 1e-9 {
+		t.Errorf("side=sell under-plan total = %v, want 10 (the MAGNITUDE of -10%%)", got)
 	}
-	if math.Abs(sellSum-(-10)) > 1e-9 {
-		t.Errorf("side=sell sum = %v, want -10 (realized below plan → negative drift)", sellSum)
+	if mean, ok := recoverSignedMeanDrift(t, Registry, map[string]string{"side": "sell"}); !ok {
+		t.Errorf("side=sell mean drift not recoverable")
+	} else if math.Abs(mean-(-10)) > 1e-9 {
+		t.Errorf("side=sell mean drift = %v, want -10 (realized below plan stays NEGATIVE)", mean)
+	}
+
+	// basis separates the two plan bases, which is the whole point of labeling it: a
+	// look-back leg's drift measures a cached ask reproducing itself, not the market model.
+	c.ObserveLegPriceDrift("buy", PlanBasisLookback, 1000, 1000) // exactly on its cached basis
+	lookback := gatherRateInputs(t, Registry, driftFamilyPrefix, map[string]string{"side": "buy", "basis": PlanBasisLookback})
+	if got := lookback[driftFamilyPrefix+"_legs_total"]; got != 1 {
+		t.Errorf("basis=lookback legs = %v, want 1 — the basis label must not collapse into solver", got)
+	}
+	solver := gatherRateInputs(t, Registry, driftFamilyPrefix, map[string]string{"side": "buy", "basis": PlanBasisSolver})
+	if got := solver[driftFamilyPrefix+"_legs_total"]; got != 2 {
+		t.Errorf("basis=solver legs = %v, want 2 — the look-back leg must not be counted as solver", got)
 	}
 
 	// The nil-safe contract every sibling emitter keeps (RULINGS #4): a recording miss on
 	// a typed-nil receiver or an uninitialized collector degrades to a no-op, never a
 	// SIGSEGV that would take down the trade path.
 	var nilC *TourMetricsCollector
-	nilC.ObserveLegPriceDrift("buy", 1000, 1100)
-	(&TourMetricsCollector{}).ObserveLegPriceDrift("buy", 1000, 1100)
+	nilC.ObserveLegPriceDrift("buy", PlanBasisSolver, 1000, 1100)
+	(&TourMetricsCollector{}).ObserveLegPriceDrift("buy", PlanBasisSolver, 1000, 1100)
 }
 
-// TestTourMetrics_RegisterAndExport proves ALL SIX tour metrics REGISTER on the daemon's
-// registry AND actually appear by name once observed. A registered CounterVec/HistogramVec/
+// TestTourMetrics_LegPriceDrift_BothDirectionsExportAsAPair proves a one-directional side
+// still exports BOTH direction series.
+//
+// The panel SUBTRACTS under-plan from over-plan, and PromQL binary operators drop any label
+// set absent from either operand. A side whose legs had all come in above plan would, if the
+// under-plan child were never created, produce no series to subtract at all — the line would
+// disappear from the panel exactly when every leg beat its plan. "No data" is the one thing a
+// healthy fleet must not look like.
+func TestTourMetrics_LegPriceDrift_BothDirectionsExportAsAPair(t *testing.T) {
+	prev := Registry
+	t.Cleanup(func() { Registry = prev })
+	Registry = prometheus.NewRegistry()
+
+	c := NewTourMetricsCollector()
+	if err := c.Register(); err != nil {
+		t.Fatalf("Register() error: %v", err)
+	}
+
+	// Strictly ONE direction ever fires: every leg lands above plan.
+	c.ObserveLegPriceDrift("buy", PlanBasisSolver, 1000, 1100)
+	c.ObserveLegPriceDrift("buy", PlanBasisSolver, 1000, 1200)
+
+	series := gatherRateInputs(t, Registry, driftFamilyPrefix, map[string]string{"side": "buy"})
+	for _, want := range []string{
+		driftFamilyPrefix + "_over_plan_pct_total",
+		driftFamilyPrefix + "_under_plan_pct_total",
+		driftFamilyPrefix + "_legs_total",
+	} {
+		if _, ok := series[want]; !ok {
+			t.Errorf("%s absent after only-above-plan legs; the panel's subtraction yields NO series and the line vanishes", want)
+		}
+	}
+	if mean, ok := recoverSignedMeanDrift(t, Registry, map[string]string{"side": "buy"}); !ok {
+		t.Errorf("mean drift not recoverable when only one direction fired — this is the vanishing-line bug")
+	} else if math.Abs(mean-15) > 1e-9 {
+		t.Errorf("mean drift = %v, want +15 (+10 and +20)", mean)
+	}
+}
+
+// driftFamilyPrefix is the metric-family prefix every plan-vs-realized drift series shares.
+// The monotonicity invariant below is asserted over the PREFIX rather than an exact family
+// name on purpose: the invariant binds whatever shape the drift metric takes, so a rename or
+// a split into several families must not silently stop the assertion from finding anything.
+const driftFamilyPrefix = "spacetraders_daemon_tour_leg_price_drift"
+
+// gatherRateInputs collects EVERY exported sample that a PromQL rate() could legally be
+// applied to, across all metric families whose name starts with prefix and whose labels
+// CONTAIN labels, keyed by "<family><suffix>". Counter value, Summary/Histogram _sum and
+// _count, and each Histogram bucket's cumulative count all qualify; a Gauge does not (rate()
+// is meaningless on one) and is skipped.
+//
+// SUBSET label matching, not exact-set: the drift series carry a basis label (solver vs
+// look-back manifest) that these assertions are not about, and an exact-set match would
+// quietly find nothing and pass vacuously.
+//
+// Samples sharing a key are SUMMED, not overwritten — with basis in play, one family holds
+// several series per side, and summing them is exactly the sum by (side) the panel applies.
+// Overwriting would silently report whichever basis happened to be gathered last.
+func gatherRateInputs(t *testing.T, reg *prometheus.Registry, prefix string, labels map[string]string) map[string]float64 {
+	t.Helper()
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather() error: %v", err)
+	}
+	out := map[string]float64{}
+	for _, f := range families {
+		if !strings.HasPrefix(f.GetName(), prefix) {
+			continue
+		}
+		for _, m := range f.GetMetric() {
+			got := map[string]string{}
+			for _, lp := range m.GetLabel() {
+				got[lp.GetName()] = lp.GetValue()
+			}
+			match := true
+			for k, v := range labels {
+				if got[k] != v {
+					match = false
+					break
+				}
+			}
+			if !match {
+				continue
+			}
+			base := f.GetName()
+			switch {
+			case m.GetCounter() != nil:
+				out[base] += m.GetCounter().GetValue()
+			case m.GetSummary() != nil:
+				out[base+"_sum"] += m.GetSummary().GetSampleSum()
+				out[base+"_count"] += float64(m.GetSummary().GetSampleCount())
+			case m.GetHistogram() != nil:
+				out[base+"_sum"] += m.GetHistogram().GetSampleSum()
+				out[base+"_count"] += float64(m.GetHistogram().GetSampleCount())
+				for _, b := range m.GetHistogram().GetBucket() {
+					out[fmt.Sprintf("%s_bucket{le=%v}", base, b.GetUpperBound())] += float64(b.GetCumulativeCount())
+				}
+			}
+		}
+	}
+	return out
+}
+
+// recoverSignedMeanDrift computes the signed mean drift the Plan-vs-Realized panel reads,
+// from the exported series, by MIRRORING the panel's PromQL. It is the executable statement of
+// that expression, so it MUST be changed in lockstep with both the metric shape and the expr in
+// configs/grafana/dashboards/financial.json — if the three ever disagree, the panel is lying
+// again and this helper is the thing that catches it.
+//
+// Panel expr:
+//
+//	(sum by (side) (rate(_over_plan_pct_total[w])) - sum by (side) (rate(_under_plan_pct_total[w])))
+//	  / sum by (side) (rate(_legs_total[w]))
+//
+// This helper is the instantaneous form of it (the registry holds exactly one window's
+// worth), summing across the basis label the same way the panel does. ok=false when there is
+// nothing to divide — which is also the answer if either direction's series is missing, since
+// PromQL's subtraction would likewise yield no series at all.
+func recoverSignedMeanDrift(t *testing.T, reg *prometheus.Registry, labels map[string]string) (float64, bool) {
+	t.Helper()
+	series := gatherRateInputs(t, reg, driftFamilyPrefix, labels)
+	legs, ok := series[driftFamilyPrefix+"_legs_total"]
+	if !ok || legs == 0 {
+		return 0, false
+	}
+	over, haveOver := series[driftFamilyPrefix+"_over_plan_pct_total"]
+	under, haveUnder := series[driftFamilyPrefix+"_under_plan_pct_total"]
+	if !haveOver || !haveUnder {
+		return 0, false
+	}
+	return (over - under) / legs, true
+}
+
+// TestTourMetrics_LegPriceDrift_NegativeDriftNeverDecreasesARateInput pins the invariant the
+// Plan-vs-Realized panel actually depends on: NO series the panel applies rate() to may ever
+// DECREASE, including when a leg realizes BELOW its plan.
+//
+// This is the sp-fpgl2 defect. Drift is SIGNED, so a Summary's _sum falls on every
+// under-plan leg — 29.9% of buy legs and 24.6% of sell legs in production. Prometheus reads
+// any decrease in a counter-typed series as a process restart and adds the FULL pre-reset
+// value back, so rate(_sum[w])/rate(_count[w]) does not return the windowed average drift; it
+// returns that average plus roughly the accumulated _sum at each false reset. Because the
+// accumulation grows with time since process start, the panel RAMPS. Replaying the real
+// 06:30-12:20Z buy sequence through rate()'s reset correction reproduced 3.4% climbing to
+// 132.5% against a true mean of 0.16-0.93%, which is the "0->~125%" the bead reported, while
+// the telemetry table read 0.60% unweighted and 0.48% value-weighted over the identical legs.
+// Neither number was wrong about its own data: the panel was not measuring drift at all.
+//
+// Asserted structurally rather than against one shape. A Summary whose _sum can fall, a
+// Histogram's _sum, and a plain Counter that is decremented would all fail this; a signed sum
+// decomposed into two monotone counters, or a Histogram read only through its (monotone)
+// buckets, both pass. That keeps the test binding on the invariant instead of on an
+// implementation, so it still guards the panel after any later reshaping.
+func TestTourMetrics_LegPriceDrift_NegativeDriftNeverDecreasesARateInput(t *testing.T) {
+	prev := Registry
+	t.Cleanup(func() { Registry = prev })
+	Registry = prometheus.NewRegistry()
+
+	c := NewTourMetricsCollector()
+	if err := c.Register(); err != nil {
+		t.Fatalf("Register() error: %v", err)
+	}
+
+	sell := map[string]string{"side": "sell"}
+
+	// A leg ABOVE plan first, so every series is non-zero and a later fall is unambiguous
+	// (a series that merely stays at zero would hide the defect).
+	c.ObserveLegPriceDrift("sell", PlanBasisSolver, 1000, 1100) // +10%
+	before := gatherRateInputs(t, Registry, driftFamilyPrefix, sell)
+	if len(before) == 0 {
+		t.Fatalf("no rate()-able series exported for side=sell under prefix %q — the invariant would pass vacuously", driftFamilyPrefix)
+	}
+
+	// The leg that breaks it: realized BELOW plan, so signed drift is negative.
+	c.ObserveLegPriceDrift("sell", PlanBasisSolver, 1000, 900) // -10%
+	after := gatherRateInputs(t, Registry, driftFamilyPrefix, sell)
+
+	for name, was := range before {
+		now, still := after[name]
+		if !still {
+			t.Errorf("series %s disappeared after a negative-drift observation", name)
+			continue
+		}
+		if now < was {
+			t.Errorf("series %s DECREASED %v -> %v on an under-plan leg. Prometheus rate() reads "+
+				"that as a counter reset and adds the whole %v back, which is what ramped the "+
+				"Plan-vs-Realized panel to 132%% against a true 0.6%%. Every rate() input must be "+
+				"monotonically non-decreasing.", name, was, now, was)
+		}
+	}
+
+	// A monotone series is worthless if the signed average is no longer recoverable from it,
+	// so pin the economics too: two legs at +10% and -10% average to EXACTLY zero drift.
+	// Whatever shape carries the sum must still be able to express that the two cancel.
+	if mean, ok := recoverSignedMeanDrift(t, Registry, sell); !ok {
+		t.Errorf("signed mean drift not recoverable from the exported side=sell series; the panel has nothing to divide")
+	} else if math.Abs(mean) > 1e-9 {
+		t.Errorf("recovered mean drift = %v, want 0 (+10%% and -10%% cancel)", mean)
+	}
+}
+
+// TestTourMetrics_LegPriceDrift_NeverPanicsOnAnyRealizedPrice is the RULINGS #4 guard for the
+// shape change itself.
+//
+// The drift series are CounterVecs now, and prometheus Counter.Add PANICS on a negative delta
+// ("counter cannot decrease in value") — that panic is the very thing the old SummaryVec was
+// chosen to avoid. Trading a non-panicking accumulator for a panicking one on a code path the
+// executor calls per leg is only safe if no reachable input can reach Add with a negative
+// value, and "I reasoned it cannot" is not the standard for something that would take down a
+// trade. So drive the adversarial inputs through and require survival.
+//
+// The routing is what makes it safe: the magnitude is negated into under-plan precisely when
+// drift is negative, so both operands are non-negative by construction, and planned > 0 is
+// already enforced upstream so neither NaN nor an infinity can be formed. This test is what
+// keeps that true if the routing is ever edited.
+func TestTourMetrics_LegPriceDrift_NeverPanicsOnAnyRealizedPrice(t *testing.T) {
+	prev := Registry
+	t.Cleanup(func() { Registry = prev })
+	Registry = prometheus.NewRegistry()
+
+	c := NewTourMetricsCollector()
+	if err := c.Register(); err != nil {
+		t.Fatalf("Register() error: %v", err)
+	}
+
+	cases := []struct {
+		name              string
+		planned, realized float64
+	}{
+		{"realized zero — the most negative drift possible, -100%", 1000, 0},
+		{"realized one credit under plan", 1000, 999},
+		{"realized exactly on plan — signed zero must not read as negative", 1000, 1000},
+		{"realized far above plan", 1, 1e9},
+		{"tiny basis, large realized — huge but finite drift", 1e-9, 1e9},
+		{"tiny basis, zero realized", 1e-9, 0},
+		{"negative realized price — never expected, must still not panic", 1000, -5000},
+		{"both at the smallest positive basis", 1e-300, 1e-300},
+	}
+	for _, tc := range cases {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("%s: ObserveLegPriceDrift PANICKED (%v) — a metrics call must never "+
+						"be able to kill a trade leg (RULINGS #4)", tc.name, r)
+				}
+			}()
+			c.ObserveLegPriceDrift("buy", PlanBasisSolver, tc.planned, tc.realized)
+			c.ObserveLegPriceDrift("sell", PlanBasisLookback, tc.planned, tc.realized)
+		}()
+	}
+
+	// Survival is not enough — the series must still be readable afterwards, or a "safe"
+	// no-panic path could be one that quietly recorded nothing.
+	if _, ok := recoverSignedMeanDrift(t, Registry, map[string]string{"side": "buy"}); !ok {
+		t.Errorf("no readable drift series after the adversarial sweep")
+	}
+}
+
+// TestTourMetrics_RegisterAndExport proves EVERY tour metric family REGISTERS on the daemon's
+// registry AND actually appears by name once observed. A registered CounterVec/HistogramVec/
 // GaugeVec exports nothing until a label combination is touched — the bopj P10 trap where a
 // family was "registered" yet never showed on /metrics. Registration alone is not export.
+//
+// The list below must stay EXHAUSTIVE. It previously omitted the plan-rate and price-drift
+// families, so it passed without ever gathering them — and a panel reading a family no test
+// exports is precisely how sp-fpgl2 went unnoticed for as long as it did.
 func TestTourMetrics_RegisterAndExport(t *testing.T) {
 	prev := Registry
 	t.Cleanup(func() { Registry = prev })
@@ -205,6 +445,8 @@ func TestTourMetrics_RegisterAndExport(t *testing.T) {
 	c.SetResolvedMaxSpend(1, 250000)
 	c.RecordJumpLoaded(1, true)
 	c.SetFactoryGoodAcquisitionCost(1, "CLOTHING", "stock", 100)
+	c.ObservePlanRate(1, "projected", 12345)
+	c.ObserveLegPriceDrift("buy", PlanBasisSolver, 1000, 1100)
 
 	families, err := Registry.Gather()
 	if err != nil {
@@ -223,6 +465,10 @@ func TestTourMetrics_RegisterAndExport(t *testing.T) {
 		"spacetraders_daemon_tour_resolved_max_spend",
 		"spacetraders_daemon_tour_jump_loaded_total",
 		"spacetraders_daemon_tour_factory_good_acquisition_cost",
+		"spacetraders_daemon_tour_plan_rate",
+		"spacetraders_daemon_tour_leg_price_drift_over_plan_pct_total",
+		"spacetraders_daemon_tour_leg_price_drift_under_plan_pct_total",
+		"spacetraders_daemon_tour_leg_price_drift_legs_total",
 	} {
 		if !got[want] {
 			t.Errorf("metric %q registered but not exported on the registry", want)

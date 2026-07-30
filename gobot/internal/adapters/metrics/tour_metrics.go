@@ -105,19 +105,70 @@ type TourMetricsCollector struct {
 	// the analyst reads the level and its stock/market split, not a distribution.
 	factoryGoodAcquisitionCost *prometheus.GaugeVec
 
-	// legPriceDriftPercent observes each realized tour leg's unit-price drift from the
-	// solver's plan — (realized-planned)/planned*100 — keyed by side (buy|sell).
-	// A SummaryVec with NO objectives: it exports only _sum and _count (no
-	// quantile streams), so the Plan-vs-Realized panel reads
-	// rate(_sum[$smooth])/rate(_count[$smooth]) = the windowed AVERAGE drift, exactly
-	// the SQL AVG it replaces. Deliberately UNLABELED by player_id: the panel is a
-	// global cross-player average and the prescribed expr does no aggregation, so a
-	// player_id split would fan the two intended buy/sell lines into one-line-per-player.
-	// A non-positive planned basis is skipped (nothing to divide by — mirrors the SQL
-	// NULLIF(planned,0)); drift is SIGNED, so Summary (not a CounterVec, whose Add
-	// panics on the negative sell-side drift) is the correct shape.
-	legPriceDriftPercent *prometheus.SummaryVec
+	// legPriceDriftOverPlanPct / legPriceDriftUnderPlanPct / legPriceDriftLegs carry each
+	// realized tour leg's unit-price drift from plan — (realized-planned)/planned*100 —
+	// DECOMPOSED into two one-way totals plus a leg count, all keyed by side (buy|sell)
+	// and basis (solver|lookback).
+	//
+	// WHY THREE COUNTERS AND NOT ONE SUMMARY (sp-fpgl2). This was a SummaryVec with no
+	// objectives, exporting _sum/_count so the Plan-vs-Realized panel could read
+	// rate(_sum[w])/rate(_count[w]) as the windowed average — "exactly the SQL AVG it
+	// replaces". It was not. Drift is SIGNED, so _sum FELL on every under-plan leg
+	// (29.9% of buy legs and 24.6% of sell legs in production), and Prometheus reads any
+	// decrease in a counter-typed series as a process restart: rate() adds the full
+	// pre-reset value back. The panel therefore reported the true average PLUS roughly
+	// the accumulated _sum at each false reset, and since that accumulation grows with
+	// time since process start, it RAMPED. Replaying the real 06:30-12:20Z buy sequence
+	// through rate()'s reset correction reproduced 3.4% climbing to 132.5% against a true
+	// mean of 0.16-0.93%. The telemetry table read 0.60% unweighted / 0.48%
+	// value-weighted over the identical legs and was right all along.
+	//
+	// Splitting the signed sum by direction makes every series a genuine monotone
+	// counter, which is the only shape rate() is defined on. The windowed average is
+	// recovered exactly:
+	//
+	//	(sum by (side) (rate(over_plan[w])) - sum by (side) (rate(under_plan[w])))
+	//	  / sum by (side) (rate(legs[w]))
+	//
+	// so the panel keeps the same meaning it always claimed, now truthfully. under_plan
+	// accumulates the ABSOLUTE value of negative drift — a CounterVec.Add panics on a
+	// negative delta, and that panic is precisely the constraint the Summary was chosen
+	// to dodge; carrying the magnitude in its own counter respects it instead.
+	//
+	// NOTE FOR ANYONE READING OLDER FIGURES: the former
+	// tour_leg_price_drift_percent{_sum,_count} series are GONE, and every drift number
+	// quoted from that panel before sp-fpgl2 (including the "~97-125% buy drift" in the
+	// bead) is an artifact of the defect above, not a measurement. The table figures from
+	// the same windows are the honest ones.
+	//
+	// Deliberately UNLABELED by player_id: the panel is a global cross-player average, so
+	// a player_id split would fan the two intended buy/sell lines into
+	// one-line-per-player. basis IS labeled — mixing the solver's ExpectedUnitPrice with
+	// the look-back manifest's cached SourceAsk is what made the panel uninterpretable —
+	// and the panel aggregates it away with sum by (side) so the default view still shows
+	// exactly two lines while an analyst can split on basis when they want it.
+	//
+	// A non-positive planned basis is skipped on all three (nothing to divide by —
+	// mirrors the SQL NULLIF(planned,0)), which is also why distress liquidations, whose
+	// basis is deliberately left at zero, appear in none of them.
+	legPriceDriftOverPlanPct  *prometheus.CounterVec
+	legPriceDriftUnderPlanPct *prometheus.CounterVec
+	legPriceDriftLegs         *prometheus.CounterVec
 }
+
+// The basis label vocabulary for the leg price-drift series. Defined here, beside the Help
+// text that documents them, so the label values have ONE source of truth rather than string
+// literals scattered across the emitter and its tests — a typo in a label value does not fail
+// a build, it silently splits a series into two.
+//
+// PlanBasisSolver: the expectation came from the tour planner's own projection, so the drift
+// measures the market model. PlanBasisLookback: it came from the look-back manifest's cached
+// SourceAsk, and the buy is gated to a tolerance band around that number, so a fresh cache
+// largely reproduces itself — informative about staleness, but NOT evidence about the model.
+const (
+	PlanBasisSolver   = "solver"
+	PlanBasisLookback = "lookback"
+)
 
 // NewTourMetricsCollector creates a new tour metrics collector.
 func NewTourMetricsCollector() *TourMetricsCollector {
@@ -224,14 +275,34 @@ func NewTourMetricsCollector() *TourMetricsCollector {
 			[]string{"player_id", "good_symbol", "source"},
 		),
 
-		legPriceDriftPercent: prometheus.NewSummaryVec(
-			prometheus.SummaryOpts{
+		legPriceDriftOverPlanPct: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
 				Namespace: namespace,
 				Subsystem: subsystem,
-				Name:      "tour_leg_price_drift_percent",
-				Help:      "Realized-vs-planned tour leg unit-price drift percent by side (side=buy|sell): (realized-planned)/planned*100. No objectives — exports _sum/_count for a windowed-average panel rate(_sum[w])/rate(_count[w]); a non-positive planned basis is skipped (sp-umyb).",
+				Name:      "tour_leg_price_drift_over_plan_pct_total",
+				Help:      "Cumulative percentage points by which realized tour leg unit prices came in ABOVE plan, by side (buy|sell) and basis (solver|lookback). Pairs with _under_plan_pct_total and _legs_total: the windowed average drift is (sum by (side) (rate(over[w])) - sum by (side) (rate(under[w]))) / sum by (side) (rate(legs[w])). Split one-way so every series is a true monotone counter — a signed sum breaks rate() (sp-fpgl2).",
 			},
-			[]string{"side"},
+			[]string{"side", "basis"},
+		),
+
+		legPriceDriftUnderPlanPct: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Subsystem: subsystem,
+				Name:      "tour_leg_price_drift_under_plan_pct_total",
+				Help:      "Cumulative percentage points by which realized tour leg unit prices came in BELOW plan (absolute magnitude), by side (buy|sell) and basis (solver|lookback). Subtracted from _over_plan_pct_total to recover the signed average — see that metric's help (sp-fpgl2).",
+			},
+			[]string{"side", "basis"},
+		),
+
+		legPriceDriftLegs: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Subsystem: subsystem,
+				Name:      "tour_leg_price_drift_legs_total",
+				Help:      "Realized tour legs that contributed a price-drift observation, by side (buy|sell) and basis (solver|lookback) — the DENOMINATOR of the windowed average drift. Excludes legs with a non-positive planned basis (nothing to divide by), which is why distress liquidations never appear (sp-fpgl2).",
+			},
+			[]string{"side", "basis"},
 		),
 	}
 }
@@ -254,7 +325,9 @@ func (c *TourMetricsCollector) Register() error {
 		c.jumpLoadedTotal,
 		c.planRate,
 		c.factoryGoodAcquisitionCost,
-		c.legPriceDriftPercent,
+		c.legPriceDriftOverPlanPct,
+		c.legPriceDriftUnderPlanPct,
+		c.legPriceDriftLegs,
 	}
 
 	for _, metric := range metrics {
@@ -357,19 +430,46 @@ func (c *TourMetricsCollector) ObservePlanRate(playerID int, phase string, credi
 	c.planRate.WithLabelValues(strconv.Itoa(playerID), phase).Observe(creditsPerHour)
 }
 
-// ObserveLegPriceDrift observes one realized tour leg's unit-price drift from the
-// solver's plan, keyed by side ("buy"|"sell"). Drift is
-// (realized-planned)/planned*100 (SIGNED: buy over plan is positive, sell under plan
-// is negative). A non-positive planned basis is SKIPPED — there is no basis to divide
-// by (mirrors the SQL NULLIF(planned,0)). Best-effort/nil-safe: a recording miss never
-// panics a trade path (RULINGS #4).
-func (c *TourMetricsCollector) ObserveLegPriceDrift(side string, planned, realized float64) {
-	if c == nil || c.legPriceDriftPercent == nil {
+// ObserveLegPriceDrift records one realized tour leg's unit-price drift from its plan,
+// keyed by side ("buy"|"sell") and basis ("solver"|"lookback"). Drift is
+// (realized-planned)/planned*100, and its SIGN is preserved by routing the magnitude to
+// one of two one-way counters: over plan (realized above planned) or under plan (below).
+// The leg counter always advances, so the two totals and the count together give the
+// exact signed average — see the field docs for the panel expression and for why a single
+// signed Summary could not be read with rate() (sp-fpgl2).
+//
+// A non-positive planned basis is SKIPPED on all three series — there is no basis to
+// divide by (mirrors the SQL NULLIF(planned,0)), and a leg counted without a contribution
+// would dilute the average toward zero, which is the direction a measurement must never
+// drift on its own (RULINGS #4).
+//
+// Best-effort/nil-safe: a recording miss never panics a trade path (RULINGS #4).
+func (c *TourMetricsCollector) ObserveLegPriceDrift(side, basis string, planned, realized float64) {
+	if c == nil || c.legPriceDriftOverPlanPct == nil || c.legPriceDriftUnderPlanPct == nil || c.legPriceDriftLegs == nil {
 		return // Recording is best-effort; never panic a trade path (RULINGS #4).
 	}
 	if planned <= 0 {
 		return // No planned basis to divide by — skip (mirrors the SQL NULLIF(planned,0)).
 	}
 	drift := (realized - planned) / planned * 100
-	c.legPriceDriftPercent.WithLabelValues(side).Observe(drift)
+
+	// The MAGNITUDE goes to the matching direction; the sign lives in the choice of series
+	// and never in the value, because Counter.Add panics on a negative delta.
+	over, under := 0.0, 0.0
+	if drift >= 0 {
+		over = drift
+	} else {
+		under = -drift
+	}
+
+	// BOTH directions are touched on every observation, even with a zero delta, so the two
+	// series always exist as a PAIR for any (side, basis) that has been seen. The panel
+	// SUBTRACTS one from the other, and PromQL binary operators drop any label set missing
+	// from either side: were the under-plan series left uncreated, a side whose legs had all
+	// come in above plan would produce no series to subtract and the line would vanish from
+	// the panel entirely — the metric reading as "no data" precisely when the news is good.
+	// Add(0) creates the child without moving the total.
+	c.legPriceDriftOverPlanPct.WithLabelValues(side, basis).Add(over)
+	c.legPriceDriftUnderPlanPct.WithLabelValues(side, basis).Add(under)
+	c.legPriceDriftLegs.WithLabelValues(side, basis).Inc()
 }

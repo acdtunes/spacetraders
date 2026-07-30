@@ -2658,6 +2658,22 @@ func shipHeldUnits(ship *navigation.Ship, good string) int {
 	return c.GetItemUnits(good)
 }
 
+// legPlanBasis names the plan basis behind a leg's ExpectedUnitPrice, using the drift
+// metric's own label vocabulary. The synthetic look-back manifest leg is the only one that
+// carries a cached SourceAsk instead of the solver's projection, and lookbackLegIndex is
+// exactly how that leg is already marked.
+//
+// The distress liquidation path passes an index at or above liquidationLegIndexBase and so
+// lands here as the solver basis, which is harmless and never actually observed: it
+// deliberately leaves its plan basis at zero rather than inventing one, and a non-positive
+// basis is skipped before any drift series moves.
+func legPlanBasis(legIdx int) string {
+	if legIdx == lookbackLegIndex {
+		return metrics.PlanBasisLookback
+	}
+	return metrics.PlanBasisSolver
+}
+
 func (h *RunTourCoordinatorHandler) recordLeg(
 	ctx context.Context,
 	cmd *RunTourCoordinatorCommand,
@@ -2668,11 +2684,19 @@ func (h *RunTourCoordinatorHandler) recordLeg(
 	plannedAt time.Time,
 ) {
 	// Emit the realized-vs-planned unit-price drift (feeds the Plan vs Realized Drift %
-	// panel) keyed by side. Independent of the telemetry repo — a nil telemetry sink
-	// must not suppress it — and nil-safe, so a metrics miss never touches the trade
-	// path (RULINGS #4). ExpectedUnitPrice is the plan basis; a non-positive basis is
-	// skipped downstream.
-	metrics.ObserveTourLegPriceDrift(tradeSide(trade), float64(trade.ExpectedUnitPrice), float64(realizedUnitPrice))
+	// panel) keyed by side and by WHICH plan basis produced the expectation. Independent
+	// of the telemetry repo — a nil telemetry sink must not suppress it — and nil-safe,
+	// so a metrics miss never touches the trade path (RULINGS #4). ExpectedUnitPrice is
+	// the plan basis; a non-positive basis is skipped downstream.
+	//
+	// The basis label matters because these are not the same measurement (sp-fpgl2). A
+	// solver leg's ExpectedUnitPrice is the planner's own projection, so its drift tests
+	// the market model. A look-back leg's is the CACHED SourceAsk the manifest was built
+	// from, and the buy is gated to a tolerance band around that very number, so a fresh
+	// cache reproduces itself: those legs measured a median absolute error of EXACTLY
+	// 0.000% over 1423 production rows against the solver's 0.518%. Averaged together
+	// they read as one number that describes neither.
+	metrics.ObserveTourLegPriceDrift(tradeSide(trade), legPlanBasis(legIdx), float64(trade.ExpectedUnitPrice), float64(realizedUnitPrice))
 	if h.telemetry == nil {
 		return
 	}

@@ -48,6 +48,12 @@ func (r *TourTelemetryRepositoryGORM) RecordLeg(ctx context.Context, leg trading
 
 // ListByPlayer returns playerID's telemetry rows whose planned_at is at or after
 // since, ordered by insertion (id ASC) so a tour's legs read back in execution order.
+//
+// planned_at holds when EXECUTION of the leg started, not when the plan was made (see
+// trading.TourLegTelemetry.PlannedAt for why it must stay that way), so this window admits
+// legs by the moment the hull acted. A tour's legs are stamped incrementally as it runs, so
+// a tour straddling either boundary is the normal case rather than an edge — which is what
+// tour_rate.go's trade matching exists to handle.
 func (r *TourTelemetryRepositoryGORM) ListByPlayer(ctx context.Context, playerID int, since time.Time) ([]trading.TourLegTelemetry, error) {
 	var rows []TourLegTelemetryModel
 	if err := r.db.WithContext(ctx).

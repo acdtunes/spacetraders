@@ -23,6 +23,23 @@ import (
 // violations, (ii) realized $/hr ≥ 1.5× the trailing single-lane $/hr, and (iii)
 // median plan-vs-realized price error ≤ ±15% (the metric that proves the model, not
 // just profit). `tour report` measures all three from the telemetry + ledger.
+//
+// sp-fpgl2 — criterion (iii) IS NOW SOLVER-BASIS ONLY, and the figure changed meaning.
+// It formerly pooled every leg with a positive plan basis, including look-back manifest
+// buys whose basis is a CACHED ask the buy is itself gated against. Those legs converge on
+// zero error by construction: in production they measured a median of EXACTLY 0.000% over
+// 1423 of 3733 rows (38%), dragging the printed figure from the solver's 0.518% down to
+// 0.309%. The gate was grading a number that described neither population.
+//
+// THE VERDICT DID NOT CHANGE and no hull graduated that should not have — 0.518% and 0.309%
+// are both far under the ±15% bar. This is a truthfulness repair to a reported figure, not a
+// re-adjudication. Any figure quoted from this report before sp-fpgl2 is the pooled one and
+// reads LOWER than the model's true error.
+//
+// The split can only TIGHTEN the gate, which is the only direction a measurement may move on
+// its own (RULINGS #4): look-back legs sit at ~0%, so pooling them could only pull the median
+// down toward passing. A window with no solver leg leaves criterion (iii) unavailable and the
+// gate fails closed — a cached ask agreeing with itself is not evidence about the model.
 const (
 	tourGateMinTours    = 10
 	tourGateMinRatio    = 1.5
@@ -30,6 +47,11 @@ const (
 )
 
 // TourGateMetrics holds the three computed graduation-gate metrics plus the verdict.
+//
+// The price error is reported per PLAN BASIS rather than pooled (sp-fpgl2). MedianPriceErrorPct
+// is the SOLVER median — the figure criterion (iii) has always claimed to be — and the
+// look-back pair beside it is reported, not discarded, so a reader can see how much of the
+// window each population accounts for.
 type TourGateMetrics struct {
 	ToursCompleted           int
 	GuardViolations          int
@@ -37,9 +59,21 @@ type TourGateMetrics struct {
 	SingleLaneCreditsPerHour float64
 	RatioAvailable           bool
 	Ratio                    float64
-	MedianPriceErrorPct      float64
-	MedianAvailable          bool
-	Pass                     bool
+
+	// MedianPriceErrorPct is the median |planned−realized|/planned over SOLVER legs only,
+	// and the value the verdict grades. SolverLegCount is how many legs it was taken over.
+	MedianPriceErrorPct float64
+	MedianAvailable     bool
+	SolverLegCount      int
+
+	// The look-back manifest population, reported for honesty and never graded. Its basis is
+	// a cached ask the buy is gated against, so it trends to ~0% error and says nothing about
+	// the market model.
+	LookbackMedianPriceErrorPct float64
+	LookbackMedianAvailable     bool
+	LookbackLegCount            int
+
+	Pass bool
 }
 
 // tourReportSource is the report's data dependency, split out so the compute/render
@@ -82,14 +116,25 @@ type tourReportSource interface {
 // closed (n/a) so the gate cannot pass on a fabricated number.
 func computeTourGateMetrics(rows []trading.TourLegTelemetry, failedTours int, tourCPH float64, tourCPHAvailable bool, singleLaneCPH float64, singleLaneAvailable bool) TourGateMetrics {
 	tourIDs := map[string]bool{}
-	var errs []float64
+	var solverErrs, lookbackErrs []float64
 
 	for _, r := range rows {
 		tourIDs[r.TourID] = true
 
 		// Price error only over executed trades with a realized price (telemetry-native).
+		// A non-positive planned basis is a distress liquidation, which records no basis
+		// rather than inventing one — excluded here exactly as every other reader excludes it.
 		if r.RealizedUnits > 0 && r.PlannedUnitPrice > 0 && r.RealizedUnitPrice > 0 {
-			errs = append(errs, math.Abs(float64(r.RealizedUnitPrice-r.PlannedUnitPrice))/float64(r.PlannedUnitPrice)*100)
+			e := math.Abs(float64(r.RealizedUnitPrice-r.PlannedUnitPrice)) / float64(r.PlannedUnitPrice) * 100
+			// SPLIT BY PLAN BASIS, never pooled (sp-fpgl2). A look-back leg is compared
+			// against the cached ask its own buy was gated to, so it converges on 0% and
+			// tells us nothing about the solver's model; averaging the two produces a figure
+			// describing neither.
+			if r.IsLookbackManifestLeg() {
+				lookbackErrs = append(lookbackErrs, e)
+			} else {
+				solverErrs = append(solverErrs, e)
+			}
 		}
 	}
 
@@ -105,9 +150,15 @@ func computeTourGateMetrics(rows []trading.TourLegTelemetry, failedTours int, to
 		m.RatioAvailable = true
 		m.Ratio = tourCPH / singleLaneCPH
 	}
-	if len(errs) > 0 {
+	m.SolverLegCount = len(solverErrs)
+	m.LookbackLegCount = len(lookbackErrs)
+	if len(solverErrs) > 0 {
 		m.MedianAvailable = true
-		m.MedianPriceErrorPct = medianFloat(errs)
+		m.MedianPriceErrorPct = medianFloat(solverErrs)
+	}
+	if len(lookbackErrs) > 0 {
+		m.LookbackMedianAvailable = true
+		m.LookbackMedianPriceErrorPct = medianFloat(lookbackErrs)
 	}
 
 	m.Pass = m.ToursCompleted >= tourGateMinTours &&
@@ -136,10 +187,16 @@ func renderTourReport(m TourGateMetrics, w io.Writer) {
 	} else {
 		fmt.Fprintf(w, "  2. Tour $/hr: %.0f   (single-lane baseline unavailable → ratio n/a)\n", m.TourCreditsPerHour)
 	}
+	// Reported per plan basis, never pooled (sp-fpgl2). The solver line is the graded one;
+	// the look-back line is shown with its count so the reader can see how much of the window
+	// it accounts for, rather than having 38% of the rows silently dropped.
 	if m.MedianAvailable {
-		fmt.Fprintf(w, "  3. Median plan-vs-realized price error: %.1f%%\n", m.MedianPriceErrorPct)
+		fmt.Fprintf(w, "  3. Median plan-vs-realized price error (solver basis): %.1f%%  over %d legs\n", m.MedianPriceErrorPct, m.SolverLegCount)
 	} else {
-		fmt.Fprintln(w, "  3. Median plan-vs-realized price error: n/a (no executed trades)")
+		fmt.Fprintln(w, "  3. Median plan-vs-realized price error (solver basis): n/a (no solver-planned trades)")
+	}
+	if m.LookbackMedianAvailable {
+		fmt.Fprintf(w, "     look-back manifest basis:   %.1f%%  over %d legs  (not graded: a cached ask compared against itself)\n", m.LookbackMedianPriceErrorPct, m.LookbackLegCount)
 	}
 	verdict := "FAIL"
 	if m.Pass {

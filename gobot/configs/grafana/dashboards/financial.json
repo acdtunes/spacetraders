@@ -1153,7 +1153,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Realized vs solver-planned unit prices per leg, as the windowed-average drift percent: rate(_sum[$smooth])/rate(_count[$smooth]) over the sp-umyb tour_leg_price_drift_percent summary (matches the SQL AVG it replaces). Positive buy drift = paying over plan (ladder pressure); negative sell drift = margin decay between plan and execution. Legacy SQL kept hidden as a cross-check.",
+      "description": "Realized vs planned unit prices per leg, as the windowed-average signed drift percent: (rate(_over_plan_pct_total) - rate(_under_plan_pct_total)) / rate(_legs_total). Positive buy drift = paying over plan (ladder pressure); negative sell drift = margin decay between plan and execution. The SQL cross-check is plotted alongside and the two lines should track each other; a sustained gap means the metric is lying, not the market. sp-fpgl2: this panel formerly read rate(_sum)/rate(_count) over a SIGNED summary, whose _sum FELL on every under-plan leg (~30% of them) - rate() reads any fall as a counter reset and adds the whole accumulated sum back, which ramped the line to ~130% against a true ~0.6%. Every drift figure quoted from this panel before that fix is an artifact, not a measurement; the SQL series from the same window is the honest one. Legs are labelled by basis (solver = the planner's own projection, the one that tests the market model; lookback = the look-back manifest's cached SourceAsk, which the buy is gated against and so largely reproduces itself) - both are summed here, split on basis to separate them.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1198,7 +1198,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "rate(spacetraders_daemon_tour_leg_price_drift_percent_sum{side=\"buy\"}[$smooth]) / rate(spacetraders_daemon_tour_leg_price_drift_percent_count{side=\"buy\"}[$smooth])",
+          "expr": "(sum(rate(spacetraders_daemon_tour_leg_price_drift_over_plan_pct_total{side=\"buy\"}[$smooth])) - sum(rate(spacetraders_daemon_tour_leg_price_drift_under_plan_pct_total{side=\"buy\"}[$smooth]))) / sum(rate(spacetraders_daemon_tour_leg_price_drift_legs_total{side=\"buy\"}[$smooth]))",
           "legendFormat": "buy drift %",
           "range": true,
           "refId": "A"
@@ -1209,7 +1209,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "rate(spacetraders_daemon_tour_leg_price_drift_percent_sum{side=\"sell\"}[$smooth]) / rate(spacetraders_daemon_tour_leg_price_drift_percent_count{side=\"sell\"}[$smooth])",
+          "expr": "(sum(rate(spacetraders_daemon_tour_leg_price_drift_over_plan_pct_total{side=\"sell\"}[$smooth])) - sum(rate(spacetraders_daemon_tour_leg_price_drift_under_plan_pct_total{side=\"sell\"}[$smooth]))) / sum(rate(spacetraders_daemon_tour_leg_price_drift_legs_total{side=\"sell\"}[$smooth]))",
           "legendFormat": "sell drift %",
           "range": true,
           "refId": "B"
@@ -1221,9 +1221,9 @@
           },
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT $__timeGroupAlias(realized_at, '30m'), CASE WHEN is_buy THEN 'buy drift %' ELSE 'sell drift %' END AS metric, AVG((realized_unit_price - planned_unit_price)::numeric / NULLIF(planned_unit_price, 0) * 100) AS \"drift\" FROM tour_leg_telemetry WHERE $__timeFilter(realized_at) AND realized_at IS NOT NULL GROUP BY 1, 2 ORDER BY 1",
+          "rawSql": "SELECT $__timeGroupAlias(realized_at, '30m'), CASE WHEN is_buy THEN 'buy drift % (SQL)' ELSE 'sell drift % (SQL)' END AS metric, AVG((realized_unit_price - planned_unit_price)::numeric / NULLIF(planned_unit_price, 0) * 100) AS \"drift\" FROM tour_leg_telemetry WHERE $__timeFilter(realized_at) AND realized_at IS NOT NULL GROUP BY 1, 2 ORDER BY 1",
           "refId": "C",
-          "hide": true
+          "hide": false
         }
       ],
       "title": "Plan vs Realized Unit Price Drift %",
