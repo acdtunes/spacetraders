@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	ledgerCommands "github.com/andrescamacho/spacetraders-go/internal/application/ledger/commands"
@@ -382,13 +383,33 @@ func (h *PurchaseShipHandler) recordShipPurchaseTransaction(
 		agentSymbol = playerData.AgentSymbol
 	}
 
+	// The hull this purchase produced, taken from the created ship in the purchase
+	// response — the ONLY place the real symbol appears. The shipyard transaction's
+	// own `shipSymbol` field is the API's deprecated alias for the ship TYPE
+	// ("SHIP_HEAVY_FREIGHTER"), so reading it here is what left every historical
+	// PURCHASE_SHIP row unjoinable to the hull it bought (sp-mjmqf). Empty only if
+	// the response carried no ship, in which case the row stays unattributed
+	// rather than re-stamping a type into a field named ship_symbol.
+	hullSymbol := ""
+	if purchaseResult.Ship != nil {
+		hullSymbol = purchaseResult.Ship.Symbol
+	}
+
 	// Build metadata
 	metadata := map[string]interface{}{
 		"agent":          agentSymbol,
 		"ship_type":      cmd.ShipType,
-		"ship_symbol":    purchaseResult.Transaction.ShipSymbol,
+		"ship_symbol":    hullSymbol,
 		"waypoint":       shipyardWaypoint,
-		"transaction_id": purchaseResult.Transaction.ShipSymbol, // Use ship symbol as transaction reference
+		"transaction_id": hullSymbol, // Use ship symbol as transaction reference
+	}
+
+	// The server's own purchase instant, so hull age is read from the receipt
+	// instead of inferred from the hull's first trade (which understates it by the
+	// purchase-to-first-tour gap). Omitted entirely when unparseable so a consumer
+	// casting this key can never trip over a malformed value.
+	if purchasedAt, ok := normalisePurchaseTimestamp(purchaseResult.Transaction.Timestamp); ok {
+		metadata["purchased_at"] = purchasedAt
 	}
 
 	// Create record transaction command
@@ -402,6 +423,14 @@ func (h *PurchaseShipHandler) recordShipPurchaseTransaction(
 		Description:          fmt.Sprintf("Purchased %s ship at %s", cmd.ShipType, shipyardWaypoint),
 		Metadata:             metadata,
 		OperationType:        "fleet expansion", // Ship purchases are fleet expansion operations
+	}
+
+	// First-class entity link so capex joins to the hull on an indexed column
+	// rather than a JSON key. Set as a pair or not at all — a "ship" link with no
+	// id is worse than an absent one.
+	if hullSymbol != "" {
+		recordCmd.RelatedEntityType = "ship"
+		recordCmd.RelatedEntityID = hullSymbol
 	}
 
 	// Record transaction via mediator (use passed context, not Background)
@@ -420,6 +449,19 @@ func (h *PurchaseShipHandler) recordShipPurchaseTransaction(
 			"price":     purchaseResult.Transaction.Price,
 		})
 	}
+}
+
+// normalisePurchaseTimestamp re-formats the shipyard transaction's timestamp as
+// canonical RFC3339 UTC, reporting false when the API sent nothing usable.
+// Normalising here (rather than passing the raw string through) is what lets a
+// consumer cast metadata->>'purchased_at' unguarded: the key is either absent or
+// a valid timestamp, never an empty or malformed string.
+func normalisePurchaseTimestamp(raw string) (string, bool) {
+	parsed, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return "", false
+	}
+	return parsed.UTC().Format(time.RFC3339), true
 }
 
 // discoverNearestShipyard discovers the nearest shipyard that sells the desired ship type
