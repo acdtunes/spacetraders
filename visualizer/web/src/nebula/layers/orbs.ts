@@ -18,6 +18,12 @@ import { makeGlowTexture } from '../glowTexture';
 export interface OrbsHandle {
   /** Region-band label sub-container (child of layers.labels) — fade this, not the shared layer. */
   labels: Container;
+  /** Threads touching the traded neighbourhood: hoverable, one Graphics each.
+   * Rides `layers.orbs` visibility, so it shows across REGION and SYSTEM. */
+  nearThreads: Container;
+  /** The rest of the lattice: batched and inert. NebulaScene holds this back
+   * until the SYSTEM band (or the Lattice toggle) asks for the full web. */
+  farThreads: Container;
 }
 
 // Palette (exact — see revamp spec).
@@ -75,8 +81,17 @@ const RING_SCALE = 1.8;
 
 const THREAD_WIDTH_PX = 1;
 const THREAD_ALPHA = 0.3;
+/** The far tier draws at roughly half the near tier's alpha, so when SYSTEM (or
+ * the Lattice toggle) reveals the whole web the traded subgraph still reads as
+ * the foreground rather than dissolving into it. */
+const THREAD_FAR_ALPHA = 0.16;
 const DASH_ON_PX = 4;
 const DASH_OFF_PX = 4;
+
+/** Thread-tier sub-containers inside `layers.orbs` — NebulaScene gates the far
+ * tier by band, and the build tests assert per-tier membership by these labels. */
+export const THREADS_NEAR = 'threads-near';
+export const THREADS_FAR = 'threads-far';
 
 /** Screen-px pad around an orb's visual radius for its pointer hit circle. */
 const ORB_HIT_PAD_PX = 4;
@@ -111,7 +126,15 @@ export function buildOrbs(layers: Layers, data: SceneData, renderer: Renderer, e
   clearLayer(layers.orbs);
   const labelBox = ensureRegionLabels(layers.labels);
   clearLayer(labelBox);
-  const handle: OrbsHandle = { labels: labelBox };
+  // Tier boxes go in FIRST (far under near under every orb) and always exist, so
+  // NebulaScene's per-tick gate never has to null-check an empty scene.
+  const farBox = new Container();
+  farBox.label = THREADS_FAR;
+  layers.orbs.addChild(farBox);
+  const nearBox = new Container();
+  nearBox.label = THREADS_NEAR;
+  layers.orbs.addChild(nearBox);
+  const handle: OrbsHandle = { labels: labelBox, nearThreads: nearBox, farThreads: farBox };
   if (data.systems.length === 0) return handle;
 
   const fit = worldBounds(data.fitPoints);
@@ -122,46 +145,86 @@ export function buildOrbs(layers: Layers, data: SceneData, renderer: Renderer, e
   const maxActivity = data.systems.reduce((m, s) => Math.max(m, Math.abs(s.activity)), 0);
 
   // ---- Dormant threads: the RAW gate topology (data.edges — spec L1) as faint
-  // slate lines, added FIRST so every orb renders on top. One Graphics PER
-  // directed edge (`thread:<from→to>`, matching the old Konva scene, which drew
-  // every gate edge; dashed via manual 4/4 segments when THAT edge is under
-  // construction — pixi Graphics has no native dash) so each thread is its own
-  // hover target; the stroke's own bounds serve as the hit area. The `from→to`
-  // key is the FlowTooltip lane-key shape.
-  const threadStyle = { width: THREAD_WIDTH_PX * worldPerPx, color: SLATE, alpha: THREAD_ALPHA } as const;
+  // slate lines, added before the orbs so every orb renders on top. TIERED by
+  // sceneData's `relevant` flag, because an undifferentiated lattice stopped
+  // working when the gate graph hit ~5.2k edges — it renders as an opaque mat
+  // that buries the trade lanes (sp-fw6a2):
+  //   NEAR — edges touching the traded neighbourhood. One Graphics PER directed
+  //     edge (`thread:<from→to>`, the FlowTooltip lane-key shape) so each thread
+  //     is its own hover target with the stroke's bounds as the hit area —
+  //     exactly what the whole lattice used to be, now ~5% of it.
+  //   FAR  — everything else, BATCHED into one Graphics per dash style (two
+  //     objects instead of thousands) and inert: at this density the far lattice
+  //     is context texture, not something you aim at. Held back to the SYSTEM
+  //     band by NebulaScene.
+  // Dashes are manual 4/4 segments — pixi Graphics has no native dash.
   const dashOn = DASH_ON_PX * worldPerPx;
   const dashOff = DASH_OFF_PX * worldPerPx;
+  /** Trace one edge's path into `g` (solid, or 4/4 dashes when under construction). */
+  const trace = (g: Graphics, ax: number, ay: number, bx: number, by: number, len: number, dashed: boolean) => {
+    if (!dashed) {
+      g.moveTo(ax, ay);
+      g.lineTo(bx, by);
+      return;
+    }
+    const ux = (bx - ax) / len;
+    const uy = (by - ay) / len;
+    for (let t = 0; t < len; t += dashOn + dashOff) {
+      const e = Math.min(t + dashOn, len);
+      g.moveTo(ax + ux * t, ay + uy * t);
+      g.lineTo(ax + ux * e, ay + uy * e);
+    }
+  };
+  const nearStyle = { width: THREAD_WIDTH_PX * worldPerPx, color: SLATE, alpha: THREAD_ALPHA } as const;
+  const farStyle = { width: THREAD_WIDTH_PX * worldPerPx, color: SLATE, alpha: THREAD_FAR_ALPHA } as const;
+  // One batch per dash style: a Graphics strokes its whole accumulated path with
+  // a single style, so solid and dashed far edges cannot share one object.
+  const farSolid = new Graphics();
+  const farDashed = new Graphics();
+  let farSolidCount = 0;
+  let farDashedCount = 0;
   for (const edge of data.edges) {
     if (edge.from === edge.to) continue;
-    const key = `${edge.from}→${edge.to}`;
     const a = bySymbol.get(edge.from);
     const b = bySymbol.get(edge.to);
     if (a == null || b == null) continue;
-    const dx = b.x - a.x;
-    const dy = b.y - a.y;
-    const len = Math.hypot(dx, dy);
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
     if (len < 1e-6) continue;
+    if (!edge.relevant) {
+      if (edge.underConstruction) {
+        trace(farDashed, a.x, a.y, b.x, b.y, len, true);
+        farDashedCount++;
+      } else {
+        trace(farSolid, a.x, a.y, b.x, b.y, len, false);
+        farSolidCount++;
+      }
+      continue;
+    }
+    const key = `${edge.from}→${edge.to}`;
     const thread = new Graphics();
     thread.label = `thread:${key}`;
-    if (edge.underConstruction) {
-      const ux = dx / len;
-      const uy = dy / len;
-      for (let t = 0; t < len; t += dashOn + dashOff) {
-        const e = Math.min(t + dashOn, len);
-        thread.moveTo(a.x + ux * t, a.y + uy * t);
-        thread.lineTo(a.x + ux * e, a.y + uy * e);
-      }
-    } else {
-      thread.moveTo(a.x, a.y);
-      thread.lineTo(b.x, b.y);
-    }
-    thread.stroke(threadStyle);
+    trace(thread, a.x, a.y, b.x, b.y, len, edge.underConstruction);
+    thread.stroke(nearStyle);
     if (events != null) {
       thread.eventMode = 'static';
       thread.on('pointerover', (e: FederatedPointerEvent) => events.hover('lane', key, e));
       thread.on('pointerout', () => events.hoverOut());
     }
-    layers.orbs.addChild(thread);
+    nearBox.addChild(thread);
+  }
+  // Stroke and mount the batches only if they drew anything — an empty Graphics
+  // would otherwise sit in the tier and make "far tier is empty" untestable.
+  if (farSolidCount > 0) {
+    farSolid.stroke(farStyle);
+    farBox.addChild(farSolid);
+  } else {
+    farSolid.destroy();
+  }
+  if (farDashedCount > 0) {
+    farDashed.stroke(farStyle);
+    farBox.addChild(farDashed);
+  } else {
+    farDashed.destroy();
   }
 
   // ---- Orbs: tinted halo + white-hot core per system; gold ring on home.

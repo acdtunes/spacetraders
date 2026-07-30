@@ -12,7 +12,9 @@ export interface FlowState {
   error: string | null;
   hoveredFlowId: string | null;
   focusFlowId: string | null;    // one-shot camera request; scene clears it
-  layerToggles: { lanes: boolean; paths: boolean; ships: boolean; freshness: boolean };
+  // `lattice` reveals the far dormant-thread tier below the SYSTEM band; unlike
+  // the other four it ADDS to the default view, so it starts off.
+  layerToggles: { lanes: boolean; paths: boolean; ships: boolean; freshness: boolean; lattice: boolean };
   staleFlows: LiveFlow[] | null; // last live flows, frozen while feedLost
   freezeAtMs: number | null;     // clock value the frozen render pins to
   freshness: FreshnessResponse | null;
@@ -31,7 +33,7 @@ export interface FlowState {
   hoverFlow: (containerId: string | null) => void;
   requestFocus: (containerId: string) => void;
   clearFocus: () => void;
-  toggleLayer: (key: 'lanes' | 'paths' | 'ships' | 'freshness') => void;
+  toggleLayer: (key: 'lanes' | 'paths' | 'ships' | 'freshness' | 'lattice') => void;
   // Freshness poll: success resets the missed counter; failure increments it
   // (freshness failures dim the layer, they never surface through setError).
   setFreshness: (freshness: FreshnessResponse) => void;
@@ -51,7 +53,7 @@ export const useFlowStore = create<FlowState>((set) => ({
   error: null,
   hoveredFlowId: null,
   focusFlowId: null,
-  layerToggles: { lanes: true, paths: true, ships: true, freshness: true },
+  layerToggles: { lanes: true, paths: true, ships: true, freshness: true, lattice: false },
   staleFlows: null,
   freezeAtMs: null,
   freshness: null,

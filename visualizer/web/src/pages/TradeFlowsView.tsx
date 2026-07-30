@@ -112,7 +112,7 @@ export function TradeFlowsView() {
 
       {/* Layer toggles */}
       <div className="absolute bottom-4 left-44 flex gap-1 rounded p-1" style={{ background: NOIR.panel }}>
-        {(['lanes', 'paths', 'ships', 'freshness'] as const).map((k) => (
+        {(['lanes', 'paths', 'ships', 'freshness', 'lattice'] as const).map((k) => (
           <button
             key={k}
             onClick={() => toggleLayer(k)}

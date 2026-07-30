@@ -56,13 +56,19 @@ describe('galaxy view state', () => {
     s.clearFocus();
     expect(useFlowStore.getState().focusFlowId).toBeNull();
 
-    expect(useFlowStore.getState().layerToggles).toEqual({ lanes: true, paths: true, ships: true, freshness: true });
+    // `lattice` starts off: it ADDS the far dormant-thread tier, where the other
+    // four subtract from the default view (sp-fw6a2).
+    expect(useFlowStore.getState().layerToggles).toEqual({
+      lanes: true, paths: true, ships: true, freshness: true, lattice: false,
+    });
     s.toggleLayer('lanes');
     expect(useFlowStore.getState().layerToggles.lanes).toBe(false);
     s.toggleLayer('lanes');
     expect(useFlowStore.getState().layerToggles.lanes).toBe(true);
     s.toggleLayer('freshness');
     expect(useFlowStore.getState().layerToggles.freshness).toBe(false);
+    s.toggleLayer('lattice');
+    expect(useFlowStore.getState().layerToggles.lattice).toBe(true);
   });
 
   it('freezes the last live flows across feed loss and clears on recovery', () => {

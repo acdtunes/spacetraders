@@ -102,12 +102,14 @@ describe('buildSceneData ships', () => {
 
 describe('buildSceneData edges', () => {
   it('maps the raw directed topology edges 1:1 with the per-edge construction flag', () => {
-    // gateWaypoint is dropped; endpoints + underConstruction survive verbatim.
+    // gateWaypoint is dropped; endpoints + underConstruction survive verbatim,
+    // plus the relevance tier. Every mock system trades, so the whole fixture
+    // lattice is relevant — the tiering itself is pinned in latticeTiers.test.ts.
     expect(scene().edges).toEqual([
-      { from: 'X1-NK36', to: 'X1-KA42', underConstruction: false },
-      { from: 'X1-KA42', to: 'X1-ZC66', underConstruction: false },
-      { from: 'X1-ZC66', to: 'X1-UU57', underConstruction: false },
-      { from: 'X1-UU57', to: 'X1-NK36', underConstruction: true },
+      { from: 'X1-NK36', to: 'X1-KA42', underConstruction: false, relevant: true },
+      { from: 'X1-KA42', to: 'X1-ZC66', underConstruction: false, relevant: true },
+      { from: 'X1-ZC66', to: 'X1-UU57', underConstruction: false, relevant: true },
+      { from: 'X1-UU57', to: 'X1-NK36', underConstruction: true, relevant: true },
     ]);
   });
 

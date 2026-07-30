@@ -30,19 +30,26 @@ export type HoverTarget = {
   clientY: number;
 };
 
-/** Page-owned layer visibility switches (the Lanes/Paths/Ships/Freshness
+/** Page-owned layer visibility switches (the Lanes/Paths/Ships/Freshness/Lattice
  * buttons). lanes/ships gate the REGION-band stream + mote containers, paths
  * gates the GALAXY-band currents (the nearest surviving "routes across the
  * galaxy" visual — per-flow plan polylines did not carry over), freshness gates
- * the SYSTEM band's market-freshness rings. */
+ * the SYSTEM band's market-freshness rings.
+ *
+ * `lattice` is the odd one out: the other four SUBTRACT from the default view,
+ * so they default on, while lattice ADDS the far thread tier that the SYSTEM
+ * band would otherwise be the only way to see — so it defaults OFF. */
 export interface NebulaLayerToggles {
   lanes: boolean;
   paths: boolean;
   ships: boolean;
   freshness: boolean;
+  lattice: boolean;
 }
 
-const ALL_LAYERS_ON: NebulaLayerToggles = { lanes: true, paths: true, ships: true, freshness: true };
+/** Absent-prop default (dev harness, tests): everything the view shows by
+ * default — which is every subtractive toggle on and the additive one off. */
+const DEFAULT_LAYERS: NebulaLayerToggles = { lanes: true, paths: true, ships: true, freshness: true, lattice: false };
 
 export interface NebulaSceneProps {
   data: SceneData | null;
@@ -174,8 +181,8 @@ export function NebulaScene({ data, onSelectSystem, onHover, apiRef, layerToggle
   const fpsRef = useRef<HTMLDivElement | null>(null);
 
   // Ticker-read layer switches (mount-once effect ⇒ refs, never closures).
-  const togglesRef = useRef<NebulaLayerToggles>(ALL_LAYERS_ON);
-  togglesRef.current = layerToggles ?? ALL_LAYERS_ON;
+  const togglesRef = useRef<NebulaLayerToggles>(DEFAULT_LAYERS);
+  togglesRef.current = layerToggles ?? DEFAULT_LAYERS;
 
   const stateRef = useRef<SceneState>({
     app: null,
@@ -529,6 +536,14 @@ export function NebulaScene({ data, onSelectSystem, onHover, apiRef, layerToggle
       if (st.orbs != null) {
         st.orbs.labels.alpha = st.regionFade * st.dim;
         st.orbs.labels.visible = regionOn;
+        // Lattice density (sp-fw6a2): the near tier — threads touching the
+        // traded neighbourhood — rides the REGION band unconditionally, so the
+        // context that frames the trade lanes is always there. The far tier is
+        // the other ~95% of a 5.2k-edge gate graph; at REGION it is an opaque
+        // mat, so it is revealed only once the camera reaches SYSTEM (where the
+        // viewport covers one system) or the Lattice toggle asks for the whole
+        // web. Both tiers ride layers.orbs above, so GALAXY still shows neither.
+        st.orbs.farThreads.visible = st.band === 'SYSTEM' || toggles.lattice;
       }
       // Lane streams + ship motes ride the same REGION fade; particles and
       // dead-reckoned ships advance only while actually visible. These two are

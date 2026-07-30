@@ -83,7 +83,9 @@ const sceneData: SceneData = {
   ],
   lanes: [{ from: 'X1-A', to: 'X1-B', profitPerHr: 100, volume: 10, realized: 5, projected: 5 }],
   ships: [ship],
-  edges: [{ from: 'X1-A', to: 'X1-B', underConstruction: false }],
+  // Relevant: the one lane above trades A→B, so this edge lands in the hoverable
+  // near tier — which is what the thread-hover assertion below reaches for.
+  edges: [{ from: 'X1-A', to: 'X1-B', underConstruction: false, relevant: true }],
   clusters: [
     { id: 'c1', members: ['X1-A'], cx: 0, cy: 0, isHome: true },
     { id: 'c2', members: ['X1-B'], cx: 200, cy: 120, isHome: false },

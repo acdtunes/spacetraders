@@ -11,8 +11,10 @@ export interface SceneSystem { symbol: string; x: number; y: number; activity: n
 export interface SceneLane { from: string; to: string; profitPerHr: number; volume: number; realized: number; projected: number }
 export interface SceneShip { id: string; flowId: string; x: number; y: number; headingRad: number; system: string | null }
 /** Raw directed topology (gate) edge — the L1 dormant-thread lattice. Distinct
- * from SceneLane: an edge exists whether or not anything traded on it. */
-export interface SceneEdge { from: string; to: string; underConstruction: boolean }
+ * from SceneLane: an edge exists whether or not anything traded on it.
+ * `relevant` tags the edge as touching the neighbourhood we actually trade in —
+ * the density cull orbs.ts tiers on (see the seed comment in buildSceneData). */
+export interface SceneEdge { from: string; to: string; underConstruction: boolean; relevant: boolean }
 export interface SceneData {
   systems: SceneSystem[]; lanes: SceneLane[]; ships: SceneShip[]; edges: SceneEdge[];
   clusters: Cluster[]; homeSystem: string | null; fitPoints: { x: number; y: number }[];
@@ -83,6 +85,27 @@ export function buildSceneData(
     if (l.to !== l.from) activity.set(l.to, (activity.get(l.to) ?? 0) + l.realized);
   }
 
+  // Lattice relevance — the density cull. The raw gate graph outgrew the view
+  // (1.2k edges → 5.2k in one day of parked sensing): drawn undifferentiated it
+  // is an opaque mat that buries the ~240 trade lanes it exists to frame. Tag
+  // each edge with whether it touches the neighbourhood we ACTUALLY trade in;
+  // orbs.ts draws that tier at REGION and holds the rest back until SYSTEM.
+  // Seed = the systems the live data names:
+  //   - both endpoints of every realized system lane,
+  //   - every system that booked realized profit (systemActivity),
+  //   - every live ship's current system — a hull must never be left gliding
+  //     over a thread that was culled out from under it (measured: 4 of 17 ship
+  //     systems are in neither lane list).
+  // ANY endpoint in the seed keeps the edge: a thread reaching from a traded
+  // system out to a quiet neighbour is the context that makes the lane legible.
+  const traded = new Set<string>();
+  for (const l of lanes?.systemLanes ?? []) {
+    if (l?.from) traded.add(l.from);
+    if (l?.to) traded.add(l.to);
+  }
+  for (const a of lanes?.systemActivity ?? []) if (a?.system) traded.add(a.system);
+  for (const s of ships) if (s.system != null) traded.add(s.system);
+
   // An edge INTO a system names that system's own gate (gate_edges semantics —
   // see buildSystemGates), so an under-construction edge flags its `to` system.
   const underConstruction = new Set<string>();
@@ -102,9 +125,15 @@ export function buildSceneData(
     lanes: sceneLanes,
     ships,
     // Raw directed gate edges 1:1 (gateWaypoint dropped — the render needs only
-    // endpoints + the per-edge construction flag). The REGION band's dormant
-    // threads draw from these, so untraded topology still shows its lattice.
-    edges: edges.map((e) => ({ from: e.from, to: e.to, underConstruction: e.underConstruction })),
+    // endpoints, the per-edge construction flag, and the relevance tier). The
+    // REGION band's dormant threads draw from these, so untraded topology still
+    // shows its lattice — tiered, not culled outright.
+    edges: edges.map((e) => ({
+      from: e.from,
+      to: e.to,
+      underConstruction: e.underConstruction,
+      relevant: traded.has(e.from) || traded.has(e.to),
+    })),
     // clustersFor takes the TopoLike shape: TopologyResponse.homeSystem is
     // optional (string | undefined) → map to the null it expects here, at the
     // call site — clusters.ts stays generic.

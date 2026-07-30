@@ -41,17 +41,32 @@ describe('TradeFlowsView layout (demo, fleet-stopped)', () => {
     }
   });
 
-  it('renders the four layer-toggle buttons wired through to the scene', async () => {
+  it('renders the five layer-toggle buttons wired through to the scene', async () => {
     render(<MemoryRouter><TradeFlowsView /></MemoryRouter>);
     act(() => seed());
     const lanesBtn = screen.getByRole('button', { name: 'lanes' });
     expect(screen.getByRole('button', { name: 'paths' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'ships' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'freshness' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'lattice' })).toBeInTheDocument();
     act(() => lanesBtn.click());
     expect(useFlowStore.getState().layerToggles.lanes).toBe(false);
     // ...and the scene receives the store's toggles as a prop.
     expect(nebulaProps.current.layerToggles.lanes).toBe(false);
+  });
+
+  it('starts the lattice toggle OFF — the far thread tier is opt-in (sp-fw6a2)', async () => {
+    render(<MemoryRouter><TradeFlowsView /></MemoryRouter>);
+    act(() => seed());
+    // The other four subtract from the default view and start on; lattice ADDS
+    // the ~95% of the gate graph that buried the trade lanes, so it starts off.
+    expect(useFlowStore.getState().layerToggles).toMatchObject({
+      lanes: true, paths: true, ships: true, freshness: true, lattice: false,
+    });
+    expect(nebulaProps.current.layerToggles.lattice).toBe(false);
+    act(() => screen.getByRole('button', { name: 'lattice' }).click());
+    expect(useFlowStore.getState().layerToggles.lattice).toBe(true);
+    expect(nebulaProps.current.layerToggles.lattice).toBe(true);
   });
 
   it('shows the detail panel when a flow is selected', async () => {
