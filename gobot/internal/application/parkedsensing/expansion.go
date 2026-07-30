@@ -89,6 +89,40 @@ type GateNeighbours interface {
 	// A PURE STORE read, like Neighbours, and for the same reason: the ordering
 	// asks this of every candidate on every tick.
 	Mapped(ctx context.Context, system string) (bool, error)
+
+	// PassableGraph returns the WHOLE topology in one read: the same two questions
+	// Neighbours and Mapped answer per system, answered for every system at once.
+	//
+	// IT EXISTS BECAUSE REACHABILITY IS TRANSITIVE (sp-1r08q). Asking "can a hull
+	// walk to this system?" needs a walk, and a walk over the per-system readers
+	// costs one store round trip per system reached — measured at ~1,070 reads and
+	// ~750ms against the live graph, on a 30s tick. The same rows arrive in a
+	// single query in ~3ms, because the whole table is only ~10k rows. Callers that
+	// need ONE system's neighbours should still use Neighbours; this is for the
+	// callers that need the shape of the graph.
+	PassableGraph(ctx context.Context) (GateGraph, error)
+}
+
+// GateGraph is one snapshot of the gate topology, as the walker sees it.
+//
+// It is a VALUE, deliberately: a snapshot read once and thrown away at the end of
+// the tick that read it. Reachability is time-varying — walls refresh on a 24h TTL
+// at ~121 systems/hour and gates finish construction — so nothing here may be
+// cached across ticks or persisted. A stored answer outlives the evidence that
+// produced it (RULINGS #2).
+type GateGraph struct {
+	// Passable maps each system to the systems ONE PASSABLE hop away: the same
+	// filtering Neighbours applies, so under-construction and condemned-stale edges
+	// are already excluded. This is the graph a hull can actually walk.
+	Passable map[string][]string
+	// Mapped names every system whose gate adjacency we have READ, whether or not
+	// any of it can be passed — exactly the question Mapped answers per system.
+	//
+	// The distinction is what separates "we know this system's exits and none of
+	// them reach us" from "we have never looked". Only the first is evidence of
+	// unreachability; the second is unread territory, and treating it as a dead end
+	// is how a feasibility filter starves a fleet that has not finished charting.
+	Mapped map[string]bool
 }
 
 // UnchartedCatalog reads which waypoints in a system are still uncharted.

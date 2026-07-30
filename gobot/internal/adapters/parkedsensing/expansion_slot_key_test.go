@@ -58,6 +58,20 @@ func (y keyTestYards) ListProbeYards(_ context.Context, system string) ([]string
 	return y.bySystem[system], nil
 }
 
+// PassableGraph mirrors this fake's own adjacency as a single snapshot. Mapped enumerates exactly
+// the systems this fake HOLDS: a bulk snapshot cannot express the per-system Mapped's "true for
+// anything you ask", and enumerating what is actually stored is the truthful reading — a system
+// with no entry here has not been read, which is what the reachability filter treats as unknown
+// rather than as a dead end.
+func (g keyTestGates) PassableGraph(_ context.Context) (appSensing.GateGraph, error) {
+	graph := appSensing.GateGraph{Passable: map[string][]string{}, Mapped: map[string]bool{}}
+	for system, neighbours := range g.adjacency {
+		graph.Mapped[system] = true
+		graph.Passable[system] = append([]string(nil), neighbours...)
+	}
+	return graph, nil
+}
+
 // keyTestScreen leaves every system PENDING: a verdict is not what these tests
 // are about, and PENDING is what keeps X1-B a charting target.
 func keyTestScreen(_ context.Context, _ string) (appSensing.ScreenResult, error) {

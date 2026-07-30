@@ -94,6 +94,20 @@ func (g *gateStore) Mapped(_ context.Context, system string) (bool, error) {
 	return held, nil
 }
 
+// PassableGraph mirrors this fake's own adjacency as a single snapshot. Mapped enumerates exactly
+// the systems this fake HOLDS: a bulk snapshot cannot express the per-system Mapped's "true for
+// anything you ask", and enumerating what is actually stored is the truthful reading — a system
+// with no entry here has not been read, which is what the reachability filter treats as unknown
+// rather than as a dead end.
+func (g *gateStore) PassableGraph(_ context.Context) (GateGraph, error) {
+	graph := GateGraph{Passable: map[string][]string{}, Mapped: map[string]bool{}}
+	for system, neighbours := range g.stored {
+		graph.Mapped[system] = true
+		graph.Passable[system] = append([]string(nil), neighbours...)
+	}
+	return graph, nil
+}
+
 func (g *gateStore) ReadGate(_ context.Context, _ int, system string) error {
 	g.reads = append(g.reads, system)
 	if err := g.readErr[system]; err != nil {

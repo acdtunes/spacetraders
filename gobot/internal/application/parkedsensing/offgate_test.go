@@ -430,3 +430,17 @@ func TestAdvanceExpansion_AnUnreadableGateGraphNeverRaisesExplorerDemand(t *test
 		}
 	}
 }
+
+// PassableGraph mirrors this fake's own adjacency as a single snapshot. Mapped enumerates exactly
+// the systems this fake HOLDS: a bulk snapshot cannot express the per-system Mapped's "true for
+// anything you ask", and enumerating what is actually stored is the truthful reading — a system
+// with no entry here has not been read, which is what the reachability filter treats as unknown
+// rather than as a dead end.
+func (f *selectiveFailGates) PassableGraph(_ context.Context) (GateGraph, error) {
+	graph := GateGraph{Passable: map[string][]string{}, Mapped: map[string]bool{}}
+	for system, neighbours := range f.adjacency {
+		graph.Mapped[system] = true
+		graph.Passable[system] = append([]string(nil), neighbours...)
+	}
+	return graph, nil
+}

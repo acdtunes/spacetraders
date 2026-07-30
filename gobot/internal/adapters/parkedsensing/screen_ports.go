@@ -856,6 +856,9 @@ func (p *RemoteMarketPort) FetchGoods(ctx context.Context, playerID int, system,
 // per-system read. *persistence.GormGateEdgeRepository satisfies it.
 type gateEdgeReader interface {
 	Edges(ctx context.Context, systemSymbol string) ([]domainSystem.GateEdge, bool, error)
+	// AllEdges returns every era-scoped system's edges at once, keyed by system, with a
+	// condemned or unread system simply ABSENT — presence is the `ok` Edges returns.
+	AllEdges(ctx context.Context) (map[string][]domainSystem.GateEdge, error)
 }
 
 // GateNeighbourPort reads which systems are one jump from a given one.
@@ -895,6 +898,39 @@ func NewGateNeighbourPort(edges gateEdgeReader) *GateNeighbourPort {
 // current, so every system holding one still-building exit reported ZERO neighbours every
 // 2h, became a WALL in every BFS, and made routing refuse provably-existing routes: 173 of
 // 1,168 live systems, freezing 266 probes that were bought, assigned and never dispatched.
+// PassableGraph returns the whole topology in one read, applying EXACTLY the filter Neighbours
+// applies per system — an under-construction or per-row-stale edge is not passable — and taking
+// the map's key set as the mapped set, which is exactly the `ok` Neighbours discards.
+//
+// Sharing the two rules with the per-system path rather than restating them is the point: a
+// second copy of "passable" would drift the first time one of them learned a new exclusion, and
+// the copy that got missed would be the one deciding where hulls can be sent.
+func (p *GateNeighbourPort) PassableGraph(ctx context.Context) (appSensing.GateGraph, error) {
+	all, err := p.edges.AllEdges(ctx)
+	if err != nil {
+		return appSensing.GateGraph{}, fmt.Errorf("failed to read the gate graph: %w", err)
+	}
+	graph := appSensing.GateGraph{
+		Passable: make(map[string][]string, len(all)),
+		Mapped:   make(map[string]bool, len(all)),
+	}
+	for symbol, edges := range all {
+		// Present in AllEdges means the system's adjacency HAS been read and is not condemned,
+		// which is the whole of "mapped" — including a system whose every exit is impassable.
+		graph.Mapped[symbol] = true
+		out := make([]string, 0, len(edges))
+		for _, edge := range edges {
+			if edge.ConnectedSystem == "" || edge.UnderConstruction || edge.Stale {
+				continue
+			}
+			out = append(out, edge.ConnectedSystem)
+		}
+		sort.Strings(out)
+		graph.Passable[symbol] = out
+	}
+	return graph, nil
+}
+
 func (p *GateNeighbourPort) Neighbours(ctx context.Context, system string) ([]string, error) {
 	edges, ok, err := p.edges.Edges(ctx, system)
 	if err != nil {

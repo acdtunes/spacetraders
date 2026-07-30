@@ -137,6 +137,61 @@ func (r *GormGateEdgeRepository) Edges(ctx context.Context, systemSymbol string)
 	return edges, true, nil
 }
 
+// AllEdges returns EVERY era-scoped system's edges in one read, keyed by system, applying the
+// same per-set condemnation and per-row staleness Edges applies to a single system.
+//
+// It exists so a caller that needs the SHAPE of the graph — reachability is transitive, so
+// answering "can a hull walk here?" needs a walk — does not pay one round trip per system
+// reached. Measured against the live graph: ~1,070 per-system reads at ~0.7ms is ~750ms, while
+// the whole table is ~10k rows and arrives in ~3ms.
+//
+// PRESENCE IN THE MAP IS THE `ok` OF Edges. A system whose set is condemned is OMITTED entirely,
+// exactly as Edges reports ok=false for it, so a caller cannot accidentally treat condemned
+// topology as read topology. A system with no rows is likewise simply absent.
+//
+// ERA-SCOPED FAIL-CLOSED, via OpenEraScope rather than eraScopePredicate(openEraID). gate_edges
+// carries rows from every era this agent has played, and the difference matters precisely when
+// the era cannot be resolved: eraScopePredicate(nil) degrades to `era_id IS NULL`, which answers
+// confidently from pre-backfill rows belonging to a dead universe. OpenEraScope refuses instead.
+// Reading dead-era topology is the sp-l0aqy failure — ~290 API failures an hour for ten hours,
+// routing against a map that no longer existed.
+func (r *GormGateEdgeRepository) AllEdges(ctx context.Context) (map[string][]system.GateEdge, error) {
+	predicate, args, err := OpenEraScope(ctx, r.db)
+	if err != nil {
+		return nil, fmt.Errorf("failed to scope gate edges to the open era: %w", err)
+	}
+	var models []GateEdgeModel
+	if err := r.db.WithContext(ctx).
+		Where("connected_system <> ?", unreadableMarker).
+		Where(predicate, args...).
+		Find(&models).Error; err != nil {
+		return nil, fmt.Errorf("failed to list the gate graph: %w", err)
+	}
+
+	bySystem := make(map[string][]GateEdgeModel)
+	for _, m := range models {
+		bySystem[m.SystemSymbol] = append(bySystem[m.SystemSymbol], m)
+	}
+
+	out := make(map[string][]system.GateEdge, len(bySystem))
+	for symbol, rows := range bySystem {
+		if r.anyCondemned(rows) {
+			continue // same verdict Edges returns as ok=false
+		}
+		edges := make([]system.GateEdge, 0, len(rows))
+		for _, m := range rows {
+			edges = append(edges, system.GateEdge{
+				ConnectedSystem:   m.ConnectedSystem,
+				GateWaypoint:      m.GateWaypoint,
+				UnderConstruction: m.UnderConstruction,
+				Stale:             r.rowStale(m),
+			})
+		}
+		out[symbol] = edges
+	}
+	return out, nil
+}
+
 // GateWaypointOf returns systemSymbol's own jump-gate waypoint if any era-scoped
 // edge records it as a connection (i.e. a neighbor's row (neighbor→systemSymbol)
 // carries systemSymbol's gate as its GateWaypoint). This reverse lookup lets an

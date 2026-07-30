@@ -61,6 +61,20 @@ func (g *gateMap) Mapped(_ context.Context, system string) (bool, error) {
 	return !g.unmapped[system], nil
 }
 
+// PassableGraph mirrors this fake's own adjacency as a single snapshot. Mapped enumerates exactly
+// the systems this fake HOLDS: a bulk snapshot cannot express the per-system Mapped's "true for
+// anything you ask", and enumerating what is actually stored is the truthful reading — a system
+// with no entry here has not been read, which is what the reachability filter treats as unknown
+// rather than as a dead end.
+func (g *gateMap) PassableGraph(_ context.Context) (GateGraph, error) {
+	graph := GateGraph{Passable: map[string][]string{}, Mapped: map[string]bool{}}
+	for system, neighbours := range g.adjacency {
+		graph.Mapped[system] = true
+		graph.Passable[system] = append([]string(nil), neighbours...)
+	}
+	return graph, nil
+}
+
 // frontierRace is the live shape, built so the OLD ordering and the NEW one disagree on every key.
 //
 // X1-NEAR wins under both existing weights — it is one hop out (the current primary key) and carries

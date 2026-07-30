@@ -87,6 +87,23 @@ type walkWorld struct {
 	release chan struct{}
 }
 
+// PassableGraph mirrors this fake's own adjacency as a single snapshot. Mapped enumerates exactly
+// the systems this fake HOLDS: a bulk snapshot cannot express the per-system Mapped's "true for
+// anything you ask", and enumerating what is actually stored is the truthful reading — a system
+// with no entry here has not been read, which is what the reachability filter treats as unknown
+// rather than as a dead end.
+func (s stubGateNeighbours) PassableGraph(_ context.Context) (appSensing.GateGraph, error) {
+	if s.err != nil {
+		return appSensing.GateGraph{}, s.err
+	}
+	graph := appSensing.GateGraph{Passable: map[string][]string{}, Mapped: map[string]bool{}}
+	for system, neighbours := range s.edges {
+		graph.Mapped[system] = true
+		graph.Passable[system] = append([]string(nil), neighbours...)
+	}
+	return graph, nil
+}
+
 func newWalkWorld() *walkWorld {
 	return &walkWorld{
 		shipAt:    map[string]string{},

@@ -1125,6 +1125,10 @@ func drainCandidates(ctx context.Context, p BuyPorts, playerID int) ([]QueuedSlo
 	if len(fills) == 0 {
 		return seeds, nil
 	}
+	fills = reachableFills(ctx, p, playerID, fills)
+	if len(fills) == 0 {
+		return seeds, nil
+	}
 	covered, err := coverageBySystem(ctx, p, playerID)
 	if err != nil {
 		return nil, err
@@ -1191,6 +1195,114 @@ type rankedFill struct {
 // which is the concentration this ordering exists to prevent, arriving silently
 // and exactly when the ledger is unwell. Nothing has been spent at this point in
 // the tick, so stopping costs no requests and one cycle.
+// reachableFills drops the fills whose system no hull can currently walk to.
+//
+// THE DEFECT (sp-1r08q): neither the screen that declares a placement nor this queue that funds it
+// asked whether a hull could ever get there. Measured live: 1,214 of 6,959 WANTED slots (17.4%)
+// named a system unreachable through the walker's own effective graph, and 5 already-funded slots
+// were in flight to targets they can never reach.
+//
+// The coverage ordering is what makes it systematic rather than incidental. Fills rank
+// coverage-ascending, and an unreachable system's coverage is EXACTLY ZERO — measured, not assumed:
+// of those 1,214 slots across 126 systems, not one sat in a system holding any parked probe,
+// because no probe has ever arrived and none ever will. So the impossible entries were promoted to
+// the very head of the queue, ahead of all 5,745 reachable ones, at ~59,584 cr each for a hull that
+// would sit in BOUGHT or IN_TRANSIT forever consuming a rotation slot and a refusal every tick.
+// This is the shape sp-2rfl found before: an ordering fix that does not first partition by
+// FEASIBILITY promotes the impossible.
+//
+// FAILS OPEN, ALWAYS. An unwired gate port or an unreadable graph means "do not filter", never
+// "reject everything" — the filter exists to stop waste, not to gate spending, so a transient read
+// fault must never be able to stop the fleet buying. Note the asymmetry with the money guards
+// around it: those fail CLOSED because the risk is spending wrongly, while this one's failure mode
+// is refusing to spend at all.
+//
+// NOTHING IS PERSISTED, and that is not an implementation detail (RULINGS #2). Reachability is
+// TIME-VARYING: 179 walls churn on a 24h TTL against refresh at ~121 systems/hour, so a system is
+// unreachable only until the next refresh or the next gate completion. A stored "unreachable" flag
+// would outlive the staleness that produced it and blacklist the system permanently — the walk is
+// therefore re-derived every drain and thrown away.
+func reachableFills(ctx context.Context, p BuyPorts, playerID int, fills []QueuedSlot) []QueuedSlot {
+	graph, reachable, ok := reachableSystems(ctx, p, playerID)
+	if !ok {
+		return fills // unknowable this tick — filter nothing (see FAILS OPEN above)
+	}
+	kept := make([]QueuedSlot, 0, len(fills))
+	for _, fill := range fills {
+		// REJECT ONLY ON POSITIVE EVIDENCE: we have READ this system's gates, and none of them
+		// connect to anywhere a hull of ours stands. A system we have never charted is UNKNOWN,
+		// not impossible, and treating the two alike is what turns this filter into a
+		// cold-start deadlock — a fresh era, a failed crawl or a walled graph all make almost
+		// everything unreachable, and a filter that cannot tell that from a genuinely stranded
+		// fleet would stop the drain buying anything at all. Measured on the live graph, the
+		// distinction is not marginal: of 126 unreachable systems, 59 are simply unread and 65
+		// are genuinely disconnected. This funds the 59 and refuses the 65.
+		if graph.Mapped[fill.System] && !reachable[fill.System] {
+			continue
+		}
+		kept = append(kept, fill)
+	}
+	return kept
+}
+
+// reachableSystems walks the fleet's own effective gate graph ONCE and returns every system a hull
+// could currently reach. ok=false means the question could not be answered at all.
+//
+// THE SEED IS PARKED SLOTS ONLY, and the exclusion is load-bearing. coverageBySystem already tallies
+// "systems the ledger says we hold", but it counts BOUGHT and IN_TRANSIT alongside PARKED — and
+// seeding from those would let a hull already flying toward an unreachable system mark that system
+// reachable FROM ITSELF, re-admitting exactly the slots this filter exists to reject. Only a PARKED
+// slot is evidence that a hull actually STANDS somewhere. Seeding from parked probes was verified
+// against seeding from every ship position: 148 seeds versus 220, the same 1,074-system component,
+// and not one slot classified differently.
+//
+// ONE READ AND ONE WALK PER DRAIN. The topology arrives as a single snapshot (PassableGraph)
+// rather than one store round trip per system reached: the per-system route costs ~1,070 reads at
+// ~0.7ms — about 750ms on a 30s tick — while the whole table is ~10k rows and arrives in ~3ms. The
+// walk over that snapshot is then free, and membership is tested per fill rather than re-walked.
+func reachableSystems(ctx context.Context, p BuyPorts, playerID int) (GateGraph, map[string]bool, bool) {
+	if p.Gates == nil {
+		return GateGraph{}, nil, false
+	}
+	graph, err := p.Gates.PassableGraph(ctx)
+	if err != nil {
+		return GateGraph{}, nil, false
+	}
+	parked, err := p.Ledger.SlotsByState(ctx, playerID, SlotStateParked)
+	if err != nil {
+		return GateGraph{}, nil, false
+	}
+
+	reachable := make(map[string]bool, len(parked))
+	var frontier []string
+	for _, slot := range parked {
+		if slot.System == "" || reachable[slot.System] {
+			continue
+		}
+		reachable[slot.System] = true
+		frontier = append(frontier, slot.System)
+	}
+	if len(frontier) == 0 {
+		// No probe stands anywhere, so there is no origin to walk from and nothing to conclude.
+		// Reporting "nothing is reachable" here would refuse every purchase on a fleet that has
+		// simply not placed its first probe yet.
+		return GateGraph{}, nil, false
+	}
+
+	for len(frontier) > 0 {
+		system := frontier[len(frontier)-1]
+		frontier = frontier[:len(frontier)-1]
+		for _, next := range graph.Passable[system] {
+			if next == "" || reachable[next] {
+				continue
+			}
+			reachable[next] = true
+			frontier = append(frontier, next)
+		}
+	}
+	return graph, reachable, true
+}
+
 func coverageBySystem(ctx context.Context, p BuyPorts, playerID int) (map[string]int, error) {
 	filled, err := p.Ledger.SlotsByState(ctx, playerID, SlotStateBought, SlotStateInTransit, SlotStateParked)
 	if err != nil {

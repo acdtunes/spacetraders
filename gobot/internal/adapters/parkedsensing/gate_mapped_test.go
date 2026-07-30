@@ -40,6 +40,21 @@ func (s stubEdgeStore) Edges(_ context.Context, system string) ([]domainSystem.G
 	return s.edges[system], s.known[system], nil
 }
 
+// AllEdges mirrors Edges in bulk: a system appears iff the store HOLDS ROWS for it, which is the
+// `ok` half of the Edges signature and the whole subject of this file. A system absent from
+// `known` is unread territory and must stay absent here too, or a caller cannot tell "we looked
+// and it connects nowhere" from "we have never looked".
+func (s stubEdgeStore) AllEdges(_ context.Context) (map[string][]domainSystem.GateEdge, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	out := map[string][]domainSystem.GateEdge{}
+	for system := range s.known {
+		out[system] = append([]domainSystem.GateEdge(nil), s.edges[system]...)
+	}
+	return out, nil
+}
+
 // A system whose every edge is UNDER CONSTRUCTION is MAPPED, even though it reports no neighbours.
 // This is the case that separates the two questions, and it is real: the fleet's own pocket was
 // sealed by exactly this shape.

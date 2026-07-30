@@ -122,6 +122,31 @@ type fakeUncharted struct {
 	calls    int
 }
 
+// PassableGraph mirrors this fake's own adjacency as a single snapshot. Mapped enumerates exactly
+// the systems this fake HOLDS: a bulk snapshot cannot express the per-system Mapped's "true for
+// anything you ask", and enumerating what is actually stored is the truthful reading — a system
+// with no entry here has not been read, which is what the reachability filter treats as unknown
+// rather than as a dead end.
+func (f *fakeGates) PassableGraph(_ context.Context) (GateGraph, error) {
+	if f.err != nil {
+		// Adversarial, matching Neighbours above: the FULL graph alongside the error, so a caller
+		// that ignores err filters on topology it never legitimately read. A fake that returned an
+		// empty graph here would make a fail-CLOSED caller indistinguishable from a fail-open one,
+		// because an empty graph maps nothing and therefore rejects nothing.
+		return f.graph(), f.err
+	}
+	return f.graph(), nil
+}
+
+func (f *fakeGates) graph() GateGraph {
+	graph := GateGraph{Passable: map[string][]string{}, Mapped: map[string]bool{}}
+	for system, neighbours := range f.adjacency {
+		graph.Mapped[system] = true
+		graph.Passable[system] = append([]string(nil), neighbours...)
+	}
+	return graph
+}
+
 func (f *fakeUncharted) UnchartedWaypoints(_ context.Context, system string) ([]string, error) {
 	f.calls++
 	if f.err != nil {
