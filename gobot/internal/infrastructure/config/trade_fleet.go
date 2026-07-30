@@ -226,9 +226,16 @@ type TradeFleetConfig struct {
 	// market and fail-closes on stale data. Daemon-global: injected into the tour coordinator
 	// handler via SetSinkFreshness at boot (the same cfg.TradeFleet → handler-setter path
 	// CargoBlocklist uses), re-read on every restart. It ships ARMED (no on/off flag,
-	// RULINGS #5 operational value): 0/absent → the 75-min default (matching the standing
-	// maxListingAge freshness discipline), byte-identical for any genuinely fresh sink. A
-	// captain softens it by RAISING the threshold (like the watchdog), never disabling.
+	// RULINGS #5 operational value): 0/absent → the 75-min default, byte-identical for any
+	// genuinely fresh sink. A captain softens it by RAISING the threshold (like the
+	// watchdog), never disabling.
+	//
+	// It is the BOOT floor only, and a floor is not the cap: the effective cap is
+	// max(floor, the live scan rotation's own anti-starvation bound) (sp-k4z5b). The LIVE
+	// lever is the tour operation's SINGLE market-data freshness knob — `spacetraders tune
+	// --operation tour market_data_max_age_minutes <N>` (sp-ry4r8) — which lands next tick
+	// with no daemon bounce, and is what an operator should reach for mid-incident. Reach
+	// for this key only when the daemon must come up on an already-widened floor.
 	SinkFreshnessMaxMinutes int `mapstructure:"sink_freshness_max_minutes"`
 
 	// --- Inventory-pressure governor (sp-tgll8 item 1) ---

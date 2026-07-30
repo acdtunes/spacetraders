@@ -835,7 +835,7 @@ func estimatedCircuitSeconds(crossSystem bool) float64 {
 	return seconds
 }
 
-// listingAgeFloor now lives in market_freshness.go, where it is a FLOOR under the
+// marketDataAgeFloor now lives in market_freshness.go, where it is a FLOOR under the
 // rotation-derived cap rather than the cap itself (sp-k4z5b). Call
 // h.listingMaxAge(ctx, playerID) rather than reaching for the constant: the
 // effective cap tracks the charted map, and a flat minute count silently

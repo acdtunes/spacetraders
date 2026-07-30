@@ -59,7 +59,7 @@ func (f *fakeFloorSource) Snapshot(_ context.Context, _ int) (liveconfig.Snapsho
 // every pre-existing test in this package depends on.
 func TestMarketFreshness_NilResolverReportsTheBootFloor(t *testing.T) {
 	var f *MarketFreshness
-	require.Equal(t, listingAgeFloor, f.Cap(context.Background(), 1, TuneKeyListingMaxAgeMinutes, listingAgeFloor))
+	require.Equal(t, marketDataAgeFloor, f.Cap(context.Background(), 1, TuneKeyMarketDataMaxAgeMinutes, marketDataAgeFloor))
 	require.Equal(t, time.Duration(0), f.RotationBound(context.Background()))
 }
 
@@ -68,8 +68,8 @@ func TestMarketFreshness_NilResolverReportsTheBootFloor(t *testing.T) {
 func TestMarketFreshness_RotationBoundDominatesTheFloor(t *testing.T) {
 	f := NewMarketFreshness(incidentRotation(), nil, nil)
 
-	cap := f.Cap(context.Background(), 1, TuneKeyListingMaxAgeMinutes, listingAgeFloor)
-	require.Greater(t, cap, listingAgeFloor,
+	cap := f.Cap(context.Background(), 1, TuneKeyMarketDataMaxAgeMinutes, marketDataAgeFloor)
+	require.Greater(t, cap, marketDataAgeFloor,
 		"the cap must widen past the 75-minute floor at 4,389 markets — that floor is what cost 87%% of throughput")
 	require.Equal(t, f.RotationBound(context.Background()), cap, "with a small floor the cap IS the rotation bound")
 	require.Greater(t, cap, 2*time.Hour,
@@ -79,10 +79,10 @@ func TestMarketFreshness_RotationBoundDominatesTheFloor(t *testing.T) {
 // The operator's lever works, live, in the direction an incident needs: raising the floor
 // above the rotation bound widens the cap without a restart.
 func TestMarketFreshness_TunedFloorAboveTheBoundWidensTheCap(t *testing.T) {
-	floors := &fakeFloorSource{config: liveconfig.Snapshot{TuneKeyListingMaxAgeMinutes: 6000}}
+	floors := &fakeFloorSource{config: liveconfig.Snapshot{TuneKeyMarketDataMaxAgeMinutes: 6000}}
 	f := NewMarketFreshness(incidentRotation(), floors, nil)
 
-	require.Equal(t, 6000*time.Minute, f.Cap(context.Background(), 1, TuneKeyListingMaxAgeMinutes, listingAgeFloor))
+	require.Equal(t, 6000*time.Minute, f.Cap(context.Background(), 1, TuneKeyMarketDataMaxAgeMinutes, marketDataAgeFloor))
 	require.Positive(t, floors.reads, "the floor must be READ from the live config column, not launch-frozen")
 }
 
@@ -90,10 +90,10 @@ func TestMarketFreshness_TunedFloorAboveTheBoundWidensTheCap(t *testing.T) {
 // tuned below the rotation bound cannot make a consumer refuse rotation-explained rows.
 func TestMarketFreshness_TunedFloorBelowTheBoundCannotTightenTheCap(t *testing.T) {
 	f := NewMarketFreshness(incidentRotation(), &fakeFloorSource{
-		config: liveconfig.Snapshot{TuneKeyListingMaxAgeMinutes: 1},
+		config: liveconfig.Snapshot{TuneKeyMarketDataMaxAgeMinutes: 1},
 	}, nil)
 
-	require.Equal(t, f.RotationBound(context.Background()), f.Cap(context.Background(), 1, TuneKeyListingMaxAgeMinutes, listingAgeFloor),
+	require.Equal(t, f.RotationBound(context.Background()), f.Cap(context.Background(), 1, TuneKeyMarketDataMaxAgeMinutes, marketDataAgeFloor),
 		"a 1-minute tune must not tighten the cap below what the rotation can deliver")
 }
 
@@ -102,13 +102,64 @@ func TestMarketFreshness_TunedFloorBelowTheBoundCannotTightenTheCap(t *testing.T
 // to a POSITIVE cap, which is what keeps the clause armed at absorption.go's `<= 0` test.
 func TestMarketFreshness_NoTuneCanDisarmTheSinkGuard(t *testing.T) {
 	boot := 75 * time.Minute
+	untuned := NewMarketFreshness(incidentRotation(), nil, nil).Cap(context.Background(), 1, TuneKeyMarketDataMaxAgeMinutes, boot)
+	require.Positive(t, untuned)
+
 	for _, tuned := range []int{0, 1, 75, 720, 43_200} {
 		f := NewMarketFreshness(incidentRotation(), &fakeFloorSource{
-			config: liveconfig.Snapshot{TuneKeySinkFreshnessMaxMinutes: tuned},
+			config: liveconfig.Snapshot{TuneKeyMarketDataMaxAgeMinutes: tuned},
 		}, nil)
-		cap := f.Cap(context.Background(), 1, TuneKeySinkFreshnessMaxMinutes, boot)
+		cap := f.Cap(context.Background(), 1, TuneKeyMarketDataMaxAgeMinutes, boot)
 		require.Positive(t, cap, "tune value %d produced a non-positive cap — the money guard would go INERT", tuned)
 		require.GreaterOrEqual(t, cap, f.RotationBound(context.Background()), "tune value %d tightened below the rotation bound", tuned)
+	}
+
+	// 0 is the revert verb, not a value: it must land on exactly the untuned cap.
+	zeroed := NewMarketFreshness(incidentRotation(), &fakeFloorSource{
+		config: liveconfig.Snapshot{TuneKeyMarketDataMaxAgeMinutes: 0},
+	}, nil)
+	require.Equal(t, untuned, zeroed.Cap(context.Background(), 1, TuneKeyMarketDataMaxAgeMinutes, boot),
+		"`tune ... 0` must revert to the documented default, not disarm a fail-closed money guard (RULINGS #4)")
+}
+
+// ...and the FLOOR is what has to survive the zero, not the rotation bound masking it.
+//
+// At the incident's map size the rotation bound is ~13h56m, so it dominates any floor and a
+// cap resolved from a zeroed floor still comes back large and positive — the assertions
+// above pass whether or not `tune ... 0` is honoured as a revert. The regimes that decide
+// it are the ones where the FLOOR binds: a small map, and a daemon with no scanner wired
+// (marketsKnown == 0, which FreshnessCap answers with the caller's own floor). There a
+// literal zero resolves to a ZERO cap, and a zero cap is not a widened guard — it refuses
+// every row with a known age, blinding the freshListings paths and fail-closing every buy.
+func TestMarketFreshness_ZeroTuneRevertsWhereTheFloorIsTheBindingTerm(t *testing.T) {
+	boot := 75 * time.Minute
+	// 12 markets at the incident's allowance: the rotation bound is seconds, so 75 minutes
+	// is unambiguously the binding term and a dropped floor cannot hide behind it.
+	small := fakeRotationSource{
+		budget:       marketscan.Budget{RateReqPerSec: testIncidentRate, ValueClampR: testIncidentClampR},
+		marketsKnown: 12,
+	}
+	require.Less(t, NewMarketFreshness(small, nil, nil).RotationBound(context.Background()), boot,
+		"fixture must put the FLOOR above the rotation bound, or this test proves nothing")
+
+	for _, tc := range []struct {
+		name     string
+		rotation ScanRotationSource
+	}{
+		{"no scanner wired", nil},
+		{"small map", small},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := NewMarketFreshness(tc.rotation, &fakeFloorSource{
+				config: liveconfig.Snapshot{TuneKeyMarketDataMaxAgeMinutes: 0},
+			}, nil)
+
+			cap := f.Cap(context.Background(), 1, TuneKeyMarketDataMaxAgeMinutes, boot)
+			require.Positive(t, cap,
+				"a zeroed floor resolved to a non-positive cap — the tour would refuse every dated row")
+			require.Equal(t, boot, cap,
+				"`tune ... 0` must revert to the documented default; taken as a literal value it collapses the cap")
+		})
 	}
 }
 
@@ -117,10 +168,10 @@ func TestMarketFreshness_NoTuneCanDisarmTheSinkGuard(t *testing.T) {
 // silently turn it on behind the operator's back.
 func TestMarketFreshness_InertClauseIsNeverArmedByDerivation(t *testing.T) {
 	f := NewMarketFreshness(incidentRotation(), &fakeFloorSource{
-		config: liveconfig.Snapshot{TuneKeySinkFreshnessMaxMinutes: 900},
+		config: liveconfig.Snapshot{TuneKeyMarketDataMaxAgeMinutes: 900},
 	}, nil)
 
-	require.Equal(t, time.Duration(0), f.Cap(context.Background(), 1, TuneKeySinkFreshnessMaxMinutes, 0),
+	require.Equal(t, time.Duration(0), f.Cap(context.Background(), 1, TuneKeyMarketDataMaxAgeMinutes, 0),
 		"an unarmed clause must stay unarmed — arming is a boot concern")
 }
 
@@ -128,14 +179,14 @@ func TestMarketFreshness_InertClauseIsNeverArmedByDerivation(t *testing.T) {
 // mid-incident, which is exactly when an operator is most likely to have just tuned one.
 func TestMarketFreshness_FailedReadReusesTheLastKnownFloor(t *testing.T) {
 	clock := &freshnessTestClock{now: time.Now()}
-	floors := &fakeFloorSource{config: liveconfig.Snapshot{TuneKeyListingMaxAgeMinutes: 6000}}
+	floors := &fakeFloorSource{config: liveconfig.Snapshot{TuneKeyMarketDataMaxAgeMinutes: 6000}}
 	f := NewMarketFreshness(incidentRotation(), floors, clock)
 
-	require.Equal(t, 6000*time.Minute, f.Cap(context.Background(), 1, TuneKeyListingMaxAgeMinutes, listingAgeFloor))
+	require.Equal(t, 6000*time.Minute, f.Cap(context.Background(), 1, TuneKeyMarketDataMaxAgeMinutes, marketDataAgeFloor))
 
 	floors.err = errors.New("database unavailable")
 	clock.now = clock.now.Add(freshnessSnapshotTTL + time.Second)
-	require.Equal(t, 6000*time.Minute, f.Cap(context.Background(), 1, TuneKeyListingMaxAgeMinutes, listingAgeFloor),
+	require.Equal(t, 6000*time.Minute, f.Cap(context.Background(), 1, TuneKeyMarketDataMaxAgeMinutes, marketDataAgeFloor),
 		"a failed read must reuse the last known floor, not silently revert it")
 }
 
@@ -144,27 +195,51 @@ func TestMarketFreshness_FailedReadReusesTheLastKnownFloor(t *testing.T) {
 // and picked up again immediately after it, so the knob is honestly "next tick".
 func TestMarketFreshness_FloorIsCachedThenRefreshed(t *testing.T) {
 	clock := &freshnessTestClock{now: time.Now()}
-	floors := &fakeFloorSource{config: liveconfig.Snapshot{TuneKeyListingMaxAgeMinutes: 100}}
+	floors := &fakeFloorSource{config: liveconfig.Snapshot{TuneKeyMarketDataMaxAgeMinutes: 100}}
 	f := NewMarketFreshness(incidentRotation(), floors, clock)
 
 	for i := 0; i < 5; i++ {
-		f.Cap(context.Background(), 1, TuneKeyListingMaxAgeMinutes, listingAgeFloor)
+		f.Cap(context.Background(), 1, TuneKeyMarketDataMaxAgeMinutes, marketDataAgeFloor)
 	}
 	require.Equal(t, 1, floors.reads, "repeated resolves inside one window must not re-query")
 
-	floors.config = liveconfig.Snapshot{TuneKeyListingMaxAgeMinutes: 6000}
+	floors.config = liveconfig.Snapshot{TuneKeyMarketDataMaxAgeMinutes: 6000}
 	clock.now = clock.now.Add(freshnessSnapshotTTL + time.Second)
-	require.Equal(t, 6000*time.Minute, f.Cap(context.Background(), 1, TuneKeyListingMaxAgeMinutes, listingAgeFloor),
+	require.Equal(t, 6000*time.Minute, f.Cap(context.Background(), 1, TuneKeyMarketDataMaxAgeMinutes, marketDataAgeFloor),
 		"a tune must land without a restart once the window elapses")
 	require.Equal(t, 2, floors.reads)
 }
 
-// The registry's documented defaults are the consts the resolver actually falls back to.
-func TestTradeFleetTunableDefaults_MirrorTheResolvedFloors(t *testing.T) {
+// The registry's documented default is the const the resolver actually falls back to —
+// and there is exactly ONE of them (sp-ry4r8). The length assertion is the guard against
+// the split coming back: a second market-freshness knob on this operation is the defect
+// this bead removed, not a feature.
+func TestTradeFleetTunableDefaults_MirrorTheResolvedFloor(t *testing.T) {
 	defaults := TradeFleetTunableDefaults()
-	require.Equal(t, int(listingAgeFloor.Minutes()), defaults[TuneKeyListingMaxAgeMinutes])
-	require.Equal(t, defaultSinkFreshnessFloorMinutes, defaults[TuneKeySinkFreshnessMaxMinutes])
-	require.Len(t, defaults, 2, "a new trade-fleet knob needs a registry entry and a bounds review")
+	require.Equal(t, int(marketDataAgeFloor.Minutes()), defaults[TuneKeyMarketDataMaxAgeMinutes])
+	require.Len(t, defaults, 1,
+		"the tour operation carries ONE market-freshness knob; a new trade-fleet knob needs a registry entry and a bounds review")
+}
+
+// The ONE knob really does feed BOTH consumers (sp-ry4r8). Tuning it moves the
+// freshListings floor and the firm-sink money guard's floor to the same number in the
+// same tick — which is the whole point of the collapse: they can no longer drift apart,
+// and an operator mid-incident has one number to reason about instead of two.
+func TestMarketFreshness_OneKnobMovesBothTheListingFloorAndTheSinkGuard(t *testing.T) {
+	f := NewMarketFreshness(incidentRotation(), &fakeFloorSource{
+		config: liveconfig.Snapshot{TuneKeyMarketDataMaxAgeMinutes: 6000},
+	}, nil)
+	ctx := context.Background()
+
+	// The two call sites, resolved exactly as listingMaxAge and sinkMaxAge resolve them:
+	// the same key, each against its own boot floor.
+	listing := f.Cap(ctx, 1, TuneKeyMarketDataMaxAgeMinutes, marketDataAgeFloor)
+	sink := f.Cap(ctx, 1, TuneKeyMarketDataMaxAgeMinutes, 75*time.Minute)
+
+	require.Equal(t, 6000*time.Minute, listing, "one tune must move the listing filter")
+	require.Equal(t, 6000*time.Minute, sink, "the same tune must move the sink money guard")
+	require.Equal(t, listing, sink,
+		"the two consumers must not be able to drift apart — that split is what sp-ry4r8 removed")
 }
 
 type freshnessTestClock struct{ now time.Time }

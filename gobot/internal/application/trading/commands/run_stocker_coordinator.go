@@ -196,7 +196,7 @@ type RunStockerCoordinatorHandler struct {
 	// freshness derives the stocker's market-freshness cap from the LIVE scan rotation
 	// rather than a minute count written into the source (sp-k4z5b) — the same resolver
 	// the tour handler holds, so the two paths never disagree about what "stale" means.
-	// nil leaves the cap at listingAgeFloor, byte-identical.
+	// nil leaves the cap at marketDataAgeFloor, byte-identical.
 	freshness *MarketFreshness
 
 	// noReachableSource de-dups the sp-yuq9 "every ranked candidate is gate-unreachable"

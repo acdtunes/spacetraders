@@ -613,7 +613,7 @@ func (h *RunTourCoordinatorHandler) activeTradeHullsBySystem(ctx context.Context
 
 // scoreRepositionNeighbors is the per-neighbor candidate scorer shared by the 1-hop scan and the
 // sp-jeou multi-hop broadening (repositionNeighborsWithinJumps): for each distinct, BUILT neighbor
-// system it reads the cached market listings, drops stale rows (the same listingAgeFloor cap the
+// system it reads the cached market listings, drops stale rows (the same marketDataAgeFloor cap the
 // solver's tour snapshot applies), and — when a fresh in-system lane remains — emits a
 // repositionCandidate carrying that lane's source waypoint (where the hull lands and the planner
 // prices the candidate tour from) plus its capped spread (the pre-rank score). A neighbor that is
@@ -649,7 +649,7 @@ func (h *RunTourCoordinatorHandler) scoreRepositionNeighbors(ctx context.Context
 			rejections = append(rejections, neighborRejection{system: sys, reason: "no-cached-market"})
 			continue // no cached market data → not a candidate (requirement: cached-data systems only)
 		}
-		// sp-lxwn: pre-rank only on FRESH listings — the same listingAgeFloor cap the solver's
+		// sp-lxwn: pre-rank only on FRESH listings — the same marketDataAgeFloor cap the solver's
 		// tour snapshot (BuildTourSnapshot) applies. The pre-rank ignored ObservedAt entirely
 		// (bestLaneForGood never checks it), so a candidate whose headline lane priced off a
 		// >75-min-stale market read HEALTHY here yet the solver, whose snapshot dropped that
@@ -723,7 +723,7 @@ func bestInSystemLane(listings []trading.GoodListing) (string, int) {
 
 // freshListings drops cached rows older than maxAge relative to now, so the reposition
 // pre-rank scores candidates only on markets the solver's tour snapshot (BuildTourSnapshot,
-// same listingAgeFloor cap) would also admit (sp-lxwn). A zero ObservedAt means "unknown age"
+// same marketDataAgeFloor cap) would also admit (sp-lxwn). A zero ObservedAt means "unknown age"
 // and is kept — the fail-open GoodListing/BuildTourSnapshot convention (an unstamped row ranks
 // as fresh rather than being silently discarded).
 func freshListings(listings []trading.GoodListing, now time.Time, maxAge time.Duration) []trading.GoodListing {

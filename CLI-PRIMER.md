@@ -257,20 +257,34 @@ list is whatever `spacetraders tune --operation <op>` prints with no key):
 | **contract** | `min_home_contract_workers` [0,200], `depot_buffer_min_source_distance` [0,5000] | contract worker reserve + depot buffering floor |
 | **autooutfit** | `min_telemetry_samples`, `price_ceiling` [0,5M], `max_installs_per_tick` [1,20], `payback_horizon_hours`, `treasury_reserve`, `max_treasury_fraction_pct` [1,100] | auto-outfit upgrade gating |
 | **shipyardbackfill** | `max_dispatches_per_cycle` [1,100], `backfill_max_hops` [1,1000] | shipyard-backfill sweep pacing/reach |
-| **tour** | `listing_max_age_minutes` [1,43200], `sink_freshness_max_minutes` [1,43200] | market-freshness FLOORS on the trade path (see below) |
+| **tour** | `market_data_max_age_minutes` [1,43200] | the market-freshness FLOOR on the trade path (see below) |
 
-The **tour** floors are not caps (sp-k4z5b). The scan budget is a fixed req/s, so a market's scan
+The **tour** floor is not a cap (sp-k4z5b). The scan budget is a fixed req/s, so a market's scan
 interval is an OUTPUT of `budget / markets known`; the effective cap is therefore
 `max(floor, rotation bound)`, where the rotation bound is the scanner's own anti-starvation number
-(`markets_known x value_clamp_r / budget_req_per_sec`) and tracks the map on its own. Raising a
-floor ABOVE the current rotation bound widens the cap; setting one below it is a deliberate no-op,
+(`markets_known x value_clamp_r / budget_req_per_sec`) and tracks the map on its own. Raising the
+floor ABOVE the current rotation bound widens the cap; setting it below is a deliberate no-op,
 which is what stops a tune re-creating the July 2026 incident (a hardcoded 75 min against a
 4,389-market map: 980 fail-closed refusals in 15 minutes, ~87% of trade throughput). Refusal logs
-name both terms so you can see which one bound. `sink_freshness_max_minutes` fronts a fail-closed
-money guard: `tune ... 0` reverts it to the documented default and can never disarm it (RULINGS #4);
-ARMING still comes from `[trade_fleet].sink_freshness_max_minutes` at boot. The captain's
-planner-staleness detector reads the SAME `listing_max_age_minutes` floor, so one tune moves the
-planner and the detector watching it together.
+name both terms so you can see which one bound.
+
+**One knob, three readers** (sp-ry4r8). It shipped as `listing_max_age_minutes` +
+`sink_freshness_max_minutes`; both defaulted to 75 and both took the identical derived term, so
+they resolved to the same number in every reachable state — two names an operator had to keep in
+sync at 4am. The single floor now feeds (1) the tour's `freshListings` paths — lookback, held-cargo
+offload, reposition + relocation pre-rank, distress liquidation, candidate shortlist, cross-system
+sink scan, stocker; (2) the FRESH clause of the firm-sink buy gate, a fail-closed money guard where
+`tune ... 0` reverts to the documented default and can never disarm it (RULINGS #4 — ARMING is
+still a boot concern, `[trade_fleet].sink_freshness_max_minutes`); and (3) the captain's
+planner-staleness detector, so one tune moves the planner and the detector watching it together.
+Keeping (1) and (2) on one number is also what stops the tour planning against rows the buy gate
+would then refuse.
+
+```
+spacetraders tune --operation tour market_data_max_age_minutes 6000   # widen, next tick, no bounce
+spacetraders tune --operation tour market_data_max_age_minutes 0      # revert to the 75-min default
+spacetraders tune --operation tour                                    # show effective value + source
+```
 
 Every `{0,1}`/flag knob and every reuse/relay master switch **defaults to 0 = off = byte-identical**
 to prior behavior (see §3.4). Target by `--operation <alias>` (freshest-heartbeat coordinator of

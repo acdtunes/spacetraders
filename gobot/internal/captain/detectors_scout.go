@@ -214,7 +214,7 @@ func rollupFreshness(latest map[string]time.Time, staleCutoff time.Time) map[str
 // from cfg.MarketScanBudget (the same [market_scan] stanza the daemon builds its budget
 // from) against the map size the caller just counted. The FLOOR term is read from the
 // trade fleet coordinator's live config column, so ONE `tune --operation tour
-// listing_max_age_minutes N` moves the planner and the detector watching it together —
+// market_data_max_age_minutes N` moves the planner and the detector watching it together —
 // which is the only way this detector can keep the claim it makes. An unreadable or
 // untuned column falls back to cfg.StalenessHidingStaleAge, so the detector degrades to
 // its own documented floor rather than to silence.
@@ -247,17 +247,18 @@ func tunedPlannerListingFloor(ctx context.Context, db *gorm.DB, playerID int) ti
 	if err := json.Unmarshal([]byte(rows[0].Config), &config); err != nil {
 		return 0
 	}
-	minutes, ok := liveconfig.Snapshot(config).PositiveInt(plannerListingFloorKey)
+	minutes, ok := liveconfig.Snapshot(config).PositiveInt(plannerMarketDataFloorKey)
 	if !ok {
 		return 0
 	}
 	return time.Duration(minutes) * time.Minute
 }
 
-// plannerListingFloorKey is the tune key whose floor the tour planner's freshListings
-// paths resolve against. Pinned here rather than imported so the watchkeeper binary does
-// not depend on the trading application package; the pairing is asserted by test.
-const plannerListingFloorKey = "listing_max_age_minutes"
+// plannerMarketDataFloorKey is the tune key whose floor the tour planner's freshListings
+// paths resolve against — the tour operation's SINGLE market-data freshness knob since
+// sp-ry4r8. Pinned here rather than imported so the watchkeeper binary does not depend on
+// the trading application package; the pairing is asserted by test.
+const plannerMarketDataFloorKey = "market_data_max_age_minutes"
 
 // postedSystems returns the set of systems the player has a scout post over IN THE OPEN
 // ERA — standing AND sweep-once alike (sp-k7q5 layer 3). It scopes to the open era

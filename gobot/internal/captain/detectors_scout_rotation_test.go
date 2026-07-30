@@ -66,7 +66,7 @@ func TestPlannerStaleAge_ReadsTheTunedTourFloor(t *testing.T) {
 	// A floor tuned ABOVE the rotation bound is what an operator reaches for mid-incident,
 	// and the detector must follow it.
 	seedTradeFleetCoordinator(t, db, playerID, "RUNNING", map[string]interface{}{
-		plannerListingFloorKey: 6000,
+		plannerMarketDataFloorKey: 6000,
 	})
 	require.Equal(t, 6000*time.Minute, resolvedPlannerStaleAge(ctx, db, cfg, 4389))
 }
@@ -85,9 +85,9 @@ func TestPlannerStaleAge_UnreadableTourFloorFallsBackToTheDocumentedFloor(t *tes
 		seed   bool
 	}{
 		{name: "no trade fleet coordinator running", seed: false},
-		{name: "coordinator stopped", status: "STOPPED", config: map[string]interface{}{plannerListingFloorKey: 6000}, seed: true},
+		{name: "coordinator stopped", status: "STOPPED", config: map[string]interface{}{plannerMarketDataFloorKey: 6000}, seed: true},
 		{name: "column carries no floor", status: "RUNNING", config: map[string]interface{}{"trade_fleet_tick_secs": 120}, seed: true},
-		{name: "floor reverted to default", status: "RUNNING", config: map[string]interface{}{plannerListingFloorKey: 0}, seed: true},
+		{name: "floor reverted to default", status: "RUNNING", config: map[string]interface{}{plannerMarketDataFloorKey: 0}, seed: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

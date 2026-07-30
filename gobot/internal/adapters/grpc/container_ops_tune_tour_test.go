@@ -10,8 +10,8 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 )
 
-// sp-k4z5b: the trade fleet coordinator's market-freshness floors, live-tunable via
-// `spacetraders tune --operation tour`.
+// sp-k4z5b: the trade fleet coordinator's market-freshness floor, live-tunable via
+// `spacetraders tune --operation tour`. sp-ry4r8 collapsed it to ONE key.
 //
 // The operational requirement behind the surface: during the incident the only lever was
 // a config.yaml edit plus a full daemon bounce, and each bounce burns jump cooldowns —
@@ -19,9 +19,11 @@ import (
 
 const tuneTradeFleetContainerID = "trade_fleet_coordinator-player-tune-test"
 
-// The operation alias resolves, and --show lists both floors with their bounds, units and
-// documented defaults.
-func TestTourTune_OperationResolvesAndListsFreshnessFloors(t *testing.T) {
+// The operation alias resolves, and --show lists the floor with its bounds, units and
+// documented default — exactly ONE market-freshness knob (sp-ry4r8). The old
+// listing_max_age_minutes / sink_freshness_max_minutes pair defaulted identically and took
+// the identical derived term, so it was two names an operator had to keep in sync.
+func TestTourTune_OperationResolvesAndListsTheFreshnessFloor(t *testing.T) {
 	db, repo, playerID := tuneTestDB(t)
 	seedTuneContainer(t, db, playerID, tuneTradeFleetContainerID,
 		string(container.ContainerTypeTradeFleetCoordinator), "trade_fleet_coordinator", "RUNNING",
@@ -37,19 +39,34 @@ func TestTourTune_OperationResolvesAndListsFreshnessFloors(t *testing.T) {
 		byKey[k.Key] = k
 	}
 	require.Len(t, show.Knobs, len(tradingCmd.TradeFleetTunableDefaults()))
+	require.Len(t, show.Knobs, 1,
+		"the tour operation must expose ONE market-freshness knob — two that must be kept in sync are worse than one (sp-ry4r8)")
 
-	for _, key := range []string{"listing_max_age_minutes", "sink_freshness_max_minutes"} {
-		knob, ok := byKey[key]
-		require.True(t, ok, "%s must be reachable via --operation tour", key)
-		require.Equal(t, 75, knob.Effective, "untuned, %s reports its documented floor", key)
-		require.Equal(t, "default", knob.Source)
-		require.Equal(t, "minutes", knob.Bound.Unit)
-		require.Equal(t, 1, knob.Bound.Min, "%s may never be tuned to 0 as a VALUE — 0 is the revert verb", key)
-		require.Equal(t, 43_200, knob.Bound.Max, "%s ceiling mirrors the scan budget's 30-day arithmetic ceiling", key)
-		require.Contains(t, knob.Bound.Description, "rotation bound",
-			"%s must tell the operator the floor is not the whole cap", key)
-		require.Contains(t, knob.Bound.Description, "next tick",
-			"%s must state its latency truthfully — a knob that silently needs a rebuild is worse than no knob", key)
+	const key = "market_data_max_age_minutes"
+	knob, ok := byKey[key]
+	require.True(t, ok, "%s must be reachable via --operation tour", key)
+	require.Equal(t, 75, knob.Effective, "untuned, %s reports its documented floor", key)
+	require.Equal(t, "default", knob.Source)
+	require.Equal(t, "minutes", knob.Bound.Unit)
+	require.Equal(t, 1, knob.Bound.Min, "%s may never be tuned to 0 as a VALUE — 0 is the revert verb", key)
+	require.Equal(t, 43_200, knob.Bound.Max, "%s ceiling mirrors the scan budget's 30-day arithmetic ceiling", key)
+	require.Contains(t, knob.Bound.Description, "rotation bound",
+		"%s must tell the operator the floor is not the whole cap", key)
+	require.Contains(t, knob.Bound.Description, "next tick",
+		"%s must state its latency truthfully — a knob that silently needs a rebuild is worse than no knob", key)
+	// One knob, two consumers: the description must name BOTH, or an operator cannot know
+	// that widening the listing filter also widens a fail-closed money guard.
+	require.Contains(t, knob.Bound.Description, "freshListings",
+		"%s must name the listing-filter consumer", key)
+	require.Contains(t, knob.Bound.Description, "money guard",
+		"%s must name the firm-sink money guard it also floors", key)
+	require.Contains(t, knob.Bound.Description, "does NOT disarm",
+		"%s must state that 0 reverts rather than disarms (RULINGS #4)", key)
+
+	// The retired names must be GONE from the surface, not silently accepted aliases.
+	for _, retired := range []string{"listing_max_age_minutes", "sink_freshness_max_minutes"} {
+		_, still := byKey[retired]
+		require.False(t, still, "%s was collapsed into %s and must not still be listed", retired, key)
 	}
 }
 
@@ -64,7 +81,7 @@ func TestTourTune_TunedFloorIsReadableByTheByTypeReader(t *testing.T) {
 	s := &DaemonServer{containerRepo: repo}
 	ctx := context.Background()
 
-	out, err := s.MutateContainerConfigKey(ctx, "", "tour", "sink_freshness_max_minutes", 1440, playerID)
+	out, err := s.MutateContainerConfigKey(ctx, "", "tour", "market_data_max_age_minutes", 1440, playerID)
 	require.NoError(t, err)
 	require.True(t, out.Changed)
 	require.Equal(t, 75, out.OldEffective)
@@ -74,19 +91,19 @@ func TestTourTune_TunedFloorIsReadableByTheByTypeReader(t *testing.T) {
 	reader := NewCoordinatorConfigReader(repo, string(container.ContainerTypeTradeFleetCoordinator))
 	snap, err := reader.Snapshot(ctx, playerID)
 	require.NoError(t, err)
-	v, set := snap.PositiveInt("sink_freshness_max_minutes")
+	v, set := snap.PositiveInt("market_data_max_age_minutes")
 	require.True(t, set, "the by-type reader must see the operator's write")
 	require.Equal(t, 1440, v)
 
 	// Revert clears the key so the documented floor applies again — it does NOT write 0,
 	// which would be indistinguishable from disarming a fail-closed money guard.
-	out, err = s.MutateContainerConfigKey(ctx, "", "tour", "sink_freshness_max_minutes", 0, playerID)
+	out, err = s.MutateContainerConfigKey(ctx, "", "tour", "market_data_max_age_minutes", 0, playerID)
 	require.NoError(t, err)
 	require.Equal(t, 75, out.NewEffective)
 	require.Equal(t, "default", out.NewSource)
 	snap, err = reader.Snapshot(ctx, playerID)
 	require.NoError(t, err)
-	_, set = snap.PositiveInt("sink_freshness_max_minutes")
+	_, set = snap.PositiveInt("market_data_max_age_minutes")
 	require.False(t, set, "revert clears the key rather than persisting a zero")
 }
 
@@ -105,9 +122,12 @@ func TestTourTune_RejectsOutOfBoundsAndUnknownKeys(t *testing.T) {
 		key   string
 		value int
 	}{
-		{"listing_max_age_minutes", 43_201},
-		{"sink_freshness_max_minutes", 43_201},
-		{"sink_freshness_minutes", 600}, // near-miss on the real key name
+		{"market_data_max_age_minutes", 43_201},
+		{"market_data_max_age_mins", 600}, // near-miss on the real key name
+		// The collapsed-away names are UNKNOWN keys now, not silent aliases: a stale runbook
+		// must error loudly rather than write a column nothing reads (sp-ry4r8).
+		{"listing_max_age_minutes", 600},
+		{"sink_freshness_max_minutes", 600},
 	} {
 		_, err := s.MutateContainerConfigKey(ctx, "", "tour", tc.key, tc.value, playerID)
 		require.Error(t, err, "%s=%d must be rejected", tc.key, tc.value)
@@ -125,6 +145,6 @@ func TestCoordinatorConfigReader_NoActiveCoordinatorIsEmptyNotAnError(t *testing
 	snap, err := NewCoordinatorConfigReader(repo, string(container.ContainerTypeTradeFleetCoordinator)).
 		Snapshot(context.Background(), playerID)
 	require.NoError(t, err)
-	_, set := snap.PositiveInt("listing_max_age_minutes")
+	_, set := snap.PositiveInt("market_data_max_age_minutes")
 	require.False(t, set)
 }

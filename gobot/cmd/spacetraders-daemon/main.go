@@ -1495,8 +1495,9 @@ func run(cfg *config.Config) error {
 	tourCoordinatorHandler.SetRankerAgeCaps(cfg.Trading.RankerAgeCapMinutes.Resolved())
 	// sp-tgll8 item 2: arm the "FRESH" clause on the firm-sink buy gate — at buy execution the
 	// gate re-reads each held sink's LIVE market_data and refuses on stale data (older than
-	// this). Ships ARMED at the 75-min default (matching maxListingAge); [trade_fleet].
-	// sink_freshness_max_minutes retunes it, restart to apply. Byte-identical for fresh sinks.
+	// this). Ships ARMED at the 75-min default. This is the BOOT floor; the effective cap is
+	// max(floor, rotation bound) (sp-k4z5b) and the LIVE lever is `tune --operation tour
+	// market_data_max_age_minutes` (sp-ry4r8). Byte-identical for fresh sinks.
 	tourCoordinatorHandler.SetSinkFreshness(cfg.TradeFleet.ResolvedSinkFreshnessMaxAge())
 	// sp-k4z5b: derive every market-freshness cap on the trade path from the LIVE scan
 	// rotation rather than a minute count written into the source. The scan budget is a

@@ -158,17 +158,21 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 		string(container.ContainerTypeContractFleetCoordinator): {
 			"min_home_contract_workers": {Type: "int", Min: 0, Max: 200, Default: contract["min_home_contract_workers"], Unit: "hulls", Description: "undedicated home general haulers the depot topology never pins as depot-delivery — the contract-worker reserve floor for unbuffered-good sourcing"},
 		},
-		// sp-k4z5b: the tour path's market-freshness FLOORS. Neither knob is the cap it
-		// looks like — the effective cap is max(floor, the live scan rotation's own
+		// sp-k4z5b / sp-ry4r8: the tour path's ONE market-freshness FLOOR. It is not the cap
+		// it looks like — the effective cap is max(floor, the live scan rotation's own
 		// anti-starvation bound), because the scan budget is a fixed req/s and a market's
 		// interval is therefore an OUTPUT of budget / markets known. A flat minute count
 		// silently invalidated as the map grew to 4,389 markets and cost ~87% of trade
-		// throughput; the derived term now tracks the map on its own, and these exist so an
-		// operator can widen further mid-incident WITHOUT a daemon bounce (each bounce burns
-		// jump cooldowns). Tuning either BELOW the rotation bound is a deliberate no-op.
+		// throughput; the derived term now tracks the map on its own, and this knob exists so
+		// an operator can widen further mid-incident WITHOUT a daemon bounce (each bounce
+		// burns jump cooldowns). Tuning it BELOW the rotation bound is a deliberate no-op.
+		//
+		// It shipped as two keys (listing_max_age_minutes, sink_freshness_max_minutes) that
+		// defaulted identically and took the identical derived term, so they resolved to the
+		// same number in every reachable state; sp-ry4r8 collapsed them, because two knobs
+		// that must be kept in sync to stay correct are worse than one.
 		string(container.ContainerTypeTradeFleetCoordinator): {
-			"listing_max_age_minutes":    {Type: "int", Min: 1, Max: 43_200, Default: tradeFleet["listing_max_age_minutes"], Unit: "minutes", Description: "FLOOR under the freshness cap the tour's freshListings paths use (lookback, held-cargo offload, reposition + relocation pre-rank, distress liquidation, candidate shortlist, cross-system sink scan, stocker). Effective cap = max(this, rotation bound); raising it above the rotation bound widens the cap, below it is a no-op. Applies next tick (the cap is re-read from this column at most every 5s), no restart"},
-			"sink_freshness_max_minutes": {Type: "int", Min: 1, Max: 43_200, Default: tradeFleet["sink_freshness_max_minutes"], Unit: "minutes", Description: "FLOOR under the FRESH clause of the firm-sink buy gate (sp-tgll8), a fail-closed money guard: never buy into a sink we cannot confirm is live. Effective cap = max(this, rotation bound), so it can never be tuned tight enough to refuse a row the rotation explains, and never to zero — `tune ... 0` reverts to the documented default, it does NOT disarm the guard (RULINGS #4). Arming remains a boot concern ([trade_fleet].sink_freshness_max_minutes). Applies next tick, no restart"},
+			"market_data_max_age_minutes": {Type: "int", Min: 1, Max: 43_200, Default: tradeFleet["market_data_max_age_minutes"], Unit: "minutes", Description: "FLOOR on how old a cached market_data row may be before the tour stops trusting it. ONE number for both consumers: the freshListings paths (lookback, held-cargo offload, reposition + relocation pre-rank, distress liquidation, candidate shortlist, cross-system sink scan, stocker) AND the FRESH clause of the firm-sink buy gate (sp-tgll8), a fail-closed money guard — never buy into a sink we cannot confirm is live. Effective cap = max(this, rotation bound): raising it above the rotation bound widens the cap, below it is a deliberate no-op, so it can never be tuned tight enough to refuse a row the rotation explains, and never to zero — `tune ... 0` reverts to the documented default, it does NOT disarm the guard (RULINGS #4). Arming the guard remains a boot concern ([trade_fleet].sink_freshness_max_minutes). Applies next tick (the cap is re-read from this column at most every 5s), no restart"},
 		},
 		string(container.ContainerTypeShipyardBackfillCoordinator): {
 			"max_dispatches_per_cycle": {Type: "int", Min: 1, Max: 100, Default: shipyardBackfill["max_dispatches_per_cycle"], Unit: "posts", Description: "per-cycle cap on sweep-once posts the shipyard-backfill sweep declares (bounded further by idle probe supply) so it drains the blind spot over cycles instead of flooding the reconciler"},

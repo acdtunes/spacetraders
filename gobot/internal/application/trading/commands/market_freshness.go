@@ -10,7 +10,8 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// market_freshness.go resolves the trade path's market-freshness caps (sp-k4z5b).
+// market_freshness.go resolves the trade path's market-freshness caps (sp-k4z5b) from
+// ONE operator knob (sp-ry4r8).
 //
 // WHY THIS EXISTS. The caps used to be minute counts written into the source: a
 // 75-minute const here, a 75-minute config default there. That is only correct at
@@ -27,23 +28,33 @@ import (
 // anti-starvation bound the scanner's own escape hatch enforces — and the minute
 // count survives only as a FLOOR the operator can raise live.
 
-const (
-	// TuneKeyListingMaxAgeMinutes is the live knob under the freshListings-based
-	// paths: the tour lookback, held-cargo offload, reposition/relocation pre-rank,
-	// distress liquidation, the candidate shortlist, cross-system sink scanning and
-	// the stocker. Registered on the trade fleet coordinator (`tune --operation tour`).
-	TuneKeyListingMaxAgeMinutes = "listing_max_age_minutes"
+// TuneKeyMarketDataMaxAgeMinutes is the trade fleet coordinator's ONE market-data
+// freshness knob: `spacetraders tune --operation tour market_data_max_age_minutes N`.
+//
+// It is named for the DATA it bounds — how old a cached market_data row may be before
+// the tour stops trusting it — and deliberately not for either consumer, because it has
+// two: the freshListings paths (tour lookback, held-cargo offload, reposition and
+// relocation pre-rank, distress liquidation, the candidate shortlist, cross-system sink
+// scanning, the stocker) and the FRESH clause of the firm-sink buy gate (sp-tgll8
+// item 2, a fail-closed money guard).
+//
+// It shipped as TWO keys — listing_max_age_minutes and sink_freshness_max_minutes — and
+// was collapsed in sp-ry4r8. Both defaulted to 75 minutes and both took the identical
+// derived rotation bound, so they resolved to the same number in every reachable state.
+// Two knobs that must be kept in sync to stay correct are worse than one: the split
+// invited exactly the drift the derivation exists to prevent, and doubled what an
+// operator has to reason about at 4am.
+//
+// Splitting them could only ever have diverged in a harmful direction, too. A floor
+// bites only ABOVE the rotation bound, so a listing floor raised past the sink floor
+// makes the tour PLAN on rows the buy gate then refuses — tours built to fail closed —
+// and the reverse leaves the money guard trusting rows the planner already discarded.
+// One number keeps planning and execution looking at the same map.
+const TuneKeyMarketDataMaxAgeMinutes = "market_data_max_age_minutes"
 
-	// TuneKeySinkFreshnessMaxMinutes is the live knob under the firm-sink buy gate's
-	// FRESH clause (sp-tgll8 item 2) — a fail-closed money guard. It shares the key
-	// NAME with [trade_fleet].sink_freshness_max_minutes deliberately: the operator
-	// who reached for that config key in an incident reaches for the same words here,
-	// and gets them without a daemon bounce.
-	TuneKeySinkFreshnessMaxMinutes = "sink_freshness_max_minutes"
-)
-
-// listingAgeFloor is the FLOOR under the freshness-gated helper paths that are NOT
-// the activity-conditioned ranker: the freshListings-based
+// marketDataAgeFloor is the BOOT floor under the freshness-gated helper paths that are
+// NOT the activity-conditioned ranker — what applies until an operator tunes
+// TuneKeyMarketDataMaxAgeMinutes: the freshListings-based
 // sink/offload/reposition/distress/candidate scans and the stocker. The UNDIRECTED
 // lane ranker (partitionListingsByAge) and the tour snapshot (BuildTourSnapshot)
 // sit on the per-activity RankerAgeCaps table instead (sp-t5sh5) — the analyst's
@@ -59,18 +70,16 @@ const (
 // Even for the ranker no cap silently vetoes an operator-directed --dest lane,
 // which is re-verified LIVE at execution (staleAskAborts + the per-visit margin
 // re-check) — see scanLanes.
-const listingAgeFloor = defaultListingMaxAgeMinutes * time.Minute
+const marketDataAgeFloor = defaultMarketDataMaxAgeMinutes * time.Minute
 
 const (
-	// defaultListingMaxAgeMinutes is the documented default of
-	// TuneKeyListingMaxAgeMinutes, and the floor that applies when nothing is tuned.
-	defaultListingMaxAgeMinutes = 75
-
-	// defaultSinkFreshnessFloorMinutes is the documented default of
-	// TuneKeySinkFreshnessMaxMinutes. It mirrors config.defaultSinkFreshnessMaxMinutes
-	// — the boot floor SetSinkFreshness injects — so `tune --show` reports the same
-	// number the daemon arms with when [trade_fleet] carries no override.
-	defaultSinkFreshnessFloorMinutes = 75
+	// defaultMarketDataMaxAgeMinutes is the documented default of
+	// TuneKeyMarketDataMaxAgeMinutes, and the floor that applies when nothing is tuned.
+	//
+	// It is also config.defaultSinkFreshnessMaxMinutes — the boot floor SetSinkFreshness
+	// injects into the money guard — so ONE knob really does mean ONE number: `tune
+	// --show` reports what BOTH consumers fall back to, not an average of two.
+	defaultMarketDataMaxAgeMinutes = 75
 
 	// freshnessSnapshotTTL bounds how long a resolved floor is reused before the
 	// container config column is consulted again.
@@ -91,8 +100,7 @@ const (
 // can pin them.
 func TradeFleetTunableDefaults() map[string]int {
 	return map[string]int{
-		TuneKeyListingMaxAgeMinutes:    defaultListingMaxAgeMinutes,
-		TuneKeySinkFreshnessMaxMinutes: defaultSinkFreshnessFloorMinutes,
+		TuneKeyMarketDataMaxAgeMinutes: defaultMarketDataMaxAgeMinutes,
 	}
 }
 
@@ -227,30 +235,32 @@ func (f *MarketFreshness) now() time.Time {
 // SetMarketFreshness wires the rotation-derived freshness caps and their live
 // operator floors (sp-k4z5b). The daemon calls it UNCONDITIONALLY at boot — there is
 // no config key and no arming step between the scan budget and a derived cap.
-// Leaving it unset is the test path, and holds every cap at listingAgeFloor / the
+// Leaving it unset is the test path, and holds every cap at marketDataAgeFloor / the
 // SetSinkFreshness value exactly as before.
 func (h *RunTourCoordinatorHandler) SetMarketFreshness(freshness *MarketFreshness) {
 	h.freshness = freshness
 }
 
 // listingMaxAge is the effective freshness cap for the freshListings-based paths:
-// listingAgeFloor (or the operator's tuned floor) widened to whatever the current
+// marketDataAgeFloor (or the operator's tuned floor) widened to whatever the current
 // scan rotation cannot beat.
 func (h *RunTourCoordinatorHandler) listingMaxAge(ctx context.Context, playerID int) time.Duration {
-	return h.freshness.Cap(ctx, playerID, TuneKeyListingMaxAgeMinutes, listingAgeFloor)
+	return h.freshness.Cap(ctx, playerID, TuneKeyMarketDataMaxAgeMinutes, marketDataAgeFloor)
 }
 
 // sinkMaxAge is the effective FRESH-clause cap on the firm-sink buy gate (sp-tgll8
-// item 2, a fail-closed money guard). h.sinkFreshnessMaxAge remains the ARM: a
+// item 2, a fail-closed money guard). It resolves the SAME operator floor listingMaxAge
+// does (sp-ry4r8) — one market-data freshness number for the whole tour operation — but
+// against its own BOOT floor, because h.sinkFreshnessMaxAge remains the ARM: a
 // non-positive boot value keeps the clause inert and no tune can change that, and a
 // positive one can never be tuned back down below the rotation bound (RULINGS #4).
 func (h *RunTourCoordinatorHandler) sinkMaxAge(ctx context.Context, playerID int) time.Duration {
-	return h.freshness.Cap(ctx, playerID, TuneKeySinkFreshnessMaxMinutes, h.sinkFreshnessMaxAge)
+	return h.freshness.Cap(ctx, playerID, TuneKeyMarketDataMaxAgeMinutes, h.sinkFreshnessMaxAge)
 }
 
 // SetMarketFreshness wires the stocker's half of the same resolver — the stocker
 // picks its storage-refill source off freshListings against the identical cap, so
-// the two must not diverge. nil leaves it on listingAgeFloor, unchanged.
+// the two must not diverge. nil leaves it on marketDataAgeFloor, unchanged.
 func (h *RunStockerCoordinatorHandler) SetMarketFreshness(freshness *MarketFreshness) {
 	h.freshness = freshness
 }
@@ -259,5 +269,5 @@ func (h *RunStockerCoordinatorHandler) SetMarketFreshness(freshness *MarketFresh
 // still overrides it outright: that is a per-run operator instruction on a one-shot
 // container, not a fleet-wide default, so it is honoured as given.
 func (h *RunStockerCoordinatorHandler) listingMaxAge(ctx context.Context, playerID int) time.Duration {
-	return h.freshness.Cap(ctx, playerID, TuneKeyListingMaxAgeMinutes, listingAgeFloor)
+	return h.freshness.Cap(ctx, playerID, TuneKeyMarketDataMaxAgeMinutes, marketDataAgeFloor)
 }

@@ -12,7 +12,7 @@ import (
 )
 
 // Ranker age-cap: lanes priced off market observations older than
-// listingAgeFloor are excluded from UNDIRECTED ranking — a stale lane can't win
+// marketDataAgeFloor are excluded from UNDIRECTED ranking — a stale lane can't win
 // selection and then execute at prices that already moved — while a captain-
 // DIRECTED --dest lane is NOT vetoed by staleness (it is re-verified live at
 // execution by staleAskAborts + the per-visit margin re-check); its stale backing

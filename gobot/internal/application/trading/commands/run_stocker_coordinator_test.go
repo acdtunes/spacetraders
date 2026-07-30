@@ -398,7 +398,7 @@ func TestStocker_Pick_MostNeededByValue(t *testing.T) {
 	h := newStockerHandler(t, fx, coord, op, miner, &sfFakeAPIClient{credits: 100000000}, tradingsvc.DepositCandidateConfig{}, 10)
 
 	ctx := auth.WithPlayerToken(context.Background(), "TOK")
-	pick, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), listingAgeFloor)
+	pick, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), marketDataAgeFloor)
 	if !ok {
 		t.Fatalf("expected a pick")
 	}
@@ -420,7 +420,7 @@ func TestStocker_Pick_MinSavingsExcludes(t *testing.T) {
 	h := newStockerHandler(t, fx, coord, op, miner, &sfFakeAPIClient{credits: 100000000}, tradingsvc.DepositCandidateConfig{MinSavingsPerUnit: 100}, 10)
 
 	ctx := auth.WithPlayerToken(context.Background(), "TOK")
-	if _, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), listingAgeFloor); ok {
+	if _, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), marketDataAgeFloor); ok {
 		t.Fatalf("a below-min-savings candidate must be excluded")
 	}
 }
@@ -436,7 +436,7 @@ func TestStocker_Pick_CeilingCapsUnits(t *testing.T) {
 	h := newStockerHandler(t, fx, coord, op, miner, &sfFakeAPIClient{credits: 700000}, tradingsvc.DepositCandidateConfig{}, 10)
 
 	ctx := auth.WithPlayerToken(context.Background(), "TOK")
-	pick, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), listingAgeFloor)
+	pick, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), marketDataAgeFloor)
 	if !ok {
 		t.Fatalf("expected a pick within the ceiling")
 	}
@@ -454,7 +454,7 @@ func TestStocker_Pick_BudgetPerLegCapsUnits(t *testing.T) {
 	h := newStockerHandler(t, fx, coord, op, miner, &sfFakeAPIClient{credits: 100000000}, tradingsvc.DepositCandidateConfig{}, 10)
 
 	ctx := auth.WithPlayerToken(context.Background(), "TOK")
-	pick, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H", BudgetPerLeg: 42000}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), listingAgeFloor)
+	pick, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H", BudgetPerLeg: 42000}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), marketDataAgeFloor)
 	if !ok {
 		t.Fatalf("expected a pick within the per-leg budget")
 	}
@@ -473,7 +473,7 @@ func TestStocker_Pick_WarehouseSpaceCapsUnits(t *testing.T) {
 	h := newStockerHandler(t, fx, coord, op, miner, &sfFakeAPIClient{credits: 100000000}, tradingsvc.DepositCandidateConfig{}, 10)
 
 	ctx := auth.WithPlayerToken(context.Background(), "TOK")
-	pick, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), listingAgeFloor)
+	pick, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), marketDataAgeFloor)
 	if !ok {
 		t.Fatalf("expected a pick within warehouse space")
 	}
@@ -497,7 +497,7 @@ func TestStocker_Pick_AtTargetExcludes(t *testing.T) {
 	h := newStockerHandler(t, fx, coord, op, miner, &sfFakeAPIClient{credits: 100000000}, tradingsvc.DepositCandidateConfig{}, 10)
 
 	ctx := auth.WithPlayerToken(context.Background(), "TOK")
-	if _, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), listingAgeFloor); ok {
+	if _, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), marketDataAgeFloor); ok {
 		t.Fatalf("a good already at target must be excluded")
 	}
 }
@@ -512,7 +512,7 @@ func TestStocker_Pick_UnreadableBalanceFailsClosed(t *testing.T) {
 	h := newStockerHandler(t, fx, coord, op, miner, &sfFakeAPIClient{err: errors.New("agent API unavailable")}, tradingsvc.DepositCandidateConfig{}, 10)
 
 	ctx := auth.WithPlayerToken(context.Background(), "TOK")
-	if _, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), listingAgeFloor); ok {
+	if _, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), marketDataAgeFloor); ok {
 		t.Fatalf("an unreadable balance must stock nothing (fail closed)")
 	}
 }
@@ -527,7 +527,7 @@ func TestStocker_Pick_UnsupportedGoodExcludes(t *testing.T) {
 	h := newStockerHandler(t, fx, coord, op, miner, &sfFakeAPIClient{credits: 100000000}, tradingsvc.DepositCandidateConfig{}, 10)
 
 	ctx := auth.WithPlayerToken(context.Background(), "TOK")
-	if _, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), listingAgeFloor); ok {
+	if _, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), marketDataAgeFloor); ok {
 		t.Fatalf("a good the warehouse does not support must be excluded")
 	}
 }
@@ -543,7 +543,7 @@ func TestStocker_Pick_StaleForeignMarketExcludes(t *testing.T) {
 	h := newStockerHandler(t, fx, coord, op, miner, &sfFakeAPIClient{credits: 100000000}, tradingsvc.DepositCandidateConfig{}, 10)
 
 	ctx := auth.WithPlayerToken(context.Background(), "TOK")
-	if _, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), listingAgeFloor); ok {
+	if _, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), marketDataAgeFloor); ok {
 		t.Fatalf("a stale foreign market must be excluded (freshness discipline)")
 	}
 }
@@ -576,7 +576,7 @@ func TestStocker_Pick_UnreachableCheapestExcluded_PicksReachablePricier(t *testi
 	h.SetGateGraph(&fakeHopGraph{hops: map[string]int{"X1-KA42->X1-JP61": 3}})
 
 	ctx := auth.WithPlayerToken(context.Background(), "TOK")
-	pick, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-KA42-H"}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), listingAgeFloor)
+	pick, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-KA42-H"}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), marketDataAgeFloor)
 	if !ok {
 		t.Fatalf("expected the reachable candidate to be picked")
 	}
@@ -613,10 +613,10 @@ func TestStocker_Pick_AllUnreachable_ParksQuietly(t *testing.T) {
 
 	ctx := auth.WithPlayerToken(context.Background(), "TOK")
 	cmd := &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-KA42-H"}
-	if _, ok := h.pick(ctx, cmd, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), listingAgeFloor); ok {
+	if _, ok := h.pick(ctx, cmd, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), marketDataAgeFloor); ok {
 		t.Fatalf("an all-unreachable candidate set must park quietly (ok=false), not surface a pick")
 	}
-	if _, ok := h.pick(ctx, cmd, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), listingAgeFloor); ok {
+	if _, ok := h.pick(ctx, cmd, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), marketDataAgeFloor); ok {
 		t.Fatalf("re-planning an unchanged unreachable-only candidate set must remain parked, got a pick")
 	}
 }
@@ -640,7 +640,7 @@ func TestStocker_Pick_AllUnreachable_LogsOnceWithStructuredReason(t *testing.T) 
 	cmd := &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-KA42-H"}
 
 	for i := 0; i < 3; i++ {
-		if _, ok := h.pick(ctx, cmd, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), listingAgeFloor); ok {
+		if _, ok := h.pick(ctx, cmd, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), marketDataAgeFloor); ok {
 			t.Fatalf("pass %d: all candidates gate-unreachable must stock nothing", i)
 		}
 	}
@@ -682,7 +682,7 @@ func TestStocker_Pick_AggregateInventoryNetsTarget(t *testing.T) {
 	h := newStockerHandlerMulti(t, fx, coord, []*storage.StorageOperation{older, newer}, miner, &sfFakeAPIClient{credits: 100000000}, tradingsvc.DepositCandidateConfig{}, 10)
 
 	ctx := auth.WithPlayerToken(context.Background(), "TOK")
-	if _, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, []*storage.StorageOperation{older, newer}, int64(defaultWorkingCapitalReserve), listingAgeFloor); ok {
+	if _, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, []*storage.StorageOperation{older, newer}, int64(defaultWorkingCapitalReserve), marketDataAgeFloor); ok {
 		t.Fatalf("aggregate on-hand (25+20=45) already meets target 40 — must stock nothing")
 	}
 }
@@ -700,7 +700,7 @@ func TestStocker_Pick_AggregateFreeSpaceCapsHaul(t *testing.T) {
 	h := newStockerHandlerMulti(t, fx, coord, []*storage.StorageOperation{a, b}, miner, &sfFakeAPIClient{credits: 100000000}, tradingsvc.DepositCandidateConfig{}, 10)
 
 	ctx := auth.WithPlayerToken(context.Background(), "TOK")
-	pick, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, []*storage.StorageOperation{a, b}, int64(defaultWorkingCapitalReserve), listingAgeFloor)
+	pick, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, []*storage.StorageOperation{a, b}, int64(defaultWorkingCapitalReserve), marketDataAgeFloor)
 	if !ok {
 		t.Fatalf("expected a pick within aggregate free space")
 	}
@@ -722,7 +722,7 @@ func TestStocker_Pick_FullOnlyWhenAllMembersFull(t *testing.T) {
 	h := newStockerHandlerMulti(t, fx, coord, []*storage.StorageOperation{full, spare}, miner, &sfFakeAPIClient{credits: 100000000}, tradingsvc.DepositCandidateConfig{}, 10)
 
 	ctx := auth.WithPlayerToken(context.Background(), "TOK")
-	pick, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, []*storage.StorageOperation{full, spare}, int64(defaultWorkingCapitalReserve), listingAgeFloor)
+	pick, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, []*storage.StorageOperation{full, spare}, int64(defaultWorkingCapitalReserve), marketDataAgeFloor)
 	if !ok {
 		t.Fatalf("a full member with a spare sibling must NOT report full — stock into the sibling")
 	}
@@ -1228,13 +1228,13 @@ func TestStocker_Pick_RefillHysteresisFloorsShortfall(t *testing.T) {
 
 	// 3 short (on-hand 37 of target 40), hysteresis 5 → below floor → excluded.
 	hLow, opsLow, ctxLow := build(37)
-	if _, ok := hLow.pick(ctxLow, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H", RefillHysteresis: 5}, opsLow, int64(defaultWorkingCapitalReserve), listingAgeFloor); ok {
+	if _, ok := hLow.pick(ctxLow, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H", RefillHysteresis: 5}, opsLow, int64(defaultWorkingCapitalReserve), marketDataAgeFloor); ok {
 		t.Fatalf("a 3-unit shortfall below a hysteresis of 5 must be excluded (no thrash)")
 	}
 
 	// 10 short (on-hand 30 of target 40), hysteresis 5 → at/above floor → picked.
 	hHi, opsHi, ctxHi := build(30)
-	if _, ok := hHi.pick(ctxHi, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H", RefillHysteresis: 5}, opsHi, int64(defaultWorkingCapitalReserve), listingAgeFloor); !ok {
+	if _, ok := hHi.pick(ctxHi, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H", RefillHysteresis: 5}, opsHi, int64(defaultWorkingCapitalReserve), marketDataAgeFloor); !ok {
 		t.Fatalf("a 10-unit shortfall at/above a hysteresis of 5 must be picked")
 	}
 }
@@ -1264,7 +1264,7 @@ func TestStocker_Pick_AutoCapBoundsHaulToSingleContractSize(t *testing.T) {
 	h := newStockerHandler(t, fx, coord, op, miner, &sfFakeAPIClient{credits: 100000000}, tradingsvc.DepositCandidateConfig{}, 10)
 
 	ctx := auth.WithPlayerToken(context.Background(), "TOK")
-	pick, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), listingAgeFloor)
+	pick, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), marketDataAgeFloor)
 	if !ok {
 		t.Fatalf("expected a pick")
 	}
@@ -1290,7 +1290,7 @@ func TestStocker_Pick_AutoCapCapsAtSingleContractSize(t *testing.T) {
 	h := newStockerHandler(t, fx, coord, op, miner, &sfFakeAPIClient{credits: 100000000}, tradingsvc.DepositCandidateConfig{}, 10)
 
 	ctx := auth.WithPlayerToken(context.Background(), "TOK")
-	if _, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), listingAgeFloor); ok {
+	if _, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), marketDataAgeFloor); ok {
 		t.Fatalf("DRUGS at its single-contract target (24) must be excluded — the cap is s_G, not the summed demand (72)")
 	}
 }
@@ -1463,7 +1463,7 @@ func TestStocker_Pick_HomeSystemOnly_SelectsHomeSourceNotForeign(t *testing.T) {
 
 	ctx := auth.WithPlayerToken(context.Background(), "TOK")
 	pick, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H", HomeSystemOnly: true},
-		[]*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), listingAgeFloor)
+		[]*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), marketDataAgeFloor)
 	if !ok {
 		t.Fatalf("expected a home-system pick")
 	}
@@ -1493,7 +1493,7 @@ func TestStocker_Pick_Default_StillSourcesCheaperForeign(t *testing.T) {
 
 	ctx := auth.WithPlayerToken(context.Background(), "TOK")
 	pick, ok := h.pick(ctx, &RunStockerCoordinatorCommand{ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-S1-H"}, // HomeSystemOnly false (default)
-		[]*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), listingAgeFloor)
+		[]*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), marketDataAgeFloor)
 	if !ok {
 		t.Fatalf("expected the generic stocker to pick the cheapest source")
 	}
@@ -1526,7 +1526,7 @@ func TestStocker_PickPinned_SourcesSupportedGoodFromHome(t *testing.T) {
 	ctx := auth.WithPlayerToken(context.Background(), "TOK")
 	pick, ok := h.pick(ctx, &RunStockerCoordinatorCommand{
 		ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-UM5-G49", HomeSystemOnly: true,
-	}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), listingAgeFloor)
+	}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), marketDataAgeFloor)
 
 	if !ok {
 		t.Fatalf("expected the pinned depot to source a supported good from home (today: nothing, after_filters=0 - the sp-rh1wi bug)")
@@ -1557,7 +1557,7 @@ func TestStocker_PickPinned_GenericPathUnaffectedByEmptyMinerRows(t *testing.T) 
 	ctx := auth.WithPlayerToken(context.Background(), "TOK")
 	_, ok := h.pick(ctx, &RunStockerCoordinatorCommand{
 		ShipSymbol: "S", PlayerID: 1, WarehouseWaypoint: "X1-UM5-G49", // HomeSystemOnly false (default)
-	}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), listingAgeFloor)
+	}, []*storage.StorageOperation{op}, int64(defaultWorkingCapitalReserve), marketDataAgeFloor)
 
 	if ok {
 		t.Fatalf("generic (non-pinned) stocker must still use the miner-ranked path and find nothing here - it must never silently take the pinned direct-home-source route")

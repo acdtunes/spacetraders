@@ -18,7 +18,7 @@ package commands
 //     walked to the relocator's OWN hopRadius rather than the reposition flight's 12-jump bound,
 //     because "system + 2-hop neighbours" is the region radius the bead specifies.
 //   - PER-NEIGHBOUR SCREENING + PRE-RANK: scoreRepositionNeighbors — unbuilt-gate rejection, the
-//     listingAgeFloor fresh-lane filter, the stale-lane counter, and the capped-spread pre-rank score.
+//     marketDataAgeFloor fresh-lane filter, the stale-lane counter, and the capped-spread pre-rank score.
 //   - HOP-DECAYED ORDERING: repositionDecayedScore over resolveRepositionReachHopDecay, the sp-uf64
 //     ranking, so the bounded pre-flight spends its planner calls on the same candidates the reach
 //     path would.
@@ -255,7 +255,7 @@ func (h *RunTourCoordinatorHandler) relocationRegionFreshness(ctx context.Contex
 	if err != nil || len(listings) == 0 {
 		return 0, "", false
 	}
-	// The SAME listingAgeFloor pre-filter scoreRepositionNeighbors applied when it built the candidate,
+	// The SAME marketDataAgeFloor pre-filter scoreRepositionNeighbors applied when it built the candidate,
 	// so the lane read here is the lane the region was ranked on.
 	fresh := freshListings(listings, now, h.listingMaxAge(ctx, cmd.PlayerID))
 	if len(fresh) == 0 {
