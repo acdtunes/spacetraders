@@ -44,6 +44,10 @@ const (
 	// are NOT the probe cap and NOT the treasury floor. A money guard doing its job is a correct
 	// refusal, never a stall; this is the other kind.
 	stallReasonBuyRefused health.StallReason = "buy_refused"
+	// stallReasonPlacementRefused: the placement machine SELECTED moves and the actuator refused
+	// every one of them, advancing nothing. The work was licensed and then lost — see
+	// placementWedged — which is what separates it from a tick that simply had no move to make.
+	stallReasonPlacementRefused health.StallReason = "placement_refused"
 	// stallReasonExpansionError: the expansion pass could not complete.
 	stallReasonExpansionError health.StallReason = "expansion_error"
 	// stallReasonOffGateNoTarget: THE MEASURED PRODUCTION FAILURE. The gate-reachable frontier is
@@ -102,6 +106,29 @@ func (t sensingTickTally) buyWedged() bool {
 	return t.buy.Bought == 0 && t.buy.Reused == 0 && t.buy.Footholds == 0
 }
 
+// placementWedged reports the placement machine having had work LICENSED and then LOST: moves were
+// selected and the actuator refused every one of them, so the tick advanced no placement at all.
+//
+// THIS IS THE DISCRIMINATOR sp-j1i49 SHIPPED FOR THE RELOCATOR, and it is here rather than a
+// second, similar rule so both coordinators answer the same question: was the work licensed and
+// then lost, or was there no work? A refusal is the actuator declining a move this machine had
+// already decided to make — the licence was granted and the move did not happen. A tick with no
+// refusals selected nothing, so nothing was lost, and it stays IDLE and silent forever, which on a
+// settled fleet is the common and correct state.
+//
+// It is deliberately NOT "refusals > 0 AND the refusal budget saturated for N ticks", which is
+// what this was first specified as. That threshold is unnecessary — the streak in
+// health.StallEscalationTicks already supplies the "for N ticks" — and worse, a bare count cannot
+// tell a refused-because-legitimately-unaffordable from a refused-because-broken. The licensing
+// question can, and it is the same question buyWedged asks about the drain.
+//
+// Actions is the ONLY thing that clears it, which is what makes PROGRESS outrank a same-tick
+// refusal: a tick that berthed one hull and was refused nine did work. Without that, any fleet
+// where a single slot is ever contended would never leave the blocked state.
+func (t sensingTickTally) placementWedged() bool {
+	return t.place.Failures > 0 && t.place.Actions == 0
+}
+
 // sensingTickVerdict maps one tick's tallies to its verdict.
 //
 // PROGRESS OUTRANKS FAILURE, deliberately. A tick that screened four systems and had one engine
@@ -117,6 +144,16 @@ func sensingTickVerdict(t sensingTickTally) health.TickOutcome {
 	}
 	if t.buyWedged() {
 		return health.TickBlocked(stallReasonBuyRefused, fmt.Sprintf("the drain made %d attempt(s) and bought nothing, with neither the probe cap nor the buy floor holding", t.buy.Attempts))
+	}
+	// After the drain, because a wedged drain is the UPSTREAM cause: with nothing bought there is
+	// nothing to place, and naming the refusal rather than its source would send the reader
+	// downstream of the actual fault.
+	//
+	// The count goes in the DETAIL and never in the reason. The reason keys the streak, so a reason
+	// that moved with the refusal count would restart the streak every tick and could never reach
+	// StallEscalationTicks — fully wired, and incapable of ever escalating.
+	if t.placementWedged() {
+		return health.TickBlocked(stallReasonPlacementRefused, fmt.Sprintf("the placement machine issued %d move(s) and every one was refused, advancing no placement at all", t.place.Failures))
 	}
 	return health.TickIdle()
 }

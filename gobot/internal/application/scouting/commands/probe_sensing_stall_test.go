@@ -312,3 +312,156 @@ func TestSensingRunsWithNoStallObserverWired(t *testing.T) {
 		t.Fatalf("ReconcileOnce error: %v", err)
 	}
 }
+
+// --- placement refusals are a wedge, not quiet (sp-biegl) -----------------------
+
+// TestSensingTickVerdict_PlacementRefusalsAreBlockedNotIdle is the bead.
+//
+// A placement tick that issued moves and had every one of them refused was filed as IDLE. That
+// understates it exactly as badly as the PROGRESS it used to be filed as: 266 probes sat frozen
+// for 28 hours while the health machinery reported healthy ticks throughout, because a refusal
+// incremented rep.Actions and anyEffect() read Actions > 0 as "a placement advanced". sp-cwnwb
+// stopped the false PROGRESS; a tick that refuses thirty moves and gets nowhere is still not idle.
+//
+// The discriminator is the one sp-j1i49 shipped for the relocator, so both coordinators share ONE
+// rule: WAS THE WORK LICENSED AND THEN LOST, OR WAS THERE NO WORK? A move that was selected and
+// then refused by the actuator was licensed and lost — blocked. A tick that selected nothing had
+// no work — idle, and silent forever, which on a settled fleet is the common and correct state.
+func TestSensingTickVerdict_PlacementRefusalsAreBlockedNotIdle(t *testing.T) {
+	cases := []struct {
+		name       string
+		tally      sensingTickTally
+		wantStatus health.StallOutcome
+		wantReason health.StallReason
+	}{
+		{
+			name:       "every move refused and nothing advanced — licensed and lost",
+			tally:      sensingTickTally{place: parkedsensing.PlacementReport{Failures: 30}},
+			wantStatus: health.StallBlocked,
+			wantReason: stallReasonPlacementRefused,
+		},
+		{
+			name:       "a single refusal with nothing advanced still counts as licensed and lost",
+			tally:      sensingTickTally{place: parkedsensing.PlacementReport{Failures: 1}},
+			wantStatus: health.StallBlocked,
+			wantReason: stallReasonPlacementRefused,
+		},
+		{
+			// The rule that keeps the streak clearable. Without it, any fleet where one slot is
+			// ever contended never leaves the blocked state.
+			name:       "PROGRESS outranks a same-tick refusal — one placement advanced, one refused",
+			tally:      sensingTickTally{place: parkedsensing.PlacementReport{Actions: 1, Failures: 9}},
+			wantStatus: health.StallProgress,
+		},
+		{
+			name:       "progress ANYWHERE outranks a placement wedge",
+			tally:      sensingTickTally{screened: 1, place: parkedsensing.PlacementReport{Failures: 30}},
+			wantStatus: health.StallProgress,
+		},
+		{
+			// No move was selected, so nothing was licensed and nothing was lost. This is what a
+			// settled fleet looks like every tick and it must stay silent.
+			name:       "a tick that selected no move at all is idle, not blocked",
+			tally:      sensingTickTally{place: parkedsensing.PlacementReport{}},
+			wantStatus: health.StallIdle,
+		},
+		{
+			// An engine that ERRORED outranks a refusal: the harder signal names the cause.
+			name:       "an engine failure outranks a placement refusal",
+			tally:      sensingTickTally{failures: 1, place: parkedsensing.PlacementReport{Failures: 30}},
+			wantStatus: health.StallBlocked,
+			wantReason: stallReasonEngineFailure,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sensingTickVerdict(tc.tally)
+			if got.Outcome != tc.wantStatus {
+				t.Fatalf("outcome = %s (reason %q, detail %q), want %s", got.Outcome, got.Reason, got.Detail, tc.wantStatus)
+			}
+			if tc.wantReason != "" && got.Reason != tc.wantReason {
+				t.Fatalf("reason = %q, want %q", got.Reason, tc.wantReason)
+			}
+		})
+	}
+}
+
+// TestSensingTickVerdict_PlacementReasonCarriesNoLiveCount pins the subtlest way to leave this
+// mechanism fully wired and completely useless.
+//
+// The StallReason KEYS THE STREAK. A reason string that moves with a live count is a different
+// reason every tick, so the streak resets every tick and can never reach StallEscalationTicks —
+// the detector reports blocked forever and escalates never. Counts belong in Detail, which is
+// carried for the human and not compared.
+//
+// Asserted STRUCTURALLY — two wildly different refusal counts must produce the byte-identical
+// reason, and that reason must be the constant itself. A multi-tick fixture would only catch this
+// when the counts happened to differ, which is precisely when a real fleet's counts might not.
+func TestSensingTickVerdict_PlacementReasonCarriesNoLiveCount(t *testing.T) {
+	one := sensingTickVerdict(sensingTickTally{place: parkedsensing.PlacementReport{Failures: 1}})
+	many := sensingTickVerdict(sensingTickTally{place: parkedsensing.PlacementReport{Failures: 987}})
+
+	if one.Reason != many.Reason {
+		t.Fatalf("reason moved with the refusal count: %q vs %q. The reason keys the streak, so a "+
+			"count inside it restarts the streak every tick and the detector can NEVER escalate.", one.Reason, many.Reason)
+	}
+	if one.Reason != stallReasonPlacementRefused {
+		t.Fatalf("reason = %q, want the constant %q — a reason assembled per tick is a reason that cannot key a streak",
+			one.Reason, stallReasonPlacementRefused)
+	}
+	// The count is not lost, only moved: Detail is what carries it to the human.
+	if one.Detail == many.Detail {
+		t.Fatalf("detail is identical for 1 and 987 refusals (%q) — the count belongs in Detail, and dropping it "+
+			"entirely leaves the operator no idea how wedged the machine is", one.Detail)
+	}
+}
+
+// TestPlacementWedged_IsSelfContained tests the predicate DIRECTLY, because its Actions clause
+// cannot be reached through sensingTickVerdict.
+//
+// A mutation removing `&& t.place.Actions == 0` survives every verdict-level fixture: anyEffect()
+// already counts place.Actions > 0 and returns PROGRESS before placementWedged() is consulted, so
+// the clause is unreachable-false at that call site. That makes it invisible to the table above
+// while still being the thing that makes the predicate MEAN what its name says — a machine that
+// berthed a hull is not wedged, whoever asks and from wherever.
+//
+// Kept rather than deleted, and tested here instead: a predicate that is only correct because of
+// an invariant its single caller happens to maintain is the kind that breaks silently the first
+// time it is reused. The progress-outranks-a-loss property at the VERDICT level lives in
+// anyEffect() and is pinned by the table case above; this pins the predicate's own contract.
+func TestPlacementWedged_IsSelfContained(t *testing.T) {
+	cases := []struct {
+		name  string
+		place parkedsensing.PlacementReport
+		want  bool
+	}{
+		{
+			name:  "moves issued, every one refused, nothing advanced — wedged",
+			place: parkedsensing.PlacementReport{Failures: 9},
+			want:  true,
+		},
+		{
+			// The clause the verdict path can never exercise.
+			name:  "something advanced alongside the refusals — NOT wedged, whoever asks",
+			place: parkedsensing.PlacementReport{Actions: 1, Failures: 9},
+			want:  false,
+		},
+		{
+			name:  "no move was ever issued — nothing licensed, nothing lost",
+			place: parkedsensing.PlacementReport{},
+			want:  false,
+		},
+		{
+			name:  "a clean tick that advanced placements is not wedged",
+			place: parkedsensing.PlacementReport{Actions: 4},
+			want:  false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := (sensingTickTally{place: tc.place}).placementWedged(); got != tc.want {
+				t.Fatalf("placementWedged() = %v, want %v for %+v", got, tc.want, tc.place)
+			}
+		})
+	}
+}
