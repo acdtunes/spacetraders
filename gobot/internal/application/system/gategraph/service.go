@@ -210,16 +210,27 @@ func NewService(
 }
 
 // Connections returns systemSymbol's directly-reachable neighbor edges,
-// fetch-through: a fresh cache hit is returned as-is; a miss or a stale set
-// triggers a single live GetJumpGate fetch which is then persisted (replacing the
-// system's old set) and returned. Errors are surfaced, never swallowed — a
-// routability guard that cannot read the graph must fail closed, not fail open.
+// fetch-through: a fresh cache hit is returned as-is; a miss, a condemned set, or a set
+// carrying ANY row past its own freshness window triggers a single live GetJumpGate fetch
+// which is then persisted (replacing the system's old set) and returned. Errors are
+// surfaced, never swallowed — a routability guard that cannot read the graph must fail
+// closed, not fail open.
+//
+// THIS IS WHERE THE BUILD-COMPLETION RE-PROBE LIVES. The store's `ok` is now a
+// whole-set verdict measured against the healthy window alone, so a still-building exit
+// past its shorter 2h window arrives here as a HIT (its built siblings are current and must
+// stay routable — that separation is what un-walled the map). The 2h clock therefore has to
+// be read off the PER-ROW Stale flag instead: early-returning on the bare `ok` would hold a
+// "still building" verdict for a full day and refuse a route that had since opened, which is
+// the exact failure the shorter window exists to prevent. A fully-current set — including one
+// whose under-construction row is still inside its own window, already a probe's verdict —
+// costs zero API.
 func (s *Service) Connections(ctx context.Context, systemSymbol string, playerID int) ([]system.GateEdge, error) {
 	edges, ok, err := s.store.Edges(ctx, systemSymbol)
 	if err != nil {
 		return nil, err
 	}
-	if ok {
+	if ok && !anyEdgeStale(edges) {
 		return edges, nil
 	}
 	// A miss/stale set would normally re-fetch. But an UNREADABLE gate (one whose live
@@ -251,8 +262,11 @@ func (s *Service) Connections(ctx context.Context, systemSymbol string, playerID
 // present read, fetchAndStore -> store.Replace deletes every row for the system INCLUDING
 // the backoff marker (self-heal, gate_edge_repository.go), so the latch clears itself. It
 // stays honest at the two boundaries that matter:
-//   - GUARD 1 (idempotent): an already-charted system (Edges is a fresh, non-empty hit)
-//     early-returns with ZERO API — an arrival on a known system costs one store read.
+//   - GUARD 1 (idempotent): an already-charted system (Edges is a fresh, non-empty hit whose
+//     every row is inside its own freshness window) early-returns with ZERO API — an arrival on
+//     a known system costs one store read. A row PAST its own window still drives the read:
+//     a hull standing on the gate is the one moment the read is guaranteed to succeed, so it is
+//     the best possible moment to settle a pending build, and idempotence must not swallow it.
 //   - GUARD 2 (negative cache intact): a present read that STILL fails re-enters the
 //     backoff unchanged via fetchAndStore's enterBackoff, so this never defeats sp-4bm3;
 //     only genuine ship-present success heals the latch.
@@ -270,7 +284,7 @@ func (s *Service) Connections(ctx context.Context, systemSymbol string, playerID
 func (s *Service) ChartPresentGate(ctx context.Context, systemSymbol, shipSymbol string, playerID int) ([]system.GateEdge, error) {
 	if edges, ok, err := s.store.Edges(ctx, systemSymbol); err != nil {
 		return nil, err
-	} else if ok && len(edges) > 0 {
+	} else if ok && len(edges) > 0 && !anyEdgeStale(edges) {
 		return edges, nil
 	}
 	// Store MISS ⇒ this gate is UNCHARTED-to-us. PUBLICLY chart it from the present hull BEFORE
@@ -899,10 +913,12 @@ func (s *Service) Adjacency(ctx context.Context) (map[string][]system.GateEdge, 
 // callers must read a missing target as unproven. Two exclusions keep that verdict no laxer
 // than the STRICT resolver the executor actually flies (RULINGS #4):
 //   - an under-construction edge is impassable (a jump into an unbuilt gate fails at hop time);
-//   - a system whose stored edge set is STALE is not expanded THROUGH. Its onward gates are
-//     unverified, and staleness is precisely where Connections would re-fetch and may then
-//     refuse — so trusting it here could prove a route the executor cannot resolve. Arriving
+//   - a system whose stored PASSABLE edges are STALE is not expanded THROUGH. Their onward gates
+//     are unverified, and staleness is precisely where Connections would re-fetch and may then
+//     refuse — so trusting them here could prove a route the executor cannot resolve. Arriving
 //     AT such a system is still resolved: only the edge into it must be verified for that.
+//     An IMPASSABLE row's staleness does not condemn its system: the walk was never going to
+//     traverse it, so its expiry withdraws no reach (see anyPassableEdgeStale).
 //
 // Distances are exact within the bound: the walk is depth-bounded but NOT breadth-bounded, so
 // a dense neighbourhood around fromSystem can never exhaust a discovery budget and leave a
@@ -975,9 +991,11 @@ func (s *Service) storedDistances(ctx context.Context, fromSystem string, target
 		for _, current := range frontier {
 			// An uncached system has no edges to expand and dead-ends here of its own accord;
 			// a stale one is dropped unless the caller ranks rather than proves, its onward
-			// gates being past verification.
+			// gates being past verification. Staleness is judged on the rows that could
+			// actually be TRAVERSED — an impassable under-construction row withdraws nothing
+			// and must not condemn the built exits it sits beside (see anyPassableEdgeStale).
 			edges := adjacency[current]
-			if !throughStale && anyEdgeStale(edges) {
+			if !throughStale && anyPassableEdgeStale(edges) {
 				continue
 			}
 			for _, e := range edges {
@@ -996,11 +1014,40 @@ func (s *Service) storedDistances(ctx context.Context, fromSystem string, target
 	return distances, nil
 }
 
-// anyEdgeStale reports whether a stored edge set is stale. A system's edges are written in one
-// Replace under a single timestamp, so one stale row condemns the whole set.
+// anyEdgeStale reports whether ANY row in a stored edge set is past its own freshness window.
+// This is the RE-PROBE question — "should the fetch-through resolver go and look again?" — and it
+// deliberately counts an under-construction row, whose shorter window exists precisely so a build
+// COMPLETION is noticed same-era rather than held for a day.
+//
+// Contrast anyPassableEdgeStale, the ROUTING question. The two were one predicate and had to be
+// split: a still-building exit must drive a re-probe (this) without condemning the system it
+// leaves from (that).
 func anyEdgeStale(edges []system.GateEdge) bool {
 	for _, e := range edges {
 		if e.Stale {
+			return true
+		}
+	}
+	return false
+}
+
+// anyPassableEdgeStale reports whether any row the walk could actually TRAVERSE is past its
+// freshness window — the ROUTING question, "is this system unsafe to expand THROUGH?".
+//
+// An under-construction row is excluded from the count because it is impassable whatever its age:
+// the walk already refuses to traverse it, so its expiry withdraws nothing that was ever usable
+// and cannot make the system's OTHER exits less verified. Counting it is what walled the map off.
+// A system's rows share one synced_at, so an under-construction row is stale on a 2h schedule
+// while its built siblings sit comfortably inside 24h — and every system holding one still-building
+// exit was dropped as unverifiable every 2h, refusing routes over its perfectly current built gates.
+//
+// A stale BUILT row still condemns the system, and that is the whole standard of proof here: those
+// rows ARE traversal candidates, their onward gates are genuinely past verification, and the
+// fetch-through resolver the executor flies would go back to the API and may then refuse. Trusting
+// them would prove a route that cannot be resolved at flight time (RULINGS #4).
+func anyPassableEdgeStale(edges []system.GateEdge) bool {
+	for _, e := range edges {
+		if e.Stale && !e.UnderConstruction {
 			return true
 		}
 	}

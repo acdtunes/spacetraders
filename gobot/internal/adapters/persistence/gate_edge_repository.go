@@ -77,11 +77,29 @@ func NewGormGateEdgeRepository(db *gorm.DB, opts ...GateEdgeOption) *GormGateEdg
 }
 
 // Edges returns systemSymbol's stored neighbor edges, era-scoped. ok is false on
-// a genuine miss (no rows) OR when the newest stored row is older than
-// gateEdgeFreshWindow — both are lazy-refresh signals the service resolves by
-// fetching the live gate. A NULL synced_at is treated as stale (unknown age →
+// a genuine miss (no rows) OR when the set is CONDEMNED — older than the healthy
+// freshness window, or of unknown age — both lazy-refresh signals the service resolves
+// by fetching the live gate. A NULL synced_at is treated as stale (unknown age →
 // refresh), the inverse of the waypoint cache's "unknown age is fresh" choice:
 // here a routing decision rides on the data, so the safe default is to re-fetch.
+//
+// TWO DIFFERENT QUESTIONS, deliberately answered by two different signals.
+// `ok` answers "may I trust this set for routing?" and is a WHOLE-SET verdict measured
+// against the healthy window alone. Per-row `Stale` answers "does this row need a
+// re-probe?" and carries the SHORTER under-construction window.
+//
+// Conflating them is what walled off the map. Every row of a system is written by one
+// Replace under a SINGLE synced_at, so returning ok=false whenever ANY row was stale meant
+// one still-building exit condemned its system's ENTIRE topology — including its built,
+// static, permanently-valid exits — 2h after the last probe. GateNeighbourPort then yielded
+// zero neighbours, the system became a WALL in every BFS, and routing refused
+// provably-existing routes: 173 of 1,168 live systems at once, freezing 266 bought probes
+// that were never dispatched. A static gate does not become unknown because a DIFFERENT
+// gate in the same system is still being built, so its staleness must not condemn siblings.
+//
+// The re-probe signal is not lost, only moved: it rides `Stale` on exactly the expired row,
+// and the fetch-through resolver (gategraph.Service.Connections) re-fetches on it. Dropping
+// it would hold a "still building" verdict for a full day and refuse a route that had opened.
 func (r *GormGateEdgeRepository) Edges(ctx context.Context, systemSymbol string) ([]system.GateEdge, bool, error) {
 	var models []GateEdgeModel
 	predicate, args := eraScopePredicate(r.openEraID(ctx))
@@ -100,7 +118,7 @@ func (r *GormGateEdgeRepository) Edges(ctx context.Context, systemSymbol string)
 	if len(models) == 0 {
 		return nil, false, nil
 	}
-	if r.anyStale(models) {
+	if r.anyCondemned(models) {
 		return nil, false, nil
 	}
 
@@ -110,6 +128,10 @@ func (r *GormGateEdgeRepository) Edges(ctx context.Context, systemSymbol string)
 			ConnectedSystem:   m.ConnectedSystem,
 			GateWaypoint:      m.GateWaypoint,
 			UnderConstruction: m.UnderConstruction,
+			// Per-row: the row is past ITS OWN window (the shorter one while a gate is
+			// building). Routing consumers exclude it from the answer; the fetch-through
+			// resolver re-probes on it. It no longer condemns its siblings.
+			Stale: r.rowStale(m),
 		})
 	}
 	return edges, true, nil
@@ -307,17 +329,49 @@ func (r *GormGateEdgeRepository) UnreadableGates(ctx context.Context) (map[strin
 	return gates, nil
 }
 
-// anyStale reports whether any row is stale. A system's edges are written in one
-// Replace() with a single timestamp, so any stale row means the whole set is stale
-// (the lazy-refresh signal that forces a full re-fetch + re-probe before routing
-// trusts the set).
-func (r *GormGateEdgeRepository) anyStale(models []GateEdgeModel) bool {
+// anyCondemned reports whether any row makes the WHOLE set untrustworthy for routing.
+// A system's edges are written in one Replace() under a single timestamp, so in practice
+// this is the one question "is this SET past the healthy window?" — and one row answering
+// yes correctly condemns all of them, because they are all the same age.
+func (r *GormGateEdgeRepository) anyCondemned(models []GateEdgeModel) bool {
 	for _, m := range models {
-		if r.rowStale(m) {
+		if r.rowCondemnsSet(m) {
 			return true
 		}
 	}
 	return false
+}
+
+// rowCondemnsSet reports whether one row's age makes its whole set untrustworthy. It is
+// deliberately NOT rowStale: the condemnation is measured against the WHOLE-SET (healthy,
+// configured) window for every row, ignoring the shorter under-construction window entirely.
+//
+// That is the whole fix. The short window exists so a BUILD COMPLETION is noticed same-era —
+// it is a re-probe schedule for one row, not a verdict on its system's topology. Letting it
+// condemn the set made every system with a still-building exit a routing WALL every 2h, and
+// re-probes are rate-limited (MaxGateReads per tick) so they could never all be refreshed
+// inside that window. An under-construction edge is impassable anyway and is already excluded
+// as a routing candidate, so its expiry costs the walk nothing that was ever usable.
+//
+// Two conditions still condemn, and both are load-bearing:
+//   - UNKNOWN AGE (missing or unparseable synced_at) — the deploy-time cache invalidation
+//     (AutoMigrate blanking synced_at) relies on it to force a re-probe of pre-tracking rows.
+//     It applies even to a row flagged under-construction: at unknown age that FLAG is
+//     unverified too, so the row cannot earn an exemption on the strength of the one field
+//     that cannot be trusted.
+//   - PAST THE HEALTHY WINDOW — a genuinely old set has unverifiable topology and is still
+//     condemned whole, exactly as before. The configured window ([routing] gate_cache_ttl) is
+//     what this measures against, so shortening the topology TTL keeps applying to every
+//     system rather than silently exempting any that has a gate under construction.
+func (r *GormGateEdgeRepository) rowCondemnsSet(m GateEdgeModel) bool {
+	if m.SyncedAt == "" {
+		return true
+	}
+	syncedAt, err := time.Parse(time.RFC3339, m.SyncedAt)
+	if err != nil {
+		return true
+	}
+	return time.Since(syncedAt) >= r.freshWindow
 }
 
 // rowStale reports whether a single edge row's cache is stale: its synced_at is
@@ -327,6 +381,11 @@ func (r *GormGateEdgeRepository) anyStale(models []GateEdgeModel) bool {
 // EMPTY synced_at is always stale: this is what the deploy-time cache invalidation
 // (AutoMigrate clearing synced_at on the column's introduction) relies on to force
 // a re-probe of pre-tracking rows before they are ever trusted for routing.
+//
+// This is the PER-ROW verdict only. It marks a row as needing a re-probe and as unusable
+// as a routing candidate; it does NOT decide whether the row's SET is trustworthy — that
+// is rowCondemnsSet, which ignores the short window on purpose. Keeping the two apart is
+// what stops one still-building exit from walling off its whole system.
 func (r *GormGateEdgeRepository) rowStale(m GateEdgeModel) bool {
 	if m.SyncedAt == "" {
 		return true

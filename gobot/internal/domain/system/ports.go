@@ -107,15 +107,24 @@ type GateEdge struct {
 	// per-edge on refresh; fails CLOSED (treated true) when the neighbor's build
 	// state cannot be read.
 	UnderConstruction bool
-	// Stale is set only by Adjacency (the raw cache dump): the row's synced_at is
-	// empty/expired, so its UnderConstruction value is UNVERIFIED and will be
-	// re-probed on the next fetch-through lookup. Fetch-through reads (Edges) never
-	// surface a stale edge — a stale set reads as a miss and is re-fetched — so this
-	// is always false there. It matters to the two Adjacency consumers: the `system
-	// gates` verb annotates a stale edge distinctly so the captain's chart never
-	// presents an invalidated row as an authoritative built/unbuilt verdict, and the
-	// store-only distance walk refuses to route THROUGH a stale system rather than
-	// trusting onward gates the fetch-through resolver would have re-verified.
+	// Stale means the row's synced_at is empty or past ITS OWN freshness window (the
+	// shorter one while the neighbor gate is building), so its UnderConstruction value is
+	// UNVERIFIED and is due a re-probe. It is a PER-ROW verdict and never a verdict on the
+	// row's siblings: one still-building exit going stale on its 2h clock must not withdraw
+	// the built, static exits written beside it under the same timestamp. Treating it as a
+	// whole-set condemnation walled off 15% of the live map every 2h.
+	//
+	// Both read shapes set it. Adjacency (the raw cache dump) always did; Edges
+	// (fetch-through) now does too, because a set is no longer condemned by a row on the
+	// short window and so must hand the caller the means to tell which row expired.
+	//
+	// Consumers divide on WHICH question they are asking. The `system gates` verb annotates a
+	// stale edge distinctly so the captain's chart never presents an invalidated row as an
+	// authoritative built/unbuilt verdict. Routing reads (GateNeighbourPort.Neighbours, the
+	// store-only distance walk) exclude a stale edge from the ANSWER — its build state is past
+	// verification — while still expanding through its siblings. The fetch-through resolver
+	// (gategraph.Service.Connections) reads it as the RE-PROBE trigger: it is what keeps a
+	// build completion noticed same-era instead of holding a "still building" verdict for a day.
 	Stale bool
 }
 

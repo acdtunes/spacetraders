@@ -194,9 +194,18 @@ func TestGateEdgeRepository_UnderConstruction_RoundTrip(t *testing.T) {
 }
 
 // TTL split: an under-construction edge uses the SHORTER (2h) freshness
-// window while a healthy edge keeps 24h. At the SAME 3h age, the under-construction
-// set reads as a MISS (re-probe, so a completed build is noticed same-era) but the
-// healthy set is still a HIT — proving the window is per-row, not global.
+// window while a healthy edge keeps 24h. At the SAME 3h age the under-construction row is
+// flagged STALE (re-probe, so a completed build is noticed same-era) and the healthy row is
+// not — proving the window is per-row, not global.
+//
+// The re-probe signal used to be carried by ok=false, and this test asserted that. It moved to
+// the per-row Stale flag when one still-building exit was found to be condemning its system's
+// whole edge set — built siblings included — and walling that system off in every BFS
+// (sp-ky85o). The guarantee is unchanged and is now checked in two places: the per-row window
+// here, and the live re-fetch it drives in gategraph's
+// TestService_Connections_StillReprobesASetWithARowPastItsOwnWindow. Asserting the flag rather
+// than the miss is also the more direct test of "per-row": it compares the verdict on two rows
+// of the SAME age, where the old assertion compared two whole sets.
 func TestGateEdgeRepository_UnderConstructionTTL_ShorterThanHealthy(t *testing.T) {
 	db, err := database.NewTestConnection()
 	require.NoError(t, err)
@@ -216,13 +225,20 @@ func TestGateEdgeRepository_UnderConstructionTTL_ShorterThanHealthy(t *testing.T
 	repo := persistence.NewGormGateEdgeRepository(db)
 	ctx := context.Background()
 
-	_, ok, err := repo.Edges(ctx, "X1-BUILDING")
+	building, ok, err := repo.Edges(ctx, "X1-BUILDING")
 	require.NoError(t, err)
-	require.False(t, ok, "an under-construction edge older than 2h must read as a miss (re-probe)")
+	require.True(t, ok, "the set is inside the 24h whole-set window, so it is not condemned")
+	require.Len(t, building, 1)
+	require.True(t, building[0].Stale,
+		"an under-construction edge older than its 2h window must be flagged Stale — the signal that "+
+			"drives the live re-probe, so a completed build is noticed same-era")
 
-	_, ok, err = repo.Edges(ctx, "X1-HEALTHY")
+	healthy, ok, err := repo.Edges(ctx, "X1-HEALTHY")
 	require.NoError(t, err)
 	require.True(t, ok, "a healthy edge at the same 3h age must still be fresh (24h window)")
+	require.Len(t, healthy, 1)
+	require.False(t, healthy[0].Stale,
+		"a healthy edge at the SAME 3h age must NOT be flagged — this is what makes the window per-row")
 }
 
 // Deploy-gap: an EMPTY synced_at — the exact state the migration leaves on

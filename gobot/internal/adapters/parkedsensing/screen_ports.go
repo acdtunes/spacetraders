@@ -849,10 +849,21 @@ func NewGateNeighbourPort(edges gateEdgeReader) *GateNeighbourPort {
 //
 // A miss returns no neighbours and no error: expansion propagating through an
 // unknown system is speculative work, and refusing to guess is the same rule the
-// stored-distance walk follows. An edge marked under-construction is impassable
-// and excluded; an edge set flagged stale is dropped WHOLE, because a system's
-// edges are written in one replace under a single timestamp and one stale row
-// condemns the set.
+// stored-distance walk follows. A genuinely old set never arrives here at all — the
+// store condemns it and reports a miss.
+//
+// Every unusable edge is EXCLUDED FROM THE ANSWER, never allowed to erase the answer.
+// An under-construction edge is impassable (a jump into an unbuilt gate fails at hop
+// time) and a stale edge's build state is past verification, so both are skipped — but
+// only that edge, not its siblings.
+//
+// Dropping the set WHOLE on any stale row is what walled off the map. Its reasoning was
+// that a system's edges are written in one replace under a single timestamp, so one stale
+// row condemns all — true of age, false of the SHORTER window an under-construction row is
+// chased on. That row is stale on a 2h schedule while its built siblings stay perfectly
+// current, so every system holding one still-building exit reported ZERO neighbours every
+// 2h, became a WALL in every BFS, and made routing refuse provably-existing routes: 173 of
+// 1,168 live systems, freezing 266 probes that were bought, assigned and never dispatched.
 func (p *GateNeighbourPort) Neighbours(ctx context.Context, system string) ([]string, error) {
 	edges, ok, err := p.edges.Edges(ctx, system)
 	if err != nil {
@@ -863,10 +874,7 @@ func (p *GateNeighbourPort) Neighbours(ctx context.Context, system string) ([]st
 	}
 	out := make([]string, 0, len(edges))
 	for _, edge := range edges {
-		if edge.Stale {
-			return nil, nil
-		}
-		if edge.ConnectedSystem == "" || edge.UnderConstruction {
+		if edge.ConnectedSystem == "" || edge.UnderConstruction || edge.Stale {
 			continue
 		}
 		out = append(out, edge.ConnectedSystem)
