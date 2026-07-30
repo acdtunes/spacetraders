@@ -678,12 +678,19 @@ type sensingConfig struct {
 	Tick                    time.Duration
 	WaitLow, WaitHigh       time.Duration
 	ProbeCap                int
-	// ExpansionSpend is whether the expansion engine may ask another engine to
-	// BUY — a charting seed from the buy queue, an explorer from the autosizer.
-	// It was `Expansion`, and the rename is the fix: the old name said the engine
-	// was off, while what the operator wanted off was the spending, and the
-	// difference cost the fleet its free frontier discovery. See
-	// parkedsensing.ExpandKnobs.SpendEnabled.
+	// ExpansionSpend is whether this coordinator may spend on hulls at all. It
+	// feeds BOTH engines that can: the expansion pass, which asks other engines to
+	// buy (a charting seed from the buy queue, an explorer from the autosizer), and
+	// the buy queue itself, which is what actually pays for a coverage probe.
+	//
+	// FEEDING ONLY THE FIRST WAS THE DEFECT. It was `Expansion`, and the rename to
+	// ExpansionSpend fixed half of it — the old name said the engine was off while
+	// what the operator wanted off was the spending, and switching the whole engine
+	// off cost the fleet its free frontier discovery. The other half was that
+	// "spending" then reached one spender: the drain bought six probes a cycle with
+	// the switch off, 907,545 credits' worth (sp-com1h). Both knobs now read this
+	// one field. See parkedsensing.ExpandKnobs.SpendEnabled and
+	// parkedsensing.BuyKnobs.SpendEnabled.
 	ExpansionSpend          bool
 	TargetUtilPct           int
 	MinScanRateMilli        int
@@ -1073,11 +1080,7 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 		surged = h.surgeToUnpricedSystems(ctx, cmd, cfg, ports, systems, &failures)
 	}
 
-	buyRep, berr := parkedsensing.DrainBuyQueue(ctx, ports.buyPorts(cmd.ContainerID, h.postRepo), playerID, parkedsensing.BuyKnobs{
-		ProbeCap:     cfg.ProbeCap,
-		CapexReserve: cfg.CapexReserveCredits,
-		KMilli:       cfg.CapitalMultiplierKMilli,
-	}, h.clock)
+	buyRep, berr := parkedsensing.DrainBuyQueue(ctx, ports.buyPorts(cmd.ContainerID, h.postRepo), playerID, buyKnobs(cfg), h.clock)
 	if berr != nil {
 		failures = append(failures, berr)
 	}
@@ -1149,6 +1152,25 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 	h.observeStall(ctx, cmd, expansionStallCoordinator, expansionStallVerdict(expandRep, eerr))
 
 	return errors.Join(failures...)
+}
+
+// buyKnobs is the buy queue's economics for this tick, derived from the resolved
+// config.
+//
+// A NAMED FUNCTION RATHER THAN A STRUCT LITERAL AT THE CALL SITE, so the one line
+// that matters here is assertable. SpendEnabled carries the SAME
+// `expansion_enabled` switch the expansion pass reads, and both engines need it
+// because they spend through different doors: expansion stops ASKING other engines
+// to buy, and this queue stops BUYING. Wiring only the first is precisely what let
+// 25 probes and 907,545 credits go out while the switch read off — a correct gate,
+// shipped unreached (sp-com1h). See sensing_expand_wiring_test.go.
+func buyKnobs(cfg sensingConfig) parkedsensing.BuyKnobs {
+	return parkedsensing.BuyKnobs{
+		SpendEnabled: cfg.ExpansionSpend,
+		ProbeCap:     cfg.ProbeCap,
+		CapexReserve: cfg.CapexReserveCredits,
+		KMilli:       cfg.CapitalMultiplierKMilli,
+	}
 }
 
 // budgetInputs takes this tick's reading of the shared API budget and advances

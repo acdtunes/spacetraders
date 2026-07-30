@@ -318,7 +318,7 @@ func TestAdvance_FliesASpareReTaskedToAnotherWaypoint(t *testing.T) {
 		Fleet:      &fakeFleet{},
 	}
 
-	if _, err := DrainBuyQueue(context.Background(), buy, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
+	if _, err := DrainBuyQueue(context.Background(), buy, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
 		t.Fatalf("drain returned error: %v", err)
 	}
 	if len(purchaser.buys) != 0 || led.slots[0].State != SlotStateInTransit {

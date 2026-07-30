@@ -335,6 +335,11 @@ func (p *ProbePurchasePort) Buy(ctx context.Context, playerID int, purchasingShi
 		ShipType:             probeShipType,
 		PlayerID:             pid,
 		ShipyardWaypoint:     yardWaypoint,
+		// This engine names itself in the ledger. Left at the default it would be
+		// booked "fleet expansion" alongside the frontier engine's probes, which is
+		// what made a live money leak indistinguishable from the engine the operator
+		// had just switched off. See appSensing.SensingCoverageOperationType.
+		OperationType: appSensing.SensingCoverageOperationType,
 	})
 	if err != nil {
 		return appSensing.BoughtProbe{}, fmt.Errorf("probe purchase at %s failed: %w", yardWaypoint, err)

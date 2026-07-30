@@ -41,6 +41,23 @@ var ErrSlotClaimed = errors.New("sensing slot was claimed by another writer")
 // another coordinator, or counted by none.
 const SensingParkedFleetTag = "sensing_parked"
 
+// SensingCoverageOperationType is the ledger operation_type every probe THIS
+// queue buys is booked under.
+//
+// It is deliberately NOT "fleet expansion". Two engines buy probes — the frontier
+// expansion engine, and this queue buying coverage for markets already judged
+// worth watching — and while both wrote the same label the ledger could not
+// answer "which engine spent this". That mattered the moment the operator
+// switched expansion off: the switch worked, expansion stopped asking, this queue
+// kept buying, and the ledger reported "fleet expansion" spending money against a
+// switch that read off. 25 hulls and 907,545 credits went out looking exactly
+// like the engine that had been stopped (sp-com1h).
+//
+// Spaced and lower-case to match the column's existing human-readable values
+// ("fleet expansion", "fleet rebalancing"), because operation_type is read
+// straight off a Grafana legend and typed by hand into ad-hoc SQL.
+const SensingCoverageOperationType = "sensing coverage"
+
 // maxDrainAttempts bounds how many purchase ATTEMPTS one drain tick may make —
 // not how many succeed. Every trip through the buy path costs one, whether it
 // ends in a hull, an unpriceable yard, or a counter that refused.
@@ -431,6 +448,33 @@ type HeavyReserveReader interface {
 
 // BuyKnobs are the operator-set economics of the queue.
 type BuyKnobs struct {
+	// SpendEnabled is the operator's expansion switch, and off means NO PROBE IS
+	// BOUGHT — the whole point of the field.
+	//
+	// IT IS THE SAME SWITCH AS ExpandKnobs.SpendEnabled (`expansion_enabled`), fed
+	// from the same resolved config on the same tick. It has to reach here as well
+	// as there, because the two engines spend through different doors and the
+	// switch only ever covered one of them: expansion's half stops the seed wants
+	// and the off-gate demand it RAISES for other engines, while this queue is the
+	// engine that actually pays. Measured: with the switch off, expansion
+	// correctly reported "spending paused: no seed purchase, no explorer demand"
+	// while this drain bought six probes a cycle for hours — 25 hulls and 907,545
+	// credits — because nothing here consulted it (sp-com1h).
+	//
+	// OFF STOPS PURCHASES, NOT THE DRAIN, and the distinction is what makes "off"
+	// safe to leave on. A paused tick still re-tasks an idle spare into a
+	// placement (reuseSpareHull) and still flies a surplus hull across a gate to
+	// establish a foothold — both cost zero credits and zero API calls, and both
+	// are how coverage keeps growing on hulls we have already paid for. What it
+	// does not do is read a yard's live price, claim a placement for purchase, or
+	// pay a counter.
+	//
+	// It is NOT the money guard. ProbeBuyFloor, the probe cap and the heavy
+	// reserve are, and they are unchanged either way (RULINGS #4) — this only ever
+	// narrows what may be bought, never widens it. The zero value is therefore the
+	// closed one: a call site that forgets to set it buys nothing, which is the
+	// only direction a money guard may fail.
+	SpendEnabled bool
 	// ProbeCap is the hard ceiling on probe hulls this engine may own.
 	ProbeCap int
 	// CapexReserve is the credits held back for ship capex the operation has
@@ -543,6 +587,20 @@ type BuyReport struct {
 	// died. A non-zero value here beside FloorHeld says "saving for a heavy",
 	// which is the difference between an operator waiting and an operator paging.
 	HeavyReserve int64
+	// SpendingPaused reports that the operator's expansion switch is off, so this
+	// tick made no purchase at all — see BuyKnobs.SpendEnabled.
+	//
+	// A SEPARATE FIELD RATHER THAN A FloorHeld VALUE, for the same reason
+	// ExpandReport.SpendingPaused is separate from Skipped: a floor or a cap is the
+	// fleet declining to afford a probe it still wants, and an operator reading one
+	// starts asking about the treasury. This is the operator's own choice, already
+	// made, and the cycle line has to say so in those words or the next money hunt
+	// begins at the wrong end again.
+	//
+	// It is mutually exclusive with CapHeld and FloorHeld by construction: a paused
+	// tick never reads the treasury or the fleet count, so neither ceiling can be
+	// evaluated, and the heartbeat can therefore report exactly one reason.
+	SpendingPaused bool
 	// CapHeld and FloorHeld report which ceiling stopped the drain.
 	CapHeld, FloorHeld bool
 	// HaltedPriceDrift reports that a yard charged MORE than it had just
@@ -576,6 +634,14 @@ type drainState struct {
 // Both ceilings are re-checked on EVERY pop, not once at the top: each purchase
 // moves the treasury and grows the fleet, so a batch that was affordable when
 // the tick started may not be by its third buy.
+//
+// THE TICK IS IN TWO HALVES, split at the same place expansion's is: free work
+// that fills a placement from a hull we already own, and work that pays for a
+// new one. BuyKnobs.SpendEnabled off runs the first half and none of the second,
+// so an operator who switched expansion off gets zero purchases while coverage
+// keeps growing on the fleet already bought. When adding a pass here, the
+// invariant to preserve is that one: if it can read a live price, claim a
+// placement for purchase, or pay a counter, it belongs below the gate.
 func DrainBuyQueue(
 	ctx context.Context,
 	p BuyPorts,
@@ -619,40 +685,58 @@ func DrainBuyQueue(
 		return rep, err
 	}
 
-	owned, err := p.Ledger.CountOwnedProbes(ctx, playerID)
-	if err != nil {
-		return rep, fmt.Errorf("probe cap unreadable, buying nothing this tick: %w", err)
-	}
-	if owned >= int64(k.ProbeCap) {
-		rep.CapHeld = true
-		return rep, nil
-	}
+	// THE SPEND GATE, and it sits AHEAD of every money read because a tick that
+	// may not buy must not price anything either. The reads below are the
+	// expensive half — LiveCredits is an API call — and evaluating a ceiling
+	// against a purchase that cannot happen would burn budget to produce a
+	// CapHeld/FloorHeld the operator would then have to discount.
+	//
+	// The candidate list above is deliberately still built: the free passes in the
+	// loop below fill placements from hulls we already own, and they need to know
+	// which placements are open. See BuyKnobs.SpendEnabled.
+	rep.SpendingPaused = !k.SpendEnabled
 
-	credits, err := p.Treasury.LiveCredits(ctx, playerID)
-	if err != nil {
-		return rep, fmt.Errorf("treasury unreadable, buying nothing this tick: %w", err)
-	}
-	spend, err := p.CargoSpend.AbsCargoBuySpendSince(ctx, playerID, clock.Now().Add(-cargoSpendLookback))
-	if err != nil {
-		// An unknowable cargo outflow is NOT a zero one. Reading it as zero
-		// would collapse the runway term and hand back the cheapest floor
-		// available exactly when we understand the least.
-		return rep, fmt.Errorf("cargo spend unreadable, buying nothing this tick: %w", err)
-	}
-	// The heavy reservation (read at the top of the tick) is capex in the literal sense
-	// CapexReserve documents: credits held back for ship capex committed elsewhere. Folding it
-	// into that term is what makes probe buying stand down while a heavy accumulates, and resume
-	// the moment it lands.
-	st := drainState{
-		credits: credits,
-		owned:   owned,
-		cap:     int64(k.ProbeCap),
-		floor: domainSensing.ProbeBuyFloor(
-			common.ImmutableReserveFloor,
-			k.CapexReserve+heavyReserve,
-			domainSensing.CargoSpendPerHour(spend),
-			k.KMilli,
-		),
+	// st stays zero-valued while paused, and every consumer of it below is behind
+	// the same k.SpendEnabled gate for that reason: a zero cap beside a zero owned
+	// count would otherwise read as "at the probe cap" and report a ceiling nobody
+	// consulted.
+	var st drainState
+	if k.SpendEnabled {
+		owned, err := p.Ledger.CountOwnedProbes(ctx, playerID)
+		if err != nil {
+			return rep, fmt.Errorf("probe cap unreadable, buying nothing this tick: %w", err)
+		}
+		if owned >= int64(k.ProbeCap) {
+			rep.CapHeld = true
+			return rep, nil
+		}
+
+		credits, err := p.Treasury.LiveCredits(ctx, playerID)
+		if err != nil {
+			return rep, fmt.Errorf("treasury unreadable, buying nothing this tick: %w", err)
+		}
+		spend, err := p.CargoSpend.AbsCargoBuySpendSince(ctx, playerID, clock.Now().Add(-cargoSpendLookback))
+		if err != nil {
+			// An unknowable cargo outflow is NOT a zero one. Reading it as zero
+			// would collapse the runway term and hand back the cheapest floor
+			// available exactly when we understand the least.
+			return rep, fmt.Errorf("cargo spend unreadable, buying nothing this tick: %w", err)
+		}
+		// The heavy reservation (read at the top of the tick) is capex in the literal sense
+		// CapexReserve documents: credits held back for ship capex committed elsewhere. Folding it
+		// into that term is what makes probe buying stand down while a heavy accumulates, and resume
+		// the moment it lands.
+		st = drainState{
+			credits: credits,
+			owned:   owned,
+			cap:     int64(k.ProbeCap),
+			floor: domainSensing.ProbeBuyFloor(
+				common.ImmutableReserveFloor,
+				k.CapexReserve+heavyReserve,
+				domainSensing.CargoSpendPerHour(spend),
+				k.KMilli,
+			),
+		}
 	}
 
 	// One memo per TICK, never longer. A refusal is re-learned on the next tick
@@ -680,7 +764,7 @@ func DrainBuyQueue(
 		if rep.Attempts >= maxDrainAttempts {
 			break
 		}
-		if st.owned >= st.cap {
+		if k.SpendEnabled && st.owned >= st.cap {
 			rep.CapHeld = true
 			break
 		}
@@ -707,6 +791,24 @@ func DrainBuyQueue(
 		if reused {
 			rep.Reused++
 			rep.Attempts++
+			continue
+		}
+
+		// PAUSED: the free half of the loop is done for this placement, and
+		// everything past this point either prices a hull or pays for one.
+		//
+		// The foothold is still attempted, and that is not an oversight. It fills a
+		// placement by flying a hull we ALREADY OWN across a gate — no credit, no
+		// API call — so switching it off with the purchases would starve the
+		// placement machine of destinations while saving nothing, which is the
+		// exact defect the expansion pause was reshaped to avoid (see
+		// ExpandKnobs.SpendEnabled). A placement it cannot fill is simply left
+		// WANTED for the tick the switch comes back on; it is NOT counted as
+		// SkippedNoYard, which means something specific and would be a lie here.
+		if !k.SpendEnabled {
+			if _, ferr := footholds.fill(ctx, p, playerID, slot, &rep); ferr != nil {
+				return rep, ferr
+			}
 			continue
 		}
 

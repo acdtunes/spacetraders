@@ -72,7 +72,7 @@ func TestDrain_PlacementsWithNoLocalBuyerCostNoAttempts(t *testing.T) {
 	ports, pur := unbuyablePorts(20, false)
 
 	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID,
-		BuyKnobs{ProbeCap: 100}, fixedClock{time.Unix(1_700_000_000, 0)})
+		BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Unix(1_700_000_000, 0)})
 	if err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestDrain_UnbuyablePlacementsDoNotStarveAFundableOne(t *testing.T) {
 	ports, pur := unbuyablePorts(20, true)
 
 	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID,
-		BuyKnobs{ProbeCap: 100}, fixedClock{time.Unix(1_700_000_000, 0)})
+		BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Unix(1_700_000_000, 0)})
 	if err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}

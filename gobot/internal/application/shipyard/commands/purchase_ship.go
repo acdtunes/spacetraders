@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
@@ -31,7 +32,29 @@ type PurchaseShipCommand struct {
 	ShipType             string
 	PlayerID             shared.PlayerID
 	ShipyardWaypoint     string // Optional - will auto-discover if empty
+	// OperationType is the ledger operation_type this purchase is booked under.
+	// Empty means OperationTypeFleetExpansion, which is what every caller that
+	// genuinely IS growing the fleet leaves it as.
+	//
+	// It exists because two different engines buy probes and one ledger label
+	// covered both: the frontier expansion engine, and the parked-sensing
+	// coordinator buying coverage for markets it already watches. With both
+	// stamped "fleet expansion", an operator who switched expansion off and then
+	// checked the ledger saw "fleet expansion" still spending — and could only
+	// conclude the switch was broken. It was not; the label was (sp-com1h). One
+	// engine per operation_type is what makes that question answerable in SQL.
+	OperationType string
 }
+
+// OperationTypeFleetExpansion is the ledger operation_type for a purchase that
+// grows the fleet: the frontier expansion engine's probes, the autosizer's
+// haulers and explorers, bootstrap's contract hulls, an operator's manual buy.
+//
+// It is the DEFAULT rather than one option among several, because it is what
+// every ship purchase meant before any engine needed to be told apart. A caller
+// that wants its spend attributable on its own sets PurchaseShipCommand.
+// OperationType; everyone else is fleet expansion and stays so.
+const OperationTypeFleetExpansion = "fleet expansion"
 
 // PurchaseShipResponse contains the newly purchased ship
 type PurchaseShipResponse struct {
@@ -422,7 +445,9 @@ func (h *PurchaseShipHandler) recordShipPurchaseTransaction(
 		AuthoritativeBalance: authoritativeBalance,
 		Description:          fmt.Sprintf("Purchased %s ship at %s", cmd.ShipType, shipyardWaypoint),
 		Metadata:             metadata,
-		OperationType:        "fleet expansion", // Ship purchases are fleet expansion operations
+		// The buying engine names itself, or the row is fleet expansion. See
+		// PurchaseShipCommand.OperationType.
+		OperationType: purchaseOperationType(cmd.OperationType),
 	}
 
 	// First-class entity link so capex joins to the hull on an indexed column
@@ -462,6 +487,19 @@ func normalisePurchaseTimestamp(raw string) (string, bool) {
 		return "", false
 	}
 	return parsed.UTC().Format(time.RFC3339), true
+}
+
+// purchaseOperationType resolves the ledger operation_type for a purchase,
+// falling back to fleet expansion when the caller named none.
+//
+// Whitespace-only is treated as unset rather than written through: operation_type
+// is a grouping key, and a row filed under " " would form its own silent bucket
+// that no operator's query would ever name.
+func purchaseOperationType(requested string) string {
+	if trimmed := strings.TrimSpace(requested); trimmed != "" {
+		return trimmed
+	}
+	return OperationTypeFleetExpansion
 }
 
 // discoverNearestShipyard discovers the nearest shipyard that sells the desired ship type

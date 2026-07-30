@@ -92,6 +92,14 @@ type heartbeat struct {
 func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *RunProbeSensingCoordinatorCommand, cfg sensingConfig, hb heartbeat) {
 	held := ""
 	switch {
+	case hb.buy.SpendingPaused:
+		// FIRST, because it is the only reason on this list that is not the fleet
+		// declining to afford something. An operator hunting a money leak reads this
+		// line and must be told "you switched this off" in those words rather than
+		// left to infer it from a bought count of zero — the whole cost of sp-com1h
+		// was a cycle line that looked healthy while the switch it named did not
+		// cover the spending.
+		held = "expansion switch: expansion_enabled is off, so no probe is bought"
 	case hb.buy.CapHeld:
 		held = "probe cap"
 	case hb.buy.FloorHeld && hb.buy.HeavyReserve > 0:
@@ -141,8 +149,12 @@ func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *
 			// refusal. attempts > 0 with bought == 0 and this empty is a
 			// contradiction — every attempt-burning path records one.
 			"buy_refusals":   refusalPayload(hb.buy.Refusals),
-			"buy_cap_held":   hb.buy.CapHeld,
-			"buy_floor_held": hb.buy.FloorHeld,
+			// The operator's expansion switch, as the buy queue saw it. Queryable
+			// beside buy_bought so "the switch is off and money still moved" is one
+			// filter rather than a correlation across two engines' log lines.
+			"buy_spending_paused": hb.buy.SpendingPaused,
+			"buy_cap_held":        hb.buy.CapHeld,
+			"buy_floor_held":      hb.buy.FloorHeld,
 			// Credits held back for the NEXT heavy. Non-zero beside buy_floor_held
 			// means "saving for a heavy", NOT "sensing is broken" — the one signal
 			// that tells those two apart (spec risk 3).

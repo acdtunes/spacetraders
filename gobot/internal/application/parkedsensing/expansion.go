@@ -271,6 +271,13 @@ type ExpandKnobs struct {
 	// SpendEnabled controls whether this engine may ASK FOR MONEY. It does not
 	// switch the engine off, and the difference is the whole point of the field.
 	//
+	// THE SAME OPERATOR SWITCH ALSO REACHES THE BUY QUEUE, and it has to: this
+	// field only ever stopped the REQUESTS, and the queue that pays them was the
+	// larger spender. With it off here alone the tick correctly reported "spending
+	// paused: no seed purchase, no explorer demand" while the drain bought six
+	// probes a cycle for hours (sp-com1h). See BuyKnobs.SpendEnabled, which is fed
+	// from the same resolved value on the same tick.
+	//
 	// WHAT IT USED TO BE, AND WHAT THAT COST. This was `Enabled`, and it returned
 	// the tick before its first port call — so an operator who wanted to stop
 	// BUYING PROBES also stopped markFrontier, which is a ledger write off stored

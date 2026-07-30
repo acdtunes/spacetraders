@@ -201,7 +201,7 @@ func liveManned() map[string]bool {
 
 func drainOnce(t *testing.T, p BuyPorts) BuyReport {
 	t.Helper()
-	rep, err := DrainBuyQueue(context.Background(), p, testPlayerID, BuyKnobs{ProbeCap: 40}, fixedClock{})
+	rep, err := DrainBuyQueue(context.Background(), p, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 40}, fixedClock{})
 	if err != nil {
 		t.Fatalf("drain: %v", err)
 	}

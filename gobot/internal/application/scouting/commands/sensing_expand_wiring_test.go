@@ -45,4 +45,25 @@ func TestSensingEnginePorts_BuyPortsStillCarriesTheListingMemo(t *testing.T) {
 	}
 }
 
+// …and the buy queue is handed the operator's expansion switch, which is the
+// wiring line whose absence cost 907,545 credits.
+//
+// `expansion_enabled=2` correctly stopped the expansion pass asking other engines
+// to buy, and the drain that actually pays for a coverage probe never saw the
+// switch at all: same cycle line, same tick, `bought 6 reused 0 queued 5` for over
+// an hour while the knob read off (sp-com1h). The gate now lives in
+// parkedsensing.DrainBuyQueue and is tested there; what THIS test defends is that
+// the coordinator still hands it the value — a gate nobody passes an argument to is
+// a gate that ships dormant, which is the exact failure mode this file exists for.
+func TestSensingBuyKnobs_CarriesTheExpansionSpendSwitch(t *testing.T) {
+	if buyKnobs(sensingConfig{ExpansionSpend: false, ProbeCap: 100}).SpendEnabled {
+		t.Fatalf("the buy queue was told spending is ENABLED while expansion_enabled reads off — " +
+			"the drain would buy probes against a switch the operator has turned off (sp-com1h)")
+	}
+	if !buyKnobs(sensingConfig{ExpansionSpend: true, ProbeCap: 100}).SpendEnabled {
+		t.Fatalf("the buy queue was told spending is DISABLED with the switch on — sensing would " +
+			"never buy a probe again")
+	}
+}
+
 var _ parkedsensing.ProbeListingMemo = wiringMemo{}

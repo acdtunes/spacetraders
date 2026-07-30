@@ -294,7 +294,7 @@ func oneFillPorts(treasury int64) (BuyPorts, *fakeBuyLedger, *fakePurchaser, *fa
 
 // capexKnobs are the Step-1 floor knobs: 50_000 immutable + 100_000 capex +
 // 2 × 300_000/h cargo runway = a 750_000 floor.
-var capexKnobs = BuyKnobs{ProbeCap: 100, CapexReserve: 100_000, KMilli: 2000}
+var capexKnobs = BuyKnobs{SpendEnabled: true, ProbeCap: 100, CapexReserve: 100_000, KMilli: 2000}
 
 // --- Step 1: the dynamic floor, integrated -----------------------------------
 
@@ -458,7 +458,7 @@ func TestDrain_SpreadsAcrossSystemsBeforeDeepeningOne(t *testing.T) {
 	// which is the concentration this ordering exists to remove.
 	ports, _, pur := multiSystemPorts()
 
-	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
 
@@ -507,7 +507,7 @@ func TestDrain_AlreadyParkedProbesPushARichSystemDownTheOrder(t *testing.T) {
 		Fleet: &fakeFleet{},
 	}
 
-	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
 
@@ -552,7 +552,7 @@ func TestDrain_FilledRowsAreCountedAsCoverageButNeverBoughtFor(t *testing.T) {
 		Fleet:      &fakeFleet{},
 	}
 
-	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()})
 	if err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
@@ -577,7 +577,7 @@ func TestDrain_UnreadableCoverageBuysNothingThisTick(t *testing.T) {
 	ports, led, pur := multiSystemPorts()
 	led.coverageErr = errors.New("ledger unavailable")
 
-	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()}); err == nil {
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()}); err == nil {
 		t.Fatal("an unreadable coverage read must stop the drain, not order on a blind zero")
 	}
 	if len(pur.buys) != 0 {
@@ -589,7 +589,7 @@ func TestDrain_SkipsPlacementsInSystemsNotInScope(t *testing.T) {
 	ports, led, pur := multiSystemPorts()
 	led.systems = []ScreenedSystem{{System: "X1-DEEP", DepthCredits: 5_000}}
 
-	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
 	for _, b := range pur.buys {
@@ -618,7 +618,7 @@ func TestDrain_ReusesParkedSpareInsteadOfBuying(t *testing.T) {
 		Fleet:      &fakeFleet{},
 	}
 
-	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()})
 	if err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
@@ -654,7 +654,7 @@ func TestDrain_HoldsAtProbeCap(t *testing.T) {
 	ports, led, pur := multiSystemPorts()
 	led.owned = 4
 
-	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 4}, fixedClock{time.Now()})
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 4}, fixedClock{time.Now()})
 	if err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
@@ -670,7 +670,7 @@ func TestDrain_StopsWhenCapIsReachedMidTick(t *testing.T) {
 	ports, led, pur := multiSystemPorts()
 	led.owned = 2
 
-	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 4}, fixedClock{time.Now()})
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 4}, fixedClock{time.Now()})
 	if err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
@@ -690,7 +690,7 @@ func TestDrain_RechecksFloorAfterEachBuy(t *testing.T) {
 	pur.price = 20_000
 	ports.Treasury = &fakeTreasury{credits: 80_000} // floor is the flat 50_000 with K=0
 
-	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()})
 	if err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
@@ -711,7 +711,7 @@ func TestDrain_ShipyardBalanceNeverRelaxesTheFloor(t *testing.T) {
 	pur.creditsAfter = 5_000_000 // an implausibly generous settlement report
 	ports.Treasury = &fakeTreasury{credits: 80_000}
 
-	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
 	if len(pur.buys) != 1 {
@@ -724,7 +724,7 @@ func TestDrain_TagsBoughtProbeIntoTheSensingFleet(t *testing.T) {
 	fleet := &fakeFleet{}
 	ports.Fleet = fleet
 
-	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
 	if len(fleet.assigns) != 1 {
@@ -741,7 +741,7 @@ func TestDrain_SkipsPlacementWithNoReachableYard(t *testing.T) {
 	ports, _, pur, _ := oneFillPorts(10_000_000)
 	ports.Ships = &fakeShipReader{} // no hull standing at any yard
 
-	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()})
 	if err != nil {
 		t.Fatalf("no yard presence must not be an error, got: %v", err)
 	}
@@ -776,7 +776,7 @@ func TestDrain_UsesParkedProbeAtYardRegardlessOfSlotKind(t *testing.T) {
 		Fleet:      &fakeFleet{},
 	}
 
-	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
 	if len(pur.buys) != 1 || pur.buys[0].ship != "PROBE-ON-YARD" {
@@ -788,7 +788,7 @@ func TestDrain_FailedPurchaseLeavesSlotQueuedForRetry(t *testing.T) {
 	ports, led, pur, _ := oneFillPorts(10_000_000)
 	pur.buyErr = errors.New("shipyard refused")
 
-	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()})
 	if err != nil {
 		t.Fatalf("a failed purchase must not fail the tick, got: %v", err)
 	}
@@ -808,7 +808,7 @@ func TestDrain_RetriesAnAlreadyQueuedSlot(t *testing.T) {
 	led.slots[0].State = SlotStateQueued
 	led.slots[0].PurchaseYard = "X1-AA-Y1"
 
-	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
 	if len(pur.buys) != 1 {
@@ -829,7 +829,7 @@ func TestDrain_HaltsWhenAPurchaseCannotBeRecorded(t *testing.T) {
 	ports, led, pur := multiSystemPorts()
 	led.transitionErr = map[string]error{"X1-DEEP-M1→" + SlotStateBought: errors.New("db down")}
 
-	_, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	_, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()})
 	if err == nil {
 		t.Fatal("an unrecordable purchase did not surface an error")
 	}
@@ -845,7 +845,7 @@ func TestDrain_SkipsSlotClaimedByAnotherWriter(t *testing.T) {
 	ports, led, pur := multiSystemPorts()
 	led.transitionErr = map[string]error{"X1-DEEP-M1→" + SlotStateQueued: ErrSlotClaimed}
 
-	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
 		t.Fatalf("losing a claim race must not fail the tick, got: %v", err)
 	}
 	if len(pur.buys) != 4 {
@@ -860,7 +860,7 @@ func TestDrain_HaltsWhenTheLedgerRefusesTheClaim(t *testing.T) {
 	ports, led, pur := multiSystemPorts()
 	led.transitionErr = map[string]error{"X1-DEEP-M1→" + SlotStateQueued: errors.New("db down")}
 
-	_, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	_, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()})
 	if err == nil {
 		t.Fatal("an unwritable ledger did not surface an error")
 	}
@@ -881,7 +881,7 @@ func TestDrain_NoCandidatesCostsNoTreasuryRead(t *testing.T) {
 		Fleet:      &fakeFleet{},
 	}
 
-	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
 	if treasury.calls != 0 {
@@ -901,7 +901,7 @@ func TestDrain_FallsBackWhenTheRecordedYardLostItsPresence(t *testing.T) {
 	led.slots[0].PurchaseYard = "X1-AA-GONE" // chosen last tick, now deserted
 	ports.Yards = &fakeYards{yards: map[string][]string{"X1-AA": {"X1-AA-GONE", "X1-AA-Y1"}}}
 
-	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
 	if len(pur.buys) != 1 || pur.buys[0].yard != "X1-AA-Y1" {
@@ -923,7 +923,7 @@ func TestDrain_PrefersTheRecordedYardWhenItStillHasPresence(t *testing.T) {
 		"X1-AA-Y2": "BUYER-CHOSEN",
 	}}
 
-	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
 	if len(pur.buys) != 1 || pur.buys[0].yard != "X1-AA-Y2" {
@@ -935,7 +935,7 @@ func TestDrain_SkipsPlacementWhoseProbeCannotBePriced(t *testing.T) {
 	ports, _, pur, _ := oneFillPorts(10_000_000)
 	pur.quoteErr = errors.New("shipyard listing unreadable")
 
-	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()})
 	if err != nil {
 		t.Fatalf("an unpriceable yard must not fail the tick, got: %v", err)
 	}
@@ -951,7 +951,7 @@ func TestDrain_FailsClosedOnYardPresenceReadError(t *testing.T) {
 	ports, _, pur, _ := oneFillPorts(10_000_000)
 	ports.Ships = &fakeShipReader{dockedErr: errors.New("db down")}
 
-	_, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	_, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()})
 	if err == nil {
 		t.Fatal("an unreadable ships table did not surface an error")
 	}
@@ -964,7 +964,7 @@ func TestDrain_FailsClosedOnSlotReadError(t *testing.T) {
 	ports, led, pur, _ := oneFillPorts(10_000_000)
 	led.slotsErr = errors.New("db down")
 
-	_, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	_, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()})
 	if err == nil {
 		t.Fatal("an unreadable slot ledger did not surface an error")
 	}
@@ -977,7 +977,7 @@ func TestDrain_FailsClosedOnVerdictReadError(t *testing.T) {
 	ports, led, pur, _ := oneFillPorts(10_000_000)
 	led.systemsErr = errors.New("db down")
 
-	_, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	_, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()})
 	if err == nil {
 		t.Fatal("unreadable system verdicts did not surface an error")
 	}
@@ -992,7 +992,7 @@ func TestDrain_FailsClosedOnYardCatalogError(t *testing.T) {
 	ports, _, pur, _ := oneFillPorts(10_000_000)
 	ports.Yards = &fakeYards{err: errors.New("waypoint cache down")}
 
-	_, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	_, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()})
 	if err == nil {
 		t.Fatal("an unreadable yard catalog did not surface an error")
 	}
@@ -1009,7 +1009,7 @@ func TestDrain_CompletesPurchaseEvenIfTheFleetTagFails(t *testing.T) {
 	ports, led, pur, _ := oneFillPorts(10_000_000)
 	ports.Fleet = &fakeFleet{err: errors.New("tag write failed")}
 
-	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()})
 	if err != nil {
 		t.Fatalf("a failed fleet tag must not fail the tick, got: %v", err)
 	}
@@ -1055,7 +1055,7 @@ func manyFailingPorts(slots int) (BuyPorts, *fakePurchaser) {
 func TestDrain_BoundsAttemptsNotOnlyPurchases(t *testing.T) {
 	ports, pur := manyFailingPorts(20)
 
-	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()})
 	if err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
@@ -1121,7 +1121,7 @@ func TestDrain_CapsAttemptsWhenEveryCounterIsADifferentOne(t *testing.T) {
 		Fleet:      &fakeFleet{},
 	}
 
-	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()})
 	if err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
@@ -1144,7 +1144,7 @@ func TestDrain_BoundsAttemptsWhenEveryCounterRefuses(t *testing.T) {
 	pur.quoteErr = nil
 	pur.buyErr = errors.New("shipyard refused")
 
-	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
 	if len(pur.buys) > maxDrainAttempts {
@@ -1165,7 +1165,7 @@ func TestDrain_TriesTheNextYardWhenACounterRefuses(t *testing.T) {
 	}}
 	pur.buyErrAt = map[string]error{"X1-AA-Y1": errors.New("out of stock")}
 
-	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()})
 	if err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
@@ -1190,7 +1190,7 @@ func TestDrain_TriesTheNextYardWhenACounterCannotBePriced(t *testing.T) {
 	}}
 	pur.quoteErrAt = map[string]error{"X1-AA-Y1": errors.New("listing unreadable")}
 
-	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
 	if len(pur.buys) != 1 || pur.buys[0].yard != "X1-AA-Y2" {
@@ -1207,7 +1207,7 @@ func TestDrain_UnusableYardPresenceCostsNoAttempt(t *testing.T) {
 	// as absent here — no yard is executable.
 	ports.Ships = &fakeShipReader{}
 
-	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()})
 	if err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
@@ -1237,7 +1237,7 @@ func driftPorts() (BuyPorts, *fakeBuyLedger, *fakePurchaser) {
 func TestDrain_RecordsTheHullEvenWhenItCostMoreThanQuoted(t *testing.T) {
 	ports, led, pur := driftPorts()
 
-	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()})
 	if err != nil {
 		t.Fatalf("a price overrun must not fail the tick, got: %v", err)
 	}
@@ -1259,7 +1259,7 @@ func TestDrain_RecordsTheHullEvenWhenItCostMoreThanQuoted(t *testing.T) {
 
 func TestDrain_NextTickProceedsNormallyAfterAPriceDriftHalt(t *testing.T) {
 	ports, _, pur := driftPorts()
-	knobs := BuyKnobs{ProbeCap: 100}
+	knobs := BuyKnobs{SpendEnabled: true, ProbeCap: 100}
 
 	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, knobs, fixedClock{time.Now()}); err != nil {
 		t.Fatalf("first tick returned error: %v", err)
@@ -1289,7 +1289,7 @@ func TestDrain_MissingActualPriceIsNotAFreeHull(t *testing.T) {
 	// Affords exactly one probe above the flat 50_000 floor.
 	ports.Treasury = &fakeTreasury{credits: 80_000}
 
-	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()})
 	if err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
@@ -1570,7 +1570,7 @@ func refusingYardPorts(treasury int64) (BuyPorts, *fakeBuyLedger, *fakePurchaser
 
 // wideKnobs put the floor far below the treasury, so nothing here is ever a
 // money-guard outcome dressed up as a refusal.
-var wideKnobs = BuyKnobs{ProbeCap: 100, CapexReserve: 0, KMilli: 0}
+var wideKnobs = BuyKnobs{SpendEnabled: true, ProbeCap: 100, CapexReserve: 0, KMilli: 0}
 
 func TestDrain_RecordsWhyEachYardRefused(t *testing.T) {
 	ports, _, pur := refusingYardPorts(1_321_274)
@@ -1734,7 +1734,7 @@ func TestDrain_YardKnownNotToSellProbesIsNeverQuotedAgain(t *testing.T) {
 	memo.scannedAt["X1-AA-Y1"] = now.Add(-time.Minute) // read a minute ago
 	memo.sells["X1-AA-Y1"] = false                     // and it sells no probe
 
-	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{now}); err != nil {
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{now}); err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
 	if len(pur.quotes) != 0 {
@@ -1748,7 +1748,7 @@ func TestDrain_UnknownYardIsQuotedOnceSoWeCanLearn(t *testing.T) {
 	now := time.Now()
 	ports, _, pur, _ := oneYardPorts(now) // memo knows nothing about the yard
 
-	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{now}); err != nil {
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{now}); err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
 	if len(pur.quotes) != 1 || pur.quotes[0] != "X1-AA-Y1" {
@@ -1770,7 +1770,7 @@ func TestDrain_AnUnreadYardIsQuotedEvenWhenItsTimestampLooksFresh(t *testing.T) 
 	ports, _, pur, memo := oneYardPorts(now)
 	memo.unknownStamp = now.Add(-time.Minute)
 
-	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{now}); err != nil {
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{now}); err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
 	if len(pur.quotes) != 1 {
@@ -1786,7 +1786,7 @@ func TestDrain_KnownNegativeYardIsRequotedOnceTheReadGoesStale(t *testing.T) {
 	memo.scannedAt["X1-AA-Y1"] = now.Add(-probeListingMemoTTL - time.Minute)
 	memo.sells["X1-AA-Y1"] = false
 
-	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{now}); err != nil {
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{now}); err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
 	if len(pur.quotes) != 1 {
@@ -1804,7 +1804,7 @@ func TestDrain_AnUnreadableMemoStillQuotes(t *testing.T) {
 	ports, _, pur, memo := oneYardPorts(now)
 	memo.err = errors.New("listing store unavailable")
 
-	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{now}); err != nil {
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{now}); err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
 	if len(pur.quotes) != 1 {
@@ -1821,7 +1821,7 @@ func TestDrain_ASkippedYardStaysLegibleInTheReport(t *testing.T) {
 	memo.scannedAt["X1-AA-Y1"] = now.Add(-time.Minute)
 	memo.sells["X1-AA-Y1"] = false
 
-	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{now})
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{now})
 	if err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
@@ -1843,7 +1843,7 @@ func TestDrain_AYardTheMemoSaysSellsProbesStillClearsEveryMoneyGuard(t *testing.
 	memo.sells["X1-AA-Y1"] = true
 	ports.Treasury = &fakeTreasury{credits: 50_100} // under the floor once the probe is priced
 
-	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{now})
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{now})
 	if err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
@@ -1862,7 +1862,7 @@ func TestDrain_ANilListingMemoBehavesExactlyAsBefore(t *testing.T) {
 	ports, _, pur, _ := oneYardPorts(now)
 	ports.ListingMemo = nil
 
-	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{now}); err != nil {
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{now}); err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
 	if len(pur.quotes) != 1 {

@@ -67,7 +67,7 @@ func ferryPorts() (BuyPorts, *fakeBuyLedger, *fakePurchaser) {
 func TestDrain_BuysAtAReachableRemoteYardWhenTheTargetSystemHasNoCounter(t *testing.T) {
 	ports, led, pur := ferryPorts()
 
-	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()})
 	if err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestDrain_NeverBuysAtASourceThatCannotReachThePlacement(t *testing.T) {
 			AssignedShip: "DEC-PROBE", WhitelistGoods: []string{"FUEL"}},
 	}
 
-	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()})
 	if err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestDrain_ALocalCounterIsPreferredAndTheGateStoreIsNeverRead(t *testing.T) 
 		"X1-DEC-Y1": "DEC-PROBE",
 	}}
 
-	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()})
 	if err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestDrain_NoRoutableFunderBuysNothingAndTheTickContinues(t *testing.T) {
 		{Waypoint: "X1-TGT-M1", System: "X1-TGT", Kind: SlotKindMarket, State: SlotStateWanted},
 	}
 
-	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()})
 	if err != nil {
 		t.Fatalf("a placement with no routable funder must not error the tick: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestDrain_APlacementAlreadyInFlightIsNeverBoughtASecondHull(t *testing.T) {
 			AssignedShip: "SRC-PROBE", WhitelistGoods: []string{"FUEL"}},
 	}
 
-	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()})
 	if err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
@@ -254,7 +254,7 @@ func TestDrain_BuysForAPlacementBeyondThePlacementWalksOwnRing(t *testing.T) {
 	// only by a bound that was never the router's.
 	ports, led, pur := chainPorts(4)
 
-	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()})
 	if err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
@@ -277,7 +277,7 @@ func TestDrain_BuysAtTheOuterEdgeOfTheRoutersReach(t *testing.T) {
 	// is a real threshold rather than an artefact of a short fixture.
 	ports, _, pur := chainPorts(maxFerryHops)
 
-	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
+	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()}); err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
 	if len(pur.buys) != 1 {
@@ -292,7 +292,7 @@ func TestDrain_RefusesAPlacementBeyondWhatTheRouterCanResolve(t *testing.T) {
 	// never arriving — strictly worse than not buying. The tick must continue.
 	ports, led, pur := chainPorts(maxFerryHops + 1)
 
-	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{ProbeCap: 100}, fixedClock{time.Now()})
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()})
 	if err != nil {
 		t.Fatalf("a placement beyond reach must not error the tick: %v", err)
 	}

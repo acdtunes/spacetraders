@@ -73,7 +73,7 @@ func TestDrain_ASeedIsReachedEvenBehindMoreFillsThanTheBudget(t *testing.T) {
 	ports, pur := fundableFillPorts(8, true)
 
 	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID,
-		BuyKnobs{ProbeCap: 100}, seedShareClock)
+		BuyKnobs{SpendEnabled: true, ProbeCap: 100}, seedShareClock)
 	if err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestDrain_FillsKeepTheWholeBudgetWithNoSeedsOutstanding(t *testing.T) {
 	ports, _ := fundableFillPorts(8, false)
 
 	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID,
-		BuyKnobs{ProbeCap: 100}, seedShareClock)
+		BuyKnobs{SpendEnabled: true, ProbeCap: 100}, seedShareClock)
 	if err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestDrain_FillsStillOutrankSeedsWithinTheirShare(t *testing.T) {
 	ports, pur := fundableFillPorts(8, true)
 
 	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID,
-		BuyKnobs{ProbeCap: 100}, seedShareClock)
+		BuyKnobs{SpendEnabled: true, ProbeCap: 100}, seedShareClock)
 	if err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestDrain_ASeedAloneDoesNotStrandTheBudget(t *testing.T) {
 	}
 
 	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID,
-		BuyKnobs{ProbeCap: 100}, seedShareClock)
+		BuyKnobs{SpendEnabled: true, ProbeCap: 100}, seedShareClock)
 	if err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
 	}
