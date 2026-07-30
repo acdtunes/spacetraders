@@ -125,7 +125,7 @@ func (o *RelocatorFleetObserverAdapter) ObserveTradeHulls(ctx context.Context, p
 	if err != nil {
 		return nil, fmt.Errorf("opportunity relocator cannot read the fleet: %w", err)
 	}
-	tourContainers, err := o.tourContainerIDs(ctx, playerID)
+	tours, err := o.tourOccupancy(ctx, playerID)
 	if err != nil {
 		return nil, err
 	}
@@ -139,39 +139,151 @@ func (o *RelocatorFleetObserverAdapter) ObserveTradeHulls(ctx context.Context, p
 		if location == nil {
 			continue // a hull with no readable position cannot be relocated FROM anywhere
 		}
-		onTour := ship.IsInTransit() || (ship.IsAssigned() && tourContainers[ship.ContainerID()])
-		hulls = append(hulls, tradingCmd.RelocatorHull{
-			ShipSymbol:       ship.ShipSymbol(),
-			CurrentSystem:    location.SystemSymbol,
-			IsCommandFrigate: ship.Role() == commandRole,
-			Pinned:           ship.IsReservedByCaptain() || (ship.IsAssigned() && !onTour),
-			OnTour:           onTour,
-		})
+		hulls = append(hulls, relocatorHullFrom(ship, location.SystemSymbol, tours))
 	}
 	return hulls, nil
 }
 
-// tourContainerIDs is the set of container IDs that are per-hull tour runs, in RUNNING or PENDING.
+// ObserveHull re-reads ONE hull's live protection facts for the actuation-time re-check (sp-x2jr6
+// slice 1) — the guard that stops the relocator flying a hull a tour claimed while the region pre-flight
+// was running.
+//
+// It derives every fact through relocatorHullFrom, the SAME function ObserveTradeHulls uses, so the
+// commit gate and the scoring gate cannot disagree about what a protected hull is. It re-reads the
+// container rows too: the whole point is that the tour row may have appeared since the snapshot, so
+// reusing a cached occupancy map would make the check answer the stale question it exists to re-ask.
+//
+// A hull that has VANISHED from the trade fleet — sold, re-dedicated, or newly unreadable — is an
+// error, not an absence. The caller fails the move closed on it, which is right: a hull that is no
+// longer a trade hull is emphatically not one this reconciler may move.
+func (o *RelocatorFleetObserverAdapter) ObserveHull(ctx context.Context, playerID int, shipSymbol string) (tradingCmd.RelocatorHull, error) {
+	if o == nil || o.ships == nil {
+		return tradingCmd.RelocatorHull{}, fmt.Errorf("opportunity relocator fleet observer is not wired to a ship repository")
+	}
+	pid, err := shared.NewPlayerID(playerID)
+	if err != nil {
+		return tradingCmd.RelocatorHull{}, fmt.Errorf("opportunity relocator cannot re-read %s: %w", shipSymbol, err)
+	}
+	ships, err := o.ships.FindAllByPlayer(ctx, pid)
+	if err != nil {
+		return tradingCmd.RelocatorHull{}, fmt.Errorf("opportunity relocator cannot re-read the fleet for %s: %w", shipSymbol, err)
+	}
+	tours, err := o.tourOccupancy(ctx, playerID)
+	if err != nil {
+		return tradingCmd.RelocatorHull{}, err
+	}
+	for _, ship := range ships {
+		if ship == nil || ship.ShipSymbol() != shipSymbol {
+			continue
+		}
+		if ship.DedicatedFleet() != tradeFleetTag {
+			return tradingCmd.RelocatorHull{}, fmt.Errorf("%s is no longer dedicated to the trade fleet (now %q), so it may not be relocated", shipSymbol, ship.DedicatedFleet())
+		}
+		location := ship.CurrentLocation()
+		if location == nil {
+			return tradingCmd.RelocatorHull{}, fmt.Errorf("%s has no readable position, so its relocation cannot be proven safe", shipSymbol)
+		}
+		return relocatorHullFrom(ship, location.SystemSymbol, tours), nil
+	}
+	return tradingCmd.RelocatorHull{}, fmt.Errorf("%s is no longer in the fleet, so its relocation cannot be proven safe", shipSymbol)
+}
+
+// relocatorHullFrom projects one ship into the relocator's view — the SINGLE derivation of the facts
+// RULINGS #7 is enforced on, read by the bulk observation and by the actuation re-check alike. A second
+// copy of this is how the two gates end up disagreeing about what a protected hull is.
+func relocatorHullFrom(ship *navigation.Ship, systemSymbol string, tours tourOccupancy) tradingCmd.RelocatorHull {
+	onTour := ship.IsInTransit() || tours.holds(ship)
+	return tradingCmd.RelocatorHull{
+		ShipSymbol:       ship.ShipSymbol(),
+		CurrentSystem:    systemSymbol,
+		IsCommandFrigate: ship.Role() == commandRole,
+		Pinned:           ship.IsReservedByCaptain() || (ship.IsAssigned() && !onTour),
+		OnTour:           onTour,
+	}
+}
+
+// tourOccupancy is what the live container rows say about which hulls are out on a tour, in the TWO
+// representations a tour's ownership takes at different points in its launch (sp-x2jr6 slice 2).
+//
+// They do not overlap, which is the whole reason both are needed. A tour launch INSERTs its container
+// row (containerRepo.Add) and only THEN claims the hull (the runner's ClaimShip). So:
+//
+//	before the claim: the ROW names its hull; the hull points at nothing.
+//	after  the claim: the hull points at the row; both agree.
+//
+// A predicate keyed only on the hull's own claim is therefore blind for the whole interval before the
+// claim lands — and that interval is exactly when a racing coordinator sees a free hull.
+type tourOccupancy struct {
+	// containerIDs are the tour containers' own IDs, matched against a hull's claim once ClaimShip has
+	// landed. This is the DERIVED representation.
+	containerIDs map[string]bool
+	// declaredHulls are the hulls tour rows NAME in config["ship_symbol"] — the DECLARED
+	// representation, and the only evidence that exists before the claim.
+	declaredHulls map[string]bool
+}
+
+// holds reports whether a live tour row accounts for this hull, by either representation.
+func (t tourOccupancy) holds(ship *navigation.Ship) bool {
+	if t.declaredHulls[ship.ShipSymbol()] {
+		return true
+	}
+	return ship.IsAssigned() && t.containerIDs[ship.ContainerID()]
+}
+
+// tourOccupancy reads the RUNNING and PENDING tour rows into both representations.
+//
 // A read failure is an ERROR, never an empty set: an empty set would read as "nobody is touring" and
 // promote every touring hull to eligible, which is the one mistake this lookup exists to prevent.
-func (o *RelocatorFleetObserverAdapter) tourContainerIDs(ctx context.Context, playerID int) (map[string]bool, error) {
+//
+// STATUS SCOPE is deliberately RUNNING + PENDING and no wider. A tour in STOPPING or INTERRUPTED still
+// holding its hull is already caught by Pinned (an assigned hull under any container that is not a live
+// tour reads as a protection event), so widening buys nothing — while an INTERRUPTED row that never
+// recovers would exclude its hull FOREVER, which is the silent-dormancy failure this observer has
+// already been bitten by once.
+//
+// A tour row whose config cannot be parsed, or which names no hull, contributes its container ID but no
+// declared hull. That is deliberate: it keeps the CLAIMED window guarded for that row and loses only
+// the pre-claim window for a tour whose launch config is already corrupt. Erroring instead would let
+// one malformed row hold the entire reconciler dormant — strictly worse than a narrow unguarded window,
+// and the same dormancy trap as above.
+func (o *RelocatorFleetObserverAdapter) tourOccupancy(ctx context.Context, playerID int) (tourOccupancy, error) {
 	if o.containers == nil {
-		return nil, fmt.Errorf("opportunity relocator fleet observer is not wired to a container repository, so a touring hull cannot be told from an idle one")
+		return tourOccupancy{}, fmt.Errorf("opportunity relocator fleet observer is not wired to a container repository, so a touring hull cannot be told from an idle one")
 	}
-	ids := map[string]bool{}
+	tours := tourOccupancy{containerIDs: map[string]bool{}, declaredHulls: map[string]bool{}}
 	for _, status := range []container.ContainerStatus{container.ContainerStatusRunning, container.ContainerStatusPending} {
 		models, err := o.containers.ListByStatus(ctx, status, &playerID)
 		if err != nil {
-			return nil, fmt.Errorf("opportunity relocator cannot read %s containers to identify touring hulls: %w", status, err)
+			return tourOccupancy{}, fmt.Errorf("opportunity relocator cannot read %s containers to identify touring hulls: %w", status, err)
 		}
 		for _, model := range models {
 			if model == nil || model.CommandType != tourRunCommandType {
 				continue
 			}
-			ids[model.ID] = true
+			tours.containerIDs[model.ID] = true
+			if hull := declaredContainerHull(model.Config); hull != "" {
+				tours.declaredHulls[hull] = true
+			}
 		}
 	}
-	return ids, nil
+	return tours, nil
+}
+
+// declaredContainerHull reads the hull a container's launch config NAMES, or "" when the config is
+// absent, unparseable, or names none. The key is the one container_ops_tour.go writes at launch and
+// buildTourCoordinatorCommand reads back on restart, so the declaration this matches is the same one
+// the tour itself is rebuilt from.
+func declaredContainerHull(configJSON string) string {
+	if configJSON == "" {
+		return ""
+	}
+	var config struct {
+		ShipSymbol string `json:"ship_symbol"`
+	}
+	if err := json.Unmarshal([]byte(configJSON), &config); err != nil {
+		return ""
+	}
+	return config.ShipSymbol
 }
 
 // --- RelocatorTelemetryObserver: the realized per-hull tour rate's source rows ---

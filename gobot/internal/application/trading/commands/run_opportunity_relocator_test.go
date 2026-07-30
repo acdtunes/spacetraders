@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -20,10 +21,36 @@ import (
 type relocFakeFleet struct {
 	hulls []RelocatorHull
 	err   error
+	// atActuation lets a test make the fleet answer DIFFERENTLY at the actuation re-read than it did
+	// at observation — the only way to exercise the sp-x2jr6 race, where a hull is eligible when it is
+	// scored and claimed by the time it would be moved. Absent for a ship ⇒ the re-read returns the
+	// same hull the bulk observation did, so every pre-existing test is unaffected.
+	atActuation map[string]RelocatorHull
+	// reobserveErr makes the single-hull re-read fail, for the fail-closed case.
+	reobserveErr error
+	// reobserved records every ship symbol the handler re-read, so a test can assert the re-check
+	// happens at all and happens once per commit.
+	reobserved []string
 }
 
 func (f *relocFakeFleet) ObserveTradeHulls(context.Context, int) ([]RelocatorHull, error) {
 	return f.hulls, f.err
+}
+
+func (f *relocFakeFleet) ObserveHull(_ context.Context, _ int, shipSymbol string) (RelocatorHull, error) {
+	f.reobserved = append(f.reobserved, shipSymbol)
+	if f.reobserveErr != nil {
+		return RelocatorHull{}, f.reobserveErr
+	}
+	if hull, ok := f.atActuation[shipSymbol]; ok {
+		return hull, nil
+	}
+	for _, hull := range f.hulls {
+		if hull.ShipSymbol == shipSymbol {
+			return hull, nil
+		}
+	}
+	return RelocatorHull{}, fmt.Errorf("hull %s is no longer in the trade fleet", shipSymbol)
 }
 
 type relocFakeRegions struct {
@@ -763,5 +790,136 @@ func TestOpportunityRelocatorShould_NeverRelocateAHullToTheSystemItIsAlreadyIn(t
 	relocRequireNoMove(t, h.actuator, "the only candidate region is the system the hull is already in")
 	if result.Skipped["region_is_current_system"] != 1 {
 		t.Fatalf("expected one region_is_current_system skip; skips %v", result.Skipped)
+	}
+}
+
+// ── the actuation-time claim race (sp-x2jr6 slice 1) ────────────────────────────────────────────
+//
+// Observation and actuation are not atomic and the actuator holds no claim, so a hull that was
+// genuinely eligible when it was scored can be claimed by a tour before it is moved. Measured live:
+// 3 of the relocator's first 4 decisions were lost this way, the losing hull having been claimed
+// FOUR SECONDS after the fleet snapshot and TEN SECONDS before the decision — the ~14s gap being the
+// bounded pre-flight, which is real work and not latency to optimise away.
+//
+// EVERY fixture here makes the hull ELIGIBLE at observation and TAKEN at actuation. That divergence is
+// the whole point: a fixture where the hull is already taken at observation never reaches the re-check,
+// because hullEligibility drops it long before, and would pass against no re-check at all.
+
+// THE REGRESSION TEST. A hull claimed between scoring and actuation is NOT moved.
+func TestOpportunityRelocatorShould_NotMoveAHullClaimedBetweenObservationAndActuation(t *testing.T) {
+	for name, taken := range map[string]RelocatorHull{
+		"a tour claimed it while the pre-flight was running": {ShipSymbol: "HAULER-A", CurrentSystem: "X1-HOME", OnTour: true},
+		"another operation claimed it":                       {ShipSymbol: "HAULER-A", CurrentSystem: "X1-HOME", Pinned: true},
+		"the captain reserved it":                            {ShipSymbol: "HAULER-A", CurrentSystem: "X1-HOME", Pinned: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newRelocHarness(t)
+			// Eligible at observation — the baseline harness already relocates this hull — and taken by
+			// the time the actuator would be called.
+			h.fleet.atActuation = map[string]RelocatorHull{"HAULER-A": taken}
+
+			result := h.reconcile(t)
+
+			relocRequireNoMove(t, h.actuator, name+", so the relocation must be abandoned")
+			if len(result.Relocated) != 0 {
+				t.Fatalf("reported Relocated %v for a hull it never moved", result.Relocated)
+			}
+			if result.Skipped["claimed_at_actuation"] != 1 {
+				t.Fatalf("expected one claimed_at_actuation skip so the loss is countable in the heartbeat; skips %v", result.Skipped)
+			}
+			// NOTHING may be persisted. An intent written for a move that never happens would be
+			// RESUMED on the next tick — which is how a refused relocation becomes one that happens
+			// anyway, one tick later, without ever being re-checked.
+			if len(h.intents.writes) != 0 {
+				t.Fatalf("an abandoned relocation persisted %d intent(s); the next tick would resume the move this check just refused", len(h.intents.writes))
+			}
+		})
+	}
+}
+
+// The re-check must actually RUN — and run for the hull about to be moved. Without this the tests above
+// could pass on a fixture accident rather than on a real re-read.
+func TestOpportunityRelocatorShould_ReReadTheChosenHullBeforeMovingIt(t *testing.T) {
+	h := newRelocHarness(t)
+
+	result := h.reconcile(t)
+
+	relocRequireMoved(t, h.actuator, "HAULER-A")
+	if len(result.Relocated) != 1 {
+		t.Fatalf("the baseline move stopped happening; the re-check must let an unchanged hull through. skips %v", result.Skipped)
+	}
+	if len(h.fleet.reobserved) != 1 || h.fleet.reobserved[0] != "HAULER-A" {
+		t.Fatalf("re-read %v immediately before moving, want exactly [HAULER-A]; a commit that never re-reads cannot see the race", h.fleet.reobserved)
+	}
+}
+
+// FAIL CLOSED: an unreadable re-read cannot prove the hull is still free, so the hull is not moved. The
+// asymmetry is deliberate — a lost relocation costs one tick, moving a hull another operation holds
+// costs a hull.
+func TestOpportunityRelocatorShould_NotMoveAHullWhoseActuationReReadIsUnreadable(t *testing.T) {
+	h := newRelocHarness(t)
+	h.fleet.reobserveErr = errors.New("ship repository blipped")
+
+	result := h.reconcile(t)
+
+	relocRequireNoMove(t, h.actuator, "the actuation re-read failed, so the hull's ownership is unprovable")
+	if result.Skipped["actuation_recheck_unreadable"] != 1 {
+		t.Fatalf("expected one actuation_recheck_unreadable skip; skips %v", result.Skipped)
+	}
+	if len(h.intents.writes) != 0 {
+		t.Fatalf("a fail-closed abort persisted %d intent(s)", len(h.intents.writes))
+	}
+}
+
+// THE RESUME PATH IS THE SAME HAZARD. A restart resumes an in-flight intent toward its original target
+// rather than re-deciding it — but if a tour has since claimed the hull, resuming poaches it just as a
+// fresh commit would, and the resume path calls the very same actuator.
+//
+// An abandoned resume must mark the intent COMPLETED. Leaving it in flight would consume a concurrency
+// slot forever: reconcileInFlight counts every uncompleted intent against
+// max_concurrent_relocations, so two permanently-unresumable intents would deadlock the reconciler at
+// its cap and it would stop relocating anything at all.
+func TestOpportunityRelocatorShould_AbandonRatherThanResumeAnInterruptedMoveOntoAHullATourHasSinceClaimed(t *testing.T) {
+	h := newRelocHarness(t)
+	h.fleet.atActuation = map[string]RelocatorHull{
+		"HAULER-A": {ShipSymbol: "HAULER-A", CurrentSystem: "X1-HOME", OnTour: true},
+	}
+	h.intents = newRelocFakeIntents(RelocationIntent{
+		ShipSymbol: "HAULER-A", FromSystem: "X1-HOME", TargetSystem: "X1-RICH", TargetWaypoint: "X1-RICH-MARKET",
+		DecidedAt: relocNow.Add(-5 * time.Minute), Completed: false,
+	})
+	h.handler = NewRunOpportunityRelocatorHandler(h.fleet, h.regions, h.telemetry, h.era, h.actuator, h.intents, nil, h.clock)
+
+	result := h.reconcile(t)
+
+	relocRequireNoMove(t, h.actuator, "a tour has claimed the hull, so its interrupted relocation must be abandoned rather than resumed")
+	if len(result.Resumed) != 0 {
+		t.Fatalf("reported Resumed %v for a move it never made", result.Resumed)
+	}
+	if !h.intents.records["HAULER-A"].Completed {
+		t.Fatal("the abandoned intent was left IN FLIGHT; it would consume a concurrency slot forever and deadlock the reconciler at its cap")
+	}
+	if got := h.intents.records["HAULER-A"].DecidedAt; !got.Equal(relocNow.Add(-5 * time.Minute)) {
+		t.Fatalf("abandoning the intent moved DecidedAt to %v; the ORIGINAL decision time is the restart-durable cooldown clock", got)
+	}
+}
+
+// An UNREADABLE re-read in the resume path is different from a hull that is definitely taken: it must
+// leave the intent IN FLIGHT so the next tick retries, rather than abandon a relocation that may still
+// be perfectly valid. Fail closed on the MOVE, not on the record.
+func TestOpportunityRelocatorShould_LeaveAnInterruptedMoveInFlightWhenItsReReadIsUnreadable(t *testing.T) {
+	h := newRelocHarness(t)
+	h.fleet.reobserveErr = errors.New("ship repository blipped")
+	h.intents = newRelocFakeIntents(RelocationIntent{
+		ShipSymbol: "HAULER-A", FromSystem: "X1-HOME", TargetSystem: "X1-RICH", TargetWaypoint: "X1-RICH-MARKET",
+		DecidedAt: relocNow.Add(-5 * time.Minute), Completed: false,
+	})
+	h.handler = NewRunOpportunityRelocatorHandler(h.fleet, h.regions, h.telemetry, h.era, h.actuator, h.intents, nil, h.clock)
+
+	h.reconcile(t)
+
+	relocRequireNoMove(t, h.actuator, "the re-read failed, so the resume cannot be proven safe this tick")
+	if h.intents.records["HAULER-A"].Completed {
+		t.Fatal("a transient re-read failure ABANDONED a valid in-flight relocation; only a hull that is definitely taken may be abandoned")
 	}
 }

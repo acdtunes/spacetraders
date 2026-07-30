@@ -201,6 +201,11 @@ type RelocationIntent struct {
 // relocator filters on.
 type RelocatorFleetObserver interface {
 	ObserveTradeHulls(ctx context.Context, playerID int) ([]RelocatorHull, error)
+	// ObserveHull re-reads ONE hull's live protection facts, for the actuation-time re-check
+	// (sp-x2jr6 slice 1). It must derive Pinned/OnTour/IsCommandFrigate exactly as ObserveTradeHulls
+	// does, or the commit gate and the scoring gate will disagree about what a protected hull is.
+	// An error means the hull's ownership is UNPROVABLE, which fails the move closed.
+	ObserveHull(ctx context.Context, playerID int, shipSymbol string) (RelocatorHull, error)
 }
 
 // RelocatorRegionObserver produces the candidate regions reachable from originSystem within
@@ -476,6 +481,27 @@ func (h *RunOpportunityRelocatorHandler) finishInterruptedMove(
 		})
 		return
 	}
+	// A RESUME calls the same actuator, so it can poach exactly as a fresh commit can (sp-x2jr6 slice
+	// 1). The two failure modes are handled DIFFERENTLY, and the difference is load-bearing:
+	//
+	//   - DEFINITELY TAKEN → ABANDON, marking the intent completed. It must not be left in flight:
+	//     reconcileInFlight counts every uncompleted intent against max_concurrent_relocations, so a
+	//     permanently-unresumable intent would consume a slot forever and two of them would deadlock
+	//     the reconciler at its cap — it would stop relocating anything at all. Completing preserves
+	//     DecidedAt, so the hull's cooldown still runs from the original decision and it is re-scored
+	//     afresh later rather than immediately.
+	//   - UNREADABLE → leave it IN FLIGHT and retry next tick. A transient blip must not abandon a
+	//     relocation that is probably still valid; failing closed here means refusing the MOVE, not
+	//     discarding the record.
+	switch verdict := h.actuationVerdict(ctx, cmd, intent.ShipSymbol); verdict {
+	case actuationTaken:
+		h.markCompleted(ctx, cmd, intent)
+		result.skip(string(verdict))
+		return
+	case actuationUnreadable:
+		result.skip(string(verdict))
+		return
+	}
 	logger.Log("INFO", fmt.Sprintf("Opportunity relocator: resuming %s's interrupted relocation to %s (%s) rather than re-scoring it from an intermediate position", intent.ShipSymbol, intent.TargetSystem, intent.TargetWaypoint), map[string]interface{}{
 		"ship_symbol": intent.ShipSymbol, "target_system": intent.TargetSystem, "target_waypoint": intent.TargetWaypoint, "reason": "intent_resumed",
 	})
@@ -489,6 +515,58 @@ func (h *RunOpportunityRelocatorHandler) finishInterruptedMove(
 	}
 	h.markCompleted(ctx, cmd, intent)
 	result.Resumed = append(result.Resumed, intent.ShipSymbol)
+}
+
+// relocationActuationVerdict is what an actuation-time re-read of ONE hull concluded. The string value
+// IS the heartbeat skip reason, so the branch taken and the counter incremented have one definition.
+type relocationActuationVerdict string
+
+const (
+	// actuationClear means the hull is still unowned and the move may proceed.
+	actuationClear relocationActuationVerdict = ""
+	// actuationTaken means someone has claimed or reserved the hull since it was scored. The
+	// relocation is abandoned. Counted apart from the scoring-time protections on purpose: it measures
+	// the RACE (how much throughput the non-atomic window is costing), which a hull that was never
+	// eligible does not.
+	actuationTaken relocationActuationVerdict = "claimed_at_actuation"
+	// actuationUnreadable means the re-read failed, so ownership is unprovable. Also refuses the move,
+	// but is a DIFFERENT outcome: it is transient, and the resume path treats the two differently.
+	actuationUnreadable relocationActuationVerdict = "actuation_recheck_unreadable"
+)
+
+// actuationVerdict re-reads ONE hull's ownership immediately before it would be moved — the sp-x2jr6
+// slice-1 narrowing.
+//
+// WHY IT IS NEEDED AT ALL. Observation and actuation are not atomic and the actuator holds no claim
+// (RepositionToWaypointWithinJumps trusts a claim its caller already holds; this reconciler holds none).
+// Between the fleet snapshot and the commit sits the bounded region pre-flight — up to
+// relocationRegionCandidateBudget planner calls per hull — which measured ~14 seconds live. In that
+// window a tour container can be created and claim the hull, and 3 of the relocator's first 4 live
+// decisions were lost exactly so.
+//
+// WHAT IT IS NOT. This does NOT make observe-and-act atomic; a claim landing between this read and the
+// first hop still wins. It shrinks the window from ~14 seconds to the round-trip of one read, which on
+// the live numbers turns the dominant failure mode into a rare one — and it introduces NO claim, so it
+// cannot leak one and cannot strand a hull, which a real ClaimShip could. Closing the window properly
+// needs that claim plus an airtight release (sp-x2jr6 slice 3); this bead stays OPEN.
+//
+// FAIL CLOSED, asymmetrically. An unreadable re-read refuses the move: a lost relocation costs one tick
+// of throughput, while moving a hull another operation is driving costs the hull.
+func (h *RunOpportunityRelocatorHandler) actuationVerdict(ctx context.Context, cmd *RunOpportunityRelocatorCommand, shipSymbol string) relocationActuationVerdict {
+	hull, err := h.fleet.ObserveHull(ctx, cmd.PlayerID, shipSymbol)
+	if err != nil {
+		common.LoggerFromContext(ctx).Log("WARN", fmt.Sprintf("Opportunity relocator: could not re-read %s's ownership immediately before moving it, so the move is refused (fail closed): %v", shipSymbol, err), map[string]interface{}{
+			"ship_symbol": shipSymbol, "reason": string(actuationUnreadable),
+		})
+		return actuationUnreadable
+	}
+	if reason, protected := hullProtected(hull); protected {
+		common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf("Opportunity relocator: %s was claimed between scoring and actuation (%s) - abandoning the relocation rather than flying a hull another operation now holds", shipSymbol, reason), map[string]interface{}{
+			"ship_symbol": shipSymbol, "protection": reason, "reason": string(actuationTaken),
+		})
+		return actuationTaken
+	}
+	return actuationClear
 }
 
 // markCompleted rewrites the hull's record as landed, preserving DecidedAt as its cooldown clock.
@@ -541,17 +619,34 @@ func (h *RunOpportunityRelocatorHandler) scoreCandidates(
 	return candidates
 }
 
+// hullProtected reports whether a hull's OWNERSHIP facts forbid relocating it, and names which one.
+//
+// It is the ONE definition of "this hull belongs to someone else", read at BOTH gates: at scoring
+// (hullEligibility) and again at commit (actuationVerdict, sp-x2jr6 slice 1). Sharing it is the point —
+// two separately-written copies of the RULINGS #7 protections would drift the moment a fourth
+// protection fact is added, and the copy that got missed would be the one guarding the actual move.
+//
+// It deliberately covers ONLY ownership. The relocator's own bookkeeping — the per-hull cooldown, an
+// already-in-flight move — is not ownership and is checked once, at scoring, where it belongs: applying
+// "already_relocating" at commit would refuse every resumed move, which is the one move a restart MUST
+// finish.
+func hullProtected(hull RelocatorHull) (string, bool) {
+	switch {
+	case hull.IsCommandFrigate:
+		return "command_frigate_protected", true // RULINGS #7
+	case hull.Pinned:
+		return "pinned_hull_protected", true // RULINGS #7
+	case hull.OnTour:
+		return "mid_tour", true // only at honest tour release
+	}
+	return "", false
+}
+
 // hullEligibility applies every non-economic exclusion, in order of how cheap it is to check. The
 // reason string is what the heartbeat counts.
 func (h *RunOpportunityRelocatorHandler) hullEligibility(hull RelocatorHull, state *relocatorState, cooldown time.Duration) (string, bool) {
-	if hull.IsCommandFrigate {
-		return "command_frigate_protected", false // RULINGS #7
-	}
-	if hull.Pinned {
-		return "pinned_hull_protected", false // RULINGS #7
-	}
-	if hull.OnTour {
-		return "mid_tour", false // only at honest tour release
+	if reason, protected := hullProtected(hull); protected {
+		return reason, false
 	}
 	if state.movingOrSettling[hull.ShipSymbol] {
 		return "already_relocating", false
@@ -674,7 +769,7 @@ func (h *RunOpportunityRelocatorHandler) commitTopCandidates(
 			result.skip("region_herded")
 			continue
 		}
-		if !h.commitRelocation(ctx, cmd, candidate) {
+		if !h.commitRelocation(ctx, cmd, candidate, result) {
 			continue
 		}
 		moved[candidate.hull.ShipSymbol] = true
@@ -687,8 +782,17 @@ func (h *RunOpportunityRelocatorHandler) commitTopCandidates(
 // commitRelocation persists the intent BEFORE moving (so a crash mid-flight is resumed, never
 // re-decided), moves the hull, then records the intent as completed — which also starts the
 // restart-durable cooldown clock. Returns whether the hull actually moved.
-func (h *RunOpportunityRelocatorHandler) commitRelocation(ctx context.Context, cmd *RunOpportunityRelocatorCommand, candidate relocationCandidate) bool {
+func (h *RunOpportunityRelocatorHandler) commitRelocation(ctx context.Context, cmd *RunOpportunityRelocatorCommand, candidate relocationCandidate, result *RelocatorTickResult) bool {
 	logger := common.LoggerFromContext(ctx)
+	// RE-READ THE HULL'S OWNERSHIP FIRST, before anything is persisted (sp-x2jr6 slice 1). The order
+	// matters: an intent written for a move this check then refuses would be RESUMED on the next tick,
+	// which is how a refused relocation happens anyway one tick later — and the resume path would be
+	// carrying it out against the very hull the check rejected. Nothing is written until the hull is
+	// proven still unowned.
+	if verdict := h.actuationVerdict(ctx, cmd, candidate.hull.ShipSymbol); verdict != actuationClear {
+		result.skip(string(verdict))
+		return false
+	}
 	intent := RelocationIntent{
 		ShipSymbol:     candidate.hull.ShipSymbol,
 		FromSystem:     candidate.hull.CurrentSystem,

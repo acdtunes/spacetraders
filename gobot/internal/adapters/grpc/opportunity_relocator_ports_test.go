@@ -164,30 +164,98 @@ func TestRelocatorFleetObserverShould_SurfaceAnIdleTradeHullAsRelocatable(t *tes
 }
 
 // A hull out on a tour is ON TOUR, not pinned: expected, temporary, and counted as mid_tour rather
-// than as a protection event. A PENDING tour counts too — a queued tour is about to claim the hull, and
-// relocating into that window is the same race as relocating mid-tour.
-func TestRelocatorFleetObserverShould_ReportAHullHeldByATourContainerAsOnTourRatherThanPinned(t *testing.T) {
+// than as a protection event.
+//
+// The hull IS claimed here, so this covers only the CLAIMED half. The unclaimed half — a tour row that
+// exists but has not claimed its hull yet — is a separate window with its own test below, because it is
+// reached by a different branch and an earlier version of this code got it wrong.
+func TestRelocatorFleetObserverShould_ReportAClaimedTourHullAsOnTourRatherThanPinned(t *testing.T) {
 	clock := shared.NewRealClock()
+	touring := relocatorPortsHull(t, "HAULER-A", "HAULER")
+	require.NoError(t, touring.AssignToContainer("tour_run-HAULER-A", clock))
+
+	observer := NewRelocatorFleetObserver(
+		&relocatorPortsShipRepo{ships: []*navigation.Ship{touring}},
+		&relocatorPortsContainerRepo{byStatus: map[container.ContainerStatus][]*persistence.ContainerModel{
+			container.ContainerStatusRunning: {{ID: "tour_run-HAULER-A", CommandType: tourRunCommandType}},
+		}},
+	)
+
+	hulls, err := observer.ObserveTradeHulls(context.Background(), 1)
+	require.NoError(t, err)
+	got := relocatorPortsObserved(t, hulls, "HAULER-A")
+	require.True(t, got.OnTour, "a claimed tour hull must read OnTour so the heartbeat counts it as mid_tour")
+	require.False(t, got.Pinned, "a tour is not a protection event; reporting it as Pinned would hide the real mid_tour count")
+}
+
+// SLICE 2 (sp-x2jr6). A tour container that EXISTS but has not claimed its hull yet must still exclude
+// that hull — and the hull must be UNASSIGNED here, because that is the only shape in which the window
+// is real.
+//
+// The launch sequence is: containerRepo.Add INSERTs the row, THEN the runner's ClaimShip takes the
+// hull. In between, `ship.ContainerID()` is empty and `IsAssigned()` is false. A predicate keyed on the
+// hull's own claim therefore cannot see the row at all — and because IsAssigned() is also false the
+// hull reads Pinned:false too, leaving it FULLY ELIGIBLE at the exact moment a tour is about to take
+// it. The container has DECLARED its hull in config["ship_symbol"] the whole time
+// (container_ops_tour.go), which is what must be matched.
+//
+// The previous version of this test assigned the hull to the PENDING container, which exercises the
+// claimed branch above and never reaches the unclaimed one — so it passed while the PENDING entries in
+// the id map were provably unreachable. That fixture was flattering the code; this one is the real shape.
+func TestRelocatorFleetObserverShould_ExcludeAHullDeclaredByATourContainerThatHasNotClaimedItYet(t *testing.T) {
 	for name, status := range map[string]container.ContainerStatus{
-		"a RUNNING tour": container.ContainerStatusRunning,
-		"a PENDING tour": container.ContainerStatusPending,
+		"a PENDING tour that has not reached its ClaimShip yet":      container.ContainerStatusPending,
+		"a RUNNING tour observed before its claim landed in the row": container.ContainerStatusRunning,
 	} {
-		touring := relocatorPortsHull(t, "HAULER-A", "HAULER")
-		require.NoError(t, touring.AssignToContainer("tour_run-HAULER-A", clock))
+		t.Run(name, func(t *testing.T) {
+			unclaimed := relocatorPortsHull(t, "HAULER-A", "HAULER")
+			require.True(t, unclaimed.IsIdle(), "fixture precondition: the tour has NOT claimed the hull yet")
+			require.False(t, unclaimed.IsAssigned(), "fixture precondition: an unassigned hull is what makes this window real")
 
-		observer := NewRelocatorFleetObserver(
-			&relocatorPortsShipRepo{ships: []*navigation.Ship{touring}},
-			&relocatorPortsContainerRepo{byStatus: map[container.ContainerStatus][]*persistence.ContainerModel{
-				status: {{ID: "tour_run-HAULER-A", CommandType: tourRunCommandType}},
-			}},
-		)
+			observer := NewRelocatorFleetObserver(
+				&relocatorPortsShipRepo{ships: []*navigation.Ship{unclaimed}},
+				&relocatorPortsContainerRepo{byStatus: map[container.ContainerStatus][]*persistence.ContainerModel{
+					status: {{
+						ID:          "tour_run-HAULER-A",
+						CommandType: tourRunCommandType,
+						Config:      `{"ship_symbol":"HAULER-A","max_iterations":-1}`,
+					}},
+				}},
+			)
 
-		hulls, err := observer.ObserveTradeHulls(context.Background(), 1)
-		require.NoError(t, err)
-		got := relocatorPortsObserved(t, hulls, "HAULER-A")
-		require.True(t, got.OnTour, "%s must read OnTour so the heartbeat counts it as mid_tour", name)
-		require.False(t, got.Pinned, "%s is not a protection event; reporting it as Pinned would hide the real mid_tour count", name)
+			hulls, err := observer.ObserveTradeHulls(context.Background(), 1)
+			require.NoError(t, err)
+			got := relocatorPortsObserved(t, hulls, "HAULER-A")
+			require.True(t, got.OnTour,
+				"%s declares HAULER-A but has not claimed it, so a claim-keyed predicate reads the hull as fully eligible — the relocator would fly it out from under a tour that is about to start", name)
+		})
 	}
+}
+
+// The declared-hull match must be scoped to TOUR rows. A non-tour container that declares a hull is a
+// protection event (Pinned), not a tour — folding it into OnTour would make the mid_tour heartbeat
+// count every long-haul worker and cargo liquidation as a tour.
+func TestRelocatorFleetObserverShould_NotCountANonTourContainersDeclaredHullAsOnTour(t *testing.T) {
+	clock := shared.NewRealClock()
+	claimed := relocatorPortsHull(t, "HAULER-A", "HAULER")
+	require.NoError(t, claimed.AssignToContainer("longhaul_arb-OTHER", clock))
+
+	observer := NewRelocatorFleetObserver(
+		&relocatorPortsShipRepo{ships: []*navigation.Ship{claimed}},
+		&relocatorPortsContainerRepo{byStatus: map[container.ContainerStatus][]*persistence.ContainerModel{
+			container.ContainerStatusRunning: {{
+				ID:          "longhaul_arb-OTHER",
+				CommandType: "longhaul_arb",
+				Config:      `{"ship_symbol":"HAULER-A"}`,
+			}},
+		}},
+	)
+
+	hulls, err := observer.ObserveTradeHulls(context.Background(), 1)
+	require.NoError(t, err)
+	got := relocatorPortsObserved(t, hulls, "HAULER-A")
+	require.False(t, got.OnTour, "a long-haul worker is not a tour; counting its hull as mid_tour would corrupt the heartbeat's tour count")
+	require.True(t, got.Pinned, "a hull exclusively held by a non-tour operation is a protection event")
 }
 
 // A hull IN TRANSIT is not at honest tour release whatever put it in flight, so it must be reported
@@ -403,4 +471,128 @@ func TestRelocatorEraHorizonShould_ReportUnknownRatherThanInventAnEraLength(t *t
 
 	require.False(t, known, "the schema holds no era-end date, so any horizon reported as KNOWN would be invented")
 	require.Zero(t, hours, "an unknown horizon must carry no number at all; a non-zero value alongside known=false invites a caller to use it")
+}
+
+// --- the actuation-time re-read (sp-x2jr6 slice 1, adapter side) ---
+
+// THE RACE, at the adapter boundary: the same observer that reported a hull relocatable must report it
+// TAKEN once a tour row appears, without anything else changing. This is the live TORWIND-5F shape — the
+// tour container was created four seconds AFTER the fleet snapshot and ten seconds before the decision.
+func TestRelocatorFleetObserverShould_SeeATourThatAppearedAfterTheBulkObservation(t *testing.T) {
+	hull := relocatorPortsHull(t, "HAULER-A", "HAULER")
+	containers := &relocatorPortsContainerRepo{}
+	observer := NewRelocatorFleetObserver(&relocatorPortsShipRepo{ships: []*navigation.Ship{hull}}, containers)
+	ctx := context.Background()
+
+	// t0: no tour anywhere. The hull is relocatable, which is what makes it a candidate.
+	bulk, err := observer.ObserveTradeHulls(ctx, 1)
+	require.NoError(t, err)
+	require.False(t, relocatorPortsObserved(t, bulk, "HAULER-A").OnTour, "fixture precondition: the hull is eligible at observation")
+
+	// t0 + the pre-flight: a tour container is created for the hull and has not claimed it yet.
+	containers.byStatus = map[container.ContainerStatus][]*persistence.ContainerModel{
+		container.ContainerStatusRunning: {{
+			ID: "tour_run-HAULER-A", CommandType: tourRunCommandType, Config: `{"ship_symbol":"HAULER-A"}`,
+		}},
+	}
+
+	reread, err := observer.ObserveHull(ctx, 1, "HAULER-A")
+	require.NoError(t, err)
+	require.True(t, reread.OnTour,
+		"the re-read did not see a tour created since the snapshot; it must re-read the container rows, not reuse the occupancy map the snapshot was built from — otherwise it answers the stale question it exists to re-ask")
+}
+
+// The re-read must derive its facts EXACTLY as the bulk observation does, or the commit gate and the
+// scoring gate disagree about what a protected hull is and the guard is bypassable through the gap.
+func TestRelocatorFleetObserverShould_DeriveTheReReadFactsIdenticallyToTheBulkObservation(t *testing.T) {
+	clock := shared.NewRealClock()
+	frigate := relocatorPortsHull(t, "COMMAND-1", commandRole)
+	reserved := relocatorPortsHull(t, "RESERVED-1", "HAULER")
+	require.NoError(t, reserved.ReserveByCaptain("operator is flying it by hand", clock))
+	claimed := relocatorPortsHull(t, "CLAIMED-1", "HAULER")
+	require.NoError(t, claimed.AssignToContainer("longhaul_arb-OTHER", clock))
+	idle := relocatorPortsHull(t, "HAULER-A", "HAULER")
+	// IN TRANSIT is in this fixture deliberately: it is the shape the live loss actually took. The
+	// TORWIND-5F jump failed with API 4214 "Ship is currently in-transit" — the tour was already flying
+	// the hull — which is a claim-race failure, NOT the unroutable-gate class that sp-ky85o cut by 97%.
+	// So the re-read must agree with the bulk observation on THIS fact above all others.
+	flying := relocatorPortsHull(t, "FLYING-1", "HAULER")
+	destination, err := shared.NewWaypoint("X1-FAR-B2", 10, 10)
+	require.NoError(t, err)
+	_, err = flying.EnsureInOrbit()
+	require.NoError(t, err)
+	require.NoError(t, flying.StartTransit(destination))
+
+	observer := NewRelocatorFleetObserver(
+		&relocatorPortsShipRepo{ships: []*navigation.Ship{frigate, reserved, claimed, idle, flying}},
+		&relocatorPortsContainerRepo{byStatus: map[container.ContainerStatus][]*persistence.ContainerModel{
+			container.ContainerStatusRunning: {{ID: "longhaul_arb-OTHER", CommandType: "longhaul_arb"}},
+		}},
+	)
+	ctx := context.Background()
+
+	bulk, err := observer.ObserveTradeHulls(ctx, 1)
+	require.NoError(t, err)
+	require.Len(t, bulk, 5)
+	require.True(t, relocatorPortsObserved(t, bulk, "FLYING-1").OnTour, "fixture precondition: the in-transit hull reads busy")
+
+	for _, want := range bulk {
+		got, rerr := observer.ObserveHull(ctx, 1, want.ShipSymbol)
+		require.NoError(t, rerr, "re-reading %s", want.ShipSymbol)
+		require.Equal(t, want, got,
+			"%s reads differently at the actuation re-check than at observation; the two gates must share one derivation or the guard is bypassable through the gap", want.ShipSymbol)
+	}
+}
+
+// A hull that is no longer a trade hull is an ERROR, not a relocatable hull with default facts. The
+// caller fails the move closed on it, which is right: a re-dedicated, sold, or vanished hull is
+// emphatically not one this reconciler may move.
+func TestRelocatorFleetObserverShould_ErrorWhenTheReReadHullIsNoLongerRelocatable(t *testing.T) {
+	reDedicated := relocatorPortsHull(t, "GONE-1", "HAULER")
+	reDedicated.SetDedicatedFleet(contractFleetTag)
+	observer := NewRelocatorFleetObserver(
+		&relocatorPortsShipRepo{ships: []*navigation.Ship{reDedicated}},
+		&relocatorPortsContainerRepo{},
+	)
+	ctx := context.Background()
+
+	_, err := observer.ObserveHull(ctx, 1, "GONE-1")
+	require.Error(t, err, "a hull re-dedicated away from the trade fleet must fail the re-read, not come back with zero-valued (unprotected) facts")
+
+	_, err = observer.ObserveHull(ctx, 1, "NEVER-EXISTED")
+	require.Error(t, err, "a hull absent from the fleet must fail the re-read; zero-valued facts would read as fully relocatable")
+}
+
+// A tour row whose launch config cannot be parsed must degrade in the SAFE direction, in both halves:
+// it still guards the CLAIMED window through its container id, and it does not take the whole
+// observation down with it.
+//
+// Erroring instead would let ONE malformed row hold the entire reconciler dormant — the
+// silent-dormancy failure this observer has already been bitten by — while dropping the row entirely
+// would un-guard a hull a tour is actively driving. So the row contributes its id but no declared hull,
+// and the only thing lost is the pre-claim window for a tour whose config is already corrupt.
+func TestRelocatorFleetObserverShould_DegradeSafelyOnATourRowWhoseConfigCannotBeParsed(t *testing.T) {
+	clock := shared.NewRealClock()
+	claimed := relocatorPortsHull(t, "HAULER-CLAIMED", "HAULER")
+	require.NoError(t, claimed.AssignToContainer("tour_run-BROKEN", clock))
+	idle := relocatorPortsHull(t, "HAULER-IDLE", "HAULER")
+
+	observer := NewRelocatorFleetObserver(
+		&relocatorPortsShipRepo{ships: []*navigation.Ship{claimed, idle}},
+		&relocatorPortsContainerRepo{byStatus: map[container.ContainerStatus][]*persistence.ContainerModel{
+			container.ContainerStatusRunning: {{
+				ID: "tour_run-BROKEN", CommandType: tourRunCommandType, Config: `{not valid json at all`,
+			}},
+		}},
+	)
+
+	hulls, err := observer.ObserveTradeHulls(context.Background(), 1)
+	require.NoError(t, err, "one malformed tour row must not fail the whole observation; that would hold the reconciler dormant until someone fixed a row")
+
+	require.True(t, relocatorPortsObserved(t, hulls, "HAULER-CLAIMED").OnTour,
+		"the hull CLAIMED by the malformed tour row must still read OnTour — the row's container id is enough for the claimed window, and dropping the row entirely would un-guard a hull a tour is driving")
+	require.False(t, relocatorPortsObserved(t, hulls, "HAULER-IDLE").OnTour,
+		"an unrelated idle hull must not be excluded by someone else's malformed row")
+	require.False(t, relocatorPortsObserved(t, hulls, "HAULER-IDLE").Pinned,
+		"an unrelated idle hull must not be pinned by someone else's malformed row")
 }
