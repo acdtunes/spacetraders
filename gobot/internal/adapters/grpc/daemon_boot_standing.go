@@ -119,6 +119,25 @@ var bootStandingCoordinatorTypes = []container.ContainerType{
 	// already RUNNING/PENDING, and its creation path's own double-launch guard (sp-9ujl) refuses a twin
 	// whose second reconcile loop would fight the first over the same posts and idle probes.
 	container.ContainerTypeScoutPostCoordinator,
+	// sp-zvywu Part 2: the opportunity relocator is the standing meta-planner that moves trade hulls
+	// toward measurably better ground. It belongs here for the same reason the construction drain does
+	// — it discovers its own subjects per tick (every trade hull, every reachable region) and needs no
+	// captain-supplied launch parameter — and it MUST be here rather than behind an arming step,
+	// because a relocator nobody launches is a relocator that never runs, and 90% of charted space is
+	// unpriced ground it exists to reach. Launch is idempotent (skipped when one is already
+	// RUNNING/PENDING) and the container re-adopts across restarts via RecoverRunningContainers.
+	//
+	// THE PROBE-BUYER LESSON (below) DOES NOT APPLY, and the difference is the point: what made that
+	// coordinator's cost unbounded was that it SPENT, so nothing had to notice it before it had bought
+	// 9 probes for 245,316 credits. The relocator spends NOTHING — it moves hulls through the existing
+	// occupancy/reposition primitives — and its worst tick is bounded by max_concurrent_relocations (2)
+	// hulls in transit, each behind a 1.5x uplift bar, an NPV floor, a 90-minute per-hull cooldown and
+	// the anti-herd cap. Its cost is bounded travel time, not credits (RULINGS #4 untouched).
+	//
+	// Boot-launching it during a COLD start is harmless, unlike the fleet autosizer (deliberately not a
+	// member, because it would buy prematurely during DATA/INCOME): with no trade-dedicated hulls yet,
+	// the relocator observes an empty fleet, relocates nothing, and re-derives 15 minutes later.
+	container.ContainerTypeOpportunityRelocator,
 	// The probe-buyer-fleet coordinator (sp-f082y) was a member here until it was RETIRED and
 	// DELETED (Admiral 2026-07-28). Boot-standing it is precisely what made its cost unbounded:
 	// nothing had to launch it, so nothing had to notice it, and the first tick after bootstrap
@@ -156,7 +175,30 @@ func (s *DaemonServer) ensureBootStandingCoordinators(ctx context.Context, playe
 			s.ensureBootstrapStanding(ctx, playerID)
 		case container.ContainerTypeScoutPostCoordinator:
 			s.ensureScoutPostStanding(ctx, playerID)
+		case container.ContainerTypeOpportunityRelocator:
+			s.ensureOpportunityRelocatorStanding(ctx, playerID)
 		}
+	}
+}
+
+// ensureOpportunityRelocatorStanding launches the standing opportunity relocator (sp-zvywu Part 2)
+// when none is already running for the player. Idempotent via the same containerTypeRunning
+// pre-check every other standing coordinator uses, so a warm restart re-adopts the existing one (via
+// RecoverRunningContainers) rather than double-launching a twin whose second reconcile loop would
+// race the first over the same hulls and the same concurrency budget. All-default launch (RULINGS
+// #5): the reconciler fills in its documented thresholds and caps. A launch failure is logged and
+// non-fatal — it must never fail daemon startup.
+func (s *DaemonServer) ensureOpportunityRelocatorStanding(ctx context.Context, playerID int) {
+	running, err := containerTypeRunning(ctx, s.containerRepo, playerID, container.ContainerTypeOpportunityRelocator)
+	if err != nil {
+		fmt.Printf("Warning: failed to check opportunity relocator state: %v\n", err)
+		return
+	}
+	if running {
+		return
+	}
+	if _, lerr := s.OpportunityRelocatorCoordinator(ctx, playerID); lerr != nil {
+		fmt.Printf("Warning: failed to launch boot-standing opportunity relocator: %v\n", lerr)
 	}
 }
 

@@ -1498,6 +1498,43 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register TourCoordinator handler: %w", err)
 	}
 
+	// Opportunity relocator (sp-zvywu Part 2): the standing reconciler that ranks every (trade hull,
+	// reachable region) pair by relocation NPV and moves the best-valued hulls onto better-earning
+	// ground. It is the rate-floor rescue's trigger INVERTED — that one rescues a hull that is rotting,
+	// this one chases upside a perfectly-profitable hull would otherwise never leave for (measured
+	// 2026-07-30, only 116 of 1,183 charted systems carry any market data, so most reachable ground goes
+	// unworked). It NEVER SPENDS: hulls move through the same travel primitive the two existing
+	// relocation triggers use, and no money guard is read or relaxed (RULINGS #4).
+	//
+	// The REGION OBSERVER is tourCoordinatorHandler itself (ObserveRegions): pricing a candidate ground
+	// means running the tour solver's pre-flight, and a second implementation of that is how a third
+	// relocation trigger starts disagreeing with the other two about what a ground is worth. Everything
+	// else is a thin adapter in opportunity_relocator_ports.go. The travel actuator rides
+	// tradeRouteCoordinatorHandler's RepositionToWaypointWithinJumps — the SAME stored-adjacency
+	// movement primitive the margins-death and rate-floor relocations commit their jumps through
+	// (sp-kl16: a relocation is a MOVEMENT of the hull, not a commitment of money).
+	//
+	// Wired UNCONDITIONALLY: no config key, no default-off, no arming step. Registering the handler is
+	// what makes a launched or restart-recovered relocator container runnable; the operator stop is the
+	// SHARED reposition_disabled kill-switch, which halts all three relocation triggers at once.
+	opportunityRelocatorHandler := tradeRouteCmd.NewRunOpportunityRelocatorHandler(
+		grpc.NewRelocatorFleetObserver(shipRepo, containerRepo),
+		tourCoordinatorHandler,
+		grpc.NewRelocatorTelemetryObserver(persistence.NewTourTelemetryRepository(db)),
+		grpc.NewRelocatorEraHorizon(),
+		grpc.NewRelocatorActuator(tradeRouteCoordinatorHandler),
+		grpc.NewRelocationIntentConfigStore(containerRepo),
+		nil, // travel-hop model: nil → the ARMED fitted affine model (SetTravelHopModel is the refit seam)
+		nil, // clock: nil → the real clock
+	)
+	// The SAME activity-conditioned freshness table the tour snapshot builder and the lane ranker drop
+	// stale rows against, so the relocator excludes a stale region on one config-resolved definition
+	// rather than a fourth copy of it.
+	opportunityRelocatorHandler.SetRankerAgeCaps(cfg.Trading.RankerAgeCapMinutes.Resolved())
+	if err := mediator.RegisterHandler[*tradeRouteCmd.RunOpportunityRelocatorCommand](med, opportunityRelocatorHandler); err != nil {
+		return fmt.Errorf("failed to register OpportunityRelocator handler: %w", err)
+	}
+
 	// Gas extraction handlers (depend on daemonClientLocal and storageCoordinator)
 	// NOTE: Storage coordinator is created below (after manufacturing setup) and passed here.
 	// We'll register these handlers after storage coordinator is created.

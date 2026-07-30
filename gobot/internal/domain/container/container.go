@@ -97,6 +97,15 @@ const (
 	// type. Its launch is ARMED (default-off) at the bootstrap early-scaling seam, never boot-standing;
 	// once launched it survives restarts via the persisted-container recovery idiom.
 	ContainerTypeContractScaler ContainerType = "CONTRACT_SCALER_COORDINATOR"
+	// ContainerTypeOpportunityRelocator is the standing OPPORTUNITY RELOCATOR (sp-zvywu Part 2): a
+	// per-player reconciler that loops forever inside one Handle() ranking every (trade hull, reachable
+	// region) pair by relocation NPV and moving the best-valued hulls onto better-earning ground. It is
+	// the rate-floor rescue's trigger INVERTED — that one rescues an under-earner, this one chases
+	// upside a perfectly-profitable hull would otherwise never leave for. Like the
+	// siting/autosizer/contract-scaler coordinators it is NOT a CoordinatorOwnsIterations type; the
+	// container-level budget (-1) is irrelevant. It NEVER SPENDS (movement only, RULINGS #4) and never
+	// touches a protected hull (RULINGS #7); the one stop is the shared reposition kill-switch.
+	ContainerTypeOpportunityRelocator ContainerType = "OPPORTUNITY_RELOCATOR_COORDINATOR"
 	// ContainerTypeBootstrapCoordinator is the standing captain bootstrap coordinator: a
 	// per-player reconciler that loops forever inside one Handle() driving a cold agent through
 	// the cold-start arc to the jump gate (DATA→INCOME→GATE). Like the siting/autosizer

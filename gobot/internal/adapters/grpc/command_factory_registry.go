@@ -404,6 +404,13 @@ func containerSpecList() []ContainerSpec {
 		// restart-recovered scaler runnable — launch itself stays gated behind the bootstrap early-scaling
 		// arm (default-off), never boot-standing.
 		{CommandType: "contract_scaler", build: buildContractScalerCommand},
+		// opportunity_relocator (sp-zvywu Part 2): the standing opportunity relocator. Like
+		// fleet_autosizer/contract_scaler it loops forever inside one Handle(), so it is NOT a
+		// CoordinatorOwnsIterations type; the container-level budget (-1) is irrelevant. Registering it
+		// here is what makes a launched or restart-recovered relocator runnable — and the restart matters
+		// more than usual: its persisted relocation intents are re-derived on the first tick, so a
+		// rebuild that never runs would leave an in-flight relocation unfinished (RULINGS #2).
+		{CommandType: "opportunity_relocator", build: buildOpportunityRelocatorCommand},
 		// bootstrap (sp-3nbe): the standing captain bootstrap coordinator. Like
 		// fleet_autosizer/siting it owns its whole reconcile loop inside one Handle() (NOT a
 		// CoordinatorOwnsIterations type) — but UNLIKE them Handle() RETURNS at the terminal
