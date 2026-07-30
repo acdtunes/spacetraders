@@ -20,7 +20,14 @@ Reconstruction fidelity
   staleness window the live snapshot builder enforces. observed_at is stamped "now"
   because solve_tour ages rows against the wall clock — a replay row is fresh as of
   its sample time by construction.
-- allowed_systems = home + gate_edges neighbors (the live tourSystemsFrom shape).
+- PRICE ORIENTATION (sp-en5h7 / sp-2ehd7): ask = purchase_price (what WE PAY buying
+  FROM the market), bid = sell_price (what WE RECEIVE selling TO it). Enforced
+  structurally by _assert_uncrossed — see reconstruct_snapshot.
+- allowed_systems = home + gate_edges neighbors (the live tourSystemsFrom shape),
+  read era-scoped and passability-filtered exactly as the Go store serves them.
+- inter_system_hops carries the real gate-hop distance of every crossing among the
+  allowed systems, mirroring tourInterSystemHops — without it every crossing prices
+  at the flat 1-hop charge and no depth>1 lane can be distinguished at all.
 - Waypoint coordinates come from the waypoints table, so travel times use the same
   CRUISE formula the live request carries.
 - Deposits and absorption are deliberately empty: the comparison is pure-arb
@@ -35,6 +42,10 @@ Opt-in arming gates (offline evidence only — bare invocation stays byte-identi
 nothing arms without an explicit captain config change on top of a green gate):
   --arm          two-cap fleet-$/hr gate: candidate (cap-N rate) vs the TRUE live-prod
                  baseline (cap-2 RATE, sp-db0n/sp-ljh5), NOT the cap-2 profit fail-safe.
+  --widen        sp-2ehd7 RATE-only multi-cap fleet-$/hr sweep (--widen-caps 2,4): the
+                 lane-selection A/B in its cheapest honest form — one solve per cap-cell,
+                 each cap carrying its own candidate set and gate-hop matrix at that cap's
+                 EFFECTIVE hop depth (live clamps depth to 1 at cap<=2).
   --closure-ab   sp-g8op chained-K open-vs-closed realized round-trip gate (im74 §2.7):
                  does a CLOSED (return-to-anchor) chain out-earn an OPEN (wander) chain?
                  Required GREEN before the arming wave exposes a --closed-tours flag.
@@ -75,11 +86,28 @@ def fetch_history(engine, hours):
     return rows
 
 
-def fetch_gate_neighbors(engine):
-    q = text("SELECT system_symbol, connected_system FROM gate_edges")
+def open_era(engine):
+    """The era gate_edges rows are scoped to, mirroring GormGateEdgeRepository.openEraID."""
+    with engine.connect() as c:
+        return c.execute(text("SELECT max(era_id) FROM gate_edges")).scalar()
+
+
+def fetch_gate_neighbors(engine, era=None):
+    """Directed {system: {neighbor}} adjacency, filtered exactly as the live walk sees it:
+    GormGateEdgeRepository.Adjacency is ERA-SCOPED and excludes marker rows (a "" connected_
+    system is a negative-result backoff mark, never an edge), and storedDistances refuses to
+    traverse an UNDER-CONSTRUCTION edge (a jump into an unbuilt gate fails at hop time whatever
+    the row's age). gate_edges retains every era, so an unfiltered read hands the harness
+    systems the fleet cannot actually reach — inflating both the candidate set and the hop
+    matrix. Kept DIRECTED, not symmetrised, because storedDistances' BFS expands
+    adjacency[current] only in the stored direction."""
+    q = text("""SELECT system_symbol, connected_system FROM gate_edges
+                WHERE (:era IS NULL OR era_id = :era)
+                  AND connected_system <> ''
+                  AND under_construction = false""")
     neighbors = defaultdict(set)
     with engine.connect() as c:
-        for sys_, conn in c.execute(q):
+        for sys_, conn in c.execute(q, {"era": era}):
             neighbors[sys_].add(conn)
     return neighbors
 
@@ -98,8 +126,175 @@ def system_of(waypoint):
     return "-".join(parts[:2]) if len(parts) >= 2 else waypoint
 
 
+MAX_JUMP_PATH = 5                # gategraph.MaxJumpPath — the stored walk's hard reach
+CANDIDATE_HOP_DEPTH_DEFAULT = 1  # candidateHopDepthDefault
+MAX_CANDIDATE_HOP_DEPTH = 3      # maxCandidateHopDepth — spec "2-3 gate hops"
+
+
+def effective_candidate_hop_depth(configured, max_tour_systems):
+    """Mirror of resolveCandidateHopDepth + effectiveCandidateHopDepth.
+
+    The two knobs are COUPLED in the live coordinator and the coupling is load-bearing for any
+    cap A/B: 0/absent depth resolves to 1, a configured depth is clamped to [1, 3], and then a
+    depth > 1 is CLAMPED BACK to 1 whenever max_tour_systems <= 2 ("clamp not lifted — widening
+    would be flat-priced"). So the same container config yields a 1-hop candidate set at cap 2
+    and a deep one at cap 4. A harness that pins one depth across both arms therefore measures
+    the wrong pair: holding depth at 1 starves the widened arm of the systems it actually
+    reaches live, while holding it at 3 hands the cap-2 arm reach prod does not give it.
+    """
+    depth = CANDIDATE_HOP_DEPTH_DEFAULT if not configured or configured <= 0 \
+        else min(configured, MAX_CANDIDATE_HOP_DEPTH)
+    if depth <= 1:
+        return depth
+    if not max_tour_systems or max_tour_systems <= 2:
+        return 1
+    return depth
+
+
+def systems_within_hops(home, neighbors, hop_depth):
+    """Systems reachable from `home` within `hop_depth` gate hops, ALWAYS including home
+    (depth 0). hop_depth <= 0 yields just {home}. `reached` only grows layer by layer, so
+    systems_within_hops(N+1) is a superset of systems_within_hops(N)."""
+    reached = {home}
+    frontier = {home}
+    for _ in range(max(0, hop_depth)):
+        nxt = set()
+        for system in frontier:
+            nxt |= neighbors.get(system, set())
+        nxt -= reached
+        if not nxt:
+            break
+        reached |= nxt
+        frontier = nxt
+    return reached
+
+
+def compute_allowed(home, neighbors, by_system, hop_depth):
+    """Candidate systems = (systems within `hop_depth` gate hops of home) ∩ (systems holding a
+    market in this snapshot) ∪ {home}.
+
+    DEPTH-1 EQUIVALENCE: systems_within_hops(home, ., 1) = {home} ∪ neighbors[home], so
+    compute_allowed(., 1) reduces to the historical
+    `{home} | (neighbors.get(home, set()) & set(by_system))` at every site — the un-widened
+    shape is byte-identical, and depth N ⊇ depth N-1 by construction."""
+    reached = systems_within_hops(home, neighbors, hop_depth)
+    return {home} | (reached & set(by_system))
+
+
+def _gate_depths(neighbors, source, bound):
+    """Directed breadth-first gate-hop depths from `source`, capped at `bound` — the mirror of
+    gategraph.storedDistances' traversal. Marker rows and under-construction edges are already
+    excluded by fetch_gate_neighbors, which is where storedDistances applies the same rule."""
+    depths = {source: 0}
+    frontier = [source]
+    for depth in range(1, bound + 1):
+        nxt = []
+        for current in frontier:
+            for neighbor in neighbors.get(current, ()):
+                if neighbor not in depths:
+                    depths[neighbor] = depth
+                    nxt.append(neighbor)
+        frontier = nxt
+        if not frontier:
+            break
+    return depths
+
+
+def inter_system_hop_distances(neighbors, allowed, max_tour_systems, candidate_hop_depth=1):
+    """The request-carried gate-hop distance map, mirroring RunTourCoordinatorHandler.
+    tourInterSystemHops (sp-tp5c3/sp-smbgd).
+
+    WITHOUT this the solver's _build_inter_system_hop_index sees {} and _make_travel_fn prices
+    EVERY crossing at gate_hops=1 — the cheapest possible. A harness that omits it therefore
+    cannot see hop depth at all: any A/B on depth pricing reads as inert past 1 hop, and every
+    deep crossing is quoted at the shallowest price, biasing the comparison toward whichever
+    arm reaches further (sp-2ehd7). Even at the 1-hop candidate shape this matters: two distinct
+    neighbors of home are 1 hop from home but 2 from EACH OTHER, and a cap>2 tour can cross
+    directly between them.
+
+    Contract copied from the Go, term for term:
+      - EMPTY below the raised cap. At cap<=2 a tour touches at most start + one gate neighbor,
+        so every crossing is a single hop the flat charge already prices exactly.
+      - bound = max(2 x candidate hop depth, MaxJumpPath); a pair may be provable from either
+        end, and the shortest proven route wins.
+      - Only distances > 1 are emitted; a proven 1-hop crossing already prices at the base.
+      - An UNPROVEN pair is charged bound+1 (unprovenCrossingHops), never dropped into the
+        solver's 1-hop default — refusing to price a crossing cheaply on a walk that could not
+        reach it (RULINGS #4: the error runs toward over-pricing, never toward free reach).
+      - One entry per unordered pair, from < to, deterministically ordered.
+    """
+    if not max_tour_systems or max_tour_systems <= 2:
+        return []
+    systems = sorted(allowed)
+    if len(systems) < 2:
+        return []
+    if neighbors is None:
+        raise ValueError(
+            "inter_system_hop_distances needs the gate adjacency to price a cap>2 tour; "
+            "without it every pair is unprovable and gets charged the refusal distance")
+    bound = max(2 * max(1, candidate_hop_depth), MAX_JUMP_PATH)
+    proven = {}
+    for from_system in systems:
+        depths = _gate_depths(neighbors, from_system, bound)
+        for to_system in systems:
+            distance = depths.get(to_system, 0)
+            if to_system == from_system or distance <= 0:
+                continue
+            pair = (from_system, to_system) if from_system < to_system \
+                else (to_system, from_system)
+            if pair not in proven or distance < proven[pair]:
+                proven[pair] = distance
+    out = []
+    for i, from_system in enumerate(systems):
+        for to_system in systems[i + 1:]:
+            gate_hops = proven.get((from_system, to_system), bound + 1)
+            if gate_hops <= 1:
+                continue
+            out.append(dict(from_system=from_system, to_system=to_system,
+                            gate_hops=gate_hops))
+    return out
+
+
+def _assert_uncrossed(snapshot):
+    """Refuse a snapshot in which any waypoint quotes bid >= ask FOR THE SAME GOOD.
+
+    A market that pays more to take a good than it charges to hand the same good over is
+    impossible: it is free money at a standstill, and the solver — which reads `ask` when
+    buying and `bid` when selling with no cross-check of its own — will happily plan a tour
+    that stands at one waypoint and prints credits. Every such tour is in-system, so the
+    distortion is DIRECTIONAL: in-system rates inflate without bound and no cross-system haul
+    is ever worth planning. That is a lane-selection verdict destroyed, not a rounding error
+    (sp-2ehd7).
+
+    In replay the only way to produce a crossed row is a mapping error, because the source
+    columns cannot be crossed: market_price_history holds purchase_price > sell_price > 0 on
+    every row the game has ever written. So this REFUSES rather than dropping the row the way
+    the live builder does (tour_snapshot.go drops, because there the provenance is genuinely
+    corrupt stored data). Dropping here would let a wholesale transposition present itself as
+    "the window had no opportunities" — silent, and indistinguishable from a thin sample.
+    """
+    for row in snapshot:
+        bid, ask = row["bid"], row["ask"]
+        if bid > 0 and ask > 0 and bid >= ask:
+            raise ValueError(
+                "replay snapshot is CROSSED at a single waypoint: "
+                f"{row['waypoint_symbol']} / {row['good_symbol']} bids {bid} and asks {ask}. "
+                "A market cannot pay more than it charges for the same good — this is a "
+                "bid/ask mapping error, not market data (sp-2ehd7). ask MUST come from "
+                "purchase_price (what we PAY) and bid from sell_price (what we RECEIVE)."
+            )
+    return snapshot
+
+
 def reconstruct_snapshot(rows, sample_t):
-    """Freshest row per (waypoint, good) with recorded_at in (T-75min, T]."""
+    """Freshest row per (waypoint, good) with recorded_at in (T-75min, T].
+
+    Orientation is the live one, settled by sp-en5h7 and pinned by every reader in the Go
+    tree (run_trade_route_coordinator_lanes.go, profitable_lane_reader.go, tour_snapshot.go):
+    purchase_price is what WE PAY to buy from the market = its ASK; sell_price is what WE
+    RECEIVE selling to it = its BID. Structurally enforced by _assert_uncrossed, so the
+    transposition can never be reintroduced quietly.
+    """
     cutoff = sample_t - timedelta(minutes=STALENESS_MINUTES)
     latest = {}
     for r in rows:
@@ -110,14 +305,12 @@ def reconstruct_snapshot(rows, sample_t):
     for (wp, good), r in latest.items():
         snapshot.append(dict(
             waypoint_symbol=wp, system_symbol=system_of(wp), good_symbol=good,
-            # GoodListing orientation: Bid = market BUY column (purchase_price),
-            # Ask = market SELL column (sell_price) — same as collectSystemListings.
-            bid=int(r.purchase_price), ask=int(r.sell_price),
+            bid=int(r.sell_price), ask=int(r.purchase_price),
             trade_volume=int(r.trade_volume),
             supply=r.supply or "", activity=r.activity or "",
             observed_at_unix=now_unix,
         ))
-    return snapshot
+    return _assert_uncrossed(snapshot)
 
 
 def plan_seconds(result):
@@ -161,7 +354,7 @@ def fleet_cph(results, overhead_seconds):
 
 
 def run_case(snapshot, waypoints, home, allowed, hold, max_spend, reserve, version,
-             max_tour_systems=None):
+             max_tour_systems=None, neighbors=None, candidate_hop_depth=1):
     home_markets = sorted({s["waypoint_symbol"] for s in snapshot
                            if s["system_symbol"] == home})
     if not home_markets:
@@ -179,6 +372,13 @@ def run_case(snapshot, waypoints, home, allowed, hold, max_spend, reserve, versi
     # [2, 6], so candidate caps > 6 silently collapse to 6.
     if max_tour_systems is not None:
         cons["max_tour_systems"] = max_tour_systems
+    # sp-2ehd7: the real gate-hop distance of every crossing this tour could make. Empty at
+    # cap<=2 (and when the key is omitted), so the default DB run stays byte-identical while a
+    # widened cap finally prices depth instead of quoting every crossing at 1 hop.
+    hops = inter_system_hop_distances(neighbors, allowed, max_tour_systems,
+                                      candidate_hop_depth)
+    if hops:
+        cons["inter_system_hops"] = hops
     scoped = [s for s in snapshot if s["system_symbol"] in allowed]
     wps = [w for w in waypoints if w["system"] in allowed]
     out = {}
@@ -226,7 +426,7 @@ def summarize(cases, overhead_seconds):
 
 
 def arming_pass(samples, rows, neighbors, coords, hulls, version,
-                baseline_cap, candidate_cap, max_spend, reserve):
+                baseline_cap, candidate_cap, max_spend, reserve, candidate_hop_depth=0):
     """Assemble the two-cap arming matrix (resolves the arming data-model finding).
 
     Per (sample, home, hull) it solves the SAME reconstructed snapshot at BOTH the
@@ -237,6 +437,12 @@ def arming_pass(samples, rows, neighbors, coords, hulls, version,
     A case is emitted only when every cell solved (both run_case calls returned) so the
     verdict below always finds a full matrix. Returns a list of
     dict(sample, home, hold, results_by_cell={(cap, objective): result}).
+
+    `candidate_hop_depth` is the CONFIGURED depth (the container's candidate_hop_depth); the
+    EFFECTIVE depth is resolved PER CAP through effective_candidate_hop_depth, because live
+    clamps depth back to 1 at cap <= 2. So the baseline arm gets exactly the reach prod has
+    today and the candidate arm gets the reach the raised cap would unlock — the comparison
+    the arming decision actually turns on. 0/absent keeps every arm at depth 1.
     """
     cases = []
     for sample_t in samples:
@@ -249,12 +455,14 @@ def arming_pass(samples, rows, neighbors, coords, hulls, version,
         for home, markets in sorted(by_system.items()):
             if len(markets) < 2:
                 continue
-            allowed = {home} | (neighbors.get(home, set()) & set(by_system))
             for hold in hulls:
                 cells = {}
                 for cap in (baseline_cap, candidate_cap):
+                    depth = effective_candidate_hop_depth(candidate_hop_depth, cap)
+                    allowed = compute_allowed(home, neighbors, by_system, depth)
                     res = run_case(snapshot, waypoints, home, allowed, hold,
-                                   max_spend, reserve, version, max_tour_systems=cap)
+                                   max_spend, reserve, version, max_tour_systems=cap,
+                                   neighbors=neighbors, candidate_hop_depth=depth)
                     if res is None:
                         break
                     _, out = res
@@ -324,7 +532,90 @@ def arming_verdict(cases, baseline, candidate, overhead_seconds, min_delta_pct, 
     )
 
 
-def _solve_chain_tour(scoped, wps, ship, allowed, max_spend, reserve, version, cap, closed):
+def _solve_rate_case(snapshot, waypoints, home, allowed, hold, max_spend, reserve,
+                     version, cap, neighbors=None, candidate_hop_depth=1):
+    """ONE rate-objective solve at the given distinct-system cap (the lean half of run_case,
+    which always solves profit AND rate). Used by widen_pass so a multi-cap sweep costs one
+    solve per cap-cell instead of two — halving solve count against the --arm matrix while
+    computing the identical cap-N RATE fleet-$/hr, the only number --arm's gating
+    true_live_delta_pct uses."""
+    home_markets = sorted({s["waypoint_symbol"] for s in snapshot
+                           if s["system_symbol"] == home})
+    if not home_markets:
+        return None
+    ship = dict(ship_symbol=f"REPLAY-{hold}", current_waypoint=home_markets[0],
+                current_system=home, hold_capacity=hold,
+                fuel_current=400, fuel_capacity=400,
+                engine_speed=ENGINE_SPEED, cargo=[])
+    cons = dict(max_hops=6, min_margin_per_unit=1,
+                max_snapshot_age_minutes=STALENESS_MINUTES,
+                max_spend=max_spend, working_capital_reserve=reserve,
+                allowed_systems=sorted(allowed), expected_model_version=version,
+                max_tour_systems=cap)
+    hops = inter_system_hop_distances(neighbors, allowed, cap, candidate_hop_depth)
+    if hops:
+        cons["inter_system_hops"] = hops
+    scoped = [s for s in snapshot if s["system_symbol"] in allowed]
+    wps = [w for w in waypoints if w["system"] in allowed]
+    return solve_tour(scoped, dict(ship), dict(cons), MODEL, waypoints=wps,
+                      objective=OBJECTIVE_RATE)
+
+
+def widen_pass(samples, rows, neighbors, coords, hulls, version, caps,
+               max_spend, reserve, candidate_hop_depth=0):
+    """RATE-only multi-cap sweep — the lane-selection A/B in its cheapest honest form.
+
+    Per (sample, home, hull) it solves the SAME reconstructed snapshot once per cap in `caps`,
+    all at RATE (the armed longer-tour objective). Each cap gets its OWN candidate set and hop
+    matrix at that cap's EFFECTIVE hop depth, mirroring the live depth<->cap coupling. A case
+    is emitted only when EVERY cap cell solved, so the caps are compared over one shared set of
+    windows. Returns dicts of dict(sample, home, hold, results_by_cap={cap: result})."""
+    cases = []
+    for sample_t in samples:
+        snapshot = reconstruct_snapshot(rows, sample_t)
+        waypoints = [dict(symbol=wp, system=sys_, x=int(x), y=int(y))
+                     for wp, (sys_, x, y) in coords.items()]
+        by_system = defaultdict(set)
+        for s in snapshot:
+            by_system[s["system_symbol"]].add(s["waypoint_symbol"])
+        for home, markets in sorted(by_system.items()):
+            if len(markets) < 2:
+                continue
+            for hold in hulls:
+                cells = {}
+                for cap in caps:
+                    depth = effective_candidate_hop_depth(candidate_hop_depth, cap)
+                    allowed = compute_allowed(home, neighbors, by_system, depth)
+                    res = _solve_rate_case(snapshot, waypoints, home, allowed, hold,
+                                           max_spend, reserve, version, cap,
+                                           neighbors=neighbors, candidate_hop_depth=depth)
+                    if res is None:
+                        break
+                    cells[cap] = res
+                if len(cells) == len(caps):
+                    cases.append(dict(sample=str(sample_t), home=home, hold=hold,
+                                      results_by_cap=cells))
+    return cases
+
+
+def widen_verdict(cases, caps, overhead_seconds):
+    """Fleet-$/hr per cap over the JOINT-feasible case set (every cap recovers a positive
+    plan_seconds), plus each cap's delta against the FIRST cap in `caps` (the baseline). All
+    cph delegate to fleet_cph — the one definition summarize prints and arming_verdict gates
+    on, so a widen number can be quoted next to an arming number without drift."""
+    joint = [c for c in cases
+             if all(plan_seconds(c["results_by_cap"][cap]) is not None for cap in caps)]
+    cph_by_cap = {cap: fleet_cph([c["results_by_cap"][cap] for c in joint], overhead_seconds)
+                  for cap in caps}
+    base = cph_by_cap[caps[0]]
+    delta_by_cap = {cap: ((cph_by_cap[cap] - base) / base * 100 if base > 0 else float("nan"))
+                    for cap in caps}
+    return dict(cases=len(joint), cph_by_cap=cph_by_cap, delta_by_cap=delta_by_cap,
+                baseline_cap=caps[0])
+
+
+def _solve_chain_tour(scoped, wps, ship, allowed, max_spend, reserve, version, cap, closed,
+                      hops=()):
     """One RATE-objective solve for the given ship position + closure flag. RATE is the
     armed longer-tour objective (spec: longer tours are selected on $/hr, not profit), so
     the closure A/B measures closure UNDER the objective it would actually run with. The
@@ -336,11 +627,14 @@ def _solve_chain_tour(scoped, wps, ship, allowed, max_spend, reserve, version, c
                 max_spend=max_spend, working_capital_reserve=reserve,
                 allowed_systems=sorted(allowed), expected_model_version=version,
                 max_tour_systems=cap, closed=closed, anchor_system="")
+    if hops:
+        cons["inter_system_hops"] = list(hops)
     return solve_tour(scoped, dict(ship), cons, MODEL, waypoints=wps,
                       objective=OBJECTIVE_RATE)
 
 
-def _chain_tours(scoped, wps, ship0, allowed, max_spend, reserve, version, cap, k, closed):
+def _chain_tours(scoped, wps, ship0, allowed, max_spend, reserve, version, cap, k, closed,
+                 hops=()):
     """Run K chained RATE tours from ship0. Between tours the hull advances to the plan's
     LAST leg waypoint — for a CLOSED tour that leg IS the anchor return (the hull re-anchors
     home each replan, floating-closure semantics), for an OPEN tour it wanders wherever the
@@ -352,7 +646,7 @@ def _chain_tours(scoped, wps, ship0, allowed, max_spend, reserve, version, cap, 
     ship = dict(ship0)
     for _ in range(k):
         res = _solve_chain_tour(scoped, wps, ship, allowed, max_spend, reserve,
-                                version, cap, closed)
+                                version, cap, closed, hops)
         legs = res.get("legs") or []
         if not res.get("feasible") or not legs:
             break
@@ -364,7 +658,7 @@ def _chain_tours(scoped, wps, ship0, allowed, max_spend, reserve, version, cap, 
 
 
 def closure_ab_pass(samples, rows, neighbors, coords, hulls, version,
-                    cap, k, max_spend, reserve):
+                    cap, k, max_spend, reserve, candidate_hop_depth=0):
     """sp-g8op chained-K open-vs-closed A/B assembly (im74 §2.7 / VERIFY A10). Per
     (sample, home, hull) it runs TWO length-K chains from the SAME home anchor at the SAME
     distinct-system cap and the RATE objective: an OPEN chain (each tour starts where the
@@ -385,9 +679,11 @@ def closure_ab_pass(samples, rows, neighbors, coords, hulls, version,
         for home, markets in sorted(by_system.items()):
             if len(markets) < 2:
                 continue
-            allowed = {home} | (neighbors.get(home, set()) & set(by_system))
+            depth = effective_candidate_hop_depth(candidate_hop_depth, cap)
+            allowed = compute_allowed(home, neighbors, by_system, depth)
             scoped = [s for s in snapshot if s["system_symbol"] in allowed]
             wps = [w for w in waypoints if w["system"] in allowed]
+            hops = inter_system_hop_distances(neighbors, allowed, cap, depth)
             home_markets = sorted(markets)
             for hold in hulls:
                 ship0 = dict(ship_symbol=f"REPLAY-{hold}",
@@ -395,9 +691,9 @@ def closure_ab_pass(samples, rows, neighbors, coords, hulls, version,
                              hold_capacity=hold, fuel_current=400, fuel_capacity=400,
                              engine_speed=ENGINE_SPEED, cargo=[])
                 open_chain = _chain_tours(scoped, wps, ship0, allowed, max_spend,
-                                          reserve, version, cap, k, closed=False)
+                                          reserve, version, cap, k, closed=False, hops=hops)
                 closed_chain = _chain_tours(scoped, wps, ship0, allowed, max_spend,
-                                            reserve, version, cap, k, closed=True)
+                                            reserve, version, cap, k, closed=True, hops=hops)
                 if len(open_chain) == k and len(closed_chain) == k:
                     cases.append(dict(sample=str(sample_t), home=home, hold=hold,
                                       open_chain=open_chain, closed_chain=closed_chain))
@@ -458,6 +754,17 @@ def main():
                          "live-prod baseline (cap-2 RATE), NOT the cap-2 profit fail-safe (sp-ljh5)")
     ap.add_argument("--arm-min-cases", type=int, default=30,
                     help="min cases feasible in BOTH cells required to arm")
+    ap.add_argument("--candidate-hop-depth", type=int, default=0,
+                    help="CONFIGURED candidate_hop_depth (the container knob). The effective "
+                         "depth is resolved PER CAP: live clamps it back to 1 at cap<=2, so "
+                         "each arm gets the reach that cap actually has. 0 = depth 1 throughout")
+    # sp-2ehd7 lane-selection sweep (opt-in, offline). RATE-only, so a cap A/B costs one solve
+    # per cap-cell instead of the --arm matrix's two.
+    ap.add_argument("--widen", action="store_true",
+                    help="also run the RATE-only multi-cap fleet-$/hr sweep (--widen-caps)")
+    ap.add_argument("--widen-caps", default="2,4",
+                    help="comma list of distinct-system caps to sweep; the FIRST is the "
+                         "baseline every delta is measured against")
     # sp-g8op closure arming gate (opt-in, offline). Bare invocation NEVER runs it either,
     # so default output stays byte-identical. Required GREEN before the arming wave exposes
     # a --closed-tours CLI flag (governance-owned; deliberately absent today).
@@ -480,7 +787,7 @@ def main():
     if not rows:
         print("no market_price_history rows in the window; nothing to replay")
         return 1
-    neighbors = fetch_gate_neighbors(engine)
+    neighbors = fetch_gate_neighbors(engine, open_era(engine))
     coords = fetch_waypoint_coords(engine)
     hulls = [int(h) for h in args.hulls.split(",") if h]
 
@@ -504,7 +811,8 @@ def main():
                 allowed = {home} | (neighbors.get(home, set()) & set(by_system))
                 for hold in hulls:
                     res = run_case(snapshot, waypoints, home, allowed, hold,
-                                   args.max_spend, args.reserve, version)
+                                   args.max_spend, args.reserve, version,
+                                   neighbors=neighbors)
                     if res is None:
                         continue
                     _, out = res
@@ -562,7 +870,8 @@ def main():
         candidate = (args.candidate_cap, OBJECTIVE_RATE)   # the cap+rate package ljh5 arms
         cases = arming_pass(samples, rows, neighbors, coords, hulls, version,
                             args.baseline_cap, args.candidate_cap,
-                            args.max_spend, args.reserve)
+                            args.max_spend, args.reserve,
+                            candidate_hop_depth=args.candidate_hop_depth)
         verdict = arming_verdict(cases, baseline, candidate, args.tour_overhead_seconds,
                                  args.arm_min_delta_pct, args.arm_min_cases)
         print(f"\n=== ARMING GATE (cap {args.baseline_cap} rate -> cap "
@@ -590,12 +899,34 @@ def main():
                 json.dump(dict(profit_vs_rate=results, arming=verdict), f,
                           indent=1, default=str)
 
+    if args.widen:
+        caps = [int(c) for c in args.widen_caps.split(",") if c]
+        widen_cases = widen_pass(samples, rows, neighbors, coords, hulls, version, caps,
+                                 args.max_spend, args.reserve,
+                                 candidate_hop_depth=args.candidate_hop_depth)
+        widen = widen_verdict(widen_cases, caps, args.tour_overhead_seconds)
+        print(f"\n=== LANE-SELECTION SWEEP (RATE, caps {caps}, configured candidate hop "
+              f"depth {args.candidate_hop_depth}) ===")
+        print("legend: one solve per cap over ONE shared set of joint-feasible windows; each "
+              "cap carries its own candidate set + gate-hop matrix at that cap's EFFECTIVE "
+              f"depth. Baseline = cap {widen['baseline_cap']}")
+        print(f"joint-feasible cases (every cap solved): {widen['cases']}")
+        for cap in caps:
+            depth = effective_candidate_hop_depth(args.candidate_hop_depth, cap)
+            print(f"  cap {cap:<2} (effective hop depth {depth}): "
+                  f"{widen['cph_by_cap'][cap]:>12,.0f} cr/hr   "
+                  f"{widen['delta_by_cap'][cap]:+7.2f}%")
+        if args.json:
+            with open(args.json, "w") as f:
+                json.dump(dict(profit_vs_rate=results, widen=widen), f, indent=1, default=str)
+
     if args.closure_ab:
         # sp-g8op: the chained open-vs-closed realized round-trip gate. Opt-in, offline; the
         # evidence the arming wave must show GREEN before it exposes a --closed-tours flag.
         closure_cases = closure_ab_pass(samples, rows, neighbors, coords, hulls, version,
                                         args.closure_cap, args.closure_k,
-                                        args.max_spend, args.reserve)
+                                        args.max_spend, args.reserve,
+                                        candidate_hop_depth=args.candidate_hop_depth)
         closure = closure_ab_verdict(closure_cases, args.tour_overhead_seconds,
                                      args.closure_min_delta_pct, args.closure_min_cases)
         print(f"\n=== CLOSURE A/B GATE (chained K={args.closure_k} open vs closed, "

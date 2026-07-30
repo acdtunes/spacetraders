@@ -145,7 +145,7 @@ def test_arming_pass_assembles_two_cap_matrix(monkeypatch):
         SimpleNamespace(waypoint_symbol="X1-S1-A", good_symbol="G", purchase_price=100,
                         sell_price=90, supply="LIMITED", activity="WEAK", trade_volume=40,
                         recorded_at=sample_t),
-        SimpleNamespace(waypoint_symbol="X1-S1-B", good_symbol="G", purchase_price=90,
+        SimpleNamespace(waypoint_symbol="X1-S1-B", good_symbol="G", purchase_price=210,
                         sell_price=200, supply="LIMITED", activity="WEAK", trade_volume=40,
                         recorded_at=sample_t),
     ]
@@ -242,9 +242,10 @@ def test_arming_verdict_relies_on_true_live_prod_baseline():
 
 # ================================== W4: real-solver arming-gate FIRING (sp-f1yk) ======
 def _replay_row(waypoint, good, purchase_price, sell_price, sample_t):
-    """A market_price_history row shaped for reconstruct_snapshot: bid=purchase_price,
-    ask=sell_price. A SOURCE (buyable) needs sell_price>0/purchase_price=0 (-> ask>0); a
-    SINK (sellable) needs purchase_price>0/sell_price=0 (-> bid>0)."""
+    """A market_price_history row shaped for reconstruct_snapshot: ask=purchase_price (what we
+    PAY), bid=sell_price (what we RECEIVE) — the live orientation, sp-en5h7/sp-2ehd7. A SOURCE
+    (buyable) needs purchase_price>0/sell_price=0 (-> ask>0); a SINK (sellable) needs
+    sell_price>0/purchase_price=0 (-> bid>0)."""
     return SimpleNamespace(waypoint_symbol=waypoint, good_symbol=good,
                            purchase_price=purchase_price, sell_price=sell_price,
                            supply="LIMITED", activity="WEAK", trade_volume=40,
@@ -278,10 +279,10 @@ def test_arming_gate_fires_on_real_replay_solver_data(monkeypatch, sequencer):
     # small tour far above PROFIT here, so the two cap-2 baselines (rate vs profit) are
     # sharply distinct — the discriminator that catches a profit-baseline regression.
     rows = [
-        _replay_row("X1-S1-A", "G", purchase_price=0,   sell_price=100, sample_t=sample_t),
-        _replay_row("X1-S1-B", "G", purchase_price=260, sell_price=0,   sample_t=sample_t),
-        _replay_row("X1-S2-C", "H", purchase_price=0,   sell_price=90,  sample_t=sample_t),
-        _replay_row("X1-S2-D", "H", purchase_price=240, sell_price=0,   sample_t=sample_t),
+        _replay_row("X1-S1-A", "G", purchase_price=100, sell_price=0,   sample_t=sample_t),
+        _replay_row("X1-S1-B", "G", purchase_price=0,   sell_price=260, sample_t=sample_t),
+        _replay_row("X1-S2-C", "H", purchase_price=90,  sell_price=0,   sample_t=sample_t),
+        _replay_row("X1-S2-D", "H", purchase_price=0,   sell_price=240, sample_t=sample_t),
     ]
     coords = {"X1-S1-A": ("X1-S1", 0, 0), "X1-S1-B": ("X1-S1", 10, 0),
               "X1-S2-C": ("X1-S2", 200, 0), "X1-S2-D": ("X1-S2", 210, 0)}
@@ -362,8 +363,8 @@ def test_closure_ab_pass_chains_open_drift_and_closed_reanchor(monkeypatch):
 
     sample_t = datetime(2026, 7, 16, 12, 0, 0)
     rows = [
-        _replay_row("X1-S1-A", "G", purchase_price=0,   sell_price=100, sample_t=sample_t),
-        _replay_row("X1-S1-B", "G", purchase_price=200, sell_price=0,   sample_t=sample_t),
+        _replay_row("X1-S1-A", "G", purchase_price=100, sell_price=0,   sample_t=sample_t),
+        _replay_row("X1-S1-B", "G", purchase_price=0,   sell_price=200, sample_t=sample_t),
     ]
     coords = {"X1-S1-A": ("X1-S1", 0, 0), "X1-S1-B": ("X1-S1", 5, 5)}
 
@@ -409,10 +410,10 @@ def test_closure_ab_reanchors_on_real_replay_solver_data(monkeypatch):
     # The same two-system profitable-arb fixture the real-solver arming gate uses; it reaches
     # the full K=4 horizon for BOTH the open and the closed arm.
     rows = [
-        _replay_row("X1-S1-A", "G", purchase_price=0,   sell_price=100, sample_t=sample_t),
-        _replay_row("X1-S1-B", "G", purchase_price=260, sell_price=0,   sample_t=sample_t),
-        _replay_row("X1-S2-C", "H", purchase_price=0,   sell_price=90,  sample_t=sample_t),
-        _replay_row("X1-S2-D", "H", purchase_price=240, sell_price=0,   sample_t=sample_t),
+        _replay_row("X1-S1-A", "G", purchase_price=100, sell_price=0,   sample_t=sample_t),
+        _replay_row("X1-S1-B", "G", purchase_price=0,   sell_price=260, sample_t=sample_t),
+        _replay_row("X1-S2-C", "H", purchase_price=90,  sell_price=0,   sample_t=sample_t),
+        _replay_row("X1-S2-D", "H", purchase_price=0,   sell_price=240, sample_t=sample_t),
     ]
     coords = {"X1-S1-A": ("X1-S1", 0, 0), "X1-S1-B": ("X1-S1", 10, 0),
               "X1-S2-C": ("X1-S2", 200, 0), "X1-S2-D": ("X1-S2", 210, 0)}
@@ -466,3 +467,253 @@ def test_closure_ab_verdict_noop(n, min_delta, min_cases, reason):
     verdict = ro.closure_ab_verdict(_closure_win_cases(n), overhead_seconds=0,
                                     min_delta_pct=min_delta, min_cases=min_cases)
     assert verdict["armed"] is False, reason
+
+
+# ======= sp-2ehd7: bid/ask orientation + the gate-hop feed the harness could not see =====
+def _market_row(waypoint, good, purchase_price, sell_price, sample_t, volume=40):
+    """A market_price_history row with the columns EXACTLY as the game writes them."""
+    return SimpleNamespace(waypoint_symbol=waypoint, good_symbol=good,
+                           purchase_price=purchase_price, sell_price=sell_price,
+                           supply="LIMITED", activity="WEAK", trade_volume=volume,
+                           recorded_at=sample_t)
+
+
+def test_reconstructed_snapshot_is_never_crossed_at_a_single_waypoint():
+    """THE STRUCTURAL FALSIFIER (sp-2ehd7). No waypoint may quote bid >= ask for the same
+    good: a market that pays more to take a good than it charges to hand the same good over is
+    free money at a standstill, and the solver has no cross-check of its own — it reads `ask`
+    to buy and `bid` to sell. Every such tour is in-system, so the distortion is DIRECTIONAL:
+    in-system rates inflate without bound and no cross-system haul is ever worth planning,
+    which destroys any lane-selection verdict the harness produces.
+
+    This is a property over the whole quote space, not an example: it sweeps a grid of real
+    market shapes (purchase_price > sell_price > 0 — the shape ALL 273,183 rows in
+    market_price_history have; zero crossed, zero one-sided) at spreads from 1 credit to 10x,
+    and asserts the invariant on every reconstructed row. It also asserts nothing VANISHED and
+    pins the orientation itself, so a transposition cannot pass by emptying the snapshot.
+    """
+    sample_t = datetime(2026, 7, 16, 12, 0, 0)
+    rows, expected = [], {}
+    for i, (purchase_price, sell_price) in enumerate([
+            (101, 100),      # 1-credit spread — the tightest possible real market
+            (120, 100),
+            (260, 100),
+            (1000, 100),     # 10x spread
+            (5, 1),
+            (99_999, 50_000),
+    ]):
+        waypoint = f"X1-S1-{chr(ord('A') + i)}"
+        rows.append(_market_row(waypoint, "G", purchase_price, sell_price, sample_t))
+        expected[waypoint] = (sell_price, purchase_price)   # (bid, ask)
+
+    snapshot = ro.reconstruct_snapshot(rows, sample_t)
+
+    # nothing vanished: a transposition that got silently dropped instead of refused would
+    # otherwise satisfy the invariant below vacuously.
+    assert len(snapshot) == len(rows)
+    for row in snapshot:
+        bid, ask = row["bid"], row["ask"]
+        assert not (bid > 0 and ask > 0 and bid >= ask), (
+            f"{row['waypoint_symbol']}/{row['good_symbol']} is crossed at a single waypoint: "
+            f"bid {bid} >= ask {ask} — bid/ask are transposed (sp-2ehd7)")
+        # ask is what WE PAY (purchase_price); bid is what WE RECEIVE (sell_price).
+        assert (bid, ask) == expected[row["waypoint_symbol"]]
+
+
+def test_reconstruct_snapshot_refuses_a_crossed_quote():
+    """The refusal is real, and it names the offender. A row whose columns are crossed under
+    the live orientation (purchase 90 / sell 200 -> ask 90, bid 200) cannot be market data, so
+    the harness must REFUSE rather than drop it: dropping would let a wholesale transposition
+    present itself as "the window had no opportunities" — silent, and indistinguishable from a
+    thin sample. Fails if the orientation is transposed, because then this row reads clean."""
+    sample_t = datetime(2026, 7, 16, 12, 0, 0)
+    rows = [_market_row("X1-S1-A", "G", purchase_price=90, sell_price=200, sample_t=sample_t)]
+
+    with pytest.raises(ValueError, match="CROSSED"):
+        ro.reconstruct_snapshot(rows, sample_t)
+
+    # and the message identifies which waypoint/good, so the refusal is actionable.
+    try:
+        ro.reconstruct_snapshot(rows, sample_t)
+    except ValueError as err:
+        assert "X1-S1-A" in str(err) and "G" in str(err)
+
+
+def test_one_sided_quotes_are_not_treated_as_crossed():
+    """A pure EXPORT (only a purchase price) or IMPORT (only a sell price) leaves one side at
+    0. That is not a crossed market and must survive — the guard tests bid>0 AND ask>0, so it
+    can never silently thin a snapshot of legitimate one-sided listings."""
+    sample_t = datetime(2026, 7, 16, 12, 0, 0)
+    rows = [
+        _market_row("X1-S1-A", "G", purchase_price=100, sell_price=0, sample_t=sample_t),
+        _market_row("X1-S1-B", "G", purchase_price=0, sell_price=260, sample_t=sample_t),
+    ]
+    snapshot = {r["waypoint_symbol"]: r for r in ro.reconstruct_snapshot(rows, sample_t)}
+    assert (snapshot["X1-S1-A"]["ask"], snapshot["X1-S1-A"]["bid"]) == (100, 0)
+    assert (snapshot["X1-S1-B"]["ask"], snapshot["X1-S1-B"]["bid"]) == (0, 260)
+
+
+# ---------------------------------------------- the inter_system_hops feed (sp-2ehd7 #2)
+# A line graph: S1 - S2 - S3. S1..S3 are 2 gate hops apart; S4 is disconnected.
+_LINE_NEIGHBORS = {"X1-S1": {"X1-S2"}, "X1-S2": {"X1-S1", "X1-S3"}, "X1-S3": {"X1-S2"}}
+
+
+def test_inter_system_hops_emits_real_depth_for_a_two_hop_pair():
+    """Without this feed the solver's _build_inter_system_hop_index sees {} and prices EVERY
+    crossing at gate_hops=1 — the cheapest possible — so a hop-depth A/B reads as inert past
+    depth 1 and the harness cannot see the variable under test (sp-2ehd7). Two neighbors of a
+    common home are 1 hop from home but 2 from EACH OTHER, which a cap>2 tour can cross."""
+    hops = ro.inter_system_hop_distances(_LINE_NEIGHBORS,
+                                         {"X1-S1", "X1-S2", "X1-S3"}, max_tour_systems=4)
+    assert hops == [dict(from_system="X1-S1", to_system="X1-S3", gate_hops=2)]
+    # the 1-hop pairs are OMITTED, not emitted as 1 — a proven single hop already prices at
+    # the base charge (tourInterSystemHops' contract).
+    assert all(h["gate_hops"] > 1 for h in hops)
+
+
+def test_inter_system_hops_is_empty_at_the_default_cap():
+    """Mirror of tourInterSystemHops' arming gate: at cap<=2 a tour touches start + one gate
+    neighbor, so every crossing is a single hop the flat charge prices exactly."""
+    for cap in (None, 0, 1, 2):
+        assert ro.inter_system_hop_distances(_LINE_NEIGHBORS,
+                                             {"X1-S1", "X1-S2", "X1-S3"}, cap) == []
+
+
+def test_inter_system_hops_refuses_an_unprovable_pair_instead_of_pricing_it_cheap():
+    """An unproven crossing is charged bound+1 (unprovenCrossingHops), never dropped into the
+    solver's 1-hop default: the harness must not quote a crossing the walk could not even
+    reach at the cheapest price. bound = max(2 x candidate depth, MaxJumpPath) = 5, so an
+    unreachable pair costs 6 hops."""
+    hops = ro.inter_system_hop_distances(_LINE_NEIGHBORS,
+                                         {"X1-S1", "X1-S4"}, max_tour_systems=4)
+    assert hops == [dict(from_system="X1-S1", to_system="X1-S4", gate_hops=6)]
+
+
+def test_inter_system_hops_needs_the_gate_graph_to_price_a_widened_tour():
+    """A missing graph makes EVERY pair unprovable, which would silently charge the refusal
+    distance on every crossing and bias the comparison toward in-system tours. Refuse loudly
+    instead. (A sub-2 system set needs no graph and short-circuits before this.)"""
+    with pytest.raises(ValueError, match="gate adjacency"):
+        ro.inter_system_hop_distances(None, {"X1-S1", "X1-S2"}, max_tour_systems=4)
+    assert ro.inter_system_hop_distances(None, {"X1-S1"}, max_tour_systems=4) == []
+
+
+@pytest.mark.parametrize("cap,expect_hops", [(4, True), (2, False), (None, False)])
+def test_run_case_threads_the_hop_matrix_into_the_constraints(monkeypatch, cap, expect_hops):
+    """The feed reaches the solver. Absent at cap<=2 / no cap, so the default DB run stays
+    byte-identical; present with the real depth once the horizon is widened."""
+    captured = {}
+
+    def fake_solve(snapshot, ship, cons, model, waypoints=None, objective=None, **kw):
+        captured["cons"] = dict(cons)
+        return _res(1, 1)
+
+    monkeypatch.setattr(ro, "solve_tour", fake_solve)
+    monkeypatch.setattr(ro, "MODEL", {"fit_version": 1, "era": "e"}, raising=False)
+
+    snapshot = [dict(waypoint_symbol="X1-S1-A", system_symbol="X1-S1", good_symbol="G",
+                     ask=100, bid=90, trade_volume=40, supply="LIMITED", activity="WEAK",
+                     observed_at_unix=9_999_999_999)]
+    waypoints = [dict(symbol="X1-S1-A", system="X1-S1", x=0, y=0)]
+
+    ro.run_case(snapshot, waypoints, "X1-S1", {"X1-S1", "X1-S2", "X1-S3"}, 40,
+                1_000_000, 0, "1@e", max_tour_systems=cap, neighbors=_LINE_NEIGHBORS)
+
+    if expect_hops:
+        assert captured["cons"]["inter_system_hops"] == \
+               [dict(from_system="X1-S1", to_system="X1-S3", gate_hops=2)]
+    else:
+        assert "inter_system_hops" not in captured["cons"]
+
+
+# ------------------------- the depth<->cap coupling and the RATE-only cap sweep (sp-2ehd7)
+@pytest.mark.parametrize("configured,cap,expected,why", [
+    (0, 4, 1, "absent depth resolves to candidateHopDepthDefault=1"),
+    (-5, 4, 1, "negative depth resolves to the default"),
+    (1, 4, 1, "depth 1 passes through"),
+    (3, 4, 3, "a widened cap unlocks the configured depth"),
+    (3, 2, 1, "cap<=2 clamps depth BACK to 1 — the live coupling"),
+    (3, None, 1, "no cap resolves to the default cap 2, so depth clamps to 1"),
+    (30, 4, 3, "a fat-fingered depth is clamped to maxCandidateHopDepth=3"),
+])
+def test_effective_candidate_hop_depth_mirrors_the_live_coupling(configured, cap, expected, why):
+    """The depth knob and the cap knob are COUPLED live (resolveCandidateHopDepth +
+    effectiveCandidateHopDepth). Pinning one depth across both arms of a cap A/B measures the
+    wrong pair: depth 1 everywhere starves the widened arm of the systems it actually reaches,
+    depth 3 everywhere hands the cap-2 arm reach prod does not give it."""
+    assert ro.effective_candidate_hop_depth(configured, cap) == expected, why
+
+
+def test_compute_allowed_at_depth_one_is_the_historical_one_hop_set():
+    """Depth-1 equivalence: the widened walk must REDUCE to the set every call site used
+    before, or the un-widened arm is no longer measuring today's behaviour."""
+    by_system = {"X1-S1": {"a"}, "X1-S2": {"b"}, "X1-S3": {"c"}}
+    historical = {"X1-S1"} | (_LINE_NEIGHBORS.get("X1-S1", set()) & set(by_system))
+    assert ro.compute_allowed("X1-S1", _LINE_NEIGHBORS, by_system, 1) == historical
+    # and the walk grows monotonically with depth: S3 is 2 hops out on the line graph.
+    assert ro.compute_allowed("X1-S1", _LINE_NEIGHBORS, by_system, 2) == \
+           historical | {"X1-S3"}
+    assert ro.compute_allowed("X1-S1", _LINE_NEIGHBORS, by_system, 0) == {"X1-S1"}
+
+
+def test_widen_verdict_reports_each_cap_against_the_first():
+    """The sweep's arithmetic: fleet-$/hr per cap over the JOINT-feasible windows only, each
+    delta measured against the FIRST cap. Delegates to fleet_cph so a widen number can sit
+    next to an arming number without drift."""
+    cases = [dict(sample="s", home="X1-S1", hold=80,
+                  results_by_cap={2: _res(1000, 1000), 4: _res(3000, 1500)})
+             for _ in range(4)]
+    # one case is infeasible at cap 4 -> excluded from BOTH caps' aggregates.
+    cases.append(dict(sample="s", home="X1-S2", hold=80,
+                      results_by_cap={2: _res(9_000_000, 9_000_000),
+                                      4: _res(0, 0, feasible=False)}))
+
+    verdict = ro.widen_verdict(cases, [2, 4], overhead_seconds=0)
+
+    assert verdict["cases"] == 4
+    assert verdict["baseline_cap"] == 2
+    assert verdict["cph_by_cap"][2] == ro.fleet_cph([_res(1000, 1000)] * 4, 0)
+    assert math.isclose(verdict["cph_by_cap"][2], 1000.0, rel_tol=1e-9)
+    assert math.isclose(verdict["cph_by_cap"][4], 1500.0, rel_tol=1e-9)
+    assert math.isclose(verdict["delta_by_cap"][2], 0.0, abs_tol=1e-9)
+    assert math.isclose(verdict["delta_by_cap"][4], 50.0, rel_tol=1e-9)
+
+
+def test_widen_pass_gives_each_cap_its_own_reach_and_hop_matrix(monkeypatch):
+    """The sweep must not hand both caps the same candidate set: at cap 2 live sees a 1-hop
+    set with NO hop matrix, at cap 4 the configured depth and the real distances. A sweep that
+    shares one reach across caps cannot answer the cap question at all."""
+    seen = {}
+
+    def fake_solve(snapshot, ship, cons, model, waypoints=None, objective=None, **kw):
+        seen[cons["max_tour_systems"]] = dict(
+            allowed=tuple(cons["allowed_systems"]),
+            hops=tuple((h["from_system"], h["to_system"], h["gate_hops"])
+                       for h in cons.get("inter_system_hops", [])))
+        return _res(1000, 1000)
+
+    monkeypatch.setattr(ro, "solve_tour", fake_solve)
+    monkeypatch.setattr(ro, "MODEL", {"fit_version": 1, "era": "e"}, raising=False)
+
+    sample_t = datetime(2026, 7, 16, 12, 0, 0)
+    rows = [
+        _market_row("X1-S1-A", "G", 100, 90, sample_t),
+        _market_row("X1-S1-B", "G", 210, 200, sample_t),
+        _market_row("X1-S2-C", "H", 100, 90, sample_t),
+        _market_row("X1-S3-D", "H", 210, 200, sample_t),
+    ]
+    coords = {"X1-S1-A": ("X1-S1", 0, 0), "X1-S1-B": ("X1-S1", 5, 5),
+              "X1-S2-C": ("X1-S2", 100, 0), "X1-S3-D": ("X1-S3", 200, 0)}
+
+    cases = ro.widen_pass([sample_t], rows, _LINE_NEIGHBORS, coords, [80], "1@e",
+                          caps=[2, 4], max_spend=1_000_000, reserve=0,
+                          candidate_hop_depth=3)
+
+    assert cases, "widen_pass produced no joint-feasible cases"
+    # cap 2: depth clamped to 1 -> S1 + S2 only, and NO hop matrix (every crossing is 1 hop).
+    assert seen[2]["allowed"] == ("X1-S1", "X1-S2")
+    assert seen[2]["hops"] == ()
+    # cap 4: depth 3 -> S3 joins, and S1<->S3 (the only >1-hop pair on the line) prices at its
+    # real 2-hop distance instead of the 1-hop default the un-fed harness quoted.
+    assert seen[4]["allowed"] == ("X1-S1", "X1-S2", "X1-S3")
+    assert seen[4]["hops"] == (("X1-S1", "X1-S3", 2),)
