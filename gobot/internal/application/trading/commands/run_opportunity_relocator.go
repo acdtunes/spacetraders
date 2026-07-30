@@ -43,6 +43,7 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/application/health"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
@@ -254,6 +255,15 @@ type RunOpportunityRelocatorHandler struct {
 	travel    trading.TravelHopModel
 	ageCaps   trading.RankerAgeCaps
 	clock     shared.Clock
+	// stall is the WRITE-ONLY stall-escalation seam (health.StallObserver): each tick's verdict is
+	// reported once, so a relocator that refuses every decision escalates instead of looking idle
+	// (sp-j1i49). Optional and nil-safe — observability never gates a tick. Its method returns
+	// nothing, so no decision path can read the streak.
+	stall health.StallObserver
+	// metrics is the WRITE-ONLY counter seam (sp-j1i49): per-tick verdict, per-hull decision, and the
+	// per-reason skip counts, so the relocator's behaviour is a RATE and not an anecdote reconstructed
+	// from a log/table join. Optional and nil-safe.
+	metrics RelocatorMetricsSink
 }
 
 // NewRunOpportunityRelocatorHandler builds the reconciler. travel may be nil, in which case the
@@ -335,7 +345,7 @@ func (h *RunOpportunityRelocatorHandler) Handle(ctx context.Context, request com
 		if err := ctx.Err(); err != nil {
 			return response, err
 		}
-		result, err := h.Reconcile(ctx, cmd)
+		result, err := h.tick(ctx, cmd)
 		if err != nil {
 			response.Errors = append(response.Errors, err.Error())
 			logger.Log("ERROR", fmt.Sprintf("Opportunity relocator tick failed: %v", err), nil)
@@ -372,6 +382,20 @@ func newRelocatorTickResult() *RelocatorTickResult {
 
 func (r *RelocatorTickResult) skip(reason string) { r.Skipped[reason]++ }
 
+// tick runs ONE reconcile and REPORTS it: the unit Handle repeats, and the unit every observability
+// test drives.
+//
+// Reporting lives here rather than inside Reconcile so the decision path stays free of it: Reconcile
+// decides, tick observes. That separation is what lets every pre-existing test drive Reconcile directly
+// and still prove what it always proved, and it keeps the once-per-tick contract the escalator depends
+// on at exactly one call site (see observeTickStall).
+func (h *RunOpportunityRelocatorHandler) tick(ctx context.Context, cmd *RunOpportunityRelocatorCommand) (*RelocatorTickResult, error) {
+	result, err := h.Reconcile(ctx, cmd)
+	h.logTickHeartbeat(ctx, cmd, result)
+	h.observeTickStall(ctx, cmd, result, err)
+	return result, err
+}
+
 // Reconcile runs ONE tick: re-derive from live state, score, act. It is the driving port — every
 // test enters here.
 //
@@ -381,7 +405,7 @@ func (r *RelocatorTickResult) skip(reason string) { r.Skipped[reason]++ }
 func (h *RunOpportunityRelocatorHandler) Reconcile(ctx context.Context, cmd *RunOpportunityRelocatorCommand) (*RelocatorTickResult, error) {
 	result := newRelocatorTickResult()
 	if cmd.RepositionDisabled {
-		result.skip("reposition_disabled")
+		result.skip(skipReasonRepositionDisabled)
 		return result, nil
 	}
 
@@ -671,7 +695,7 @@ func (h *RunOpportunityRelocatorHandler) scoreHull(
 	regions, err := h.regions.ObserveRegions(ctx, cmd.PlayerID, hull.CurrentSystem, resolveRelocatorRegionHopRadius(cmd.RegionHopRadius))
 	if err != nil {
 		// Fail closed: an unreadable region set scores NOTHING for this hull.
-		result.skip("regions_unreadable")
+		result.skip(skipReasonRegionsUnreadable)
 		logger.Log("WARN", fmt.Sprintf("Opportunity relocator: regions around %s unreadable for %s, scoring nothing there: %v", hull.CurrentSystem, hull.ShipSymbol, err), map[string]interface{}{
 			"ship_symbol": hull.ShipSymbol, "origin_system": hull.CurrentSystem, "reason": "regions_unreadable",
 		})
@@ -804,8 +828,11 @@ func (h *RunOpportunityRelocatorHandler) commitRelocation(ctx context.Context, c
 		// Fail closed: without a durable intent a crash mid-flight would leave an unattributed hull
 		// in transit and the next tick would re-decide it. Do not move.
 		logger.Log("WARN", fmt.Sprintf("Opportunity relocator: could not persist %s's relocation intent, not moving it: %v", intent.ShipSymbol, err), map[string]interface{}{
-			"ship_symbol": intent.ShipSymbol, "reason": "intent_persist_failed",
+			"ship_symbol": intent.ShipSymbol, "reason": skipReasonIntentPersistFailed,
 		})
+		// Counted, not just logged: a licensed relocation that did not happen is what the stall
+		// verdict escalates on, and before sp-j1i49 this path left no trace in the tick result at all.
+		result.skip(skipReasonIntentPersistFailed)
 		return false
 	}
 	logger.Log("INFO", fmt.Sprintf("Opportunity relocator: relocating %s from %s to %s (%s), %d gate hops - NPV %.0f cr (uplift %.0f/hr over %.1f h, payback %.2f h)", intent.ShipSymbol, intent.FromSystem, intent.TargetSystem, intent.TargetWaypoint, candidate.region.GateHops, candidate.valuation.NPV, candidate.valuation.UpliftPerHour, candidate.valuation.ProductiveWindowHours, candidate.valuation.PaybackHours), map[string]interface{}{
@@ -818,8 +845,9 @@ func (h *RunOpportunityRelocatorHandler) commitRelocation(ctx context.Context, c
 	if err := h.actuator.RelocateHull(ctx, cmd.PlayerID, intent.ShipSymbol, intent.TargetWaypoint, resolveRepositionJumpBound(cmd.JumpBound)); err != nil {
 		// The intent stays UNcompleted, so the next tick RESUMES this move instead of re-deciding it.
 		logger.Log("WARN", fmt.Sprintf("Opportunity relocator: relocating %s to %s failed, intent left in flight for the next tick: %v", intent.ShipSymbol, intent.TargetWaypoint, err), map[string]interface{}{
-			"ship_symbol": intent.ShipSymbol, "target_waypoint": intent.TargetWaypoint, "reason": "relocate_failed",
+			"ship_symbol": intent.ShipSymbol, "target_waypoint": intent.TargetWaypoint, "reason": skipReasonRelocateFailed,
 		})
+		result.skip(skipReasonRelocateFailed) // see the persist branch above
 		return false
 	}
 	h.markCompleted(ctx, cmd, intent)

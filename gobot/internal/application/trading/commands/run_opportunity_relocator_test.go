@@ -611,9 +611,15 @@ func TestOpportunityRelocatorShould_NotMoveAHullWhenTheIntentCannotBePersisted(t
 	h := newRelocHarness(t)
 	h.intents.recordErr = errors.New("intent store unavailable")
 
-	h.reconcile(t)
+	result := h.reconcile(t)
 
 	relocRequireNoMove(t, h.actuator, "the relocation intent could not be persisted")
+	// COUNTED, not merely logged. A licensed relocation that did not happen is what the stall verdict
+	// escalates on, so a commit failure that records nothing is invisible to the escalator and to the
+	// heartbeat alike — which is how this whole class of loss stayed unmeasured (sp-j1i49).
+	if result.Skipped[skipReasonIntentPersistFailed] != 1 {
+		t.Fatalf("an unpersistable intent recorded no skip; skips %v", result.Skipped)
+	}
 }
 
 // A failed move leaves the intent UNCOMPLETED so the next tick resumes it, and does not report a
@@ -626,6 +632,9 @@ func TestOpportunityRelocatorShould_LeaveAFailedMovesIntentInFlightForTheNextTic
 
 	if len(result.Relocated) != 0 {
 		t.Fatalf("a failed move was reported as relocated %v", result.Relocated)
+	}
+	if result.Skipped[skipReasonRelocateFailed] != 1 {
+		t.Fatalf("a failed jump recorded no skip, so the escalator and the heartbeat both stay blind to it; skips %v", result.Skipped)
 	}
 	intent, seen := h.intents.records["HAULER-A"]
 	if !seen {

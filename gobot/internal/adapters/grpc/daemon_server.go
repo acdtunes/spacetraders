@@ -633,6 +633,20 @@ func NewDaemonServer(
 		}
 		metrics.SetGlobalStallCollector(stallCollector)
 
+		// Opportunity-relocator collector (sp-j1i49): the counters that make the relocator's behaviour
+		// a RATE rather than an anecdote. It shipped emitting nothing, so a relocator losing every
+		// decision to the claim race was indistinguishable from one with nothing to do. Same lifecycle
+		// and the same lazy-global reasoning as the stall collector above — the relocator handler is
+		// wired well before this constructor runs. A RELOCATOR-SPECIFIC series, never the tour's: this
+		// package already records that two hull-relocating engines keep separate series "so the two
+		// engines' telemetry never conflate".
+		relocatorCollector := metrics.NewRelocatorMetricsCollector()
+		if err := relocatorCollector.Register(); err != nil {
+			listener.Close()
+			return nil, fmt.Errorf("failed to register opportunity-relocator metrics collector: %w", err)
+		}
+		metrics.SetGlobalRelocatorCollector(relocatorCollector)
+
 		// Ship-position re-anchor collector: the Prometheus half of the lost-write signal.
 		// Same lifecycle and same lazy-global reasoning as the stall collector above — the
 		// ship repository is wired well before this constructor runs.

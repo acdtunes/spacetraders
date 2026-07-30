@@ -1540,6 +1540,25 @@ func run(cfg *config.Config) error {
 	// stale rows against, so the relocator excludes a stale region on one config-resolved definition
 	// rather than a fourth copy of it.
 	opportunityRelocatorHandler.SetRankerAgeCaps(cfg.Trading.RankerAgeCapMinutes.Resolved())
+	// Stall escalation (sp-j1i49): the relocator reports PROGRESS / IDLE / BLOCKED(reason) once per
+	// tick, and a block sustained on one reason for health.StallEscalationTicks consecutive ticks raises
+	// a coordinator.stalled captain event beside a Prometheus escalation counter.
+	//
+	// It shipped without this, which is why the claim race could eat 3 of its first 4 decisions in
+	// silence: a relocator losing every decision and one with nothing to do both produce a quiet log,
+	// so "is it working?" had to be answered by hand-joining daemon.log against the containers table.
+	// BLOCKED here means a relocation was LICENSED and could not be carried out — never merely that
+	// nothing was worth moving for, which is the common and correct case on a settled fleet and must
+	// stay silent forever. Write-only by type, so no relocation decision can read the streak
+	// (RULINGS #2).
+	opportunityRelocatorHandler.SetStallObserver(health.NewStallEscalator(metricsAdapter.NewStallMetricsPort(), captainEventRepo))
+	// Counters (sp-j1i49): per-tick verdict, per-hull decision, and the per-reason skip counts the tick
+	// always computed and always discarded. A RELOCATOR-SPECIFIC series, not the tour's — two
+	// hull-relocating engines already keep separate ones "so the two engines' telemetry never conflate"
+	// (adapters/metrics/tour_metrics.go), and this reconciler's reason vocabulary has no overlap with
+	// the tour's success|failed|no_candidate anyway. Write-only by type, so no relocation decision can
+	// read a counter.
+	opportunityRelocatorHandler.SetMetricsSink(metricsAdapter.NewRelocatorMetricsPort())
 	if err := mediator.RegisterHandler[*tradeRouteCmd.RunOpportunityRelocatorCommand](med, opportunityRelocatorHandler); err != nil {
 		return fmt.Errorf("failed to register OpportunityRelocator handler: %w", err)
 	}
