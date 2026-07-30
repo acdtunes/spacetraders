@@ -57,6 +57,7 @@ import (
 	tradingSvc "github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
 	watchkeeper "github.com/andrescamacho/spacetraders-go/internal/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
+	domainContainer "github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainRouting "github.com/andrescamacho/spacetraders-go/internal/domain/routing"
@@ -1497,6 +1498,23 @@ func run(cfg *config.Config) error {
 	// this). Ships ARMED at the 75-min default (matching maxListingAge); [trade_fleet].
 	// sink_freshness_max_minutes retunes it, restart to apply. Byte-identical for fresh sinks.
 	tourCoordinatorHandler.SetSinkFreshness(cfg.TradeFleet.ResolvedSinkFreshnessMaxAge())
+	// sp-k4z5b: derive every market-freshness cap on the trade path from the LIVE scan
+	// rotation rather than a minute count written into the source. The scan budget is a
+	// fixed req/s, so a market's scan interval is an OUTPUT of budget / markets known —
+	// and when the charted map reached 4,389 markets the flat 75-minute caps started
+	// discarding four fifths of it (980 fail-closed refusals in 15 minutes, ~87% of trade
+	// throughput). marketScanner's budget is the SAME allowance admission is decided
+	// against, so consumers now refuse exactly when the scanner has failed its own
+	// anti-starvation guarantee. The floors under it are live-tunable on the trade fleet
+	// coordinator's config column (`spacetraders tune --operation tour ...`) — no restart,
+	// because each daemon bounce costs jump cooldowns. Wired UNCONDITIONALLY: no config
+	// key, no default-off, no arming step.
+	marketFreshness := tradeRouteCmd.NewMarketFreshness(
+		marketScanner.ScanBudget(),
+		grpc.NewCoordinatorConfigReader(containerRepo, string(domainContainer.ContainerTypeTradeFleetCoordinator)),
+		nil, // nil clock = RealClock
+	)
+	tourCoordinatorHandler.SetMarketFreshness(marketFreshness)
 	// sp-ftqgp: the TRADE half of the per-operation capital budget, on the SAME sensor the
 	// construction executor holds. The dynamic (--max-spend 0) cap is clamped to trade's share of
 	// deployable capital, and graceful degradation hands trade the WHOLE pool whenever the
@@ -1723,6 +1741,10 @@ func run(cfg *config.Config) error {
 	// kqxe withdrawal recorder wired above). Additive + fail-open — a record error never fails
 	// a deposit.
 	stockerCoordinatorHandler.SetStockingRecorder(persistence.NewStockingEventRepository(db))
+	// sp-k4z5b: the stocker picks its refill source off the same freshListings filter the
+	// tour does, so it shares the tour's rotation-derived cap and its live floor rather
+	// than carrying a second copy that could drift.
+	stockerCoordinatorHandler.SetMarketFreshness(marketFreshness)
 	if err := mediator.RegisterHandler[*tradeRouteCmd.RunStockerCoordinatorCommand](med, stockerCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register StockerCoordinator handler: %w", err)
 	}

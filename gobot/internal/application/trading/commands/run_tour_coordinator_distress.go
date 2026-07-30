@@ -167,7 +167,7 @@ func (h *RunTourCoordinatorHandler) maybeDistressLiquidate(
 	if err != nil {
 		return false, nil // current-system markets unreadable — exit honestly, no distress (fail-open)
 	}
-	sinks := bestLocalDistressSinks(freshListings(listings, h.clock.Now(), maxListingAge), held)
+	sinks := bestLocalDistressSinks(freshListings(listings, h.clock.Now(), h.listingMaxAge(ctx, cmd.PlayerID)), held)
 	if len(sinks) == 0 {
 		return false, nil // no local buyer for any held good — distress cannot help
 	}
@@ -264,7 +264,7 @@ func (h *RunTourCoordinatorHandler) liquidateStrandBeforeExit(
 	if cmd.RepositionDisabled {
 		listings = listingsAt(listings, ship.CurrentLocation().Symbol)
 	}
-	sinks := bestLocalDistressSinks(freshListings(listings, h.clock.Now(), maxListingAge), held)
+	sinks := bestLocalDistressSinks(freshListings(listings, h.clock.Now(), h.listingMaxAge(ctx, cmd.PlayerID)), held)
 	if len(sinks) == 0 {
 		// Nothing here bids on the load. The strand is real: report it loudly so it is
 		// greppable and hand-recoverable, and let the veto fail the run on tour-bought units.

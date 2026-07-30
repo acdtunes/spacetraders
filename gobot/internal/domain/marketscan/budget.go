@@ -237,6 +237,46 @@ func MaxStaleness(b Budget, marketsKnown int) time.Duration {
 	return Interval(b, baselineWeight, float64(marketsKnown)*float64(clamp))
 }
 
+// FreshnessCap is the age past which a consumer may refuse a cached market row:
+// the larger of the operator's floor and the age the rotation itself cannot
+// explain.
+//
+// It answers the question a freshness-gated consumer should be asking. The WRONG
+// question — the one that cost 87% of trade throughput — is "is this row older
+// than N minutes", with N chosen when the map was 300 systems. Because the budget
+// is fixed, each market's scan interval is an OUTPUT of budget ÷ markets known
+// (see the package doc), so N silently invalidates every time charting finds
+// another market: at 4,389 markets and 0.70 req/s an even rotation is already
+// ~105 minutes, and a 75-minute N discards four fifths of the map as worthless
+// when nothing whatever is wrong with it.
+//
+// MaxStaleness is the RIGHT question expressed as a number. It is the bound the
+// scanner's own anti-starvation escape enforces, so refusing at it means a
+// consumer refuses exactly when the scanner has failed its own guarantee — the
+// only case where a row is genuinely dead rather than merely waiting its turn.
+//
+// floor is applied as a FLOOR and never as a ceiling. The cap is therefore never
+// TIGHTER than the rotation bound, whatever the floor says, so no setting of it
+// can re-create the incident by refusing rotation-explained rows; a floor raised
+// ABOVE the current bound does widen the cap, which is the direction an operator
+// ever needs in an incident. It also means the cap is never below the floor, so a
+// consumer armed at a floor can never be disarmed through this function — the
+// property the firm-sink money guard depends on (RULINGS #4).
+//
+// An unknown map (marketsKnown <= 0) or an unconfigured budget yields the floor
+// alone, and that direction is deliberate: MaxStaleness answers a zero map size
+// with the 30-day arithmetic ceiling, and letting an unwired budget widen a money
+// guard to thirty days is precisely the fail-OPEN a freshness gate must never do.
+func FreshnessCap(floor time.Duration, b Budget, marketsKnown int) time.Duration {
+	if marketsKnown <= 0 || b.RateReqPerSec <= 0 {
+		return floor
+	}
+	if bound := MaxStaleness(b, marketsKnown); bound > floor {
+		return bound
+	}
+	return floor
+}
+
 // valueReserveFraction is the share of the allowance bucket held back for the
 // markets that earn the most. Above it every due market is admitted; within it
 // the bar climbs toward ValueClampR.

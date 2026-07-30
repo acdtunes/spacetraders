@@ -246,17 +246,31 @@ re-reads its config at the next tick start — the change lands next tick and **
 restart**. `value 0` or `--reset` reverts to the documented default. Every effective tune emits a
 `config.tuned` captain audit event (these knobs move real credits — no silent writes).
 
-**Registry — SIX tunable coordinator types** (the `tune --help` text still says only
-freshsizer+frontier; that text lags the code, which registers all six):
+**Registry** (this table and the `tune --help` text both lag the code — the authoritative
+list is whatever `spacetraders tune --operation <op>` prints with no key):
 
 | `--operation` | Key knobs (bounds in parens) | What it governs |
 |---|---|---|
 | **freshsizer** | `max_spend_per_cycle` [0,5M], `purchase_cooldown_secs` [10,86400], `spend_window_secs`, `max_probe_fleet` [0,200], `max_probes_per_system`, `sla_seconds`, `target_percentile` [1,100], `value_weighted` {1,2}, `worst_cycle_seconds`, `cycle_dampening_percent`, `breach_response_percent` [1,500], `release_slack_percent`, `release_stable_window_secs`, `reserved_frontier_floor`, `hold_unscanned_market_posts` {0,1} | market-freshness probe auto-buyer sizing |
 | **frontier** | `max_spend_per_cycle`, `purchase_cooldown_secs`, `max_probe_fleet`, `proximal_yard_hop_penalty`, `probe_sibling_price_margin`, `max_probe_price`, `breadth_fraction_percent` [1,100], `max_depth_pathfinders` [1,20], `max_depth_hops` [1,12], `objective_bias_percent`, `off_gate_*` (queue_exhaustion_cycles, warp_range_fuel, value_weight, fuel_weight), `reserved_freshness_floor`, `discovery_share` [0,100], `scan_only` (deprecated → discovery_share), `probe_reuse_enabled` {0,1}, `edge_relay_max_hops`, `reuse_value_ceiling`, `snowball_neighbors` {0,1}, `post_inflight_timeout_secs` | frontier expansion depth-vs-breadth, probe reuse, spend guards |
-| **scoutpost** | `manning_stall_cycles` [1,1440], `manning_stall_correction_cap`, `scout_cross_system_relay_enabled` {0,1}, `scout_relay_max_hops` [1,12] | scout-post manning + cross-system reuse relay |
+| **scoutpost** | `manning_stall_cycles` [1,1440], `manning_stall_correction_cap`, `scout_cross_system_relay_enabled` {0,1}, `scout_relay_max_hops` [1,12], `market_drift_max_age_secs` [60,86400] | scout-post manning, cross-system reuse relay, market-set re-cut debounce |
 | **contract** | `min_home_contract_workers` [0,200], `depot_buffer_min_source_distance` [0,5000] | contract worker reserve + depot buffering floor |
 | **autooutfit** | `min_telemetry_samples`, `price_ceiling` [0,5M], `max_installs_per_tick` [1,20], `payback_horizon_hours`, `treasury_reserve`, `max_treasury_fraction_pct` [1,100] | auto-outfit upgrade gating |
 | **shipyardbackfill** | `max_dispatches_per_cycle` [1,100], `backfill_max_hops` [1,1000] | shipyard-backfill sweep pacing/reach |
+| **tour** | `listing_max_age_minutes` [1,43200], `sink_freshness_max_minutes` [1,43200] | market-freshness FLOORS on the trade path (see below) |
+
+The **tour** floors are not caps (sp-k4z5b). The scan budget is a fixed req/s, so a market's scan
+interval is an OUTPUT of `budget / markets known`; the effective cap is therefore
+`max(floor, rotation bound)`, where the rotation bound is the scanner's own anti-starvation number
+(`markets_known x value_clamp_r / budget_req_per_sec`) and tracks the map on its own. Raising a
+floor ABOVE the current rotation bound widens the cap; setting one below it is a deliberate no-op,
+which is what stops a tune re-creating the July 2026 incident (a hardcoded 75 min against a
+4,389-market map: 980 fail-closed refusals in 15 minutes, ~87% of trade throughput). Refusal logs
+name both terms so you can see which one bound. `sink_freshness_max_minutes` fronts a fail-closed
+money guard: `tune ... 0` reverts it to the documented default and can never disarm it (RULINGS #4);
+ARMING still comes from `[trade_fleet].sink_freshness_max_minutes` at boot. The captain's
+planner-staleness detector reads the SAME `listing_max_age_minutes` floor, so one tune moves the
+planner and the detector watching it together.
 
 Every `{0,1}`/flag knob and every reuse/relay master switch **defaults to 0 = off = byte-identical**
 to prior behavior (see §3.4). Target by `--operation <alias>` (freshest-heartbeat coordinator of

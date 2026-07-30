@@ -475,6 +475,13 @@ type RunTourCoordinatorHandler struct {
 	// gate behaves exactly as sp-pcxju; production ships it ARMED at the conservative default.
 	sinkFreshnessMaxAge time.Duration
 
+	// freshness derives every market-freshness cap on the tour path from the LIVE scan
+	// rotation instead of a minute count written into the source (sp-k4z5b), and carries
+	// the operator's live floors from `tune --operation tour`. nil — every existing test —
+	// leaves each cap at the floor it was already using, so an unwired handler is
+	// byte-identical. The daemon injects it via SetMarketFreshness at boot.
+	freshness *MarketFreshness
+
 	// workSensor backs the per-operation capital budget (sp-ftqgp): it answers whether the
 	// CONSTRUCTION side is live, which is what sizes trade's share of deployable capital. nil
 	// disables the budget and leaves the 25%-of-treasury cap and the reserve floor guarding
@@ -2137,7 +2144,7 @@ func (h *RunTourCoordinatorHandler) recordUnreachableLanes(
 	if len(goods) == 0 {
 		return
 	}
-	sinks, err := h.sinkScanner.BestSinksAcrossSystems(ctx, goods, playerID, maxListingAge, h.clock.Now())
+	sinks, err := h.sinkScanner.BestSinksAcrossSystems(ctx, goods, playerID, h.listingMaxAge(ctx, playerID), h.clock.Now())
 	if err != nil || len(sinks) == 0 {
 		return
 	}

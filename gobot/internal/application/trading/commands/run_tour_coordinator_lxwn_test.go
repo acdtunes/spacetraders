@@ -20,13 +20,13 @@ import (
 //      — which would otherwise produce a healthy-looking score for a ground the solver
 //      finds no profitable tour on.
 
-// freshListings must drop rows past maxListingAge so the pre-rank scores only markets the
+// freshListings must drop rows past listingAgeFloor so the pre-rank scores only markets the
 // solver's snapshot would also admit — the exact staleness parity that matters: a fat STALE
 // lane must never out-rank a modest FRESH one, nominating a hull to a ground whose "spread"
 // is a mirage the solver's snapshot has already dropped.
 func TestReposition_FreshListings_ExcludesStaleBestLane(t *testing.T) {
 	now := time.Now()
-	stale := now.Add(-2 * maxListingAge) // well past the 75-min snapshot cap
+	stale := now.Add(-2 * listingAgeFloor) // well past the 75-min snapshot cap
 	fresh := now.Add(-1 * time.Minute)
 
 	// A FAT stale lane (spread 500 x vol 300 = 150000) and a MODEST fresh lane (spread 50 x
@@ -51,7 +51,7 @@ func TestReposition_FreshListings_ExcludesStaleBestLane(t *testing.T) {
 
 	// After age-filtering only the fresh lane survives, so the pre-rank reflects tradeable depth
 	// the solver can actually realise (5000), never the stale 150000 mirage.
-	kept := freshListings(listings, now, maxListingAge)
+	kept := freshListings(listings, now, listingAgeFloor)
 	if len(kept) != 2 {
 		t.Fatalf("age filter must keep exactly the 2 fresh rows, kept %d", len(kept))
 	}
@@ -61,7 +61,7 @@ func TestReposition_FreshListings_ExcludesStaleBestLane(t *testing.T) {
 
 	// A zero ObservedAt means "unknown age" and is kept (fail-open, matching BuildTourSnapshot).
 	unstamped := []trading.GoodListing{{Good: "G", Waypoint: "X1-C-1", TradeType: "IMPORT", Ask: 1, Bid: 1, Volume: 1}}
-	if len(freshListings(unstamped, now, maxListingAge)) != 1 {
+	if len(freshListings(unstamped, now, listingAgeFloor)) != 1 {
 		t.Fatalf("a zero-ObservedAt row must be treated as fresh (kept), not discarded")
 	}
 }

@@ -835,20 +835,11 @@ func estimatedCircuitSeconds(crossSystem bool) float64 {
 	return seconds
 }
 
-// maxListingAge bounds how old a cached market observation may be and still feed the
-// freshness-gated helper paths that are NOT the activity-conditioned ranker: the
-// freshListings-based sink/offload/reposition/distress/candidate scans and the
-// stocker. The UNDIRECTED lane ranker (partitionListingsByAge) and the tour snapshot
-// (BuildTourSnapshot) moved OFF this flat threshold to the per-activity RankerAgeCaps
-// table (sp-t5sh5) — the analyst's era3/4 fit showed staleness cost is
-// activity-dependent, so one uniform 75-minute cap is the wrong shape for ranking.
-// 75 minutes stays a generous flat cap for those simpler paths: a frontier market a
-// hull hasn't visited in over an hour is genuinely unreliable, while a lane
-// re-observed within the hour (every completed trade refreshes its own two markets,
-// see scanLanes' refreshMarketData note) stays eligible. Even for the ranker it never
-// silently vetoes an operator-directed --dest lane, which is re-verified LIVE at
-// execution (staleAskAborts + the per-visit margin re-check) — see scanLanes.
-const maxListingAge = 75 * time.Minute
+// listingAgeFloor now lives in market_freshness.go, where it is a FLOOR under the
+// rotation-derived cap rather than the cap itself (sp-k4z5b). Call
+// h.listingMaxAge(ctx, playerID) rather than reaching for the constant: the
+// effective cap tracks the charted map, and a flat minute count silently
+// invalidates every time charting finds another market.
 
 // partitionListingsByAge splits listings into those still fresh and those stale,
 // preserving input order in each. Each listing is measured against ITS OWN activity's

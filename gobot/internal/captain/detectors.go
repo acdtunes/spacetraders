@@ -11,6 +11,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/marketscan"
 )
 
 type DetectorConfig struct {
@@ -101,7 +102,16 @@ type DetectorConfig struct {
 	StalenessHidingStaleAge         time.Duration // a market whose newest scan predates this is being dropped by the planner
 	StalenessHidingMinPricedMarkets int           // system must carry at least this many priced markets to qualify
 	StalenessHidingThreshold        int           // fire once at least this many of them are stale
-	StalenessHidingCooldown         time.Duration // re-fire suppression window (<= 0 reuses StalenessHidingStaleAge)
+	StalenessHidingCooldown         time.Duration // re-fire suppression window (<= 0 reuses the RESOLVED stale age)
+
+	// MarketScanBudget is the fleet's market-scan allowance, mirrored from the daemon's
+	// [market_scan] stanza so this process can re-derive the tour planner's freshness
+	// boundary (sp-k4z5b). StalenessHidingStaleAge is only the FLOOR under it: the
+	// effective boundary is marketscan.FreshnessCap against the live map size, because
+	// the scan budget is fixed and a market's interval is therefore an output of
+	// budget / markets known. A zero budget (setter unwired) leaves the floor standing
+	// alone — the pre-sp-k4z5b behavior.
+	MarketScanBudget marketscan.Budget
 
 	// sp-k7q5 layer 3 (scout.post_proposal): fires when discovery has priced a system
 	// past MinPricedMarkets yet NO scout post (standing OR frontier sweep-once) stands
@@ -170,12 +180,16 @@ const defaultFactoryIncomeStall = 3 * time.Hour
 
 // sp-k7q5 layer 2/3 defaults, wired by the supervisor until CaptainConfig grows
 // tunable fields (a follow-up bead, mirroring the crash-loop / factory-stall defaults
-// above). The staleness cap matches the tour planner's own maxListingAge (75min), the
-// exact boundary past which a lane is dropped; the market-rich thresholds and hop model
+// above). The staleness cap is the FLOOR under the tour planner's own resolved listing
+// cap — the exact boundary past which a lane is dropped. It stopped being that boundary
+// on its own when the scan budget made the boundary a function of map size (sp-k4z5b):
+// resolvedPlannerStaleAge widens it to whatever the live rotation cannot explain, and
+// reads the operator's tuned floor off the same coordinator the planner does, so the two
+// can never drift apart. The market-rich thresholds and hop model
 // (~3min/market, the Admiral circuit doctrine) are conservative starting points, and the
 // cooldowns keep these DEFERRED events from re-queuing every 30s poll while a gap persists.
 const (
-	defaultStalenessHidingStaleAge         = 75 * time.Minute
+	defaultStalenessHidingStaleAge         = 75 * time.Minute // FLOOR only — see resolvedPlannerStaleAge
 	defaultStalenessHidingMinPricedMarkets = 10
 	defaultStalenessHidingThreshold        = 5
 	defaultStalenessHidingCooldown         = 3 * time.Hour

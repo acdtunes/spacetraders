@@ -14,6 +14,7 @@ import (
 	fleetCmd "github.com/andrescamacho/spacetraders-go/internal/application/fleet/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
+	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 )
@@ -72,6 +73,10 @@ var tuneOperationCoordinatorTypes = map[string]string{
 	"bootstrap":        string(container.ContainerTypeBootstrapCoordinator),
 	"contractscaler":   string(container.ContainerTypeContractScaler),
 	"autosizer":        string(container.ContainerTypeFleetAutosizer),
+	// The trade fleet coordinator owns the tour path's market-freshness floors
+	// (sp-k4z5b). "tour" rather than "tradefleet" because the knobs govern what a TOUR
+	// will still price off, and "tour" is the word the operator reaches for mid-incident.
+	"tour": string(container.ContainerTypeTradeFleetCoordinator),
 }
 
 func tunableKnobsByContainerType() map[string]map[string]TuneBound {
@@ -83,6 +88,7 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 	bootstrap := bootstrapCmd.BootstrapTunableDefaults()
 	contractScaler := contractScalerCmd.ContractScalerTunableDefaults()
 	fleetAutosizer := fleetCmd.FleetAutosizerTunableDefaults()
+	tradeFleet := tradingCmd.TradeFleetTunableDefaults()
 	return map[string]map[string]TuneBound{
 		// The fleet capacity autosizer. heavy_cap is its ONLY live-tunable knob — every other
 		// autosizer knob stays config.yaml + restart, so this is a deliberate exception rather
@@ -146,10 +152,23 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 			"manning_stall_cycles":             {Type: "int", Min: 1, Max: 1440, Default: scoutPost["manning_stall_cycles"], Unit: "cycles", Description: "MINIMUM consecutive stale reconcile cycles before a silent fully-manned post is re-manned; each post's window is raised to its own circuit period (the soonest its worst-case market age could improve), so tuning this only ever lengthens the wait"},
 			"manning_stall_correction_cap":     {Type: "int", Min: 1, Max: 100, Default: scoutPost["manning_stall_correction_cap"], Unit: "corrections", Description: "re-mans of one silent post before the watchdog backs off to the captain event"},
 			"scout_cross_system_relay_enabled": {Type: "int", Min: 0, Max: 1, Default: scoutPost["scout_cross_system_relay_enabled"], Unit: "flag", Description: "sp-u8jc cross-system reuse-relay master switch: 1 ⇒ when a declared post has no in-system OR idle probe, borrow ONE surplus probe from an OVER-COVERED source system (manning supply > freshsizer demand) and relay it cross-system to the post (mans the dense unscanned hubs), 0 (default) ⇒ in-system + idle-reposition-only, byte-identical. Requires the daemon to have wired the probe-demand reader"},
+			"market_drift_max_age_secs":        {Type: "int", Min: 60, Max: 86_400, Default: scoutPost["market_drift_max_age_secs"], Unit: "seconds", Description: "sp-k4z5b AGE trigger on the debounced market-set re-cut: how long a partition drift may stay pending before a partitioned post re-cuts anyway (the threshold trigger fires first when enough markets drift). NOT a market-data freshness cap and deliberately not rotation-derived — it measures how long a DRIFT has been pending, which map growth does not invalidate. Applies next tick"},
 			"scout_relay_max_hops":             {Type: "int", Min: 1, Max: 12, Default: scoutPost["scout_relay_max_hops"], Unit: "hops", Description: "sp-u8jc max gate-hops the cross-system reuse relay may move a surplus probe (probes are fuel_cap=0 gate-users, so reach is a router bound, not physical). Inert while scout_cross_system_relay_enabled=0"},
 		},
 		string(container.ContainerTypeContractFleetCoordinator): {
 			"min_home_contract_workers": {Type: "int", Min: 0, Max: 200, Default: contract["min_home_contract_workers"], Unit: "hulls", Description: "undedicated home general haulers the depot topology never pins as depot-delivery — the contract-worker reserve floor for unbuffered-good sourcing"},
+		},
+		// sp-k4z5b: the tour path's market-freshness FLOORS. Neither knob is the cap it
+		// looks like — the effective cap is max(floor, the live scan rotation's own
+		// anti-starvation bound), because the scan budget is a fixed req/s and a market's
+		// interval is therefore an OUTPUT of budget / markets known. A flat minute count
+		// silently invalidated as the map grew to 4,389 markets and cost ~87% of trade
+		// throughput; the derived term now tracks the map on its own, and these exist so an
+		// operator can widen further mid-incident WITHOUT a daemon bounce (each bounce burns
+		// jump cooldowns). Tuning either BELOW the rotation bound is a deliberate no-op.
+		string(container.ContainerTypeTradeFleetCoordinator): {
+			"listing_max_age_minutes":    {Type: "int", Min: 1, Max: 43_200, Default: tradeFleet["listing_max_age_minutes"], Unit: "minutes", Description: "FLOOR under the freshness cap the tour's freshListings paths use (lookback, held-cargo offload, reposition + relocation pre-rank, distress liquidation, candidate shortlist, cross-system sink scan, stocker). Effective cap = max(this, rotation bound); raising it above the rotation bound widens the cap, below it is a no-op. Applies next tick (the cap is re-read from this column at most every 5s), no restart"},
+			"sink_freshness_max_minutes": {Type: "int", Min: 1, Max: 43_200, Default: tradeFleet["sink_freshness_max_minutes"], Unit: "minutes", Description: "FLOOR under the FRESH clause of the firm-sink buy gate (sp-tgll8), a fail-closed money guard: never buy into a sink we cannot confirm is live. Effective cap = max(this, rotation bound), so it can never be tuned tight enough to refuse a row the rotation explains, and never to zero — `tune ... 0` reverts to the documented default, it does NOT disarm the guard (RULINGS #4). Arming remains a boot concern ([trade_fleet].sink_freshness_max_minutes). Applies next tick, no restart"},
 		},
 		string(container.ContainerTypeShipyardBackfillCoordinator): {
 			"max_dispatches_per_cycle": {Type: "int", Min: 1, Max: 100, Default: shipyardBackfill["max_dispatches_per_cycle"], Unit: "posts", Description: "per-cycle cap on sweep-once posts the shipyard-backfill sweep declares (bounded further by idle probe supply) so it drains the blind spot over cycles instead of flooding the reconciler"},
@@ -360,6 +379,47 @@ func joinSortedKeys[V any](m map[string]V) string {
 	}
 	sort.Strings(keys)
 	return strings.Join(keys, ", ")
+}
+
+// CoordinatorConfigReader snapshots the persisted config of a player's ACTIVE
+// coordinator OF A GIVEN TYPE, rather than of a container the caller names.
+//
+// It exists for the daemon-global handlers. The tour handler is ONE instance serving
+// every TRADING container the trade fleet coordinator launches, so it has no
+// container id of its own to read a tune from — but the standing coordinator that
+// owns its knobs has exactly one active row per player, and that is the row `tune
+// --operation tour` writes to. Resolving by type is therefore reading precisely what
+// the operator just wrote, through the same FindActiveCoordinatorByType lookup the
+// tune verb itself used to find the target.
+//
+// No active coordinator is NOT an error: it is a player whose trade fleet is not
+// running, which must leave every caller on its boot floor rather than erroring on a
+// hot path.
+type CoordinatorConfigReader struct {
+	containerRepo   *persistence.ContainerRepositoryGORM
+	coordinatorType string
+}
+
+// NewCoordinatorConfigReader wires a by-type live snapshot source.
+func NewCoordinatorConfigReader(containerRepo *persistence.ContainerRepositoryGORM, coordinatorType string) *CoordinatorConfigReader {
+	return &CoordinatorConfigReader{containerRepo: containerRepo, coordinatorType: coordinatorType}
+}
+
+// Snapshot returns the active coordinator's current persisted config, or an empty
+// snapshot when no coordinator of that type is running.
+func (r *CoordinatorConfigReader) Snapshot(ctx context.Context, playerID int) (liveconfig.Snapshot, error) {
+	model, err := r.containerRepo.FindActiveCoordinatorByType(ctx, r.coordinatorType, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("find active %s for live config snapshot: %w", r.coordinatorType, err)
+	}
+	if model == nil || model.Config == "" {
+		return liveconfig.Snapshot{}, nil
+	}
+	config := map[string]interface{}{}
+	if err := json.Unmarshal([]byte(model.Config), &config); err != nil {
+		return nil, fmt.Errorf("parse %s config for live snapshot: %w", r.coordinatorType, err)
+	}
+	return liveconfig.Snapshot(config), nil
 }
 
 // ContainerConfigReader implements liveconfig.Reader over the container repository —

@@ -320,6 +320,38 @@ func (b *ScanBudget) Snapshot() BudgetSnapshot {
 	}
 }
 
+// RotationInputs reports the allowance and the live map size behind it — the two
+// numbers marketscan.FreshnessCap needs to say how old a cached market row may be
+// before it is older than this rotation can explain.
+//
+// It is a LIVE read, not a launch value. The map size is the same denominator
+// admission is decided against (re-counted on the charted-count TTL), so a
+// consumer derived from it widens on its own as charting finds markets and
+// narrows again if the allowance is raised — which is the whole point: a fixed
+// minute count chosen at one map size is wrong at every later one.
+//
+// It takes a context because it refreshes the map size on the same TTL Admit does,
+// and that matters at BOOT: until something has counted the map, marketsKnown is
+// zero and every derived cap collapses to its floor — which is the 75-minute
+// behaviour this whole change exists to remove. Refreshing here means the first
+// freshness question asked after a daemon restart is answered against the real map
+// rather than against an empty one.
+//
+// A nil budget (no scanner wired — every test that never builds one) reports a
+// zero map, which FreshnessCap answers with the caller's own floor rather than
+// with a widened cap.
+func (b *ScanBudget) RotationInputs(ctx context.Context) (marketscan.Budget, int) {
+	if b == nil {
+		return marketscan.Budget{}, 0
+	}
+	b.refreshChartedCount(ctx)
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	_, _, marketsKnown := b.aggregateLocked()
+	return b.policy, marketsKnown
+}
+
 // aggregateLocked returns the fleet median spread, the summed weight of every
 // known market and the map size, recomputing them only when an observation or a
 // new market has invalidated the cache.

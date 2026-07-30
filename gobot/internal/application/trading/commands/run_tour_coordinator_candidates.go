@@ -249,12 +249,14 @@ func (h *RunTourCoordinatorHandler) shortlistByProfitableEdge(
 	// helper, so tag at collection time — every row from collectSystemListings(sys) is in sys.
 	wpSystem := map[string]string{}
 	var union []trading.GoodListing
+	// Resolved once, outside collect: the cap is a live read and collect runs per system.
+	maxAge := h.listingMaxAge(ctx, playerID)
 	collect := func(sys string) {
 		rows, err := h.legs.collectSystemListings(ctx, sys, playerID)
 		if err != nil {
 			return // unreadable system contributes no lanes (fail-open)
 		}
-		for _, row := range freshListings(rows, h.clock.Now(), maxListingAge) {
+		for _, row := range freshListings(rows, h.clock.Now(), maxAge) {
 			wpSystem[row.Waypoint] = sys
 			union = append(union, row)
 		}

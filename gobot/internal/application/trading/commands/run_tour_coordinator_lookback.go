@@ -245,8 +245,9 @@ func (h *RunTourCoordinatorHandler) loadLookbackManifest(
 		})
 		return 0
 	}
-	src := freshListings(srcRaw, now, maxListingAge)
-	dst := freshListings(destRaw, now, maxListingAge)
+	maxAge := h.listingMaxAge(ctx, cmd.PlayerID)
+	src := freshListings(srcRaw, now, maxAge)
+	dst := freshListings(destRaw, now, maxAge)
 	// sp-o4wa: bar the noise-goods blocklist from the look-back buy universe — the SECOND
 	// tour cargo-selection path (fresh listings, independent of the solver snapshot). Filtering
 	// the buy-source rows means a blocklisted good (FUEL/ALUMINUM/PLASTICS) is never a look-back

@@ -14,6 +14,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	watchkeeper "github.com/andrescamacho/spacetraders-go/internal/captain"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/marketscan"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/buildinfo"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
@@ -53,6 +54,15 @@ func main() {
 	gw := watchkeeper.NewCityGateway(cfg.Captain.GCBin, cfg.Captain.CityDir)
 	bc := watchkeeper.NewBeadsClient(cfg.Captain.BDBin, cfg.Captain.RepoDir)
 	sup.SetCity(gw, bc)
+
+	// sp-k4z5b: mirror the daemon's market-scan allowance so the planner-staleness
+	// detector resolves the SAME freshness boundary the tour planner does. The boundary is
+	// an OUTPUT of budget / markets known, not a constant, so a detector holding a fixed
+	// minute count reports fiction the moment the map outgrows it.
+	sup.SetMarketScanBudget(marketscan.Budget{
+		RateReqPerSec: cfg.MarketScan.ResolvedBudgetReqPerSec(),
+		ValueClampR:   cfg.MarketScan.ResolvedValueClampR(),
+	})
 
 	apiClient := api.NewSpaceTradersClient()
 	sup.SetUniverseWatch(apiClient, persistence.NewEraRepository(db))

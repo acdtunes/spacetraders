@@ -193,6 +193,12 @@ type RunStockerCoordinatorHandler struct {
 	// coarse in/cross-system residual (RULINGS #1) — the pre-sp-9274 behavior.
 	waypointRepo system.WaypointRepository
 
+	// freshness derives the stocker's market-freshness cap from the LIVE scan rotation
+	// rather than a minute count written into the source (sp-k4z5b) — the same resolver
+	// the tour handler holds, so the two paths never disagree about what "stale" means.
+	// nil leaves the cap at listingAgeFloor, byte-identical.
+	freshness *MarketFreshness
+
 	// noReachableSource de-dups the sp-yuq9 "every ranked candidate is gate-unreachable"
 	// verdict so a hull whose need-rank keeps landing on unreachable-only markets (a
 	// scouted-but-unroutable market like X1-PB12 staying artificially "cheapest" forever)
@@ -416,7 +422,7 @@ func (h *RunStockerCoordinatorHandler) execute(ctx context.Context, cmd *RunStoc
 	if reserve == 0 {
 		reserve = int64(defaultWorkingCapitalReserve)
 	}
-	maxAge := maxListingAge
+	maxAge := h.listingMaxAge(ctx, cmd.PlayerID)
 	if cmd.MaxMarketAgeMinutes > 0 {
 		maxAge = time.Duration(cmd.MaxMarketAgeMinutes) * time.Minute
 	}

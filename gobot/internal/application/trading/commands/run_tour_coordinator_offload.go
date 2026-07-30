@@ -96,6 +96,9 @@ func (h *RunTourCoordinatorHandler) bestHeldCargoSink(
 	ctx context.Context, cmd *RunTourCoordinatorCommand, candidates []repositionCandidate, held map[string]int,
 ) (repositionCandidate, int64, bool) {
 	now := h.clock.Now()
+	// Resolved once, outside the candidate loop: the cap is a live read and the loop
+	// walks every reachable neighbour system.
+	maxAge := h.listingMaxAge(ctx, cmd.PlayerID)
 	var best repositionCandidate
 	var bestValue int64
 	found := false
@@ -104,7 +107,7 @@ func (h *RunTourCoordinatorHandler) bestHeldCargoSink(
 		if err != nil || len(listings) == 0 {
 			continue
 		}
-		value := heldCargoSinkValue(freshListings(listings, now, maxListingAge), held)
+		value := heldCargoSinkValue(freshListings(listings, now, maxAge), held)
 		if value <= 0 {
 			continue
 		}

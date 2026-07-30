@@ -613,7 +613,7 @@ func (h *RunTourCoordinatorHandler) activeTradeHullsBySystem(ctx context.Context
 
 // scoreRepositionNeighbors is the per-neighbor candidate scorer shared by the 1-hop scan and the
 // sp-jeou multi-hop broadening (repositionNeighborsWithinJumps): for each distinct, BUILT neighbor
-// system it reads the cached market listings, drops stale rows (the same maxListingAge cap the
+// system it reads the cached market listings, drops stale rows (the same listingAgeFloor cap the
 // solver's tour snapshot applies), and — when a fresh in-system lane remains — emits a
 // repositionCandidate carrying that lane's source waypoint (where the hull lands and the planner
 // prices the candidate tour from) plus its capped spread (the pre-rank score). A neighbor that is
@@ -625,6 +625,9 @@ func (h *RunTourCoordinatorHandler) scoreRepositionNeighbors(ctx context.Context
 	seen := map[string]bool{currentSystem: true} // exclude the current (dead) ground
 	var candidates []repositionCandidate
 	var rejections []neighborRejection
+	// Resolved once, outside the neighbour loop: the cap is a live read and the loop
+	// walks every reachable neighbour system.
+	maxAge := h.listingMaxAge(ctx, cmd.PlayerID)
 	for _, nb := range neighbors {
 		sys := nb.system
 		if sys == "" || seen[sys] {
@@ -646,7 +649,7 @@ func (h *RunTourCoordinatorHandler) scoreRepositionNeighbors(ctx context.Context
 			rejections = append(rejections, neighborRejection{system: sys, reason: "no-cached-market"})
 			continue // no cached market data → not a candidate (requirement: cached-data systems only)
 		}
-		// sp-lxwn: pre-rank only on FRESH listings — the same maxListingAge cap the solver's
+		// sp-lxwn: pre-rank only on FRESH listings — the same listingAgeFloor cap the solver's
 		// tour snapshot (BuildTourSnapshot) applies. The pre-rank ignored ObservedAt entirely
 		// (bestLaneForGood never checks it), so a candidate whose headline lane priced off a
 		// >75-min-stale market read HEALTHY here yet the solver, whose snapshot dropped that
@@ -654,7 +657,7 @@ func (h *RunTourCoordinatorHandler) scoreRepositionNeighbors(ctx context.Context
 		// -stale source, solver-infeasible). Worse, a stale-inflated score could crowd a
 		// genuinely-fresh candidate out of the bounded top-K solver pre-flight. Aligning the
 		// pre-rank freshness with the snapshot keeps the top-K ordered by tradeable spread.
-		fresh := freshListings(listings, now, maxListingAge)
+		fresh := freshListings(listings, now, maxAge)
 		// sp-k7q5 layer 2: count the lanes this pre-rank drops for staleness, the same
 		// exclusion BuildTourSnapshot counts on the solver side — so a candidate system
 		// going invisible to the reposition ranking shows up on
@@ -720,7 +723,7 @@ func bestInSystemLane(listings []trading.GoodListing) (string, int) {
 
 // freshListings drops cached rows older than maxAge relative to now, so the reposition
 // pre-rank scores candidates only on markets the solver's tour snapshot (BuildTourSnapshot,
-// same maxListingAge cap) would also admit (sp-lxwn). A zero ObservedAt means "unknown age"
+// same listingAgeFloor cap) would also admit (sp-lxwn). A zero ObservedAt means "unknown age"
 // and is kept — the fail-open GoodListing/BuildTourSnapshot convention (an unstamped row ranks
 // as fresh rather than being silently discarded).
 func freshListings(listings []trading.GoodListing, now time.Time, maxAge time.Duration) []trading.GoodListing {

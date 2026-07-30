@@ -80,8 +80,9 @@ const (
 	// re-cuts once its discovered market set has drifted from its persisted partition
 	// union by at least Threshold markets (additions and removals both count), or the
 	// drift has been pending at least MaxAge — whichever fires first.
-	defaultMarketDriftThreshold = 2
-	defaultMarketDriftMaxAge    = 60 * time.Minute
+	defaultMarketDriftThreshold  = 2
+	defaultMarketDriftMaxAgeSecs = 3600
+	defaultMarketDriftMaxAge     = defaultMarketDriftMaxAgeSecs * time.Second
 
 	// defaultBudgetChangeDebounceCycles bounds the debounced hull-budget re-partition when
 	// unset. The freshness sizer's per-post budget can oscillate ±1 cycle-to-cycle on
@@ -1196,7 +1197,28 @@ func ScoutPostTunableDefaults() map[string]int {
 		"manning_stall_correction_cap":     defaultManningStallCorrectionCap,
 		"scout_cross_system_relay_enabled": defaultScoutCrossSystemRelayEnabled, // int-mode flag (0=off)
 		"scout_relay_max_hops":             defaultScoutRelayMaxHops,
+		"market_drift_max_age_secs":        defaultMarketDriftMaxAgeSecs,
 	}
+}
+
+// resolveMarketDriftMaxAge resolves the debounced market-set re-cut's AGE trigger for
+// one tick, mirroring resolveManningStallConfig's live-overlay + <= 0 -> default idiom.
+//
+// NOTE what this is NOT. It is not a market-DATA freshness cap and is deliberately not
+// derived from the scan rotation the way the tour path's caps are (sp-k4z5b): it bounds
+// how long a PENDING PARTITION DRIFT waits before forcing a re-cut, measured from the
+// moment the drift was first noticed, and a larger charted map does not invalidate it.
+// What it did share with those caps was being unreachable without a daemon bounce, and
+// that is what this fixes.
+func resolveMarketDriftMaxAge(cmd *RunScoutPostCoordinatorCommand, live liveconfig.Snapshot) time.Duration {
+	secs := cmd.MarketDriftMaxAgeSecs
+	if live != nil {
+		secs = live.PositiveIntOrZero("market_drift_max_age_secs")
+	}
+	if secs <= 0 {
+		return defaultMarketDriftMaxAge
+	}
+	return time.Duration(secs) * time.Second
 }
 
 // scoutRelayConfig is the cross-system reuse relay's resolved per-tick knobs.
@@ -1867,10 +1889,7 @@ func (h *RunScoutPostCoordinatorHandler) ensurePartitions(ctx context.Context, c
 		if threshold <= 0 {
 			threshold = defaultMarketDriftThreshold
 		}
-		maxAge := time.Duration(cmd.MarketDriftMaxAgeSecs) * time.Second
-		if maxAge <= 0 {
-			maxAge = defaultMarketDriftMaxAge
-		}
+		maxAge := resolveMarketDriftMaxAge(cmd, h.liveConfigSnapshot(ctx, cmd))
 		age := h.noteDriftPending(key)
 
 		switch {
@@ -2007,10 +2026,7 @@ func (h *RunScoutPostCoordinatorHandler) ensureSingleHullFreshness(ctx context.C
 	if threshold <= 0 {
 		threshold = defaultMarketDriftThreshold
 	}
-	maxAge := time.Duration(cmd.MarketDriftMaxAgeSecs) * time.Second
-	if maxAge <= 0 {
-		maxAge = defaultMarketDriftMaxAge
-	}
+	maxAge := resolveMarketDriftMaxAge(cmd, h.liveConfigSnapshot(ctx, cmd))
 	age := h.noteSingleHullDriftPending(key)
 
 	driftTrigger := ""

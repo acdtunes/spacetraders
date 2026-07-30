@@ -5,6 +5,7 @@ package watchkeeper
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"time"
@@ -12,7 +13,10 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
+	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/marketscan"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -44,19 +48,28 @@ func detectScoutStaleness(ctx context.Context, db *gorm.DB, store captain.EventS
 		return nil // both disabled — no market_data scan at all.
 	}
 
-	// staleCutoff drives layer 2's stale count; layer 3 reads only `priced` (cutoff-
-	// independent), so a layer-3-only tick passes `now` and simply never marks anything
-	// stale. A market whose newest scan predates staleCutoff is one the tour planner is
-	// dropping — the exact boundary BuildTourSnapshot / freshListings enforce.
-	staleCutoff := now.Add(-cfg.StalenessHidingStaleAge)
-	bySystem, err := marketFreshnessBySystem(ctx, db, cfg.PlayerID, staleCutoff)
+	// The observations are loaded BEFORE the cutoff is chosen, because the cutoff is
+	// derived from how many markets there are (sp-k4z5b). This detector's whole claim is
+	// "the tour planner is dropping these lanes", so its boundary has to be the planner's
+	// OWN boundary — and the planner's is no longer a constant: the scan budget is a fixed
+	// req/s, so a market's interval is an output of budget / markets known. Against a 4,389
+	// market map a 75-minute cutoff called four fifths of a healthy map stale and would
+	// have reported that fiction to the captain on every poll.
+	latest, err := latestMarketObservations(ctx, db, cfg.PlayerID)
 	if err != nil {
 		return err
 	}
+	staleAge := resolvedPlannerStaleAge(ctx, db, cfg, len(latest))
+
+	// staleCutoff drives layer 2's stale count; layer 3 reads only `priced` (cutoff-
+	// independent), so a layer-3-only tick simply never marks anything stale. A market
+	// whose newest scan predates staleCutoff is one the tour planner is dropping — the
+	// exact boundary BuildTourSnapshot / freshListings enforce.
+	bySystem := rollupFreshness(latest, now.Add(-staleAge))
 	systems := sortedFreshnessKeys(bySystem)
 
 	if layer2 {
-		if err := emitStalenessHidingRevenue(ctx, store, cfg, now, bySystem, systems); err != nil {
+		if err := emitStalenessHidingRevenue(ctx, store, cfg, now, staleAge, bySystem, systems); err != nil {
 			return err
 		}
 	}
@@ -76,10 +89,10 @@ func detectScoutStaleness(ctx context.Context, db *gorm.DB, store captain.EventS
 // system whose stale-lane count clears the threshold (sp-k7q5 layer 2), deduped per
 // system via HasSince over the cooldown so a persistent gap re-queues the DEFERRED event
 // at most once per window, not every poll (the detectIncomeStall idiom).
-func emitStalenessHidingRevenue(ctx context.Context, store captain.EventStore, cfg DetectorConfig, now time.Time, bySystem map[string]systemMarketFreshness, systems []string) error {
+func emitStalenessHidingRevenue(ctx context.Context, store captain.EventStore, cfg DetectorConfig, now time.Time, staleAge time.Duration, bySystem map[string]systemMarketFreshness, systems []string) error {
 	cooldown := cfg.StalenessHidingCooldown
 	if cooldown <= 0 {
-		cooldown = cfg.StalenessHidingStaleAge
+		cooldown = staleAge
 	}
 	for _, system := range systems {
 		stats := bySystem[system]
@@ -99,7 +112,7 @@ func emitStalenessHidingRevenue(ctx context.Context, store captain.EventStore, c
 		if err := store.Record(ctx, &captain.Event{
 			Type: captain.EventStalenessHidingRevenue, Ship: system, PlayerID: cfg.PlayerID,
 			Payload: fmt.Sprintf(`{"system":%q,"priced_markets":%d,"stale_markets":%d,"stale_age_minutes":%d}`,
-				system, stats.priced, stats.stale, int(cfg.StalenessHidingStaleAge.Minutes())),
+				system, stats.priced, stats.stale, int(staleAge.Minutes())),
 		}); err != nil {
 			return err
 		}
@@ -148,14 +161,16 @@ func emitPostProposals(ctx context.Context, store captain.EventStore, cfg Detect
 	return nil
 }
 
-// marketFreshnessBySystem rolls the player's market_data up per system for the sp-k7q5
-// staleness detectors. It loads one (waypoint, last_updated) pair per priced row (the
-// same whole-table read detectRegimeShift does), keeps each WAYPOINT's most-recent scan
-// across all its goods, and groups waypoints into systems via the waypoint→system
-// convention (shared.ExtractSystemSymbol). A waypoint is stale when its newest scan
-// predates staleCutoff. Computing the max in Go rather than SQL keeps it dialect-portable
-// across the SQLite test DB and the production store.
-func marketFreshnessBySystem(ctx context.Context, db *gorm.DB, playerID int, staleCutoff time.Time) (map[string]systemMarketFreshness, error) {
+// latestMarketObservations loads each priced WAYPOINT's most-recent scan time for the
+// player: one (waypoint, last_updated) pair per market_data row (the same whole-table
+// read detectRegimeShift does), reduced to the max per waypoint. Computing the max in Go
+// rather than SQL keeps it dialect-portable across the SQLite test DB and the production
+// store.
+//
+// Its LENGTH is the map size the freshness cutoff is derived from (sp-k4z5b), which is
+// why the load is separate from the rollup: the cutoff cannot be chosen until the
+// denominator is known, and reading market_data twice to learn it would be wasteful.
+func latestMarketObservations(ctx context.Context, db *gorm.DB, playerID int) (map[string]time.Time, error) {
 	var rows []persistence.MarketData
 	if err := db.WithContext(ctx).
 		Select("waypoint_symbol", "last_updated").
@@ -169,6 +184,14 @@ func marketFreshnessBySystem(ctx context.Context, db *gorm.DB, playerID int, sta
 			latest[r.WaypointSymbol] = r.LastUpdated
 		}
 	}
+	return latest, nil
+}
+
+// rollupFreshness groups priced waypoints into systems via the waypoint→system
+// convention (shared.ExtractSystemSymbol) and counts, per system, how many are priced
+// and how many are stale — a waypoint being stale when its newest scan predates
+// staleCutoff.
+func rollupFreshness(latest map[string]time.Time, staleCutoff time.Time) map[string]systemMarketFreshness {
 	out := make(map[string]systemMarketFreshness)
 	for waypoint, last := range latest {
 		system := shared.ExtractSystemSymbol(waypoint)
@@ -179,8 +202,62 @@ func marketFreshnessBySystem(ctx context.Context, db *gorm.DB, playerID int, sta
 		}
 		out[system] = s
 	}
-	return out, nil
+	return out
 }
+
+// resolvedPlannerStaleAge is the age past which this detector calls a market stale: the
+// same marketscan.FreshnessCap the tour planner itself resolves, re-derived here because
+// the detector runs in the watchkeeper process and cannot read the daemon's in-memory
+// scan budget (sp-k4z5b).
+//
+// Both terms of the planner's resolve are reachable from here. The rotation term comes
+// from cfg.MarketScanBudget (the same [market_scan] stanza the daemon builds its budget
+// from) against the map size the caller just counted. The FLOOR term is read from the
+// trade fleet coordinator's live config column, so ONE `tune --operation tour
+// listing_max_age_minutes N` moves the planner and the detector watching it together —
+// which is the only way this detector can keep the claim it makes. An unreadable or
+// untuned column falls back to cfg.StalenessHidingStaleAge, so the detector degrades to
+// its own documented floor rather than to silence.
+func resolvedPlannerStaleAge(ctx context.Context, db *gorm.DB, cfg DetectorConfig, marketsKnown int) time.Duration {
+	floor := cfg.StalenessHidingStaleAge
+	if tuned := tunedPlannerListingFloor(ctx, db, cfg.PlayerID); tuned > 0 {
+		floor = tuned
+	}
+	return marketscan.FreshnessCap(floor, cfg.MarketScanBudget, marketsKnown)
+}
+
+// tunedPlannerListingFloor reads the operator's tuned listing-age floor off the active
+// trade fleet coordinator's persisted config — the row `spacetraders tune --operation
+// tour` writes. Returns 0 for "nothing tuned", which includes every failure mode
+// (no coordinator running, unreadable row, unparseable config): this is a detector
+// threshold, so an unreadable row must leave the documented floor standing rather than
+// error a supervisor tick.
+func tunedPlannerListingFloor(ctx context.Context, db *gorm.DB, playerID int) time.Duration {
+	var rows []persistence.ContainerModel
+	if err := db.WithContext(ctx).
+		Select("config").
+		Where("container_type = ? AND player_id = ? AND status IN (?, ?)",
+			string(container.ContainerTypeTradeFleetCoordinator), playerID, "PENDING", "RUNNING").
+		Order("heartbeat_at DESC").
+		Limit(1).
+		Find(&rows).Error; err != nil || len(rows) == 0 || rows[0].Config == "" {
+		return 0
+	}
+	config := map[string]interface{}{}
+	if err := json.Unmarshal([]byte(rows[0].Config), &config); err != nil {
+		return 0
+	}
+	minutes, ok := liveconfig.Snapshot(config).PositiveInt(plannerListingFloorKey)
+	if !ok {
+		return 0
+	}
+	return time.Duration(minutes) * time.Minute
+}
+
+// plannerListingFloorKey is the tune key whose floor the tour planner's freshListings
+// paths resolve against. Pinned here rather than imported so the watchkeeper binary does
+// not depend on the trading application package; the pairing is asserted by test.
+const plannerListingFloorKey = "listing_max_age_minutes"
 
 // postedSystems returns the set of systems the player has a scout post over IN THE OPEN
 // ERA — standing AND sweep-once alike (sp-k7q5 layer 3). It scopes to the open era

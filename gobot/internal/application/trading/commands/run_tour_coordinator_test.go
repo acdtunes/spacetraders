@@ -49,7 +49,7 @@ type tourFixture struct {
 	bid map[string]map[string]int // waypoint -> good -> bid (sell_price, sell revenue)
 	ask map[string]map[string]int // waypoint -> good -> ask (purchase_price, buy cost)
 	tv  map[string]map[string]int // waypoint -> good -> tradeVolume
-	// staleMarkets marks waypoints whose cached market reads are >maxListingAge old (sp-z7ng): a
+	// staleMarkets marks waypoints whose cached market reads are >listingAgeFloor old (sp-z7ng): a
 	// listed waypoint here gets an ObservedAt 2h in the past, so freshListings drops it and the
 	// reposition/placement staleness gate excludes it. Absent (nil) → every market reads fresh
 	// (ObservedAt=now), the pre-existing behavior every other test relies on.
@@ -357,7 +357,7 @@ func (r *tourFakeMarketRepo) GetMarketData(ctx context.Context, waypointSymbol s
 	}
 	observedAt := time.Now()
 	if r.fx.staleMarkets[waypointSymbol] {
-		observedAt = observedAt.Add(-2 * time.Hour) // >maxListingAge (75m) → freshListings drops it
+		observedAt = observedAt.Add(-2 * time.Hour) // >listingAgeFloor (75m) → freshListings drops it
 	}
 	if age, ok := r.fx.ageByWaypoint[waypointSymbol]; ok {
 		observedAt = time.Now().Add(-age)

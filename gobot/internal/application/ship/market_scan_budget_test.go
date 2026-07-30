@@ -643,3 +643,38 @@ func TestDebit_RegistersTheMarketSoItJoinsTheDenominator(t *testing.T) {
 		"a market discovered by the catalogue read shares the budget from then on")
 	assert.Equal(t, uint64(1), snap.Admitted)
 }
+
+// -----------------------------------------------------------------------------
+// RotationInputs: the numbers freshness consumers derive their caps from (sp-k4z5b).
+// -----------------------------------------------------------------------------
+
+// The map size must be counted on the FIRST question, not only after the first
+// admission. At boot nothing has been admitted yet, and a zero denominator collapses
+// every derived freshness cap back to its 75-minute floor — the exact behaviour the
+// derivation exists to remove. A consumer asking right after a daemon restart must get
+// the real map.
+func TestRotationInputs_CountsTheMapBeforeAnythingHasBeenAdmitted(t *testing.T) {
+	b, _ := newTestBudget(t, 0.70, 8)
+	counter := &stubCounter{counts: map[string]int{"X1-AA": 4000, "X1-BB": 389}}
+	b.SetChartedMarketCounter(counter)
+
+	budget, marketsKnown := b.RotationInputs(context.Background())
+
+	assert.Equal(t, 1, counter.calls, "the first rotation question must count the map itself")
+	assert.Equal(t, 4389, marketsKnown, "a boot-time consumer must see the real map, not an empty one")
+	assert.Equal(t, 0.70, budget.RateReqPerSec)
+	assert.Equal(t, 8, budget.ValueClampR)
+
+	// And the derived bound is the one the whole change turns on: hours, not 75 minutes.
+	assert.Greater(t, marketscan.FreshnessCap(75*time.Minute, budget, marketsKnown), 2*time.Hour)
+}
+
+// A nil budget (no scanner wired) reports an empty map, which FreshnessCap answers with
+// the caller's own floor — never a widened cap.
+func TestRotationInputs_NilBudgetReportsAnEmptyMap(t *testing.T) {
+	var b *ScanBudget
+	budget, marketsKnown := b.RotationInputs(context.Background())
+
+	assert.Equal(t, 0, marketsKnown)
+	assert.Equal(t, 75*time.Minute, marketscan.FreshnessCap(75*time.Minute, budget, marketsKnown))
+}

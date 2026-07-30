@@ -339,10 +339,18 @@ func (h *RunTourCoordinatorHandler) freshReachableSinkDepth(ctx context.Context,
 			"Tour firm-sink freshness: sink %s no longer trades %s - failing closed", waypoint, good), nil)
 		return 0 // the sink no longer trades the good — fail-closed
 	}
-	if observed := mkt.LastUpdated(); !observed.IsZero() && h.clock.Now().Sub(observed) > h.sinkFreshnessMaxAge {
+	// The cap is DERIVED from the live scan rotation, not a minute count written into
+	// the source (sp-k4z5b): the scan budget is fixed, so a market's interval is an
+	// output of budget ÷ markets known, and a flat threshold silently invalidates as
+	// the map grows. Refusing at the rotation bound means this guard fails closed
+	// exactly when the SCANNER has failed its own guarantee, never merely because a
+	// row is waiting its turn in a bigger map.
+	maxAge := h.sinkMaxAge(ctx, playerID)
+	if observed := mkt.LastUpdated(); !observed.IsZero() && h.clock.Now().Sub(observed) > maxAge {
 		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
-			"Tour firm-sink freshness: sink %s/%s market_data is %s stale (> %s cap) - failing closed (the FRESH guarantee failed, sp-tgll8)",
-			waypoint, good, h.clock.Now().Sub(observed).Truncate(time.Second), h.sinkFreshnessMaxAge), nil)
+			"Tour firm-sink freshness: sink %s/%s market_data is %s stale (> %s cap, rotation bound %s) - failing closed (the FRESH guarantee failed, sp-tgll8)",
+			waypoint, good, h.clock.Now().Sub(observed).Truncate(time.Second), maxAge,
+			h.freshness.RotationBound(ctx).Truncate(time.Second)), nil)
 		return 0 // stale market_data — the fresh guarantee failed, fail-closed
 	}
 	liveDepth := tourACapTranches * sink.TradeVolume()

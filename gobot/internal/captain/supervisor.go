@@ -8,6 +8,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/marketscan"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
 )
 
@@ -141,6 +142,13 @@ type Supervisor struct {
 	// break the wake/cap/bridge assertions (empty means off, matching the
 	// detector's own idiom).
 	promAlertsURL string
+
+	// marketScanBudget mirrors the daemon's [market_scan] allowance so the planner-
+	// staleness detector can re-derive the tour planner's own freshness boundary
+	// (sp-k4z5b). The watchkeeper is a separate process and cannot read the daemon's
+	// in-memory ScanBudget, but the allowance is config, so both sides resolve the same
+	// two numbers. The zero value leaves the detector on its documented floor.
+	marketScanBudget marketscan.Budget
 }
 
 func NewSupervisor(db *gorm.DB, store captain.EventStore, ws Workspace, cfg config.CaptainConfig) (*Supervisor, error) {
@@ -392,6 +400,7 @@ func (s *Supervisor) buildDetectorConfig(prevCredits int, regimePolicy RegimePol
 		// sp-k7q5 layers 2+3, wired to package defaults here until CaptainConfig grows
 		// tunable fields (mirrors FactoryIncomeStall / CrashLoop above).
 		StalenessHidingStaleAge:         defaultStalenessHidingStaleAge,
+		MarketScanBudget:                s.marketScanBudget,
 		StalenessHidingMinPricedMarkets: defaultStalenessHidingMinPricedMarkets,
 		StalenessHidingThreshold:        defaultStalenessHidingThreshold,
 		StalenessHidingCooldown:         defaultStalenessHidingCooldown,
@@ -405,6 +414,15 @@ func (s *Supervisor) buildDetectorConfig(prevCredits int, regimePolicy RegimePol
 		// blank it and stay isolated from any Prometheus running on the dev box.
 		PrometheusAlertsURL: s.promAlertsURL,
 	}
+}
+
+// SetMarketScanBudget mirrors the daemon's market-scan allowance into the supervisor
+// so the planner-staleness detector resolves the SAME freshness boundary the tour
+// planner does (sp-k4z5b). Optional, like SetCity/SetUniverseWatch/SetAgentAPI: unset
+// leaves the detector comparing against its documented floor alone, which is what it
+// did before the scan budget made that floor a function of map size.
+func (s *Supervisor) SetMarketScanBudget(b marketscan.Budget) {
+	s.marketScanBudget = b
 }
 
 // Run loops Tick on the poll interval until ctx is cancelled.
