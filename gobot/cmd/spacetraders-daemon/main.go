@@ -1242,6 +1242,19 @@ func run(cfg *config.Config) error {
 			// heavy-yard milestone fires from either.
 			YardRead: parkedSensingAdapters.NewYardCatalogPort(shipyardScanner, playerRepo),
 			YardScan: parkedSensingAdapters.NewYardScanPort(shipyardScanner, playerRepo),
+			// The third half of the shipyard problem, and the one neither reader can
+			// solve: a counter's PRICES never appear in any response until a hull of
+			// ours is standing on it (sp-fox5u). This is the SAME budget instance
+			// every shipyard reader draws from, handed over as a demand source — its
+			// top weight tier is precisely the set of yards it keeps ranking first and
+			// keeps failing to price, and here that tier becomes a request to send a
+			// hull rather than another read that comes back without a number.
+			//
+			// Passed DIRECTLY rather than through an adapter because there is nothing
+			// to adapt: the budget already speaks the port's two methods, and a
+			// wrapper would only create a second place for the reposition allowance to
+			// be accidentally re-created per player.
+			YardPresence: yardBudget,
 			// The market cache: what a market deals in, how deep it is, and the
 			// two-sided quotes the spread weighting reads (columns CROSSED — see
 			// MarketPrices, where an uncrossed wiring fails silently).

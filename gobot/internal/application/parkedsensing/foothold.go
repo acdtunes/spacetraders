@@ -293,14 +293,24 @@ func (p *surplusPool) systems() []string {
 //
 // "Releasable" is the conjunction of the two guards this file exists to apply:
 // the hull is claimed by no scout post, and every whitelisted good it observes
-// survives its departure in another parked market of the same system.
-func (p *surplusPool) take(system string) (QueuedSlot, bool) {
+// survives its departure — in another parked market of the same system, or at
+// the destination the hull is being sent to.
+//
+// destinationGoods is what the hull will be watching once it ARRIVES, and
+// counting it is what makes the rule correct for a move that stays inside one
+// system (sp-fox5u). A hull sent from market A to market B in the same system
+// does not subtract coverage, it RELOCATES it: B's goods are observed after the
+// move exactly as A's were before. Ignoring that would refuse a move that costs
+// the system nothing. Pass nil for a destination that watches no market — an
+// expansion foothold on a bare probe yard — and the test collapses to "some
+// other row already covers it", which is the original rule.
+func (p *surplusPool) take(system string, destinationGoods []string) (QueuedSlot, bool) {
 	rows := p.bySystem[system]
 	for i, row := range rows {
 		if p.manned[row.AssignedShip] {
 			continue
 		}
-		if !coveredByOthers(row, rows) {
+		if !coveredAfterMove(row, rows, destinationGoods) {
 			continue
 		}
 		p.bySystem[system] = append(append([]QueuedSlot{}, rows[:i]...), rows[i+1:]...)
@@ -309,8 +319,18 @@ func (p *surplusPool) take(system string) (QueuedSlot, bool) {
 	return QueuedSlot{}, false
 }
 
-// coveredByOthers reports whether every whitelisted good on candidate is also
-// carried by some OTHER row in the same system.
+// coveredAfterMove reports whether every whitelisted good on candidate still has
+// an observer once candidate's hull leaves for a destination watching
+// destinationGoods.
+//
+// THE INVARIANT IS UNCHANGED BY THE DESTINATION CLAUSE, which is why it is safe
+// to widen: no whitelisted good in the system may lose its LAST observer. The
+// clause only recognises an observer the original test could not see, because
+// the original was written for a move that leaves the system altogether and this
+// one may not. What it does not do is excuse the transient: between departure and
+// arrival neither waypoint is watched, and that gap is bounded by an in-system
+// flight rather than by anything this function can assert. The permanent property
+// is what is being guarded here.
 //
 // FAIL-CLOSED ON MISSING GOODS, in both directions, and neither is an accident:
 //
@@ -325,16 +345,32 @@ func (p *surplusPool) take(system string) (QueuedSlot, bool) {
 // Both readings shrink the eligible set, which is the safe direction: the cost
 // of being wrong here is a foothold delayed, against a market silently going
 // dark.
-func coveredByOthers(candidate QueuedSlot, rows []QueuedSlot) bool {
+func coveredAfterMove(candidate QueuedSlot, rows []QueuedSlot, destinationGoods []string) bool {
 	if len(candidate.WhitelistGoods) == 0 {
 		return false
 	}
 	for _, good := range candidate.WhitelistGoods {
-		if !observedElsewhere(good, candidate.Waypoint, rows) {
+		if observedElsewhere(good, candidate.Waypoint, rows) {
+			continue
+		}
+		if !containsGood(destinationGoods, good) {
 			return false
 		}
 	}
 	return true
+}
+
+// containsGood reports whether goods carries good. A nil or empty list carries
+// nothing — the same reading observedElsewhere gives an empty row, and the one
+// that keeps an unknown destination from being credited with coverage it may not
+// have.
+func containsGood(goods []string, good string) bool {
+	for _, g := range goods {
+		if g == good {
+			return true
+		}
+	}
+	return false
 }
 
 // observedElsewhere reports whether some row other than the one at exclude
@@ -411,7 +447,12 @@ func footholdFromSurplus(
 	rep *BuyReport,
 ) (bool, error) {
 	for _, system := range reach {
-		source, found := pool.take(system)
+		// A foothold target is a SPARE want on a bare probe yard, which watches no
+		// market and therefore contributes no coverage. Passing its goods rather
+		// than nil is deliberate all the same: the field is the destination's
+		// contract, and reading it here means a SPARE placement that ever did carry
+		// goods would be credited correctly instead of silently under-counted.
+		source, found := pool.take(system, target.WhitelistGoods)
 		if !found {
 			continue
 		}

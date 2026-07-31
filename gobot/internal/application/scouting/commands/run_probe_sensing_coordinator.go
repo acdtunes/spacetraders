@@ -246,8 +246,20 @@ type SensingEnginePorts struct {
 	// prices the yards we occupy and what finally records the shipyard under a
 	// market sensor's feet. Billed to the scanning envelope, like the market scan
 	// it rides.
-	YardScan   parkedsensing.YardCatalogReader
-	Treasury   parkedsensing.TreasuryReader
+	YardScan parkedsensing.YardCatalogReader
+	// YardPresence is the shipyard-read budget, asked which yards sell a hull we
+	// want at a price no read can reveal because we have nobody standing there
+	// (sp-fox5u). It is the SAME budget instance every shipyard reader draws from,
+	// so the yards it names here are exactly the ones its own rotation ranks
+	// highest and keeps failing to price.
+	//
+	// OPTIONAL, and deliberately not in the ready() check below. Unlike the three
+	// yard READ ports above — whose absence would mean the fleet never learns what
+	// a shipyard sells, a blind spot worth failing loudly for — an absent presence
+	// port means hulls are not repositioned, which is exactly how the fleet ran
+	// before this existed. It is inert rather than fatal.
+	YardPresence parkedsensing.YardPresenceDemand
+	Treasury     parkedsensing.TreasuryReader
 	CargoSpend parkedsensing.CargoSpendReader
 	Purchaser  parkedsensing.ProbePurchaser
 	Ships      parkedsensing.ParkedShipReader
@@ -327,6 +339,25 @@ func (p SensingEnginePorts) yardCatalogPorts() parkedsensing.YardCatalogPorts {
 	return parkedsensing.YardCatalogPorts{
 		Frontier: p.YardCatalog,
 		Catalog:  p.YardRead,
+	}
+}
+
+// yardPresencePorts bundles the presence pass's surface: the budget that names
+// the unpriceable yards, the ledger it re-tasks rows in, the ship reader that
+// confirms a hull is standing still, and the post reader that says which hulls
+// are not ours to take.
+//
+// NO PURCHASER AND NO TREASURY, and that omission is the RULINGS #4 guarantee
+// stated in the wiring rather than only in the prose: this pass cannot buy a
+// probe because it is handed nothing that could. The post reader is built here
+// rather than memoised onto the port struct for the same reason the drain's is —
+// it is handler state, not a per-player adapter.
+func (p SensingEnginePorts) yardPresencePorts(posts SensingPostRepository) parkedsensing.YardPresencePorts {
+	return parkedsensing.YardPresencePorts{
+		Demand:      p.YardPresence,
+		Ledger:      p.Ledger,
+		Ships:       p.Ships,
+		MannedHulls: mannedHulls{posts: posts},
 	}
 }
 
@@ -975,6 +1006,22 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 		failures = append(failures, yerr)
 	}
 
+	// The paid half of the same discovery, and it runs IMMEDIATELY AFTER the free
+	// one for a reason the two passes' contract makes exact. A yard only becomes a
+	// presence candidate once its catalogue shows it sells something wanted
+	// (yardscan.WantsPresence refuses an Unknown yard), so a catalogue landing on
+	// this tick makes its yard eligible on this same tick rather than the next.
+	// The reverse order would work too, one tick slower, and there is no reason to
+	// pay that.
+	//
+	// BEFORE the reaper and the drain, so a market this pass releases back to
+	// WANTED is a placement they see on the tick it is released — the reaper does
+	// not treat it as stranded and the drain may re-cover it immediately.
+	presenceRep, perr := parkedsensing.DispatchYardPresence(ctx, ports.yardPresencePorts(h.postRepo), playerID)
+	if perr != nil {
+		failures = append(failures, perr)
+	}
+
 	// BETWEEN THE SWEEP AND THE DRAIN, and both edges are the contract.
 	//
 	// After the sweep, so a verdict written by THIS tick is honoured by it: a
@@ -1083,6 +1130,7 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 		expand:      expandRep,
 		rotation:    rotation,
 		yard:        yardRep,
+		presence:    presenceRep,
 	})
 
 	// The tick's three-way verdict, on the two keys that stall independently. Reported ONCE per

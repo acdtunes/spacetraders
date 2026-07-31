@@ -57,6 +57,11 @@ type heartbeat struct {
 	// the fleet has never asked what they sell, and while it is non-zero the fleet
 	// is hunting hulls it may already be able to see.
 	yard parkedsensing.YardCatalogReport
+	// presence is the paid half's accounting: yards that need a hull standing on
+	// them before any read can price them, and how many hulls were sent. Requested
+	// is the backlog; the gap between it and Dispatched is the honest measure of
+	// how committed the sensing fleet is, not of a fault.
+	presence parkedsensing.YardPresenceReport
 	// rotation is how many slots the scan pacer is ACTUALLY watching, which is
 	// not the ledger's parked count: the rotation drops anything unscannable.
 	rotation int
@@ -130,6 +135,19 @@ func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *
 			"yards_read":        hb.yard.Read,
 			"yards_failed":      hb.yard.Failed,
 			"yards_outstanding": hb.yard.Outstanding,
+
+			// The OTHER shipyard blind spot, and the one no amount of reading can
+			// close: yards_need_presence counts counters we know sell a hull we want
+			// and whose price the API will not disclose until one of our hulls is
+			// standing there. yards_presence_sent is how many were addressed this
+			// tick. The two together separate the three states an operator would
+			// otherwise have to guess between — a backlog being worked (sent > 0), a
+			// fleet with no hull to spare (no_hull high), and an allowance holding
+			// the rate down (metered high).
+			"yards_need_presence":   hb.presence.Requested,
+			"yards_presence_sent":   hb.presence.Dispatched,
+			"yards_presence_nohull": hb.presence.NoHull,
+			"yards_presence_meter":  hb.presence.Metered,
 
 			"buy_bought": hb.buy.Bought,
 			"buy_reused": hb.buy.Reused,
