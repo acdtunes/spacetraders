@@ -57,10 +57,17 @@ type relocFakeRegions struct {
 	byOrigin map[string][]RelocatorRegion
 	err      error
 	radii    []int // every hopRadius the handler asked for, so a test can assert the knob is honoured
+	// origins is every origin system asked for, IN CALL ORDER. It is the only observable of SCORING
+	// order: the region pre-flight is the expensive per-hull step, so the sequence of these calls is
+	// literally the sequence in which hulls were scored. Outcome assertions cannot see this — the
+	// candidate sort fixes commit order regardless — so without this a scoring-order regression is
+	// invisible to the suite.
+	origins []string
 }
 
 func (f *relocFakeRegions) ObserveRegions(_ context.Context, _ int, originSystem string, hopRadius int) ([]RelocatorRegion, error) {
 	f.radii = append(f.radii, hopRadius)
+	f.origins = append(f.origins, originSystem)
 	return f.byOrigin[originSystem], f.err
 }
 
@@ -1017,34 +1024,43 @@ func TestResolveRelocatorTickSeconds_OperatorOverrideStillWins(t *testing.T) {
 	}
 }
 
-// An OFFERED hull is SCORED before an un-offered one, not merely committed before it.
+// An OFFERED hull is SCORED before an un-offered one — asserted on SCORING order, not the outcome.
 //
-// The commit-order sort alone was not enough: it runs AFTER every hull has been scored, so an offered
-// hull's 150s window was being spent on other hulls' region pre-flights. Measured live, the gap from
-// licensing to actuation ran 184s / 304s / 664s, and all 98 of the fleet's offers lapsed unclaimed with
-// zero ever taken. This pins the ORDER OF SCORING, which is what bounds that gap.
+// WHY THE OBVIOUS TEST DOES NOT WORK, recorded because I wrote it first and it passed while guarding
+// nothing: asserting "the offered hull got the single concurrency slot" passes with OR WITHOUT the
+// scoring-order fix, because the candidate sort already puts offered hulls first in COMMIT order. A
+// mutation probe removing the fix broke no test at all. The fix changes LATENCY — when a hull is
+// reached — and a fake region observer has no latency, so only the CALL ORDER can see it.
 //
-// The single concurrency slot is the mechanism of the test: whichever hull is reached first takes it,
-// so the assertion fails if scoring order regresses to observation order.
+// WHY IT MATTERS: the offer window is 150s and measured licensing-to-actuation gaps were 184s / 304s
+// / 664s, because an offered hull's window was spent on other hulls' region pre-flights before its own
+// commit was reached. All 98 of the fleet's offers lapsed unclaimed; zero were taken.
 func TestOpportunityRelocatorShould_ScoreAnOfferedHullBeforeAnUnofferedOne(t *testing.T) {
 	h := newRelocHarness(t)
-	h.cmd.MaxConcurrentRelocations = 1
 
-	// UNOFFERED first in observation order, so passing cannot be an accident of input ordering.
+	// Distinct systems, so the origin of each region pre-flight IDENTIFIES the hull being scored.
+	// UNOFFERED is listed first in observation order, so passing cannot be an artefact of input order.
 	h.fleet.hulls = []RelocatorHull{
-		{ShipSymbol: "HAULER-UNOFFERED", CurrentSystem: "X1-HOME"},
-		{ShipSymbol: "HAULER-OFFERED", CurrentSystem: "X1-HOME", OnTour: true, Offered: true},
+		{ShipSymbol: "HAULER-UNOFFERED", CurrentSystem: "X1-UNOFF"},
+		{ShipSymbol: "HAULER-OFFERED", CurrentSystem: "X1-OFF", OnTour: true, Offered: true},
 	}
 	h.telemetry.rows = append(
 		relocTelemetryFor("HAULER-UNOFFERED", 100_000, relocNow.Add(-30*time.Minute)),
 		relocTelemetryFor("HAULER-OFFERED", 100_000, relocNow.Add(-30*time.Minute))...,
 	)
+	h.regions.byOrigin = map[string][]RelocatorRegion{
+		"X1-UNOFF": {relocRegion("X1-RICH", 2, 400_000)},
+		"X1-OFF":   {relocRegion("X1-RICH", 2, 400_000)},
+	}
 
-	got := h.reconcile(t)
+	h.reconcile(t)
 
-	if len(got.Relocated) != 1 || got.Relocated[0] != "HAULER-OFFERED" {
-		t.Fatalf("the OFFERED hull must win the slot: it is the only one under a clock, its tour is stalled "+
-			"waiting, and an un-offered hull will still be here next tick. relocated %v, skips %v",
-			got.Relocated, got.Skipped)
+	if len(h.regions.origins) < 2 {
+		t.Fatalf("both hulls must be scored for the ORDER to mean anything; got pre-flights for %v", h.regions.origins)
+	}
+	if h.regions.origins[0] != "X1-OFF" {
+		t.Fatalf("the OFFERED hull must be SCORED first — its tour is stalled on a closing 150s window, "+
+			"while an un-offered hull is under no clock and will still be here next tick. "+
+			"pre-flight order was %v", h.regions.origins)
 	}
 }
