@@ -9,7 +9,18 @@ import (
 )
 
 // yardqueue.go makes the buy queue's ordering aware that some of its placements
-// stand on a shipyard the fleet cannot price (sp-7qhum).
+// stand on a shipyard the fleet cannot price (sp-7qhum), and gives those
+// placements ABSOLUTE precedence over every ordinary market (sp-0j5hi).
+//
+// THE SECOND HALF IS AN ADMIRAL DIRECTIVE AND IT OVERRULES THE FIRST'S DESIGN.
+// sp-7qhum was built to leave coverage-first as the top-level key, so it could
+// only promote a yard within its own system's run of coverage values — and the
+// live result was that a yard in a system holding three probes competed at
+// coverage 3 and lost to every one of ~8,900 coverage-0 market rows elsewhere.
+// Ninety minutes with buying restored bought 56 probes and put 5 on yards. The
+// ordering now partitions yard-before-market ABOVE coverage; coverage-first
+// survives inside each tier, which is what keeps the yard tier spread across
+// systems. See yardFirstOffsets and drainCandidates' sort.
 //
 // THE DEFECT IT CLOSES. planSlots emits a YARD-kind slot only for a yard no
 // market slot already covers, and measured live that set is EMPTY: of 2,257
@@ -102,6 +113,18 @@ type yardOrder struct {
 }
 
 // wants reports whether a waypoint is a shipyard the fleet needs presence at.
+//
+// IT IS THE TIER PREDICATE (sp-0j5hi): true puts a placement ahead of every
+// ordinary market in the queue, so what this set contains is the whole of what
+// absolute precedence applies to. It is deliberately NARROWER than "stands on a
+// SHIPYARD-trait waypoint" — the map comes from WantsPresence, so a yard whose
+// price we already hold and a yard whose catalogue has never been read are both
+// outside it. Widening it to the trait would promote counters that need nothing
+// (a priced yard has already given us the listings a hull buys) and counters that
+// need a free catalogue read rather than a hull. Measured live the two sets very
+// nearly coincide anyway — 1,574 of 1,575 unfilled shipyard placements sit on an
+// unpriced yard — because a yard gets priced only by being manned, and being
+// manned is what takes its placement out of WANTED in the first place.
 func (y yardOrder) wants(waypoint string) bool {
 	_, ok := y.rank[waypoint]
 	return ok
@@ -173,29 +196,37 @@ func readYardDemand(ctx context.Context, p BuyPorts, playerID int) yardOrder {
 // yardFirstOffsets gives every fill its position among its OWN system's
 // outstanding placements, with the dark yards taking the low positions.
 //
-// THIS IS THE TERM THAT MATTERS, and it is worth being exact about why it does
-// not disturb coverage-first. drainCandidates ranks the i-th outstanding
-// placement of a system at parked + i, so a system's slots occupy a fixed run of
-// coverage values — parked+0, parked+1, … — and that run is what bounds the share
-// of the queue head any one system can take. This changes only WHICH of the
-// system's placements gets WHICH value in that run. The multiset is untouched, so
-// the anti-concentration property the coverage ordering exists for (67% of parked
-// probes in three systems, before it) is untouched too.
+// IT IS WHAT SPREADS THE YARD TIER ACROSS SYSTEMS. drainCandidates ranks the i-th
+// outstanding placement of a system at parked + i, and the sort's top key is now
+// yard-before-market (sp-0j5hi), so the coverage a yard competes at only ever
+// separates it from OTHER YARDS. A system's dark yards take its indices 0,1,2,…
+// in RankPresence order, which means its second yard ranks behind every other
+// system's first, its third behind every other system's second, and no system can
+// take more than one place in any coverage band. That is the whole of the
+// anti-concentration guarantee inside a tier that no longer answers to
+// coverage-first from outside — measured, the 1,575 yard placements sit in 795
+// systems and 517 of those hold no hull, so the coverage-0 band is 517 wide.
 //
-// The size of the move is the whole fix. Measured live: 56 of the 78 unfilled
-// heavy-freighter yards sit in 47 systems holding ZERO parked probes, and those
-// same systems carry 775 outstanding placements between them. A heavy yard's
-// ledger position in its system was incidental — around the sixteenth row on
-// average — so it competed at coverage ≈15 while other systems' first rows
-// competed at 0. It now competes at 0 itself.
+// ALL OF A SYSTEM'S YARDS ARE PROMOTED, NOT ITS BEST ONE. Every dark yard sorts
+// ahead of every market here, so a system holding eight of them contributes eight
+// rows to the yard tier at coverages parked+0…parked+7. There is no per-system
+// cap and there must not be one: 677 systems hold two or more shipyards and the
+// directive is that all of them get manned. The sort's RankPresence tiebreak
+// decides which yard of a system goes FIRST; it never decides which goes at all.
+//
+// THE MARKETS OF A YARD SYSTEM ARE PUSHED BACK BY ITS YARD COUNT, and that is
+// correct rather than incidental. A system with three dark yards has its first
+// market land at offset 3, competing at parked+3 — which is the coverage that
+// system will genuinely hold once the tier above it has been filled, since those
+// three yards are guaranteed to be funded before any market anywhere.
 //
 // STABLE, so a placement that is not a yard keeps its FIFO position relative to
 // its system-mates. The FIFO order is deliberate — drainCandidates documents it as
 // what stops a placement being overtaken by a newer one in its own system, tick
-// after tick — and this introduces exactly ONE exception to it, for exactly the
-// class the bead is about. The exception cannot starve anything: a promoted yard
-// leaves WANTED as soon as it is filled and stops competing, and the number of
-// shipyards in a system is small and fixed while its markets are many.
+// after tick — and the yards are the one class exempt from it. The exemption
+// cannot starve anything permanently: a promoted yard leaves WANTED as soon as it
+// is filled and stops competing, and the number of shipyards in a system is small
+// and fixed while its markets are many.
 //
 // It returns offsets in the fills' own order rather than a reordered slice,
 // because drainCandidates' outer sort is STABLE over ledger order and that order

@@ -1151,12 +1151,15 @@ func postBuyCredits(before, price int64, probe BoughtProbe) int64 {
 // is right both ways round: it still needs working, and a claim already made is
 // a probe already spoken for.
 //
-// DARK SHIPYARDS ARE THE ONE THING THAT REORDERS INSIDE A SYSTEM. A placement
-// standing on a counter that sells a hull we buy at a price we cannot see takes
-// its system's FIRST coverage index and, at equal coverage, sorts ahead of an
-// ordinary market — see yardqueue.go for why that leaves coverage-first intact
-// and what it was measured to move. It returns the yardOrder it built so the loop
-// above can report what the ordering actually did.
+// DARK SHIPYARDS ARE A TIER ABOVE COVERAGE, NOT A TERM INSIDE IT (sp-0j5hi,
+// Admiral directive: "yards should take absolute precedence over other markets!
+// They should be the first ones to be manned. ALL yards of a system!"). Every
+// placement standing on a counter that sells a hull we buy at a price we cannot
+// see sorts ahead of EVERY ordinary market, whatever either one's coverage.
+// Coverage-first then orders within each tier, and all of a system's dark yards
+// are promoted rather than only its best one — see yardqueue.go for what that
+// costs and why the yard tier does not re-concentrate the fleet. It returns the
+// yardOrder it built so the loop above can report what the ordering actually did.
 func drainCandidates(ctx context.Context, p BuyPorts, playerID int) ([]QueuedSlot, yardOrder, error) {
 	slots, err := p.Ledger.SlotsByState(ctx, playerID, SlotStateWanted, SlotStateQueued)
 	if err != nil {
@@ -1228,18 +1231,47 @@ func drainCandidates(ctx context.Context, p BuyPorts, playerID int) ([]QueuedSlo
 	// tiebreak — which makes the queue FIFO per system and its output
 	// reproducible tick to tick.
 	sort.SliceStable(ranked, func(i, j int) bool {
+		// THE TIER, and it is ABOVE COVERAGE. A dark yard outranks every ordinary
+		// market in the queue, including one in a system holding no hull at all.
+		//
+		// This is what sp-7qhum could not do and what the Admiral overruled it for.
+		// That version promoted a yard only WITHIN its own system's run of coverage
+		// values, so a yard in a system already holding three probes competed at
+		// coverage 3 and lost to every one of ~8,900 coverage-0 market rows
+		// elsewhere. Measured over 90 minutes live with buying restored: 56 probes
+		// bought, 5 of them onto yards, and heavy yards priced stayed flat at 4
+		// of 86. A tiebreak inside coverage cannot reach a set that never ties.
+		//
+		// THE COST IS REAL AND WAS ACCEPTED. 1,575 of 9,216 unfilled placements
+		// stand on a shipyard, so placement capacity goes to yards until yards are
+		// exhausted and market coverage grows only afterwards. That is the trade the
+		// directive makes: a yard is what makes every future hull purchase cheap,
+		// while market coverage is already oversupplied at ~103 fresh sinks per
+		// trade hull, and what binds trading is sink DEPTH rather than market count.
+		//
+		// IT DOES NOT RE-CONCENTRATE THE FLEET, and that is a property of the
+		// coverage ordering surviving INSIDE the tier rather than an assumption
+		// about how yards happen to be spread. A system's dark yards take its
+		// coverage indices 0,1,2,… (yardFirstOffsets), so its second yard ranks
+		// behind every other system's first and no system can take more than one
+		// place in any coverage band. Measured on the live map: the 1,575 yard
+		// placements sit in 795 systems, 517 of which hold no hull at all, so the
+		// coverage-0 band alone is 517 systems wide against a head of six.
+		yi, yj := yards.wants(ranked[i].slot.Waypoint), yards.wants(ranked[j].slot.Waypoint)
+		if yi != yj {
+			return yi
+		}
 		if ranked[i].coverage != ranked[j].coverage {
 			return ranked[i].coverage < ranked[j].coverage
 		}
-		// The yard term, BELOW coverage and ABOVE depth.
+		// The demand weighting, INSIDE the yard tier and above depth.
 		//
-		// Below coverage because coverage is what stops one system taking every
-		// tick, and a shipyard is not worth re-concentrating the fleet for. Above
-		// depth because this is where the systems' first placements all meet:
-		// every uncovered system ranks its first row at the same coverage, so
-		// without a term here a dark heavy counter is separated from an ordinary
-		// market only by which system happens to be richer — which is how 78 heavy
-		// yards stayed unpriced while the queue worked correctly by its own lights.
+		// Both keys are notAYard in the market tier, so this term is dead there and
+		// ordinary markets are separated by depth exactly as they always were. In
+		// the yard tier it is where the systems' first yards all meet — every
+		// uncovered system ranks its first yard at the same coverage — so without it
+		// a dark heavy counter would be separated from a probe-only one by which
+		// system happens to be richer.
 		//
 		// The key is the budget's own RankPresence position, so heavy counters lead
 		// unconditionally and the read budget's weighting carries through without a

@@ -9,7 +9,15 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/yardscan"
 )
 
-// yardqueue_test.go pins the yard-aware ordering (sp-7qhum).
+// yardqueue_test.go pins the yard-aware ordering (sp-7qhum) and the ABSOLUTE
+// precedence it was later overruled into (sp-0j5hi).
+//
+// TWO TESTS HERE ASSERT THE OPPOSITE OF WHAT THEY USED TO, and that is the change
+// rather than a break. TestDrainCandidates_CoverageStillOutranksTheYardTerm became
+// TestDrainCandidates_ADarkYardAtHighCoverageStillBeatsEveryMarketAtZero, and the
+// heavy-versus-probe test now asserts that a probe-only yard is ordered SECOND
+// rather than excluded — "ALL yards of a system" means the demand weighting orders
+// the tier instead of gating entry to it.
 //
 // WHAT THE FIXTURES HAVE TO DO, because a fixture that does not do it produces a
 // test that passes with the feature deleted. The drain works maxDrainAttempts = 6
@@ -334,49 +342,185 @@ func TestDrainCandidates_ADarkYardOutranksADeeperSystemAtEqualCoverage(t *testin
 	}
 }
 
-// TestDrainCandidates_AHeavyYardOutranksAProbeOnlyYardInItsOwnSystem pins the
-// demand weighting.
+// TestDrainCandidates_AHeavyYardOutranksAProbeOnlyYardInsideTheTier pins the demand
+// weighting, which under absolute precedence orders the yard tier rather than
+// gating entry to it.
 //
 // One unpriced heavy counter is worth more than every probe yard on the map put
 // together — the incident behind sp-mb0er had the fleet buying heavies at up to
 // 2,288,156 against a visible cheapest of 1,918,293, chosen from four prices out of
-// eighty-five. So a yard selling only probes and shuttles must not take the one
-// promotion its system gets.
+// eighty-five. A probe-only yard is still a yard and still gets manned (that is the
+// "ALL yards" half of the directive), but it goes SECOND.
 //
-// THE FIXTURE IS BUILT TO DEFEAT THE TWO CHEAP WAYS OF PASSING IT. The probe yard
-// is named X1-TWO-A1 and the heavy X1-TWO-Z9, so RankPresence's SYMBOL tiebreak
-// favours the probe yard — dropping the Heavy clause therefore flips this test
-// rather than leaving it green on alphabetical luck. And the probe yard is written
-// FIRST in the ledger, so a keying that made all yards tie would hand it the
-// system's offset 0 on stable order alone.
-func TestDrainCandidates_AHeavyYardOutranksAProbeOnlyYardInItsOwnSystem(t *testing.T) {
+// THE TWO YARDS ARE IN DIFFERENT SYSTEMS, BOTH UNCOVERED, so they meet at coverage
+// 0 and the RankPresence key is the only term that can separate them. Putting them
+// in one system would let yardFirstOffsets decide it instead and leave the sort's
+// key untested.
+//
+// THE FIXTURE DEFEATS THE THREE CHEAP WAYS OF PASSING. The probe yard is named
+// X1-AAA-A1 and the heavy X1-ZZZ-Z9, so RankPresence's SYMBOL tiebreak favours the
+// probe yard; the probe yard's system is 900x DEEPER, so the depth tiebreak favours
+// it too; and it is written FIRST in the ledger, so stable order favours it. Only
+// the Heavy clause can put Z9 ahead.
+func TestDrainCandidates_AHeavyYardOutranksAProbeOnlyYardInsideTheTier(t *testing.T) {
 	rivals, rivalSys := rivalSystems(8, 1, 9_000)
 	slots := append([]QueuedSlot{
-		{Waypoint: "X1-TWO-A1", System: "X1-TWO", Kind: SlotKindMarket, State: SlotStateWanted},
-		{Waypoint: "X1-TWO-Z9", System: "X1-TWO", Kind: SlotKindMarket, State: SlotStateWanted},
-		{Waypoint: "X1-TWO-M1", System: "X1-TWO", Kind: SlotKindMarket, State: SlotStateWanted},
+		{Waypoint: "X1-AAA-A1", System: "X1-AAA", Kind: SlotKindMarket, State: SlotStateWanted},
+		{Waypoint: "X1-ZZZ-Z9", System: "X1-ZZZ", Kind: SlotKindMarket, State: SlotStateWanted},
 	}, rivals...)
-	systems := append([]ScreenedSystem{{System: "X1-TWO", DepthCredits: 100}}, rivalSys...)
+	systems := append([]ScreenedSystem{
+		{System: "X1-AAA", DepthCredits: 900_000},
+		{System: "X1-ZZZ", DepthCredits: 1_000},
+	}, rivalSys...)
 
 	ports, _ := yardQueuePorts(slots, systems, &fakeYardDemand{yards: []fakeYard{
-		darkYard("X1-TWO-A1", "X1-TWO", false), // probes only
-		darkYard("X1-TWO-Z9", "X1-TWO", true),  // heavy freighters
+		darkYard("X1-AAA-A1", "X1-AAA", false), // probes only
+		darkYard("X1-ZZZ-Z9", "X1-ZZZ", true),  // heavy freighters
 	}})
 	got, _, err := drainCandidates(context.Background(), ports, testPlayerID)
 	if err != nil {
 		t.Fatalf("drainCandidates returned error: %v", err)
 	}
 
-	// Nine systems rank a placement at coverage 0 and the head is six, so the
-	// coverage-1 placement X1-TWO gets is out of reach. The system's ONE promotion
-	// has to go to the heavy counter.
-	if !inHead(got, "X1-TWO-Z9") {
-		t.Fatalf("the heavy counter did not take its system's promotion: Z9 at %d, head=%v",
-			positionOf(got, "X1-TWO-Z9"), head(got))
+	heavy, probe := positionOf(got, "X1-ZZZ-Z9"), positionOf(got, "X1-AAA-A1")
+	if heavy != 0 {
+		t.Fatalf("the heavy counter is at %d, want 0: inside the yard tier RankPresence puts heavies "+
+			"unconditionally first, whatever the symbol, the depth or the ledger order say. head=%v",
+			heavy, head(got))
 	}
-	if inHead(got, "X1-TWO-A1") {
-		t.Fatalf("a probe-only yard took the promotion a heavy counter needed. A1 at %d, Z9 at %d, head=%v",
-			positionOf(got, "X1-TWO-A1"), positionOf(got, "X1-TWO-Z9"), head(got))
+	// Both are still manned — the weighting orders the tier, it does not gate it.
+	if probe != 1 {
+		t.Fatalf("the probe-only yard is at %d, want 1: it ranks BEHIND the heavy counter and AHEAD of "+
+			"every ordinary market. All yards get manned. head=%v", probe, head(got))
+	}
+}
+
+// manyYardSystem builds one system holding `yards` dark heavy counters plus one
+// ordinary market, named so that RankPresence's symbol tiebreak ranks all of them
+// AHEAD of anything named later — which is what makes the concentration test below
+// able to fail.
+func manyYardSystem(system string, yards int) ([]QueuedSlot, []fakeYard) {
+	slots := make([]QueuedSlot, 0, yards+1)
+	facts := make([]fakeYard, 0, yards)
+	for i := 0; i < yards; i++ {
+		waypoint := fmt.Sprintf("%s-Y%d", system, i)
+		slots = append(slots, QueuedSlot{
+			Waypoint: waypoint, System: system, Kind: SlotKindMarket, State: SlotStateWanted,
+		})
+		facts = append(facts, darkYard(waypoint, system, true))
+	}
+	slots = append(slots, QueuedSlot{
+		Waypoint: system + "-M1", System: system, Kind: SlotKindMarket, State: SlotStateWanted,
+	})
+	return slots, facts
+}
+
+// TestDrainCandidates_EveryYardOfAMultiYardSystemIsPromoted is the "ALL yards of a
+// system!" half of the directive, and it is the assertion a one-yard-per-system
+// fixture is structurally unable to make.
+//
+// FOUR yards, because three is the minimum that distinguishes the rules and four
+// leaves margin: 677 systems on the live map hold two or more shipyards and the
+// largest holds eight. Under sp-7qhum's within-system promotion the system's yards
+// take its coverage run 0,1,2,3 and only the FIRST of them ever meets the
+// coverage-0 group, so three of the four sit behind every rival market — which is
+// exactly what this fixture would show with the tier partition removed.
+func TestDrainCandidates_EveryYardOfAMultiYardSystemIsPromoted(t *testing.T) {
+	// Ten rival systems each ranking a market at coverage 0, against a head of six,
+	// and all of them deeper than the yard system.
+	rivals, rivalSys := rivalSystems(10, 2, 90_000)
+	yardSlots, yardFacts := manyYardSystem("X1-MANY", 4)
+	slots := append(yardSlots, rivals...)
+	systems := append([]ScreenedSystem{{System: "X1-MANY", DepthCredits: 100}}, rivalSys...)
+
+	// Every yard past the first must be out of reach with the term switched off, or
+	// the claim below is not load-bearing for it.
+	for i := 1; i < 4; i++ {
+		assertFixtureSaturates(t, slots, systems, fmt.Sprintf("X1-MANY-Y%d", i))
+	}
+
+	ports, _ := yardQueuePorts(slots, systems, &fakeYardDemand{yards: yardFacts})
+	got, _, err := drainCandidates(context.Background(), ports, testPlayerID)
+	if err != nil {
+		t.Fatalf("drainCandidates returned error: %v", err)
+	}
+
+	for i := 0; i < 4; i++ {
+		waypoint := fmt.Sprintf("X1-MANY-Y%d", i)
+		if at := positionOf(got, waypoint); at != i {
+			t.Fatalf("%s sits at %d, want %d. ALL of a system's dark yards outrank every ordinary market — "+
+				"there is no per-system cap and no first-yard-only rule. head=%v", waypoint, at, i, head(got))
+		}
+	}
+	// The system's ordinary market is NOT promoted with them: the tier is yards, not
+	// systems that contain yards.
+	if inHead(got, "X1-MANY-M1") {
+		t.Fatalf("the yard system's ordinary market reached the head at %d — a system with yards had its "+
+			"whole backlog promoted. head=%v", positionOf(got, "X1-MANY-M1"), head(got))
+	}
+}
+
+// TestDrainCandidates_TheYardTierDoesNotConcentrateOnOneSystem is the guarantee
+// that makes absolute precedence safe to ship.
+//
+// Coverage-first was introduced because depth alone put 67% of parked probes in
+// three systems, and the tier partition removes coverage's authority OVER the yard
+// tier. What replaces it is coverage's authority INSIDE the tier: a system's dark
+// yards take its coverage indices 0,1,2,… so its second yard ranks behind every
+// other system's first, and no system takes more than one place in a coverage band.
+//
+// THE FIXTURE IS BUILT SO THAT DROPPING COVERAGE FROM INSIDE THE TIER FAILS IT.
+// X1-AAA's four yards are named to sort first under RankPresence's symbol tiebreak
+// and every yard here is heavy with equal weight, so a yard tier ordered on the
+// presence key alone would hand X1-AAA the first four places outright.
+func TestDrainCandidates_TheYardTierDoesNotConcentrateOnOneSystem(t *testing.T) {
+	// Eight rival systems ranking an ordinary market at coverage 0. They are not the
+	// subject of the test, but without them a yard DEMOTED out of the tier would
+	// still land immediately behind the coverage-0 yards and the position assertion
+	// below could not tell a promoted yard from a demoted one.
+	rivals, rivalSys := rivalSystems(8, 1, 9_000)
+	yardSlots, yardFacts := manyYardSystem("X1-AAA", 4)
+	slots := append([]QueuedSlot(nil), yardSlots...)
+	systems := []ScreenedSystem{{System: "X1-AAA", DepthCredits: 90_000}}
+	for _, system := range []string{"X1-BBB", "X1-CCC", "X1-DDD", "X1-EEE"} {
+		waypoint := system + "-Y0"
+		slots = append(slots, QueuedSlot{
+			Waypoint: waypoint, System: system, Kind: SlotKindMarket, State: SlotStateWanted,
+		})
+		systems = append(systems, ScreenedSystem{System: system, DepthCredits: 100})
+		yardFacts = append(yardFacts, darkYard(waypoint, system, true))
+	}
+	slots = append(slots, rivals...)
+	systems = append(systems, rivalSys...)
+
+	ports, _ := yardQueuePorts(slots, systems, &fakeYardDemand{yards: yardFacts})
+	got, _, err := drainCandidates(context.Background(), ports, testPlayerID)
+	if err != nil {
+		t.Fatalf("drainCandidates returned error: %v", err)
+	}
+
+	// Eight dark yards compete for six places, so the tier itself is saturated.
+	// Five systems rank a yard at coverage 0; that band is the first five places.
+	const coverageZeroBand = 5
+	var fromAAA []string
+	for i := 0; i < coverageZeroBand && i < len(got); i++ {
+		if got[i].System == "X1-AAA" {
+			fromAAA = append(fromAAA, got[i].Waypoint)
+		}
+	}
+	if len(fromAAA) != 1 {
+		t.Fatalf("X1-AAA took %v of the five coverage-0 places, want exactly one. Coverage still orders "+
+			"WITHIN the yard tier: a system's second yard ranks behind every other system's first, which "+
+			"is what stops absolute precedence re-concentrating the fleet. order=%v", fromAAA, head(got))
+	}
+	// Its remaining yards still outrank all eight rival markets, so the coverage-1
+	// band of the YARD tier opens immediately after the coverage-0 one. This is the
+	// assertion that fails if the tier is capped at one yard per system: a demoted
+	// X1-AAA-Y1 would sit behind the eight coverage-0 markets instead.
+	if at := positionOf(got, "X1-AAA-Y1"); at != coverageZeroBand {
+		t.Fatalf("X1-AAA-Y1 sits at %d, want %d: every yard outranks every market, so the yard tier's "+
+			"coverage-1 band opens immediately after its coverage-0 one and no market comes between "+
+			"them. head=%v", at, coverageZeroBand, head(got))
 	}
 }
 
@@ -429,30 +573,47 @@ func TestDrainCandidates_AnUnknownYardIsNotPromoted(t *testing.T) {
 	}
 }
 
-// TestDrainCandidates_CoverageStillOutranksTheYardTerm is the coverage-first
-// guarantee, and it is the test that fails if this is ever "improved" by ranking
-// yards ABOVE coverage.
+// TestDrainCandidates_ADarkYardAtHighCoverageStillBeatsEveryMarketAtZero IS THE
+// FALSIFIER for sp-0j5hi, and it is the exact case sp-7qhum's ordering gets wrong.
 //
-// Coverage-first exists because depth alone put 67% of parked probes in three
-// systems, and a shipyard is not worth re-concentrating the fleet for. It is also
-// the correct division of labour with sp-fox5u: a system that already holds a hull
-// can have its yard priced by relocating that hull in-system, which buys nothing,
-// so the queue that SPENDS should be aimed at the systems that hold none. Measured
-// live, that is where the problem is anyway — 56 of the 78 unfilled heavy yards
-// sit in systems with no probe at all.
+// That version left coverage-first as the top-level key and promoted a yard only
+// within its OWN system's run of coverage values, which reads as a safe change and
+// is why it shipped. What it means in the live ledger is that a yard in a system
+// already holding four probes competes at coverage 4 and is beaten by every one of
+// ~8,900 coverage-0 market rows in every other system. A tiebreak inside coverage
+// cannot reach a set that never ties: 90 minutes with buying restored bought 56
+// probes, 5 of which landed on a yard, and the heavy-yard priced count stayed at 4
+// of 86.
 //
-// Here the dark heavy counter sits in a system that already has a probe parked in
-// it. It must therefore wait behind eight uncovered systems, promoted within its
-// own system and nowhere else.
-func TestDrainCandidates_CoverageStillOutranksTheYardTerm(t *testing.T) {
-	rivals, rivalSys := rivalSystems(8, 1, 100)
-	slots := append([]QueuedSlot{
-		// The hull that makes X1-COVERED covered.
-		{Waypoint: "X1-COVERED-P1", System: "X1-COVERED", Kind: SlotKindMarket, State: SlotStateParked, AssignedShip: "PROBE-1"},
+// The Admiral's directive of 2026-07-31 overruled the constraint that produced it:
+// "yards should take absolute precedence over other markets! They should be the
+// first ones to be manned." So X1-COVERED-Y1 here sits in the most heavily covered
+// system in the fixture, behind four parked hulls, and it must still take the head
+// of the queue ahead of nine systems holding nothing at all.
+//
+// This test previously asserted the opposite (TestDrainCandidates_
+// CoverageStillOutranksTheYardTerm). It is inverted deliberately, not broken.
+func TestDrainCandidates_ADarkYardAtHighCoverageStillBeatsEveryMarketAtZero(t *testing.T) {
+	// Nine uncovered rival systems, each ranking a market at coverage 0, against a
+	// head of six. Their depth is the highest in the fixture, so every ordinary
+	// tiebreak in the sort is working against the yard.
+	rivals, rivalSys := rivalSystems(9, 2, 90_000)
+	covered := []QueuedSlot{
 		{Waypoint: "X1-COVERED-M1", System: "X1-COVERED", Kind: SlotKindMarket, State: SlotStateWanted},
 		{Waypoint: "X1-COVERED-Y1", System: "X1-COVERED", Kind: SlotKindMarket, State: SlotStateWanted},
-	}, rivals...)
-	systems := append([]ScreenedSystem{{System: "X1-COVERED", DepthCredits: 90_000}}, rivalSys...)
+	}
+	// Four hulls already parked, so the yard competes at coverage 4 — the state the
+	// shipped ordering is structurally unable to promote out of.
+	for i := 0; i < 4; i++ {
+		covered = append(covered, QueuedSlot{
+			Waypoint: fmt.Sprintf("X1-COVERED-P%d", i), System: "X1-COVERED",
+			Kind: SlotKindMarket, State: SlotStateParked, AssignedShip: fmt.Sprintf("PROBE-%d", i),
+		})
+	}
+	slots := append(covered, rivals...)
+	systems := append([]ScreenedSystem{{System: "X1-COVERED", DepthCredits: 100}}, rivalSys...)
+
+	assertFixtureSaturates(t, slots, systems, "X1-COVERED-Y1")
 
 	ports, _ := yardQueuePorts(slots, systems, &fakeYardDemand{
 		yards: []fakeYard{darkYard("X1-COVERED-Y1", "X1-COVERED", true)},
@@ -462,17 +623,57 @@ func TestDrainCandidates_CoverageStillOutranksTheYardTerm(t *testing.T) {
 		t.Fatalf("drainCandidates returned error: %v", err)
 	}
 
-	if inHead(got, "X1-COVERED-Y1") {
-		t.Fatalf("a dark yard in an ALREADY-COVERED system jumped ahead of eight systems holding no hull "+
-			"at all. The yard term ranks below coverage: it reorders within a system, it does not promote "+
-			"one past another. head=%v", head(got))
+	if got[0].Waypoint != "X1-COVERED-Y1" {
+		t.Fatalf("a dark heavy counter at coverage 4 lost to a market at coverage 0: head is %q, yard at "+
+			"%d of %d. Yards take ABSOLUTE precedence — coverage orders WITHIN the tier, it does not "+
+			"outrank it. head=%v", got[0].Waypoint, positionOf(got, "X1-COVERED-Y1"), len(got), head(got))
 	}
-	// It is still promoted WITHIN its own system — the term fired, it just did not
-	// outrank coverage. Without this the test would also pass with the feature
-	// deleted.
-	if positionOf(got, "X1-COVERED-Y1") > positionOf(got, "X1-COVERED-M1") {
-		t.Fatalf("the yard was not promoted inside its own system: Y1 at %d, M1 at %d",
-			positionOf(got, "X1-COVERED-Y1"), positionOf(got, "X1-COVERED-M1"))
+	// And the market beside it in the same covered system is NOT dragged along: the
+	// promotion is of the yard, not of its system.
+	if inHead(got, "X1-COVERED-M1") {
+		t.Fatalf("promoting the yard dragged its system's ordinary market into the head as well: M1 at %d. "+
+			"head=%v", positionOf(got, "X1-COVERED-M1"), head(got))
+	}
+}
+
+// TestDrainCandidates_TheMarketTierIsStillOrderedCoverageFirst is the other side of
+// the partition, and it is what stops "absolute precedence" being read as "throw
+// the ordering away".
+//
+// Coverage-first exists because depth alone put 67% of parked probes in three
+// systems. Nothing about the yard tier changes that for the markets: below the
+// partition the queue must order exactly as it always did, coverage ascending with
+// depth as the tiebreak. The fixture holds no yard at all in the covered system, so
+// only the market tier is under test.
+func TestDrainCandidates_TheMarketTierIsStillOrderedCoverageFirst(t *testing.T) {
+	rivals, rivalSys := rivalSystems(3, 1, 100)
+	slots := append([]QueuedSlot{
+		{Waypoint: "X1-RICH-P1", System: "X1-RICH", Kind: SlotKindMarket, State: SlotStateParked, AssignedShip: "PROBE-1"},
+		{Waypoint: "X1-RICH-M1", System: "X1-RICH", Kind: SlotKindMarket, State: SlotStateWanted},
+		{Waypoint: "X1-LONE-Y1", System: "X1-LONE", Kind: SlotKindMarket, State: SlotStateWanted},
+	}, rivals...)
+	systems := append([]ScreenedSystem{
+		{System: "X1-RICH", DepthCredits: 900_000},
+		{System: "X1-LONE", DepthCredits: 1},
+	}, rivalSys...)
+
+	ports, _ := yardQueuePorts(slots, systems, &fakeYardDemand{
+		yards: []fakeYard{darkYard("X1-LONE-Y1", "X1-LONE", true)},
+	})
+	got, _, err := drainCandidates(context.Background(), ports, testPlayerID)
+	if err != nil {
+		t.Fatalf("drainCandidates returned error: %v", err)
+	}
+
+	// The yard takes the head, then the market tier: three uncovered rivals at
+	// coverage 0 before the 900,000-deep covered system's market at coverage 1.
+	if got[0].Waypoint != "X1-LONE-Y1" {
+		t.Fatalf("the yard did not take the head: got %q. head=%v", got[0].Waypoint, head(got))
+	}
+	if rich := positionOf(got, "X1-RICH-M1"); rich != 4 {
+		t.Fatalf("X1-RICH-M1 sits at %d, want 4: below the yard tier the market ordering is unchanged — "+
+			"three uncovered rivals at coverage 0, then the covered system at coverage 1, however deep it "+
+			"is. order=%v", rich, head(got))
 	}
 }
 
@@ -538,14 +739,19 @@ func TestDrainCandidates_AnUnwiredYardDemandOrdersExactlyAsBefore(t *testing.T) 
 	}
 }
 
-// TestDrainCandidates_AnUnreachableDarkYardIsNotPromoted keeps feasibility ahead of
-// priority.
+// TestDrainCandidates_AnUnreachableDarkYardIsNotPromoted keeps FEASIBILITY ahead of
+// PRIORITY, and absolute precedence raises the stakes on it rather than lowering
+// them.
 //
 // An ordering fix that does not first partition by feasibility PROMOTES THE
 // IMPOSSIBLE — sp-1r08q's own finding, and the reason reachableFills runs before
 // the ranking rather than after it. An unreachable system's coverage is exactly
 // zero because no hull has ever arrived, so it was already being promoted for the
-// wrong reason; making it a dark yard as well must not promote it twice.
+// wrong reason. Under sp-7qhum a dark yard there merely won a tiebreak; under
+// sp-0j5hi it would take POSITION ZERO of every tick for as long as the system
+// stayed unreachable, spending ~59,584 credits on a hull that sits in BOUGHT
+// forever. Moving the partition ahead of reachableFills is the mutation this test
+// exists to kill.
 func TestDrainCandidates_AnUnreachableDarkYardIsNotPromoted(t *testing.T) {
 	ports, led, _ := reachPorts()
 	led.slots = append(led.slots, QueuedSlot{
@@ -558,8 +764,15 @@ func TestDrainCandidates_AnUnreachableDarkYardIsNotPromoted(t *testing.T) {
 		t.Fatalf("drainCandidates returned error: %v", err)
 	}
 	if positionOf(got, "X1-FAR-Y1") >= 0 {
-		t.Fatalf("funded a heavy counter in a system no hull can walk to. A dark yard that cannot be "+
-			"reached is still unreachable. got=%v", systemsOf(got))
+		t.Fatalf("funded a heavy counter in a system no hull can walk to, at position %d. A dark yard "+
+			"that cannot be reached is still unreachable, and absolute precedence would park it at the "+
+			"head of every tick. got=%v", positionOf(got, "X1-FAR-Y1"), systemsOf(got))
+	}
+	// The REACHABLE ordinary market is what the tick works instead. Without this the
+	// test would also pass if the fixture had produced nothing at all.
+	if len(got) == 0 || got[0].Waypoint != "X1-NEXT-M1" {
+		t.Fatalf("the reachable placement did not take the head after the unreachable yard was dropped: "+
+			"got=%v", systemsOf(got))
 	}
 	if yards.queued != 0 {
 		t.Fatalf("counted an unreachable yard as queued (%d) — the report would show the ordering "+
@@ -674,6 +887,185 @@ func TestDrain_ReportsTheOrderingWhileSpendingIsPaused(t *testing.T) {
 	}
 	if rep.YardsFilled != 0 {
 		t.Fatalf("YardsFilled=%d with spending paused and no spare to reuse: %+v", rep.YardsFilled, rep)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// A YARD NEVER TAKES A MANNED MARKET'S HULL (sp-0j5hi, Admiral constraint).
+//
+// The question that produced these two tests: "will they be retasked? so we
+// will unman some already manned markets from days ago?" The answer is no, and
+// these are what keep it no.
+//
+// "Absolute precedence" decides WHICH UNFILLED PLACEMENT GETS THE NEXT HULL. It
+// is not authority to strip a market that already has one. Three independent
+// structural facts hold that line, and each has an assertion below:
+//
+//  1. The drain's candidate read is SlotsByState(WANTED, QUEUED) — a PARKED row
+//     is never a candidate at all.
+//  2. The only transition in the whole drain that LEAVES PARKED is the spare
+//     release in reuseSpareHull, and its loop guard requires Kind == SPARE. A
+//     PARKED MARKET row cannot be transitioned by this queue by any path.
+//  3. The foothold path DOES take a hull off a working market, but it fires
+//     only for a target of Kind == SPARE (foothold.go), and SPARE placements are
+//     routed to `seeds` before the sort ever runs. The ordering this bead
+//     changes cannot reach it.
+// ---------------------------------------------------------------------------
+
+// TestDrainCandidates_AParkedMarketIsNeverACandidate is fact (1), and it is the
+// test that fails if someone widens the drain's state list.
+//
+// The fixture is deliberately hostile: every PARKED market sits in the SAME
+// system as the dark yard that wants a hull, so a state list widened to "see"
+// them would put them directly in the yard's path.
+func TestDrainCandidates_AParkedMarketIsNeverACandidate(t *testing.T) {
+	slots := []QueuedSlot{
+		{Waypoint: "X1-OLD-Y1", System: "X1-OLD", Kind: SlotKindMarket, State: SlotStateWanted},
+	}
+	// Three markets manned days ago, in the yard's own system.
+	for i := 0; i < 3; i++ {
+		slots = append(slots, QueuedSlot{
+			Waypoint: fmt.Sprintf("X1-OLD-M%d", i), System: "X1-OLD", Kind: SlotKindMarket,
+			State: SlotStateParked, AssignedShip: fmt.Sprintf("PROBE-OLD-%d", i),
+		})
+	}
+	systems := []ScreenedSystem{{System: "X1-OLD", DepthCredits: 900}}
+
+	ports, _ := yardQueuePorts(slots, systems, &fakeYardDemand{
+		yards: []fakeYard{darkYard("X1-OLD-Y1", "X1-OLD", true)},
+	})
+	got, _, err := drainCandidates(context.Background(), ports, testPlayerID)
+	if err != nil {
+		t.Fatalf("drainCandidates returned error: %v", err)
+	}
+
+	// The yard IS worked — without this the assertion below would also pass on an
+	// empty candidate list.
+	if len(got) != 1 || got[0].Waypoint != "X1-OLD-Y1" {
+		t.Fatalf("expected exactly the one unfilled yard as a candidate, got %v", head(got))
+	}
+	for _, c := range got {
+		if c.State == SlotStateParked {
+			t.Fatalf("a PARKED placement reached the candidate list: %s (%s). The drain reads WANTED and "+
+				"QUEUED only, and promoting yards must never widen that — a manned market is not a "+
+				"placement to be re-decided", c.Waypoint, c.State)
+		}
+	}
+}
+
+// TestDrain_APromotedYardDoesNotUnmanAnAlreadyMannedMarket is facts (2) and (3),
+// end to end through the real DrainBuyQueue.
+//
+// THE FOOTHOLD PATH IS WIRED HERE, NOT NIL, and that is the whole point of the
+// fixture. footholdBroker.fill returns false immediately when Gates or
+// MannedHulls is nil, so a fixture that left them out would assert that a
+// disabled path took no hull — which is true of any code and proves nothing. Both
+// ports are supplied, the surplus pool is loaded with the parked markets, and the
+// path still must not touch them, because the yard placement is Kind MARKET and
+// the broker only serves Kind SPARE.
+//
+// A spare IS parked in the system, so the drain has a legitimate hull to take.
+// That makes the test say something sharper than "nothing happened": the yard is
+// filled, and the hull it is filled with is the SPARE's, not any market's.
+func TestDrain_APromotedYardDoesNotUnmanAnAlreadyMannedMarket(t *testing.T) {
+	slots := []QueuedSlot{
+		{Waypoint: "X1-OLD-Y1", System: "X1-OLD", Kind: SlotKindMarket, State: SlotStateWanted},
+	}
+	// THE MANNED MARKETS COME BEFORE THE SPARE IN LEDGER ORDER, and that is the
+	// whole reason this fixture bites. reuseSpareHull walks the system's rows in
+	// ledger order and returns on the FIRST match, so with the spare written first
+	// a relaxed Kind guard would still find the spare and the markets would survive
+	// by luck. Written this way, a guard that stops distinguishing SPARE from
+	// MARKET takes X1-OLD-M0 immediately.
+	manned := map[string]bool{}
+	for i := 0; i < 3; i++ {
+		hull := fmt.Sprintf("PROBE-OLD-%d", i)
+		slots = append(slots, QueuedSlot{
+			Waypoint: fmt.Sprintf("X1-OLD-M%d", i), System: "X1-OLD", Kind: SlotKindMarket,
+			State: SlotStateParked, AssignedShip: hull,
+		})
+		manned[hull] = true
+	}
+	slots = append(slots, QueuedSlot{
+		Waypoint: "X1-OLD-S1", System: "X1-OLD", Kind: SlotKindSpare, State: SlotStateParked, AssignedShip: "PROBE-SPARE",
+	})
+
+	led := &fakeBuyLedger{slots: slots, systems: []ScreenedSystem{{System: "X1-OLD", DepthCredits: 900}}}
+	ports := BuyPorts{
+		Treasury:   &fakeTreasury{credits: 10_000_000},
+		CargoSpend: &fakeCargoSpend{},
+		Purchaser:  &fakePurchaser{price: 1_000},
+		Ledger:     led,
+		Yards:      &fakeYards{yards: map[string][]string{"X1-OLD": {"X1-OLD-Y1"}}},
+		Ships:      &fakeShipReader{docked: map[string]string{"X1-OLD-Y1": "BUYER"}},
+		Fleet:      &fakeFleet{},
+		YardDemand: &fakeYardDemand{yards: []fakeYard{darkYard("X1-OLD-Y1", "X1-OLD", true)}},
+		// The hull-releasing path, LIVE.
+		Gates:       &fakeGates{adjacency: map[string][]string{"X1-OLD": {}}},
+		MannedHulls: &fakeManned{hulls: manned},
+	}
+
+	rep, err := DrainBuyQueue(context.Background(), ports, testPlayerID,
+		BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{time.Now()})
+	if err != nil {
+		t.Fatalf("DrainBuyQueue returned error: %v", err)
+	}
+
+	// The tick DID work — otherwise every assertion below is vacuous.
+	if rep.Reused != 1 || rep.YardsFilled != 1 {
+		t.Fatalf("the fixture did not fill the yard (Reused=%d YardsFilled=%d), so the untouched-markets "+
+			"claim proves nothing: %+v", rep.Reused, rep.YardsFilled, rep)
+	}
+	// An end-to-end sanity check, NOT the coverage for the foothold guard. It is
+	// weak here by construction: the yard is filled by the reuse path and
+	// `continue`s before footholds.fill is ever called, so this stays green even if
+	// the broker's Kind guard is deleted. The guard's real killing test is
+	// TestFoothold_FillsOnlySparePlacementsNotMarketWants in foothold_test.go —
+	// verified by mutating the guard, which fails that test and not this one. Do
+	// not read this line as protection.
+	if rep.Footholds != 0 {
+		t.Fatalf("Footholds=%d: this drain took a hull off a working market to fill a yard: %+v",
+			rep.Footholds, rep)
+	}
+
+	// Every manned market is still manned, by the same hull.
+	for i := 0; i < 3; i++ {
+		waypoint := fmt.Sprintf("X1-OLD-M%d", i)
+		var found *QueuedSlot
+		for j := range led.slots {
+			if led.slots[j].Waypoint == waypoint && led.slots[j].Kind == SlotKindMarket {
+				found = &led.slots[j]
+			}
+		}
+		if found == nil {
+			t.Fatalf("%s vanished from the ledger entirely", waypoint)
+		}
+		if found.State != SlotStateParked || found.AssignedShip != fmt.Sprintf("PROBE-OLD-%d", i) {
+			t.Fatalf("%s was unmanned to feed a yard: state=%q hull=%q, want PARKED with PROBE-OLD-%d. "+
+				"Yards get every NEW hull first; they do not get other placements' hulls taken from them",
+				waypoint, found.State, found.AssignedShip, i)
+		}
+	}
+	// And no transition was even ATTEMPTED against one of them. The state check
+	// above could be satisfied by a release that was later undone; this cannot.
+	for _, tr := range led.transitions {
+		for i := 0; i < 3; i++ {
+			if tr.waypoint == fmt.Sprintf("X1-OLD-M%d", i) {
+				t.Fatalf("the drain attempted %s: %s -> %s on a manned market. No path in this queue may "+
+					"transition a PARKED MARKET row", tr.waypoint, tr.from, tr.to)
+			}
+		}
+	}
+	// The SPARE is what was spent, and it went back to WANTED with no hull — the
+	// one PARKED -> WANTED transition the drain owns, and it is Kind SPARE only.
+	var spare *QueuedSlot
+	for j := range led.slots {
+		if led.slots[j].Kind == SlotKindSpare {
+			spare = &led.slots[j]
+		}
+	}
+	if spare == nil || spare.State != SlotStateWanted || spare.AssignedShip != "" {
+		t.Fatalf("the spare was not the hull that fed the yard: %+v", spare)
 	}
 }
 
