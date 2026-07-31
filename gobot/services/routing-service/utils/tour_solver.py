@@ -1906,6 +1906,87 @@ def solve_tour(snapshot, ship, constraints, model, waypoints=None,
         pool += [s for s in beam_cands[:full_score_top_n] if s not in seen_seqs]
     else:
         pool = beam_cands[:full_score_top_n]
+
+    # HOME-SCOPED UNION (sp-97ine) — mirrors the ortools-unions-beam pattern above.
+    #
+    # Stage 1 is a TRUNCATED search (BEAM_WIDTH per level, then the full_score_top_n
+    # cut), so a WIDE candidate set can crowd out the in-system tours a home-only
+    # solve finds — even though the wide solve's solution space strictly CONTAINS
+    # the home-only one. Economy-analyst A/B, 2026-07-31, 51 joint cases (hull 220,
+    # live cap-2 / candidate-hop-depth 3 vs allowed_systems={home}): the intra-only
+    # solve BEAT live on 14 of 51, concentrated in the richest systems where the
+    # in-system tours are monsters. Losing to a SUBSET of your own search space is a
+    # dilution defect, not a strategy result — the third confirmed instance of this
+    # mechanism (cap-4 -26%, top_n-100 -21/-29%, now this).
+    #
+    # Fix: re-run stage 1 on the home-system market subset and UNION its candidates
+    # into the pool. Same can-only-ADD contract as the ortools union above — stage 2
+    # stays the sole arbiter — which restores the strict-superset property
+    # (live >= intra on every case) WITHOUT banning profitable crossings.
+    #
+    # Deliberately a re-SEARCH, not a filter of the wide candidates: a home-only
+    # sequence can be pruned out of the wide beam mid-search (its prefix loses a
+    # BEAM_WIDTH cut to foreign competitors), so filtering the wide output would
+    # recover only the dilution at the final cut, not the dilution inside the search.
+    #
+    # Scoping predicate: keep a node in the ship's home system, PLUS any node
+    # carrying no system at all. The latter are only ever the synthetic storage
+    # nodes `_build_deposit_sinks`/`_build_stock_sources` setdefault in when a
+    # candidate's storage_system is "" — which an allowed_systems={home} solve also
+    # keeps (its `if system and system not in allowed_systems` guard tolerates the
+    # empty string), so dropping them here would leave a gap in the very superset
+    # property this exists to restore. Real market nodes always carry their row's
+    # system_symbol, so no foreign market can enter through the falsy branch.
+    home_markets = {wp: m for wp, m in markets.items()
+                    if not m["system"] or m["system"] == ship["current_system"]}
+    # Skipped when the home subset IS the whole market set — the ordinary
+    # single-system solve, where the re-run would reproduce the wide candidates
+    # exactly and add nothing. Costs nothing on the common path; the extra stage-1
+    # is paid only by genuinely multi-system solves.
+    if home_markets and len(home_markets) < len(markets):
+        home_deposit_sinks = {k: v for k, v in deposit_sinks.items()
+                              if k[0] in home_markets}
+        home_stock_sources = {k: v for k, v in stock_source_idx.items()
+                              if k[0] in home_markets}
+        # travel_fn is REUSED, not rebuilt: it resolves a waypoint's system out of
+        # the full `markets`, and home_markets is a strict subset, so every home hop
+        # prices identically here, in the wide stage 1, and in stage 2 — one travel
+        # model per solve, which is the discipline the rest of solve_tour follows.
+        home_beam = beam_sequences(home_markets, ship, constraints, travel_fn,
+                                   home_deposit_sinks, home_stock_sources,
+                                   max_planned_tranches=max_planned_tranches)
+        if sequencer == SEQUENCER_ORTOOLS:
+            try:
+                home_ortools = ortools_sequences(home_markets, ship, constraints,
+                                                 travel_fn, home_deposit_sinks,
+                                                 home_stock_sources,
+                                                 max_planned_tranches=max_planned_tranches)
+            except Exception:
+                # Same never-die contract as the wide call. DISTINCT once-log key so
+                # a home failure can never suppress the wide traceback, or vice versa.
+                if "ortools_error_home" not in _logged_sequencer:
+                    _logged_sequencer.add("ortools_error_home")
+                    logger.exception("tour-solver: ortools home-scoped stage-1 "
+                                     "failed — home beam only")
+                home_ortools = []
+            home_pool = list(home_ortools[:full_score_top_n])
+            home_seen = set(home_pool)
+            home_pool += [s for s in home_beam[:full_score_top_n]
+                          if s not in home_seen]
+        else:
+            home_pool = home_beam[:full_score_top_n]
+        # APPENDED last, and de-duplicated against the wide pool: a home candidate
+        # has to win stage 2 outright to change the answer, and when the union adds
+        # nothing the pool — and therefore the whole response — is unchanged.
+        already = set(pool)
+        added = [s for s in home_pool if s not in already]
+        pool += added
+        if added:
+            # The mechanism has to be measurable or a union that never contributes
+            # looks exactly like one that is working.
+            logger.info("tour-solver: home-scoped stage-1 added %d candidate(s) "
+                        "(%d home of %d markets)",
+                        len(added), len(home_markets), len(markets))
     if not pool:
         # Union-empty ⇒ beam-empty ⇒ today's reason string, byte-identical.
         return _infeasible("no_candidate_tours", model_version)
