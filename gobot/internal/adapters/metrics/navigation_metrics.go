@@ -22,6 +22,9 @@ type NavigationMetricsCollector struct {
 	fuelPurchased  *prometheus.CounterVec
 	fuelConsumed   *prometheus.CounterVec
 	fuelEfficiency *prometheus.HistogramVec
+
+	// Jump claim-record hygiene
+	strandedJumpContainers *prometheus.CounterVec
 }
 
 // NewNavigationMetricsCollector creates a new navigation metrics collector
@@ -116,6 +119,22 @@ func NewNavigationMetricsCollector() *NavigationMetricsCollector {
 			},
 			[]string{"player_id"},
 		),
+
+		// Stranded jump-claim records found and cleared (sp-rqhzh). A jump's
+		// container row is a pure FK placeholder that its own handler deletes on
+		// the way out; a row that outlives its jump is a leak. Labelled by outcome
+		// so a reaper that never fires (0) is distinguishable from one that fires
+		// and fails (clear_failed) — otherwise a broken reaper and a clean fleet
+		// emit the identical signal.
+		strandedJumpContainers: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Subsystem: subsystem,
+				Name:      "stranded_jump_containers_total",
+				Help:      "Leftover jump container rows found by the post-claim reap, by outcome (cleared/clear_failed)",
+			},
+			[]string{"player_id", "outcome"},
+		),
 	}
 }
 
@@ -134,6 +153,7 @@ func (c *NavigationMetricsCollector) Register() error {
 		c.fuelPurchased,
 		c.fuelConsumed,
 		c.fuelEfficiency,
+		c.strandedJumpContainers,
 	}
 
 	for _, metric := range metrics {
@@ -210,4 +230,14 @@ func (c *NavigationMetricsCollector) RecordFuelConsumption(
 	flightModeStr := flightMode.Name()
 
 	c.fuelConsumed.WithLabelValues(playerIDStr, flightModeStr).Add(float64(units))
+}
+
+// RecordStrandedJumpContainer records one leftover jump container row the
+// post-claim reap found, under the outcome it reached ("cleared" /
+// "clear_failed").
+func (c *NavigationMetricsCollector) RecordStrandedJumpContainer(
+	playerID int,
+	outcome string,
+) {
+	c.strandedJumpContainers.WithLabelValues(strconv.Itoa(playerID), outcome).Inc()
 }

@@ -366,6 +366,50 @@ func (r *ContainerRepositoryGORM) ListRunningScoutWorkers(
 	return summaries, nil
 }
 
+// ListJumpContainersForShip returns the IDs of every JUMP container row the player holds that
+// NAMES this hull in its config, in any status. It backs jump_ship's post-claim reap (sp-rqhzh).
+//
+// Matching is on config["ship_symbol"], never on an ID prefix. Jump IDs are "ship-jump-<symbol>-
+// <nonce>", and hull symbols are not prefix-free — "ship-jump-TORWIND-2" is a prefix of
+// "ship-jump-TORWIND-23-..." — so a LIKE 'ship-jump-<symbol>%' would reap another hull's live
+// claim record. The config field is the hull the row was created FOR, which is exactly the
+// question being asked.
+//
+// STATUS IS DELIBERATELY UNSCOPED. A jump row's status never advances: it is written PENDING and
+// deleted on the way out, so status carries no information about whether a jump is in flight —
+// the hull's own claim does, and the caller holds it. Filtering by status here would only miss
+// rows that a claim-break already terminalized to STOPPED, which leak exactly like the PENDING
+// ones.
+func (r *ContainerRepositoryGORM) ListJumpContainersForShip(
+	ctx context.Context,
+	shipSymbol string,
+	playerID int,
+) ([]string, error) {
+	var models []*ContainerModel
+	err := r.db.WithContext(ctx).
+		Where("player_id = ? AND container_type = ?", playerID, string(container.ContainerTypeJump)).
+		Find(&models).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to list jump containers for ship %s: %w", shipSymbol, err)
+	}
+
+	ids := make([]string, 0, len(models))
+	for _, m := range models {
+		var cfg struct {
+			ShipSymbol string `json:"ship_symbol"`
+		}
+		// An unparseable config names no hull and is therefore never matched: a row we
+		// cannot attribute is left alone rather than reaped against the wrong hull.
+		if err := json.Unmarshal([]byte(m.Config), &cfg); err != nil {
+			continue
+		}
+		if cfg.ShipSymbol == shipSymbol {
+			ids = append(ids, m.ID)
+		}
+	}
+	return ids, nil
+}
+
 // HasActiveContainerOfType reports whether any container of the given types is currently RUNNING
 // or PENDING for the player. It backs the per-operation capital budget's hasWork sensor
 // (common.EngineCapitalWorkSensor, sp-ftqgp): the trade and construction spend guards each ask

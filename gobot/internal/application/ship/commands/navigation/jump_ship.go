@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/ship/queries"
 	domainContainer "github.com/andrescamacho/spacetraders-go/internal/domain/container"
@@ -28,7 +29,7 @@ type JumpShipCommand struct {
 	// SkipClaim indicates the caller already holds the ship claimed under
 	// its own container (e.g. a trade-route coordinator mid-circuit,
 	// sp-wlev). When true, Handle does not create/remove the lightweight
-	// "ship-jump-<symbol>" container record and does not
+	// "ship-jump-<symbol>-<nanos>" container record and does not
 	// AssignToContainer/ForceRelease the ship - it trusts the caller's
 	// existing claim instead of taking a second, conflicting one. Defaults
 	// to false, preserving today's self-claiming behavior for every
@@ -56,6 +57,10 @@ type JumpShipResponse struct {
 type ContainerRepository interface {
 	Add(ctx context.Context, containerEntity *domainContainer.Container, commandType string) error
 	Remove(ctx context.Context, containerID string, playerID int) error
+	// ListJumpContainersForShip returns the IDs of every JUMP container row that names
+	// this hull, in any status. It is what lets a jump clear the claim records its own
+	// earlier attempts leaked (sp-rqhzh).
+	ListJumpContainersForShip(ctx context.Context, shipSymbol string, playerID int) ([]string, error)
 }
 
 // JumpTopologyStore answers a jump's two topology questions from the persisted gate
@@ -270,7 +275,32 @@ func (h *JumpShipHandler) Handle(ctx context.Context, request common.Request) (c
 	// would otherwise error "already assigned to container X", and
 	// ForceRelease on the way out would wrongly drop the caller's claim.
 	if !cmd.SkipClaim {
-		jumpContainerID := fmt.Sprintf("ship-jump-%s", cmd.ShipSymbol)
+		// UNIQUE PER ATTEMPT (sp-rqhzh). This ID used to be a bare
+		// "ship-jump-<symbol>" — deterministic, with nothing to distinguish one
+		// attempt from the next. A jump that left its row behind (the deferred
+		// Remove below never ran, because the daemon died mid-jump, or it ran and
+		// the delete failed — its error is discarded) therefore made every LATER
+		// jump for that hull collide on containers_pkey, forever: the hull could
+		// never jump again, and kept consuming a probe-cap slot it could not use.
+		// Measured on the live fleet as 156 failures across two permanently wedged
+		// hulls, whose leftover rows named a destination they had ALREADY reached.
+		//
+		// A per-attempt nonce makes the collision structurally impossible rather
+		// than recoverable, and it costs no exclusivity: two jumps racing the same
+		// hull were only ever serialized by that pkey collision ACCIDENTALLY, and
+		// are still serialized deliberately by AssignToContainer below, which
+		// rejects an already-claimed hull whatever container holds it.
+		//
+		// Each attempt owning its OWN row is also what makes the deferred Remove
+		// safe: ships.container_id references containers ON DELETE SET NULL, so
+		// deleting a row silently strips the claim of whatever hull points at it.
+		// Under the old shared ID, a losing attempt's cleanup would have silently
+		// unclaimed the WINNER's hull mid-jump. Now every Remove can only ever
+		// touch the row its own attempt created.
+		//
+		// Mirrors ship-outfit-<symbol>-<nanos> in outfitting.go, the sibling
+		// operation that already claims a hull this way.
+		jumpContainerID := fmt.Sprintf("ship-jump-%s-%d", cmd.ShipSymbol, h.clock.Now().UnixNano())
 		jumpContainer := domainContainer.NewContainer(
 			jumpContainerID,
 			domainContainer.ContainerTypeJump,
@@ -305,6 +335,11 @@ func (h *JumpShipHandler) Handle(ctx context.Context, request common.Request) (c
 			}); err != nil {
 			return nil, fmt.Errorf("failed to save ship claim: %w", err)
 		}
+
+		// The claim has landed, so this is the one moment where the leftovers of
+		// this hull's earlier jumps are PROVABLY dead. See reapStrandedJumpContainers.
+		h.reapStrandedJumpContainers(ctx, cmd.ShipSymbol, jumpContainerID, playerID, logger)
+
 		defer func() {
 			// Release under CAS-retry too: re-apply ForceRelease on the fresh row,
 			// touching only the assignment, and skip if the hull is no longer this
@@ -429,6 +464,69 @@ func (h *JumpShipHandler) Handle(ctx context.Context, request common.Request) (c
 // the realistic case (a single stale nav_status), and the bound guarantees a
 // jump that keeps 4236-ing for any OTHER reason surfaces the error instead of
 // looping forever.
+// reapStrandedJumpContainers deletes the leftover JUMP container rows this hull
+// accumulated from earlier jumps, so a crash-leaked claim record cannot outlive the
+// fleet (sp-rqhzh). activeContainerID is this attempt's own row, which is never touched.
+//
+// WHY THIS CANNOT CLEAR A JUMP THAT IS ACTUALLY IN FLIGHT. It runs only AFTER this
+// handler's own AssignToContainer has committed, so this hull's single assignment row
+// points at activeContainerID right now. A jump holds its hull claimed for its entire
+// duration, so no other jump for this hull can be in flight while we hold that claim —
+// any concurrent attempt is already guaranteed to lose at AssignToContainer, and its own
+// deferred Remove is a harmless no-op against a row that is already gone.
+//
+// That held claim is POSITIVE evidence — a fact about the present, read from the same
+// assignment row the rest of the fleet reads ownership from — and not an age heuristic.
+// An age rule would have been the wrong instrument here: a jump row is written BEFORE its
+// claim, so "old and unclaimed" cannot tell a stranded row from one whose jump is a
+// millisecond away from claiming, and picking the wrong side of that rips a hull mid-spawn.
+// Holding the claim removes the ambiguity entirely instead of trading it off.
+//
+// BEST-EFFORT BY CONSTRUCTION. With per-attempt IDs a leftover row is inert — it can no
+// longer wedge anything — so this is hygiene, not the fix, and a failure here must never
+// fail the jump. Both outcomes are counted, because a reap that never runs and a reap
+// that runs and fails must not emit the same signal.
+func (h *JumpShipHandler) reapStrandedJumpContainers(
+	ctx context.Context,
+	shipSymbol string,
+	activeContainerID string,
+	playerID shared.PlayerID,
+	logger common.ContainerLogger,
+) {
+	if h.containerRepo == nil {
+		return
+	}
+
+	ids, err := h.containerRepo.ListJumpContainersForShip(ctx, shipSymbol, playerID.Value())
+	if err != nil {
+		logger.Log("WARN", "could not look for stranded jump claim records, continuing with the jump", map[string]interface{}{
+			"ship":  shipSymbol,
+			"error": err.Error(),
+		})
+		return
+	}
+
+	for _, id := range ids {
+		if id == activeContainerID {
+			continue // this jump's own claim record
+		}
+		if err := h.containerRepo.Remove(ctx, id, playerID.Value()); err != nil {
+			metrics.RecordStrandedJumpContainer(playerID.Value(), "clear_failed")
+			logger.Log("WARN", "found a stranded jump claim record but could not clear it", map[string]interface{}{
+				"ship":         shipSymbol,
+				"container_id": id,
+				"error":        err.Error(),
+			})
+			continue
+		}
+		metrics.RecordStrandedJumpContainer(playerID.Value(), "cleared")
+		logger.Log("INFO", "cleared a stranded jump claim record left by an earlier jump", map[string]interface{}{
+			"ship":         shipSymbol,
+			"container_id": id,
+		})
+	}
+}
+
 const maxJumpOrbitRetries = 2
 
 // jumpWithOrbitRetry executes the live jump, riding out a not-in-orbit rejection

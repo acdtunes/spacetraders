@@ -133,6 +133,7 @@ type NavigationMetricsRecorder interface {
 	RecordSegmentCompletion(playerID int, distance int, fuelRequired int)
 	RecordFuelPurchase(playerID int, waypoint string, units int)
 	RecordFuelConsumption(playerID int, flightMode shared.FlightMode, units int)
+	RecordStrandedJumpContainer(playerID int, outcome string)
 }
 
 // FinancialMetricsRecorder defines the interface for recording financial metrics
@@ -254,6 +255,14 @@ func RecordFuelPurchase(playerID int, waypoint string, units int) {
 func RecordFuelConsumption(playerID int, flightMode shared.FlightMode, units int) {
 	if globalNavigationCollector != nil {
 		globalNavigationCollector.RecordFuelConsumption(playerID, flightMode, units)
+	}
+}
+
+// RecordStrandedJumpContainer records one leftover jump container row the
+// post-claim reap found, under the outcome it reached (sp-rqhzh).
+func RecordStrandedJumpContainer(playerID int, outcome string) {
+	if globalNavigationCollector != nil {
+		globalNavigationCollector.RecordStrandedJumpContainer(playerID, outcome)
 	}
 }
 

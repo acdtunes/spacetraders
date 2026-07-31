@@ -3,6 +3,7 @@ package navigation
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -109,23 +110,71 @@ func (s *stubJumpAPIClient) GetJumpGate(_ context.Context, _, _, _ string) (*por
 	return s.gateData, s.gateErr
 }
 
-// stubJumpContainerRepo records claim-lifecycle calls (Add when the claim is
-// taken, Remove when it is released) so tests can assert the temporary
-// container record used to satisfy the ship_assignments FK constraint is
-// created and cleaned up, mirroring balance_ship_position.go's pattern.
+// stubJumpContainerRepo is an in-memory stand-in for the containers table. It records
+// claim-lifecycle calls (Add when the claim is taken, Remove when it is released) so
+// tests can assert the temporary container record used to satisfy the ships.container_id
+// FK constraint is created and cleaned up.
+//
+// Add ENFORCES PRIMARY-KEY UNIQUENESS on the container ID, exactly as containers_pkey
+// does in Postgres. That is not decoration: the sp-rqhzh wedge IS that duplicate-key
+// rejection, so a stub which quietly accepted a second row under the same ID could not
+// reproduce the bug at all, and every test written against it would pass with the fix
+// deleted.
 type stubJumpContainerRepo struct {
 	added   []*domainContainer.Container
 	removed []string
+
+	// rows is the persisted table: container ID -> the hull its config names.
+	rows map[string]string
+
+	// removeErr, when set, fails every Remove - the reap's clear_failed path.
+	removeErr error
+}
+
+// seedStrandedJumpContainer plants the leftover row a crashed earlier jump leaves
+// behind: a JUMP container whose ID is already taken and which no hull is claimed
+// under. This is the fixture the wedge needs to exist at all.
+func (s *stubJumpContainerRepo) seedStrandedJumpContainer(containerID, shipSymbol string) {
+	if s.rows == nil {
+		s.rows = map[string]string{}
+	}
+	s.rows[containerID] = shipSymbol
 }
 
 func (s *stubJumpContainerRepo) Add(_ context.Context, c *domainContainer.Container, _ string) error {
+	if s.rows == nil {
+		s.rows = map[string]string{}
+	}
+	if _, exists := s.rows[c.ID()]; exists {
+		// The live failure, verbatim in shape: containers_pkey rejects the insert and
+		// jump_ship surfaces it as "failed to create jump container record".
+		return fmt.Errorf("failed to insert container: ERROR: duplicate key value violates unique constraint \"containers_pkey\" (SQLSTATE 23505)")
+	}
+	hull, _ := c.GetMetadataValue("ship_symbol")
+	hullStr, _ := hull.(string)
+	s.rows[c.ID()] = hullStr
 	s.added = append(s.added, c)
 	return nil
 }
 
 func (s *stubJumpContainerRepo) Remove(_ context.Context, containerID string, _ int) error {
+	if s.removeErr != nil {
+		return s.removeErr
+	}
+	delete(s.rows, containerID)
 	s.removed = append(s.removed, containerID)
 	return nil
+}
+
+func (s *stubJumpContainerRepo) ListJumpContainersForShip(_ context.Context, shipSymbol string, _ int) ([]string, error) {
+	ids := make([]string, 0, len(s.rows))
+	for id, hull := range s.rows {
+		if hull == shipSymbol {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids) // deterministic order for assertions
+	return ids, nil
 }
 
 // stubJumpConstructionRepo embeds the domain interface so we only implement
