@@ -968,8 +968,20 @@ func run(cfg *config.Config) error {
 		nil,      // nil ⇒ the documented heavy classes
 	)
 
+	// sp-muq66: the daemon's ONE treasury reader. `Get Agent` measured 0.167 req/s — 8.3% of
+	// the 2.00 req/s ceiling — and did NOT fall under request coalescing, because the money
+	// guards' reads are invalidation-driven (every buy/sell/refuel/jump empties the agent
+	// cache) rather than concurrent duplicates. This reader answers from the transaction
+	// ledger, which already carries the same balance to the credit, and falls back to the
+	// coalesced live read when the newest row is older than the 30s freshness bound. Shared
+	// by the tour coordinator, the trade-route circuit, the fleet autosizer and the contract
+	// scaler so every money guard reads treasury one way. DELIBERATELY NOT wired into
+	// bootstrap (cold start has a legitimately empty ledger and stays live-first) nor into
+	// the captain's own credits reader (separate process, wake gate not a money guard).
+	ledgerTreasury := grpc.NewLedgerTreasuryReader(db, apiClient)
+
 	fleetAutosizerHandler := grpc.NewFleetAutosizerCoordinatorHandler(
-		daemonServer, apiClient, shipRepo, med, waypointRepo, captainEventRepo,
+		daemonServer, apiClient, ledgerTreasury, shipRepo, med, waypointRepo, captainEventRepo,
 		marketRepo,
 		shipyardQuery.NewReachableYardFinder(shipyardInventoryRepo, gateGraphService),
 		explorerOffGateBridge, // sp-a3yn: explorer demand provider reads off-gate demand through this bridge
@@ -988,7 +1000,7 @@ func run(cfg *config.Config) error {
 	// — it merely makes the coordinator available; the bootstrap coordinator launches this scaler during its
 	// DATA/INCOME cold-start window (unconditional, sp-1cbxz).
 	contractScalerHandler := grpc.NewContractScalerCoordinatorHandler(
-		daemonServer, apiClient, shipRepo, med, waypointRepo, marketRepo,
+		daemonServer, apiClient, ledgerTreasury, shipRepo, med, waypointRepo, marketRepo,
 		shipyardQuery.NewReachableYardFinder(shipyardInventoryRepo, gateGraphService),
 		gateGraphService, // sp-fihvy: home-scoped depot stocker reclaim (Routable) — same graph, no new mechanism
 	)
@@ -1020,6 +1032,10 @@ func run(cfg *config.Config) error {
 		med, shipRepo, marketRepo, marketScanner, nil, apiClient,
 	)
 	tradeRouteCoordinatorHandler.SetGateGraph(gateGraphService)
+	// sp-muq66: the circuit's working-capital spend floor reads treasury through the shared
+	// ledger-backed reader instead of a live Get Agent before every buy. Unconditional — no
+	// config gate. An unreadable treasury still aborts the circuit (fail-closed, RULINGS #4).
+	tradeRouteCoordinatorHandler.SetTreasuryReader(ledgerTreasury)
 	// sp-bcsu: chart every jump gate a hull lands on (the one moment its outbound edges are
 	// readable — a remote read with no ship present 400s) so a market-swept frontier system
 	// never strands hulls on empty gate_edges. Default ON; [routing] chart_gate_on_arrival
@@ -1490,6 +1506,11 @@ func run(cfg *config.Config) error {
 		routingClient, marketScanner, nil, apiClient,
 	)
 	tourCoordinatorHandler.SetGateGraph(gateGraphService)
+	// sp-muq66: the tour's dynamic 25%-of-treasury max-spend, its pre-positioning capital
+	// ceiling, and the movement legs' working-capital floor all read treasury through the
+	// shared ledger-backed reader instead of a live Get Agent per check. Unconditional — no
+	// config gate. An unreadable treasury still fails CLOSED exactly as before (RULINGS #4).
+	tourCoordinatorHandler.SetTreasuryReader(ledgerTreasury)
 	tourCoordinatorHandler.SetChartGateOnArrival(chartGateOnArrival) // sp-bcsu: chart cross-gate tour arrivals
 	// sp-mtvg: wire the global best-sink reader so the tour coordinator can SEE (and count
 	// on tour_candidates_dropped_total) the profitable exotic lanes whose sink is beyond the

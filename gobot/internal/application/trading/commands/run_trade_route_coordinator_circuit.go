@@ -210,7 +210,7 @@ func (h *RunTradeRouteCoordinatorHandler) flyVisits(
 		// purpose. Uses basis (this visit's live source ask, re-observed above),
 		// not lane.SourceAsk (the STALE ranked basis), so the projected cost
 		// reflects what the circuit is actually about to pay right now.
-		if h.spendFloorBreached(ctx, buyUnits*basis, reserve, response) {
+		if h.spendFloorBreached(ctx, playerID, buyUnits*basis, reserve, response) {
 			return ship, held
 		}
 

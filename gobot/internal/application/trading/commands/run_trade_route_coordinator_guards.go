@@ -4,82 +4,112 @@ package commands
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
 
-// reserveHeadroom performs the single live-treasury read that BOTH working-capital
+// TreasuryReader reports a player's credit balance for the money guards. The daemon
+// satisfies it with the LEDGER-backed reader (sp-muq66), which serves the balance from the
+// transaction ledger — no API call — and falls back to the coalesced live read only when
+// the ledger is older than its freshness bound. `Get Agent` was 8.3% of the API ceiling and
+// did not fall under request coalescing, because the reads are invalidation-driven rather
+// than duplicated; the only way to remove them is to stop asking.
+//
+// An error means UNREADABLE, and every caller here fails closed on it (RULINGS #4). The
+// reader never converts a failed read into a stale or zero success.
+type TreasuryReader interface {
+	Credits(ctx context.Context, playerID int) (int64, error)
+}
+
+// treasuryCredits reads the player's balance for a money guard: through the ledger-backed
+// reader when the daemon has wired one, otherwise the direct live call this guard has
+// always made. The direct path is the optional-port contract every nil-apiClient test
+// relies on, not an arming switch — the daemon wires the reader unconditionally, with no
+// config gate between.
+func (h *RunTradeRouteCoordinatorHandler) treasuryCredits(ctx context.Context, playerID int) (int64, error) {
+	if h.treasury != nil {
+		return h.treasury.Credits(ctx, playerID)
+	}
+	token, err := common.PlayerTokenFromContext(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("player token unavailable: %w", err)
+	}
+	agentData, err := h.apiClient.GetAgent(ctx, token)
+	if err != nil {
+		return 0, fmt.Errorf("live agent read failed: %w", err)
+	}
+	return int64(agentData.Credits), nil
+}
+
+// reserveHeadroom performs the single treasury read that BOTH working-capital
 // money guards share (sp-agzj): the circuit's spendFloorBreached (abort-on-breach)
 // and the tour's buy-time tranche shrink (executeBuy). It reports how many credits
-// may be spent right now while keeping live treasury at or above reserve, so the two
-// call sites make the same live read against the same fail-open/fail-closed contract
+// may be spent right now while keeping treasury at or above reserve, so the two
+// call sites make the same read against the same fail-open/fail-closed contract
 // rather than each rolling its own.
 //
 // Three outcomes, mirroring the original spendFloorBreached optional-port contract:
-//   - available=false                 → no apiClient wired (guard disabled, the
-//     contract most tests rely on); the caller proceeds UNCONSTRAINED.
-//   - available=true, readable=false  → a client IS wired but the live read FAILED
-//     (unresolvable token, or GetAgent itself erroring); the caller MUST fail CLOSED
-//     — never spend on a balance it could not read (RULINGS #4). The read-failure
-//     cause is logged here; the caller logs the action it took.
-//   - available=true, readable=true   → headroom = liveBalance - effectiveFloor (may be
-//     <= 0), and liveBalance is the live treasury the decision was made against.
+//   - available=false                 → no treasury source wired at all (guard disabled,
+//     the contract most tests rely on); the caller proceeds UNCONSTRAINED.
+//   - available=true, readable=false  → a source IS wired but the read FAILED
+//     (unresolvable token, an erroring GetAgent, or a ledger too stale to trust with no
+//     live fallback available); the caller MUST fail CLOSED — never spend on a balance it
+//     could not read (RULINGS #4). The read-failure cause is logged here; the caller logs
+//     the action it took.
+//   - available=true, readable=true   → headroom = balance - effectiveFloor (may be
+//     <= 0), and balance is the treasury the decision was made against.
 //
 // The floor subtracted is the ABSOLUTE reserve (sp-05glh: the prior sp-yqx4 counter-cyclical
 // proportional-of-treasury shrink was scrapped — every caller now enforces the flat
-// configured/default reserve, unconditionally, whatever live treasury is).
-func (h *RunTradeRouteCoordinatorHandler) reserveHeadroom(ctx context.Context, reserve int) (headroom, liveBalance int, available, readable bool) {
+// configured/default reserve, unconditionally, whatever treasury is).
+func (h *RunTradeRouteCoordinatorHandler) reserveHeadroom(ctx context.Context, playerID, reserve int) (headroom, liveBalance int, available, readable bool) {
 	logger := common.LoggerFromContext(ctx)
-	if h.apiClient == nil {
+	if h.apiClient == nil && h.treasury == nil {
 		return 0, 0, false, false
 	}
 
-	token, err := common.PlayerTokenFromContext(ctx)
+	credits, err := h.treasuryCredits(ctx, playerID)
 	if err != nil {
-		logger.Log("WARNING", "Could not resolve player token for working-capital spend-floor check (fail-closed)", map[string]interface{}{
+		logger.Log("WARNING", "Could not read treasury for working-capital spend-floor check (fail-closed)", map[string]interface{}{
 			"error": err.Error(),
 		})
 		return 0, 0, true, false
 	}
 
-	agentData, err := h.apiClient.GetAgent(ctx, token)
-	if err != nil {
-		logger.Log("WARNING", "Could not read live treasury for working-capital spend-floor check (fail-closed)", map[string]interface{}{
-			"error": err.Error(),
-		})
-		return 0, 0, true, false
-	}
-
-	return agentData.Credits - reserve, agentData.Credits, true, true
+	balance := int(credits)
+	return balance - reserve, balance, true, true
 }
 
-// spendFloorBreached live-checks whether spending projectedCost right now would
+// spendFloorBreached checks whether spending projectedCost right now would
 // drop treasury below reserve (sp-bp6f), setting the abort fields on response
 // and returning true if so — the caller must not proceed with the buy. It is the
 // circuit's abort-on-breach reading of the shared reserveHeadroom seam (sp-agzj).
 //
-// Fails OPEN when no apiClient is wired (h.apiClient == nil): the guard is
-// simply unavailable, the same optional-port contract staleAskAborts already
-// uses for marketRefresher, so callers that cannot supply a live API client
-// (most tests) run without it rather than being forced to fake one.
+// Fails OPEN when NO treasury source is wired at all (neither the ledger-backed
+// reader nor an apiClient): the guard is simply unavailable, the same optional-port
+// contract staleAskAborts already uses for marketRefresher, so callers that cannot
+// supply one (most tests) run without it rather than being forced to fake one.
 //
-// Fails CLOSED on every live-read failure (an unresolvable player token, or the
-// GetAgent call itself erroring): unlike staleAskAborts' infrastructure-gap
+// Fails CLOSED on every treasury-read failure (an unresolvable player token, an
+// erroring GetAgent, or a ledger too stale to trust with the live fallback also
+// down): unlike staleAskAborts' infrastructure-gap
 // tolerance, a guard whose entire job is stopping the treasury from going
 // negative must never let a buy through just because it went blind. An API
 // hiccup here aborts the circuit instead of silently trading past the floor.
 func (h *RunTradeRouteCoordinatorHandler) spendFloorBreached(
 	ctx context.Context,
+	playerID int,
 	projectedCost int,
 	reserve int,
 	response *RunTradeRouteCoordinatorResponse,
 ) bool {
 	logger := common.LoggerFromContext(ctx)
-	headroom, liveBalance, available, readable := h.reserveHeadroom(ctx, reserve)
+	headroom, liveBalance, available, readable := h.reserveHeadroom(ctx, playerID, reserve)
 	if !available {
-		return false // no apiClient — guard unavailable, fail OPEN
+		return false // no treasury source wired — guard unavailable, fail OPEN
 	}
 	if !readable {
 		// reserveHeadroom already logged the read-failure cause; record the

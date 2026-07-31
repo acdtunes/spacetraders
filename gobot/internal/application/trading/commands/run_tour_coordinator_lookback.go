@@ -359,7 +359,7 @@ func (h *RunTourCoordinatorHandler) buyLookbackItem(
 	// what the reserve can still afford, skip if even one unit pierces it, and fail CLOSED
 	// (no spend) if the live balance cannot be read. No live client wired → guard off
 	// (the optional-port contract every nil-apiClient test relies on).
-	headroom, liveBalance, guardOn, readable := h.legs.reserveHeadroom(ctx, int(reserve))
+	headroom, liveBalance, guardOn, readable := h.legs.reserveHeadroom(ctx, cmd.PlayerID, int(reserve))
 	if guardOn && !readable {
 		logger.Log("WARNING", fmt.Sprintf("Look-back: live balance unreadable buying %s @ %d (reserve %d) - not spending (fail-closed)", item.Good, liveAsk, reserve), map[string]interface{}{
 			"ship_symbol": cmd.ShipSymbol, "good": item.Good, "ask": liveAsk, "reserve": reserve,

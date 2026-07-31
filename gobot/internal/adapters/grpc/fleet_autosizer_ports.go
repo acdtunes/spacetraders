@@ -59,6 +59,7 @@ type agentReader interface {
 func NewFleetAutosizerCoordinatorHandler(
 	server *DaemonServer,
 	apiClient *api.SpaceTradersClient,
+	ledgerTreasury *persistence.LedgerTreasury,
 	shipRepo navigation.ShipRepository,
 	med common.Mediator,
 	waypointRepo *persistence.GormWaypointRepository,
@@ -92,7 +93,7 @@ func NewFleetAutosizerCoordinatorHandler(
 	h.AddDemandProvider(fleetCmd.NewExplorerDemandProvider(offGateDemand, &autosizerExplorerFleetSource{shipRepo: shipRepo}))
 
 	// Buy-path readers + writers.
-	h.SetTreasuryReader(&autosizerTreasuryReader{api: apiClient})
+	h.SetTreasuryReader(&autosizerTreasuryReader{api: apiClient, ledger: ledgerTreasury})
 	h.SetAPIUtilizationReader(&autosizerAPIUtilReader{reporter: metrics.GetGlobalAPIBudgetTracker()})
 	// The concrete waypoint repo is assigned only when non-nil: a typed-nil
 	// pointer inside the interface field would defeat the reader's nil guard
@@ -149,9 +150,28 @@ func NewFleetAutosizerCoordinatorHandler(
 
 // --- treasury ---
 
-type autosizerTreasuryReader struct{ api agentReader }
+// autosizerTreasuryReader answers the autosizer's (and the contract scaler's) treasury
+// cushion guard. It prefers the LEDGER (sp-muq66) — the same balance, with no API call —
+// and only falls back to a live read when the ledger is too old to trust; the fallback
+// lives inside the ledger reader, so this type states the guard's contract and nothing
+// more. An unwired ledger keeps the direct live read, which is what the daemon did before
+// and what every test that constructs this type bare still exercises.
+//
+// Unreadable is reported as readable=false, never as a zero balance: a guard that cannot
+// read treasury must refuse to buy, not size a purchase against 0 (RULINGS #4).
+type autosizerTreasuryReader struct {
+	api    agentReader
+	ledger *persistence.LedgerTreasury
+}
 
 func (r *autosizerTreasuryReader) Treasury(ctx context.Context, playerID int) (int64, bool, error) {
+	if r.ledger != nil {
+		credits, err := r.ledger.Credits(ctx, playerID)
+		if err != nil {
+			return 0, false, nil // unreadable → the treasury guards fail closed
+		}
+		return credits, true, nil
+	}
 	token, err := common.PlayerTokenFromContext(ctx)
 	if err != nil {
 		return 0, false, nil // no token in ctx → unreadable → the treasury guards fail closed

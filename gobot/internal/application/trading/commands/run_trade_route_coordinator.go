@@ -322,6 +322,12 @@ type RunTradeRouteCoordinatorHandler struct {
 	// defaulting to a real client the way clock defaults to RealClock — a caller
 	// that cannot supply one (e.g. most tests) simply runs without the guard.
 	apiClient domainPorts.APIClient
+	// treasury is the LEDGER-backed treasury reader (sp-muq66) the working-capital
+	// guards read through instead of calling Get Agent on every check. nil — every
+	// existing test — leaves the direct apiClient read in place, byte-identical; the
+	// daemon injects the shared reader via SetTreasuryReader at boot, with no config
+	// gate between. Wired or not, an unreadable treasury still fails CLOSED.
+	treasury TreasuryReader
 	// gateGraph resolves multi-jump routes over the persisted cross-system gate
 	// adjacency (sp-7gr2). Optional; nil keeps travel()'s legacy single-jump
 	// assumption (a direct origin→dest edge) so every existing caller/test is
@@ -495,6 +501,15 @@ func NewRunTradeRouteCoordinatorHandler(
 		clock:           clock,
 		apiClient:       apiClient,
 	}
+}
+
+// SetTreasuryReader wires the ledger-backed treasury reader the working-capital money
+// guards read through (sp-muq66), replacing a live Get Agent call on every check with a
+// ledger read that falls back to the live call only when the ledger is stale. Left unset
+// (nil) the guards keep reading the apiClient directly, so no existing caller or test
+// changes. This is DI, not an arming knob: the daemon wires it unconditionally.
+func (h *RunTradeRouteCoordinatorHandler) SetTreasuryReader(r TreasuryReader) {
+	h.treasury = r
 }
 
 // SetGateGraph wires the multi-jump gate-graph resolver (sp-7gr2). The daemon

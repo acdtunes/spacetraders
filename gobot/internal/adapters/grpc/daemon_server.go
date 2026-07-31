@@ -502,6 +502,18 @@ func NewDaemonServer(
 		// Store reference for lifecycle management
 		server.absorptionMetricsCollector = absorptionCollector
 
+		// Treasury-read collector (sp-muq66): the ledger/live/error split of every money-guard
+		// treasury read. Without it a fleet whose ledger is always stale would keep making
+		// every API call it made before and look, from the API counters alone, exactly like a
+		// change that never shipped. Event-driven, so registration + the global wire is the
+		// whole lifecycle.
+		treasuryReadCollector := metrics.NewTreasuryReadMetricsCollector()
+		if err := treasuryReadCollector.Register(); err != nil {
+			listener.Close()
+			return nil, fmt.Errorf("failed to register treasury read metrics collector: %w", err)
+		}
+		metrics.SetGlobalTreasuryReadCollector(treasuryReadCollector)
+
 		// Create tour instrumentation collector (sp-fbih): the tour coordinator emits the
 		// reposition/margins-death/reserve-floor/exit/duration/resolved-cap series through the
 		// global set here. Event-driven (no polling goroutine), so registration + the global

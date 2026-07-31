@@ -463,6 +463,13 @@ type RunTourCoordinatorHandler struct {
 	// apiClient live-reads treasury for the default 25% max-spend; nil → no default
 	// cap (the per-buy working-capital floor still guards).
 	apiClient domainPorts.APIClient
+	// treasury is the LEDGER-backed treasury reader (sp-muq66) the tour's money reads —
+	// the dynamic 25%-of-treasury max-spend and the pre-positioning capital ceiling — go
+	// through instead of calling Get Agent every time. nil (every existing test) keeps the
+	// direct apiClient read, byte-identical; the daemon injects the shared reader via
+	// SetTreasuryReader at boot with no config gate. An unreadable treasury still fails
+	// CLOSED either way.
+	treasury TreasuryReader
 	// modelArtifactPath is the daemon-configured (absolute) path to the market-model
 	// artifact this coordinator reads at launch, injected from cfg.Routing.ModelArtifactPath.
 	// Empty → the repo-relative defaultModelArtifactPath fallback. A per-run
@@ -738,6 +745,14 @@ func (h *RunTourCoordinatorHandler) SetOutOfHorizonSinkScanner(s outOfHorizonSin
 // arb coordinator's injection.
 func (h *RunTourCoordinatorHandler) SetGateGraph(g GateGraph) {
 	h.legs.SetGateGraph(g)
+}
+
+// SetTreasuryReader wires the ledger-backed treasury reader (sp-muq66) into BOTH this
+// coordinator's own money reads and the movement legs' working-capital guard, so the tour
+// path reads treasury one way rather than two. Left unset, both keep the direct live read.
+func (h *RunTourCoordinatorHandler) SetTreasuryReader(r TreasuryReader) {
+	h.treasury = r
+	h.legs.SetTreasuryReader(r)
 }
 
 // SetChartGateOnArrival propagates the chart-on-gate-arrival knob to the movement
@@ -1765,7 +1780,7 @@ func (h *RunTourCoordinatorHandler) executeBuy(
 	// parallel read. NOTE: the read is live but not atomic with the purchase, so
 	// concurrent hulls draining the shared treasury in the read→buy window remain a
 	// residual; this binds the floor at execution, it does not lock it.
-	headroom, liveBalance, guardOn, readable := h.legs.reserveHeadroom(ctx, int(reserve))
+	headroom, liveBalance, guardOn, readable := h.legs.reserveHeadroom(ctx, cmd.PlayerID, int(reserve))
 	if guardOn && !readable {
 		response.CapitalDeniedBuys++
 		logger.Log("WARNING", fmt.Sprintf("Tour leg %d: live balance unreadable at buy time for %d %s @ %d (reserve %d) - not spending, will re-plan (fail-closed)",
@@ -2359,7 +2374,7 @@ func (h *RunTourCoordinatorHandler) depositCandidates(ctx context.Context, cmd *
 			map[string]interface{}{"ship_symbol": cmd.ShipSymbol, "container_id": cmd.ContainerID})
 		return nil
 	}
-	ceiling, known := h.depositCapitalCeiling(ctx, reserve)
+	ceiling, known := h.depositCapitalCeiling(ctx, cmd.PlayerID, reserve)
 	if !known {
 		// Unreadable live balance: fail CLOSED (RULINGS #4) — a genuine anomaly (WARNING),
 		// but de-duped per container so a rate-limit blip does not spam.
@@ -2413,24 +2428,40 @@ func (h *RunTourCoordinatorHandler) clearDepositParked(key string) {
 	h.depositParkedMu.Unlock()
 }
 
-// depositCapitalCeiling resolves the pre-positioning capital ceiling: depositCeilingPct
-// percent of LIVE treasury, held JUNIOR to the working-capital reserve (never tie up
-// capital that would breach it). The caller (depositCandidates) gates on
-// depositCeilingPct>0 before calling this; a non-positive pct here returns a KNOWN zero
-// (fail closed, parked) rather than substituting a default — an unset ceiling can never
-// silently turn money movement ON. Returns known=false when the live balance is
-// UNREADABLE — the caller then offers no candidates (fail closed, RULINGS #4). The
-// foreign buys the deposits fund still pass the per-buy working-capital floor and the
-// cumulative max-spend cap at execution; this ceiling is layered on top.
-func (h *RunTourCoordinatorHandler) depositCapitalCeiling(ctx context.Context, reserve int64) (int64, bool) {
-	if h.apiClient == nil {
-		return 0, false
+// treasuryCredits reads the player's balance for this coordinator's money decisions:
+// through the ledger-backed reader when the daemon has wired one (sp-muq66 — no API call
+// on the common path), otherwise the direct live call the tour has always made. The direct
+// path is the optional-port contract every nil-apiClient test relies on, not an arming
+// switch. An error means UNREADABLE and every caller fails closed on it (RULINGS #4).
+func (h *RunTourCoordinatorHandler) treasuryCredits(ctx context.Context, playerID int) (int64, error) {
+	if h.treasury != nil {
+		return h.treasury.Credits(ctx, playerID)
 	}
 	token, err := common.PlayerTokenFromContext(ctx)
 	if err != nil {
-		return 0, false
+		return 0, fmt.Errorf("player token unavailable: %w", err)
 	}
 	agent, err := h.apiClient.GetAgent(ctx, token)
+	if err != nil {
+		return 0, fmt.Errorf("live agent read failed: %w", err)
+	}
+	return int64(agent.Credits), nil
+}
+
+// depositCapitalCeiling resolves the pre-positioning capital ceiling: depositCeilingPct
+// percent of treasury, held JUNIOR to the working-capital reserve (never tie up
+// capital that would breach it). The caller (depositCandidates) gates on
+// depositCeilingPct>0 before calling this; a non-positive pct here returns a KNOWN zero
+// (fail closed, parked) rather than substituting a default — an unset ceiling can never
+// silently turn money movement ON. Returns known=false when the balance is
+// UNREADABLE — the caller then offers no candidates (fail closed, RULINGS #4). The
+// foreign buys the deposits fund still pass the per-buy working-capital floor and the
+// cumulative max-spend cap at execution; this ceiling is layered on top.
+func (h *RunTourCoordinatorHandler) depositCapitalCeiling(ctx context.Context, playerID int, reserve int64) (int64, bool) {
+	if h.apiClient == nil && h.treasury == nil {
+		return 0, false
+	}
+	credits, err := h.treasuryCredits(ctx, playerID)
 	if err != nil {
 		return 0, false
 	}
@@ -2438,8 +2469,8 @@ func (h *RunTourCoordinatorHandler) depositCapitalCeiling(ctx context.Context, r
 	if pct <= 0 {
 		return 0, true // no ceiling configured — parked, fail closed (caller gates on this)
 	}
-	ceiling := int64(agent.Credits) * pct / 100
-	if avail := int64(agent.Credits) - reserve; avail < ceiling {
+	ceiling := credits * pct / 100
+	if avail := credits - reserve; avail < ceiling {
 		ceiling = avail // junior to the working-capital reserve
 	}
 	if ceiling < 0 {
@@ -2527,39 +2558,33 @@ func (h *RunTourCoordinatorHandler) tourShipState(ship *navigation.Ship) routing
 // int64(0) would conflate the two, letting a transient read failure masquerade as a
 // 0 budget:
 //
-//   - unreadable=false, cap>0  → live treasury read; size the tour to 25% of it.
+//   - unreadable=false, cap>0  → treasury read; size the tour to 25% of it.
 //   - unreadable=false, cap=0  → NO apiClient wired at all (structural; the daemon
 //     always wires one, so this is the test-harness / pure-env path). 0 is "no explicit
 //     cumulative cap" — the per-buy working-capital floor still guards every spend.
-//   - unreadable=true,  cap=0  → a treasury SOURCE is wired but the live read FAILED
-//     (no player token, or GetAgent errored). The caller MUST fail closed: never spend
+//   - unreadable=true,  cap=0  → a treasury SOURCE is wired but the read FAILED
+//     (no player token, GetAgent errored, or a stale ledger with the live fallback also
+//     down). The caller MUST fail closed: never spend
 //     on this, never fall back to unlimited or a stale budget — pause and retry so a
 //     continuous (--iterations -1) loop survives the transient (a shared-agent GetAgent
 //     blip must not complete every hull after one iteration).
 func (h *RunTourCoordinatorHandler) defaultMaxSpend(ctx context.Context, playerID int, reserve int64) (int64, bool) {
 	logger := common.LoggerFromContext(ctx)
-	if h.apiClient == nil {
+	if h.apiClient == nil && h.treasury == nil {
 		return 0, false // no treasury source wired — 0 = no explicit cap (floor guards)
 	}
-	token, err := common.PlayerTokenFromContext(ctx)
+	credits, err := h.treasuryCredits(ctx, playerID)
 	if err != nil {
-		logger.Log("WARNING", "Cannot re-resolve dynamic tour max-spend: player token unavailable - failing closed (will not spend uncapped)", map[string]interface{}{
+		logger.Log("WARNING", fmt.Sprintf("Cannot re-resolve dynamic tour max-spend: treasury read failed (%v) - failing closed (will not spend uncapped)", err), map[string]interface{}{
 			"error": err.Error(),
 		})
-		return 0, true // source exists but UNREADABLE (no token) — fail closed
+		return 0, true // source exists but UNREADABLE — fail closed
 	}
-	agent, err := h.apiClient.GetAgent(ctx, token)
-	if err != nil {
-		logger.Log("WARNING", fmt.Sprintf("Cannot re-resolve dynamic tour max-spend: live treasury read failed (%v) - failing closed (will not spend uncapped)", err), map[string]interface{}{
-			"error": err.Error(),
-		})
-		return 0, true // source exists but UNREADABLE (read failed) — fail closed
-	}
-	spendCap := int64(agent.Credits) * tourDefaultMaxSpendTreasuryPct / 100
-	logger.Log("INFO", fmt.Sprintf("Default tour max-spend = %d (25%% of live treasury %d)", spendCap, agent.Credits), map[string]interface{}{
-		"max_spend": spendCap, "treasury": agent.Credits,
+	spendCap := credits * tourDefaultMaxSpendTreasuryPct / 100
+	logger.Log("INFO", fmt.Sprintf("Default tour max-spend = %d (25%% of treasury %d)", spendCap, credits), map[string]interface{}{
+		"max_spend": spendCap, "treasury": credits,
 	})
-	return h.applyCapitalBudget(ctx, playerID, reserve, int64(agent.Credits), spendCap), false
+	return h.applyCapitalBudget(ctx, playerID, reserve, credits, spendCap), false
 }
 
 // applyCapitalBudget clamps this tour's cumulative spend cap to TRADE's share of deployable

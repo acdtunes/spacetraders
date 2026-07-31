@@ -1009,7 +1009,7 @@ func (h *RunStockerCoordinatorHandler) buy(
 	// Working-capital spend floor (RULINGS #4), reusing the delegated guard: never drop
 	// live treasury below the reserve. Fails closed on any live-read failure.
 	projectedCost := units * pick.ForeignAsk
-	if h.legs.spendFloorBreached(ctx, projectedCost, int(reserve), &RunTradeRouteCoordinatorResponse{}) {
+	if h.legs.spendFloorBreached(ctx, cmd.PlayerID, projectedCost, int(reserve), &RunTradeRouteCoordinatorResponse{}) {
 		logger.Log("WARNING", fmt.Sprintf("Stocker: buy of %d %s @ %d would breach working-capital floor %d - skipping", units, pick.Good, pick.ForeignAsk, reserve), map[string]interface{}{
 			"ship_symbol": cmd.ShipSymbol, "good": pick.Good, "units": units, "ask": pick.ForeignAsk, "reserve": reserve,
 		})

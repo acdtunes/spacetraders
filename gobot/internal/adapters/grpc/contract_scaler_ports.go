@@ -239,6 +239,7 @@ func mostCommonSystem(counts map[string]int) string {
 func NewContractScalerCoordinatorHandler(
 	server *DaemonServer,
 	apiClient *api.SpaceTradersClient,
+	ledgerTreasury *persistence.LedgerTreasury,
 	shipRepo navigation.ShipRepository,
 	med common.Mediator,
 	waypointRepo *persistence.GormWaypointRepository,
@@ -261,7 +262,7 @@ func NewContractScalerCoordinatorHandler(
 	h.SetRoleResolver(resolver)
 
 	// Treasury: the SAME reader the autosizer's cushion guard uses (fail-closed on an unreadable balance).
-	h.SetTreasuryReader(&autosizerTreasuryReader{api: apiClient})
+	h.SetTreasuryReader(&autosizerTreasuryReader{api: apiClient, ledger: ledgerTreasury})
 
 	// Yard price: the autosizer's cheapest-known-yard walk, adapted to the scaler's narrower
 	// NextHullPrice port. The concrete waypoint repo is assigned only when non-nil (the same typed-nil
