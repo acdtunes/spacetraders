@@ -778,6 +778,266 @@
       ],
       "title": "Fuel Spend (cr/hr) by Operation",
       "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 42
+      },
+      "id": 34,
+      "panels": [],
+      "title": "Travel Costs (jump gate fees)",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "description": "Jump gate fees burned per hour, trailing 6h. The window START is clamped to the first whole minute of TRAVEL_COSTS data, so this reads the TRUE rate instead of being diluted by pre-deploy hours with no data. Expect ~1.7-1.8M/hr at current fleet size; near zero means the category filter is wrong, far higher means it is double-counting FUEL_COSTS. This is pure opex and is already inside financial.json's ex-capex operating profit — it is NOT a new cost, it is a cost that was previously invisible. TRAVEL_COSTS has NO backfill (sp-shq63): it is zero for all time before the deploy and real after, so a long window shows a step change that is an artefact of INSTRUMENTATION, not of behaviour — do not read it as a cost spike.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "unit": "locale",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 4,
+        "x": 0,
+        "y": 43
+      },
+      "id": 35,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(-SUM(amount) * 3600.0 / NULLIF(GREATEST(EXTRACT(EPOCH FROM (NOW() - GREATEST((SELECT date_trunc('minute', MIN(created_at)) + INTERVAL '1 minute' FROM transactions WHERE category='TRAVEL_COSTS'), NOW() - INTERVAL '6 hours'))), 0), 0), 0) FROM transactions WHERE category='TRAVEL_COSTS' AND created_at >= GREATEST((SELECT date_trunc('minute', MIN(created_at)) + INTERVAL '1 minute' FROM transactions WHERE category='TRAVEL_COSTS'), NOW() - INTERVAL '6 hours') AND player_id=(SELECT MAX(id) FROM players)",
+          "refId": "A"
+        }
+      ],
+      "title": "Travel Spend (cr/hr)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "description": "Gate transits per hour, trailing 6h, window clamped to the instrumented era as with Travel Spend. Expect ~270-310/hr at current fleet size. Pair with the fee distribution on the right: spend falls either by jumping less or by jumping cheaper, and this tells you which lever moved. Filtered on transaction_type='JUMP' rather than the category alone so the count stays literally correct if TRAVEL_COSTS ever widens beyond gate fees. TRAVEL_COSTS has NO backfill (sp-shq63): it is zero for all time before the deploy and real after, so a long window shows a step change that is an artefact of INSTRUMENTATION, not of behaviour — do not read it as a cost spike.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "unit": "locale",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 4,
+        "x": 4,
+        "y": 43
+      },
+      "id": 36,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(COUNT(*) * 3600.0 / NULLIF(GREATEST(EXTRACT(EPOCH FROM (NOW() - GREATEST((SELECT date_trunc('minute', MIN(created_at)) + INTERVAL '1 minute' FROM transactions WHERE category='TRAVEL_COSTS'), NOW() - INTERVAL '6 hours'))), 0), 0), 0) FROM transactions WHERE category='TRAVEL_COSTS' AND transaction_type='JUMP' AND created_at >= GREATEST((SELECT date_trunc('minute', MIN(created_at)) + INTERVAL '1 minute' FROM transactions WHERE category='TRAVEL_COSTS'), NOW() - INTERVAL '6 hours') AND player_id=(SELECT MAX(id) FROM players)",
+          "refId": "A"
+        }
+      ],
+      "title": "Jumps/hr",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "description": "Jump gate fees as a percentage of operating profit BEFORE those fees (revenue less all non-travel opex, ex-capex). Currently ~42%: routing is the single largest controllable drag on the trading business, which is what makes this a decision rather than a line item. Use it to price routing work — a change that cuts jumps 10% is worth ~4% of gross operating profit. Numerator and denominator share ONE clamped window (start = first whole minute of TRAVEL_COSTS data), which is essential: an unclamped ratio would divide minutes of fee data by hours of profit and read far too low. Expect this to be volatile for the first hour after a deploy — the denominator is lumpy over short windows because a single large cargo buy dents gross profit — and to settle as the 6h window fills. TRAVEL_COSTS has NO backfill (sp-shq63): it is zero for all time before the deploy and real after, so a long window shows a step change that is an artefact of INSTRUMENTATION, not of behaviour — do not read it as a cost spike.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "unit": "percent",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 4,
+        "x": 8,
+        "y": 43
+      },
+      "id": 37,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(ROUND(100.0 * (-SUM(amount) FILTER (WHERE category='TRAVEL_COSTS')) / NULLIF(SUM(amount) FILTER (WHERE category NOT IN ('SHIP_INVESTMENTS','TRAVEL_COSTS')), 0), 1), 0) FROM transactions WHERE created_at >= GREATEST((SELECT date_trunc('minute', MIN(created_at)) + INTERVAL '1 minute' FROM transactions WHERE category='TRAVEL_COSTS'), NOW() - INTERVAL '6 hours') AND player_id=(SELECT MAX(id) FROM players)",
+          "refId": "A"
+        }
+      ],
+      "title": "Jump Cost — Share of Gross Operating Profit",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
+      },
+      "description": "Cost of a single gate transit, 15m buckets. This distribution has never been visible before and is the number that says whether routing changes pay for themselves: if p75 sits far above p50, a minority of expensive jumps carries the spend and lane selection is the lever; if the band is tight, only jumping LESS reduces cost. Currently p25/p50/p75 ≈ 5.2k/5.5k/6.4k. Unlike the stats to the left this honours the time picker directly, so it will show empty buckets before the deploy rather than a misleading flat line. TRAVEL_COSTS has NO backfill (sp-shq63): it is zero for all time before the deploy and real after, so a long window shows a step change that is an artefact of INSTRUMENTATION, not of behaviour — do not read it as a cost spike.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "unit": "locale",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 43
+      },
+      "id": 38,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT $__timeGroupAlias(created_at, '15m'), percentile_cont(0.25) WITHIN GROUP (ORDER BY -amount) AS \"p25\", percentile_cont(0.50) WITHIN GROUP (ORDER BY -amount) AS \"p50\", percentile_cont(0.75) WITHIN GROUP (ORDER BY -amount) AS \"p75\" FROM transactions WHERE $__timeFilter(created_at) AND category='TRAVEL_COSTS' AND transaction_type='JUMP' AND player_id=(SELECT MAX(id) FROM players) GROUP BY 1 ORDER BY 1",
+          "refId": "A"
+        }
+      ],
+      "title": "Per-Jump Gate Fee p25/p50/p75",
+      "type": "timeseries"
     }
   ],
   "refresh": "30s",

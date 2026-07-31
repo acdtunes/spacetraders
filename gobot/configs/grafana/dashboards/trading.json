@@ -657,7 +657,7 @@
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
       },
-      "description": "Income-ledger attribution per trade heavy, last 6h. Net includes open inventory (a heavy mid-buy shows negative until it sells). Duplicated from financial.json.",
+      "description": "Income-ledger attribution per trade heavy, last 6h. Net includes open inventory (a heavy mid-buy shows negative until it sells). Duplicated from financial.json. Costs = TRADING_COSTS + FUEL_COSTS + TRAVEL_COSTS (jump gate fees, ~6k/jump). Travel was added 2026-07-31 (sp-flvhs); before that this column understated cost by ~14%, so treat any margin you computed from it earlier as optimistic. TRAVEL_COSTS has NO backfill — it is zero for all time before the sp-shq63 deploy, so a window spanning that point mixes an instrumented era with an uninstrumented one.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -689,7 +689,7 @@
           },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT metadata->>'ship_symbol' AS \"Ship\", SUM(amount) AS \"Net\", COALESCE(SUM(amount) FILTER (WHERE category='TRADING_REVENUE'), 0) AS \"Revenue\", COALESCE(-SUM(amount) FILTER (WHERE category IN ('TRADING_COSTS','FUEL_COSTS')), 0) AS \"Costs\", COUNT(DISTINCT related_entity_id) AS \"Runs\" FROM transactions WHERE operation_type='tour' AND created_at >= NOW() - INTERVAL '6 hours' AND player_id=(SELECT MAX(id) FROM players) AND metadata->>'ship_symbol' IS NOT NULL GROUP BY 1 ORDER BY SUM(amount) DESC",
+          "rawSql": "SELECT metadata->>'ship_symbol' AS \"Ship\", SUM(amount) AS \"Net\", COALESCE(SUM(amount) FILTER (WHERE category='TRADING_REVENUE'), 0) AS \"Revenue\", COALESCE(-SUM(amount) FILTER (WHERE category IN ('TRADING_COSTS','FUEL_COSTS','TRAVEL_COSTS')), 0) AS \"Costs\", COUNT(DISTINCT related_entity_id) AS \"Runs\" FROM transactions WHERE operation_type='tour' AND created_at >= NOW() - INTERVAL '6 hours' AND player_id=(SELECT MAX(id) FROM players) AND metadata->>'ship_symbol' IS NOT NULL GROUP BY 1 ORDER BY SUM(amount) DESC",
           "refId": "A"
         }
       ],
@@ -701,7 +701,7 @@
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
       },
-      "description": "Same attribution as the 6h table, widened to 24h to smooth single-tour noise.",
+      "description": "Same attribution as the 6h table, widened to 24h to smooth single-tour noise. Costs includes TRAVEL_COSTS (jump gate fees) as of 2026-07-31 (sp-flvhs). At 24h this table currently spans the instrumentation boundary: TRAVEL_COSTS has NO backfill and is zero before the sp-shq63 deploy, so travel is under-counted here until a full 24h has elapsed since it. Prefer the 6h table for cost-accurate margins in the meantime.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -733,7 +733,7 @@
           },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT metadata->>'ship_symbol' AS \"Ship\", SUM(amount) AS \"Net\", COALESCE(SUM(amount) FILTER (WHERE category='TRADING_REVENUE'), 0) AS \"Revenue\", COALESCE(-SUM(amount) FILTER (WHERE category IN ('TRADING_COSTS','FUEL_COSTS')), 0) AS \"Costs\", COUNT(DISTINCT related_entity_id) AS \"Runs\" FROM transactions WHERE operation_type='tour' AND created_at >= NOW() - INTERVAL '24 hours' AND player_id=(SELECT MAX(id) FROM players) AND metadata->>'ship_symbol' IS NOT NULL GROUP BY 1 ORDER BY SUM(amount) DESC",
+          "rawSql": "SELECT metadata->>'ship_symbol' AS \"Ship\", SUM(amount) AS \"Net\", COALESCE(SUM(amount) FILTER (WHERE category='TRADING_REVENUE'), 0) AS \"Revenue\", COALESCE(-SUM(amount) FILTER (WHERE category IN ('TRADING_COSTS','FUEL_COSTS','TRAVEL_COSTS')), 0) AS \"Costs\", COUNT(DISTINCT related_entity_id) AS \"Runs\" FROM transactions WHERE operation_type='tour' AND created_at >= NOW() - INTERVAL '24 hours' AND player_id=(SELECT MAX(id) FROM players) AND metadata->>'ship_symbol' IS NOT NULL GROUP BY 1 ORDER BY SUM(amount) DESC",
           "refId": "A"
         }
       ],
@@ -1491,7 +1491,7 @@
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
       },
-      "description": "Per-tour spend (TRADING_COSTS + FUEL_COSTS) vs a 25%-of-treasury-at-start proxy for the coordinator's defaultMaxSpend() resolution (RULINGS #6). The cap is resolved once per tour from live treasury at plan time and is not itself persisted to Postgres \u2014 'Treasury@Start' is the last known balance_after at or before started_at, so 'Cap Proxy' approximates but is not guaranteed to equal the value the coordinator actually used. Last 6h, most recent first.",
+      "description": "Per-tour spend (TRADING_COSTS + FUEL_COSTS + TRAVEL_COSTS) vs a 25%-of-treasury-at-start proxy for the coordinator's defaultMaxSpend() resolution (RULINGS #6). The cap is resolved once per tour from live treasury at plan time and is not itself persisted to Postgres \u2014 'Treasury@Start' is the last known balance_after at or before started_at, so 'Cap Proxy' approximates but is not guaranteed to equal the value the coordinator actually used. Last 6h, most recent first. NOTE on what the cap governs: MaxSpend bounds the CARGO buy only (affordable = MaxSpend / ask); fuel and jump gate fees are not charged against it. 'Tour Spend' deliberately totals all cash out per tour, so a row near or above 100% is not by itself a guard breach — check the TRADING_COSTS share before escalating. TRAVEL_COSTS added 2026-07-31 (sp-flvhs) and has NO backfill, so it reads zero before the sp-shq63 deploy.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1523,7 +1523,7 @@
           },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT c.id AS \"Tour\", c.config::jsonb->>'ship_symbol' AS \"Ship\", c.started_at AS \"Started\", treas.balance_after AS \"Treasury@Start\", ROUND(treas.balance_after * 0.25) AS \"Cap Proxy (25%)\", COALESCE(spend.tour_spend,0) AS \"Tour Spend\", ROUND(100.0 * COALESCE(spend.tour_spend,0) / NULLIF(treas.balance_after * 0.25,0),1) AS \"% of Cap\" FROM containers c LEFT JOIN LATERAL (SELECT balance_after FROM transactions t2 WHERE t2.created_at <= c.started_at AND t2.player_id=(SELECT MAX(id) FROM players) ORDER BY t2.created_at DESC LIMIT 1) treas ON true LEFT JOIN LATERAL (SELECT SUM(-amount) AS tour_spend FROM transactions t3 WHERE t3.operation_type='tour' AND t3.category IN ('TRADING_COSTS','FUEL_COSTS') AND t3.metadata->>'ship_symbol' = c.config::jsonb->>'ship_symbol' AND t3.created_at BETWEEN c.started_at AND COALESCE(c.stopped_at, NOW())) spend ON true WHERE c.command_type='tour_run' AND c.started_at >= NOW() - INTERVAL '6 hours' ORDER BY c.started_at DESC LIMIT 20",
+          "rawSql": "SELECT c.id AS \"Tour\", c.config::jsonb->>'ship_symbol' AS \"Ship\", c.started_at AS \"Started\", treas.balance_after AS \"Treasury@Start\", ROUND(treas.balance_after * 0.25) AS \"Cap Proxy (25%)\", COALESCE(spend.tour_spend,0) AS \"Tour Spend\", ROUND(100.0 * COALESCE(spend.tour_spend,0) / NULLIF(treas.balance_after * 0.25,0),1) AS \"% of Cap\" FROM containers c LEFT JOIN LATERAL (SELECT balance_after FROM transactions t2 WHERE t2.created_at <= c.started_at AND t2.player_id=(SELECT MAX(id) FROM players) ORDER BY t2.created_at DESC LIMIT 1) treas ON true LEFT JOIN LATERAL (SELECT SUM(-amount) AS tour_spend FROM transactions t3 WHERE t3.operation_type='tour' AND t3.category IN ('TRADING_COSTS','FUEL_COSTS','TRAVEL_COSTS') AND t3.metadata->>'ship_symbol' = c.config::jsonb->>'ship_symbol' AND t3.created_at BETWEEN c.started_at AND COALESCE(c.stopped_at, NOW())) spend ON true WHERE c.command_type='tour_run' AND c.started_at >= NOW() - INTERVAL '6 hours' ORDER BY c.started_at DESC LIMIT 20",
           "refId": "A"
         }
       ],
