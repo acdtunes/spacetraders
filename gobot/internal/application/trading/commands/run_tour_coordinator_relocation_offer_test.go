@@ -38,7 +38,7 @@ func TestRelocationOfferShould_OfferOnlyAHullThatIsSharingItsSystem(t *testing.T
 		"system count unreadable (0) — fail closed, keep touring":           {0, false},
 	} {
 		t.Run(name, func(t *testing.T) {
-			got := shouldOfferForRelocation(tc.hullsInSystem, defaultRelocationOfferMinHullsInSystem, offerNow, time.Time{})
+			_, got := shouldOfferForRelocation(tc.hullsInSystem, defaultRelocationOfferMinHullsInSystem, offerNow, time.Time{})
 			if got != tc.want {
 				t.Fatalf("%s: offered=%v, want %v", name, got, tc.want)
 			}
@@ -52,12 +52,12 @@ func TestRelocationOfferShould_OfferOnlyAHullThatIsSharingItsSystem(t *testing.T
 func TestRelocationOfferShould_NotReOfferAHullWhoseLastOfferLapsedUnclaimed(t *testing.T) {
 	backoffUntil := offerNow.Add(20 * time.Minute)
 
-	if shouldOfferForRelocation(5, defaultRelocationOfferMinHullsInSystem, offerNow, backoffUntil) {
+	if _, offered := shouldOfferForRelocation(5, defaultRelocationOfferMinHullsInSystem, offerNow, backoffUntil); offered {
 		t.Fatal("a hull inside its post-lapse backoff was offered again; a hull the relocator cannot move would pay a window every tour cycle forever")
 	}
 	// Past the backoff the SAME hull is offered again — it is a timer, not a permanent exclusion, because
 	// the ground around it changes as the sensing surge prices new systems.
-	if !shouldOfferForRelocation(5, defaultRelocationOfferMinHullsInSystem, backoffUntil.Add(time.Second), backoffUntil) {
+	if _, offered := shouldOfferForRelocation(5, defaultRelocationOfferMinHullsInSystem, backoffUntil.Add(time.Second), backoffUntil); !offered {
 		t.Fatal("the hull was still refused past its backoff; the ground changes, so the refusal must lapse")
 	}
 }
@@ -92,4 +92,47 @@ func TestRelocationOfferShould_ResolveAWindowLongerThanTheRelocatorsOwnTick(t *t
 	}
 	t.Fatalf("the default offer window (%s) is shorter than the relocator's default tick (%s), so an offer can expire between two observations and never be seen — the feature would be inert by construction",
 		resolveRelocationOfferWindow(0), relocatorTick)
+}
+
+// EVERY REFUSAL MUST NAME ITSELF. sp-e8d92 shipped offering silently: the success path logged, the
+// persist-failure path logged, and a hull refused by the herd gate or the backoff logged NOTHING. So
+// "why wasn't this hull offered?" was unanswerable without a debugger — and the first time the feature
+// looked under-firing in production, answering it took a database investigation instead of a grep.
+//
+// That is the same absence-of-signal defect as sp-j1i49, in code written hours after fixing it there.
+// The reasons are a SMALL STABLE VOCABULARY so they can be grepped and counted rather than read.
+func TestRelocationOfferShould_NameTheReasonItRefusedToOffer(t *testing.T) {
+	for name, tc := range map[string]struct {
+		hullsInSystem int
+		backoffUntil  time.Time
+		wantReason    string
+		wantOffer     bool
+	}{
+		"sharing its system, no backoff — offered": {
+			hullsInSystem: 3, wantReason: "", wantOffer: true,
+		},
+		"alone in its system": {
+			hullsInSystem: 1, wantReason: offerRefusedAloneInSystem,
+		},
+		"the fleet snapshot read as zero": {
+			hullsInSystem: 0, wantReason: offerRefusedAloneInSystem,
+		},
+		"inside its post-lapse backoff": {
+			hullsInSystem: 5, backoffUntil: offerNow.Add(20 * time.Minute), wantReason: offerRefusedWithinBackoff,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			reason, offer := shouldOfferForRelocation(tc.hullsInSystem, defaultRelocationOfferMinHullsInSystem, offerNow, tc.backoffUntil)
+
+			if offer != tc.wantOffer {
+				t.Fatalf("%s: offered=%v, want %v", name, offer, tc.wantOffer)
+			}
+			if reason != tc.wantReason {
+				t.Fatalf("%s: reason %q, want %q — a refusal that names nothing is why the first production question needed a database investigation instead of a grep", name, reason, tc.wantReason)
+			}
+			if tc.wantOffer && reason != "" {
+				t.Fatalf("%s: an OFFERED hull carries refusal reason %q", name, reason)
+			}
+		})
+	}
 }

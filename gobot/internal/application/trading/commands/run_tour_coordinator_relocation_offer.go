@@ -101,20 +101,34 @@ func resolveRelocationOfferBackoff(configuredMinutes int) time.Duration {
 	return time.Duration(configuredMinutes) * time.Minute
 }
 
+const (
+	// The refusal vocabulary. SMALL and STABLE so a refusal can be grepped and counted rather than read,
+	// and so "why wasn't this hull offered?" is answerable from a log line instead of a debugger.
+	//
+	// sp-e8d92 shipped without these: the success path logged and the persist-failure path logged, but a
+	// hull refused by the herd gate or the backoff logged nothing at all. The first time the feature
+	// looked under-firing in production, answering that question took a database investigation — which is
+	// the same absence-of-signal defect as sp-j1i49, reintroduced hours after fixing it there.
+	offerRefusedAloneInSystem   = "alone_in_system"
+	offerRefusedWithinBackoff   = "within_offer_backoff"
+	offerRefusedFleetUnreadable = "fleet_unreadable"
+	offerRefusedUnwired         = "offer_persister_unwired"
+)
+
 // shouldOfferForRelocation decides whether THIS hull, at THIS boundary, is worth stalling for the
-// relocator. Pure: it judges facts the caller already read.
+// relocator, and NAMES the reason when it refuses. Pure: it judges facts the caller already read.
 //
 // hullsInSystem is the count of active trade hulls in the hull's current system, INCLUDING itself. A
 // zero means the fleet snapshot was unreadable, which fails CLOSED — an unreadable count is not evidence
 // of a stack, and the cost of guessing wrong is a hull that stops trading for no reason.
-func shouldOfferForRelocation(hullsInSystem, minHullsInSystem int, now, backoffUntil time.Time) bool {
+func shouldOfferForRelocation(hullsInSystem, minHullsInSystem int, now, backoffUntil time.Time) (string, bool) {
 	if hullsInSystem < minHullsInSystem {
-		return false // alone (or unreadable): already spreading, or unprovable
+		return offerRefusedAloneInSystem, false // alone (or unreadable): already spreading, or unprovable
 	}
 	if !backoffUntil.IsZero() && now.Before(backoffUntil) {
-		return false // its last offer lapsed unclaimed; do not pay another window yet
+		return offerRefusedWithinBackoff, false // its last offer lapsed unclaimed; do not pay another window
 	}
-	return true
+	return "", true
 }
 
 // relocationOfferStands reports whether an offer is live at now. THE EXPIRY IS ENFORCED HERE, by the
@@ -164,19 +178,23 @@ func (h *RunTourCoordinatorHandler) SetRelocationOfferPersister(p RelocationOffe
 // each returns "no offer" and the tour plans locally exactly as it does today. That is the whole safety
 // argument for this feature: the failure mode is today's behaviour, never a stalled hull.
 func (h *RunTourCoordinatorHandler) maybeOfferForRelocation(ctx context.Context, cmd *RunTourCoordinatorCommand, currentSystem string) time.Time {
+	logger := common.LoggerFromContext(ctx)
 	if h.offerPersister == nil || cmd.ContainerID == "" || currentSystem == "" {
+		logRelocationOfferRefused(logger, cmd, currentSystem, offerRefusedUnwired, 0)
 		return time.Time{}
 	}
 	now := h.clock.Now()
 	counts, ok := h.activeTradeHullsBySystem(ctx, cmd.PlayerID)
 	if !ok {
-		return time.Time{} // unreadable fleet: not evidence of a stack, so keep touring (fail closed)
+		// Unreadable fleet: not evidence of a stack, so keep touring (fail closed).
+		logRelocationOfferRefused(logger, cmd, currentSystem, offerRefusedFleetUnreadable, 0)
+		return time.Time{}
 	}
-	if !shouldOfferForRelocation(counts[currentSystem], resolveRelocationOfferMinHulls(cmd.RelocationOfferMinHulls), now, cmd.RelocationOfferBackoffUntil) {
+	if reason, offer := shouldOfferForRelocation(counts[currentSystem], resolveRelocationOfferMinHulls(cmd.RelocationOfferMinHulls), now, cmd.RelocationOfferBackoffUntil); !offer {
+		logRelocationOfferRefused(logger, cmd, currentSystem, reason, counts[currentSystem])
 		return time.Time{}
 	}
 	deadline := now.Add(resolveRelocationOfferWindow(cmd.RelocationOfferWindowSeconds))
-	logger := common.LoggerFromContext(ctx)
 	if err := h.offerPersister.PersistRelocationOffer(ctx, cmd.ContainerID, cmd.PlayerID, RelocationOffer{OfferedUntil: deadline}); err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Could not persist %s's relocation offer, touring on without offering (fail-open): %v", cmd.ShipSymbol, err), map[string]interface{}{
 			"ship_symbol": cmd.ShipSymbol, "container_id": cmd.ContainerID, "error": err.Error(),
@@ -265,4 +283,20 @@ func (h *RunTourCoordinatorHandler) relocationOfferPoll() time.Duration {
 		return h.offerPollInterval
 	}
 	return time.Duration(relocationOfferPollSeconds) * time.Second
+}
+
+// logRelocationOfferRefused names why a boundary did NOT offer its hull.
+//
+// In the MESSAGE TEXT, not only the metadata map, because `container logs` drops the map (the
+// sp-149h/sp-iqyq renderer defect) — a reason that lives only in structured fields is invisible to
+// whoever is actually reading logs, which is the person asking the question.
+//
+// No counter: the tour coordinator has no metrics sink, and adding one for this would be a new port and
+// new boot wiring rather than a free ride on an existing seam. A greppable line answers the question
+// this exists for; if the RATE ever matters, the sink is the right change and this is not it.
+func logRelocationOfferRefused(logger common.ContainerLogger, cmd *RunTourCoordinatorCommand, system, reason string, hullsInSystem int) {
+	logger.Log("INFO", fmt.Sprintf("Relocation offer refused: %s at %s - %s (%d trade hulls in system, gate needs %d)", cmd.ShipSymbol, system, reason, hullsInSystem, resolveRelocationOfferMinHulls(cmd.RelocationOfferMinHulls)), map[string]interface{}{
+		"ship_symbol": cmd.ShipSymbol, "system": system, "reason": reason,
+		"hulls_in_system": hullsInSystem, "trigger": "relocation_offer", "outcome": "refused",
+	})
 }
