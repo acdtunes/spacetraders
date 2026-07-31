@@ -173,6 +173,12 @@ type RunArbCoordinatorHandler struct {
 	// gate; nil skips the refresh and gates on the cached basis.
 	apiClient       domainPorts.APIClient
 	marketRefresher MarketRefresher
+	// treasury is the LEDGER-backed treasury reader (sp-muq66) the spend-floor guard reads
+	// through instead of calling Get Agent before every one-shot buy (sp-45s6f). nil —
+	// every existing test — leaves the direct apiClient read in place, byte-identical; the
+	// daemon injects the shared reader via SetTreasuryReader at boot, with no config gate
+	// between. Wired or not, an unreadable treasury still aborts the buy (fail closed).
+	treasury TreasuryReader
 	// costPersister durably records a fresh buy's cost so a resumed run reports honest
 	// P&L across a daemon restart (sp-dkj7, RULINGS #2). Optional; nil disables the
 	// persistence (a cross-restart resume then under-reports cost exactly as before this
@@ -242,6 +248,17 @@ func (h *RunArbCoordinatorHandler) SetGateGraph(g GateGraph) {
 // Mirrors the SetGateGraph delegation.
 func (h *RunArbCoordinatorHandler) SetChartGateOnArrival(enabled bool) {
 	h.legs.SetChartGateOnArrival(enabled)
+}
+
+// SetTreasuryReader wires the shared ledger-backed treasury reader (sp-45s6f) into this
+// coordinator's spend-floor guard AND into its MOVEMENT LEGS, which run the buy-time
+// working-capital floor. The legs are this handler's OWN RunTradeRouteCoordinatorHandler
+// instance (the constructor builds one; the daemon passes nil), NOT the daemon's separately
+// wired circuit handler — so a setter that stopped here would leave half the arb path still
+// calling Get Agent. Same delegation the tour coordinator's setter makes.
+func (h *RunArbCoordinatorHandler) SetTreasuryReader(r TreasuryReader) {
+	h.treasury = r
+	h.legs.SetTreasuryReader(r)
 }
 
 // SetEventSubscriber wires the ship-arrival event bus into the delegated movement
@@ -702,11 +719,11 @@ func (h *RunArbCoordinatorHandler) guardAndBuy(
 	}
 
 	// Guard 4 — spend-floor (mirrors sp-bp6f): never execute a buy that would drop
-	// live treasury below the working-capital reserve. Fails CLOSED on any live-read
-	// failure (missing token or GetAgent error). projectedCost is bounded by MaxSpend
-	// already (the sizing above), so this only adds the treasury-floor protection.
+	// treasury below the working-capital reserve. Fails CLOSED on any treasury-read
+	// failure. projectedCost is bounded by MaxSpend already (the sizing above), so this
+	// only adds the treasury-floor protection.
 	projectedCost := units * sourceAsk
-	if h.spendFloorBreached(ctx, projectedCost, reserve, response) {
+	if h.spendFloorBreached(ctx, cmd.PlayerID, projectedCost, reserve, response) {
 		if response.AbortReason == "" {
 			response.AbortReason = fmt.Sprintf("buy of %d @ %d (=%d) would breach the working-capital floor %d - aborting before spending", units, sourceAsk, projectedCost, reserve)
 		}
@@ -829,26 +846,34 @@ func unitsOfGoodAboard(ship *navigation.Ship, good string) int {
 }
 
 // spendFloorBreached mirrors the trade-route working-capital guard (sp-bp6f) for the
-// one-shot buy: it reports whether executing a buy of projectedCost would drop live
-// treasury below reserve, and fails CLOSED on any live-read failure (a missing player
-// token or a GetAgent error) rather than risk spending blind. A nil apiClient
-// disables the guard entirely (fail-open on the missing port). On a confirmed breach
-// it records the live treasury figure; on a blind fail-closed abort it leaves
-// TreasuryAtAbort at zero, since no live figure was ever obtained.
+// one-shot buy: it reports whether executing a buy of projectedCost would drop treasury
+// below reserve, and fails CLOSED on any read failure (a missing player token, a GetAgent
+// error, or a ledger too stale to trust with the live fallback also down) rather than risk
+// spending blind. No treasury source at all — neither the ledger-backed reader nor an
+// apiClient — disables the guard entirely (fail-open on the missing port). On a confirmed
+// breach it records the treasury figure the decision was made against; on a blind
+// fail-closed abort it leaves TreasuryAtAbort at zero, since no figure was ever obtained.
+//
+// The read goes through the shared ledger-backed reader when the daemon has wired one
+// (sp-45s6f), so the common path costs NO API call. The two read-failure branches this
+// replaced set identical response fields and differed only in their log text; the cause is
+// now carried in the wrapped error instead, which also covers the ledger-side failures the
+// token/GetAgent split could not name.
 func (h *RunArbCoordinatorHandler) spendFloorBreached(
 	ctx context.Context,
+	playerID int,
 	projectedCost int,
 	reserve int,
 	response *RunArbCoordinatorResponse,
 ) bool {
 	logger := common.LoggerFromContext(ctx)
-	if h.apiClient == nil {
+	if h.apiClient == nil && h.treasury == nil {
 		return false
 	}
 
-	token, err := common.PlayerTokenFromContext(ctx)
+	credits, err := readTreasuryCredits(ctx, h.treasury, h.apiClient, playerID)
 	if err != nil {
-		logger.Log("WARNING", "Could not resolve player token for spend-floor check - aborting buy (fail-closed)", map[string]interface{}{
+		logger.Log("WARNING", "Could not read treasury for spend-floor check - aborting buy (fail-closed)", map[string]interface{}{
 			"error": err.Error(),
 		})
 		response.Aborted = true
@@ -857,24 +882,14 @@ func (h *RunArbCoordinatorHandler) spendFloorBreached(
 		return true
 	}
 
-	agentData, err := h.apiClient.GetAgent(ctx, token)
-	if err != nil {
-		logger.Log("WARNING", "Could not read live treasury for spend-floor check - aborting buy (fail-closed)", map[string]interface{}{
-			"error": err.Error(),
-		})
-		response.Aborted = true
-		response.SpendFloorAbort = true
-		response.ReserveFloor = reserve
-		return true
-	}
-
-	if agentData.Credits-projectedCost < reserve {
+	treasury := int(credits)
+	if treasury-projectedCost < reserve {
 		logger.Log("WARNING", "Buy would breach the working-capital reserve floor - aborting before spending", map[string]interface{}{
-			"treasury": agentData.Credits, "projected_cost": projectedCost, "reserve": reserve,
+			"treasury": treasury, "projected_cost": projectedCost, "reserve": reserve,
 		})
 		response.Aborted = true
 		response.SpendFloorAbort = true
-		response.TreasuryAtAbort = agentData.Credits
+		response.TreasuryAtAbort = treasury
 		response.ReserveFloor = reserve
 		return true
 	}

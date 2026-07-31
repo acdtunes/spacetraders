@@ -181,7 +181,13 @@ type RunStockerCoordinatorHandler struct {
 	mediator           common.Mediator
 	marketRepo         market.MarketRepository
 	apiClient          domainPorts.APIClient
-	clock              shared.Clock
+	// treasury is the LEDGER-backed treasury reader (sp-muq66) the stocker's capital
+	// ceiling reads through instead of calling Get Agent on every pick (sp-45s6f). nil —
+	// every existing test — leaves the direct apiClient read in place, byte-identical; the
+	// daemon injects the shared reader via SetTreasuryReader at boot, with no config gate
+	// between. Wired or not, an unreadable balance still stocks nothing (fail closed).
+	treasury TreasuryReader
+	clock    shared.Clock
 	storageCoordinator storage.StorageCoordinator
 	warehouseFinder    tradingsvc.WarehouseOperationFinder
 	demandMiner        tradingsvc.DepositDemandMiner
@@ -358,6 +364,17 @@ func (h *RunStockerCoordinatorHandler) SetGateGraph(g GateGraph) {
 // too. Mirrors the SetGateGraph delegation.
 func (h *RunStockerCoordinatorHandler) SetChartGateOnArrival(enabled bool) {
 	h.legs.SetChartGateOnArrival(enabled)
+}
+
+// SetTreasuryReader wires the shared ledger-backed treasury reader (sp-45s6f) into this
+// coordinator's capital ceiling AND into its MOVEMENT LEGS, which run the buy-time
+// working-capital floor. The legs are this handler's OWN RunTradeRouteCoordinatorHandler
+// instance (the constructor builds one; the daemon passes nil), NOT the daemon's separately
+// wired circuit handler — so a setter that stopped here would leave half the stocker path
+// still calling Get Agent. Same delegation the tour coordinator's setter makes.
+func (h *RunStockerCoordinatorHandler) SetTreasuryReader(r TreasuryReader) {
+	h.treasury = r
+	h.legs.SetTreasuryReader(r)
 }
 
 // SetEventSubscriber wires the ship-arrival event bus into the delegated movement
@@ -618,11 +635,11 @@ func (h *RunStockerCoordinatorHandler) pick(
 ) (stockerPick, bool) {
 	logger := common.LoggerFromContext(ctx)
 
-	// Capital ceiling (10% of live treasury, junior to the reserve). Unreadable balance →
+	// Capital ceiling (10% of treasury, junior to the reserve). Unreadable balance →
 	// stock nothing (fail closed, RULINGS #4).
-	ceiling, known := h.capitalCeiling(ctx, reserve)
+	ceiling, known := h.capitalCeiling(ctx, cmd.PlayerID, reserve)
 	if !known {
-		logger.Log("WARNING", "Stocker: capital ceiling unreadable (live balance) - nothing to stock this pass (fail closed, RULINGS #4)", map[string]interface{}{
+		logger.Log("WARNING", "Stocker: capital ceiling unreadable (treasury) - nothing to stock this pass (fail closed, RULINGS #4)", map[string]interface{}{
 			"ship_symbol": cmd.ShipSymbol,
 		})
 		return stockerPick{}, false
@@ -1277,18 +1294,15 @@ func (h *RunStockerCoordinatorHandler) warehouseAt(ctx context.Context, playerID
 }
 
 // capitalCeiling resolves the pre-positioning capital ceiling: ceilingPct (default 10)
-// percent of LIVE treasury, held JUNIOR to the working-capital reserve. Returns
-// known=false when the live balance is UNREADABLE — the pick then stocks nothing (fail
-// closed, RULINGS #4). Mirrors the tour's depositCapitalCeiling verbatim.
-func (h *RunStockerCoordinatorHandler) capitalCeiling(ctx context.Context, reserve int64) (int64, bool) {
-	if h.apiClient == nil {
+// percent of treasury, held JUNIOR to the working-capital reserve. Returns known=false
+// when the balance is UNREADABLE — the pick then stocks nothing (fail closed, RULINGS #4).
+// Mirrors the tour's depositCapitalCeiling verbatim, including its treasury read: both go
+// through the shared ledger-backed reader (sp-45s6f) rather than each calling Get Agent.
+func (h *RunStockerCoordinatorHandler) capitalCeiling(ctx context.Context, playerID int, reserve int64) (int64, bool) {
+	if h.apiClient == nil && h.treasury == nil {
 		return 0, false
 	}
-	token, err := common.PlayerTokenFromContext(ctx)
-	if err != nil {
-		return 0, false
-	}
-	agent, err := h.apiClient.GetAgent(ctx, token)
+	credits, err := readTreasuryCredits(ctx, h.treasury, h.apiClient, playerID)
 	if err != nil {
 		return 0, false
 	}
@@ -1296,8 +1310,8 @@ func (h *RunStockerCoordinatorHandler) capitalCeiling(ctx context.Context, reser
 	if pct <= 0 {
 		pct = defaultDepositCeilingPct
 	}
-	ceiling := int64(agent.Credits) * pct / 100
-	if avail := int64(agent.Credits) - reserve; avail < ceiling {
+	ceiling := credits * pct / 100
+	if avail := credits - reserve; avail < ceiling {
 		ceiling = avail // junior to the working-capital reserve
 	}
 	if ceiling < 0 {

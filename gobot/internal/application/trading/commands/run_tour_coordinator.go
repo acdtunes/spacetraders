@@ -2434,18 +2434,7 @@ func (h *RunTourCoordinatorHandler) clearDepositParked(key string) {
 // path is the optional-port contract every nil-apiClient test relies on, not an arming
 // switch. An error means UNREADABLE and every caller fails closed on it (RULINGS #4).
 func (h *RunTourCoordinatorHandler) treasuryCredits(ctx context.Context, playerID int) (int64, error) {
-	if h.treasury != nil {
-		return h.treasury.Credits(ctx, playerID)
-	}
-	token, err := common.PlayerTokenFromContext(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("player token unavailable: %w", err)
-	}
-	agent, err := h.apiClient.GetAgent(ctx, token)
-	if err != nil {
-		return 0, fmt.Errorf("live agent read failed: %w", err)
-	}
-	return int64(agent.Credits), nil
+	return readTreasuryCredits(ctx, h.treasury, h.apiClient, playerID)
 }
 
 // depositCapitalCeiling resolves the pre-positioning capital ceiling: depositCeilingPct

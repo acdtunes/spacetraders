@@ -214,6 +214,19 @@ type SpendReservationLedger interface {
 	ExpireStale(ctx context.Context, maxAge time.Duration) (int, error)
 }
 
+// TreasuryReader reports a player's credit balance for the factory money guards. The daemon
+// satisfies it with the LEDGER-backed reader (sp-muq66), which serves the balance from the
+// transaction ledger — no API call — and falls back to the coalesced live read only when the
+// ledger is older than its freshness bound. `Get Agent` was 9-10% of the API ceiling and did
+// not fall under request coalescing, because the reads are invalidation-driven rather than
+// duplicated; the only way to remove them is to stop asking.
+//
+// An error means UNREADABLE, and both callers here PARK the input buy on it (RULINGS #4).
+// The reader never converts a failed read into a stale or zero success.
+type TreasuryReader interface {
+	Credits(ctx context.Context, playerID int) (int64, error)
+}
+
 // ProductionExecutor orchestrates the production of goods by coordinating ship operations.
 // It handles both purchasing goods from markets (BUY) and manufacturing them (FABRICATE).
 type ProductionExecutor struct {
@@ -232,6 +245,13 @@ type ProductionExecutor struct {
 	// wires the real DB-backed ledger via SetSpendLedger). Injected by setter, not constructor,
 	// so the package's existing test fixtures and the executor's many call sites stay untouched.
 	spendLedger SpendReservationLedger
+	// treasury is the LEDGER-backed treasury reader (sp-muq66) BOTH factory money guards —
+	// the per-buy spend floor and the cross-container concurrent-spend cap — read through
+	// instead of calling Get Agent before every input tranche (sp-45s6f). nil (every
+	// existing fixture) leaves the direct apiClient read in place, byte-identical; the
+	// daemon injects the shared reader via SetTreasuryReader at boot, with no config gate
+	// between. Wired or not, an unreadable treasury still PARKS the buy (fail closed).
+	treasury TreasuryReader
 	// priceHistory backs the input price ceiling (sp-iv65): the trailing-median-ask source a
 	// factory input buy is checked against before it dispatches. nil disables the ceiling — the
 	// same optional-port fail-OPEN contract as apiClient/spendLedger (tests wire nothing; the
@@ -258,6 +278,39 @@ type ProductionExecutor struct {
 // cap fail-open, which is exactly what every non-daemon caller wants.
 func (e *ProductionExecutor) SetSpendLedger(ledger SpendReservationLedger) {
 	e.spendLedger = ledger
+}
+
+// SetTreasuryReader wires the daemon's shared ledger-backed treasury reader (sp-45s6f) into
+// BOTH factory money guards. The daemon calls this UNCONDITIONALLY when it builds the
+// construction executor — no config key, no default-off, no arming step. Leaving it unset is
+// the test-fixture path only, and keeps the direct live read exactly as before this bead.
+func (e *ProductionExecutor) SetTreasuryReader(r TreasuryReader) {
+	e.treasury = r
+}
+
+// treasuryCredits reads the player's balance for a factory money guard: through the
+// ledger-backed reader when the daemon has wired one, otherwise the direct live call this
+// guard has always made. The direct path is the optional-port contract the package's
+// fixtures rely on, not an arming switch.
+//
+// Every failure is an ERROR — never a zero, never a retained value. Both callers read that
+// as "PARK this input buy" (RULINGS #4).
+func (e *ProductionExecutor) treasuryCredits(ctx context.Context, playerID int) (int64, error) {
+	if e.treasury != nil {
+		return e.treasury.Credits(ctx, playerID)
+	}
+	if e.apiClient == nil {
+		return 0, fmt.Errorf("no treasury source wired")
+	}
+	token, err := common.PlayerTokenFromContext(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("player token unavailable: %w", err)
+	}
+	agentData, err := e.apiClient.GetAgent(ctx, token)
+	if err != nil {
+		return 0, fmt.Errorf("live agent read failed: %w", err)
+	}
+	return int64(agentData.Credits), nil
 }
 
 // SetCapitalWorkSensor wires the per-operation capital budget's hasWork sensor (sp-ftqgp). The
@@ -654,57 +707,56 @@ func (e *ProductionExecutor) buyGood(
 }
 
 // spendFloorBreached reports whether buying an input tranche costing projectedCost would drop
-// live treasury below the floor this buy is guarded against, and returns that floor so the caller
+// treasury below the floor this buy is guarded against, and returns that floor so the caller
 // can name the ACTUAL enforced number in its park log rather than re-deriving a base that the
 // capital budget may have raised. It mirrors bp6f's trade floor (spendFloorBreached in
-// run_trade_route_coordinator.go): a live GetAgent read checked right before the buy commits, so
-// the caller can PARK instead of spending.
+// run_trade_route_coordinator.go): a pre-commit treasury read checked right before the buy
+// commits, so the caller can PARK instead of spending.
+//
+// That mirror is why the read is now the ledger-backed one (sp-45s6f): bp6f's floor was routed
+// through the shared reader in sp-muq66, and this guard exists to enforce the SAME line the
+// same way. It stays a genuine pre-commit read — the freshness bound is what makes the ledger
+// answer admissible, and past it the coalesced live call still answers.
 //
 // The floor is budgetedReserveFloor (sp-ftqgp): the flat non-contract reserve, raised by the share
 // of deployable capital reserved for the trade side. Layering the budget HERE covers both spend
 // paths at once — raw input buys (buyGood) and fabricated-output harvests both funnel through
 // this one primitive — with no second guard to drift.
 //
-// Fails OPEN when no apiClient is wired (e.apiClient == nil): the guard is simply
-// unavailable — the optional-port contract the package's test fixtures rely on (they
-// pass nil), never the daemon, which always wires the real client.
+// Fails OPEN when NO treasury source is wired at all (neither the ledger-backed reader nor
+// an apiClient): the guard is simply unavailable — the optional-port contract the package's
+// test fixtures rely on (they pass nil), never the daemon, which always wires both.
 //
-// Fails CLOSED on every live-read failure (an unresolvable player token, or GetAgent
-// itself erroring): a guard whose whole job is keeping treasury above the reserve must
-// never let a buy through just because it went blind. An API hiccup here parks the
-// input rather than spending unseen — the factory-side analogue of bp6f's fail-closed.
+// Fails CLOSED on every treasury-read failure (an unresolvable player token, GetAgent itself
+// erroring, or a ledger too stale to trust with the live fallback also down): a guard whose
+// whole job is keeping treasury above the reserve must never let a buy through just because
+// it went blind. A hiccup here parks the input rather than spending unseen — the factory-side
+// analogue of bp6f's fail-closed.
 func (e *ProductionExecutor) spendFloorBreached(ctx context.Context, playerID, projectedCost int) (bool, int) {
 	logger := common.LoggerFromContext(ctx)
-	if e.apiClient == nil {
+	if e.apiClient == nil && e.treasury == nil {
 		return false, effectiveReserveFloor(ctx)
 	}
 
-	token, err := common.PlayerTokenFromContext(ctx)
+	credits, err := e.treasuryCredits(ctx, playerID)
 	if err != nil {
 		// Numbers/cause in the MESSAGE (sp-iqyq): the container log renderer drops the
 		// metadata map, so a blind fail-closed park must name its cause in the text.
-		logger.Log("WARNING", fmt.Sprintf("Could not resolve player token for factory spend-floor check — parking input buy (fail-closed): %v", err), map[string]interface{}{
+		logger.Log("WARNING", fmt.Sprintf("Could not read treasury for factory spend-floor check — parking input buy (fail-closed): %v", err), map[string]interface{}{
 			"error": err.Error(),
 		})
 		return true, effectiveReserveFloor(ctx)
 	}
-
-	agentData, err := e.apiClient.GetAgent(ctx, token)
-	if err != nil {
-		logger.Log("WARNING", fmt.Sprintf("Could not read live treasury for factory spend-floor check — parking input buy (fail-closed): %v", err), map[string]interface{}{
-			"error": err.Error(),
-		})
-		return true, effectiveReserveFloor(ctx)
-	}
+	treasury := int(credits)
 
 	// The flat non-contract floor (sp-05glh/sp-q8bon), RAISED by trade's reserved share of
-	// deployable capital (sp-ftqgp). Resolved against the SAME live treasury the breach test
+	// deployable capital (sp-ftqgp). Resolved against the SAME treasury figure the breach test
 	// uses, so the budget and the check can never disagree about the balance they are sizing.
-	reserve := e.budgetedReserveFloor(ctx, playerID, agentData.Credits)
+	reserve := e.budgetedReserveFloor(ctx, playerID, treasury)
 
-	if agentData.Credits-projectedCost < reserve {
-		logger.Log("WARNING", fmt.Sprintf("Factory input buy would breach the working-capital reserve — treasury %d, projected cost %d, reserve %d", agentData.Credits, projectedCost, reserve), map[string]interface{}{
-			"treasury": agentData.Credits, "projected_cost": projectedCost, "reserve": reserve,
+	if treasury-projectedCost < reserve {
+		logger.Log("WARNING", fmt.Sprintf("Factory input buy would breach the working-capital reserve — treasury %d, projected cost %d, reserve %d", treasury, projectedCost, reserve), map[string]interface{}{
+			"treasury": treasury, "projected_cost": projectedCost, "reserve": reserve,
 		})
 		return true, reserve
 	}
@@ -717,44 +769,48 @@ func (e *ProductionExecutor) spendFloorBreached(ctx context.Context, playerID, p
 // breach the reserve (sp-w3he). On the proceed path it returns the reservation id the
 // caller must Release after the buy.
 //
-// Fails OPEN when the cap is unavailable (no ledger wired, or no apiClient to read live
-// treasury) — the same optional-port contract as the per-buy floor, so every non-daemon
-// caller is unaffected. Fails CLOSED (parks) on any live-read or ledger error: a cap whose
-// job is protecting the reserve must never let a buy through blind.
+// Fails OPEN when the cap is unavailable (no ledger wired, or no treasury source at all to
+// read the balance from) — the same optional-port contract as the per-buy floor, so every
+// non-daemon caller is unaffected. Fails CLOSED (parks) on any treasury-read or ledger error:
+// a cap whose job is protecting the reserve must never let a buy through blind.
 //
-// The live treasury read here is deliberately independent of spendFloorBreached (sp-9aoc,
-// left unchanged): factory input buys are low-frequency — one per market visit, after a
+// The treasury read here is deliberately independent of spendFloorBreached (sp-9aoc, left
+// unchanged): factory input buys are low-frequency — one per market visit, after a
 // multi-second navigate+dock — so the second read is negligible next to keeping the two
-// guards decoupled, each with its own legible park reason. The read stays OUTSIDE the
-// ledger transaction (passed in as a value) so the DB is never held open across the API call.
+// guards decoupled, each with its own legible park reason. It is now the ledger-backed read
+// (sp-45s6f), which makes "negligible" literal on the common path: no API call at all.
+//
+// WHY A LEDGER BALANCE IS SOUND FOR THE CONCURRENT CAP. The cap subtracts in-flight
+// RESERVATIONS from a base balance, precisely because a balance read cannot see spend that
+// has not committed yet. Committed spend is in the ledger (every transaction records its
+// post-transaction balance); uncommitted spend is in the reservation ledger. Nothing falls
+// between the two: the cargo transaction handler records the transaction SYNCHRONOUSLY, in
+// the same call, before the buy returns — and the reservation is only released after that
+// call returns — so there is no window in which a spend is absent from both.
+//
+// The read stays OUTSIDE the ledger transaction (passed in as a value) so the DB is never
+// held open across it.
 func (e *ProductionExecutor) reserveConcurrentSpendOrPark(ctx context.Context, playerID, projectedCost int, market, good string) (reservationID string, parked bool) {
 	logger := common.LoggerFromContext(ctx)
-	if e.spendLedger == nil || e.apiClient == nil {
+	if e.spendLedger == nil || (e.apiClient == nil && e.treasury == nil) {
 		return "", false
 	}
 
-	token, err := common.PlayerTokenFromContext(ctx)
+	credits, err := e.treasuryCredits(ctx, playerID)
 	if err != nil {
-		logger.Log("WARNING", fmt.Sprintf("Could not resolve player token for factory concurrent-spend-cap check — parking input buy (fail-closed): %v", err), map[string]interface{}{
+		logger.Log("WARNING", fmt.Sprintf("Could not read treasury for factory concurrent-spend-cap check — parking input buy (fail-closed): %v", err), map[string]interface{}{
 			"error": err.Error(),
 		})
 		return "", true
 	}
-
-	agentData, err := e.apiClient.GetAgent(ctx, token)
-	if err != nil {
-		logger.Log("WARNING", fmt.Sprintf("Could not read live treasury for factory concurrent-spend-cap check — parking input buy (fail-closed): %v", err), map[string]interface{}{
-			"error": err.Error(),
-		})
-		return "", true
-	}
+	treasury := int(credits)
 
 	// Same floor as the per-buy check: the concurrent cap must serialize against the SAME
 	// reserve the per-container floor enforces, or the two guards would disagree on where the
 	// line is (sp-agzj/sp-05glh). That reserve is now the BUDGETED floor (sp-ftqgp) — the flat
-	// non-contract base raised by trade's reserved share — resolved against this call's own live
+	// non-contract base raised by trade's reserved share — resolved against this call's own
 	// treasury read, so a construction buy cannot slip past the budget by taking the ledger path.
-	reserve := e.budgetedReserveFloor(ctx, playerID, agentData.Credits)
+	reserve := e.budgetedReserveFloor(ctx, playerID, treasury)
 
 	// Container id attributes the reservation to the owning factory (already threaded into
 	// ctx by the coordinator, sp-9aoc's operation context). Best-effort: the staleness sweep
@@ -764,7 +820,7 @@ func (e *ProductionExecutor) reserveConcurrentSpendOrPark(ctx context.Context, p
 		containerID = opCtx.ContainerID
 	}
 
-	resID, ok, err := e.spendLedger.Reserve(ctx, playerID, containerID, projectedCost, agentData.Credits, reserve)
+	resID, ok, err := e.spendLedger.Reserve(ctx, playerID, containerID, projectedCost, treasury, reserve)
 	if err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Factory concurrent-spend-cap ledger error — parking input buy (fail-closed): %v", err), map[string]interface{}{
 			"error": err.Error(),
@@ -775,11 +831,11 @@ func (e *ProductionExecutor) reserveConcurrentSpendOrPark(ctx context.Context, p
 		// Numbers in the MESSAGE (sp-iqyq): the container log renderer drops the metadata map,
 		// so the cause — combined in-flight factory spend breaching the reserve — must be legible
 		// in the text or an operator never sees why this factory parked.
-		logger.Log("WARNING", fmt.Sprintf("Parked input purchase of %s at %s — cross-container concurrent spend cap: live treasury %d minus in-flight factory reservations would breach the working-capital reserve %d (this buy %d)", good, market, agentData.Credits, reserve, projectedCost), map[string]interface{}{
+		logger.Log("WARNING", fmt.Sprintf("Parked input purchase of %s at %s — cross-container concurrent spend cap: treasury %d minus in-flight factory reservations would breach the working-capital reserve %d (this buy %d)", good, market, treasury, reserve, projectedCost), map[string]interface{}{
 			"good":           good,
 			"market":         market,
 			"projected_cost": projectedCost,
-			"treasury":       agentData.Credits,
+			"treasury":       treasury,
 			"reserve":        reserve,
 			"action":         "factory_parked",
 			"reason":         "concurrent_spend_cap",

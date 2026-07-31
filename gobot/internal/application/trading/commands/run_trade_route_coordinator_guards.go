@@ -4,9 +4,11 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
@@ -24,24 +26,42 @@ type TreasuryReader interface {
 	Credits(ctx context.Context, playerID int) (int64, error)
 }
 
-// treasuryCredits reads the player's balance for a money guard: through the ledger-backed
-// reader when the daemon has wired one, otherwise the direct live call this guard has
-// always made. The direct path is the optional-port contract every nil-apiClient test
-// relies on, not an arming switch — the daemon wires the reader unconditionally, with no
-// config gate between.
-func (h *RunTradeRouteCoordinatorHandler) treasuryCredits(ctx context.Context, playerID int) (int64, error) {
-	if h.treasury != nil {
-		return h.treasury.Credits(ctx, playerID)
+// readTreasuryCredits is this package's ONE money-guard balance read: through the
+// ledger-backed reader when the daemon has wired one, otherwise the direct live call the
+// guards made before the reader existed. The direct path is the optional-port contract
+// every nil-apiClient test relies on, not an arming switch — the daemon wires the reader
+// unconditionally, with no config gate between.
+//
+// It is a free function rather than a method because FOUR guards on three different
+// handlers need it — the circuit's working-capital floor and the tour's money reads
+// (sp-muq66), plus the stocker's capital ceiling and the one-shot arb's spend floor
+// (sp-45s6f). Each of those handlers holds its own optional reader beside its own API
+// client; sharing the read keeps them from drifting into four subtly different answers to
+// "how many credits do we have".
+//
+// Every failure is an ERROR — never a zero, never a retained value. Callers read that as
+// "do not spend this episode" (RULINGS #4).
+func readTreasuryCredits(ctx context.Context, treasury TreasuryReader, api domainPorts.APIClient, playerID int) (int64, error) {
+	if treasury != nil {
+		return treasury.Credits(ctx, playerID)
+	}
+	if api == nil {
+		return 0, errors.New("no treasury source wired")
 	}
 	token, err := common.PlayerTokenFromContext(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("player token unavailable: %w", err)
 	}
-	agentData, err := h.apiClient.GetAgent(ctx, token)
+	agentData, err := api.GetAgent(ctx, token)
 	if err != nil {
 		return 0, fmt.Errorf("live agent read failed: %w", err)
 	}
 	return int64(agentData.Credits), nil
+}
+
+// treasuryCredits reads the player's balance for the circuit's working-capital guards.
+func (h *RunTradeRouteCoordinatorHandler) treasuryCredits(ctx context.Context, playerID int) (int64, error) {
+	return readTreasuryCredits(ctx, h.treasury, h.apiClient, playerID)
 }
 
 // reserveHeadroom performs the single treasury read that BOTH working-capital

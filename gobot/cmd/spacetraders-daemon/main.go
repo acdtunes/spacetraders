@@ -780,8 +780,27 @@ func run(cfg *config.Config) error {
 	// executor), the construction drain builds its producer directly here, so it must supply the clock
 	// itself — otherwise the unified gate-fill nil-panicked on every construction tick at e.clock.Now().
 	// The constructor also defaults a nil clock (defense in depth).
+	// sp-muq66: the daemon's ONE treasury reader. `Get Agent` measured 0.167 req/s — 8.3% of
+	// the 2.00 req/s ceiling — and did NOT fall under request coalescing, because the money
+	// guards' reads are invalidation-driven (every buy/sell/refuel/jump empties the agent
+	// cache) rather than concurrent duplicates. This reader answers from the transaction
+	// ledger, which already carries the same balance to the credit, and falls back to the
+	// coalesced live read when the newest row is older than the 30s freshness bound. Shared
+	// by the tour coordinator, the trade-route circuit, the fleet autosizer, the contract
+	// scaler and — since sp-45s6f — the stocker, the one-shot arb and BOTH factory spend
+	// guards, so every money guard reads treasury one way. Built HERE, above its first
+	// consumer, rather than beside the autosizer further down: the construction executor is
+	// the earliest guard that needs it. DELIBERATELY NOT wired into bootstrap (cold start has
+	// a legitimately empty ledger and stays live-first) nor into the captain's own credits
+	// reader (separate process, wake gate not a money guard).
+	ledgerTreasury := grpc.NewLedgerTreasuryReader(db, apiClient)
+
 	constructionExecutor := goodsServices.NewProductionExecutor(med, shipRepo, marketRepoAdapter, goodsMarketLocator, shared.NewRealClock(), apiClient)
 	constructionExecutor.SetConstructionRepo(api.NewConstructionSiteRepository(apiClient, playerRepo))
+	// sp-45s6f: BOTH factory money guards (the per-buy spend floor and the cross-container
+	// concurrent-spend cap) read treasury through the shared ledger-backed reader instead of
+	// calling Get Agent before every input tranche. Unconditional — no config key, no arming.
+	constructionExecutor.SetTreasuryReader(ledgerTreasury)
 	// sp-ftqgp per-operation capital budget: ONE sensor, shared by BOTH spend guards (the
 	// construction executor below and the tour coordinator further down), so their two views of
 	// the trade/construction split are always resolved from the same source and can never each
@@ -967,18 +986,6 @@ func run(cfg *config.Config) error {
 		shipRepo, // reach is measured from the systems the fleet actually holds
 		nil,      // nil ⇒ the documented heavy classes
 	)
-
-	// sp-muq66: the daemon's ONE treasury reader. `Get Agent` measured 0.167 req/s — 8.3% of
-	// the 2.00 req/s ceiling — and did NOT fall under request coalescing, because the money
-	// guards' reads are invalidation-driven (every buy/sell/refuel/jump empties the agent
-	// cache) rather than concurrent duplicates. This reader answers from the transaction
-	// ledger, which already carries the same balance to the credit, and falls back to the
-	// coalesced live read when the newest row is older than the 30s freshness bound. Shared
-	// by the tour coordinator, the trade-route circuit, the fleet autosizer and the contract
-	// scaler so every money guard reads treasury one way. DELIBERATELY NOT wired into
-	// bootstrap (cold start has a legitimately empty ledger and stays live-first) nor into
-	// the captain's own credits reader (separate process, wake gate not a money guard).
-	ledgerTreasury := grpc.NewLedgerTreasuryReader(db, apiClient)
 
 	fleetAutosizerHandler := grpc.NewFleetAutosizerCoordinatorHandler(
 		daemonServer, apiClient, ledgerTreasury, shipRepo, med, waypointRepo, captainEventRepo,
@@ -1419,6 +1426,10 @@ func run(cfg *config.Config) error {
 	// guard.
 	arbCoordinatorHandler.SetGateGraph(gateGraphService)
 	arbCoordinatorHandler.SetChartGateOnArrival(chartGateOnArrival) // sp-bcsu: chart cross-system arrivals
+	// sp-45s6f: the spend-floor guard — and the movement legs' buy-time working-capital floor,
+	// which this setter also reaches — read treasury through the shared ledger-backed reader
+	// instead of calling Get Agent before every one-shot buy.
+	arbCoordinatorHandler.SetTreasuryReader(ledgerTreasury)
 	// Wait out a mid-transit re-adoption before the resume path's jump, instead of
 	// 4214'ing and burning the container restart budget on a routine arrival.
 	arbCoordinatorHandler.SetEventSubscriber(shipEventBus)
@@ -1797,6 +1808,10 @@ func run(cfg *config.Config) error {
 	)
 	stockerCoordinatorHandler.SetGateGraph(gateGraphService)
 	stockerCoordinatorHandler.SetChartGateOnArrival(chartGateOnArrival) // sp-bcsu: chart cross-system haul arrivals
+	// sp-45s6f: the capital ceiling — and the movement legs' buy-time working-capital floor,
+	// which this setter also reaches — read treasury through the shared ledger-backed reader
+	// instead of calling Get Agent on every stocker pick.
+	stockerCoordinatorHandler.SetTreasuryReader(ledgerTreasury)
 	stockerCoordinatorHandler.SetEventSubscriber(shipEventBus)
 	// sp-j6uz: emit a structured stock-IN event on each CONFIRMED stocker→warehouse deposit so
 	// downstream analysis can measure depot throughput/coverage (the stock-IN mirror of the
