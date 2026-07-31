@@ -161,9 +161,24 @@ export interface SystemFreshnessRecord {
   scoutPost: { status: ScoutPostStatus; hull: string | null; kind: string } | null;
 }
 
+/** How the server arrived at the rotation bound — see server/utils/freshness.ts.
+ * 'unknown' means there were no market rows to measure, so the scale is a
+ * placeholder and the legend must say so rather than assert an age. */
+export type RotationBoundBasis = 'observed' | 'floor' | 'ceiling' | 'unknown';
+
 export interface FreshnessResponse {
   systems: SystemFreshnessRecord[];
-  staleAfterMinutes: number;     // mirrors gobot maxListingAge; never hardcode
+  /** Derived per request from the era's observed p95 listing age — NOT a
+   * constant, and specifically not the 75 minutes this field carried until
+   * sp-3fcdx. Doubles as the freshness aura's full scale. */
+  staleAfterMinutes: number;
+  // Optional so a cached/older payload (or a fixture) still type-checks; the
+  // client falls back to staleAfterMinutes and the legend degrades to 'unknown'.
+  rotationBoundMinutes?: number;
+  rotationBoundBasis?: RotationBoundBasis;
+  /** Charted marketplace waypoints behind the bound — the rotation's denominator,
+   * shown in the legend so the scale's size is explainable rather than magic. */
+  marketsKnown?: number;
   generatedAt: string;
 }
 

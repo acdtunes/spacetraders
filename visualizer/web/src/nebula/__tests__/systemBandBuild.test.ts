@@ -9,6 +9,7 @@ import { buildSystemBand, clearSystemBand } from '../layers/systemBand';
 import { LAYER_ORDER, type Layers } from '../layers/registry';
 import type { SystemDetail } from '../useSystemDetail';
 import type { SceneData } from '../sceneData';
+import { DARK } from '../freshness';
 import type { Waypoint } from '../../types/spacetraders';
 
 const stubRenderer = {} as unknown as Renderer;
@@ -52,12 +53,16 @@ const detailWith = (gate: SystemDetail['gate']): SystemDetail => ({
 });
 
 const scene: SceneData = {
-  systems: [{ symbol: 'X1-TEST', x: 500, y: 500, activity: 1, isHome: false, underConstruction: true }],
+  systems: [{ symbol: 'X1-TEST', x: 500, y: 500, activity: 1, isHome: false, underConstruction: true, freshness: DARK }],
   lanes: [],
   ships: [{ id: 's1', flowId: 'f1', x: 500, y: 500, headingRad: 0, system: 'X1-TEST' }],
   edges: [],
   clusters: [],
   homeSystem: null,
+  clusterFreshness: new Map(),
+  rotationBoundMinutes: 0,
+  rotationBoundBasis: 'unknown',
+  marketsKnown: 0,
   fitPoints: [
     { x: 0, y: 0 },
     { x: 1000, y: 1000 },

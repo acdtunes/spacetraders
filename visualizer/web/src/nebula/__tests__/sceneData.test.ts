@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mockTopology, mockLanes, mockLiveFlows } from '../../mocks/mockFlows';
+import { mockTopology, mockLanes, mockLiveFlows, mockFreshness } from '../../mocks/mockFlows';
 import { buildSceneData } from '../sceneData';
 
 // Exactly on a 10-minute wall-clock boundary: mockLiveFlows anchors its in-transit
@@ -142,13 +142,79 @@ describe('buildSceneData clusters, home, fit', () => {
   });
 });
 
+describe('buildSceneData market freshness', () => {
+  // mockFreshness anchors freshestAt to the CALLER's clock (so the drilldown's
+  // "Nm ago" line reads plausibly), so these use wall-clock now rather than the
+  // pinned NOW the ship-motion fixtures need.
+  const REAL_NOW = Date.now();
+  const fresh = () => buildSceneData(mockTopology, mockLanes('6h'), mockLiveFlows(NOW), REAL_NOW, mockFreshness());
+
+  it('resolves dark from the difference against topology, not from the response', () => {
+    // mockFreshness omits X1-UU57 entirely and carries X1-QA88 (a zero-listing
+    // scout-post system) that topology does not place. The drawn set is
+    // topology's, so UU57 is dark and QA88 simply is not drawn.
+    const byName = new Map(fresh().systems.map((s) => [s.symbol, s.freshness]));
+    expect([...byName.keys()]).toEqual(['X1-NK36', 'X1-KA42', 'X1-ZC66', 'X1-UU57']);
+    expect(byName.get('X1-UU57')).toMatchObject({ priced: false, t: null, ageMinutes: null });
+    expect(byName.get('X1-NK36')?.priced).toBe(true);
+  });
+
+  it('ramps priced systems continuously by age', () => {
+    const byName = new Map(fresh().systems.map((s) => [s.symbol, s.freshness]));
+    const ts = ['X1-NK36', 'X1-KA42', 'X1-ZC66'].map((s) => byName.get(s)!.t!);
+    expect(ts[0]).toBeLessThan(ts[1]);
+    expect(ts[1]).toBeLessThan(ts[2]);
+    expect(ts.every((t) => t > 0 && t < 1)).toBe(true);
+  });
+
+  it('carries the live bound and its basis through for the legend', () => {
+    const s = fresh();
+    expect(s.rotationBoundMinutes).toBe(400);
+    expect(s.rotationBoundBasis).toBe('observed');
+    expect(s.marketsKnown).toBe(13_525);
+  });
+
+  it('falls back to staleAfterMinutes when an older payload omits the bound', () => {
+    const legacy = { ...mockFreshness(), rotationBoundMinutes: undefined, staleAfterMinutes: 222 };
+    expect(buildSceneData(mockTopology, null, null, REAL_NOW, legacy).rotationBoundMinutes).toBe(222);
+  });
+
+  it('leaves the bound at 0 with no freshness payload — nothing drawn, nothing claimed', () => {
+    // The distinction the bands depend on: "we have no freshness data" must not
+    // render as "every one of these markets is unsensed".
+    const s = buildSceneData(mockTopology, null, null, REAL_NOW);
+    expect(s.rotationBoundMinutes).toBe(0);
+    expect(s.rotationBoundBasis).toBe('unknown');
+    expect(s.systems.every((x) => x.freshness.priced === false)).toBe(true);
+  });
+
+  it('aggregates clusters on worst-case age plus a dark count, never a mean', () => {
+    const s = fresh();
+    expect(s.clusterFreshness.size).toBe(s.clusters.length);
+    for (const c of s.clusters) {
+      const cf = s.clusterFreshness.get(c.id)!;
+      const members = c.members.map((m) => s.systems.find((x) => x.symbol === m)!.freshness);
+      const pricedTs = members.filter((f) => f.t != null).map((f) => f.t!);
+      expect(cf.darkCount).toBe(members.filter((f) => !f.priced).length);
+      if (pricedTs.length > 0) expect(cf.worstT).toBe(Math.max(...pricedTs));
+      else expect(cf.worstT).toBeNull();
+    }
+  });
+});
+
 describe('buildSceneData degraded inputs', () => {
   it('returns an empty scene for missing inputs without throwing', () => {
     for (const empty of [
       buildSceneData(undefined, undefined, undefined, 0),
       buildSceneData(null, null, null, NOW),
     ]) {
-      expect(empty).toEqual({ systems: [], lanes: [], ships: [], edges: [], clusters: [], homeSystem: null, fitPoints: [] });
+      expect(empty).toEqual({
+        systems: [], lanes: [], ships: [], edges: [], clusters: [], homeSystem: null, fitPoints: [],
+        // An empty scene knows NOTHING about freshness — bound 0 and basis
+        // 'unknown', which is what makes the bands draw no freshness marks at
+        // all rather than ringing every system dark.
+        clusterFreshness: new Map(), rotationBoundMinutes: 0, rotationBoundBasis: 'unknown', marketsKnown: 0,
+      });
     }
   });
 

@@ -15,6 +15,7 @@ import { Container } from 'pixi.js';
 import { NebulaScene, type NebulaApi, type NebulaLayerToggles } from '../NebulaScene';
 import { THREADS_NEAR, THREADS_FAR } from '../layers/orbs';
 import type { SceneData, SceneEdge } from '../sceneData';
+import { DARK } from '../freshness';
 
 const pixiState = vi.hoisted(() => ({ apps: [] as any[] }));
 
@@ -57,16 +58,20 @@ const edge = (from: string, to: string, relevant: boolean): SceneEdge =>
 
 const sceneData: SceneData = {
   systems: [
-    { symbol: 'X1-A', x: 0, y: 0, activity: 5, isHome: true, underConstruction: false },
-    { symbol: 'X1-B', x: 200, y: 120, activity: 3, isHome: false, underConstruction: false },
-    { symbol: 'X1-C', x: 60, y: 90, activity: 0, isHome: false, underConstruction: false },
-    { symbol: 'X1-D', x: 140, y: 30, activity: 0, isHome: false, underConstruction: false },
+    { symbol: 'X1-A', x: 0, y: 0, activity: 5, isHome: true, underConstruction: false, freshness: DARK },
+    { symbol: 'X1-B', x: 200, y: 120, activity: 3, isHome: false, underConstruction: false, freshness: DARK },
+    { symbol: 'X1-C', x: 60, y: 90, activity: 0, isHome: false, underConstruction: false, freshness: DARK },
+    { symbol: 'X1-D', x: 140, y: 30, activity: 0, isHome: false, underConstruction: false, freshness: DARK },
   ],
   lanes: [{ from: 'X1-A', to: 'X1-B', profitPerHr: 100, volume: 10, realized: 5, projected: 0 }],
   ships: [],
   edges: [edge('X1-A', 'X1-B', true), edge('X1-B', 'X1-C', false), edge('X1-C', 'X1-D', false)],
   clusters: [{ id: 'c1', members: ['X1-A', 'X1-B'], cx: 100, cy: 60, isHome: true }],
   homeSystem: 'X1-A',
+  clusterFreshness: new Map(),
+  rotationBoundMinutes: 0,
+  rotationBoundBasis: 'unknown',
+  marketsKnown: 0,
   fitPoints: [{ x: 0, y: 0 }, { x: 200, y: 120 }],
 };
 

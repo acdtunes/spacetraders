@@ -10,6 +10,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { Container, Graphics, type Renderer } from 'pixi.js';
 import { buildSceneData, type SceneData, type SceneEdge } from '../sceneData';
+import { DARK } from '../freshness';
 import { buildOrbs, THREADS_NEAR, THREADS_FAR } from '../layers/orbs';
 import { LAYER_ORDER, type Layers, type PointerHooks } from '../layers/registry';
 import { mockTopology, mockLiveFlows } from '../../mocks/mockFlows';
@@ -131,7 +132,7 @@ describe('buildSceneData lattice relevance', () => {
 // touch the core, three do not — one of those under construction, so the far
 // tier's dash split is observable.
 const sys = (symbol: string, x: number, y: number, activity = 0) =>
-  ({ symbol, x, y, activity, isHome: false, underConstruction: false });
+  ({ symbol, x, y, activity, isHome: false, underConstruction: false, freshness: DARK });
 const edge = (from: string, to: string, relevant: boolean, underConstruction = false): SceneEdge =>
   ({ from, to, underConstruction, relevant });
 
@@ -152,6 +153,10 @@ const tieredScene = (): SceneData => ({
   ],
   clusters: [],
   homeSystem: null,
+  clusterFreshness: new Map(),
+  rotationBoundMinutes: 0,
+  rotationBoundBasis: 'unknown',
+  marketsKnown: 0,
   fitPoints: [{ x: 0, y: 0 }, { x: 1200, y: 500 }],
 });
 

@@ -70,6 +70,10 @@ const sceneData: SceneData = {
   edges: [],
   clusters: [],
   homeSystem: null,
+  clusterFreshness: new Map(),
+  rotationBoundMinutes: 0,
+  rotationBoundBasis: 'unknown',
+  marketsKnown: 0,
   fitPoints: [
     { x: 0, y: 0 },
     { x: 200, y: 120 },

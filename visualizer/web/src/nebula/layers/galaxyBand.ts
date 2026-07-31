@@ -14,13 +14,42 @@ import type { Layers, PointerHooks } from './registry';
 import { worldBounds } from '../camera';
 import { makeGlowTexture } from '../glowTexture';
 import { aggregateCurrents } from '../aggregate';
+import { DARK_COLOR, rampColor } from '../freshness';
 
 export interface GalaxyBandHandle {
   /** Galaxy-band label sub-container (child of layers.labels) — fade this, not the shared layer. */
   labels: Container;
+  /** Per-cluster market-freshness rings; gated by the Freshness toggle. */
+  freshness: Container;
   /** Advance drifting current particles. Call from the ticker only while visible. */
   update(dtMs: number): void;
 }
+
+/** Cluster-freshness sub-container inside `layers.auras`. */
+export const CLUSTER_FRESHNESS_BOX = 'cluster-freshness';
+
+/** Cluster freshness gauge geometry.
+ *
+ * A SEPARATE mark, not a re-tint of the aura: the aura's tint is paired with its
+ * backdrop fog's hue and its alpha carries profit share, so overwriting either
+ * would trade one meaning for another rather than add one.
+ *
+ * FIXED SCREEN-PX RADIUS, deliberately not proportional to the aura. The first
+ * version scaled with the aura (1.18× and 1.3×) and rendered as an opaque mat of
+ * ~65 overlapping circles that buried the auras and the money currents outright —
+ * caught by screenshotting the page, invisible to the build tests. Aura radius
+ * already encodes member count; the gauge re-encoding it bought nothing and cost
+ * the whole band's legibility. At a constant small size the gauges read as one
+ * comparable set of dials scattered over the cloud, which is what they are. */
+const GAUGE_PX = 11;
+const GAUGE_WIDTH_PX = 1.8;
+const GAUGE_ALPHA = 0.9;
+/** Dark dashes per full circle — the dark arc uses this density pro-rata, so a
+ * quarter-dark cluster gets a quarter of them and the dash pitch stays constant. */
+const GAUGE_DARK_DASHES = 12;
+/** Gap (radians) between the priced arc and the dark arc, so the split is a
+ * visible boundary rather than a colour change mid-stroke. */
+const GAUGE_ARC_GAP = 0.12;
 
 // Palette (exact — see revamp spec). Violet is the named #a78bfa here, not the
 // backdrop fog's deliberate 0x8b5cf6.
@@ -135,9 +164,16 @@ export function buildGalaxyBand(layers: Layers, data: SceneData, renderer: Rende
   const labelBox = ensureGalaxyLabels(layers.labels);
   clearLayer(labelBox);
 
+  // Mounted unconditionally (the orbs tier-box rationale): the ticker's toggle
+  // gate and the build tests must find this container even in an empty scene.
+  const freshBox = new Container();
+  freshBox.label = CLUSTER_FRESHNESS_BOX;
+  layers.auras.addChild(freshBox);
+
   const particles: DriftingParticle[] = [];
   const handle: GalaxyBandHandle = {
     labels: labelBox,
+    freshness: freshBox,
     update(dtMs: number) {
       const dt = dtMs / 1000;
       for (const p of particles) {
@@ -195,6 +231,74 @@ export function buildGalaxyBand(layers: Layers, data: SceneData, renderer: Rende
       layers.auras.addChild(ring);
     }
   });
+
+  // ---- Cluster market freshness: one small dial per cluster ----------------
+  //
+  // AGGREGATION IS EXPLICITLY NOT AN AVERAGE, and that is the whole design
+  // question at this band. A mean age over a cluster hides a dark system inside a
+  // fresh neighbourhood and dilutes one badly-lagging market to nothing — the two
+  // states most worth seeing are exactly the two an average erases. So the dial
+  // shows two independent facts instead (see clusterFreshnessFor):
+  //
+  //   priced arc — stroked in the OLDEST priced member's ramp colour, so one
+  //                lagging system colours its cluster and cannot be averaged away.
+  //   dark arc   — LENGTH ∝ the share of members with no prices at all, dashed
+  //                in the same off-ramp slate the REGION band's dark rings use.
+  //                Length rather than opacity because an unsensed market is a
+  //                countable fact and length is the channel that reads as a count.
+  //
+  // The two arcs complete one circle, so the split is legible at a glance: a fully
+  // sensed cluster is a solid coloured ring, a fully dark one a dashed grey ring,
+  // and anything between shows its own proportion. A cluster is ≤ 8 systems
+  // (clusters.ts MAX_CLUSTER), so "worst of these" is a claim about a small
+  // legible neighbourhood, not a whole region.
+  //
+  // Lifted to the top of `layers.auras` — a crisp stroke under a soft glow washes
+  // out. addChild on an already-parented child re-orders it, which is the intent.
+  layers.auras.addChild(freshBox);
+  if (data.rotationBoundMinutes > 0) {
+    const r = GAUGE_PX * worldPerPx;
+    const width = GAUGE_WIDTH_PX * worldPerPx;
+    const darkArcs = new Graphics();
+    let arcCount = 0;
+
+    for (const cluster of data.clusters) {
+      const cf = data.clusterFreshness.get(cluster.id);
+      if (cf == null || cf.members === 0) continue;
+      const darkSweep = Math.PI * 2 * cf.darkRatio;
+      const start = -Math.PI / 2;
+
+      // Priced arc: the remainder of the circle, in the worst member's colour.
+      // Its own Graphics — a Graphics strokes its whole path with ONE style, so
+      // per-cluster colours cannot share an object (the far-thread rationale).
+      if (cf.worstT != null && cf.darkRatio < 1) {
+        const gap = cf.darkCount > 0 ? GAUGE_ARC_GAP : 0;
+        const g = new Graphics();
+        g.arc(cluster.cx, cluster.cy, r, start + darkSweep + gap, start + Math.PI * 2 - gap);
+        g.stroke({ width, color: rampColor(cf.worstT), alpha: GAUGE_ALPHA });
+        freshBox.addChild(g);
+      }
+
+      if (cf.darkCount > 0) {
+        const dashes = Math.max(1, Math.round(GAUGE_DARK_DASHES * cf.darkRatio));
+        const seg = darkSweep / dashes;
+        for (let k = 0; k < dashes; k++) {
+          const a0 = start + k * seg;
+          darkArcs.moveTo(cluster.cx + Math.cos(a0) * r, cluster.cy + Math.sin(a0) * r);
+          darkArcs.arc(cluster.cx, cluster.cy, r, a0, a0 + seg * 0.6);
+        }
+        arcCount++;
+      }
+    }
+
+    // Every dark arc shares one style, so they batch into a single object.
+    if (arcCount > 0) {
+      darkArcs.stroke({ width, color: DARK_COLOR, alpha: GAUGE_ALPHA });
+      freshBox.addChild(darkArcs);
+    } else {
+      darkArcs.destroy();
+    }
+  }
 
   // ---- Currents: quadratic ribbons between cluster centers + drifting particles.
   const byId = new Map(data.clusters.map((c) => [c.id, c]));

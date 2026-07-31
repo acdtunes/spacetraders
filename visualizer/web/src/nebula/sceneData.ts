@@ -2,12 +2,26 @@
 // flows) folded into one render-ready SceneData frame for the nebula renderer.
 // No pixi, no fetching, no side effects — and never throws: any missing input
 // degrades to the empty scene (or the static subset the inputs can support).
-import type { FlowWindow, LanesResponse, LiveFlowsResponse, TopologyResponse } from '../types/flows';
+import type { FlowWindow, FreshnessResponse, LanesResponse, LiveFlowsResponse, TopologyResponse } from '../types/flows';
 import type { Point } from '../components/flows/flowGeometry';
 import { buildAdjacency, buildSystemGates, projectFlowMotion } from '../components/flows/flowMotion';
 import { clustersFor, type Cluster } from './clusters';
+import {
+  DARK,
+  clusterFreshnessFor,
+  systemFreshnessFor,
+  type ClusterFreshness,
+  type SystemFreshness,
+} from './freshness';
 
-export interface SceneSystem { symbol: string; x: number; y: number; activity: number; isHome: boolean; underConstruction: boolean }
+export interface SceneSystem {
+  symbol: string; x: number; y: number; activity: number; isHome: boolean; underConstruction: boolean;
+  /** Market-freshness render state. Every drawn system carries one: the
+   * priced/dark distinction is a property of the ORB SET, so it is resolved here
+   * against topology (the only source of placeable systems) rather than left to
+   * each band to re-derive. See `freshness` below for why the join runs this way. */
+  freshness: SystemFreshness;
+}
 export interface SceneLane { from: string; to: string; profitPerHr: number; volume: number; realized: number; projected: number }
 export interface SceneShip { id: string; flowId: string; x: number; y: number; headingRad: number; system: string | null }
 /** Raw directed topology (gate) edge — the L1 dormant-thread lattice. Distinct
@@ -18,18 +32,29 @@ export interface SceneEdge { from: string; to: string; underConstruction: boolea
 export interface SceneData {
   systems: SceneSystem[]; lanes: SceneLane[]; ships: SceneShip[]; edges: SceneEdge[];
   clusters: Cluster[]; homeSystem: string | null; fitPoints: { x: number; y: number }[];
+  /** Per-cluster freshness aggregate, keyed by Cluster.id — the GALAXY band's
+   * input. Computed here so both bands read one snapshot and can never disagree. */
+  clusterFreshness: Map<string, ClusterFreshness>;
+  /** The aura's full scale in minutes and how the server got it, carried through
+   * for the legend. Zero/`'unknown'` means the server had nothing to measure. */
+  rotationBoundMinutes: number;
+  rotationBoundBasis: FreshnessResponse['rotationBoundBasis'];
+  marketsKnown: number;
 }
 
 const WINDOW_HOURS: Record<FlowWindow, number> = { '1h': 1, '6h': 6, '24h': 24 };
 
-const emptyScene = (): SceneData =>
-  ({ systems: [], lanes: [], ships: [], edges: [], clusters: [], homeSystem: null, fitPoints: [] });
+const emptyScene = (): SceneData => ({
+  systems: [], lanes: [], ships: [], edges: [], clusters: [], homeSystem: null, fitPoints: [],
+  clusterFreshness: new Map(), rotationBoundMinutes: 0, rotationBoundBasis: 'unknown', marketsKnown: 0,
+});
 
 export function buildSceneData(
   topology: TopologyResponse | null | undefined,
   lanes: LanesResponse | null | undefined,
   live: LiveFlowsResponse | null | undefined,
   nowMs: number,
+  freshness?: FreshnessResponse | null,
 ): SceneData {
   if (!topology || !Array.isArray(topology.systems) || topology.systems.length === 0) return emptyScene();
   const edges = Array.isArray(topology.edges) ? topology.edges : [];
@@ -111,6 +136,33 @@ export function buildSceneData(
   const underConstruction = new Set<string>();
   for (const e of edges) if (e.underConstruction) underConstruction.add(e.to);
 
+  // ---- Market freshness: the priced/dark join ------------------------------
+  //
+  // DARK SYSTEMS COME FROM THE DIFFERENCE AGAINST TOPOLOGY, CLIENT-SIDE, and
+  // that is a deliberate choice over extending /api/flows/freshness to emit them.
+  // The endpoint omits zero-listing systems by design (except those carrying a
+  // scout post, so an actuator marker renders before its first scan) — so dark
+  // has to be inferred somewhere. Doing it here, against topology:
+  //
+  //   - joins against the RIGHT set. /topology serves exactly the systems that
+  //     can be placed truthfully, which is exactly the orb set being drawn. A
+  //     server-side dark list would be built from charted markets — a strictly
+  //     larger set (1,490 charted market systems vs ~495 placeable) — so most of
+  //     it would name systems the renderer cannot draw, and the two endpoints
+  //     would need topology's placement rules duplicated to agree.
+  //   - costs nothing on the wire. Absence is already an unambiguous signal;
+  //     emitting ~1,100 all-zero records to say the same thing is pure payload.
+  //   - keeps the scout-post exception working for free: those records still
+  //     arrive, still have zero listings, and still resolve to dark-with-a-post.
+  //
+  // A system in the freshness response but NOT in topology simply isn't drawn —
+  // the map has never claimed to show unplaceable systems (see coverage notice).
+  const bound = freshness?.rotationBoundMinutes ?? freshness?.staleAfterMinutes ?? 0;
+  const freshBySystem = new Map<string, SystemFreshness>();
+  for (const rec of freshness?.systems ?? []) {
+    if (rec?.system) freshBySystem.set(rec.system, systemFreshnessFor(rec, nowMs, bound));
+  }
+
   const systems: SceneSystem[] = topology.systems.map((s) => ({
     symbol: s.symbol,
     x: s.x,
@@ -118,7 +170,17 @@ export function buildSceneData(
     activity: activity.get(s.symbol) ?? 0,
     isHome: s.symbol === homeSystem,
     underConstruction: underConstruction.has(s.symbol),
+    // No record ⇒ dark. Never a synthesised age: `DARK` carries t: null, so no
+    // downstream ramp can accidentally render "we have never seen this market"
+    // as "we saw it exactly one full rotation ago".
+    freshness: freshBySystem.get(s.symbol) ?? DARK,
   }));
+
+  const clusters = clustersFor({ systems: topology.systems, edges, homeSystem });
+  const bySymbol = new Map(systems.map((s) => [s.symbol, s.freshness]));
+  const clusterFreshness = new Map(
+    clusters.map((c) => [c.id, clusterFreshnessFor(c.members, bySymbol)]),
+  );
 
   return {
     systems,
@@ -137,8 +199,12 @@ export function buildSceneData(
     // clustersFor takes the TopoLike shape: TopologyResponse.homeSystem is
     // optional (string | undefined) → map to the null it expects here, at the
     // call site — clusters.ts stays generic.
-    clusters: clustersFor({ systems: topology.systems, edges, homeSystem }),
+    clusters,
     homeSystem,
     fitPoints: topology.systems.map((s) => ({ x: s.x, y: s.y })),
+    clusterFreshness,
+    rotationBoundMinutes: bound,
+    rotationBoundBasis: freshness?.rotationBoundBasis ?? (freshness ? 'observed' : 'unknown'),
+    marketsKnown: freshness?.marketsKnown ?? 0,
   };
 }

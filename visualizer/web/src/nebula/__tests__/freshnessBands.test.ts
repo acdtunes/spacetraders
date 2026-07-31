@@ -1,0 +1,143 @@
+// sp-3fcdx — the freshness marks actually reach the scene graph, at both the
+// GALAXY (per-cluster) and REGION (per-system) bands. Real pixi containers with a
+// stub renderer (jsdom has no WebGL), mirroring latticeTiers.test.ts.
+//
+// These pin STRUCTURE — that the right number of marks of the right kind exist,
+// and that they vanish when there is no freshness data. They are deliberately not
+// offered as evidence that the aura is legible on screen; that was checked by
+// rendering the page (see the bead's render evidence), because this dashboard has
+// produced three defects that passed their unit tests and only a browser caught.
+import { describe, it, expect, vi } from 'vitest';
+import { Container, Sprite, type Renderer } from 'pixi.js';
+import { buildSceneData, type SceneData } from '../sceneData';
+import { buildOrbs, FRESHNESS_BOX } from '../layers/orbs';
+import { buildGalaxyBand, CLUSTER_FRESHNESS_BOX } from '../layers/galaxyBand';
+import { LAYER_ORDER, type Layers } from '../layers/registry';
+import { mockTopology, mockFreshness } from '../../mocks/mockFlows';
+import { FRESHNESS_RAMP, DARK_COLOR, rampColor } from '../freshness';
+
+vi.mock('../glowTexture', () => ({ makeGlowTexture: () => ({ width: 1, height: 1 }) }));
+
+const stubRenderer = {} as unknown as Renderer;
+
+function makeLayers(): Layers {
+  const world = new Container();
+  const named = {} as Record<(typeof LAYER_ORDER)[number], Container>;
+  for (const name of LAYER_ORDER) {
+    const layer = new Container();
+    layer.label = name;
+    world.addChild(layer);
+    named[name] = layer;
+  }
+  return { ...named, world };
+}
+
+const NOW = Date.now();
+const withFreshness = (): SceneData =>
+  buildSceneData(mockTopology, null, null, NOW, mockFreshness());
+const withoutFreshness = (): SceneData => buildSceneData(mockTopology, null, null, NOW);
+
+const boxIn = (layer: Container, label: string) =>
+  layer.children.find((c) => c.label === label) as Container | undefined;
+
+describe('REGION band freshness marks', () => {
+  it('draws one aura per priced system plus a batched dark-ring object', () => {
+    const layers = makeLayers();
+    buildOrbs(layers, withFreshness(), stubRenderer);
+    const box = boxIn(layers.orbs, FRESHNESS_BOX)!;
+    expect(box).toBeDefined();
+
+    // mockTopology draws NK36, KA42, ZC66 (priced) and UU57 (omitted ⇒ dark).
+    // 3 aura sprites + 1 batched dark-ring Graphics + 1 batched scout Graphics.
+    const tints = box.children.filter((c) => c instanceof Sprite).map((c) => (c as { tint: number }).tint);
+    expect(tints).toHaveLength(3);
+    expect(box.children).toHaveLength(5);
+  });
+
+  it('tints each aura by its own age — the ramp is continuous, not two buckets', () => {
+    const layers = makeLayers();
+    const data = withFreshness();
+    buildOrbs(layers, data, stubRenderer);
+    const box = boxIn(layers.orbs, FRESHNESS_BOX)!;
+    const tints = box.children.filter((c) => c instanceof Sprite).map((c) => (c as { tint: number }).tint);
+
+    // Every aura tint is a distinct point on the ramp, and matches the exact
+    // colour its system's own t resolves to.
+    expect(new Set(tints).size).toBe(3);
+    const priced = data.systems.filter((s) => s.freshness.priced);
+    expect(tints).toEqual(priced.map((s) => rampColor(s.freshness.t!)));
+    // Ordered along the ramp: the freshest system is the brightest. (It is NOT
+    // exactly FRESHNESS_RAMP[0] — a 4-minute-old scan sits just off the head,
+    // which is what "continuous" means and what a two-bucket encoding could not
+    // produce.)
+    const lum = (c: number) => 0.2126 * ((c >> 16) & 0xff) + 0.7152 * ((c >> 8) & 0xff) + 0.0722 * (c & 0xff);
+    expect(lum(tints[0])).toBeGreaterThan(lum(tints[1]));
+    expect(lum(tints[1])).toBeGreaterThan(lum(tints[2]));
+    expect(lum(tints[0])).toBeLessThan(lum(FRESHNESS_RAMP[0]));
+    // No aura ever wears the dark state's colour.
+    expect(tints).not.toContain(DARK_COLOR);
+  });
+
+  it('gives a dark system a ring and NO aura — absence of data, absence of glow', () => {
+    const layers = makeLayers();
+    const data = withFreshness();
+    buildOrbs(layers, data, stubRenderer);
+    const box = boxIn(layers.orbs, FRESHNESS_BOX)!;
+    // One aura short of the system count: UU57 is dark.
+    const auras = box.children.filter((c) => c instanceof Sprite);
+    expect(data.systems).toHaveLength(4);
+    expect(auras).toHaveLength(3);
+    expect(data.systems.find((s) => s.symbol === 'X1-UU57')!.freshness.t).toBeNull();
+  });
+
+  it('draws nothing at all when no freshness payload has landed', () => {
+    // The distinction that matters: a failed poll must not ring every system
+    // dark, because "we do not know" is not "these markets are unsensed".
+    const layers = makeLayers();
+    buildOrbs(layers, withoutFreshness(), stubRenderer);
+    const box = boxIn(layers.orbs, FRESHNESS_BOX)!;
+    expect(box).toBeDefined();
+    expect(box.children).toHaveLength(0);
+  });
+
+  it('sits behind the orbs and above the lattice', () => {
+    const layers = makeLayers();
+    buildOrbs(layers, withFreshness(), stubRenderer);
+    const labels = layers.orbs.children.map((c) => c.label);
+    const fresh = labels.indexOf(FRESHNESS_BOX);
+    expect(fresh).toBeGreaterThan(labels.indexOf('threads-near'));
+    // Orb sprites are appended after, so every later child outranks the box.
+    expect(fresh).toBeLessThan(labels.length - 1);
+  });
+});
+
+describe('GALAXY band cluster freshness', () => {
+  it('rings each cluster and marks its dark share', () => {
+    const layers = makeLayers();
+    const data = withFreshness();
+    buildGalaxyBand(layers, data, stubRenderer);
+    const box = boxIn(layers.auras, CLUSTER_FRESHNESS_BOX)!;
+    expect(box).toBeDefined();
+    // The single mock cluster has priced members AND a dark one (UU57), so both
+    // the worst-case ring and the dark arc are present.
+    expect(box.children).toHaveLength(2);
+    const cf = data.clusterFreshness.get(data.clusters[0].id)!;
+    expect(cf.worstT).not.toBeNull();
+    expect(cf.darkCount).toBe(1);
+  });
+
+  it('is lifted above the cluster auras — a crisp stroke under a glow washes out', () => {
+    const layers = makeLayers();
+    buildGalaxyBand(layers, withFreshness(), stubRenderer);
+    const labels = layers.auras.children.map((c) => c.label);
+    expect(labels[labels.length - 1]).toBe(CLUSTER_FRESHNESS_BOX);
+  });
+
+  it('draws nothing when no freshness payload has landed', () => {
+    const layers = makeLayers();
+    buildGalaxyBand(layers, withoutFreshness(), stubRenderer);
+    const box = boxIn(layers.auras, CLUSTER_FRESHNESS_BOX)!;
+    expect(box).toBeDefined();
+    expect(box.children).toHaveLength(0);
+  });
+});

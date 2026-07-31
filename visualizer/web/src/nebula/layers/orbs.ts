@@ -14,10 +14,13 @@ import type { SceneData } from '../sceneData';
 import type { Layers, PointerHooks } from './registry';
 import { worldBounds } from '../camera';
 import { makeGlowTexture } from '../glowTexture';
+import { DARK_COLOR, SCOUT_COLOR, rampColor } from '../freshness';
 
 export interface OrbsHandle {
   /** Region-band label sub-container (child of layers.labels) — fade this, not the shared layer. */
   labels: Container;
+  /** Market-freshness auras + dark rings + scout markers; gated by the Freshness toggle. */
+  freshness: Container;
   /** Threads touching the traded neighbourhood: hoverable, one Graphics each.
    * Rides `layers.orbs` visibility, so it shows across REGION and SYSTEM. */
   nearThreads: Container;
@@ -93,6 +96,44 @@ const DASH_OFF_PX = 4;
 export const THREADS_NEAR = 'threads-near';
 export const THREADS_FAR = 'threads-far';
 
+/** Market-freshness sub-container inside `layers.orbs` — the REGION band's
+ * priced/dark encoding. It lives HERE, not in `layers.auras`, on purpose: the
+ * auras layer is GALAXY-only (NebulaScene fades it out on the way to REGION) and
+ * is cleared wholesale by galaxyBand, whereas `layers.orbs` is already gated to
+ * exactly the band these marks belong to. Inserted before the orb sprites so
+ * every aura sits behind its own orb. Gated by the Freshness toggle. */
+export const FRESHNESS_BOX = 'system-freshness-auras';
+
+/** Freshness aura geometry. The aura is a mark of its own — it never resizes the
+ * orb or re-tints it, because orb radius/tint already carry activity and stacking
+ * a second meaning on them is what makes a map unreadable. Its own radius is a
+ * fixed multiple of the orb's (so dense regions stay proportionate) with a px
+ * floor, so a zero-activity system — drawn at the 4px orb floor — still shows a
+ * legible aura. Nothing here ramps with age but the COLOUR and the alpha: aura
+ * size is not a freshness channel, or a big stale system would outrank a small
+ * fresh one. */
+const AURA_SCALE = 2.6;
+const AURA_MIN_PX = 9;
+const AURA_ALPHA_FRESH = 0.7;
+const AURA_ALPHA_STALE = 0.34;
+
+/** Dark (unsensed) ring: hollow, dashed, off-ramp slate. Hollow-and-dashed is
+ * the load-bearing part — priced vs dark must be legible as a difference in FORM
+ * (glow vs outline), not only in hue, so it survives CVD, the focus dimmer and a
+ * grayscale screenshot. */
+const DARK_RING_SCALE = 2.0;
+const DARK_RING_MIN_PX = 8;
+const DARK_RING_WIDTH_PX = 1.1;
+const DARK_RING_ALPHA = 0.5;
+const DARK_DASH_COUNT = 10;
+
+/** Scout-post actuator: a small diamond on the system. Drawn for priced AND dark
+ * systems — a post on a dark system (an actuator placed, first scan not yet
+ * landed) is the case the freshness endpoint bends its own omission rule for, so
+ * dropping it here would discard exactly the record it took trouble to emit. */
+const SCOUT_PX = 3.4;
+const SCOUT_ALPHA = 0.95;
+
 /** Screen-px pad around an orb's visual radius for its pointer hit circle. */
 const ORB_HIT_PAD_PX = 4;
 
@@ -134,7 +175,12 @@ export function buildOrbs(layers: Layers, data: SceneData, renderer: Renderer, e
   const nearBox = new Container();
   nearBox.label = THREADS_NEAR;
   layers.orbs.addChild(nearBox);
-  const handle: OrbsHandle = { labels: labelBox, nearThreads: nearBox, farThreads: farBox };
+  // Freshness box goes in AFTER the threads and BEFORE the orbs: auras behind
+  // their orbs, above the lattice.
+  const freshBox = new Container();
+  freshBox.label = FRESHNESS_BOX;
+  layers.orbs.addChild(freshBox);
+  const handle: OrbsHandle = { labels: labelBox, nearThreads: nearBox, farThreads: farBox, freshness: freshBox };
   if (data.systems.length === 0) return handle;
 
   const fit = worldBounds(data.fitPoints);
@@ -225,6 +271,82 @@ export function buildOrbs(layers: Layers, data: SceneData, renderer: Renderer, e
     farBox.addChild(farDashed);
   } else {
     farDashed.destroy();
+  }
+
+  // ---- Market freshness: aura (priced) / hollow dashed ring (dark) ----------
+  //
+  // Drawn only when a freshness payload actually reached the scene. A failed or
+  // not-yet-landed poll leaves rotationBoundMinutes at 0, and in that case NOTHING
+  // is drawn rather than every system being ringed dark: "we have no freshness
+  // data" and "these markets are unsensed" are different claims, and painting the
+  // first as the second is the same class of lie as rendering a missing age at the
+  // far end of the ramp. The legend states which case the reader is in.
+  if (data.rotationBoundMinutes > 0) {
+    const auraTex = makeGlowTexture(renderer, ORB_TEXTURE_RADIUS, HALO_STOPS);
+    const darkRings = new Graphics();
+    const scouts = new Graphics();
+    let darkCount = 0;
+    let scoutCount = 0;
+
+    for (const sys of data.systems) {
+      const orbR = orbRadius(sys.activity, maxActivity) * worldPerPx;
+      const f = sys.freshness;
+
+      if (f.priced && f.t != null) {
+        const radius = Math.max(AURA_MIN_PX * worldPerPx, orbR * AURA_SCALE);
+        const aura = new Sprite(auraTex);
+        aura.anchor.set(0.5);
+        aura.position.set(sys.x, sys.y);
+        aura.width = radius * 2;
+        aura.height = radius * 2;
+        // Tint AND alpha both ramp, and both monotonically: the single-hue scale
+        // carries the ordering, the alpha reinforces it. The stale end stops at
+        // 0.34 over a #070312 backdrop rather than fading out, so the OLDEST
+        // markets stay visible — an aura whose worst state is invisible reports
+        // its worst state as "nothing here".
+        aura.tint = rampColor(f.t);
+        aura.alpha = AURA_ALPHA_FRESH + (AURA_ALPHA_STALE - AURA_ALPHA_FRESH) * f.t;
+        aura.blendMode = 'screen';
+        freshBox.addChild(aura);
+      } else {
+        const radius = Math.max(DARK_RING_MIN_PX * worldPerPx, orbR * DARK_RING_SCALE);
+        // Manual dashes — pixi Graphics has no native dash (the `trace` rationale).
+        const step = (Math.PI * 2) / DARK_DASH_COUNT;
+        for (let k = 0; k < DARK_DASH_COUNT; k++) {
+          const a0 = k * step;
+          darkRings.moveTo(sys.x + Math.cos(a0) * radius, sys.y + Math.sin(a0) * radius);
+          darkRings.arc(sys.x, sys.y, radius, a0, a0 + step * 0.5);
+        }
+        darkCount++;
+      }
+
+      if (f.scoutPost != null) {
+        const d = SCOUT_PX * worldPerPx;
+        scouts.moveTo(sys.x, sys.y - d);
+        scouts.lineTo(sys.x + d, sys.y);
+        scouts.lineTo(sys.x, sys.y + d);
+        scouts.lineTo(sys.x - d, sys.y);
+        scouts.closePath();
+        scoutCount++;
+      }
+    }
+
+    // Batched: one Graphics for every dark ring and one for every scout marker.
+    // Mounted only when non-empty, so "no dark systems" is an empty box rather
+    // than an invisible object that makes the state untestable (the far-thread
+    // batch rationale).
+    if (darkCount > 0) {
+      darkRings.stroke({ width: DARK_RING_WIDTH_PX * worldPerPx, color: DARK_COLOR, alpha: DARK_RING_ALPHA });
+      freshBox.addChild(darkRings);
+    } else {
+      darkRings.destroy();
+    }
+    if (scoutCount > 0) {
+      scouts.fill({ color: SCOUT_COLOR, alpha: SCOUT_ALPHA });
+      freshBox.addChild(scouts);
+    } else {
+      scouts.destroy();
+    }
   }
 
   // ---- Orbs: tinted halo + white-hot core per system; gold ring on home.

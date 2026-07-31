@@ -9,7 +9,7 @@ import { aggregateLanes, rollupSystemLanes, rollupSystemActivity } from '../util
 import { mergeFills } from '../utils/fills.js';
 import { homeSystemFromHeadquarters } from '../utils/homeSystem.js';
 import { currentEraId, resolveSystemCoords } from '../utils/systemCoords.js';
-import { shapeFreshnessResponse } from '../utils/freshness.js';
+import { shapeFreshnessResponse, deriveRotationBound } from '../utils/freshness.js';
 import { SpaceTradersClient } from '../src/client.js';
 
 const router = Router();
@@ -379,18 +379,45 @@ router.get('/live', async (_req, res) => {
 });
 
 // ---- GET /api/flows/freshness ------------------------------------------------
-// Per-system solver visibility: share of market listings inside the tour/sink
-// staleness gate, plus scout-post actuator state. STALE_AFTER_MINUTES mirrors
-// gobot maxListingAge (run_trade_route_coordinator_travel.go:711) — the solver's
-// number; clients read it from the response, never hardcode it.
-const STALE_AFTER_MINUTES = 75;
-
+// Per-system solver visibility: how much of each system's market data is inside
+// the scan rotation's own reach, the newest scan per system (the aura's ramp
+// input), and scout-post actuator state.
+//
+// The staleness cutoff is DERIVED per request, never a constant. It used to be
+// `const STALE_AFTER_MINUTES = 75`, annotated "mirrors gobot maxListingAge — the
+// solver's number". That claim died with sp-k4z5b, which deleted maxListingAge and
+// made the solver's cap a function of the live scan rotation; the same 75-minute
+// assumption baked into four gobot consumers cost ~87% of trade throughput in one
+// incident. See utils/freshness.ts `deriveRotationBound` for why the bound is
+// measured here rather than recomputed from the solver's formula (two of its three
+// inputs live in the daemon's config.yaml and are exposed nowhere the visualizer
+// can read).
 router.get('/freshness', async (_req, res) => {
   let client;
   try {
     client = await pool.connect();
     const eraId = await currentEraId(client);
-    const cutoffIso = new Date(Date.now() - STALE_AFTER_MINUTES * 60 * 1000).toISOString();
+
+    // One round trip for both scale inputs: the era's observed p95 listing age
+    // (the aura's full scale) and the charted-market count behind it — the same
+    // FUEL_STATION-excluded, MARKETPLACE-trait, era-scoped filter gobot's own
+    // ChartedMarketSystemCounts uses, so the denominator the reader is shown is
+    // the denominator the scanner paces against.
+    const rotationResult = await client.query(
+      `SELECT
+         (SELECT percentile_cont(0.95) WITHIN GROUP (
+                   ORDER BY EXTRACT(EPOCH FROM (NOW() - md.last_updated)) / 60)
+          FROM market_data md
+          JOIN waypoints w ON w.waypoint_symbol = md.waypoint_symbol
+          WHERE (w.era_id = $1 OR w.era_id IS NULL)) AS p95_minutes,
+         (SELECT COUNT(*) FROM waypoints
+          WHERE type <> 'FUEL_STATION' AND traits LIKE '%MARKETPLACE%'
+            AND (era_id = $1 OR era_id IS NULL)) AS markets_known`,
+      [eraId],
+    );
+    const rotation = deriveRotationBound(rotationResult.rows[0]?.p95_minutes);
+    const marketsKnown = Number(rotationResult.rows[0]?.markets_known) || 0;
+    const cutoffIso = new Date(Date.now() - rotation.minutes * 60 * 1000).toISOString();
     const marketResult = await client.query(
       `SELECT w.system_symbol AS system,
               COUNT(*) AS total,
@@ -415,7 +442,14 @@ router.get('/freshness', async (_req, res) => {
     );
     res.json({
       systems: shapeFreshnessResponse(marketResult.rows, scoutResult.rows),
-      staleAfterMinutes: STALE_AFTER_MINUTES,
+      // The aura's full scale and the freshListings cutoff are the SAME number,
+      // so a system the drilldown ring calls half-stale is half-way along the
+      // galaxy ramp too. staleAfterMinutes is kept as its long-standing name and
+      // now carries the derived value rather than a constant.
+      staleAfterMinutes: rotation.minutes,
+      rotationBoundMinutes: rotation.minutes,
+      rotationBoundBasis: rotation.basis,
+      marketsKnown,
       generatedAt: new Date().toISOString(),
     });
   } catch (error: any) {

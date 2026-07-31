@@ -13,6 +13,7 @@ import { NebulaScene, type NebulaApi } from '../NebulaScene';
 import { buildSystemBand, clearSystemBand } from '../layers/systemBand';
 import { anchoredZoom } from '../camera';
 import type { SceneData } from '../sceneData';
+import { DARK } from '../freshness';
 
 // ---- pixi.js: real module, stubbed Application (init needs WebGL) ----------
 const pixiState = vi.hoisted(() => ({
@@ -78,8 +79,8 @@ vi.stubGlobal('ResizeObserver', StubResizeObserver);
 const ship = { id: 's1', flowId: 'flow-1', x: 100, y: 60, headingRad: 0, system: null };
 const sceneData: SceneData = {
   systems: [
-    { symbol: 'X1-A', x: 0, y: 0, activity: 5, isHome: true, underConstruction: false },
-    { symbol: 'X1-B', x: 200, y: 120, activity: 3, isHome: false, underConstruction: false },
+    { symbol: 'X1-A', x: 0, y: 0, activity: 5, isHome: true, underConstruction: false, freshness: DARK },
+    { symbol: 'X1-B', x: 200, y: 120, activity: 3, isHome: false, underConstruction: false, freshness: DARK },
   ],
   lanes: [{ from: 'X1-A', to: 'X1-B', profitPerHr: 100, volume: 10, realized: 5, projected: 5 }],
   ships: [ship],
@@ -91,6 +92,10 @@ const sceneData: SceneData = {
     { id: 'c2', members: ['X1-B'], cx: 200, cy: 120, isHome: false },
   ],
   homeSystem: 'X1-A',
+  clusterFreshness: new Map(),
+  rotationBoundMinutes: 0,
+  rotationBoundBasis: 'unknown',
+  marketsKnown: 0,
   fitPoints: [
     { x: 0, y: 0 },
     { x: 200, y: 120 },

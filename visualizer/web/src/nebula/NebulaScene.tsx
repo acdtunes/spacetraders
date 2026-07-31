@@ -34,7 +34,9 @@ export type HoverTarget = {
  * buttons). lanes/ships gate the REGION-band stream + mote containers, paths
  * gates the GALAXY-band currents (the nearest surviving "routes across the
  * galaxy" visual — per-flow plan polylines did not carry over), freshness gates
- * the SYSTEM band's market-freshness rings.
+ * every market-freshness visual in the scene: the GALAXY band's per-cluster
+ * rings, the REGION band's per-system auras and dark rings, and the SYSTEM
+ * band's per-waypoint rings.
  *
  * `lattice` is the odd one out: the other four SUBTRACT from the default view,
  * so they default on, while lattice ADDS the far thread tier that the SYSTEM
@@ -522,6 +524,9 @@ export function NebulaScene({ data, onSelectSystem, onHover, apiRef, layerToggle
       if (st.galaxyBand != null) {
         st.galaxyBand.labels.alpha = st.galaxyFade * st.dim;
         st.galaxyBand.labels.visible = galaxyOn && toggles.paths;
+        // Cluster freshness rings ride the galaxy fade with the auras they sit
+        // in; the Freshness toggle is the only thing that hides them separately.
+        st.galaxyBand.freshness.visible = toggles.freshness;
         if (galaxyOn) st.galaxyBand.update(dtMs);
       }
 
@@ -544,6 +549,9 @@ export function NebulaScene({ data, onSelectSystem, onHover, apiRef, layerToggle
         // viewport covers one system) or the Lattice toggle asks for the whole
         // web. Both tiers ride layers.orbs above, so GALAXY still shows neither.
         st.orbs.farThreads.visible = st.band === 'SYSTEM' || toggles.lattice;
+        // Per-system freshness auras / dark rings / scout markers ride the REGION
+        // fade with layers.orbs; the Freshness toggle hides them independently.
+        st.orbs.freshness.visible = toggles.freshness;
       }
       // Lane streams + ship motes ride the same REGION fade; particles and
       // dead-reckoned ships advance only while actually visible. These two are

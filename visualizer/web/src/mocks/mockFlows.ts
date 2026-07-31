@@ -402,20 +402,34 @@ export function mockDenseGalaxy(nowMs: number): { topology: TopologyResponse; la
   };
 }
 
-// Ramp-spanning freshness demo (spec §6): three sensed systems staggered along
-// the 0-100% solver-visibility ramp with distinct scout-post states, plus one
-// demo system (X1-UU57) deliberately omitted so it renders dark/unsensed —
-// no halo, no marker. freshestAt is anchored to the caller clock so the "Nm ago"
-// drilldown line reads plausibly.
+// Ramp-spanning freshness demo (spec §6): four sensed systems staggered across
+// the aura's 0→bound age ramp with distinct scout-post states, plus one demo
+// system (X1-UU57) deliberately omitted so it renders DARK — a hollow dashed
+// ring, never the far end of the ramp. freshestAt is anchored to the caller clock
+// so both the aura and the "Nm ago" drilldown line read plausibly.
+//
+// The bound mirrors a plausible live rotation (~6.7h observed p95 on 2026-07-30)
+// rather than the 75 minutes this mock carried before sp-3fcdx: a mock pinned to
+// a dead constant would have kept demoing a ramp the real map never produces.
 export function mockFreshness(): FreshnessResponse {
+  const boundMinutes = 400;
+  const at = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
   return {
     systems: [
-      { system: 'X1-NK36', totalListings: 42, freshListings: 40, freshnessPct: 95, freshestAt: new Date(Date.now() - 4 * 60_000).toISOString(), scoutPost: { status: 'manned', hull: 'TORWIND-9', kind: 'standing' } },
-      { system: 'X1-KA42', totalListings: 60, freshListings: 30, freshnessPct: 50, freshestAt: new Date(Date.now() - 38 * 60_000).toISOString(), scoutPost: { status: 'relay', hull: null, kind: 'standing' } },
-      { system: 'X1-ZC66', totalListings: 31, freshListings: 3, freshnessPct: 10, freshestAt: new Date(Date.now() - 71 * 60_000).toISOString(), scoutPost: { status: 'unmanned', hull: null, kind: 'standing' } },
-      // X1-UU57 deliberately absent: unsensed — no halo, no marker.
+      { system: 'X1-NK36', totalListings: 42, freshListings: 40, freshnessPct: 95, freshestAt: at(4), scoutPost: { status: 'manned', hull: 'TORWIND-9', kind: 'standing' } },
+      { system: 'X1-KA42', totalListings: 60, freshListings: 30, freshnessPct: 50, freshestAt: at(140), scoutPost: { status: 'relay', hull: null, kind: 'standing' } },
+      { system: 'X1-ZC66', totalListings: 31, freshListings: 3, freshnessPct: 10, freshestAt: at(300), scoutPost: { status: 'unmanned', hull: null, kind: 'standing' } },
+      { system: 'X1-PT19', totalListings: 18, freshListings: 0, freshnessPct: 0, freshestAt: at(480), scoutPost: null },
+      // Zero listings but a scout post: the endpoint's deliberate exception —
+      // an actuator placed whose first scan has not landed. Renders DARK with a
+      // scout marker, which is exactly the case the exception exists for.
+      { system: 'X1-QA88', totalListings: 0, freshListings: 0, freshnessPct: 0, freshestAt: null, scoutPost: { status: 'manned', hull: 'TORWIND-4', kind: 'standing' } },
+      // X1-UU57 deliberately absent: unsensed — dark ring, no aura, no marker.
     ],
-    staleAfterMinutes: 75,
+    staleAfterMinutes: boundMinutes,
+    rotationBoundMinutes: boundMinutes,
+    rotationBoundBasis: 'observed',
+    marketsKnown: 13_525,
     generatedAt: new Date().toISOString(),
   };
 }

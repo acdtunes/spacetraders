@@ -13,6 +13,7 @@ import { TourRoster } from '../components/flows/TourRoster';
 import { FeedLostChip } from '../components/flows/FeedLostChip';
 import { FillTicker } from '../components/flows/FillTicker';
 import { FlowTooltip } from '../components/flows/FlowTooltip';
+import { FreshnessLegend } from '../components/flows/FreshnessLegend';
 import { coverageNotice } from '../components/flows/coverageNotice';
 import { NOIR } from '../theme/noir';
 import type { FlowWindow } from '../types/flows';
@@ -30,6 +31,8 @@ export function TradeFlowsView() {
   const selectedFlowId = useFlowStore((s) => s.selectedFlowId);
   const selectFlow = useFlowStore((s) => s.selectFlow);
   const hoveredFlowId = useFlowStore((s) => s.hoveredFlowId);
+  const freshness = useFlowStore((s) => s.freshness);
+  const freshnessMissedPolls = useFlowStore((s) => s.freshnessMissedPolls);
   const layerToggles = useFlowStore((s) => s.layerToggles);
   const toggleLayer = useFlowStore((s) => s.toggleLayer);
   const error = useFlowStore((s) => s.error);
@@ -52,9 +55,11 @@ export function TradeFlowsView() {
 
   // One SceneData frame per poll delivery (identity change on any slice);
   // between polls the scene dead-reckons, so no rAF rebuild is needed here.
+  // Freshness joins here (60s poll) so the priced/dark split and the age ramp are
+  // resolved once, against topology, rather than re-derived per band.
   const sceneData = useMemo(
-    () => buildSceneData(topology, lanes, live, Date.now()),
-    [topology, lanes, live],
+    () => buildSceneData(topology, lanes, live, Date.now(), freshness),
+    [topology, lanes, live, freshness],
   );
 
   // Scene hover → the shared tooltip card. Systems and lanes have cards;
@@ -142,6 +147,17 @@ export function TradeFlowsView() {
         >
           {coverage.text}
         </div>
+      )}
+
+      {/* Freshness legend — mounted with the layer it explains, so toggling the
+          layer off never leaves an orphaned key for marks that aren't drawn. */}
+      {layerToggles.freshness && (
+        <FreshnessLegend
+          boundMinutes={sceneData.rotationBoundMinutes}
+          basis={sceneData.rotationBoundBasis}
+          marketsKnown={sceneData.marketsKnown}
+          missedPolls={freshnessMissedPolls}
+        />
       )}
 
       <FlowDetailPanel flow={hoveredFlow ?? selectedFlow} />
