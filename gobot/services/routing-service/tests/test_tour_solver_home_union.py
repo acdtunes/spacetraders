@@ -134,6 +134,103 @@ def test_superset_property_holds_under_rate_objective(monkeypatch):
     assert live["projected_credits_per_hour"] >= intra["projected_credits_per_hour"]
 
 
+def _pool_cphs(monkeypatch):
+    """Record (cph, seconds) for every candidate stage 2 actually scores."""
+    seen = []
+    real = ts.score_sequence
+
+    def spy(seq, *a, **kw):
+        r = real(seq, *a, **kw)
+        seen.append((r["cph"], r["seconds"]))
+        return r
+
+    monkeypatch.setattr(ts, "score_sequence", spy)
+    return seen
+
+
+def _seed_a_bare_stop(monkeypatch, wp="H2"):
+    """Put a bare single-waypoint candidate at the HEAD of stage 1's output.
+
+    This is the one place fixtures and reality diverge, and it is why the lane's 80
+    generated fixtures passed while the real harness failed. Measured on this
+    fixture: every candidate surviving the full_score_top_n cut is a 6-stop tour,
+    because long tours accumulate the most beam gain and short seeds sort last. On
+    real reconstructed snapshots the pool DOES carry bare stops — the ortools
+    sequencer is armed in prod (TOUR_SOLVER_SEQUENCER=ortools) and its
+    prize-collecting model emits short/no-trade routes that land in
+    `ortools_cands[:full_score_top_n]` ahead of beam's. A lone market cannot arb, so
+    such a candidate scores 0 profit / 0 seconds — the "bare sink seed" that
+    test_tour_closure already notes exists in almost every real pool.
+
+    Prepended, not appended, so it survives the top-N cut exactly as ortools' does.
+    """
+    real = ts.beam_sequences
+
+    def spy(markets, *a, **kw):
+        out = real(markets, *a, **kw)
+        return [(wp,)] + [s for s in out if s != (wp,)] if wp in markets else out
+
+    monkeypatch.setattr(ts, "beam_sequences", spy)
+
+
+def test_rate_objective_actually_selects_the_pools_best_cph(monkeypatch):
+    """THE sp-97ine falsifier, reproduced as a fixture.
+
+    The union restores pool ⊇ pool_home and stage 2 is the sole arbiter, so under
+    OBJECTIVE_RATE the answer MUST be the pool's max-cph candidate. On real
+    reconstructed snapshots it was not: intra beat live 37/59 with the union verified
+    present and contributing, because `_sort_scored`'s old whole-pool zero-time veto
+    silently demoted every real solve to PROFIT ordering. Adding candidates then
+    raises the chosen PROFIT but not the chosen $/hr, so the wider arm reliably lost
+    the $/hr comparison — the union was working and could not possibly help.
+
+    Asserting the MECHANISM, not the outcome: an outcome-only assert passes by luck
+    whenever profit ordering happens to agree, which is precisely how this shipped.
+    """
+    monkeypatch.setenv(ts.OBJECTIVE_ENV_VAR, ts.OBJECTIVE_RATE)
+    snapshot, waypoints = dilution_fixture()
+    _seed_a_bare_stop(monkeypatch)
+    pool = _pool_cphs(monkeypatch)
+    live = solve_tour(snapshot, _ship(), _cons(["S1", "S2"]), MODEL, waypoints=waypoints)
+    assert live["feasible"]
+    assert any(sec <= 0 for _, sec in pool), (
+        "fixture no longer carries a degenerate zero-time candidate — it cannot "
+        "exercise the defect")
+    best_cph = max(c for c, _ in pool)
+    assert best_cph > 0
+    assert live["projected_credits_per_hour"] == pytest.approx(best_cph), (
+        "rate-objective solve did not return its pool's best $/hr — selection fell "
+        "back to profit ordering")
+
+
+def test_superset_property_survives_a_degenerate_candidate(monkeypatch):
+    """The strict-superset property under the pool shape reality actually has.
+
+    Same invariant as test_superset_property_holds_under_rate_objective, but with a
+    bare zero-time stop in the pool. That test passed pre-fix only because its pool
+    happened to contain no degenerate candidate, so the veto never fired.
+
+    NOT THE REGRESSION GUARD, and measured as such: reverting _sort_scored to the
+    whole-pool veto leaves this test GREEN. Under the veto both arms fall back to
+    profit ordering, live's pool ⊇ intra's, so live's max-PROFIT tour is >= intra's
+    and on this fixture its $/hr happens to come out >= too. That is the exact
+    failure mode that let the defect ship — an outcome-only assert passes by luck
+    whenever profit ordering agrees. The mutation-killers are
+    test_rate_objective_actually_selects_the_pools_best_cph (solve level) and
+    test_sort_scored_selection_is_monotonic_in_pool_size (unit level); this one is
+    kept only as a second shape of the invariant. Do not treat it as the guard.
+    """
+    monkeypatch.setenv(ts.OBJECTIVE_ENV_VAR, ts.OBJECTIVE_RATE)
+    snapshot, waypoints = dilution_fixture()
+    _seed_a_bare_stop(monkeypatch)
+    intra = solve_tour(snapshot, _ship(), _cons(["S1"]), MODEL, waypoints=waypoints)
+    live = solve_tour(snapshot, _ship(), _cons(["S1", "S2"]), MODEL, waypoints=waypoints)
+    assert live["feasible"] and intra["feasible"]
+    assert live["projected_credits_per_hour"] >= intra["projected_credits_per_hour"], (
+        f"wide solve {live['projected_credits_per_hour']:,.0f}/hr lost to its own "
+        f"home-only subset {intra['projected_credits_per_hour']:,.0f}/hr")
+
+
 # --------------------------------------------------------------------------
 # 3. Additive-only: the common path pays nothing and changes nothing.
 # --------------------------------------------------------------------------

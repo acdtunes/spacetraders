@@ -1022,20 +1022,26 @@ def test_objective_env_var_selects_rate_and_explicit_argument_wins(monkeypatch):
     assert "B2" in bogus_sinks
 
 
-def test_sort_scored_zero_time_falls_back_to_profit_ordering():
-    # The sp-1wp8 regression pin: a seconds<=0 candidate (degenerate input) drops
-    # the WHOLE selection back to profit ordering — a divide-by-zero artifact
-    # (cph=0 on instant profit) must never decide selection in either direction.
+def test_sort_scored_quarantines_zero_time_instead_of_vetoing_rate_ordering():
+    # sp-97ine falsifier. The sp-1wp8 intent — "a divide-by-zero artifact must never
+    # out-rank real plans" — is satisfied by score_sequence pinning cph to 0.0 whenever
+    # seconds<=0, so a degenerate candidate sorts LAST under rate ordering for free.
+    # The old implementation instead VETOED rate ordering for the WHOLE pool on any one
+    # seconds<=0 entry, which (a) let the degenerate actually WIN when its profit was
+    # highest — the opposite of the stated intent — and (b) made OBJECTIVE_RATE
+    # inoperative on every real snapshot, since beam seeds a single-waypoint sequence
+    # per market and a lone market cannot arb (0 profit / 0 seconds).
     from utils.tour_solver import _sort_scored, OBJECTIVE_RATE, OBJECTIVE_PROFIT
     scored = [
         (dict(profit=50, cph=99_999.0, seconds=10), "fast"),
         (dict(profit=100, cph=0.0, seconds=0), "instant-degenerate"),
     ]
     effective = _sort_scored(scored, OBJECTIVE_RATE)
-    assert effective == OBJECTIVE_PROFIT
-    assert scored[0][1] == "instant-degenerate"  # profit ordering: 100 first
+    assert effective == OBJECTIVE_RATE, "one degenerate candidate must not veto rate ordering"
+    assert scored[0][1] == "fast", "the degenerate must sort BELOW a real plan, not above it"
+    assert scored[-1][1] == "instant-degenerate"
 
-    # With every candidate carrying real time, rate mode orders by cph.
+    # With every candidate carrying real time, rate mode orders by cph (unchanged).
     scored = [
         (dict(profit=100, cph=6_000.0, seconds=60_000), "slow-big"),
         (dict(profit=50, cph=99_999.0, seconds=10), "fast"),
@@ -1043,6 +1049,35 @@ def test_sort_scored_zero_time_falls_back_to_profit_ordering():
     effective = _sort_scored(scored, OBJECTIVE_RATE)
     assert effective == OBJECTIVE_RATE
     assert scored[0][1] == "fast"
+
+    # Profit ordering is untouched in both directions.
+    scored = [
+        (dict(profit=50, cph=99_999.0, seconds=10), "fast"),
+        (dict(profit=100, cph=0.0, seconds=0), "instant-degenerate"),
+    ]
+    assert _sort_scored(scored, OBJECTIVE_PROFIT) == OBJECTIVE_PROFIT
+    assert scored[0][1] == "instant-degenerate"
+
+
+def test_sort_scored_selection_is_monotonic_in_pool_size():
+    # THE property sp-97ine's union (and sp-y05b's ortools union) both rest on:
+    # adding a candidate can only ADD, never re-rank the candidates already there.
+    # The old whole-pool veto broke exactly this — appending one degenerate entry
+    # flipped the ORDERING RULE for every other candidate, so a union could
+    # contribute the right candidate at an identical score and still lose.
+    from utils.tour_solver import _sort_scored, OBJECTIVE_RATE
+    real = [
+        (dict(profit=100, cph=6_000.0, seconds=60_000), "slow-big"),
+        (dict(profit=50, cph=99_999.0, seconds=10), "fast"),
+    ]
+    _sort_scored(real, OBJECTIVE_RATE)
+    winner_before = real[0][1]
+
+    widened = list(real) + [(dict(profit=100_000, cph=0.0, seconds=0), "bare-seed")]
+    _sort_scored(widened, OBJECTIVE_RATE)
+    assert widened[0][1] == winner_before, (
+        "adding a candidate changed the winner among the pre-existing ones — "
+        "selection is not monotonic in pool size")
 
 
 # ===================================================================== sp-ljh5 =====

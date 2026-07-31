@@ -380,12 +380,35 @@ def _sort_scored(scored, objective):
 
     profit (default): (-profit, -cph, summary) — byte-identical to the 2026-07-09
     Admiral decision. rate: (-cph, -profit, summary) — fastest money first, equal
-    rates break on absolute profit. Zero-time pin: rate ordering applies ONLY when
-    every candidate carries a positive time estimate; any seconds<=0 candidate
-    (degenerate input — a real plan always dwells >=60s/leg) drops the WHOLE
-    selection back to profit ordering (and reports so), so a divide-by-zero
-    artifact can never out-rank real plans."""
-    if objective == OBJECTIVE_RATE and all(r["seconds"] > 0 for r, _ in scored):
+    rates break on absolute profit.
+
+    Degenerate (seconds<=0) candidates are QUARANTINED, not vetoed. score_sequence
+    already pins cph to 0.0 whenever seconds<=0 — that IS the divide-by-zero guard —
+    so under rate ordering a degenerate candidate sorts BELOW every profitable real
+    plan for free, which is the safety property this function ever needed.
+
+    sp-97ine falsifier (real reconstructed snapshots, 2026-07-31): the previous
+    `all(seconds > 0)` guard was a WHOLE-POOL VETO — ONE degenerate candidate
+    anywhere demoted the ENTIRE selection back to profit ordering. Every real
+    stage-1 pool contains one: beam seeds each market as a single-waypoint
+    sequence, a lone market cannot arb, so it scores 0 profit / 0 seconds (the
+    "bare sink seed" test_tour_closure already documents as present in almost
+    every real pool). Two consequences, both observed:
+      1. OBJECTIVE_RATE was inoperative on live snapshots — every solve silently
+         selected profit-primary — while still working on hand-built fixtures,
+         which only engage cph ordering because they carry ballast cargo giving
+         every candidate a leg (see test_tour_solver's _deep_lane_board note).
+      2. Selection was NON-MONOTONIC in pool size: adding a candidate could change
+         the ordering RULE for every other candidate. That silently voided the
+         can-only-ADD contract the sp-97ine home-scoped union and the sp-y05b
+         ortools union both rely on — the union could contribute exactly the right
+         candidate, at an identical score, and the wider arm would still lose the
+         $/hr comparison because it was never ranking on $/hr.
+    Ordering now depends only on the objective, never on pool composition, which
+    is what restores the strict-superset property (wide >= home-only on every
+    case). An all-nonpositive pool still sorts a nonpositive candidate first under
+    both objectives, so the no_profitable_tour guard below is unchanged."""
+    if objective == OBJECTIVE_RATE:
         scored.sort(key=lambda rs: (-rs[0]["cph"], -rs[0]["profit"], rs[1]))
         return OBJECTIVE_RATE
     scored.sort(key=lambda rs: (-rs[0]["profit"], -rs[0]["cph"], rs[1]))
