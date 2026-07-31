@@ -13,6 +13,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	domainContainer "github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/marketscan"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/ports"
@@ -47,6 +48,19 @@ type ContainerRepository interface {
 	Remove(ctx context.Context, containerID string, playerID int) error
 }
 
+// yardFeeReader is the one verb the outfitting spend-floor needs from the fleet's
+// shipyard scanner: a METERED live shipyard read, from which the modification fee
+// is taken. *ship.ShipyardScanner satisfies it.
+//
+// The fee is not persisted anywhere — the shipyard inventory store records ship
+// types and their purchase prices, not the counter's modification charge — so
+// unlike the catalogue-searching callers this guard has no store to fall back on
+// and its read is genuinely undeniable. That is precisely the Earning class:
+// metered against the same allowance, never declined (sp-mb0er).
+type yardFeeReader interface {
+	ReadShipyard(ctx context.Context, playerID uint, waypointSymbol string, class marketscan.Class) (*ports.ShipyardData, error)
+}
+
 // OutfittingHandler serves InstallModule, RemoveModule and ListShipModules. A
 // single handler backs all three (registered against each request type) because
 // they share the ship-outfitting deps and claim/persist machinery.
@@ -54,17 +68,21 @@ type OutfittingHandler struct {
 	shipRepo       navigation.ShipRepository
 	playerRepo     player.PlayerRepository
 	apiClient      ports.APIClient
+	yards          yardFeeReader
 	containerRepo  ContainerRepository
 	clock          shared.Clock
 	playerResolver *common.PlayerResolver
 }
 
 // NewOutfittingHandler creates an OutfittingHandler. If clock is nil, uses the
-// real clock (production default).
+// real clock (production default). yards is the metered shipyard reader the
+// spend-floor takes the modification fee from; a nil one leaves the guard
+// unavailable rather than reaching the API unmetered.
 func NewOutfittingHandler(
 	shipRepo navigation.ShipRepository,
 	playerRepo player.PlayerRepository,
 	apiClient ports.APIClient,
+	yards yardFeeReader,
 	containerRepo ContainerRepository,
 	clock shared.Clock,
 ) *OutfittingHandler {
@@ -75,6 +93,7 @@ func NewOutfittingHandler(
 		shipRepo:       shipRepo,
 		playerRepo:     playerRepo,
 		apiClient:      apiClient,
+		yards:          yards,
 		containerRepo:  containerRepo,
 		clock:          clock,
 		playerResolver: common.NewPlayerResolver(playerRepo),
@@ -242,19 +261,26 @@ func (h *OutfittingHandler) modifyModule(
 // price the modification will charge. Per RULING #4, if the live balance OR the
 // price cannot be read, the guard returns breached=true (do not spend).
 //
-// apiClient == nil returns breached=false: the guard is unavailable only in
-// unit-test fixtures that inject no API client, mirroring the codebase's
-// spend-floor convention.
+// A nil apiClient or nil yard reader returns breached=false: the guard is
+// unavailable only in unit-test fixtures that inject neither, mirroring the
+// codebase's spend-floor convention.
+//
+// The fee read is Earning-class against the fleet's shipyard-read budget — metered
+// like every other shipyard request, but never declined, because there is no
+// stored modification fee to fall back on and a guard answered from memory is not
+// a guard (RULINGS #4).
 func (h *OutfittingHandler) floorGuardBreached(ctx context.Context, ship *navigation.Ship, token string) (breached bool, credits int, fee int, reason string) {
-	if h.apiClient == nil {
+	if h.apiClient == nil || h.yards == nil {
 		return false, 0, 0, ""
 	}
 
 	waypoint := ship.CurrentLocation().Symbol
-	systemSymbol := shared.ExtractSystemSymbol(waypoint)
-	shipyard, err := h.apiClient.GetShipyard(ctx, systemSymbol, waypoint, token)
-	if err != nil {
+	shipyard, err := h.yards.ReadShipyard(ctx, uint(ship.PlayerID().Value()), waypoint, marketscan.Earning)
+	if err != nil && shipyard == nil {
 		return true, 0, 0, fmt.Sprintf("could not read the shipyard modification fee at %s — the ship must be at a shipyard to be outfitted (fail-closed): %v", waypoint, err)
+	}
+	if shipyard == nil {
+		return true, 0, 0, fmt.Sprintf("the shipyard modification fee at %s was not read live (fail-closed)", waypoint)
 	}
 	fee = shipyard.ModificationFee
 

@@ -74,6 +74,13 @@ func (s *DaemonServer) StartConstructionPipeline(ctx context.Context, constructi
 		s.playerRepo,
 		apiClient,
 	)
+	// The hull search draws on the fleet's one shipyard-read allowance, exactly like
+	// the shared locator in the composition root (sp-mb0er). Guarded rather than
+	// passed blind: a typed-nil scanner would satisfy the interface and defeat the
+	// setter's own nil check.
+	if s.yardScanner != nil {
+		marketLocator.SetYardSource(s.yardScanner)
+	}
 
 	// Create planner
 	planner := services.NewConstructionPipelinePlanner(

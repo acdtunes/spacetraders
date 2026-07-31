@@ -253,6 +253,30 @@ func (r *GormWaypointRepository) ListBySystemWithTrait(ctx context.Context, syst
 	return r.modelsToWaypoints(models)
 }
 
+// ChartedShipyardCount returns how many CHARTED waypoints in the current era bear
+// the SHIPYARD trait — the denominator of the fleet's "shipyard budget ÷ yards
+// known" rotation (sp-mb0er).
+//
+// It applies the IDENTICAL trait predicate as ListBySystemWithTrait above, only
+// global and counted rather than scoped to one system and materialised, so the
+// budget's map size and the yard lists callers actually iterate can never drift
+// apart. Era-scoped for the same reason every other read here is: a dead-era
+// waypoint is not a yard the fleet has to keep looking at, and counting it would
+// silently lengthen every live yard's interval.
+func (r *GormWaypointRepository) ChartedShipyardCount(ctx context.Context) (int, error) {
+	var count int64
+	pattern := fmt.Sprintf("%%\"%s\"%%", "SHIPYARD")
+	predicate, args := eraScopePredicate(r.openEraID(ctx))
+	if err := r.db.WithContext(ctx).
+		Model(&WaypointModel{}).
+		Where("traits LIKE ?", pattern).
+		Where(predicate, args...).
+		Count(&count).Error; err != nil {
+		return 0, fmt.Errorf("failed to count charted shipyards: %w", err)
+	}
+	return int(count), nil
+}
+
 // Add persists a waypoint
 func (r *GormWaypointRepository) Add(ctx context.Context, waypoint *shared.Waypoint) error {
 	model, err := r.waypointToModel(waypoint)

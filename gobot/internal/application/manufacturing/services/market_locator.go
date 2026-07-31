@@ -8,11 +8,22 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/marketscan"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/ports"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shipyard"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
+
+// yardSource is what the locator needs from the fleet's shipyard scanner to price
+// a hull without bypassing the shipyard-read budget: the persisted catalogue, a
+// metered live read for yards the store has never seen, and the demand signal that
+// keeps the yards we shop at priced. *ship.ShipyardScanner satisfies it.
+type yardSource interface {
+	OffersFor(ctx context.Context, playerID int, shipType string) ([]shipyard.ShipTypeAvailability, error)
+	ReadShipyard(ctx context.Context, playerID uint, waypointSymbol string, class marketscan.Class) (*ports.ShipyardData, error)
+	NoteDemand(shipType string)
+}
 
 // MarketLocator finds optimal markets for buying and selling goods.
 // It ranks markets by activity and supply levels to guide production decisions.
@@ -22,6 +33,7 @@ type MarketLocator struct {
 	waypointRepo system.WaypointRepository
 	playerRepo   player.PlayerRepository
 	apiClient    ports.APIClient
+	yards        yardSource
 }
 
 // NewMarketLocator creates a new market locator service
@@ -37,6 +49,26 @@ func NewMarketLocator(
 		playerRepo:   playerRepo,
 		apiClient:    apiClient,
 	}
+}
+
+// SetYardSource wires the metered shipyard reader the hull search runs through.
+//
+// A setter rather than a constructor argument because NewMarketLocator has two
+// dozen test call sites that pass nil for everything but the market repository,
+// and none of them exercise the hull path; widening the constructor would churn
+// all of them to express nothing. The two production composition roots set it.
+//
+// WITHOUT IT THE HULL SEARCH FINDS NOTHING, deliberately. This search used to
+// issue one live GET /shipyard per shipyard in the system, uncached and unmetered,
+// from a path on the 30-second construction drain — one of the four bypasses that
+// put shipyard reads at 44.7% of the server ceiling (sp-mb0er). Failing to find a
+// hull is a recoverable planning outcome; quietly restoring an unmetered burst
+// because a wiring was missed is not.
+func (l *MarketLocator) SetYardSource(yards yardSource) {
+	if yards == nil {
+		return
+	}
+	l.yards = yards
 }
 
 // MarketLocatorResult contains market information for a good
@@ -85,16 +117,26 @@ func (l *MarketLocator) FindImportMarket(
 
 // findShipyardSellingShip finds a shipyard that sells a specific ship type.
 // Returns the shipyard with the lowest purchase price.
+//
+// STORE-FIRST (sp-mb0er). This used to issue one live GET /shipyard per shipyard
+// in the system, uncached and unmetered, from a path reachable on the 30-second
+// construction drain. One store query now covers every yard in the system, and
+// only yards the store has no priced row for cost a request — a request the
+// shipyard-read budget may decline, in which case that yard is simply not this
+// tick's candidate.
+//
+// A yard row with PurchasePrice 0 is catalogued but never priced (a presence-less
+// GET sees what a counter sells but not what it charges), and it is NOT a free
+// hull: it is skipped as a price, and it is exactly the row that makes the yard
+// worth a live read.
 func (l *MarketLocator) findShipyardSellingShip(
 	ctx context.Context,
 	shipType string,
 	systemSymbol string,
 	playerID int,
 ) (*MarketLocatorResult, error) {
-	// Get player to fetch API token
-	playerEntity, err := l.playerRepo.FindByID(ctx, shared.MustNewPlayerID(playerID))
-	if err != nil {
-		return nil, fmt.Errorf("failed to get player: %w", err)
+	if l.yards == nil {
+		return nil, fmt.Errorf("no shipyard reader wired; cannot search shipyards for %s", shipType)
 	}
 
 	// Find all shipyards in the system
@@ -107,31 +149,60 @@ func (l *MarketLocator) findShipyardSellingShip(
 		return nil, fmt.Errorf("no shipyards found in system %s", systemSymbol)
 	}
 
-	// Search all shipyards for the ship type
+	// Shopping for a hull IS the demand signal: it lifts every yard known to sell
+	// this type to the top of the budget's rotation, so the next pass through here
+	// finds more of them already priced.
+	l.yards.NoteDemand(shipType)
+
+	inSystem := make(map[string]bool, len(shipyards))
+	for _, waypoint := range shipyards {
+		inSystem[waypoint.Symbol] = true
+	}
+
 	var bestShipyard *MarketLocatorResult
 	var bestPrice int
+	consider := func(waypoint string, price int) {
+		if price <= 0 {
+			return
+		}
+		if bestShipyard == nil || price < bestPrice {
+			bestPrice = price
+			bestShipyard = &MarketLocatorResult{
+				WaypointSymbol: waypoint,
+				Activity:       "", // Shipyards don't have activity/supply metrics
+				Supply:         "",
+				Price:          price,
+			}
+		}
+	}
 
+	priced := make(map[string]bool, len(shipyards))
+	rows, err := l.yards.OffersFor(ctx, playerID, shipType)
+	if err == nil {
+		for _, row := range rows {
+			if !inSystem[row.WaypointSymbol] {
+				continue
+			}
+			if row.PurchasePrice > 0 {
+				priced[row.WaypointSymbol] = true
+				consider(row.WaypointSymbol, row.PurchasePrice)
+			}
+		}
+	}
+
+	// Only the yards the store cannot price are worth a request.
 	for _, waypoint := range shipyards {
-		// Get shipyard data from API
-		shipyardData, err := l.apiClient.GetShipyard(ctx, systemSymbol, waypoint.Symbol, playerEntity.Token)
-		if err != nil {
-			// Skip shipyards we can't access
+		if priced[waypoint.Symbol] {
 			continue
 		}
-
-		// Find the ship in this shipyard's listings
+		shipyardData, err := l.yards.ReadShipyard(ctx, uint(playerID), waypoint.Symbol, marketscan.Discretionary)
+		if err != nil || shipyardData == nil {
+			// Unreadable, or declined by the budget. Skip it this tick.
+			continue
+		}
 		for _, listing := range shipyardData.Ships {
 			if listing.Type == shipType {
-				// Found the ship! Check if it's cheaper than current best
-				if bestShipyard == nil || listing.PurchasePrice < bestPrice {
-					bestPrice = listing.PurchasePrice
-					bestShipyard = &MarketLocatorResult{
-						WaypointSymbol: waypoint.Symbol,
-						Activity:       "", // Shipyards don't have activity/supply metrics
-						Supply:         "",
-						Price:          listing.PurchasePrice,
-					}
-				}
+				consider(waypoint.Symbol, listing.PurchasePrice)
 			}
 		}
 	}

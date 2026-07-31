@@ -354,6 +354,21 @@ func run(cfg *config.Config) error {
 		domainShipyard.NewHeavyShipTypeSet(cfg.Scouting.HeavyShipTypes),
 		time.Duration(cfg.Scouting.ShipyardRescanTTLSeconds)*time.Second,
 	)
+	// The fleet's ONE shipyard-read budget, shared by every reader (sp-mb0er).
+	// Config rather than a container tunable for the same reason the market budget
+	// is: a per-container allowance would multiply by the container count and stop
+	// being a budget. The budget is enforced by construction; this only replaces the
+	// built-in default with the configured rate and demand clamp, and wires the
+	// charted-yard counter that is its denominator.
+	yardBudget := ship.NewYardScanBudget(
+		cfg.ShipyardScan.ResolvedBudgetReqPerSec(),
+		cfg.ShipyardScan.ResolvedValueClampR(),
+		domainShipyard.NewHeavyShipTypeSet(cfg.Scouting.HeavyShipTypes),
+	)
+	yardBudget.SetChartedYardCounter(waypointRepo)
+	shipyardScanner.SetScanBudget(yardBudget)
+	fmt.Printf("Shipyard-read budget: %.3f req/s shared by every shipyard reader, demand clamp %dx\n",
+		cfg.ShipyardScan.ResolvedBudgetReqPerSec(), cfg.ShipyardScan.ResolvedValueClampR())
 
 	routeExecutor := ship.NewRouteExecutor(shipRepo, med, nil, marketScanner, shipyardScanner, nil, waypointRepo, shipEventBus) // nil = use RealClock and default refuel strategy
 
@@ -378,7 +393,7 @@ func run(cfg *config.Config) error {
 	// handler backs all three commands. The op atomically claims the hull
 	// (RULING #3/#7) and gates the modification fee on the working-capital
 	// reserve (RULING #4).
-	outfittingHandler := shipOutfit.NewOutfittingHandler(shipRepo, playerRepo, apiClient, containerRepo, nil) // nil clock = RealClock
+	outfittingHandler := shipOutfit.NewOutfittingHandler(shipRepo, playerRepo, apiClient, shipyardScanner, containerRepo, nil) // nil clock = RealClock
 	if err := mediator.RegisterHandler[*shipOutfit.InstallModuleCommand](med, outfittingHandler); err != nil {
 		return fmt.Errorf("failed to register InstallModule handler: %w", err)
 	}
@@ -502,12 +517,12 @@ func run(cfg *config.Config) error {
 	}
 
 	// Shipyard handlers
-	getShipyardListingsHandler := shipyardQuery.NewGetShipyardListingsHandler(apiClient, playerRepo)
+	getShipyardListingsHandler := shipyardQuery.NewGetShipyardListingsHandler(shipyardScanner, playerRepo)
 	if err := mediator.RegisterHandler[*shipyardQuery.GetShipyardListingsQuery](med, getShipyardListingsHandler); err != nil {
 		return fmt.Errorf("failed to register GetShipyardListings handler: %w", err)
 	}
 
-	purchaseShipHandler := shipyardCmd.NewPurchaseShipHandler(shipRepo, playerRepo, waypointRepo, graphService, apiClient, med)
+	purchaseShipHandler := shipyardCmd.NewPurchaseShipHandler(shipRepo, playerRepo, waypointRepo, graphService, apiClient, med, shipyardScanner)
 	if err := mediator.RegisterHandler[*shipyardCmd.PurchaseShipCommand](med, purchaseShipHandler); err != nil {
 		return fmt.Errorf("failed to register PurchaseShip handler: %w", err)
 	}
@@ -744,6 +759,7 @@ func run(cfg *config.Config) error {
 	// Shared production services for the construction-supply drain (sp-hoj8u: the goods-factory
 	// coordinator that also consumed these was retired; construction is now the sole consumer).
 	goodsMarketLocator := goodsServices.NewMarketLocator(marketRepoAdapter, waypointRepo, playerRepo, apiClient)
+	goodsMarketLocator.SetYardSource(shipyardScanner)
 	goodsResolver := goodsServices.NewSupplyChainResolver(goods.ExportToImportMap, marketRepoAdapter)
 
 	// Register the standing construction-supply drain (sp-382j): the coordinator that rebuilds
@@ -855,6 +871,10 @@ func run(cfg *config.Config) error {
 	// mechanism. Post-construction (gateGraphService is built after NewDaemonServer runs), mirroring
 	// SetStorageRecovery below.
 	daemonServer.SetGateGraph(gateGraphService)
+	// StartConstructionPipeline builds its own MarketLocator per call; give it the
+	// shared shipyard reader so its hull search draws on the fleet's one
+	// shipyard-read allowance rather than reaching the API unmetered (sp-mb0er).
+	daemonServer.SetYardScanner(shipyardScanner)
 
 	// Off-gate warp support (sp-0xd0, slice A): attach the warp-execute +
 	// chart-on-arrival capability to the route executor now that gateGraphService

@@ -12,10 +12,12 @@ import (
 	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	shipTypes "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
 	"github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/marketscan"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	domainShipyard "github.com/andrescamacho/spacetraders-go/internal/domain/shipyard"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
@@ -75,6 +77,16 @@ type shipyardCandidate struct {
 	distance float64
 }
 
+// yardCatalogReader is what this command needs from the fleet's shipyard scanner
+// to shop for a hull without bypassing the shipyard-read budget: a metered live
+// read, the persisted catalogue behind it, and the demand signal that tells the
+// budget which yards are worth keeping priced. *ship.ShipyardScanner satisfies it.
+type yardCatalogReader interface {
+	ReadShipyard(ctx context.Context, playerID uint, waypointSymbol string, class marketscan.Class) (*domainPorts.ShipyardData, error)
+	OffersFor(ctx context.Context, playerID int, shipType string) ([]domainShipyard.ShipTypeAvailability, error)
+	NoteDemand(shipType string)
+}
+
 // PurchaseShipHandler handles the PurchaseShip command
 type PurchaseShipHandler struct {
 	shipRepo         navigation.ShipRepository
@@ -83,9 +95,13 @@ type PurchaseShipHandler struct {
 	waypointProvider system.IWaypointProvider
 	apiClient        domainPorts.APIClient
 	mediator         common.Mediator
+	yards            yardCatalogReader
 }
 
-// NewPurchaseShipHandler creates a new PurchaseShipHandler
+// NewPurchaseShipHandler creates a new PurchaseShipHandler. yards is the metered
+// shipyard reader the type search shops through; without it the handler can still
+// buy at an explicitly named yard but cannot discover one, which is the correct
+// failure — the alternative was an unmetered live read per yard in the system.
 func NewPurchaseShipHandler(
 	shipRepo navigation.ShipRepository,
 	playerRepo player.PlayerRepository,
@@ -93,6 +109,7 @@ func NewPurchaseShipHandler(
 	waypointProvider system.IWaypointProvider,
 	apiClient domainPorts.APIClient,
 	mediator common.Mediator,
+	yards yardCatalogReader,
 ) *PurchaseShipHandler {
 	return &PurchaseShipHandler{
 		shipRepo:         shipRepo,
@@ -101,6 +118,7 @@ func NewPurchaseShipHandler(
 		waypointProvider: waypointProvider,
 		apiClient:        apiClient,
 		mediator:         mediator,
+		yards:            yards,
 	}
 }
 
@@ -517,7 +535,7 @@ func (h *PurchaseShipHandler) discoverNearestShipyard(
 	}
 
 	candidates, err := h.filterShipyardsBySupportedType(
-		ctx, shipyardWaypoints, systemSymbol, shipType, token, purchasingShip.CurrentLocation(),
+		ctx, shipyardWaypoints, shipType, purchasingShip.PlayerID(), purchasingShip.CurrentLocation(),
 	)
 	if err != nil {
 		return "", err
@@ -548,48 +566,107 @@ func (h *PurchaseShipHandler) getShipyardWaypoints(
 	return shipyardWaypoints, nil
 }
 
-// filterShipyardsBySupportedType finds shipyards that sell the desired ship type
+// filterShipyardsBySupportedType finds shipyards that sell the desired ship type.
+//
+// IT IS STORE-FIRST, and that is the sp-mb0er change. This used to issue one live
+// GET /shipyard PER SHIPYARD IN THE SYSTEM on every discovery, uncached and
+// unmetered — a burst that scaled with how many yards a system happened to have,
+// and one of the four paths that put shipyard reads at 44.7% of the server
+// ceiling. One store query now answers the whole system, and only yards the store
+// has never heard of cost a request — a request the budget may decline, in which
+// case the yard drops out of this tick's candidates and is picked up by the
+// rotation rather than being bought at blind.
+//
 // Returns: array of shipyard candidates with distances
 func (h *PurchaseShipHandler) filterShipyardsBySupportedType(
 	ctx context.Context,
 	waypoints []*shared.Waypoint,
-	systemSymbol string,
 	shipType string,
-	token string,
+	playerID shared.PlayerID,
 	currentLocation *shared.Waypoint,
 ) ([]shipyardCandidate, error) {
-	var validShipyards []shipyardCandidate
+	// Searching for a hull type IS the demand signal: every yard known to sell it
+	// rises in the budget's rotation, so the counters we are about to shop at are
+	// the ones kept priced.
+	if h.yards != nil {
+		h.yards.NoteDemand(shipType)
+	}
 
+	stored := h.storedYardsSelling(ctx, playerID, shipType)
+
+	var validShipyards []shipyardCandidate
 	for _, waypoint := range waypoints {
-		sells, err := h.doesShipyardSellType(ctx, systemSymbol, waypoint, shipType, token)
-		if err != nil {
+		sells, ok := stored[waypoint.Symbol]
+		if !ok {
+			// The store has never seen this yard sell anything of the sort. Ask for a
+			// live look; a declined or failed read means "not a candidate this tick",
+			// never "does not sell it".
+			var err error
+			sells, err = h.doesShipyardSellType(ctx, playerID, waypoint, shipType)
+			if err != nil {
+				continue
+			}
+		}
+		if !sells {
 			continue
 		}
-
-		if sells {
-			distance := currentLocation.DistanceTo(waypoint)
-			validShipyards = append(validShipyards, shipyardCandidate{
-				waypoint: waypoint.Symbol,
-				distance: distance,
-			})
-		}
+		validShipyards = append(validShipyards, shipyardCandidate{
+			waypoint: waypoint.Symbol,
+			distance: currentLocation.DistanceTo(waypoint),
+		})
 	}
 
 	return validShipyards, nil
 }
 
-// doesShipyardSellType checks if a specific shipyard sells the ship type
+// storedYardsSelling is the persisted answer to "which yards sell this type",
+// keyed by waypoint. A yard ABSENT from the map is unknown rather than negative —
+// the store records only what a scan has seen — so absence sends the caller to a
+// metered live read rather than silently excluding the yard.
+func (h *PurchaseShipHandler) storedYardsSelling(ctx context.Context, playerID shared.PlayerID, shipType string) map[string]bool {
+	if h.yards == nil {
+		return nil
+	}
+	rows, err := h.yards.OffersFor(ctx, playerID.Value(), shipType)
+	if err != nil {
+		return nil
+	}
+	out := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		if row.WaypointSymbol != "" {
+			out[row.WaypointSymbol] = true
+		}
+	}
+	return out
+}
+
+// doesShipyardSellType checks if a specific shipyard sells the ship type, through
+// the fleet's metered shipyard reader.
+//
+// It asks the CATALOGUE question, not the price question, so it is Discretionary:
+// a declined read costs the fleet a candidate this tick, never a bad spend. The
+// pre-buy price verification that actually guards the purchase is a separate,
+// Earning-class read (validateAndGetShipPrice, via GetShipyardListings) and is
+// never declined.
+//
 // Returns: true if shipyard supports type, false otherwise, error
 func (h *PurchaseShipHandler) doesShipyardSellType(
 	ctx context.Context,
-	systemSymbol string,
+	playerID shared.PlayerID,
 	waypoint *shared.Waypoint,
 	shipType string,
-	token string,
 ) (bool, error) {
-	shipyardData, err := h.apiClient.GetShipyard(ctx, systemSymbol, waypoint.Symbol, token)
+	if h.yards == nil {
+		return false, fmt.Errorf("shipyard catalogue unavailable: no scanner wired")
+	}
+	shipyardData, err := h.yards.ReadShipyard(ctx, uint(playerID.Value()), waypoint.Symbol, marketscan.Discretionary)
 	if err != nil {
 		return false, err
+	}
+	if shipyardData == nil {
+		// Served from store, and the store had nothing for this yard — otherwise the
+		// caller would not have asked. Not a candidate this tick.
+		return false, nil
 	}
 
 	for _, shipTypeInfo := range shipyardData.ShipTypes {

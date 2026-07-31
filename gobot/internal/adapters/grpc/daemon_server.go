@@ -21,6 +21,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/application/ship"
 	storageApp "github.com/andrescamacho/spacetraders-go/internal/application/storage"
 	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
@@ -70,6 +71,11 @@ type DaemonServer struct {
 	// coordinator + operation-repo singletons are built after NewDaemonServer runs.
 	// nil disables recovery (fail-open — boot never depends on it).
 	storageRecovery *storageApp.StorageRecoveryService
+
+	// yardScanner is the fleet's metered shipyard reader, handed to the per-call
+	// MarketLocator StartConstructionPipeline builds so its hull search draws on the
+	// same one shipyard-read allowance as every other reader (sp-mb0er).
+	yardScanner *ship.ShipyardScanner
 
 	// depotNavigateOverride, when non-nil, replaces NavigateShip for the depot element hull
 	// repositioning positionDepotElementHull performs (sp-3l64) — the delivery-hull hub and the
@@ -1364,6 +1370,17 @@ func (s *DaemonServer) RecoverRunningContainers(ctx context.Context) error {
 // recoverStorageOperations no-ops.
 func (s *DaemonServer) SetStorageRecovery(svc *storageApp.StorageRecoveryService) {
 	s.storageRecovery = svc
+}
+
+// SetYardScanner injects the fleet's metered shipyard reader (sp-mb0er).
+//
+// StartConstructionPipeline builds its own per-call MarketLocator, and that
+// locator's hull search must draw on the SAME one shipyard-read allowance as every
+// other reader — otherwise the budget would hold everywhere except on a path that
+// constructs its collaborator fresh, which is precisely how the four original
+// bypasses came about. Wired from main.go after the scanner is constructed.
+func (s *DaemonServer) SetYardScanner(sc *ship.ShipyardScanner) {
+	s.yardScanner = sc
 }
 
 // SetGateGraph injects the cross-system gate-graph reachability service the depot element hull

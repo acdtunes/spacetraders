@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/marketscan"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -23,19 +24,44 @@ type GetShipyardListingsResponse struct {
 	Shipyard shipyard.Shipyard
 }
 
-// GetShipyardListingsHandler handles the GetShipyardListings query
+// yardPriceReader is the one verb this query needs from the fleet's shipyard
+// scanner: a METERED live shipyard read. *ship.ShipyardScanner satisfies it.
+//
+// Narrowed to one method rather than taking the scanner concretely so this
+// package keeps no dependency on the application/ship package's other surface,
+// following the same idiom as parkedsensing's shipyardScanAPI.
+type yardPriceReader interface {
+	ReadShipyard(ctx context.Context, playerID uint, waypointSymbol string, class marketscan.Class) (*domainPorts.ShipyardData, error)
+	NoteTarget(waypoint string)
+}
+
+// GetShipyardListingsHandler handles the GetShipyardListings query.
+//
+// EVERY CONSUMER OF THIS QUERY IS A PRE-COMMIT PRICE READ. The fleet autosizer's
+// price guard, the bootstrap capital gate, the probe-purchase treasury floor, the
+// frontier probe buy, the batch purchase path and purchase_ship's own
+// pre-buy verification all reach a shipyard exclusively through here, and every
+// one of them is documented fail-closed — an unreadable price must stop a spend,
+// never be replaced by a remembered one. That is why the read is classed Earning
+// (metered, never denied) rather than routed through the deniable scan path: a
+// cached hull price is not something a money guard can be satisfied with
+// (RULINGS #4).
 type GetShipyardListingsHandler struct {
-	apiClient  domainPorts.APIClient
+	yards      yardPriceReader
 	playerRepo player.PlayerRepository
 }
 
-// NewGetShipyardListingsHandler creates a new GetShipyardListingsHandler
+// NewGetShipyardListingsHandler creates a new GetShipyardListingsHandler.
+//
+// It takes the scanner rather than the API client on purpose: there is no longer a
+// way to reach GET /shipyard from this query without drawing on the fleet's one
+// shipyard-read allowance (sp-mb0er).
 func NewGetShipyardListingsHandler(
-	apiClient domainPorts.APIClient,
+	yards yardPriceReader,
 	playerRepo player.PlayerRepository,
 ) *GetShipyardListingsHandler {
 	return &GetShipyardListingsHandler{
-		apiClient:  apiClient,
+		yards:      yards,
 		playerRepo: playerRepo,
 	}
 }
@@ -47,14 +73,25 @@ func (h *GetShipyardListingsHandler) Handle(ctx context.Context, request common.
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	token, err := common.PlayerTokenFromContext(ctx)
-	if err != nil {
-		return nil, err
+	if h.yards == nil {
+		return nil, fmt.Errorf("shipyard listings unavailable: no scanner wired")
 	}
 
-	shipyardData, err := h.apiClient.GetShipyard(ctx, query.SystemSymbol, query.WaypointSymbol, token)
-	if err != nil {
+	// The fleet is buying at this counter, not merely shopping — the strongest
+	// demand signal the budget has. Recorded before the read so a yard we price
+	// stays warm in the rotation between guard reads rather than decaying back to
+	// the baseline the moment the buy loop looks away.
+	h.yards.NoteTarget(query.WaypointSymbol)
+
+	shipyardData, err := h.yards.ReadShipyard(ctx, uint(query.PlayerID.Value()), query.WaypointSymbol, marketscan.Earning)
+	if err != nil && shipyardData == nil {
 		return nil, fmt.Errorf("failed to get shipyard: %w", err)
+	}
+	if shipyardData == nil {
+		// Unreachable for an Earning read, which the budget never declines. Kept as
+		// a hard stop rather than a nil deref so that if the class ever changed the
+		// failure would be a refusal to price, not a panic or a silent zero.
+		return nil, fmt.Errorf("shipyard listings for %s were not read live", query.WaypointSymbol)
 	}
 
 	shipListings := h.convertShipListings(shipyardData.Ships)

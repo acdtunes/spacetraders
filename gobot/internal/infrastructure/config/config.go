@@ -49,6 +49,12 @@ type Config struct {
 	// allocates it. Read at daemon start into the shared MarketScanner. Absent
 	// section defers to the armed defaults, so the budget is enforced regardless.
 	MarketScan MarketScanConfig `mapstructure:"market_scan"`
+	// ShipyardScan holds the fleet's ONE shipyard-read budget (sp-mb0er) — the
+	// total shipyard-read rate every reader in the daemon shares, and the demand
+	// clamp that allocates it. Read at daemon start into the shared
+	// ShipyardScanner. Absent section defers to the armed defaults, so the budget
+	// is enforced regardless.
+	ShipyardScan ShipyardScanConfig `mapstructure:"shipyard_scan"`
 	// Sensing holds the probe-sensing coordinator's config.yaml-authoritative knobs
 	// (the goods whitelist — a string the int-only tune registry cannot carry),
 	// injected live into the probe_sensing_coordinator container on every build.

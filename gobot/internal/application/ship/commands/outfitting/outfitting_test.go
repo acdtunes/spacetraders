@@ -11,6 +11,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/marketscan"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/ports"
@@ -47,6 +48,18 @@ func (f *outfitFakeAPIClient) GetShip(_ context.Context, _, _ string) (*navigati
 }
 
 func (f *outfitFakeAPIClient) GetShipyard(_ context.Context, _, _, _ string) (*ports.ShipyardData, error) {
+	if f.shipyardErr != nil {
+		return nil, f.shipyardErr
+	}
+	return f.shipyard, nil
+}
+
+// ReadShipyard makes the fake satisfy the metered yardFeeReader the spend-floor
+// now takes the modification fee through (sp-mb0er). It answers exactly as the old
+// direct GetShipyard call did, so the fail-closed fixtures still exercise the
+// guard: the fee read is Earning-class and therefore never declined, so there is
+// no serve-from-store case to model here.
+func (f *outfitFakeAPIClient) ReadShipyard(_ context.Context, _ uint, _ string, _ marketscan.Class) (*ports.ShipyardData, error) {
 	if f.shipyardErr != nil {
 		return nil, f.shipyardErr
 	}
@@ -115,7 +128,7 @@ func newOutfitHarness(t *testing.T, fake *outfitFakeAPIClient) (*OutfittingHandl
 	playerRepo := &outfitFakePlayerRepo{p: &player.Player{ID: playerID, Token: "tok"}}
 	shipRepo := api.NewShipRepository(fake, playerRepo, nil, outfitFakeWaypointProvider{}, db, nil)
 	containerRepo := persistence.NewContainerRepository(db)
-	handler := NewOutfittingHandler(shipRepo, playerRepo, fake, containerRepo, nil)
+	handler := NewOutfittingHandler(shipRepo, playerRepo, fake, fake, containerRepo, nil)
 
 	return handler, db, playerRow.ID
 }
