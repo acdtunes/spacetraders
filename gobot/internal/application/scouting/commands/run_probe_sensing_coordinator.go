@@ -479,6 +479,15 @@ type ParkedSensingRecorder interface {
 	RecordRate(playerID int, reqPerSec float64)
 	RecordStaleness(playerID int, tier string, seconds float64)
 	RecordSlots(playerID int, state string, count int)
+
+	// The shipyard blind spot's three independently-failing halves. They are
+	// published from the heartbeat rather than from publish() because publish()
+	// sits inside the rotation-view branch and is skipped whenever that read
+	// fails — and a tick that could not read the rotation is exactly the tick an
+	// operator most needs the yard numbers for.
+	RecordYardCatalogue(playerID int, state string, count int)
+	RecordYardPresence(playerID int, outcome string, count int)
+	RecordYardSlots(playerID int, stage string, count int)
 }
 
 // RunProbeSensingCoordinatorCommand launches the standing coordinator for a

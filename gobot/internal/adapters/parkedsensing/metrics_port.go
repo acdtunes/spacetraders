@@ -33,3 +33,18 @@ func (MetricsPort) RecordStaleness(playerID int, tier string, seconds float64) {
 func (MetricsPort) RecordSlots(playerID int, state string, count int) {
 	metrics.GetGlobalParkedSensingCollector().RecordSlots(playerID, state, count)
 }
+
+// RecordYardCatalogue publishes one state of the free shipyard-catalogue sweep.
+func (MetricsPort) RecordYardCatalogue(playerID int, state string, count int) {
+	metrics.GetGlobalParkedSensingCollector().RecordYardCatalogue(playerID, state, count)
+}
+
+// RecordYardPresence publishes one outcome of the presence-dispatch pass.
+func (MetricsPort) RecordYardPresence(playerID int, outcome string, count int) {
+	metrics.GetGlobalParkedSensingCollector().RecordYardPresence(playerID, outcome, count)
+}
+
+// RecordYardSlots publishes one stage of the buy queue's dark-yard accounting.
+func (MetricsPort) RecordYardSlots(playerID int, stage string, count int) {
+	metrics.GetGlobalParkedSensingCollector().RecordYardSlots(playerID, stage, count)
+}

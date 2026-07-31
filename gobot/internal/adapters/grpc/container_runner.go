@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,6 +17,7 @@ import (
 	bootstrapCmd "github.com/andrescamacho/spacetraders-go/internal/application/bootstrap/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
+	"github.com/andrescamacho/spacetraders-go/internal/application/logging"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -96,6 +99,10 @@ type ContainerRunner struct {
 	containerRepo   *persistence.ContainerRepositoryGORM
 	shipRepo        navigation.ShipRepository
 	clock           shared.Clock
+
+	// out is the log sink's writer seam. Nil in production (os.Stdout); set by
+	// tests that need to read what this runner actually printed.
+	out io.Writer
 
 	// Execution control
 	ctx        context.Context
@@ -1015,13 +1022,24 @@ func (r *ContainerRunner) Log(level, message string, metadata map[string]interfa
 	r.logs = append(r.logs, entry)
 	r.mu.Unlock()
 
-	// Print to stdout
-	fmt.Printf("[%s] [%s] %s: %s\n",
-		entry.Timestamp.Format(time.RFC3339),
+	// Print to stdout, MESSAGE AND FIELDS BOTH.
+	//
+	// This line used to render the message alone and drop the payload on the
+	// floor. Every structured field in the daemon was therefore invisible to a
+	// grep of daemon.log — not merely hard to find, absent — while remaining in
+	// container_logs.metadata for anyone who knew to go and join the table by
+	// hand. Counters written expressly so an operator could tell a working engine
+	// from an idle one were unreadable on the channel they were written for
+	// (sp-qkskz). logging.FormatLine now owns the whole rendering, so a field
+	// added to any call site tomorrow reaches daemon.log without its author
+	// having to know this hole ever existed.
+	fmt.Fprintln(r.stdout(), logging.FormatLine(
+		entry.Timestamp,
 		r.containerEntity.ID(),
 		level,
 		message,
-	)
+		metadata,
+	))
 
 	// Persist to database (async to avoid blocking)
 	go func() {
@@ -1037,6 +1055,17 @@ func (r *ContainerRunner) Log(level, message string, metadata map[string]interfa
 			)
 		}
 	}()
+}
+
+// stdout is the sink Log renders into. Nil means os.Stdout, which is every
+// production path — the field exists so a test can read back the bytes this
+// runner actually emits rather than assert against a re-implementation of the
+// format, which is the assertion that let the dropped payload survive.
+func (r *ContainerRunner) stdout() io.Writer {
+	if r.out != nil {
+		return r.out
+	}
+	return os.Stdout
 }
 
 // log is a lowercase alias for backward compatibility with existing code

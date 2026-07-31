@@ -1076,14 +1076,23 @@ func (f *fakePhase) InExpansion(context.Context, shared.PlayerID) (bool, error) 
 
 // fakeRecorder captures the published gauges.
 type fakeRecorder struct {
-	mu        sync.Mutex
-	rate      []float64
-	staleness map[string]float64
-	slots     map[string]int
+	mu           sync.Mutex
+	rate         []float64
+	staleness    map[string]float64
+	slots        map[string]int
+	yardCatalogs map[string]int
+	yardPresence map[string]int
+	yardSlots    map[string]int
 }
 
 func newFakeRecorder() *fakeRecorder {
-	return &fakeRecorder{staleness: map[string]float64{}, slots: map[string]int{}}
+	return &fakeRecorder{
+		staleness:    map[string]float64{},
+		slots:        map[string]int{},
+		yardCatalogs: map[string]int{},
+		yardPresence: map[string]int{},
+		yardSlots:    map[string]int{},
+	}
 }
 
 func (f *fakeRecorder) RecordRate(_ int, reqPerSec float64) {
@@ -1102,6 +1111,24 @@ func (f *fakeRecorder) RecordSlots(_ int, state string, count int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.slots[state] = count
+}
+
+func (f *fakeRecorder) RecordYardCatalogue(_ int, state string, count int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.yardCatalogs[state] = count
+}
+
+func (f *fakeRecorder) RecordYardPresence(_ int, outcome string, count int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.yardPresence[outcome] = count
+}
+
+func (f *fakeRecorder) RecordYardSlots(_ int, stage string, count int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.yardSlots[stage] = count
 }
 
 // --- helpers ------------------------------------------------------------------

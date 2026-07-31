@@ -36,6 +36,19 @@ type ParkedSensingMetricsCollector struct {
 	// so a queue that drains reads as empty rather than holding its last
 	// non-zero value until the series goes stale.
 	slots *prometheus.GaugeVec
+
+	// The shipyard blind spot, in three gauges — the one question the four
+	// series above cannot answer: does the fleet know what the counters sell?
+	//
+	// It is asked in three places that fail INDEPENDENTLY, which is why this is
+	// not one gauge. The free catalogue sweep can stall while presence dispatch
+	// is healthy; presence can be starved of hulls while the buy queue is
+	// ordering perfectly; and the buy queue can rank dark yards last while both
+	// of the others are working. Collapsed into a single number every one of
+	// those reads as "yards: some", and the operator is back to guessing.
+	yardCatalogue *prometheus.GaugeVec
+	yardPresence  *prometheus.GaugeVec
+	yardSlots     *prometheus.GaugeVec
 }
 
 // NewParkedSensingMetricsCollector creates a new parked-probe sensing collector.
@@ -68,6 +81,33 @@ func NewParkedSensingMetricsCollector() *ParkedSensingMetricsCollector {
 			},
 			[]string{"player_id", "state"},
 		),
+		yardCatalogue: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: namespace,
+				Subsystem: subsystem,
+				Name:      "parked_sensing_yard_catalogue",
+				Help:      "The free shipyard-catalogue sweep, by state. outstanding is a LEVEL — known shipyards whose catalogue has never been read, and while it is non-zero the fleet is hunting hulls it may already be able to see; it drains to zero and stays there, so a value that stops falling is the signal. read and failed are PER-TICK counts of that drain",
+			},
+			[]string{"player_id", "state"},
+		),
+		yardPresence: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: namespace,
+				Subsystem: subsystem,
+				Name:      "parked_sensing_yard_presence",
+				Help:      "The paid half: yards whose price the API will not disclose until one of our hulls is standing there. requested is the LEVEL (the backlog); dispatched, no_hull and metered are PER-TICK and separate the three states an operator would otherwise guess between — a backlog being worked, a fleet with no hull to spare, and an allowance holding the rate down",
+			},
+			[]string{"player_id", "outcome"},
+		),
+		yardSlots: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: namespace,
+				Subsystem: subsystem,
+				Name:      "parked_sensing_yard_slots",
+				Help:      "The same blind spot seen from the buy queue. queued is the LEVEL of unfilled placements standing on a dark yard; at_head is how many the ordering delivered into the window a tick can actually reach, and a high queued beside a persistent zero at_head is the ordering failing rather than an absence of dark yards; filled is the outcome, and reads zero whenever spending is paused",
+			},
+			[]string{"player_id", "stage"},
+		),
 	}
 }
 
@@ -82,6 +122,9 @@ func (c *ParkedSensingMetricsCollector) Register() error {
 		c.rateReqPerSec,
 		c.stalenessSeconds,
 		c.slots,
+		c.yardCatalogue,
+		c.yardPresence,
+		c.yardSlots,
 	}
 
 	for _, metric := range metrics {
@@ -115,6 +158,30 @@ func (c *ParkedSensingMetricsCollector) RecordSlots(playerID int, state string, 
 		return
 	}
 	c.slots.WithLabelValues(strconv.Itoa(playerID), state).Set(float64(count))
+}
+
+// RecordYardCatalogue sets one state of the free catalogue sweep.
+func (c *ParkedSensingMetricsCollector) RecordYardCatalogue(playerID int, state string, count int) {
+	if c == nil || c.yardCatalogue == nil {
+		return
+	}
+	c.yardCatalogue.WithLabelValues(strconv.Itoa(playerID), state).Set(float64(count))
+}
+
+// RecordYardPresence sets one outcome of the presence-dispatch pass.
+func (c *ParkedSensingMetricsCollector) RecordYardPresence(playerID int, outcome string, count int) {
+	if c == nil || c.yardPresence == nil {
+		return
+	}
+	c.yardPresence.WithLabelValues(strconv.Itoa(playerID), outcome).Set(float64(count))
+}
+
+// RecordYardSlots sets one stage of the buy queue's dark-yard accounting.
+func (c *ParkedSensingMetricsCollector) RecordYardSlots(playerID int, stage string, count int) {
+	if c == nil || c.yardSlots == nil {
+		return
+	}
+	c.yardSlots.WithLabelValues(strconv.Itoa(playerID), stage).Set(float64(count))
 }
 
 // globalParkedSensingCollector is the process-wide collector the sensing

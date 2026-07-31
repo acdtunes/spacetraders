@@ -32,6 +32,25 @@ const (
 	stalenessTierCold   = "cold"   // p90 — the tail the freshness cap binds on
 )
 
+// The label values of the three shipyard gauges. Named rather than inlined
+// because publishYards must emit EVERY one of them on EVERY tick — see the
+// comment there — and a list is checkable where scattered string literals are
+// not.
+const (
+	yardCatalogueOutstanding = "outstanding"
+	yardCatalogueRead        = "read"
+	yardCatalogueFailed      = "failed"
+
+	yardPresenceRequested  = "requested"
+	yardPresenceDispatched = "dispatched"
+	yardPresenceNoHull     = "no_hull"
+	yardPresenceMetered    = "metered"
+
+	yardSlotsQueued = "queued"
+	yardSlotsAtHead = "at_head"
+	yardSlotsFilled = "filled"
+)
+
 // heartbeat is one tick's reportable outcome, gathered from every engine.
 type heartbeat struct {
 	sensingRate float64
@@ -88,6 +107,8 @@ type heartbeat struct {
 //     what stops buy_queued reading permanently inflated. A standing non-zero
 //     value means verdicts are churning, not that the queue is failing.
 func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *RunProbeSensingCoordinatorCommand, cfg sensingConfig, hb heartbeat) {
+	h.publishYards(cmd.PlayerID.Value(), hb)
+
 	held := ""
 	switch {
 	case hb.buy.SpendingPaused:
@@ -220,6 +241,56 @@ func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *
 			"markets_found":        hb.expand.MarketsFound,
 			"retargeted":           hb.expand.Retargeted,
 		})
+}
+
+// publishYards puts the shipyard blind spot on the scrape surface.
+//
+// THESE NUMBERS EXISTED FOR A WHILE BEFORE ANYONE COULD READ THEM. They were
+// written into the cycle line's structured payload and nowhere else, and the
+// question they were built to answer — is the presence pass dispatching and
+// finding no work, or not running at all — could not be answered from outside
+// the process at all (sp-qkskz). A log payload is a forensic record; a gauge is
+// what a panel draws and an alert fires on, and the distinction is the whole
+// difference between a counter that is stored and a counter that is watched.
+//
+// EVERY LABEL VALUE IS SET ON EVERY TICK, INCLUDING THE ZEROS, for the same
+// reason slotCensus republishes its empty states: a gauge that simply stopped
+// reporting would leave its last non-zero value standing in Prometheus until the
+// series went stale, so a backlog that drained to nothing would read as
+// permanently jammed — which is the exact misreading these counters exist to
+// prevent, restored one layer down.
+//
+// Observation only (RULINGS #4): a nil recorder returns immediately and nothing
+// below can touch a decision path.
+func (h *RunProbeSensingCoordinatorHandler) publishYards(playerID int, hb heartbeat) {
+	if h.recorder == nil {
+		return
+	}
+
+	for state, count := range map[string]int{
+		yardCatalogueOutstanding: hb.yard.Outstanding,
+		yardCatalogueRead:        hb.yard.Read,
+		yardCatalogueFailed:      hb.yard.Failed,
+	} {
+		h.recorder.RecordYardCatalogue(playerID, state, count)
+	}
+
+	for outcome, count := range map[string]int{
+		yardPresenceRequested:  hb.presence.Requested,
+		yardPresenceDispatched: hb.presence.Dispatched,
+		yardPresenceNoHull:     hb.presence.NoHull,
+		yardPresenceMetered:    hb.presence.Metered,
+	} {
+		h.recorder.RecordYardPresence(playerID, outcome, count)
+	}
+
+	for stage, count := range map[string]int{
+		yardSlotsQueued: hb.buy.YardsQueued,
+		yardSlotsAtHead: hb.buy.YardsAtHead,
+		yardSlotsFilled: hb.buy.YardsFilled,
+	} {
+		h.recorder.RecordYardSlots(playerID, stage, count)
+	}
 }
 
 // heldSuffix names the ceiling that stopped the drain, or nothing at all.
