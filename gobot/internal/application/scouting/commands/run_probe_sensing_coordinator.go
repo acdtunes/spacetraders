@@ -412,6 +412,13 @@ func (p SensingEnginePorts) buyPorts(claimOwnerContainerID string, posts Sensing
 		// handler state, not a per-player adapter.
 		Gates:       p.Gates,
 		MannedHulls: mannedHulls{posts: posts},
+		// The SAME budget instance the presence pass is handed, so the mover and
+		// the buyer rank dark shipyards identically (sp-7qhum). Only its READ half
+		// crosses here — YardDemandReader, not YardPresenceDemand — so the drain
+		// cannot consume the reposition allowance the presence pass paces itself
+		// with. nil-safe: an unwired budget orders the queue as it was ordered
+		// before the term existed.
+		YardDemand: p.YardPresence,
 		// nil-safe: an unwired reserve means no hold-back, not a stalled drain.
 		HeavyReserve:          p.HeavyReserve,
 		ClaimOwnerContainerID: claimOwnerContainerID,

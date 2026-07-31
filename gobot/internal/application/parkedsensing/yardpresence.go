@@ -79,9 +79,12 @@ const yardPresenceRequestLimit = 64
 // its own. A push in the other direction would be a latching bridge: this pass
 // would hold the last list it was handed and keep sending hulls at counters that
 // no longer need one.
+// The READ half is YardDemandReader, embedded rather than respelled, because the
+// buy queue's ordering consults the same set (yardqueue.go) and one spelling is
+// what stops the mover and the queue drifting into two ideas of which yard is
+// dark. What this adds on top is the meter, which only a mover may consume.
 type YardPresenceDemand interface {
-	// PresenceRequests returns at most limit yards wanting presence, ranked.
-	PresenceRequests(ctx context.Context, playerID int, limit int) []yardscan.PresenceRequest
+	YardDemandReader
 	// AdmitPresence consumes one reposition from the metered allowance, reporting
 	// whether there was one to consume. It is asked ONCE PER DISPATCH and only
 	// after a hull has actually been found, so a tick that can move nothing spends

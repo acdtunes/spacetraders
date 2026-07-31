@@ -149,6 +149,27 @@ func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *
 			"yards_presence_nohull": hb.presence.NoHull,
 			"yards_presence_meter":  hb.presence.Metered,
 
+			// The SAME blind spot seen from the buy queue (sp-7qhum). The pass above
+			// moves a hull we already own; these three say what the queue that BUYS
+			// hulls did about it.
+			//
+			// yard_slots_queued is how many unfilled placements stand on such a
+			// counter, and yard_slots_at_head how many of those the ordering
+			// delivered into the six-placement window the tick can actually reach.
+			// The second was effectively zero before the yard term existed — 78 heavy
+			// counters among 8,934 rows ordered on coverage, depth and arrival — and a
+			// queued figure that stays high beside an at_head of zero is this ordering
+			// failing, which is the one reading that used to be indistinguishable from
+			// having no dark yards at all.
+			//
+			// yard_slots_filled is the outcome: placements on a dark yard actually
+			// funded this tick. It reads zero while buy_spending_paused is true, and
+			// that is correct rather than a fault — the queue is ordered, nothing is
+			// bought, and the ordering is banked for the tick the switch comes back on.
+			"yard_slots_queued":  hb.buy.YardsQueued,
+			"yard_slots_at_head": hb.buy.YardsAtHead,
+			"yard_slots_filled":  hb.buy.YardsFilled,
+
 			"buy_bought": hb.buy.Bought,
 			"buy_reused": hb.buy.Reused,
 			// CLAIMED for purchase — NOT purchases in flight. A QUEUED slot may

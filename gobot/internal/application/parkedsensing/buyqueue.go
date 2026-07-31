@@ -427,6 +427,21 @@ type BuyPorts struct {
 	Gates       GateNeighbours
 	MannedHulls MannedHullReader
 
+	// YardDemand names the shipyards the fleet cannot price, so the drain's
+	// ordering can put a placement standing on one ahead of an ordinary market in
+	// the same system (yardqueue.go). It is the SAME budget instance the presence
+	// pass pulls from, which is the point: that pass moves a hull we already own
+	// to a dark yard, this one decides which placement the fleet BUYS a hull for
+	// first, and a fleet where the two ranked yards differently would spend both
+	// resources on different counters.
+	//
+	// OPTIONAL and FAIL-OPEN. A nil reader orders the queue exactly as it was
+	// ordered before this term existed — the same direction reachableFills takes,
+	// and the opposite of the money guards above, because this term can only
+	// reorder placements the queue had already decided it wanted. It is wired in
+	// the sensing coordinator; nil is a test wiring, not a deployment one.
+	YardDemand YardDemandReader
+
 	// ClaimOwnerContainerID is the driving coordinator's container id, handed to
 	// Purchaser.Buy as the owner of the purchasing hull's claim. It is IDENTITY,
 	// not a port: the drain never reads it, it only carries it, because the claim
@@ -603,6 +618,24 @@ type BuyReport struct {
 	SpendingPaused bool
 	// CapHeld and FloorHeld report which ceiling stopped the drain.
 	CapHeld, FloorHeld bool
+	// YardsQueued, YardsAtHead and YardsFilled are the yard-aware ordering's
+	// accounting (yardqueue.go). They exist because a coordinator LOSING every one
+	// of these decisions would otherwise look identical to one with nothing to
+	// decide, which is exactly the state this ordering was written to end.
+	//
+	//   - YardsQueued: candidate placements standing on a shipyard whose price the
+	//     fleet cannot see. The rows the ordering was CONSULTED on.
+	//   - YardsAtHead: how many of those the ordering delivered into the first
+	//     maxDrainAttempts places — the window this tick's budget can reach. High
+	//     YardsQueued beside a persistent zero here is the ordering failing, and it
+	//     is the number that was effectively zero before this feature: 78 heavy
+	//     counters sat in 8,934 rows with a head of six.
+	//   - YardsFilled: how many of the placements actually FUNDED this tick — by
+	//     reuse, foothold or purchase — stood on one. Presence achieved, and the
+	//     only one of the three that costs anything. It reads zero while the
+	//     expansion switch is off, which is correct: the queue is ordered and
+	//     nothing is bought.
+	YardsQueued, YardsAtHead, YardsFilled int
 	// HaltedPriceDrift reports that a yard charged MORE than it had just
 	// quoted, and the drain stopped for the tick because of it. The hull is
 	// still bought and recorded — an overrun cannot un-buy it — but every
@@ -680,10 +713,14 @@ func DrainBuyQueue(
 	// Cheapest-first gate order: the ledger reads are local, the treasury and
 	// price reads are network. A tick with nothing to buy — the overwhelmingly
 	// common case once the map is placed — must not cost an API call.
-	candidates, err := drainCandidates(ctx, p, playerID)
+	candidates, yards, err := drainCandidates(ctx, p, playerID)
 	if err != nil || len(candidates) == 0 {
 		return rep, err
 	}
+	// Published even on the paused path below, because "the queue is ordered and
+	// the switch is off" and "the ordering never sees a shipyard" are the two
+	// readings an operator has to tell apart while spending is stood down.
+	rep.YardsQueued, rep.YardsAtHead = yards.queued, yards.atHead
 
 	// THE SPEND GATE, and it sits AHEAD of every money read because a tick that
 	// may not buy must not price anything either. The reads below are the
@@ -774,6 +811,13 @@ func DrainBuyQueue(
 			continue
 		}
 
+		// Whether THIS placement stands on a shipyard the fleet cannot price,
+		// taken once because every fill path below reports against it. Counted at
+		// the moment a placement is actually funded rather than inferred from
+		// rep.Bought afterwards, because by then the queue no longer knows which
+		// slot the hull went to.
+		darkYard := yards.wants(slot.Waypoint)
+
 		// The system's slots serve both the spare-reuse scan and the
 		// purchasing-hull lookup below, so they are read once per pop.
 		inSystem, err := p.Ledger.SlotsBySystem(ctx, playerID, slot.System)
@@ -791,6 +835,7 @@ func DrainBuyQueue(
 		if reused {
 			rep.Reused++
 			rep.Attempts++
+			countYardFill(&rep, darkYard)
 			continue
 		}
 
@@ -806,9 +851,11 @@ func DrainBuyQueue(
 		// WANTED for the tick the switch comes back on; it is NOT counted as
 		// SkippedNoYard, which means something specific and would be a lie here.
 		if !k.SpendEnabled {
-			if _, ferr := footholds.fill(ctx, p, playerID, slot, &rep); ferr != nil {
+			paused, ferr := footholds.fill(ctx, p, playerID, slot, &rep)
+			if ferr != nil {
 				return rep, ferr
 			}
+			countYardFill(&rep, darkYard && paused)
 			continue
 		}
 
@@ -830,6 +877,7 @@ func DrainBuyQueue(
 				return rep, ferr
 			}
 			if foothold {
+				countYardFill(&rep, darkYard)
 				continue
 			}
 
@@ -849,15 +897,31 @@ func DrainBuyQueue(
 			continue
 		}
 
+		boughtBefore := rep.Bought
 		halt, err := fillSlot(ctx, p, playerID, slot, buys, &st, &rep, memo)
 		if err != nil {
 			return rep, err
 		}
+		countYardFill(&rep, darkYard && rep.Bought > boughtBefore)
 		if halt {
 			break
 		}
 	}
 	return rep, nil
+}
+
+// countYardFill records that a funded placement stood on a shipyard the fleet
+// cannot price.
+//
+// One named helper rather than four inline increments, because it is called from
+// every path that fills a placement — reuse, the paused foothold, the funded
+// foothold and the purchase — and a fill path added later that forgets it would
+// not fail anything, it would just quietly under-report the one outcome this
+// ordering exists to produce.
+func countYardFill(rep *BuyReport, filled bool) {
+	if filled {
+		rep.YardsFilled++
+	}
 }
 
 // fillSlot buys one hull for a claimed placement, trying each yard where we have
@@ -1086,18 +1150,25 @@ func postBuyCredits(before, price int64, probe BoughtProbe) int64 {
 // be retried. A QUEUED slot is a candidate AND consumes a coverage index, which
 // is right both ways round: it still needs working, and a claim already made is
 // a probe already spoken for.
-func drainCandidates(ctx context.Context, p BuyPorts, playerID int) ([]QueuedSlot, error) {
+//
+// DARK SHIPYARDS ARE THE ONE THING THAT REORDERS INSIDE A SYSTEM. A placement
+// standing on a counter that sells a hull we buy at a price we cannot see takes
+// its system's FIRST coverage index and, at equal coverage, sorts ahead of an
+// ordinary market — see yardqueue.go for why that leaves coverage-first intact
+// and what it was measured to move. It returns the yardOrder it built so the loop
+// above can report what the ordering actually did.
+func drainCandidates(ctx context.Context, p BuyPorts, playerID int) ([]QueuedSlot, yardOrder, error) {
 	slots, err := p.Ledger.SlotsByState(ctx, playerID, SlotStateWanted, SlotStateQueued)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list unfilled sensing slots: %w", err)
+		return nil, yardOrder{}, fmt.Errorf("failed to list unfilled sensing slots: %w", err)
 	}
 	if len(slots) == 0 {
-		return nil, nil
+		return nil, yardOrder{}, nil
 	}
 
 	systems, err := p.Ledger.SystemsByVerdict(ctx, playerID, VerdictInScope)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list in-scope sensing systems: %w", err)
+		return nil, yardOrder{}, fmt.Errorf("failed to list in-scope sensing systems: %w", err)
 	}
 	depth := make(map[string]int64, len(systems))
 	inScope := make(map[string]bool, len(systems))
@@ -1123,24 +1194,34 @@ func drainCandidates(ctx context.Context, p BuyPorts, playerID int) ([]QueuedSlo
 	}
 
 	if len(fills) == 0 {
-		return seeds, nil
+		return seeds, yardOrder{}, nil
 	}
 	fills = reachableFills(ctx, p, playerID, fills)
 	if len(fills) == 0 {
-		return seeds, nil
+		return seeds, yardOrder{}, nil
 	}
 	covered, err := coverageBySystem(ctx, p, playerID)
 	if err != nil {
-		return nil, err
+		return nil, yardOrder{}, err
 	}
 
-	// Each fill's effective coverage, taken in the ledger's own order so the
-	// per-system index is FIFO.
+	// AFTER the reachability partition, and that order is load-bearing. A yard in
+	// a system no hull can walk to is still a dark yard, and promoting it would put
+	// an impossible placement at the very head of the queue — the exact failure
+	// reachableFills was written for (sp-1r08q) and the one an ordering fix
+	// reproduces if it reorders before it partitions. Feasibility first, priority
+	// second.
+	//
+	// It is also the cheapest place to ask: the tick already knows it has fills to
+	// order, so a tick with nothing to buy still pays nothing.
+	yards := readYardDemand(ctx, p, playerID)
+
+	// Each fill's effective coverage. The per-system offset is FIFO except that
+	// dark yards take the low positions — see yardFirstOffsets.
+	offsets := yardFirstOffsets(fills, yards)
 	ranked := make([]rankedFill, len(fills))
-	outstanding := make(map[string]int, len(fills))
 	for i, fill := range fills {
-		ranked[i] = rankedFill{slot: fill, coverage: covered[fill.System] + outstanding[fill.System]}
-		outstanding[fill.System]++
+		ranked[i] = rankedFill{slot: fill, coverage: covered[fill.System] + offsets[i]}
 	}
 
 	// Stable, so the ledger's own waypoint ordering survives as the last
@@ -1150,14 +1231,38 @@ func drainCandidates(ctx context.Context, p BuyPorts, playerID int) ([]QueuedSlo
 		if ranked[i].coverage != ranked[j].coverage {
 			return ranked[i].coverage < ranked[j].coverage
 		}
+		// The yard term, BELOW coverage and ABOVE depth.
+		//
+		// Below coverage because coverage is what stops one system taking every
+		// tick, and a shipyard is not worth re-concentrating the fleet for. Above
+		// depth because this is where the systems' first placements all meet:
+		// every uncovered system ranks its first row at the same coverage, so
+		// without a term here a dark heavy counter is separated from an ordinary
+		// market only by which system happens to be richer — which is how 78 heavy
+		// yards stayed unpriced while the queue worked correctly by its own lights.
+		//
+		// The key is the budget's own RankPresence position, so heavy counters lead
+		// unconditionally and the read budget's weighting carries through without a
+		// second ranking being invented here.
+		ki, kj := yards.key(ranked[i].slot.Waypoint), yards.key(ranked[j].slot.Waypoint)
+		if ki != kj {
+			return ki < kj
+		}
 		return depth[ranked[i].slot.System] > depth[ranked[j].slot.System]
 	})
 
 	out := make([]QueuedSlot, 0, len(ranked)+len(seeds))
-	for _, r := range ranked {
+	for position, r := range ranked {
 		out = append(out, r.slot)
+		if !yards.wants(r.slot.Waypoint) {
+			continue
+		}
+		yards.queued++
+		if position < maxDrainAttempts {
+			yards.atHead++
+		}
 	}
-	return append(out, seeds...), nil
+	return append(out, seeds...), yards, nil
 }
 
 // rankedFill is one fill beside the coverage it competes at — the count of hulls

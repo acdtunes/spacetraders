@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/parkedsensing"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/yardscan"
 )
 
 // sensing_expand_wiring_test.go pins that the expansion engine is actually HANDED the collaborators
@@ -66,4 +67,51 @@ func TestSensingBuyKnobs_CarriesTheExpansionSpendSwitch(t *testing.T) {
 	}
 }
 
-var _ parkedsensing.ProbeListingMemo = wiringMemo{}
+// wiringYardDemand is a stand-in for the shipyard-read budget, identifiable by
+// pointer so a test can assert the drain and the presence pass got the SAME one.
+type wiringYardDemand struct{}
+
+func (*wiringYardDemand) PresenceRequests(context.Context, int, int) []yardscan.PresenceRequest {
+	return nil
+}
+func (*wiringYardDemand) AdmitPresence() bool { return false }
+
+// …and the buy queue is handed the shipyard-read budget, which is what makes the
+// yard-aware ordering fire at all (sp-7qhum).
+//
+// This is the wiring line whose absence would ship the whole feature inert, and it
+// is a quiet inertness rather than a loud one: an unwired port FAILS OPEN by
+// design, so the drain would order its queue exactly as it did before, report zero
+// dark yards queued, and look identical to a fleet that simply has none. A
+// mutation setting this field to nil failed no test until this existed — the same
+// finding that put the ListingMemo tests above in this file.
+func TestSensingEnginePorts_BuyPortsCarriesTheYardDemandReader(t *testing.T) {
+	budget := &wiringYardDemand{}
+	ports := SensingEnginePorts{YardPresence: budget}
+
+	got := ports.buyPorts("container-1", nil).YardDemand
+	if got == nil {
+		t.Fatalf("buyPorts dropped the YardDemand reader — the buy queue would go back to ordering " +
+			"8,934 placements on coverage, depth and arrival with nothing marking the 78 heavy counters " +
+			"among them, and would report zero dark yards while doing it (sp-7qhum)")
+	}
+	// The SAME instance the presence pass gets. Two budgets would rank dark yards
+	// from two different fact sets, so the pass that MOVES a hull and the queue that
+	// BUYS one would aim at different counters.
+	if got != parkedsensing.YardDemandReader(budget) {
+		t.Fatalf("buyPorts was handed a different yard budget than the presence pass — the mover and the "+
+			"buyer would rank shipyards from separate fact sets. got=%#v want=%#v", got, budget)
+	}
+	if presence := ports.yardPresencePorts(nil).Demand; presence != parkedsensing.YardPresenceDemand(budget) {
+		t.Fatalf("the presence pass no longer holds the budget this test compares against: %#v", presence)
+	}
+}
+
+var (
+	_ parkedsensing.ProbeListingMemo   = wiringMemo{}
+	_ parkedsensing.YardPresenceDemand = (*wiringYardDemand)(nil)
+	// The read half the drain is handed is a strict subset of the presence
+	// interface, so one budget satisfies both and the drain cannot reach the
+	// reposition allowance.
+	_ parkedsensing.YardDemandReader = (*wiringYardDemand)(nil)
+)
