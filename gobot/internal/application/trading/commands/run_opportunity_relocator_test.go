@@ -1016,3 +1016,35 @@ func TestResolveRelocatorTickSeconds_OperatorOverrideStillWins(t *testing.T) {
 		}
 	}
 }
+
+// An OFFERED hull is SCORED before an un-offered one, not merely committed before it.
+//
+// The commit-order sort alone was not enough: it runs AFTER every hull has been scored, so an offered
+// hull's 150s window was being spent on other hulls' region pre-flights. Measured live, the gap from
+// licensing to actuation ran 184s / 304s / 664s, and all 98 of the fleet's offers lapsed unclaimed with
+// zero ever taken. This pins the ORDER OF SCORING, which is what bounds that gap.
+//
+// The single concurrency slot is the mechanism of the test: whichever hull is reached first takes it,
+// so the assertion fails if scoring order regresses to observation order.
+func TestOpportunityRelocatorShould_ScoreAnOfferedHullBeforeAnUnofferedOne(t *testing.T) {
+	h := newRelocHarness(t)
+	h.cmd.MaxConcurrentRelocations = 1
+
+	// UNOFFERED first in observation order, so passing cannot be an accident of input ordering.
+	h.fleet.hulls = []RelocatorHull{
+		{ShipSymbol: "HAULER-UNOFFERED", CurrentSystem: "X1-HOME"},
+		{ShipSymbol: "HAULER-OFFERED", CurrentSystem: "X1-HOME", OnTour: true, Offered: true},
+	}
+	h.telemetry.rows = append(
+		relocTelemetryFor("HAULER-UNOFFERED", 100_000, relocNow.Add(-30*time.Minute)),
+		relocTelemetryFor("HAULER-OFFERED", 100_000, relocNow.Add(-30*time.Minute))...,
+	)
+
+	got := h.reconcile(t)
+
+	if len(got.Relocated) != 1 || got.Relocated[0] != "HAULER-OFFERED" {
+		t.Fatalf("the OFFERED hull must win the slot: it is the only one under a clock, its tour is stalled "+
+			"waiting, and an un-offered hull will still be here next tick. relocated %v, skips %v",
+			got.Relocated, got.Skipped)
+	}
+}

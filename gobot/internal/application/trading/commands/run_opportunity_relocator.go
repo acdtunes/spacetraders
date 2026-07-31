@@ -668,6 +668,25 @@ func (h *RunOpportunityRelocatorHandler) scoreCandidates(
 	remainingEra, eraKnown := h.readEraHorizon(ctx, cmd)
 	cooldown := time.Duration(resolveRelocatorCooldownMinutes(cmd.CooldownMinutes)) * time.Minute
 
+	// SCORE OFFERED HULLS FIRST — not merely commit them first.
+	//
+	// The candidate sort below already puts offered hulls at the head of the COMMIT order, and that was
+	// necessary but not sufficient: it runs after the whole loop, so an offered hull's window was being
+	// spent on OTHER hulls' region pre-flights before its own commit could be reached. Each eligible
+	// hull costs up to relocationRegionCandidateBudget planner calls, and with the fleet at 52 hulls the
+	// scoring phase measured 184s / 304s / 664s from licensing to actuation against a 150s offer window.
+	// Every one of the fleet's 98 offers lapsed unclaimed, and zero were ever taken.
+	//
+	// An offered hull is the ONLY hull under a clock: its tour is stalled, waiting, and will resume at
+	// the deadline whatever we do. An un-offered hull is under no such pressure and will still be here
+	// next tick. So the scarce thing to protect is not planner budget, it is the offered hull's WINDOW,
+	// and the way to protect it is to reach its commit while the offer still stands.
+	//
+	// Sorted in place: hulls is the observation's own slice and this reorders it for the rest of the
+	// tick, which is exactly the intent. Stable, so the observation's order survives within each group
+	// and the change is a pure reordering rather than a reshuffle.
+	sort.SliceStable(hulls, func(i, j int) bool { return hulls[i].Offered && !hulls[j].Offered })
+
 	var candidates []relocationCandidate
 	for _, hull := range hulls {
 		if reason, eligible := h.hullEligibility(hull, state, cooldown); !eligible {
