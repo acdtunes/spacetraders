@@ -30,7 +30,7 @@
       },
       "id": 100,
       "panels": [],
-      "title": "Q1 \u00b7 Is each budget inside its allowance?",
+      "title": "Is each budget inside its allowance?",
       "type": "row"
     },
     {
@@ -38,7 +38,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "HEADLINE (sp-zi2hc). Observed spend rate divided by the budget's own fixed allowance (scan_budget_rate_req_per_sec). 1.0 = exactly at budget. GREEN <=1, AMBER 1-2, RED >2. Market and shipyard are separate series and must never be summed - they hold independent allowances (market 0.70 req/s, shipyard 0.12 req/s). A persistently red budget means the fixed allowance is below the fleet's unavoidable pre-buy verification and should be RAISED, never that a money guard should be weakened.",
+      "description": "Spend against allowance. 1.0 is at budget. Sustained overshoot means the allowance is undersized for the reads the fleet can't avoid \u2014 raise it rather than loosening a guard.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -108,7 +108,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Same ratio as the stat, over time. Dashed threshold lines at 1.0 (at budget) and 2.0 (double budget). The shipyard line falling back toward 1.0 is the signal that a scan-budget fix has landed; a flat line above 2.0 is a persistent structural overdraft.",
+      "description": "Watch the shape, not the number. The dashed lines mark 1x and 2x allowance. A step down means a fix landed; a flat line above 1 is structural and won't correct itself.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -192,7 +192,7 @@
       },
       "id": 103,
       "panels": [],
-      "title": "Q2/Q3 \u00b7 Overdrafts (reads forced against an empty bucket)",
+      "title": "Overdrafts (reads forced against an empty bucket)",
       "type": "row"
     },
     {
@@ -200,7 +200,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "rate(scan_budget_overdrafts_total) by budget and read class. An overdraft is a read admitted against an ALREADY-EMPTY allowance bucket - the forced draw. This is the quantity config/shipyard_scan.go tells the operator to watch when deciding whether to raise an allowance. Class breakdown shows WHICH traffic is forcing the draw: 'earning' is unavoidable pre-buy verification, 'discretionary' is opportunistic and is the traffic sp-lr27k reshapes.",
+      "description": "Reads that went through on an empty bucket. Earning is a money guard that can't be refused; discretionary is opportunistic and can be.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -259,7 +259,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Overdrafts as a fraction of all spends, by budget. A RATIO survives a fleet-size change; a raw count does not - double the fleet and the raw overdraft count doubles while the share is unchanged, so only the share tells you whether the allowance itself is mis-sized. Undefined (gap in the line) when a budget spent nothing in the window: 0/0 is genuinely unknown, not zero.",
+      "description": "The share rather than the count \u2014 a bigger fleet raises the count without the allowance being any more wrong. A gap in the line is a window where the budget spent nothing at all, not a zero.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -343,7 +343,7 @@
       },
       "id": 106,
       "panels": [],
-      "title": "Q4/Q5 \u00b7 Read class mix and denials",
+      "title": "Read class mix and denials",
       "type": "row"
     },
     {
@@ -351,7 +351,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Spend rate broken out by read class. This is how sp-lr27k is observed working: traffic should shift OUT of 'earning' (unavoidable pre-buy verification, cannot be denied) and INTO 'discretionary' (opportunistic, can be served from store). A third class 'paired' exists in the domain (marketscan.Paired - the sampled before/after impact scan) and is not yet exercised in this era; the query groups by class rather than enumerating it, so it will appear automatically the first time it fires.",
+      "description": "Which kind of read is spending the budget. Earning can never be declined, so a budget dominated by it is only fixable by making fewer reads, not by pacing them.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -414,7 +414,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "decision=serve_from_store by budget - reads the budget DECLINED to spend on. ZERO IS DISTINCT FROM NO DATA HERE: the 'or (max by (budget) (...allowance...) * 0)' term pins an explicit 0 line for any budget that is published but has emitted no denial series at all. A flat-zero line therefore means the budget is declining NOTHING and is not actually binding - a real finding. A budget missing entirely means it is not published at all. Note only 'discretionary' reads are ever denied; 'earning' has no serve_from_store series by construction, which is why this panel groups by budget and not by class.",
+      "description": "What the budget actually refused \u2014 only discretionary reads can be, so earning never appears here. Flat zero is a real line rather than missing data: the budget binds on nothing and the pacing is decorative.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -478,7 +478,7 @@
       },
       "id": 109,
       "panels": [],
-      "title": "Q6 \u00b7 Coverage-decay invariant (cost must not grow with the map)",
+      "title": "Coverage-decay invariant (cost must not grow with the map)",
       "type": "row"
     },
     {
@@ -486,7 +486,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "THE INVARIANT: total cost does NOT grow with the charted map. Coverage (waypoints sharing the allowance, LEFT axis) should CLIMB as the map is charted while the spend rate (RIGHT axis) stays FLAT - a growing map lengthens each waypoint's interval instead of raising the request rate. Coverage and the allowance are GAUGES, so this panel uses max(), never rate(). If both lines climb together the invariant is broken and scanning cost is scaling with the map.",
+      "description": "Coverage should climb as the map is charted while the dashed spend rate on the right stays flat \u2014 each waypoint simply waits longer. Both lines climbing together means cost is scaling with the map.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -585,7 +585,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "The number an operator actually reasons about: 'each market gets looked at every N'. Derived as coverage / scan_budget_rate_req_per_sec, in SECONDS (Grafana renders hours). This is the reciprocal of the per-waypoint rate the metric HELP describes as rate/coverage. Both inputs are gauges - max(), not rate(). This value RISING while the utilisation panel stays flat is the coverage-decay invariant holding: the map grew and each waypoint is simply visited less often, at unchanged total cost.",
+      "description": "How long each waypoint waits between looks. Rising is expected as the map grows; it's the total cost that's supposed to hold still.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -649,7 +649,7 @@
       },
       "id": 112,
       "panels": [],
-      "title": "Q7 \u00b7 Instrument self-check (if this fails, every panel above is void)",
+      "title": "Instrument self-check (if this fails, every panel above is void)",
       "type": "row"
     },
     {
@@ -657,7 +657,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "The metric's own HELP asserts these reconcile: decision=spend is ONE API request each, so sum(rate(scan_budget_decisions_total{decision=\"spend\"})) must track sum(rate(api_requests_total)) for the matching endpoint. If they diverge persistently the instrument is lying and every other panel on this dashboard is void. READ THE CUMULATIVE STAT TO THE RIGHT BEFORE RAISING AN ALARM: at these low absolute counts (~0.3-0.6 req/s) a short rate window jitters by 20%+ between the two counters purely from scrape alignment. Sustained one-directional drift is the real signal. api_requests_total carries NO player_id label - do not add $player to those two targets, it would return empty. Verified against /metrics.",
+      "description": "Two independent counts of the same requests. Short windows disagree by a fifth on scrape timing alone, so judge drift by direction over time and check the cumulative stat beside this before calling it divergence.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -762,7 +762,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "The noise-free form of the self-check: cumulative endpoint requests divided by cumulative scan-budget spends, since process start. 100% = perfect agreement. Immune to the rate-window jitter that makes the timeseries to the left look divergent. A steady ~99% is EXPECTED and healthy - the budget counter is incremented just before the HTTP call, so one in-flight request is permanently counted by the budget and not yet by the endpoint. Measured live at build time: market 117/118, shipyard 195/196. AMBER outside 95-105%, RED outside 90-110% - that is real divergence and voids this dashboard. api_requests_total carries NO player_id label - do not add $player to those two targets, it would return empty. Verified against /metrics.",
+      "description": "The same check without the jitter. Just under 100% is correct \u2014 one request is always counted before it lands. Drift away from that means these panels are measuring nothing.",
       "fieldConfig": {
         "defaults": {
           "color": {
