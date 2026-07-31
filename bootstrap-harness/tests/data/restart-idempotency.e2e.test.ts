@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { twin } from '../helpers/twin-admin';
 import { coldStart } from '../helpers/fixtures';
 import { resetDaemonDb, startTestDaemon } from '../helpers/daemon';
-import { launchBootstrap, pollUntil } from '../helpers/drive';
+import { launchBootstrap, pollUntil, scrapeBootstrapMetric } from '../helpers/drive';
 import { countCall } from '../helpers/mutation-log';
 
 describe('bootstrap DATA — restart idempotency', () => {
@@ -12,18 +12,22 @@ describe('bootstrap DATA — restart idempotency', () => {
 
     // Lifetime 1: run until exactly the FIRST probe purchase is recorded, then freeze progress.
     let daemon = await startTestDaemon();
-    launchBootstrap();
-    const afterFirst = await pollUntil(
-      () => twin.state(),
-      (s) => countCall(s.mutationLog, 'PurchaseShip') >= 1,
-      { steps: 40, advanceMs: 1000 },
-    );
-    expect(countCall(afterFirst.mutationLog, 'PurchaseShip')).toBe(1); // one buy so far
-    expect(afterFirst.ships.filter((x) => x.role === 'SATELLITE').length).toBe(2); // probe really exists
-
-    // Kill the daemon BEFORE it re-observes — the twin world (2 probes) persists; the daemon keeps
-    // no in-memory progress cursor, so a reboot must re-derive "need 1 more", not "need 2".
-    await daemon.stop();
+    try {
+      launchBootstrap();
+      const afterFirst = await pollUntil(
+        () => twin.state(),
+        (s) => countCall(s.mutationLog, 'PurchaseShip') >= 1,
+        { steps: 40, advanceMs: 1000 },
+      );
+      expect(countCall(afterFirst.mutationLog, 'PurchaseShip')).toBe(1); // one buy so far
+      expect(afterFirst.ships.filter((x) => x.role === 'SATELLITE').length).toBe(2); // probe really exists
+    } finally {
+      // Kill the daemon BEFORE it re-observes — the twin world (2 probes) persists; the daemon keeps
+      // no in-memory progress cursor, so a reboot must re-derive "need 1 more", not "need 2".
+      // In a finally: a failed arrange must never LEAK a live daemon — leaked lifetime-1 daemons from
+      // retried runs keep reconciling against the shared twin and poison every later attempt.
+      await daemon.stop();
+    }
     daemon = await startTestDaemon(); // reboot; SAME test DB (operation record persists), SAME twin
     try {
       launchBootstrap();
@@ -36,6 +40,20 @@ describe('bootstrap DATA — restart idempotency', () => {
       // of the probe that existed at restart.
       expect(countCall(done.mutationLog, 'PurchaseShip')).toBe(2);
       expect(done.ships.filter((x) => x.role === 'SATELLITE').length).toBe(3);
+      // (a) phase re-detection after the reboot lands on DATA again — the rebooted daemon re-derives
+      // its phase from DB+twin, it does not thrash to a different phase. EVENTUAL (poll, not instant
+      // read): the gauge appears on the recovered brain's first reconcile tick, which the fast
+      // compressed convergence above can beat by a few hundred ms.
+      const phaseGauge = await pollUntil(
+        () => scrapeBootstrapMetric('spacetraders_daemon_bootstrap_phase', { phase: 'DATA' }),
+        (v) => v === 1,
+        { steps: 30, advanceMs: 1000 },
+      );
+      expect(phaseGauge, 'rebooted daemon re-derives DATA within its first reconcile ticks').toBe(1);
+      // (b) treasury debited EXACTLY twice (probePrice 40000) across BOTH daemon lifetimes — identical
+      // to a single uninterrupted run (data/golden-path asserts the same 175000-2*40000). An independent
+      // /v2 observable (agent.credits) pairing the PurchaseShip count: a re-buy would show 55000, not 95000.
+      expect(done.agent.credits).toBe(175000 - 2 * 40000);
     } finally {
       await daemon.stop();
     }

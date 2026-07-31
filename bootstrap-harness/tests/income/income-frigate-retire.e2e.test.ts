@@ -5,7 +5,7 @@ import { countCall } from '../helpers/mutation-log';
 
 describe('bootstrap INCOME — frigate retirement', () => {
   it('clears the frigate contract dedication exactly once', async () => {
-    await withIncomeScenario(incomeEntry({ hubs: ['X1-PZ28-H1'], credits: 3_000_000 }), async (ctx) => {
+    await withIncomeScenario(incomeEntry({ credits: 3_000_000 }), async (ctx) => {
       ctx.launchBootstrap();
       const s = await ctx.pollUntil(
         () => ctx.twin.incomeState(),

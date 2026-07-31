@@ -4,7 +4,7 @@ import { incomeEntry } from '../helpers/fixtures-income';
 
 describe('bootstrap INCOME — income_bar exit', () => {
   it('holds INCOME below the bar, derives INCOME-complete once $/hr clears it (GATE stub, out of scope)', async () => {
-    await withIncomeScenario(incomeEntry({ hubs: ['X1-PZ28-H1', 'X1-PZ28-H2'], credits: 3_000_000, creditsPerHour: 0 }), async (ctx) => {
+    await withIncomeScenario(incomeEntry({ credits: 3_000_000, creditsPerHour: 0 }), async (ctx) => {
       ctx.launchBootstrap();
       // Below the bar → INCOME stays active.
       await ctx.pollUntil(

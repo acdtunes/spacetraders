@@ -1,0 +1,2354 @@
+[
+  {
+    "symbol": "X1-PZ28-A1",
+    "type": "PLANET",
+    "systemSymbol": "X1-PZ28",
+    "x": 17,
+    "y": -21,
+    "traits": [
+      {
+        "symbol": "SWAMP",
+        "name": "Swamp",
+        "description": ""
+      },
+      {
+        "symbol": "SCATTERED_SETTLEMENTS",
+        "name": "Scattered Settlements",
+        "description": ""
+      },
+      {
+        "symbol": "ICE_CRYSTALS",
+        "name": "Ice Crystals",
+        "description": ""
+      },
+      {
+        "symbol": "SCARCE_LIFE",
+        "name": "Scarce Life",
+        "description": ""
+      },
+      {
+        "symbol": "ASH_CLOUDS",
+        "name": "Ash Clouds",
+        "description": ""
+      },
+      {
+        "symbol": "MAGMA_SEAS",
+        "name": "Magma Seas",
+        "description": ""
+      },
+      {
+        "symbol": "MARKETPLACE",
+        "name": "Marketplace",
+        "description": ""
+      }
+    ],
+    "orbitals": [
+      {
+        "symbol": "X1-PZ28-A2"
+      },
+      {
+        "symbol": "X1-PZ28-A3"
+      },
+      {
+        "symbol": "X1-PZ28-A4"
+      }
+    ],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-A2",
+    "type": "MOON",
+    "systemSymbol": "X1-PZ28",
+    "x": 17,
+    "y": -21,
+    "traits": [
+      {
+        "symbol": "ROCKY",
+        "name": "Rocky",
+        "description": ""
+      },
+      {
+        "symbol": "OUTPOST",
+        "name": "Outpost",
+        "description": ""
+      },
+      {
+        "symbol": "TERRAFORMED",
+        "name": "Terraformed",
+        "description": ""
+      },
+      {
+        "symbol": "STRONG_MAGNETOSPHERE",
+        "name": "Strong Magnetosphere",
+        "description": ""
+      },
+      {
+        "symbol": "THIN_ATMOSPHERE",
+        "name": "Thin Atmosphere",
+        "description": ""
+      },
+      {
+        "symbol": "MARKETPLACE",
+        "name": "Marketplace",
+        "description": ""
+      },
+      {
+        "symbol": "SHIPYARD",
+        "name": "Shipyard",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-A3",
+    "type": "MOON",
+    "systemSymbol": "X1-PZ28",
+    "x": 17,
+    "y": -21,
+    "traits": [
+      {
+        "symbol": "FROZEN",
+        "name": "Frozen",
+        "description": ""
+      },
+      {
+        "symbol": "SCATTERED_SETTLEMENTS",
+        "name": "Scattered Settlements",
+        "description": ""
+      },
+      {
+        "symbol": "CORROSIVE_ATMOSPHERE",
+        "name": "Corrosive Atmosphere",
+        "description": ""
+      },
+      {
+        "symbol": "MARKETPLACE",
+        "name": "Marketplace",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-A4",
+    "type": "ORBITAL_STATION",
+    "systemSymbol": "X1-PZ28",
+    "x": 17,
+    "y": -21,
+    "traits": [
+      {
+        "symbol": "RESEARCH_FACILITY",
+        "name": "Research Facility",
+        "description": ""
+      },
+      {
+        "symbol": "MARKETPLACE",
+        "name": "Marketplace",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-B10",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": 327,
+    "y": -112,
+    "traits": [
+      {
+        "symbol": "COMMON_METAL_DEPOSITS",
+        "name": "Common Metal Deposits",
+        "description": ""
+      },
+      {
+        "symbol": "MICRO_GRAVITY_ANOMALIES",
+        "name": "Micro Gravity Anomalies",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-B11",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": 363,
+    "y": 97,
+    "traits": [
+      {
+        "symbol": "COMMON_METAL_DEPOSITS",
+        "name": "Common Metal Deposits",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-B12",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": 297,
+    "y": -111,
+    "traits": [
+      {
+        "symbol": "MINERAL_DEPOSITS",
+        "name": "Mineral Deposits",
+        "description": ""
+      },
+      {
+        "symbol": "EXPLOSIVE_GASES",
+        "name": "Explosive Gases",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-B13",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": 347,
+    "y": 74,
+    "traits": [
+      {
+        "symbol": "MINERAL_DEPOSITS",
+        "name": "Mineral Deposits",
+        "description": ""
+      },
+      {
+        "symbol": "RADIOACTIVE",
+        "name": "Radioactive",
+        "description": ""
+      },
+      {
+        "symbol": "DEBRIS_CLUSTER",
+        "name": "Debris Cluster",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-B14",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": 294,
+    "y": 175,
+    "traits": [
+      {
+        "symbol": "MINERAL_DEPOSITS",
+        "name": "Mineral Deposits",
+        "description": ""
+      },
+      {
+        "symbol": "DEEP_CRATERS",
+        "name": "Deep Craters",
+        "description": ""
+      },
+      {
+        "symbol": "RADIOACTIVE",
+        "name": "Radioactive",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-B15",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": 258,
+    "y": 243,
+    "traits": [
+      {
+        "symbol": "MINERAL_DEPOSITS",
+        "name": "Mineral Deposits",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-B16",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": 159,
+    "y": 350,
+    "traits": [
+      {
+        "symbol": "COMMON_METAL_DEPOSITS",
+        "name": "Common Metal Deposits",
+        "description": ""
+      },
+      {
+        "symbol": "DEEP_CRATERS",
+        "name": "Deep Craters",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-B17",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": 44,
+    "y": 374,
+    "traits": [
+      {
+        "symbol": "COMMON_METAL_DEPOSITS",
+        "name": "Common Metal Deposits",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-B18",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": 11,
+    "y": 383,
+    "traits": [
+      {
+        "symbol": "MINERAL_DEPOSITS",
+        "name": "Mineral Deposits",
+        "description": ""
+      },
+      {
+        "symbol": "HOLLOWED_INTERIOR",
+        "name": "Hollowed Interior",
+        "description": ""
+      },
+      {
+        "symbol": "SHALLOW_CRATERS",
+        "name": "Shallow Craters",
+        "description": ""
+      },
+      {
+        "symbol": "DEEP_CRATERS",
+        "name": "Deep Craters",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-B19",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": -56,
+    "y": 373,
+    "traits": [
+      {
+        "symbol": "MINERAL_DEPOSITS",
+        "name": "Mineral Deposits",
+        "description": ""
+      },
+      {
+        "symbol": "EXPLOSIVE_GASES",
+        "name": "Explosive Gases",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-B20",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": 58,
+    "y": 346,
+    "traits": [
+      {
+        "symbol": "RARE_METAL_DEPOSITS",
+        "name": "Rare Metal Deposits",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-B21",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": -95,
+    "y": 361,
+    "traits": [
+      {
+        "symbol": "COMMON_METAL_DEPOSITS",
+        "name": "Common Metal Deposits",
+        "description": ""
+      },
+      {
+        "symbol": "SHALLOW_CRATERS",
+        "name": "Shallow Craters",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-B22",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": -303,
+    "y": 132,
+    "traits": [
+      {
+        "symbol": "COMMON_METAL_DEPOSITS",
+        "name": "Common Metal Deposits",
+        "description": ""
+      },
+      {
+        "symbol": "DEEP_CRATERS",
+        "name": "Deep Craters",
+        "description": ""
+      },
+      {
+        "symbol": "UNSTABLE_COMPOSITION",
+        "name": "Unstable Composition",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-B23",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": -280,
+    "y": 178,
+    "traits": [
+      {
+        "symbol": "COMMON_METAL_DEPOSITS",
+        "name": "Common Metal Deposits",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-B24",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": -217,
+    "y": 249,
+    "traits": [
+      {
+        "symbol": "COMMON_METAL_DEPOSITS",
+        "name": "Common Metal Deposits",
+        "description": ""
+      },
+      {
+        "symbol": "RADIOACTIVE",
+        "name": "Radioactive",
+        "description": ""
+      },
+      {
+        "symbol": "SHALLOW_CRATERS",
+        "name": "Shallow Craters",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-B25",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": -371,
+    "y": 43,
+    "traits": [
+      {
+        "symbol": "MINERAL_DEPOSITS",
+        "name": "Mineral Deposits",
+        "description": ""
+      },
+      {
+        "symbol": "RADIOACTIVE",
+        "name": "Radioactive",
+        "description": ""
+      },
+      {
+        "symbol": "SHALLOW_CRATERS",
+        "name": "Shallow Craters",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-B26",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": -344,
+    "y": 47,
+    "traits": [
+      {
+        "symbol": "COMMON_METAL_DEPOSITS",
+        "name": "Common Metal Deposits",
+        "description": ""
+      },
+      {
+        "symbol": "EXPLOSIVE_GASES",
+        "name": "Explosive Gases",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-B27",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": -366,
+    "y": 86,
+    "traits": [
+      {
+        "symbol": "COMMON_METAL_DEPOSITS",
+        "name": "Common Metal Deposits",
+        "description": ""
+      },
+      {
+        "symbol": "DEEP_CRATERS",
+        "name": "Deep Craters",
+        "description": ""
+      },
+      {
+        "symbol": "EXPLOSIVE_GASES",
+        "name": "Explosive Gases",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-B28",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": -268,
+    "y": -168,
+    "traits": [
+      {
+        "symbol": "MINERAL_DEPOSITS",
+        "name": "Mineral Deposits",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-B29",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": -312,
+    "y": -63,
+    "traits": [
+      {
+        "symbol": "COMMON_METAL_DEPOSITS",
+        "name": "Common Metal Deposits",
+        "description": ""
+      },
+      {
+        "symbol": "SHALLOW_CRATERS",
+        "name": "Shallow Craters",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-B30",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": -254,
+    "y": -226,
+    "traits": [
+      {
+        "symbol": "MINERAL_DEPOSITS",
+        "name": "Mineral Deposits",
+        "description": ""
+      },
+      {
+        "symbol": "EXPLOSIVE_GASES",
+        "name": "Explosive Gases",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-B31",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": -234,
+    "y": -285,
+    "traits": [
+      {
+        "symbol": "COMMON_METAL_DEPOSITS",
+        "name": "Common Metal Deposits",
+        "description": ""
+      },
+      {
+        "symbol": "RADIOACTIVE",
+        "name": "Radioactive",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-B32",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": -313,
+    "y": -229,
+    "traits": [
+      {
+        "symbol": "COMMON_METAL_DEPOSITS",
+        "name": "Common Metal Deposits",
+        "description": ""
+      },
+      {
+        "symbol": "EXPLOSIVE_GASES",
+        "name": "Explosive Gases",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-B33",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": -185,
+    "y": -271,
+    "traits": [
+      {
+        "symbol": "MINERAL_DEPOSITS",
+        "name": "Mineral Deposits",
+        "description": ""
+      },
+      {
+        "symbol": "EXPLOSIVE_GASES",
+        "name": "Explosive Gases",
+        "description": ""
+      },
+      {
+        "symbol": "SHALLOW_CRATERS",
+        "name": "Shallow Craters",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-B34",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": 121,
+    "y": -337,
+    "traits": [
+      {
+        "symbol": "COMMON_METAL_DEPOSITS",
+        "name": "Common Metal Deposits",
+        "description": ""
+      },
+      {
+        "symbol": "DEBRIS_CLUSTER",
+        "name": "Debris Cluster",
+        "description": ""
+      },
+      {
+        "symbol": "EXPLOSIVE_GASES",
+        "name": "Explosive Gases",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-B35",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": 130,
+    "y": -296,
+    "traits": [
+      {
+        "symbol": "MINERAL_DEPOSITS",
+        "name": "Mineral Deposits",
+        "description": ""
+      },
+      {
+        "symbol": "MICRO_GRAVITY_ANOMALIES",
+        "name": "Micro Gravity Anomalies",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-B36",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": 16,
+    "y": -381,
+    "traits": [
+      {
+        "symbol": "COMMON_METAL_DEPOSITS",
+        "name": "Common Metal Deposits",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-B37",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": -3,
+    "y": -342,
+    "traits": [
+      {
+        "symbol": "COMMON_METAL_DEPOSITS",
+        "name": "Common Metal Deposits",
+        "description": ""
+      },
+      {
+        "symbol": "SHALLOW_CRATERS",
+        "name": "Shallow Craters",
+        "description": ""
+      },
+      {
+        "symbol": "EXPLOSIVE_GASES",
+        "name": "Explosive Gases",
+        "description": ""
+      },
+      {
+        "symbol": "MICRO_GRAVITY_ANOMALIES",
+        "name": "Micro Gravity Anomalies",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-B38",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": 169,
+    "y": -309,
+    "traits": [
+      {
+        "symbol": "MINERAL_DEPOSITS",
+        "name": "Mineral Deposits",
+        "description": ""
+      },
+      {
+        "symbol": "EXPLOSIVE_GASES",
+        "name": "Explosive Gases",
+        "description": ""
+      },
+      {
+        "symbol": "SHALLOW_CRATERS",
+        "name": "Shallow Craters",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-B39",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": 110,
+    "y": -337,
+    "traits": [
+      {
+        "symbol": "MINERAL_DEPOSITS",
+        "name": "Mineral Deposits",
+        "description": ""
+      },
+      {
+        "symbol": "SHALLOW_CRATERS",
+        "name": "Shallow Craters",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-B40",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": 175,
+    "y": -275,
+    "traits": [
+      {
+        "symbol": "PRECIOUS_METAL_DEPOSITS",
+        "name": "Precious Metal Deposits",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-B6",
+    "type": "FUEL_STATION",
+    "systemSymbol": "X1-PZ28",
+    "x": 173,
+    "y": -81,
+    "traits": [
+      {
+        "symbol": "MARKETPLACE",
+        "name": "Marketplace",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-B7",
+    "type": "ASTEROID_BASE",
+    "systemSymbol": "X1-PZ28",
+    "x": 92,
+    "y": -332,
+    "traits": [
+      {
+        "symbol": "HOLLOWED_INTERIOR",
+        "name": "Hollowed Interior",
+        "description": ""
+      },
+      {
+        "symbol": "OUTPOST",
+        "name": "Outpost",
+        "description": ""
+      },
+      {
+        "symbol": "MARKETPLACE",
+        "name": "Marketplace",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-B8",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": 342,
+    "y": -101,
+    "traits": [
+      {
+        "symbol": "MINERAL_DEPOSITS",
+        "name": "Mineral Deposits",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-B9",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": 386,
+    "y": 29,
+    "traits": [
+      {
+        "symbol": "COMMON_METAL_DEPOSITS",
+        "name": "Common Metal Deposits",
+        "description": ""
+      },
+      {
+        "symbol": "EXPLOSIVE_GASES",
+        "name": "Explosive Gases",
+        "description": ""
+      },
+      {
+        "symbol": "DEEP_CRATERS",
+        "name": "Deep Craters",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-C41",
+    "type": "GAS_GIANT",
+    "systemSymbol": "X1-PZ28",
+    "x": -128,
+    "y": 85,
+    "traits": [
+      {
+        "symbol": "STRONG_GRAVITY",
+        "name": "Strong Gravity",
+        "description": ""
+      }
+    ],
+    "orbitals": [
+      {
+        "symbol": "X1-PZ28-C42"
+      }
+    ],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-C42",
+    "type": "ORBITAL_STATION",
+    "systemSymbol": "X1-PZ28",
+    "x": -128,
+    "y": 85,
+    "traits": [
+      {
+        "symbol": "OUTPOST",
+        "name": "Outpost",
+        "description": ""
+      },
+      {
+        "symbol": "INDUSTRIAL",
+        "name": "Industrial",
+        "description": ""
+      },
+      {
+        "symbol": "MARKETPLACE",
+        "name": "Marketplace",
+        "description": ""
+      },
+      {
+        "symbol": "SHIPYARD",
+        "name": "Shipyard",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-C43",
+    "type": "FUEL_STATION",
+    "systemSymbol": "X1-PZ28",
+    "x": -97,
+    "y": 65,
+    "traits": [
+      {
+        "symbol": "MARKETPLACE",
+        "name": "Marketplace",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-D44",
+    "type": "PLANET",
+    "systemSymbol": "X1-PZ28",
+    "x": 35,
+    "y": 78,
+    "traits": [
+      {
+        "symbol": "TEMPERATE",
+        "name": "Temperate",
+        "description": ""
+      },
+      {
+        "symbol": "SCATTERED_SETTLEMENTS",
+        "name": "Scattered Settlements",
+        "description": ""
+      },
+      {
+        "symbol": "SCARCE_LIFE",
+        "name": "Scarce Life",
+        "description": ""
+      },
+      {
+        "symbol": "METHANE_POOLS",
+        "name": "Methane Pools",
+        "description": ""
+      },
+      {
+        "symbol": "DIVERSE_LIFE",
+        "name": "Diverse Life",
+        "description": ""
+      },
+      {
+        "symbol": "DRY_SEABEDS",
+        "name": "Dry Seabeds",
+        "description": ""
+      },
+      {
+        "symbol": "INDUSTRIAL",
+        "name": "Industrial",
+        "description": ""
+      },
+      {
+        "symbol": "MARKETPLACE",
+        "name": "Marketplace",
+        "description": ""
+      }
+    ],
+    "orbitals": [
+      {
+        "symbol": "X1-PZ28-D45"
+      },
+      {
+        "symbol": "X1-PZ28-D46"
+      }
+    ],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-D45",
+    "type": "MOON",
+    "systemSymbol": "X1-PZ28",
+    "x": 35,
+    "y": 78,
+    "traits": [
+      {
+        "symbol": "FROZEN",
+        "name": "Frozen",
+        "description": ""
+      },
+      {
+        "symbol": "SCATTERED_SETTLEMENTS",
+        "name": "Scattered Settlements",
+        "description": ""
+      },
+      {
+        "symbol": "VIBRANT_AURORAS",
+        "name": "Vibrant Auroras",
+        "description": ""
+      },
+      {
+        "symbol": "TERRAFORMED",
+        "name": "Terraformed",
+        "description": ""
+      },
+      {
+        "symbol": "INDUSTRIAL",
+        "name": "Industrial",
+        "description": ""
+      },
+      {
+        "symbol": "MARKETPLACE",
+        "name": "Marketplace",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-D46",
+    "type": "MOON",
+    "systemSymbol": "X1-PZ28",
+    "x": 35,
+    "y": 78,
+    "traits": [
+      {
+        "symbol": "VOLCANIC",
+        "name": "Volcanic",
+        "description": ""
+      },
+      {
+        "symbol": "CORROSIVE_ATMOSPHERE",
+        "name": "Corrosive Atmosphere",
+        "description": ""
+      },
+      {
+        "symbol": "TOXIC_ATMOSPHERE",
+        "name": "Toxic Atmosphere",
+        "description": ""
+      },
+      {
+        "symbol": "MARKETPLACE",
+        "name": "Marketplace",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-E47",
+    "type": "PLANET",
+    "systemSymbol": "X1-PZ28",
+    "x": -49,
+    "y": -23,
+    "traits": [
+      {
+        "symbol": "VOLCANIC",
+        "name": "Volcanic",
+        "description": ""
+      },
+      {
+        "symbol": "SCATTERED_SETTLEMENTS",
+        "name": "Scattered Settlements",
+        "description": ""
+      },
+      {
+        "symbol": "STRONG_GRAVITY",
+        "name": "Strong Gravity",
+        "description": ""
+      },
+      {
+        "symbol": "VIBRANT_AURORAS",
+        "name": "Vibrant Auroras",
+        "description": ""
+      },
+      {
+        "symbol": "INDUSTRIAL",
+        "name": "Industrial",
+        "description": ""
+      },
+      {
+        "symbol": "MARKETPLACE",
+        "name": "Marketplace",
+        "description": ""
+      }
+    ],
+    "orbitals": [
+      {
+        "symbol": "X1-PZ28-E48"
+      },
+      {
+        "symbol": "X1-PZ28-E49"
+      },
+      {
+        "symbol": "X1-PZ28-E50"
+      },
+      {
+        "symbol": "X1-PZ28-E51"
+      },
+      {
+        "symbol": "X1-PZ28-E52"
+      },
+      {
+        "symbol": "X1-PZ28-E53"
+      },
+      {
+        "symbol": "X1-PZ28-E54"
+      }
+    ],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-E48",
+    "type": "MOON",
+    "systemSymbol": "X1-PZ28",
+    "x": -49,
+    "y": -23,
+    "traits": [
+      {
+        "symbol": "FROZEN",
+        "name": "Frozen",
+        "description": ""
+      },
+      {
+        "symbol": "OUTPOST",
+        "name": "Outpost",
+        "description": ""
+      },
+      {
+        "symbol": "CORROSIVE_ATMOSPHERE",
+        "name": "Corrosive Atmosphere",
+        "description": ""
+      },
+      {
+        "symbol": "TERRAFORMED",
+        "name": "Terraformed",
+        "description": ""
+      },
+      {
+        "symbol": "INDUSTRIAL",
+        "name": "Industrial",
+        "description": ""
+      },
+      {
+        "symbol": "MARKETPLACE",
+        "name": "Marketplace",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-E49",
+    "type": "MOON",
+    "systemSymbol": "X1-PZ28",
+    "x": -49,
+    "y": -23,
+    "traits": [
+      {
+        "symbol": "ROCKY",
+        "name": "Rocky",
+        "description": ""
+      },
+      {
+        "symbol": "TOXIC_ATMOSPHERE",
+        "name": "Toxic Atmosphere",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-E50",
+    "type": "MOON",
+    "systemSymbol": "X1-PZ28",
+    "x": -49,
+    "y": -23,
+    "traits": [
+      {
+        "symbol": "VOLCANIC",
+        "name": "Volcanic",
+        "description": ""
+      },
+      {
+        "symbol": "THIN_ATMOSPHERE",
+        "name": "Thin Atmosphere",
+        "description": ""
+      },
+      {
+        "symbol": "STRONG_MAGNETOSPHERE",
+        "name": "Strong Magnetosphere",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-E51",
+    "type": "MOON",
+    "systemSymbol": "X1-PZ28",
+    "x": -49,
+    "y": -23,
+    "traits": [
+      {
+        "symbol": "BARREN",
+        "name": "Barren",
+        "description": ""
+      },
+      {
+        "symbol": "CORROSIVE_ATMOSPHERE",
+        "name": "Corrosive Atmosphere",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-E52",
+    "type": "MOON",
+    "systemSymbol": "X1-PZ28",
+    "x": -49,
+    "y": -23,
+    "traits": [
+      {
+        "symbol": "BARREN",
+        "name": "Barren",
+        "description": ""
+      },
+      {
+        "symbol": "VIBRANT_AURORAS",
+        "name": "Vibrant Auroras",
+        "description": ""
+      },
+      {
+        "symbol": "CORROSIVE_ATMOSPHERE",
+        "name": "Corrosive Atmosphere",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-E53",
+    "type": "MOON",
+    "systemSymbol": "X1-PZ28",
+    "x": -49,
+    "y": -23,
+    "traits": [
+      {
+        "symbol": "BARREN",
+        "name": "Barren",
+        "description": ""
+      },
+      {
+        "symbol": "STRONG_MAGNETOSPHERE",
+        "name": "Strong Magnetosphere",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-E54",
+    "type": "MOON",
+    "systemSymbol": "X1-PZ28",
+    "x": -49,
+    "y": -23,
+    "traits": [
+      {
+        "symbol": "FROZEN",
+        "name": "Frozen",
+        "description": ""
+      },
+      {
+        "symbol": "EXTREME_PRESSURE",
+        "name": "Extreme Pressure",
+        "description": ""
+      },
+      {
+        "symbol": "THIN_ATMOSPHERE",
+        "name": "Thin Atmosphere",
+        "description": ""
+      },
+      {
+        "symbol": "EXTREME_TEMPERATURES",
+        "name": "Extreme Temperatures",
+        "description": ""
+      },
+      {
+        "symbol": "MARKETPLACE",
+        "name": "Marketplace",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-F55",
+    "type": "PLANET",
+    "systemSymbol": "X1-PZ28",
+    "x": 53,
+    "y": -55,
+    "traits": [
+      {
+        "symbol": "FROZEN",
+        "name": "Frozen",
+        "description": ""
+      },
+      {
+        "symbol": "OUTPOST",
+        "name": "Outpost",
+        "description": ""
+      },
+      {
+        "symbol": "SCARCE_LIFE",
+        "name": "Scarce Life",
+        "description": ""
+      },
+      {
+        "symbol": "MAGMA_SEAS",
+        "name": "Magma Seas",
+        "description": ""
+      },
+      {
+        "symbol": "ASH_CLOUDS",
+        "name": "Ash Clouds",
+        "description": ""
+      },
+      {
+        "symbol": "MARKETPLACE",
+        "name": "Marketplace",
+        "description": ""
+      }
+    ],
+    "orbitals": [
+      {
+        "symbol": "X1-PZ28-F56"
+      },
+      {
+        "symbol": "X1-PZ28-F57"
+      },
+      {
+        "symbol": "X1-PZ28-F58"
+      },
+      {
+        "symbol": "X1-PZ28-F59"
+      },
+      {
+        "symbol": "X1-PZ28-F60"
+      },
+      {
+        "symbol": "X1-PZ28-F61"
+      }
+    ],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-F56",
+    "type": "ORBITAL_STATION",
+    "systemSymbol": "X1-PZ28",
+    "x": 53,
+    "y": -55,
+    "traits": [
+      {
+        "symbol": "ROCKY",
+        "name": "Rocky",
+        "description": ""
+      },
+      {
+        "symbol": "SCATTERED_SETTLEMENTS",
+        "name": "Scattered Settlements",
+        "description": ""
+      },
+      {
+        "symbol": "EXTREME_TEMPERATURES",
+        "name": "Extreme Temperatures",
+        "description": ""
+      },
+      {
+        "symbol": "HIGH_TECH",
+        "name": "High Tech",
+        "description": ""
+      },
+      {
+        "symbol": "MARKETPLACE",
+        "name": "Marketplace",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-F57",
+    "type": "MOON",
+    "systemSymbol": "X1-PZ28",
+    "x": 53,
+    "y": -55,
+    "traits": [
+      {
+        "symbol": "BARREN",
+        "name": "Barren",
+        "description": ""
+      },
+      {
+        "symbol": "VIBRANT_AURORAS",
+        "name": "Vibrant Auroras",
+        "description": ""
+      },
+      {
+        "symbol": "STRONG_MAGNETOSPHERE",
+        "name": "Strong Magnetosphere",
+        "description": ""
+      },
+      {
+        "symbol": "EXTREME_PRESSURE",
+        "name": "Extreme Pressure",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-F58",
+    "type": "MOON",
+    "systemSymbol": "X1-PZ28",
+    "x": 53,
+    "y": -55,
+    "traits": [
+      {
+        "symbol": "BARREN",
+        "name": "Barren",
+        "description": ""
+      },
+      {
+        "symbol": "OUTPOST",
+        "name": "Outpost",
+        "description": ""
+      },
+      {
+        "symbol": "EXTREME_PRESSURE",
+        "name": "Extreme Pressure",
+        "description": ""
+      },
+      {
+        "symbol": "MARKETPLACE",
+        "name": "Marketplace",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-F59",
+    "type": "MOON",
+    "systemSymbol": "X1-PZ28",
+    "x": 53,
+    "y": -55,
+    "traits": [
+      {
+        "symbol": "BARREN",
+        "name": "Barren",
+        "description": ""
+      },
+      {
+        "symbol": "EXTREME_PRESSURE",
+        "name": "Extreme Pressure",
+        "description": ""
+      },
+      {
+        "symbol": "MARKETPLACE",
+        "name": "Marketplace",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-F60",
+    "type": "MOON",
+    "systemSymbol": "X1-PZ28",
+    "x": 53,
+    "y": -55,
+    "traits": [
+      {
+        "symbol": "FROZEN",
+        "name": "Frozen",
+        "description": ""
+      },
+      {
+        "symbol": "TOXIC_ATMOSPHERE",
+        "name": "Toxic Atmosphere",
+        "description": ""
+      },
+      {
+        "symbol": "EXTREME_PRESSURE",
+        "name": "Extreme Pressure",
+        "description": ""
+      },
+      {
+        "symbol": "MARKETPLACE",
+        "name": "Marketplace",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-F61",
+    "type": "MOON",
+    "systemSymbol": "X1-PZ28",
+    "x": 53,
+    "y": -55,
+    "traits": [
+      {
+        "symbol": "ROCKY",
+        "name": "Rocky",
+        "description": ""
+      },
+      {
+        "symbol": "THIN_ATMOSPHERE",
+        "name": "Thin Atmosphere",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-FF5F",
+    "type": "ENGINEERED_ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": 4,
+    "y": 26,
+    "traits": [
+      {
+        "symbol": "COMMON_METAL_DEPOSITS",
+        "name": "Common Metal Deposits",
+        "description": ""
+      },
+      {
+        "symbol": "STRIPPED",
+        "name": "Stripped",
+        "description": ""
+      },
+      {
+        "symbol": "MARKETPLACE",
+        "name": "Marketplace",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-G62",
+    "type": "PLANET",
+    "systemSymbol": "X1-PZ28",
+    "x": -53,
+    "y": 39,
+    "traits": [
+      {
+        "symbol": "VOLCANIC",
+        "name": "Volcanic",
+        "description": ""
+      },
+      {
+        "symbol": "OUTPOST",
+        "name": "Outpost",
+        "description": ""
+      },
+      {
+        "symbol": "DRY_SEABEDS",
+        "name": "Dry Seabeds",
+        "description": ""
+      },
+      {
+        "symbol": "CANYONS",
+        "name": "Canyons",
+        "description": ""
+      },
+      {
+        "symbol": "MAGMA_SEAS",
+        "name": "Magma Seas",
+        "description": ""
+      },
+      {
+        "symbol": "INDUSTRIAL",
+        "name": "Industrial",
+        "description": ""
+      },
+      {
+        "symbol": "MARKETPLACE",
+        "name": "Marketplace",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-H63",
+    "type": "PLANET",
+    "systemSymbol": "X1-PZ28",
+    "x": 36,
+    "y": 26,
+    "traits": [
+      {
+        "symbol": "ROCKY",
+        "name": "Rocky",
+        "description": ""
+      },
+      {
+        "symbol": "SCATTERED_SETTLEMENTS",
+        "name": "Scattered Settlements",
+        "description": ""
+      },
+      {
+        "symbol": "ASH_CLOUDS",
+        "name": "Ash Clouds",
+        "description": ""
+      },
+      {
+        "symbol": "SALT_FLATS",
+        "name": "Salt Flats",
+        "description": ""
+      },
+      {
+        "symbol": "ICE_CRYSTALS",
+        "name": "Ice Crystals",
+        "description": ""
+      },
+      {
+        "symbol": "SCARCE_LIFE",
+        "name": "Scarce Life",
+        "description": ""
+      },
+      {
+        "symbol": "INDUSTRIAL",
+        "name": "Industrial",
+        "description": ""
+      },
+      {
+        "symbol": "MARKETPLACE",
+        "name": "Marketplace",
+        "description": ""
+      }
+    ],
+    "orbitals": [
+      {
+        "symbol": "X1-PZ28-H64"
+      },
+      {
+        "symbol": "X1-PZ28-H65"
+      },
+      {
+        "symbol": "X1-PZ28-H66"
+      }
+    ],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-H64",
+    "type": "MOON",
+    "systemSymbol": "X1-PZ28",
+    "x": 36,
+    "y": 26,
+    "traits": [
+      {
+        "symbol": "ROCKY",
+        "name": "Rocky",
+        "description": ""
+      },
+      {
+        "symbol": "SPRAWLING_CITIES",
+        "name": "Sprawling Cities",
+        "description": ""
+      },
+      {
+        "symbol": "TOXIC_ATMOSPHERE",
+        "name": "Toxic Atmosphere",
+        "description": ""
+      },
+      {
+        "symbol": "CORROSIVE_ATMOSPHERE",
+        "name": "Corrosive Atmosphere",
+        "description": ""
+      },
+      {
+        "symbol": "INDUSTRIAL",
+        "name": "Industrial",
+        "description": ""
+      },
+      {
+        "symbol": "MARKETPLACE",
+        "name": "Marketplace",
+        "description": ""
+      },
+      {
+        "symbol": "SHIPYARD",
+        "name": "Shipyard",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-H65",
+    "type": "MOON",
+    "systemSymbol": "X1-PZ28",
+    "x": 36,
+    "y": 26,
+    "traits": [
+      {
+        "symbol": "FROZEN",
+        "name": "Frozen",
+        "description": ""
+      },
+      {
+        "symbol": "OUTPOST",
+        "name": "Outpost",
+        "description": ""
+      },
+      {
+        "symbol": "VIBRANT_AURORAS",
+        "name": "Vibrant Auroras",
+        "description": ""
+      },
+      {
+        "symbol": "EXTREME_PRESSURE",
+        "name": "Extreme Pressure",
+        "description": ""
+      },
+      {
+        "symbol": "INDUSTRIAL",
+        "name": "Industrial",
+        "description": ""
+      },
+      {
+        "symbol": "MARKETPLACE",
+        "name": "Marketplace",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-H66",
+    "type": "MOON",
+    "systemSymbol": "X1-PZ28",
+    "x": 36,
+    "y": 26,
+    "traits": [
+      {
+        "symbol": "VOLCANIC",
+        "name": "Volcanic",
+        "description": ""
+      },
+      {
+        "symbol": "OUTPOST",
+        "name": "Outpost",
+        "description": ""
+      },
+      {
+        "symbol": "EXTREME_TEMPERATURES",
+        "name": "Extreme Temperatures",
+        "description": ""
+      },
+      {
+        "symbol": "INDUSTRIAL",
+        "name": "Industrial",
+        "description": ""
+      },
+      {
+        "symbol": "MARKETPLACE",
+        "name": "Marketplace",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-I67",
+    "type": "JUMP_GATE",
+    "systemSymbol": "X1-PZ28",
+    "x": -286,
+    "y": -344,
+    "traits": [
+      {
+        "symbol": "MARKETPLACE",
+        "name": "Marketplace",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-I68",
+    "type": "FUEL_STATION",
+    "systemSymbol": "X1-PZ28",
+    "x": -146,
+    "y": -176,
+    "traits": [
+      {
+        "symbol": "MARKETPLACE",
+        "name": "Marketplace",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-J69",
+    "type": "FUEL_STATION",
+    "systemSymbol": "X1-PZ28",
+    "x": -384,
+    "y": -461,
+    "traits": [
+      {
+        "symbol": "MARKETPLACE",
+        "name": "Marketplace",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-J70",
+    "type": "ASTEROID_BASE",
+    "systemSymbol": "X1-PZ28",
+    "x": -460,
+    "y": -552,
+    "traits": [
+      {
+        "symbol": "HOLLOWED_INTERIOR",
+        "name": "Hollowed Interior",
+        "description": ""
+      },
+      {
+        "symbol": "PIRATE_BASE",
+        "name": "Pirate Base",
+        "description": ""
+      },
+      {
+        "symbol": "MARKETPLACE",
+        "name": "Marketplace",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-J71",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": 541,
+    "y": 511,
+    "traits": [
+      {
+        "symbol": "MINERAL_DEPOSITS",
+        "name": "Mineral Deposits",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-J72",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": -22,
+    "y": 766,
+    "traits": [
+      {
+        "symbol": "MINERAL_DEPOSITS",
+        "name": "Mineral Deposits",
+        "description": ""
+      },
+      {
+        "symbol": "RADIOACTIVE",
+        "name": "Radioactive",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-J73",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": -500,
+    "y": 595,
+    "traits": [
+      {
+        "symbol": "MINERAL_DEPOSITS",
+        "name": "Mineral Deposits",
+        "description": ""
+      },
+      {
+        "symbol": "EXPLOSIVE_GASES",
+        "name": "Explosive Gases",
+        "description": ""
+      },
+      {
+        "symbol": "RADIOACTIVE",
+        "name": "Radioactive",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-J74",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": -423,
+    "y": 618,
+    "traits": [
+      {
+        "symbol": "COMMON_METAL_DEPOSITS",
+        "name": "Common Metal Deposits",
+        "description": ""
+      },
+      {
+        "symbol": "SHALLOW_CRATERS",
+        "name": "Shallow Craters",
+        "description": ""
+      },
+      {
+        "symbol": "DEEP_CRATERS",
+        "name": "Deep Craters",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-J75",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": -492,
+    "y": 609,
+    "traits": [
+      {
+        "symbol": "COMMON_METAL_DEPOSITS",
+        "name": "Common Metal Deposits",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-J76",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": -766,
+    "y": -38,
+    "traits": [
+      {
+        "symbol": "COMMON_METAL_DEPOSITS",
+        "name": "Common Metal Deposits",
+        "description": ""
+      },
+      {
+        "symbol": "EXPLOSIVE_GASES",
+        "name": "Explosive Gases",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-J77",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": -395,
+    "y": -606,
+    "traits": [
+      {
+        "symbol": "MINERAL_DEPOSITS",
+        "name": "Mineral Deposits",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-J78",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": -556,
+    "y": -539,
+    "traits": [
+      {
+        "symbol": "MINERAL_DEPOSITS",
+        "name": "Mineral Deposits",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-J79",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": -495,
+    "y": -509,
+    "traits": [
+      {
+        "symbol": "RARE_METAL_DEPOSITS",
+        "name": "Rare Metal Deposits",
+        "description": ""
+      },
+      {
+        "symbol": "DEEP_CRATERS",
+        "name": "Deep Craters",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-J80",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": -351,
+    "y": -679,
+    "traits": [
+      {
+        "symbol": "MINERAL_DEPOSITS",
+        "name": "Mineral Deposits",
+        "description": ""
+      },
+      {
+        "symbol": "HOLLOWED_INTERIOR",
+        "name": "Hollowed Interior",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-J81",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": -33,
+    "y": -761,
+    "traits": [
+      {
+        "symbol": "MINERAL_DEPOSITS",
+        "name": "Mineral Deposits",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-J82",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": 628,
+    "y": -349,
+    "traits": [
+      {
+        "symbol": "COMMON_METAL_DEPOSITS",
+        "name": "Common Metal Deposits",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-J83",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": 400,
+    "y": -641,
+    "traits": [
+      {
+        "symbol": "MINERAL_DEPOSITS",
+        "name": "Mineral Deposits",
+        "description": ""
+      },
+      {
+        "symbol": "SHALLOW_CRATERS",
+        "name": "Shallow Craters",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-J84",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": 746,
+    "y": 86,
+    "traits": [
+      {
+        "symbol": "COMMON_METAL_DEPOSITS",
+        "name": "Common Metal Deposits",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-J85",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": 711,
+    "y": -158,
+    "traits": [
+      {
+        "symbol": "MINERAL_DEPOSITS",
+        "name": "Mineral Deposits",
+        "description": ""
+      },
+      {
+        "symbol": "DEEP_CRATERS",
+        "name": "Deep Craters",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-J86",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": 752,
+    "y": -29,
+    "traits": [
+      {
+        "symbol": "COMMON_METAL_DEPOSITS",
+        "name": "Common Metal Deposits",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-J87",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": 228,
+    "y": 725,
+    "traits": [
+      {
+        "symbol": "RARE_METAL_DEPOSITS",
+        "name": "Rare Metal Deposits",
+        "description": ""
+      },
+      {
+        "symbol": "DEBRIS_CLUSTER",
+        "name": "Debris Cluster",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-J88",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": 187,
+    "y": 725,
+    "traits": [
+      {
+        "symbol": "COMMON_METAL_DEPOSITS",
+        "name": "Common Metal Deposits",
+        "description": ""
+      },
+      {
+        "symbol": "DEEP_CRATERS",
+        "name": "Deep Craters",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-J89",
+    "type": "ASTEROID",
+    "systemSymbol": "X1-PZ28",
+    "x": 525,
+    "y": 589,
+    "traits": [
+      {
+        "symbol": "PRECIOUS_METAL_DEPOSITS",
+        "name": "Precious Metal Deposits",
+        "description": ""
+      },
+      {
+        "symbol": "SHALLOW_CRATERS",
+        "name": "Shallow Craters",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  },
+  {
+    "symbol": "X1-PZ28-K90",
+    "type": "PLANET",
+    "systemSymbol": "X1-PZ28",
+    "x": -19,
+    "y": -102,
+    "traits": [
+      {
+        "symbol": "ROCKY",
+        "name": "Rocky",
+        "description": ""
+      },
+      {
+        "symbol": "OUTPOST",
+        "name": "Outpost",
+        "description": ""
+      },
+      {
+        "symbol": "MUTATED_FLORA",
+        "name": "Mutated Flora",
+        "description": ""
+      },
+      {
+        "symbol": "FOSSILS",
+        "name": "Fossils",
+        "description": ""
+      },
+      {
+        "symbol": "BREATHABLE_ATMOSPHERE",
+        "name": "Breathable Atmosphere",
+        "description": ""
+      },
+      {
+        "symbol": "SUPERVOLCANOES",
+        "name": "Supervolcanoes",
+        "description": ""
+      },
+      {
+        "symbol": "INDUSTRIAL",
+        "name": "Industrial",
+        "description": ""
+      },
+      {
+        "symbol": "MARKETPLACE",
+        "name": "Marketplace",
+        "description": ""
+      }
+    ],
+    "orbitals": [],
+    "isUnderConstruction": false
+  }
+]

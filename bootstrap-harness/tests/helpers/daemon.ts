@@ -1,5 +1,5 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import {
   DAEMON_BIN,
   GOBOT_DIR,
@@ -19,11 +19,28 @@ const env = (configPath: string) => ({
   // batch-contract, construction-start, executor-bounce, repurpose, launch-*) here so the twin's
   // /_twin/state mutationLog + flags reflect them. Unset in prod => the coordinator's report is a no-op.
   TWIN_REPORT_URL: `${ADMIN_URL}/report`,
+  // st-drm.8: shrink the daemon's arrival/cooldown clock-drift clamp from its 1s prod default so
+  // compressed twin travel isn't dominated by the clamp. INVARIANT: keep this <= the twin's
+  // TWIN_MIN_TRAVEL_MS floor (twin default 1000; fast stacks set 50/50), else arrivals can be missed.
+  ST_CLOCK_DRIFT_BUFFER_MS: '50',
+  // Raise the daemon's API client rate limiter from its 2 req/sec prod ceiling so a synchronous buy's
+  // ~11 twin HTTP calls stop serialising behind rateLimiter.Wait (~5.5s/hauler). The twin is local and
+  // has no real 429 budget, so a high ceiling is safe here. Unset in prod => byte-identical 2/sec, burst 30.
+  ST_API_RATE_LIMIT_PER_SEC: '100',
+  ST_API_RATE_LIMIT_BURST: '200',
 });
 
 export interface DaemonHandle {
   proc: ChildProcess;
   stop(): Promise<void>;
+  /** Abrupt SIGKILL — simulates a daemon CRASH (no graceful 30s drain of in-flight ops). The
+   *  daemon's in-memory arrival timers die instantly WITHOUT completing, so a hull that was
+   *  IN_TRANSIT at the kill is left for the NEXT daemon to re-adopt (ScheduleAllPending re-arm) —
+   *  the faithful "killed mid-flight" precondition the restart specs assert on. `stop()` (SIGTERM)
+   *  instead lets the daemon gracefully finish those ops, which defeats a mid-flight kill. SIGKILL
+   *  cannot unlink its own socket, so we remove the stale TEST socket here — else the next
+   *  startTestDaemon's waitForSocket would return on the dead socket before the new daemon rebinds. */
+  kill(): Promise<void>;
 }
 
 async function waitForSocket(timeoutMs = 20_000): Promise<void> {
@@ -49,14 +66,34 @@ export async function startTestDaemon(opts: { configPath?: string } = {}): Promi
       proc.once('exit', () => resolve());
       proc.kill('SIGTERM');
     });
-  return { proc, stop };
+  const kill = () =>
+    new Promise<void>((resolve) => {
+      const cleanup = () => {
+        // SIGKILL leaves the unix socket file behind (the daemon never ran its unlink). Remove the
+        // stale TEST socket so the next daemon's waitForSocket waits for the NEW bind, not this corpse.
+        try {
+          rmSync(TEST_DAEMON_SOCKET, { force: true });
+        } catch {
+          /* best-effort */
+        }
+        resolve();
+      };
+      if (proc.exitCode !== null) return cleanup();
+      proc.once('exit', cleanup);
+      proc.kill('SIGKILL');
+    });
+  return { proc, stop, kill };
 }
 
 export async function resetDaemonDb(): Promise<void> {
-  // Truncate every daemon-owned table but preserve the seeded players row + migration ledger.
+  // Truncate every daemon-owned table but preserve the seeded IDENTITY rows (players + the open
+  // era minted by `player register --new`) + the migration ledger. Truncating `eras` makes the
+  // daemon's recovery era-guard read the world as "universe reset" and (correctly, fail-closed)
+  // refuse to recover containers across a restart — which killed every post-reboot bootstrap
+  // (found via data/restart-idempotency's phase-gauge teeth, st-drm.14).
   const sql = `DO $$ DECLARE r RECORD; BEGIN
     FOR r IN SELECT tablename FROM pg_tables WHERE schemaname='public'
-             AND tablename NOT IN ('players','schema_migrations','goose_db_version') LOOP
+             AND tablename NOT IN ('players','eras','schema_migrations','goose_db_version') LOOP
       EXECUTE 'TRUNCATE TABLE public.' || quote_ident(r.tablename) || ' RESTART IDENTITY CASCADE';
     END LOOP; END $$;`;
   const res = spawnSync('psql', [TEST_DATABASE_URL, '-v', 'ON_ERROR_STOP=1', '-c', sql], {

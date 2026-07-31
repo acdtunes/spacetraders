@@ -8,7 +8,11 @@ import type { MutationLogEntry } from './mutation-log';
 export interface TwinShip {
   symbol: string;
   role: string;
-  nav: { status: string; waypoint: string };
+  // GET /_twin/state serves the resolveNav'd `route` (departureTime + arrival) on any ship that has
+  // a live/settled transit — absent/null for a ship that never moved. Restart mid-transit specs read
+  // `nav.route.arrival` to prove the rebooted daemon ADOPTED the in-flight transit (same arrival
+  // instant) rather than superseding it with a fresh navigate (which would re-mint a later arrival).
+  nav: { status: string; waypoint: string; route?: { departureTime: string; arrival: string } | null };
   scoutAssignment: string | null;
 }
 export interface TwinState {
@@ -41,6 +45,15 @@ export const twin = {
   },
   clock(opts: { mode?: 'frozen' | 'running'; advanceMs?: number; setNow?: string }) {
     return post<{ now: string }>('/clock', opts);
+  },
+  // Live-retune the twin's ONE travel-compression knob (routes/admin.ts POST /_twin/time-compression):
+  // arrivalMs = realETA / factor. A LOWER factor => slower travel => a WIDER IN_TRANSIT window, which
+  // lets a restart mid-transit spec deterministically catch a ship in flight at the orchestrator's
+  // fast default (200x makes a >=15s real leg resolve in ~50-300ms — too fast to catch). CAUTION:
+  // compression is STICKY across POST /_twin/reset, so any spec that lowers it MUST restore the fast
+  // default (finally) or every later spec inherits the slow clock.
+  setCompression(factor: number) {
+    return post<{ compression: number }>('/time-compression', { compression: factor });
   },
   async setCredits(credits: number): Promise<void> {
     await post('/agent', { credits });

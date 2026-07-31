@@ -10,6 +10,13 @@ database:
   type: postgres
   # Test Postgres on 5433 — NEVER 5432 (prod). Overridable at runtime via DATABASE_URL.
   url: postgresql://spacetraders:dev_password@localhost:5433/spacetraders_test?sslmode=disable
+  # SMALL pool for the harness (st-drm.22): the parallel runner boots up to HARNESS_MAX_WORKERS
+  # daemons at once, each opening this pool. 5 open × 6 workers = 30 ≪ Postgres max_connections
+  # (100), leaving ample headroom for the concurrently-running GATE stack. The generated
+  # per-worker configs inherit this block; only the isolation scalars below are swapped per worker.
+  pool:
+    max_open: 5
+    max_idle: 2
 
 api:
   # Display/default only — the real redirect is the ST_API_BASE_URL env the harness sets.

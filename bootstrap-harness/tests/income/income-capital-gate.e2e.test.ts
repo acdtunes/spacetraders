@@ -6,7 +6,7 @@ import { countCall } from '../helpers/mutation-log';
 describe('bootstrap INCOME — capital gate', () => {
   it('blocks a hauler buy that breaches reserve_margin, then buys once funded', async () => {
     // 300k hauler but only 400k credits → a buy leaves 100k < 50% reserve → blocked.
-    await withIncomeScenario(incomeEntry({ hubs: ['X1-PZ28-H1'], credits: 400000, haulerPrice: 300000 }), async (ctx) => {
+    await withIncomeScenario(incomeEntry({ credits: 400000, haulerPrice: 300000 }), async (ctx) => {
       ctx.launchBootstrap();
       await ctx.advanceTicks(8, 1000);
       const s1 = await ctx.twin.incomeState();

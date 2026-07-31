@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -136,9 +137,20 @@ type SpaceTradersClient struct {
 // NewSpaceTradersClient creates a new SpaceTraders API client with default settings
 // Rate limit: 2 requests per second with burst of 30
 // Retry: max 10 attempts with 2s exponential backoff + jitter (capped at 30s)
+//
+// ST_API_BASE_URL, when set and non-empty, overrides the production base URL.
+// This is the digital-twin seam: the twin harness spawns the daemon as a
+// process, so an env var is the only way to point it at the fake server.
+// Production never sets it and keeps hitting the real API, so the constructed
+// client is byte-identical to the pre-seam one. Already documented as a
+// supported knob in .env.example and docs/CONFIGURATION.md.
 func NewSpaceTradersClient() *SpaceTradersClient {
+	base := baseURL
+	if v := os.Getenv("ST_API_BASE_URL"); v != "" {
+		base = v
+	}
 	return NewSpaceTradersClientWithConfig(
-		baseURL,
+		base,
 		defaultMaxRetries,
 		defaultBackoffBase,
 		nil, // Use RealClock by default

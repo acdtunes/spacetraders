@@ -5,9 +5,9 @@ import { countCall } from '../helpers/mutation-log';
 
 describe('bootstrap INCOME — hauler cap', () => {
   it('buys at most hauler_target haulers even when more hubs are viable', async () => {
-    // 8 viable hubs but hauler_target defaults to 4–5; assert the fleet never exceeds the cap.
-    const hubs = Array.from({ length: 8 }, (_, i) => `X1-PZ28-H${i + 1}`);
-    await withIncomeScenario(incomeEntry({ hubs, credits: 5_000_000 }), async (ctx) => {
+    // The twin serves 30 real marketplaces, so the coordinator sees FAR more than hauler_target viable
+    // hubs; assert the fleet still never exceeds the cap (hauler_target defaults to 4–5). Treasury ample.
+    await withIncomeScenario(incomeEntry({ credits: 5_000_000 }), async (ctx) => {
       ctx.launchBootstrap();
       // Let it buy until it plateaus (no new buy across a settle window).
       await ctx.pollUntil(
