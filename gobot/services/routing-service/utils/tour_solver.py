@@ -833,6 +833,83 @@ def _make_travel_fn(constraints, markets, ship, waypoints=None):
     return hop
 
 
+# --- Allocation trace (sp-o2dzb diagnosis) -----------------------------------
+#
+# PURE OBSERVABILITY. `_ALLOC_TRACE` is None in every production path; the solver
+# never reads it and no branch on it can change an allocation. Set it to a list
+# from a replay harness and each committed allocation appends the value of EVERY
+# term that could have bounded it, plus the argmin — which is the only honest way
+# to answer "which term binds", since a pinned value never names its constraint.
+#
+# The terms are RECOMPUTED for the winning pairing after `best` is chosen and
+# before any `take()`, so the pools, `occ`, `spend` and `sold_this_visit` are all
+# in exactly the state the scan saw. That keeps the inner candidate loop — the hot
+# path — byte-identical, at the cost of one extra head() per commit while tracing.
+_ALLOC_TRACE = None
+
+
+def _trace_allocation(best, alive, seq, markets, hold_cap, occ, spend, spend_cap,
+                      min_margin, initial_left, sold_this_visit, realized_sink_tranches,
+                      sink_for, source_for):
+    """Append one trace record for `best`, or a termination census when best is None."""
+    if best is None:
+        # The loop is about to stop. Classify every pairing by the FIRST gate that
+        # zeroed it, in the same order the scan applies them — this is what actually
+        # ends a plan, and it is invisible from the leg output.
+        census = {}
+        for good, i, j, kind in alive:
+            sell_rem, sell_price = sink_for(kind, j, good).head()
+            if sell_rem <= 0:
+                reason = "sell_pool_exhausted"
+            elif i is None:
+                reason = ("launch_cargo_exhausted"
+                          if initial_left.get(good, 0) <= 0 or sell_price < 1
+                          else "residual_launch_cargo")
+            else:
+                buy_rem, buy_price = source_for(kind, i, good).head()
+                if buy_rem <= 0 or buy_price <= 0:
+                    reason = "buy_pool_exhausted"
+                elif sell_price - buy_price < min_margin:
+                    # Distinguish a pairing THIS plan traded until the spread closed
+                    # (an economically correct stop) from one that was never profitable
+                    # at the live quotes (structural — no cap change can reach it).
+                    src, snk = source_for(kind, i, good), sink_for(kind, j, good)
+                    touched = src.idx or src.used or snk.idx or snk.used
+                    reason = ("margin_closed_by_our_own_trading" if touched
+                              else "margin_never_positive")
+                else:
+                    slack = hold_cap - max(occ[i:j]) if j > i else 0
+                    afford = (spend_cap - spend) // buy_price
+                    visit_rem = (int(realized_sink_tranches
+                                     * markets[seq[j]]["goods"][good]["trade_volume"])
+                                 - sold_this_visit.get((j, good), 0))
+                    zeroed = [n for n, v in (("hold_slack", slack), ("afford", afford),
+                                             ("visit_cap", visit_rem)) if v <= 0]
+                    reason = "+".join(zeroed) if zeroed else "unclassified"
+            census[reason] = census.get(reason, 0) + 1
+        _ALLOC_TRACE.append(dict(event="terminated", census=census,
+                                 peak_occupancy=max(occ) if occ else 0,
+                                 hold_cap=hold_cap, spend=spend, spend_cap=spend_cap))
+        return
+
+    _, good, i, j, units, _buy_price, _sell_price, kind = best
+    sell_rem, _sp = sink_for(kind, j, good).head()
+    if i is None:
+        terms = {"launch_cargo_left": initial_left.get(good, 0), "sell_rem": sell_rem}
+    else:
+        buy_rem, buy_price = source_for(kind, i, good).head()
+        terms = {"buy_rem": buy_rem, "sell_rem": sell_rem,
+                 "hold_slack": hold_cap - max(occ[i:j]) if j > i else 0,
+                 "afford": (spend_cap - spend) // buy_price}
+    if kind != "deposit":
+        terms["visit_cap"] = (int(realized_sink_tranches
+                                  * markets[seq[j]]["goods"][good]["trade_volume"])
+                              - sold_this_visit.get((j, good), 0))
+    _ALLOC_TRACE.append(dict(event="alloc", good=good, buy_leg=i, sell_leg=j, kind=kind,
+                             units=units, terms=terms,
+                             binding=sorted(n for n, v in terms.items() if v == units)))
+
+
 def score_sequence(seq, markets, ship, constraints, model, travel_fn, deposit_sinks=None,
                    absorption_index=None, stock_sources=None, max_planned_tranches=None,
                    realized_sink_tranches=None, gate_fee_fn=None):
@@ -1081,6 +1158,10 @@ def score_sequence(seq, markets, ship, constraints, model, travel_fn, deposit_si
             key = (eff_margin, -j, -(i if i is not None else -1))
             if best is None or key > best[0]:
                 best = (key, good, i, j, units, buy_price, sell_price, kind)
+        if _ALLOC_TRACE is not None:
+            _trace_allocation(best, alive, seq, markets, hold_cap, occ, spend, spend_cap,
+                              min_margin, initial_left, sold_this_visit,
+                              realized_sink_tranches, sink_for, source_for)
         if best is None:
             break
         _, good, i, j, units, buy_price, sell_price, kind = best
