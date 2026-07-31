@@ -59,8 +59,17 @@ export function FreshnessLegend({ boundMinutes, basis, marketsKnown, missedPolls
     >
       <span style={{ color: NOIR.ink }}>freshness</span>
 
-      {/* The ramp — a single-hue ordinal scale, so the bar itself reads as ordered. */}
+      {/* The ramp — a single-hue ordinal scale, so the bar itself reads as ordered.
+          The solid ring in front of it is not decoration: on the map, priced and
+          dark are told apart by FORM (solid contour vs dashed one) because the
+          orb underneath already owns the fresh end's hue. A key that showed only
+          the colour bar would describe a channel the reader cannot use. */}
       <span className="flex items-center gap-1.5">
+        <span
+          className="inline-block rounded-full"
+          style={{ width: 9, height: 9, border: `1px solid ${hex(FRESHNESS_RAMP[0])}` }}
+          data-testid="freshness-priced-swatch"
+        />
         <span>just scanned</span>
         <span className="h-1.5 rounded-sm" style={{ width: 72, background: gradient }} />
         <span data-testid="freshness-full-scale" style={{ color: known ? NOIR.ink : NOIR.dim }}>

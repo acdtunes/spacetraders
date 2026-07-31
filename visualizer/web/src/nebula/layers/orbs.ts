@@ -14,7 +14,7 @@ import type { SceneData } from '../sceneData';
 import type { Layers, PointerHooks } from './registry';
 import { worldBounds } from '../camera';
 import { makeGlowTexture } from '../glowTexture';
-import { DARK_COLOR, SCOUT_COLOR, rampColor } from '../freshness';
+import { DARK_COLOR, FRESHNESS_RAMP, SCOUT_COLOR, rampColor, rampStep } from '../freshness';
 
 export interface OrbsHandle {
   /** Region-band label sub-container (child of layers.labels) — fade this, not the shared layer. */
@@ -116,6 +116,38 @@ const AURA_SCALE = 2.6;
 const AURA_MIN_PX = 9;
 const AURA_ALPHA_FRESH = 0.7;
 const AURA_ALPHA_STALE = 0.34;
+
+/** The priced state's CONTOUR — a solid ring on the aura's own edge, colour
+ * quantised to the ramp step. The glow alone did not survive contact with the
+ * live map (sp-voyz7, Admiral-reported):
+ *
+ *   MEASURED, /trade-flows at REGION against live data — peak luminance in the
+ *   annulus just OUTSIDE each orb, the only place a freshness mark can be read
+ *   because inside it the orb's own halo dominates:
+ *       priced (dormant)  median 28.7
+ *       priced (traded)   median 56
+ *       DARK              median 79.1
+ *   Absence of data was drawn 2.8× louder than presence of it, and with 58% of
+ *   the drawable map legitimately dark the whole field read dark.
+ *
+ * And the failure was worst on exactly the systems that matter. FRESHNESS_RAMP
+ * step 0 IS this file's CYAN — the same 0x22d3ee — so a freshly-scanned TRADED
+ * system drew a #22d3ee glow BEHIND a #22d3ee orb halo that is brighter (0.85 vs
+ * 0.70) and sharper. Measured on the live map, X1-CX39's aura tint and its halo
+ * tint were byte-identical. A hue cannot carry the state when the orb already
+ * owns that hue: "trading markets show no freshness at all" was structural.
+ *
+ * So the priced state gets an EDGE at the dark state's weight — solid ring vs
+ * dashed ring, both drawn OUTSIDE the orb where nothing else draws. That is the
+ * file's own form-over-hue argument (see DARK_RING_* below) finally applied to
+ * BOTH states instead of only one, and it is why the mark survives the hue
+ * collision, the focus dimmer and a grayscale screenshot. */
+const PRICED_RING_WIDTH_PX = 1.3;
+const PRICED_RING_ALPHA = 0.8;
+/** Sub-container label prefix, one batch per ramp step (`priced-ring:0`…`:4`) —
+ * a Graphics strokes its whole path with ONE style, so per-step colour needs
+ * per-step objects. Five, not 265. */
+export const PRICED_RING_PREFIX = 'priced-ring:';
 
 /** Dark (unsensed) ring: hollow, dashed, off-ramp slate. Hollow-and-dashed is
  * the load-bearing part — priced vs dark must be legible as a difference in FORM
@@ -285,6 +317,9 @@ export function buildOrbs(layers: Layers, data: SceneData, renderer: Renderer, e
     const auraTex = makeGlowTexture(renderer, ORB_TEXTURE_RADIUS, HALO_STOPS);
     const darkRings = new Graphics();
     const scouts = new Graphics();
+    // One contour batch per ramp step — see PRICED_RING_PREFIX.
+    const pricedRings = FRESHNESS_RAMP.map(() => new Graphics());
+    const pricedCounts = FRESHNESS_RAMP.map(() => 0);
     let darkCount = 0;
     let scoutCount = 0;
 
@@ -308,6 +343,11 @@ export function buildOrbs(layers: Layers, data: SceneData, renderer: Renderer, e
         aura.alpha = AURA_ALPHA_FRESH + (AURA_ALPHA_STALE - AURA_ALPHA_FRESH) * f.t;
         aura.blendMode = 'screen';
         freshBox.addChild(aura);
+        // ...and the contour on the glow's own edge, so priced is a MARK and not
+        // a smudge under a brighter orb of the same colour.
+        const step = rampStep(f.t);
+        pricedRings[step].circle(sys.x, sys.y, radius);
+        pricedCounts[step] += 1;
       } else {
         const radius = Math.max(DARK_RING_MIN_PX * worldPerPx, orbR * DARK_RING_SCALE);
         // Manual dashes — pixi Graphics has no native dash (the `trace` rationale).
@@ -329,6 +369,24 @@ export function buildOrbs(layers: Layers, data: SceneData, renderer: Renderer, e
         scouts.closePath();
         scoutCount++;
       }
+    }
+
+    // Priced contours go in AFTER the glows they edge (so the edge stays crisp
+    // over its own falloff) and BEFORE the dark rings, so neither state's mark
+    // can be said to sit "on top of" the other. Same mount-only-when-non-empty
+    // rule as every other batch here.
+    for (let i = 0; i < pricedRings.length; i++) {
+      if (pricedCounts[i] === 0) {
+        pricedRings[i].destroy();
+        continue;
+      }
+      pricedRings[i].label = `${PRICED_RING_PREFIX}${i}`;
+      pricedRings[i].stroke({
+        width: PRICED_RING_WIDTH_PX * worldPerPx,
+        color: FRESHNESS_RAMP[i],
+        alpha: PRICED_RING_ALPHA,
+      });
+      freshBox.addChild(pricedRings[i]);
     }
 
     // Batched: one Graphics for every dark ring and one for every scout marker.

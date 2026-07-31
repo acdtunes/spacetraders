@@ -10,11 +10,11 @@
 import { describe, it, expect, vi } from 'vitest';
 import { Container, Sprite, type Renderer } from 'pixi.js';
 import { buildSceneData, type SceneData } from '../sceneData';
-import { buildOrbs, FRESHNESS_BOX } from '../layers/orbs';
+import { buildOrbs, FRESHNESS_BOX, PRICED_RING_PREFIX } from '../layers/orbs';
 import { buildGalaxyBand, CLUSTER_FRESHNESS_BOX } from '../layers/galaxyBand';
 import { LAYER_ORDER, type Layers } from '../layers/registry';
 import { mockTopology, mockFreshness } from '../../mocks/mockFlows';
-import { FRESHNESS_RAMP, DARK_COLOR, rampColor } from '../freshness';
+import { FRESHNESS_RAMP, DARK_COLOR, rampColor, rampStep } from '../freshness';
 
 vi.mock('../glowTexture', () => ({ makeGlowTexture: () => ({ width: 1, height: 1 }) }));
 
@@ -48,10 +48,11 @@ describe('REGION band freshness marks', () => {
     expect(box).toBeDefined();
 
     // mockTopology draws NK36, KA42, ZC66 (priced) and UU57 (omitted ⇒ dark).
-    // 3 aura sprites + 1 batched dark-ring Graphics + 1 batched scout Graphics.
+    // 3 aura sprites + 3 priced-contour batches (their t's land on 3 distinct
+    // ramp steps) + 1 batched dark-ring Graphics + 1 batched scout Graphics.
     const tints = box.children.filter((c) => c instanceof Sprite).map((c) => (c as { tint: number }).tint);
     expect(tints).toHaveLength(3);
-    expect(box.children).toHaveLength(5);
+    expect(box.children).toHaveLength(8);
   });
 
   it('tints each aura by its own age — the ramp is continuous, not two buckets', () => {
@@ -88,6 +89,69 @@ describe('REGION band freshness marks', () => {
     expect(data.systems).toHaveLength(4);
     expect(auras).toHaveLength(3);
     expect(data.systems.find((s) => s.symbol === 'X1-UU57')!.freshness.t).toBeNull();
+  });
+
+  // sp-voyz7 — the priced state must be a MARK, not a glow. Measured on the live
+  // map at REGION, peak luminance in the annulus outside each orb was 79 for a
+  // dark system's dashed ring against 29 for a priced system's glow: absence was
+  // drawn 2.8× louder than presence and the whole field read dark. Worse, ramp
+  // step 0 IS the orb's own CYAN, so on a TRADED (active) system the glow was a
+  // #22d3ee smudge behind a brighter #22d3ee halo — invisible by construction.
+  // The contour is what survives both, so these pin it existing, being per-step,
+  // and never appearing for a dark system.
+  const ringBatches = (box: Container) =>
+    box.children.filter((c) => typeof c.label === 'string' && c.label.startsWith(PRICED_RING_PREFIX));
+
+  it('gives every priced system a contour, batched by ramp step', () => {
+    const layers = makeLayers();
+    const data = withFreshness();
+    buildOrbs(layers, data, stubRenderer);
+    const box = boxIn(layers.orbs, FRESHNESS_BOX)!;
+
+    const priced = data.systems.filter((s) => s.freshness.priced);
+    expect(priced).toHaveLength(3);
+    // One batch per DISTINCT step the priced systems occupy — not one per system
+    // (265 strokes on the live map) and not one for all (a Graphics carries one
+    // stroke colour, so a single batch could only ever draw one ramp step).
+    const steps = [...new Set(priced.map((s) => rampStep(s.freshness.t!)))].sort();
+    expect(steps.length).toBeGreaterThan(1); // the fixture must span the ramp
+    expect(ringBatches(box).map((c) => c.label).sort()).toEqual(
+      steps.map((i) => `${PRICED_RING_PREFIX}${i}`).sort(),
+    );
+    // No batch is mounted for a step nothing occupies.
+    expect(ringBatches(box)).toHaveLength(steps.length);
+  });
+
+  it('draws the contour in its ramp step colour, not the dark colour', () => {
+    const layers = makeLayers();
+    const data = withFreshness();
+    buildOrbs(layers, data, stubRenderer);
+    const box = boxIn(layers.orbs, FRESHNESS_BOX)!;
+    for (const batch of ringBatches(box)) {
+      const step = Number((batch.label as string).slice(PRICED_RING_PREFIX.length));
+      const style = (batch as unknown as { strokeStyle: { color: number; alpha: number; width: number } }).strokeStyle;
+      expect(style.color).toBe(FRESHNESS_RAMP[step]);
+      expect(style.color).not.toBe(DARK_COLOR);
+      expect(style.alpha).toBeGreaterThan(0);
+      expect(style.width).toBeGreaterThan(0);
+    }
+  });
+
+  it('never contours a dark system — absence of data still gets absence of glow AND of edge', () => {
+    const layers = makeLayers();
+    // Every system dark: the freshness response carries no priced record that
+    // topology can place, so nothing may draw a priced contour.
+    const fresh = mockFreshness();
+    fresh.systems = fresh.systems.map((s) => ({ ...s, totalListings: 0, freshestAt: null }));
+    const data = buildSceneData(mockTopology, null, null, NOW, fresh);
+    buildOrbs(layers, data, stubRenderer);
+    const box = boxIn(layers.orbs, FRESHNESS_BOX)!;
+    expect(data.systems.every((s) => !s.freshness.priced)).toBe(true);
+    expect(ringBatches(box)).toHaveLength(0);
+    expect(box.children.filter((c) => c instanceof Sprite)).toHaveLength(0);
+    // ...but the dark rings themselves are still there — this is the "all dark"
+    // state, not the "no data" state.
+    expect(box.children.length).toBeGreaterThan(0);
   });
 
   it('draws nothing at all when no freshness payload has landed', () => {

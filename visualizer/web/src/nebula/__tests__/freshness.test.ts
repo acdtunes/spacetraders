@@ -5,6 +5,7 @@ import {
   clusterFreshnessFor,
   formatAge,
   rampColor,
+  rampStep,
   systemFreshnessFor,
   type SystemFreshness,
 } from '../freshness';
@@ -148,5 +149,41 @@ describe('formatAge', () => {
     expect(formatAge(4320)).toBe('3.0d');
     expect(formatAge(null)).toBe('—');
     expect(formatAge(Number.NaN)).toBe('—');
+  });
+});
+
+// sp-voyz7 — the priced CONTOUR quantises the ramp, so the step function is load
+// bearing: an off-by-one at either edge would either drop the freshest systems
+// into the second-brightest batch or index past the ramp and crash the build.
+describe('rampStep', () => {
+  it('puts each fifth of the scale in its own step, boundaries included', () => {
+    expect(rampStep(0)).toBe(0);
+    expect(rampStep(0.199)).toBe(0);
+    expect(rampStep(0.2)).toBe(1);
+    expect(rampStep(0.4)).toBe(2);
+    expect(rampStep(0.6)).toBe(3);
+    expect(rampStep(0.8)).toBe(4);
+  });
+
+  it('never indexes past the ramp — t = 1 is the last step, not a sixth one', () => {
+    expect(rampStep(1)).toBe(FRESHNESS_RAMP.length - 1);
+    expect(rampStep(1.5)).toBe(FRESHNESS_RAMP.length - 1);
+    expect(FRESHNESS_RAMP[rampStep(1)]).toBeDefined();
+  });
+
+  it('clamps below and treats a non-finite t as freshest, matching rampColor', () => {
+    expect(rampStep(-3)).toBe(0);
+    expect(rampStep(Number.NaN)).toBe(0);
+    expect(rampStep(Number.POSITIVE_INFINITY)).toBe(0);
+  });
+
+  it('agrees with rampColor at every step head — one scale, two readouts', () => {
+    for (let i = 0; i < FRESHNESS_RAMP.length; i++) {
+      const t = i / FRESHNESS_RAMP.length;
+      expect(rampStep(t)).toBe(i);
+    }
+    // ...and the step's colour is the ramp entry the continuous read passes
+    // through, so the contour never disagrees with the glow it edges.
+    expect(FRESHNESS_RAMP[rampStep(0)]).toBe(rampColor(0));
   });
 });

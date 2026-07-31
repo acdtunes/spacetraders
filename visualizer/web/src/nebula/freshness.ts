@@ -52,6 +52,23 @@ export const DARK_COLOR = 0x8b95ab;
  * drawn independently of priced/dark rather than as part of either. */
 export const SCOUT_COLOR = 0xe8d9a0;
 
+/**
+ * Which of the five ramp steps a position falls in — 0 = just scanned, 4 = at or
+ * past the bound. Clamped, and NaN reads as step 0 (the same convention
+ * `rampColor` uses for a non-finite t).
+ *
+ * The glow interpolates continuously; the priced CONTOUR quantises to these
+ * steps. That is not a downgrade of the encoding: the scale is ordinal by
+ * construction (five steps, single hue, monotone lightness), a pixi Graphics
+ * strokes its whole accumulated path with ONE style, and five legible batches
+ * say more than 265 nearly-identical strokes would. The continuous read still
+ * lives on the glow underneath.
+ */
+export function rampStep(t: number): number {
+  const clamped = Number.isFinite(t) ? Math.min(1, Math.max(0, t)) : 0;
+  return Math.min(FRESHNESS_RAMP.length - 1, Math.floor(clamped * FRESHNESS_RAMP.length));
+}
+
 /** Linear interpolation across FRESHNESS_RAMP for t ∈ [0,1] (clamped). */
 export function rampColor(t: number): number {
   const clamped = Number.isFinite(t) ? Math.min(1, Math.max(0, t)) : 0;
