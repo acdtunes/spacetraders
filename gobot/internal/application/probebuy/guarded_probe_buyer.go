@@ -135,6 +135,29 @@ type Config struct {
 	// retirement (2026-07-28); the remaining caller, the retired market-freshness sizer, leaves it 0
 	// and is byte-identical. The guard is kept because the tier mistake it now refuses is the one
 	// this package exists to make impossible for whoever wires the next probe buyer.
+	//
+	// AND WHEN IT IS NEXT WIRED, IT MUST BIND ON LANDED COST, NOT STICKER. `price` is what the counter
+	// charges; a probe also has to be DELIVERED, and the gate fees for that are real money this
+	// comparison cannot see. sp-e46yc measured it on the sibling path: an authorised ~10M probe
+	// expansion bought 258 probes for 10,152,775 — on budget — then spent a further 6,444,427 flying
+	// them to post. Landed 16.6M, 63% over, and every sizing decision taken on the wrong number. It
+	// shipped domain/parkedsensing/ferrycost.go as the arithmetic (FerryHops / FerryCost /
+	// LandedProbeCost, with a measured DefaultGateFeeCredits of 5,900).
+	//
+	// DO NOT REACH FOR THAT FILE UNEXAMINED, THOUGH. The two paths do not price the same journey, and
+	// sp-1ngte was closed rather than "fixed" for exactly this reason. LandedProbeCost models
+	// YARD -> POST: flying the hull being BOUGHT to the placement it was bought for. This path's
+	// flight is BUYER -> YARD — probeBuyPlan.relay moves an EXISTING idle hull to the counter so the
+	// purchase can happen there, relayAndRecheck re-prices at the dock, and the new probe reaches its
+	// post later under a different reconciler. Those are different quantities. Collapsing them puts
+	// two meanings of "landed" behind one name, which is worse than having neither: whoever wires this
+	// needs its OWN ferry term, derived from the relay it actually pays for.
+	//
+	// AND THIS IS NOT THE GUARD THAT WOULD BIND FIRST. At ReserveFloor 0 the gate is inactive
+	// altogether, so a ferry term added only here would be inert. The two that actually refuse a buy
+	// are the 25% treasury rule (price*100 > credits*25, RULINGS #6) and the per-window spend cap —
+	// both compare against `price`, and both need the landed number for their refusal to mean what it
+	// says.
 	ReserveFloor int64
 }
 
