@@ -41,10 +41,26 @@ export TOUR_SOLVER_MAX_PLANNED_TRANCHES="${TOUR_SOLVER_MAX_PLANNED_TRANCHES:-3}"
 # ARMED LIVE (Admiral 2026-07-17 "build everything", toward 15M): sp-7q5t/sp-fguo WIDENING UNLOCK.
 # candidate_hop_depth=2 (daemon) widened the candidate set, but the distant rich sinks were being
 # CUT at the stage-2 full-scoring shortlist (FULL_SCORE_TOP_N=20) before they could compete —
-# systems/tour stuck at ~1.4 vs the >3 bar. Raise the shortlist 20->35 (analyst rec) so the widened
-# candidates survive to scoring. FULL_SCORE_TOP_N affects BOTH sequencer paths (lives in solve_tour).
-# clamp [10,100]; disarm with `export TOUR_SOLVER_FULL_SCORE_TOP_N=20` (or git checkout run.sh) + deploy-routing.
-export TOUR_SOLVER_FULL_SCORE_TOP_N="${TOUR_SOLVER_FULL_SCORE_TOP_N:-35}"
+# systems/tour stuck at ~1.4 vs the >3 bar. Raised 20->35 (analyst rec) so the widened candidates
+# survive to scoring. FULL_SCORE_TOP_N affects BOTH sequencer paths (lives in solve_tour).
+#
+# RAISED 35 -> 100, 2026-07-31 (economy-analyst grid, re-run post-f4686056). READ THE WHY, because
+# the pre-fix measurement said the OPPOSITE and is still in the record: widening to 100 previously
+# scored -21/-29% and the standing advice was "do not widen". That verdict was an artifact.
+# f4686056 fixed _sort_scored's whole-pool zero-time veto, under which OBJECTIVE_RATE was
+# INOPERATIVE on every live snapshot — every solve silently ordered by profit, so the whole knob
+# grid had been measuring profit-ordered selection regardless of the objective requested.
+# Re-run on the working objective the sign INVERTS: top_n=100 reads +5.85% (5W / 0L / 38T, n=43),
+# and the best grid cell tv50/tn100 reads +7.13% (8W / 0L). ZERO per-case losses either way, which
+# is the part that makes this safe rather than merely positive.
+#
+# trade_volume stays 10 for now — its edge was thin and the analyst wants it re-measured separately.
+#
+# 100 IS THE CLAMP CEILING (FULL_SCORE_TOP_N_MAX), so this grid is CENSORED AT ITS BEST CELL: the
+# measurement cannot tell us whether 150 would be better still. Raising the ceiling is a separate
+# decision — it bounds stage-2 scoring cost, so it needs a latency sweep, not just a $/hr grid.
+# clamp [10,100]; disarm with `export TOUR_SOLVER_FULL_SCORE_TOP_N=35` (or git checkout run.sh) + deploy-routing.
+export TOUR_SOLVER_FULL_SCORE_TOP_N="${TOUR_SOLVER_FULL_SCORE_TOP_N:-100}"
 # ARMED LIVE (same): OR-Tools per-model node cap 80->160. Admits ~2x pruned candidate nodes per subset
 # model so a distant rich cluster survives pruning to compete in-model. ONLY bites under
 # TOUR_SOLVER_SEQUENCER=ortools (armed); inert under beam. 160 stays well under the [40,400] ceiling and
