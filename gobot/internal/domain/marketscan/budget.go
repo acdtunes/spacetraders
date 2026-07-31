@@ -96,6 +96,25 @@ const (
 	Paired
 )
 
+// String is the class's metric-label form, and it is defined HERE rather than at
+// the recording site so the label domain is the enum itself: a class added to
+// this package cannot silently start reporting as something else.
+//
+// An unrecognised value reports as the zero-value name rather than as a numeric
+// fallback, because the only way to reach it is a Class this package does not
+// define — and a budget vocabulary that leaked "Class(7)" into a label would
+// spray one series per stray integer.
+func (c Class) String() string {
+	switch c {
+	case Earning:
+		return "earning"
+	case Paired:
+		return "paired"
+	default:
+		return "discretionary"
+	}
+}
+
 // Decision is what a caller does with the request it just submitted.
 type Decision int
 
@@ -110,6 +129,17 @@ const (
 	// Spend authorises one market API request.
 	Spend
 )
+
+// String is the decision's metric-label form. Same rule as Class.String: an
+// unrecognised value reports as the zero value (ServeFromStore), which is also
+// the safe reading — a decision this package cannot name did not authorise a
+// request.
+func (d Decision) String() string {
+	if d == Spend {
+		return "spend"
+	}
+	return "serve_from_store"
+}
 
 // NeverScanned is the Staleness a caller passes for a market with no cached row
 // at all. It is the largest representable duration, so it exceeds every

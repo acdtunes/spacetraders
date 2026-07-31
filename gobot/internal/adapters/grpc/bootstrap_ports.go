@@ -19,6 +19,7 @@ import (
 	shipyardCmd "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/commands"
 	shipyardQueries "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/marketscan"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainScouting "github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -554,7 +555,20 @@ func (a *bootstrapAcquirer) PriceCheck(ctx context.Context, playerID int, shipTy
 }
 
 func (a *bootstrapAcquirer) priceAtShipyard(ctx context.Context, system, waypoint, shipType string, pid shared.PlayerID) (int64, bool) {
-	q := &shipyardQueries.GetShipyardListingsQuery{SystemSymbol: system, WaypointSymbol: waypoint, PlayerID: pid}
+	// The bootstrap capital gate spends against the winning price this search
+	// returns, with no later re-verification, so the read stays Earning: metered,
+	// never denied (RULINGS #4).
+	//
+	// NOTE FOR THE NEXT READER: this is called in a LOOP over every SHIPYARD-trait
+	// waypoint in every system the fleet occupies (see PriceCheck), so one call
+	// costs one undeniable live read PER YARD, and two of PriceCheck's own callers
+	// discard the result entirely — they are documented read-only. That residual
+	// is the largest remaining Earning-class consumer of the shipyard allowance;
+	// it is left alone here because fixing it means changing WHERE the capital
+	// gate gets its price (rank on the store, then take ONE live read at the
+	// winner), which needs its own money-guard analysis. It is now MEASURABLE:
+	// scan_budget_decisions_total{budget="shipyard",class="earning"}.
+	q := &shipyardQueries.GetShipyardListingsQuery{SystemSymbol: system, WaypointSymbol: waypoint, PlayerID: pid, Class: marketscan.Earning}
 	resp, err := a.med.Send(ctx, q)
 	if err != nil {
 		return 0, false

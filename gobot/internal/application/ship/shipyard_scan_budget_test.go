@@ -65,7 +65,7 @@ func newTestYardBudget(t *testing.T, yardsKnown int) (*YardScanBudget, *time.Tim
 // budget — the state every "is this read deniable" question has to be asked in.
 func drain(b *YardScanBudget) {
 	for i := 0; i < yardBurstRequests+2; i++ {
-		b.Debit("X1-DRAIN-Y")
+		b.Debit(testPlayerID, "X1-DRAIN-Y")
 	}
 }
 
@@ -249,7 +249,7 @@ func TestYardBudget_UnpricedHeavyYardIsFundedWhileADullYardIsDeclined(t *testing
 	// A bucket squeezed into the value reserve: enough for some reads, not all.
 	// This is the contention the priority ordering exists to resolve.
 	for i := 0; i < yardBurstRequests-2; i++ {
-		b.Debit("X1-DRAIN-Y")
+		b.Debit(testPlayerID, "X1-DRAIN-Y")
 	}
 
 	// Both are equally due — old enough that dueness cannot be the discriminator.
@@ -274,7 +274,7 @@ func TestYardBudget_TargetedYardOutranksAnEquallyStaleDullYard(t *testing.T) {
 	b.NoteTarget("X1-TARGET-Y1")
 
 	for i := 0; i < yardBurstRequests-2; i++ {
-		b.Debit("X1-DRAIN-Y")
+		b.Debit(testPlayerID, "X1-DRAIN-Y")
 	}
 	due := dueButNotStarved(t, b, *now)
 
@@ -294,7 +294,7 @@ func TestYardBudget_DemandForANonHeavyTypeExpires(t *testing.T) {
 	b.Observe("X1-SURVEY-Y1", []shipyard.ShipTypeAvailability{{ShipType: "SHIP_SURVEYOR"}})
 
 	for i := 0; i < yardBurstRequests-2; i++ {
-		b.Debit("X1-DRAIN-Y")
+		b.Debit(testPlayerID, "X1-DRAIN-Y")
 	}
 	due := dueButNotStarved(t, b, *now)
 	require.Equal(t, marketscan.Spend,
@@ -306,7 +306,7 @@ func TestYardBudget_DemandForANonHeavyTypeExpires(t *testing.T) {
 	*now = now.Add(yardDemandTTL + time.Minute)
 	b.Observe("X1-SURVEY-Y1", []shipyard.ShipTypeAvailability{{ShipType: "SHIP_SURVEYOR"}})
 	for i := 0; i < yardBurstRequests-2; i++ {
-		b.Debit("X1-DRAIN-Y")
+		b.Debit(testPlayerID, "X1-DRAIN-Y")
 	}
 	require.Equal(t, marketscan.ServeFromStore,
 		b.Admit(context.Background(), testPlayerID, "X1-SURVEY-Y1", dueButNotStarved(t, b, *now), true, marketscan.Discretionary),
@@ -322,7 +322,7 @@ func TestYardBudget_HeavyTypesAreWantedWithNoDemandSignal(t *testing.T) {
 	b.Observe("X1-HEAVY-Y1", []shipyard.ShipTypeAvailability{{ShipType: "SHIP_HEAVY_FREIGHTER"}})
 
 	for i := 0; i < yardBurstRequests-2; i++ {
-		b.Debit("X1-DRAIN-Y")
+		b.Debit(testPlayerID, "X1-DRAIN-Y")
 	}
 	require.Equal(t, marketscan.Spend,
 		b.Admit(context.Background(), testPlayerID, "X1-HEAVY-Y1", dueButNotStarved(t, b, *now), true, marketscan.Discretionary))
@@ -343,7 +343,7 @@ func TestYardBudget_RebuildsTheDemandPictureFromTheStoreAfterARestart(t *testing
 	b.Observe("X1-DULL-Y1", []shipyard.ShipTypeAvailability{{ShipType: "SHIP_PROBE"}})
 
 	for i := 0; i < yardBurstRequests-2; i++ {
-		b.Debit("X1-DRAIN-Y")
+		b.Debit(testPlayerID, "X1-DRAIN-Y")
 	}
 	due := dueButNotStarved(t, b, *now)
 

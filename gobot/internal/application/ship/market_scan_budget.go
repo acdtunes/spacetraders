@@ -7,6 +7,7 @@ import (
 
 	"golang.org/x/time/rate"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/marketscan"
 )
@@ -178,7 +179,12 @@ func (b *ScanBudget) setClock(now func() time.Time) {
 // declines discretionary reads until it refills, so a burst of trade-critical
 // verification squeezes discretionary scanning instead of being added on top of
 // it. That is what keeps this one budget the honest total.
-func (b *ScanBudget) Admit(ctx context.Context, waypoint string, cached *market.Market, class marketscan.Class) marketscan.Decision {
+//
+// playerID is carried for ATTRIBUTION ONLY — it labels the emitted decision so
+// an operator can see whose reads spent the allowance. It does NOT partition the
+// budget: there is one bucket, one map size and one rate across the whole daemon,
+// which is the property that makes it a budget at all.
+func (b *ScanBudget) Admit(ctx context.Context, playerID int, waypoint string, cached *market.Market, class marketscan.Class) marketscan.Decision {
 	b.refreshChartedCount(ctx)
 
 	b.mu.Lock()
@@ -202,6 +208,12 @@ func (b *ScanBudget) Admit(ctx context.Context, waypoint string, cached *market.
 		BucketCapacity:  burstRequests,
 	})
 
+	// Emitted from INSIDE the lock, on values this call just re-derived, so the
+	// published rate and coverage describe the same budget state the decision was
+	// taken against (RULING #2: nothing is held between ticks to be reconciled).
+	// Recording is best-effort and cannot alter the decision below.
+	recordScanBudgetDecision(playerID, metrics.BudgetMarket, class, decision, b.policy.RateReqPerSec, marketsKnown)
+
 	if decision != marketscan.Spend {
 		b.declined++
 		return decision
@@ -212,6 +224,7 @@ func (b *ScanBudget) Admit(ctx context.Context, waypoint string, cached *market.
 	// is empty this is a forced read whose debit still has to land.
 	if !b.limiter.AllowN(now, 1) {
 		b.forced++
+		recordScanBudgetOverdraft(playerID, metrics.BudgetMarket, class)
 	}
 	b.admitted++
 	return marketscan.Spend
@@ -233,7 +246,14 @@ func (b *ScanBudget) Admit(ctx context.Context, waypoint string, cached *market.
 // read consumes allowance that discretionary scanning then cannot, so every
 // market request in the daemon is attributable to this one number even though not
 // every one of them is deniable.
-func (b *ScanBudget) Debit(waypoint string) {
+//
+// IT REPORTS AS EARNING, and that is the honest label rather than a convenience.
+// Earning is this vocabulary's word for "metered but never denied", which is
+// exactly what a Debit is — the class names deniability, not motive. Reporting it
+// anywhere else would break the one property the counter has to have: that
+// decision="spend" is every market request the daemon issues, so it reconciles
+// against api_requests_total.
+func (b *ScanBudget) Debit(playerID int, waypoint string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -241,8 +261,11 @@ func (b *ScanBudget) Debit(waypoint string) {
 		b.seen[waypoint] = struct{}{}
 		b.aggregateStale = true
 	}
+	_, _, marketsKnown := b.aggregateLocked()
+	recordScanBudgetDecision(playerID, metrics.BudgetMarket, marketscan.Earning, marketscan.Spend, b.policy.RateReqPerSec, marketsKnown)
 	if !b.limiter.AllowN(b.now(), 1) {
 		b.forced++
+		recordScanBudgetOverdraft(playerID, metrics.BudgetMarket, marketscan.Earning)
 	}
 	b.admitted++
 }

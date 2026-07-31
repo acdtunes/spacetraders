@@ -106,7 +106,7 @@ func (s *MarketScanner) ScanAndSaveMarket(ctx context.Context, playerID uint, wa
 	// trip the fail-closed money guards, which is why the four call paths that
 	// cannot tolerate a cached price stamp WithLiveScanRequired and are never
 	// declined.
-	if s.budget.Admit(ctx, waypointSymbol, cached, scanClassOf(ctx)) == marketscan.ServeFromStore {
+	if s.budget.Admit(ctx, int(playerID), waypointSymbol, cached, scanClassOf(ctx)) == marketscan.ServeFromStore {
 		logger.Log("DEBUG", fmt.Sprintf(
 			"[MarketScanner] Serving %s from store - market-scan budget", waypointSymbol), map[string]interface{}{
 			"action": "scan_served_from_store", "waypoint": waypointSymbol,

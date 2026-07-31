@@ -20,6 +20,7 @@ import (
 	shipyardQueries "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/ledger"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/marketscan"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
@@ -610,7 +611,13 @@ func (p *ProbePurchaser) resolveInPlaceBuy(ctx context.Context, playerID shared.
 		if loc == nil {
 			continue
 		}
-		price, ok := p.probePriceAt(ctx, playerID, loc.SystemSymbol, loc.Symbol)
+		// A SEARCH, not a guard read: this asks whether the waypoint this idle hull
+		// happens to be parked at sells probes at all, and for most hulls the answer
+		// is "there is no shipyard here" — which the cached trait filter answers for
+		// free, but only for a DENIABLE read. A decline skips the hull, so the guard
+		// below still only ever sees a LIVE price (RULINGS #4: strictly stricter, it
+		// can prevent a buy and never authorise one).
+		price, ok := p.probePriceAt(ctx, playerID, loc.SystemSymbol, loc.Symbol, marketscan.Discretionary)
 		if !ok {
 			continue
 		}
@@ -636,7 +643,9 @@ func (p *ProbePurchaser) relayAndRecheck(ctx context.Context, playerID shared.Pl
 			return 0, err
 		}
 	}
-	price, ok := p.probePriceAt(ctx, playerID, shared.ExtractSystemSymbol(plan.yard), plan.yard)
+	// PRE-COMMIT: the buyer has been relayed and the guard judges this exact number
+	// before the purchase commits, so it must be live and undeniable (RULINGS #4).
+	price, ok := p.probePriceAt(ctx, playerID, shared.ExtractSystemSymbol(plan.yard), plan.yard, marketscan.Earning)
 	if !ok {
 		return 0, fmt.Errorf("live dock price at %s unreadable after relay", plan.yard)
 	}
@@ -668,11 +677,19 @@ func buyerAtYard(buyer *navigation.Ship, yard string) bool {
 // probePriceAt reads the live SHIP_PROBE purchase price at a waypoint's shipyard, or
 // reports ok=false if the waypoint is not a probe-selling shipyard (or has no priced
 // listing — which happens unless a ship is present, exactly the in-place buyers we scan).
-func (p *ProbePurchaser) probePriceAt(ctx context.Context, playerID shared.PlayerID, systemSymbol, waypointSymbol string) (int, bool) {
+// class decides whether the read may be paced. The two callers differ and the
+// difference is not cosmetic: relayAndRecheck prices the ONE yard the buy is
+// about to commit at (Earning — undeniable, RULINGS #4), while resolveInPlaceBuy
+// SWEEPS every idle hull's current waypoint looking for a counter that sells
+// probes at all (Discretionary — a search, and one whose waypoints are mostly not
+// shipyards). Collapsing both onto Earning is what let a fleet-wide sweep bypass
+// the trait filter, the rescan floor and the allowance together.
+func (p *ProbePurchaser) probePriceAt(ctx context.Context, playerID shared.PlayerID, systemSymbol, waypointSymbol string, class marketscan.Class) (int, bool) {
 	resp, err := p.mediator.Send(ctx, &shipyardQueries.GetShipyardListingsQuery{
 		SystemSymbol:   systemSymbol,
 		WaypointSymbol: waypointSymbol,
 		PlayerID:       playerID,
+		Class:          class,
 	})
 	if err != nil {
 		return 0, false

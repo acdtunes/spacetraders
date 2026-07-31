@@ -44,6 +44,7 @@ import (
 	shipyardQueries "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/apibudget"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/ledger"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/marketscan"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
@@ -288,6 +289,13 @@ func (p *ProbePurchasePort) Quote(ctx context.Context, playerID int, yardWaypoin
 		SystemSymbol:   shared.ExtractSystemSymbol(yardWaypoint),
 		WaypointSymbol: yardWaypoint,
 		PlayerID:       pid,
+		// PRE-COMMIT, despite living in the sensing adapter. The buy queue
+		// subtracts this quote from the running treasury and compares the result
+		// against the working-capital floor, and buys on the very next line if it
+		// clears (application/parkedsensing/buyqueue.go, fillSlot). A quote served
+		// from store would be a stale number a live floor check is spending
+		// against, so this read is Earning: metered, never denied (RULINGS #4).
+		Class: marketscan.Earning,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("failed to read shipyard listings at %s: %w", yardWaypoint, err)

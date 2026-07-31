@@ -7,6 +7,7 @@ import (
 
 	"golang.org/x/time/rate"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/marketscan"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shipyard"
@@ -334,6 +335,13 @@ func (b *YardScanBudget) Admit(ctx context.Context, playerID int, waypoint strin
 		BucketCapacity:  yardBurstRequests,
 	})
 
+	// Emitted from INSIDE the lock, on values this call just re-derived, so the
+	// published rate and coverage describe the same budget state the decision was
+	// taken against (RULING #2). Recording is best-effort and cannot alter the
+	// decision below. THIS COUNTER IS THE ONE THAT MAKES THE OVERDRAFT VISIBLE:
+	// yard reads ran at 3.2x this allowance with nothing counting the breach.
+	recordScanBudgetDecision(playerID, metrics.BudgetShipyard, class, decision, b.policy.RateReqPerSec, yardsKnown)
+
 	if decision != marketscan.Spend {
 		b.declined++
 		return decision
@@ -344,6 +352,7 @@ func (b *YardScanBudget) Admit(ctx context.Context, playerID int, waypoint strin
 	// forced read whose debit still has to land.
 	if !b.limiter.AllowN(now, 1) {
 		b.forced++
+		recordScanBudgetOverdraft(playerID, metrics.BudgetShipyard, class)
 	}
 	b.admitted++
 	return marketscan.Spend
@@ -353,7 +362,12 @@ func (b *YardScanBudget) Admit(ctx context.Context, playerID int, waypoint strin
 // to be declined. It exists for a read that must be metered but that no store can
 // answer; metering it keeps every shipyard request in the daemon attributable to
 // this one number even though not every one of them is deniable.
-func (b *YardScanBudget) Debit(waypoint string) {
+//
+// IT REPORTS AS EARNING for the same reason the market budget's Debit does: the
+// class names DENIABILITY, not motive, and "metered but never denied" is exactly
+// what Earning means here. Keeping it in the same counter is what lets
+// decision="spend" stand for every shipyard request the daemon issues.
+func (b *YardScanBudget) Debit(playerID int, waypoint string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -361,8 +375,11 @@ func (b *YardScanBudget) Debit(waypoint string) {
 		b.seen[waypoint] = struct{}{}
 		b.aggregateStale = true
 	}
+	_, yardsKnown := b.aggregateLocked()
+	recordScanBudgetDecision(playerID, metrics.BudgetShipyard, marketscan.Earning, marketscan.Spend, b.policy.RateReqPerSec, yardsKnown)
 	if !b.limiter.AllowN(b.now(), 1) {
 		b.forced++
+		recordScanBudgetOverdraft(playerID, metrics.BudgetShipyard, marketscan.Earning)
 	}
 	b.admitted++
 }

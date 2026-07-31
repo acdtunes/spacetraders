@@ -790,7 +790,7 @@ type marketFetchAPI interface {
 // It has no "may I" counterpart on purpose — see FetchGoods for why this read is
 // metered but never deniable. *ship.ScanBudget satisfies it.
 type scanDebiter interface {
-	Debit(waypoint string)
+	Debit(playerID int, waypoint string)
 }
 
 // RemoteMarketPort fills a market-cache gap from the API — the screen's only
@@ -839,7 +839,7 @@ func (p *RemoteMarketPort) FetchGoods(ctx context.Context, playerID int, system,
 	// it keeps the budget the honest total, since the allowance it consumes is
 	// allowance discretionary scanning then cannot.
 	if p.budget != nil {
-		p.budget.Debit(waypoint)
+		p.budget.Debit(playerID, waypoint)
 	}
 
 	market, err := p.client.GetMarket(sensingCtx(ctx), system, waypoint, token)

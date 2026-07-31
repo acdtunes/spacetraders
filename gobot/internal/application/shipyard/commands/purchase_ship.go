@@ -327,6 +327,9 @@ func (h *PurchaseShipHandler) validateAndGetShipPrice(
 		SystemSymbol:   systemSymbol,
 		WaypointSymbol: shipyardWaypoint,
 		PlayerID:       cmd.PlayerID,
+		// Pre-buy verification: this price is checked immediately before the
+		// purchase commits, so it must be live and undeniable (RULINGS #4).
+		Class: marketscan.Earning,
 	}
 	shipyardResp, err := h.mediator.Send(ctx, query)
 	if err != nil {

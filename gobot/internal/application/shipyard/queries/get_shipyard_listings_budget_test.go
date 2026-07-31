@@ -20,6 +20,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/ship"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/marketscan"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	domainShipyard "github.com/andrescamacho/spacetraders-go/internal/domain/shipyard"
@@ -81,7 +82,7 @@ func contendedScanner(t *testing.T, isYard bool) (*ship.ShipyardScanner, *counti
 
 	budget := ship.NewYardScanBudget(0.12, 8, heavy)
 	for i := 0; i < 16; i++ {
-		budget.Debit("X1-DRAIN-Y")
+		budget.Debit(1, "X1-DRAIN-Y")
 	}
 	scanner.SetScanBudget(budget)
 	return scanner, api
@@ -111,6 +112,7 @@ func TestGetShipyardListings_PriceReadIsNeverServedFromStore(t *testing.T) {
 		SystemSymbol:   "X1-GUARD",
 		WaypointSymbol: guardYard,
 		PlayerID:       shared.MustNewPlayerID(1),
+		Class:          marketscan.Earning,
 	})
 
 	require.NoError(t, err)
@@ -140,6 +142,7 @@ func TestGetShipyardListings_PriceReadIgnoresAColdTraitCache(t *testing.T) {
 		SystemSymbol:   "X1-GUARD",
 		WaypointSymbol: guardYard,
 		PlayerID:       shared.MustNewPlayerID(1),
+		Class:          marketscan.Earning,
 	})
 
 	require.NoError(t, err)
@@ -159,6 +162,7 @@ func TestGetShipyardListings_EveryPriceReadDrawsOnTheOneAllowance(t *testing.T) 
 			SystemSymbol:   "X1-GUARD",
 			WaypointSymbol: guardYard,
 			PlayerID:       shared.MustNewPlayerID(1),
+			Class:          marketscan.Earning,
 		})
 		require.NoError(t, err)
 	}
@@ -178,6 +182,7 @@ func TestGetShipyardListings_WithoutAScannerItRefusesRatherThanBypassing(t *test
 		SystemSymbol:   "X1-GUARD",
 		WaypointSymbol: guardYard,
 		PlayerID:       shared.MustNewPlayerID(1),
+		Class:          marketscan.Earning,
 	})
 	require.Error(t, err)
 }

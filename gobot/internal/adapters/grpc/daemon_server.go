@@ -559,6 +559,26 @@ func NewDaemonServer(
 		}
 		metrics.SetGlobalParkedSensingCollector(parkedSensingCollector)
 
+		// Scan-budget collector (sp-e4dkw): the fleet's two scan allowances — the
+		// market budget and the shipyard budget — emit their admission decisions,
+		// forced overdrafts, rate and coverage denominator through the global set
+		// here. Until this existed BOTH budgets were armed and reached in production
+		// while publishing nothing at all, which is how shipyard reads ran at 3.2x
+		// their configured allowance unseen and how the shipyard knob's own documented
+		// operating procedure ("raise it when Forced overdrafts are persistently
+		// high") was unexecutable. Event-driven: each admission SETS the two gauges
+		// and increments the counters on values it re-derived that same call, so there
+		// is no polling goroutine and registration plus the global wire is the whole
+		// lifecycle, mirroring the parked-sensing collector above. The budgets resolve
+		// this global LAZILY per call, because they are constructed during handler
+		// wiring — before this constructor runs.
+		scanBudgetCollector := metrics.NewScanBudgetMetricsCollector()
+		if err := scanBudgetCollector.Register(); err != nil {
+			listener.Close()
+			return nil, fmt.Errorf("failed to register scan-budget metrics collector: %w", err)
+		}
+		metrics.SetGlobalScanBudgetCollector(scanBudgetCollector)
+
 		// Create fleet-health collector (sp-686e): the tour coordinator's reposition exit
 		// path emits the stranded-hull counter (fleet_hull_stranded_total) through the global
 		// set here — the StrandedHull alert's source. Event-driven (no polling goroutine), so

@@ -137,7 +137,7 @@ func newSearchHandler(t *testing.T, inv *searchInventory, drained bool) (*Purcha
 	budget := ship.NewYardScanBudget(0.12, 8, heavy)
 	if drained {
 		for i := 0; i < 16; i++ {
-			budget.Debit("X1-DRAIN-Y")
+			budget.Debit(1, "X1-DRAIN-Y")
 		}
 	}
 	scanner.SetScanBudget(budget)

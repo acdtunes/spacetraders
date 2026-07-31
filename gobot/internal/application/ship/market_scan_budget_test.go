@@ -15,6 +15,12 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
+// budgetTestPlayerID is the player every budget fixture admits on behalf of.
+// The budgets carry a player only to LABEL what they emit (sp-e4dkw) — one
+// bucket, one map size and one rate are shared across the whole daemon — so the
+// value is arbitrary and identical everywhere.
+const budgetTestPlayerID = 1
+
 // fakeClock is a hand-advanced clock so the allowance's refill can be driven
 // deterministically instead of slept through.
 type fakeClock struct{ t time.Time }
@@ -160,7 +166,7 @@ func TestAdmit_SustainedAdmissionsTrackTheConfiguredRate(t *testing.T) {
 		// A market comfortably past its interval but far short of the worst-case
 		// bound, asked about relentlessly.
 		cached := cachedAt(t, hot, clock.now(), age, goodsWithSpread(t, "FUEL", 20, 180))
-		if b.Admit(ctx, hot, cached, marketscan.Discretionary) == marketscan.Spend {
+		if b.Admit(ctx, budgetTestPlayerID, hot, cached, marketscan.Discretionary) == marketscan.Spend {
 			admitted++
 		}
 		clock.advance(time.Second)
@@ -183,7 +189,7 @@ func TestAdmit_ExhaustedAllowanceDeclinesAnOverdueMarket(t *testing.T) {
 	drained := 0
 	for i := 0; i < burstRequests+4; i++ {
 		cached := cachedAt(t, hot, clock.now(), age, goodsWithSpread(t, "FUEL", 20, 180))
-		if b.Admit(ctx, hot, cached, marketscan.Discretionary) == marketscan.Spend {
+		if b.Admit(ctx, budgetTestPlayerID, hot, cached, marketscan.Discretionary) == marketscan.Spend {
 			drained++
 		}
 	}
@@ -203,14 +209,14 @@ func TestAdmit_AllowanceRefillsAsTimePasses(t *testing.T) {
 	}
 
 	for i := 0; i < burstRequests+4; i++ {
-		b.Admit(ctx, hot, stale(), marketscan.Discretionary)
+		b.Admit(ctx, budgetTestPlayerID, hot, stale(), marketscan.Discretionary)
 	}
-	require.Equal(t, marketscan.ServeFromStore, b.Admit(ctx, hot, stale(), marketscan.Discretionary),
+	require.Equal(t, marketscan.ServeFromStore, b.Admit(ctx, budgetTestPlayerID, hot, stale(), marketscan.Discretionary),
 		"bucket must be empty before the refill is tested")
 
 	clock.advance(2 * time.Second) // 1.0 req/s => 2 tokens back
 
-	assert.Equal(t, marketscan.Spend, b.Admit(ctx, hot, stale(), marketscan.Discretionary))
+	assert.Equal(t, marketscan.Spend, b.Admit(ctx, budgetTestPlayerID, hot, stale(), marketscan.Discretionary))
 }
 
 // -----------------------------------------------------------------------------
@@ -227,7 +233,7 @@ func TestAdmit_TheSameReadIsDeclinedOnALargerMapAtTheSameBudget(t *testing.T) {
 
 	ask := func(b *ScanBudget, clock *fakeClock) marketscan.Decision {
 		cached := cachedAt(t, "X1-AA-A1", clock.now(), age, goodsWithSpread(t, "FUEL", 90, 110))
-		return b.Admit(ctx, "X1-AA-A1", cached, marketscan.Discretionary)
+		return b.Admit(ctx, budgetTestPlayerID, "X1-AA-A1", cached, marketscan.Discretionary)
 	}
 
 	small, smallClock := newTestBudget(t, 0.35, 8)
@@ -296,8 +302,8 @@ func TestAggregate_UnmeasuredMarketsAreCountedAtThePriorNotAtZero(t *testing.T) 
 	ctx := context.Background()
 
 	// Two markets asked about but never scanned.
-	b.Admit(ctx, "X1-AA-A1", nil, marketscan.Discretionary)
-	b.Admit(ctx, "X1-AA-A2", nil, marketscan.Discretionary)
+	b.Admit(ctx, budgetTestPlayerID, "X1-AA-A1", nil, marketscan.Discretionary)
+	b.Admit(ctx, budgetTestPlayerID, "X1-AA-A2", nil, marketscan.Discretionary)
 
 	snap := b.Snapshot()
 	assert.Equal(t, 2, snap.MarketsKnown)
@@ -326,7 +332,7 @@ func TestAdmit_ACompletelyStarvedMarketIsEventuallyAdmittedEvenWithAnEmptyBucket
 
 	// Drain the allowance and keep the clock still so it cannot refill.
 	for i := 0; i < burstRequests*2; i++ {
-		b.Admit(ctx, "X1-AA-H0", cachedAt(t, "X1-AA-H0", clock.now(), time.Hour, goodsWithSpread(t, "FUEL", 40, 160)), marketscan.Discretionary)
+		b.Admit(ctx, budgetTestPlayerID, "X1-AA-H0", cachedAt(t, "X1-AA-H0", clock.now(), time.Hour, goodsWithSpread(t, "FUEL", 40, 160)), marketscan.Discretionary)
 	}
 	require.Less(t, b.Snapshot().TokensAvailable, 1.0, "fixture must leave the allowance exhausted")
 
@@ -334,11 +340,11 @@ func TestAdmit_ACompletelyStarvedMarketIsEventuallyAdmittedEvenWithAnEmptyBucket
 	require.Less(t, bound, 30*24*time.Hour, "the bound must be a real number")
 
 	justInside := cachedAt(t, "X1-AA-COLD", clock.now(), bound-time.Minute, goodsWithSpread(t, "FUEL", 100, 100))
-	assert.Equal(t, marketscan.ServeFromStore, b.Admit(ctx, "X1-AA-COLD", justInside, marketscan.Discretionary),
+	assert.Equal(t, marketscan.ServeFromStore, b.Admit(ctx, budgetTestPlayerID, "X1-AA-COLD", justInside, marketscan.Discretionary),
 		"before the bound the cold market yields, which is what makes the bound meaningful")
 
 	pastBound := cachedAt(t, "X1-AA-COLD", clock.now(), bound+time.Minute, goodsWithSpread(t, "FUEL", 100, 100))
-	assert.Equal(t, marketscan.Spend, b.Admit(ctx, "X1-AA-COLD", pastBound, marketscan.Discretionary),
+	assert.Equal(t, marketscan.Spend, b.Admit(ctx, budgetTestPlayerID, "X1-AA-COLD", pastBound, marketscan.Discretionary),
 		"past the bound it is scanned regardless of value or contention — no market starves")
 }
 
@@ -351,11 +357,11 @@ func TestAdmit_NeverScannedMarketIsAdmittedEvenWithAnEmptyAllowance(t *testing.T
 	// reserve stops a baseline market draining the last of the allowance, which is
 	// the point of the reserve.
 	for i := 0; i < burstRequests*2; i++ {
-		b.Admit(ctx, "X1-AA-A1", cachedAt(t, "X1-AA-A1", clock.now(), time.Second, goodsWithSpread(t, "FUEL", 40, 160)), marketscan.Earning)
+		b.Admit(ctx, budgetTestPlayerID, "X1-AA-A1", cachedAt(t, "X1-AA-A1", clock.now(), time.Second, goodsWithSpread(t, "FUEL", 40, 160)), marketscan.Earning)
 	}
 	require.Less(t, b.Snapshot().TokensAvailable, 1.0)
 
-	assert.Equal(t, marketscan.Spend, b.Admit(ctx, "X1-AA-NEW", nil, marketscan.Discretionary),
+	assert.Equal(t, marketscan.Spend, b.Admit(ctx, budgetTestPlayerID, "X1-AA-NEW", nil, marketscan.Discretionary),
 		"there is nothing in the store to serve, so a never-scanned market cannot be declined")
 }
 
@@ -364,7 +370,7 @@ func TestAdmit_MarketRowStampedInTheFutureIsTreatedAsUnknownNotAsFresh(t *testin
 
 	future := cachedAt(t, "X1-AA-A1", clock.now(), -time.Hour, goodsWithSpread(t, "FUEL", 90, 110))
 
-	assert.Equal(t, marketscan.Spend, b.Admit(context.Background(), "X1-AA-A1", future, marketscan.Discretionary),
+	assert.Equal(t, marketscan.Spend, b.Admit(context.Background(), budgetTestPlayerID, "X1-AA-A1", future, marketscan.Discretionary),
 		"one bad timestamp must not mute a market indefinitely")
 }
 
@@ -383,12 +389,12 @@ func TestAdmit_EarningReadIsAdmittedWithTheAllowanceExhaustedAndStillDebitsIt(t 
 
 	// A just-scanned market with a completely open allowance is declined as a
 	// discretionary read...
-	require.Equal(t, marketscan.ServeFromStore, b.Admit(ctx, "X1-AA-A1", fresh(), marketscan.Discretionary))
+	require.Equal(t, marketscan.ServeFromStore, b.Admit(ctx, budgetTestPlayerID, "X1-AA-A1", fresh(), marketscan.Discretionary))
 
 	// ...and admitted as a money-guard read, over and over, even once the
 	// allowance is long gone.
 	for i := 0; i < burstRequests*3; i++ {
-		require.Equal(t, marketscan.Spend, b.Admit(ctx, "X1-AA-A1", fresh(), marketscan.Earning),
+		require.Equal(t, marketscan.Spend, b.Admit(ctx, budgetTestPlayerID, "X1-AA-A1", fresh(), marketscan.Earning),
 			"a pre-commit money guard is never served from store (RULINGS #4)")
 	}
 
@@ -398,7 +404,7 @@ func TestAdmit_EarningReadIsAdmittedWithTheAllowanceExhaustedAndStillDebitsIt(t 
 		"and they must have consumed the allowance, so discretionary scanning is squeezed")
 
 	assert.Equal(t, marketscan.ServeFromStore,
-		b.Admit(ctx, "X1-AA-A1", cachedAt(t, "X1-AA-A1", clock.now(), overdue, goodsWithSpread(t, "FUEL", 90, 110)), marketscan.Discretionary),
+		b.Admit(ctx, budgetTestPlayerID, "X1-AA-A1", cachedAt(t, "X1-AA-A1", clock.now(), overdue, goodsWithSpread(t, "FUEL", 90, 110)), marketscan.Discretionary),
 		"an overdue discretionary read now finds the allowance spent by the guards")
 }
 
@@ -410,16 +416,16 @@ func TestAdmit_PairedReadIsAdmittedOnAFreshCacheButStillNeedsAToken(t *testing.T
 		return cachedAt(t, "X1-AA-A1", clock.now(), 2*time.Second, goodsWithSpread(t, "FUEL", 90, 110))
 	}
 
-	require.Equal(t, marketscan.ServeFromStore, b.Admit(ctx, "X1-AA-A1", fresh(), marketscan.Discretionary),
+	require.Equal(t, marketscan.ServeFromStore, b.Admit(ctx, budgetTestPlayerID, "X1-AA-A1", fresh(), marketscan.Discretionary),
 		"the same read as a discretionary one is vetoed for freshness")
-	assert.Equal(t, marketscan.Spend, b.Admit(ctx, "X1-AA-A1", fresh(), marketscan.Paired),
+	assert.Equal(t, marketscan.Spend, b.Admit(ctx, budgetTestPlayerID, "X1-AA-A1", fresh(), marketscan.Paired),
 		"the after half of an impact pair is not redundant for following its before half")
 
 	// Drain the allowance; the paired read now yields, unlike an Earning one.
 	for i := 0; i < burstRequests*3; i++ {
-		b.Admit(ctx, "X1-AA-A1", fresh(), marketscan.Paired)
+		b.Admit(ctx, budgetTestPlayerID, "X1-AA-A1", fresh(), marketscan.Paired)
 	}
-	assert.Equal(t, marketscan.ServeFromStore, b.Admit(ctx, "X1-AA-A1", fresh(), marketscan.Paired),
+	assert.Equal(t, marketscan.ServeFromStore, b.Admit(ctx, budgetTestPlayerID, "X1-AA-A1", fresh(), marketscan.Paired),
 		"instrumentation is what the budget sheds first")
 }
 
@@ -445,7 +451,7 @@ func TestAdmit_MapSizeComesFromTheChartedCountNotJustTheMarketsSeen(t *testing.T
 	b, _ := newTestBudget(t, 0.35, 8)
 	b.SetChartedMarketCounter(&stubCounter{counts: map[string]int{"X1-AA": 200, "X1-BB": 155}})
 
-	b.Admit(context.Background(), "X1-AA-A1", nil, marketscan.Discretionary)
+	b.Admit(context.Background(), budgetTestPlayerID, "X1-AA-A1", nil, marketscan.Discretionary)
 
 	assert.Equal(t, 355, b.Snapshot().MarketsKnown,
 		"the denominator is the charted map, not only the markets this gate happens to have been asked about")
@@ -458,13 +464,13 @@ func TestAdmit_ChartedCountIsCachedAndRefreshedOnItsTTL(t *testing.T) {
 	ctx := context.Background()
 
 	for i := 0; i < 20; i++ {
-		b.Admit(ctx, "X1-AA-A1", nil, marketscan.Discretionary)
+		b.Admit(ctx, budgetTestPlayerID, "X1-AA-A1", nil, marketscan.Discretionary)
 	}
 	assert.Equal(t, 1, counter.calls, "the map size must not be re-counted on every admission")
 
 	counter.counts = map[string]int{"X1-AA": 40}
 	clock.advance(chartedCountTTL + time.Second)
-	b.Admit(ctx, "X1-AA-A1", nil, marketscan.Discretionary)
+	b.Admit(ctx, budgetTestPlayerID, "X1-AA-A1", nil, marketscan.Discretionary)
 
 	assert.Equal(t, 2, counter.calls)
 	assert.Equal(t, 40, b.Snapshot().MarketsKnown, "and it must pick up a map that grew")
@@ -476,12 +482,12 @@ func TestAdmit_CounterFailureKeepsThePreviousCountRatherThanCollapsingTheDenomin
 	b.SetChartedMarketCounter(counter)
 	ctx := context.Background()
 
-	b.Admit(ctx, "X1-AA-A1", nil, marketscan.Discretionary)
+	b.Admit(ctx, budgetTestPlayerID, "X1-AA-A1", nil, marketscan.Discretionary)
 	require.Equal(t, 300, b.Snapshot().MarketsKnown)
 
 	counter.err = errors.New("database unavailable")
 	clock.advance(chartedCountTTL + time.Second)
-	b.Admit(ctx, "X1-AA-A1", nil, marketscan.Discretionary)
+	b.Admit(ctx, budgetTestPlayerID, "X1-AA-A1", nil, marketscan.Discretionary)
 
 	assert.Equal(t, 300, b.Snapshot().MarketsKnown,
 		"a counter hiccup must not reset the denominator, which would collapse every interval to nothing")
@@ -492,7 +498,7 @@ func TestAdmit_WithNoCounterWiredTheMarketsSeenAreTheDenominatorAndPacingStillHo
 	ctx := context.Background()
 
 	for i := 0; i < 12; i++ {
-		b.Admit(ctx, fmt.Sprintf("X1-AA-A%d", i), nil, marketscan.Discretionary)
+		b.Admit(ctx, budgetTestPlayerID, fmt.Sprintf("X1-AA-A%d", i), nil, marketscan.Discretionary)
 	}
 
 	snap := b.Snapshot()
@@ -507,7 +513,7 @@ func TestSetChartedMarketCounter_IgnoresNil(t *testing.T) {
 	b.SetChartedMarketCounter(counter)
 	b.SetChartedMarketCounter(nil)
 
-	b.Admit(context.Background(), "X1-AA-A1", nil, marketscan.Discretionary)
+	b.Admit(context.Background(), budgetTestPlayerID, "X1-AA-A1", nil, marketscan.Discretionary)
 	assert.Equal(t, 7, b.Snapshot().MarketsKnown, "nil must not detach a working counter")
 }
 
@@ -539,7 +545,7 @@ func TestAdmit_IsSafeForTheConcurrentContainersThatShareOneAllowance(t *testing.
 			defer func() { done <- struct{}{} }()
 			for i := 0; i < 50; i++ {
 				waypoint := fmt.Sprintf("X1-AA-A%d", i)
-				b.Admit(ctx, waypoint, nil, marketscan.Discretionary)
+				b.Admit(ctx, budgetTestPlayerID, waypoint, nil, marketscan.Discretionary)
 				b.Observe(waypoint, goodsWithSpread(t, "FUEL", 90, 110))
 				b.Snapshot()
 			}
@@ -567,16 +573,16 @@ func TestAdmit_UnderContentionTheHotMarketClaimsTheTokenAndTheDullOneYields(t *t
 	// Draw the bucket down into the value reserve, where the bar bites. Earning
 	// reads drain unconditionally, so they set the fill precisely.
 	for b.Snapshot().TokensAvailable > 1.5 {
-		b.Admit(ctx, hot, cachedAt(t, hot, clock.now(), time.Second, goodsWithSpread(t, "FUEL", 20, 180)), marketscan.Earning)
+		b.Admit(ctx, budgetTestPlayerID, hot, cachedAt(t, hot, clock.now(), time.Second, goodsWithSpread(t, "FUEL", 20, 180)), marketscan.Earning)
 	}
 	require.GreaterOrEqual(t, b.Snapshot().TokensAvailable, 1.0,
 		"a whole token must remain, or the cap decides and the value ordering is untested")
 
 	assert.Equal(t, marketscan.ServeFromStore,
-		b.Admit(ctx, dull, cachedAt(t, dull, clock.now(), age, goodsWithSpread(t, "FUEL", 99, 101)), marketscan.Discretionary),
+		b.Admit(ctx, budgetTestPlayerID, dull, cachedAt(t, dull, clock.now(), age, goodsWithSpread(t, "FUEL", 99, 101)), marketscan.Discretionary),
 		"the dull market yields the contended token")
 	assert.Equal(t, marketscan.Spend,
-		b.Admit(ctx, hot, cachedAt(t, hot, clock.now(), age, goodsWithSpread(t, "FUEL", 20, 180)), marketscan.Discretionary),
+		b.Admit(ctx, budgetTestPlayerID, hot, cachedAt(t, hot, clock.now(), age, goodsWithSpread(t, "FUEL", 20, 180)), marketscan.Discretionary),
 		"the market that earns most claims it")
 }
 
@@ -592,16 +598,16 @@ func TestAdmit_AStarvedMarketOutranksAHotOneOnceItPassesTheBound(t *testing.T) {
 
 	// Empty the allowance outright.
 	for i := 0; i < burstRequests*3; i++ {
-		b.Admit(ctx, hot, cachedAt(t, hot, clock.now(), time.Second, goodsWithSpread(t, "FUEL", 20, 180)), marketscan.Earning)
+		b.Admit(ctx, budgetTestPlayerID, hot, cachedAt(t, hot, clock.now(), time.Second, goodsWithSpread(t, "FUEL", 20, 180)), marketscan.Earning)
 	}
 	require.Less(t, b.Snapshot().TokensAvailable, 1.0)
 
 	bound := b.Snapshot().WorstCaseStaleness
 	assert.Equal(t, marketscan.ServeFromStore,
-		b.Admit(ctx, hot, cachedAt(t, hot, clock.now(), bound/2, goodsWithSpread(t, "FUEL", 20, 180)), marketscan.Discretionary),
+		b.Admit(ctx, budgetTestPlayerID, hot, cachedAt(t, hot, clock.now(), bound/2, goodsWithSpread(t, "FUEL", 20, 180)), marketscan.Discretionary),
 		"even the hottest market cannot draw on an empty allowance")
 	assert.Equal(t, marketscan.Spend,
-		b.Admit(ctx, dull, cachedAt(t, dull, clock.now(), bound+time.Minute, goodsWithSpread(t, "FUEL", 99, 101)), marketscan.Discretionary),
+		b.Admit(ctx, budgetTestPlayerID, dull, cachedAt(t, dull, clock.now(), bound+time.Minute, goodsWithSpread(t, "FUEL", 99, 101)), marketscan.Discretionary),
 		"but the dullest market past the bound can — value orders the queue, it never empties it")
 }
 
@@ -622,21 +628,21 @@ func TestDebit_ChargesTheAllowanceAndSqueezesDiscretionaryScanning(t *testing.T)
 
 	before := b.Snapshot().TokensAvailable
 	for i := 0; i < burstRequests*3; i++ {
-		b.Debit(fmt.Sprintf("X1-AA-UNVISITED%d", i))
+		b.Debit(budgetTestPlayerID, fmt.Sprintf("X1-AA-UNVISITED%d", i))
 	}
 	after := b.Snapshot()
 
 	assert.Less(t, after.TokensAvailable, before, "a debited read must consume the allowance")
 	assert.Positive(t, after.Forced, "debits past an empty bucket must be recorded as overdrafts")
 	assert.Equal(t, marketscan.ServeFromStore,
-		b.Admit(ctx, hot, cachedAt(t, hot, clock.now(), age, goodsWithSpread(t, "FUEL", 20, 180)), marketscan.Discretionary),
+		b.Admit(ctx, budgetTestPlayerID, hot, cachedAt(t, hot, clock.now(), age, goodsWithSpread(t, "FUEL", 20, 180)), marketscan.Discretionary),
 		"and an overdue hot market now finds the allowance spent by the catalogue reads")
 }
 
 func TestDebit_RegistersTheMarketSoItJoinsTheDenominator(t *testing.T) {
 	b, _ := newTestBudget(t, 0.35, 8)
 
-	b.Debit("X1-AA-UNVISITED")
+	b.Debit(budgetTestPlayerID, "X1-AA-UNVISITED")
 
 	snap := b.Snapshot()
 	assert.Equal(t, 1, snap.MarketsKnown,

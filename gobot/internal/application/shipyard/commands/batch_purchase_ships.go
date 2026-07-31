@@ -8,6 +8,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/assignment"
 	"github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/marketscan"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
@@ -188,6 +189,9 @@ func (h *BatchPurchaseShipsHandler) getShipPriceFromShipyard(
 		SystemSymbol:   systemSymbol,
 		WaypointSymbol: shipyardWaypoint,
 		PlayerID:       playerID,
+		// Pre-buy verification for the batch path: same guard, same undeniability
+		// (RULINGS #4).
+		Class: marketscan.Earning,
 	}
 	shipyardResp, err := h.mediator.Send(ctx, query)
 	if err != nil {

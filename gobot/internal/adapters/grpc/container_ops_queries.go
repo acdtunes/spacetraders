@@ -8,6 +8,7 @@ import (
 	shipQuery "github.com/andrescamacho/spacetraders-go/internal/application/ship/queries"
 	shipyardQuery "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
 	systemQuery "github.com/andrescamacho/spacetraders-go/internal/application/system/queries"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/marketscan"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
@@ -397,6 +398,13 @@ func (s *DaemonServer) GetShipyardListings(ctx context.Context, systemSymbol, wa
 		SystemSymbol:   systemSymbol,
 		WaypointSymbol: waypointSymbol,
 		PlayerID:       shared.MustNewPlayerID(*playerID),
+		// The gRPC/CLI surface (`spacetraders shipyard listings`). Nobody spends
+		// against this: it is a human looking at a counter, so it is paced like any
+		// other discovery read and — being deniable — no longer marks the yard as
+		// one the fleet is buying at. Left at the Discretionary zero value
+		// EXPLICITLY, so the classification is a decision on the record rather than
+		// an omission.
+		Class: marketscan.Discretionary,
 	}
 
 	// Execute via mediator
