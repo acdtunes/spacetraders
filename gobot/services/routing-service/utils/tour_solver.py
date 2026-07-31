@@ -242,6 +242,40 @@ INTER_SYSTEM_TRAVEL_PER_HOP_ENV_VAR = "TOUR_SOLVER_INTER_SYSTEM_TRAVEL_PER_HOP_S
 # floor and ceiling the old single-term clamp guaranteed.
 INTER_SYSTEM_TRAVEL_TERM_MIN = 300
 INTER_SYSTEM_TRAVEL_TERM_MAX = 1800
+
+# Jump-gate FEES (sp-wtc47). CREDITS, not seconds. The affine model above prices a
+# crossing's TIME; the gate also charges MONEY, and until now nothing subtracted it — so
+# every cross-system candidate's projected profit was overstated by ~fee x hops. At the
+# measured fleet rate that is ~570k/hr, ~15% of trading margin, and it biased BOTH
+# objectives toward crossing. Rate doubly so: a fee adds cost without adding time, so it
+# lowers the numerator of profit/seconds while leaving the denominator untouched.
+#
+# Fitted from realized rows (transactions type=JUMP, category=TRAVEL_COSTS, player 5,
+# n=2,355 over 24h, total 14.11M):
+#   min 4,386 | p25 5,204 | p50 5,619 | MEAN 5,992 | p75 6,342 | p90 7,435 | max 19,409
+#   stddev 1,296
+#
+# THE MEAN, NOT THE MEDIAN — this choice is load-bearing, not cosmetic. The charge is
+# SUMMED across hops, so the quantity we need is E[fee]: expected total = hops x E[fee].
+# The distribution is right-skewed (mean 5,992 > median 5,619), so pricing at the median
+# under-charges expected total by 6.2%. The median would be the right estimator only if we
+# were predicting a SINGLE jump's typical cost, which is not what this term does.
+#
+# WHAT THE SINGLE CONSTANT COSTS, stated rather than hidden: the real fee is
+# distance-scaled and spans 4,386-19,409, so one flat per-hop charge is unbiased in
+# aggregate but wrong on any individual crossing — it under-prices long jumps and
+# over-prices short ones. A per-pair lookup would fix that, and _build_inter_system_hop_index
+# is the natural place to carry it since it already keys on (system, system). This is the
+# deliberate median-first simplification the bead specified, not an oversight.
+INTER_SYSTEM_JUMP_FEE_PER_HOP = 6000    # fitted MEAN 5,992, rounded (cf. 749->750, 661->650)
+INTER_SYSTEM_JUMP_FEE_ENV_VAR = "TOUR_SOLVER_INTER_SYSTEM_JUMP_FEE_PER_HOP"
+# The floor is POSITIVE for the same reason the travel terms' floor is, and one more: a 0
+# floor would let an operator silently switch fee pricing OFF, which is exactly the
+# default-off seam this must not have. The fitted default is ACTIVE — absent env means fees
+# are charged, not that pricing is disabled. Bounds span the observed distribution with
+# headroom for a retune.
+INTER_SYSTEM_JUMP_FEE_MIN = 500
+INTER_SYSTEM_JUMP_FEE_MAX = 25000
 DWELL_SECONDS_PER_LEG = 60          # dock + transact allowance per market stop
 
 # Stage-1 sequencer selection (sp-y05b): "beam" = the proven beam search
@@ -699,6 +733,44 @@ def _build_inter_system_hop_index(constraints):
     return index
 
 
+def _make_gate_fee_fn(constraints, markets, ship):
+    """Gate-FEE fn(a, b) -> credits (sp-wtc47). The money sibling of _make_travel_fn.
+
+    Deliberately mirrors _make_travel_fn's crossing test rather than reimplementing it: the
+    same system_of resolution and the same inter_system_hops lookup with the same 1-hop
+    default for an absent pair. If the two ever disagreed about what constitutes a crossing,
+    a tour could be charged time without money or the reverse, which is worse than either
+    charge being wrong.
+
+    Returns 0 for an intra-system move — no gate, no fee — so an all-local tour is priced
+    exactly as before this change.
+
+    NOT hooked to `_travel_fn`. A caller-supplied travel hook overrides TIME only; it
+    carries no fee model, and honouring it here would mean any test or caller passing a
+    custom travel_fn silently reverted to unpriced crossings. Fees are charged on the real
+    system topology regardless of how travel time is computed."""
+    fee_per_hop = _resolve_inter_system_jump_fee_per_hop()
+    inter_system_hops = _build_inter_system_hop_index(constraints)
+
+    def system_of(wp):
+        if wp in markets:
+            return markets[wp]["system"]
+        if wp == ship["current_waypoint"]:
+            return ship["current_system"]
+        return None
+
+    def fee(a, b):
+        if a == b:
+            return 0
+        sys_a, sys_b = system_of(a), system_of(b)
+        if sys_a and sys_b and sys_a != sys_b:
+            gate_hops = inter_system_hops.get((sys_a, sys_b), 1)
+            return gate_hops * fee_per_hop
+        return 0
+
+    return fee
+
+
 def _make_travel_fn(constraints, markets, ship, waypoints=None):
     """Travel-seconds fn(a, b). Precedence: caller-supplied `_travel_fn`
     hook > coordinate mode (CRUISE formula on request-carried TourWaypoint
@@ -757,7 +829,7 @@ def _make_travel_fn(constraints, markets, ship, waypoints=None):
 
 def score_sequence(seq, markets, ship, constraints, model, travel_fn, deposit_sinks=None,
                    absorption_index=None, stock_sources=None, max_planned_tranches=None,
-                   realized_sink_tranches=None):
+                   realized_sink_tranches=None, gate_fee_fn=None):
     """Greedy tranche allocation over one hop sequence (the LP stage).
 
     Returns dict(profit, spend, seconds, cph, legs, held_liquidation,
@@ -1082,12 +1154,27 @@ def score_sequence(seq, markets, ship, constraints, model, travel_fn, deposit_si
                          projected_leg_profit=leg_profit,
                          travel_seconds_from_prev=0))
 
+    # sp-wtc47: gate fees are CREDITS and accumulate alongside seconds, on the same walk
+    # over the same pairs, so a crossing can never be charged time without money.
+    #
+    # The fn is a PARAMETER with a build-if-absent fallback, not a memo stashed on
+    # constraints. Two reasons, both learned the hard way: stashing it would MUTATE the
+    # caller's own dict (unlike `_travel_fn`, which the caller supplies, this is something
+    # the solver writes), and a caller that reused or copied that dict across solves would
+    # then carry a stale fee resolved under different env. The fallback is what keeps the
+    # charge unconditional — there is no path to scoring that skips it — while solve_tour
+    # passes a prebuilt fn so the hot path never rebuilds the hop index per candidate.
+    if gate_fee_fn is None:
+        gate_fee_fn = _make_gate_fee_fn(constraints, markets, ship)
+    gate_fees = 0
+
     seconds = 0
     prev = ship["current_waypoint"]
     for leg in legs:
         hop = int(travel_fn(prev, leg["waypoint_symbol"]))
         leg["travel_seconds_from_prev"] = hop
         seconds += hop + DWELL_SECONDS_PER_LEG
+        gate_fees += int(gate_fee_fn(prev, leg["waypoint_symbol"]))
         prev = leg["waypoint_symbol"]
 
     # sp-im74 closure epilogue: a CLOSED tour ends at the anchor solve_tour resolved
@@ -1106,11 +1193,22 @@ def score_sequence(seq, markets, ship, constraints, model, travel_fn, deposit_si
                          trades=[], projected_leg_profit=0,
                          travel_seconds_from_prev=hop))
         seconds += hop + DWELL_SECONDS_PER_LEG
+        # The return hop carries no TRADE, so it contributes no profit — but if it crosses a
+        # gate it still costs real credits. Time and money part company here: the epilogue's
+        # travel is charged to the clock only, its fee to the purse.
+        gate_fees += int(gate_fee_fn(prev, return_wp))
+
+    # sp-wtc47: fees are subtracted from projected profit, which is what makes them bite in
+    # BOTH objectives — profit ordering sees the lower number directly, and cph sees it
+    # through the numerator while the denominator is untouched (a fee costs money, not time).
+    # That asymmetry is the point: it is why an unpriced fee biased rate ordering harder than
+    # profit ordering.
+    profit -= gate_fees
 
     cph = profit / (seconds / 3600.0) if seconds > 0 else 0.0
     return dict(profit=profit, spend=spend, seconds=seconds, cph=cph, legs=legs,
                 held_liquidation=held_liquidation, deposit_value=deposit_value,
-                stock_value=stock_value)
+                stock_value=stock_value, gate_fees=gate_fees)
 
 
 def _held_liquidation_value(wp, markets, initial_cargo):
@@ -1476,6 +1574,22 @@ def _resolve_inter_system_travel_per_hop_seconds():
                                  INTER_SYSTEM_TRAVEL_TERM_MAX, int)
 
 
+def _resolve_inter_system_jump_fee_per_hop():
+    """Per-solve env override for the per-gate-hop CREDIT fee (sp-wtc47,
+    TOUR_SOLVER_INTER_SYSTEM_JUMP_FEE_PER_HOP). Same clamp-and-fallback discipline as the
+    two travel-seconds resolvers; fitted default INTER_SYSTEM_JUMP_FEE_PER_HOP (6000, the
+    realized MEAN rounded).
+
+    The env var exists to RE-FIT the number as gate pricing moves, NOT to switch fee
+    pricing off: the clamp floor is positive, so no export can zero this term, and an
+    absent env resolves to the fitted default rather than to unpriced. Charging fees is the
+    armed behaviour."""
+    return _sequencer_env_scalar(INTER_SYSTEM_JUMP_FEE_ENV_VAR,
+                                 INTER_SYSTEM_JUMP_FEE_PER_HOP,
+                                 INTER_SYSTEM_JUMP_FEE_MIN,
+                                 INTER_SYSTEM_JUMP_FEE_MAX, int)
+
+
 def ortools_sequences(markets, ship, constraints, travel_fn, deposit_sinks=None,
                       stock_sources=None, stats_out=None, max_planned_tranches=None):
     """OR-Tools prize-collecting stage-1 sequencer (sp-y05b). Same contract as
@@ -1736,6 +1850,7 @@ def _infeasible(reason, model_version, top_rejected=None):
     return dict(feasible=False, infeasible_reason=reason, legs=[],
                 projected_profit=0, projected_credits_per_hour=0.0,
                 held_liquidation=0, deposit_value=0, stock_value=0,
+                gate_fees=0,
                 top_rejected=top_rejected or [], model_version=model_version)
 
 
@@ -1888,6 +2003,10 @@ def solve_tour(snapshot, ship, constraints, model, waypoints=None,
     stock_source_idx = _build_stock_sources(stock_sources, markets, allowed)
     absorption_index = _index_absorption(absorption)
     travel_fn = _make_travel_fn(constraints, markets, ship, waypoints)
+    # sp-wtc47: built ONCE per solve beside travel_fn, for the same reason that one does —
+    # every crossing in a single solve must be priced by one model, and the hop index is
+    # rebuilt per call otherwise.
+    gate_fee_fn = _make_gate_fee_fn(constraints, markets, ship)
     sequencer = _resolve_sequencer(sequencer)
     # sp-acb8 Tune 1: resolve the planned-tranche ladder cap ONCE per solve (env
     # TOUR_SOLVER_MAX_PLANNED_TRANCHES, default 2 == byte-identical) and thread the
@@ -2020,7 +2139,8 @@ def solve_tour(snapshot, ship, constraints, model, waypoints=None,
         result = score_sequence(seq, markets, ship, constraints, model, travel_fn,
                                 deposit_sinks, absorption_index, stock_source_idx,
                                 max_planned_tranches=max_planned_tranches,
-                                realized_sink_tranches=realized_sink_tranches)
+                                realized_sink_tranches=realized_sink_tranches,
+                                gate_fee_fn=gate_fee_fn)
         signature = tuple((l["waypoint_symbol"],
                            tuple((t["good_symbol"], t["units"], t["is_buy"],
                                   t["is_deposit"], t["is_stock"], t["expected_unit_price"])
@@ -2076,5 +2196,11 @@ def solve_tour(snapshot, ship, constraints, model, waypoints=None,
                 held_liquidation=best["held_liquidation"],
                 deposit_value=best["deposit_value"],
                 stock_value=best["stock_value"],
+                # sp-wtc47: reported SEPARATELY as well as netted out of projected_profit.
+                # projected_profit is already fee-inclusive, so this is not a second charge —
+                # it is the term that makes the bead's realized check possible at all:
+                # compare this against the tour's actual JUMP/TRAVEL_COSTS rows and the
+                # per-hop constant can be re-fitted from the gap instead of re-derived.
+                gate_fees=best["gate_fees"],
                 top_rejected=rejected(scored[1:], winner=best),
                 model_version=model_version)

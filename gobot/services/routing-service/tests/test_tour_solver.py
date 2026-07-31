@@ -59,17 +59,31 @@ def _cap_sweep_board():
     # requires touching 3 systems. With only 2 systems reachable the tour can dump into
     # a single sink and must eat the 0.9 decay on its 2nd tranche. The raised cap is
     # therefore exactly what unlocks the strictly-higher 3-system optimum.
+    # PRICE SCALE (sp-wtc47), same reasoning as _deep_lane_board and the same x15: ratios
+    # and decay behaviour are untouched, only the absolute regime moves to where live tours
+    # actually sit (180k-280k net, fees 5-10%).
+    #
+    # THIS BOARD IS SCALE-CRITICAL because what it tests is a DIFFERENCE, not a level. The
+    # 3-system split beats the 2-system dump only by the decay it avoids on the second
+    # tranche: at the original prices that edge was 800 credits, against a 6,000 fee for the
+    # extra crossing — so the split correctly LOST once fees existed, and the test was
+    # asserting an optimum that is not optimal. Scaled, the edge is 12,000 against the same
+    # 6,000 crossing, so the raised cap again unlocks a genuinely richer plan and the test
+    # measures what its name says.
+    _S = 15
     snapshot = [
-        snap("A", "S1", "G", ask=100, bid=90, tv=40),   # cheap source (80u via A-cap)
-        snap("B", "S2", "G", ask=999, bid=300, tv=40),  # fat sink 1
-        snap("C", "S3", "G", ask=999, bid=290, tv=40),  # fat sink 2 (comparable)
+        snap("A", "S1", "G", ask=100 * _S, bid=90 * _S, tv=40),   # cheap source (80u via A-cap)
+        snap("B", "S2", "G", ask=999 * _S, bid=300 * _S, tv=40),  # fat sink 1
+        snap("C", "S3", "G", ask=999 * _S, bid=290 * _S, tv=40),  # fat sink 2 (comparable)
     ]
     ship = dict(ship_symbol="H", current_waypoint="A", current_system="S1",
                 hold_capacity=80, fuel_current=400, fuel_capacity=400,
                 engine_speed=30, cargo=[])
 
     def cons(**over):
-        base = dict(max_hops=4, max_spend=100_000, min_margin_per_unit=1,
+        # max_spend raised with the scale: it was never the binding constraint here (8k of
+        # buys against a 100k ceiling) and must not become one at x15 (120k of buys).
+        base = dict(max_hops=4, max_spend=1_500_000, min_margin_per_unit=1,
                     working_capital_reserve=0, allowed_systems=["S1", "S2", "S3"],
                     max_snapshot_age_minutes=75, expected_model_version="1@e")
         base.update(over)
@@ -367,7 +381,11 @@ def test_solver_cap_reshapes_revisit_ladder():
     assert all(units <= 2 * 40 for units in per_side.values()), per_side
     # With the ladder capped, the best plan is the hold-refilling crossing:
     # 80u G out (A->D), 80u H back (D->E) — not a third/fourth tranche at D.
-    assert out["projected_profit"] == 23_880
+    # The plan SHAPE is what this test guards and it is unchanged; the number moved because
+    # that shape crosses a gate twice (S1->S2 out, S2->S1 back) and sp-wtc47 now charges the
+    # fee those two crossings really cost: 23,880 gross - 2 x 6,000 = 11,880 net.
+    assert out["gate_fees"] == 2 * 6_000, out
+    assert out["projected_profit"] == 23_880 - out["gate_fees"]
 
 
 def test_solver_held_cargo_liquidates_without_buy_leg():
@@ -1614,7 +1632,14 @@ def test_multihop_cph_is_lower_than_one_hop_for_the_same_far_lane():
                     inter_system_hops=[dict(from_system="S1", to_system="S2", gate_hops=3)]),
         MODEL, objective="rate")
     assert flat["feasible"] and honest["feasible"]
-    assert honest["projected_profit"] == flat["projected_profit"]         # same trade, same profit
+    # sp-wtc47 REPLACED the old "same trade, same profit" invariant here, and the replacement
+    # is strictly stronger. That equality held only while depth was free of MONEY: the two
+    # arms move the identical cargo, so before gate fees existed only their clocks differed.
+    # Depth now costs credits as well as seconds, so the deeper read must be POORER by exactly
+    # the fee on its extra hops — a sharper claim than equality ever was, and it would catch a
+    # fee that failed to scale with depth, which equality could not.
+    assert honest["projected_profit"] < flat["projected_profit"]
+    assert flat["projected_profit"] - honest["projected_profit"] == (3 - 1) * 6_000
     assert honest["projected_credits_per_hour"] < flat["projected_credits_per_hour"]  # honest time
 
 
@@ -1659,9 +1684,23 @@ def _deep_lane_board(far_bid=560):
     # affect selection and the flip is untestable. One tradable unit at every stop gives every
     # candidate a leg, so cph ordering — what live runs with (TOUR_SOLVER_OBJECTIVE=rate) —
     # actually engages. Its 2 credits are noise against the 8k-18k lanes.
-    snapshot = [snap("SRC", "S1", "G", ask=100, bid=0, tv=40),
-                snap("NEAR", "S2", "G", ask=0, bid=300, tv=40),
-                snap("FAR", "S3", "G", ask=0, bid=far_bid, tv=40),
+    # PRICE SCALE (sp-wtc47). The G prices are scaled x15 against the original board. The
+    # ratios — and therefore everything this fixture tests — are untouched: NEAR stays 200
+    # margin/unit and FAR stays far_bid-100, so far_bid=560 is still the 2.3x lane and
+    # far_bid=340 still the 1.2x one.
+    #
+    # WHY IT HAD TO CHANGE: this board was built to test TIME pricing, where absolute scale
+    # is irrelevant — a crossing's seconds do not depend on how rich the lane is. Gate FEES
+    # are absolute CREDITS, so scale suddenly matters. At the original prices the lanes were
+    # 8k-18k (this fixture's own note said so) against a 6k/hop fee, i.e. the fee was 75-98%
+    # of a lane's entire profit and swamped every comparison. Live tours net 180k-280k with
+    # fees at 5-10%. The scaled board reproduces that ratio (NEAR 120k, FAR 276k at 2.3x),
+    # so the deep-lane flip is exercised in the regime it was written to describe instead of
+    # one where any fee at all decides the outcome.
+    _S = 15
+    snapshot = [snap("SRC", "S1", "G", ask=100 * _S, bid=0, tv=40),
+                snap("NEAR", "S2", "G", ask=0, bid=300 * _S, tv=40),
+                snap("FAR", "S3", "G", ask=0, bid=far_bid * _S, tv=40),
                 snap("SRC", "S1", "B", ask=0, bid=2, tv=40),
                 snap("NEAR", "S2", "B", ask=0, bid=2, tv=40),
                 snap("FAR", "S3", "B", ask=0, bid=2, tv=40)]
@@ -1728,3 +1767,149 @@ def test_affine_pricing_still_prefers_the_near_lane_when_margin_does_not_justify
     free = solve_tour(snapshot, ship, dict(cons, _travel_fn=_flat_travel_fn(0)),
                       MODEL, objective="rate")
     assert _sold_at(free) == {"FAR"}, f"fixture is inert — free crossings must flip it, got {free}"
+
+
+# ── sp-wtc47: gate FEES are priced into projected profit ──────────────────────
+# The affine model above prices a crossing's TIME. The gate also charges MONEY, and until
+# sp-wtc47 nothing subtracted it, so every cross-system candidate was overstated by
+# ~fee x hops (~570k/hr fleet-wide, ~15% of trading margin). These guard the charge itself,
+# its scaling with depth, and — the one that actually bites — that it can CHANGE A CHOICE.
+
+def _clear_fee_env(monkeypatch):
+    from utils.tour_solver import INTER_SYSTEM_JUMP_FEE_ENV_VAR
+    monkeypatch.delenv(INTER_SYSTEM_JUMP_FEE_ENV_VAR, raising=False)
+
+
+def _fee_board(far_bid=9000, gate_hops=3):
+    """One source in S1, one sink in S2 at `gate_hops` depth. Deliberately at the LIVE
+    profit regime (~200k+), not the 8k-18k of the older boards: a fee is absolute credits,
+    so a fixture priced two orders of magnitude below reality tests a regime we never run
+    in — the exact mis-scaling sp-wtc47 had to correct in _deep_lane_board."""
+    snapshot = [snap("SRC", "S1", "G", ask=1500, bid=0, tv=40),
+                snap("SINK", "S2", "G", ask=0, bid=far_bid, tv=40)]
+    ship = dict(ship_symbol="H", current_waypoint="SRC", current_system="S1",
+                hold_capacity=40, fuel_current=4000, fuel_capacity=4000,
+                engine_speed=30, cargo=[])
+    cons = _tp5c3_cons(max_tour_systems=3, max_spend=1_500_000,
+                       inter_system_hops=[dict(from_system="S1", to_system="S2",
+                                               gate_hops=gate_hops)])
+    return snapshot, ship, cons
+
+
+def test_gate_fee_is_charged_per_hop_and_netted_out_of_projected_profit(monkeypatch):
+    # The charge itself, pinned at the fitted default: one crossing of N hops costs
+    # N x 6000 credits, reported separately AND already subtracted from projected_profit.
+    # Both halves matter — the separate term is what makes the realized re-fit possible,
+    # and the subtraction is what makes the fee affect selection at all.
+    _clear_fee_env(monkeypatch)
+    snapshot, ship, cons = _fee_board(gate_hops=3)
+    out = solve_tour(snapshot, ship, cons, MODEL, objective="rate")
+    assert out["feasible"], out
+    gross = 40 * (9000 - 1500)
+    assert out["gate_fees"] == 3 * 6_000, out
+    assert out["projected_profit"] == gross - out["gate_fees"], out
+
+
+def test_gate_fee_scales_with_depth_so_a_deeper_read_of_one_lane_is_poorer(monkeypatch):
+    # Depth must cost MONEY monotonically, not just time. Same board, same trade, same
+    # cargo — only the declared gate depth differs — so the profit gap isolates the fee.
+    # A fee that ignored hop count (a flat per-CROSSING charge) would pass the test above
+    # and fail this one.
+    _clear_fee_env(monkeypatch)
+    outs = {}
+    for hops in (1, 3, 5):
+        snapshot, ship, cons = _fee_board(gate_hops=hops)
+        outs[hops] = solve_tour(snapshot, ship, cons, MODEL, objective="rate")
+        assert outs[hops]["feasible"], (hops, outs[hops])
+    assert outs[1]["gate_fees"] < outs[3]["gate_fees"] < outs[5]["gate_fees"]
+    assert outs[1]["projected_profit"] > outs[3]["projected_profit"] > outs[5]["projected_profit"]
+    # ... and by EXACTLY the marginal hops, not merely in the right direction.
+    assert outs[3]["projected_profit"] - outs[5]["projected_profit"] == 2 * 6_000
+
+
+def test_an_intra_system_tour_pays_no_gate_fee(monkeypatch):
+    # The floor. No crossing, no gate, no fee — so a purely local tour is priced exactly as
+    # it was before sp-wtc47. This is what stops the charge leaking into every plan.
+    _clear_fee_env(monkeypatch)
+    snapshot = [snap("SRC", "S1", "G", ask=1500, bid=0, tv=40),
+                snap("SINK", "S1", "G", ask=0, bid=9000, tv=40)]
+    ship = dict(ship_symbol="H", current_waypoint="SRC", current_system="S1",
+                hold_capacity=40, fuel_current=4000, fuel_capacity=4000,
+                engine_speed=30, cargo=[])
+    out = solve_tour(snapshot, ship, _tp5c3_cons(max_spend=1_500_000), MODEL, objective="rate")
+    assert out["feasible"], out
+    assert out["gate_fees"] == 0, out
+    assert out["projected_profit"] == 40 * (9000 - 1500), out
+
+
+def test_gate_fee_can_flip_the_chosen_lane_when_depth_is_not_worth_its_fee(monkeypatch):
+    # THE test that justifies shipping this. Arithmetic is necessary but not sufficient:
+    # the reason fees matter is that they CHANGE A CHOICE. Two sinks, the far one richer by
+    # 10k/load but 3 gate hops away vs 1 — so it wins on gross margin and LOSES once its
+    # 18k of fees are charged against the near lane's 6k. Priced honestly the solver must
+    # take NEAR; with fees floored to their minimum the far lane wins again, which is what
+    # proves the fixture is not inert and that the FEE is doing the work.
+    _clear_fee_env(monkeypatch)
+    snapshot = [snap("SRC", "S1", "G", ask=1500, bid=0, tv=40),
+                snap("NEAR", "S2", "G", ask=0, bid=9000, tv=40),
+                snap("FAR", "S3", "G", ask=0, bid=9250, tv=40),
+                # ballast: every candidate needs a leg so cph ordering engages
+                snap("SRC", "S1", "B", ask=0, bid=2, tv=40),
+                snap("NEAR", "S2", "B", ask=0, bid=2, tv=40),
+                snap("FAR", "S3", "B", ask=0, bid=2, tv=40)]
+    ship = dict(ship_symbol="H", current_waypoint="SRC", current_system="S1",
+                hold_capacity=41, fuel_current=4000, fuel_capacity=4000,
+                engine_speed=30, cargo=[dict(good_symbol="B", units=1)])
+    cons = dict(max_hops=2, max_spend=1_500_000, min_margin_per_unit=1,
+                working_capital_reserve=0, allowed_systems=["S1", "S2", "S3"],
+                max_snapshot_age_minutes=75, expected_model_version="1@e",
+                max_tour_systems=3,
+                inter_system_hops=[dict(from_system="S1", to_system="S2", gate_hops=1),
+                                   dict(from_system="S1", to_system="S3", gate_hops=3)])
+
+    priced = solve_tour(snapshot, ship, dict(cons), MODEL, objective="profit")
+    assert priced["feasible"], priced
+    assert _sold_at(priced) == {"NEAR"}, f"fees must make the deep lane lose, got {priced}"
+
+    # The far lane really was the richer one on gross margin — it lost on FEES, not on price.
+    assert 40 * (9250 - 1500) > 40 * (9000 - 1500)
+
+    from utils.tour_solver import INTER_SYSTEM_JUMP_FEE_ENV_VAR, INTER_SYSTEM_JUMP_FEE_MIN
+    monkeypatch.setenv(INTER_SYSTEM_JUMP_FEE_ENV_VAR, str(INTER_SYSTEM_JUMP_FEE_MIN))
+    cheap = solve_tour(snapshot, ship, dict(cons), MODEL, objective="profit")
+    assert _sold_at(cheap) == {"FAR"}, f"fixture is inert — a cheap fee must flip it, got {cheap}"
+
+
+def test_the_fee_env_var_cannot_switch_pricing_off(monkeypatch):
+    # ARMING GUARD (standing order: no default-off seams). The env var exists to RE-FIT the
+    # fee, never to disable it. Zero and negative exports must clamp to the positive floor,
+    # and an absent var must resolve to the fitted default — not to unpriced. A future
+    # refactor that let any of these reach 0 would silently restore the pre-sp-wtc47
+    # behaviour on a solver that still claims to price fees.
+    from utils.tour_solver import (INTER_SYSTEM_JUMP_FEE_ENV_VAR, INTER_SYSTEM_JUMP_FEE_MIN,
+                                   INTER_SYSTEM_JUMP_FEE_PER_HOP,
+                                   _resolve_inter_system_jump_fee_per_hop)
+    monkeypatch.delenv(INTER_SYSTEM_JUMP_FEE_ENV_VAR, raising=False)
+    assert _resolve_inter_system_jump_fee_per_hop() == INTER_SYSTEM_JUMP_FEE_PER_HOP
+    for hostile in ("0", "-1", "-999999"):
+        monkeypatch.setenv(INTER_SYSTEM_JUMP_FEE_ENV_VAR, hostile)
+        assert _resolve_inter_system_jump_fee_per_hop() >= INTER_SYSTEM_JUMP_FEE_MIN > 0, hostile
+
+
+def test_a_custom_travel_fn_does_not_silently_unprice_crossings(monkeypatch):
+    # The seam I deliberately did NOT create. `_travel_fn` overrides TIME only; it carries no
+    # fee model. Honouring it for fees would mean every caller or test passing a travel hook
+    # silently reverted to free crossings — a default-off path reachable without touching any
+    # config. Fees are charged on the real system topology regardless of how time is computed.
+    _clear_fee_env(monkeypatch)
+    snapshot, ship, cons = _fee_board(gate_hops=3)
+    out = solve_tour(snapshot, ship, dict(cons, _travel_fn=lambda a, b: 0), MODEL,
+                     objective="profit")
+    assert out["feasible"], out
+    # With travel time zeroed the solver happily round-trips, so count the crossings the plan
+    # ACTUALLY makes rather than assuming one: the invariant under test is that the hook does
+    # not zero the fee, and that each crossing is still charged at its real 3-hop depth.
+    systems = ["S1"] + [l["system_symbol"] for l in out["legs"]]
+    crossings = sum(1 for a, b in zip(systems, systems[1:]) if a != b)
+    assert crossings >= 1, out
+    assert out["gate_fees"] == crossings * 3 * 6_000, f"travel hook must not zero the fee, got {out}"
