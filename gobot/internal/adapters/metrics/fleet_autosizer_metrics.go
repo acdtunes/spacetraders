@@ -35,6 +35,9 @@ type FleetAutosizerMetricsCollector struct {
 	heaviesOwned        *prometheus.GaugeVec
 	heavyCap            *prometheus.GaugeVec
 	heavyPricePremium   *prometheus.SummaryVec
+
+	// The master switch's state as read each tick (sp-k4wdd).
+	sizingEnabled *prometheus.GaugeVec
 }
 
 // NewFleetAutosizerMetricsCollector creates a new autosizer metrics collector.
@@ -112,6 +115,15 @@ func NewFleetAutosizerMetricsCollector() *FleetAutosizerMetricsCollector {
 			},
 			[]string{"player_id"},
 		),
+		sizingEnabled: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: namespace,
+				Subsystem: subsystem,
+				Name:      "autosizer_sizing_enabled",
+				Help:      "The sizing_enabled master switch as read this tick: 1=sizing, 0=PAUSED by operator tune (sp-k4wdd). Emitted every tick on both paths — at 0 the coordinator reads nothing (no shipyard scans, no demand reads) and buys nothing, which is deliberate, NOT a stalled or dead coordinator",
+			},
+			[]string{"player_id"},
+		),
 		zeroEffectTotal: prometheus.NewCounter(
 			prometheus.CounterOpts{
 				Namespace: namespace,
@@ -153,7 +165,24 @@ func (c *FleetAutosizerMetricsCollector) Register() error {
 	if err := Registry.Register(c.heavyPricePremium); err != nil {
 		return err
 	}
+	if err := Registry.Register(c.sizingEnabled); err != nil {
+		return err
+	}
 	return Registry.Register(c.zeroEffectTotal)
+}
+
+// RecordSizingEnabled sets the master-switch gauge from the value read this tick (1=sizing,
+// 0=paused). Called on BOTH the active and the paused path, so the series is continuous and a
+// gap in it means the coordinator is gone, not that it was tuned off.
+func (c *FleetAutosizerMetricsCollector) RecordSizingEnabled(playerID string, enabled bool) {
+	if c == nil || c.sizingEnabled == nil {
+		return
+	}
+	value := 0.0
+	if enabled {
+		value = 1.0
+	}
+	c.sizingEnabled.WithLabelValues(playerID).Set(value)
 }
 
 // RecordPurchase increments the purchase counter for a class (called once per executed buy).

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/application/health"
 )
 
 // autosizerRunConfig is the launch command with every default resolved, so the reconcile logic
@@ -144,11 +145,45 @@ type reconcileResult struct {
 // the per-tick cap). It is the unit the tests drive directly; Handle just calls it on the tick.
 func (h *RunFleetAutosizerCoordinatorHandler) reconcileOnce(ctx context.Context, cmd *RunFleetAutosizerCoordinatorCommand) (reconcileResult, error) {
 	cfg := resolveFleetAutosizerConfig(cmd)
-	// The ONE live-tunable knob: re-read from persisted config each tick so a `tune` applies
-	// on the next reconcile with no container rebuild.
-	cfg.HeavyCap = h.liveHeavyCap(ctx, cmd, cfg.HeavyCap)
+	// The live-tunable knobs, re-read from persisted config on ONE snapshot each tick so a `tune`
+	// applies on the next reconcile with no container rebuild and no restart.
+	liveCap, sizingOn := h.liveKnobs(ctx, cmd, cfg.HeavyCap)
+	cfg.HeavyCap = liveCap
 	logger := common.LoggerFromContext(ctx)
 	res := reconcileResult{}
+
+	// Emitted on BOTH paths, every tick: an operator must be able to read which state the
+	// coordinator is in from a series, not infer it from the absence of one.
+	if h.metrics != nil {
+		h.metrics.RecordSizingEnabled(strconv.Itoa(cmd.PlayerID), sizingOn)
+	}
+
+	// THE MASTER SWITCH, and it is placed HERE for a reason: every port the autosizer touches is
+	// read below this line — the shared tick inputs, the heavy pricing errand, each class's demand,
+	// and (inside sizeClass) the shipyard price walk. That last one is the expensive one and it is
+	// why the switch cannot live further down.
+	//
+	// WHY NOT GATE THE PURCHASE. The obvious shape — copy expansion_enabled and gate the buy —
+	// would not work here, because sizeClass calls buildPurchaseRequest (→ resolveHullPrice →
+	// PriceFor) BEFORE EvaluateGuards. PriceFor walks every system the fleet occupies × every
+	// SHIPYARD waypoint in it, and resolveHullPrice repeats that entire walk for each alternative
+	// in TradeHullPreferenceOrder when the preferred hull cannot be priced. So a BLOCKED decision
+	// costs the same hundreds of Get Shipyard calls as an approved one: measured live, 25
+	// buy-decisions that bought NOTHING (14 blocked by demand, 11 by heavy_cap) cost 14,053
+	// shipyard scans — 96.7% of all Get Shipyard traffic and ~21% of the account's 2.00 req/s
+	// ceiling. Those reads are classed marketscan.Earning, which the scan budget admits
+	// unconditionally, so they also drove 7,326 budget overdrafts and starved discretionary market
+	// scanning. Gating the buy would have left every one of them in place.
+	//
+	// The autosizer costs almost nothing in credits and everything in API requests; this switch is
+	// therefore about reclaiming API, not about changing buying policy.
+	//
+	// NO HOT SPIN: Handle sleeps the full tick after every reconcileOnce, whatever it returns, so
+	// skipping the work does not tighten the loop.
+	if !sizingOn {
+		h.reportSizingPaused(ctx, cmd)
+		return res, nil
+	}
 
 	st := h.coordinatorState(cmd.ContainerID)
 	in := h.readTickInputs(ctx, cmd.PlayerID, cfg)
@@ -233,6 +268,34 @@ func (h *RunFleetAutosizerCoordinatorHandler) reconcileOnce(ctx context.Context,
 		"purchased":         res.Purchased,
 	})
 	return res, nil
+}
+
+// reportSizingPaused is the whole observable footprint of a paused tick.
+//
+// It logs EVERY tick rather than once on the edge. The autosizer's liveness signal is its
+// `autosizer_tick` line; if a paused coordinator simply went quiet it would look exactly like a
+// dead one, which is the failure mode this reporting exists to prevent. The line names the knob and
+// the value that restores it, so an operator who finds a silent autosizer learns why from the log
+// itself rather than having to know this feature exists.
+//
+// It also reports IDLE for every class the tick would have sized. Paused is idle-BY-INSTRUCTION —
+// there is no work outstanding, because the operator withdrew it — so it must not read as BLOCKED,
+// and reporting it clears any stale BLOCKED streak the escalator was holding from before the pause
+// (heavy_cap was blocking 11 of 25 decisions when this shipped). Class() is a pure accessor on the
+// provider; nothing here touches a port.
+func (h *RunFleetAutosizerCoordinatorHandler) reportSizingPaused(ctx context.Context, cmd *RunFleetAutosizerCoordinatorCommand) {
+	common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf(
+		"Autosizer PAUSED: %s is off, so the coordinator reads nothing and buys nothing this tick "+
+			"(no shipyard scans, no demand reads, no pricing errand). Restore with "+
+			"`spacetraders tune --operation autosizer %s 1`",
+		sizingEnabledKey, sizingEnabledKey), map[string]interface{}{
+		"action":       "autosizer_paused",
+		"container_id": cmd.ContainerID,
+		"knob":         sizingEnabledKey,
+	})
+	for _, p := range h.providers {
+		h.observeClassStall(ctx, cmd, p.Class(), health.TickIdle())
+	}
 }
 
 // runZeroEffectAlarm raises ONE edge-triggered WARN when demand has persisted for

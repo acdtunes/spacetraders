@@ -483,6 +483,9 @@ func (m *autosizerMetricsSink) RecordHeavyReserve(playerID string, reserve int64
 func (m *autosizerMetricsSink) ObserveHeavyPricePremium(playerID string, paid, cheapestKnown int64) {
 	metrics.ObserveAutosizerHeavyPricePremium(playerID, paid, cheapestKnown)
 }
+func (m *autosizerMetricsSink) RecordSizingEnabled(playerID string, enabled bool) {
+	metrics.RecordAutosizerSizingEnabled(playerID, enabled)
+}
 
 // --- LIGHT demand sources ---
 

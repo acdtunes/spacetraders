@@ -121,6 +121,11 @@ type MetricsSink interface {
 	// ObserveHeavyPricePremium reports what one heavy purchase paid above the cheapest KNOWN
 	// yard ask, in percent — the measured cost of buying at the cheapest yard WITH PRESENCE.
 	ObserveHeavyPricePremium(playerID string, paid, cheapestKnown int64)
+	// RecordSizingEnabled publishes the sizing_enabled master switch as read THIS TICK. Emitted
+	// every tick on both the active and the paused path, because a paused coordinator that stopped
+	// emitting would be indistinguishable from a dead one — the operator needs a series that says
+	// "deliberately off", not a gap.
+	RecordSizingEnabled(playerID string, enabled bool)
 }
 
 // tickInputs are the per-tick shared reads the guard stack needs for every class.

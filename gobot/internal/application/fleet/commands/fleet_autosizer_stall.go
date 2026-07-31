@@ -174,6 +174,12 @@ func (t *blockedGuardTap) RecordHeavyReserve(playerID string, reserve int64, own
 	}
 }
 
+func (t *blockedGuardTap) RecordSizingEnabled(playerID string, enabled bool) {
+	if t.inner != nil {
+		t.inner.RecordSizingEnabled(playerID, enabled)
+	}
+}
+
 func (t *blockedGuardTap) ObserveHeavyPricePremium(playerID string, paid, cheapestKnown int64) {
 	if t.inner != nil {
 		t.inner.ObserveHeavyPricePremium(playerID, paid, cheapestKnown)

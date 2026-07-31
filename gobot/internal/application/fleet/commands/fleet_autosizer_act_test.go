@@ -73,6 +73,9 @@ type recordingMetrics struct {
 	lastOwned         int
 	lastCap           int
 	pricePremiums     [][2]int64
+	// The master-switch gauge (sp-k4wdd). sizingStates records EVERY tick's emission in order,
+	// so a test can assert both the value and that the series is continuous across a pause.
+	sizingStates []bool
 }
 
 func (m *recordingMetrics) RecordDemand(class HullClass, demand, current int) { m.demand++ }
@@ -88,6 +91,9 @@ func (m *recordingMetrics) RecordHeavyReserve(_ string, reserve int64, owned, ca
 }
 func (m *recordingMetrics) ObserveHeavyPricePremium(_ string, paid, cheapestKnown int64) {
 	m.pricePremiums = append(m.pricePremiums, [2]int64{paid, cheapestKnown})
+}
+func (m *recordingMetrics) RecordSizingEnabled(_ string, enabled bool) {
+	m.sizingStates = append(m.sizingStates, enabled)
 }
 
 // armedHandler wires a coordinator with all buy-path readers healthy (so a shortfall class buys),

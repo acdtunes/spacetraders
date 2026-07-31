@@ -715,6 +715,14 @@ func RecordAutosizerHeavyReserve(playerID string, reserve int64, owned, cap int)
 	}
 }
 
+// RecordAutosizerSizingEnabled publishes the sizing_enabled master switch as read this tick
+// (1=sizing, 0=paused by operator tune) (sp-k4wdd).
+func RecordAutosizerSizingEnabled(playerID string, enabled bool) {
+	if globalFleetAutosizerCollector != nil {
+		globalFleetAutosizerCollector.RecordSizingEnabled(playerID, enabled)
+	}
+}
+
 // ObserveAutosizerHeavyPricePremium records one heavy purchase's premium over the cheapest known
 // yard ask, in percent (sp-fwk8z).
 func ObserveAutosizerHeavyPricePremium(playerID string, paid, cheapestKnown int64) {
