@@ -393,7 +393,7 @@ func run(cfg *config.Config) error {
 	// handler backs all three commands. The op atomically claims the hull
 	// (RULING #3/#7) and gates the modification fee on the working-capital
 	// reserve (RULING #4).
-	outfittingHandler := shipOutfit.NewOutfittingHandler(shipRepo, playerRepo, apiClient, shipyardScanner, containerRepo, nil) // nil clock = RealClock
+	outfittingHandler := shipOutfit.NewOutfittingHandler(shipRepo, playerRepo, apiClient, shipyardScanner, containerRepo, med, nil) // nil clock = RealClock
 	if err := mediator.RegisterHandler[*shipOutfit.InstallModuleCommand](med, outfittingHandler); err != nil {
 		return fmt.Errorf("failed to register InstallModule handler: %w", err)
 	}

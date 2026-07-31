@@ -71,8 +71,12 @@ Categories (derived deterministically from transaction type):
                       not just standalone arbitrage trades
   TRADING_COSTS     - Cost of ANY cargo purchase (PURCHASE_CARGO): factory inputs,
                       tour/trade buys, construction supply — not just standalone trades
-  SHIP_INVESTMENTS  - Expenses from purchasing ships
+  SHIP_INVESTMENTS  - Expenses from purchasing ships AND from outfitting them
+                      (MODULE_INSTALL / MODULE_REMOVE shipyard fees)
   CONTRACT_REVENUE  - Income from contracts
+  TRAVEL_COSTS      - NON-fuel cost of moving a hull; today only jump gate fees.
+                      Kept separate from FUEL_COSTS: a gate fee is charged per
+                      jump, fuel scales with distance burned
 
 Transaction Types:
   REFUEL              - Ship refueling
@@ -81,6 +85,9 @@ Transaction Types:
   PURCHASE_SHIP       - Ship purchase
   CONTRACT_ACCEPTED   - Contract acceptance payment
   CONTRACT_FULFILLED  - Contract fulfillment payment
+  JUMP                - Jump gate fee charged for a cross-system jump
+  MODULE_INSTALL      - Shipyard fee to install a module on a hull
+  MODULE_REMOVE       - Shipyard fee to remove a module (a fee, not a refund)
 
 Examples:
   spacetraders ledger list --player-id 1 --limit 10

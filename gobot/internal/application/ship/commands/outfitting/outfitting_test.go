@@ -11,6 +11,8 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
+	ledgerCommands "github.com/andrescamacho/spacetraders-go/internal/application/ledger/commands"
+	"github.com/andrescamacho/spacetraders-go/internal/application/mediator"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/marketscan"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
@@ -128,7 +130,15 @@ func newOutfitHarness(t *testing.T, fake *outfitFakeAPIClient) (*OutfittingHandl
 	playerRepo := &outfitFakePlayerRepo{p: &player.Player{ID: playerID, Token: "tok"}}
 	shipRepo := api.NewShipRepository(fake, playerRepo, nil, outfitFakeWaypointProvider{}, db, nil)
 	containerRepo := persistence.NewContainerRepository(db)
-	handler := NewOutfittingHandler(shipRepo, playerRepo, fake, fake, containerRepo, nil)
+
+	// Wire the REAL ledger recorder over the same DB (sp-shq63) so the shipyard
+	// fee travels the true recording path — a spy would accept any balance and
+	// could not tell a re-anchored row from an appended one.
+	med := mediator.NewMediator()
+	require.NoError(t, mediator.RegisterHandler[*ledgerCommands.RecordTransactionCommand](
+		med, ledgerCommands.NewRecordTransactionHandler(persistence.NewGormTransactionRepository(db), nil)))
+
+	handler := NewOutfittingHandler(shipRepo, playerRepo, fake, fake, containerRepo, med, nil)
 
 	return handler, db, playerRow.ID
 }

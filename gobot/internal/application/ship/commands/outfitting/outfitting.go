@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	ledgerCommands "github.com/andrescamacho/spacetraders-go/internal/application/ledger/commands"
 	domainContainer "github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/ledger"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/marketscan"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
@@ -70,6 +72,7 @@ type OutfittingHandler struct {
 	apiClient      ports.APIClient
 	yards          yardFeeReader
 	containerRepo  ContainerRepository
+	mediator       common.Mediator
 	clock          shared.Clock
 	playerResolver *common.PlayerResolver
 }
@@ -77,13 +80,16 @@ type OutfittingHandler struct {
 // NewOutfittingHandler creates an OutfittingHandler. If clock is nil, uses the
 // real clock (production default). yards is the metered shipyard reader the
 // spend-floor takes the modification fee from; a nil one leaves the guard
-// unavailable rather than reaching the API unmetered.
+// unavailable rather than reaching the API unmetered. mediator carries the
+// shipyard fee to the financial ledger (sp-shq63); a nil one records nothing
+// and is logged loudly at spend time rather than silently dropping the row.
 func NewOutfittingHandler(
 	shipRepo navigation.ShipRepository,
 	playerRepo player.PlayerRepository,
 	apiClient ports.APIClient,
 	yards yardFeeReader,
 	containerRepo ContainerRepository,
+	mediator common.Mediator,
 	clock shared.Clock,
 ) *OutfittingHandler {
 	if clock == nil {
@@ -95,6 +101,7 @@ func NewOutfittingHandler(
 		apiClient:      apiClient,
 		yards:          yards,
 		containerRepo:  containerRepo,
+		mediator:       mediator,
 		clock:          clock,
 		playerResolver: common.NewPlayerResolver(playerRepo),
 	}
@@ -223,7 +230,12 @@ func (h *OutfittingHandler) modifyModule(
 		return nil, err
 	}
 
-	// 7. Persist the ship's updated state — the new cargo capacity is the whole
+	// 7. Record the shipyard fee in the financial ledger (sp-shq63) BEFORE the
+	//    state persist: the credits are already gone server-side, and a persist
+	//    failure must not be the reason the spend goes unrecorded.
+	h.recordModificationFee(ctx, verb, shipSymbol, moduleSymbol, playerID, player.AgentSymbol, result)
+
+	// 8. Persist the ship's updated state — the new cargo capacity is the whole
 	//    point (RULING #3: the daemon writes ship state). SyncShipFromAPI
 	//    re-fetches the full ship and preserves the claim columns.
 	capacity := result.CargoCapacity
@@ -253,6 +265,91 @@ func (h *OutfittingHandler) modifyModule(
 		Fee:           result.Fee,
 		Modules:       result.Modules,
 	}, nil
+}
+
+// recordModificationFee writes the shipyard modification fee to the financial
+// ledger (sp-shq63). Same defect class as the jump gate fee: the API charges it,
+// the adapter parsed it into ModuleModificationResult.Fee (and the in-band
+// post-transaction credits into AgentCredits), and nothing consumed either — so
+// an autonomous auto-outfit install moved credits with no ledger row, letting the
+// ledger over-report the balance. Over-reporting is the one direction a
+// fail-closed money guard cannot survive.
+//
+// AgentCredits is passed as AuthoritativeBalance so the row RE-ANCHORS the running
+// chain to API truth instead of merely appending to it. Best-effort: a ledger
+// failure is logged, never returned — the module is already installed and the fee
+// already paid, so failing here would only discard a correct outcome.
+func (h *OutfittingHandler) recordModificationFee(
+	ctx context.Context,
+	verb, shipSymbol, moduleSymbol string,
+	playerID shared.PlayerID,
+	agentSymbol string,
+	result *ports.ModuleModificationResult,
+) {
+	logger := common.LoggerFromContext(ctx)
+
+	// A zero fee is not a transaction: ledger.Validate rejects amount == 0.
+	if result.Fee == 0 {
+		return
+	}
+
+	if h.mediator == nil {
+		logger.Log("ERROR", "Cannot record shipyard modification fee: no mediator wired", map[string]interface{}{
+			"ship":   shipSymbol,
+			"module": moduleSymbol,
+			"fee":    result.Fee,
+		})
+		return
+	}
+
+	txType := ledger.TransactionTypeModuleInstall
+	if verb == "remove" {
+		txType = ledger.TransactionTypeModuleRemove
+	}
+
+	if agentSymbol == "" {
+		agentSymbol = "UNKNOWN"
+	}
+
+	// Zero baseline: nil AgentCredits reconstructs from the running chain, a set
+	// one re-anchors to API truth.
+	const balanceBefore = 0
+
+	recordCmd := &ledgerCommands.RecordTransactionCommand{
+		PlayerID:             playerID.Value(),
+		TransactionType:      string(txType),
+		Amount:               -result.Fee, // Negative: the fee is charged in BOTH directions, install and remove
+		BalanceBefore:        balanceBefore,
+		BalanceAfter:         balanceBefore - result.Fee,
+		AuthoritativeBalance: result.AgentCredits,
+		Description:          fmt.Sprintf("Shipyard fee to %s module %s on %s", verb, moduleSymbol, shipSymbol),
+		Metadata: map[string]interface{}{
+			"agent":       agentSymbol,
+			"ship_symbol": shipSymbol,
+			"module":      moduleSymbol,
+			"action":      verb,
+		},
+	}
+
+	if opCtx := shared.OperationContextFromContext(ctx); opCtx != nil && opCtx.IsValid() {
+		recordCmd.RelatedEntityType = "container"
+		recordCmd.RelatedEntityID = opCtx.ContainerID
+		recordCmd.OperationType = opCtx.NormalizedOperationType()
+	} else {
+		recordCmd.OperationType = "manual"
+	}
+
+	// context.Background(): the spend is already real, so the record must not be
+	// lost to a cancelled caller context (mirrors refuel/cargo/jump recording).
+	if _, err := h.mediator.Send(context.Background(), recordCmd); err != nil {
+		logger.Log("ERROR", "Failed to record shipyard modification fee in ledger", map[string]interface{}{
+			"error":     err.Error(),
+			"ship":      shipSymbol,
+			"module":    moduleSymbol,
+			"fee":       result.Fee,
+			"player_id": playerID.Value(),
+		})
+	}
 }
 
 // floorGuardBreached reports whether performing the modification would breach

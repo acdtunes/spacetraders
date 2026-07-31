@@ -20,6 +20,15 @@ const (
 
 	// CategoryContractRevenue represents income from contracts
 	CategoryContractRevenue Category = "CONTRACT_REVENUE"
+
+	// CategoryTravelCosts represents the NON-FUEL cost of moving a hull —
+	// today only jump gate fees (sp-shq63). Deliberately separate from
+	// FUEL_COSTS: the two are different unit economics (fuel scales with
+	// distance burned, a gate fee is charged per jump), and the existing
+	// fuel-cost analytics would silently absorb a ~6.3k/jump line if these
+	// shared a bucket. It is an operating expense, so the briefing's ex-capex
+	// slope (category != SHIP_INVESTMENTS) correctly counts it.
+	CategoryTravelCosts Category = "TRAVEL_COSTS"
 )
 
 // AllCategories returns all valid categories
@@ -30,6 +39,7 @@ func AllCategories() []Category {
 		CategoryTradingCosts,
 		CategoryShipInvestments,
 		CategoryContractRevenue,
+		CategoryTravelCosts,
 	}
 }
 
@@ -45,6 +55,12 @@ var TypeToCategoryMap = map[TransactionType]Category{
 	TransactionTypePurchaseShip:      CategoryShipInvestments,
 	TransactionTypeContractAccepted:  CategoryContractRevenue,
 	TransactionTypeContractFulfilled: CategoryContractRevenue,
+	TransactionTypeJump:              CategoryTravelCosts,
+	// Outfitting a hull is capital work ON that hull, so both directions of a
+	// module modification land in SHIP_INVESTMENTS beside the hull purchases
+	// they upgrade — and are correctly excluded from the ex-capex operating slope.
+	TransactionTypeModuleInstall: CategoryShipInvestments,
+	TransactionTypeModuleRemove:  CategoryShipInvestments,
 }
 
 // String returns the string representation of the Category
@@ -59,7 +75,8 @@ func (c Category) IsValid() bool {
 		CategoryTradingRevenue,
 		CategoryTradingCosts,
 		CategoryShipInvestments,
-		CategoryContractRevenue:
+		CategoryContractRevenue,
+		CategoryTravelCosts:
 		return true
 	default:
 		return false

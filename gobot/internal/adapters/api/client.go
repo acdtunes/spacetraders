@@ -538,6 +538,12 @@ func (c *SpaceTradersClient) JumpShip(ctx context.Context, shipSymbol, waypointS
 
 	var response struct {
 		Data struct {
+			// Agent is a pointer so an omitted block (nil) is distinguishable
+			// from a real zero balance; the in-band credits are the ledger's
+			// authoritative post-fee balance (mirrors RefuelShip/SellCargo).
+			Agent *struct {
+				Credits int `json:"credits"`
+			} `json:"agent"`
 			Nav struct {
 				SystemSymbol   string `json:"systemSymbol"`
 				WaypointSymbol string `json:"waypointSymbol"`
@@ -561,12 +567,17 @@ func (c *SpaceTradersClient) JumpShip(ctx context.Context, shipSymbol, waypointS
 	}
 	c.invalidateAgentCache() // jump charges a gate fee (transaction.totalPrice) -> drop the stale-high cache
 
-	return &domainPorts.JumpResult{
+	result := &domainPorts.JumpResult{
 		DestinationSystem:   response.Data.Nav.SystemSymbol,
 		DestinationWaypoint: response.Data.Nav.WaypointSymbol,
 		CooldownSeconds:     response.Data.Cooldown.RemainingSeconds,
 		TotalPrice:          response.Data.Transaction.TotalPrice,
-	}, nil
+	}
+	if response.Data.Agent != nil {
+		credits := response.Data.Agent.Credits
+		result.AgentCredits = &credits
+	}
+	return result, nil
 }
 
 // CreateChart PUBLICLY charts the ship's CURRENT waypoint (POST /my/ships/{shipSymbol}/chart).

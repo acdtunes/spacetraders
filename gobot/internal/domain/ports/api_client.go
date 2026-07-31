@@ -231,6 +231,13 @@ type JumpResult struct {
 	DestinationWaypoint string
 	CooldownSeconds     int
 	TotalPrice          int
+
+	// AgentCredits is the agent's balance AFTER the gate fee, as reported
+	// in-band by the jump's own response (data.agent.credits). Nil when the
+	// API omitted the agent block. It is the ledger's AuthoritativeBalance:
+	// it re-anchors the running chain to API truth rather than merely
+	// appending the fee to it (sp-shq63).
+	AgentCredits *int
 }
 
 type JumpGateData struct {
