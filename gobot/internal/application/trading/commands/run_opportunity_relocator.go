@@ -768,18 +768,61 @@ func (h *RunOpportunityRelocatorHandler) scoreHull(
 			result.skip(string(valuation.Verdict))
 			continue
 		}
+		// sp-e8d92/relocator: staleness no longer vetoes (see regionUsable), so a LICENSED candidate
+		// may be resting on cold ground. Say so at the moment it is admitted, not afterwards — this is
+		// the only place that knows both the age and that the economics said yes. A licensed-on-stale
+		// candidate is the deliberate trade the Admiral authorised; an unexplained one later is not.
+		if h.regionSnapshotStale(region) {
+			logger.Log("INFO", fmt.Sprintf(
+				"Opportunity relocator: licensing %s -> %s on a STALE snapshot (%s old, cap %s for activity %q) - accepted deliberately, the alternative was leaving the hull in a shared system",
+				hull.ShipSymbol, region.AnchorSystem, region.SnapshotAge.Round(time.Minute),
+				h.ageCaps.For(region.Activity).Round(time.Minute), region.Activity),
+				map[string]interface{}{
+					"ship_symbol": hull.ShipSymbol, "origin_system": hull.CurrentSystem,
+					"target_system": region.AnchorSystem, "snapshot_age_seconds": int(region.SnapshotAge.Seconds()),
+					"activity_cap_seconds": int(h.ageCaps.For(region.Activity).Seconds()),
+					"activity":             region.Activity, "trigger": "relocator_stale_region_licensed",
+				})
+		}
 		scored = append(scored, relocationCandidate{hull: hull, region: region, valuation: valuation})
 	}
 	return scored
 }
 
-// regionUsable applies the region-side exclusions: FAIL CLOSED on an unreadable projection or a
-// snapshot older than its activity's freshness cap.
+// regionUsable applies the region-side exclusions: FAIL CLOSED on an unreadable projection.
 //
-// A STALE REGION IS EXCLUDED, NOT SCORED OPTIMISTICALLY. That is the whole point of reusing
-// RankerAgeCaps here: an 8-hour-old quote on a WEAK market is still rankable, while a 40-minute-old
-// one on a STRONG market is not, and a single flat cap gets one of those wrong. Scoring a stale
-// region at its last-seen prices is how a hull gets sent to ground that no longer exists.
+// STALENESS NO LONGER EXCLUDES A REGION (Admiral, 2026-07-31). The previous rule refused any region
+// whose snapshot was older than its activity's freshness cap, and it was the single largest blocker
+// of actual spreading: over the measured window the relocator was offered hulls at a healthy rate,
+// exempted them from the mid-tour rule correctly, and then refused 27 of ~48 eligible pairings as
+// region_snapshot_stale — against 1 relocation. Meanwhile the fleet held market data for 516 systems
+// and traded in 39.
+//
+// The rule was locally correct and globally wrong. Its own reasoning still stands as written: an
+// 8-hour-old quote on a WEAK market is rankable, a 40-minute-old one on a STRONG market is not, and
+// scoring a stale region at last-seen prices can send a hull to ground that no longer exists. What
+// it missed is the alternative. Refusing the move does not hold the hull somewhere known-good; it
+// holds it in a system it already shares with ~26 other trade hulls, grinding a contended sink. A
+// stale estimate of somewhere else beats a fresh estimate of the crush.
+//
+// WHAT STILL PROTECTS THE MOVE, because this removes ONE gate and not the economics:
+//   - region_rate_unreadable stays. An unreadable projection is still fail-closed: we will act on an
+//     OLD number, never on NO number.
+//   - ValueRelocation still has to LICENSE the move (no_uplift / below_npv_threshold at :767). The
+//     destination must still beat the hull's current rate by the NPV threshold, on whatever data
+//     exists.
+//   - the anti-herd cap in commitTopCandidates still stops a stampede into one region.
+//   - the concurrency cap, the per-hull cooldown, and the actuation-time ownership re-check are all
+//     downstream of here and untouched.
+//
+// So the accepted risk is bounded and RECOVERABLE: a hull can be sent somewhere that turns out no
+// better, and is then relocated again from there. That is strictly preferable to the status quo, in
+// which it is never sent anywhere at all.
+//
+// SnapshotAge is deliberately still carried on the region and is reported by the caller, so the cost
+// of this decision stays measurable — see the stale-accepted counting at the call site. If
+// stale-sourced relocations systematically underperform fresh ones, that shows up as data rather
+// than as an argument.
 //
 // THE ANTI-HERD CAP IS DELIBERATELY NOT CHECKED HERE. It lives at ONE site, in commitTopCandidates,
 // because that is where the per-system count actually MUTATES: committing one hull to a region is
@@ -793,10 +836,17 @@ func (h *RunOpportunityRelocatorHandler) regionUsable(region RelocatorRegion, hu
 	if !region.RateReadable {
 		return "region_rate_unreadable", false
 	}
-	if region.SnapshotAge > h.ageCaps.For(region.Activity) {
-		return "region_snapshot_stale", false
-	}
 	return "", true
+}
+
+// regionSnapshotStale reports whether a region's snapshot is older than its activity's freshness cap.
+//
+// This is the predicate that used to VETO the region. It is retained, and still consulted, purely as
+// an OBSERVATION: the relocator now accepts stale ground deliberately, and the fleet needs to be able
+// to tell afterwards how much of its spreading was bought on cold data. Deleting it would have made
+// that unanswerable, which is the same mistake as shipping the offer path with no refusal counter.
+func (h *RunOpportunityRelocatorHandler) regionSnapshotStale(region RelocatorRegion) bool {
+	return region.SnapshotAge > h.ageCaps.For(region.Activity)
 }
 
 // inputsFor assembles the pure valuation's inputs. travel_h comes from the swappable TravelHopModel;

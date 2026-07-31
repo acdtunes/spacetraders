@@ -387,25 +387,48 @@ func TestOpportunityRelocatorShould_NotRelocateAHullInsideItsCooldown(t *testing
 
 // ── fail-closed exclusions ──────────────────────────────────────────────────────────────────────
 
-// A STALE or UNREADABLE region is EXCLUDED, never scored optimistically. Staleness is measured
-// per-activity through RankerAgeCaps: a STRONG market's 30-minute cap, not a flat threshold.
-func TestOpportunityRelocatorShould_ExcludeAStaleOrUnreadableRegionRatherThanScoreItOptimistically(t *testing.T) {
-	for name, region := range map[string]RelocatorRegion{
-		"a region whose projection is unreadable": {
-			AnchorSystem: "X1-RICH", LandingWaypoint: "X1-RICH-MARKET", GateHops: 2,
-			ProjectedRate: 400_000, RateReadable: false, SnapshotAge: time.Minute, Activity: "STRONG",
-		},
-		"a STRONG-market region past its 30-minute freshness cap": {
-			AnchorSystem: "X1-RICH", LandingWaypoint: "X1-RICH-MARKET", GateHops: 2,
-			ProjectedRate: 400_000, RateReadable: true, SnapshotAge: 31 * time.Minute, Activity: "STRONG",
-		},
-	} {
-		h := newRelocHarness(t)
-		h.regions.byOrigin["X1-HOME"] = []RelocatorRegion{region}
+// An UNREADABLE region is still EXCLUDED. This half of the old fail-closed rule is untouched by the
+// staleness change below, and the distinction is the whole point: we will act on an OLD number, never
+// on NO number. A region with no readable projection cannot be compared to the hull's current rate at
+// all, so licensing it would not be optimism — it would be arithmetic on nothing.
+func TestOpportunityRelocatorShould_ExcludeARegionWhoseProjectionIsUnreadable(t *testing.T) {
+	h := newRelocHarness(t)
+	h.regions.byOrigin["X1-HOME"] = []RelocatorRegion{{
+		AnchorSystem: "X1-RICH", LandingWaypoint: "X1-RICH-MARKET", GateHops: 2,
+		ProjectedRate: 400_000, RateReadable: false, SnapshotAge: time.Minute, Activity: "STRONG",
+	}}
 
-		h.reconcile(t)
+	h.reconcile(t)
 
-		relocRequireNoMove(t, h.actuator, name+" must be excluded, not scored at its last-seen prices")
+	relocRequireNoMove(t, h.actuator, "a region whose projection is unreadable must be excluded")
+}
+
+// A STALE region is now ACCEPTED (Admiral, 2026-07-31). This test previously asserted the opposite,
+// and the inversion is deliberate — it is not a weakened assertion, it is the new contract.
+//
+// WHY IT CHANGED: staleness was the single largest blocker of spreading. Measured over one window the
+// relocator refused 27 of ~48 eligible hull/region pairings as region_snapshot_stale and performed 1
+// relocation, while the fleet held market data for 516 systems and traded in 39. The old rule's own
+// reasoning was sound in isolation — a stale quote can send a hull to ground that no longer exists —
+// but it priced only one side. Refusing does not park the hull somewhere known-good; it leaves it in
+// a system it already shares with ~26 other trade hulls. A stale estimate of elsewhere beats a fresh
+// estimate of the crush, and the move is recoverable: a hull sent somewhere no better is relocated
+// again from there.
+//
+// The economics are NOT waived — ValueRelocation must still license the move on whatever data exists,
+// which is what separates "act on old numbers" from "act on no numbers".
+func TestOpportunityRelocatorShould_AcceptAStaleRegionBecauseTheAlternativeIsLeavingTheHullInACrowdedSystem(t *testing.T) {
+	h := newRelocHarness(t)
+	h.regions.byOrigin["X1-HOME"] = []RelocatorRegion{{
+		AnchorSystem: "X1-RICH", LandingWaypoint: "X1-RICH-MARKET", GateHops: 2,
+		ProjectedRate: 400_000, RateReadable: true, SnapshotAge: 31 * time.Minute, Activity: "STRONG",
+	}}
+
+	got := h.reconcile(t)
+
+	if len(got.Relocated) != 1 {
+		t.Fatalf("a STRONG-market region 31 minutes past its 30-minute cap must now be LICENSED, not excluded — "+
+			"staleness stopped being a veto on 2026-07-31 and this is the guard for it. skips %v", got.Skipped)
 	}
 }
 
