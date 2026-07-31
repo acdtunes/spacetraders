@@ -93,12 +93,23 @@ const maxFerryCandidates = 3
 // from another concern. MaxWalkRings is deliberately left where it is; giving the
 // ferry its own bound is the per-instance separation sp-9fdc258d established.
 //
-// WHAT NINE COSTS IS TICKS, NOT CREDITS. A gate jump burns no fuel — it is
-// instantaneous at the API with only a reactor cooldown — and one crossing is two
-// dispatch steps, so nine hops is roughly eighteen. A probe in transit is not
-// scanning; but the placements this reaches were not going to be bought at all,
-// so the comparison is against nothing, not against a faster purchase. Nine is
-// also where this graph saturated when this bound was chosen.
+// WHAT NINE COSTS IS TICKS **AND CREDITS**, and this paragraph used to say
+// otherwise. It read "TICKS, NOT CREDITS — a gate jump burns no fuel", which is
+// true about FUEL and was false about money: a gate crossing charges a fee,
+// measured at a mean of 5,900 credits over 4,235 jumps. That belief is what let
+// sp-e46yc happen — an authorised 10.15M probe expansion spent a further 6.44M
+// delivering the hulls, 63% over budget, because nothing in the buy path priced
+// the flight. At nine hops the ferry alone is ~53k against an ~83k probe.
+//
+// The bound itself is UNCHANGED, and deliberately so: nine is the router's reach
+// and buying past it strands hulls, which is a correctness limit rather than an
+// economic one. What changed is that the credits are now PRICED rather than
+// assumed away — see domain/parkedsensing.FerryCost and the landed-cost check in
+// fillSlot — so a distant placement is refused by the buy floor when it is
+// genuinely unaffordable instead of being bought and discovered later. A probe in
+// transit is still not scanning; but the placements this reaches were not going to
+// be bought at all, so the comparison is against nothing, not against a faster
+// purchase. Nine is also where this graph saturated when this bound was chosen.
 //
 // ITS OWN NUMBER NOW, not the seed's. It used to read MaxSeedFlightHops, and that
 // constant has since become SeedFlightUnbounded — a seed's reach is bounded by the
@@ -225,6 +236,19 @@ func ferryCandidates(ctx context.Context, p BuyPorts, playerID int, slot QueuedS
 
 	candidates := make([]purchaseCandidate, 0, maxFerryCandidates)
 	for _, source := range sources {
+		// The hop count the buy floor prices the delivery from (sp-e46yc). It COSTS
+		// NOTHING to ask: originsWithinReach has already run this exact walk to
+		// order the sources, and gateReach memoises one BFS per origin for the
+		// tick, so this is a map lookup rather than a second traversal.
+		//
+		// An unreadable walk is not read as zero hops. Zero would price a
+		// cross-system ferry as free, which is the defect being closed — so the
+		// count is simply left unset and FerryHops charges the one-gate minimum
+		// that `ferried` alone already proves.
+		hops, within, err := broker.reach.hops(ctx, source, slot.System)
+		if err != nil || !within {
+			hops = 0
+		}
 		yards, err := p.Yards.ListProbeYards(ctx, source)
 		if err != nil {
 			return nil, fmt.Errorf("failed to list probe yards in %q: %w", source, err)
@@ -240,7 +264,9 @@ func ferryCandidates(ctx context.Context, p BuyPorts, playerID int, slot QueuedS
 			if !found {
 				continue
 			}
-			candidates = append(candidates, newPurchaseCandidate(slot.System, yard, buyer))
+			candidate := newPurchaseCandidate(slot.System, yard, buyer)
+			candidate.ferryHops = hops
+			candidates = append(candidates, candidate)
 			if len(candidates) >= maxFerryCandidates {
 				return candidates, nil
 			}

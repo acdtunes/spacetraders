@@ -969,7 +969,21 @@ func fillSlot(
 			memo.record(rep, BuyStepQuote, candidate.yard, "", err.Error())
 			continue
 		}
-		if st.credits-quote < st.floor {
+		// THE FLOOR BINDS ON LANDED COST, NOT STICKER (sp-e46yc). A probe bought at
+		// a counter in another system still has to be flown to its post, and every
+		// gate it crosses on the way charges a fee. Checking the quote alone
+		// authorised 10.15M of probes and then spent 6.44M more delivering them —
+		// 63% over an explicit Admiral budget that the guard never saw coming.
+		//
+		// This can only ever make the guard STRICTER: ferry is non-negative by
+		// construction and LandedProbeCost is floored at the quote, so a placement
+		// bought at its own destination prices exactly as it did before.
+		ferry := domainSensing.FerryCost(
+			domainSensing.FerryHops(candidate.ferried, candidate.ferryHops),
+			domainSensing.DefaultGateFeeCredits,
+		)
+		landed := domainSensing.LandedProbeCost(quote, ferry)
+		if st.credits-landed < st.floor {
 			// At the floor. Stop rather than shop for a cheaper yard: the floor
 			// exists to protect working capital, and a marginally cheaper probe
 			// erodes it just the same.
@@ -1011,7 +1025,34 @@ func fillSlot(
 		if probe.Price > paid {
 			paid = probe.Price
 		}
-		st.credits = postBuyCredits(st.credits, paid, probe)
+		// The ferry is subtracted AFTER postBuyCredits rather than folded into
+		// `paid`, because the two numbers are different KINDS of fact and mixing
+		// them would corrupt the better one. postBuyCredits reconciles against
+		// probe.CreditsAfter — the API's authoritative balance the instant the
+		// purchase settled — and the ferry has not been flown yet, so it is absent
+		// from that balance by definition. Adding it to `paid` would make the
+		// reconciliation compare a spend that happened against a balance that
+		// predates it, and the `CreditsAfter < arithmetic` branch would silently
+		// discard the ferry every time. Held back separately, it reserves the
+		// delivery against the placements this same tick has yet to pop.
+		st.credits = postBuyCredits(st.credits, paid, probe) - ferry
+
+		// Purchase, ferry and landed cost logged SEPARATELY (sp-e46yc acceptance):
+		// the whole defect was that only the first was ever visible, so an operator
+		// reading a cycle line saw a 10.15M expansion that in fact cost 16.6M. The
+		// three numbers together make the multiplier readable per decision rather
+		// than reconstructable from the ledger a day later.
+		logging.LoggerFromContext(ctx).Log("INFO", "sensing probe bought", map[string]interface{}{
+			"action":      "parked_sensing_probe_landed_cost",
+			"ship_symbol": probe.ShipSymbol,
+			"waypoint":    slot.Waypoint,
+			"yard":        candidate.yard,
+			"ferried":     candidate.ferried,
+			"ferry_hops":  domainSensing.FerryHops(candidate.ferried, candidate.ferryHops),
+			"purchase":    paid,
+			"ferry":       ferry,
+			"landed":      domainSensing.LandedProbeCost(paid, ferry),
+		})
 
 		if probe.Price > quote {
 			// The market moved against us mid-purchase. The hull is bought and
@@ -1528,6 +1569,17 @@ type purchaseCandidate struct {
 	// remote yard recorded by an earlier tick is re-offered through the
 	// recorded-yard preference rather than through the cross-system search.
 	ferried bool
+	// ferryHops is how many gate crossings the bought hull must make to reach the
+	// placement, and it is what the buy floor prices the delivery from (sp-e46yc).
+	//
+	// Set ONLY by the path that actually walked the gate graph, so it is zero on
+	// every other path — including the recorded-yard preference, which re-offers a
+	// remote yard an earlier tick chose without re-walking it. Reading that zero
+	// as "free to deliver" is precisely the defect this field exists to close, so
+	// nothing reads it directly: domainSensing.FerryHops turns it into a
+	// chargeable count, and prices an unknown cross-system hop as one rather than
+	// as none.
+	ferryHops int
 }
 
 // newPurchaseCandidate pairs a counter with its buyer, deciding from the symbols
