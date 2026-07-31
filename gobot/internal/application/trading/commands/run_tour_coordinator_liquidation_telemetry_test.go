@@ -49,6 +49,16 @@ func assertLiquidationLeg(t *testing.T, leg trading.TourLegTelemetry, tourID, sh
 	if leg.LegIndex < liquidationLegIndexBase {
 		t.Fatalf("a liquidation leg must sort after every plan leg, got LegIndex=%d want >= %d", leg.LegIndex, liquidationLegIndexBase)
 	}
+	// sp-fzt09: and it must SAY it is a liquidation. Carrying no plan basis is what makes this
+	// row correct; being indistinguishable from a solver leg whose plan failed to persist is
+	// what made a quarter of all realized sells unattributable in SQL. An analysis that read
+	// these zeros as solver legs concluded the planner used 36.7% of market depth and had to be
+	// withdrawn. The zero basis above is the DATA; this is the ATTRIBUTION, and a reader must
+	// not have to infer the second from the first.
+	if leg.Engine != trading.LegEngineLiquidation {
+		t.Fatalf("a liquidation leg must declare its engine, got Engine=%q want %q — an unattributed "+
+			"zero-basis sell is indistinguishable from a solver leg that lost its plan", leg.Engine, trading.LegEngineLiquidation)
+	}
 }
 
 // sp-xfrfw. THE DEFECT: a liquidation sale is a REAL realized sell — real units leave the hull at

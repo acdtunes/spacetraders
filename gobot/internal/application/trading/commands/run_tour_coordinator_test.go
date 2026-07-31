@@ -770,6 +770,21 @@ func TestTour_ExecutesLegsAndRecordsTelemetry(t *testing.T) {
 	if len(tel.rows) != 4 {
 		t.Fatalf("expected 4 telemetry rows (one per trade), got %d: %+v", len(tel.rows), tel.rows)
 	}
+	// sp-fzt09: every plan leg — BOTH sides — must declare the solver engine. This is the
+	// population that grades the market model, so it is the one that must not silently
+	// acquire members. Asserted on all four rows rather than the first: the buy and sell
+	// paths call recordLeg from separate sites and can regress independently.
+	for i, row := range tel.rows {
+		if row.Engine != trading.LegEngineSolver {
+			t.Fatalf("row %d (isBuy=%t %s): Engine = %q, want %q — a plan leg is the evidence about the "+
+				"market model and must be attributable without inferring it from planned_unit_price",
+				i, row.IsBuy, row.Good, row.Engine, trading.LegEngineSolver)
+		}
+		if row.PlannedUnits <= 0 || row.PlannedUnitPrice <= 0 {
+			t.Fatalf("row %d (isBuy=%t %s): a solver leg must carry its plan, got PlannedUnits=%d PlannedUnitPrice=%d",
+				i, row.IsBuy, row.Good, row.PlannedUnits, row.PlannedUnitPrice)
+		}
+	}
 	if r.ModelVersion != "1@test-era" {
 		t.Fatalf("model version = %q, want 1@test-era", r.ModelVersion)
 	}

@@ -54,7 +54,11 @@ import (
 // above any plan length (tours run a handful of legs), and the sweep offsets from it per SINK
 // VISITED, not per sale, so goods dumped at one waypoint collapse into one leg exactly as
 // several trades at one plan leg do.
-const liquidationLegIndexBase = 1_000_000
+//
+// The literal now lives on the domain DTO (as lookbackLegIndex's does) because the
+// persistence layer needs it to attribute rows written before the engine column existed —
+// a second copy here would have been free to drift away from the one the backfill reads.
+const liquidationLegIndexBase = trading.LiquidationLegIndexBase
 
 // liquidationLegIndex hands out the telemetry leg position for a liquidation sweep. A sweep sells
 // its goods one at a time and flies between sinks, so the unit of a "leg" is the SINK VISIT, not
@@ -401,6 +405,7 @@ func (h *RunTourCoordinatorHandler) distressSellGood(
 	// nil-safe and swallows its own error into a WARNING, so a recording miss stays a recording
 	// miss and never touches the sale (RULINGS #4).
 	h.recordLeg(ctx, cmd,
+		trading.LegEngineLiquidation,
 		routing.TourLeg{Waypoint: sink.waypoint},
 		legIdx,
 		routing.TourTrade{Good: good, IsBuy: false},

@@ -165,9 +165,19 @@ type TourMetricsCollector struct {
 // measures the market model. PlanBasisLookback: it came from the look-back manifest's cached
 // SourceAsk, and the buy is gated to a tolerance band around that number, so a fresh cache
 // largely reproduces itself — informative about staleness, but NOT evidence about the model.
+//
+// PlanBasisLiquidation: there was no plan at all — a distress dump or exit sweep records a
+// zero basis rather than inventing one. It is passed for completeness and honesty (the label
+// matches the row's engine column, sp-fzt09) but NEVER materialises a series: a non-positive
+// basis returns before any counter is touched, so no liquidation observation survives to be
+// labelled. It exists so the emitter cannot quietly file a non-solver leg under solver.
+//
+// The values match trading.LegEngine's, which is what the telemetry row stores; the basis
+// label and the engine column are one fact rendered twice, and legPlanBasis maps between them.
 const (
-	PlanBasisSolver   = "solver"
-	PlanBasisLookback = "lookback"
+	PlanBasisSolver      = "solver"
+	PlanBasisLookback    = "lookback"
+	PlanBasisLiquidation = "liquidation"
 )
 
 // NewTourMetricsCollector creates a new tour metrics collector.

@@ -427,6 +427,7 @@ func (h *RunTourCoordinatorHandler) buyLookbackItem(
 	// (recordCargoTransaction skips zero-amount rows).
 	if buyResp.UnitsAdded > 0 {
 		h.recordLeg(ctx, cmd,
+			trading.LegEngineLookback,
 			routing.TourLeg{Waypoint: item.SourceWaypoint},
 			lookbackLegIndex,
 			routing.TourTrade{Good: item.Good, IsBuy: true, Units: item.Units, ExpectedUnitPrice: item.SourceAsk},

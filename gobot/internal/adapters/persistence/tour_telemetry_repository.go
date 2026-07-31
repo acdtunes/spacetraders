@@ -24,10 +24,21 @@ func NewTourTelemetryRepository(db *gorm.DB) *TourTelemetryRepositoryGORM {
 }
 
 // RecordLeg persists one planned-vs-realized trade record.
+//
+// An unset Engine is filled from the LegIndex class rather than stored empty: the column's
+// whole purpose is that EVERY leg with realized cargo is attributable (sp-fzt09), and a
+// blank row would reintroduce exactly the unattributable population it was added to remove.
+// Callers are still expected to declare their engine — recordLeg takes it as a required
+// parameter — so this is a floor, not the normal path.
 func (r *TourTelemetryRepositoryGORM) RecordLeg(ctx context.Context, leg trading.TourLegTelemetry) error {
+	engine := leg.Engine
+	if engine == "" {
+		engine = trading.EngineForLegIndex(leg.LegIndex)
+	}
 	row := &TourLegTelemetryModel{
 		TourID:            leg.TourID,
 		ShipSymbol:        leg.ShipSymbol,
+		Engine:            string(engine),
 		LegIndex:          leg.LegIndex,
 		Waypoint:          leg.Waypoint,
 		Good:              leg.Good,
@@ -68,6 +79,7 @@ func (r *TourTelemetryRepositoryGORM) ListByPlayer(ctx context.Context, playerID
 		out = append(out, trading.TourLegTelemetry{
 			TourID:            row.TourID,
 			ShipSymbol:        row.ShipSymbol,
+			Engine:            trading.LegEngine(row.Engine),
 			LegIndex:          row.LegIndex,
 			Waypoint:          row.Waypoint,
 			Good:              row.Good,

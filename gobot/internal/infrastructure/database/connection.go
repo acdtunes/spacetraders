@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm/logger"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
 )
 
@@ -172,6 +173,11 @@ func AutoMigrate(db *gorm.DB) error {
 	// is safe and self-healing.
 	gateConstructionColumnExisted := db.Migrator().HasColumn(&persistence.GateEdgeModel{}, "under_construction")
 
+	// sp-fzt09: same detection for the tour-telemetry engine column. Rows written before it
+	// existed record their engine only in the LegIndex sentinel, so they must be attributed
+	// once or a `WHERE engine = 'solver'` reader silently loses all history.
+	legEngineColumnExisted := db.Migrator().HasColumn(&persistence.TourLegTelemetryModel{}, "engine")
+
 	if err := db.AutoMigrate(persistence.AllModels()...); err != nil {
 		return err
 	}
@@ -180,6 +186,43 @@ func AutoMigrate(db *gorm.DB) error {
 		if err := db.Exec("UPDATE gate_edges SET synced_at = ''").Error; err != nil {
 			return fmt.Errorf("failed to invalidate gate_edges cache for construction re-probe: %w", err)
 		}
+	}
+
+	if !legEngineColumnExisted {
+		if err := backfillTourLegEngine(db); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// backfillTourLegEngine attributes pre-existing tour_leg_telemetry rows from their LegIndex
+// class, so the engine column answers for all of history and not merely for rows written
+// after the migration (sp-fzt09).
+//
+// The mapping is trading.EngineForLegIndex expressed in SQL, and it is exact rather than
+// approximate: across 45,466 production rows the three index classes partitioned without one
+// exception — every row at or above the liquidation base carried a zero basis and was a sell,
+// every look-back row carried a basis and was a buy, and no plan-position leg lacked a plan.
+//
+// Runs only on the migration that introduces the column, and is idempotent anyway: it
+// touches only rows whose engine is still unset, so a re-run after a partial failure resumes
+// rather than rewrites.
+func backfillTourLegEngine(db *gorm.DB) error {
+	err := db.Exec(`
+		UPDATE tour_leg_telemetry
+		SET engine = CASE
+			WHEN leg_index >= ? THEN ?
+			WHEN leg_index = ?  THEN ?
+			ELSE ?
+		END
+		WHERE engine IS NULL OR engine = ''`,
+		trading.LiquidationLegIndexBase, string(trading.LegEngineLiquidation),
+		trading.LookbackLegIndex, string(trading.LegEngineLookback),
+		string(trading.LegEngineSolver),
+	).Error
+	if err != nil {
+		return fmt.Errorf("failed to backfill tour_leg_telemetry engine attribution: %w", err)
 	}
 	return nil
 }

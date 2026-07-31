@@ -599,7 +599,7 @@
         "type": "grafana-postgresql-datasource",
         "uid": "postgresql"
       },
-      "description": "Realized vs solver-planned unit prices per leg. Positive buy drift = paying over plan (ladder pressure); negative sell drift = margin decay between plan and execution. Duplicated from financial.json.",
+      "description": "Realized vs solver-planned unit prices per leg. Positive buy drift = paying over plan (ladder pressure); negative sell drift = margin decay between plan and execution. Duplicated from financial.json. Scoped to engine='solver' (sp-fzt09): the panel says solver-planned and now selects exactly that, instead of relying on NULLIF(planned_unit_price,0) to drop liquidations while silently pooling look-back legs, whose cached-ask basis converges on 0% and dilutes the figure (sp-fpgl2).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -645,7 +645,7 @@
           },
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT $__timeGroupAlias(realized_at, '30m'), CASE WHEN is_buy THEN 'buy drift %' ELSE 'sell drift %' END AS metric, AVG((realized_unit_price - planned_unit_price)::numeric / NULLIF(planned_unit_price, 0) * 100) AS \"drift\" FROM tour_leg_telemetry WHERE $__timeFilter(realized_at) AND realized_at IS NOT NULL GROUP BY 1, 2 ORDER BY 1",
+          "rawSql": "SELECT $__timeGroupAlias(realized_at, '30m'), CASE WHEN is_buy THEN 'buy drift %' ELSE 'sell drift %' END AS metric, AVG((realized_unit_price - planned_unit_price)::numeric / NULLIF(planned_unit_price, 0) * 100) AS \"drift\" FROM tour_leg_telemetry WHERE $__timeFilter(realized_at) AND realized_at IS NOT NULL AND engine = 'solver' GROUP BY 1, 2 ORDER BY 1",
           "refId": "A"
         }
       ],

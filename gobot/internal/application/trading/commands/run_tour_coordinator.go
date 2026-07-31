@@ -1821,7 +1821,7 @@ func (h *RunTourCoordinatorHandler) executeBuy(
 	response.TotalSpent += int64(buyResp.TotalCost)
 	response.TradesExecuted++
 	netBought[trade.Good] += buyResp.UnitsAdded
-	h.recordLeg(ctx, cmd, leg, legIdx, trade, buyResp.UnitsAdded, realizedUnitPrice(buyResp.TotalCost, buyResp.UnitsAdded), plannedAt)
+	h.recordLeg(ctx, cmd, trading.LegEngineSolver, leg, legIdx, trade, buyResp.UnitsAdded, realizedUnitPrice(buyResp.TotalCost, buyResp.UnitsAdded), plannedAt)
 	logger.Log("INFO", fmt.Sprintf("Tour leg %d: bought %d %s at %s (cost %d)", legIdx, buyResp.UnitsAdded, trade.Good, leg.Waypoint, buyResp.TotalCost), nil)
 	// A buy that LANDED on ground carrying an outstanding EXECUTED recovery shadow is
 	// a cross-plan ladder incident — the fleet re-buying into a market still
@@ -1895,7 +1895,7 @@ func (h *RunTourCoordinatorHandler) executeSell(
 	// under-stating the multi-tranche co-dump crush this ledger exists to shadow. The
 	// live re-verify tier + trade_volume (stable across a sink's tranches) size the shadow.
 	h.noteSinkSale(legSells, trade.Good, sellResp.UnitsSold, live)
-	h.recordLeg(ctx, cmd, leg, legIdx, trade, sellResp.UnitsSold, realizedUnitPrice(sellResp.TotalRevenue, sellResp.UnitsSold), plannedAt)
+	h.recordLeg(ctx, cmd, trading.LegEngineSolver, leg, legIdx, trade, sellResp.UnitsSold, realizedUnitPrice(sellResp.TotalRevenue, sellResp.UnitsSold), plannedAt)
 	logger.Log("INFO", fmt.Sprintf("Tour leg %d: sold %d %s at %s (revenue %d)", legIdx, sellResp.UnitsSold, trade.Good, leg.Waypoint, sellResp.TotalRevenue), nil)
 	return true, nil
 }
@@ -2729,24 +2729,35 @@ func shipHeldUnits(ship *navigation.Ship, good string) int {
 }
 
 // legPlanBasis names the plan basis behind a leg's ExpectedUnitPrice, using the drift
-// metric's own label vocabulary. The synthetic look-back manifest leg is the only one that
-// carries a cached SourceAsk instead of the solver's projection, and lookbackLegIndex is
-// exactly how that leg is already marked.
+// metric's own label vocabulary. It reads the engine the executing path DECLARED, so the
+// basis label on the metric and the engine column on the row cannot drift apart — they are
+// now one fact with two renderings rather than two independent classifications of the same
+// leg (sp-fzt09).
 //
-// The distress liquidation path passes an index at or above liquidationLegIndexBase and so
-// lands here as the solver basis, which is harmless and never actually observed: it
-// deliberately leaves its plan basis at zero rather than inventing one, and a non-positive
-// basis is skipped before any drift series moves.
-func legPlanBasis(legIdx int) string {
-	if legIdx == lookbackLegIndex {
+// A liquidation reports its own basis rather than borrowing the solver's. No series moves
+// either way: it leaves its plan basis at zero rather than inventing one, and a non-positive
+// basis is skipped before any drift counter is touched — so this label never materialises.
+// It is the honest value for a leg that is genuinely not solver evidence.
+func legPlanBasis(engine trading.LegEngine) string {
+	switch engine {
+	case trading.LegEngineLookback:
 		return metrics.PlanBasisLookback
+	case trading.LegEngineLiquidation:
+		return metrics.PlanBasisLiquidation
+	default:
+		return metrics.PlanBasisSolver
 	}
-	return metrics.PlanBasisSolver
 }
 
+// recordLeg persists one leg and emits its price drift. engine is REQUIRED and names the
+// path calling in — solver, look-back or liquidation. It is a parameter rather than
+// something inferred from legIdx so that a new execution path cannot compile without saying
+// who it is: inference would file an unrecognised path under solver, quietly polluting the
+// population that grades the market model (sp-fzt09).
 func (h *RunTourCoordinatorHandler) recordLeg(
 	ctx context.Context,
 	cmd *RunTourCoordinatorCommand,
+	engine trading.LegEngine,
 	leg routing.TourLeg,
 	legIdx int,
 	trade routing.TourTrade,
@@ -2766,13 +2777,14 @@ func (h *RunTourCoordinatorHandler) recordLeg(
 	// cache reproduces itself: those legs measured a median absolute error of EXACTLY
 	// 0.000% over 1423 production rows against the solver's 0.518%. Averaged together
 	// they read as one number that describes neither.
-	metrics.ObserveTourLegPriceDrift(tradeSide(trade), legPlanBasis(legIdx), float64(trade.ExpectedUnitPrice), float64(realizedUnitPrice))
+	metrics.ObserveTourLegPriceDrift(tradeSide(trade), legPlanBasis(engine), float64(trade.ExpectedUnitPrice), float64(realizedUnitPrice))
 	if h.telemetry == nil {
 		return
 	}
 	err := h.telemetry.RecordLeg(ctx, trading.TourLegTelemetry{
 		TourID:            cmd.ContainerID,
 		ShipSymbol:        cmd.ShipSymbol,
+		Engine:            engine,
 		LegIndex:          legIdx,
 		Waypoint:          leg.Waypoint,
 		Good:              trade.Good,

@@ -645,14 +645,36 @@ type TourLegTelemetryModel struct {
 	TourID     string `gorm:"column:tour_id;not null;index:idx_tour_leg_telemetry_tour"`
 	ShipSymbol string `gorm:"column:ship_symbol;not null"`
 
+	// Engine is WHICH execution path wrote this row: solver, lookback or liquidation
+	// (trading.LegEngine). It is the attribution column a SQL reader filters on —
+	// `WHERE engine = 'solver'` for planner accuracy — and exists because that reader
+	// previously had to recognise an engine from the shape of its data (sp-fzt09).
+	//
+	// It is NOT a second encoding of LegIndex. LegIndex stays the visualizer's ordering
+	// sentinel and keeps its exact meaning; Engine is stamped independently by the call
+	// site, so the two are cross-checked rather than derived from one another. Rows
+	// written before this column existed were backfilled once from the LegIndex class
+	// (see database.AutoMigrate), which the production data supports without exception.
+	//
+	// AutoMigrate adds the column with an empty default; the backfill fills it in the same
+	// startup. Deliberately NOT `not null` — a NOT NULL add against a populated table is
+	// the one AutoMigrate shape that can fail on production Postgres, and the repository
+	// already refuses to write an empty engine.
+	Engine string `gorm:"column:engine;index:idx_tour_leg_telemetry_engine"`
+
 	// LegIndex is the leg's 0..N position in the solver's plan — EXCEPT for two sentinels
 	// that encode which kind of leg this is, and it is NOT free to change.
 	//
 	// trading.LookbackLegIndex (-1) marks a look-back manifest buy: an opportunistic
 	// pre-jump load at the reposition seam, whose plan basis is a CACHED SourceAsk rather
-	// than the solver's projection. Indices at or above 1_000_000 mark a distress
-	// liquidation, which carries no plan basis at all (liquidationLegIndexBase, declared
-	// unexported in application/trading/commands/run_tour_coordinator_distress.go).
+	// than the solver's projection. Indices at or above trading.LiquidationLegIndexBase
+	// (1_000_000) mark a distress liquidation, which carries no plan basis at all.
+	//
+	// PREFER THE ENGINE COLUMN for "which path made this leg" — that is what it is for, and
+	// it is the only form of the question a SQL reader can ask. These sentinels remain the
+	// ORDERING contract (their sign decides which way the visualizer draws a hop) and are
+	// still the classification the Go-side graduation gate uses, but as a way to identify
+	// an engine they were a magic number half-hidden in an application package.
 	//
 	// This column WAS informational — the netting readers group by good and tour and never
 	// by leg_index — and said so until sp-fpgl2 made it the PLAN-BASIS DISCRIMINATOR. It

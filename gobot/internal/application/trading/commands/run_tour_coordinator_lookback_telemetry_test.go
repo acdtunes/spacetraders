@@ -73,6 +73,17 @@ func TestTour_Lookback_RecordsTelemetryForBuy(t *testing.T) {
 	if row.TourID != "ctr-lb-tel" || row.PlayerID != 1 {
 		t.Fatalf("telemetry scoping = tour %q player %d, want ctr-lb-tel / 1", row.TourID, row.PlayerID)
 	}
+	// sp-fzt09: a look-back buy DOES carry a basis, but a CACHED SourceAsk its own buy was
+	// gated to — not the solver's projection. Pooled into planner accuracy it converges on 0%
+	// error and reports a figure describing neither population (sp-fpgl2), so it must declare
+	// itself rather than be recognised by its leg index.
+	if row.Engine != trading.LegEngineLookback {
+		t.Fatalf("look-back buy engine = %q, want %q — a cached-ask leg filed as solver re-merges "+
+			"the two plan bases in every SQL reader", row.Engine, trading.LegEngineLookback)
+	}
+	if row.LegIndex != lookbackLegIndex {
+		t.Fatalf("look-back buy must keep its ordering sentinel, got LegIndex=%d want %d", row.LegIndex, lookbackLegIndex)
+	}
 }
 
 // Reconciliation at the manifest level: loading a look-back manifest before a jump must
