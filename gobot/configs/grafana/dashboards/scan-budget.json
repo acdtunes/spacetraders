@@ -1,0 +1,897 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 100,
+      "panels": [],
+      "title": "Q1 \u00b7 Is each budget inside its allowance?",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "HEADLINE (sp-zi2hc). Observed spend rate divided by the budget's own fixed allowance (scan_budget_rate_req_per_sec). 1.0 = exactly at budget. GREEN <=1, AMBER 1-2, RED >2. Market and shipyard are separate series and must never be summed - they hold independent allowances (market 0.70 req/s, shipyard 0.12 req/s). A persistently red budget means the fixed allowance is below the fleet's unavoidable pre-buy verification and should be RAISED, never that a money guard should be weakened.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "unit": "none",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 2
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 0,
+        "y": 1
+      },
+      "id": 101,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (budget) (rate(spacetraders_daemon_scan_budget_decisions_total{decision=\"spend\",player_id=\"$player\"}[$__rate_interval]))\n  / max by (budget) (spacetraders_daemon_scan_budget_rate_req_per_sec{player_id=\"$player\"})",
+          "refId": "A",
+          "legendFormat": "{{budget}}"
+        }
+      ],
+      "title": "Budget utilisation (x allowance)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Same ratio as the stat, over time. Dashed threshold lines at 1.0 (at budget) and 2.0 (double budget). The shipyard line falling back toward 1.0 is the signal that a scan-budget fix has landed; a flat line above 2.0 is a persistent structural overdraft.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "unit": "none",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": true,
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "decimals": 2,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 2
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 16,
+        "x": 8,
+        "y": 1
+      },
+      "id": 102,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (budget) (rate(spacetraders_daemon_scan_budget_decisions_total{decision=\"spend\",player_id=\"$player\"}[$__rate_interval]))\n  / max by (budget) (spacetraders_daemon_scan_budget_rate_req_per_sec{player_id=\"$player\"})",
+          "refId": "A",
+          "legendFormat": "{{budget}}"
+        }
+      ],
+      "title": "Budget utilisation over time",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 7
+      },
+      "id": 103,
+      "panels": [],
+      "title": "Q2/Q3 \u00b7 Overdrafts (reads forced against an empty bucket)",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "rate(scan_budget_overdrafts_total) by budget and read class. An overdraft is a read admitted against an ALREADY-EMPTY allowance bucket - the forced draw. This is the quantity config/shipyard_scan.go tells the operator to watch when deciding whether to raise an allowance. Class breakdown shows WHICH traffic is forcing the draw: 'earning' is unavoidable pre-buy verification, 'discretionary' is opportunistic and is the traffic sp-lr27k reshapes.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "decimals": 4,
+          "min": 0
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "id": 104,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (budget, class) (rate(spacetraders_daemon_scan_budget_overdrafts_total{player_id=\"$player\"}[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{budget}} - {{class}}"
+        }
+      ],
+      "title": "Overdraft rate by budget and class",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Overdrafts as a fraction of all spends, by budget. A RATIO survives a fleet-size change; a raw count does not - double the fleet and the raw overdraft count doubles while the share is unchanged, so only the share tells you whether the allowance itself is mis-sized. Undefined (gap in the line) when a budget spent nothing in the window: 0/0 is genuinely unknown, not zero.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "unit": "percentunit",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": true,
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "decimals": 1,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.1
+              },
+              {
+                "color": "red",
+                "value": 0.5
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "id": 105,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (budget) (rate(spacetraders_daemon_scan_budget_overdrafts_total{player_id=\"$player\"}[$__rate_interval]))\n  / sum by (budget) (rate(spacetraders_daemon_scan_budget_decisions_total{decision=\"spend\",player_id=\"$player\"}[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{budget}}"
+        }
+      ],
+      "title": "Overdraft share (overdrafts / spends)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 15
+      },
+      "id": 106,
+      "panels": [],
+      "title": "Q4/Q5 \u00b7 Read class mix and denials",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Spend rate broken out by read class. This is how sp-lr27k is observed working: traffic should shift OUT of 'earning' (unavoidable pre-buy verification, cannot be denied) and INTO 'discretionary' (opportunistic, can be served from store). A third class 'paired' exists in the domain (marketscan.Paired - the sampled before/after impact scan) and is not yet exercised in this era; the query groups by class rather than enumerating it, so it will appear automatically the first time it fires.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 40,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            }
+          },
+          "decimals": 4,
+          "min": 0
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "id": 107,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (budget, class) (rate(spacetraders_daemon_scan_budget_decisions_total{decision=\"spend\",player_id=\"$player\"}[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{budget}} - {{class}}"
+        }
+      ],
+      "title": "Read class mix (spends by class, per budget)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "decision=serve_from_store by budget - reads the budget DECLINED to spend on. ZERO IS DISTINCT FROM NO DATA HERE: the 'or (max by (budget) (...allowance...) * 0)' term pins an explicit 0 line for any budget that is published but has emitted no denial series at all. A flat-zero line therefore means the budget is declining NOTHING and is not actually binding - a real finding. A budget missing entirely means it is not published at all. Note only 'discretionary' reads are ever denied; 'earning' has no serve_from_store series by construction, which is why this panel groups by budget and not by class.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "decimals": 4,
+          "min": 0
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "id": 108,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (budget) (rate(spacetraders_daemon_scan_budget_decisions_total{decision=\"serve_from_store\",player_id=\"$player\"}[$__rate_interval]))\n  or (max by (budget) (spacetraders_daemon_scan_budget_rate_req_per_sec{player_id=\"$player\"}) * 0)",
+          "refId": "A",
+          "legendFormat": "{{budget}}"
+        }
+      ],
+      "title": "Denials (served from store instead of spending)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 23
+      },
+      "id": 109,
+      "panels": [],
+      "title": "Q6 \u00b7 Coverage-decay invariant (cost must not grow with the map)",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "THE INVARIANT: total cost does NOT grow with the charted map. Coverage (waypoints sharing the allowance, LEFT axis) should CLIMB as the map is charted while the spend rate (RIGHT axis) stays FLAT - a growing map lengthens each waypoint's interval instead of raising the request rate. Coverage and the allowance are GAUGES, so this panel uses max(), never rate(). If both lines climb together the invariant is broken and scanning cost is scaling with the map.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "unit": "none",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "decimals": 0,
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*spend rate.*"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "reqps"
+              },
+              {
+                "id": "decimals",
+                "value": 4
+              },
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "dash": [
+                    10,
+                    10
+                  ],
+                  "fill": "dash"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 24
+      },
+      "id": 110,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (budget) (spacetraders_daemon_scan_budget_coverage{player_id=\"$player\"})",
+          "refId": "A",
+          "legendFormat": "{{budget}} - coverage (waypoints)"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (budget) (rate(spacetraders_daemon_scan_budget_decisions_total{decision=\"spend\",player_id=\"$player\"}[$__rate_interval]))",
+          "refId": "B",
+          "legendFormat": "{{budget}} - spend rate"
+        }
+      ],
+      "title": "Coverage vs spend rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "The number an operator actually reasons about: 'each market gets looked at every N'. Derived as coverage / scan_budget_rate_req_per_sec, in SECONDS (Grafana renders hours). This is the reciprocal of the per-waypoint rate the metric HELP describes as rate/coverage. Both inputs are gauges - max(), not rate(). This value RISING while the utilisation panel stays flat is the coverage-decay invariant holding: the map grew and each waypoint is simply visited less often, at unchanged total cost.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "decimals": 0,
+          "min": 0
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 24
+      },
+      "id": 111,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (budget) (spacetraders_daemon_scan_budget_coverage{player_id=\"$player\"})\n  / max by (budget) (spacetraders_daemon_scan_budget_rate_req_per_sec{player_id=\"$player\"})",
+          "refId": "A",
+          "legendFormat": "{{budget}}"
+        }
+      ],
+      "title": "Per-waypoint scan interval (coverage / allowance)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 31
+      },
+      "id": 112,
+      "panels": [],
+      "title": "Q7 \u00b7 Instrument self-check (if this fails, every panel above is void)",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "The metric's own HELP asserts these reconcile: decision=spend is ONE API request each, so sum(rate(scan_budget_decisions_total{decision=\"spend\"})) must track sum(rate(api_requests_total)) for the matching endpoint. If they diverge persistently the instrument is lying and every other panel on this dashboard is void. READ THE CUMULATIVE STAT TO THE RIGHT BEFORE RAISING AN ALARM: at these low absolute counts (~0.3-0.6 req/s) a short rate window jitters by 20%+ between the two counters purely from scrape alignment. Sustained one-directional drift is the real signal. api_requests_total carries NO player_id label - do not add $player to those two targets, it would return empty. Verified against /metrics.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "decimals": 4,
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*endpoint.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "dash": [
+                    10,
+                    10
+                  ],
+                  "fill": "dash"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 16,
+        "x": 0,
+        "y": 32
+      },
+      "id": 113,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(spacetraders_daemon_scan_budget_decisions_total{budget=\"market\",decision=\"spend\",player_id=\"$player\"}[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "market - scan-budget spends"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(spacetraders_daemon_api_requests_total{endpoint=\"Get Market\"}[$__rate_interval]))",
+          "refId": "B",
+          "legendFormat": "market - Get Market endpoint"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(spacetraders_daemon_scan_budget_decisions_total{budget=\"shipyard\",decision=\"spend\",player_id=\"$player\"}[$__rate_interval]))",
+          "refId": "C",
+          "legendFormat": "shipyard - scan-budget spends"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(spacetraders_daemon_api_requests_total{endpoint=\"Get Shipyard\"}[$__rate_interval]))",
+          "refId": "D",
+          "legendFormat": "shipyard - Get Shipyard endpoint"
+        }
+      ],
+      "title": "Spend rate vs matching endpoint rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "The noise-free form of the self-check: cumulative endpoint requests divided by cumulative scan-budget spends, since process start. 100% = perfect agreement. Immune to the rate-window jitter that makes the timeseries to the left look divergent. A steady ~99% is EXPECTED and healthy - the budget counter is incremented just before the HTTP call, so one in-flight request is permanently counted by the budget and not yet by the endpoint. Measured live at build time: market 117/118, shipyard 195/196. AMBER outside 95-105%, RED outside 90-110% - that is real divergence and voids this dashboard. api_requests_total carries NO player_id label - do not add $player to those two targets, it would return empty. Verified against /metrics.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "unit": "percentunit",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.9
+              },
+              {
+                "color": "green",
+                "value": 0.95
+              },
+              {
+                "color": "orange",
+                "value": 1.05
+              },
+              {
+                "color": "red",
+                "value": 1.1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 16,
+        "y": 32
+      },
+      "id": 114,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(spacetraders_daemon_api_requests_total{endpoint=\"Get Market\"})\n  / sum(spacetraders_daemon_scan_budget_decisions_total{budget=\"market\",decision=\"spend\",player_id=\"$player\"})",
+          "refId": "A",
+          "legendFormat": "market",
+          "instant": true,
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(spacetraders_daemon_api_requests_total{endpoint=\"Get Shipyard\"})\n  / sum(spacetraders_daemon_scan_budget_decisions_total{budget=\"shipyard\",decision=\"spend\",player_id=\"$player\"})",
+          "refId": "B",
+          "legendFormat": "shipyard",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "title": "Instrument agreement (cumulative)",
+      "type": "stat"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 41,
+  "tags": [
+    "spacetraders",
+    "scan-budget",
+    "api"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {},
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "label_values(spacetraders_daemon_scan_budget_rate_req_per_sec, player_id)",
+        "description": "Current era's player id, discovered from the scan-budget metric itself. SCOPED TO THE METRIC ON PURPOSE (sp-ahepk): an unscoped label_values(player_id) returns every era ever recorded (1,2,3,4,5 today) and offers four dead options that render every panel empty. Scoping to scan_budget_rate_req_per_sec returns only eras that actually published a scan budget.",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Player",
+        "multi": false,
+        "name": "player",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(spacetraders_daemon_scan_budget_rate_req_per_sec, player_id)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 0,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "SpaceTraders - Scan Budget",
+  "uid": "spacetraders-scan-budget",
+  "version": 1
+}
