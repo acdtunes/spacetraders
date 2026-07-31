@@ -52,9 +52,14 @@ func resolveCandidateShortlistTopN(configured int) int {
 
 // effectiveCandidateHopDepth is the sp-jsng ARMING GATE. The configured depth only takes
 // EFFECT once the Python solver clamp has actually been lifted; otherwise it is floored to
-// 1. This makes the depth>=2 widening branch unreachable while tour_solver.py still clamps
-// at MAX_TOUR_SYSTEMS=2 with flat INTER_SYSTEM_TRAVEL_SECONDS pricing, so a lone live-config
-// edit of candidate_hop_depth can never underprice a non-gate-adjacent multi-hop deadhead.
+// 1. This makes the depth>=2 widening branch unreachable while tour_solver.py still clamps at
+// MAX_TOUR_SYSTEMS=2, so a lone live-config edit of candidate_hop_depth can never widen the
+// candidate set past what the solver will actually sequence.
+//
+// The gate rests on the CLAMP, not on how a crossing is priced. It originally cited the flat
+// INTER_SYSTEM_TRAVEL_SECONDS charge as the hazard — a deadhead deeper than one hop would be
+// underpriced — but sp-smbgd retired that constant for the affine base + per_hop*hops fit, so
+// depth is now priced on its own terms at every depth. The clamp is what still binds.
 //
 // Integration checkpoint (sp-syaz): syaz threads cmd.MaxTourSystems with 0-as-absent
 // semantics — 0 maps to the solver's MAX_TOUR_SYSTEMS default of 2, and there is no Go

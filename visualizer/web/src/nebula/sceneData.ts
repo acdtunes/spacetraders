@@ -64,14 +64,25 @@ export function buildSceneData(
   // endpoints are SceneSystem symbols). profitPerHr normalizes the window's
   // realized profit so lane weight is comparable across 1h/6h/24h.
   const hours = WINDOW_HOURS[lanes?.window as FlowWindow] ?? 1;
-  const sceneLanes: SceneLane[] = (lanes?.systemLanes ?? []).map((l) => ({
-    from: l.from,
-    to: l.to,
-    profitPerHr: l.realizedProfit / hours,
-    volume: l.realizedUnits,
-    realized: l.realizedProfit,
-    projected: 0,
-  }));
+  // A MALFORMED ROW COSTS ONE LANE, NEVER THE SCENE (sp-qsq46). This file's contract is that
+  // it never throws, but `l.from` was dereferenced unguarded — so a single null row from
+  // /api/flows/lanes would throw here, before relevance is even computed, and blank the whole
+  // of /trade-flows instead of dropping the one bad lane. /lanes does not emit null rows
+  // today; the guard is what keeps that a non-event on the day it does. The array check
+  // mirrors how `edges` is read above, for the same reason.
+  //
+  // A row that passes the filter must also not carry NaN into the renderer, or the blank
+  // scene is merely traded for a NaN-weighted lane — hence the numeric defaults.
+  const sceneLanes: SceneLane[] = (Array.isArray(lanes?.systemLanes) ? lanes.systemLanes : [])
+    .filter((l) => !!l && !!l.from && !!l.to)
+    .map((l) => ({
+      from: l.from,
+      to: l.to,
+      profitPerHr: (l.realizedProfit ?? 0) / hours,
+      volume: l.realizedUnits ?? 0,
+      realized: l.realizedProfit ?? 0,
+      projected: 0,
+    }));
   const laneByEdge = new Map(sceneLanes.map((l) => [`${l.from}→${l.to}`, l]));
 
   // Ships via the existing motion model (position truth — reused verbatim, not

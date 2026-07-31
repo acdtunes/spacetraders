@@ -228,3 +228,60 @@ func TestAffineHopModelShould_ReportNoDrift_GivenNoMeasurements(t *testing.T) {
 		t.Fatal("an empty median table reported drift; absence of measurement must not force a refit")
 	}
 }
+
+// ---------------------------------------------------------------------------------------
+// ArrivalBoundHopModel — the GUARD's travel model (sp-dct0r).
+// ---------------------------------------------------------------------------------------
+
+// measuredP90Fixture is the MEASURED p90 crossing seconds by gate-hop depth (2026-07-30,
+// tour_leg_telemetry, n=868 over depths 1-5 — the whole range gategraph.MaxJumpPath admits),
+// quoted from the measurement the factor was chosen on rather than recomputed here.
+var measuredP90Fixture = map[int]float64{1: 1630, 2: 2720, 3: 3441, 4: 3899, 5: 4415}
+
+// The bound must track the measured p90 arrival, not merely sit somewhere above the median.
+// MedianDriftExceeds is the codebase's own "does this model track this table" check, so the
+// assertion is the same one a refit would run.
+func TestArrivalBoundHopModelShould_TrackTheMeasuredP90ArrivalTable(t *testing.T) {
+	if ArrivalBoundHopModel().MedianDriftExceeds(measuredP90Fixture, 0.10) {
+		t.Fatalf("the arrival bound drifts more than 10%% off the measured p90 at some depth; "+
+			"model %+v against %v", ArrivalBoundHopModel(), measuredP90Fixture)
+	}
+}
+
+// ...and the fixture DISCRIMINATES: the median model — what the guard would use if the
+// headroom factor were dropped — fails that same bar. Without this, the test above passes on
+// any model loose enough to be useless.
+func TestArrivalBoundHopModelShould_RejectTheMedianModelAgainstTheSameP90Bar(t *testing.T) {
+	if !DefaultAffineHopModel().MedianDriftExceeds(measuredP90Fixture, 0.10) {
+		t.Fatalf("the MEDIAN model must NOT track the p90 table within 10%% — if it does, the p90 " +
+			"fixture cannot tell an arrival bound from an expected-value price and proves nothing")
+	}
+}
+
+// A guard is late-averse where an objective is not: the bound must exceed the published median
+// charge at EVERY depth a strict flight bound can produce, or the freshness cap it feeds is
+// being held at a coin-flip arrival.
+func TestArrivalBoundHopModelShould_ExceedTheMedianChargeAtEveryReachableDepth(t *testing.T) {
+	bound, median := ArrivalBoundHopModel(), DefaultAffineHopModel()
+
+	for hops := 1; hops <= 5; hops++ {
+		if got, want := bound.CrossingHours(hops), median.CrossingHours(hops); got <= want {
+			t.Fatalf("a %d-hop crossing bounds arrival at %.4f h but is PRICED at %.4f h — an arrival "+
+				"bound at or below the median is wrong half the time", hops, got, want)
+		}
+	}
+}
+
+// The bound is the median model SCALED, not a second set of coefficients: a refit of the armed
+// constants must carry the guard with it rather than leave it stale beside them.
+func TestArrivalBoundHopModelShould_FollowARefitOfTheMedianCoefficients(t *testing.T) {
+	bound := ArrivalBoundHopModel()
+	wantBase := DefaultCrossingBaseSeconds * ArrivalP90HeadroomFactor
+	wantPerHop := DefaultCrossingPerHopSeconds * ArrivalP90HeadroomFactor
+
+	if math.Abs(bound.BaseSeconds-wantBase) > 1e-9 || math.Abs(bound.PerHopSeconds-wantPerHop) > 1e-9 {
+		t.Fatalf("arrival bound is %+v, want the armed coefficients scaled by %.2f (%.1f, %.1f) — a "+
+			"hand-written second pair would go stale the first time the median model is refitted",
+			bound, ArrivalP90HeadroomFactor, wantBase, wantPerHop)
+	}
+}

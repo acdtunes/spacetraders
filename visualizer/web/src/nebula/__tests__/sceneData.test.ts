@@ -218,6 +218,43 @@ describe('buildSceneData degraded inputs', () => {
     }
   });
 
+  // sp-qsq46: a null lane row used to throw on the unguarded `l.from`, BEFORE relevance was
+  // computed — so one bad row emptied the entire scene instead of costing one lane. The
+  // assertion that matters is that the SURVIVORS still render: "it did not throw" is also
+  // true of a blank scene, which is the bug.
+  it('drops only the malformed lane rows and still renders the survivors', () => {
+    const good = mockLanes('6h');
+    const poisoned = {
+      ...good,
+      systemLanes: [
+        null,
+        good.systemLanes[0],
+        undefined,
+        { to: 'X1-KA42', realizedProfit: 1, realizedUnits: 1 }, // no `from`
+        good.systemLanes[1],
+        { from: 'X1-ZC66', realizedProfit: 1, realizedUnits: 1 }, // no `to`
+      ],
+    } as unknown as ReturnType<typeof mockLanes>;
+
+    const s = buildSceneData(mockTopology, poisoned, mockLiveFlows(NOW), NOW);
+
+    expect(s.lanes).toHaveLength(2);
+    expect(s.lanes[0]).toMatchObject({ from: 'X1-NK36', to: 'X1-KA42', realized: 312000, volume: 480, profitPerHr: 52000 });
+    expect(s.lanes[1]).toMatchObject({ from: 'X1-KA42', to: 'X1-ZC66', realized: 141000, volume: 300, profitPerHr: 23500 });
+    // The rest of the scene is unharmed — systems, the edge lattice and clusters still build,
+    // and lane-derived activity is summed from the surviving lanes rather than zeroed.
+    expect(s.systems).toHaveLength(4);
+    expect(s.edges.length).toBeGreaterThan(0);
+    expect(s.clusters).toHaveLength(1);
+    expect(new Map(s.systems.map((x) => [x.symbol, x.activity])).get('X1-KA42')).toBe(453000);
+  });
+
+  it('keeps the no-throw contract when systemLanes is not an array at all', () => {
+    const s = buildSceneData(mockTopology, { window: '6h', systemLanes: null } as never, undefined, NOW);
+    expect(s.lanes).toEqual([]);
+    expect(s.systems).toHaveLength(4); // still the static scene, not the empty one
+  });
+
   it('builds the static scene when only topology is available', () => {
     const s = buildSceneData(mockTopology, undefined, undefined, NOW);
     expect(s.systems).toHaveLength(4);

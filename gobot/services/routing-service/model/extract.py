@@ -144,8 +144,17 @@ def extract_control_series(engine) -> pd.DataFrame:
                 WHERE t.transaction_type IN ('SELL_CARGO','PURCHASE_CARGO')
                   AND CAST(t.metadata AS TEXT) LIKE '%%' || p.waypoint_symbol || '%%'
                   AND CAST(t.metadata AS TEXT) LIKE '%%' || p.good_symbol || '%%'))
+        -- PRICE ORIENTATION (sp-en5h7, sp-2ehd7, sp-w963v): market_price_history quotes the
+        -- market's side, so `bid` — what the market PAYS US, the series recovery is fitted on
+        -- — is sell_price. This read had it transposed (bid <- purchase_price), which fitted
+        -- the half-life to the wrong column: the two correlate 0.9994 so the direction held,
+        -- but the median fitted half-life came out 7% off (1864 vs 1742 min).
+        --
+        -- The matching `ask` alias is NOT selected. It was never read (fit_recovery consumes
+        -- `bid` alone), and a dead half of a pair is exactly how the transposition survived
+        -- unnoticed — an unused column has nothing to contradict it.
         SELECT h.waypoint_symbol AS waypoint, h.good_symbol AS good,
-               h.sell_price AS ask, h.purchase_price AS bid,
+               h.sell_price AS bid,
                h.trade_volume, h.recorded_at,
                COALESCE(h.supply, '') AS supply,
                COALESCE(h.activity, '') AS activity

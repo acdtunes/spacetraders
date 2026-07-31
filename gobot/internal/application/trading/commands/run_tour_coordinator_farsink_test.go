@@ -6,10 +6,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/application/system/gategraph"
 	tradingsvc "github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
 
 // Far-sink capture. The tour horizon is built by gate-NEIGHBOUR expansion around the hull,
@@ -496,5 +499,109 @@ func TestTourInterSystemHops_SpansTheExecutorFlightBound(t *testing.T) {
 
 	if d, ok := hopBetween(got, chain[0], chain[5]); !ok || d != 5 {
 		t.Fatalf("a pair at the executor's flight bound must be priced at its real 5 hops, not defaulted to 1; got %v (present=%v) in %+v", d, ok, got)
+	}
+}
+
+// ---------------------------------------------------------------------------------------
+// sp-dct0r — the ARRIVAL BOUND the staleness ager predicts with.
+//
+// The retired constant aged 1800s per gate hop on the stated ground that the ager must
+// mirror the solver's per-hop charge. sp-smbgd retired that charge (the solver now prices an
+// affine base + per_hop*hops), and the mirror was wrong anyway: the price is an
+// expected-value MEDIAN, while this feeds survivesArrival, which asks whether a quote is
+// still fresh ON ARRIVAL. These pin both halves of the replacement — looser than the retired
+// flat ager everywhere the flight bound reaches (the suppression sp-smbgd's win was gated
+// behind), and still conservative against the solver's median charge (never optimistic).
+// ---------------------------------------------------------------------------------------
+
+// retiredFlatAgerPerHop is the constant this replaces, quoted rather than referenced: it no
+// longer exists in the code, and the test's job is to prove we moved off it.
+const retiredFlatAgerPerHop = 30 * time.Minute
+
+// solverMedianCrossingSeconds is the sp-smbgd solver's OWN published charge by gate-hop depth
+// (750 + 650*hops) — the median the ager must never drop to, quoted so the assertion does not
+// recompute the model it is checking.
+var solverMedianCrossingSeconds = map[int]float64{1: 1400, 2: 2050, 3: 2700, 4: 3350, 5: 4000}
+
+func TestFarSinkReach_AgesEveryReachableDepthMoreCheaplyThanTheRetiredFlatAger(t *testing.T) {
+	for hops := 1; hops <= gategraph.MaxJumpPath; hops++ {
+		got := farSinkReach{maxHops: hops}.travel()
+		retired := time.Duration(hops) * retiredFlatAgerPerHop
+		if got >= retired {
+			t.Fatalf("a %d-hop sink is aged %s, but the RETIRED flat ager charged %s — the fix must "+
+				"admit more far sinks at every reachable depth, not fewer", hops, got, retired)
+		}
+	}
+}
+
+func TestFarSinkReach_NeverAgesASinkAsCheaplyAsTheSolverPricesIt(t *testing.T) {
+	for hops, medianSeconds := range solverMedianCrossingSeconds {
+		got := farSinkReach{maxHops: hops}.travel()
+		median := time.Duration(medianSeconds) * time.Second
+		if got <= median {
+			t.Fatalf("a %d-hop sink is aged %s against a solver charge of %s — a freshness guard "+
+				"predicting arrival at the MEDIAN is wrong half the time and cannot hold a p90-fitted cap",
+				hops, got, median)
+		}
+	}
+}
+
+// A same-system "crossing" must still age by nothing. farSinkReachAt already refuses hops<=0
+// upstream, so this pins the model's behaviour at the boundary rather than a live path.
+func TestFarSinkReach_AgesASameSystemSinkByNothing(t *testing.T) {
+	for _, hops := range []int{0, -1} {
+		if got := (farSinkReach{maxHops: hops}).travel(); got != 0 {
+			t.Fatalf("a %d-hop (same-system) reach aged by %s, want 0", hops, got)
+		}
+	}
+}
+
+// THE PAYOFF, AS A GUARD DECISION RATHER THAN A NUMBER. A RESTRICTED row (180-minute fitted
+// cap) observed 60 minutes ago at the DEEPEST reach the flight bound admits — five gate hops,
+// where the retired ager diverged furthest: flat ageing put arrival at 60+150 = 210 minutes and
+// discarded the lane, while the arrival bound puts it at 60+~81 = ~141, inside the cap, so it
+// survives. Both verdicts are asserted — the retired one AND the new one — so a regression to
+// flat ageing fails here rather than silently forfeiting the lane again.
+func TestKeepRowsSurvivingArrival_KeepsADeepLaneTheRetiredFlatAgerWouldHaveDiscarded(t *testing.T) {
+	now := time.Now()
+	const hops = gategraph.MaxJumpPath
+	caps := trading.DefaultRankerAgeCaps()
+	row := routing.TourGoodSnapshot{
+		Waypoint: farSys + "-W", System: farSys, Good: "GX",
+		Activity: string(shared.ActivityLevelRestricted), Bid: 30000,
+		ObservedAt: now.Add(-60 * time.Minute),
+	}
+
+	reach := farSinkReach{maxHops: hops}
+	retired := time.Duration(hops) * retiredFlatAgerPerHop
+	if survivesArrival(row, retired, caps, now) {
+		t.Fatalf("fixture is inert: the retired flat ager (%s) must have DISCARDED this row, or the "+
+			"test proves nothing about the change", retired)
+	}
+
+	kept, expired := keepRowsSurvivingArrival([]routing.TourGoodSnapshot{row}, reach.travel(), caps, now)
+	if expired != 0 || len(kept) != 1 {
+		t.Fatalf("a GROWING row 35min old, %d hops out (arrival bound %s, cap %s) must survive; got %d kept, %d expired",
+			hops, reach.travel(), caps.For(row.Activity), len(kept), expired)
+	}
+}
+
+// The loosened bound is still a GUARD: a row that genuinely ages out over the same haul is
+// still dropped. Without this, the fix above is indistinguishable from deleting the check.
+func TestKeepRowsSurvivingArrival_StillDiscardsARowThatAgesOutOverTheHaul(t *testing.T) {
+	now := time.Now()
+	const hops = gategraph.MaxJumpPath
+	caps := trading.DefaultRankerAgeCaps()
+	row := routing.TourGoodSnapshot{
+		Waypoint: farSys + "-S", System: farSys, Good: "GS",
+		Activity: string(shared.ActivityLevelRestricted), Bid: 40000,
+		ObservedAt: now.Add(-120 * time.Minute), // 120min + ~81min arrival > the 180min RESTRICTED cap
+	}
+
+	kept, expired := keepRowsSurvivingArrival([]routing.TourGoodSnapshot{row},
+		farSinkReach{maxHops: hops}.travel(), caps, now)
+	if expired != 1 || len(kept) != 0 {
+		t.Fatalf("a GROWING row 50min old cannot survive a %d-hop haul against a %s cap; got %d kept, %d expired",
+			hops, caps.For(row.Activity), len(kept), expired)
 	}
 }

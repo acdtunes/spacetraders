@@ -35,10 +35,16 @@ def engine():
         # (as pre-sp-pf60-style rows would be) so tests can assert both the
         # real-value and COALESCE-to-empty-string paths through extract_control_series.
         tiers = [("MODERATE", "GROWING"), (None, None), (None, None)]
-        for i, (bid, (supply, activity)) in enumerate(zip([5200, 5210, 5190], tiers)):
+        # purchase_price (the ASK — what WE PAY) and sell_price (the BID — what the market PAYS
+        # US) are given DISTINCT, non-overlapping ranges so a read that transposes them shows up
+        # in the VALUES, not merely in a column name (sp-w963v). They were previously 5200-ish
+        # against a constant 3000, under a loop variable named `bid` that in fact held the ask.
+        for i, (purchase, sell, (supply, activity)) in enumerate(
+                zip([5200, 5210, 5190], [3000, 3010, 2990], tiers)):
             c.execute(text("""INSERT INTO market_price_history VALUES
-                ('X1-GQ92-A1','MEDICINE',:b,3000,80,:ts,:s,:a)"""),
-                dict(b=bid, ts=f"2026-07-09 2{i}:00:00", s=supply, a=activity))
+                ('X1-GQ92-A1','MEDICINE',:pp,:sp,80,:ts,:sup,:act)"""),
+                dict(pp=purchase, sp=sell, ts=f"2026-07-09 2{i}:00:00",
+                     sup=supply, act=activity))
     return eng
 
 def test_ladder_grouping_and_unit_prices(engine):
@@ -70,6 +76,23 @@ def test_control_series_exposes_tier_at_time(engine):
     ctrl = extract_control_series(engine).sort_values("recorded_at").reset_index(drop=True)
     assert list(ctrl.supply) == ["MODERATE", "", ""]
     assert list(ctrl.activity) == ["GROWING", "", ""]
+
+
+def test_control_series_reads_bid_from_sell_price(engine):
+    """sp-w963v: `bid` is what the market PAYS US, i.e. sell_price — the live convention
+    settled by sp-en5h7 (Bid <- sell_price, Ask <- purchase_price) and the one sp-2ehd7
+    restored in the replay harness. This read had the pair transposed, fitting fit_recovery's
+    half-life to purchase_price; the columns correlate 0.9994 so the direction survived, but
+    the median fitted half-life came out 7% off (1864 vs 1742 min).
+
+    The fixture's purchase_price (5190-5210) and sell_price (2990-3010) ranges do not overlap,
+    so a transposition cannot pass this assertion by coincidence.
+    """
+    ctrl = extract_control_series(engine).sort_values("recorded_at").reset_index(drop=True)
+    assert list(ctrl.bid) == [3000, 3010, 2990]
+    # The `ask` half is not selected at all. Nothing consumed it, and a dead half of a pair is
+    # precisely how the transposition survived: an unused column has nothing to contradict it.
+    assert "ask" not in ctrl.columns
 
 
 @pytest.fixture

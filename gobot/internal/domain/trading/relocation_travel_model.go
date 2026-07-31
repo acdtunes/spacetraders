@@ -82,6 +82,52 @@ func DefaultAffineHopModel() AffineHopModel {
 	}
 }
 
+// ArrivalP90HeadroomFactor lifts the fitted MEDIAN crossing time to a conservative ARRIVAL
+// BOUND — the p90 of the measured travel distribution. It is the factor a GUARD multiplies the
+// objective's coefficients by, and that distinction is the whole point:
+//
+//   - The tour solver's $/hr objective and the relocator's NPV are EXPECTED-VALUE calculations.
+//     They should price a crossing at its MEDIAN, because over many crossings the halves cancel.
+//   - A freshness guard gets no such averaging. It asks "will this quote still be inside its
+//     activity's cap when the hull ARRIVES", and a median arrival is wrong half the time — which
+//     silently halves the confidence of a cap that was itself fitted at p90 (RankerAgeCaps are
+//     fitted so p90 sell-price drift over the window stays ≤ ~5%). Ageing at the p90 arrival
+//     holds BOTH terms of that guard at one confidence level instead of pairing a coin-flip
+//     arrival with a p90 drift bound.
+//
+// MEASURED 2026-07-30 over tour_leg_telemetry, same methodology as the median fit above
+// (consecutive realized legs whose system changes, dt in [120s, 3h], leg_index >= 0, depth by
+// BFS over the open-era gate graph). Depths 1-5 — the entire range a strict flight bound can
+// produce, since gategraph.MaxJumpPath is 5 — n = 868:
+//
+//	hops    1      2      3      4      5
+//	n     509    188     95     42     34
+//	p50   987   1813   2235   2821   3573
+//	p90  1630   2720   3441   3899   4415
+//
+// Weighted OLS on the p90 row gives 925 + 781*h. ScaledBy(1.21) over the armed median
+// coefficients gives 1694 / 2480 / 3267 / 4054 / 4840 — within 0.8% of that direct fit at every
+// depth. So the RATIO is the honest primitive here, and ScaledBy is the right way to spend it:
+// the bound then tracks any refit of the median coefficients instead of going stale beside them
+// (the cap-2 refit the caveat above calls for would otherwise move one and not the other).
+//
+// WHY 1.21 AND NOT THE ~1.4-1.7 RAW p90/p50 OF THAT TABLE: the armed coefficients were fitted on
+// a ~85% cap-4 window and already sit ABOVE current realized medians — a p50 refit over the full
+// history reads 381 + 640*h. The armed line is therefore already conservative, and 1.21x of it
+// is where the measured p90 lands.
+const ArrivalP90HeadroomFactor = 1.21
+
+// ArrivalBoundHopModel is the travel model a FRESHNESS GUARD must predict arrival with: the
+// armed fitted shape lifted to its measured p90. Use it wherever being LATE is the failure mode;
+// never for pricing, where DefaultAffineHopModel's median is the correct expectation.
+//
+// It is a MODEL, not a second set of constants: the coefficients still have exactly one
+// definition (DefaultCrossingBaseSeconds / DefaultCrossingPerHopSeconds), and this is that model
+// scaled by a measured ratio.
+func ArrivalBoundHopModel() AffineHopModel {
+	return DefaultAffineHopModel().ScaledBy(ArrivalP90HeadroomFactor)
+}
+
 // CrossingHours prices the crossing. Each term is clamped to [CrossingTermMinSeconds,
 // CrossingTermMaxSeconds] so no refit — however badly conditioned its input — can price a crossing
 // at zero (which would make every distant region look free) or at an absurd level. A zero-value

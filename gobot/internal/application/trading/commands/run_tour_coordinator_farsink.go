@@ -29,12 +29,6 @@ const (
 	// so examining a few more than can be admitted lets a rejected top lane yield to the
 	// next-richest instead of forfeiting the pass.
 	farSinkCandidateTopN = 6
-	// interSystemHopTravel is the wall-clock ONE gate hop costs a hull, mirroring the
-	// solver's INTER_SYSTEM_TRAVEL_SECONDS (2*GATE_HOP_ALLOWANCE 450 + JUMP_COOLDOWN 900
-	// = 1800s, tour_solver.py). The number the plan is PRICED with is the number the
-	// staleness gate ages a row by, so a sink can never be admitted as affordable by one
-	// clock and refused as unreachable by another.
-	interSystemHopTravel = 30 * time.Minute
 	// farSinkUnreachableReason labels sinks refused because an already-admitted system sits
 	// further from them than the executor's strict flight bound. This counter staying
 	// non-zero is the guard working, not a fault.
@@ -65,9 +59,28 @@ type farSinkReach struct {
 	distances []routing.InterSystemHopDistance
 }
 
-// travel is the worst-case wall-clock to reach this sink from anywhere in the tour graph.
+// travel is the worst-case wall-clock to reach this sink from anywhere in the tour graph,
+// predicted at the ARRIVAL BOUND (trading.ArrivalBoundHopModel) — the fitted crossing shape at
+// its measured p90 — rather than at the solver's price.
+//
+// THOSE ARE DIFFERENT QUESTIONS, AND THE CONSTANT THIS REPLACES CONFLATED THEM (sp-dct0r). It
+// aged 1800s per hop "mirroring the solver's INTER_SYSTEM_TRAVEL_SECONDS", on the stated ground
+// that the ager must never diverge from the price. But the price answers "is this crossing worth
+// its time" and is rightly a MEDIAN, while the only thing this feeds — survivesArrival — asks
+// "will the quote still be fresh when we get there", where a median arrival is wrong half the
+// time. The two were equal by coincidence, not by construction, and sp-smbgd broke even that
+// when it retired the flat constant for an affine 750 + 650*hops charge: the ager was left
+// ageing a 5-hop sink by 9,000s against a 4,000s crossing. Conservative, so never a money hazard
+// — but it discards exactly the deep sinks the affine model was shipped to unlock (+21.4% on 3+
+// hop lanes in replay).
+//
+// The p90 bound composes with the p90-fitted RankerAgeCaps on the other side of that inequality
+// instead of mixing confidence levels, and it is looser than the retired 1800*hops at every
+// depth the flight bound admits (1..gategraph.MaxJumpPath), by far the most at depth — which is
+// where the suppression was.
 func (r farSinkReach) travel() time.Duration {
-	return time.Duration(r.maxHops) * interSystemHopTravel
+	hours := trading.ArrivalBoundHopModel().CrossingHours(r.maxHops)
+	return time.Duration(hours * float64(time.Hour))
 }
 
 // admitFarSinks turns the out-of-horizon lane DIAGNOSTIC into a capture path: the same
@@ -230,7 +243,7 @@ func (h *RunTourCoordinatorHandler) farSinkReachAt(
 			reach.maxHops = hops
 		}
 		// Only >1-hop pairs need correcting; a 1-hop pair already prices exactly at the
-		// solver's flat per-crossing charge.
+		// solver's default single-crossing charge (base + per_hop, sp-smbgd).
 		if hops > 1 {
 			from, to := sinkSystem, sys
 			if to < from {
