@@ -83,16 +83,43 @@ type SpaceTradersClient struct {
 
 	// Agent cache. All GetAgent callers share this one client instance, so
 	// caching here transparently cuts the redundant live reads for every money
-	// guard and monitor at once. agentCacheMu guards ALL four fields below AND is
-	// held across the live fetch, so a concurrent invalidation (from a spend) can
-	// never interleave between a fetch and its store — the invalidation is forced
-	// to run strictly after the store, guaranteeing the post-spend cache is EMPTY
-	// (the over-spend safety proof). agentCache==nil means empty/invalidated.
+	// guard and monitor at once. agentCacheMu guards every field below.
+	// agentCache==nil means empty/invalidated.
+	//
+	// The mutex is NOT held across the live fetch (it once was). Holding it there
+	// made every cache HIT queue behind an in-flight miss, and a /my/agent read
+	// that hits the 429 retry ladder can stall for tens of seconds — head-of-line
+	// blocking every money guard on the box. agentCacheEpoch replaces the lock as
+	// the over-spend safety proof; see GetAgent and invalidateAgentCache.
 	agentCacheMu    sync.Mutex
 	agentCache      *player.AgentData
 	agentCachedAt   time.Time
 	agentCacheToken string        // token that produced agentCache (cross-agent guard)
 	agentCacheTTL   time.Duration // 0 => defaultAgentCacheTTL
+
+	// agentCacheEpoch counts invalidations. A live fetch samples it before the
+	// request and re-checks it before storing: any spend that invalidated while
+	// the fetch was in flight bumps the epoch, and the store is DROPPED. That
+	// preserves the invariant the cache mutex used to enforce by serialization —
+	// after any spend the cache is EMPTY, so no money guard can be answered with a
+	// pre-spend (stale-HIGH) balance — without holding a lock across the network.
+	agentCacheEpoch uint64
+
+	// agentFlight is the single in-flight live /my/agent read that concurrent
+	// GetAgent callers share (singleflight), and agentFlightToken the token it
+	// authenticates. Callers arriving during a flight WAIT on it instead of
+	// issuing their own request, so N concurrent cold readers cost ONE API call —
+	// on the failure path too, where N independent retry ladders against a
+	// rate-limited API is the worst thing the fleet can do. nil => no flight.
+	agentFlight      *agentFlight
+	agentFlightToken string
+
+	// onAgentFlightJoin, when non-nil, is invoked by a caller that has joined an
+	// in-flight read, immediately before it blocks on it. Test-only seam, always
+	// nil in production: it lets a test prove N waiters really did share ONE
+	// flight by waiting for them deterministically, instead of racing a sleep and
+	// calling the resulting flake a pass. Read under agentCacheMu.
+	onAgentFlightJoin func()
 
 	// scheduler is the priority-aware rate-limit scheduler (sp-ratelimit-prio,
 	// ARMED Admiral 2026-07-17): every token acquisition goes through it.
@@ -624,40 +651,109 @@ func (c *SpaceTradersClient) GetWaypoint(ctx context.Context, systemSymbol, wayp
 	}, nil
 }
 
+// agentFlight is one in-flight live /my/agent read, shared by every GetAgent
+// caller that arrives while it is running. done is closed exactly once, by the
+// leader, after agent/err are set — so a waiter that observes the close is
+// guaranteed to see both (the channel close is the happens-before edge).
+type agentFlight struct {
+	done  chan struct{}
+	agent *player.AgentData
+	err   error
+}
+
+// await blocks until the shared flight lands and returns its result, or gives up
+// early if the WAITER's own context dies (a caller never inherits the leader's
+// deadline). The flight's error is returned verbatim to every waiter: a failed
+// read must surface as an error at each call site so the money guards fail
+// closed, never as a retained earlier value.
+func (f *agentFlight) await(ctx context.Context) (*player.AgentData, error) {
+	select {
+	case <-f.done:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	if f.err != nil {
+		return nil, f.err
+	}
+	observed := *f.agent // copy: never hand out the shared pointer
+	return &observed, nil
+}
+
 // GetAgent retrieves agent information, served from a short-TTL cache to cut
-// redundant live reads.
+// redundant live reads, with concurrent misses coalesced into a single request.
 //
-// Safety (money-critical): the cache mutex is held ACROSS the live fetch. That
-// serializes GetAgent against invalidateAgentCache (a spend), so an invalidation
-// can never interleave between a fetch and its store — it is forced to run either
-// entirely before the fetch (which then reads post-spend state) or entirely after
-// the store (which it then clears). Either way, after any spend the cache is
-// EMPTY, so the next money-guard read cannot be answered with a pre-spend
-// (stale-HIGH) balance; it re-reads live. Concurrent cold readers collapse to
-// exactly one live fetch (the first fills the cache, the rest hit it).
+// Concurrency: a caller that finds no usable cache entry either STARTS the live
+// read or JOINS the one already running for the same token. N concurrent cold
+// readers therefore cost exactly ONE API call, and each receives a value observed
+// at that single instant — the duplication is removed, the liveness is not. This
+// holds on the failure path too, which is where it matters most: without it, N
+// money guards meeting a rate-limited API each climb their own retry ladder and
+// pile more load onto the exact condition that broke the read. Every waiter gets
+// the shared error; none is ever handed a retained value in its place.
+//
+// Safety (money-critical): the fetch runs WITHOUT the cache lock, so a spend can
+// invalidate mid-flight. agentCacheEpoch closes that hole — the epoch is sampled
+// before the request and re-checked before the store, and a store whose epoch
+// moved is DROPPED. So an invalidation that races a fetch always wins, and after
+// any spend the cache is EMPTY: the next money-guard read cannot be answered with
+// a pre-spend (stale-HIGH) balance, it re-reads live. That is the same invariant
+// the old lock-across-the-fetch enforced, minus the head-of-line blocking.
 //
 // A defensive copy is returned so a caller mutating the AgentData can never
 // poison the shared cache. The token is part of the cache key so a client reused
 // across agents/tokens (era rotation) never serves one agent's balance to another.
 func (c *SpaceTradersClient) GetAgent(ctx context.Context, token string) (*player.AgentData, error) {
 	c.agentCacheMu.Lock()
-	defer c.agentCacheMu.Unlock()
 
 	if c.agentCache != nil &&
 		c.agentCacheToken == token &&
 		c.clock.Now().Sub(c.agentCachedAt) < c.resolvedAgentCacheTTLLocked() {
 		cached := *c.agentCache // copy: never hand out the cached pointer
+		c.agentCacheMu.Unlock()
 		return &cached, nil
 	}
 
+	// A read for this token is already in flight — share it rather than issue a
+	// duplicate. Matched on token so an era rotation never joins a flight
+	// authenticating a different agent.
+	if inFlight := c.agentFlight; inFlight != nil && c.agentFlightToken == token {
+		joined := c.onAgentFlightJoin
+		c.agentCacheMu.Unlock()
+		if joined != nil {
+			joined()
+		}
+		return inFlight.await(ctx)
+	}
+
+	flight := &agentFlight{done: make(chan struct{})}
+	c.agentFlight = flight
+	c.agentFlightToken = token
+	epoch := c.agentCacheEpoch
+	c.agentCacheMu.Unlock()
+
 	agent, err := c.fetchAgentLive(ctx, token)
+
+	c.agentCacheMu.Lock()
+	// Store only if no spend invalidated while this read was in flight. If one
+	// did, the value in hand may pre-date it (stale-HIGH), so the cache stays
+	// empty and the next money guard re-reads live.
+	if err == nil && c.agentCacheEpoch == epoch {
+		c.agentCache = agent
+		c.agentCachedAt = c.clock.Now()
+		c.agentCacheToken = token
+	}
+	c.agentFlight = nil
+	c.agentFlightToken = ""
+	c.agentCacheMu.Unlock()
+
+	// Publish to the waiters last: the close is what makes agent/err visible.
+	flight.agent = agent
+	flight.err = err
+	close(flight.done)
+
 	if err != nil {
 		return nil, err
 	}
-
-	c.agentCache = agent
-	c.agentCachedAt = c.clock.Now()
-	c.agentCacheToken = token
 	fresh := *agent
 	return &fresh, nil
 }
@@ -679,10 +775,16 @@ func (c *SpaceTradersClient) resolvedAgentCacheTTLLocked() time.Duration {
 // Also invalidated on obvious income (sell) as a cheap bonus so an
 // affordable buy becomes visible sooner. Cheap and idempotent: a redundant
 // invalidation only costs one extra live read.
+//
+// Bumping agentCacheEpoch is what makes the invariant hold against a read that is
+// ALREADY in flight: that read sampled the old epoch and will refuse to store its
+// (now possibly pre-spend) value. Clearing the fields alone would not — the
+// in-flight store would land after this call and resurrect a stale-HIGH balance.
 func (c *SpaceTradersClient) invalidateAgentCache() {
 	c.agentCacheMu.Lock()
 	c.agentCache = nil
 	c.agentCacheToken = ""
+	c.agentCacheEpoch++
 	c.agentCacheMu.Unlock()
 }
 
