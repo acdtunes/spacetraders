@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react';
 import { Application } from 'pixi.js';
 import { createLayers, type Layers, type PointerHooks } from './layers/registry';
-import { buildBackdrop } from './layers/backdrop';
+import { buildBackdrop, BACKDROP_COLOR } from './layers/backdrop';
 import { buildGalaxyBand, type GalaxyBandHandle } from './layers/galaxyBand';
 import { buildOrbs, type OrbsHandle } from './layers/orbs';
 import { buildStreams, type StreamsHandle } from './layers/streams';
@@ -549,10 +549,13 @@ export function NebulaScene({ data, onSelectSystem, onHover, apiRef, layerToggle
         // viewport covers one system) or the Lattice toggle asks for the whole
         // web. Both tiers ride layers.orbs above, so GALAXY still shows neither.
         st.orbs.farThreads.visible = st.band === 'SYSTEM' || toggles.lattice;
-        // Per-system freshness auras / dark rings / scout markers ride the REGION
-        // fade with layers.orbs; the Freshness toggle hides them independently.
-        st.orbs.freshness.visible = toggles.freshness;
       }
+      // Per-system freshness marks. They are orbs.ts content but they live in
+      // their OWN layer, under the lanes (sp-9m0bd), so the REGION fade has to
+      // be driven here rather than inherited from layers.orbs. The Freshness
+      // toggle hides them independently, as before.
+      st.layers.freshness.alpha = st.regionFade * st.dim;
+      st.layers.freshness.visible = regionOn && toggles.freshness;
       // Lane streams + ship motes ride the same REGION fade; particles and
       // dead-reckoned ships advance only while actually visible. These two are
       // ADDITIVE particle layers: dense chains sum back to white through any
@@ -601,7 +604,7 @@ export function NebulaScene({ data, onSelectSystem, onHover, apiRef, layerToggle
     (async () => {
       try {
         await app.init({
-          background: 0x070312,
+          background: BACKDROP_COLOR,
           antialias: true,
           resolution: Math.min(window.devicePixelRatio || 1, 2),
           // The canvas's CSS size must equal the renderer's LOGICAL size: with

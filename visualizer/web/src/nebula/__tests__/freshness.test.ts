@@ -10,6 +10,25 @@ import {
   type SystemFreshness,
 } from '../freshness';
 import type { SystemFreshnessRecord } from '../../types/flows';
+import { AURA_ALPHA, CYAN as ORB_CYAN, ORB_HALO_ALPHA_ACTIVE } from '../layers/orbs';
+import { BACKDROP_COLOR } from '../layers/backdrop';
+import {
+  contrastRatio,
+  deltaE2000,
+  normalOver,
+  rgb,
+  rgbToLab,
+  screenOver,
+  simulateCvd,
+} from './helpers/colour';
+
+const BACKDROP = rgb(BACKDROP_COLOR);
+/** A ramp step exactly as orbs.ts composites it: the aura's flat alpha, normal
+ * blend, over the scene's clear colour. Every claim about this scale is made
+ * about THIS, never about the constant. */
+const renderedRamp = (step: number) => normalOver(step, BACKDROP, AURA_ALPHA);
+const contrastOnBackdrop = (step: number, alpha: number) =>
+  contrastRatio(normalOver(step, BACKDROP, alpha), BACKDROP);
 
 const rec = (over: Partial<SystemFreshnessRecord> = {}): SystemFreshnessRecord => ({
   system: 'X1-AA',
@@ -92,10 +111,88 @@ describe('rampColor', () => {
 
   it('never reaches the backdrop — the stalest markets must stay visible', () => {
     // #070312 is the pixi clear colour. A ramp running to black would make the
-    // worst state the least visible one.
-    const stale = rampColor(1);
-    expect((stale >> 16) & 0xff).toBeGreaterThan(0x30);
-    expect(stale & 0xff).toBeGreaterThan(0x60);
+    // worst state the least visible one. Stated as CONTRAST, not as per-channel
+    // byte floors: the old form of this test asserted blue > 0x60, which is a
+    // fact about the cyan ramp that happened to be there rather than about
+    // visibility, and it would have blocked any ramp that was not blue-heavy
+    // while passing a blue one that had gone invisible.
+    expect(contrastOnBackdrop(rampColor(1), AURA_ALPHA)).toBeGreaterThanOrEqual(2);
+    expect(contrastOnBackdrop(rampColor(0), AURA_ALPHA)).toBeGreaterThanOrEqual(2);
+  });
+});
+
+// sp-9m0bd — THE CHECK THAT WOULD HAVE CAUGHT THE UNREADABLE SCALE. sp-voyz7
+// shipped a ramp whose five steps were, as drawn, one cyan; it passed its unit
+// tests because they only ever compared hex literals, and a hex literal is not
+// what anybody looks at. Everything below composites the ramp the way the
+// renderer does — at the mark's real alpha, over the real backdrop — and then
+// measures perceptual distance. CIEDE2000 ΔE ≈ 2.3 is the just-noticeable
+// difference for adjacent LARGE fields; these marks are small, so the bar here
+// is deliberately well above it.
+describe('FRESHNESS_RAMP is legible as a scale, as rendered', () => {
+  it('separates adjacent steps well past the JND once composited', () => {
+    for (let i = 0; i < FRESHNESS_RAMP.length - 1; i++) {
+      const d = deltaE2000(
+        renderedRamp(FRESHNESS_RAMP[i]),
+        renderedRamp(FRESHNESS_RAMP[i + 1]),
+      );
+      expect(d).toBeGreaterThan(6);
+    }
+  });
+
+  it('is monotone in BOTH lightness and chroma — an ordinal scale, not a hue wheel', () => {
+    const lab = FRESHNESS_RAMP.map((c) => rgbToLab(renderedRamp(c)));
+    for (let i = 1; i < lab.length; i++) {
+      expect(lab[i][0]).toBeLessThan(lab[i - 1][0]);                       // L*
+      expect(Math.hypot(lab[i][1], lab[i][2]))
+        .toBeLessThan(Math.hypot(lab[i - 1][1], lab[i - 1][2]));           // C*
+    }
+  });
+
+  it('keeps the fresh end off the ACTIVE ORB HALO — the sp-voyz7 collision', () => {
+    // The ramp's head used to BE orbs.ts CYAN (0x22d3ee), so a freshly-scanned
+    // traded system drew its mark in the exact colour of the halo drawn on top
+    // of it. Byte inequality is not enough to prove that is fixed: two different
+    // hexes can composite to the same pixel. Compare the composites.
+    expect(FRESHNESS_RAMP[0]).not.toBe(ORB_CYAN);
+    const halo = screenOver(ORB_CYAN, BACKDROP, ORB_HALO_ALPHA_ACTIVE);
+    for (const c of FRESHNESS_RAMP) {
+      expect(deltaE2000(renderedRamp(c), halo)).toBeGreaterThan(20);
+    }
+  });
+
+  it('survives colour-vision deficiency — adjacent steps stay apart for a dichromat', () => {
+    // A single-hue ramp that relies on hue alone collapses here; this one is
+    // carried by lightness and chroma, so it does not. (The cyan ramp scored
+    // ~3 ΔE under deuteranopia — no usable scale at all.)
+    for (const kind of ['deuteranopia', 'protanopia'] as const) {
+      for (let i = 0; i < FRESHNESS_RAMP.length - 1; i++) {
+        const d = deltaE2000(
+          simulateCvd(renderedRamp(FRESHNESS_RAMP[i]), kind),
+          simulateCvd(renderedRamp(FRESHNESS_RAMP[i + 1]), kind),
+        );
+        expect(d).toBeGreaterThan(5);
+      }
+    }
+  });
+
+  it('stays clear of every other mark the scene draws at the same place', () => {
+    // A freshness mark that lands on the dark ring's colour, the dormant orb's
+    // ember or the scout diamond's gold is a mark that says the wrong thing.
+    // Each neighbour is composited the way IT renders, not taken as a literal.
+    const neighbours = {
+      dormantOrbHalo: screenOver(0x475569, BACKDROP, 0.45),
+      latticeThread: normalOver(0x475569, BACKDROP, 0.3),
+      darkRing: normalOver(0x8b95ab, BACKDROP, 0.5),
+      scoutDiamond: normalOver(0xe8d9a0, BACKDROP, 0.95),
+      label: rgb(0x8b9cc0),
+    };
+    for (const [who, colour] of Object.entries(neighbours)) {
+      for (const c of FRESHNESS_RAMP) {
+        const d = deltaE2000(renderedRamp(c), colour);
+        expect(d, `ramp step vs ${who}`).toBeGreaterThan(12);
+      }
+    }
   });
 });
 

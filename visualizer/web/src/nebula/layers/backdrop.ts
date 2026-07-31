@@ -10,6 +10,11 @@ import { makeGlowTexture } from '../glowTexture';
 export interface StarSeed { x: number; y: number; r: number; alpha: number }
 
 export const STAR_COUNT = 600;
+/** The field every mark in this scene is composited over — pixi's clear colour,
+ * applied by NebulaScene. Named here because it is the GROUND for every contrast
+ * and separation claim the freshness encoding makes, and those claims have to be
+ * checkable against the value the renderer actually uses (sp-9m0bd). */
+export const BACKDROP_COLOR = 0x070312;
 /** Starfield spreads past the fitted systems so pans never hit a hard edge. */
 const BOUNDS_SCALE = 1.5;
 const MIN_SPAN = 200; // degenerate (single-system) scenes still get a sky

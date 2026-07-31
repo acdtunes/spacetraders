@@ -8,6 +8,12 @@ export const LAYER_ORDER = [
   'backdrop',
   'auras',
   'currents',
+  // Per-system market freshness (orbs.ts writes it; REGION band). It sits BELOW
+  // `lanes` on purpose: freshness is context — how well we can see a market —
+  // and the lanes and labels are the subject of this view. Carried above the
+  // orbs it buried both (sp-9m0bd, Admiral-reported). It cannot live inside
+  // `auras` either: that layer is GALAXY-only and galaxyBand clears it whole.
+  'freshness',
   'lanes',
   'orbs',
   'ships',

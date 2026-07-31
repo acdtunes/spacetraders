@@ -2,9 +2,10 @@
 // gold ring on the home system), the dormant gate topology (raw edges) as faint
 // 1px threads UNDER the orbs (dashed where the edge is under construction), and
 // monospace labels on the top-20 systems by activity. Owns the `orbs` layer
-// outright (this band is its only writer) plus a private 'region-labels'
-// sub-container inside the shared `labels` layer — the galaxyBand pattern — so
-// other bands' labels are never faded or cleared by this band.
+// outright (this band is its only writer) AND the `freshness` layer beneath the
+// lanes, plus a private 'region-labels' sub-container inside the shared `labels`
+// layer — the galaxyBand pattern — so other bands' labels are never faded or
+// cleared by this band.
 //
 // buildOrbs is idempotent per snapshot: it clears everything it owns before
 // drawing. Visibility (250ms cross-fade on band ∈ {REGION, SYSTEM}) is driven
@@ -14,12 +15,14 @@ import type { SceneData } from '../sceneData';
 import type { Layers, PointerHooks } from './registry';
 import { worldBounds } from '../camera';
 import { makeGlowTexture } from '../glowTexture';
-import { DARK_COLOR, FRESHNESS_RAMP, SCOUT_COLOR, rampColor, rampStep } from '../freshness';
+import { DARK_COLOR, FRESHNESS_RAMP, SCOUT_COLOR, rampStep } from '../freshness';
 
 export interface OrbsHandle {
   /** Region-band label sub-container (child of layers.labels) — fade this, not the shared layer. */
   labels: Container;
-  /** Market-freshness auras + dark rings + scout markers; gated by the Freshness toggle. */
+  /** Market-freshness auras + dark rings + scout markers. Lives in
+   * `layers.freshness` (below the lanes), not in `layers.orbs` — so NebulaScene
+   * drives that layer's band fade, and the Freshness toggle gates it. */
   freshness: Container;
   /** Threads touching the traded neighbourhood: hoverable, one Graphics each.
    * Rides `layers.orbs` visibility, so it shows across REGION and SYSTEM. */
@@ -30,7 +33,11 @@ export interface OrbsHandle {
 }
 
 // Palette (exact — see revamp spec).
-const CYAN = 0x22d3ee;
+/** The ACTIVE orb's halo tint. Exported because it is the thing a freshness mark
+ * must never be mistaken for — the ramp's head used to be this exact constant
+ * (sp-voyz7), so the encoding tests assert separation against it by reading it
+ * from here rather than restating it. */
+export const CYAN = 0x22d3ee;
 const GOLD = 0xe8d9a0;
 const SLATE = 0x475569; // dim ember for dormant orbs + the thread lattice
 const LABEL = 0x8b9cc0;
@@ -96,65 +103,113 @@ const DASH_OFF_PX = 4;
 export const THREADS_NEAR = 'threads-near';
 export const THREADS_FAR = 'threads-far';
 
-/** Market-freshness sub-container inside `layers.orbs` — the REGION band's
- * priced/dark encoding. It lives HERE, not in `layers.auras`, on purpose: the
- * auras layer is GALAXY-only (NebulaScene fades it out on the way to REGION) and
- * is cleared wholesale by galaxyBand, whereas `layers.orbs` is already gated to
- * exactly the band these marks belong to. Inserted before the orb sprites so
- * every aura sits behind its own orb. Gated by the Freshness toggle. */
+/** Market-freshness sub-container. It is mounted in `layers.freshness` — BELOW
+ * the lanes, the orbs and the labels — because presence is context and they are
+ * the subject; see the registry's LAYER_ORDER note. Gated by the Freshness
+ * toggle, and faded with the REGION band by NebulaScene like the orbs it
+ * annotates. The box is still built here because this band owns the per-system
+ * geometry (orb radius) the marks are sized from. */
 export const FRESHNESS_BOX = 'system-freshness-auras';
 
-/** Freshness aura geometry. The aura is a mark of its own — it never resizes the
- * orb or re-tints it, because orb radius/tint already carry activity and stacking
- * a second meaning on them is what makes a map unreadable. Its own radius is a
- * fixed multiple of the orb's (so dense regions stay proportionate) with a px
- * floor, so a zero-activity system — drawn at the 4px orb floor — still shows a
- * legible aura. Nothing here ramps with age but the COLOUR and the alpha: aura
- * size is not a freshness channel, or a big stale system would outrank a small
- * fresh one. */
-const AURA_SCALE = 2.6;
-const AURA_MIN_PX = 9;
-const AURA_ALPHA_FRESH = 0.7;
-const AURA_ALPHA_STALE = 0.34;
+/** THE ANNULUS BOTH FRESHNESS STATES DRAW IN, and one radius for both is the
+ * point. Priced and dark occupy the SAME ring of space just outside the orb, so
+ * the two states differ in FORM alone (a filled soft band vs a dashed hairline)
+ * — which is what keeps them apart under CVD, under the focus dimmer and in a
+ * grayscale screenshot — and so the luminance comparison sp-voyz7 introduced
+ * ("absence must not be drawn louder than presence") is measured over the same
+ * pixels for both rather than over two different annuli.
+ *
+ * 2.6 → 2.0 IS THE DENSITY FIX (sp-9m0bd, Admiral-reported). Measured on the
+ * live REGION viewport over the reported neighbourhood, freshness marks crossed
+ * each other 380 times in one frame; the eye read the crossings, not the
+ * systems. The multiplier is the whole lever here and the px floor is inert:
+ * ORB_MIN_PX is 4, so 4 × 2.0 = 8 = MARK_MIN_PX exactly, and 0% of the marks in
+ * that frame were pinned by the floor. It is kept as the guard it is — if the
+ * orb floor ever drops, a zero-activity system must still show a legible mark.
+ *
+ * SHRINKING ALONE COULD NEVER HAVE FIXED IT, which is why the priced state is a
+ * soft band and not a thinner ring. In that frame the 5th-percentile
+ * nearest-neighbour separation is 7.1 design px against a 4px orb floor: ANY
+ * hard contour drawn outside the orb crosses its neighbours (measured: 341
+ * crossing pairs at the old 10.4px radius, 184 at 8px, and you have to get down
+ * to ~3.5px — inside the orb — for zero). A curve with no edge has no locus to
+ * cross; two overlapping soft bands blend. The geometry forbids the contour, so
+ * the contour had to go.
+ *
+ * Nothing here ramps with age. Mark size is NOT a freshness channel, or a big
+ * stale system would outrank a small fresh one — age is carried by colour alone,
+ * and orb radius/tint keep activity to themselves. */
+const MARK_SCALE = 2.0;
+const MARK_MIN_PX = 8;
 
-/** The priced state's CONTOUR — a solid ring on the aura's own edge, colour
- * quantised to the ramp step. The glow alone did not survive contact with the
- * live map (sp-voyz7, Admiral-reported):
- *
- *   MEASURED, /trade-flows at REGION against live data — peak luminance in the
- *   annulus just OUTSIDE each orb, the only place a freshness mark can be read
- *   because inside it the orb's own halo dominates:
- *       priced (dormant)  median 28.7
- *       priced (traded)   median 56
- *       DARK              median 79.1
- *   Absence of data was drawn 2.8× louder than presence of it, and with 58% of
- *   the drawable map legitimately dark the whole field read dark.
- *
- * And the failure was worst on exactly the systems that matter. FRESHNESS_RAMP
- * step 0 IS this file's CYAN — the same 0x22d3ee — so a freshly-scanned TRADED
- * system drew a #22d3ee glow BEHIND a #22d3ee orb halo that is brighter (0.85 vs
- * 0.70) and sharper. Measured on the live map, X1-CX39's aura tint and its halo
- * tint were byte-identical. A hue cannot carry the state when the orb already
- * owns that hue: "trading markets show no freshness at all" was structural.
- *
- * So the priced state gets an EDGE at the dark state's weight — solid ring vs
- * dashed ring, both drawn OUTSIDE the orb where nothing else draws. That is the
- * file's own form-over-hue argument (see DARK_RING_* below) finally applied to
- * BOTH states instead of only one, and it is why the mark survives the hue
- * collision, the focus dimmer and a grayscale screenshot. */
-const PRICED_RING_WIDTH_PX = 1.3;
-const PRICED_RING_ALPHA = 0.8;
-/** Sub-container label prefix, one batch per ramp step (`priced-ring:0`…`:4`) —
- * a Graphics strokes its whole path with ONE style, so per-step colour needs
- * per-step objects. Five, not 265. */
-export const PRICED_RING_PREFIX = 'priced-ring:';
+/**
+ * A system's freshness-mark radius in design px, for an orb of `orbPx`. Pure and
+ * exported so both states, the label offset and the tests all read ONE rule —
+ * the priced and dark radii used to be two constant pairs that happened to
+ * agree, which is not the same thing as sharing an annulus.
+ */
+export function markRadiusPx(orbPx: number): number {
+  return Math.max(MARK_MIN_PX, orbPx * MARK_SCALE);
+}
 
-/** Dark (unsensed) ring: hollow, dashed, off-ramp slate. Hollow-and-dashed is
- * the load-bearing part — priced vs dark must be legible as a difference in FORM
- * (glow vs outline), not only in hue, so it survives CVD, the focus dimmer and a
- * grayscale screenshot. */
-const DARK_RING_SCALE = 2.0;
-const DARK_RING_MIN_PX = 8;
+/** Priced: a soft filled band in that annulus, quantised to its ramp step.
+ *
+ * ENERGY IN THE ANNULUS, NOT UNDER THE ORB. The old aura reused HALO_STOPS,
+ * whose energy sits inside 35% of its radius — i.e. underneath the orb, the one
+ * place a freshness mark cannot be read, which is why sp-voyz7 measured it at
+ * 45.1 peak against the dark ring's 80.9 and concluded the glow had to be
+ * replaced. It did not: it had to be moved. This profile is zero out to 0.5
+ * (exactly where the orb ends, since MARK_SCALE is 2.0), peaks across the outer
+ * half, and returns to zero at the rim so the mark has no edge to moiré with.
+ *
+ * THE OUTER FALLOFF IS THE LONG ONE, and deliberately so: the inner edge is
+ * masked by the orb's own halo, so the only edge a neighbour can cross is the
+ * outer one. It runs 0.68 → 1.0, about twice the width of the rise. Measured,
+ * the first cut of this profile still put as much strong-gradient pixel on
+ * screen as the contour it replaced — at the REGION reference zoom a floor-orb
+ * mark is only ~9px in radius, so a profile written in fractions of r gives
+ * transitions of 1.6px, which is a ring edge by another name. This softens the
+ * mark; it does not remove its edge, and the crossing count is what does the
+ * real work here.
+ *
+ * ONE COLOUR PER SYSTEM, AND IT IS A LEGEND COLOUR. The band replaced a
+ * continuously-tinted glow WITH a quantised contour stacked on top of it; two
+ * marks per system in near-identical hues is why the framebuffer read adjacent
+ * ramp steps 2.2 ΔE apart when the palette promised 9.3. See freshness.ts
+ * rampStep for why quantised beats interpolated at this separation.
+ *
+ * 'normal', NOT 'screen'. Screen is right for the orb halos — neighbours soften
+ * instead of summing — but it makes DENSITY read as BRIGHTNESS, and density is
+ * the defect. Under normal blend eight overlapping marks look like one mark
+ * instead of a hotspot, and the composited colour is exactly tint×alpha over the
+ * ground, which is what makes the legend's flat swatches honest. */
+export const AURA_STOPS: [number, string][] = [
+  [0, 'rgba(255,255,255,0)'],
+  [0.5, 'rgba(255,255,255,0)'],
+  [0.62, 'rgba(255,255,255,1)'],
+  [0.68, 'rgba(255,255,255,1)'],
+  [1, 'rgba(255,255,255,0)'],
+];
+/** One alpha for every step — the ramp carries the ordering on its own (monotone
+ * L* AND C*, see FRESHNESS_RAMP), and a second luminance channel on top of it
+ * would only make the map disagree with its own legend, which draws the five
+ * stops flat. 0.8 → 0.65 is also the alpha drop this needed: as the PEAK of a
+ * profile that is zero at both ends, the mark's mean energy is well under half
+ * what the old hard 0.8 stroke put on screen. */
+export const AURA_ALPHA = 0.7;
+
+/** Orb halo alpha, active / dormant. Exported alongside CYAN for the same
+ * reason: "the mark is not the halo" is a claim about the composited pixel, and
+ * a composite needs the alpha. */
+export const ORB_HALO_ALPHA_ACTIVE = 0.85;
+export const ORB_HALO_ALPHA_DORMANT = 0.45;
+
+/** Dark (unsensed) ring: hollow, dashed, off-ramp slate — UNCHANGED (it reads
+ * well and was never what anybody complained about). Hollow-and-dashed is the
+ * load-bearing part: priced vs dark must be legible as a difference in FORM, not
+ * only in hue. It now shares the priced mark's radius by construction rather
+ * than by coincidence — see MARK_SCALE — which is byte-identical to the 2.0/8 it
+ * already used. */
 const DARK_RING_WIDTH_PX = 1.1;
 const DARK_RING_ALPHA = 0.5;
 const DARK_DASH_COUNT = 10;
@@ -197,6 +252,10 @@ function clearLayer(layer: Container): void {
  */
 export function buildOrbs(layers: Layers, data: SceneData, renderer: Renderer, events?: PointerHooks): OrbsHandle {
   clearLayer(layers.orbs);
+  // The freshness layer is this band's too, and it is a SEPARATE layer now, so
+  // it needs its own clear — left out, every rebuild would stack another full
+  // set of auras on the last one.
+  clearLayer(layers.freshness);
   const labelBox = ensureRegionLabels(layers.labels);
   clearLayer(labelBox);
   // Tier boxes go in FIRST (far under near under every orb) and always exist, so
@@ -207,11 +266,10 @@ export function buildOrbs(layers: Layers, data: SceneData, renderer: Renderer, e
   const nearBox = new Container();
   nearBox.label = THREADS_NEAR;
   layers.orbs.addChild(nearBox);
-  // Freshness box goes in AFTER the threads and BEFORE the orbs: auras behind
-  // their orbs, above the lattice.
+  // Freshness marks go in their own layer, under the lanes — LAYER_ORDER.
   const freshBox = new Container();
   freshBox.label = FRESHNESS_BOX;
-  layers.orbs.addChild(freshBox);
+  layers.freshness.addChild(freshBox);
   const handle: OrbsHandle = { labels: labelBox, nearThreads: nearBox, farThreads: farBox, freshness: freshBox };
   if (data.systems.length === 0) return handle;
 
@@ -305,7 +363,7 @@ export function buildOrbs(layers: Layers, data: SceneData, renderer: Renderer, e
     farDashed.destroy();
   }
 
-  // ---- Market freshness: aura (priced) / hollow dashed ring (dark) ----------
+  // ---- Market freshness: soft band (priced) / hollow dashed ring (dark) -----
   //
   // Drawn only when a freshness payload actually reached the scene. A failed or
   // not-yet-landed poll leaves rotationBoundMinutes at 0, and in that case NOTHING
@@ -314,42 +372,31 @@ export function buildOrbs(layers: Layers, data: SceneData, renderer: Renderer, e
   // first as the second is the same class of lie as rendering a missing age at the
   // far end of the ramp. The legend states which case the reader is in.
   if (data.rotationBoundMinutes > 0) {
-    const auraTex = makeGlowTexture(renderer, ORB_TEXTURE_RADIUS, HALO_STOPS);
+    const auraTex = makeGlowTexture(renderer, ORB_TEXTURE_RADIUS, AURA_STOPS);
     const darkRings = new Graphics();
     const scouts = new Graphics();
-    // One contour batch per ramp step — see PRICED_RING_PREFIX.
-    const pricedRings = FRESHNESS_RAMP.map(() => new Graphics());
-    const pricedCounts = FRESHNESS_RAMP.map(() => 0);
     let darkCount = 0;
     let scoutCount = 0;
 
     for (const sys of data.systems) {
-      const orbR = orbRadius(sys.activity, maxActivity) * worldPerPx;
+      // ONE radius for both states — see MARK_SCALE.
+      const radius = markRadiusPx(orbRadius(sys.activity, maxActivity)) * worldPerPx;
       const f = sys.freshness;
 
       if (f.priced && f.t != null) {
-        const radius = Math.max(AURA_MIN_PX * worldPerPx, orbR * AURA_SCALE);
         const aura = new Sprite(auraTex);
         aura.anchor.set(0.5);
         aura.position.set(sys.x, sys.y);
         aura.width = radius * 2;
         aura.height = radius * 2;
-        // Tint AND alpha both ramp, and both monotonically: the single-hue scale
-        // carries the ordering, the alpha reinforces it. The stale end stops at
-        // 0.34 over a #070312 backdrop rather than fading out, so the OLDEST
-        // markets stay visible — an aura whose worst state is invisible reports
-        // its worst state as "nothing here".
-        aura.tint = rampColor(f.t);
-        aura.alpha = AURA_ALPHA_FRESH + (AURA_ALPHA_STALE - AURA_ALPHA_FRESH) * f.t;
-        aura.blendMode = 'screen';
+        // Quantised to the ramp step, so the mark wears a legend colour exactly
+        // rather than an un-matchable point between two of them. Alpha is flat:
+        // the ramp is monotone in BOTH lightness and chroma and carries the
+        // ordering on its own.
+        aura.tint = FRESHNESS_RAMP[rampStep(f.t)];
+        aura.alpha = AURA_ALPHA;
         freshBox.addChild(aura);
-        // ...and the contour on the glow's own edge, so priced is a MARK and not
-        // a smudge under a brighter orb of the same colour.
-        const step = rampStep(f.t);
-        pricedRings[step].circle(sys.x, sys.y, radius);
-        pricedCounts[step] += 1;
       } else {
-        const radius = Math.max(DARK_RING_MIN_PX * worldPerPx, orbR * DARK_RING_SCALE);
         // Manual dashes — pixi Graphics has no native dash (the `trace` rationale).
         const step = (Math.PI * 2) / DARK_DASH_COUNT;
         for (let k = 0; k < DARK_DASH_COUNT; k++) {
@@ -369,24 +416,6 @@ export function buildOrbs(layers: Layers, data: SceneData, renderer: Renderer, e
         scouts.closePath();
         scoutCount++;
       }
-    }
-
-    // Priced contours go in AFTER the glows they edge (so the edge stays crisp
-    // over its own falloff) and BEFORE the dark rings, so neither state's mark
-    // can be said to sit "on top of" the other. Same mount-only-when-non-empty
-    // rule as every other batch here.
-    for (let i = 0; i < pricedRings.length; i++) {
-      if (pricedCounts[i] === 0) {
-        pricedRings[i].destroy();
-        continue;
-      }
-      pricedRings[i].label = `${PRICED_RING_PREFIX}${i}`;
-      pricedRings[i].stroke({
-        width: PRICED_RING_WIDTH_PX * worldPerPx,
-        color: FRESHNESS_RAMP[i],
-        alpha: PRICED_RING_ALPHA,
-      });
-      freshBox.addChild(pricedRings[i]);
     }
 
     // Batched: one Graphics for every dark ring and one for every scout marker.
@@ -421,7 +450,7 @@ export function buildOrbs(layers: Layers, data: SceneData, renderer: Renderer, e
     halo.width = r * 2;
     halo.height = r * 2;
     halo.tint = active ? CYAN : SLATE;
-    halo.alpha = active ? 0.85 : 0.45;
+    halo.alpha = active ? ORB_HALO_ALPHA_ACTIVE : ORB_HALO_ALPHA_DORMANT;
     // 'screen': neighbouring halos in dense regions soften instead of summing.
     halo.blendMode = 'screen';
     layers.orbs.addChild(halo);
@@ -473,7 +502,13 @@ export function buildOrbs(layers: Layers, data: SceneData, renderer: Renderer, e
     .sort((s1, s2) => Math.abs(s2.activity) - Math.abs(s1.activity) || (s1.symbol < s2.symbol ? -1 : 1))
     .slice(0, REGION_LABEL_COUNT);
   for (const sys of top) {
-    const r = orbRadius(sys.activity, maxActivity) * worldPerPx;
+    // Offset from the FRESHNESS MARK, not from the orb. A label placed against
+    // the orb sits inside its own system's mark on any orb above the floor
+    // (the mark reaches 2× the orb radius), and a glyph on a mark is a glyph on
+    // ground of very nearly its own luminance — measured 1.05:1 before this
+    // (sp-9m0bd). The offset is the mark's whether or not the Freshness toggle
+    // is drawing one, so labels never shift when it is flipped.
+    const r = markRadiusPx(orbRadius(sys.activity, maxActivity)) * worldPerPx;
     const text = new Text({
       text: sys.symbol,
       style: {

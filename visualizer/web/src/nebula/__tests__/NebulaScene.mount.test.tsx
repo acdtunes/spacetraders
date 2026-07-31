@@ -61,7 +61,10 @@ vi.stubGlobal('ResizeObserver', StubResizeObserver);
 
 // ---- fixtures ---------------------------------------------------------------
 // Contract pin: later layer tasks attach to these EXACT names in this z-order.
-const LAYER_NAMES = ['backdrop', 'auras', 'currents', 'lanes', 'orbs', 'ships', 'labels', 'fx'];
+// Restated here rather than imported from the registry on purpose: this test
+// exists to catch an UNINTENDED change to the scene's z-order, and reading the
+// order from the thing under test would make it agree with any change at all.
+const LAYER_NAMES = ['backdrop', 'auras', 'currents', 'freshness', 'lanes', 'orbs', 'ships', 'labels', 'fx'];
 
 const sceneData: SceneData = {
   systems: [],
@@ -120,7 +123,7 @@ describe('NebulaScene mount', () => {
     expect(opts.resolution).toBeLessThanOrEqual(2);
   });
 
-  it('registers all 8 layers in z-order under a single world container on the stage', async () => {
+  it('registers all 9 layers in z-order under a single world container on the stage', async () => {
     renderScene();
     await waitForCanvas(screen.getByTestId('nebula-host'));
     const app = pixiState.apps[0];

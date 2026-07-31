@@ -11,36 +11,75 @@
 // member count). Layering an age ramp onto any of those would put two meanings
 // on one channel and produce exactly the unreadable map this view has been
 // complained about for before. So freshness takes its OWN mark at every band —
-// a halo behind the orb at REGION, a ring outside the aura at GALAXY — and
-// touches none of the existing channels.
+// a soft band in the annulus just outside the orb at REGION, a ring outside the
+// aura at GALAXY — and touches none of the existing channels.
 //
-// PRICED vs DARK IS A DIFFERENCE IN FORM, NOT A POINT ON THE RAMP. A priced
-// system draws a filled glow whose colour runs the ramp; a dark system draws a
-// hollow dashed ring and no glow at all. That is deliberate and it is the whole
+// PRICED vs DARK IS A DIFFERENCE IN FORM, NOT A POINT ON THE RAMP. Both states
+// draw in the SAME annulus outside the orb: a priced system fills it with a soft
+// band whose colour runs the ramp, a dark system outlines it with a hollow
+// dashed ring and fills nothing. That is deliberate and it is the whole
 // point of the request: a system with no price data is UNSENSED, not "maximally
 // stale", and rendering it at the far end of the ramp would assert an age nobody
 // measured. Absence of data gets absence of glow.
 //
-// The ramp itself is a single-hue ordinal scale (cyan family, monotone
-// lightness, validated: adjacent ΔL clear, both ends ≥ 2:1 against the #070312
-// backdrop). Bright and saturated = freshly priced, dim and dull = fading out of
-// the rotation's reach, then dark = we cannot see this market at all. The
-// progression reads as one continuous story about visibility, and it keeps the
-// SYSTEM-band drilldown's existing convention that cyan means fresh.
+// The ramp itself is a single-family ordinal scale (green, monotone lightness
+// AND monotone chroma, validated: see FRESHNESS_RAMP). Bright and saturated =
+// freshly priced, dim and dull = fading out of the rotation's reach, then dark =
+// we cannot see this market at all. The progression reads as one continuous
+// story about visibility.
 import type { ScoutPostStatus, SystemFreshnessRecord } from '../types/flows';
 
 /**
  * The freshness ramp: fresh → stale, five steps.
  *
- * Single hue by construction (hue spread 32°, cyan family) with monotone
- * lightness — the correctness condition for a sequential/ordinal scale, and the
- * reason this is not a cyan→amber→red traffic light. The stale end deliberately
- * stops well short of the backdrop rather than fading to black: a run to
- * near-black would make the STALEST systems the least visible ones, inverting
- * the salience the aura exists to provide. Step 0 is the codebase's CYAN
- * (0x22d3ee) so the galaxy ramp and the SYSTEM-band rings start from one colour.
+ * GREEN, NOT CYAN, AND THAT IS THE LOAD-BEARING PART (sp-9m0bd). The ramp used
+ * to open on 0x22d3ee — byte-identical to orbs.ts CYAN, the ACTIVE orb halo
+ * tint — so a freshly-scanned traded system drew its freshness mark in the
+ * exact colour of the thing on top of it. Composited as they actually render
+ * (mark at its own alpha, halo at 0.85, both over the #070312 backdrop) the two
+ * measured ΔE2000 = 2.9 apart: indistinguishable. They are now 26.8 apart.
+ *
+ * Chosen by search over CIE LCh, not by eye, against every constraint this
+ * scene imposes — and every number below is the colour AS RENDERED at
+ * AURA_ALPHA, normal blend, over the backdrop, never the hex literal, because
+ * the hex is not what anybody looks at:
+ *
+ *   monotone L*        64.5 → 34.5   (the ordinal correctness condition)
+ *   monotone C*        44.4 → 16.3   (bright+saturated = fresh, dull = stale)
+ *   adjacent ΔE2000    8.22 / 8.17 / 8.92 / 8.44   (was 7.6 / 8.9 / 8.3 / 9.3)
+ *   contrast, backdrop 7.46 → 2.57   (both ends clear the ≥ 2:1 bar)
+ *   luminance          148.7 → 80.8  (EVERY step stays above the dark ring's
+ *                                     measured 78.3 — see below)
+ *   ΔE vs active halo  26.8          (was 2.9 — the collision above)
+ *   ΔE vs the nearest OTHER mark in the scene: 26.1 (the home ring)
+ *   ΔE adjacent under CVD: deuteranopia 6.71, protanopia 6.74, tritanopia 7.77
+ *                          (was 3.05 / 3.37 / 6.89 — a colour-blind reader had
+ *                           no ramp at all)
+ *
+ * THE LUMINANCE FLOOR IS WHAT PINS THIS RAMP, and it is sp-voyz7's invariant
+ * doing its job: absence must not be drawn louder than presence. The dark ring
+ * peaks at 78.3 in the same annulus, so no priced step may render below it —
+ * which sets a floor on the ramp's stale end, and that floor is why AURA_ALPHA
+ * is 0.7 and not lower. Every candidate at 0.60 and 0.65 puts the stalest priced
+ * systems UNDER the dark ring and re-opens the defect sp-voyz7 was raised to fix.
+ *
+ * THE ADJACENT ΔE ONLY BOUGHT +8%, AND THAT IS THE HONEST STORY OF THIS RAMP.
+ * A sweep of the whole LCh space under those constraints tops out near ΔE 9 per
+ * step: five steps have to fit in the L* window between "not the orb halo" and
+ * "not quieter than absence", which is about 30 L* points, and 30 over four gaps
+ * is 7.5. Recolouring alone was never going to make this scale legible. What
+ * made it illegible was carrying ΔE 8 on a 1.3px hairline that no reader ever
+ * sees beside another one — measured on the live map, adjacent steps came off
+ * the framebuffer 2.2 ΔE apart against the 9.3 the palette promised. The fix for
+ * that is the MARK (orbs.ts AURA_STOPS: a filled band with real area, one colour
+ * per system, quantised so a mark wears a legend colour exactly); this ramp is
+ * the other half.
+ *
+ * The stale end deliberately stops well short of the backdrop rather than fading
+ * to black: a run to near-black would make the STALEST systems the least visible
+ * ones, inverting the salience the aura exists to provide.
  */
-export const FRESHNESS_RAMP = [0x22d3ee, 0x2eb6d6, 0x3799bd, 0x3d7ea3, 0x41648a] as const;
+export const FRESHNESS_RAMP = [0x58f8ab, 0x6fd585, 0x75b467, 0x729450, 0x68753e] as const;
 
 /** The dark (unsensed) mark's colour — a neutral slate deliberately OFF the
  * ramp, carried on a hollow dashed ring so the state is distinguishable by form
@@ -57,12 +96,16 @@ export const SCOUT_COLOR = 0xe8d9a0;
  * past the bound. Clamped, and NaN reads as step 0 (the same convention
  * `rampColor` uses for a non-finite t).
  *
- * The glow interpolates continuously; the priced CONTOUR quantises to these
- * steps. That is not a downgrade of the encoding: the scale is ordinal by
- * construction (five steps, single hue, monotone lightness), a pixi Graphics
- * strokes its whole accumulated path with ONE style, and five legible batches
- * say more than 265 nearly-identical strokes would. The continuous read still
- * lives on the glow underneath.
+ * THE REGION AURA QUANTISES TO THESE STEPS RATHER THAN INTERPOLATING, and that
+ * is a legibility decision, not a downgrade (sp-9m0bd). Adjacent steps are only
+ * ~9 ΔE apart — that is the ceiling this scene's constraints allow, see
+ * FRESHNESS_RAMP — so a continuously interpolated tint lands BETWEEN two legend
+ * stops and is by construction less separable than either. Quantising makes a
+ * mark wear a legend colour exactly, which is the only way "match the mark to
+ * the scale" is a task a reader can actually perform. The continuous position
+ * is still what `t` carries, and the GALAXY band's per-cluster gauge still
+ * interpolates — one cluster ring is read against itself over time, not matched
+ * against a five-stop legend at density.
  */
 export function rampStep(t: number): number {
   const clamped = Number.isFinite(t) ? Math.min(1, Math.max(0, t)) : 0;
