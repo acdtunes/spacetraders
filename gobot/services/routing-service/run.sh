@@ -56,11 +56,16 @@ export TOUR_SOLVER_MAX_PLANNED_TRANCHES="${TOUR_SOLVER_MAX_PLANNED_TRANCHES:-3}"
 #
 # trade_volume stays 10 for now — its edge was thin and the analyst wants it re-measured separately.
 #
-# 100 IS THE CLAMP CEILING (FULL_SCORE_TOP_N_MAX), so this grid is CENSORED AT ITS BEST CELL: the
-# measurement cannot tell us whether 150 would be better still. Raising the ceiling is a separate
-# decision — it bounds stage-2 scoring cost, so it needs a latency sweep, not just a $/hr grid.
-# clamp [10,100]; disarm with `export TOUR_SOLVER_FULL_SCORE_TOP_N=35` (or git checkout run.sh) + deploy-routing.
-export TOUR_SOLVER_FULL_SCORE_TOP_N="${TOUR_SOLVER_FULL_SCORE_TOP_N:-100}"
+# THEN 100 -> 150, same day. 100 had been BOTH the best cell AND the clamp ceiling, so that grid
+# was censored at its own optimum and could not say whether more was better. Raising the ceiling
+# was held back deliberately until it had a LATENCY sweep rather than another $/hr grid, because
+# FULL_SCORE_TOP_N_MAX exists to bound stage-2 scoring cost — a credits-only measurement would
+# happily buy $/hr with p99 solve time and not report it. Swept tn 100/150/200 WITH wall-time:
+# p50 solve 6,056 -> 6,065 ms (the ortools anytime budget dominates, so shortlist size barely
+# moves it), tn=150 +1.34% 6W/0L, tn=200 +1.09%. 150 is an INTERIOR optimum — 200 is measurably
+# worse — so the ceiling is no longer hiding the answer.
+# clamp [10,150]; disarm with `export TOUR_SOLVER_FULL_SCORE_TOP_N=100` (or git checkout run.sh) + deploy-routing.
+export TOUR_SOLVER_FULL_SCORE_TOP_N="${TOUR_SOLVER_FULL_SCORE_TOP_N:-150}"
 # ARMED LIVE (same): OR-Tools per-model node cap 80->160. Admits ~2x pruned candidate nodes per subset
 # model so a distant rich cluster survives pruning to compete in-model. ONLY bites under
 # TOUR_SOLVER_SEQUENCER=ortools (armed); inert under beam. 160 stays well under the [40,400] ceiling and

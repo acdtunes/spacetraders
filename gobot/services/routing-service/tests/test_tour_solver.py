@@ -1345,17 +1345,18 @@ def test_max_planned_tranches_env_deepens_planned_load(monkeypatch):
     ("20", 20),    # explicit default
     ("35", 35),    # the economy-analyst's recommended arm value
     ("50", 50),    # mid, in-range
-    ("100", 100),  # ceiling, in-range
+    ("100", 100),  # in-range (the previous ceiling, kept as a regression point)
+    ("150", 150),  # ceiling, in-range — raised 100->150 on the 2026-07-31 latency sweep
     ("10", 10),    # floor, in-range
     ("0", 10),     # 0 -> floored to the sane minimum, NEVER 0 (a 0 top-N scores nothing)
     ("-5", 10),    # negative -> floored to 10, never 0
     ("5", 10),     # below the floor -> clamped up to 10
-    ("200", 100),  # above the sane range -> clamped to the ceiling
+    ("200", 150),  # above the sane range -> clamped to the ceiling (150, was 100)
     ("abc", 20),   # non-int -> falls back to the default
     ("2.5", 20),   # non-int (float string) -> falls back to the default
 ])
 def test_resolve_full_score_top_n_env_override(monkeypatch, env_value, expected):
-    # sp-7q5t: the resolver mirrors _sequencer_env_scalar — clamp to [10, 100], fall
+    # sp-7q5t: the resolver mirrors _sequencer_env_scalar — clamp to [10, 150], fall
     # back to the FULL_SCORE_TOP_N default (20) on absent/unset/non-int. Floor is 10
     # (NEVER 0): a 0/negative operator typo could otherwise admit no sequence to full
     # scoring and silently return no tour.

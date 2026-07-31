@@ -123,7 +123,13 @@ BEAM_WIDTH = 50               # spec decision #4
 FULL_SCORE_TOP_N = 20         # sequences fully tranche-scored after the beam; env TOUR_SOLVER_FULL_SCORE_TOP_N, clamp [10, 100]
 FULL_SCORE_TOP_N_ENV_VAR = "TOUR_SOLVER_FULL_SCORE_TOP_N"
 FULL_SCORE_TOP_N_MIN = 10     # floor: a tiny top-N starves stage-2 of candidates; NEVER 0 (0 scores nothing)
-FULL_SCORE_TOP_N_MAX = 100    # ceiling: bounds stage-2 scoring cost
+FULL_SCORE_TOP_N_MAX = 150    # ceiling: bounds stage-2 scoring cost
+# RAISED 100 -> 150, 2026-07-31, on a latency sweep rather than a $/hr grid alone. The old
+# ceiling was CENSORING its own measurement: 100 was simultaneously the best cell and the
+# boundary, so the grid could not say whether more was better. Swept tn 100/150/200 with
+# wall-time: p50 solve 6,056 -> 6,065 ms (the anytime budget dominates, so shortlist size
+# barely moves it), tn=150 +1.34% 6W/0L, tn=200 +1.09%. 150 is an INTERIOR optimum now, not
+# a boundary — 200 is measurably worse, so the ceiling is no longer hiding the answer.
 TOP_REJECTED_N = 3            # rejected alternatives reported (observability parity)
 MAX_SNAPSHOT_AGE_MINUTES_DEFAULT = 75   # mirrors trading's maxListingAge
 DEFAULT_SELL_DECAY = 0.9      # conservative fallback when tier not fitted
