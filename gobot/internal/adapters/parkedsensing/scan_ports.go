@@ -25,8 +25,13 @@ var _ appSensing.MarketScanRunner = (*ScanRunnerPort)(nil)
 // scanner. Narrowed to one method so the runner can be exercised without an API
 // client, and so this adapter cannot grow a second responsibility by accident.
 // *ship.MarketScanner satisfies it.
+// It is the OUTCOME-reporting variant deliberately. The plain ScanAndSaveMarket
+// returns nil both when it wrote market data and when the fleet's scan budget
+// declined the request, and the pacer keeps a freshness ledger off this return —
+// so the narrow error-only form is precisely what made 78.5% of the sensing
+// ledger's stamps false (sp-zml2u).
 type marketScanAPI interface {
-	ScanAndSaveMarket(ctx context.Context, playerID uint, waypointSymbol string) error
+	ScanAndSaveMarketWithOutcome(ctx context.Context, playerID uint, waypointSymbol string) (bool, error)
 }
 
 // ScanRunnerPort issues one parked-probe market scan.
@@ -43,13 +48,16 @@ func NewScanRunnerPort(scanner marketScanAPI) *ScanRunnerPort {
 	return &ScanRunnerPort{scanner: scanner}
 }
 
-// Run scans one waypoint and persists what it found.
-func (p *ScanRunnerPort) Run(ctx context.Context, playerID int, waypoint string) error {
+// Run scans one waypoint and persists what it found, reporting whether it wrote
+// anything: scanned is false when the fleet's market-scan budget declined the
+// request, which is a success for the caller but not an event any freshness
+// ledger may record.
+func (p *ScanRunnerPort) Run(ctx context.Context, playerID int, waypoint string) (bool, error) {
 	pid, err := shared.NewPlayerID(playerID)
 	if err != nil {
-		return err
+		return false, err
 	}
-	return p.scanner.ScanAndSaveMarket(scanCtx(ctx), uint(pid.Value()), waypoint)
+	return p.scanner.ScanAndSaveMarketWithOutcome(scanCtx(ctx), uint(pid.Value()), waypoint)
 }
 
 // scanCtx tags a parked-probe scan on both of the API client's axes, and is the

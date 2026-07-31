@@ -206,10 +206,11 @@ type SensingLedger interface {
 	parkedsensing.ExpandLedger
 	parkedsensing.ReapLedger
 
-	// ParkedSlotViews returns every PARKED placement with the three columns the
-	// scan rotation paces on — the whitelist it watches, its smoothed spread and
-	// its last scan stamp — which the state-only QueuedSlot projection does not
-	// carry.
+	// ParkedSlotViews returns every PARKED placement with the columns the scan
+	// rotation paces on — the whitelist it watches, its smoothed spread and its
+	// last ATTEMPT stamp — which the state-only QueuedSlot projection does not
+	// carry, plus the separate last-DATA stamp the staleness gauge reports
+	// (sp-zml2u).
 	ParkedSlotViews(ctx context.Context, playerID int) ([]parkedsensing.SensingSlotView, error)
 }
 

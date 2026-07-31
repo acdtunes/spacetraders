@@ -603,7 +603,9 @@ func TestMetrics_PublishesRateStalenessAndSlots(t *testing.T) {
 			Kind: parkedsensing.SlotKindMarket, State: parkedsensing.SlotStateParked,
 			AssignedShip: "PROBE-" + string(rune('1'+i)),
 		}
-		world.ledger.views[waypoint] = parkedsensing.SensingSlotView{LastScan: now.Add(-age)}
+		// LastDataAt, not LastScan: the gauge reports the age of the DATA, and
+		// LastScan is the rotation's pacing clock (sp-zml2u).
+		world.ledger.views[waypoint] = parkedsensing.SensingSlotView{LastDataAt: now.Add(-age)}
 	}
 
 	require.NoError(t, world.handler.ReconcileOnce(world.ctx, world.cmd))
@@ -622,9 +624,9 @@ func TestMetrics_PublishesRateStalenessAndSlots(t *testing.T) {
 func TestMetrics_NeverScannedSlotsAreExcludedNotClamped(t *testing.T) {
 	now := time.Now()
 	hot, median, cold, ok := stalenessPercentiles([]parkedsensing.SensingSlotView{
-		{Waypoint: "A", LastScan: now.Add(-30 * time.Second)},
+		{Waypoint: "A", LastDataAt: now.Add(-30 * time.Second)},
 		{Waypoint: "B"}, // never scanned
-		{Waypoint: "C", LastScan: now.Add(-90 * time.Second)},
+		{Waypoint: "C", LastDataAt: now.Add(-90 * time.Second)},
 	}, now)
 
 	require.True(t, ok)

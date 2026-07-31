@@ -76,7 +76,31 @@ func (s *MarketScanner) ScanBudget() *ScanBudget { return s.budget }
 
 // ScanAndSaveMarket scans a market at the given waypoint and saves the data to the database.
 // This is a non-fatal operation - errors are logged but do not fail the caller's operation.
+//
+// IT CANNOT TELL A SCAN FROM A DECLINE, and callers that need to must use
+// ScanAndSaveMarketWithOutcome instead. A budget decline returns nil here for a
+// good reason (see the Admit branch below), but nil then means two different
+// things — "the data is written" and "the data is whatever was already there" —
+// and a caller that records freshness off this return records a claim it cannot
+// support. That is exactly what made 78.5% of the sensing ledger's freshness
+// stamps false (sp-zml2u).
 func (s *MarketScanner) ScanAndSaveMarket(ctx context.Context, playerID uint, waypointSymbol string) error {
+	_, err := s.ScanAndSaveMarketWithOutcome(ctx, playerID, waypointSymbol)
+	return err
+}
+
+// ScanAndSaveMarketWithOutcome is ScanAndSaveMarket plus the one bit an error
+// return cannot carry: whether market data was actually written.
+//
+// scanned is true only when this call reached the API and persisted a fresh
+// row. It is false when the fleet's market-scan budget declined the request —
+// still a SUCCESS for the caller, whose next act is the store read it would have
+// done anyway, but NOT an event that any freshness ledger may record. It is
+// false on an error too, for the same reason: nothing was written.
+//
+// The (bool, error) shape mirrors ScanAndSaveMarketFresh, which already answers
+// the same question about its own gate.
+func (s *MarketScanner) ScanAndSaveMarketWithOutcome(ctx context.Context, playerID uint, waypointSymbol string) (bool, error) {
 	logger := common.LoggerFromContext(ctx)
 
 	// Start timing for metrics
@@ -106,19 +130,22 @@ func (s *MarketScanner) ScanAndSaveMarket(ctx context.Context, playerID uint, wa
 	// trip the fail-closed money guards, which is why the four call paths that
 	// cannot tolerate a cached price stamp WithLiveScanRequired and are never
 	// declined.
+	//
+	// SUCCESS, BUT NOT A SCAN — hence (false, nil) rather than plain nil. Nothing
+	// was written, so a caller keeping a freshness ledger must record nothing.
 	if s.budget.Admit(ctx, int(playerID), waypointSymbol, cached, scanClassOf(ctx)) == marketscan.ServeFromStore {
 		logger.Log("DEBUG", fmt.Sprintf(
 			"[MarketScanner] Serving %s from store - market-scan budget", waypointSymbol), map[string]interface{}{
 			"action": "scan_served_from_store", "waypoint": waypointSymbol,
 		})
-		return nil
+		return false, nil
 	}
 
 	token, err := common.PlayerTokenFromContext(ctx)
 	if err != nil {
 		logger.Log("ERROR", fmt.Sprintf("[MarketScanner] Failed to get player token: %v", err), nil)
 		recordMarketScanMetric(playerID, waypointSymbol, startTime, err)
-		return fmt.Errorf("failed to get player token: %w", err)
+		return false, fmt.Errorf("failed to get player token: %w", err)
 	}
 
 	systemSymbol := shared.ExtractSystemSymbol(waypointSymbol)
@@ -128,20 +155,20 @@ func (s *MarketScanner) ScanAndSaveMarket(ctx context.Context, playerID uint, wa
 	if err != nil {
 		logger.Log("ERROR", fmt.Sprintf("[MarketScanner] Failed to get market data for %s: %v", waypointSymbol, err), nil)
 		recordMarketScanMetric(playerID, waypointSymbol, startTime, err)
-		return fmt.Errorf("failed to get market data for %s: %w", waypointSymbol, err)
+		return false, fmt.Errorf("failed to get market data for %s: %w", waypointSymbol, err)
 	}
 
 	tradeGoods, err := s.convertAPIGoodsToDomain(marketData.TradeGoods, logger)
 	if err != nil {
 		recordMarketScanMetric(playerID, waypointSymbol, startTime, err)
-		return err
+		return false, err
 	}
 
 	err = s.marketRepo.UpsertMarketData(ctx, playerID, waypointSymbol, tradeGoods, time.Now())
 	if err != nil {
 		logger.Log("ERROR", fmt.Sprintf("[MarketScanner] Failed to persist market data for %s: %v", waypointSymbol, err), nil)
 		recordMarketScanMetric(playerID, waypointSymbol, startTime, err)
-		return fmt.Errorf("failed to persist market data: %w", err)
+		return false, fmt.Errorf("failed to persist market data: %w", err)
 	}
 
 	// Record price changes in history if repository is available
@@ -157,7 +184,7 @@ func (s *MarketScanner) ScanAndSaveMarket(ctx context.Context, playerID uint, wa
 
 	recordMarketScanMetric(playerID, waypointSymbol, startTime, nil)
 
-	return nil
+	return true, nil
 }
 
 // recordMarketScanMetric records a market-scan outcome to the global market
@@ -193,8 +220,10 @@ func MarketFreshWithin(m *market.Market, maxAge time.Duration, now time.Time) bo
 // ScanAndSaveMarket: when maxAge>0 AND the cached market for waypointSymbol was scanned
 // within maxAge, it SKIPS the GetMarket API call and reuses the cache (returns
 // scanned=false) — killing the redundant re-scan (the measured "same hull re-scanning a
-// market 4s apart"). A stale, never-scanned, or unknown-age market still scans (returns
-// scanned=true) so the trade sees fresh-enough prices. maxAge<=0 disables the gate
+// market 4s apart"). A stale, never-scanned, or unknown-age market falls through to a
+// scan so the trade sees fresh-enough prices, and scanned then reports what THAT scan
+// did — true if it wrote data, false if the market-scan budget declined it. maxAge<=0
+// disables the gate
 // entirely (always scans — pre-sp-v34b behavior), so the freshness-scout recovery path
 // (which stamps no policy, hence maxAge 0) and every other caller are byte-for-byte
 // unaffected. Non-fatal like ScanAndSaveMarket: the returned error is the underlying
@@ -213,7 +242,12 @@ func (s *MarketScanner) ScanAndSaveMarketFresh(ctx context.Context, playerID uin
 			return false, nil
 		}
 	}
-	return true, s.ScanAndSaveMarket(ctx, playerID, waypointSymbol)
+	// The outcome is the SCANNER's, not this gate's. Falling through to a scan
+	// that the market-scan budget then declines writes no data either, so
+	// reporting true here would reintroduce the same collapse this gate's own
+	// return value exists to avoid (sp-zml2u). Every caller today discards the
+	// bool, so this is inert now; it stops the next one from inheriting the trap.
+	return s.ScanAndSaveMarketWithOutcome(ctx, playerID, waypointSymbol)
 }
 
 func (s *MarketScanner) convertAPIGoodsToDomain(apiGoods []domainPorts.TradeGoodData, logger common.ContainerLogger) ([]market.TradeGood, error) {

@@ -19,9 +19,15 @@ type SlotSchedule struct {
 	Waypoint string
 	// Weight is this slot's share of the scan budget, from ScanWeight.
 	Weight float64
-	// LastScan is when this slot was last sensed. The next due time is
-	// anchored on it, so a slot that has been waiting longer keeps its place
-	// in the queue rather than being reset by a renormalisation.
+	// LastScan is when this slot last had its TURN — not when it last produced
+	// data. The next due time is anchored on it, so a slot that has been waiting
+	// longer keeps its place in the queue rather than being reset by a
+	// renormalisation.
+	//
+	// The distinction is load-bearing: the fleet's market-scan budget declines
+	// most turns and writes nothing, so anchoring on "last produced data" would
+	// leave every declined slot permanently due (sp-zml2u). The freshness claim
+	// is a separate stamp this type never sees.
 	LastScan time.Time
 }
 

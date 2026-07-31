@@ -31,8 +31,14 @@ import (
 //
 // The rotation is in memory and is rebuilt from the ledger by each reconcile.
 // Nothing here is durable and nothing needs to be: a restart re-reads the slots,
-// and every slot's last_scan_at survives in the ledger, so the rotation resumes
-// with its pacing intact.
+// and every slot's last_scan_attempt_at survives in the ledger, so the rotation
+// resumes with its pacing intact.
+//
+// THAT REBUILD IS WHY THE PACING CLOCK IS DURABLE AND SEPARATE. SyncMembership
+// replaces the members map and the heap wholesale on EVERY reconcile, so the
+// local clock requeue keeps is authoritative for one tick and no longer. Any
+// change to what a turn records in the ledger is therefore a change to the
+// pacing, whether or not it looks like one — see runScan (sp-zml2u).
 
 // emptyRotationPoll is how long the pacer parks when it has nothing to scan.
 // Membership only changes at a reconcile, so this is a liveness poll, not a
@@ -85,9 +91,24 @@ type SensingSlotView struct {
 	// unmeasured, which ScanWeight deliberately treats as optimistic rather
 	// than as the worst possible reading.
 	SpreadEWMA float64
-	// LastScan is the freshness stamp the rotation paces against. The zero time
-	// means never scanned, which makes the slot due immediately.
+	// LastScan is the stamp the rotation PACES against: when this slot last had
+	// its turn, whether or not the turn produced data. The zero time means never
+	// attempted, which makes the slot due immediately.
+	//
+	// IT IS THE ATTEMPT CLOCK, NOT THE FRESHNESS CLAIM — see LastDataAt, and
+	// sp-zml2u for why the two must be separate. It is fed from
+	// last_scan_attempt_at.
 	LastScan time.Time
+	// LastDataAt is when market data was last actually WRITTEN for this
+	// waypoint — the honest freshness stamp, fed from last_scan_at.
+	//
+	// It paces nothing. It exists because the fleet's market-scan budget declines
+	// most turns (92%, measured) and a declined turn writes nothing, so a single
+	// stamp serving both the rotation and the staleness gauge has to lie to one of
+	// them. The rotation needs the turn to count; the gauge needs it not to. This
+	// is the field the gauge reads. The zero time means never scanned, and the
+	// gauge EXCLUDES such a slot rather than reading it as infinitely stale.
+	LastDataAt time.Time
 	// YardCadence is the quartermaster's re-read interval, and applies to YARD
 	// slots only. It is a FLOOR on the interval, never a target: a yard falls
 	// due at the later of its weighted turn and last scan + cadence, so the
@@ -102,8 +123,16 @@ type SensingSlotView struct {
 // work. Scans are the one class of call that must lose a contended rate-limit
 // token to every other consumer, and putting that tag in the adapter keeps this
 // layer free of an API-client import.
+//
+// Run reports whether the scan actually WROTE market data. A false with a nil
+// error is a budget DECLINE: the fleet's one market-scan allowance served this
+// waypoint from the store instead of spending a request. That is a success for
+// the caller — the prices it will read are the ones it would have read anyway —
+// but it is not a scan, and runScan is the reason the distinction has to survive
+// this interface: an error-only Run collapses the two, and the ledger then
+// records a freshness claim nothing wrote (sp-zml2u).
 type MarketScanRunner interface {
-	Run(ctx context.Context, playerID int, waypoint string) error
+	Run(ctx context.Context, playerID int, waypoint string) (scanned bool, err error)
 }
 
 // SpreadObserver reads the prices a completed scan just persisted for ONE
@@ -124,8 +153,20 @@ type SpreadObserver interface {
 // other two. Those write sets are disjoint BY CONSTRUCTION, which is what lets
 // the pacer run concurrently with the reconcile without either fighting the
 // other for a row.
+//
+// The TWO verbs are the whole freshness fix (sp-zml2u). MarkScanned says data was
+// written and advances both scan clocks; MarkScanAttempted says only that the
+// rotation spent this slot's turn, and advances the pacing clock alone. They are
+// separate methods rather than one method with a flag because the columns they
+// may touch differ, and the ownership rules on this table are per-COLUMN.
 type ScanLedger interface {
 	MarkScanned(ctx context.Context, playerID int, waypoint, kind string, at time.Time, spreadEWMA float64) error
+	// MarkScanAttempted records a turn that produced no data — a budget decline.
+	// It MUST advance the durable pacing clock: the reconcile rebuilds the whole
+	// rotation from the ledger every tick, so a decline that advanced nothing
+	// would leave the slot due again immediately and, at the measured 92% decline
+	// rate, spin the entire rotation at full speed producing nothing.
+	MarkScanAttempted(ctx context.Context, playerID int, waypoint, kind string, at time.Time) error
 }
 
 // ScanPorts is everything the scanner needs from the outside world.
@@ -441,18 +482,39 @@ func (s *Scanner) launch(ctx context.Context, slot SensingSlotView) {
 // through any of them. A slot that failed to leave the rotation on its own turn
 // would never scan again until the next reconcile rebuilt the heap around it.
 //
-// The scan stamp is refreshed even when the scan FAILED. Leaving it stale would
-// leave the slot due immediately and turn a failing waypoint into a hot retry
-// loop against the API that is already failing. The ledger is not told about a
-// failed scan — a freshness stamp is a claim that data was written — so the
-// paced retry is a local one, and the next reconcile re-reads the older stamp
-// from the ledger and tries again.
+// A TURN HAS THREE OUTCOMES, not two, and they differ ONLY in what the ledger is
+// told (sp-zml2u):
+//
+//	SCANNED   data written    → MarkScanned:       both clocks advance
+//	DECLINED  budget said no  → MarkScanAttempted: pacing clock only
+//	FAILED    error           → nothing written:   neither clock advances durably
+//
+// THE PACING IS IDENTICAL IN ALL THREE. Every exit requeues, which advances the
+// LOCAL pacing clock, and the first two also advance the DURABLE one. That
+// symmetry is not tidiness — it is the safety property. The scan budget declines
+// most turns (92%, measured), so a decline that did not pace would leave the slot
+// due immediately and turn the whole rotation into a hot loop against the store.
+// The same reasoning is why the stamp was already refreshed on FAILURE: a failing
+// waypoint must not become a hot retry loop against an API that is already
+// failing.
+//
+// The durable clock matters because the in-memory one does not survive: the
+// reconcile calls SyncMembership every tick and rebuilds the entire heap from the
+// ledger, so a decline that advanced only requeue's local view would be re-paced
+// from its last REAL scan within one tick — and every declined slot would read as
+// permanently due. Skipping MarkScanned alone, without MarkScanAttempted beside
+// it, is precisely that bug.
+//
+// A FAILED turn still advances no durable clock, unchanged: it is paced locally
+// until the next reconcile, which re-reads the older stamp and tries again.
 func (s *Scanner) runScan(ctx context.Context, slot SensingSlotView) {
 	at := s.clock.Now()
 	spread := slot.SpreadEWMA
-	defer func() { s.requeue(slot.Waypoint, at, spread) }()
+	wrote := false
+	defer func() { s.requeue(slot.Waypoint, at, spread, wrote) }()
 
-	if err := s.ports.Scan.Run(ctx, s.playerID, slot.Waypoint); err != nil {
+	scanned, err := s.ports.Scan.Run(ctx, s.playerID, slot.Waypoint)
+	if err != nil {
 		at = s.clock.Now()
 		s.warn(ctx, "parked_sensing_scan_failed", slot.Waypoint,
 			fmt.Sprintf("parked sensing scan of %s failed: %v", slot.Waypoint, err))
@@ -467,7 +529,24 @@ func (s *Scanner) runScan(ctx context.Context, slot SensingSlotView) {
 	// The second half of a parked probe's turn: whatever else this waypoint is,
 	// if it is ALSO a shipyard the hull standing here can price it, and nothing
 	// else in the fleet will. See ScanPorts.Yard.
+	//
+	// IT RUNS ON A DECLINED TURN TOO. The market budget declining says nothing
+	// about the shipyard — this is the only path in the fleet that ever PRICES a
+	// yard we occupy, and gating it on the market outcome would silently drop 92%
+	// of those readings.
 	s.readYard(ctx, slot)
+
+	if !scanned {
+		// DECLINED. The budget served this waypoint from the store, so no market
+		// data was written and the freshness stamp must not move. Only the turn
+		// is recorded, which is what keeps the rotation paced.
+		if err := s.ports.Ledger.MarkScanAttempted(ctx, s.playerID, slot.Waypoint, slot.Kind, at); err != nil {
+			s.warn(ctx, "parked_sensing_mark_attempt_failed", slot.Waypoint,
+				fmt.Sprintf("failed to record a declined sensing scan of %s: %v", slot.Waypoint, err))
+		}
+		return
+	}
+	wrote = true
 
 	if err := s.ports.Ledger.MarkScanned(ctx, s.playerID, slot.Waypoint, slot.Kind, at, spread); err != nil {
 		// Logged, never fatal to the slot. MarkScanned records freshness; losing
@@ -550,7 +629,10 @@ func (s *Scanner) observe(ctx context.Context, slot SensingSlotView) (float64, b
 // renormalised wholesale by SyncMembership; adjusting the total on every scan
 // would re-pace every other slot mid-rotation on the strength of a single
 // observation.
-func (s *Scanner) requeue(waypoint string, at time.Time, spreadEWMA float64) {
+// wrote says whether the turn actually produced market data. It advances
+// LastDataAt; LastScan (the pacing clock) advances either way, because the slot
+// has had its turn whatever came of it.
+func (s *Scanner) requeue(waypoint string, at time.Time, spreadEWMA float64, wrote bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -562,6 +644,9 @@ func (s *Scanner) requeue(waypoint string, at time.Time, spreadEWMA float64) {
 	}
 	view.SpreadEWMA = spreadEWMA
 	view.LastScan = at
+	if wrote {
+		view.LastDataAt = at
+	}
 	s.members[waypoint] = view
 
 	heap.Push(s.due, s.scheduleFor(view))

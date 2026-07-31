@@ -71,13 +71,21 @@ var sensingSystemUpdateColumns = []string{
 	"depth_credits", "era_id", "updated_at",
 }
 
-// COLUMN OWNERSHIP on sensing_slots. FOUR writers drive this table
+// COLUMN OWNERSHIP on sensing_slots. FIVE writers drive this table
 // concurrently, and each owns a disjoint answer about the same placement:
 //
-//	MarkScanned         what the market last showed  — last_scan_at, spread_ewma
+//	MarkScanned         what the market last showed  — last_scan_at, spread_ewma, last_scan_attempt_at
+//	MarkScanAttempted   that the rotation took a turn — last_scan_attempt_at
 //	TransitionSlot      how far along the placement is — state, assigned_ship, purchase_yard
 //	UpsertSlotMetadata  what the screen measured      — whitelist_goods, depth_credits
 //	UpsertSpareSlot     which hull is standing here   — state, assigned_ship
+//
+// The scan path is the only writer of the two scan clocks, and it writes them
+// through those two methods ONLY — which is what keeps "the rotation took a
+// turn" and "market data was written" independently answerable (sp-zml2u).
+// MarkScanned names last_scan_attempt_at as well because a completed scan IS a
+// turn; a scan path that advanced only the data stamp would leave a
+// never-declined slot pacing off a NULL attempt clock.
 //
 // NOBODY owns slot_kind: it is part of the primary key (sp-dpfp8) and therefore
 // immutable. A row's kind is decided when it is inserted and can only change by
@@ -658,11 +666,53 @@ func (r *SensingLedgerRepository) MarkScanned(ctx context.Context, playerID int,
 		Where("player_id = ? AND waypoint_symbol = ? AND slot_kind = ?", playerID, waypoint, kind).
 		Updates(map[string]any{
 			"last_scan_at": at,
-			"spread_ewma":  spreadEWMA,
-			"updated_at":   time.Now().UTC(),
+			// A completed scan is also a TURN, so it advances the pacing clock in
+			// the same write. Omitting it would leave a slot that never gets
+			// declined pacing off a NULL attempt stamp, which the reader coalesces
+			// to last_scan_at — correct today, but only by accident, and it would
+			// silently break the moment the coalesce was removed.
+			"last_scan_attempt_at": at,
+			"spread_ewma":          spreadEWMA,
+			"updated_at":           time.Now().UTC(),
 		})
 	if res.Error != nil {
 		return fmt.Errorf("failed to mark sensing slot %q (%s) scanned: %w", waypoint, kind, res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return fmt.Errorf("sensing slot %q (%s) for player %d: %w", waypoint, kind, playerID, gorm.ErrRecordNotFound)
+	}
+	return nil
+}
+
+// MarkScanAttempted records that the rotation spent this slot's TURN on it
+// without producing any market data — the market-scan budget declined the
+// request and the caller served from the store instead.
+//
+// IT WRITES THE PACING CLOCK AND NOTHING ELSE, and that is the entire point
+// (sp-zml2u). last_scan_at is a claim that data was written, so a decline must
+// not touch it; but the reconcile rebuilds the scan heap from this table every
+// 30 seconds, so if a decline advanced no durable clock at all, every declined
+// slot would read as due on every rebuild and the rotation would spin at full
+// speed forever. At a measured 92% decline rate that is the whole rotation.
+// Advancing the attempt clock alone is what keeps the pacing the budget computed
+// while leaving the freshness stamp honest.
+//
+// spread_ewma is deliberately NOT written. A spread computed on a declined turn
+// is derived from whatever the store already held — the very data whose age is
+// in question — so persisting it would weight the rotation on a measurement no
+// scan backs. It is written only alongside the data that justifies it.
+//
+// A missing slot is an error for MarkScanned's reason exactly: a phantom row
+// would later be read back as a real placement and dispatched to.
+func (r *SensingLedgerRepository) MarkScanAttempted(ctx context.Context, playerID int, waypoint, kind string, at time.Time) error {
+	res := r.db.WithContext(ctx).Model(&SensingSlotModel{}).
+		Where("player_id = ? AND waypoint_symbol = ? AND slot_kind = ?", playerID, waypoint, kind).
+		Updates(map[string]any{
+			"last_scan_attempt_at": at,
+			"updated_at":           time.Now().UTC(),
+		})
+	if res.Error != nil {
+		return fmt.Errorf("failed to mark sensing slot %q (%s) attempted: %w", waypoint, kind, res.Error)
 	}
 	if res.RowsAffected == 0 {
 		return fmt.Errorf("sensing slot %q (%s) for player %d: %w", waypoint, kind, playerID, gorm.ErrRecordNotFound)

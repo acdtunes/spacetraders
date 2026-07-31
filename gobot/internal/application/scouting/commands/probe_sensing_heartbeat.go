@@ -447,13 +447,21 @@ func slotCensus(ctx context.Context, ports SensingEnginePorts, playerID int) map
 // would peg the cold tier at the process's uptime and make the gauge unreadable
 // for exactly as long as the rotation is warming up. With nothing measured at all
 // the tiers are not published, so the series is absent rather than false.
+//
+// IT MEASURES LastDataAt, NOT LastScan, and the difference is the whole of
+// sp-zml2u. LastScan is the rotation's pacing clock and advances on every turn
+// including the ones the market-scan budget declines — which is most of them
+// (92%, measured). Reading it here reported the age of the last ATTEMPT while
+// claiming to report the age of the DATA, so the gauge said 909 slots were fresh
+// while 216 markets actually were. LastDataAt moves only when a scan wrote
+// something, so this now measures what it says it measures.
 func stalenessPercentiles(views []parkedsensing.SensingSlotView, now time.Time) (hot, median, cold float64, ok bool) {
 	ages := make([]float64, 0, len(views))
 	for _, view := range views {
-		if view.LastScan.IsZero() {
+		if view.LastDataAt.IsZero() {
 			continue
 		}
-		age := now.Sub(view.LastScan).Seconds()
+		age := now.Sub(view.LastDataAt).Seconds()
 		if age < 0 {
 			// A stamp from the future is clock skew, not freshness. Zero is the
 			// honest reading: it was scanned as recently as we can tell.

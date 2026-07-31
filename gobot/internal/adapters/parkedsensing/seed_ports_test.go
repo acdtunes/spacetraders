@@ -87,9 +87,9 @@ type fakeSeedScanner struct {
 	err     error
 }
 
-func (f *fakeSeedScanner) ScanAndSaveMarket(_ context.Context, _ uint, waypoint string) error {
+func (f *fakeSeedScanner) ScanAndSaveMarketWithOutcome(_ context.Context, _ uint, waypoint string) (bool, error) {
 	f.scanned = append(f.scanned, waypoint)
-	return f.err
+	return f.err == nil, f.err
 }
 
 type stubPlayerRepo struct{ err error }

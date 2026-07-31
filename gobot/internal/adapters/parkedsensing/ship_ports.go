@@ -1136,12 +1136,19 @@ func orbitalSymbols(orbitals []map[string]string) []string {
 
 // ReadMarketAt scans the market the hull is standing at and persists its prices
 // and price history, through the same scanner the rest of the fleet uses.
+//
+// The scan outcome is deliberately discarded. This path keeps no freshness
+// ledger — it is a seed reading the market under its feet on the way past — so a
+// budget decline is simply a read served from the store, with nothing anywhere
+// claiming otherwise. The scan pacer is the caller that must NOT discard it
+// (sp-zml2u); see ScanRunnerPort.Run.
 func (p *SeedCommandPort) ReadMarketAt(ctx context.Context, playerID int, waypoint string) error {
 	pid, err := shared.NewPlayerID(playerID)
 	if err != nil {
 		return err
 	}
-	return p.scanner.ScanAndSaveMarket(sensingCtx(ctx), uint(pid.Value()), waypoint)
+	_, err = p.scanner.ScanAndSaveMarketWithOutcome(sensingCtx(ctx), uint(pid.Value()), waypoint)
+	return err
 }
 
 // token resolves the player's API token, mirroring the gate graph's own lookup.
@@ -1289,8 +1296,25 @@ func (p *LedgerPort) ParkedSlotViews(ctx context.Context, playerID int) ([]appSe
 			Whitelist:  goods,
 			SpreadEWMA: m.SpreadEWMA,
 		}
-		if m.LastScanAt != nil {
+		// The rotation paces on the ATTEMPT clock and the staleness gauge reads the
+		// DATA clock, because a budget decline advances the first and not the second
+		// (sp-zml2u). Reading one column into both is exactly the collapse this fix
+		// removes.
+		//
+		// THE COALESCE IS THE MIGRATION. AutoMigrate adds last_scan_attempt_at as
+		// NULL on every existing row, and a NULL read as the zero time would declare
+		// the entire rotation due on the first tick after deploy — one full-speed
+		// sweep of every slot, which is the regression this whole change exists to
+		// avoid. Falling back to last_scan_at makes that first tick pace exactly as
+		// the last one did; the attempt clock takes over from the first turn each
+		// slot then takes.
+		if m.LastScanAttemptAt != nil {
+			view.LastScan = *m.LastScanAttemptAt
+		} else if m.LastScanAt != nil {
 			view.LastScan = *m.LastScanAt
+		}
+		if m.LastScanAt != nil {
+			view.LastDataAt = *m.LastScanAt
 		}
 		out = append(out, view)
 	}
@@ -1388,6 +1412,17 @@ func (p *LedgerPort) TransitionSlot(
 // defence in depth, but it is no longer what makes this safe.
 func (p *LedgerPort) MarkScanned(ctx context.Context, playerID int, waypoint, kind string, at time.Time, spreadEWMA float64) error {
 	return p.repo.MarkScanned(ctx, playerID, waypoint, kind, at, spreadEWMA)
+}
+
+// MarkScanAttempted records that the rotation spent this slot's turn on it and
+// the market-scan budget declined, so no market data was written.
+//
+// It writes the PACING clock only, leaving the freshness stamp where it was —
+// the two-clock split in sp-zml2u. Same concurrency argument as MarkScanned
+// above: last_scan_attempt_at has exactly one writer (this path) and no other
+// writer of sensing_slots names it.
+func (p *LedgerPort) MarkScanAttempted(ctx context.Context, playerID int, waypoint, kind string, at time.Time) error {
+	return p.repo.MarkScanAttempted(ctx, playerID, waypoint, kind, at)
 }
 
 // Systems returns every system row the player holds, carrying the uncharted

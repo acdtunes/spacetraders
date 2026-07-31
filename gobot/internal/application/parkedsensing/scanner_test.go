@@ -113,7 +113,7 @@ func TestScannerNextAction_WeightedRotationFavoursHotSlots(t *testing.T) {
 		}
 		counts[waypoint]++
 		pops++
-		sc.requeue(waypoint, clock.Now(), spreads[waypoint])
+		sc.requeue(waypoint, clock.Now(), spreads[waypoint], true)
 	}
 
 	hot, c1, c2 := counts["X1-AA-HOT"], counts["X1-AA-C1"], counts["X1-AA-C2"]
@@ -264,9 +264,12 @@ type fakeScanRunner struct {
 
 	err     error
 	panicAt string
+	// declineAll makes every Run report a budget DECLINE: nil error, scanned
+	// false. It is the outcome the fleet actually takes 92% of the time.
+	declineAll bool
 }
 
-func (f *fakeScanRunner) Run(_ context.Context, _ int, waypoint string) error {
+func (f *fakeScanRunner) Run(_ context.Context, _ int, waypoint string) (bool, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, waypoint)
 	f.mu.Unlock()
@@ -280,7 +283,10 @@ func (f *fakeScanRunner) Run(_ context.Context, _ int, waypoint string) error {
 	if f.panicAt == waypoint {
 		panic("scan exploded")
 	}
-	return f.err
+	if f.err != nil {
+		return false, f.err
+	}
+	return !f.declineAll, nil
 }
 
 func (f *fakeScanRunner) scanned() []string {
@@ -295,10 +301,24 @@ type markScannedCall struct {
 	spread   float64
 }
 
+// markAttemptCall is one MarkScanAttempted — the pacing-only write a declined
+// turn makes. Kept in a SEPARATE slice from the freshness writes on purpose: the
+// whole point of sp-zml2u is that the two are independently observable, and a
+// shared log would let a test that meant to assert "no freshness claim" pass on
+// an attempt record instead.
+type markAttemptCall struct {
+	waypoint string
+	at       time.Time
+}
+
 type fakeScanLedger struct {
-	mu    sync.Mutex
-	calls []markScannedCall
-	err   error
+	mu       sync.Mutex
+	calls    []markScannedCall
+	attempts []markAttemptCall
+	err      error
+	// attemptErr fails MarkScanAttempted only, so the decline path's error
+	// handling can be driven without disturbing the scanned path.
+	attemptErr error
 }
 
 func (f *fakeScanLedger) MarkScanned(_ context.Context, _ int, waypoint, _ string, at time.Time, spreadEWMA float64) error {
@@ -308,10 +328,23 @@ func (f *fakeScanLedger) MarkScanned(_ context.Context, _ int, waypoint, _ strin
 	return f.err
 }
 
+func (f *fakeScanLedger) MarkScanAttempted(_ context.Context, _ int, waypoint, _ string, at time.Time) error {
+	f.mu.Lock()
+	f.attempts = append(f.attempts, markAttemptCall{waypoint, at})
+	f.mu.Unlock()
+	return f.attemptErr
+}
+
 func (f *fakeScanLedger) marks() []markScannedCall {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]markScannedCall(nil), f.calls...)
+}
+
+func (f *fakeScanLedger) attemptMarks() []markAttemptCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]markAttemptCall(nil), f.attempts...)
 }
 
 type fakeSpreadObserver struct {
@@ -588,6 +621,208 @@ func TestScannerRunScan_FailedScanPacesItsRetry(t *testing.T) {
 	}
 	if _, _, ok := sc.nextAction(sc.clock.Now()); ok {
 		t.Error("the failed slot came straight back round, which is a retry hot loop")
+	}
+}
+
+// --- the three outcomes of a turn (sp-zml2u) ---------------------------------
+
+// TestScannerRunScan_ThreeOutcomesDifferOnlyInWhatTheLedgerIsTold is the whole
+// freshness fix in one table.
+//
+// A turn ends SCANNED (data written), DECLINED (the fleet's market-scan budget
+// served this waypoint from the store — a success that wrote nothing) or FAILED.
+// Before sp-zml2u the first two were indistinguishable here, because Run
+// returned a bare nil for both, and the ledger recorded a freshness claim for a
+// scan that never happened: 78.5% of stamped slots held data older than the stamp
+// claimed.
+//
+// The freshness stamp must therefore be written for EXACTLY ONE of the three,
+// while the slot is returned to the rotation in ALL THREE. That second half is
+// not symmetry for its own sake — it is the hot-loop guard. See
+// TestScannerRunScan_ADeclinedTurnPacesExactlyLikeAScannedOne.
+func TestScannerRunScan_ThreeOutcomesDifferOnlyInWhatTheLedgerIsTold(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// how the scan port answers
+		runner *fakeScanRunner
+		// what the ledger must be told
+		wantScannedMarks int
+		wantAttemptMarks int
+	}{
+		{
+			name:             "scanned: data was written, so freshness may be claimed",
+			runner:           &fakeScanRunner{},
+			wantScannedMarks: 1,
+			wantAttemptMarks: 0,
+		},
+		{
+			name:             "declined: nothing written, so the turn is recorded but no freshness is",
+			runner:           &fakeScanRunner{declineAll: true},
+			wantScannedMarks: 0,
+			wantAttemptMarks: 1,
+		},
+		{
+			name:             "failed: nothing written and nothing durable recorded",
+			runner:           &fakeScanRunner{err: errors.New("api down")},
+			wantScannedMarks: 0,
+			wantAttemptMarks: 0,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sc, ledger, _ := scanFixture(t, 2, tc.runner)
+			sc.SyncMembership([]SensingSlotView{dueMarket("X1-AA-M1", 0.1)}, 1.0)
+
+			takeAndLaunch(t, context.Background(), sc)
+			sc.workers.Wait()
+
+			// FIXTURE ASSERTION, not a behavioural one. Every claim below is about
+			// what happened AFTER the scan port answered, so a fixture where the
+			// port was never reached would satisfy the "no marks" expectations
+			// vacuously and the guard would be untested.
+			if got := tc.runner.scanned(); len(got) != 1 || got[0] != "X1-AA-M1" {
+				t.Fatalf("fixture never reached the scan port: calls = %v", got)
+			}
+
+			if got := ledger.marks(); len(got) != tc.wantScannedMarks {
+				t.Errorf("MarkScanned calls = %d (%v), want %d — a freshness stamp is a claim that data was written",
+					len(got), got, tc.wantScannedMarks)
+			}
+			if got := ledger.attemptMarks(); len(got) != tc.wantAttemptMarks {
+				t.Errorf("MarkScanAttempted calls = %d (%v), want %d",
+					len(got), got, tc.wantAttemptMarks)
+			}
+
+			// Requeued in ALL THREE cases: a slot that failed to leave the rotation
+			// on its own turn would never scan again until the next reconcile.
+			if pending := sc.pendingWaypoints(); len(pending) != 1 || pending[0] != "X1-AA-M1" {
+				t.Errorf("rotation = %v, want the slot returned whatever the outcome", pending)
+			}
+		})
+	}
+}
+
+// TestScannerRunScan_ADeclinedTurnPacesExactlyLikeAScannedOne is the regression
+// guard on the OBVIOUS fix, which is a trap.
+//
+// Simply skipping MarkScanned on a decline leaves the slot's durable clock at its
+// last REAL scan. The reconcile rebuilds the whole heap from that clock every 30
+// seconds, so at the measured 92% decline rate every slot would read as
+// permanently due and the entire rotation would spin at full speed producing
+// nothing — a far worse bug than the false telemetry it set out to fix.
+//
+// So a declined turn must pace on BOTH clocks: the local heap position (this
+// test's second half) and the durable stamp the rebuild reads (its first). The
+// durable half is the one a purely in-memory fix would miss, and it is asserted
+// here as the timestamp actually handed to the ledger, not merely as a call
+// count.
+func TestScannerRunScan_ADeclinedTurnPacesExactlyLikeAScannedOne(t *testing.T) {
+	runner := &fakeScanRunner{declineAll: true}
+	sc, ledger, _ := scanFixture(t, 2, runner)
+	sc.SyncMembership([]SensingSlotView{dueMarket("X1-AA-M1", 0.1)}, 1.0)
+
+	takeAndLaunch(t, context.Background(), sc)
+	sc.workers.Wait()
+
+	if got := runner.scanned(); len(got) != 1 {
+		t.Fatalf("fixture never reached the scan port: calls = %v", got)
+	}
+
+	// THE DURABLE CLOCK. Without this write the next reconcile re-paces the slot
+	// from its last real scan and it is immediately due again, forever.
+	attempts := ledger.attemptMarks()
+	if len(attempts) != 1 {
+		t.Fatalf("MarkScanAttempted calls = %d, want 1 — a decline that records no durable turn "+
+			"is re-paced from its last real scan by the next reconcile, which is the hot loop", len(attempts))
+	}
+	if attempts[0].at != scanEpoch {
+		t.Errorf("recorded attempt time = %s, want the clock's %s", attempts[0].at, scanEpoch)
+	}
+	if got := ledger.marks(); len(got) != 0 {
+		t.Fatalf("MarkScanned called %v on a declined turn — nothing was written", got)
+	}
+
+	// THE LOCAL CLOCK. The slot is back in the rotation and is NOT due again
+	// immediately: exactly the assertion the failed-scan path already makes.
+	if pending := sc.pendingWaypoints(); len(pending) != 1 {
+		t.Fatalf("rotation = %v, want the declined slot returned", pending)
+	}
+	if _, _, ok := sc.nextAction(sc.clock.Now()); ok {
+		t.Error("the declined slot came straight back round, which is a full-speed rotation")
+	}
+}
+
+// TestScannerRunScan_DeclineSurvivesTheReconcileRebuildWithoutBecomingDue is the
+// COMPOSED hot-loop proof, and the one that actually pins the primary risk.
+//
+// The in-memory requeue clock is authoritative for one tick only: every reconcile
+// calls SyncMembership, which replaces the members map and rebuilds the heap from
+// the LEDGER. So "the slot is not due right after requeue" is not enough — the
+// question is whether it is still not due after the rotation has been rebuilt
+// from what the ledger was told.
+//
+// This drives a declined turn, then replays the rebuild the way the adapter does
+// it: the view's pacing stamp is whatever the ledger now holds. If the decline
+// recorded a turn, the rebuilt slot is paced; if it recorded nothing, the rebuild
+// re-paces it from its last REAL scan and it is instantly due — at a 92% decline
+// rate, that is every slot, every 30 seconds, forever.
+//
+// The second half is the NEGATIVE CONTROL: it feeds the same rotation the stamp
+// it would have had WITHOUT the durable write and proves the slot really would
+// come straight back round. Without it, the first assertion could pass on a
+// rotation that was never capable of being due at all.
+func TestScannerRunScan_DeclineSurvivesTheReconcileRebuildWithoutBecomingDue(t *testing.T) {
+	lastRealScan := scanEpoch.Add(-144 * time.Minute) // the measured median staleness
+
+	runner := &fakeScanRunner{declineAll: true}
+	sc, ledger, _ := scanFixture(t, 2, runner)
+	sc.SyncMembership([]SensingSlotView{parkedMarket("X1-AA-M1", 0.1, lastRealScan)}, 1.0)
+
+	takeAndLaunch(t, context.Background(), sc)
+	sc.workers.Wait()
+
+	attempts := ledger.attemptMarks()
+	if len(attempts) != 1 {
+		t.Fatalf("fixture did not record a declined turn: attempts = %v", attempts)
+	}
+
+	// The reconcile, replayed: ParkedSlotViews reads last_scan_attempt_at into
+	// LastScan, so the rebuilt view carries the stamp the decline just wrote.
+	sc.SyncMembership([]SensingSlotView{parkedMarket("X1-AA-M1", 0.1, attempts[0].at)}, 1.0)
+	if _, _, ok := sc.nextAction(sc.clock.Now()); ok {
+		t.Error("the declined slot was due again immediately after the reconcile rebuild — " +
+			"the whole rotation would spin at full speed producing nothing")
+	}
+
+	// Negative control: the same rebuild WITHOUT the durable turn.
+	sc.SyncMembership([]SensingSlotView{parkedMarket("X1-AA-M1", 0.1, lastRealScan)}, 1.0)
+	if _, _, ok := sc.nextAction(sc.clock.Now()); !ok {
+		t.Fatal("negative control did not fire: a slot paced from its last real scan must be due, " +
+			"otherwise the assertion above proves nothing")
+	}
+}
+
+// TestScannerRunScan_DeclineStillPricesTheShipyardUnderTheProbe guards a
+// regression the decline path could easily introduce.
+//
+// The parked yard read is an independent errand riding the same turn, and it is
+// the ONLY path in the fleet that ever prices a yard we occupy. The market
+// budget declining says nothing about the shipyard, so gating the yard read on
+// the market outcome would silently drop 92% of those readings.
+func TestScannerRunScan_DeclineStillPricesTheShipyardUnderTheProbe(t *testing.T) {
+	runner := &fakeScanRunner{declineAll: true}
+	sc, ledger, _ := scanFixture(t, 2, runner)
+	yard := newFakeYardReader(map[string][]string{"X1-AA-M1": {"SHIP_PROBE"}})
+	sc.ports.Yard = yard
+	sc.SyncMembership([]SensingSlotView{dueMarket("X1-AA-M1", 0.1)}, 1.0)
+
+	takeAndLaunch(t, context.Background(), sc)
+	sc.workers.Wait()
+
+	if got := len(ledger.attemptMarks()); got != 1 {
+		t.Fatalf("fixture did not take the decline path: attempt marks = %d", got)
+	}
+	if offers, ok := yard.catalogueAt("X1-AA-M1"); !ok || len(offers) != 1 {
+		t.Errorf("yard catalogue at the declined waypoint = %v (read=%v), want the shipyard still priced", offers, ok)
 	}
 }
 

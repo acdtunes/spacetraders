@@ -419,12 +419,29 @@ func (f *psLedger) TransitionSlot(_ context.Context, _ int, waypoint, kind, from
 	return nil
 }
 
+// MarkScanned mirrors the real ledger's two-column write: a completed scan
+// advances BOTH the pacing clock (LastScan / last_scan_attempt_at) and the
+// freshness stamp (LastDataAt / last_scan_at), because a scan that wrote data is
+// also a turn the rotation took.
 func (f *psLedger) MarkScanned(_ context.Context, _ int, waypoint, _ string, at time.Time, spreadEWMA float64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	view := f.views[waypoint]
-	view.Waypoint, view.LastScan, view.SpreadEWMA = waypoint, at, spreadEWMA
+	view.Waypoint, view.LastScan, view.LastDataAt, view.SpreadEWMA = waypoint, at, at, spreadEWMA
+	f.views[waypoint] = view
+	return nil
+}
+
+// MarkScanAttempted mirrors the decline write: the PACING clock only. LastDataAt
+// is left exactly where it was, which is what keeps the staleness gauge honest
+// about a turn that produced nothing (sp-zml2u).
+func (f *psLedger) MarkScanAttempted(_ context.Context, _ int, waypoint, _ string, at time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	view := f.views[waypoint]
+	view.Waypoint, view.LastScan = waypoint, at
 	f.views[waypoint] = view
 	return nil
 }
@@ -903,11 +920,18 @@ func (f *fakeSeedCommander) SyncWaypoints(_ context.Context, _ int, system strin
 }
 
 // fakeScanRunner performs parked market scans. Counted.
-type fakeScanRunner struct{ calls *callCounter }
+//
+// It reports every scan as having WRITTEN data (scanned=true). declineAll flips
+// it to the budget-decline outcome — nil error, nothing written — which is what
+// the fleet actually returns for most turns.
+type fakeScanRunner struct {
+	calls      *callCounter
+	declineAll bool
+}
 
-func (f *fakeScanRunner) Run(context.Context, int, string) error {
+func (f *fakeScanRunner) Run(context.Context, int, string) (bool, error) {
 	f.calls.hit("scan")
-	return nil
+	return !f.declineAll, nil
 }
 
 // fakeYardCatalog is the free shipyard-catalogue sweep's pair of ports in one

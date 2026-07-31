@@ -1057,7 +1057,32 @@ type SensingSlotModel struct {
 	WhitelistGoods string     `gorm:"column:whitelist_goods;type:text;not null;default:'[]'"` // JSON array
 	SpreadEWMA     float64    `gorm:"column:spread_ewma;not null;default:0"`
 	LastScanAt     *time.Time `gorm:"column:last_scan_at"`
-	DepthCredits   int64      `gorm:"column:depth_credits;not null;default:0"`
+	// LastScanAttemptAt is when the scan rotation last took this slot's TURN,
+	// whether or not that turn produced any market data. It is the rotation's
+	// PACING clock, and it exists because last_scan_at cannot be both that and an
+	// honest freshness stamp (sp-zml2u).
+	//
+	// The fleet's market-scan budget declines the overwhelming majority of turns
+	// — measured at 92% (3,551 declines to 310 scans) — and a decline writes
+	// nothing to market_data. Stamping last_scan_at anyway made 78.5% of slots
+	// claim data they did not have. But the stamp is ALSO what the rotation paces
+	// against: the reconcile rebuilds the whole heap from this table every 30s, so
+	// a clock that stops advancing on a decline makes every declined slot read as
+	// permanently due and spins the entire rotation at full speed producing
+	// nothing. The two answers are needed at once and they disagree 92% of the
+	// time, so they are two columns.
+	//
+	// This one advances on EVERY turn (scanned, declined, or failed); last_scan_at
+	// advances only when market data was actually written. Same split, same
+	// reasoning, as LastAttemptAt vs updated_at below.
+	//
+	// NULL MEANS "NEVER ATTEMPTED", and the reader coalesces it to last_scan_at
+	// rather than to the zero time — see ParkedSlotViews. AutoMigrate adds the
+	// column in place, so every pre-existing row reads NULL on the first tick
+	// after deploy, and the coalesce is what makes that tick pace identically to
+	// the one before it instead of declaring the whole rotation due at once.
+	LastScanAttemptAt *time.Time `gorm:"column:last_scan_attempt_at"`
+	DepthCredits      int64      `gorm:"column:depth_credits;not null;default:0"`
 	EraID          *int       `gorm:"column:era_id;index"`
 	UpdatedAt      time.Time  `gorm:"column:updated_at"`
 	// LastAttemptAt is when the placement machine last spent one of a tick's
