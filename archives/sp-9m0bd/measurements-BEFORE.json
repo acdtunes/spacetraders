@@ -1,0 +1,274 @@
+{
+  "tag": "before",
+  "knobs": {
+    "markScale": 2.6,
+    "markMinPx": 9,
+    "labelFromMark": false
+  },
+  "fullScale": "8.3h",
+  "camera": {
+    "zoom": 2.873,
+    "scale": 0.034973731296168556,
+    "canvas": {
+      "left": 0,
+      "top": 65,
+      "cw": 1600,
+      "ch": 835
+    },
+    "calibration": "n=10, median core offset 1.15px, 0 beyond 3px"
+  },
+  "a_density": {
+    "marksInFrame": 461,
+    "crossingPairs": 431,
+    "pricedPricedPairs": 80,
+    "marksCrossedByAtLeastOne": 357,
+    "hardEdgePixels": {
+      "freshnessOn": 176877,
+      "freshnessOff": 97914,
+      "addedByFreshness": 78963
+    },
+    "gradientSum": {
+      "freshnessOn": 14733134,
+      "freshnessOff": 8677225,
+      "addedByFreshness": 6055909
+    }
+  },
+  "b_labels": [
+    {
+      "symbol": "X1-XC31",
+      "glyphPx": 194,
+      "nearPx": 428,
+      "contrastVsGround": 5.1,
+      "contrastVsWorstGround": 1.64,
+      "contrastVsGround_freshnessOff": 5.39,
+      "contrastVsWorstGround_freshnessOff": 3.76,
+      "marksCrossingIt": 6
+    },
+    {
+      "symbol": "X1-UB61",
+      "glyphPx": 236,
+      "nearPx": 484,
+      "contrastVsGround": 3.83,
+      "contrastVsWorstGround": 1.82,
+      "contrastVsGround_freshnessOff": 4.4,
+      "contrastVsWorstGround_freshnessOff": 3.21,
+      "marksCrossingIt": 3
+    },
+    {
+      "symbol": "X1-VY39",
+      "glyphPx": 0,
+      "note": "glyph not resolved in frame"
+    },
+    {
+      "symbol": "X1-BM33",
+      "glyphPx": 186,
+      "nearPx": 364,
+      "contrastVsGround": 4.5,
+      "contrastVsWorstGround": 1.32,
+      "contrastVsGround_freshnessOff": 4.66,
+      "contrastVsWorstGround_freshnessOff": 3.34,
+      "marksCrossingIt": 8
+    },
+    {
+      "symbol": "X1-KC83",
+      "glyphPx": 226,
+      "nearPx": 413,
+      "contrastVsGround": 4.59,
+      "contrastVsWorstGround": 1.47,
+      "contrastVsGround_freshnessOff": 4.66,
+      "contrastVsWorstGround_freshnessOff": 3.23,
+      "marksCrossingIt": 5
+    },
+    {
+      "symbol": "X1-ZV7",
+      "glyphPx": 316,
+      "nearPx": 394,
+      "contrastVsGround": 2.97,
+      "contrastVsWorstGround": 1.46,
+      "contrastVsGround_freshnessOff": 5.84,
+      "contrastVsWorstGround_freshnessOff": 4,
+      "marksCrossingIt": 6
+    },
+    {
+      "symbol": "X1-GV4",
+      "glyphPx": 33,
+      "nearPx": 88,
+      "contrastVsGround": 7.48,
+      "contrastVsWorstGround": 1.06,
+      "contrastVsGround_freshnessOff": 6.75,
+      "contrastVsWorstGround_freshnessOff": 5.57,
+      "marksCrossingIt": 2
+    },
+    {
+      "symbol": "X1-GF41",
+      "glyphPx": 0,
+      "note": "glyph not resolved in frame"
+    },
+    {
+      "symbol": "X1-UN60",
+      "glyphPx": 84,
+      "nearPx": 105,
+      "contrastVsGround": 4.49,
+      "contrastVsWorstGround": 1.73,
+      "contrastVsGround_freshnessOff": 4.49,
+      "contrastVsWorstGround_freshnessOff": 3.3,
+      "marksCrossingIt": 3
+    },
+    {
+      "symbol": "X1-AS39",
+      "glyphPx": 356,
+      "nearPx": 445,
+      "contrastVsGround": 3.71,
+      "contrastVsWorstGround": 1.26,
+      "contrastVsGround_freshnessOff": 4.81,
+      "contrastVsWorstGround_freshnessOff": 3.47,
+      "marksCrossingIt": 2
+    },
+    {
+      "symbol": "X1-MY3",
+      "glyphPx": 186,
+      "nearPx": 439,
+      "contrastVsGround": 4.89,
+      "contrastVsWorstGround": 1.41,
+      "contrastVsGround_freshnessOff": 5.11,
+      "contrastVsWorstGround_freshnessOff": 3.66,
+      "marksCrossingIt": 4
+    },
+    {
+      "symbol": "X1-UQ61",
+      "glyphPx": 269,
+      "nearPx": 517,
+      "contrastVsGround": 4.16,
+      "contrastVsWorstGround": 1.49,
+      "contrastVsGround_freshnessOff": 4.92,
+      "contrastVsWorstGround_freshnessOff": 3.41,
+      "marksCrossingIt": 3
+    },
+    {
+      "symbol": "X1-BM36",
+      "glyphPx": 21,
+      "nearPx": 244,
+      "contrastVsGround": 1.41,
+      "contrastVsWorstGround": 5.07,
+      "contrastVsGround_freshnessOff": 1.49,
+      "contrastVsWorstGround_freshnessOff": 1.12,
+      "marksCrossingIt": 1
+    },
+    {
+      "symbol": "X1-KD64",
+      "glyphPx": 281,
+      "nearPx": 509,
+      "contrastVsGround": 3.98,
+      "contrastVsWorstGround": 1.58,
+      "contrastVsGround_freshnessOff": 5.33,
+      "contrastVsWorstGround_freshnessOff": 3.64,
+      "marksCrossingIt": 6
+    },
+    {
+      "symbol": "X1-KY38",
+      "glyphPx": 238,
+      "nearPx": 559,
+      "contrastVsGround": 2.36,
+      "contrastVsWorstGround": 2.09,
+      "contrastVsGround_freshnessOff": 4.29,
+      "contrastVsWorstGround_freshnessOff": 2.97,
+      "marksCrossingIt": 3
+    },
+    {
+      "symbol": "X1-CX39",
+      "glyphPx": 206,
+      "nearPx": 441,
+      "contrastVsGround": 3.8,
+      "contrastVsWorstGround": 1.43,
+      "contrastVsGround_freshnessOff": 4.97,
+      "contrastVsWorstGround_freshnessOff": 3.45,
+      "marksCrossingIt": 1
+    },
+    {
+      "symbol": "X1-A4",
+      "glyphPx": 13,
+      "note": "glyph not resolved in frame"
+    }
+  ],
+  "c_ramp": {
+    "sampledOnUncrossedMarks": 48,
+    "steps": [
+      {
+        "step": 0,
+        "n": 2,
+        "rgb": [
+          135,
+          171,
+          195
+        ],
+        "peakLum": 150.9
+      },
+      {
+        "step": 1,
+        "n": 26,
+        "rgb": [
+          39,
+          147,
+          176
+        ],
+        "peakLum": 126.1
+      },
+      {
+        "step": 2,
+        "n": 7,
+        "rgb": [
+          51,
+          103,
+          137
+        ],
+        "peakLum": 95.1
+      },
+      {
+        "step": 3,
+        "n": 7,
+        "rgb": [
+          51,
+          103,
+          136
+        ],
+        "peakLum": 94.1
+      },
+      {
+        "step": 4,
+        "n": 6,
+        "rgb": [
+          54,
+          82,
+          116
+        ],
+        "peakLum": 78.7
+      }
+    ],
+    "adjacentDeltaE": [
+      13.33,
+      17.23,
+      0.35,
+      8.88
+    ]
+  },
+  "e_invariants": {
+    "darkPeakLum": 77.4,
+    "darkRgb": [
+      73,
+      77,
+      96
+    ],
+    "pricedPeakLumByStep": [
+      150.9,
+      126.1,
+      95.1,
+      94.1,
+      78.7
+    ],
+    "quietestPricedVsDark": 1.02
+  },
+  "shots": {
+    "on": "/private/tmp/claude-502/-Users-andres-dandrea-IdeaProjects-cities-spacetraders-city/c77c9709-e861-4701-be33-49418a01712b/scratchpad/shots-before2/before-region-dense.png",
+    "off": "/private/tmp/claude-502/-Users-andres-dandrea-IdeaProjects-cities-spacetraders-city/c77c9709-e861-4701-be33-49418a01712b/scratchpad/shots-before2/before-region-dense-freshness-off.png"
+  }
+}

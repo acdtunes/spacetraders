@@ -1,0 +1,269 @@
+{
+  "tag": "after",
+  "knobs": {
+    "markScale": 2,
+    "markMinPx": 8,
+    "labelFromMark": true
+  },
+  "fullScale": "8.3h",
+  "camera": {
+    "zoom": 2.873,
+    "scale": 0.034973731296168556,
+    "canvas": {
+      "left": 0,
+      "top": 65,
+      "cw": 1600,
+      "ch": 835
+    },
+    "calibration": "n=10, median core offset 1.17px, 0 beyond 3px"
+  },
+  "a_density": {
+    "marksInFrame": 459,
+    "crossingPairs": 239,
+    "pricedPricedPairs": 50,
+    "marksCrossedByAtLeastOne": 276,
+    "hardEdgePixels": {
+      "freshnessOn": 142828,
+      "freshnessOff": 65458,
+      "addedByFreshness": 77370
+    },
+    "gradientSum": {
+      "freshnessOn": 11081906,
+      "freshnessOff": 6394688,
+      "addedByFreshness": 4687218
+    }
+  },
+  "b_labels": [
+    {
+      "symbol": "X1-XC31",
+      "glyphPx": 98,
+      "nearPx": 343,
+      "contrastVsGround": 5.16,
+      "contrastVsWorstGround": 1.17,
+      "contrastVsGround_freshnessOff": 5.16,
+      "contrastVsWorstGround_freshnessOff": 3.72,
+      "marksCrossingIt": 4
+    },
+    {
+      "symbol": "X1-UB61",
+      "glyphPx": 236,
+      "nearPx": 366,
+      "contrastVsGround": 4.45,
+      "contrastVsWorstGround": 1.81,
+      "contrastVsGround_freshnessOff": 4.42,
+      "contrastVsWorstGround_freshnessOff": 3.22,
+      "marksCrossingIt": 1
+    },
+    {
+      "symbol": "X1-VY39",
+      "glyphPx": 0,
+      "note": "glyph not resolved in frame"
+    },
+    {
+      "symbol": "X1-BM33",
+      "glyphPx": 9,
+      "note": "glyph not resolved in frame"
+    },
+    {
+      "symbol": "X1-KC83",
+      "glyphPx": 169,
+      "nearPx": 323,
+      "contrastVsGround": 5.16,
+      "contrastVsWorstGround": 1.09,
+      "contrastVsGround_freshnessOff": 5.17,
+      "contrastVsWorstGround_freshnessOff": 3.59,
+      "marksCrossingIt": 1
+    },
+    {
+      "symbol": "X1-ZV7",
+      "glyphPx": 188,
+      "nearPx": 377,
+      "contrastVsGround": 3.22,
+      "contrastVsWorstGround": 1.67,
+      "contrastVsGround_freshnessOff": 4.85,
+      "contrastVsWorstGround_freshnessOff": 3.37,
+      "marksCrossingIt": 4
+    },
+    {
+      "symbol": "X1-GV4",
+      "glyphPx": 69,
+      "nearPx": 261,
+      "contrastVsGround": 4.34,
+      "contrastVsWorstGround": 1.75,
+      "contrastVsGround_freshnessOff": 3.22,
+      "contrastVsWorstGround_freshnessOff": 2.16,
+      "marksCrossingIt": 0
+    },
+    {
+      "symbol": "X1-GF41",
+      "glyphPx": 61,
+      "nearPx": 88,
+      "contrastVsGround": 2.37,
+      "contrastVsWorstGround": 1.7,
+      "contrastVsGround_freshnessOff": 2.37,
+      "contrastVsWorstGround_freshnessOff": 1.7,
+      "marksCrossingIt": 5
+    },
+    {
+      "symbol": "X1-UN60",
+      "glyphPx": 58,
+      "nearPx": 172,
+      "contrastVsGround": 3.46,
+      "contrastVsWorstGround": 1.34,
+      "contrastVsGround_freshnessOff": 3.21,
+      "contrastVsWorstGround_freshnessOff": 2.33,
+      "marksCrossingIt": 1
+    },
+    {
+      "symbol": "X1-AS39",
+      "glyphPx": 477,
+      "nearPx": 310,
+      "contrastVsGround": 4.79,
+      "contrastVsWorstGround": 1.13,
+      "contrastVsGround_freshnessOff": 5.89,
+      "contrastVsWorstGround_freshnessOff": 4.11,
+      "marksCrossingIt": 2
+    },
+    {
+      "symbol": "X1-MY3",
+      "glyphPx": 181,
+      "nearPx": 444,
+      "contrastVsGround": 4.88,
+      "contrastVsWorstGround": 1.13,
+      "contrastVsGround_freshnessOff": 4.92,
+      "contrastVsWorstGround_freshnessOff": 3.47,
+      "marksCrossingIt": 3
+    },
+    {
+      "symbol": "X1-UQ61",
+      "glyphPx": 130,
+      "nearPx": 352,
+      "contrastVsGround": 4.92,
+      "contrastVsWorstGround": 2.19,
+      "contrastVsGround_freshnessOff": 4.93,
+      "contrastVsWorstGround_freshnessOff": 3.46,
+      "marksCrossingIt": 4
+    },
+    {
+      "symbol": "X1-BM36",
+      "glyphPx": 13,
+      "note": "glyph not resolved in frame"
+    },
+    {
+      "symbol": "X1-KD64",
+      "glyphPx": 309,
+      "nearPx": 558,
+      "contrastVsGround": 4.91,
+      "contrastVsWorstGround": 2.75,
+      "contrastVsGround_freshnessOff": 4.88,
+      "contrastVsWorstGround_freshnessOff": 3.26,
+      "marksCrossingIt": 3
+    },
+    {
+      "symbol": "X1-KY38",
+      "glyphPx": 52,
+      "nearPx": 369,
+      "contrastVsGround": 1.28,
+      "contrastVsWorstGround": 3.76,
+      "contrastVsGround_freshnessOff": 2.95,
+      "contrastVsWorstGround_freshnessOff": 2,
+      "marksCrossingIt": 1
+    },
+    {
+      "symbol": "X1-CX39",
+      "glyphPx": 63,
+      "nearPx": 158,
+      "contrastVsGround": 4.79,
+      "contrastVsWorstGround": 3.01,
+      "contrastVsGround_freshnessOff": 4.89,
+      "contrastVsWorstGround_freshnessOff": 3.6,
+      "marksCrossingIt": 1
+    },
+    {
+      "symbol": "X1-A4",
+      "glyphPx": 11,
+      "note": "glyph not resolved in frame"
+    }
+  ],
+  "c_ramp": {
+    "sampledOnUncrossedMarks": 73,
+    "steps": [
+      {
+        "step": 0,
+        "n": 7,
+        "rgb": [
+          66,
+          176,
+          129
+        ],
+        "peakLum": 149.2
+      },
+      {
+        "step": 1,
+        "n": 34,
+        "rgb": [
+          80,
+          151,
+          100
+        ],
+        "peakLum": 132.2
+      },
+      {
+        "step": 2,
+        "n": 14,
+        "rgb": [
+          84,
+          127,
+          79
+        ],
+        "peakLum": 114.4
+      },
+      {
+        "step": 3,
+        "n": 11,
+        "rgb": [
+          83,
+          106,
+          65
+        ],
+        "peakLum": 98.1
+      },
+      {
+        "step": 4,
+        "n": 7,
+        "rgb": [
+          75,
+          85,
+          53
+        ],
+        "peakLum": 80.4
+      }
+    ],
+    "adjacentDeltaE": [
+      8.45,
+      8.81,
+      8.01,
+      7.85
+    ]
+  },
+  "e_invariants": {
+    "darkPeakLum": 62.4,
+    "darkRgb": [
+      58,
+      62,
+      81
+    ],
+    "pricedPeakLumByStep": [
+      149.2,
+      132.2,
+      114.4,
+      98.1,
+      80.4
+    ],
+    "quietestPricedVsDark": 1.29
+  },
+  "shots": {
+    "on": "/private/tmp/claude-502/-Users-andres-dandrea-IdeaProjects-cities-spacetraders-city/c77c9709-e861-4701-be33-49418a01712b/scratchpad/shots-after/after-region-dense.png",
+    "off": "/private/tmp/claude-502/-Users-andres-dandrea-IdeaProjects-cities-spacetraders-city/c77c9709-e861-4701-be33-49418a01712b/scratchpad/shots-after/after-region-dense-freshness-off.png"
+  }
+}
