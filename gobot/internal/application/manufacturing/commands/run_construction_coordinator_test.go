@@ -342,7 +342,7 @@ func TestConstructionDrain_SuppliesReadyTask(t *testing.T) {
 	shipRepo := newDrainShipRepo(newTestHauler(t, "HAULER-7", nil))
 
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(activator), &factoryFakeClock{})
-	resp, err := handler.drainOnce(context.Background(), newDrainCommand())
+	resp, err := drainSettled(t, handler, context.Background(), newDrainCommand())
 	if err != nil {
 		t.Fatalf("drainOnce: %v", err)
 	}
@@ -398,7 +398,7 @@ func TestConstructionDrain_StampsRemainingBillAsHullFillTarget(t *testing.T) {
 	shipRepo := newDrainShipRepo(newTestHauler(t, "HAULER-7", nil))
 
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
-	if _, err := handler.drainOnce(context.Background(), newDrainCommand()); err != nil {
+	if _, err := drainSettled(t, handler, context.Background(), newDrainCommand()); err != nil {
 		t.Fatalf("drainOnce: %v", err)
 	}
 
@@ -431,7 +431,7 @@ func TestConstructionDrain_FabricatePlannedMaterial_ProducesViaFabricateNode(t *
 	shipRepo := newDrainShipRepo(newTestHauler(t, "HAULER-7", nil))
 
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
-	resp, err := handler.drainOnce(context.Background(), newDrainCommand())
+	resp, err := drainSettled(t, handler, context.Background(), newDrainCommand())
 	if err != nil {
 		t.Fatalf("drainOnce: %v", err)
 	}
@@ -477,7 +477,7 @@ func TestConstructionDrain_BuyableMaterial_UsesBuyNode(t *testing.T) {
 	shipRepo := newDrainShipRepo(newTestHauler(t, "HAULER-7", nil))
 
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
-	if _, err := handler.drainOnce(context.Background(), newDrainCommand()); err != nil {
+	if _, err := drainSettled(t, handler, context.Background(), newDrainCommand()); err != nil {
 		t.Fatalf("drainOnce: %v", err)
 	}
 
@@ -506,7 +506,7 @@ func TestConstructionDrain_DeferOnDryMarket(t *testing.T) {
 	shipRepo := newDrainShipRepo(newTestHauler(t, "HAULER-7", nil))
 
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
-	resp, err := handler.drainOnce(context.Background(), newDrainCommand())
+	resp, err := drainSettled(t, handler, context.Background(), newDrainCommand())
 	if err != nil {
 		t.Fatalf("drainOnce: %v", err)
 	}
@@ -545,7 +545,7 @@ func TestConstructionDrain_RestartResilient(t *testing.T) {
 	// First coordinator instance drains the first delivery (40/100). The bill is not met, so
 	// it autonomously enqueues + persists the follow-on delivery task before the "crash".
 	h1 := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
-	if _, err := h1.drainOnce(context.Background(), newDrainCommand()); err != nil {
+	if _, err := drainSettled(t, h1, context.Background(), newDrainCommand()); err != nil {
 		t.Fatalf("first drainOnce: %v", err)
 	}
 	if first.Status() != manufacturing.TaskStatusCompleted {
@@ -559,7 +559,7 @@ func TestConstructionDrain_RestartResilient(t *testing.T) {
 	// A brand-new coordinator instance (no carried state) over the SAME repos rebuilds its
 	// worklist from persistence and resumes the follow-on task that was persisted READY.
 	h2 := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
-	resp2, err := h2.drainOnce(context.Background(), newDrainCommand())
+	resp2, err := drainSettled(t, h2, context.Background(), newDrainCommand())
 	if err != nil {
 		t.Fatalf("post-restart drainOnce: %v", err)
 	}
@@ -588,7 +588,7 @@ func TestConstructionDrain_DerivesSystemFromSiteWhenUnset(t *testing.T) {
 
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
 	// No SystemSymbol: the drain must derive X1-TEST from the site X1-TEST-GATE.
-	resp, err := handler.drainOnce(context.Background(), &RunConstructionCoordinatorCommand{PlayerID: 1, ContainerID: "cc-1"})
+	resp, err := drainSettled(t, handler, context.Background(), &RunConstructionCoordinatorCommand{PlayerID: 1, ContainerID: "cc-1"})
 	if err != nil {
 		t.Fatalf("drainOnce: %v", err)
 	}
@@ -612,7 +612,7 @@ func TestConstructionDrain_IgnoresNonExecutingPipelineTask(t *testing.T) {
 	shipRepo := newDrainShipRepo(newTestHauler(t, "HAULER-7", nil))
 
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
-	resp, err := handler.drainOnce(context.Background(), newDrainCommand())
+	resp, err := drainSettled(t, handler, context.Background(), newDrainCommand())
 	if err != nil {
 		t.Fatalf("drainOnce: %v", err)
 	}
@@ -641,7 +641,7 @@ func TestConstructionDrain_FailsTaskOnSourcingError(t *testing.T) {
 	shipRepo := newDrainShipRepo(newTestHauler(t, "HAULER-7", nil))
 
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
-	resp, err := handler.drainOnce(context.Background(), newDrainCommand())
+	resp, err := drainSettled(t, handler, context.Background(), newDrainCommand())
 	if err != nil {
 		t.Fatalf("a task-level failure must not fail the whole tick, got %v", err)
 	}
@@ -671,7 +671,7 @@ func TestConstructionDrain_FailsTaskOnDeliveryError(t *testing.T) {
 	shipRepo := newDrainShipRepo(newTestHauler(t, "HAULER-7", nil))
 
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
-	_, err := handler.drainOnce(context.Background(), newDrainCommand())
+	_, err := drainSettled(t, handler, context.Background(), newDrainCommand())
 	if err != nil {
 		t.Fatalf("a task-level failure must not fail the whole tick, got %v", err)
 	}
@@ -700,7 +700,7 @@ func TestConstructionDrain_SkipsRejectedClaim(t *testing.T) {
 	shipRepo.claimErr = errors.New("ship dedicated to another fleet")
 
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
-	resp, err := handler.drainOnce(context.Background(), newDrainCommand())
+	resp, err := drainSettled(t, handler, context.Background(), newDrainCommand())
 	if err != nil {
 		t.Fatalf("a rejected claim must not fail the tick, got %v", err)
 	}
@@ -723,7 +723,7 @@ func TestConstructionDrain_NoReadyTasks_ReportsNoWork(t *testing.T) {
 	shipRepo := newDrainShipRepo(newTestHauler(t, "HAULER-7", nil))
 
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, &fakeConstructionProducer{}, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
-	resp, err := handler.drainOnce(context.Background(), newDrainCommand())
+	resp, err := drainSettled(t, handler, context.Background(), newDrainCommand())
 	if err != nil {
 		t.Fatalf("drainOnce: %v", err)
 	}
@@ -744,7 +744,7 @@ func TestConstructionDrain_NoIdleHauler_ReportsNoWork(t *testing.T) {
 	shipRepo := newDrainShipRepo() // no haulers
 
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, &fakeConstructionProducer{}, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
-	resp, err := handler.drainOnce(context.Background(), newDrainCommand())
+	resp, err := drainSettled(t, handler, context.Background(), newDrainCommand())
 	if err != nil {
 		t.Fatalf("drainOnce: %v", err)
 	}
@@ -820,7 +820,7 @@ func TestConstructionDrain_EnqueuesReplenishmentWhenBillRemains(t *testing.T) {
 	shipRepo := newDrainShipRepo(newTestHauler(t, "HAULER-7", nil))
 
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
-	if _, err := handler.drainOnce(context.Background(), newDrainCommand()); err != nil {
+	if _, err := drainSettled(t, handler, context.Background(), newDrainCommand()); err != nil {
 		t.Fatalf("drainOnce: %v", err)
 	}
 
@@ -855,7 +855,7 @@ func TestConstructionDrain_NoReplenishmentWhenBillMet(t *testing.T) {
 	shipRepo := newDrainShipRepo(newTestHauler(t, "HAULER-7", nil))
 
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
-	if _, err := handler.drainOnce(context.Background(), newDrainCommand()); err != nil {
+	if _, err := drainSettled(t, handler, context.Background(), newDrainCommand()); err != nil {
 		t.Fatalf("drainOnce: %v", err)
 	}
 
@@ -886,7 +886,7 @@ func TestConstructionDrain_DrivesFullBillAcrossDeliveries(t *testing.T) {
 
 	deliveries := 0
 	for tick := 0; tick < 10; tick++ { // bounded guard: the chain must settle well before this
-		resp, err := handler.drainOnce(context.Background(), cmd)
+		resp, err := drainSettled(t, handler, context.Background(), cmd)
 		if err != nil {
 			t.Fatalf("tick %d drainOnce: %v", tick, err)
 		}
@@ -935,7 +935,7 @@ func TestConstructionDrain_DeliversOnHandCargoWhenSourceParks(t *testing.T) {
 	shipRepo := newDrainShipRepo(ladenHauler(t, "HAULER-7", "FAB_MATS", 30))
 
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
-	resp, err := handler.drainOnce(context.Background(), newDrainCommand())
+	resp, err := drainSettled(t, handler, context.Background(), newDrainCommand())
 	if err != nil {
 		t.Fatalf("drainOnce: %v", err)
 	}
@@ -975,7 +975,7 @@ func TestConstructionDrain_DeliversOnHandFirstThenSourcesRemainder(t *testing.T)
 	shipRepo := newDrainShipRepo(ladenHauler(t, "HAULER-7", "FAB_MATS", 30))
 
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
-	resp, err := handler.drainOnce(context.Background(), newDrainCommand())
+	resp, err := drainSettled(t, handler, context.Background(), newDrainCommand())
 	if err != nil {
 		t.Fatalf("drainOnce: %v", err)
 	}
@@ -1015,7 +1015,7 @@ func TestConstructionDrain_UnrelatedCargoDryMarket_StillDefers(t *testing.T) {
 	shipRepo := newDrainShipRepo(ladenHauler(t, "HAULER-7", "IRON", 20)) // holds IRON, task needs FAB_MATS
 
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
-	resp, err := handler.drainOnce(context.Background(), newDrainCommand())
+	resp, err := drainSettled(t, handler, context.Background(), newDrainCommand())
 	if err != nil {
 		t.Fatalf("drainOnce: %v", err)
 	}
@@ -1050,7 +1050,7 @@ func TestConstructionDrain_BillMet_DoesNotOverDeliverOnHand(t *testing.T) {
 	shipRepo := newDrainShipRepo(ladenHauler(t, "HAULER-7", "FAB_MATS", 40))
 
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
-	if _, err := handler.drainOnce(context.Background(), newDrainCommand()); err != nil {
+	if _, err := drainSettled(t, handler, context.Background(), newDrainCommand()); err != nil {
 		t.Fatalf("drainOnce: %v", err)
 	}
 

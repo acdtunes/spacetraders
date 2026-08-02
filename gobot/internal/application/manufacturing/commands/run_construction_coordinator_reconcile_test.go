@@ -77,7 +77,7 @@ func TestConstructionDrain_ReconcilesDeliveredQuantityBehindLiveSite(t *testing.
 
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
 	handler.SetConstructionSiteSource(site)
-	if _, err := handler.drainOnce(context.Background(), newDrainCommand()); err != nil {
+	if _, err := drainSettled(t, handler, context.Background(), newDrainCommand()); err != nil {
 		t.Fatalf("drainOnce: %v", err)
 	}
 
@@ -107,7 +107,7 @@ func TestConstructionDrain_ReconciledBillStopsResourcingDeliveredMaterial(t *tes
 
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
 	handler.SetConstructionSiteSource(site)
-	resp, err := handler.drainOnce(context.Background(), newDrainCommand())
+	resp, err := drainSettled(t, handler, context.Background(), newDrainCommand())
 	if err != nil {
 		t.Fatalf("drainOnce: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestConstructionDrain_SiteBehindLocalCounter_KeepsLocalAndWarnsLoudly(t *te
 
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
 	handler.SetConstructionSiteSource(site)
-	if _, err := handler.drainOnce(common.WithLogger(context.Background(), logger), newDrainCommand()); err != nil {
+	if _, err := drainSettled(t, handler, common.WithLogger(context.Background(), logger), newDrainCommand()); err != nil {
 		t.Fatalf("drainOnce: %v", err)
 	}
 
@@ -226,7 +226,7 @@ func TestConstructionDrain_UnwiredSiteSource_ReportsReconciliationDisabled(t *te
 	logger := &capturingLogger{}
 
 	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
-	if _, err := handler.drainOnce(common.WithLogger(context.Background(), logger), newDrainCommand()); err != nil {
+	if _, err := drainSettled(t, handler, common.WithLogger(context.Background(), logger), newDrainCommand()); err != nil {
 		t.Fatalf("drainOnce: %v", err)
 	}
 
