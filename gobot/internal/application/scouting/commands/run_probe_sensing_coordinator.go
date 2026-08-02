@@ -287,6 +287,13 @@ type SensingEnginePorts struct {
 	SpreadOf parkedsensing.SpreadObserver
 	Home     HomeSystemReader
 	Budget   BudgetRateReader
+	// UnpricedPool is the sensing surge's work list: the charted systems the fleet
+	// holds no price for (sp-zvywu). REQUIRED, and checked in ready() below rather
+	// than nil-tolerated: a nil-tolerant pool read is what a dormant feature looks
+	// like — the tick would report healthy forever while ~300 surplus probes stood
+	// idle against 1,067 unpriced systems, which is precisely the blind spot this
+	// port exists to close. Held fail-closed and LOUD instead.
+	UnpricedPool UnpricedSystemPool
 	// HeavyReserve holds treasury back for the next heavy so probe buying stands down
 	// while one accumulates (sp-fwk8z). OPTIONAL: nil is byte-identical to no reserve,
 	// which is what a deployment without the fleet autosizer should see.
@@ -311,7 +318,9 @@ func (p SensingEnginePorts) wired() bool {
 		// looks like: the engine would tick along reporting healthy while never learning
 		// what a single shipyard sells, which is precisely the blind spot these ports
 		// exist to close. Held fail-closed and LOUD instead.
-		p.YardCatalog != nil && p.YardRead != nil && p.YardScan != nil
+		p.YardCatalog != nil && p.YardRead != nil && p.YardScan != nil &&
+		// The sensing surge's pool read, REQUIRED for the same reason (sp-zvywu).
+		p.UnpricedPool != nil
 }
 
 // --- engine port bundles ------------------------------------------------------
@@ -531,6 +540,9 @@ type RunProbeSensingCoordinatorCommand struct {
 	CapexReserveCredits int
 	// QuartermasterCadence is a yard slot's re-read floor, in seconds.
 	QuartermasterCadence int
+	// SurgeInFlightCap bounds how many surplus probes may be flying toward
+	// charted-but-unpriced systems at once (sp-zvywu). See defaultSurgeInFlightCap.
+	SurgeInFlightCap int
 
 	// --- retired: read by the old touring core, ignored by this one -----------
 
@@ -735,6 +747,8 @@ type sensingConfig struct {
 	CapitalMultiplierKMilli int
 	CapexReserveCredits     int64
 	QuartermasterCadence    time.Duration
+	// SurgeInFlightCap is the standing bound on surge dispatches in flight.
+	SurgeInFlightCap int
 }
 
 // resolveSensingConfig resolves one tick's effective config from the launch
@@ -797,6 +811,7 @@ func resolveSensingConfig(ctx context.Context, cmd *RunProbeSensingCoordinatorCo
 		CapitalMultiplierKMilli: pick("capital_multiplier_k_milli", cmd.CapitalMultiplierKMilli),
 		CapexReserveCredits:     int64(pick("capex_reserve_credits", cmd.CapexReserveCredits)),
 		QuartermasterCadence:    time.Duration(pick("quartermaster_cadence_secs", cmd.QuartermasterCadence)) * time.Second,
+		SurgeInFlightCap:        pick("surge_inflight_cap", cmd.SurgeInFlightCap),
 	}
 
 	// 1=on, 2=off. Anything else — including the absent-key 0 — is the default.
@@ -852,6 +867,12 @@ func resolveSensingConfig(ctx context.Context, cmd *RunProbeSensingCoordinatorCo
 	}
 	if c.QuartermasterCadence <= 0 {
 		c.QuartermasterCadence = defaultQuartermasterCadenceSecs * time.Second
+	}
+	if c.SurgeInFlightCap <= 0 {
+		// Reverts to the documented default like every other knob, which is also what
+		// makes this cap unusable as an off switch: `tune surge_inflight_cap 0` restores
+		// 8 rather than stopping the surge. The pass ships ARMED and has no off seam.
+		c.SurgeInFlightCap = defaultSurgeInFlightCap
 	}
 	return c
 }
@@ -1091,10 +1112,36 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 	// scout-tagged hull is not an orphan at all, the scout posts still stand, and
 	// the scout-post coordinator is actively drawing from its idle pool. Flying
 	// one then would take a hull out from under a LIVE coordinator.
-	adopted, dispatchedOrphans := 0, 0
+	adopted, dispatchedOrphans, surged := 0, 0, 0
 	if !cutoverPending {
 		adopted = h.adoptStrandedProbes(ctx, cmd, ports, &failures)
 		dispatchedOrphans = h.dispatchIdleOrphans(ctx, cmd, ports, &failures)
+		// THE SENSING SURGE, and its position is three separate arguments (sp-zvywu).
+		//
+		// AFTER THE ORPHAN DISPATCH, because that pass fills placements THE SCREEN
+		// ALREADY DECLARED and this one declares new ones. A hull the dispatch can berth
+		// at an existing WANTED row is a hull that needs no new placement written for
+		// it, so running the surge first would spend it on a fresh row and leave a
+		// declared placement standing empty.
+		//
+		// BEFORE THE DRAIN, and this is money (RULINGS #4). A surplus probe is named by
+		// NO slot row, which is exactly why the probe cap cannot see it — an UNDER-count,
+		// the direction that authorises buying a replacement for a hull we already own.
+		// The surge's write names it, so the cap counts it, so the drain buys FEWER
+		// probes. Running the surge after the drain would spend money this tick that the
+		// same tick's own bookkeeping made unnecessary.
+		//
+		// GATED ON THE CUTOVER for adoption's reason exactly: before the cutover a
+		// scout-tagged hull is not surplus at all — the scout posts still stand and the
+		// scout-post coordinator is actively drawing from its idle pool — so flying one
+		// then would take a hull out from under a LIVE coordinator.
+		//
+		// `systems` is the tick's own ledger read from above, passed rather than re-read
+		// for ONE narrow use: which hulls are out on a charting errand. That is safe
+		// where reusing it for a VERDICT would not be (see the reaper's note): SetSeed and
+		// UpsertSystem own disjoint column sets in the persistence layer, so the screening
+		// sweep between the read and here cannot have touched a seed column.
+		surged = h.surgeToUnpricedSystems(ctx, cmd, cfg, ports, systems, &failures)
 	}
 
 	buyRep, berr := parkedsensing.DrainBuyQueue(ctx, ports.buyPorts(cmd.ContainerID, h.postRepo), playerID, buyKnobs(cfg), h.clock)
@@ -1141,6 +1188,7 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 		screened:    screened,
 		adopted:     adopted,
 		dispatched:  dispatchedOrphans,
+		surged:      surged,
 		reap:        reapRep,
 		buy:         buyRep,
 		place:       placeRep,
@@ -1158,6 +1206,7 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 		screened:   screened,
 		adopted:    adopted,
 		dispatched: dispatchedOrphans,
+		surged:     surged,
 		rotation:   rotation,
 		reap:       reapRep,
 		buy:        buyRep,

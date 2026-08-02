@@ -75,12 +75,17 @@ type sensingTickTally struct {
 	screened   int
 	adopted    int
 	dispatched int
-	rotation   int
-	reap       parkedsensing.ReapReport
-	buy        parkedsensing.BuyReport
-	place      parkedsensing.PlacementReport
-	expand     parkedsensing.ExpandReport
-	failures   int
+	// surged counts surplus probes sent into charted-but-unpriced systems (sp-zvywu).
+	// It is an EFFECT, and it has to be: a tick that surged eight probes into
+	// unpriced space and did nothing else would otherwise be filed IDLE, which is
+	// exactly the silent-progress misreading this verdict exists to prevent.
+	surged   int
+	rotation int
+	reap     parkedsensing.ReapReport
+	buy      parkedsensing.BuyReport
+	place    parkedsensing.PlacementReport
+	expand   parkedsensing.ExpandReport
+	failures int
 }
 
 // anyEffect reports whether the tick moved ANYTHING: a system screened, a hull adopted, flown,
@@ -88,7 +93,7 @@ type sensingTickTally struct {
 // dispatched. The rotation size is deliberately NOT an effect — a steady rotation is what an idle
 // tick looks like.
 func (t sensingTickTally) anyEffect() bool {
-	return t.cutover > 0 || t.screened > 0 || t.adopted > 0 || t.dispatched > 0 ||
+	return t.cutover > 0 || t.screened > 0 || t.adopted > 0 || t.dispatched > 0 || t.surged > 0 ||
 		t.reap.Reaped > 0 ||
 		t.buy.Bought > 0 || t.buy.Reused > 0 || t.buy.Footholds > 0 || t.buy.Queued > 0 ||
 		t.place.Actions > 0 ||

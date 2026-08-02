@@ -1218,6 +1218,14 @@ func run(cfg *config.Config) error {
 	// singleton serving every player's ticks. The factory result is memoised per player.
 	sensingLedgerPort := parkedSensingAdapters.NewLedgerPort(persistence.NewSensingLedgerRepository(db))
 	sensingMarketGoods := parkedSensingAdapters.NewMarketGoodsPort(db)
+	// The sensing surge's pool read (sp-zvywu): the era-scoped set difference between
+	// the charted systems and the ones we already hold prices for. Player-agnostic
+	// instance — its method carries the player, because the priced half is
+	// player-partitioned while the charted half is shared — so one instance serves
+	// every player's ticks. Wired UNCONDITIONALLY and checked by wired(): a
+	// nil-tolerated pool read is what a dormant feature looks like, and this ships
+	// driving the live tick.
+	sensingUnpricedPool := parkedSensingAdapters.NewUnpricedPoolPort(db)
 
 	// The screen's catalogue gap fill is the one market API read that cannot pass
 	// through MarketScanner, so it is charged to the same allowance directly
@@ -1322,6 +1330,9 @@ func run(cfg *config.Config) error {
 			SeedShip: parkedSensingAdapters.NewSeedCommandPort(med, apiClient, playerRepo, waypointRepo, marketScanner, gateNeighbours),
 			Scan:     parkedSensingAdapters.NewScanRunnerPort(marketScanner),
 			Home:     parkedSensingAdapters.NewHomeSystemPort(db),
+			// The sensing surge's work list: charted systems we hold no price for
+			// (sp-zvywu). Same instance for every player — see its construction above.
+			UnpricedPool: sensingUnpricedPool,
 			// The heavy reservation: probe buying stands down while treasury accumulates
 			// toward the next heavy, and resumes the moment it lands. heavy_cap is read
 			// from the fleet autosizer's OWN persisted config — one dial, one enforcer —

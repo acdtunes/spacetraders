@@ -281,6 +281,15 @@ func TestSensingTickVerdictTable(t *testing.T) {
 			wantStatus: health.StallIdle,
 		},
 		{
+			// A tick that surged eight probes into space the fleet has never priced and did
+			// nothing else would otherwise be filed IDLE — the silent-progress misreading
+			// this verdict exists to prevent, and the one that would let a working surge look
+			// like a wedged engine.
+			name:       "a surge into charted-but-unpriced space is progress",
+			tally:      sensingTickTally{surged: 3},
+			wantStatus: health.StallProgress,
+		},
+		{
 			name:       "a steady scan rotation with nothing to change is idle, not progress",
 			tally:      sensingTickTally{rotation: 42},
 			wantStatus: health.StallIdle,
