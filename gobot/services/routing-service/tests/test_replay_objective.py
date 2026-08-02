@@ -30,6 +30,12 @@ from types import SimpleNamespace
 
 import pytest
 
+# replay_objective reads the ledger through SQLAlchemy, which is a MODEL-PIPELINE
+# dependency (requirements-model.txt) and deliberately absent from the pinned service
+# venv. Skip rather than error there, so a service-only environment can still run the
+# suite to completion instead of failing at collection.
+pytest.importorskip("sqlalchemy", reason="model-pipeline dep; see requirements-model.txt")
+
 import replay_objective as ro
 from replay_objective import OBJECTIVE_PROFIT, OBJECTIVE_RATE
 

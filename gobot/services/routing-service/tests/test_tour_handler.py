@@ -106,7 +106,11 @@ def test_golden_tour(tmp_path):
         ("D", "H", True, 50): 40, ("D", "H", True, 55): 40,      # 80u H return cargo
         ("E", "H", False, 160): 40, ("E", "H", False, 144): 40,  # sold back home (two visits)
     }
-    assert resp.projected_profit == 23_880
+    # NET of jump-gate fees, not gross: the trades above gross 23,880, and this board
+    # makes two crossings which price at the fitted default INTER_SYSTEM_JUMP_FEE_PER_HOP
+    # (6,000) each. projected_profit is fee-inclusive by contract, so a gross expectation
+    # here would silently pass whenever the fee stopped being charged at all.
+    assert resp.projected_profit == 23_880 - 2 * 6_000
     assert resp.projected_credits_per_hour > 0
     # sp-bc27: an empty-hold tour has no launch-liquidation revenue, so the split
     # field is 0 and projected_profit is all fresh-trade profit.
@@ -148,10 +152,11 @@ def test_handler_forwards_max_tour_systems(tmp_path):
 def test_handler_forwards_inter_system_hops(tmp_path):
     # sp-tp5c3: the pb TourConstraints.inter_system_hops must be BRIDGED into the solver
     # constraints dict so a cross-system crossing is priced in its REAL gate-hop count.
-    # sp-smbgd made that price AFFINE — 750 + 650*hops — so on the golden board an undeclared
-    # S1<->S2 crossing prices at the 1-hop charge 1400, and declaring it as 2 gate hops raises
-    # each crossing to 2050 (NOT 2x1400: the fixed base is paid once per crossing, not per hop),
-    # WITHOUT changing the profit-primary tour shape (declaring hops changes time, not profit).
+    # Hops price BOTH time and profit: the crossing charge is affine in hops, and the
+    # jump-gate fee is charged PER HOP and netted out of projected_profit. So a declared
+    # hop count can change which tour wins, and on this board it does. The affine law
+    # itself is pinned in the solver tests; what is proved here is only that the field
+    # survives the wire — an unbridged field would leave `armed` identical to `base`.
     handler = RoutingServiceHandler(tour_artifact_path=_artifact(tmp_path))
 
     # Baseline: no map -> every crossing defaults to 1 hop = 750 + 650 = 1400.
@@ -160,18 +165,22 @@ def test_handler_forwards_inter_system_hops(tmp_path):
     # Two crossings, not four: sp-28lw9's per-visit cap of 2.5 trade_volumes lets the golden
     # board's load clear in ONE D/E round trip instead of two (see test_golden_tour).
     assert [l.travel_seconds_from_prev for l in base.legs[1:]] == [1400, 1400]
+    assert any(l.system_symbol == "S2" for l in base.legs), "baseline winner crosses to S2"
 
-    # Armed: S1<->S2 declared as 2 gate hops -> each crossing prices at 750 + 650*2 = 2050.
+    # Armed: S1<->S2 declared as 2 gate hops. Each of the two crossings then carries two
+    # hops of fee, 4 x 6,000 = 24,000 against the cross-system tour's 23,880 gross — the
+    # crossing is a net LOSS — so the intra-S1 tour that never leaves the system wins.
     req = request()
     req.constraints.inter_system_hops.append(
         routing_pb2.InterSystemHopDistance(from_system="S1", to_system="S2", gate_hops=2))
     armed = handler.OptimizeTradeTour(req, None)
     assert armed.feasible
-    assert [(l.waypoint_symbol, l.system_symbol) for l in armed.legs] == \
-        [(l.waypoint_symbol, l.system_symbol) for l in base.legs]
-    assert [l.travel_seconds_from_prev for l in armed.legs[1:]] == [2050, 2050]
-    # The affine shape, asserted at the bridge: a 2-hop crossing costs LESS than two 1-hop ones.
-    assert armed.legs[1].travel_seconds_from_prev < 2 * base.legs[1].travel_seconds_from_prev
+    assert all(l.system_symbol == "S1" for l in armed.legs), (
+        "a 2-hop crossing is uneconomic here, so the winner must stay intra-system: "
+        f"{[(l.waypoint_symbol, l.system_symbol) for l in armed.legs]}")
+    assert armed.projected_profit < base.projected_profit, (
+        "declaring hops must reach the solver and reprice the board: "
+        f"base={base.projected_profit} armed={armed.projected_profit}")
 
 
 def test_handler_forwards_closure_fields(tmp_path):
