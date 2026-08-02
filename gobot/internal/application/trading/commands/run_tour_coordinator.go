@@ -470,6 +470,11 @@ type RunTourCoordinatorHandler struct {
 	// SetTreasuryReader at boot with no config gate. An unreadable treasury still fails
 	// CLOSED either way.
 	treasury TreasuryReader
+	// gateFees is the ledger-backed per-DEPARTURE-SYSTEM jump-fee table (sp-9idvn) the
+	// solver prices crossings against. nil (every existing test, and any daemon that does
+	// not wire it) => no table on the wire => every crossing prices at the solver's flat
+	// charge, byte-identical to today. Injected via SetGateFeeReader at boot.
+	gateFees GateFeeReader
 	// modelArtifactPath is the daemon-configured (absolute) path to the market-model
 	// artifact this coordinator reads at launch, injected from cfg.Routing.ModelArtifactPath.
 	// Empty → the repo-relative defaultModelArtifactPath fallback. A per-run
@@ -753,6 +758,26 @@ func (h *RunTourCoordinatorHandler) SetGateGraph(g GateGraph) {
 func (h *RunTourCoordinatorHandler) SetTreasuryReader(r TreasuryReader) {
 	h.treasury = r
 	h.legs.SetTreasuryReader(r)
+}
+
+// SetGateFeeReader injects the ledger-backed per-departure-gate fee table (sp-9idvn).
+// Unset (every existing test) leaves gateFees nil, which plans byte-identically to today.
+func (h *RunTourCoordinatorHandler) SetGateFeeReader(r GateFeeReader) {
+	h.gateFees = r
+}
+
+// tourGateFees resolves the per-departure-gate fee table for this solve.
+//
+// Nil-reader and empty-table both yield nil, and nil means every crossing prices at the
+// solver's flat charge — the pre-table behaviour. There is no error path on purpose: a
+// pricing refinement must never be the reason a tour fails to plan.
+func (h *RunTourCoordinatorHandler) tourGateFees(
+	ctx context.Context, cmd *RunTourCoordinatorCommand,
+) []routing.GateFee {
+	if h.gateFees == nil {
+		return nil
+	}
+	return gateFeeConstraints(h.gateFees.GateFees(ctx, cmd.PlayerID))
 }
 
 // SetChartGateOnArrival propagates the chart-on-gate-arrival knob to the movement
@@ -2164,6 +2189,12 @@ func (h *RunTourCoordinatorHandler) planForState(
 		// solver's min-margin gate keeps testing the raw margin (RULINGS #4: no guard is
 		// tightened as a side effect).
 		ExternalityWeight: cmd.ExternalityWeight,
+		// sp-9idvn: the per-departure-gate fee table, learned from the ledger's own recorded
+		// jumps, so a crossing's first hop is priced by the gate it leaves rather than by the
+		// fleet mean. Nil reader (every existing test, and any daemon that has not wired it)
+		// or an empty ledger => nil => every crossing prices at the flat charge =>
+		// byte-identical to today.
+		GateFees: h.tourGateFees(ctx, cmd),
 	}
 	plan, err := h.planner.OptimizeTradeTour(ctx, snapshot, waypoints, shipState, cons, deposits, absorptionView)
 	if err != nil {

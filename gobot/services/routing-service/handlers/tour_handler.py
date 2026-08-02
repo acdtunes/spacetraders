@@ -111,6 +111,13 @@ class TourHandlerMixin:
                 # the wire. Absent/0 (the unarmed default) -> no charge -> the pairing
                 # order is byte-identical to today.
                 externality_weight=request.constraints.externality_weight,
+                # sp-9idvn: per-DEPARTURE-GATE fees, learned Go-side from the ledger's own
+                # recorded jumps, so a crossing's first hop is priced by the gate it leaves
+                # rather than by one fleet-wide constant. Absent (no history yet, or an older
+                # caller) -> [] -> every crossing prices at the flat charge -> byte-identical
+                # to today. Keyed on ONE system and never mirrored: the fee is asymmetric.
+                gate_fees=[dict(system=g.system, fee_credits=g.fee_credits)
+                           for g in request.constraints.gate_fees],
                 expected_model_version=request.constraints.expected_model_version)
             waypoints = [dict(symbol=w.symbol, system_symbol=w.system_symbol,
                               x=w.x, y=w.y)

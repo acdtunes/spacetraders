@@ -416,6 +416,22 @@ func buildTourRequest(
 		return pbInterSystemHops[i].ToSystem < pbInterSystemHops[j].ToSystem
 	})
 
+	// sp-9idvn: per-departure-gate fees so the solver prices a crossing's first hop from the
+	// gate it actually leaves. Empty (no ledger history yet) serializes to nothing —
+	// byte-identical to a pre-table binary. Sorted by system for reproducible payloads/logs,
+	// mirroring the hop ordering above. NOT mirrored onto reverse pairs: a fee belongs to the
+	// departure system alone (see routing.GateFee).
+	pbGateFees := make([]*pb.GateFee, 0, len(cons.GateFees))
+	for _, f := range cons.GateFees {
+		pbGateFees = append(pbGateFees, &pb.GateFee{
+			System:     f.System,
+			FeeCredits: f.FeeCredits,
+		})
+	}
+	sort.Slice(pbGateFees, func(i, j int) bool {
+		return pbGateFees[i].System < pbGateFees[j].System
+	})
+
 	return &pb.OptimizeTradeTourRequest{
 		Snapshot: pbSnapshot,
 		Ship: &pb.TourShip{
@@ -445,6 +461,9 @@ func buildTourRequest(
 			// Recovery-externality weight. 0 (unarmed) serializes to nothing, so the
 			// request is byte-identical to a binary that predates the charge.
 			ExternalityWeight: cons.ExternalityWeight,
+			// Per-departure-gate fees. Empty (no history) serializes to nothing, so the
+			// request is byte-identical to a binary that predates the table.
+			GateFees: pbGateFees,
 		},
 		Waypoints:         pbWaypoints,
 		DepositCandidates: pbDeposits,

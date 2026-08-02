@@ -432,7 +432,7 @@ func (h *JumpShipHandler) Handle(ctx context.Context, request common.Request) (c
 	// must not be the reason the spend goes unrecorded. Recording is
 	// best-effort and never fails the jump — the hull HAS moved, so returning
 	// an error here would strand the caller's model of where it is.
-	h.recordJumpFee(ctx, cmd, playerID, playerEntity.AgentSymbol, jumpResult)
+	h.recordJumpFee(ctx, cmd, playerID, playerEntity.AgentSymbol, currentSystem, jumpResult)
 
 	// 10. Sync ship nav state to the destination - mirrors how navigate
 	// persists the ship's location/cooldown after a successful API call.
@@ -493,6 +493,7 @@ func (h *JumpShipHandler) recordJumpFee(
 	cmd *JumpShipCommand,
 	playerID shared.PlayerID,
 	agentSymbol string,
+	originSystem string,
 	jumpResult *ports.JumpResult,
 ) {
 	logger := common.LoggerFromContext(ctx)
@@ -531,8 +532,15 @@ func (h *JumpShipHandler) recordJumpFee(
 		Description: fmt.Sprintf("Jump gate fee for %s to %s",
 			cmd.ShipSymbol, jumpResult.DestinationSystem),
 		Metadata: map[string]interface{}{
-			"agent":                agentSymbol,
-			"ship_symbol":          cmd.ShipSymbol,
+			"agent":       agentSymbol,
+			"ship_symbol": cmd.ShipSymbol,
+			// origin_system is what makes the fee ATTRIBUTABLE (sp-9idvn). The fee is a
+			// property of the gate a hull DEPARTS from, not of the pair and not of the
+			// distance, so without this field the per-gate table can only be recovered by a
+			// window function over each hull's jump sequence — which mis-attributes silently
+			// the moment a hull's previous row is not where this jump actually started.
+			// Recording it is free: the handler already knows where the hull was.
+			"origin_system":        originSystem,
 			"destination_system":   jumpResult.DestinationSystem,
 			"destination_waypoint": jumpResult.DestinationWaypoint,
 		},

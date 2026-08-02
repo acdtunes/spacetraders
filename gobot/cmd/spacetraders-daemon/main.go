@@ -1522,6 +1522,16 @@ func run(cfg *config.Config) error {
 	// shared ledger-backed reader instead of a live Get Agent per check. Unconditional — no
 	// config gate. An unreadable treasury still fails CLOSED exactly as before (RULINGS #4).
 	tourCoordinatorHandler.SetTreasuryReader(ledgerTreasury)
+	// sp-9idvn: price each crossing's first hop from the gate it actually DEPARTS, learned
+	// from the ledger's own recorded jumps, instead of from one fleet-wide constant. The fee
+	// is a property of the departure gate (origin explains 99.7% of the variance; the same
+	// edge costs 27% more one way than the other), so the flat charge — while unbiased in
+	// aggregate — carries a 15.2% error on any individual crossing, which is precisely the
+	// error that orders candidates against each other. Unconditional, no config gate: an
+	// empty or unreadable ledger yields no table, and no table prices exactly as before.
+	tourCoordinatorHandler.SetGateFeeReader(
+		tradeRouteCmd.NewLedgerGateFeeReader(transactionRepo, nil), // nil clock = RealClock
+	)
 	tourCoordinatorHandler.SetChartGateOnArrival(chartGateOnArrival) // sp-bcsu: chart cross-gate tour arrivals
 	// sp-mtvg: wire the global best-sink reader so the tour coordinator can SEE (and count
 	// on tour_candidates_dropped_total) the profitable exotic lanes whose sink is beyond the

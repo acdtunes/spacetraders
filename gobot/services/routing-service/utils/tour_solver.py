@@ -267,12 +267,40 @@ INTER_SYSTEM_TRAVEL_TERM_MAX = 1800
 # under-charges expected total by 6.2%. The median would be the right estimator only if we
 # were predicting a SINGLE jump's typical cost, which is not what this term does.
 #
-# WHAT THE SINGLE CONSTANT COSTS, stated rather than hidden: the real fee is
-# distance-scaled and spans 4,386-19,409, so one flat per-hop charge is unbiased in
-# aggregate but wrong on any individual crossing — it under-prices long jumps and
-# over-prices short ones. A per-pair lookup would fix that, and _build_inter_system_hop_index
-# is the natural place to carry it since it already keys on (system, system). This is the
-# deliberate median-first simplification the bead specified, not an oversight.
+# WHAT THIS CONSTANT IS NOW, and what it stopped being (sp-9idvn). It is the FALLBACK for a
+# departure gate we have never crossed. Observed gates are priced from the request-carried
+# per-origin table instead — see _build_gate_fee_index.
+#
+# THE FEE IS A PROPERTY OF THE DEPARTURE GATE, NOT OF DISTANCE. An earlier revision of this
+# comment asserted the fee was "distance-scaled" and that a per-PAIR lookup was the fix. Both
+# claims are wrong, and the measurement that settles it (2,016 jumps, player 5, 2026-07-31):
+#
+#   corr(fee, euclidean distance)  = 0.124          -- essentially nil
+#   SD overall 1,141 | within-destination 344 | within-pair 98 | WITHIN-ORIGIN 67
+#     -> the origin system explains 99.7% of the variance
+#   X1-KD64->X1-KY38 = 6,760  vs  X1-KY38->X1-KD64 = 5,313
+#     -> same edge, same distance, opposite directions, 27% apart
+#
+# Distance is symmetric; the fee is not. So the correct structure is a per-SYSTEM scalar
+# (286-376 numbers), not a per-pair matrix (~81k). Within-gate spread is tight where it
+# matters: 71% of jump traffic crosses gates whose fee varies under 5% about their own mean,
+# 24% between 5-15%, and 4.7% (three gates) above 15%. So a per-gate mean is worth roughly a
+# 5% traffic-weighted error against this flat constant's 15.2% mean absolute error — but it
+# is NOT uniformly better, and the three noisy gates are the honest limit of the model.
+#
+# WHY 6000 AND NOT THE 5,424 UNWEIGHTED GATE MEAN. Two different populations, and the
+# distinction is the reason this number must not silently drift from parkedsensing's
+# DefaultGateFeeCredits (5,900):
+#   traffic-weighted mean over JUMPS  = 5,917   -- "what does the average crossing cost?"
+#   unweighted mean over GATES        = 5,424   -- "what does an unseen gate cost?"
+# They differ by 9% because traffic concentrates on the pricier gates. 6,000 and 5,900 are
+# both traffic-weighted means of the same underlying table, fitted on different windows, so
+# they agree by construction rather than by coincidence. The unweighted 5,424 is the better
+# point estimate for a NEVER-CROSSED gate, and it is deliberately NOT used here: an empty or
+# partial table must stay byte-identical to the pre-table flat model, and over-charging an
+# unknown gate errs toward not crossing, which is the safe direction for the same reason
+# ferrycost.go clamps toward over-charging. Retune to 5,424 only alongside evidence that
+# exploration is being suppressed.
 INTER_SYSTEM_JUMP_FEE_PER_HOP = 6000    # fitted MEAN 5,992, rounded (cf. 749->750, 661->650)
 INTER_SYSTEM_JUMP_FEE_ENV_VAR = "TOUR_SOLVER_INTER_SYSTEM_JUMP_FEE_PER_HOP"
 # The floor is POSITIVE for the same reason the travel terms' floor is, and one more: a 0
@@ -739,8 +767,46 @@ def _build_inter_system_hop_index(constraints):
     return index
 
 
+def _build_gate_fee_index(constraints):
+    """Build an ASYMMETRIC {departure_system: fee_credits} lookup from the request-carried
+    `gate_fees` list (sp-9idvn).
+
+    KEYED ON ONE SYSTEM, AND STORED ONE DIRECTION ONLY. That is the entire difference from
+    _build_inter_system_hop_index above, which keys on a PAIR and deliberately stores both
+    directions because gate-hop distance is symmetric. A gate FEE is not: the same edge
+    measured 6,760 one way and 5,313 the other, so mirroring an entry the way the hop index
+    does would write a confidently wrong price for the return crossing. If you are tempted to
+    make these two functions share a shape, this is the reason they cannot.
+
+    The Go caller learns each scalar from the ledger's own recorded jumps, so the solver
+    still never sees the jump-gate graph — same division of labour as the hop feed.
+
+    A malformed entry is DROPPED, not defaulted: a missing symbol, a non-int fee, or a
+    non-positive fee all fall through to the flat INTER_SYSTEM_JUMP_FEE_PER_HOP charge. A
+    zero or negative fee is the one value that must never reach the objective, because it
+    would make a crossing free and bias every candidate toward it — the precise defect
+    sp-wtc47 exists to close. Empty / absent -> {} -> every crossing prices at the flat
+    charge, byte-identical to the pre-table model."""
+    index = {}
+    for entry in constraints.get("gate_fees") or []:
+        system = entry.get("system")
+        fee_credits = entry.get("fee_credits")
+        if (not system
+                or isinstance(fee_credits, bool)
+                or not isinstance(fee_credits, int)
+                or fee_credits <= 0):
+            continue
+        index[system] = fee_credits
+    return index
+
+
 def _make_gate_fee_fn(constraints, markets, ship):
-    """Gate-FEE fn(a, b) -> credits (sp-wtc47). The money sibling of _make_travel_fn.
+    """Gate-FEE fn(a, b) -> credits (sp-wtc47; per-origin pricing sp-9idvn). The money
+    sibling of _make_travel_fn.
+
+    A crossing is priced from the DEPARTURE system's own learned scalar when the request
+    carries one, and from the flat fleet fallback when it does not. See
+    _build_gate_fee_index for why the table is keyed on one system and not on a pair.
 
     Deliberately mirrors _make_travel_fn's crossing test rather than reimplementing it: the
     same system_of resolution and the same inter_system_hops lookup with the same 1-hop
@@ -757,6 +823,7 @@ def _make_gate_fee_fn(constraints, markets, ship):
     system topology regardless of how travel time is computed."""
     fee_per_hop = _resolve_inter_system_jump_fee_per_hop()
     inter_system_hops = _build_inter_system_hop_index(constraints)
+    gate_fee_by_origin = _build_gate_fee_index(constraints)
 
     def system_of(wp):
         if wp in markets:
@@ -771,7 +838,21 @@ def _make_gate_fee_fn(constraints, markets, ship):
         sys_a, sys_b = system_of(a), system_of(b)
         if sys_a and sys_b and sys_a != sys_b:
             gate_hops = inter_system_hops.get((sys_a, sys_b), 1)
-            return gate_hops * fee_per_hop
+            # THE FIRST HOP IS THE ONLY ONE WHOSE DEPARTURE GATE WE KNOW (sp-9idvn). It
+            # leaves sys_a, so it is priced from sys_a's own learned scalar. The remaining
+            # hops leave intermediate systems the solver cannot name — it never sees the
+            # gate graph, only the hop COUNT — so they price at the fleet fallback.
+            #
+            # NOT gate_hops * gate_fee_by_origin[sys_a]. Multiplying one gate's price across
+            # a whole path would take the most extreme observed gate (11,074 against a 5,424
+            # typical gate) and charge it three times over for a 3-hop crossing, turning a
+            # correct per-gate reading into a worse estimate than the flat charge it
+            # replaced. Precision on hop 1 must not become confident nonsense on hops 2..n.
+            #
+            # Under the standing max_tour_systems=2 ruling every crossing is exactly 1 hop,
+            # so today this reduces to the exact per-origin price and the second term is 0.
+            first_hop_fee = gate_fee_by_origin.get(sys_a, fee_per_hop)
+            return first_hop_fee + (gate_hops - 1) * fee_per_hop
         return 0
 
     return fee

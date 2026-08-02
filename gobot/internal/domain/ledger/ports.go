@@ -22,6 +22,28 @@ type TransactionRepository interface {
 	CountByPlayer(ctx context.Context, playerID shared.PlayerID, opts QueryOptions) (int, error)
 }
 
+// GateFeeAggregator reads the mean recorded jump-gate fee, in credits, keyed by the system
+// the hull DEPARTED from (sp-9idvn).
+//
+// DELIBERATELY SEPARATE FROM TransactionRepository, though the same GORM type satisfies
+// both. This is a single-caller analytical read, and folding it into the broad repository
+// interface would oblige roughly a dozen unrelated test fakes — expansion, probebuy,
+// scouting, frontier — to grow a method none of them will ever call. The narrow port keeps
+// the cost of the read with the code that wants it.
+//
+// Only rows carrying a non-empty metadata.origin_system are aggregated: a fee whose origin
+// is unknown cannot be attributed to a gate, and guessing one would poison the table.
+//
+// A gate's fee is a CONSTANT of the map, not a market price, so a stale answer is still a
+// correct one and callers may cache it freely. `since` bounds the scan for cost, not for
+// freshness.
+//
+// An empty map is a valid, non-error answer: nothing has been recorded yet, and every
+// caller must already handle that by falling back to its flat charge.
+type GateFeeAggregator interface {
+	PerOriginGateFees(ctx context.Context, playerID shared.PlayerID, since time.Time) (map[string]int64, error)
+}
+
 // QueryOptions defines filtering and pagination options for transaction queries
 type QueryOptions struct {
 	// Date range filtering

@@ -94,6 +94,30 @@ type TourConstraints struct {
 	// default) charges nothing and plans byte-identically to today, which is also the
 	// documented revert.
 	ExternalityWeight float64
+	// GateFees carries the per-DEPARTURE-SYSTEM jump-gate fee (sp-9idvn), learned from
+	// the ledger's own recorded jumps. The solver prices a crossing's first hop from the
+	// departure system's scalar instead of the flat fleet charge. Empty (no history yet)
+	// => every crossing prices at the flat charge => byte-identical to today; a system
+	// the table omits likewise falls back.
+	GateFees []GateFee
+}
+
+// GateFee is one departure system's jump-gate fee in credits (sp-9idvn).
+//
+// KEYED ON ONE SYSTEM, unlike InterSystemHopDistance, and the asymmetry is measured
+// rather than stylistic: gate-hop DISTANCE is symmetric, but a gate FEE belongs to the
+// system a hull DEPARTS from. corr(fee, distance) = 0.124, the origin system explains
+// 99.7% of the fee variance, and the same edge measured 6,760 credits one way against
+// 5,313 the other. Never mirror an entry onto the reverse direction.
+//
+// FeeCredits is the MEAN of that gate's observed jumps. The per-gate constant model fits
+// most traffic well (71% of jumps cross gates varying under 5% about their own mean) but
+// not all of it (4.7% cross three gates varying by more than 15%), which is why the mean
+// is taken over a window rather than from one reading. A non-positive value is ignored by
+// the solver, which falls back to the flat charge rather than crossing free.
+type GateFee struct {
+	System     string
+	FeeCredits int64
 }
 
 // InterSystemHopDistance is one gate-hop distance between two systems (sp-tp5c3). GateHops is

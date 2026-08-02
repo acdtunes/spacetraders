@@ -1914,3 +1914,121 @@ def test_a_custom_travel_fn_does_not_silently_unprice_crossings(monkeypatch):
     crossings = sum(1 for a, b in zip(systems, systems[1:]) if a != b)
     assert crossings >= 1, out
     assert out["gate_fees"] == crossings * 3 * 6_000, f"travel hook must not zero the fee, got {out}"
+
+
+# ---------------------------------------------------------------------------
+# sp-9idvn: per-ORIGIN-GATE fee pricing.
+#
+# The fee is a property of the DEPARTURE gate, not of distance: corr(fee, distance) = 0.124,
+# the origin system explains 99.7% of the variance, and the same edge measured 6,760 one way
+# against 5,313 the other. These tests pin that asymmetry, because the failure mode they
+# guard is a plausible one — mirroring entries the way _build_inter_system_hop_index
+# correctly does for symmetric hop DISTANCE would silently misprice every return crossing.
+# ---------------------------------------------------------------------------
+
+
+def _origin_fee_board(gate_fees=None, gate_hops=1, far_bid=9000):
+    """_fee_board's sibling, carrying a per-origin `gate_fees` table. Same live-regime
+    profit scale, so a fee shifts selection the way it does in production."""
+    snapshot = [snap("SRC", "S1", "G", ask=1500, bid=0, tv=40),
+                snap("SINK", "S2", "G", ask=0, bid=far_bid, tv=40)]
+    ship = dict(ship_symbol="H", current_waypoint="SRC", current_system="S1",
+                hold_capacity=40, fuel_current=4000, fuel_capacity=4000,
+                engine_speed=30, cargo=[])
+    over = dict(max_tour_systems=3, max_spend=1_500_000,
+                inter_system_hops=[dict(from_system="S1", to_system="S2",
+                                        gate_hops=gate_hops)])
+    if gate_fees is not None:
+        over["gate_fees"] = gate_fees
+    return snapshot, ship, _tp5c3_cons(**over)
+
+
+def test_a_crossing_is_priced_from_its_departure_gates_own_scalar(monkeypatch):
+    # The whole feature in one assertion: the tour leaves S1, S1's learned scalar is 9,000,
+    # so the crossing costs 9,000 and NOT the 6,000 flat charge. Kills any implementation
+    # that builds the table but never consults it.
+    _clear_fee_env(monkeypatch)
+    snapshot, ship, cons = _origin_fee_board(
+        gate_fees=[dict(system="S1", fee_credits=9_000)])
+    out = solve_tour(snapshot, ship, cons, MODEL, objective="rate")
+    assert out["feasible"], out
+    assert out["gate_fees"] == 9_000, out
+    assert out["projected_profit"] == 40 * (9000 - 1500) - 9_000, out
+
+
+def test_the_gate_fee_table_is_not_mirrored_so_each_direction_keeps_its_own_price(monkeypatch):
+    # THE ASYMMETRY. Only S2 is priced. The tour departs S1, so it must fall back to the flat
+    # 6,000 — S2's 11,000 belongs to crossings that LEAVE S2 and must not leak onto this one.
+    # An implementation that mirrored entries (index[a]=index[b]=fee, as the symmetric hop
+    # index legitimately does) would charge 11,000 here and fail.
+    _clear_fee_env(monkeypatch)
+    snapshot, ship, cons = _origin_fee_board(
+        gate_fees=[dict(system="S2", fee_credits=11_000)])
+    out = solve_tour(snapshot, ship, cons, MODEL, objective="rate")
+    assert out["feasible"], out
+    assert out["gate_fees"] == 6_000, f"S2's price must not price an S1 departure: {out}"
+
+
+def test_an_unobserved_departure_gate_falls_back_to_the_flat_fleet_charge(monkeypatch):
+    # A table that names OTHER systems must not perturb a gate it has never seen. This is the
+    # coverage story: the table grows with traffic, and everything it has not reached yet is
+    # priced exactly as it was before the table existed.
+    _clear_fee_env(monkeypatch)
+    snapshot, ship, cons = _origin_fee_board(
+        gate_fees=[dict(system="S7", fee_credits=10_500),
+                   dict(system="S9", fee_credits=4_100)])
+    out = solve_tour(snapshot, ship, cons, MODEL, objective="rate")
+    assert out["feasible"], out
+    assert out["gate_fees"] == 6_000, out
+
+
+def test_an_absent_gate_fee_feed_is_identical_to_the_flat_model(monkeypatch):
+    # The no-regression guarantee, asserted as EQUALITY of the whole plan rather than of the
+    # fee alone: with no table fed, every number the solver reports must match the pre-table
+    # model. This is what lets the change deploy before the ledger has taught it anything.
+    _clear_fee_env(monkeypatch)
+    snapshot, ship, cons_absent = _origin_fee_board(gate_fees=None)
+    snapshot2, ship2, cons_empty = _origin_fee_board(gate_fees=[])
+    absent = solve_tour(snapshot, ship, cons_absent, MODEL, objective="rate")
+    empty = solve_tour(snapshot2, ship2, cons_empty, MODEL, objective="rate")
+    assert absent["feasible"], absent
+    assert absent["gate_fees"] == 6_000, absent
+    assert empty == absent, "an empty table must be byte-identical to no table"
+
+
+@pytest.mark.parametrize("bad", [
+    dict(system="S1", fee_credits=0),          # free crossing — the one value that must never land
+    dict(system="S1", fee_credits=-4_000),     # negative — would PAY the fleet to cross
+    dict(system="S1", fee_credits="9000"),     # str, not int
+    dict(system="S1", fee_credits=9_000.5),    # float, not int
+    dict(system="S1", fee_credits=True),       # bool is an int subclass in Python
+    dict(system="", fee_credits=9_000),        # missing symbol
+    dict(fee_credits=9_000),                   # absent symbol key
+    dict(system="S1"),                         # absent fee key
+])
+def test_a_malformed_or_nonpositive_gate_fee_is_dropped_not_charged(monkeypatch, bad):
+    # Fail-closed on every malformed shape. The 0 and negative cases are the load-bearing
+    # ones: a zero-priced crossing is free and biases every candidate toward crossing, which
+    # is the exact defect sp-wtc47 exists to close. `True` is here because bool subclasses
+    # int, so a naive isinstance(x, int) check would admit it and charge 1 credit.
+    _clear_fee_env(monkeypatch)
+    snapshot, ship, cons = _origin_fee_board(gate_fees=[bad])
+    out = solve_tour(snapshot, ship, cons, MODEL, objective="rate")
+    assert out["feasible"], out
+    assert out["gate_fees"] == 6_000, f"malformed entry {bad} must fall back, got {out}"
+
+
+def test_only_the_first_hop_is_priced_from_the_origin_gate(monkeypatch):
+    # The multi-hop model. The crossing leaves S1 (11,000) and takes 3 gate hops, but only the
+    # FIRST leaves a gate we can name — the solver never sees the intermediate systems. So the
+    # charge is 11,000 + 2 x 6,000 = 23,000.
+    #
+    # This kills the tempting `gate_hops * origin_fee` form, which would charge 33,000 and turn
+    # a correct reading of one expensive gate into a worse estimate than the flat charge.
+    _clear_fee_env(monkeypatch)
+    snapshot, ship, cons = _origin_fee_board(
+        gate_fees=[dict(system="S1", fee_credits=11_000)], gate_hops=3)
+    out = solve_tour(snapshot, ship, cons, MODEL, objective="rate")
+    assert out["feasible"], out
+    assert out["gate_fees"] == 11_000 + 2 * 6_000, out
+    assert out["gate_fees"] != 3 * 11_000, "must not multiply one gate's price across the path"

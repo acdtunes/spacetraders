@@ -248,6 +248,32 @@ func TestJumpFeeIsRecordedAsAnExpense(t *testing.T) {
 	require.Equal(t, string(ledger.CategoryTravelCosts), string(latest.Category()))
 }
 
+// TestJumpFeeRecordsTheDepartureSystem kills the mutation "record the fee without
+// naming where the hull left from" (sp-9idvn).
+//
+// The fee is a property of the DEPARTURE gate — the origin system explains 99.7% of the
+// variance, and the same edge costs 27% more in one direction than the other — so a row
+// that names only the destination cannot be attributed to the gate that charged it. The
+// per-gate table is built by grouping on exactly this field; without it the table can only
+// be reconstructed by a window function over each hull's jump history, which mis-attributes
+// silently whenever a hull's previous row is not where this jump actually started.
+func TestJumpFeeRecordsTheDepartureSystem(t *testing.T) {
+	const startingCredits, fee = 100000, 5400
+	h := newJumpLedgerHarness(t, startingCredits, fee)
+
+	anchor := startingCredits
+	h.record(t, string(ledger.TransactionTypeSellCargo), 1000, &anchor)
+
+	h.jump(t)
+
+	meta := h.latest(t).Metadata()
+	require.NotNil(t, meta, "the fee row must carry metadata to be attributable")
+	require.Equal(t, "X1-AB12", meta["origin_system"],
+		"the row must name the system the hull DEPARTED, not only where it arrived")
+	// Both endpoints, so a mutation that swapped them cannot pass.
+	require.Equal(t, "X1-CD34", meta["destination_system"])
+}
+
 // TestJumpFeeWithoutAgentBlockStillRecords covers the API omitting data.agent.
 // The spend is real either way, so the row must still be written (reconstructed
 // from the chain) — recording nothing would restore the over-reporting gap.

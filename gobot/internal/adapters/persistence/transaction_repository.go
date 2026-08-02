@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/ledger"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -105,6 +107,52 @@ func (r *GormTransactionRepository) CountByPlayer(ctx context.Context, playerID 
 	}
 
 	return int(count), nil
+}
+
+// PerOriginGateFees aggregates recorded jump fees into a {departure system: mean fee}
+// table (sp-9idvn).
+//
+// WHY THE MEAN AND NOT THE MEDIAN, given sp-wtc47 argued the mean for the FLEET constant:
+// there the estimator had to price a SUM of n crossings, so E[total] = n x E[fee] forced
+// the mean. Here the estimator prices ONE crossing of ONE known gate, and within a single
+// gate the spread is 2.38% of that gate's own mean with no meaningful skew — mean and
+// median agree to well under a percent, so the mean is chosen for continuity with the
+// constant it refines rather than because the distribution demands it.
+//
+// amount is stored NEGATIVE for an expense, so it is negated back to a positive fee. Rows
+// without an origin are excluded rather than bucketed under '' — see the port doc.
+func (r *GormTransactionRepository) PerOriginGateFees(
+	ctx context.Context, playerID shared.PlayerID, since time.Time,
+) (map[string]int64, error) {
+	type row struct {
+		OriginSystem string
+		MeanFee      float64
+	}
+	var rows []row
+	result := r.db.WithContext(ctx).Model(&TransactionModel{}).
+		Select("metadata->>'origin_system' AS origin_system, AVG(-amount) AS mean_fee").
+		Where("player_id = ?", playerID.Value()).
+		Where("transaction_type = ?", string(ledger.TransactionTypeJump)).
+		Where("timestamp >= ?", since).
+		Where("metadata->>'origin_system' IS NOT NULL").
+		Where("metadata->>'origin_system' <> ''").
+		Group("metadata->>'origin_system'").
+		Scan(&rows)
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to aggregate per-origin gate fees: %w", result.Error)
+	}
+
+	fees := make(map[string]int64, len(rows))
+	for _, rw := range rows {
+		// A non-positive mean cannot be a real gate fee. Dropping it here means the
+		// solver falls back to its flat charge instead of pricing a crossing at or below
+		// zero, which is the one direction that biases every candidate toward crossing.
+		if rw.MeanFee <= 0 {
+			continue
+		}
+		fees[rw.OriginSystem] = int64(math.Round(rw.MeanFee))
+	}
+	return fees, nil
 }
 
 // applyFilters applies query options to a GORM query

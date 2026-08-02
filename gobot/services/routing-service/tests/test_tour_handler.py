@@ -263,3 +263,31 @@ def test_reserve_exceeds_budget_names_the_cause_through_handler(tmp_path):
     assert "max_spend 50000" in resp.infeasible_reason
     assert "reserve 50000" in resp.infeasible_reason
     assert len(resp.legs) == 0
+
+
+def test_handler_forwards_per_origin_gate_fees(tmp_path):
+    # sp-9idvn: the pb TourConstraints.gate_fees must be BRIDGED into the solver constraints
+    # dict, or the whole per-gate table is inert on the wire — the exact failure mode that
+    # made max_tour_systems dormant before sp-syaz.
+    #
+    # The golden board makes TWO crossings, one departing S1 and one departing S2, which is
+    # what lets a single assertion prove both halves at once: pricing S1 alone must move the
+    # total by exactly one crossing's difference. A handler that mirrored the entry onto both
+    # directions would move it by two, and a handler that dropped the field by zero.
+    handler = RoutingServiceHandler(tour_artifact_path=_artifact(tmp_path))
+
+    base = handler.OptimizeTradeTour(request(), None)
+    assert base.feasible
+
+    req = request()
+    req.constraints.gate_fees.append(routing_pb2.GateFee(system="S1", fee_credits=9_000))
+    armed = handler.OptimizeTradeTour(req, None)
+    assert armed.feasible
+
+    # Same tour, only priced differently — so the delta isolates the fee.
+    assert [(l.waypoint_symbol, l.system_symbol) for l in armed.legs] == \
+        [(l.waypoint_symbol, l.system_symbol) for l in base.legs]
+    # One crossing leaves S1, and it now costs 9,000 instead of the flat 6,000.
+    assert base.projected_profit - armed.projected_profit == 3_000, (
+        f"expected exactly one crossing to reprice: "
+        f"base={base.projected_profit} armed={armed.projected_profit}")
