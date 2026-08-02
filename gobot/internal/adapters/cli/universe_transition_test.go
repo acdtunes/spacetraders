@@ -165,16 +165,16 @@ func happyDeps() (transitionDeps, *fakeTransitionAPI, *fakeTransitionEraStore, *
 		newPlayerID: 3,
 	}
 	def := &fakeDefaultSetter{}
-	cap := &fakeCaptainCfg{}
+	capCfg := &fakeCaptainCfg{}
 	fleet := &fakeFleet{notFound: map[string]bool{}}
-	deps := transitionDeps{api: apiFake, era: store, cliDefault: def, captainCfg: cap, lister: fleet, stopper: fleet, reconciler: fleet}
-	return deps, apiFake, store, def, cap, fleet
+	deps := transitionDeps{api: apiFake, era: store, cliDefault: def, captainCfg: capCfg, lister: fleet, stopper: fleet, reconciler: fleet}
+	return deps, apiFake, store, def, capCfg, fleet
 }
 
 // ---- tests -----------------------------------------------------------------
 
 func TestTransition_InvalidTokenAbortsBeforeAnyWrite(t *testing.T) {
-	deps, apiFake, store, def, cap, fleet := happyDeps()
+	deps, apiFake, store, def, capCfg, fleet := happyDeps()
 	apiFake.agent = nil
 	apiFake.agentErr = errors.New("401 invalid token (code 4104)")
 	var out bytes.Buffer
@@ -186,12 +186,12 @@ func TestTransition_InvalidTokenAbortsBeforeAnyWrite(t *testing.T) {
 	require.True(t, apiFake.agentCalled)
 	require.Zero(t, store.transitionCalls, "no era flip on an invalid token")
 	require.False(t, def.called, "no CLI default repoint on an invalid token")
-	require.False(t, cap.called, "no captain.player_id repoint on an invalid token")
+	require.False(t, capCfg.called, "no captain.player_id repoint on an invalid token")
 	require.Empty(t, fleet.stopOrder, "no drain on an invalid token")
 }
 
 func TestTransition_TokenAgentMismatchAbortsBeforeAnyWrite(t *testing.T) {
-	deps, apiFake, store, def, cap, _ := happyDeps()
+	deps, apiFake, store, def, capCfg, _ := happyDeps()
 	apiFake.agent = &player.AgentData{Symbol: "SOMEONE_ELSE"}
 	var out bytes.Buffer
 
@@ -200,11 +200,11 @@ func TestTransition_TokenAgentMismatchAbortsBeforeAnyWrite(t *testing.T) {
 	require.Error(t, err)
 	require.Zero(t, store.transitionCalls)
 	require.False(t, def.called)
-	require.False(t, cap.called)
+	require.False(t, capCfg.called)
 }
 
 func TestTransition_HappyPath_FlipsEraAndRepoints(t *testing.T) {
-	deps, _, store, def, cap, _ := happyDeps()
+	deps, _, store, def, capCfg, _ := happyDeps()
 	var out bytes.Buffer
 
 	err := runUniverseTransition(context.Background(), deps, transitionOpts{agent: "TORWIND", token: "valid-jwt", confirm: true}, &out)
@@ -221,8 +221,8 @@ func TestTransition_HappyPath_FlipsEraAndRepoints(t *testing.T) {
 	require.True(t, def.called)
 	require.Equal(t, "TORWIND", def.agent)
 	require.Equal(t, 3, def.pid)
-	require.True(t, cap.called)
-	require.Equal(t, 3, cap.pid)
+	require.True(t, capCfg.called)
+	require.Equal(t, 3, capCfg.pid)
 
 	// The one-and-only token must never be echoed to stdout.
 	require.NotContains(t, out.String(), "valid-jwt")
@@ -284,7 +284,7 @@ func TestTransition_NoCacheTruncation(t *testing.T) {
 }
 
 func TestTransition_Idempotent_SecondRunNoop(t *testing.T) {
-	deps, _, store, def, cap, fleet := happyDeps()
+	deps, _, store, def, capCfg, fleet := happyDeps()
 	// Open era already at the server reset date -> already in sync.
 	inSync := time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC)
 	store.openEra = &persistence.EraModel{Name: "torwind-2026-07-12", AgentSymbol: "TORWIND", PlayerID: 3, UniverseResetDate: &inSync}
@@ -295,13 +295,13 @@ func TestTransition_Idempotent_SecondRunNoop(t *testing.T) {
 
 	require.Zero(t, store.transitionCalls, "already-current era must be a no-op")
 	require.False(t, def.called)
-	require.False(t, cap.called)
+	require.False(t, capCfg.called)
 	require.Empty(t, fleet.stopOrder)
 	require.Contains(t, out.String(), "in sync")
 }
 
 func TestTransition_DryRunNoMutation(t *testing.T) {
-	deps, _, store, def, cap, fleet := happyDeps()
+	deps, _, store, def, capCfg, fleet := happyDeps()
 	var out bytes.Buffer
 
 	err := runUniverseTransition(context.Background(), deps, transitionOpts{agent: "TORWIND", token: "valid-jwt", dryRun: true, confirm: true}, &out)
@@ -310,13 +310,13 @@ func TestTransition_DryRunNoMutation(t *testing.T) {
 	// --dry-run wins even with --confirm: preview only, zero mutation.
 	require.Zero(t, store.transitionCalls)
 	require.False(t, def.called)
-	require.False(t, cap.called)
+	require.False(t, capCfg.called)
 	require.Empty(t, fleet.stopOrder)
 	require.Contains(t, out.String(), "torwind-2026-07-12") // plan previewed
 }
 
 func TestTransition_NoConfirmPreviewsNoMutation(t *testing.T) {
-	deps, _, store, def, cap, _ := happyDeps()
+	deps, _, store, def, capCfg, _ := happyDeps()
 	var out bytes.Buffer
 
 	// No --confirm and no --dry-run: fail-closed preview, no destructive ops.
@@ -325,14 +325,14 @@ func TestTransition_NoConfirmPreviewsNoMutation(t *testing.T) {
 
 	require.Zero(t, store.transitionCalls)
 	require.False(t, def.called)
-	require.False(t, cap.called)
+	require.False(t, capCfg.called)
 	require.Contains(t, out.String(), "--confirm")
 }
 
 // (a) No --token + ST_ACCOUNT_TOKEN present + apply: the new era's JWT is minted via
 // the API, and it — not the empty --token — is what gets validated and persisted.
 func TestTransition_MintsJWTFromAccountTokenOnApply(t *testing.T) {
-	deps, apiFake, store, def, cap, _ := happyDeps()
+	deps, apiFake, store, def, capCfg, _ := happyDeps()
 	apiFake.registerResult = &api.RegisterResult{Token: "minted-jwt", AgentSymbol: "TORWIND"}
 	var out bytes.Buffer
 
@@ -354,7 +354,7 @@ func TestTransition_MintsJWTFromAccountTokenOnApply(t *testing.T) {
 	// The flip and both repoints proceed on the minted token.
 	require.Equal(t, 1, store.transitionCalls)
 	require.True(t, def.called)
-	require.True(t, cap.called)
+	require.True(t, capCfg.called)
 
 	// The one-and-only minted token must never be echoed to stdout.
 	require.NotContains(t, out.String(), "minted-jwt")
@@ -379,7 +379,7 @@ func TestTransition_ExplicitTokenSkipsMint(t *testing.T) {
 // (c) Neither --token nor ST_ACCOUNT_TOKEN: fail closed with a clear error, touching
 // no external service and writing nothing (RULINGS #4 fail-closed principle).
 func TestTransition_NoTokenAndNoAccountTokenFailsClosed(t *testing.T) {
-	deps, apiFake, store, def, cap, fleet := happyDeps()
+	deps, apiFake, store, def, capCfg, fleet := happyDeps()
 	var out bytes.Buffer
 
 	err := runUniverseTransition(context.Background(), deps, transitionOpts{agent: "TORWIND", confirm: true}, &out)
@@ -390,7 +390,7 @@ func TestTransition_NoTokenAndNoAccountTokenFailsClosed(t *testing.T) {
 	require.False(t, apiFake.agentCalled, "no API calls at all on the fail-closed path")
 	require.Zero(t, store.transitionCalls)
 	require.False(t, def.called)
-	require.False(t, cap.called)
+	require.False(t, capCfg.called)
 	require.Empty(t, fleet.stopOrder)
 }
 
@@ -407,7 +407,7 @@ func TestTransition_PreviewDoesNotMint(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			deps, apiFake, store, def, cap, fleet := happyDeps()
+			deps, apiFake, store, def, capCfg, fleet := happyDeps()
 			apiFake.registerResult = &api.RegisterResult{Token: "minted-jwt", AgentSymbol: "TORWIND"}
 			var out bytes.Buffer
 
@@ -417,7 +417,7 @@ func TestTransition_PreviewDoesNotMint(t *testing.T) {
 			require.Zero(t, apiFake.registerCalls, "preview must not register an agent")
 			require.Zero(t, store.transitionCalls)
 			require.False(t, def.called)
-			require.False(t, cap.called)
+			require.False(t, capCfg.called)
 			require.Empty(t, fleet.stopOrder)
 
 			require.Contains(t, out.String(), "ST_ACCOUNT_TOKEN")
@@ -429,7 +429,7 @@ func TestTransition_PreviewDoesNotMint(t *testing.T) {
 // (e) If the minted token validates to a different agent than --agent, the existing
 // GetAgent symbol guard must still refuse the flip (belt-and-suspenders).
 func TestTransition_MintedSymbolMismatchRefused(t *testing.T) {
-	deps, apiFake, store, def, cap, _ := happyDeps()
+	deps, apiFake, store, def, capCfg, _ := happyDeps()
 	apiFake.registerResult = &api.RegisterResult{Token: "minted-jwt", AgentSymbol: "TORWIND"}
 	apiFake.agent = &player.AgentData{Symbol: "SOMEONE_ELSE"}
 	var out bytes.Buffer
@@ -440,7 +440,7 @@ func TestTransition_MintedSymbolMismatchRefused(t *testing.T) {
 	require.Equal(t, 1, apiFake.registerCalls, "mint precedes validation")
 	require.Zero(t, store.transitionCalls, "no era flip when the minted symbol mismatches")
 	require.False(t, def.called)
-	require.False(t, cap.called)
+	require.False(t, capCfg.called)
 }
 
 func TestTransition_DrainAlreadyTerminalMidList_ContinuesPastIt(t *testing.T) {

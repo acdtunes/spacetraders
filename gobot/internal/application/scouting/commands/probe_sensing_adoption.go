@@ -7,6 +7,8 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/parkedsensing"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	domainScouting "github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
 )
 
 // probe_sensing_adoption.go is the standing retry behind the cutover's one-shot
@@ -91,38 +93,15 @@ func adoptableFleetTag(fleet string) bool {
 // write, however many ticks run.
 func (h *RunProbeSensingCoordinatorHandler) adoptStrandedProbes(
 	ctx context.Context,
-	cmd *RunProbeSensingCoordinatorCommand,
-	ports SensingEnginePorts,
+	cyc sensingCycle,
 	failures *[]error,
 ) int {
 	logger := common.LoggerFromContext(ctx)
-	playerID := cmd.PlayerID.Value()
+	playerID := cyc.cmd.PlayerID.Value()
 
-	// All three reads FAIL CLOSED, and the post list is the sharpest of them: read
-	// permissively an unreadable post list is an EMPTY one, which means "no hull is
-	// manned" — and this pass would then adopt the probe standing on the surviving
-	// home post right out from under the scout coordinator.
-	ships, err := h.fleetRepo.FindAllByPlayer(ctx, cmd.PlayerID)
-	if err != nil {
-		*failures = append(*failures, fmt.Errorf("failed to list the fleet for probe adoption: %w", err))
+	ships, manned, holds, ok := h.adoptionInputs(ctx, cyc, failures)
+	if !ok {
 		return 0
-	}
-	posts, err := h.postRepo.ListActive(ctx, playerID)
-	if err != nil {
-		*failures = append(*failures, fmt.Errorf("failed to list scout posts for probe adoption: %w", err))
-		return 0
-	}
-	holds, err := ledgerHoldings(ctx, ports, playerID)
-	if err != nil {
-		*failures = append(*failures, err)
-		return 0
-	}
-
-	manned := make(map[string]bool, len(posts))
-	for _, post := range posts {
-		if post.AssignedHull != "" {
-			manned[post.AssignedHull] = true
-		}
 	}
 
 	adopted, writes := 0, 0
@@ -140,6 +119,7 @@ func (h *RunProbeSensingCoordinatorHandler) adoptStrandedProbes(
 		if !ship.IsScoutType() || !adoptableFleetTag(ship.DedicatedFleet()) {
 			continue // not a probe frame, or dedicated to a fleet that is not ours to take
 		}
+		hull := ship.ShipSymbol()
 		if !ship.IsIdle() {
 			// DRIVEN BY A LIVE CONTAINER — leave it alone (RULINGS #3, single writer).
 			//
@@ -155,10 +135,10 @@ func (h *RunProbeSensingCoordinatorHandler) adoptStrandedProbes(
 			// desynced hull; the trade is not close.
 			continue
 		}
-		if manned[ship.ShipSymbol()] {
+		if manned[hull] {
 			continue // still manning a surviving post — that post's hull, not ours to take
 		}
-		if holds.hulls[ship.ShipSymbol()] {
+		if holds.hulls[hull] {
 			// Recorded but still scout-tagged: the safe half-done shape a failed
 			// tag write leaves. The row is what the probe cap counts, and it is
 			// already there, so re-writing it would buy nothing and would spend
@@ -192,33 +172,10 @@ func (h *RunProbeSensingCoordinatorHandler) adoptStrandedProbes(
 		//     a claim that money is already riding on.
 		//   - anything else (BOUGHT / IN_TRANSIT / PARKED): already somebody's.
 		if row, fillable := holds.fillableAt(location.Symbol); fillable {
-			hull := ship.ShipSymbol()
 			writes++ // counted before the write, as below: a failed write costs the database the same
-			terr := ports.Ledger.TransitionSlot(ctx, playerID, location.Symbol, row.Kind,
-				parkedsensing.SlotStateWanted, parkedsensing.SlotStateParked,
-				parkedsensing.SlotFields{AssignedShip: &hull})
-			switch {
-			case errors.Is(terr, parkedsensing.ErrSlotClaimed):
-				// Another writer took the placement between the read and the write. Routine
-				// contention, nothing spent — the hull is still an orphan and still first in line
-				// next tick.
-				continue
-			case terr != nil:
-				*failures = append(*failures, fmt.Errorf("failed to fill placement %s with the probe standing on it (%s): %w", location.Symbol, hull, terr))
-				continue
+			if fillPlacementInPlace(ctx, cyc.ports, playerID, hull, location.Symbol, row, holds, failures) {
+				adopted++
 			}
-			// Same order as the spare path: the row is what the cap counts, so it is written first
-			// and the tag is best-effort behind it.
-			if tagErr := ports.Fleet.AssignFleet(ctx, playerID, hull, parkedsensing.SensingParkedFleetTag); tagErr != nil {
-				logger.Log("WARNING", fmt.Sprintf(
-					"Probe %s now fills placement %s but keeps its old fleet tag (the probe cap counts it; the placement machine re-tags it on first use): %v",
-					hull, location.Symbol, tagErr), map[string]interface{}{
-					"action":      "parked_sensing_adopt_tag_failed",
-					"ship_symbol": hull,
-				})
-			}
-			holds.hulls[hull] = true
-			adopted++
 			continue
 		}
 
@@ -252,48 +209,9 @@ func (h *RunProbeSensingCoordinatorHandler) adoptStrandedProbes(
 		// hulls — acceptable, because they are the same hulls it would retry
 		// anyway, and the failures are collected and surfaced.
 		writes++
-		// RECORD BEFORE TAGGING. The two writes are ordered by what a failure
-		// between them costs, and the orders are not symmetric.
-		// Recorded-but-untagged leaves a hull the probe cap COUNTS and which the
-		// filter above then skips forever — safe, and self-healing the first time
-		// the placement machine touches the spare. Tagged-but-unrecorded is
-		// unrecoverable here: the tag makes the hull fail the scout-tag filter on
-		// every future tick, so it would stay invisible to the cap for good and
-		// authorise re-buying a probe we own.
-		if uerr := ports.Ledger.UpsertSpareSlot(ctx, playerID, parkedsensing.SlotRecord{
-			Waypoint:     location.Symbol,
-			System:       location.SystemSymbol,
-			Kind:         parkedsensing.SlotKindSpare,
-			State:        parkedsensing.SlotStateParked,
-			AssignedShip: ship.ShipSymbol(),
-		}); uerr != nil {
-			*failures = append(*failures, fmt.Errorf("failed to adopt stranded probe %s as a spare: %w", ship.ShipSymbol(), uerr))
-			continue
+		if recordAsSpare(ctx, cyc.ports, playerID, hull, location.Symbol, location.SystemSymbol, holds, failures) {
+			adopted++
 		}
-		// Best-effort, for the reason above: the cap counts rows, and the row is
-		// written. Named rather than silent, because an untagged hull looks idle
-		// and undedicated to every other coordinator's ownership sweep.
-		if terr := ports.Fleet.AssignFleet(ctx, playerID, ship.ShipSymbol(), parkedsensing.SensingParkedFleetTag); terr != nil {
-			logger.Log("WARNING", fmt.Sprintf(
-				"Adopted stranded probe %s is recorded as a sensing spare but keeps its old fleet tag (the probe cap counts it; the placement machine re-tags it on first use): %v",
-				ship.ShipSymbol(), terr), map[string]interface{}{
-				"action":      "parked_sensing_adopt_tag_failed",
-				"ship_symbol": ship.ShipSymbol(),
-			})
-		}
-		// The waypoint holds a SPARE row now, so a later candidate standing on it is
-		// skipped rather than overwriting what this tick just wrote. APPENDED rather than
-		// assigned: the waypoint may already carry a MARKET placement, and dropping that from
-		// the index would let this same tick treat the yard as unplaced.
-		holds.rows[location.Symbol] = append(holds.rows[location.Symbol], parkedsensing.QueuedSlot{
-			Waypoint:     location.Symbol,
-			System:       location.SystemSymbol,
-			Kind:         parkedsensing.SlotKindSpare,
-			State:        parkedsensing.SlotStateParked,
-			AssignedShip: ship.ShipSymbol(),
-		})
-		holds.hulls[ship.ShipSymbol()] = true
-		adopted++
 	}
 
 	if adopted > 0 {
@@ -306,6 +224,113 @@ func (h *RunProbeSensingCoordinatorHandler) adoptStrandedProbes(
 		})
 	}
 	return adopted
+}
+
+// adoptionInputs reads the fleet, the manned-hull index and the ledger's holdings. All three
+// reads FAIL CLOSED, and the post list is the sharpest of them: read permissively an
+// unreadable post list is an EMPTY one, which means "no hull is manned" — and this pass would
+// then adopt the probe standing on the surviving home post right out from under the scout
+// coordinator.
+func (h *RunProbeSensingCoordinatorHandler) adoptionInputs(ctx context.Context, cyc sensingCycle, failures *[]error) ([]*navigation.Ship, map[string]bool, ledgerHolds, bool) {
+	playerID := cyc.cmd.PlayerID.Value()
+	ships, err := h.fleetRepo.FindAllByPlayer(ctx, cyc.cmd.PlayerID)
+	if err != nil {
+		*failures = append(*failures, fmt.Errorf("failed to list the fleet for probe adoption: %w", err))
+		return nil, nil, ledgerHolds{}, false
+	}
+	posts, err := h.postRepo.ListActive(ctx, playerID)
+	if err != nil {
+		*failures = append(*failures, fmt.Errorf("failed to list scout posts for probe adoption: %w", err))
+		return nil, nil, ledgerHolds{}, false
+	}
+	holds, err := ledgerHoldings(ctx, cyc.ports, playerID)
+	if err != nil {
+		*failures = append(*failures, err)
+		return nil, nil, ledgerHolds{}, false
+	}
+
+	manned := primaryMannedHulls(posts)
+	return ships, manned, holds, true
+}
+
+// fillPlacementInPlace berths the orphan on the hull-less WANTED row it is already standing
+// on, and reports whether the hull was adopted.
+func fillPlacementInPlace(ctx context.Context, ports SensingEnginePorts, playerID int, hull, waypoint string, row parkedsensing.QueuedSlot, holds ledgerHolds, failures *[]error) bool {
+	err := ports.Ledger.TransitionSlot(ctx, playerID, parkedsensing.SlotTransition{
+		Waypoint: waypoint,
+		Kind:     row.Kind,
+		From:     parkedsensing.SlotStateWanted,
+		To:       parkedsensing.SlotStateParked,
+	}, parkedsensing.SlotFields{AssignedShip: &hull})
+	switch {
+	case errors.Is(err, parkedsensing.ErrSlotClaimed):
+		// Another writer took the placement between the read and the write. Routine
+		// contention, nothing spent — the hull is still an orphan and still first in line
+		// next tick.
+		return false
+	case err != nil:
+		*failures = append(*failures, fmt.Errorf("failed to fill placement %s with the probe standing on it (%s): %w", waypoint, hull, err))
+		return false
+	}
+	// Same order as the spare path: the row is what the cap counts, so it is written first
+	// and the tag is best-effort behind it.
+	if tagErr := ports.Fleet.AssignFleet(ctx, playerID, hull, parkedsensing.SensingParkedFleetTag); tagErr != nil {
+		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
+			"Probe %s now fills placement %s but keeps its old fleet tag (the probe cap counts it; the placement machine re-tags it on first use): %v",
+			hull, waypoint, tagErr), map[string]interface{}{
+			"action":      "parked_sensing_adopt_tag_failed",
+			"ship_symbol": hull,
+		})
+	}
+	holds.hulls[hull] = true
+	return true
+}
+
+// recordAsSpare records the orphan as a parked SPARE where it stands, and reports whether the
+// hull was adopted.
+//
+// RECORD BEFORE TAGGING. The two writes are ordered by what a failure between them costs, and
+// the orders are not symmetric. Recorded-but-untagged leaves a hull the probe cap COUNTS and
+// which the eligibility filter then skips forever — safe, and self-healing the first time the
+// placement machine touches the spare. Tagged-but-unrecorded is unrecoverable here: the tag
+// makes the hull fail the scout-tag filter on every future tick, so it would stay invisible to
+// the cap for good and authorise re-buying a probe we own.
+func recordAsSpare(ctx context.Context, ports SensingEnginePorts, playerID int, hull, waypoint, system string, holds ledgerHolds, failures *[]error) bool {
+	spare := parkedsensing.SlotRecord{
+		Waypoint:     waypoint,
+		System:       system,
+		Kind:         parkedsensing.SlotKindSpare,
+		State:        parkedsensing.SlotStateParked,
+		AssignedShip: hull,
+	}
+	if err := ports.Ledger.UpsertSpareSlot(ctx, playerID, spare); err != nil {
+		*failures = append(*failures, fmt.Errorf("failed to adopt stranded probe %s as a spare: %w", hull, err))
+		return false
+	}
+	// Best-effort, for the reason above: the cap counts rows, and the row is written. Named
+	// rather than silent, because an untagged hull looks idle and undedicated to every other
+	// coordinator's ownership sweep.
+	if err := ports.Fleet.AssignFleet(ctx, playerID, hull, parkedsensing.SensingParkedFleetTag); err != nil {
+		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
+			"Adopted stranded probe %s is recorded as a sensing spare but keeps its old fleet tag (the probe cap counts it; the placement machine re-tags it on first use): %v",
+			hull, err), map[string]interface{}{
+			"action":      "parked_sensing_adopt_tag_failed",
+			"ship_symbol": hull,
+		})
+	}
+	// The waypoint holds a SPARE row now, so a later candidate standing on it is skipped rather
+	// than overwriting what this tick just wrote. APPENDED rather than assigned: the waypoint
+	// may already carry a MARKET placement, and dropping that from the index would let this
+	// same tick treat the yard as unplaced.
+	holds.rows[waypoint] = append(holds.rows[waypoint], parkedsensing.QueuedSlot{
+		Waypoint:     spare.Waypoint,
+		System:       spare.System,
+		Kind:         spare.Kind,
+		State:        spare.State,
+		AssignedShip: spare.AssignedShip,
+	})
+	holds.hulls[hull] = true
+	return true
 }
 
 // ledgerHolds is what the sensing ledger already accounts for, in TWO separate
@@ -391,6 +416,18 @@ func (h ledgerHolds) fillableAt(waypoint string) (parkedsensing.QueuedSlot, bool
 // the pass built for it.
 func (h ledgerHolds) occupiedAt(waypoint string) bool {
 	return len(h.rows[waypoint]) > 0
+}
+
+// primaryMannedHulls indexes the hull manning each post's PRIMARY slot — the hulls a pass
+// that takes idle probes must leave to the scout coordinator.
+func primaryMannedHulls(posts []*domainScouting.ScoutPost) map[string]bool {
+	manned := make(map[string]bool, len(posts))
+	for _, post := range posts {
+		if post.AssignedHull != "" {
+			manned[post.AssignedHull] = true
+		}
+	}
+	return manned
 }
 
 // ledgerHoldings builds both indexes from the single query the pass makes.

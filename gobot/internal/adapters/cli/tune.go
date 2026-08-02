@@ -20,8 +20,18 @@ import (
 // `goods factory workers` verbs guarantee it. The daemon is the SOLE writer of the
 // persisted knob (RULINGS #3) and validates every tune against its bounds registry.
 type containerTuner interface {
-	TuneContainerConfig(ctx context.Context, containerID, operation, key string, value int64, playerID *int32, agentSymbol *string) (*pb.TuneContainerConfigResponse, error)
-	ShowTunableConfig(ctx context.Context, containerID, operation string, playerID *int32, agentSymbol *string) (*pb.ShowTunableConfigResponse, error)
+	TuneContainerConfig(ctx context.Context, containerID, operation, key string, value int64, playerIdent *PlayerIdentifier) (*pb.TuneContainerConfigResponse, error)
+	ShowTunableConfig(ctx context.Context, containerID, operation string, playerIdent *PlayerIdentifier) (*pb.ShowTunableConfigResponse, error)
+}
+
+// tuneRequest is one resolved invocation of the `tune` grammar: containerID or
+// operation names the target (never both), and isShow separates a read from a write.
+type tuneRequest struct {
+	containerID string
+	operation   string
+	key         string
+	value       int64
+	isShow      bool
 }
 
 // runTune sets (value > 0) or reverts (value == 0) one live knob on a running
@@ -29,10 +39,10 @@ type containerTuner interface {
 // re-reads its config at each tick start, so the change lands on the NEXT tick —
 // no container restart. A no-op (the knob already carried the value) is reported
 // honestly rather than as a fresh change.
-func runTune(ctx context.Context, client containerTuner, containerID, operation, key string, value int64, playerID *int32, agentSymbol *string) (string, error) {
-	resp, err := client.TuneContainerConfig(ctx, containerID, operation, key, value, playerID, agentSymbol)
+func runTune(ctx context.Context, client containerTuner, req tuneRequest, playerIdent *PlayerIdentifier) (string, error) {
+	resp, err := client.TuneContainerConfig(ctx, req.containerID, req.operation, req.key, req.value, playerIdent)
 	if err != nil {
-		return "", fmt.Errorf("failed to tune %s: %w", key, err)
+		return "", fmt.Errorf("failed to tune %s: %w", req.key, err)
 	}
 	if !resp.Changed {
 		return fmt.Sprintf("• %s %s is already %d %s (%s) — unchanged\n",
@@ -52,22 +62,22 @@ func runTune(ctx context.Context, client containerTuner, containerID, operation,
 // (sp-pvw3 readable tune). With filterKey set it narrows to that ONE knob (the `tune <target> <knob>`
 // no-value form); with asJSON it emits a machine-readable object for scripts. The full listing is the
 // default when neither a knob nor a value is given.
-func runTuneShow(ctx context.Context, client containerTuner, containerID, operation, filterKey string, asJSON bool, playerID *int32, agentSymbol *string) (string, error) {
-	resp, err := client.ShowTunableConfig(ctx, containerID, operation, playerID, agentSymbol)
+func runTuneShow(ctx context.Context, client containerTuner, req tuneRequest, asJSON bool, playerIdent *PlayerIdentifier) (string, error) {
+	resp, err := client.ShowTunableConfig(ctx, req.containerID, req.operation, playerIdent)
 	if err != nil {
 		return "", fmt.Errorf("failed to list tunable knobs: %w", err)
 	}
 	knobs := resp.Knobs
-	if filterKey != "" {
-		knobs = filterTunableKnobs(resp.Knobs, filterKey)
+	if req.key != "" {
+		knobs = filterTunableKnobs(resp.Knobs, req.key)
 		if len(knobs) == 0 {
-			return "", fmt.Errorf("%q is not a tunable knob of %s (%s) — run the command with no knob to list them", filterKey, resp.ContainerId, resp.ContainerType)
+			return "", fmt.Errorf("%q is not a tunable knob of %s (%s) — run the command with no knob to list them", req.key, resp.ContainerId, resp.ContainerType)
 		}
 	}
 	if asJSON {
 		return renderTuneJSON(resp, knobs)
 	}
-	return renderTuneTable(resp, knobs, filterKey != ""), nil
+	return renderTuneTable(resp, knobs, req.key != ""), nil
 }
 
 // filterTunableKnobs narrows a knob listing to the one matching key (empty when unknown).
@@ -146,46 +156,49 @@ func renderTuneJSON(resp *pb.ShowTunableConfigResponse, knobs []*pb.TunableKnobS
 //
 // isShow is true for every READ form; key is "" for the whole-container table and the knob name for a
 // single-knob read. A negative value or an explicit --show paired with a value is rejected.
-func parseTuneArgs(args []string, operation string, reset, show bool) (containerID, key string, value int64, isShow bool, err error) {
+func parseTuneArgs(args []string, operation string, reset, show bool) (tuneRequest, error) {
+	req := tuneRequest{operation: operation}
 	rest := args
 	if operation == "" {
 		if len(rest) == 0 {
-			return "", "", 0, false, fmt.Errorf("a container id (or --operation) is required")
+			return tuneRequest{}, fmt.Errorf("a container id (or --operation) is required")
 		}
-		containerID = rest[0]
+		req.containerID = rest[0]
 		rest = rest[1:]
 	}
 	if len(rest) > 0 {
-		key = rest[0]
+		req.key = rest[0]
 		rest = rest[1:]
 	}
 	if reset {
-		if key == "" {
-			return "", "", 0, false, fmt.Errorf("--reset needs a knob key (use no knob to list the tunable keys)")
+		if req.key == "" {
+			return tuneRequest{}, fmt.Errorf("--reset needs a knob key (use no knob to list the tunable keys)")
 		}
 		if len(rest) != 0 {
-			return "", "", 0, false, fmt.Errorf("--reset takes no value argument")
+			return tuneRequest{}, fmt.Errorf("--reset takes no value argument")
 		}
-		return containerID, key, 0, false, nil
+		return req, nil
 	}
 	if show || len(rest) == 0 {
 		// READ: no value token (or an explicit --show). key "" lists every knob; else one knob.
 		if len(rest) != 0 {
-			return "", "", 0, false, fmt.Errorf("--show takes no value argument")
+			return tuneRequest{}, fmt.Errorf("--show takes no value argument")
 		}
-		return containerID, key, 0, true, nil
+		req.isShow = true
+		return req, nil
 	}
 	if len(rest) != 1 {
-		return "", "", 0, false, fmt.Errorf("expected a single value after the knob (or omit it to read, or --reset to revert)")
+		return tuneRequest{}, fmt.Errorf("expected a single value after the knob (or omit it to read, or --reset to revert)")
 	}
-	value, err = strconv.ParseInt(rest[0], 10, 64)
+	value, err := strconv.ParseInt(rest[0], 10, 64)
 	if err != nil {
-		return "", "", 0, false, fmt.Errorf("value %q is not an integer: %w", rest[0], err)
+		return tuneRequest{}, fmt.Errorf("value %q is not an integer: %w", rest[0], err)
 	}
 	if value < 0 {
-		return "", "", 0, false, fmt.Errorf("value must be >= 0 (0 reverts the knob to its documented default)")
+		return tuneRequest{}, fmt.Errorf("value must be >= 0 (0 reverts the knob to its documented default)")
 	}
-	return containerID, key, value, false, nil
+	req.value = value
+	return req, nil
 }
 
 // NewTuneCommand creates the `tune` command (sp-vwek): the generic live runtime
@@ -237,7 +250,7 @@ Examples:
   spacetraders tune --operation sensing purchase_cooldown_secs --reset`,
 		Args: cobra.RangeArgs(0, 3),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			containerID, key, value, isShow, err := parseTuneArgs(args, operation, reset, show)
+			req, err := parseTuneArgs(args, operation, reset, show)
 			if err != nil {
 				return err
 			}
@@ -252,16 +265,14 @@ Examples:
 			if err != nil {
 				return err
 			}
-			playerID, agentSymbol := playerPointers(playerIdent)
-
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
 			var msg string
-			if isShow {
-				msg, err = runTuneShow(ctx, client, containerID, operation, key, asJSON, playerID, agentSymbol)
+			if req.isShow {
+				msg, err = runTuneShow(ctx, client, req, asJSON, playerIdent)
 			} else {
-				msg, err = runTune(ctx, client, containerID, operation, key, value, playerID, agentSymbol)
+				msg, err = runTune(ctx, client, req, playerIdent)
 			}
 			if err != nil {
 				return err

@@ -7,7 +7,6 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
 
@@ -69,16 +68,8 @@ func (s *DaemonServer) StartArbRun(
 		return nil, fmt.Errorf("buy-at and sell-at must differ (both %s)", buyAt)
 	}
 
-	// Idle-gap discipline: only fly a genuinely idle hull, never steal one mid-task.
-	ship, err := s.shipRepo.FindBySymbol(ctx, shipSymbol, shared.MustNewPlayerID(playerID))
-	if err != nil {
-		return nil, fmt.Errorf("failed to load ship %s: %w", shipSymbol, err)
-	}
-	if ship == nil {
-		return nil, fmt.Errorf("ship %s not found", shipSymbol)
-	}
-	if !ship.IsIdle() {
-		return nil, fmt.Errorf("ship %s is not idle (assigned to %q) - arb-run only takes idle-gap hulls", shipSymbol, ship.ContainerID())
+	if err := s.requireIdleHull(ctx, shipSymbol, playerID, "arb-run"); err != nil {
+		return nil, err
 	}
 
 	containerID := utils.GenerateContainerID("arb-run", shipSymbol)

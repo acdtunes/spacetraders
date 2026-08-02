@@ -81,7 +81,7 @@ func (h *RunTourCoordinatorHandler) ObserveRegions(ctx context.Context, playerID
 	// HANDLER, not the command, so it still applies unchanged.
 	cmd := &RunTourCoordinatorCommand{PlayerID: playerID}
 
-	maxHops, maxSpend, reserve, modelVersion, err := h.relocationPreflightBudget(ctx, cmd)
+	budget, err := h.relocationPreflightBudget(ctx, cmd)
 	if err != nil {
 		return nil, err
 	}
@@ -119,7 +119,7 @@ func (h *RunTourCoordinatorHandler) ObserveRegions(ctx context.Context, playerID
 			})
 			break
 		}
-		regions = append(regions, h.observeOneRegion(ctx, cmd, ship, candidate, maxHops, maxSpend, reserve, modelVersion, now))
+		regions = append(regions, h.observeOneRegion(ctx, cmd, ship, candidate, budget, now))
 	}
 	return regions, nil
 }
@@ -137,9 +137,7 @@ func (h *RunTourCoordinatorHandler) observeOneRegion(
 	cmd *RunTourCoordinatorCommand,
 	ship *navigation.Ship,
 	candidate repositionCandidate,
-	maxHops int,
-	maxSpend, reserve int64,
-	modelVersion string,
+	budget tourPlanBudget,
 	now time.Time,
 ) RelocatorRegion {
 	region := RelocatorRegion{
@@ -155,7 +153,7 @@ func (h *RunTourCoordinatorHandler) observeOneRegion(
 	}
 	region.SnapshotAge, region.Activity = age, activity
 
-	plan, perr := h.planAtCandidate(ctx, ship, candidate, maxHops, maxSpend, reserve, cmd, modelVersion)
+	plan, perr := h.planAtCandidate(ctx, ship, candidate, cmd, budget)
 	rate, ok := relocationProjectedRate(plan)
 	if !ok {
 		// The pre-flight declined, errored, or carried no usable time estimate. Name WHICH — the same
@@ -331,34 +329,34 @@ func (h *RunTourCoordinatorHandler) tighterAgeCapActivity(a, b string) string {
 //     spend cap of 0 would render them all infeasible and report that as the GROUND being poor.
 //     An ABSENT treasury source (no apiClient) is not unreadable — it means no explicit cap, exactly
 //     as in Handle, with the per-buy working-capital floor still guarding every real spend.
-func (h *RunTourCoordinatorHandler) relocationPreflightBudget(ctx context.Context, cmd *RunTourCoordinatorCommand) (maxHops int, maxSpend, reserve int64, modelVersion string, err error) {
+func (h *RunTourCoordinatorHandler) relocationPreflightBudget(ctx context.Context, cmd *RunTourCoordinatorCommand) (tourPlanBudget, error) {
 	artifactPath := h.modelArtifactPath
 	if artifactPath == "" {
 		artifactPath = defaultModelArtifactPath
 	}
-	modelVersion, err = readTourModelVersion(artifactPath)
+	modelVersion, err := readTourModelVersion(artifactPath)
 	if err != nil {
-		return 0, 0, 0, "", fmt.Errorf("relocator regions unobservable: tour model artifact unreadable (%s): %w", artifactPath, err)
+		return tourPlanBudget{}, fmt.Errorf("relocator regions unobservable: tour model artifact unreadable (%s): %w", artifactPath, err)
 	}
 	// The synthesised command carries no launch reserve, so this is the coordinator's own documented
 	// default — the same value Handle resolves a captain CLI tour to.
-	reserve = cmd.WorkingCapitalReserve
+	reserve := cmd.WorkingCapitalReserve
 	if reserve == 0 {
 		reserve = int64(defaultWorkingCapitalReserve)
 	}
-	maxHops = cmd.MaxHops
+	maxHops := cmd.MaxHops
 	if maxHops <= 0 || maxHops > maxTourHops {
 		maxHops = maxTourHops
 	}
-	maxSpend = cmd.MaxSpend
+	maxSpend := cmd.MaxSpend
 	if maxSpend == 0 {
 		resolved, unreadable := h.defaultMaxSpend(ctx, cmd.PlayerID, reserve)
 		if unreadable {
-			return 0, 0, 0, "", fmt.Errorf("relocator regions unobservable: live treasury unreadable, so no candidate can be priced against an honest budget")
+			return tourPlanBudget{}, fmt.Errorf("relocator regions unobservable: live treasury unreadable, so no candidate can be priced against an honest budget")
 		}
 		maxSpend = resolved
 	}
-	return maxHops, maxSpend, reserve, modelVersion, nil
+	return tourPlanBudget{maxHops: maxHops, maxSpend: maxSpend, reserve: reserve, modelVersion: modelVersion}, nil
 }
 
 // relocationOriginHull picks the hull whose capacity, engine and role the candidate tours are priced

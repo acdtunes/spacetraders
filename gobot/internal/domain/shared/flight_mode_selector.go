@@ -108,15 +108,8 @@ func NewFlightModeSelector(strategies ...FlightModeStrategy) *FlightModeSelector
 //
 // Priority order: BURN > CRUISE.
 //
-// Parameters:
-//   - currentFuel: Ship's current fuel level
-//   - fuelCost: Fuel cost for CRUISE mode (baseline)
-//   - safetyMargin: Minimum fuel to keep as reserve
-//
-// Returns:
-//   - Optimal flight mode (BURN or CRUISE)
-//   - Whether the tank can pay for it. When false the tank affords no mode at all,
-//     and the returned CRUISE is the floor the caller must refuel up to.
+// fuelCost is the CRUISE-mode baseline. When the bool is false the tank affords
+// no mode at all, and the returned CRUISE is the floor the caller must refuel up to.
 func (s *FlightModeSelector) SelectOptimalMode(currentFuel, fuelCost, safetyMargin int) (FlightMode, bool) {
 	for _, strategy := range s.strategies {
 		if strategy.CanUse(currentFuel, fuelCost, safetyMargin) {

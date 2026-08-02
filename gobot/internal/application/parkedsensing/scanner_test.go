@@ -458,10 +458,10 @@ func TestScannerLaunch_InFlightSlotLeavesTheRotation(t *testing.T) {
 // every token held the pacer must BLOCK rather than queue, so scan issuance
 // tracks how fast scans actually complete.
 func TestScannerLaunch_InflightCapHoldsThePacer(t *testing.T) {
-	const cap = 3
+	const inflightCap = 3
 	started, hold := make(chan string, 8), make(chan struct{})
 	runner := &fakeScanRunner{started: started, hold: hold}
-	sc, _, _ := scanFixture(t, cap, runner)
+	sc, _, _ := scanFixture(t, inflightCap, runner)
 	sc.SyncMembership([]SensingSlotView{
 		dueMarket("X1-AA-M1", 0.2), dueMarket("X1-AA-M2", 0.2),
 		dueMarket("X1-AA-M3", 0.2), dueMarket("X1-AA-M4", 0.2),
@@ -471,17 +471,17 @@ func TestScannerLaunch_InflightCapHoldsThePacer(t *testing.T) {
 	paced := make(chan struct{})
 	go func() { defer close(paced); sc.RunPacer(ctx) }()
 
-	for i := 0; i < cap; i++ {
+	for i := 0; i < inflightCap; i++ {
 		select {
 		case <-started:
 		case <-time.After(2 * time.Second):
-			t.Fatalf("only %d of %d scans started", i, cap)
+			t.Fatalf("only %d of %d scans started", i, inflightCap)
 		}
 	}
 
 	select {
 	case waypoint := <-started:
-		t.Fatalf("scan of %s launched with all %d in-flight tokens held", waypoint, cap)
+		t.Fatalf("scan of %s launched with all %d in-flight tokens held", waypoint, inflightCap)
 	case <-time.After(150 * time.Millisecond):
 	}
 

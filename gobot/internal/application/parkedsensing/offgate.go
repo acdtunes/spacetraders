@@ -98,7 +98,7 @@ func (o OffGatePorts) wired() bool {
 	return o.Select != nil && o.Demand != nil && o.Explorer != nil && o.Warp != nil
 }
 
-// offGateSelectionParams are the ranking inputs handed to the ported selector.
+// The ranking inputs handed to the off-gate selector.
 //
 // PLAIN CONSTANTS, deliberately not knobs. They pace an exploration choice, not an economic one —
 // the money decision is the autosizer's and is guarded there — and the retired coordinator's own
@@ -250,26 +250,4 @@ func dispatchExplorer(
 		"from_system":   target.FromSystem,
 		"warp_fuel":     target.WarpFuelCost,
 	})
-}
-
-// anyGateReachable reports whether ANY outstanding charting target is within MaxWalkRings of a
-// system we hold — the discriminator that keeps warp a fallback.
-//
-// It reuses the tick's existing gateReach memo and heldSystems index, so it costs no store read the
-// tick was not already making, and it can never disagree with the reach the seed machinery itself
-// applies: the same forward BFS, the same bound, the same origins.
-func anyGateReachable(ctx context.Context, reach *gateReach, targets []ExpandSystem, book *slotBook) (bool, error) {
-	held := heldSystems(book)
-	for _, target := range targets {
-		for _, origin := range held {
-			within, err := reach.canReach(ctx, origin, target.System)
-			if err != nil {
-				return false, err
-			}
-			if within {
-				return true, nil
-			}
-		}
-	}
-	return false, nil
 }

@@ -71,9 +71,9 @@ func (w *warnLogger) Log(level, message string, _ map[string]interface{}) {
 	}
 }
 
-func portWith(cap *fakeCapSource, census *fakeCensus, yards *fakeYardPricer) (*HeavyReservePort, *warnLogger, context.Context) {
+func portWith(caps *fakeCapSource, census *fakeCensus, yards *fakeYardPricer) (*HeavyReservePort, *warnLogger, context.Context) {
 	log := &warnLogger{}
-	return NewHeavyReservePort(census, yards, cap), log, logging.WithLogger(context.Background(), log)
+	return NewHeavyReservePort(census, yards, caps), log, logging.WithLogger(context.Background(), log)
 }
 
 // LADDER 1: no autosizer container ⇒ reserve 0. No heavy buyer exists, so there is nothing to save
@@ -322,12 +322,12 @@ func TestHeavyReservePort_NoTargetYardReservesNothing(t *testing.T) {
 // reservation would start at 5× and taper, and a per-purchase reservation would grow. At the cap
 // it must drop to zero, releasing the treasury back to expansion for good.
 func TestHeavyReservePort_ReservesOneHeavyAtATimeThenReleasesAtTheCap(t *testing.T) {
-	const cap = 5
+	const heavyCap = 5
 	const ask = int64(1_565_500)
 
-	for owned := 0; owned < cap; owned++ {
+	for owned := 0; owned < heavyCap; owned++ {
 		p, _, ctx := portWith(
-			&fakeCapSource{exists: true, present: true, cap: cap},
+			&fakeCapSource{exists: true, present: true, cap: heavyCap},
 			&fakeCensus{owned: owned},
 			&fakeYardPricer{price: int(ask), found: true},
 		)
@@ -335,20 +335,20 @@ func TestHeavyReservePort_ReservesOneHeavyAtATimeThenReleasesAtTheCap(t *testing
 		require.NoError(t, err)
 		require.Equal(t, ask, got,
 			"owned=%d (headroom %d): reserve must be exactly ONE heavy's ask, never cap−owned multiples — expansion needs a spending window between purchases",
-			owned, cap-owned)
+			owned, heavyCap-owned)
 	}
 
 	// At the cap the reservation ends: nothing further is being saved for, and every credit is
 	// released back to expansion. Written for at-cap AND over-cap, because a hull acquired outside
 	// this path must not leave a reservation standing forever.
-	for _, owned := range []int{cap, cap + 3} {
+	for _, owned := range []int{heavyCap, heavyCap + 3} {
 		p, _, ctx := portWith(
-			&fakeCapSource{exists: true, present: true, cap: cap},
+			&fakeCapSource{exists: true, present: true, cap: heavyCap},
 			&fakeCensus{owned: owned},
 			&fakeYardPricer{price: int(ask), found: true},
 		)
 		got, err := p.Reserve(ctx, 1)
 		require.NoError(t, err)
-		require.Equal(t, int64(0), got, "owned=%d at cap %d: the reserve must release the treasury to expansion", owned, cap)
+		require.Equal(t, int64(0), got, "owned=%d at cap %d: the reserve must release the treasury to expansion", owned, heavyCap)
 	}
 }

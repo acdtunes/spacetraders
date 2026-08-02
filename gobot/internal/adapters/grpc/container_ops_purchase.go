@@ -47,7 +47,6 @@ func (s *DaemonServer) PurchaseShip(ctx context.Context, purchasingShipSymbol, s
 		"operation": operationPurchasing,
 	}
 
-	// Create purchase command from the launch config
 	cmd, err := s.buildCommandForType("purchase_ship", config, playerID, containerID)
 	if err != nil {
 		return "", "", 0, 0, "", fmt.Errorf("failed to create command: %w", err)
@@ -113,7 +112,6 @@ func (s *DaemonServer) BatchPurchaseShips(ctx context.Context, purchasingShipSym
 		"operation": operationPurchasing,
 	}
 
-	// Create batch purchase command from the launch config
 	cmd, err := s.buildCommandForType("batch_purchase_ships", config, playerID, containerID)
 	if err != nil {
 		return "", 0, 0, "", "", fmt.Errorf("failed to create command: %w", err)

@@ -123,9 +123,7 @@ func (h *RunTourCoordinatorHandler) maybeRepositionRateFloor(
 	cmd *RunTourCoordinatorCommand,
 	response *RunTourCoordinatorResponse,
 	netBought map[string]int,
-	maxHops int,
-	maxSpend, reserve int64,
-	modelVersion string,
+	budget tourPlanBudget,
 ) error {
 	logger := common.LoggerFromContext(ctx)
 
@@ -184,7 +182,7 @@ func (h *RunTourCoordinatorHandler) maybeRepositionRateFloor(
 	// already priced into. Evaluating only the single best is the cheapest (one pre-flight) and most
 	// conservative choice: if the top ground is not a clear win we STAY, never fishing for a #2.
 	best := candidates[0]
-	plan, perr := h.planAtCandidate(ctx, ship, best, maxHops, maxSpend, reserve, cmd, modelVersion)
+	plan, perr := h.planAtCandidate(ctx, ship, best, cmd, budget)
 	if perr != nil || plan == nil || !plan.Feasible {
 		logger.Log("INFO", fmt.Sprintf("Reposition rate-floor: %s best candidate %s is infeasible (%s) - staying", cmd.ShipSymbol, best.system, repositionCandidateReason(plan, perr)), map[string]interface{}{
 			"ship_symbol": cmd.ShipSymbol, "candidate": best.system, "reason": "infeasible",
@@ -212,7 +210,7 @@ func (h *RunTourCoordinatorHandler) maybeRepositionRateFloor(
 	}
 
 	// ALL gates cleared — relocate through the shared jump machinery.
-	return h.commitRateFloorRelocation(ctx, cmd, response, netBought, currentSystem, best, hullRate, candidateRate, maxSpend, reserve)
+	return h.commitRateFloorRelocation(ctx, cmd, response, netBought, currentSystem, best, hullRate, candidateRate, budget.maxSpend, budget.reserve)
 }
 
 // rateFloorImprovementClears reports whether a candidate's deadhead-netted projected rate is a

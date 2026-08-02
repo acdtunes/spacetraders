@@ -55,8 +55,6 @@ func (p *FactorySupplyPoller) Run(ctx context.Context) {
 func (p *FactorySupplyPoller) PollOnce(ctx context.Context) {
 	logger := common.LoggerFromContext(ctx)
 
-	// Get ALL factories - we need to poll ready ones too in case supply dropped
-	// This allows us to reset ready flags when supply drops below HIGH
 	allFactories := p.factoryTracker.GetAllFactories()
 	if len(allFactories) == 0 {
 		// Even without factories, check supply-gated and construction tasks
@@ -74,19 +72,15 @@ func (p *FactorySupplyPoller) PollOnce(ctx context.Context) {
 		p.checkFactorySupply(ctx, factory)
 	}
 
-	// Check and activate any supply-gated ACQUIRE_DELIVER tasks
-	// This activates tasks that were waiting for HIGH/ABUNDANT supply at source market
+	// The gate these tasks were waiting on reads supply at the SOURCE market.
 	p.activator.ActivateSupplyGatedTasks(ctx)
 
-	// Deactivate READY ACQUIRE_DELIVER tasks whose factory input became saturated
-	// This prevents wasted trips when factory already has enough supply
+	// Prevents wasted trips when the factory already has enough supply.
 	p.activator.DeactivateSaturatedAcquireDeliverTasks(ctx)
 
-	// Enqueue READY COLLECTION pipeline tasks that aren't in the queue
 	// COLLECTION pipelines have no factory states, so we must poll them separately
 	p.activator.ActivateCollectionPipelineTasks(ctx)
 
-	// Activate PENDING DELIVER_TO_CONSTRUCTION tasks whose dependencies completed
 	// CONSTRUCTION pipelines are not covered by the acquire/collect activators above
 	p.activator.ActivateConstructionTasks(ctx)
 }
@@ -95,49 +89,15 @@ func (p *FactorySupplyPoller) PollOnce(ctx context.Context) {
 func (p *FactorySupplyPoller) checkFactorySupply(ctx context.Context, factory *manufacturing.FactoryState) {
 	logger := common.LoggerFromContext(ctx)
 
-	// Get current market data
-	marketData, err := p.marketRepo.GetMarketData(ctx, factory.FactorySymbol(), factory.PlayerID())
-	if err != nil {
-		logger.Log("WARN", "Failed to get market data for factory", map[string]interface{}{
-			"factory": factory.FactorySymbol(),
-			"output":  factory.OutputGood(),
-			"error":   err.Error(),
-		})
-		return
-	}
-	if marketData == nil {
-		// No market data available yet - scouts may not have scanned this waypoint
+	supply, ok := p.readFactorySupply(ctx, factory)
+	if !ok {
 		return
 	}
 
-	// Find the output good
-	tradeGood := marketData.FindGood(factory.OutputGood())
-	if tradeGood == nil {
-		logger.Log("WARN", "Output good not found in factory market", map[string]interface{}{
-			"factory": factory.FactorySymbol(),
-			"output":  factory.OutputGood(),
-		})
-		return
-	}
-
-	supply := supplyOrModerate(tradeGood)
-
-	// Update factory state
 	previousSupply := factory.CurrentSupply()
 	factory.UpdateSupply(supply)
+	p.persistFactoryState(ctx, factory)
 
-	// Persist the change to database
-	if p.factoryStateRepo != nil {
-		if err := p.factoryStateRepo.Update(ctx, factory); err != nil {
-			logger.Log("WARN", "Failed to persist factory state update", map[string]interface{}{
-				"factory": factory.FactorySymbol(),
-				"output":  factory.OutputGood(),
-				"error":   err.Error(),
-			})
-		}
-	}
-
-	// Log supply change and record metrics
 	if previousSupply != supply {
 		logger.Log("INFO", "Factory supply changed", map[string]interface{}{
 			"factory":  factory.FactorySymbol(),
@@ -146,23 +106,18 @@ func (p *FactorySupplyPoller) checkFactorySupply(ctx context.Context, factory *m
 			"current":  supply,
 		})
 
-		// Record supply transition metric
 		metrics.RecordManufacturingSupplyTransition(factory.PlayerID(), factory.OutputGood(), previousSupply, supply)
 
-		// DEMAND-DRIVEN SUPPLY: When supply drops below HIGH, create ACQUIRE_DELIVER tasks
-		// This replenishes the factory with raw materials so it can produce more output
-		wasHighOrAbundant := isHighOrAbundant(previousSupply)
-		isNowLower := !isHighOrAbundant(supply)
-		if wasHighOrAbundant && isNowLower {
+		// DEMAND-DRIVEN SUPPLY: a factory that has just fallen below HIGH is replenished with the
+		// raw materials it needs to keep producing.
+		if isHighOrAbundant(previousSupply) && !isHighOrAbundant(supply) {
 			p.replenisher.createTasksForFactory(ctx, factory)
 		}
 	}
 
-	// CONTINUOUS DELIVERY: If supply is STILL below HIGH/ABUNDANT and factory is active,
-	// create more ACQUIRE_DELIVER tasks if none are pending.
-	// This fixes the bug where pipeline stalls because supply never reached HIGH to begin with.
-	supplyBelowTarget := !isHighOrAbundant(supply)
-	if supplyBelowTarget && factory.HasReceivedAnyDelivery() {
+	// CONTINUOUS DELIVERY: supply that never reached HIGH in the first place produces no
+	// transition above, so a fed factory still short of target re-stages here or the pipeline stalls.
+	if !isHighOrAbundant(supply) && factory.HasReceivedAnyDelivery() {
 		if !p.replenisher.hasPendingAcquireDeliverTasks(ctx, factory) {
 			logger.Log("INFO", "Factory supply still below target with no pending deliveries - creating more tasks", map[string]interface{}{
 				"factory": factory.FactorySymbol(),
@@ -173,7 +128,6 @@ func (p *FactorySupplyPoller) checkFactorySupply(ctx context.Context, factory *m
 		}
 	}
 
-	// Check if now ready for collection
 	if factory.IsReadyForCollection() {
 		logger.Log("INFO", "Factory ready for collection", map[string]interface{}{
 			"factory":  factory.FactorySymbol(),
@@ -182,10 +136,8 @@ func (p *FactorySupplyPoller) checkFactorySupply(ctx context.Context, factory *m
 			"pipeline": factory.PipelineID(),
 		})
 
-		// Record factory cycle completion metric
 		metrics.RecordManufacturingFactoryCycle(factory.PlayerID(), factory.FactorySymbol(), factory.OutputGood())
 
-		// Mark related COLLECT tasks as ready
 		p.markCollectTasksReady(ctx, factory)
 	}
 }
@@ -202,30 +154,14 @@ func (p *FactorySupplyPoller) checkFactorySupply(ctx context.Context, factory *m
 func (p *FactorySupplyPoller) markCollectTasksReady(ctx context.Context, factory *manufacturing.FactoryState) {
 	logger := common.LoggerFromContext(ctx)
 
-	// CRITICAL: Verify pipeline is still EXECUTING before activating tasks
-	// Tasks from CANCELLED/FAILED/COMPLETED pipelines should not be activated
 	if !pipelineExecutingForFactory(ctx, p.pipelineRepo, factory, "Skipping task activation") {
 		return
 	}
 
-	// STREAMING GATE: Ensure at least one delivery before allowing collection
-	// This prevents premature collection when factory has HIGH supply but
-	// we haven't started feeding it yet (opportunistic factory with existing stock)
-	//
-	// EXCEPTION: Skip this gate if factory has NO required inputs (source factory).
-	// Source factories produce goods without needing any deliveries, so they
-	// should be collected as soon as supply is HIGH/ABUNDANT.
-	hasRequiredInputs := len(factory.RequiredInputs()) > 0
-	if hasRequiredInputs && !factory.HasReceivedAnyDelivery() {
-		logger.Log("DEBUG", "Factory ready but no deliveries yet - waiting", map[string]interface{}{
-			"factory": factory.FactorySymbol(),
-			"output":  factory.OutputGood(),
-			"supply":  factory.CurrentSupply(),
-		})
+	if !p.collectionGateOpen(ctx, factory) {
 		return
 	}
 
-	// Get all tasks for this pipeline
 	if p.taskRepo == nil {
 		// Fall back to in-memory queue only
 		marked := p.taskQueue.MarkCollectTasksReady(factory.FactorySymbol(), factory.OutputGood())
@@ -237,7 +173,6 @@ func (p *FactorySupplyPoller) markCollectTasksReady(ctx context.Context, factory
 		return
 	}
 
-	// Find COLLECT tasks for this factory
 	tasks, err := p.taskRepo.FindByPipelineID(ctx, factory.PipelineID())
 	if err != nil {
 		logger.Log("WARN", "Failed to find tasks for pipeline", map[string]interface{}{
@@ -247,34 +182,10 @@ func (p *FactorySupplyPoller) markCollectTasksReady(ctx context.Context, factory
 		return
 	}
 
-	// Check if there's a pending COLLECT task
-	var hasPendingCollect bool
-	var hasCompletedCollect bool
-	marked := 0
+	marked, hasPendingCollect, hasCompletedCollect := p.readyCollectTasks(ctx, tasks, factory)
 
-	for _, task := range tasks {
-		if !isCollectTaskForFactory(task, factory) {
-			continue
-		}
-		switch task.Status() {
-		case manufacturing.TaskStatusPending:
-			hasPendingCollect = true
-			if p.readyAndEnqueueCollectTask(ctx, task) {
-				marked++
-			}
-		case manufacturing.TaskStatusReady:
-			// Task is already READY (e.g., from DB recovery after daemon restart)
-			// Re-check saturation and add to queue if still valid
-			if p.requeueRecoveredCollectTask(ctx, task) {
-				marked++
-			}
-		case manufacturing.TaskStatusCompleted:
-			hasCompletedCollect = true
-		}
-	}
-
-	// If no pending COLLECT but there was a completed one, create new COLLECT + SELL tasks
-	// This handles the case where factory supply became ABUNDANT again after previous collection
+	// No pending COLLECT but a completed one means supply became ABUNDANT again after the previous
+	// collection, so the follow-up pair is staged instead.
 	if !hasPendingCollect && hasCompletedCollect {
 		logger.Log("INFO", "No pending COLLECT task but factory is ready - creating new tasks", map[string]interface{}{
 			"factory":  factory.FactorySymbol(),
@@ -292,7 +203,6 @@ func (p *FactorySupplyPoller) markCollectTasksReady(ctx context.Context, factory
 		"tasks_marked": marked,
 	})
 
-	// Notify coordinator that tasks are ready for assignment
 	if marked > 0 {
 		p.notifier.notifyTasksReady(factory.PipelineID())
 	}
@@ -348,6 +258,91 @@ func (p *FactorySupplyPoller) requeueRecoveredCollectTask(ctx context.Context, t
 	return true
 }
 
+// readFactorySupply reads the factory's live supply level for its own output good. ok is false when
+// the market has not been scanned yet, or does not list the good at all.
+func (p *FactorySupplyPoller) readFactorySupply(ctx context.Context, factory *manufacturing.FactoryState) (string, bool) {
+	logger := common.LoggerFromContext(ctx)
+
+	marketData, err := p.marketRepo.GetMarketData(ctx, factory.FactorySymbol(), factory.PlayerID())
+	if err != nil {
+		logger.Log("WARN", "Failed to get market data for factory", map[string]interface{}{
+			"factory": factory.FactorySymbol(),
+			"output":  factory.OutputGood(),
+			"error":   err.Error(),
+		})
+		return "", false
+	}
+	if marketData == nil {
+		return "", false // scouts may not have scanned this waypoint yet
+	}
+
+	tradeGood := marketData.FindGood(factory.OutputGood())
+	if tradeGood == nil {
+		logger.Log("WARN", "Output good not found in factory market", map[string]interface{}{
+			"factory": factory.FactorySymbol(),
+			"output":  factory.OutputGood(),
+		})
+		return "", false
+	}
+	return supplyOrModerate(tradeGood), true
+}
+
+// persistFactoryState is best-effort: a write failure is logged, never propagated, so a poll cycle
+// still acts on the supply it just read.
+func (p *FactorySupplyPoller) persistFactoryState(ctx context.Context, factory *manufacturing.FactoryState) {
+	if p.factoryStateRepo == nil {
+		return
+	}
+	if err := p.factoryStateRepo.Update(ctx, factory); err != nil {
+		common.LoggerFromContext(ctx).Log("WARN", "Failed to persist factory state update", map[string]interface{}{
+			"factory": factory.FactorySymbol(),
+			"output":  factory.OutputGood(),
+			"error":   err.Error(),
+		})
+	}
+}
+
+// collectionGateOpen holds collection back until the factory has received at least one delivery,
+// so an opportunistic factory that merely happens to hold stock is not collected before we have
+// started feeding it. A SOURCE factory (no required inputs) produces without deliveries, so it is
+// exempt and collectable as soon as supply is HIGH/ABUNDANT.
+func (p *FactorySupplyPoller) collectionGateOpen(ctx context.Context, factory *manufacturing.FactoryState) bool {
+	if len(factory.RequiredInputs()) == 0 || factory.HasReceivedAnyDelivery() {
+		return true
+	}
+	common.LoggerFromContext(ctx).Log("DEBUG", "Factory ready but no deliveries yet - waiting", map[string]interface{}{
+		"factory": factory.FactorySymbol(),
+		"output":  factory.OutputGood(),
+		"supply":  factory.CurrentSupply(),
+	})
+	return false
+}
+
+// readyCollectTasks promotes this factory's PENDING collect tasks and re-queues ones left READY by
+// a daemon restart, reporting how many were marked plus whether any pending or completed collect
+// task exists at all — the two facts that decide whether a follow-up pair must be staged.
+func (p *FactorySupplyPoller) readyCollectTasks(ctx context.Context, tasks []*manufacturing.ManufacturingTask, factory *manufacturing.FactoryState) (marked int, hasPendingCollect, hasCompletedCollect bool) {
+	for _, task := range tasks {
+		if !isCollectTaskForFactory(task, factory) {
+			continue
+		}
+		switch task.Status() {
+		case manufacturing.TaskStatusPending:
+			hasPendingCollect = true
+			if p.readyAndEnqueueCollectTask(ctx, task) {
+				marked++
+			}
+		case manufacturing.TaskStatusReady:
+			if p.requeueRecoveredCollectTask(ctx, task) {
+				marked++
+			}
+		case manufacturing.TaskStatusCompleted:
+			hasCompletedCollect = true
+		}
+	}
+	return marked, hasPendingCollect, hasCompletedCollect
+}
+
 // createNewCollectSellTasks creates a new atomic COLLECT_SELL task for a factory that's ready
 // but has no pending COLLECT task (previous one completed and supply is ABUNDANT again).
 // Uses atomic task to prevent "orphaned cargo" bug where one ship collects and another sells.
@@ -362,73 +357,13 @@ func (p *FactorySupplyPoller) requeueRecoveredCollectTask(ctx context.Context, t
 func (p *FactorySupplyPoller) createNewCollectSellTasks(ctx context.Context, factory *manufacturing.FactoryState) {
 	logger := common.LoggerFromContext(ctx)
 
-	// Load the pipeline to check if this is the final product factory AND if it's still EXECUTING
-	var pipeline *manufacturing.ManufacturingPipeline
-	var fallbackMarket string
-	if p.pipelineRepo != nil {
-		var err error
-		pipeline, err = p.pipelineRepo.FindByID(ctx, factory.PipelineID())
-		if err != nil {
-			logger.Log("WARN", "Failed to load pipeline for sell market lookup", map[string]interface{}{
-				"factory":  factory.FactorySymbol(),
-				"output":   factory.OutputGood(),
-				"pipeline": factory.PipelineID(),
-				"error":    err.Error(),
-			})
-			return
-		}
-		if pipeline == nil {
-			logger.Log("DEBUG", "Skipping new task creation - pipeline not found", map[string]interface{}{
-				"factory":     factory.FactorySymbol(),
-				"pipeline_id": shortID(factory.PipelineID()),
-			})
-			return
-		}
-
-		// CRITICAL: Don't create new tasks for non-executing pipelines
-		if pipeline.Status() != manufacturing.PipelineStatusExecuting {
-			logger.Log("DEBUG", "Skipping new task creation - pipeline not executing", map[string]interface{}{
-				"factory":         factory.FactorySymbol(),
-				"pipeline_id":     shortID(factory.PipelineID()),
-				"pipeline_status": pipeline.Status(),
-			})
-			return
-		}
-
-		fallbackMarket = pipeline.SellMarket()
-	}
-
-	// CRITICAL: Only create follow-up tasks for FINAL GOODS factories
-	// Intermediate factories (EQUIPMENT, ELECTRONICS, etc.) should not get new tasks here
-	// because their output goes to another factory, not to a sell market.
-	// Without knowing the downstream factory, we can't correctly route intermediate goods.
-	if pipeline != nil && factory.OutputGood() != pipeline.ProductGood() {
-		logger.Log("DEBUG", "Skipping follow-up task for intermediate factory", map[string]interface{}{
-			"factory":       factory.FactorySymbol(),
-			"output":        factory.OutputGood(),
-			"final_product": pipeline.ProductGood(),
-			"reason":        "intermediate goods need specific factory destination",
-		})
+	fallbackMarket, eligible := p.followUpSellFallback(ctx, factory)
+	if !eligible {
 		return
 	}
 
-	// Fallback to finding best market if pipeline lookup failed
-	if fallbackMarket == "" {
-		var err error
-		fallbackMarket, err = p.findBestSellMarket(ctx, factory.FactorySymbol(), factory.OutputGood())
-		if err != nil {
-			logger.Log("WARN", "Failed to find sell market for new collection", map[string]interface{}{
-				"factory": factory.FactorySymbol(),
-				"output":  factory.OutputGood(),
-				"error":   err.Error(),
-			})
-			return
-		}
-	}
-
-	// Use the distributor to select from ALL eligible markets, not just the pipeline's market
 	// This distributes sales across multiple SCARCE/LIMITED markets to avoid flooding
-	systemSymbol := extractSystem(factory.FactorySymbol())
+	systemSymbol := extractSystemSymbol(factory.FactorySymbol())
 	sellMarket, err := p.sellMarketDistrib.SelectSellMarket(
 		ctx,
 		factory.OutputGood(),
@@ -458,8 +393,79 @@ func (p *FactorySupplyPoller) createNewCollectSellTasks(ctx context.Context, fac
 		return
 	}
 
-	// Create atomic COLLECT_SELL task (same ship collects AND sells)
-	// Immediately ready since supply is HIGH/ABUNDANT
+	p.stageCollectSellTask(ctx, factory, sellMarket)
+}
+
+// followUpSellFallback reports whether this factory may get a follow-up collection at all, and the
+// pipeline's own sell market to fall back on. Only FINAL-GOODS factories of an EXECUTING pipeline
+// qualify: an intermediate factory's output goes to another factory, and without knowing that
+// downstream factory the goods cannot be routed.
+func (p *FactorySupplyPoller) followUpSellFallback(ctx context.Context, factory *manufacturing.FactoryState) (string, bool) {
+	logger := common.LoggerFromContext(ctx)
+
+	var pipeline *manufacturing.ManufacturingPipeline
+	var fallbackMarket string
+	if p.pipelineRepo != nil {
+		var err error
+		pipeline, err = p.pipelineRepo.FindByID(ctx, factory.PipelineID())
+		if err != nil {
+			logger.Log("WARN", "Failed to load pipeline for sell market lookup", map[string]interface{}{
+				"factory":  factory.FactorySymbol(),
+				"output":   factory.OutputGood(),
+				"pipeline": factory.PipelineID(),
+				"error":    err.Error(),
+			})
+			return "", false
+		}
+		if pipeline == nil {
+			logger.Log("DEBUG", "Skipping new task creation - pipeline not found", map[string]interface{}{
+				"factory":     factory.FactorySymbol(),
+				"pipeline_id": shortID(factory.PipelineID()),
+			})
+			return "", false
+		}
+		if pipeline.Status() != manufacturing.PipelineStatusExecuting {
+			logger.Log("DEBUG", "Skipping new task creation - pipeline not executing", map[string]interface{}{
+				"factory":         factory.FactorySymbol(),
+				"pipeline_id":     shortID(factory.PipelineID()),
+				"pipeline_status": pipeline.Status(),
+			})
+			return "", false
+		}
+
+		fallbackMarket = pipeline.SellMarket()
+	}
+
+	if pipeline != nil && factory.OutputGood() != pipeline.ProductGood() {
+		logger.Log("DEBUG", "Skipping follow-up task for intermediate factory", map[string]interface{}{
+			"factory":       factory.FactorySymbol(),
+			"output":        factory.OutputGood(),
+			"final_product": pipeline.ProductGood(),
+			"reason":        "intermediate goods need specific factory destination",
+		})
+		return "", false
+	}
+
+	if fallbackMarket == "" {
+		var err error
+		fallbackMarket, err = p.findBestSellMarket(ctx, factory.FactorySymbol(), factory.OutputGood())
+		if err != nil {
+			logger.Log("WARN", "Failed to find sell market for new collection", map[string]interface{}{
+				"factory": factory.FactorySymbol(),
+				"output":  factory.OutputGood(),
+				"error":   err.Error(),
+			})
+			return "", false
+		}
+	}
+	return fallbackMarket, true
+}
+
+// stageCollectSellTask creates, persists and enqueues the atomic COLLECT_SELL task — one ship both
+// collects and sells. It is immediately READY because supply at the factory is already HIGH/ABUNDANT.
+func (p *FactorySupplyPoller) stageCollectSellTask(ctx context.Context, factory *manufacturing.FactoryState, sellMarket string) {
+	logger := common.LoggerFromContext(ctx)
+
 	collectSellTask := manufacturing.NewCollectSellTask(
 		factory.PipelineID(),
 		factory.PlayerID(),
@@ -475,7 +481,6 @@ func (p *FactorySupplyPoller) createNewCollectSellTasks(ctx context.Context, fac
 		return
 	}
 
-	// Persist task
 	if err := p.taskRepo.Create(ctx, collectSellTask); err != nil {
 		logger.Log("WARN", "Failed to persist new COLLECT_SELL task", map[string]interface{}{
 			"error": err.Error(),
@@ -483,7 +488,6 @@ func (p *FactorySupplyPoller) createNewCollectSellTasks(ctx context.Context, fac
 		return
 	}
 
-	// Add to queue
 	p.taskQueue.Enqueue(collectSellTask)
 
 	logger.Log("INFO", "Created new COLLECT_SELL task for repeated collection (atomic)", map[string]interface{}{
@@ -493,7 +497,6 @@ func (p *FactorySupplyPoller) createNewCollectSellTasks(ctx context.Context, fac
 		"task_id":     collectSellTask.ID(),
 	})
 
-	// Notify coordinator that tasks are ready for assignment
 	p.notifier.notifyTasksReady(factory.PipelineID())
 }
 
@@ -501,10 +504,8 @@ func (p *FactorySupplyPoller) createNewCollectSellTasks(ctx context.Context, fac
 // Uses the existing FindBestMarketBuying which considers both price and activity.
 // If waypointProvider is available, it will prefer closer markets when prices are similar.
 func (p *FactorySupplyPoller) findBestSellMarket(ctx context.Context, factorySymbol string, good string) (string, error) {
-	// Extract system from factory symbol (e.g., X1-YZ19-K84 -> X1-YZ19)
-	system := extractSystem(factorySymbol)
+	system := extractSystemSymbol(factorySymbol)
 
-	// Use existing market repo method to find best buying market
 	result, err := p.marketRepo.FindBestMarketBuying(ctx, good, system, p.playerID)
 	if err != nil {
 		return "", err
@@ -514,21 +515,4 @@ func (p *FactorySupplyPoller) findBestSellMarket(ctx context.Context, factorySym
 	}
 
 	return result.WaypointSymbol, nil
-}
-
-// extractSystem extracts the system symbol from a waypoint symbol
-// e.g., X1-YZ19-K84 -> X1-YZ19
-func extractSystem(waypointSymbol string) string {
-	// Waypoint format: SECTOR-SYSTEM-WAYPOINT (e.g., X1-YZ19-K84)
-	// System is first two parts
-	parts := 0
-	for i, c := range waypointSymbol {
-		if c == '-' {
-			parts++
-			if parts == 2 {
-				return waypointSymbol[:i]
-			}
-		}
-	}
-	return waypointSymbol
 }

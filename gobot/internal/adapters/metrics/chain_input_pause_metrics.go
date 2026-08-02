@@ -30,14 +30,10 @@ type ChainInputPauseMetricsCollector struct {
 // NewChainInputPauseMetricsCollector creates a new input-pause metrics collector.
 func NewChainInputPauseMetricsCollector() *ChainInputPauseMetricsCollector {
 	return &ChainInputPauseMetricsCollector{
-		pausesTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "chain_input_pause_total",
-				Help:      "Chain input-poison pause episodes: a chain crossing from running to paused because its input layer went ineligible (no MODERATE+ supply source in-system for a required input), counted once per episode (sp-r5a6)",
-			},
-			[]string{"good"},
+		pausesTotal: newCounterVec(
+			"chain_input_pause_total",
+			"Chain input-poison pause episodes: a chain crossing from running to paused because its input layer went ineligible (no MODERATE+ supply source in-system for a required input), counted once per episode (sp-r5a6)",
+			"good",
 		),
 	}
 }
@@ -46,9 +42,11 @@ func NewChainInputPauseMetricsCollector() *ChainInputPauseMetricsCollector {
 // (metrics disabled) is a no-op, matching the sibling collectors.
 func (c *ChainInputPauseMetricsCollector) Register() error {
 	if Registry == nil {
-		return nil // Metrics not enabled
+		return nil
 	}
-	return Registry.Register(c.pausesTotal)
+	return registerAll(
+		c.pausesTotal,
+	)
 }
 
 // RecordPause increments the input-pause-episode counter for a good. Emitted once per episode
@@ -58,4 +56,31 @@ func (c *ChainInputPauseMetricsCollector) RecordPause(good string) {
 		return // Recording is best-effort; never panic the pause-check path (RULINGS #4).
 	}
 	c.pausesTotal.WithLabelValues(good).Inc()
+}
+
+// globalChainInputPauseCollector is the singleton input-poison anti-cycle collector.
+// Set by SetGlobalChainInputPauseCollector() when metrics are enabled; the
+// goods_factory coordinator emits the input-pause episode counter through it (the INPUT
+// side of the self-pruning portfolio, alongside the chain-P&L kill counter above).
+var globalChainInputPauseCollector *ChainInputPauseMetricsCollector
+
+// SetGlobalChainInputPauseCollector sets the global input-pause collector. Pass nil
+// to clear it (e.g. in test cleanup).
+func SetGlobalChainInputPauseCollector(collector *ChainInputPauseMetricsCollector) {
+	globalChainInputPauseCollector = collector
+}
+
+// GetGlobalChainInputPauseCollector returns the global input-pause collector.
+// Returns nil if metrics are not enabled.
+func GetGlobalChainInputPauseCollector() *ChainInputPauseMetricsCollector {
+	return globalChainInputPauseCollector
+}
+
+// RecordChainInputPause increments a chain's input-pause-episode counter globally.
+// No-op when metrics are disabled, so a metrics miss never touches the pause-check path
+// (RULINGS #4).
+func RecordChainInputPause(good string) {
+	if globalChainInputPauseCollector != nil {
+		globalChainInputPauseCollector.RecordPause(good)
+	}
 }

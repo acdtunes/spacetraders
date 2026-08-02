@@ -199,9 +199,7 @@ func (h *RunTourCoordinatorHandler) maybeReposition(
 	response *RunTourCoordinatorResponse,
 	episode *repositionEpisode,
 	netBought map[string]int,
-	maxHops int,
-	maxSpend, reserve int64,
-	modelVersion string,
+	budget tourPlanBudget,
 ) (bool, error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -218,7 +216,7 @@ func (h *RunTourCoordinatorHandler) maybeReposition(
 	// β is readable, the placement engine decides; an unreadable β returns handled=false and falls
 	// THROUGH to the untouched legacy body below (fresh-boot rescue preserved), never a forked copy.
 	if cmd.PlacementScoreEnabled {
-		handled, repositioned, perr := h.maybeRepositionPlacement(ctx, cmd, response, episode, netBought, maxHops, maxSpend, reserve, modelVersion)
+		handled, repositioned, perr := h.maybeRepositionPlacement(ctx, cmd, response, episode, netBought, budget)
 		if handled {
 			return repositioned, perr
 		}
@@ -262,33 +260,7 @@ func (h *RunTourCoordinatorHandler) maybeReposition(
 		floor = repositionMinMarginDefault
 	}
 
-	// Evaluate at most K pre-ranked candidates with a real planner call. Each feasible
-	// candidate carries its planned FRESH profit (total minus held-liquidation minus
-	// synthetic deposit value — the honest new-cash-earning a relocation buys, so a laden
-	// hull's launch-liquidation can't flatter a dead ground into looking worth the jump)
-	// AND its projected fresh-$/HOUR (sp-1wp8): the winner is the best RATE among
-	// floor-clearing candidates, because a fresh=200k ground five minutes of plan away
-	// earns more per hour than a fresh=345k ground twenty-five minutes away.
-	var evaluated []repositionScore
-	for i, cand := range candidates {
-		if i >= k {
-			break
-		}
-		s := repositionScore{system: cand.system, waypoint: cand.waypoint, prerank: cand.score}
-		plan, perr := h.planAtCandidate(ctx, ship, cand, maxHops, maxSpend, reserve, cmd, modelVersion)
-		if perr == nil && plan != nil && plan.Feasible {
-			s.feasible = true
-			s.freshProfit = plan.ProjectedProfit - plan.HeldLiquidation - plan.DepositValue
-			s.rate, s.hasRate = repositionCandidateRate(s.freshProfit, plan, cand.hops)
-		} else {
-			// sp-lxwn: capture WHY this candidate is not a contender so the ranking log names
-			// it. The solver returns "no_profitable_tour" for a tapped/depleted ground (it built
-			// tours but none cleared profit>0) — distinct from a "planner-error" (the pre-flight
-			// CALL failed) which the pre-fix code silently folded into the same bare "infeasible".
-			s.reason = repositionCandidateReason(plan, perr)
-		}
-		evaluated = append(evaluated, s)
-	}
+	evaluated := h.evaluateRepositionCandidates(ctx, cmd, ship, candidates, k, budget)
 
 	best, _, _ := selectRepositionWinner(evaluated, floor)
 	logRepositionRanking(logger, cmd.ShipSymbol, currentSystem, evaluated, best, floor)
@@ -315,19 +287,11 @@ func (h *RunTourCoordinatorHandler) maybeReposition(
 	// cooldown-riding travel machinery (sp-wc5h; SkipClaim — the container already holds
 	// the hull, RULINGS #7), then clear the persisted flag once it lands.
 	h.persistReposition(ctx, cmd, RepositionEpisode{InProgress: true, TargetSystem: best.system, TargetWaypoint: best.waypoint})
-	rateNote := ""
-	if best.hasRate {
-		rateNote = fmt.Sprintf(" (projected %.0f fresh/hr)", best.rate)
-	}
 	// The reposition flies over the stored-adjacency RepositionPath bounded to
 	// jumpBound (routing PAST an unreadable origin gate), so the per-route log names the bound
 	// — the greppable operator signal that this leg used the movement resolver, not strict Path.
 	jumpBound := resolveRepositionJumpBound(cmd.RepositionJumpBound)
-	logger.Log("INFO", fmt.Sprintf("Reposition: margins died at %s - jumping to %s (%s) within %d stored-adjacency jumps, planned fresh profit %d >= floor %d%s, then re-planning there", currentSystem, best.system, best.waypoint, jumpBound, best.freshProfit, floor, rateNote), map[string]interface{}{
-		"ship_symbol": cmd.ShipSymbol, "from_system": currentSystem, "to_system": best.system,
-		"to_waypoint": best.waypoint, "planned_fresh_profit": best.freshProfit, "floor": floor,
-		"planned_fresh_rate_per_hour": best.rate, "reposition_jump_bound": jumpBound,
-	})
+	logRepositionCommit(logger, cmd, currentSystem, best, floor, jumpBound)
 
 	// sp-ed4i look-back loading: the reposition jump was a structural deadhead (the reposition
 	// is a pure empty move — no buy-commitment routing). Before jumping, buy the best
@@ -337,7 +301,7 @@ func (h *RunTourCoordinatorHandler) maybeReposition(
 	// nothing bought → an empty jump, exactly as pre-sp-ed4i. Persisted-in-progress is set
 	// FIRST (above), so a restart mid-load resumes the jump carrying whatever was already
 	// bought (RULINGS #2). Best-effort: it never blocks the reposition rescue.
-	loadedUnits := h.loadLookbackManifest(ctx, cmd, response, netBought, currentSystem, best.system, maxSpend, reserve)
+	loadedUnits := h.loadLookbackManifest(ctx, cmd, response, netBought, currentSystem, best.system, budget.maxSpend, budget.reserve)
 
 	// Resolve the cross-system leg over the PERSISTED stored adjacency (RepositionPath),
 	// bounded to jumpBound, so a heavy whose ORIGIN gate is in the unreadable-backoff set
@@ -366,6 +330,56 @@ func (h *RunTourCoordinatorHandler) maybeReposition(
 	response.Repositions++
 	metrics.RecordTourReposition(cmd.PlayerID, "success") // sp-fbih P3: hull rotated to a fresh ground
 	return true, nil
+}
+
+// evaluateRepositionCandidates prices at most K pre-ranked candidates with a real planner
+// call. Each feasible candidate carries its planned FRESH profit (total minus
+// held-liquidation minus synthetic deposit value — the honest new-cash-earning a relocation
+// buys, so a laden hull's launch-liquidation can't flatter a dead ground into looking worth
+// the jump) AND its projected fresh-$/HOUR (sp-1wp8): the winner is the best RATE among
+// floor-clearing candidates, because a fresh=200k ground five minutes of plan away earns
+// more per hour than a fresh=345k ground twenty-five minutes away.
+func (h *RunTourCoordinatorHandler) evaluateRepositionCandidates(
+	ctx context.Context,
+	cmd *RunTourCoordinatorCommand,
+	ship *navigation.Ship,
+	candidates []repositionCandidate,
+	k int,
+	budget tourPlanBudget,
+) []repositionScore {
+	var evaluated []repositionScore
+	for i, cand := range candidates {
+		if i >= k {
+			break
+		}
+		s := repositionScore{system: cand.system, waypoint: cand.waypoint, prerank: cand.score}
+		plan, perr := h.planAtCandidate(ctx, ship, cand, cmd, budget)
+		if perr == nil && plan != nil && plan.Feasible {
+			s.feasible = true
+			s.freshProfit = plan.ProjectedProfit - plan.HeldLiquidation - plan.DepositValue
+			s.rate, s.hasRate = repositionCandidateRate(s.freshProfit, plan, cand.hops)
+		} else {
+			// sp-lxwn: capture WHY this candidate is not a contender so the ranking log names
+			// it. The solver returns "no_profitable_tour" for a tapped/depleted ground (it built
+			// tours but none cleared profit>0) — distinct from a "planner-error" (the pre-flight
+			// CALL failed), which reads as the same bare "infeasible" otherwise.
+			s.reason = repositionCandidateReason(plan, perr)
+		}
+		evaluated = append(evaluated, s)
+	}
+	return evaluated
+}
+
+func logRepositionCommit(logger common.ContainerLogger, cmd *RunTourCoordinatorCommand, currentSystem string, best *repositionScore, floor int64, jumpBound int) {
+	rateNote := ""
+	if best.hasRate {
+		rateNote = fmt.Sprintf(" (projected %.0f fresh/hr)", best.rate)
+	}
+	logger.Log("INFO", fmt.Sprintf("Reposition: margins died at %s - jumping to %s (%s) within %d stored-adjacency jumps, planned fresh profit %d >= floor %d%s, then re-planning there", currentSystem, best.system, best.waypoint, jumpBound, best.freshProfit, floor, rateNote), map[string]interface{}{
+		"ship_symbol": cmd.ShipSymbol, "from_system": currentSystem, "to_system": best.system,
+		"to_waypoint": best.waypoint, "planned_fresh_profit": best.freshProfit, "floor": floor,
+		"planned_fresh_rate_per_hour": best.rate, "reposition_jump_bound": jumpBound,
+	})
 }
 
 // repositionNeighborEdge is one directly-gated neighbor of the origin system in the reposition
@@ -758,8 +772,8 @@ func repositionCandidateRate(freshProfit int64, plan *routing.TourPlan, hops int
 	if hops < 1 {
 		hops = 1 // defensive floor: an unstamped candidate is charged one hop, never a free deadhead
 	}
-	planSeconds := float64(plan.ProjectedProfit) / plan.ProjectedCreditsPerHour * 3600
-	hours := (float64(hops)*crossSystemHopSeconds + repositionReplanAllowanceSeconds + planSeconds) / 3600
+	planSeconds := float64(plan.ProjectedProfit) / plan.ProjectedCreditsPerHour * secondsPerHour
+	hours := (float64(hops)*crossSystemHopSeconds + repositionReplanAllowanceSeconds + planSeconds) / secondsPerHour
 	return float64(freshProfit) / hours, true
 }
 
@@ -858,9 +872,9 @@ func sanitizeReasonToken(s string) string {
 // cannot blow up the ranking line, cutting on a rune boundary so a multibyte glyph (the "→"
 // in tour summaries) is never split into invalid UTF-8.
 func truncateReason(s string) string {
-	const max = 160
-	if r := []rune(s); len(r) > max {
-		return string(r[:max]) + "..."
+	const maxRunes = 160
+	if r := []rune(s); len(r) > maxRunes {
+		return string(r[:maxRunes]) + "..."
 	}
 	return s
 }
@@ -877,10 +891,8 @@ func (h *RunTourCoordinatorHandler) planAtCandidate(
 	ctx context.Context,
 	ship *navigation.Ship,
 	cand repositionCandidate,
-	maxHops int,
-	maxSpend, reserve int64,
 	cmd *RunTourCoordinatorCommand,
-	modelVersion string,
+	budget tourPlanBudget,
 ) (*routing.TourPlan, error) {
 	shipState := h.tourShipState(ship)
 	shipState.CurrentSystem = cand.system
@@ -911,7 +923,7 @@ func (h *RunTourCoordinatorHandler) planAtCandidate(
 	// The pre-flight only PRICES a candidate ground (it reserves nothing — no plan is
 	// committed here, sp-78ai L3); the snapshot and netted absorption the reserve/accept
 	// path would need are discarded (no plan is accepted here, so no burn-in emission).
-	plan, _, _, err := h.planForState(ctx, shipState, allowedSystems, maxHops, maxSpend, reserve, cmd, modelVersion)
+	plan, _, _, err := h.planForState(ctx, shipState, allowedSystems, cmd, budget)
 	return plan, err
 }
 

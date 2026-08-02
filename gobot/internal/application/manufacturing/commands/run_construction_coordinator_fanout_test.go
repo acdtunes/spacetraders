@@ -164,3 +164,69 @@ func TestConstructionDrain_SupplyTaskTimeoutDefaultsTo30Minutes(t *testing.T) {
 		t.Fatalf("expected the default supply-task timeout raised to 30m (was a hardcoded 10m that abandoned legit long hauls), got %s", got)
 	}
 }
+
+// perGoodProbeProducer counts ProduceGood calls per material, so a test can assert how many lots
+// the dispatch plan gave each one.
+type perGoodProbeProducer struct {
+	mu    sync.Mutex
+	calls map[string]int
+}
+
+func (p *perGoodProbeProducer) ProduceGood(ctx context.Context, _ *navigation.Ship, node *goods.SupplyChainNode, _ string, _ int, _ *shared.OperationContext, _ bool) (*mfgServices.ProductionResult, error) {
+	fill, _, _ := mfgServices.HullFillTargetFromContext(ctx)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.calls[node.Good]++
+	return &mfgServices.ProductionResult{QuantityAcquired: fill}, nil
+}
+
+func (p *perGoodProbeProducer) DeliverToConstructionSite(_ context.Context, _, _, _ string, _ shared.PlayerID) (int, error) {
+	return 0, nil
+}
+
+func (p *perGoodProbeProducer) callsFor(good string) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.calls[good]
+}
+
+// (d) PER-MATERIAL LOT CAP: an over-staged queue (two READY tasks for the same material) must still
+// dispatch only ceil(remaining/hull-load) lots for it. FAB_MATS wants 200 units (5 lots at capacity
+// 40) so the GLOBAL lot ceiling is 6 and cannot be what bounds the small material; only the
+// per-material cap stops the second CIRCUITRY task, whose 30-unit bill supports exactly one lot.
+// Without it the drain buys two hull-loads against a 30-unit need and starves FAB_MATS of a lot.
+func TestConstructionDrain_OverStagedMaterialStillCapsItsLots(t *testing.T) {
+	pipeline := manufacturing.NewConstructionPipeline(constructionSiteWP, 1, 1, 6)
+	if err := pipeline.AddMaterial(manufacturing.NewConstructionMaterialTarget("FAB_MATS", 200)); err != nil {
+		t.Fatalf("AddMaterial FAB_MATS: %v", err)
+	}
+	if err := pipeline.AddMaterial(manufacturing.NewConstructionMaterialTarget("ADVANCED_CIRCUITRY", 30)); err != nil {
+		t.Fatalf("AddMaterial ADVANCED_CIRCUITRY: %v", err)
+	}
+	if err := pipeline.Start(); err != nil {
+		t.Fatalf("pipeline.Start: %v", err)
+	}
+
+	tasks := []*manufacturing.ManufacturingTask{
+		readyConstructionTask(t, pipeline, "FAB_MATS"),
+		readyConstructionTask(t, pipeline, "ADVANCED_CIRCUITRY"),
+		readyConstructionTask(t, pipeline, "ADVANCED_CIRCUITRY"),
+	}
+
+	producer := &perGoodProbeProducer{calls: map[string]int{}}
+	taskRepo := &drainStubTaskRepo{tasks: tasks}
+	pipelineRepo := &drainStubPipelineRepo{pipelines: map[string]*manufacturing.ManufacturingPipeline{pipeline.ID(): pipeline}}
+	shipRepo := newDrainShipRepo(nDrainHaulers(t, 6)...)
+
+	handler := NewRunConstructionCoordinatorHandler(taskRepo, pipelineRepo, shipRepo, producer, staticActivator(&fakeConstructionActivator{}), &factoryFakeClock{})
+	if _, err := drainSettled(t, handler, context.Background(), newDrainCommand()); err != nil {
+		t.Fatalf("drainOnce: %v", err)
+	}
+
+	if got := producer.callsFor("ADVANCED_CIRCUITRY"); got != 1 {
+		t.Fatalf("a 30-unit material (hull cap 40) supports ceil(30/40)=1 lot however many READY tasks the queue staged; got %d", got)
+	}
+	if got := producer.callsFor("FAB_MATS"); got != 5 {
+		t.Fatalf("the lot the over-staged material must not take belongs to FAB_MATS (ceil(200/40)=5); got %d", got)
+	}
+}

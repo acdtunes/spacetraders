@@ -43,13 +43,13 @@ type selectedHaul struct {
 
 // selectHauls returns EVERY ranked lane the worker can actually trade — sized buy positive AND
 // buy cost clears the money envelope (permitsBuy — per-haul cap + the 200k cushion fence,
-// fail-closed) — preserving the input's realized-$/hr order. It is the reachability-fallback
-// generalization of selectHaul (which returns only the first): the episode iterates these so a
-// top lane whose SOURCE is structurally unreachable for this hull is skipped for the next viable
-// lane instead of error-looping the same deterministic pick (sp-e059j). Same floor/envelope/fit
-// discipline as selectHaul, applied per candidate (not duplicated). absorptionHeadroom is the
-// worker's live sink-depth consult (nil → unbounded by absorption). An unreadable treasury sizes
-// every lane to zero, so this returns empty and the worker trades nothing (fail-closed).
+// fail-closed) — preserving the input's realized-$/hr order. Returning all of them rather than
+// only the best is the reachability fallback: the episode iterates these so a top lane whose
+// SOURCE is structurally unreachable for this hull is skipped for the next viable lane instead
+// of error-looping the same deterministic pick (sp-e059j). The floor/envelope/fit discipline is
+// applied per candidate (not duplicated). absorptionHeadroom is the worker's live sink-depth
+// consult (nil → unbounded by absorption). An unreadable treasury sizes every lane to zero, so
+// this returns empty and the worker trades nothing (fail-closed).
 func selectHauls(
 	ranked []pricedLongHaulLane,
 	holdSpace int,
@@ -73,21 +73,4 @@ func selectHauls(
 		hauls = append(hauls, selectedHaul{lane: lane, units: units})
 	}
 	return hauls
-}
-
-// selectHaul picks the single highest realized-$/hr lane the worker can actually trade — the
-// first of selectHauls. Retained for callers/tests that want one lane; the episode uses
-// selectHauls to iterate for the reachability fallback. Returns (lane, units, true) on a
-// tradeable lane, or ok=false when none clears.
-func selectHaul(
-	ranked []pricedLongHaulLane,
-	holdSpace int,
-	envelope longHaulEnvelope,
-	absorptionHeadroom func(lane trading.ArbitrageLane) int,
-) (pricedLongHaulLane, int, bool) {
-	hauls := selectHauls(ranked, holdSpace, envelope, absorptionHeadroom)
-	if len(hauls) == 0 {
-		return pricedLongHaulLane{}, 0, false
-	}
-	return hauls[0].lane, hauls[0].units, true
 }

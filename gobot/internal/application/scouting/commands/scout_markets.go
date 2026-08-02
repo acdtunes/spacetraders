@@ -215,13 +215,11 @@ func (h *ScoutMarketsHandler) loadShipConfigurations(
 		return nil, fmt.Errorf("failed to load ships: %w", err)
 	}
 
-	// Build lookup set for efficient filtering
 	symbolSet := make(map[string]bool, len(shipSymbols))
 	for _, s := range shipSymbols {
 		symbolSet[s] = true
 	}
 
-	// Filter to only requested ships and build config map
 	shipConfigs := make(map[string]*routing.ShipConfigData)
 	for _, ship := range allShips {
 		if symbolSet[ship.ShipSymbol()] {
@@ -233,7 +231,6 @@ func (h *ScoutMarketsHandler) loadShipConfigurations(
 		}
 	}
 
-	// Verify we found all requested ships
 	if len(shipConfigs) != len(shipSymbols) {
 		for _, symbol := range shipSymbols {
 			if _, found := shipConfigs[symbol]; !found {

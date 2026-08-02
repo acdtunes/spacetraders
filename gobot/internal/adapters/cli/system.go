@@ -13,8 +13,6 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/system/gategraph"
 	domainsystem "github.com/andrescamacho/spacetraders-go/internal/domain/system"
-	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
-	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
 // NewSystemCommand creates the `system` command group. Today it exposes the
@@ -62,13 +60,9 @@ Examples:
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
 
-			cfg, err := config.LoadConfig("")
+			db, err := openDatabase()
 			if err != nil {
-				return fmt.Errorf("failed to load config: %w", err)
-			}
-			db, err := database.NewConnection(&cfg.Database)
-			if err != nil {
-				return fmt.Errorf("failed to connect to database: %w", err)
+				return err
 			}
 
 			// Same dependency chain the daemon and other CLI read commands build:

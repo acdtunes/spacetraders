@@ -135,7 +135,7 @@ func TestPlanForState_AdmitsFarSinkBeyondCandidateHorizon(t *testing.T) {
 
 	// CONTROL: no global sink scan wired → the horizon is exactly what it always was.
 	if _, _, _, err := h.planForState(context.Background(), ship,
-		h.tourSystemsFrom(context.Background(), farHome, widenedFarCmd()), 6, 1_000_000, 0, widenedFarCmd(), ""); err != nil {
+		h.tourSystemsFrom(context.Background(), farHome, widenedFarCmd()), widenedFarCmd(), tourPlanBudget{maxHops: 6, maxSpend: 1_000_000}); err != nil {
 		t.Fatalf("planForState (control): %v", err)
 	}
 	if candidateSetHas(fake.allowedSystems[0], farSys) {
@@ -148,7 +148,7 @@ func TestPlanForState_AdmitsFarSinkBeyondCandidateHorizon(t *testing.T) {
 	// CAPTURE: the same world, with the scan that already knows where the value is.
 	h.SetOutOfHorizonSinkScanner(gxSinkAt(farSys+"-W", farSys, 30000))
 	if _, _, _, err := h.planForState(context.Background(), ship,
-		h.tourSystemsFrom(context.Background(), farHome, widenedFarCmd()), 6, 1_000_000, 0, widenedFarCmd(), ""); err != nil {
+		h.tourSystemsFrom(context.Background(), farHome, widenedFarCmd()), widenedFarCmd(), tourPlanBudget{maxHops: 6, maxSpend: 1_000_000}); err != nil {
 		t.Fatalf("planForState (capture): %v", err)
 	}
 	if !candidateSetHas(fake.allowedSystems[1], farSys) {
@@ -379,7 +379,7 @@ func TestPlanForState_PricesAdmittedFarSinkAtItsProvenDistance(t *testing.T) {
 	ship := routing.TourShipState{ShipSymbol: "F-1", CurrentWaypoint: farHome + "-M", CurrentSystem: farHome, HoldCapacity: 40}
 
 	if _, _, _, err := h.planForState(context.Background(), ship,
-		h.tourSystemsFrom(context.Background(), farHome, widenedFarCmd()), 6, 1_000_000, 0, widenedFarCmd(), ""); err != nil {
+		h.tourSystemsFrom(context.Background(), farHome, widenedFarCmd()), widenedFarCmd(), tourPlanBudget{maxHops: 6, maxSpend: 1_000_000}); err != nil {
 		t.Fatalf("planForState: %v", err)
 	}
 	if d, ok := hopBetween(fake.interSystemHops[0], farHome, farSys); !ok || d != 3 {
@@ -502,7 +502,6 @@ func TestTourInterSystemHops_SpansTheExecutorFlightBound(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------------------
 // sp-dct0r — the ARRIVAL BOUND the staleness ager predicts with.
 //
 // The retired constant aged 1800s per gate hop on the stated ground that the ager must
@@ -512,7 +511,6 @@ func TestTourInterSystemHops_SpansTheExecutorFlightBound(t *testing.T) {
 // still fresh ON ARRIVAL. These pin both halves of the replacement — looser than the retired
 // flat ager everywhere the flight bound reaches (the suppression sp-smbgd's win was gated
 // behind), and still conservative against the solver's median charge (never optimistic).
-// ---------------------------------------------------------------------------------------
 
 // retiredFlatAgerPerHop is the constant this replaces, quoted rather than referenced: it no
 // longer exists in the code, and the test's job is to prove we moved off it.

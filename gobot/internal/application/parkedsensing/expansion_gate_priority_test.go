@@ -23,7 +23,7 @@ import (
 //	20    X1-KP42      9      62          YES
 //	21    X1-UV56      9      11          YES
 //
-// The mechanism is DISTANCE, not depth: orderByReach makes hop count the primary key, so the two
+// The mechanism is DISTANCE, not depth: orderByDistance makes hop count the primary key, so the two
 // systems that can actually grow the map sort behind every nearer one and never get a seed. X1-KP42
 // carries the second-deepest uncharted count in the whole set and it still came last.
 //

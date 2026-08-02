@@ -16,6 +16,8 @@ type GormContractRepository struct {
 	db *gorm.DB
 }
 
+var _ contract.ContractRepository = (*GormContractRepository)(nil)
+
 // NewGormContractRepository creates a new GORM contract repository
 func NewGormContractRepository(db *gorm.DB) *GormContractRepository {
 	return &GormContractRepository{db: db}

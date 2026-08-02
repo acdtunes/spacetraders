@@ -43,23 +43,17 @@ type TourStalenessMetricsCollector struct {
 // NewTourStalenessMetricsCollector creates a new tour-staleness metrics collector.
 func NewTourStalenessMetricsCollector() *TourStalenessMetricsCollector {
 	return &TourStalenessMetricsCollector{
-		staleExcludedTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "tour_lanes_stale_excluded_total",
-				Help:      "Tour candidate lanes dropped for exceeding the freshness cap, by system (the planner staleness-exclusion counter, sp-k7q5)",
-			},
-			[]string{"player_id", "system"},
+		staleExcludedTotal: newCounterVec(
+			"tour_lanes_stale_excluded_total",
+			"Tour candidate lanes dropped for exceeding the freshness cap, by system (the planner staleness-exclusion counter, sp-k7q5)",
+			"player_id",
+			"system",
 		),
-		candidatesDroppedTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "tour_candidates_dropped_total",
-				Help:      "Profitable tour lanes dropped from candidate assembly by reason (sp-mtvg); reason=counterparty_system_unreachable flags a lane whose best sink is beyond the 1-gate-hop tour graph",
-			},
-			[]string{"player_id", "reason"},
+		candidatesDroppedTotal: newCounterVec(
+			"tour_candidates_dropped_total",
+			"Profitable tour lanes dropped from candidate assembly by reason (sp-mtvg); reason=counterparty_system_unreachable flags a lane whose best sink is beyond the 1-gate-hop tour graph",
+			"player_id",
+			"reason",
 		),
 	}
 }
@@ -68,12 +62,12 @@ func NewTourStalenessMetricsCollector() *TourStalenessMetricsCollector {
 // Registry (metrics disabled) is a no-op, matching the sibling collectors.
 func (c *TourStalenessMetricsCollector) Register() error {
 	if Registry == nil {
-		return nil // Metrics not enabled
+		return nil
 	}
-	if err := Registry.Register(c.staleExcludedTotal); err != nil {
-		return err
-	}
-	return Registry.Register(c.candidatesDroppedTotal)
+	return registerAll(
+		c.staleExcludedTotal,
+		c.candidatesDroppedTotal,
+	)
 }
 
 // RecordStaleExcluded records `count` lanes dropped for staleness in `system`. count
@@ -94,4 +88,34 @@ func (c *TourStalenessMetricsCollector) RecordCandidateDropped(playerID int, rea
 		return
 	}
 	c.candidatesDroppedTotal.WithLabelValues(strconv.Itoa(playerID), reason).Add(float64(count))
+}
+
+// globalTourStalenessCollector is the singleton planner staleness-exclusion
+// collector (layer 2). Set by SetGlobalTourStalenessCollector() when
+// metrics are enabled; the tour planner's two staleness drop sites emit the
+// tour_lanes_stale_excluded_total counter through it.
+var globalTourStalenessCollector *TourStalenessMetricsCollector
+
+// SetGlobalTourStalenessCollector sets the global planner staleness-exclusion
+// collector (layer 2).
+func SetGlobalTourStalenessCollector(collector *TourStalenessMetricsCollector) {
+	globalTourStalenessCollector = collector
+}
+
+// RecordTourLanesStaleExcluded records `count` tour lanes dropped for staleness in
+// `system` globally (layer 2). No-op when metrics are disabled, so a metrics
+// miss never touches the tour planning path (RULINGS #4).
+func RecordTourLanesStaleExcluded(playerID int, system string, count int) {
+	if globalTourStalenessCollector != nil {
+		globalTourStalenessCollector.RecordStaleExcluded(playerID, system, count)
+	}
+}
+
+// RecordTourCandidateDropped records `count` profitable lanes dropped from tour candidate
+// assembly for `reason` globally. No-op when metrics are disabled, so a metrics
+// miss never touches the tour planning path (RULINGS #4).
+func RecordTourCandidateDropped(playerID int, reason string, count int) {
+	if globalTourStalenessCollector != nil {
+		globalTourStalenessCollector.RecordCandidateDropped(playerID, reason, count)
+	}
 }

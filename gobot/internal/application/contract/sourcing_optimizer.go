@@ -91,7 +91,7 @@ type SourcingPlan struct {
 // sourcing is single-system by ruling (RULINGS #14): only markets in the
 // delivery system are candidates, so a cross-system source can never be
 // selected. An error means no market in the home system sells the good yet —
-// callers treat that exactly like a FindPurchaseMarket miss (wait for scouts /
+// callers treat that exactly like a market miss (wait for scouts /
 // re-project next pass), never a skip (RULINGS #1).
 func PlanSourcing(
 	ctx context.Context,

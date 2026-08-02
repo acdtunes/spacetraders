@@ -6,7 +6,6 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
 
@@ -82,16 +81,8 @@ func (s *DaemonServer) StartStocker(
 		return nil, fmt.Errorf("warehouse waypoint is required")
 	}
 
-	// Idle-gap discipline: only fly a genuinely idle hull, never steal one mid-task.
-	ship, err := s.shipRepo.FindBySymbol(ctx, shipSymbol, shared.MustNewPlayerID(playerID))
-	if err != nil {
-		return nil, fmt.Errorf("failed to load ship %s: %w", shipSymbol, err)
-	}
-	if ship == nil {
-		return nil, fmt.Errorf("ship %s not found", shipSymbol)
-	}
-	if !ship.IsIdle() {
-		return nil, fmt.Errorf("ship %s is not idle (assigned to %q) - stocker only takes idle-gap hulls", shipSymbol, ship.ContainerID())
+	if err := s.requireIdleHull(ctx, shipSymbol, playerID, "stocker"); err != nil {
+		return nil, err
 	}
 
 	containerID := utils.GenerateContainerID("stocker", shipSymbol)

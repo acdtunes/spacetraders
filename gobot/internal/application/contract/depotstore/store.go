@@ -86,12 +86,11 @@ func (s *Store) RemoveElement(ctx context.Context, depotID string, role depot.Ro
 	})
 }
 
-// PlaceElement repositions the element crewed by shipSymbol in a depot's named role to
-// waypoint and persists the result — the granular positioning op (placement stays pure
-// config: the caller supplies the waypoint).
-func (s *Store) PlaceElement(ctx context.Context, depotID string, role depot.Role, shipSymbol, waypoint string) error {
+// PlaceElement repositions an existing element and persists the result. Placement stays
+// pure config: the caller supplies the waypoint.
+func (s *Store) PlaceElement(ctx context.Context, depotID string, role depot.Role, e depot.Element) error {
 	return s.mutate(ctx, depotID, "place", func(c *depot.ContractDepot) (*depot.ContractDepot, error) {
-		return c.WithElementPlaced(role, shipSymbol, waypoint)
+		return c.WithElementPlaced(role, e)
 	})
 }
 

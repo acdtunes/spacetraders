@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
 
@@ -65,16 +64,8 @@ func (s *DaemonServer) StartTradeRoute(
 		return nil, fmt.Errorf("system symbol is required")
 	}
 
-	// Idle-gap discipline: only fly a genuinely idle hull, never steal one mid-task.
-	ship, err := s.shipRepo.FindBySymbol(ctx, shipSymbol, shared.MustNewPlayerID(playerID))
-	if err != nil {
-		return nil, fmt.Errorf("failed to load ship %s: %w", shipSymbol, err)
-	}
-	if ship == nil {
-		return nil, fmt.Errorf("ship %s not found", shipSymbol)
-	}
-	if !ship.IsIdle() {
-		return nil, fmt.Errorf("ship %s is not idle (assigned to %q) - trade-route only takes idle-gap hulls", shipSymbol, ship.ContainerID())
+	if err := s.requireIdleHull(ctx, shipSymbol, playerID, "trade-route"); err != nil {
+		return nil, err
 	}
 
 	containerID := utils.GenerateContainerID("trade-route", shipSymbol)

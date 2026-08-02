@@ -36,12 +36,10 @@ func (s *DaemonServer) ContractWorkflow(
 	coordinatorID string,
 	iterations int,
 ) (string, error) {
-	// Persist container to DB
 	if err := s.PersistContractWorkflow(ctx, containerID, shipSymbol, playerID, coordinatorID, iterations); err != nil {
 		return "", err
 	}
 
-	// Start the container
 	if err := s.StartContractWorkflow(ctx, containerID); err != nil {
 		return "", err
 	}
@@ -97,34 +95,16 @@ func (s *DaemonServer) StartContractWorkflow(
 	ctx context.Context,
 	containerID string,
 ) error {
-	// We need playerID to load the container, but we don't have it here
-	// Solution: Load from all players or add playerID parameter
-	// For now, use a workaround: query by ID only (add new repository method)
-	// Temporary: Use ListAll and filter
-	allContainers, err := s.containerRepo.ListAll(ctx, nil)
+	containerModel, err := s.findContainerModelByID(ctx, containerID)
 	if err != nil {
-		return fmt.Errorf("failed to list containers: %w", err)
+		return err
 	}
 
-	var containerModel *persistence.ContainerModel
-	for _, c := range allContainers {
-		if c.ID == containerID {
-			containerModel = c
-			break
-		}
-	}
-
-	if containerModel == nil {
-		return fmt.Errorf("container %s not found", containerID)
-	}
-
-	// Parse config
 	var config map[string]interface{}
 	if err := json.Unmarshal([]byte(containerModel.Config), &config); err != nil {
 		return fmt.Errorf("failed to parse config: %w", err)
 	}
 
-	// Create command
 	cmd, err := s.buildCommandForType("contract_workflow", config, containerModel.PlayerID, containerModel.ID)
 	if err != nil {
 		return fmt.Errorf("failed to create command: %w", err)
@@ -141,7 +121,6 @@ func (s *DaemonServer) StartContractWorkflow(
 		iterations = v
 	}
 
-	// Create container entity from model
 	containerEntity := container.NewContainer(
 		containerModel.ID,
 		container.ContainerType(containerModel.ContainerType),
@@ -242,7 +221,6 @@ func (s *DaemonServer) ContractFleetCoordinator(ctx context.Context, shipSymbols
 	// of truth and a retune (config edit + daemon restart) actually reaches a
 	// recovered coordinator. The persisted idle_arb_* keys are dead.
 
-	// Create contract fleet coordinator command from the launch config
 	cmd, err := s.buildCommandForType("contract_fleet_coordinator", config, playerID, containerID)
 	if err != nil {
 		return "", fmt.Errorf("failed to create command: %w", err)

@@ -22,14 +22,7 @@ func NewWaypointEnricher(waypointRepo system.WaypointRepository) *WaypointEnrich
 
 // EnrichGraphWaypoints enriches NavigationGraph waypoints with trait data from database
 //
-// Args:
-//
-//	graph: NavigationGraph with waypoints
-//	systemSymbol: System symbol for loading waypoint traits
-//
-// Returns:
-//
-//	Map of waypoint_symbol -> Waypoint objects with enriched trait data
+// Returns waypoints keyed by waypoint symbol, with trait data merged in.
 func (e *WaypointEnricher) EnrichGraphWaypoints(
 	ctx context.Context,
 	graph *system.NavigationGraph,

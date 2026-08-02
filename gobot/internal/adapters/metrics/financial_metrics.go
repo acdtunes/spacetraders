@@ -60,27 +60,21 @@ func NewFinancialMetricsCollector(
 		getContainers: getContainers,
 
 		// Current credits balance gauge
-		creditsBalance: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "player_credits_balance",
-				Help:      "Current credits balance for each player",
-			},
-			[]string{"player_id", "agent"},
+		creditsBalance: newGaugeVec(
+			"player_credits_balance",
+			"Current credits balance for each player",
+			"player_id",
+			"agent",
 		),
 
 		// Transaction count by type. category is dropped: it is a
 		// deterministic f(type) relabel, so it duplicated `type` here for no
 		// added signal. The Operating-vs-Net split lives on ledger_*_total below.
-		transactionsTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "transactions_total",
-				Help:      "Total number of transactions by type",
-			},
-			[]string{"player_id", "type"},
+		transactionsTotal: newCounterVec(
+			"transactions_total",
+			"Total number of transactions by type",
+			"player_id",
+			"type",
 		),
 
 		// Transaction amount distribution
@@ -97,82 +91,48 @@ func NewFinancialMetricsCollector(
 		),
 
 		// Ledger revenue (positive inflow) running total by operation/category
-		ledgerRevenueTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "ledger_revenue_total",
-				Help:      "Cumulative positive ledger amount (revenue) by operation_type and category",
-			},
-			[]string{"operation_type", "category", "player_id"},
+		ledgerRevenueTotal: newCounterVec(
+			"ledger_revenue_total",
+			"Cumulative positive ledger amount (revenue) by operation_type and category",
+			"operation_type",
+			"category",
+			"player_id",
 		),
 
 		// Ledger cost (negative outflow magnitude) running total by operation/category
-		ledgerCostTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "ledger_cost_total",
-				Help:      "Cumulative negative ledger amount magnitude (cost) by operation_type and category",
-			},
-			[]string{"operation_type", "category", "player_id"},
+		ledgerCostTotal: newCounterVec(
+			"ledger_cost_total",
+			"Cumulative negative ledger amount magnitude (cost) by operation_type and category",
+			"operation_type",
+			"category",
+			"player_id",
 		),
 
 		// Total revenue by category
-		totalRevenue: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "total_revenue",
-				Help:      "Total revenue by category",
-			},
-			[]string{"player_id", "agent", "category"},
-		),
+		totalRevenue: newGaugeVec("total_revenue", "Total revenue by category", "player_id", "agent", "category"),
 
 		// Total expenses by category
-		totalExpenses: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "total_expenses",
-				Help:      "Total expenses by category",
-			},
-			[]string{"player_id", "agent", "category"},
-		),
+		totalExpenses: newGaugeVec("total_expenses", "Total expenses by category", "player_id", "agent", "category"),
 
 		// Net profit
-		netProfit: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "net_profit",
-				Help:      "Net profit (revenue - expenses)",
-			},
-			[]string{"player_id"},
-		),
+		netProfit: newGaugeVec("net_profit", "Net profit (revenue - expenses)", "player_id"),
 
 		// Profit per unit (for trades)
-		tradeProfitPerUnit: prometheus.NewHistogramVec(
-			prometheus.HistogramOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "trade_profit_per_unit",
-				Help:      "Profit per unit from trades",
-				Buckets:   []float64{1, 5, 10, 50, 100, 500, 1000},
-			},
-			[]string{"player_id", "good_symbol"},
+		tradeProfitPerUnit: newHistogramVec(
+			"trade_profit_per_unit",
+			"Profit per unit from trades",
+			[]float64{1, 5, 10, 50, 100, 500, 1000},
+			"player_id",
+			"good_symbol",
 		),
 
 		// Trade margin percentage
-		tradeMarginPercent: prometheus.NewHistogramVec(
-			prometheus.HistogramOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "trade_margin_percent",
-				Help:      "Trade margin percentage ((sell-buy)/buy * 100)",
-				Buckets:   []float64{5, 10, 25, 50, 75, 100, 150, 200},
-			},
-			[]string{"player_id", "good_symbol"},
+		tradeMarginPercent: newHistogramVec(
+			"trade_margin_percent",
+			"Trade margin percentage ((sell-buy)/buy * 100)",
+			[]float64{5, 10, 25, 50, 75, 100, 150, 200},
+			"player_id",
+			"good_symbol",
 		),
 	}
 }
@@ -180,10 +140,9 @@ func NewFinancialMetricsCollector(
 // Register registers all financial metrics with the Prometheus registry
 func (c *FinancialMetricsCollector) Register() error {
 	if Registry == nil {
-		return nil // Metrics not enabled
+		return nil
 	}
-
-	metrics := []prometheus.Collector{
+	return registerAll(
 		c.creditsBalance,
 		c.transactionsTotal,
 		c.transactionAmount,
@@ -194,15 +153,7 @@ func (c *FinancialMetricsCollector) Register() error {
 		c.netProfit,
 		c.tradeProfitPerUnit,
 		c.tradeMarginPercent,
-	}
-
-	for _, metric := range metrics {
-		if err := Registry.Register(metric); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	)
 }
 
 // Start begins the P&L polling goroutine
@@ -351,4 +302,35 @@ func (c *FinancialMetricsCollector) RecordTrade(
 	// Calculate margin percentage
 	marginPercent := float64(profitPerUnit) / float64(buyPrice) * 100
 	c.tradeMarginPercent.WithLabelValues(playerIDStr, goodSymbol).Observe(marginPercent)
+}
+
+// globalFinancialCollector is the singleton financial metrics collector
+// Set by SetGlobalFinancialCollector() when metrics are enabled
+var globalFinancialCollector FinancialMetricsRecorder
+
+// FinancialMetricsRecorder defines the interface for recording financial metrics
+type FinancialMetricsRecorder interface {
+	RecordTransaction(playerID int, agentSymbol string, transactionType string, category string, amount int, creditsBalance int, operationType string)
+	RecordTrade(playerID int, goodSymbol string, buyPrice int, sellPrice int, quantity int)
+}
+
+// SetGlobalFinancialCollector sets the global financial metrics collector
+func SetGlobalFinancialCollector(collector FinancialMetricsRecorder) {
+	globalFinancialCollector = collector
+}
+
+// RecordTransaction records a transaction event globally. operationType
+// (contract/tour/arbitrage/...) drives the ledger-flow counters that
+// back the cr/hr financial panels; pass "" when unknown.
+func RecordTransaction(playerID int, agentSymbol string, transactionType string, category string, amount int, creditsBalance int, operationType string) {
+	if globalFinancialCollector != nil {
+		globalFinancialCollector.RecordTransaction(playerID, agentSymbol, transactionType, category, amount, creditsBalance, operationType)
+	}
+}
+
+// RecordTrade records trade profitability metrics globally
+func RecordTrade(playerID int, goodSymbol string, buyPrice int, sellPrice int, quantity int) {
+	if globalFinancialCollector != nil {
+		globalFinancialCollector.RecordTrade(playerID, goodSymbol, buyPrice, sellPrice, quantity)
+	}
 }

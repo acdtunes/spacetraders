@@ -73,12 +73,6 @@ type MarketPriceHistoryRepository interface {
 
 // DTOs for data transfer
 
-// Data represents market information from external sources
-type Data struct {
-	WaypointSymbol string
-	TradeGoods     []TradeGoodData
-}
-
 // TradeType indicates whether a good is exported, imported, or exchanged at a market
 type TradeType string
 
@@ -87,17 +81,6 @@ const (
 	TradeTypeImport   TradeType = "IMPORT"   // Market consumes and buys this good (consumer)
 	TradeTypeExchange TradeType = "EXCHANGE" // Market trades but doesn't produce/consume
 )
-
-// TradeGoodData represents trade good information from external sources
-type TradeGoodData struct {
-	Symbol        string
-	Supply        string
-	Activity      string
-	SellPrice     int
-	PurchasePrice int
-	TradeVolume   int
-	TradeType     TradeType // EXPORT, IMPORT, or EXCHANGE
-}
 
 // CheapestMarketResult represents the result of finding the cheapest market to BUY from
 type CheapestMarketResult struct {

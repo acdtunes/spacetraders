@@ -53,13 +53,8 @@ func NewContractProfitabilityService() *ContractProfitabilityService {
 //   - net_profit = total_payment - (purchase_cost + fuel_cost)
 //   - is_profitable = net_profit >= MinProfitThreshold (-5000)
 //
-// Parameters:
-//   - contract: The contract to evaluate
-//   - ctx: Market prices, cargo capacity, and fuel costs
-//
-// Returns:
-//   - ProfitabilityEvaluation with all calculated metrics
-//   - Error if market prices are missing for required goods
+// ctx carries market prices, cargo capacity and fuel costs; it is not a
+// context.Context. Errors when a required good has no market price.
 func (s *ContractProfitabilityService) EvaluateProfitability(
 	contract *Contract,
 	ctx ProfitabilityContext,

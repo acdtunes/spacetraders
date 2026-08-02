@@ -30,6 +30,9 @@ const constructionSiteWP = "X1-TEST-GATE"
 // live executor (nav/market/API). *mfgServices.ProductionExecutor satisfies the
 // same ConstructionProducer interface in production.
 type fakeConstructionProducer struct {
+	// mu guards the recorders: the drain dispatches concurrent supply workers through ONE producer,
+	// so unguarded appends both race and silently drop calls.
+	mu            sync.Mutex
 	acquire       int // QuantityAcquired ProduceGood reports (0 models a dry/no-source market)
 	delivered     int // units DeliverToConstructionSite reports the site accepted (default per call)
 	produceGoods  []string
@@ -53,6 +56,8 @@ type fakeConstructionProducer struct {
 type producerDeliverCall struct{ ship, good, site string }
 
 func (p *fakeConstructionProducer) ProduceGood(ctx context.Context, _ *navigation.Ship, node *goods.SupplyChainNode, _ string, _ int, _ *shared.OperationContext, _ bool) (*mfgServices.ProductionResult, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.callSeq = append(p.callSeq, "produce")
 	p.produceGoods = append(p.produceGoods, node.Good)
 	if bill, _, ok := mfgServices.HullFillTargetFromContext(ctx); ok {
@@ -68,6 +73,8 @@ func (p *fakeConstructionProducer) ProduceGood(ctx context.Context, _ *navigatio
 }
 
 func (p *fakeConstructionProducer) DeliverToConstructionSite(_ context.Context, shipSymbol, good, site string, _ shared.PlayerID) (int, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.callSeq = append(p.callSeq, "deliver")
 	p.deliverCalls = append(p.deliverCalls, producerDeliverCall{ship: shipSymbol, good: good, site: site})
 	if p.deliverErr != nil {

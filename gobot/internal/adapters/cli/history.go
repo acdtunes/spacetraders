@@ -12,8 +12,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
-	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
-	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
 type historyProvider interface {
@@ -38,13 +36,9 @@ func parseEraFlag(eraFlag string) (*int, error) {
 }
 
 func connectHistoryRepository() (*persistence.HistoryRepository, error) {
-	cfg, err := config.LoadConfig("")
+	db, err := openDatabase()
 	if err != nil {
-		return nil, fmt.Errorf("failed to load config: %w", err)
-	}
-	db, err := database.NewConnection(&cfg.Database)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to database: %w", err)
+		return nil, err
 	}
 	return persistence.NewHistoryRepository(db), nil
 }

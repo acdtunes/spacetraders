@@ -25,14 +25,11 @@ type ScoutMetricsCollector struct {
 // NewScoutMetricsCollector creates a new scout metrics collector.
 func NewScoutMetricsCollector() *ScoutMetricsCollector {
 	return &ScoutMetricsCollector{
-		freshnessActualSeconds: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "scout_freshness_actual_seconds",
-				Help:      "Worst-case market data staleness (now - last_updated, seconds) across a POSTED system's markets, per the scout post coordinator's reconcile sweep",
-			},
-			[]string{"player_id", "system"},
+		freshnessActualSeconds: newGaugeVec(
+			"scout_freshness_actual_seconds",
+			"Worst-case market data staleness (now - last_updated, seconds) across a POSTED system's markets, per the scout post coordinator's reconcile sweep",
+			"player_id",
+			"system",
 		),
 	}
 }
@@ -41,20 +38,11 @@ func NewScoutMetricsCollector() *ScoutMetricsCollector {
 // (metrics disabled) is a no-op, matching the sibling collectors.
 func (c *ScoutMetricsCollector) Register() error {
 	if Registry == nil {
-		return nil // Metrics not enabled
+		return nil
 	}
-
-	metrics := []prometheus.Collector{
+	return registerAll(
 		c.freshnessActualSeconds,
-	}
-
-	for _, metric := range metrics {
-		if err := Registry.Register(metric); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	)
 }
 
 // RecordFreshness sets the market-freshness gauge for one (player, system) to
@@ -65,4 +53,28 @@ func (c *ScoutMetricsCollector) RecordFreshness(playerID int, system string, age
 		return // Recording is best-effort; never panic the reconcile sweep (RULINGS #4).
 	}
 	c.freshnessActualSeconds.WithLabelValues(strconv.Itoa(playerID), system).Set(ageSeconds)
+}
+
+// globalScoutCollector is the singleton scout metrics collector.
+// Set by SetGlobalScoutCollector() when metrics are enabled; the scout post
+// coordinator's reconcile sweep emits the market-freshness gauge through it.
+var globalScoutCollector *ScoutMetricsCollector
+
+// SetGlobalScoutCollector sets the global scout metrics collector.
+func SetGlobalScoutCollector(collector *ScoutMetricsCollector) {
+	globalScoutCollector = collector
+}
+
+// GetGlobalScoutCollector returns the global scout metrics collector.
+// Returns nil if metrics are not enabled.
+func GetGlobalScoutCollector() *ScoutMetricsCollector {
+	return globalScoutCollector
+}
+
+// RecordScoutFreshness sets the scout market-freshness gauge for one (player, system)
+// globally. No-op when metrics are disabled (RULINGS #4).
+func RecordScoutFreshness(playerID int, system string, ageSeconds float64) {
+	if globalScoutCollector != nil {
+		globalScoutCollector.RecordFreshness(playerID, system, ageSeconds)
+	}
 }

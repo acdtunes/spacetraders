@@ -157,7 +157,7 @@ func TestBuildLaunchGoodOverrides_SpecOverridesJSONForSameGood(t *testing.T) {
 func TestBuildConstructionOverrideRequest_SetsProvidedKnobsOnly(t *testing.T) {
 	req, clamped, err := buildConstructionOverrideRequest(constructionOverrideFlags{
 		site: "X1-VB74-I55", good: "FAB_MATS", minSupply: "LIMITED",
-	}, 1, nil)
+	}, &PlayerIdentifier{PlayerID: 1})
 	require.NoError(t, err)
 	require.False(t, clamped)
 	require.Equal(t, "X1-VB74-I55", req.ConstructionSite)
@@ -166,12 +166,34 @@ func TestBuildConstructionOverrideRequest_SetsProvidedKnobsOnly(t *testing.T) {
 	require.NotNil(t, req.MinSupply)
 	require.Equal(t, "LIMITED", *req.MinSupply)
 	require.Nil(t, req.PriceCeilingMult, "an unset knob must not be sent, so it leaves that dimension unchanged")
+	require.Equal(t, int32(1), req.PlayerId, "the override must be addressed to the resolved player")
+	require.Nil(t, req.AgentSymbol, "a numeric identifier sends no agent symbol")
+}
+
+// TestBuildConstructionOverrideRequest_AddressesTheResolvedPlayer pins the request's
+// player addressing for both identifier forms. The override targets ONE player's running
+// construction pipeline, so a wrong or absent identifier tunes the wrong pipeline (or none):
+// the numeric form must send the id with no agent symbol, and the agent form must send the
+// symbol with the id left at its zero value.
+func TestBuildConstructionOverrideRequest_AddressesTheResolvedPlayer(t *testing.T) {
+	flags := constructionOverrideFlags{site: "X1-VB74-I55", good: "FAB_MATS", minSupply: "LIMITED"}
+
+	byID, _, err := buildConstructionOverrideRequest(flags, &PlayerIdentifier{PlayerID: 7})
+	require.NoError(t, err)
+	require.Equal(t, int32(7), byID.PlayerId)
+	require.Nil(t, byID.AgentSymbol)
+
+	byAgent, _, err := buildConstructionOverrideRequest(flags, &PlayerIdentifier{AgentSymbol: "ENDURANCE"})
+	require.NoError(t, err)
+	require.Zero(t, byAgent.PlayerId, "an agent-symbol identifier carries no numeric id")
+	require.NotNil(t, byAgent.AgentSymbol)
+	require.Equal(t, "ENDURANCE", *byAgent.AgentSymbol)
 }
 
 func TestBuildConstructionOverrideRequest_ClampsMultAtBoundary(t *testing.T) {
 	req, clamped, err := buildConstructionOverrideRequest(constructionOverrideFlags{
 		site: "X1-VB74-I55", good: "FAB_MATS", priceCeilingMult: 99, multProvided: true,
-	}, 1, nil)
+	}, &PlayerIdentifier{PlayerID: 1})
 	require.NoError(t, err)
 	require.True(t, clamped, "a value over the cap reports that it was clamped")
 	require.NotNil(t, req.PriceCeilingMult)
@@ -181,7 +203,7 @@ func TestBuildConstructionOverrideRequest_ClampsMultAtBoundary(t *testing.T) {
 func TestBuildConstructionOverrideRequest_RejectsUnknownTier(t *testing.T) {
 	_, _, err := buildConstructionOverrideRequest(constructionOverrideFlags{
 		site: "X1-VB74-I55", good: "FAB_MATS", minSupply: "PLENTIFUL",
-	}, 1, nil)
+	}, &PlayerIdentifier{PlayerID: 1})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "PLENTIFUL")
 }
@@ -189,14 +211,14 @@ func TestBuildConstructionOverrideRequest_RejectsUnknownTier(t *testing.T) {
 func TestBuildConstructionOverrideRequest_ClearIsExclusiveOfKnobs(t *testing.T) {
 	_, _, err := buildConstructionOverrideRequest(constructionOverrideFlags{
 		site: "X1-VB74-I55", good: "FAB_MATS", clear: true, minSupply: "LIMITED",
-	}, 1, nil)
+	}, &PlayerIdentifier{PlayerID: 1})
 	require.Error(t, err, "--clear cannot be combined with a knob flag")
 }
 
 func TestBuildConstructionOverrideRequest_ClearBuildsClearRequest(t *testing.T) {
 	req, _, err := buildConstructionOverrideRequest(constructionOverrideFlags{
 		site: "X1-VB74-I55", good: "FAB_MATS", clear: true,
-	}, 1, nil)
+	}, &PlayerIdentifier{PlayerID: 1})
 	require.NoError(t, err)
 	require.True(t, req.Clear)
 	require.Nil(t, req.MinSupply)
@@ -206,15 +228,15 @@ func TestBuildConstructionOverrideRequest_ClearBuildsClearRequest(t *testing.T) 
 func TestBuildConstructionOverrideRequest_RequiresAtLeastOneKnob(t *testing.T) {
 	_, _, err := buildConstructionOverrideRequest(constructionOverrideFlags{
 		site: "X1-VB74-I55", good: "FAB_MATS",
-	}, 1, nil)
+	}, &PlayerIdentifier{PlayerID: 1})
 	require.Error(t, err, "a non-clear override with no knob set has nothing to do")
 }
 
 func TestBuildConstructionOverrideRequest_RequiresSiteAndGood(t *testing.T) {
-	_, _, err := buildConstructionOverrideRequest(constructionOverrideFlags{good: "FAB_MATS", minSupply: "LIMITED"}, 1, nil)
+	_, _, err := buildConstructionOverrideRequest(constructionOverrideFlags{good: "FAB_MATS", minSupply: "LIMITED"}, &PlayerIdentifier{PlayerID: 1})
 	require.Error(t, err, "--site is required")
 
-	_, _, err = buildConstructionOverrideRequest(constructionOverrideFlags{site: "X1-VB74-I55", minSupply: "LIMITED"}, 1, nil)
+	_, _, err = buildConstructionOverrideRequest(constructionOverrideFlags{site: "X1-VB74-I55", minSupply: "LIMITED"}, &PlayerIdentifier{PlayerID: 1})
 	require.Error(t, err, "--good is required")
 }
 

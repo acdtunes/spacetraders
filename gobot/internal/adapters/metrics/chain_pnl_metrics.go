@@ -30,23 +30,15 @@ type ChainPnLMetricsCollector struct {
 // NewChainPnLMetricsCollector creates a new chain-P&L metrics collector.
 func NewChainPnLMetricsCollector() *ChainPnLMetricsCollector {
 	return &ChainPnLMetricsCollector{
-		realizedPerHour: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "chain_pnl_realized_per_hour",
-				Help:      "Per-chain realized P&L per hour over the rolling window (factory local sells + tour realized net − input cost − lift), the number the auto-pause kill-switch judges (sp-rh2z)",
-			},
-			[]string{"good"},
+		realizedPerHour: newGaugeVec(
+			"chain_pnl_realized_per_hour",
+			"Per-chain realized P&L per hour over the rolling window (factory local sells + tour realized net − input cost − lift), the number the auto-pause kill-switch judges (sp-rh2z)",
+			"good",
 		),
-		killsTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "chain_pnl_kills_total",
-				Help:      "Chain auto-pause episodes: a chain crossing from running to paused because its realized P&L/hr fell below the kill threshold, counted once per episode (sp-rh2z)",
-			},
-			[]string{"good"},
+		killsTotal: newCounterVec(
+			"chain_pnl_kills_total",
+			"Chain auto-pause episodes: a chain crossing from running to paused because its realized P&L/hr fell below the kill threshold, counted once per episode (sp-rh2z)",
+			"good",
 		),
 	}
 }
@@ -55,12 +47,12 @@ func NewChainPnLMetricsCollector() *ChainPnLMetricsCollector {
 // (metrics disabled) is a no-op, matching the sibling collectors.
 func (c *ChainPnLMetricsCollector) Register() error {
 	if Registry == nil {
-		return nil // Metrics not enabled
+		return nil
 	}
-	if err := Registry.Register(c.realizedPerHour); err != nil {
-		return err
-	}
-	return Registry.Register(c.killsTotal)
+	return registerAll(
+		c.realizedPerHour,
+		c.killsTotal,
+	)
 }
 
 // RecordRealizedPerHour sets the chain's realized P&L/hr gauge for a good. Called on every
@@ -79,4 +71,38 @@ func (c *ChainPnLMetricsCollector) RecordKill(good string) {
 		return // Recording is best-effort; never panic the kill-check path (RULINGS #4).
 	}
 	c.killsTotal.WithLabelValues(good).Inc()
+}
+
+// globalChainPnLCollector is the singleton chain-P&L collector. Set by
+// SetGlobalChainPnLCollector() when metrics are enabled; the goods_factory coordinator's
+// kill-switch emits the realized-P&L/hr gauge and the kill-episode counter through it.
+var globalChainPnLCollector *ChainPnLMetricsCollector
+
+// SetGlobalChainPnLCollector sets the global chain-P&L collector. Pass nil to
+// clear it (e.g. in test cleanup).
+func SetGlobalChainPnLCollector(collector *ChainPnLMetricsCollector) {
+	globalChainPnLCollector = collector
+}
+
+// GetGlobalChainPnLCollector returns the global chain-P&L collector.
+// Returns nil if metrics are not enabled.
+func GetGlobalChainPnLCollector() *ChainPnLMetricsCollector {
+	return globalChainPnLCollector
+}
+
+// RecordChainPnLRealizedPerHour sets a chain's realized-P&L/hr gauge globally.
+// No-op when metrics are disabled, so a metrics miss never touches the kill-check path
+// (RULINGS #4).
+func RecordChainPnLRealizedPerHour(good string, perHour float64) {
+	if globalChainPnLCollector != nil {
+		globalChainPnLCollector.RecordRealizedPerHour(good, perHour)
+	}
+}
+
+// RecordChainPnLKill increments a chain's kill-episode counter globally. No-op
+// when metrics are disabled (RULINGS #4).
+func RecordChainPnLKill(good string) {
+	if globalChainPnLCollector != nil {
+		globalChainPnLCollector.RecordKill(good)
+	}
 }

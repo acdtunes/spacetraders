@@ -15,6 +15,8 @@ type GormMarketPriceHistoryRepository struct {
 	db *gorm.DB
 }
 
+var _ market.MarketPriceHistoryRepository = (*GormMarketPriceHistoryRepository)(nil)
+
 // NewGormMarketPriceHistoryRepository creates a new GORM market price history repository
 func NewGormMarketPriceHistoryRepository(db *gorm.DB) *GormMarketPriceHistoryRepository {
 	return &GormMarketPriceHistoryRepository{db: db}
@@ -94,7 +96,6 @@ func (r *GormMarketPriceHistoryRepository) GetVolatilityMetrics(
 ) (*market.VolatilityMetrics, error) {
 	since := time.Now().Add(-time.Duration(windowHours) * time.Hour)
 
-	// Query to calculate statistics using window functions
 	type result struct {
 		MeanPrice      float64
 		StdDev         float64
@@ -140,7 +141,6 @@ func (r *GormMarketPriceHistoryRepository) GetVolatilityMetrics(
 		return nil, fmt.Errorf("failed to calculate volatility metrics: %w", err)
 	}
 
-	// If no data, return empty metrics
 	if res.SampleSize == 0 {
 		return &market.VolatilityMetrics{
 			GoodSymbol:      goodSymbol,
@@ -293,39 +293,37 @@ func (r *GormMarketPriceHistoryRepository) GetMarketStability(
 		return nil, fmt.Errorf("failed to calculate market stability: %w", err)
 	}
 
-	// If no data, return nil stability metrics
 	if res.ChangeCount == 0 {
 		return nil, fmt.Errorf("no price history data for market %s and good %s", waypointSymbol, goodSymbol)
 	}
 
 	priceRange := res.MaxPrice - res.MinPrice
 
-	// Calculate stability score (0-100, higher = more stable)
-	// Lower average change size and smaller price range = higher stability
-	stabilityScore := 100.0
-	if res.AvgChangeSize > 0 {
-		stabilityScore -= res.AvgChangeSize // Penalize by average change %
-	}
-	if priceRange > 0 && res.MinPrice > 0 {
-		rangePercent := float64(priceRange) / float64(res.MinPrice) * 100.0
-		stabilityScore -= rangePercent / 2.0 // Penalize by half the range %
-	}
-
-	// Ensure score stays in bounds
-	if stabilityScore < 0 {
-		stabilityScore = 0
-	}
-	if stabilityScore > 100 {
-		stabilityScore = 100
-	}
-
 	return &market.MarketStability{
 		WaypointSymbol: waypointSymbol,
 		GoodSymbol:     goodSymbol,
-		StabilityScore: stabilityScore,
+		StabilityScore: stabilityScore(res.AvgChangeSize, priceRange, res.MinPrice),
 		PriceRange:     priceRange,
 		AvgChangeSize:  res.AvgChangeSize,
 	}, nil
+}
+
+func stabilityScore(avgChangeSize float64, priceRange, minPrice int) float64 {
+	score := 100.0
+	if avgChangeSize > 0 {
+		score -= avgChangeSize
+	}
+	if priceRange > 0 && minPrice > 0 {
+		rangePercent := float64(priceRange) / float64(minPrice) * 100.0
+		score -= rangePercent / 2.0
+	}
+	if score < 0 {
+		return 0
+	}
+	if score > 100 {
+		return 100
+	}
+	return score
 }
 
 // modelToHistory converts a GORM model to a domain entity

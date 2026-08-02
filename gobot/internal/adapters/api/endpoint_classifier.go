@@ -94,7 +94,7 @@ func (c endpointClassifier) classify(path string) string {
 func (c endpointClassifier) normalizePath(parts []string) string {
 	normalized := make([]string, 0, len(parts))
 
-	for i, part := range parts {
+	for _, part := range parts {
 		if part == "" {
 			continue
 		}
@@ -105,7 +105,7 @@ func (c endpointClassifier) normalizePath(parts []string) string {
 			prevPart = normalized[len(normalized)-1]
 		}
 
-		if c.isDynamicSegment(part, prevPart, parts, i) {
+		if c.isDynamicSegment(part, prevPart) {
 			normalized = append(normalized, "*")
 		} else {
 			normalized = append(normalized, part)
@@ -116,7 +116,7 @@ func (c endpointClassifier) normalizePath(parts []string) string {
 }
 
 // isDynamicSegment determines if a path segment is a dynamic value (ID, symbol)
-func (c endpointClassifier) isDynamicSegment(segment, prevSegment string, parts []string, index int) bool {
+func (c endpointClassifier) isDynamicSegment(segment, prevSegment string) bool {
 	switch prevSegment {
 	case "ships":
 		return looksLikeShipSymbol(segment)

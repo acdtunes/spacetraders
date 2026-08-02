@@ -317,16 +317,37 @@ func TestActivateConstructionTasks_DeferredManufacturable_NoFactory_RecoversViaB
 func reconstituteFailedTask(pipelineID string, taskType manufacturing.TaskType, retryCount int, failedAgo time.Duration) *manufacturing.ManufacturingTask {
 	failedAt := time.Now().Add(-failedAgo)
 	createdAt := time.Now().Add(-2 * time.Hour)
-	return manufacturing.ReconstituteTask(
-		"failed-task-1", pipelineID, 1, taskType, manufacturing.TaskStatusFailed,
-		"FAB_MATS", 0, 0,
-		"X1-TEST-SRC", "", "", "", "", plannerTestSite,
-		nil, "STRANDED-1", 0,
-		retryCount, manufacturing.DefaultMaxRetries, 0, 0,
-		"Market X1-VD76-H47 does not list QUARTZ_SAND (4602)",
-		createdAt, nil, nil, &failedAt,
-		false, false, nil,
-	)
+	return manufacturing.ReconstituteTask(manufacturing.TaskData{
+		ID:                    "failed-task-1",
+		PipelineID:            pipelineID,
+		PlayerID:              1,
+		TaskType:              taskType,
+		Status:                manufacturing.TaskStatusFailed,
+		Good:                  "FAB_MATS",
+		Quantity:              0,
+		ActualQuantity:        0,
+		SourceMarket:          "X1-TEST-SRC",
+		TargetMarket:          "",
+		FactorySymbol:         "",
+		StorageOperationID:    "",
+		StorageWaypoint:       "",
+		ConstructionSite:      plannerTestSite,
+		DependsOn:             nil,
+		AssignedShip:          "STRANDED-1",
+		Priority:              0,
+		RetryCount:            retryCount,
+		MaxRetries:            manufacturing.DefaultMaxRetries,
+		TotalCost:             0,
+		TotalRevenue:          0,
+		ErrorMessage:          "Market X1-VD76-H47 does not list QUARTZ_SAND (4602)",
+		CreatedAt:             createdAt,
+		ReadyAt:               nil,
+		StartedAt:             nil,
+		CompletedAt:           &failedAt,
+		CollectPhaseCompleted: false,
+		AcquirePhaseCompleted: false,
+		PhaseCompletedAt:      nil,
+	})
 }
 
 // FAILED DELIVER_TO_CONSTRUCTION tasks with retry budget left were never

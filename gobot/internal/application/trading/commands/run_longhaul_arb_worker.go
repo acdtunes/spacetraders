@@ -43,13 +43,10 @@ type directedLegCommand struct {
 	ContainerID string
 }
 
-// directedLegResult reports one leg's realized outcome. HeldAboard > 0 is a stranded-cargo
-// failure (the sink could not absorb the tranche, or the sell floor aborted) — the next
-// episode's re-derive resumes selling it.
+// directedLegResult reports one leg's realized outcome.
 type directedLegResult struct {
 	UnitsTraded int
 	NetProfit   int
-	HeldAboard  int
 	Aborted     bool
 	AbortReason string
 }

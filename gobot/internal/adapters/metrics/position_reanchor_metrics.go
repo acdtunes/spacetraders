@@ -29,14 +29,11 @@ type PositionReanchorCollector struct {
 // NewPositionReanchorCollector creates a new position-re-anchor collector.
 func NewPositionReanchorCollector() *PositionReanchorCollector {
 	return &PositionReanchorCollector{
-		reanchors: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "ship_position_reanchors_total",
-				Help:      "Hulls a sync found in a DIFFERENT system from the one their persisted row claimed. Every increment is a completed move that was never written; a healthy fleet holds this at zero",
-			},
-			[]string{"believed_system", "actual_system"},
+		reanchors: newCounterVec(
+			"ship_position_reanchors_total",
+			"Hulls a sync found in a DIFFERENT system from the one their persisted row claimed. Every increment is a completed move that was never written; a healthy fleet holds this at zero",
+			"believed_system",
+			"actual_system",
 		),
 	}
 }
@@ -45,9 +42,11 @@ func NewPositionReanchorCollector() *PositionReanchorCollector {
 // (metrics disabled) is a no-op, matching the sibling collectors.
 func (c *PositionReanchorCollector) Register() error {
 	if Registry == nil {
-		return nil // Metrics not enabled
+		return nil
 	}
-	return Registry.Register(c.reanchors)
+	return registerAll(
+		c.reanchors,
+	)
 }
 
 // RecordPositionReanchor counts one discovery that a hull's persisted system was wrong.

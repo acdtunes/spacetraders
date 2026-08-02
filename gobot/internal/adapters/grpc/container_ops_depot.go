@@ -94,15 +94,15 @@ func (s *DaemonServer) RemoveDepot(ctx context.Context, playerID int, depotID st
 // idempotent, fail-open, per-role launch/position path boot runs, so the added hull is freed from
 // its prior fleet, excluded from the contract grab, and navigated to its waypoint (or handed to its
 // own coordinator to park) — atomically, for EVERY role.
-func (s *DaemonServer) AddDepotElement(ctx context.Context, playerID int, depotID, role, waypoint, shipSymbol string) error {
+func (s *DaemonServer) AddDepotElement(ctx context.Context, playerID int, depotID, role string, element depot.Element) error {
 	parsedRole, err := depot.ParseRole(role)
 	if err != nil {
 		return err
 	}
-	if err := s.depotStore(playerID).AddElement(ctx, depotID, parsedRole, depot.Element{Waypoint: waypoint, ShipSymbol: shipSymbol}); err != nil {
+	if err := s.depotStore(playerID).AddElement(ctx, depotID, parsedRole, element); err != nil {
 		return err
 	}
-	s.positionAddedDepotElement(ctx, playerID, depotID, shipSymbol)
+	s.positionAddedDepotElement(ctx, playerID, depotID, element.ShipSymbol)
 	return nil
 }
 
@@ -142,15 +142,14 @@ func (s *DaemonServer) RemoveDepotElement(ctx context.Context, playerID int, dep
 	return s.depotStore(playerID).RemoveElement(ctx, depotID, parsedRole, shipSymbol)
 }
 
-// PlaceDepotElement is mode (B) at element granularity: it repositions the element
-// crewed by shipSymbol in a depot's named role to waypoint and persists it, via
-// Store.PlaceElement — the parametrized co-location op (the caller supplies the waypoint).
-func (s *DaemonServer) PlaceDepotElement(ctx context.Context, playerID int, depotID, role, shipSymbol, waypoint string) error {
+// PlaceDepotElement is mode (B) at element granularity: it repositions an existing element
+// and persists it via Store.PlaceElement — the caller supplies the waypoint.
+func (s *DaemonServer) PlaceDepotElement(ctx context.Context, playerID int, depotID, role string, element depot.Element) error {
 	parsedRole, err := depot.ParseRole(role)
 	if err != nil {
 		return err
 	}
-	return s.depotStore(playerID).PlaceElement(ctx, depotID, parsedRole, shipSymbol, waypoint)
+	return s.depotStore(playerID).PlaceElement(ctx, depotID, parsedRole, element)
 }
 
 // ListDepots returns the player's persisted depots — the read the CLI's

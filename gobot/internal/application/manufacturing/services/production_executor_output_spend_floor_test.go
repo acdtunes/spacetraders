@@ -54,7 +54,7 @@ func newOutputFloorExecutor(t *testing.T, apiClient domainPorts.APIClient) (*Pro
 }
 
 func buyFabricatedOutput(executor *ProductionExecutor, ctx context.Context) (int, int, error) {
-	return executor.purchaseFabricatedOutput(ctx, dockRaceGood, gateFillTestFactoryWP, dockRaceShip, shared.MustNewPlayerID(1), outputFloorTradeVolume, outputFloorUnitPrice)
+	return executor.purchaseFabricatedOutput(ctx, harvestRun{good: dockRaceGood, waypointSymbol: gateFillTestFactoryWP, shipSymbol: dockRaceShip, playerID: shared.MustNewPlayerID(1)}, outputFloorTradeVolume, outputFloorUnitPrice)
 }
 
 // A treasury far above the 430-credit buy cost but below the 50000 reserve must PARK the output

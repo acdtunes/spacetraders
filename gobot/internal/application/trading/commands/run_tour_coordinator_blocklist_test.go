@@ -62,7 +62,7 @@ func planOnce(t *testing.T, h *RunTourCoordinatorHandler, fake *tourFakeRoutingC
 		ShipSymbol: "BL-1", CurrentWaypoint: "X1-BL1-A", CurrentSystem: "X1-BL1", HoldCapacity: 40,
 	}
 	_, snap, _, err := h.planForState(
-		context.Background(), ship, []string{"X1-BL1"}, 6, 1_000_000, 0, cmd, "",
+		context.Background(), ship, []string{"X1-BL1"}, cmd, tourPlanBudget{maxHops: 6, maxSpend: 1_000_000},
 	)
 	if err != nil {
 		t.Fatalf("planForState: %v", err)

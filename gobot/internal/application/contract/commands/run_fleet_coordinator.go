@@ -2,7 +2,6 @@ package commands
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -11,9 +10,6 @@ import (
 	contractServices "github.com/andrescamacho/spacetraders-go/internal/application/contract/services"
 	contractTypes "github.com/andrescamacho/spacetraders-go/internal/application/contract/types"
 	"github.com/andrescamacho/spacetraders-go/internal/application/health"
-	"github.com/andrescamacho/spacetraders-go/internal/application/liquidation"
-	playerQueries "github.com/andrescamacho/spacetraders-go/internal/application/player/queries"
-	shipAssignment "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/assignment"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/absorption"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
@@ -22,12 +18,56 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
-	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
 
 // Type aliases for convenience
 type RunFleetCoordinatorCommand = contractTypes.RunFleetCoordinatorCommand
 type RunFleetCoordinatorResponse = contractTypes.RunFleetCoordinatorResponse
+
+// Pacing for the reconcile loop's retry backoffs, taken on the INJECTED clock
+// (h.clock.Sleep), which a MockClock makes instant in tests.
+//
+// These are deliberately kept separate from the select-timeout constants below:
+// the two families run on DIFFERENT clocks and must never be merged behind one
+// helper — see the note on that block.
+const (
+	// stepRetryBackoff paces the retry after a transient discovery, filtering or
+	// dispatch step fails, so a failing pass cannot spin the loop hot.
+	stepRetryBackoff = 10 * time.Second
+
+	// negotiateRetryBackoff paces the retry after negotiation fails — longer than
+	// stepRetryBackoff because the cause is usually server-side or funding.
+	negotiateRetryBackoff = 30 * time.Second
+
+	// awaitMarketDataBackoff paces re-checks while scouts scan. Not an error path: the
+	// contract is parked and retried every pass (RULINGS #1), never skipped.
+	awaitMarketDataBackoff = 30 * time.Second
+
+	// postFulfillmentPause is a brief settle after a contract is fulfilled,
+	// before negotiating the next one.
+	postFulfillmentPause = 5 * time.Second
+)
+
+// Bounds on the loop's `select` waits for a worker-completion event, taken with
+// time.After.
+//
+// HAZARD: time.After is the REAL wall clock even under a MockClock, unlike the
+// backoff constants above which ride the injected clock. Naming both families is
+// safe; routing them through one shared sleep helper is NOT — it would hang the
+// test suite on these timeouts.
+const (
+	// idlePoolRecheckInterval bounds one wait when no hull is currently
+	// dispatchable, so the pool is re-examined even if no completion event lands.
+	idlePoolRecheckInterval = 30 * time.Second
+
+	// activeWorkerWaitTimeout bounds one wait for the single active hull to
+	// finish before the loop re-checks contract state.
+	activeWorkerWaitTimeout = 1 * time.Minute
+
+	// workerCompletionTimeout is the watchdog on a dispatched worker: crossing it
+	// records an error and re-enters the loop rather than waiting forever.
+	workerCompletionTimeout = 30 * time.Minute
+)
 
 // RunFleetCoordinatorHandler implements the fleet coordinator logic
 type RunFleetCoordinatorHandler struct {
@@ -225,9 +265,14 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 	// deliberately `fleet remove`d, resurrecting the removal. Routed through
 	// AssignShipFleetCommand, the single write path for the tag.
 	if len(cmd.DedicatedShips) > 0 {
-		seedDedicatedFleetIfFirstBoot(ctx, logger, h.fleetPoolManager.GetMediator(), h.seedMarker,
-			cmd.PlayerID, cmd.ContainerID, cmd.DedicatedShips, cmd.DedicatedShipsSeeded, dedicatedFleetContract,
-			fmt.Sprintf("contract-coordinator-reconcile:%s", cmd.ContainerID))
+		dedicationSeed{
+			logger:         logger,
+			med:            h.fleetPoolManager.GetMediator(),
+			playerID:       cmd.PlayerID,
+			dedicatedShips: cmd.DedicatedShips,
+			fleetName:      dedicatedFleetContract,
+			assigner:       fmt.Sprintf("contract-coordinator-reconcile:%s", cmd.ContainerID),
+		}.seedIfFirstBoot(ctx, h.seedMarker, cmd.ContainerID, cmd.DedicatedShipsSeeded)
 	}
 
 	// No pool initialization - ships are discovered dynamically
@@ -246,71 +291,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 	// ctx, and it is inert when no dedicated fleet exists or no launcher is
 	// wired.
 	if h.idleArbLauncher != nil && !cmd.IdleArbDisabled {
-		// Post-leg re-homing reuses the coordinator's own balanced-standby homing
-		// (HomeShipCommand) — never a parallel homing path (RULINGS #7). Empty
-		// StandbyStations leaves re-homing off, exactly as it leaves the
-		// contract-handoff homing off.
-		homer := &mediatorShipHomer{
-			mediator:          h.fleetPoolManager.GetMediator(),
-			shipRepo:          h.shipRepo,
-			playerID:          cmd.PlayerID,
-			fleet:             dedicatedFleetContract,
-			placementProvider: h.standbyPlacementProvider,
-		}
-		dispatcher := appContract.NewIdleArbDispatcher(
-			h.shipRepo,
-			h.marketRepo,
-			h.graphProvider,
-			h.idleArbLauncher,
-			homer,
-			appContract.NewActiveContractGoods(h.contractRepo),
-			h.clock,
-			cmd.PlayerID,
-			dedicatedFleetContract,
-			appContract.IdleArbConfig{
-				ReserveHulls:     cmd.IdleArbReserveHulls,
-				HubRadius:        cmd.IdleArbHubRadius,
-				LeashRadius:      cmd.IdleArbLeashRadius,
-				MaxLegDuration:   time.Duration(cmd.IdleArbMaxLegSecs) * time.Second,
-				MaxSpendPerLeg:   cmd.IdleArbMaxSpend,
-				MinMarginPerUnit: cmd.IdleArbMinMargin,
-				// Percent → fraction (0 → WithDefaults applies the 0.80 default).
-				MarginVerifyFraction: float64(cmd.IdleArbMarginVerifyPct) / 100.0,
-				Blacklist:            cmd.IdleArbBlacklist,
-				StandbyStations:      cmd.StandbyStations,
-				Interval:             time.Duration(cmd.IdleArbIntervalSecs) * time.Second,
-				// Lane mutex recovery hold (0 → WithDefaults applies 20min).
-				RecoveryHold: time.Duration(cmd.IdleArbRecoveryHoldSecs) * time.Second,
-				// Per-trip profitability floor. Percent → fraction (0 →
-				// WithDefaults applies 100/u, 0.20, 35/u fuel).
-				MinNetProfitPerUnit: cmd.IdleArbMinNetProfit,
-				NetProfitFraction:   float64(cmd.IdleArbNetProfitPct) / 100.0,
-				FuelCostPerUnit:     cmd.IdleArbFuelCostPerUnit,
-			},
-		)
-		// Wires the cross-engine absorption ledger so the dispatcher consults it
-		// (skip:reserved) and records launched legs. Inert when unwired.
-		dispatcher.SetAbsorptionLedger(h.absorptionLedger, h.absorptionPlannedTTLSlack)
-		// Live-treasury source for the working-capital reserve gate (sp-zq635 §4a): the
-		// pass's concurrent legs can never collectively drain treasury below the immutable
-		// reserve. Reads the same live balance (mediator GetPlayerQuery) the contract park
-		// path reads; a read failure fails the gate CLOSED (holds the pass).
-		dispatcher.SetTreasuryReader(&mediatorTreasuryReader{
-			mediator: h.fleetPoolManager.GetMediator(),
-			playerID: cmd.PlayerID,
-		})
-		// LIVE hub set: resolves the CURRENT standby set each pass from this
-		// coordinator's container config, so `fleet hub add|remove` re-homes idle
-		// hulls across the new set with no restart. Falls back to
-		// cmd.StandbyStations on a read failure / no provider.
-		dispatcher.SetStandbyResolver(func(resolveCtx context.Context) []string {
-			return appContract.ResolveStandbyStations(resolveCtx, common.LoggerFromContext(resolveCtx), h.standbyProvider, cmd.ContainerID, cmd.PlayerID.Value(), cmd.StandbyStations)
-		})
-		// LIVE fixed-placement auto-resolution: when no `fleet hub` is pinned, the standing
-		// re-home sweep resolves its standby set from the ≤6 fixed placement slots (sp-bu6ma /
-		// sp-mtgje) via the SAME provider the between-legs hook uses, so a SITTING idle pool homes
-		// to the fixed one-per-waypoint slots instead of piling. Nil-safe (byte-identical unwired).
-		dispatcher.SetStandbyPlacementProvider(h.standbyPlacementProvider)
+		dispatcher := h.newIdleArbDispatcher(cmd)
 		go dispatcher.Run(ctx)
 	}
 
@@ -360,6 +341,23 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 	// re-earning it once is safer than persisting a stale suppression.
 	deliverHeldAttempted := make(map[string]bool)
 
+	idlePoolWait := workerWait{
+		ch:           workerCompletedCh,
+		recheck:      idlePoolRecheckInterval,
+		completedMsg: "Ship %s completed, back in pool",
+	}
+	activeHullWait := func(timeoutLevel, timeoutMsg string) workerWait {
+		return workerWait{
+			ch:           workerCompletedCh,
+			recheck:      activeWorkerWaitTimeout,
+			completedMsg: "Active worker completed for ship %s",
+			timeoutLevel: timeoutLevel,
+			timeoutMsg:   timeoutMsg,
+		}
+	}
+
+	pass := &coordinatorPass{h: h, cmd: cmd, result: result, errMon: errMon}
+
 	// Executes one contract at a time (game constraint: one active contract per player).
 	for {
 		select {
@@ -381,80 +379,20 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			continue // Re-check ctx.Done() and re-discover candidates with the freed ship(s)
 		}
 
-		// The command ship is a first-class hauling candidate: it hauls contract
-		// legs fine and is often the fastest, largest hull owned, so it competes
-		// on distance like any hauler instead of sitting benched until zero
-		// haulers remain.
-		generalShipEntities, generalShips, err := appContract.FindIdleLightHaulers(ctx, cmd.PlayerID, h.shipRepo, "", appContract.IncludeCommandShip)
-		if err != nil {
-			errMsg := fmt.Sprintf("Failed to find idle haulers: %v", err)
-			logger.Log("ERROR", errMsg, nil)
-			result.Errors = append(result.Errors, errMsg)
-			if streak, crossed := errMon.Note("find_idle_haulers", err.Error()); crossed {
-				h.recordErrorLoopEvent(ctx, cmd, "find_idle_haulers", err, streak)
-			}
-			h.clock.Sleep(10 * time.Second)
+		pool, ok := pass.discoverShipPool(ctx)
+		if !ok {
 			continue
 		}
-		errMon.Note("find_idle_haulers", "")
-
-		// FindIdleLightHaulers' generic cargo check only screens out probes
-		// (CargoCapacity() == 0); a command hull below the cargo baseline would
-		// double-trip a load a dedicated hauler moves in one pass, spending its
-		// whole speed advantage for a net loss, so it is filtered back out here,
-		// before any candidate is ranked or claimed.
-		generalShips = appContract.FilterCommandCargoBaseline(ctx, generalShipEntities, cmd.CommandCargoBaseline)
-
-		// The coordinator's own dedicated fleet is invisible to
-		// FindIdleLightHaulers via the claim-filter, so it is looked up
-		// separately here — by fleet NAME from the persisted tag, not the
-		// remembered --dedicated-ships list, so a `fleet assign`/`unassign` takes
-		// effect on the very next pass, no restart needed.
-		// RequireCargoCapacity: a 0-cargo hull mispinned into the contract fleet
-		// is UNSELECTABLE here — it can never carry a delivery, so claiming it
-		// just spawns a worker that dies instantly. The idle-arb dispatcher's own
-		// FindIdleShipsByFleet calls omit the policy and keep every tagged
-		// member, so its reserve accounting is unchanged.
-		_, dedicatedIdleShips, err := appContract.FindIdleShipsByFleet(ctx, cmd.PlayerID, h.shipRepo, dedicatedFleetContract, appContract.RequireCargoCapacity)
-		if err != nil {
-			errMsg := fmt.Sprintf("Failed to find idle dedicated ships: %v", err)
-			logger.Log("ERROR", errMsg, nil)
-			result.Errors = append(result.Errors, errMsg)
-			h.clock.Sleep(10 * time.Second)
-			continue
-		}
-
-		// EXCLUSIVE MODE: a dedicated fleet, once tagged (via --dedicated-ships at
-		// startup or a live `fleet assign` with no restart), is sealed — the
-		// coordinator draws ONLY from its own idle members, even when that set is
-		// empty because every member is busy.
-		dedicatedFleetActive, err := appContract.FleetHasMembers(ctx, cmd.PlayerID, h.shipRepo, dedicatedFleetContract)
-		if err != nil {
-			errMsg := fmt.Sprintf("Failed to check dedicated fleet membership: %v", err)
-			logger.Log("ERROR", errMsg, nil)
-			result.Errors = append(result.Errors, errMsg)
-			h.clock.Sleep(10 * time.Second)
-			continue
-		}
-		availableShips := appContract.SelectAvailableShips(generalShips, dedicatedIdleShips, dedicatedFleetActive)
 
 		// The interrupted-worker reclaim pass already ran unconditionally at the
 		// top of this iteration, so by this point any orphan has already been
 		// freed if one existed.
-		if len(availableShips) == 0 {
+		if len(pool.available) == 0 {
 			logger.Log("INFO", "No ships available, waiting for completion...", nil)
-			select {
-			case event := <-workerCompletedCh:
-				recordWorkerCompletion(logger, event, fmt.Sprintf("Ship %s completed, back in pool", event.ShipSymbol))
-				activeWorkerContainerID = "" // Worker completed
-				// Loop immediately to assign next contract
-			case <-time.After(30 * time.Second):
-				// Timeout, check again
-			case <-ctx.Done():
-				h.stopActiveWorker(ctx, activeWorkerContainerID)
+			if h.awaitWorkerSlot(ctx, idlePoolWait, &activeWorkerContainerID) {
 				return result, ctx.Err()
 			}
-			continue // Loop back to check for available ships
+			continue
 		}
 
 		// DETERMINISTIC SINGLE-HULL GATE (sp-zve2q): activeWorkerContainerID is this
@@ -476,14 +414,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		// activeWorkerContainerID is "" here — byte-identical selection preserved.
 		if activeWorkerContainerID != "" {
 			logger.Log("INFO", fmt.Sprintf("Contract already has an active hull (worker %s) - waiting for it to complete before dispatching another (sp-zve2q deterministic single-hull)", activeWorkerContainerID), nil)
-			select {
-			case event := <-workerCompletedCh:
-				recordWorkerCompletion(logger, event, fmt.Sprintf("Active worker completed for ship %s", event.ShipSymbol))
-				activeWorkerContainerID = "" // Worker completed — next pass selects the NEXT hull by distance
-			case <-time.After(1 * time.Minute):
-				logger.Log("INFO", "Timeout waiting for active hull, will re-check", nil)
-			case <-ctx.Done():
-				h.stopActiveWorker(ctx, activeWorkerContainerID)
+			if h.awaitWorkerSlot(ctx, activeHullWait("INFO", "Timeout waiting for active hull, will re-check"), &activeWorkerContainerID) {
 				return result, ctx.Err()
 			}
 			continue
@@ -496,15 +427,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			logger.Log("WARNING", fmt.Sprintf("Failed to check for active workers: %v", err), nil)
 		} else if len(existingActiveWorkers) > 0 {
 			logger.Log("WARNING", fmt.Sprintf("Found %d active CONTRACT_WORKFLOW workers - waiting instead of creating new worker", len(existingActiveWorkers)), nil)
-			select {
-			case event := <-workerCompletedCh:
-				recordWorkerCompletion(logger, event, fmt.Sprintf("Active worker completed for ship %s", event.ShipSymbol))
-				activeWorkerContainerID = "" // Worker completed
-				// Loop back to create new worker
-			case <-time.After(1 * time.Minute):
-				logger.Log("WARNING", "Timeout waiting for active worker, will check again", nil)
-			case <-ctx.Done():
-				h.stopActiveWorker(ctx, activeWorkerContainerID)
+			if h.awaitWorkerSlot(ctx, activeHullWait("WARNING", "Timeout waiting for active worker, will check again"), &activeWorkerContainerID) {
 				return result, ctx.Err()
 			}
 			continue
@@ -512,40 +435,25 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 
 		// Negotiate contract (use any ship from pool for negotiation)
 		logger.Log("INFO", "Negotiating new contract...", nil)
-		contract, err := h.contractMarketService.NegotiateContract(ctx, availableShips[0], cmd.PlayerID.Value())
+		contract, err := h.contractMarketService.NegotiateContract(ctx, pool.available[0], cmd.PlayerID.Value())
 		if err != nil {
-			errMsg := fmt.Sprintf("Failed to negotiate contract: %v", err)
-			logger.Log("ERROR", errMsg, nil)
-			result.Errors = append(result.Errors, errMsg)
-			if streak, crossed := errMon.Note("negotiate_contract", err.Error()); crossed {
-				h.recordErrorLoopEvent(ctx, cmd, "negotiate_contract", err, streak)
-			}
-			h.clock.Sleep(30 * time.Second)
+			pass.recordStepFailure(ctx, "negotiate_contract", fmt.Sprintf("Failed to negotiate contract: %v", err), err)
+			h.clock.Sleep(negotiateRetryBackoff)
 			continue
 		}
 		errMon.Note("negotiate_contract", "")
 
-		// Check if contract is already complete (all deliveries fulfilled)
-		allDeliveriesFulfilled := true
-		for _, delivery := range contract.Terms().Deliveries {
-			if delivery.UnitsRequired > delivery.UnitsFulfilled {
-				allDeliveriesFulfilled = false
-				break
-			}
-		}
-		if allDeliveriesFulfilled {
+		if _, stillOwed := outstandingDelivery(contract); !stillOwed {
 			logger.Log("INFO", "Contract deliveries complete - fulfilling contract to get reward", map[string]interface{}{
 				"contract_id": contract.ContractID(),
 			})
-			// Try to fulfill the contract via API to claim rewards
-			err := h.contractMarketService.FulfillContract(ctx, contract, cmd.PlayerID)
-			if err != nil {
+			if err := h.contractMarketService.FulfillContract(ctx, contract, cmd.PlayerID); err != nil {
 				logger.Log("ERROR", fmt.Sprintf("Failed to fulfill contract: %v", err), nil)
 			} else {
 				logger.Log("INFO", "Contract fulfilled successfully - will negotiate new contract", nil)
 				result.ContractsCompleted++
 			}
-			h.clock.Sleep(5 * time.Second) // Brief pause before negotiating new contract
+			h.clock.Sleep(postFulfillmentPause)
 			continue
 		}
 
@@ -561,51 +469,15 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 				"error":       err.Error(),
 			})
 			// Sleep and retry - scouts will eventually scan the required market
-			h.clock.Sleep(30 * time.Second)
+			h.clock.Sleep(awaitMarketDataBackoff)
 			continue
 		}
 		purchaseMarket := plan.Market
 
-		// SOURCING DEFER GATE: never EXECUTE a sourcing run whose projected net is
-		// worse than −20% of payout while deadline runway remains — park and
-		// re-project next pass instead. The contract is ACCEPTED before parking:
-		// acceptance is what makes NegotiateContract resume it, and an unaccepted
-		// contract parked past its accept-by deadline would be a skip (RULINGS #1).
-		decision := appContract.EvaluateSourcingDefer(plan, contract, h.clock.Now())
-		if decision.Defer {
-			accepted, acceptErr := h.contractMarketService.EnsureAccepted(ctx, contract, cmd.PlayerID)
-			if acceptErr != nil {
-				// Without acceptance a defer is not safe (see above) — source
-				// this pass instead of parking, and say why.
-				logger.Log("WARNING", fmt.Sprintf(
-					"Sourcing defer wanted but contract %s could not be accepted first (%v) - sourcing this pass instead of parking (never-skip)",
-					contract.ContractID(), acceptErr), nil)
-			} else {
-				contract = accepted
-				logger.Log("WARNING", decision.DeferMessage(plan), map[string]interface{}{
-					"action":        "sourcing_deferred",
-					"contract_id":   contract.ContractID(),
-					"projected_net": decision.ProjectedNet,
-					"payout":        decision.Payout,
-					"threshold":     decision.Threshold,
-					"unit_ask":      plan.UnitAsk,
-					"market":        plan.Market,
-					"trade_symbol":  plan.Good,
-				})
-				h.clock.Sleep(appContract.SourcingDeferRecheckInterval)
-				continue
-			}
-		} else if decision.Overridden {
-			logger.Log("WARNING", decision.OverrideMessage(plan), map[string]interface{}{
-				"action":        "sourcing_defer_overridden",
-				"contract_id":   contract.ContractID(),
-				"projected_net": decision.ProjectedNet,
-				"payout":        decision.Payout,
-				"threshold":     decision.Threshold,
-				"unit_ask":      plan.UnitAsk,
-				"market":        plan.Market,
-				"trade_symbol":  plan.Good,
-			})
+		contract, deferSourcing := h.applySourcingDefer(ctx, cmd, contract, plan)
+		if deferSourcing {
+			h.clock.Sleep(appContract.SourcingDeferRecheckInterval)
+			continue
 		}
 
 		// deliveryDestination is the active delivery's waypoint; its system is the
@@ -614,13 +486,10 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		var requiredCargo string
 		var unitsNeeded int
 		var deliveryDestination string
-		for _, delivery := range contract.Terms().Deliveries {
-			if delivery.UnitsRequired > delivery.UnitsFulfilled {
-				requiredCargo = delivery.TradeSymbol
-				unitsNeeded = delivery.UnitsRequired - delivery.UnitsFulfilled
-				deliveryDestination = delivery.DestinationSymbol
-				break
-			}
+		if delivery, stillOwed := outstandingDelivery(contract); stillOwed {
+			requiredCargo = delivery.TradeSymbol
+			unitsNeeded = delivery.UnitsRequired - delivery.UnitsFulfilled
+			deliveryDestination = delivery.DestinationSymbol
 		}
 
 		// Check for in-flight cargo from active workers (prevent duplicate purchases on restart)
@@ -630,45 +499,13 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			// Continue anyway - better to risk duplication than block indefinitely
 		}
 
-		// sp-1pf0r double-load defense: also see the contract-good load already
-		// aboard IDLE hulls (e.g. one reclaimed from a crashed worker). This is a
-		// DISPATCH signal, never a WAIT one — the wait gate below stays keyed on
-		// worker-held cargo only (waiting on an idle hull's load would stall,
-		// since the gate short-circuits before selection). When the shortfall is
-		// already aboard an idle hull, the coordinator completes that load with
-		// the SAME hull (cargo-priority selection picks the holder below) instead
-		// of sourcing a duplicate onto a second hull — the pattern that produced
-		// the 128-units-for-a-64-need double-load. A count failure is logged and
-		// ignored (better to risk a duplicate than to block).
-		idleReclaimedCargo, idleErr := h.idleReclaimedContractCargoHeld(ctx, requiredCargo, cmd.PlayerID.Value())
-		if idleErr != nil {
-			logger.Log("WARNING", fmt.Sprintf("Failed to count idle reclaimed contract cargo: %v", idleErr), nil)
-		} else if inFlightCargo < unitsNeeded && idleReclaimedCargo >= unitsNeeded-inFlightCargo {
-			logger.Log("INFO", fmt.Sprintf(
-				"%d units of %s already aboard idle hull(s) cover the %d-unit shortfall - the cargo-priority selection below completes that load with its holder before sourcing a duplicate onto a second hull (sp-1pf0r double-load defense)",
-				idleReclaimedCargo, requiredCargo, unitsNeeded-inFlightCargo), map[string]interface{}{
-				"action":          "idle_cargo_dispatch",
-				"contract_id":     contract.ContractID(),
-				"trade_symbol":    requiredCargo,
-				"idle_reclaimed":  idleReclaimedCargo,
-				"units_shortfall": unitsNeeded - inFlightCargo,
-			})
-		}
+		h.noteIdleHullsCoverShortfall(ctx, contract.ContractID(), requiredCargo, unitsNeeded, inFlightCargo, cmd.PlayerID.Value())
 
 		// If there's already enough in-flight cargo, wait for delivery instead of assigning new work
 		if inFlightCargo >= unitsNeeded {
 			logger.Log("INFO", fmt.Sprintf("Contract already has %d units of %s in-flight (needed: %d) - waiting for delivery instead of assigning new ship",
 				inFlightCargo, requiredCargo, unitsNeeded), nil)
-			// Wait for worker completion
-			select {
-			case event := <-workerCompletedCh:
-				recordWorkerCompletion(logger, event, fmt.Sprintf("Active worker completed for ship %s", event.ShipSymbol))
-				activeWorkerContainerID = "" // Worker completed
-				// Loop back to check contract status
-			case <-time.After(1 * time.Minute):
-				logger.Log("INFO", "Timeout waiting for delivery, will re-check", nil)
-			case <-ctx.Done():
-				h.stopActiveWorker(ctx, activeWorkerContainerID)
+			if h.awaitWorkerSlot(ctx, activeHullWait("INFO", "Timeout waiting for delivery, will re-check"), &activeWorkerContainerID) {
 				return result, ctx.Err()
 			}
 			continue
@@ -687,12 +524,9 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		// stalled. Scoped to the GENERAL grab pool only; a dedicated fleet
 		// (EXCLUSIVE MODE) passes through untouched. An empty home-scoped pool
 		// falls through to the "no spawnable ships" wait branch below.
-		availableShips, err = h.scopeCandidatesToContractHome(ctx, cmd.PlayerID, availableShips, deliveryDestination, dedicatedFleetActive)
+		pool.available, err = h.scopeCandidatesToContractHome(ctx, cmd.PlayerID, pool.available, deliveryDestination, pool.dedicatedFleetActive)
 		if err != nil {
-			errMsg := fmt.Sprintf("Failed to scope candidates to contract home system: %v", err)
-			logger.Log("ERROR", errMsg, nil)
-			result.Errors = append(result.Errors, errMsg)
-			h.clock.Sleep(10 * time.Second)
+			pass.retryAfterStepFailure(ctx, "", fmt.Sprintf("Failed to scope candidates to contract home system: %v", err), err)
 			continue
 		}
 
@@ -702,12 +536,9 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		// whatever it was carrying to satisfy a contract that has nothing to do
 		// with that cargo. Filter BEFORE SelectClosestShip so an unrelated-cargo
 		// hull is never even distance-ranked as the winner.
-		claimableShips, parkedShips, err := appContract.FilterUnrelatedCargo(ctx, cmd.PlayerID, h.shipRepo, availableShips, requiredCargo)
+		claimableShips, parkedShips, err := appContract.FilterUnrelatedCargo(ctx, cmd.PlayerID, h.shipRepo, pool.available, requiredCargo)
 		if err != nil {
-			errMsg := fmt.Sprintf("Failed to filter candidates by cargo: %v", err)
-			logger.Log("ERROR", errMsg, nil)
-			result.Errors = append(result.Errors, errMsg)
-			h.clock.Sleep(10 * time.Second)
+			pass.retryAfterStepFailure(ctx, "", fmt.Sprintf("Failed to filter candidates by cargo: %v", err), err)
 			continue
 		}
 
@@ -731,14 +562,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			logger.Log("INFO", fmt.Sprintf(
 				"No spawnable ships - %d hold unrelated cargo, %d in spawn-backoff/quarantine; waiting for completion...",
 				len(parkedShips), len(heldShips)), nil)
-			select {
-			case event := <-workerCompletedCh:
-				recordWorkerCompletion(logger, event, fmt.Sprintf("Ship %s completed, back in pool", event.ShipSymbol))
-				activeWorkerContainerID = "" // Worker completed
-			case <-time.After(30 * time.Second):
-				// Timeout, check again
-			case <-ctx.Done():
-				h.stopActiveWorker(ctx, activeWorkerContainerID)
+			if h.awaitWorkerSlot(ctx, idlePoolWait, &activeWorkerContainerID) {
 				return result, ctx.Err()
 			}
 			continue
@@ -802,61 +626,27 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			// register what it is standing on (zero travel), and the next pass sources
 			// the remainder with the near hull. The held load is neither stranded nor
 			// re-bought, so sp-zve2q's duplicate-sourcing defense is intact.
-			deliverHeldOnly = h.decideDeliverHeldFirst(ctx, contract.ContractID(), holder, spawnableShips,
-				purchaseMarket, deliveryDestination, requiredCargo, unitsNeeded, cmd.PlayerID.Value(), deliverHeldAttempted)
+			deliverHeldOnly = h.decideDeliverHeldFirst(ctx, contract.ContractID(), holderRun{
+				Holder:         holder,
+				Candidates:     spawnableShips,
+				SourceWaypoint: purchaseMarket,
+				Destination:    deliveryDestination,
+				Good:           requiredCargo,
+				UnitsNeeded:    unitsNeeded,
+				PlayerID:       cmd.PlayerID.Value(),
+			}, deliverHeldAttempted)
 
-			if deliverHeldOnly {
-				logger.Log("INFO", fmt.Sprintf(
-					"Idle hull %s already holds %s for contract %s - dispatching it to DELIVER what it holds where it stands, then sourcing the remainder with the hull nearest the source (sp-zve2q single-hull, weighed by sp-5jce2)",
-					holder, requiredCargo, contract.ContractID()), map[string]interface{}{
-					"action":            "select_cargo_holder",
-					"contract_id":       contract.ContractID(),
-					"ship_symbol":       holder,
-					"trade_symbol":      requiredCargo,
-					"deliver_held_only": true,
-				})
-			} else {
-				logger.Log("INFO", fmt.Sprintf(
-					"Idle hull %s already holds %s for contract %s - selecting it to complete its load instead of sourcing a duplicate onto the closest empty hull (sp-zve2q deterministic single-hull)",
-					holder, requiredCargo, contract.ContractID()), map[string]interface{}{
-					"action":       "select_cargo_holder",
-					"contract_id":  contract.ContractID(),
-					"ship_symbol":  holder,
-					"trade_symbol": requiredCargo,
-				})
-			}
+			logHolderSelection(logger, contract.ContractID(), holder, requiredCargo, deliverHeldOnly)
 		} else if hullRoute := resolveContractHullRoute(route, routeMatched, plan); hullRoute.UseDepotHull {
 			selectedShip = hullRoute.DepotHull
-			logger.Log("INFO", fmt.Sprintf(
-				"Contract %s destination owned by depot %s - good BUFFERED at hub, routing to co-located delivery hull %s (withdraw-local+deliver-local via warehouse %s)",
-				contract.ContractID(), route.DepotID, route.DeliveryHull, route.Warehouse),
-				map[string]interface{}{
-					"action":        "depot_route_contract",
-					"contract_id":   contract.ContractID(),
-					"depot_id":      route.DepotID,
-					"delivery_hull": route.DeliveryHull,
-					"warehouse":     route.Warehouse,
-					"source":        purchaseMarket,
-					"buffered":      true,
-				})
+			logDepotRouteBuffered(logger, contract.ContractID(), route, purchaseMarket)
 		} else {
 			// A depot owns the destination but the good is UNBUFFERED — DECOUPLE
 			// sourcing from delivery rather than pull the pinned depot hull off
 			// its hub to fly ~2x; source with the idle hull nearest the SOURCE
 			// market instead (the default path below).
 			if routeMatched {
-				logger.Log("INFO", fmt.Sprintf(
-					"Contract %s destination owned by depot %s but good %s is UNBUFFERED (source %s) - decoupling sourcing from delivery: selecting the idle hull nearest the source market instead of the destination-pinned depot hull %s (sp-obtr)",
-					contract.ContractID(), route.DepotID, requiredCargo, purchaseMarket, route.DeliveryHull),
-					map[string]interface{}{
-						"action":        "depot_route_unbuffered_source",
-						"contract_id":   contract.ContractID(),
-						"depot_id":      route.DepotID,
-						"delivery_hull": route.DeliveryHull,
-						"source":        purchaseMarket,
-						"trade_symbol":  requiredCargo,
-						"buffered":      false,
-					})
+				logDepotRouteUnbuffered(logger, contract.ContractID(), route, requiredCargo, purchaseMarket)
 			}
 			// DEFAULT PATH: select closest ship to purchase market (prioritizes
 			// ships with required cargo).
@@ -873,13 +663,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 				cmd.PlayerID.Value(),
 			)
 			if err != nil {
-				errMsg := fmt.Sprintf("Failed to select ship: %v", err)
-				logger.Log("ERROR", errMsg, nil)
-				result.Errors = append(result.Errors, errMsg)
-				if streak, crossed := errMon.Note("select_closest_ship", err.Error()); crossed {
-					h.recordErrorLoopEvent(ctx, cmd, "select_closest_ship", err, streak)
-				}
-				h.clock.Sleep(10 * time.Second)
+				pass.retryAfterStepFailure(ctx, "select_closest_ship", fmt.Sprintf("Failed to select ship: %v", err), err)
 				continue
 			}
 			errMon.Note("select_closest_ship", "")
@@ -887,70 +671,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 
 		logger.Log("INFO", fmt.Sprintf("Selected %s (distance: %.2f units)", selectedShip, distance), nil)
 
-		// If the selected ship differs from the previous ship, reposition it: a
-		// dedicated ship homes to a balanced operator-configured standby station
-		// (fewest fleet peers, distance tie-break) instead of normal
-		// market-balancing, since it's exclusively reserved for this coordinator
-		// and has no reason to loiter at a general market.
-		if previousShipSymbol != "" && previousShipSymbol != selectedShip {
-			// LIVE dedicated-fleet membership, not the frozen launch list: a hull
-			// `fleet add`ed after launch homes between legs like any dedicated
-			// member, and this same list is the standby-station occupancy peer set.
-			dedicatedMembers := resolveDedicatedMembersForHoming(ctx, logger, h.shipRepo, cmd.PlayerID, dedicatedFleetContract, cmd.DedicatedShips)
-			if isDedicatedShip(previousShipSymbol, dedicatedMembers) {
-				logger.Log("INFO", fmt.Sprintf("Selected ship changed from %s to %s - homing dedicated ship %s to standby station", previousShipSymbol, selectedShip, previousShipSymbol), nil)
-
-				// LIVE standby-station set, not the frozen launch snapshot: a hub
-				// `fleet hub add`ed after launch draws idle hulls toward it and a
-				// removed one re-homes its hulls to the remaining set, all with no
-				// restart. Falls back to cmd.StandbyStations on a read failure or
-				// when no provider is wired.
-				liveStandby := appContract.ResolveStandbyStations(ctx, logger, h.standbyProvider, cmd.ContainerID, cmd.PlayerID.Value(), cmd.StandbyStations)
-
-				// Resolve the ≤6 FIXED placement slots when the fleet-hub set is empty (sp-bu6ma /
-				// sp-mtgje) so between-legs homing sends each idle hull to its permanent slot instead
-				// of piling. Nil-safe → liveStandby unchanged. The homing zips this hull to its slot
-				// by symbol against the dedicated roster (FleetShips) — no demand.
-				liveStandby = appContract.ResolveStandbyForHoming(ctx, logger, h.standbyPlacementProvider, cmd.PlayerID.Value(), liveStandby)
-
-				// Launch homing command asynchronously (fire-and-forget)
-				go func(shipSymbol string, playerID shared.PlayerID, standbyStations []string, fleetShips []string) {
-					homeCmd := &HomeShipCommand{
-						ShipSymbol:      shipSymbol,
-						PlayerID:        playerID,
-						StandbyStations: standbyStations,
-						FleetShips:      fleetShips,
-					}
-					// Create background context since parent context may be cancelled
-					homeCtx := context.Background()
-					homeCtx = common.WithLogger(homeCtx, common.LoggerFromContext(ctx))
-
-					_, err := h.fleetPoolManager.GetMediator().Send(homeCtx, homeCmd)
-					if err != nil {
-						logger.Log("WARNING", fmt.Sprintf("Failed to home dedicated ship %s: %v", shipSymbol, err), nil)
-					}
-				}(previousShipSymbol, cmd.PlayerID, liveStandby, dedicatedMembers)
-			} else {
-				logger.Log("INFO", fmt.Sprintf("Selected ship changed from %s to %s - balancing previous ship position", previousShipSymbol, selectedShip), nil)
-
-				// Launch balancing command asynchronously (fire-and-forget)
-				go func(shipSymbol string, playerID shared.PlayerID, coordinatorID string) {
-					balanceCmd := &BalanceShipPositionCommand{
-						ShipSymbol:    shipSymbol,
-						PlayerID:      playerID,
-						CoordinatorID: coordinatorID,
-					}
-					// Create background context since parent context may be cancelled
-					balanceCtx := context.Background()
-					balanceCtx = common.WithLogger(balanceCtx, common.LoggerFromContext(ctx))
-
-					_, err := h.fleetPoolManager.GetMediator().Send(balanceCtx, balanceCmd)
-					if err != nil {
-						logger.Log("WARNING", fmt.Sprintf("Failed to balance ship %s position: %v", shipSymbol, err), nil)
-					}
-				}(previousShipSymbol, cmd.PlayerID, cmd.ContainerID)
-			}
-		}
+		h.repositionPreviousShip(ctx, cmd, previousShipSymbol, selectedShip)
 
 		// Last-resort verdict for the claim-side guard: the command frigate may be
 		// drafted for this leg only when NO regular hauler was an idle candidate
@@ -958,16 +679,11 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		// HOLDER completing its EXISTING load is never a fresh last-resort draft
 		// (like a readopt) — so a command frigate already holding contract cargo is
 		// authorized here rather than benched, matching readoptInterruptedDeliveries.
-		commandDraftAllowed := holder != "" || !hasRegularHaulerCandidate(generalShipEntities)
+		commandDraftAllowed := holder != "" || !hasRegularHaulerCandidate(pool.generalEntities)
 
 		workerContainerID, err := h.spawnContractWorker(ctx, cmd, selectedShip, commandDraftAllowed, deliverHeldOnly)
 		if err != nil {
-			logger.Log("ERROR", err.Error(), nil)
-			result.Errors = append(result.Errors, err.Error())
-			if streak, crossed := errMon.Note("spawn_contract_worker", err.Error()); crossed {
-				h.recordErrorLoopEvent(ctx, cmd, "spawn_contract_worker", err, streak)
-			}
-			h.clock.Sleep(10 * time.Second)
+			pass.retryAfterStepFailure(ctx, "spawn_contract_worker", err.Error(), err)
 			continue
 		}
 		errMon.Note("spawn_contract_worker", "")
@@ -1009,7 +725,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 
 			continue
 
-		case <-time.After(30 * time.Minute):
+		case <-time.After(workerCompletionTimeout):
 			logger.Log("ERROR", fmt.Sprintf("Timeout waiting for worker %s", selectedShip), nil)
 			errMsg := fmt.Sprintf("Worker timeout for ship %s", selectedShip)
 			result.Errors = append(result.Errors, errMsg)
@@ -1023,1048 +739,53 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 	}
 }
 
-// dedicatedFleetContract is the Ship.DedicatedFleet() value this coordinator
-// reconciles its --dedicated-ships list into.
-const dedicatedFleetContract = "contract"
-
-// ErrCommandFrigateNotLastResort is returned by spawnContractWorker when it
-// refuses to draft an UNDEDICATED command frigate for a contract haul because a
-// regular hauler is available (RULINGS #7: the command frigate hauls only as a
-// last resort). A sentinel so callers/tests can distinguish this deliberate
-// policy refusal from a transient spawn failure via errors.Is.
-var ErrCommandFrigateNotLastResort = errors.New("command frigate not drafted for contract haul: regular haulers available (last-resort only)")
-
-// hasRegularHaulerCandidate reports whether any candidate is a non-command hull
-// (a regular hauler). The main loop uses it to compute the command frigate's
-// last-resort verdict for the claim-side guard: a regular hauler among the
-// discovered candidates means the frigate is NOT the last resort.
-func hasRegularHaulerCandidate(candidates []*navigation.Ship) bool {
-	for _, ship := range candidates {
-		if !domainContract.IsCommandHull(ship) {
-			return true
-		}
-	}
-	return false
-}
-
-// DedicatedFleetSeedMarker durably records that this coordinator has applied its
-// --dedicated-ships launch seed ONCE, so a later daemon-restart rebuild reads the
-// marker back and does NOT replay the stale launch seed over live fleet state —
-// a hull deliberately `fleet remove`d stays removed across the restart
-// (RULINGS #2). Reporting/gating only — no ship state is written here.
-type DedicatedFleetSeedMarker interface {
-	// MarkDedicatedShipsSeeded records that containerID's --dedicated-ships seed
-	// has been applied, so a later restart rebuild reads DedicatedShipsSeeded=true.
-	// A returned error is advisory: the seed has already been applied, so the caller
-	// logs and continues (a persistence failure degrades restart-resilience of the
-	// removal, it never fails the coordinator).
-	MarkDedicatedShipsSeeded(ctx context.Context, containerID string, playerID int) error
-}
-
-// seedDedicatedFleetIfFirstBoot applies the --dedicated-ships launch seed EXACTLY
-// once per coordinator lifetime. On genuine first boot (seeded=false) it
-// reconciles the seed into the dedication tag and then persists a durable "seeded"
-// marker into the coordinator's own container config; on every subsequent daemon
-// restart (seeded=true, reloaded from that marker) it does NOTHING, leaving the
-// live dedicated_fleet tag authoritative. Replaying the seed on every boot would
-// re-stamp a hull removed via `fleet remove` (tag cleared) back onto the fleet,
-// resurrecting a deliberate removal.
-//
-// An empty seed still touches nothing (mediator lookup included). A nil marker
-// leaves the seed un-persisted and warns: the seed still applies, but a restart
-// would re-seed (fail-open; production always wires it).
-func seedDedicatedFleetIfFirstBoot(
-	ctx context.Context,
-	logger common.ContainerLogger,
-	med common.Mediator,
-	marker DedicatedFleetSeedMarker,
-	playerID shared.PlayerID,
-	containerID string,
-	dedicatedShips []string,
-	seeded bool,
-	fleetName string,
-	assigner string,
-) {
-	if len(dedicatedShips) == 0 {
-		return
-	}
-	// Already seeded on a previous boot — the live dedicated_fleet tag is now
-	// authoritative. Do NOT replay the stale launch snapshot, or a hull removed
-	// via `fleet remove` (tag cleared) that is still listed in the seed would be
-	// re-stamped "contract", resurrecting a deliberate removal.
-	if seeded {
-		return
-	}
-
-	reconcileDedicatedFleet(ctx, logger, med, playerID, dedicatedShips, fleetName, assigner)
-
-	// Persist the first-boot marker so a later restart reloads seeded=true and skips
-	// the replay above. Fail-open: the seed has already been applied, so a marker
-	// failure is a WARNING, never a coordinator abort (RULINGS #1 never-skip).
-	if marker == nil {
-		logger.Log("WARNING", fmt.Sprintf(
-			"dedicated fleet seed applied for %d ship(s) but no seed marker is wired - a daemon restart may replay the launch seed over live fleet state (sp-86vb)",
-			len(dedicatedShips)), nil)
-		return
-	}
-	if err := marker.MarkDedicatedShipsSeeded(ctx, containerID, playerID.Value()); err != nil {
-		logger.Log("WARNING", fmt.Sprintf(
-			"dedicated fleet seed applied but failed to persist the seeded marker (a restart may replay the launch seed): %v", err), nil)
-	}
-}
-
-// reconcileDedicatedFleet marks every operator-configured --dedicated-ships
-// entry into fleetName so the DedicatedFleet claim-filter in
-// FindIdleLightHaulers actually takes effect. Routed through
-// AssignShipFleetCommand, the single write path for the dedication tag, rather
-// than mutating ships directly, so reconciliation and `fleet assign` can never
-// drift apart. Additive-only: a symbol removed from a later --dedicated-ships
-// list on restart is NOT un-dedicated by this pass — only configured symbols
-// are marked. Idempotent: the repository write skips the DB write when the tag
-// is already fleetName. Per-ship failures are logged at WARNING and skipped
-// rather than aborting the whole pass, since one bad symbol must not block
-// reconciling the rest.
-func reconcileDedicatedFleet(
-	ctx context.Context,
-	logger common.ContainerLogger,
-	med common.Mediator,
-	playerID shared.PlayerID,
-	dedicatedShips []string,
-	fleetName string,
-	assigner string,
-) {
-	for _, symbol := range dedicatedShips {
-		pid := playerID.Value()
-		// Automated path (Manual: false): the assign handler BLOCKS a 0-cargo hull
-		// from being pinned into a hauling fleet. A blocked symbol surfaces as the
-		// WARNING below and is skipped, like any other per-ship failure — the
-		// rest of the list still reconciles.
-		_, err := med.Send(ctx, &shipAssignment.AssignShipFleetCommand{
-			ShipSymbol: symbol,
-			Fleet:      fleetName,
-			PlayerID:   &pid,
-			Assigner:   assigner,
-			Manual:     false,
-		})
-		if err != nil {
-			logger.Log("WARNING", fmt.Sprintf("dedicated fleet reconciliation: failed to assign ship %s: %v", symbol, err), nil)
-			continue
-		}
-		logger.Log("INFO", fmt.Sprintf("Ship %s reconciled into dedicated %s fleet", symbol, fleetName), nil)
-	}
-}
-
-// mediatorShipHomer implements appContract.ShipHomer by dispatching the
-// EXISTING balanced-standby HomeShipCommand through the mediator — the
-// idle-arb dispatcher's post-leg re-home reuses the coordinator's own homing
-// machinery verbatim, with the same standby-station set and fleet-peer list
-// the contract-handoff homing uses (RULINGS #7: no parallel homing algorithm).
-//
-// Both membership inputs are LIVE, not frozen launch snapshots. The standby
-// set is passed in per re-home — the dispatcher resolves the CURRENT hub set
-// from the coordinator's container config each pass, so a `fleet hub
-// add|remove` re-homes across the new set with no restart. The fleet-peer list
-// is resolved LIVE per re-home from the dedicated_fleet tag, so a hull `fleet
-// add`ed after launch is counted in standby-station occupancy and a `fleet
-// remove`d one is not — both matching the contract-handoff homing gate.
-//
-// Navigation runs FIRE-AND-FORGET, mirroring the coordinator's own
-// `go func(){ Send(homeCmd) }` at the contract-handoff hook: HomeShipCommand
-// blocks until the hull arrives (navigate_route executes the whole route), so a
-// synchronous call would stall the dispatcher tick for the full flight. HomeShip
-// returns as soon as the home is DISPATCHED; the detached goroutine carries the
-// container logger on a background context that outlives the request ctx,
-// exactly as the coordinator's homing goroutine does, and logs a homing failure
-// at WARNING rather than surfacing it (re-homing is best-effort).
-type mediatorShipHomer struct {
-	mediator common.Mediator
-	shipRepo navigation.ShipRepository
-	playerID shared.PlayerID
-	fleet    string
-	// placementProvider resolves the ≤6 FIXED placement slots and auto-drives the standby set
-	// from them when the passed live set is empty — the SAME provider the coordinator's
-	// between-legs homing uses, so idle-arb re-homes track contract homing (RULINGS #7, one
-	// homing algorithm). Nil-safe: the passed set is kept unchanged.
-	placementProvider appContract.StandbyPlacementProvider
-}
-
-var _ appContract.ShipHomer = (*mediatorShipHomer)(nil)
-
-// HomeShip re-homes the hull to the LIVE standby set the dispatcher resolved
-// this pass, passed in rather than frozen on the homer, so an idle-arb re-home
-// tracks a `fleet hub add|remove` with no restart — the same live set the
-// coordinator's between-legs homing uses.
-func (m *mediatorShipHomer) HomeShip(ctx context.Context, shipSymbol string, standbyStations []string) error {
-	logger := common.LoggerFromContext(ctx)
-	// When the passed live set is empty, auto-drive it from the ≤6 FIXED placement slots — the SAME
-	// resolution the coordinator's between-legs homing uses (nil-safe → the passed set unchanged). The
-	// homing zips this hull to its slot by symbol against the dedicated roster (FleetShips) — no demand.
-	standbyStations = appContract.ResolveStandbyForHoming(ctx, logger, m.placementProvider, m.playerID.Value(), standbyStations)
-	homeCmd := &HomeShipCommand{
-		ShipSymbol:      shipSymbol,
-		PlayerID:        m.playerID,
-		StandbyStations: standbyStations,
-		FleetShips:      resolveDedicatedMembersForHoming(ctx, logger, m.shipRepo, m.playerID, m.fleet, nil),
-	}
-	go func() {
-		// Background context (the dispatch ctx may be cancelled when the
-		// coordinator stops) carrying the container logger, mirroring the
-		// contract-handoff homing goroutine.
-		homeCtx := common.WithLogger(context.Background(), logger)
-		if _, err := m.mediator.Send(homeCtx, homeCmd); err != nil {
-			logger.Log("WARNING", fmt.Sprintf("Idle-arb re-home: homing %s failed: %v", shipSymbol, err), nil)
-		}
-	}()
-	return nil
-}
-
-// mediatorTreasuryReader reads live treasury for the idle-arb dispatcher's working-
-// capital reserve gate (sp-zq635 §4a) over the mediator's GetPlayerQuery — the same live
-// balance the contract park path reads, bound to this coordinator's player.
-type mediatorTreasuryReader struct {
-	mediator common.Mediator
-	playerID shared.PlayerID
-}
-
-var _ appContract.TreasuryReader = (*mediatorTreasuryReader)(nil)
-
-func (r *mediatorTreasuryReader) LiveTreasury(ctx context.Context) (int64, error) {
-	pid := r.playerID.Value()
-	resp, err := r.mediator.Send(ctx, &playerQueries.GetPlayerQuery{PlayerID: &pid})
-	if err != nil {
-		return 0, err
-	}
-	playerResp, ok := resp.(*playerQueries.GetPlayerResponse)
-	if !ok || playerResp.Player == nil {
-		return 0, fmt.Errorf("idle-arb treasury read: unexpected GetPlayer response %T", resp)
-	}
-	return int64(playerResp.Player.Credits), nil
-}
-
-// isDedicatedShip reports whether shipSymbol is present in the given
-// dedicated-membership list. Used at the "previous ship" hook to decide whether
-// an idle ship homes to a standby station instead of being balanced to a market.
-// The list is the LIVE dedicated-fleet membership, not the immutable
-// --dedicated-ships launch snapshot — see resolveDedicatedMembersForHoming.
-func isDedicatedShip(shipSymbol string, dedicatedShips []string) bool {
-	for _, symbol := range dedicatedShips {
-		if symbol == shipSymbol {
-			return true
-		}
-	}
-	return false
-}
-
-// resolveDedicatedMembersForHoming returns the LIVE dedicated-fleet membership
-// the between-legs homing gate keys off, so the gate and the standby-occupancy
-// peer list track actual membership, matching the live authority
-// FindIdleShipsByFleet / FleetHasMembers already give the selection side.
-//
-// On a membership read error it falls back to launchList, so a transient repo
-// failure just forgoes the live view for that one repositioning.
-func resolveDedicatedMembersForHoming(
-	ctx context.Context,
-	logger common.ContainerLogger,
-	shipRepo navigation.ShipRepository,
-	playerID shared.PlayerID,
-	fleet string,
-	launchList []string,
-) []string {
-	members, err := appContract.FindFleetMemberSymbols(ctx, playerID, shipRepo, fleet)
-	if err != nil {
-		logger.Log("WARNING", fmt.Sprintf(
-			"failed to read live %s-fleet membership for homing (falling back to launch --dedicated-ships list): %v", fleet, err), nil)
-		return launchList
-	}
-	return members
-}
-
-// recordWorkerCompletion logs the outcome of a worker-completion event honestly
-// and reports whether it should count toward the completed-contracts metric.
-// A successful worker is logged at INFO with successMsg and counts; a crashed
-// worker is logged at ERROR carrying event.Error and does NOT count — so the
-// logs and the ContractsCompleted metric never treat a failure as a completion.
-// Every worker-completion receive site funnels through here.
-func recordWorkerCompletion(logger common.ContainerLogger, event navigation.WorkerCompletedEvent, successMsg string) (succeeded bool) {
-	if event.Success {
-		logger.Log("INFO", successMsg, nil)
-		return true
-	}
-	logger.Log("ERROR", fmt.Sprintf("Worker for ship %s failed: %s", event.ShipSymbol, event.Error), nil)
-	return false
-}
-
-// homeCompletedHullToStandby dispatches a just-completed contract-work hull to a
-// demand-ranked standby sink THE MOMENT its worker finishes, so the hull
-// does not loiter at the delivery waypoint until the next between-legs selection
-// change or the ~90s idle-arb sweep.
-func (h *RunFleetCoordinatorHandler) homeCompletedHullToStandby(ctx context.Context, cmd *RunFleetCoordinatorCommand, shipSymbol string) {
-	logger := common.LoggerFromContext(ctx)
-
-	ship, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, cmd.PlayerID)
-	if err != nil {
-		logger.Log("WARNING", fmt.Sprintf("immediate homing: failed to load completed hull %s (skipping fast re-home): %v", shipSymbol, err), nil)
-		return
-	}
-	// The command frigate homes on its own last-resort rules, never parked as a
-	// standby drifter (RULINGS #7) — mirror the candidate-side IsCommandHull gate.
-	if domainContract.IsCommandHull(ship) {
-		return
-	}
-
-	// The SAME live-set resolution the between-legs hook uses: live `fleet hub` pins, or the ≤6
-	// fixed placement slots auto-driving the set when no hub is pinned.
-	// Nil-safe → launch snapshot.
-	liveStandby := appContract.ResolveStandbyStations(ctx, logger, h.standbyProvider, cmd.ContainerID, cmd.PlayerID.Value(), cmd.StandbyStations)
-	liveStandby = appContract.ResolveStandbyForHoming(ctx, logger, h.standbyPlacementProvider, cmd.PlayerID.Value(), liveStandby)
-
-	dedicatedMembers := resolveDedicatedMembersForHoming(ctx, logger, h.shipRepo, cmd.PlayerID, dedicatedFleetContract, cmd.DedicatedShips)
-
-	// No-thrash: a hull already at ITS OWN assigned fixed slot skips the redundant dispatch (sp-mtgje —
-	// "at MY slot", not "at ANY sink": two hulls that both delivered to one sink would otherwise both
-	// skip and pile). A hull that owns no slot (surplus over the knee) is left for the scaler to re-role.
-	slot, owns := domainContract.AssignedSlot(shipSymbol, dedicatedMembers, liveStandby)
-	if !owns || ship.CurrentLocation().Symbol == slot {
-		return
-	}
-
-	// Fire-and-forget on a background context carrying the container logger — the
-	// SAME async dispatch the between-legs hook uses (HomeShipCommand blocks for the
-	// whole flight, so a synchronous send would stall the coordinator loop).
-	go func(shipSymbol string, playerID shared.PlayerID, standbyStations []string, fleetShips []string) {
-		homeCmd := &HomeShipCommand{
-			ShipSymbol:      shipSymbol,
-			PlayerID:        playerID,
-			StandbyStations: standbyStations,
-			FleetShips:      fleetShips,
-		}
-		homeCtx := common.WithLogger(context.Background(), logger)
-		if _, err := h.fleetPoolManager.GetMediator().Send(homeCtx, homeCmd); err != nil {
-			logger.Log("WARNING", fmt.Sprintf("immediate homing: failed to home completed hull %s: %v", shipSymbol, err), nil)
-		}
-	}(shipSymbol, cmd.PlayerID, liveStandby, dedicatedMembers)
-}
-
-// readoptInterruptedDeliveries resumes a contract delivery that a daemon
-// restart orphaned mid-flight. A restart marks the in-flight worker container
-// FAILED (markWorkerInterrupted) but deliberately leaves its ship holding the
-// contract cargo. The existing "ship has cargo -> resume delivery" path
-// (StopExistingWorkers) only inspects RUNNING workers, so it never fires for a
-// restart-interrupted (FAILED) worker; without this pass the coordinator would
-// instead ForceRelease that ship (ReclaimShipsFromInterruptedWorkers) and
-// restart the whole workflow from the top — negotiate -> find-purchase-market
-// -> select — stalling the fully-loaded ship behind a purchase-market gate it
-// does not need while scouts repopulate market data after the restart.
-//
-// Re-adopting spawns a fresh worker directly for the cargo-laden ship; the
-// worker's already-idempotent workflow (FindOrNegotiate finds the accepted
-// contract, ProcessAllDeliveries delivers the aboard cargo) resumes at the
-// delivery leg with no re-negotiation and no re-purchase. At most one ship is
-// re-adopted per startup: contracts run one worker at a time (game constraint:
-// one active contract per player), so only one ship is ever mid-delivery. Empty
-// interrupted ships are left untouched here for ReclaimShipsFromInterruptedWorkers
-// to free into normal discovery. Any failure falls back to that reclaim path, so
-// a transient error here can never strand the ship — it just forgoes the fast
-// resume. Returns the re-adopted worker's container ID, or "" if nothing was
-// re-adopted.
-func (h *RunFleetCoordinatorHandler) readoptInterruptedDeliveries(
+// applySourcingDefer parks the pass when projected net is worse than the defer
+// threshold. RULINGS #1 never-skip means Defer never fires here; it surfaces as Overridden.
+func (h *RunFleetCoordinatorHandler) applySourcingDefer(
 	ctx context.Context,
 	cmd *RunFleetCoordinatorCommand,
-) string {
+	contract *domainContract.Contract,
+	plan *appContract.SourcingPlan,
+) (*domainContract.Contract, bool) {
 	logger := common.LoggerFromContext(ctx)
+	decision := appContract.EvaluateSourcingDefer(plan, contract, h.clock.Now())
 
-	ships, err := h.workerLifecycleManager.FindInterruptedWorkerShipsWithCargo(ctx, cmd.PlayerID.Value())
-	if err != nil {
-		logger.Log("WARNING", fmt.Sprintf("Failed to find interrupted deliveries to re-adopt: %v", err), nil)
-		return ""
-	}
-	if len(ships) == 0 {
-		return ""
-	}
-
-	ship := ships[0]
-	shipSymbol := ship.ShipSymbol()
-
-	// Detach from the dead worker container so spawnContractWorker can re-assign
-	// the ship to the fresh one. Mirrors ReclaimShipsFromInterruptedWorkers' own
-	// detach, but here we immediately re-adopt instead of returning to discovery.
-	// Under CAS-retry: re-apply ForceRelease on the FRESH row so a concurrent
-	// writer's cargo/nav update on the same hull survives instead of being
-	// last-write-wins clobbered, and skip unless the hull is still on its dead
-	// worker (already released / re-claimed elsewhere -> changed=false).
-	deadWorkerContainer := ship.ContainerID()
-	if _, _, err := h.shipRepo.SaveWithRetry(ctx, shipSymbol, cmd.PlayerID,
-		func(sh *navigation.Ship) (bool, error) {
-			if !sh.IsAssigned() || sh.ContainerID() != deadWorkerContainer {
-				return false, nil
-			}
-			sh.ForceRelease("worker_readopt", h.clock)
-			return true, nil
-		}); err != nil {
-		logger.Log("WARNING", fmt.Sprintf("Failed to release ship %s for re-adoption (falling back to reclaim/discovery): %v", shipSymbol, err), nil)
-		return ""
+	if !decision.Defer {
+		if decision.Overridden {
+			logger.Log("WARNING", decision.OverrideMessage(plan), map[string]interface{}{
+				"action":        "sourcing_defer_overridden",
+				"contract_id":   contract.ContractID(),
+				"projected_net": decision.ProjectedNet,
+				"payout":        decision.Payout,
+				"threshold":     decision.Threshold,
+				"unit_ask":      plan.UnitAsk,
+				"market":        plan.Market,
+				"trade_symbol":  plan.Good,
+			})
+		}
+		return contract, false
 	}
 
-	// A resume is never a fresh last-resort decision: the frigate (if this hull
-	// is the command frigate) was already mid-contract, so re-orphaning it here
-	// would be wrong. Always authorize the command draft here.
-	// A resume runs the FULL leg (source the remainder, then deliver), never
-	// deliver-held: re-adoption exists to finish an interrupted delivery, and the
-	// coordinator has not weighed this hull's placement here.
-	workerContainerID, err := h.spawnContractWorker(ctx, cmd, shipSymbol, true, false)
-	if err != nil {
-		logger.Log("WARNING", fmt.Sprintf("Failed to re-adopt in-flight delivery for ship %s (falling back to discovery): %v", shipSymbol, err), nil)
-		return ""
+	// Acceptance is what makes NegotiateContract resume the parked contract; an
+	// unaccepted one parked past its accept-by deadline would be a skip.
+	accepted, acceptErr := h.contractMarketService.EnsureAccepted(ctx, contract, cmd.PlayerID)
+	if acceptErr != nil {
+		logger.Log("WARNING", fmt.Sprintf(
+			"Sourcing defer wanted but contract %s could not be accepted first (%v) - sourcing this pass instead of parking (never-skip)",
+			contract.ContractID(), acceptErr), nil)
+		return contract, false
 	}
 
-	logger.Log("INFO", fmt.Sprintf("Re-adopted in-flight contract delivery: ship %s resuming in worker %s (cargo aboard, no re-negotiation)", shipSymbol, workerContainerID), map[string]interface{}{
-		"ship_symbol":  shipSymbol,
-		"container_id": workerContainerID,
-		"action":       "readopt_delivery",
+	contract = accepted
+	logger.Log("WARNING", decision.DeferMessage(plan), map[string]interface{}{
+		"action":        "sourcing_deferred",
+		"contract_id":   contract.ContractID(),
+		"projected_net": decision.ProjectedNet,
+		"payout":        decision.Payout,
+		"threshold":     decision.Threshold,
+		"unit_ask":      plan.UnitAsk,
+		"market":        plan.Market,
+		"trade_symbol":  plan.Good,
 	})
-	return workerContainerID
-}
-
-// spawnContractWorker persists, claims, and starts a contract-workflow worker on
-// selectedShip. commandDraftAllowed authorizes drafting the command frigate for
-// this leg: a FRESH draft from the main loop passes the last-resort verdict
-// (true only when no regular hauler is an idle candidate), while a RESUME of an
-// interrupted delivery (readoptInterruptedDeliveries) always passes true — a
-// mid-delivery frigate must never be re-orphaned. The value governs only an
-// UNDEDICATED command frigate; every regular hull and every contract-dedicated
-// command hull is unaffected.
-func (h *RunFleetCoordinatorHandler) spawnContractWorker(
-	ctx context.Context,
-	cmd *RunFleetCoordinatorCommand,
-	selectedShip string,
-	commandDraftAllowed bool,
-	deliverHeldOnly bool,
-) (string, error) {
-	logger := common.LoggerFromContext(ctx)
-
-	workerContainerID := utils.GenerateContainerID("contract-work", selectedShip)
-
-	workerCmd := &RunWorkflowCommand{
-		ShipSymbol:    selectedShip,
-		PlayerID:      cmd.PlayerID,
-		ContainerID:   workerContainerID,
-		CoordinatorID: cmd.ContainerID,
-		// DELIVER-HELD mode (sp-5jce2) — set only when this hull is a badly-placed
-		// partial holder standing on the delivery; see weighHolderPlacement.
-		DeliverHeldOnly: deliverHeldOnly,
-	}
-
-	logger.Log("INFO", fmt.Sprintf("Persisting worker container %s for %s", workerContainerID, selectedShip), nil)
-	if err := h.daemonClient.PersistContainer(ctx, daemon.ContainerKindContractWorkflow, workerContainerID, uint(cmd.PlayerID.Value()), workerCmd); err != nil {
-		return "", fmt.Errorf("Failed to persist worker container: %v", err)
-	}
-
-	logger.Log("INFO", fmt.Sprintf("Assigning %s to worker container", selectedShip), nil)
-	ship, err := h.shipRepo.FindBySymbol(ctx, selectedShip, cmd.PlayerID)
-	if err != nil {
-		_ = h.workerLifecycleManager.StopWorkerContainer(ctx, workerContainerID)
-		return "", fmt.Errorf("Failed to load ship %s: %v", selectedShip, err)
-	}
-
-	// Claim-side last-resort backstop (RULINGS #7): refuse to draft an
-	// UNDEDICATED command frigate for a contract haul unless it is a genuine
-	// last resort. This is the single-writer backstop at the claim itself, so
-	// even a discovery regression cannot silently re-sweep the frigate onto
-	// contracts. A contract-DEDICATED command hull (tag "contract") is a
-	// legitimate fleet member and passes untouched; a resume (readopt) passes
-	// commandDraftAllowed=true so a mid-delivery frigate is never re-orphaned.
-	// Rolled back exactly like a rejected claim — no ship write, no worker
-	// started.
-	if !commandDraftAllowed && ship.DedicatedFleet() == "" && domainContract.IsCommandHull(ship) {
-		logger.Log("INFO", fmt.Sprintf(
-			"Refusing to draft undedicated command frigate %s for a contract haul while a regular hauler is available — command frigate hauls only as last resort (RULINGS #7)", selectedShip),
-			map[string]interface{}{
-				"action":      "skipped:command_frigate_not_last_resort",
-				"ship_symbol": selectedShip,
-			})
-		_ = h.workerLifecycleManager.StopWorkerContainer(ctx, workerContainerID)
-		return "", fmt.Errorf("refusing to draft undedicated command frigate %s for a contract haul: %w", selectedShip, ErrCommandFrigateNotLastResort)
-	}
-
-	// Atomic claim: assignment AND fleet dedication are re-checked inside
-	// ClaimShip's row-locked transaction, so a `fleet assign` racing discovery
-	// can never slip a foreign-pinned hull — including the command frigate under
-	// its "command" pin — into a contract worker. A hull pinned to a fleet other
-	// than dedicatedFleetContract ("contract") is rejected at the DB, not
-	// clobbered; a contract-pinned or unpinned hull claims normally. Both
-	// callers hand this an idle ship: the main loop selects from idle
-	// candidates, and readoptInterruptedDeliveries force-releases the dead
-	// worker's hull to idle before re-adopting it.
-	//
-	// A DEPOT DELIVERY hull carries the distinct depot.DeliveryHullFleet
-	// dedication (so discovery can never re-grab it) and reaches this claim ONLY
-	// via routeContractViaDepot or a mid-delivery readopt. contractClaimFleet
-	// keys the claim on the hull's own dedication so that depot-routed dispatch
-	// passes the dedication guard, while every other hull still claims under
-	// "contract".
-	if err := h.shipRepo.ClaimShip(ctx, selectedShip, workerContainerID, cmd.PlayerID, contractClaimFleet(ship.DedicatedFleet())); err != nil {
-		_ = h.workerLifecycleManager.StopWorkerContainer(ctx, workerContainerID)
-		// %w so callers (and the poach-vector test) can distinguish a fleet-
-		// dedication rejection from a transient failure; the string is identical.
-		return "", fmt.Errorf("Failed to claim ship %s: %w", selectedShip, err)
-	}
-
-	// Mirror the committed claim into the in-memory entity so the start-failure
-	// rollback below (and any later read of `ship`) sees the assignment. A sync
-	// failure here is a WARN, not an unclaim: the DB claim already holds the
-	// ship, so returning an error would orphan a committed claim with no holder
-	// to release it (matches the factory/gas Phase 2 migration).
-	if err := ship.AssignToContainer(workerContainerID, h.clock); err != nil {
-		logger.Log("WARNING", fmt.Sprintf("Ship %s claimed in DB but in-memory assign failed (claim stands): %v", selectedShip, err), nil)
-	}
-
-	logger.Log("INFO", fmt.Sprintf("Starting worker container for %s", selectedShip), nil)
-	if err := h.daemonClient.StartContainer(ctx, daemon.ContainerKindContractWorkflow, workerContainerID); err != nil {
-		// Release the just-claimed hull under CAS-retry: re-apply ForceRelease on
-		// the FRESH row so a concurrent writer's cargo/nav update survives instead
-		// of being last-write-wins clobbered, and skip unless the hull is still
-		// this worker's claim (RULINGS #7 — never release out from under a new
-		// owner).
-		_, _, _ = h.shipRepo.SaveWithRetry(ctx, selectedShip, cmd.PlayerID,
-			func(sh *navigation.Ship) (bool, error) {
-				if !sh.IsAssigned() || sh.ContainerID() != workerContainerID {
-					return false, nil
-				}
-				sh.ForceRelease("worker_start_failed", h.clock)
-				return true, nil
-			})
-		_ = h.workerLifecycleManager.StopWorkerContainer(ctx, workerContainerID)
-		return "", fmt.Errorf("Failed to start worker container: %v", err)
-	}
-
-	return workerContainerID, nil
-}
-
-// liquidationDispatchCooldown is how long a hull stays off the auto-liquidation
-// re-dispatch list after one attempt. It bounds a spawn-storm on a genuinely
-// stuck hull — no in-system market bids its cargo and jettison is off, so each
-// pass would otherwise re-park then re-dispatch it. A sellable hull clears on
-// the first attempt and never comes back to the parked list, so the cooldown
-// only governs the unsellable-hold tail; the hull is retried after it, since a
-// market may appear (scouts scan) — a deferral, never a permanent skip
-// (RULINGS #1).
-const liquidationDispatchCooldown = 5 * time.Minute
-
-// dispatchLiquidationForParked self-clears the hulls FilterUnrelatedCargo
-// parked for holding cargo unrelated to the active contract: each gets a
-// one-shot cargo_liquidation worker that sells the strand at the best
-// in-system bid (jettison only as a last resort below the configured floor),
-// so the hull re-enters candidacy on a later pass instead of sitting filtered
-// out of the pool forever. It is a STANDING mechanism (runs every discovery
-// pass), gated by the AutoLiquidationDisabled escape hatch and a per-hull
-// cooldown so an unsellable hold never storms. Best-effort: a spawn failure is
-// logged and the hull is put on cooldown so a persistent failure cannot spin;
-// contract work on the spawnable hulls is never blocked by it.
-func (h *RunFleetCoordinatorHandler) dispatchLiquidationForParked(
-	ctx context.Context,
-	cmd *RunFleetCoordinatorCommand,
-	parkedShips []string,
-	requiredCargo string,
-	cooldown map[string]time.Time,
-) {
-	if cmd.AutoLiquidationDisabled || len(parkedShips) == 0 {
-		return
-	}
-	logger := common.LoggerFromContext(ctx)
-	now := h.clock.Now()
-	for _, shipSymbol := range parkedShips {
-		if until, ok := cooldown[shipSymbol]; ok && now.Before(until) {
-			continue // recently dispatched — don't re-storm a stuck hull
-		}
-		cooldown[shipSymbol] = now.Add(liquidationDispatchCooldown)
-		workerID, err := h.spawnLiquidationWorker(ctx, cmd, shipSymbol, requiredCargo)
-		if errors.Is(err, errHoldAlreadyClear) {
-			logger.Log("INFO", fmt.Sprintf("Auto-liquidation for parked hull %s skipped - its hold cleared between the parking decision and dispatch, so nothing was spawned or claimed", shipSymbol), map[string]interface{}{
-				"action":      "liquidation_dispatch_skipped_clear",
-				"ship_symbol": shipSymbol,
-			})
-			continue
-		}
-		if err != nil {
-			logger.Log("WARNING", fmt.Sprintf("Auto-liquidation dispatch for parked hull %s failed: %v - will retry after cooldown", shipSymbol, err), map[string]interface{}{
-				"action":      "liquidation_dispatch_failed",
-				"ship_symbol": shipSymbol,
-			})
-			continue
-		}
-		logger.Log("INFO", fmt.Sprintf("Auto-liquidation dispatched for parked hull %s (worker %s) - self-clearing stranded cargo so it re-enters candidacy", shipSymbol, workerID), map[string]interface{}{
-			"action":       "liquidation_dispatched",
-			"ship_symbol":  shipSymbol,
-			"worker_id":    workerID,
-			"min_jettison": cmd.LiquidationMinJettisonValue,
-		})
-	}
-}
-
-// errHoldAlreadyClear reports that the hull stopped holding unrelated cargo between
-// the parking decision and this dispatch, so there is nothing to liquidate.
-var errHoldAlreadyClear = errors.New("hold no longer holds cargo unrelated to the contract")
-
-// spawnLiquidationWorker persists, claims, and starts a one-shot
-// cargo_liquidation worker on a parked hull, mirroring spawnContractWorker's
-// atomic-claim + rollback lifecycle. The claim goes through ClaimShip under
-// the contract fleet identity, so an unpinned or contract-pinned hull claims
-// cleanly while a hull pinned to another fleet is rejected at the DB rather
-// than poached. On a start failure the assignment is released so the hull
-// returns to the pool.
-//
-// The hold is re-verified against SERVER TRUTH first, because the parking decision
-// can be right when made and wrong when acted on: a contract turnover empties the
-// hold and flips requiredCargo within about a second, so a hull parked for the
-// OUTGOING good is routinely clear by the time the worker would run. Re-evaluating
-// FilterUnrelatedCargo's own predicate against the API — the same read the worker
-// itself opens with, so no extra call is spent — is what makes decision and action
-// agree; the sync also persists the true hold, so the hull re-enters candidacy on
-// the next pass. Fails CLOSED: an unverifiable hold is never claimed, and the
-// caller's cooldown defers the retry rather than skipping it (RULINGS #1).
-func (h *RunFleetCoordinatorHandler) spawnLiquidationWorker(
-	ctx context.Context,
-	cmd *RunFleetCoordinatorCommand,
-	shipSymbol string,
-	requiredCargo string,
-) (string, error) {
-	logger := common.LoggerFromContext(ctx)
-
-	ship, err := h.shipRepo.SyncShipFromAPI(ctx, shipSymbol, cmd.PlayerID)
-	if err != nil {
-		return "", fmt.Errorf("failed to verify hold of %s: %w", shipSymbol, err)
-	}
-	if cargo := ship.Cargo(); cargo == nil || !cargo.HasItemsOtherThan(requiredCargo) {
-		return "", errHoldAlreadyClear
-	}
-
-	workerContainerID := utils.GenerateContainerID("cargo-liquidation", shipSymbol)
-	workerCmd := &liquidation.LiquidateCargoCommand{
-		PlayerID:         cmd.PlayerID,
-		ShipSymbol:       shipSymbol,
-		MinJettisonValue: cmd.LiquidationMinJettisonValue,
-		CoordinatorID:    cmd.ContainerID,
-	}
-
-	if err := h.daemonClient.PersistContainer(ctx, daemon.ContainerKindCargoLiquidation, workerContainerID, uint(cmd.PlayerID.Value()), workerCmd); err != nil {
-		return "", fmt.Errorf("failed to persist liquidation worker: %w", err)
-	}
-
-	// Atomic operation-checked claim, same identity as spawnContractWorker: a
-	// foreign-pinned hull is rejected at the DB, not clobbered.
-	if err := h.shipRepo.ClaimShip(ctx, shipSymbol, workerContainerID, cmd.PlayerID, dedicatedFleetContract); err != nil {
-		_ = h.workerLifecycleManager.StopWorkerContainer(ctx, workerContainerID)
-		return "", fmt.Errorf("failed to claim ship %s: %w", shipSymbol, err)
-	}
-
-	// Mirror the committed claim into the in-memory entity so the start-failure rollback
-	// below sees the assignment; a sync failure is a WARN, not an unclaim (the DB claim
-	// stands).
-	if err := ship.AssignToContainer(workerContainerID, h.clock); err != nil {
-		logger.Log("WARNING", fmt.Sprintf("Ship %s claimed in DB but in-memory assign failed (claim stands): %v", shipSymbol, err), nil)
-	}
-
-	if err := h.daemonClient.StartContainer(ctx, daemon.ContainerKindCargoLiquidation, workerContainerID); err != nil {
-		// Release the just-claimed hull under CAS-retry: re-apply ForceRelease on
-		// the FRESH row so a concurrent writer's cargo/nav update survives instead
-		// of being last-write-wins clobbered, and skip unless the hull is still
-		// this worker's claim (RULINGS #7).
-		_, _, _ = h.shipRepo.SaveWithRetry(ctx, shipSymbol, cmd.PlayerID,
-			func(sh *navigation.Ship) (bool, error) {
-				if !sh.IsAssigned() || sh.ContainerID() != workerContainerID {
-					return false, nil
-				}
-				sh.ForceRelease("liquidation_start_failed", h.clock)
-				return true, nil
-			})
-		_ = h.workerLifecycleManager.StopWorkerContainer(ctx, workerContainerID)
-		return "", fmt.Errorf("failed to start liquidation worker: %w", err)
-	}
-
-	return workerContainerID, nil
-}
-
-// scopeCandidatesToContractHome narrows the worker-candidate pool to hulls idle in the
-// contract's HOME system — the delivery-destination system, the SAME authoritative scope
-// PlanSourcing/market_finder derive contract sourcing from (RULINGS #14: the worker is
-// zero-jump, so a hull outside the delivery system can neither source nor deliver).
-//
-// Scope applies to the GENERAL grab pool only: in EXCLUSIVE MODE (a dedicated contract
-// fleet active) the pool passes through unscoped, since a dedicated fleet already draws
-// ONLY from its own members. Reserved hulls from the fleet reserve floor are UNDEDICATED +
-// home, so they ride this general path and stay eligible. An un-derivable destination
-// yields an empty home system, so FilterToHomeSystem degrades to fleet-wide (fail-open)
-// and never blocks the contract.
-func (h *RunFleetCoordinatorHandler) scopeCandidatesToContractHome(
-	ctx context.Context,
-	playerID shared.PlayerID,
-	candidates []string,
-	deliveryDestination string,
-	dedicatedFleetActive bool,
-) ([]string, error) {
-	if dedicatedFleetActive {
-		return candidates, nil
-	}
-	homeSystem := shared.ExtractSystemSymbol(deliveryDestination)
-	return appContract.FilterToHomeSystem(ctx, playerID, h.shipRepo, candidates, homeSystem)
-}
-
-// calculateInFlightCargo calculates the total cargo of a specific trade symbol
-// that is currently held by ships working on active contract workflows, plus
-// cargo still aboard ships whose contract worker was interrupted (marked
-// FAILED) but hasn't been reclaimed to idle yet. Without the second source, a
-// partially-laden hull orphaned by a dead worker read as 0 in-flight the
-// moment its worker died, letting the coordinator purchase units redundant
-// with what that hull is still physically holding.
-//
-// Ordering rules out double-counting: readoptInterruptedDeliveries runs once,
-// before the main loop starts, and moves any successfully
-// re-adopted ship onto a fresh RUNNING container before this function is ever
-// called from inside the loop. That ship is therefore picked up exactly once,
-// by the RUNNING-workers pass below, and no longer matches
-// FindInterruptedWorkerShipsWithCargo's query (it queries by container ID,
-// and the ship has moved off the dead one — the dead container's own row can
-// still be sitting in the FAILED list, but nothing on it matches anymore). A
-// ship that is NOT re-adopted (readoption only re-adopts one hull per
-// startup) stays attached to its FAILED container - a transient state the
-// loop's unconditional ReclaimShipsFromInterruptedWorkers pass forces closed
-// on its very next iteration - so counting it here can delay, but never
-// permanently stall, the coordinator, unlike counting arbitrary idle-ship
-// cargo would.
-//
-// This is used during restart recovery to prevent duplicate cargo purchases.
-func (h *RunFleetCoordinatorHandler) calculateInFlightCargo(
-	ctx context.Context,
-	tradeSymbol string,
-	playerID int,
-) (int, error) {
-	logger := common.LoggerFromContext(ctx)
-
-	// Find all active CONTRACT_WORKFLOW containers
-	activeWorkers, err := h.workerLifecycleManager.FindExistingWorkers(ctx, playerID)
-	if err != nil {
-		return 0, fmt.Errorf("failed to find existing workers: %w", err)
-	}
-
-	totalInFlight := 0
-
-	// For each active worker, find its assigned ships and check their cargo
-	for _, worker := range activeWorkers {
-		ships, err := h.shipRepo.FindByContainer(ctx, worker.ID, shared.MustNewPlayerID(playerID))
-		if err != nil {
-			logger.Log("WARNING", fmt.Sprintf("Failed to get ships for container %s: %v", worker.ID, err), nil)
-			continue
-		}
-
-		for _, ship := range ships {
-			// Count cargo of the required trade symbol
-			for _, item := range ship.Cargo().Inventory {
-				if item.Symbol == tradeSymbol {
-					totalInFlight += item.Units
-					logger.Log("INFO", fmt.Sprintf("Found %d units of %s in ship %s cargo (worker %s)",
-						item.Units, tradeSymbol, ship.ShipSymbol(), worker.ID), nil)
-				}
-			}
-		}
-	}
-
-	// Also count cargo still aboard ships whose contract worker was
-	// interrupted (marked FAILED) but hasn't been reclaimed to idle yet.
-	// Reuses FindInterruptedWorkerShipsWithCargo rather than a new query, so
-	// this always agrees with readoptInterruptedDeliveries
-	// about which ships are "interrupted with cargo to salvage." A failure
-	// here is logged and swallowed, matching this function's existing
-	// "better to risk duplication than block indefinitely" contract with its
-	// caller — the RUNNING-workers total above is still valid on its own.
-	interruptedShips, err := h.workerLifecycleManager.FindInterruptedWorkerShipsWithCargo(ctx, playerID)
-	if err != nil {
-		logger.Log("WARNING", fmt.Sprintf("Failed to find interrupted-worker ships for in-flight cargo count: %v", err), nil)
-	} else {
-		for _, ship := range interruptedShips {
-			for _, item := range ship.Cargo().Inventory {
-				if item.Symbol == tradeSymbol {
-					totalInFlight += item.Units
-					logger.Log("INFO", fmt.Sprintf("Found %d units of %s in interrupted ship %s cargo (worker dead, not yet reclaimed)",
-						item.Units, tradeSymbol, ship.ShipSymbol()), nil)
-				}
-			}
-		}
-	}
-
-	if totalInFlight > 0 {
-		logger.Log("INFO", fmt.Sprintf("Total in-flight cargo: %d units of %s", totalInFlight, tradeSymbol), nil)
-	}
-
-	return totalInFlight, nil
-}
-
-// idleReclaimedContractCargoHeld sums the contract good already aboard IDLE
-// (unassigned) hulls — most importantly one just reclaimed from a crashed
-// contract worker that still physically holds its contract load.
-//
-// calculateInFlightCargo deliberately counts only RUNNING/interrupted-worker
-// cargo for its WAIT gate: counting idle cargo there would STALL the coordinator,
-// because an idle hull's load is dispatchable NOW (the wait gate short-circuits
-// before selection, so a counted-but-not-dispatched idle load would loop
-// forever). This companion instead surfaces that idle load as a DISPATCH signal —
-// the coordinator completes it with the holding hull (cargo-priority selection
-// picks the holder) rather than sourcing a duplicate onto a second hull, which is
-// the sp-1pf0r double-load defense. Read-only; a load-failure is returned so the
-// caller can log and proceed (better to risk a duplicate than to block).
-func (h *RunFleetCoordinatorHandler) idleReclaimedContractCargoHeld(ctx context.Context, tradeSymbol string, playerID int) (int, error) {
-	ships, err := h.shipRepo.FindAllByPlayer(ctx, shared.MustNewPlayerID(playerID))
-	if err != nil {
-		return 0, fmt.Errorf("failed to load ships for idle-cargo count: %w", err)
-	}
-	total := 0
-	for _, ship := range ships {
-		if ship.IsAssigned() {
-			continue // on a worker/other container — waited on / counted elsewhere
-		}
-		total += ship.Cargo().GetItemUnits(tradeSymbol)
-	}
-	return total, nil
-}
-
-// idleContractCargoHolder names the IDLE (unassigned) hull best positioned to
-// COMPLETE the active contract's delivery from cargo it ALREADY holds: among idle
-// hulls carrying ONLY the contract good (a PURE holder — safe to claim without the
-// NO-CARGO-DUMP guard tripping), the one holding the MOST units, ties broken by the
-// lexicographically-smallest symbol so a restart deterministically re-picks the
-// SAME hull, never a second cargo-laden one. Returns "" when no pure holder exists.
-//
-// This is the SELECTION companion to idleReclaimedContractCargoHeld's dispatch-
-// signal COUNT: that surfaces the intent to complete the load with its holder; this
-// NAMES the holder so the coordinator actually SELECTS it, short-circuiting the
-// distance-based pick. It is needed because the candidate-discovery filters
-// (FindIdleLightHaulers / FindIdleShipsByFleet) drop an idle holder that is IN
-// TRANSIT, or UNDEDICATED while a dedicated contract fleet is active (EXCLUSIVE
-// MODE) — so such a holder is DETECTED yet never reaches SelectClosestShip's own
-// cargo-priority, and the closest empty hull sources a duplicate (the observed
-// TORWIND-15-holds-43 / TORWIND-8-double-sources gap). This scans the full fleet,
-// like its count sibling, so it sees the holder regardless of those filters.
-// Read-only; a load failure is returned so the caller logs and falls back to
-// distance selection (better a possible duplicate than a blocked contract).
-func (h *RunFleetCoordinatorHandler) idleContractCargoHolder(ctx context.Context, requiredCargo string, playerID int) (string, error) {
-	ships, err := h.shipRepo.FindAllByPlayer(ctx, shared.MustNewPlayerID(playerID))
-	if err != nil {
-		return "", fmt.Errorf("failed to load ships for idle-holder selection: %w", err)
-	}
-	bestSymbol := ""
-	bestUnits := 0
-	for _, ship := range ships {
-		if ship.IsAssigned() {
-			continue // on a worker/other container — completing on its own worker, not idle-dispatchable here
-		}
-		units := ship.Cargo().GetItemUnits(requiredCargo)
-		if units <= 0 {
-			continue // holds none of the contract good
-		}
-		if ship.Cargo().HasItemsOtherThan(requiredCargo) {
-			continue // impure holder — leave to the NO-CARGO-DUMP park/liquidate path, never force-claim
-		}
-		symbol := ship.ShipSymbol()
-		if units > bestUnits || (units == bestUnits && symbol < bestSymbol) {
-			bestSymbol = symbol
-			bestUnits = units
-		}
-	}
-	return bestSymbol, nil
-}
-
-// weighHolderPlacement measures the ONE comparison the holder-vs-source decision
-// needs: how far the idle holder sits from the SOURCE market versus the nearest
-// spawnable candidate, plus whether the holder is standing on the delivery (so
-// its held units can be registered without travel). dist(source,destination) is
-// identical for every candidate and cancels out, so this is a scalar sweep of
-// already-loaded ship positions — never a routing solve.
-//
-// Only hulls in the SOURCE's system are compared: Waypoint.DistanceTo is a plain
-// Euclidean coordinate distance and is meaningless across systems, and a hull
-// outside the contract's home system could reach neither the source nor the
-// delivery anyway (RULINGS #14). Candidates are taken from the pass's already
-// dedication-filtered, cargo-filtered, governor-filtered spawnable pool, so this
-// never reaches into another fleet's hulls. Errors (and a nil graph provider)
-// return a placement with no alternative named, which the decision reads as
-// "keep the holder" — fail-closed onto sp-zve2q's behaviour.
-func (h *RunFleetCoordinatorHandler) weighHolderPlacement(
-	ctx context.Context,
-	holder string,
-	candidates []string,
-	sourceWaypoint string,
-	deliveryDestination string,
-	requiredCargo string,
-	unitsNeeded int,
-	playerID int,
-) (domainContract.HolderPlacement, error) {
-	placement := domainContract.HolderPlacement{Holder: holder, UnitsNeeded: unitsNeeded}
-	if holder == "" || sourceWaypoint == "" || h.graphProvider == nil {
-		return placement, nil
-	}
-
-	ships, err := h.shipRepo.FindAllByPlayer(ctx, shared.MustNewPlayerID(playerID))
-	if err != nil {
-		return placement, fmt.Errorf("failed to load ships for holder placement: %w", err)
-	}
-
-	sourceSystem := shared.ExtractSystemSymbol(sourceWaypoint)
-	graphResult, err := h.graphProvider.GetGraph(ctx, sourceSystem, false, playerID)
-	if err != nil {
-		return placement, fmt.Errorf("failed to load system graph for holder placement: %w", err)
-	}
-	source, ok := graphResult.Graph.Waypoints[sourceWaypoint]
-	if !ok {
-		return placement, fmt.Errorf("source waypoint %s not found in graph", sourceWaypoint)
-	}
-
-	candidateSet := make(map[string]bool, len(candidates))
-	for _, symbol := range candidates {
-		candidateSet[symbol] = true
-	}
-
-	nearestDist := 0.0
-	for _, ship := range ships {
-		location := ship.CurrentLocation()
-		if location == nil || shared.ExtractSystemSymbol(location.Symbol) != sourceSystem {
-			continue
-		}
-
-		if ship.ShipSymbol() == holder {
-			placement.HeldUnits = ship.Cargo().GetItemUnits(requiredCargo)
-			placement.HolderSourceDist = location.DistanceTo(source)
-			placement.HolderAtDestination = location.Symbol == deliveryDestination
-			continue
-		}
-
-		if !candidateSet[ship.ShipSymbol()] {
-			continue // not claimable for this contract on this pass
-		}
-		if ship.NavStatus() == navigation.NavStatusInTransit {
-			continue // its position is already stale — never rank a moving hull
-		}
-
-		if distance := location.DistanceTo(source); placement.NearestHull == "" || distance < nearestDist {
-			placement.NearestHull = ship.ShipSymbol()
-			nearestDist = distance
-		}
-	}
-	placement.NearestSourceDist = nearestDist
-
-	return placement, nil
-}
-
-// decideDeliverHeldFirst weighs the sp-zve2q holder short-circuit against source
-// proximity and reports whether the holder should be dispatched in DELIVER-HELD
-// mode — registering the load it is standing on at zero travel and stopping, so
-// the next pass hands the sourcing run to the hull near the source instead of
-// flying this one to the source and back.
-//
-// attempted bounds it to ONE zero-travel delivery per (contract, hull) for this
-// coordinator's lifetime. If the hull comes back still holding its load — an API
-// refusal, or a daemon restart that rebuilt the worker as an ordinary run — the
-// next pass runs the FULL leg rather than re-dispatching the same no-op forever.
-func (h *RunFleetCoordinatorHandler) decideDeliverHeldFirst(
-	ctx context.Context,
-	contractID string,
-	holder string,
-	candidates []string,
-	sourceWaypoint string,
-	deliveryDestination string,
-	requiredCargo string,
-	unitsNeeded int,
-	playerID int,
-	attempted map[string]bool,
-) bool {
-	logger := common.LoggerFromContext(ctx)
-
-	placement, err := h.weighHolderPlacement(ctx, holder, candidates, sourceWaypoint, deliveryDestination, requiredCargo, unitsNeeded, playerID)
-	if err != nil {
-		logger.Log("WARNING", fmt.Sprintf(
-			"Failed to measure holder placement for %s (keeping the single-hull short-circuit unchanged): %v", holder, err), nil)
-		return false
-	}
-
-	decision := domainContract.WeighHolderAgainstSource(placement)
-	if !decision.DeliverHeldFirst {
-		return false
-	}
-
-	key := contractID + "|" + holder
-	if attempted[key] {
-		logger.Log("INFO", fmt.Sprintf(
-			"Hull %s already had its zero-travel deliver-held run this coordinator lifetime and still holds %s - running the FULL source+deliver leg instead of re-dispatching it (sp-5jce2 one-shot)",
-			holder, requiredCargo), map[string]interface{}{
-			"action":      "deliver_held_already_attempted",
-			"contract_id": contractID,
-			"ship_symbol": holder,
-		})
-		return false
-	}
-	attempted[key] = true
-
-	logger.Log("INFO", fmt.Sprintf(
-		"Holder %s sits %.1f units from source %s holding only %d of %d needed, while %s sits %.1f units away - dispatching %s to register its load where it stands (zero travel), then sourcing the remainder with the near hull instead of a %.1f-unit round trip (sp-5jce2): %s",
-		holder, placement.HolderSourceDist, sourceWaypoint, placement.HeldUnits, placement.UnitsNeeded,
-		placement.NearestHull, placement.NearestSourceDist, holder,
-		2*placement.HolderSourceDist, decision.Reason), map[string]interface{}{
-		"action":              "deliver_held_split",
-		"contract_id":         contractID,
-		"ship_symbol":         holder,
-		"trade_symbol":        requiredCargo,
-		"held_units":          placement.HeldUnits,
-		"units_needed":        placement.UnitsNeeded,
-		"holder_source_dist":  placement.HolderSourceDist,
-		"nearest_hull":        placement.NearestHull,
-		"nearest_source_dist": placement.NearestSourceDist,
-		"source":              sourceWaypoint,
-	})
-	return true
-}
-
-// recordErrorLoopEvent emits the captain outbox event for a checkpoint's
-// error streak crossing. Fire-and-forget with its own short timeout,
-// mirroring internal/adapters/grpc/captain_recorder.go's idiom: an
-// outbox failure must never break the coordinator's retry loop, so errors
-// are logged at WARNING and swallowed. A nil captainEvents (not wired —
-// tests, or a daemon boot before main finishes DI) silently disables
-// recording rather than panicking.
-func (h *RunFleetCoordinatorHandler) recordErrorLoopEvent(ctx context.Context, cmd *RunFleetCoordinatorCommand, checkpoint string, cause error, streak int) {
-	if h.captainEvents == nil {
-		return
-	}
-	logger := common.LoggerFromContext(ctx)
-	event := health.NewErrorLoopEvent(cmd.ContainerID, cmd.PlayerID.Value(), checkpoint, cause, streak)
-	recordCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := h.captainEvents.Record(recordCtx, event); err != nil {
-		logger.Log("WARNING", fmt.Sprintf("captain outbox: failed to record %s for checkpoint %s: %v", captain.EventCoordinatorErrorLoop, checkpoint, err), nil)
-	}
-}
-
-// recordHullQuarantineEvent emits the single captain outbox event for a hull
-// crossing into spawn quarantine. Fire-and-forget with its own short timeout,
-// mirroring recordErrorLoopEvent exactly: an outbox failure must never
-// break the coordinator's loop, so it is logged at WARNING and swallowed, and a
-// nil captainEvents (not wired — tests, or a daemon boot before DI completes)
-// silently disables recording rather than panicking.
-func (h *RunFleetCoordinatorHandler) recordHullQuarantineEvent(ctx context.Context, cmd *RunFleetCoordinatorCommand, hull string, instantDeaths int) {
-	if h.captainEvents == nil {
-		return
-	}
-	logger := common.LoggerFromContext(ctx)
-	event := buildHullQuarantineEvent(cmd.ContainerID, cmd.PlayerID.Value(), hull, instantDeaths)
-	recordCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := h.captainEvents.Record(recordCtx, event); err != nil {
-		logger.Log("WARNING", fmt.Sprintf("captain outbox: failed to record hull quarantine for %s: %v", hull, err), nil)
-	}
-}
-
-func (h *RunFleetCoordinatorHandler) stopActiveWorker(ctx context.Context, activeWorkerContainerID string) {
-	if activeWorkerContainerID == "" {
-		return
-	}
-	logger := common.LoggerFromContext(ctx)
-	logger.Log("INFO", fmt.Sprintf("Stopping active worker container: %s", activeWorkerContainerID), nil)
-	_ = h.workerLifecycleManager.StopWorkerContainer(ctx, activeWorkerContainerID)
+	return contract, true
 }

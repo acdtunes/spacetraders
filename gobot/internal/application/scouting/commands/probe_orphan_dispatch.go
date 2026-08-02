@@ -68,19 +68,18 @@ type idleOrphanHull struct {
 // therefore costs this pass its three reads and not one write, however many ticks run.
 func (h *RunProbeSensingCoordinatorHandler) dispatchIdleOrphans(
 	ctx context.Context,
-	cmd *RunProbeSensingCoordinatorCommand,
-	ports SensingEnginePorts,
+	cyc sensingCycle,
 	failures *[]error,
 ) int {
 	logger := common.LoggerFromContext(ctx)
-	playerID := cmd.PlayerID.Value()
+	playerID := cyc.cmd.PlayerID.Value()
 
 	// ALL THREE READS FAIL CLOSED, and the post list is the sharpest of them: read permissively, an
 	// unreadable post list is an EMPTY one, which means "no hull is manned" — and this pass would
 	// then fly the probe manning the surviving home post out from under the scout coordinator. An
 	// unreadable input must never read as "nothing is assigned"; that is the shape that authorises
 	// taking a busy hull.
-	ships, err := h.fleetRepo.FindAllByPlayer(ctx, cmd.PlayerID)
+	ships, err := h.fleetRepo.FindAllByPlayer(ctx, cyc.cmd.PlayerID)
 	if err != nil {
 		*failures = append(*failures, fmt.Errorf("failed to list the fleet for idle-orphan dispatch: %w", err))
 		return 0
@@ -90,18 +89,13 @@ func (h *RunProbeSensingCoordinatorHandler) dispatchIdleOrphans(
 		*failures = append(*failures, fmt.Errorf("failed to list scout posts for idle-orphan dispatch: %w", err))
 		return 0
 	}
-	holds, err := ledgerHoldings(ctx, ports, playerID)
+	holds, err := ledgerHoldings(ctx, cyc.ports, playerID)
 	if err != nil {
 		*failures = append(*failures, err)
 		return 0
 	}
 
-	manned := make(map[string]bool, len(posts))
-	for _, post := range posts {
-		if post.AssignedHull != "" {
-			manned[post.AssignedHull] = true
-		}
-	}
+	manned := primaryMannedHulls(posts)
 
 	orphans, standing := idleOrphans(ships, manned, holds)
 	if len(orphans) == 0 {
@@ -113,7 +107,7 @@ func (h *RunProbeSensingCoordinatorHandler) dispatchIdleOrphans(
 	}
 	// One walker per tick, so the topology behind a burst of dispatches is read once per distinct
 	// system the hulls are standing in rather than once per hull.
-	reach := newGateReach(ports.Gates, failures)
+	reach := newGateReach(cyc.ports.Gates, failures)
 
 	dispatched, writes := 0, 0
 	for _, orphan := range orphans {
@@ -156,59 +150,9 @@ func (h *RunProbeSensingCoordinatorHandler) dispatchIdleOrphans(
 
 		hull := orphan.ship.ShipSymbol()
 		writes++
-		// THE WRITE ORDER IS A MONEY GUARD.
-		//
-		// claimSpares and reuseSpareHull both order two writes so that a crash between them
-		// OVER-counts the fleet rather than under-counting it, because an over-count only ever buys
-		// FEWER probes while an under-count authorises buying a replacement for a hull we already
-		// own (RULINGS #4). Here the RELEASE LEG IS ABSENT — an orphan is named by no row at all,
-		// which is the whole reason it is stuck — so this stamps the errand and has nothing to hand
-		// back. There is no window in which the hull is named by neither row, because it starts named
-		// by neither and ends named by one.
-		//
-		// The two writes that remain are the row and the fleet tag, and the same rule decides their
-		// order for the same reason. The ROW is what CountOwnedProbes reads:
-		//
-		//   - row then tag (as here): a failure leaves the hull recorded and untagged. It counts
-		//     against the probe cap, and the placement machine re-tags it on first use. Recoverable.
-		//   - tag then row: a failure leaves the hull TAGGED sensing_parked with no row anywhere —
-		//     invisible to the cap for good, and the cap then authorises re-buying it. Money-unsafe,
-		//     and it is the exact shape that cost this fleet 245,316 credits.
-		//
-		// So the row goes first and the tag is best-effort behind it, exactly as in adoption.
-		//
-		// This writes IN_TRANSIT for a hull that has NOT been told to move. The placement machine's
-		// dispatchClaim branch is what notices a still hull on an in-flight row and flies it; that
-		// branch is load-bearing for this path, not an edge case — without it the hull would stand
-		// where it is forever while the row read as in-flight.
-		err := ports.Ledger.TransitionSlot(ctx, playerID, target.Waypoint, target.Kind,
-			parkedsensing.SlotStateWanted, parkedsensing.SlotStateInTransit,
-			parkedsensing.SlotFields{AssignedShip: &hull})
-		switch {
-		case errors.Is(err, parkedsensing.ErrSlotClaimed):
-			// Another writer took the placement between the read and the write. Routine contention,
-			// nothing spent, and nothing to unwind — the hull is untouched and still an orphan.
-			continue
-		case err != nil:
-			*failures = append(*failures, fmt.Errorf(
-				"failed to dispatch idle probe %s to the open placement at %s: %w", hull, target.Waypoint, err))
-			continue
+		if claimOpenPlacement(ctx, cyc.ports, playerID, hull, target, holds, failures) {
+			dispatched++
 		}
-
-		// Best-effort, for the reason above: the cap counts rows, and the row is written. Named
-		// rather than silent, because an untagged hull reads as idle and undedicated to every other
-		// coordinator's ownership sweep — long enough to be poached mid-flight.
-		if tagErr := ports.Fleet.AssignFleet(ctx, playerID, hull, parkedsensing.SensingParkedFleetTag); tagErr != nil {
-			logger.Log("WARNING", fmt.Sprintf(
-				"Idle probe %s is now dispatched to %s but keeps its old fleet tag (the probe cap counts it; the placement machine re-tags it on first use): %v",
-				hull, target.Waypoint, tagErr), map[string]interface{}{
-				"action":      "parked_sensing_dispatch_tag_failed",
-				"ship_symbol": hull,
-				"waypoint":    target.Waypoint,
-			})
-		}
-		holds.hulls[hull] = true
-		dispatched++
 	}
 
 	if dispatched > 0 {
@@ -221,6 +165,63 @@ func (h *RunProbeSensingCoordinatorHandler) dispatchIdleOrphans(
 		})
 	}
 	return dispatched
+}
+
+// claimOpenPlacement stamps the errand onto the open placement and reports whether the hull
+// was dispatched.
+//
+// THE WRITE ORDER IS A MONEY GUARD. claimSpares and reuseSpareHull both order two writes so
+// that a crash between them OVER-counts the fleet rather than under-counting it, because an
+// over-count only ever buys FEWER probes while an under-count authorises buying a replacement
+// for a hull we already own (RULINGS #4). Here the RELEASE LEG IS ABSENT — an orphan is named
+// by no row at all, which is the whole reason it is stuck — so this stamps the errand and has
+// nothing to hand back.
+//
+// The two writes that remain are the row and the fleet tag, and the ROW is what
+// CountOwnedProbes reads:
+//
+//   - row then tag (as here): a failure leaves the hull recorded and untagged. It counts
+//     against the probe cap, and the placement machine re-tags it on first use. Recoverable.
+//   - tag then row: a failure leaves the hull TAGGED sensing_parked with no row anywhere —
+//     invisible to the cap for good, and the cap then authorises re-buying it. Money-unsafe,
+//     and it is the exact shape that cost this fleet 245,316 credits.
+//
+// This writes IN_TRANSIT for a hull that has NOT been told to move. The placement machine's
+// dispatchClaim branch is what notices a still hull on an in-flight row and flies it; that
+// branch is load-bearing for this path, not an edge case — without it the hull would stand
+// where it is forever while the row read as in-flight.
+func claimOpenPlacement(ctx context.Context, ports SensingEnginePorts, playerID int, hull string, target parkedsensing.QueuedSlot, holds ledgerHolds, failures *[]error) bool {
+	err := ports.Ledger.TransitionSlot(ctx, playerID, parkedsensing.SlotTransition{
+		Waypoint: target.Waypoint,
+		Kind:     target.Kind,
+		From:     parkedsensing.SlotStateWanted,
+		To:       parkedsensing.SlotStateInTransit,
+	}, parkedsensing.SlotFields{AssignedShip: &hull})
+	switch {
+	case errors.Is(err, parkedsensing.ErrSlotClaimed):
+		// Another writer took the placement between the read and the write. Routine contention,
+		// nothing spent, and nothing to unwind — the hull is untouched and still an orphan.
+		return false
+	case err != nil:
+		*failures = append(*failures, fmt.Errorf(
+			"failed to dispatch idle probe %s to the open placement at %s: %w", hull, target.Waypoint, err))
+		return false
+	}
+
+	// Best-effort, for the reason above: the cap counts rows, and the row is written. Named
+	// rather than silent, because an untagged hull reads as idle and undedicated to every other
+	// coordinator's ownership sweep — long enough to be poached mid-flight.
+	if tagErr := ports.Fleet.AssignFleet(ctx, playerID, hull, parkedsensing.SensingParkedFleetTag); tagErr != nil {
+		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
+			"Idle probe %s is now dispatched to %s but keeps its old fleet tag (the probe cap counts it; the placement machine re-tags it on first use): %v",
+			hull, target.Waypoint, tagErr), map[string]interface{}{
+			"action":      "parked_sensing_dispatch_tag_failed",
+			"ship_symbol": hull,
+			"waypoint":    target.Waypoint,
+		})
+	}
+	holds.hulls[hull] = true
+	return true
 }
 
 // idleOrphans selects the hulls this pass may fly, and reports every waypoint an eligible idle
@@ -306,7 +307,7 @@ func idleOrphans(ships []*navigation.Ship, manned map[string]bool, holds ledgerH
 //   - a waypoint an idle orphan is standing on: adoption fills it in place for free.
 func openPlacements(holds ledgerHolds, standing map[string]bool) map[string][]parkedsensing.QueuedSlot {
 	targets := map[string][]parkedsensing.QueuedSlot{}
-	// Two loops because a waypoint can carry more than one placement now
+	// Two loops because a waypoint can carry more than one placement now —
 	// (sp-dpfp8) — the SPARE filter below is exactly what keeps the extra row from
 	// becoming a target, so both have to be looked at rather than whichever one an
 	// index happened to keep.

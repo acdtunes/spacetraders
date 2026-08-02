@@ -31,7 +31,7 @@ type fakeFleetMutator struct {
 	listErr       error
 }
 
-func (f *fakeFleetMutator) AssignShipFleet(_ context.Context, shipSymbol, fleet string, _ *int32, _ *string) (*pb.AssignShipFleetResponse, error) {
+func (f *fakeFleetMutator) AssignShipFleet(_ context.Context, shipSymbol, fleet string, _ *PlayerIdentifier) (*pb.AssignShipFleetResponse, error) {
 	f.assignCalls = append(f.assignCalls, assignCall{ship: shipSymbol, fleet: fleet})
 	if f.assignErr != nil {
 		return nil, f.assignErr
@@ -39,7 +39,7 @@ func (f *fakeFleetMutator) AssignShipFleet(_ context.Context, shipSymbol, fleet 
 	return &pb.AssignShipFleetResponse{ShipSymbol: shipSymbol, Fleet: fleet}, nil
 }
 
-func (f *fakeFleetMutator) UnassignShipFleet(_ context.Context, shipSymbol string, _ *int32, _ *string) (*pb.UnassignShipFleetResponse, error) {
+func (f *fakeFleetMutator) UnassignShipFleet(_ context.Context, shipSymbol string, _ *PlayerIdentifier) (*pb.UnassignShipFleetResponse, error) {
 	f.unassignCalls = append(f.unassignCalls, shipSymbol)
 	if f.unassignErr != nil {
 		return nil, f.unassignErr
@@ -47,7 +47,7 @@ func (f *fakeFleetMutator) UnassignShipFleet(_ context.Context, shipSymbol strin
 	return &pb.UnassignShipFleetResponse{ShipSymbol: shipSymbol}, nil
 }
 
-func (f *fakeFleetMutator) ListFleets(_ context.Context, _ *int32, _ *string) (*pb.ListFleetsResponse, error) {
+func (f *fakeFleetMutator) ListFleets(_ context.Context, _ *PlayerIdentifier) (*pb.ListFleetsResponse, error) {
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
@@ -81,7 +81,7 @@ func fleetsFixture(membership map[string][]string) *pb.ListFleetsResponse {
 func TestFleetAdd_DispatchedNextTick_NoRestart(t *testing.T) {
 	client := &fakeFleetMutator{}
 
-	msg, err := runFleetAdd(context.Background(), client, "contract", "TORWIND-5", nil, nil)
+	msg, err := runFleetAdd(context.Background(), client, "contract", "TORWIND-5", nil)
 	require.NoError(t, err)
 
 	require.Equal(t, []assignCall{{ship: "TORWIND-5", fleet: "contract"}}, client.assignCalls,
@@ -97,7 +97,7 @@ func TestFleetAdd_DispatchedNextTick_NoRestart(t *testing.T) {
 func TestFleetAdd_PropagatesDaemonError(t *testing.T) {
 	client := &fakeFleetMutator{assignErr: errors.New("daemon unavailable")}
 
-	_, err := runFleetAdd(context.Background(), client, "contract", "TORWIND-5", nil, nil)
+	_, err := runFleetAdd(context.Background(), client, "contract", "TORWIND-5", nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "TORWIND-5")
 	require.Contains(t, err.Error(), "contract")
@@ -116,7 +116,7 @@ func TestFleetRemove_MidContract_FinishesOrHandsOff_NoStranded(t *testing.T) {
 		listResp: fleetsFixture(map[string][]string{"contract": {"TORWIND-1", "TORWIND-5"}}),
 	}
 
-	msg, err := runFleetRemove(context.Background(), client, "contract", "TORWIND-1", nil, nil)
+	msg, err := runFleetRemove(context.Background(), client, "contract", "TORWIND-1", nil)
 	require.NoError(t, err)
 
 	require.Equal(t, []string{"TORWIND-1"}, client.unassignCalls,
@@ -137,7 +137,7 @@ func TestFleetRemove_ClearsDedication_CoordinatorStopsUsing(t *testing.T) {
 		listResp: fleetsFixture(map[string][]string{"contract": {"TORWIND-1"}}),
 	}
 
-	_, err := runFleetRemove(context.Background(), client, "contract", "TORWIND-1", nil, nil)
+	_, err := runFleetRemove(context.Background(), client, "contract", "TORWIND-1", nil)
 	require.NoError(t, err)
 	require.Equal(t, []string{"TORWIND-1"}, client.unassignCalls)
 }
@@ -157,7 +157,7 @@ func TestFleetRemove_RespectsExclusivity_RefusesForeignOperation(t *testing.T) {
 		}),
 	}
 
-	_, err := runFleetRemove(context.Background(), client, "contract", "TORWIND-1", nil, nil)
+	_, err := runFleetRemove(context.Background(), client, "contract", "TORWIND-1", nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "stocker", "the error must name the hull's real fleet")
 	require.Contains(t, err.Error(), "TORWIND-1")
@@ -171,7 +171,7 @@ func TestFleetRemove_ShipInNoFleet_Errors(t *testing.T) {
 		listResp: fleetsFixture(map[string][]string{"contract": {"TORWIND-5"}}),
 	}
 
-	_, err := runFleetRemove(context.Background(), client, "contract", "TORWIND-9", nil, nil)
+	_, err := runFleetRemove(context.Background(), client, "contract", "TORWIND-9", nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "TORWIND-9")
 	require.Empty(t, client.unassignCalls)
@@ -183,7 +183,7 @@ func TestFleetRemove_ShipInNoFleet_Errors(t *testing.T) {
 func TestFleetRemove_ListFleetsError_AbortsWithoutClearing(t *testing.T) {
 	client := &fakeFleetMutator{listErr: errors.New("daemon unavailable")}
 
-	_, err := runFleetRemove(context.Background(), client, "contract", "TORWIND-1", nil, nil)
+	_, err := runFleetRemove(context.Background(), client, "contract", "TORWIND-1", nil)
 	require.Error(t, err)
 	require.Empty(t, client.unassignCalls, "an unverified removal must never clear a dedication")
 }

@@ -27,7 +27,7 @@ import (
 // systems previously written off as "unreachable, behind the wall" are plain gate-reachable.
 //
 // WHY THE ENGINE NEVER ASKED. seedlessTargets keeps a system only while
-// `(UnchartedCount > 0 || !CatalogKnown) && !hasActiveSeed`, and orderByGateMapping — the only caller
+// `(UnchartedCount > 0 || !CatalogKnown) && !hasActiveSeed`, and orderUnmappedFirst — the only caller
 // of Gates.Mapped — runs over its output. So a system leaves the gate question entirely once EITHER a
 // seed is dispatched to it OR its catalogue is swept and fully charted. X1-TD22 hit the first: a probe
 // stamped hours earlier was still in flight several hops away, and from that moment the engine waited

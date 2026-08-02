@@ -85,12 +85,12 @@ func TestRetiredLegacyCoordinatorStartVerbs_ReturnRetiredError(t *testing.T) {
 	s := &DaemonServer{containerRepo: repo}
 	ctx := context.Background()
 
-	_, err := s.MarketFreshnessSizerCoordinator(ctx, playerID, 0, false, 0, 0, 0, 0, 0)
+	_, err := s.MarketFreshnessSizerCoordinator(ctx, playerID)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "retired", "the sizer start verb must say it is retired")
 	require.Contains(t, err.Error(), "probe-sensing", "the error must point the operator at the successor")
 
-	_, err = s.FrontierExpansionCoordinator(ctx, playerID, 0, false, 0, 0)
+	_, err = s.FrontierExpansionCoordinator(ctx, playerID)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "retired", "the frontier start verb must say it is retired")
 	require.Contains(t, err.Error(), "probe-sensing", "the error must point the operator at the successor")

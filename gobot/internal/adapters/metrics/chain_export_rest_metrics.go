@@ -31,14 +31,10 @@ type ChainExportRestMetricsCollector struct {
 // NewChainExportRestMetricsCollector creates a new export-rest metrics collector.
 func NewChainExportRestMetricsCollector() *ChainExportRestMetricsCollector {
 	return &ChainExportRestMetricsCollector{
-		restsTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "chain_export_rest_total",
-				Help:      "Chain export-ask-subsidy rest episodes: a chain crossing from lifting to rested because its own-market ask laddered above the eligible cross-source median (the 8w40 signal), counted once per episode (sp-xdk6)",
-			},
-			[]string{"good"},
+		restsTotal: newCounterVec(
+			"chain_export_rest_total",
+			"Chain export-ask-subsidy rest episodes: a chain crossing from lifting to rested because its own-market ask laddered above the eligible cross-source median (the 8w40 signal), counted once per episode (sp-xdk6)",
+			"good",
 		),
 	}
 }
@@ -47,9 +43,11 @@ func NewChainExportRestMetricsCollector() *ChainExportRestMetricsCollector {
 // (metrics disabled) is a no-op, matching the sibling collectors.
 func (c *ChainExportRestMetricsCollector) Register() error {
 	if Registry == nil {
-		return nil // Metrics not enabled
+		return nil
 	}
-	return Registry.Register(c.restsTotal)
+	return registerAll(
+		c.restsTotal,
+	)
 }
 
 // RecordRest increments the export-rest-episode counter for a good. Emitted once per episode
@@ -59,4 +57,32 @@ func (c *ChainExportRestMetricsCollector) RecordRest(good string) {
 		return // Recording is best-effort; never panic the rest-check path (RULINGS #4).
 	}
 	c.restsTotal.WithLabelValues(good).Inc()
+}
+
+// globalChainExportRestCollector is the singleton export-ask-subsidy rest collector.
+// Set by SetGlobalChainExportRestCollector() when metrics are enabled; the
+// goods_factory coordinator emits the export-rest episode counter through it (the
+// OUTPUT-LADDER side of the self-pruning portfolio, alongside the input-pause and
+// chain-P&L kill counters above).
+var globalChainExportRestCollector *ChainExportRestMetricsCollector
+
+// SetGlobalChainExportRestCollector sets the global export-ask-subsidy rest collector.
+// Pass nil to clear it (e.g. in test cleanup).
+func SetGlobalChainExportRestCollector(collector *ChainExportRestMetricsCollector) {
+	globalChainExportRestCollector = collector
+}
+
+// GetGlobalChainExportRestCollector returns the global export-rest collector.
+// Returns nil if metrics are not enabled.
+func GetGlobalChainExportRestCollector() *ChainExportRestMetricsCollector {
+	return globalChainExportRestCollector
+}
+
+// RecordChainExportRest increments a chain's export-rest-episode counter globally.
+// No-op when metrics are disabled, so a metrics miss never touches the rest-check path
+// (RULINGS #4).
+func RecordChainExportRest(good string) {
+	if globalChainExportRestCollector != nil {
+		globalChainExportRestCollector.RecordRest(good)
+	}
 }

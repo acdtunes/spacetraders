@@ -34,7 +34,7 @@ type fakeHubMutator struct {
 	respErr error
 }
 
-func (f *fakeHubMutator) FleetHub(_ context.Context, operation, waypoint string, add bool, _ *int32, _ *string) (*pb.FleetHubResponse, error) {
+func (f *fakeHubMutator) FleetHub(_ context.Context, operation, waypoint string, add bool, _ *PlayerIdentifier) (*pb.FleetHubResponse, error) {
 	f.calls = append(f.calls, hubCall{operation: operation, waypoint: waypoint, add: add})
 	if f.respErr != nil {
 		return nil, f.respErr
@@ -49,7 +49,7 @@ func TestRunFleetHubAdd_MutatesRunningCoordinatorLive(t *testing.T) {
 		Changed:         true,
 	}}
 
-	msg, err := runFleetHubAdd(context.Background(), client, "contract", "X1-TW-C3", nil, nil)
+	msg, err := runFleetHubAdd(context.Background(), client, "contract", "X1-TW-C3", nil)
 	require.NoError(t, err)
 
 	require.Len(t, client.calls, 1)
@@ -67,7 +67,7 @@ func TestRunFleetHubAdd_AlreadyAHub_ReportsNoOp(t *testing.T) {
 		Changed:         false, // already a hub → daemon reports no change
 	}}
 
-	msg, err := runFleetHubAdd(context.Background(), client, "contract", "X1-TW-A1", nil, nil)
+	msg, err := runFleetHubAdd(context.Background(), client, "contract", "X1-TW-A1", nil)
 	require.NoError(t, err)
 	require.Contains(t, strings.ToLower(msg), "already")
 }
@@ -79,7 +79,7 @@ func TestRunFleetHubRemove_MutatesRunningCoordinatorLive(t *testing.T) {
 		Changed:         true,
 	}}
 
-	msg, err := runFleetHubRemove(context.Background(), client, "contract", "X1-TW-C3", nil, nil)
+	msg, err := runFleetHubRemove(context.Background(), client, "contract", "X1-TW-C3", nil)
 	require.NoError(t, err)
 
 	require.Len(t, client.calls, 1)
@@ -95,7 +95,7 @@ func TestRunFleetHubRemove_NotAHub_ReportsNoOp(t *testing.T) {
 		Changed:         false, // absent → nothing removed
 	}}
 
-	msg, err := runFleetHubRemove(context.Background(), client, "contract", "X1-TW-Z9", nil, nil)
+	msg, err := runFleetHubRemove(context.Background(), client, "contract", "X1-TW-Z9", nil)
 	require.NoError(t, err)
 	require.Contains(t, strings.ToLower(msg), "not a")
 }
@@ -103,7 +103,7 @@ func TestRunFleetHubRemove_NotAHub_ReportsNoOp(t *testing.T) {
 func TestRunFleetHubAdd_DaemonError_Propagates(t *testing.T) {
 	client := &fakeHubMutator{respErr: errors.New("no running contract coordinator")}
 
-	_, err := runFleetHubAdd(context.Background(), client, "contract", "X1-TW-C3", nil, nil)
+	_, err := runFleetHubAdd(context.Background(), client, "contract", "X1-TW-C3", nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "X1-TW-C3")
 }

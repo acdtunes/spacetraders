@@ -46,7 +46,7 @@ func TestReconcileDedicatedFleet_SendsAssignCommandPerConfiguredShip(t *testing.
 	med := &reconcileStubMediator{}
 	logger := &completionCapturingLogger{}
 
-	reconcileDedicatedFleet(context.Background(), logger, med, shared.MustNewPlayerID(7), []string{"TORWIND-4", "TORWIND-5"}, "contract", "contract-coordinator-reconcile:test")
+	dedicationSeed{logger: logger, med: med, playerID: shared.MustNewPlayerID(7), dedicatedShips: []string{"TORWIND-4", "TORWIND-5"}, fleetName: "contract", assigner: "contract-coordinator-reconcile:test"}.reconcile(context.Background())
 
 	if len(med.sent) != 2 {
 		t.Fatalf("expected exactly 2 assign commands, got %d: %+v", len(med.sent), med.sent)
@@ -83,7 +83,7 @@ func TestReconcileDedicatedFleet_CommandFailure_LogsWarningAndContinues(t *testi
 	}}
 	logger := &completionCapturingLogger{}
 
-	reconcileDedicatedFleet(context.Background(), logger, med, shared.MustNewPlayerID(1), []string{"TORWIND-GONE", "TORWIND-5"}, "contract", "contract-coordinator-reconcile:test")
+	dedicationSeed{logger: logger, med: med, playerID: shared.MustNewPlayerID(1), dedicatedShips: []string{"TORWIND-GONE", "TORWIND-5"}, fleetName: "contract", assigner: "contract-coordinator-reconcile:test"}.reconcile(context.Background())
 
 	if len(med.sent) != 2 {
 		t.Fatalf("expected the pass to continue past the failure and send both commands, got %d: %+v", len(med.sent), med.sent)
@@ -108,7 +108,7 @@ func TestReconcileDedicatedFleet_EmptyList_NoOp(t *testing.T) {
 	med := &reconcileStubMediator{}
 	logger := &completionCapturingLogger{}
 
-	reconcileDedicatedFleet(context.Background(), logger, med, shared.MustNewPlayerID(1), nil, "contract", "contract-coordinator-reconcile:test")
+	dedicationSeed{logger: logger, med: med, playerID: shared.MustNewPlayerID(1), dedicatedShips: nil, fleetName: "contract", assigner: "contract-coordinator-reconcile:test"}.reconcile(context.Background())
 
 	if len(med.sent) != 0 {
 		t.Fatalf("expected no assign commands for an empty dedicated-ships list, got %+v", med.sent)

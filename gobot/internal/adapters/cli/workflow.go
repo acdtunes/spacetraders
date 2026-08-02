@@ -102,7 +102,6 @@ Examples:
 				return fmt.Errorf("batch contract workflow failed: %w", err)
 			}
 
-			// Display result
 			mode := "single contract"
 			if loop {
 				mode = "continuous loop (stop with: spacetraders container stop " + result.ContainerID + ")"

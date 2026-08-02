@@ -18,21 +18,9 @@ import (
 // 2. Fetches target waypoint coordinates
 // 3. Delegates selection logic to domain FleetSelector service
 //
-// Parameters:
-//   - shipSymbols: List of ship symbols to consider
-//   - shipRepo: Repository to fetch ship details
-//   - graphProvider: For loading waypoint coordinates
-//   - converter: For converting graph waypoint data to domain objects
-//   - targetWaypointSymbol: The destination waypoint symbol
 //   - requiredCargoSymbol: The cargo needed for delivery (optional, for prioritization)
 //   - unitsNeeded: Units still required for the delivery - used for hull
 //     right-sizing, estimating round trips per candidate hull
-//   - playerID: Player ID for ship lookups
-//
-// Returns:
-//   - shipSymbol: The symbol of the selected ship
-//   - distance: The distance from the selected ship to the target
-//   - error: Any error encountered
 func SelectClosestShip(
 	ctx context.Context,
 	shipSymbols []string,

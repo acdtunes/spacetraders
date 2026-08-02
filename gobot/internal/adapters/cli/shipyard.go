@@ -13,8 +13,6 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shipyard"
-	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
-	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
 // NewShipyardCommand creates the shipyard command with subcommands
@@ -33,7 +31,6 @@ Examples:
   spacetraders shipyard purchase --ship AGENT-1 --type SHIP_PROBE --quantity 5 --budget 500000 --player-id 1`,
 	}
 
-	// Add subcommands
 	cmd.AddCommand(newShipyardListCommand())
 	cmd.AddCommand(newShipyardPurchaseCommand())
 	cmd.AddCommand(newShipyardYardsCommand())
@@ -59,20 +56,17 @@ Examples:
 			systemSymbol := args[0]
 			waypointSymbol := args[1]
 
-			// Resolve player from flags or defaults
 			playerIdent, err := resolvePlayerIdentifier()
 			if err != nil {
 				return err
 			}
 
-			// Get daemon client
 			client, err := connectDaemon()
 			if err != nil {
 				return err
 			}
 			defer client.Close()
 
-			// Call daemon via gRPC
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
@@ -86,7 +80,6 @@ Examples:
 				return nil
 			}
 
-			// Display table
 			fmt.Printf("Shipyard: %s\n\n", response.ShipyardSymbol)
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
@@ -121,16 +114,58 @@ Examples:
 	return cmd
 }
 
+// shipyardPurchaseFlags is one `shipyard purchase` request as the operator typed it.
+type shipyardPurchaseFlags struct {
+	purchasingShip   string
+	shipType         string
+	quantity         int
+	maxBudget        int
+	shipyardWaypoint string
+	dedicateFleet    string
+}
+
+func (f shipyardPurchaseFlags) validate() error {
+	if f.purchasingShip == "" {
+		return fmt.Errorf("--ship flag is required")
+	}
+	if f.shipType == "" {
+		return fmt.Errorf("--type flag is required")
+	}
+	if f.quantity <= 0 {
+		return fmt.Errorf("--quantity must be greater than 0")
+	}
+	if f.maxBudget < 0 {
+		return fmt.Errorf("--budget cannot be negative")
+	}
+	return nil
+}
+
+func printShipyardPurchaseStart(out io.Writer, f shipyardPurchaseFlags, containerID, status string) {
+	fmt.Fprintln(out, "✓ Ship purchase started successfully")
+	fmt.Fprintf(out, "  Container ID:     %s\n", containerID)
+	fmt.Fprintf(out, "  Purchasing Ship:  %s\n", f.purchasingShip)
+	fmt.Fprintf(out, "  Ship Type:        %s\n", f.shipType)
+	fmt.Fprintf(out, "  Quantity:         %d\n", f.quantity)
+	if f.maxBudget > 0 {
+		fmt.Fprintf(out, "  Max Budget:       %d credits\n", f.maxBudget)
+	} else {
+		fmt.Fprintf(out, "  Max Budget:       No limit\n")
+	}
+	if f.shipyardWaypoint != "" {
+		fmt.Fprintf(out, "  Shipyard:         %s\n", f.shipyardWaypoint)
+	} else {
+		fmt.Fprintf(out, "  Shipyard:         Auto-discovering...\n")
+	}
+	if f.dedicateFleet != "" {
+		fmt.Fprintf(out, "  Dedicated Fleet:  %s (atomic buy+dedicate)\n", f.dedicateFleet)
+	}
+	fmt.Fprintf(out, "  Status:           %s\n", status)
+	fmt.Fprintf(out, "\nTrack progress with: spacetraders container logs %s\n", containerID)
+}
+
 // newShipyardPurchaseCommand creates the shipyard purchase subcommand
 func newShipyardPurchaseCommand() *cobra.Command {
-	var (
-		purchasingShip   string
-		shipType         string
-		quantity         int
-		maxBudget        int
-		shipyardWaypoint string
-		dedicateFleet    string
-	)
+	var flags shipyardPurchaseFlags
 
 	cmd := &cobra.Command{
 		Use:   "purchase",
@@ -156,78 +191,44 @@ Examples:
   spacetraders shipyard purchase --ship AGENT-1 --type SHIP_MINING_DRONE --quantity 10 --waypoint X1-GZ7-A1 --player-id 1
   spacetraders shipyard purchase --ship AGENT-1 --type SHIP_HEAVY_FREIGHTER --quantity 5 --fleet trade --player-id 1  # atomic buy+dedicate to the trade fleet`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Validate flags
-			if purchasingShip == "" {
-				return fmt.Errorf("--ship flag is required")
-			}
-			if shipType == "" {
-				return fmt.Errorf("--type flag is required")
-			}
-			if quantity <= 0 {
-				return fmt.Errorf("--quantity must be greater than 0")
-			}
-			if maxBudget < 0 {
-				return fmt.Errorf("--budget cannot be negative")
+			if err := flags.validate(); err != nil {
+				return err
 			}
 
-			// Resolve player from flags or defaults
 			playerIdent, err := resolvePlayerIdentifier()
 			if err != nil {
 				return err
 			}
 
-			// Get daemon client
 			client, err := connectDaemon()
 			if err != nil {
 				return err
 			}
 			defer client.Close()
 
-			// Call daemon via gRPC
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
 			// Trim so a whitespace-only --fleet is treated as omitted (no
 			// accidental empty-tag dedicate) before it ever leaves the CLI.
-			dedicateFleet = strings.TrimSpace(dedicateFleet)
+			flags.dedicateFleet = strings.TrimSpace(flags.dedicateFleet)
 
-			response, err := client.BatchPurchaseShips(ctx, purchasingShip, shipType, quantity, maxBudget, playerIdent.PlayerID, playerIdent.AgentSymbol, shipyardWaypoint, dedicateFleet)
+			response, err := client.BatchPurchaseShips(ctx, flags.purchasingShip, flags.shipType, flags.quantity, flags.maxBudget, playerIdent.PlayerID, playerIdent.AgentSymbol, flags.shipyardWaypoint, flags.dedicateFleet)
 			if err != nil {
 				return fmt.Errorf("failed to batch purchase ships: %w", err)
 			}
 
-			// Display result
-			fmt.Println("✓ Ship purchase started successfully")
-			fmt.Printf("  Container ID:     %s\n", response.ContainerId)
-			fmt.Printf("  Purchasing Ship:  %s\n", purchasingShip)
-			fmt.Printf("  Ship Type:        %s\n", shipType)
-			fmt.Printf("  Quantity:         %d\n", quantity)
-			if maxBudget > 0 {
-				fmt.Printf("  Max Budget:       %d credits\n", maxBudget)
-			} else {
-				fmt.Printf("  Max Budget:       No limit\n")
-			}
-			if shipyardWaypoint != "" {
-				fmt.Printf("  Shipyard:         %s\n", shipyardWaypoint)
-			} else {
-				fmt.Printf("  Shipyard:         Auto-discovering...\n")
-			}
-			if dedicateFleet != "" {
-				fmt.Printf("  Dedicated Fleet:  %s (atomic buy+dedicate)\n", dedicateFleet)
-			}
-			fmt.Printf("  Status:           %s\n", response.Status)
-			fmt.Printf("\nTrack progress with: spacetraders container logs %s\n", response.ContainerId)
-
+			printShipyardPurchaseStart(os.Stdout, flags, response.ContainerId, response.Status)
 			return nil
 		},
 	}
 
-	cmd.Flags().StringVar(&purchasingShip, "ship", "", "Ship symbol to use for navigation (required)")
-	cmd.Flags().StringVar(&shipType, "type", "", "Ship type to purchase (e.g., SHIP_PROBE, SHIP_MINING_DRONE) (required)")
-	cmd.Flags().IntVar(&quantity, "quantity", 1, "Number of ships to purchase (default: 1)")
-	cmd.Flags().IntVar(&maxBudget, "budget", 0, "Maximum budget in credits (0 = no limit, default: 0)")
-	cmd.Flags().StringVar(&shipyardWaypoint, "waypoint", "", "Shipyard waypoint (optional - will auto-discover if not provided)")
-	cmd.Flags().StringVar(&dedicateFleet, "fleet", "", "Optional: dedicate each purchased hull to this fleet tag ATOMICALLY at purchase (same vocabulary as `fleet assign --fleet`), so it is never observable as an undedicated/reclaimable pool hull. Omitted = hull lands undedicated (current behavior).")
+	cmd.Flags().StringVar(&flags.purchasingShip, "ship", "", "Ship symbol to use for navigation (required)")
+	cmd.Flags().StringVar(&flags.shipType, "type", "", "Ship type to purchase (e.g., SHIP_PROBE, SHIP_MINING_DRONE) (required)")
+	cmd.Flags().IntVar(&flags.quantity, "quantity", 1, "Number of ships to purchase (default: 1)")
+	cmd.Flags().IntVar(&flags.maxBudget, "budget", 0, "Maximum budget in credits (0 = no limit, default: 0)")
+	cmd.Flags().StringVar(&flags.shipyardWaypoint, "waypoint", "", "Shipyard waypoint (optional - will auto-discover if not provided)")
+	cmd.Flags().StringVar(&flags.dedicateFleet, "fleet", "", "Optional: dedicate each purchased hull to this fleet tag ATOMICALLY at purchase (same vocabulary as `fleet assign --fleet`), so it is never observable as an undedicated/reclaimable pool hull. Omitted = hull lands undedicated (current behavior).")
 
 	return cmd
 }
@@ -269,13 +270,9 @@ Examples:
 				return err
 			}
 
-			cfg, err := config.LoadConfig("")
+			db, err := openDatabase()
 			if err != nil {
-				return fmt.Errorf("failed to load config: %w", err)
-			}
-			db, err := database.NewConnection(&cfg.Database)
-			if err != nil {
-				return fmt.Errorf("failed to connect to database: %w", err)
+				return err
 			}
 
 			repo := persistence.NewShipyardInventoryRepository(db)

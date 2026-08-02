@@ -5,12 +5,17 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"slices"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
+
+// maxWaypointPages caps waypoint pagination so a server that never reports the
+// collection exhausted cannot spin the fetch loop forever.
+const maxWaypointPages = 50
 
 // GraphBuilder builds system navigation graphs from API data
 type GraphBuilder struct {
@@ -49,13 +54,51 @@ func (b *GraphBuilder) BuildSystemGraph(ctx context.Context, systemSymbol string
 		return nil, fmt.Errorf("failed to get player: %w", err)
 	}
 
-	allWaypoints := []system.WaypointAPIData{}
-	page := 1
-	limit := 20
-	maxPages := 50 // Safety limit
+	allWaypoints, err := b.fetchAllWaypoints(ctx, systemSymbol, player.Token)
+	if err != nil {
+		return nil, err
+	}
 
-	for page <= maxPages {
-		result, err := b.apiClient.ListWaypoints(ctx, systemSymbol, player.Token, page, limit)
+	if len(allWaypoints) == 0 {
+		return nil, fmt.Errorf("no waypoints found for system %s", systemSymbol)
+	}
+
+	graph := system.NewNavigationGraph(systemSymbol)
+
+	waypointObjects := []*shared.Waypoint{}
+
+	for _, wp := range allWaypoints {
+		waypointObj, err := waypointFromAPIData(wp, systemSymbol)
+		if err != nil {
+			log.Printf("Warning: failed to create waypoint %s: %v", wp.Symbol, err)
+			continue
+		}
+
+		graph.AddWaypoint(waypointObj)
+
+		waypointObjects = append(waypointObjects, waypointObj)
+	}
+
+	connectEveryWaypointPair(graph)
+	b.cacheWaypoints(ctx, waypointObjects)
+
+	fuelStations := len(graph.GetFuelStations())
+
+	log.Printf("Graph built for %s", systemSymbol)
+	log.Printf("  Waypoints: %d", graph.WaypointCount())
+	log.Printf("  Edges: %d", graph.EdgeCount())
+	log.Printf("  Synced %d waypoints to waypoints table", len(waypointObjects))
+	log.Printf("  Fuel stations: %d", fuelStations)
+
+	return graph, nil
+}
+
+func (b *GraphBuilder) fetchAllWaypoints(ctx context.Context, systemSymbol, token string) ([]system.WaypointAPIData, error) {
+	allWaypoints := []system.WaypointAPIData{}
+	limit := apiPageLimitMax
+
+	for page := 1; page <= maxWaypointPages; page++ {
+		result, err := b.apiClient.ListWaypoints(ctx, systemSymbol, token, page, limit)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch waypoints page %d: %w", page, err)
 		}
@@ -76,54 +119,51 @@ func (b *GraphBuilder) BuildSystemGraph(ctx context.Context, systemSymbol string
 		if page >= totalPages || len(result.Data) < limit {
 			break
 		}
-
-		page++
 	}
 
-	if len(allWaypoints) == 0 {
-		return nil, fmt.Errorf("no waypoints found for system %s", systemSymbol)
+	return allWaypoints, nil
+}
+
+func waypointFromAPIData(wp system.WaypointAPIData, systemSymbol string) (*shared.Waypoint, error) {
+	waypointObj, err := shared.NewWaypoint(wp.Symbol, wp.X, wp.Y)
+	if err != nil {
+		return nil, err
 	}
 
-	graph := system.NewNavigationGraph(systemSymbol)
+	traits := traitSymbols(wp.Traits)
 
-	waypointObjects := []*shared.Waypoint{}
+	waypointObj.SystemSymbol = systemSymbol
+	waypointObj.Type = wp.Type
+	waypointObj.Traits = traits
+	waypointObj.HasFuel = shared.TraitsGrantFuel(traits)
+	waypointObj.Orbitals = orbitalSymbols(wp.Orbitals)
 
-	for _, wp := range allWaypoints {
-		orbitals := []string{}
-		for _, orbital := range wp.Orbitals {
-			if symbol, ok := orbital["symbol"]; ok {
-				orbitals = append(orbitals, symbol)
+	return waypointObj, nil
+}
+
+func orbitalSymbols(orbitals []map[string]string) []string {
+	symbols := []string{}
+	for _, orbital := range orbitals {
+		if symbol, ok := orbital["symbol"]; ok {
+			symbols = append(symbols, symbol)
+		}
+	}
+	return symbols
+}
+
+func traitSymbols(traits []map[string]interface{}) []string {
+	symbols := []string{}
+	for _, trait := range traits {
+		if symbol, ok := trait["symbol"]; ok {
+			if symbolStr, ok := symbol.(string); ok {
+				symbols = append(symbols, symbolStr)
 			}
 		}
-
-		traits := []string{}
-		for _, trait := range wp.Traits {
-			if symbol, ok := trait["symbol"]; ok {
-				if symbolStr, ok := symbol.(string); ok {
-					traits = append(traits, symbolStr)
-				}
-			}
-		}
-
-		hasFuel := shared.TraitsGrantFuel(traits)
-
-		waypointObj, err := shared.NewWaypoint(wp.Symbol, wp.X, wp.Y)
-		if err != nil {
-			log.Printf("Warning: failed to create waypoint %s: %v", wp.Symbol, err)
-			continue
-		}
-
-		waypointObj.SystemSymbol = systemSymbol
-		waypointObj.Type = wp.Type
-		waypointObj.Traits = traits
-		waypointObj.HasFuel = hasFuel
-		waypointObj.Orbitals = orbitals
-
-		graph.AddWaypoint(waypointObj)
-
-		waypointObjects = append(waypointObjects, waypointObj)
 	}
+	return symbols
+}
 
+func connectEveryWaypointPair(graph *system.NavigationGraph) {
 	waypointList := make([]string, 0, len(graph.Waypoints))
 	for symbol := range graph.Waypoints {
 		waypointList = append(waypointList, symbol)
@@ -134,55 +174,28 @@ func (b *GraphBuilder) BuildSystemGraph(ctx context.Context, systemSymbol string
 
 		// Only create edges with waypoints that come after this one (avoid duplicates)
 		for _, wp2Symbol := range waypointList[i+1:] {
-			wp2 := graph.Waypoints[wp2Symbol]
-
-			isOrbital := false
-			for _, orbital := range wp1.Orbitals {
-				if orbital == wp2Symbol {
-					isOrbital = true
-					break
-				}
-			}
-			if !isOrbital {
-				for _, orbital := range wp2.Orbitals {
-					if orbital == wp1Symbol {
-						isOrbital = true
-						break
-					}
-				}
-			}
-
-			var distance float64
-			var edgeType system.EdgeType
-
-			if isOrbital {
-				distance = 0.0
-				edgeType = system.EdgeTypeOrbital
-			} else {
-				distance = wp1.DistanceTo(wp2)
-				edgeType = system.EdgeTypeNormal
-			}
-
-			distance = math.Round(distance*100) / 100
-
+			distance, edgeType := edgeBetween(wp1, graph.Waypoints[wp2Symbol])
 			graph.AddEdge(wp1Symbol, wp2Symbol, distance, edgeType)
 		}
 	}
+}
 
+func edgeBetween(wp1, wp2 *shared.Waypoint) (float64, system.EdgeType) {
+	if inSameOrbit(wp1, wp2) {
+		return 0.0, system.EdgeTypeOrbital
+	}
+	return math.Round(wp1.DistanceTo(wp2)*100) / 100, system.EdgeTypeNormal
+}
+
+func inSameOrbit(wp1, wp2 *shared.Waypoint) bool {
+	return slices.Contains(wp1.Orbitals, wp2.Symbol) || slices.Contains(wp2.Orbitals, wp1.Symbol)
+}
+
+func (b *GraphBuilder) cacheWaypoints(ctx context.Context, waypointObjects []*shared.Waypoint) {
 	for _, waypointObj := range waypointObjects {
 		if err := b.waypointRepo.Add(ctx, waypointObj); err != nil {
 			log.Printf("Warning: failed to save waypoint %s: %v", waypointObj.Symbol, err)
 			// Continue - caching failure shouldn't break the operation
 		}
 	}
-
-	fuelStations := len(graph.GetFuelStations())
-
-	log.Printf("Graph built for %s", systemSymbol)
-	log.Printf("  Waypoints: %d", graph.WaypointCount())
-	log.Printf("  Edges: %d", graph.EdgeCount())
-	log.Printf("  Synced %d waypoints to waypoints table", len(waypointObjects))
-	log.Printf("  Fuel stations: %d", fuelStations)
-
-	return graph, nil
 }

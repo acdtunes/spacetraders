@@ -5,84 +5,8 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
-)
-
-// FindCoordinatorShips returns the list of ship symbols currently owned by the coordinator.
-// These are ships that are assigned to the coordinator container and haven't been transferred to workers.
-//
-// Parameters:
-//   - coordinatorID: The container ID of the coordinator
-//   - playerID: Player ID for ship lookups
-//   - shipRepo: Repository to query ships with assignments
-//
-// Returns:
-//   - shipSymbols: List of ship symbols owned by the coordinator
-//   - error: Any error encountered
-func FindCoordinatorShips(
-	ctx context.Context,
-	coordinatorID string,
-	playerID int,
-	shipRepo navigation.ShipRepository,
-) ([]string, error) {
-	// Find all ships assigned to this coordinator
-	ships, err := shipRepo.FindByContainer(ctx, coordinatorID, shared.MustNewPlayerID(playerID))
-	if err != nil {
-		return nil, fmt.Errorf("failed to find coordinator ships: %w", err)
-	}
-
-	// Extract ship symbols
-	shipSymbols := make([]string, 0, len(ships))
-	for _, ship := range ships {
-		shipSymbols = append(shipSymbols, ship.ShipSymbol())
-	}
-
-	logger := common.LoggerFromContext(ctx)
-	logger.Log("INFO", "Coordinator ships retrieved", map[string]interface{}{
-		"action":         "find_coordinator_ships",
-		"coordinator_id": coordinatorID,
-		"ship_count":     len(shipSymbols),
-		"ships":          shipSymbols,
-	})
-
-	return shipSymbols, nil
-}
-
-// CommandShipPolicy controls whether the command ship counts as a haul candidate.
-type CommandShipPolicy int
-
-const (
-	// ExcludeCommandShip keeps the command ship out of the candidate pool.
-	// Default for manufacturing/factory work, which reserves the command ship
-	// for contracts and manual operations.
-	ExcludeCommandShip CommandShipPolicy = iota
-	// IncludeCommandShip makes the command ship a first-class haul candidate,
-	// sized to its own cargo. The contract coordinator opts in because the
-	// command frigate hauls contract legs fine and is frequently the fastest,
-	// largest-cargo hull owned - benching it until zero haulers remain wastes
-	// fleet capacity.
-	IncludeCommandShip
-)
-
-// CargoCapacityPolicy controls whether a dedicated-fleet lookup excludes hulls
-// with zero cargo capacity, mirroring the "unsuitable = UNSELECTABLE, not
-// spawned-then-crashed" pattern used elsewhere in this package for the
-// dedicated pool.
-type CargoCapacityPolicy int
-
-const (
-	// AnyCargoCapacity returns every tagged fleet member regardless of cargo
-	// capacity - the original FindIdleShipsByFleet behavior. The idle-arb
-	// dispatcher keeps this default so its reserve accounting is unchanged.
-	AnyCargoCapacity CargoCapacityPolicy = iota
-	// RequireCargoCapacity excludes 0-cargo hulls (probes/satellites) from the
-	// pool. The contract coordinator opts in: a 0-cargo hull can never deliver a
-	// contract, so a probe mispinned into the contract fleet must be
-	// UNSELECTABLE here rather than claimed, spawned, and crashed on
-	// 'deliveries not complete'.
-	RequireCargoCapacity
 )
 
 // roleHauler is the registration role of dedicated haul hulls; the command
@@ -102,10 +26,6 @@ const roleHauler = "HAULER"
 // This provides a dynamic pool of available haulers without requiring pre-assignment.
 // Ship assignment status is now embedded in the Ship aggregate and enriched by the repository.
 //
-// Parameters:
-//   - ctx: Context for cancellation and logging
-//   - playerID: Player ID to find ships for
-//   - shipRepo: Repository to query ships (enriches assignment data automatically)
 //   - systemFilter: When non-empty, restricts the pool to hulls whose CURRENT
 //     system equals it. Single-system callers (manufacturing/factory
 //     coordinators, which never jump cross-system) pass their operating system
@@ -114,11 +34,6 @@ const roleHauler = "HAULER"
 //     for the pre-filter's original, unfiltered behavior.
 //   - policies: Optional command-ship policy (default: ExcludeCommandShip). Pass
 //     IncludeCommandShip to treat the command ship as a first-class candidate.
-//
-// Returns:
-//   - ships: List of idle candidate ship entities
-//   - shipSymbols: List of idle candidate ship symbols (for convenience)
-//   - error: Any error encountered
 func FindIdleLightHaulers(
 	ctx context.Context,
 	playerID shared.PlayerID,
@@ -260,60 +175,6 @@ func FindIdleLightHaulers(
 	return idleHaulers, idleHaulerSymbols, nil
 }
 
-// CommandCargoBaselineDefault is the minimum cargo capacity a command ship
-// must carry to stay a contract-selection candidate once IncludeCommandShip
-// has already opted it into FindIdleLightHaulers' pool. It matches the
-// light-hauler standard (RULINGS #5): a stock 40-cargo frigate double-trips
-// a load an 80-cargo light hauler single-trips, spending its whole speed
-// advantage on the extra leg for a net loss versus just dispatching the
-// hauler - so a stock hull is not a genuine candidate. era-2's upgraded
-// frigate (115 cargo) clears this bar.
-const CommandCargoBaselineDefault = 80
-
-// FilterCommandCargoBaseline drops the command ship from a candidate list
-// when its cargo capacity is below baseline; every non-command hull passes
-// through untouched. This is a SELECTION-time gate only, applied by the
-// caller immediately after FindIdleLightHaulers returns (when it opted in
-// with IncludeCommandShip) - it does not change FindIdleLightHaulers itself,
-// the dedication-write floor (AssignShipFleet's cargo_capacity>=1 floor), or
-// the last-resort ranking in SelectHullForCargo (domain contract package),
-// which simply never sees a candidate this gate already removed.
-//
-// Parameters:
-//   - ctx: Context for cancellation and logging
-//   - ships: Candidate ships to filter, as returned by FindIdleLightHaulers
-//   - baseline: Minimum cargo capacity a command ship must carry to remain
-//     eligible. <= 0 falls back to CommandCargoBaselineDefault (RULINGS #5:
-//     parametrize, don't hardcode - the zero value means "not configured",
-//     matching the IdleArb* knobs' idiom).
-//
-// Returns:
-//   - symbols: Candidate ship symbols with any under-baseline command ship
-//     removed, in input order.
-func FilterCommandCargoBaseline(ctx context.Context, ships []*navigation.Ship, baseline int) []string {
-	if baseline <= 0 {
-		baseline = CommandCargoBaselineDefault
-	}
-	logger := common.LoggerFromContext(ctx)
-
-	symbols := make([]string, 0, len(ships))
-	for _, ship := range ships {
-		if isCommandHull(ship) && ship.CargoCapacity() < baseline {
-			logger.Log("INFO", fmt.Sprintf(
-				"Command ship %s skipped for contract selection: cargo capacity %d below baseline %d - upgrade its cargo hold or dispatch a light hauler instead",
-				ship.ShipSymbol(), ship.CargoCapacity(), baseline), map[string]interface{}{
-				"action":         "skipped:command_cargo_below_baseline",
-				"ship_symbol":    ship.ShipSymbol(),
-				"cargo_capacity": ship.CargoCapacity(),
-				"baseline":       baseline,
-			})
-			continue
-		}
-		symbols = append(symbols, ship.ShipSymbol())
-	}
-	return symbols
-}
-
 // FindIdleShipsByFleet looks up a coordinator's own dedicated fleet by name -
 // every ship whose persisted DedicatedFleet tag equals fleet - and returns
 // only the ones currently idle. Busy and in-transit ships are silently
@@ -333,20 +194,11 @@ func FilterCommandCargoBaseline(ctx context.Context, ships []*navigation.Ship, b
 // mispinned into the contract fleet is UNSELECTABLE rather than
 // claimed-spawned-crashed.
 //
-// Parameters:
-//   - ctx: Context for cancellation and logging
-//   - playerID: Player ID to find ships for
-//   - shipRepo: Repository to query ships (enriches assignment data automatically)
 //   - fleet: The fleet name to look up; "" (no dedicated fleet) returns nothing,
 //     since an empty tag means "general pool", never a fleet of its own
 //   - policies: Optional cargo-capacity policy (default: AnyCargoCapacity). Pass
 //     RequireCargoCapacity to exclude 0-cargo hulls (probes/satellites) that can
 //     never carry a delivery.
-//
-// Returns:
-//   - ships: List of idle dedicated ship entities
-//   - shipSymbols: List of idle dedicated ship symbols (for convenience)
-//   - error: Any error encountered
 func FindIdleShipsByFleet(
 	ctx context.Context,
 	playerID shared.PlayerID,
@@ -421,279 +273,4 @@ func FindIdleShipsByFleet(
 	})
 
 	return idleShips, idleSymbols, nil
-}
-
-// FleetHasMembers reports whether ANY ship - idle, busy, or in transit -
-// currently carries the given DedicatedFleet tag. Unlike FindIdleShipsByFleet,
-// which only surfaces dispatchable members, this answers a different
-// question: does this coordinator have an exclusive fleet AT ALL right now?
-//
-// That distinction is what makes EXCLUSIVE MODE correct: a dedicated fleet
-// that is fully busy must still block the coordinator from raiding the
-// general pool. Only the absence of ANY tagged member falls back to shared
-// hulls. Reading the persisted tag on every call (rather than trusting a
-// remembered --dedicated-ships list) keeps this live with the same "no
-// restart needed" guarantee FindIdleShipsByFleet already gives `fleet
-// assign`/`unassign`.
-//
-// Parameters:
-//   - fleet: The fleet name to look up; "" always returns false, mirroring
-//     FindIdleShipsByFleet's "no dedicated fleet" convention.
-//
-// Returns:
-//   - hasMembers: true if at least one ship carries the fleet tag
-//   - error: Any error encountered
-func FleetHasMembers(
-	ctx context.Context,
-	playerID shared.PlayerID,
-	shipRepo navigation.ShipRepository,
-	fleet string,
-) (bool, error) {
-	if fleet == "" {
-		return false, nil
-	}
-
-	allShips, err := shipRepo.FindAllByPlayer(ctx, playerID)
-	if err != nil {
-		return false, fmt.Errorf("failed to fetch ships: %w", err)
-	}
-
-	for _, ship := range allShips {
-		if ship.DedicatedFleet() == fleet {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-// FindFleetMemberSymbols returns the symbols of EVERY ship currently carrying the
-// given DedicatedFleet tag — idle, busy, or in transit — the LIVE membership of a
-// coordinator's dedicated fleet. Unlike FindIdleShipsByFleet it applies no
-// idle/role/cargo filter: pure membership by tag, because the callers that need it
-// (the between-legs homing gate and the standby-station occupancy balancer) care who
-// BELONGS to the fleet, not who is dispatchable right now.
-//
-// Reading the persisted tag on every call is what makes membership live: a hull
-// added via `fleet add` (tag set, absent from the immutable --dedicated-ships launch
-// list) is a member immediately, and a hull `fleet remove`d (tag cleared) drops out —
-// no restart, and no dependence on the stale launch snapshot. The "" fleet returns
-// nothing, mirroring FindIdleShipsByFleet / FleetHasMembers.
-func FindFleetMemberSymbols(
-	ctx context.Context,
-	playerID shared.PlayerID,
-	shipRepo navigation.ShipRepository,
-	fleet string,
-) ([]string, error) {
-	if fleet == "" {
-		return nil, nil
-	}
-
-	allShips, err := shipRepo.FindAllByPlayer(ctx, playerID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch ships: %w", err)
-	}
-
-	var members []string
-	for _, ship := range allShips {
-		if ship.DedicatedFleet() == fleet {
-			members = append(members, ship.ShipSymbol())
-		}
-	}
-	return members, nil
-}
-
-// SelectAvailableShips combines the general and dedicated-fleet candidate
-// pools into the coordinator's working set for one discovery pass.
-//
-// EXCLUSIVE MODE: when dedicatedFleetActive is true, the general pool is
-// dropped entirely - the coordinator draws ONLY from dedicatedIdleShips, even
-// when that is empty because every dedicated member is busy, rather than
-// falling back to idle non-dedicated hulls by distance. A dedicated fleet
-// must be genuinely exclusive: drafting a general-pool hull instead risks
-// displacing cargo the operator is using that hull for elsewhere.
-//
-// When dedicatedFleetActive is false, the two pools are combined
-// (dedicatedIdleShips is normally empty in this branch, since the caller's
-// dedication check already says no fleet is tagged).
-func SelectAvailableShips(generalShips, dedicatedIdleShips []string, dedicatedFleetActive bool) []string {
-	if dedicatedFleetActive {
-		return dedicatedIdleShips
-	}
-	return append(generalShips, dedicatedIdleShips...)
-}
-
-// FilterUnrelatedCargo splits candidate ship symbols into those safe to
-// claim for a delivery of requiredCargo and those that must be parked
-// instead.
-//
-// NO-CARGO-DUMP CLAIM GUARD: a hull already holding cargo that is NOT part
-// of this delivery is never claimed, so the worker's jettison step
-// (CargoManager.JettisonWrongCargoIfNeeded) can never silently dump cargo the
-// operator is using the hull for elsewhere. The guard runs at selection
-// time, before a hull is ever assigned, so unrelated cargo is never at risk
-// of being jettisoned by this coordinator's own workers.
-//
-// A ship whose hold is empty, or whose hold contains only requiredCargo
-// (e.g. a partial delivery resumed after a restart), is claimable. A
-// candidate symbol not found in the current fleet snapshot is skipped
-// silently - matching FindIdleShipsByFleet's tolerance for fleet
-// composition that varies between passes - and appears in neither returned
-// list.
-//
-// Parameters:
-//   - symbols: Candidate ship symbols to classify (already idle/dedication
-//     filtered by the caller)
-//   - requiredCargo: The trade symbol this delivery needs; a hull carrying
-//     ONLY this symbol is not considered "unrelated" cargo
-//
-// Returns:
-//   - claimable: Symbols safe to hand to SelectClosestShip
-//   - parked: Symbols excluded because they hold unrelated cargo
-//   - error: Any error encountered
-func FilterUnrelatedCargo(
-	ctx context.Context,
-	playerID shared.PlayerID,
-	shipRepo navigation.ShipRepository,
-	symbols []string,
-	requiredCargo string,
-) ([]string, []string, error) {
-	logger := common.LoggerFromContext(ctx)
-
-	bySymbol, err := fleetBySymbol(ctx, playerID, shipRepo)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	var claimable []string
-	var parked []string
-	for _, symbol := range symbols {
-		ship, ok := bySymbol[symbol]
-		if !ok {
-			// Not in the current fleet snapshot (sold, renamed since
-			// discovery) - excluded from both lists rather than guessed at.
-			continue
-		}
-		if ship.Cargo().HasItemsOtherThan(requiredCargo) {
-			parked = append(parked, symbol)
-			continue
-		}
-		claimable = append(claimable, symbol)
-	}
-
-	if len(parked) > 0 {
-		logger.Log("INFO", "Parked candidates holding unrelated cargo", map[string]interface{}{
-			"action":          "filter_unrelated_cargo",
-			"required_cargo":  requiredCargo,
-			"parked_ships":    parked,
-			"claimable_ships": claimable,
-		})
-	}
-
-	return claimable, parked, nil
-}
-
-// FilterToHomeSystem narrows a candidate ship-symbol list to the hulls currently located in
-// homeSystem — the contract's HOME system, derived from the delivery destination
-// (shared.ExtractSystemSymbol) exactly as PlanSourcing/market_finder scope contract sourcing
-// (RULINGS #14). A contract worker sources AND delivers in that one system with ZERO jump
-// capability, so a hull idle in a FOREIGN system (a gate hop away) can reach neither the
-// source market nor the delivery and must be UNSELECTABLE here, never claimed-then-stalled.
-// This is the worker-pool LOCALITY half of the reserve floor that keeps N HOME haulers
-// undedicated; this ensures the grab only ever takes HOME ones.
-//
-// homeSystem == "" degrades to a fleet-wide passthrough (fail-open): an un-derivable
-// destination must never block the contract, matching FindIdleLightHaulers' "" convention.
-// A candidate whose CURRENT system cannot be resolved (unknown location) is treated as
-// out-of-home and dropped (fail-closed, matching shipCurrentSystem's pre-filter): the pool
-// never surfaces a hull it cannot confirm is in range. A symbol absent from the current fleet
-// snapshot is skipped silently, mirroring FilterUnrelatedCargo's tolerance for fleet
-// composition that varies between passes.
-//
-// Parameters:
-//   - symbols: Candidate ship symbols to scope (already idle/dedication/cargo filtered by the caller)
-//   - homeSystem: The contract's home system; "" returns symbols unchanged (fleet-wide)
-//
-// Returns:
-//   - homeSymbols: The subset of symbols whose ship is currently in homeSystem, in input order
-//   - error: Any error encountered fetching the fleet snapshot
-func FilterToHomeSystem(
-	ctx context.Context,
-	playerID shared.PlayerID,
-	shipRepo navigation.ShipRepository,
-	symbols []string,
-	homeSystem string,
-) ([]string, error) {
-	if homeSystem == "" {
-		return symbols, nil
-	}
-	logger := common.LoggerFromContext(ctx)
-
-	bySymbol, err := fleetBySymbol(ctx, playerID, shipRepo)
-	if err != nil {
-		return nil, err
-	}
-
-	homeSymbols := make([]string, 0, len(symbols))
-	var foreign []string
-	for _, symbol := range symbols {
-		ship, ok := bySymbol[symbol]
-		if !ok {
-			// Not in the current fleet snapshot (sold/renamed since discovery) — excluded
-			// from the result rather than guessed at, mirroring FilterUnrelatedCargo.
-			continue
-		}
-		if shipCurrentSystem(ship) == homeSystem {
-			homeSymbols = append(homeSymbols, symbol)
-		} else {
-			foreign = append(foreign, symbol)
-		}
-	}
-
-	if len(foreign) > 0 {
-		logger.Log("INFO", "Excluded out-of-home-system hulls from contract worker selection", map[string]interface{}{
-			"action":        "filter_to_home_system",
-			"home_system":   homeSystem,
-			"home_symbols":  homeSymbols,
-			"foreign_ships": foreign,
-		})
-	}
-
-	return homeSymbols, nil
-}
-
-// fleetBySymbol fetches the player's current fleet snapshot indexed by ship
-// symbol. Shared by the candidate filters (FilterUnrelatedCargo /
-// FilterToHomeSystem) that resolve already-discovered candidate symbols against
-// live ship state: a symbol absent from the returned map is not in the current
-// fleet snapshot (sold/renamed since discovery) and those filters skip it.
-func fleetBySymbol(ctx context.Context, playerID shared.PlayerID, shipRepo navigation.ShipRepository) (map[string]*navigation.Ship, error) {
-	allShips, err := shipRepo.FindAllByPlayer(ctx, playerID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch ships: %w", err)
-	}
-	bySymbol := make(map[string]*navigation.Ship, len(allShips))
-	for _, ship := range allShips {
-		bySymbol[ship.ShipSymbol()] = ship
-	}
-	return bySymbol, nil
-}
-
-// isCommandHull reports whether a ship is the command ship, by registration role
-// or by the conventional "*-1" symbol. Candidate discovery, the selection log
-// and the domain cargo-fit ladder (SelectHullForCargo) share the one domain
-// predicate so they all mark exactly the same hull as the command ship.
-func isCommandHull(ship *navigation.Ship) bool {
-	return domainContract.IsCommandHull(ship)
-}
-
-// shipCurrentSystem returns the system symbol a ship is currently located in,
-// derived from its current waypoint symbol (e.g. "X1-KA42-E42" -> "X1-KA42").
-// Returns "" when the location is unknown, which the single-system pool filter
-// treats as out-of-system (fail-closed).
-func shipCurrentSystem(ship *navigation.Ship) string {
-	loc := ship.CurrentLocation()
-	if loc == nil {
-		return ""
-	}
-	return shared.ExtractSystemSymbol(loc.Symbol)
 }

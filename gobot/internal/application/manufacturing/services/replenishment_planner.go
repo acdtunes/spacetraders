@@ -37,70 +37,22 @@ type ReplenishmentPlanner struct {
 func (rp *ReplenishmentPlanner) createTasksForFactory(ctx context.Context, factory *manufacturing.FactoryState) {
 	logger := common.LoggerFromContext(ctx)
 
-	if rp.marketLocator == nil {
-		logger.Log("WARN", "MarketLocator not available - cannot create ACQUIRE_DELIVER tasks", map[string]interface{}{
-			"factory": factory.FactorySymbol(),
-		})
+	factoryInputs, existingTasks, ok := rp.replenishableInputs(ctx, factory)
+	if !ok {
 		return
 	}
 
-	// CRITICAL: Verify pipeline is still EXECUTING before creating new tasks
-	if !pipelineExecutingForFactory(ctx, rp.pipelineRepo, factory, "Skipping ACQUIRE_DELIVER task creation") {
-		return
-	}
-
-	// Get factory market data to find required inputs (IMPORT goods)
-	marketData, err := rp.marketRepo.GetMarketData(ctx, factory.FactorySymbol(), factory.PlayerID())
-	if err != nil {
-		logger.Log("WARN", "Failed to get market data for factory", map[string]interface{}{
-			"factory": factory.FactorySymbol(),
-			"error":   err.Error(),
-		})
-		return
-	}
-
-	if len(factory.RequiredInputs()) == 0 {
-		logger.Log("DEBUG", "Factory has no required inputs - may be a source factory", map[string]interface{}{
-			"factory": factory.FactorySymbol(),
-			"output":  factory.OutputGood(),
-		})
-		return
-	}
-
-	factoryInputs := requiredImportInputs(marketData, factory)
-	if len(factoryInputs) == 0 {
-		logger.Log("DEBUG", "Factory required inputs not available as IMPORT at market", map[string]interface{}{
-			"factory":         factory.FactorySymbol(),
-			"output":          factory.OutputGood(),
-			"required_inputs": factory.RequiredInputs(),
-		})
-		return
-	}
-
-	// Get existing tasks for this pipeline to check what's already pending
-	existingTasks, err := rp.taskRepo.FindByPipelineID(ctx, factory.PipelineID())
-	if err != nil {
-		logger.Log("WARN", "Failed to find existing tasks", map[string]interface{}{
-			"pipeline": factory.PipelineID(),
-			"error":    err.Error(),
-		})
-		return
-	}
-
-	// Build maps of goods with pending tasks, tracking task type separately.
-	// This allows us to detect and replace ACQUIRE_DELIVER tasks with STORAGE_ACQUIRE_DELIVER
-	// when a storage operation becomes available for a good.
+	// Knowing both pending task types lets a good whose storage operation has since started be
+	// migrated from ACQUIRE_DELIVER onto STORAGE_ACQUIRE_DELIVER.
 	pendingStorageTasks, pendingAcquireTasks := pendingInputTasksByType(existingTasks, factory)
 
-	systemSymbol := extractSystem(factory.FactorySymbol())
+	systemSymbol := extractSystemSymbol(factory.FactorySymbol())
 	tasksCreated := 0
 	skippedHighSupply := 0
 
-	// Create ACQUIRE_DELIVER or STORAGE_ACQUIRE_DELIVER tasks for inputs that need them.
-	// INPUT BALANCING: Only deliver inputs that are actually needed (not already HIGH/ABUNDANT)
+	// INPUT BALANCING: only deliver inputs that are actually needed, so one input is not
+	// over-delivered while another starves.
 	for _, input := range factoryInputs {
-		// INPUT BALANCING OPTIMIZATION: Skip inputs that already have HIGH/ABUNDANT supply at factory
-		// This prevents over-delivering one input while another starves
 		if isHighOrAbundant(input.supply) {
 			logger.Log("DEBUG", "Input already abundant at factory, skipping delivery", map[string]interface{}{
 				"factory": factory.FactorySymbol(),
@@ -111,34 +63,16 @@ func (rp *ReplenishmentPlanner) createTasksForFactory(ctx context.Context, facto
 			continue
 		}
 
-		// STORAGE OPERATION INTEGRATION: Check if this input is produced by a running storage operation
-		// (e.g., gas siphoning produces LIQUID_HYDROGEN, LIQUID_NITROGEN, HYDROCARBON)
+		// A running storage operation (e.g. gas siphoning produces LIQUID_HYDROGEN) sources the
+		// input for free, so it takes precedence over a market buy.
 		storageOp := rp.storageSources.FindRunningOperationForGood(ctx, rp.playerID, input.good)
-
-		// If there's already a correct STORAGE_ACQUIRE_DELIVER task, skip
-		if storageOp != nil && pendingStorageTasks[input.good] {
-			continue // Already has correct task type
-		}
-
-		// TASK TYPE MIGRATION: If there's a running storage operation but we have an ACQUIRE_DELIVER task,
-		// cancel the wrong task and create the correct STORAGE_ACQUIRE_DELIVER task.
-		// This fixes legacy tasks created before the storage operation was started.
 		if storageOp != nil {
-			if wrongTask, exists := pendingAcquireTasks[input.good]; exists {
-				if wrongTask.Status() == manufacturing.TaskStatusExecuting {
-					// Task is executing - let it complete, will create correct type on next cycle
-					continue
-				}
-				rp.cancelAcquireTaskReplacedByStorage(ctx, factory, input.good, wrongTask, storageOp)
-			}
-
-			if rp.createStorageAcquireDeliverTask(ctx, factory, input.good, storageOp) {
+			if rp.replenishFromStorage(ctx, factory, input.good, storageOp, pendingStorageTasks, pendingAcquireTasks) {
 				tasksCreated++
 			}
 			continue
 		}
 
-		// No storage operation - check if we already have an ACQUIRE_DELIVER task
 		if pendingAcquireTasks[input.good] != nil {
 			continue
 		}
@@ -160,6 +94,83 @@ func (rp *ReplenishmentPlanner) createTasksForFactory(ctx context.Context, facto
 	if tasksCreated > 0 {
 		rp.notifier.notifyTasksReady(factory.PipelineID())
 	}
+}
+
+// replenishableInputs gathers the factory inputs eligible for replenishment this pass, plus the
+// pipeline's existing tasks. ok is false when any precondition rules the whole factory out.
+func (rp *ReplenishmentPlanner) replenishableInputs(ctx context.Context, factory *manufacturing.FactoryState) ([]factoryInput, []*manufacturing.ManufacturingTask, bool) {
+	logger := common.LoggerFromContext(ctx)
+
+	if rp.marketLocator == nil {
+		logger.Log("WARN", "MarketLocator not available - cannot create ACQUIRE_DELIVER tasks", map[string]interface{}{
+			"factory": factory.FactorySymbol(),
+		})
+		return nil, nil, false
+	}
+
+	if !pipelineExecutingForFactory(ctx, rp.pipelineRepo, factory, "Skipping ACQUIRE_DELIVER task creation") {
+		return nil, nil, false
+	}
+
+	marketData, err := rp.marketRepo.GetMarketData(ctx, factory.FactorySymbol(), factory.PlayerID())
+	if err != nil {
+		logger.Log("WARN", "Failed to get market data for factory", map[string]interface{}{
+			"factory": factory.FactorySymbol(),
+			"error":   err.Error(),
+		})
+		return nil, nil, false
+	}
+
+	if len(factory.RequiredInputs()) == 0 {
+		logger.Log("DEBUG", "Factory has no required inputs - may be a source factory", map[string]interface{}{
+			"factory": factory.FactorySymbol(),
+			"output":  factory.OutputGood(),
+		})
+		return nil, nil, false
+	}
+
+	factoryInputs := requiredImportInputs(marketData, factory)
+	if len(factoryInputs) == 0 {
+		logger.Log("DEBUG", "Factory required inputs not available as IMPORT at market", map[string]interface{}{
+			"factory":         factory.FactorySymbol(),
+			"output":          factory.OutputGood(),
+			"required_inputs": factory.RequiredInputs(),
+		})
+		return nil, nil, false
+	}
+
+	existingTasks, err := rp.taskRepo.FindByPipelineID(ctx, factory.PipelineID())
+	if err != nil {
+		logger.Log("WARN", "Failed to find existing tasks", map[string]interface{}{
+			"pipeline": factory.PipelineID(),
+			"error":    err.Error(),
+		})
+		return nil, nil, false
+	}
+	return factoryInputs, existingTasks, true
+}
+
+// replenishFromStorage routes one input to its running storage operation, retiring a stale
+// market-buy task for the same good first. An EXECUTING wrong-type task is left to finish; the
+// correct type is created on the next cycle. Reports whether a task was created.
+func (rp *ReplenishmentPlanner) replenishFromStorage(
+	ctx context.Context,
+	factory *manufacturing.FactoryState,
+	good string,
+	storageOp *storage.StorageOperation,
+	pendingStorageTasks map[string]bool,
+	pendingAcquireTasks map[string]*manufacturing.ManufacturingTask,
+) bool {
+	if pendingStorageTasks[good] {
+		return false // already has the correct task type
+	}
+	if wrongTask, exists := pendingAcquireTasks[good]; exists {
+		if wrongTask.Status() == manufacturing.TaskStatusExecuting {
+			return false
+		}
+		rp.cancelAcquireTaskReplacedByStorage(ctx, factory, good, wrongTask, storageOp)
+	}
+	return rp.createStorageAcquireDeliverTask(ctx, factory, good, storageOp)
 }
 
 func pipelineExecutingForFactory(ctx context.Context, pipelineRepo manufacturing.PipelineRepository, factory *manufacturing.FactoryState, skipAction string) bool {
@@ -320,20 +331,22 @@ func (rp *ReplenishmentPlanner) createStorageAcquireDeliverTask(ctx context.Cont
 	return true
 }
 
+// findInputSourceMarket picks the export market to buy an input from. A RAW material is held to
+// HIGH/ABUNDANT because SCARCE markets carry a 2x+ markup on it; an INTERMEDIATE good is allowed
+// down to MODERATE+ so a supply chain can bootstrap at all.
+func (rp *ReplenishmentPlanner) findInputSourceMarket(ctx context.Context, factory *manufacturing.FactoryState, good, systemSymbol string, isRawMaterial bool) (*MarketLocatorResult, error) {
+	if isRawMaterial {
+		return rp.marketLocator.FindExportMarketWithGoodSupply(ctx, good, systemSymbol, factory.PlayerID())
+	}
+	return rp.marketLocator.FindExportMarketBySupplyPriority(ctx, good, systemSymbol, factory.PlayerID())
+}
+
 func (rp *ReplenishmentPlanner) createMarketAcquireDeliverTask(ctx context.Context, factory *manufacturing.FactoryState, good string, systemSymbol string) bool {
 	logger := common.LoggerFromContext(ctx)
 
 	isRawMaterial := goods.IsMineableRawMaterial(good)
 
-	// RAW MATERIALS: Strict filter - HIGH/ABUNDANT only (SCARCE markets have 2x+ markup)
-	// INTERMEDIATE GOODS: Allow MODERATE+ to bootstrap supply chains
-	var exportMarket *MarketLocatorResult
-	var err error
-	if isRawMaterial {
-		exportMarket, err = rp.marketLocator.FindExportMarketWithGoodSupply(ctx, good, systemSymbol, factory.PlayerID())
-	} else {
-		exportMarket, err = rp.marketLocator.FindExportMarketBySupplyPriority(ctx, good, systemSymbol, factory.PlayerID())
-	}
+	exportMarket, err := rp.findInputSourceMarket(ctx, factory, good, systemSymbol, isRawMaterial)
 	if err != nil || exportMarket == nil {
 		logger.Log("WARN", fmt.Sprintf("No export market for %s: %v", good, err), map[string]interface{}{
 			"factory":    factory.FactorySymbol(),
@@ -344,7 +357,7 @@ func (rp *ReplenishmentPlanner) createMarketAcquireDeliverTask(ctx context.Conte
 		return false
 	}
 
-	// SUPPLY-GATED TASK CREATION: Check source market supply before marking task ready
+	// Supply-gated: a source that is not yet acceptable still gets a task, staged PENDING.
 	sourceSupply := rp.supply.sourceMarketSupply(ctx, exportMarket.WaypointSymbol, good)
 	isAcceptableSupply := acceptableSourceSupply(sourceSupply, isRawMaterial)
 
@@ -377,7 +390,7 @@ func (rp *ReplenishmentPlanner) createMarketAcquireDeliverTask(ctx context.Conte
 			"task_id":       shortID(task.ID()),
 		})
 	} else {
-		// Stay PENDING - will be activated when source market supply improves
+		// Stays PENDING until the source market's supply improves.
 		logger.Log("INFO", "Created ACQUIRE_DELIVER task (PENDING - supply gated)", map[string]interface{}{
 			"factory":       factory.FactorySymbol(),
 			"input":         good,

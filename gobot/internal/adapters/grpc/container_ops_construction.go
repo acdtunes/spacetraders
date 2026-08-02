@@ -59,7 +59,6 @@ type GetConstructionStatusResult struct {
 // floor. The map is persisted on the pipeline so it survives a restart (RULINGS #2). Nil/empty
 // preserves today's behaviour for every good.
 func (s *DaemonServer) StartConstructionPipeline(ctx context.Context, constructionSite string, playerID int, supplyChainDepth int, maxWorkers int, systemSymbol string, minSupply string, goodOverrides manufacturing.GoodGatingOverrides) (*StartConstructionPipelineResult, error) {
-	// Create dependencies for ConstructionPipelinePlanner
 	pipelineRepo := persistence.NewGormManufacturingPipelineRepository(s.db)
 	taskRepo := persistence.NewGormManufacturingTaskRepository(s.db)
 	constructionRepo := api.NewConstructionSiteRepository(
@@ -82,7 +81,6 @@ func (s *DaemonServer) StartConstructionPipeline(ctx context.Context, constructi
 		marketLocator.SetYardSource(s.yardScanner)
 	}
 
-	// Create planner
 	planner := services.NewConstructionPipelinePlanner(
 		pipelineRepo,
 		taskRepo,
@@ -100,13 +98,11 @@ func (s *DaemonServer) StartConstructionPipeline(ctx context.Context, constructi
 	// repo as the daemon's shared goodsResolver, so the planner and drain agree on feasibility.
 	planner.SetTreeResolver(services.NewSupplyChainResolver(goods.ExportToImportMap, marketRepo))
 
-	// Start or resume pipeline
 	result, err := planner.StartOrResume(ctx, playerID, constructionSite, supplyChainDepth, maxWorkers, systemSymbol, minSupply, goodOverrides)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start construction pipeline: %w", err)
 	}
 
-	// Convert materials to response format
 	materials := make([]ConstructionMaterialResult, len(result.Pipeline.Materials()))
 	for i, mat := range result.Pipeline.Materials() {
 		materials[i] = ConstructionMaterialResult{
@@ -118,7 +114,6 @@ func (s *DaemonServer) StartConstructionPipeline(ctx context.Context, constructi
 		}
 	}
 
-	// Build status message
 	status := string(result.Pipeline.Status())
 	message := ""
 	if result.IsResumed {
@@ -148,13 +143,11 @@ func (s *DaemonServer) GetConstructionStatus(ctx context.Context, constructionSi
 	)
 	pipelineRepo := persistence.NewGormManufacturingPipelineRepository(s.db)
 
-	// Get construction site data from API
 	site, err := constructionRepo.FindByWaypoint(ctx, constructionSite, playerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get construction site: %w", err)
 	}
 
-	// Convert materials to response format
 	siteMaterials := site.Materials()
 	materials := make([]ConstructionMaterialResult, len(siteMaterials))
 	for i, mat := range siteMaterials {
@@ -174,7 +167,6 @@ func (s *DaemonServer) GetConstructionStatus(ctx context.Context, constructionSi
 		Materials:        materials,
 	}
 
-	// Check for active pipeline
 	pipeline, err := pipelineRepo.FindByConstructionSite(ctx, constructionSite, playerID)
 	if err != nil {
 		// Non-fatal - just log and continue without pipeline info
@@ -299,20 +291,20 @@ type goodOverridePatch struct {
 }
 
 // applyGoodOverride merges patch into a COPY of current for good (or clears good's entry when
-// clear), returning the next map, the resulting override for good, and whether anything changed.
+// clearGood), returning the next map, the resulting override for good, and whether anything changed.
 // Pure over the map — MutateConstructionGoodOverride wraps it with the find→persist plumbing.
 // The price-ceiling multiplier is clamped to manufacturing.MaxPriceCeilingMultiplier HERE so the
 // daemon single-writer (RULINGS #3) enforces the ladder-chase guardrail (RULINGS #4) regardless of
 // how the request reached it — the CLI clamp is a friendly early bound, this is the authoritative
 // one. changed=false lets the caller skip a redundant DB write and report the no-op honestly
 // (mirrors mutateFactoryWorkerCapConfig). The input map is never mutated in place.
-func applyGoodOverride(current manufacturing.GoodGatingOverrides, good string, patch goodOverridePatch, clear bool) (manufacturing.GoodGatingOverrides, manufacturing.GoodGatingOverride, bool) {
+func applyGoodOverride(current manufacturing.GoodGatingOverrides, good string, patch goodOverridePatch, clearGood bool) (manufacturing.GoodGatingOverrides, manufacturing.GoodGatingOverride, bool) {
 	next := manufacturing.GoodGatingOverrides{}
 	for k, v := range current {
 		next[k] = v
 	}
 
-	if clear {
+	if clearGood {
 		if _, existed := next[good]; !existed {
 			return next, manufacturing.GoodGatingOverride{}, false
 		}
@@ -356,7 +348,7 @@ type ConstructionGoodOverrideResult struct {
 // current map, and (only when changed) writes the pipeline back via the repo's full-row Update —
 // the same durable path StartOrResume uses on resume. The daemon is the single writer (RULINGS #3).
 // Returns a clear error when there is no active construction pipeline for the site.
-func (s *DaemonServer) MutateConstructionGoodOverride(ctx context.Context, constructionSite string, playerID int, good string, patch goodOverridePatch, clear bool) (*ConstructionGoodOverrideResult, error) {
+func (s *DaemonServer) MutateConstructionGoodOverride(ctx context.Context, constructionSite string, playerID int, good string, patch goodOverridePatch, clearGood bool) (*ConstructionGoodOverrideResult, error) {
 	if good == "" {
 		return nil, fmt.Errorf("a good symbol is required to set a per-good construction override")
 	}
@@ -371,12 +363,12 @@ func (s *DaemonServer) MutateConstructionGoodOverride(ctx context.Context, const
 		return nil, fmt.Errorf("no active construction pipeline for %s (player %d) — start one before setting a per-good override", constructionSite, playerID)
 	}
 
-	next, resulting, changed := applyGoodOverride(pipeline.GoodOverrides(), good, patch, clear)
+	next, resulting, changed := applyGoodOverride(pipeline.GoodOverrides(), good, patch, clearGood)
 
 	result := &ConstructionGoodOverrideResult{
 		ConstructionSite: constructionSite,
 		Good:             good,
-		Cleared:          clear,
+		Cleared:          clearGood,
 		Changed:          changed,
 		Override:         resulting,
 	}

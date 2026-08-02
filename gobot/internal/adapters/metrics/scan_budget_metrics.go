@@ -83,41 +83,32 @@ type ScanBudgetMetricsCollector struct {
 // NewScanBudgetMetricsCollector creates a new scan-budget collector.
 func NewScanBudgetMetricsCollector() *ScanBudgetMetricsCollector {
 	return &ScanBudgetMetricsCollector{
-		decisions: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "scan_budget_decisions_total",
-				Help:      "Scan-budget admission decisions by budget (market|shipyard), read class (discretionary|earning|paired) and outcome (spend|serve_from_store). The decision=spend slice is one API request each, so sum(rate()) over it reconciles with api_requests_total for the matching endpoint",
-			},
-			[]string{"player_id", "budget", "class", "decision"},
+		decisions: newCounterVec(
+			"scan_budget_decisions_total",
+			"Scan-budget admission decisions by budget (market|shipyard), read class (discretionary|earning|paired) and outcome (spend|serve_from_store). The decision=spend slice is one API request each, so sum(rate()) over it reconciles with api_requests_total for the matching endpoint",
+			"player_id",
+			"budget",
+			"class",
+			"decision",
 		),
-		overdrafts: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "scan_budget_overdrafts_total",
-				Help:      "Scan-budget reads admitted against an already-empty allowance bucket (the forced draw), by budget and read class. A strict subset of scan_budget_decisions_total{decision=\"spend\"}. Persistently high means the fixed allowance is below the fleet's unavoidable pre-buy verification and should be raised, never that a money guard should be weakened",
-			},
-			[]string{"player_id", "budget", "class"},
+		overdrafts: newCounterVec(
+			"scan_budget_overdrafts_total",
+			"Scan-budget reads admitted against an already-empty allowance bucket (the forced draw), by budget and read class. A strict subset of scan_budget_decisions_total{decision=\"spend\"}. Persistently high means the fixed allowance is below the fleet's unavoidable pre-buy verification and should be raised, never that a money guard should be weakened",
+			"player_id",
+			"budget",
+			"class",
 		),
-		rateReqPerSec: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "scan_budget_rate_req_per_sec",
-				Help:      "The scan budget's own fixed allowance in requests/sec, by budget. Constant with respect to the charted map by design: a growing map lengthens each waypoint's interval instead of raising this number",
-			},
-			[]string{"player_id", "budget"},
+		rateReqPerSec: newGaugeVec(
+			"scan_budget_rate_req_per_sec",
+			"The scan budget's own fixed allowance in requests/sec, by budget. Constant with respect to the charted map by design: a growing map lengthens each waypoint's interval instead of raising this number",
+			"player_id",
+			"budget",
 		),
-		coverage: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "scan_budget_coverage",
-				Help:      "Waypoints sharing the budget (markets known / yards known) — the denominator the fixed allowance is divided across, so a waypoint's scan interval is rate/coverage. Published beside the rate so the coverage-decay invariant is observable rather than merely asserted",
-			},
-			[]string{"player_id", "budget"},
+		coverage: newGaugeVec(
+			"scan_budget_coverage",
+			"Waypoints sharing the budget (markets known / yards known) — the denominator the fixed allowance is divided across, so a waypoint's scan interval is rate/coverage. Published beside the rate so the coverage-decay invariant is observable rather than merely asserted",
+			"player_id",
+			"budget",
 		),
 	}
 }
@@ -126,23 +117,14 @@ func NewScanBudgetMetricsCollector() *ScanBudgetMetricsCollector {
 // Registry (metrics disabled) is a no-op, matching the sibling collectors.
 func (c *ScanBudgetMetricsCollector) Register() error {
 	if Registry == nil {
-		return nil // Metrics not enabled
+		return nil
 	}
-
-	metrics := []prometheus.Collector{
+	return registerAll(
 		c.decisions,
 		c.overdrafts,
 		c.rateReqPerSec,
 		c.coverage,
-	}
-
-	for _, metric := range metrics {
-		if err := Registry.Register(metric); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	)
 }
 
 // RecordDecision counts one admission decision.

@@ -193,38 +193,3 @@ func (f *FactoryState) String() string {
 	return fmt.Sprintf("Factory[%s, output=%s, inputs=%d/%d, supply=%s, ready=%t]",
 		f.factorySymbol, f.outputGood, delivered, total, f.currentSupply, f.readyForCollection)
 }
-
-// ReconstituteFactoryState creates a factory state from persisted data (for repository use only)
-func ReconstituteFactoryState(
-	id int,
-	factorySymbol string,
-	outputGood string,
-	pipelineID string,
-	playerID int,
-	requiredInputs []string,
-	deliveredInputs map[string]*InputState,
-	allInputsDelivered bool,
-	currentSupply string,
-	previousSupply string,
-	readyForCollection bool,
-	createdAt time.Time,
-	inputsCompletedAt *time.Time,
-	readyAt *time.Time,
-) *FactoryState {
-	return &FactoryState{
-		id:                 id,
-		factorySymbol:      factorySymbol,
-		outputGood:         outputGood,
-		pipelineID:         pipelineID,
-		playerID:           playerID,
-		requiredInputs:     requiredInputs,
-		deliveredInputs:    deliveredInputs,
-		allInputsDelivered: allInputsDelivered,
-		currentSupply:      currentSupply,
-		previousSupply:     previousSupply,
-		readyForCollection: readyForCollection,
-		createdAt:          createdAt,
-		inputsCompletedAt:  inputsCompletedAt,
-		readyAt:            readyAt,
-	}
-}

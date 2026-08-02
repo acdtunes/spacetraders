@@ -268,7 +268,8 @@ func (l *walkLedger) MarkPlacementAttempt(_ context.Context, _ int, waypoint, ki
 	return nil
 }
 
-func (l *walkLedger) TransitionSlot(_ context.Context, _ int, waypoint, _, from, to string, _ appSensing.SlotFields) error {
+func (l *walkLedger) TransitionSlot(_ context.Context, _ int, tr appSensing.SlotTransition, _ appSensing.SlotFields) error {
+	waypoint, from, to := tr.Waypoint, tr.From, tr.To
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	slot, ok := l.slots[waypoint]

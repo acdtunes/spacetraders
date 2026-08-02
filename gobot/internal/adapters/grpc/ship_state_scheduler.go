@@ -265,19 +265,12 @@ func (s *ShipStateScheduler) CancelAll() {
 	}
 }
 
-// PendingCount returns the number of pending timers (for testing/monitoring)
-func (s *ShipStateScheduler) PendingCount() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.timers)
-}
-
 // RunSweeper blocks, checking for stuck ships every SweeperInterval, until
 // ctx is canceled or Stop() is called. It runs under the daemon Supervisor
 // (sp-i01z): a panic inside a sweep pass is captured there and the sweeper
 // restarts with backoff instead of dying silently. An unsupervised sweeper that
 // dies stops arrivals being swept for the rest of the daemon's life, with zero
-// signal. Replaces StartBackgroundSweeper.
+// signal.
 func (s *ShipStateScheduler) RunSweeper(ctx context.Context) error {
 	fmt.Printf("Background sweeper started (interval: %v)\n", SweeperInterval)
 	ticker := time.NewTicker(SweeperInterval)
@@ -300,7 +293,6 @@ func (s *ShipStateScheduler) sweepStuckShips() {
 	ctx, cancel := context.WithTimeout(context.Background(), stuckSweepTimeout)
 	defer cancel()
 
-	// Find ships that should have arrived but are still IN_TRANSIT
 	stuckShips, err := s.shipRepo.FindInTransitWithPastArrival(ctx)
 	if err != nil {
 		fmt.Printf("Sweeper: Failed to find stuck ships: %v\n", err)

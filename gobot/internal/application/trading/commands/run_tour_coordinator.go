@@ -2,12 +2,8 @@ package commands
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
-	"os"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -15,14 +11,12 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/flowfeed"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	gasCmd "github.com/andrescamacho/spacetraders-go/internal/application/gas/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/application/health"
 	"github.com/andrescamacho/spacetraders-go/internal/application/system/gategraph"
 	tradingsvc "github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/absorption"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -42,10 +36,9 @@ const (
 	// maxTourHops bounds the planner's search (spec: ≤6 hops); the executor caps hops in
 	// the constraint it sends. The per-tour distinct-system cap rides cmd.MaxTourSystems ->
 	// TourConstraints.MaxTourSystems to the Python solver, which clamps it to [2,
-	// MAX_HOPS_DEFAULT] and falls back to its own MAX_TOUR_SYSTEMS default (2) when unset.
-	// maxTourSystems here is therefore only the documented default, not a code-enforced bound.
-	maxTourHops    = 6
-	maxTourSystems = 2
+	// MAX_HOPS_DEFAULT] and falls back to its own MAX_TOUR_SYSTEMS default (2) when unset —
+	// this side enforces no distinct-system bound of its own.
+	maxTourHops = 6
 	// unreachableLaneReason labels the drop counter: a good with a cheap source
 	// IN the tour graph but its best sink in a system OUTSIDE it (>1 gate hop away), so
 	// source and sink never co-occur in one snapshot and the solver can never plan the
@@ -135,318 +128,6 @@ const plannerInternalErrorMarker = "internal_error:"
 func isPlannerInternalError(reason string) bool {
 	return strings.Contains(reason, plannerInternalErrorMarker)
 }
-
-// RunTourCoordinatorCommand is a captain-directed, guarded multi-hop trade-tour run:
-// plan a depth-aware tour for THIS hull, fly it leg by leg with prices re-verified
-// live at every dock, re-plan at most ReplanLimit times when reality drifts past
-// tolerance. The route is dynamically planned, so honest completion is a response
-// VETO (not a Go error) — a re-run cannot resume a planner-chosen route.
-//
-// Iterations makes it a CONTINUOUS engine: on manifest completion it re-plans from
-// the hull's CURRENT position + live market and flies the next tour with no captain
-// in the loop, turning capital velocity from captain-cadence into engine-cadence. See
-// Iterations for the loop semantics.
-type RunTourCoordinatorCommand struct {
-	ShipSymbol string
-	PlayerID   int
-	MaxHops    int // 0 → maxTourHops
-	// MaxTourSystems caps the DISTINCT systems one tour may touch (start + gate
-	// neighbors). 0 → the solver's MAX_TOUR_SYSTEMS default (2), byte-identical to
-	// today; a positive value sweeps tour length without a redeploy.
-	MaxTourSystems int
-	// ClosedTours + AnchorSystem opt this run into closed-tour mode: every planned
-	// tour ENDS at the anchor via an appended, honestly-priced no-trade return leg.
-	// AnchorSystem "" floats the anchor to the ship's waypoint at plan time; an
-	// explicit system symbol pins the return to that system's first fresh market.
-	// Zero-values = open tours, byte-identical to today. Deliberately no CLI flag
-	// yet — arming is governance-owned.
-	ClosedTours  bool
-	AnchorSystem string
-	MaxSpend     int64 // 0 → 25% of live treasury (re-resolved per tour when Iterations != 0/1)
-	MinMargin    int
-	ReplanLimit  int // 0 → tourMaxReplansDefault (PER TOUR)
-	// Iterations is the tour count, unifying the container iteration semantics
-	// (registry invariant 3): -1 = CONTINUOUS (tour, re-plan from the new position,
-	// tour again — until margins die/starvation/stop), N>0 = exactly N tours, 0 =
-	// the one-tour default (byte-for-byte unchanged from the original one-shot
-	// behavior). The coordinator owns this loop internally
-	// (CoordinatorOwnsIterations); the container runs Handle() once.
-	Iterations            int
-	AgentSymbol           string
-	ContainerID           string // the tour id; groups this run's telemetry legs
-	WorkingCapitalReserve int64  // 0 → defaultWorkingCapitalReserve (flat, sp-05glh — no proportional shrink)
-	// ModelArtifactPath overrides defaultModelArtifactPath (tests point it at a temp
-	// artifact); empty → the default repo-relative path.
-	ModelArtifactPath string
-
-	// --- Reposition-on-margins-death ---
-	// When a CONTINUOUS (--iterations -1) tour's margins die (tourStarvationLimit
-	// consecutive no-plans after >=1 productive tour), the coordinator RANKS
-	// jump-reachable systems by expected tour margin and JUMPS to the best one before
-	// exiting — a hull stranded on its own freshly-sold-out ground rotates to a fresh
-	// renewable one instead of dying on it and burning a captain relaunch. Bounded to
-	// ONE reposition per margins-death episode (no infinite hop-scotching).
-
-	// RepositionDisabled is the kill-switch. false (the zero value / absent config,
-	// and the default) → reposition is ON for continuous runs; true disables it and
-	// a margins-died tour exits without rotating.
-	RepositionDisabled bool
-	// RepositionMinMargin is the fresh-profit floor (RULINGS #5) a candidate's planned
-	// tour must clear to justify the jump: a jump costs antimatter + fuel + a one-way
-	// hop the hull spends not trading, so a marginal destination isn't worth relocating
-	// for. 0 → repositionMinMarginDefault.
-	RepositionMinMargin int
-	// RepositionMaxCandidates bounds the solver fan-out: at most K pre-ranked candidate
-	// systems get a real planner call per margins-death episode. 0 →
-	// repositionMaxCandidatesDefault.
-	RepositionMaxCandidates int
-	// RepositionJumpBound is the jump bound the reposition flight resolves its cross-system
-	// leg over the PERSISTED stored adjacency (RepositionPath) with, routing PAST an
-	// unreadable frontier gate rather than fail-closing on it via the strict Path — a tour
-	// reposition is a MOVEMENT of the hull, not a money commitment, so it shares the scout
-	// reposition's relaxation. 0/absent → repositionJumpBoundDefault (12, the scout
-	// frontier depth); a positive value is the captain's [trade_fleet].reposition_jump_bound
-	// override. Always resolves > 0, so the reposition never degrades to the strict resolver,
-	// which cannot route a heavy off an unreadable-gate origin. The buy-side (arb pre-buy,
-	// trade-route lane commits, cargo delivery) keeps strict Path — money-commitment vs
-	// hull-movement is the guard line.
-	RepositionJumpBound int
-	// RepositionInProgress / RepositionTargetSystem / RepositionTargetWaypoint are the
-	// restart-resume state (RULINGS #2): persisted into the container config the instant
-	// a reposition jump is committed and cleared once it lands, so a daemon restart
-	// mid-jump resumes toward the SAME ground through the shared cooldown-riding travel
-	// machinery rather than re-planning at whatever intermediate hop it was re-adopted
-	// on. Set by the recovery rebuild from the persisted config; a fresh launch leaves
-	// them zero.
-	RepositionInProgress     bool
-	RepositionTargetSystem   string
-	RepositionTargetWaypoint string
-
-	// --- Reposition reach (always-broaden discovery + deadhead-decay + anti-herd) ---
-	// A hull whose origin has ANY fresh-market 1-hop neighbour (even a money-losing one) never
-	// sees richer systems 2-4 gate hops away, because buildRepositionCandidates broadens to the
-	// multi-hop scan ONLY when the 1-hop set is EMPTY (the off-circuit gate).
-
-	// RepositionReachEnabled arms the reach improvement. false (the zero value / absent config) →
-	// the legacy 1-hop-first + broaden-on-empty path runs byte-for-byte unchanged (the governance
-	// gate). true → buildRepositionCandidates ALWAYS runs BOTH the 1-hop and the multi-hop scan,
-	// merges+dedups them (1-hop precedence on ties), RE-RANKS by a hop-decayed score so a rich
-	// distant ground can outrank a mediocre near one without a marginally-better distant one
-	// overflying, and EXCLUDES candidate systems already saturated with active trade hulls.
-	RepositionReachEnabled bool
-	// RepositionReachHopDecayPct is the per-hop ranking decay (an int percent): the pre-rank score
-	// is adjusted to score·(pct/100)^hops so distant candidates pay for the extra deadhead travel.
-	// 0/absent → repositionReachHopDecayPctDefault (85 ⇒ 0.85/hop). Only read when
-	// RepositionReachEnabled is true.
-	RepositionReachHopDecayPct int
-	// RepositionReachMaxHullsPerSystem is the anti-herd cap: a candidate system already served by
-	// >= this many active trade hulls is excluded, so simultaneously-margin-dead hulls do not all
-	// pile onto the same top system and re-drain it. 0/absent →
-	// repositionReachMaxHullsPerSystemDefault (5). Only read when RepositionReachEnabled is true.
-	RepositionReachMaxHullsPerSystem int
-
-	// --- Rate-floor early-reposition (always-relocate chronic under-earners) ---
-	// The margins-death reposition only fires when a continuous tour's margins DIE. A hull earning
-	// mediocre-but-profitable local arb (say 80k/hr while frontier pays 360-480k/hr) never
-	// margin-dies, so it never relocates. This trigger, evaluated AFTER a PRODUCTIVE continuous tour,
-	// relocates a hull whose realized rate is far below the fleet median to a meaningfully better
-	// reachable ground via part-1's reach discovery. DEFAULT-OFF and heavily gated (thrash is the
-	// failure mode); the whole trigger lives inside RepositionRateFloorEnabled.
-
-	// RepositionRateFloorEnabled is the master gate. false (the zero value / absent config) → the
-	// trigger never runs and the productive-tour path is byte-identical to today; true → after a
-	// productive continuous tour the coordinator evaluates the rate-floor relocation (still subject
-	// to the shared RepositionDisabled kill-switch, the fail-closed median, the improvement gate,
-	// anti-herd, and the dwell window). Governance-owned arming (config + restart).
-	RepositionRateFloorEnabled bool
-	// RepositionRateFloorPct is the under-earner threshold as a percent of the fleet-median realized
-	// tour $/hr: a hull earning < this % of the median is a relocation candidate. 0/absent →
-	// repositionRateFloorPctDefault (40). Only read when RepositionRateFloorEnabled is true.
-	RepositionRateFloorPct int
-	// RepositionRateFloorImprovementPct is how much better the best reach candidate's PROJECTED rate
-	// must be than the hull's CURRENT realized rate to justify the jump (the anti-thrash cushion):
-	// relocate only if candidate_projected >= this % of current_realized (and strictly better).
-	// 0/absent → repositionRateFloorImprovementPctDefault (200, i.e. 2x). Only read when
-	// RepositionRateFloorEnabled is true.
-	RepositionRateFloorImprovementPct int
-	// RepositionRateFloorDwellMinutes is the per-hull cooldown after a rate-floor relocation: a hull
-	// that relocated within this window is never a rate-floor candidate again, so it cannot
-	// hop-scotch across successive productive tours. 0/absent → repositionRateFloorDwellMinutesDefault
-	// (15). Only read when RepositionRateFloorEnabled is true.
-	RepositionRateFloorDwellMinutes int
-
-	// --- Placement/relocation scoring loop ---
-	// The margins-death rescue evolves into the spec's score(x)=E_x−β·D_x placement loop:
-	// argmax over reachable systems (INCLUDING staying put) on the deadhead-charged score,
-	// with a φ·β park floor. DEFAULT-OFF and byte-identical to the legacy static-floor
-	// reposition when unarmed; the shared RepositionDisabled kill-switch and one-per-episode
-	// budget still win (they sit ABOVE the placement dispatch). Governance-owned arming.
-
-	// PlacementScoreEnabled arms the placement loop. false (the zero value / absent config) →
-	// the legacy static-floor reposition runs unchanged (byte-identical at the epic defaults);
-	// true → maybeRepositionPlacement scores candidates on score(x)=E_x−β·D_x. β unreadable
-	// (no telemetry) falls back to the legacy engine for that episode (fresh-boot rescue).
-	PlacementScoreEnabled bool
-	// PlacementBetaWindowMinutes is the trailing window for the fleet rolling-median realized
-	// tour $/hr (β). 0 → placementBetaWindowMinutesDefault (60).
-	PlacementBetaWindowMinutes int
-	// PlacementParkFloorPct is φ×100: a candidate's deadhead-charged score must clear φ·β to be
-	// worth the jump, else the hull parks. 0 → placementParkFloorPctDefault (30, spec φ=0.3).
-	PlacementParkFloorPct int
-	// PlacementShortlistTopN is the same-budget shortlist N: armed mode prices top-(N−1) foreign
-	// candidates + 1 current-system E_s = N planner calls per episode, identical to legacy's K.
-	// 0 → the resolved RepositionMaxCandidates (default 3), so arming never grows the solver herd.
-	PlacementShortlistTopN int
-
-	// StrandedConsecutiveThreshold is the stranded-hull detector threshold: how many
-	// CONSECUTIVE origin-level empty reposition discoveries (no durable adjacency + gate
-	// inaccessible) a hull must accrue before the coordinator pages the watch with a
-	// WARN + the fleet_hull_stranded_total counter. 0/absent →
-	// strandedConsecutiveThresholdDefault (3). Config-driven from [trade_fleet]
-	// (RULINGS #5), threaded through the container config so a captain retunes it by
-	// editing config.yaml + restarting the daemon.
-	StrandedConsecutiveThreshold int
-
-	// CandidateHopDepth is the gate-hop radius for the tour candidate set. 0/absent →
-	// candidateHopDepthDefault (1 = today's exact behavior: home + live 1-gate-hop
-	// neighbors). Clamped to [1, maxCandidateHopDepth=3] (spec "2-3 gate hops"). EFFECT
-	// is arming-gated: a value > 1 is a NO-OP unless the solver clamp is lifted
-	// (cmd.MaxTourSystems > 2), so a lone live-config edit can never feed a
-	// non-gate-adjacent set to the flat-pricing solver.
-	CandidateHopDepth int
-	// CandidateShortlistTopN bounds how many ≥2-hop systems the profitable-edge shortlist
-	// ADDS on top of the always-present 1-hop floor. 0/absent → candidateShortlistTopNDefault (6).
-	CandidateShortlistTopN int
-
-	// ExternalityWeight prices the recovery burden a planned sell tranche imposes on the
-	// rest of the fleet, so hulls stop converging on the same sinks.
-	// Config-driven from [trade_fleet] (RULINGS #5) and threaded through the container
-	// config, so a captain arms and retunes it by editing config.yaml + restarting.
-	// 0/absent → no charge → the solver ranks on raw margin exactly as today, which is
-	// also the documented revert.
-	ExternalityWeight float64
-	// --- sp-e8d92 FIRST REFUSAL knobs. Every one is 0/absent -> a documented default (RULINGS #5). ---
-
-	// RelocationOfferWindowSeconds is how long the tour waits for the relocator at its boundary.
-	// 0/absent -> defaultRelocationOfferWindowSeconds (150s), which is longer than the relocator's own
-	// tick (an offer shorter than that can lapse between two observations and never be seen) and shorter
-	// than the measured 224s median inter-tour gap.
-	RelocationOfferWindowSeconds int
-	// RelocationOfferMinHulls is the herd gate: offer only a hull whose system already holds at least
-	// this many trade hulls. 0/absent -> defaultRelocationOfferMinHullsInSystem (2).
-	RelocationOfferMinHulls int
-	// RelocationOfferBackoffMinutes is how long a hull whose offer LAPSED waits before being offered
-	// again. 0/absent -> defaultRelocationOfferBackoffMinutes (30).
-	RelocationOfferBackoffMinutes int
-	// RelocationOfferUntil is the restart-durable OFFER deadline, reloaded from the container config so a
-	// restart mid-offer honours the same deadline instead of opening a fresh one.
-	RelocationOfferUntil time.Time
-	// RelocationOfferBackoffUntil is the restart-durable backoff instant, reloaded from the container
-	// config so a restart does not forget that this hull's last offer went unclaimed and immediately pay
-	// another window (RULINGS #2).
-	RelocationOfferBackoffUntil time.Time
-}
-
-// RunTourCoordinatorResponse reports the realised tour economics and — via
-// CompletionOutcome — whether the run honestly completed. Three terminal shapes:
-// a completed tour (Completed), a fail-open no-op (TourUnavailable, a clean
-// completion — planner down/infeasible or model artifact unreadable, single-lane
-// fallback stands), and a stranded-cargo veto (CargoStranded → the runner
-// terminalizes FAILED via the honest-completion contract).
-type RunTourCoordinatorResponse struct {
-	ShipSymbol   string
-	TourID       string
-	LegsPlanned  int
-	LegsExecuted int
-	Replans      int
-	TotalSpent   int64
-	TotalRevenue int64
-	NetProfit    int64
-	ModelVersion string
-	Completed    bool
-
-	// ToursCompleted counts how many tours flew >=1 trade this run. 1 for
-	// the one-shot default; >1 for a continuous (--iterations) run. TradesExecuted is
-	// the run's total executed buy+sell tranches (the per-tour progress signal the
-	// starvation guard reads). ExitReason (a tourExit* constant) explains why a
-	// continuous loop stopped; empty on the one-shot path.
-	ToursCompleted int
-	TradesExecuted int
-	ExitReason     string
-
-	// Repositions counts how many times this run rotated the hull to a fresh ground on
-	// margins-death. ExitDetail is the human-readable exit explanation the
-	// ExitReason constant abbreviates — on a reposition-then-death it NAMES BOTH the
-	// origin and the destination system ("repositioned X -> Y ... margins died there
-	// too"), so a captain reading a completed continuous tour sees the full rotation
-	// story, not just the machine-readable "starvation".
-	Repositions int
-	ExitDetail  string
-
-	// DistressLiquidations counts how many stuck-laden episodes this run resolved by the
-	// sp-2v69u TERTIARY last resort: a laden hull with no profitable fresh tour AND no
-	// reachable sink (the fresh-arb reposition and the held-cargo offload both declined)
-	// sold its held cargo at the best AVAILABLE local bid — below the profit floor,
-	// sunk-cost cash recovery — so it re-enters planning EMPTY instead of churning
-	// relaunch-after-relaunch full. Zero on every run that never strands a hull laden.
-	DistressLiquidations int
-
-	// ExitHoldLiquidations counts the goods the exit sweep cleared out of the hold on
-	// the way to release: cargo that had a live local bid and would otherwise have been marooned
-	// on an idle hull the instant releaseShipAssignments ran. It is the falsifier for that sweep
-	// — a run whose hold emptied for any OTHER reason leaves this at zero — so a regression that
-	// stops consulting the invariant shows up as a flat counter, not just a changed row.
-	ExitHoldLiquidations int
-
-	// CapitalDeniedBuys counts buys a MONEY GUARD refused: the working-capital floor, or a
-	// fail-closed unreadable balance. A tour that flew zero trades while this rose was
-	// DENIED CAPITAL — the planner found the margin, the treasury could not fund it — which
-	// is the opposite of margin death and must never feed the margins-death breaker.
-	CapitalDeniedBuys int
-
-	// TourUnavailable marks a fail-open exit: no trading happened, the single-lane
-	// fallback remains. A CLEAN completion (not a failure), never a phantom trade.
-	TourUnavailable       bool
-	TourUnavailableReason string
-
-	// CargoStranded is the honest-completion veto (invariant: a tour ending with
-	// unsold bought cargo is never a clean completion). Threaded through
-	// CompletionOutcome (nil Go error), NOT arb's non-nil-error shape — a
-	// dynamically-planned tour cannot be resumed by a re-run, which would trade
-	// AROUND the strand.
-	CargoStranded       bool
-	CargoStrandedReason string
-
-	// PlannerInternalError is the honest-completion veto for a planner OUTAGE: the
-	// routing-service caught an exception and returned a STRUCTURED feasible=false
-	// with an "internal_error:" reason (not a gRPC transport error). That is a real
-	// planner failure, NOT a legitimate "no profitable tour" — routing it to the clean
-	// TourUnavailable fail-open would mask a live outage as container success=true.
-	// Surfaced through CompletionOutcome (nil Go error, like CargoStranded) so the
-	// container terminalizes FAILED and the outage is loud.
-	PlannerInternalError       bool
-	PlannerInternalErrorReason string
-
-	Error string
-}
-
-// CompletionOutcome implements common.CompletionReporter: a stranded tour vetoes
-// the runner's success=true (terminalized FAILED with the strand as its signature).
-// A planner internal_error vetoes the same way — a real routing-service outage is a
-// FAILURE, never masked as a clean completion. A fail-open "tour unavailable" is an
-// honest clean completion (nothing half-done).
-func (r *RunTourCoordinatorResponse) CompletionOutcome() (bool, string) {
-	if r.CargoStranded {
-		return false, r.CargoStrandedReason
-	}
-	if r.PlannerInternalError {
-		return false, r.PlannerInternalErrorReason
-	}
-	return true, ""
-}
-
-// Compile-time pin: the tour response participates in the honest-completion contract.
-var _ common.CompletionReporter = (*RunTourCoordinatorResponse)(nil)
 
 // RunTourCoordinatorHandler runs the one-shot guarded tour. It composes the proven
 // RunTradeRouteCoordinatorHandler primitives (travel — multi-jump, dock, purchase,
@@ -672,240 +353,6 @@ type RunTourCoordinatorHandler struct {
 	captainEvents captain.EventRecorder
 }
 
-// outOfHorizonSinkScanner reads the global best sell destination per good (across ALL
-// systems), the seam the tour coordinator uses to SEE sinks its 1-gate-hop snapshot
-// cannot. The concrete *persistence.MarketRepositoryGORM satisfies it; the daemon
-// injects it via SetOutOfHorizonSinkScanner. Kept as a narrow local port (not a method
-// on the wide market.MarketRepository interface) so no mock/test double outside this
-// diagnostic is disturbed.
-type outOfHorizonSinkScanner interface {
-	BestSinksAcrossSystems(ctx context.Context, goods []string, playerID int, maxAge time.Duration, now time.Time) (map[string]market.GlobalSinkResult, error)
-}
-
-// NewRunTourCoordinatorHandler wires the tour coordinator with the same driven ports
-// as the trade-route circuit (so buys/sells/navigation resolve to the daemon's exact
-// command handlers) plus the market-model planner, waypoint repository (era-scoped
-// coordinates), and telemetry repository. A nil clock defaults to RealClock.
-func NewRunTourCoordinatorHandler(
-	mediator common.Mediator,
-	shipRepo navigation.ShipRepository,
-	marketRepo market.MarketRepository,
-	waypointRepo system.WaypointRepository,
-	telemetry trading.TourTelemetryRepository,
-	planner routing.RoutingClient,
-	marketRefresher MarketRefresher,
-	clock shared.Clock,
-	apiClient domainPorts.APIClient,
-) *RunTourCoordinatorHandler {
-	if clock == nil {
-		clock = shared.NewRealClock()
-	}
-	return &RunTourCoordinatorHandler{
-		legs:                       NewRunTradeRouteCoordinatorHandler(mediator, shipRepo, marketRepo, marketRefresher, clock, apiClient),
-		marketRepo:                 marketRepo,
-		waypointRepo:               waypointRepo,
-		telemetry:                  telemetry,
-		planner:                    planner,
-		clock:                      clock,
-		apiClient:                  apiClient,
-		mediator:                   mediator,
-		depositParked:              make(map[string]string),
-		strandedStreak:             make(map[string]*strandedHullState),
-		purchaseObligation:         make(map[string]map[string]int),
-		rateFloorLastRelocation:    make(map[string]time.Time),
-		pendingRelocationsBySystem: make(map[string]int),
-	}
-}
-
-// SetPrePositioning wires the optional haul-to-storage deposit subsystem: the shared
-// storage coordinator (deposit protocol + warehouse space reads), the warehouse-op
-// finder, the demand miner, the resolved config, and the capital-ceiling percent.
-// Called from main.go AFTER the storage subsystem is constructed (the tour
-// coordinator is wired earlier). Left unset, no deposit legs are ever offered or
-// executed — the tour plans and flies pure arb.
-func (h *RunTourCoordinatorHandler) SetPrePositioning(
-	coordinator storage.StorageCoordinator,
-	warehouses tradingsvc.WarehouseOperationFinder,
-	miner tradingsvc.DepositDemandMiner,
-	cfg tradingsvc.DepositCandidateConfig,
-	capitalCeilingPct int,
-) {
-	h.storageCoordinator = coordinator
-	h.warehouseFinder = warehouses
-	h.demandMiner = miner
-	h.prePositioning = cfg
-	h.depositCeilingPct = capitalCeilingPct
-}
-
-// SetOutOfHorizonSinkScanner wires the global best-sink reader that backs the
-// out-of-horizon lane diagnostic. The daemon injects the concrete market repo; left
-// unset the diagnostic no-ops (RULINGS #4). Optional-port pattern, like the setters
-// below.
-func (h *RunTourCoordinatorHandler) SetOutOfHorizonSinkScanner(s outOfHorizonSinkScanner) {
-	h.sinkScanner = s
-}
-
-// SetGateGraph wires the multi-jump gate-graph resolver into the delegated movement
-// handler (so travel crosses multi-hop gaps and cross-gate tours fly). Mirrors the
-// arb coordinator's injection.
-func (h *RunTourCoordinatorHandler) SetGateGraph(g GateGraph) {
-	h.legs.SetGateGraph(g)
-}
-
-// SetTreasuryReader wires the ledger-backed treasury reader (sp-muq66) into BOTH this
-// coordinator's own money reads and the movement legs' working-capital guard, so the tour
-// path reads treasury one way rather than two. Left unset, both keep the direct live read.
-func (h *RunTourCoordinatorHandler) SetTreasuryReader(r TreasuryReader) {
-	h.treasury = r
-	h.legs.SetTreasuryReader(r)
-}
-
-// SetGateFeeReader injects the ledger-backed per-departure-gate fee table.
-// Unset (every existing test) leaves gateFees nil, which plans byte-identically to today.
-func (h *RunTourCoordinatorHandler) SetGateFeeReader(r GateFeeReader) {
-	h.gateFees = r
-}
-
-// tourGateFees resolves the per-departure-gate fee table for this solve.
-//
-// Nil-reader and empty-table both yield nil, and nil means every crossing prices at the
-// solver's flat charge — the pre-table behaviour. There is no error path on purpose: a
-// pricing refinement must never be the reason a tour fails to plan.
-func (h *RunTourCoordinatorHandler) tourGateFees(
-	ctx context.Context, cmd *RunTourCoordinatorCommand,
-) []routing.GateFee {
-	if h.gateFees == nil {
-		return nil
-	}
-	return gateFeeConstraints(h.gateFees.GateFees(ctx, cmd.PlayerID))
-}
-
-// SetChartGateOnArrival propagates the chart-on-gate-arrival knob to the movement
-// legs, so this coordinator's cross-gate tour arrivals chart the gate they land on too.
-// Mirrors the SetGateGraph delegation.
-func (h *RunTourCoordinatorHandler) SetChartGateOnArrival(enabled bool) {
-	h.legs.SetChartGateOnArrival(enabled)
-}
-
-// SetScanPolicy wires the tour-scan load policy (recent-scan freshness gate +
-// impact-sample rate, resolved from cfg.TradeImpact on restart). Stamped onto ctx at run
-// start so the shared arrival + post-trade scans throttle the deliberate price-impact
-// instrumentation. Left unset, the coordinator stamps no policy and every scan runs
-// unsampled (deploy-safe). Mirrors the SetGateGraph optional-injection idiom.
-func (h *RunTourCoordinatorHandler) SetScanPolicy(policy shared.ScanPolicy) {
-	h.scanPolicy = policy
-	h.scanPolicySet = true
-}
-
-// SetRankerAgeCaps wires the activity-conditioned listing freshness table
-// into the tour snapshot builder, the same optional-injection idiom as SetScanPolicy.
-// The daemon injects cfg.Trading.RankerAgeCapMinutes.Resolved() so the tour path and
-// the lane ranker drop stale rows against the SAME config-resolved caps; left unset
-// the zero-value table still builds on the fitted armed defaults, so every existing
-// test is unaffected.
-func (h *RunTourCoordinatorHandler) SetRankerAgeCaps(caps trading.RankerAgeCaps) {
-	h.rankerAgeCaps = caps
-}
-
-// SetCargoBlocklist injects the tour cargo good-blocklist from
-// cfg.TradeFleet.CargoBlocklist at daemon boot — the same global-config → handler-setter
-// injection SetPrePositioning/SetScanPolicy use. An empty/absent list leaves the handler's
-// set nil, so planForState's filter is a no-op and the tour plans over the full good
-// universe exactly as before (byte-identical). Arming the noise-goods filter is an
-// explicit config edit (recommended value: FUEL, ALUMINUM, PLASTICS) + daemon restart.
-func (h *RunTourCoordinatorHandler) SetCargoBlocklist(goods []string) {
-	h.cargoBlocklist = stringSet(goods)
-}
-
-// SetSinkFreshness arms the sp-tgll8 item-2 "FRESH" clause on the firm-sink buy gate with
-// the maximum age a downstream sink's cached market_data may carry at buy time. The daemon
-// injects cfg.TradeFleet.ResolvedSinkFreshnessMaxAge() at boot — the same global-config →
-// handler-setter idiom SetRankerAgeCaps/SetCargoBlocklist use, re-read on every restart. A
-// non-positive age leaves the clause INERT (the gate behaves exactly as sp-pcxju), so every
-// existing ledger-wired tour test that never calls this is byte-identical.
-func (h *RunTourCoordinatorHandler) SetSinkFreshness(maxAge time.Duration) {
-	h.sinkFreshnessMaxAge = maxAge
-}
-
-// SetCapitalWorkSensor wires the per-operation capital budget's hasWork sensor (sp-ftqgp). The
-// daemon calls this UNCONDITIONALLY at boot — there is no config key, no default-off and no
-// arming step between the sensor and a live budget. Leaving it unset is the test path only, and
-// keeps the 25%-of-treasury dynamic cap as the sole cumulative bound.
-func (h *RunTourCoordinatorHandler) SetCapitalWorkSensor(sensor common.CapitalWorkSensor) {
-	h.workSensor = sensor
-}
-
-// SetModelArtifactPath injects the daemon-configured (absolute) market-model artifact
-// path this coordinator reads at launch (resolved from cfg.Routing.ModelArtifactPath so
-// it is cwd-independent). Left unset, the coordinator falls back to the repo-relative
-// defaultModelArtifactPath. Mirrors the SetGateGraph optional-injection idiom.
-func (h *RunTourCoordinatorHandler) SetModelArtifactPath(path string) {
-	h.modelArtifactPath = path
-}
-
-// RepositionEpisode is the durable slice of a margins-death reposition: the destination
-// the hull is jumping to. It is persisted into the container config the instant the
-// jump is committed and cleared (InProgress=false) once it lands, so a daemon restart
-// mid-jump (RULINGS #2) resumes toward the SAME ground through the shared
-// cooldown-riding travel machinery rather than re-planning at whatever intermediate hop
-// it was re-adopted on.
-type RepositionEpisode struct {
-	InProgress     bool
-	TargetSystem   string
-	TargetWaypoint string
-}
-
-// RepositionStatePersister durably records an in-flight reposition's destination (keyed
-// by container) so a restart-rebuilt run resumes the jump instead of re-planning at an
-// intermediate position (RULINGS #2). The daemon backs this with the container config —
-// the same map the recovery rebuild reads (buildTourCoordinatorCommand's reposition_*
-// keys). Mirrors the arb ArbCostPersister contract: a returned error is advisory
-// (persistence durability, never a spend/movement guard), so the caller logs and
-// continues.
-type RepositionStatePersister interface {
-	PersistRepositionState(ctx context.Context, containerID string, playerID int, episode RepositionEpisode) error
-}
-
-// SetRepositionPersister wires the durable reposition-state store so a margins-death
-// reposition survives a daemon restart mid-jump (RULINGS #2). Left unset (nil), a
-// restart mid-jump re-plans at the hull's current position rather than resuming the
-// reposition, exactly as if the feature carried no persistence (fail-open). Mirrors the
-// arb SetCostPersister optional-injection idiom.
-func (h *RunTourCoordinatorHandler) SetRepositionPersister(p RepositionStatePersister) {
-	h.repositionPersister = p
-}
-
-// SetEventRecorder wires the captain outbox the coordinator emits its error-loop event
-// through. Optional-injection like the other setters: without it the streak monitor
-// still tracks and logs, it just cannot escalate to a captain event (nil-safe, see
-// health.RecordErrorLoop).
-func (h *RunTourCoordinatorHandler) SetEventRecorder(rec captain.EventRecorder) {
-	h.captainEvents = rec
-}
-
-// errTourBudgetUnreadable is the constant streak key for the dynamic-budget resolve
-// checkpoint. Constant so consecutive unreadable-treasury iterations count as the SAME
-// error and accumulate toward the threshold (a varying message would reset the streak
-// every pass).
-var errTourBudgetUnreadable = errors.New("dynamic tour budget unresolved: live treasury unreadable")
-
-// noteTourBudget records one iteration of the continuous loop's dynamic-budget resolve
-// at the "resolve_tour_budget" streak checkpoint. unreadable=true is a failure
-// (fail-closed pause) that, repeated for DefaultStreakThreshold consecutive iterations,
-// crosses and emits the coordinator error-loop captain event; a readable resolve resets
-// the streak. Edge-triggered and nil-safe on the recorder (health.RecordErrorLoop). Only
-// reached on the dynamic-budget path (an explicit --max-spend never resolves, so this
-// checkpoint stays inert for it).
-func (h *RunTourCoordinatorHandler) noteTourBudget(ctx context.Context, cmd *RunTourCoordinatorCommand, budgetMon *health.Monitor, unreadable bool) {
-	msg := ""
-	if unreadable {
-		msg = errTourBudgetUnreadable.Error()
-	}
-	if streak, crossed := budgetMon.Note("resolve_tour_budget", msg); crossed {
-		health.RecordErrorLoop(h.captainEvents, common.LoggerFromContext(ctx), cmd.ContainerID, cmd.PlayerID, "resolve_tour_budget", errTourBudgetUnreadable, streak)
-	}
-}
-
 // Handle executes the one-shot tour. A fail-open no-op and a stranded-cargo veto both
 // return a nil Go error (the veto is threaded through CompletionOutcome); an
 // operational failure mid-tour returns the underlying error so the runner can retry
@@ -926,6 +373,15 @@ func (h *RunTourCoordinatorHandler) Handle(ctx context.Context, request common.R
 	return response, nil
 }
 
+// execute runs the hull's continuous tour loop: resolve the run's budget, reserve and
+// model version, resume any in-flight reposition, then plan and fly tours until a
+// terminal condition ends the run.
+//
+// The named return err is load-bearing: the tour-exit metrics defer and the
+// purchase-obligation epilogue below both branch on it. Binding err with := inside a
+// nested scope shadows it and silently breaks the "observe only on honest completion"
+// contract — give an inner error a distinct name (the file's verr/rerr convention) and
+// assign to err explicitly.
 func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoordinatorCommand, response *RunTourCoordinatorResponse) (err error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -1001,16 +457,8 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 	}()
 
 	// Bind the model version from the checked-in artifact (RULINGS #4: unreadable →
-	// fail OPEN to single-lane, never guess a version). Path precedence: an explicit
-	// per-run cmd.ModelArtifactPath (tests) → the daemon-configured absolute path
-	// (production, cwd-independent) → the repo-relative constant (pure-env fallback).
-	artifactPath := cmd.ModelArtifactPath
-	if artifactPath == "" {
-		artifactPath = h.modelArtifactPath
-	}
-	if artifactPath == "" {
-		artifactPath = defaultModelArtifactPath
-	}
+	// fail OPEN to single-lane, never guess a version).
+	artifactPath := h.resolveModelArtifactPath(cmd)
 	modelVersion, err := readTourModelVersion(artifactPath)
 	if err != nil {
 		response.TourUnavailable = true
@@ -1023,31 +471,9 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 	}
 	response.ModelVersion = modelVersion
 
-	reserve := cmd.WorkingCapitalReserve
-	if reserve == 0 {
-		reserve = int64(defaultWorkingCapitalReserve)
-		// RULINGS #4: never resolve the reserve to a default SILENTLY. A built command
-		// reaching here with reserve==0 means the launch config carried no reserve (a
-		// captain CLI tour with no --reserve, or a fleet whose [trade_fleet] reserve is
-		// unset); surfacing it makes a fleet accidentally running on the floor visible in
-		// the log, not only in the P&L. The present-but-unparseable case cannot
-		// reach here — it fails the build closed (PresentOrFailInt in
-		// buildTourCoordinatorCommand).
-		logger.Log("WARNING", fmt.Sprintf(
-			"Tour %s: working-capital reserve resolved to the %d default (launch config carried no reserve) - every buy is floored at %d, not a fleet reserve",
-			cmd.ShipSymbol, defaultWorkingCapitalReserve, defaultWorkingCapitalReserve), map[string]interface{}{
-			"ship_symbol": cmd.ShipSymbol, "container_id": cmd.ContainerID, "resolved_reserve": defaultWorkingCapitalReserve,
-		})
-	}
-
-	maxHops := cmd.MaxHops
-	if maxHops <= 0 || maxHops > maxTourHops {
-		maxHops = maxTourHops
-	}
-	replanLimit := cmd.ReplanLimit
-	if replanLimit <= 0 {
-		replanLimit = tourMaxReplansDefault
-	}
+	reserve := h.resolveWorkingCapitalReserve(cmd, logger)
+	maxHops, replanLimit := resolveTourHopBudget(cmd)
+	budget := tourPlanBudget{maxHops: maxHops, reserve: reserve, modelVersion: modelVersion}
 
 	// Iteration budget: 0 → the one-tour default (the original one-shot); -1 →
 	// continuous until margins die; N>0 → exactly N tours.
@@ -1084,25 +510,12 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 	// restarts is precisely the unexpiring hold that would strand a trade hull.
 	relocationOfferUntil := cmd.RelocationOfferUntil
 
-	// RULINGS #2 restart-resume: a continuous run re-adopted mid-jump (the reposition was
-	// in flight when the daemon restarted) resumes toward the SAME destination through the
-	// shared cooldown-riding travel machinery, then clears the persisted flag — so the
-	// hull lands on the ground it was rotating to rather than re-planning at whatever
-	// intermediate hop it was re-adopted on. It counts as the episode's spent reposition
-	// so a fresh 3-strike at the destination exits honestly instead of hop-scotching
-	// across the restart boundary.
-	if continuous && cmd.RepositionInProgress && cmd.RepositionTargetWaypoint != "" {
-		logger.Log("INFO", fmt.Sprintf("Reposition resume: re-adopted mid-jump toward %s (%s) after a restart - completing the jump before re-planning (RULINGS #2)", cmd.RepositionTargetSystem, cmd.RepositionTargetWaypoint), map[string]interface{}{
-			"ship_symbol": cmd.ShipSymbol, "target_system": cmd.RepositionTargetSystem, "target_waypoint": cmd.RepositionTargetWaypoint,
-		})
-		// The resume rides the SAME stored-adjacency bounded resolver as the fresh jump
-		// (resolveRepositionJumpBound), so a restart mid-jump toward an unreadable-gate ground
-		// completes over the persisted topology instead of re-hitting the strict Path fail-close.
-		if rerr := h.legs.RepositionToWaypointWithinJumps(ctx, cmd.ShipSymbol, cmd.RepositionTargetWaypoint, cmd.PlayerID, resolveRepositionJumpBound(cmd.RepositionJumpBound)); rerr != nil {
-			return rerr // resumable — the persisted in-progress flag stays set so a re-restart retries the resume
+	if continuous {
+		resumed, rerr := h.resumeInFlightReposition(ctx, cmd, logger)
+		if rerr != nil {
+			return rerr
 		}
-		h.persistReposition(ctx, cmd, RepositionEpisode{InProgress: false})
-		episode = repositionEpisode{repositioned: true, toSystem: cmd.RepositionTargetSystem}
+		episode = resumed
 	}
 
 	// budgetMon makes a continuous run that can never re-resolve its dynamic budget
@@ -1141,48 +554,18 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 			relocationOfferUntil = time.Time{}
 		}
 
-		// RULINGS #6: an explicit --max-spend is a constant per-tour cap; --max-spend
-		// 0/omitted re-resolves 25% of LIVE treasury at EACH tour's plan, so a
-		// continuous run sizes each tour to the treasury it has grown into. The per-buy
-		// working-capital floor guards every spend regardless.
-		tourMaxSpend := cmd.MaxSpend
-		if tourMaxSpend == 0 {
-			resolved, unreadable := h.defaultMaxSpend(ctx, cmd.PlayerID, reserve)
-			if unreadable {
-				// The dynamic budget could NOT be re-resolved — a treasury SOURCE is
-				// wired but the live read failed (transient GetAgent blip / token gone).
-				// RULINGS #4 fail-CLOSED: do NOT spend this iteration and NEVER fall back
-				// to unlimited or a stale budget. But failing closed must PAUSE and
-				// RETRY, not end the loop: proceeding here with a 0 budget is exactly
-				// what the planner refused (spend_cap 0 → infeasible), which — nothing
-				// earned yet on a relaunch — the loop below would misread as "tour
-				// unavailable" and COMPLETE a -1 container after one iteration. Skip the
-				// tour, wait an interruptible backoff, and re-resolve next pass; a
-				// Stop/shutdown during the wait exits RESUMABLE (ctx error), the same as
-				// the boundary check above. The no-progress starvation streak is left
-				// UNTOUCHED — an unreadable treasury is a transient guard trip, not
-				// margin-death.
-				logger.Log("WARNING", "Dynamic tour budget unresolved (live treasury unreadable) - failing closed: not spending, pausing before retry (loop stays alive)", map[string]interface{}{
-					"ship_symbol": cmd.ShipSymbol, "tours_completed": response.ToursCompleted,
-					"backoff_seconds": int(tourTreasuryRetryBackoff.Seconds()),
-				})
-				h.noteTourBudget(ctx, cmd, budgetMon, true)
-				if werr := h.legs.sleepInterruptibly(ctx, tourTreasuryRetryBackoff); werr != nil {
-					return werr
-				}
-				continue
-			}
-			h.noteTourBudget(ctx, cmd, budgetMon, false) // readable resolve resets the streak
-			tourMaxSpend = resolved
-			// Record the RESOLVED dynamic cap (25% of live treasury) — the same value the
-			// Guards dashboard panel proxies with a treasury x 0.25 line. Only on the
-			// dynamic path — an explicit --max-spend constant has nothing dynamic to track.
-			metrics.SetTourResolvedMaxSpend(cmd.PlayerID, resolved)
+		tourMaxSpend, unresolved, serr := h.resolveTourSpendCap(ctx, cmd, response, budgetMon, reserve, logger)
+		if serr != nil {
+			return serr
 		}
+		if unresolved {
+			continue
+		}
+		tourBudget := budget.withMaxSpend(tourMaxSpend)
 
 		tradesBefore := response.TradesExecuted
 		deniedBefore := response.CapitalDeniedBuys
-		feasible, reason, terr := h.runOneTour(ctx, cmd, response, netBought, maxHops, tourMaxSpend, reserve, replanLimit, modelVersion)
+		feasible, reason, terr := h.runOneTour(ctx, cmd, response, netBought, tourBudget, replanLimit)
 		if terr != nil {
 			return terr
 		}
@@ -1214,28 +597,12 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 			capitalDeniedStreak = 0
 			response.ToursCompleted++
 			episode = repositionEpisode{}
-			// Rate-floor early-reposition (DEFAULT-OFF): a hull that just flew a
-			// PRODUCTIVE-but-mediocre tour (well below the fleet-median realized rate) never
-			// margin-dies, so the margins-death reposition never rescues it. When armed, evaluate a
-			// relocation to a meaningfully better reachable ground before touring here again. The
-			// ENTIRE trigger lives inside cmd.RepositionRateFloorEnabled, so a default-OFF run is
-			// byte-identical to today; it is CONTINUOUS-only (a finite/one-shot run flies exactly its
-			// requested tours). A non-nil error is a resumable travel failure (persisted in-flight
-			// destination resumes on restart); every stay path returns nil and simply keeps touring.
-			if continuous && cmd.RepositionRateFloorEnabled {
-				if rerr := h.maybeRepositionRateFloor(ctx, cmd, response, netBought, maxHops, tourMaxSpend, reserve, modelVersion); rerr != nil {
-					return rerr
-				}
-			}
-			// FIRST REFUSAL (sp-e8d92): offer this hull to the relocator before touring here again — but
-			// only when it SHARES its system, because a hull alone in its system is already spreading and
-			// stalling it would cost a window of earning for nothing. Continuous runs only: a finite run
-			// flies exactly the tours it was asked for. Fail-open throughout — no persister, an unreadable
-			// fleet, or a failed write all yield no offer and today's behaviour.
 			if continuous {
-				if ship, serr := h.legs.loadShip(ctx, cmd.ShipSymbol, cmd.PlayerID); serr == nil && ship != nil && ship.CurrentLocation() != nil {
-					relocationOfferUntil = h.maybeOfferForRelocation(ctx, cmd, ship.CurrentLocation().SystemSymbol)
+				offerUntil, perr := h.afterProductiveTour(ctx, cmd, response, netBought, tourBudget)
+				if perr != nil {
+					return perr
 				}
+				relocationOfferUntil = offerUntil
 			}
 			continue
 		}
@@ -1309,72 +676,20 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 		// resets the streak, so this counts once per margins-death episode.
 		metrics.RecordTourMarginsDeath(cmd.PlayerID)
 
-		// Margins confirmed dead. Before exiting, try to ROTATE the hull to a fresh
-		// renewable ground: rank jump-reachable systems by expected tour margin, jump to
-		// the best one that clears the reposition floor, and let the loop re-plan there.
 		// Scoped to CONTINUOUS (-1) runs — a finite/one-shot run already fail-opened above
-		// on iteration-1 infeasibility and never reaches here with no plan. This also fires
-		// at ToursCompleted==0, so a recovered continuous engine that re-entered with a
-		// lost productive count and 3-struck on iteration-1 infeasibility rotates off the
-		// drained ground instead of dying on it.
+		// on iteration-1 infeasibility and never reaches here with no plan.
 		if continuous {
-			repositioned, rerr := h.maybeReposition(ctx, cmd, response, &episode, netBought, maxHops, tourMaxSpend, reserve, modelVersion)
+			rescued, rerr := h.rescueStarvedGround(ctx, cmd, response, &episode, netBought, tourBudget)
 			if rerr != nil {
 				return rerr
 			}
-			if !repositioned {
-				// sp-2v69u: fresh arb found nothing worth the jump. A LADEN hull is not
-				// actually stuck — it may still be worth jumping toward the best reachable
-				// sink for the cargo it is already holding (margin-exempt cash recovery).
-				// Fallback only: never engages while maybeReposition itself finds a plan.
-				offloaded, oerr := h.maybeOffloadHeldCargo(ctx, cmd, response, &episode)
-				if oerr != nil {
-					return oerr
-				}
-				repositioned = offloaded
-			}
-			if !repositioned {
-				// sp-2v69u TERTIARY: neither a fresh-arb jump nor a held-cargo offload could
-				// rescue this laden hull — there is no profitable fresh tour anywhere reachable
-				// AND no reachable OTHER-system sink for its load. LAST RESORT: sell the held
-				// cargo at the best AVAILABLE bid in the hull's CURRENT system (a ground the
-				// offload never evaluates), even below the profit floor — the cargo is sunk cost,
-				// so recovering partial capital and freeing the hull beats churning full forever.
-				// Sell-side cash recovery only (RULINGS #4 buy guards untouched); shares the same
-				// kill-switch + one-action-per-episode budget, so it fires at most once per stuck
-				// episode. Fallback only: never engages while a fresh plan or an offload sink exists.
-				liquidated, lerr := h.maybeDistressLiquidate(ctx, cmd, response, &episode, netBought)
-				if lerr != nil {
-					return lerr
-				}
-				repositioned = liquidated
-			}
-			if repositioned {
+			if rescued {
 				noProgressStreak = 0
 				continue
 			}
 		}
 
-		// No ground was worth the jump (or reposition is off/already spent this episode) —
-		// exit HONEST (the container completes). The detail NAMES BOTH systems when a
-		// reposition was already spent this episode (RULINGS: name origin and destination).
-		response.ExitReason = tourExitStarvation
-		response.ExitDetail = starvationExitDetail(episode, starvationDetail)
-		// Append the LAST tour's concrete reason (e.g. a solver "reserve_exceeds_budget"
-		// verdict) to the MESSAGE TEXT, not just metadata — ContainerRunner.Log only
-		// prints "message" to stdout, so a reason left solely in the metadata map is
-		// invisible to `container logs`. Without this, a starved budget and genuine
-		// market death both read as the same generic "margins died" line. Empty when the
-		// last tour was feasible but flew zero trades (a different, already-named
-		// failure class above).
-		stopMsg := "Continuous tour stopping - " + response.ExitDetail
-		if reason != "" {
-			stopMsg += " (last: " + reason + ")"
-		}
-		logger.Log("INFO", stopMsg, map[string]interface{}{
-			"ship_symbol": cmd.ShipSymbol, "tours_completed": response.ToursCompleted,
-			"repositions": response.Repositions, "reason": reason,
-		})
+		h.recordStarvationExit(cmd, response, episode, starvationDetail, reason, logger)
 		break
 	}
 	if response.ExitReason == "" {
@@ -1392,6 +707,132 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 	return nil
 }
 
+func (h *RunTourCoordinatorHandler) resolveModelArtifactPath(cmd *RunTourCoordinatorCommand) string {
+	// Precedence: an explicit per-run path (tests) → the daemon-configured absolute path
+	// (production, cwd-independent) → the repo-relative constant (pure-env fallback).
+	if cmd.ModelArtifactPath != "" {
+		return cmd.ModelArtifactPath
+	}
+	if h.modelArtifactPath != "" {
+		return h.modelArtifactPath
+	}
+	return defaultModelArtifactPath
+}
+
+// resumeInFlightReposition returns the episode the restart inherited: an empty one when no
+// jump was in flight.
+func (h *RunTourCoordinatorHandler) resumeInFlightReposition(ctx context.Context, cmd *RunTourCoordinatorCommand, logger common.ContainerLogger) (repositionEpisode, error) {
+	if !cmd.RepositionInProgress || cmd.RepositionTargetWaypoint == "" {
+		return repositionEpisode{}, nil
+	}
+	// RULINGS #2 restart-resume: a continuous run re-adopted mid-jump (the reposition was
+	// in flight when the daemon restarted) resumes toward the SAME destination through the
+	// shared cooldown-riding travel machinery, then clears the persisted flag — so the
+	// hull lands on the ground it was rotating to rather than re-planning at whatever
+	// intermediate hop it was re-adopted on. It counts as the episode's spent reposition
+	// so a fresh 3-strike at the destination exits honestly instead of hop-scotching
+	// across the restart boundary.
+	logger.Log("INFO", fmt.Sprintf("Reposition resume: re-adopted mid-jump toward %s (%s) after a restart - completing the jump before re-planning (RULINGS #2)", cmd.RepositionTargetSystem, cmd.RepositionTargetWaypoint), map[string]interface{}{
+		"ship_symbol": cmd.ShipSymbol, "target_system": cmd.RepositionTargetSystem, "target_waypoint": cmd.RepositionTargetWaypoint,
+	})
+	// The resume rides the SAME stored-adjacency bounded resolver as the fresh jump
+	// (resolveRepositionJumpBound), so a restart mid-jump toward an unreadable-gate ground
+	// completes over the persisted topology instead of re-hitting the strict Path fail-close.
+	if rerr := h.legs.RepositionToWaypointWithinJumps(ctx, cmd.ShipSymbol, cmd.RepositionTargetWaypoint, cmd.PlayerID, resolveRepositionJumpBound(cmd.RepositionJumpBound)); rerr != nil {
+		return repositionEpisode{}, rerr // resumable — the persisted in-progress flag stays set so a re-restart retries the resume
+	}
+	h.persistReposition(ctx, cmd, RepositionEpisode{InProgress: false})
+	return repositionEpisode{repositioned: true, toSystem: cmd.RepositionTargetSystem}, nil
+}
+
+// afterProductiveTour returns the relocation-offer deadline the loop must honour before it
+// plans here again. Continuous runs only: a finite run flies exactly the tours it was asked for.
+func (h *RunTourCoordinatorHandler) afterProductiveTour(ctx context.Context, cmd *RunTourCoordinatorCommand, response *RunTourCoordinatorResponse, netBought map[string]int, budget tourPlanBudget) (time.Time, error) {
+	// Rate-floor early-reposition (DEFAULT-OFF): a hull that just flew a
+	// PRODUCTIVE-but-mediocre tour (well below the fleet-median realized rate) never
+	// margin-dies, so the margins-death reposition never rescues it. When armed, evaluate a
+	// relocation to a meaningfully better reachable ground before touring here again. A
+	// non-nil error is a resumable travel failure (persisted in-flight destination resumes
+	// on restart); every stay path returns nil and simply keeps touring.
+	if cmd.RepositionRateFloorEnabled {
+		if rerr := h.maybeRepositionRateFloor(ctx, cmd, response, netBought, budget); rerr != nil {
+			return time.Time{}, rerr
+		}
+	}
+	// FIRST REFUSAL (sp-e8d92): offer this hull to the relocator before touring here again — but
+	// only when it SHARES its system, because a hull alone in its system is already spreading and
+	// stalling it would cost a window of earning for nothing. Fail-open throughout — no persister,
+	// an unreadable fleet, or a failed write all yield no offer and today's behaviour.
+	if ship, serr := h.legs.loadShip(ctx, cmd.ShipSymbol, cmd.PlayerID); serr == nil && ship != nil && ship.CurrentLocation() != nil {
+		return h.maybeOfferForRelocation(ctx, cmd, ship.CurrentLocation().SystemSymbol), nil
+	}
+	return time.Time{}, nil
+}
+
+// rescueStarvedGround is the three-tier ladder a margins-dead hull descends: rotate to a
+// fresh ground, else offload held cargo at a reachable sink, else distress-sell where it sits.
+func (h *RunTourCoordinatorHandler) rescueStarvedGround(ctx context.Context, cmd *RunTourCoordinatorCommand, response *RunTourCoordinatorResponse, episode *repositionEpisode, netBought map[string]int, budget tourPlanBudget) (bool, error) {
+	// Margins confirmed dead. Before exiting, try to ROTATE the hull to a fresh
+	// renewable ground: rank jump-reachable systems by expected tour margin, jump to
+	// the best one that clears the reposition floor, and let the loop re-plan there.
+	// This also fires at ToursCompleted==0, so a recovered continuous engine that
+	// re-entered with a lost productive count and 3-struck on iteration-1 infeasibility
+	// rotates off the drained ground instead of dying on it.
+	repositioned, rerr := h.maybeReposition(ctx, cmd, response, episode, netBought, budget)
+	if rerr != nil {
+		return false, rerr
+	}
+	if !repositioned {
+		// sp-2v69u: fresh arb found nothing worth the jump. A LADEN hull is not
+		// actually stuck — it may still be worth jumping toward the best reachable
+		// sink for the cargo it is already holding (margin-exempt cash recovery).
+		// Fallback only: never engages while maybeReposition itself finds a plan.
+		offloaded, oerr := h.maybeOffloadHeldCargo(ctx, cmd, response, episode)
+		if oerr != nil {
+			return false, oerr
+		}
+		repositioned = offloaded
+	}
+	if !repositioned {
+		// sp-2v69u TERTIARY: neither a fresh-arb jump nor a held-cargo offload could
+		// rescue this laden hull — there is no profitable fresh tour anywhere reachable
+		// AND no reachable OTHER-system sink for its load. LAST RESORT: sell the held
+		// cargo at the best AVAILABLE bid in the hull's CURRENT system (a ground the
+		// offload never evaluates), even below the profit floor — the cargo is sunk cost,
+		// so recovering partial capital and freeing the hull beats churning full forever.
+		// Sell-side cash recovery only (RULINGS #4 buy guards untouched); shares the same
+		// kill-switch + one-action-per-episode budget, so it fires at most once per stuck
+		// episode. Fallback only: never engages while a fresh plan or an offload sink exists.
+		liquidated, lerr := h.maybeDistressLiquidate(ctx, cmd, response, episode, netBought)
+		if lerr != nil {
+			return false, lerr
+		}
+		repositioned = liquidated
+	}
+	return repositioned, nil
+}
+
+func (h *RunTourCoordinatorHandler) recordStarvationExit(cmd *RunTourCoordinatorCommand, response *RunTourCoordinatorResponse, episode repositionEpisode, starvationDetail, reason string, logger common.ContainerLogger) {
+	// No ground was worth the jump (or reposition is off/already spent this episode) —
+	// exit HONEST (the container completes). The detail NAMES BOTH systems when a
+	// reposition was already spent this episode (RULINGS: name origin and destination).
+	response.ExitReason = tourExitStarvation
+	response.ExitDetail = starvationExitDetail(episode, starvationDetail)
+	// Append the LAST tour's concrete reason (e.g. a solver "reserve_exceeds_budget"
+	// verdict) to the MESSAGE TEXT, not just metadata — ContainerRunner.Log only
+	// prints "message" to stdout, so a reason left solely in the metadata map is
+	// invisible to `container logs`. Without this, a starved budget and genuine
+	// market death both read as the same generic "margins died" line.
+	stopMsg := "Continuous tour stopping - " + response.ExitDetail
+	if reason != "" {
+		stopMsg += " (last: " + reason + ")"
+	}
+	logger.Log("INFO", stopMsg, map[string]interface{}{
+		"ship_symbol": cmd.ShipSymbol, "tours_completed": response.ToursCompleted,
+		"repositions": response.Repositions, "reason": reason,
+	})
+}
+
 // runOneTour plans and flies ONE tour from the hull's CURRENT position and cargo,
 // accumulating economics into response and cargo bought into netBought (cumulative
 // across the run). It returns feasible=false with a fail-open reason when the planner
@@ -1405,10 +846,8 @@ func (h *RunTourCoordinatorHandler) runOneTour(
 	cmd *RunTourCoordinatorCommand,
 	response *RunTourCoordinatorResponse,
 	netBought map[string]int,
-	maxHops int,
-	maxSpend, reserve int64,
+	budget tourPlanBudget,
 	replanLimit int,
-	modelVersion string,
 ) (bool, string, error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -1421,7 +860,7 @@ func (h *RunTourCoordinatorHandler) runOneTour(
 	// reservation breach (another container claimed a sink between the netting snapshot
 	// and the reserve) is a normal re-plan, NOT a failure — planAndReserve retries
 	// against fresh ledger state, and only a persistent contention exits infeasible.
-	plan, shadowSinks, reason, feasible, err := h.planAndReserve(ctx, cmd, ship, maxHops, maxSpend, reserve, modelVersion)
+	plan, shadowSinks, reason, feasible, err := h.planAndReserve(ctx, cmd, ship, budget)
 	if err != nil {
 		return false, "", err
 	}
@@ -1439,11 +878,11 @@ func (h *RunTourCoordinatorHandler) runOneTour(
 	// deposit_value (liquidation has no acquisition cost; a deposit books no cash — its
 	// value is future contract savings, not revenue).
 	freshProfit := plan.ProjectedProfit - plan.HeldLiquidation - plan.DepositValue
-	logger.Log("INFO", fmt.Sprintf("Tour planned: %d legs, projected profit %d (fresh %d, liquidation %d, deposit %d) (model %s)", len(plan.Legs), plan.ProjectedProfit, freshProfit, plan.HeldLiquidation, plan.DepositValue, modelVersion), map[string]interface{}{
+	logger.Log("INFO", fmt.Sprintf("Tour planned: %d legs, projected profit %d (fresh %d, liquidation %d, deposit %d) (model %s)", len(plan.Legs), plan.ProjectedProfit, freshProfit, plan.HeldLiquidation, plan.DepositValue, budget.modelVersion), map[string]interface{}{
 		"legs": len(plan.Legs), "projected_profit": plan.ProjectedProfit,
 		"projected_fresh_profit": freshProfit, "projected_held_liquidation": plan.HeldLiquidation,
 		"projected_deposit_value": plan.DepositValue,
-		"cph":                     plan.ProjectedCreditsPerHour, "model": modelVersion,
+		"cph":                     plan.ProjectedCreditsPerHour, "model": budget.modelVersion,
 	})
 	// Pair every accepted plan's PROJECTED rate with a REALIZED rate at the tour's
 	// honest completion, so ranking quality is measurable (a systematic
@@ -1463,8 +902,12 @@ func (h *RunTourCoordinatorHandler) runOneTour(
 	// by replanLimit PER TOUR).
 	replansLeft := replanLimit
 	var cumulativeSpend int64
+	run := tourPlanRun{
+		cmd: cmd, response: response, netBought: netBought,
+		cumulativeSpend: &cumulativeSpend, maxSpend: budget.maxSpend, reserve: budget.reserve,
+	}
 	for {
-		degraded, execErr := h.executePlan(ctx, cmd, plan, shadowSinks, response, netBought, &cumulativeSpend, maxSpend, reserve)
+		degraded, execErr := h.executePlan(ctx, run, plan, shadowSinks)
 		if execErr != nil {
 			return false, "", execErr
 		}
@@ -1483,13 +926,13 @@ func (h *RunTourCoordinatorHandler) runOneTour(
 		if err != nil {
 			return false, "", err
 		}
-		budget := remainingSpend(maxSpend, cumulativeSpend)
+		replanSpend := remainingSpend(budget.maxSpend, cumulativeSpend)
 		// Re-plan releases this container's prior PLANNED rows and reserves the new plan
 		// fresh (planAndReserve), so the replacement plan never double-counts the old
 		// one's holds and converted recovery shadows persist.
 		var replanFeasible bool
 		var replanReason string
-		plan, shadowSinks, replanReason, replanFeasible, err = h.planAndReserve(ctx, cmd, ship, maxHops, budget, reserve, modelVersion)
+		plan, shadowSinks, replanReason, replanFeasible, err = h.planAndReserve(ctx, cmd, ship, budget.withMaxSpend(replanSpend))
 		if err != nil {
 			return false, "", err
 		}
@@ -1525,7 +968,7 @@ func realizedRatePerHour(profit int64, elapsedSeconds float64) (float64, bool) {
 	if elapsedSeconds <= 0 {
 		return 0, false
 	}
-	return float64(profit) / (elapsedSeconds / 3600), true
+	return float64(profit) / (elapsedSeconds / secondsPerHour), true
 }
 
 // executePlan flies the legs of a single plan. It returns degraded=true when a
@@ -1534,19 +977,16 @@ func realizedRatePerHour(profit int64, elapsedSeconds float64) (float64, bool) {
 // graph drift) is treated as degradation, not a hard failure.
 func (h *RunTourCoordinatorHandler) executePlan(
 	ctx context.Context,
-	cmd *RunTourCoordinatorCommand,
+	run tourPlanRun,
 	plan *routing.TourPlan,
 	shadowSinks map[shadowSinkKey]bool,
-	response *RunTourCoordinatorResponse,
-	netBought map[string]int,
-	cumulativeSpend *int64,
-	maxSpend, reserve int64,
 ) (bool, error) {
 	logger := common.LoggerFromContext(ctx)
 	// Per-good sink dispositions for the firm-sink buy gate (sp-pcxju), folded once from
 	// the plan: which goods have a market sink (gated on firm reserved depth) vs a
 	// warehouse deposit (exempt — a guaranteed sink).
-	dispositions := planDispositions(plan)
+	run = run.forPlan(plan, shadowSinks)
+	cmd := run.cmd
 
 	// discharging marks the plan's economics void but its ROUTE still worth flying: a leg has
 	// degraded, and a later leg can still sell cargo the hull is holding. Realising owned
@@ -1597,7 +1037,7 @@ func (h *RunTourCoordinatorHandler) executePlan(
 		// Sells before buys (errata): a leg that fills the hold both ways must free
 		// space before spending it, and sell tranches are ordered price-ascending.
 		for _, trade := range legTradesToFly(leg.Trades, discharging) {
-			executed, terr := h.executeTrade(ctx, cmd, leg, legIdx, trade, shadowSinks, dispositions, response, netBought, cumulativeSpend, maxSpend, reserve, legSells)
+			executed, terr := h.executeTrade(ctx, run, leg, legIdx, trade, legSells)
 			if terr != nil {
 				return false, terr
 			}
@@ -1608,7 +1048,7 @@ func (h *RunTourCoordinatorHandler) executePlan(
 		// Convert this leg's sinks to recovery shadows (per sink as legs complete, design
 		// §2) — even on a degraded leg, so the tranches that DID sell shadow their crush.
 		h.convertLegShadows(ctx, cmd, leg.Waypoint, legSells)
-		response.LegsExecuted++
+		run.response.LegsExecuted++
 		if !legDegraded && !discharging {
 			continue
 		}
@@ -1620,1294 +1060,4 @@ func (h *RunTourCoordinatorHandler) executePlan(
 		}
 	}
 	return discharging, nil
-}
-
-// legTradesToFly orders a leg's trades sells-before-buys and, once the plan has degraded into a
-// discharge run, drops the buys: the tour is flying the rest of the route only to get cargo off
-// the hull, and the broken plan is no basis for acquiring more.
-func legTradesToFly(trades []routing.TourTrade, discharging bool) []routing.TourTrade {
-	ordered := sellsBeforeBuys(trades)
-	if !discharging {
-		return ordered
-	}
-	sells := make([]routing.TourTrade, 0, len(ordered))
-	for _, t := range ordered {
-		if !t.IsBuy {
-			sells = append(sells, t)
-		}
-	}
-	return sells
-}
-
-// legsCanDischargeHold reports whether any of legs sells (or deposits) a good the hull is
-// holding right now — the "reachable bid" test at plan scope. The hull is already standing at
-// the head of that route, so flying it is strictly cash-positive and cannot strand. An
-// unreadable hull proves nothing and answers no, degrading exactly as before.
-func (h *RunTourCoordinatorHandler) legsCanDischargeHold(ctx context.Context, cmd *RunTourCoordinatorCommand, legs []routing.TourLeg) bool {
-	if len(legs) == 0 {
-		return false
-	}
-	ship, err := h.legs.loadShip(ctx, cmd.ShipSymbol, cmd.PlayerID)
-	if err != nil {
-		return false
-	}
-	held := h.tourShipState(ship).Cargo // reserved cargo excluded: the executor refuses to sell it
-	for _, leg := range legs {
-		for _, trade := range leg.Trades {
-			if !trade.IsBuy && held[trade.Good] > 0 {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// executeTrade live-re-verifies one trade against the plan and, if within tolerance,
-// dispatches it. Returns executed=false (a skip) when the live price has degraded past
-// tourPriceTolerancePct or cannot be read — the caller degrades the leg and re-plans.
-func (h *RunTourCoordinatorHandler) executeTrade(
-	ctx context.Context,
-	cmd *RunTourCoordinatorCommand,
-	leg routing.TourLeg,
-	legIdx int,
-	trade routing.TourTrade,
-	shadowSinks map[shadowSinkKey]bool,
-	dispositions tourGoodDispositions,
-	response *RunTourCoordinatorResponse,
-	netBought map[string]int,
-	cumulativeSpend *int64,
-	maxSpend, reserve int64,
-	legSells map[string]*tourSinkSale,
-) (bool, error) {
-	logger := common.LoggerFromContext(ctx)
-
-	// A DEPOSIT tranche is a haul-to-storage transfer, not a market trade — there is
-	// no live market bid to re-verify (its value is the synthetic bid). Route it
-	// straight to the warehouse deposit path, BYPASSING the live-price observe +
-	// tolerance gate the market trades below run.
-	if trade.IsDeposit {
-		return h.executeDeposit(ctx, cmd, leg, legIdx, trade, response, netBought)
-	}
-
-	live, oerr := h.legs.observeGood(ctx, leg.Waypoint, trade.Good, cmd.PlayerID)
-	if oerr != nil {
-		logger.Log("WARNING", fmt.Sprintf("No live price for %s at %s - skipping (will re-plan): %v", trade.Good, leg.Waypoint, oerr), map[string]interface{}{
-			"good": trade.Good, "waypoint": leg.Waypoint, "error": oerr.Error(),
-		})
-		return false, nil
-	}
-	planned := trade.ExpectedUnitPrice
-	if planned <= 0 {
-		return false, nil
-	}
-	// sell_price is the bid we receive, purchase_price the ask we pay. Read the
-	// other way round until sp-en5h7, correct only against transposed rows.
-	livePrice := live.SellPrice() // sell: what the market pays us
-	if trade.IsBuy {
-		livePrice = live.PurchasePrice() // buy: what we pay
-	}
-	degradationPct := math.Abs(float64(livePrice-planned)) / float64(planned) * 100
-	if degradationPct > tourPriceTolerancePct {
-		logger.Log("WARNING", fmt.Sprintf("Leg %d %s %s: live %d vs planned %d = %.1f%% moved (> %d%%) - skipping, will re-plan",
-			legIdx, tradeSide(trade), trade.Good, livePrice, planned, degradationPct, tourPriceTolerancePct), map[string]interface{}{
-			"leg": legIdx, "good": trade.Good, "live": livePrice, "planned": planned, "degradation_pct": degradationPct,
-		})
-		return false, nil
-	}
-
-	if trade.IsBuy {
-		return h.executeBuy(ctx, cmd, leg, legIdx, trade, shadowSinks, dispositions, live, response, netBought, cumulativeSpend, maxSpend, reserve)
-	}
-	return h.executeSell(ctx, cmd, leg, legIdx, trade, live, response, netBought, legSells)
-}
-
-func (h *RunTourCoordinatorHandler) executeBuy(
-	ctx context.Context,
-	cmd *RunTourCoordinatorCommand,
-	leg routing.TourLeg,
-	legIdx int,
-	trade routing.TourTrade,
-	shadowSinks map[shadowSinkKey]bool,
-	dispositions tourGoodDispositions,
-	live *market.TradeGood,
-	response *RunTourCoordinatorResponse,
-	netBought map[string]int,
-	cumulativeSpend *int64,
-	maxSpend, reserve int64,
-) (bool, error) {
-	logger := common.LoggerFromContext(ctx)
-
-	ship, err := h.legs.loadShip(ctx, cmd.ShipSymbol, cmd.PlayerID)
-	if err != nil {
-		return false, err
-	}
-	liveAsk := live.PurchasePrice() // the ASK is purchase_price — what we pay (sp-en5h7)
-	if liveAsk <= 0 {
-		return false, nil
-	}
-	units := trade.Units
-	if space := ship.AvailableCargoSpace(); space < units {
-		units = space
-	}
-	if tv := live.TradeVolume(); tv > 0 && tv < units {
-		units = tv // each transaction ≤ tradeVolume
-	}
-	if maxSpend > 0 {
-		remaining := maxSpend - *cumulativeSpend
-		if remaining <= 0 {
-			logger.Log("WARNING", "Cumulative tour spend cap reached - skipping buy", map[string]interface{}{
-				"good": trade.Good, "cap": maxSpend, "spent": *cumulativeSpend,
-			})
-			return false, nil
-		}
-		if affordable := int(remaining / int64(liveAsk)); affordable < units {
-			units = affordable
-		}
-	}
-
-	// Firm-sink gate (sp-pcxju): "we absolutely cannot buy cargo and not sell it." Bound
-	// this buy to the depth THIS hull's OWN downstream sink reservation can still absorb,
-	// and refuse entirely when no firm sink is held — validated HERE at buy EXECUTION (not
-	// just at plan time), so a sink saturated or dropped since planning cannot slip an
-	// on-spec buy. sinkBound < 0 is "not gated" (no ledger wired / warehouse-bound good),
-	// keeping the happy path byte-identical; 0 fails closed (RULINGS #4 — never buy blind).
-	if sinkBound := h.firmSinkUnits(ctx, cmd, trade.Good, dispositions); sinkBound >= 0 {
-		if sinkBound == 0 {
-			metrics.RecordAbsorptionConsultVerdict(cmd.PlayerID, "skip_reserved", absorptionEngineTour)
-			logger.Log("WARNING", fmt.Sprintf("Tour leg %d: no firm sink held for %s at %s - not buying (sp-pcxju: never buy cargo we cannot sell)",
-				legIdx, trade.Good, leg.Waypoint), map[string]interface{}{
-				"leg": legIdx, "good": trade.Good, "waypoint": leg.Waypoint, "reason": "no_firm_sink",
-			})
-			return false, nil
-		}
-		if sinkBound < units {
-			metrics.RecordAbsorptionConsultVerdict(cmd.PlayerID, "skip_reserved", absorptionEngineTour)
-			logger.Log("INFO", fmt.Sprintf("Tour leg %d: shrinking buy of %s from %d to %d units to fit firm sink depth (sp-pcxju)",
-				legIdx, trade.Good, units, sinkBound), map[string]interface{}{
-				"leg": legIdx, "good": trade.Good, "planned_units": units, "firm_sink_units": sinkBound,
-			})
-			units = sinkBound
-		}
-	}
-
-	if units <= 0 {
-		return false, nil
-	}
-
-	// Working-capital spend floor at BUY time (RULINGS #4). Re-read the LIVE balance
-	// immediately before the purchase and SHRINK this tranche to the units the
-	// reserve can still afford, rather than an all-or-nothing skip — a floor that
-	// binds should still buy what fits beneath it. Skip only if even one unit
-	// pierces the floor; fail CLOSED (no spend, re-plan) if the balance can't be
-	// read; proceed unconstrained when no live client is wired (the guard's
-	// optional-port contract, which every nil-apiClient test relies on). This shares
-	// the circuit's live-treasury seam (reserveHeadroom) rather than forking a
-	// parallel read. NOTE: the read is live but not atomic with the purchase, so
-	// concurrent hulls draining the shared treasury in the read→buy window remain a
-	// residual; this binds the floor at execution, it does not lock it.
-	headroom, liveBalance, guardOn, readable := h.legs.reserveHeadroom(ctx, cmd.PlayerID, int(reserve))
-	if guardOn && !readable {
-		response.CapitalDeniedBuys++
-		logger.Log("WARNING", fmt.Sprintf("Tour leg %d: live balance unreadable at buy time for %d %s @ %d (reserve %d) - not spending, will re-plan (fail-closed)",
-			legIdx, units, trade.Good, liveAsk, reserve), map[string]interface{}{
-			"leg": legIdx, "good": trade.Good, "planned_units": units, "ask": liveAsk, "reserve": reserve,
-		})
-		return false, nil
-	}
-	if guardOn {
-		floorMaxUnits := headroom / liveAsk // floor-respecting max; headroom may be <= 0 (skip)
-		if floorMaxUnits <= 0 {
-			// The guard is right to refuse and stays exactly as it is; what the run records
-			// here is the DIAGNOSIS — this tour was denied capital, so the loop must not read
-			// its zero trades as a dead ground.
-			response.CapitalDeniedBuys++
-			metrics.RecordTourReserveFloorEngagement(cmd.PlayerID, "skip") // floor bound the whole tranche
-			logger.Log("WARNING", fmt.Sprintf("Tour leg %d: buy of %d %s @ %d would breach working-capital floor - live balance %d, reserve %d, even 1 unit pierces - skipping, will re-plan",
-				legIdx, units, trade.Good, liveAsk, liveBalance, reserve), map[string]interface{}{
-				"leg": legIdx, "good": trade.Good, "planned_units": units, "ask": liveAsk, "live_balance": liveBalance, "reserve": reserve,
-			})
-			return false, nil
-		}
-		if floorMaxUnits < units {
-			metrics.RecordTourReserveFloorEngagement(cmd.PlayerID, "shrink") // floor cut the tranche to fit
-			logger.Log("WARNING", fmt.Sprintf("Tour leg %d: shrinking buy of %s from %d to %d units @ %d to respect working-capital floor (live balance %d, reserve %d)",
-				legIdx, trade.Good, units, floorMaxUnits, liveAsk, liveBalance, reserve), map[string]interface{}{
-				"leg": legIdx, "good": trade.Good, "planned_units": units, "floor_max_units": floorMaxUnits, "ask": liveAsk, "live_balance": liveBalance, "reserve": reserve,
-			})
-			units = floorMaxUnits
-		}
-	}
-
-	plannedAt := h.clock.Now()
-	// Arm the per-tranche buy ceiling at the plan's tolerated ask — the planned basis
-	// plus the same tourPriceTolerancePct the leg-level gate above applied. That gate
-	// checked only the first live read; this bounds the intra-buy ladder a
-	// multi-tranche purchase walks up itself, aborting the remainder once a
-	// sub-tranche prices past the plan's tolerance.
-	planned := trade.ExpectedUnitPrice
-	maxAskPerUnit := planned + planned*tourPriceTolerancePct/100
-	buyResp, err := h.legs.purchaseWithCeiling(ctx, cmd.ShipSymbol, trade.Good, units, cmd.PlayerID, maxAskPerUnit)
-	if err != nil {
-		return false, fmt.Errorf("purchase of %d %s at %s failed: %w", units, trade.Good, leg.Waypoint, err)
-	}
-	if buyResp.UnitsAdded == 0 && buyResp.CeilingAborted {
-		logger.Log("WARNING", fmt.Sprintf("Tour leg %d: buy ceiling aborted %s at %s (live ask %d > ceiling %d) - skipping, will re-plan",
-			legIdx, trade.Good, leg.Waypoint, buyResp.CeilingObservedAsk, maxAskPerUnit), map[string]interface{}{
-			"leg": legIdx, "good": trade.Good, "live_ask": buyResp.CeilingObservedAsk, "ceiling": maxAskPerUnit,
-		})
-		return false, nil
-	}
-	*cumulativeSpend += int64(buyResp.TotalCost)
-	response.TotalSpent += int64(buyResp.TotalCost)
-	response.TradesExecuted++
-	netBought[trade.Good] += buyResp.UnitsAdded
-	h.recordLeg(ctx, cmd, trading.LegEngineSolver, leg, legIdx, trade, buyResp.UnitsAdded, realizedUnitPrice(buyResp.TotalCost, buyResp.UnitsAdded), plannedAt)
-	logger.Log("INFO", fmt.Sprintf("Tour leg %d: bought %d %s at %s (cost %d)", legIdx, buyResp.UnitsAdded, trade.Good, leg.Waypoint, buyResp.TotalCost), nil)
-	// A buy that LANDED on ground carrying an outstanding EXECUTED recovery shadow is
-	// a cross-plan ladder incident — the fleet re-buying into a market still
-	// recovering from its own dump. Pure observation off the plan-time probe set; a
-	// nil-map read is false, so this is inert when no shadows were netted.
-	if buyResp.UnitsAdded > 0 && shadowSinks[shadowSinkKey{leg.Waypoint, trade.Good}] {
-		metrics.RecordAbsorptionLadderIncident(cmd.PlayerID, trade.Good)
-	}
-	return true, nil
-}
-
-func (h *RunTourCoordinatorHandler) executeSell(
-	ctx context.Context,
-	cmd *RunTourCoordinatorCommand,
-	leg routing.TourLeg,
-	legIdx int,
-	trade routing.TourTrade,
-	live *market.TradeGood,
-	response *RunTourCoordinatorResponse,
-	netBought map[string]int,
-	legSells map[string]*tourSinkSale,
-) (bool, error) {
-	logger := common.LoggerFromContext(ctx)
-
-	ship, err := h.legs.loadShip(ctx, cmd.ShipSymbol, cmd.PlayerID)
-	if err != nil {
-		return false, err
-	}
-
-	// Fail-closed: never sell cargo the hull has reserved as do-not-sell (a staged
-	// outfitting module, or an operator-protected good). Skip the leg with a
-	// reason=reserved line rather than liquidate a module a coordinator wrongly
-	// treated as manifest. tourShipState already keeps reserved cargo out of the
-	// planner, so this only fires on a planning leak — the executor refuses
-	// independently so a leak can never realize the loss. Returning a skip degrades
-	// the leg, and the re-plan (with reserved cargo excluded) drops the doomed sell.
-	if ship.IsCargoReserved(trade.Good) {
-		logger.Log("INFO", fmt.Sprintf("Tour leg %d: skipped selling %s at %s - cargo is reserved (do-not-sell), held aboard", legIdx, trade.Good, leg.Waypoint), map[string]interface{}{
-			"action": "reserved_cargo_skip", "ship_symbol": cmd.ShipSymbol, "good": trade.Good, "waypoint": leg.Waypoint, "reason": "reserved", "leg": legIdx,
-		})
-		return false, nil
-	}
-
-	held := 0
-	if c := ship.Cargo(); c != nil {
-		held = c.GetItemUnits(trade.Good)
-	}
-	units := trade.Units
-	if held < units {
-		units = held
-	}
-	if tv := live.TradeVolume(); tv > 0 && tv < units {
-		units = tv
-	}
-	if units <= 0 {
-		return false, nil // nothing to sell here (cargo already gone) — not a degrade
-	}
-
-	plannedAt := h.clock.Now()
-	sellResp, err := h.legs.sell(ctx, cmd.ShipSymbol, trade.Good, units, cmd.PlayerID)
-	if err != nil {
-		return false, fmt.Errorf("sell of %d %s at %s failed: %w", units, trade.Good, leg.Waypoint, err)
-	}
-	response.TotalRevenue += int64(sellResp.TotalRevenue)
-	response.TradesExecuted++
-	dischargePurchaseObligation(netBought, trade.Good, sellResp.UnitsSold)
-	// Accumulate the realized units sold into this sink for the per-sink conversion
-	// at leg completion. The solver splits a sink's A-cap depth into SEPARATE
-	// price-tiered tranches (distinct trades), so a single sink can sell across several
-	// executeSell calls in one leg; converting per tranche would record only the first,
-	// under-stating the multi-tranche co-dump crush this ledger exists to shadow. The
-	// live re-verify tier + trade_volume (stable across a sink's tranches) size the shadow.
-	h.noteSinkSale(legSells, trade.Good, sellResp.UnitsSold, live)
-	h.recordLeg(ctx, cmd, trading.LegEngineSolver, leg, legIdx, trade, sellResp.UnitsSold, realizedUnitPrice(sellResp.TotalRevenue, sellResp.UnitsSold), plannedAt)
-	logger.Log("INFO", fmt.Sprintf("Tour leg %d: sold %d %s at %s (revenue %d)", legIdx, sellResp.UnitsSold, trade.Good, leg.Waypoint, sellResp.TotalRevenue), nil)
-	return true, nil
-}
-
-// executeDeposit deposits a haul-to-storage tranche into the home warehouse using
-// the gas-proven protocol: ReserveSpaceForDeposit → TransferCargo (API) →
-// ConfirmDeposit, releasing the reservation on transfer failure. It runs NO
-// live-price re-verify (the value is the synthetic bid, not a market price) and
-// books ZERO revenue — a deposit is an inventory transfer, not a sale, so no
-// ledger transaction row is written (recordLeg is deliberately NOT called) and
-// realized P&L is not inflated; the synthetic savings value is logged for
-// observability only.
-//
-// Honest-completion composure (RULINGS #1): a successful deposit decrements
-// netBought (the good LEFT the hull into inventory — not stranded). A deposit
-// that cannot complete (no warehouse, warehouse full/gone) returns a SKIP
-// (executed=false) so the leg degrades and the tour re-plans; the un-deposited
-// cargo is then carried as held cargo and the next plan liquidates it at market
-// rather than stranding it. An API transfer failure returns an error the runner
-// retries (it re-plans cargo-aware from the current hold).
-func (h *RunTourCoordinatorHandler) executeDeposit(
-	ctx context.Context,
-	cmd *RunTourCoordinatorCommand,
-	leg routing.TourLeg,
-	legIdx int,
-	trade routing.TourTrade,
-	response *RunTourCoordinatorResponse,
-	netBought map[string]int,
-) (bool, error) {
-	logger := common.LoggerFromContext(ctx)
-
-	if h.storageCoordinator == nil || h.warehouseFinder == nil || h.mediator == nil {
-		logger.Log("WARNING", fmt.Sprintf("Tour leg %d: deposit of %s planned but storage subsystem unwired - degrading to re-plan (held cargo will liquidate)", legIdx, trade.Good), map[string]interface{}{
-			"leg": legIdx, "good": trade.Good, "waypoint": leg.Waypoint,
-		})
-		return false, nil
-	}
-
-	// The deposit sink is the CO-LOCATED warehouse group at the leg's waypoint (the
-	// anchor plus any additive-capacity siblings). None running → degrade.
-	group := h.warehousesAt(ctx, cmd.PlayerID, leg.Waypoint)
-	if len(group) == 0 {
-		logger.Log("WARNING", fmt.Sprintf("Tour leg %d: no running warehouse at %s for %s deposit - degrading to re-plan (held cargo will liquidate)", legIdx, leg.Waypoint, trade.Good), map[string]interface{}{
-			"leg": legIdx, "good": trade.Good, "waypoint": leg.Waypoint,
-		})
-		return false, nil
-	}
-
-	ship, err := h.legs.loadShip(ctx, cmd.ShipSymbol, cmd.PlayerID)
-	if err != nil {
-		return false, err
-	}
-	held := 0
-	if c := ship.Cargo(); c != nil {
-		held = c.GetItemUnits(trade.Good)
-	}
-	units := trade.Units
-	if held < units {
-		units = held
-	}
-	if units <= 0 {
-		return false, nil // nothing to deposit (cargo already gone) — not a degrade
-	}
-
-	// Deposit across the group, spilling from the newest member with space into the
-	// next as each fills (additive capacity). Each member: reserve atomically → transfer
-	// → confirm (Lane B / siphon protocol). "Full" — and the degrade — is reached only
-	// when the WHOLE group is saturated.
-	deposited := 0
-	for deposited < units {
-		remaining := units - deposited
-		dst := tradingsvc.SelectDepositWarehouse(h.storageCoordinator, group, trade.Good)
-		if dst == nil {
-			break // every co-located member full or unsupported
-		}
-		storageShip, reserved, ok := h.storageCoordinator.ReserveSpaceForDeposit(dst.ID(), remaining)
-		if !ok || storageShip == nil {
-			break // race: space vanished between select and reserve
-		}
-		move := reserved
-		if move > remaining {
-			move = remaining
-		}
-		if _, terr := h.mediator.Send(ctx, &gasCmd.TransferCargoCommand{
-			FromShip:   cmd.ShipSymbol,
-			ToShip:     storageShip.ShipSymbol(),
-			GoodSymbol: trade.Good,
-			Units:      move,
-			PlayerID:   shared.MustNewPlayerID(cmd.PlayerID),
-		}); terr != nil {
-			h.storageCoordinator.ReleaseReservedSpace(storageShip.ShipSymbol(), reserved)
-			return false, fmt.Errorf("deposit transfer of %d %s to warehouse hull %s failed: %w", move, trade.Good, storageShip.ShipSymbol(), terr)
-		}
-		h.storageCoordinator.ConfirmDeposit(storageShip.ShipSymbol(), trade.Good, move)
-		logger.Log("INFO", fmt.Sprintf("Tour leg %d: deposited %d %s into warehouse %s (savings value %d, no revenue)", legIdx, move, trade.Good, storageShip.WaypointSymbol(), move*trade.ExpectedUnitPrice), map[string]interface{}{
-			"leg": legIdx, "good": trade.Good, "units": move, "warehouse": dst.ID(),
-			"storage_ship": storageShip.ShipSymbol(), "savings_value": move * trade.ExpectedUnitPrice,
-			"operation_type": "warehouse_deposit",
-		})
-		deposited += move
-	}
-
-	if deposited <= 0 {
-		logger.Log("WARNING", fmt.Sprintf("Tour leg %d: warehouse group at %s has no space for %d %s (all %d co-located op(s) full) - degrading to re-plan (held cargo will liquidate at market)", legIdx, leg.Waypoint, units, trade.Good, len(group)), map[string]interface{}{
-			"leg": legIdx, "good": trade.Good, "units": units, "waypoint": leg.Waypoint, "group_size": len(group),
-		})
-		return false, nil // full → degrade → next plan liquidates the held cargo
-	}
-
-	response.TradesExecuted++
-	dischargePurchaseObligation(netBought, trade.Good, deposited) // left the hull into inventory — not stranded
-	return true, nil
-}
-
-// warehousesAt returns ALL RUNNING warehouse operations parked at waypoint — the
-// co-located additive-capacity group (e.g. light + heavy warehouses at the same
-// waypoint, whose slots sum). Empty when none is running there or the finder is
-// unwired (fail closed — the caller degrades to pure arb for that leg). A stale
-// zombie row is included but contributes 0 free space and is never chosen as a
-// deposit target, so aggregation composes with the newest-wins zombie fix.
-func (h *RunTourCoordinatorHandler) warehousesAt(ctx context.Context, playerID int, waypoint string) []*storage.StorageOperation {
-	if h.warehouseFinder == nil {
-		return nil
-	}
-	ops, err := h.warehouseFinder.FindRunning(ctx, playerID)
-	if err != nil {
-		return nil
-	}
-	return tradingsvc.RunningWarehousesAtWaypoint(ops, waypoint)
-}
-
-// warehouseAt returns the newest RUNNING warehouse operation at waypoint (the group's
-// deposit anchor), or nil if none is running there. The deposit path aggregates the
-// whole co-located group (warehousesAt); this anchor pick guards against a stale
-// zombie row sitting alongside its live replacement at the same waypoint —
-// newest-wins ensures the anchor is the live op, and the group aggregation
-// independently ensures the zombie's 0-capacity never makes the warehouse look full.
-func (h *RunTourCoordinatorHandler) warehouseAt(ctx context.Context, playerID int, waypoint string) *storage.StorageOperation {
-	return tradingsvc.SelectNewestRunningWarehouse(h.warehousesAt(ctx, playerID, waypoint))
-}
-
-// plan assembles the market snapshot + era-scoped coordinates over the tour graph
-// (home system + fresh gate neighbors) and calls the depth-aware planner. The
-// constraint carries the resolved model version so the solver fails closed on a
-// mismatch rather than silently using a stale model.
-func (h *RunTourCoordinatorHandler) plan(
-	ctx context.Context,
-	ship *navigation.Ship,
-	maxHops int,
-	maxSpend, reserve int64,
-	cmd *RunTourCoordinatorCommand,
-	modelVersion string,
-) (*routing.TourPlan, []routing.TourGoodSnapshot, []routing.TourMarketAbsorption, error) {
-	allowedSystems := h.tourSystems(ctx, ship, cmd)
-	return h.planForState(ctx, h.tourShipState(ship), allowedSystems, maxHops, maxSpend, reserve, cmd, modelVersion)
-}
-
-// planForState assembles the market snapshot + era-scoped coordinates over allowedSystems
-// and calls the depth-aware planner for the given ship state. It is the plan core shared
-// by the live tour (plan, above — ship state + tour graph derived from the hull's real
-// position) and the reposition pre-flight (planAtCandidate — a SYNTHETIC ship state
-// positioned at a candidate system, over that candidate's tour graph, to price the tour
-// the hull WOULD fly there without moving it first).
-func (h *RunTourCoordinatorHandler) planForState(
-	ctx context.Context,
-	shipState routing.TourShipState,
-	allowedSystems []string,
-	maxHops int,
-	maxSpend, reserve int64,
-	cmd *RunTourCoordinatorCommand,
-	modelVersion string,
-) (*routing.TourPlan, []routing.TourGoodSnapshot, []routing.TourMarketAbsorption, error) {
-	snapshot, waypoints, err := tradingsvc.BuildTourSnapshot(ctx, h.marketRepo, h.waypointRepo, allowedSystems, cmd.PlayerID, h.clock.Now(), h.rankerAgeCaps)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	// Drop the config-driven noise-goods blocklist from the good universe BEFORE
-	// any downstream consumer sees it, so a blocklisted good (FUEL/ALUMINUM/PLASTICS — sub-
-	// 70-cr/u tempo drag) is never chosen as tour cargo (buy source OR sell sink) and never
-	// misreported as an unreachable lane. No-op (same slice) when the blocklist is unset, so
-	// the default path is byte-identical. This is the tour cargo universe only — refueling
-	// is a separate command that never reads this snapshot.
-	snapshot = filterBlocklistedCargo(snapshot, h.cargoBlocklist)
-	// Pull the richest sinks the gate-neighbour horizon HIDES back into the tour graph,
-	// behind an explicit bound and only where reach and freshness both survive the haul
-	// (admitFarSinks). Empty whenever the bound, the guards or the wiring say so, leaving
-	// the graph exactly as the candidate walk produced it.
-	far := h.admitFarSinks(ctx, cmd, allowedSystems, snapshot)
-	allowedSystems = append(append([]string(nil), allowedSystems...), far.systems...)
-	snapshot = append(snapshot, far.rows...)
-	waypoints = append(waypoints, far.waypoints...)
-	// sp-mtvg: make the horizon's dropped exotic lanes LOUD. Read against the FINAL graph,
-	// so what it counts is the value still out of reach after capture. Best-effort and
-	// read-only — it never touches snapshot/plan and any error is swallowed (RULINGS #4).
-	h.recordUnreachableLanes(ctx, allowedSystems, snapshot, cmd.PlayerID)
-	// Assemble haul-to-storage deposit candidates for the planner to price against arb
-	// sells. Empty when pre-positioning is off, no warehouse is in the tour graph, or
-	// the capital ceiling is unreadable (fail closed) — the tour then plans pure arb,
-	// unchanged.
-	deposits := h.depositCandidates(ctx, cmd, allowedSystems, reserve)
-	// Assemble the outstanding cross-container absorption the solver nets out of
-	// available depth so it plans AROUND sinks other containers occupy. Empty when
-	// the ledger is unwired / the consult is killed / the read fails (fail-OPEN — the
-	// conditional Reserve is the hard backstop), leaving the plan against full depth.
-	absorptionView := h.assembleAbsorption(ctx, cmd.PlayerID, cmd.ContainerID)
-	// The solver's money guard is spend_cap = max(0, max_spend − working_capital_reserve)
-	// (tour_solver.py, score_sequence) — a CASH contract: max_spend is the cash the
-	// caller lets the tour touch, the reserve a keep-back. That pairing only holds on
-	// the EXPLICIT --max-spend path. Under the DYNAMIC budget (cmd.MaxSpend == 0 → 25%
-	// of live treasury, re-resolved per tour), maxSpend is already a spend BUDGET — the
-	// capital guard is the 25% sizing plus the per-buy live-balance floor
-	// (reserveHeadroom, proportional to live treasury) — so forwarding the ABSOLUTE
-	// fleet reserve would subtract the guard a second time and zero the planner for any
-	// treasury below 4×reserve (25%×T ≤ reserve). The dynamic path hands the planner a
-	// reserve of 0; execution-time floors are untouched.
-	plannerReserve := reserve
-	if cmd.MaxSpend == 0 {
-		plannerReserve = 0
-	}
-	cons := routing.TourConstraints{
-		MaxHops:          maxHops,
-		MinMarginPerUnit: cmd.MinMargin,
-		// The solver re-filters the snapshot on this cap, so it must be a BACKSTOP, not a
-		// second opinion: BuildTourSnapshot above already dropped each row against ITS OWN
-		// activity's fitted cap, and a tighter flat value here would silently re-drop the
-		// long-lived WEAK rows that pass deliberately kept.
-		MaxSnapshotAgeMinutes: int(h.rankerAgeCaps.Widest().Minutes()),
-		MaxSpend:              maxSpend,
-		WorkingCapitalReserve: plannerReserve,
-		AllowedSystems:        allowedSystems,
-		ExpectedModelVersion:  modelVersion,
-		// 0 (the daemon/CLI default) => the solver's MAX_TOUR_SYSTEMS default (2), so
-		// the wire and plan are byte-identical to today; a positive knob raises the
-		// per-tour distinct-system cap.
-		MaxTourSystems: cmd.MaxTourSystems,
-		// Closed-tour mode. false/"" (every current caller) => the solver plans an
-		// OPEN tour byte-identical to today; true makes each planned tour end at the
-		// anchor via an appended, honestly-priced no-trade return leg.
-		Closed:       cmd.ClosedTours,
-		AnchorSystem: cmd.AnchorSystem,
-		// The gate-hop distance between every pair of allowedSystems, so the solver
-		// prices a cross-system crossing by its REAL hop count instead of a flat 1 hop. Empty
-		// at the default cap (every crossing is a single hop the flat charge prices exactly) =>
-		// byte-identical to today; only a widened horizon (MaxTourSystems > 2) populates it.
-		// A far sink's distances are merged in from the reachability check that ADMITTED it,
-		// so the crossing is priced on exactly the hops the guard verified.
-		InterSystemHops: mergeInterSystemHops(h.tourInterSystemHops(ctx, allowedSystems, cmd), far.hops),
-		// Recovery-externality charge. 0 (the unarmed default) leaves
-		// the solver's pairing order untouched; a positive weight makes a hull prefer the
-		// sink the fleet is not still recovering at equal spread. PREFERENCE only — the
-		// solver's min-margin gate keeps testing the raw margin (RULINGS #4: no guard is
-		// tightened as a side effect).
-		ExternalityWeight: cmd.ExternalityWeight,
-		// The per-departure-gate fee table, learned from the ledger's own recorded
-		// jumps, so a crossing's first hop is priced by the gate it leaves rather than by the
-		// fleet mean. Nil reader (every existing test, and any daemon that has not wired it)
-		// or an empty ledger => nil => every crossing prices at the flat charge =>
-		// byte-identical to today.
-		GateFees: h.tourGateFees(ctx, cmd),
-	}
-	plan, err := h.planner.OptimizeTradeTour(ctx, snapshot, waypoints, shipState, cons, deposits, absorptionView)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	// absorptionView is returned so the accept path can score cap-binding + ladder
-	// incidents off the SAME netted depth the solver planned against — no re-read of
-	// the ledger. Nil when the ledger is unwired / consult killed, which simply
-	// yields no burn-in samples.
-	return plan, snapshot, absorptionView, nil
-}
-
-// filterBlocklistedCargo drops every snapshot row whose good is in the blocklist,
-// removing the good from the tour's cargo universe entirely — as both a buy source (Ask)
-// and a sell sink (Bid) — so the solver can never plan a buy or sell leg for it. An
-// empty/nil blocklist is a true no-op: the SAME slice is returned (zero copy), keeping the
-// default path byte-identical. Exact good-symbol match, mirroring the pre_positioning
-// blocklist (good symbols are canonical uppercase).
-func filterBlocklistedCargo(snapshot []routing.TourGoodSnapshot, block map[string]bool) []routing.TourGoodSnapshot {
-	if len(block) == 0 {
-		return snapshot
-	}
-	kept := make([]routing.TourGoodSnapshot, 0, len(snapshot))
-	for _, row := range snapshot {
-		if block[row.Good] {
-			continue
-		}
-		kept = append(kept, row)
-	}
-	return kept
-}
-
-// recordUnreachableLanes is the sp-mtvg out-of-horizon lane diagnostic. Given the
-// just-built in-scope snapshot, it finds each good the hull can SOURCE cheaply within the
-// tour graph whose best sink (across ALL systems) lies OUTSIDE it — a profitable lane the
-// 1-gate-hop horizon structurally hides from the solver (the source and its sink never
-// co-occur in one snapshot, so no filter ever "rejects" the good; it simply never has a
-// sell destination present). It counts every such lane on
-// tour_candidates_dropped_total{reason=counterparty_system_unreachable} and names the
-// richest few by spread in one log line, converting the silent leak into a legible signal
-// so the class can never again be misdiagnosed as a price/volume filter.
-//
-// Read-only, best-effort, nil-safe: an unset scanner (tests / metrics-disabled), an empty
-// snapshot, or any read error yields no diagnostic and never touches the plan (RULINGS #4).
-// The guarded 1-hop horizon itself is unchanged — this only makes what it drops visible.
-func (h *RunTourCoordinatorHandler) recordUnreachableLanes(
-	ctx context.Context,
-	allowedSystems []string,
-	snapshot []routing.TourGoodSnapshot,
-	playerID int,
-) {
-	if h.sinkScanner == nil || len(snapshot) == 0 {
-		return
-	}
-	goods := inScopeSourcedGoods(snapshot)
-	if len(goods) == 0 {
-		return
-	}
-	sinks, err := h.sinkScanner.BestSinksAcrossSystems(ctx, goods, playerID, h.listingMaxAge(ctx, playerID), h.clock.Now())
-	if err != nil || len(sinks) == 0 {
-		return
-	}
-	dropped := computeUnreachableLanes(allowedSystems, snapshot, sinks)
-	if len(dropped) == 0 {
-		return
-	}
-	metrics.RecordTourCandidateDropped(playerID, unreachableLaneReason, len(dropped))
-	// Name the richest lanes by spread (bounded) so the counter's rate carries exemplars.
-	top := dropped
-	if len(top) > unreachableLaneLogTopN {
-		top = top[:unreachableLaneLogTopN]
-	}
-	parts := make([]string, 0, len(top))
-	for _, l := range top {
-		parts = append(parts, fmt.Sprintf("%s %s(%d)->%s@%s(%d) spread %d/u",
-			l.Good, l.SourceWaypoint, l.Ask, l.SinkWaypoint, l.SinkSystem, l.Bid, l.Spread))
-	}
-	common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf(
-		"Tour horizon dropped %d profitable lane(s) whose best sink is beyond the gate-neighbor graph (sp-mtvg): %s",
-		len(dropped), strings.Join(parts, "; ")),
-		map[string]interface{}{
-			"action":          "tour_candidates_dropped",
-			"reason":          unreachableLaneReason,
-			"count":           len(dropped),
-			"allowed_systems": strings.Join(allowedSystems, ","),
-		})
-}
-
-// unreachableLane is one profitable lane the tour horizon hides: a good sourceable in the
-// tour graph whose best sink sits in an out-of-graph system.
-type unreachableLane struct {
-	Good           string
-	SourceWaypoint string
-	SinkWaypoint   string
-	SinkSystem     string
-	Ask            int
-	Bid            int
-	Spread         int
-}
-
-// inScopeSourcedGoods returns the goods with a positive in-scope BUY quote (Ask>0) in the
-// snapshot — the goods the hull can actually source within the tour graph, the only ones
-// whose out-of-graph sinks are a genuine missed lane rather than noise.
-func inScopeSourcedGoods(snapshot []routing.TourGoodSnapshot) []string {
-	seen := map[string]bool{}
-	var goods []string
-	for _, r := range snapshot {
-		if r.Ask > 0 && !seen[r.Good] {
-			seen[r.Good] = true
-			goods = append(goods, r.Good)
-		}
-	}
-	return goods
-}
-
-// computeUnreachableLanes is the pure detection core of the out-of-horizon diagnostic.
-// For each good with a cheap in-scope source (min Ask>0 in the snapshot), it flags the good when
-// its best sink (from `sinks`, the global cross-system scan) lies OUTSIDE allowedSystems
-// and clears the materiality floor. Returned richest-spread-first. Pure — no clock, no
-// metrics, no IO — so the flagging rules are unit-tested directly.
-func computeUnreachableLanes(
-	allowedSystems []string,
-	snapshot []routing.TourGoodSnapshot,
-	sinks map[string]market.GlobalSinkResult,
-) []unreachableLane {
-	cheapestAsk := map[string]int{}
-	sourceWp := map[string]string{}
-	for _, r := range snapshot {
-		if r.Ask <= 0 {
-			continue
-		}
-		if cur, ok := cheapestAsk[r.Good]; !ok || r.Ask < cur {
-			cheapestAsk[r.Good] = r.Ask
-			sourceWp[r.Good] = r.Waypoint
-		}
-	}
-	allowed := map[string]bool{}
-	for _, s := range allowedSystems {
-		allowed[s] = true
-	}
-	var dropped []unreachableLane
-	for good, ask := range cheapestAsk {
-		sink, ok := sinks[good]
-		if !ok || allowed[sink.SystemSymbol] {
-			continue // no known sink, or the sink is already reachable in the tour graph
-		}
-		spread := sink.Bid - ask
-		if spread < unreachableLaneMinSpreadPerUnit {
-			continue
-		}
-		dropped = append(dropped, unreachableLane{
-			Good: good, SourceWaypoint: sourceWp[good], SinkWaypoint: sink.WaypointSymbol,
-			SinkSystem: sink.SystemSymbol, Ask: ask, Bid: sink.Bid, Spread: spread,
-		})
-	}
-	sort.Slice(dropped, func(i, j int) bool { return dropped[i].Spread > dropped[j].Spread })
-	return dropped
-}
-
-// depositCandidates assembles the haul-to-storage deposit sinks for the planner. It
-// gates on the CAPITAL stage first (RULINGS #4/#5) and only enters the funnel
-// (BuildDepositCandidates) when there is real capital to spend:
-//   - pre-positioning off (Enabled=false) → silent off-switch;
-//   - subsystem unwired → WARNING (a wiring bug);
-//   - no capital ceiling configured (depositCeilingPct<=0) → DORMANT, fail closed —
-//     opportunistic tour money movement is a captain/analyst decision, NOT an
-//     auto-10%-of-treasury default that turns spending ON with no ruled number;
-//   - live balance unreadable → WARNING, fail closed (RULINGS #4);
-//   - ceiling resolves to 0 (treasury at/below the reserve) → nothing to stock now.
-//
-// Each parked outcome logs at most ONCE per container per distinct state via
-// recordDepositParked, so a hull whose deposits stay parked does not re-emit the
-// same fail-closed verdict every re-plan. The capital-available path clears the
-// remembered state (a later park re-logs as a state change) and delegates to
-// BuildDepositCandidates, whose own funnel verdict then fires only when there is
-// capital to spend, never as per-tick parked noise.
-func (h *RunTourCoordinatorHandler) depositCandidates(ctx context.Context, cmd *RunTourCoordinatorCommand, allowedSystems []string, reserve int64) []routing.TourDepositCandidate {
-	if !h.prePositioning.Enabled {
-		return nil // deliberate off-switch — not a silent zero, no verdict
-	}
-	key := cmd.ContainerID
-	if key == "" {
-		key = cmd.ShipSymbol
-	}
-	if h.storageCoordinator == nil || h.warehouseFinder == nil || h.demandMiner == nil {
-		// Enabled but a dependency is unwired: a WIRING BUG, not an off-switch — make it
-		// LOUD, but once per container, not per re-plan.
-		h.recordDepositParked(ctx, key, "WARNING",
-			"pre-positioning enabled but subsystem unwired (storageCoordinator/warehouseFinder/demandMiner nil)",
-			map[string]interface{}{
-				"ship_symbol":               cmd.ShipSymbol,
-				"container_id":              cmd.ContainerID,
-				"storage_coordinator_wired": h.storageCoordinator != nil,
-				"warehouse_finder_wired":    h.warehouseFinder != nil,
-				"demand_miner_wired":        h.demandMiner != nil,
-			})
-		return nil
-	}
-	// Money movement is a captain/analyst decision (RULINGS #5): pre-positioning stays
-	// PARKED until an explicit capital ceiling is configured. A 0/absent
-	// capital_ceiling_pct is the dormant, fail-closed default — NOT an auto-10% of
-	// treasury (which would turn spending ON the moment treasury cleared the reserve,
-	// with no analyst-ruled number). The captain enables it by setting
-	// contract.pre_positioning.capital_ceiling_pct>0.
-	if h.depositCeilingPct <= 0 {
-		h.recordDepositParked(ctx, key, "INFO",
-			"pre-positioning dormant — no capital ceiling configured (set contract.pre_positioning.capital_ceiling_pct>0 to enable; money movement is a captain/analyst decision, RULINGS #5)",
-			map[string]interface{}{"ship_symbol": cmd.ShipSymbol, "container_id": cmd.ContainerID})
-		return nil
-	}
-	ceiling, known := h.depositCapitalCeiling(ctx, cmd.PlayerID, reserve)
-	if !known {
-		// Unreadable live balance: fail CLOSED (RULINGS #4) — a genuine anomaly (WARNING),
-		// but de-duped per container so a rate-limit blip does not spam.
-		h.recordDepositParked(ctx, key, "WARNING",
-			"capital ceiling unreadable (live balance) — pre-positioning parked, fail closed (RULINGS #4)",
-			map[string]interface{}{"ship_symbol": cmd.ShipSymbol, "container_id": cmd.ContainerID})
-		return nil
-	}
-	if ceiling <= 0 {
-		// Treasury at/below the working-capital reserve: the ceiling (junior to the
-		// reserve) is 0, so nothing can be pre-positioned this pass. A transient economic
-		// condition (INFO, mirroring the stocker's "capital ceiling is 0" line), de-duped.
-		h.recordDepositParked(ctx, key, "INFO",
-			fmt.Sprintf("capital ceiling 0 (treasury at/below the %d working-capital reserve) — nothing to pre-position this pass", reserve),
-			map[string]interface{}{"ship_symbol": cmd.ShipSymbol, "container_id": cmd.ContainerID, "reserve": reserve})
-		return nil
-	}
-	// Capital available — forget any prior parked state (a later park re-logs as a state
-	// change) and run the funnel.
-	h.clearDepositParked(key)
-	return tradingsvc.BuildDepositCandidates(
-		ctx, h.demandMiner, h.warehouseFinder, h.storageCoordinator,
-		allowedSystems, cmd.PlayerID, ceiling, known, h.prePositioning,
-	)
-}
-
-// recordDepositParked emits a pre-positioning parked/dormant verdict for a container at
-// most ONCE per distinct (level, reason): a hull whose deposits stay parked across
-// hundreds of re-plans logs one line, not one per tick. A genuine state change — a
-// different reason, or a transition through the capital-available path, which clears
-// the remembered signature — re-emits. Concurrency-safe: the tour handler is a shared
-// singleton dispatched for every touring hull at once.
-func (h *RunTourCoordinatorHandler) recordDepositParked(ctx context.Context, key, level, reason string, fields map[string]interface{}) {
-	sig := level + "|" + reason
-	h.depositParkedMu.Lock()
-	if h.depositParked[key] == sig {
-		h.depositParkedMu.Unlock()
-		return
-	}
-	h.depositParked[key] = sig
-	h.depositParkedMu.Unlock()
-	common.LoggerFromContext(ctx).Log(level, "Pre-positioning parked: "+reason, fields)
-}
-
-// clearDepositParked forgets a container's last parked verdict so that, should the hull
-// fall back to a parked state, it logs afresh — the "or on state change" half of the
-// once-per-container discipline.
-func (h *RunTourCoordinatorHandler) clearDepositParked(key string) {
-	h.depositParkedMu.Lock()
-	delete(h.depositParked, key)
-	h.depositParkedMu.Unlock()
-}
-
-// treasuryCredits reads the player's balance for this coordinator's money decisions:
-// through the ledger-backed reader when the daemon has wired one (sp-muq66 — no API call
-// on the common path), otherwise the direct live call the tour has always made. The direct
-// path is the optional-port contract every nil-apiClient test relies on, not an arming
-// switch. An error means UNREADABLE and every caller fails closed on it (RULINGS #4).
-func (h *RunTourCoordinatorHandler) treasuryCredits(ctx context.Context, playerID int) (int64, error) {
-	return readTreasuryCredits(ctx, h.treasury, h.apiClient, playerID)
-}
-
-// depositCapitalCeiling resolves the pre-positioning capital ceiling: depositCeilingPct
-// percent of treasury, held JUNIOR to the working-capital reserve (never tie up
-// capital that would breach it). The caller (depositCandidates) gates on
-// depositCeilingPct>0 before calling this; a non-positive pct here returns a KNOWN zero
-// (fail closed, parked) rather than substituting a default — an unset ceiling can never
-// silently turn money movement ON. Returns known=false when the balance is
-// UNREADABLE — the caller then offers no candidates (fail closed, RULINGS #4). The
-// foreign buys the deposits fund still pass the per-buy working-capital floor and the
-// cumulative max-spend cap at execution; this ceiling is layered on top.
-func (h *RunTourCoordinatorHandler) depositCapitalCeiling(ctx context.Context, playerID int, reserve int64) (int64, bool) {
-	if h.apiClient == nil && h.treasury == nil {
-		return 0, false
-	}
-	credits, err := h.treasuryCredits(ctx, playerID)
-	if err != nil {
-		return 0, false
-	}
-	pct := int64(h.depositCeilingPct)
-	if pct <= 0 {
-		return 0, true // no ceiling configured — parked, fail closed (caller gates on this)
-	}
-	ceiling := credits * pct / 100
-	if avail := credits - reserve; avail < ceiling {
-		ceiling = avail // junior to the working-capital reserve
-	}
-	if ceiling < 0 {
-		ceiling = 0
-	}
-	return ceiling, true
-}
-
-// tourSystems is the default tour graph: the hull's current system plus every system
-// one gate hop away with fresh market data (the planner scopes each tour to
-// maxTourSystems within this allowed set). Neighbor discovery fails open to home-only.
-// Threads cmd so the candidate set can be widened past 1 gate hop once the solver
-// clamp is lifted (arming-gated in tourSystemsFrom); byte-identical at the defaults.
-func (h *RunTourCoordinatorHandler) tourSystems(ctx context.Context, ship *navigation.Ship, cmd *RunTourCoordinatorCommand) []string {
-	return h.tourSystemsFrom(ctx, ship.CurrentLocation().SystemSymbol, cmd)
-}
-
-// tourSystemsFrom is tourSystems generalized to an arbitrary home system. The live tour
-// centers it on the hull's current system; the reposition pre-flight centers it on a
-// candidate system to build that candidate's tour graph.
-//
-// At the default (effectiveCandidateHopDepth <= 1) it returns the VERBATIM 1-hop set
-// (oneHopTourSystems) with ZERO durable-graph access — byte-identical. Only when the
-// arming gate opens (a configured depth > 1 AND the solver clamp lifted) does it widen,
-// and the widened set is floored to the 1-hop set so it can never go narrower.
-func (h *RunTourCoordinatorHandler) tourSystemsFrom(ctx context.Context, home string, cmd *RunTourCoordinatorCommand) []string {
-	oneHop := h.oneHopTourSystems(ctx, home, cmd.PlayerID)
-	if h.effectiveCandidateHopDepth(cmd) <= 1 {
-		return oneHop // DEFAULT PATH — byte-identical, zero durable-graph access
-	}
-	return h.widenedTourSystems(ctx, home, cmd, oneHop)
-}
-
-// oneHopTourSystems is the VERBATIM tourSystemsFrom body: home + every live
-// 1-gate-hop neighbor with fresh data, deduped, fail-open to home-only. It is the default
-// result AND the floor the widened branch can never go below.
-func (h *RunTourCoordinatorHandler) oneHopTourSystems(ctx context.Context, home string, playerID int) []string {
-	systems := []string{home}
-	seen := map[string]bool{home: true}
-	for _, n := range h.legs.neighborSystems(ctx, home, playerID) {
-		if n == "" || seen[n] {
-			continue
-		}
-		seen[n] = true
-		systems = append(systems, n)
-	}
-	return systems
-}
-
-func (h *RunTourCoordinatorHandler) tourShipState(ship *navigation.Ship) routing.TourShipState {
-	cargo := map[string]int{}
-	if c := ship.Cargo(); c != nil {
-		for _, item := range c.Inventory {
-			// Never offer reserved cargo (staged outfitting modules, or an
-			// operator-protected good) to the planner as sellable/liquidatable
-			// inventory — the tour must not PLAN to sell what the executor will
-			// refuse to sell, and its projected profit must not book phantom
-			// module-liquidation revenue. Non-reserved held cargo is still carried
-			// forward and liquidated as launch inventory.
-			if ship.IsCargoReserved(item.Symbol) {
-				continue
-			}
-			cargo[item.Symbol] = item.Units
-		}
-	}
-	fuelCurrent, fuelCapacity := 0, ship.FuelCapacity()
-	if f := ship.Fuel(); f != nil {
-		fuelCurrent, fuelCapacity = f.Current, f.Capacity
-	}
-	return routing.TourShipState{
-		ShipSymbol:      ship.ShipSymbol(),
-		CurrentWaypoint: ship.CurrentLocation().Symbol,
-		CurrentSystem:   ship.CurrentLocation().SystemSymbol,
-		HoldCapacity:    ship.CargoCapacity(),
-		FuelCurrent:     fuelCurrent,
-		FuelCapacity:    fuelCapacity,
-		EngineSpeed:     ship.EngineSpeed(),
-		Cargo:           cargo,
-	}
-}
-
-// defaultMaxSpend resolves the 25%-of-treasury cap (RULINGS #6) when --max-spend is 0.
-// It returns (cap, unreadable) so the caller can tell "no treasury source, plan
-// uncapped" apart from "have a source but the read FAILED, fail closed" — a single
-// int64(0) would conflate the two, letting a transient read failure masquerade as a
-// 0 budget:
-//
-//   - unreadable=false, cap>0  → treasury read; size the tour to 25% of it.
-//   - unreadable=false, cap=0  → NO apiClient wired at all (structural; the daemon
-//     always wires one, so this is the test-harness / pure-env path). 0 is "no explicit
-//     cumulative cap" — the per-buy working-capital floor still guards every spend.
-//   - unreadable=true,  cap=0  → a treasury SOURCE is wired but the read FAILED
-//     (no player token, GetAgent errored, or a stale ledger with the live fallback also
-//     down). The caller MUST fail closed: never spend
-//     on this, never fall back to unlimited or a stale budget — pause and retry so a
-//     continuous (--iterations -1) loop survives the transient (a shared-agent GetAgent
-//     blip must not complete every hull after one iteration).
-func (h *RunTourCoordinatorHandler) defaultMaxSpend(ctx context.Context, playerID int, reserve int64) (int64, bool) {
-	logger := common.LoggerFromContext(ctx)
-	if h.apiClient == nil && h.treasury == nil {
-		return 0, false // no treasury source wired — 0 = no explicit cap (floor guards)
-	}
-	credits, err := h.treasuryCredits(ctx, playerID)
-	if err != nil {
-		logger.Log("WARNING", fmt.Sprintf("Cannot re-resolve dynamic tour max-spend: treasury read failed (%v) - failing closed (will not spend uncapped)", err), map[string]interface{}{
-			"error": err.Error(),
-		})
-		return 0, true // source exists but UNREADABLE — fail closed
-	}
-	spendCap := credits * tourDefaultMaxSpendTreasuryPct / 100
-	logger.Log("INFO", fmt.Sprintf("Default tour max-spend = %d (25%% of treasury %d)", spendCap, credits), map[string]interface{}{
-		"max_spend": spendCap, "treasury": credits,
-	})
-	return h.applyCapitalBudget(ctx, playerID, reserve, credits, spendCap), false
-}
-
-// applyCapitalBudget clamps this tour's cumulative spend cap to TRADE's share of deployable
-// capital (sp-ftqgp) — the other half of the per-operation budget whose construction half lives in
-// the production executor's budgetedReserveFloor. It only ever LOWERS the cap (RULINGS #4: this
-// bead adds a constraint and weakens none), and it derives the deployable pool from the tour's own
-// resolved reserve rather than a second floor constant (RULINGS #5).
-//
-// It is applied on the DYNAMIC path only (--max-spend 0 → the 25%-of-treasury default, which is
-// what the trade fleet runs). An explicit --max-spend is a captain override that already bypasses
-// the 25% cap by design; leaving it untouched keeps that path byte-identical rather than adding a
-// fail-closed live-treasury read to a path that has never had one.
-//
-// Three resolutions, deliberately different, mirroring the construction side:
-//
-//   - No sensor wired -> the 25% cap, unchanged (the optional-port contract; the daemon always
-//     wires one).
-//   - Sensor says construction is idle -> graceful degradation hands trade the WHOLE deployable
-//     pool, which is far above 25% of treasury, so the cap is untouched and NO capital idles.
-//     This is the live acceptance case: with the gate pipeline stopped, trade gets 100%.
-//   - Sensor errors -> fail CONSERVATIVE, not open: assume construction IS working and take only
-//     the proportional share.
-//
-// Trade passes `true` for its OWN side unconditionally — a tour asking this question is a tour
-// about to buy — so a sensor miss can never budget trade to zero and park the fleet.
-func (h *RunTourCoordinatorHandler) applyCapitalBudget(ctx context.Context, playerID int, reserve, treasury, spendCap int64) int64 {
-	if h.workSensor == nil {
-		return spendCap
-	}
-	logger := common.LoggerFromContext(ctx)
-
-	constructionHasWork := true
-	if has, err := h.workSensor.ConstructionHasWork(ctx, playerID); err != nil {
-		logger.Log("WARNING", fmt.Sprintf("Could not sense whether construction is live for the capital budget — assuming it is and taking only trade's %d%% share (fail-conservative): %v", common.TradeCapitalSharePct, err), map[string]interface{}{
-			"error": err.Error(),
-		})
-	} else {
-		constructionHasWork = has
-	}
-
-	deployable := common.CapitalDeployable(treasury, reserve)
-	tradeBudget, _ := common.CapitalSplit(common.TradeCapitalSharePct, deployable, true, constructionHasWork)
-	if tradeBudget >= spendCap {
-		// The budget is not the binding constraint this tour — either construction is idle and
-		// trade holds the whole pool, or the 25% cap is simply tighter. Logged at INFO so the
-		// "trade got 100%" acceptance case is directly observable in the container log.
-		logger.Log("INFO", fmt.Sprintf("Capital budget: trade's share is %d of %d deployable (construction live=%v, share %d%%) — above the %d max-spend, so the dynamic cap binds", tradeBudget, deployable, constructionHasWork, common.TradeCapitalSharePct, spendCap), map[string]interface{}{
-			"trade_budget": tradeBudget, "deployable": deployable, "construction_has_work": constructionHasWork,
-			"max_spend": spendCap, "treasury": treasury, "reserve": reserve,
-		})
-		return spendCap
-	}
-
-	logger.Log("INFO", fmt.Sprintf("Capital budget: tour max-spend cut from %d to %d — trade's %d%% share of %d deployable (treasury %d, reserve %d), construction live=%v", spendCap, tradeBudget, common.TradeCapitalSharePct, deployable, treasury, reserve, constructionHasWork), map[string]interface{}{
-		"trade_budget": tradeBudget, "deployable": deployable, "construction_has_work": constructionHasWork,
-		"max_spend_before": spendCap, "treasury": treasury, "reserve": reserve,
-	})
-	return tradeBudget
-}
-
-// adoptPurchaseObligation hands this run the hull's outstanding tour-purchase ledger,
-// seeded with whatever an earlier run left undischarged, for the run to accumulate into.
-// A copy, so a concurrent read of the carry never races the run's own buys and sells.
-func (h *RunTourCoordinatorHandler) adoptPurchaseObligation(shipSymbol string) map[string]int {
-	h.purchaseObligationMu.Lock()
-	defer h.purchaseObligationMu.Unlock()
-	outstanding := map[string]int{}
-	for good, units := range h.purchaseObligation[shipSymbol] {
-		outstanding[good] = units
-	}
-	return outstanding
-}
-
-// retainPurchaseObligation hands the run's ledger back for the hull's NEXT run, so a
-// purchase survives the restart that interrupted it. A hull with nothing outstanding is
-// dropped entirely — a settled obligation must never linger to veto a later, unrelated run.
-func (h *RunTourCoordinatorHandler) retainPurchaseObligation(shipSymbol string, outstanding map[string]int) {
-	carry := map[string]int{}
-	for good, units := range outstanding {
-		if units > 0 {
-			carry[good] = units
-		}
-	}
-	h.purchaseObligationMu.Lock()
-	defer h.purchaseObligationMu.Unlock()
-	if len(carry) == 0 {
-		delete(h.purchaseObligation, shipSymbol)
-		return
-	}
-	h.purchaseObligation[shipSymbol] = carry
-}
-
-// dischargePurchaseObligation books units of good OFF the hull's outstanding obligation as
-// they leave the hold — sold, deposited or liquidated. It never falls below zero: moving
-// cargo the tour did NOT buy (a load the hull was handed, liquidated as launch inventory)
-// discharges nothing, so it cannot buy credit against a LATER purchase the run then fails
-// to sell. That netting is how a run could empty an inherited hold, refill it, and still
-// report success.
-func dischargePurchaseObligation(outstanding map[string]int, good string, units int) {
-	remaining := outstanding[good] - units
-	if remaining <= 0 {
-		delete(outstanding, good)
-		return
-	}
-	outstanding[good] = remaining
-}
-
-// vetoLadenExit terminalizes the run FAILED when the hull is ending laden with cargo the
-// tour bought — the honest-completion veto (RULINGS #4: a hold the tour bought and did not
-// sell is a failure, never a success). Called from the deferred epilogue so no exit path
-// can release a laden hull as a clean completion.
-func (h *RunTourCoordinatorHandler) vetoLadenExit(ctx context.Context, cmd *RunTourCoordinatorCommand, response *RunTourCoordinatorResponse, netBought map[string]int) {
-	reason, stranded := h.strandedReason(ctx, cmd, netBought)
-	if !stranded {
-		return
-	}
-	response.CargoStranded = true
-	response.CargoStrandedReason = reason
-	response.Completed = false
-	common.LoggerFromContext(ctx).Log("ERROR", reason, map[string]interface{}{"ship_symbol": cmd.ShipSymbol})
-}
-
-// strandedReason reports whether cargo the tour bought is still aboard — an
-// honest-completion veto. Each good's strand is bounded by what the hull ACTUALLY holds,
-// so an obligation the hold no longer carries (sold on another ground, transferred off,
-// hand-rescued by the captain) is discharged rather than wedging the hull in permanent
-// failure. It also settles the ledger against that live read, so the discharge carries to
-// the next run. The message names each good, its stranded units, and the hull's current
-// location so the strand is greppable and hand-recoverable.
-func (h *RunTourCoordinatorHandler) strandedReason(ctx context.Context, cmd *RunTourCoordinatorCommand, netBought map[string]int) (string, bool) {
-	if len(netBought) == 0 {
-		return "", false
-	}
-	// An unreadable hull cannot prove the hold is empty. Fail CLOSED on the ledger alone
-	// (RULINGS #4) — a read failure must never convert a strand into a success — and leave
-	// the ledger untouched so the next run re-checks against a live read.
-	loc := "unknown"
-	ship, err := h.legs.loadShip(ctx, cmd.ShipSymbol, cmd.PlayerID)
-	if err == nil {
-		loc = ship.CurrentLocation().Symbol
-	}
-	var parts []string
-	for good, bought := range netBought {
-		stranded := bought
-		if err == nil {
-			stranded = min(bought, shipHeldUnits(ship, good))
-			netBought[good] = stranded
-		}
-		if stranded > 0 {
-			parts = append(parts, fmt.Sprintf("%d %s", stranded, good))
-		}
-	}
-	if len(parts) == 0 {
-		return "", false
-	}
-	sort.Strings(parts)
-	return fmt.Sprintf("stranded cargo: %s still aboard at %s (tour-bought, unsold) - reporting failure", strings.Join(parts, ", "), loc), true
-}
-
-// shipHeldUnits reads how many units of good the hull is carrying right now.
-func shipHeldUnits(ship *navigation.Ship, good string) int {
-	c := ship.Cargo()
-	if c == nil {
-		return 0
-	}
-	return c.GetItemUnits(good)
-}
-
-// legPlanBasis names the plan basis behind a leg's ExpectedUnitPrice, using the drift
-// metric's own label vocabulary. It reads the engine the executing path DECLARED, so the
-// basis label on the metric and the engine column on the row cannot drift apart — they are
-// now one fact with two renderings rather than two independent classifications of the same
-// leg.
-//
-// A liquidation reports its own basis rather than borrowing the solver's. No series moves
-// either way: it leaves its plan basis at zero rather than inventing one, and a non-positive
-// basis is skipped before any drift counter is touched — so this label never materialises.
-// It is the honest value for a leg that is genuinely not solver evidence.
-func legPlanBasis(engine trading.LegEngine) string {
-	switch engine {
-	case trading.LegEngineLookback:
-		return metrics.PlanBasisLookback
-	case trading.LegEngineLiquidation:
-		return metrics.PlanBasisLiquidation
-	default:
-		return metrics.PlanBasisSolver
-	}
-}
-
-// recordLeg persists one leg and emits its price drift. engine is REQUIRED and names the
-// path calling in — solver, look-back or liquidation. It is a parameter rather than
-// something inferred from legIdx so that a new execution path cannot compile without saying
-// who it is: inference would file an unrecognised path under solver, quietly polluting the
-// population that grades the market model.
-func (h *RunTourCoordinatorHandler) recordLeg(
-	ctx context.Context,
-	cmd *RunTourCoordinatorCommand,
-	engine trading.LegEngine,
-	leg routing.TourLeg,
-	legIdx int,
-	trade routing.TourTrade,
-	realizedUnits, realizedUnitPrice int,
-	plannedAt time.Time,
-) {
-	// Emit the realized-vs-planned unit-price drift (feeds the Plan vs Realized Drift %
-	// panel) keyed by side and by WHICH plan basis produced the expectation. Independent
-	// of the telemetry repo — a nil telemetry sink must not suppress it — and nil-safe,
-	// so a metrics miss never touches the trade path (RULINGS #4). ExpectedUnitPrice is
-	// the plan basis; a non-positive basis is skipped downstream.
-	//
-	// The basis label matters because these are not the same measurement (sp-fpgl2). A
-	// solver leg's ExpectedUnitPrice is the planner's own projection, so its drift tests
-	// the market model. A look-back leg's is the CACHED SourceAsk the manifest was built
-	// from, and the buy is gated to a tolerance band around that very number, so a fresh
-	// cache reproduces itself: those legs measured a median absolute error of EXACTLY
-	// 0.000% over 1423 production rows against the solver's 0.518%. Averaged together
-	// they read as one number that describes neither.
-	metrics.ObserveTourLegPriceDrift(tradeSide(trade), legPlanBasis(engine), float64(trade.ExpectedUnitPrice), float64(realizedUnitPrice))
-	if h.telemetry == nil {
-		return
-	}
-	err := h.telemetry.RecordLeg(ctx, trading.TourLegTelemetry{
-		TourID:            cmd.ContainerID,
-		ShipSymbol:        cmd.ShipSymbol,
-		Engine:            engine,
-		LegIndex:          legIdx,
-		Waypoint:          leg.Waypoint,
-		Good:              trade.Good,
-		IsBuy:             trade.IsBuy,
-		PlannedUnits:      trade.Units,
-		RealizedUnits:     realizedUnits,
-		PlannedUnitPrice:  trade.ExpectedUnitPrice,
-		RealizedUnitPrice: realizedUnitPrice,
-		PlannedAt:         plannedAt,
-		RealizedAt:        h.clock.Now(),
-		PlayerID:          cmd.PlayerID,
-	})
-	if err != nil {
-		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf("Failed to record tour leg telemetry: %v", err), map[string]interface{}{
-			"tour": cmd.ContainerID, "leg": legIdx, "good": trade.Good, "error": err.Error(),
-		})
-	}
-}
-
-// readTourModelVersion reads "<fit_version>@<era>" from the checked-in artifact so the
-// constraint binds the planner to the exact fitted model (spec: mismatch → the solver
-// fails closed). Any read/parse failure surfaces as an error the caller fails open on.
-func readTourModelVersion(path string) (string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("read model artifact: %w", err)
-	}
-	var art struct {
-		FitVersion int    `json:"fit_version"`
-		Era        string `json:"era"`
-	}
-	if err := json.Unmarshal(data, &art); err != nil {
-		return "", fmt.Errorf("parse model artifact: %w", err)
-	}
-	if art.Era == "" {
-		return "", fmt.Errorf("model artifact missing era")
-	}
-	return fmt.Sprintf("%d@%s", art.FitVersion, art.Era), nil
-}
-
-// sellsBeforeBuys reorders a leg's trades so every sell precedes every buy, preserving
-// relative order within each side (the planner emits them this way; the executor
-// enforces it so the hold is freed before it is refilled).
-func sellsBeforeBuys(trades []routing.TourTrade) []routing.TourTrade {
-	out := make([]routing.TourTrade, 0, len(trades))
-	for _, t := range trades {
-		if !t.IsBuy {
-			out = append(out, t)
-		}
-	}
-	for _, t := range trades {
-		if t.IsBuy {
-			out = append(out, t)
-		}
-	}
-	return out
-}
-
-func remainingSpend(maxSpend, spent int64) int64 {
-	if maxSpend <= 0 {
-		return 0 // no explicit cap
-	}
-	if r := maxSpend - spent; r > 0 {
-		return r
-	}
-	return 0
-}
-
-func realizedUnitPrice(total, units int) int {
-	if units <= 0 {
-		return 0
-	}
-	return total / units
-}
-
-func tradeSide(t routing.TourTrade) string {
-	if t.IsBuy {
-		return "buy"
-	}
-	return "sell"
 }

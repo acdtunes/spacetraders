@@ -91,13 +91,9 @@ func (c *ContractDepot) WithElementRemoved(role Role, shipSymbol string) (*Contr
 	return NewContractDepot(c.id, w, s, d, h)
 }
 
-// WithElementPlaced returns a NEW depot with the element crewed by shipSymbol in the
-// named role repositioned to waypoint, preserving its identity and slice order. It is
-// the parametrized positioning op (e.g. parking a delivery hull at its warehouse per the
-// analyst's co-location policy) — it invents no placement, the caller supplies the
-// waypoint. It errors when no such element exists (place repositions an existing member,
-// use WithElementAdded to introduce one).
-func (c *ContractDepot) WithElementPlaced(role Role, shipSymbol, waypoint string) (*ContractDepot, error) {
+// WithElementPlaced returns a NEW depot with the element crewed by element.ShipSymbol
+// repositioned to element.Waypoint. It errors rather than introducing a missing element.
+func (c *ContractDepot) WithElementPlaced(role Role, element Element) (*ContractDepot, error) {
 	w, s, d, h := c.Warehouses(), c.Stockers(), c.DeliveryHulls(), c.SourceHubs()
 	target, err := roleTarget(role, &w, &s, &d, &h)
 	if err != nil {
@@ -105,14 +101,14 @@ func (c *ContractDepot) WithElementPlaced(role Role, shipSymbol, waypoint string
 	}
 	placed := false
 	for i := range *target {
-		if (*target)[i].ShipSymbol == shipSymbol {
-			(*target)[i].Waypoint = waypoint
+		if (*target)[i].ShipSymbol == element.ShipSymbol {
+			(*target)[i].Waypoint = element.Waypoint
 			placed = true
 			break
 		}
 	}
 	if !placed {
-		return nil, fmt.Errorf("no %s element crewed by ship %q in depot %q to place", role, shipSymbol, c.id)
+		return nil, fmt.Errorf("no %s element crewed by ship %q in depot %q to place", role, element.ShipSymbol, c.id)
 	}
 	return NewContractDepot(c.id, w, s, d, h)
 }

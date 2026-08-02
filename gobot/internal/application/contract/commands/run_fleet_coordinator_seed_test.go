@@ -185,9 +185,7 @@ func TestReconcile_LiveRemovedHull_NotResurrectedOnRestart(t *testing.T) {
 
 	// Restart: the seed lists TORWIND-7, but the first boot already consumed the
 	// seed (seeded=true, reloaded from the persisted marker).
-	seedDedicatedFleetIfFirstBoot(context.Background(), logger, med, marker,
-		shared.MustNewPlayerID(2), "cc-1", []string{"TORWIND-7"}, true, "contract",
-		"contract-coordinator-reconcile:cc-1")
+	dedicationSeed{logger: logger, med: med, playerID: shared.MustNewPlayerID(2), dedicatedShips: []string{"TORWIND-7"}, fleetName: "contract", assigner: "contract-coordinator-reconcile:cc-1"}.seedIfFirstBoot(context.Background(), marker, "cc-1", true)
 
 	if got := repo.fleetTag(t, "TORWIND-7"); got != "" {
 		t.Fatalf("live-removed hull resurrected on restart: expected dedicated_fleet \"\", got %q", got)
@@ -205,9 +203,7 @@ func TestReconcile_FirstBoot_StillSeeds(t *testing.T) {
 	marker := newFakeSeedMarker()
 	logger := &completionCapturingLogger{}
 
-	seedDedicatedFleetIfFirstBoot(context.Background(), logger, med, marker,
-		shared.MustNewPlayerID(2), "cc-1", []string{"TORWIND-7"}, false, "contract",
-		"contract-coordinator-reconcile:cc-1")
+	dedicationSeed{logger: logger, med: med, playerID: shared.MustNewPlayerID(2), dedicatedShips: []string{"TORWIND-7"}, fleetName: "contract", assigner: "contract-coordinator-reconcile:cc-1"}.seedIfFirstBoot(context.Background(), marker, "cc-1", false)
 
 	if got := repo.fleetTag(t, "TORWIND-7"); got != "contract" {
 		t.Fatalf("first boot must seed the hull into the contract fleet, got dedicated_fleet %q", got)
@@ -232,9 +228,7 @@ func TestReconcile_ConsumedRemoval_SurvivesRestart(t *testing.T) {
 	seed := []string{"TORWIND-7", "TORWIND-8"}
 
 	// First boot: seed applies (marker reads false), both hulls tagged, marker set.
-	seedDedicatedFleetIfFirstBoot(context.Background(), logger, med, marker,
-		shared.MustNewPlayerID(2), "cc-1", seed, marker.isSeeded("cc-1"), "contract",
-		"contract-coordinator-reconcile:cc-1")
+	dedicationSeed{logger: logger, med: med, playerID: shared.MustNewPlayerID(2), dedicatedShips: seed, fleetName: "contract", assigner: "contract-coordinator-reconcile:cc-1"}.seedIfFirstBoot(context.Background(), marker, "cc-1", marker.isSeeded("cc-1"))
 	if repo.fleetTag(t, "TORWIND-7") != "contract" || repo.fleetTag(t, "TORWIND-8") != "contract" {
 		t.Fatalf("first boot must seed both hulls, got %q / %q",
 			repo.fleetTag(t, "TORWIND-7"), repo.fleetTag(t, "TORWIND-8"))
@@ -244,9 +238,7 @@ func TestReconcile_ConsumedRemoval_SurvivesRestart(t *testing.T) {
 	removeFromFleet(t, med, "TORWIND-8", 2)
 
 	// Restart: reload the persisted marker (seeded=true) — the seed must NOT replay.
-	seedDedicatedFleetIfFirstBoot(context.Background(), logger, med, marker,
-		shared.MustNewPlayerID(2), "cc-1", seed, marker.isSeeded("cc-1"), "contract",
-		"contract-coordinator-reconcile:cc-1")
+	dedicationSeed{logger: logger, med: med, playerID: shared.MustNewPlayerID(2), dedicatedShips: seed, fleetName: "contract", assigner: "contract-coordinator-reconcile:cc-1"}.seedIfFirstBoot(context.Background(), marker, "cc-1", marker.isSeeded("cc-1"))
 
 	if got := repo.fleetTag(t, "TORWIND-8"); got != "" {
 		t.Fatalf("consumed removal did not survive the restart: TORWIND-8 dedicated_fleet %q (want \"\")", got)

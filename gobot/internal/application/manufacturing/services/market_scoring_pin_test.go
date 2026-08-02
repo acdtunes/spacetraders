@@ -44,33 +44,6 @@ func TestImportActivityScore_PinsSellerSideOrdering(t *testing.T) {
 	}
 }
 
-func TestCollectionOpportunityScore_AbundantStrongRanksHighest(t *testing.T) {
-	cases := []struct {
-		name            string
-		factorySupply   string
-		sellActivity    string
-		factoryActivity string
-		expected        int
-	}{
-		{"abundant strong weak", "ABUNDANT", "STRONG", "WEAK", 1800},
-		{"high growing growing", "HIGH", "GROWING", "GROWING", 1400},
-		{"abundant weak strong", "ABUNDANT", "WEAK", "STRONG", 1250},
-		{"high restricted restricted", "HIGH", "RESTRICTED", "RESTRICTED", 1000},
-		{"unknown levels", "", "", "", 1000},
-	}
-	for _, tc := range cases {
-		opp := &CollectionOpportunity{
-			ExpectedProfit:     1000,
-			FactorySupply:      tc.factorySupply,
-			SellMarketActivity: tc.sellActivity,
-			FactoryActivity:    tc.factoryActivity,
-		}
-		if got := opp.Score(); got != tc.expected {
-			t.Errorf("%s: Score() = %d, want %d", tc.name, got, tc.expected)
-		}
-	}
-}
-
 func TestApplySourceSupplyPriority_AbundantHighThenFloorOfTen(t *testing.T) {
 	cases := map[string]int{
 		"ABUNDANT": 40, "HIGH": 30, "MODERATE": 10, "LIMITED": 10, "SCARCE": 10, "": 10,

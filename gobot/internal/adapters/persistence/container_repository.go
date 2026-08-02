@@ -3,25 +3,17 @@ package persistence
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"time"
 
 	"gorm.io/gorm"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 const (
 	containerStatusPending = "PENDING"
 	containerStatusRunning = "RUNNING"
-	containerStatusStopped = "STOPPED"
-
-	workerTypeManufacturingTask = "MANUFACTURING_TASK_WORKER"
-
-	exitReasonOrphanedByRestart = "orphaned_by_coordinator_restart"
-	exitReasonStaleHeartbeat    = "stale_heartbeat_timeout"
 
 	restartPolicyNone      = "no"
 	restartPolicyOnFailure = "on-failure"
@@ -43,22 +35,38 @@ func (r *ContainerRepositoryGORM) Add(
 	containerEntity *container.Container,
 	commandType string,
 ) error {
-	// Serialize metadata to JSON (this is the config in Container entity)
-	configJSON, err := json.Marshal(containerEntity.Metadata())
+	now := time.Now()
+	model, err := newContainerModel(containerEntity, commandType, now)
 	if err != nil {
-		return fmt.Errorf("failed to serialize config: %w", err)
+		return err
+	}
+	model.HeartbeatAt = &now
+
+	if err := r.db.WithContext(ctx).Create(model).Error; err != nil {
+		return fmt.Errorf("failed to insert container: %w", err)
 	}
 
-	now := time.Now()
+	return nil
+}
 
-	// Map restart count to restart policy for database storage
-	// Go implementation uses maxRestarts count, not policy string
+// newContainerModel maps the entity onto a fresh container row. HeartbeatAt is left NULL —
+// only Add seeds it — and a NULL heartbeat is excluded from the captain's staleness detector.
+func newContainerModel(
+	containerEntity *container.Container,
+	commandType string,
+	now time.Time,
+) (*ContainerModel, error) {
+	configJSON, err := json.Marshal(containerEntity.Metadata())
+	if err != nil {
+		return nil, fmt.Errorf("failed to serialize config: %w", err)
+	}
+
 	restartPolicy := restartPolicyNone
 	if containerEntity.MaxRestarts() > 0 {
 		restartPolicy = restartPolicyOnFailure
 	}
 
-	model := &ContainerModel{
+	return &ContainerModel{
 		ID:                containerEntity.ID(),
 		PlayerID:          containerEntity.PlayerID(),
 		ContainerType:     string(containerEntity.Type()),
@@ -69,17 +77,10 @@ func (r *ContainerRepositoryGORM) Add(
 		RestartCount:      containerEntity.RestartCount(),
 		Config:            string(configJSON),
 		StartedAt:         &now,
-		HeartbeatAt:       &now, // Initialize heartbeat at start
 		StoppedAt:         nil,
 		ExitCode:          nil,
 		ExitReason:        "",
-	}
-
-	if err := r.db.WithContext(ctx).Create(model).Error; err != nil {
-		return fmt.Errorf("failed to insert container: %w", err)
-	}
-
-	return nil
+	}, nil
 }
 
 // UpdateStatus updates container status and completion info
@@ -160,143 +161,6 @@ func (r *ContainerRepositoryGORM) Get(
 	return &model, nil
 }
 
-// ContainerStatus returns the lifecycle status of a container and whether the
-// container row exists. It backs the ship-refresh stale-claim reconciler
-// (internal/application/ship/queries.ContainerStatusReader): found=false lets the
-// reconciler treat a ship claim whose container row is gone as orphaned, while a
-// live PENDING/RUNNING status lets it distinguish a dead CLI-runner artifact from
-// an active daemon worker.
-func (r *ContainerRepositoryGORM) ContainerStatus(
-	ctx context.Context,
-	containerID string,
-	playerID shared.PlayerID,
-) (string, bool, error) {
-	var model ContainerModel
-	err := r.db.WithContext(ctx).
-		Select("status").
-		Where("id = ? AND player_id = ?", containerID, playerID.Value()).
-		First(&model).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return "", false, nil
-	}
-	if err != nil {
-		return "", false, fmt.Errorf("failed to read container status: %w", err)
-	}
-	return model.Status, true, nil
-}
-
-// ListByStatus lists all containers with a specific status
-func (r *ContainerRepositoryGORM) ListByStatus(
-	ctx context.Context,
-	status container.ContainerStatus,
-	playerID *int,
-) ([]*ContainerModel, error) {
-	var models []*ContainerModel
-
-	query := r.db.WithContext(ctx).Where("status = ?", string(status))
-
-	if playerID != nil {
-		query = query.Where("player_id = ?", *playerID)
-	}
-
-	if err := query.Find(&models).Error; err != nil {
-		return nil, fmt.Errorf("failed to list containers by status: %w", err)
-	}
-
-	return models, nil
-}
-
-// FindShipSymbolsWithActiveOrRecentContainers returns the set of ship symbols referenced
-// (via the config JSON "ship_symbol") by a container for the player that is either
-// NON-TERMINAL (PENDING/RUNNING/STOPPING/INTERRUPTED — a live claim or op) OR terminated
-// at/after activeSince (a recently-finished op). It is the stale-captain-reservation
-// reaper's safety signal: a captain-reserved hull is reaped only when it is in NEITHER set —
-// i.e. nothing has touched it within the idle window — so a hull a live captain op is using,
-// or just finished using, is never reaped even though its ships-row reservation looks
-// orphaned. config is the container's metadata JSON; a row whose config is empty or not a
-// JSON object (a coordinator with no ship, say) contributes no symbol. Read-only.
-//
-// The OR group is parenthesized so the player_id scope (a chained AND) binds to the WHOLE
-// disjunction — without the parens SQL precedence would let the stopped_at branch match
-// every player's recent containers.
-func (r *ContainerRepositoryGORM) FindShipSymbolsWithActiveOrRecentContainers(
-	ctx context.Context,
-	playerID int,
-	activeSince time.Time,
-) (map[string]bool, error) {
-	liveStatuses := []string{
-		containerStatusPending,
-		containerStatusRunning,
-		string(container.ContainerStatusStopping),
-		string(container.ContainerStatusInterrupted),
-	}
-
-	var models []*ContainerModel
-	if err := r.db.WithContext(ctx).
-		Where("player_id = ?", playerID).
-		Where("(status IN ? OR (stopped_at IS NOT NULL AND stopped_at >= ?))", liveStatuses, activeSince).
-		Find(&models).Error; err != nil {
-		return nil, fmt.Errorf("failed to list active/recent containers for player %d: %w", playerID, err)
-	}
-
-	symbols := make(map[string]bool, len(models))
-	for _, m := range models {
-		if m.Config == "" {
-			continue
-		}
-		var cfg map[string]interface{}
-		if err := json.Unmarshal([]byte(m.Config), &cfg); err != nil {
-			continue // a non-object / unparseable config carries no ship reference
-		}
-		if sym, ok := cfg["ship_symbol"].(string); ok && sym != "" {
-			symbols[sym] = true
-		}
-	}
-
-	return symbols, nil
-}
-
-// ListByCommandTypeSince lists containers of a command type for a player that started
-// at/after `since`. The worker-rebalancer coordinator uses it to read recent
-// worker_ferry rows for the per-vacancy cooldown — a focused query that avoids scanning
-// every container. StartedAt is the persisted launch time, so the cooldown clock survives
-// a daemon restart with zero new state (RULINGS #2).
-func (r *ContainerRepositoryGORM) ListByCommandTypeSince(
-	ctx context.Context,
-	commandType string,
-	since time.Time,
-	playerID int,
-) ([]*ContainerModel, error) {
-	var models []*ContainerModel
-	if err := r.db.WithContext(ctx).
-		Where("command_type = ? AND player_id = ? AND started_at IS NOT NULL AND started_at >= ?",
-			commandType, playerID, since).
-		Find(&models).Error; err != nil {
-		return nil, fmt.Errorf("failed to list containers by command type since: %w", err)
-	}
-	return models, nil
-}
-
-// ListAll lists all containers, optionally filtered by player
-func (r *ContainerRepositoryGORM) ListAll(
-	ctx context.Context,
-	playerID *int,
-) ([]*ContainerModel, error) {
-	var models []*ContainerModel
-
-	query := r.db.WithContext(ctx)
-
-	if playerID != nil {
-		query = query.Where("player_id = ?", *playerID)
-	}
-
-	if err := query.Find(&models).Error; err != nil {
-		return nil, fmt.Errorf("failed to list containers: %w", err)
-	}
-
-	return models, nil
-}
-
 // Remove removes a container record
 func (r *ContainerRepositoryGORM) Remove(
 	ctx context.Context,
@@ -312,167 +176,6 @@ func (r *ContainerRepositoryGORM) Remove(
 	}
 
 	return nil
-}
-
-// ContainerSummary is an internal query result struct for simplified container lookups.
-// For full container data, use the Container domain entity.
-// This struct is used by coordinators to check container status efficiently.
-type ContainerSummary struct {
-	ID            string
-	ContainerType string
-	Status        string
-}
-
-// ScoutWorkerSummary is one RUNNING scout worker container (tour or reposition
-// relay) with the coordinator_id its persisted config carries — empty for a
-// manually-launched tour, which no reconciler may ever stop.
-type ScoutWorkerSummary struct {
-	ID            string
-	CoordinatorID string
-}
-
-// scoutWorkerCommandTypes are the two container command types the scout-post
-// coordinator spawns as managed workers. Kept in lockstep with the Add calls in
-// PersistScoutTourWorker / PersistScoutRepositionWorker.
-var scoutWorkerCommandTypes = []string{"scout_tour", "scout_reposition"}
-
-// ListRunningScoutWorkers returns every RUNNING scout_tour / scout_reposition
-// container for the player, each with the coordinator_id parsed from its
-// persisted config. It is the scout-post reconciler's container-side view: the
-// slot-driven passes can only see workers a post references, so a worker whose
-// post was removed needs this read to be found at all. An unparseable config
-// reads as "" — the conservative side, since an unidentifiable worker must
-// never be stopped.
-func (r *ContainerRepositoryGORM) ListRunningScoutWorkers(
-	ctx context.Context,
-	playerID shared.PlayerID,
-) ([]ScoutWorkerSummary, error) {
-	var models []*ContainerModel
-	err := r.db.WithContext(ctx).
-		Where("status = ? AND player_id = ? AND command_type IN ?", containerStatusRunning, playerID.Value(), scoutWorkerCommandTypes).
-		Find(&models).Error
-	if err != nil {
-		return nil, fmt.Errorf("failed to list running scout workers: %w", err)
-	}
-
-	summaries := make([]ScoutWorkerSummary, 0, len(models))
-	for _, m := range models {
-		var cfg struct {
-			CoordinatorID string `json:"coordinator_id"`
-		}
-		_ = json.Unmarshal([]byte(m.Config), &cfg)
-		summaries = append(summaries, ScoutWorkerSummary{ID: m.ID, CoordinatorID: cfg.CoordinatorID})
-	}
-	return summaries, nil
-}
-
-// ListJumpContainersForShip returns the IDs of every JUMP container row the player holds that
-// NAMES this hull in its config, in any status. It backs jump_ship's post-claim reap.
-//
-// Matching is on config["ship_symbol"], never on an ID prefix. Jump IDs are "ship-jump-<symbol>-
-// <nonce>", and hull symbols are not prefix-free — "ship-jump-TORWIND-2" is a prefix of
-// "ship-jump-TORWIND-23-..." — so a LIKE 'ship-jump-<symbol>%' would reap another hull's live
-// claim record. The config field is the hull the row was created FOR, which is exactly the
-// question being asked.
-//
-// STATUS IS DELIBERATELY UNSCOPED. A jump row's status never advances: it is written PENDING and
-// deleted on the way out, so status carries no information about whether a jump is in flight —
-// the hull's own claim does, and the caller holds it. Filtering by status here would only miss
-// rows that a claim-break already terminalized to STOPPED, which leak exactly like the PENDING
-// ones.
-func (r *ContainerRepositoryGORM) ListJumpContainersForShip(
-	ctx context.Context,
-	shipSymbol string,
-	playerID int,
-) ([]string, error) {
-	var models []*ContainerModel
-	err := r.db.WithContext(ctx).
-		Where("player_id = ? AND container_type = ?", playerID, string(container.ContainerTypeJump)).
-		Find(&models).Error
-	if err != nil {
-		return nil, fmt.Errorf("failed to list jump containers for ship %s: %w", shipSymbol, err)
-	}
-
-	ids := make([]string, 0, len(models))
-	for _, m := range models {
-		var cfg struct {
-			ShipSymbol string `json:"ship_symbol"`
-		}
-		// An unparseable config names no hull and is therefore never matched: a row we
-		// cannot attribute is left alone rather than reaped against the wrong hull.
-		if err := json.Unmarshal([]byte(m.Config), &cfg); err != nil {
-			continue
-		}
-		if cfg.ShipSymbol == shipSymbol {
-			ids = append(ids, m.ID)
-		}
-	}
-	return ids, nil
-}
-
-// HasActiveContainerOfType reports whether any container of the given types is currently RUNNING
-// or PENDING for the player. It backs the per-operation capital budget's hasWork sensor
-// (common.EngineCapitalWorkSensor, sp-ftqgp): the trade and construction spend guards each ask
-// whether the OTHER side is live before sizing their own share of deployable capital.
-//
-// PENDING counts alongside RUNNING for the same reason the bootstrap gate's containerTypeRunning
-// counts it: a container about to start is a side about to spend, so treating it as idle would
-// briefly hand the asking side 100% of the treasury during every launch window. An empty type
-// list matches nothing (false) rather than everything — a caller that resolved no types must
-// never be told the whole fleet is busy.
-func (r *ContainerRepositoryGORM) HasActiveContainerOfType(
-	ctx context.Context,
-	playerID int,
-	containerTypes ...string,
-) (bool, error) {
-	if len(containerTypes) == 0 {
-		return false, nil
-	}
-
-	var count int64
-	err := r.db.WithContext(ctx).
-		Model(&ContainerModel{}).
-		Where("player_id = ?", playerID).
-		Where("status IN ?", []string{
-			string(container.ContainerStatusRunning),
-			string(container.ContainerStatusPending),
-		}).
-		Where("container_type IN ?", containerTypes).
-		Count(&count).Error
-	if err != nil {
-		return false, fmt.Errorf("failed to check for active containers by type: %w", err)
-	}
-	return count > 0, nil
-}
-
-// ListByStatusSimple returns simplified container info (for coordinators)
-func (r *ContainerRepositoryGORM) ListByStatusSimple(
-	ctx context.Context,
-	status string,
-	playerID *int,
-) ([]ContainerSummary, error) {
-	var models []*ContainerModel
-
-	query := r.db.WithContext(ctx).Where("status = ?", status)
-
-	if playerID != nil {
-		query = query.Where("player_id = ?", *playerID)
-	}
-
-	if err := query.Find(&models).Error; err != nil {
-		return nil, fmt.Errorf("failed to list containers by status: %w", err)
-	}
-
-	result := make([]ContainerSummary, len(models))
-	for i, model := range models {
-		result[i] = ContainerSummary{
-			ID:            model.ID,
-			ContainerType: model.ContainerType,
-			Status:        model.Status,
-		}
-	}
-
-	return result, nil
 }
 
 // CreateIfNoActiveWorker atomically creates a worker container only if no other
@@ -499,31 +202,9 @@ func (r *ContainerRepositoryGORM) CreateIfNoActiveWorker(
 			return nil
 		}
 
-		configJSON, err := json.Marshal(containerEntity.Metadata())
+		model, err := newContainerModel(containerEntity, commandType, time.Now())
 		if err != nil {
-			return fmt.Errorf("failed to serialize config: %w", err)
-		}
-
-		now := time.Now()
-		restartPolicy := restartPolicyNone
-		if containerEntity.MaxRestarts() > 0 {
-			restartPolicy = restartPolicyOnFailure
-		}
-
-		model := &ContainerModel{
-			ID:                containerEntity.ID(),
-			PlayerID:          containerEntity.PlayerID(),
-			ContainerType:     string(containerEntity.Type()),
-			CommandType:       commandType,
-			Status:            string(containerEntity.Status()),
-			ParentContainerID: containerEntity.ParentContainerID(),
-			RestartPolicy:     restartPolicy,
-			RestartCount:      containerEntity.RestartCount(),
-			Config:            string(configJSON),
-			StartedAt:         &now,
-			StoppedAt:         nil,
-			ExitCode:          nil,
-			ExitReason:        "",
+			return err
 		}
 
 		if err := tx.Create(model).Error; err != nil {
@@ -535,229 +216,6 @@ func (r *ContainerRepositoryGORM) CreateIfNoActiveWorker(
 	})
 
 	return created, err
-}
-
-// FindChildContainers retrieves all direct children of a parent container
-// Returns empty slice if no children found (not an error)
-func (r *ContainerRepositoryGORM) FindChildContainers(
-	ctx context.Context,
-	parentContainerID string,
-	playerID int,
-) ([]*ContainerModel, error) {
-	var models []*ContainerModel
-
-	err := r.db.WithContext(ctx).
-		Where("parent_container_id = ? AND player_id = ?", parentContainerID, playerID).
-		Order("started_at ASC"). // Oldest children first for consistent ordering
-		Find(&models).Error
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to find child containers: %w", err)
-	}
-
-	return models, nil
-}
-
-// FindActiveCoordinatorByTypeAndSystem finds an active (PENDING or RUNNING) coordinator
-// of the given type for the specified system. Returns nil if none found.
-// Used to enforce singleton coordinators per system.
-func (r *ContainerRepositoryGORM) FindActiveCoordinatorByTypeAndSystem(
-	ctx context.Context,
-	containerType string,
-	systemSymbol string,
-	playerID int,
-) (*ContainerModel, error) {
-	var model ContainerModel
-
-	// Config is JSON with "system_symbol" field
-	result := r.db.WithContext(ctx).
-		Where("container_type = ? AND player_id = ? AND status IN (?, ?)",
-			containerType, playerID, containerStatusPending, containerStatusRunning).
-		Where("config LIKE ?", fmt.Sprintf(`%%"system_symbol":"%s"%%`, systemSymbol)).
-		First(&model)
-
-	if result.Error != nil {
-		if result.Error == gorm.ErrRecordNotFound {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to find active coordinator: %w", result.Error)
-	}
-
-	return &model, nil
-}
-
-// FindActiveCoordinatorByType finds an active (PENDING or RUNNING) coordinator of
-// the given type for a player, regardless of system. Unlike
-// FindActiveCoordinatorByTypeAndSystem this applies no system filter — the
-// contract coordinator is not system-scoped, so the live `fleet hub` mutation
-// locates it by type alone. Returns nil if none is active.
-//
-// With >=2 active rows of the same type the result is made deterministic by
-// Order("heartbeat_at DESC") — the freshest (most-recently heartbeating)
-// coordinator wins, so a live mutation never lands on a stale row on the whim of
-// the DB's default ordering.
-func (r *ContainerRepositoryGORM) FindActiveCoordinatorByType(
-	ctx context.Context,
-	containerType string,
-	playerID int,
-) (*ContainerModel, error) {
-	var model ContainerModel
-
-	result := r.db.WithContext(ctx).
-		Where("container_type = ? AND player_id = ? AND status IN (?, ?)",
-			containerType, playerID, containerStatusPending, containerStatusRunning).
-		Order("heartbeat_at DESC").
-		First(&model)
-
-	if result.Error != nil {
-		if result.Error == gorm.ErrRecordNotFound {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to find active coordinator by type: %w", result.Error)
-	}
-
-	return &model, nil
-}
-
-// FindMostRecentByType returns the most-recently-STARTED container of a type for a
-// player REGARDLESS of status (STOPPED/INTERRUPTED included), or nil if none exists.
-// Unlike FindActiveCoordinatorByType it applies NO PENDING/RUNNING filter — it is the
-// source of the last persisted live-config a coordinator (re)start re-applies:
-// relaunching a previously-stopped coordinator via `frontier start` must re-adopt its
-// live-tuned knobs (the persisted config column) instead of reverting to config-file
-// defaults, exactly as the daemon-restart recovery path already does. Ordered by
-// started_at DESC (the freshest launch's config wins; StartedAt is set on every Add).
-func (r *ContainerRepositoryGORM) FindMostRecentByType(
-	ctx context.Context,
-	containerType string,
-	playerID int,
-) (*ContainerModel, error) {
-	var model ContainerModel
-
-	result := r.db.WithContext(ctx).
-		Where("container_type = ? AND player_id = ?", containerType, playerID).
-		Order("started_at DESC").
-		First(&model)
-
-	if result.Error != nil {
-		if result.Error == gorm.ErrRecordNotFound {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to find most recent container by type: %w", result.Error)
-	}
-
-	return &model, nil
-}
-
-// StopOrphanedWorkersByParent marks all RUNNING/PENDING worker containers
-// with the given parent container ID as STOPPED. Used during coordinator
-// startup to clean up orphaned workers from crashed coordinators.
-func (r *ContainerRepositoryGORM) StopOrphanedWorkersByParent(
-	ctx context.Context,
-	parentContainerID string,
-	playerID int,
-) (int64, error) {
-	now := time.Now()
-	exitCode := 1
-
-	result := r.db.WithContext(ctx).
-		Model(&ContainerModel{}).
-		Where("parent_container_id = ? AND player_id = ? AND status IN (?, ?)",
-			parentContainerID, playerID, containerStatusPending, containerStatusRunning).
-		Updates(map[string]interface{}{
-			"status":      containerStatusStopped,
-			"stopped_at":  &now,
-			"exit_code":   &exitCode,
-			"exit_reason": exitReasonOrphanedByRestart,
-		})
-
-	if result.Error != nil {
-		return 0, fmt.Errorf("failed to stop orphaned workers: %w", result.Error)
-	}
-
-	return result.RowsAffected, nil
-}
-
-// StopAllOrphanedManufacturingWorkers marks ALL RUNNING/PENDING manufacturing task worker
-// containers for a player as STOPPED. Used at coordinator startup to ensure clean state.
-// This prevents orphaned workers from crashed coordinators from holding ships.
-func (r *ContainerRepositoryGORM) StopAllOrphanedManufacturingWorkers(
-	ctx context.Context,
-	playerID int,
-) (int64, error) {
-	now := time.Now()
-	exitCode := 1
-
-	result := r.db.WithContext(ctx).
-		Model(&ContainerModel{}).
-		Where("container_type = ? AND player_id = ? AND status IN (?, ?)",
-			workerTypeManufacturingTask, playerID, containerStatusPending, containerStatusRunning).
-		Updates(map[string]interface{}{
-			"status":      containerStatusStopped,
-			"stopped_at":  &now,
-			"exit_code":   &exitCode,
-			"exit_reason": exitReasonOrphanedByRestart,
-		})
-
-	if result.Error != nil {
-		return 0, fmt.Errorf("failed to stop orphaned workers: %w", result.Error)
-	}
-
-	return result.RowsAffected, nil
-}
-
-// FindStaleManufacturingWorkers returns RUNNING manufacturing task workers whose
-// heartbeat is stale. Used for logging before stopping.
-func (r *ContainerRepositoryGORM) FindStaleManufacturingWorkers(
-	ctx context.Context,
-	playerID int,
-	staleTimeout time.Duration,
-) ([]*ContainerModel, error) {
-	cutoffTime := time.Now().Add(-staleTimeout)
-
-	var models []*ContainerModel
-	err := r.db.WithContext(ctx).
-		Where("container_type = ? AND player_id = ? AND status = ?",
-			workerTypeManufacturingTask, playerID, containerStatusRunning).
-		Where("heartbeat_at IS NOT NULL AND heartbeat_at < ?", cutoffTime).
-		Find(&models).Error
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to find stale workers: %w", err)
-	}
-
-	return models, nil
-}
-
-// StopStaleManufacturingWorkers marks RUNNING manufacturing task workers as STOPPED if their
-// heartbeat is stale. This detects workers that crashed without proper cleanup.
-// staleTimeout defines how long a worker can go without heartbeat before being considered stale.
-func (r *ContainerRepositoryGORM) StopStaleManufacturingWorkers(
-	ctx context.Context,
-	playerID int,
-	staleTimeout time.Duration,
-) (int64, error) {
-	now := time.Now()
-	cutoffTime := now.Add(-staleTimeout)
-	exitCode := 1
-
-	result := r.db.WithContext(ctx).
-		Model(&ContainerModel{}).
-		Where("container_type = ? AND player_id = ? AND status = ?",
-			workerTypeManufacturingTask, playerID, containerStatusRunning).
-		Where("heartbeat_at IS NOT NULL AND heartbeat_at < ?", cutoffTime).
-		Updates(map[string]interface{}{
-			"status":      containerStatusStopped,
-			"stopped_at":  &now,
-			"exit_code":   &exitCode,
-			"exit_reason": exitReasonStaleHeartbeat,
-		})
-
-	if result.Error != nil {
-		return 0, fmt.Errorf("failed to stop stale workers: %w", result.Error)
-	}
-
-	return result.RowsAffected, nil
 }
 
 // UpdateContainerHeartbeat updates the heartbeat timestamp for a container
@@ -775,30 +233,4 @@ func (r *ContainerRepositoryGORM) UpdateContainerHeartbeat(
 		return fmt.Errorf("failed to update heartbeat: %w", result.Error)
 	}
 	return nil
-}
-
-// FindActiveGasCoordinator finds an active (PENDING or RUNNING) gas coordinator
-// for the specified gas giant. Returns nil if none found.
-// Used to enforce singleton gas coordinators per gas giant.
-func (r *ContainerRepositoryGORM) FindActiveGasCoordinator(
-	ctx context.Context,
-	gasGiant string,
-	playerID int,
-) (*ContainerModel, error) {
-	var model ContainerModel
-
-	result := r.db.WithContext(ctx).
-		Where("container_type = ? AND player_id = ? AND status IN (?, ?)",
-			"GAS_COORDINATOR", playerID, containerStatusPending, containerStatusRunning).
-		Where("config LIKE ?", fmt.Sprintf(`%%"gas_giant":"%s"%%`, gasGiant)).
-		First(&model)
-
-	if result.Error != nil {
-		if result.Error == gorm.ErrRecordNotFound {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to find active gas coordinator: %w", result.Error)
-	}
-
-	return &model, nil
 }

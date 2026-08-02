@@ -356,94 +356,13 @@ func (h *RunTradeRouteCoordinatorHandler) travelWithJumpBound(
 		return ship, err
 	}
 
-	// sp-5nqx departure hop — the SOURCE-side mirror of the gate->waypoint
-	// arrival hop below. The jump verb requires a DRIVELESS hull (which the arb/
-	// trade haulers are) to already be sitting ON a jump gate: jump_ship.go rejects
-	// "no jump drive module and not at a jump gate" for a driveless hull UP FRONT,
-	// before its own find-nearest-gate hop can run (that hop only rescues drive-
-	// equipped hulls). So a cross-system leg that starts at a market waypoint (e.g.
-	// K79) must fly the waypoint->gate hop HERE first, or the jump fails and the
-	// bought tranche strands at the source (the live sp-5nqx incident). GUARDED: a
-	// hull already sitting on a jump gate skips the hop entirely, so a gate-origin
-	// lane still costs exactly one jump and zero extra navigates.
-	if !ship.CurrentLocation().IsJumpGate() {
-		gateResp, gerr := h.mediator.Send(ctx, &shipQueries.FindNearestJumpGateQuery{
-			ShipSymbol: ship.ShipSymbol(),
-			PlayerID:   &playerID,
-		})
-		if gerr != nil {
-			return ship, fmt.Errorf("find source jump gate for %s in %s failed: %w", ship.ShipSymbol(), currentSystem, gerr)
-		}
-		gate, ok := gateResp.(*shipQueries.FindNearestJumpGateResponse)
-		if !ok || gate.JumpGate == nil {
-			return ship, fmt.Errorf("no source jump gate resolved for %s in %s (response %T)", ship.ShipSymbol(), currentSystem, gateResp)
-		}
-		if err := h.navigate(ctx, ship, gate.JumpGate.Symbol, playerID); err != nil {
-			return ship, fmt.Errorf("navigate %s from %s to source jump gate %s failed: %w", ship.ShipSymbol(), ship.CurrentLocation().Symbol, gate.JumpGate.Symbol, err)
-		}
-
-		// sp-trnp: DO NOT trust the navigate's completion. Its arrival wait can return on a
-		// STALE "left transit" resync (arrival_wait.go's pre-ETA safety poll reads a
-		// not-yet-propagated pre-departure nav_status — the sp-n7yp/sp-ynuf nav-cache race)
-		// BEFORE the hull actually reaches the gate, leaving a DRIVELESS hull off-gate. The
-		// hop loop's jump then hits jump_ship.go's hard "not at a jump gate" reject — which,
-		// unlike the drive-equipped path, does NOT auto-navigate — and the tour crashes
-		// UNRECOVERABLY (the live incident: TORWIND-37's leg-1 departure hop toward gate
-		// X1-DP51-B26F "completed" via a 30s-in false-positive while still ~2m in transit,
-		// and the jump crashed). Re-confirm on the AUTHORITATIVE live position: resync from
-		// the API (defeating the stale cache, exactly as dock does for the mirror race,
-		// sp-ynuf), ride out any genuine remaining transit, and only fall through to the jump
-		// once the hull is truly ON the gate. Otherwise fail with a resume-safe error so the
-		// container re-adopts and rides out the transit (travel()'s own top-of-function
-		// waitForInTransitArrival) instead of firing a doomed jump.
-		resynced, serr := h.shipRepo.SyncShipFromAPI(ctx, ship.ShipSymbol(), shared.MustNewPlayerID(playerID))
-		if serr != nil {
-			return ship, fmt.Errorf("resync %s onto source jump gate %s after departure hop failed: %w", ship.ShipSymbol(), gate.JumpGate.Symbol, serr)
-		}
-		arrived, aerr := h.waitForInTransitArrival(ctx, resynced, playerID)
-		if aerr != nil {
-			return ship, aerr
-		}
-		if !arrived.CurrentLocation().IsJumpGate() {
-			return ship, fmt.Errorf("departure hop for %s reported navigate-complete but the hull is at %s, not source jump gate %s (nav-cache race, sp-trnp) — resume-safe, retrying", ship.ShipSymbol(), arrived.CurrentLocation().Symbol, gate.JumpGate.Symbol)
-		}
-		ship = arrived
+	ship, err = h.flyToSourceJumpGate(ctx, ship, currentSystem, playerID)
+	if err != nil {
+		return ship, err
 	}
 
-	// Execute the path hop-by-hop. Each hop is ONE directly-connected jump: the
-	// jump verb resolves the next gate from the ORIGIN gate's live connections and
-	// lands the hull ON the next system's gate, already positioned for the
-	// following jump — so intermediate hops need no waypoint→gate navigate, only
-	// the terminal arrival hop below. A cooldown wait follows EVERY jump (the old
-	// single-jump path waited too): the wait is precisely what lets the NEXT jump
-	// proceed, and after the final jump it is a harmless bounded settle before the
-	// arrival hop. SkipClaim: the coordinator already holds this hull claimed for
-	// the whole circuit (sp-wlev). path[0] is the current system; jump to each
-	// subsequent hop. The jump dispatches by SYMBOL and re-reads the hull's
-	// freshly-persisted location each time, so no per-hop reload of `ship` is
-	// needed — only the single post-path reload below, for the arrival hop.
-	totalHops := len(path) - 1
-	for i := 1; i < len(path); i++ {
-		nextSystem := path[i]
-		jumpResp, jerr := h.jumpHop(ctx, &navCmd.JumpShipCommand{
-			ShipSymbol:        ship.ShipSymbol(),
-			DestinationSystem: nextSystem,
-			PlayerID:          &playerID,
-			SkipClaim:         true,
-		})
-		if jerr != nil {
-			return ship, fmt.Errorf("jump %s to %s (hop %d of %d toward %s) failed: %w", ship.ShipSymbol(), nextSystem, i, totalHops, destSystem, jerr)
-		}
-		if werr := h.waitForJumpCooldown(ctx, jumpResp.CooldownSeconds); werr != nil {
-			return ship, werr
-		}
-		// The hop landed the hull ON nextSystem's jump gate — the one moment its
-		// outbound edges are readable. Chart it now (best-effort). The TERMINAL hop's system
-		// is charted from the authoritative reloaded pointer below (chartArrivedGate), so
-		// skip it here to avoid a redundant re-chart of the destination.
-		if i < len(path)-1 {
-			h.chartSystemGate(ctx, nextSystem, ship.ShipSymbol(), playerID)
-		}
+	if err := h.flyJumpPath(ctx, ship, path, destSystem, playerID); err != nil {
+		return ship, err
 	}
 
 	freshShip, err := h.shipRepo.FindBySymbol(ctx, ship.ShipSymbol(), shared.MustNewPlayerID(playerID))
@@ -473,6 +392,99 @@ func (h *RunTradeRouteCoordinatorHandler) travelWithJumpBound(
 		}
 	}
 	return freshShip, nil
+}
+
+// flyToSourceJumpGate is the sp-5nqx departure hop — the SOURCE-side mirror of the
+// gate->waypoint arrival hop. The jump verb requires a DRIVELESS hull (which the arb/
+// trade haulers are) to already be sitting ON a jump gate: jump_ship.go rejects
+// "no jump drive module and not at a jump gate" for a driveless hull UP FRONT,
+// before its own find-nearest-gate hop can run (that hop only rescues drive-
+// equipped hulls). So a cross-system leg that starts at a market waypoint (e.g.
+// K79) must fly the waypoint->gate hop first, or the jump fails and the
+// bought tranche strands at the source (the live sp-5nqx incident). GUARDED: a
+// hull already sitting on a jump gate skips the hop entirely, so a gate-origin
+// lane still costs exactly one jump and zero extra navigates.
+func (h *RunTradeRouteCoordinatorHandler) flyToSourceJumpGate(ctx context.Context, ship *navigation.Ship, currentSystem string, playerID int) (*navigation.Ship, error) {
+	if ship.CurrentLocation().IsJumpGate() {
+		return ship, nil
+	}
+	gateResp, gerr := h.mediator.Send(ctx, &shipQueries.FindNearestJumpGateQuery{
+		ShipSymbol: ship.ShipSymbol(),
+		PlayerID:   &playerID,
+	})
+	if gerr != nil {
+		return ship, fmt.Errorf("find source jump gate for %s in %s failed: %w", ship.ShipSymbol(), currentSystem, gerr)
+	}
+	gate, ok := gateResp.(*shipQueries.FindNearestJumpGateResponse)
+	if !ok || gate.JumpGate == nil {
+		return ship, fmt.Errorf("no source jump gate resolved for %s in %s (response %T)", ship.ShipSymbol(), currentSystem, gateResp)
+	}
+	if err := h.navigate(ctx, ship, gate.JumpGate.Symbol, playerID); err != nil {
+		return ship, fmt.Errorf("navigate %s from %s to source jump gate %s failed: %w", ship.ShipSymbol(), ship.CurrentLocation().Symbol, gate.JumpGate.Symbol, err)
+	}
+
+	// sp-trnp: DO NOT trust the navigate's completion. Its arrival wait can return on a
+	// STALE "left transit" resync (arrival_wait.go's pre-ETA safety poll reads a
+	// not-yet-propagated pre-departure nav_status — the sp-n7yp/sp-ynuf nav-cache race)
+	// BEFORE the hull actually reaches the gate, leaving a DRIVELESS hull off-gate. The
+	// hop loop's jump then hits jump_ship.go's hard "not at a jump gate" reject — which,
+	// unlike the drive-equipped path, does NOT auto-navigate — and the tour crashes
+	// UNRECOVERABLY (the live incident: TORWIND-37's leg-1 departure hop toward gate
+	// X1-DP51-B26F "completed" via a 30s-in false-positive while still ~2m in transit,
+	// and the jump crashed). Re-confirm on the AUTHORITATIVE live position: resync from
+	// the API (defeating the stale cache, exactly as dock does for the mirror race,
+	// sp-ynuf), ride out any genuine remaining transit, and only return once the hull is
+	// truly ON the gate. Otherwise fail with a resume-safe error so the container
+	// re-adopts and rides out the transit (travel()'s own top-of-function
+	// waitForInTransitArrival) instead of firing a doomed jump.
+	resynced, serr := h.shipRepo.SyncShipFromAPI(ctx, ship.ShipSymbol(), shared.MustNewPlayerID(playerID))
+	if serr != nil {
+		return ship, fmt.Errorf("resync %s onto source jump gate %s after departure hop failed: %w", ship.ShipSymbol(), gate.JumpGate.Symbol, serr)
+	}
+	arrived, aerr := h.waitForInTransitArrival(ctx, resynced, playerID)
+	if aerr != nil {
+		return ship, aerr
+	}
+	if !arrived.CurrentLocation().IsJumpGate() {
+		return ship, fmt.Errorf("departure hop for %s reported navigate-complete but the hull is at %s, not source jump gate %s (nav-cache race, sp-trnp) — resume-safe, retrying", ship.ShipSymbol(), arrived.CurrentLocation().Symbol, gate.JumpGate.Symbol)
+	}
+	return arrived, nil
+}
+
+// flyJumpPath executes the resolved path hop-by-hop. Each hop is ONE directly-connected
+// jump: the jump verb resolves the next gate from the ORIGIN gate's live connections and
+// lands the hull ON the next system's gate, already positioned for the following jump — so
+// intermediate hops need no waypoint→gate navigate, only the caller's terminal arrival hop.
+// A cooldown wait follows EVERY jump: the wait is precisely what lets the NEXT jump proceed,
+// and after the final jump it is a harmless bounded settle before the arrival hop. SkipClaim:
+// the coordinator already holds this hull claimed for the whole circuit (sp-wlev). path[0] is
+// the current system. The jump dispatches by SYMBOL and re-reads the hull's freshly-persisted
+// location each time, so no per-hop reload of ship is needed.
+func (h *RunTradeRouteCoordinatorHandler) flyJumpPath(ctx context.Context, ship *navigation.Ship, path []string, destSystem string, playerID int) error {
+	totalHops := len(path) - 1
+	for i := 1; i < len(path); i++ {
+		nextSystem := path[i]
+		jumpResp, jerr := h.jumpHop(ctx, &navCmd.JumpShipCommand{
+			ShipSymbol:        ship.ShipSymbol(),
+			DestinationSystem: nextSystem,
+			PlayerID:          &playerID,
+			SkipClaim:         true,
+		})
+		if jerr != nil {
+			return fmt.Errorf("jump %s to %s (hop %d of %d toward %s) failed: %w", ship.ShipSymbol(), nextSystem, i, totalHops, destSystem, jerr)
+		}
+		if werr := h.waitForJumpCooldown(ctx, jumpResp.CooldownSeconds); werr != nil {
+			return werr
+		}
+		// The hop landed the hull ON nextSystem's jump gate — the one moment its
+		// outbound edges are readable. Chart it now (best-effort). The TERMINAL hop's system
+		// is charted from the authoritative reloaded pointer by the caller (chartArrivedGate),
+		// so skip it here to avoid a redundant re-chart of the destination.
+		if i < len(path)-1 {
+			h.chartSystemGate(ctx, nextSystem, ship.ShipSymbol(), playerID)
+		}
+	}
+	return nil
 }
 
 // chartArrivedGate best-effort charts the outbound gate connections of the system the
@@ -763,6 +775,11 @@ func (h *RunTradeRouteCoordinatorHandler) jumpPath(ctx context.Context, fromSyst
 	return h.gateGraph.Path(ctx, fromSystem, destSystem, playerID)
 }
 
+// secondsPerHour converts a wall-clock seconds figure into hours for the
+// credits-per-hour rate math shared by the tour, reposition, placement and
+// long-haul rankers.
+const secondsPerHour = 3600
+
 // --- circuit time model (sp-wlev; sp-xwa1; sp-1wp8 rate-ranking) ---
 
 // The lane ranker scores each lane by RATE — hold-fit-weighted per-circuit value
@@ -911,7 +928,7 @@ func laneCircuitValue(l trading.ArbitrageLane, shipCapacity int, model laneImpac
 func laneCircuitRatePerHour(l trading.ArbitrageLane, shipCapacity int, targetDest string, model laneImpactModel) float64 {
 	crossSystem := shared.ExtractSystemSymbol(l.SourceWaypoint) != shared.ExtractSystemSymbol(l.DestWaypoint)
 	charged := crossSystem && !laneMatchesTarget(l, targetDest)
-	return laneCircuitValue(l, shipCapacity, model) / (estimatedCircuitSeconds(charged) / 3600)
+	return laneCircuitValue(l, shipCapacity, model) / (estimatedCircuitSeconds(charged) / secondsPerHour)
 }
 
 // rankLanesByCircuitRate re-orders lanes already ranked by trading.RankSpreads by

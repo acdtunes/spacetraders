@@ -420,12 +420,9 @@ func (h *bootstrapHandoffLauncher) LaunchTradeFleetCoordinator(ctx context.Conte
 	return err
 }
 
-// LaunchStandingCoordinators is a no-op since the factory-ops retirement. It formerly
-// launched the siting + worker-rebalancer coordinators at the GATE hand-off; both were retired with
-// the factories, so there is nothing left to launch here. The method is retained (returning nil) so
-// the bootstrap GATE hand-off's control flow and its port contract are unchanged; the fleet-autosizer
-// hand-off runs through its own dedicated launcher. (Vestigial plumbing — a candidate for a later
-// clean removal of the port method + call sites.)
+// LaunchStandingCoordinators has nothing left to launch: it is retained returning nil so the
+// bootstrap GATE hand-off's control flow and port contract are unchanged. The fleet-autosizer
+// hand-off runs through its own dedicated launcher.
 func (h *bootstrapHandoffLauncher) LaunchStandingCoordinators(ctx context.Context, playerID int, agentSymbol string) error {
 	return nil
 }

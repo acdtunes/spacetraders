@@ -33,7 +33,7 @@ type fakeTuner struct {
 	showResp *pb.ShowTunableConfigResponse
 }
 
-func (f *fakeTuner) TuneContainerConfig(_ context.Context, containerID, operation, key string, value int64, _ *int32, _ *string) (*pb.TuneContainerConfigResponse, error) {
+func (f *fakeTuner) TuneContainerConfig(_ context.Context, containerID, operation, key string, value int64, _ *PlayerIdentifier) (*pb.TuneContainerConfigResponse, error) {
 	f.calls = append(f.calls, tuneCall{containerID: containerID, operation: operation, key: key, value: value})
 	if f.respErr != nil {
 		return nil, f.respErr
@@ -41,7 +41,7 @@ func (f *fakeTuner) TuneContainerConfig(_ context.Context, containerID, operatio
 	return f.resp, nil
 }
 
-func (f *fakeTuner) ShowTunableConfig(_ context.Context, containerID, operation string, _ *int32, _ *string) (*pb.ShowTunableConfigResponse, error) {
+func (f *fakeTuner) ShowTunableConfig(_ context.Context, containerID, operation string, _ *PlayerIdentifier) (*pb.ShowTunableConfigResponse, error) {
 	if f.respErr != nil {
 		return nil, f.respErr
 	}
@@ -57,7 +57,7 @@ func TestRunTune_PrintsOldToNewWithUnits(t *testing.T) {
 		NewEffective: 60, NewSource: "live-config", Unit: "seconds", DefaultValue: 60, Changed: true,
 	}}
 
-	msg, err := runTune(context.Background(), client, "market_freshness_sizer_coordinator-player-1-abc", "", "purchase_cooldown_secs", 60, nil, nil)
+	msg, err := runTune(context.Background(), client, tuneRequest{containerID: "market_freshness_sizer_coordinator-player-1-abc", key: "purchase_cooldown_secs", value: 60}, nil)
 	require.NoError(t, err)
 
 	require.Len(t, client.calls, 1)
@@ -73,7 +73,7 @@ func TestRunTune_PrintsOldToNewWithUnits(t *testing.T) {
 		Key: "purchase_cooldown_secs", OldEffective: 120, OldSource: "live-config",
 		NewEffective: 60, NewSource: "default", Unit: "seconds", DefaultValue: 60, Changed: true,
 	}
-	msg, err = runTune(context.Background(), client, "c1", "", "purchase_cooldown_secs", 0, nil, nil)
+	msg, err = runTune(context.Background(), client, tuneRequest{containerID: "c1", key: "purchase_cooldown_secs"}, nil)
 	require.NoError(t, err)
 	require.Contains(t, msg, "120 -> 60 seconds")
 	require.Contains(t, strings.ToLower(msg), "default", "a revert names the default it restored")
@@ -85,12 +85,12 @@ func TestRunTune_NoOpAndErrorsReportedHonestly(t *testing.T) {
 		ContainerId: "c1", Key: "max_spend_per_cycle", OldEffective: 500000, OldSource: "live-config",
 		NewEffective: 500000, NewSource: "live-config", Unit: "credits", Changed: false,
 	}}
-	msg, err := runTune(context.Background(), client, "c1", "", "max_spend_per_cycle", 500000, nil, nil)
+	msg, err := runTune(context.Background(), client, tuneRequest{containerID: "c1", key: "max_spend_per_cycle", value: 500000}, nil)
 	require.NoError(t, err)
 	require.Contains(t, strings.ToLower(msg), "already", "a no-op must not read like a fresh change")
 
 	client.respErr = errors.New("max_spend_per_cycle=9000000 is outside its bounds [0, 5000000] credits — rejected, nothing written")
-	_, err = runTune(context.Background(), client, "c1", "", "max_spend_per_cycle", 9000000, nil, nil)
+	_, err = runTune(context.Background(), client, tuneRequest{containerID: "c1", key: "max_spend_per_cycle", value: 9000000}, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "outside its bounds")
 }
@@ -106,7 +106,7 @@ func TestRunTuneShow_ListsKnobsWithSourcesAndBounds(t *testing.T) {
 		},
 	}}
 
-	msg, err := runTuneShow(context.Background(), client, "", "freshsizer", "", false, nil, nil)
+	msg, err := runTuneShow(context.Background(), client, tuneRequest{operation: "freshsizer"}, false, nil)
 	require.NoError(t, err)
 	require.Contains(t, msg, "MARKET_FRESHNESS_SIZER_COORDINATOR")
 	require.Contains(t, msg, "purchase_cooldown_secs")
@@ -136,7 +136,7 @@ func frontierShowResp() *pb.ShowTunableConfigResponse {
 func TestRunTuneShow_ListsEveryFrontierKnobWithMetadata(t *testing.T) {
 	client := &fakeTuner{showResp: frontierShowResp()}
 
-	msg, err := runTuneShow(context.Background(), client, "", "frontier", "", false, nil, nil)
+	msg, err := runTuneShow(context.Background(), client, tuneRequest{operation: "frontier"}, false, nil)
 	require.NoError(t, err)
 	require.Contains(t, msg, "FRONTIER_EXPANSION_COORDINATOR")
 	require.Contains(t, msg, "discovery_share")
@@ -153,7 +153,7 @@ func TestRunTuneShow_ListsEveryFrontierKnobWithMetadata(t *testing.T) {
 func TestRunTuneShow_SingleKnobShowsValueAndMetadata(t *testing.T) {
 	client := &fakeTuner{showResp: frontierShowResp()}
 
-	msg, err := runTuneShow(context.Background(), client, "", "frontier", "discovery_share", false, nil, nil)
+	msg, err := runTuneShow(context.Background(), client, tuneRequest{operation: "frontier", key: "discovery_share"}, false, nil)
 	require.NoError(t, err)
 	require.Contains(t, msg, "discovery_share")
 	require.Contains(t, msg, "60", "the current effective value")
@@ -161,7 +161,7 @@ func TestRunTuneShow_SingleKnobShowsValueAndMetadata(t *testing.T) {
 	require.NotContains(t, msg, "max_probe_fleet", "a single-knob read shows only the requested knob")
 
 	// An unknown knob is a clear error that points back to the listing form.
-	_, err = runTuneShow(context.Background(), client, "", "frontier", "no_such_knob", false, nil, nil)
+	_, err = runTuneShow(context.Background(), client, tuneRequest{operation: "frontier", key: "no_such_knob"}, false, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "not a tunable knob")
 }
@@ -170,7 +170,7 @@ func TestRunTuneShow_SingleKnobShowsValueAndMetadata(t *testing.T) {
 func TestRunTuneShow_JSONForScripts(t *testing.T) {
 	client := &fakeTuner{showResp: frontierShowResp()}
 
-	msg, err := runTuneShow(context.Background(), client, "", "frontier", "", true, nil, nil)
+	msg, err := runTuneShow(context.Background(), client, tuneRequest{operation: "frontier"}, true, nil)
 	require.NoError(t, err)
 
 	var parsed tuneShowJSON
@@ -189,41 +189,41 @@ func TestRunTuneShow_JSONForScripts(t *testing.T) {
 // sp-pvw3 grammar: a missing value is a READ (not an error); a value is a WRITE; --reset reverts.
 func TestParseTuneArgs_ReadAndWriteForms(t *testing.T) {
 	// READ: whole-container table (by --operation, no positional).
-	cid, key, value, isShow, err := parseTuneArgs(nil, "frontier", false, false)
+	req, err := parseTuneArgs(nil, "frontier", false, false)
 	require.NoError(t, err)
-	require.True(t, isShow)
-	require.Empty(t, cid)
-	require.Empty(t, key)
-	require.Zero(t, value)
+	require.True(t, req.isShow)
+	require.Empty(t, req.containerID)
+	require.Empty(t, req.key)
+	require.Zero(t, req.value)
 
 	// READ: single knob (by --operation + knob, no value).
-	_, key, _, isShow, err = parseTuneArgs([]string{"discovery_share"}, "frontier", false, false)
+	req, err = parseTuneArgs([]string{"discovery_share"}, "frontier", false, false)
 	require.NoError(t, err)
-	require.True(t, isShow)
-	require.Equal(t, "discovery_share", key)
+	require.True(t, req.isShow)
+	require.Equal(t, "discovery_share", req.key)
 
 	// WRITE: knob + value.
-	_, key, value, isShow, err = parseTuneArgs([]string{"discovery_share", "60"}, "frontier", false, false)
+	req, err = parseTuneArgs([]string{"discovery_share", "60"}, "frontier", false, false)
 	require.NoError(t, err)
-	require.False(t, isShow)
-	require.Equal(t, "discovery_share", key)
-	require.Equal(t, int64(60), value)
+	require.False(t, req.isShow)
+	require.Equal(t, "discovery_share", req.key)
+	require.Equal(t, int64(60), req.value)
 
 	// WRITE: --reset reverts (value 0) and needs a knob.
-	_, key, value, isShow, err = parseTuneArgs([]string{"discovery_share"}, "frontier", true, false)
+	req, err = parseTuneArgs([]string{"discovery_share"}, "frontier", true, false)
 	require.NoError(t, err)
-	require.False(t, isShow)
-	require.Equal(t, "discovery_share", key)
-	require.Zero(t, value)
+	require.False(t, req.isShow)
+	require.Equal(t, "discovery_share", req.key)
+	require.Zero(t, req.value)
 
 	// By container-id (no --operation): first positional is the id.
-	cid, key, _, isShow, err = parseTuneArgs([]string{"frontier-abc", "discovery_share"}, "", false, false)
+	req, err = parseTuneArgs([]string{"frontier-abc", "discovery_share"}, "", false, false)
 	require.NoError(t, err)
-	require.True(t, isShow)
-	require.Equal(t, "frontier-abc", cid)
-	require.Equal(t, "discovery_share", key)
+	require.True(t, req.isShow)
+	require.Equal(t, "frontier-abc", req.containerID)
+	require.Equal(t, "discovery_share", req.key)
 
 	// A negative value is rejected.
-	_, _, _, _, err = parseTuneArgs([]string{"discovery_share", "-3"}, "frontier", false, false)
+	_, err = parseTuneArgs([]string{"discovery_share", "-3"}, "frontier", false, false)
 	require.Error(t, err)
 }

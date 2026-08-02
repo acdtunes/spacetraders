@@ -13,9 +13,10 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/ledger/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/application/player"
-	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
-	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
+
+// ledgerDateLayout is the accepted form of the --start-date/--end-date flags.
+const ledgerDateLayout = "2006-01-02"
 
 // NewLedgerCommand creates the ledger command with subcommands
 func NewLedgerCommand() *cobra.Command {
@@ -35,7 +36,6 @@ Examples:
   spacetraders ledger report cash-flow --start-date 2024-01-15 --end-date 2024-01-22`,
 	}
 
-	// Add subcommands
 	cmd.AddCommand(newLedgerListCommand())
 	cmd.AddCommand(newLedgerPositionsCommand())
 	cmd.AddCommand(newLedgerReportCommand())
@@ -43,18 +43,21 @@ Examples:
 	return cmd
 }
 
+// ledgerListFlags is one `ledger list` query as the operator typed it.
+type ledgerListFlags struct {
+	startDate string
+	endDate   string
+	category  string
+	txType    string
+	limit     int
+	offset    int
+	orderBy   string
+	jsonOut   bool
+}
+
 // newLedgerListCommand creates the ledger list subcommand
 func newLedgerListCommand() *cobra.Command {
-	var (
-		startDate string
-		endDate   string
-		category  string
-		txType    string
-		limit     int
-		offset    int
-		orderBy   string
-		jsonOut   bool
-	)
+	var flags ledgerListFlags
 
 	cmd := &cobra.Command{
 		Use:   "list",
@@ -94,18 +97,18 @@ Examples:
   spacetraders ledger list --category FUEL_COSTS
   spacetraders ledger list --start-date 2024-01-15 --end-date 2024-01-22`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runLedgerList(playerID, startDate, endDate, category, txType, limit, offset, orderBy, jsonOut)
+			return runLedgerList(flags)
 		},
 	}
 
-	cmd.Flags().StringVar(&startDate, "start-date", "", "Start date (YYYY-MM-DD)")
-	cmd.Flags().StringVar(&endDate, "end-date", "", "End date (YYYY-MM-DD)")
-	cmd.Flags().StringVar(&category, "category", "", "Filter by category")
-	cmd.Flags().StringVar(&txType, "type", "", "Filter by transaction type")
-	cmd.Flags().IntVar(&limit, "limit", 50, "Maximum number of transactions to return")
-	cmd.Flags().IntVar(&offset, "offset", 0, "Number of transactions to skip")
-	cmd.Flags().StringVar(&orderBy, "order-by", "timestamp DESC", "Sort order")
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output as JSON (full entry fields including good/ship/waypoint attribution)")
+	cmd.Flags().StringVar(&flags.startDate, "start-date", "", "Start date (YYYY-MM-DD)")
+	cmd.Flags().StringVar(&flags.endDate, "end-date", "", "End date (YYYY-MM-DD)")
+	cmd.Flags().StringVar(&flags.category, "category", "", "Filter by category")
+	cmd.Flags().StringVar(&flags.txType, "type", "", "Filter by transaction type")
+	cmd.Flags().IntVar(&flags.limit, "limit", 50, "Maximum number of transactions to return")
+	cmd.Flags().IntVar(&flags.offset, "offset", 0, "Number of transactions to skip")
+	cmd.Flags().StringVar(&flags.orderBy, "order-by", "timestamp DESC", "Sort order")
+	cmd.Flags().BoolVar(&flags.jsonOut, "json", false, "Output as JSON (full entry fields including good/ship/waypoint attribution)")
 
 	return cmd
 }
@@ -152,7 +155,7 @@ Example:
   spacetraders ledger report profit-loss --player-id 1 \
     --start-date 2024-01-01 --end-date 2024-01-31`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runProfitLoss(playerID, startDate, endDate)
+			return runProfitLoss(startDate, endDate)
 		},
 	}
 
@@ -187,7 +190,7 @@ Example:
   spacetraders ledger report cash-flow --player-id 1 \
     --start-date 2024-01-15 --end-date 2024-01-22`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runCashFlow(playerID, startDate, endDate, groupBy)
+			return runCashFlow(startDate, endDate, groupBy)
 		},
 	}
 
@@ -201,19 +204,12 @@ Example:
 }
 
 // runLedgerList executes the ledger list command
-func runLedgerList(playerID int, startDate, endDate, category, txType string, limit, offset int, orderBy string, jsonOut bool) error {
-	// Load config and connect to database
-	cfg, err := config.LoadConfig("")
+func runLedgerList(flags ledgerListFlags) error {
+	db, err := openDatabase()
 	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
+		return err
 	}
 
-	db, err := database.NewConnection(&cfg.Database)
-	if err != nil {
-		return fmt.Errorf("failed to connect to database: %w", err)
-	}
-
-	// Create repository and handler
 	transactionRepo := persistence.NewGormTransactionRepository(db)
 	playerRepo := persistence.NewGormPlayerRepository(db)
 	playerResolver := player.NewPlayerResolver(playerRepo)
@@ -226,45 +222,28 @@ func runLedgerList(playerID int, startDate, endDate, category, txType string, li
 	if err != nil {
 		return err
 	}
-	playerID = resolvedPlayer.ID.Value()
 
-	// Parse dates
-	var start, end *time.Time
-	if startDate != "" {
-		parsed, err := time.Parse("2006-01-02", startDate)
-		if err != nil {
-			return fmt.Errorf("invalid start date format: %w", err)
-		}
-		start = &parsed
-	}
-	if endDate != "" {
-		parsed, err := time.Parse("2006-01-02", endDate)
-		if err != nil {
-			return fmt.Errorf("invalid end date format: %w", err)
-		}
-		// Set to end of day
-		endOfDay := parsed.Add(23*time.Hour + 59*time.Minute + 59*time.Second)
-		end = &endOfDay
+	start, end, err := flags.dateRange()
+	if err != nil {
+		return err
 	}
 
-	// Build query
 	query := &queries.GetTransactionsQuery{
-		PlayerID:  playerID,
+		PlayerID:  resolvedPlayer.ID.Value(),
 		StartDate: start,
 		EndDate:   end,
-		Limit:     limit,
-		Offset:    offset,
-		OrderBy:   orderBy,
+		Limit:     flags.limit,
+		Offset:    flags.offset,
+		OrderBy:   flags.orderBy,
 	}
 
-	if category != "" {
-		query.Category = &category
+	if flags.category != "" {
+		query.Category = &flags.category
 	}
-	if txType != "" {
-		query.TransactionType = &txType
+	if flags.txType != "" {
+		query.TransactionType = &flags.txType
 	}
 
-	// Execute query
 	result, err := handler.Handle(ctx, query)
 	if err != nil {
 		return fmt.Errorf("failed to query transactions: %w", err)
@@ -272,36 +251,48 @@ func runLedgerList(playerID int, startDate, endDate, category, txType string, li
 
 	response := result.(*queries.GetTransactionsResponse)
 
-	// Display results
-	return renderTransactionList(os.Stdout, response, jsonOut)
+	return renderTransactionList(os.Stdout, response, flags.jsonOut)
+}
+
+// dateRange resolves the optional --start-date/--end-date pair. An empty bound stays
+// nil (unbounded); the end bound covers the whole calendar day.
+func (f ledgerListFlags) dateRange() (*time.Time, *time.Time, error) {
+	var start, end *time.Time
+	if f.startDate != "" {
+		parsed, err := time.Parse(ledgerDateLayout, f.startDate)
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid start date format: %w", err)
+		}
+		start = &parsed
+	}
+	if f.endDate != "" {
+		parsed, err := time.Parse(ledgerDateLayout, f.endDate)
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid end date format: %w", err)
+		}
+		endOfDay := parsed.Add(23*time.Hour + 59*time.Minute + 59*time.Second)
+		end = &endOfDay
+	}
+	return start, end, nil
 }
 
 // runProfitLoss executes the profit & loss report command
-func runProfitLoss(playerID int, startDate, endDate string) error {
-	// Parse dates
-	start, err := time.Parse("2006-01-02", startDate)
+func runProfitLoss(startDate, endDate string) error {
+	start, err := time.Parse(ledgerDateLayout, startDate)
 	if err != nil {
 		return fmt.Errorf("invalid start date format: %w", err)
 	}
-	end, err := time.Parse("2006-01-02", endDate)
+	end, err := time.Parse(ledgerDateLayout, endDate)
 	if err != nil {
 		return fmt.Errorf("invalid end date format: %w", err)
 	}
-	// Set to end of day
 	end = end.Add(23*time.Hour + 59*time.Minute + 59*time.Second)
 
-	// Load config and connect to database
-	cfg, err := config.LoadConfig("")
+	db, err := openDatabase()
 	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
+		return err
 	}
 
-	db, err := database.NewConnection(&cfg.Database)
-	if err != nil {
-		return fmt.Errorf("failed to connect to database: %w", err)
-	}
-
-	// Create repository and handler
 	transactionRepo := persistence.NewGormTransactionRepository(db)
 	playerRepo := persistence.NewGormPlayerRepository(db)
 	handler := queries.NewGetProfitLossHandler(transactionRepo)
@@ -314,11 +305,9 @@ func runProfitLoss(playerID int, startDate, endDate string) error {
 	if err != nil {
 		return err
 	}
-	playerID = resolvedPlayer.ID.Value()
 
-	// Execute query
 	result, err := handler.Handle(ctx, &queries.GetProfitLossQuery{
-		PlayerID:  playerID,
+		PlayerID:  resolvedPlayer.ID.Value(),
 		StartDate: start,
 		EndDate:   end,
 	})
@@ -328,38 +317,28 @@ func runProfitLoss(playerID int, startDate, endDate string) error {
 
 	response := result.(*queries.GetProfitLossResponse)
 
-	// Display results
 	displayProfitLoss(response)
 
 	return nil
 }
 
 // runCashFlow executes the cash flow report command
-func runCashFlow(playerID int, startDate, endDate, groupBy string) error {
-	// Parse dates
-	start, err := time.Parse("2006-01-02", startDate)
+func runCashFlow(startDate, endDate, groupBy string) error {
+	start, err := time.Parse(ledgerDateLayout, startDate)
 	if err != nil {
 		return fmt.Errorf("invalid start date format: %w", err)
 	}
-	end, err := time.Parse("2006-01-02", endDate)
+	end, err := time.Parse(ledgerDateLayout, endDate)
 	if err != nil {
 		return fmt.Errorf("invalid end date format: %w", err)
 	}
-	// Set to end of day
 	end = end.Add(23*time.Hour + 59*time.Minute + 59*time.Second)
 
-	// Load config and connect to database
-	cfg, err := config.LoadConfig("")
+	db, err := openDatabase()
 	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
+		return err
 	}
 
-	db, err := database.NewConnection(&cfg.Database)
-	if err != nil {
-		return fmt.Errorf("failed to connect to database: %w", err)
-	}
-
-	// Create repository and handler
 	transactionRepo := persistence.NewGormTransactionRepository(db)
 	playerRepo := persistence.NewGormPlayerRepository(db)
 	handler := queries.NewGetCashFlowHandler(transactionRepo)
@@ -372,11 +351,9 @@ func runCashFlow(playerID int, startDate, endDate, groupBy string) error {
 	if err != nil {
 		return err
 	}
-	playerID = resolvedPlayer.ID.Value()
 
-	// Execute query
 	result, err := handler.Handle(ctx, &queries.GetCashFlowQuery{
-		PlayerID:  playerID,
+		PlayerID:  resolvedPlayer.ID.Value(),
 		StartDate: start,
 		EndDate:   end,
 		GroupBy:   groupBy,
@@ -387,7 +364,6 @@ func runCashFlow(playerID int, startDate, endDate, groupBy string) error {
 
 	response := result.(*queries.GetCashFlowResponse)
 
-	// Display results
 	displayCashFlow(response)
 
 	return nil

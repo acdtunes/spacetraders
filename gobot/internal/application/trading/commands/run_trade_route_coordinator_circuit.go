@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
@@ -113,6 +114,85 @@ func (h *RunTradeRouteCoordinatorHandler) liquidateHeld(
 	return ship, held
 }
 
+// observeLaneEnds re-reads both ends of the lane: the basis (source ask we pay) and the
+// live dest bid. readable=false means the circuit must end here.
+func (h *RunTradeRouteCoordinatorHandler) observeLaneEnds(ctx context.Context, lane trading.ArbitrageLane, playerID int, logger common.ContainerLogger) (srcGood, dstGood *market.TradeGood, readable bool) {
+	srcGood, err := h.observeGood(ctx, lane.SourceWaypoint, lane.Good, playerID)
+	if err != nil {
+		logger.Log("INFO", "Source market no longer readable - ending circuit", map[string]interface{}{
+			"waypoint": lane.SourceWaypoint, "good": lane.Good, "error": err.Error(),
+		})
+		return nil, nil, false
+	}
+	dstGood, err = h.observeGood(ctx, lane.DestWaypoint, lane.Good, playerID)
+	if err != nil {
+		logger.Log("INFO", "Destination market no longer readable - ending circuit", map[string]interface{}{
+			"waypoint": lane.DestWaypoint, "good": lane.Good, "error": err.Error(),
+		})
+		return nil, nil, false
+	}
+	return srcGood, dstGood, true
+}
+
+// sellLegAtDestination is Leg 2: fly to the importer and sell what we hold. A cross-system
+// lane jumps instead of navigating (sp-wlev). It books the sale into response and the lane
+// ledger; ok=false means the circuit must end with sold/revenue already applied (both 0 on
+// every failure path, so the caller's cargo count and margin are untouched).
+func (h *RunTradeRouteCoordinatorHandler) sellLegAtDestination(
+	ctx context.Context,
+	lane trading.ArbitrageLane,
+	ship *navigation.Ship,
+	dstGood *market.TradeGood,
+	held, playerID int,
+	response *RunTradeRouteCoordinatorResponse,
+	logger common.ContainerLogger,
+) (*navigation.Ship, int, int, bool) {
+	ship, err := h.travel(ctx, ship, lane.DestWaypoint, playerID)
+	if err != nil {
+		response.AbortReason = fmt.Sprintf("travel to destination %s failed (cargo aboard): %v", lane.DestWaypoint, err)
+		// Verbatim cause in the MESSAGE (sp-ynuf); the finish-current-leg
+		// epilogue owns whether this becomes a recovered leg or the one
+		// structured cargo_aboard_exit strand record (sp-1hj5).
+		logger.Log("WARNING", fmt.Sprintf("Travel to destination %s failed with %d %s aboard: %v - finishing leg via liquidation", lane.DestWaypoint, held, lane.Good, err), map[string]interface{}{"error": err.Error()})
+		return ship, 0, 0, false
+	}
+	if err := h.dock(ctx, ship, playerID); err != nil {
+		response.AbortReason = fmt.Sprintf("dock at destination %s failed (cargo aboard): %v", lane.DestWaypoint, err)
+		// Verbatim cause in the MESSAGE (not the dropped metadata field) so a blind
+		// dock-at-destination failure names itself — same defect-1 fix as the source leg.
+		logger.Log("WARNING", fmt.Sprintf("Dock at destination %s failed (cargo aboard): %v - ending circuit", lane.DestWaypoint, err), map[string]interface{}{"error": err.Error()})
+		return ship, 0, 0, false
+	}
+	sellUnits := trading.VisitTranche(dstGood.TradeVolume(), held)
+	if sellUnits <= 0 {
+		// The importer has no tradable volume this tick while we hold cargo: not a
+		// clean margin-death, so surface it rather than return silently.
+		response.AbortReason = fmt.Sprintf("destination %s has no sellable volume for %s while holding %d units", lane.DestWaypoint, lane.Good, held)
+		logger.Log("INFO", fmt.Sprintf("No sellable tranche at destination %s (importer trade volume %d exhausted) with %d %s aboard - finishing leg via liquidation", lane.DestWaypoint, dstGood.TradeVolume(), held, lane.Good), nil)
+		return ship, 0, 0, false
+	}
+	sellResp, err := h.sell(ctx, ship.ShipSymbol(), lane.Good, sellUnits, playerID)
+	if err != nil {
+		response.AbortReason = fmt.Sprintf("sell of %d %s at destination %s failed (cargo aboard): %v", sellUnits, lane.Good, lane.DestWaypoint, err)
+		logger.Log("WARNING", fmt.Sprintf("Sell of %d %s at destination %s failed with %d aboard: %v - finishing leg via liquidation", sellUnits, lane.Good, lane.DestWaypoint, held, err), map[string]interface{}{"error": err.Error()})
+		return ship, 0, 0, false
+	}
+	response.TotalRevenue += sellResp.TotalRevenue
+	response.UnitsTraded += sellResp.UnitsSold
+	response.Visits++
+
+	// Record this leg's compression debt on the SHARED cooldown
+	// ledger so the ranker down-weights this lane for ~tau (hours, not minutes)
+	// and the fleet rotates to fresh lanes instead of re-hammering it.
+	// Keyed by lane (buy, sell, good); U = units sold this visit, tv = the lane's
+	// absorption cap (the same tv the ranker charges self-impact against). Best-effort:
+	// a nil ledger (unwired) or non-positive units/cap is a no-op inside Accrue.
+	if h.laneLedger != nil {
+		h.laneLedger.Accrue(laneCooldownKey(lane), sellResp.UnitsSold, lane.VolumeCap, h.clock.Now())
+	}
+	return ship, sellResp.UnitsSold, sellResp.TotalRevenue, true
+}
+
 // flyVisits is the lane's visit loop: disciplined tranches until the destination
 // bid falls below basis+1000, tradable volume dries up, the RUN's remaining
 // visit budget is consumed, or a leg fails. It returns the current ship pointer
@@ -141,19 +221,8 @@ func (h *RunTradeRouteCoordinatorHandler) flyVisits(
 	// Termination: every iteration either returns or completes a sell
 	// (response.Visits++), so the condition strictly progresses.
 	for i := 0; response.Visits < runMaxVisits; i++ {
-		// Re-observe both ends: basis (source ask we pay) and the live dest bid.
-		srcGood, err := h.observeGood(ctx, lane.SourceWaypoint, lane.Good, playerID)
-		if err != nil {
-			logger.Log("INFO", "Source market no longer readable - ending circuit", map[string]interface{}{
-				"waypoint": lane.SourceWaypoint, "good": lane.Good, "error": err.Error(),
-			})
-			return ship, held
-		}
-		dstGood, err := h.observeGood(ctx, lane.DestWaypoint, lane.Good, playerID)
-		if err != nil {
-			logger.Log("INFO", "Destination market no longer readable - ending circuit", map[string]interface{}{
-				"waypoint": lane.DestWaypoint, "good": lane.Good, "error": err.Error(),
-			})
+		srcGood, dstGood, readable := h.observeLaneEnds(ctx, lane, playerID, logger)
+		if !readable {
 			return ship, held
 		}
 
@@ -216,6 +285,7 @@ func (h *RunTradeRouteCoordinatorHandler) flyVisits(
 		// Leg 1: buy a tranche at the source (exporter). A cross-system lane
 		// jumps instead of navigating (sp-wlev); travel reloads the ship
 		// afterward so this pointer reflects its post-jump state.
+		var err error
 		ship, err = h.travel(ctx, ship, lane.SourceWaypoint, playerID)
 		if err != nil {
 			response.AbortReason = fmt.Sprintf("travel to source %s failed: %v", lane.SourceWaypoint, err)
@@ -267,52 +337,13 @@ func (h *RunTradeRouteCoordinatorHandler) flyVisits(
 		response.TotalCost += buyResp.TotalCost
 		circuitNetMargin -= buyResp.TotalCost
 
-		// Leg 2: sell what we hold at the destination (importer). A
-		// cross-system lane jumps instead of navigating (sp-wlev).
-		ship, err = h.travel(ctx, ship, lane.DestWaypoint, playerID)
-		if err != nil {
-			response.AbortReason = fmt.Sprintf("travel to destination %s failed (cargo aboard): %v", lane.DestWaypoint, err)
-			// Verbatim cause in the MESSAGE (sp-ynuf); the finish-current-leg
-			// epilogue owns whether this becomes a recovered leg or the one
-			// structured cargo_aboard_exit strand record (sp-1hj5).
-			logger.Log("WARNING", fmt.Sprintf("Travel to destination %s failed with %d %s aboard: %v - finishing leg via liquidation", lane.DestWaypoint, held, lane.Good, err), map[string]interface{}{"error": err.Error()})
+		var sold, revenue int
+		var sellOK bool
+		ship, sold, revenue, sellOK = h.sellLegAtDestination(ctx, lane, ship, dstGood, held, playerID, response, logger)
+		held -= sold
+		circuitNetMargin += revenue
+		if !sellOK {
 			return ship, held
-		}
-		if err := h.dock(ctx, ship, playerID); err != nil {
-			response.AbortReason = fmt.Sprintf("dock at destination %s failed (cargo aboard): %v", lane.DestWaypoint, err)
-			// Verbatim cause in the MESSAGE (not the dropped metadata field) so a blind
-			// dock-at-destination failure names itself — same defect-1 fix as the source leg.
-			logger.Log("WARNING", fmt.Sprintf("Dock at destination %s failed (cargo aboard): %v - ending circuit", lane.DestWaypoint, err), map[string]interface{}{"error": err.Error()})
-			return ship, held
-		}
-		sellUnits := trading.VisitTranche(dstGood.TradeVolume(), held)
-		if sellUnits <= 0 {
-			// The importer has no tradable volume this tick while we hold cargo: not a
-			// clean margin-death, so surface it rather than return silently.
-			response.AbortReason = fmt.Sprintf("destination %s has no sellable volume for %s while holding %d units", lane.DestWaypoint, lane.Good, held)
-			logger.Log("INFO", fmt.Sprintf("No sellable tranche at destination %s (importer trade volume %d exhausted) with %d %s aboard - finishing leg via liquidation", lane.DestWaypoint, dstGood.TradeVolume(), held, lane.Good), nil)
-			return ship, held
-		}
-		sellResp, err := h.sell(ctx, ship.ShipSymbol(), lane.Good, sellUnits, playerID)
-		if err != nil {
-			response.AbortReason = fmt.Sprintf("sell of %d %s at destination %s failed (cargo aboard): %v", sellUnits, lane.Good, lane.DestWaypoint, err)
-			logger.Log("WARNING", fmt.Sprintf("Sell of %d %s at destination %s failed with %d aboard: %v - finishing leg via liquidation", sellUnits, lane.Good, lane.DestWaypoint, held, err), map[string]interface{}{"error": err.Error()})
-			return ship, held
-		}
-		held -= sellResp.UnitsSold
-		response.TotalRevenue += sellResp.TotalRevenue
-		response.UnitsTraded += sellResp.UnitsSold
-		circuitNetMargin += sellResp.TotalRevenue
-		response.Visits++
-
-		// Record this leg's compression debt on the SHARED cooldown
-		// ledger so the ranker down-weights this lane for ~tau (hours, not minutes)
-		// and the fleet rotates to fresh lanes instead of re-hammering it.
-		// Keyed by lane (buy, sell, good); U = units sold this visit, tv = the lane's
-		// absorption cap (the same tv the ranker charges self-impact against). Best-effort:
-		// a nil ledger (unwired) or non-positive units/cap is a no-op inside Accrue.
-		if h.laneLedger != nil {
-			h.laneLedger.Accrue(laneCooldownKey(lane), sellResp.UnitsSold, lane.VolumeCap, h.clock.Now())
 		}
 
 		// Per-circuit negative-margin abort (sp-bp6f fix #2): this circuit's own

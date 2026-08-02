@@ -109,7 +109,7 @@ func NewHeavyReservePort(census heavyCensusCounter, yards heavyYardPricer, caps 
 // still fails CLOSED on any reader that does surface one. This implementation simply never needs
 // to, because "cannot tell" has a well-defined answer here, and it is zero.
 func (p *HeavyReservePort) Reserve(ctx context.Context, playerID int) (int64, error) {
-	cap, capOK := p.resolveHeavyCap(ctx, playerID)
+	heavyCap, capOK := p.resolveHeavyCap(ctx, playerID)
 	if !capOK {
 		// No autosizer, or one that cannot spend ⇒ no heavy buyer ⇒ nothing to save for.
 		return 0, nil
@@ -130,7 +130,7 @@ func (p *HeavyReservePort) Reserve(ctx context.Context, playerID int) (int64, er
 	return common.HeavyReserve(common.HeavyReserveInputs{
 		CapabilityOpen:  target.CapabilityOpen,
 		HeaviesOwned:    owned,
-		HeavyCap:        cap,
+		HeavyCap:        heavyCap,
 		TargetYardPrice: target.PurchasePrice,
 	}), nil
 }
@@ -191,6 +191,10 @@ func abandoned(ctx context.Context, err error) bool {
 
 // resolveHeavyCap walks the fallback ladder. ok=false means "reserve nothing".
 func (p *HeavyReservePort) resolveHeavyCap(ctx context.Context, playerID int) (int, bool) {
+	// Resolved ONCE and named, because two separate rungs below fall back to it and the whole
+	// point of both is that they land on the SAME number the autosizer itself resolves to.
+	documentedCap := fleetCmd.FleetAutosizerTunableDefaults()[heavyCapKey]
+
 	value, present, containerExists, err := p.caps.HeavyCap(ctx, playerID)
 	switch {
 	case err != nil:
@@ -227,13 +231,13 @@ func (p *HeavyReservePort) resolveHeavyCap(ctx context.Context, playerID int) (i
 		// healthy either way.
 		logging.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
 			"Sensing heavy reserve: could not resolve the autosizer's heavy_cap (%v) — falling back to the documented default %d, the same value the autosizer itself resolves to when its own read fails, so the two cannot disagree about the cap. Investigate the container config read.",
-			err, fleetCmd.FleetAutosizerTunableDefaults()[heavyCapKey],
+			err, documentedCap,
 		), map[string]interface{}{
 			"action":    "sensing_heavy_cap_unresolved",
 			"player_id": playerID,
 			"error":     err.Error(),
 		})
-		return fleetCmd.FleetAutosizerTunableDefaults()[heavyCapKey], true
+		return documentedCap, true
 	case !containerExists:
 		// No autosizer, or one that cannot spend (terminal) ⇒ no heavy buyer ⇒ nothing to save
 		// for. Both are expected configurations rather than faults, so this rung is deliberately
@@ -242,7 +246,7 @@ func (p *HeavyReservePort) resolveHeavyCap(ctx context.Context, playerID int) (i
 	case !present:
 		// The knob is unset on a live autosizer, so both sides resolve the SAME documented
 		// default and cannot disagree about a cap.
-		return fleetCmd.FleetAutosizerTunableDefaults()[heavyCapKey], true
+		return documentedCap, true
 	default:
 		return value, true
 	}

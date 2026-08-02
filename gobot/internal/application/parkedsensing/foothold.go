@@ -136,10 +136,10 @@ func (b *footholdBroker) fill(
 	// placements sharing a neighbourhood reads the topology once per source rather
 	// than once per placement — and every read is the gate STORE, never the API.
 	if b.reach == nil {
-		// MaxWalkRings, NOT the seed's MaxSeedFlightHops: this walker decides how far a
+		// MaxWalkRings, NOT the seed's SeedFlightUnbounded: this walker decides how far a
 		// surplus SCANNING HULL may be drawn to fill a placement, which is a different and
-		// much shorter journey than a charting seed's. The seed bound widened; this one
-		// deliberately did not.
+		// much shorter journey than a charting seed's. The seed's reach is the graph; this
+		// one deliberately is not.
 		b.reach = newGateReach(p.Gates, nil, MaxWalkRings)
 	}
 	reach, err := sourcesWithinReach(ctx, b.reach, b.pool, target.System)
@@ -417,7 +417,7 @@ func observedElsewhere(good, exclude string, rows []QueuedSlot) bool {
 // this is the one caller that must not silently conclude "nowhere to draw from"
 // when the truth is "the topology store did not answer".
 func sourcesWithinReach(ctx context.Context, reach *gateReach, pool *surplusPool, target string) ([]string, error) {
-	return originsWithinReach(ctx, reach, pool.systems(), target)
+	return reach.originsWithin(ctx, pool.systems(), target)
 }
 
 // footholdFromSurplus fills a SPARE placement no local counter can fund by
@@ -455,25 +455,13 @@ func footholdFromSurplus(
 			continue
 		}
 		hull := source.AssignedShip
-
-		// The ledger says PARKED; the ships table is asked whether the hull is
-		// actually standing still. The two can disagree — a row is written from
-		// the last confirmed reading, and another engine may have moved the hull
-		// since — and re-tasking a hull that is mid-flight would have two
-		// machines steering it. This is the sensing engine's reading of the same
-		// "is it idle?" question the orphan dispatch asks of the fleet.
-		//
-		// Unreadable or absent is treated as NOT takeable: a hull we cannot
-		// locate is never acted on, exactly as advanceSeed treats one. The row
-		// stays out of the pool for the rest of the tick, so a hull in this state
-		// is skipped rather than retried against the next target.
-		pos, err := p.Ships.ShipAt(ctx, playerID, hull)
-		if err != nil || !pos.Found || pos.NavStatus == navigation.NavStatusInTransit {
+		if !hullIsStandingStill(ctx, p, playerID, hull) {
 			continue
 		}
 
-		err = p.Ledger.TransitionSlot(ctx, playerID, target.Waypoint, target.Kind, target.State, SlotStateInTransit,
-			SlotFields{AssignedShip: &hull})
+		err := p.Ledger.TransitionSlot(ctx, playerID, SlotTransition{
+			Waypoint: target.Waypoint, Kind: target.Kind, From: target.State, To: SlotStateInTransit,
+		}, SlotFields{AssignedShip: &hull})
 		switch {
 		case errors.Is(err, ErrSlotClaimed):
 			// Another writer took the placement. The source is untouched — which
@@ -489,8 +477,9 @@ func footholdFromSurplus(
 		// intend to fill, and leaving it on the books is what gets a replacement
 		// bought there once a counter can fund it.
 		cleared := ""
-		if err := p.Ledger.TransitionSlot(ctx, playerID, source.Waypoint, source.Kind, SlotStateParked, SlotStateWanted,
-			SlotFields{AssignedShip: &cleared}); err != nil {
+		if err := p.Ledger.TransitionSlot(ctx, playerID, SlotTransition{
+			Waypoint: source.Waypoint, Kind: source.Kind, From: SlotStateParked, To: SlotStateWanted,
+		}, SlotFields{AssignedShip: &cleared}); err != nil {
 			return true, fmt.Errorf(
 				"surplus hull %s re-tasked to foothold %s but its market %s was not released (hull now double-counted, cap reads high): %w",
 				hull, target.Waypoint, source.Waypoint, err)
@@ -499,4 +488,16 @@ func footholdFromSurplus(
 		return true, nil
 	}
 	return false, nil
+}
+
+// hullIsStandingStill asks the ships table whether a hull the ledger calls PARKED
+// really is. The two can disagree — a row is written from the last confirmed
+// reading, and another engine may have moved the hull since — and re-tasking a hull
+// that is mid-flight would have two machines steering it.
+//
+// Unreadable or absent answers NO: a hull we cannot locate is never acted on,
+// exactly as advanceSeed treats one.
+func hullIsStandingStill(ctx context.Context, p BuyPorts, playerID int, hull string) bool {
+	pos, err := p.Ships.ShipAt(ctx, playerID, hull)
+	return err == nil && pos.Found && pos.NavStatus != navigation.NavStatusInTransit
 }

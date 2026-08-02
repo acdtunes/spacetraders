@@ -47,14 +47,10 @@ type TreasuryReadMetricsCollector struct {
 // constructor idiom.
 func NewTreasuryReadMetricsCollector() *TreasuryReadMetricsCollector {
 	return &TreasuryReadMetricsCollector{
-		readsTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "treasury_reads_total",
-				Help:      "Money-guard treasury reads by source: ledger (no API call), live (fell back to Get Agent), error (both failed — the guard failed closed) (sp-muq66)",
-			},
-			[]string{"source"},
+		readsTotal: newCounterVec(
+			"treasury_reads_total",
+			"Money-guard treasury reads by source: ledger (no API call), live (fell back to Get Agent), error (both failed — the guard failed closed) (sp-muq66)",
+			"source",
 		),
 	}
 }
@@ -65,7 +61,9 @@ func (c *TreasuryReadMetricsCollector) Register() error {
 	if Registry == nil {
 		return nil
 	}
-	return Registry.Register(c.readsTotal)
+	return registerAll(
+		c.readsTotal,
+	)
 }
 
 // Record counts one treasury read served by source.

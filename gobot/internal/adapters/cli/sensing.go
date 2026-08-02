@@ -81,15 +81,10 @@ Examples:
 			}
 			defer client.Close()
 
-			playerID, agentSymbol := playerPointers(playerIdent)
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
-			var pid int32
-			if playerID != nil {
-				pid = *playerID
-			}
-			resp, err := client.SensingRescreen(ctx, pid, agentSymbol)
+			resp, err := client.SensingRescreen(ctx, playerIdent)
 			if err != nil {
 				return fmt.Errorf("sensing rescreen failed: %w", err)
 			}

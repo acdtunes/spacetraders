@@ -104,3 +104,21 @@ func (s *DutyCycleSampler) Start() {
 func (s *DutyCycleSampler) Stop() {
 	close(s.stopCh)
 }
+
+// globalDutyCycleSampler is the singleton duty-cycle KPI sampler
+// (captain amendment). Set by SetGlobalDutyCycleSampler() at
+// daemon startup so a future CLI/gRPC read can reach it without a direct
+// reference to the daemon's internal sampler instance.
+var globalDutyCycleSampler *DutyCycleSampler
+
+// SetGlobalDutyCycleSampler sets the global duty-cycle KPI sampler.
+// Pass nil to clear it (e.g. in test cleanup).
+func SetGlobalDutyCycleSampler(sampler *DutyCycleSampler) {
+	globalDutyCycleSampler = sampler
+}
+
+// GetGlobalDutyCycleSampler returns the global duty-cycle KPI sampler.
+// Returns nil if it was never set.
+func GetGlobalDutyCycleSampler() *DutyCycleSampler {
+	return globalDutyCycleSampler
+}

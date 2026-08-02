@@ -8,6 +8,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/flowfeed"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	shipCargo "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
 	"github.com/andrescamacho/spacetraders-go/internal/application/system/gategraph"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/absorption"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
@@ -364,25 +365,8 @@ func (h *RunArbCoordinatorHandler) execute(
 	// cumulative-actuals cap: once any tranche is aboard, additional spend and units
 	// are capped at zero. A fresh run (holding none of the good) runs the four guards
 	// and buys exactly as before.
-	tranche := unitsOfGoodAboard(ship, cmd.Good)
-	if tranche > 0 {
-		response.UnitsTraded = tranche
-		// sp-dkj7 — the buy is DONE (its tranche is physically aboard), so restore the
-		// prior attempt's cost the run persisted before it was interrupted. Without this
-		// the resumed run's accounting starts at TotalCost=0 and the completion line
-		// reports NetProfit as the full sale revenue, silently omitting the basis it
-		// already paid. PriorAttemptCost is 0 only when the cost was never persisted (no
-		// persister wired, or the crash beat the persist) — the honest fail-open floor,
-		// the pre-fix behavior, never an over-count.
-		response.TotalCost = cmd.PriorAttemptCost
-		logger.Log("INFO", fmt.Sprintf(
-			"Resuming arb: %d units of %s already aboard from a prior attempt — skipping the buy, delivering to %s (retry-safe, no re-buy; prior cost %d)",
-			tranche, cmd.Good, cmd.SellAt, cmd.PriorAttemptCost,
-		), map[string]interface{}{
-			"action": "arb_resume_no_rebuy", "ship_symbol": cmd.ShipSymbol,
-			"good": cmd.Good, "held": tranche, "dest": cmd.SellAt, "prior_cost": cmd.PriorAttemptCost,
-		})
-	} else {
+	tranche := resumePriorTranche(cmd, response, ship, logger)
+	if tranche == 0 {
 		buyUnits, berr := h.guardAndBuy(ctx, cmd, response, reserve, ship)
 		if berr != nil {
 			return berr
@@ -428,32 +412,7 @@ func (h *RunArbCoordinatorHandler) execute(
 		response.AbortReason = fmt.Sprintf("dock at destination %s failed: %v", cmd.SellAt, err)
 		return err
 	}
-	// PER-TRANCHE SELL FLOOR: arm the sale with a per-unit floor so a bid
-	// our own tranches (or a colliding hull) crush mid-sale aborts the remainder
-	// instead of dumping it — the H50 fix (five tranches for 27 credits). The floor
-	// is ceil(fraction × QUOTED bid); the quote is the healthy anchor: a fresh run
-	// has it live in DestBid, an in-process retry carries it on the command, and a
-	// daemon-restart resume (neither available) falls back to a fresh pre-sell
-	// observation. No obtainable anchor → floor disabled for this sale (fail-open on
-	// a missing basis, matching the buy guard's cached-basis path) rather than
-	// refuse a legitimate sale we cannot anchor.
-	sellFloorFraction := cmd.SellFloorFraction
-	if sellFloorFraction <= 0 {
-		sellFloorFraction = defaultArbSellFloorFraction
-	}
-	quotedBid := response.DestBid
-	if quotedBid <= 0 {
-		quotedBid = cmd.QuotedDestBid
-	}
-	if quotedBid <= 0 {
-		if g, oerr := h.legs.observeGood(ctx, cmd.SellAt, cmd.Good, cmd.PlayerID); oerr == nil {
-			quotedBid = g.SellPrice() // the BID is sell_price — what the market pays us (sp-en5h7)
-		}
-	}
-	minBidPerUnit := 0
-	if quotedBid > 0 {
-		minBidPerUnit = int(math.Ceil(sellFloorFraction * float64(quotedBid)))
-	}
+	sellFloorFraction, quotedBid, minBidPerUnit := h.resolveSellFloor(ctx, cmd, response)
 
 	sellResp, err := h.legs.sellWithFloor(ctx, cmd.ShipSymbol, cmd.Good, tranche, cmd.PlayerID, minBidPerUnit)
 	if err != nil {
@@ -471,41 +430,8 @@ func (h *RunArbCoordinatorHandler) execute(
 	// that never reserved (the update matches zero PLANNED rows).
 	h.convertAbsorptionShadow(ctx, cmd, sellResp.UnitsSold)
 
-	// A held remainder is a FAILURE, never a false success (sp-5nqx fix c, sp-lbbm).
-	// It arises two ways, both the stranded-veto situation: the sell floor aborted
-	// the sale (the bid crashed), or the destination could not absorb the
-	// whole tranche. Either leaves unsold units aboard, which must reflect as a
-	// container failure (a non-nil error → the runner's signalCompletionWithStatus(
-	// false)), NOT the success=true the incident logged with cargo stranded — so the
-	// m5kv/next-leg liquidation path picks the held cargo up. The sell-floor case is
-	// named distinctly (SellFloorAbort) so a deliberate money-guard hold reads apart
-	// from a destination-capacity strand; both carry good/units/location for
-	// greppable hand-recovery.
-	if held := tranche - sellResp.UnitsSold; held > 0 {
-		if sellResp.FloorAborted {
-			response.SellFloorAbort = true
-			response.AbortReason = fmt.Sprintf(
-				"sell-floor abort: live bid %d < floor %d/unit (%.0f%% of quoted bid %d) at %s - sold %d of %d, %d units of %s held aboard for later liquidation",
-				sellResp.FloorObservedBid, minBidPerUnit, sellFloorFraction*100, quotedBid, cmd.SellAt,
-				sellResp.UnitsSold, tranche, held, cmd.Good,
-			)
-			logger.Log("WARNING", response.AbortReason, map[string]interface{}{
-				"action": "arb_sell_floor_abort", "ship_symbol": cmd.ShipSymbol,
-				"good": cmd.Good, "sell_at": cmd.SellAt, "live_bid": sellResp.FloorObservedBid,
-				"floor": minBidPerUnit, "quoted_bid": quotedBid, "sold": sellResp.UnitsSold, "held": held,
-			})
-			return fmt.Errorf("%s", response.AbortReason)
-		}
-		response.AbortReason = fmt.Sprintf(
-			"stranded cargo: %d unsold units of %s at %s (sold %d of %d) - reporting failure",
-			held, cmd.Good, cmd.SellAt, sellResp.UnitsSold, tranche,
-		)
-		logger.Log("ERROR", response.AbortReason, map[string]interface{}{
-			"action": "arb_stranded_cargo", "ship_symbol": cmd.ShipSymbol,
-			"good": cmd.Good, "stranded": held, "sold": sellResp.UnitsSold,
-			"tranche": tranche, "location": cmd.SellAt,
-		})
-		return fmt.Errorf("%s", response.AbortReason)
+	if err := reportHeldRemainder(cmd, response, sellResp, tranche, minBidPerUnit, quotedBid, sellFloorFraction, logger); err != nil {
+		return err
 	}
 
 	logger.Log("INFO", "One-shot arb complete", map[string]interface{}{
@@ -514,6 +440,107 @@ func (h *RunArbCoordinatorHandler) execute(
 	})
 	// One shot: no loop. The container runner releases the hull on this return.
 	return nil
+}
+
+// resumePriorTranche returns the units of the run's good already aboard from an
+// interrupted attempt — 0 on a fresh run, which the caller must then buy.
+func resumePriorTranche(cmd *RunArbCoordinatorCommand, response *RunArbCoordinatorResponse, ship *navigation.Ship, logger common.ContainerLogger) int {
+	tranche := unitsOfGoodAboard(ship, cmd.Good)
+	if tranche == 0 {
+		return 0
+	}
+	response.UnitsTraded = tranche
+	// sp-dkj7 — the buy is DONE (its tranche is physically aboard), so restore the
+	// prior attempt's cost the run persisted before it was interrupted. Without this
+	// the resumed run's accounting starts at TotalCost=0 and the completion line
+	// reports NetProfit as the full sale revenue, silently omitting the basis it
+	// already paid. PriorAttemptCost is 0 only when the cost was never persisted (no
+	// persister wired, or the crash beat the persist) — the honest fail-open floor,
+	// never an over-count.
+	response.TotalCost = cmd.PriorAttemptCost
+	logger.Log("INFO", fmt.Sprintf(
+		"Resuming arb: %d units of %s already aboard from a prior attempt — skipping the buy, delivering to %s (retry-safe, no re-buy; prior cost %d)",
+		tranche, cmd.Good, cmd.SellAt, cmd.PriorAttemptCost,
+	), map[string]interface{}{
+		"action": "arb_resume_no_rebuy", "ship_symbol": cmd.ShipSymbol,
+		"good": cmd.Good, "held": tranche, "dest": cmd.SellAt, "prior_cost": cmd.PriorAttemptCost,
+	})
+	return tranche
+}
+
+// resolveSellFloor arms the PER-TRANCHE SELL FLOOR: a per-unit floor so a bid
+// our own tranches (or a colliding hull) crush mid-sale aborts the remainder
+// instead of dumping it — the H50 fix (five tranches for 27 credits). The floor
+// is ceil(fraction × QUOTED bid); the quote is the healthy anchor: a fresh run
+// has it live in DestBid, an in-process retry carries it on the command, and a
+// daemon-restart resume (neither available) falls back to a fresh pre-sell
+// observation. No obtainable anchor → floor disabled for this sale (fail-open on
+// a missing basis, matching the buy guard's cached-basis path) rather than
+// refuse a legitimate sale we cannot anchor.
+func (h *RunArbCoordinatorHandler) resolveSellFloor(ctx context.Context, cmd *RunArbCoordinatorCommand, response *RunArbCoordinatorResponse) (fraction float64, quotedBid, minBidPerUnit int) {
+	fraction = cmd.SellFloorFraction
+	if fraction <= 0 {
+		fraction = defaultArbSellFloorFraction
+	}
+	quotedBid = response.DestBid
+	if quotedBid <= 0 {
+		quotedBid = cmd.QuotedDestBid
+	}
+	if quotedBid <= 0 {
+		if g, oerr := h.legs.observeGood(ctx, cmd.SellAt, cmd.Good, cmd.PlayerID); oerr == nil {
+			quotedBid = g.SellPrice() // the BID is sell_price — what the market pays us (sp-en5h7)
+		}
+	}
+	if quotedBid > 0 {
+		minBidPerUnit = int(math.Ceil(fraction * float64(quotedBid)))
+	}
+	return fraction, quotedBid, minBidPerUnit
+}
+
+// reportHeldRemainder turns unsold units into a FAILURE, never a false success (sp-5nqx
+// fix c, sp-lbbm). A remainder arises two ways, both the stranded-veto situation: the sell
+// floor aborted the sale (the bid crashed), or the destination could not absorb the whole
+// tranche. Either leaves unsold units aboard, which must reflect as a container failure (a
+// non-nil error → the runner's signalCompletionWithStatus(false)) so the m5kv/next-leg
+// liquidation path picks the held cargo up. The sell-floor case is named distinctly
+// (SellFloorAbort) so a deliberate money-guard hold reads apart from a destination-capacity
+// strand; both carry good/units/location for greppable hand-recovery.
+func reportHeldRemainder(
+	cmd *RunArbCoordinatorCommand,
+	response *RunArbCoordinatorResponse,
+	sellResp *shipCargo.SellCargoResponse,
+	tranche, minBidPerUnit, quotedBid int,
+	sellFloorFraction float64,
+	logger common.ContainerLogger,
+) error {
+	held := tranche - sellResp.UnitsSold
+	if held <= 0 {
+		return nil
+	}
+	if sellResp.FloorAborted {
+		response.SellFloorAbort = true
+		response.AbortReason = fmt.Sprintf(
+			"sell-floor abort: live bid %d < floor %d/unit (%.0f%% of quoted bid %d) at %s - sold %d of %d, %d units of %s held aboard for later liquidation",
+			sellResp.FloorObservedBid, minBidPerUnit, sellFloorFraction*100, quotedBid, cmd.SellAt,
+			sellResp.UnitsSold, tranche, held, cmd.Good,
+		)
+		logger.Log("WARNING", response.AbortReason, map[string]interface{}{
+			"action": "arb_sell_floor_abort", "ship_symbol": cmd.ShipSymbol,
+			"good": cmd.Good, "sell_at": cmd.SellAt, "live_bid": sellResp.FloorObservedBid,
+			"floor": minBidPerUnit, "quoted_bid": quotedBid, "sold": sellResp.UnitsSold, "held": held,
+		})
+		return fmt.Errorf("%s", response.AbortReason)
+	}
+	response.AbortReason = fmt.Sprintf(
+		"stranded cargo: %d unsold units of %s at %s (sold %d of %d) - reporting failure",
+		held, cmd.Good, cmd.SellAt, sellResp.UnitsSold, tranche,
+	)
+	logger.Log("ERROR", response.AbortReason, map[string]interface{}{
+		"action": "arb_stranded_cargo", "ship_symbol": cmd.ShipSymbol,
+		"good": cmd.Good, "stranded": held, "sold": sellResp.UnitsSold,
+		"tranche": tranche, "location": cmd.SellAt,
+	})
+	return fmt.Errorf("%s", response.AbortReason)
 }
 
 // guardAndBuy runs the four pre-buy guards (location, min-margin, caps, spend-floor)

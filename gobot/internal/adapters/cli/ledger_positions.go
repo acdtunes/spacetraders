@@ -13,8 +13,6 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/ledger"
-	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
-	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
 // ledger_positions.go — `spacetraders ledger positions`, the analyst-facing surface for
@@ -78,13 +76,9 @@ Examples:
 			if err != nil {
 				return err
 			}
-			cfg, err := config.LoadConfig("")
+			db, err := openDatabase()
 			if err != nil {
-				return fmt.Errorf("failed to load config: %w", err)
-			}
-			db, err := database.NewConnection(&cfg.Database)
-			if err != nil {
-				return fmt.Errorf("failed to connect to database: %w", err)
+				return err
 			}
 			// Resolve --agent to a numeric id: matching is scoped by player_id, and a
 			// silent 0 would read an empty ledger and report a confident zero margin.
@@ -121,6 +115,37 @@ type positionsReportOptions struct {
 	OperationType string
 }
 
+// reportWindow is the half-open [start, end) the OUTPUT is scoped to. Matching always runs
+// over the full history first, so this never bounds what is read.
+type reportWindow struct {
+	start time.Time
+	end   time.Time
+}
+
+func (o positionsReportOptions) window() reportWindow {
+	return reportWindow{start: o.Now.Add(-o.Since).Truncate(o.Bucket), end: o.Now}
+}
+
+func (w reportWindow) contains(t time.Time) bool {
+	return !t.Before(w.start) && t.Before(w.end)
+}
+
+// includesGoodHull applies the --good/--hull scope. Inventory is filtered by this alone:
+// --operation scopes CLOSES, and an open position has not closed.
+func (o positionsReportOptions) includesGoodHull(good, hull string) bool {
+	if o.Good != "" && good != o.Good {
+		return false
+	}
+	return o.Hull == "" || hull == o.Hull
+}
+
+func (o positionsReportOptions) includes(good, hull, operationType string) bool {
+	if !o.includesGoodHull(good, hull) {
+		return false
+	}
+	return o.OperationType == "" || operationType == o.OperationType
+}
+
 // runLedgerPositions matches the player's full cargo history, scopes the OUTPUT to the
 // requested window, and renders the matched figures beside the naive ones.
 func runLedgerPositions(ctx context.Context, reader positionsReader, playerID int, opts positionsReportOptions, out io.Writer) error {
@@ -141,23 +166,34 @@ func runLedgerPositions(ctx context.Context, reader positionsReader, playerID in
 	matched := ledger.MatchPositions(legs)
 	reconciles := matched.ReconcilesTo(legs)
 
-	windowStart := opts.Now.Add(-opts.Since).Truncate(opts.Bucket)
-	windowEnd := opts.Now
+	win := opts.window()
 
-	closed := ledger.FilterClosedByWindow(matched.Closed, windowStart, windowEnd)
+	closed := ledger.FilterClosedByWindow(matched.Closed, win.start, win.end)
 	closed = filterClosed(closed, opts)
-	uncosted := filterUncosted(matched.Uncosted, windowStart, windowEnd, opts)
+	uncosted := filterUncosted(matched.Uncosted, win, opts)
 	open := filterOpen(matched.Open, opts)
 
 	// The naive comparison is computed over the legs whose OWN instant falls in the window —
 	// exactly what `SELECT date_trunc(...), SUM(amount) ... WHERE created_at >= ?` does.
-	naiveLegs := filterLegsForNaive(legs, windowStart, windowEnd, opts)
+	naiveLegs := filterLegsForNaive(legs, win, opts)
+
+	buckets := ledger.BucketRealized(closed, opts.Bucket)
+	naiveBuckets := ledger.BucketNaiveLegs(naiveLegs, opts.Bucket)
 
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	writePositionsHeader(w, playerID, win, opts, stats, reconciles)
+	writeBucketComparison(w, buckets, naiveBuckets)
+	writeBucketTotals(w, buckets, naiveBuckets, opts.Since)
+	writeUncostedSales(w, uncosted)
+	writeOpenInventory(w, open, win.end)
+	return w.Flush()
+}
 
+func writePositionsHeader(w io.Writer, playerID int, win reportWindow,
+	opts positionsReportOptions, stats persistence.LegReadStats, reconciles bool) {
 	fmt.Fprintf(w, "POSITION-MATCHED REALISED MARGIN  (player %d)\n", playerID)
 	fmt.Fprintf(w, "window\t%s → %s  (%s, %s buckets)\n",
-		windowStart.Format("2006-01-02 15:04"), windowEnd.Format("2006-01-02 15:04"),
+		win.start.Format("2006-01-02 15:04"), win.end.Format("2006-01-02 15:04"),
 		opts.Since, opts.Bucket)
 	if scope := describeScope(opts); scope != "" {
 		fmt.Fprintf(w, "scope\t%s\n", scope)
@@ -174,10 +210,9 @@ func runLedgerPositions(ctx context.Context, reader positionsReader, playerID in
 		fmt.Fprintf(w, "\tfigure below as unsafe and file a bug.\n")
 	}
 	fmt.Fprintln(w)
+}
 
-	// The per-bucket table. NAIVE is the defective reading, printed for contrast only.
-	buckets := ledger.BucketRealized(closed, opts.Bucket)
-	naiveBuckets := ledger.BucketNaiveLegs(naiveLegs, opts.Bucket)
+func writeBucketComparison(w io.Writer, buckets []ledger.RealizedBucket, naiveBuckets []ledger.NaiveBucket) {
 	naiveByStart := make(map[time.Time]ledger.NaiveBucket, len(naiveBuckets))
 	for _, b := range naiveBuckets {
 		naiveByStart[b.Start] = b
@@ -210,8 +245,9 @@ func runLedgerPositions(ctx context.Context, reader positionsReader, playerID in
 			start.Format("2006-01-02 15:04"), closes, units, cost, revenue, realised, marginPct,
 			naive, legCount)
 	}
+}
 
-	// Totals.
+func writeBucketTotals(w io.Writer, buckets []ledger.RealizedBucket, naiveBuckets []ledger.NaiveBucket, since time.Duration) {
 	var totalCost, totalRevenue int64
 	var totalCloses, totalUnits int
 	for _, b := range buckets {
@@ -235,7 +271,7 @@ func runLedgerPositions(ctx context.Context, reader positionsReader, playerID in
 		formatCredits(int(naiveTotal)), naiveBuys, naiveSells)
 	fmt.Fprintln(w)
 
-	hours := opts.Since.Hours()
+	hours := since.Hours()
 	if hours > 0 {
 		fmt.Fprintf(w, "realised $/hr\t%s\t(position-matched, closes attributed to the closing instant)\n",
 			formatCredits(int(float64(totalRevenue-totalCost)/hours)))
@@ -243,39 +279,35 @@ func runLedgerPositions(ctx context.Context, reader positionsReader, playerID in
 			formatCredits(int(float64(naiveTotal)/hours)))
 	}
 	fmt.Fprintln(w)
+}
 
-	// Uncosted revenue — sales with no purchase to close. Never folded into margin above.
-	if len(uncosted) > 0 {
-		var uncostedRevenue int64
-		var uncostedUnits int
-		for _, u := range uncosted {
-			uncostedRevenue += u.Revenue
-			uncostedUnits += u.Units
-		}
-		fmt.Fprintf(w, "UNCOSTED SALES (in window, EXCLUDED from realised margin above)\n")
-		fmt.Fprintf(w, "\t%d sales, %d units, %s credits — cargo with no purchase on that hull+good\n",
-			len(uncosted), uncostedUnits, formatCredits(int(uncostedRevenue)))
-		fmt.Fprintf(w, "\t(siphoned or transferred-in cargo; a large figure here means matched\n")
-		fmt.Fprintf(w, "\thistory was truncated, not that the fleet found free cargo)\n")
-		fmt.Fprintln(w)
+func writeUncostedSales(w io.Writer, uncosted []ledger.UncostedSale) {
+	if len(uncosted) == 0 {
+		return
 	}
+	var uncostedRevenue int64
+	var uncostedUnits int
+	for _, u := range uncosted {
+		uncostedRevenue += u.Revenue
+		uncostedUnits += u.Units
+	}
+	fmt.Fprintf(w, "UNCOSTED SALES (in window, EXCLUDED from realised margin above)\n")
+	fmt.Fprintf(w, "\t%d sales, %d units, %s credits — cargo with no purchase on that hull+good\n",
+		len(uncosted), uncostedUnits, formatCredits(int(uncostedRevenue)))
+	fmt.Fprintf(w, "\t(siphoned or transferred-in cargo; a large figure here means matched\n")
+	fmt.Fprintf(w, "\thistory was truncated, not that the fleet found free cargo)\n")
+	fmt.Fprintln(w)
+}
 
-	// Open inventory at cost, partitioned by the operation that OPENED it so the classes that
-	// never close (contract, stocker, factory inputs) are visible rather than lumped in.
-	fmt.Fprintf(w, "OPEN INVENTORY AT COST (as of %s — NOT a loss)\n", windowEnd.Format("2006-01-02 15:04"))
-	byOperation := make(map[string]*struct {
-		positions, units int
-		basis            int64
-		oldest           time.Time
-	})
+// writeOpenInventory partitions by the operation that OPENED each position, so the classes
+// that never close (contract, stocker, factory inputs) are visible rather than lumped in.
+func writeOpenInventory(w io.Writer, open []ledger.OpenPosition, asOf time.Time) {
+	fmt.Fprintf(w, "OPEN INVENTORY AT COST (as of %s — NOT a loss)\n", asOf.Format("2006-01-02 15:04"))
+	byOperation := make(map[string]*openInventoryAggregate)
 	for _, o := range open {
 		agg, ok := byOperation[o.BuyOperationType]
 		if !ok {
-			agg = &struct {
-				positions, units int
-				basis            int64
-				oldest           time.Time
-			}{oldest: o.OpenedAt}
+			agg = &openInventoryAggregate{oldest: o.OpenedAt}
 			byOperation[o.BuyOperationType] = agg
 		}
 		agg.positions++
@@ -307,60 +339,42 @@ func runLedgerPositions(ctx context.Context, reader positionsReader, playerID in
 	fmt.Fprintf(w, "\t(contract revenue arrives as CONTRACT_FULFILLED with no hull attribution),\n")
 	fmt.Fprintf(w, "\tso they accumulate here permanently. Partition on buy operation before\n")
 	fmt.Fprintf(w, "\treading this total as cargo still in flight.\n")
+}
 
-	return w.Flush()
+type openInventoryAggregate struct {
+	positions, units int
+	basis            int64
+	oldest           time.Time
 }
 
 func filterClosed(closed []ledger.ClosedPosition, opts positionsReportOptions) []ledger.ClosedPosition {
 	out := make([]ledger.ClosedPosition, 0, len(closed))
 	for _, c := range closed {
-		if opts.Good != "" && c.Good != opts.Good {
-			continue
+		if opts.includes(c.Good, c.Hull, c.SellOperationType) {
+			out = append(out, c)
 		}
-		if opts.Hull != "" && c.Hull != opts.Hull {
-			continue
-		}
-		if opts.OperationType != "" && c.SellOperationType != opts.OperationType {
-			continue
-		}
-		out = append(out, c)
 	}
 	return out
 }
 
-func filterUncosted(uncosted []ledger.UncostedSale, start, end time.Time, opts positionsReportOptions) []ledger.UncostedSale {
+func filterUncosted(uncosted []ledger.UncostedSale, win reportWindow, opts positionsReportOptions) []ledger.UncostedSale {
 	out := make([]ledger.UncostedSale, 0, len(uncosted))
 	for _, u := range uncosted {
-		if u.ClosedAt.Before(start) || !u.ClosedAt.Before(end) {
-			continue
+		if win.contains(u.ClosedAt) && opts.includes(u.Good, u.Hull, u.SellOperationType) {
+			out = append(out, u)
 		}
-		if opts.Good != "" && u.Good != opts.Good {
-			continue
-		}
-		if opts.Hull != "" && u.Hull != opts.Hull {
-			continue
-		}
-		if opts.OperationType != "" && u.SellOperationType != opts.OperationType {
-			continue
-		}
-		out = append(out, u)
 	}
 	return out
 }
 
-// filterOpen scopes open inventory by good/hull only. It is deliberately NOT window-filtered:
-// inventory is a stock, not a flow, and a position opened before the window is still in the
-// hold. It is also not operation-filtered — --operation scopes CLOSES.
+// filterOpen is deliberately NOT window-filtered: inventory is a stock, not a flow, and a
+// position opened before the window is still in the hold.
 func filterOpen(open []ledger.OpenPosition, opts positionsReportOptions) []ledger.OpenPosition {
 	out := make([]ledger.OpenPosition, 0, len(open))
 	for _, o := range open {
-		if opts.Good != "" && o.Good != opts.Good {
-			continue
+		if opts.includesGoodHull(o.Good, o.Hull) {
+			out = append(out, o)
 		}
-		if opts.Hull != "" && o.Hull != opts.Hull {
-			continue
-		}
-		out = append(out, o)
 	}
 	return out
 }
@@ -368,22 +382,12 @@ func filterOpen(open []ledger.OpenPosition, opts positionsReportOptions) []ledge
 // filterLegsForNaive selects the legs a naive windowed SQL sum would have seen: those whose OWN
 // instant falls inside the window, regardless of whether their counterpart leg does. That
 // asymmetry IS the defect being displayed.
-func filterLegsForNaive(legs []ledger.CargoLeg, start, end time.Time, opts positionsReportOptions) []ledger.CargoLeg {
+func filterLegsForNaive(legs []ledger.CargoLeg, win reportWindow, opts positionsReportOptions) []ledger.CargoLeg {
 	out := make([]ledger.CargoLeg, 0, len(legs))
 	for _, leg := range legs {
-		if leg.At.Before(start) || !leg.At.Before(end) {
-			continue
+		if win.contains(leg.At) && opts.includes(leg.Good, leg.Hull, leg.OperationType) {
+			out = append(out, leg)
 		}
-		if opts.Good != "" && leg.Good != opts.Good {
-			continue
-		}
-		if opts.Hull != "" && leg.Hull != opts.Hull {
-			continue
-		}
-		if opts.OperationType != "" && leg.OperationType != opts.OperationType {
-			continue
-		}
-		out = append(out, leg)
 	}
 	return out
 }

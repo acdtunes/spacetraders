@@ -11,8 +11,6 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
-	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
-	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
 type registrationAPI interface {
@@ -108,14 +106,9 @@ func runPlayerRegisterNew(ctx context.Context, client registrationAPI, store reg
 }
 
 func runPlayerRegisterNewCommand(agentSymbol, faction string) error {
-	cfg, err := config.LoadConfig("")
+	db, err := openDatabase()
 	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
-	}
-
-	db, err := database.NewConnection(&cfg.Database)
-	if err != nil {
-		return fmt.Errorf("failed to connect to database: %w", err)
+		return err
 	}
 
 	client := api.NewSpaceTradersClient()

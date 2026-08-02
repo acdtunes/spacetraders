@@ -2,7 +2,9 @@ package commands
 
 import (
 	"context"
+	"fmt"
 
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	appContract "github.com/andrescamacho/spacetraders-go/internal/application/contract"
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contract/depot"
@@ -206,4 +208,34 @@ func newDepotDeliveryDistance(ctx context.Context, graphProvider system.ISystemG
 		}
 		return fromCoords.DistanceTo(toCoords), true
 	}
+}
+
+func logDepotRouteBuffered(logger common.ContainerLogger, contractID string, route depotRoute, purchaseMarket string) {
+	logger.Log("INFO", fmt.Sprintf(
+		"Contract %s destination owned by depot %s - good BUFFERED at hub, routing to co-located delivery hull %s (withdraw-local+deliver-local via warehouse %s)",
+		contractID, route.DepotID, route.DeliveryHull, route.Warehouse),
+		map[string]interface{}{
+			"action":        "depot_route_contract",
+			"contract_id":   contractID,
+			"depot_id":      route.DepotID,
+			"delivery_hull": route.DeliveryHull,
+			"warehouse":     route.Warehouse,
+			"source":        purchaseMarket,
+			"buffered":      true,
+		})
+}
+
+func logDepotRouteUnbuffered(logger common.ContainerLogger, contractID string, route depotRoute, requiredCargo, purchaseMarket string) {
+	logger.Log("INFO", fmt.Sprintf(
+		"Contract %s destination owned by depot %s but good %s is UNBUFFERED (source %s) - decoupling sourcing from delivery: selecting the idle hull nearest the source market instead of the destination-pinned depot hull %s (sp-obtr)",
+		contractID, route.DepotID, requiredCargo, purchaseMarket, route.DeliveryHull),
+		map[string]interface{}{
+			"action":        "depot_route_unbuffered_source",
+			"contract_id":   contractID,
+			"depot_id":      route.DepotID,
+			"delivery_hull": route.DeliveryHull,
+			"source":        purchaseMarket,
+			"trade_symbol":  requiredCargo,
+			"buffered":      false,
+		})
 }

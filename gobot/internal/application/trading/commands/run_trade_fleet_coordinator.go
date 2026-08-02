@@ -195,75 +195,6 @@ type RunTradeFleetCoordinatorResponse struct {
 	Errors   []string
 }
 
-// TourLaunchSpec is the launch request the coordinator hands the daemon for one idle
-// hull (sp-1278). It carries only decision inputs — the daemon owns claim, container
-// persistence, and the operation="trade" stamp (StartTourRun), so the coordinator
-// stays a pure decision loop that claims nothing itself (RULINGS #3/#7).
-type TourLaunchSpec struct {
-	ShipSymbol            string
-	MaxHops               int
-	MaxSpend              int64
-	MinMargin             int
-	ReplanLimit           int
-	WorkingCapitalReserve int64
-	AgentSymbol           string
-	Iterations            int
-	PlayerID              int
-
-	// RepositionReachEscalated arms reposition-reach for THIS launch (sp-nxrt part a),
-	// overriding the daemon-global reposition_reach_enabled. The fleet coordinator sets it
-	// on the relaunch of a hull that has fast-failed twice in a row: instead of doubling the
-	// hull's sleep again, it relaunches promptly with the broadened 2-4-gate-hop reach
-	// discovery armed, so a hull whose lane died HERE moves to a fresh system it could not
-	// see over the default 1-hop scan. Zero value (false) is a normal launch — byte-identical
-	// to a config-only reach setting — so every non-escalated relaunch and the captain CLI
-	// path are unchanged.
-	RepositionReachEscalated bool
-}
-
-// TourLauncher starts one recovery-safe, guarded continuous tour container for an idle
-// trade hull and returns its container ID. Implemented by the daemon server
-// (DaemonServer.LaunchTour → StartTourRun), so the launch goes through the SAME path
-// `workflow tour-run` uses: the atomic operation="trade" ClaimShip, the single-writer
-// container row, and release-on-death all apply, and the coordinator never touches ship
-// state. Mirrors appContract.IdleArbLauncher's shape (a narrow port faked trivially in
-// tests).
-type TourLauncher interface {
-	LaunchTour(ctx context.Context, spec TourLaunchSpec) (containerID string, err error)
-}
-
-// TourLivenessPort reports the last real-PROGRESS time of each named running tour container
-// (sp-m3122): the most recent moment the tour actually did something — planned, navigated,
-// arrived, bought, or sold. It is deliberately NOT the container's wall-clock heartbeat: a
-// tour whose worker goroutine has silently died or wedged still has a fresh heartbeat (a
-// separate goroutine keeps stamping it), which is exactly how a hung tour masqueraded as
-// healthy for hours. The daemon implements it over the container activity trail it single-
-// writes; a container absent from the returned map has no known progress and is left alone
-// (the watchdog never kills a tour whose liveness it could not read). Optional-injection like
-// ActiveContainerShipsPort: a nil port makes the watchdog inert (fail-closed).
-type TourLivenessPort interface {
-	LastTourProgress(ctx context.Context, playerID shared.PlayerID, containerIDs []string) (map[string]time.Time, error)
-}
-
-// TourStopper kills one hung tour container by ID (sp-m3122) — the watchdog's remedy, the
-// automated form of the captain's manual `container stop <hung-tour>`. The daemon implements
-// it (StopContainer): the stop releases the hull's claim, so the next relaunch re-claims it
-// cleanly. Optional-injection: without a stopper the watchdog is inert (fail-closed — it can
-// detect a hang but must not "handle" it by leaving the hull relaunched under a still-live
-// doomed container).
-type TourStopper interface {
-	StopTour(ctx context.Context, containerID, reason string) error
-}
-
-// DeadContainerAbsorptionReclaimer promptly releases market_absorption_ledger reservations
-// held by containers that no longer exist (sp-m3122 part 3), rather than waiting for the TTL
-// sweep — so phantom reservations left by a restart or by a just-killed hung tour never make
-// open sinks look contended. The daemon implements it over the ledger's existing dead-
-// container sweep. Optional-injection: a nil reclaimer skips the reclaim (nil-safe).
-type DeadContainerAbsorptionReclaimer interface {
-	ReclaimDeadContainerAbsorption(ctx context.Context, playerID shared.PlayerID) (int, error)
-}
-
 // RunTradeFleetCoordinatorHandler keeps continuous tours alive across the 'trade'
 // fleet (sp-1278). Every reconcile pass snapshots the fleet, and for each trade hull
 // parked by an honest tour exit (idle, past its cooldown) it relaunches a fresh
@@ -328,42 +259,6 @@ func NewRunTradeFleetCoordinatorHandler(shipRepo navigation.ShipRepository, cloc
 		clock = shared.NewRealClock()
 	}
 	return &RunTradeFleetCoordinatorHandler{shipRepo: shipRepo, clock: clock, backoff: make(map[string]*hullBackoff)}
-}
-
-// SetTourLauncher wires the daemon-server launcher each relaunch spawns its tour
-// container through (sp-1278). Optional-injection like the contract coordinator's
-// SetIdleArbLauncher: without it a reconcile pass is a fail-closed no-op (it cannot
-// launch), never a panic.
-func (h *RunTradeFleetCoordinatorHandler) SetTourLauncher(launcher TourLauncher) {
-	h.launcher = launcher
-}
-
-// SetEventRecorder wires the captain outbox the coordinator emits its
-// error-loop event through. Optional-injection like SetTourLauncher:
-// without it the streak monitor still tracks and logs, it just cannot escalate
-// to a captain event (nil-safe, see health.RecordErrorLoop).
-func (h *RunTradeFleetCoordinatorHandler) SetEventRecorder(rec captain.EventRecorder) {
-	h.captainEvents = rec
-}
-
-// SetTourLiveness wires the sp-m3122 watchdog's progress signal — the port that reports each
-// running tour's last real-progress time. Optional-injection like SetTourLauncher: without it
-// (or without a stopper) the watchdog is inert (fail-closed), never a panic.
-func (h *RunTradeFleetCoordinatorHandler) SetTourLiveness(port TourLivenessPort) {
-	h.tourLiveness = port
-}
-
-// SetTourStopper wires the sp-m3122 watchdog's remedy — the port that kills a hung tour
-// container. Optional-injection like SetTourLauncher: without it the watchdog can detect a
-// hang but takes no action (fail-closed).
-func (h *RunTradeFleetCoordinatorHandler) SetTourStopper(port TourStopper) {
-	h.tourStopper = port
-}
-
-// SetAbsorptionReclaimer wires the sp-m3122 part-3 dead-container absorption reclaim.
-// Optional-injection: without it the reclaim is skipped (nil-safe).
-func (h *RunTradeFleetCoordinatorHandler) SetAbsorptionReclaimer(port DeadContainerAbsorptionReclaimer) {
-	h.absorptionReclaimer = port
 }
 
 // Handle runs the reconcile loop until the context is cancelled.
@@ -505,26 +400,7 @@ func (h *RunTradeFleetCoordinatorHandler) reconcileOnce(ctx context.Context, cmd
 		massParkExempt = detectMassPark(idle, cmd.massParkWindow(), cmd.massParkMinHulls())
 	}
 
-	// sp-tgll8 inventory-pressure governor: govern buy-rate by sell-rate. When too much of the
-	// trade fleet is sitting FULL of cargo it cannot offload, PAUSE relaunching EMPTY idle
-	// hulls into NEW buying tours this tick — the fleet stops buying what it cannot sell. LADEN
-	// idle hulls are NEVER paused (they must always relaunch to sell, so the fleet drains and
-	// the governor un-throttles — no wedge, RULINGS #4). Conservative default (65% FULL) so a
-	// healthy fleet is byte-identical.
-	fullHulls, totalHulls := fullHullPressure(idle, running)
-	pausePct := cmd.fullHullPausePct()
-	pauseEmptyRelaunch := totalHulls > 0 && fullHulls*100 > pausePct*totalHulls
-	if pauseEmptyRelaunch {
-		logger.Log("INFO", fmt.Sprintf(
-			"Trade fleet inventory pressure %d%% FULL (%d/%d) exceeds the %d%% pause threshold — pausing new buying tours on EMPTY idle hulls this tick (laden hulls still relaunch to sell)",
-			fullHulls*100/totalHulls, fullHulls, totalHulls, pausePct), map[string]interface{}{
-			"action":      "trade_fleet_inventory_pressure_pause",
-			"full_hulls":  fullHulls,
-			"total_hulls": totalHulls,
-			"full_pct":    fullHulls * 100 / totalHulls,
-			"pause_pct":   pausePct,
-		})
-	}
+	pauseEmptyRelaunch, fullPct := inventoryPressurePause(idle, running, cmd, logger)
 
 	for _, ship := range idle {
 		// sp-tgll8: under fleet saturation, hold an EMPTY idle hull this tick rather than
@@ -533,10 +409,10 @@ func (h *RunTradeFleetCoordinatorHandler) reconcileOnce(ctx context.Context, cmd
 		if pauseEmptyRelaunch && ship.CargoUnits() == 0 {
 			logger.Log("INFO", fmt.Sprintf(
 				"Trade hull %s held this tick under inventory pressure (%d%% of the fleet is FULL) — not starting a new buying tour on an EMPTY hull while the fleet cannot offload",
-				ship.ShipSymbol(), fullHulls*100/totalHulls), map[string]interface{}{
+				ship.ShipSymbol(), fullPct), map[string]interface{}{
 				"action":      "trade_fleet_inventory_pressure_hold",
 				"ship_symbol": ship.ShipSymbol(),
-				"full_pct":    fullHulls * 100 / totalHulls,
+				"full_pct":    fullPct,
 			})
 			continue
 		}
@@ -559,163 +435,87 @@ func (h *RunTradeFleetCoordinatorHandler) reconcileOnce(ctx context.Context, cmd
 		// is exempt from BOTH the sleep ramp and the movement escalation.
 		cooldown, reachEscalated := h.cooldownFor(ship, baseCooldown, backoffMax, massParkExempt[ship.ShipSymbol()], logger)
 
-		// A hull the honest-completion veto sent back is the definitive dead-ground case:
-		// its run did not merely trade badly, it ended unable to sell what it was holding
-		// where it stands. The tour's exit sweep can only sell in the hull's CURRENT
-		// system, so a hold nothing local bids on leaves it nothing to do — and relaunching
-		// onto those same markets re-inherits the same unsold obligation and is refused
-		// again, burning a container per turn while the cargo never moves.
-		//
-		// Arm reposition-reach so the relaunch can reach the 2-4-gate-hop systems it could
-		// not otherwise see. This is the sp-nxrt machinery already wired end to end; it was
-		// simply never pointed at this case, because the veto's exit was indistinguishable
-		// from any other failure until it started stamping its own release reason.
-		//
-		// Derived per pass from the hull's persisted release reason — no cross-tick state
-		// (RULINGS #2). It only widens where the hull may LOOK for a buyer; it relaxes no
-		// margin, spend or sell guard (RULINGS #4), and it does not touch the veto, which
-		// still refuses to report the failed run as a success.
-		if !reachEscalated && priorExitReason(ship) == common.ReleaseReasonHonestCompletionVeto {
+		if !reachEscalated && escalateReachAfterVeto(ship, logger) {
 			reachEscalated = true
-			logger.Log("INFO", fmt.Sprintf(
-				"Trade hull %s came back from the honest-completion veto (cargo it could not sell where it stands) — relaunching with reposition-reach ARMED instead of onto the ground that just refused it",
-				ship.ShipSymbol()), map[string]interface{}{
-				"action":            "trade_fleet_stranded_reach_escalation",
-				"ship_symbol":       ship.ShipSymbol(),
-				"prior_exit_reason": priorExitReason(ship),
-			})
 		}
 
-		if remaining := cooldownRemaining(ship, now, cooldown); remaining > 0 {
-			logger.Log("INFO", fmt.Sprintf(
-				"Trade hull %s parked %s ago — cooling down %s more before relaunch (letting the ground breathe)",
-				ship.ShipSymbol(), (cooldown-remaining).Truncate(time.Second), remaining.Truncate(time.Second)), map[string]interface{}{
-				"action":            "trade_fleet_cooldown_hold",
-				"ship_symbol":       ship.ShipSymbol(),
-				"cooldown_secs":     int(cooldown.Seconds()),
-				"remaining_secs":    int(remaining.Seconds()),
-				"prior_exit_reason": priorExitReason(ship),
-			})
+		if holdForCooldown(ship, now, cooldown, logger) {
 			continue
 		}
 
-		spec := buildTourLaunchSpec(cmd, ship.ShipSymbol(), reachEscalated)
-		containerID, lerr := h.launcher.LaunchTour(ctx, spec)
-		if lerr != nil {
-			// A single hull's launch failure (e.g. it was claimed between the snapshot
-			// and the launch, or the daemon refused it) must not abort the pass — the
-			// rest of the fleet still gets serviced, and this hull retries next tick.
-			logger.Log("WARNING", fmt.Sprintf("Failed to relaunch tour for trade hull %s: %v", ship.ShipSymbol(), lerr), map[string]interface{}{
-				"action":      "trade_fleet_relaunch_failed",
-				"ship_symbol": ship.ShipSymbol(),
-			})
+		if !h.launchTourForHull(ctx, cmd, ship, cooldown, reachEscalated, logger) {
 			continue
 		}
-
 		runningTours++
 		launched++
-		reachNote := ""
-		if reachEscalated {
-			reachNote = ", reposition-reach ARMED (escalate-to-movement, sp-nxrt)"
-		}
-		logger.Log("INFO", fmt.Sprintf(
-			"Relaunched continuous tour for trade hull %s (prior exit: %s, cooldown %s, container %s%s)",
-			ship.ShipSymbol(), priorExitReasonLabel(ship), cooldown.Truncate(time.Second), containerID, reachNote), map[string]interface{}{
-			"action":            "trade_fleet_relaunch",
-			"ship_symbol":       ship.ShipSymbol(),
-			"container_id":      containerID,
-			"prior_exit_reason": priorExitReason(ship),
-			"cooldown_secs":     int(cooldown.Seconds()),
-			"reposition_reach":  reachEscalated,
-		})
 	}
 
 	return launched, nil
 }
 
-// relaunchHungTours is the sp-m3122 liveness watchdog — the primary fix. For each RUNNING
-// trade tour it reads the tour's last real-PROGRESS time (plan/navigate/arrive/buy/sell) and,
-// if the tour has been parked-and-silent past the stall threshold, KILLS the container and
-// relaunches a fresh tour on the hull — the automated form of the captain's manual
-// `container stop <hung-tour>` (which is how the sp-m3122 incident was cleared by hand). A
-// fresh tour re-plans from scratch against current sinks and offloads any held cargo via the
-// existing held-cargo-aware path (sp-2v69u), so a hull stranded FULL by a hung tour resumes
-// selling. This self-heals ANY hang — restart-induced or otherwise — and is the backstop that
-// makes keeping the mid-jump restart-resume safe (the bead's explicit allowance).
-//
-// It NEVER kills a hull IN_TRANSIT: a flying hull is on a legitimately-long leg (multi-hop
-// travel / jump), which is progress, not a stall — this is how the watchdog keys on PROGRESS
-// rather than wall-clock silence. And it fails CLOSED: without BOTH ports wired, on a liveness
-// read error, or for any container whose progress it cannot read, it kills nothing — a
-// watchdog that cannot confirm a hang must never "remedy" one. Returns (killed, relaunched);
-// a kill whose fresh launch failed is counted in killed but not relaunched (the released hull
-// rejoins the idle bucket and the idle path relaunches it next tick).
-func (h *RunTradeFleetCoordinatorHandler) relaunchHungTours(
-	ctx context.Context,
-	cmd *RunTradeFleetCoordinatorCommand,
-	running []*navigation.Ship,
-	now time.Time,
-	logger common.ContainerLogger,
-) (killed, relaunched int) {
-	// The watchdog ENGINE is shared with the long-haul engine (relaunchHungContainers, see
-	// watchdog.go) so ONE watchdog serves trade tours AND long-haul hauls (sp-mepj), not a
-	// fork. Trade supplies its own tour-relaunch closure; the fail-closed progress read, the
-	// IN_TRANSIT skip, the kill, the kill-failed-no-relaunch rule, and the stall threshold all
-	// live in the shared engine. The held-cargo-aware fresh tour (sp-2v69u) is the relaunch's
-	// own behavior, so a hull stranded FULL by a hung tour still resumes selling.
-	return relaunchHungContainers(ctx, running, now, logger, watchdogConfig{
-		liveness:   h.tourLiveness,
-		stopper:    h.tourStopper,
-		playerID:   cmd.PlayerID,
-		threshold:  cmd.watchdogStallThreshold(),
-		humanLabel: "Trade fleet",
-		action:     "trade_fleet",
-		relaunch: func(ctx context.Context, shipSymbol string) (string, error) {
-			return h.launcher.LaunchTour(ctx, buildTourLaunchSpec(cmd, shipSymbol, false))
-		},
+// inventoryPressurePause is the sp-tgll8 governor: govern buy-rate by sell-rate. When too
+// much of the trade fleet is sitting FULL of cargo it cannot offload, PAUSE relaunching EMPTY
+// idle hulls into NEW buying tours this tick — the fleet stops buying what it cannot sell.
+// LADEN idle hulls are NEVER paused (they must always relaunch to sell, so the fleet drains
+// and the governor un-throttles — no wedge, RULINGS #4). Conservative default (65% FULL) so a
+// healthy fleet is byte-identical.
+func inventoryPressurePause(idle, running []*navigation.Ship, cmd *RunTradeFleetCoordinatorCommand, logger common.ContainerLogger) (bool, int) {
+	fullHulls, totalHulls := fullHullPressure(idle, running)
+	pausePct := cmd.fullHullPausePct()
+	if totalHulls == 0 || fullHulls*100 <= pausePct*totalHulls {
+		return false, 0
+	}
+	fullPct := fullHulls * 100 / totalHulls
+	logger.Log("INFO", fmt.Sprintf(
+		"Trade fleet inventory pressure %d%% FULL (%d/%d) exceeds the %d%% pause threshold — pausing new buying tours on EMPTY idle hulls this tick (laden hulls still relaunch to sell)",
+		fullPct, fullHulls, totalHulls, pausePct), map[string]interface{}{
+		"action":      "trade_fleet_inventory_pressure_pause",
+		"full_hulls":  fullHulls,
+		"total_hulls": totalHulls,
+		"full_pct":    fullPct,
+		"pause_pct":   pausePct,
 	})
+	return true, fullPct
 }
 
-// reclaimDeadContainerAbsorption promptly releases market_absorption_ledger reservations held
-// by containers that no longer exist (sp-m3122 part 3). Nil-safe: without a reclaimer wired it
-// is a no-op. Best-effort: a reclaim error is logged and swallowed (the TTL sweep remains the
-// backstop), never aborting the reconcile pass.
-func (h *RunTradeFleetCoordinatorHandler) reclaimDeadContainerAbsorption(ctx context.Context, cmd *RunTradeFleetCoordinatorCommand, logger common.ContainerLogger) {
-	if h.absorptionReclaimer == nil {
-		return
+// escalateReachAfterVeto arms reposition-reach for a hull the honest-completion veto sent
+// back — the definitive dead-ground case: its run did not merely trade badly, it ended unable
+// to sell what it was holding where it stands. The tour's exit sweep can only sell in the
+// hull's CURRENT system, so relaunching onto those same markets re-inherits the same unsold
+// obligation and is refused again, burning a container per turn while the cargo never moves.
+//
+// Derived per pass from the hull's persisted release reason — no cross-tick state (RULINGS
+// #2). It only widens where the hull may LOOK for a buyer; it relaxes no margin, spend or
+// sell guard (RULINGS #4), and it does not touch the veto itself.
+func escalateReachAfterVeto(ship *navigation.Ship, logger common.ContainerLogger) bool {
+	if priorExitReason(ship) != common.ReleaseReasonHonestCompletionVeto {
+		return false
 	}
-	reclaimed, err := h.absorptionReclaimer.ReclaimDeadContainerAbsorption(ctx, cmd.PlayerID)
-	if err != nil {
-		logger.Log("WARNING", fmt.Sprintf("Trade fleet: dead-container absorption reclaim failed: %v", err), map[string]interface{}{
-			"action": "trade_fleet_absorption_reclaim_failed",
-		})
-		return
-	}
-	if reclaimed > 0 {
-		logger.Log("INFO", fmt.Sprintf("Trade fleet: reclaimed %d absorption reservation(s) held by non-existent containers (sp-m3122)", reclaimed), map[string]interface{}{
-			"action":    "trade_fleet_absorption_reclaimed",
-			"reclaimed": reclaimed,
-		})
-	}
+	logger.Log("INFO", fmt.Sprintf(
+		"Trade hull %s came back from the honest-completion veto (cargo it could not sell where it stands) — relaunching with reposition-reach ARMED instead of onto the ground that just refused it",
+		ship.ShipSymbol()), map[string]interface{}{
+		"action":            "trade_fleet_stranded_reach_escalation",
+		"ship_symbol":       ship.ShipSymbol(),
+		"prior_exit_reason": priorExitReason(ship),
+	})
+	return true
 }
 
-// buildTourLaunchSpec assembles the launch request for one hull, shared by the idle-relaunch
-// path and the sp-m3122 watchdog relaunch (one spec shape, no drift). reachEscalated arms
-// reposition-reach for this tour (sp-nxrt); the watchdog always passes false — a fresh tour on
-// a hung hull re-plans normally, it was not a margins-death fast-fail.
-func buildTourLaunchSpec(cmd *RunTradeFleetCoordinatorCommand, shipSymbol string, reachEscalated bool) TourLaunchSpec {
-	return TourLaunchSpec{
-		ShipSymbol:               shipSymbol,
-		MaxHops:                  cmd.MaxHops,
-		MaxSpend:                 cmd.MaxSpend,
-		MinMargin:                cmd.MinMargin,
-		ReplanLimit:              cmd.ReplanLimit,
-		WorkingCapitalReserve:    cmd.WorkingCapitalReserve,
-		AgentSymbol:              cmd.AgentSymbol,
-		Iterations:               tourIterationsContinuous,
-		PlayerID:                 cmd.PlayerID.Value(),
-		RepositionReachEscalated: reachEscalated,
+func holdForCooldown(ship *navigation.Ship, now time.Time, cooldown time.Duration, logger common.ContainerLogger) bool {
+	remaining := cooldownRemaining(ship, now, cooldown)
+	if remaining <= 0 {
+		return false
 	}
+	logger.Log("INFO", fmt.Sprintf(
+		"Trade hull %s parked %s ago — cooling down %s more before relaunch (letting the ground breathe)",
+		ship.ShipSymbol(), (cooldown-remaining).Truncate(time.Second), remaining.Truncate(time.Second)), map[string]interface{}{
+		"action":            "trade_fleet_cooldown_hold",
+		"ship_symbol":       ship.ShipSymbol(),
+		"cooldown_secs":     int(cooldown.Seconds()),
+		"remaining_secs":    int(remaining.Seconds()),
+		"prior_exit_reason": priorExitReason(ship),
+	})
+	return true
 }
 
 // noteReconcile records one reconcile pass at the "reconcile" streak checkpoint
@@ -731,382 +531,4 @@ func (h *RunTradeFleetCoordinatorHandler) noteReconcile(ctx context.Context, cmd
 	if streak, crossed := errMon.Note("reconcile", msg); crossed {
 		health.RecordErrorLoop(h.captainEvents, common.LoggerFromContext(ctx), cmd.ContainerID, cmd.PlayerID.Value(), "reconcile", err, streak)
 	}
-}
-
-// partitionTradeFleet splits a fleet snapshot into the 'trade'-dedicated hulls that
-// are parked and eligible for relaunch (idle, not in transit) and a count of those
-// currently running a tour — the reconcile predicate (sp-1278), the analog of the
-// scout reconciler detecting unmanned slots.
-//
-// The two captain off-switches are honored here for free, with no extra guard:
-//   - Unpinned: a hull whose DedicatedFleet() != "trade" is simply not ours — skipped.
-//   - Captain-reserved: a captain reservation is an ACTIVE assignment (owner=captain),
-//     so it is neither idle nor a container-owned tour; IsReservedByCaptain() drops it
-//     before either bucket, so a reserved hull is never relaunched AND never counted
-//     against the concurrency cap.
-//
-// A hull mid-tour (a live container claim) is returned in `running` — the sp-m3122
-// watchdog inspects each for liveness (a RUNNING claim is no longer trusted as healthy),
-// and len(running) is the concurrency-cap count. An in-transit idle hull (a rare gap
-// between release and the next claim while still flying) is neither relaunched this tick
-// nor counted — StartTourRun would refuse a non-idle hull anyway, and counting it would
-// distort the cap.
-func partitionTradeFleet(ships []*navigation.Ship) (idle []*navigation.Ship, running []*navigation.Ship) {
-	for _, ship := range ships {
-		if ship.DedicatedFleet() != tradeFleet {
-			continue // not a trade hull (or unpinned — the captain's per-hull opt-out)
-		}
-		if ship.IsReservedByCaptain() {
-			continue // captain reserved: respect it, never relaunch and never count it
-		}
-		if ship.IsAssigned() {
-			running = append(running, ship) // live container claim => a tour is running
-			continue
-		}
-		if ship.IsInTransit() {
-			continue // idle but still flying — not a launch candidate this tick
-		}
-		idle = append(idle, ship) // parked by an honest tour exit: relaunch candidate
-	}
-	return idle, running
-}
-
-// cooldownRemaining returns how much of the per-hull cooldown is still pending for an
-// idle trade hull (sp-1278), or 0 when it is clear to relaunch. The cooldown is
-// measured from the hull's last release time — the ContainerRunner stamps released_at
-// when a tour terminates (ForceRelease -> assignment.Released), and a trade hull is
-// only ever claimed by tour_run, so its last release IS its last tour's honest-exit
-// time. That timestamp is persisted on the ship row, so the cooldown is respected
-// across coordinator restarts with zero new state (RULINGS #2). A hull that has never
-// run a tour (no release time) is clear immediately.
-func cooldownRemaining(ship *navigation.Ship, now time.Time, cooldown time.Duration) time.Duration {
-	if cooldown <= 0 {
-		return 0
-	}
-	assignment := ship.Assignment()
-	if assignment == nil || assignment.ReleasedAt() == nil {
-		return 0 // never toured (or no terminal recorded) — nothing to cool down from
-	}
-	elapsed := now.Sub(*assignment.ReleasedAt())
-	if elapsed >= cooldown {
-		return 0
-	}
-	return cooldown - elapsed
-}
-
-// detectMassPark returns the set of idle hull symbols whose park is part of a
-// restart-induced mass-park (sp-nkci): at least minHulls idle hulls released within
-// `window` of each other. A daemon blip/restart force-parks the whole trade fleet in one
-// narrow window, and that synchronized park must NOT be fed to the sp-1pli thin-depth
-// backoff — organic thin-depth parks a hull at a time (when ITS market dies), so a
-// tight cluster of many simultaneous parks is a restart signature, not a depth signal.
-// An empty set (no cluster, or fewer than minHulls idle hulls) means nothing is exempt,
-// so the backoff behaves exactly as before for the spread-out single-hull case.
-func detectMassPark(idle []*navigation.Ship, window time.Duration, minHulls int) map[string]bool {
-	exempt := make(map[string]bool)
-	if minHulls <= 0 || len(idle) < minHulls {
-		return exempt
-	}
-
-	// Only hulls with a real release anchor can be part of a park cluster (a never-toured
-	// hull has no releasedAt and is not adaptive anyway — cooldownFor short-circuits it).
-	type park struct {
-		symbol string
-		at     time.Time
-	}
-	parks := make([]park, 0, len(idle))
-	for _, ship := range idle {
-		assignment := ship.Assignment()
-		if assignment == nil || assignment.ReleasedAt() == nil {
-			continue
-		}
-		parks = append(parks, park{symbol: ship.ShipSymbol(), at: *assignment.ReleasedAt()})
-	}
-	if len(parks) < minHulls {
-		return exempt
-	}
-
-	// A hull is in a mass-park when at least minHulls parks (including itself) fall within
-	// `window` of its own release. O(n^2) over the fleet's idle hulls (tens) — trivial.
-	for i := range parks {
-		coincident := 0
-		for j := range parks {
-			if absDuration(parks[i].at.Sub(parks[j].at)) <= window {
-				coincident++
-			}
-		}
-		if coincident >= minHulls {
-			exempt[parks[i].symbol] = true
-		}
-	}
-	return exempt
-}
-
-// fullHullPressure counts how many of the fleet's trade hulls (idle + running) are sitting
-// FULL — the sp-tgll8 inventory-pressure signal — alongside the total, so reconcileOnce can
-// decide whether the fleet is too saturated with unsold cargo to launch NEW buying tours. A
-// FULL hull genuinely cannot offload; a merely LADEN (partly-loaded) hull is a healthy
-// mid-run tour and is NOT counted — the naive "laden fraction" would false-trip on a working
-// fleet, so the signal keys on FULL/stuck, not laden.
-func fullHullPressure(idle, running []*navigation.Ship) (full, total int) {
-	for _, ship := range idle {
-		if isFullTradeHull(ship) {
-			full++
-		}
-	}
-	for _, ship := range running {
-		if isFullTradeHull(ship) {
-			full++
-		}
-	}
-	return full, len(idle) + len(running)
-}
-
-// isFullTradeHull reports whether a hull's hold is at capacity — the sp-tgll8 saturation
-// signal. The capacity guard rejects a zero-capacity hull (which would spuriously read
-// units>=capacity as 0>=0) so only a real cargo hull genuinely stuck full counts.
-func isFullTradeHull(ship *navigation.Ship) bool {
-	return ship.CargoCapacity() > 0 && ship.CargoUnits() >= ship.CargoCapacity()
-}
-
-// absDuration returns the absolute value of a duration.
-func absDuration(d time.Duration) time.Duration {
-	if d < 0 {
-		return -d
-	}
-	return d
-}
-
-// hullBackoff is the adaptive per-hull relaunch-cooldown state sp-1pli tracks in
-// memory (RunTradeFleetCoordinatorHandler.backoff). cooldown starts at the base and
-// only ever changes through cooldownFor: doubled (clamped to the configured max) on a
-// freshly-scored unproductive exit, reset to base on a freshly-scored productive one.
-// scoredRelease is the release timestamp already folded into cooldown/
-// consecutiveUnproductive — it guards against rescoring the SAME parked exit on every
-// subsequent reconcile tick while the hull just sits out its cooldown, which would
-// otherwise runaway-escalate a single unproductive tour to the max within a few ticks
-// instead of once per real tour cycle ("no per-tick spam", per the bead).
-type hullBackoff struct {
-	consecutiveUnproductive int
-	cooldown                time.Duration
-	scoredRelease           time.Time
-	// reachEscalated is set once a hull hits its 2nd consecutive fast-fail (sp-nxrt part a):
-	// the relaunch is armed with reposition-reach (the broadened 2-4-gate-hop discovery)
-	// so the hull MOVES to a fresh system instead of the coordinator sleeping ever longer
-	// on a lane that is gone from HERE. It stays armed while the coordinator backs off a
-	// map-wide-dead neighbourhood (streak >= 3) and is cleared only by a productive tour —
-	// a recovered hull relaunches normally. reconcileOnce copies it onto the launch spec.
-	reachEscalated bool
-}
-
-// cooldownFor resolves the relaunch cooldown to apply to one idle hull this pass AND
-// whether that relaunch should be reach-escalated (sp-1pli + sp-nxrt). A hull that has
-// never toured (no release recorded) is unscored, uses base, and is not escalated —
-// exactly like cooldownRemaining's own nil-check.
-//
-// Otherwise the hull's last release is scored AT MOST ONCE (guarded by scoredRelease):
-// a tour that ran for at least minProductiveTourDuration is productive and resets the
-// hull straight back to base (and disarms any reach escalation); a shorter exit is an
-// unproductive fast-fail and drives the escalation ladder below. Every escalation logs
-// one INFO line (never a reset), so an idle hull merely waiting out an already-scored
-// cooldown across many ticks stays silent.
-//
-// The fast-fail ladder (sp-nxrt part a) — the fix for ~238 hull-hours/day of pure
-// parking, where SLEEP was the sole response and a hull spiralled 6->12->24->30min:
-//
-//	1st fast-fail   -> DOUBLE the sleep (base -> 2*base). The market HERE may just be
-//	                   thin (the lxwn rich->tapped->rich cycle), so wait one cycle in
-//	                   place — cheaper than moving. Reach stays off.
-//	2nd consecutive -> ESCALATE TO MOVEMENT. Waiting-in-place did not help: the lane is
-//	                   gone from HERE. Arm reposition-reach on the relaunch and drop the
-//	                   sleep back to the base breather so the hull MOVES promptly instead
-//	                   of a longer sleep. This is the biggest single tempo lever.
-//	3rd+ consecutive-> Even the reach-armed relaunch (broadened to 2-4 gate hops) found
-//	                   no ground worth the jump — genuine map-wide margin exhaustion.
-//	                   RESUME the bounded sleep backoff (do not hammer a dead map every
-//	                   base cooldown) while KEEPING reach armed for the instant a ground
-//	                   reopens.
-func (h *RunTradeFleetCoordinatorHandler) cooldownFor(ship *navigation.Ship, base, max time.Duration, massParkExempt bool, logger common.ContainerLogger) (time.Duration, bool) {
-	assignment := ship.Assignment()
-	if assignment == nil || assignment.ReleasedAt() == nil {
-		return base, false // never toured — nothing to score
-	}
-	releasedAt := *assignment.ReleasedAt()
-
-	bo := h.backoff[ship.ShipSymbol()]
-	if bo == nil {
-		bo = &hullBackoff{cooldown: base}
-		h.backoff[ship.ShipSymbol()] = bo
-	}
-
-	if !releasedAt.After(bo.scoredRelease) {
-		return bo.cooldown, bo.reachEscalated // this exit was already scored on a prior tick
-	}
-	bo.scoredRelease = releasedAt
-
-	// sp-nkci: a restart-induced mass-park (many hulls force-parked in one window) is not
-	// a thin-depth signal — do NOT feed it to the adaptive backoff, and (sp-nxrt) do NOT
-	// let it trigger the movement escalation: repositioning the whole fleet off a daemon
-	// blip would be a mass reposition-churn event. Mark the release scored (so the same
-	// park is never re-scored on a later tick as hulls relaunch and the cluster dissipates)
-	// but leave the hull's cooldown, streak, AND reach flag untouched: a synchronized park
-	// says nothing about market depth, so it neither escalates nor resets. One INFO line
-	// (guarded by scoredRelease, so once per park) records why the fleet did not ramp.
-	if massParkExempt {
-		logger.Log("INFO", fmt.Sprintf(
-			"Trade hull %s parked in a fleet-wide mass-park window — exempt from sp-1pli adaptive backoff (sp-nkci), cooldown held at %s",
-			ship.ShipSymbol(), bo.cooldown.Truncate(time.Second)), map[string]interface{}{
-			"action":        "trade_fleet_masspark_exempt",
-			"ship_symbol":   ship.ShipSymbol(),
-			"cooldown_secs": int(bo.cooldown.Seconds()),
-		})
-		return bo.cooldown, bo.reachEscalated
-	}
-
-	if releasedAt.Sub(assignment.AssignedAt()) >= minProductiveTourDuration {
-		// Productive: a fresh ground was found and traded. Reset to base and disarm reach —
-		// the recovered hull relaunches normally, not force-armed forever.
-		bo.consecutiveUnproductive = 0
-		bo.cooldown = base
-		bo.reachEscalated = false
-		return bo.cooldown, false
-	}
-
-	bo.consecutiveUnproductive++
-	switch {
-	case bo.consecutiveUnproductive == 1:
-		// 1st fast-fail: wait ONE lengthened cycle in place (the market may just be thin).
-		bo.cooldown = clampDuration(base*2, max)
-		logger.Log("INFO", fmt.Sprintf(
-			"Trade hull %s cooldown escalating to %s after %d consecutive unproductive exit(s) — fleet-wide infeasibility backoff",
-			ship.ShipSymbol(), bo.cooldown.Truncate(time.Second), bo.consecutiveUnproductive), map[string]interface{}{
-			"action":                   "trade_fleet_backoff_escalate",
-			"ship_symbol":              ship.ShipSymbol(),
-			"new_cooldown_secs":        int(bo.cooldown.Seconds()),
-			"consecutive_unproductive": bo.consecutiveUnproductive,
-		})
-	case bo.consecutiveUnproductive == 2:
-		// 2nd consecutive fast-fail: the lane is gone from HERE — MOVE instead of sleeping
-		// longer. Arm reposition-reach and relaunch at the base breather (sp-nxrt part a).
-		bo.reachEscalated = true
-		bo.cooldown = base
-		logger.Log("INFO", fmt.Sprintf(
-			"Trade hull %s escalating to MOVEMENT after %d consecutive unproductive exit(s) — arming reposition-reach and relaunching at the %s base breather instead of a longer sleep (sp-nxrt)",
-			ship.ShipSymbol(), bo.consecutiveUnproductive, bo.cooldown.Truncate(time.Second)), map[string]interface{}{
-			"action":                   "trade_fleet_movement_escalate",
-			"ship_symbol":              ship.ShipSymbol(),
-			"new_cooldown_secs":        int(bo.cooldown.Seconds()),
-			"consecutive_unproductive": bo.consecutiveUnproductive,
-			"reposition_reach_armed":   true,
-		})
-	default:
-		// 3rd+ consecutive fast-fail: the reach-armed relaunch could not escape either —
-		// genuine map-wide exhaustion. Resume the bounded sleep backoff, keep reach armed.
-		bo.cooldown = clampDuration(bo.cooldown*2, max)
-		logger.Log("INFO", fmt.Sprintf(
-			"Trade hull %s cooldown escalating to %s after %d consecutive unproductive exit(s) — reposition-reach did not rescue it, backing off (bounded, reposition-reach stays armed)",
-			ship.ShipSymbol(), bo.cooldown.Truncate(time.Second), bo.consecutiveUnproductive), map[string]interface{}{
-			"action":                   "trade_fleet_backoff_escalate",
-			"ship_symbol":              ship.ShipSymbol(),
-			"new_cooldown_secs":        int(bo.cooldown.Seconds()),
-			"consecutive_unproductive": bo.consecutiveUnproductive,
-			"reposition_reach_armed":   true,
-		})
-	}
-	return bo.cooldown, bo.reachEscalated
-}
-
-// clampDuration caps d at max (the per-hull backoff ceiling, RULINGS #5). A tiny helper so
-// the ladder's two escalation arms clamp identically.
-func clampDuration(d, max time.Duration) time.Duration {
-	if d > max {
-		return max
-	}
-	return d
-}
-
-// priorExitReason returns the release reason stamped on the hull when its last tour
-// terminated, or "" if none — read-only (the coordinator never rewrites it, so
-// honest-exit telemetry is untouched).
-func priorExitReason(ship *navigation.Ship) string {
-	assignment := ship.Assignment()
-	if assignment == nil || assignment.ReleaseReason() == nil {
-		return ""
-	}
-	return *assignment.ReleaseReason()
-}
-
-// priorExitReasonLabel is priorExitReason with a human placeholder for the empty case,
-// for the relaunch log line.
-func priorExitReasonLabel(ship *navigation.Ship) string {
-	if reason := priorExitReason(ship); reason != "" {
-		return reason
-	}
-	return "unknown"
-}
-
-// cooldownDuration resolves the command's cooldown, applying the default when unset.
-func (c *RunTradeFleetCoordinatorCommand) cooldownDuration() time.Duration {
-	secs := c.CooldownSecs
-	if secs <= 0 {
-		secs = defaultTradeFleetCooldownSeconds
-	}
-	return time.Duration(secs) * time.Second
-}
-
-// relaunchBackoffMaxDuration resolves the command's adaptive-backoff ceiling (sp-1pli),
-// applying the default when unset.
-func (c *RunTradeFleetCoordinatorCommand) relaunchBackoffMaxDuration() time.Duration {
-	secs := c.RelaunchBackoffMaxSecs
-	if secs <= 0 {
-		secs = defaultRelaunchBackoffMaxSeconds
-	}
-	return time.Duration(secs) * time.Second
-}
-
-// massParkWindow resolves the mass-park co-park window (sp-nkci), applying the default
-// when unset.
-func (c *RunTradeFleetCoordinatorCommand) massParkWindow() time.Duration {
-	secs := c.MassParkWindowSecs
-	if secs <= 0 {
-		secs = defaultMassParkWindowSeconds
-	}
-	return time.Duration(secs) * time.Second
-}
-
-// massParkMinHulls resolves the mass-park hull threshold (sp-nkci), applying the default
-// when unset.
-func (c *RunTradeFleetCoordinatorCommand) massParkMinHulls() int {
-	if c.MassParkMinHulls <= 0 {
-		return defaultMassParkMinHulls
-	}
-	return c.MassParkMinHulls
-}
-
-// watchdogStallThreshold resolves the sp-m3122 liveness-watchdog stall threshold, applying
-// the default (12 min) when unset.
-func (c *RunTradeFleetCoordinatorCommand) watchdogStallThreshold() time.Duration {
-	secs := c.WatchdogStallSecs
-	if secs <= 0 {
-		secs = defaultWatchdogStallSeconds
-	}
-	return time.Duration(secs) * time.Second
-}
-
-// fullHullPausePct resolves the sp-tgll8 inventory-pressure governor threshold, applying the
-// default (65%) when unset.
-func (c *RunTradeFleetCoordinatorCommand) fullHullPausePct() int {
-	if c.FullHullPausePct <= 0 {
-		return defaultFullHullPausePct
-	}
-	return c.FullHullPausePct
-}
-
-// maxConcurrentLabel renders the concurrency cap for the start log — "unlimited" for
-// the <=0 (fleet-size-bounded) case.
-func maxConcurrentLabel(max int) string {
-	if max <= 0 {
-		return "unlimited"
-	}
-	return fmt.Sprintf("%d", max)
 }

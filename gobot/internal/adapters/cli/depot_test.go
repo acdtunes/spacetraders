@@ -1,11 +1,16 @@
 package cli
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
+
+	"github.com/andrescamacho/spacetraders-go/internal/domain/contract/depot"
+	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
 )
 
 // `depot start <name>` resolves the named depot out of the multi-depot spec file: the
@@ -89,6 +94,47 @@ func TestLoadDepotSpecFile_BothShapes(t *testing.T) {
 		require.Equal(t, "X1-A-1", depots[0].Warehouses[0].Waypoint)
 		require.Equal(t, "WH-1", depots[0].Warehouses[0].ShipSymbol)
 	}
+}
+
+// fakeDepotElementClient captures the element requests without a daemon; the embedded
+// interface carries the DaemonServiceClient methods these two calls never touch.
+type fakeDepotElementClient struct {
+	pb.DaemonServiceClient
+	addReq   *pb.AddDepotElementRequest
+	placeReq *pb.PlaceDepotElementRequest
+}
+
+func (f *fakeDepotElementClient) AddDepotElement(_ context.Context, in *pb.AddDepotElementRequest, _ ...grpc.CallOption) (*pb.DepotElementResponse, error) {
+	f.addReq = in
+	return &pb.DepotElementResponse{}, nil
+}
+
+func (f *fakeDepotElementClient) PlaceDepotElement(_ context.Context, in *pb.PlaceDepotElementRequest, _ ...grpc.CallOption) (*pb.DepotElementResponse, error) {
+	f.placeReq = in
+	return &pb.DepotElementResponse{}, nil
+}
+
+// The Element -> proto mapping is the operator-facing half: --waypoint must reach the
+// request's waypoint and --ship its ship_symbol, for BOTH verbs, whose request messages
+// declare those two strings in OPPOSITE order. Transposing them compiles, so pin per field.
+func TestDepotElementClientVerbs_MapElementOntoTheRequest(t *testing.T) {
+	fake := &fakeDepotElementClient{}
+	client := &DaemonClient{client: fake}
+	ctx := context.Background()
+
+	require.NoError(t, client.AddDepotElement(ctx, 7, "", "central", "stocker",
+		depot.Element{Waypoint: "X1-CLI-SRC", ShipSymbol: "CLI-ST"}))
+	require.Equal(t, "X1-CLI-SRC", fake.addReq.Waypoint, "--waypoint reaches add_depot_element.waypoint")
+	require.Equal(t, "CLI-ST", fake.addReq.ShipSymbol, "--ship reaches add_depot_element.ship_symbol")
+	require.Equal(t, "central", fake.addReq.DepotId)
+	require.Equal(t, "stocker", fake.addReq.Role)
+
+	require.NoError(t, client.PlaceDepotElement(ctx, 7, "", "central", "delivery-hull",
+		depot.Element{Waypoint: "X1-CLI-WH", ShipSymbol: "CLI-DH"}))
+	require.Equal(t, "X1-CLI-WH", fake.placeReq.Waypoint, "--waypoint reaches place_depot_element.waypoint")
+	require.Equal(t, "CLI-DH", fake.placeReq.ShipSymbol, "--ship reaches place_depot_element.ship_symbol")
+	require.Equal(t, "central", fake.placeReq.DepotId)
+	require.Equal(t, "delivery-hull", fake.placeReq.Role)
 }
 
 // A mistyped --role is rejected client-side before any RPC.

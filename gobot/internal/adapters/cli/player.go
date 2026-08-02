@@ -13,8 +13,6 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/auth"
 	playerQuery "github.com/andrescamacho/spacetraders-go/internal/application/player/queries"
-	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
-	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
 // NewPlayerCommand creates the player command with subcommands
@@ -34,7 +32,6 @@ Examples:
   spacetraders player info --player-id 1`,
 	}
 
-	// Add subcommands
 	cmd.AddCommand(newPlayerRegisterCommand())
 	cmd.AddCommand(newPlayerListCommand())
 	cmd.AddCommand(newPlayerInfoCommand())
@@ -69,15 +66,9 @@ Example:
 				return runPlayerRegisterNewCommand(agentSymbol, faction)
 			}
 
-			// Load config and connect to database
-			cfg, err := config.LoadConfig("")
+			db, err := openDatabase()
 			if err != nil {
-				return fmt.Errorf("failed to load config: %w", err)
-			}
-
-			db, err := database.NewConnection(&cfg.Database)
-			if err != nil {
-				return fmt.Errorf("failed to connect to database: %w", err)
+				return err
 			}
 
 			// Import the caller-supplied token AND open its era row (sp-pr42).
@@ -112,15 +103,9 @@ Shows player ID, agent symbol, credits, and registration date.
 Example:
   spacetraders player list`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Load config and connect to database
-			cfg, err := config.LoadConfig("")
+			db, err := openDatabase()
 			if err != nil {
-				return fmt.Errorf("failed to load config: %w", err)
-			}
-
-			db, err := database.NewConnection(&cfg.Database)
-			if err != nil {
-				return fmt.Errorf("failed to connect to database: %w", err)
+				return err
 			}
 
 			// Query all players directly (TODO: add ListAll to repository)
@@ -136,7 +121,6 @@ Example:
 				return nil
 			}
 
-			// Display table
 			// NOTE: Credits not shown in list view - use 'player info' to fetch fresh credits from API
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 			fmt.Fprintln(w, "ID\tAGENT SYMBOL\tCREATED")
@@ -179,18 +163,11 @@ Examples:
   spacetraders player info --agent ENDURANCE
   spacetraders player info --show-token`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Load config and connect to database
-			cfg, err := config.LoadConfig("")
+			db, err := openDatabase()
 			if err != nil {
-				return fmt.Errorf("failed to load config: %w", err)
+				return err
 			}
 
-			db, err := database.NewConnection(&cfg.Database)
-			if err != nil {
-				return fmt.Errorf("failed to connect to database: %w", err)
-			}
-
-			// Create repository, API client, and handler
 			playerRepo := persistence.NewGormPlayerRepository(db)
 			apiClient := api.NewSpaceTradersClient()
 			handler := playerQuery.NewGetPlayerHandler(playerRepo, apiClient)
@@ -217,7 +194,6 @@ Examples:
 			result := response.(*playerQuery.GetPlayerResponse)
 			p := result.Player
 
-			// Display player info
 			fmt.Printf("Player Information\n")
 			fmt.Printf("==================\n\n")
 			fmt.Printf("Player ID:     %d\n", p.ID.Value())

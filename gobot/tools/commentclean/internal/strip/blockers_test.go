@@ -1,8 +1,6 @@
 package strip
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -93,8 +91,6 @@ var b2SubjectVerb = []blockerCase{
 		// Directly under an Admiral directive line, which ends in '.', so again
 		// the wrapped-sentence gate is not what refuses this.
 		name: "B2d_R5c_was_built",
-		// provenance retired: Layer 2 rewrote internal/application/parkedsensing/yardqueue.go:16,
-		// so this input no longer exists in the corpus. The rule assertion stands.
 		file: "", line: 0,
 		prev: "// THE SECOND HALF IS AN ADMIRAL DIRECTIVE AND IT OVERRULES THE FIRST'S DESIGN.",
 		in:   "// sp-7qhum was built to leave coverage-first as the top-level key, so it could",
@@ -102,24 +98,18 @@ var b2SubjectVerb = []blockerCase{
 	},
 	{
 		name: "B2e_R10_removed_the_master_flag",
-		// provenance retired: Layer 2 rewrote internal/application/bootstrap/commands/run_bootstrap_coordinator.go:81,
-		// so this input no longer exists in the corpus. The rule assertion stands.
 		file: "", line: 0,
 		in:   "// Death-spiral cure (UNCONDITIONALLY ON, sp-gm7r removed the master flag). It replaces the premature",
 		skip: "S-SUBJECT-VERB",
 	},
 	{
 		name: "B2f_R9_removed_the_flag",
-		// provenance retired: Layer 2 rewrote internal/application/bootstrap/commands/run_bootstrap_coordinator.go:456,
-		// so this input no longer exists in the corpus. The rule assertion stands.
 		file: "", line: 0,
 		in:   "// sequential). Consulted every tick (sp-gm7r removed the flag); NOT a progress cursor — dropped on",
 		skip: "S-SUBJECT-VERB",
 	},
 	{
 		name: "B2g_R9_reconcile_removed_the_flag",
-		// provenance retired: Layer 2 rewrote internal/application/bootstrap/commands/run_bootstrap_reconcile.go:360,
-		// so this input no longer exists in the corpus. The rule assertion stands.
 		file: "", line: 0,
 		in:   "// ON (sp-gm7r removed the flag) — consulted every tick, but it only ever touches a STICKY, starved latch.",
 		skip: "S-SUBJECT-VERB",
@@ -152,8 +142,6 @@ var b2SubjectVerb = []blockerCase{
 var b3WrappedSentence = []blockerCase{
 	{
 		name: "B3a_ferry_governor_let",
-		// provenance retired: Layer 2 rewrote internal/application/parkedsensing/ferry.go:100,
-		// so this input no longer exists in the corpus. The rule assertion stands.
 		file: "", line: 0,
 		prev: "// measured at a mean of 5,900 credits over 4,235 jumps. That belief is what let",
 		in:   "// sp-e46yc happen — an authorised 10.15M probe expansion spent a further 6.44M",
@@ -451,39 +439,20 @@ func TestNewGatesAdmitTheBenignShape(t *testing.T) {
 
 func TestBlockerFixturesAreReal(t *testing.T) {
 	root := repoRoot(t)
-	retired := 0
 	for _, c := range allBlockerCases() {
-		// A fixture with no file is a synthetic shape row, or one whose source
-		// line a later layer rewrote. Its rule assertion still runs; only the
-		// provenance claim is retired. Counted so silent rot stays visible.
+		// No file = synthetic row or drifted source; the rule assertion still runs.
 		if c.file == "" {
-			retired++
 			continue
 		}
 		t.Run(c.name, func(t *testing.T) {
-			b, err := os.ReadFile(filepath.Join(root, c.file))
-			if err != nil {
-				t.Fatal(err)
+			if !fixtureIsReal(root, c.file, c.in) {
+				t.Errorf("fixture was never a line of %s: %q", c.file, c.in)
 			}
-			lines := strings.Split(string(b), "\n")
-			if c.line < 1 || c.line > len(lines) {
-				t.Fatalf("%s has %d lines, fixture claims %d", c.file, len(lines), c.line)
-			}
-			if got := commentOf(t, c.file, c.line, lines[c.line-1]); got != c.in {
-				t.Errorf("fixture drift at %s:%d\n  file: %q\n  test: %q", c.file, c.line, got, c.in)
-			}
-			if c.prev == "" {
-				return
-			}
-			if c.line < 2 {
-				t.Fatalf("%s:%d has no previous line", c.file, c.line)
-			}
-			if got := commentOf(t, c.file, c.line-1, lines[c.line-2]); got != c.prev {
-				t.Errorf("prev-line drift at %s:%d\n  file: %q\n  test: %q", c.file, c.line-1, got, c.prev)
+			if c.prev != "" && !fixtureIsReal(root, c.file, c.prev) {
+				t.Errorf("prev fixture was never a line of %s: %q", c.file, c.prev)
 			}
 		})
 	}
-	t.Logf("provenance retired for %d fixture(s) whose source a later layer rewrote", retired)
 }
 
 // commentOf strips a fixture line's indentation, so a fixture is the comment

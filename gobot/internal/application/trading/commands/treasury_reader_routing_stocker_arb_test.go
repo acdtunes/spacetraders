@@ -19,9 +19,7 @@ import (
 	"testing"
 )
 
-// ---------------------------------------------------------------------------
 // Stocker: the pre-positioning capital ceiling.
-// ---------------------------------------------------------------------------
 
 // ACCEPTANCE at the stocker: with a reader wired, the capital ceiling makes NO API call and
 // derives the ceiling from the reader's balance. The API client is wired with a balance
@@ -126,9 +124,7 @@ func TestStockerSetTreasuryReaderAlsoWiresTheMovementLegs(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // One-shot arb: the pre-buy spend floor.
-// ---------------------------------------------------------------------------
 
 // ACCEPTANCE at the arb, no-breach direction: the reader's balance clears the floor while the
 // API client's does NOT. A guard still reading the API would abort the buy; routing means it

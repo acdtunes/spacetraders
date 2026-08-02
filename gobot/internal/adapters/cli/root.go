@@ -34,9 +34,6 @@ Examples:
   spacetraders workflow batch-contract --ship AGENT-1 --iterations 5
   spacetraders container list
   spacetraders container logs <container-id>`,
-		PersistentPreRun: func(cmd *cobra.Command, args []string) {
-			// Global setup (if needed)
-		},
 		CompletionOptions: cobra.CompletionOptions{
 			DisableDefaultCmd: true,
 		},
@@ -52,7 +49,6 @@ Examples:
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false,
 		"Enable verbose output")
 
-	// Add command groups
 	rootCmd.AddCommand(NewConfigCommand())
 	rootCmd.AddCommand(NewPlayerCommand())
 	rootCmd.AddCommand(NewShipCommand())

@@ -43,68 +43,41 @@ type FleetAutosizerMetricsCollector struct {
 // NewFleetAutosizerMetricsCollector creates a new autosizer metrics collector.
 func NewFleetAutosizerMetricsCollector() *FleetAutosizerMetricsCollector {
 	return &FleetAutosizerMetricsCollector{
-		purchasesTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "autosizer_purchases_total",
-				Help:      "Hulls the fleet autosizer bought behind the guard stack, counted once per purchase, by class (sp-1txd)",
-			},
-			[]string{"class"},
+		purchasesTotal: newCounterVec(
+			"autosizer_purchases_total",
+			"Hulls the fleet autosizer bought behind the guard stack, counted once per purchase, by class (sp-1txd)",
+			"class",
 		),
-		blockedTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "autosizer_blocked_total",
-				Help:      "Candidate autosizer buys blocked by a guard, counted once per block, by class and blocking guard (sp-1txd)",
-			},
-			[]string{"class", "guard"},
+		blockedTotal: newCounterVec(
+			"autosizer_blocked_total",
+			"Candidate autosizer buys blocked by a guard, counted once per block, by class and blocking guard (sp-1txd)",
+			"class",
+			"guard",
 		),
-		demandHulls: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "autosizer_demand_hulls",
-				Help:      "The hull count the autosizer's demand model wants standing, by class (sp-1txd)",
-			},
-			[]string{"class"},
+		demandHulls: newGaugeVec(
+			"autosizer_demand_hulls",
+			"The hull count the autosizer's demand model wants standing, by class (sp-1txd)",
+			"class",
 		),
-		currentHulls: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "autosizer_current_hulls",
-				Help:      "The live hull count the autosizer sees, by class (sp-1txd)",
-			},
-			[]string{"class"},
+		currentHulls: newGaugeVec(
+			"autosizer_current_hulls",
+			"The live hull count the autosizer sees, by class (sp-1txd)",
+			"class",
 		),
-		heavyReserveCredits: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "autosizer_heavy_reserve_credits",
-				Help:      "Credits held back for the NEXT heavy purchase, derived per tick (sp-fwk8z). A non-zero value beside stalled probe/light buying means the fleet is SAVING for a heavy, not broken — it is the series that tells accumulation from failure",
-			},
-			[]string{"player_id"},
+		heavyReserveCredits: newGaugeVec(
+			"autosizer_heavy_reserve_credits",
+			"Credits held back for the NEXT heavy purchase, derived per tick (sp-fwk8z). A non-zero value beside stalled probe/light buying means the fleet is SAVING for a heavy, not broken — it is the series that tells accumulation from failure",
+			"player_id",
 		),
-		heaviesOwned: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "autosizer_heavies_owned",
-				Help:      "Owned HEAVY hulls counted tag-independently (frame list primary, cargo-capacity safety net) — capital exposure, NOT the tag-scoped trade-pool count behind heavy DEMAND (sp-fwk8z); since sp-r7eiu this is the only count-based purchase bound",
-			},
-			[]string{"player_id"},
+		heaviesOwned: newGaugeVec(
+			"autosizer_heavies_owned",
+			"Owned HEAVY hulls counted tag-independently (frame list primary, cargo-capacity safety net) — capital exposure, NOT the tag-scoped trade-pool count behind heavy DEMAND (sp-fwk8z); since sp-r7eiu this is the only count-based purchase bound",
+			"player_id",
 		),
-		heavyCap: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "autosizer_heavy_cap",
-				Help:      "The operator's heavy-hull cap in force this tick, after the live-config read. 0 is a deliberate HOLD, not an unset knob (sp-fwk8z)",
-			},
-			[]string{"player_id"},
+		heavyCap: newGaugeVec(
+			"autosizer_heavy_cap",
+			"The operator's heavy-hull cap in force this tick, after the live-config read. 0 is a deliberate HOLD, not an unset knob (sp-fwk8z)",
+			"player_id",
 		),
 		heavyPricePremium: prometheus.NewSummaryVec(
 			prometheus.SummaryOpts{
@@ -115,22 +88,14 @@ func NewFleetAutosizerMetricsCollector() *FleetAutosizerMetricsCollector {
 			},
 			[]string{"player_id"},
 		),
-		sizingEnabled: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "autosizer_sizing_enabled",
-				Help:      "The sizing_enabled master switch as read this tick: 1=sizing, 0=PAUSED by operator tune (sp-k4wdd). Emitted every tick on both paths — at 0 the coordinator reads nothing (no shipyard scans, no demand reads) and buys nothing, which is deliberate, NOT a stalled or dead coordinator",
-			},
-			[]string{"player_id"},
+		sizingEnabled: newGaugeVec(
+			"autosizer_sizing_enabled",
+			"The sizing_enabled master switch as read this tick: 1=sizing, 0=PAUSED by operator tune (sp-k4wdd). Emitted every tick on both paths — at 0 the coordinator reads nothing (no shipyard scans, no demand reads) and buys nothing, which is deliberate, NOT a stalled or dead coordinator",
+			"player_id",
 		),
-		zeroEffectTotal: prometheus.NewCounter(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "autosizer_zero_effect_alarm_total",
-				Help:      "Edge-triggered zero-effect alarm episodes (demand persisted but nothing bought for N ticks) (sp-1txd)",
-			},
+		zeroEffectTotal: newCounter(
+			"autosizer_zero_effect_alarm_total",
+			"Edge-triggered zero-effect alarm episodes (demand persisted but nothing bought for N ticks) (sp-1txd)",
 		),
 	}
 }
@@ -141,34 +106,18 @@ func (c *FleetAutosizerMetricsCollector) Register() error {
 	if Registry == nil {
 		return nil
 	}
-	if err := Registry.Register(c.purchasesTotal); err != nil {
-		return err
-	}
-	if err := Registry.Register(c.blockedTotal); err != nil {
-		return err
-	}
-	if err := Registry.Register(c.demandHulls); err != nil {
-		return err
-	}
-	if err := Registry.Register(c.currentHulls); err != nil {
-		return err
-	}
-	if err := Registry.Register(c.heavyReserveCredits); err != nil {
-		return err
-	}
-	if err := Registry.Register(c.heaviesOwned); err != nil {
-		return err
-	}
-	if err := Registry.Register(c.heavyCap); err != nil {
-		return err
-	}
-	if err := Registry.Register(c.heavyPricePremium); err != nil {
-		return err
-	}
-	if err := Registry.Register(c.sizingEnabled); err != nil {
-		return err
-	}
-	return Registry.Register(c.zeroEffectTotal)
+	return registerAll(
+		c.purchasesTotal,
+		c.blockedTotal,
+		c.demandHulls,
+		c.currentHulls,
+		c.heavyReserveCredits,
+		c.heaviesOwned,
+		c.heavyCap,
+		c.heavyPricePremium,
+		c.sizingEnabled,
+		c.zeroEffectTotal,
+	)
 }
 
 // RecordSizingEnabled sets the master-switch gauge from the value read this tick (1=sizing,
@@ -226,7 +175,7 @@ func (c *FleetAutosizerMetricsCollector) RecordZeroEffectAlarm() {
 // tag-independent owned-heavy census, and the cap in force. Called once per tick, whatever the
 // outcome — a reserve that is only recorded when something happens is exactly the series an
 // operator cannot use to tell "saving" from "stuck".
-func (c *FleetAutosizerMetricsCollector) RecordHeavyReserve(playerID string, reserve int64, owned, cap int) {
+func (c *FleetAutosizerMetricsCollector) RecordHeavyReserve(playerID string, reserve int64, owned, capacity int) {
 	if c == nil {
 		return
 	}
@@ -237,7 +186,7 @@ func (c *FleetAutosizerMetricsCollector) RecordHeavyReserve(playerID string, res
 		c.heaviesOwned.WithLabelValues(playerID).Set(float64(owned))
 	}
 	if c.heavyCap != nil {
-		c.heavyCap.WithLabelValues(playerID).Set(float64(cap))
+		c.heavyCap.WithLabelValues(playerID).Set(float64(capacity))
 	}
 }
 
@@ -250,4 +199,75 @@ func (c *FleetAutosizerMetricsCollector) ObserveHeavyPricePremium(playerID strin
 	}
 	premium := float64(paid-cheapestKnown) / float64(cheapestKnown) * 100
 	c.heavyPricePremium.WithLabelValues(playerID).Observe(premium)
+}
+
+// globalFleetAutosizerCollector is the singleton fleet-autosizer collector. Set by
+// SetGlobalFleetAutosizerCollector() when metrics are enabled; the autosizer's ACT path emits
+// its purchase/blocked/demand/zero-effect series through the package Record funcs below.
+var globalFleetAutosizerCollector *FleetAutosizerMetricsCollector
+
+// SetGlobalFleetAutosizerCollector sets the global fleet-autosizer collector. Pass nil
+// to clear it (e.g. in test cleanup).
+func SetGlobalFleetAutosizerCollector(collector *FleetAutosizerMetricsCollector) {
+	globalFleetAutosizerCollector = collector
+}
+
+// GetGlobalFleetAutosizerCollector returns the global fleet-autosizer collector.
+func GetGlobalFleetAutosizerCollector() *FleetAutosizerMetricsCollector {
+	return globalFleetAutosizerCollector
+}
+
+// RecordAutosizerPurchase increments the autosizer purchase counter for a class globally.
+// No-op when metrics are disabled, so a metrics miss never touches the buy path.
+func RecordAutosizerPurchase(class string) {
+	if globalFleetAutosizerCollector != nil {
+		globalFleetAutosizerCollector.RecordPurchase(class)
+	}
+}
+
+// RecordAutosizerBlocked increments the autosizer blocked counter for a (class, guard) globally.
+// No-op when metrics are disabled.
+func RecordAutosizerBlocked(class, guard string) {
+	if globalFleetAutosizerCollector != nil {
+		globalFleetAutosizerCollector.RecordBlocked(class, guard)
+	}
+}
+
+// RecordAutosizerDemand sets the autosizer demand/current gauges for a class globally.
+// No-op when metrics are disabled.
+func RecordAutosizerDemand(class string, demand, current int) {
+	if globalFleetAutosizerCollector != nil {
+		globalFleetAutosizerCollector.RecordDemand(class, demand, current)
+	}
+}
+
+// RecordAutosizerZeroEffectAlarm increments the autosizer zero-effect alarm counter globally.
+// No-op when metrics are disabled.
+func RecordAutosizerZeroEffectAlarm() {
+	if globalFleetAutosizerCollector != nil {
+		globalFleetAutosizerCollector.RecordZeroEffectAlarm()
+	}
+}
+
+// RecordAutosizerHeavyReserve sets the per-tick heavy-trade gauges (sp-fwk8z).
+func RecordAutosizerHeavyReserve(playerID string, reserve int64, owned, capacity int) {
+	if globalFleetAutosizerCollector != nil {
+		globalFleetAutosizerCollector.RecordHeavyReserve(playerID, reserve, owned, capacity)
+	}
+}
+
+// RecordAutosizerSizingEnabled publishes the sizing_enabled master switch as read this tick
+// (1=sizing, 0=paused by operator tune) (sp-k4wdd).
+func RecordAutosizerSizingEnabled(playerID string, enabled bool) {
+	if globalFleetAutosizerCollector != nil {
+		globalFleetAutosizerCollector.RecordSizingEnabled(playerID, enabled)
+	}
+}
+
+// ObserveAutosizerHeavyPricePremium records one heavy purchase's premium over the cheapest known
+// yard ask, in percent (sp-fwk8z).
+func ObserveAutosizerHeavyPricePremium(playerID string, paid, cheapestKnown int64) {
+	if globalFleetAutosizerCollector != nil {
+		globalFleetAutosizerCollector.ObserveHeavyPricePremium(playerID, paid, cheapestKnown)
+	}
 }

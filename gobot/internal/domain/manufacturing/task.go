@@ -249,13 +249,9 @@ func NewCollectSellTask(pipelineID string, playerID int, good string, factorySym
 // The hauler navigates to the storage operation waypoint, waits for cargo from storage ships,
 // transfers the cargo, then navigates to and delivers to the factory/destination.
 //
-// Parameters:
 //   - pipelineID: Parent pipeline (can be empty for standalone tasks)
-//   - playerID: Player who owns this task
-//   - good: The cargo type to acquire
 //   - storageOperationID: ID of the storage operation to acquire from
 //   - storageWaypoint: Waypoint where storage ships are located
-//   - factorySymbol: Destination factory to deliver to
 //   - dependsOn: Task IDs that must complete first (usually empty)
 func NewStorageAcquireDeliverTask(
 	pipelineID string,
@@ -278,14 +274,9 @@ func NewStorageAcquireDeliverTask(
 // NewDeliverToConstructionTask creates a task to acquire goods AND deliver to a construction site.
 // This is similar to ACQUIRE_DELIVER but uses SupplyConstruction API instead of selling to market.
 //
-// Parameters:
 //   - pipelineID: Parent pipeline (CONSTRUCTION type)
-//   - playerID: Player who owns this task
-//   - good: The cargo type to acquire and deliver
 //   - sourceMarket: Market to purchase goods from (empty if collecting from factory)
 //   - factorySymbol: Factory to collect from (empty if purchasing from market)
-//   - constructionSite: Waypoint of construction site to deliver to
-//   - dependsOn: Task IDs that must complete first
 func NewDeliverToConstructionTask(
 	pipelineID string,
 	playerID int,
@@ -451,69 +442,69 @@ func (t *ManufacturingTask) String() string {
 		t.id[:8], t.taskType, t.good, t.status, t.priority)
 }
 
+type TaskData struct {
+	ID                    string
+	PipelineID            string
+	PlayerID              int
+	TaskType              TaskType
+	Status                TaskStatus
+	Good                  string
+	Quantity              int
+	ActualQuantity        int
+	SourceMarket          string
+	TargetMarket          string
+	FactorySymbol         string
+	StorageOperationID    string
+	StorageWaypoint       string
+	ConstructionSite      string
+	DependsOn             []string
+	AssignedShip          string
+	Priority              int
+	RetryCount            int
+	MaxRetries            int
+	TotalCost             int
+	TotalRevenue          int
+	ErrorMessage          string
+	CreatedAt             time.Time
+	ReadyAt               *time.Time
+	StartedAt             *time.Time
+	CompletedAt           *time.Time
+	CollectPhaseCompleted bool
+	AcquirePhaseCompleted bool
+	PhaseCompletedAt      *time.Time
+}
+
 // ReconstituteTask creates a task from persisted data (for repository use only)
-func ReconstituteTask(
-	id string,
-	pipelineID string,
-	playerID int,
-	taskType TaskType,
-	status TaskStatus,
-	good string,
-	quantity int,
-	actualQuantity int,
-	sourceMarket string,
-	targetMarket string,
-	factorySymbol string,
-	storageOperationID string,
-	storageWaypoint string,
-	constructionSite string,
-	dependsOn []string,
-	assignedShip string,
-	priority int,
-	retryCount int,
-	maxRetries int,
-	totalCost int,
-	totalRevenue int,
-	errorMessage string,
-	createdAt time.Time,
-	readyAt *time.Time,
-	startedAt *time.Time,
-	completedAt *time.Time,
-	// Phase tracking fields
-	collectPhaseCompleted bool,
-	acquirePhaseCompleted bool,
-	phaseCompletedAt *time.Time,
-) *ManufacturingTask {
+func ReconstituteTask(d TaskData) *ManufacturingTask {
 	return &ManufacturingTask{
-		id:                 id,
-		pipelineID:         pipelineID,
-		playerID:           playerID,
-		taskType:           taskType,
-		status:             status,
-		good:               good,
-		quantity:           quantity,
-		actualQuantity:     actualQuantity,
-		sourceMarket:       sourceMarket,
-		targetMarket:       targetMarket,
-		factorySymbol:      factorySymbol,
-		storageOperationID: storageOperationID,
-		storageWaypoint:    storageWaypoint,
-		constructionSite:   constructionSite,
-		dependsOn:          dependsOn,
-		assignedShip:       assignedShip,
-		priority:           priority,
-		retryCount:         retryCount,
-		maxRetries:         maxRetries,
-		totalCost:          totalCost,
-		totalRevenue:       totalRevenue,
-		errorMessage:       errorMessage,
-		createdAt:          createdAt,
-		readyAt:            readyAt,
-		startedAt:          startedAt,
-		completedAt:        completedAt,
-		// Phase tracking fields
-		collectPhaseCompleted: collectPhaseCompleted,
-		acquirePhaseCompleted: acquirePhaseCompleted,
-		phaseCompletedAt:      phaseCompletedAt,
+		id:                    d.ID,
+		pipelineID:            d.PipelineID,
+		playerID:              d.PlayerID,
+		taskType:              d.TaskType,
+		status:                d.Status,
+		good:                  d.Good,
+		quantity:              d.Quantity,
+		actualQuantity:        d.ActualQuantity,
+		sourceMarket:          d.SourceMarket,
+		targetMarket:          d.TargetMarket,
+		factorySymbol:         d.FactorySymbol,
+		storageOperationID:    d.StorageOperationID,
+		storageWaypoint:       d.StorageWaypoint,
+		constructionSite:      d.ConstructionSite,
+		dependsOn:             d.DependsOn,
+		assignedShip:          d.AssignedShip,
+		priority:              d.Priority,
+		retryCount:            d.RetryCount,
+		maxRetries:            d.MaxRetries,
+		totalCost:             d.TotalCost,
+		totalRevenue:          d.TotalRevenue,
+		errorMessage:          d.ErrorMessage,
+		createdAt:             d.CreatedAt,
+		readyAt:               d.ReadyAt,
+		startedAt:             d.StartedAt,
+		completedAt:           d.CompletedAt,
+		collectPhaseCompleted: d.CollectPhaseCompleted,
+		acquirePhaseCompleted: d.AcquirePhaseCompleted,
+		phaseCompletedAt:      d.PhaseCompletedAt,
 	}
 }

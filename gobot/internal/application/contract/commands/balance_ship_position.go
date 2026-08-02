@@ -81,31 +81,8 @@ func (h *BalanceShipPositionHandler) Handle(ctx context.Context, request common.
 		"ship_symbol": cmd.ShipSymbol,
 	})
 
-	// Create temporary container record to satisfy foreign key constraint
-	balancingContainerID := fmt.Sprintf("ship-balancing-%s", cmd.ShipSymbol)
-	metadata := map[string]interface{}{
-		"ship_symbol":    cmd.ShipSymbol,
-		"coordinator_id": cmd.CoordinatorID,
-	}
-
-	// Use coordinator ID as parent if provided (spawned by coordinator)
-	// Otherwise nil for manual/standalone balancing operations
-	var parentContainerID *string
-	if cmd.CoordinatorID != "" {
-		parentContainerID = &cmd.CoordinatorID
-	}
-
-	balancingContainer := domainContainer.NewContainer(
-		balancingContainerID,
-		domainContainer.ContainerTypeBalancing,
-		cmd.PlayerID.Value(),
-		1, // maxIterations: balancing is single-shot
-		parentContainerID,
-		metadata,
-		shared.NewRealClock(),
-	)
-
-	// Create container record in database
+	// Temporary container record, purely to satisfy the ship_assignments foreign key.
+	balancingContainerID, balancingContainer := newBalancingContainer(cmd)
 	if err := h.containerRepo.Add(ctx, balancingContainer, "balance_ship_position"); err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Failed to create balancing container: %v", err), nil)
 		// Continue anyway - balancing is best-effort
@@ -143,16 +120,7 @@ func (h *BalanceShipPositionHandler) Handle(ctx context.Context, request common.
 	// cargo/nav update survives instead of being last-write-wins clobbered by this
 	// handler's pre-claim snapshot, and skip the write unless the hull is still
 	// this balancer's claim (RULINGS #7 — never release out from under a new owner).
-	defer func() {
-		_, _, _ = h.shipRepo.SaveWithRetry(ctx, cmd.ShipSymbol, cmd.PlayerID,
-			func(sh *navigation.Ship) (bool, error) {
-				if !sh.IsAssigned() || sh.ContainerID() != balancingContainerID {
-					return false, nil
-				}
-				sh.ForceRelease("balancing_complete", h.clock)
-				return true, nil
-			})
-	}()
+	defer h.releaseBalancingClaim(ctx, cmd.ShipSymbol, cmd.PlayerID, balancingContainerID)
 	// Mirror the claim into the in-memory entity (best-effort: the DB claim
 	// already holds the reservation, and the release defer's ForceRelease+Save
 	// clears it regardless of this in-memory state).
@@ -160,36 +128,12 @@ func (h *BalanceShipPositionHandler) Handle(ctx context.Context, request common.
 		logger.Log("WARNING", fmt.Sprintf("Ship %s claimed in DB but in-memory assign failed (claim stands): %v", cmd.ShipSymbol, err), nil)
 	}
 
-	systemSymbol := ship.CurrentLocation().SystemSymbol
-	marketSymbols, err := h.marketRepo.FindAllMarketsInSystem(ctx, systemSymbol, cmd.PlayerID.Value())
+	result, err := h.selectBalancingTarget(ctx, ship, cmd.PlayerID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to discover markets: %w", err)
+		return nil, err
 	}
-
-	if len(marketSymbols) == 0 {
-		logger.Log("WARNING", "No markets found in system - skipping balancing", nil)
+	if result == nil {
 		return &BalanceShipPositionResponse{Navigated: false}, nil
-	}
-
-	marketWaypoints, err := h.fetchMarketWaypoints(ctx, marketSymbols, systemSymbol, cmd.PlayerID.Value())
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch market waypoints: %w", err)
-	}
-
-	// Ships with active assignments (including other ships being balanced) are automatically excluded
-	idleHaulers, _, err := appContract.FindIdleLightHaulers(ctx, cmd.PlayerID, h.shipRepo, "")
-	if err != nil {
-		return nil, fmt.Errorf("failed to find idle haulers: %w", err)
-	}
-
-	logger.Log("INFO", "Calculating optimal balancing position", map[string]interface{}{
-		"markets":      len(marketWaypoints),
-		"idle_haulers": len(idleHaulers),
-	})
-
-	result, err := h.balancer.SelectOptimalBalancingPosition(ship, marketWaypoints, idleHaulers)
-	if err != nil {
-		return nil, fmt.Errorf("failed to calculate balancing position: %w", err)
 	}
 
 	logger.Log("INFO", "Optimal market selected", map[string]interface{}{
@@ -218,6 +162,81 @@ func (h *BalanceShipPositionHandler) Handle(ctx context.Context, request common.
 		Score:         result.Score,
 		Navigated:     navigated,
 	}, nil
+}
+
+// newBalancingContainer builds the single-shot container the claim hangs off; the
+// spawning coordinator is its parent, standalone balancing has none.
+func newBalancingContainer(cmd *BalanceShipPositionCommand) (string, *domainContainer.Container) {
+	balancingContainerID := fmt.Sprintf("ship-balancing-%s", cmd.ShipSymbol)
+
+	var parentContainerID *string
+	if cmd.CoordinatorID != "" {
+		parentContainerID = &cmd.CoordinatorID
+	}
+
+	return balancingContainerID, domainContainer.NewContainer(
+		balancingContainerID,
+		domainContainer.ContainerTypeBalancing,
+		cmd.PlayerID.Value(),
+		1,
+		parentContainerID,
+		map[string]interface{}{
+			"ship_symbol":    cmd.ShipSymbol,
+			"coordinator_id": cmd.CoordinatorID,
+		},
+		shared.NewRealClock(),
+	)
+}
+
+// releaseBalancingClaim CAS-releases on the FRESH row, and only while the hull is
+// still this balancer's claim (RULINGS #7 — never release out from under a new owner).
+func (h *BalanceShipPositionHandler) releaseBalancingClaim(ctx context.Context, shipSymbol string, playerID shared.PlayerID, balancingContainerID string) {
+	_, _, _ = h.shipRepo.SaveWithRetry(ctx, shipSymbol, playerID,
+		func(sh *navigation.Ship) (bool, error) {
+			if !sh.IsAssigned() || sh.ContainerID() != balancingContainerID {
+				return false, nil
+			}
+			sh.ForceRelease("balancing_complete", h.clock)
+			return true, nil
+		})
+}
+
+// selectBalancingTarget scores in-system markets against the idle haulers already
+// spread across them. A nil result with a nil error means there are no markets.
+func (h *BalanceShipPositionHandler) selectBalancingTarget(ctx context.Context, ship *navigation.Ship, playerID shared.PlayerID) (*domainContract.BalancingResult, error) {
+	logger := common.LoggerFromContext(ctx)
+	systemSymbol := ship.CurrentLocation().SystemSymbol
+
+	marketSymbols, err := h.marketRepo.FindAllMarketsInSystem(ctx, systemSymbol, playerID.Value())
+	if err != nil {
+		return nil, fmt.Errorf("failed to discover markets: %w", err)
+	}
+	if len(marketSymbols) == 0 {
+		logger.Log("WARNING", "No markets found in system - skipping balancing", nil)
+		return nil, nil
+	}
+
+	marketWaypoints, err := h.fetchMarketWaypoints(ctx, marketSymbols, systemSymbol, playerID.Value())
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch market waypoints: %w", err)
+	}
+
+	// Ships with active assignments (including other ships being balanced) are automatically excluded
+	idleHaulers, _, err := appContract.FindIdleLightHaulers(ctx, playerID, h.shipRepo, "")
+	if err != nil {
+		return nil, fmt.Errorf("failed to find idle haulers: %w", err)
+	}
+
+	logger.Log("INFO", "Calculating optimal balancing position", map[string]interface{}{
+		"markets":      len(marketWaypoints),
+		"idle_haulers": len(idleHaulers),
+	})
+
+	result, err := h.balancer.SelectOptimalBalancingPosition(ship, marketWaypoints, idleHaulers)
+	if err != nil {
+		return nil, fmt.Errorf("failed to calculate balancing position: %w", err)
+	}
+	return result, nil
 }
 
 // fetchMarketWaypoints fetches waypoint objects for market symbols from the graph provider

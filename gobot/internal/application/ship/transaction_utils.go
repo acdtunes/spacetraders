@@ -20,16 +20,8 @@ import (
 //
 // This ensures the handler can still operate even when market data is stale or missing.
 //
-// Parameters:
-//   - ctx: Request context for cancellation
-//   - marketRepo: Repository for fetching market data
-//   - waypointSymbol: Symbol of the waypoint/market (e.g., "X1-C3-A1")
-//   - goodSymbol: Symbol of the trade good (e.g., "IRON_ORE")
-//   - playerID: Player ID for market data access
-//   - requestedUnits: Number of units requested in the original command
-//
-// Returns:
-//   - Transaction limit (units per API call). Either the market's limit or requestedUnits.
+// Returns the per-API-call unit limit: either the market's own limit or
+// requestedUnits, whichever applies.
 func GetTransactionLimit(
 	ctx context.Context,
 	marketRepo scoutingQuery.MarketRepository,

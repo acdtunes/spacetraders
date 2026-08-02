@@ -46,7 +46,7 @@ type ScoutRepositionCommand struct {
 	// CoordinatorID names the scout_post_coordinator that spawned this relay as a
 	// managed worker. Persisted into the container config so daemon restart recovery
 	// SKIPS it (marks it worker_interrupted, preserving the ship claim) and leaves
-	// re-dispatch to the coordinator's reconcile pass — the scout_tour worker pattern
+	// re-dispatch to the coordinator's reconcile pass — the scout_tour worker pattern.
 	// (sp-cxpq). A restart re-dispatches from the hull's CURRENT position: travel()
 	// waits out any in-transit leg and re-plans the gate path, so a mid-relay restart
 	// resumes rather than strands (RULINGS #2).

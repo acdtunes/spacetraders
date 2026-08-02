@@ -17,7 +17,6 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
-	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
 // ---- seams -----------------------------------------------------------------
@@ -147,14 +146,12 @@ func runUniverseTransition(ctx context.Context, deps transitionDeps, opts transi
 	}
 	newEraName := strings.ToLower(symbol) + "-" + resetDate.Format(eraDateLayout)
 
-	// 3. Idempotency: if the open era already matches the server reset date the
-	//    universe is in sync (same comparison as `universe status`) — no-op, exit 0.
+	// 3. Idempotency: an already-synced universe is a no-op, exit 0.
 	openEra, err := deps.era.FindOpenEra(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to load open era: %w", err)
 	}
-	if openEra != nil && openEra.UniverseResetDate != nil &&
-		openEra.UniverseResetDate.Format(eraDateLayout) == status.ResetDate {
+	if eraInSyncWith(openEra, status.ResetDate) {
 		fmt.Fprintf(out, "Universe already in sync (open era %s, player %d, resetDate %s). No changes made.\n",
 			openEra.Name, openEra.PlayerID, status.ResetDate)
 		return nil
@@ -174,6 +171,46 @@ func runUniverseTransition(ctx context.Context, deps transitionDeps, opts transi
 
 	// 5. Era flip through the non-truncating repository path (crit 1, 5). The new
 	//    player row is created here with the validated token.
+	newPlayer, newEra := newEraRecords(symbol, token, agentData, newEraName, resetDate)
+	report, err := deps.era.TransitionEra(ctx, newPlayer, newEra)
+	if err != nil {
+		return fmt.Errorf("era flip failed: %w", err)
+	}
+	newPlayerID := report.NewPlayerID
+	fmt.Fprintf(out, "\n✓ Era flipped: opened %s (player %d)", newEra.Name, newPlayerID)
+	if report.ClosedEra != nil {
+		fmt.Fprintf(out, "; closed %s (final_credits %d)", report.ClosedEra.Name, report.ClosedCredits)
+	}
+	fmt.Fprintln(out)
+
+	// 6+7. Repoint the CLI default and captain.player_id.
+	if err := repointToNewPlayer(deps, symbol, newPlayerID, out); err != nil {
+		return err
+	}
+
+	// 8. Drain the prior era's containers coordinators-first + reconcile orphans.
+	if openEra != nil {
+		dr, err := drainPriorEra(ctx, deps.lister, deps.stopper, deps.reconciler, openEra.PlayerID, out)
+		if err != nil {
+			return fmt.Errorf("drain failed: %w", err)
+		}
+		fmt.Fprintf(out, "✓ Drained prior player %d: %d stopped, %d orphan row(s) reconciled to STOPPED, %d already terminal\n",
+			openEra.PlayerID, dr.Stopped, dr.OrphansReconciled, dr.AlreadyTerminal)
+	}
+
+	fmt.Fprintln(out, "\nNOTE: the daemon's in-memory 'Active Containers' gauge may stay high until an")
+	fmt.Fprintln(out, "Admiral daemon restart clears it — verify the drain against DB truth, not the gauge.")
+	return nil
+}
+
+// eraInSyncWith reports whether the open era already covers the server's current reset
+// date — the same comparison `universe status` makes.
+func eraInSyncWith(openEra *persistence.EraModel, serverResetDate string) bool {
+	return openEra != nil && openEra.UniverseResetDate != nil &&
+		openEra.UniverseResetDate.Format(eraDateLayout) == serverResetDate
+}
+
+func newEraRecords(symbol, token string, agentData *player.AgentData, newEraName string, resetDate time.Time) (*persistence.PlayerModel, *persistence.EraModel) {
 	now := time.Now().UTC()
 	newPlayer := &persistence.PlayerModel{
 		AgentSymbol: symbol,
@@ -191,25 +228,17 @@ func runUniverseTransition(ctx context.Context, deps transitionDeps, opts transi
 		f := agentData.StartingFaction
 		newEra.Faction = &f
 	}
-	report, err := deps.era.TransitionEra(ctx, newPlayer, newEra)
-	if err != nil {
-		return fmt.Errorf("era flip failed: %w", err)
-	}
-	newPlayerID := report.NewPlayerID
-	fmt.Fprintf(out, "\n✓ Era flipped: opened %s (player %d)", newEra.Name, newPlayerID)
-	if report.ClosedEra != nil {
-		fmt.Fprintf(out, "; closed %s (final_credits %d)", report.ClosedEra.Name, report.ClosedCredits)
-	}
-	fmt.Fprintln(out)
+	return newPlayer, newEra
+}
 
-	// 6. Repoint the CLI default player.
+// repointToNewPlayer moves the CLI default and captain.player_id onto the new era's player,
+// so the supervisor does not wake as the dead prior-era one. Fails loud if config.yaml is lost.
+func repointToNewPlayer(deps transitionDeps, symbol string, newPlayerID int, out io.Writer) error {
 	if err := deps.cliDefault.SetDefault(symbol, newPlayerID); err != nil {
 		return fmt.Errorf("era flipped but failed to set CLI default player: %w", err)
 	}
 	fmt.Fprintf(out, "✓ CLI default player → %s (id %d)\n", symbol, newPlayerID)
 
-	// 7. Repoint captain.player_id so the supervisor does not wake as the dead
-	//    prior-era player (closes sp-m602). Fail loud if the file can't be located.
 	changed, cfgPath, err := deps.captainCfg.SetCaptainPlayerID(newPlayerID)
 	if err != nil {
 		return fmt.Errorf("era flipped but failed to repoint captain.player_id: %w", err)
@@ -219,19 +248,6 @@ func runUniverseTransition(ctx context.Context, deps transitionDeps, opts transi
 	} else {
 		fmt.Fprintf(out, "• captain.player_id already %d (%s)\n", newPlayerID, cfgPath)
 	}
-
-	// 8. Drain the prior era's containers coordinators-first + reconcile orphans.
-	if openEra != nil {
-		dr, err := drainPriorEra(ctx, deps.lister, deps.stopper, deps.reconciler, openEra.PlayerID, out)
-		if err != nil {
-			return fmt.Errorf("drain failed: %w", err)
-		}
-		fmt.Fprintf(out, "✓ Drained prior player %d: %d stopped, %d orphan row(s) reconciled to STOPPED, %d already terminal\n",
-			openEra.PlayerID, dr.Stopped, dr.OrphansReconciled, dr.AlreadyTerminal)
-	}
-
-	fmt.Fprintln(out, "\nNOTE: the daemon's in-memory 'Active Containers' gauge may stay high until an")
-	fmt.Fprintln(out, "Admiral daemon restart clears it — verify the drain against DB truth, not the gauge.")
 	return nil
 }
 
@@ -545,13 +561,9 @@ Examples:
 }
 
 func runUniverseTransitionCommand(agent, token string, dryRun, confirm bool) error {
-	cfg, err := config.LoadConfig("")
+	db, err := openDatabase()
 	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
-	}
-	db, err := database.NewConnection(&cfg.Database)
-	if err != nil {
-		return fmt.Errorf("failed to connect to database: %w", err)
+		return err
 	}
 
 	userConfigHandler, err := config.NewUserConfigHandler()

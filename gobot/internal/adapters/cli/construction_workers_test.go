@@ -31,7 +31,7 @@ type fakeConstructionWorkerCapMutator struct {
 	respErr error
 }
 
-func (f *fakeConstructionWorkerCapMutator) ConstructionWorkerCap(_ context.Context, site string, count int, _ *int32, _ *string) (*pb.ConstructionWorkerCapResponse, error) {
+func (f *fakeConstructionWorkerCapMutator) ConstructionWorkerCap(_ context.Context, site string, count int, _ *PlayerIdentifier) (*pb.ConstructionWorkerCapResponse, error) {
 	f.calls = append(f.calls, constructionWorkerCapCall{site: site, count: count})
 	if f.respErr != nil {
 		return nil, f.respErr
@@ -46,7 +46,7 @@ func TestRunConstructionWorkers_SetsCapLive(t *testing.T) {
 		Changed:          true,
 	}}
 
-	msg, err := runConstructionWorkers(context.Background(), client, "X1-FB5-I56", 10, nil, nil)
+	msg, err := runConstructionWorkers(context.Background(), client, "X1-FB5-I56", 10, nil)
 	require.NoError(t, err)
 
 	require.Len(t, client.calls, 1)
@@ -63,7 +63,7 @@ func TestRunConstructionWorkers_AlreadyAtCount_ReportsNoOp(t *testing.T) {
 		Changed:          false, // already at count → daemon reports no change
 	}}
 
-	msg, err := runConstructionWorkers(context.Background(), client, "X1-FB5-I56", 5, nil, nil)
+	msg, err := runConstructionWorkers(context.Background(), client, "X1-FB5-I56", 5, nil)
 	require.NoError(t, err)
 	require.Contains(t, strings.ToLower(msg), "already")
 }
@@ -71,7 +71,7 @@ func TestRunConstructionWorkers_AlreadyAtCount_ReportsNoOp(t *testing.T) {
 func TestRunConstructionWorkers_DaemonError_Propagates(t *testing.T) {
 	client := &fakeConstructionWorkerCapMutator{respErr: errors.New("no active construction pipeline for X1-NONE-I1")}
 
-	_, err := runConstructionWorkers(context.Background(), client, "X1-NONE-I1", 10, nil, nil)
+	_, err := runConstructionWorkers(context.Background(), client, "X1-NONE-I1", 10, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "X1-NONE-I1")
 }

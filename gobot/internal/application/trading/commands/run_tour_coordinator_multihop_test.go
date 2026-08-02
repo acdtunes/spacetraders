@@ -121,7 +121,7 @@ func TestPlanForState_FeedsInterSystemHopsToPlanner(t *testing.T) {
 
 	// Widened: the 2-hop pair rides onto cons.InterSystemHops.
 	cmd := &RunTourCoordinatorCommand{PlayerID: 1, CandidateHopDepth: 2, MaxTourSystems: 5}
-	if _, _, _, err := h.planForState(context.Background(), ship, allowed, 6, 1_000_000, 0, cmd, ""); err != nil {
+	if _, _, _, err := h.planForState(context.Background(), ship, allowed, cmd, tourPlanBudget{maxHops: 6, maxSpend: 1_000_000}); err != nil {
 		t.Fatalf("planForState (widened): %v", err)
 	}
 	if len(fake.interSystemHops) != 1 {
@@ -133,7 +133,7 @@ func TestPlanForState_FeedsInterSystemHopsToPlanner(t *testing.T) {
 
 	// Default cap: the planner receives NO hop map (byte-identical to today).
 	cmdDefault := &RunTourCoordinatorCommand{PlayerID: 1}
-	if _, _, _, err := h.planForState(context.Background(), ship, allowed, 6, 1_000_000, 0, cmdDefault, ""); err != nil {
+	if _, _, _, err := h.planForState(context.Background(), ship, allowed, cmdDefault, tourPlanBudget{maxHops: 6, maxSpend: 1_000_000}); err != nil {
 		t.Fatalf("planForState (default): %v", err)
 	}
 	if len(fake.interSystemHops[1]) != 0 {

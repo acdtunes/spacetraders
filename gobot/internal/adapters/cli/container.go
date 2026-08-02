@@ -8,8 +8,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
-	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
-	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
 // NewContainerCommand creates the container command with subcommands
@@ -77,7 +75,6 @@ Use --show-all to see containers in all states including completed and failed.`,
 				return nil
 			}
 
-			// Display containers in table format
 			fmt.Print(formatContainerListHeader())
 
 			for _, c := range containers {
@@ -126,7 +123,6 @@ live daemon state, so the daemon must be running.`,
 				return fmt.Errorf("failed to get container: %w", err)
 			}
 
-			// Display detailed info
 			fmt.Printf("Container: %s\n", container.ContainerID)
 			fmt.Println("══════════════════════════════════════════════")
 			fmt.Printf("  Type:             %s\n", container.ContainerType)
@@ -215,24 +211,16 @@ Examples:
 		RunE: func(cmd *cobra.Command, args []string) error {
 			containerID := args[0]
 
-			// Resolve player from flags or defaults
 			playerIdent, err := resolvePlayerIdentifier()
 			if err != nil {
 				return err
 			}
 
-			// Load config and connect to database
-			cfg, err := config.LoadConfig("")
+			db, err := openDatabase()
 			if err != nil {
-				return fmt.Errorf("failed to load config: %w", err)
+				return err
 			}
 
-			db, err := database.NewConnection(&cfg.Database)
-			if err != nil {
-				return fmt.Errorf("failed to connect to database: %w", err)
-			}
-
-			// Create log repository
 			logRepo := persistence.NewGormContainerLogRepository(db, nil) // nil = use RealClock
 
 			// Query logs. --tail and --limit both resolve to the same

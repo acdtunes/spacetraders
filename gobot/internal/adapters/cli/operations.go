@@ -43,23 +43,21 @@ Examples:
 	return cmd
 }
 
+// operationsStartFlags is one `operations start` invocation as the operator typed it.
+type operationsStartFlags struct {
+	systemSymbol string
+	dryRun       bool
+	enableGas    bool
+	siphonsCsv   string
+	storageCsv   string
+	gasGiant     string
+	force        bool
+	maxLegTime   int
+}
+
 // newOperationsStartCommand creates the operations start subcommand
 func newOperationsStartCommand() *cobra.Command {
-	var (
-		// Common flags
-		systemSymbol string
-		dryRun       bool
-
-		// Operation type flag
-		enableGas bool
-
-		// Gas-specific flags
-		siphonsCsv string
-		storageCsv string
-		gasGiant   string
-		force      bool
-		maxLegTime int
-	)
+	var flags operationsStartFlags
 
 	cmd := &cobra.Command{
 		Use:   "start",
@@ -78,33 +76,15 @@ Examples:
   # Dry run to preview the operation
   spacetraders operations start --system X1-AU21 --gas --dry-run`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Validate the operation type is specified
-			if !enableGas {
-				return fmt.Errorf("--gas must be specified")
+			if err := flags.validate(); err != nil {
+				return err
 			}
 
-			// Validate system symbol
-			if systemSymbol == "" {
-				return fmt.Errorf("--system flag is required")
-			}
-
-			// Validate gas-specific requirements
-			if enableGas {
-				if siphonsCsv == "" {
-					return fmt.Errorf("--siphons flag is required when --gas is enabled")
-				}
-				if storageCsv == "" {
-					return fmt.Errorf("--storage flag is required when --gas is enabled")
-				}
-			}
-
-			// Resolve player from flags or defaults
 			playerIdent, err := resolvePlayerIdentifier()
 			if err != nil {
 				return err
 			}
 
-			// Connect to daemon
 			client, err := connectDaemon()
 			if err != nil {
 				return err
@@ -112,69 +92,85 @@ Examples:
 			defer client.Close()
 
 			playerID := playerIdent.PlayerID
+			printOperationsStartHeader(flags.systemSymbol, playerIdent.AgentSymbol, playerID, flags.dryRun)
 
-			fmt.Println("\nStarting Resource Operations")
-			fmt.Println("════════════════════════════")
-			fmt.Printf("System:  %s\n", systemSymbol)
-			fmt.Printf("Player:  %s (ID: %d)\n", playerIdent.AgentSymbol, playerID)
-			if dryRun {
-				fmt.Println("Mode:    DRY RUN (preview only)")
-			}
-			fmt.Println()
-
-			var results []operationResult
-
-			// Start gas extraction if enabled
-			if enableGas {
-				result := startGasOperation(client, playerID, gasGiant, siphonsCsv, storageCsv, force, dryRun, maxLegTime)
-				results = append(results, result)
+			results := []operationResult{
+				startGasOperation(client, flags, playerID),
 			}
 
-			// Display summary
-			fmt.Println("\nOperation Summary")
-			fmt.Println("─────────────────")
-			for _, r := range results {
-				statusIcon := "✓"
-				if r.err != nil {
-					statusIcon = "✗"
-				}
-				fmt.Printf("%s %s: ", statusIcon, r.operationType)
-				if r.err != nil {
-					fmt.Printf("FAILED - %v\n", r.err)
-				} else {
-					fmt.Printf("%s\n", r.containerID)
-				}
-			}
-
-			// Display tracking info
-			fmt.Println("\nTracking:")
-			for _, r := range results {
-				if r.err == nil && r.containerID != "" {
-					fmt.Printf("  spacetraders container logs %s\n", r.containerID)
-				}
-			}
-
+			printOperationSummary(results)
 			return nil
 		},
 	}
 
 	// Common flags
-	cmd.Flags().StringVar(&systemSymbol, "system", "", "System symbol (required)")
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview operations without executing")
+	cmd.Flags().StringVar(&flags.systemSymbol, "system", "", "System symbol (required)")
+	cmd.Flags().BoolVar(&flags.dryRun, "dry-run", false, "Preview operations without executing")
 
 	// Operation type flag
-	cmd.Flags().BoolVar(&enableGas, "gas", false, "Enable gas extraction operation")
+	cmd.Flags().BoolVar(&flags.enableGas, "gas", false, "Enable gas extraction operation")
 
 	// Gas-specific flags
-	cmd.Flags().StringVar(&siphonsCsv, "siphons", "", "Comma-separated siphon ship symbols (required for gas)")
-	cmd.Flags().StringVar(&storageCsv, "storage", "", "Comma-separated storage ship symbols (required for gas)")
-	cmd.Flags().StringVar(&gasGiant, "gas-giant", "", "Gas giant waypoint (optional, auto-selects if not provided)")
-	cmd.Flags().BoolVar(&force, "force", false, "Override fuel validation warnings (gas)")
-	cmd.Flags().IntVar(&maxLegTime, "max-leg-time", 0, "Max time per leg in minutes (gas, 0 = no limit)")
+	cmd.Flags().StringVar(&flags.siphonsCsv, "siphons", "", "Comma-separated siphon ship symbols (required for gas)")
+	cmd.Flags().StringVar(&flags.storageCsv, "storage", "", "Comma-separated storage ship symbols (required for gas)")
+	cmd.Flags().StringVar(&flags.gasGiant, "gas-giant", "", "Gas giant waypoint (optional, auto-selects if not provided)")
+	cmd.Flags().BoolVar(&flags.force, "force", false, "Override fuel validation warnings (gas)")
+	cmd.Flags().IntVar(&flags.maxLegTime, "max-leg-time", 0, "Max time per leg in minutes (gas, 0 = no limit)")
 
 	cmd.MarkFlagRequired("system")
 
 	return cmd
+}
+
+func (f operationsStartFlags) validate() error {
+	if !f.enableGas {
+		return fmt.Errorf("--gas must be specified")
+	}
+	if f.systemSymbol == "" {
+		return fmt.Errorf("--system flag is required")
+	}
+	if f.siphonsCsv == "" {
+		return fmt.Errorf("--siphons flag is required when --gas is enabled")
+	}
+	if f.storageCsv == "" {
+		return fmt.Errorf("--storage flag is required when --gas is enabled")
+	}
+	return nil
+}
+
+func printOperationsStartHeader(systemSymbol, agentSymbol string, playerID int, dryRun bool) {
+	fmt.Println("\nStarting Resource Operations")
+	fmt.Println("════════════════════════════")
+	fmt.Printf("System:  %s\n", systemSymbol)
+	fmt.Printf("Player:  %s (ID: %d)\n", agentSymbol, playerID)
+	if dryRun {
+		fmt.Println("Mode:    DRY RUN (preview only)")
+	}
+	fmt.Println()
+}
+
+func printOperationSummary(results []operationResult) {
+	fmt.Println("\nOperation Summary")
+	fmt.Println("─────────────────")
+	for _, r := range results {
+		statusIcon := "✓"
+		if r.err != nil {
+			statusIcon = "✗"
+		}
+		fmt.Printf("%s %s: ", statusIcon, r.operationType)
+		if r.err != nil {
+			fmt.Printf("FAILED - %v\n", r.err)
+		} else {
+			fmt.Printf("%s\n", r.containerID)
+		}
+	}
+
+	fmt.Println("\nTracking:")
+	for _, r := range results {
+		if r.err == nil && r.containerID != "" {
+			fmt.Printf("  spacetraders container logs %s\n", r.containerID)
+		}
+	}
 }
 
 // operationResult holds the result of starting an operation
@@ -185,33 +181,33 @@ type operationResult struct {
 }
 
 // startGasOperation starts a gas extraction operation
-func startGasOperation(client *DaemonClient, playerID int, gasGiant, siphonsCsv, storageCsv string, force, dryRun bool, maxLegTime int) operationResult {
-	siphons := parseCsvList(siphonsCsv)
-	storage := parseCsvList(storageCsv)
+func startGasOperation(client *DaemonClient, flags operationsStartFlags, playerID int) operationResult {
+	siphons := parseCsvList(flags.siphonsCsv)
+	storage := parseCsvList(flags.storageCsv)
 
 	fmt.Printf("Gas Extraction:\n")
 	fmt.Printf("  Siphon Ships:  %s\n", strings.Join(siphons, ", "))
 	fmt.Printf("  Storage Ships: %s\n", strings.Join(storage, ", "))
-	if gasGiant != "" {
-		fmt.Printf("  Gas Giant:     %s\n", gasGiant)
+	if flags.gasGiant != "" {
+		fmt.Printf("  Gas Giant:     %s\n", flags.gasGiant)
 	} else {
 		fmt.Printf("  Gas Giant:     (auto-select)\n")
 	}
 	fmt.Println()
 
 	timeout := 30 * time.Second
-	if dryRun {
+	if flags.dryRun {
 		timeout = 300 * time.Second
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	result, err := client.GasExtractionOperation(ctx, gasGiant, siphons, storage, force, dryRun, maxLegTime, playerID)
+	result, err := client.GasExtractionOperation(ctx, flags.gasGiant, siphons, storage, flags.force, flags.dryRun, flags.maxLegTime, playerID)
 	if err != nil {
 		return operationResult{operationType: "Gas Extraction", err: err}
 	}
 
-	if dryRun {
+	if flags.dryRun {
 		fmt.Printf("  [DRY RUN] Gas Giant: %s\n", result.GasGiant)
 	}
 
@@ -267,7 +263,6 @@ Examples:
 			mfgWorkers := groups.mfgWorkers
 			other := groups.other
 
-			// Display results
 			fmt.Println("\nResource Operations Status")
 			fmt.Println("══════════════════════════")
 
@@ -458,7 +453,6 @@ Examples:
 				playerIDPtr = &playerID
 			}
 
-			// Get running containers
 			status := "RUNNING,INTERRUPTED"
 			containers, err := client.ListContainers(ctx, playerIDPtr, &status)
 			if err != nil {
@@ -475,7 +469,6 @@ Examples:
 
 			fmt.Printf("Stopping %d coordinator(s)...\n\n", len(toStop))
 
-			// Stop each coordinator
 			for _, c := range toStop {
 				result, err := client.StopContainer(ctx, c.ContainerID)
 				if err != nil {

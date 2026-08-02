@@ -23,6 +23,32 @@ type tokenCollector interface {
 	Collect(ctx context.Context, since time.Time) ([]domain.SessionUsage, error)
 }
 
+// tokenTelemetry is the config-resolved input to every token/quota block.
+// A nil collector means telemetry is unavailable and the block is omitted.
+type tokenTelemetry struct {
+	collector         tokenCollector
+	captainAlias      string
+	budgetTokens      int64
+	alertThresholdPct int
+}
+
+func newTokenTelemetry() (tokenTelemetry, error) {
+	cfg, err := config.LoadConfig("")
+	if err != nil {
+		return tokenTelemetry{captainAlias: "captain"}, err
+	}
+	return tokenTelemetry{
+		collector: adapter.NewLiveCollector(
+			gcBinOrDefault(cfg.Captain.GCBin),
+			cfg.Captain.CityDir,
+			os.Getenv("CLAUDE_PROJECTS_ROOT"),
+		),
+		captainAlias:      captainAliasOrDefault(cfg.Captain.CaptainAgent),
+		budgetTokens:      weeklyTokenBudgetOrDefault(cfg.Captain.WeeklyTokenBudget),
+		alertThresholdPct: quotaAlertThresholdPctOrDefault(cfg.Captain.QuotaAlertThresholdPct),
+	}, nil
+}
+
 // QuotaSummary is the weekly-quota VISIBILITY proxy. No machine-readable
 // Claude/Anthropic billing or quota source exists anywhere in this codebase,
 // so this compares the report's own windowed token total against an
@@ -112,16 +138,13 @@ func buildTokenRows(sessions []domain.SessionUsage, sinceSpawn []domain.SessionU
 // runTokenReport collects per-session token usage over the last `days`, derives
 // the fleet report, and renders it as JSON or a table to w. It is the testable
 // core of the `captain tokens` verb.
-//
-// budgetTokens/alertThresholdPct feed the quota-visibility block
-// (computeQuotaSummary); budgetTokens <= 0 disables it entirely (unconfigured).
-func runTokenReport(ctx context.Context, c tokenCollector, captainAlias string, days int, now time.Time, budgetTokens int64, alertThresholdPct int, jsonOut bool, w io.Writer) error {
+func runTokenReport(ctx context.Context, tt tokenTelemetry, days int, now time.Time, jsonOut bool, w io.Writer) error {
 	since := now.AddDate(0, 0, -days)
-	sessions, err := c.Collect(ctx, since)
+	sessions, err := tt.collector.Collect(ctx, since)
 	if err != nil {
 		return fmt.Errorf("collect token telemetry: %w", err)
 	}
-	report := domain.ComputeReport(sessions, captainAlias, days)
+	report := domain.ComputeReport(sessions, tt.captainAlias, days)
 
 	// Tokens-since-spawn is additive visibility layered on top of the
 	// windowed report: a second, unbounded collect (Collect's documented
@@ -129,7 +152,7 @@ func runTokenReport(ctx context.Context, c tokenCollector, captainAlias string, 
 	// session's lifetime total. Best-effort — its failure must never break the
 	// windowed report the captain already relies on.
 	var sinceSpawn []domain.SessionUsage
-	if full, err := c.Collect(ctx, time.Time{}); err != nil {
+	if full, err := tt.collector.Collect(ctx, time.Time{}); err != nil {
 		fmt.Fprintf(os.Stderr, "captain tokens: tokens-since-spawn unavailable: %v\n", err)
 	} else {
 		sinceSpawn = full
@@ -138,7 +161,7 @@ func runTokenReport(ctx context.Context, c tokenCollector, captainAlias string, 
 	out := tokensReportOutput{
 		Report:   report,
 		Sessions: buildTokenRows(report.Sessions, sinceSpawn),
-		Quota:    computeQuotaSummary(report.TotalTokens, budgetTokens, alertThresholdPct),
+		Quota:    computeQuotaSummary(report.TotalTokens, tt.budgetTokens, tt.alertThresholdPct),
 	}
 
 	if jsonOut {
@@ -215,18 +238,11 @@ Examples:
 			if days <= 0 {
 				return fmt.Errorf("--days must be positive")
 			}
-			cfg, err := config.LoadConfig("")
+			tt, err := newTokenTelemetry()
 			if err != nil {
 				return fmt.Errorf("failed to load config: %w", err)
 			}
-			collector := adapter.NewLiveCollector(
-				gcBinOrDefault(cfg.Captain.GCBin),
-				cfg.Captain.CityDir,
-				os.Getenv("CLAUDE_PROJECTS_ROOT"),
-			)
-			return runTokenReport(context.Background(), collector, captainAliasOrDefault(cfg.Captain.CaptainAgent), days, time.Now(),
-				weeklyTokenBudgetOrDefault(cfg.Captain.WeeklyTokenBudget), quotaAlertThresholdPctOrDefault(cfg.Captain.QuotaAlertThresholdPct),
-				jsonOut, os.Stdout)
+			return runTokenReport(context.Background(), tt, days, time.Now(), jsonOut, os.Stdout)
 		},
 	}
 

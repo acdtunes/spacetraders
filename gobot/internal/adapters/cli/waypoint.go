@@ -75,8 +75,6 @@ Examples:
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 
-			playerID, agentSymbol := playerPointers(playerIdent)
-
 			var traitPtr *string
 			if trait != "" {
 				traitPtr = &trait
@@ -86,7 +84,7 @@ Examples:
 				typePtr = &waypointType
 			}
 
-			response, err := client.ListWaypoints(ctx, systemSymbol, traitPtr, typePtr, playerID, agentSymbol)
+			response, err := client.ListWaypoints(ctx, systemSymbol, traitPtr, typePtr, playerIdent)
 			if err != nil {
 				return fmt.Errorf("failed to list waypoints: %w", err)
 			}
@@ -157,9 +155,7 @@ Examples:
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 
-			playerID, agentSymbol := playerPointers(playerIdent)
-
-			response, err := client.GetWaypoint(ctx, waypointSymbol, playerID, agentSymbol)
+			response, err := client.GetWaypoint(ctx, waypointSymbol, playerIdent)
 			if err != nil {
 				return fmt.Errorf("failed to get waypoint: %w", err)
 			}

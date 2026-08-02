@@ -112,8 +112,7 @@ func placementHandler(t *testing.T, ships []*navigation.Ship) *RunFleetCoordinat
 func TestWeighHolderPlacement_LiveKP23Case_SplitsTheCycle(t *testing.T) {
 	handler := placementHandler(t, liveKP23Fleet(t, 8))
 
-	placement, err := handler.weighHolderPlacement(context.Background(), "TORWIND-7",
-		[]string{"TORWIND-5", "TORWIND-8"}, placementSource, placementDestination, "ASSAULT_RIFLES", 19, 1)
+	placement, err := handler.weighHolderPlacement(context.Background(), holderRun{Holder: "TORWIND-7", Candidates: []string{"TORWIND-5", "TORWIND-8"}, SourceWaypoint: placementSource, Destination: placementDestination, Good: "ASSAULT_RIFLES", UnitsNeeded: 19, PlayerID: 1})
 	if err != nil {
 		t.Fatalf("weighHolderPlacement: %v", err)
 	}
@@ -148,8 +147,7 @@ func TestWeighHolderPlacement_LiveKP23Case_SplitsTheCycle(t *testing.T) {
 func TestWeighHolderPlacement_FullHolderKeepsTheRun_ZveTwoQPreserved(t *testing.T) {
 	handler := placementHandler(t, liveKP23Fleet(t, 19))
 
-	placement, err := handler.weighHolderPlacement(context.Background(), "TORWIND-7",
-		[]string{"TORWIND-5", "TORWIND-8"}, placementSource, placementDestination, "ASSAULT_RIFLES", 19, 1)
+	placement, err := handler.weighHolderPlacement(context.Background(), holderRun{Holder: "TORWIND-7", Candidates: []string{"TORWIND-5", "TORWIND-8"}, SourceWaypoint: placementSource, Destination: placementDestination, Good: "ASSAULT_RIFLES", UnitsNeeded: 19, PlayerID: 1})
 	if err != nil {
 		t.Fatalf("weighHolderPlacement: %v", err)
 	}
@@ -167,8 +165,7 @@ func TestWeighHolderPlacement_RanksOnlySpawnableCandidates(t *testing.T) {
 		placementShip(t, "OTHERFLEET-1", placementSource, 0, 0, navigation.NavStatusInOrbit)) // sitting ON the source
 	handler := placementHandler(t, ships)
 
-	placement, err := handler.weighHolderPlacement(context.Background(), "TORWIND-7",
-		[]string{"TORWIND-5", "TORWIND-8"}, placementSource, placementDestination, "ASSAULT_RIFLES", 19, 1)
+	placement, err := handler.weighHolderPlacement(context.Background(), holderRun{Holder: "TORWIND-7", Candidates: []string{"TORWIND-5", "TORWIND-8"}, SourceWaypoint: placementSource, Destination: placementDestination, Good: "ASSAULT_RIFLES", UnitsNeeded: 19, PlayerID: 1})
 	if err != nil {
 		t.Fatalf("weighHolderPlacement: %v", err)
 	}
@@ -191,8 +188,7 @@ func TestWeighHolderPlacement_SkipsInTransitCandidates(t *testing.T) {
 	}
 	handler := placementHandler(t, ships)
 
-	placement, err := handler.weighHolderPlacement(context.Background(), "TORWIND-7",
-		[]string{"TORWIND-5", "TORWIND-8"}, placementSource, placementDestination, "ASSAULT_RIFLES", 19, 1)
+	placement, err := handler.weighHolderPlacement(context.Background(), holderRun{Holder: "TORWIND-7", Candidates: []string{"TORWIND-5", "TORWIND-8"}, SourceWaypoint: placementSource, Destination: placementDestination, Good: "ASSAULT_RIFLES", UnitsNeeded: 19, PlayerID: 1})
 	if err != nil {
 		t.Fatalf("weighHolderPlacement: %v", err)
 	}
@@ -210,8 +206,7 @@ func TestWeighHolderPlacement_IgnoresForeignSystemHulls(t *testing.T) {
 		placementShip(t, "TORWIND-99", placementForeign, 1.0, 0, navigation.NavStatusInOrbit))
 	handler := placementHandler(t, ships)
 
-	placement, err := handler.weighHolderPlacement(context.Background(), "TORWIND-7",
-		[]string{"TORWIND-5", "TORWIND-8", "TORWIND-99"}, placementSource, placementDestination, "ASSAULT_RIFLES", 19, 1)
+	placement, err := handler.weighHolderPlacement(context.Background(), holderRun{Holder: "TORWIND-7", Candidates: []string{"TORWIND-5", "TORWIND-8", "TORWIND-99"}, SourceWaypoint: placementSource, Destination: placementDestination, Good: "ASSAULT_RIFLES", UnitsNeeded: 19, PlayerID: 1})
 	if err != nil {
 		t.Fatalf("weighHolderPlacement: %v", err)
 	}
@@ -229,16 +224,14 @@ func TestWeighHolderPlacement_MeasurementFailure_KeepsTheHolder(t *testing.T) {
 			shipRepo:      &singleHullFakeShipRepo{ships: liveKP23Fleet(t, 8)},
 			graphProvider: &placementStubGraphProvider{err: errors.New("graph unavailable")},
 		}
-		if _, err := handler.weighHolderPlacement(context.Background(), "TORWIND-7",
-			[]string{"TORWIND-5"}, placementSource, placementDestination, "ASSAULT_RIFLES", 19, 1); err == nil {
+		if _, err := handler.weighHolderPlacement(context.Background(), holderRun{Holder: "TORWIND-7", Candidates: []string{"TORWIND-5"}, SourceWaypoint: placementSource, Destination: placementDestination, Good: "ASSAULT_RIFLES", UnitsNeeded: 19, PlayerID: 1}); err == nil {
 			t.Fatalf("expected the graph failure surfaced so the caller keeps the holder")
 		}
 	})
 
 	t.Run("no graph provider wired", func(t *testing.T) {
 		handler := &RunFleetCoordinatorHandler{shipRepo: &singleHullFakeShipRepo{ships: liveKP23Fleet(t, 8)}}
-		placement, err := handler.weighHolderPlacement(context.Background(), "TORWIND-7",
-			[]string{"TORWIND-5"}, placementSource, placementDestination, "ASSAULT_RIFLES", 19, 1)
+		placement, err := handler.weighHolderPlacement(context.Background(), holderRun{Holder: "TORWIND-7", Candidates: []string{"TORWIND-5"}, SourceWaypoint: placementSource, Destination: placementDestination, Good: "ASSAULT_RIFLES", UnitsNeeded: 19, PlayerID: 1})
 		if err != nil {
 			t.Fatalf("a nil provider must degrade quietly, got: %v", err)
 		}
@@ -257,14 +250,12 @@ func TestDecideDeliverHeldFirst_OneShotPerContractAndHull(t *testing.T) {
 	attempted := map[string]bool{}
 	ctx := context.Background()
 
-	first := handler.decideDeliverHeldFirst(ctx, "cms41jtz0", "TORWIND-7", []string{"TORWIND-5", "TORWIND-8"},
-		placementSource, placementDestination, "ASSAULT_RIFLES", 19, 1, attempted)
+	first := handler.decideDeliverHeldFirst(ctx, "cms41jtz0", holderRun{Holder: "TORWIND-7", Candidates: []string{"TORWIND-5", "TORWIND-8"}, SourceWaypoint: placementSource, Destination: placementDestination, Good: "ASSAULT_RIFLES", UnitsNeeded: 19, PlayerID: 1}, attempted)
 	if !first {
 		t.Fatalf("the measured live case must split the cycle on the first pass")
 	}
 
-	second := handler.decideDeliverHeldFirst(ctx, "cms41jtz0", "TORWIND-7", []string{"TORWIND-5", "TORWIND-8"},
-		placementSource, placementDestination, "ASSAULT_RIFLES", 19, 1, attempted)
+	second := handler.decideDeliverHeldFirst(ctx, "cms41jtz0", holderRun{Holder: "TORWIND-7", Candidates: []string{"TORWIND-5", "TORWIND-8"}, SourceWaypoint: placementSource, Destination: placementDestination, Good: "ASSAULT_RIFLES", UnitsNeeded: 19, PlayerID: 1}, attempted)
 	if second {
 		t.Fatalf("a second deliver-held dispatch for the same hull+contract would livelock — the full leg must run instead")
 	}

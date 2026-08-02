@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"strconv"
 	"time"
@@ -83,23 +84,31 @@ func (o attemptOutcome) isSuccess() bool {
 	return o.statusCode >= 200 && o.statusCode < 300
 }
 
-func (c *SpaceTradersClient) sendOnce(ctx context.Context, method, url, token string, body interface{}) (attemptOutcome, error) {
+// apiRequest is one outbound call; path is relative to the client's baseURL.
+type apiRequest struct {
+	method string
+	path   string
+	token  string
+	body   interface{}
+}
+
+func (c *SpaceTradersClient) sendOnce(ctx context.Context, call apiRequest) (attemptOutcome, error) {
 	var reqBody io.Reader
-	if body != nil {
-		jsonData, err := json.Marshal(body)
+	if call.body != nil {
+		jsonData, err := json.Marshal(call.body)
 		if err != nil {
 			return attemptOutcome{}, fmt.Errorf("failed to marshal request body: %w", err)
 		}
 		reqBody = bytes.NewBuffer(jsonData)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, url, reqBody)
+	req, err := http.NewRequestWithContext(ctx, call.method, c.baseURL+call.path, reqBody)
 	if err != nil {
 		return attemptOutcome{}, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Authorization", "Bearer "+call.token)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -115,9 +124,8 @@ func (c *SpaceTradersClient) sendOnce(ctx context.Context, method, url, token st
 	return attemptOutcome{statusCode: resp.StatusCode, header: resp.Header, body: respBody}, nil
 }
 
-func (c *SpaceTradersClient) doWithRetry(ctx context.Context, method, path, token string, body interface{}, onTerminal func(statusCode int, respBody []byte) error) error {
-	url := c.baseURL + path
-	endpoint := apiEndpointClassifier.classify(path)
+func (c *SpaceTradersClient) doWithRetry(ctx context.Context, call apiRequest, onTerminal func(statusCode int, respBody []byte) error) error {
+	endpoint := apiEndpointClassifier.classify(call.path)
 	overallStart := time.Now()
 
 	var lastErr error
@@ -134,11 +142,11 @@ func (c *SpaceTradersClient) doWithRetry(ctx context.Context, method, path, toke
 		rateLimitWait := time.Since(rateLimitStart)
 		c.limiterPressure.Observe(rateLimitWait, time.Now())
 		if collector := c.getMetricsCollector(); collector != nil {
-			collector.RecordRateLimitWait(method, endpoint, rateLimitWait.Seconds())
+			collector.RecordRateLimitWait(call.method, endpoint, rateLimitWait.Seconds())
 			collector.SetRateLimiterTokens(c.rateLimiter.Tokens())
 		}
 
-		outcome, err := c.sendOnce(ctx, method, url, token, body)
+		outcome, err := c.sendOnce(ctx, call)
 		if err != nil {
 			return err
 		}
@@ -147,8 +155,8 @@ func (c *SpaceTradersClient) doWithRetry(ctx context.Context, method, path, toke
 		// site covers both terminal and retry paths, since it runs before
 		// classify() branches on the outcome.
 		if tracker := c.getBudgetTracker(); tracker != nil {
-			hull := extractShipSymbol(path)
-			purpose := classifyPurpose(method, attempt)
+			hull := extractShipSymbol(call.path)
+			purpose := classifyPurpose(call.method, attempt)
 			tracker.Record(hull, purpose, sourceFromContext(ctx), outcome.statusCode == http.StatusTooManyRequests)
 		}
 
@@ -157,7 +165,7 @@ func (c *SpaceTradersClient) doWithRetry(ctx context.Context, method, path, toke
 			terminalErr := onTerminal(outcome.statusCode, outcome.body)
 			if terminalErr == nil || !outcome.isSuccess() {
 				if collector := c.getMetricsCollector(); collector != nil {
-					collector.RecordAPIRequest(method, endpoint, outcome.statusCode, time.Since(overallStart).Seconds())
+					collector.RecordAPIRequest(call.method, endpoint, outcome.statusCode, time.Since(overallStart).Seconds())
 				}
 			}
 			return terminalErr
@@ -165,7 +173,7 @@ func (c *SpaceTradersClient) doWithRetry(ctx context.Context, method, path, toke
 
 		lastErr = decision.failure
 		if collector := c.getMetricsCollector(); collector != nil {
-			collector.RecordAPIRetry(method, endpoint, decision.metricReason)
+			collector.RecordAPIRetry(call.method, endpoint, decision.metricReason)
 		}
 		if attempt >= c.maxRetries {
 			finalStatusCode = outcome.statusCode
@@ -183,10 +191,30 @@ func (c *SpaceTradersClient) doWithRetry(ctx context.Context, method, path, toke
 	}
 
 	if collector := c.getMetricsCollector(); collector != nil && finalStatusCode > 0 {
-		collector.RecordAPIRequest(method, endpoint, finalStatusCode, time.Since(overallStart).Seconds())
+		collector.RecordAPIRequest(call.method, endpoint, finalStatusCode, time.Since(overallStart).Seconds())
 	}
 	if lastErr != nil {
 		return fmt.Errorf("max retries exceeded: %w", lastErr)
 	}
 	return fmt.Errorf("max retries exceeded")
+}
+
+// addJitter adds random jitter to a duration to avoid thundering herd
+// Returns a duration between 50% and 150% of the original value
+func addJitter(d time.Duration) time.Duration {
+	if d > maxBackoffDuration {
+		d = maxBackoffDuration
+	}
+	jitter := 0.5 + rand.Float64() // 0.5 to 1.5
+	return time.Duration(float64(d) * jitter)
+}
+
+// retryableError represents an error that should trigger a retry
+type retryableError struct {
+	message    string
+	retryAfter time.Duration
+}
+
+func (e *retryableError) Error() string {
+	return e.message
 }

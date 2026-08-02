@@ -103,21 +103,19 @@ type surgeTarget struct {
 // pass its reads and not one write, however many ticks run.
 func (h *RunProbeSensingCoordinatorHandler) surgeToUnpricedSystems(
 	ctx context.Context,
-	cmd *RunProbeSensingCoordinatorCommand,
-	cfg sensingConfig,
-	ports SensingEnginePorts,
+	cyc sensingCycle,
 	systems []parkedsensing.ExpandSystem,
 	failures *[]error,
 ) int {
 	logger := common.LoggerFromContext(ctx)
-	playerID := cmd.PlayerID.Value()
+	playerID := cyc.cmd.PlayerID.Value()
 
 	// EVERY READ FAILS CLOSED. The pool read is the era-scoped one and refuses
 	// rather than guessing (see UnpricedSystemPool); the post list is the sharpest,
 	// because read permissively an unreadable post list is an EMPTY one — "no hull
 	// is manned" — and this pass would then fly the probe manning the surviving home
 	// post out from under the scout coordinator.
-	pool, err := ports.UnpricedPool.UnpricedSystems(ctx, playerID)
+	pool, err := cyc.ports.UnpricedPool.UnpricedSystems(ctx, playerID)
 	if err != nil {
 		*failures = append(*failures, fmt.Errorf("failed to read the charted-but-unpriced sensing pool: %w", err))
 		return 0
@@ -129,19 +127,19 @@ func (h *RunProbeSensingCoordinatorHandler) surgeToUnpricedSystems(
 	// RE-READ, not the copy the passes above worked from. Adoption and the orphan
 	// dispatch have already written this tick, and a hull one of them just claimed
 	// must read as taken here — sharing their index would hand one hull two errands.
-	holds, err := ledgerHoldings(ctx, ports, playerID)
+	holds, err := ledgerHoldings(ctx, cyc.ports, playerID)
 	if err != nil {
 		*failures = append(*failures, err)
 		return 0
 	}
 
 	// THE IN-FLIGHT BUDGET, derived entirely from durable rows (RULINGS #2).
-	budget := cfg.SurgeInFlightCap - inFlightSurge(pool, holds)
+	budget := cyc.cfg.SurgeInFlightCap - inFlightSurge(pool, holds)
 	if budget <= 0 {
 		return 0
 	}
 
-	ships, err := h.fleetRepo.FindAllByPlayer(ctx, cmd.PlayerID)
+	ships, err := h.fleetRepo.FindAllByPlayer(ctx, cyc.cmd.PlayerID)
 	if err != nil {
 		*failures = append(*failures, fmt.Errorf("failed to list the fleet for the sensing surge: %w", err))
 		return 0
@@ -151,12 +149,7 @@ func (h *RunProbeSensingCoordinatorHandler) surgeToUnpricedSystems(
 		*failures = append(*failures, fmt.Errorf("failed to list scout posts for the sensing surge: %w", err))
 		return 0
 	}
-	manned := make(map[string]bool, len(posts))
-	for _, post := range posts {
-		if post.AssignedHull != "" {
-			manned[post.AssignedHull] = true
-		}
-	}
+	manned := primaryMannedHulls(posts)
 
 	surplus := surplusProbes(ships, manned, holds, systems)
 	if len(surplus) == 0 {
@@ -170,7 +163,7 @@ func (h *RunProbeSensingCoordinatorHandler) surgeToUnpricedSystems(
 	// One walker per tick, memoised per origin: surplus probes stack in a handful of
 	// systems, so the topology behind a burst of dispatches is read once per distinct
 	// system the hulls stand in rather than once per hull.
-	reach := newGateReach(ports.Gates, failures)
+	reach := newGateReach(cyc.ports.Gates, failures)
 
 	dispatched, writes := 0, 0
 	for _, hull := range surplus {
@@ -192,62 +185,9 @@ func (h *RunProbeSensingCoordinatorHandler) surgeToUnpricedSystems(
 
 		ship := hull.ship.ShipSymbol()
 		writes++
-		// ONE WRITE, AND THAT IS THE MONEY GUARD (RULINGS #4).
-		//
-		// The obvious shape — declare the placement WANTED, then transition it to
-		// IN_TRANSIT naming the hull — opens a spend path this pass must not have: a
-		// failure between the two writes leaves a hull-less WANTED row behind, and a
-		// hull-less WANTED row in a MARKET slot is exactly what the buy queue drains
-		// by BUYING A PROBE. This pass would then have spent money by failing.
-		//
-		// So the row is BORN NAMING ITS HULL, in IN_TRANSIT, through the one ledger
-		// write whose conflict set carries state and assigned_ship. There is no window
-		// in which the placement exists without a hull, and therefore no window in
-		// which the drain can see it: the hull starts named by no row and ends named
-		// by one.
-		//
-		// SAFE AS AN INSERT because surgeTargets only ever offers a waypoint carrying
-		// NO row at all — the conflict branch of that write re-points an existing row
-		// at this hull, which would evict an incumbent, and the target picker is what
-		// makes that branch unreachable here.
-		//
-		// It writes IN_TRANSIT for a hull that has NOT been told to move. The placement
-		// machine's dispatchClaim branch is what notices a still hull on an in-flight
-		// row and flies it — load-bearing for this path, exactly as it is for the
-		// orphan dispatch, and without it the hull would stand where it is forever
-		// while the row read as in-flight.
-		if uerr := ports.Ledger.UpsertSpareSlot(ctx, playerID, parkedsensing.SlotRecord{
-			Waypoint:     target.waypoint,
-			System:       target.system,
-			Kind:         parkedsensing.SlotKindMarket,
-			State:        parkedsensing.SlotStateInTransit,
-			AssignedShip: ship,
-		}); uerr != nil {
-			*failures = append(*failures, fmt.Errorf(
-				"failed to surge surplus probe %s into the unpriced system %s: %w", ship, target.system, uerr))
-			continue
+		if berthSurgedProbe(ctx, cyc.ports, playerID, ship, target, holds, failures) {
+			dispatched++
 		}
-
-		// Best-effort behind the row, in the same order and for the same reason as
-		// adoption and the orphan dispatch: the probe cap counts ROWS, and the row is
-		// written. Named rather than silent, because an untagged hull reads as idle and
-		// undedicated to every other coordinator's ownership sweep — long enough to be
-		// poached mid-flight.
-		if tagErr := ports.Fleet.AssignFleet(ctx, playerID, ship, parkedsensing.SensingParkedFleetTag); tagErr != nil {
-			logger.Log("WARNING", fmt.Sprintf(
-				"Surged probe %s is now dispatched to %s but keeps its old fleet tag (the probe cap counts it; the placement machine re-tags it on first use): %v",
-				ship, target.waypoint, tagErr), map[string]interface{}{
-				"action":      "parked_sensing_surge_tag_failed",
-				"ship_symbol": ship,
-				"waypoint":    target.waypoint,
-			})
-		}
-		holds.hulls[ship] = true
-		holds.rows[target.waypoint] = append(holds.rows[target.waypoint], parkedsensing.QueuedSlot{
-			Waypoint: target.waypoint, System: target.system,
-			Kind: parkedsensing.SlotKindMarket, State: parkedsensing.SlotStateInTransit, AssignedShip: ship,
-		})
-		dispatched++
 	}
 
 	if dispatched > 0 {
@@ -257,13 +197,67 @@ func (h *RunProbeSensingCoordinatorHandler) surgeToUnpricedSystems(
 			"action":     "parked_sensing_surged",
 			"surged":     dispatched,
 			"pool":       len(pool),
-			"in_flight":  cfg.SurgeInFlightCap - budget + dispatched,
-			"cap":        cfg.SurgeInFlightCap,
+			"in_flight":  cyc.cfg.SurgeInFlightCap - budget + dispatched,
+			"cap":        cyc.cfg.SurgeInFlightCap,
 			"surplus":    len(surplus),
 			"candidates": len(targets),
 		})
 	}
 	return dispatched
+}
+
+// berthSurgedProbe writes the surplus hull onto its target placement and reports whether it
+// was dispatched.
+//
+// ONE WRITE, AND THAT IS THE MONEY GUARD (RULINGS #4). The obvious shape — declare the
+// placement WANTED, then transition it to IN_TRANSIT naming the hull — opens a spend path this
+// pass must not have: a failure between the two writes leaves a hull-less WANTED row behind,
+// and a hull-less WANTED row in a MARKET slot is exactly what the buy queue drains by BUYING A
+// PROBE. This pass would then have spent money by failing. So the row is BORN NAMING ITS HULL,
+// in IN_TRANSIT, through the one ledger write whose conflict set carries state and
+// assigned_ship: the hull starts named by no row and ends named by one, with no window in
+// which the drain can see a hull-less placement.
+//
+// SAFE AS AN INSERT because surgeTargets only ever offers a waypoint carrying NO row at all —
+// the conflict branch of that write re-points an existing row at this hull, which would evict
+// an incumbent, and the target picker is what makes that branch unreachable here.
+//
+// It writes IN_TRANSIT for a hull that has NOT been told to move. The placement machine's
+// dispatchClaim branch is what notices a still hull on an in-flight row and flies it —
+// load-bearing here exactly as it is for the orphan dispatch, and without it the hull would
+// stand where it is forever while the row read as in-flight.
+func berthSurgedProbe(ctx context.Context, ports SensingEnginePorts, playerID int, ship string, target surgeTarget, holds ledgerHolds, failures *[]error) bool {
+	if err := ports.Ledger.UpsertSpareSlot(ctx, playerID, parkedsensing.SlotRecord{
+		Waypoint:     target.waypoint,
+		System:       target.system,
+		Kind:         parkedsensing.SlotKindMarket,
+		State:        parkedsensing.SlotStateInTransit,
+		AssignedShip: ship,
+	}); err != nil {
+		*failures = append(*failures, fmt.Errorf(
+			"failed to surge surplus probe %s into the unpriced system %s: %w", ship, target.system, err))
+		return false
+	}
+
+	// Best-effort behind the row, in the same order and for the same reason as adoption and the
+	// orphan dispatch: the probe cap counts ROWS, and the row is written. Named rather than
+	// silent, because an untagged hull reads as idle and undedicated to every other
+	// coordinator's ownership sweep — long enough to be poached mid-flight.
+	if tagErr := ports.Fleet.AssignFleet(ctx, playerID, ship, parkedsensing.SensingParkedFleetTag); tagErr != nil {
+		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
+			"Surged probe %s is now dispatched to %s but keeps its old fleet tag (the probe cap counts it; the placement machine re-tags it on first use): %v",
+			ship, target.waypoint, tagErr), map[string]interface{}{
+			"action":      "parked_sensing_surge_tag_failed",
+			"ship_symbol": ship,
+			"waypoint":    target.waypoint,
+		})
+	}
+	holds.hulls[ship] = true
+	holds.rows[target.waypoint] = append(holds.rows[target.waypoint], parkedsensing.QueuedSlot{
+		Waypoint: target.waypoint, System: target.system,
+		Kind: parkedsensing.SlotKindMarket, State: parkedsensing.SlotStateInTransit, AssignedShip: ship,
+	})
+	return true
 }
 
 // inFlightSurge counts the probes already flying toward a system in the pool.

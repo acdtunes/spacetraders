@@ -312,8 +312,9 @@ func presenceTarget(ctx context.Context, p YardPresencePorts, playerID int, requ
 func retaskToYard(ctx context.Context, p YardPresencePorts, playerID int, source, target QueuedSlot) (bool, error) {
 	hull := source.AssignedShip
 
-	err := p.Ledger.TransitionSlot(ctx, playerID, target.Waypoint, target.Kind, target.State, SlotStateInTransit,
-		SlotFields{AssignedShip: &hull})
+	err := p.Ledger.TransitionSlot(ctx, playerID, SlotTransition{
+		Waypoint: target.Waypoint, Kind: target.Kind, From: target.State, To: SlotStateInTransit,
+	}, SlotFields{AssignedShip: &hull})
 	switch {
 	case errors.Is(err, ErrSlotClaimed):
 		// Another writer took the placement. The source is untouched — which is
@@ -329,8 +330,9 @@ func retaskToYard(ctx context.Context, p YardPresencePorts, playerID int, source
 	// fill, and leaving it on the books is what gets it re-covered once a hull can
 	// be spared for it.
 	cleared := ""
-	if err := p.Ledger.TransitionSlot(ctx, playerID, source.Waypoint, source.Kind, SlotStateParked, SlotStateWanted,
-		SlotFields{AssignedShip: &cleared}); err != nil {
+	if err := p.Ledger.TransitionSlot(ctx, playerID, SlotTransition{
+		Waypoint: source.Waypoint, Kind: source.Kind, From: SlotStateParked, To: SlotStateWanted,
+	}, SlotFields{AssignedShip: &cleared}); err != nil {
 		return true, fmt.Errorf(
 			"hull %s re-tasked to unpriced yard %s but its market %s was not released (hull now double-counted, cap reads high): %w",
 			hull, target.Waypoint, source.Waypoint, err)

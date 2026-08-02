@@ -14,6 +14,8 @@ type GormManufacturingPipelineRepository struct {
 	db *gorm.DB
 }
 
+var _ manufacturing.PipelineRepository = (*GormManufacturingPipelineRepository)(nil)
+
 // NewGormManufacturingPipelineRepository creates a new GORM manufacturing pipeline repository
 func NewGormManufacturingPipelineRepository(db *gorm.DB) *GormManufacturingPipelineRepository {
 	return &GormManufacturingPipelineRepository{db: db}
@@ -21,7 +23,6 @@ func NewGormManufacturingPipelineRepository(db *gorm.DB) *GormManufacturingPipel
 
 // Create persists a new pipeline
 func (r *GormManufacturingPipelineRepository) Create(ctx context.Context, pipeline *manufacturing.ManufacturingPipeline) error {
-	// Compute next sequence number for this player
 	var maxSeq int
 	err := r.db.WithContext(ctx).
 		Model(&ManufacturingPipelineModel{}).
@@ -32,7 +33,6 @@ func (r *GormManufacturingPipelineRepository) Create(ctx context.Context, pipeli
 		return fmt.Errorf("failed to get max sequence number: %w", err)
 	}
 
-	// Set the sequence number on the pipeline
 	pipeline.SetSequenceNumber(maxSeq + 1)
 
 	model := r.pipelineToModel(pipeline)
@@ -239,7 +239,6 @@ func (r *GormManufacturingPipelineRepository) modelsToPipelines(models []Manufac
 
 // pipelineToModel converts domain entity to database model
 func (r *GormManufacturingPipelineRepository) pipelineToModel(p *manufacturing.ManufacturingPipeline) *ManufacturingPipelineModel {
-	// Serialize materials to JSON
 	materialsJSON := "[]"
 	if len(p.Materials()) > 0 {
 		materials := make([]map[string]interface{}, len(p.Materials()))

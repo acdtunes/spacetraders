@@ -14,8 +14,6 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	watchkeeper "github.com/andrescamacho/spacetraders-go/internal/captain"
-	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
-	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
 // watchPolicyStore is the subset of one-shot wake-watch persistence the CLI
@@ -112,13 +110,9 @@ func newShipNavReader(ctx context.Context) (shipNavReader, error) {
 		return nil, err
 	}
 
-	cfg, err := config.LoadConfig("")
+	db, err := openDatabase()
 	if err != nil {
-		return nil, fmt.Errorf("failed to load config: %w", err)
-	}
-	db, err := database.NewConnection(&cfg.Database)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to database: %w", err)
+		return nil, err
 	}
 
 	playerID, err := resolveNumericPlayerID(ctx, db, playerIdent)

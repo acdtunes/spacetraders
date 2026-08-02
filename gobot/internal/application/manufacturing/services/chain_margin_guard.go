@@ -126,7 +126,8 @@ func (g *ChainMarginGuard) Evaluate(ctx context.Context, root *goods.SupplyChain
 
 	// Project every stage's live P&L, delivering the finished product into the
 	// sink bid. Any unpriceable stage fails the whole chain closed.
-	pl, feedSpend, perr := g.branchPL(ctx, root, sink.Price, sink.TradeVolume, systemSymbol, playerID, &proj.Stages)
+	pricing := &chainPricing{guard: g, systemSymbol: systemSymbol, playerID: playerID, stages: &proj.Stages}
+	pl, feedSpend, perr := pricing.branchPL(ctx, root, sink.Price, sink.TradeVolume)
 	if perr != nil {
 		return failClosed(proj, perr.Error())
 	}
@@ -156,6 +157,15 @@ func (g *ChainMarginGuard) Evaluate(ctx context.Context, root *goods.SupplyChain
 	return proj
 }
 
+// chainPricing is one Evaluate walk down a supply chain: the market lookups are all against the
+// same system and player, and every leg appends to the one stage trace the projection reports.
+type chainPricing struct {
+	guard        *ChainMarginGuard
+	systemSymbol string
+	playerID     int
+	stages       *[]string
+}
+
 // branchPL projects the live P&L of obtaining node.Good and delivering it into
 // deliverBid at up to deliverVol units, plus the recursive P&L of obtaining its
 // inputs. Returns (P&L, feed spend on raw BUY inputs, error). Any market-read
@@ -169,39 +179,36 @@ func (g *ChainMarginGuard) Evaluate(ctx context.Context, root *goods.SupplyChain
 //     import bid). Leg P&L = (deliverBid − fab_ask)·vol. Its inputs are then priced
 //     recursively, each delivered into THIS fab's import bid for that input good.
 //     The harvest ask is real P&L but is NOT feed spend — only raw BUY inputs are.
-func (g *ChainMarginGuard) branchPL(
+func (c *chainPricing) branchPL(
 	ctx context.Context,
 	node *goods.SupplyChainNode,
 	deliverBid int,
 	deliverVol int,
-	systemSymbol string,
-	playerID int,
-	stages *[]string,
 ) (int, int, error) {
 	// Raw feed input.
 	if node.IsLeaf() && node.AcquisitionMethod == goods.AcquisitionBuy {
-		src, err := g.marketLocator.FindExportMarket(ctx, node.Good, systemSymbol, playerID)
+		src, err := c.guard.marketLocator.FindExportMarket(ctx, node.Good, c.systemSymbol, c.playerID)
 		if err != nil || src == nil {
 			return 0, 0, fmt.Errorf("no priceable source for feed %s: %v", node.Good, err)
 		}
 		vol := min(src.TradeVolume, deliverVol)
 		legPL := (deliverBid - src.Price) * vol
 		feedSpend := src.Price * vol
-		*stages = append(*stages, fmt.Sprintf("feed %s bid%d-ask%d=%d×%d", node.Good, deliverBid, src.Price, deliverBid-src.Price, vol))
+		*c.stages = append(*c.stages, fmt.Sprintf("feed %s bid%d-ask%d=%d×%d", node.Good, deliverBid, src.Price, deliverBid-src.Price, vol))
 		return legPL, feedSpend, nil
 	}
 
 	// Fabrication node: locate its fab (export market), price the harvest→deliver
 	// leg, then recurse into inputs delivered into this fab's import bids.
-	fab, err := g.marketLocator.FindExportMarket(ctx, node.Good, systemSymbol, playerID)
+	fab, err := c.guard.marketLocator.FindExportMarket(ctx, node.Good, c.systemSymbol, c.playerID)
 	if err != nil || fab == nil {
 		return 0, 0, fmt.Errorf("no priceable fab (export market) for %s: %v", node.Good, err)
 	}
 	nodeVol := min(fab.TradeVolume, deliverVol)
 	nodePL := (deliverBid - fab.Price) * nodeVol
-	*stages = append(*stages, fmt.Sprintf("make %s bid%d-ask%d=%d×%d", node.Good, deliverBid, fab.Price, deliverBid-fab.Price, nodeVol))
+	*c.stages = append(*c.stages, fmt.Sprintf("make %s bid%d-ask%d=%d×%d", node.Good, deliverBid, fab.Price, deliverBid-fab.Price, nodeVol))
 
-	fabMarket, err := g.marketRepo.GetMarketData(ctx, fab.WaypointSymbol, playerID)
+	fabMarket, err := c.guard.marketRepo.GetMarketData(ctx, fab.WaypointSymbol, c.playerID)
 	if err != nil || fabMarket == nil {
 		return 0, 0, fmt.Errorf("no market data for fab %s of %s: %v", fab.WaypointSymbol, node.Good, err)
 	}
@@ -213,7 +220,7 @@ func (g *ChainMarginGuard) branchPL(
 		if fabImport == nil {
 			return 0, 0, fmt.Errorf("fab %s does not import feed %s (unpriceable delivery leg)", fab.WaypointSymbol, child.Good)
 		}
-		childPL, childFeed, cerr := g.branchPL(ctx, child, fabImport.SellPrice(), fabImport.TradeVolume(), systemSymbol, playerID, stages)
+		childPL, childFeed, cerr := c.branchPL(ctx, child, fabImport.SellPrice(), fabImport.TradeVolume())
 		if cerr != nil {
 			return 0, 0, cerr
 		}

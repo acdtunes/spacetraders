@@ -18,7 +18,7 @@ import (
 // older than this window means the owning factory died mid-buy without releasing — so the
 // window is set comfortably above the worst-case single buy yet short enough that a dead
 // container's hold is reclaimed well within a factory's buy cadence, never wedging the
-// shared budget. Mirrors the container heartbeat staleness idiom (FindStaleManufacturingWorkers).
+// shared budget.
 const defaultSpendReservationStaleWindow = 5 * time.Minute
 
 // spendAdvisoryNamespace is the fixed first key of the Postgres transaction-scoped

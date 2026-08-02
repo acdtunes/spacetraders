@@ -191,6 +191,15 @@ func DefaultColdStartCaps() []GoodCap {
 // — a waypoint legitimately at the origin resolves ok=true with (0,0).
 type WaypointCoordsLookup func(waypointSymbol string) (x, y float64, ok bool)
 
+// residualGeometry is the warehouse-side position context every candidate's residual is
+// measured from, resolved once per solve. whKnown=false fails open to the coarse constant.
+type residualGeometry struct {
+	homeSystem string
+	whX, whY   float64
+	whKnown    bool
+	coords     WaypointCoordsLookup
+}
+
 // residualKnobs holds the residual-buy-leg ramp params with every default substituted and
 // the RULING #14 ceiling clamp applied. Extracted so the source-side (PlanWarehouseCaps)
 // and destination-receipt (PlanReceiptCaps) adapters resolve the ramp identically
@@ -273,20 +282,14 @@ func PlanWarehouseCaps(
 	current map[string]int,
 	params WarehouseCapParams,
 ) WarehouseCapResult {
-	k := params.residualKnobs()
-	inResidual := k.inResidual
-	crossResidual := k.crossResidual
-	floor := k.floor
-	ceiling := k.ceiling
-	saturation := k.saturation
+	knobs := params.residualKnobs()
 
 	// Resolve the warehouse's own position ONCE. When it (or the whole lookup) is unavailable, no
 	// in-system distance can be computed and every in-system good FAILS OPEN to the coarse constant
 	// (RULINGS #1) — byte-identical to the binary proxy.
-	var whX, whY float64
-	whKnown := false
+	geo := residualGeometry{homeSystem: homeSystem, coords: coords}
 	if coords != nil && warehouseWaypoint != "" {
-		whX, whY, whKnown = coords(warehouseWaypoint)
+		geo.whX, geo.whY, geo.whKnown = coords(warehouseWaypoint)
 	}
 
 	goods := make([]GoodDemand, 0, len(candidates))
@@ -298,7 +301,7 @@ func PlanWarehouseCaps(
 		if size <= 0 {
 			continue // nothing to size — cannot buffer
 		}
-		residual := residualBuyLeg(c, homeSystem, whX, whY, whKnown, coords, inResidual, crossResidual, floor, ceiling, saturation)
+		residual := residualBuyLeg(c, geo, knobs)
 		payment := float64(c.HomeAsk)
 		if payment <= 0 {
 			payment = float64(c.ForeignAsk) // last-resort value proxy when the home ask is unknown
@@ -334,26 +337,19 @@ func PlanWarehouseCaps(
 //     TTL-expired source waypoint — FAILS OPEN to the coarse InSystemResidual constant (RULINGS
 //     #1): never crashes, never drops the good. A nil lookup makes every good fall back, so the
 //     whole solve is byte-identical to the binary proxy.
-func residualBuyLeg(
-	c persistence.DemandCandidate,
-	homeSystem string,
-	whX, whY float64,
-	whKnown bool,
-	coords WaypointCoordsLookup,
-	inResidual, crossResidual, floor, ceiling, saturation float64,
-) float64 {
-	if c.ForeignSystem != "" && c.ForeignSystem != homeSystem {
-		return crossResidual // cross-system: the buffer's highest-value case (RULING #14)
+func residualBuyLeg(c persistence.DemandCandidate, geo residualGeometry, k residualKnobs) float64 {
+	if c.ForeignSystem != "" && c.ForeignSystem != geo.homeSystem {
+		return k.crossResidual // cross-system: the buffer's highest-value case (RULING #14)
 	}
 	// In-system: try a real dist(warehouse, source); fail open to the coarse in-system constant.
-	if !whKnown || coords == nil || c.ForeignMarket == "" {
-		return inResidual
+	if !geo.whKnown || geo.coords == nil || c.ForeignMarket == "" {
+		return k.inResidual
 	}
-	srcX, srcY, ok := coords(c.ForeignMarket)
+	srcX, srcY, ok := geo.coords(c.ForeignMarket)
 	if !ok {
-		return inResidual
+		return k.inResidual
 	}
-	return residualForDistance(euclidDist(whX, whY, srcX, srcY), floor, ceiling, saturation)
+	return residualForDistance(euclidDist(geo.whX, geo.whY, srcX, srcY), k.floor, k.ceiling, k.saturation)
 }
 
 // euclidDist is the in-system Euclidean distance between two positions (mirrors

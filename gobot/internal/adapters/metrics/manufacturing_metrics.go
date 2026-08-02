@@ -70,283 +70,195 @@ func NewManufacturingMetricsCollector(db *gorm.DB) *ManufacturingMetricsCollecto
 		db: db,
 
 		// Pipeline Health Metrics
-		pipelineRunningTotal: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "manufacturing_pipeline_running_total",
-				Help:      "Number of currently running manufacturing pipelines",
-			},
-			[]string{"player_id", "product_good"},
+		pipelineRunningTotal: newGaugeVec(
+			"manufacturing_pipeline_running_total",
+			"Number of currently running manufacturing pipelines",
+			"player_id",
+			"product_good",
 		),
 
-		pipelineQueueDepth: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "manufacturing_pipeline_queue_depth",
-				Help:      "Total pipelines in planning or executing state",
-			},
-			[]string{"player_id"},
+		pipelineQueueDepth: newGaugeVec(
+			"manufacturing_pipeline_queue_depth",
+			"Total pipelines in planning or executing state",
+			"player_id",
 		),
 
-		pipelineCompletedTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "manufacturing_pipeline_completed_total",
-				Help:      "Total completed manufacturing pipelines by status",
-			},
-			[]string{"player_id", "product_good", "status"},
+		pipelineCompletedTotal: newCounterVec(
+			"manufacturing_pipeline_completed_total",
+			"Total completed manufacturing pipelines by status",
+			"player_id",
+			"product_good",
+			"status",
 		),
 
-		pipelineDurationSeconds: prometheus.NewHistogramVec(
-			prometheus.HistogramOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "manufacturing_pipeline_duration_seconds",
-				Help:      "Pipeline execution duration in seconds",
-				Buckets:   []float64{60, 120, 300, 600, 900, 1200, 1800, 3600},
-			},
-			[]string{"player_id", "product_good"},
+		pipelineDurationSeconds: newHistogramVec(
+			"manufacturing_pipeline_duration_seconds",
+			"Pipeline execution duration in seconds",
+			[]float64{60, 120, 300, 600, 900, 1200, 1800, 3600},
+			"player_id",
+			"product_good",
 		),
 
-		pipelineProfitCredits: prometheus.NewHistogramVec(
-			prometheus.HistogramOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "manufacturing_pipeline_profit_credits",
-				Help:      "Profit per pipeline in credits",
-				Buckets:   []float64{1000, 5000, 10000, 50000, 100000, 500000},
-			},
-			[]string{"player_id", "product_good"},
+		pipelineProfitCredits: newHistogramVec(
+			"manufacturing_pipeline_profit_credits",
+			"Profit per pipeline in credits",
+			[]float64{1000, 5000, 10000, 50000, 100000, 500000},
+			"player_id",
+			"product_good",
 		),
 
 		// Task Execution Metrics
-		tasksPendingTotal: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "manufacturing_tasks_pending_total",
-				Help:      "Number of tasks waiting for dependencies",
-			},
-			[]string{"player_id", "task_type"},
+		tasksPendingTotal: newGaugeVec(
+			"manufacturing_tasks_pending_total",
+			"Number of tasks waiting for dependencies",
+			"player_id",
+			"task_type",
 		),
 
-		tasksReadyTotal: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "manufacturing_tasks_ready_total",
-				Help:      "Number of tasks ready to execute",
-			},
-			[]string{"player_id", "task_type"},
+		tasksReadyTotal: newGaugeVec(
+			"manufacturing_tasks_ready_total",
+			"Number of tasks ready to execute",
+			"player_id",
+			"task_type",
 		),
 
-		tasksExecutingTotal: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "manufacturing_tasks_executing_total",
-				Help:      "Number of tasks currently executing",
-			},
-			[]string{"player_id", "task_type"},
+		tasksExecutingTotal: newGaugeVec(
+			"manufacturing_tasks_executing_total",
+			"Number of tasks currently executing",
+			"player_id",
+			"task_type",
 		),
 
-		tasksCompletedTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "manufacturing_tasks_completed_total",
-				Help:      "Total completed tasks by type and status",
-			},
-			[]string{"player_id", "task_type", "status"},
+		tasksCompletedTotal: newCounterVec(
+			"manufacturing_tasks_completed_total",
+			"Total completed tasks by type and status",
+			"player_id",
+			"task_type",
+			"status",
 		),
 
-		taskDurationSeconds: prometheus.NewHistogramVec(
-			prometheus.HistogramOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "manufacturing_task_duration_seconds",
-				Help:      "Task execution duration in seconds",
-				Buckets:   []float64{10, 30, 60, 120, 300, 600},
-			},
-			[]string{"player_id", "task_type"},
+		taskDurationSeconds: newHistogramVec(
+			"manufacturing_task_duration_seconds",
+			"Task execution duration in seconds",
+			[]float64{10, 30, 60, 120, 300, 600},
+			"player_id",
+			"task_type",
 		),
 
-		taskRetryTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "manufacturing_task_retry_total",
-				Help:      "Total task retries by type",
-			},
-			[]string{"player_id", "task_type"},
+		taskRetryTotal: newCounterVec(
+			"manufacturing_task_retry_total",
+			"Total task retries by type",
+			"player_id",
+			"task_type",
 		),
 
 		// Factory Supply Metrics
-		factorySupplyLevel: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "manufacturing_factory_supply_level",
-				Help:      "Current supply level at factory (1=SCARCE, 2=LIMITED, 3=MODERATE, 4=HIGH, 5=ABUNDANT)",
-			},
-			[]string{"player_id", "factory_symbol", "output_good"},
+		factorySupplyLevel: newGaugeVec(
+			"manufacturing_factory_supply_level",
+			"Current supply level at factory (1=SCARCE, 2=LIMITED, 3=MODERATE, 4=HIGH, 5=ABUNDANT)",
+			"player_id",
+			"factory_symbol",
+			"output_good",
 		),
 
-		factoryInputsDelivered: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "manufacturing_factory_inputs_delivered",
-				Help:      "Input delivery progress (0-1)",
-			},
-			[]string{"player_id", "factory_symbol", "output_good"},
+		factoryInputsDelivered: newGaugeVec(
+			"manufacturing_factory_inputs_delivered",
+			"Input delivery progress (0-1)",
+			"player_id",
+			"factory_symbol",
+			"output_good",
 		),
 
-		factoryReadyTotal: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "manufacturing_factory_ready_total",
-				Help:      "Number of factories ready for collection",
-			},
-			[]string{"player_id"},
+		factoryReadyTotal: newGaugeVec(
+			"manufacturing_factory_ready_total",
+			"Number of factories ready for collection",
+			"player_id",
 		),
 
-		factoryCyclesTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "manufacturing_factory_cycles_total",
-				Help:      "Total production cycles completed",
-			},
-			[]string{"player_id", "factory_symbol", "output_good"},
+		factoryCyclesTotal: newCounterVec(
+			"manufacturing_factory_cycles_total",
+			"Total production cycles completed",
+			"player_id",
+			"factory_symbol",
+			"output_good",
 		),
 
-		supplyTransitionsTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "manufacturing_supply_transitions_total",
-				Help:      "Supply level transitions by good",
-			},
-			[]string{"player_id", "good_symbol", "from_level", "to_level"},
+		supplyTransitionsTotal: newCounterVec(
+			"manufacturing_supply_transitions_total",
+			"Supply level transitions by good",
+			"player_id",
+			"good_symbol",
+			"from_level",
+			"to_level",
 		),
 
 		// Ship Utilization Metrics
-		shipsAssignedTotal: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "manufacturing_ships_assigned_total",
-				Help:      "Number of ships assigned to manufacturing tasks",
-			},
-			[]string{"player_id"},
+		shipsAssignedTotal: newGaugeVec(
+			"manufacturing_ships_assigned_total",
+			"Number of ships assigned to manufacturing tasks",
+			"player_id",
 		),
 
-		shipsIdleTotal: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "manufacturing_ships_idle_total",
-				Help:      "Number of ships available for manufacturing",
-			},
-			[]string{"player_id"},
+		shipsIdleTotal: newGaugeVec(
+			"manufacturing_ships_idle_total",
+			"Number of ships available for manufacturing",
+			"player_id",
 		),
 
-		shipTaskDurationSeconds: prometheus.NewHistogramVec(
-			prometheus.HistogramOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "manufacturing_ship_task_duration_seconds",
-				Help:      "Ship task execution duration in seconds",
-				Buckets:   []float64{10, 30, 60, 120, 300, 600},
-			},
-			[]string{"player_id", "task_type"},
+		shipTaskDurationSeconds: newHistogramVec(
+			"manufacturing_ship_task_duration_seconds",
+			"Ship task execution duration in seconds",
+			[]float64{10, 30, 60, 120, 300, 600},
+			"player_id",
+			"task_type",
 		),
 
-		shipUtilizationPercent: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "manufacturing_ship_utilization_percent",
-				Help:      "Ship utilization percentage (assigned/total * 100)",
-			},
-			[]string{"player_id"},
+		shipUtilizationPercent: newGaugeVec(
+			"manufacturing_ship_utilization_percent",
+			"Ship utilization percentage (assigned/total * 100)",
+			"player_id",
 		),
 
 		// Economic Metrics
-		costTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "manufacturing_cost_total",
-				Help:      "Total manufacturing costs by type",
-			},
-			[]string{"player_id", "cost_type"},
+		costTotal: newCounterVec(
+			"manufacturing_cost_total",
+			"Total manufacturing costs by type",
+			"player_id",
+			"cost_type",
 		),
 
-		revenueTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "manufacturing_revenue_total",
-				Help:      "Total manufacturing revenue",
-			},
-			[]string{"player_id"},
-		),
+		revenueTotal: newCounterVec("manufacturing_revenue_total", "Total manufacturing revenue", "player_id"),
 
-		profitRate: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "manufacturing_profit_rate",
-				Help:      "Manufacturing profit rate (credits/hour)",
-			},
-			[]string{"player_id"},
-		),
+		profitRate: newGaugeVec("manufacturing_profit_rate", "Manufacturing profit rate (credits/hour)", "player_id"),
 
-		marginPercent: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "manufacturing_margin_percent",
-				Help:      "Profit margin percentage by product",
-			},
-			[]string{"player_id", "product_good"},
+		marginPercent: newGaugeVec(
+			"manufacturing_margin_percent",
+			"Profit margin percentage by product",
+			"player_id",
+			"product_good",
 		),
 
 		// Starvation Metrics - detect and alert on task type starvation
-		taskStarvationMinutes: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "manufacturing_task_starvation_minutes",
-				Help:      "Minutes since last task assignment by type (alert if > 15)",
-			},
-			[]string{"player_id", "task_type"},
+		taskStarvationMinutes: newGaugeVec(
+			"manufacturing_task_starvation_minutes",
+			"Minutes since last task assignment by type (alert if > 15)",
+			"player_id",
+			"task_type",
 		),
 
-		taskAssignmentsTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "manufacturing_task_assignments_total",
-				Help:      "Total task assignments by type",
-			},
-			[]string{"player_id", "task_type"},
+		taskAssignmentsTotal: newCounterVec(
+			"manufacturing_task_assignments_total",
+			"Total task assignments by type",
+			"player_id",
+			"task_type",
 		),
 
-		taskTypeReservationSkipsTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "manufacturing_task_type_reservation_skips_total",
-				Help:      "Total tasks skipped due to task type reservation rules",
-			},
-			[]string{"player_id", "task_type", "reason"},
+		taskTypeReservationSkipsTotal: newCounterVec(
+			"manufacturing_task_type_reservation_skips_total",
+			"Total tasks skipped due to task type reservation rules",
+			"player_id",
+			"task_type",
+			"reason",
 		),
 
 		// Configuration
@@ -357,52 +269,37 @@ func NewManufacturingMetricsCollector(db *gorm.DB) *ManufacturingMetricsCollecto
 // Register registers all manufacturing metrics with the Prometheus registry
 func (c *ManufacturingMetricsCollector) Register() error {
 	if Registry == nil {
-		return nil // Metrics not enabled
+		return nil
 	}
-
-	metrics := []prometheus.Collector{
-		// Pipeline Health
+	return registerAll(
 		c.pipelineRunningTotal,
 		c.pipelineQueueDepth,
 		c.pipelineCompletedTotal,
 		c.pipelineDurationSeconds,
 		c.pipelineProfitCredits,
-		// Task Execution
 		c.tasksPendingTotal,
 		c.tasksReadyTotal,
 		c.tasksExecutingTotal,
 		c.tasksCompletedTotal,
 		c.taskDurationSeconds,
 		c.taskRetryTotal,
-		// Factory Supply
 		c.factorySupplyLevel,
 		c.factoryInputsDelivered,
 		c.factoryReadyTotal,
 		c.factoryCyclesTotal,
 		c.supplyTransitionsTotal,
-		// Ship Utilization
 		c.shipsAssignedTotal,
 		c.shipsIdleTotal,
 		c.shipTaskDurationSeconds,
 		c.shipUtilizationPercent,
-		// Economic
 		c.costTotal,
 		c.revenueTotal,
 		c.profitRate,
 		c.marginPercent,
-		// Starvation
 		c.taskStarvationMinutes,
 		c.taskAssignmentsTotal,
 		c.taskTypeReservationSkipsTotal,
-	}
-
-	for _, metric := range metrics {
-		if err := Registry.Register(metric); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	)
 }
 
 // Start begins the polling goroutine for aggregate metrics
@@ -760,4 +657,75 @@ func (c *ManufacturingMetricsCollector) RecordTaskTypeReservationSkip(playerID i
 func (c *ManufacturingMetricsCollector) UpdateTaskStarvationMinutes(playerID int, taskType string, minutes float64) {
 	playerIDStr := strconv.Itoa(playerID)
 	c.taskStarvationMinutes.WithLabelValues(playerIDStr, taskType).Set(minutes)
+}
+
+// globalManufacturingCollector is the singleton manufacturing metrics collector
+// Set by SetGlobalManufacturingCollector() when metrics are enabled
+var globalManufacturingCollector *ManufacturingMetricsCollector
+
+// SetGlobalManufacturingCollector sets the global manufacturing metrics collector
+func SetGlobalManufacturingCollector(collector *ManufacturingMetricsCollector) {
+	globalManufacturingCollector = collector
+}
+
+// GetGlobalManufacturingCollector returns the global manufacturing metrics collector
+// Returns nil if metrics are not enabled
+func GetGlobalManufacturingCollector() *ManufacturingMetricsCollector {
+	return globalManufacturingCollector
+}
+
+// RecordManufacturingPipelineCompletion records a pipeline completion event globally
+func RecordManufacturingPipelineCompletion(playerID int, productGood, status string, duration time.Duration, profit int) {
+	if globalManufacturingCollector != nil {
+		globalManufacturingCollector.RecordPipelineCompletion(playerID, productGood, status, duration, profit)
+	}
+}
+
+// RecordManufacturingTaskCompletion records a task completion event globally
+func RecordManufacturingTaskCompletion(playerID int, taskType, status string, duration time.Duration) {
+	if globalManufacturingCollector != nil {
+		globalManufacturingCollector.RecordTaskCompletion(playerID, taskType, status, duration)
+	}
+}
+
+// RecordManufacturingTaskRetry records a task retry event globally
+func RecordManufacturingTaskRetry(playerID int, taskType string) {
+	if globalManufacturingCollector != nil {
+		globalManufacturingCollector.RecordTaskRetry(playerID, taskType)
+	}
+}
+
+// RecordManufacturingSupplyTransition records a supply level change event globally
+func RecordManufacturingSupplyTransition(playerID int, good, fromLevel, toLevel string) {
+	if globalManufacturingCollector != nil {
+		globalManufacturingCollector.RecordSupplyTransition(playerID, good, fromLevel, toLevel)
+	}
+}
+
+// RecordManufacturingFactoryCycle records a factory production cycle completion globally
+func RecordManufacturingFactoryCycle(playerID int, factorySymbol, outputGood string) {
+	if globalManufacturingCollector != nil {
+		globalManufacturingCollector.RecordFactoryCycle(playerID, factorySymbol, outputGood)
+	}
+}
+
+// RecordManufacturingCost records a manufacturing cost globally
+func RecordManufacturingCost(playerID int, costType string, amount int) {
+	if globalManufacturingCollector != nil {
+		globalManufacturingCollector.RecordCost(playerID, costType, amount)
+	}
+}
+
+// RecordManufacturingRevenue records manufacturing revenue globally
+func RecordManufacturingRevenue(playerID int, amount int) {
+	if globalManufacturingCollector != nil {
+		globalManufacturingCollector.RecordRevenue(playerID, amount)
+	}
+}
+
+// RecordManufacturingTaskAssignment records a task assignment event globally
+func RecordManufacturingTaskAssignment(playerID int, taskType string) {
+	if globalManufacturingCollector != nil {
+		globalManufacturingCollector.RecordTaskAssignment(playerID, taskType)
+	}
 }

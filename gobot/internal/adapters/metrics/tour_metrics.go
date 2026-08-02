@@ -183,136 +183,95 @@ const (
 // NewTourMetricsCollector creates a new tour metrics collector.
 func NewTourMetricsCollector() *TourMetricsCollector {
 	return &TourMetricsCollector{
-		repositionsTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "tour_repositions_total",
-				Help:      "Margins-death reposition evaluations by outcome (outcome=success|no_candidate|failed)",
-			},
-			[]string{"player_id", "outcome"},
+		repositionsTotal: newCounterVec(
+			"tour_repositions_total",
+			"Margins-death reposition evaluations by outcome (outcome=success|no_candidate|failed)",
+			"player_id",
+			"outcome",
 		),
 
-		placementDecisionsTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "tour_placement_decisions_total",
-				Help:      "Armed placement/relocation decisions by verdict (verdict=jump|stay|hold_park_floor|fallback_legacy)",
-			},
-			[]string{"player_id", "verdict"},
+		placementDecisionsTotal: newCounterVec(
+			"tour_placement_decisions_total",
+			"Armed placement/relocation decisions by verdict (verdict=jump|stay|hold_park_floor|fallback_legacy)",
+			"player_id",
+			"verdict",
 		),
 
-		marginsDeathTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "tour_margins_death_total",
-				Help:      "Confirmed 3-strike ground tap-outs (margins died this episode), counted whether or not a reposition then rescues the run",
-			},
-			[]string{"player_id"},
+		marginsDeathTotal: newCounterVec(
+			"tour_margins_death_total",
+			"Confirmed 3-strike ground tap-outs (margins died this episode), counted whether or not a reposition then rescues the run",
+			"player_id",
 		),
 
-		reserveFloorEngagementsTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "tour_reserve_floor_engagements_total",
-				Help:      "Buy-time working-capital floor engagements (action=skip|shrink)",
-			},
-			[]string{"player_id", "action"},
+		reserveFloorEngagementsTotal: newCounterVec(
+			"tour_reserve_floor_engagements_total",
+			"Buy-time working-capital floor engagements (action=skip|shrink)",
+			"player_id",
+			"action",
 		),
 
-		exitTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "tour_exit_total",
-				Help:      "Tour-run terminal completions by exit reason (reason=iterations_exhausted|starvation|tour_unavailable)",
-			},
-			[]string{"player_id", "reason"},
+		exitTotal: newCounterVec(
+			"tour_exit_total",
+			"Tour-run terminal completions by exit reason (reason=iterations_exhausted|starvation|tour_unavailable)",
+			"player_id",
+			"reason",
 		),
 
-		durationSeconds: prometheus.NewHistogramVec(
-			prometheus.HistogramOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "tour_duration_seconds",
-				Help:      "Wall-time a tour_run container ran before an honest completion (tour_run only, not the blended container_type=TRADING histogram)",
-				Buckets:   tourDurationBuckets,
-			},
-			[]string{"player_id"},
+		durationSeconds: newHistogramVec(
+			"tour_duration_seconds",
+			"Wall-time a tour_run container ran before an honest completion (tour_run only, not the blended container_type=TRADING histogram)",
+			tourDurationBuckets,
+			"player_id",
 		),
 
-		resolvedMaxSpend: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "tour_resolved_max_spend",
-				Help:      "The dynamic per-tour spend cap (25% of live treasury) as most recently resolved by defaultMaxSpend, in credits",
-			},
-			[]string{"player_id"},
+		resolvedMaxSpend: newGaugeVec(
+			"tour_resolved_max_spend",
+			"The dynamic per-tour spend cap (25% of live treasury) as most recently resolved by defaultMaxSpend, in credits",
+			"player_id",
 		),
 
-		jumpLoadedTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "tour_jump_loaded_total",
-				Help:      "Margins-death reposition jumps by whether they carried a look-back manifest (loaded=true|false) — the deadhead empty-rate (sp-ed4i)",
-			},
-			[]string{"player_id", "loaded"},
+		jumpLoadedTotal: newCounterVec(
+			"tour_jump_loaded_total",
+			"Margins-death reposition jumps by whether they carried a look-back manifest (loaded=true|false) — the deadhead empty-rate (sp-ed4i)",
+			"player_id",
+			"loaded",
 		),
 
-		planRate: prometheus.NewHistogramVec(
-			prometheus.HistogramOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "tour_plan_rate",
-				Help:      "Tour plan credits-per-hour by phase (phase=projected at plan-accept from the solver's cph; phase=realized at completion from cash profit over actual wall-clock) — the sp-1wp8 $/hour yardstick",
-				Buckets:   tourPlanRateBuckets,
-			},
-			[]string{"player_id", "phase"},
+		planRate: newHistogramVec(
+			"tour_plan_rate",
+			"Tour plan credits-per-hour by phase (phase=projected at plan-accept from the solver's cph; phase=realized at completion from cash profit over actual wall-clock) — the sp-1wp8 $/hour yardstick",
+			tourPlanRateBuckets,
+			"player_id",
+			"phase",
 		),
 
-		factoryGoodAcquisitionCost: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "tour_factory_good_acquisition_cost",
-				Help:      "Per-unit price a tour paid to acquire a factory good, by source (source=stock: withdrawn from warehouse at cost basis; source=market: bought at market ask). The C1 (sp-64je) T2 acceptance series — must track the rested ask, not the ladder.",
-			},
-			[]string{"player_id", "good_symbol", "source"},
+		factoryGoodAcquisitionCost: newGaugeVec(
+			"tour_factory_good_acquisition_cost",
+			"Per-unit price a tour paid to acquire a factory good, by source (source=stock: withdrawn from warehouse at cost basis; source=market: bought at market ask). The C1 (sp-64je) T2 acceptance series — must track the rested ask, not the ladder.",
+			"player_id",
+			"good_symbol",
+			"source",
 		),
 
-		legPriceDriftOverPlanPct: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "tour_leg_price_drift_over_plan_pct_total",
-				Help:      "Cumulative percentage points by which realized tour leg unit prices came in ABOVE plan, by side (buy|sell) and basis (solver|lookback). Pairs with _under_plan_pct_total and _legs_total: the windowed average drift is (sum by (side) (rate(over[w])) - sum by (side) (rate(under[w]))) / sum by (side) (rate(legs[w])). Split one-way so every series is a true monotone counter — a signed sum breaks rate() (sp-fpgl2).",
-			},
-			[]string{"side", "basis"},
+		legPriceDriftOverPlanPct: newCounterVec(
+			"tour_leg_price_drift_over_plan_pct_total",
+			"Cumulative percentage points by which realized tour leg unit prices came in ABOVE plan, by side (buy|sell) and basis (solver|lookback). Pairs with _under_plan_pct_total and _legs_total: the windowed average drift is (sum by (side) (rate(over[w])) - sum by (side) (rate(under[w]))) / sum by (side) (rate(legs[w])). Split one-way so every series is a true monotone counter — a signed sum breaks rate() (sp-fpgl2).",
+			"side",
+			"basis",
 		),
 
-		legPriceDriftUnderPlanPct: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "tour_leg_price_drift_under_plan_pct_total",
-				Help:      "Cumulative percentage points by which realized tour leg unit prices came in BELOW plan (absolute magnitude), by side (buy|sell) and basis (solver|lookback). Subtracted from _over_plan_pct_total to recover the signed average — see that metric's help (sp-fpgl2).",
-			},
-			[]string{"side", "basis"},
+		legPriceDriftUnderPlanPct: newCounterVec(
+			"tour_leg_price_drift_under_plan_pct_total",
+			"Cumulative percentage points by which realized tour leg unit prices came in BELOW plan (absolute magnitude), by side (buy|sell) and basis (solver|lookback). Subtracted from _over_plan_pct_total to recover the signed average — see that metric's help (sp-fpgl2).",
+			"side",
+			"basis",
 		),
 
-		legPriceDriftLegs: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "tour_leg_price_drift_legs_total",
-				Help:      "Realized tour legs that contributed a price-drift observation, by side (buy|sell) and basis (solver|lookback) — the DENOMINATOR of the windowed average drift. Excludes legs with a non-positive planned basis (nothing to divide by), which is why distress liquidations never appear (sp-fpgl2).",
-			},
-			[]string{"side", "basis"},
+		legPriceDriftLegs: newCounterVec(
+			"tour_leg_price_drift_legs_total",
+			"Realized tour legs that contributed a price-drift observation, by side (buy|sell) and basis (solver|lookback) — the DENOMINATOR of the windowed average drift. Excludes legs with a non-positive planned basis (nothing to divide by), which is why distress liquidations never appear (sp-fpgl2).",
+			"side",
+			"basis",
 		),
 	}
 }
@@ -321,10 +280,9 @@ func NewTourMetricsCollector() *TourMetricsCollector {
 // (metrics disabled) is a no-op, matching the sibling collectors.
 func (c *TourMetricsCollector) Register() error {
 	if Registry == nil {
-		return nil // Metrics not enabled
+		return nil
 	}
-
-	metrics := []prometheus.Collector{
+	return registerAll(
 		c.repositionsTotal,
 		c.placementDecisionsTotal,
 		c.marginsDeathTotal,
@@ -338,15 +296,7 @@ func (c *TourMetricsCollector) Register() error {
 		c.legPriceDriftOverPlanPct,
 		c.legPriceDriftUnderPlanPct,
 		c.legPriceDriftLegs,
-	}
-
-	for _, metric := range metrics {
-		if err := Registry.Register(metric); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	)
 }
 
 // RecordReposition records one margins-death reposition evaluation by outcome
@@ -482,4 +432,115 @@ func (c *TourMetricsCollector) ObserveLegPriceDrift(side, basis string, planned,
 	c.legPriceDriftOverPlanPct.WithLabelValues(side, basis).Add(over)
 	c.legPriceDriftUnderPlanPct.WithLabelValues(side, basis).Add(under)
 	c.legPriceDriftLegs.WithLabelValues(side, basis).Inc()
+}
+
+// globalTourCollector is the singleton tour instrumentation collector.
+// Set by SetGlobalTourCollector() when metrics are enabled; the tour coordinator emits
+// the reposition/margins-death/reserve-floor/exit/duration/resolved-cap series through it.
+var globalTourCollector *TourMetricsCollector
+
+// SetGlobalTourCollector sets the global tour instrumentation collector.
+func SetGlobalTourCollector(collector *TourMetricsCollector) {
+	globalTourCollector = collector
+}
+
+// GetGlobalTourCollector returns the global tour instrumentation collector.
+// Returns nil if metrics are not enabled.
+func GetGlobalTourCollector() *TourMetricsCollector {
+	return globalTourCollector
+}
+
+// RecordTourReposition records one margins-death reposition evaluation globally.
+// No-op when metrics are disabled, so a metrics miss never touches the
+// trade path (RULINGS #4).
+func RecordTourReposition(playerID int, outcome string) {
+	if globalTourCollector != nil {
+		globalTourCollector.RecordReposition(playerID, outcome)
+	}
+}
+
+// RecordTourPlacementDecision records one armed placement/relocation decision globally by
+// verdict (jump|stay|hold_park_floor|fallback_legacy). No-op when metrics are disabled,
+// so a metrics miss never touches the trade path (RULINGS #4).
+func RecordTourPlacementDecision(playerID int, verdict string) {
+	if globalTourCollector != nil {
+		globalTourCollector.RecordPlacementDecision(playerID, verdict)
+	}
+}
+
+// RecordTourMarginsDeath records one confirmed 3-strike ground tap-out globally.
+// No-op when metrics are disabled.
+func RecordTourMarginsDeath(playerID int) {
+	if globalTourCollector != nil {
+		globalTourCollector.RecordMarginsDeath(playerID)
+	}
+}
+
+// RecordTourReserveFloorEngagement records one buy-time working-capital floor engagement
+// globally. No-op when metrics are disabled.
+func RecordTourReserveFloorEngagement(playerID int, action string) {
+	if globalTourCollector != nil {
+		globalTourCollector.RecordReserveFloorEngagement(playerID, action)
+	}
+}
+
+// RecordTourExit records one tour-run terminal completion by exit reason globally.
+// No-op when metrics are disabled.
+func RecordTourExit(playerID int, reason string) {
+	if globalTourCollector != nil {
+		globalTourCollector.RecordExit(playerID, reason)
+	}
+}
+
+// RecordTourJumpLoaded records one committed margins-death reposition jump globally by
+// whether it carried a look-back manifest. No-op when metrics are disabled, so
+// a metrics miss never touches the trade path (RULINGS #4).
+func RecordTourJumpLoaded(playerID int, loaded bool) {
+	if globalTourCollector != nil {
+		globalTourCollector.RecordJumpLoaded(playerID, loaded)
+	}
+}
+
+// ObserveTourDuration observes one tour-run wall-time (seconds) globally at honest
+// completion. No-op when metrics are disabled.
+func ObserveTourDuration(playerID int, seconds float64) {
+	if globalTourCollector != nil {
+		globalTourCollector.ObserveDuration(playerID, seconds)
+	}
+}
+
+// SetTourResolvedMaxSpend records the dynamic per-tour spend cap globally as just resolved.
+// No-op when metrics are disabled.
+func SetTourResolvedMaxSpend(playerID int, maxSpend int64) {
+	if globalTourCollector != nil {
+		globalTourCollector.SetResolvedMaxSpend(playerID, maxSpend)
+	}
+}
+
+// SetTourFactoryGoodAcquisitionCost records the per-unit price a tour paid to
+// acquire a factory good (source=stock|market) — the C1 T2 acceptance
+// series. No-op until the global tour collector is wired.
+func SetTourFactoryGoodAcquisitionCost(playerID int, good, source string, unitPrice float64) {
+	if globalTourCollector != nil {
+		globalTourCollector.SetFactoryGoodAcquisitionCost(playerID, good, source, unitPrice)
+	}
+}
+
+// ObserveTourPlanRate observes one tour plan's credits/hour globally,
+// phase="projected" at plan-accept or phase="realized" at completion. No-op when
+// metrics are disabled, so a metrics miss never touches the trade path (RULINGS #4).
+func ObserveTourPlanRate(playerID int, phase string, creditsPerHour float64) {
+	if globalTourCollector != nil {
+		globalTourCollector.ObservePlanRate(playerID, phase, creditsPerHour)
+	}
+}
+
+// ObserveTourLegPriceDrift records one realized tour leg's unit-price drift from plan
+// globally, keyed by side ("buy"|"sell") and basis ("solver"|"lookback") —
+// (realized-planned)/planned*100, skipping a non-positive planned basis. No-op when
+// metrics are disabled, so a metrics miss never touches the trade path (RULINGS #4).
+func ObserveTourLegPriceDrift(side, basis string, planned, realized float64) {
+	if globalTourCollector != nil {
+		globalTourCollector.ObserveLegPriceDrift(side, basis, planned, realized)
+	}
 }

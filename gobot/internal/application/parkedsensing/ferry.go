@@ -67,59 +67,38 @@ const maxFerryCandidates = 3
 // maxFerryHops is how far a BOUGHT hull may be flown to reach the placement it
 // was bought for.
 //
-// IT IS THE ROUTER'S BOUND, and that is the whole derivation. A ferried hull is
-// carried by the placement machine's RouteAcross, which resolves one hop at a
-// time through nextHopToward — a breadth-first search that returns an ERROR when
-// the destination is not found inside its own ring limit. The adapter pins that
-// limit to MaxSeedFlightHops (`const maxWalkRings = appSensing.MaxSeedFlightHops`
-// in adapters/parkedsensing), so nine hops is exactly what the router can
-// actually deliver. Buying for anything further does not stretch the walk, it
-// strands the hull: the step errors every tick, the slot sits IN_TRANSIT naming a
-// hull that never arrives, and the probe cap is held the whole time.
+// IT IS THE FERRY'S OWN BOUND — neither the router's nor the seed's — and it must
+// stay inside the router's reach. A ferried hull is carried by the placement
+// machine's RouteAcross, which resolves one hop at a time through nextHopToward, a
+// breadth-first search that returns an ERROR when the destination is not found.
+// Buying past what that can resolve does not stretch the walk, it strands the
+// hull: the step errors every tick, the slot sits IN_TRANSIT naming a hull that
+// never arrives, and the probe cap is held the whole time.
 //
-// SO THIS IS DERIVED, NEVER CHOSEN. Reading it from MaxSeedFlightHops is what
-// keeps the buy and the walk from drifting apart — the failure MaxWalkRings' own
-// doc warns about, where a caller works from a private copy of a bound and hands
-// out errands the resolver cannot serve. A literal 9 here would be that copy.
+// WHY NOT MaxWalkRings. That constant bounds the FOOTHOLD path's draw of an
+// already-parked scanning hull off a working market — a different and deliberately
+// shorter journey, and one whose cost is real (a market stops being watched).
+// Measured live, it stranded 143 of 238 pending placements sitting 3-9 hops from
+// their nearest funder: routable, and refused by a bound borrowed from another
+// concern. MaxWalkRings is deliberately left where it is.
 //
-// WHY NOT MaxWalkRings, WHICH THIS USED TO READ. That constant bounds the
-// FOOTHOLD path's draw of an already-parked scanning hull off a working market —
-// a different and deliberately shorter journey, and one whose cost is real
-// (a market stops being watched). It was the right conservative default when
-// cross-system buying was first restored, but it is not the router's reach and
-// never was. Measured live, it stranded 143 of 238 pending placements that sit
-// 3-9 hops from their nearest funder: routable, and refused by a bound borrowed
-// from another concern. MaxWalkRings is deliberately left where it is; giving the
-// ferry its own bound is the per-instance separation sp-9fdc258d established.
+// WHY NOT SeedFlightUnbounded. A seed's reach is the graph rather than a count,
+// because the one system that can still grow the map sits past any number we would
+// pick. A FERRY carries a hull to a remote COUNTER so a placement in a yardless
+// system can be bought, and nine hops of transit to make one purchase is already a
+// long way to send a scanner. Inheriting the seed's unbounded reach would widen the
+// BUY path on the strength of a decision taken about charting.
 //
-// WHAT NINE COSTS IS TICKS **AND CREDITS**, and this paragraph used to say
-// otherwise. It read "TICKS, NOT CREDITS — a gate jump burns no fuel", which is
-// true about FUEL and was false about money: a gate crossing charges a fee,
-// measured at a mean of 5,900 credits over 4,235 jumps. That belief is what let
-// sp-e46yc happen — an authorised 10.15M probe expansion spent a further 6.44M
-// delivering the hulls, 63% over budget, because nothing in the buy path priced
-// the flight. At nine hops the ferry alone is ~53k against an ~83k probe.
-//
-// The bound itself is UNCHANGED, and deliberately so: nine is the router's reach
-// and buying past it strands hulls, which is a correctness limit rather than an
-// economic one. What changed is that the credits are now PRICED rather than
-// assumed away — see domain/parkedsensing.FerryCost and the landed-cost check in
-// fillSlot — so a distant placement is refused by the buy floor when it is
-// genuinely unaffordable instead of being bought and discovered later. A probe in
-// transit is still not scanning; but the placements this reaches were not going to
-// be bought at all, so the comparison is against nothing, not against a faster
-// purchase. Nine is also where this graph saturated when this bound was chosen.
-//
-// ITS OWN NUMBER NOW, not the seed's. It used to read MaxSeedFlightHops, and that
-// constant has since become SeedFlightUnbounded — a seed's reach is bounded by the
-// graph rather than by a count, because the one system that can still grow the map
-// sits past any number we would have picked. A FERRY is a different journey with a
-// different justification: it carries a hull to a remote COUNTER so a placement in
-// a yardless system can be bought, and nine hops of transit to make one purchase is
-// already a long way to send a scanner. Inheriting the seed's unbounded reach would
-// have widened the buy path silently, on the strength of a decision taken about
-// charting. So the number stays, explicitly, until someone measures the ferry on its
-// own terms — exactly as foothold's MaxWalkRings stayed at two.
+// WHAT NINE COSTS IS TICKS **AND CREDITS**. A gate jump burns no fuel but a
+// crossing charges a fee, measured at a mean of 5,900 credits over 4,235 jumps, so
+// at nine hops the ferry alone is ~53k against an ~83k probe. Assuming it free is
+// what let an authorised 10.15M probe expansion spend a further 6.44M delivering
+// the hulls, 63% over budget. The flight is now PRICED — see
+// domain/parkedsensing.FerryCost and the landed-cost check in fillSlot — so a
+// distant placement is refused by the buy floor when it is genuinely unaffordable
+// instead of being bought and discovered later. Nine is where this graph saturated
+// when the bound was chosen; it stays until someone measures the ferry on its own
+// terms.
 const maxFerryHops = 9
 
 // ferryBroker is one tick's cross-system buying state: where our hulls actually
@@ -187,7 +166,7 @@ func (b *ferryBroker) load(ctx context.Context, p BuyPorts, playerID int) bool {
 	return true
 }
 
-// ferryCandidates lists executable counters in OTHER systems for a placement its
+// candidates lists executable counters in OTHER systems for a placement its
 // own system cannot fund, nearest gate ring first.
 //
 // SOURCE ORDER IS BY GATE JUMPS, then symbol. A nearer source is fewer
@@ -204,49 +183,12 @@ func (b *ferryBroker) load(ctx context.Context, p BuyPorts, playerID int) bool {
 // Returns nothing, rather than an error, when the topology cannot be read or no
 // source has a counter. Both are ordinary answers: the placement simply waits,
 // and the drain's other work is unaffected.
-func ferryCandidates(ctx context.Context, p BuyPorts, playerID int, slot QueuedSlot, broker *ferryBroker) ([]purchaseCandidate, error) {
-	if p.Gates == nil {
-		// No topology wired: no cross-system guess. This is the pre-ferry
-		// behaviour exactly, and it is a supported wiring (see BuyPorts.Gates).
-		return nil, nil
-	}
-	if !broker.load(ctx, p, playerID) {
-		return nil, nil
-	}
-
-	// Each candidate source is asked whether IT can reach the target — the
-	// direction the hull will actually fly. See the file header for why the
-	// reverse walk is not equivalent.
-	sources, err := originsWithinReach(ctx, broker.reach, broker.systems, slot.System)
-	if err != nil {
-		// The topology store could not answer. Only this placement is passed over
-		// — another's neighbourhood may read perfectly well — and it is NAMED, so
-		// an operator can tell an unreadable gate graph apart from a genuinely
-		// unserved region.
-		logging.LoggerFromContext(ctx).Log("WARN", "sensing placement could not resolve its gate reach; no cross-system counter this tick", map[string]interface{}{
-			"action":   "parked_sensing_ferry_reach_failed",
-			"waypoint": slot.Waypoint,
-			"system":   slot.System,
-			"error":    err.Error(),
-		})
-		return nil, nil
-	}
+func (b *ferryBroker) candidates(ctx context.Context, p BuyPorts, playerID int, slot QueuedSlot) ([]purchaseCandidate, error) {
+	sources := b.sources(ctx, p, playerID, slot)
 
 	candidates := make([]purchaseCandidate, 0, maxFerryCandidates)
 	for _, source := range sources {
-		// The hop count the buy floor prices the delivery from (sp-e46yc). It COSTS
-		// NOTHING to ask: originsWithinReach has already run this exact walk to
-		// order the sources, and gateReach memoises one BFS per origin for the
-		// tick, so this is a map lookup rather than a second traversal.
-		//
-		// An unreadable walk is not read as zero hops. Zero would price a
-		// cross-system ferry as free, which is the defect being closed — so the
-		// count is simply left unset and FerryHops charges the one-gate minimum
-		// that `ferried` alone already proves.
-		hops, within, err := broker.reach.hops(ctx, source, slot.System)
-		if err != nil || !within {
-			hops = 0
-		}
+		hops := b.hopsFrom(ctx, source, slot.System)
 		yards, err := p.Yards.ListProbeYards(ctx, source)
 		if err != nil {
 			return nil, fmt.Errorf("failed to list probe yards in %q: %w", source, err)
@@ -271,4 +213,53 @@ func ferryCandidates(ctx context.Context, p BuyPorts, playerID int, slot QueuedS
 		}
 	}
 	return candidates, nil
+}
+
+// sources are the systems holding a hull that could fly to this placement.
+//
+// Each candidate source is asked whether IT can reach the target — the direction
+// the hull will actually fly. See the file header for why the reverse walk is not
+// equivalent. An empty answer covers all three ordinary refusals: no topology
+// wired, no hulls loaded, and a gate store that could not answer.
+func (b *ferryBroker) sources(ctx context.Context, p BuyPorts, playerID int, slot QueuedSlot) []string {
+	if p.Gates == nil {
+		// No topology wired: no cross-system guess. This is the pre-ferry
+		// behaviour exactly, and it is a supported wiring (see BuyPorts.Gates).
+		return nil
+	}
+	if !b.load(ctx, p, playerID) {
+		return nil
+	}
+	sources, err := b.reach.originsWithin(ctx, b.systems, slot.System)
+	if err != nil {
+		// The topology store could not answer. Only this placement is passed over
+		// — another's neighbourhood may read perfectly well — and it is NAMED, so
+		// an operator can tell an unreadable gate graph apart from a genuinely
+		// unserved region.
+		logging.LoggerFromContext(ctx).Log("WARN", "sensing placement could not resolve its gate reach; no cross-system counter this tick", map[string]interface{}{
+			"action":   "parked_sensing_ferry_reach_failed",
+			"waypoint": slot.Waypoint,
+			"system":   slot.System,
+			"error":    err.Error(),
+		})
+		return nil
+	}
+	return sources
+}
+
+// hopsFrom is the hop count the buy floor prices the delivery from. It COSTS
+// NOTHING to ask: originsWithin has already run this exact walk to order the
+// sources, and gateReach memoises one BFS per origin for the tick, so this is a map
+// lookup rather than a second traversal.
+//
+// An unreadable walk is not read as zero hops. Zero would price a cross-system
+// ferry as free, which is the defect being closed — so the count is simply left
+// unset and FerryHops charges the one-gate minimum that `ferried` alone already
+// proves.
+func (b *ferryBroker) hopsFrom(ctx context.Context, source, target string) int {
+	hops, within, err := b.reach.hops(ctx, source, target)
+	if err != nil || !within {
+		return 0
+	}
+	return hops
 }

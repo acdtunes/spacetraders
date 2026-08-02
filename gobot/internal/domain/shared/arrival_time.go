@@ -16,13 +16,7 @@ type ArrivalTime struct {
 // NewArrivalTime creates a new ArrivalTime value object with validation
 // The timestamp must be in ISO8601 format (RFC3339).
 //
-// Args:
-//
-//	timestamp: ISO8601 format arrival time from API (e.g., "2024-01-01T12:00:00Z")
-//
-// Returns:
-//
-//	ArrivalTime value object or error if timestamp is invalid
+// timestamp is ISO8601 as returned by the API (e.g. "2024-01-01T12:00:00Z").
 func NewArrivalTime(timestamp string) (*ArrivalTime, error) {
 	if timestamp == "" {
 		return nil, fmt.Errorf("arrival time timestamp cannot be empty")
@@ -45,10 +39,6 @@ func parseArrivalTimestamp(timestamp string) (time.Time, error) {
 
 // CalculateWaitTime calculates the number of seconds to wait until arrival
 // Returns 0 if the arrival time is in the past or if parsing fails.
-//
-// Returns:
-//
-//	Seconds to wait (minimum 0)
 func (a *ArrivalTime) CalculateWaitTime() int {
 	arrivalTime, err := parseArrivalTimestamp(a.timestamp)
 	if err != nil {

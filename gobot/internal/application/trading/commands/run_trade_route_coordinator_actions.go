@@ -90,18 +90,13 @@ func (h *RunTradeRouteCoordinatorHandler) dock(ctx context.Context, ship *naviga
 	return fmt.Errorf("dock of %s still failing after %d resync retries: %w", shipSymbol, tradeRouteDockRetryLimit, lastErr)
 }
 
-func (h *RunTradeRouteCoordinatorHandler) purchase(ctx context.Context, shipSymbol, good string, units, playerID int) (*shipCargo.PurchaseCargoResponse, error) {
-	return h.purchaseWithCeiling(ctx, shipSymbol, good, units, playerID, 0)
-}
-
-// purchaseWithCeiling buys like purchase, but arms the per-tranche buy ceiling
+// purchaseWithCeiling buys, arming the per-tranche buy ceiling
 // (sp-9mkf): maxAskPerUnit>0 makes the underlying handler re-verify the live ask
 // before each tranche and abort the remainder (left unbought,
 // PurchaseCargoResponse.CeilingAborted) if it rises above the ceiling. It is the
 // buy-side mirror of sellWithFloor and the fix for the stale-ask ladder (SHIP_PARTS
 // bought at D39 as the ask ran 3,985→~7k inside one dispatch). maxAskPerUnit==0 is
-// exactly the plain buy, so purchase() and the manufacturing/contract callers are
-// unchanged.
+// exactly a plain buy, so the manufacturing/contract callers are unchanged.
 func (h *RunTradeRouteCoordinatorHandler) purchaseWithCeiling(ctx context.Context, shipSymbol, good string, units, playerID, maxAskPerUnit int) (*shipCargo.PurchaseCargoResponse, error) {
 	resp, err := h.mediator.Send(ctx, &shipCargo.PurchaseCargoCommand{
 		ShipSymbol:    shipSymbol,

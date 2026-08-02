@@ -134,9 +134,8 @@ func (e *ProductionExecutor) selectInputSource(ctx context.Context, good, system
 		return r, sourceModePriceFirstOff, nil
 	}
 
-	// Price-first exception — ERA-END mode (< T-6h): mean-reversion has no time to work, so a
-	// cheap ask that clears margin NOW beats waiting (wedx (3)(i)). Daemon-toggled at the same
-	// boundary as the stocker rundown.
+	// ERA-END (< T-6h): mean-reversion has no time to work, so a cheap ask that clears margin NOW
+	// beats waiting. Daemon-toggled at the same boundary as the stocker rundown.
 	if cfg.eraEndPriceFirst {
 		r, err := e.marketLocator.FindExportMarket(ctx, good, systemSymbol, playerID)
 		if err != nil {
@@ -177,11 +176,15 @@ func (e *ProductionExecutor) selectInputSource(ctx context.Context, good, system
 		return src, mode, nil
 	}
 
-	// RESCUE / EXCHANGE fallback (sp-a5j7): being in buyGood for a required input with no healthy
-	// source means the chain is blocked on it (wedx rescue precondition). Fall to the cheapest
-	// available source (price-first) but buy ONLY within the rescue cap; otherwise PARK rather than
-	// ladder a depleted market.
-	rescueMult := cfg.rescueMultiplier
+	return e.rescueSource(ctx, good, fallback, cfg.rescueMultiplier)
+}
+
+// rescueSource admits the cheapest remaining source ONCE, and only within the rescue cap: reaching
+// here means the chain is blocked on an input with no healthy source, but laddering a depleted
+// market is worse than waiting. Fails CLOSED — with no trailing median to validate against, the
+// buy is refused rather than made blind.
+func (e *ProductionExecutor) rescueSource(ctx context.Context, good string, fallback *MarketLocatorResult, rescueMult float64) (*MarketLocatorResult, inputSourceMode, error) {
+	logger := common.LoggerFromContext(ctx)
 	if rescueMult <= 0 {
 		rescueMult = defaultRescueMultiplier
 	}

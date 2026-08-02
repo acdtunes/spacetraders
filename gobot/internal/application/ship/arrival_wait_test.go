@@ -156,7 +156,7 @@ func TestWaitForShipArrivalCore_EventArrives_HappyPathUnchanged(t *testing.T) {
 		return nil, nil
 	}}
 
-	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 5, noopLogger{}, 50*time.Millisecond, 200*time.Millisecond)
+	err := arrivalWait{shipRepo: repo, subscriber: sub, ship: ship, playerID: shared.MustNewPlayerID(1), waitTimeSeconds: 5, logger: noopLogger{}, gracePeriod: 50 * time.Millisecond, budget: 200 * time.Millisecond}.run(context.Background())
 	if err != nil {
 		t.Fatalf("expected success on event arrival, got: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestWaitForShipArrivalCore_EventLost_ResyncConfirmsArrival(t *testing.T) {
 		return newArrivalWaitTestShip(t, domainNavigation.NavStatusInOrbit), nil
 	}}
 
-	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 5, noopLogger{}, 20*time.Millisecond, 200*time.Millisecond)
+	err := arrivalWait{shipRepo: repo, subscriber: sub, ship: ship, playerID: shared.MustNewPlayerID(1), waitTimeSeconds: 5, logger: noopLogger{}, gracePeriod: 20 * time.Millisecond, budget: 200 * time.Millisecond}.run(context.Background())
 	if err != nil {
 		t.Fatalf("expected resync to recover from a lost event, got: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestWaitForShipArrivalCore_ResyncStillInTransitFutureETA_KeepsWaitingUntilA
 	// wait is never at risk of exhausting on wall-clock alone - this test is
 	// about NOT parking early on a future ETA, not about budget sizing (that's
 	// calculateArrivalWaitBudget's own test below).
-	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 1500, noopLogger{}, 5*time.Millisecond, 2*time.Second)
+	err := arrivalWait{shipRepo: repo, subscriber: sub, ship: ship, playerID: shared.MustNewPlayerID(1), waitTimeSeconds: 1500, logger: noopLogger{}, gracePeriod: 5 * time.Millisecond, budget: 2 * time.Second}.run(context.Background())
 	if err != nil {
 		t.Fatalf("expected the wait to survive past the old fixed-attempt budget and eventually succeed, got: %v", err)
 	}
@@ -252,7 +252,7 @@ func TestWaitForShipArrivalCore_HealthyTransit_PollsAreBoundedNotGraceCadence(t 
 		return newArrivalWaitTestShip(t, domainNavigation.NavStatusInOrbit), nil
 	}
 
-	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 0, noopLogger{}, 5*time.Millisecond, 5*time.Second)
+	err := arrivalWait{shipRepo: repo, subscriber: sub, ship: ship, playerID: shared.MustNewPlayerID(1), waitTimeSeconds: 0, logger: noopLogger{}, gracePeriod: 5 * time.Millisecond, budget: 5 * time.Second}.run(context.Background())
 	if err != nil {
 		t.Fatalf("expected the resync to confirm arrival, got: %v", err)
 	}
@@ -294,8 +294,8 @@ func TestWaitForShipArrivalCore_ArrivesDuringLongLeg_ConfirmsWithinBoundedRechec
 	// The budget is far larger than the bound asserted below, so a pass proves the
 	// RE-CHECK is bounded rather than the overall budget deadline ending the wait.
 	start := time.Now()
-	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1),
-		int(longETA.Seconds()), noopLogger{}, gracePeriod, 2*time.Second)
+	err := arrivalWait{shipRepo: repo, subscriber: sub, ship: ship, playerID: shared.MustNewPlayerID(1),
+		waitTimeSeconds: int(longETA.Seconds()), logger: noopLogger{}, gracePeriod: gracePeriod, budget: 2 * time.Second}.run(context.Background())
 	elapsed := time.Since(start)
 
 	if err != nil {
@@ -336,7 +336,7 @@ func TestWaitForShipArrivalCore_ResyncStillInTransitPastETA_ParksWithinDebounceW
 
 	// budget is deliberately large (5s) to prove parking happens because the
 	// ETA is past, not because the budget ran out.
-	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 5, noopLogger{}, 10*time.Millisecond, 5*time.Second)
+	err := arrivalWait{shipRepo: repo, subscriber: sub, ship: ship, playerID: shared.MustNewPlayerID(1), waitTimeSeconds: 5, logger: noopLogger{}, gracePeriod: 10 * time.Millisecond, budget: 5 * time.Second}.run(context.Background())
 	if err == nil {
 		t.Fatalf("expected exhaustion error, got nil (a past-ETA IN_TRANSIT resync must not succeed silently)")
 	}
@@ -373,7 +373,7 @@ func TestWaitForShipArrivalCore_BudgetExhausted_NoResolvingSignal_ParksWithTyped
 		return newArrivalWaitTestShip(t, domainNavigation.NavStatusInTransit), nil
 	}}
 
-	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 5, noopLogger{}, 15*time.Millisecond, 40*time.Millisecond)
+	err := arrivalWait{shipRepo: repo, subscriber: sub, ship: ship, playerID: shared.MustNewPlayerID(1), waitTimeSeconds: 5, logger: noopLogger{}, gracePeriod: 15 * time.Millisecond, budget: 40 * time.Millisecond}.run(context.Background())
 	if err == nil {
 		t.Fatalf("expected exhaustion error, got nil (wait must not silently succeed while still IN_TRANSIT)")
 	}
@@ -403,7 +403,7 @@ func TestWaitForShipArrivalCore_ContextCancelled_ReturnsCtxErrImmediately(t *tes
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := waitForShipArrivalCore(ctx, repo, sub, ship, shared.MustNewPlayerID(1), 5, noopLogger{}, 50*time.Millisecond, time.Second)
+	err := arrivalWait{shipRepo: repo, subscriber: sub, ship: ship, playerID: shared.MustNewPlayerID(1), waitTimeSeconds: 5, logger: noopLogger{}, gracePeriod: 50 * time.Millisecond, budget: time.Second}.run(ctx)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled, got: %v", err)
 	}
@@ -442,7 +442,7 @@ func TestWaitForShipArrivalCore_StalePreDepartureSnapshotBeforeETA_DoesNotConfir
 	// waitTimeSeconds=1 keeps both resyncs firmly BEFORE the scheduled arrival
 	// (dueIn>0) — the exact window the false positive lived in. The small budget
 	// bounds the ETA-aligned reschedule so the destination poll lands fast.
-	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 1, noopLogger{}, 5*time.Millisecond, 200*time.Millisecond)
+	err := arrivalWait{shipRepo: repo, subscriber: sub, ship: ship, playerID: shared.MustNewPlayerID(1), waitTimeSeconds: 1, logger: noopLogger{}, gracePeriod: 5 * time.Millisecond, budget: 200 * time.Millisecond}.run(context.Background())
 	if err != nil {
 		t.Fatalf("expected the wait to ignore the stale pre-departure snapshot and confirm on the real destination arrival, got: %v", err)
 	}
@@ -469,7 +469,7 @@ func TestWaitForShipArrivalCore_GenuineEarlyArrivalBeforeETA_ConfirmsFromPositio
 	}}
 
 	// waitTimeSeconds=1 puts the resync firmly BEFORE the scheduled arrival.
-	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 1, noopLogger{}, 5*time.Millisecond, 2*time.Second)
+	err := arrivalWait{shipRepo: repo, subscriber: sub, ship: ship, playerID: shared.MustNewPlayerID(1), waitTimeSeconds: 1, logger: noopLogger{}, gracePeriod: 5 * time.Millisecond, budget: 2 * time.Second}.run(context.Background())
 	if err != nil {
 		t.Fatalf("expected a genuine early destination arrival to confirm, got: %v", err)
 	}
@@ -497,7 +497,7 @@ func TestWaitForShipArrivalCore_OnTimeArrivalPastETA_ConfirmsOnStatusUnchanged(t
 
 	// waitTimeSeconds=0: the scheduled arrival is immediately due, so the first
 	// resync fires AT/PAST the ETA — the normal on-time arrival window.
-	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 0, noopLogger{}, 5*time.Millisecond, 2*time.Second)
+	err := arrivalWait{shipRepo: repo, subscriber: sub, ship: ship, playerID: shared.MustNewPlayerID(1), waitTimeSeconds: 0, logger: noopLogger{}, gracePeriod: 5 * time.Millisecond, budget: 2 * time.Second}.run(context.Background())
 	if err != nil {
 		t.Fatalf("expected an on-time (past-ETA) arrival to confirm on status alone, got: %v", err)
 	}
@@ -533,7 +533,7 @@ func TestWaitForShipArrivalCore_StaleDBPastETA_LiveAPIConfirmsArrived_ReturnsSuc
 		},
 	}
 
-	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 0, noopLogger{}, 5*time.Millisecond, 2*time.Second)
+	err := arrivalWait{shipRepo: repo, subscriber: sub, ship: ship, playerID: shared.MustNewPlayerID(1), waitTimeSeconds: 0, logger: noopLogger{}, gracePeriod: 5 * time.Millisecond, budget: 2 * time.Second}.run(context.Background())
 	if err != nil {
 		t.Fatalf("expected the live-API re-confirm to recognise the stale-row arrival and succeed, got: %v", err)
 	}
@@ -566,7 +566,7 @@ func TestWaitForShipArrivalCore_StaleDBPastETA_LiveAPIError_FallsBackToPark(t *t
 		},
 	}
 
-	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 0, noopLogger{}, 5*time.Millisecond, 2*time.Second)
+	err := arrivalWait{shipRepo: repo, subscriber: sub, ship: ship, playerID: shared.MustNewPlayerID(1), waitTimeSeconds: 0, logger: noopLogger{}, gracePeriod: 5 * time.Millisecond, budget: 2 * time.Second}.run(context.Background())
 	var exhausted *ErrArrivalWaitExhausted
 	if !errors.As(err, &exhausted) {
 		t.Fatalf("expected fallback to DB-only park (*ErrArrivalWaitExhausted) on live-API error, got %T: %v", err, err)
@@ -596,7 +596,7 @@ func TestWaitForShipArrivalCore_StaleDBPastETA_LiveAlsoInTransit_StillParks(t *t
 		},
 	}
 
-	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 0, noopLogger{}, 5*time.Millisecond, 2*time.Second)
+	err := arrivalWait{shipRepo: repo, subscriber: sub, ship: ship, playerID: shared.MustNewPlayerID(1), waitTimeSeconds: 0, logger: noopLogger{}, gracePeriod: 5 * time.Millisecond, budget: 2 * time.Second}.run(context.Background())
 	var exhausted *ErrArrivalWaitExhausted
 	if !errors.As(err, &exhausted) {
 		t.Fatalf("expected a genuinely-stuck hull to still park (*ErrArrivalWaitExhausted), got %T: %v", err, err)
@@ -625,7 +625,7 @@ func TestWaitForShipArrivalCore_ShortLeg_DoesNotParkOnFirstPastETAObservation(t 
 		return newArrivalWaitTestShip(t, domainNavigation.NavStatusInOrbit), nil
 	}
 
-	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 0, noopLogger{}, 5*time.Millisecond, 2*time.Second)
+	err := arrivalWait{shipRepo: repo, subscriber: sub, ship: ship, playerID: shared.MustNewPlayerID(1), waitTimeSeconds: 0, logger: noopLogger{}, gracePeriod: 5 * time.Millisecond, budget: 2 * time.Second}.run(context.Background())
 	if err != nil {
 		t.Fatalf("expected the short-leg debounce to catch the second (arrived) poll and succeed, got: %v", err)
 	}

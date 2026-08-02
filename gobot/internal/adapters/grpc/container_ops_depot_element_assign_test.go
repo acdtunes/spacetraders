@@ -45,7 +45,7 @@ func TestPositionDepotElementHull_DoesNotPoachForeignDedicatedHull(t *testing.T)
 			const hull = "HULL-1"
 			insertDepotDeliveryHull(t, db, hull, playerID, tc.priorTag, "X1-VB74-I55", tc.active)
 
-			ship, crewed, err := s.positionDepotElementHull(context.Background(), hull, waypoint, tc.roleFleet, false, playerID)
+			ship, crewed, err := s.positionDepotElementHull(context.Background(), depotElementPlacement{shipSymbol: hull, targetWaypoint: waypoint, fleetTag: tc.roleFleet}, playerID)
 			require.NoError(t, err)
 			require.False(t, crewed, "a foreign-dedicated hull is not crewed — the element goes uncrewed")
 			require.NotNil(t, ship)
@@ -77,7 +77,7 @@ func TestPositionDepotElementHull_CrewsUndedicatedHullToRoleFleet(t *testing.T) 
 			insertDepotDeliveryHull(t, db, hull, playerID, "", "X1-VB74-I55", false) // UNDEDICATED, idle
 			pid := shared.MustNewPlayerID(playerID)
 
-			ship, crewed, err := s.positionDepotElementHull(context.Background(), hull, waypoint, roleFleet, false, playerID)
+			ship, crewed, err := s.positionDepotElementHull(context.Background(), depotElementPlacement{shipSymbol: hull, targetWaypoint: waypoint, fleetTag: roleFleet}, playerID)
 			require.NoError(t, err)
 			require.True(t, crewed, "an undedicated hull is crewed for the depot role")
 			require.NotNil(t, ship)
@@ -113,7 +113,7 @@ func TestPositionDepotElementHull_LeavesAlreadyRoleDedicatedBusyHullUndisturbed(
 			const hull = "HULL-BUSY"
 			insertDepotDeliveryHull(t, db, hull, playerID, roleFleet, "X1-VB74-E44", true) // already dedicated, busy, off-waypoint
 
-			ship, crewed, err := s.positionDepotElementHull(context.Background(), hull, waypoint, roleFleet, false, playerID)
+			ship, crewed, err := s.positionDepotElementHull(context.Background(), depotElementPlacement{shipSymbol: hull, targetWaypoint: waypoint, fleetTag: roleFleet}, playerID)
 			require.NoError(t, err)
 			require.True(t, crewed, "a hull already on this role is crewed (idempotent — never-poach applies only to a DIFFERENT fleet)")
 			require.NotNil(t, ship)
@@ -141,7 +141,7 @@ func TestPositionDepotElementHull_NavigatesSourceHubHullToItsWaypoint(t *testing
 	insertDepotDeliveryHull(t, db, hull, playerID, "", "X1-VB74-I55", false) // idle, UNDEDICATED, off its market
 	pid := shared.MustNewPlayerID(playerID)
 
-	ship, crewed, err := s.positionDepotElementHull(context.Background(), hull, waypoint, depotSourceHubFleet, true, playerID)
+	ship, crewed, err := s.positionDepotElementHull(context.Background(), depotElementPlacement{shipSymbol: hull, targetWaypoint: waypoint, fleetTag: depotSourceHubFleet, navigateOnAssign: true}, playerID)
 	require.NoError(t, err)
 	require.True(t, crewed, "an undedicated source-hub hull is crewed and positioned")
 	require.NotNil(t, ship)
@@ -220,7 +220,7 @@ func TestAddDepotElement_PositionsAddedHullForEveryRole(t *testing.T) {
 				Warehouses: []ElementSpec{{Waypoint: anchor}},
 			}))
 
-			require.NoError(t, s.AddDepotElement(context.Background(), playerID, depotID, tc.role, tc.addWaypoint, tc.addedHull))
+			require.NoError(t, s.AddDepotElement(context.Background(), playerID, depotID, tc.role, depot.Element{Waypoint: tc.addWaypoint, ShipSymbol: tc.addedHull}))
 
 			launches := tc.pick(spy)
 			require.Len(t, launches, 1, "element add dispatches exactly the added element's per-role launch")
@@ -242,7 +242,7 @@ func TestAddDepotElement_UncrewedSlotPositionsNothing(t *testing.T) {
 		Warehouses: []ElementSpec{{Waypoint: "X1-A-WH0"}},
 	}))
 
-	require.NoError(t, s.AddDepotElement(context.Background(), playerID, "d1", "delivery-hull", "X1-A-H52", "")) // uncrewed
+	require.NoError(t, s.AddDepotElement(context.Background(), playerID, "d1", "delivery-hull", depot.Element{Waypoint: "X1-A-H52"})) // uncrewed
 
 	require.Empty(t, spy.warehouses)
 	require.Empty(t, spy.stockers)

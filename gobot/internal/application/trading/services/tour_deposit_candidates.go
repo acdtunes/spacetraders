@@ -125,34 +125,7 @@ func BuildDepositCandidates(
 	var out []routing.TourDepositCandidate
 	defer func() {
 		v.final = len(out)
-		if v.reason == "" {
-			v.reason = "selected"
-		}
-		level := v.level
-		if level == "" {
-			level = "INFO"
-		}
-		wh := v.warehouseID
-		if wh == "" {
-			wh = "none"
-		}
-		logger.Log(level, fmt.Sprintf(
-			"Pre-positioning verdict: %d deposit candidate(s) — %s "+
-				"[warehouse=%s wh_candidates=%d reachable=%t systems=%v ceiling=%d(known=%t) free=%d "+
-				"funnel: miner_rows=%d stock_eligible=%d after_whitelist=%d]",
-			v.final, v.reason, wh, v.warehouseCandidates, v.warehouseID != "", v.allowedSystems,
-			v.ceilingCredits, v.ceilingKnown, v.freeSpace,
-			v.minerRows, v.stockEligible, v.afterWhitelist),
-			map[string]interface{}{
-				"final": v.final, "reason": v.reason,
-				"warehouse": v.warehouseID, "storage_waypoint": v.storageWaypoint,
-				"warehouse_candidates": v.warehouseCandidates,
-				"home_system":          v.homeSystem, "reachable_warehouse": v.warehouseID != "",
-				"allowed_systems": v.allowedSystems, "ceiling_credits": v.ceilingCredits,
-				"ceiling_known": v.ceilingKnown, "free_space": v.freeSpace,
-				"miner_rows": v.minerRows, "stock_eligible": v.stockEligible,
-				"after_whitelist": v.afterWhitelist,
-			})
+		v.emit(logger)
 	}()
 
 	// Fail CLOSED: an unreadable balance (or a non-positive ceiling) buys nothing
@@ -210,44 +183,22 @@ func BuildDepositCandidates(
 	}
 	v.minerRows = len(rows)
 
-	allow := toSet(cfg.Allowlist)
-	block := toSet(cfg.Blocklist)
-	minSavings := cfg.MinSavingsPerUnit
-	if minSavings <= 0 {
-		minSavings = 1
-	}
-	topN := cfg.TopN
-	if topN <= 0 {
-		topN = 5
-	}
+	filters := resolveDepositFilters(cfg)
 
 	// Rows arrive stock-eligible-first, ranked by total projected savings (Lane A).
 	remainingSpace := freeSpace
 	remainingCredits := ceilingCredits
 	for _, r := range rows {
-		if len(out) >= topN || remainingSpace <= 0 || remainingCredits <= 0 {
+		if len(out) >= filters.topN || remainingSpace <= 0 || remainingCredits <= 0 {
 			break
 		}
-		if !r.StockEligible { // eligible only: known both asks AND savings>0 (no speculative stocking)
-			continue
-		}
-		if r.ProjectedSavingsPerUnit < minSavings || r.ForeignAsk <= 0 || r.HomeAsk <= 0 {
+		if !stockEligible(r, filters.minSavings) {
 			continue
 		}
 		v.stockEligible++
-		if len(allow) > 0 && !allow[r.Good] {
-			continue
-		}
-		if block[r.Good] {
-			continue
-		}
-		// Only offer goods the group actually BUFFERS: withdrawal discovery (Lane D,
-		// StorageSourceFinder.FindByGood) keys on the warehouse's supported goods, so
-		// depositing a good no co-located member supports would strand it (paid-for
-		// inventory that no contract worker can source). Fail closed. AnySupportsGood
-		// spans the group so a good buffered by only one of the co-located hulls still
-		// qualifies — the deposit executor lands it on a member that supports it.
-		if !AnySupportsGood(group, r.Good) {
+		// Fail closed on a good no co-located member buffers: withdrawal discovery keys on
+		// supported goods, so depositing one would strand paid-for inventory nothing can source.
+		if !filters.admits(r.Good) || !AnySupportsGood(group, r.Good) {
 			continue
 		}
 		v.afterWhitelist++
@@ -281,6 +232,75 @@ func BuildDepositCandidates(
 		v.reason = "no candidates survived filters (eligibility/whitelist/space/ceiling)"
 	}
 	return out
+}
+
+func (v *depositVerdict) emit(logger common.ContainerLogger) {
+	if v.reason == "" {
+		v.reason = "selected"
+	}
+	level := v.level
+	if level == "" {
+		level = "INFO"
+	}
+	wh := v.warehouseID
+	if wh == "" {
+		wh = "none"
+	}
+	logger.Log(level, fmt.Sprintf(
+		"Pre-positioning verdict: %d deposit candidate(s) — %s "+
+			"[warehouse=%s wh_candidates=%d reachable=%t systems=%v ceiling=%d(known=%t) free=%d "+
+			"funnel: miner_rows=%d stock_eligible=%d after_whitelist=%d]",
+		v.final, v.reason, wh, v.warehouseCandidates, v.warehouseID != "", v.allowedSystems,
+		v.ceilingCredits, v.ceilingKnown, v.freeSpace,
+		v.minerRows, v.stockEligible, v.afterWhitelist),
+		map[string]interface{}{
+			"final": v.final, "reason": v.reason,
+			"warehouse": v.warehouseID, "storage_waypoint": v.storageWaypoint,
+			"warehouse_candidates": v.warehouseCandidates,
+			"home_system":          v.homeSystem, "reachable_warehouse": v.warehouseID != "",
+			"allowed_systems": v.allowedSystems, "ceiling_credits": v.ceilingCredits,
+			"ceiling_known": v.ceilingKnown, "free_space": v.freeSpace,
+			"miner_rows": v.minerRows, "stock_eligible": v.stockEligible,
+			"after_whitelist": v.afterWhitelist,
+		})
+}
+
+// depositFilters is the resolved good-admission policy: an empty allowlist admits every
+// good the blocklist does not name.
+type depositFilters struct {
+	allow      map[string]bool
+	block      map[string]bool
+	minSavings int
+	topN       int
+}
+
+func resolveDepositFilters(cfg DepositCandidateConfig) depositFilters {
+	f := depositFilters{
+		allow:      toSet(cfg.Allowlist),
+		block:      toSet(cfg.Blocklist),
+		minSavings: cfg.MinSavingsPerUnit,
+		topN:       cfg.TopN,
+	}
+	if f.minSavings <= 0 {
+		f.minSavings = 1
+	}
+	if f.topN <= 0 {
+		f.topN = 5
+	}
+	return f
+}
+
+func (f depositFilters) admits(good string) bool {
+	if len(f.allow) > 0 && !f.allow[good] {
+		return false
+	}
+	return !f.block[good]
+}
+
+// stockEligible admits only rows with BOTH asks known and savings clearing the floor —
+// no speculative stocking.
+func stockEligible(r persistence.DemandCandidate, minSavings int) bool {
+	return r.StockEligible && r.ProjectedSavingsPerUnit >= minSavings && r.ForeignAsk > 0 && r.HomeAsk > 0
 }
 
 // findWarehouseInGraph resolves the deposit sink for a tour graph. anchor is the

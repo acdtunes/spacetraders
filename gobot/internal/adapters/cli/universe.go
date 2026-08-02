@@ -11,8 +11,6 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
-	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
-	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
 const eraDateLayout = "2006-01-02"
@@ -67,13 +65,9 @@ Re-running on an already-closed era is an idempotent no-op. Player-scoped
 history (transactions, contracts, ...) is never touched.`,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.LoadConfig("")
+			db, err := openDatabase()
 			if err != nil {
-				return fmt.Errorf("failed to load config: %w", err)
-			}
-			db, err := database.NewConnection(&cfg.Database)
-			if err != nil {
-				return fmt.Errorf("failed to connect to database: %w", err)
+				return err
 			}
 			repo := persistence.NewEraRepository(db)
 			return runUniverseClose(context.Background(), repo, era, confirm, os.Stdout)
@@ -96,13 +90,9 @@ open era and never touches ARCHIVE-class history. Requires --confirm to echo
 the era name.`,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.LoadConfig("")
+			db, err := openDatabase()
 			if err != nil {
-				return fmt.Errorf("failed to load config: %w", err)
-			}
-			db, err := database.NewConnection(&cfg.Database)
-			if err != nil {
-				return fmt.Errorf("failed to connect to database: %w", err)
+				return err
 			}
 			repo := persistence.NewEraRepository(db)
 			return runUniverseScrub(context.Background(), repo, era, confirm, os.Stdout)
@@ -170,14 +160,9 @@ reset date. Exits non-zero on MISMATCH so the Watchkeeper can script detection.
 With no open era row it prints NO ERA and exits zero (pre-registration state).`,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.LoadConfig("")
+			db, err := openDatabase()
 			if err != nil {
-				return fmt.Errorf("failed to load config: %w", err)
-			}
-
-			db, err := database.NewConnection(&cfg.Database)
-			if err != nil {
-				return fmt.Errorf("failed to connect to database: %w", err)
+				return err
 			}
 
 			client := api.NewSpaceTradersClient()

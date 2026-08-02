@@ -54,59 +54,40 @@ type ParkedSensingMetricsCollector struct {
 // NewParkedSensingMetricsCollector creates a new parked-probe sensing collector.
 func NewParkedSensingMetricsCollector() *ParkedSensingMetricsCollector {
 	return &ParkedSensingMetricsCollector{
-		rateReqPerSec: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "parked_sensing_rate_req_per_sec",
-				Help:      "Requests/sec the parked-probe scan pacer is running at, as handed to the rotation by the last reconcile (the residual under the utilization target, less charting, floored at min_scan_rate)",
-			},
-			[]string{"player_id"},
+		rateReqPerSec: newGaugeVec(
+			"parked_sensing_rate_req_per_sec",
+			"Requests/sec the parked-probe scan pacer is running at, as handed to the rotation by the last reconcile (the residual under the utilization target, less charting, floored at min_scan_rate)",
+			"player_id",
 		),
-		stalenessSeconds: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "parked_sensing_staleness_seconds",
-				Help:      "Age of the parked fleet's market data in seconds, by percentile tier: hot=p10, median=p50, cold=p90. Never-scanned slots are excluded rather than counted as infinitely stale",
-			},
-			[]string{"player_id", "tier"},
+		stalenessSeconds: newGaugeVec(
+			"parked_sensing_staleness_seconds",
+			"Age of the parked fleet's market data in seconds, by percentile tier: hot=p10, median=p50, cold=p90. Never-scanned slots are excluded rather than counted as infinitely stale",
+			"player_id",
+			"tier",
 		),
-		slots: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "parked_sensing_slots",
-				Help:      "Probe placements by lifecycle state (WANTED, QUEUED, BOUGHT, IN_TRANSIT, PARKED). QUEUED means CLAIMED for purchase — including claims whose yard then quoted above the buy floor — never purchases in flight",
-			},
-			[]string{"player_id", "state"},
+		slots: newGaugeVec(
+			"parked_sensing_slots",
+			"Probe placements by lifecycle state (WANTED, QUEUED, BOUGHT, IN_TRANSIT, PARKED). QUEUED means CLAIMED for purchase — including claims whose yard then quoted above the buy floor — never purchases in flight",
+			"player_id",
+			"state",
 		),
-		yardCatalogue: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "parked_sensing_yard_catalogue",
-				Help:      "The free shipyard-catalogue sweep, by state. outstanding is a LEVEL — known shipyards whose catalogue has never been read, and while it is non-zero the fleet is hunting hulls it may already be able to see; it drains to zero and stays there, so a value that stops falling is the signal. read and failed are PER-TICK counts of that drain",
-			},
-			[]string{"player_id", "state"},
+		yardCatalogue: newGaugeVec(
+			"parked_sensing_yard_catalogue",
+			"The free shipyard-catalogue sweep, by state. outstanding is a LEVEL — known shipyards whose catalogue has never been read, and while it is non-zero the fleet is hunting hulls it may already be able to see; it drains to zero and stays there, so a value that stops falling is the signal. read and failed are PER-TICK counts of that drain",
+			"player_id",
+			"state",
 		),
-		yardPresence: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "parked_sensing_yard_presence",
-				Help:      "The paid half: yards whose price the API will not disclose until one of our hulls is standing there. requested is the LEVEL (the backlog); dispatched, no_hull and metered are PER-TICK and separate the three states an operator would otherwise guess between — a backlog being worked, a fleet with no hull to spare, and an allowance holding the rate down",
-			},
-			[]string{"player_id", "outcome"},
+		yardPresence: newGaugeVec(
+			"parked_sensing_yard_presence",
+			"The paid half: yards whose price the API will not disclose until one of our hulls is standing there. requested is the LEVEL (the backlog); dispatched, no_hull and metered are PER-TICK and separate the three states an operator would otherwise guess between — a backlog being worked, a fleet with no hull to spare, and an allowance holding the rate down",
+			"player_id",
+			"outcome",
 		),
-		yardSlots: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "parked_sensing_yard_slots",
-				Help:      "The same blind spot seen from the buy queue. queued is the LEVEL of unfilled placements standing on a dark yard; at_head is how many the ordering delivered into the window a tick can actually reach, and a high queued beside a persistent zero at_head is the ordering failing rather than an absence of dark yards; filled is the outcome, and reads zero whenever spending is paused",
-			},
-			[]string{"player_id", "stage"},
+		yardSlots: newGaugeVec(
+			"parked_sensing_yard_slots",
+			"The same blind spot seen from the buy queue. queued is the LEVEL of unfilled placements standing on a dark yard; at_head is how many the ordering delivered into the window a tick can actually reach, and a high queued beside a persistent zero at_head is the ordering failing rather than an absence of dark yards; filled is the outcome, and reads zero whenever spending is paused",
+			"player_id",
+			"stage",
 		),
 	}
 }
@@ -115,25 +96,16 @@ func NewParkedSensingMetricsCollector() *ParkedSensingMetricsCollector {
 // nil Registry (metrics disabled) is a no-op, matching the sibling collectors.
 func (c *ParkedSensingMetricsCollector) Register() error {
 	if Registry == nil {
-		return nil // Metrics not enabled
+		return nil
 	}
-
-	metrics := []prometheus.Collector{
+	return registerAll(
 		c.rateReqPerSec,
 		c.stalenessSeconds,
 		c.slots,
 		c.yardCatalogue,
 		c.yardPresence,
 		c.yardSlots,
-	}
-
-	for _, metric := range metrics {
-		if err := Registry.Register(metric); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	)
 }
 
 // RecordRate sets the scan pacer's current rate for one player.

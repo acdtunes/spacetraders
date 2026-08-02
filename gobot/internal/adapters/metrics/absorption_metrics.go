@@ -39,34 +39,27 @@ type AbsorptionMetricsCollector struct {
 // NewAbsorptionMetricsCollector creates a new absorption metrics collector.
 func NewAbsorptionMetricsCollector() *AbsorptionMetricsCollector {
 	return &AbsorptionMetricsCollector{
-		capBindingTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "absorption_cap_binding_total",
-				Help:      "Accepted tour plan (market,good,side) touches on an absorbed lane, by whether the fleet-wide cap bound the plan (outcome=bound|unbound)",
-			},
-			[]string{"player_id", "side", "outcome"},
+		capBindingTotal: newCounterVec(
+			"absorption_cap_binding_total",
+			"Accepted tour plan (market,good,side) touches on an absorbed lane, by whether the fleet-wide cap bound the plan (outcome=bound|unbound)",
+			"player_id",
+			"side",
+			"outcome",
 		),
 
-		ladderIncidentsTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "absorption_ladder_incidents_total",
-				Help:      "Tour BUY legs executed against a market carrying an outstanding EXECUTED recovery shadow (cross-plan ladder incidents)",
-			},
-			[]string{"player_id", "good_symbol"},
+		ladderIncidentsTotal: newCounterVec(
+			"absorption_ladder_incidents_total",
+			"Tour BUY legs executed against a market carrying an outstanding EXECUTED recovery shadow (cross-plan ladder incidents)",
+			"player_id",
+			"good_symbol",
 		),
 
-		consultVerdictsTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "absorption_consult_verdicts_total",
-				Help:      "Absorption-consult verdicts applied at a lane/plan exclusion site, by verdict and consulting engine",
-			},
-			[]string{"player_id", "verdict", "engine"},
+		consultVerdictsTotal: newCounterVec(
+			"absorption_consult_verdicts_total",
+			"Absorption-consult verdicts applied at a lane/plan exclusion site, by verdict and consulting engine",
+			"player_id",
+			"verdict",
+			"engine",
 		),
 	}
 }
@@ -75,22 +68,13 @@ func NewAbsorptionMetricsCollector() *AbsorptionMetricsCollector {
 // (metrics disabled) is a no-op, matching the sibling collectors.
 func (c *AbsorptionMetricsCollector) Register() error {
 	if Registry == nil {
-		return nil // Metrics not enabled
+		return nil
 	}
-
-	metrics := []prometheus.Collector{
+	return registerAll(
 		c.capBindingTotal,
 		c.ladderIncidentsTotal,
 		c.consultVerdictsTotal,
-	}
-
-	for _, metric := range metrics {
-		if err := Registry.Register(metric); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	)
 }
 
 // RecordCapBinding records one accepted-plan cap-binding classification for a touched,
@@ -119,4 +103,47 @@ func (c *AbsorptionMetricsCollector) RecordConsultVerdict(playerID int, verdict,
 		return // Recording is best-effort; never panic a trade path (RULINGS #4).
 	}
 	c.consultVerdictsTotal.WithLabelValues(strconv.Itoa(playerID), verdict, engine).Inc()
+}
+
+// globalAbsorptionCollector is the singleton absorption burn-in collector.
+// Set by SetGlobalAbsorptionCollector() when metrics are enabled; the tour
+// coordinator emits the cap-binding + ladder-incident counters through it.
+var globalAbsorptionCollector *AbsorptionMetricsCollector
+
+// SetGlobalAbsorptionCollector sets the global absorption burn-in collector.
+func SetGlobalAbsorptionCollector(collector *AbsorptionMetricsCollector) {
+	globalAbsorptionCollector = collector
+}
+
+// GetGlobalAbsorptionCollector returns the global absorption burn-in collector.
+// Returns nil if metrics are not enabled.
+func GetGlobalAbsorptionCollector() *AbsorptionMetricsCollector {
+	return globalAbsorptionCollector
+}
+
+// RecordAbsorptionCapBinding records one accepted-plan cap-binding classification
+// globally. No-op when metrics are disabled, so a metrics miss never
+// touches the trade path (RULINGS #4).
+func RecordAbsorptionCapBinding(playerID int, side, outcome string) {
+	if globalAbsorptionCollector != nil {
+		globalAbsorptionCollector.RecordCapBinding(playerID, side, outcome)
+	}
+}
+
+// RecordAbsorptionLadderIncident records one cross-plan ladder incident globally.
+// No-op when metrics are disabled.
+func RecordAbsorptionLadderIncident(playerID int, goodSymbol string) {
+	if globalAbsorptionCollector != nil {
+		globalAbsorptionCollector.RecordLadderIncident(playerID, goodSymbol)
+	}
+}
+
+// RecordAbsorptionConsultVerdict records one consult-apply verdict globally. engine
+// distinguishes the emitting engine ("idle_arb"|"trade_route"); verdict
+// uses each engine's own native vocabulary (idle_arb: skip_reserved|pass; trade_route:
+// clear|shadow|reserved-depth|unreadable). No-op when metrics are disabled (RULINGS #4).
+func RecordAbsorptionConsultVerdict(playerID int, verdict, engine string) {
+	if globalAbsorptionCollector != nil {
+		globalAbsorptionCollector.RecordConsultVerdict(playerID, verdict, engine)
+	}
 }

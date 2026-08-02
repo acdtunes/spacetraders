@@ -37,8 +37,6 @@ package commands
 import (
 	"context"
 	"fmt"
-	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -238,7 +236,7 @@ type TourTelemetryReader interface {
 	ListByPlayer(ctx context.Context, playerID int, since time.Time) ([]trading.TourLegTelemetry, error)
 }
 
-// RunMarketFreshnessSizerCoordinatorCommand launches the standing coordinator for a player
+// RunMarketFreshnessSizerCoordinatorCommand launches the standing coordinator for a player.
 // (sp-orgp). Like the other coordinators it runs an infinite reconcile loop inside a single
 // Handle() call. All knobs are launch-config keys (RULINGS #5); <= 0 (or the zero value)
 // falls back to the documented default.
@@ -334,7 +332,7 @@ type RunMarketFreshnessSizerCoordinatorHandler struct {
 	// the identical error for DefaultStreakThreshold consecutive ticks. Optional-injection.
 	captainEvents captain.EventRecorder
 
-	// liveConfig snapshots the container's OWN persisted config at each tick start
+	// liveConfig snapshots the container's OWN persisted config at each tick start,
 	// (sp-vwek/sp-0z7f), so a `spacetraders tune` of a spend/cooldown/cap knob takes
 	// effect on the NEXT tick with no restart. Optional-injection: nil keeps the
 	// launch-frozen behavior byte-identical.
@@ -475,305 +473,11 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) noteReconcile(ctx context.Co
 	}
 }
 
-// SizerTunableDefaults maps every LIVE-tunable freshness-sizer knob to its
-// documented default — the value that applies when neither the live container config
-// nor the launch command carries a positive one. The daemon's tune bounds registry
-// reads THIS map, so the defaults-of-record stay in this file next to the consts they
-// mirror (including today's Admiral retunes: cooldown 1m, max spend 500k). The map's
-// KEY SET is also the contract for which keys resolveSizerConfig live-overlays.
-func SizerTunableDefaults() map[string]int {
-	return map[string]int{
-		"max_spend_per_cycle":         defaultSizerMaxSpend,
-		"purchase_cooldown_secs":      int(defaultSizerCooldown / time.Second),
-		"spend_window_secs":           int(defaultSizerSpendWindow / time.Second),
-		"max_probe_fleet":             defaultSizerMaxProbeFleet,
-		"max_probes_per_system":       defaultMaxProbesPerSystem,
-		"sla_seconds":                 defaultSLASeconds,
-		"sla_seconds_weak":            defaultSLAWeakSeconds,        // Per-activity SLA (WEAK, 360m)
-		"sla_seconds_restricted":      defaultSLARestrictedSeconds,  // Per-activity SLA (RESTRICTED + unknown/null, 135m)
-		"sla_seconds_growing":         defaultSLAGrowingSeconds,     // Per-activity SLA (GROWING, 45m)
-		"sla_seconds_strong":          defaultSLAStrongSeconds,      // Per-activity SLA (STRONG, 22m)
-		"target_percentile":           defaultTargetPercentile,      // sp-r57g percentile-age target
-		"value_weighted":              valueWeightedModeOn,          // sp-r57g value-weighting mode (2=on default, 1=off)
-		"demand_ewma_half_life_secs":  defaultDemandHalfLifeSeconds, // Realized-demand EWMA half-life
-		"worst_cycle_seconds":         defaultWorstCycleSeconds,
-		"cycle_dampening_percent":     defaultCycleDampeningPercent,
-		"breach_response_percent":     defaultBreachResponsePercent,
-		"release_slack_percent":       defaultReleaseSlackPercent,
-		"release_stable_window_secs":  defaultReleaseStableWindowSecs,
-		"reserved_frontier_floor":     defaultReservedFrontierFloor,
-		"hold_unscanned_market_posts": defaultHoldUnscannedMarketPosts, // sp-u8jc/sp-gucu bootstrap flag (0=off)
-		// Sensing scope: how long a traded system stays in the footprint, how many out-of-footprint
-		// systems stay under watch, and the relaxed target those watch posts carry.
-		"scan_footprint_retention_secs": defaultScanFootprintRetentionSecs,
-		"scan_discovery_allowance":      defaultScanDiscoveryAllowance,
-		"scan_discovery_sla_seconds":    defaultScanDiscoverySLASeconds,
-	}
-}
-
-// sizerConfig is the launch command with every default resolved.
-type sizerConfig struct {
-	DefaultSLA time.Duration
-	Overrides  map[string]time.Duration
-	// ActivitySLA is the per-activity freshness SLA: each market ACTIVITY state is sized
-	// against its own SLA, keyed by the canonical shared.ActivityLevel. Resolved once in
-	// resolveSizerConfig from the sla_seconds_{weak,restricted,growing,strong} knobs; read via
-	// slaForActivity, which maps an unknown/absent activity to the RESTRICTED entry.
-	ActivitySLA              map[shared.ActivityLevel]time.Duration
-	SeedCycle                time.Duration
-	MinCycleSamples          int
-	WorstCycle               time.Duration
-	CycleDampeningPercent    int
-	MaxProbesPerSystem       int
-	BreachResponsePercent    int
-	TargetPercentile         int           // sp-r57g percentile-age target (default 90; 100 = max-age behavior)
-	ValueWeighted            bool          // sp-r57g: weight the percentile by per-market value (default ON)
-	DemandHalfLife           time.Duration // EWMA half-life of the realized-sink-demand weight
-	ReleaseSlackPercent      int
-	ReleaseStableWindow      time.Duration
-	ReservedFrontierFloor    int
-	HoldUnscannedMarketPosts bool // sp-u8jc/sp-gucu: hold-not-retire charted-but-unscanned posts
-	// FootprintRetention is how long a system stays in the trading footprint after its last
-	// realized trade; DiscoveryAllowance how many out-of-footprint systems keep a standing watch;
-	// DiscoverySLA the relaxed freshness target those watch posts carry.
-	FootprintRetention time.Duration
-	DiscoveryAllowance int
-	DiscoverySLA       time.Duration
-	Buy                probebuy.Config
-}
-
-// resolveSizerConfig resolves one tick's effective config. live is the tick-start
-// snapshot of the container's persisted config column (nil when unwired/unreadable).
-// For the TUNABLE knobs (SizerTunableDefaults) a non-nil snapshot is AUTHORITATIVE:
-// a positive value is the live value (the launch verb wrote its values into the same
-// column, so untuned knobs still read their launch values here), and an absent/zeroed
-// key means the documented default — the `tune <key> 0` revert. Only when there is NO
-// snapshot does the launch command fill those knobs (fail-safe launch behavior). The
-// non-tunable knobs always resolve from the launch command, unchanged.
-func resolveSizerConfig(cmd *RunMarketFreshnessSizerCoordinatorCommand, live liveconfig.Snapshot) sizerConfig {
-	c := sizerConfig{
-		DefaultSLA:            time.Duration(cmd.SLASeconds) * time.Second,
-		SeedCycle:             time.Duration(cmd.SeedCycleSeconds) * time.Second,
-		MinCycleSamples:       cmd.MinCycleSamples,
-		WorstCycle:            time.Duration(cmd.WorstCycleSeconds) * time.Second,
-		CycleDampeningPercent: cmd.CycleDampeningPercent,
-		MaxProbesPerSystem:    cmd.MaxProbesPerSystem,
-		BreachResponsePercent: cmd.BreachResponsePercent,
-		TargetPercentile:      cmd.TargetPercentile,
-		ValueWeighted:         valueWeightedFromMode(cmd.ValueWeightedMode),
-		ReleaseSlackPercent:   cmd.ReleaseSlackPercent,
-		ReleaseStableWindow:   time.Duration(cmd.ReleaseStableWindowSecs) * time.Second,
-		ReservedFrontierFloor: cmd.ReservedFrontierFloor,
-		// sp-u8jc/sp-gucu int-mode flag: >0 ⇒ hold-not-retire charted-but-unscanned posts.
-		HoldUnscannedMarketPosts: cmd.HoldUnscannedMarketPosts > 0,
-		Buy: probebuy.Config{
-			MaxProbeFleet:    cmd.MaxProbeFleet,
-			MaxSpendPerCycle: cmd.MaxSpendPerCycle,
-			PurchaseCooldown: time.Duration(cmd.PurchaseCooldownSecs) * time.Second,
-			SpendWindow:      time.Duration(cmd.SpendWindowSecs) * time.Second,
-		},
-	}
-	if live != nil {
-		c.DefaultSLA = time.Duration(live.PositiveIntOrZero("sla_seconds")) * time.Second
-		c.WorstCycle = time.Duration(live.PositiveIntOrZero("worst_cycle_seconds")) * time.Second
-		c.CycleDampeningPercent = live.PositiveIntOrZero("cycle_dampening_percent")
-		c.MaxProbesPerSystem = live.PositiveIntOrZero("max_probes_per_system")
-		c.BreachResponsePercent = live.PositiveIntOrZero("breach_response_percent")
-		c.TargetPercentile = live.PositiveIntOrZero("target_percentile")
-		// value_weighted is live-authoritative both ways (2=on, 1=off, absent/0=default) — a live
-		// snapshot can re-enable weighting the launch disabled, or disable it live if it misbehaves.
-		c.ValueWeighted = valueWeightedFromMode(live.PositiveIntOrZero("value_weighted"))
-		c.ReleaseSlackPercent = live.PositiveIntOrZero("release_slack_percent")
-		c.ReleaseStableWindow = time.Duration(live.PositiveIntOrZero("release_stable_window_secs")) * time.Second
-		// sp-iopd reserved frontier floor: live-authoritative. Absent/zeroed ⇒ 0 (floor OFF),
-		// which is the documented default — no <=0 fallback, since 0 IS the default here.
-		c.ReservedFrontierFloor = live.PositiveIntOrZero("reserved_frontier_floor")
-		// sp-u8jc/sp-gucu hold-unscanned flag: live-authoritative int-mode bool. Absent/zeroed ⇒
-		// OFF (the documented default, retire-as-gone) — no fallback, since 0 IS the default here.
-		c.HoldUnscannedMarketPosts = live.PositiveIntOrZero("hold_unscanned_market_posts") > 0
-		c.Buy.MaxProbeFleet = live.PositiveIntOrZero("max_probe_fleet")
-		c.Buy.MaxSpendPerCycle = live.PositiveIntOrZero("max_spend_per_cycle")
-		c.Buy.PurchaseCooldown = time.Duration(live.PositiveIntOrZero("purchase_cooldown_secs")) * time.Second
-		c.Buy.SpendWindow = time.Duration(live.PositiveIntOrZero("spend_window_secs")) * time.Second
-	}
-	if c.DefaultSLA <= 0 {
-		c.DefaultSLA = defaultSLASeconds * time.Second
-	}
-	if c.SeedCycle <= 0 {
-		c.SeedCycle = defaultSeedCycleSeconds * time.Second
-	}
-	if c.MinCycleSamples <= 0 {
-		c.MinCycleSamples = defaultMinCycleSamples
-	}
-	if c.WorstCycle <= 0 {
-		c.WorstCycle = defaultWorstCycleSeconds * time.Second
-	}
-	if c.CycleDampeningPercent <= 0 {
-		c.CycleDampeningPercent = defaultCycleDampeningPercent
-	}
-	if c.MaxProbesPerSystem <= 0 {
-		c.MaxProbesPerSystem = defaultMaxProbesPerSystem
-	}
-	if c.BreachResponsePercent <= 0 {
-		c.BreachResponsePercent = defaultBreachResponsePercent
-	}
-	if c.TargetPercentile <= 0 {
-		c.TargetPercentile = defaultTargetPercentile
-	}
-	// ValueWeighted needs no <=0 fallback — valueWeightedFromMode already maps the unset mode (0)
-	// to defaultValueWeighted, so both the launch and live branches carry a resolved bool by here.
-	if c.ReleaseSlackPercent <= 0 {
-		c.ReleaseSlackPercent = defaultReleaseSlackPercent
-	}
-	if c.ReleaseStableWindow <= 0 {
-		c.ReleaseStableWindow = defaultReleaseStableWindowSecs * time.Second
-	}
-	if c.Buy.MaxProbeFleet <= 0 {
-		c.Buy.MaxProbeFleet = defaultSizerMaxProbeFleet
-	}
-	if c.Buy.MaxSpendPerCycle <= 0 {
-		c.Buy.MaxSpendPerCycle = defaultSizerMaxSpend
-	}
-	if c.Buy.PurchaseCooldown <= 0 {
-		c.Buy.PurchaseCooldown = defaultSizerCooldown
-	}
-	if c.Buy.SpendWindow <= 0 {
-		c.Buy.SpendWindow = defaultSizerSpendWindow
-	}
-	c.Overrides = make(map[string]time.Duration, len(cmd.SystemSLAOverrides))
-	for system, secs := range cmd.SystemSLAOverrides {
-		if secs > 0 {
-			c.Overrides[system] = time.Duration(secs) * time.Second
-		}
-	}
-	c.ActivitySLA = resolveActivitySLA(live)
-	c.DemandHalfLife = resolveDemandHalfLife(live)
-	c.FootprintRetention = liveSecondsOrDefault(live, "scan_footprint_retention_secs", defaultScanFootprintRetentionSecs)
-	c.DiscoverySLA = liveSecondsOrDefault(live, "scan_discovery_sla_seconds", defaultScanDiscoverySLASeconds)
-	c.DiscoveryAllowance = defaultScanDiscoveryAllowance
-	if live != nil {
-		if allowance := live.PositiveIntOrZero("scan_discovery_allowance"); allowance > 0 {
-			c.DiscoveryAllowance = allowance
-		}
-	}
-	return c
-}
-
-// liveSecondsOrDefault resolves a tunable-only seconds knob: live-authoritative when a positive
-// value is present, the documented default otherwise (absent key, `tune <key> 0`, or no snapshot).
-func liveSecondsOrDefault(live liveconfig.Snapshot, key string, defaultSeconds int) time.Duration {
-	secs := 0
-	if live != nil {
-		secs = live.PositiveIntOrZero(key)
-	}
-	if secs <= 0 {
-		secs = defaultSeconds
-	}
-	return time.Duration(secs) * time.Second
-}
-
-// resolveDemandHalfLife resolves the realized-demand EWMA half-life from the tick's live
-// snapshot: live-authoritative when a positive value is present, the documented default otherwise
-// (an absent/zeroed key, or no snapshot). It is tunable-only — no launch-command field, mirroring
-// the per-activity SLA knobs — so a nil snapshot yields the armed default directly.
-func resolveDemandHalfLife(live liveconfig.Snapshot) time.Duration {
-	secs := 0
-	if live != nil {
-		secs = live.PositiveIntOrZero("demand_ewma_half_life_secs")
-	}
-	if secs <= 0 {
-		secs = defaultDemandHalfLifeSeconds
-	}
-	return time.Duration(secs) * time.Second
-}
-
-func (c sizerConfig) slaFor(system string) time.Duration {
-	if sla, ok := c.Overrides[system]; ok {
-		return sla
-	}
-	return c.DefaultSLA
-}
-
-// resolveActivitySLA resolves the per-activity freshness SLA map from the tick's live
-// snapshot. Each knob is live-authoritative when a positive value is present and falls back to its
-// documented default otherwise (an absent/zeroed key, or no snapshot) — the same tune-registry
-// semantics the other tunables use, where `tune <key> 0` reverts to the default. The launch verb
-// does not carry these knobs (they arm at the defaults and tune live), so there is no launch-command
-// field to fold in — a nil snapshot yields the armed defaults directly.
-func resolveActivitySLA(live liveconfig.Snapshot) map[shared.ActivityLevel]time.Duration {
-	weak, restricted, growing, strong := 0, 0, 0, 0
-	if live != nil {
-		weak = live.PositiveIntOrZero("sla_seconds_weak")
-		restricted = live.PositiveIntOrZero("sla_seconds_restricted")
-		growing = live.PositiveIntOrZero("sla_seconds_growing")
-		strong = live.PositiveIntOrZero("sla_seconds_strong")
-	}
-	return map[shared.ActivityLevel]time.Duration{
-		shared.ActivityLevelWeak:       activitySLAOrDefault(weak, defaultSLAWeakSeconds),
-		shared.ActivityLevelRestricted: activitySLAOrDefault(restricted, defaultSLARestrictedSeconds),
-		shared.ActivityLevelGrowing:    activitySLAOrDefault(growing, defaultSLAGrowingSeconds),
-		shared.ActivityLevelStrong:     activitySLAOrDefault(strong, defaultSLAStrongSeconds),
-	}
-}
-
-// activitySLAOrDefault turns a knob's resolved seconds into a duration, substituting the documented
-// default for a non-positive (unset / `tune 0`-reverted) value.
-func activitySLAOrDefault(secs, defaultSecs int) time.Duration {
-	if secs <= 0 {
-		secs = defaultSecs
-	}
-	return time.Duration(secs) * time.Second
-}
-
-// slaForActivity returns the freshness SLA for a canonical activity level. An activity
-// absent from the map — an unknown/null state, or the "" zero value — resolves to the RESTRICTED
-// entry, the documented unknown default.
-func (c sizerConfig) slaForActivity(level shared.ActivityLevel) time.Duration {
-	if sla, ok := c.ActivitySLA[level]; ok {
-		return sla
-	}
-	return c.ActivitySLA[shared.ActivityLevelRestricted]
-}
-
-// valueWeightedFromMode maps the int-mode value_weighted knob to a bool: valueWeightedModeOff (1)
-// → off, valueWeightedModeOn (2) → on, and anything else (0/unset, or an out-of-range value) →
-// the documented default (ON). The int encoding exists because the tune registry stores ints and
-// treats 0 as "revert to default", so a plain 0/1 bool could never express an OFF that survives a
-// revert; 1=off / 2=on keeps the toggle live-tunable in BOTH directions.
-func valueWeightedFromMode(mode int) bool {
-	switch mode {
-	case valueWeightedModeOff:
-		return false
-	case valueWeightedModeOn:
-		return true
-	default:
-		return defaultValueWeighted
-	}
-}
-
-// liveConfigSnapshot takes the tick's live-config snapshot (sp-vwek). A nil reader
-// (not wired — tests, minimal boots) or a read error yields nil, which
-// resolveSizerConfig treats as "run this tick entirely on the launch command" — the
-// fail-safe launch behavior, never a half-applied config. The read is logged, not
-// fatal: a transient DB gap must not kill the reconcile loop.
-func (h *RunMarketFreshnessSizerCoordinatorHandler) liveConfigSnapshot(ctx context.Context, cmd *RunMarketFreshnessSizerCoordinatorCommand) liveconfig.Snapshot {
-	if h.liveConfig == nil {
-		return nil
-	}
-	snap, err := h.liveConfig.Snapshot(ctx, cmd.ContainerID, cmd.PlayerID.Value())
-	if err != nil {
-		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf("Live config unreadable — this tick runs on launch values: %v", err), nil)
-		return nil
-	}
-	return snap
-}
-
 // ReconcileOnce is one reconcile pass — the unit the tests drive directly. It MEASURES the
 // per-system freshness demand, SIZES each market-bearing system's standing post, and BUYS
 // one probe when the aggregate demand outruns supply and every guard passes. The tick runs
 // entirely on the live-config snapshot taken here; a knob tuned mid-tick lands next tick.
 func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Context, cmd *RunMarketFreshnessSizerCoordinatorCommand) error {
-	logger := common.LoggerFromContext(ctx)
 	cfg := resolveSizerConfig(cmd, h.liveConfigSnapshot(ctx, cmd))
 
 	snapshots, err := h.freshnessReader.SystemsFreshness(ctx, cmd.PlayerID.Value())
@@ -856,32 +560,7 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Co
 			totalDemand++
 			continue
 		}
-		sla := cfg.slaFor(snap.SystemSymbol)
-		cycle := resolveCycleSeconds(snap, globalCycle, cfg)
-		existing := postBySystem[snap.SystemSymbol]
-		current := 0
-		fullyManned := false
-		if existing != nil {
-			current = existing.HullBudget()
-			fullyManned = existing.IsFullyManned() // sp-iupr issue 3a: gates the empirical-age sanity floor.
-		}
-		// COLD-START SCALE-UP: while the initial circuit is incomplete the census MarketCount is only
-		// the SCANNED subset, so a big post sizes to one hull and never grows. Size against the full
-		// CHARTED marketplace count so it reaches its true RequiredHulls at once (the coordinator then
-		// mans + VRP-partitions the idle probes). The measured per-market cycle is taken from that SAME
-		// partial subset — during a cold start it is a burst-and-idle artifact that deflates below the
-		// true per-market hop, so sizing off it yields RequiredHulls=1 even at the full charted count.
-		// Size off the fixed SEED cycle instead, matching the scout-post coordinator's undersized-warning
-		// avgHop, so the two coordinators' hull demand agrees. Age/percentile telemetry stays on the
-		// scanned reality (you can only measure a market you have scanned). Once scanning catches up
-		// (charted ≤ scanned) neither override fires and the measured-cycle loop resumes.
-		sizingSnap := snap
-		sizingCycle := cycle
-		if charted := chartedMarketplace[snap.SystemSymbol]; charted > sizingSnap.MarketCount {
-			sizingSnap.MarketCount = charted
-			sizingCycle = cfg.SeedCycle
-		}
-		desired := h.desiredHulls(releaseKey(cmd.PlayerID.Value(), snap.SystemSymbol), current, fullyManned, sizingSnap, sla, sizingCycle, cfg)
+		desired := h.sizeTradedSystem(cmd.PlayerID.Value(), snap, postBySystem[snap.SystemSymbol], chartedMarketplace[snap.SystemSymbol], globalCycle, cfg)
 		desiredBySystem[snap.SystemSymbol] = desired
 		totalDemand += desired
 	}
@@ -908,10 +587,62 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Co
 	// Empty holdCharted (hold_unscanned off / reader unwired) ⇒ 0 ⇒ byte-identical.
 	totalDemand += initialScanDemand(posts, marketBearing, holdCharted, scope)
 
-	// neediest{System,Gap} tracks the market-bearing system with the LARGEST unmet probe gap
-	// (desired − current) — the demand-proximal buy TARGET. The aggregate buy lands one
-	// undedicated probe for the reconciler to relay; naming the neediest system lets the purchaser
-	// spawn it at the probe-yard NEAREST that system. Empty (no positive gap) is the home-yard path.
+	neediestSystem := h.applySizedPosts(ctx, cmd, cfg, snapshots, scope, desiredBySystem, postBySystem)
+
+	// AUTO-RESIZE / RELEASE: a standing post whose system dropped out of the census (its
+	// markets retired) is removed, freeing its probes back to the pool. A charted-but-unscanned
+	// system (marketplace waypoints present, no market_data yet) is HELD when armed — it needs an
+	// initial scan, not retirement (sp-u8jc/sp-gucu).
+	retired := h.retireMarketlessPosts(ctx, cmd, posts, marketBearing, holdCharted, scope)
+
+	// AGGREGATE BUY: one guarded probe buy when total freshness demand outruns supply. With the
+	// reserved frontier floor engaged, totalDemand is already ≤ (supply − floor) < supply, so the
+	// sizer never buys into the reserved probes — it holds strictly against the reduced pool.
+	buyer := probebuy.NewGuardedProbeBuyer(h.treasury, h.purchaser, h.ledgerRepo, h.clock, cfg.Buy)
+	// Demand-proximal buy hint: spawn the probe at the yard nearest the neediest system.
+	// The sizer has no per-hop tuning knob of its own, so it applies the shared default penalty
+	// (proximity-first) and the shared sp-iqv2 supply-depletion margin so a repeated aggregate buy
+	// spreads across sibling yards instead of spiraling one market to 4x. An empty neediestSystem is
+	// the home-yard path — unchanged.
+	target := probebuy.ProbeTarget{System: neediestSystem, HopPenaltyCredits: probebuy.DefaultHopPenaltyCredits, SiblingPriceMarginCredits: probebuy.DefaultSiblingPriceMarginCredits, ClaimOwnerContainerID: cmd.ContainerID}
+	outcome := buyer.MaybeBuy(ctx, cmd.PlayerID, totalDemand, supply, cmd.DryRun, target)
+
+	logSizerCycle(ctx, cmd.DryRun, len(marketBearing), totalDemand, supply, retired, outcome)
+	return nil
+}
+
+func (h *RunMarketFreshnessSizerCoordinatorHandler) sizeTradedSystem(playerID int, snap domainScouting.SystemFreshnessSnapshot, existing *domainScouting.ScoutPost, chartedMarkets int, globalCycle float64, cfg sizerConfig) int {
+	sla := cfg.slaFor(snap.SystemSymbol)
+	cycle := resolveCycleSeconds(snap, globalCycle, cfg)
+	sz := systemSizing{snap: snap, sla: sla}
+	if existing != nil {
+		sz.current = existing.HullBudget()
+		sz.fullyManned = existing.IsFullyManned() // sp-iupr issue 3a: gates the empirical-age sanity floor.
+	}
+	// COLD-START SCALE-UP: while the initial circuit is incomplete the census MarketCount is only
+	// the SCANNED subset, so a big post sizes to one hull and never grows. Size against the full
+	// CHARTED marketplace count so it reaches its true RequiredHulls at once (the coordinator then
+	// mans + VRP-partitions the idle probes). The measured per-market cycle is taken from that SAME
+	// partial subset — during a cold start it is a burst-and-idle artifact that deflates below the
+	// true per-market hop, so sizing off it yields RequiredHulls=1 even at the full charted count.
+	// Size off the fixed SEED cycle instead, matching the scout-post coordinator's undersized-warning
+	// avgHop, so the two coordinators' hull demand agrees. Age/percentile telemetry stays on the
+	// scanned reality (you can only measure a market you have scanned). Once scanning catches up
+	// (charted ≤ scanned) neither override fires and the measured-cycle loop resumes.
+	if chartedMarkets > snap.MarketCount {
+		sz.snap.MarketCount = chartedMarkets
+		cycle = cfg.SeedCycle
+	}
+	sz.cycle = cycle
+	return h.desiredHulls(releaseKey(playerID, snap.SystemSymbol), sz, cfg)
+}
+
+// applySizedPosts writes each in-scope system's post at its sized manning level and returns
+// the market-bearing system with the LARGEST unmet probe gap — the demand-proximal buy TARGET.
+// The aggregate buy lands one undedicated probe for the reconciler to relay; naming the
+// neediest system lets the purchaser spawn it at the probe-yard NEAREST that system. Empty
+// (no positive gap) is the home-yard path.
+func (h *RunMarketFreshnessSizerCoordinatorHandler) applySizedPosts(ctx context.Context, cmd *RunMarketFreshnessSizerCoordinatorCommand, cfg sizerConfig, snapshots []domainScouting.SystemFreshnessSnapshot, scope domainScouting.ScanScope, desiredBySystem map[string]int, postBySystem map[string]*domainScouting.ScoutPost) string {
 	neediestSystem := ""
 	neediestGap := 0
 	for _, snap := range snapshots {
@@ -949,32 +680,18 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Co
 			h.applyPost(ctx, cmd, existing, snap.SystemSymbol, manning, postSLA)
 		}
 	}
+	return neediestSystem
+}
 
-	// AUTO-RESIZE / RELEASE: a standing post whose system dropped out of the census (its
-	// markets retired) is removed, freeing its probes back to the pool. A charted-but-unscanned
-	// system (marketplace waypoints present, no market_data yet) is HELD when armed — it needs an
-	// initial scan, not retirement (sp-u8jc/sp-gucu).
-	retired := h.retireMarketlessPosts(ctx, cmd, posts, marketBearing, holdCharted, scope)
-
-	// AGGREGATE BUY: one guarded probe buy when total freshness demand outruns supply. With the
-	// reserved frontier floor engaged, totalDemand is already ≤ (supply − floor) < supply, so the
-	// sizer never buys into the reserved probes — it holds strictly against the reduced pool.
-	buyer := probebuy.NewGuardedProbeBuyer(h.treasury, h.purchaser, h.ledgerRepo, h.clock, cfg.Buy)
-	// Demand-proximal buy hint: spawn the probe at the yard nearest the neediest system.
-	// The sizer has no per-hop tuning knob of its own, so it applies the shared default penalty
-	// (proximity-first) and the shared sp-iqv2 supply-depletion margin so a repeated aggregate buy
-	// spreads across sibling yards instead of spiraling one market to 4x. An empty neediestSystem is
-	// the home-yard path — unchanged.
-	target := probebuy.ProbeTarget{System: neediestSystem, HopPenaltyCredits: probebuy.DefaultHopPenaltyCredits, SiblingPriceMarginCredits: probebuy.DefaultSiblingPriceMarginCredits, ClaimOwnerContainerID: cmd.ContainerID}
-	outcome := buyer.MaybeBuy(ctx, cmd.PlayerID, totalDemand, supply, cmd.DryRun, target)
-
-	logger.Log("INFO", fmt.Sprintf("Freshness sizer cycle: %d market-bearing systems, aggregate demand %d probes, supply %d, %d retired — %s", len(marketBearing), totalDemand, supply, retired, outcome.Reason), map[string]interface{}{
+func logSizerCycle(ctx context.Context, dryRun bool, systems, totalDemand, supply, retired int, outcome probebuy.Outcome) {
+	logger := common.LoggerFromContext(ctx)
+	logger.Log("INFO", fmt.Sprintf("Freshness sizer cycle: %d market-bearing systems, aggregate demand %d probes, supply %d, %d retired — %s", systems, totalDemand, supply, retired, outcome.Reason), map[string]interface{}{
 		"action":           "freshness_sizer_cycle",
-		"systems":          len(marketBearing),
+		"systems":          systems,
 		"aggregate_demand": totalDemand,
 		"supply":           supply,
 		"retired":          retired,
-		"dry_run":          cmd.DryRun,
+		"dry_run":          dryRun,
 		"outcome":          outcome.Reason,
 	})
 	if outcome.Bought {
@@ -985,7 +702,6 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Co
 			"yard":        outcome.Yard,
 		})
 	}
-	return nil
 }
 
 // applyDemandWeights overrides each market's intrinsic census weight with its realized
@@ -1024,26 +740,6 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) applyDemandWeights(cfg sizer
 	}
 }
 
-// toSinkSales maps realized SELL legs to the slim scouting.SinkSale shape the demand EWMA folds,
-// keeping the scouting domain free of the trading package (mirrors autooutfit's toLegSaturation). A
-// BUY leg is not a sink and is dropped; the realized sell-value is RealizedUnits × RealizedUnitPrice
-// (a skipped leg's RealizedUnits=0 ⇒ zero value ⇒ dropped by the domain fold), and the recency age
-// is measured from RealizedAt.
-func toSinkSales(legs []trading.TourLegTelemetry, now time.Time) []domainScouting.SinkSale {
-	sales := make([]domainScouting.SinkSale, 0, len(legs))
-	for _, leg := range legs {
-		if leg.IsBuy {
-			continue
-		}
-		sales = append(sales, domainScouting.SinkSale{
-			Waypoint:   leg.Waypoint,
-			Value:      float64(leg.RealizedUnits) * float64(leg.RealizedUnitPrice),
-			AgeSeconds: now.Sub(leg.RealizedAt).Seconds(),
-		})
-	}
-	return sales
-}
-
 // readTradeLegs pulls ONE tick's realized trade telemetry, spanning the WIDER of the demand-weight
 // and footprint-retention windows so a single read serves both consumers (each applies its own
 // window downstream).
@@ -1068,530 +764,6 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) readTradeLegs(ctx context.Co
 	return legs, true
 }
 
-// buildScanScope derives the tick's sensing scope: the systems the fleet operates in (traded ∪
-// occupied) plus the bounded discovery allowance drawn from the richest systems outside it.
-//
-// A leg's system comes from the census's own waypoint index where the market is still present —
-// the authoritative mapping — falling back to parsing the symbol for a market that has since left
-// the census. An empty footprint yields an un-narrowed scope, so cold start and any evidence gap
-// sense the whole census exactly as before.
-//
-// tradeEvidence false (no telemetry reader, or its read failed) refuses to narrow at all: the
-// occupied set alone is not a footprint, and narrowing on it would release every system the fleet
-// trades in but holds no hull in at this instant.
-func buildScanScope(snapshots []domainScouting.SystemFreshnessSnapshot, legs []trading.TourLegTelemetry, tradeEvidence bool, occupied map[string]bool, cfg sizerConfig, now time.Time) domainScouting.ScanScope {
-	if !tradeEvidence {
-		return domainScouting.ScanScope{}
-	}
-	waypointSystem := make(map[string]string)
-	for _, snap := range snapshots {
-		for _, market := range snap.Markets {
-			if market.Waypoint != "" {
-				waypointSystem[market.Waypoint] = snap.SystemSymbol
-			}
-		}
-	}
-	visits := make([]domainScouting.TradeVisit, 0, len(legs))
-	for _, leg := range legs {
-		if leg.RealizedUnits <= 0 {
-			continue // a skipped or degraded leg is not a trade
-		}
-		system, ok := waypointSystem[leg.Waypoint]
-		if !ok {
-			system = shared.ExtractSystemSymbol(leg.Waypoint)
-		}
-		visits = append(visits, domainScouting.TradeVisit{System: system, AgeSeconds: now.Sub(leg.RealizedAt).Seconds()})
-	}
-	traded := domainScouting.TradedFootprint(visits, cfg.FootprintRetention.Seconds())
-
-	candidates := make([]domainScouting.DiscoveryCandidate, 0, len(snapshots))
-	for _, snap := range snapshots {
-		if snap.MarketCount <= 0 {
-			continue
-		}
-		candidates = append(candidates, domainScouting.DiscoveryCandidate{System: snap.SystemSymbol, Weight: intrinsicSystemWeight(snap)})
-	}
-	return domainScouting.BuildScanScope(traded, occupied, candidates, cfg.DiscoveryAllowance)
-}
-
-// intrinsicSystemWeight totals a system's per-market value weights — the census's own
-// Σ(trade_volume × price) prior — used to rank discovery candidates by how rich a market the fleet
-// would be watching. A census with no per-market breakdown falls back to the market count so a
-// candidate is still ranked above an emptier one rather than collapsing to zero.
-func intrinsicSystemWeight(snap domainScouting.SystemFreshnessSnapshot) float64 {
-	if len(snap.Markets) == 0 {
-		return float64(snap.MarketCount)
-	}
-	total := 0.0
-	for _, market := range snap.Markets {
-		total += market.Weight
-	}
-	if total <= 0 {
-		return float64(snap.MarketCount)
-	}
-	return total
-}
-
-// measuredAgeSeconds is the sp-r57g closed-loop ground truth: the (value-weighted) P90 market age
-// the sizer sizes and releases against, replacing the tail-dominated max (OldestAgeSeconds). It
-// falls back to OldestAgeSeconds when the census carries NO per-market breakdown — a census that
-// predates sp-r57g, or an aggregate-only fixture — so the coordinator is byte-identical to
-// pre-sp-r57g on the fallback path (percentile 100 also equals the max, the live rollback lever).
-func measuredAgeSeconds(snap domainScouting.SystemFreshnessSnapshot, cfg sizerConfig) float64 {
-	if len(snap.Markets) == 0 {
-		return snap.OldestAgeSeconds
-	}
-	return domainScouting.WeightedPercentileAgeSeconds(snap.Markets, cfg.ValueWeighted, cfg.TargetPercentile)
-}
-
-// computeTarget is the per-system SIZE the sizer aims a post at, before release pacing. It runs
-// an ordered pipeline: (1) the cycle-driven MODEL, where telemetry noise enters; (2) the
-// sp-iupr issue-3b market-count CLAMP that bounds the noise; (3) the sp-tor9 CIRCUIT-OBSERVED
-// BREACH RESPONSE that sizes a trusted, fully-manned post from its measured circuit; then the
-// floor-of-1 and per-system cap.
-//
-// The two age-driven branches are deliberately DISJOINT (they must never collide):
-//   - a TELEMETRY-STARVED system (its probes have not produced MinCycleSamples scan intervals)
-//     has an age that reflects a MANNING failure, NOT a capacity shortfall — raising demand off
-//     it only strands more probes (the issue-1 pathology). It stays on the static base (the
-//     per-activity cohort sum, or the single-SLA market-count model) and is NEVER raised off the age;
-//   - a TRUSTED, FULLY MANNED system is the OPPOSITE case: its P90 market age at the CURRENT hull
-//     count is an honest circuit measurement, so the breach response sizes it straight from that
-//     circuit. Gated on !starved, so it can never fire for the starved case above.
-//
-// sp-r57g SUPERSEDES sp-tor9's MAX-AGE premise: measuredAgeSeconds is now the (value-weighted) P90
-// market age, NOT the tail-dominated OldestAgeSeconds (the max). The closed-loop measurement + the
-// proportional CircuitRequiredHulls response are REUSED verbatim — only the metric feeding them
-// changed, so a big system sizes to its ACHIEVABLE P90 (tail tolerated) instead of an unachievable
-// max. A target_percentile of 100 makes measuredAgeSeconds == the max, recovering sp-tor9 exactly.
-func computeTarget(snap domainScouting.SystemFreshnessSnapshot, sla, cycle time.Duration, cfg sizerConfig, current int, fullyManned bool, measuredAgeSeconds float64) (target int, starved bool) {
-	starved = snap.CycleSamples < cfg.MinCycleSamples
-
-	// 0. STATIC BASE — the required_probes = ceil(markets × cycle / sla) model. sp-j4kjv: when the
-	//    census carries per-market ACTIVITY the base is the per-activity cohort SUM (each activity
-	//    sized against its OWN SLA and the per-cohort needs summed); otherwise it is the single-SLA
-	//    RequiredHulls over the whole market count. ONLY this base's sla input became per-activity —
-	//    the age raise, clamp, circuit response, and release pacing below are UNCHANGED, each still
-	//    keyed on the system SLA (`sla`), so a census with no activity signal is byte-identical.
-	_, hasOverride := cfg.Overrides[snap.SystemSymbol]
-	staticBase, perActivity := activityStaticHulls(snap, cycle, cfg, hasOverride)
-	if !perActivity {
-		staticBase = domainScouting.RequiredHulls(snap.MarketCount, cycle, sla)
-	}
-
-	// 1. MODEL — the static base (starved) or that base raised by the empirical P90 breach (trusted:
-	//    sp-orgp/sp-r57g closed loop). The base is per-activity when the census carries activity.
-	target = modelTargetFromBase(staticBase, sla, starved, measuredAgeSeconds)
-
-	// 2. MARKET-COUNT CLAMP (sp-iupr issue 3b) — bound the noise-driven model to what this
-	//    market count could justify at the worst plausible cycle, capping a small-market system a
-	//    noisy-high cycle over-sized (ZY16: 3 markets read as 6). The circuit response below is
-	//    ground truth and is applied AFTER, so it may exceed this ceiling.
-	target = domainScouting.ClampToMarketCount(target, snap.MarketCount, cfg.WorstCycle, sla)
-
-	// 3. CIRCUIT-OBSERVED BREACH RESPONSE (sp-tor9) — supersedes the issue-3a +1 sanity floor with
-	//    one coherent breach path. A TRUSTED, FULLY MANNED post's worst-case age at its CURRENT
-	//    hull count directly measures its circuit period; the measured-cycle model cannot, because
-	//    the pooled inter-scan interval deflates with probe count, collapsing the static estimate
-	//    toward 1 on exactly the high-market systems that need many probes. Size to
-	//    ceil(current × age/sla) (scaled by the breach-response knob): PROPORTIONAL to the breach
-	//    on the way up (a 158min-at-60min post jumps toward coverage in one resize, not eight),
-	//    and — because current × age ≈ markets × perMarketHop is CONSERVED as hulls change — a
-	//    STABLE fixpoint at steady state (raising to it drops the age so the next tick re-derives
-	//    the same target: no release-flap). It only RAISES here: a non-breaching post's circuit
-	//    target is ≤ current, so max() leaves the model target untouched. DISJOINT from the starved
-	//    branch by !starved (issue 1: a starved post's age is a manning signal, never a capacity
-	//    one); the fullyManned gate keeps the age an HONEST reading — a partially-manned post's age
-	//    reflects fewer working probes than its budget, so sizing off it would over-count.
-	if !starved && fullyManned {
-		// The age fed to the breach-response circuit is the MEASURED P90 (value-weighted),
-		// not the max — so the tail beyond the target percentile does not drive the raise.
-		effectiveAge := breachResponseAge(measuredAgeSeconds, cfg.BreachResponsePercent)
-		if circuitTarget := domainScouting.CircuitRequiredHulls(current, effectiveAge, sla); circuitTarget > target {
-			target = circuitTarget
-		}
-	}
-
-	if target < 1 {
-		target = 1
-	}
-	if target > cfg.MaxProbesPerSystem {
-		target = cfg.MaxProbesPerSystem
-	}
-	return target, starved
-}
-
-// breachResponseAge scales the measured age by the breach-response aggressiveness knob (sp-tor9)
-// before it is fed to the circuit model — percent > 100 sizes for a proportionally WORSE effective
-// age (equivalently, a tighter effective SLA), buying headroom against a circuit that under-measures
-// in practice; 100 is the exact measured circuit; the coordinator's default chain guarantees a
-// positive percent so this never zeroes the age. ageSeconds is the value-weighted P90, not
-// the max — the tail beyond the target percentile does not inflate the breach response.
-func breachResponseAge(ageSeconds float64, breachResponsePercent int) time.Duration {
-	scaledSeconds := ageSeconds * float64(breachResponsePercent) / 100
-	return time.Duration(scaledSeconds * float64(time.Second))
-}
-
-// modelTargetFromBase turns the STATIC required-hull base into the cycle-driven model target. A
-// telemetry-starved system uses the base as-is and is NOT age-raised (issue 1: its age is a manning
-// signal, not a capacity one); a trusted system raises the base by its empirical P90 breach (the
-// sp-orgp/sp-r57g closed loop, via RaisedForBreach). The static base is either the per-
-// activity cohort sum or the single-SLA RequiredHulls — computed by the caller (computeTarget), which
-// is where the per-activity vs global-SLA decision lives; this function only applies the age raise.
-func modelTargetFromBase(staticBase int, sla time.Duration, starved bool, measuredAgeSeconds float64) int {
-	if starved {
-		return staticBase
-	}
-	age := time.Duration(measuredAgeSeconds * float64(time.Second))
-	return domainScouting.RaisedForBreach(staticBase, sla, age)
-}
-
-// activityStaticHulls is the per-activity static base: it partitions the system's markets by
-// ACTIVITY and SUMS each cohort's RequiredHulls, sizing each cohort against ITS OWN SLA — a WEAK
-// cohort tolerates a longer SLA and needs fewer probes than an equal STRONG one. It replaces the
-// single-SLA RequiredHulls(MarketCount, cycle, sla) as the model's static base.
-//
-// It returns (_, false) — "no activity signal, size on the global SLA (byte-identical to
-// pre-sp-j4kjv)" — when ANY of:
-//   - the system carries a per-system SLA override (an explicit operator decision governs the WHOLE
-//     system across activities, so per-activity heuristics must not second-guess it);
-//   - the per-market breakdown does not fully account for MarketCount — a cold-start charted override
-//     inflated MarketCount beyond the scanned markets, or an aggregate-only / pre-breakdown census;
-//   - no market carries a KNOWN activity (a pre-activity census, or a test fixture): an all-unknown
-//     system stays on the tuned global SLA rather than repricing every market at the RESTRICTED
-//     default, which is what keeps every pre-sp-j4kjv sizing test byte-identical.
-//
-// Within a partitioned system a market whose activity is unknown/null joins the RESTRICTED cohort
-// (the documented unknown default), so a mix of known + null markets sizes the null ones at RESTRICTED.
-func activityStaticHulls(snap domainScouting.SystemFreshnessSnapshot, cycle time.Duration, cfg sizerConfig, hasOverride bool) (int, bool) {
-	if hasOverride {
-		return 0, false
-	}
-	if len(snap.Markets) == 0 || len(snap.Markets) != snap.MarketCount {
-		return 0, false
-	}
-	counts := make(map[shared.ActivityLevel]int, 4)
-	anyKnown := false
-	for i := range snap.Markets {
-		level, known := canonicalActivity(snap.Markets[i].Activity)
-		if known {
-			anyKnown = true
-		}
-		counts[level]++
-	}
-	if !anyKnown {
-		return 0, false
-	}
-	total := 0
-	for level, count := range counts {
-		total += domainScouting.RequiredHulls(count, cycle, cfg.slaForActivity(level))
-	}
-	return total, true
-}
-
-// canonicalActivity maps a raw market_data.activity string to its canonical ActivityLevel. An empty
-// or unrecognized value returns (ActivityLevelRestricted, false): unknown/null is SIZED at the
-// RESTRICTED default, while the false flag lets activityStaticHulls tell an ALL-unknown
-// system (fall back to the global SLA) from a mix carrying at least one known activity.
-func canonicalActivity(raw string) (shared.ActivityLevel, bool) {
-	switch shared.ActivityLevel(strings.ToUpper(strings.TrimSpace(raw))) {
-	case shared.ActivityLevelWeak:
-		return shared.ActivityLevelWeak, true
-	case shared.ActivityLevelGrowing:
-		return shared.ActivityLevelGrowing, true
-	case shared.ActivityLevelStrong:
-		return shared.ActivityLevelStrong, true
-	case shared.ActivityLevelRestricted:
-		return shared.ActivityLevelRestricted, true
-	default:
-		return shared.ActivityLevelRestricted, false
-	}
-}
-
-// desiredHulls applies release PACING on top of computeTarget so the fleet neither flaps at
-// the SLA line nor thrashes the shared satellite pool. A raise or a fresh declaration lands
-// immediately (freshness is the priority). Shedding a surplus (target < current) is tiered:
-//   - a TELEMETRY-STARVED oversized post, or a TRUSTED post COMFORTABLY under its SLA (age
-//     below the release-slack line), sheds ONE probe immediately — the starved post's age
-//     cannot hold it (sp-iupr bug 1), the comfortable post has the margin to spare (the
-//     original sp-orgp hysteresis);
-//   - a TRUSTED post in the WARM band (under the SLA but past the slack line) whose measured
-//     requirement fell below its budget sheds one probe only once the surplus has been STABLE
-//     for the release window (sp-iupr bug 2) — a one-cycle demand dip clears the pending
-//     window and sheds nothing, so the sizer never releases a hull the next tick re-buys.
-//
-// Every shed is one step, floored at the measured requirement (never below what the post
-// needs), and lands as a resize-DOWN the scout reconciler un-mans — returning the hull to the
-// shared pool where the frontier coordinator can claim it, never sold or retired.
-func (h *RunMarketFreshnessSizerCoordinatorHandler) desiredHulls(key string, current int, fullyManned bool, snap domainScouting.SystemFreshnessSnapshot, sla, cycle time.Duration, cfg sizerConfig) int {
-	measuredAge := measuredAgeSeconds(snap, cfg)
-	target, starved := computeTarget(snap, sla, cycle, cfg, current, fullyManned, measuredAge)
-
-	if current == 0 || target >= current {
-		h.clearReleasePending(key) // declaring, raising, or holding — no surplus to debounce.
-		return target
-	}
-
-	// Surplus (target < current). Comfortably-fresh trusted posts and starved posts shed now.
-	// "Comfortable" is judged on the P90 (sp-r57g), so a big system whose only stale markets are
-	// the tolerated tail (its P90 sits under the slack line) is free to RELEASE the freed slug —
-	// where the max would have pinned it stale forever.
-	slackSeconds := sla.Seconds() * float64(cfg.ReleaseSlackPercent) / 100
-	if starved || measuredAge < slackSeconds {
-		h.clearReleasePending(key)
-		return stepDownToward(current, target)
-	}
-
-	// Warm surplus: shed one probe only after it has held for the stable window (debounced).
-	if h.releasePendingElapsed(key) < cfg.ReleaseStableWindow {
-		return current // pending, not yet stable — hold this tick.
-	}
-	h.markReleasePending(key) // reset the window so warm sheds pace at one probe per window.
-	return stepDownToward(current, target)
-}
-
-// stepDownToward sheds exactly one probe, never below the target (the measured requirement).
-func stepDownToward(current, target int) int {
-	stepDown := current - 1
-	if stepDown < target {
-		stepDown = target
-	}
-	return stepDown
-}
-
-// releaseAggregateToPool is the sp-iopd reserved-frontier-floor RELEASE: it sheds one probe at a
-// time from the LARGEST post (tie-break by system symbol for determinism) until the aggregate
-// desired fits effectivePool or every post sits at its floor of 1. Each shed is a resize-DOWN the
-// scout reconciler un-mans, returning the hull undedicated to the shared pool the frontier claims
-// — never sold or retired. It caps the AGGREGATE only; the per-system computeTarget that produced
-// each `desired` is untouched. Largest-first keeps freshness's smallest (cheapest-to-keep) posts
-// intact longest, shedding from the systems best able to absorb one fewer probe.
-func releaseAggregateToPool(desired map[string]int, effectivePool int) {
-	if effectivePool < 0 {
-		effectivePool = 0
-	}
-	for sumDesired(desired) > effectivePool {
-		pick := ""
-		for system, hulls := range desired {
-			if hulls <= 1 {
-				continue // never shed a post below one probe — that is retirement, not release
-			}
-			if pick == "" || hulls > desired[pick] || (hulls == desired[pick] && system < pick) {
-				pick = system
-			}
-		}
-		if pick == "" {
-			return // every post already at its floor of 1 — the floor is unsatisfiable this tick
-		}
-		desired[pick]--
-	}
-}
-
-// sumDesired totals a per-system desired-hulls map — the sizer's aggregate probe footprint.
-func sumDesired(desired map[string]int) int {
-	total := 0
-	for _, hulls := range desired {
-		total += hulls
-	}
-	return total
-}
-
-// releaseKey scopes the warm-surplus debounce per player and system (matching the scout
-// reconciler's driftKey shape) so the singleton handler tracks each post independently.
-func releaseKey(playerID int, system string) string {
-	return fmt.Sprintf("%d|%s", playerID, system)
-}
-
-// releasePendingElapsed records the FIRST tick a warm post's surplus was seen and returns how
-// long it has been pending. A key already tracked keeps its original timestamp — the window
-// accumulates across ticks until the shed fires or the surplus resolves (clearReleasePending).
-func (h *RunMarketFreshnessSizerCoordinatorHandler) releasePendingElapsed(key string) time.Duration {
-	h.releaseMu.Lock()
-	defer h.releaseMu.Unlock()
-	if h.releasePendingSince == nil {
-		h.releasePendingSince = make(map[string]time.Time)
-	}
-	now := h.clock.Now()
-	since, ok := h.releasePendingSince[key]
-	if !ok {
-		h.releasePendingSince[key] = now
-		return 0
-	}
-	return now.Sub(since)
-}
-
-// markReleasePending (re)starts a post's stable window at now — called right after a warm
-// shed so the next shed must re-earn the full window (paces releases at one probe per window).
-func (h *RunMarketFreshnessSizerCoordinatorHandler) markReleasePending(key string) {
-	h.releaseMu.Lock()
-	defer h.releaseMu.Unlock()
-	if h.releasePendingSince == nil {
-		h.releasePendingSince = make(map[string]time.Time)
-	}
-	h.releasePendingSince[key] = h.clock.Now()
-}
-
-// clearReleasePending forgets a post's pending window — called the moment its surplus
-// resolves (target rose back to the budget, or it shed by the immediate path), so a later
-// dip below the budget starts a FRESH window rather than inheriting a stale one.
-func (h *RunMarketFreshnessSizerCoordinatorHandler) clearReleasePending(key string) {
-	h.releaseMu.Lock()
-	defer h.releaseMu.Unlock()
-	delete(h.releasePendingSince, key)
-}
-
-// applyPost reconciles the desired-state post for one market-bearing system: declare (new),
-// promote (a sweep_once that turned out to hold markets), or resize (an existing standing
-// post). Resizes prefer the narrow hull-update seam so live manning is preserved.
-func (h *RunMarketFreshnessSizerCoordinatorHandler) applyPost(ctx context.Context, cmd *RunMarketFreshnessSizerCoordinatorCommand, existing *domainScouting.ScoutPost, system string, desired int, sla time.Duration) {
-	logger := common.LoggerFromContext(ctx)
-
-	if existing == nil {
-		post := &domainScouting.ScoutPost{
-			PlayerID:        cmd.PlayerID.Value(),
-			SystemSymbol:    system,
-			FreshnessTarget: sla,
-			Kind:            domainScouting.PostKindStanding,
-			Hulls:           desired,
-			CreatedAt:       h.clock.Now(),
-		}
-		if err := h.postRepo.Upsert(ctx, post); err != nil {
-			logger.Log("WARNING", fmt.Sprintf("Failed to declare standing freshness post %s: %v", system, err), nil)
-			return
-		}
-		logger.Log("INFO", fmt.Sprintf("Declared standing freshness post %s sized to %d probes (SLA %s) — reconciler will man and partition", system, desired, sla), map[string]interface{}{
-			"action": "freshness_post_declared", "system_symbol": system, "hulls": desired,
-		})
-		return
-	}
-
-	if existing.Kind != domainScouting.PostKindStanding {
-		// PROMOTION: a sweep_once post whose system turned out to hold markets becomes a
-		// standing freshness post, sized to the model, with its manning preserved.
-		existing.Kind = domainScouting.PostKindStanding
-		existing.Hulls = desired
-		existing.FreshnessTarget = sla
-		if err := h.postRepo.Upsert(ctx, existing); err != nil {
-			logger.Log("WARNING", fmt.Sprintf("Failed to promote %s to a standing freshness post: %v", system, err), nil)
-			return
-		}
-		logger.Log("INFO", fmt.Sprintf("Promoted %s from sweep_once to a standing freshness post sized to %d probes", system, desired), map[string]interface{}{
-			"action": "freshness_post_promoted", "system_symbol": system, "hulls": desired,
-		})
-		return
-	}
-
-	if existing.HullBudget() == desired && existing.FreshnessTarget == sla {
-		return // stable — nothing to do.
-	}
-
-	// RESIZE. Prefer the narrow hull-update seam (manning-preserving, clobber-free) when the
-	// SLA is unchanged; a SLA change needs the full row so it goes through Upsert.
-	if h.hullUpdater != nil && existing.FreshnessTarget == sla {
-		if err := h.hullUpdater.UpdateHulls(ctx, cmd.PlayerID.Value(), system, desired); err != nil {
-			logger.Log("WARNING", fmt.Sprintf("Failed to resize freshness post %s to %d: %v", system, desired, err), nil)
-			return
-		}
-	} else {
-		existing.Hulls = desired
-		existing.FreshnessTarget = sla
-		if err := h.postRepo.Upsert(ctx, existing); err != nil {
-			logger.Log("WARNING", fmt.Sprintf("Failed to resize freshness post %s to %d: %v", system, desired, err), nil)
-			return
-		}
-	}
-	logger.Log("INFO", fmt.Sprintf("Resized freshness post %s to %d probes (SLA %s)", system, desired, sla), map[string]interface{}{
-		"action": "freshness_post_resized", "system_symbol": system, "hulls": desired,
-	})
-}
-
-// retireMarketlessPosts removes every STANDING post whose system dropped out of the census
-// (its markets retired), freeing its probes back to the pool. sweep_once posts are left to
-// the frontier coordinator. Returns the count retired.
-//
-// sp-u8jc/sp-gucu HOLD GUARD: a system ABSENT from the SCANNED census is not automatically
-// "markets gone". If it is charted WITH marketplace waypoints (chartedMarketplace[system] > 0)
-// it has simply never been scanned — it NEEDS an initial scan, so its post is HELD, not retired,
-// so the reconciler/relay can man it and the probe can make that first scan. chartedMarketplace
-// is nil (⇒ zero for every lookup) unless the hold_unscanned_market_posts knob is armed AND the
-// reader is wired, so this guard never fires by default — retire-as-gone stays byte-identical.
-func (h *RunMarketFreshnessSizerCoordinatorHandler) retireMarketlessPosts(ctx context.Context, cmd *RunMarketFreshnessSizerCoordinatorCommand, posts []*domainScouting.ScoutPost, marketBearing map[string]bool, chartedMarketplace map[string]int, scope domainScouting.ScanScope) int {
-	if cmd.DryRun {
-		return 0
-	}
-	// FAIL-SAFE (the enumerate-the-rejected-class lesson): never mass-remove on an EMPTY
-	// census. A cold start, an era gap, or a transient read that surfaced zero market-bearing
-	// systems would otherwise remove EVERY standing post in one tick — a fleet-killer. With
-	// no census to compare against, remove nothing and wait for it to repopulate.
-	//
-	// It covers the SCOPE pass as well as the retire sweep, and must run before both: the scope's
-	// discovery tier is drawn from that same census, so an empty one yields a scope with no
-	// discovery slots at all, and releasing against it un-mans everything outside the footprint.
-	if len(marketBearing) == 0 {
-		return 0
-	}
-	released := h.releaseOutOfScopePosts(ctx, cmd, posts, scope)
-	logger := common.LoggerFromContext(ctx)
-	retired := released
-	for _, post := range posts {
-		if post.Kind != domainScouting.PostKindStanding || marketBearing[post.SystemSymbol] {
-			continue
-		}
-		if !scope.Includes(post.SystemSymbol) {
-			continue // already released by the scope pass
-		}
-		if chartedMarketplace[post.SystemSymbol] > 0 {
-			// Charted WITH marketplace waypoints but not yet scanned — held for its initial scan.
-			logger.Log("INFO", fmt.Sprintf("Held freshness post %s — charted with %d marketplace(s) but unscanned, awaiting its initial scan (not retired)", post.SystemSymbol, chartedMarketplace[post.SystemSymbol]), map[string]interface{}{
-				"action": "freshness_post_held_unscanned", "system_symbol": post.SystemSymbol, "marketplaces": chartedMarketplace[post.SystemSymbol],
-			})
-			continue
-		}
-		if err := h.postRepo.Remove(ctx, cmd.PlayerID.Value(), post.SystemSymbol); err != nil {
-			logger.Log("WARNING", fmt.Sprintf("Failed to retire marketless freshness post %s: %v", post.SystemSymbol, err), nil)
-			continue
-		}
-		retired++
-		logger.Log("INFO", fmt.Sprintf("Retired freshness post %s — its markets are gone, probes freed to the pool", post.SystemSymbol), map[string]interface{}{
-			"action": "freshness_post_retired", "system_symbol": post.SystemSymbol,
-		})
-	}
-	return retired
-}
-
-// releaseOutOfScopePosts removes every STANDING post whose system fell outside the sensing scope,
-// freeing its probes back to the shared pool for the in-scope posts (and the frontier) to claim.
-// This is the mechanism by which the scope cut converts into freshness: the same probes redistribute
-// onto the systems the fleet actually trades in, rather than being spread over the whole map.
-//
-// Two guards. An UN-NARROWED scope releases nothing, so cold start and every evidence gap keep
-// today's behavior. A post carrying a manning FLOOR is never released — the floor exists to keep
-// bootstrap's home probes from being sized away, and releasing the post would strand them.
-func (h *RunMarketFreshnessSizerCoordinatorHandler) releaseOutOfScopePosts(ctx context.Context, cmd *RunMarketFreshnessSizerCoordinatorCommand, posts []*domainScouting.ScoutPost, scope domainScouting.ScanScope) int {
-	if !scope.Narrowed {
-		return 0
-	}
-	logger := common.LoggerFromContext(ctx)
-	released := 0
-	for _, post := range posts {
-		if post.Kind != domainScouting.PostKindStanding || scope.Includes(post.SystemSymbol) {
-			continue
-		}
-		if post.MinHulls > 0 {
-			continue // a floored post is pinned by the operator; the scope cut never strands it
-		}
-		if err := h.postRepo.Remove(ctx, cmd.PlayerID.Value(), post.SystemSymbol); err != nil {
-			logger.Log("WARNING", fmt.Sprintf("Failed to release out-of-scope freshness post %s: %v", post.SystemSymbol, err), nil)
-			continue
-		}
-		released++
-		logger.Log("INFO", fmt.Sprintf("Released freshness post %s — outside the trading footprint and the discovery allowance, probes freed to the pool", post.SystemSymbol), map[string]interface{}{
-			"action": "freshness_post_out_of_scope", "system_symbol": post.SystemSymbol,
-		})
-	}
-	return released
-}
-
 // chartedMarketplaceSystems reads the "has a marketplace" signal for this tick: system → charted
 // marketplace-waypoint count. It returns nil (⇒ every lookup is zero ⇒ both consumers byte-identical)
 // only when the reader is unwired; otherwise it always reads, because cold-start SIZING consumes the
@@ -1603,32 +775,6 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) chartedMarketplaceSystems(ct
 		return nil, nil
 	}
 	return h.chartedMarketplaceReader.ChartedMarketSystemCounts(ctx)
-}
-
-// initialScanDemand (sp-u8jc/sp-gucu) totals the one-probe-per-post initial-scan demand of the
-// charted-but-unscanned systems: a system that carries a STANDING post, is charted WITH marketplace
-// waypoints (chartedMarketplace[system] > 0), but is ABSENT from the scanned census (not market-
-// bearing) needs one probe to make its first scan. It is bounded to ONE probe per post — never
-// scaled by the marketplace count — and only for systems that already have a post (a mannable
-// target), so it can never over-provision. A nil chartedMarketplace (knob off / reader unwired)
-// yields 0, keeping the aggregate demand byte-identical.
-func initialScanDemand(posts []*domainScouting.ScoutPost, marketBearing map[string]bool, chartedMarketplace map[string]int, scope domainScouting.ScanScope) int {
-	demand := 0
-	for _, post := range posts {
-		if post.Kind != domainScouting.PostKindStanding {
-			continue
-		}
-		if marketBearing[post.SystemSymbol] {
-			continue // already counted by the census demand loop
-		}
-		if !scope.Includes(post.SystemSymbol) {
-			continue // outside the sensing scope — its post is released, so it needs no scan capacity
-		}
-		if chartedMarketplace[post.SystemSymbol] > 0 {
-			demand++ // ONE probe for the initial scan — never scaled by the marketplace count
-		}
-	}
-	return demand
 }
 
 // fleetView is one pass over the fleet: the scout-probe SUPPLY and the systems the fleet's
@@ -1669,52 +815,4 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) readFleet(ctx context.Contex
 		view.supply++
 	}
 	return view, nil
-}
-
-// resolveCycleSeconds picks the per-market cycle for a system: its own MEASURED cycle when
-// it has cleared the sample floor, else the fleet-wide median of trusted measurements, else
-// the seed default. This keeps the cycle EMPIRICAL (never a bare constant) while degrading
-// gracefully before telemetry exists. A system's own measurement is DAMPENED toward the fleet-
-// wide median (sp-iupr issue 3c): per-system cycle telemetry is noisy, so shrinking each
-// reading toward the pooled robust estimate makes equal-market systems converge on the same
-// target instead of diverging on noise. A single trusted system (median == own) or a 0%
-// dampening is a no-op, so this never perturbs the single-system or launch-frozen paths.
-func resolveCycleSeconds(snap domainScouting.SystemFreshnessSnapshot, globalCycleSeconds float64, cfg sizerConfig) time.Duration {
-	seconds := cfg.SeedCycle.Seconds()
-	switch {
-	case snap.CycleSamples >= cfg.MinCycleSamples && snap.MeasuredCycleSeconds > 0:
-		seconds = domainScouting.DampenedCycleSeconds(snap.MeasuredCycleSeconds, globalCycleSeconds, cfg.CycleDampeningPercent)
-	case globalCycleSeconds > 0:
-		seconds = globalCycleSeconds
-	}
-	return time.Duration(seconds * float64(time.Second))
-}
-
-// aggregateMeasuredCycleSeconds is the fleet-wide median of the per-system measured cycles
-// that cleared the sample floor — the fallback for a market-bearing system that does not yet
-// have enough samples of its own. 0 ⇒ no system has a trusted measurement yet.
-func aggregateMeasuredCycleSeconds(snapshots []domainScouting.SystemFreshnessSnapshot, minSamples int) float64 {
-	var trusted []float64
-	for _, snap := range snapshots {
-		if snap.CycleSamples >= minSamples && snap.MeasuredCycleSeconds > 0 {
-			trusted = append(trusted, snap.MeasuredCycleSeconds)
-		}
-	}
-	if len(trusted) == 0 {
-		return 0
-	}
-	sort.Float64s(trusted)
-	mid := len(trusted) / 2
-	if len(trusted)%2 == 1 {
-		return trusted[mid]
-	}
-	return (trusted[mid-1] + trusted[mid]) / 2
-}
-
-func indexPostsBySystem(posts []*domainScouting.ScoutPost) map[string]*domainScouting.ScoutPost {
-	index := make(map[string]*domainScouting.ScoutPost, len(posts))
-	for _, post := range posts {
-		index[post.SystemSymbol] = post
-	}
-	return index
 }

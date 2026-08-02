@@ -611,6 +611,10 @@ func (h *RunTradeRouteCoordinatorHandler) Handle(ctx context.Context, request co
 	response.Completed = true
 	return response, nil
 }
+
+// execute runs the hull's trade-route circuits: it loads the hull the container runner
+// already claimed, then re-ranks lanes from fresh cache and flies one circuit per
+// iteration (bounded by defaultMaxCircuits) until a terminal condition sets exitReason.
 func (h *RunTradeRouteCoordinatorHandler) execute(
 	ctx context.Context,
 	cmd *RunTradeRouteCoordinatorCommand,
@@ -713,54 +717,13 @@ func (h *RunTradeRouteCoordinatorHandler) execute(
 			break
 		}
 
-		// Routability guard, directed lane only: an operator who pins a
-		// cross-system --dest must not have the hull buy a tranche it then cannot
-		// deliver — the arb-run incident (bought, flew to the gate, found no route to
-		// JP61, crashed laden) in the circuit's directed form. Verify the selected
-		// lane's sell system is reachable over the gate graph BEFORE the circuit's
-		// first buy; unroutable (or an unverifiable check → fail closed) stops the run
-		// CLEANLY and EMPTY. Scoped to the directed path (TargetDest set): the
-		// undirected auto-scan re-ranks and would just re-select the same lane, and its
-		// cross-system lanes are already ranking-penalized + caught honestly by
-		// travel()/liquidation if flown. No gate graph wired skips the guard (fail-open
-		// on the missing port, matching travel()'s own single-jump fallback).
-		if cmd.TargetDest != "" && h.gateGraph != nil {
-			laneSrcSystem := shared.ExtractSystemSymbol(lane.SourceWaypoint)
-			laneDstSystem := shared.ExtractSystemSymbol(lane.DestWaypoint)
-			if laneSrcSystem != laneDstSystem {
-				routable, rerr := h.gateGraph.Routable(ctx, laneSrcSystem, laneDstSystem, playerID)
-				if rerr != nil || !routable {
-					response.RoutabilityAbort = true
-					if rerr != nil {
-						response.AbortReason = fmt.Sprintf("could not verify a jump-gate route from %s to %s for directed lane %s - not committing the buy (fail-closed): %v", laneSrcSystem, laneDstSystem, lane.Good, rerr)
-					} else {
-						response.AbortReason = fmt.Sprintf("no jump-gate route from %s (buy %s) to %s (sell %s) for directed lane %s - not committing a buy that cannot be delivered", laneSrcSystem, lane.SourceWaypoint, laneDstSystem, lane.DestWaypoint, lane.Good)
-					}
-					logger.Log("WARNING", response.AbortReason, map[string]interface{}{
-						"ship_symbol": cmd.ShipSymbol, "good": lane.Good,
-						"source": lane.SourceWaypoint, "dest": lane.DestWaypoint,
-						"source_system": laneSrcSystem, "dest_system": laneDstSystem,
-					})
-					exitReason = exitReasonUnroutable
-					break
-				}
-			}
+		if h.directedLaneUnroutable(ctx, cmd, lane, response, logger) {
+			exitReason = exitReasonUnroutable
+			break
 		}
 
-		// Pre-flight cargo gate: a hull with no free hold cannot buy a
-		// tranche, so park BEFORE committing the circuit rather than burning
-		// starvation cycles on a non-empty hull or flying a cross-system round trip
-		// to buy nothing (the exact zero-tranche starvation the root cause named).
-		// Checked here, once a lane is chosen, so the park reason names the good the
-		// hull would have traded; runCircuit re-checks before each buy leg as
-		// accumulated cargo fills the hold, covering mid-circuit fills this can't see.
-		if free := ship.AvailableCargoSpace(); free < minFreeCargoForCircuit {
+		if cargoGateBlocks(ship, lane, response, logger) {
 			exitReason = exitReasonCargoBlocked
-			response.CargoBlocked = true
-			response.CargoBlockReason = fmt.Sprintf(
-				"hull has %d free cargo unit(s), needs >=%d to buy %s at %s",
-				free, minFreeCargoForCircuit, lane.Good, lane.SourceWaypoint)
-			cargoBlockedLog(logger, lane.Good, minFreeCargoForCircuit, free, "hull has no free hold to buy a tranche")
 			break
 		}
 
@@ -769,60 +732,13 @@ func (h *RunTradeRouteCoordinatorHandler) execute(
 		response.DestWaypoint = lane.DestWaypoint
 		response.Circuits++
 
-		// Publish the committed circuit lane to the read-only flow feed (fire-and-forget;
-		// a missed publish never touches the trade path — RULINGS #4).
-		flowfeed.Publish(buildTradeRouteFlow(cmd, lane, laneCircuitRatePerHour(lane, ship.CargoCapacity(), cmd.TargetDest, h.buildLaneImpactModel()), shipCargoItems(ship), time.Time{}, time.Now().UTC()))
-
-		// laneLogPayload carries the SELECTED lane's full identity (both endpoints'
-		// waypoint+system, margin, cross-system flag); laneLogCandidates attaches the
-		// top-ranked shortlist so a surcharged-but-present cross-system lane (see
-		// rankLanesByCircuitRate) is verifiable in the log even when a home lane wins
-		// the selection. Without the structured payload the captain can only infer which
-		// lane a daemon picked, and whether cross-system lanes were scanned at all, from
-		// nav destinations.
-		selectionPayload := laneLogPayload(lane)
-		selectionPayload["ship_symbol"] = cmd.ShipSymbol
-		selectionPayload["circuit"] = response.Circuits
-		selectionPayload["candidates"] = laneLogCandidates(lanes)
-		// sp-149h: put the payload in the MESSAGE TEXT, not just the metadata map the
-		// `container logs` renderer drops — the captain greps the CLI output to verify
-		// which lane (and whether a cross-system one) was picked and at what margin.
-		logger.Log("INFO", laneSelectionMessage(lane, lanes, ship.CargoCapacity(), cmd.TargetDest, h.buildLaneImpactModel()), selectionPayload)
+		h.announceLaneCommitment(cmd, lane, lanes, ship, response, logger)
 
 		visitsBefore := response.Visits
 		ship = h.runCircuit(ctx, cmd, lane, ship, response, runMaxVisits)
 
-		if response.CargoStranded {
-			// The circuit ended laden and the bounded finish-current-leg
-			// liquidation could not empty the hold (sp-1hj5). Checked before
-			// AbortReason: a stranded exit usually carries the failed leg's
-			// AbortReason too, and stranded is the truth that matters — this
-			// run is a FAILURE (CompletionOutcome vetoes the runner's
-			// success=true, sp-7yej invariant 2).
-			exitReason = exitReasonCargoStranded
-			break
-		}
-		if response.AbortReason != "" {
-			exitReason = exitReasonError
-			break
-		}
-		if response.StaleAskAbort {
-			exitReason = exitReasonStaleAsk
-			break
-		}
-		if response.SpendFloorAbort {
-			exitReason = exitReasonSpendFloor
-			break
-		}
-		if response.NegativeMarginAbort {
-			exitReason = exitReasonNegativeMargin
-			break
-		}
-		if response.CargoBlocked {
-			// A buy leg found the hold filled with cargo bought this circuit (the
-			// pre-flight gate above catches a hull that starts non-empty). Either way
-			// the hull can't buy — stop the run, don't re-select into the same wall.
-			exitReason = exitReasonCargoBlocked
+		if reason := terminalCircuitExit(response); reason != "" {
+			exitReason = reason
 			break
 		}
 		if response.Visits == visitsBefore {
@@ -857,6 +773,124 @@ func (h *RunTradeRouteCoordinatorHandler) execute(
 		"net_profit":    response.NetProfit,
 	})
 	return nil
+}
+
+// directedLaneUnroutable is the routability guard, directed lane only: an operator who pins a
+// cross-system --dest must not have the hull buy a tranche it then cannot
+// deliver — the arb-run incident (bought, flew to the gate, found no route to
+// JP61, crashed laden) in the circuit's directed form. Verify the selected
+// lane's sell system is reachable over the gate graph BEFORE the circuit's
+// first buy; unroutable (or an unverifiable check → fail closed) stops the run
+// CLEANLY and EMPTY. Scoped to the directed path (TargetDest set): the
+// undirected auto-scan re-ranks and would just re-select the same lane, and its
+// cross-system lanes are already ranking-penalized + caught honestly by
+// travel()/liquidation if flown. No gate graph wired skips the guard (fail-open
+// on the missing port, matching travel()'s own single-jump fallback).
+func (h *RunTradeRouteCoordinatorHandler) directedLaneUnroutable(
+	ctx context.Context,
+	cmd *RunTradeRouteCoordinatorCommand,
+	lane trading.ArbitrageLane,
+	response *RunTradeRouteCoordinatorResponse,
+	logger common.ContainerLogger,
+) bool {
+	if cmd.TargetDest == "" || h.gateGraph == nil {
+		return false
+	}
+	laneSrcSystem := shared.ExtractSystemSymbol(lane.SourceWaypoint)
+	laneDstSystem := shared.ExtractSystemSymbol(lane.DestWaypoint)
+	if laneSrcSystem == laneDstSystem {
+		return false
+	}
+	routable, rerr := h.gateGraph.Routable(ctx, laneSrcSystem, laneDstSystem, cmd.PlayerID)
+	if rerr == nil && routable {
+		return false
+	}
+	response.RoutabilityAbort = true
+	if rerr != nil {
+		response.AbortReason = fmt.Sprintf("could not verify a jump-gate route from %s to %s for directed lane %s - not committing the buy (fail-closed): %v", laneSrcSystem, laneDstSystem, lane.Good, rerr)
+	} else {
+		response.AbortReason = fmt.Sprintf("no jump-gate route from %s (buy %s) to %s (sell %s) for directed lane %s - not committing a buy that cannot be delivered", laneSrcSystem, lane.SourceWaypoint, laneDstSystem, lane.DestWaypoint, lane.Good)
+	}
+	logger.Log("WARNING", response.AbortReason, map[string]interface{}{
+		"ship_symbol": cmd.ShipSymbol, "good": lane.Good,
+		"source": lane.SourceWaypoint, "dest": lane.DestWaypoint,
+		"source_system": laneSrcSystem, "dest_system": laneDstSystem,
+	})
+	return true
+}
+
+// cargoGateBlocks is the pre-flight cargo gate: a hull with no free hold cannot buy a
+// tranche, so park BEFORE committing the circuit rather than burning
+// starvation cycles on a non-empty hull or flying a cross-system round trip
+// to buy nothing (the exact zero-tranche starvation the root cause named).
+// Checked once a lane is chosen, so the park reason names the good the
+// hull would have traded; runCircuit re-checks before each buy leg as
+// accumulated cargo fills the hold, covering mid-circuit fills this can't see.
+func cargoGateBlocks(ship *navigation.Ship, lane trading.ArbitrageLane, response *RunTradeRouteCoordinatorResponse, logger common.ContainerLogger) bool {
+	free := ship.AvailableCargoSpace()
+	if free >= minFreeCargoForCircuit {
+		return false
+	}
+	response.CargoBlocked = true
+	response.CargoBlockReason = fmt.Sprintf(
+		"hull has %d free cargo unit(s), needs >=%d to buy %s at %s",
+		free, minFreeCargoForCircuit, lane.Good, lane.SourceWaypoint)
+	cargoBlockedLog(logger, lane.Good, minFreeCargoForCircuit, free, "hull has no free hold to buy a tranche")
+	return true
+}
+
+func (h *RunTradeRouteCoordinatorHandler) announceLaneCommitment(
+	cmd *RunTradeRouteCoordinatorCommand,
+	lane trading.ArbitrageLane,
+	lanes []trading.ArbitrageLane,
+	ship *navigation.Ship,
+	response *RunTradeRouteCoordinatorResponse,
+	logger common.ContainerLogger,
+) {
+	// Publish the committed circuit lane to the read-only flow feed (fire-and-forget;
+	// a missed publish never touches the trade path — RULINGS #4).
+	flowfeed.Publish(buildTradeRouteFlow(cmd, lane, laneCircuitRatePerHour(lane, ship.CargoCapacity(), cmd.TargetDest, h.buildLaneImpactModel()), shipCargoItems(ship), time.Time{}, time.Now().UTC()))
+
+	// laneLogPayload carries the SELECTED lane's full identity (both endpoints'
+	// waypoint+system, margin, cross-system flag); laneLogCandidates attaches the
+	// top-ranked shortlist so a surcharged-but-present cross-system lane (see
+	// rankLanesByCircuitRate) is verifiable in the log even when a home lane wins
+	// the selection. Without the structured payload the captain can only infer which
+	// lane a daemon picked, and whether cross-system lanes were scanned at all, from
+	// nav destinations.
+	selectionPayload := laneLogPayload(lane)
+	selectionPayload["ship_symbol"] = cmd.ShipSymbol
+	selectionPayload["circuit"] = response.Circuits
+	selectionPayload["candidates"] = laneLogCandidates(lanes)
+	// sp-149h: put the payload in the MESSAGE TEXT, not just the metadata map the
+	// `container logs` renderer drops — the captain greps the CLI output to verify
+	// which lane (and whether a cross-system one) was picked and at what margin.
+	logger.Log("INFO", laneSelectionMessage(lane, lanes, ship.CargoCapacity(), cmd.TargetDest, h.buildLaneImpactModel()), selectionPayload)
+}
+
+// terminalCircuitExit maps the flags a finished circuit left on the response to the run's
+// exit reason, "" when the run may commit another lane. Order is load-bearing: a stranded
+// exit usually carries the failed leg's AbortReason too, and stranded is the truth that
+// matters — that run is a FAILURE (CompletionOutcome vetoes the runner's success=true).
+func terminalCircuitExit(response *RunTradeRouteCoordinatorResponse) string {
+	switch {
+	case response.CargoStranded:
+		return exitReasonCargoStranded
+	case response.AbortReason != "":
+		return exitReasonError
+	case response.StaleAskAbort:
+		return exitReasonStaleAsk
+	case response.SpendFloorAbort:
+		return exitReasonSpendFloor
+	case response.NegativeMarginAbort:
+		return exitReasonNegativeMargin
+	case response.CargoBlocked:
+		// A buy leg found the hold filled with cargo bought this circuit (the
+		// pre-flight gate catches a hull that starts non-empty). Either way
+		// the hull can't buy — stop the run, don't re-select into the same wall.
+		return exitReasonCargoBlocked
+	}
+	return ""
 }
 
 // runCircuit flies one lane commitment and ENFORCES the finish-current-leg rule

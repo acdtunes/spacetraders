@@ -6,7 +6,7 @@ package commands
 // composes RunArbCoordinatorHandler rather than re-implementing buy/travel/sell/held-cargo. The
 // mapping sets the money-envelope backstop — WorkingCapitalReserve = the 200k ContractScalerCushion
 // fence, MaxSpend = the per-haul cap — so the arb executor's OWN fail-closed guards enforce the
-// envelope a second time at execution (belt-and-suspenders to the worker's selectHaul sizing).
+// envelope a second time at execution (belt-and-suspenders to the worker's selectHauls sizing).
 
 import (
 	"context"

@@ -120,7 +120,7 @@ func (r *GormTransactionRepository) CountByPlayer(ctx context.Context, playerID 
 // constant it refines rather than because the distribution demands it.
 //
 // amount is stored NEGATIVE for an expense, so it is negated back to a positive fee. Rows
-// without an origin are excluded rather than bucketed under '' — see the port doc.
+// without an origin are excluded rather than bucketed as blank — see the port doc.
 func (r *GormTransactionRepository) PerOriginGateFees(
 	ctx context.Context, playerID shared.PlayerID, since time.Time,
 ) (map[string]int64, error) {

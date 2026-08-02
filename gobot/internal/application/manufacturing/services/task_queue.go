@@ -75,7 +75,6 @@ func (q *TaskQueue) Enqueue(task *manufacturing.ManufacturingTask) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	// Only add if task is READY
 	if task.Status() != manufacturing.TaskStatusReady {
 		return
 	}
@@ -121,7 +120,6 @@ func (q *TaskQueue) GetReadyTasks() []*manufacturing.ManufacturingTask {
 		}
 	}
 
-	// Sort by effective priority (with aging) - highest first
 	// Heap order only guarantees index 0 is max, not full sort order
 	sortByEffectivePriority(result)
 
@@ -130,7 +128,6 @@ func (q *TaskQueue) GetReadyTasks() []*manufacturing.ManufacturingTask {
 
 // sortByEffectivePriority sorts tasks by effective priority (base + aging) in descending order
 func sortByEffectivePriority(tasks []*manufacturing.ManufacturingTask) {
-	// Sort descending by effective priority
 	for i := 0; i < len(tasks)-1; i++ {
 		for j := i + 1; j < len(tasks); j++ {
 			iPriority := effectivePriority(tasks[i])
@@ -230,7 +227,6 @@ func (q *TaskQueue) GetReadyTasksByType(taskType manufacturing.TaskType) []*manu
 		}
 	}
 
-	// Sort by effective priority (with aging) - highest first
 	sortByEffectivePriority(result)
 
 	return result

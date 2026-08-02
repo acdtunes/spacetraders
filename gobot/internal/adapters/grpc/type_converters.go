@@ -18,3 +18,13 @@ func stringValue(p *string) string {
 	}
 	return *p
 }
+
+// toInterfaceSlice widens a string slice for a container config map, whose values are
+// round-tripped through JSON as interface{}.
+func toInterfaceSlice(values []string) []interface{} {
+	out := make([]interface{}, len(values))
+	for i, v := range values {
+		out[i] = v
+	}
+	return out
+}

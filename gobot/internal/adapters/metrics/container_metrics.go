@@ -72,59 +72,45 @@ func NewContainerMetricsCollector(
 		shipRepo:      shipRepo,
 
 		// Container running gauge
-		containerRunningTotal: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "container_running_total",
-				Help:      "Number of currently running containers by type and player",
-			},
-			[]string{"player_id", "container_type"},
+		containerRunningTotal: newGaugeVec(
+			"container_running_total",
+			"Number of currently running containers by type and player",
+			"player_id",
+			"container_type",
 		),
 
 		// Container lifecycle counter
-		containerTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "container_total",
-				Help:      "Total number of container lifecycle events by status",
-			},
-			[]string{"player_id", "container_type", "status"},
+		containerTotal: newCounterVec(
+			"container_total",
+			"Total number of container lifecycle events by status",
+			"player_id",
+			"container_type",
+			"status",
 		),
 
 		// Container execution duration histogram
-		containerDuration: prometheus.NewHistogramVec(
-			prometheus.HistogramOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "container_duration_seconds",
-				Help:      "Container execution duration distribution",
-				Buckets:   []float64{1, 5, 10, 30, 60, 300, 600, 1800, 3600},
-			},
-			[]string{"player_id", "container_type"},
+		containerDuration: newHistogramVec(
+			"container_duration_seconds",
+			"Container execution duration distribution",
+			[]float64{1, 5, 10, 30, 60, 300, 600, 1800, 3600},
+			"player_id",
+			"container_type",
 		),
 
 		// Container restarts counter
-		containerRestarts: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "container_restarts_total",
-				Help:      "Total number of container restarts",
-			},
-			[]string{"player_id", "container_type"},
+		containerRestarts: newCounterVec(
+			"container_restarts_total",
+			"Total number of container restarts",
+			"player_id",
+			"container_type",
 		),
 
 		// Container iterations counter
-		containerIterations: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "container_iterations_total",
-				Help:      "Total number of container iterations completed",
-			},
-			[]string{"player_id", "container_type"},
+		containerIterations: newCounterVec(
+			"container_iterations_total",
+			"Total number of container iterations completed",
+			"player_id",
+			"container_type",
 		),
 
 		// Container exit counter: one increment per terminal
@@ -133,50 +119,28 @@ func NewContainerMetricsCollector(
 		// finishCleanExit's completion branch, handleError) so this stays a
 		// strict superset labeling of that existing signal rather than
 		// diverging semantics between the two families.
-		containerExitTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "container_exit_total",
-				Help:      "Total number of container terminal exits by command type and status",
-			},
-			[]string{"player_id", "command_type", "status"},
+		containerExitTotal: newCounterVec(
+			"container_exit_total",
+			"Total number of container terminal exits by command type and status",
+			"player_id",
+			"command_type",
+			"status",
 		),
 
 		// Supervised daemon background component restarts. Labeled
 		// by component only — a small fixed set (ship-state-sweeper,
 		// container-recovery, ...), deliberately NOT per-ship.
-		daemonComponentRestarts: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: "daemon",
-				Name:      "component_restarts_total",
-				Help:      "Restarts of supervised daemon background components",
-			},
-			[]string{"component"},
+		daemonComponentRestarts: newCounterVec(
+			"component_restarts_total",
+			"Restarts of supervised daemon background components",
+			"component",
 		),
 
 		// Ship count by role/location
-		shipsTotal: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "ships_total",
-				Help:      "Number of ships by role and location",
-			},
-			[]string{"player_id", "role", "location"},
-		),
+		shipsTotal: newGaugeVec("ships_total", "Number of ships by role and location", "player_id", "role", "location"),
 
 		// Ship status distribution
-		shipStatusTotal: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "ship_status_total",
-				Help:      "Number of ships by navigation status",
-			},
-			[]string{"player_id", "status"},
-		),
+		shipStatusTotal: newGaugeVec("ship_status_total", "Number of ships by navigation status", "player_id", "status"),
 
 		// Version-conflict tripwire: ship saves that raced past their loaded version.
 		// Unlabeled — the paired ERROR log carries the ship symbol.
@@ -194,10 +158,9 @@ func NewContainerMetricsCollector(
 // Register registers all metrics with the Prometheus registry
 func (c *ContainerMetricsCollector) Register() error {
 	if Registry == nil {
-		return nil // Metrics not enabled
+		return nil
 	}
-
-	metrics := []prometheus.Collector{
+	return registerAll(
 		c.containerRunningTotal,
 		c.containerTotal,
 		c.containerDuration,
@@ -208,15 +171,7 @@ func (c *ContainerMetricsCollector) Register() error {
 		c.shipsTotal,
 		c.shipStatusTotal,
 		c.shipVersionConflicts,
-	}
-
-	for _, metric := range metrics {
-		if err := Registry.Register(metric); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	)
 }
 
 // Start begins the metrics collection goroutines
@@ -386,4 +341,71 @@ func (c *ContainerMetricsCollector) RecordDaemonComponentRestart(component strin
 		return
 	}
 	c.daemonComponentRestarts.WithLabelValues(component).Inc()
+}
+
+// globalCollector is the singleton container metrics collector
+// Set by SetGlobalCollector() when metrics are enabled
+var globalCollector MetricsRecorder
+
+// MetricsRecorder defines the interface for recording container metrics events
+// This interface is used by domain/application code to record metrics
+type MetricsRecorder interface {
+	RecordContainerCompletion(containerInfo ContainerInfo)
+	RecordContainerRestart(containerInfo ContainerInfo)
+	RecordContainerIteration(containerInfo ContainerInfo)
+	RecordContainerExit(containerInfo ContainerInfo)
+}
+
+// ShipWriteConflictRecorder is implemented by collectors that track the
+// ship-row version tripwire. Separate single-method interface so
+// existing MetricsRecorder implementations keep compiling.
+type ShipWriteConflictRecorder interface {
+	RecordShipVersionConflict()
+}
+
+// SetGlobalCollector sets the global metrics collector
+// This should be called after the collector is created and started
+func SetGlobalCollector(collector MetricsRecorder) {
+	globalCollector = collector
+}
+
+// RecordContainerCompletion records a container completion event globally
+func RecordContainerCompletion(containerInfo ContainerInfo) {
+	if globalCollector != nil {
+		globalCollector.RecordContainerCompletion(containerInfo)
+	}
+}
+
+// RecordContainerRestart records a container restart event globally
+func RecordContainerRestart(containerInfo ContainerInfo) {
+	if globalCollector != nil {
+		globalCollector.RecordContainerRestart(containerInfo)
+	}
+}
+
+// RecordContainerIteration records a container iteration completion globally
+func RecordContainerIteration(containerInfo ContainerInfo) {
+	if globalCollector != nil {
+		globalCollector.RecordContainerIteration(containerInfo)
+	}
+}
+
+// RecordContainerExit records a container terminal exit event globally.
+func RecordContainerExit(containerInfo ContainerInfo) {
+	if globalCollector != nil {
+		globalCollector.RecordContainerExit(containerInfo)
+	}
+}
+
+// RecordShipVersionConflict records a ship save whose row version moved past
+// the entity's loaded version (a concurrent-writer clobber). No-op
+// when metrics are disabled or the global collector doesn't implement the
+// recorder, so a metrics miss never touches the save path (RULINGS #4).
+func RecordShipVersionConflict() {
+	if globalCollector == nil {
+		return
+	}
+	if rec, ok := globalCollector.(ShipWriteConflictRecorder); ok {
+		rec.RecordShipVersionConflict()
+	}
 }

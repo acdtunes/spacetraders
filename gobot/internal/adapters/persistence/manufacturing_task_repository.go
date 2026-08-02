@@ -14,6 +14,8 @@ type GormManufacturingTaskRepository struct {
 	db *gorm.DB
 }
 
+var _ manufacturing.TaskRepository = (*GormManufacturingTaskRepository)(nil)
+
 // NewGormManufacturingTaskRepository creates a new GORM manufacturing task repository
 func NewGormManufacturingTaskRepository(db *gorm.DB) *GormManufacturingTaskRepository {
 	return &GormManufacturingTaskRepository{db: db}
@@ -28,7 +30,6 @@ func (r *GormManufacturingTaskRepository) Create(ctx context.Context, task *manu
 		return fmt.Errorf("failed to create task: %w", result.Error)
 	}
 
-	// Create dependencies
 	for _, depID := range task.DependsOn() {
 		dep := &ManufacturingTaskDependencyModel{
 			TaskID:      task.ID(),
@@ -51,7 +52,6 @@ func (r *GormManufacturingTaskRepository) CreateBatch(ctx context.Context, tasks
 				return fmt.Errorf("failed to create task %s: %w", task.ID(), err)
 			}
 
-			// Create dependencies
 			for _, depID := range task.DependsOn() {
 				dep := &ManufacturingTaskDependencyModel{
 					TaskID:      task.ID(),
@@ -90,7 +90,6 @@ func (r *GormManufacturingTaskRepository) FindByID(ctx context.Context, id strin
 		return nil, fmt.Errorf("failed to find task: %w", result.Error)
 	}
 
-	// Load dependencies
 	deps, err := r.FindDependencies(ctx, id)
 	if err != nil {
 		return nil, err
@@ -307,7 +306,6 @@ func (r *GormManufacturingTaskRepository) AssignTaskAtomically(ctx context.Conte
 			return fmt.Errorf("failed to lock task: %w", err)
 		}
 
-		// Check task is in READY status
 		if model.Status != string(manufacturing.TaskStatusReady) {
 			return &manufacturing.ErrInvalidTaskTransition{
 				TaskID:      taskID,
@@ -317,7 +315,6 @@ func (r *GormManufacturingTaskRepository) AssignTaskAtomically(ctx context.Conte
 			}
 		}
 
-		// Check task is not already assigned
 		if model.AssignedShip != nil && *model.AssignedShip != "" && *model.AssignedShip != shipSymbol {
 			return &manufacturing.ErrTaskAlreadyAssigned{
 				TaskID:       taskID,
@@ -325,7 +322,6 @@ func (r *GormManufacturingTaskRepository) AssignTaskAtomically(ctx context.Conte
 			}
 		}
 
-		// Update task atomically
 		if err := tx.Model(&model).Updates(map[string]interface{}{
 			"status":        string(manufacturing.TaskStatusAssigned),
 			"assigned_ship": shipSymbol,
@@ -391,37 +387,37 @@ func (r *GormManufacturingTaskRepository) taskToModel(t *manufacturing.Manufactu
 
 // modelToTask converts database model to domain entity
 func (r *GormManufacturingTaskRepository) modelToTask(m *ManufacturingTaskModel, deps []string) (*manufacturing.ManufacturingTask, error) {
-	return manufacturing.ReconstituteTask(
-		m.ID,
-		derefString(m.PipelineID),
-		m.PlayerID,
-		manufacturing.TaskType(m.TaskType),
-		manufacturing.TaskStatus(m.Status),
-		m.Good,
-		m.Quantity,
-		m.ActualQuantity,
-		derefString(m.SourceMarket),
-		derefString(m.TargetMarket),
-		derefString(m.FactorySymbol),
-		derefString(m.StorageOperationID),
-		derefString(m.StorageWaypoint),
-		derefString(m.ConstructionSite),
-		deps,
-		derefString(m.AssignedShip),
-		m.Priority,
-		m.RetryCount,
-		m.MaxRetries,
-		m.TotalCost,
-		m.TotalRevenue,
-		derefString(m.ErrorMessage),
-		m.CreatedAt,
-		m.ReadyAt,
-		m.StartedAt,
-		m.CompletedAt,
-		m.CollectPhaseCompleted,
-		m.AcquirePhaseCompleted,
-		m.PhaseCompletedAt,
-	), nil
+	return manufacturing.ReconstituteTask(manufacturing.TaskData{
+		ID:                    m.ID,
+		PipelineID:            derefString(m.PipelineID),
+		PlayerID:              m.PlayerID,
+		TaskType:              manufacturing.TaskType(m.TaskType),
+		Status:                manufacturing.TaskStatus(m.Status),
+		Good:                  m.Good,
+		Quantity:              m.Quantity,
+		ActualQuantity:        m.ActualQuantity,
+		SourceMarket:          derefString(m.SourceMarket),
+		TargetMarket:          derefString(m.TargetMarket),
+		FactorySymbol:         derefString(m.FactorySymbol),
+		StorageOperationID:    derefString(m.StorageOperationID),
+		StorageWaypoint:       derefString(m.StorageWaypoint),
+		ConstructionSite:      derefString(m.ConstructionSite),
+		DependsOn:             deps,
+		AssignedShip:          derefString(m.AssignedShip),
+		Priority:              m.Priority,
+		RetryCount:            m.RetryCount,
+		MaxRetries:            m.MaxRetries,
+		TotalCost:             m.TotalCost,
+		TotalRevenue:          m.TotalRevenue,
+		ErrorMessage:          derefString(m.ErrorMessage),
+		CreatedAt:             m.CreatedAt,
+		ReadyAt:               m.ReadyAt,
+		StartedAt:             m.StartedAt,
+		CompletedAt:           m.CompletedAt,
+		CollectPhaseCompleted: m.CollectPhaseCompleted,
+		AcquirePhaseCompleted: m.AcquirePhaseCompleted,
+		PhaseCompletedAt:      m.PhaseCompletedAt,
+	}), nil
 }
 
 // ExistsLiquidateForShipAndGood checks if an incomplete LIQUIDATE task already exists for ship+good

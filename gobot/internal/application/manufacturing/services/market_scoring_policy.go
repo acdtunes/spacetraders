@@ -67,9 +67,3 @@ var sellMarketScoringPolicy = MarketScoringPolicy{
 	activity: activityWeightTable{weak: 10, growing: 30, strong: 50, restricted: 5, unknown: 20},
 	supply:   supplyWeightTable{scarce: 10, limited: 20, moderate: 30, high: 40, abundant: 50, unknown: 15},
 }
-
-const collectionAbundantFactoryBonus = 100
-
-var collectionSellMarketActivityBonus = activityWeightTable{weak: 100, growing: 300, strong: 500, restricted: 0, unknown: 0}
-
-var collectionFactoryActivityBonus = activityWeightTable{weak: 200, growing: 100, strong: 50, restricted: 0, unknown: 0}

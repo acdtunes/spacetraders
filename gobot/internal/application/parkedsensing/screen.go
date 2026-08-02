@@ -238,35 +238,25 @@ func ScreenSystem(
 		return ScreenResult{}, fmt.Errorf("screening %q: %w", system, ErrEmptyWhitelist)
 	}
 
-	markets, err := p.Waypoints.ListMarketWaypoints(ctx, system)
-	if err != nil {
-		return ScreenResult{}, fmt.Errorf("failed to list market waypoints in %q: %w", system, err)
-	}
-	unchartedCount, err := p.Waypoints.ListUnchartedCount(ctx, system)
-	if err != nil {
-		return ScreenResult{}, fmt.Errorf("failed to count uncharted waypoints in %q: %w", system, err)
-	}
-	catalogKnown, err := p.Waypoints.CatalogKnown(ctx, system)
-	if err != nil {
-		// Fail the screen rather than guess. Guessing TRUE writes off unexplored
-		// systems durably; guessing FALSE would be safe here but would leave the
-		// caller unable to tell a real PENDING from an unreadable one.
-		return ScreenResult{}, fmt.Errorf("failed to read whether the waypoint catalog of %q is known: %w", system, err)
-	}
-
-	existing, err := existingByWaypoint(ctx, p, playerID, system)
+	s := &screenPass{p: p, playerID: playerID, system: system, whitelist: whitelist}
+	catalog, err := s.readSystemCatalog(ctx)
 	if err != nil {
 		return ScreenResult{}, err
 	}
 
-	hits, allResolved, err := screenMarkets(ctx, p, playerID, system, markets, whitelist, existing)
+	s.existing, err = s.existingByWaypoint(ctx)
+	if err != nil {
+		return ScreenResult{}, err
+	}
+
+	hits, allResolved, err := s.screenMarkets(ctx, catalog.markets)
 	if err != nil {
 		return ScreenResult{}, err
 	}
 
 	result := ScreenResult{
-		Verdict:        verdictFor(len(hits) > 0, allResolved, catalogKnown, unchartedCount),
-		UnchartedCount: unchartedCount,
+		Verdict:        verdictFor(len(hits) > 0, allResolved, catalog.known, catalog.unchartedCount),
+		UnchartedCount: catalog.unchartedCount,
 	}
 	var systemDepth int64
 	for _, hit := range hits {
@@ -278,7 +268,7 @@ func ScreenSystem(
 		if err != nil {
 			return ScreenResult{}, err
 		}
-		if err := recordSlots(ctx, p, playerID, system, result.Slots, existing); err != nil {
+		if err := s.recordSlots(ctx, result.Slots); err != nil {
 			return ScreenResult{}, err
 		}
 	}
@@ -286,13 +276,38 @@ func ScreenSystem(
 	if err := p.Ledger.UpsertSystem(ctx, playerID, SystemRecord{
 		System:         system,
 		Verdict:        result.Verdict,
-		UnchartedCount: unchartedCount,
+		UnchartedCount: catalog.unchartedCount,
 		DepthCredits:   systemDepth,
-		CatalogKnown:   catalogKnown,
+		CatalogKnown:   catalog.known,
 	}); err != nil {
 		return ScreenResult{}, fmt.Errorf("failed to record screening verdict for %q: %w", system, err)
 	}
 	return result, nil
+}
+
+type systemCatalog struct {
+	markets        []string
+	unchartedCount int
+	known          bool
+}
+
+func (s *screenPass) readSystemCatalog(ctx context.Context) (systemCatalog, error) {
+	markets, err := s.p.Waypoints.ListMarketWaypoints(ctx, s.system)
+	if err != nil {
+		return systemCatalog{}, fmt.Errorf("failed to list market waypoints in %q: %w", s.system, err)
+	}
+	unchartedCount, err := s.p.Waypoints.ListUnchartedCount(ctx, s.system)
+	if err != nil {
+		return systemCatalog{}, fmt.Errorf("failed to count uncharted waypoints in %q: %w", s.system, err)
+	}
+	known, err := s.p.Waypoints.CatalogKnown(ctx, s.system)
+	if err != nil {
+		// Fail the screen rather than guess. Guessing TRUE writes off unexplored
+		// systems durably; guessing FALSE would be safe here but would leave the
+		// caller unable to tell a real PENDING from an unreadable one.
+		return systemCatalog{}, fmt.Errorf("failed to read whether the waypoint catalog of %q is known: %w", s.system, err)
+	}
+	return systemCatalog{markets: markets, unchartedCount: unchartedCount, known: known}, nil
 }
 
 // screenMarkets resolves every charted market's goods and keeps the ones dealing
@@ -316,100 +331,105 @@ func ScreenSystem(
 // The second return reports whether EVERY market resolved: a market we failed to
 // read is not a market that deals in nothing, and must not harden into a
 // rejection.
-func screenMarkets(
-	ctx context.Context,
-	p ScreenPorts,
-	playerID int,
-	system string,
-	markets []string,
-	whitelist map[string]bool,
-	existing map[string]ExistingSlot,
-) ([]screenedMarket, bool, error) {
+func (s *screenPass) screenMarkets(ctx context.Context, markets []string) ([]screenedMarket, bool, error) {
 	sorted := append([]string(nil), markets...)
 	sort.Strings(sorted)
 
 	hits := make([]screenedMarket, 0, len(sorted))
 	allResolved := true
 	for _, waypoint := range sorted {
-		goods, known, err := p.MarketGoods.GoodsAt(ctx, playerID, waypoint)
+		goods, known, err := s.p.MarketGoods.GoodsAt(ctx, s.playerID, waypoint)
 		if err != nil {
 			return nil, false, fmt.Errorf("failed to read known goods at %q: %w", waypoint, err)
 		}
 
-		// recorded is the slot's own memory of this waypoint, used only when
-		// market_data has nothing — it carries the goods AND the depth measured
-		// when the placement was made.
-		//
-		// What it carries is a whitelist PROJECTION (see ExistingSlot), and
-		// caching a projection is sound only because the whitelist is invariant
-		// within an era: under that axiom an empty projection means "nothing we
-		// want is here", which a refetch would only confirm at the cost of an
-		// API call. A whitelist edited MID-era breaks the axiom.
-		//
-		// The operator response is `spacetraders sensing rescreen`,
-		// which re-opens every VERDICT so the sweep re-judges under the new list.
-		// That fixes every market the cache can answer for — GoodsAt is consulted
-		// FIRST, so a market any probe has scanned never reaches this branch at
-		// all. What it does NOT fix is this branch: a never-scanned market is
-		// still judged from its stored projection, and the rescreen cannot clear
-		// that projection because the clear would be permanent (recordSlots skips
-		// waypoints that already hold a slot) and self-suppressing (the test
-		// below is on the slot EXISTING, not on its projection being populated, so
-		// an emptied projection would stop the refetch that would repopulate it).
-		// Closing that gap needs this branch and recordSlots changed together —
-		// and note that the CURRENT behaviour is deliberate and PINNED by
-		// TestScreenSystemTreatsEmptyProjectionAsAuthoritative, so changing it is
-		// a design decision rather than a bug fix. Tracked as sp-ysg8h.
-		//
-		// It is also self-limiting: once a probe parks at the waypoint and scans
-		// it, market_data answers GoodsAt and this branch stops governing that
-		// market — for as long as market_data holds rows for it.
 		var recorded *ExistingSlot
 		if !known {
-			if slot, ok := existing[waypoint]; ok {
-				recorded = &slot
-				goods = slot.WhitelistGoods
-			} else {
-				goods, err = p.RemoteMarket.FetchGoods(ctx, playerID, system, waypoint)
-				if err != nil {
-					// Opportunistic: one unreadable market leaves the system
-					// undecided rather than failing the whole screen.
-					allResolved = false
-					continue
-				}
+			var resolved bool
+			goods, recorded, resolved = s.goodsWithoutMarketData(ctx, waypoint)
+			if !resolved {
+				// Opportunistic: one unreadable market leaves the system
+				// undecided rather than failing the whole screen.
+				allResolved = false
+				continue
 			}
 		}
 
-		matched := matchWhitelist(goods, whitelist)
+		matched := matchWhitelist(goods, s.whitelist)
 		if len(matched) == 0 {
 			continue
 		}
 
-		// Depth comes from the priced rows, which only a scanned market has. A
-		// market known only remotely is deliberately left at 0 — a blind prior
-		// that orders it last, not a claim that it is worthless — except where
-		// the slot row already carries a measured value, which is kept.
-		var depth int64
-		switch {
-		case known:
-			rows, err := p.MarketGoods.DepthRowsAt(ctx, playerID, waypoint)
-			if err != nil {
-				return nil, false, fmt.Errorf("failed to read market depth at %q: %w", waypoint, err)
-			}
-			depth = depthOf(rows, whitelist)
-		case recorded != nil:
-			depth = recorded.DepthCredits
+		depth, err := s.marketDepth(ctx, waypoint, known, recorded)
+		if err != nil {
+			return nil, false, err
 		}
 		hits = append(hits, screenedMarket{waypoint: waypoint, goods: matched, depth: depth})
 	}
 	return hits, allResolved, nil
 }
 
-// existingByWaypoint loads the system's current placements, keyed by waypoint.
-func existingByWaypoint(ctx context.Context, p ScreenPorts, playerID int, system string) (map[string]ExistingSlot, error) {
-	slots, err := p.Ledger.ExistingSlots(ctx, playerID, system)
+// goodsWithoutMarketData answers what a market deals in when market_data holds
+// nothing for it: from the slot row we already wrote, or failing that from the API.
+// The third return is false when the API read failed.
+//
+// The slot's recorded goods are a whitelist PROJECTION (see ExistingSlot), and
+// caching a projection is sound only because the whitelist is invariant within an
+// era: under that axiom an empty projection means "nothing we want is here", which
+// a refetch would only confirm at the cost of an API call. A whitelist edited
+// MID-era breaks the axiom.
+//
+// The operator response is `spacetraders sensing rescreen`, which re-opens every
+// VERDICT so the sweep re-judges under the new list. That fixes every market the
+// cache can answer for — GoodsAt is consulted FIRST, so a market any probe has
+// scanned never reaches this branch at all. What it does NOT fix is a never-scanned
+// market: it is still judged from its stored projection, and the rescreen cannot
+// clear that projection because the clear would be permanent (recordSlots skips
+// waypoints that already hold a slot) and self-suppressing (the test below is on
+// the slot EXISTING, not on its projection being populated, so an emptied
+// projection would stop the refetch that would repopulate it). Closing that gap
+// needs this branch and recordSlots changed together — and note that the CURRENT
+// behaviour is deliberate and PINNED by
+// TestScreenSystemTreatsEmptyProjectionAsAuthoritative, so changing it is a design
+// decision rather than a bug fix. Tracked as sp-ysg8h.
+//
+// It is also self-limiting: once a probe parks at the waypoint and scans it,
+// market_data answers GoodsAt and this branch stops governing that market — for as
+// long as market_data holds rows for it.
+func (s *screenPass) goodsWithoutMarketData(ctx context.Context, waypoint string) ([]string, *ExistingSlot, bool) {
+	if slot, ok := s.existing[waypoint]; ok {
+		return slot.WhitelistGoods, &slot, true
+	}
+	goods, err := s.p.RemoteMarket.FetchGoods(ctx, s.playerID, s.system, waypoint)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list existing sensing slots in %q: %w", system, err)
+		return nil, nil, false
+	}
+	return goods, nil, true
+}
+
+// marketDepth prices a market from its priced rows, which only a scanned market
+// has. A market known only remotely is deliberately left at 0 — a blind prior that
+// orders it last, not a claim that it is worthless — except where the slot row
+// already carries a measured value, which is kept.
+func (s *screenPass) marketDepth(ctx context.Context, waypoint string, known bool, recorded *ExistingSlot) (int64, error) {
+	switch {
+	case known:
+		rows, err := s.p.MarketGoods.DepthRowsAt(ctx, s.playerID, waypoint)
+		if err != nil {
+			return 0, fmt.Errorf("failed to read market depth at %q: %w", waypoint, err)
+		}
+		return depthOf(rows, s.whitelist), nil
+	case recorded != nil:
+		return recorded.DepthCredits, nil
+	}
+	return 0, nil
+}
+
+// existingByWaypoint loads the system's current placements, keyed by waypoint.
+func (s *screenPass) existingByWaypoint(ctx context.Context) (map[string]ExistingSlot, error) {
+	slots, err := s.p.Ledger.ExistingSlots(ctx, s.playerID, s.system)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list existing sensing slots in %q: %w", s.system, err)
 	}
 	byWaypoint := make(map[string]ExistingSlot, len(slots))
 	for _, slot := range slots {
@@ -563,21 +583,14 @@ func planSlots(ctx context.Context, p ScreenPorts, system string, hits []screene
 // That is the live path this skip and the slot cache are both built for — the
 // seed-measured goods flow back through the cache and let the verdict reach
 // IN_SCOPE with no API call. Once a system is IN_SCOPE it is never re-screened.
-func recordSlots(
-	ctx context.Context,
-	p ScreenPorts,
-	playerID int,
-	system string,
-	slots []PlannedSlot,
-	existing map[string]ExistingSlot,
-) error {
+func (s *screenPass) recordSlots(ctx context.Context, slots []PlannedSlot) error {
 	for _, slot := range slots {
-		if _, held := existing[slot.Waypoint]; held {
+		if _, held := s.existing[slot.Waypoint]; held {
 			continue
 		}
-		if err := p.Ledger.UpsertSlotMetadata(ctx, playerID, SlotRecord{
+		if err := s.p.Ledger.UpsertSlotMetadata(ctx, s.playerID, SlotRecord{
 			Waypoint:       slot.Waypoint,
-			System:         system,
+			System:         s.system,
 			Kind:           slot.Kind,
 			State:          SlotStateWanted,
 			WhitelistGoods: slot.WhitelistGoods,
@@ -625,4 +638,13 @@ func depthOf(rows []scouting.MarketDepthRow, whitelist map[string]bool) int64 {
 		depth += int64(row.TradeVolume) * int64(row.MidPrice)
 	}
 	return depth
+}
+
+// existing is filled once the ledger has been read and is constant after.
+type screenPass struct {
+	p         ScreenPorts
+	playerID  int
+	system    string
+	whitelist map[string]bool
+	existing  map[string]ExistingSlot
 }

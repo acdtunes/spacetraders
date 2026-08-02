@@ -70,9 +70,7 @@ func (h *RunTourCoordinatorHandler) planAndReserve(
 	ctx context.Context,
 	cmd *RunTourCoordinatorCommand,
 	ship *navigation.Ship,
-	maxHops int,
-	maxSpend, reserve int64,
-	modelVersion string,
+	budget tourPlanBudget,
 ) (*routing.TourPlan, map[shadowSinkKey]bool, string, bool, error) {
 	// One planner per player through release → net → solve → reserve. Without it every
 	// planner in a batch nets the SAME pre-reservation snapshot, ranks the same sink best
@@ -93,7 +91,7 @@ func (h *RunTourCoordinatorHandler) planAndReserve(
 	h.releaseTourReservations(ctx, cmd)
 
 	for attempt := 0; attempt <= tourReserveMaxRetries; attempt++ {
-		plan, snapshot, absorptionView, err := h.plan(ctx, ship, maxHops, maxSpend, reserve, cmd, modelVersion)
+		plan, snapshot, absorptionView, err := h.plan(ctx, ship, cmd, budget)
 		if err != nil {
 			return nil, nil, fmt.Sprintf("tour unavailable: planner error: %v", err), false, nil
 		}

@@ -395,7 +395,8 @@ func (f *psLedger) CountOwnedProbes(_ context.Context, _ int) (int64, error) {
 	return owned, nil
 }
 
-func (f *psLedger) TransitionSlot(_ context.Context, _ int, waypoint, kind, fromState, toState string, set parkedsensing.SlotFields) error {
+func (f *psLedger) TransitionSlot(_ context.Context, _ int, tr parkedsensing.SlotTransition, set parkedsensing.SlotFields) error {
+	waypoint, kind, fromState, toState := tr.Waypoint, tr.Kind, tr.From, tr.To
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -1224,22 +1225,6 @@ func sortedSlots(m map[psSlotKey]parkedsensing.QueuedSlot) []parkedsensing.Queue
 type psSlotKey struct {
 	waypoint string
 	kind     string
-}
-
-// putSlot seeds a placement, keyed the way the real table keys it. Tests use this
-// rather than assigning into the map so that a fixture naming two kinds at one
-// waypoint produces two rows, exactly as production would.
-func (f *psLedger) putSlot(slot parkedsensing.QueuedSlot) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.slots[psSlotKey{slot.Waypoint, slot.Kind}] = slot
-}
-
-// slotAt reads back one placement.
-func (f *psLedger) slotAt(waypoint, kind string) parkedsensing.QueuedSlot {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.slots[psSlotKey{waypoint, kind}]
 }
 
 func sortedSystems(m map[string]parkedsensing.ExpandSystem) []parkedsensing.ExpandSystem {

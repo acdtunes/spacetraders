@@ -48,7 +48,6 @@ func (h *RefreshMarketDataHandler) Handle(ctx context.Context, request common.Re
 
 	logger := common.LoggerFromContext(ctx)
 
-	// Scan and save market data
 	err := h.marketScanner.ScanAndSaveMarket(ctx, uint(cmd.PlayerID.Value()), cmd.WaypointSymbol)
 	if err != nil {
 		logger.Log("WARN", "Failed to refresh market data after transaction", map[string]interface{}{

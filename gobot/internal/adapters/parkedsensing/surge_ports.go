@@ -85,10 +85,38 @@ func (p *UnpricedPoolPort) UnpricedSystems(ctx context.Context, playerID int) ([
 		return nil, fmt.Errorf("failed to enumerate the charted-but-unpriced sensing pool: %w", err)
 	}
 
-	// THE PRICED HALF, first, because it is the cheapest and it is what the other two
-	// are filtered against. market_data holds one row per (waypoint, good) and carries
-	// no system column, so the system is derived from the waypoint symbol exactly as
-	// every other reader of this table derives it.
+	priced, err := p.pricedSystems(ctx, playerID)
+	if err != nil {
+		return nil, err
+	}
+	richness, err := p.unpricedRichness(ctx, eraPredicate, eraArgs, priced)
+	if err != nil {
+		return nil, err
+	}
+	if len(richness) == 0 {
+		return nil, nil
+	}
+	markets, order, err := p.marketplacesOf(ctx, eraPredicate, eraArgs, richness)
+	if err != nil {
+		return nil, err
+	}
+
+	pool := make([]domainScouting.UnpricedSystem, 0, len(order))
+	for _, system := range order {
+		pool = append(pool, domainScouting.UnpricedSystem{
+			System:          system,
+			MarketWaypoints: markets[system],
+			Waypoints:       richness[system],
+		})
+	}
+	return pool, nil
+}
+
+// pricedSystems is THE PRICED HALF, read first because it is the cheapest and it
+// is what the other two are filtered against. market_data holds one row per
+// (waypoint, good) and carries no system column, so the system is derived from the
+// waypoint symbol exactly as every other reader of this table derives it.
+func (p *UnpricedPoolPort) pricedSystems(ctx context.Context, playerID int) (map[string]bool, error) {
 	var pricedWaypoints []string
 	if err := p.db.WithContext(ctx).
 		Table("market_data").
@@ -103,10 +131,18 @@ func (p *UnpricedPoolPort) UnpricedSystems(ctx context.Context, playerID int) ([
 			priced[system] = true
 		}
 	}
+	return priced, nil
+}
 
-	// THE RICHNESS HALF: how many waypoint rows each charted system holds in the open
-	// era. Grouped in SQL rather than counted in Go so the read stays one row per
-	// system rather than one per waypoint.
+// unpricedRichness counts how many waypoint rows each still-unpriced charted system
+// holds in the open era. Grouped in SQL rather than counted in Go so the read stays
+// one row per system rather than one per waypoint.
+func (p *UnpricedPoolPort) unpricedRichness(
+	ctx context.Context,
+	eraPredicate string,
+	eraArgs []interface{},
+	priced map[string]bool,
+) (map[string]int, error) {
 	var counts []struct {
 		SystemSymbol string
 		Waypoints    int
@@ -126,14 +162,24 @@ func (p *UnpricedPoolPort) UnpricedSystems(ctx context.Context, playerID int) ([
 		}
 		richness[row.SystemSymbol] = row.Waypoints
 	}
-	if len(richness) == 0 {
-		return nil, nil
-	}
+	return richness, nil
+}
 
-	// THE MARKETPLACE HALF. The trait column is a JSON array stored as text, matched
-	// with the same LIKE pattern every other trait read in this package uses; the
-	// UNCHARTED exclusion is applied in Go through hasTrait so this read and
-	// ListMarketWaypoints cannot disagree about what "charted marketplace" means.
+// marketplacesOf is THE MARKETPLACE HALF. The trait column is a JSON array stored
+// as text, matched with the same LIKE pattern every other trait read in this
+// package uses; the UNCHARTED exclusion is applied in Go through hasTrait so this
+// read and ListMarketWaypoints cannot disagree about what "charted marketplace"
+// means.
+//
+// The second return is the systems in the order the rows arrived — sorted by system
+// then waypoint — so each system's marketplace list is deterministic and the
+// surge's "first free marketplace waypoint" pick is reproducible tick to tick.
+func (p *UnpricedPoolPort) marketplacesOf(
+	ctx context.Context,
+	eraPredicate string,
+	eraArgs []interface{},
+	richness map[string]int,
+) (map[string][]string, []string, error) {
 	var marketRows []struct {
 		SystemSymbol   string
 		WaypointSymbol string
@@ -146,12 +192,9 @@ func (p *UnpricedPoolPort) UnpricedSystems(ctx context.Context, playerID int) ([
 		Where(eraPredicate, eraArgs...).
 		Order("system_symbol ASC, waypoint_symbol ASC").
 		Scan(&marketRows).Error; err != nil {
-		return nil, fmt.Errorf("failed to list the marketplaces of the open-era systems: %w", err)
+		return nil, nil, fmt.Errorf("failed to list the marketplaces of the open-era systems: %w", err)
 	}
 
-	// Assembled in the order the rows arrived, which is sorted by system and then by
-	// waypoint — so the marketplace list of each system is deterministic, and the
-	// surge's "first free marketplace waypoint" pick is reproducible tick to tick.
 	markets := map[string][]string{}
 	order := make([]string, 0, len(richness))
 	for _, row := range marketRows {
@@ -166,16 +209,7 @@ func (p *UnpricedPoolPort) UnpricedSystems(ctx context.Context, playerID int) ([
 		}
 		markets[row.SystemSymbol] = append(markets[row.SystemSymbol], row.WaypointSymbol)
 	}
-
-	pool := make([]domainScouting.UnpricedSystem, 0, len(order))
-	for _, system := range order {
-		pool = append(pool, domainScouting.UnpricedSystem{
-			System:          system,
-			MarketWaypoints: markets[system],
-			Waypoints:       richness[system],
-		})
-	}
-	return pool, nil
+	return markets, order, nil
 }
 
 // chartedMarketplace reports whether a waypoints.traits column names a MARKETPLACE

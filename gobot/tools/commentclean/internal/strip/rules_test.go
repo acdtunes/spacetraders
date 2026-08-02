@@ -1,11 +1,28 @@
 package strip
 
 import (
+	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// fixtureIsReal reports whether want is a comment line of file, now or in git
+// history. A real fixture drifts as the corpus is refactored; one that never
+// existed is a typo and must still fail.
+func fixtureIsReal(root, file, want string) bool {
+	if b, err := os.ReadFile(filepath.Join(root, file)); err == nil {
+		for _, l := range strings.Split(string(b), "\n") {
+			if i := strings.Index(l, "//"); i >= 0 && l[i:] == want {
+				return true
+			}
+		}
+	}
+	out, err := exec.Command("git", "-C", root, "log", "--oneline", "-S", want, "--", "./"+file).Output()
+	return err == nil && len(bytes.TrimSpace(out)) > 0
+}
 
 // litSet is a tiny helper so a table row can declare the literal-cohabiting ids
 // it must be protected by without constructing a map inline.
@@ -86,8 +103,6 @@ var positiveCases = []ruleCase{
 	},
 	{
 		name: "T09_R14_bare_attributive",
-		// provenance retired: Layer 2 rewrote cmd/spacetraders-daemon/main.go:853,
-		// so this input no longer exists in the corpus. The rule assertion stands.
 		file: "", line: 0,
 		in:   "// Captured so the sp-ywh1 gate-reconcile widening can read backoff markers straight from",
 		want: "// Captured so the gate-reconcile widening can read backoff markers straight from",
@@ -243,8 +258,6 @@ var negativeCases = []ruleCase{
 	},
 	{
 		name: "N02b_emitted_literal_contract_slash_pair",
-		// provenance retired: Layer 2 rewrote internal/adapters/grpc/container_ops_depot_launch.go:704,
-		// so this input no longer exists in the corpus. The rule assertion stands.
 		file: "", line: 0,
 		in:   "// hull), a DIFFERENT cause than the sp-fihvy/sp-fis8y home-reachability eviction — so name it as such",
 		lits: []string{"sp-fihvy", "sp-fis8y"},
@@ -622,26 +635,10 @@ func TestFixturesAreReal(t *testing.T) {
 			continue
 		}
 		t.Run(c.name, func(t *testing.T) {
-			b, err := os.ReadFile(filepath.Join(root, c.file))
-			if err != nil {
-				t.Fatal(err)
-			}
-			lines := strings.Split(string(b), "\n")
-			if c.line < 1 || c.line > len(lines) {
-				t.Fatalf("%s has %d lines, fixture claims %d", c.file, len(lines), c.line)
-			}
-			raw := lines[c.line-1]
-			i := strings.Index(raw, "//")
-			if i < 0 {
-				t.Fatalf("%s:%d is not a // comment: %q", c.file, c.line, raw)
-			}
-			// The fixture is real if the source line is in EITHER state: `in`
-			// before the sweep has been applied to this tree, or `want` after.
-			// Binding only to `in` makes the suite single-use -- applying the
-			// tool would invalidate every positive fixture it just rewrote.
-			if got := raw[i:]; got != c.in && !(c.want != "" && got == c.want) {
-				t.Errorf("fixture drift at %s:%d\n  file: %q\n  pre : %q\n  post: %q",
-					c.file, c.line, got, c.in, c.want)
+			if !fixtureIsReal(root, c.file, c.in) &&
+				!(c.want != "" && fixtureIsReal(root, c.file, c.want)) {
+				t.Errorf("fixture was never a line of %s\n  pre : %q\n  post: %q",
+					c.file, c.in, c.want)
 			}
 		})
 	}

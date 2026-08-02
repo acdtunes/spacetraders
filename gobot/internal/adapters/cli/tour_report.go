@@ -14,8 +14,6 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
-	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
-	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
 // The A→B graduation gate: a hull graduates from supervised one-shot
@@ -310,13 +308,9 @@ The gate passes at 10 tours, >=1.5x single-lane $/hr, and <=15% median price err
 			if err != nil {
 				return err
 			}
-			cfg, err := config.LoadConfig("")
+			db, err := openDatabase()
 			if err != nil {
-				return fmt.Errorf("failed to load config: %w", err)
-			}
-			db, err := database.NewConnection(&cfg.Database)
-			if err != nil {
-				return fmt.Errorf("failed to connect to database: %w", err)
+				return err
 			}
 			now := time.Now()
 			source := &gormTourReportSource{db: db, now: now}

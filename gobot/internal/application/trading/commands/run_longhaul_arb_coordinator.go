@@ -295,9 +295,9 @@ func (h *LongHaulArbFleetCoordinatorHandler) reconcileOnce(ctx context.Context, 
 	sort.Slice(idle, func(i, j int) bool { return idle[i].ShipSymbol() < idle[j].ShipSymbol() })
 
 	// UNCAPPED CONCURRENCY (Admiral order): launch a worker for EVERY idle tagged
-	// long-haul hull each tick. No total-exposure CONCURRENCY ceiling is applied here:
-	// maxConcurrentHauls (totalExposureCap/perHaulCap) is deliberately NOT consulted, so a
-	// tagged hull never sits idle behind it. Spend is still fail-closed PER BUY inside each worker — the
+	// long-haul hull each tick. No total-exposure CONCURRENCY ceiling is applied here
+	// (totalExposureCap/perHaulCap is deliberately never derived), so a tagged hull never
+	// sits idle behind one. Spend is still fail-closed PER BUY inside each worker — the
 	// reserve-floor fence (newLongHaulFence → common.ReserveFloorGate, the 200k cushion over
 	// the immutable 50k floor, RULINGS #4/#5) and the per-haul cap (threaded via
 	// buildLongHaulLaunchSpec) are untouched. launched already counts any watchdog relaunch.

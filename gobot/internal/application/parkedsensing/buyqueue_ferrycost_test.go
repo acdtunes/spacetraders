@@ -160,9 +160,9 @@ func TestFerryCandidates_CarryTheWalkedHopCount(t *testing.T) {
 	broker := &ferryBroker{}
 	slot := QueuedSlot{Waypoint: "X1-TGT-M1", System: "X1-TGT", Kind: SlotKindMarket, State: SlotStateWanted}
 
-	candidates, err := ferryCandidates(context.Background(), ports, testPlayerID, slot, broker)
+	candidates, err := broker.candidates(context.Background(), ports, testPlayerID, slot)
 	if err != nil {
-		t.Fatalf("ferryCandidates returned error: %v", err)
+		t.Fatalf("ferryBroker.candidates returned error: %v", err)
 	}
 	if len(candidates) == 0 {
 		t.Fatal("no ferry candidates: the fixture never reached the code under test")

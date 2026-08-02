@@ -45,27 +45,25 @@ func TestLongHaulAchievableUnits_TightestBound(t *testing.T) {
 // SELECTION (design §2/§3): the worker takes the highest realized-$/hr lane it can actually
 // size a positive buy for — a top-ranked lane it cannot afford a single unit of is skipped to
 // the next.
-func TestLongHaulSelectHaul_PicksTopSizeableLane(t *testing.T) {
+func TestLongHaulSelectHauls_PicksTopSizeableLane(t *testing.T) {
 	env := newLongHaulEnvelope(newLongHaulFence(50_000_000), 1_000_000) // spendCeiling = 1M
 	// A ranks highest but is unaffordable at any unit (ask 2M > 1M ceiling) -> sizes to 0 -> skipped.
 	a := pricedLane("A", 2_000_000, 5, 100.0)
 	b := pricedLane("B", 1000, 40, 50.0)
 
-	lane, units, ok := selectHaul([]pricedLongHaulLane{a, b}, 40, env, nil)
+	hauls := selectHauls([]pricedLongHaulLane{a, b}, 40, env, nil)
 
-	require.True(t, ok)
-	require.Equal(t, "B", lane.Lane.Good, "the top lane that cannot be sized is skipped to the next tradeable one")
-	require.Equal(t, 40, units)
+	require.Len(t, hauls, 1, "the unaffordable top lane is dropped, not returned")
+	require.Equal(t, "B", hauls[0].lane.Lane.Good, "the top lane that cannot be sized is skipped to the next tradeable one")
+	require.Equal(t, 40, hauls[0].units)
 }
 
 // Fail-closed: an unreadable treasury sizes every lane to zero (spendCeiling 0), so the worker
 // selects NOTHING rather than spend blind (RULINGS #4).
-func TestLongHaulSelectHaul_UnreadableTreasury_SelectsNothing(t *testing.T) {
+func TestLongHaulSelectHauls_UnreadableTreasury_SelectsNothing(t *testing.T) {
 	env := newLongHaulEnvelope(unreadableLongHaulFence(), 1_000_000)
 
-	lane, units, ok := selectHaul([]pricedLongHaulLane{pricedLane("A", 1000, 40, 50)}, 40, env, nil)
+	hauls := selectHauls([]pricedLongHaulLane{pricedLane("A", 1000, 40, 50)}, 40, env, nil)
 
-	require.False(t, ok)
-	require.Equal(t, 0, units)
-	require.Equal(t, pricedLongHaulLane{}, lane)
+	require.Empty(t, hauls)
 }

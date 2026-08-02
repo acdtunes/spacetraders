@@ -50,32 +50,23 @@ type RelocatorMetricsCollector struct {
 // constructor idiom.
 func NewRelocatorMetricsCollector() *RelocatorMetricsCollector {
 	return &RelocatorMetricsCollector{
-		ticksTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "relocator_ticks_total",
-				Help:      "Opportunity relocator ticks by verdict: PROGRESS (a hull moved), IDLE (nothing to do, correctly), BLOCKED (a relocation was licensed and could not be carried out, or a signal the decision needed was unreadable)",
-			},
-			[]string{"player_id", "verdict"},
+		ticksTotal: newCounterVec(
+			"relocator_ticks_total",
+			"Opportunity relocator ticks by verdict: PROGRESS (a hull moved), IDLE (nothing to do, correctly), BLOCKED (a relocation was licensed and could not be carried out, or a signal the decision needed was unreadable)",
+			"player_id",
+			"verdict",
 		),
-		decisionsTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "relocator_decisions_total",
-				Help:      "Hulls the opportunity relocator actually moved: relocated (a fresh decision) or resumed (an interrupted move finished after a restart)",
-			},
-			[]string{"player_id", "outcome"},
+		decisionsTotal: newCounterVec(
+			"relocator_decisions_total",
+			"Hulls the opportunity relocator actually moved: relocated (a fresh decision) or resumed (an interrupted move finished after a restart)",
+			"player_id",
+			"outcome",
 		),
-		skipsTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "relocator_skips_total",
-				Help:      "Opportunity relocator exclusions by reason. claimed_at_actuation is the claim race (the economics said yes and the hull was gone by actuation); the economic verdicts (no_uplift, below_npv_threshold) are the reconciler working, not failing",
-			},
-			[]string{"player_id", "reason"},
+		skipsTotal: newCounterVec(
+			"relocator_skips_total",
+			"Opportunity relocator exclusions by reason. claimed_at_actuation is the claim race (the economics said yes and the hull was gone by actuation); the economic verdicts (no_uplift, below_npv_threshold) are the reconciler working, not failing",
+			"player_id",
+			"reason",
 		),
 	}
 }
@@ -84,14 +75,13 @@ func NewRelocatorMetricsCollector() *RelocatorMetricsCollector {
 // disabled) is a no-op, matching the sibling collectors.
 func (c *RelocatorMetricsCollector) Register() error {
 	if Registry == nil {
-		return nil // Metrics not enabled
+		return nil
 	}
-	for _, collector := range []prometheus.Collector{c.ticksTotal, c.decisionsTotal, c.skipsTotal} {
-		if err := Registry.Register(collector); err != nil {
-			return err
-		}
-	}
-	return nil
+	return registerAll(
+		c.ticksTotal,
+		c.decisionsTotal,
+		c.skipsTotal,
+	)
 }
 
 // RecordTick counts one tick by verdict. Nil-safe and best-effort: a metrics miss must never touch the

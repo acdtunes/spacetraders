@@ -24,6 +24,7 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -115,15 +116,6 @@ func calledFuncName(expr ast.Expr) string {
 	return ""
 }
 
-func contains(haystack []string, needle string) bool {
-	for _, s := range haystack {
-		if s == needle {
-			return true
-		}
-	}
-	return false
-}
-
 // THE INVARIANT. Exactly one HeavyTargetFinder is constructed in the composition root, and that same
 // instance reaches both the spender and the withholder.
 func TestSharedHeavyTargetIsOneInstanceServingBothConsumers(t *testing.T) {
@@ -145,10 +137,10 @@ func TestSharedHeavyTargetIsOneInstanceServingBothConsumers(t *testing.T) {
 	require.Equal(t, 1, w.callsByConsumer[heavyTargetWithholder],
 		"exactly one %s: a second reserve port would need its own target and reintroduce the divergence", heavyTargetWithholder)
 
-	require.True(t, contains(w.identArgsByConsumer[heavyTargetSpender], w.instanceName),
+	require.True(t, slices.Contains(w.identArgsByConsumer[heavyTargetSpender], w.instanceName),
 		"the SPENDER (%s) must be handed the shared %q; it is not, so the autosizer is buying against a target the reservation does not know about",
 		heavyTargetSpender, w.instanceName)
-	require.True(t, contains(w.identArgsByConsumer[heavyTargetWithholder], w.instanceName),
+	require.True(t, slices.Contains(w.identArgsByConsumer[heavyTargetWithholder], w.instanceName),
 		"the WITHHOLDER (%s) must be handed the shared %q; it is not, so sensing is saving toward a yard the buy is not targeting",
 		heavyTargetWithholder, w.instanceName)
 }
@@ -170,9 +162,9 @@ func wire() {
 
 	require.Equal(t, 2, w.constructions, "a second construction must be counted")
 	require.Equal(t, "heavyTargetFinder", w.instanceName)
-	require.True(t, contains(w.identArgsByConsumer[heavyTargetSpender], w.instanceName),
+	require.True(t, slices.Contains(w.identArgsByConsumer[heavyTargetSpender], w.instanceName),
 		"the spender still holds the shared instance in this scenario")
-	require.False(t, contains(w.identArgsByConsumer[heavyTargetWithholder], w.instanceName),
+	require.False(t, slices.Contains(w.identArgsByConsumer[heavyTargetWithholder], w.instanceName),
 		"the withholder was handed its OWN finder — the divergence must be visible as a missing shared name, not just as a count")
 }
 
@@ -192,6 +184,6 @@ func wire() {
 	w := analyseHeavyTargetWiring(t, "dropped.go", dropped)
 
 	require.Equal(t, 1, w.constructions, "the count alone cannot see this shape")
-	require.False(t, contains(w.identArgsByConsumer[heavyTargetWithholder], w.instanceName),
+	require.False(t, slices.Contains(w.identArgsByConsumer[heavyTargetWithholder], w.instanceName),
 		"a consumer left unwired must still be caught")
 }

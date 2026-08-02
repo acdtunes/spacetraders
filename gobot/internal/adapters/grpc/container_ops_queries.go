@@ -16,19 +16,16 @@ import (
 
 // ListShips handles ship listing requests
 func (s *DaemonServer) ListShips(ctx context.Context, playerID *int, agentSymbol string) ([]*pb.ShipInfo, error) {
-	// Create query
 	query := &shipQuery.ListShipsQuery{
 		PlayerID:    playerID,
 		AgentSymbol: agentSymbol,
 	}
 
-	// Execute via mediator
 	response, err := s.mediator.Send(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list ships: %w", err)
 	}
 
-	// Convert response
 	listResp, ok := response.(*shipQuery.ListShipsResponse)
 	if !ok {
 		return nil, fmt.Errorf("unexpected response type")
@@ -54,20 +51,17 @@ func (s *DaemonServer) ListShips(ctx context.Context, playerID *int, agentSymbol
 
 // GetShip handles ship detail requests
 func (s *DaemonServer) GetShip(ctx context.Context, shipSymbol string, playerID *int, agentSymbol string) (*pb.ShipDetail, error) {
-	// Create query
 	query := &shipQuery.GetShipQuery{
 		ShipSymbol:  shipSymbol,
 		PlayerID:    playerID,
 		AgentSymbol: agentSymbol,
 	}
 
-	// Execute via mediator
 	response, err := s.mediator.Send(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get ship: %w", err)
 	}
 
-	// Convert response
 	getResp, ok := response.(*shipQuery.GetShipResponse)
 	if !ok {
 		return nil, fmt.Errorf("unexpected response type")
@@ -85,7 +79,6 @@ func (s *DaemonServer) GetShip(ctx context.Context, shipSymbol string, playerID 
 		})
 	}
 
-	// Build ship detail
 	shipDetail := &pb.ShipDetail{
 		Symbol:             domainShip.ShipSymbol(),
 		Location:           domainShip.CurrentLocation().Symbol,
@@ -116,20 +109,17 @@ func (s *DaemonServer) GetShip(ctx context.Context, shipSymbol string, playerID 
 // RefreshShip forces a resync of a ship from the API, overwriting the local
 // cache, and returns the reconciled ship detail.
 func (s *DaemonServer) RefreshShip(ctx context.Context, shipSymbol string, playerID *int, agentSymbol string) (*pb.ShipDetail, error) {
-	// Create query
 	query := &shipQuery.RefreshShipQuery{
 		ShipSymbol:  shipSymbol,
 		PlayerID:    playerID,
 		AgentSymbol: agentSymbol,
 	}
 
-	// Execute via mediator
 	response, err := s.mediator.Send(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to refresh ship: %w", err)
 	}
 
-	// Convert response
 	refreshResp, ok := response.(*shipQuery.RefreshShipResponse)
 	if !ok {
 		return nil, fmt.Errorf("unexpected response type")
@@ -147,7 +137,6 @@ func (s *DaemonServer) RefreshShip(ctx context.Context, shipSymbol string, playe
 		})
 	}
 
-	// Build ship detail
 	shipDetail := &pb.ShipDetail{
 		Symbol:             domainShip.ShipSymbol(),
 		Location:           domainShip.CurrentLocation().Symbol,
@@ -393,7 +382,6 @@ func (s *DaemonServer) GetShipyardListings(ctx context.Context, systemSymbol, wa
 		return nil, "", 0, fmt.Errorf("player_id is required")
 	}
 
-	// Create query
 	query := &shipyardQuery.GetShipyardListingsQuery{
 		SystemSymbol:   systemSymbol,
 		WaypointSymbol: waypointSymbol,
@@ -407,19 +395,16 @@ func (s *DaemonServer) GetShipyardListings(ctx context.Context, systemSymbol, wa
 		Class: marketscan.Discretionary,
 	}
 
-	// Execute via mediator
 	response, err := s.mediator.Send(ctx, query)
 	if err != nil {
 		return nil, "", 0, fmt.Errorf("failed to get shipyard listings: %w", err)
 	}
 
-	// Convert response
 	listingsResp, ok := response.(*shipyardQuery.GetShipyardListingsResponse)
 	if !ok {
 		return nil, "", 0, fmt.Errorf("unexpected response type")
 	}
 
-	// Convert to protobuf format
 	listings := make([]*pb.ShipListing, len(listingsResp.Shipyard.Listings))
 	for i, listing := range listingsResp.Shipyard.Listings {
 		listings[i] = &pb.ShipListing{

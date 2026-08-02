@@ -60,7 +60,7 @@ func (s *daemonServiceImpl) AddDepotElement(ctx context.Context, req *pb.AddDepo
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve player: %w", err)
 	}
-	if err := s.daemon.AddDepotElement(ctx, playerID, req.DepotId, req.Role, req.Waypoint, req.ShipSymbol); err != nil {
+	if err := s.daemon.AddDepotElement(ctx, playerID, req.DepotId, req.Role, depot.Element{Waypoint: req.Waypoint, ShipSymbol: req.ShipSymbol}); err != nil {
 		return nil, fmt.Errorf("failed to add depot element: %w", err)
 	}
 	return &pb.DepotElementResponse{Status: "ADDED"}, nil
@@ -84,7 +84,7 @@ func (s *daemonServiceImpl) PlaceDepotElement(ctx context.Context, req *pb.Place
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve player: %w", err)
 	}
-	if err := s.daemon.PlaceDepotElement(ctx, playerID, req.DepotId, req.Role, req.ShipSymbol, req.Waypoint); err != nil {
+	if err := s.daemon.PlaceDepotElement(ctx, playerID, req.DepotId, req.Role, depot.Element{Waypoint: req.Waypoint, ShipSymbol: req.ShipSymbol}); err != nil {
 		return nil, fmt.Errorf("failed to place depot element: %w", err)
 	}
 	return &pb.DepotElementResponse{Status: "PLACED"}, nil

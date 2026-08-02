@@ -40,21 +40,6 @@ const (
 	TransactionTypeModuleRemove TransactionType = "MODULE_REMOVE"
 )
 
-// AllTransactionTypes returns all valid transaction types
-func AllTransactionTypes() []TransactionType {
-	return []TransactionType{
-		TransactionTypeRefuel,
-		TransactionTypePurchaseCargo,
-		TransactionTypeSellCargo,
-		TransactionTypePurchaseShip,
-		TransactionTypeContractAccepted,
-		TransactionTypeContractFulfilled,
-		TransactionTypeJump,
-		TransactionTypeModuleInstall,
-		TransactionTypeModuleRemove,
-	}
-}
-
 // String returns the string representation of the TransactionType
 func (t TransactionType) String() string {
 	return string(t)

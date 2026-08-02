@@ -83,7 +83,7 @@ func TestManufacturingMetrics_LabelsAndValues(t *testing.T) {
 // is pre-existing code and carries no self-guard — calling it on a nil
 // *ManufacturingMetricsCollector or a bare &ManufacturingMetricsCollector{} panics on the nil
 // CounterVec/HistogramVec fields. Its RULINGS #4 nil-safety instead comes entirely from the
-// package-level RecordManufacturingTaskCompletion wrapper (prometheus_collector.go), which
+// package-level RecordManufacturingTaskCompletion wrapper, which
 // every real call site uses and which checks globalManufacturingCollector != nil before ever
 // calling this method — the same convention container_metrics.go's pre-existing sibling
 // methods (RecordContainerCompletion etc.) already rely on.

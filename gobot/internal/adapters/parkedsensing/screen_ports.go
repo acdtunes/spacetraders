@@ -1,9 +1,9 @@
 package parkedsensing
 
 // screen_ports.go holds the READ adapters behind the screen, the expansion
-// frontier and the scan rotation: what the map looks like, what markets deal in,
-// and what they are quoting. Everything here is a query — nothing in this file
-// commands a ship or moves money.
+// frontier and the scan rotation: what the map looks like, and which of its
+// waypoints are charted, sell probes, or are worth a slot. Everything here is a
+// query — nothing in this file commands a ship or moves money.
 //
 // Most of these reads go to the DATABASE rather than the API, and in three cases
 // that is a contract rather than a preference. Each is stated at the method it
@@ -25,11 +25,8 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	appSensing "github.com/andrescamacho/spacetraders-go/internal/application/parkedsensing"
-	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/scouting"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	shipyardDomain "github.com/andrescamacho/spacetraders-go/internal/domain/shipyard"
-	domainSystem "github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
 const (
@@ -352,30 +349,13 @@ func (p *WaypointCatalogPort) OutstandingYards(ctx context.Context, playerID int
 		return nil, fmt.Errorf("failed to list the charted shipyards of the open era: %w", err)
 	}
 
-	var readSymbols []string
-	if err := p.db.WithContext(ctx).
-		Table("shipyard_inventory").
-		Distinct("waypoint_symbol").
-		Where("player_id = ?", playerID).
-		Pluck("waypoint_symbol", &readSymbols).Error; err != nil {
+	held, err := p.distinctColumnSet(ctx, playerID, "shipyard_inventory", "waypoint_symbol")
+	if err != nil {
 		return nil, fmt.Errorf("failed to read which shipyard catalogues we already hold: %w", err)
 	}
-	held := make(map[string]bool, len(readSymbols))
-	for _, symbol := range readSymbols {
-		held[symbol] = true
-	}
-
-	var watchedSystems []string
-	if err := p.db.WithContext(ctx).
-		Table("sensing_slots").
-		Distinct("system_symbol").
-		Where("player_id = ?", playerID).
-		Pluck("system_symbol", &watchedSystems).Error; err != nil {
+	watched, err := p.distinctColumnSet(ctx, playerID, "sensing_slots", "system_symbol")
+	if err != nil {
 		return nil, fmt.Errorf("failed to read which systems we already watch: %w", err)
-	}
-	watched := make(map[string]bool, len(watchedSystems))
-	for _, system := range watchedSystems {
-		watched[system] = true
 	}
 
 	out := make([]appSensing.OutstandingYard, 0, len(yards))
@@ -398,6 +378,22 @@ func (p *WaypointCatalogPort) OutstandingYards(ctx context.Context, playerID int
 		})
 	}
 	return out, nil
+}
+
+func (p *WaypointCatalogPort) distinctColumnSet(ctx context.Context, playerID int, table, column string) (map[string]bool, error) {
+	var values []string
+	if err := p.db.WithContext(ctx).
+		Table(table).
+		Distinct(column).
+		Where("player_id = ?", playerID).
+		Pluck(column, &values).Error; err != nil {
+		return nil, err
+	}
+	set := make(map[string]bool, len(values))
+	for _, v := range values {
+		set[v] = true
+	}
+	return set, nil
 }
 
 // LastListingScan reports what the stored shipyard inventory says about ONE
@@ -526,24 +522,16 @@ func (p *WaypointCatalogPort) ListProbeYards(ctx context.Context, system string)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list probe yards in %q: %w", system, err)
 	}
-	// THE CANDIDATE UNIVERSE, built PER WAYPOINT rather than per system: every
-	// waypoint already carrying a probe row, plus every charted SHIPYARD-trait
-	// waypoint. The union is what makes the two halves independent.
-	//
-	// An either/or — `if len(rows) > 0 { return priced }`, with the trait fallback
-	// only when the system holds NOT ONE probe row anywhere — lets one priced
-	// yard switch the fallback off for the WHOLE system, and every yard not yet
-	// priced becomes invisible: not merely unranked, absent.
-	// Measured live, 81 of 614 charted shipyards were lost that way, and a
-	// yard nothing can see is a counter we can never buy at, because buying needs a
-	// hull already standing there. The evidence a yard IS priced says nothing about
-	// its neighbour, so the decision belongs to each waypoint on its own.
 	traitYards, err := p.waypoints.ListBySystemWithTrait(ctx, system, shipyardTrait)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list shipyards in %q: %w", system, err)
 	}
-	seen := make(map[string]bool, len(rows)+len(traitYards))
+	// A UNION, not an either/or. Falling back to traits only when the system holds
+	// NOT ONE probe row lets a single priced yard hide every unpriced one — 81 of
+	// 614 charted shipyards were lost that way, and a yard nothing can see is a
+	// counter we can never buy at.
 	universe := make([]string, 0, len(rows)+len(traitYards))
+	seen := make(map[string]bool, len(rows)+len(traitYards))
 	// Priced first, so the cheapest-first order the query already applied survives
 	// into the evidenced half below.
 	for _, row := range rows {
@@ -553,40 +541,50 @@ func (p *WaypointCatalogPort) ListProbeYards(ctx context.Context, system string)
 		seen[row.WaypointSymbol] = true
 		universe = append(universe, row.WaypointSymbol)
 	}
-	// Then the trait yards, in symbol order, as the fallback always returned them.
-	// UNCHARTED is not yet a yard — its traits are a guess until someone charts it.
-	// Note the priced half above is NOT trait-filtered: a yard we have actually
-	// priced is evidenced by the reading itself, and may have no waypoint row at
-	// all.
-	traitOnly := make([]string, 0, len(traitYards))
+	universe = append(universe, chartedTraitYards(traitYards, seen)...)
+
+	return p.probeStockCandidates(ctx, universe)
+}
+
+// chartedTraitYards is the fallback half of the candidate universe, in symbol order
+// as the fallback always returned them. UNCHARTED is not yet a yard — its traits
+// are a guess until someone charts it. The priced half is deliberately NOT
+// trait-filtered: a yard we have actually priced is evidenced by the reading
+// itself, and may have no waypoint row at all.
+func chartedTraitYards(traitYards []*shared.Waypoint, seen map[string]bool) []string {
+	out := make([]string, 0, len(traitYards))
 	for _, waypoint := range traitYards {
 		if seen[waypoint.Symbol] || hasTrait(waypoint, unchartedTrait) {
 			continue
 		}
 		seen[waypoint.Symbol] = true
-		traitOnly = append(traitOnly, waypoint.Symbol)
+		out = append(out, waypoint.Symbol)
 	}
-	sort.Strings(traitOnly)
-	universe = append(universe, traitOnly...)
+	sort.Strings(out)
+	return out
+}
 
-	// THE SHARED RULE DECIDES, not this query. appSensing.ProbeYardIsCandidate is
-	// the exported face of readProbeStock — the same classification the buy queue's
-	// skipKnownProbeless and seed staging's stagedProbeStockAccepts consult — so a
-	// yard priced and found probe-less is dropped here for exactly the reason the
-	// drain would refuse it, and a STALE probe-less reading degrades to "never
-	// priced" and is reconsidered. Re-deriving that in SQL is what would let the
-	// three engines drift.
-	//
-	// EVIDENCE-FIRST ORDER COMES FROM THE UNION ABOVE, not from a second sort.
-	// universe is priced rows (cheapest first) followed by trait-only yards (symbol
-	// order), and each half can classify only one way: a yard drawn from a priced
-	// probe row is SELLS or NONE, a trait-only yard is UNREAD or NONE. So every
-	// survivor of the first half is evidence and every survivor of the second is a
-	// guess, and filtering IN PLACE preserves both the ranking and the
-	// cheapest-first order inside it. A partition here would re-sort nothing.
-	//
-	// Ranking a guess last must never mean dropping it — an unpriced yard is how
-	// the fleet learns where probes are sold at all.
+// probeStockCandidates drops the yards the drain itself would refuse.
+//
+// THE SHARED RULE DECIDES, not this query. appSensing.ProbeYardIsCandidate is
+// the exported face of readProbeStock — the same classification the buy queue's
+// skipKnownProbeless and seed staging's probeStock.acceptsStaging consult — so a
+// yard priced and found probe-less is dropped here for exactly the reason the
+// drain would refuse it, and a STALE probe-less reading degrades to "never
+// priced" and is reconsidered. Re-deriving that in SQL is what would let the
+// three engines drift.
+//
+// EVIDENCE-FIRST ORDER COMES FROM THE UNION, not from a second sort. universe is
+// priced rows (cheapest first) followed by trait-only yards (symbol order), and
+// each half can classify only one way: a yard drawn from a priced probe row is
+// SELLS or NONE, a trait-only yard is UNREAD or NONE. So every survivor of the
+// first half is evidence and every survivor of the second is a guess, and filtering
+// IN PLACE preserves both the ranking and the cheapest-first order inside it. A
+// partition here would re-sort nothing.
+//
+// Ranking a guess last must never mean dropping it — an unpriced yard is how the
+// fleet learns where probes are sold at all.
+func (p *WaypointCatalogPort) probeStockCandidates(ctx context.Context, universe []string) ([]string, error) {
 	now := time.Now()
 	out := make([]string, 0, len(universe))
 	for _, yard := range universe {
@@ -653,318 +651,6 @@ func hasTrait(waypoint *shared.Waypoint, trait string) bool {
 		}
 	}
 	return false
-}
-
-// MarketGoodsPort reads the local market cache: what a market deals in, how deep
-// it is, and what it is currently quoting.
-//
-// All three reads hit market_data and none of them touches the API. The cache is
-// exactly what a parked probe's scans populate, so these reads are how the model
-// closes its own loop.
-type MarketGoodsPort struct{ db *gorm.DB }
-
-// NewMarketGoodsPort wires the market cache reads.
-func NewMarketGoodsPort(db *gorm.DB) *MarketGoodsPort {
-	return &MarketGoodsPort{db: db}
-}
-
-// marketRow is one persisted (waypoint, good) quote.
-type marketRow struct {
-	GoodSymbol    string
-	PurchasePrice int
-	SellPrice     int
-	TradeVolume   int
-}
-
-// rowsAt reads one waypoint's cached quotes.
-func (p *MarketGoodsPort) rowsAt(ctx context.Context, playerID int, waypoint string) ([]marketRow, error) {
-	var rows []marketRow
-	err := p.db.WithContext(ctx).
-		Table("market_data").
-		Select("good_symbol, purchase_price, sell_price, trade_volume").
-		Where("player_id = ? AND waypoint_symbol = ?", playerID, waypoint).
-		Order("good_symbol ASC").
-		Scan(&rows).Error
-	if err != nil {
-		return nil, fmt.Errorf("failed to read the market cache at %q: %w", waypoint, err)
-	}
-	return rows, nil
-}
-
-// GoodsAt returns the goods a market is known to deal in, and whether we know
-// anything about it at all.
-//
-// The bool is the whole point: a market known to trade nothing returns
-// (empty, true), which is an ANSWER, while a market never scanned returns
-// (nil, false), which is a gap the screen fills remotely. Collapsing the two
-// would either spend an API call on every barren market forever, or record a
-// never-visited one as barren.
-func (p *MarketGoodsPort) GoodsAt(ctx context.Context, playerID int, waypoint string) ([]string, bool, error) {
-	rows, err := p.rowsAt(ctx, playerID, waypoint)
-	if err != nil {
-		return nil, false, err
-	}
-	if len(rows) == 0 {
-		return nil, false, nil
-	}
-	goods := make([]string, 0, len(rows))
-	for _, row := range rows {
-		goods = append(goods, row.GoodSymbol)
-	}
-	return goods, true, nil
-}
-
-// DepthRowsAt returns the priced rows behind a market's goods, with the
-// side-neutral integer mid-price — matching MarketDepthRows, the codebase's one
-// depth convention, so a market sized here and a market sized by the census can
-// never disagree.
-func (p *MarketGoodsPort) DepthRowsAt(ctx context.Context, playerID int, waypoint string) ([]scouting.MarketDepthRow, error) {
-	rows, err := p.rowsAt(ctx, playerID, waypoint)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]scouting.MarketDepthRow, 0, len(rows))
-	for _, row := range rows {
-		out = append(out, scouting.MarketDepthRow{
-			System:      shared.ExtractSystemSymbol(waypoint),
-			Waypoint:    waypoint,
-			Good:        row.GoodSymbol,
-			TradeVolume: row.TradeVolume,
-			MidPrice:    (row.PurchasePrice + row.SellPrice) / 2,
-		})
-	}
-	return out, nil
-}
-
-// MarketPrices returns the two-sided quotes a scan just persisted, for the
-// spread weighting.
-//
-// The column names and the field names come from opposite sides of the trade, so
-// the mapping is a RENAME rather than a pass-through:
-//
-//	Bid ← market_data.sell_price      (what the market PAYS us — its bid)
-//	Ask ← market_data.purchase_price  (what the market CHARGES us — its ask)
-//
-// The persisted columns are named from OUR side of the trade; GoodPrice is named
-// from the MARKET's. Wiring them by name inverts every quote, and the failure is
-// SILENT rather than loud: RelativeSpread's guard skips each inverted good, every
-// market observes a spread of zero, the fleet median collapses to its cold-start
-// fallback, and every slot lands on the same prior weight. The rotation keeps
-// running and reports no error — it just stops preferring the markets worth
-// watching.
-//
-// This mapping is CORRECT and was correct all along. It is also what DETECTED
-// sp-en5h7: the scanner had been persisting the two prices transposed since the
-// project's first era, so this port computed ask<bid at nearly every market and
-// RelativeSpread skipped the goods. An earlier version of this comment claimed
-// the resulting warning was "a symptom" and that this mapping was "the fix" —
-// that sent the next reader to the wrong file. The warning was the true signal
-// and the bug was in the WRITER (application/ship/market_scanner.go). Do not
-// re-explain a warning from here; check what the scanner persisted.
-func (p *MarketGoodsPort) MarketPrices(ctx context.Context, playerID int, waypoint string) ([]appSensing.GoodPrice, error) {
-	rows, err := p.rowsAt(ctx, playerID, waypoint)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]appSensing.GoodPrice, 0, len(rows))
-	for _, row := range rows {
-		out = append(out, appSensing.GoodPrice{
-			Good: row.GoodSymbol,
-			Bid:  row.SellPrice,     // renamed, not swapped — see the doc above
-			Ask:  row.PurchasePrice, // renamed, not swapped — see the doc above
-		})
-	}
-	return out, nil
-}
-
-// marketFetchAPI is the one API verb the remote gap fill needs.
-// *api.SpaceTradersClient satisfies it.
-type marketFetchAPI interface {
-	GetMarket(ctx context.Context, systemSymbol, waypointSymbol, token string) (*domainPorts.MarketData, error)
-}
-
-// scanDebiter charges a market read to the fleet's one market-scan budget.
-//
-// It has no "may I" counterpart on purpose — see FetchGoods for why this read is
-// metered but never deniable. *ship.ScanBudget satisfies it.
-type scanDebiter interface {
-	Debit(playerID int, waypoint string)
-}
-
-// RemoteMarketPort fills a market-cache gap from the API — the screen's only
-// genuine spend, and the reason a charted-but-never-visited market can be judged
-// without sending a hull to it.
-type RemoteMarketPort struct {
-	client marketFetchAPI
-	tokens playerTokenReader
-	budget scanDebiter
-}
-
-// NewRemoteMarketPort wires the remote gap fill.
-func NewRemoteMarketPort(client marketFetchAPI, tokens playerTokenReader) *RemoteMarketPort {
-	return &RemoteMarketPort{client: client, tokens: tokens}
-}
-
-// SetScanBudget wires the fleet market-scan budget this port charges its reads to
-// (sp-ntgfj). Nil leaves the read unmetered, which is a test-only shape: the
-// composition root always wires it.
-func (p *RemoteMarketPort) SetScanBudget(b scanDebiter) {
-	if b == nil {
-		return
-	}
-	p.budget = b
-}
-
-// FetchGoods returns what a market DEALS IN, read remotely.
-//
-// It reads the goods CATALOGUE, not the priced rows. A market GET made with no
-// ship at the waypoint returns the imports/exports/exchange symbol arrays but an
-// EMPTY tradeGoods list, so a caller reading prices would see every unvisited
-// market as trading nothing — and the screen would record that as a durable
-// rejection. The catalogue survives a presence-less GET, which is exactly the
-// call being made here.
-func (p *RemoteMarketPort) FetchGoods(ctx context.Context, playerID int, system, waypoint string) ([]string, error) {
-	token, err := playerToken(ctx, p.tokens, playerID)
-	if err != nil {
-		return nil, err
-	}
-	// Charged to the fleet market-scan budget, but never gated by it.
-	// There is no store to serve this from — filling the gap is the point — and a
-	// declined catalogue read makes the screen record a durable rejection of a
-	// market it never managed to look at, which costs more than the request saves.
-	// The spend is bounded by the rate of CHARTING rather than by the size of the
-	// map, so admitting it does not put the fixed-budget invariant at risk; metering
-	// it keeps the budget the honest total, since the allowance it consumes is
-	// allowance discretionary scanning then cannot.
-	if p.budget != nil {
-		p.budget.Debit(playerID, waypoint)
-	}
-
-	market, err := p.client.GetMarket(sensingCtx(ctx), system, waypoint, token)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch the market at %q: %w", waypoint, err)
-	}
-	if market == nil {
-		return nil, fmt.Errorf("the market at %q returned no data", waypoint)
-	}
-	return market.TradedGoodSymbols, nil
-}
-
-// gateEdgeReader is the stored jump-gate adjacency, narrowed to the one
-// per-system read. *persistence.GormGateEdgeRepository satisfies it.
-type gateEdgeReader interface {
-	Edges(ctx context.Context, systemSymbol string) ([]domainSystem.GateEdge, bool, error)
-	// AllEdges returns every era-scoped system's edges at once, keyed by system, with a
-	// condemned or unread system simply ABSENT — presence is the `ok` Edges returns.
-	AllEdges(ctx context.Context) (map[string][]domainSystem.GateEdge, error)
-}
-
-// GateNeighbourPort reads which systems are one jump from a given one.
-//
-// PER-SYSTEM, never the whole-map Adjacency read. Expansion asks this of every
-// judged system on every tick, so a whole-map query would make one tick's
-// topology cost scale with everything the fleet has ever charted — and it would
-// grow fastest exactly as the frontier succeeds.
-//
-// A PURE STORE read by contract: a system missing from the store, or whose edge
-// set is stale, is simply not expanded through. Wiring a fetch-through resolver
-// here would spend the API budget on topology precisely where topology is least
-// cached.
-type GateNeighbourPort struct{ edges gateEdgeReader }
-
-// NewGateNeighbourPort wires the stored gate adjacency.
-func NewGateNeighbourPort(edges gateEdgeReader) *GateNeighbourPort {
-	return &GateNeighbourPort{edges: edges}
-}
-
-// Neighbours returns the system's stored gate neighbours.
-//
-// A miss returns no neighbours and no error: expansion propagating through an
-// unknown system is speculative work, and refusing to guess is the same rule the
-// stored-distance walk follows. A genuinely old set never arrives here at all — the
-// store condemns it and reports a miss.
-//
-// Every unusable edge is EXCLUDED FROM THE ANSWER, never allowed to erase the answer.
-// An under-construction edge is impassable (a jump into an unbuilt gate fails at hop
-// time) and a stale edge's build state is past verification, so both are skipped — but
-// only that edge, not its siblings.
-//
-// Dropping the set WHOLE on any stale row is what walled off the map. Its reasoning was
-// that a system's edges are written in one replace under a single timestamp, so one stale
-// row condemns all — true of age, false of the SHORTER window an under-construction row is
-// chased on. That row is stale on a 2h schedule while its built siblings stay perfectly
-// current, so every system holding one still-building exit reported ZERO neighbours every
-// 2h, became a WALL in every BFS, and made routing refuse provably-existing routes: 173 of
-// 1,168 live systems, freezing 266 probes that were bought, assigned and never dispatched.
-// PassableGraph returns the whole topology in one read, applying EXACTLY the filter Neighbours
-// applies per system — an under-construction or per-row-stale edge is not passable — and taking
-// the map's key set as the mapped set, which is exactly the `ok` Neighbours discards.
-//
-// Sharing the two rules with the per-system path rather than restating them is the point: a
-// second copy of "passable" would drift the first time one of them learned a new exclusion, and
-// the copy that got missed would be the one deciding where hulls can be sent.
-func (p *GateNeighbourPort) PassableGraph(ctx context.Context) (appSensing.GateGraph, error) {
-	all, err := p.edges.AllEdges(ctx)
-	if err != nil {
-		return appSensing.GateGraph{}, fmt.Errorf("failed to read the gate graph: %w", err)
-	}
-	graph := appSensing.GateGraph{
-		Passable: make(map[string][]string, len(all)),
-		Mapped:   make(map[string]bool, len(all)),
-	}
-	for symbol, edges := range all {
-		// Present in AllEdges means the system's adjacency HAS been read and is not condemned,
-		// which is the whole of "mapped" — including a system whose every exit is impassable.
-		graph.Mapped[symbol] = true
-		out := make([]string, 0, len(edges))
-		for _, edge := range edges {
-			if edge.ConnectedSystem == "" || edge.UnderConstruction || edge.Stale {
-				continue
-			}
-			out = append(out, edge.ConnectedSystem)
-		}
-		sort.Strings(out)
-		graph.Passable[symbol] = out
-	}
-	return graph, nil
-}
-
-func (p *GateNeighbourPort) Neighbours(ctx context.Context, system string) ([]string, error) {
-	edges, ok, err := p.edges.Edges(ctx, system)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read the gate neighbours of %q: %w", system, err)
-	}
-	if !ok {
-		return nil, nil
-	}
-	out := make([]string, 0, len(edges))
-	for _, edge := range edges {
-		if edge.ConnectedSystem == "" || edge.UnderConstruction || edge.Stale {
-			continue
-		}
-		out = append(out, edge.ConnectedSystem)
-	}
-	sort.Strings(out)
-	return out, nil
-}
-
-// Mapped reports whether we hold ANY stored gate adjacency for this system.
-//
-// IT READS THE `ok` THE EDGE STORE ALREADY RETURNS and Neighbours discards — the same round trip,
-// answering the different question. Neighbours filters under-construction and stale edges out of its
-// ANSWER while the rows remain, so "Neighbours returned nothing" cannot distinguish a system whose
-// exits are all under construction (fully mapped: we know where it connects and simply cannot pass)
-// from one we have never read at all. Only the second can add systems to the ledger when charted.
-//
-// A read failure PROPAGATES rather than defaulting. Read as mapped it would demote genuine frontier
-// territory to the back of the seed queue and the fleet would quietly stop growing; read as unmapped
-// it would promote every ordinary target at once.
-func (p *GateNeighbourPort) Mapped(ctx context.Context, system string) (bool, error) {
-	_, ok, err := p.edges.Edges(ctx, system)
-	if err != nil {
-		return false, fmt.Errorf("failed to read whether the gate of %q has been mapped: %w", system, err)
-	}
-	return ok, nil
 }
 
 // HomeSystemPort resolves the player's headquarters system from the players

@@ -14,12 +14,9 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
-	adaptertelemetry "github.com/andrescamacho/spacetraders-go/internal/adapters/telemetry"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	telemetry "github.com/andrescamacho/spacetraders-go/internal/domain/telemetry"
-	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
-	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
 type EngineReport struct {
@@ -98,7 +95,7 @@ func computeEngineReport(events []*captain.Event, playerID, days int, now time.T
 	return report
 }
 
-func latencyPercentiles(latencies []float64) (p50, max float64) {
+func latencyPercentiles(latencies []float64) (p50, maxLatency float64) {
 	if len(latencies) == 0 {
 		return 0, 0
 	}
@@ -138,49 +135,33 @@ func (s *gormReportEventSource) FindSince(ctx context.Context, playerID int, sin
 }
 
 func newReportEventSource() (reportEventSource, error) {
-	cfg, err := config.LoadConfig("")
+	db, err := openDatabase()
 	if err != nil {
-		return nil, fmt.Errorf("failed to load config: %w", err)
-	}
-	db, err := database.NewConnection(&cfg.Database)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to database: %w", err)
+		return nil, err
 	}
 	return &gormReportEventSource{db: db}, nil
 }
 
-// newReportTokenCollector builds the live token collector and captain alias for
-// the report's best-effort token block, plus the sp-1vkr quota inputs
-// (weekly_token_budget/quota_alert_threshold_pct). On any config failure it
-// returns a nil collector so the events report still renders — token
-// telemetry (and the quota block riding on it) is additive.
-func newReportTokenCollector() (tokenCollector, string, int64, int) {
-	cfg, err := config.LoadConfig("")
+// reportTokenTelemetry degrades a config failure to an unwired collector: the
+// events report and the quota block riding on it are additive, never required.
+func reportTokenTelemetry() tokenTelemetry {
+	tt, err := newTokenTelemetry()
 	if err != nil {
-		return nil, "captain", 0, 0
+		return tokenTelemetry{captainAlias: "captain"}
 	}
-	collector := adaptertelemetry.NewLiveCollector(
-		gcBinOrDefault(cfg.Captain.GCBin),
-		cfg.Captain.CityDir,
-		os.Getenv("CLAUDE_PROJECTS_ROOT"),
-	)
-	return collector, captainAliasOrDefault(cfg.Captain.CaptainAgent),
-		weeklyTokenBudgetOrDefault(cfg.Captain.WeeklyTokenBudget),
-		quotaAlertThresholdPctOrDefault(cfg.Captain.QuotaAlertThresholdPct)
+	return tt
 }
 
-func runEngineReport(ctx context.Context, source reportEventSource, tc tokenCollector, captainAlias string, playerID, days int, now time.Time, budgetTokens int64, alertThresholdPct int, jsonOut bool, w io.Writer) error {
+func runEngineReport(ctx context.Context, source reportEventSource, tt tokenTelemetry, playerID, days int, now time.Time, jsonOut bool, w io.Writer) error {
 	since := now.AddDate(0, 0, -days)
 	events, err := source.FindSince(ctx, playerID, since)
 	if err != nil {
 		return fmt.Errorf("failed to load captain events: %w", err)
 	}
 	report := computeEngineReport(events, playerID, days, now)
-	// Token telemetry is additive and best-effort: attach it when a collector
-	// is wired and succeeds, but never let its absence or failure (missing `gc`,
-	// no transcripts) fail the events report the captain relies on. The quota
-	// block (sp-1vkr) rides along inside it for the same reason.
-	report.TokenUsage = collectTokenSummary(ctx, tc, captainAlias, days, since, budgetTokens, alertThresholdPct)
+	// Best-effort: a missing `gc` or an empty transcript set must never fail the
+	// events report the captain relies on.
+	report.TokenUsage = tt.summarize(ctx, days, since)
 
 	if jsonOut {
 		encoder := json.NewEncoder(w)
@@ -192,33 +173,31 @@ func runEngineReport(ctx context.Context, source reportEventSource, tc tokenColl
 
 // runEngineReportResolved resolves the effective player — --player-id,
 // --agent, or the persisted default, via the shared resolver — before
-// delegating to runEngineReport. Replaces a hard "--player-id is required"
-// error with the same fallback chain "captain events list" now honors
-// (sp-yr3f).
-func runEngineReportResolved(ctx context.Context, playerRepo player.PlayerRepository, source reportEventSource, tc tokenCollector, captainAlias string, days int, now time.Time, budgetTokens int64, alertThresholdPct int, jsonOut bool, w io.Writer) error {
+// delegating to runEngineReport.
+func runEngineReportResolved(ctx context.Context, playerRepo player.PlayerRepository, source reportEventSource, tt tokenTelemetry, days int, now time.Time, jsonOut bool, w io.Writer) error {
 	resolved, err := resolveDefaultPlayer(ctx, playerRepo)
 	if err != nil {
 		return err
 	}
-	return runEngineReport(ctx, source, tc, captainAlias, resolved.ID.Value(), days, now, budgetTokens, alertThresholdPct, jsonOut, w)
+	return runEngineReport(ctx, source, tt, resolved.ID.Value(), days, now, jsonOut, w)
 }
 
-// collectTokenSummary returns the compact token block, or nil when no collector
-// is wired or collection fails. Errors are swallowed by design (see caller).
-func collectTokenSummary(ctx context.Context, tc tokenCollector, captainAlias string, days int, since time.Time, budgetTokens int64, alertThresholdPct int) *TokenSummary {
-	if tc == nil {
+// summarize returns the compact token block, or nil when no collector is wired
+// or collection fails. Errors are swallowed by design (see caller).
+func (t tokenTelemetry) summarize(ctx context.Context, days int, since time.Time) *TokenSummary {
+	if t.collector == nil {
 		return nil
 	}
-	sessions, err := tc.Collect(ctx, since)
+	sessions, err := t.collector.Collect(ctx, since)
 	if err != nil {
 		return nil
 	}
-	rep := telemetry.ComputeReport(sessions, captainAlias, days)
+	rep := telemetry.ComputeReport(sessions, t.captainAlias, days)
 	return &TokenSummary{
 		TotalTokens:   rep.TotalTokens,
 		TokensPerDay:  rep.TokensPerDay,
 		TokensPerWake: rep.TokensPerWake,
-		Quota:         computeQuotaSummary(rep.TotalTokens, budgetTokens, alertThresholdPct),
+		Quota:         computeQuotaSummary(rep.TotalTokens, t.budgetTokens, t.alertThresholdPct),
 	}
 }
 
@@ -289,8 +268,7 @@ Examples:
 			if err != nil {
 				return err
 			}
-			tc, captainAlias, budgetTokens, alertThresholdPct := newReportTokenCollector()
-			return runEngineReportResolved(context.Background(), playerRepo, source, tc, captainAlias, days, time.Now(), budgetTokens, alertThresholdPct, jsonOut, os.Stdout)
+			return runEngineReportResolved(context.Background(), playerRepo, source, reportTokenTelemetry(), days, time.Now(), jsonOut, os.Stdout)
 		},
 	}
 

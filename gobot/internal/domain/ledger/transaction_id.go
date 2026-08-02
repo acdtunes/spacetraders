@@ -31,16 +31,6 @@ func NewTransactionIDFromString(id string) (TransactionID, error) {
 	return TransactionID{value: id}, nil
 }
 
-// MustNewTransactionIDFromString creates a TransactionID from a string, panicking if invalid
-// Use this only when you're certain the ID is valid (e.g., from database)
-func MustNewTransactionIDFromString(id string) TransactionID {
-	tid, err := NewTransactionIDFromString(id)
-	if err != nil {
-		panic(err)
-	}
-	return tid
-}
-
 // Value returns the string value of the TransactionID
 func (t TransactionID) Value() string {
 	return t.value

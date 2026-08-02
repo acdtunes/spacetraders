@@ -79,9 +79,7 @@ func (h *RunTourCoordinatorHandler) maybeRepositionPlacement(
 	response *RunTourCoordinatorResponse,
 	episode *repositionEpisode,
 	netBought map[string]int,
-	maxHops int,
-	maxSpend, reserve int64,
-	modelVersion string,
+	budget tourPlanBudget,
 ) (handled bool, repositioned bool, err error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -119,12 +117,12 @@ func (h *RunTourCoordinatorHandler) maybeRepositionPlacement(
 		if index >= foreignBudget {
 			break
 		}
-		evals = append(evals, h.evaluateForeignPlacement(ctx, ship, candidate, beta, maxHops, maxSpend, reserve, cmd, modelVersion))
+		evals = append(evals, h.evaluateForeignPlacement(ctx, ship, candidate, beta, cmd, budget))
 	}
 	// E_s: the current system as a clean-hold STAY option (Hops=0, D=0), commensurable with the
 	// candidates' clean-hold E_x. Reusing the just-failed 3-strike (laden) plan would bias E_s low
 	// and systematically over-trigger jumps, so it gets its own clean pre-flight.
-	evals = append(evals, h.evaluateStayPlacement(ctx, ship, currentSystem, currentWaypoint, beta, maxHops, maxSpend, reserve, cmd, modelVersion))
+	evals = append(evals, h.evaluateStayPlacement(ctx, ship, currentSystem, currentWaypoint, beta, cmd, budget))
 
 	// DIFF: argmax score(x)=E_x−β·D_x, park floor φ·β.
 	phi := float64(resolvePlacementParkFloorPct(cmd.PlacementParkFloorPct)) / 100
@@ -141,7 +139,7 @@ func (h *RunTourCoordinatorHandler) maybeRepositionPlacement(
 	}
 
 	// CONVERGE: the winner is a foreign ground worth the jump — reuse the existing machinery.
-	return h.convergePlacementJump(ctx, cmd, response, episode, netBought, currentSystem, decision.Winner, maxSpend, reserve)
+	return h.convergePlacementJump(ctx, cmd, response, episode, netBought, currentSystem, decision.Winner, budget.maxSpend, budget.reserve)
 }
 
 // senseBeta reads the fleet rolling-median realized tour $/hr over the trailing window via the
@@ -181,17 +179,15 @@ func (h *RunTourCoordinatorHandler) evaluateForeignPlacement(
 	ship *navigation.Ship,
 	candidate repositionCandidate,
 	beta float64,
-	maxHops int,
-	maxSpend, reserve int64,
 	cmd *RunTourCoordinatorCommand,
-	modelVersion string,
+	budget tourPlanBudget,
 ) placement.Evaluation {
 	hops := candidate.hops
 	if hops <= 0 {
 		hops = 1 // defensive: an unstamped candidate is charged one hop, never a free deadhead
 	}
-	deadheadHours := (float64(hops)*crossSystemHopSeconds + repositionReplanAllowanceSeconds) / 3600
-	return h.scorePlacementCandidate(ctx, ship, candidate, hops, deadheadHours, beta, maxHops, maxSpend, reserve, cmd, modelVersion)
+	deadheadHours := (float64(hops)*crossSystemHopSeconds + repositionReplanAllowanceSeconds) / secondsPerHour
+	return h.scorePlacementCandidate(ctx, ship, candidate, hops, deadheadHours, beta, cmd, budget)
 }
 
 // evaluateStayPlacement scores the current system as the STAY option (Hops=0, D=0 — the D_s=0
@@ -201,13 +197,11 @@ func (h *RunTourCoordinatorHandler) evaluateStayPlacement(
 	ship *navigation.Ship,
 	currentSystem, currentWaypoint string,
 	beta float64,
-	maxHops int,
-	maxSpend, reserve int64,
 	cmd *RunTourCoordinatorCommand,
-	modelVersion string,
+	budget tourPlanBudget,
 ) placement.Evaluation {
 	stay := repositionCandidate{system: currentSystem, waypoint: currentWaypoint, hops: 0}
-	return h.scorePlacementCandidate(ctx, ship, stay, 0, 0, beta, maxHops, maxSpend, reserve, cmd, modelVersion)
+	return h.scorePlacementCandidate(ctx, ship, stay, 0, 0, beta, cmd, budget)
 }
 
 // scorePlacementCandidate runs the E_x pre-flight (the spec's PlacementValue for v1 — peak $/hr via
@@ -220,13 +214,11 @@ func (h *RunTourCoordinatorHandler) scorePlacementCandidate(
 	candidate repositionCandidate,
 	hops int,
 	deadheadHours, beta float64,
-	maxHops int,
-	maxSpend, reserve int64,
 	cmd *RunTourCoordinatorCommand,
-	modelVersion string,
+	budget tourPlanBudget,
 ) placement.Evaluation {
 	evaluation := placement.Evaluation{System: candidate.system, Waypoint: candidate.waypoint, Hops: hops, DeadheadHours: deadheadHours}
-	plan, perr := h.planAtCandidate(ctx, ship, candidate, maxHops, maxSpend, reserve, cmd, modelVersion)
+	plan, perr := h.planAtCandidate(ctx, ship, candidate, cmd, budget)
 	if perr == nil && plan != nil && plan.Feasible {
 		evaluation.EX = plan.ProjectedCreditsPerHour
 		evaluation.Feasible = true

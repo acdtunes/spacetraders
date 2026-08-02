@@ -418,7 +418,7 @@ func (s *Scanner) nextAction(now time.Time) (string, time.Duration, bool) {
 
 	var held []domainSensing.SlotSchedule
 	var earliest time.Time
-	for i := 0; i < n; i++ {
+	for range n {
 		sched := heap.Pop(s.due).(domainSensing.SlotSchedule)
 		view, ok := s.members[sched.Waypoint]
 		if !ok {

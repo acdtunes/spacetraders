@@ -136,26 +136,32 @@ type moduleOutcome struct {
 // create the FK-parent container → atomically claim the hull → reload the
 // claim-aware ship → pre-check → gate the fee on the working-capital floor →
 // dock → modify via API → persist the new capacity → release the claim.
+// moduleOp names one module modification: the verb used in logs and operation
+// records, the hull, the module, and the player it runs under.
+type moduleOp struct {
+	verb         string
+	shipSymbol   string
+	moduleSymbol string
+	playerID     shared.PlayerID
+}
+
 func (h *OutfittingHandler) modifyModule(
 	ctx context.Context,
-	verb string,
-	shipSymbol string,
-	moduleSymbol string,
-	playerID shared.PlayerID,
+	op moduleOp,
 	preCheck func(ship *navigation.Ship) error,
 	apiCall func(ctx context.Context, token string) (*ports.ModuleModificationResult, error),
 ) (*moduleOutcome, error) {
 	logger := common.LoggerFromContext(ctx)
 
-	player, err := h.playerRepo.FindByID(ctx, playerID)
+	player, err := h.playerRepo.FindByID(ctx, op.playerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get player: %w", err)
 	}
 
 	// Existence guarantee: FindBySymbol SyncFromAPI-falls-back when the row is
 	// missing, so the ships row exists before ClaimShip locks it.
-	if _, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, playerID); err != nil {
-		return nil, fmt.Errorf("failed to get ship %s: %w", shipSymbol, err)
+	if _, err := h.shipRepo.FindBySymbol(ctx, op.shipSymbol, op.playerID); err != nil {
+		return nil, fmt.Errorf("failed to get ship %s: %w", op.shipSymbol, err)
 	}
 
 	// 1. Persist the FK-parent container row FIRST (the claim writes
@@ -163,39 +169,26 @@ func (h *OutfittingHandler) modifyModule(
 	//    take the atomic, operation-checked claim (RULING #3/#7). A unique id
 	//    avoids colliding with a concurrent outfit of the same hull — that race
 	//    is arbitrated by ClaimShip, which refuses the second claimant.
-	containerID := fmt.Sprintf("ship-outfit-%s-%d", shipSymbol, h.clock.Now().UnixNano())
-	containerEntity := domainContainer.NewContainer(
-		containerID,
-		domainContainer.ContainerTypeOutfitting,
-		playerID.Value(),
-		1,
-		nil,
-		map[string]interface{}{
-			"ship_symbol": shipSymbol,
-			"module":      moduleSymbol,
-			"action":      verb,
-		},
-		h.clock,
-	)
+	containerID, containerEntity := h.newOutfittingContainer(op)
 	if err := h.containerRepo.Add(ctx, containerEntity, "outfit_ship"); err != nil {
 		return nil, fmt.Errorf("failed to create outfitting container record: %w", err)
 	}
-	defer h.removeContainer(containerID, playerID.Value())
+	defer h.removeContainer(containerID, op.playerID.Value())
 
-	if err := h.shipRepo.ClaimShip(ctx, shipSymbol, containerID, playerID, outfittingOperation); err != nil {
+	if err := h.shipRepo.ClaimShip(ctx, op.shipSymbol, containerID, op.playerID, outfittingOperation); err != nil {
 		// Honest refusal: hull dedicated to another fleet, claimed by another
 		// container, or reserved by the captain (RULING #7). Nothing was
 		// claimed; the container row is cleaned up by the defer above.
-		return nil, fmt.Errorf("cannot %s module on %s: %w", verb, shipSymbol, err)
+		return nil, fmt.Errorf("cannot %s module on %s: %w", op.verb, op.shipSymbol, err)
 	}
 	// The hull is claimed — guarantee release on every subsequent exit.
-	defer h.releaseClaim(shipSymbol, playerID, fmt.Sprintf("outfit_%s_done", verb))
+	defer h.releaseClaim(op.shipSymbol, op.playerID, fmt.Sprintf("outfit_%s_done", op.verb))
 
 	// 2. Reload the ship so the in-memory entity carries the claim (Dock's Save
 	//    must preserve it) and reflects the persisted cargo/modules.
-	ship, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
+	ship, err := h.shipRepo.FindBySymbol(ctx, op.shipSymbol, op.playerID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to reload ship %s after claim: %w", shipSymbol, err)
+		return nil, fmt.Errorf("failed to reload ship %s after claim: %w", op.shipSymbol, err)
 	}
 
 	// 3. Pre-check: honest error if the modification is not legal for the ship.
@@ -208,20 +201,20 @@ func (h *OutfittingHandler) modifyModule(
 	//    spend.
 	breached, credits, fee, reason := h.floorGuardBreached(ctx, ship, player.Token)
 	if breached {
-		logger.Log("WARNING", fmt.Sprintf("Parked %s of %s on %s — %s", verb, moduleSymbol, shipSymbol, reason), map[string]interface{}{
-			"ship":    shipSymbol,
-			"module":  moduleSymbol,
+		logger.Log("WARNING", fmt.Sprintf("Parked %s of %s on %s — %s", op.verb, op.moduleSymbol, op.shipSymbol, reason), map[string]interface{}{
+			"ship":    op.shipSymbol,
+			"module":  op.moduleSymbol,
 			"credits": credits,
 			"fee":     fee,
 			"reserve": defaultWorkingCapitalReserve,
 		})
-		return nil, fmt.Errorf("cannot %s module %s on %s: %s", verb, moduleSymbol, shipSymbol, reason)
+		return nil, fmt.Errorf("cannot %s module %s on %s: %s", op.verb, op.moduleSymbol, op.shipSymbol, reason)
 	}
 
 	// 5. Ensure the ship is docked (module modifications require a docked ship
 	//    at a shipyard). Dock is idempotent.
-	if err := h.shipRepo.Dock(ctx, ship, playerID); err != nil {
-		return nil, fmt.Errorf("failed to dock %s to %s module: %w", shipSymbol, verb, err)
+	if err := h.shipRepo.Dock(ctx, ship, op.playerID); err != nil {
+		return nil, fmt.Errorf("failed to dock %s to %s module: %w", op.shipSymbol, op.verb, err)
 	}
 
 	// 6. Perform the modification via the API.
@@ -233,29 +226,16 @@ func (h *OutfittingHandler) modifyModule(
 	// 7. Record the shipyard fee in the financial ledger BEFORE the
 	//    state persist: the credits are already gone server-side, and a persist
 	//    failure must not be the reason the spend goes unrecorded.
-	h.recordModificationFee(ctx, verb, shipSymbol, moduleSymbol, playerID, player.AgentSymbol, result)
+	h.recordModificationFee(ctx, op, player.AgentSymbol, result)
 
 	// 8. Persist the ship's updated state — the new cargo capacity is the whole
 	//    point (RULING #3: the daemon writes ship state). SyncShipFromAPI
 	//    re-fetches the full ship and preserves the claim columns.
-	capacity := result.CargoCapacity
-	synced, err := h.shipRepo.SyncShipFromAPI(ctx, shipSymbol, playerID)
-	if err != nil {
-		// The modification already succeeded server-side and cannot be rolled
-		// back; a persist failure is surfaced but the fresh capacity from the
-		// API response is still authoritative for the response. The daemon's
-		// next ship refresh reconciles the row.
-		logger.Log("WARNING", fmt.Sprintf("Completed %s of module %s on %s but failed to persist ship state: %v", verb, moduleSymbol, shipSymbol, err), map[string]interface{}{
-			"ship":   shipSymbol,
-			"module": moduleSymbol,
-		})
-	} else if synced != nil {
-		capacity = synced.CargoCapacity()
-	}
+	capacity := h.persistOutfittedShip(ctx, op, result.CargoCapacity)
 
-	logger.Log("INFO", fmt.Sprintf("Completed %s of module %s on %s: fee %d, cargo capacity now %d", verb, moduleSymbol, shipSymbol, result.Fee, capacity), map[string]interface{}{
-		"ship":           shipSymbol,
-		"module":         moduleSymbol,
+	logger.Log("INFO", fmt.Sprintf("Completed %s of module %s on %s: fee %d, cargo capacity now %d", op.verb, op.moduleSymbol, op.shipSymbol, result.Fee, capacity), map[string]interface{}{
+		"ship":           op.shipSymbol,
+		"module":         op.moduleSymbol,
 		"fee":            result.Fee,
 		"cargo_capacity": capacity,
 	})
@@ -265,6 +245,42 @@ func (h *OutfittingHandler) modifyModule(
 		Fee:           result.Fee,
 		Modules:       result.Modules,
 	}, nil
+}
+
+// newOutfittingContainer builds the FK-parent container row. The id carries a nonce
+// so a concurrent outfit of the same hull cannot collide on the primary key.
+func (h *OutfittingHandler) newOutfittingContainer(op moduleOp) (string, *domainContainer.Container) {
+	containerID := fmt.Sprintf("ship-outfit-%s-%d", op.shipSymbol, h.clock.Now().UnixNano())
+	return containerID, domainContainer.NewContainer(
+		containerID,
+		domainContainer.ContainerTypeOutfitting,
+		op.playerID.Value(),
+		1,
+		nil,
+		map[string]interface{}{
+			"ship_symbol": op.shipSymbol,
+			"module":      op.moduleSymbol,
+			"action":      op.verb,
+		},
+		h.clock,
+	)
+}
+
+// persistOutfittedShip re-fetches the hull for the new capacity. The modification
+// cannot be rolled back, so apiCapacity stays authoritative if the persist fails.
+func (h *OutfittingHandler) persistOutfittedShip(ctx context.Context, op moduleOp, apiCapacity int) int {
+	synced, err := h.shipRepo.SyncShipFromAPI(ctx, op.shipSymbol, op.playerID)
+	if err != nil {
+		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf("Completed %s of module %s on %s but failed to persist ship state: %v", op.verb, op.moduleSymbol, op.shipSymbol, err), map[string]interface{}{
+			"ship":   op.shipSymbol,
+			"module": op.moduleSymbol,
+		})
+		return apiCapacity
+	}
+	if synced != nil {
+		return synced.CargoCapacity()
+	}
+	return apiCapacity
 }
 
 // recordModificationFee writes the shipyard modification fee to the financial
@@ -281,8 +297,7 @@ func (h *OutfittingHandler) modifyModule(
 // already paid, so failing here would only discard a correct outcome.
 func (h *OutfittingHandler) recordModificationFee(
 	ctx context.Context,
-	verb, shipSymbol, moduleSymbol string,
-	playerID shared.PlayerID,
+	op moduleOp,
 	agentSymbol string,
 	result *ports.ModuleModificationResult,
 ) {
@@ -295,15 +310,15 @@ func (h *OutfittingHandler) recordModificationFee(
 
 	if h.mediator == nil {
 		logger.Log("ERROR", "Cannot record shipyard modification fee: no mediator wired", map[string]interface{}{
-			"ship":   shipSymbol,
-			"module": moduleSymbol,
+			"ship":   op.shipSymbol,
+			"module": op.moduleSymbol,
 			"fee":    result.Fee,
 		})
 		return
 	}
 
 	txType := ledger.TransactionTypeModuleInstall
-	if verb == "remove" {
+	if op.verb == "remove" {
 		txType = ledger.TransactionTypeModuleRemove
 	}
 
@@ -316,18 +331,18 @@ func (h *OutfittingHandler) recordModificationFee(
 	const balanceBefore = 0
 
 	recordCmd := &ledgerCommands.RecordTransactionCommand{
-		PlayerID:             playerID.Value(),
+		PlayerID:             op.playerID.Value(),
 		TransactionType:      string(txType),
 		Amount:               -result.Fee, // Negative: the fee is charged in BOTH directions, install and remove
 		BalanceBefore:        balanceBefore,
 		BalanceAfter:         balanceBefore - result.Fee,
 		AuthoritativeBalance: result.AgentCredits,
-		Description:          fmt.Sprintf("Shipyard fee to %s module %s on %s", verb, moduleSymbol, shipSymbol),
+		Description:          fmt.Sprintf("Shipyard fee to %s module %s on %s", op.verb, op.moduleSymbol, op.shipSymbol),
 		Metadata: map[string]interface{}{
 			"agent":       agentSymbol,
-			"ship_symbol": shipSymbol,
-			"module":      moduleSymbol,
-			"action":      verb,
+			"ship_symbol": op.shipSymbol,
+			"module":      op.moduleSymbol,
+			"action":      op.verb,
 		},
 	}
 
@@ -344,10 +359,10 @@ func (h *OutfittingHandler) recordModificationFee(
 	if _, err := h.mediator.Send(context.Background(), recordCmd); err != nil {
 		logger.Log("ERROR", "Failed to record shipyard modification fee in ledger", map[string]interface{}{
 			"error":     err.Error(),
-			"ship":      shipSymbol,
-			"module":    moduleSymbol,
+			"ship":      op.shipSymbol,
+			"module":    op.moduleSymbol,
 			"fee":       result.Fee,
-			"player_id": playerID.Value(),
+			"player_id": op.playerID.Value(),
 		})
 	}
 }

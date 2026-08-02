@@ -14,63 +14,65 @@ func (s *Ship) PersistedVersion() int { return s.persistedVersion }
 // and after a committed save.
 func (s *Ship) SetPersistedVersion(v int) { s.persistedVersion = v }
 
-func ReconstructShip(
-	shipSymbol string,
-	playerID shared.PlayerID,
-	currentLocation *shared.Waypoint,
-	fuel *shared.Fuel,
-	fuelCapacity int,
-	cargoCapacity int,
-	cargo *shared.Cargo,
-	engineSpeed int,
-	frameSymbol string,
-	role string,
-	modules []*ShipModule,
-	navStatus NavStatus,
-	flightMode string,
-	arrivalTime *time.Time,
-	cooldownExpiration *time.Time,
-	assignment *ShipAssignment,
-	dedicatedFleet string,
-	reactorSymbol string,
-	reactorName string,
-	reactorPowerOutput int,
-	reactorRequirements ShipRequirements,
-	moduleSlots int,
-	mountingPoints int,
-	mounts []*ShipMount,
-	crewCurrent int,
-	crewRequired int,
-	crewCapacity int,
-) (*Ship, error) {
+type ShipReconstruction struct {
+	ShipSymbol          string
+	PlayerID            shared.PlayerID
+	CurrentLocation     *shared.Waypoint
+	Fuel                *shared.Fuel
+	FuelCapacity        int
+	CargoCapacity       int
+	Cargo               *shared.Cargo
+	EngineSpeed         int
+	FrameSymbol         string
+	Role                string
+	Modules             []*ShipModule
+	NavStatus           NavStatus
+	FlightMode          string
+	ArrivalTime         *time.Time
+	CooldownExpiration  *time.Time
+	Assignment          *ShipAssignment
+	DedicatedFleet      string
+	ReactorSymbol       string
+	ReactorName         string
+	ReactorPowerOutput  int
+	ReactorRequirements ShipRequirements
+	ModuleSlots         int
+	MountingPoints      int
+	Mounts              []*ShipMount
+	CrewCurrent         int
+	CrewRequired        int
+	CrewCapacity        int
+}
+
+func ReconstructShip(d ShipReconstruction) (*Ship, error) {
 	s := &Ship{
-		shipSymbol:          shipSymbol,
-		playerID:            playerID,
-		currentLocation:     currentLocation,
-		fuel:                fuel,
-		fuelCapacity:        fuelCapacity,
-		cargoCapacity:       cargoCapacity,
-		cargo:               cargo,
-		engineSpeed:         engineSpeed,
-		frameSymbol:         frameSymbol,
-		role:                role,
-		modules:             modules,
-		navStatus:           navStatus,
-		flightMode:          flightMode,
-		arrivalTime:         arrivalTime,
-		cooldownExpiration:  cooldownExpiration,
-		assignment:          assignment,
-		dedicatedFleet:      dedicatedFleet,
-		reactorSymbol:       reactorSymbol,
-		reactorName:         reactorName,
-		reactorPowerOutput:  reactorPowerOutput,
-		reactorRequirements: reactorRequirements,
-		moduleSlots:         moduleSlots,
-		mountingPoints:      mountingPoints,
-		mounts:              mounts,
-		crewCurrent:         crewCurrent,
-		crewRequired:        crewRequired,
-		crewCapacity:        crewCapacity,
+		shipSymbol:          d.ShipSymbol,
+		playerID:            d.PlayerID,
+		currentLocation:     d.CurrentLocation,
+		fuel:                d.Fuel,
+		fuelCapacity:        d.FuelCapacity,
+		cargoCapacity:       d.CargoCapacity,
+		cargo:               d.Cargo,
+		engineSpeed:         d.EngineSpeed,
+		frameSymbol:         d.FrameSymbol,
+		role:                d.Role,
+		modules:             d.Modules,
+		navStatus:           d.NavStatus,
+		flightMode:          d.FlightMode,
+		arrivalTime:         d.ArrivalTime,
+		cooldownExpiration:  d.CooldownExpiration,
+		assignment:          d.Assignment,
+		dedicatedFleet:      d.DedicatedFleet,
+		reactorSymbol:       d.ReactorSymbol,
+		reactorName:         d.ReactorName,
+		reactorPowerOutput:  d.ReactorPowerOutput,
+		reactorRequirements: d.ReactorRequirements,
+		moduleSlots:         d.ModuleSlots,
+		mountingPoints:      d.MountingPoints,
+		mounts:              d.Mounts,
+		crewCurrent:         d.CrewCurrent,
+		crewRequired:        d.CrewRequired,
+		crewCapacity:        d.CrewCapacity,
 		fuelService:         NewShipFuelService(),
 	}
 

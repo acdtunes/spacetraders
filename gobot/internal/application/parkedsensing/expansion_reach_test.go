@@ -74,21 +74,19 @@ func TestAdvanceExpansion_TargetTwoGateHopsAwayIsStaged(t *testing.T) {
 	}
 }
 
-// A target THREE hops out is not staged at all: no want, no error, and the tick
-// carries on.
+// A target no gate edge reaches is not staged at all: no want, no error, and the
+// tick carries on.
 //
-// The bound is what keeps a dispatched seed from stranding. nextHopToward names
-// no next system beyond MaxWalkRings, so a seed stamped for a target out there
+// Routability is what keeps a dispatched seed from stranding. nextHopToward names
+// no next system for an unreachable target, so a seed stamped for one out there
 // would hold probe-cap headroom, re-issue a failing step every tick, and chart
 // nothing — strictly worse than never dispatching it.
 func TestAdvanceExpansion_TargetBeyondTheWalkIsNeverStaged(t *testing.T) {
-	// SUPERSEDED FIXTURE, KEPT AS A PROPERTY. This used a hard-coded three-hop chain, which was
-	// "beyond the walk" only while the bound was two; once seed staging moved to MaxSeedFlightHops
-	// the fixture stopped reproducing anything. The property it protects — a target the walk cannot
-	// route to is never staged — is now pinned bound-relatively by
-	// TestAdvanceExpansion_ATargetBeyondTheFlightBound, which builds its chain FROM the constant and
-	// therefore cannot rot the same way. What is left here is the other half of the original test,
-	// which never depended on the distance: an unroutable target is skipped QUIETLY.
+	// A distance-based fixture rots with the bound, so this one is unroutable instead. The
+	// bound-relative half of the property — a target past the flight bound is never staged — is
+	// pinned by TestAdvanceExpansion_ATargetBeyondTheFlightBound, which builds its chain FROM the
+	// constant. What this asserts is the half that never depended on distance: an unroutable
+	// target is skipped QUIETLY.
 	h := twoHopWorld()
 	h.ledger.systems = append(h.ledger.systems,
 		ExpandSystem{System: "X1-OUT", Verdict: VerdictPending, UnchartedCount: 9})
@@ -224,9 +222,7 @@ func TestAdvanceExpansion_SpareTwoHopsFromTheTargetIsClaimed(t *testing.T) {
 func TestAdvanceExpansion_SpareBeyondTheWalkIsNeitherClaimedNorCountedAsSupply(t *testing.T) {
 	h := twoHopWorld()
 	// X1-EDGE can reach NOTHING: it has no outbound gate edge, so X1-FAR is unroutable from it at
-	// any depth. It used to sit three hops away, which stopped meaning "out of reach" when seed
-	// staging moved to MaxSeedFlightHops — a distance-based fixture rots with the bound, an
-	// unroutable one does not.
+	// any depth. Unroutability is the durable fixture — a distance-based one rots with the bound.
 	h.ledger.systems = append(h.ledger.systems,
 		ExpandSystem{System: "X1-EDGE", Verdict: VerdictInScope})
 	h.gates.adjacency["X1-EDGE"] = []string{}

@@ -57,7 +57,7 @@ func (m laneImpactModel) price(c longHaulCandidate, marginalFloorCredits float64
 	trip := c.tripSeconds()
 	perHour := 0.0
 	if trip > 0 && q > 0 && net > 0 {
-		perHour = net / (trip / 3600)
+		perHour = net / (trip / secondsPerHour)
 	}
 	return pricedLongHaulLane{
 		longHaulCandidate:      c,

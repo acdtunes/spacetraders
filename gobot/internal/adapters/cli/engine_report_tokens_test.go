@@ -25,7 +25,7 @@ func TestRunEngineReportEmbedsTokenBlockBestEffort(t *testing.T) {
 	fc := &fakeTokenCollector{sessions: sampleTokenSessions()}
 	var buf bytes.Buffer
 
-	err := runEngineReport(context.Background(), src, fc, "captain", 1, 7, now, 0, 0, true, &buf)
+	err := runEngineReport(context.Background(), src, tokenTelemetry{collector: fc, captainAlias: "captain", budgetTokens: 0, alertThresholdPct: 0}, 1, 7, now, true, &buf)
 	require.NoError(t, err)
 
 	var decoded map[string]any
@@ -50,7 +50,7 @@ func TestRunEngineReportIncludesQuotaBlockWhenBudgetConfigured(t *testing.T) {
 	fc := &fakeTokenCollector{sessions: sampleTokenSessions()}
 	var buf bytes.Buffer
 
-	err := runEngineReport(context.Background(), src, fc, "captain", 1, 7, now, 100000, 80, true, &buf)
+	err := runEngineReport(context.Background(), src, tokenTelemetry{collector: fc, captainAlias: "captain", budgetTokens: 100000, alertThresholdPct: 80}, 1, 7, now, true, &buf)
 	require.NoError(t, err)
 
 	var decoded map[string]any
@@ -68,7 +68,7 @@ func TestRunEngineReportNilCollectorOmitsTokenBlock(t *testing.T) {
 	src := fakeReportSource{events: sampleReportEvents(now)}
 	var buf bytes.Buffer
 
-	err := runEngineReport(context.Background(), src, nil, "captain", 1, 7, now, 0, 0, true, &buf)
+	err := runEngineReport(context.Background(), src, tokenTelemetry{collector: nil, captainAlias: "captain", budgetTokens: 0, alertThresholdPct: 0}, 1, 7, now, true, &buf)
 	require.NoError(t, err)
 
 	var decoded map[string]any
@@ -82,7 +82,7 @@ func TestRunEngineReportTokenCollectorErrorDoesNotFailReport(t *testing.T) {
 	fc := &fakeTokenCollector{err: errors.New("gc unavailable")}
 	var buf bytes.Buffer
 
-	err := runEngineReport(context.Background(), src, fc, "captain", 1, 7, now, 0, 0, true, &buf)
+	err := runEngineReport(context.Background(), src, tokenTelemetry{collector: fc, captainAlias: "captain", budgetTokens: 0, alertThresholdPct: 0}, 1, 7, now, true, &buf)
 	require.NoError(t, err, "a token-collection failure must not fail the events report")
 
 	var decoded map[string]any

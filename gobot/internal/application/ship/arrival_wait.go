@@ -117,10 +117,16 @@ func WaitForShipArrival(
 		DefaultArrivalMarginFactor,
 		DefaultArrivalMinMargin,
 	)
-	return waitForShipArrivalCore(
-		ctx, shipRepo, subscriber, ship, playerID, waitTimeSeconds, logger,
-		DefaultArrivalGracePeriod, budget,
-	)
+	return arrivalWait{
+		shipRepo:        shipRepo,
+		subscriber:      subscriber,
+		ship:            ship,
+		playerID:        playerID,
+		waitTimeSeconds: waitTimeSeconds,
+		logger:          logger,
+		gracePeriod:     DefaultArrivalGracePeriod,
+		budget:          budget,
+	}.run(ctx)
 }
 
 // calculateArrivalWaitBudget returns the total time WaitForShipArrival keeps
@@ -143,7 +149,7 @@ func calculateArrivalWaitBudget(eta time.Duration, marginFactor float64, minMarg
 	return floor
 }
 
-// waitForShipArrivalCore is WaitForShipArrival's configurable core. Tests
+// arrivalWait is WaitForShipArrival's configurable core. Tests
 // inject a tiny gracePeriod and small budget to exercise the
 // timeout->resync->park backstop without slowing down the suite; production
 // always goes through WaitForShipArrival's fixed defaults above.
@@ -154,29 +160,30 @@ func calculateArrivalWaitBudget(eta time.Duration, marginFactor float64, minMarg
 // the async IN_TRANSIT->IN_ORBIT transition on a short leg, so a DB-only park
 // is a false positive. The happy path (ARRIVED event, or a DB poll that
 // already shows the hull left transit) makes ZERO API calls.
-func waitForShipArrivalCore(
-	ctx context.Context,
-	shipRepo domainNavigation.ShipQueryRepository,
-	subscriber domainNavigation.ShipEventSubscriber,
-	ship *domainNavigation.Ship,
-	playerID shared.PlayerID,
-	waitTimeSeconds int,
-	logger common.ContainerLogger,
-	gracePeriod time.Duration,
-	budget time.Duration,
-) error {
-	shipSymbol := ship.ShipSymbol()
+type arrivalWait struct {
+	shipRepo        domainNavigation.ShipQueryRepository
+	subscriber      domainNavigation.ShipEventSubscriber
+	ship            *domainNavigation.Ship
+	playerID        shared.PlayerID
+	waitTimeSeconds int
+	logger          common.ContainerLogger
+	gracePeriod     time.Duration
+	budget          time.Duration
+}
 
-	arrivedCh := subscriber.SubscribeArrived(shipSymbol)
-	defer subscriber.UnsubscribeArrived(shipSymbol, arrivedCh)
+func (w arrivalWait) run(ctx context.Context) error {
+	shipSymbol := w.ship.ShipSymbol()
 
-	deadline := time.Now().Add(budget)
+	arrivedCh := w.subscriber.SubscribeArrived(shipSymbol)
+	defer w.subscriber.UnsubscribeArrived(shipSymbol, arrivedCh)
 
-	logger.Log("INFO", "Waiting for ship arrival event", map[string]interface{}{
+	deadline := time.Now().Add(w.budget)
+
+	w.logger.Log("INFO", "Waiting for ship arrival event", map[string]interface{}{
 		"ship_symbol":      shipSymbol,
 		"action":           "wait_arrival_event",
-		"expected_seconds": waitTimeSeconds,
-		"budget_seconds":   budget.Seconds(),
+		"expected_seconds": w.waitTimeSeconds,
+		"budget_seconds":   w.budget.Seconds(),
 	})
 
 	// expectedArrival is the best current estimate of when the ship actually
@@ -196,8 +203,8 @@ func waitForShipArrivalCore(
 	//     (INFO); only a poll past the expected arrival means the event is
 	//     genuinely overdue and worth a WARNING, so the real lost-event signal
 	//     is never drowned in routine-poll noise.
-	expectedArrival := time.Now().Add(time.Duration(waitTimeSeconds) * time.Second)
-	nextTick := gracePeriod
+	expectedArrival := time.Now().Add(time.Duration(w.waitTimeSeconds) * time.Second)
+	nextTick := w.gracePeriod
 
 	attempt := 0
 	// pastETAObservations counts CONSECUTIVE past-ETA DB polls for Fix B's
@@ -211,13 +218,13 @@ func waitForShipArrivalCore(
 			// Ship arrived - update domain state to match. Domain state is
 			// already updated by ShipStateScheduler; just sync our local
 			// copy to reflect the new state (unchanged happy path).
-			logger.Log("INFO", "Ship arrival event received", map[string]interface{}{
+			w.logger.Log("INFO", "Ship arrival event received", map[string]interface{}{
 				"ship_symbol": shipSymbol,
 				"action":      "arrival_event_received",
 				"location":    event.Location,
 				"status":      string(event.Status),
 			})
-			return applyArrival(ship)
+			return applyArrival(w.ship)
 
 		case <-ctx.Done():
 			return ctx.Err()
@@ -230,26 +237,12 @@ func waitForShipArrivalCore(
 			// PublishArrived raced ahead of SubscribeArrived). Severity tracks
 			// whether the arrival is actually due (see expectedArrival above).
 			dueIn := time.Until(expectedArrival)
-			if dueIn > 0 {
-				logger.Log("INFO", "Arrival not due yet - safety resync while in transit", map[string]interface{}{
-					"ship_symbol":    shipSymbol,
-					"action":         "arrival_wait_resync",
-					"attempt":        attempt,
-					"due_in_seconds": int(dueIn.Seconds()),
-				})
-			} else {
-				logger.Log("WARNING", "Ship arrival event overdue - resyncing", map[string]interface{}{
-					"ship_symbol":     shipSymbol,
-					"action":          "arrival_wait_resync",
-					"attempt":         attempt,
-					"overdue_seconds": int((-dueIn).Seconds()),
-				})
-			}
-			fresh, err := shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
+			logArrivalResync(w.logger, shipSymbol, attempt, dueIn)
+			fresh, err := w.shipRepo.FindBySymbol(ctx, shipSymbol, w.playerID)
 			switch {
 			case err != nil:
 				pastETAObservations = 0 // Fix B: a failed poll breaks the past-ETA streak.
-				logger.Log("WARNING", "Arrival resync lookup failed, will retry", map[string]interface{}{
+				w.logger.Log("WARNING", "Arrival resync lookup failed, will retry", map[string]interface{}{
 					"ship_symbol": shipSymbol,
 					"attempt":     attempt,
 					"error":       err.Error(),
@@ -273,22 +266,22 @@ func waitForShipArrivalCore(
 				// snapshot falls through to keep polling until the cache catches up
 				// (then this same branch confirms at the destination, or the
 				// IN_TRANSIT branches take over) or the budget deadline parks it.
-				if dueIn <= 0 || arrivedAtDestination(fresh, ship) {
-					logger.Log("INFO", "Arrival resync confirmed ship left transit", map[string]interface{}{
+				if dueIn <= 0 || arrivedAtDestination(fresh, w.ship) {
+					w.logger.Log("INFO", "Arrival resync confirmed ship left transit", map[string]interface{}{
 						"ship_symbol": shipSymbol,
 						"action":      "arrival_wait_resync_confirmed",
 						"status":      string(fresh.NavStatus()),
 					})
-					return applyArrival(ship)
+					return applyArrival(w.ship)
 				}
-				logger.Log("WARNING", "Arrival resync not-in-transit before ETA but hull still at origin - stale pre-departure snapshot, continuing to wait", map[string]interface{}{
+				w.logger.Log("WARNING", "Arrival resync not-in-transit before ETA but hull still at origin - stale pre-departure snapshot, continuing to wait", map[string]interface{}{
 					"ship_symbol":    shipSymbol,
 					"action":         "arrival_wait_resync_stale_predeparture",
 					"attempt":        attempt,
 					"due_in_seconds": int(dueIn.Seconds()),
 					"fresh_status":   string(fresh.NavStatus()),
 					"fresh_location": shipLocationSymbol(fresh),
-					"destination":    shipLocationSymbol(ship),
+					"destination":    shipLocationSymbol(w.ship),
 				})
 
 			case arrivalIsPast(fresh, time.Now()):
@@ -309,7 +302,7 @@ func waitForShipArrivalCore(
 				// above — with ZERO API calls.
 				pastETAObservations++
 				if pastETAObservations < requiredPastETAObservationsBeforePark {
-					logger.Log("INFO", "Arrival past its own ETA but still IN_TRANSIT - re-reading the local row once before parking (short-leg stale-transition debounce)", map[string]interface{}{
+					w.logger.Log("INFO", "Arrival past its own ETA but still IN_TRANSIT - re-reading the local row once before parking (short-leg stale-transition debounce)", map[string]interface{}{
 						"ship_symbol":  shipSymbol,
 						"action":       "arrival_wait_past_eta_debounce",
 						"attempt":      attempt,
@@ -318,34 +311,7 @@ func waitForShipArrivalCore(
 					break // exit the switch → reschedule + re-poll; do NOT park, no API.
 				}
 
-				// Fix A (the definitive fix): before parking, re-confirm ONCE against
-				// the AUTHORITATIVE live API. The DB is the source of truth for ship
-				// state but LAGS the async arrival transition; the API reflects the
-				// hull's real status immediately. This is the ONLY API call in the
-				// entire wait, fires only on this rare park path (the branch always
-				// returns, so it can never be called per-poll), and on any API error
-				// falls back to today's DB-only park — never worse than status quo.
-				leftTransit, apiErr := liveAPIShowsLeftTransit(ctx, shipRepo, shipSymbol, playerID)
-				if apiErr != nil {
-					logger.Log("WARNING", "Arrival live-API re-confirm failed - falling back to DB-only park", map[string]interface{}{
-						"ship_symbol": shipSymbol,
-						"action":      "arrival_wait_live_reconfirm_error",
-						"attempt":     attempt,
-						"error":       apiErr.Error(),
-					})
-					return parkLostEvent(logger, shipSymbol, attempt)
-				}
-				if leftTransit {
-					logger.Log("INFO", "Arrival live-API re-confirm shows ship left transit - stale DB row, applying arrival instead of parking", map[string]interface{}{
-						"ship_symbol": shipSymbol,
-						"action":      "arrival_wait_live_reconfirm_arrived",
-						"attempt":     attempt,
-					})
-					return applyArrival(ship)
-				}
-				// The live API AGREES the ship is genuinely still IN_TRANSIT: a real
-				// lost event / stuck hull, not a stale-row race. Park as before.
-				return parkLostEvent(logger, shipSymbol, attempt)
+				return w.reconfirmBeforePark(ctx, shipSymbol, attempt)
 
 			default:
 				pastETAObservations = 0 // Fix B: a future-ETA poll breaks the past-ETA streak.
@@ -356,7 +322,7 @@ func waitForShipArrivalCore(
 				if arrival := fresh.ArrivalTime(); arrival != nil {
 					expectedArrival = *arrival
 				}
-				logger.Log("INFO", "Arrival resync still shows IN_TRANSIT with a future ETA, continuing to wait", map[string]interface{}{
+				w.logger.Log("INFO", "Arrival resync still shows IN_TRANSIT with a future ETA, continuing to wait", map[string]interface{}{
 					"ship_symbol": shipSymbol,
 					"action":      "arrival_wait_resync_still_future",
 					"attempt":     attempt,
@@ -364,34 +330,80 @@ func waitForShipArrivalCore(
 			}
 
 			if !time.Now().Before(deadline) {
-				logger.Log("ERROR", "Ship arrival wait budget exhausted, parking", map[string]interface{}{
+				w.logger.Log("ERROR", "Ship arrival wait budget exhausted, parking", map[string]interface{}{
 					"ship_symbol":    shipSymbol,
 					"action":         "arrival_wait_exhausted",
 					"attempts":       attempt,
-					"budget_seconds": budget.Seconds(),
+					"budget_seconds": w.budget.Seconds(),
 				})
 				return &ErrArrivalWaitExhausted{ShipSymbol: shipSymbol, Attempts: attempt}
 			}
 
-			// ETA-aligned schedule: while the arrival is still ahead, aim the next
-			// tick just past it — the event wins the select the moment it lands, so
-			// a long sleep never delays the happy path. Once at/past the ETA (or
-			// when it is unknown), poll at the gracePeriod cadence. Two caps: the
-			// re-check ceiling, so a distant ETA can never starve the wait of a look
-			// at an already-arrived hull; and the budget deadline, so a tick never
-			// sleeps far past it — the check above must get its turn.
-			nextTick = gracePeriod
-			if remaining := time.Until(expectedArrival) + gracePeriod; remaining > nextTick {
-				nextTick = remaining
-			}
-			if ceiling := maxArrivalRecheckGracePeriods * gracePeriod; nextTick > ceiling {
-				nextTick = ceiling
-			}
-			if untilDeadline := time.Until(deadline) + gracePeriod; nextTick > untilDeadline {
-				nextTick = untilDeadline
-			}
+			nextTick = nextArrivalTick(w.gracePeriod, expectedArrival, deadline)
 		}
 	}
+}
+
+// logArrivalResync logs a resync at the severity the schedule earns: only an overdue
+// poll is a WARNING, so the real lost-event signal is not drowned in routine noise.
+func logArrivalResync(logger common.ContainerLogger, shipSymbol string, attempt int, dueIn time.Duration) {
+	if dueIn > 0 {
+		logger.Log("INFO", "Arrival not due yet - safety resync while in transit", map[string]interface{}{
+			"ship_symbol":    shipSymbol,
+			"action":         "arrival_wait_resync",
+			"attempt":        attempt,
+			"due_in_seconds": int(dueIn.Seconds()),
+		})
+		return
+	}
+	logger.Log("WARNING", "Ship arrival event overdue - resyncing", map[string]interface{}{
+		"ship_symbol":     shipSymbol,
+		"action":          "arrival_wait_resync",
+		"attempt":         attempt,
+		"overdue_seconds": int((-dueIn).Seconds()),
+	})
+}
+
+// reconfirmBeforePark re-confirms a would-be park ONCE against the live API (the DB
+// LAGS the arrival transition). The only API call in the wait; errors fall back to park.
+func (w arrivalWait) reconfirmBeforePark(ctx context.Context, shipSymbol string, attempt int) error {
+	leftTransit, apiErr := liveAPIShowsLeftTransit(ctx, w.shipRepo, shipSymbol, w.playerID)
+	if apiErr != nil {
+		w.logger.Log("WARNING", "Arrival live-API re-confirm failed - falling back to DB-only park", map[string]interface{}{
+			"ship_symbol": shipSymbol,
+			"action":      "arrival_wait_live_reconfirm_error",
+			"attempt":     attempt,
+			"error":       apiErr.Error(),
+		})
+		return parkLostEvent(w.logger, shipSymbol, attempt)
+	}
+	if leftTransit {
+		w.logger.Log("INFO", "Arrival live-API re-confirm shows ship left transit - stale DB row, applying arrival instead of parking", map[string]interface{}{
+			"ship_symbol": shipSymbol,
+			"action":      "arrival_wait_live_reconfirm_arrived",
+			"attempt":     attempt,
+		})
+		return applyArrival(w.ship)
+	}
+	// The live API AGREES the hull is genuinely still IN_TRANSIT: a real lost
+	// event / stuck hull, not a stale-row race.
+	return parkLostEvent(w.logger, shipSymbol, attempt)
+}
+
+// nextArrivalTick aims the next poll just past the expected arrival, capped by the
+// re-check ceiling and the budget deadline so a tick never oversleeps either.
+func nextArrivalTick(gracePeriod time.Duration, expectedArrival, deadline time.Time) time.Duration {
+	tick := gracePeriod
+	if remaining := time.Until(expectedArrival) + gracePeriod; remaining > tick {
+		tick = remaining
+	}
+	if ceiling := maxArrivalRecheckGracePeriods * gracePeriod; tick > ceiling {
+		tick = ceiling
+	}
+	if untilDeadline := time.Until(deadline) + gracePeriod; tick > untilDeadline {
+		tick = untilDeadline
+	}
+	return tick
 }
 
 // parkLostEvent logs the genuine lost/stuck-event park and returns the typed

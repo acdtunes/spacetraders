@@ -1,6 +1,9 @@
 package api
 
 import (
+	"encoding/json"
+	"fmt"
+
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -13,6 +16,37 @@ type requirementsDTO struct {
 	Power int `json:"power"`
 	Crew  int `json:"crew"`
 	Slots int `json:"slots"`
+}
+
+// cargoDTO mirrors the SpaceTraders API's ShipCargo schema, returned by every
+// endpoint that reads or mutates a hold.
+type cargoDTO struct {
+	Capacity  int `json:"capacity"`
+	Units     int `json:"units"`
+	Inventory []struct {
+		Symbol      string `json:"symbol"`
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		Units       int    `json:"units"`
+	} `json:"inventory"`
+}
+
+func (c cargoDTO) toCargoData() *navigation.CargoData {
+	inventory := make([]shared.CargoItem, len(c.Inventory))
+	for i, item := range c.Inventory {
+		inventory[i] = shared.CargoItem{
+			Symbol:      item.Symbol,
+			Name:        item.Name,
+			Description: item.Description,
+			Units:       item.Units,
+		}
+	}
+
+	return &navigation.CargoData{
+		Capacity:  c.Capacity,
+		Units:     c.Units,
+		Inventory: inventory,
+	}
 }
 
 type shipDTO struct {
@@ -42,16 +76,7 @@ type shipDTO struct {
 		Current  int `json:"current"`
 		Capacity int `json:"capacity"`
 	} `json:"fuel"`
-	Cargo struct {
-		Capacity  int `json:"capacity"`
-		Units     int `json:"units"`
-		Inventory []struct {
-			Symbol      string `json:"symbol"`
-			Name        string `json:"name"`
-			Description string `json:"description"`
-			Units       int    `json:"units"`
-		} `json:"inventory"`
-	} `json:"cargo"`
+	Cargo    cargoDTO `json:"cargo"`
 	Cooldown *struct {
 		Expiration string `json:"expiration"`
 	} `json:"cooldown,omitempty"`
@@ -97,103 +122,111 @@ type shipDTO struct {
 	} `json:"mounts"`
 }
 
-func (d *shipDTO) toShipData() *navigation.ShipData {
-	inventory := make([]shared.CargoItem, len(d.Cargo.Inventory))
-	for i, item := range d.Cargo.Inventory {
-		inventory[i] = shared.CargoItem{
-			Symbol:      item.Symbol,
-			Name:        item.Name,
-			Description: item.Description,
-			Units:       item.Units,
-		}
+func (r requirementsDTO) toRequirementsData() navigation.RequirementsData {
+	return navigation.RequirementsData{
+		Power: r.Power,
+		Crew:  r.Crew,
+		Slots: r.Slots,
 	}
+}
 
-	cargo := &navigation.CargoData{
-		Capacity:  d.Cargo.Capacity,
-		Units:     d.Cargo.Units,
-		Inventory: inventory,
-	}
-
+func (d *shipDTO) toModuleData() []navigation.ModuleData {
 	modules := make([]navigation.ModuleData, len(d.Modules))
 	for i, module := range d.Modules {
 		modules[i] = navigation.ModuleData{
-			Symbol:   module.Symbol,
-			Capacity: module.Capacity,
-			Range:    module.Range,
-			Requirements: navigation.RequirementsData{
-				Power: module.Requirements.Power,
-				Crew:  module.Requirements.Crew,
-				Slots: module.Requirements.Slots,
-			},
+			Symbol:       module.Symbol,
+			Capacity:     module.Capacity,
+			Range:        module.Range,
+			Requirements: module.Requirements.toRequirementsData(),
 		}
 	}
+	return modules
+}
 
+func (d *shipDTO) toMountData() []navigation.MountData {
 	mounts := make([]navigation.MountData, len(d.Mounts))
 	for i, mount := range d.Mounts {
 		mounts[i] = navigation.MountData{
-			Symbol:   mount.Symbol,
-			Name:     mount.Name,
-			Strength: mount.Strength,
-			Deposits: mount.Deposits,
-			Requirements: navigation.RequirementsData{
-				Power: mount.Requirements.Power,
-				Crew:  mount.Requirements.Crew,
-				Slots: mount.Requirements.Slots,
-			},
+			Symbol:       mount.Symbol,
+			Name:         mount.Name,
+			Strength:     mount.Strength,
+			Deposits:     mount.Deposits,
+			Requirements: mount.Requirements.toRequirementsData(),
 		}
 	}
+	return mounts
+}
 
-	arrivalTime := ""
-	departureTime := ""
-	originSymbol := ""
-	originX := 0.0
-	originY := 0.0
+func (d *shipDTO) toShipData() *navigation.ShipData {
+	data := &navigation.ShipData{
+		Symbol:              d.Symbol,
+		Location:            d.Nav.WaypointSymbol,
+		NavStatus:           d.Nav.Status,
+		FlightMode:          d.Nav.FlightMode,
+		FuelCurrent:         d.Fuel.Current,
+		FuelCapacity:        d.Fuel.Capacity,
+		CargoCapacity:       d.Cargo.Capacity,
+		CargoUnits:          d.Cargo.Units,
+		EngineSpeed:         d.Engine.Speed,
+		FrameSymbol:         d.Frame.Symbol,
+		ModuleSlots:         d.Frame.ModuleSlots,
+		MountingPoints:      d.Frame.MountingPoints,
+		Role:                d.Registration.Role,
+		Modules:             d.toModuleData(),
+		Mounts:              d.toMountData(),
+		ReactorSymbol:       d.Reactor.Symbol,
+		ReactorName:         d.Reactor.Name,
+		ReactorPowerOutput:  d.Reactor.PowerOutput,
+		ReactorRequirements: d.Reactor.Requirements.toRequirementsData(),
+		CrewCurrent:         d.Crew.Current,
+		CrewRequired:        d.Crew.Required,
+		CrewCapacity:        d.Crew.Capacity,
+		Cargo:               d.Cargo.toCargoData(),
+	}
+
 	if d.Nav.Route != nil {
-		arrivalTime = d.Nav.Route.Arrival
-		departureTime = d.Nav.Route.DepartureTime
-		originSymbol = d.Nav.Route.Origin.Symbol
-		originX = d.Nav.Route.Origin.X
-		originY = d.Nav.Route.Origin.Y
+		data.ArrivalTime = d.Nav.Route.Arrival
+		data.DepartureTime = d.Nav.Route.DepartureTime
+		data.OriginSymbol = d.Nav.Route.Origin.Symbol
+		data.OriginX = d.Nav.Route.Origin.X
+		data.OriginY = d.Nav.Route.Origin.Y
 	}
 
-	cooldownExpiration := ""
 	if d.Cooldown != nil {
-		cooldownExpiration = d.Cooldown.Expiration
+		data.CooldownExpiration = d.Cooldown.Expiration
 	}
 
-	return &navigation.ShipData{
-		Symbol:             d.Symbol,
-		Location:           d.Nav.WaypointSymbol,
-		NavStatus:          d.Nav.Status,
-		FlightMode:         d.Nav.FlightMode,
-		ArrivalTime:        arrivalTime,
-		OriginSymbol:       originSymbol,
-		OriginX:            originX,
-		OriginY:            originY,
-		DepartureTime:      departureTime,
-		CooldownExpiration: cooldownExpiration,
-		FuelCurrent:        d.Fuel.Current,
-		FuelCapacity:       d.Fuel.Capacity,
-		CargoCapacity:      d.Cargo.Capacity,
-		CargoUnits:         d.Cargo.Units,
-		EngineSpeed:        d.Engine.Speed,
-		FrameSymbol:        d.Frame.Symbol,
-		ModuleSlots:        d.Frame.ModuleSlots,
-		MountingPoints:     d.Frame.MountingPoints,
-		Role:               d.Registration.Role,
-		Modules:            modules,
-		Mounts:             mounts,
-		ReactorSymbol:      d.Reactor.Symbol,
-		ReactorName:        d.Reactor.Name,
-		ReactorPowerOutput: d.Reactor.PowerOutput,
-		ReactorRequirements: navigation.RequirementsData{
-			Power: d.Reactor.Requirements.Power,
-			Crew:  d.Reactor.Requirements.Crew,
-			Slots: d.Reactor.Requirements.Slots,
-		},
-		CrewCurrent:  d.Crew.Current,
-		CrewRequired: d.Crew.Required,
-		CrewCapacity: d.Crew.Capacity,
-		Cargo:        cargo,
+	return data
+}
+
+// convertShipData converts ship data from API response map to ShipData struct
+func convertShipData(data map[string]interface{}) (*navigation.ShipData, error) {
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal ship data: %w", err)
 	}
+
+	var dto shipDTO
+	if err := json.Unmarshal(raw, &dto); err != nil {
+		return nil, fmt.Errorf("failed to parse ship data: %w", err)
+	}
+
+	if dto.Symbol == "" {
+		return nil, fmt.Errorf("missing or invalid ship symbol")
+	}
+
+	if _, ok := data["nav"].(map[string]interface{}); !ok {
+		return nil, fmt.Errorf("missing or invalid nav data")
+	}
+	if _, ok := data["fuel"].(map[string]interface{}); !ok {
+		return nil, fmt.Errorf("missing or invalid fuel data")
+	}
+	if _, ok := data["cargo"].(map[string]interface{}); !ok {
+		return nil, fmt.Errorf("missing or invalid cargo data")
+	}
+	if _, ok := data["engine"].(map[string]interface{}); !ok {
+		return nil, fmt.Errorf("missing or invalid engine data")
+	}
+
+	return dto.toShipData(), nil
 }

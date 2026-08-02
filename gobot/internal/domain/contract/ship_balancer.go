@@ -54,14 +54,8 @@ func NewShipBalancer() *ShipBalancer {
 //   - Distance as tiebreaker when assignments are equal (0.1× weight)
 //   - This is a single-ship decision (not batch processing)
 //
-// Parameters:
-//   - ship: The ship to reposition
-//   - markets: Available markets in the system
-//   - idleHaulers: Not used in current implementation (kept for interface compatibility)
-//
-// Returns:
-//   - BalancingResult with target market, score, and metrics
-//   - Error if no markets available or ship is nil
+// idleHaulers is not used in the current implementation; it is kept for
+// interface compatibility.
 func (b *ShipBalancer) SelectOptimalBalancingPosition(
 	ship *navigation.Ship,
 	markets []*shared.Waypoint,

@@ -1,7 +1,6 @@
 package container
 
 import (
-	"context"
 	"fmt"
 	"time"
 
@@ -105,108 +104,4 @@ func (sa *ShipAssignment) IsActive() bool {
 func (sa *ShipAssignment) String() string {
 	return fmt.Sprintf("ShipAssignment[ship=%s, container=%s, status=%s]",
 		sa.shipSymbol, sa.containerID, sa.status)
-}
-
-// ShipAssignmentManager manages ship assignments and enforces locking
-type ShipAssignmentManager struct {
-	assignments map[string]*ShipAssignment // key: shipSymbol
-	clock       shared.Clock
-}
-
-func NewShipAssignmentManager(clock shared.Clock) *ShipAssignmentManager {
-	if clock == nil {
-		clock = shared.NewRealClock()
-	}
-
-	return &ShipAssignmentManager{
-		assignments: make(map[string]*ShipAssignment),
-		clock:       clock,
-	}
-}
-
-// AssignShip assigns a ship to a container operation
-// Returns error if ship is already assigned to another container
-func (sam *ShipAssignmentManager) AssignShip(
-	ctx context.Context,
-	shipSymbol string,
-	playerID int,
-	containerID string,
-) (*ShipAssignment, error) {
-	if existing, exists := sam.assignments[shipSymbol]; exists {
-		if existing.IsActive() {
-			return nil, fmt.Errorf("ship is already assigned to another container")
-		}
-	}
-
-	assignment := NewShipAssignment(shipSymbol, playerID, containerID, sam.clock)
-	sam.assignments[shipSymbol] = assignment
-
-	return assignment, nil
-}
-
-func (sam *ShipAssignmentManager) GetAssignment(shipSymbol string) (*ShipAssignment, bool) {
-	assignment, exists := sam.assignments[shipSymbol]
-	return assignment, exists
-}
-
-func (sam *ShipAssignmentManager) ReleaseAssignment(shipSymbol string, reason string) error {
-	assignment, exists := sam.assignments[shipSymbol]
-	if !exists {
-		return fmt.Errorf("no assignment found for ship %s", shipSymbol)
-	}
-
-	return assignment.Release(reason)
-}
-
-// ReleaseAll releases all active assignments with the given reason
-func (sam *ShipAssignmentManager) ReleaseAll(reason string) error {
-	for _, assignment := range sam.assignments {
-		if assignment.IsActive() {
-			if err := assignment.Release(reason); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-// CleanOrphanedAssignments releases assignments for non-existent containers
-func (sam *ShipAssignmentManager) CleanOrphanedAssignments(
-	existingContainerIDs map[string]bool,
-) (int, error) {
-	cleaned := 0
-
-	for _, assignment := range sam.assignments {
-		if !assignment.IsActive() {
-			continue
-		}
-
-		if !existingContainerIDs[assignment.ContainerID()] {
-			if err := assignment.Release("orphaned_cleanup"); err != nil {
-				return cleaned, err
-			}
-			cleaned++
-		}
-	}
-
-	return cleaned, nil
-}
-
-func (sam *ShipAssignmentManager) CleanStaleAssignments(timeout time.Duration) (int, error) {
-	cleaned := 0
-
-	for _, assignment := range sam.assignments {
-		if !assignment.IsActive() {
-			continue
-		}
-
-		if assignment.IsStale(timeout) {
-			if err := assignment.ForceRelease("stale_timeout"); err != nil {
-				return cleaned, err
-			}
-			cleaned++
-		}
-	}
-
-	return cleaned, nil
 }

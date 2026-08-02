@@ -106,15 +106,9 @@ func (f FlightMode) TravelTime(distance float64, engineSpeed int) int {
 //
 // Priority order: BURN > CRUISE.
 //
-// Parameters:
-//   - currentFuel: Ship's current fuel level
-//   - fuelCost: Fuel cost for CRUISE mode (baseline)
-//   - safetyMargin: Minimum fuel to keep as reserve
-//
-// Returns:
-//   - Optimal flight mode (BURN or CRUISE)
-//   - Whether the tank can actually pay for it; when false the caller must refuel
-//     to fly the returned mode rather than settle for something slower.
+// fuelCost is the CRUISE-mode baseline. The bool reports whether the tank can
+// actually pay for the returned mode; when false the caller must refuel to fly
+// it rather than settle for something slower.
 func SelectOptimalFlightMode(currentFuel, fuelCost, safetyMargin int) (FlightMode, bool) {
 	selector := NewFlightModeSelector()
 	return selector.SelectOptimalMode(currentFuel, fuelCost, safetyMargin)

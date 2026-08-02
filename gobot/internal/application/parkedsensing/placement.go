@@ -94,21 +94,17 @@ const placementCrossingReserve = 2
 // MaxWalkRings is how far the FOOTHOLD path may draw an already-parked scanning
 // hull off a working market to fill a placement elsewhere.
 //
-// IT IS NO LONGER THE WALK'S REACH, and that correction matters. This constant
-// was originally the bound nextHopToward resolved under, so it genuinely was "how
-// far a hull may be sent" — but the adapter's resolver now reads
-// MaxSeedFlightHops instead (`const maxWalkRings = appSensing.MaxSeedFlightHops`
-// in adapters/parkedsensing), because a charting seed had to be flyable further
-// than a staging walk. What is left here is a SELECTION bound: how far this
-// engine chooses to reach when picking a source, not how far the router can
-// deliver.
+// IT IS A SELECTION BOUND, NOT THE WALK'S REACH: how far this engine chooses to
+// reach when picking a source, not how far the router can deliver. The adapter's
+// resolver reads SeedFlightUnbounded, because a charting seed has to be flyable
+// further than a staging walk.
 //
 // The distinction is easy to lose and expensive to lose. A destination beyond the
 // ROUTER's bound is not refused loudly — nextHopToward names no next system, the
 // step returns an error, the slot stays IN_TRANSIT still naming the hull, and the
 // hull goes on counting against the probe cap while never arriving. So a
 // selection bound may sit at or below the router's, never above it; anything that
-// wants to reach further must read the router's own number, as maxFerryHops does.
+// wants to reach further has to carry its own justification, as maxFerryHops does.
 //
 // WHY TWO, FOR THE FOOTHOLD. Its cost is not ticks but COVERAGE: the hull it
 // takes was watching a market, and that market stops being watched until a
@@ -172,7 +168,7 @@ type PlacementLedger interface {
 	// drain gives the list a permanent head, and a fixed budget then means
 	// everything behind that head is never examined at all.
 	PlacementWorklist(ctx context.Context, playerID int, states ...string) ([]QueuedSlot, error)
-	TransitionSlot(ctx context.Context, playerID int, waypoint, kind, fromState, toState string, set SlotFields) error
+	TransitionSlot(ctx context.Context, playerID int, t SlotTransition, set SlotFields) error
 	// MarkPlacementAttempt records that a slot consumed one of a tick's budgets,
 	// which is what moves it to the back of the worklist above.
 	//
@@ -276,7 +272,8 @@ func AdvancePlacements(ctx context.Context, pl PlacementPorts, playerID int, max
 
 	maxFailures := maxActions * placementFailureBudgetMultiple
 
-	for _, w := range arrivalsFirst(ctx, pl, playerID, slots, maxActions) {
+	t := &placementTick{pl: pl, playerID: playerID, rep: &rep}
+	for _, w := range t.arrivalsFirst(ctx, slots, maxActions) {
 		if rep.Actions >= maxActions {
 			// The accepted-command budget is spent. Walking further can only issue
 			// commands there is no budget left to keep.
@@ -290,7 +287,7 @@ func AdvancePlacements(ctx context.Context, pl PlacementPorts, playerID int, max
 		}
 		slot := w.slot
 
-		outcome, err := advanceOne(ctx, pl, playerID, slot, w.pos, &rep)
+		outcome, err := t.advanceOne(ctx, slot, w.pos)
 		if err != nil {
 			return rep, err
 		}
@@ -306,7 +303,7 @@ func AdvancePlacements(ctx context.Context, pl PlacementPorts, playerID int, max
 			// what makes the order rotate: stamping only successes would leave the
 			// failing slots permanently oldest and hand them the head forever —
 			// the very monopoly this is here to break.
-			markAttempt(ctx, pl, playerID, slot)
+			t.markAttempt(ctx, slot)
 		}
 	}
 	return rep, nil
@@ -355,7 +352,7 @@ type placementWork struct {
 // current backlog, on a 756-row table keyed by the exact lookup. That is the price
 // of knowing which slots have arrived BEFORE choosing which to serve, and it buys
 // the reordering without touching the API budget that is actually scarce.
-func arrivalsFirst(ctx context.Context, pl PlacementPorts, playerID int, slots []QueuedSlot, maxActions int) []placementWork {
+func (t *placementTick) arrivalsFirst(ctx context.Context, slots []QueuedSlot, maxActions int) []placementWork {
 	arrived := make([]placementWork, 0, len(slots))
 	travelling := make([]placementWork, 0, len(slots))
 
@@ -363,7 +360,7 @@ func arrivalsFirst(ctx context.Context, pl PlacementPorts, playerID int, slots [
 		if slot.AssignedShip == "" {
 			continue
 		}
-		pos, err := pl.Ships.ShipAt(ctx, playerID, slot.AssignedShip)
+		pos, err := t.pl.Ships.ShipAt(ctx, t.playerID, slot.AssignedShip)
 		if err != nil || !pos.Found {
 			continue
 		}
@@ -427,8 +424,8 @@ func hasArrived(slot QueuedSlot, pos ShipPos) bool {
 //
 // It is never silent, though. Stamps failing wholesale is starvation coming back,
 // and the symptom (a head that never rotates) looks identical to the bug it fixes.
-func markAttempt(ctx context.Context, pl PlacementPorts, playerID int, slot QueuedSlot) {
-	if err := pl.Ledger.MarkPlacementAttempt(ctx, playerID, slot.Waypoint, slot.Kind); err != nil {
+func (t *placementTick) markAttempt(ctx context.Context, slot QueuedSlot) {
+	if err := t.pl.Ledger.MarkPlacementAttempt(ctx, t.playerID, slot.Waypoint, slot.Kind); err != nil {
 		logging.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
 			"Sensing placement %s (%s) consumed a tick's placement budget but its attempt stamp could not be recorded, so it will not rotate to the back of the worklist and may take another slot's turn: %v",
 			slot.Waypoint, slot.Kind, err), map[string]interface{}{
@@ -441,19 +438,19 @@ func markAttempt(ctx context.Context, pl PlacementPorts, playerID int, slot Queu
 
 // advanceOne applies the single transition available to one placement, and
 // reports what it cost the tick.
-func advanceOne(ctx context.Context, pl PlacementPorts, playerID int, slot QueuedSlot, pos ShipPos, rep *PlacementReport) (placementOutcome, error) {
+func (t *placementTick) advanceOne(ctx context.Context, slot QueuedSlot, pos ShipPos) (placementOutcome, error) {
 	switch slot.State {
 	case SlotStateBought:
-		return dispatch(ctx, pl, playerID, slot, pos, rep)
+		return t.dispatch(ctx, slot, pos)
 	case SlotStateInTransit:
-		return standDown(ctx, pl, playerID, slot, pos, rep)
+		return t.standDown(ctx, slot, pos)
 	default:
 		return outcomeIdle, nil
 	}
 }
 
 // dispatch sends a freshly-bought hull toward its slot.
-func dispatch(ctx context.Context, pl PlacementPorts, playerID int, slot QueuedSlot, pos ShipPos, rep *PlacementReport) (placementOutcome, error) {
+func (t *placementTick) dispatch(ctx context.Context, slot QueuedSlot, pos ShipPos) (placementOutcome, error) {
 	// Re-assert the fleet tag before anything else. The purchase already wrote
 	// it, but that write is best-effort — it happens after the money has moved,
 	// where failing the whole purchase would be worse than an untagged hull. So
@@ -464,7 +461,7 @@ func dispatch(ctx context.Context, pl PlacementPorts, playerID int, slot QueuedS
 	// untagged probe reads as idle and undedicated to every other coordinator's
 	// ownership sweep, so a repeatedly failing tag is how a sensing hull quietly
 	// ends up somebody else's.
-	warnIfTagFailed(ctx, pl, playerID, slot.AssignedShip, slot.Waypoint, "parked_sensing_dispatch_tag_failed")
+	t.warnIfTagFailed(ctx, slot.AssignedShip, slot.Waypoint, "parked_sensing_dispatch_tag_failed")
 
 	if pos.NavStatus == navigation.NavStatusInTransit {
 		// Already flying — under this or a previous tick's command. Issuing
@@ -476,14 +473,14 @@ func dispatch(ctx context.Context, pl PlacementPorts, playerID int, slot QueuedS
 		// Bought at the very waypoint it was wanted at (a yard that is also the
 		// slot). No movement to perform: hand it to the arrival branch, which
 		// docks and parks it on the next tick.
-		if err := transitionInFlight(ctx, pl, playerID, slot, SlotStateBought, SlotStateInTransit); err != nil {
+		if err := t.transitionInFlight(ctx, slot, SlotStateBought, SlotStateInTransit); err != nil {
 			return outcomeIdle, err
 		}
-		rep.Dispatched++
+		t.rep.Dispatched++
 		return outcomeAdvanced, nil
 	}
 
-	if moveErr := flyToSlot(ctx, pl, playerID, slot, pos); moveErr != nil {
+	if moveErr := t.flyToSlot(ctx, slot, pos); moveErr != nil {
 		// The hull did not leave. Holding the slot at BOUGHT keeps the retry
 		// CORRECT — the next tick re-reads the position and re-issues, with no
 		// stuck state to unwind — but it is not free, and the comment that used to
@@ -495,10 +492,10 @@ func dispatch(ctx context.Context, pl PlacementPorts, playerID int, slot QueuedS
 		return outcomeFailed, nil
 	}
 
-	if err := transitionInFlight(ctx, pl, playerID, slot, SlotStateBought, SlotStateInTransit); err != nil {
+	if err := t.transitionInFlight(ctx, slot, SlotStateBought, SlotStateInTransit); err != nil {
 		return outcomeIdle, err
 	}
-	rep.Dispatched++
+	t.rep.Dispatched++
 	return outcomeAdvanced, nil
 }
 
@@ -511,7 +508,7 @@ func dispatch(ctx context.Context, pl PlacementPorts, playerID int, slot QueuedS
 // to buy another hull for a waypoint reads exactly that — so a placement parked
 // on a hull that never actually docked would suppress a purchase it should have
 // allowed, and leave the waypoint unwatched indefinitely.
-func standDown(ctx context.Context, pl PlacementPorts, playerID int, slot QueuedSlot, pos ShipPos, rep *PlacementReport) (placementOutcome, error) {
+func (t *placementTick) standDown(ctx context.Context, slot QueuedSlot, pos ShipPos) (placementOutcome, error) {
 	if pos.Waypoint != slot.Waypoint {
 		if pos.NavStatus == navigation.NavStatusInTransit {
 			return outcomeIdle, nil // genuinely flying; leave it alone
@@ -519,24 +516,24 @@ func standDown(ctx context.Context, pl PlacementPorts, playerID int, slot Queued
 		// Sitting still, somewhere that is not the slot. This placement reached
 		// IN_TRANSIT without anything ever having been told to move, so nothing
 		// downstream will move it either — see dispatchClaim.
-		return dispatchClaim(ctx, pl, playerID, slot, pos, rep)
+		return t.dispatchClaim(ctx, slot, pos)
 	}
 
 	switch pos.NavStatus {
 	case navigation.NavStatusInOrbit:
 		// Arrived but not berthed. Stay IN_TRANSIT: the next tick reads the
 		// docked row and parks it.
-		if err := pl.Mover.Dock(ctx, playerID, slot.AssignedShip); err != nil {
+		if err := t.pl.Mover.Dock(ctx, t.playerID, slot.AssignedShip); err != nil {
 			return outcomeFailed, nil // retried next tick, off the refusal budget
 		}
-		rep.Docking++
+		t.rep.Docking++
 		return outcomeAdvanced, nil
 
 	case navigation.NavStatusDocked:
-		if err := transitionInFlight(ctx, pl, playerID, slot, SlotStateInTransit, SlotStateParked); err != nil {
+		if err := t.transitionInFlight(ctx, slot, SlotStateInTransit, SlotStateParked); err != nil {
 			return outcomeIdle, err
 		}
-		rep.Parked++
+		t.rep.Parked++
 		return outcomeAdvanced, nil
 
 	default:
@@ -567,7 +564,7 @@ func standDown(ctx context.Context, pl PlacementPorts, playerID int, slot Queued
 // command to issue. A failure leaves it IN_TRANSIT and the next tick re-issues,
 // which is the same bounded retry the purchase path gets: correct, but charged to
 // the refusal budget rather than free (sp-cwnwb).
-func dispatchClaim(ctx context.Context, pl PlacementPorts, playerID int, slot QueuedSlot, pos ShipPos, rep *PlacementReport) (placementOutcome, error) {
+func (t *placementTick) dispatchClaim(ctx context.Context, slot QueuedSlot, pos ShipPos) (placementOutcome, error) {
 	// Claims that bypass the purchase path also bypass the tag write that
 	// happens there, so this is the first and only place such a hull is tagged.
 	// Idempotent, so it costs nothing for the hulls that already carry it.
@@ -575,12 +572,12 @@ func dispatchClaim(ctx context.Context, pl PlacementPorts, playerID int, slot Qu
 	// This is the ONLY place a claimed hull is tagged, so a silent failure here
 	// leaves it untagged for its whole flight — long enough for another
 	// coordinator's ownership sweep to claim it.
-	warnIfTagFailed(ctx, pl, playerID, slot.AssignedShip, slot.Waypoint, "parked_sensing_claim_tag_failed")
+	t.warnIfTagFailed(ctx, slot.AssignedShip, slot.Waypoint, "parked_sensing_claim_tag_failed")
 
-	if err := flyToSlot(ctx, pl, playerID, slot, pos); err != nil {
+	if err := t.flyToSlot(ctx, slot, pos); err != nil {
 		return outcomeFailed, nil // retried next tick, off the refusal budget
 	}
-	rep.Dispatched++
+	t.rep.Dispatched++
 	return outcomeAdvanced, nil
 }
 
@@ -589,8 +586,8 @@ func dispatchClaim(ctx context.Context, pl PlacementPorts, playerID int, slot Qu
 // already done the thing that matters (recorded a hull, or is about to fly one)
 // and a missing tag is repaired on the next edge — but it is never silent,
 // because an untagged hull is a poachable one.
-func warnIfTagFailed(ctx context.Context, pl PlacementPorts, playerID int, shipSymbol, waypoint, action string) {
-	if err := pl.Fleet.AssignFleet(ctx, playerID, shipSymbol, SensingParkedFleetTag); err != nil {
+func (t *placementTick) warnIfTagFailed(ctx context.Context, shipSymbol, waypoint, action string) {
+	if err := t.pl.Fleet.AssignFleet(ctx, t.playerID, shipSymbol, SensingParkedFleetTag); err != nil {
 		// The destination rides along with the hull, matching the buy queue's
 		// own tag warning: an untagged probe is found by looking at where it was
 		// being sent, and a warning naming only the hull leaves the reader
@@ -616,11 +613,11 @@ func warnIfTagFailed(ctx context.Context, pl PlacementPorts, playerID int, shipS
 // rest of the way — each of them re-reading pos and re-deciding from scratch,
 // which is also what makes the walk self-correcting when a hull ends up
 // somewhere the last tick did not send it.
-func flyToSlot(ctx context.Context, pl PlacementPorts, playerID int, slot QueuedSlot, pos ShipPos) error {
+func (t *placementTick) flyToSlot(ctx context.Context, slot QueuedSlot, pos ShipPos) error {
 	if shared.ExtractSystemSymbol(pos.Waypoint) == slot.System {
-		return pl.Mover.NavigateWithin(ctx, playerID, slot.AssignedShip, slot.Waypoint)
+		return t.pl.Mover.NavigateWithin(ctx, t.playerID, slot.AssignedShip, slot.Waypoint)
 	}
-	return pl.Mover.RouteAcross(ctx, playerID, slot.AssignedShip, pos.Waypoint, slot.Waypoint)
+	return t.pl.Mover.RouteAcross(ctx, t.playerID, slot.AssignedShip, pos.Waypoint, slot.Waypoint)
 }
 
 // transitionInFlight advances a placement, treating a lost race as a normal
@@ -630,10 +627,18 @@ func flyToSlot(ctx context.Context, pl PlacementPorts, playerID int, slot Queued
 // It takes the SLOT rather than a bare waypoint because a waypoint no longer
 // identifies a placement on its own: a yard can hold a MARKET row and
 // a SPARE row at once, and this hull is flying to exactly one of them.
-func transitionInFlight(ctx context.Context, pl PlacementPorts, playerID int, slot QueuedSlot, from, to string) error {
-	err := pl.Ledger.TransitionSlot(ctx, playerID, slot.Waypoint, slot.Kind, from, to, SlotFields{})
+func (t *placementTick) transitionInFlight(ctx context.Context, slot QueuedSlot, from, to string) error {
+	err := t.pl.Ledger.TransitionSlot(ctx, t.playerID, SlotTransition{
+		Waypoint: slot.Waypoint, Kind: slot.Kind, From: from, To: to,
+	}, SlotFields{})
 	if err == nil || errors.Is(err, ErrSlotClaimed) {
 		return nil
 	}
 	return fmt.Errorf("failed to advance sensing placement %s (%s) from %s to %s: %w", slot.Waypoint, slot.Kind, from, to, err)
+}
+
+type placementTick struct {
+	pl       PlacementPorts
+	playerID int
+	rep      *PlacementReport
 }

@@ -59,25 +59,3 @@ func TestLongHaulEnvelope_SpendCeiling(t *testing.T) {
 		})
 	}
 }
-
-// EXPOSURE CAP (design §3): total in-flight capital is bounded by limiting concurrent hauls
-// to totalExposureCap / perHaulCap (each worker holds at most one perHaulCap tranche), floored
-// at 1 when both caps are positive; a non-positive cap means unlimited.
-func TestLongHaulMaxConcurrentHauls(t *testing.T) {
-	cases := []struct {
-		name           string
-		total, perHaul int64
-		want           int
-	}{
-		{"2M / 1M = 2", 2_000_000, 1_000_000, 2},
-		{"5M / 1M = 5", 5_000_000, 1_000_000, 5},
-		{"below one haul -> floored to 1", 900_000, 1_000_000, 1},
-		{"unlimited (no total cap)", 0, 1_000_000, 0},
-		{"unlimited (no per-haul cap)", 2_000_000, 0, 0},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, maxConcurrentHauls(tc.total, tc.perHaul))
-		})
-	}
-}

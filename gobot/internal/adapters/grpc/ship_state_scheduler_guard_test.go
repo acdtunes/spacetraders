@@ -13,7 +13,7 @@ import (
 
 // newTestShipWithArrival builds a minimal valid ship carrying a pending
 // arrival time — the only shape ScheduleArrival needs to arm its AfterFunc.
-// Built via NewShip + SetArrivalTime rather than the 28-param ReconstructShip
+// Built via NewShip + SetArrivalTime rather than the full-state ReconstructShip
 // (the panic under test fires at handleArrival's nil-shipRepo deref, before
 // any nav-status check, so the exact status is immaterial).
 func newTestShipWithArrival(t *testing.T, symbol string, playerID int, arrival time.Time) *navigation.Ship {

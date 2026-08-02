@@ -31,93 +31,65 @@ type NavigationMetricsCollector struct {
 func NewNavigationMetricsCollector() *NavigationMetricsCollector {
 	return &NavigationMetricsCollector{
 		// Route completions/failures counter
-		routesTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "routes_total",
-				Help:      "Total number of route lifecycle events by status",
-			},
-			[]string{"player_id", "status"},
+		routesTotal: newCounterVec(
+			"routes_total",
+			"Total number of route lifecycle events by status",
+			"player_id",
+			"status",
 		),
 
 		// Route execution duration histogram
-		routeDuration: prometheus.NewHistogramVec(
-			prometheus.HistogramOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "route_duration_seconds",
-				Help:      "Route execution duration distribution",
-				Buckets:   []float64{10, 30, 60, 120, 300, 600, 1200, 1800},
-			},
-			[]string{"player_id", "status"},
+		routeDuration: newHistogramVec(
+			"route_duration_seconds",
+			"Route execution duration distribution",
+			[]float64{10, 30, 60, 120, 300, 600, 1200, 1800},
+			"player_id",
+			"status",
 		),
 
 		// Total distance traveled counter
-		routeDistanceTraveled: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "route_distance_traveled_total",
-				Help:      "Total distance traveled across all routes",
-			},
-			[]string{"player_id"},
+		routeDistanceTraveled: newCounterVec(
+			"route_distance_traveled_total",
+			"Total distance traveled across all routes",
+			"player_id",
 		),
 
 		// Total fuel consumed by routes counter
-		routeFuelConsumed: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "route_fuel_consumed_total",
-				Help:      "Total fuel consumed by route execution",
-			},
-			[]string{"player_id"},
+		routeFuelConsumed: newCounterVec(
+			"route_fuel_consumed_total",
+			"Total fuel consumed by route execution",
+			"player_id",
 		),
 
 		// Route segments completed counter
-		routeSegmentsCompleted: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "route_segments_completed_total",
-				Help:      "Total number of route segments completed",
-			},
-			[]string{"player_id"},
+		routeSegmentsCompleted: newCounterVec(
+			"route_segments_completed_total",
+			"Total number of route segments completed",
+			"player_id",
 		),
 
 		// Fuel purchases counter
-		fuelPurchased: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "fuel_purchased_units_total",
-				Help:      "Total units of fuel purchased",
-			},
-			[]string{"player_id", "waypoint"},
+		fuelPurchased: newCounterVec(
+			"fuel_purchased_units_total",
+			"Total units of fuel purchased",
+			"player_id",
+			"waypoint",
 		),
 
 		// Fuel consumption by flight mode counter
-		fuelConsumed: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "fuel_consumed_units_total",
-				Help:      "Total units of fuel consumed by flight mode",
-			},
-			[]string{"player_id", "flight_mode"},
+		fuelConsumed: newCounterVec(
+			"fuel_consumed_units_total",
+			"Total units of fuel consumed by flight mode",
+			"player_id",
+			"flight_mode",
 		),
 
 		// Fuel efficiency histogram
-		fuelEfficiency: prometheus.NewHistogramVec(
-			prometheus.HistogramOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "fuel_efficiency_ratio",
-				Help:      "Fuel efficiency distribution (distance per fuel unit)",
-				Buckets:   []float64{0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0},
-			},
-			[]string{"player_id"},
+		fuelEfficiency: newHistogramVec(
+			"fuel_efficiency_ratio",
+			"Fuel efficiency distribution (distance per fuel unit)",
+			[]float64{0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0},
+			"player_id",
 		),
 
 		// Stranded jump-claim records found and cleared. A jump's
@@ -126,14 +98,11 @@ func NewNavigationMetricsCollector() *NavigationMetricsCollector {
 		// so a reaper that never fires (0) is distinguishable from one that fires
 		// and fails (clear_failed) — otherwise a broken reaper and a clean fleet
 		// emit the identical signal.
-		strandedJumpContainers: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "stranded_jump_containers_total",
-				Help:      "Leftover jump container rows found by the post-claim reap, by outcome (cleared/clear_failed)",
-			},
-			[]string{"player_id", "outcome"},
+		strandedJumpContainers: newCounterVec(
+			"stranded_jump_containers_total",
+			"Leftover jump container rows found by the post-claim reap, by outcome (cleared/clear_failed)",
+			"player_id",
+			"outcome",
 		),
 	}
 }
@@ -141,10 +110,9 @@ func NewNavigationMetricsCollector() *NavigationMetricsCollector {
 // Register registers all navigation metrics with the Prometheus registry
 func (c *NavigationMetricsCollector) Register() error {
 	if Registry == nil {
-		return nil // Metrics not enabled
+		return nil
 	}
-
-	metrics := []prometheus.Collector{
+	return registerAll(
 		c.routesTotal,
 		c.routeDuration,
 		c.routeDistanceTraveled,
@@ -154,15 +122,7 @@ func (c *NavigationMetricsCollector) Register() error {
 		c.fuelConsumed,
 		c.fuelEfficiency,
 		c.strandedJumpContainers,
-	}
-
-	for _, metric := range metrics {
-		if err := Registry.Register(metric); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	)
 }
 
 // RecordRouteCompletion records a route completion event
@@ -240,4 +200,58 @@ func (c *NavigationMetricsCollector) RecordStrandedJumpContainer(
 	outcome string,
 ) {
 	c.strandedJumpContainers.WithLabelValues(strconv.Itoa(playerID), outcome).Inc()
+}
+
+// globalNavigationCollector is the singleton navigation metrics collector
+// Set by SetGlobalNavigationCollector() when metrics are enabled
+var globalNavigationCollector NavigationMetricsRecorder
+
+// NavigationMetricsRecorder defines the interface for recording navigation metrics
+type NavigationMetricsRecorder interface {
+	RecordRouteCompletion(playerID int, status navigation.RouteStatus, duration float64, distance int, fuelConsumed int)
+	RecordSegmentCompletion(playerID int, distance int, fuelRequired int)
+	RecordFuelPurchase(playerID int, waypoint string, units int)
+	RecordFuelConsumption(playerID int, flightMode shared.FlightMode, units int)
+	RecordStrandedJumpContainer(playerID int, outcome string)
+}
+
+// SetGlobalNavigationCollector sets the global navigation metrics collector
+func SetGlobalNavigationCollector(collector NavigationMetricsRecorder) {
+	globalNavigationCollector = collector
+}
+
+// RecordRouteCompletion records a route completion event globally
+func RecordRouteCompletion(playerID int, status navigation.RouteStatus, duration float64, distance int, fuelConsumed int) {
+	if globalNavigationCollector != nil {
+		globalNavigationCollector.RecordRouteCompletion(playerID, status, duration, distance, fuelConsumed)
+	}
+}
+
+// RecordSegmentCompletion records a route segment completion globally
+func RecordSegmentCompletion(playerID int, distance int, fuelRequired int) {
+	if globalNavigationCollector != nil {
+		globalNavigationCollector.RecordSegmentCompletion(playerID, distance, fuelRequired)
+	}
+}
+
+// RecordFuelPurchase records a fuel purchase event globally
+func RecordFuelPurchase(playerID int, waypoint string, units int) {
+	if globalNavigationCollector != nil {
+		globalNavigationCollector.RecordFuelPurchase(playerID, waypoint, units)
+	}
+}
+
+// RecordFuelConsumption records fuel consumption globally
+func RecordFuelConsumption(playerID int, flightMode shared.FlightMode, units int) {
+	if globalNavigationCollector != nil {
+		globalNavigationCollector.RecordFuelConsumption(playerID, flightMode, units)
+	}
+}
+
+// RecordStrandedJumpContainer records one leftover jump container row the
+// post-claim reap found, under the outcome it reached.
+func RecordStrandedJumpContainer(playerID int, outcome string) {
+	if globalNavigationCollector != nil {
+		globalNavigationCollector.RecordStrandedJumpContainer(playerID, outcome)
+	}
 }

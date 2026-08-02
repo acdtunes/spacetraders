@@ -52,7 +52,6 @@ func (f *StorageSourceFinder) FindRunningOperationForGood(ctx context.Context, p
 
 	logger := common.LoggerFromContext(ctx)
 
-	// Find storage operations that support this good
 	operations, err := f.storageOpRepo.FindByGood(ctx, playerID, good)
 	if err != nil {
 		logger.Log("WARN", "Storage operation lookup: FindByGood failed", map[string]interface{}{

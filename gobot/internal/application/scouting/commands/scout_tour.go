@@ -159,7 +159,7 @@ type ScoutTourHandler struct {
 	shipRepo      navigation.ShipRepository
 	mediator      common.Mediator
 	marketScanner *ship.MarketScanner
-	// shipyardScanner piggybacks a shipyard scan on the SAME market visit
+	// shipyardScanner piggybacks a shipyard scan on the SAME market visit:
 	// (sp-42ow): no extra trips, no new tour legs. Nil-safe — a tour without
 	// one (tests, minimal wiring) simply skips shipyard scans.
 	shipyardScanner *ship.ShipyardScanner
@@ -489,7 +489,7 @@ func (h *ScoutTourHandler) performInitialScan(
 	return nil
 }
 
-// scanShipyardAlongside piggybacks a shipyard scan on the SAME market visit
+// scanShipyardAlongside piggybacks a shipyard scan on the SAME market visit:
 // (sp-42ow): if the waypoint bears the SHIPYARD trait, its ship-type
 // availability + prices are persisted to the shipyard-inventory store. No
 // extra trips, no new tour legs — the scout is already here. Strictly
@@ -509,7 +509,7 @@ func (h *ScoutTourHandler) scanShipyardAlongside(ctx context.Context, playerID u
 	}
 }
 
-// continuousMarketScanning runs a loop that scans the market on cmd.ScanInterval
+// continuousMarketScanning runs a loop that scans the market on cmd.ScanInterval —
 // (sp-zixw) — resolved and clamped by effectiveScanInterval, so no launch path can
 // hammer the API below the floor or drift stale above the cap.
 func (h *ScoutTourHandler) continuousMarketScanning(

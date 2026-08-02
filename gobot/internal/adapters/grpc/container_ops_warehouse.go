@@ -115,11 +115,6 @@ func (s *DaemonServer) persistAndRunWarehouse(
 ) (*WarehouseOperationResult, error) {
 	containerID := utils.GenerateContainerID("warehouse", shipSymbol)
 
-	supportedGoodsInterface := make([]interface{}, len(supportedGoods))
-	for i, g := range supportedGoods {
-		supportedGoodsInterface[i] = g
-	}
-
 	targetUnitsInterface := make(map[string]interface{}, len(targetUnits))
 	for g, u := range targetUnits {
 		targetUnitsInterface[g] = u
@@ -129,7 +124,7 @@ func (s *DaemonServer) persistAndRunWarehouse(
 		"ship_symbol":     shipSymbol,
 		"waypoint_symbol": waypointSymbol,
 		"operation_id":    containerID,
-		"supported_goods": supportedGoodsInterface,
+		"supported_goods": toInterfaceSlice(supportedGoods),
 		"container_id":    containerID,
 		// Auto-computed per-good buffer caps. Persisted so the plan reloads with the
 		// container; the stocker enforces the live-re-derived equivalents.

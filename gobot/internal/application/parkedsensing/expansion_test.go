@@ -333,7 +333,8 @@ func (f *fakeExpandLedger) DeleteSlot(_ context.Context, _ int, waypoint, kind s
 	return nil
 }
 
-func (f *fakeExpandLedger) TransitionSlot(_ context.Context, _ int, waypoint, kind, from, to string, set SlotFields) error {
+func (f *fakeExpandLedger) TransitionSlot(_ context.Context, _ int, tr SlotTransition, set SlotFields) error {
+	waypoint, kind, from, to := tr.Waypoint, tr.Kind, tr.From, tr.To
 	f.transitions = append(f.transitions, transitionCall{waypoint, from, to, set.AssignedShip, set.PurchaseYard})
 	if f.transitionErr != nil {
 		return f.transitionErr

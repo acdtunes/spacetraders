@@ -19,7 +19,7 @@ import (
 // engine ever asked X1-TD22 what it connected to.
 //
 // WHY NOTHING ASKED. Every gate-related consideration in this engine ran over seedlessTargets, whose
-// membership rule is `(UnchartedCount > 0 || !CatalogKnown) && !hasActiveSeed`. orderByGateMapping is
+// membership rule is `(UnchartedCount > 0 || !CatalogKnown) && !hasActiveSeed`. orderUnmappedFirst is
 // the only caller of Gates.Mapped and it iterates that set, so a system dropped out of the gate
 // question entirely once EITHER
 //
@@ -93,7 +93,7 @@ type GateReader interface {
 // gateMapping memoises "does the store hold ANY gate adjacency for this system?" for the TICK.
 //
 // TWO CONSUMERS, ONE READ. This pass asks it of every system in scope to build its candidate set, and
-// orderByGateMapping asks it of every seed target to rank unknown territory first. Both are asking
+// orderUnmappedFirst asks it of every seed target to rank unknown territory first. Both are asking
 // the identical question of the identical store, and two unshared reads would double a per-system
 // store read every tick and let the two consumers observe different answers within one tick.
 //
@@ -130,13 +130,13 @@ func (m *gateMapping) mapped(ctx context.Context, system string) (bool, error) {
 	return held, nil
 }
 
-// unreadGates names every system in scope whose adjacency the store cannot answer for.
+// unread names every system in scope whose adjacency the store cannot answer for.
 //
 // UNORDERED, deliberately. orderUnreadGatesByFrontier owns the order and owns it TOTALLY — distance
 // then symbol — and sorting here as well would leave that function's tiebreak unable to decide
 // anything, since preserving a symbol-sorted input IS the symbol order. A guard that can never be the
 // thing that decides is dead code with a plausible-sounding rationale, which this engine already
-// judges worse than none (see orderByGateMapping's removed short-circuit). One owner, one sort.
+// judges worse than none (see orderUnmappedFirst's removed short-circuit). One owner, one sort.
 //
 // SCOPE IS THE LEDGER, whatever the verdict — the same set readNeighbours propagates from, and for
 // the same stated reason: "we have charted the gate" and "the store has rows" are the same fact, and
@@ -154,13 +154,13 @@ func (m *gateMapping) mapped(ctx context.Context, system string) (bool, error) {
 // the edge store returns, so a system this admits is exactly a system Connections would fetch live,
 // and a system it skips is exactly one Connections would answer from cache. There is no second notion
 // of "already known" to drift.
-func unreadGates(ctx context.Context, mapping *gateMapping, scope map[string]bool) ([]string, error) {
+func (m *gateMapping) unread(ctx context.Context, scope map[string]bool) ([]string, error) {
 	unread := make([]string, 0, len(scope))
 	for system := range scope {
 		if system == "" {
 			continue
 		}
-		held, err := mapping.mapped(ctx, system)
+		held, err := m.mapped(ctx, system)
 		if err != nil {
 			return nil, err
 		}
@@ -180,7 +180,7 @@ func unreadGates(ctx context.Context, mapping *gateMapping, scope map[string]boo
 // neighbours a parked spare could be walked to almost immediately; a gate nine hops out names
 // neighbours nothing can act on for twenty ticks of transit. Reading the near ones first is what turns
 // a newly-opened region into placements soonest, and it is the same rule and the same walker
-// (gateReach, over stored adjacency) that orderByReach already applies to seed targets, so the two can
+// (gateReach, over stored adjacency) that orderByDistance already applies to seed targets, so the two can
 // never disagree about what "near" means.
 //
 // A SYSTEM WE HOLD IS ZERO HOPS FROM ITSELF, and it is stated rather than derived because the walker
@@ -201,14 +201,14 @@ func orderUnreadGatesByFrontier(
 	book *slotBook,
 	unread []string,
 ) ([]string, error) {
-	held := heldSystems(book)
+	held := book.heldSystems()
 	occupied := make(map[string]bool, len(held))
 	for _, system := range held {
 		occupied[system] = true
 	}
 
 	// Resolved ONCE PER CANDIDATE, up front, never from inside the comparator — the same discipline
-	// orderByGateMapping documents. The walk is memoised per origin, but sort calls its less function
+	// orderUnmappedFirst documents. The walk is memoised per origin, but sort calls its less function
 	// O(n log n) times and a miss there would walk the graph again.
 	distance := make(map[string]int, len(unread))
 	for _, system := range unread {
@@ -277,7 +277,7 @@ func readUnmappedGates(
 	if p.GateRead == nil {
 		return nil
 	}
-	unread, err := unreadGates(ctx, mapping, scope)
+	unread, err := mapping.unread(ctx, scope)
 	if err != nil {
 		return err
 	}

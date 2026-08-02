@@ -170,7 +170,8 @@ func (l *stubPlacementLedger) MarkPlacementAttempt(_ context.Context, _ int, way
 	return nil
 }
 
-func (l *stubPlacementLedger) TransitionSlot(_ context.Context, _ int, waypoint, _, from, to string, _ appSensing.SlotFields) error {
+func (l *stubPlacementLedger) TransitionSlot(_ context.Context, _ int, tr appSensing.SlotTransition, _ appSensing.SlotFields) error {
+	waypoint, from, to := tr.Waypoint, tr.From, tr.To
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.transitions = append(l.transitions, waypoint+":"+from+"->"+to)

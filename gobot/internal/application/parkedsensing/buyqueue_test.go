@@ -144,7 +144,8 @@ func (f *fakeBuyLedger) CountOwnedProbes(_ context.Context, _ int) (int64, error
 // TransitionSlot keys its injected failures on the EDGE (waypoint→toState), not
 // the waypoint, so a test can break the claim and the record independently —
 // they sit on opposite sides of the purchase and fail in opposite directions.
-func (f *fakeBuyLedger) TransitionSlot(_ context.Context, _ int, waypoint, kind, from, to string, set SlotFields) error {
+func (f *fakeBuyLedger) TransitionSlot(_ context.Context, _ int, tr SlotTransition, set SlotFields) error {
+	waypoint, kind, from, to := tr.Waypoint, tr.Kind, tr.From, tr.To
 	f.transitions = append(f.transitions, transitionCall{waypoint, from, to, set.AssignedShip, set.PurchaseYard})
 	if err := f.transitionErr[waypoint+"→"+to]; err != nil {
 		return err
@@ -1754,7 +1755,7 @@ func (f *fakeListingMemo) LastListingScan(_ context.Context, _ int, waypoint str
 // oneYardPorts wires a single placement whose system has ONE yard, with a hull
 // standing at it — so the only thing deciding whether a quote call happens is the
 // listing memo.
-func oneYardPorts(now time.Time) (BuyPorts, *fakeBuyLedger, *fakePurchaser, *fakeListingMemo) {
+func oneYardPorts() (BuyPorts, *fakeBuyLedger, *fakePurchaser, *fakeListingMemo) {
 	led := &fakeBuyLedger{
 		slots: []QueuedSlot{
 			{Waypoint: "X1-AA-M1", System: "X1-AA", Kind: SlotKindMarket, State: SlotStateWanted},
@@ -1781,7 +1782,7 @@ func TestDrain_YardKnownNotToSellProbesIsNeverQuotedAgain(t *testing.T) {
 	// and "quoted, then refused" produce an identical zero-purchase report. Only the
 	// quote count tells them apart.
 	now := time.Now()
-	ports, _, pur, memo := oneYardPorts(now)
+	ports, _, pur, memo := oneYardPorts()
 	memo.scannedAt["X1-AA-Y1"] = now.Add(-time.Minute) // read a minute ago
 	memo.sells["X1-AA-Y1"] = false                     // and it sells no probe
 
@@ -1797,7 +1798,7 @@ func TestDrain_UnknownYardIsQuotedOnceSoWeCanLearn(t *testing.T) {
 	// Fail OPEN on unknown: a yard nothing has ever read must still be asked, or the
 	// memo could never be populated and the fleet would freeze its own knowledge.
 	now := time.Now()
-	ports, _, pur, _ := oneYardPorts(now) // memo knows nothing about the yard
+	ports, _, pur, _ := oneYardPorts() // memo knows nothing about the yard
 
 	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{now}); err != nil {
 		t.Fatalf("DrainBuyQueue returned error: %v", err)
@@ -1818,7 +1819,7 @@ func TestDrain_AnUnreadYardIsQuotedEvenWhenItsTimestampLooksFresh(t *testing.T) 
 	// memo ever be populated. A caller that read absence as a negative would write
 	// off every yard nothing had happened to read yet, permanently.
 	now := time.Now()
-	ports, _, pur, memo := oneYardPorts(now)
+	ports, _, pur, memo := oneYardPorts()
 	memo.unknownStamp = now.Add(-time.Minute)
 
 	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{now}); err != nil {
@@ -1833,7 +1834,7 @@ func TestDrain_KnownNegativeYardIsRequotedOnceTheReadGoesStale(t *testing.T) {
 	// A permanent write-off would be wrong — shipyards restock. The stored negative
 	// is trusted only for probeListingMemoTTL.
 	now := time.Now()
-	ports, _, pur, memo := oneYardPorts(now)
+	ports, _, pur, memo := oneYardPorts()
 	memo.scannedAt["X1-AA-Y1"] = now.Add(-probeListingMemoTTL - time.Minute)
 	memo.sells["X1-AA-Y1"] = false
 
@@ -1852,7 +1853,7 @@ func TestDrain_AnUnreadableMemoStillQuotes(t *testing.T) {
 	// failure costs is the single call we already make today. Every money guard is
 	// untouched either way.
 	now := time.Now()
-	ports, _, pur, memo := oneYardPorts(now)
+	ports, _, pur, memo := oneYardPorts()
 	memo.err = errors.New("listing store unavailable")
 
 	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{now}); err != nil {
@@ -1868,7 +1869,7 @@ func TestDrain_ASkippedYardStaysLegibleInTheReport(t *testing.T) {
 	// being queried must not also stop being reported, or the next such defect is
 	// invisible.
 	now := time.Now()
-	ports, _, _, memo := oneYardPorts(now)
+	ports, _, _, memo := oneYardPorts()
 	memo.scannedAt["X1-AA-Y1"] = now.Add(-time.Minute)
 	memo.sells["X1-AA-Y1"] = false
 
@@ -1889,7 +1890,7 @@ func TestDrain_AYardTheMemoSaysSellsProbesStillClearsEveryMoneyGuard(t *testing.
 	// probe-selling is quoted and floor-checked exactly as before — here the treasury
 	// is below the floor, so nothing may be bought.
 	now := time.Now()
-	ports, _, pur, memo := oneYardPorts(now)
+	ports, _, pur, memo := oneYardPorts()
 	memo.scannedAt["X1-AA-Y1"] = now.Add(-time.Minute)
 	memo.sells["X1-AA-Y1"] = true
 	ports.Treasury = &fakeTreasury{credits: 50_100} // under the floor once the probe is priced
@@ -1910,7 +1911,7 @@ func TestDrain_ANilListingMemoBehavesExactlyAsBefore(t *testing.T) {
 	// The port is optional. An unwired memo must quote everything, so the drain is
 	// byte-identical to its pre-memo behaviour wherever it is not wired.
 	now := time.Now()
-	ports, _, pur, _ := oneYardPorts(now)
+	ports, _, pur, _ := oneYardPorts()
 	ports.ListingMemo = nil
 
 	if _, err := DrainBuyQueue(context.Background(), ports, testPlayerID, BuyKnobs{SpendEnabled: true, ProbeCap: 100}, fixedClock{now}); err != nil {

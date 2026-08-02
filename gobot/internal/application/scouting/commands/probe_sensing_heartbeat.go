@@ -67,7 +67,7 @@ type heartbeat struct {
 	// both, one tick apart, and conflating them would double-count the fleet's
 	// activity.
 	dispatched int
-	// surged counts surplus probes sent into CHARTED-BUT-UNPRICED systems this tick
+	// surged counts surplus probes sent into CHARTED-BUT-UNPRICED systems this tick.
 	// (sp-zvywu). Kept apart from dispatched above because the two answer different
 	// questions about coverage: dispatched fills placements the screen already
 	// declared, while this one is the fleet reaching systems no placement exists for
@@ -75,9 +75,9 @@ type heartbeat struct {
 	// been priced actually shrinking.
 	surged int
 	reap   parkedsensing.ReapReport
-	buy        parkedsensing.BuyReport
-	place      parkedsensing.PlacementReport
-	expand     parkedsensing.ExpandReport
+	buy    parkedsensing.BuyReport
+	place  parkedsensing.PlacementReport
+	expand parkedsensing.ExpandReport
 	// yard is the free shipyard-catalogue sweep's accounting. Outstanding is the
 	// number an operator watches fall to zero: it is the count of KNOWN shipyards
 	// the fleet has never asked what they sell, and while it is non-zero the fleet
@@ -208,7 +208,7 @@ func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *
 			// Why the counters that refused refused, one entry per distinct
 			// refusal. attempts > 0 with bought == 0 and this empty is a
 			// contradiction — every attempt-burning path records one.
-			"buy_refusals":   refusalPayload(hb.buy.Refusals),
+			"buy_refusals": refusalPayload(hb.buy.Refusals),
 			// The operator's expansion switch, as the buy queue saw it. Queryable
 			// beside buy_bought so "the switch is off and money still moved" is one
 			// filter rather than a correlation across two engines' log lines.
@@ -248,11 +248,11 @@ func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *
 			"expansion_skipped":         hb.expand.Skipped,
 			"expansion_spending_paused": hb.expand.SpendingPaused,
 			"expansion_discovered":      hb.expand.Discovered,
-			"seeds_requested":      hb.expand.SeedsRequested,
-			"seeds_claimed":        hb.expand.SeedsClaimed,
-			"charted":              hb.expand.Charted,
-			"markets_found":        hb.expand.MarketsFound,
-			"retargeted":           hb.expand.Retargeted,
+			"seeds_requested":           hb.expand.SeedsRequested,
+			"seeds_claimed":             hb.expand.SeedsClaimed,
+			"charted":                   hb.expand.Charted,
+			"markets_found":             hb.expand.MarketsFound,
+			"retargeted":                hb.expand.Retargeted,
 		})
 }
 

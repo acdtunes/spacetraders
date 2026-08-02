@@ -387,7 +387,7 @@ func TestBudget_ExpansionGetsTheResidual_PacerGetsTheFlooredRate(t *testing.T) {
 	// Drive the brake down over several ticks, exactly as the loop would.
 	var budget domainSensing.BudgetInputs
 	for i := 0; i < 6; i++ {
-		budget = world.handler.budgetInputs(world.cmd, cfg, ports)
+		budget = world.handler.budgetInputs(sensingCycle{cmd: world.cmd, cfg: cfg, ports: ports})
 	}
 
 	sensingRate := domainSensing.SensingRate(budget)
@@ -410,8 +410,8 @@ func TestBudget_BrakeAdvancesOncePerTick(t *testing.T) {
 	cfg := resolveSensingConfig(context.Background(), world.cmd, nil)
 	ports, _ := world.handler.portsFor(testPlayerID)
 
-	first := world.handler.budgetInputs(world.cmd, cfg, ports)
-	second := world.handler.budgetInputs(world.cmd, cfg, ports)
+	first := world.handler.budgetInputs(sensingCycle{cmd: world.cmd, cfg: cfg, ports: ports})
+	second := world.handler.budgetInputs(sensingCycle{cmd: world.cmd, cfg: cfg, ports: ports})
 
 	require.InDelta(t, first.BrakeFactor*0.5, second.BrakeFactor, 1e-9,
 		"each call halves the brake exactly once")

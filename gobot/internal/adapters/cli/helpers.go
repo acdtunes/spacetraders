@@ -4,9 +4,12 @@ import (
 	"context"
 	"fmt"
 
+	"gorm.io/gorm"
+
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
+	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
 func connectDaemon() (*DaemonClient, error) {
@@ -15,6 +18,21 @@ func connectDaemon() (*DaemonClient, error) {
 		return nil, fmt.Errorf("failed to connect to daemon: %w", err)
 	}
 	return client, nil
+}
+
+// openDatabase is the CLI's single direct-DB entry point, for the read paths and the few
+// verbs that bypass the daemon.
+func openDatabase() (*gorm.DB, error) {
+	cfg, err := config.LoadConfig("")
+	if err != nil {
+		return nil, fmt.Errorf("failed to load config: %w", err)
+	}
+
+	db, err := database.NewConnection(&cfg.Database)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to database: %w", err)
+	}
+	return db, nil
 }
 
 // PlayerIdentifier holds player identification (either ID or agent symbol)

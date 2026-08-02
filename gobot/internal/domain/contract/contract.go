@@ -175,12 +175,8 @@ func (c *Contract) IsExpired() bool {
 // maintaining proper separation of concerns. The actual business logic resides in
 // ContractProfitabilityService.
 //
-// Parameters:
-//   - ctx: Market prices, cargo capacity, and fuel costs
-//
-// Returns:
-//   - ProfitabilityEvaluation with all calculated metrics
-//   - Error if market prices are missing for required goods
+// ctx carries market prices, cargo capacity and fuel costs; it is not a
+// context.Context. Errors when a required good has no market price.
 func (c *Contract) EvaluateProfitability(ctx ProfitabilityContext) (*ProfitabilityEvaluation, error) {
 	service := NewContractProfitabilityService()
 	return service.EvaluateProfitability(c, ctx)

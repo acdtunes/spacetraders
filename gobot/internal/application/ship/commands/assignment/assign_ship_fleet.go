@@ -207,90 +207,17 @@ func (h *AssignShipFleetHandler) Handle(ctx context.Context, request common.Requ
 	cargoCapacity := ship.CargoCapacity()
 	changed := ship.DedicatedFleet() != cmd.Fleet
 
-	// Eligibility gate — only a REAL change into a cargo-required fleet by
-	// an under-capacity hull. A no-op re-touch of an already-mispinned hull
-	// is intentionally skipped so the reconcile does not error-spam every
-	// restart while a legacy mispin persists.
-	if changed {
-		if minCargo := h.fleetCargoReq.MinCargoCapacity(cmd.Fleet); minCargo > 0 && cargoCapacity < minCargo {
-			if !cmd.Manual {
-				// AUTOMATED path — BLOCK. This is the reconcile mispinner: refuse
-				// the write, name the assigner + hull class so the culprit is one
-				// grep away.
-				logger.Log("ERROR", fmt.Sprintf(
-					"BLOCKED auto-assign of %s to %q fleet: cargo capacity %d below floor %d (frame %s) — a hull that cannot haul is never auto-pinned to a hauling fleet [assigner=%s]",
-					cmd.ShipSymbol, cmd.Fleet, cargoCapacity, minCargo, frame, assigner),
-					map[string]interface{}{
-						"action":         "block_ineligible_fleet_assign",
-						"ship_symbol":    cmd.ShipSymbol,
-						"fleet":          cmd.Fleet,
-						"assigner":       assigner,
-						"frame":          frame,
-						"cargo_capacity": cargoCapacity,
-						"min_cargo":      minCargo,
-					})
-				return nil, fmt.Errorf(
-					"ship %s ineligible for %q fleet: cargo capacity %d below floor %d (frame %s) — auto-assign blocked (sp-r6f1)",
-					cmd.ShipSymbol, cmd.Fleet, cargoCapacity, minCargo, frame)
-			}
-			// MANUAL path — WARN, do not block. The captain may deliberately pin
-			// anything; the selection side already refuses to dispatch a 0-cargo
-			// hull, so this is dead weight, not a crash — say so loudly.
-			logger.Log("WARNING", fmt.Sprintf(
-				"Manual assign of %s to %q fleet: 0-cargo hull (frame %s, cargo %d) cannot haul — the fleet coordinator will exclude it from selection (sp-lybx). Proceeding on operator authority [assigner=%s]",
-				cmd.ShipSymbol, cmd.Fleet, frame, cargoCapacity, assigner),
-				map[string]interface{}{
-					"action":         "warn_manual_ineligible_fleet_assign",
-					"ship_symbol":    cmd.ShipSymbol,
-					"fleet":          cmd.Fleet,
-					"assigner":       assigner,
-					"frame":          frame,
-					"cargo_capacity": cargoCapacity,
-					"min_cargo":      minCargo,
-				})
-		}
+	if err := h.enforceCargoFloor(ctx, cmd, assigner, frame, cargoCapacity, changed); err != nil {
+		return nil, err
 	}
 
 	if err := h.shipRepo.AssignFleet(ctx, cmd.ShipSymbol, cmd.Fleet, playerID); err != nil {
 		return nil, fmt.Errorf("failed to assign ship fleet: %w", err)
 	}
 
-	// `fleet unassign` (BreakWorkClaim) additionally severs the live
-	// coordinator work-claim so the coordinator stops routing the hull — clearing
-	// the dedication alone only governs the NEXT acquisition, not the current
-	// claim. Scoped to the operator path (the reconcile leaves BreakWorkClaim
-	// false), and a captain reservation is left untouched by the break (that is
-	// `ship release`'s job). Best-effort audit: a broken claim logs one line.
 	if cmd.BreakWorkClaim {
-		brokenFrom, err := h.shipRepo.ReleaseContainerClaim(ctx, cmd.ShipSymbol, playerID, "fleet unassign (sp-w3yd)")
-		if err != nil {
-			return nil, fmt.Errorf("failed to break live work-claim on unassign: %w", err)
-		}
-		if brokenFrom != "" {
-			logger.Log("INFO", fmt.Sprintf(
-				"Broke live coordinator work-claim on %s during unassign — coordinator will stop routing it [assigner=%s]",
-				cmd.ShipSymbol, assigner),
-				map[string]interface{}{
-					"action":       "break_work_claim_on_unassign",
-					"ship_symbol":  cmd.ShipSymbol,
-					"assigner":     assigner,
-					"container_id": brokenFrom,
-				})
-
-			// Reap the container the break just orphaned. Freeing the hull is
-			// only half of unassign: the container that was flying it is untouched by the
-			// claim write and keeps navigating, buying and selling on a hull it no longer
-			// owns, invisible to the coordinator (which reads ownership from the hull's
-			// single assignment row) — so the coordinator launches a SECOND container onto
-			// the same hull, and nothing reconciles the two until a restart's recovery
-			// sweep fails the orphan hours later. Measured: 4.0h and 2.9h.
-			//
-			// The reassignment itself is CORRECT and stands; only the loser is cleaned up,
-			// so no claim guard is weakened (RULINGS #4/#7).
-			if h.reaper != nil {
-				h.reaper.ReapOrphanedContainer(ctx, brokenFrom, playerID,
-					fmt.Sprintf("fleet unassign of %s [assigner=%s]", cmd.ShipSymbol, assigner))
-			}
+		if err := h.breakLiveWorkClaim(ctx, cmd, playerID, assigner); err != nil {
+			return nil, err
 		}
 	}
 
@@ -315,4 +242,85 @@ func (h *AssignShipFleetHandler) Handle(ctx context.Context, request common.Requ
 		ShipSymbol: cmd.ShipSymbol,
 		Fleet:      cmd.Fleet,
 	}, nil
+}
+
+// enforceCargoFloor gates a REAL change only, so a legacy mispin does not error-spam
+// every restart. The automated path blocks; the manual path warns and proceeds.
+func (h *AssignShipFleetHandler) enforceCargoFloor(ctx context.Context, cmd *AssignShipFleetCommand, assigner, frame string, cargoCapacity int, changed bool) error {
+	if !changed {
+		return nil
+	}
+	minCargo := h.fleetCargoReq.MinCargoCapacity(cmd.Fleet)
+	if minCargo <= 0 || cargoCapacity >= minCargo {
+		return nil
+	}
+	logger := common.LoggerFromContext(ctx)
+
+	if !cmd.Manual {
+		logger.Log("ERROR", fmt.Sprintf(
+			"BLOCKED auto-assign of %s to %q fleet: cargo capacity %d below floor %d (frame %s) — a hull that cannot haul is never auto-pinned to a hauling fleet [assigner=%s]",
+			cmd.ShipSymbol, cmd.Fleet, cargoCapacity, minCargo, frame, assigner),
+			map[string]interface{}{
+				"action":         "block_ineligible_fleet_assign",
+				"ship_symbol":    cmd.ShipSymbol,
+				"fleet":          cmd.Fleet,
+				"assigner":       assigner,
+				"frame":          frame,
+				"cargo_capacity": cargoCapacity,
+				"min_cargo":      minCargo,
+			})
+		return fmt.Errorf(
+			"ship %s ineligible for %q fleet: cargo capacity %d below floor %d (frame %s) — auto-assign blocked (sp-r6f1)",
+			cmd.ShipSymbol, cmd.Fleet, cargoCapacity, minCargo, frame)
+	}
+
+	logger.Log("WARNING", fmt.Sprintf(
+		"Manual assign of %s to %q fleet: 0-cargo hull (frame %s, cargo %d) cannot haul — the fleet coordinator will exclude it from selection (sp-lybx). Proceeding on operator authority [assigner=%s]",
+		cmd.ShipSymbol, cmd.Fleet, frame, cargoCapacity, assigner),
+		map[string]interface{}{
+			"action":         "warn_manual_ineligible_fleet_assign",
+			"ship_symbol":    cmd.ShipSymbol,
+			"fleet":          cmd.Fleet,
+			"assigner":       assigner,
+			"frame":          frame,
+			"cargo_capacity": cargoCapacity,
+			"min_cargo":      minCargo,
+		})
+	return nil
+}
+
+// breakLiveWorkClaim severs the live coordinator work-claim on `fleet unassign`:
+// clearing the dedication alone only governs the NEXT acquisition, not the
+// current claim. A captain reservation is left untouched (that is `ship
+// release`'s job).
+//
+// The container the break orphans is reaped too — otherwise it keeps navigating,
+// buying and selling on a hull it no longer owns, invisible to the coordinator,
+// which then launches a SECOND container onto the same hull. The reassignment
+// itself is CORRECT and stands; only the loser is cleaned up, so no claim guard
+// is weakened (RULINGS #4/#7).
+func (h *AssignShipFleetHandler) breakLiveWorkClaim(ctx context.Context, cmd *AssignShipFleetCommand, playerID shared.PlayerID, assigner string) error {
+	brokenFrom, err := h.shipRepo.ReleaseContainerClaim(ctx, cmd.ShipSymbol, playerID, "fleet unassign (sp-w3yd)")
+	if err != nil {
+		return fmt.Errorf("failed to break live work-claim on unassign: %w", err)
+	}
+	if brokenFrom == "" {
+		return nil
+	}
+
+	common.LoggerFromContext(ctx).Log("INFO", fmt.Sprintf(
+		"Broke live coordinator work-claim on %s during unassign — coordinator will stop routing it [assigner=%s]",
+		cmd.ShipSymbol, assigner),
+		map[string]interface{}{
+			"action":       "break_work_claim_on_unassign",
+			"ship_symbol":  cmd.ShipSymbol,
+			"assigner":     assigner,
+			"container_id": brokenFrom,
+		})
+
+	if h.reaper != nil {
+		h.reaper.ReapOrphanedContainer(ctx, brokenFrom, playerID,
+			fmt.Sprintf("fleet unassign of %s [assigner=%s]", cmd.ShipSymbol, assigner))
+	}
+	return nil
 }

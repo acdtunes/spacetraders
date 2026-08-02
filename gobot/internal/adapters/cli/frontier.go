@@ -65,11 +65,10 @@ Examples:
 			}
 			defer client.Close()
 
-			playerID, agentSymbol := playerPointers(playerIdent)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
-			resp, err := client.GetFrontierStatus(ctx, playerID, agentSymbol)
+			resp, err := client.GetFrontierStatus(ctx, playerIdent)
 			if err != nil {
 				return fmt.Errorf("frontier status failed: %w", err)
 			}

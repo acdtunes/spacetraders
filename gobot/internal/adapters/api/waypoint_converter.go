@@ -14,17 +14,8 @@ func NewWaypointConverter() *WaypointConverter {
 	return &WaypointConverter{}
 }
 
-// ConvertGraphToWaypoints converts graph waypoints to Waypoint objects with optional trait enrichment
-//
-// Args:
-//
-//	graph: Graph structure with waypoints data (map[string]interface{})
-//	waypointTraits: Optional lookup map of Waypoint objects with full trait data
-//	                Maps waypoint_symbol -> Waypoint from database
-//
-// Returns:
-//
-//	Map of waypoint_symbol -> Waypoint objects
+// ConvertGraphToWaypoints converts graph waypoints into Waypoint objects keyed by symbol,
+// preferring a trait-enriched waypointTraits entry over structure-only graph data.
 func (c *WaypointConverter) ConvertGraphToWaypoints(
 	graph map[string]interface{},
 	waypointTraits map[string]*shared.Waypoint,

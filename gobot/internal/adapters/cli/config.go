@@ -8,7 +8,6 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
-	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
 // NewConfigCommand creates the config command with subcommands
@@ -32,7 +31,6 @@ Examples:
   spacetraders config clear-player`,
 	}
 
-	// Add subcommands
 	cmd.AddCommand(newConfigShowCommand())
 	cmd.AddCommand(newConfigSetPlayerCommand())
 	cmd.AddCommand(newConfigClearPlayerCommand())
@@ -52,7 +50,6 @@ Shows both system configuration and user preferences.
 Example:
   spacetraders config show`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Load system config
 			cfg, err := config.LoadConfig("")
 			if err != nil {
 				fmt.Printf("Warning: Failed to load config: %v\n", err)
@@ -60,7 +57,6 @@ Example:
 				cfg = config.LoadConfigOrDefault("")
 			}
 
-			// Load user config
 			userConfigHandler, err := config.NewUserConfigHandler()
 			if err != nil {
 				return fmt.Errorf("failed to create user config handler: %w", err)
@@ -72,7 +68,6 @@ Example:
 				userCfg = &config.UserConfig{}
 			}
 
-			// Display configuration
 			fmt.Println("SpaceTraders Configuration")
 			fmt.Println("==========================")
 
@@ -129,21 +124,15 @@ Examples:
 				return fmt.Errorf("either --player-id or --agent flag is required")
 			}
 
-			// Create user config handler
 			userConfigHandler, err := config.NewUserConfigHandler()
 			if err != nil {
 				return fmt.Errorf("failed to create user config handler: %w", err)
 			}
 
 			// Verify player exists in database
-			cfg, err := config.LoadConfig("")
+			db, err := openDatabase()
 			if err != nil {
-				return fmt.Errorf("failed to load config: %w", err)
-			}
-
-			db, err := database.NewConnection(&cfg.Database)
-			if err != nil {
-				return fmt.Errorf("failed to connect to database: %w", err)
+				return err
 			}
 
 			playerRepo := persistence.NewGormPlayerRepository(db)
@@ -151,7 +140,6 @@ Examples:
 
 			var verifiedPlayer *persistence.PlayerModel
 			if playerID > 0 {
-				// Verify by player ID
 				var model persistence.PlayerModel
 				result := db.Where("id = ?", playerID).First(&model)
 				if result.Error != nil {
@@ -159,18 +147,15 @@ Examples:
 				}
 				verifiedPlayer = &model
 
-				// Set by player ID
 				if err := userConfigHandler.SetDefaultPlayer(playerID); err != nil {
 					return fmt.Errorf("failed to set default player: %w", err)
 				}
 			} else {
-				// Verify by agent symbol
 				player, err := playerRepo.FindByAgentSymbol(ctx, agentSymbol)
 				if err != nil {
 					return fmt.Errorf("player with agent '%s' not found", agentSymbol)
 				}
 
-				// Set by agent symbol
 				if err := userConfigHandler.SetDefaultAgent(agentSymbol); err != nil {
 					return fmt.Errorf("failed to set default agent: %w", err)
 				}

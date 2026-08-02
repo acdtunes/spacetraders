@@ -10,6 +10,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/contract/depotstore"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contract/depot"
+	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
 )
 
 // freshRegistry rebuilds the routing registry from the DB via a BRAND-NEW store — the
@@ -89,7 +90,7 @@ func TestAddDepotElement_PersistsAcrossRoles(t *testing.T) {
 			ctx := context.Background()
 			require.NoError(t, s.AddDepot(ctx, playerID, DepotSpec{ID: "alpha", Warehouses: []ElementSpec{{Waypoint: "X1-A-1", ShipSymbol: "WH-A"}}}))
 
-			require.NoError(t, s.AddDepotElement(ctx, playerID, "alpha", role, "X1-NEW-1", "SHIP-NEW"))
+			require.NoError(t, s.AddDepotElement(ctx, playerID, "alpha", role, depot.Element{Waypoint: "X1-NEW-1", ShipSymbol: "SHIP-NEW"}))
 
 			got := depotByID(freshRegistry(t, db, playerID), "alpha")
 			require.NotNil(t, got)
@@ -127,7 +128,7 @@ func TestPlaceDepotElement_Repositions(t *testing.T) {
 		DeliveryHulls: []ElementSpec{{Waypoint: "X1-OFF-1", ShipSymbol: "DH-1"}},
 	}))
 
-	require.NoError(t, s.PlaceDepotElement(ctx, playerID, "alpha", "delivery-hull", "DH-1", "X1-A-1"))
+	require.NoError(t, s.PlaceDepotElement(ctx, playerID, "alpha", "delivery-hull", depot.Element{Waypoint: "X1-A-1", ShipSymbol: "DH-1"}))
 
 	got := depotByID(freshRegistry(t, db, playerID), "alpha")
 	require.NotNil(t, got)
@@ -136,13 +137,47 @@ func TestPlaceDepotElement_Repositions(t *testing.T) {
 	require.Equal(t, "X1-A-1", hulls[0].Waypoint, "the hull must be repositioned to its warehouse, durably")
 }
 
+// The proto -> depot.Element mapping in depot_service_impl.go is the boundary the old
+// positional signatures INVERTED (add passed waypoint-then-ship, place ship-then-waypoint).
+// Two same-typed strings: a transposition there compiles and no other depot test notices.
+func TestDepotElementRPCs_CarryWireFieldsOntoTheElement(t *testing.T) {
+	s, db, playerID := newRecoveryTestServer(t)
+	s.depotSinkOverride = &spyDepotSink{} // the add's positioning dispatch stays off real coordinators
+	ctx := context.Background()
+	impl := NewDaemonServiceImpl(s)
+	require.NoError(t, s.AddDepot(ctx, playerID, DepotSpec{
+		ID:            "wire",
+		Warehouses:    []ElementSpec{{Waypoint: "X1-WIRE-WH", ShipSymbol: "WIRE-WH"}},
+		DeliveryHulls: []ElementSpec{{Waypoint: "X1-WIRE-OFF", ShipSymbol: "WIRE-DH"}},
+	}))
+
+	_, err := impl.AddDepotElement(ctx, &pb.AddDepotElementRequest{
+		PlayerId: int32(playerID), DepotId: "wire", Role: "stocker",
+		Waypoint: "X1-WIRE-SRC", ShipSymbol: "WIRE-ST",
+	})
+	require.NoError(t, err)
+
+	_, err = impl.PlaceDepotElement(ctx, &pb.PlaceDepotElementRequest{
+		PlayerId: int32(playerID), DepotId: "wire", Role: "delivery-hull",
+		ShipSymbol: "WIRE-DH", Waypoint: "X1-WIRE-WH",
+	})
+	require.NoError(t, err, "place looks the element up by the request's ship_symbol, never by its waypoint")
+
+	got := depotByID(freshRegistry(t, db, playerID), "wire")
+	require.NotNil(t, got)
+	require.Equal(t, []depot.Element{{Waypoint: "X1-WIRE-SRC", ShipSymbol: "WIRE-ST"}}, got.Stockers(),
+		"add's request waypoint lands on Element.Waypoint and its ship_symbol on Element.ShipSymbol")
+	require.Equal(t, []depot.Element{{Waypoint: "X1-WIRE-WH", ShipSymbol: "WIRE-DH"}}, got.DeliveryHulls(),
+		"place moves the hull to the request's waypoint, leaving the ship it was found by intact")
+}
+
 // A mistyped role is rejected loudly rather than silently touching the wrong class.
 func TestDepotElement_InvalidRoleRejected(t *testing.T) {
 	s, _, playerID := newRecoveryTestServer(t)
 	ctx := context.Background()
 	require.NoError(t, s.AddDepot(ctx, playerID, DepotSpec{ID: "alpha", Warehouses: []ElementSpec{{Waypoint: "X1-A-1", ShipSymbol: "WH-A"}}}))
 
-	err := s.AddDepotElement(ctx, playerID, "alpha", "not-a-role", "X1-1", "S")
+	err := s.AddDepotElement(ctx, playerID, "alpha", "not-a-role", depot.Element{Waypoint: "X1-1", ShipSymbol: "S"})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "role")
 }
@@ -151,7 +186,7 @@ func TestDepotElement_InvalidRoleRejected(t *testing.T) {
 // so the CLI reports it rather than fabricating a malformed depot.
 func TestDepotElement_UnknownDepotRejected(t *testing.T) {
 	s, _, playerID := newRecoveryTestServer(t)
-	err := s.AddDepotElement(context.Background(), playerID, "ghost", "stocker", "X1-1", "S")
+	err := s.AddDepotElement(context.Background(), playerID, "ghost", "stocker", depot.Element{Waypoint: "X1-1", ShipSymbol: "S"})
 	require.Error(t, err)
 }
 

@@ -4,26 +4,13 @@ import (
 	"context"
 	"fmt"
 	"sort"
-	"strings"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/marketscan"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/ports"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/shipyard"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
-
-// yardSource is what the locator needs from the fleet's shipyard scanner to price
-// a hull without bypassing the shipyard-read budget: the persisted catalogue, a
-// metered live read for yards the store has never seen, and the demand signal that
-// keeps the yards we shop at priced. *ship.ShipyardScanner satisfies it.
-type yardSource interface {
-	OffersFor(ctx context.Context, playerID int, shipType string) ([]shipyard.ShipTypeAvailability, error)
-	ReadShipyard(ctx context.Context, playerID uint, waypointSymbol string, class marketscan.Class) (*ports.ShipyardData, error)
-	NoteDemand(shipType string)
-}
 
 // MarketLocator finds optimal markets for buying and selling goods.
 // It ranks markets by activity and supply levels to guide production decisions.
@@ -51,26 +38,6 @@ func NewMarketLocator(
 	}
 }
 
-// SetYardSource wires the metered shipyard reader the hull search runs through.
-//
-// A setter rather than a constructor argument because NewMarketLocator has two
-// dozen test call sites that pass nil for everything but the market repository,
-// and none of them exercise the hull path; widening the constructor would churn
-// all of them to express nothing. The two production composition roots set it.
-//
-// WITHOUT IT THE HULL SEARCH FINDS NOTHING, deliberately. This search used to
-// issue one live GET /shipyard per shipyard in the system, uncached and unmetered,
-// from a path on the 30-second construction drain — one of the four bypasses that
-// put shipyard reads at 44.7% of the server ceiling. Failing to find a
-// hull is a recoverable planning outcome; quietly restoring an unmetered burst
-// because a wiring was missed is not.
-func (l *MarketLocator) SetYardSource(yards yardSource) {
-	if yards == nil {
-		return
-	}
-	l.yards = yards
-}
-
 // MarketLocatorResult contains market information for a good
 type MarketLocatorResult struct {
 	WaypointSymbol string
@@ -91,7 +58,6 @@ func (l *MarketLocator) FindImportMarket(
 	systemSymbol string,
 	playerID int,
 ) (*MarketLocatorResult, error) {
-	// Use the repository's FindBestMarketBuying method
 	bestMarket, err := l.marketRepo.FindBestMarketBuying(ctx, good, systemSymbol, playerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find import market for %s: %w", good, err)
@@ -113,119 +79,6 @@ func (l *MarketLocator) FindImportMarket(
 		Price:          bestMarket.Bid,
 		TradeVolume:    tradeGood.TradeVolume(),
 	}, nil
-}
-
-// findShipyardSellingShip finds a shipyard that sells a specific ship type.
-// Returns the shipyard with the lowest purchase price.
-//
-// STORE-FIRST: one store query covers every yard in the system, and only yards
-// the store has no priced row for cost a request — a request the shipyard-read
-// budget may decline, in which case that yard is simply not this tick's
-// candidate. Fanning out instead — a live GET /shipyard per yard, off the store
-// and outside the budget — is uncached and unmetered on a path reachable from
-// the 30-second construction drain.
-//
-// A yard row with PurchasePrice 0 is catalogued but never priced (a presence-less
-// GET sees what a counter sells but not what it charges), and it is NOT a free
-// hull: it is skipped as a price, and it is exactly the row that makes the yard
-// worth a live read.
-func (l *MarketLocator) findShipyardSellingShip(
-	ctx context.Context,
-	shipType string,
-	systemSymbol string,
-	playerID int,
-) (*MarketLocatorResult, error) {
-	if l.yards == nil {
-		return nil, fmt.Errorf("no shipyard reader wired; cannot search shipyards for %s", shipType)
-	}
-
-	// Find all shipyards in the system
-	shipyards, err := l.waypointRepo.ListBySystemWithTrait(ctx, systemSymbol, "SHIPYARD")
-	if err != nil {
-		return nil, fmt.Errorf("failed to find shipyards: %w", err)
-	}
-
-	if len(shipyards) == 0 {
-		return nil, fmt.Errorf("no shipyards found in system %s", systemSymbol)
-	}
-
-	// Shopping for a hull IS the demand signal: it lifts every yard known to sell
-	// this type to the top of the budget's rotation, so the next pass through here
-	// finds more of them already priced.
-	l.yards.NoteDemand(shipType)
-
-	inSystem := make(map[string]bool, len(shipyards))
-	for _, waypoint := range shipyards {
-		inSystem[waypoint.Symbol] = true
-	}
-
-	var bestShipyard *MarketLocatorResult
-	var bestPrice int
-	consider := func(waypoint string, price int) {
-		if price <= 0 {
-			return
-		}
-		if bestShipyard == nil || price < bestPrice {
-			bestPrice = price
-			bestShipyard = &MarketLocatorResult{
-				WaypointSymbol: waypoint,
-				Activity:       "", // Shipyards don't have activity/supply metrics
-				Supply:         "",
-				Price:          price,
-			}
-		}
-	}
-
-	priced := make(map[string]bool, len(shipyards))
-	rows, err := l.yards.OffersFor(ctx, playerID, shipType)
-	if err == nil {
-		for _, row := range rows {
-			if !inSystem[row.WaypointSymbol] {
-				continue
-			}
-			if row.PurchasePrice > 0 {
-				priced[row.WaypointSymbol] = true
-				consider(row.WaypointSymbol, row.PurchasePrice)
-			}
-		}
-	}
-
-	// Only the yards the store cannot price are worth a request.
-	for _, waypoint := range shipyards {
-		if priced[waypoint.Symbol] {
-			continue
-		}
-		shipyardData, err := l.yards.ReadShipyard(ctx, uint(playerID), waypoint.Symbol, marketscan.Discretionary)
-		if err != nil || shipyardData == nil {
-			// Unreadable, or declined by the budget. Skip it this tick.
-			continue
-		}
-		for _, listing := range shipyardData.Ships {
-			if listing.Type == shipType {
-				consider(waypoint.Symbol, listing.PurchasePrice)
-			}
-		}
-	}
-
-	if bestShipyard == nil {
-		return nil, fmt.Errorf("no shipyard found selling %s in system %s", shipType, systemSymbol)
-	}
-
-	return bestShipyard, nil
-}
-
-// isShipType returns true if the good is an actual ship type (not ship components like SHIP_PARTS).
-// Ship types are manufactured at shipyards, while ship components are sold at regular markets.
-var shipComponents = map[string]bool{
-	"SHIP_PARTS":   true,
-	"SHIP_PLATING": true,
-}
-
-func isShipType(good string) bool {
-	if shipComponents[good] {
-		return false
-	}
-	return strings.HasPrefix(good, "SHIP_")
 }
 
 func (l *MarketLocator) scannedTradeGood(ctx context.Context, waypointSymbol string, good string, playerID int) (*market.TradeGood, error) {
@@ -266,7 +119,6 @@ func (l *MarketLocator) FindExportMarket(
 	systemSymbol string,
 	playerID int,
 ) (*MarketLocatorResult, error) {
-	// Check if this is an actual ship type - ships are manufactured at shipyards
 	// Ship components (SHIP_PARTS, SHIP_PLATING) are regular market goods
 	if isShipType(good) {
 		return l.findShipyardSellingShip(ctx, good, systemSymbol, playerID)
@@ -345,13 +197,11 @@ func (l *MarketLocator) FindExportMarketBySupplyPriority(
 		return l.findShipyardSellingShip(ctx, good, systemSymbol, playerID)
 	}
 
-	// Get all markets in the system to consider activity
 	marketWaypoints, err := l.marketRepo.FindAllMarketsInSystem(ctx, systemSymbol, playerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find markets: %w", err)
 	}
 
-	// Collect all candidate markets with MODERATE+ supply
 	type candidateMarket struct {
 		waypointSymbol string
 		supply         string
@@ -399,7 +249,6 @@ func (l *MarketLocator) FindExportMarketBySupplyPriority(
 		return nil, fmt.Errorf("no market with MODERATE+ supply for %s (SCARCE/LIMITED markets skipped)", good)
 	}
 
-	// Sort by: Supply priority DESC, then Activity score DESC, then Price ASC
 	sort.SliceStable(candidates, func(i, j int) bool {
 		if candidates[i].supplyScore != candidates[j].supplyScore {
 			return candidates[i].supplyScore > candidates[j].supplyScore
@@ -575,61 +424,7 @@ func (l *MarketLocator) FindConstructionSource(
 		return nil, fmt.Errorf("failed to find markets: %w", err)
 	}
 
-	type sourceCandidate struct {
-		result        *MarketLocatorResult
-		supplyScore   int
-		activityScore int
-		price         int
-	}
-	var exportCandidates, importCandidates []sourceCandidate
-
-	for _, waypointSymbol := range marketWaypoints {
-		marketData, err := l.marketRepo.GetMarketData(ctx, waypointSymbol, playerID)
-		if err != nil || marketData == nil {
-			continue
-		}
-		tradeGood := marketData.FindGood(good)
-		if tradeGood == nil {
-			continue
-		}
-
-		supply := supplyOrEmpty(tradeGood)
-		activity := activityOrEmpty(tradeGood)
-		result := &MarketLocatorResult{
-			WaypointSymbol: waypointSymbol,
-			Activity:       activity,
-			Supply:         supply,
-			Price:          tradeGood.PurchasePrice(),
-			TradeVolume:    tradeGood.TradeVolume(),
-		}
-
-		switch tradeGood.TradeType() {
-		case market.TradeTypeExport:
-			// EXPORT: accept floor+ (default MODERATE+, skipping SCARCE/LIMITED
-			// to avoid overpaying, unless the caller lowered the floor).
-			supplyScore := manufacturing.SupplyLevel(supply).Order() - floor.Order() + 1
-			if supplyScore < 1 {
-				continue
-			}
-			exportCandidates = append(exportCandidates, sourceCandidate{
-				result:        result,
-				supplyScore:   supplyScore,
-				activityScore: ExportActivityScore(activity),
-				price:         tradeGood.PurchasePrice(),
-			})
-		case market.TradeTypeImport, market.TradeTypeExchange:
-			// FALLBACK: only oversupplied importers/exchanges (HIGH/ABUNDANT) can
-			// serve as a reliable buy source for accumulated stock.
-			if !isHighOrAbundant(supply) {
-				continue
-			}
-			importCandidates = append(importCandidates, sourceCandidate{
-				result:      result,
-				supplyScore: manufacturing.SupplyLevel(supply).Order(),
-				price:       tradeGood.PurchasePrice(),
-			})
-		}
-	}
+	exportCandidates, importCandidates := l.collectSourceCandidates(ctx, marketWaypoints, good, playerID, floor)
 
 	// Prefer EXPORT markets when any qualify.
 	if len(exportCandidates) > 0 {
@@ -660,6 +455,71 @@ func (l *MarketLocator) FindConstructionSource(
 	return nil, nil
 }
 
+// sourceCandidate is one market that could supply a construction material, pre-scored so the
+// caller only has to sort.
+type sourceCandidate struct {
+	result        *MarketLocatorResult
+	supplyScore   int
+	activityScore int
+	price         int
+}
+
+// collectSourceCandidates scores every market in the system that sells the good, splitting them
+// into EXPORT candidates at or above the supply floor and the oversupplied import/exchange
+// fallback — only HIGH/ABUNDANT importers hold enough accumulated stock to be a reliable source.
+func (l *MarketLocator) collectSourceCandidates(
+	ctx context.Context,
+	marketWaypoints []string,
+	good string,
+	playerID int,
+	floor manufacturing.SupplyLevel,
+) (exportCandidates, importCandidates []sourceCandidate) {
+	for _, waypointSymbol := range marketWaypoints {
+		marketData, err := l.marketRepo.GetMarketData(ctx, waypointSymbol, playerID)
+		if err != nil || marketData == nil {
+			continue
+		}
+		tradeGood := marketData.FindGood(good)
+		if tradeGood == nil {
+			continue
+		}
+
+		supply := supplyOrEmpty(tradeGood)
+		activity := activityOrEmpty(tradeGood)
+		result := &MarketLocatorResult{
+			WaypointSymbol: waypointSymbol,
+			Activity:       activity,
+			Supply:         supply,
+			Price:          tradeGood.PurchasePrice(),
+			TradeVolume:    tradeGood.TradeVolume(),
+		}
+
+		switch tradeGood.TradeType() {
+		case market.TradeTypeExport:
+			supplyScore := manufacturing.SupplyLevel(supply).Order() - floor.Order() + 1
+			if supplyScore < 1 {
+				continue
+			}
+			exportCandidates = append(exportCandidates, sourceCandidate{
+				result:        result,
+				supplyScore:   supplyScore,
+				activityScore: ExportActivityScore(activity),
+				price:         tradeGood.PurchasePrice(),
+			})
+		case market.TradeTypeImport, market.TradeTypeExchange:
+			if !isHighOrAbundant(supply) {
+				continue
+			}
+			importCandidates = append(importCandidates, sourceCandidate{
+				result:      result,
+				supplyScore: manufacturing.SupplyLevel(supply).Order(),
+				price:       tradeGood.PurchasePrice(),
+			})
+		}
+	}
+	return exportCandidates, importCandidates
+}
+
 // FindExportMarketWithGoodSupply finds a market that exports a good with HIGH or ABUNDANT supply.
 // This is used for supply-gated acquisitions to ensure we only buy when prices are favorable.
 // Returns nil if no market with good supply is available.
@@ -676,19 +536,16 @@ func (l *MarketLocator) FindExportMarketWithGoodSupply(
 	systemSymbol string,
 	playerID int,
 ) (*MarketLocatorResult, error) {
-	// Check if this is an actual ship type - ships are manufactured at shipyards
 	// Shipyards don't have supply levels, so they're always available
 	if isShipType(good) {
 		return l.findShipyardSellingShip(ctx, good, systemSymbol, playerID)
 	}
 
-	// Get all markets in the system
 	marketWaypoints, err := l.marketRepo.FindAllMarketsInSystem(ctx, systemSymbol, playerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find markets in system: %w", err)
 	}
 
-	// Collect all markets with HIGH or ABUNDANT supply
 	type candidateMarket struct {
 		result *MarketLocatorResult
 		supply string
@@ -697,16 +554,14 @@ func (l *MarketLocator) FindExportMarketWithGoodSupply(
 	var candidates []candidateMarket
 
 	for _, waypointSymbol := range marketWaypoints {
-		// Get market data
 		marketData, err := l.marketRepo.GetMarketData(ctx, waypointSymbol, playerID)
 		if err != nil || marketData == nil {
-			continue // Skip markets we can't access
+			continue
 		}
 
-		// Check if this market exports the good
 		tradeGood := marketData.FindGood(good)
 		if tradeGood == nil {
-			continue // Market doesn't have this good
+			continue
 		}
 
 		// Only consider EXPORT markets (selling to us)
@@ -714,7 +569,6 @@ func (l *MarketLocator) FindExportMarketWithGoodSupply(
 			continue
 		}
 
-		// Check supply level - only HIGH or ABUNDANT
 		supply := supplyOrEmpty(tradeGood)
 		if !isHighOrAbundant(supply) {
 			continue
@@ -739,7 +593,6 @@ func (l *MarketLocator) FindExportMarketWithGoodSupply(
 		return nil, nil // No market with good supply - not an error, just unavailable
 	}
 
-	// Sort candidates: ABUNDANT > HIGH, then by price (lower is better)
 	sort.SliceStable(candidates, func(i, j int) bool {
 		if candidates[i].supply != candidates[j].supply {
 			return candidates[i].supply == supplyAbundant
@@ -759,7 +612,6 @@ func (l *MarketLocator) FindBestExportMarket(
 	systemSymbol string,
 	playerID int,
 ) (*MarketLocatorResult, error) {
-	// Get all markets in the system
 	marketWaypoints, err := l.marketRepo.FindAllMarketsInSystem(ctx, systemSymbol, playerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find markets in system: %w", err)
@@ -769,25 +621,21 @@ func (l *MarketLocator) FindBestExportMarket(
 	var bestScore int
 
 	for _, waypointSymbol := range marketWaypoints {
-		// Get market data
 		marketData, err := l.marketRepo.GetMarketData(ctx, waypointSymbol, playerID)
 		if err != nil || marketData == nil {
-			continue // Skip markets we can't access
+			continue
 		}
 
-		// Check if this market sells the good
 		tradeGood := marketData.FindGood(good)
 		if tradeGood == nil {
-			continue // Market doesn't sell this good
+			continue
 		}
 
-		// Calculate market score based on activity and supply
 		activity := activityOrEmpty(tradeGood)
 		supply := supplyOrEmpty(tradeGood)
 
 		score := calculateMarketScore(activity, supply)
 
-		// Update best market if this one has a higher score
 		if bestMarket == nil || score > bestScore {
 			bestScore = score
 			bestMarket = &MarketLocatorResult{
@@ -849,7 +697,6 @@ func (l *MarketLocator) FindFactoryForProduction(
 	systemSymbol string,
 	playerID int,
 ) (*MarketLocatorResult, error) {
-	// Get all markets in the system
 	marketWaypoints, err := l.marketRepo.FindAllMarketsInSystem(ctx, systemSymbol, playerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find markets in system: %w", err)
@@ -859,21 +706,18 @@ func (l *MarketLocator) FindFactoryForProduction(
 	var bestScore int
 
 	for _, waypointSymbol := range marketWaypoints {
-		// Get market data
 		marketData, err := l.marketRepo.GetMarketData(ctx, waypointSymbol, playerID)
 		if err != nil || marketData == nil {
-			continue // Skip markets we can't access
+			continue
 		}
 
-		// Check if this market EXPORTS the output good (actually produces it)
 		// CRITICAL: Must check trade_type = EXPORT, not just that the good exists!
 		// A market can IMPORT a good (consume it) without producing it.
 		outputTradeGood := marketData.FindGood(outputGood)
 		if outputTradeGood == nil || outputTradeGood.TradeType() != market.TradeTypeExport {
-			continue // Market doesn't produce (export) this good
+			continue
 		}
 
-		// Check if this market IMPORTS all input goods (buys them)
 		// A factory that produces a good should also accept its inputs
 		allInputsAccepted := true
 		for _, inputGood := range inputGoods {
@@ -885,16 +729,14 @@ func (l *MarketLocator) FindFactoryForProduction(
 		}
 
 		if !allInputsAccepted {
-			continue // Factory doesn't accept all required inputs
+			continue
 		}
 
-		// Calculate score based on output good activity and supply
 		activity := activityOrEmpty(outputTradeGood)
 		supply := supplyOrEmpty(outputTradeGood)
 
 		score := calculateMarketScore(activity, supply)
 
-		// Update best factory if this one has a higher score
 		if bestFactory == nil || score > bestScore {
 			bestScore = score
 			bestFactory = &MarketLocatorResult{

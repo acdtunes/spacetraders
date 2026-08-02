@@ -12,16 +12,6 @@ import (
 // the coordinator's source stays in the tree pending era-5 proof. Its
 // container type is no longer in the command registry, so a still-RUNNING
 // legacy container fails closed at restart recovery ("unknown command type").
-func (s *DaemonServer) MarketFreshnessSizerCoordinator(
-	ctx context.Context,
-	playerID int,
-	tickIntervalSecs int,
-	dryRun bool,
-	slaSeconds int,
-	maxProbesPerSystem int,
-	maxProbeFleet int,
-	maxSpendPerCycle int,
-	purchaseCooldownSecs int,
-) (string, error) {
+func (s *DaemonServer) MarketFreshnessSizerCoordinator(ctx context.Context, playerID int) (string, error) {
 	return "", fmt.Errorf("the market-freshness sizer is retired: the probe-sensing coordinator (boot-standing) owns freshness sizing — operate it via `tune --operation sensing`")
 }

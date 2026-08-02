@@ -119,7 +119,6 @@ func (d *SellMarketDistributor) findEligibleSellMarkets(
 	systemSymbol string,
 	playerID int,
 ) ([]*EligibleMarket, error) {
-	// Get all markets in the system
 	marketWaypoints, err := d.marketRepo.FindAllMarketsInSystem(ctx, systemSymbol, playerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find markets: %w", err)
@@ -178,13 +177,11 @@ func (d *SellMarketDistributor) countPendingTasksPerMarket(
 	good string,
 	playerID int,
 ) {
-	// Get all incomplete tasks for the player
 	tasks, err := d.taskRepo.FindIncomplete(ctx, playerID)
 	if err != nil {
 		return // Can't count, leave all at 0
 	}
 
-	// Build a map for quick lookup
 	marketMap := make(map[string]*EligibleMarket)
 	for _, m := range markets {
 		marketMap[m.WaypointSymbol] = m

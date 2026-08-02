@@ -19,9 +19,9 @@ const (
 	// single out or backhaul buy may spend. Aggressive by Admiral authorization; live-tunable.
 	defaultLongHaulPerHaulCap int64 = 1_000_000
 
-	// defaultLongHaulTotalExposureCap is the total in-flight long-haul exposure cap (~2M):
-	// the most capital that may sit in unsold long-haul cargo across the fleet at once. It is
-	// enforced as maxConcurrentHauls (below): worst-case exposure = concurrent × perHaulCap.
+	// defaultLongHaulTotalExposureCap is the total in-flight long-haul exposure figure (~2M).
+	// It is threaded to each worker for parity only — the coordinator applies no concurrency
+	// ceiling from it (Admiral uncap order); spend stays bounded per buy by the fence below.
 	defaultLongHaulTotalExposureCap int64 = 2_000_000
 )
 
@@ -39,11 +39,9 @@ func unreadableLongHaulFence() common.ReserveFloorGate {
 }
 
 // longHaulEnvelope is one buy's money envelope: the per-haul cap plus the shared cushion
-// fence. The total-exposure cap (design guard 3) is enforced UPSTREAM as the fleet
-// coordinator's concurrent-haul limit (maxConcurrentHauls), so a single worker only enforces
-// the per-haul + cushion bounds here — each worker holds at most one perHaulCap tranche at a
-// time (it sells the out cargo before buying the backhaul), so concurrent × perHaulCap bounds
-// total in-flight exposure.
+// fence. No total-exposure ceiling is enforced anywhere (Admiral uncap order) — a worker
+// holds at most one perHaulCap tranche at a time (it sells the out cargo before buying the
+// backhaul), so the per-haul + cushion bounds here are the whole spend guard.
 type longHaulEnvelope struct {
 	perHaulCap int64                   // credits; 0 → treated as no explicit per-haul cap
 	fence      common.ReserveFloorGate // Floor = ContractScalerCushion (200k), fail-closed
@@ -96,21 +94,4 @@ func (e longHaulEnvelope) permitsBuy(buyCost int64) (bool, string) {
 		return false, fmt.Sprintf("buy %d would breach the %d contract-cushion fence (treasury %d)", buyCost, e.fence.Floor, e.fence.Treasury)
 	}
 	return true, ""
-}
-
-// maxConcurrentHauls bounds simultaneously-running long-haul workers so worst-case in-flight
-// exposure stays within the total-exposure cap (design guard 3): each worker holds at most
-// one perHaulCap tranche at a time, so concurrent × perHaulCap ≤ totalExposureCap. Floored at
-// 1 when both caps are positive (a total cap below one haul still runs a single guarded haul).
-// A non-positive cap means unlimited (bounded naturally by the tagged fleet size + the
-// per-hull guards).
-func maxConcurrentHauls(totalExposureCap, perHaulCap int64) int {
-	if totalExposureCap <= 0 || perHaulCap <= 0 {
-		return 0
-	}
-	n := int(totalExposureCap / perHaulCap)
-	if n < 1 {
-		n = 1
-	}
-	return n
 }

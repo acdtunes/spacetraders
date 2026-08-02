@@ -6,6 +6,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // startContainerRunner wires a ContainerRunner for an already-persisted container,
@@ -25,6 +26,22 @@ func (s *DaemonServer) startContainerRunner(containerEntity *container.Container
 			fmt.Printf("%s %s failed: %v\n", logLabel, containerID, err)
 		}
 	}()
+}
+
+// requireIdleHull enforces the idle-gap discipline every hull-taking start verb shares: fly
+// a genuinely idle hull, never steal one mid-task. opLabel names the caller in the error.
+func (s *DaemonServer) requireIdleHull(ctx context.Context, shipSymbol string, playerID int, opLabel string) error {
+	ship, err := s.shipRepo.FindBySymbol(ctx, shipSymbol, shared.MustNewPlayerID(playerID))
+	if err != nil {
+		return fmt.Errorf("failed to load ship %s: %w", shipSymbol, err)
+	}
+	if ship == nil {
+		return fmt.Errorf("ship %s not found", shipSymbol)
+	}
+	if !ship.IsIdle() {
+		return fmt.Errorf("ship %s is not idle (assigned to %q) - %s only takes idle-gap hulls", shipSymbol, ship.ContainerID(), opLabel)
+	}
+	return nil
 }
 
 // findContainerModelByID linear-scans every container for one with the given ID. The

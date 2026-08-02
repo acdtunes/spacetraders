@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 )
 
@@ -62,20 +61,9 @@ func (s *DaemonServer) PersistWorkerFerryWorker(
 // coordinator-managed ferry path). Mirrors StartScoutReposition: load the persisted model,
 // rebuild the command from its config, and run it.
 func (s *DaemonServer) StartWorkerFerry(ctx context.Context, containerID string) error {
-	allContainers, err := s.containerRepo.ListAll(ctx, nil)
+	containerModel, err := s.findContainerModelByID(ctx, containerID)
 	if err != nil {
-		return fmt.Errorf("failed to list containers: %w", err)
-	}
-
-	var containerModel *persistence.ContainerModel
-	for _, c := range allContainers {
-		if c.ID == containerID {
-			containerModel = c
-			break
-		}
-	}
-	if containerModel == nil {
-		return fmt.Errorf("container %s not found", containerID)
+		return err
 	}
 
 	var config map[string]interface{}

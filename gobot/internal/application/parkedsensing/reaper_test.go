@@ -60,7 +60,8 @@ func (f *fakeReapLedger) SlotsByState(_ context.Context, _ int, states ...string
 	return out, nil
 }
 
-func (f *fakeReapLedger) TransitionSlot(_ context.Context, _ int, waypoint, kind, from, to string, set SlotFields) error {
+func (f *fakeReapLedger) TransitionSlot(_ context.Context, _ int, tr SlotTransition, set SlotFields) error {
+	waypoint, kind, from, to := tr.Waypoint, tr.Kind, tr.From, tr.To
 	f.transitions = append(f.transitions, transitionCall{waypoint, from, to, set.AssignedShip, set.PurchaseYard})
 	if err := f.transitionErr[waypoint]; err != nil {
 		return err

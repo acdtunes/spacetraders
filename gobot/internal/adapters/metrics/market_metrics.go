@@ -57,162 +57,126 @@ func NewMarketMetricsCollector(db *gorm.DB) *MarketMetricsCollector {
 		db: db,
 
 		// Scanner Performance Metrics
-		marketScansTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "market_scans_total",
-				Help:      "Total number of market scans attempted",
-			},
-			[]string{"player_id", "waypoint_symbol", "status"},
+		marketScansTotal: newCounterVec(
+			"market_scans_total",
+			"Total number of market scans attempted",
+			"player_id",
+			"waypoint_symbol",
+			"status",
 		),
 
-		marketScanDurationSeconds: prometheus.NewHistogramVec(
-			prometheus.HistogramOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "market_scan_duration_seconds",
-				Help:      "Duration of market scan operations",
-				Buckets:   []float64{0.5, 1.0, 1.5, 2.0, 3.0, 5.0, 10.0},
-			},
-			[]string{"player_id", "waypoint_symbol"},
+		marketScanDurationSeconds: newHistogramVec(
+			"market_scan_duration_seconds",
+			"Duration of market scan operations",
+			[]float64{0.5, 1.0, 1.5, 2.0, 3.0, 5.0, 10.0},
+			"player_id",
+			"waypoint_symbol",
 		),
 
-		marketScanRate: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "market_scan_rate",
-				Help:      "Current scans per minute in system",
-			},
-			[]string{"player_id", "system_symbol"},
+		marketScanRate: newGaugeVec(
+			"market_scan_rate",
+			"Current scans per minute in system",
+			"player_id",
+			"system_symbol",
 		),
 
-		marketScannerErrorsTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "market_scanner_errors_total",
-				Help:      "Total number of scanner errors by type",
-			},
-			[]string{"player_id", "error_type"},
+		marketScannerErrorsTotal: newCounterVec(
+			"market_scanner_errors_total",
+			"Total number of scanner errors by type",
+			"player_id",
+			"error_type",
 		),
 
 		// Coverage Metrics
-		marketCoverageTotal: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "market_coverage_total",
-				Help:      "Total number of markets discovered/scanned in system",
-			},
-			[]string{"player_id", "system_symbol"},
+		marketCoverageTotal: newGaugeVec(
+			"market_coverage_total",
+			"Total number of markets discovered/scanned in system",
+			"player_id",
+			"system_symbol",
 		),
 
-		marketCoverageFresh: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "market_coverage_fresh",
-				Help:      "Number of markets with data fresher than threshold",
-			},
-			[]string{"player_id", "system_symbol", "age_threshold"},
+		marketCoverageFresh: newGaugeVec(
+			"market_coverage_fresh",
+			"Number of markets with data fresher than threshold",
+			"player_id",
+			"system_symbol",
+			"age_threshold",
 		),
 
-		marketDataAge: prometheus.NewHistogramVec(
-			prometheus.HistogramOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "market_data_age_seconds",
-				Help:      "Age distribution of market data (seconds since last_updated)",
-				Buckets:   []float64{60, 300, 600, 1800, 3600, 7200},
-			},
-			[]string{"player_id", "system_symbol"},
+		marketDataAge: newHistogramVec(
+			"market_data_age_seconds",
+			"Age distribution of market data (seconds since last_updated)",
+			[]float64{60, 300, 600, 1800, 3600, 7200},
+			"player_id",
+			"system_symbol",
 		),
 
 		// Price Dynamics Metrics
-		marketPriceSpread: prometheus.NewHistogramVec(
-			prometheus.HistogramOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "market_price_spread",
-				Help:      "Distribution of price spreads, the market rake (purchasePrice - sellPrice, i.e. ask - bid)",
-				Buckets:   []float64{10, 50, 100, 500, 1000, 5000, 10000},
-			},
-			[]string{"player_id", "good_symbol"},
+		marketPriceSpread: newHistogramVec(
+			"market_price_spread",
+			"Distribution of price spreads, the market rake (purchasePrice - sellPrice, i.e. ask - bid)",
+			[]float64{10, 50, 100, 500, 1000, 5000, 10000},
+			"player_id",
+			"good_symbol",
 		),
 
-		marketBestSpread: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "market_best_spread",
-				Help:      "Maximum price spread available for each good in system",
-			},
-			[]string{"player_id", "good_symbol", "system_symbol"},
+		marketBestSpread: newGaugeVec(
+			"market_best_spread",
+			"Maximum price spread available for each good in system",
+			"player_id",
+			"good_symbol",
+			"system_symbol",
 		),
 
-		marketEfficiencyPercent: prometheus.NewHistogramVec(
-			prometheus.HistogramOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "market_efficiency_percent",
-				Help:      "Spread as percentage of the ask ((spread / purchasePrice) * 100)",
-				Buckets:   []float64{5, 10, 25, 50, 75, 100},
-			},
-			[]string{"player_id", "good_symbol"},
+		marketEfficiencyPercent: newHistogramVec(
+			"market_efficiency_percent",
+			"Spread as percentage of the ask ((spread / purchasePrice) * 100)",
+			[]float64{5, 10, 25, 50, 75, 100},
+			"player_id",
+			"good_symbol",
 		),
 
 		// Supply & Demand Metrics
-		marketSupplyDistribution: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "market_supply_distribution",
-				Help:      "Count of markets at each supply level per good",
-			},
-			[]string{"player_id", "good_symbol", "supply_level"},
+		marketSupplyDistribution: newGaugeVec(
+			"market_supply_distribution",
+			"Count of markets at each supply level per good",
+			"player_id",
+			"good_symbol",
+			"supply_level",
 		),
 
-		marketActivityDistribution: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "market_activity_distribution",
-				Help:      "Count of markets at each activity level per good",
-			},
-			[]string{"player_id", "good_symbol", "activity_level"},
+		marketActivityDistribution: newGaugeVec(
+			"market_activity_distribution",
+			"Count of markets at each activity level per good",
+			"player_id",
+			"good_symbol",
+			"activity_level",
 		),
 
-		marketLiquidity: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "market_liquidity",
-				Help:      "Trade volume limit (max units per transaction)",
-			},
-			[]string{"player_id", "waypoint_symbol", "good_symbol"},
+		marketLiquidity: newGaugeVec(
+			"market_liquidity",
+			"Trade volume limit (max units per transaction)",
+			"player_id",
+			"waypoint_symbol",
+			"good_symbol",
 		),
 
 		// Trading Opportunities Metrics
-		tradeOpportunitiesTotal: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "trade_opportunities_total",
-				Help:      "Count of profitable trade routes with margin >= threshold",
-			},
-			[]string{"player_id", "system_symbol", "min_margin"},
+		tradeOpportunitiesTotal: newGaugeVec(
+			"trade_opportunities_total",
+			"Count of profitable trade routes with margin >= threshold",
+			"player_id",
+			"system_symbol",
+			"min_margin",
 		),
 
-		marketBestPrice: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "market_best_price",
-				Help:      "Best buy/sell prices for each good in system",
-			},
-			[]string{"player_id", "good_symbol", "system_symbol", "type"},
+		marketBestPrice: newGaugeVec(
+			"market_best_price",
+			"Best buy/sell prices for each good in system",
+			"player_id",
+			"good_symbol",
+			"system_symbol",
+			"type",
 		),
 
 		// Configuration
@@ -225,10 +189,9 @@ func NewMarketMetricsCollector(db *gorm.DB) *MarketMetricsCollector {
 // Register registers all market metrics with the Prometheus registry
 func (c *MarketMetricsCollector) Register() error {
 	if Registry == nil {
-		return nil // Metrics not enabled
+		return nil
 	}
-
-	metrics := []prometheus.Collector{
+	return registerAll(
 		c.marketScansTotal,
 		c.marketScanDurationSeconds,
 		c.marketScanRate,
@@ -244,15 +207,7 @@ func (c *MarketMetricsCollector) Register() error {
 		c.marketLiquidity,
 		c.tradeOpportunitiesTotal,
 		c.marketBestPrice,
-	}
-
-	for _, metric := range metrics {
-		if err := Registry.Register(metric); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	)
 }
 
 // Start begins the polling goroutine for aggregate metrics
@@ -274,11 +229,30 @@ func (c *MarketMetricsCollector) updateAllMetrics() {
 
 	for _, playerID := range players {
 		for _, systemSymbol := range systems {
-			c.updateCoverageMetrics(playerID, systemSymbol)
-			c.updatePriceMetrics(playerID, systemSymbol)
-			c.updateSupplyDemandMetrics(playerID, systemSymbol)
-			c.updateTradingOpportunities(playerID, systemSymbol)
+			scope := newMarketScope(playerID, systemSymbol)
+			c.updateCoverageMetrics(scope)
+			c.updatePriceMetrics(scope)
+			c.updateSupplyDemandMetrics(scope)
+			c.updateTradingOpportunities(scope)
 		}
+	}
+}
+
+// marketScope is the (player, system) pair every poll query and gauge in this collector
+// is keyed on, with the label string and the waypoint LIKE pattern derived once.
+type marketScope struct {
+	playerID       int
+	playerIDLabel  string
+	system         string
+	waypointPrefix string
+}
+
+func newMarketScope(playerID int, system string) marketScope {
+	return marketScope{
+		playerID:       playerID,
+		playerIDLabel:  strconv.Itoa(playerID),
+		system:         system,
+		waypointPrefix: system + "-%",
 	}
 }
 
@@ -326,14 +300,12 @@ func (c *MarketMetricsCollector) getActivePlayersAndSystems() ([]int, []string) 
 }
 
 // updateCoverageMetrics updates market coverage and freshness metrics
-func (c *MarketMetricsCollector) updateCoverageMetrics(playerID int, systemSymbol string) {
-	playerIDStr := strconv.Itoa(playerID)
-
+func (c *MarketMetricsCollector) updateCoverageMetrics(scope marketScope) {
 	// Total markets in system
 	var totalCount int64
 	err := c.db.Table("market_data").
 		Select("COUNT(DISTINCT waypoint_symbol)").
-		Where("player_id = ? AND waypoint_symbol LIKE ?", playerID, systemSymbol+"-%").
+		Where("player_id = ? AND waypoint_symbol LIKE ?", scope.playerID, scope.waypointPrefix).
 		Count(&totalCount).Error
 
 	if err != nil {
@@ -341,7 +313,7 @@ func (c *MarketMetricsCollector) updateCoverageMetrics(playerID int, systemSymbo
 		return
 	}
 
-	c.marketCoverageTotal.WithLabelValues(playerIDStr, systemSymbol).Set(float64(totalCount))
+	c.marketCoverageTotal.WithLabelValues(scope.playerIDLabel, scope.system).Set(float64(totalCount))
 
 	// Fresh markets by threshold
 	for _, threshold := range c.freshThresholds {
@@ -351,7 +323,7 @@ func (c *MarketMetricsCollector) updateCoverageMetrics(playerID int, systemSymbo
 		err := c.db.Table("market_data").
 			Select("COUNT(DISTINCT waypoint_symbol)").
 			Where("player_id = ? AND waypoint_symbol LIKE ? AND last_updated >= ?",
-				playerID, systemSymbol+"-%", cutoff).
+				scope.playerID, scope.waypointPrefix, cutoff).
 			Count(&freshCount).Error
 
 		if err != nil {
@@ -360,7 +332,7 @@ func (c *MarketMetricsCollector) updateCoverageMetrics(playerID int, systemSymbo
 		}
 
 		thresholdLabel := strconv.Itoa(threshold) + "s"
-		c.marketCoverageFresh.WithLabelValues(playerIDStr, systemSymbol, thresholdLabel).Set(float64(freshCount))
+		c.marketCoverageFresh.WithLabelValues(scope.playerIDLabel, scope.system, thresholdLabel).Set(float64(freshCount))
 	}
 
 	// Market data age distribution
@@ -377,7 +349,7 @@ func (c *MarketMetricsCollector) updateCoverageMetrics(playerID int, systemSymbo
 			WHERE player_id = ? AND waypoint_symbol LIKE ?
 			GROUP BY waypoint_symbol
 		) as waypoint_ages
-	`, playerID, systemSymbol+"-%").Scan(&ageRecords).Error
+	`, scope.playerID, scope.waypointPrefix).Scan(&ageRecords).Error
 
 	if err != nil {
 		log.Printf("Failed to get market data ages: %v", err)
@@ -387,14 +359,12 @@ func (c *MarketMetricsCollector) updateCoverageMetrics(playerID int, systemSymbo
 	// Clear previous observations (reset histogram)
 	// Note: Histograms accumulate, so we record current snapshot
 	for _, record := range ageRecords {
-		c.marketDataAge.WithLabelValues(playerIDStr, systemSymbol).Observe(float64(record.Age))
+		c.marketDataAge.WithLabelValues(scope.playerIDLabel, scope.system).Observe(float64(record.Age))
 	}
 }
 
 // updatePriceMetrics updates price spread and efficiency metrics
-func (c *MarketMetricsCollector) updatePriceMetrics(playerID int, systemSymbol string) {
-	playerIDStr := strconv.Itoa(playerID)
-
+func (c *MarketMetricsCollector) updatePriceMetrics(scope marketScope) {
 	// Get all market data for price calculations
 	var records []struct {
 		GoodSymbol    string
@@ -404,7 +374,7 @@ func (c *MarketMetricsCollector) updatePriceMetrics(playerID int, systemSymbol s
 
 	err := c.db.Table("market_data").
 		Select("good_symbol, sell_price, purchase_price").
-		Where("player_id = ? AND waypoint_symbol LIKE ?", playerID, systemSymbol+"-%").
+		Where("player_id = ? AND waypoint_symbol LIKE ?", scope.playerID, scope.waypointPrefix).
 		Scan(&records).Error
 
 	if err != nil {
@@ -422,7 +392,7 @@ func (c *MarketMetricsCollector) updatePriceMetrics(playerID int, systemSymbol s
 		spread := record.PurchasePrice - record.SellPrice
 
 		// Record spread distribution
-		c.marketPriceSpread.WithLabelValues(playerIDStr, record.GoodSymbol).Observe(float64(spread))
+		c.marketPriceSpread.WithLabelValues(scope.playerIDLabel, record.GoodSymbol).Observe(float64(spread))
 
 		// Track best spread
 		if spread > bestSpreads[record.GoodSymbol] {
@@ -432,20 +402,18 @@ func (c *MarketMetricsCollector) updatePriceMetrics(playerID int, systemSymbol s
 		// Calculate efficiency percentage: the rake as a share of the ASK we would pay.
 		if record.PurchasePrice > 0 {
 			efficiencyPercent := float64(spread) / float64(record.PurchasePrice) * 100
-			c.marketEfficiencyPercent.WithLabelValues(playerIDStr, record.GoodSymbol).Observe(efficiencyPercent)
+			c.marketEfficiencyPercent.WithLabelValues(scope.playerIDLabel, record.GoodSymbol).Observe(efficiencyPercent)
 		}
 	}
 
 	// Set best spread gauges
 	for goodSymbol, bestSpread := range bestSpreads {
-		c.marketBestSpread.WithLabelValues(playerIDStr, goodSymbol, systemSymbol).Set(float64(bestSpread))
+		c.marketBestSpread.WithLabelValues(scope.playerIDLabel, goodSymbol, scope.system).Set(float64(bestSpread))
 	}
 }
 
 // updateSupplyDemandMetrics updates supply/demand distribution and liquidity metrics
-func (c *MarketMetricsCollector) updateSupplyDemandMetrics(playerID int, systemSymbol string) {
-	playerIDStr := strconv.Itoa(playerID)
-
+func (c *MarketMetricsCollector) updateSupplyDemandMetrics(scope marketScope) {
 	// Get supply distribution
 	var supplyDist []struct {
 		GoodSymbol  string
@@ -455,7 +423,7 @@ func (c *MarketMetricsCollector) updateSupplyDemandMetrics(playerID int, systemS
 
 	err := c.db.Table("market_data").
 		Select("good_symbol, supply as supply_level, COUNT(*) as count").
-		Where("player_id = ? AND waypoint_symbol LIKE ?", playerID, systemSymbol+"-%").
+		Where("player_id = ? AND waypoint_symbol LIKE ?", scope.playerID, scope.waypointPrefix).
 		Group("good_symbol, supply").
 		Scan(&supplyDist).Error
 
@@ -467,7 +435,7 @@ func (c *MarketMetricsCollector) updateSupplyDemandMetrics(playerID int, systemS
 			if record.SupplyLevel.Valid {
 				supplyLevel = record.SupplyLevel.String
 			}
-			c.marketSupplyDistribution.WithLabelValues(playerIDStr, record.GoodSymbol, supplyLevel).Set(float64(record.Count))
+			c.marketSupplyDistribution.WithLabelValues(scope.playerIDLabel, record.GoodSymbol, supplyLevel).Set(float64(record.Count))
 		}
 	}
 
@@ -480,7 +448,7 @@ func (c *MarketMetricsCollector) updateSupplyDemandMetrics(playerID int, systemS
 
 	err = c.db.Table("market_data").
 		Select("good_symbol, activity as activity_level, COUNT(*) as count").
-		Where("player_id = ? AND waypoint_symbol LIKE ?", playerID, systemSymbol+"-%").
+		Where("player_id = ? AND waypoint_symbol LIKE ?", scope.playerID, scope.waypointPrefix).
 		Group("good_symbol, activity").
 		Scan(&activityDist).Error
 
@@ -492,7 +460,7 @@ func (c *MarketMetricsCollector) updateSupplyDemandMetrics(playerID int, systemS
 			if record.ActivityLevel.Valid {
 				activityLevel = record.ActivityLevel.String
 			}
-			c.marketActivityDistribution.WithLabelValues(playerIDStr, record.GoodSymbol, activityLevel).Set(float64(record.Count))
+			c.marketActivityDistribution.WithLabelValues(scope.playerIDLabel, record.GoodSymbol, activityLevel).Set(float64(record.Count))
 		}
 	}
 
@@ -505,22 +473,20 @@ func (c *MarketMetricsCollector) updateSupplyDemandMetrics(playerID int, systemS
 
 	err = c.db.Table("market_data").
 		Select("waypoint_symbol, good_symbol, trade_volume").
-		Where("player_id = ? AND waypoint_symbol LIKE ?", playerID, systemSymbol+"-%").
+		Where("player_id = ? AND waypoint_symbol LIKE ?", scope.playerID, scope.waypointPrefix).
 		Scan(&liquidityRecords).Error
 
 	if err != nil {
 		log.Printf("Failed to get liquidity data: %v", err)
 	} else {
 		for _, record := range liquidityRecords {
-			c.marketLiquidity.WithLabelValues(playerIDStr, record.WaypointSymbol, record.GoodSymbol).Set(float64(record.TradeVolume))
+			c.marketLiquidity.WithLabelValues(scope.playerIDLabel, record.WaypointSymbol, record.GoodSymbol).Set(float64(record.TradeVolume))
 		}
 	}
 }
 
 // updateTradingOpportunities updates trading opportunity metrics
-func (c *MarketMetricsCollector) updateTradingOpportunities(playerID int, systemSymbol string) {
-	playerIDStr := strconv.Itoa(playerID)
-
+func (c *MarketMetricsCollector) updateTradingOpportunities(scope marketScope) {
 	// Get the cheapest ASK (where we BUY) and the best BID (where we SELL) for each good.
 	// sp-en5h7: purchase_price is the ask (what WE PAY, the larger), sell_price the bid
 	// (what the market PAYS us, the smaller) — so the cheapest buy is MIN(purchase_price)
@@ -552,7 +518,7 @@ func (c *MarketMetricsCollector) updateTradingOpportunities(playerID int, system
 		FROM market_data md1
 		WHERE player_id = ? AND waypoint_symbol LIKE ?
 		GROUP BY good_symbol
-	`, playerID, systemSymbol+"-%", playerID, systemSymbol+"-%", playerID, systemSymbol+"-%").Scan(&priceData).Error
+	`, scope.playerID, scope.waypointPrefix, scope.playerID, scope.waypointPrefix, scope.playerID, scope.waypointPrefix).Scan(&priceData).Error
 
 	if err != nil {
 		log.Printf("Failed to get trading opportunity data: %v", err)
@@ -567,10 +533,10 @@ func (c *MarketMetricsCollector) updateTradingOpportunities(playerID int, system
 
 	for _, record := range priceData {
 		// Set best buy price (the lowest ASK - where we buy FROM)
-		c.marketBestPrice.WithLabelValues(playerIDStr, record.GoodSymbol, systemSymbol, "buy").Set(float64(record.MinAsk))
+		c.marketBestPrice.WithLabelValues(scope.playerIDLabel, record.GoodSymbol, scope.system, "buy").Set(float64(record.MinAsk))
 
 		// Set best sell price (the highest BID - where we sell TO)
-		c.marketBestPrice.WithLabelValues(playerIDStr, record.GoodSymbol, systemSymbol, "sell").Set(float64(record.MaxBid))
+		c.marketBestPrice.WithLabelValues(scope.playerIDLabel, record.GoodSymbol, scope.system, "sell").Set(float64(record.MaxBid))
 
 		// Calculate profit margin: best sell (bid) minus cheapest buy (ask)
 		profit := record.MaxBid - record.MinAsk
@@ -586,7 +552,7 @@ func (c *MarketMetricsCollector) updateTradingOpportunities(playerID int, system
 	// Set opportunity counts
 	for threshold, count := range opportunitiesByMargin {
 		thresholdLabel := strconv.Itoa(threshold)
-		c.tradeOpportunitiesTotal.WithLabelValues(playerIDStr, systemSymbol, thresholdLabel).Set(float64(count))
+		c.tradeOpportunitiesTotal.WithLabelValues(scope.playerIDLabel, scope.system, thresholdLabel).Set(float64(count))
 	}
 }
 
@@ -606,4 +572,19 @@ func (c *MarketMetricsCollector) RecordScan(playerID int, waypointSymbol string,
 
 	c.marketScansTotal.WithLabelValues(playerIDStr, waypointSymbol, status).Inc()
 	c.marketScanDurationSeconds.WithLabelValues(playerIDStr, waypointSymbol).Observe(duration.Seconds())
+}
+
+// globalMarketCollector is the singleton market metrics collector
+// Set by SetGlobalMarketCollector() when metrics are enabled
+var globalMarketCollector *MarketMetricsCollector
+
+// SetGlobalMarketCollector sets the global market metrics collector
+func SetGlobalMarketCollector(collector *MarketMetricsCollector) {
+	globalMarketCollector = collector
+}
+
+// GetGlobalMarketCollector returns the global market metrics collector
+// Returns nil if metrics are not enabled
+func GetGlobalMarketCollector() *MarketMetricsCollector {
+	return globalMarketCollector
 }

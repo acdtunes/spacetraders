@@ -33,74 +33,49 @@ func (s *DaemonServer) GasExtractionOperation(
 	maxLegTime int,
 	playerID int,
 ) (*GasExtractionOperationResult, error) {
-	// Validate we have at least one siphon ship
 	if len(siphonShips) == 0 {
 		return nil, fmt.Errorf("at least one siphon ship is required")
 	}
 
-	// Auto-select gas giant if not specified
 	if gasGiant == "" {
-		selectedGasGiant, err := s.selectGasGiantForShip(ctx, siphonShips[0], playerID)
+		selected, err := s.selectGasGiantForShip(ctx, siphonShips[0], playerID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to auto-select gas giant: %w", err)
 		}
-		gasGiant = selectedGasGiant
+		gasGiant = selected
 		fmt.Printf("Auto-selected gas giant: %s\n", gasGiant)
 	}
 
-	// SINGLETON CHECK: Only one coordinator per gas giant (skip for dry runs)
 	if !dryRun {
-		existingCoordinator, err := s.containerRepo.FindActiveGasCoordinator(ctx, gasGiant, playerID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to check for existing gas coordinator: %w", err)
-		}
-		if existingCoordinator != nil {
-			fmt.Printf("SINGLETON: Gas coordinator already exists for %s: %s (status: %s)\n",
-				gasGiant, existingCoordinator.ID, existingCoordinator.Status)
-			return &GasExtractionOperationResult{
-				ContainerID: existingCoordinator.ID,
-				GasGiant:    gasGiant,
-			}, nil
+		existing, err := s.adoptExistingGasCoordinator(ctx, gasGiant, playerID)
+		if err != nil || existing != nil {
+			return existing, err
 		}
 	}
 
-	var containerID string
+	containerIDPrefix := "gas_coordinator"
 	if dryRun {
-		containerID = utils.GenerateContainerID("gas_dry_run", siphonShips[0])
-	} else {
-		containerID = utils.GenerateContainerID("gas_coordinator", siphonShips[0])
+		containerIDPrefix = "gas_dry_run"
 	}
-
-	// Convert ship arrays to interface{} for metadata
-	siphonShipsInterface := make([]interface{}, len(siphonShips))
-	for i, s := range siphonShips {
-		siphonShipsInterface[i] = s
-	}
-
-	storageShipsInterface := make([]interface{}, len(storageShips))
-	for i, s := range storageShips {
-		storageShipsInterface[i] = s
-	}
+	containerID := utils.GenerateContainerID(containerIDPrefix, siphonShips[0])
 
 	config := map[string]interface{}{
 		"gas_operation_id": containerID,
 		"gas_giant":        gasGiant,
-		"siphon_ships":     siphonShipsInterface,
-		"storage_ships":    storageShipsInterface,
+		"siphon_ships":     toInterfaceSlice(siphonShips),
+		"storage_ships":    toInterfaceSlice(storageShips),
 		"container_id":     containerID,
 		"force":            force,
 		"dry_run":          dryRun,
 		"max_leg_time":     maxLegTime,
 	}
 
-	// Create gas coordinator command from the launch config
 	cmd, err := s.buildCommandForType("gas_coordinator", config, playerID, containerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create command: %w", err)
 	}
 
-	// Set iterations: 1 for dry-run (single execution), -1 for normal (infinite)
-	iterations := -1
+	iterations := -1 // infinite; a dry run executes once
 	if dryRun {
 		iterations = 1
 	}
@@ -127,6 +102,21 @@ func (s *DaemonServer) GasExtractionOperation(
 	}, nil
 }
 
+// adoptExistingGasCoordinator enforces one coordinator per gas giant: a live one is
+// returned as the operation's result rather than starting a second. nil means none exists.
+func (s *DaemonServer) adoptExistingGasCoordinator(ctx context.Context, gasGiant string, playerID int) (*GasExtractionOperationResult, error) {
+	existing, err := s.containerRepo.FindActiveGasCoordinator(ctx, gasGiant, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check for existing gas coordinator: %w", err)
+	}
+	if existing == nil {
+		return nil, nil
+	}
+	fmt.Printf("SINGLETON: Gas coordinator already exists for %s: %s (status: %s)\n",
+		gasGiant, existing.ID, existing.Status)
+	return &GasExtractionOperationResult{ContainerID: existing.ID, GasGiant: gasGiant}, nil
+}
+
 // PersistGasSiphonWorkerContainer creates a gas siphon worker container in DB (does NOT start it)
 func (s *DaemonServer) PersistGasSiphonWorkerContainer(
 	ctx context.Context,
@@ -139,7 +129,6 @@ func (s *DaemonServer) PersistGasSiphonWorkerContainer(
 		return fmt.Errorf("invalid command type for gas siphon worker")
 	}
 
-	// Create container entity
 	containerEntity := container.NewContainer(
 		containerID,
 		container.ContainerTypeGasSiphonWorker,
@@ -201,12 +190,10 @@ func (s *DaemonServer) StartGasSiphonWorkerContainer(
 			return err
 		}
 
-		// Parse config
 		if err := json.Unmarshal([]byte(containerModel.Config), &config); err != nil {
 			return fmt.Errorf("failed to parse config: %w", err)
 		}
 
-		// Extract fields
 		shipSymbol := config["ship_symbol"].(string)
 		gasGiant := config["gas_giant"].(string)
 		coordinatorID, _ := config["coordinator_id"].(string)
@@ -222,7 +209,6 @@ func (s *DaemonServer) StartGasSiphonWorkerContainer(
 		}
 	}
 
-	// Create container entity
 	containerEntity := container.NewContainer(
 		containerID,
 		container.ContainerTypeGasSiphonWorker,
@@ -251,7 +237,6 @@ func (s *DaemonServer) PersistStorageShipContainer(
 		return fmt.Errorf("invalid command type for storage ship worker")
 	}
 
-	// Create container entity
 	containerEntity := container.NewContainer(
 		containerID,
 		container.ContainerTypeStorageShip,
@@ -284,7 +269,6 @@ func (s *DaemonServer) StartStorageShipContainer(
 	ctx context.Context,
 	containerID string,
 ) error {
-	// Try to get cached command first
 	s.pendingWorkerCommandsMu.Lock()
 	cachedCmd, hasCached := s.pendingWorkerCommands[containerID]
 	if hasCached {
@@ -297,7 +281,6 @@ func (s *DaemonServer) StartStorageShipContainer(
 	var playerID int
 
 	if hasCached {
-		// Use cached command
 		cmd = cachedCmd.(*gasCmd.RunStorageShipWorkerCommand)
 		playerID = cmd.PlayerID.Value()
 		config = map[string]interface{}{
@@ -313,12 +296,10 @@ func (s *DaemonServer) StartStorageShipContainer(
 			return err
 		}
 
-		// Parse config
 		if err := json.Unmarshal([]byte(containerModel.Config), &config); err != nil {
 			return fmt.Errorf("failed to parse config: %w", err)
 		}
 
-		// Extract fields
 		shipSymbol := config["ship_symbol"].(string)
 		gasGiant := config["gas_giant"].(string)
 		coordinatorID, _ := config["coordinator_id"].(string)
@@ -334,7 +315,6 @@ func (s *DaemonServer) StartStorageShipContainer(
 		}
 	}
 
-	// Create container entity
 	containerEntity := container.NewContainer(
 		containerID,
 		container.ContainerTypeStorageShip,
@@ -356,13 +336,11 @@ func (s *DaemonServer) StartStorageShipContainer(
 // selectGasGiantForShip auto-selects a gas giant based on ship location.
 // Uses the ship's current system and finds the closest gas giant waypoint.
 func (s *DaemonServer) selectGasGiantForShip(ctx context.Context, shipSymbol string, playerID int) (string, error) {
-	// Get ship to determine system
 	ship, err := s.shipRepo.FindBySymbol(ctx, shipSymbol, shared.MustNewPlayerID(playerID))
 	if err != nil {
 		return "", fmt.Errorf("failed to get ship %s: %w", shipSymbol, err)
 	}
 
-	// Extract system from ship's current location
 	systemSymbol := ship.CurrentLocation().SystemSymbol
 
 	// List all waypoints in the system

@@ -5,28 +5,15 @@ import (
 	"log"
 )
 
-// ship_position_reanchor.go makes the fleet's worst silent failure audible: discovering
-// that the position we had DURABLY RECORDED for a hull was wrong.
-//
-// Every re-anchor in this codebase runs through SyncShipFromAPI — the navigate 4204/4214
-// reconciles, the cargo and delivery resyncs, the liquidation hold read, the phantom-
-// position adoption, `ship refresh`, the post-purchase sync, the trade-route gate
-// re-confirm. All of them GET the server's truth and write it through. None of them ever
-// asked the one question that matters afterwards: was what we replaced actually WRONG?
-//
-// That question went unasked while a hull sat in X1-KC84 with a row naming X1-GF41. The
-// row was corrected several times over by routine syncs and nothing said a word, so the
-// only evidence the fleet ever produced was the downstream symptom — a jump the API kept
-// refusing as not-connected (4255) — hours later and pointing at the router rather than
-// at the lost write. A correction is EVIDENCE, and evidence discarded is how a write-loss
-// survives a hunt.
-//
-// SYSTEM-level divergence only, deliberately. A hull changing waypoint inside one system
-// is ordinary traffic and every mover already records it; a hull changing SYSTEM behind
-// our back is a lost cross-system write, and it is the divergence that actually breaks
-// routing — the planner resolves gates and plots BFS hops per system, so a wrong system
-// makes every downstream step confidently impossible. Narrow keeps the signal worth
-// reading.
+// SYSTEM-level divergence only: a hull changing waypoint inside one system is ordinary
+// traffic, but a changed SYSTEM is a lost cross-system write, and the planner resolves
+// gates and plots BFS hops per system — a wrong system makes every hop impossible.
+
+// shipPosition is where a hull is, or was believed to be.
+type shipPosition struct {
+	system   string
+	waypoint string
+}
 
 // PositionReanchor is one discovery that our durable position for a hull was wrong: the
 // system we BELIEVED it was in, and the system the server says it is actually in.
@@ -77,17 +64,17 @@ func (r *ShipRepository) reportPositionReanchor(ctx context.Context, reanchor Po
 // wrong) and for a row that recorded no system at all (a partially-written row is not
 // evidence of a lost move). Both are fail-quiet by intent: this is an alarm, and an alarm
 // that fires on absence of information is one nobody reads.
-func divergedPosition(hadRow bool, believedSystem, believedWaypoint, actualSystem, actualWaypoint string) (PositionReanchor, bool) {
-	if !hadRow || believedSystem == "" || actualSystem == "" {
+func divergedPosition(hadRow bool, believed, actual shipPosition) (PositionReanchor, bool) {
+	if !hadRow || believed.system == "" || actual.system == "" {
 		return PositionReanchor{}, false
 	}
-	if believedSystem == actualSystem {
+	if believed.system == actual.system {
 		return PositionReanchor{}, false
 	}
 	return PositionReanchor{
-		BelievedSystem:   believedSystem,
-		BelievedWaypoint: believedWaypoint,
-		ActualSystem:     actualSystem,
-		ActualWaypoint:   actualWaypoint,
+		BelievedSystem:   believed.system,
+		BelievedWaypoint: believed.waypoint,
+		ActualSystem:     actual.system,
+		ActualWaypoint:   actual.waypoint,
 	}, true
 }

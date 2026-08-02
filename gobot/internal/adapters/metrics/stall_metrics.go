@@ -31,23 +31,19 @@ type StallMetricsCollector struct {
 // NewStallMetricsCollector creates a new coordinator-stall collector.
 func NewStallMetricsCollector() *StallMetricsCollector {
 	return &StallMetricsCollector{
-		streak: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "coordinator_stall_streak",
-				Help:      "Consecutive ticks a coordinator has reported BLOCKED (had work to do and could not do it) on the SAME reason. 0 means the block has cleared; escalation fires at the threshold",
-			},
-			[]string{"coordinator", "scope", "reason"},
+		streak: newGaugeVec(
+			"coordinator_stall_streak",
+			"Consecutive ticks a coordinator has reported BLOCKED (had work to do and could not do it) on the SAME reason. 0 means the block has cleared; escalation fires at the threshold",
+			"coordinator",
+			"scope",
+			"reason",
 		),
-		escalations: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "coordinator_stall_escalations_total",
-				Help:      "Coordinator stall EPISODES escalated: counted once per streak on the tick it reaches the consecutive-BLOCKED threshold, never once per tick past it",
-			},
-			[]string{"coordinator", "scope", "reason"},
+		escalations: newCounterVec(
+			"coordinator_stall_escalations_total",
+			"Coordinator stall EPISODES escalated: counted once per streak on the tick it reaches the consecutive-BLOCKED threshold, never once per tick past it",
+			"coordinator",
+			"scope",
+			"reason",
 		),
 	}
 }
@@ -56,12 +52,12 @@ func NewStallMetricsCollector() *StallMetricsCollector {
 // disabled) is a no-op, matching the sibling collectors.
 func (c *StallMetricsCollector) Register() error {
 	if Registry == nil {
-		return nil // Metrics not enabled
+		return nil
 	}
-	if err := Registry.Register(c.streak); err != nil {
-		return err
-	}
-	return Registry.Register(c.escalations)
+	return registerAll(
+		c.streak,
+		c.escalations,
+	)
 }
 
 // RecordStallStreak sets the live consecutive-BLOCKED tick count for one coordinator/scope/reason.

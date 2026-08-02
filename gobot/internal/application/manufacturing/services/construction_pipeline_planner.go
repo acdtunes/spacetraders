@@ -3,7 +3,6 @@ package services
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
@@ -135,111 +134,21 @@ func (p *ConstructionPipelinePlanner) StartOrResume(
 ) (*StartOrResumeResult, error) {
 	logger := common.LoggerFromContext(ctx)
 
-	// 1. IDEMPOTENCY CHECK: Check if pipeline already exists for this construction site
 	existingPipeline, err := p.pipelineRepo.FindByConstructionSite(ctx, constructionSite, playerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check for existing pipeline: %w", err)
 	}
 
 	if existingPipeline != nil {
-		// A pipeline row alone doesn't mean the pipeline is healthy: its tasks
-		// may have been reaped (e.g. by daemon-restart recovery), leaving an
-		// EXECUTING pipeline that can never deliver, complete, or fail. Only
-		// resume if there is still at least one incomplete task to execute.
-		persistedTasks, err := p.taskRepo.FindByPipelineID(ctx, existingPipeline.ID())
+		resumed, err := p.resumeExisting(ctx, existingPipeline, constructionSite, maxWorkers, minSupply, goodOverrides)
 		if err != nil {
-			return nil, fmt.Errorf("failed to load tasks for existing pipeline %s: %w", existingPipeline.ID(), err)
+			return nil, err
 		}
-
-		hasIncompleteTasks := false
-		for _, task := range persistedTasks {
-			if !task.IsTerminal() {
-				hasIncompleteTasks = true
-				break
-			}
+		if resumed != nil {
+			return resumed, nil
 		}
-
-		if hasIncompleteTasks {
-			existingPipeline.SetTasks(persistedTasks)
-			// Only touch the persisted floor/overrides when the caller supplied a genuine,
-			// changed value: an empty minSupply (or empty override map) means "the flag wasn't
-			// passed on this resume call" and must not clobber a value set earlier.
-			needsUpdate := false
-			if minSupply != "" && minSupply != existingPipeline.MinSupply() {
-				existingPipeline.SetMinSupply(minSupply)
-				needsUpdate = true
-			}
-			// A resumed pipeline that STILL has no explicit floor (empty — e.g. a gate pipeline
-			// created before unified gate-fill, now stuck with its SCARCE material deferred) is upgraded
-			// to the SCARCE admission default so the deferred-material recovery loop promotes it
-			// automatically, no manual --min-supply. Only FILLS an empty floor: an explicit operator
-			// floor (set this call above, or persisted earlier) is never clobbered, so an explicit
-			// override still wins on resume.
-			if existingPipeline.MinSupply() == "" {
-				existingPipeline.SetMinSupply(string(manufacturing.SupplyLevelScarce))
-				needsUpdate = true
-			}
-			// sp-sdyo: a resumed launch that supplies per-good overrides updates the persisted map
-			// (e.g. re-tuning a bottleneck's floor); an empty map leaves the existing overrides intact.
-			if len(goodOverrides) > 0 {
-				existingPipeline.SetGoodOverrides(goodOverrides)
-				needsUpdate = true
-			}
-			// A resumed launch with an explicit --max-workers (>0) updates the persisted
-			// concurrent-worker cap — the SAME field the live `construction workers` verb writes. 0 is
-			// the unset sentinel (an omitted flag, and the bootstrap gate caller's value), so an
-			// idempotent re-run never clobbers a live-tuned pipeline's cap.
-			if maxWorkers > 0 && maxWorkers != existingPipeline.MaxWorkers() {
-				existingPipeline.SetMaxWorkers(maxWorkers)
-				needsUpdate = true
-			}
-			if needsUpdate {
-				if err := p.pipelineRepo.Update(ctx, existingPipeline); err != nil {
-					return nil, fmt.Errorf("failed to persist updated sourcing config for pipeline %s: %w", existingPipeline.ID(), err)
-				}
-			}
-
-			// A resumed pipeline's deferred materials live only in its
-			// persisted tasks (the local deferredMaterials slice below only
-			// exists during initial planning), so scan for them here too - the
-			// operator re-running `construction start` on an in-progress
-			// pipeline deserves the same by-name visibility as a fresh plan.
-			resumedDeferred := make([]string, 0)
-			for _, task := range persistedTasks {
-				if task.IsDeferredConstruction() {
-					resumedDeferred = append(resumedDeferred, task.Good())
-				}
-			}
-
-			logger.Log("INFO", "Resuming existing construction pipeline", map[string]interface{}{
-				"pipeline_id":       existingPipeline.ID(),
-				"construction_site": constructionSite,
-				"status":            existingPipeline.Status(),
-				"task_count":        existingPipeline.TaskCount(),
-				"progress":          fmt.Sprintf("%.1f%%", existingPipeline.ConstructionProgress()),
-			})
-			return &StartOrResumeResult{
-				Pipeline:          existingPipeline,
-				IsResumed:         true,
-				DeferredMaterials: resumedDeferred,
-			}, nil
-		}
-
-		// Stale empty pipeline: terminalize it so FindByConstructionSite stops
-		// returning it, then fall through to plan a fresh pipeline.
-		if err := existingPipeline.Fail("re-planned: pipeline had no incomplete tasks"); err != nil {
-			return nil, fmt.Errorf("failed to terminalize stale construction pipeline %s: %w", existingPipeline.ID(), err)
-		}
-		if err := p.pipelineRepo.Update(ctx, existingPipeline); err != nil {
-			return nil, fmt.Errorf("failed to persist terminalized construction pipeline %s: %w", existingPipeline.ID(), err)
-		}
-		logger.Log("WARN", "Existing construction pipeline had no incomplete tasks - marked FAILED, re-planning", map[string]interface{}{
-			"pipeline_id":       existingPipeline.ID(),
-			"construction_site": constructionSite,
-		})
 	}
 
-	// 2. AUTO-DISCOVERY: Fetch construction requirements from API
 	logger.Log("INFO", "Fetching construction site requirements", map[string]interface{}{
 		"construction_site": constructionSite,
 		"player_id":         playerID,
@@ -254,7 +163,6 @@ func (p *ConstructionPipelinePlanner) StartOrResume(
 		return nil, fmt.Errorf("construction site %s is already complete", constructionSite)
 	}
 
-	// 3. Get unfulfilled materials (only materials that still need delivery)
 	unfulfilledMaterials := constructionSiteData.UnfulfilledMaterials()
 	if len(unfulfilledMaterials) == 0 {
 		return nil, fmt.Errorf("construction site %s has no remaining materials to deliver", constructionSite)
@@ -265,94 +173,43 @@ func (p *ConstructionPipelinePlanner) StartOrResume(
 		"materials_count":   len(unfulfilledMaterials),
 	})
 
-	// 4. Create pipeline
 	pipeline := manufacturing.NewConstructionPipeline(constructionSite, playerID, supplyChainDepth, maxWorkers)
-	// Resolve the admission floor ONCE — unified gate-fill defaults an unset floor to SCARCE
-	// so scarce gate materials are admitted (and, once persisted, promoted) automatically; explicit
-	// and OFF are unchanged (admissionFloor is a no-op for both).
+	// Resolve the admission floor ONCE, and persist it (and the per-good overrides) on the entity
+	// rather than only passing it to planMaterial: a material that defers during THIS pass is
+	// recovered later by reading the floor back off the pipeline row (RULINGS #2).
 	effectiveMinSupply := p.admissionFloor(minSupply)
-	// Persist the floor on the entity itself, not just pass it
-	// transiently to planMaterial below - a material that defers during THIS
-	// pass is recovered later by reading the floor back off the pipeline row.
 	pipeline.SetMinSupply(effectiveMinSupply)
-	// sp-sdyo: persist the per-good override map on the entity too, so a per-good sourcing-floor
-	// override survives a restart and is re-read by the deferred-material recovery loop, not just
-	// consumed during this initial planning pass (RULINGS #2).
 	pipeline.SetGoodOverrides(goodOverrides)
 
-	// 5. Add material targets to pipeline
-	for _, mat := range unfulfilledMaterials {
-		remaining := mat.Remaining()
-		materialTarget := manufacturing.NewConstructionMaterialTarget(mat.TradeSymbol(), remaining)
-		if err := pipeline.AddMaterial(materialTarget); err != nil {
-			return nil, fmt.Errorf("failed to add material %s: %w", mat.TradeSymbol(), err)
-		}
-
-		logger.Log("INFO", "Added material target to pipeline", map[string]interface{}{
-			"material":  mat.TradeSymbol(),
-			"remaining": remaining,
-		})
+	if err := addMaterialTargets(ctx, pipeline, unfulfilledMaterials); err != nil {
+		return nil, err
 	}
 
-	// 6. Determine system symbol - use provided value or derive from waypoint
 	if systemSymbol == "" {
 		systemSymbol = extractSystemSymbol(constructionSite)
 	}
 
-	// 7. Plan each material INDEPENDENTLY — planning is not all-or-nothing. A
-	// material that cannot be sourced right now is DEFERRED (a visible PENDING
-	// task), not a fatal error - so the pipeline still saves and dispatches every
-	// sourceable material while the deferred one waits. The SupplyMonitor
-	// re-sources deferred tasks when supply regenerates.
-	deferredMaterials := make([]string, 0)
-	for _, mat := range unfulfilledMaterials {
-		// sp-sdyo: resolve the EXPORT sourcing floor per material — a per-good override loosens the
-		// floor for a single bottleneck (e.g. down to SCARCE) while every other material keeps the
-		// pipeline's global floor unchanged. sp-yexq: the base is the toggle-resolved effectiveMinSupply
-		// (SCARCE under unified gate-fill), so an unset floor admits scarce materials; a per-good
-		// override still wins over it.
-		matMinSupply := goodOverrides.MinSupplyFor(mat.TradeSymbol(), effectiveMinSupply)
-		staged, deferred, err := p.planMaterial(ctx, pipeline.ID(), mat.TradeSymbol(), systemSymbol, constructionSite, supplyChainDepth, playerID, matMinSupply, goodOverrides)
-		if err != nil {
-			return nil, fmt.Errorf("failed to plan material %s: %w", mat.TradeSymbol(), err)
-		}
-		for _, task := range staged {
-			if err := pipeline.AddTask(task); err != nil {
-				return nil, fmt.Errorf("failed to add task for %s: %w", mat.TradeSymbol(), err)
-			}
-		}
-		if deferred {
-			deferredMaterials = append(deferredMaterials, mat.TradeSymbol())
-			logger.Log("WARN", "Construction material deferred - no buy source yet, will recover when supply regenerates", map[string]interface{}{
-				"material":          mat.TradeSymbol(),
-				"construction_site": constructionSite,
-				"remaining":         mat.Remaining(),
-			})
-		}
+	plan := materialPlan{
+		pipelineID:       pipeline.ID(),
+		systemSymbol:     systemSymbol,
+		constructionSite: constructionSite,
+		supplyChainDepth: supplyChainDepth,
+		playerID:         playerID,
+		minSupply:        effectiveMinSupply,
+		goodOverrides:    goodOverrides,
 	}
-	if len(deferredMaterials) > 0 {
-		logger.Log("INFO", "Construction pipeline planned with deferred materials", map[string]interface{}{
-			"construction_site":  constructionSite,
-			"deferred_materials": deferredMaterials,
-			"sourceable_count":   len(unfulfilledMaterials) - len(deferredMaterials),
-		})
+	deferredMaterials, err := p.planMaterials(ctx, pipeline, unfulfilledMaterials, plan)
+	if err != nil {
+		return nil, err
 	}
 
-	// 8. Start pipeline so dependency-free tasks become READY and the running
-	// coordinator can pick them up without waiting for a daemon restart.
+	// Start before persisting so dependency-free tasks are already READY and the running
+	// coordinator picks them up without waiting for a daemon restart.
 	if err := pipeline.Start(); err != nil {
 		return nil, fmt.Errorf("failed to start pipeline: %w", err)
 	}
-
-	// 9. Persist pipeline and its tasks (the coordinator reads tasks from the
-	// database, so unpersisted tasks would leave the pipeline permanently idle)
-	if err := p.pipelineRepo.Create(ctx, pipeline); err != nil {
-		return nil, fmt.Errorf("failed to save pipeline: %w", err)
-	}
-	if tasks := pipeline.Tasks(); len(tasks) > 0 {
-		if err := p.taskRepo.CreateBatch(ctx, tasks); err != nil {
-			return nil, fmt.Errorf("failed to save pipeline tasks: %w", err)
-		}
+	if err := p.persistPlannedPipeline(ctx, pipeline); err != nil {
+		return nil, err
 	}
 
 	logger.Log("INFO", "Created new construction pipeline", map[string]interface{}{
@@ -368,6 +225,204 @@ func (p *ConstructionPipelinePlanner) StartOrResume(
 		IsResumed:         false,
 		DeferredMaterials: deferredMaterials,
 	}, nil
+}
+
+// resumeExisting adopts a pipeline that already exists for this construction site, or terminalizes
+// it and returns nil so the caller re-plans from scratch.
+//
+// A pipeline ROW alone does not mean the pipeline is healthy: its tasks may have been reaped by
+// daemon-restart recovery, leaving an EXECUTING pipeline that can never deliver, complete, or fail.
+func (p *ConstructionPipelinePlanner) resumeExisting(
+	ctx context.Context,
+	existingPipeline *manufacturing.ManufacturingPipeline,
+	constructionSite string,
+	maxWorkers int,
+	minSupply string,
+	goodOverrides manufacturing.GoodGatingOverrides,
+) (*StartOrResumeResult, error) {
+	logger := common.LoggerFromContext(ctx)
+
+	persistedTasks, err := p.taskRepo.FindByPipelineID(ctx, existingPipeline.ID())
+	if err != nil {
+		return nil, fmt.Errorf("failed to load tasks for existing pipeline %s: %w", existingPipeline.ID(), err)
+	}
+
+	if !hasIncompleteTask(persistedTasks) {
+		// Terminalize so FindByConstructionSite stops returning it, then let the caller re-plan.
+		if err := existingPipeline.Fail("re-planned: pipeline had no incomplete tasks"); err != nil {
+			return nil, fmt.Errorf("failed to terminalize stale construction pipeline %s: %w", existingPipeline.ID(), err)
+		}
+		if err := p.pipelineRepo.Update(ctx, existingPipeline); err != nil {
+			return nil, fmt.Errorf("failed to persist terminalized construction pipeline %s: %w", existingPipeline.ID(), err)
+		}
+		logger.Log("WARN", "Existing construction pipeline had no incomplete tasks - marked FAILED, re-planning", map[string]interface{}{
+			"pipeline_id":       existingPipeline.ID(),
+			"construction_site": constructionSite,
+		})
+		return nil, nil
+	}
+
+	existingPipeline.SetTasks(persistedTasks)
+	if applyResumedSourcingConfig(existingPipeline, minSupply, maxWorkers, goodOverrides) {
+		if err := p.pipelineRepo.Update(ctx, existingPipeline); err != nil {
+			return nil, fmt.Errorf("failed to persist updated sourcing config for pipeline %s: %w", existingPipeline.ID(), err)
+		}
+	}
+
+	// A resumed pipeline's deferred materials live only in its persisted tasks, so scan for them
+	// here too: re-running `construction start` on an in-progress pipeline deserves the same
+	// by-name visibility as a fresh plan.
+	resumedDeferred := make([]string, 0)
+	for _, task := range persistedTasks {
+		if task.IsDeferredConstruction() {
+			resumedDeferred = append(resumedDeferred, task.Good())
+		}
+	}
+
+	logger.Log("INFO", "Resuming existing construction pipeline", map[string]interface{}{
+		"pipeline_id":       existingPipeline.ID(),
+		"construction_site": constructionSite,
+		"status":            existingPipeline.Status(),
+		"task_count":        existingPipeline.TaskCount(),
+		"progress":          fmt.Sprintf("%.1f%%", existingPipeline.ConstructionProgress()),
+	})
+	return &StartOrResumeResult{
+		Pipeline:          existingPipeline,
+		IsResumed:         true,
+		DeferredMaterials: resumedDeferred,
+	}, nil
+}
+
+func hasIncompleteTask(tasks []*manufacturing.ManufacturingTask) bool {
+	for _, task := range tasks {
+		if !task.IsTerminal() {
+			return true
+		}
+	}
+	return false
+}
+
+// applyResumedSourcingConfig folds this launch's flags into an already-persisted pipeline and
+// reports whether anything changed. An empty minSupply or override map means "the flag wasn't
+// passed on this call" and must never clobber a value set earlier; 0 is maxWorkers' unset sentinel,
+// so an idempotent re-run cannot overwrite a live-tuned cap.
+func applyResumedSourcingConfig(
+	pipeline *manufacturing.ManufacturingPipeline,
+	minSupply string,
+	maxWorkers int,
+	goodOverrides manufacturing.GoodGatingOverrides,
+) bool {
+	needsUpdate := false
+	if minSupply != "" && minSupply != pipeline.MinSupply() {
+		pipeline.SetMinSupply(minSupply)
+		needsUpdate = true
+	}
+	// A resume that STILL has no explicit floor is upgraded to the SCARCE admission default so the
+	// deferred-material recovery loop promotes it automatically. Only FILLS an empty floor, so an
+	// explicit operator floor still wins.
+	if pipeline.MinSupply() == "" {
+		pipeline.SetMinSupply(string(manufacturing.SupplyLevelScarce))
+		needsUpdate = true
+	}
+	if len(goodOverrides) > 0 {
+		pipeline.SetGoodOverrides(goodOverrides)
+		needsUpdate = true
+	}
+	if maxWorkers > 0 && maxWorkers != pipeline.MaxWorkers() {
+		pipeline.SetMaxWorkers(maxWorkers)
+		needsUpdate = true
+	}
+	return needsUpdate
+}
+
+func addMaterialTargets(ctx context.Context, pipeline *manufacturing.ManufacturingPipeline, materials []manufacturing.ConstructionMaterial) error {
+	logger := common.LoggerFromContext(ctx)
+	for _, mat := range materials {
+		remaining := mat.Remaining()
+		materialTarget := manufacturing.NewConstructionMaterialTarget(mat.TradeSymbol(), remaining)
+		if err := pipeline.AddMaterial(materialTarget); err != nil {
+			return fmt.Errorf("failed to add material %s: %w", mat.TradeSymbol(), err)
+		}
+
+		logger.Log("INFO", "Added material target to pipeline", map[string]interface{}{
+			"material":  mat.TradeSymbol(),
+			"remaining": remaining,
+		})
+	}
+	return nil
+}
+
+// materialPlan is the planning context every construction material is planned under: which
+// pipeline and site it belongs to, how deep fabrication may go, and the supply gating in force.
+type materialPlan struct {
+	pipelineID       string
+	systemSymbol     string
+	constructionSite string
+	supplyChainDepth int
+	playerID         int
+	minSupply        string
+	goodOverrides    manufacturing.GoodGatingOverrides
+}
+
+// forGood applies the per-good override, loosening the floor for a single bottleneck while every
+// other material keeps the pipeline's global floor.
+func (m materialPlan) forGood(good string) materialPlan {
+	m.minSupply = m.goodOverrides.MinSupplyFor(good, m.minSupply)
+	return m
+}
+
+// planMaterials plans each material INDEPENDENTLY: one that cannot be sourced right now is
+// DEFERRED (a visible PENDING task), never a failure of the whole plan. Returns those names.
+func (p *ConstructionPipelinePlanner) planMaterials(
+	ctx context.Context,
+	pipeline *manufacturing.ManufacturingPipeline,
+	materials []manufacturing.ConstructionMaterial,
+	plan materialPlan,
+) ([]string, error) {
+	logger := common.LoggerFromContext(ctx)
+
+	deferredMaterials := make([]string, 0)
+	for _, mat := range materials {
+		staged, deferred, err := p.planMaterial(ctx, mat.TradeSymbol(), plan.forGood(mat.TradeSymbol()))
+		if err != nil {
+			return nil, fmt.Errorf("failed to plan material %s: %w", mat.TradeSymbol(), err)
+		}
+		for _, task := range staged {
+			if err := pipeline.AddTask(task); err != nil {
+				return nil, fmt.Errorf("failed to add task for %s: %w", mat.TradeSymbol(), err)
+			}
+		}
+		if deferred {
+			deferredMaterials = append(deferredMaterials, mat.TradeSymbol())
+			logger.Log("WARN", "Construction material deferred - no buy source yet, will recover when supply regenerates", map[string]interface{}{
+				"material":          mat.TradeSymbol(),
+				"construction_site": plan.constructionSite,
+				"remaining":         mat.Remaining(),
+			})
+		}
+	}
+	if len(deferredMaterials) > 0 {
+		logger.Log("INFO", "Construction pipeline planned with deferred materials", map[string]interface{}{
+			"construction_site":  plan.constructionSite,
+			"deferred_materials": deferredMaterials,
+			"sourceable_count":   len(materials) - len(deferredMaterials),
+		})
+	}
+	return deferredMaterials, nil
+}
+
+// persistPlannedPipeline saves the pipeline AND its tasks: the coordinator reads tasks from the
+// database, so unpersisted tasks would leave the pipeline permanently idle.
+func (p *ConstructionPipelinePlanner) persistPlannedPipeline(ctx context.Context, pipeline *manufacturing.ManufacturingPipeline) error {
+	if err := p.pipelineRepo.Create(ctx, pipeline); err != nil {
+		return fmt.Errorf("failed to save pipeline: %w", err)
+	}
+	if tasks := pipeline.Tasks(); len(tasks) > 0 {
+		if err := p.taskRepo.CreateBatch(ctx, tasks); err != nil {
+			return fmt.Errorf("failed to save pipeline tasks: %w", err)
+		}
+	}
+	return nil
 }
 
 // StopResult contains the result of stopping a construction pipeline.
@@ -495,53 +550,44 @@ func (p *ConstructionPipelinePlanner) releaseShip(ctx context.Context, shipSymbo
 // material is reported via deferred=true, never as an error.
 func (p *ConstructionPipelinePlanner) planMaterial(
 	ctx context.Context,
-	pipelineID string,
 	targetGood string,
-	systemSymbol string,
-	constructionSite string,
-	supplyChainDepth int,
-	playerID int,
-	minSupply string,
-	goodOverrides manufacturing.GoodGatingOverrides,
+	plan materialPlan,
 ) (staged []*manufacturing.ManufacturingTask, deferred bool, err error) {
 	logger := common.LoggerFromContext(ctx)
 
 	// 1. Prefer buying the final good directly (cheapest sourceable path),
 	//    regardless of the depth flag - depth only caps how deep we fabricate.
-	source, err := p.marketLocator.FindConstructionSource(ctx, targetGood, systemSymbol, playerID, manufacturing.SupplyLevel(minSupply))
+	source, err := p.marketLocator.FindConstructionSource(ctx, targetGood, plan.systemSymbol, plan.playerID, manufacturing.SupplyLevel(plan.minSupply))
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to locate buy source for %s: %w", targetGood, err)
 	}
 	if source != nil {
 		task := manufacturing.NewDeliverToConstructionTask(
-			pipelineID, playerID, targetGood,
+			plan.pipelineID, plan.playerID, targetGood,
 			source.WaypointSymbol, // sourceMarket (buy here)
 			"",                    // factorySymbol (not collecting from a factory)
-			constructionSite,
+			plan.constructionSite,
 			[]string{}, // no dependencies
 		)
 		logger.Log("DEBUG", "Planned construction buy (direct)", map[string]interface{}{
 			"good":              targetGood,
 			"source_market":     source.WaypointSymbol,
 			"supply":            source.Supply,
-			"construction_site": constructionSite,
+			"construction_site": plan.constructionSite,
 		})
 		return []*manufacturing.ManufacturingTask{task}, false, nil
 	}
 
 	// 2. Not buyable. Fabricate within the depth ceiling when permitted.
 	//    depth >= 3 is a "buy final only" ceiling; raw materials cannot be made.
-	if supplyChainDepth < 3 && !goods.IsRawMaterial(targetGood) {
-		fabTasks, ok, ferr := p.planFabrication(ctx, pipelineID, targetGood, systemSymbol, constructionSite, supplyChainDepth, playerID, goodOverrides)
-		if ferr != nil {
-			return nil, false, ferr
-		}
+	if plan.supplyChainDepth < 3 && !goods.IsRawMaterial(targetGood) {
+		fabTasks, ok := p.planFabrication(ctx, targetGood, plan)
 		if ok {
 			logger.Log("DEBUG", "Planned construction material via fabrication", map[string]interface{}{
 				"good":              targetGood,
 				"tasks":             len(fabTasks),
-				"depth_ceiling":     supplyChainDepth,
-				"construction_site": constructionSite,
+				"depth_ceiling":     plan.supplyChainDepth,
+				"construction_site": plan.constructionSite,
 			})
 			return fabTasks, false, nil
 		}
@@ -549,19 +595,20 @@ func (p *ConstructionPipelinePlanner) planMaterial(
 
 	// 3. Neither buyable nor fabricable now - DEFER with a visible PENDING task.
 	deferredTask := manufacturing.NewDeliverToConstructionTask(
-		pipelineID, playerID, targetGood,
+		plan.pipelineID, plan.playerID, targetGood,
 		"", // no source yet - SupplyMonitor re-sources when supply regenerates
 		"", // no factory
-		constructionSite,
+		plan.constructionSite,
 		[]string{},
 	)
 	return []*manufacturing.ManufacturingTask{deferredTask}, true, nil
 }
 
 // planFabrication stages the fabrication of targetGood as a SINGLE dependency-free
-// DELIVER_TO_CONSTRUCTION task carrying the factory. ok=false (with a nil error) means
+// DELIVER_TO_CONSTRUCTION task carrying the factory. ok=false means
 // a factory or an input is not sourceable within the depth ceiling, so the whole material should be
-// deferred rather than partially planned. Only infrastructure failures are returned as errors.
+// deferred rather than partially planned. There is no failure mode: a factory-lookup error is
+// itself a defer (we cannot fabricate now), so the step reports ok, never an error.
 //
 // It does NOT stage separate ACQUIRE_DELIVER input legs. The construction drain executes the
 // delivery task by driving ProduceGood(Fabricate) on the shared engine, which sources the inputs
@@ -580,44 +627,39 @@ func (p *ConstructionPipelinePlanner) planMaterial(
 // stalling the gate leg. fabricationInputsSourceable defers only a TRULY unsourceable input.
 func (p *ConstructionPipelinePlanner) planFabrication(
 	ctx context.Context,
-	pipelineID string,
 	targetGood string,
-	systemSymbol string,
-	constructionSite string,
-	supplyChainDepth int,
-	playerID int,
-	goodOverrides manufacturing.GoodGatingOverrides,
-) (staged []*manufacturing.ManufacturingTask, ok bool, err error) {
+	plan materialPlan,
+) (staged []*manufacturing.ManufacturingTask, ok bool) {
 	inputs := goods.GetRequiredInputs(targetGood)
 	if len(inputs) == 0 {
-		return nil, false, nil // no recipe - not fabricable, defer
+		return nil, false // no recipe - not fabricable, defer
 	}
 
 	// The factory must EXPORT targetGood AND IMPORT every input. A missing factory
 	// (or a transient lookup miss) means we cannot fabricate now - defer.
-	factory, ferr := p.marketLocator.FindFactoryForProduction(ctx, targetGood, inputs, systemSymbol, playerID)
+	factory, ferr := p.marketLocator.FindFactoryForProduction(ctx, targetGood, inputs, plan.systemSymbol, plan.playerID)
 	if ferr != nil {
-		return nil, false, nil
+		return nil, false
 	}
 
 	// FEASIBILITY: defer the whole material only when an input is TRULY unsourceable
 	// within the depth ceiling — no market AND no producible path. A scarce-but-producible input
 	// (the gate-critical ELECTRONICS case) is FEASIBLE, because the drain will produce it.
-	if !p.fabricationInputsSourceable(ctx, targetGood, systemSymbol, supplyChainDepth, playerID, goodOverrides, inputs) {
-		return nil, false, nil // an input is unsourceable within depth - defer whole material
+	if !p.fabricationInputsSourceable(ctx, targetGood, plan, inputs) {
+		return nil, false // an input is unsourceable within depth - defer whole material
 	}
 
 	// A single dependency-free DELIVER_TO_CONSTRUCTION task carrying the factory: the drain
 	// fabricates the good there and delivers it to the site. No input-leg dependencies, so it
 	// becomes READY the moment the pipeline starts.
 	deliverTask := manufacturing.NewDeliverToConstructionTask(
-		pipelineID, playerID, targetGood,
+		plan.pipelineID, plan.playerID, targetGood,
 		"",                     // sourceMarket (fabricated at the factory, not bought)
 		factory.WaypointSymbol, // factorySymbol
-		constructionSite,
+		plan.constructionSite,
 		nil, // no input-leg dependencies — ProduceGood(Fabricate) sources the inputs
 	)
-	return []*manufacturing.ManufacturingTask{deliverTask}, true, nil
+	return []*manufacturing.ManufacturingTask{deliverTask}, true
 }
 
 // fabricationInputsSourceable reports whether every input of targetGood can be SOURCED — bought OR
@@ -645,38 +687,26 @@ func (p *ConstructionPipelinePlanner) planFabrication(
 func (p *ConstructionPipelinePlanner) fabricationInputsSourceable(
 	ctx context.Context,
 	targetGood string,
-	systemSymbol string,
-	supplyChainDepth int,
-	playerID int,
-	goodOverrides manufacturing.GoodGatingOverrides,
+	plan materialPlan,
 	immediateInputs []string,
 ) bool {
 	if p.treeResolver != nil {
 		// Stamp the drain's exact tree-build settings (mirrors run_construction_coordinator.go's
 		// resolveFabricationTree) so the planner's feasibility verdict equals the drain's execution.
 		buildCtx := WithProductionStrategy(ctx, DefaultProductionStrategy)
-		buildCtx = WithFabricateDepthCap(buildCtx, supplyChainDepth, false)
-		buildCtx = WithGoodGatingOverrides(buildCtx, goodOverrides)
-		tree, terr := p.treeResolver.BuildDependencyTree(buildCtx, targetGood, systemSymbol, playerID)
+		buildCtx = WithFabricateDepthCap(buildCtx, plan.supplyChainDepth, false)
+		buildCtx = WithGoodGatingOverrides(buildCtx, plan.goodOverrides)
+		tree, terr := p.treeResolver.BuildDependencyTree(buildCtx, targetGood, plan.systemSymbol, plan.playerID)
 		return terr == nil && tree != nil
 	}
 
 	// Fallback (no resolver wired): the pre-sp-3bza gate — every immediate input buyable at
 	// MODERATE+ now, or the material defers.
 	for _, input := range immediateInputs {
-		src, serr := p.marketLocator.FindExportMarketBySupplyPriority(ctx, input, systemSymbol, playerID)
+		src, serr := p.marketLocator.FindExportMarketBySupplyPriority(ctx, input, plan.systemSymbol, plan.playerID)
 		if serr != nil || src == nil {
 			return false
 		}
 	}
 	return true
-}
-
-// extractSystemSymbol extracts system from waypoint (e.g., "X1-FB5-I61" -> "X1-FB5").
-func extractSystemSymbol(waypointSymbol string) string {
-	parts := strings.Split(waypointSymbol, "-")
-	if len(parts) >= 2 {
-		return parts[0] + "-" + parts[1]
-	}
-	return waypointSymbol
 }

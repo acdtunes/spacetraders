@@ -33,38 +33,22 @@ type BootstrapMetricsCollector struct {
 // NewBootstrapMetricsCollector creates a new bootstrap metrics collector.
 func NewBootstrapMetricsCollector() *BootstrapMetricsCollector {
 	return &BootstrapMetricsCollector{
-		phase: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "bootstrap_phase",
-				Help:      "The captain bootstrap coordinator's currently-derived cold-start phase (1 = active), by phase (sp-3nbe)",
-			},
-			[]string{"phase"},
+		phase: newGaugeVec(
+			"bootstrap_phase",
+			"The captain bootstrap coordinator's currently-derived cold-start phase (1 = active), by phase (sp-3nbe)",
+			"phase",
 		),
-		probesTotal: prometheus.NewCounter(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "bootstrap_probes_total",
-				Help:      "Probes the bootstrap coordinator bought in the COLDSTART phase, counted once per purchase (sp-3nbe)",
-			},
+		probesTotal: newCounter(
+			"bootstrap_probes_total",
+			"Probes the bootstrap coordinator bought in the COLDSTART phase, counted once per purchase (sp-3nbe)",
 		),
-		haulersTotal: prometheus.NewCounter(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "bootstrap_haulers_total",
-				Help:      "Contract haulers the bootstrap coordinator bought in the COLDSTART phase, counted once per purchase (sp-ysgb.1)",
-			},
+		haulersTotal: newCounter(
+			"bootstrap_haulers_total",
+			"Contract haulers the bootstrap coordinator bought in the COLDSTART phase, counted once per purchase (sp-ysgb.1)",
 		),
-		constructionPct: prometheus.NewGauge(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "bootstrap_construction_pct",
-				Help:      "The gate construction site's delivery progress [0,100] in the GATE phase, set each tick (sp-ysgb.2)",
-			},
+		constructionPct: newGauge(
+			"bootstrap_construction_pct",
+			"The gate construction site's delivery progress [0,100] in the GATE phase, set each tick (sp-ysgb.2)",
 		),
 	}
 }
@@ -75,16 +59,12 @@ func (c *BootstrapMetricsCollector) Register() error {
 	if Registry == nil {
 		return nil
 	}
-	if err := Registry.Register(c.phase); err != nil {
-		return err
-	}
-	if err := Registry.Register(c.probesTotal); err != nil {
-		return err
-	}
-	if err := Registry.Register(c.haulersTotal); err != nil {
-		return err
-	}
-	return Registry.Register(c.constructionPct)
+	return registerAll(
+		c.phase,
+		c.probesTotal,
+		c.haulersTotal,
+		c.constructionPct,
+	)
 }
 
 // RecordPhase sets the derived-phase gauge: the given phase to 1 and every other known phase to 0,
@@ -124,4 +104,20 @@ func (c *BootstrapMetricsCollector) RecordConstructionPct(pct float64) {
 		return
 	}
 	c.constructionPct.Set(pct)
+}
+
+// globalBootstrapCollector is the singleton captain-bootstrap collector. Set by
+// SetGlobalBootstrapCollector() when metrics are enabled; the bootstrap reconciler emits its
+// derived-phase gauge + probe-purchase counter through it.
+var globalBootstrapCollector *BootstrapMetricsCollector
+
+// SetGlobalBootstrapCollector sets the global captain-bootstrap collector. Pass nil to
+// clear it (e.g. in test cleanup).
+func SetGlobalBootstrapCollector(collector *BootstrapMetricsCollector) {
+	globalBootstrapCollector = collector
+}
+
+// GetGlobalBootstrapCollector returns the global captain-bootstrap collector.
+func GetGlobalBootstrapCollector() *BootstrapMetricsCollector {
+	return globalBootstrapCollector
 }

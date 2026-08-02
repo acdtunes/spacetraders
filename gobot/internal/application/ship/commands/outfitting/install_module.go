@@ -43,10 +43,7 @@ func (h *OutfittingHandler) handleInstall(ctx context.Context, cmd *InstallModul
 
 	outcome, err := h.modifyModule(
 		ctx,
-		"install",
-		cmd.ShipSymbol,
-		cmd.ModuleSymbol,
-		playerID,
+		moduleOp{verb: "install", shipSymbol: cmd.ShipSymbol, moduleSymbol: cmd.ModuleSymbol, playerID: playerID},
 		func(ship *navigation.Ship) error {
 			// SpaceTraders constraint: the module must be in the ship's cargo.
 			if ship.Cargo() == nil || ship.Cargo().GetItemUnits(cmd.ModuleSymbol) < 1 {

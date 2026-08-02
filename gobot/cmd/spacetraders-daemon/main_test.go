@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -151,16 +152,8 @@ func unregisteredGaps(registered map[string]struct{}, declared map[string][]stri
 		}
 		gaps = append(gaps, name)
 	}
-	sortStrings(gaps)
+	slices.Sort(gaps)
 	return gaps
-}
-
-func sortStrings(s []string) {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && s[j-1] > s[j]; j-- {
-			s[j-1], s[j] = s[j], s[j-1]
-		}
-	}
 }
 
 // gatePaths resolves main.go and the internal/application tree relative to

@@ -50,7 +50,7 @@ func TestRunTokenReportJSONShapeIsPinned(t *testing.T) {
 	fc := &fakeTokenCollector{sessions: sampleTokenSessions()}
 	var buf bytes.Buffer
 
-	err := runTokenReport(context.Background(), fc, "captain", 4, now, 0, 0, true, &buf)
+	err := runTokenReport(context.Background(), tokenTelemetry{collector: fc, captainAlias: "captain", budgetTokens: 0, alertThresholdPct: 0}, 4, now, true, &buf)
 	require.NoError(t, err)
 
 	// Collector was queried over the requested window (first call).
@@ -71,7 +71,7 @@ func TestRunTokenReportHumanRenderShowsHeadlineAndSessions(t *testing.T) {
 	fc := &fakeTokenCollector{sessions: sampleTokenSessions()}
 	var buf bytes.Buffer
 
-	err := runTokenReport(context.Background(), fc, "captain", 4, now, 0, 0, false, &buf)
+	err := runTokenReport(context.Background(), tokenTelemetry{collector: fc, captainAlias: "captain", budgetTokens: 0, alertThresholdPct: 0}, 4, now, false, &buf)
 	require.NoError(t, err)
 
 	out := buf.String()
@@ -86,7 +86,7 @@ func TestRunTokenReportEmptyIsNotAnError(t *testing.T) {
 	fc := &fakeTokenCollector{sessions: nil}
 	var buf bytes.Buffer
 
-	err := runTokenReport(context.Background(), fc, "captain", 7, now, 0, 0, false, &buf)
+	err := runTokenReport(context.Background(), tokenTelemetry{collector: fc, captainAlias: "captain", budgetTokens: 0, alertThresholdPct: 0}, 7, now, false, &buf)
 	require.NoError(t, err)
 	require.Contains(t, buf.String(), "No token telemetry")
 }
@@ -109,7 +109,7 @@ func TestRunTokenReportIncludesTokensSinceSpawnPerSession(t *testing.T) {
 	}
 	var buf bytes.Buffer
 
-	err := runTokenReport(context.Background(), fc, "captain", 4, now, 0, 0, true, &buf)
+	err := runTokenReport(context.Background(), tokenTelemetry{collector: fc, captainAlias: "captain", budgetTokens: 0, alertThresholdPct: 0}, 4, now, true, &buf)
 	require.NoError(t, err)
 
 	require.Len(t, fc.sinceCalls, 2, "the windowed collect plus the unbounded since-spawn collect")
@@ -142,7 +142,7 @@ func TestRunTokenReportSinceSpawnBestEffortOnCollectorError(t *testing.T) {
 	}
 	var buf bytes.Buffer
 
-	err := runTokenReport(context.Background(), fc, "captain", 4, now, 0, 0, true, &buf)
+	err := runTokenReport(context.Background(), tokenTelemetry{collector: fc, captainAlias: "captain", budgetTokens: 0, alertThresholdPct: 0}, 4, now, true, &buf)
 	require.NoError(t, err, "a since-spawn collection failure must not fail the windowed report")
 
 	var decoded map[string]any
@@ -164,7 +164,7 @@ func TestRunTokenReportQuotaBlockPresentWhenBudgetConfigured(t *testing.T) {
 	fc := &fakeTokenCollector{sessions: sampleTokenSessions()}
 	var buf bytes.Buffer
 
-	err := runTokenReport(context.Background(), fc, "captain", 4, now, 100000, 80, true, &buf)
+	err := runTokenReport(context.Background(), tokenTelemetry{collector: fc, captainAlias: "captain", budgetTokens: 100000, alertThresholdPct: 80}, 4, now, true, &buf)
 	require.NoError(t, err)
 
 	var decoded map[string]any
@@ -186,7 +186,7 @@ func TestRunTokenReportQuotaBlockOmittedWhenBudgetUnconfigured(t *testing.T) {
 	fc := &fakeTokenCollector{sessions: sampleTokenSessions()}
 	var buf bytes.Buffer
 
-	err := runTokenReport(context.Background(), fc, "captain", 4, now, 0, 0, true, &buf)
+	err := runTokenReport(context.Background(), tokenTelemetry{collector: fc, captainAlias: "captain", budgetTokens: 0, alertThresholdPct: 0}, 4, now, true, &buf)
 	require.NoError(t, err)
 
 	var decoded map[string]any
@@ -203,7 +203,7 @@ func TestRunTokenReportQuotaAlertFlagsWhenThresholdCrossed(t *testing.T) {
 	var buf bytes.Buffer
 
 	// Budget 20000, used 20000 -> 100%, well past an 80% threshold.
-	err := runTokenReport(context.Background(), fc, "captain", 4, now, 20000, 80, false, &buf)
+	err := runTokenReport(context.Background(), tokenTelemetry{collector: fc, captainAlias: "captain", budgetTokens: 20000, alertThresholdPct: 80}, 4, now, false, &buf)
 	require.NoError(t, err)
 
 	out := buf.String()

@@ -280,7 +280,7 @@ func TestObserveRegionsShould_ReportNoRateWhenTheRegionsFreshnessCannotBeEstabli
 	})
 	ctx := common.WithLogger(context.Background(), &tradeCaptureLogger{})
 	cmd := &RunTourCoordinatorCommand{PlayerID: 1}
-	maxHops, maxSpend, reserve, modelVersion, err := h.relocationPreflightBudget(ctx, cmd)
+	budget, err := h.relocationPreflightBudget(ctx, cmd)
 	if err != nil {
 		t.Fatalf("resolving the pre-flight budget: %v", err)
 	}
@@ -297,7 +297,7 @@ func TestObserveRegionsShould_ReportNoRateWhenTheRegionsFreshnessCannotBeEstabli
 
 	region := h.observeOneRegion(ctx, cmd, ship,
 		repositionCandidate{system: "X1-NOWHERE", waypoint: "X1-NOWHERE-A", score: 1000, hops: 2},
-		maxHops, maxSpend, reserve, modelVersion, now)
+		budget, now)
 
 	if region.RateReadable {
 		t.Fatalf("a region of unestablishable vintage reported a readable rate of %.0f; the relocator's per-activity staleness exclusion would judge it at an age of zero", region.ProjectedRate)

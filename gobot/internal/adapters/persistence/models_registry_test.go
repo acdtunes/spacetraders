@@ -4,9 +4,11 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 
@@ -15,36 +17,99 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 )
 
+func tableNameReceiver(decl *ast.FuncDecl) (string, bool) {
+	if decl.Name.Name != "TableName" || decl.Recv == nil || len(decl.Recv.List) != 1 {
+		return "", false
+	}
+	if decl.Type.Params != nil && len(decl.Type.Params.List) != 0 {
+		return "", false
+	}
+	results := decl.Type.Results
+	if results == nil || len(results.List) != 1 || len(results.List[0].Names) > 1 {
+		return "", false
+	}
+	if ident, ok := results.List[0].Type.(*ast.Ident); !ok || ident.Name != "string" {
+		return "", false
+	}
+	recv := decl.Recv.List[0].Type
+	if star, ok := recv.(*ast.StarExpr); ok {
+		recv = star.X
+	}
+	ident, ok := recv.(*ast.Ident)
+	if !ok {
+		return "", false
+	}
+	return ident.Name, true
+}
+
+// gormTaggedModelStructs names struct types ending in "Model" that tag a field for
+// gorm -- the second guard arm, since a model omitting TableName() migrates nowhere.
+// The gorm tag is what separates those from absorptionRecoveryModel, a fitted market
+// model that must never migrate.
+func gormTaggedModelStructs(decl *ast.GenDecl) []string {
+	if decl.Tok != token.TYPE {
+		return nil
+	}
+	var names []string
+	for _, spec := range decl.Specs {
+		typeSpec, ok := spec.(*ast.TypeSpec)
+		if !ok || !strings.HasSuffix(typeSpec.Name.Name, "Model") {
+			continue
+		}
+		structType, ok := typeSpec.Type.(*ast.StructType)
+		if !ok || structType.Fields == nil {
+			continue
+		}
+		for _, field := range structType.Fields.List {
+			if field.Tag != nil && strings.Contains(field.Tag.Value, "gorm:") {
+				names = append(names, typeSpec.Name.Name)
+				break
+			}
+		}
+	}
+	return names
+}
+
 func declaredModelTypeNames(t *testing.T) []string {
 	t.Helper()
 
 	_, thisFile, _, ok := runtime.Caller(0)
 	require.True(t, ok)
-	modelsFile := filepath.Join(filepath.Dir(thisFile), "models.go")
+	pkgDir := filepath.Dir(thisFile)
 
 	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, modelsFile, nil, 0)
+	// Test files are excluded: a fixture carrying TableName() would look like a table
+	// model, and "fixing" the guard by registering it makes AutoMigrate build a real table.
+	pkgs, err := parser.ParseDir(fset, pkgDir, func(fi fs.FileInfo) bool {
+		return !strings.HasSuffix(fi.Name(), "_test.go")
+	}, 0)
 	require.NoError(t, err)
 
 	var names []string
-	for _, decl := range file.Decls {
-		genDecl, ok := decl.(*ast.GenDecl)
-		if !ok || genDecl.Tok != token.TYPE {
-			continue
+	seen := map[string]bool{}
+	add := func(name string) {
+		if !seen[name] {
+			seen[name] = true
+			names = append(names, name)
 		}
-		for _, spec := range genDecl.Specs {
-			typeSpec, ok := spec.(*ast.TypeSpec)
-			if !ok {
-				continue
-			}
-			if _, ok := typeSpec.Type.(*ast.StructType); !ok {
-				continue
-			}
-			if strings.HasSuffix(typeSpec.Name.Name, "Model") {
-				names = append(names, typeSpec.Name.Name)
+	}
+	for _, pkg := range pkgs {
+		for _, file := range pkg.Files {
+			for _, decl := range file.Decls {
+				switch d := decl.(type) {
+				case *ast.FuncDecl:
+					if name, ok := tableNameReceiver(d); ok {
+						add(name)
+					}
+				case *ast.GenDecl:
+					for _, name := range gormTaggedModelStructs(d) {
+						add(name)
+					}
+				}
 			}
 		}
 	}
+	sort.Strings(names)
 	return names
 }
 
@@ -55,16 +120,14 @@ func registeredModelTypeNames() []string {
 		if t.Kind() == reflect.Ptr {
 			t = t.Elem()
 		}
-		if strings.HasSuffix(t.Name(), "Model") {
-			names = append(names, t.Name())
-		}
+		names = append(names, t.Name())
 	}
 	return names
 }
 
 func TestAllModelsRegistersEveryModelStruct(t *testing.T) {
 	declared := declaredModelTypeNames(t)
-	require.NotEmpty(t, declared, "expected to find *Model struct declarations in models.go")
+	require.NotEmpty(t, declared, "expected to find persisted model types in the persistence package")
 
 	registered := registeredModelTypeNames()
 
@@ -80,5 +143,5 @@ func TestAllModelsRegistersEveryModelStruct(t *testing.T) {
 		}
 	}
 
-	require.Empty(t, missing, "models declared in models.go but not registered in persistence.AllModels(): %v", missing)
+	require.Empty(t, missing, "persisted model types not registered in persistence.AllModels(): %v", missing)
 }

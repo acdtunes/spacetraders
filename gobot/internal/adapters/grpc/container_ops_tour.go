@@ -9,7 +9,6 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
 
@@ -90,16 +89,8 @@ func (s *DaemonServer) StartTourRun(
 		return nil, fmt.Errorf("ship symbol is required")
 	}
 
-	// Idle-gap discipline: only fly a genuinely idle hull, never steal one mid-task.
-	ship, err := s.shipRepo.FindBySymbol(ctx, shipSymbol, shared.MustNewPlayerID(playerID))
-	if err != nil {
-		return nil, fmt.Errorf("failed to load ship %s: %w", shipSymbol, err)
-	}
-	if ship == nil {
-		return nil, fmt.Errorf("ship %s not found", shipSymbol)
-	}
-	if !ship.IsIdle() {
-		return nil, fmt.Errorf("ship %s is not idle (assigned to %q) - tour-run only takes idle-gap hulls", shipSymbol, ship.ContainerID())
+	if err := s.requireIdleHull(ctx, shipSymbol, playerID, "tour-run"); err != nil {
+		return nil, err
 	}
 
 	containerID := utils.GenerateContainerID("tour-run", shipSymbol)
@@ -112,105 +103,15 @@ func (s *DaemonServer) StartTourRun(
 		"min_margin":              minMargin,
 		"replan_limit":            replanLimit,
 		"working_capital_reserve": workingCapitalReserve,
-		// sp-686e: the stranded-hull detector threshold, sourced from the daemon's live
-		// [trade_fleet] config (not a per-call param — it is a daemon-global tuning, the same
-		// for every tour a captain or the trade-fleet coordinator launches). Persisted as-is
-		// (0 too, so an absent knob survives a recovery rebuild unchanged); buildTourCoordinatorCommand
-		// passes it to the coordinator, which resolves 0/absent → its default 3.
-		"stranded_consecutive_threshold": s.tradeFleetConfig.StrandedConsecutiveThreshold,
-		// The tour-reposition jump bound, sourced from the daemon's live [trade_fleet]
-		// config (a daemon-global tuning, same for every tour). Persisted as-is (0 too, so an
-		// absent knob survives a recovery rebuild unchanged); buildTourCoordinatorCommand passes
-		// it to the coordinator, which resolves 0/absent → its default 12. This is the o34q WRITE
-		// side — the scout bug was a persist path that DROPPED the bound; writing it into
-		// the launch config here, where PersistRepositionState's read-modify-write preserves it and
-		// buildTourCoordinatorCommand reads it back, is what makes the bound survive the round-trip.
-		"reposition_jump_bound": s.tradeFleetConfig.RepositionJumpBound,
-		// The per-tour distinct-system cap, sourced from the daemon's live
-		// [trade_fleet] config (a daemon-global tour tuning, same for every tour — the
-		// mirror of reposition_jump_bound/stranded_consecutive_threshold above). Persisted
-		// as-is (0 too, so an absent knob survives a recovery rebuild unchanged);
-		// buildTourCoordinatorCommand reads it back into cmd.MaxTourSystems, which rides
-		// TourConstraints to the solver, resolving 0/absent → the MAX_TOUR_SYSTEMS default
-		// (2). This WRITE is what makes the request-driven cap take effect in production —
-		// without it the knob is inert and every tour silently clamps to 2.
-		"max_tour_systems": s.tradeFleetConfig.MaxTourSystems,
-		// Config plumbing: the closed-circuit (return-to-anchor) arming flag, sourced
-		// from the daemon's live [trade_fleet] config (a daemon-global tour tuning, same for
-		// every tour — the mirror of max_tour_systems above). Persisted as-is (false too, so an
-		// absent/unarmed knob survives a recovery rebuild unchanged and OPEN mode stays stable);
-		// buildTourCoordinatorCommand reads it back into cmd.ClosedTours, which im74 already
-		// threads to TourConstraints.Closed and the solver's closed-circuit path, resolving
-		// false → OPEN tours (byte-identical to today). This WRITE is what lets the deferred
-		// arming knob take effect — without it cmd.ClosedTours is inert and always false.
-		"closed_tours": s.tradeFleetConfig.ClosedTours,
-		// sp-z7ng: the placement/relocation scoring loop knobs, sourced from the daemon's live
-		// [trade_fleet] config (daemon-global tour tuning, same for every tour — the mirror of
-		// max_tour_systems/reposition_jump_bound above). Persisted as-is (zeros/false too, so an
-		// absent knob survives a recovery rebuild unchanged and the default-OFF dormancy is stable
-		// in BOTH directions); buildTourCoordinatorCommand reads them back onto the command via
-		// OptionalBool/OptionalInt, which yield the zero values for absent keys — the dormancy the
-		// Reposition* knobs already rely on. placement_score_enabled=false keeps the legacy engine.
-		"placement_score_enabled":       s.tradeFleetConfig.PlacementScoreEnabled,
-		"placement_beta_window_minutes": s.tradeFleetConfig.PlacementBetaWindowMinutes,
-		"placement_park_floor_pct":      s.tradeFleetConfig.PlacementParkFloorPct,
-		"placement_shortlist_top_n":     s.tradeFleetConfig.PlacementShortlistTopN,
-		// sp-uf64: the reposition-reach knobs (always-broaden discovery + deadhead-decay ranking +
-		// anti-herd cap), sourced from the daemon's live [trade_fleet] config (daemon-global tour
-		// tuning, same for every tour — the mirror of closed_tours/placement_* above). Persisted
-		// as-is (false/0 too, so an absent knob survives a recovery rebuild unchanged and the
-		// default-OFF dormancy is stable in BOTH directions); buildTourCoordinatorCommand reads them
-		// back onto the command via OptionalBool/OptionalInt, which yield the zero values for absent
-		// keys. reposition_reach_enabled=false keeps the legacy 1-hop-first reposition. This WRITE is
-		// what lets the knob take effect — without it cmd.RepositionReachEnabled is inert and false.
-		"reposition_reach_enabled":              s.tradeFleetConfig.RepositionReachEnabled,
-		"reposition_reach_hop_decay_pct":        s.tradeFleetConfig.RepositionReachHopDecayPct,
-		"reposition_reach_max_hulls_per_system": s.tradeFleetConfig.RepositionReachMaxHullsPerSystem,
-		// epic sp-fguo Part 2: the rate-floor early-reposition knobs, sourced from the daemon's live
-		// [trade_fleet] config (daemon-global tour tuning, the mirror of reposition_reach_* above).
-		// Persisted as-is (false/0 too, so an absent knob survives a recovery rebuild unchanged and
-		// the default-OFF dormancy is stable in BOTH directions); buildTourCoordinatorCommand reads
-		// them back via OptionalBool/OptionalInt, which yield the zero values for absent keys.
-		// reposition_rate_floor_enabled=false keeps the trigger dormant. This WRITE is what lets the
-		// knob take effect — without it cmd.RepositionRateFloorEnabled is inert and false.
-		"reposition_rate_floor_enabled":         s.tradeFleetConfig.RepositionRateFloorEnabled,
-		"reposition_rate_floor_pct":             s.tradeFleetConfig.RepositionRateFloorPct,
-		"reposition_rate_floor_improvement_pct": s.tradeFleetConfig.RepositionRateFloorImprovementPct,
-		"reposition_rate_floor_dwell_minutes":   s.tradeFleetConfig.RepositionRateFloorDwellMinutes,
-		// The candidate-widening knobs (the #1 fleet-$/hr lever), sourced from the
-		// daemon's live [trade_fleet] config (daemon-global tour tuning, the mirror of max_tour_systems/
-		// closed_tours above). Persisted as-is (0 too, so an absent knob survives a recovery rebuild
-		// unchanged and the 1-hop default is stable); buildTourCoordinatorCommand reads them back onto
-		// cmd.CandidateHopDepth / cmd.CandidateShortlistTopN, which the widenedTourSystems producer reads
-		// (arming-gated by max_tour_systems > 2). candidate_hop_depth 0/absent → the coordinator floors it
-		// to 1 (the exact 1-hop set, byte-identical to today). This WRITE is what lets the deferred knob
-		// take effect — without it cmd.CandidateHopDepth is inert and every tour stays 1-hop.
-		"candidate_hop_depth":       s.tradeFleetConfig.CandidateHopDepth,
-		"candidate_shortlist_top_n": s.tradeFleetConfig.CandidateShortlistTopN,
-		// The recovery-externality weight, sourced from the daemon's live
-		// [trade_fleet] config (daemon-global tour tuning, the mirror of candidate_hop_depth
-		// above). Persisted as-is (0 too, so an absent knob survives a recovery rebuild
-		// unchanged and the unarmed default is stable in BOTH directions). This WRITE is what
-		// lets the knob take effect — without it cmd.ExternalityWeight is inert and every tour
-		// keeps ranking on raw margin.
-		"externality_weight": s.tradeFleetConfig.ExternalityWeight,
-		"iterations":         iterations,
-		// The tour heavies are dedicated to the "trade" fleet
-		// (ships.dedicated_fleet == "trade"), so tour_run MUST claim under that
-		// same 'trade' identity — otherwise the dedication guard (atomic ClaimShip
-		// AND the legacy-path guard) would reject a tour from claiming its OWN
-		// hull, killing the entire trade-fleet on the next restart. Same constant
-		// and stamping pattern as container_ops_trade.go:95 / container_ops_idle_arb.go:69,
-		// persisted in the launch config so BOTH a fresh start and a recovery
-		// rebuild claim under operationTrade: a 'trade'-dedicated hull is permitted
-		// (operation == dedication) while a foreign-fleet hull is still rejected.
+		"iterations":              iterations,
+		// Tour heavies are dedicated_fleet=="trade", so tour_run MUST claim under that same
+		// identity or the dedication guard rejects a tour claiming its OWN hull.
 		"operation": operationTrade,
 	}
+	s.addTradeFleetTourKnobs(config)
 
-	// sp-nxrt: layer any per-launch overrides (the fast-fail escalate-to-movement reach
-	// arming) onto the config BEFORE building the command, so the override rides the same
-	// persisted launch config the recovery rebuild reads — the escalation survives a
-	// daemon restart mid-tour without the fleet coordinator's in-memory streak.
+	// Overrides must land BEFORE the command is built so they ride the same persisted
+	// launch config the recovery rebuild reads.
 	applyTourRunOverrides(config, overrides)
 
 	// Build the tour command through the same factory recovery uses, so the launch
@@ -220,12 +121,8 @@ func (s *DaemonServer) StartTourRun(
 		return nil, fmt.Errorf("failed to create tour-run command: %w", err)
 	}
 
-	// The coordinator owns the tour loop (CoordinatorOwnsIterations): whether
-	// this is one tour or a continuous --iterations -1 run, the container runs Handle()
-	// exactly ONCE and the coordinator loops internally, so the container's own
-	// iteration budget stays 1 (re-entering it would double-loop the run). The
-	// persisted "iterations" config drives the coordinator's loop and survives a
-	// recovery rebuild, so a -1 run resumes continuous after a restart.
+	// The coordinator owns the tour loop, so the container's own iteration budget stays 1
+	// — re-entering it would double-loop the run. The persisted "iterations" drives the loop.
 	containerEntity := container.NewContainer(
 		containerID,
 		container.ContainerTypeTrading,
@@ -248,6 +145,36 @@ func (s *DaemonServer) StartTourRun(
 		ContainerID: containerID,
 		ShipSymbol:  shipSymbol,
 	}, nil
+}
+
+// addTradeFleetTourKnobs stamps the daemon-global [trade_fleet] tunings into a launch config.
+// Persisted as-is including zero/false, so an absent knob survives a recovery rebuild.
+func (s *DaemonServer) addTradeFleetTourKnobs(config map[string]interface{}) {
+	config["stranded_consecutive_threshold"] = s.tradeFleetConfig.StrandedConsecutiveThreshold
+	config["reposition_jump_bound"] = s.tradeFleetConfig.RepositionJumpBound
+	config["max_tour_systems"] = s.tradeFleetConfig.MaxTourSystems
+	config["closed_tours"] = s.tradeFleetConfig.ClosedTours
+
+	config["placement_score_enabled"] = s.tradeFleetConfig.PlacementScoreEnabled
+	config["placement_beta_window_minutes"] = s.tradeFleetConfig.PlacementBetaWindowMinutes
+	config["placement_park_floor_pct"] = s.tradeFleetConfig.PlacementParkFloorPct
+	config["placement_shortlist_top_n"] = s.tradeFleetConfig.PlacementShortlistTopN
+
+	config["reposition_reach_enabled"] = s.tradeFleetConfig.RepositionReachEnabled
+	config["reposition_reach_hop_decay_pct"] = s.tradeFleetConfig.RepositionReachHopDecayPct
+	config["reposition_reach_max_hulls_per_system"] = s.tradeFleetConfig.RepositionReachMaxHullsPerSystem
+
+	config["reposition_rate_floor_enabled"] = s.tradeFleetConfig.RepositionRateFloorEnabled
+	config["reposition_rate_floor_pct"] = s.tradeFleetConfig.RepositionRateFloorPct
+	config["reposition_rate_floor_improvement_pct"] = s.tradeFleetConfig.RepositionRateFloorImprovementPct
+	config["reposition_rate_floor_dwell_minutes"] = s.tradeFleetConfig.RepositionRateFloorDwellMinutes
+
+	// candidate_hop_depth is arming-gated by max_tour_systems > 2; 0/absent floors to the
+	// exact 1-hop set in the coordinator.
+	config["candidate_hop_depth"] = s.tradeFleetConfig.CandidateHopDepth
+	config["candidate_shortlist_top_n"] = s.tradeFleetConfig.CandidateShortlistTopN
+
+	config["externality_weight"] = s.tradeFleetConfig.ExternalityWeight
 }
 
 // TourRepositionConfigPersister backs the tour coordinator's

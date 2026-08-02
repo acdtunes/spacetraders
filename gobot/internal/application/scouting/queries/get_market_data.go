@@ -46,7 +46,6 @@ func (h *GetMarketDataHandler) Handle(ctx context.Context, request common.Reques
 	if !ok {
 		return nil, fmt.Errorf("invalid request type")
 	}
-	// Get market data from repository
 	marketData, err := h.marketRepo.GetMarketData(ctx, query.WaypointSymbol, query.PlayerID.Value())
 	if err != nil {
 		return nil, err
@@ -87,7 +86,6 @@ func (h *ListMarketDataHandler) Handle(ctx context.Context, request common.Reque
 	if !ok {
 		return nil, fmt.Errorf("invalid request type")
 	}
-	// Get all markets in system from repository
 	markets, err := h.marketRepo.ListMarketsInSystem(ctx, uint(query.PlayerID.Value()), query.SystemSymbol, query.MaxAgeMinutes)
 	if err != nil {
 		return nil, err

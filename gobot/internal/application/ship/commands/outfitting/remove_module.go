@@ -43,10 +43,7 @@ func (h *OutfittingHandler) handleRemove(ctx context.Context, cmd *RemoveModuleC
 
 	outcome, err := h.modifyModule(
 		ctx,
-		"remove",
-		cmd.ShipSymbol,
-		cmd.ModuleSymbol,
-		playerID,
+		moduleOp{verb: "remove", shipSymbol: cmd.ShipSymbol, moduleSymbol: cmd.ModuleSymbol, playerID: playerID},
 		func(ship *navigation.Ship) error {
 			// The module must currently be installed on the ship.
 			for _, m := range ship.Modules() {

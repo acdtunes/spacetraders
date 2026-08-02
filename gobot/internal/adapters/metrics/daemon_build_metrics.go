@@ -22,22 +22,15 @@ type DaemonBuildInfoCollector struct {
 // NewDaemonBuildInfoCollector creates the daemon build-info collector.
 func NewDaemonBuildInfoCollector() *DaemonBuildInfoCollector {
 	return &DaemonBuildInfoCollector{
-		buildInfo: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "build_info",
-				Help:      "Running daemon build identity (always 1), labelled by commit and start time (sp-wrh84)",
-			},
-			[]string{"commit", "started_at"},
+		buildInfo: newGaugeVec(
+			"build_info",
+			"Running daemon build identity (always 1), labelled by commit and start time (sp-wrh84)",
+			"commit",
+			"started_at",
 		),
-		startTime: prometheus.NewGauge(
-			prometheus.GaugeOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "process_start_time_seconds",
-				Help:      "Unix start time of the running daemon process, so a scrape reveals a stale instance (sp-wrh84)",
-			},
+		startTime: newGauge(
+			"process_start_time_seconds",
+			"Unix start time of the running daemon process, so a scrape reveals a stale instance (sp-wrh84)",
 		),
 	}
 }
@@ -48,10 +41,10 @@ func (c *DaemonBuildInfoCollector) Register() error {
 	if Registry == nil {
 		return nil
 	}
-	if err := Registry.Register(c.buildInfo); err != nil {
-		return err
-	}
-	return Registry.Register(c.startTime)
+	return registerAll(
+		c.buildInfo,
+		c.startTime,
+	)
 }
 
 // Record pins the build-info gauge to 1 for the given commit/start time and sets

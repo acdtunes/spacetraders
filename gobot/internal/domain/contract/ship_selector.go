@@ -35,16 +35,9 @@ func NewShipSelector() *ShipSelector {
 //     nearer fitting hull is not passed over for a far smaller one idling at
 //     a hub.
 //
-// Parameters:
-//   - ships: Available ships to choose from
-//   - targetWaypoint: Destination waypoint
-//   - requiredCargoSymbol: Optional cargo type for priority selection
-//   - unitsNeeded: Units still required for the delivery, used to judge which
-//     hulls fit the load (and trip counts when none do)
-//
-// Returns:
-//   - SelectionResult with selected ship, distance, and reason
-//   - Error if no suitable ship found
+// requiredCargoSymbol is optional and drives the priority rule above.
+// unitsNeeded is the quantity still outstanding, used to judge which hulls fit
+// the load (and trip counts when none do).
 func (s *ShipSelector) SelectOptimalShip(
 	ships []*navigation.Ship,
 	targetWaypoint *shared.Waypoint,

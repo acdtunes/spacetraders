@@ -66,42 +66,44 @@ func (h *AssignScoutingFleetHandler) Handle(ctx context.Context, request common.
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	_, scoutShips, err := h.validateAndLoadShips(ctx, cmd)
+	scoutShips, err := h.loadScoutShips(ctx, cmd)
 	if err != nil {
 		return nil, err
 	}
+	shipSymbols := extractShipSymbols(scoutShips)
 
 	marketSymbols, err := h.loadAndFilterMarketplaces(ctx, cmd.SystemSymbol)
 	if err != nil {
 		return nil, err
 	}
 
-	scoutCmd := h.buildScoutMarketsCommand(cmd, extractShipSymbols(scoutShips), marketSymbols)
+	scoutCmd := h.buildScoutMarketsCommand(cmd, shipSymbols, marketSymbols)
 
 	scoutResult, err := h.executeScoutMarkets(ctx, scoutCmd)
 	if err != nil {
 		return nil, err
 	}
 
-	return h.buildResponse(extractShipSymbols(scoutShips), scoutResult), nil
+	return h.buildResponse(shipSymbols, scoutResult), nil
 }
 
-// validateAndLoadShips loads all ships and filters for scout-capable ships
-func (h *AssignScoutingFleetHandler) validateAndLoadShips(
+// loadScoutShips reads the fleet and keeps the scout-capable hulls in the command's
+// system, erroring when none is available to assign.
+func (h *AssignScoutingFleetHandler) loadScoutShips(
 	ctx context.Context,
 	cmd *AssignScoutingFleetCommand,
-) ([]*navigation.Ship, []*navigation.Ship, error) {
+) ([]*navigation.Ship, error) {
 	ships, err := h.shipRepo.FindAllByPlayer(ctx, cmd.PlayerID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to list ships: %w", err)
+		return nil, fmt.Errorf("failed to list ships: %w", err)
 	}
 
 	scoutShips := h.filterScoutShips(ships, cmd.SystemSymbol)
 	if len(scoutShips) == 0 {
-		return nil, nil, fmt.Errorf("no probe or satellite ships found")
+		return nil, fmt.Errorf("no probe or satellite ships found")
 	}
 
-	return ships, scoutShips, nil
+	return scoutShips, nil
 }
 
 // loadAndFilterMarketplaces loads system marketplaces and filters out fuel stations
@@ -196,13 +198,11 @@ func (h *AssignScoutingFleetHandler) filterScoutShips(ships []*navigation.Ship, 
 	var scoutShips []*navigation.Ship
 
 	for _, ship := range ships {
-		// Check if ship is in the specified system
 		shipSystem := ship.CurrentLocation().SystemSymbol
 		if shipSystem != systemSymbol {
 			continue
 		}
 
-		// Filter by frame type (probe or drone)
 		if ship.IsScoutType() {
 			scoutShips = append(scoutShips, ship)
 		}

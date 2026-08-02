@@ -224,7 +224,7 @@ func TestTourPlanGate_ConcurrentPlannersDoNotAllTakeTheSameSink(t *testing.T) {
 				ShipSymbol: fmt.Sprintf("TOUR-%d", i), PlayerID: 1, ContainerID: fmt.Sprintf("ctr-%d", i),
 			}
 			<-start
-			_, _, reason, feasible, err := h.planAndReserve(context.Background(), cmd, ship, 3, 1_000_000, 0, "")
+			_, _, reason, feasible, err := h.planAndReserve(context.Background(), cmd, ship, tourPlanBudget{maxHops: 3, maxSpend: 1_000_000})
 			outcomes[i] = planOutcome{feasible: feasible, reason: reason, err: err}
 		}(i)
 	}
@@ -284,7 +284,7 @@ func TestTourPlanGate_IncumbentKeepsItsSinkAcrossTheReplanReleaseWindow(t *testi
 	go func() {
 		defer wg.Done()
 		cmd := &RunTourCoordinatorCommand{ShipSymbol: "TOUR-INC", PlayerID: 1, ContainerID: "ctr-incumbent"}
-		_, _, reason, feasible, e := h.planAndReserve(context.Background(), cmd, ship, 3, 1_000_000, 0, "")
+		_, _, reason, feasible, e := h.planAndReserve(context.Background(), cmd, ship, tourPlanBudget{maxHops: 3, maxSpend: 1_000_000})
 		incumbent = planOutcome{feasible: feasible, reason: reason, err: e}
 	}()
 
@@ -295,7 +295,7 @@ func TestTourPlanGate_IncumbentKeepsItsSinkAcrossTheReplanReleaseWindow(t *testi
 	go func() {
 		defer wg.Done()
 		cmd := &RunTourCoordinatorCommand{ShipSymbol: "TOUR-RIV", PlayerID: 1, ContainerID: "ctr-rival"}
-		_, _, reason, feasible, e := h.planAndReserve(context.Background(), cmd, ship, 3, 1_000_000, 0, "")
+		_, _, reason, feasible, e := h.planAndReserve(context.Background(), cmd, ship, tourPlanBudget{maxHops: 3, maxSpend: 1_000_000})
 		rival = planOutcome{feasible: feasible, reason: reason, err: e}
 	}()
 	wg.Wait()
@@ -335,13 +335,13 @@ func TestTourPlanGate_ContendedGateRefusesTheTourAndReservesNothing(t *testing.T
 	go func() {
 		defer wg.Done()
 		cmd := &RunTourCoordinatorCommand{ShipSymbol: "TOUR-HOLD", PlayerID: 1, ContainerID: "ctr-holder"}
-		_, _, reason, feasible, e := h.planAndReserve(context.Background(), cmd, ship, 3, 1_000_000, 0, "")
+		_, _, reason, feasible, e := h.planAndReserve(context.Background(), cmd, ship, tourPlanBudget{maxHops: 3, maxSpend: 1_000_000})
 		holder = planOutcome{feasible: feasible, reason: reason, err: e}
 	}()
 
 	<-inSolve // the holder is inside the solve, holding the gate
 	cmd := &RunTourCoordinatorCommand{ShipSymbol: "TOUR-BLOCK", PlayerID: 1, ContainerID: "ctr-blocked"}
-	_, _, reason, feasible, err := h.planAndReserve(context.Background(), cmd, ship, 3, 1_000_000, 0, "")
+	_, _, reason, feasible, err := h.planAndReserve(context.Background(), cmd, ship, tourPlanBudget{maxHops: 3, maxSpend: 1_000_000})
 	blocked = planOutcome{feasible: feasible, reason: reason, err: err}
 	close(holdSolve)
 	wg.Wait()
@@ -368,7 +368,7 @@ func TestTourPlanGate_UncontendedPlannerIsUnchanged(t *testing.T) {
 
 	ship := fx.buildShip(t, "TOUR-SOLO")
 	cmd := &RunTourCoordinatorCommand{ShipSymbol: "TOUR-SOLO", PlayerID: 1, ContainerID: "ctr-solo"}
-	plan, _, reason, feasible, err := h.planAndReserve(context.Background(), cmd, ship, 3, 1_000_000, 0, "")
+	plan, _, reason, feasible, err := h.planAndReserve(context.Background(), cmd, ship, tourPlanBudget{maxHops: 3, maxSpend: 1_000_000})
 
 	require.NoError(t, err)
 	require.Truef(t, feasible, "uncontended planner refused: %s", reason)

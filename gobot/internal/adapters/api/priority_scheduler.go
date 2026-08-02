@@ -179,8 +179,7 @@ func (s *priorityScheduler) removeWaiterLocked(target *priorityWaiter) bool {
 }
 
 // pendingCount reports how many acquirers are currently parked (not counting the
-// one that holds the slot). Used for observability and for deterministic test
-// synchronisation.
+// one that holds the slot). Test-only: nothing in production reads it.
 func (s *priorityScheduler) pendingCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()

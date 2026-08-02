@@ -242,12 +242,3 @@ func (p *blockingProducer) DeliverToConstructionSite(_ context.Context, _, _, _ 
 }
 
 func (p *blockingProducer) unblock() { p.once.Do(func() { close(p.release) }) }
-
-func (p *blockingProducer) wasEntered() bool {
-	select {
-	case <-p.entered:
-		return true
-	default:
-		return false
-	}
-}

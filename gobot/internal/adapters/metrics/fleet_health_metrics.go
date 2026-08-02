@@ -27,14 +27,11 @@ type FleetHealthMetricsCollector struct {
 // NewFleetHealthMetricsCollector creates a new fleet-health metrics collector.
 func NewFleetHealthMetricsCollector() *FleetHealthMetricsCollector {
 	return &FleetHealthMetricsCollector{
-		hullStrandedTotal: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: subsystem,
-				Name:      "fleet_hull_stranded_total",
-				Help:      "Stranded-hull episodes: a hull whose origin has no durable gate adjacency AND a gate-inaccessible live probe, detected once per episode of N consecutive empty reposition discoveries (sp-686e)",
-			},
-			[]string{"ship", "system"},
+		hullStrandedTotal: newCounterVec(
+			"fleet_hull_stranded_total",
+			"Stranded-hull episodes: a hull whose origin has no durable gate adjacency AND a gate-inaccessible live probe, detected once per episode of N consecutive empty reposition discoveries (sp-686e)",
+			"ship",
+			"system",
 		),
 	}
 }
@@ -43,9 +40,11 @@ func NewFleetHealthMetricsCollector() *FleetHealthMetricsCollector {
 // (metrics disabled) is a no-op, matching the sibling collectors.
 func (c *FleetHealthMetricsCollector) Register() error {
 	if Registry == nil {
-		return nil // Metrics not enabled
+		return nil
 	}
-	return Registry.Register(c.hullStrandedTotal)
+	return registerAll(
+		c.hullStrandedTotal,
+	)
 }
 
 // RecordHullStranded records one stranded-hull episode for a (ship, system). Emitted once
@@ -56,4 +55,29 @@ func (c *FleetHealthMetricsCollector) RecordHullStranded(ship, systemSymbol stri
 		return // Recording is best-effort; never panic a reposition/tour path (RULINGS #4).
 	}
 	c.hullStrandedTotal.WithLabelValues(ship, systemSymbol).Inc()
+}
+
+// globalFleetHealthCollector is the singleton fleet-health collector.
+// Set by SetGlobalFleetHealthCollector() when metrics are enabled; the tour
+// coordinator's reposition exit path emits the stranded-hull counter through it.
+var globalFleetHealthCollector *FleetHealthMetricsCollector
+
+// SetGlobalFleetHealthCollector sets the global fleet-health collector.
+func SetGlobalFleetHealthCollector(collector *FleetHealthMetricsCollector) {
+	globalFleetHealthCollector = collector
+}
+
+// GetGlobalFleetHealthCollector returns the global fleet-health collector.
+// Returns nil if metrics are not enabled.
+func GetGlobalFleetHealthCollector() *FleetHealthMetricsCollector {
+	return globalFleetHealthCollector
+}
+
+// RecordHullStranded records one stranded-hull episode for a (ship, system) globally.
+// No-op when metrics are disabled, so a metrics miss never touches the
+// reposition/tour path (RULINGS #4).
+func RecordHullStranded(ship, system string) {
+	if globalFleetHealthCollector != nil {
+		globalFleetHealthCollector.RecordHullStranded(ship, system)
+	}
 }

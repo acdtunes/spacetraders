@@ -173,7 +173,7 @@ func TestStore_PlaceElement_Durable(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	if err := New(repo).PlaceElement(ctx, "alpha", depot.RoleDeliveryHull, "DH-1", "X1-A-1"); err != nil {
+	if err := New(repo).PlaceElement(ctx, "alpha", depot.RoleDeliveryHull, depot.Element{ShipSymbol: "DH-1", Waypoint: "X1-A-1"}); err != nil {
 		t.Fatalf("PlaceElement: %v", err)
 	}
 	reg, _ := New(repo).LoadRegistry(ctx)

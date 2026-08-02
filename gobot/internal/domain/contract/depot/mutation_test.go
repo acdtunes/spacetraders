@@ -105,7 +105,7 @@ func TestContractDepot_WithElementRemoved_LastWarehouseRefused(t *testing.T) {
 func TestContractDepot_WithElementPlaced_RepositionsExistingElement(t *testing.T) {
 	base := mutBase(t)
 
-	got, err := base.WithElementPlaced(RoleDeliveryHull, "DH-1", "X1-MOVED-7")
+	got, err := base.WithElementPlaced(RoleDeliveryHull, Element{ShipSymbol: "DH-1", Waypoint: "X1-MOVED-7"})
 	if err != nil {
 		t.Fatalf("WithElementPlaced: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestContractDepot_WithElementPlaced_RepositionsExistingElement(t *testing.T
 
 func TestContractDepot_WithElementPlaced_UnknownShipErrors(t *testing.T) {
 	base := mutBase(t)
-	if _, err := base.WithElementPlaced(RoleDeliveryHull, "NOPE", "X1-MOVED-7"); err == nil {
+	if _, err := base.WithElementPlaced(RoleDeliveryHull, Element{ShipSymbol: "NOPE", Waypoint: "X1-MOVED-7"}); err == nil {
 		t.Fatalf("placing an absent ship must error (place repositions an existing element)")
 	}
 }

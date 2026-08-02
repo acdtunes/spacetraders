@@ -16,7 +16,6 @@ import (
 	metricsAdapter "github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	parkedSensingAdapters "github.com/andrescamacho/spacetraders-go/internal/adapters/parkedsensing"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
-	"github.com/andrescamacho/spacetraders-go/internal/adapters/routing"
 	autooutfitCmd "github.com/andrescamacho/spacetraders-go/internal/application/autooutfit"
 	bootstrapCmd "github.com/andrescamacho/spacetraders-go/internal/application/bootstrap/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
@@ -57,22 +56,20 @@ import (
 	tradingSvc "github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
 	watchkeeper "github.com/andrescamacho/spacetraders-go/internal/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
-	domainContainer "github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
-	domainRouting "github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
-	domainShipyard "github.com/andrescamacho/spacetraders-go/internal/domain/shipyard"
 	domainTrading "github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/buildinfo"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
-	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/daemonlock"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/pidfile"
+	"gorm.io/gorm"
 )
 
+const constructionActivatorPollInterval = time.Minute
+
 func main() {
-	// Parse command-line flags
 	forceFlag := flag.Bool("force", false, "Kill any existing daemon and start a new one")
 	flag.Parse()
 
@@ -82,33 +79,13 @@ func main() {
 	// deploy can assert the fresh build is actually running.
 	fmt.Println(buildinfo.Get().Banner("spacetraders-daemon"))
 
-	// Load configuration
 	fmt.Println("Loading configuration...")
 	cfg := config.MustLoadConfig("") // Empty string = search default paths
 
 	// Acquire PID file lock to prevent multiple instances
 	fmt.Printf("Acquiring PID file lock: %s\n", cfg.Daemon.PIDFile)
 	pf := pidfile.New(cfg.Daemon.PIDFile)
-
-	// Try to acquire the lock
-	err := pf.Acquire()
-	if err != nil {
-		if *forceFlag {
-			// Force mode: kill existing daemon and try again
-			fmt.Println("Force mode enabled - attempting to kill existing daemon...")
-			if killErr := pf.KillExisting(); killErr != nil {
-				log.Fatalf("Failed to kill existing daemon: %v", killErr)
-			}
-			fmt.Println("Existing daemon killed")
-
-			// Try to acquire lock again
-			if err := pf.Acquire(); err != nil {
-				log.Fatalf("Failed to acquire PID file lock after killing existing daemon: %v", err)
-			}
-		} else {
-			log.Fatalf("Failed to acquire PID file lock: %v\nUse --force to kill the existing daemon", err)
-		}
-	}
+	acquirePIDLockOrExit(pf, *forceFlag)
 
 	defer func() {
 		if err := pf.Release(); err != nil {
@@ -117,34 +94,406 @@ func main() {
 	}()
 	fmt.Println("PID file lock acquired")
 
-	// Initialize application
 	if err := run(cfg); err != nil {
 		log.Fatalf("Fatal error: %v", err)
 	}
 }
 
-func run(cfg *config.Config) error {
-	// 1. Setup database connection
-	fmt.Printf("Connecting to %s database...\n", cfg.Database.Type)
+// daemonRepos is the shared, one-instance-each repository set every registration group wires from.
+type daemonRepos struct {
+	med               mediator.Mediator
+	apiClient         *api.SpaceTradersClient
+	shipRepo          navigation.ShipRepository
+	playerRepo        *persistence.GormPlayerRepository
+	waypointRepo      *persistence.GormWaypointRepository
+	containerRepo     *persistence.ContainerRepositoryGORM
+	graphService      *graph.GraphService
+	marketRepo        *persistence.MarketRepositoryGORM
+	marketRepoAdapter *persistence.MarketRepositoryAdapter
+	contractRepo      *persistence.GormContractRepository
+	transactionRepo   *persistence.GormTransactionRepository
+}
 
-	db, err := database.NewConnection(&cfg.Database)
+// The atomic verbs RouteExecutor dispatches leg by leg.
+func (r daemonRepos) registerShipTacticHandlers() error {
+	orbitHandler := shipTactics.NewOrbitShipHandler(r.shipRepo)
+	if err := mediator.RegisterHandler[*shipTypes.OrbitShipCommand](r.med, orbitHandler); err != nil {
+		return fmt.Errorf("failed to register OrbitShip handler: %w", err)
+	}
+
+	dockHandler := shipTactics.NewDockShipHandler(r.shipRepo)
+	if err := mediator.RegisterHandler[*shipTypes.DockShipCommand](r.med, dockHandler); err != nil {
+		return fmt.Errorf("failed to register DockShip handler: %w", err)
+	}
+
+	refuelHandler := shipTactics.NewRefuelShipHandler(r.shipRepo, r.playerRepo, r.apiClient, r.med)
+	if err := mediator.RegisterHandler[*shipTypes.RefuelShipCommand](r.med, refuelHandler); err != nil {
+		return fmt.Errorf("failed to register RefuelShip handler: %w", err)
+	}
+
+	setFlightModeHandler := shipNav.NewSetFlightModeHandler(r.shipRepo)
+	if err := mediator.RegisterHandler[*shipTypes.SetFlightModeCommand](r.med, setFlightModeHandler); err != nil {
+		return fmt.Errorf("failed to register SetFlightMode handler: %w", err)
+	}
+
+	navigateDirectHandler := shipNav.NewNavigateDirectHandler(r.shipRepo, r.waypointRepo)
+	if err := mediator.RegisterHandler[*shipTypes.NavigateDirectCommand](r.med, navigateDirectHandler); err != nil {
+		return fmt.Errorf("failed to register NavigateDirect handler: %w", err)
+	}
+	return nil
+}
+
+func (r daemonRepos) registerMarketAndPlayerQueryHandlers() error {
+	getMarketHandler := scoutingQuery.NewGetMarketDataHandler(r.marketRepo)
+	if err := mediator.RegisterHandler[*scoutingQuery.GetMarketDataQuery](r.med, getMarketHandler); err != nil {
+		return fmt.Errorf("failed to register GetMarketData handler: %w", err)
+	}
+
+	listMarketsHandler := scoutingQuery.NewListMarketDataHandler(r.marketRepo)
+	if err := mediator.RegisterHandler[*scoutingQuery.ListMarketDataQuery](r.med, listMarketsHandler); err != nil {
+		return fmt.Errorf("failed to register ListMarketData handler: %w", err)
+	}
+
+	getPlayerHandler := playerQuery.NewGetPlayerHandler(r.playerRepo, r.apiClient)
+	if err := mediator.RegisterHandler[*playerQuery.GetPlayerQuery](r.med, getPlayerHandler); err != nil {
+		return fmt.Errorf("failed to register GetPlayer handler: %w", err)
+	}
+
+	// Player identity sync. Era registration seeds players.metadata.headquarters; this handler
+	// is what REPAIRS it, and the parked-sensing cutover reads it ahead of expansion on every
+	// tick. Leave it unregistered and a row whose key is missing or stale stays broken forever,
+	// with the whole sensing reconcile aborting every 30s. The daemon's boot hook dispatches it
+	// per player; registering it here is what makes that dispatch resolve instead of failing
+	// with "no handler registered for type".
+	syncPlayerHandler := playerCmd.NewSyncPlayerHandler(r.playerRepo, r.apiClient)
+	if err := mediator.RegisterHandler[*playerCmd.SyncPlayerCommand](r.med, syncPlayerHandler); err != nil {
+		return fmt.Errorf("failed to register SyncPlayer handler: %w", err)
+	}
+	return nil
+}
+
+func (r daemonRepos) registerShipQueryHandlers() error {
+	listShipsHandler := shipQuery.NewListShipsHandler(r.shipRepo, r.playerRepo)
+	if err := mediator.RegisterHandler[*shipQuery.ListShipsQuery](r.med, listShipsHandler); err != nil {
+		return fmt.Errorf("failed to register ListShips handler: %w", err)
+	}
+
+	getShipHandler := shipQuery.NewGetShipHandler(r.shipRepo, r.playerRepo)
+	if err := mediator.RegisterHandler[*shipQuery.GetShipQuery](r.med, getShipHandler); err != nil {
+		return fmt.Errorf("failed to register GetShip handler: %w", err)
+	}
+
+	// r.containerRepo satisfies ContainerStatusReader so refresh can reconcile a
+	// stale claim left by a dead trade-route CLI runner; nil clock =
+	// RealClock.
+	refreshShipHandler := shipQuery.NewRefreshShipHandler(r.shipRepo, r.playerRepo, r.containerRepo, nil)
+	if err := mediator.RegisterHandler[*shipQuery.RefreshShipQuery](r.med, refreshShipHandler); err != nil {
+		return fmt.Errorf("failed to register RefreshShip handler: %w", err)
+	}
+
+	// Jump-gate discovery query handlers. GetJumpGateConnections backs the
+	// multi-system trade-route's neighbor-system discovery.
+	findNearestJumpGateHandler := shipQuery.NewFindNearestJumpGateHandler(r.shipRepo, r.graphService, r.playerRepo)
+	if err := mediator.RegisterHandler[*shipQuery.FindNearestJumpGateQuery](r.med, findNearestJumpGateHandler); err != nil {
+		return fmt.Errorf("failed to register FindNearestJumpGate handler: %w", err)
+	}
+
+	getJumpGateConnectionsHandler := shipQuery.NewGetJumpGateConnectionsHandler(r.graphService, r.apiClient, r.playerRepo)
+	if err := mediator.RegisterHandler[*shipQuery.GetJumpGateConnectionsQuery](r.med, getJumpGateConnectionsHandler); err != nil {
+		return fmt.Errorf("failed to register GetJumpGateConnections handler: %w", err)
+	}
+	return nil
+}
+
+// The reserve and assign handlers are returned because both later take an
+// orphaned-container reaper, which only exists once the daemon server does.
+func (r daemonRepos) registerFleetAssignmentHandlers() (*shipAssignment.ReserveShipHandler, *shipAssignment.AssignShipFleetHandler, error) {
+	// Captain-reservation command handlers: reserve/release a hull for the
+	// captain's direct manual use, hiding it from coordinator discovery
+	// (sp-i1ku).
+	reserveShipHandler := shipAssignment.NewReserveShipHandler(r.shipRepo, r.playerRepo)
+	if err := mediator.RegisterHandler[*shipAssignment.ReserveShipCommand](r.med, reserveShipHandler); err != nil {
+		return nil, nil, fmt.Errorf("failed to register ReserveShip handler: %w", err)
+	}
+
+	releaseShipHandler := shipAssignment.NewReleaseShipHandler(r.shipRepo, r.playerRepo)
+	if err := mediator.RegisterHandler[*shipAssignment.ReleaseShipCommand](r.med, releaseShipHandler); err != nil {
+		return nil, nil, fmt.Errorf("failed to register ReleaseShip handler: %w", err)
+	}
+
+	// Fleet-dedication command + query: the single write path for the
+	// dedicated_fleet tag and the fleet listing behind `fleet list`.
+	// The contract coordinator's startup reconciliation of --dedicated-ships
+	// routes through the same command.
+	assignShipFleetHandler := shipAssignment.NewAssignShipFleetHandler(r.shipRepo, r.playerRepo)
+	if err := mediator.RegisterHandler[*shipAssignment.AssignShipFleetCommand](r.med, assignShipFleetHandler); err != nil {
+		return nil, nil, fmt.Errorf("failed to register AssignShipFleet handler: %w", err)
+	}
+
+	listFleetsHandler := shipQuery.NewListFleetsHandler(r.shipRepo, r.playerRepo)
+	if err := mediator.RegisterHandler[*shipQuery.ListFleetsQuery](r.med, listFleetsHandler); err != nil {
+		return nil, nil, fmt.Errorf("failed to register ListFleets handler: %w", err)
+	}
+	return reserveShipHandler, assignShipFleetHandler, nil
+}
+
+// graphService implements both the system-graph and single-waypoint provider interfaces.
+func (r daemonRepos) registerWaypointQueryHandlers() error {
+	listWaypointsHandler := systemQuery.NewListWaypointsHandler(r.graphService, r.playerRepo)
+	if err := mediator.RegisterHandler[*systemQuery.ListWaypointsQuery](r.med, listWaypointsHandler); err != nil {
+		return fmt.Errorf("failed to register ListWaypoints handler: %w", err)
+	}
+
+	getWaypointHandler := systemQuery.NewGetWaypointHandler(r.graphService, r.playerRepo)
+	if err := mediator.RegisterHandler[*systemQuery.GetWaypointQuery](r.med, getWaypointHandler); err != nil {
+		return fmt.Errorf("failed to register GetWaypoint handler: %w", err)
+	}
+	return nil
+}
+
+func (r daemonRepos) registerLedgerHandlers() error {
+	playerResolver := common.NewPlayerResolver(r.playerRepo)
+	recordTransactionHandler := ledgerCmd.NewRecordTransactionHandler(r.transactionRepo, nil) // nil = use RealClock
+	if err := mediator.RegisterHandler[*ledgerCmd.RecordTransactionCommand](r.med, recordTransactionHandler); err != nil {
+		return fmt.Errorf("failed to register RecordTransaction handler: %w", err)
+	}
+
+	getTransactionsHandler := ledgerQuery.NewGetTransactionsHandler(r.transactionRepo, playerResolver)
+	if err := mediator.RegisterHandler[*ledgerQuery.GetTransactionsQuery](r.med, getTransactionsHandler); err != nil {
+		return fmt.Errorf("failed to register GetTransactions handler: %w", err)
+	}
+
+	getProfitLossHandler := ledgerQuery.NewGetProfitLossHandler(r.transactionRepo)
+	if err := mediator.RegisterHandler[*ledgerQuery.GetProfitLossQuery](r.med, getProfitLossHandler); err != nil {
+		return fmt.Errorf("failed to register GetProfitLoss handler: %w", err)
+	}
+
+	getCashFlowHandler := ledgerQuery.NewGetCashFlowHandler(r.transactionRepo)
+	if err := mediator.RegisterHandler[*ledgerQuery.GetCashFlowQuery](r.med, getCashFlowHandler); err != nil {
+		return fmt.Errorf("failed to register GetCashFlow handler: %w", err)
+	}
+	return nil
+}
+
+func (r daemonRepos) registerContractLifecycleHandlers() error {
+	negotiateContractHandler := contractCmd.NewNegotiateContractHandler(r.contractRepo, r.shipRepo, r.playerRepo, r.apiClient)
+	if err := mediator.RegisterHandler[*contractCmd.NegotiateContractCommand](r.med, negotiateContractHandler); err != nil {
+		return fmt.Errorf("failed to register NegotiateContract handler: %w", err)
+	}
+
+	acceptContractHandler := contractCmd.NewAcceptContractHandler(r.contractRepo, r.playerRepo, r.apiClient, r.med)
+	if err := mediator.RegisterHandler[*contractCmd.AcceptContractCommand](r.med, acceptContractHandler); err != nil {
+		return fmt.Errorf("failed to register AcceptContract handler: %w", err)
+	}
+
+	deliverContractHandler := contractCmd.NewDeliverContractHandler(r.contractRepo, r.apiClient, r.playerRepo)
+	if err := mediator.RegisterHandler[*contractCmd.DeliverContractCommand](r.med, deliverContractHandler); err != nil {
+		return fmt.Errorf("failed to register DeliverContract handler: %w", err)
+	}
+
+	fulfillContractHandler := contractCmd.NewFulfillContractHandler(r.contractRepo, r.playerRepo, r.apiClient, r.med)
+	if err := mediator.RegisterHandler[*contractCmd.FulfillContractCommand](r.med, fulfillContractHandler); err != nil {
+		return fmt.Errorf("failed to register FulfillContract handler: %w", err)
+	}
+
+	evaluateContractProfitabilityHandler := contractQuery.NewEvaluateContractProfitabilityHandler(r.shipRepo, r.marketRepoAdapter)
+	if err := mediator.RegisterHandler[*contractQuery.EvaluateContractProfitabilityQuery](r.med, evaluateContractProfitabilityHandler); err != nil {
+		return fmt.Errorf("failed to register EvaluateContractProfitability handler: %w", err)
+	}
+	return nil
+}
+
+func (r daemonRepos) registerGasExtractionHandlers(shipEventBus *ship.ShipEventBus) error {
+	siphonResourcesHandler := gasCmd.NewSiphonResourcesHandler(r.shipRepo, r.playerRepo, r.apiClient, shipEventBus)
+	if err := mediator.RegisterHandler[*gasCmd.SiphonResourcesCommand](r.med, siphonResourcesHandler); err != nil {
+		return fmt.Errorf("failed to register SiphonResources handler: %w", err)
+	}
+
+	transferCargoHandler := gasCmd.NewTransferCargoHandler(r.shipRepo, r.apiClient)
+	if err := mediator.RegisterHandler[*gasCmd.TransferCargoCommand](r.med, transferCargoHandler); err != nil {
+		return fmt.Errorf("failed to register TransferCargo handler: %w", err)
+	}
+
+	findFactoryForGasHandler := gasQuery.NewFindFactoryForGasHandler(r.marketRepoAdapter)
+	if err := mediator.RegisterHandler[*gasQuery.FindFactoryForGasQuery](r.med, findFactoryForGasHandler); err != nil {
+		return fmt.Errorf("failed to register FindFactoryForGas handler: %w", err)
+	}
+	return nil
+}
+
+// sensingWiring is the parked-sensing engine's collaborator set, composed per player into its ports.
+type sensingWiring struct {
+	ledger       *parkedSensingAdapters.LedgerPort
+	marketGoods  *parkedSensingAdapters.MarketGoodsPort
+	unpricedPool *parkedSensingAdapters.UnpricedPoolPort
+	remoteMarket *parkedSensingAdapters.RemoteMarketPort
+
+	offGateSelect *expansionAdapters.OffGateWarpTargetSelector
+	offGateDemand *expansionAdapters.ExplorerOffGateBridge
+	idleExplorer  *expansionAdapters.IdleExplorerPort
+	explorerWarp  *expansionAdapters.ExplorerWarpDispatcher
+
+	db              *gorm.DB
+	med             mediator.Mediator
+	apiClient       *api.SpaceTradersClient
+	shipRepo        navigation.ShipRepository
+	playerRepo      *persistence.GormPlayerRepository
+	waypointRepo    *persistence.GormWaypointRepository
+	transactionRepo *persistence.GormTransactionRepository
+
+	gateEdgeRepo     *persistence.GormGateEdgeRepository
+	gateGraphService *gategraph.Service
+	marketScanner    *ship.MarketScanner
+
+	shipyardScanner       *ship.ShipyardScanner
+	shipyardInventoryRepo *persistence.ShipyardInventoryRepositoryGORM
+	yardBudget            *ship.YardScanBudget
+}
+
+// The engine's outbound surface, wired as ONE unit: a half-wired engine is a wedge
+// rather than a degraded mode (it would plan placements forever and fill none), so the
+// coordinator checks the bundle is complete and holds the tick fail-closed if it is not.
+// Every adapter here is thin — the money guards, the purchase machinery, the movement
+// verbs and the market scanner are all reused unmodified.
+//
+// Built PER PLAYER, like constructionActivatorFactory: two of the reads sit in
+// player-scoped tables while their port signatures carry no player (the shipyard
+// inventory behind ListProbeYards, and the catalog sweep stamp behind CatalogKnown), so
+// the player has to be bound into the adapter — and the handler is a registered
+// singleton serving every player's ticks. The factory result is memoised per player.
+//
+// heavyTargetFinder is an explicit parameter rather than a field: the composition-root
+// pin test requires both of its consumers be handed the one instance by name.
+func (s sensingWiring) enginePorts(
+	heavyTargetFinder *shipyardQuery.HeavyTargetFinder,
+	sensingPlayerID int,
+) scoutingCmd.SensingEnginePorts {
+	// One catalog adapter instance serves the screen, the buy queue's yard lookup and
+	// expansion's uncharted walk, so the three can never disagree about what is in a
+	// system. DB-only by contract — ListProbeYards especially, whose locality the
+	// drain's free-skip accounting depends on.
+	catalog := parkedSensingAdapters.NewWaypointCatalogPort(s.waypointRepo, s.db, sensingPlayerID)
+	// One gate-adjacency adapter serves expansion's frontier walk AND the
+	// placement mover's cross-system gate walk, so the two can never disagree
+	// about which systems border which — the mover walks toward a placement
+	// over the same edges expansion used to decide the placement was reachable.
+	gateNeighbours := parkedSensingAdapters.NewGateNeighbourPort(s.gateEdgeRepo)
+	return scoutingCmd.SensingEnginePorts{
+		Ledger:    s.ledger,
+		Waypoints: catalog,
+		Uncharted: catalog,
+		// Off-gate warp expansion (write side of the explorer demand bridge). Wired
+		// unconditionally rather than behind a knob: a separately-armed expansion engine
+		// just sits dormant, so this one drives the live tick.
+		OffGate: parkedsensing.OffGatePorts{
+			Select:   s.offGateSelect,
+			Demand:   s.offGateDemand,
+			Explorer: s.idleExplorer,
+			Warp:     s.explorerWarp,
+		},
+		// The same catalog instance again: it owns the shipyard_inventory reads,
+		// so the yard lookup and the listing memo read one store.
+		ListingMemo: catalog,
+		// And once more for the shipyard blind spot: the set difference between
+		// the charted SHIPYARD-trait waypoints and the ones already carrying a
+		// stored reading. Same instance, so "which yards exist" and "which yards
+		// have we read" are answered from one place.
+		YardCatalog: catalog,
+		// The two halves of a shipyard read, wired as ONE scanner behind two
+		// budget tags. The free half learns what a yard SELLS with no hull
+		// anywhere near it (`shipTypes` survives a presence-less GET, exactly like
+		// the market catalogue above); the scan half rides a parked probe's turn
+		// and additionally carries the PRICES, which only a hull at the counter
+		// can see. Both persist through the fleet's one shipyard scanner, so the
+		// heavy-yard milestone fires from either.
+		YardRead: parkedSensingAdapters.NewYardCatalogPort(s.shipyardScanner, s.playerRepo),
+		YardScan: parkedSensingAdapters.NewYardScanPort(s.shipyardScanner, s.playerRepo),
+		// The third half of the shipyard problem, and the one neither reader can
+		// solve: a counter's PRICES never appear in any response until a hull of
+		// ours is standing on it. This is the SAME budget instance
+		// every shipyard reader draws from, handed over as a demand source — its
+		// top weight tier is precisely the set of yards it keeps ranking first and
+		// keeps failing to price, and here that tier becomes a request to send a
+		// hull rather than another read that comes back without a number.
+		//
+		// Passed DIRECTLY rather than through an adapter because there is nothing
+		// to adapt: the budget already speaks the port's two methods, and a
+		// wrapper would only create a second place for the reposition allowance to
+		// be accidentally re-created per player.
+		YardPresence: s.yardBudget,
+		// The market cache: what a market deals in, how deep it is, and the
+		// two-sided quotes the spread weighting reads (columns CROSSED — see
+		// MarketPrices, where an uncrossed wiring fails silently).
+		MarketGoods: s.marketGoods,
+		SpreadOf:    s.marketGoods,
+		// The screen's only genuine API spend: the goods CATALOGUE of a charted
+		// market no hull has visited, which survives a presence-less GET. It is
+		// CHARGED to the fleet market-scan budget but never gated by it — there is
+		// no store to serve a cache gap from (sp-ntgfj).
+		RemoteMarket: s.remoteMarket,
+		// Money: the same live-treasury reader every other guard uses, and the
+		// trading fleet's measured cargo outflow, which is what makes the probe
+		// buy floor dynamic rather than a fixed number.
+		Treasury:   parkedSensingAdapters.NewTreasuryPort(expansionAdapters.NewTreasuryReader(s.apiClient)),
+		CargoSpend: parkedSensingAdapters.NewCargoSpendPort(s.transactionRepo),
+		// The purchaser PERSISTS every shipyard listing set its quote reads, which
+		// is what populates the memo above — without the writer the memo can never
+		// learn and every dead yard is re-quoted forever.
+		Purchaser: parkedSensingAdapters.NewProbePurchasePort(s.med, s.shipRepo, s.shipyardInventoryRepo),
+		Ships:     parkedSensingAdapters.NewShipPositionPort(s.db),
+		Fleet:     parkedSensingAdapters.NewFleetTagPort(s.shipRepo),
+		Mover:     parkedSensingAdapters.NewMoverPort(s.med, gateNeighbours),
+		// Per-system stored gate adjacency — never the whole-map read, and never a
+		// fetch-through resolver.
+		Gates: gateNeighbours,
+		// The DELIBERATE fetch-through gate read, over the SAME gategraph service the
+		// `spacetraders system gates --system X1-…` CLI verb drives and every router already
+		// resolves through — so there is one live gate fetcher in the codebase, one persistence
+		// path, and one negative-result backoff for a gate the API refuses.
+		//
+		// It is a SECOND port beside Gates rather than a widening of it: Gates is asked of every
+		// known system on every tick and must stay a pure store read, while this is asked of a
+		// bounded, ordered handful (MaxGateReads) of systems the store has already said it cannot
+		// answer for. Without it the engine could only learn a system's adjacency by flying a
+		// probe to it, which left the fleet sealed inside a 57-system pocket whose one built,
+		// passable exit nobody had ever read.
+		GateRead: parkedSensingAdapters.NewGateReadPort(s.gateGraphService),
+		// The same stored adjacency the placement mover walks: a seed's target
+		// may now be up to MaxWalkRings hops out, so the crossing resolves its
+		// next system from the gate graph rather than jumping at the errand's
+		// final system, which the API rejects when it is not connected.
+		SeedShip: parkedSensingAdapters.NewSeedCommandPort(s.med, s.apiClient, s.playerRepo, s.waypointRepo, s.marketScanner, gateNeighbours),
+		Scan:     parkedSensingAdapters.NewScanRunnerPort(s.marketScanner),
+		Home:     parkedSensingAdapters.NewHomeSystemPort(s.db),
+		// The sensing surge's work list: charted systems we hold no price for
+		// (sp-zvywu). Same instance for every player — see its construction above.
+		UnpricedPool: s.unpricedPool,
+		// The heavy reservation: probe buying stands down while treasury accumulates
+		// toward the next heavy, and resumes the moment it lands. heavy_cap is read
+		// from the fleet autosizer's OWN persisted config — one dial, one enforcer —
+		// and an absent autosizer simply reserves nothing.
+		//
+		// The price term is heavyTargetFinder — the SAME instance the autosizer reads,
+		// not a second query that happens to agree — so the spender and the withholder
+		// cannot end up saving toward different yards (sp-fwk8z).
+		HeavyReserve: parkedSensingAdapters.NewHeavyReservePort(
+			parkedSensingAdapters.NewShipRepoCensus(s.shipRepo),
+			heavyTargetFinder,
+			parkedSensingAdapters.NewAutosizerCapPort(s.db),
+		),
+		// The budget the whole model is sized against: sensing is the RESIDUAL
+		// consumer, so it reads how much of the ceiling everyone else is using.
+		Budget: parkedSensingAdapters.NewBudgetRatePort(metricsAdapter.GetGlobalAPIBudgetTracker(), api.RateLimitPerSecond),
+	}
+}
+
+func run(cfg *config.Config) error {
+	db, err := openDatabase(&cfg.Database)
 	if err != nil {
-		return fmt.Errorf("failed to connect to database: %w", err)
+		return err
 	}
 	defer database.Close(db)
-	fmt.Println("Database connected")
-
-	// Reconcile schema on startup: models are the source of truth, and
-	// AutoMigrate is additive (creates missing tables/columns/indexes, never
-	// destructive) — closes the gap where a merged model change passes tests
-	// (which AutoMigrate the in-memory SQLite) but breaks production Postgres
-	// for lack of a hand-written migration. Non-fatal: a healthy earner must
-	// not be blocked by a migration quirk — log loudly and continue.
-	if err := database.AutoMigrate(db); err != nil {
-		fmt.Printf("WARNING: schema AutoMigrate failed (continuing on existing schema): %v\n", err)
-	} else {
-		fmt.Println("Schema reconciled (AutoMigrate)")
-	}
+	reconcileSchema(db)
 
 	// Single-writer guard (sp-wrh84): take a Postgres SESSION advisory lock for
 	// this player BEFORE recovering any containers, so two daemons can never write
@@ -153,46 +502,33 @@ func run(cfg *config.Config) error {
 	// shutdown (or drops on crash). SQLite (tests/local) is already a single-writer
 	// store, so the guard is Postgres-only.
 	if cfg.Database.Type == "postgres" {
-		sqlDB, err := db.DB()
+		playerLock, err := acquirePlayerAdvisoryLock(db, cfg.Captain.PlayerID)
 		if err != nil {
-			return fmt.Errorf("failed to get underlying db for advisory lock: %w", err)
-		}
-		lockCtx, lockCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		playerLock, err := daemonlock.NewPostgresPlayerLock(lockCtx, sqlDB)
-		if err != nil {
-			lockCancel()
-			return fmt.Errorf("failed to create daemon advisory lock: %w", err)
-		}
-		if err := daemonlock.AcquireExclusive(lockCtx, playerLock, cfg.Captain.PlayerID); err != nil {
-			lockCancel()
-			_ = playerLock.Close()
 			return err
 		}
-		lockCancel()
 		// Hold the lock (pinned connection) for the whole daemon lifetime; the
 		// deferred Close releases it at shutdown (LIFO: runs before database.Close).
 		defer func() { _ = playerLock.Close() }()
 		fmt.Printf("Daemon advisory lock acquired for player %d\n", cfg.Captain.PlayerID)
 	}
 
-	// 2. Initialize waypoint converter (needed for repositories)
+	// Initialize waypoint converter. Its sole consumer is the contract fleet
+	// coordinator, constructed far below; no repository takes it.
 	waypointConverter := api.NewWaypointConverter()
 	fmt.Println("Waypoint converter initialized")
 
-	// 3. Initialize repositories
+	// Initialize repositories
 	playerRepo := persistence.NewGormPlayerRepository(db)
 	waypointRepo := persistence.NewGormWaypointRepository(db)
 	systemGraphRepo := persistence.NewGormSystemGraphRepository(db)
 	containerLogRepo := persistence.NewGormContainerLogRepository(db, nil) // nil = use RealClock in production
 	containerRepo := persistence.NewContainerRepository(db)
 	marketRepo := persistence.NewMarketRepository(db)
-	marketRepoAdapter := persistence.NewMarketRepositoryAdapter(marketRepo) // Adapter for domain market.MarketRepository interface
+	marketRepoAdapter := persistence.NewMarketRepositoryAdapter(marketRepo)
 	contractRepo := persistence.NewGormContractRepository(db)
-	tradingMarketRepo := persistence.NewMarketRepositoryAdapter(marketRepo)
 	transactionRepo := persistence.NewGormTransactionRepository(db)
 	priceHistoryRepo := persistence.NewGormMarketPriceHistoryRepository(db)
 
-	// 4. Initialize API client
 	apiClient := api.NewSpaceTradersClient()
 	// Cache Get Agent (the #2 API consumer) with a short TTL. Every
 	// GetAgent caller shares this one client, so the money guards and monitors all
@@ -205,42 +541,20 @@ func run(cfg *config.Config) error {
 	apiClient.SetLimiterPressureHalfLife(time.Duration(cfg.Daemon.LimiterPressureHalfLifeSeconds) * time.Second)
 	fmt.Println("API client initialized")
 
-	// 4. Initialize ship repository (adapts API responses to domain entities)
-	// Note: Will be updated after waypointProvider is created
-	var shipRepo navigation.ShipRepository // Declare here, initialize after waypointProvider
+	// Declared as the interface up here and assigned below, once graphService —
+	// the IWaypointProvider it is built over — exists.
+	var shipRepo navigation.ShipRepository
 	fmt.Println("Ship repository will be initialized after waypoint provider")
 
-	// 5. Initialize routing client
-	// Use real gRPC client if routing address is configured, otherwise use mock
-	var routingClient domainRouting.RoutingClient
-	if cfg.Routing.Address != "" {
-		fmt.Printf("Connecting to routing service at %s...\n", cfg.Routing.Address)
-		grpcClient, err := routing.NewGRPCRoutingClient(cfg.Routing.Address)
-		if err != nil {
-			return fmt.Errorf("failed to create routing client: %w", err)
-		}
-		// Boot-time reachability probe: the daemon does NOT depend on the
-		// routing service being up — the lazy gRPC conn reconnects on its own — but
-		// operators should see routing state at startup. Bounded and non-fatal either way.
-		probeCtx, probeCancel := context.WithTimeout(context.Background(), 2*time.Second)
-		if probeErr := grpcClient.WaitForReady(probeCtx); probeErr != nil {
-			fmt.Printf("Routing service UNREACHABLE at boot (%s) — continuing, will reconnect (route planning degraded until it returns)\n", cfg.Routing.Address)
-		} else {
-			fmt.Printf("Routing service reachable at %s\n", cfg.Routing.Address)
-		}
-		probeCancel()
-		routingClient = grpcClient
-		fmt.Println("Routing client initialized (gRPC OR-Tools service)")
-	} else {
-		routingClient = routing.NewMockRoutingClient()
-		fmt.Println("Routing client initialized (mock - configure routing.address to use real service)")
+	routingClient, err := newRoutingClient(cfg.Routing.Address)
+	if err != nil {
+		return err
 	}
 
-	// 6. Initialize graph builder
 	graphBuilder := api.NewGraphBuilder(apiClient, playerRepo, waypointRepo)
 	fmt.Println("Graph builder initialized")
 
-	// 6.5. Initialize unified graph service (replaces SystemGraphProvider + WaypointProvider)
+	// Initialize unified graph service (replaces SystemGraphProvider + WaypointProvider)
 	// This single service provides both graph and waypoint access with consistent caching
 	graphService := graph.NewGraphService(systemGraphRepo, waypointRepo, graphBuilder)
 	fmt.Println("Graph service initialized (unified graph and waypoint access)")
@@ -254,37 +568,28 @@ func run(cfg *config.Config) error {
 	shipRepo = shipRepoImpl
 	fmt.Println("Ship repository initialized")
 
-	// 7. Initialize mediator (CQRS dispatcher)
+	// Initialize mediator (CQRS dispatcher)
 	med := common.NewMediator()
 
-	// 7a. Register middleware (must be done before registering handlers)
+	// Register middleware (must be done before registering handlers)
 	med.RegisterMiddleware(common.PlayerTokenMiddleware(playerRepo))
 
-	// 8. Register command handlers
-	// Register atomic command handlers (used by RouteExecutor)
-	orbitHandler := shipTactics.NewOrbitShipHandler(shipRepo)
-	if err := mediator.RegisterHandler[*shipTypes.OrbitShipCommand](med, orbitHandler); err != nil {
-		return fmt.Errorf("failed to register OrbitShip handler: %w", err)
+	repos := daemonRepos{
+		med:               med,
+		apiClient:         apiClient,
+		shipRepo:          shipRepo,
+		playerRepo:        playerRepo,
+		waypointRepo:      waypointRepo,
+		containerRepo:     containerRepo,
+		graphService:      graphService,
+		marketRepo:        marketRepo,
+		marketRepoAdapter: marketRepoAdapter,
+		contractRepo:      contractRepo,
+		transactionRepo:   transactionRepo,
 	}
 
-	dockHandler := shipTactics.NewDockShipHandler(shipRepo)
-	if err := mediator.RegisterHandler[*shipTypes.DockShipCommand](med, dockHandler); err != nil {
-		return fmt.Errorf("failed to register DockShip handler: %w", err)
-	}
-
-	refuelHandler := shipTactics.NewRefuelShipHandler(shipRepo, playerRepo, apiClient, med)
-	if err := mediator.RegisterHandler[*shipTypes.RefuelShipCommand](med, refuelHandler); err != nil {
-		return fmt.Errorf("failed to register RefuelShip handler: %w", err)
-	}
-
-	setFlightModeHandler := shipNav.NewSetFlightModeHandler(shipRepo)
-	if err := mediator.RegisterHandler[*shipTypes.SetFlightModeCommand](med, setFlightModeHandler); err != nil {
-		return fmt.Errorf("failed to register SetFlightMode handler: %w", err)
-	}
-
-	navigateDirectHandler := shipNav.NewNavigateDirectHandler(shipRepo, waypointRepo)
-	if err := mediator.RegisterHandler[*shipTypes.NavigateDirectCommand](med, navigateDirectHandler); err != nil {
-		return fmt.Errorf("failed to register NavigateDirect handler: %w", err)
+	if err := repos.registerShipTacticHandlers(); err != nil {
+		return err
 	}
 
 	// Create extracted services for NavigateRouteHandler
@@ -292,19 +597,7 @@ func run(cfg *config.Config) error {
 	routePlanner := ship.NewRoutePlanner(routingClient)
 
 	// Market scanner for automatic market data collection during navigation.
-	//
-	// ONE scanner instance, shared by every coordinator container, which is what
-	// makes its market-scan budget a fleet budget rather than a per-container one
-	// that would multiply by the container count. The budget is enforced
-	// by construction; this only replaces the built-in default with the configured
-	// rate and value clamp.
-	marketScanner := ship.NewMarketScanner(apiClient, marketRepo, playerRepo, priceHistoryRepo)
-	marketScanner.SetScanBudget(ship.NewScanBudget(
-		cfg.MarketScan.ResolvedBudgetReqPerSec(),
-		cfg.MarketScan.ResolvedValueClampR(),
-	))
-	fmt.Printf("Market-scan budget: %.3f req/s shared by every market reader, value clamp %dx\n",
-		cfg.MarketScan.ResolvedBudgetReqPerSec(), cfg.MarketScan.ResolvedValueClampR())
+	marketScanner := newMarketScanner(cfg.MarketScan, apiClient, marketRepo, playerRepo, priceHistoryRepo)
 
 	// Ship event bus for pub/sub of ship state changes (arrival, cooldown, etc.)
 	// Used by ShipStateScheduler (publisher) and RouteExecutor (subscriber)
@@ -349,30 +642,12 @@ func run(cfg *config.Config) error {
 	// route-arrival hook or a scout that visits a SHIPYARD-trait marketplace never
 	// persists a shipyard_inventory row.
 	shipyardInventoryRepo := persistence.NewShipyardInventoryRepository(db)
-	shipyardScanner := ship.NewShipyardScanner(
-		apiClient, shipyardInventoryRepo, waypointRepo, captainEventRepo,
-		domainShipyard.NewHeavyShipTypeSet(cfg.Scouting.HeavyShipTypes),
-		time.Duration(cfg.Scouting.ShipyardRescanTTLSeconds)*time.Second,
+	shipyardScanner, yardBudget := newShipyardScanner(
+		cfg.ShipyardScan, cfg.Scouting, apiClient, shipyardInventoryRepo, waypointRepo, captainEventRepo,
 	)
-	// The fleet's ONE shipyard-read budget, shared by every reader.
-	// Config rather than a container tunable for the same reason the market budget
-	// is: a per-container allowance would multiply by the container count and stop
-	// being a budget. The budget is enforced by construction; this only replaces the
-	// built-in default with the configured rate and demand clamp, and wires the
-	// charted-yard counter that is its denominator.
-	yardBudget := ship.NewYardScanBudget(
-		cfg.ShipyardScan.ResolvedBudgetReqPerSec(),
-		cfg.ShipyardScan.ResolvedValueClampR(),
-		domainShipyard.NewHeavyShipTypeSet(cfg.Scouting.HeavyShipTypes),
-	)
-	yardBudget.SetChartedYardCounter(waypointRepo)
-	shipyardScanner.SetScanBudget(yardBudget)
-	fmt.Printf("Shipyard-read budget: %.3f req/s shared by every shipyard reader, demand clamp %dx\n",
-		cfg.ShipyardScan.ResolvedBudgetReqPerSec(), cfg.ShipyardScan.ResolvedValueClampR())
 
 	routeExecutor := ship.NewRouteExecutor(shipRepo, med, nil, marketScanner, shipyardScanner, nil, waypointRepo, shipEventBus) // nil = use RealClock and default refuel strategy
 
-	// NavigateRoute handler (now uses extracted services)
 	navigateRouteHandler := shipNav.NewNavigateRouteHandler(
 		shipRepo,
 		graphService,
@@ -384,7 +659,9 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register NavigateRoute handler: %w", err)
 	}
 
-	jumpShipHandler := shipNav.NewJumpShipHandler(shipRepo, playerRepo, apiClient, med, containerRepo, api.NewConstructionSiteRepository(apiClient, playerRepo), nil) // constructionRepo enables the at-complete-gate driveless-jump check; nil clock = RealClock
+	constructionSiteRepo := api.NewConstructionSiteRepository(apiClient, playerRepo)
+
+	jumpShipHandler := shipNav.NewJumpShipHandler(shipRepo, playerRepo, apiClient, med, containerRepo, constructionSiteRepo, nil) // constructionRepo enables the at-complete-gate driveless-jump check; nil clock = RealClock
 	if err := mediator.RegisterHandler[*shipNav.JumpShipCommand](med, jumpShipHandler); err != nil {
 		return fmt.Errorf("failed to register JumpShip handler: %w", err)
 	}
@@ -419,101 +696,21 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register ScoutTour handler: %w", err)
 	}
 
-	getMarketHandler := scoutingQuery.NewGetMarketDataHandler(marketRepo)
-	if err := mediator.RegisterHandler[*scoutingQuery.GetMarketDataQuery](med, getMarketHandler); err != nil {
-		return fmt.Errorf("failed to register GetMarketData handler: %w", err)
+	if err := repos.registerMarketAndPlayerQueryHandlers(); err != nil {
+		return err
 	}
 
-	listMarketsHandler := scoutingQuery.NewListMarketDataHandler(marketRepo)
-	if err := mediator.RegisterHandler[*scoutingQuery.ListMarketDataQuery](med, listMarketsHandler); err != nil {
-		return fmt.Errorf("failed to register ListMarketData handler: %w", err)
+	if err := repos.registerShipQueryHandlers(); err != nil {
+		return err
 	}
 
-	// Player query handlers
-	getPlayerHandler := playerQuery.NewGetPlayerHandler(playerRepo, apiClient)
-	if err := mediator.RegisterHandler[*playerQuery.GetPlayerQuery](med, getPlayerHandler); err != nil {
-		return fmt.Errorf("failed to register GetPlayer handler: %w", err)
+	reserveShipHandler, assignShipFleetHandler, err := repos.registerFleetAssignmentHandlers()
+	if err != nil {
+		return err
 	}
 
-	// Player identity sync. Era registration seeds players.metadata.headquarters; this handler
-	// is what REPAIRS it, and the parked-sensing cutover reads it ahead of expansion on every
-	// tick. Leave it unregistered and a row whose key is missing or stale stays broken forever,
-	// with the whole sensing reconcile aborting every 30s. The daemon's boot hook dispatches it
-	// per player; registering it here is what makes that dispatch resolve instead of failing
-	// with "no handler registered for type".
-	syncPlayerHandler := playerCmd.NewSyncPlayerHandler(playerRepo, apiClient)
-	if err := mediator.RegisterHandler[*playerCmd.SyncPlayerCommand](med, syncPlayerHandler); err != nil {
-		return fmt.Errorf("failed to register SyncPlayer handler: %w", err)
-	}
-
-	// Ship query handlers
-	listShipsHandler := shipQuery.NewListShipsHandler(shipRepo, playerRepo)
-	if err := mediator.RegisterHandler[*shipQuery.ListShipsQuery](med, listShipsHandler); err != nil {
-		return fmt.Errorf("failed to register ListShips handler: %w", err)
-	}
-
-	getShipHandler := shipQuery.NewGetShipHandler(shipRepo, playerRepo)
-	if err := mediator.RegisterHandler[*shipQuery.GetShipQuery](med, getShipHandler); err != nil {
-		return fmt.Errorf("failed to register GetShip handler: %w", err)
-	}
-
-	// containerRepo satisfies ContainerStatusReader so refresh can reconcile a
-	// stale claim left by a dead trade-route CLI runner; nil clock =
-	// RealClock.
-	refreshShipHandler := shipQuery.NewRefreshShipHandler(shipRepo, playerRepo, containerRepo, nil)
-	if err := mediator.RegisterHandler[*shipQuery.RefreshShipQuery](med, refreshShipHandler); err != nil {
-		return fmt.Errorf("failed to register RefreshShip handler: %w", err)
-	}
-
-	// Jump-gate discovery query handlers. GetJumpGateConnections backs the
-	// multi-system trade-route's neighbor-system discovery.
-	findNearestJumpGateHandler := shipQuery.NewFindNearestJumpGateHandler(shipRepo, graphService, playerRepo)
-	if err := mediator.RegisterHandler[*shipQuery.FindNearestJumpGateQuery](med, findNearestJumpGateHandler); err != nil {
-		return fmt.Errorf("failed to register FindNearestJumpGate handler: %w", err)
-	}
-
-	getJumpGateConnectionsHandler := shipQuery.NewGetJumpGateConnectionsHandler(graphService, apiClient, playerRepo)
-	if err := mediator.RegisterHandler[*shipQuery.GetJumpGateConnectionsQuery](med, getJumpGateConnectionsHandler); err != nil {
-		return fmt.Errorf("failed to register GetJumpGateConnections handler: %w", err)
-	}
-
-	// Captain-reservation command handlers: reserve/release a hull for the
-	// captain's direct manual use, hiding it from coordinator discovery
-	// (sp-i1ku).
-	reserveShipHandler := shipAssignment.NewReserveShipHandler(shipRepo, playerRepo)
-	if err := mediator.RegisterHandler[*shipAssignment.ReserveShipCommand](med, reserveShipHandler); err != nil {
-		return fmt.Errorf("failed to register ReserveShip handler: %w", err)
-	}
-
-	releaseShipHandler := shipAssignment.NewReleaseShipHandler(shipRepo, playerRepo)
-	if err := mediator.RegisterHandler[*shipAssignment.ReleaseShipCommand](med, releaseShipHandler); err != nil {
-		return fmt.Errorf("failed to register ReleaseShip handler: %w", err)
-	}
-
-	// Fleet-dedication command + query: the single write path for the
-	// dedicated_fleet tag and the fleet listing behind `fleet list`.
-	// The contract coordinator's startup reconciliation of --dedicated-ships
-	// routes through the same command.
-	assignShipFleetHandler := shipAssignment.NewAssignShipFleetHandler(shipRepo, playerRepo)
-	if err := mediator.RegisterHandler[*shipAssignment.AssignShipFleetCommand](med, assignShipFleetHandler); err != nil {
-		return fmt.Errorf("failed to register AssignShipFleet handler: %w", err)
-	}
-
-	listFleetsHandler := shipQuery.NewListFleetsHandler(shipRepo, playerRepo)
-	if err := mediator.RegisterHandler[*shipQuery.ListFleetsQuery](med, listFleetsHandler); err != nil {
-		return fmt.Errorf("failed to register ListFleets handler: %w", err)
-	}
-
-	// Waypoint discovery query handlers (graphService implements both the
-	// system-graph and single-waypoint provider interfaces).
-	listWaypointsHandler := systemQuery.NewListWaypointsHandler(graphService, playerRepo)
-	if err := mediator.RegisterHandler[*systemQuery.ListWaypointsQuery](med, listWaypointsHandler); err != nil {
-		return fmt.Errorf("failed to register ListWaypoints handler: %w", err)
-	}
-
-	getWaypointHandler := systemQuery.NewGetWaypointHandler(graphService, playerRepo)
-	if err := mediator.RegisterHandler[*systemQuery.GetWaypointQuery](med, getWaypointHandler); err != nil {
-		return fmt.Errorf("failed to register GetWaypoint handler: %w", err)
+	if err := repos.registerWaypointQueryHandlers(); err != nil {
+		return err
 	}
 
 	// Shipyard handlers
@@ -543,52 +740,12 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register JettisonCargo handler: %w", err)
 	}
 
-	// Ledger handlers
-	playerResolver := common.NewPlayerResolver(playerRepo)
-	recordTransactionHandler := ledgerCmd.NewRecordTransactionHandler(transactionRepo, nil) // nil = use RealClock
-	if err := mediator.RegisterHandler[*ledgerCmd.RecordTransactionCommand](med, recordTransactionHandler); err != nil {
-		return fmt.Errorf("failed to register RecordTransaction handler: %w", err)
+	if err := repos.registerLedgerHandlers(); err != nil {
+		return err
 	}
 
-	getTransactionsHandler := ledgerQuery.NewGetTransactionsHandler(transactionRepo, playerResolver)
-	if err := mediator.RegisterHandler[*ledgerQuery.GetTransactionsQuery](med, getTransactionsHandler); err != nil {
-		return fmt.Errorf("failed to register GetTransactions handler: %w", err)
-	}
-
-	getProfitLossHandler := ledgerQuery.NewGetProfitLossHandler(transactionRepo)
-	if err := mediator.RegisterHandler[*ledgerQuery.GetProfitLossQuery](med, getProfitLossHandler); err != nil {
-		return fmt.Errorf("failed to register GetProfitLoss handler: %w", err)
-	}
-
-	getCashFlowHandler := ledgerQuery.NewGetCashFlowHandler(transactionRepo)
-	if err := mediator.RegisterHandler[*ledgerQuery.GetCashFlowQuery](med, getCashFlowHandler); err != nil {
-		return fmt.Errorf("failed to register GetCashFlow handler: %w", err)
-	}
-
-	// Contract handlers
-	negotiateContractHandler := contractCmd.NewNegotiateContractHandler(contractRepo, shipRepo, playerRepo, apiClient)
-	if err := mediator.RegisterHandler[*contractCmd.NegotiateContractCommand](med, negotiateContractHandler); err != nil {
-		return fmt.Errorf("failed to register NegotiateContract handler: %w", err)
-	}
-
-	acceptContractHandler := contractCmd.NewAcceptContractHandler(contractRepo, playerRepo, apiClient, med)
-	if err := mediator.RegisterHandler[*contractCmd.AcceptContractCommand](med, acceptContractHandler); err != nil {
-		return fmt.Errorf("failed to register AcceptContract handler: %w", err)
-	}
-
-	deliverContractHandler := contractCmd.NewDeliverContractHandler(contractRepo, apiClient, playerRepo)
-	if err := mediator.RegisterHandler[*contractCmd.DeliverContractCommand](med, deliverContractHandler); err != nil {
-		return fmt.Errorf("failed to register DeliverContract handler: %w", err)
-	}
-
-	fulfillContractHandler := contractCmd.NewFulfillContractHandler(contractRepo, playerRepo, apiClient, med)
-	if err := mediator.RegisterHandler[*contractCmd.FulfillContractCommand](med, fulfillContractHandler); err != nil {
-		return fmt.Errorf("failed to register FulfillContract handler: %w", err)
-	}
-
-	evaluateContractProfitabilityHandler := contractQuery.NewEvaluateContractProfitabilityHandler(shipRepo, tradingMarketRepo)
-	if err := mediator.RegisterHandler[*contractQuery.EvaluateContractProfitabilityQuery](med, evaluateContractProfitabilityHandler); err != nil {
-		return fmt.Errorf("failed to register EvaluateContractProfitability handler: %w", err)
+	if err := repos.registerContractLifecycleHandlers(); err != nil {
+		return err
 	}
 
 	// ContractWorkflow handler is constructed AFTER the storage coordinator +
@@ -610,11 +767,10 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register SellCargo handler: %w", err)
 	}
 
-	// 7. Initialize daemon server
+	// Initialize daemon server
 	socketPath := cfg.Daemon.SocketPath
 	fmt.Printf("Starting daemon server on: %s\n", socketPath)
 
-	// Ensure socket directory exists
 	if err := os.MkdirAll(filepath.Dir(socketPath), 0755); err != nil {
 		return fmt.Errorf("failed to create socket directory: %w", err)
 	}
@@ -647,6 +803,7 @@ func run(cfg *config.Config) error {
 		},
 		persistence.NewContainerLiveness(db),
 	)
+	absorptionReclaimer := grpc.NewDeadContainerAbsorptionReclaimer(absorptionLedger)
 
 	// ONE shared, decaying, per-lane compression ledger for the whole fleet. Every
 	// trade-route/arb/tour/stocker leg Accrues its compression debt to it and every lane
@@ -659,7 +816,7 @@ func run(cfg *config.Config) error {
 		cfg.TradeImpact.ResolvedCooldownTau(),
 	)
 
-	contractFleetCoordinatorHandler := contractCmd.NewRunFleetCoordinatorHandler(med, shipRepo, contractRepo, tradingMarketRepo, daemonClientLocal, graphService, waypointConverter, containerRepo, nil, captainEventRepo)
+	contractFleetCoordinatorHandler := contractCmd.NewRunFleetCoordinatorHandler(med, shipRepo, contractRepo, marketRepoAdapter, daemonClientLocal, graphService, waypointConverter, containerRepo, nil, captainEventRepo)
 	contractFleetCoordinatorHandler.SetEventSubscriber(shipEventBus)
 	// First-boot seed marker (sp-86vb): persist "the --dedicated-ships seed has
 	// been applied" into the coordinator's own container config after first boot,
@@ -751,7 +908,7 @@ func run(cfg *config.Config) error {
 	// plus promptly release absorption reservations of dead containers on restart / after a kill.
 	tradeFleetCoordinatorHandler.SetTourLiveness(daemonServer)
 	tradeFleetCoordinatorHandler.SetTourStopper(daemonServer)
-	tradeFleetCoordinatorHandler.SetAbsorptionReclaimer(grpc.NewDeadContainerAbsorptionReclaimer(absorptionLedger))
+	tradeFleetCoordinatorHandler.SetAbsorptionReclaimer(absorptionReclaimer)
 	if err := mediator.RegisterHandler[*tradeRouteCmd.RunTradeFleetCoordinatorCommand](med, tradeFleetCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register TradeFleetCoordinator handler: %w", err)
 	}
@@ -797,7 +954,7 @@ func run(cfg *config.Config) error {
 	ledgerTreasury := grpc.NewLedgerTreasuryReader(db, apiClient)
 
 	constructionExecutor := goodsServices.NewProductionExecutor(med, shipRepo, marketRepoAdapter, goodsMarketLocator, shared.NewRealClock(), apiClient)
-	constructionExecutor.SetConstructionRepo(api.NewConstructionSiteRepository(apiClient, playerRepo))
+	constructionExecutor.SetConstructionRepo(constructionSiteRepo)
 	// BOTH factory money guards (the per-buy spend floor and the cross-container
 	// concurrent-spend cap) read treasury through the shared ledger-backed reader instead of
 	// calling Get Agent before every input tranche. Unconditional — no config key, no arming.
@@ -821,7 +978,7 @@ func run(cfg *config.Config) error {
 	constructionActivatorFactory := func(pid int) goodsCmd.ConstructionActivator {
 		return goodsServices.NewSupplyMonitor(
 			marketRepoAdapter, nil, nil, constructionPipelineRepo, goodsServices.NewTaskQueue(),
-			constructionTaskRepo, nil, goodsMarketLocator, nil, nil, nil, time.Minute, pid,
+			constructionTaskRepo, nil, goodsMarketLocator, nil, nil, nil, constructionActivatorPollInterval, pid,
 		)
 	}
 	constructionCoordinatorHandler := goodsCmd.NewRunConstructionCoordinatorHandler(
@@ -836,7 +993,7 @@ func run(cfg *config.Config) error {
 	// each tick reconciles the pipeline's delivered counters against the server before sizing buys.
 	// Unwired, those counters can only drift BEHIND (they are written after the server already
 	// accepted a supply) and the drain over-sources material the gate no longer needs.
-	constructionCoordinatorHandler.SetConstructionSiteSource(api.NewConstructionSiteRepository(apiClient, playerRepo))
+	constructionCoordinatorHandler.SetConstructionSiteSource(constructionSiteRepo)
 	if err := mediator.RegisterHandler[*goodsCmd.RunConstructionCoordinatorCommand](med, constructionCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register ConstructionCoordinator handler: %w", err)
 	}
@@ -858,34 +1015,12 @@ func run(cfg *config.Config) error {
 	// ([routing] gate_cache_ttl, 24h default) — the per-tick lane/reposition neighbor scan
 	// hits this cache instead of re-reading gate topology live.
 	gateEdgeRepo := persistence.NewGormGateEdgeRepository(db, persistence.WithFreshWindow(cfg.Routing.GateCacheTTL))
-	// Skip the guaranteed-400 live GetJumpGate on an uncharted origin gate
-	// (default ON; an explicit [routing] skip_uncharted_gate_fetch:false restores probe-
-	// then-backoff). A nil switch defaults ON, matching SetDefaults.
-	skipUnchartedGateFetch := cfg.Routing.SkipUnchartedGateFetch == nil || *cfg.Routing.SkipUnchartedGateFetch
-	// A gate-set refresh re-reads EVERY connected gate's build state, and a set expires
-	// as a whole — so one neighbour still under construction drags its healthy siblings
-	// onto the short window and re-confirms verdicts that cannot have changed (gate
-	// construction is monotone). This probe answers those from the same era-scoped,
-	// freshness-bounded row the routing cache already trusts; every uncertain case still
-	// goes live. Scoped to the gate graph, the only consumer of the per-gate read.
 	// A jump asks two topology questions the router has already answered and stored:
 	// which gate waypoint the hop leaves for, and whether the source gate is built.
 	// Attached here, where the store exists; the handler keeps its live reads for
 	// anything the store does not hold.
 	jumpShipHandler.SetJumpTopologyStore(gateEdgeRepo)
-	gateProbeClient := api.NewGateConstructionProbe(apiClient, gateEdgeRepo)
-	gateGraphService := gategraph.NewService(
-		gateEdgeRepo, gateProbeClient, graphService, playerRepo,
-		// Back off re-probing an unreadable jump gate (5m→30m→2h) instead of
-		// re-fetching it every reconcile tick — the negative-result backoff is persisted
-		// on the gate_edges row so a restart resumes it rather than re-storming the API.
-		gategraph.WithBackoff(gategraph.BackoffSchedule{
-			Initial:    cfg.Routing.GateBackoff.Initial,
-			Multiplier: cfg.Routing.GateBackoff.Multiplier,
-			Max:        cfg.Routing.GateBackoff.Max,
-		}),
-		gategraph.WithSkipUnchartedFetch(skipUnchartedGateFetch),
-	)
+	gateGraphService := newGateGraphService(cfg.Routing, gateEdgeRepo, apiClient, graphService, playerRepo)
 	// sp-fihvy: wire the SAME gate-graph reachability service into the daemon server so the depot
 	// stocker hull viability precondition can consult it (Routable) — never a second reachability
 	// mechanism. Post-construction (gateGraphService is built after NewDaemonServer runs), mirroring
@@ -895,6 +1030,25 @@ func run(cfg *config.Config) error {
 	// shared shipyard reader so its hull search draws on the fleet's one
 	// shipyard-read allowance rather than reaching the API unmetered.
 	daemonServer.SetYardScanner(shipyardScanner)
+
+	circuits := circuitWiring{
+		cfg:              cfg,
+		db:               db,
+		containerRepo:    containerRepo,
+		transactionRepo:  transactionRepo,
+		marketRepo:       marketRepo,
+		captainEventRepo: captainEventRepo,
+		marketScanner:    marketScanner,
+		shipEventBus:     shipEventBus,
+
+		gateGraph:         gateGraphService,
+		treasury:          ledgerTreasury,
+		absorption:        absorptionLedger,
+		laneCooldown:      laneCooldownLedger,
+		capitalWorkSensor: capitalWorkSensor,
+
+		chartGateOnArrival: defaultOn(cfg.Routing.ChartGateOnArrival),
+	}
 
 	// Off-gate warp support (slice A): attach the warp-execute +
 	// chart-on-arrival capability to the route executor now that gateGraphService
@@ -975,6 +1129,8 @@ func run(cfg *config.Config) error {
 	idleExplorerPort := expansionAdapters.NewIdleExplorerPort(shipRepo)
 	explorerWarpDispatcher := expansionAdapters.NewExplorerWarpDispatcher(routeExecutor, shipRepo, warpWaypointSource)
 
+	reachableYardFinder := shipyardQuery.NewReachableYardFinder(shipyardInventoryRepo, gateGraphService)
+
 	// THE SHARED HEAVY TARGET (sp-fwk8z). ONE instance, two consumers: the fleet autosizer (which
 	// SPENDS the accumulation) and the sensing buy-floor (which WITHHOLDS it) both read the heavy
 	// target through this, so they can never end up saving toward different yards. The reservation's
@@ -982,15 +1138,15 @@ func run(cfg *config.Config) error {
 	// one too. Constructed here, at the composition root, precisely so a second one is conspicuous.
 	heavyTargetFinder := shipyardQuery.NewHeavyTargetFinder(
 		shipyardInventoryRepo, // availability — HasAnyOfTypes, the read with NO price predicate
-		shipyardQuery.NewReachableYardFinder(shipyardInventoryRepo, gateGraphService), // the buy path's own priced rank
-		shipRepo, // reach is measured from the systems the fleet actually holds
-		nil,      // nil ⇒ the documented heavy classes
+		reachableYardFinder,   // the buy path's own priced rank
+		shipRepo,              // reach is measured from the systems the fleet actually holds
+		nil,                   // nil ⇒ the documented heavy classes
 	)
 
 	fleetAutosizerHandler := grpc.NewFleetAutosizerCoordinatorHandler(
 		daemonServer, apiClient, ledgerTreasury, shipRepo, med, waypointRepo, captainEventRepo,
 		marketRepo,
-		shipyardQuery.NewReachableYardFinder(shipyardInventoryRepo, gateGraphService),
+		reachableYardFinder,
 		explorerOffGateBridge, // Explorer demand provider reads off-gate demand through this bridge
 		heavyTargetFinder,     // sp-fwk8z: the SHARED heavy target — the reservation price term, one definition
 	)
@@ -1008,7 +1164,7 @@ func run(cfg *config.Config) error {
 	// DATA/INCOME cold-start window (unconditional).
 	contractScalerHandler := grpc.NewContractScalerCoordinatorHandler(
 		daemonServer, apiClient, ledgerTreasury, shipRepo, med, waypointRepo, marketRepo,
-		shipyardQuery.NewReachableYardFinder(shipyardInventoryRepo, gateGraphService),
+		reachableYardFinder,
 		gateGraphService, // sp-fihvy: home-scoped depot stocker reclaim (Routable) — same graph, no new mechanism
 	)
 	if err := mediator.RegisterHandler[*contractScalerCmd.RunContractScalerCommand](med, contractScalerHandler); err != nil {
@@ -1038,41 +1194,7 @@ func run(cfg *config.Config) error {
 	tradeRouteCoordinatorHandler := tradeRouteCmd.NewRunTradeRouteCoordinatorHandler(
 		med, shipRepo, marketRepo, marketScanner, nil, apiClient,
 	)
-	tradeRouteCoordinatorHandler.SetGateGraph(gateGraphService)
-	// sp-muq66: the circuit's working-capital spend floor reads treasury through the shared
-	// ledger-backed reader instead of a live Get Agent before every buy. Unconditional — no
-	// config gate. An unreadable treasury still aborts the circuit (fail-closed, RULINGS #4).
-	tradeRouteCoordinatorHandler.SetTreasuryReader(ledgerTreasury)
-	// Chart every jump gate a hull lands on (the one moment its outbound edges are
-	// readable — a remote read with no ship present 400s) so a market-swept frontier system
-	// never strands hulls on empty gate_edges. Default ON; [routing] chart_gate_on_arrival
-	// (nil => on) is the reversibility switch. Wired on this SHARED instance (trade circuits +
-	// scout reposition + worker ferry + route-ship) and delegated to the arb/tour/stocker legs
-	// below, so ALL cross-system gate arrivals chart. Best-effort + idempotent: no new burst.
-	chartGateOnArrival := cfg.Routing.ChartGateOnArrival == nil || *cfg.Routing.ChartGateOnArrival
-	tradeRouteCoordinatorHandler.SetChartGateOnArrival(chartGateOnArrival)
-	// The shared ship-arrival event bus lets travel() wait out a hull
-	// re-adopted mid-transit before any movement (jump/navigate) instead of 4214'ing
-	// and burning the container restart budget on a routine arrival.
-	tradeRouteCoordinatorHandler.SetEventSubscriber(shipEventBus)
-	// sp-78ai L4: read-only absorption consult (trade-analyst Q1: "circuits write
-	// nothing") — scanLanes excludes a lane whose sell side is shadowed or whose
-	// reserved depth can't absorb a circuit tranche. Shares the SAME ledger instance
-	// L2 (idle-arb) writes to, above.
-	tradeRouteCoordinatorHandler.SetAbsorptionLedger(absorptionLedger)
-	// Wire the era-3 price-impact coefficients + the shared cooldown ledger into
-	// lane ranking. scanLanes now ranks on the EFFECTIVE spread (snapshot less the
-	// self-compression this hull's volume would cause + the live shared cooldown debt), and
-	// runCircuit accrues each completed leg's debt back to the shared ledger.
-	tradeRouteCoordinatorHandler.SetLaneImpactModel(
-		cfg.TradeImpact.ResolvedBuyImpact(),
-		cfg.TradeImpact.ResolvedSellImpact(),
-		laneCooldownLedger,
-	)
-	// Arm the activity-conditioned ranker freshness caps for the undirected
-	// auto-scan. Absent [trading] config → the fitted armed defaults; a captain retunes
-	// per activity from config.yaml + restart (RULINGS #5).
-	tradeRouteCoordinatorHandler.SetRankerAgeCaps(cfg.Trading.RankerAgeCapMinutes.Resolved())
+	circuits.configureTradeRouteCoordinator(tradeRouteCoordinatorHandler)
 	if err := mediator.RegisterHandler[*tradeRouteCmd.RunTradeRouteCoordinatorCommand](med, tradeRouteCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register TradeRouteCoordinator handler: %w", err)
 	}
@@ -1135,11 +1257,12 @@ func run(cfg *config.Config) error {
 	// byte-identical to today. Demand HONORS age-driven raises, so a breaching core system reads a
 	// high demand and is never raided — only comfortably-fresh over-provisioned systems donate.
 	scoutPostCoordinatorHandler.SetProbeDemandReader(scoutingCmd.NewCensusProbeDemandReader(marketRepo, 0, 0))
+	containerConfigReader := grpc.NewContainerConfigReader(containerRepo)
 	// The watchdog's manning_stall_* knobs are live-tunable — snapshot this
 	// container's own persisted config each tick (the SAME reader the freshness sizer uses) so a
 	// `spacetraders tune scoutpost ...` lands on the next tick with no restart. sp-u8jc's two knobs
 	// ride the same snapshot.
-	scoutPostCoordinatorHandler.SetLiveConfigReader(grpc.NewContainerConfigReader(containerRepo))
+	scoutPostCoordinatorHandler.SetLiveConfigReader(containerConfigReader)
 	scoutRepositionHandler := scoutingCmd.NewScoutRepositionHandler(tradeRouteCoordinatorHandler)
 	if err := mediator.RegisterHandler[*scoutingCmd.ScoutRepositionCommand](med, scoutRepositionHandler); err != nil {
 		return fmt.Errorf("failed to register ScoutReposition handler: %w", err)
@@ -1186,7 +1309,7 @@ func run(cfg *config.Config) error {
 	// construction site, the same signal bootstrap's derivePhase reads) because the phase
 	// is never persisted and bootstrap exits after its hand-off. Fail-closed.
 	expansionPhase := expansionAdapters.NewBootstrapExpansionPhaseReader(
-		shipRepo, waypointRepo, api.NewConstructionSiteRepository(apiClient, playerRepo),
+		shipRepo, waypointRepo, constructionSiteRepo,
 	)
 
 	// Parked-probe sensing coordinator: the fleet's ONE standing sensing engine. Its model
@@ -1205,17 +1328,6 @@ func run(cfg *config.Config) error {
 	probeSensingHandler := scoutingCmd.NewRunProbeSensingCoordinatorHandler(
 		marketRepo, scoutPostRepo, shipRepo, apiClient.LimiterPressure(), expansionPhase, nil, // nil = use RealClock
 	)
-	// The engine's outbound surface, wired as ONE unit: a half-wired engine is a wedge
-	// rather than a degraded mode (it would plan placements forever and fill none), so the
-	// coordinator checks the bundle is complete and holds the tick fail-closed if it is not.
-	// Every adapter here is thin — the money guards, the purchase machinery, the movement
-	// verbs and the market scanner are all reused unmodified.
-	//
-	// Built PER PLAYER, like constructionActivatorFactory above: two of the reads sit in
-	// player-scoped tables while their port signatures carry no player (the shipyard
-	// inventory behind ListProbeYards, and the catalog sweep stamp behind CatalogKnown), so
-	// the player has to be bound into the adapter — and this handler is a registered
-	// singleton serving every player's ticks. The factory result is memoised per player.
 	sensingLedgerPort := parkedSensingAdapters.NewLedgerPort(persistence.NewSensingLedgerRepository(db))
 	sensingMarketGoods := parkedSensingAdapters.NewMarketGoodsPort(db)
 	// The sensing surge's pool read (sp-zvywu): the era-scoped set difference between
@@ -1232,128 +1344,39 @@ func run(cfg *config.Config) error {
 	// (sp-ntgfj) — metered for attribution, never deniable.
 	remoteMarketPort := parkedSensingAdapters.NewRemoteMarketPort(apiClient, playerRepo)
 	remoteMarketPort.SetScanBudget(marketScanner.ScanBudget())
+	sensing := sensingWiring{
+		ledger:       sensingLedgerPort,
+		marketGoods:  sensingMarketGoods,
+		unpricedPool: sensingUnpricedPool,
+		remoteMarket: remoteMarketPort,
+
+		offGateSelect: offGateSelector,
+		offGateDemand: explorerOffGateBridge,
+		idleExplorer:  idleExplorerPort,
+		explorerWarp:  explorerWarpDispatcher,
+
+		db:              db,
+		med:             med,
+		apiClient:       apiClient,
+		shipRepo:        shipRepo,
+		playerRepo:      playerRepo,
+		waypointRepo:    waypointRepo,
+		transactionRepo: transactionRepo,
+
+		gateEdgeRepo:     gateEdgeRepo,
+		gateGraphService: gateGraphService,
+		marketScanner:    marketScanner,
+
+		shipyardScanner:       shipyardScanner,
+		shipyardInventoryRepo: shipyardInventoryRepo,
+		yardBudget:            yardBudget,
+	}
 	probeSensingHandler.SetEnginePortsFactory(func(sensingPlayerID int) scoutingCmd.SensingEnginePorts {
-		// One catalog adapter instance serves the screen, the buy queue's yard lookup and
-		// expansion's uncharted walk, so the three can never disagree about what is in a
-		// system. DB-only by contract — ListProbeYards especially, whose locality the
-		// drain's free-skip accounting depends on.
-		catalog := parkedSensingAdapters.NewWaypointCatalogPort(waypointRepo, db, sensingPlayerID)
-		// One gate-adjacency adapter serves expansion's frontier walk AND the
-		// placement mover's cross-system gate walk, so the two can never disagree
-		// about which systems border which — the mover walks toward a placement
-		// over the same edges expansion used to decide the placement was reachable.
-		gateNeighbours := parkedSensingAdapters.NewGateNeighbourPort(gateEdgeRepo)
-		return scoutingCmd.SensingEnginePorts{
-			Ledger:    sensingLedgerPort,
-			Waypoints: catalog,
-			Uncharted: catalog,
-			// Off-gate warp expansion (write side of the explorer demand bridge). Wired
-			// unconditionally rather than behind a knob: a separately-armed expansion engine
-			// just sits dormant, so this one drives the live tick.
-			OffGate: parkedsensing.OffGatePorts{
-				Select:   offGateSelector,
-				Demand:   explorerOffGateBridge,
-				Explorer: idleExplorerPort,
-				Warp:     explorerWarpDispatcher,
-			},
-			// The same catalog instance again: it owns the shipyard_inventory reads,
-			// so the yard lookup and the listing memo read one store.
-			ListingMemo: catalog,
-			// And once more for the shipyard blind spot: the set difference between
-			// the charted SHIPYARD-trait waypoints and the ones already carrying a
-			// stored reading. Same instance, so "which yards exist" and "which yards
-			// have we read" are answered from one place.
-			YardCatalog: catalog,
-			// The two halves of a shipyard read, wired as ONE scanner behind two
-			// budget tags. The free half learns what a yard SELLS with no hull
-			// anywhere near it (`shipTypes` survives a presence-less GET, exactly like
-			// the market catalogue above); the scan half rides a parked probe's turn
-			// and additionally carries the PRICES, which only a hull at the counter
-			// can see. Both persist through the fleet's one shipyard scanner, so the
-			// heavy-yard milestone fires from either.
-			YardRead: parkedSensingAdapters.NewYardCatalogPort(shipyardScanner, playerRepo),
-			YardScan: parkedSensingAdapters.NewYardScanPort(shipyardScanner, playerRepo),
-			// The third half of the shipyard problem, and the one neither reader can
-			// solve: a counter's PRICES never appear in any response until a hull of
-			// ours is standing on it. This is the SAME budget instance
-			// every shipyard reader draws from, handed over as a demand source — its
-			// top weight tier is precisely the set of yards it keeps ranking first and
-			// keeps failing to price, and here that tier becomes a request to send a
-			// hull rather than another read that comes back without a number.
-			//
-			// Passed DIRECTLY rather than through an adapter because there is nothing
-			// to adapt: the budget already speaks the port's two methods, and a
-			// wrapper would only create a second place for the reposition allowance to
-			// be accidentally re-created per player.
-			YardPresence: yardBudget,
-			// The market cache: what a market deals in, how deep it is, and the
-			// two-sided quotes the spread weighting reads (columns CROSSED — see
-			// MarketPrices, where an uncrossed wiring fails silently).
-			MarketGoods: sensingMarketGoods,
-			SpreadOf:    sensingMarketGoods,
-			// The screen's only genuine API spend: the goods CATALOGUE of a charted
-			// market no hull has visited, which survives a presence-less GET. It is
-			// CHARGED to the fleet market-scan budget but never gated by it — there is
-			// no store to serve a cache gap from (sp-ntgfj).
-			RemoteMarket: remoteMarketPort,
-			// Money: the same live-treasury reader every other guard uses, and the
-			// trading fleet's measured cargo outflow, which is what makes the probe
-			// buy floor dynamic rather than a fixed number.
-			Treasury:   parkedSensingAdapters.NewTreasuryPort(expansionAdapters.NewTreasuryReader(apiClient)),
-			CargoSpend: parkedSensingAdapters.NewCargoSpendPort(transactionRepo),
-			// The purchaser PERSISTS every shipyard listing set its quote reads, which
-			// is what populates the memo above — without the writer the memo can never
-			// learn and every dead yard is re-quoted forever.
-			Purchaser: parkedSensingAdapters.NewProbePurchasePort(med, shipRepo, persistence.NewShipyardInventoryRepository(db)),
-			Ships:     parkedSensingAdapters.NewShipPositionPort(db),
-			Fleet:     parkedSensingAdapters.NewFleetTagPort(shipRepo),
-			Mover:     parkedSensingAdapters.NewMoverPort(med, gateNeighbours),
-			// Per-system stored gate adjacency — never the whole-map read, and never a
-			// fetch-through resolver.
-			Gates: gateNeighbours,
-			// The DELIBERATE fetch-through gate read, over the SAME gategraph service the
-			// `spacetraders system gates --system X1-…` CLI verb drives and every router already
-			// resolves through — so there is one live gate fetcher in the codebase, one persistence
-			// path, and one negative-result backoff for a gate the API refuses.
-			//
-			// It is a SECOND port beside Gates rather than a widening of it: Gates is asked of every
-			// known system on every tick and must stay a pure store read, while this is asked of a
-			// bounded, ordered handful (MaxGateReads) of systems the store has already said it cannot
-			// answer for. Without it the engine could only learn a system's adjacency by flying a
-			// probe to it, which left the fleet sealed inside a 57-system pocket whose one built,
-			// passable exit nobody had ever read.
-			GateRead: parkedSensingAdapters.NewGateReadPort(gateGraphService),
-			// The same stored adjacency the placement mover walks: a seed's target
-			// may now be up to MaxWalkRings hops out, so the crossing resolves its
-			// next system from the gate graph rather than jumping at the errand's
-			// final system, which the API rejects when it is not connected.
-			SeedShip: parkedSensingAdapters.NewSeedCommandPort(med, apiClient, playerRepo, waypointRepo, marketScanner, gateNeighbours),
-			Scan:     parkedSensingAdapters.NewScanRunnerPort(marketScanner),
-			Home:     parkedSensingAdapters.NewHomeSystemPort(db),
-			// The sensing surge's work list: charted systems we hold no price for
-			// (sp-zvywu). Same instance for every player — see its construction above.
-			UnpricedPool: sensingUnpricedPool,
-			// The heavy reservation: probe buying stands down while treasury accumulates
-			// toward the next heavy, and resumes the moment it lands. heavy_cap is read
-			// from the fleet autosizer's OWN persisted config — one dial, one enforcer —
-			// and an absent autosizer simply reserves nothing.
-			//
-			// The price term is heavyTargetFinder — the SAME instance the autosizer reads,
-			// not a second query that happens to agree — so the spender and the withholder
-			// cannot end up saving toward different yards (sp-fwk8z).
-			HeavyReserve: parkedSensingAdapters.NewHeavyReservePort(
-				parkedSensingAdapters.NewShipRepoCensus(shipRepo),
-				heavyTargetFinder,
-				parkedSensingAdapters.NewAutosizerCapPort(db),
-			),
-			// The budget the whole model is sized against: sensing is the RESIDUAL
-			// consumer, so it reads how much of the ceiling everyone else is using.
-			Budget: parkedSensingAdapters.NewBudgetRatePort(metricsAdapter.GetGlobalAPIBudgetTracker(), api.RateLimitPerSecond),
-		}
+		return sensing.enginePorts(heavyTargetFinder, sensingPlayerID)
 	})
 	// Per-tick live view of the persisted config, so `tune --operation sensing` takes
 	// effect on the NEXT reconcile rather than at the next rebuild (mirrors probeBuyer).
-	probeSensingHandler.SetLiveConfigReader(grpc.NewContainerConfigReader(containerRepo))
+	probeSensingHandler.SetLiveConfigReader(containerConfigReader)
 	probeSensingHandler.SetEventRecorder(captainEventRepo) // emit coordinator error-loop events on reconcile streak breach
 	// Resolves the collector lazily per call: the metrics collectors are installed by
 	// NewDaemonServer, which runs after this wiring, so a captured reference would be nil.
@@ -1398,7 +1421,7 @@ func run(cfg *config.Config) error {
 		scoutPostRepo,
 		nil, // nil = use RealClock
 	)
-	shipyardBackfillHandler.SetLiveConfigReader(grpc.NewContainerConfigReader(containerRepo))
+	shipyardBackfillHandler.SetLiveConfigReader(containerConfigReader)
 	if err := mediator.RegisterHandler[*scoutingCmd.RunShipyardBackfillCoordinatorCommand](med, shipyardBackfillHandler); err != nil {
 		return fmt.Errorf("failed to register ShipyardBackfillCoordinator handler: %w", err)
 	}
@@ -1409,6 +1432,8 @@ func run(cfg *config.Config) error {
 	// jump gate COMPLETE the gate-depot demand machinery it fed would be dead weight anyway.
 	// Nothing boot-standing or restart-recovering depends on that stack (RULINGS #2).
 
+	tourTelemetryRepo := persistence.NewTourTelemetryRepository(db)
+
 	// Auto-outfit coordinator (sp-buyd): the standing guarded auto-outfit coordinator — the
 	// module analogue of the autosizer's hull-buying. Each tick it measures per-hull cargo
 	// saturation from tour_leg_telemetry, catalogs available modules off the market cache,
@@ -1418,7 +1443,7 @@ func run(cfg *config.Config) error {
 	// `workflow auto-outfit`, then survives restarts through the persisted-container recovery
 	// idiom. Live-tunable via `tune --operation autooutfit`.
 	autoOutfitHandler := grpc.NewAutoOutfitCoordinatorHandler(
-		apiClient, shipRepo, persistence.NewTourTelemetryRepository(db), marketRepo, med, captainEventRepo, containerRepo,
+		apiClient, shipRepo, tourTelemetryRepo, marketRepo, med, captainEventRepo, containerRepo,
 	)
 	if err := mediator.RegisterHandler[*autooutfitCmd.RunAutoOutfitCoordinatorCommand](med, autoOutfitHandler); err != nil {
 		return fmt.Errorf("failed to register AutoOutfitCoordinator handler: %w", err)
@@ -1433,24 +1458,7 @@ func run(cfg *config.Config) error {
 	arbCoordinatorHandler := tradeRouteCmd.NewRunArbCoordinatorHandler(
 		med, shipRepo, marketRepo, marketScanner, nil, apiClient,
 	)
-	// Same gate graph: enables multi-jump travel AND the routability-check-before-spend
-	// guard.
-	arbCoordinatorHandler.SetGateGraph(gateGraphService)
-	arbCoordinatorHandler.SetChartGateOnArrival(chartGateOnArrival) // Chart cross-system arrivals
-	// The spend-floor guard — and the movement legs' buy-time working-capital floor,
-	// which this setter also reaches — read treasury through the shared ledger-backed reader
-	// instead of calling Get Agent before every one-shot buy.
-	arbCoordinatorHandler.SetTreasuryReader(ledgerTreasury)
-	// Wait out a mid-transit re-adoption before the resume path's jump, instead of
-	// 4214'ing and burning the container restart budget on a routine arrival.
-	arbCoordinatorHandler.SetEventSubscriber(shipEventBus)
-	// Durably record a fresh buy's cost into the container config so a
-	// restart-rebuilt resume reloads it and reports honest P&L (a resumed run skips the
-	// completed buy, which otherwise leaves TotalCost=0 and over-states NetProfit).
-	arbCoordinatorHandler.SetCostPersister(grpc.NewArbCostConfigPersister(containerRepo))
-	// sp-78ai L2: convert an arb/idle-arb leg's PLANNED absorption hold into an
-	// EXECUTED recovery shadow at sale completion (shared ledger instance above).
-	arbCoordinatorHandler.SetAbsorptionLedger(absorptionLedger)
+	circuits.configureArbCoordinator(arbCoordinatorHandler)
 	if err := mediator.RegisterHandler[*tradeRouteCmd.RunArbCoordinatorCommand](med, arbCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register ArbCoordinator handler: %w", err)
 	}
@@ -1511,7 +1519,7 @@ func run(cfg *config.Config) error {
 	// stalled these hulls is gone too (plan-cheap-verify + pathfind deadline).
 	longHaulCoordinatorHandler.SetTourLiveness(daemonServer)
 	longHaulCoordinatorHandler.SetTourStopper(daemonServer)
-	longHaulCoordinatorHandler.SetAbsorptionReclaimer(grpc.NewDeadContainerAbsorptionReclaimer(absorptionLedger))
+	longHaulCoordinatorHandler.SetAbsorptionReclaimer(absorptionReclaimer)
 	if err := mediator.RegisterHandler[*tradeRouteCmd.LongHaulArbFleetCoordinatorCommand](med, longHaulCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register LongHaulArbFleetCoordinator handler: %w", err)
 	}
@@ -1524,97 +1532,10 @@ func run(cfg *config.Config) error {
 	// and the tour telemetry repository (planned-vs-realized for the graduation report).
 	// DaemonServer.StartTourRun launches the container.
 	tourCoordinatorHandler := tradeRouteCmd.NewRunTourCoordinatorHandler(
-		med, shipRepo, marketRepo, waypointRepo, persistence.NewTourTelemetryRepository(db),
+		med, shipRepo, marketRepo, waypointRepo, tourTelemetryRepo,
 		routingClient, marketScanner, nil, apiClient,
 	)
-	tourCoordinatorHandler.SetGateGraph(gateGraphService)
-	// sp-muq66: the tour's dynamic 25%-of-treasury max-spend, its pre-positioning capital
-	// ceiling, and the movement legs' working-capital floor all read treasury through the
-	// shared ledger-backed reader instead of a live Get Agent per check. Unconditional — no
-	// config gate. An unreadable treasury still fails CLOSED exactly as before (RULINGS #4).
-	tourCoordinatorHandler.SetTreasuryReader(ledgerTreasury)
-	// Price each crossing's first hop from the gate it actually DEPARTS, learned
-	// from the ledger's own recorded jumps, instead of from one fleet-wide constant. The fee
-	// is a property of the departure gate (origin explains 99.7% of the variance; the same
-	// edge costs 27% more one way than the other), so the flat charge — while unbiased in
-	// aggregate — carries a 15.2% error on any individual crossing, which is precisely the
-	// error that orders candidates against each other. Unconditional, no config gate: an
-	// empty or unreadable ledger yields no table, and no table prices exactly as before.
-	tourCoordinatorHandler.SetGateFeeReader(
-		tradeRouteCmd.NewLedgerGateFeeReader(transactionRepo, nil), // nil clock = RealClock
-	)
-	tourCoordinatorHandler.SetChartGateOnArrival(chartGateOnArrival) // Chart cross-gate tour arrivals
-	// sp-mtvg: wire the global best-sink reader so the tour coordinator can SEE (and count
-	// on tour_candidates_dropped_total) the profitable exotic lanes whose sink is beyond the
-	// 1-gate-hop tour graph. The raw GORM repo carries BestSinksAcrossSystems; read-only.
-	tourCoordinatorHandler.SetOutOfHorizonSinkScanner(marketRepo)
-	// Inject the config-resolved ABSOLUTE artifact path so the executor reads the
-	// market model regardless of the daemon's cwd (the launchd daemon's cwd is not the
-	// repo root).
-	tourCoordinatorHandler.SetModelArtifactPath(cfg.Routing.ModelArtifactPath)
-	// sp-zhii: durably record an in-flight margins-death reposition (its target
-	// system+waypoint) into the container config so a restart-rebuilt resume completes the
-	// jump toward the same ground instead of re-planning at an intermediate hop (RULINGS #2).
-	tourCoordinatorHandler.SetRepositionPersister(grpc.NewTourRepositionConfigPersister(containerRepo))
-	// sp-e8d92 FIRST REFUSAL: the same config-backed persister also records the relocation OFFER a tour
-	// writes at its boundary, which is how the relocator gets a hull BEFORE the tour re-anchors it
-	// locally. The fleet occupies 23 of 373 tradeable systems because a tour is planned from wherever the
-	// hull stands, so the envelope never leaves its neighbourhood; the relocator is the only thing that
-	// moves a hull to new ground and it only ever sees the 2.6% of time a hull is idle. Unwired, no offer
-	// is ever written and the fleet tours exactly as it does today (fail-open).
-	tourCoordinatorHandler.SetRelocationOfferPersister(grpc.NewTourRepositionConfigPersister(containerRepo))
-	// sp-78ai L3: wire the SAME absorption ledger the idle-arb/arb engines use so the
-	// tour reserves its planned tranches (fleet-wide A-cap), nets outstanding depth into
-	// each plan, and converts sold sinks into recovery shadows — the flagship writer/reader
-	// of the cross-engine coordination. The shared PlannedTTLSlack sizes reservation
-	// lifetimes.
-	tourCoordinatorHandler.SetAbsorptionLedger(absorptionLedger, cfg.Absorption.PlannedTTLSlack)
-	tourCoordinatorHandler.SetEventRecorder(captainEventRepo) // Emit coordinator error-loop event when the dynamic-budget resolve stays unreadable
-	// Inject the noise-goods cargo blocklist (FUEL/ALUMINUM/PLASTICS are sub-70-cr/u
-	// tempo drag) so the tour planner never selects a listed good as cargo. Global list from
-	// [trade_fleet].cargo_blocklist, mirroring the contract pre_positioning.blocklist boot
-	// injection. Absent/empty ⇒ no filtering ⇒ byte-identical; arming = adding goods to
-	// config.yaml + daemon restart. Cargo only — refueling never reads the tour snapshot.
-	tourCoordinatorHandler.SetCargoBlocklist(cfg.TradeFleet.CargoBlocklist)
-	// Stamp the tour-scan load policy so the shared arrival + post-trade scans
-	// SAMPLE the deliberate price-impact instrumentation (the top API consumer, ~80% of
-	// API) instead of scanning every market around every trade. Resolved from [trade_impact]
-	// config (scan_max_age_seconds / impact_sample_rate; restart to apply — the same
-	// refit-per-era path the model's coefficients already use).
-	tourCoordinatorHandler.SetScanPolicy(cfg.TradeImpact.ResolvedScanPolicy())
-	// Arm the SAME activity-conditioned freshness caps for the tour snapshot
-	// builder, so the tour path and the lane ranker drop stale rows against one
-	// config-resolved table (defined once).
-	tourCoordinatorHandler.SetRankerAgeCaps(cfg.Trading.RankerAgeCapMinutes.Resolved())
-	// sp-tgll8 item 2: arm the "FRESH" clause on the firm-sink buy gate — at buy execution the
-	// gate re-reads each held sink's LIVE market_data and refuses on stale data (older than
-	// this). Ships ARMED at the 75-min default. This is the BOOT floor; the effective cap is
-	// max(floor, rotation bound) (sp-k4z5b) and the LIVE lever is `tune --operation tour
-	// market_data_max_age_minutes`. Byte-identical for fresh sinks.
-	tourCoordinatorHandler.SetSinkFreshness(cfg.TradeFleet.ResolvedSinkFreshnessMaxAge())
-	// sp-k4z5b: derive every market-freshness cap on the trade path from the LIVE scan
-	// rotation rather than a minute count written into the source. The scan budget is a
-	// fixed req/s, so a market's scan interval is an OUTPUT of budget / markets known —
-	// and when the charted map reached 4,389 markets the flat 75-minute caps started
-	// discarding four fifths of it (980 fail-closed refusals in 15 minutes, ~87% of trade
-	// throughput). marketScanner's budget is the SAME allowance admission is decided
-	// against, so consumers now refuse exactly when the scanner has failed its own
-	// anti-starvation guarantee. The floors under it are live-tunable on the trade fleet
-	// coordinator's config column (`spacetraders tune --operation tour ...`) — no restart,
-	// because each daemon bounce costs jump cooldowns. Wired UNCONDITIONALLY: no config
-	// key, no default-off, no arming step.
-	marketFreshness := tradeRouteCmd.NewMarketFreshness(
-		marketScanner.ScanBudget(),
-		grpc.NewCoordinatorConfigReader(containerRepo, string(domainContainer.ContainerTypeTradeFleetCoordinator)),
-		nil, // nil clock = RealClock
-	)
-	tourCoordinatorHandler.SetMarketFreshness(marketFreshness)
-	// The TRADE half of the per-operation capital budget, on the SAME sensor the
-	// construction executor holds. The dynamic (--max-spend 0) cap is clamped to trade's share of
-	// deployable capital, and graceful degradation hands trade the WHOLE pool whenever the
-	// construction drain is not running — so a stopped gate never leaves capital idle. Wired
-	// UNCONDITIONALLY: no config key, no default-off, no arming step.
-	tourCoordinatorHandler.SetCapitalWorkSensor(capitalWorkSensor)
+	marketFreshness := circuits.configureTourCoordinator(tourCoordinatorHandler)
 	if err := mediator.RegisterHandler[*tradeRouteCmd.RunTourCoordinatorCommand](med, tourCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register TourCoordinator handler: %w", err)
 	}
@@ -1641,7 +1562,7 @@ func run(cfg *config.Config) error {
 	opportunityRelocatorHandler := tradeRouteCmd.NewRunOpportunityRelocatorHandler(
 		grpc.NewRelocatorFleetObserver(shipRepo, containerRepo),
 		tourCoordinatorHandler,
-		grpc.NewRelocatorTelemetryObserver(persistence.NewTourTelemetryRepository(db)),
+		grpc.NewRelocatorTelemetryObserver(tourTelemetryRepo),
 		grpc.NewRelocatorEraHorizon(),
 		grpc.NewRelocatorActuator(tradeRouteCoordinatorHandler),
 		grpc.NewRelocationIntentConfigStore(containerRepo),
@@ -1675,23 +1596,8 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register OpportunityRelocator handler: %w", err)
 	}
 
-	// Gas extraction handlers (depend on daemonClientLocal and storageCoordinator)
-	// NOTE: Storage coordinator is created below (after manufacturing setup) and passed here.
-	// We'll register these handlers after storage coordinator is created.
-
-	siphonResourcesHandler := gasCmd.NewSiphonResourcesHandler(shipRepo, playerRepo, apiClient, shipEventBus)
-	if err := mediator.RegisterHandler[*gasCmd.SiphonResourcesCommand](med, siphonResourcesHandler); err != nil {
-		return fmt.Errorf("failed to register SiphonResources handler: %w", err)
-	}
-
-	transferCargoHandler := gasCmd.NewTransferCargoHandler(shipRepo, apiClient)
-	if err := mediator.RegisterHandler[*gasCmd.TransferCargoCommand](med, transferCargoHandler); err != nil {
-		return fmt.Errorf("failed to register TransferCargo handler: %w", err)
-	}
-
-	findFactoryForGasHandler := gasQuery.NewFindFactoryForGasHandler(tradingMarketRepo)
-	if err := mediator.RegisterHandler[*gasQuery.FindFactoryForGasQuery](med, findFactoryForGasHandler); err != nil {
-		return fmt.Errorf("failed to register FindFactoryForGas handler: %w", err)
+	if err := repos.registerGasExtractionHandlers(shipEventBus); err != nil {
+		return err
 	}
 
 	storageOperationRepo := persistence.NewStorageOperationRepository(db, nil) // nil = use RealClock
@@ -1783,21 +1689,23 @@ func run(cfg *config.Config) error {
 	// Live-config (sp-ts82 pattern): the daemon reads these knobs from config.yaml at
 	// every boot, so a captain retunes by editing config.yaml and restarting. OFF
 	// unless enabled AND a warehouse hull is running in the tour's home system.
-	pp := cfg.Contract.PrePositioning
+	prePositioning := cfg.Contract.PrePositioning
+	demandMiner := persistence.NewDemandMiner(db)
+	depositCandidates := tradingSvc.DepositCandidateConfig{
+		Enabled:              prePositioning.Enabled,
+		TopN:                 prePositioning.TopN,
+		MinRecurrence:        prePositioning.MinRecurrence,
+		MinSavingsPerUnit:    prePositioning.MinSavingsPerUnit,
+		BuyLegSavingsPerUnit: prePositioning.BuyLegSavingsPerUnit,
+		Allowlist:            prePositioning.Allowlist,
+		Blocklist:            prePositioning.Blocklist,
+	}
 	tourCoordinatorHandler.SetPrePositioning(
 		storageCoordinator,
 		storageOperationRepo,
-		persistence.NewDemandMiner(db),
-		tradingSvc.DepositCandidateConfig{
-			Enabled:              pp.Enabled,
-			TopN:                 pp.TopN,
-			MinRecurrence:        pp.MinRecurrence,
-			MinSavingsPerUnit:    pp.MinSavingsPerUnit,
-			BuyLegSavingsPerUnit: pp.BuyLegSavingsPerUnit,
-			Allowlist:            pp.Allowlist,
-			Blocklist:            pp.Blocklist,
-		},
-		pp.CapitalCeilingPct,
+		demandMiner,
+		depositCandidates,
+		prePositioning.CapitalCeilingPct,
 	)
 
 	// Stocker coordinator: a dedicated hull that fills the home warehouse the
@@ -1810,39 +1718,16 @@ func run(cfg *config.Config) error {
 	// finder (storageOperationRepo), and the Lane A demand miner (over the same db). The
 	// pre-positioning economics (min-recurrence/min-savings/allow-block/ceiling-pct) come
 	// from the same cfg.Contract.PrePositioning the tour reads; the stocker is launched
-	// explicitly (a dedicated hull), so it runs its economics regardless of pp.Enabled (the
+	// explicitly (a dedicated hull), so it runs its economics regardless of prePositioning.Enabled (the
 	// tour's opportunistic-deposit switch). DaemonServer.StartStocker launches the container.
 	stockerCoordinatorHandler := tradeRouteCmd.NewRunStockerCoordinatorHandler(
 		med, shipRepo, marketRepo, marketScanner, nil, apiClient,
-		storageCoordinator, storageOperationRepo, persistence.NewDemandMiner(db),
-		tradingSvc.DepositCandidateConfig{
-			Enabled:              pp.Enabled,
-			TopN:                 pp.TopN,
-			MinRecurrence:        pp.MinRecurrence,
-			MinSavingsPerUnit:    pp.MinSavingsPerUnit,
-			BuyLegSavingsPerUnit: pp.BuyLegSavingsPerUnit,
-			Allowlist:            pp.Allowlist,
-			Blocklist:            pp.Blocklist,
-		},
-		pp.CapitalCeilingPct,
+		storageCoordinator, storageOperationRepo, demandMiner,
+		depositCandidates,
+		prePositioning.CapitalCeilingPct,
 		waypointRepo, // Cache-only coords for the distance-aware residual buy-leg (fail-open)
 	)
-	stockerCoordinatorHandler.SetGateGraph(gateGraphService)
-	stockerCoordinatorHandler.SetChartGateOnArrival(chartGateOnArrival) // Chart cross-system haul arrivals
-	// The capital ceiling — and the movement legs' buy-time working-capital floor,
-	// which this setter also reaches — read treasury through the shared ledger-backed reader
-	// instead of calling Get Agent on every stocker pick.
-	stockerCoordinatorHandler.SetTreasuryReader(ledgerTreasury)
-	stockerCoordinatorHandler.SetEventSubscriber(shipEventBus)
-	// Emit a structured stock-IN event on each CONFIRMED stocker→warehouse deposit so
-	// downstream analysis can measure depot throughput/coverage (the stock-IN mirror of the
-	// kqxe withdrawal recorder wired above). Additive + fail-open — a record error never fails
-	// a deposit.
-	stockerCoordinatorHandler.SetStockingRecorder(persistence.NewStockingEventRepository(db))
-	// sp-k4z5b: the stocker picks its refill source off the same freshListings filter the
-	// tour does, so it shares the tour's rotation-derived cap and its live floor rather
-	// than carrying a second copy that could drift.
-	stockerCoordinatorHandler.SetMarketFreshness(marketFreshness)
+	circuits.configureStockerCoordinator(stockerCoordinatorHandler, marketFreshness)
 	if err := mediator.RegisterHandler[*tradeRouteCmd.RunStockerCoordinatorCommand](med, stockerCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register StockerCoordinator handler: %w", err)
 	}

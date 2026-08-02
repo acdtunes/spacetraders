@@ -128,3 +128,21 @@ func (t *APIBudgetTracker) pruneLocked(now time.Time) {
 	}
 	t.events = kept
 }
+
+// globalAPIBudgetTracker is the singleton API request-budget tracker. Set
+// by SetGlobalAPIBudgetTracker() at daemon startup; the API
+// client falls back to it when no per-instance tracker was injected, the
+// same pattern getMetricsCollector() uses for globalAPICollector.
+var globalAPIBudgetTracker *APIBudgetTracker
+
+// SetGlobalAPIBudgetTracker sets the global API request-budget tracker.
+// Pass nil to clear it (e.g. in test cleanup).
+func SetGlobalAPIBudgetTracker(tracker *APIBudgetTracker) {
+	globalAPIBudgetTracker = tracker
+}
+
+// GetGlobalAPIBudgetTracker returns the global API request-budget tracker.
+// Returns nil if it was never set.
+func GetGlobalAPIBudgetTracker() *APIBudgetTracker {
+	return globalAPIBudgetTracker
+}

@@ -12,13 +12,6 @@ import (
 // vanishing; the coordinator's source stays in the tree pending era-5 proof.
 // Its container type is no longer in the command registry, so a still-RUNNING
 // legacy container fails closed at restart recovery ("unknown command type").
-func (s *DaemonServer) FrontierExpansionCoordinator(
-	ctx context.Context,
-	playerID int,
-	tickIntervalSecs int,
-	dryRun bool,
-	maxProbeFleet int,
-	expansionMaxHops int,
-) (string, error) {
+func (s *DaemonServer) FrontierExpansionCoordinator(ctx context.Context, playerID int) (string, error) {
 	return "", fmt.Errorf("the frontier expansion coordinator is retired: the probe-sensing coordinator (boot-standing) owns discovery — operate it via `tune --operation sensing`")
 }

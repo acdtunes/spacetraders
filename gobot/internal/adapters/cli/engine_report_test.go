@@ -93,7 +93,7 @@ func TestCaptainReportResolvedHonorsAgentFlagWithoutPlayerID(t *testing.T) {
 	source := &fakeReportEventSource{}
 	var buf bytes.Buffer
 
-	err := runEngineReportResolved(context.Background(), repo, source, nil, "", 7, time.Now(), 0, 0, true, &buf)
+	err := runEngineReportResolved(context.Background(), repo, source, tokenTelemetry{}, 7, time.Now(), true, &buf)
 
 	require.NoError(t, err)
 	require.Equal(t, 9, source.lastPlayerID)
@@ -109,7 +109,7 @@ func TestCaptainReportResolvedErrorsWhenNoPlayerIdentifiable(t *testing.T) {
 	source := &fakeReportEventSource{}
 	var buf bytes.Buffer
 
-	err := runEngineReportResolved(context.Background(), repo, source, nil, "", 7, time.Now(), 0, 0, true, &buf)
+	err := runEngineReportResolved(context.Background(), repo, source, tokenTelemetry{}, 7, time.Now(), true, &buf)
 
 	require.Error(t, err)
 }
