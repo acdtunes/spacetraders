@@ -1,7 +1,7 @@
 package config
 
 // ContractConfig holds contract-coordinator configuration. Today it carries the
-// idle-gap arbitrage harvest knobs (sp-1z2h / sp-uohe): the daemon injects these
+// idle-gap arbitrage harvest knobs: the daemon injects these
 // into the contract fleet coordinator container's launch config at creation
 // (DaemonServer.ContractFleetCoordinator), so a captain tunes the harvest —
 // including the money-guard blacklist — by editing config.yaml and restarting
@@ -10,7 +10,7 @@ type ContractConfig struct {
 	IdleArb         IdleArbSettings         `mapstructure:"idle_arb"`
 	PrePositioning  PrePositioningSettings  `mapstructure:"pre_positioning"`
 	AutoLiquidation AutoLiquidationSettings `mapstructure:"auto_liquidation"`
-	// MinHomeContractWorkers is the contract-worker RESERVE FLOOR (bead sp-mzdk): the number of
+	// MinHomeContractWorkers is the contract-worker RESERVE FLOOR: the number of
 	// undedicated HOME general haulers the depot topology must NEVER convert to depot-delivery pins,
 	// so an UNBUFFERED-good contract always has a general sourcing worker to fly out and buy it. It
 	// is the LAUNCH tier of the live>launch>default chain; 0/absent defers to the documented default
@@ -20,10 +20,10 @@ type ContractConfig struct {
 }
 
 // AutoLiquidationSettings are the yaml-tunable knobs for the contract coordinator's
-// parked-hull auto-liquidation (sp-39oi): a hull the spawn filter parks for holding cargo
+// parked-hull auto-liquidation: a hull the spawn filter parks for holding cargo
 // unrelated to the active contract self-clears via a one-shot cargo_liquidation worker,
 // so the pool never jams to zero fulfillments on a crop of strands. Like the idle-arb
-// knobs these are resolved LIVE from config.yaml on every coordinator build (sp-ts82).
+// knobs these are resolved LIVE from config.yaml on every coordinator build.
 type AutoLiquidationSettings struct {
 	// Disabled turns auto-liquidation OFF (default: ON). Liquidation-by-sale only converts
 	// a stranded hold to treasury, so it is on by default; an absent key reads as enabled,
@@ -60,11 +60,11 @@ type PrePositioningSettings struct {
 	// #6). <1 => the miner's own default.
 	MinRecurrence int `mapstructure:"min_recurrence"`
 	// CapitalCeilingPct is the pre-positioning capital ceiling as a percent of LIVE
-	// treasury AND the enablement knob for opportunistic tour deposits (sp-13tl):
+	// treasury AND the enablement knob for opportunistic tour deposits:
 	// 0/absent => PARKED (dormant, fail closed, no deposits — money movement is a
 	// captain/analyst decision, RULINGS #5), NOT an auto-10% default. A positive value
 	// authorizes deposits up to that % of live treasury, held JUNIOR to the
-	// working-capital reserve and the sp-w3he cross-container cap; when the live balance
+	// working-capital reserve and the cross-container cap; when the live balance
 	// is unreadable the ceiling is ZERO and no candidates are offered (fail closed,
 	// RULINGS #4). (The dedicated stocker hull keeps its own default; see
 	// defaultDepositCeilingPct.)
@@ -73,7 +73,7 @@ type PrePositioningSettings struct {
 	// to be worth stocking (projected_savings >= this). <=0 => default 1.
 	MinSavingsPerUnit int `mapstructure:"min_savings_per_unit"`
 	// BuyLegSavingsPerUnit is the per-unit value credited to the source→central buy-leg
-	// the contract worker skips when a good is pre-positioned (sp-layd). It makes
+	// the contract worker skips when a good is pre-positioned. It makes
 	// IN-SYSTEM pre-positioning worthwhile when the cheapest source is the home system
 	// (price differential 0): the warehouse compresses the export→A1 haul. <=0 => the
 	// miner's DefaultBuyLegSavingsPerUnit (fail OPEN for the in-system case, RULINGS #5 —
@@ -104,11 +104,11 @@ type IdleArbSettings struct {
 	MarginVerifyPct int      `mapstructure:"margin_verify_pct"`
 	IntervalSeconds int      `mapstructure:"interval_seconds"`
 	Blacklist       []string `mapstructure:"blacklist"`
-	// RecoveryHoldSeconds (sp-lbbm) is the lane mutex's post-termination hold: how
+	// RecoveryHoldSeconds is the lane mutex's post-termination hold: how
 	// long a (good, sink) lane stays closed after its leg terminates before another
 	// hull may work it. 0 → the contract package default (1200s = 20min).
 	RecoveryHoldSeconds int `mapstructure:"recovery_hold_seconds"`
-	// sp-u4tv per-trip live-profitability floor (all 0 → the contract package
+	// Per-trip live-profitability floor (all 0 → the contract package
 	// defaults: net >= max(100/u, 20% of buy) after ~35/u fuel). The gate re-prices
 	// every trip from live prices and refuses a lane whose net (spread − fuel) is
 	// below the binding floor — the fix for the fleet's own buys inflating a thin

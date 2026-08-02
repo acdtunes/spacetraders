@@ -8,7 +8,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// sp-mu6u: a goods_factory feeder crashed with "no cargo space available for
+// A goods_factory feeder crashed with "no cargo space available for
 // purchase" when an input BUY was attempted against an already-full hold — e.g.
 // SHIP_PARTS-ff2078ee, ADVANCED_CIRCUITRY-b69aabe7/07391f2f, MEDICINE-5cbd2bce,
 // SHIP_PLATING-7cefb592, all terminal-crashed on this exact string across

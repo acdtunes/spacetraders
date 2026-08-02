@@ -150,7 +150,7 @@ func (f *fakeBuyLedger) TransitionSlot(_ context.Context, _ int, waypoint, kind,
 		return err
 	}
 	for i := range f.slots {
-		// Matched on the KIND too, as the real ledger is (sp-dpfp8): a waypoint can
+		// Matched on the KIND too, as the real ledger is: a waypoint can
 		// carry a MARKET and a SPARE row, and they are often in the same state.
 		if f.slots[i].Waypoint != waypoint || f.slots[i].Kind != kind {
 			continue

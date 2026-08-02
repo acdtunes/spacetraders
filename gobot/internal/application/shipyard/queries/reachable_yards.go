@@ -11,7 +11,7 @@ import (
 )
 
 // YardCandidate is one reachable shipyard selling a requested ship type,
-// ranked by gate-graph hop distance first, then price (sp-42ow) — the
+// ranked by gate-graph hop distance first, then price — the
 // "nearest reachable heavy yard" signal the fleet autosizer's fail-closed
 // heavy branch consumes.
 type YardCandidate struct {
@@ -40,7 +40,7 @@ type inventoryByTypeReader interface {
 }
 
 // ReachableYardFinder ranks scanned shipyards selling the requested ship types
-// by hop distance from the caller's reference systems, then by price (sp-42ow).
+// by hop distance from the caller's reference systems, then by price.
 // Distances run over the PERSISTED gate adjacency with under-construction
 // edges excluded (the gategraph BFS semantics), bounded to gategraph.MaxJumpPath
 // — the reach heavies are held to. The rank is a SIGNAL: the actual purchase

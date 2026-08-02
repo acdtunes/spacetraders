@@ -13,7 +13,7 @@ import (
 // sp-ehg9: the bootstrap command frigate needs a CONTINUOUS single-hull contract
 // loop — re-negotiate + run contracts until stopped — so the pre-hauler cold
 // start earns income with zero captain re-launches. batch-contract without the
-// loop flag stays single-shot (sp-6fsq); the loop is opt-in via RunWorkflowCommand.Loop.
+// loop flag stays single-shot; the loop is opt-in via RunWorkflowCommand.Loop.
 //
 // These tests pin the LOOP ORCHESTRATION (repeat, pace, park-not-crash, clean
 // ctx-stop) against a fake per-contract cycle so they are decoupled from the
@@ -53,7 +53,7 @@ func TestRunContractLoop_RunsUntilContextCancelled(t *testing.T) {
 
 // TestRunContractLoop_MoneyGuardParksAndContinues proves the money guard STOPS a
 // spend it cannot afford without killing the loop: an ErrInsufficientCredits
-// cycle (sp-vwhi park) is not propagated as a crash, the loop backs off (via the
+// cycle (park) is not propagated as a crash, the loop backs off (via the
 // injected clock, so no real wait), and it keeps running so the frigate resumes
 // contracts once the treasury recovers. This is the fail-closed money guard the
 // bead requires ("stops it when it can't afford") without stranding the hull.

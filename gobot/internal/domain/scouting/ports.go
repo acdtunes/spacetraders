@@ -65,18 +65,18 @@ type SystemFreshnessSnapshot struct {
 type MarketFreshnessSample struct {
 	AgeSeconds float64
 	Weight     float64
-	// Waypoint is the market's waypoint symbol — the sink identity the sp-wuksw demand
+	// Waypoint is the market's waypoint symbol — the sink identity the demand
 	// re-weighting keys on: the coordinator looks up each market's realized-sell demand by
 	// this symbol and overrides Weight with it (intrinsic prior for a never-traded market).
 	// EMPTY when the census carries no per-waypoint identity (an aggregate-only fixture), in
 	// which case no demand can be mapped and the intrinsic Weight stands — byte-identical.
 	Waypoint string
 	// Activity is the market's raw market_data.activity state (WEAK/GROWING/STRONG/RESTRICTED, or
-	// "" when the census carries no activity signal). sp-j4kjv sizes each activity cohort against
+	// "" when the census carries no activity signal). The sizer sizes each activity cohort against
 	// ITS OWN freshness SLA — a WEAK market tolerates far staler prices than a STRONG one — and an
 	// unknown/"" activity is sized at the RESTRICTED default. When EVERY market's activity is empty
 	// (a pre-activity census, or an aggregate-only fixture) the sizer falls back to the single
-	// global sla_seconds, byte-identical to pre-sp-j4kjv.
+	// global sla_seconds.
 	Activity string
 }
 

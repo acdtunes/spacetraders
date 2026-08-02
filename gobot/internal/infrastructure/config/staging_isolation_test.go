@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// Known PROD identifiers (sp-widl). These are the live values the prod daemon
+// Known PROD identifiers. These are the live values the prod daemon
 // resolves to — set both by SetDefaults (see defaults.go) and by the operator's
 // local gobot/config.yaml, and by the launchd unit (com.spacetraders.*). config.yaml
 // itself is an untracked local file, so the staging isolation contract is pinned
@@ -41,7 +41,7 @@ func loadStagingConfig(t *testing.T) *Config {
 	return cfg
 }
 
-// TestStagingIsolatedFromProd pins the sp-widl isolation contract: every mutable
+// TestStagingIsolatedFromProd pins the isolation contract: every mutable
 // resource the committed staging config names must DIFFER from the live prod
 // identifier, so a staging daemon can never collide with or corrupt prod. If a
 // future edit points staging at a live resource, this fails loudly in CI instead

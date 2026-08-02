@@ -1,6 +1,6 @@
 package config
 
-// ScoutingConfig holds the scouting subsystem's knobs (sp-x8i5). The daemon injects
+// ScoutingConfig holds the scouting subsystem's knobs. The daemon injects
 // these into scout_tour and scout_post_coordinator launch configs on every build —
 // creation AND restart recovery, via resolveScoutingConfig — so a captain retunes the
 // fleet's phase behavior by editing config.yaml and restarting, no code redeploy
@@ -10,7 +10,7 @@ package config
 // that knob, so the daemon injects only the keys the captain actually set.
 type ScoutingConfig struct {
 	// TourStartJitterMaxSeconds bounds the per-ship deterministic phase jitter a scout
-	// tour waits before its first navigation/scan (sp-x8i5). ~45 scouts restarting
+	// tour waits before its first navigation/scan. ~45 scouts restarting
 	// their rotation in near-lockstep transiently saturates the rate limiter in a
 	// phase-locked wave, not a sustained-load problem. Each ship waits hash(ship_symbol) % ceiling
 	// before its tour starts — deterministic across restarts (no math/rand) — so the
@@ -30,7 +30,7 @@ type ScoutingConfig struct {
 	MaxRepositionJumps int `mapstructure:"max_reposition_jumps"`
 
 	// RepositionFailureCooldownSecs is how long a scout post whose reposition relay FAILED
-	// waits before the coordinator retries repositioning to it (sp-o34q). On a failure the
+	// waits before the coordinator retries repositioning to it. On a failure the
 	// coordinator frees the probe and tries the NEXT candidate post this tick instead of
 	// respawning the same corpse, so one genuinely-unroutable post can no longer crash-loop
 	// the relay dispatcher and flood the event queue. 0/absent => 1800s (30 min): long enough that a broken
@@ -39,7 +39,7 @@ type ScoutingConfig struct {
 
 	// RespawnAttemptCap bounds how many CONSECUTIVE times the standing scout_post_coordinator
 	// respawns a post's dead tour before it PARKS the post for a backoff window instead of
-	// respawning it yet again (sp-py4n). The reconciler respawns any dead tour every tick, so a
+	// respawning it yet again. The reconciler respawns any dead tour every tick, so a
 	// tour crashing on a PERSISTENT non-cross-system reason would respawn-loop at tick cadence
 	// forever; this caps that loop. A tour that finally runs healthy resets the count, so the cap
 	// is on consecutive failures, not lifetime, and the count is persisted per post so it survives
@@ -49,7 +49,7 @@ type ScoutingConfig struct {
 	RespawnAttemptCap int `mapstructure:"respawn_attempt_cap"`
 
 	// HeavyShipTypes is the set of ship types that count as HEAVY freight for
-	// shipyard discovery (sp-42ow): the scout tour's piggybacked shipyard scan
+	// shipyard discovery: the scout tour's piggybacked shipyard scan
 	// emits a one-time-per-era milestone event when a yard selling one of these
 	// is first discovered, and the fleet autosizer's nearest-reachable-heavy-yard
 	// signal keys on the same classification. Empty/absent defers to the domain
@@ -76,12 +76,12 @@ type ScoutingConfig struct {
 	GateReconcileEnabled bool `mapstructure:"gate_reconcile_enabled"`
 
 	// GateReconcileMaxDispatch HARD-CAPS how many gate-reconcile relays the sweep dispatches
-	// per tick (sp-bcsu) — the rate-budget guard so it can never burst the limiter or starve
+	// per tick — the rate-budget guard so it can never burst the limiter or starve
 	// trade hulls of it. 0/absent => defaultGateReconcileMaxDispatch (2), mirroring
 	// MaxRepositionJumps' 0 => default idiom.
 	GateReconcileMaxDispatch int `mapstructure:"gate_reconcile_max_dispatch"`
 
-	// GateReconcileMarketlessDisabled is the sp-ywh1 disable-escape: it reverts the widened
+	// GateReconcileMarketlessDisabled is the disable-escape: it reverts the widened
 	// gate-reconcile sweep to the market-only sp-bcsu backlog, dropping the traffic-markered
 	// MARKETLESS transit gates from the target set. false/absent => LIVE (the widened scope is
 	// ON whenever gate_reconcile_enabled arms the sweep): the sweep also charts uncharted transit

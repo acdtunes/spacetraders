@@ -28,7 +28,7 @@ type SellCargoCommand struct {
 	Units      int             // Total units to sell
 	PlayerID   shared.PlayerID // Player ID for authorization
 
-	// MinBidPerUnit (sp-lbbm) arms the per-tranche sell floor: before each tranche
+	// MinBidPerUnit arms the per-tranche sell floor: before each tranche
 	// the handler re-verifies the live bid and aborts the remainder (holding it
 	// aboard) if it falls below this per-unit floor. 0 disables it — the unchanged
 	// path for every caller but the arb executor. See CargoTransactionCommand.
@@ -44,13 +44,13 @@ type SellCargoResponse struct {
 	UnitsSold        int // Total units successfully sold
 	TransactionCount int // Number of API transactions executed
 
-	// FloorAborted (sp-lbbm) is true when the per-tranche sell floor stopped the
+	// FloorAborted is true when the per-tranche sell floor stopped the
 	// sale early (live bid below MinBidPerUnit); the unsold remainder is held
 	// aboard. FloorObservedBid is the live bid that tripped it (0 if unreadable).
 	FloorAborted     bool
 	FloorObservedBid int
 
-	// Reserved (sp-1vhv) is true when the sale was refused because the good is
+	// Reserved is true when the sale was refused because the good is
 	// reserved as do-not-sell on the hull (a staged outfitting module, or an
 	// operator-protected good). UnitsSold and TotalRevenue are then zero and the
 	// cargo is held aboard — no API call was made.
@@ -109,7 +109,7 @@ func (h *SellCargoHandler) Handle(ctx context.Context, request common.Request) (
 		GoodSymbol:    cmd.GoodSymbol,
 		Units:         cmd.Units,
 		PlayerID:      cmd.PlayerID,
-		MinBidPerUnit: cmd.MinBidPerUnit, // sp-lbbm per-tranche sell floor (0 → disabled)
+		MinBidPerUnit: cmd.MinBidPerUnit, // Per-tranche sell floor (0 → disabled)
 	}
 
 	// Delegate to unified handler

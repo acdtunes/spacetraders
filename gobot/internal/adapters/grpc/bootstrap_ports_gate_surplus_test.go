@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// sp-mxflh: bootstrapGateSurplusReleaser un-dedicates the requested surplus IDLE manufacturing hulls to the
+// bootstrapGateSurplusReleaser un-dedicates the requested surplus IDLE manufacturing hulls to the
 // UNDEDICATED pool (AssignFleet→"", the single write path) — the OPPOSITE direction of the repurposer — so the
 // contract scaler's reuse tier (isReclaimable) then adopts them into the contract fleet. It RE-GUARDS each hull
 // at release time: a hull that started a construction task (in transit) or was already re-tagged since the

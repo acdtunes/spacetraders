@@ -444,7 +444,7 @@ func TestUpdateSpread_AdoptsTheFirstObservationThenSmooths(t *testing.T) {
 // Paired measurement: exempt from the freshness veto, and nothing else.
 // -----------------------------------------------------------------------------
 
-// TestDecide_PairedReadIsNotVetoedByAFreshCache protects the sp-tl68 refit
+// TestDecide_PairedReadIsNotVetoedByAFreshCache protects the refit
 // corpus. The "after" half of a scan-buy-scan pair arrives moments after the
 // "before" half by construction, so judging it on cache freshness would decline
 // every impact measurement the price model is fitted from.

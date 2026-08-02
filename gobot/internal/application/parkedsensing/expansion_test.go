@@ -254,7 +254,7 @@ func (f *fakeExpandLedger) UpsertSpareSlot(_ context.Context, _ int, slot SlotRe
 }
 
 // slotIndex finds an existing placement by (waypoint, KIND) — the real ledger is
-// keyed on the pair (sp-dpfp8), so a second write of the SAME KIND at a waypoint
+// keyed on the pair, so a second write of the SAME KIND at a waypoint
 // is a CONFLICT while a write of a different kind is a NEW ROW.
 //
 // This used to match on the waypoint alone, which made the fake structurally
@@ -788,7 +788,7 @@ func TestAdvanceExpansion_UnseededSystemEnqueuesOneSpareAtTheYard(t *testing.T) 
 
 // A yard that already holds a placement of ANOTHER kind is a perfectly good place
 // to stage a seed, and the seed goes there rather than walking on to the next
-// yard (sp-dpfp8).
+// yard.
 //
 // This test used to assert the opposite — that the request skipped to X1-A-YARD2
 // — on the grounds that writing over the PARKED slot at X1-A-YARD would drop
@@ -2072,7 +2072,7 @@ func TestAdvanceExpansion_LooseEndClaimsAWantedSlotUnderfootInsteadOfParking(t *
 }
 
 // A seed finishing where ANOTHER hull's placement already stands now parks as a
-// spare beside it instead of standing down with no row at all (sp-dpfp8).
+// spare beside it instead of standing down with no row at all.
 //
 // The old behaviour was the money-UNSAFE one and the original comment said so:
 // the seed was stood down DONE with no placement written, so PROBE-7 — a probe we

@@ -1,6 +1,6 @@
 package commands
 
-// run_tour_coordinator_reposition_contention_test.go — sp-lq64 (epic sp-g9td): contention-aware
+// run_tour_coordinator_reposition_contention_test.go: contention-aware
 // reposition on the DEFAULT margins-death path. The pre-flight ALREADY nets the fleet-wide
 // absorption ledger read-only (planAtCandidate → planForState → assembleAbsorption), so a sink
 // that is ALREADY saturated at pre-flight time is planned around. The residual bug the sp-fmxp

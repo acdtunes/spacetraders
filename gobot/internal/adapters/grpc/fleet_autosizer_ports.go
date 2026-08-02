@@ -35,16 +35,16 @@ import (
 // at boot. No business logic lives here — every method forwards to an existing client/repo.
 //
 // LIGHTS and HEAVIES are both FULLY LIVE. Lights: real worker count (HAULER hulls), running-chain
-// count, chain-P&L realized worker rate. Heavies (sp-4ewi): the unserved-lane count reads the
+// count, chain-P&L realized worker rate. Heavies: the unserved-lane count reads the
 // profitable-lane surface off the persisted market cache (the read-only ProfitableLaneReader — the
 // same pure trading.RankSpreads ranking the trade circuit flies, no coordinator perturbation), and
 // the realized tour-rate reads persisted tour telemetry (trading.ComputeFleetTourRate). Both fail
 // CLOSED on a genuine read failure (RULINGS #4 — an unreadable signal never spends); the seam only
 // makes readable demand READABLE, it relaxes no guard. Shared: treasury / era-clock / yard-price /
-// fleet-size reads and the buy+dedicate path. API utilization is now LIVE too (sp-a5dq): it reads the
-// rolling-5m window of the sp-51ti budget tracker (the daemon-startup singleton), so its guard fails
-// CLOSED — holding concurrency growth on real saturation or an absent surface — instead of the old
-// fail-open stub. Vacancies are 0 for now (the rebalancer hub-vacancy query is a later enrichment;
+// fleet-size reads and the buy+dedicate path. API utilization is LIVE too: it reads the
+// rolling-5m window of the budget tracker (the daemon-startup singleton), so its guard fails
+// CLOSED rather than open — holding concurrency growth on real saturation or an absent surface.
+// Vacancies are 0 for now (the rebalancer hub-vacancy query is a later enrichment;
 // a 0 leaves the chain-derived base demand intact).
 
 // agentReader is the narrow slice of *api.SpaceTradersClient the money guards need (treasury).
@@ -75,7 +75,7 @@ func NewFleetAutosizerCoordinatorHandler(
 	h.AddDemandProvider(fleetCmd.NewLightDemandProvider(&autosizerLightSources{
 		shipRepo: shipRepo, server: server,
 	}))
-	// HEAVIES ARE NOW LIVE (sp-4ewi): the unserved-lane signal reads the profitable-lane surface
+	// HEAVIES ARE NOW LIVE: the unserved-lane signal reads the profitable-lane surface
 	// off the persisted market cache (tradingQueries.ProfitableLaneReader, read-only — the same pure
 	// trading.RankSpreads ranking the trade circuit uses, no coordinator perturbation), and the
 	// realized tour-rate reads persisted tour telemetry. Both fail closed on a genuine read failure,
@@ -85,7 +85,7 @@ func NewFleetAutosizerCoordinatorHandler(
 		laneReader: tradingQueries.NewProfitableLaneReader(marketRepo),
 	}))
 
-	// Explorer class (sp-a3yn slice C): reads slice-B off-gate demand through the cross-coordinator
+	// Explorer class (slice C): reads slice-B off-gate demand through the cross-coordinator
 	// bridge (offGateDemand) and the live explorer-pool count (dedicate-at-purchase "explorer" fleet).
 	// DORMANT until BOTH armed (explorer_hulls_enabled, default off — classDisabled skips it otherwise)
 	// AND the frontier raises off-gate demand into the bridge, so registering it here changes no live
@@ -140,7 +140,7 @@ func NewFleetAutosizerCoordinatorHandler(
 	h.SetMetricsSink(fleetCmd.NewBlockedGuardTap(&autosizerMetricsSink{}))
 	// Stall escalation: a class BLOCKED on the SAME guard for health.StallEscalationTicks
 	// consecutive ticks raises a coordinator.stalled captain event and a Prometheus escalation
-	// counter, instead of the INFO line that went unread for hours. Write-only by type — the
+	// counter rather than an INFO log line, which nothing watches. Write-only by type — the
 	// streak it accumulates is unreadable by any sizing decision (RULINGS #2).
 	h.SetStallObserver(health.NewStallEscalator(metrics.NewStallMetricsPort(), eventStore))
 	// sp-y2ptq: the contract_delivery graduation gate was removed with the autosizer's contract class
@@ -227,7 +227,7 @@ type shipyardWaypointLister interface {
 }
 
 // scannedYardRanker is the nearest-reachable-yard signal off the persisted
-// shipyard-inventory scans (sp-42ow), ranked hops-then-price. Satisfied by
+// shipyard-inventory scans, ranked hops-then-price. Satisfied by
 // *shipyardQueries.ReachableYardFinder.
 type scannedYardRanker interface {
 	NearestYardsSelling(ctx context.Context, playerID int, shipTypes []string, fromSystems []string) ([]shipyardQueries.YardCandidate, error)
@@ -237,7 +237,7 @@ type autosizerYardPriceReader struct {
 	med          common.Mediator
 	shipRepo     navigation.ShipRepository
 	waypointRepo shipyardWaypointLister
-	// scannedYards is the sp-42ow heavy-yard fallback: when the live in-system
+	// scannedYards is the heavy-yard fallback: when the live in-system
 	// walk finds no priced listing (the branch that has ALWAYS failed closed),
 	// the HEAVY class may open on a scout-scanned, gate-reachable yard. Nil-safe;
 	// nil or an empty scan store keeps the historical fail-closed behavior.
@@ -246,7 +246,7 @@ type autosizerYardPriceReader struct {
 
 // PriceFor finds the cheapest priced listing for the ship type at a SHIPYARD-trait waypoint in a
 // system where the player operates. When that live in-system walk finds nothing, the HEAVY class
-// falls back to the scout-scanned shipyard inventory (sp-42ow): the nearest gate-reachable scanned
+// falls back to the scout-scanned shipyard inventory: the nearest gate-reachable scanned
 // yard, ranked hops-then-price — the availability signal the fail-closed heavy branch was designed
 // to consume. Returns readable=false (price guard fails closed) when neither surface knows a priced
 // yard. The demand-proximal preference is a later refinement (banked) — cheapest is returned now.
@@ -327,7 +327,7 @@ func (r *autosizerYardPriceReader) PriceForSystem(ctx context.Context, playerID 
 }
 
 // scannedYardFallback opens the HEAVY price signal from the persisted shipyard
-// scans when the live in-system walk found no priced listing (sp-42ow). Heavy
+// scans when the live in-system walk found no priced listing. Heavy
 // ONLY: heavy hulls are the class whose yards are routinely out-of-system (the
 // branch that has always failed closed for lack of this signal); lights keep
 // buying in-system, so widening them to remote yards would be a buy-policy
@@ -388,7 +388,7 @@ func autosizerDedicatedFleet(class fleetCmd.HullClass) string {
 	case fleetCmd.HullClassHeavy:
 		return "trade"
 	case fleetCmd.HullClassExplorer:
-		// sp-a3yn dedicate-at-purchase: tag the bought explorer to the "explorer" fleet in the same
+		// Dedicate-at-purchase: tag the bought explorer to the "explorer" fleet in the same
 		// breath so no coordinator poaches it before the frontier dispatch loop warps it off-gate.
 		return "explorer"
 	case fleetCmd.HullClassContractDelivery:
@@ -409,7 +409,7 @@ func (p *autosizerPurchaser) BuyAndDedicate(ctx context.Context, order fleetCmd.
 	// The purchase needs a hull to travel to and buy at the shipyard. sp-7r7w: PREFER the exclusive
 	// purchasing ship (the pivoted command frigate) when idle — the deterministic, protected buy ship for
 	// every scaling buy — and fall back to any idle hull if it is momentarily busy or not yet established.
-	// The battle-tested batch path navigates it and enforces the sp-e7je money-integrity type guard.
+	// The battle-tested batch path navigates it and enforces the money-integrity type guard.
 	ships, err := p.shipRepo.FindAllByPlayer(ctx, pid)
 	if err != nil {
 		return fleetCmd.BuyResult{}, err
@@ -569,7 +569,7 @@ func (s *autosizerHeavySources) HeavyCount(ctx context.Context, playerID int) (i
 }
 
 // UnservedLaneCount surfaces the trade solver's profitable-but-unflown lane count as the heavy
-// capacity-short signal (sp-4ewi): the number of profitable, feasible lanes the player's trading
+// capacity-short signal: the number of profitable, feasible lanes the player's trading
 // grounds rank BEYOND the current trade-hull pool. It discovers those grounds from the player's hull
 // locations (the yard-price reader's system-discovery idiom), asks the read-only lane reader how many
 // profitable lanes they hold, and subtracts the current heavies. READ-ONLY: it never perturbs the
@@ -730,11 +730,12 @@ const heavyYardReachBoundHops = gategraph.MaxJumpPath
 // heavyYardReachable derives whether a ranked candidate is inside the heavy reach bound FROM THE
 // ROW'S OWN HOP COUNT, which is the only reachability evidence the candidate actually carries.
 //
-// This used to be the literal `true`, justified by "rows the ranker returns are reachable by
-// construction". That is true of *ReachableYardFinder — rankYardsSelling drops every row whose
+// A literal `true` here, justified by "rows the ranker returns are reachable by construction",
+// is a claim about an implementation this adapter does not own. It holds for
+// *ReachableYardFinder — rankYardsSelling drops every row whose
 // system is absent from the bounded multi-source BFS, so a returned row's Hops is a real distance in
-// [0, gategraph.MaxJumpPath] — but it was a claim about an implementation this adapter does not own.
-// The port depends on the narrow heavyYardRanker interface, and a literal cannot tell the difference
+// [0, gategraph.MaxJumpPath] — but the port depends on the narrow heavyYardRanker interface,
+// and a literal cannot tell the difference
 // between a rank that filtered and one that did not. Deriving the flag costs nothing, changes no
 // verdict for the real ranker (every row it emits satisfies the bound), and fails CLOSED for any
 // row that does not: an out-of-bound yard is dropped by the errand policy rather than flown to.

@@ -70,9 +70,9 @@ var relocatorCommitFailureReasons = []string{
 }
 
 const (
-	// skipReasonIntentPersistFailed and skipReasonRelocateFailed name the two commit failures that
-	// previously returned false and counted NOTHING — so a relocation lost to an unwritable intent or
-	// a failed jump left no trace in the tick result at all.
+	// skipReasonIntentPersistFailed and skipReasonRelocateFailed name the two commit failures —
+	// an unwritable intent and a failed jump — so a relocation lost to either is counted in the
+	// tick result instead of leaving no trace at all.
 	skipReasonIntentPersistFailed = "intent_persist_failed"
 	skipReasonRelocateFailed      = "relocate_failed"
 	// skipReasonRegionsUnreadable is recorded per hull whose region set could not be read.

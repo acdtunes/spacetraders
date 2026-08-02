@@ -232,7 +232,7 @@ type SensingEnginePorts struct {
 	// ListingMemo answers what a previous shipyard read persisted about a yard's
 	// stock, so the drain can skip yards already known to sell no probe without
 	// spending a live quote on each one, every tick. OPTIONAL: nil quotes
-	// everything, which is the pre-memo behaviour.
+	// everything.
 	ListingMemo  parkedsensing.ProbeListingMemo
 	MarketGoods  parkedsensing.MarketGoodsReader
 	RemoteMarket parkedsensing.RemoteMarketFetcher
@@ -257,8 +257,7 @@ type SensingEnginePorts struct {
 	// OPTIONAL, and deliberately not in the ready() check below. Unlike the three
 	// yard READ ports above — whose absence would mean the fleet never learns what
 	// a shipyard sells, a blind spot worth failing loudly for — an absent presence
-	// port means hulls are not repositioned, which is exactly how the fleet ran
-	// before this existed. It is inert rather than fatal.
+	// port means hulls are not repositioned. It is inert rather than fatal.
 	YardPresence parkedsensing.YardPresenceDemand
 	Treasury     parkedsensing.TreasuryReader
 	CargoSpend parkedsensing.CargoSpendReader
@@ -731,10 +730,10 @@ type sensingConfig struct {
 	// buy (a charting seed from the buy queue, an explorer from the autosizer), and
 	// the buy queue itself, which is what actually pays for a coverage probe.
 	//
-	// FEEDING ONLY THE FIRST WAS THE DEFECT. It was `Expansion`, and the rename to
-	// ExpansionSpend fixed half of it — the old name said the engine was off while
-	// what the operator wanted off was the spending, and switching the whole engine
-	// off cost the fleet its free frontier discovery. The other half was that
+	// FEEDING ONLY THE FIRST WAS THE DEFECT. Half of it was the NAME: a switch
+	// called `Expansion` reads as the engine being off while what the operator
+	// wants off is the spending, and switching the whole engine
+	// off costs the fleet its free frontier discovery. The other half was that
 	// "spending" then reached one spender: the drain bought six probes a cycle with
 	// the switch off, 907,545 credits' worth (sp-com1h). Both knobs now read this
 	// one field. See parkedsensing.ExpandKnobs.SpendEnabled and
@@ -1010,7 +1009,7 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 	cutover, rotation := 0, 0
 	// cutoverPending is the cutover's own trigger, named because the adoption
 	// retry below gates on it too: while the cutover has not finished, adopting
-	// orphans is still ITS job (sp-0gp21).
+	// orphans is still ITS job.
 	cutoverPending := len(systems) == 0 && !h.cutoverAlreadyDone(cmd.ContainerID)
 	if cutoverPending {
 		count, cerr := h.cutover(ctx, cmd, cfg, ports)
@@ -1084,7 +1083,7 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 	// The reaper's sibling, and also BEFORE the drain — for the same reason. A
 	// hull adopted this tick is a parked SPARE the buy queue can re-task instead
 	// of buying, so running it after the drain would spend money on a probe we
-	// already own and had just finished recording (sp-0gp21).
+	// already own and had just finished recording.
 	//
 	// GATED ON THE CUTOVER, NOT THE PHASE. Before the cutover a scout-tagged hull
 	// is not an orphan at all — the scout posts still stand and the scout-post
@@ -1105,7 +1104,7 @@ func (h *RunProbeSensingCoordinatorHandler) ReconcileOnce(ctx context.Context, c
 	// Before the drain, and this is the whole economic point: a placement filled
 	// here is a placement the drain does NOT buy a hull for. Running it after the
 	// drain would spend money on a probe we already own and had standing idle —
-	// the same argument that puts adoption before the drain (sp-0gp21), except
+	// the same argument that puts adoption before the drain, except
 	// that here the hull is not merely counted but actually put to work.
 	//
 	// GATED ON THE CUTOVER for adoption's reason exactly: before the cutover a
@@ -1442,7 +1441,7 @@ func (h *RunProbeSensingCoordinatorHandler) cutover(ctx context.Context, cmd *Ru
 		// A PARTIALLY screened ledger MOSTLY no longer needs the gate. It already
 		// holds rows, so the cutover's own trigger will not re-enter whatever this
 		// gate does — and usually it need not, because a system whose screen failed
-		// carries a bare PENDING row of its own (sp-x665h, markAwaitingScreening),
+		// carries a bare PENDING row of its own (markAwaitingScreening),
 		// which is exactly what the steady-state sweep re-screens. Recovery is
 		// SAME-TICK, not next-tick: the sweep runs later in this very reconcile,
 		// so a system marked PENDING here is re-screened before the tick ends.
@@ -1627,7 +1626,7 @@ func (h *RunProbeSensingCoordinatorHandler) adoptOrphanProbes(ctx context.Contex
 		if location == nil || location.Symbol == "" {
 			continue // a hull we cannot place is a hull we must not record
 		}
-		// THE OCCUPANCY GUARD (sp-0gp21). UpsertSpareSlot's conflict set carries
+		// THE OCCUPANCY GUARD. UpsertSpareSlot's conflict set carries
 		// assigned_ship, so a write at a waypoint that already holds a SPARE row
 		// does not fail — it silently re-points that row at this hull. The hull it
 		// displaced then holds the sensing tag with NO row anywhere, which is

@@ -14,7 +14,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// These tests pin the "ship jettison" behavior (bead sp-psfc) at the handler
+// These tests pin the "ship jettison" behavior at the handler
 // boundary the daemon's JettisonCargo container dispatches to. Jettison is the
 // last-resort disposal path for stranded/bait cargo that no reachable market
 // buys: it discards units directly via the SpaceTraders API instead of selling
@@ -47,7 +47,7 @@ func (r *jettisonFakeShipRepo) Save(ctx context.Context, ship *navigation.Ship) 
 }
 
 // SaveWithRetry mirrors the real repository's non-conflict path (find → mutate →
-// save) so the migrated jettison persist (sp-wa7c) exercises its production closure
+// save) so the migrated jettison persist exercises its production closure
 // while still routing through Save's tracking.
 func (r *jettisonFakeShipRepo) SaveWithRetry(ctx context.Context, symbol string, playerID shared.PlayerID, mutate navigation.ShipMutation) (*navigation.Ship, bool, error) {
 	sh, err := r.FindBySymbol(ctx, symbol, playerID)

@@ -14,7 +14,7 @@ import (
 // DEPLOY-INERT pin (sp-s1ek): adding the LAUNCH VERB for the shipyard-backfill sweep
 // (sp-rhju built the engine) must change NOTHING until an operator explicitly starts
 // it. Like the frontier/capacity coordinators it must NEVER be boot-standing-armed the
-// way the market-freshness sizer is (sp-orgp, bootStandingCoordinatorTypes). If a future
+// way the market-freshness sizer is (bootStandingCoordinatorTypes). If a future
 // change adds it to the boot set, this test is the tripwire.
 func TestShipyardBackfill_NotBootStandingArmed(t *testing.T) {
 	for _, ct := range bootStandingCoordinatorTypes {

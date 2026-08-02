@@ -518,7 +518,7 @@ func TestTourInterSystemHops_SpansTheExecutorFlightBound(t *testing.T) {
 // longer exists in the code, and the test's job is to prove we moved off it.
 const retiredFlatAgerPerHop = 30 * time.Minute
 
-// solverMedianCrossingSeconds is the sp-smbgd solver's OWN published charge by gate-hop depth
+// solverMedianCrossingSeconds is the solver's OWN published charge by gate-hop depth
 // (750 + 650*hops) — the median the ager must never drop to, quoted so the assertion does not
 // recompute the model it is checking.
 var solverMedianCrossingSeconds = map[int]float64{1: 1400, 2: 2050, 3: 2700, 4: 3350, 5: 4000}

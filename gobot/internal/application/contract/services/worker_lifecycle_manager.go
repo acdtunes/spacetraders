@@ -149,7 +149,7 @@ func (m *WorkerLifecycleManager) ReclaimShipsFromInterruptedWorkers(
 		// The contract coordinator spawns two worker kinds and must reclaim BOTH when a
 		// daemon restart interrupts them (markWorkerInterrupted marks them FAILED with the
 		// ship claim preserved): CONTRACT_WORKFLOW delivery workers and CARGO_LIQUIDATION
-		// self-clear workers (sp-39oi). Leaving the liquidation worker out would deadlock an
+		// self-clear workers. Leaving the liquidation worker out would deadlock an
 		// interrupted liquidation hull — claimed to a dead container, invisible to discovery
 		// (FindAllByPlayer does not reconcile stale claims; only the external RefreshShip
 		// query does) — the fleet-killer class of not reclaiming the spawner's own hulls.
@@ -168,7 +168,7 @@ func (m *WorkerLifecycleManager) ReclaimShipsFromInterruptedWorkers(
 				continue
 			}
 			shipSymbol := ship.ShipSymbol()
-			// Reclaim under CAS-retry (sp-wa7c): re-apply ForceRelease on the FRESH row
+			// Reclaim under CAS-retry: re-apply ForceRelease on the FRESH row
 			// so a concurrent writer's cargo/nav update on the same hull survives instead
 			// of being last-write-wins clobbered by the FindByContainer snapshot. Skip
 			// unless the hull is still claimed to THIS dead worker (a concurrent release
@@ -202,7 +202,7 @@ func (m *WorkerLifecycleManager) ReclaimShipsFromInterruptedWorkers(
 // (markWorkerInterrupted). Such a ship is mid-delivery — it holds contract cargo
 // for an already-accepted contract — so the coordinator re-adopts it to RESUME the
 // delivery leg (readoptInterruptedDeliveries) rather than restarting the workflow
-// from negotiate/find-purchase-market (sp-tgp5). Ships with empty cargo are NOT
+// from negotiate/find-purchase-market. Ships with empty cargo are NOT
 // returned: they were mid-purchase or mid-navigation with nothing aboard, and
 // ReclaimShipsFromInterruptedWorkers correctly frees them into normal discovery.
 // This is the read-only counterpart to that reclaim — it identifies which

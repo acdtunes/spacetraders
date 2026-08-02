@@ -109,7 +109,7 @@ func TestBuyGood_SpendFloor_ParksWhenBuyWouldBreachReserve(t *testing.T) {
 	}
 
 	warns := logger.entriesWithLevel("WARNING")
-	// The park cause must be legible in the MESSAGE text (sp-iqyq): the good, the
+	// The park cause must be legible in the MESSAGE text: the good, the
 	// waypoint, and the reserve breach — not buried in a dropped metadata map.
 	if !spendFloorWarnContains(warns, "working-capital reserve") {
 		t.Fatalf("expected a WARNING naming the working-capital reserve breach, got: %+v", warns)

@@ -243,12 +243,12 @@ func rateFloorImprovementClears(candidateRate, hullRate, floor, improvementFacto
 // placement β window knob (placement_beta_window_minutes, default 60) rather than inventing a fifth
 // rate-floor knob — one trailing-window concept for both rate-based relocation paths.
 //
-// sp-461l (epic sp-g9td) cash-true audit: BOTH rates STAY on telemetry. The under-earner predicate is
+// Cash-true audit: BOTH rates STAY on telemetry. The under-earner predicate is
 // a RATIO (hullRate < rate_floor_pct% × fleetMedian) of two PER-HULL/PER-TOUR medians, which the
 // transactions ledger (no ship/tour column) cannot reproduce, and both sides must share one basis for
-// the ratio to be meaningful. sp-rd21's write-path fix (dropped buy legs now recorded) removed the
-// per-hull UNEVEN bias — a hull whose buys were dropped no longer looks like a star — so this trigger
-// now relocates the genuinely-under-earning hulls on the true netted rate.
+// the ratio to be meaningful. This depends on the write path recording EVERY buy leg: a hull whose
+// buys go unrecorded looks like a star on an uneven per-hull basis, and the trigger then relocates
+// the wrong hulls instead of the genuinely-under-earning ones.
 //
 // The hull rate is MedianTourRate over the hull's OWN telemetry rows (filtered by ship symbol) —
 // symmetric with the fleet median and reusing the exact same rate math (no reinvention). ok=false

@@ -11,7 +11,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
-// ListJumpContainersForShip backs jump_ship's post-claim reap (sp-rqhzh), which DELETES
+// ListJumpContainersForShip backs jump_ship's post-claim reap, which DELETES
 // what this returns. Every row it hands back is a row that is about to be destroyed, so
 // the query's scoping is the whole safety property — it is tested here against the real
 // schema rather than only through the handler's stub.

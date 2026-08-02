@@ -20,7 +20,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// These tests reproduce goods-factory feeder crash #3 (sp-n7yp): the buy step
+// These tests reproduce goods-factory feeder crash #3: the buy step
 // races the async dock. The ONLY faked collaborator is the ShipRepository (the
 // DB/API boundary) and the market; the real DockShipHandler, runStateTransition,
 // LoadShip and domain EnsureDocked all execute, so the tests exercise the actual
@@ -116,7 +116,7 @@ func (r *dockRaceShipRepo) Save(ctx context.Context, ship *navigation.Ship) erro
 // SaveWithRetry models the real single-writer CAS path (sp-01wc): load the ship FRESH from the
 // persisted primitives, apply the mutation, and — only when it reports a change — persist the
 // resulting cargo/nav back to those primitives, so a follow-up FindBySymbol reflects it. This lets
-// the construction-supply terminal's post-supply cargo write-back (sp-v5d1) be exercised against a
+// the construction-supply terminal's post-supply cargo write-back be exercised against a
 // faithful persistence fake rather than a re-implemented one.
 func (r *dockRaceShipRepo) SaveWithRetry(ctx context.Context, symbol string, playerID shared.PlayerID, mutate navigation.ShipMutation) (*navigation.Ship, bool, error) {
 	r.mu.Lock()
@@ -160,7 +160,7 @@ func (r *dockRaceShipRepo) syncCalls() int {
 	return r.syncAPICalls
 }
 
-// fillCargo (sp-mu6u) preloads the hold with the given items so buildShip
+// fillCargo preloads the hold with the given items so buildShip
 // reports a full/partially-full cargo hold, reproducing the crash precondition:
 // an input BUY attempted while the hull is already carrying cargo.
 func (r *dockRaceShipRepo) fillCargo(items []*shared.CargoItem) {
@@ -174,7 +174,7 @@ func (r *dockRaceShipRepo) fillCargo(items []*shared.CargoItem) {
 	r.cargoUnits = units
 }
 
-// removeCargo (sp-mu6u) mirrors a successful sell: it mutates the persisted
+// removeCargo mirrors a successful sell: it mutates the persisted
 // inventory/units the same way the real API would, so a follow-up
 // FindBySymbol/buildShip reflects the freed space.
 func (r *dockRaceShipRepo) removeCargo(symbol string, units int) {
@@ -214,9 +214,9 @@ type dockRaceMediator struct {
 	navCalls       int
 	purchaseCalls  int
 	purchaseScript []error // per-attempt outcome; nil entry = success, missing = model real precondition
-	purchaseBranch string  // sp-br0m: selector branch observed on ctx at the last purchase dispatch
+	purchaseBranch string  // Selector branch observed on ctx at the last purchase dispatch
 	sellCalls      int
-	sellShouldFail bool // sp-mu6u: model a market that won't import the onboard good
+	sellShouldFail bool // Model a market that won't import the onboard good
 }
 
 func (m *dockRaceMediator) Send(ctx context.Context, request common.Request) (common.Response, error) {
@@ -236,7 +236,7 @@ func (m *dockRaceMediator) Send(ctx context.Context, request common.Request) (co
 		m.mu.Lock()
 		idx := m.purchaseCalls
 		m.purchaseCalls++
-		// sp-br0m: capture the selector branch buyGood stamped on ctx for this input buy —
+		// Capture the selector branch buyGood stamped on ctx for this input buy —
 		// the same value the ledger recorder tags into the transaction metadata.
 		if branch, ok := shared.SelectorBranchFromContext(ctx); ok {
 			m.purchaseBranch = branch
@@ -303,7 +303,7 @@ func (m *dockRaceMediator) sellAttempts() int {
 }
 
 // purchaseBranchTag returns the selector branch observed on ctx at the last purchase
-// dispatch (sp-br0m), or "" if none was stamped.
+// dispatch, or "" if none was stamped.
 func (m *dockRaceMediator) purchaseBranchTag() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -328,7 +328,7 @@ func (r *dockRaceMarketRepo) FindCheapestMarketSelling(ctx context.Context, good
 }
 
 // FindAllMarketsInSystem lists this harness's single market so the trade-type-aware
-// FindExportMarket (sp-9mkf) can iterate it; GetMarketData is consistent with
+// FindExportMarket can iterate it; GetMarketData is consistent with
 // FindCheapestMarketSelling, so the sourced market is unchanged.
 func (r *dockRaceMarketRepo) FindAllMarketsInSystem(ctx context.Context, systemSymbol string, playerID int) ([]string, error) {
 	return []string{dockRaceMarketWP}, nil

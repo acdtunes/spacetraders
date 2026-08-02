@@ -73,7 +73,7 @@ func twoLevelChainResolver() *SupplyChainResolver {
 func TestDepthCapCollapsesDepth2FabricateToBuy(t *testing.T) {
 	resolver := twoLevelChainResolver()
 
-	ctx := WithFabricateDepthCap(context.Background(), 1, false) // sp-yfzi: pin the depth-1 cap explicitly
+	ctx := WithFabricateDepthCap(context.Background(), 1, false) // Pin the depth-1 cap explicitly
 	root, err := resolver.BuildDependencyTree(ctx, "ADVANCED_CIRCUITRY", "X1-AA", 1)
 	if err != nil {
 		t.Fatalf("BuildDependencyTree returned error: %v", err)

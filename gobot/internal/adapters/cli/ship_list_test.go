@@ -115,7 +115,7 @@ func TestBuildShipRowsShowsCaptainReservationWithoutReason(t *testing.T) {
 	require.Equal(t, "captain", rows[0].Assignment)
 }
 
-// TestBuildShipRowsPopulatesFleetAndSortsNatural is the sp-ioqt fixture test:
+// TestBuildShipRowsPopulatesFleetAndSortsNatural is the fixture test:
 // a probe, a hauler, a container-claimed ship, and a dedicated-fleet ship,
 // supplied out of symbol order (including a lexicographic trap — "TORWIND-3"
 // and "TORWIND-10" sort backwards under plain string comparison). It asserts

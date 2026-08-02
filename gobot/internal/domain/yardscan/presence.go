@@ -3,7 +3,7 @@ package yardscan
 import "sort"
 
 // presence.go answers the question a shipyard-read budget cannot answer by
-// reading harder: WHICH YARDS NEED A HULL STANDING AT THEM (sp-fox5u).
+// reading harder: WHICH YARDS NEED A HULL STANDING AT THEM.
 //
 // THE MECHANIC, and why no amount of scanning substitutes for it.
 // `GET /systems/{s}/waypoints/{w}/shipyard` answers with two things, and only

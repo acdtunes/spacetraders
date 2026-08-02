@@ -16,7 +16,7 @@ import (
 )
 
 // capturingLogRepo records every runner log line so a test can assert the
-// captain-authority override audit line (sp-sg35) actually fires. Only Log is
+// captain-authority override audit line actually fires. Only Log is
 // exercised by the ContainerRunner; the embedded interface backs the rest.
 type capturingLogRepo struct {
 	persistence.ContainerLogRepository
@@ -52,7 +52,7 @@ func (r *capturingLogRepo) find(level, substr string) (capturedLogLine, bool) {
 // to show the sink in a failure message MUST use this and never read the entries
 // slice directly: ContainerRunner.Log persists each line on a detached goroutine
 // (container_runner.go), so an unsynchronized read of entries races that writer —
-// the -race trip the single read at the assertion caused (sp-yon7).
+// the -race trip the single read at the assertion caused.
 func (r *capturingLogRepo) snapshot() []capturedLogLine {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -65,7 +65,7 @@ func (r *capturingLogRepo) snapshot() []capturedLogLine {
 // substr appears, or the deadline elapses. ContainerRunner.Log persists each line
 // asynchronously (so the claim path never blocks on the log sink), so an audit line
 // lands shortly AFTER the synchronous Start() that triggered it returns; a single
-// read of the sink races that goroutine and intermittently sees it empty (sp-yon7).
+// read of the sink races that goroutine and intermittently sees it empty.
 // Polling a mutex-guarded read with a bounded deadline removes the ordering flake
 // without weakening the assertion — the line must still appear.
 func (r *capturingLogRepo) waitForLog(t *testing.T, level, substr string, timeout time.Duration) capturedLogLine {
@@ -117,7 +117,7 @@ func TestCaptainManualAuthorityOverridesForeignDedication(t *testing.T) {
 
 	// Every override MUST be audited: one WARNING line naming ship, op, dedication.
 	// The audit line persists on Log's detached goroutine, so wait for it instead of
-	// reading the sink once (sp-yon7): the single read raced that goroutine — seeing an
+	// reading the sink once: the single read raced that goroutine — seeing an
 	// empty sink, and tripping -race on the unsynchronized entries read in the message.
 	line := logs.waitForLog(t, "WARNING", "Captain-authority override", 2*time.Second)
 	require.Equal(t, "TORWIND-19", line.metadata["ship_symbol"])
@@ -211,7 +211,7 @@ func TestCaptainManualCLIOpsStampAuthorityFlag(t *testing.T) {
 }
 
 // sp-sfoe — the captain-context reservation pass-through (the permit half). A
-// captain reservation (sp-i1ku) locks coordinators out of a hull the captain is
+// captain reservation locks coordinators out of a hull the captain is
 // operating by hand, but a deliberate captain CLI manual op (navigate/dock/orbit/
 // refuel/jettison — the only setters of captainManualAuthorityKey) must be able to
 // operate that reserved hull WITHOUT dropping the reservation. The claim is SKIPPED
@@ -253,7 +253,7 @@ func TestCaptainContextOpPermittedOnCaptainReservedHull(t *testing.T) {
 
 	// Every pass-through MUST be audited: one WARNING line naming ship and op. The
 	// audit line persists on Log's detached goroutine, so wait for it instead of
-	// reading the sink once (sp-yon7).
+	// reading the sink once.
 	line := logs.waitForLog(t, "WARNING", "Captain-context override", 2*time.Second)
 	require.Equal(t, "TORWIND-19", line.metadata["ship_symbol"])
 	require.Equal(t, "NAVIGATE", line.metadata["op"])

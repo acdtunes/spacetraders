@@ -28,7 +28,7 @@ func TestStopContainerTerminalizesGasCoordinatorStorageOperationRow(t *testing.T
 	requireStorageOperationStatus(t, db, coordinatorID, playerID, "STOPPED")
 }
 
-// sp-3lj5: a warehouse container needs the identical terminalization gas
+// A warehouse container needs the identical terminalization gas
 // coordinators received under sp-86yb. Left un-terminalized, a stopped
 // warehouse's storage_operations row stays RUNNING forever - a stale "zombie"
 // row that the stocker/tour warehouse lookup can resolve to instead of a live
@@ -77,7 +77,7 @@ func TestStopContainerDoesNotClobberAlreadyCompletedStorageOperationRow(t *testi
 	requireStorageOperationStatus(t, db, coordinatorID, playerID, "COMPLETED")
 }
 
-// Same idempotency guard, mirrored for warehouses (sp-3lj5).
+// Same idempotency guard, mirrored for warehouses.
 func TestStopContainerDoesNotClobberAlreadyCompletedWarehouseStorageOperationRow(t *testing.T) {
 	s, db, playerID := newRecoveryTestServer(t)
 

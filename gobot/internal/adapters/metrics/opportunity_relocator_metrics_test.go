@@ -8,7 +8,7 @@ import (
 	dto "github.com/prometheus/client_model/go"
 )
 
-// opportunity_relocator_metrics_test.go — the relocator's collector (sp-j1i49).
+// opportunity_relocator_metrics_test.go — the relocator's collector.
 //
 // Two things are pinned: the series NAMES (a rename silently breaks every dashboard and alert built on
 // them, and nothing else in the build would notice), and the fact that a skip records its COUNT rather

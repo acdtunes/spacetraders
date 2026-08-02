@@ -127,7 +127,7 @@ func (r *fakeScoutShipRepo) FindIdleByPlayer(_ context.Context, _ shared.PlayerI
 
 // FindActiveByPlayer returns the ASSIGNED hulls (container claim OR captain
 // reservation), derived from entity state like FindIdleByPlayer — the roster the
-// orphan sweep enumerates (sp-6zgs). A hull the sweep frees flips to idle, so a
+// orphan sweep enumerates. A hull the sweep frees flips to idle, so a
 // later FindIdleByPlayer in the same tick surfaces it, exactly like the DB.
 func (r *fakeScoutShipRepo) FindActiveByPlayer(_ context.Context, _ shared.PlayerID) ([]*navigation.Ship, error) {
 	var active []*navigation.Ship
@@ -183,7 +183,7 @@ func (r *fakeScoutShipRepo) Save(_ context.Context, ship *navigation.Ship) error
 }
 
 // SaveWithRetry mirrors the real repository's non-conflict path (find → mutate →
-// save) so the migrated scout reclaim/release sites (sp-wa7c) exercise their
+// save) so the migrated scout reclaim/release sites exercise their
 // production closures while still routing through Save's released-hull tracking.
 func (r *fakeScoutShipRepo) SaveWithRetry(ctx context.Context, symbol string, playerID shared.PlayerID, mutate navigation.ShipMutation) (*navigation.Ship, bool, error) {
 	sh, err := r.FindBySymbol(ctx, symbol, playerID)
@@ -207,7 +207,7 @@ func (r *fakeScoutShipRepo) SaveWithRetry(ctx context.Context, symbol string, pl
 type fakeScoutDaemonClient struct {
 	daemon.DaemonClient
 	persisted               []string                  // container IDs persisted (scout_tour workers)
-	persistedTourCmds       []*ScoutTourCommand       // the *ScoutTourCommand captured per persisted tour, same order as persisted (sp-zixw)
+	persistedTourCmds       []*ScoutTourCommand       // the *ScoutTourCommand captured per persisted tour, same order as persisted
 	repositioned            []string                  // container IDs persisted (scout_reposition relays, sp-s232)
 	persistedRepositionCmds []*ScoutRepositionCommand // the *ScoutRepositionCommand captured per relay, same order as repositioned (sp-8k9m)
 	started                 []string
@@ -271,7 +271,7 @@ func (q *fakeContainerStatusQuery) ListRunningScoutWorkers(_ context.Context, _ 
 }
 
 // ContainerStatus resolves a single container's status from the SAME byStatus
-// fixture (sp-6zgs), so a test that already declares a container RUNNING via
+// fixture, so a test that already declares a container RUNNING via
 // byStatus needs no second wiring — the orphan sweep reads liveness through the
 // same source the manning passes do. An ID absent from every status bucket
 // reports found=false, the gone-container case.
@@ -309,7 +309,7 @@ func (m *fakeMarketProvider) ListBySystemWithTrait(_ context.Context, systemSymb
 // hops+1 systems; only its length feeds the coordinator's nearest-by-hops selection.
 type fakeGateGraph struct {
 	hops map[string]int // "FROM->TO" → jump hops
-	// adjacency is the canned CHARTED-system set for Adjacency (sp-bcsu): a system present
+	// adjacency is the canned CHARTED-system set for Adjacency: a system present
 	// as a key (with >=1 edge) reads as gate-charted, so the gate-reconcile sweep excludes
 	// it. Absent => gate-uncharted. adjErr forces the read to fail (the sweep must skip).
 	adjacency map[string][]system.GateEdge
@@ -343,7 +343,7 @@ func (g *fakeGateGraph) Adjacency(_ context.Context) (map[string][]system.GateEd
 	return g.adjacency, nil
 }
 
-// fakeGraphProvider stands in for the presence-free graph service (sp-nn0y). GetGraph
+// fakeGraphProvider stands in for the presence-free graph service. GetGraph
 // records the systems it was asked to discover and, on success, "charts" the system by
 // removing it from the paired fakeMarketProvider's emptySystems — mirroring the real
 // BuildSystemGraph→waypointRepo.Add→ListBySystemWithTrait round-trip (era-scoping is the
@@ -476,13 +476,13 @@ func TestScoutPost_HealthyTour_LeftUntouched(t *testing.T) {
 	require.Equal(t, "live-tour", postRepo.find("X1-GZ7").TourContainerID)
 }
 
-// sp-6zgs orphan-sweep (headline): an ACTIVE scout probe whose owning container is
+// Orphan-sweep (headline): an ACTIVE scout probe whose owning container is
 // gone — its post died in a reconciler outage / reset, so NO post slot references it
 // and the idle scan (FindIdleByPlayer) never sees it (assignment_status=active). The
 // coordinator's orphan sweep frees it back to the idle pool and, since it already sits
 // in an unmanned post's system, the SAME tick re-seats it in-system — the captain's
 // "same-system re-seat beats a 6-hop relay" ask. Reuses refresh_ship's IsClaimOrphaned
-// verdict (sp-vjwb) rather than rebuilding the orphan predicate.
+// verdict rather than rebuilding the orphan predicate.
 func TestScoutPost_OrphanSweep_FreesActiveProbeWithDeadContainer_ReseatsInSystem(t *testing.T) {
 	clock := &shared.MockClock{CurrentTime: time.Now()}
 	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-C81", Kind: domainScouting.PostKindStanding}
@@ -545,7 +545,7 @@ func TestScoutPost_OrphanSweep_InterruptedContainerNotSwept(t *testing.T) {
 
 // A captain-reserved probe is ACTIVE but owns no container (ContainerID is ""), so a
 // naive orphan check would see "container gone" and reap it. The sweep must skip captain
-// reservations (sp-i1ku) exactly as refresh_ship's reconciler does — a reservation has
+// reservations exactly as refresh_ship's reconciler does — a reservation has
 // no container to go stale.
 func TestScoutPost_OrphanSweep_CaptainReservedNotSwept(t *testing.T) {
 	clock := &shared.MockClock{CurrentTime: time.Now()}
@@ -582,7 +582,7 @@ func TestScoutPost_OrphanSweep_TerminalContainerSwept(t *testing.T) {
 	require.Contains(t, shipRepo.releases, "PROBE-DONE", "a probe on a COMPLETED container is swept (the claim can never resume)")
 }
 
-// Acceptance (3), in-system-scoped (sp-qxa4): the old "zero satellites idle while
+// Acceptance (3), in-system-scoped: the old "zero satellites idle while
 // unmanned posts exist" is now system-scoped. A satellite may sit idle in system A
 // while a post in system B is unmanned — that is CORRECT, not a violation: handing
 // the A-satellite to the B-post would crash the cross-system tour. Each post is
@@ -687,7 +687,7 @@ func TestScoutPost_SweepOnceCrashed_Retried(t *testing.T) {
 }
 
 // sortPostsByPriority orders standing posts before sweep-once, deterministic by
-// system within a kind. Under in-system-only matching (sp-qxa4) each post draws only
+// system within a kind. Under in-system-only matching each post draws only
 // from its own system's satellite pool (posts are keyed by system, so two never
 // compete for one hull) — the ordering no longer causes cross-system stealing, but it
 // still gives the reconcile a stable, standing-first iteration order. Tested directly.
@@ -705,7 +705,7 @@ func TestScoutPost_SortPostsByPriority_StandingBeforeSweepOnce(t *testing.T) {
 		"standing posts sort before sweep-once, deterministic by system within a kind")
 }
 
-// A multi-hull post fully unmanned must not starve DISTINCT uncovered systems (sp-6ovd):
+// A multi-hull post fully unmanned must not starve DISTINCT uncovered systems:
 // the reconciler herded the whole idle-probe group onto the top-priority multi-hull post
 // per cycle (live evidence: 7→BT82, then 8→GS93) while HZ30/PD44/YP16/FQ55 stayed dark
 // with zero probes — over-scout where 1 suffices AND uncovered high-value systems.
@@ -754,7 +754,7 @@ func TestScoutPost_UnmannedSlotTargets_CoverageBeforeDepth(t *testing.T) {
 }
 
 // Only the in-system satellite is ever selected; the out-of-system one is left idle,
-// never claimed (sp-qxa4 in-system-only matching), even though it sorts first.
+// never claimed (in-system-only matching), even though it sorts first.
 func TestScoutPost_SelectsInSystemSatellite_CrossSystemLeftIdle(t *testing.T) {
 	clock := &shared.MockClock{CurrentTime: time.Now()}
 	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-GZ7", Kind: domainScouting.PostKindStanding}
@@ -816,7 +816,7 @@ func TestScoutPost_StartFailure_ReleasesHull(t *testing.T) {
 
 // ---- tests: sp-qxa4 in-system-only matching -------------------------------
 
-// Root cause (sp-qxa4): only a cross-system idle satellite exists — the live
+// Root cause: only a cross-system idle satellite exists — the live
 // 1A@DP51 / post-in-PA3 shape. It must NEVER be selected: the scout tour navigates
 // in-system only, so a cross-system assignment crash-respawn-loops. The post parks.
 func TestScoutPost_CrossSystemSatellite_NeverSelected(t *testing.T) {
@@ -837,7 +837,7 @@ func TestScoutPost_CrossSystemSatellite_NeverSelected(t *testing.T) {
 }
 
 // An unmanned post with no in-system satellite (but a repositionable one idle
-// elsewhere) parks with an honest, system-scoped reason in the message text (sp-qxa4).
+// elsewhere) parks with an honest, system-scoped reason in the message text.
 func TestScoutPost_UnmannedPost_ParksWithReason(t *testing.T) {
 	clock := &shared.MockClock{CurrentTime: time.Now()}
 	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-PA3", Kind: domainScouting.PostKindStanding}
@@ -856,7 +856,7 @@ func TestScoutPost_UnmannedPost_ParksWithReason(t *testing.T) {
 		"the park must be logged with an honest, system-scoped reason in the message text")
 }
 
-// Repair pass (sp-qxa4): the live incident — a post ASSIGNED a hull that is not in
+// Repair pass: the live incident — a post ASSIGNED a hull that is not in
 // the post's system (1A stranded in DP51 while manning the PA3 post), the crash-loop
 // even flickering RUNNING. On reconcile the assignment is released: tour stopped (NOT
 // respawned), hull freed, assignment cleared — both return to the pool. This heals the
@@ -888,7 +888,7 @@ func TestScoutPost_RepairPass_ReleasesMismatchedAssignment(t *testing.T) {
 }
 
 // A parked post self-heals the moment a satellite arrives in its system — no
-// coordinator restart, no manual intervention (sp-qxa4). Two ticks: parks, then mans.
+// coordinator restart, no manual intervention. Two ticks: parks, then mans.
 func TestScoutPost_InSystemArrival_SelfHeals(t *testing.T) {
 	clock := &shared.MockClock{CurrentTime: time.Now()}
 	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-PA3", Kind: domainScouting.PostKindStanding}
@@ -1104,7 +1104,7 @@ func TestScoutPost_Reposition_ArrivalMansInSystem(t *testing.T) {
 	require.Equal(t, "SAT-1", shipRepo.claims[0].ship)
 }
 
-// sp-o34q: a relay that ended with an explicit FAILED status arms the LONG failure
+// A relay that ended with an explicit FAILED status arms the LONG failure
 // cooldown, not the short dispatch floor. This is the fix for the post-deploy crash-loop:
 // the coordinator saw a genuinely-unroutable post's relay die, cleared the 5-min floor a
 // few ticks later, and re-dispatched the SAME corpse — ~20 relays / 15min. After the fix a
@@ -1149,7 +1149,7 @@ func TestScoutPost_Reposition_RelayFailed_ArmsLongFailureCooldown(t *testing.T) 
 	require.Len(t, daemonClient.repositioned, 1, "the failed post is still cooling down at +6min — no crash-loop re-dispatch")
 }
 
-// sp-o34q: the pass-2 "backing off" skip log is a STATE CHANGE, emitted once per cooldown
+// The pass-2 "backing off" skip log is a STATE CHANGE, emitted once per cooldown
 // episode — not every 30s tick. This is the fix for the event flood: a single dark post used
 // to log its backoff on every reconcile, ~20+ events / 15min. Across three ticks inside one
 // cooldown window the skip reason is logged exactly once.
@@ -1191,7 +1191,7 @@ func TestScoutPost_Reposition_BackoffSkip_LogsOncePerEpisode(t *testing.T) {
 	require.Equal(t, 1, skips, "the backoff skip is announced once per episode, not every tick (event-flood fix)")
 }
 
-// sp-o34q: a relay that COMPLETED (the probe arrived) resets the post's consecutive-failure
+// A relay that COMPLETED (the probe arrived) resets the post's consecutive-failure
 // streak and clears its cooldown, so a post that finally succeeds starts clean — the next
 // failure is "attempt 1", never an inherited count, and no stale cooldown lingers on a
 // healthy post.
@@ -1220,7 +1220,7 @@ func TestScoutPost_Reposition_CompletedRelay_ResetsFailureStreak(t *testing.T) {
 	require.Equal(t, "SAT-1", postRepo.find("X1-FAR").AssignedHull, "the arrived satellite still mans the post in-system")
 }
 
-// sp-o34q: a post cooling down after a failed relay does NOT starve the other candidates.
+// A post cooling down after a failed relay does NOT starve the other candidates.
 // pass-2b skips the backed-off post WITHOUT consuming the shared idle satellite, so the one
 // probe rotates to the next candidate this same tick. (Regression contract for "free the
 // probe to the next candidate on each failure".)
@@ -1296,7 +1296,7 @@ func TestScoutPost_Reposition_NoGateGraph_ParksUnchanged(t *testing.T) {
 
 // ---- tests: sp-nn0y virgin-system waypoint discovery ----------------------
 
-// Acceptance (sp-nn0y): a reposition target with NO known market waypoint (a virgin
+// Acceptance: a reposition target with NO known market waypoint (a virgin
 // frontier system — the s232 park-forever bug) is DISCOVERED presence-free via the API and
 // repositioned the SAME tick. The discovery charts the system (persisting its waypoints
 // era-scoped via the reused BuildSystemGraph→Add path), the re-read now surfaces a market,
@@ -1330,7 +1330,7 @@ func TestScoutPost_Reposition_VirginSystem_DiscoversAndDispatches(t *testing.T) 
 // A virgin system that discovery charts as GENUINELY marketless parks with a DISTINCT
 // 'unserviceable' reason — never the 'not yet scanned' park — so the captain can tell a
 // barren system apart from an unscanned one and remove the post. No relay is dispatched
-// (nothing to scan) and no satellite is claimed (sp-nn0y).
+// (nothing to scan) and no satellite is claimed.
 func TestScoutPost_Reposition_VirginSystem_NoMarkets_ParksUnserviceable(t *testing.T) {
 	clock := &shared.MockClock{CurrentTime: time.Now()}
 	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-BARREN", Kind: domainScouting.PostKindSweepOnce}
@@ -1358,7 +1358,7 @@ func TestScoutPost_Reposition_VirginSystem_NoMarkets_ParksUnserviceable(t *testi
 
 // A virgin discovery whose API call FAILS parks fail-closed (nothing spent, no relay) and
 // arms the reposition backoff, so the API is NOT re-probed every tick — the second tick
-// inside the window attempts no discovery at all (sp-nn0y / sp-py4n anti-hot-loop).
+// inside the window attempts no discovery at all (anti-hot-loop).
 func TestScoutPost_Reposition_VirginDiscoveryFails_ParksAndBacksOff(t *testing.T) {
 	clock := &shared.MockClock{CurrentTime: time.Now()}
 	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-VIRGIN", Kind: domainScouting.PostKindSweepOnce}
@@ -1412,7 +1412,7 @@ func TestScoutPost_SpawnTour_ScanInterval_60mFreshnessClampsAtCap(t *testing.T) 
 }
 
 // A 20m freshness target derives to 10m, well inside [floor, cap] — proving the
-// derivation is not simply clamping everything to one bound (sp-zixw).
+// derivation is not simply clamping everything to one bound.
 func TestScoutPost_SpawnTour_ScanInterval_20mFreshnessUnclamped(t *testing.T) {
 	clock := &shared.MockClock{CurrentTime: time.Now()}
 	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-GZ7", Kind: domainScouting.PostKindStanding, FreshnessTarget: 20 * time.Minute}
@@ -1431,7 +1431,7 @@ func TestScoutPost_SpawnTour_ScanInterval_20mFreshnessUnclamped(t *testing.T) {
 // A zero/unset freshness target (post.FreshnessTarget never configured) derives to
 // zero, which clamps UP to the 5m floor — the coordinator path has no "direct
 // launch" 15m default to fall back on, so an absent freshness must not resolve to a
-// zero-wait busy loop (sp-zixw).
+// zero-wait busy loop.
 func TestScoutPost_SpawnTour_ScanInterval_ZeroFreshnessClampsToFloor(t *testing.T) {
 	clock := &shared.MockClock{CurrentTime: time.Now()}
 	post := &domainScouting.ScoutPost{PlayerID: 1, SystemSymbol: "X1-GZ7", Kind: domainScouting.PostKindStanding} // FreshnessTarget left zero
@@ -1832,7 +1832,7 @@ func TestScoutPost_MultiHull_PersistentBudgetChangeRepartitionsOnceAfterDebounce
 	require.Equal(t, 1, rc.calls, "a settled budget re-partitions no further")
 }
 
-// sp-itr5 STABILITY UNDER NOISE (the core fix): a materialized, running post whose
+// STABILITY UNDER NOISE (the core fix): a materialized, running post whose
 // freshness-sizer budget OSCILLATES ±1 every tick (the measured 156↔151-probes-at-the-80-cap
 // demand noise) must NOT re-partition and must NOT stop its tours — the physical partition
 // stays put across the whole oscillation. This is the RED→GREEN acceptance for the bead AND
@@ -1895,7 +1895,7 @@ func TestScoutPost_MultiHull_BudgetOscillationDoesNotThrash(t *testing.T) {
 		"every market stays covered by its original partition — freshness is preserved, just not re-scanned")
 }
 
-// sp-itr5 TRANSIENT: a single-tick budget swing that reverts before the debounce window
+// TRANSIENT: a single-tick budget swing that reverts before the debounce window
 // closes never re-partitions — the classic 1-tick noise blip is fully absorbed.
 func TestScoutPost_MultiHull_TransientBudgetSwingIgnored(t *testing.T) {
 	clock := &shared.MockClock{CurrentTime: time.Now()}
@@ -1950,7 +1950,7 @@ func TestScoutPost_MultiHull_TransientBudgetSwingIgnored(t *testing.T) {
 
 // Reducing a multi-probe post to a single hull reverts it to the pre-enry single-slot
 // shape and frees the surplus probes to the pool (no stale extra slots linger) — but, like
-// every other hull-budget change, only once the reduction has PERSISTED the sp-itr5 debounce
+// every other hull-budget change, only once the reduction has PERSISTED the debounce
 // window (so a transient noise dip to 1 does not free-then-re-buy a probe every tick).
 // Updated openly for sp-itr5: the pre-fix behavior reverted on the FIRST tick.
 func TestScoutPost_MultiHull_RevertToSingleHullFreesSurplus(t *testing.T) {
@@ -2312,7 +2312,7 @@ func TestScoutPost_SingleHull_NeverPartitionsButDoesRespawnOnMarketGrowth(t *tes
 
 	// The market set grows well past both the count threshold and (via clock.Advance)
 	// the age ceiling — a partitioned post would re-cut; a single-hull post instead
-	// respawns its single probe's tour over the grown market list (sp-tzqv).
+	// respawns its single probe's tour over the grown market list.
 	mp.markets["X1-GZ7"] = append(mp.markets["X1-GZ7"], "X1-GZ7-M3", "X1-GZ7-M4", "X1-GZ7-M5")
 	clock.Advance(2 * time.Hour)
 
@@ -2917,7 +2917,7 @@ func TestReconcileGateChartSweep_ZeroHopDispatch_FlagsChartOnArrival(t *testing.
 
 // --- sp-ywh1: widen the sweep onto marketless traffic-markered transit gates ---
 
-// fakeUnreadableGateProvider stands in for GormGateEdgeRepository.UnreadableGates (sp-ywh1):
+// fakeUnreadableGateProvider stands in for GormGateEdgeRepository.UnreadableGates:
 // the era-scoped backoff markers (system -> the gate waypoint the marker recorded) that fleet
 // traffic's route-through 400s left behind. err simulates a read failure the sweep must fail
 // CLOSED on (degrade to market-only this tick, never a panic). calls counts invocations so a
@@ -2943,7 +2943,7 @@ func (f *fakeUnreadableGateProvider) UnreadableGates(_ context.Context) (map[str
 func TestGateChartSweepTargets_UnionsMarketAndMarkeredMinusCharted(t *testing.T) {
 	marketAges := map[string]float64{"X1-MKT": 100, "X1-BOTH": 200, "X1-CHARTEDMKT": 300}
 	markeredGates := map[string]string{
-		"X1-TRANSIT":    "X1-TRANSIT-GATE", // marketless + markered → included (THE sp-ywh1 widening)
+		"X1-TRANSIT":    "X1-TRANSIT-GATE", // marketless + markered → included (THE widening)
 		"X1-BOTH":       "X1-BOTH-GATE",    // also market-known → deduped to a single target
 		"X1-CHARTEDMKR": "X1-CG",           // markered BUT already charted → excluded
 	}
@@ -2958,7 +2958,7 @@ func TestGateChartSweepTargets_UnionsMarketAndMarkeredMinusCharted(t *testing.T)
 		"union of market-backlog {MKT,BOTH} and markered {TRANSIT,BOTH}, deduped (BOTH once), minus charted {CHARTEDMKT,CHARTEDMKR}; sorted")
 }
 
-// sp-ywh1: the widened sweep charts a MARKETLESS transit gate a stale backoff marker proves
+// The widened sweep charts a MARKETLESS transit gate a stale backoff marker proves
 // traffic jumps THROUGH — the residual GetJumpGate-400 source the sp-bcsu market-scoped sweep
 // structurally could never reach (a system's market status is unknown until its gate is
 // charted, the chicken-and-egg). Because the target bears no market, the dispatch aims the
@@ -2993,7 +2993,7 @@ func TestReconcileGateChartSweep_MarkerlessTransitGate_DispatchesToGateWaypoint(
 	require.Len(t, idle, 0, "the one dispatched probe is consumed; the dead-end never draws a second")
 }
 
-// sp-ywh1 disable-escape: GateReconcileMarketlessDisabled reverts the widened scope to the
+// Disable-escape: GateReconcileMarketlessDisabled reverts the widened scope to the
 // sp-bcsu market-only backlog. The same markered marketless transit gate the test above
 // dispatched to now draws NOTHING — proving the safety knob pins market-only without a redeploy,
 // and (falsifiability) that the WIDENING is what produced that dispatch, not some other path.

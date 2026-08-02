@@ -11,7 +11,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// The ST_CLOCK_DRIFT_BUFFER_MS seam (st-drm.8) lets the digital-twin test stacks shrink the
+// The ST_CLOCK_DRIFT_BUFFER_MS seam lets the digital-twin test stacks shrink the
 // arrival/cooldown clock-drift clamp from its 1s prod default so compressed twin arrivals resolve
 // fast. Production leaves the env unset and MUST stay byte-identical to the pre-seam behaviour.
 func TestResolveClockDriftBuffer(t *testing.T) {

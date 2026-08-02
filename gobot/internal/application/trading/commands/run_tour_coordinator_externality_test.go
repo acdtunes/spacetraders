@@ -29,7 +29,7 @@ func planExternalityWeight(t *testing.T, cmd *RunTourCoordinatorCommand) float64
 
 // The knob is only worth anything if it REACHES the solver: the recovery-externality
 // charge lives in the Python pairing loop and reads the weight off the request. A weight
-// stranded on the command prices nothing (the sp-jsng candidate-widening failure mode).
+// stranded on the command prices nothing (the candidate-widening failure mode).
 func TestTour_ExternalityWeightReachesTheSolverRequest(t *testing.T) {
 	got := planExternalityWeight(t, &RunTourCoordinatorCommand{ExternalityWeight: 0.35})
 

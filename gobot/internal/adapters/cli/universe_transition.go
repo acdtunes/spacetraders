@@ -289,7 +289,7 @@ func previewPendingMint(ctx context.Context, deps transitionDeps, opts transitio
 }
 
 // agentIdentityMetadata builds the new era row's metadata column from the agent payload the
-// rollover already fetched to validate the token (sp-0eufi).
+// rollover already fetched to validate the token.
 //
 // It replaces the former factionMetadata, which persisted starting_faction and dropped everything
 // else — including headquarters, which was sitting right there in the same struct. That omission

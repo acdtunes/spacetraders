@@ -15,11 +15,11 @@ import (
 // import the application service, avoiding an import cycle, exactly as
 // GormMarketPriceHistoryRepository satisfies InputPriceHistoryReader via domain/market types.
 // It runs, Go-side, the SAME per-good attribution the validated manufacturing dashboard uses
-// (panel 502 / sp-i0hl): transactions.metadata->>'good_symbol' for factory local buys/sells
-// under the manufacturing/factory operation types, AND — since sp-461l — for tour realized net
-// under operation_type='tour' too. The tour net formerly netted tour_leg_telemetry, which sp-rd21
-// proved read ~2x inflated (dropped buy legs); it now reads the treasury-true transactions ledger,
-// so every per-good flow this reader returns reconciles to the treasury on one consistent source.
+// (panel 502): transactions.metadata->>'good_symbol' for factory local buys/sells
+// under the manufacturing/factory operation types, AND for tour realized net
+// under operation_type='tour' too. The tour net reads the treasury-true transactions ledger
+// and NOT tour_leg_telemetry, which reads ~2x inflated (it drops buy legs), so every per-good
+// flow this reader returns reconciles to the treasury on one consistent source.
 // It adds the refuel pool the dashboard omits (attributed per-good in the service's ComputeChainPnL
 // — refuel rows carry no good_symbol). PostgreSQL-specific (JSONB ->>, FILTER), matching the sibling
 // manufacturing metrics collector; the daemon only ever wires it against Postgres.
@@ -74,7 +74,7 @@ func (r *GormChainPnLRepository) ReadRealizedPnL(ctx context.Context, playerID i
 		return manufacturing.ChainPnLRaw{}, err
 	}
 
-	// Per-good tour realized net from the TRANSACTIONS ledger (sp-461l, epic sp-g9td): a signed
+	// Per-good tour realized net from the TRANSACTIONS ledger: a signed
 	// SUM(amount) over the tour cargo trades — SELL_CARGO(+) and PURCHASE_CARGO(−) — scoped to
 	// operation_type='tour' and attributed to metadata->>'good_symbol', the SAME treasury-true,
 	// per-good source the factory-flows CTE above reads. It REPLACES the former tour_leg_telemetry

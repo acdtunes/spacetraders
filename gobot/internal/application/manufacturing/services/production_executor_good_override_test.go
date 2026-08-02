@@ -11,7 +11,7 @@ import (
 
 // sp-sdyo gate 2 (INPUT-PRICE-CEILING) — per-good ladder-chase multiplier override, plus the
 // money-integrity guardrail. The per-good override tunes THIS good's per-tranche ceiling only; it
-// must NOT bypass the structural inputRoundMarginParked round-gate nor the sp-9aoc solvency floor,
+// must NOT bypass the structural inputRoundMarginParked round-gate nor the solvency floor,
 // and it is hard-capped so a fat-finger can loosen but never disable the ceiling (RULINGS #4).
 // dockRaceGood ("IRON") is the good produceBuy sources, so overrides key on it.
 
@@ -97,7 +97,7 @@ func TestInputRoundMargin_StillParksUnderAggressiveOverride(t *testing.T) {
 	}
 }
 
-// GUARDRAIL (acceptance): the sp-9aoc solvency floor is INDEPENDENT of the price override. With an
+// GUARDRAIL (acceptance): the solvency floor is INDEPENDENT of the price override. With an
 // aggressive per-good override stamped, an input buy that would drop live treasury below the
 // working-capital reserve STILL parks fail-closed — the treasury floor stays hard for both
 // overridden and non-overridden goods.

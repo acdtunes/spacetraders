@@ -38,7 +38,7 @@ import (
 // replaces the members map and the heap wholesale on EVERY reconcile, so the
 // local clock requeue keeps is authoritative for one tick and no longer. Any
 // change to what a turn records in the ledger is therefore a change to the
-// pacing, whether or not it looks like one — see runScan (sp-zml2u).
+// pacing, whether or not it looks like one — see runScan.
 
 // emptyRotationPoll is how long the pacer parks when it has nothing to scan.
 // Membership only changes at a reconcile, so this is a liveness poll, not a
@@ -130,7 +130,7 @@ type SensingSlotView struct {
 // the caller — the prices it will read are the ones it would have read anyway —
 // but it is not a scan, and runScan is the reason the distinction has to survive
 // this interface: an error-only Run collapses the two, and the ledger then
-// records a freshness claim nothing wrote (sp-zml2u).
+// records a freshness claim nothing wrote.
 type MarketScanRunner interface {
 	Run(ctx context.Context, playerID int, waypoint string) (scanned bool, err error)
 }
@@ -154,7 +154,7 @@ type SpreadObserver interface {
 // the pacer run concurrently with the reconcile without either fighting the
 // other for a row.
 //
-// The TWO verbs are the whole freshness fix (sp-zml2u). MarkScanned says data was
+// The TWO verbs are the whole freshness fix. MarkScanned says data was
 // written and advances both scan clocks; MarkScanAttempted says only that the
 // rotation spent this slot's turn, and advances the pacing clock alone. They are
 // separate methods rather than one method with a flag because the columns they
@@ -189,7 +189,7 @@ type ScanPorts struct {
 	// goods list; YARD does not), so the hull standing there was a market sensor
 	// and nothing ever asked it about the counter under its feet — measured live,
 	// nine shipyards had one of our hulls parked on them and no recorded
-	// inventory at all. The fix is to stop deciding by kind: EVERY parked scan
+	// inventory at all. So the kind does not decide: EVERY parked scan
 	// also reads the yard, and the adapter's cached SHIPYARD-trait check makes
 	// that free at the waypoints that are only markets.
 	//
@@ -483,7 +483,7 @@ func (s *Scanner) launch(ctx context.Context, slot SensingSlotView) {
 // would never scan again until the next reconcile rebuilt the heap around it.
 //
 // A TURN HAS THREE OUTCOMES, not two, and they differ ONLY in what the ledger is
-// told (sp-zml2u):
+// told:
 //
 //	SCANNED   data written    → MarkScanned:       both clocks advance
 //	DECLINED  budget said no  → MarkScanAttempted: pacing clock only

@@ -9,7 +9,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 )
 
-// These tests pin the sp-rsgc generalization of the sp-ve3q re-apply: relaunching a
+// These tests pin the generalization of the re-apply: relaunching a
 // previously-stopped TUNABLE coordinator via its `start` verb must RE-ADOPT the last
 // persisted live-tuned config (source=live-config) instead of silently reverting every knob
 // to config-file defaults — for the probe-sensing coordinator, the guarded auto-outfit

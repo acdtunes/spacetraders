@@ -58,7 +58,7 @@ func preCancelledCtx() context.Context {
 	return ctx
 }
 
-// The context-less siphon positioning (sp-zc8i). The siphon worker navigates its hull
+// The context-less siphon positioning. The siphon worker navigates its hull
 // to the gas giant on a bare ctx, so the refuels that hop fires landed
 // operation_type='manual'. This asserts at the NavigateRouteCommand boundary that a
 // worker bearing a CoordinatorID runs its positioning navigate — and thus the refuels
@@ -84,7 +84,7 @@ func TestRunSiphonWorker_Positioning_CarriesGasSiphonOperationContext(t *testing
 	}
 }
 
-// The context-less storage positioning (sp-zc8i). The storage-ship worker likewise
+// The context-less storage positioning. The storage-ship worker likewise
 // navigates its hull to the gas giant on a bare ctx before registering as a buffer, so
 // that hop's refuels landed 'manual'. This asserts the positioning navigate runs under
 // operation_type='storage'.

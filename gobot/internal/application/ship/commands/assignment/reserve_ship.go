@@ -69,7 +69,7 @@ func NewReserveShipHandler(shipRepo navigation.ShipRepository, playerRepo player
 
 // SetOrphanedContainerReaper wires the reaper post-construction (see
 // AssignShipFleetHandler.SetOrphanedContainerReaper). A nil reaper leaves the
-// preempt byte-identical to its pre-sp-h8mbb behavior.
+// preempt unchanged.
 func (h *ReserveShipHandler) SetOrphanedContainerReaper(reaper OrphanedContainerReaper) {
 	h.reaper = reaper
 }
@@ -99,7 +99,7 @@ func (h *ReserveShipHandler) Handle(ctx context.Context, request common.Request)
 		if err != nil {
 			return nil, fmt.Errorf("failed to preempt ship for captain: %w", err)
 		}
-		// Reap the container the preempt orphaned (sp-h8mbb). Revoking the claim hands the
+		// Reap the container the preempt orphaned. Revoking the claim hands the
 		// hull to the captain, but leaves the coordinator's container RUNNING and still
 		// flying it — so a hull the captain believes is theirs keeps being navigated and
 		// traded by a container nobody can see, until a restart's recovery sweep fails it

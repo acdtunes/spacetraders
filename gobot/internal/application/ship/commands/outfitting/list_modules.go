@@ -11,16 +11,15 @@ import (
 // ListShipModulesQuery lists the modules currently installed on a ship. This is
 // a read-only operation — it takes no claim.
 //
-// CandidateSymbol, when set, requests an offline feasibility check (sp-el60)
+// CandidateSymbol, when set, requests an offline feasibility check
 // for a not-yet-installed module against the ship's current power/slot/crew
 // budget. The candidate's own power/crew/slots requirements are resolved via
 // ShipRepository.FindModuleRequirements — there is no catalog of unowned
 // module specs anywhere in this codebase or the SpaceTraders API, so the
 // only real data source is another ship in the fleet that has the symbol
-// installed (sp-el60 acceptance fix). Earlier revisions accepted
-// caller-supplied CandidatePower/Crew/Slots ints; an unprovided flag
-// silently defaulted to 0, which then trivially satisfied every budget
-// check and misreported CAN-INSTALL — those fields are gone. When
+// installed. Caller-supplied CandidatePower/Crew/Slots ints must not be
+// reintroduced: an unprovided flag silently defaults to 0, which then
+// trivially satisfies every budget check and misreports CAN-INSTALL. When
 // FindModuleRequirements finds no match anywhere, the verdict is
 // UnknownRequirementsFeasibility, never a zero-filled "fits" verdict.
 type ListShipModulesQuery struct {
@@ -33,8 +32,8 @@ type ListShipModulesQuery struct {
 
 // ModuleFeasibility names the candidate a navigation.InstallFeasibility
 // verdict was computed for, plus the candidate's own resolved requirements
-// (sp-el60 acceptance fix) so callers can always print what was checked
-// against — even when RequirementsKnown is false, in which case
+// so callers can always print what was checked against — even when
+// RequirementsKnown is false, in which case
 // RequirementsPower/Crew/Slots stay 0 and must be presented as "unknown",
 // not as a real zero-cost spec.
 type ModuleFeasibility struct {
@@ -47,7 +46,7 @@ type ModuleFeasibility struct {
 }
 
 // ListShipModulesResponse carries the ship's installed modules plus its
-// power/slot/crew budget summary (sp-el60), computed offline from the
+// power/slot/crew budget summary, computed offline from the
 // DB-cached ship state — reactors, frames, and crew capacity have no swap
 // endpoint, so these budgets are permanent per hull. Feasibility is
 // populated only when the query carried a CandidateSymbol.
@@ -89,7 +88,7 @@ func (h *OutfittingHandler) handleList(ctx context.Context, cmd *ListShipModules
 	}
 
 	// The power/slot/crew budget summary and feasibility check are computed
-	// offline from the DB-cached ship (sp-el60) — no live trial-and-error
+	// offline from the DB-cached ship — no live trial-and-error
 	// install required. FindBySymbol reads the ships table directly and only
 	// falls back to the API for a ship that has never been synced.
 	ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, playerID)
@@ -113,10 +112,10 @@ func (h *OutfittingHandler) handleList(ctx context.Context, cmd *ListShipModules
 
 	if cmd.CandidateSymbol != "" {
 		// The candidate's requirements must come from a real data source: a
-		// ship elsewhere in the fleet that has this symbol installed
-		// (sp-el60 acceptance fix). A DB/infra error here is propagated like
-		// any other repository failure in this handler; "no ship has ever
-		// carried this symbol" is a clean not-found (found=false, err=nil)
+		// ship elsewhere in the fleet that has this symbol installed.
+		// A DB/infra error here is propagated like any other repository
+		// failure in this handler; "no ship has ever carried this
+		// symbol" is a clean not-found (found=false, err=nil)
 		// and fails closed to UnknownRequirementsFeasibility rather than
 		// aborting the whole query.
 		reqs, found, err := h.shipRepo.FindModuleRequirements(ctx, cmd.CandidateSymbol)

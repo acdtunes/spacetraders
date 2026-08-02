@@ -77,7 +77,7 @@ func TestBalanceShipPosition_ClaimsUnderContractOperation(t *testing.T) {
 	}
 }
 
-// sp-lprs: a hull the captain pinned to another fleet — the command frigate's
+// A hull the captain pinned to another fleet — the command frigate's
 // "command" pin is the poach vector — is rejected inside ClaimShip's locked
 // transaction. Balancing is best-effort repositioning, so it SKIPS the ship
 // (no navigation) rather than poaching it. Critically, because the release

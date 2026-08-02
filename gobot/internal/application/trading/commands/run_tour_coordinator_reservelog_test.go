@@ -9,7 +9,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 )
 
-// sp-avt4: a reserve >= max_spend zeroes the Python solver's spend_cap BEFORE the
+// A reserve >= max_spend zeroes the Python solver's spend_cap BEFORE the
 // market is ever looked at. Pre-fix, the solver's generic "no profitable allocation"
 // reason was indistinguishable from genuine market death, costing 70+ min of
 // misdiagnosis in the 2026-07-11 fleet-dark P0. The solver-side fix (tour_solver.py)
@@ -25,7 +25,7 @@ import (
 
 // Path 1: a ONE-SHOT (default Iterations) run whose only planner call is infeasible.
 // This is the "no-plan" fail-open exit (run_tour_coordinator.go ~line 701) — the
-// simplest, most direct site Task 2 (sp-avt4) requires to name the cause.
+// simplest, most direct site Task 2 requires to name the cause.
 func TestTour_NoPlanLog_SurfacesReserveExceedsBudgetVerbatim(t *testing.T) {
 	fx := &tourFixture{
 		cargo: map[string]int{}, location: "X1-S1-A", cargoCap: 100,

@@ -1,9 +1,9 @@
 package grpc
 
-// treasury_ports.go — the daemon's ONE treasury reader (sp-muq66).
+// treasury_ports.go — the daemon's ONE treasury reader.
 //
-// Every money guard used to answer "how many credits do we have" with a live `Get Agent`
-// call. That measured 0.167 req/s, 8.3% of the 2.00 req/s ceiling, and did not fall under
+// Answering "how many credits do we have" with a live `Get Agent` call per money guard
+// measures 0.167 req/s, 8.3% of the 2.00 req/s ceiling, and does not fall under
 // request coalescing because the reads are invalidation-driven rather than duplicated —
 // each buy, sell, refuel and jump empties the agent cache, forcing the next read cold.
 //

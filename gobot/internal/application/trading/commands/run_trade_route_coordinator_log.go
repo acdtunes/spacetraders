@@ -1,6 +1,6 @@
 package commands
 
-// run_trade_route_coordinator_log.go — structured logging and reporting helpers for lane selection and stranded/blocked-cargo exits (sp-wads move-only split).
+// run_trade_route_coordinator_log.go — structured logging and reporting helpers for lane selection and stranded/blocked-cargo exits (move-only split).
 
 import (
 	"fmt"
@@ -32,14 +32,13 @@ func cargoAboardExitLog(logger common.ContainerLogger, level string, lane tradin
 	})
 }
 
-// cargoBlockedLog emits the structured pre-flight/pre-buy cargo park (sp-xwa1): the
+// cargoBlockedLog emits the structured pre-flight/pre-buy cargo park: the
 // hull has too little free hold to buy a tranche, so it parks rather than failing
 // mid-buy or buying a useless sliver. The good/needed/free/action/reason fields go in
 // the MESSAGE TEXT — `container logs` drops the metadata map (the sp-149h/sp-iqyq
 // renderer defect), so an operator reading the CLI must see WHY the hull parked on the
 // line itself, not in a discarded map. reason distinguishes this HULL-side stop
-// ("no free hold") from a market-side one ("source volume exhausted"), which the two
-// causes used to share behind one indistinguishable "volume or hold exhausted" line.
+// ("no free hold") from a market-side one ("source volume exhausted").
 func cargoBlockedLog(logger common.ContainerLogger, good string, needed, free int, reason string) {
 	logger.Log("WARNING", fmt.Sprintf(
 		"Pre-flight cargo check parked hull: good=%s needed>=%d free=%d action=empty-residual-cargo-before-trading reason=%s",
@@ -76,14 +75,14 @@ func derefString(s *string) string {
 }
 
 // laneCandidateLogLimit bounds how many top-ranked candidates are attached to the
-// lane-selection log line (sp-q1ca): enough to show cross-system candidates were
+// lane-selection log line: enough to show cross-system candidates were
 // actually scanned and ranked even when a penalized home lane wins the selection,
 // without flooding the log with the full ranked set on a system with many goods.
 const laneCandidateLogLimit = 5
 
 // laneLogCandidates summarizes up to laneCandidateLogLimit top-ranked lanes (in
 // their already-rate-ranked order) into loggable payloads, so the lane-selection
-// log line makes cross-system scanning VERIFIABLE rather than inferred (sp-q1ca):
+// log line makes cross-system scanning VERIFIABLE rather than inferred:
 // an operator can see the full ranked shortlist — including any cross-system
 // candidates that lost to a penalized home lane — not just the one that won.
 func laneLogCandidates(lanes []trading.ArbitrageLane) []map[string]interface{} {
@@ -99,7 +98,7 @@ func laneLogCandidates(lanes []trading.ArbitrageLane) []map[string]interface{} {
 }
 
 // laneLogPayload flattens one lane into the structured fields the captain needs to
-// verify lane selection without inferring it from nav destinations (sp-q1ca): the
+// verify lane selection without inferring it from nav destinations: the
 // good, both endpoints (waypoint + system), the per-unit margin, and whether the
 // lane crosses a system boundary (source system != destination system).
 func laneLogPayload(l trading.ArbitrageLane) map[string]interface{} {
@@ -140,7 +139,7 @@ func laneSelectionOneLiner(l trading.ArbitrageLane, shipCapacity int, targetDest
 	if srcSys != dstSys {
 		scope = "cross"
 	}
-	// rate is the EXACT score the ranker used, so it reflects the sp-tl68 effective-spread
+	// rate is the EXACT score the ranker used, so it reflects the effective-spread
 	// compression + cooldown debt in production; m stays the raw snapshot spread. An inert
 	// model (unit tests) leaves rate at the snapshot value.
 	base := fmt.Sprintf("%s %s(%s)->%s(%s) m=%d %s rate=%.0f/hr",

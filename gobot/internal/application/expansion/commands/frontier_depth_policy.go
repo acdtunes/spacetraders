@@ -29,7 +29,7 @@ import (
 // yard has been discovered. When the objective is UNMET the split biases toward depth (punch
 // outward to find the yard); once a yard is known — or there is no shortfall — it relaxes back to
 // the baseline split. It is a driven port: the adapter combines the autosizer heavy-shortfall
-// signal (sp-4ewi) with the shipyard-inventory yard-known predicate (sp-42ow). Optional-injection;
+// signal with the shipyard-inventory yard-known predicate. Optional-injection;
 // a nil or unreadable reader applies NO bias (fail-safe — this shifts a policy split, never a
 // spend decision, so an unreadable signal simply leaves the baseline split standing).
 type DepthObjectiveReader interface {

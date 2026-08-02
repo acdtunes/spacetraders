@@ -3,13 +3,13 @@ package contract
 import "sort"
 
 // AssignedSlot returns the FIXED home slot a delivery hull owns under the design's
-// one-hull-per-waypoint placement (sp-9le3x / sp-mtgje): the delivery fleet and the
+// one-hull-per-waypoint placement: the delivery fleet and the
 // placement slots are each put in a stable symbol order, and hull[i] permanently owns
 // slot[i]. It is a PURE, deterministic function of the roster + the slot set — NO demand
 // ranking, NO occupancy, NO live position — so it is byte-identical across restarts, and a
-// second homing pass moves no hull (a hull already at its slot stays put). This replaces the
-// runtime demand/occupancy distributor whose concurrent-homing timing piled idle hulls on
-// the top-demand hub.
+// second homing pass moves no hull (a hull already at its slot stays put). Distributing by
+// live demand/occupancy instead loses that: concurrent homing races on the same reading and
+// piles idle hulls on the top-demand hub.
 //
 // A hull BEYOND the number of slots (surplus over the delivery knee, e.g. an 8th hull when
 // the plan caps delivery at 6) owns NO slot (ok=false); the scaler re-roles that surplus to

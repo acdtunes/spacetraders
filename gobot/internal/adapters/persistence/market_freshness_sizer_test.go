@@ -86,7 +86,7 @@ func TestMarketRepo_SystemsFreshness(t *testing.T) {
 	require.Equal(t, "X1-BB-M1", bb.Markets[0].Waypoint, "sp-wuksw: the census carries each market's waypoint — the sink identity the demand re-weighting keys on")
 }
 
-// SystemsFreshness carries each market's ACTIVITY state (sp-j4kjv), collapsing a market's per-good
+// SystemsFreshness carries each market's ACTIVITY state, collapsing a market's per-good
 // rows to the activity of its DOMINANT (highest trade_volume × mid-price) good — the throughput
 // proxy the value weight already uses. Here M1's GOLD good (100 × 50) dwarfs its FUEL good (1 × 10),
 // so the market reads STRONG even though FUEL carries no activity.

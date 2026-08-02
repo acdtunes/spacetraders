@@ -1,6 +1,6 @@
 package queries
 
-// Tests for the CLASS SEAM (sp-lr27k): that this query can be asked for a
+// Tests for the CLASS SEAM: that this query can be asked for a
 // DENIABLE read, that forgetting to say so is the safe direction, and that a
 // deniable read no longer inflates the demand signal the budget allocates
 // attention with.

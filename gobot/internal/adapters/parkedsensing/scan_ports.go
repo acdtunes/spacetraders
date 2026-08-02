@@ -29,7 +29,7 @@ var _ appSensing.MarketScanRunner = (*ScanRunnerPort)(nil)
 // returns nil both when it wrote market data and when the fleet's scan budget
 // declined the request, and the pacer keeps a freshness ledger off this return —
 // so the narrow error-only form is precisely what made 78.5% of the sensing
-// ledger's stamps false (sp-zml2u).
+// ledger's stamps false.
 type marketScanAPI interface {
 	ScanAndSaveMarketWithOutcome(ctx context.Context, playerID uint, waypointSymbol string) (bool, error)
 }

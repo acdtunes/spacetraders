@@ -166,7 +166,7 @@ func NewShipDedicatedToOtherFleetError(shipSymbol, fleet, operation string) *Shi
 // role (warehouse/stocker) the flagship must never fill. Enforced atomically
 // inside ClaimShip on every path (launch, grow, restart recovery) so an orphaned
 // depot container recovered from the container registry can never re-claim the
-// frigate after a daemon restart (sp-3tsjz). Operation is the depot fleet the
+// frigate after a daemon restart. Operation is the depot fleet the
 // claim identified itself as. Like the dedication rejection above it is a
 // standing rejection (never a transient claim-handoff race), so it fails fast
 // and leaves the row untouched.

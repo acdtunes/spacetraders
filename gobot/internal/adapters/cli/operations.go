@@ -396,9 +396,9 @@ func isGasWorkerType(containerType string) bool {
 }
 
 // isManufacturingCoordinatorType matches the parallel task-based manufacturing coordinator and the
-// dedicated construction-supply drain (sp-382j) — the container types the operations verbs treat as
+// dedicated construction-supply drain — the container types the operations verbs treat as
 // "manufacturing activity". The vestigial goods-factory/standard manufacturing coordinator was
-// retired with the factory ops (sp-hoj8u); construction supply runs through its OWN drain
+// retired with the factory ops; construction supply runs through its OWN drain
 // (ContainerTypeConstructionCoordinator), so it is matched here to keep the verbs seeing construction.
 func isManufacturingCoordinatorType(containerType string) bool {
 	return strings.EqualFold(containerType, string(container.ContainerTypeParallelManufacturing)) ||

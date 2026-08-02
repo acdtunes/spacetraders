@@ -81,7 +81,7 @@ func (s *DaemonServer) PurchaseShip(ctx context.Context, purchasingShipSymbol, s
 
 // BatchPurchaseShips purchases multiple ships from a shipyard as a background operation.
 //
-// dedicateFleet (sp-0ms61) is the optional operator-named fleet each purchased hull is
+// dedicateFleet is the optional operator-named fleet each purchased hull is
 // dedicated to ATOMICALLY at purchase (via the container's BatchPurchaseShipsCommand, which
 // stamps the single sanctioned AssignFleet write per hull before it completes). Empty ->
 // hull lands undedicated, byte-identical to a plain purchase. It rides in the persisted

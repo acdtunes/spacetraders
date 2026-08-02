@@ -127,7 +127,7 @@ func (s *DaemonServer) StartScoutTour(ctx context.Context, containerID string) e
 }
 
 // PersistScoutRepositionWorker persists (but does NOT start) a scout_reposition
-// container the scout_post_coordinator manages (sp-s232). Like a scout_tour worker it
+// container the scout_post_coordinator manages. Like a scout_tour worker it
 // carries a coordinator_id and a parent link, so daemon restart recovery SKIPS it
 // (marks it worker_interrupted, preserving the ship claim) and leaves re-dispatch to
 // the coordinator's reconcile pass. It wraps exactly ONE iteration — the whole relay —
@@ -146,7 +146,7 @@ func (s *DaemonServer) PersistScoutRepositionWorker(
 		"ship_symbol":    shipSymbol,
 		"destination":    destinationWaypoint,
 		"coordinator_id": coordinatorID,
-		// sp-o34q: persist the expendable-probe reposition bound the coordinator resolved so
+		// Persist the expendable-probe reposition bound the coordinator resolved so
 		// the container's rebuild (buildScoutRepositionCommand) reloads it and the worker flies
 		// the stored-adjacency RepositionPath at that reach. Written unconditionally (not guarded
 		// on != 0 like the daemon-wide injectScoutingConfig knobs): this is a concrete per-relay
@@ -156,7 +156,7 @@ func (s *DaemonServer) PersistScoutRepositionWorker(
 		// sp-4yse: persist the 0-hop gate-charting intent so the worker's start-path rebuild
 		// (StartScoutReposition -> buildScoutRepositionCommand) charts the target gate on arrival.
 		// Dropping it here would silently degrade the relay to a plain market navigate that never
-		// charts — exactly the boundary the sp-o34q bound was lost across.
+		// charts — exactly the boundary the bound was lost across.
 		"chart_gate_on_arrival": chartGateOnArrival,
 	}
 
@@ -290,7 +290,7 @@ func (s *DaemonServer) injectScoutingConfig(config map[string]interface{}) {
 	if sc.RespawnAttemptCap != 0 {
 		config["respawn_attempt_cap"] = sc.RespawnAttemptCap
 	}
-	// Gate-reconcile opt-in (sp-bcsu): true-only injection — false/absent leaves the sweep OFF
+	// Gate-reconcile opt-in: true-only injection — false/absent leaves the sweep OFF
 	// (deploy-inert). The cap is written only when the captain set a non-zero override; 0 defers
 	// to defaultGateReconcileMaxDispatch.
 	if sc.GateReconcileEnabled {
@@ -299,7 +299,7 @@ func (s *DaemonServer) injectScoutingConfig(config map[string]interface{}) {
 	if sc.GateReconcileMaxDispatch != 0 {
 		config["gate_reconcile_max_dispatch"] = sc.GateReconcileMaxDispatch
 	}
-	// sp-ywh1 marketless-widening disable-escape: true-only injection (mirrors coverage_spread /
+	// Marketless-widening disable-escape: true-only injection (mirrors coverage_spread /
 	// respawn_cap) — false/absent leaves the widened scope LIVE (marketless transit gates charted)
 	// whenever the sweep is armed.
 	if sc.GateReconcileMarketlessDisabled {

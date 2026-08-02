@@ -281,7 +281,7 @@ func TestFrontier_CoveredSystemExcludedFromQueue(t *testing.T) {
 	require.Equal(t, "X1-MID", pr.upserts[0].SystemSymbol, "the covered X1-HIGH is skipped; next best declared")
 }
 
-// sp-dc50 gap 2 / sp-gb7h KEEP side: a reachable, uncovered system whose gate we have charted
+// sp-dc50 gap 2 KEEP side: a reachable, uncovered system whose gate we have charted
 // (Charted=true) but whose full waypoint set was NEVER swept (Scanned=false, KnownMarkets=0) is
 // an UNSCANNED scout target — NOT "known marketless." The old skip ("charted but marketless —
 // nothing to scan") keyed on gate-edge presence, not on actual sweep knowledge, so it silently
@@ -308,7 +308,7 @@ func TestFrontier_ChartedButUnscannedSystemIsScouted(t *testing.T) {
 		"the unscanned system is declared so a probe scouts its markets/shipyards")
 }
 
-// sp-gb7h DROP side: a reachable, uncovered system whose full waypoint set WAS swept
+// DROP side: a reachable, uncovered system whose full waypoint set WAS swept
 // (Scanned=true) and holds NO marketplace anywhere (KnownMarkets=0) is genuinely barren — its
 // markets were looked for and none exist. It must be DROPPED from the queue, not re-declared:
 // sp-dc50's gap-2 fix removed the charted-marketless skip entirely, so such a system was
@@ -333,7 +333,7 @@ func TestFrontier_ScannedMarketlessSystemNotDeclared(t *testing.T) {
 		"a scanned-and-genuinely-marketless system is dropped, not re-declared every cycle")
 }
 
-// sp-njwy STARVATION: the frontier must NOT auto-declare a post for a system it ALREADY
+// STARVATION: the frontier must NOT auto-declare a post for a system it ALREADY
 // OCCUPIES (a hop-0 anchor — the HQ or any system the fleet already sits in). Such a system
 // is coverable in-system with no relay; declaring it as a frontier post spins up a local
 // in-system sweep tour that ABSORBS every freshly-bought probe — the scout reconciler mans
@@ -544,11 +544,11 @@ func TestFrontier_BuysProbeWhenShortAndGuardsPass(t *testing.T) {
 	require.NoError(t, h.ReconcileOnce(context.Background(), testCmd()))
 	require.Equal(t, 1, buyer.buyCalls, "one probe bought")
 	require.Equal(t, 100000, buyer.lastBudget, "budget is 25% of the 400000 treasury")
-	// sp-hej4: the buy carries the demand-proximal target — the unmanned-slot post's system, with
+	// The buy carries the demand-proximal target — the unmanned-slot post's system, with
 	// the default per-hop penalty knob (testCmd sets none → the documented default).
 	require.Equal(t, "X1-A", buyer.lastTarget.System, "the target is the post whose unmanned slot the probe serves")
 	require.Equal(t, hopPenaltyCredits, buyer.lastTarget.HopPenaltyCredits, "the internal proximal-yard penalty const is applied")
-	// sp-1bme8: the buy owns its exclusive single-writer journey claim by the DRIVING coordinator's
+	// The buy owns its exclusive single-writer journey claim by the DRIVING coordinator's
 	// container id, so the freshness sizer's selection can never grab this buyer mid-relay.
 	require.Equal(t, "frontier-1", buyer.lastTarget.ClaimOwnerContainerID, "the journey claim is owned by the frontier container id")
 }
@@ -639,7 +639,7 @@ func TestFrontier_RepositioningSlotNotDemand(t *testing.T) {
 	require.Zero(t, buyer.buyCalls, "a slot with a relay in flight is being served — not demand, no buy")
 }
 
-// sp-njwy OVER-BUY: an occupied (hop-0) system is coverable in-system, so the frontier must
+// OVER-BUY: an occupied (hop-0) system is coverable in-system, so the frontier must
 // never BUY a probe to "serve" it. Before the fix the anchor was auto-declared as a sweep-once
 // post whose unmanned slot counted as buy-demand, so with no idle probe on hand the coordinator
 // bought a probe the system never needed — the credits-wasting over-buy the bead flags. With the

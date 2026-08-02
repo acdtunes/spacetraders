@@ -273,7 +273,7 @@ func (t *ManufacturingTask) UpdateSourceMarket(newSource string) error {
 // only PENDING tasks may be updated (to avoid disrupting in-flight work). Assigning a factory makes
 // the task no longer IsDeferredConstruction(), so the activator marks it READY and the drain
 // fabricates the material (buying inputs, feeding the factory, harvesting) rather than buying the
-// good's depleted export cold — the buy-only deadlock recovery (sp-9p87s). Construction-only: a
+// good's depleted export cold — the buy-only deadlock recovery. Construction-only: a
 // factory is meaningless for other task types (an ACQUIRE_DELIVER's factorySymbol is its delivery
 // target, not a fabrication site).
 func (t *ManufacturingTask) UpdateFactorySymbol(newFactory string) error {

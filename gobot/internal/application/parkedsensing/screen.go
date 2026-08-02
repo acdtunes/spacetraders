@@ -106,7 +106,7 @@ type RemoteMarketFetcher interface {
 // a populated one does.
 //
 // That behaviour is PINNED by TestScreenSystemTreatsEmptyProjectionAsAuthoritative,
-// and it is why `spacetraders sensing rescreen` (sp-j2efq) re-opens VERDICTS only
+// and it is why `spacetraders sensing rescreen` re-opens VERDICTS only
 // and leaves this column alone: blanking it here would not re-open the question,
 // it would answer it wrongly and permanently — nothing rewrites an existing
 // slot's projection (recordSlots skips waypoints already held), an emptied
@@ -346,7 +346,7 @@ func screenMarkets(
 		// want is here", which a refetch would only confirm at the cost of an
 		// API call. A whitelist edited MID-era breaks the axiom.
 		//
-		// The operator response is `spacetraders sensing rescreen` (sp-j2efq),
+		// The operator response is `spacetraders sensing rescreen`,
 		// which re-opens every VERDICT so the sweep re-judges under the new list.
 		// That fixes every market the cache can answer for — GoodsAt is consulted
 		// FIRST, so a market any probe has scanned never reaches this branch at
@@ -468,7 +468,7 @@ func planSlots(ctx context.Context, p ScreenPorts, system string, hits []screene
 	// ship of ours already standing at that shipyard. A yard we never place at is
 	// a counter we can never buy from, however cheap it is — and seed probes, the
 	// hulls this engine explores with, can only be ordered at a staffed
-	// probe-selling yard. Slotting only the first left every other shipyard in the
+	// probe-selling yard. Slotting only the first leaves every other shipyard in the
 	// system permanently unbuyable, which is what capped exploration.
 	//
 	// `placed` is CARRIED THROUGH this loop, not just read from it: it is what
@@ -489,11 +489,11 @@ func planSlots(ctx context.Context, p ScreenPorts, system string, hits []screene
 	// PRECEDENCE, NOT EXCLUSION. The heavy list is appended BEHIND the probe list, so
 	// the probe-priced cheapest-first ordering above keeps its precedence untouched —
 	// probes are what this engine actually buys, and a probe yard is still the first
-	// placement the system offers. What changed is that the heavy list is now
-	// CONSULTED ALWAYS. It used to be read only when the system offered no probe yard
-	// at all, on the reasoning that probes come first; but "first" is an ordering
-	// claim and this made it an exclusion, so a system that sold both simply never
-	// looked. Measured live: X1-QR78-AE4F sells probes AND heavy freighters, so
+	// placement the system offers. The heavy list is nonetheless
+	// CONSULTED ALWAYS. Reading it only when the system offers no probe yard
+	// at all turns "probes come first" from an ordering
+	// claim into an exclusion, so a system that sells both never
+	// looks. Measured live: X1-QR78-AE4F sells probes AND heavy freighters, so
 	// X1-QR78 never consulted its heavy list, and its SECOND heavy yard X1-QR78-FE8C
 	// — which sells no probe — was invisible as a heavy yard entirely. The engine was
 	// hunting a SHIP_HEAVY_FREIGHTER at the time.

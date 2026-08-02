@@ -224,7 +224,7 @@ func NewLiquidationTask(playerID int, shipSymbol string, good string, quantity i
 }
 
 // NewAcquireDeliverTask creates an atomic task to buy from export market AND deliver to factory.
-// This replaces the separate ACQUIRE + DELIVER pattern to ensure the same ship does both operations.
+// Atomic so the same ship does both operations.
 func NewAcquireDeliverTask(pipelineID string, playerID int, good string, sourceMarket string, factorySymbol string, dependsOn []string) *ManufacturingTask {
 	task := NewManufacturingTask(TaskTypeAcquireDeliver, good, pipelineID, playerID)
 	task.sourceMarket = sourceMarket   // Where to buy from
@@ -235,7 +235,7 @@ func NewAcquireDeliverTask(pipelineID string, playerID int, good string, sourceM
 }
 
 // NewCollectSellTask creates an atomic task to collect from factory AND sell at demand market.
-// This replaces the separate COLLECT + SELL pattern to ensure the same ship does both operations.
+// Atomic so the same ship does both operations.
 func NewCollectSellTask(pipelineID string, playerID int, good string, factorySymbol string, targetMarket string, dependsOn []string) *ManufacturingTask {
 	task := NewManufacturingTask(TaskTypeCollectSell, good, pipelineID, playerID)
 	task.factorySymbol = factorySymbol // Where to collect from

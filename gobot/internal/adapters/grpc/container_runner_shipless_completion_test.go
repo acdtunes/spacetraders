@@ -32,7 +32,7 @@ func newCompletionRunner(t *testing.T, ctype container.ContainerType, metadata m
 }
 
 // countCompletionWarnings counts WARNING-level logs whose message references the
-// completion-signal path — the cry-wolf line this bead (sp-hehz) targets.
+// completion-signal path — the cry-wolf line this bead targets.
 func countCompletionWarnings(r *ContainerRunner) int {
 	n := 0
 	for _, entry := range r.GetLogs(nil, nil) {
@@ -70,7 +70,7 @@ func TestSignalCompletion_ShiplessCoordinator_NoCryWolfWarning(t *testing.T) {
 // TestSignalCompletion_ConstructionCoordinator_NoCryWolfWarning pins the construction-drain
 // half of the bead symptom with a second representative ship-less coordinator type, guarding
 // against a fix that special-cases only scouts. (This fixture was the goods_factory coordinator
-// before the factory ops were retired, sp-hoj8u — the construction drain is the surviving
+// before the factory ops were retired — the construction drain is the surviving
 // ship-less manufacturing-family coordinator.)
 func TestSignalCompletion_ConstructionCoordinator_NoCryWolfWarning(t *testing.T) {
 	rec := &fakeRecorder{}

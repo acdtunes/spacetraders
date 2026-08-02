@@ -416,7 +416,7 @@ func surgeTargets(pool []UnpricedSystem, holds ledgerHolds) []surgeTarget {
 //     scales what a delivered probe is worth PERMANENTLY: the hull prices one
 //     waypoint, but a system with several markets is one whose remaining markets the
 //     screen can then justify placements for, and whose prices Part 2's relocator
-//     scores a whole region on. A hop costs 850-1360s measured (sp-smbgd) — tens of
+//     scores a whole region on. A hop costs 850-1360s measured — tens of
 //     minutes, once — against an era measured in days, so distance must not outrank
 //     it. Getting this precedence backwards is not a subtle mis-ranking: it sends
 //     every probe to whatever is nearest and the value inputs stop mattering at all.

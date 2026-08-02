@@ -588,14 +588,13 @@ const maxWalkRings = appSensing.SeedFlightUnbounded
 // RouteAcross advances a hull ONE STEP of its gate walk toward destination, and
 // returns either way. It NEVER waits.
 //
-// WHY THIS REPLACED A REFUSAL. There is no dispatch-and-return primitive for a
+// WHY IT DOES NOT SIMPLY REFUSE. There is no dispatch-and-return primitive for a
 // whole gate crossing: RouteShipCommand, delegating to the shared multi-jump
 // travel(), resolves a gate path and FLIES it, waiting out every leg and every
 // jump cooldown in between. Sending that from inside a tick is the exact failure
-// this port exists to prevent, so this verb used to refuse instead. The refusal
-// was safe but it was a wall: with it in place a probe could never leave the
-// system it was bought in, so only the system we already occupied ever had
-// usable yards, and the frontier could not widen.
+// this port exists to prevent. Refusing instead is safe but it is a wall: a probe
+// could never leave the system it was bought in, so only the system we already
+// occupy would ever have usable yards, and the frontier could not widen.
 //
 // The way out is the one the charting seed's gate hop already took: don't fly
 // the crossing, WALK it. A crossing is a sequence of steps — onto the gate, then
@@ -659,7 +658,7 @@ func (p *MoverPort) RouteAcross(ctx context.Context, playerID int, shipSymbol, f
 	// could spend one placement attempt per tick indefinitely and produce no
 	// diagnostics at all. That is the state TORWIND-15F was found in — 22.5 hours
 	// BOUGHT with ZERO lines in the log naming it — and it is why the freeze had to
-	// be diagnosed from the database instead of from the logs (sp-cwnwb).
+	// be diagnosed from the database instead of from the logs.
 	//
 	// The two warnings are deliberately distinct actions. Unroutable means the
 	// stored graph names no way there and the fix is a gate re-probe; a refused
@@ -897,12 +896,12 @@ func NewSeedCommandPort(
 // JumpTo advances a hull ONE step of its gate CROSSING to targetSystem: the
 // in-system move onto the gate, or the jump off it. It returns either way.
 //
-// TARGETSYSTEM IS A DESTINATION, NOT A NEIGHBOUR. It used to be both — this verb
-// named targetSystem as the jump's destination directly, which is correct only
-// while a seed's errand is a system next door. Seed staging now reaches
-// MaxWalkRings, so the errand's target is routinely NOT connected to the gate
-// the hull is standing on, and a jump naming an unconnected system is rejected
-// by the API: the hull would sit on the gate re-issuing a refused command every
+// TARGETSYSTEM IS A DESTINATION, NOT A NEIGHBOUR. Naming it as the jump's
+// destination directly is correct only while a seed's errand is a system next
+// door. Seed staging reaches MaxWalkRings, so the errand's target is routinely
+// NOT connected to the gate the hull is standing on, and a jump naming an
+// unconnected system is rejected by the API: the hull would sit on the gate
+// re-issuing a refused command every
 // tick, indistinguishable from a reactor cooldown, charting nothing while
 // holding probe-cap headroom.
 //
@@ -1361,7 +1360,7 @@ func (p *LedgerPort) CountOwnedProbes(ctx context.Context, playerID int) (int64,
 // must be able to tell routine contention (skip the placement) from a ledger
 // that is refusing writes (stop), and it cannot import the persistence error to
 // do it.
-// The KIND is part of the placement's address (sp-dpfp8): a waypoint can carry a
+// The KIND is part of the placement's address: a waypoint can carry a
 // MARKET row and a SPARE row at once, and they are often in the same state, so a
 // transition that named only the waypoint would guard on one row and write both.
 func (p *LedgerPort) TransitionSlot(
@@ -1391,7 +1390,7 @@ func (p *LedgerPort) TransitionSlot(
 // not conjure a placement row from a scan.
 //
 // WHY IT IS SAFE TO RUN CONCURRENTLY WITH THE RECONCILE: the write sets are
-// disjoint BY COLUMN (sp-wgjb7). last_scan_at and spread_ewma have exactly one
+// disjoint BY COLUMN. last_scan_at and spread_ewma have exactly one
 // writer — this one — and every other writer of sensing_slots names only the
 // columns it owns: a transition writes state (plus the hull or yard it actually
 // changed), a screen re-declaration writes what it measured, a stand-down writes
@@ -1400,16 +1399,11 @@ func (p *LedgerPort) TransitionSlot(
 // value. See sensingSlotMetadataUpdateColumns in the repository for the
 // full ownership table.
 //
-// This used to rest on an invariant instead, and it is worth knowing why that was
-// not enough. TransitionSlot re-wrote the WHOLE row from the copy it loaded at the
-// top of its transaction, so a scan committing inside that window was reverted;
-// what kept the two apart was that the rotation admitted only PARKED MARKET/YARD
-// slots while the only PARKED→X transition skipped non-SPARE kinds, so they never
-// met on a ROW. That held only for as long as nobody transitioned a parked market
-// — which the slot reaper (sp-l3f3d) does by design.
-//
-// The kind-based separation still holds and is still worth keeping as
-// defence in depth, but it is no longer what makes this safe.
+// It does NOT rest on the kind-based separation — the rotation admitting only
+// PARKED MARKET/YARD slots while the only PARKED→X transition skips non-SPARE
+// kinds, so the two rarely meet on a ROW. That separation is worth keeping as
+// defence in depth, but it holds only for as long as nobody transitions a parked
+// market, which the slot reaper does by design.
 func (p *LedgerPort) MarkScanned(ctx context.Context, playerID int, waypoint, kind string, at time.Time, spreadEWMA float64) error {
 	return p.repo.MarkScanned(ctx, playerID, waypoint, kind, at, spreadEWMA)
 }
@@ -1536,7 +1530,7 @@ func (p *LedgerPort) SetSeed(ctx context.Context, playerID int, system, shipSymb
 // DeleteSlot removes ONE placement row outright — the one write that hands a
 // parked spare's hull from the ledger to a charting errand.
 //
-// The KIND is required and is a money guard (sp-dpfp8): a yard can hold a SPARE
+// The KIND is required and is a money guard: a yard can hold a SPARE
 // row being released here AND a MARKET row whose probe is parked there scanning.
 // Releasing by waypoint alone would delete both and drop that probe out of the
 // cap while it is still flying, authorising a replacement purchase for a hull we

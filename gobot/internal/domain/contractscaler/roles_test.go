@@ -97,7 +97,7 @@ func TestResolveRoles_InnerBandPureExporterIsNotAPark(t *testing.T) {
 // A charted inner-band MARKETPLACE whose per-good imports have NOT been dock-scanned
 // this pass (no scanned Imports/Exports) is STILL a central contract-sink park:
 // classification keys on the DURABLE marketplace trait, not the transient scanned
-// import goods (sp-ojp32). Without this, idle delivery hulls pile onto only the
+// import goods. Without this, idle delivery hulls pile onto only the
 // handful of currently-scanned importers (the live A/K/G/H pile) while the unscanned
 // E/F/D/C central bands sit EMPTY. A marketplace that is a KNOWN pure exporter stays
 // excluded — it is a source, not a sink, even in the inner band.

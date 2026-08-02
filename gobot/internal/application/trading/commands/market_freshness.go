@@ -13,9 +13,8 @@ import (
 // market_freshness.go resolves the trade path's market-freshness caps (sp-k4z5b) from
 // ONE operator knob (sp-ry4r8).
 //
-// WHY THIS EXISTS. The caps used to be minute counts written into the source: a
-// 75-minute const here, a 75-minute config default there. That is only correct at
-// one map size. The fleet's market-scan budget is a fixed req/s (sp-ntgfj), so a
+// WHY THIS EXISTS. A cap written into the source as a minute count is only correct at
+// one map size. The fleet's market-scan budget is a fixed req/s, so a
 // market's scan interval is an OUTPUT of budget ÷ markets known — and when the
 // charted map reached 4,389 markets an even rotation stretched to ~105 minutes.
 // Every consumer comparing against 75 minutes then discarded four fifths of the
@@ -57,11 +56,11 @@ const TuneKeyMarketDataMaxAgeMinutes = "market_data_max_age_minutes"
 // TuneKeyMarketDataMaxAgeMinutes: the freshListings-based
 // sink/offload/reposition/distress/candidate scans and the stocker. The UNDIRECTED
 // lane ranker (partitionListingsByAge) and the tour snapshot (BuildTourSnapshot)
-// sit on the per-activity RankerAgeCaps table instead (sp-t5sh5) — the analyst's
+// sit on the per-activity RankerAgeCaps table instead — the analyst's
 // era3/4 fit showed staleness cost is activity-dependent, so one uniform threshold
 // is the wrong SHAPE for ranking.
 //
-// It is a floor and no longer a cap (sp-k4z5b). The EFFECTIVE cap is
+// It is a floor, NOT a cap. The EFFECTIVE cap is
 // marketscan.FreshnessCap(floor, budget, marketsKnown): on a small map, where the
 // rotation is quick, 75 minutes stays the operative number and behaviour is
 // unchanged; on today's 4,000+ market map the rotation bound dominates and the
@@ -125,7 +124,7 @@ type FreshnessFloorSource interface {
 //
 // The zero value is not usable; a NIL *MarketFreshness is, and reports the caller's
 // own floor unchanged. That is the optional-port contract every test relies on: a
-// handler nobody wired behaves exactly as it did before this type existed.
+// handler nobody wired is unaffected.
 type MarketFreshness struct {
 	rotation ScanRotationSource
 	floors   FreshnessFloorSource

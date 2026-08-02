@@ -7,7 +7,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 )
 
-// sp-br0m: every factory input buy tags its ledger row with the a5j7 selector branch that chose
+// Every factory input buy tags its ledger row with the a5j7 selector branch that chose
 // the source, so the analyst can grade A1 (supply-first compliance) straight from the
 // transactions table and split legal RESCUE buys from violations. buyGood stamps the branch on
 // ctx (shared.WithSelectorBranch), and it rides through to the PURCHASE_CARGO recorder. These

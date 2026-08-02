@@ -41,7 +41,7 @@ func NewStorageInventoryFinder(opRepo storage.StorageOperationRepository, coordi
 // FindInSystemInventory returns the in-system warehouse the contract worker should
 // withdraw good from, or nil (fail-open). Nil-receiver-safe.
 //
-// Multi-warehouse (sp-5q2c): more than one warehouse may hold the good in the
+// Multi-warehouse: more than one warehouse may hold the good in the
 // delivery system (additive capacity). The withdrawal targets the FULLEST hull — the
 // one with the most unreserved units, breaking ties toward the newest operation — so
 // a single trip moves the most and the choice is stable across reads; as that hull

@@ -114,9 +114,9 @@ type GateEdge struct {
 	// the built, static exits written beside it under the same timestamp. Treating it as a
 	// whole-set condemnation walled off 15% of the live map every 2h.
 	//
-	// Both read shapes set it. Adjacency (the raw cache dump) always did; Edges
-	// (fetch-through) now does too, because a set is no longer condemned by a row on the
-	// short window and so must hand the caller the means to tell which row expired.
+	// BOTH read shapes must set it — Adjacency (the raw cache dump) and Edges
+	// (fetch-through) alike. A set is never condemned by one row on the short window, so
+	// each must hand the caller the means to tell WHICH row expired.
 	//
 	// Consumers divide on WHICH question they are asking. The `system gates` verb annotates a
 	// stale edge distinctly so the captain's chart never presents an invalidated row as an

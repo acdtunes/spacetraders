@@ -11,8 +11,8 @@ import (
 	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
 )
 
-// sp-fwxm THE O34Q WRITE-SIDE PIN (ferry variant). The worker-ferry jump bound is daemon-global
-// tuning ([trade_fleet].reposition_jump_bound, the SAME knob the tour reposition rides, sp-kl16),
+// THE O34Q WRITE-SIDE PIN (ferry variant). The worker-ferry jump bound is daemon-global
+// tuning ([trade_fleet].reposition_jump_bound, the SAME knob the tour reposition rides),
 // so PersistWorkerFerryWorker must STAMP it into the launch config — the write half of the persist
 // boundary. Unlike the TOP-LEVEL tour (never persisted via PersistContainer), the ferry IS
 // persisted via PersistContainer and REBUILT by buildWorkerFerryCommand on every start (fresh AND

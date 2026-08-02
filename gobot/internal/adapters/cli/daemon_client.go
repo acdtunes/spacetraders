@@ -126,7 +126,7 @@ type ContractFleetCoordinatorResponse struct {
 }
 
 // ScoutPost mirrors the protobuf ScoutPost message for CLI display (sp-cxpq). Hulls
-// is the probe budget N and MannedCount how many of those slots have a hull (sp-enry).
+// is the probe budget N and MannedCount how many of those slots have a hull.
 type ScoutPost struct {
 	SystemSymbol     string
 	FreshnessSeconds int
@@ -238,7 +238,7 @@ func (c *DaemonClient) NavigateShip(
 	}, nil
 }
 
-// RouteShip initiates cross-system point-to-point travel (sp-6hjw)
+// RouteShip initiates cross-system point-to-point travel
 func (c *DaemonClient) RouteShip(
 	ctx context.Context,
 	shipSymbol, destination string,
@@ -989,7 +989,7 @@ func (c *DaemonClient) HealthCheck(ctx context.Context) (*HealthResponse, error)
 	}, nil
 }
 
-// GetAPIBudget retrieves API request-budget observability (sp-51ti):
+// GetAPIBudget retrieves API request-budget observability:
 // per-hull req/s, global utilization vs the rate ceiling, and the
 // duty-cycle KPI (ship-hours earning/day per hull).
 func (c *DaemonClient) GetAPIBudget(ctx context.Context) (*pb.GetAPIBudgetResponse, error) {
@@ -1051,7 +1051,7 @@ func (c *DaemonClient) RefreshShip(ctx context.Context, shipSymbol string, playe
 }
 
 // ReserveShip reserves a ship for the captain's direct manual use, hiding it
-// from every coordinator's assignment discovery (sp-i1ku). When force is true,
+// from every coordinator's assignment discovery. When force is true,
 // a coordinator's live claim is PREEMPTED — atomically revoked and transferred
 // to the captain (sp-w3yd) — instead of rejected.
 func (c *DaemonClient) ReserveShip(ctx context.Context, shipSymbol string, reason *string, playerID *int32, agentSymbol *string, force bool) (*pb.ReserveShipResponse, error) {
@@ -1074,7 +1074,7 @@ func (c *DaemonClient) ReserveShip(ctx context.Context, shipSymbol string, reaso
 }
 
 // ReleaseShip clears a captain reservation, returning the ship to idle so
-// normal coordinator discovery can claim it again (sp-i1ku)
+// normal coordinator discovery can claim it again
 func (c *DaemonClient) ReleaseShip(ctx context.Context, shipSymbol string, reason *string, playerID *int32, agentSymbol *string) (*pb.ReleaseShipResponse, error) {
 	req := &pb.ReleaseShipRequest{
 		ShipSymbol:  shipSymbol,
@@ -1092,7 +1092,7 @@ func (c *DaemonClient) ReleaseShip(ctx context.Context, shipSymbol string, reaso
 }
 
 // AssignShipFleet dedicates a ship to a named fleet, making it exclusive to
-// that coordinator's discovery (sp-l7h2)
+// that coordinator's discovery
 func (c *DaemonClient) AssignShipFleet(ctx context.Context, shipSymbol, fleet string, playerID *int32, agentSymbol *string) (*pb.AssignShipFleetResponse, error) {
 	req := &pb.AssignShipFleetRequest{
 		ShipSymbol:  shipSymbol,
@@ -1110,7 +1110,7 @@ func (c *DaemonClient) AssignShipFleet(ctx context.Context, shipSymbol, fleet st
 }
 
 // UnassignShipFleet clears a ship's fleet dedication, returning it to the
-// general pool (sp-l7h2)
+// general pool
 func (c *DaemonClient) UnassignShipFleet(ctx context.Context, shipSymbol string, playerID *int32, agentSymbol *string) (*pb.UnassignShipFleetResponse, error) {
 	req := &pb.UnassignShipFleetRequest{
 		ShipSymbol:  shipSymbol,
@@ -1127,7 +1127,7 @@ func (c *DaemonClient) UnassignShipFleet(ctx context.Context, shipSymbol string,
 }
 
 // FleetHub adds or removes a standby-station ("hub") waypoint on a running
-// operation's coordinator, live, with no container restart (sp-jcke).
+// operation's coordinator, live, with no container restart.
 func (c *DaemonClient) FleetHub(ctx context.Context, operation, waypoint string, add bool, playerID *int32, agentSymbol *string) (*pb.FleetHubResponse, error) {
 	req := &pb.FleetHubRequest{
 		Operation:   operation,
@@ -1146,7 +1146,7 @@ func (c *DaemonClient) FleetHub(ctx context.Context, operation, waypoint string,
 }
 
 // ConstructionWorkerCap sets the concurrent-worker cap (max_workers) on a running construction
-// pipeline live, with no pipeline/daemon restart (sp-duljg).
+// pipeline live, with no pipeline/daemon restart.
 func (c *DaemonClient) ConstructionWorkerCap(ctx context.Context, constructionSite string, count int, playerID *int32, agentSymbol *string) (*pb.ConstructionWorkerCapResponse, error) {
 	req := &pb.ConstructionWorkerCapRequest{
 		ConstructionSite: constructionSite,
@@ -1163,7 +1163,7 @@ func (c *DaemonClient) ConstructionWorkerCap(ctx context.Context, constructionSi
 	return resp, nil
 }
 
-// SensingRescreen re-opens every sensing system verdict for a player (sp-j2efq),
+// SensingRescreen re-opens every sensing system verdict for a player,
 // so the steady-state sweep re-judges them under the CURRENT goods whitelist.
 func (c *DaemonClient) SensingRescreen(ctx context.Context, playerID int32, agentSymbol *string) (*pb.SensingRescreenResponse, error) {
 	resp, err := c.client.SensingRescreen(ctx, &pb.SensingRescreenRequest{
@@ -1231,7 +1231,7 @@ func (c *DaemonClient) GetFrontierStatus(ctx context.Context, playerID *int32, a
 	return resp, nil
 }
 
-// ListFleets lists every dedicated fleet and its member ships (sp-l7h2)
+// ListFleets lists every dedicated fleet and its member ships
 func (c *DaemonClient) ListFleets(ctx context.Context, playerID *int32, agentSymbol *string) (*pb.ListFleetsResponse, error) {
 	req := &pb.ListFleetsRequest{
 		PlayerId:    playerID,
@@ -1333,7 +1333,7 @@ func (c *DaemonClient) BatchPurchaseShips(ctx context.Context, purchasingShipSym
 	if shipyardWaypoint != "" {
 		req.ShipyardWaypoint = &shipyardWaypoint
 	}
-	// sp-0ms61: forward the optional --fleet role only when set, so an omitted flag
+	// Forward the optional --fleet role only when set, so an omitted flag
 	// leaves the field nil (byte-identical: the daemon lands the hull undedicated).
 	if dedicateFleet != "" {
 		req.DedicateFleet = &dedicateFleet
@@ -1350,7 +1350,7 @@ func (c *DaemonClient) BatchPurchaseShips(ctx context.Context, purchasingShipSym
 // ContractFleetCoordinator starts a contract fleet coordinator
 // Uses all available idle light hauler ships (no pre-assignment needed).
 //
-// dedicatedShips/standbyStations (sp-snmb) carry the operator's optional
+// dedicatedShips/standbyStations carry the operator's optional
 // --dedicated-ships/--standby-stations CLI flags through to the daemon. Both
 // are nil for a plain, non-dedicated coordinator - the feature is opt-in.
 func (c *DaemonClient) ContractFleetCoordinator(
@@ -1542,7 +1542,7 @@ func (c *DaemonClient) ShipyardBackfillCoordinator(ctx context.Context, playerID
 }
 
 // AddScoutPost adds or updates a desired-state scout post (sp-cxpq). hulls is the
-// probe budget N (sp-enry); 0 defaults to single-hull.
+// probe budget N; 0 defaults to single-hull.
 func (c *DaemonClient) AddScoutPost(ctx context.Context, playerID int, agentSymbol, systemSymbol string, freshnessSeconds int, kind string, hulls int) (*ScoutPost, error) {
 	req := &pb.AddScoutPostRequest{
 		PlayerId:         int32(playerID),
@@ -1610,7 +1610,7 @@ func protoToScoutPost(p *pb.ScoutPost) *ScoutPost {
 
 // StartGoodsFactory starts a goods factory for automated production
 // StartTradeRoute launches a single-hull pure-arbitrage circuit as a recovery-safe
-// daemon container (sp-zewt). Replaces the old in-process CLI runner.
+// daemon container.
 func (c *DaemonClient) StartTradeRoute(
 	ctx context.Context,
 	shipSymbol string,
@@ -1670,7 +1670,7 @@ func (c *DaemonClient) StartWarehouse(
 	}, nil
 }
 
-// StartArbRunResult reports the container started for a one-shot guarded arb run (sp-p4ua).
+// StartArbRunResult reports the container started for a one-shot guarded arb run.
 type StartArbRunResult struct {
 	ContainerID string
 	ShipSymbol  string
@@ -1692,7 +1692,7 @@ type StartTourRunResult struct {
 // tour as a recovery-safe container (sp-1ek0). maxHops/maxSpend/minMargin/replanLimit/
 // workingCapitalReserve/iterations are optional: pass nil to leave each unset (the
 // coordinator's own default semantics apply — max_hops→6, max_spend→25% of treasury,
-// replan_limit→2, iterations→one tour). iterations=-1 makes it CONTINUOUS (sp-m5kv):
+// replan_limit→2, iterations→one tour). iterations=-1 makes it CONTINUOUS:
 // tour, re-plan from the new position, tour again until margins die.
 func (c *DaemonClient) StartTourRun(
 	ctx context.Context,
@@ -1730,7 +1730,7 @@ func (c *DaemonClient) StartTourRun(
 }
 
 // StartArbRun asks the daemon to launch a one-shot, captain-directed, guarded arbitrage
-// run as a recovery-safe container (sp-p4ua). maxUnits/maxSpend/minMargin/workingCapitalReserve
+// run as a recovery-safe container. maxUnits/maxSpend/minMargin/workingCapitalReserve
 // are optional guards: pass nil to leave each unset (the coordinator's own default/disabled
 // semantics apply per guard).
 func (c *DaemonClient) StartArbRun(
@@ -1773,7 +1773,7 @@ func (c *DaemonClient) StartArbRun(
 	}, nil
 }
 
-// StartStockerResult reports the container started for a stocker loop (sp-zdwg).
+// StartStockerResult reports the container started for a stocker loop.
 type StartStockerResult struct {
 	ContainerID       string
 	ShipSymbol        string
@@ -1782,7 +1782,7 @@ type StartStockerResult struct {
 	Message           string
 }
 
-// StartStocker asks the daemon to launch the STOCKER LOOP (sp-zdwg) as a recovery-safe
+// StartStocker asks the daemon to launch the STOCKER LOOP as a recovery-safe
 // container: a dedicated hull fills a home warehouse with contract-recurrent goods bought
 // cheap at foreign markets, live-verified and fail-closed. budgetPerLeg/workingCapitalReserve/
 // iterations/maxMarketAgeMinutes/targetPerGood are optional: pass nil to leave each unset
@@ -1981,7 +1981,7 @@ type StartConstructionPipelineResponse struct {
 	Message          string
 
 	// DeferredMaterials names every material (trade symbol) that could not be
-	// sourced this call (sp-560b/sp-ooba), so the CLI can report the gap by
+	// sourced this call, so the CLI can report the gap by
 	// name instead of a generic "no market" message.
 	DeferredMaterials []string
 }
@@ -2110,7 +2110,7 @@ type StopConstructionPipelineResponse struct {
 	Message          string
 }
 
-// StopConstructionPipeline cancels the active construction pipeline for a site (sp-yzrv)
+// StopConstructionPipeline cancels the active construction pipeline for a site
 func (c *DaemonClient) StopConstructionPipeline(
 	ctx context.Context,
 	constructionSite string,
@@ -2138,7 +2138,7 @@ func (c *DaemonClient) StopConstructionPipeline(
 }
 
 // ConstructionGoodOverride sets or clears one good's per-good buy-gating override on a running
-// construction pipeline live, with no restart (sp-pdb3). The daemon is the single writer of the
+// construction pipeline live, with no restart. The daemon is the single writer of the
 // persisted override (RULINGS #3); the coordinator re-reads it on its next discovery pass.
 func (c *DaemonClient) ConstructionGoodOverride(ctx context.Context, req *pb.ConstructionGoodOverrideRequest) (*pb.ConstructionGoodOverrideResponse, error) {
 	resp, err := c.client.ConstructionGoodOverride(ctx, req)

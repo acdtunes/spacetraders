@@ -149,7 +149,7 @@ func TestTour_MarginsDeath_RanksAndRepositionsToFreshGround(t *testing.T) {
 	}
 }
 
-// sp-kl16 THE PD21 PIN (the C1 draw-loop blocker). A heavy whose ORIGIN gate is in the
+// THE PD21 PIN (the C1 draw-loop blocker). A heavy whose ORIGIN gate is in the
 // ikx1 unreadable-backoff set cannot be repositioned by the strict fetch-through Path — it
 // fail-closes on the unreadable gate and returns ErrUnroutable "within 5 jumps" even though a
 // short stored-adjacency route exists (the live incident: TORWIND-37->GQ92-D39 and
@@ -221,7 +221,7 @@ func TestTour_MarginsDeath_RepositionsPastUnreadableGateOrigin_ViaStoredAdjacenc
 	}
 }
 
-// sp-1ki5 REPLAY (the X1-DP51 shape). Reposition discovery must find a fresh, direct-gate, BUILT
+// REPLAY (the X1-DP51 shape). Reposition discovery must find a fresh, direct-gate, BUILT
 // neighbor even when the ORIGIN's own jump gate is uncharted or has no ship present — the live
 // GetJumpGate API refuses that origin with 4001 "waypoint not accessible", returning ZERO
 // neighbors, while the durable era-scoped gate_edges adjacency answers regardless of origin.
@@ -592,7 +592,7 @@ func TestTour_RepositionRestartResume_CompletesJumpThenReplans(t *testing.T) {
 	}
 }
 
-// sp-kl16: the RESTART-RESUME jump (run_tour_coordinator.go, re-adopted mid-jump) must ride the
+// The RESTART-RESUME jump (run_tour_coordinator.go, re-adopted mid-jump) must ride the
 // SAME bounded stored-adjacency resolver as the fresh margins-death jump — not the strict Path.
 // Otherwise a hull re-adopted mid-jump toward an unreadable-gate ground would re-hit the strict
 // fail-close on every restart and crash-loop (the o34q live shape on the resume leg). The fake

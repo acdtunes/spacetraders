@@ -535,7 +535,7 @@ func (f *fakeDepotReclaimer) FindReclaimableForHome(ctx context.Context, playerI
 	return f.available[0], true, nil
 }
 
-// fakeReleaser is the surplus-delivery RE-ROLE double (DeliverySurplusReleaser, sp-mtgje): on
+// fakeReleaser is the surplus-delivery RE-ROLE double (DeliverySurplusReleaser): on
 // ReleaseSurplusDelivery it decrements the "contract" fleet Current by count (un-dedicate) and pushes
 // count freshly-idle symbols into the depot reuse tier — modelling how a released delivery hull becomes
 // reclaimable into the warehouse deficit the SAME pass. calls records each release count in order.

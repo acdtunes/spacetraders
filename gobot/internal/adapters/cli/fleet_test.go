@@ -71,7 +71,7 @@ func fleetsFixture(membership map[string][]string) *pb.ListFleetsResponse {
 	return resp
 }
 
-// TestFleetAdd_DispatchedNextTick_NoRestart (sp-4s9m acceptance): adding a hull
+// TestFleetAdd_DispatchedNextTick_NoRestart (acceptance): adding a hull
 // to a running operation writes exactly ONE dedication (AssignShipFleet with the
 // operation as the fleet tag) and nothing else — no unassign, and (by the shape
 // of fleetMutator) no container restart. The coordinator then discovers the hull
@@ -126,7 +126,7 @@ func TestFleetRemove_MidContract_FinishesOrHandsOff_NoStranded(t *testing.T) {
 	require.Contains(t, msg, "in-progress contract leg", "the message must promise a clean hand-off, not an abort")
 }
 
-// TestFleetRemove_ClearsDedication_CoordinatorStopsUsing (sp-4s9m acceptance):
+// TestFleetRemove_ClearsDedication_CoordinatorStopsUsing (acceptance):
 // the happy-path removal routes the clear through the daemon's UnassignShipFleet
 // (the single tag-write path). Once cleared, FindIdleShipsByFleet no longer
 // returns the hull (proven for the empty tag by

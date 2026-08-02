@@ -1,20 +1,20 @@
 package metrics
 
-// treasury_read_metrics.go — how the money guards learned their treasury (sp-muq66).
+// treasury_read_metrics.go — how the money guards read their treasury.
 //
-// The guards used to answer that question with a live `Get Agent` call every time, which
-// measured 0.167 req/s = 8.3% of the 2.00 req/s API ceiling and did not fall under the
-// request-coalescing singleflight, because the reads are invalidation-driven (every buy,
-// sell, refuel and jump empties the agent cache) rather than concurrent duplicates. The
-// ledger already carries the same number: every credit-moving transaction records the
-// agent's post-transaction balance, and over 3,086 consecutive intervals the unrecorded
-// -spend gap measured exactly zero.
+// Answering that question with a live `Get Agent` call every time measures 0.167 req/s =
+// 8.3% of the 2.00 req/s API ceiling and does not fall under the request-coalescing
+// singleflight, because the reads are invalidation-driven (every buy, sell, refuel and
+// jump empties the agent cache) rather than concurrent duplicates. The ledger already
+// carries the same number: every credit-moving transaction records the agent's
+// post-transaction balance, and over 3,086 consecutive intervals the unrecorded -spend
+// gap measured exactly zero.
 //
-// So the read now prefers the ledger and falls back to the live call when the ledger is
-// too old to trust. That split is the ONE thing about this change that is not knowable
-// from the outside: a fleet whose ledger is always stale would keep making every API call
-// it made before and look, from the API counters alone, exactly like a change that never
-// shipped. This counter is what tells those apart.
+// So the read prefers the ledger and falls back to the live call when the ledger is too
+// old to trust. That split is the ONE thing about the arrangement that is not knowable
+// from the outside: a fleet whose ledger is always stale makes every API call the live-only
+// read would have made, and looks, from the API counters alone, exactly like a reader that
+// never shipped. This counter is what tells those apart.
 //
 //	sum(rate(treasury_reads_total[15m])) by (source)      the ledger/live/error split
 //	rate(treasury_reads_total{source="live"}[15m])        the fallback rate — expected ~2%

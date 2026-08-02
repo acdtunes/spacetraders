@@ -59,7 +59,7 @@ func TestOpportunityRelocatorShould_HonourTheOfferAtTheActuationRecheckAsWellAsA
 
 // THE OFFER IS NOT OWNERSHIP (constraint 2). If the offer lapses between scoring and actuation — the
 // window expired and the tour took its hull back — the relocator must abandon cleanly rather than fly a
-// hull that is now trading. This is the sp-x2jr6 slice-1 path doing its job on a new input.
+// hull that is now trading. This is the slice-1 path doing its job on a new input.
 func TestOpportunityRelocatorShould_AbandonAnOfferThatLapsedBeforeTheHullCouldBeMoved(t *testing.T) {
 	h := newRelocHarness(t)
 	h.fleet.hulls = []RelocatorHull{

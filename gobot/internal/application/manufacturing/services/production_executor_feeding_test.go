@@ -19,7 +19,7 @@ import (
 )
 
 // sp-to2v — fabrication efficiency, driven through the real fabricateGood/ProduceGood path. These
-// pin the executor's OBSERVABLE feeding behavior (now the sole feeding path, sp-sxyx6): the ample
+// pin the executor's OBSERVABLE feeding behavior (now the sole feeding path): the ample
 // input is pulled down to the scarce (limiting) input's flow rather than greedily piled on (#2), each
 // delivery is saturation-capped (#3), the scarcest input is fed FIRST (#4a), and a non-responsive
 // output is BUY-OR-SKIPed instead of fed (#4b).
@@ -187,7 +187,7 @@ func balancedFeedingRepo() *feedingMarketRepo {
 }
 
 func feedingCtx() context.Context {
-	// Feeding is unconditional (sp-sxyx6): the executor runs the default balanced policy, so the ctx
+	// Feeding is unconditional: the executor runs the default balanced policy, so the ctx
 	// carries only the construction-supply marker + logger. The default saturation window [25,200]
 	// leaves the balanced tranche (=limiter 40) un-clamped, so the ample input is visibly pulled from
 	// its full trade volume down to the limiter's flow.

@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// These tests pin the "ship jettison" CLI verb (bead sp-psfc): a container-based
+// These tests pin the "ship jettison" CLI verb: a container-based
 // mirror of "ship dock"/"ship refuel" (CLI -> daemon gRPC -> JettisonCargoHandler
 // -> SpaceTraders API), used to discard stranded/bait cargo that no reachable
 // market buys. It validates its required flags before touching any

@@ -1,6 +1,6 @@
 package ship
 
-// Unit tests for the shipyard budget's PRESENCE half (sp-fox5u): the request set
+// Unit tests for the shipyard budget's PRESENCE half: the request set
 // it publishes for yards no read can price, and the allowance that paces the hull
 // moves those requests cause.
 //

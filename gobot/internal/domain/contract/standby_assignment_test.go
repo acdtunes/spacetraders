@@ -2,7 +2,7 @@ package contract
 
 import "testing"
 
-// THE LOAD-BEARING PROOF (sp-mtgje): N delivery hulls own N DISTINCT fixed slots — one per
+// THE LOAD-BEARING PROOF: N delivery hulls own N DISTINCT fixed slots — one per
 // waypoint, never piled. hull[i] (symbol order) owns slot[i] (symbol order), a pure zip: no
 // demand, no occupancy, no live position. This is the fixed-placement replacement for the
 // runtime distributor whose concurrent-homing timing piled idle hulls on the top-demand hub.

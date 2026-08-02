@@ -1,4 +1,4 @@
-// Package parkedsensing plans the parked-probe sensing model (sp-k6v8z): which
+// Package parkedsensing plans the parked-probe sensing model: which
 // systems are worth watching, and which waypoints inside them earn a standing
 // probe.
 package parkedsensing

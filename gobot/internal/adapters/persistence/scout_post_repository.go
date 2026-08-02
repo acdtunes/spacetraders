@@ -155,7 +155,7 @@ func (r *GormScoutPostRepository) UpdateSensingState(ctx context.Context, player
 
 // UpdateMinHulls updates ONLY the manning-floor column of the (playerID, systemSymbol)
 // post in the open era: the narrow seam bootstrap uses to stamp the home post's permanent
-// probe_target floor (sp-2ci9y) without disturbing the freshsizer's Hulls resize or the
+// probe_target floor without disturbing the freshsizer's Hulls resize or the
 // reconciler's manning — a single-column write, so it cannot clobber either. min_hulls is a
 // DISJOINT column from hulls: bootstrap is the sole writer of the floor, the freshsizer the
 // sole writer of the budget, so the two never oscillate. Updating a post that does not exist

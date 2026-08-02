@@ -10,7 +10,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 )
 
-// ListFleetsQuery lists every dedicated fleet and its member ships (sp-l7h2).
+// ListFleetsQuery lists every dedicated fleet and its member ships.
 // Fleets exist implicitly as the distinct non-empty DedicatedFleet tags across
 // the player's ships — there is no fleet table; an empty result means no ship
 // is dedicated to anything.

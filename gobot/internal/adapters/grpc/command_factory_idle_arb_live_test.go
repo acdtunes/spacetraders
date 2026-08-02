@@ -99,7 +99,7 @@ func TestContractCoordinatorResolvesLeashFromLiveConfig(t *testing.T) {
 }
 
 // TestContractCoordinatorResolvesBlacklistFromLiveConfig locks the blacklist
-// money guard's live resolution (sp-ts82), including the two non-numeric edges:
+// money guard's live resolution, including the two non-numeric edges:
 // an absent list must fall through to the default guard, and an explicit empty
 // list must survive as the captain's deliberate disable.
 func TestContractCoordinatorResolvesBlacklistFromLiveConfig(t *testing.T) {
@@ -125,7 +125,7 @@ func TestContractCoordinatorResolvesBlacklistFromLiveConfig(t *testing.T) {
 			wantBlacklist: nil,
 		},
 		{
-			// Explicit empty list is a deliberate captain disable (sp-uohe): the
+			// Explicit empty list is a deliberate captain disable: the
 			// non-nil [] must survive as [] (not collapse to nil -> [ELECTRONICS]).
 			name:          "explicit empty live blacklist disables the guard",
 			live:          config.IdleArbSettings{Blacklist: []string{}},
@@ -145,7 +145,7 @@ func TestContractCoordinatorResolvesBlacklistFromLiveConfig(t *testing.T) {
 
 // TestContractCoordinatorResolvesAllIdleArbSiblingsFromLiveConfig proves the
 // resolution is ONE shared mechanism across every idle-arb sibling knob, not a
-// per-key special case (sp-ts82): a single live config.yaml drives them all on the
+// per-key special case: a single live config.yaml drives them all on the
 // recovery rebuild, and every stale persisted sibling is discarded.
 func TestContractCoordinatorResolvesAllIdleArbSiblingsFromLiveConfig(t *testing.T) {
 	live := config.IdleArbSettings{
@@ -158,7 +158,7 @@ func TestContractCoordinatorResolvesAllIdleArbSiblingsFromLiveConfig(t *testing.
 		MarginVerifyPct: 90,
 		IntervalSeconds: 120,
 		Blacklist:       []string{"ELECTRONICS", "FUEL"},
-		// sp-u4tv per-trip profitability floor siblings.
+		// Per-trip profitability floor siblings.
 		MinNetProfitPerUnit: 150,
 		NetProfitPct:        25,
 		FuelCostPerUnit:     40,
@@ -192,14 +192,14 @@ func TestContractCoordinatorResolvesAllIdleArbSiblingsFromLiveConfig(t *testing.
 	require.Equal(t, 90, cmd.IdleArbMarginVerifyPct)
 	require.Equal(t, 120, cmd.IdleArbIntervalSecs)
 	require.Equal(t, []string{"ELECTRONICS", "FUEL"}, cmd.IdleArbBlacklist)
-	// sp-u4tv: the profitability floor knobs resolve live too (stale 100/20/35 discarded).
+	// The profitability floor knobs resolve live too (stale 100/20/35 discarded).
 	require.Equal(t, 150, cmd.IdleArbMinNetProfit)
 	require.Equal(t, 25, cmd.IdleArbNetProfitPct)
 	require.Equal(t, 40, cmd.IdleArbFuelCostPerUnit)
 }
 
 // TestContractCoordinatorResolvesDisabledToggleFromLiveConfig: the harvest escape
-// hatch also resolves live (sp-ts82). A coordinator persisted disabled must
+// hatch also resolves live. A coordinator persisted disabled must
 // re-enable when config.yaml drops `disabled: true` and the daemon restarts — the
 // stale idle_arb_disabled key can never keep the harvest off — and, symmetrically,
 // a live `disabled: true` must take effect on the recovery rebuild.

@@ -31,7 +31,7 @@ type ProfitabilityResult struct {
 
 	// MarketPrices echoes the per-good unit asks this evaluation was computed
 	// from (the chosen market's cached ask per trade symbol). The delivery
-	// executor's ladder cap (sp-1z2h) compares each purchase trip's realized
+	// executor's ladder cap compares each purchase trip's realized
 	// per-unit price against this basis to stop an intra-run ask ladder.
 	MarketPrices map[string]int
 }
@@ -95,12 +95,12 @@ func (h *EvaluateContractProfitabilityHandler) fetchShip(ctx context.Context, sh
 }
 
 // buildMarketPricesMap prices each unfulfilled delivery at the market
-// PlanSourcing would choose (sp-1z2h): cheapest HOME-system market.
+// PlanSourcing would choose: cheapest HOME-system market.
 // Routing the worker's evaluation through the same selection keeps the
 // projector and the executor pointed at the same market — the executor
 // navigates to CheapestMarketWaypoint, so a divergent pick here would send the
 // hull to a market the coordinator never costed. Contract sourcing is HOME-system
-// only (RULINGS #14), matching the executor's zero-jump navigation (sp-9hu8):
+// only (RULINGS #14), matching the executor's zero-jump navigation:
 // pricing at a cross-system market the worker cannot fly would both mis-project
 // profit and point the hull at an unreachable waypoint.
 func (h *EvaluateContractProfitabilityHandler) buildMarketPricesMap(ctx context.Context, query *EvaluateContractProfitabilityQuery) (map[string]int, string, error) {

@@ -124,7 +124,7 @@ type goodUniverse interface {
 //     the strict fail-closed fetch-through — that is the reposition's job at execution time
 //     (sp-e059j, unchanged). On a COLD in-memory cache the fetch-through Path fetches gate data per
 //     traversed system across every candidate lane — the measured ~10-min first-episode discovery
-//     stall (sp-yginc); the stored-adjacency read is fast even cold, so hops() rides it.
+//     stall; the stored-adjacency read is fast even cold, so hops() rides it.
 //   - Path is the STRICT fetch-through resolver, retained on the port so the deliberate choice of
 //     the fast resolver stays explicit and regression-locked; discovery does not call it.
 //
@@ -182,7 +182,7 @@ func (d *longHaulDiscoverer) DiscoverLanes(ctx context.Context, playerID int) ([
 		// Ride the FAST stored-adjacency resolver (RepositionPath), NOT the strict fetch-through
 		// Path: discovery's hop count is only a RANKING estimate (realized $/hr ∝ GateHops) plus a
 		// reachability signal. On a COLD cache Path fetches gate data per traversed system across
-		// every candidate lane — the measured ~10-min first-episode discovery stall (sp-yginc); the
+		// every candidate lane — the measured ~10-min first-episode discovery stall; the
 		// stored-adjacency read is fast even cold. The strict fail-closed reach stays the
 		// reposition's job at execution time (sp-e059j, unchanged). Bounded by longHaulRepositionJumps
 		// — the same large long-haul reach the reposition flies, so discovery ranks exactly the far

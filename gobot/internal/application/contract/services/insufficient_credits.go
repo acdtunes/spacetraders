@@ -10,10 +10,10 @@ import (
 // error code 4600). This is PERMANENT relative to the current treasury
 // snapshot, not transient - the caller must PARK (clean exit, resume on the
 // coordinator's next tick once credits recover) rather than propagate a
-// crash. This is the third credits-guard surface (sp-vwhi), joining sp-bp6f
+// crash. This is the third credits-guard surface, joining sp-bp6f
 // (trade) and sp-9aoc/sp-2dv4 (factory); it follows the park-not-crash idiom
-// established by ErrDeferToSupply (sp-hs2j, manufacturing) and
-// ErrRefuelUnrecoverable (sp-vsfn, refuel retry).
+// established by ErrDeferToSupply (manufacturing) and
+// ErrRefuelUnrecoverable (refuel retry).
 //
 // Before this fix, a 4600 during contract purchasing propagated as a plain
 // wrapped error, which the container runner treats as a crash: the

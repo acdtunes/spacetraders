@@ -136,8 +136,8 @@ func SelectDiscovery(candidates []DiscoveryCandidate, footprint map[string]bool,
 //
 // An EMPTY footprint returns an un-narrowed scope. That is the cold-start and no-evidence
 // path: before the fleet has traded anywhere and while it has no hull placed, there is nothing
-// to scope against, so the sizer senses the whole census exactly as it did before — a cold
-// start can never be starved of sensing by its own lack of history.
+// to scope against, so the sizer senses the whole census — a cold start can never be
+// starved of sensing by its own lack of history.
 func BuildScanScope(traded, occupied map[string]bool, candidates []DiscoveryCandidate, allowance int) ScanScope {
 	footprint := make(map[string]bool, len(traded)+len(occupied))
 	for system := range traded {

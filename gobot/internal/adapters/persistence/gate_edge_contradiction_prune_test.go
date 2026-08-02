@@ -169,7 +169,7 @@ func TestPruneContradictedEdges_LeavesOtherSystemsAlone(t *testing.T) {
 
 // GUARD: the negative-result BACKOFF MARKER (connected_system = "") is not an edge — it holds
 // the unreadable ORIGIN gate, which no connection set will ever contain. Sweeping it up as
-// "contradicted" would silently clear the sp-ikx1 backoff and re-open the 400-storm.
+// "contradicted" would silently clear the backoff and re-open the 400-storm.
 func TestPruneContradictedEdges_NeverDeletesTheBackoffMarker(t *testing.T) {
 	db, err := database.NewTestConnection()
 	require.NoError(t, err)

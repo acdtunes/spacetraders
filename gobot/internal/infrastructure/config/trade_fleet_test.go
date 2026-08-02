@@ -225,7 +225,7 @@ func TestLoadConfig_CandidateWidening_RoundTrips(t *testing.T) {
 		"candidate_shortlist_top_n must round-trip so the profitable-edge shortlist bound is operator-tunable")
 }
 
-// sp-jsng default-safety companion: an ABSENT candidate-widening block resolves to the Go zero
+// Default-safety companion: an ABSENT candidate-widening block resolves to the Go zero
 // values viper leaves untouched (0 + 0) — so a daemon that never sets the knobs runs the exact
 // 1-hop candidate set, byte-identical to today. The two int sentinels (0) are the consumer's
 // "resolve to default" signal (resolveCandidateHopDepth -> 1, resolveCandidateShortlistTopN -> 6),
@@ -327,7 +327,7 @@ func TestLoadConfig_WorkingCapitalReserve_RoundTrips(t *testing.T) {
 	}
 }
 
-// sp-o4wa cargo_blocklist round-trip pin: the noise-goods blocklist must travel from
+// cargo_blocklist round-trip pin: the noise-goods blocklist must travel from
 // config.yaml's [trade_fleet] section into the loaded config unchanged, so a captain arms
 // the FUEL/ALUMINUM/PLASTICS filter by editing config.yaml + restarting — no code redeploy.
 // Exercises the REAL viper mapstructure pipeline (trade_fleet.cargo_blocklist ->

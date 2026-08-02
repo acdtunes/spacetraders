@@ -30,7 +30,7 @@ func (f *fakeCrossSystemRouter) RepositionToWaypoint(_ context.Context, shipSymb
 // the trade-route coordinator's exported RepositionToWaypoint (the SAME multi-jump
 // travel() the arb/trade/scout circuits use) and reports the completed move. This
 // is the primitive a manual cross-gate hull move (warehouse dispatch, spare
-// repositioning) needs — no hand-rolled navigate-to-gate + jump + navigate (sp-6hjw).
+// repositioning) needs — no hand-rolled navigate-to-gate + jump + navigate.
 func TestRouteShip_DelegatesCrossSystemTravelToRouter(t *testing.T) {
 	router := &fakeCrossSystemRouter{}
 	handler := NewRouteShipHandler(router)

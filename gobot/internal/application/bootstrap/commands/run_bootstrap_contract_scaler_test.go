@@ -7,7 +7,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
 )
 
-// The dedicated contract auto-scaler is ensured (unconditional, sp-1cbxz) during the cold-start window so
+// The dedicated contract auto-scaler is ensured (unconditional) during the cold-start window so
 // it ramps the exclusive contract fleet behind the 200000 cushion. The once-only guarantee lives in the
 // LAUNCHER, which skips a coordinator already RUNNING/PENDING — bootstrap holds no arbitration state.
 

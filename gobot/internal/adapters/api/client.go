@@ -101,9 +101,9 @@ type SpaceTradersClient struct {
 	// agentCacheEpoch counts invalidations. A live fetch samples it before the
 	// request and re-checks it before storing: any spend that invalidated while
 	// the fetch was in flight bumps the epoch, and the store is DROPPED. That
-	// preserves the invariant the cache mutex used to enforce by serialization —
-	// after any spend the cache is EMPTY, so no money guard can be answered with a
-	// pre-spend (stale-HIGH) balance — without holding a lock across the network.
+	// holds the invariant — after any spend the cache is EMPTY, so no money guard
+	// can be answered with a pre-spend (stale-HIGH) balance — without serializing
+	// readers behind a lock held across the network.
 	agentCacheEpoch uint64
 
 	// agentFlight is the single in-flight live /my/agent read that concurrent
@@ -719,8 +719,9 @@ func (f *agentFlight) await(ctx context.Context) (*player.AgentData, error) {
 // before the request and re-checked before the store, and a store whose epoch
 // moved is DROPPED. So an invalidation that races a fetch always wins, and after
 // any spend the cache is EMPTY: the next money-guard read cannot be answered with
-// a pre-spend (stale-HIGH) balance, it re-reads live. That is the same invariant
-// the old lock-across-the-fetch enforced, minus the head-of-line blocking.
+// a pre-spend (stale-HIGH) balance, it re-reads live. Holding the lock across the
+// fetch would enforce the same invariant, at the cost of head-of-line blocking
+// every reader behind one network round trip.
 //
 // A defensive copy is returned so a caller mutating the AgentData can never
 // poison the shared cache. The token is part of the cache key so a client reused

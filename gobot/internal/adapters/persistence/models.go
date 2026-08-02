@@ -647,8 +647,8 @@ type TourLegTelemetryModel struct {
 
 	// Engine is WHICH execution path wrote this row: solver, lookback or liquidation
 	// (trading.LegEngine). It is the attribution column a SQL reader filters on —
-	// `WHERE engine = 'solver'` for planner accuracy — and exists because that reader
-	// previously had to recognise an engine from the shape of its data (sp-fzt09).
+	// `WHERE engine = 'solver'` for planner accuracy — and exists so that reader need not
+	// recognise an engine from the shape of its data.
 	//
 	// It is NOT a second encoding of LegIndex. LegIndex stays the visualizer's ordering
 	// sentinel and keeps its exact meaning; Engine is stamped independently by the call
@@ -976,7 +976,7 @@ func (ShipyardInventoryModel) TableName() string {
 }
 
 // SensingSystemModel is the per-system screening verdict of the parked-probe
-// sensing ledger (sp-k6v8z): has this system been judged worth placing probes
+// sensing ledger: has this system been judged worth placing probes
 // in, and what did the charting seed cost. Verdict is PENDING (not yet
 // screened), IN_SCOPE (deals in ≥1 whitelisted good — place slots here), or
 // NO_WHITELIST (screened and rejected). SeedShip/SeedState track the one-off
@@ -1031,7 +1031,7 @@ func (SensingSystemModel) TableName() string {
 // smoothed price spread the scans feed, LastScanAt the freshness stamp.
 // EraID mirrors SensingSystemModel.
 //
-// SLOT_KIND IS IN THE PRIMARY KEY (sp-dpfp8), and that is load-bearing rather
+// SLOT_KIND IS IN THE PRIMARY KEY, and that is load-bearing rather
 // than incidental. A waypoint can be two things at once: a market a probe is
 // parked at scanning (MARKET), and a probe-selling yard where a seed is staged
 // for purchase (SPARE). Keyed on the waypoint alone those two claims collided,
@@ -1060,7 +1060,7 @@ type SensingSlotModel struct {
 	// LastScanAttemptAt is when the scan rotation last took this slot's TURN,
 	// whether or not that turn produced any market data. It is the rotation's
 	// PACING clock, and it exists because last_scan_at cannot be both that and an
-	// honest freshness stamp (sp-zml2u).
+	// honest freshness stamp.
 	//
 	// The fleet's market-scan budget declines the overwhelming majority of turns
 	// — measured at 92% (3,551 declines to 310 scans) — and a decline writes
@@ -1088,7 +1088,7 @@ type SensingSlotModel struct {
 	// LastAttemptAt is when the placement machine last spent one of a tick's
 	// budgets on this slot, or NULL for a slot it has never tried. It is what lets
 	// the placement worklist rotate least-recently-attempted first instead of
-	// working a fixed alphabetical head forever (sp-cwnwb). AutoMigrate adds the
+	// working a fixed alphabetical head forever. AutoMigrate adds the
 	// column in place; every existing row reads it as NULL, i.e. never attempted.
 	//
 	// IT IS DELIBERATELY NOT updated_at, and the difference is the whole point.

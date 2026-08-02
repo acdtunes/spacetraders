@@ -60,7 +60,7 @@ func (r *reclaimRaceRepo) FindByContainer(ctx context.Context, containerID strin
 }
 
 // TestReclaimInterruptedWorkers_ReleaseDoesNotClobberFreshCargo drives the
-// interrupted-worker reclaim (a migrated ForceRelease site, sp-wa7c) against a
+// interrupted-worker reclaim (a migrated ForceRelease site) against a
 // real, version-guarded repository. A concurrent writer unloads cargo on the same
 // hull while the reclaim holds its snapshot; the migrated SaveWithRetry re-applies
 // ONLY the release on the fresh row, so the concurrent cargo update survives

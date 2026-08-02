@@ -9,7 +9,7 @@ import (
 //
 // A supply worker OUTLIVES the tick that dispatched it — that is what keeps activation, the retry
 // sweep and hull discovery on the tick's cadence instead of a haul's — so the bookkeeping a joined
-// errgroup used to give for free has to live here: how many workers a container has out (the
+// errgroup would give for free has to live here: how many workers a container has out (the
 // max_workers bound), which hulls they hold (so no later tick re-dispatches one), and how many
 // supplies have landed since that container's last tick reported.
 //
@@ -18,8 +18,8 @@ import (
 // stop. Hull ownership is deliberately global: no two workers may hold one hull, whoever dispatched
 // them.
 //
-// A registration is BOUNDED (supplyHold.expiresAt) because nothing else bounds it: an errgroup knew
-// its goroutines had returned, this registry only knows what a worker tells it, and a worker that
+// A registration is BOUNDED (supplyHold.expiresAt) because nothing else bounds it: an errgroup would
+// know its goroutines had returned, this registry only knows what a worker tells it, and a worker that
 // stops running without deregistering would retire its hull for the life of the process.
 //
 // In-process only. A restart loses the workers and this registry together, and the daemon's

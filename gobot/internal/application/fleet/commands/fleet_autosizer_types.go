@@ -22,14 +22,13 @@ const (
 	// HullClassExplorer is the off-gate warp-exploration pool (DedicatedFleet "explorer").
 	// It is sized to slice-B off-gate demand: an explorer buys REACH (it charts new systems so the
 	// cheap probe frontier resumes via growFrontierGraph), NOT income. It runs the SAME guard stack
-	// as every other class — there is no longer any class-gated carve-out, because the two income
-	// guards the explorer had to be exempted FROM are gone. Its ~819k spend is bounded by the
+	// as every other class — there is no class-gated carve-out. Its ~819k spend is bounded by the
 	// demand-gate (buys only when off-gate demand fires AND the class is armed), a HARD CAP of 1
 	// (the class fleet ceiling), and a price ceiling (~819k SHIP_EXPLORER + premium).
 	// Opt-IN (explorer_hulls_enabled, default OFF) and double-gated, so a bare deploy buys nothing.
 	HullClassExplorer HullClass = "explorer"
 	// HullClassContractDelivery is the capacity reconciler's contract-delivery capital pool
-	// (delivery hulls + contract-depot warehouses + contract-depot stockers, sp-nkqn / st-7zk). The
+	// (delivery hulls + contract-depot warehouses + contract-depot stockers). The
 	// reconciler EMITS its tier-4 gap into this class via the ContractDeliveryDemandBridge, so
 	// arming it routes ROUTINE early-game hauler scaling through this coordinator's SINGLE
 	// money-guard stack — guard-gated AUTO, not captain-approval-gated (RULINGS #6: the guards are

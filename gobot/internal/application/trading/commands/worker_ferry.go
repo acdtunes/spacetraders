@@ -8,7 +8,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// Repositioner is the narrow movement port the worker ferry rides (sp-f5pr): fly
+// Repositioner is the narrow movement port the worker ferry rides: fly
 // shipSymbol to destinationWaypoint, crossing gates as needed. It is satisfied by the
 // trade-route coordinator's exported RepositionToWaypointWithinJumps, which delegates to
 // the SAME multi-jump travel() the arb/trade circuits use — the ferry reuses that
@@ -23,7 +23,7 @@ type Repositioner interface {
 	// destinationWaypoint, resolving the cross-system jump path over the PERSISTED stored
 	// adjacency bounded to maxJumps (RepositionPath, sp-8k9m) rather than the strict
 	// fetch-through Path — routing PAST unreadable frontier gates so a ferry can reach a
-	// worker-starved factory system the strict cap rejects (sp-fwxm/sp-kl16). A ferry is a
+	// worker-starved factory system the strict cap rejects. A ferry is a
 	// hull MOVE (no money commitment), so it earns the same relaxation as a tour/scout
 	// reposition; maxJumps <= 0 degrades to the strict resolver, so a mis-wired caller can
 	// never accidentally relax. Buy/delivery routing stays strict — the guard line is
@@ -32,7 +32,7 @@ type Repositioner interface {
 }
 
 // WorkerFerryCommand is a one-shot cross-system relay: jump-route a claimed idle
-// light-hauler to DestinationWaypoint in a worker-starved factory system (sp-f5pr). The
+// light-hauler to DestinationWaypoint in a worker-starved factory system. The
 // worker_rebalancer_coordinator spawns it as a managed worker (like a scout_reposition
 // relay) — the hull is already claimed to this container, so the ferry owns it for the
 // whole flight and nothing poaches it mid-jump (RULINGS #7). On arrival the container
@@ -47,7 +47,7 @@ type WorkerFerryCommand struct {
 	// a managed worker. Persisted into the container config so daemon restart recovery
 	// SKIPS it (marks it worker_interrupted, preserving the ship claim) and leaves the
 	// reclaim/re-evaluation to the coordinator's reconcile pass — the scout_reposition
-	// worker pattern (sp-s232). A restart re-dispatches from the hull's CURRENT position:
+	// worker pattern. A restart re-dispatches from the hull's CURRENT position:
 	// travel() waits out any in-transit leg and re-plans the gate path, so a mid-ferry
 	// restart resumes rather than strands (RULINGS #2).
 	CoordinatorID string
@@ -72,7 +72,7 @@ type WorkerFerryResponse struct {
 }
 
 // WorkerFerryHandler flies a claimed light-hauler to a worker-starved factory system by
-// delegating to the shared multi-jump travel machinery (sp-f5pr). It is deliberately
+// delegating to the shared multi-jump travel machinery. It is deliberately
 // tiny: all ferry bookkeeping (vacancy detection, nearest-source-by-hops selection, the
 // claim, cooldown/concurrency caps, the reclaim on arrival/interruption) lives in the
 // coordinator's reconcile; this worker just moves the hull and reports. Twin of
@@ -105,7 +105,7 @@ func (h *WorkerFerryHandler) Handle(ctx context.Context, request common.Request)
 
 	// A ferry is a hull MOVE, so it rides the bounded stored-adjacency resolver (past
 	// unreadable frontier gates), NOT the strict fetch-through Path — resolveRepositionJumpBound
-	// applies the same 0/absent → default (12) rule the tour reposition uses (sp-fwxm/sp-kl16),
+	// applies the same 0/absent → default (12) rule the tour reposition uses,
 	// so an unset bound never degrades the ferry to the strict resolver that fail-closes a
 	// far-cluster launch. Buy/delivery stays strict elsewhere: the guard line is money vs move.
 	if err := h.repositioner.RepositionToWaypointWithinJumps(ctx, cmd.ShipSymbol, cmd.DestinationWaypoint, cmd.PlayerID.Value(), resolveRepositionJumpBound(cmd.RepositionJumpBound)); err != nil {

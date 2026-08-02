@@ -678,7 +678,7 @@ Examples:
 				return err
 			}
 
-			// Parse the optional dedicated-fleet CSV flags (sp-snmb). Both are
+			// Parse the optional dedicated-fleet CSV flags. Both are
 			// nil when unset, keeping the coordinator's plain behavior intact.
 			dedicatedShips := parseCsvList(dedicatedShipsCsv)
 			standbyStations := parseCsvList(standbyStationsCsv)

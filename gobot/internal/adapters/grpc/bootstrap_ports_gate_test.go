@@ -6,7 +6,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 )
 
-// sp-382j: the bootstrap GATE false-adoption fix. Before this, a planner-set EXECUTING
+// The bootstrap GATE false-adoption fix. Before this, a planner-set EXECUTING
 // pipeline status read as "adopted" even with NO executor running, so the gate silently
 // skipped the ensure/launch and the pipeline sat EXECUTING@0% forever. Adoption must key on a
 // RUNNING construction executor, not the pipeline-status string. The construction drain

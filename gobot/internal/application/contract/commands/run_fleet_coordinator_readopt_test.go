@@ -22,7 +22,7 @@ type readoptFakeShipRepo struct {
 	ship   *navigation.Ship
 	onSave func()
 	saves  []contractShipSnapshot
-	claims []contractShipClaim // atomic ClaimShip calls the re-adoption issues (sp-lprs)
+	claims []contractShipClaim // atomic ClaimShip calls the re-adoption issues
 }
 
 func (r *readoptFakeShipRepo) FindAllByPlayer(_ context.Context, _ shared.PlayerID) ([]*navigation.Ship, error) {
@@ -49,7 +49,7 @@ func (r *readoptFakeShipRepo) Save(_ context.Context, ship *navigation.Ship) err
 }
 
 // SaveWithRetry mirrors the real repository's non-conflict path (find → mutate →
-// save) so the migrated re-adoption detach (sp-wa7c) exercises its production
+// save) so the migrated re-adoption detach exercises its production
 // closure while still routing through Save's snapshot tracking.
 func (r *readoptFakeShipRepo) SaveWithRetry(ctx context.Context, symbol string, playerID shared.PlayerID, mutate navigation.ShipMutation) (*navigation.Ship, bool, error) {
 	sh, err := r.FindBySymbol(ctx, symbol, playerID)
@@ -70,7 +70,7 @@ func (r *readoptFakeShipRepo) SaveWithRetry(ctx context.Context, symbol string, 
 }
 
 // ClaimShip records the atomic operation-checked claim spawnContractWorker now
-// issues to acquire the re-adopted hull for the fresh worker (sp-lprs). The old
+// issues to acquire the re-adopted hull for the fresh worker. The old
 // AssignToContainer+Save happy path is gone, so the ship's final assignment is
 // observed here (and on the in-memory entity), not via a Save.
 func (r *readoptFakeShipRepo) ClaimShip(_ context.Context, symbol string, containerID string, _ shared.PlayerID, operation string) error {

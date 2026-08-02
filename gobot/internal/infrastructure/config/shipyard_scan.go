@@ -1,6 +1,6 @@
 package config
 
-// shipyard_scan.go carries the fleet's ONE shipyard-read budget (sp-mb0er): the
+// shipyard_scan.go carries the fleet's ONE shipyard-read budget: the
 // total request rate every shipyard reader in the daemon shares, and how much more
 // attention the yards the fleet is buying from may earn than the ones it is not.
 //

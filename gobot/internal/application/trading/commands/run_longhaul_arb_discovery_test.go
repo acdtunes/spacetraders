@@ -143,7 +143,7 @@ func TestLongHaulDiscoverer_ComposesUniverseScannersAssembleRank(t *testing.T) {
 	require.Positive(t, ranked[0].OptimalUnits)
 }
 
-// COLD-CACHE DISCOVERY LATENCY (sp-yginc, headline): the discovery hop estimate must ride the
+// COLD-CACHE DISCOVERY LATENCY (headline): the discovery hop estimate must ride the
 // FAST stored-adjacency resolver (RepositionPath), NEVER the strict fetch-through Path — on a cold
 // gate-graph cache Path fetches gate data per traversed system across every candidate lane, the
 // measured ~10-min first-episode stall. Modelled by a pathfinder whose strict Path FAILS (the
@@ -178,7 +178,7 @@ func TestLongHaulDiscoverer_RanksViaStoredAdjacency_NeverStrictFetchThrough(t *t
 	require.Positive(t, graph.repositionCalls, "discovery ranks via RepositionPath (stored adjacency)")
 }
 
-// STORED-ADJACENCY HOP ESTIMATE (sp-yginc): discovery ranks a FAR (>5-hop, beyond MaxJumpPath)
+// STORED-ADJACENCY HOP ESTIMATE: discovery ranks a FAR (>5-hop, beyond MaxJumpPath)
 // lane with the hop count read from stored adjacency — a heavy reaches it via the large reposition
 // bound — and DROPS a lane with no stored-adjacency path within bound. The (hops,routable) contract
 // the strict resolver honored is unchanged; only the resolver behind it is now the fast store read.
@@ -211,7 +211,7 @@ func TestLongHaulDiscoverer_RanksFarLane_DropsUnreachableByStoredAdjacency(t *te
 	require.Equal(t, 8, ranked[0].GateHops, "far lane ranks with the stored-adjacency hop count (>5, beyond the strict MaxJumpPath)")
 }
 
-// ISOLATION (sp-yginc): the cold-cache discovery fix switches ONLY discovery's RANKING resolver.
+// ISOLATION: the cold-cache discovery fix switches ONLY discovery's RANKING resolver.
 // The strict fetch-through reach cap the reposition rides is byte-untouched — MaxJumpPath stays 5,
 // and the large stored-adjacency bound discovery/reposition ride stays longHaulRepositionJumps=25.
 // A regression lock on the two constants the DO-NOT-TOUCH sp-e059j reposition path depends on.

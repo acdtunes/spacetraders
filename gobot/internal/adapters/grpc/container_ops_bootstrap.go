@@ -96,7 +96,7 @@ func (s *DaemonServer) injectBootstrapConfig(config map[string]interface{}) {
 	}
 }
 
-// buildBootstrapCommand rebuilds the standing bootstrap command (sp-3nbe) from a persisted launch
+// buildBootstrapCommand rebuilds the standing bootstrap command from a persisted launch
 // config so a daemon restart re-adopts it. The [bootstrap] keys are resolved LIVE from config.yaml
 // just before this runs (resolveBootstrapConfig in buildCommandForType), so the persisted
 // bootstrap_* keys are transient — the reads below see the current config.yaml. Disabled is

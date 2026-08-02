@@ -38,7 +38,7 @@ type waypointTraitReader interface {
 // discovery of the era it emits one milestone captain event — the signal the
 // fleet autosizer's fail-closed heavy branch has been waiting on.
 //
-// IT IS ALSO THE FLEET'S ONE SHIPYARD-READ CHOKE POINT (sp-mb0er). Every path in
+// IT IS ALSO THE FLEET'S ONE SHIPYARD-READ CHOKE POINT. Every path in
 // the daemon that costs a GET /shipyard request now reaches ReadShipyard below, so
 // the server's unraisable 2.00 req/s ceiling is defended in exactly one place.
 // That was not true when this type was written: four call sites reached

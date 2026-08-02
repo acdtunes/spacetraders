@@ -25,7 +25,7 @@ type WarehouseOperationResult struct {
 // and rejected for every other operation, so the dedicated buffer hull is never
 // poached by a gas/manufacturing/contract coordinator.
 //
-// Defined FROM the domain source-of-truth (sp-3tsjz) so this launcher and the
+// Defined FROM the domain source-of-truth so this launcher and the
 // claim-time command-frigate guard (ship_repository.go ClaimShip, via
 // domainContract.IsDepotOperation) can never name different strings and let the
 // guard silently drift out of coverage.
@@ -83,7 +83,7 @@ func (s *DaemonServer) StartWarehouse(
 		return nil, fmt.Errorf("ship %s is not idle (assigned to %q) - warehouse only takes idle hulls", shipSymbol, ship.ContainerID())
 	}
 
-	// Auto-cap knapsack (sp-5n7v): compute per-good target_units from live contract demand ×
+	// Auto-cap knapsack: compute per-good target_units from live contract demand ×
 	// residual-buy-leg over the REAL hull cargo_capacity (never assume-80) and persist them in
 	// the config, so the caps survive + reload with the container (RULINGS #2) and the captain
 	// can inspect the buffer plan. A thin/absent demand history degrades to the static
@@ -100,7 +100,7 @@ func (s *DaemonServer) StartWarehouse(
 }
 
 // persistAndRunWarehouse builds the recovery-visible warehouse container from precomputed
-// per-good caps, persists it, and starts the claiming runner. Extracted (sp-cftm) so the
+// per-good caps, persists it, and starts the claiming runner. Extracted so the
 // source-side StartWarehouse and the destination-side depot launch share ONE container
 // lifecycle: the caps come from different selectors (source-side PlanWarehouseCaps vs
 // destination-receipt PlanReceiptCaps) but the persistence / claim / recovery path is
@@ -131,7 +131,7 @@ func (s *DaemonServer) persistAndRunWarehouse(
 		"operation_id":    containerID,
 		"supported_goods": supportedGoodsInterface,
 		"container_id":    containerID,
-		// Auto-computed per-good buffer caps (sp-5n7v). Persisted so the plan reloads with the
+		// Auto-computed per-good buffer caps. Persisted so the plan reloads with the
 		// container; the stocker enforces the live-re-derived equivalents.
 		"target_units": targetUnitsInterface,
 		// The runner claims the hull through the atomic operation-checked
@@ -176,7 +176,7 @@ func (s *DaemonServer) persistAndRunWarehouse(
 	}, nil
 }
 
-// warehouseTargetUnits computes the per-good buffer caps for a warehouse hull (sp-5n7v):
+// warehouseTargetUnits computes the per-good buffer caps for a warehouse hull:
 // the auto-cap knapsack over live contract demand × residual-buy-leg subject to the REAL
 // hull cargo_capacity (capacity — never assume-80). A nil miner, a mining error, or thin
 // demand history degrades to the static cold-start caps clipped to the real capacity, so a
@@ -205,7 +205,7 @@ func warehouseTargetUnits(
 	return tradingsvc.PlanWarehouseCaps(candidates, capacity, homeSystem, warehouseWaypoint, coords, nil, nil, p).Targets
 }
 
-// waypointCoords builds the sp-9274 cache-only coordinate lookup for the warehouse-launch
+// waypointCoords builds the cache-only coordinate lookup for the warehouse-launch
 // auto-cap plan (mirrors the stocker's live-loop lookup). Reads the waypoint repository only
 // (no API fetch-through); a nil repo or an unresolvable/TTL-expired waypoint returns ok=false and
 // the optimizer FAILS OPEN to the coarse in/cross-system residual (RULINGS #1).

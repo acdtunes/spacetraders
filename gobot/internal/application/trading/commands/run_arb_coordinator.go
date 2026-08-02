@@ -16,7 +16,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// defaultArbSellFloorFraction (sp-lbbm) is the per-tranche sell floor's default
+// defaultArbSellFloorFraction is the per-tranche sell floor's default
 // fraction of the quoted bid: a sell tranche aborts the remainder when the live
 // bid falls below 80% of the quote. It mirrors the buy-side live-verify default
 // (idle-arb's MarginVerifyFraction), so an unarmed captain arb-run is still
@@ -51,14 +51,14 @@ type RunArbCoordinatorCommand struct {
 	// WorkingCapitalReserve is the hard spend floor (mirrors sp-bp6f): the buy must
 	// not drop live treasury below this line. 0 → defaultWorkingCapitalReserve.
 	WorkingCapitalReserve int
-	// SellFloorFraction (sp-lbbm) arms the per-tranche sell floor: each sell tranche
+	// SellFloorFraction arms the per-tranche sell floor: each sell tranche
 	// aborts the remainder (held aboard) when the LIVE bid falls below this fraction
 	// of the QUOTED bid. It reuses the same 80% knob the buy-side live-verify uses,
 	// applied uniformly to arb-run and idle-arb (both run this coordinator). 0 →
 	// defaultArbSellFloorFraction, so even a captain arb-run with no knob set is
 	// guarded.
 	SellFloorFraction float64
-	// QuotedDestBid (sp-lbbm) carries the quoted destination bid — the healthy
+	// QuotedDestBid carries the quoted destination bid — the healthy
 	// anchor the sell floor measures against — across an IN-PROCESS retry, exactly
 	// as PriorAttemptCost carries the buy cost: a fresh buy records it here so the
 	// retry (same command object, cargo already aboard) floors against the real
@@ -68,14 +68,14 @@ type RunArbCoordinatorCommand struct {
 	// to a fresh pre-sell bid observation as the anchor.
 	QuotedDestBid int
 	// PriorAttemptCost carries a prior attempt's already-incurred buy cost across a
-	// resume so the completion P&L is honest (sp-dkj7). On a FRESH run it is 0 and the
+	// resume so the completion P&L is honest. On a FRESH run it is 0 and the
 	// buy sets TotalCost live; the run then persists that cost (container config +
 	// this field) so a resume — the retry re-runs the whole Handle and skips the buy,
 	// which otherwise leaves TotalCost=0 and over-reports NetProfit by the full basis —
 	// reads it back here and reports the true net. It is REPORTING ONLY: no guard reads
 	// it (the spend caps read live state), so it can never gate or resize a buy.
 	PriorAttemptCost int
-	// LegJumpBound (sp-ry741) is the jump horizon the WHOLE long-haul leg resolves at — BOTH
+	// LegJumpBound is the jump horizon the WHOLE long-haul leg resolves at — BOTH
 	// Guard-0's pre-buy delivery routability CHECK and the travel-to-sink FLIGHT. 0 →
 	// gategraph.MaxJumpPath (5), so the one-shot arb and every gRPC/recovery-rebuilt run keep the
 	// strict 5-hop reach BYTE-IDENTICAL for check AND flight (this follows the same "0 → default"
@@ -84,7 +84,7 @@ type RunArbCoordinatorCommand struct {
 	// REACHES the far 6–12 hop exotic sinks discovery RANKS and the reposition FLIES to — aligning
 	// check, flight, and the buy-side reposition on ONE horizon instead of vetoing (or stranding
 	// laden at) every lane long-haul exists to capture. The residual bug this name-change records:
-	// sp-ry741 first widened only the CHECK, so the hull passed the buy check at 25 then fail-looped
+	// First widened only the CHECK, so the hull passed the buy check at 25 then fail-looped
 	// the sell FLIGHT at 5 — the field now drives both. It is a HORIZON, never a spend relaxation: at
 	// 25 Guard-0 still refuses a genuinely-unroutable lane fail-closed (RULINGS #4), and the flight
 	// still fail-closes on an unreadable chosen-path gate. Isolated by construction — only
@@ -138,14 +138,14 @@ type RunArbCoordinatorResponse struct {
 	ExpectedLocation string
 	ActualLocation   string
 
-	// Routability guard (sp-7gr2): set when a cross-system sell leg was refused
+	// Routability guard: set when a cross-system sell leg was refused
 	// pre-buy because no jump-gate route from the buy system to the sell system
 	// exists (or could not be verified). The incident bought first and discovered
 	// the missing route only after crashing laden at the home gate; this refuses
 	// the buy BEFORE spending. AbortReason names both systems.
 	RoutabilityAbort bool
 
-	// Sell-floor guard (sp-lbbm): set when the per-tranche sell floor aborted the
+	// Sell-floor guard: set when the per-tranche sell floor aborted the
 	// sale mid-tranche because the LIVE bid fell below the floor, leaving the
 	// remainder held aboard. This is an HONEST failure completion (Handle returns a
 	// non-nil error), NOT a false success — the held cargo is picked up by the next
@@ -174,15 +174,15 @@ type RunArbCoordinatorHandler struct {
 	apiClient       domainPorts.APIClient
 	marketRefresher MarketRefresher
 	// treasury is the LEDGER-backed treasury reader (sp-muq66) the spend-floor guard reads
-	// through instead of calling Get Agent before every one-shot buy (sp-45s6f). nil —
+	// through instead of calling Get Agent before every one-shot buy. nil —
 	// every existing test — leaves the direct apiClient read in place, byte-identical; the
 	// daemon injects the shared reader via SetTreasuryReader at boot, with no config gate
 	// between. Wired or not, an unreadable treasury still aborts the buy (fail closed).
 	treasury TreasuryReader
 	// costPersister durably records a fresh buy's cost so a resumed run reports honest
-	// P&L across a daemon restart (sp-dkj7, RULINGS #2). Optional; nil disables the
-	// persistence (a cross-restart resume then under-reports cost exactly as before this
-	// fix — fail-open, matching the sibling optional-port contract). The daemon injects a
+	// P&L across a daemon restart (RULINGS #2). Optional; nil disables the
+	// persistence (a cross-restart resume then under-reports cost — fail-open, matching
+	// the sibling optional-port contract). The daemon injects a
 	// container-config-backed persister via SetCostPersister.
 	costPersister ArbCostPersister
 	// absorptionLedger (sp-78ai L2) converts this leg's PLANNED absorption hold into
@@ -199,7 +199,7 @@ type RunArbCoordinatorHandler struct {
 // ArbCostPersister durably records a one-shot arb run's already-incurred buy cost
 // (keyed by container) so a resumed run — which skips the completed buy and would
 // otherwise start its P&L accounting at TotalCost=0 — can restore the prior attempt's
-// cost and report an honest NetProfit (sp-dkj7). It exists because the cost is NOT
+// cost and report an honest NetProfit. It exists because the cost is NOT
 // otherwise recoverable on resume: cargo carries no cost basis and the launch config
 // holds only the lane/caps, so per RULINGS #2 the run must persist it and reload it on
 // boot. The daemon backs this with the container config (the same map recovery rebuilds
@@ -233,7 +233,7 @@ func NewRunArbCoordinatorHandler(
 	}
 }
 
-// SetGateGraph wires the multi-jump gate-graph resolver (sp-7gr2) into the
+// SetGateGraph wires the multi-jump gate-graph resolver into the
 // delegated movement handler (so travel crosses multi-hop gaps) AND enables this
 // coordinator's pre-buy routability guard, which route-checks a cross-system
 // sell leg through the SAME instance before spending. Left unset (nil), both the
@@ -243,14 +243,14 @@ func (h *RunArbCoordinatorHandler) SetGateGraph(g GateGraph) {
 	h.legs.SetGateGraph(g)
 }
 
-// SetChartGateOnArrival propagates the sp-bcsu chart-on-gate-arrival knob to the movement
+// SetChartGateOnArrival propagates the chart-on-gate-arrival knob to the movement
 // legs, so this coordinator's cross-system arrivals chart the gate they land on too.
 // Mirrors the SetGateGraph delegation.
 func (h *RunArbCoordinatorHandler) SetChartGateOnArrival(enabled bool) {
 	h.legs.SetChartGateOnArrival(enabled)
 }
 
-// SetTreasuryReader wires the shared ledger-backed treasury reader (sp-45s6f) into this
+// SetTreasuryReader wires the shared ledger-backed treasury reader into this
 // coordinator's spend-floor guard AND into its MOVEMENT LEGS, which run the buy-time
 // working-capital floor. The legs are this handler's OWN RunTradeRouteCoordinatorHandler
 // instance (the constructor builds one; the daemon passes nil), NOT the daemon's separately
@@ -270,9 +270,9 @@ func (h *RunArbCoordinatorHandler) SetEventSubscriber(subscriber navigation.Ship
 	h.legs.SetEventSubscriber(subscriber)
 }
 
-// SetCostPersister wires the durable buy-cost store (sp-dkj7) so a fresh run records its
+// SetCostPersister wires the durable buy-cost store so a fresh run records its
 // tranche cost for an honest resume P&L. Left unset (nil), a resumed run reports NetProfit
-// without the prior attempt's cost, exactly as before this fix (fail-open). Mirrors the
+// without the prior attempt's cost (fail-open). Mirrors the
 // SetGateGraph optional-injection idiom.
 func (h *RunArbCoordinatorHandler) SetCostPersister(p ArbCostPersister) {
 	h.costPersister = p
@@ -329,13 +329,13 @@ func (h *RunArbCoordinatorHandler) execute(
 		return fmt.Errorf("buy-at and sell-at must differ (both %s)", cmd.BuyAt)
 	}
 
-	// sp-ieqj: stamp this run's operation context so every ledger row AND every refuel
+	// Stamp this run's operation context so every ledger row AND every refuel
 	// it writes inherits operation_type="arb_run" instead of the 'manual' fallback. The
 	// one-shot buy→travel→sell delegates to the shared trade-route legs, which are
 	// ctx-transparent (they record whatever operation context rides the ctx), and
 	// travel's RouteExecutor propagates this ctx verbatim to every RefuelShipCommand it
-	// fires. Before this stamp arb's PURCHASE_CARGO/SELL_CARGO and its travel refuels
-	// landed unattributed, crediting arbitrage P&L to no engine. Mirrors how every
+	// fires. Without the stamp arb's PURCHASE_CARGO/SELL_CARGO and its travel refuels
+	// land unattributed, crediting arbitrage P&L to no engine. Mirrors how every
 	// sibling coordinator tags its writes at the boundary (trade_route/tour/stocker/…).
 	// A run built without a ContainerID (direct/CLI) yields a nil context and stays
 	// 'manual' — the honest ad-hoc default.
@@ -351,10 +351,10 @@ func (h *RunArbCoordinatorHandler) execute(
 	// publish never touches the trade path — RULINGS #4).
 	flowfeed.Publish(buildArbFlow(cmd, shipCargoItems(ship), time.Now().UTC()))
 
-	// sp-5nqx retry safety — resume from the failed step, NEVER re-buy. The daemon
+	// Retry safety — resume from the failed step, NEVER re-buy. The daemon
 	// container runner retries a failed run by RE-RUNNING THE WHOLE iteration
-	// (buy→travel→sell), so before this guard a post-buy failure (the missing
-	// departure hop failing the jump) sent every retry back through the buy and blew
+	// (buy→travel→sell), so without this guard a post-buy failure (the missing
+	// departure hop failing the jump) sends every retry back through the buy and blows
 	// past --max-spend: the live incident bought 3× (−39,468/−39,624/−39,780 =
 	// 118,872) against a 40k cap. The tranche a prior attempt already bought is
 	// physically in the hull's hold, so if the hull is already holding this good we
@@ -408,11 +408,11 @@ func (h *RunArbCoordinatorHandler) execute(
 		response.AbortReason = fmt.Sprintf("could not reload ship %s before travel: %v", cmd.ShipSymbol, err)
 		return err
 	}
-	// sp-ry741 residual: the travel-to-sink FLIGHT must honor the SAME jump horizon Guard-0's pre-buy
-	// routability CHECK used (cmd.LegJumpBound). Before this the check admitted a far long-haul
-	// sink at bound 25 while the flight still resolved at the hardcoded MaxJumpPath=5, so the hull passed
-	// the buy check, bought, then failed the sell-leg flight ("no jump-gate route ... within 5 jumps")
-	// and stranded laden — capturing zero value. Reuse the shared bound-aware travel (no forked route
+	// Residual: the travel-to-sink FLIGHT must honor the SAME jump horizon Guard-0's pre-buy
+	// routability CHECK used (cmd.LegJumpBound). Let them diverge and the check admits a far long-haul
+	// sink at bound 25 while the flight still resolves at the hardcoded MaxJumpPath=5, so the hull passes
+	// the buy check, buys, then fails the sell-leg flight ("no jump-gate route ... within 5 jumps")
+	// and strands laden — capturing zero value. Reuse the shared bound-aware travel (no forked route
 	// logic): thread the bound into the stored-then-verify slot — the SAME resolver the long-haul
 	// reposition-to-source rides (sp-0o9ub) — so the buy-side reposition and the sell-side flight agree
 	// on horizon AND resolver. 0 -> all bounds 0 -> the strict Path at MaxJumpPath, byte-identical for
@@ -428,7 +428,7 @@ func (h *RunArbCoordinatorHandler) execute(
 		response.AbortReason = fmt.Sprintf("dock at destination %s failed: %v", cmd.SellAt, err)
 		return err
 	}
-	// PER-TRANCHE SELL FLOOR (sp-lbbm): arm the sale with a per-unit floor so a bid
+	// PER-TRANCHE SELL FLOOR: arm the sale with a per-unit floor so a bid
 	// our own tranches (or a colliding hull) crush mid-sale aborts the remainder
 	// instead of dumping it — the H50 fix (five tranches for 27 credits). The floor
 	// is ceil(fraction × QUOTED bid); the quote is the healthy anchor: a fresh run
@@ -473,7 +473,7 @@ func (h *RunArbCoordinatorHandler) execute(
 
 	// A held remainder is a FAILURE, never a false success (sp-5nqx fix c, sp-lbbm).
 	// It arises two ways, both the stranded-veto situation: the sell floor aborted
-	// the sale (the bid crashed — sp-lbbm), or the destination could not absorb the
+	// the sale (the bid crashed), or the destination could not absorb the
 	// whole tranche. Either leaves unsold units aboard, which must reflect as a
 	// container failure (a non-nil error → the runner's signalCompletionWithStatus(
 	// false)), NOT the success=true the incident logged with cargo stranded — so the
@@ -531,7 +531,7 @@ func (h *RunArbCoordinatorHandler) guardAndBuy(
 ) (int, error) {
 	logger := common.LoggerFromContext(ctx)
 
-	// Guard 0 — routability (sp-7gr2): never buy a tranche whose sell leg sits in a
+	// Guard 0 — routability: never buy a tranche whose sell leg sits in a
 	// system we cannot reach. The incident bought at C37, flew to the home gate, then
 	// discovered there was NO jump route to JP61 and crashed laden — spend first, learn
 	// unroutable after. This inverts that order: a cross-system sell leg is route-checked
@@ -540,7 +540,7 @@ func (h *RunArbCoordinatorHandler) guardAndBuy(
 	// check; no gate graph wired skips it too (fail-open on the missing port, matching the
 	// sibling guards' optional-port contract).
 	//
-	// The routability HORIZON is caller-chosen (sp-ry741). Default 0 → gategraph.MaxJumpPath=5,
+	// The routability HORIZON is caller-chosen. Default 0 → gategraph.MaxJumpPath=5,
 	// so the one-shot arb and every gRPC/recovery-rebuilt run keep the strict 5-hop veto
 	// BYTE-IDENTICAL. The long-haul arb leg sets LegJumpBound=longHaulRepositionJumps(25)
 	// so this check ADMITS the far 6–12 hop exotic sinks discovery ranks and the reposition flies
@@ -608,7 +608,7 @@ func (h *RunArbCoordinatorHandler) guardAndBuy(
 	// guard's live-refresh is simply inactive and the gate runs on the cached basis.
 	if h.marketRefresher != nil {
 		// LIVE, not budgeted: this guard fails CLOSED and this run gets one shot,
-		// so a cached basis would be verified against itself (sp-ntgfj).
+		// so a cached basis would be verified against itself.
 		if rerr := h.marketRefresher.ScanAndSaveMarket(shared.WithLiveScanRequired(ctx), uint(cmd.PlayerID), cmd.BuyAt); rerr != nil {
 			response.Aborted = true
 			response.MarginAbort = true
@@ -679,7 +679,7 @@ func (h *RunArbCoordinatorHandler) guardAndBuy(
 	response.DestBid = destBid
 	response.MarginPerUnit = marginPerUnit
 	response.MinMarginFloor = cmd.MinMargin
-	// sp-lbbm: record the quoted bid as the sell floor's healthy anchor, so an
+	// Record the quoted bid as the sell floor's healthy anchor, so an
 	// in-process retry (same command object, tranche already aboard, DestBid not
 	// re-read) still floors against the real quote rather than a since-crushed bid.
 	cmd.QuotedDestBid = destBid
@@ -738,7 +738,7 @@ func (h *RunArbCoordinatorHandler) guardAndBuy(
 	// margin: the quoted dest bid minus the min-margin floor (or one credit when no
 	// floor is set, so a non-positive-margin unit can never be bought). Each sub-tranche
 	// re-reads the live ask and aborts the remainder once it ladders past this ceiling.
-	// destBid is the quoted (cached) bid — the sell floor (sp-lbbm) guards the far-side
+	// destBid is the quoted (cached) bid — the sell floor guards the far-side
 	// bid-crash; together they bound the loss, per RULINGS #4 layered defense.
 	maxAskPerUnit := destBid - cmd.MinMargin
 	if cmd.MinMargin <= 0 {
@@ -771,7 +771,7 @@ func (h *RunArbCoordinatorHandler) guardAndBuy(
 }
 
 // persistBuyCostForResume durably records a fresh buy's cost so a resumed run reports
-// honest P&L (sp-dkj7). It writes to TWO places, covering both restart shapes:
+// honest P&L. It writes to TWO places, covering both restart shapes:
 //
 //   - cmd.PriorAttemptCost, in memory, for an IN-PROCESS retry: the container runner
 //     re-runs the SAME command object on a backoff, so the next Handle's resume branch
@@ -845,7 +845,7 @@ func unitsOfGoodAboard(ship *navigation.Ship, good string) int {
 	return cargo.GetItemUnits(good)
 }
 
-// spendFloorBreached mirrors the trade-route working-capital guard (sp-bp6f) for the
+// spendFloorBreached mirrors the trade-route working-capital guard for the
 // one-shot buy: it reports whether executing a buy of projectedCost would drop treasury
 // below reserve, and fails CLOSED on any read failure (a missing player token, a GetAgent
 // error, or a ledger too stale to trust with the live fallback also down) rather than risk

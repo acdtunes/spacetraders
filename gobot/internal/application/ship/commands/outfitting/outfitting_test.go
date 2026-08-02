@@ -57,7 +57,7 @@ func (f *outfitFakeAPIClient) GetShipyard(_ context.Context, _, _, _ string) (*p
 }
 
 // ReadShipyard makes the fake satisfy the metered yardFeeReader the spend-floor
-// now takes the modification fee through (sp-mb0er). It answers exactly as the old
+// now takes the modification fee through. It answers exactly as the old
 // direct GetShipyard call did, so the fail-closed fixtures still exercise the
 // guard: the fee read is Earning-class and therefore never declined, so there is
 // no serve-from-store case to model here.
@@ -131,7 +131,7 @@ func newOutfitHarness(t *testing.T, fake *outfitFakeAPIClient) (*OutfittingHandl
 	shipRepo := api.NewShipRepository(fake, playerRepo, nil, outfitFakeWaypointProvider{}, db, nil)
 	containerRepo := persistence.NewContainerRepository(db)
 
-	// Wire the REAL ledger recorder over the same DB (sp-shq63) so the shipyard
+	// Wire the REAL ledger recorder over the same DB so the shipyard
 	// fee travels the true recording path — a spy would accept any balance and
 	// could not tell a re-anchored row from an appended one.
 	med := mediator.NewMediator()

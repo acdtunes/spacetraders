@@ -99,7 +99,7 @@ func TestCalculateInFlightCargo_CountsInterruptedLadenShip(t *testing.T) {
 
 // Baseline regression guard: a ship attached to a live RUNNING worker is
 // counted exactly as before this fix — the pre-existing RUNNING-workers pass
-// is untouched by the sp-u20w addition.
+// is untouched by the addition.
 func TestCalculateInFlightCargo_RunningWorkerCountingUnchanged(t *testing.T) {
 	ship := newInFlightCargoTestShip(t, "TORWIND-7", 30, "contract-work-live")
 	repo := &multiOrphanFakeShipRepo{ships: []*navigation.Ship{ship}}
@@ -139,7 +139,7 @@ func TestCalculateInFlightCargo_SumsRunningAndInterruptedShips(t *testing.T) {
 	}
 }
 
-// readoptInterruptedDeliveries (sp-tgp5) moves a successfully re-adopted ship
+// readoptInterruptedDeliveries moves a successfully re-adopted ship
 // off its dead FAILED container and onto a fresh RUNNING one before the main
 // loop — and therefore before calculateInFlightCargo — ever runs. The old
 // dead container can still be listed as FAILED (its own row isn't cleaned up

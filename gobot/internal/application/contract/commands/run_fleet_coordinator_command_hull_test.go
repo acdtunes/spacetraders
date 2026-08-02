@@ -6,7 +6,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 )
 
-// hasRegularHaulerCandidate computes the sp-sqq5 last-resort verdict the main
+// hasRegularHaulerCandidate computes the last-resort verdict the main
 // loop feeds into spawnContractWorker's commandDraftAllowed guard
 // (run_fleet_coordinator.go:717) - the claim-side backstop that refuses to
 // draft an undedicated command frigate whenever a regular hauler was among

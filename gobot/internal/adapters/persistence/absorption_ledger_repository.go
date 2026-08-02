@@ -22,7 +22,7 @@ const (
 	// DefaultExecutedHardCap bounds how long an EXECUTED recovery shadow may block
 	// before the sweep wipes it regardless of decay.
 	//
-	// 4h (sp-brr68), recalibrated from 12h. The 12h was derived as "≈ two half-lives of the
+	// 4h, recalibrated from 12h. The 12h was derived as "≈ two half-lives of the
 	// slowest TAGGED tier (RESTRICTED, ~6.9h)", with the cap intended as "the belt to the decay
 	// curve's suspenders" — a backstop that should almost never be what clears a shadow.
 	// sp-ircfy's era-07-19 re-fit raised every half-life 4-6x (RESTRICTED 6.9h → 39.4h, WEAK →

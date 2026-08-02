@@ -88,7 +88,7 @@ func TestFrontier_Depth_TargetsDeepestReachableVirgin(t *testing.T) {
 		"the breadth slice still declares its near-ring head — market coverage continues (no regression)")
 }
 
-// Mutation guard (sp-rjgr): a 0% depth split (breadth 100%) is PURE BFS — no pathfinder is
+// Mutation guard: a 0% depth split (breadth 100%) is PURE BFS — no pathfinder is
 // dispatched, so the deepest virgin is never targeted. Byte-identical scenario to the
 // depth-drive test above; only the split flips. Proves the split is load-bearing.
 func TestFrontier_Depth_ZeroDepthSplitIsPureBFS(t *testing.T) {

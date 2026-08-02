@@ -120,7 +120,7 @@ func NewNavigationMetricsCollector() *NavigationMetricsCollector {
 			[]string{"player_id"},
 		),
 
-		// Stranded jump-claim records found and cleared (sp-rqhzh). A jump's
+		// Stranded jump-claim records found and cleared. A jump's
 		// container row is a pure FK placeholder that its own handler deletes on
 		// the way out; a row that outlives its jump is a leak. Labelled by outcome
 		// so a reaper that never fires (0) is distinguishable from one that fires

@@ -80,7 +80,7 @@ type TourConstraints struct {
 	Closed                bool
 	AnchorSystem          string
 	// InterSystemHops carries the gate-hop distance between each pair of systems in
-	// AllowedSystems (sp-tp5c3), resolved Go-side over the SAME gate graph the reposition
+	// AllowedSystems, resolved Go-side over the SAME gate graph the reposition
 	// and candidate walk use. The solver prices a cross-system crossing as gate_hops x the
 	// per-crossing charge instead of a flat 1 hop, so a widened (MaxTourSystems > 2) horizon
 	// is priced honestly. Empty (the un-widened default) => the solver defaults every crossing
@@ -94,7 +94,7 @@ type TourConstraints struct {
 	// default) charges nothing and plans byte-identically to today, which is also the
 	// documented revert.
 	ExternalityWeight float64
-	// GateFees carries the per-DEPARTURE-SYSTEM jump-gate fee (sp-9idvn), learned from
+	// GateFees carries the per-DEPARTURE-SYSTEM jump-gate fee, learned from
 	// the ledger's own recorded jumps. The solver prices a crossing's first hop from the
 	// departure system's scalar instead of the flat fleet charge. Empty (no history yet)
 	// => every crossing prices at the flat charge => byte-identical to today; a system
@@ -102,7 +102,7 @@ type TourConstraints struct {
 	GateFees []GateFee
 }
 
-// GateFee is one departure system's jump-gate fee in credits (sp-9idvn).
+// GateFee is one departure system's jump-gate fee in credits.
 //
 // KEYED ON ONE SYSTEM, unlike InterSystemHopDistance, and the asymmetry is measured
 // rather than stylistic: gate-hop DISTANCE is symmetric, but a gate FEE belongs to the
@@ -120,7 +120,7 @@ type GateFee struct {
 	FeeCredits int64
 }
 
-// InterSystemHopDistance is one gate-hop distance between two systems (sp-tp5c3). GateHops is
+// InterSystemHopDistance is one gate-hop distance between two systems. GateHops is
 // the number of jump-gate crossings on the shortest built-gate route (1 for a directly-gated
 // pair). Distance is symmetric; a caller may send either direction. The solver ignores a
 // non-positive GateHops (that crossing defaults to 1 hop).

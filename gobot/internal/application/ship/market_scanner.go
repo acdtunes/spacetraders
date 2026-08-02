@@ -25,7 +25,7 @@ type MarketScanner struct {
 	// budget is the fleet's ONE market-scan allowance, and it is never nil —
 	// see NewMarketScanner. Every market read in the daemon that costs an API
 	// request reaches ScanAndSaveMarket, so this field is the single place the
-	// server's unraisable 2.00 req/s ceiling is defended (sp-ntgfj).
+	// server's unraisable 2.00 req/s ceiling is defended.
 	budget *ScanBudget
 }
 
@@ -83,7 +83,7 @@ func (s *MarketScanner) ScanBudget() *ScanBudget { return s.budget }
 // things — "the data is written" and "the data is whatever was already there" —
 // and a caller that records freshness off this return records a claim it cannot
 // support. That is exactly what made 78.5% of the sensing ledger's freshness
-// stamps false (sp-zml2u).
+// stamps false.
 func (s *MarketScanner) ScanAndSaveMarket(ctx context.Context, playerID uint, waypointSymbol string) error {
 	_, err := s.ScanAndSaveMarketWithOutcome(ctx, playerID, waypointSymbol)
 	return err
@@ -122,7 +122,7 @@ func (s *MarketScanner) ScanAndSaveMarketWithOutcome(ctx context.Context, player
 		cached = nil
 	}
 
-	// The fleet's ONE market-scan budget (sp-ntgfj). Declining is a SUCCESS: the
+	// The fleet's ONE market-scan budget. Declining is a SUCCESS: the
 	// caller's next act is to read this waypoint from the store, which is exactly
 	// what it would have done after a scan, so it proceeds on prices that are
 	// current to within the budget's own rotation interval instead of spending a
@@ -199,7 +199,7 @@ func recordMarketScanMetric(playerID uint, waypointSymbol string, startTime time
 }
 
 // MarketFreshWithin reports whether the cached market m was last updated within maxAge
-// of now — the sp-v34b recent-scan freshness test SHARED by the arrival scan
+// of now — the recent-scan freshness test SHARED by the arrival scan
 // (RouteExecutor) and the post-trade impact scan (cargo transactions), so both gates
 // agree on one definition of "fresh". A nil market (never scanned) or a zero/unknown
 // timestamp is NOT fresh, so the caller scans: a trade must never proceed on prices it
@@ -216,7 +216,7 @@ func MarketFreshWithin(m *market.Market, maxAge time.Duration, now time.Time) bo
 	return now.Sub(observed) <= maxAge
 }
 
-// ScanAndSaveMarketFresh is the sp-v34b recent-scan freshness gate over
+// ScanAndSaveMarketFresh is the recent-scan freshness gate over
 // ScanAndSaveMarket: when maxAge>0 AND the cached market for waypointSymbol was scanned
 // within maxAge, it SKIPS the GetMarket API call and reuses the cache (returns
 // scanned=false) — killing the redundant re-scan (the measured "same hull re-scanning a
@@ -224,7 +224,7 @@ func MarketFreshWithin(m *market.Market, maxAge time.Duration, now time.Time) bo
 // scan so the trade sees fresh-enough prices, and scanned then reports what THAT scan
 // did — true if it wrote data, false if the market-scan budget declined it. maxAge<=0
 // disables the gate
-// entirely (always scans — pre-sp-v34b behavior), so the freshness-scout recovery path
+// entirely (always scans), so the freshness-scout recovery path
 // (which stamps no policy, hence maxAge 0) and every other caller are byte-for-byte
 // unaffected. Non-fatal like ScanAndSaveMarket: the returned error is the underlying
 // scan error, never the gate.
@@ -245,7 +245,7 @@ func (s *MarketScanner) ScanAndSaveMarketFresh(ctx context.Context, playerID uin
 	// The outcome is the SCANNER's, not this gate's. Falling through to a scan
 	// that the market-scan budget then declines writes no data either, so
 	// reporting true here would reintroduce the same collapse this gate's own
-	// return value exists to avoid (sp-zml2u). Every caller today discards the
+	// return value exists to avoid. Every caller today discards the
 	// bool, so this is inert now; it stops the next one from inheriting the trap.
 	return s.ScanAndSaveMarketWithOutcome(ctx, playerID, waypointSymbol)
 }
@@ -256,7 +256,7 @@ func (s *MarketScanner) convertAPIGoodsToDomain(apiGoods []domainPorts.TradeGood
 		// Each price keeps its own name across the boundary: the API's
 		// purchasePrice is the domain's purchasePrice. They are two adjacent ints,
 		// so passing them in the wrong order compiles silently — which is exactly
-		// what sp-en5h7 was: every persisted row, every era, held the two prices
+		// what happened once: every persisted row, every era, held the two prices
 		// transposed, and TradeGoodData happens to DECLARE SellPrice first, which
 		// made the wrong order look like the natural one. Keep them named.
 		good, err := market.NewTradeGood(

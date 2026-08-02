@@ -35,8 +35,7 @@ const (
 // chains (goods_factory coordinators, in particular) should PARK on this
 // error - preserving chain/pipeline state for resumption on the next poll
 // cycle - rather than letting it propagate into a terminal crash the way
-// goods_factory-SHIP_PARTS-c7e2ecb2 and the SHIP_PLATING recurrence did
-// (sp-vsfn).
+// goods_factory-SHIP_PARTS-c7e2ecb2 and the SHIP_PLATING recurrence did.
 type ErrRefuelUnrecoverable struct {
 	ShipSymbol string
 	Waypoint   string
@@ -60,7 +59,7 @@ func (e *ErrRefuelUnrecoverable) Unwrap() error { return e.Cause }
 // messages retry_policy.go's final wrap produces: "server error (%d)" for
 // 5xx, "rate limited (429)", "service unavailable (503)", "network error:
 // %w", and "max retries exceeded: %w" wrapping any of those. The evidence
-// bug (sp-vsfn) surfaced exactly "max retries exceeded: server error (500)"
+// bug surfaced exactly "max retries exceeded: server error (500)"
 // from a refuel step.
 func isRetryableRefuelError(err error) bool {
 	if err == nil {
@@ -85,8 +84,8 @@ func isRetryableRefuelError(err error) bool {
 
 // refuelShipWithRetry refuels ship at its current location, retrying a
 // transient failure with backoff and rerouting to an alternate fuel-capable
-// waypoint if the original stop keeps failing past the retry budget
-// (sp-vsfn). This is the entry point production code should call instead of
+// waypoint if the original stop keeps failing past the retry budget. This is
+// the entry point production code should call instead of
 // refuelShip directly at every refuel call site.
 func (e *RouteExecutor) refuelShipWithRetry(
 	ctx context.Context,
@@ -102,9 +101,9 @@ func (e *RouteExecutor) refuelShipWithRetry(
 // not need to be shrunk for tests since e.clock is expected to be a
 // shared.MockClock whose Sleep advances time instantly without blocking.
 //
-// returnToOrbit is threaded straight to refuelShip (sp-yd84 CUT 2): the
-// same-waypoint retry loop honours the caller's stay-docked choice. The
-// alternate-stop reroute below always returns to orbit — after a reroute the
+// returnToOrbit is threaded straight to refuelShip: the same-waypoint retry
+// loop honours the caller's stay-docked choice. The alternate-stop reroute
+// below always returns to orbit — after a reroute the
 // ship has moved to a different waypoint, so the stay-docked optimization (whose
 // point is to let a co-located trade skip its dock) no longer applies and the
 // caller still needs orbit for the leg it was preparing.
@@ -181,10 +180,9 @@ func (e *RouteExecutor) refuelShipWithRetryCore(
 
 // refuelAtAlternateStop reroutes ship to the nearest alternate fuel-capable
 // marketplace in its system (excluding failedWaypoint) and refuels there.
-// Candidates are filtered to HasFuel waypoints - the "verify fuel-stop
-// selection is sane" check the bead asked for, applied via static waypoint
-// trait data rather than a live MarketScanner query (sp-vsfn scope: no test
-// here drives a live-market check, so none is added).
+// Candidates are filtered to HasFuel waypoints via static waypoint trait data
+// rather than a live MarketScanner query (no test here drives a live-market
+// check, so none is added).
 func (e *RouteExecutor) refuelAtAlternateStop(
 	ctx context.Context,
 	ship *domainNavigation.Ship,
@@ -236,7 +234,7 @@ func (e *RouteExecutor) refuelAtAlternateStop(
 
 // navigateShipDirect sends ship directly to dest and waits for arrival if the
 // response includes one, mirroring navigateToSegmentDestination's
-// command/response handling for the out-of-route reroute path (sp-vsfn's
+// command/response handling for the out-of-route reroute path (the
 // alternate-fuel-stop navigate is not part of any planned Route, so it cannot
 // reuse executeSegment).
 func (e *RouteExecutor) navigateShipDirect(

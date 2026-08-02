@@ -10,7 +10,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// These tests cover the stale-launch-list homing defect (sp-cmwc): the between-legs
+// These tests cover the stale-launch-list homing defect: the between-legs
 // homing gate must key off the LIVE dedicated_fleet tag, not the immutable
 // --dedicated-ships launch snapshot, so a hull added via `fleet add --operation
 // contract` after launch homes to a standby station between legs instead of being

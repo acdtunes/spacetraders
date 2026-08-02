@@ -58,12 +58,12 @@ func (h *RunFleetAutosizerCoordinatorHandler) SetHeavyCapReader(r liveconfig.Rea
 }
 
 // liveKnobs takes the tick's ONE live-config snapshot and resolves BOTH live-tunable knobs from it
-// (the sp-ts82 Pattern-C hot reload). One snapshot per tick is the documented liveconfig
+// (the Pattern-C hot reload). One snapshot per tick is the documented liveconfig
 // discipline — a second read would double the coordinator's config traffic and could see two
 // different configs within a single tick.
 //
-// reconcileOnce already re-resolves the whole config every tick — it simply resolved from the
-// launch-frozen command struct — so this replaces the SOURCE of these knobs, not the cadence.
+// reconcileOnce already re-resolves the whole config every tick, so this changes the SOURCE of
+// these knobs, not the cadence.
 //
 // Fallback chain, deliberately never zeroing:
 //   - nil reader        → launch heavy cap, sizing ON (the coordinator is not wired for live config)

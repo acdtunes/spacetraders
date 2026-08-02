@@ -17,7 +17,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
 )
 
-// sp-crjla warehouse-first construction sourcing. These tests pin the NEW PHASE-1.5
+// Warehouse-first construction sourcing. These tests pin the NEW PHASE-1.5
 // seam in supplyTask: before buying a gate material at market (PHASE 2), the drain
 // WITHDRAWS it from an in-system depot warehouse at zero cost, so the depot's stocker
 // is the sole buyer→warehouse and the construction buy is only ever the RESIDUAL

@@ -14,7 +14,7 @@ import (
 // reconcileStubMediator records every AssignShipFleetCommand sent through it
 // and returns a canned per-symbol error, so tests can assert exactly which
 // ships reconciliation tried to dedicate - without a real handler stack.
-// Reconciliation routes through the mediator (sp-l7h2), not the repository:
+// Reconciliation routes through the mediator, not the repository:
 // idempotence (skip the DB write when the tag is unchanged) now lives inside
 // ShipRepository.AssignFleet and is covered by the repository's own tests.
 type reconcileStubMediator struct {
@@ -40,7 +40,7 @@ func (m *reconcileStubMediator) RegisterMiddleware(common.Middleware) {}
 
 // Every symbol on the operator's --dedicated-ships list must be routed
 // through AssignShipFleetCommand - the single write path for the dedication
-// tag (sp-l7h2) - into the named fleet, so the claim-filter in
+// tag - into the named fleet, so the claim-filter in
 // FindIdleLightHaulers and the atomic guard in ClaimShip take effect.
 func TestReconcileDedicatedFleet_SendsAssignCommandPerConfiguredShip(t *testing.T) {
 	med := &reconcileStubMediator{}
@@ -120,7 +120,7 @@ func TestReconcileDedicatedFleet_EmptyList_NoOp(t *testing.T) {
 
 // A symbol present on the operator's --dedicated-ships list is dedicated -
 // this decides whether the "previous ship" hook homes a ship instead of
-// balancing it to a market (sp-snmb).
+// balancing it to a market.
 func TestIsDedicatedShip_SymbolInList_ReturnsTrue(t *testing.T) {
 	if !isDedicatedShip("TORWIND-4", []string{"TORWIND-4", "TORWIND-5"}) {
 		t.Fatalf("expected TORWIND-4 to be reported as dedicated")

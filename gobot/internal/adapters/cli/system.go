@@ -18,7 +18,7 @@ import (
 )
 
 // NewSystemCommand creates the `system` command group. Today it exposes the
-// jump-gate adjacency (sp-7gr2) so an operator (or a satellite pushing outward)
+// jump-gate adjacency so an operator (or a satellite pushing outward)
 // can see the real cross-system topology the daemon routes over — the map that
 // makes JP61's three-jump distance from KA42 (PA3→UQ16→JP61) visible instead of
 // discovered by a laden crash at the home gate.
@@ -41,7 +41,7 @@ system live on demand.`,
 // newSystemGatesCommand creates `system gates`: print the jump-gate adjacency for
 // every charted system, or (with --system) for one system, fetching it live on a
 // store miss. Output is one line per system in the shape
-// `X1-ABC <-> X1-DEF,X1-GHI` — the same shape as the sp-7gr2 topology dump, so it
+// `X1-ABC <-> X1-DEF,X1-GHI` — the same shape as the topology dump, so it
 // stays greppable and feeds manual routing.
 func newSystemGatesCommand() *cobra.Command {
 	var systemSymbol string
@@ -122,7 +122,7 @@ func printGateAdjacency(adjacency map[string][]domainsystem.GateEdge) {
 
 // renderGateAdjacency renders the adjacency as aligned `SYS <-> a,b,c` lines,
 // systems sorted for stable output and neighbors sorted and comma-joined — the
-// sp-7gr2 topology-dump shape. Two markers keep the chart honest (sp-8qhu): a
+// sp-7gr2 topology-dump shape. Two markers keep the chart honest: a
 // VERIFIED under-construction gate is marked `*` (not routable); a STALE row —
 // whose cached construction state is unverified and will be re-probed on the next
 // route — is marked `?` so an invalidated row is never presented as an

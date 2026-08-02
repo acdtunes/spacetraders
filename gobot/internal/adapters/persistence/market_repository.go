@@ -670,7 +670,7 @@ func (r *MarketRepositoryGORM) SystemsFreshness(
 	// Collapse per-(waypoint,good) rows to one market: the latest scan time (defensively — a
 	// market's goods share one scan), the summed Σ(trade_volume × mid-price) value weight, and the
 	// activity of the DOMINANT (highest trade_volume × mid-price) good — the throughput proxy the
-	// value weight already uses, so a market's freshness activity (sp-j4kjv) tracks the good that
+	// value weight already uses, so a market's freshness activity tracks the good that
 	// actually drives its throughput rather than an arbitrary or low-volume one.
 	type marketRollup struct {
 		waypoint      string

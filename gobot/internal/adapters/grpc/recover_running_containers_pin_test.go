@@ -65,7 +65,7 @@ func newRecoveryTestServer(t *testing.T) (*DaemonServer, *gorm.DB, int) {
 	require.NoError(t, err)
 	player := persistence.PlayerModel{AgentSymbol: "REC-AGENT", Token: "tok", CreatedAt: time.Now()}
 	require.NoError(t, db.Create(&player).Error)
-	// sp-njpu: recovery is scoped to the open era's player, so the harness needs an
+	// Recovery is scoped to the open era's player, so the harness needs an
 	// open era owned by this player. Containers inserted with this player's ID are
 	// therefore "live" and recover as before; foreign-player containers are dead-era.
 	era := persistence.EraModel{Name: "REC-ERA", AgentSymbol: "REC-AGENT", PlayerID: player.ID}

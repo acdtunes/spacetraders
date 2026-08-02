@@ -15,7 +15,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// sp-382j: the thin construction-supply DRAIN. These tests drive drainOnce (the
+// The thin construction-supply DRAIN. These tests drive drainOnce (the
 // per-tick reconcile) directly — the Handle loop just calls it on a timer. The
 // drain is tested at its true seam: sourcing + delivery are delegated to a
 // ConstructionProducer (the shared ProductionExecutor in production), so the
@@ -38,11 +38,11 @@ type fakeConstructionProducer struct {
 	deliverCalls  []producerDeliverCall
 	produceErr    error
 	deliverErr    error
-	// sp-2me2: capture the hull-fill target the drain stamped on ctx at ProduceGood, so a test can
+	// Capture the hull-fill target the drain stamped on ctx at ProduceGood, so a test can
 	// assert the drain fills toward the outstanding bill rather than one trade-volume tranche.
 	observedBill   int
 	observedFillOK bool
-	// sp-9ptm: callSeq is the ORDERED trace of "produce"/"deliver" across the run, so a test can
+	// callSeq is the ORDERED trace of "produce"/"deliver" across the run, so a test can
 	// prove the deliver-on-hand leg runs BEFORE the source-buy attempt. deliveredSeq scripts the
 	// units each successive DeliverToConstructionSite reports (on-hand load, then sourced load);
 	// it falls back to `delivered` once exhausted, so existing single-delivery tests are unchanged.
@@ -97,7 +97,7 @@ func staticActivator(a ConstructionActivator) func(int) ConstructionActivator {
 
 // drainStubTaskRepo serves READY tasks and records status persistence. Embeds the
 // interface so any unused method panics, keeping the stub honest. The mutex makes it
-// safe for the concurrent drain workers (sp-01eh) that call Update in parallel.
+// safe for the concurrent drain workers that call Update in parallel.
 type drainStubTaskRepo struct {
 	manufacturing.TaskRepository
 	mu        sync.Mutex
@@ -158,7 +158,7 @@ func (r *drainStubTaskRepo) Update(_ context.Context, task *manufacturing.Manufa
 // Create persists an enqueued replenishment task (PHASE-5 refill): it is recorded and appended
 // to the ready worklist so a subsequent tick's FindByStatus picks it up, exactly as the real
 // repo + drain loop behave. Locks r.mu (like Update/FindByStatus) so concurrent drain workers
-// (sp-01eh) each enqueuing a replenishment task append safely — the real GORM repo serializes
+// each enqueuing a replenishment task append safely — the real GORM repo serializes
 // concurrent inserts at the DB, so this models that atomicity.
 func (r *drainStubTaskRepo) Create(_ context.Context, task *manufacturing.ManufacturingTask) error {
 	r.mu.Lock()
@@ -169,7 +169,7 @@ func (r *drainStubTaskRepo) Create(_ context.Context, task *manufacturing.Manufa
 }
 
 // drainStubPipelineRepo caches pipelines by ID. The mutex guards the shared map and the
-// updates counter against the concurrent drain workers (sp-01eh); the pipeline object's own
+// updates counter against the concurrent drain workers; the pipeline object's own
 // read-modify-write (RecordMaterialDelivery) is serialized handler-side so no delivery is lost.
 type drainStubPipelineRepo struct {
 	manufacturing.PipelineRepository
@@ -217,7 +217,7 @@ func (r *drainFakeShipRepo) FindAllByPlayer(_ context.Context, _ shared.PlayerID
 }
 
 // ClaimShip records the atomic claim. The mutex models the DB's atomicity so the concurrent
-// drain workers (sp-01eh) each register a distinct claim without a data race (RULINGS #7).
+// drain workers each register a distinct claim without a data race (RULINGS #7).
 func (r *drainFakeShipRepo) ClaimShip(_ context.Context, symbol, containerID string, _ shared.PlayerID, operation string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -260,7 +260,7 @@ func (r *drainFakeShipRepo) claimCount() int {
 
 func (r *drainFakeShipRepo) Save(_ context.Context, _ *navigation.Ship) error { return nil }
 
-// SaveWithRetry models the real repo's CAS re-apply path (sp-wa7c) that
+// SaveWithRetry models the real repo's CAS re-apply path that
 // releaseClaims now routes through: find the hull fresh by symbol and apply the
 // mutation in place. The stored *Ship is a shared pointer, so the re-applied
 // change (e.g. a ForceRelease) is reflected for the next find — mirroring the
@@ -753,7 +753,7 @@ func TestConstructionDrain_NoIdleHauler_ReportsNoWork(t *testing.T) {
 	}
 }
 
-// sp-382j: the daemon now boot-launches this drain as a STANDING coordinator (MaxIterations=-1,
+// The daemon now boot-launches this drain as a STANDING coordinator (MaxIterations=-1,
 // mirroring GoodsFactoryCoordinator/StartGoodsFactory) so it runs continuously with no
 // bootstrapper required — idling when there is no pipeline, ready to supply the moment one
 // appears. Handle (the standing-loop entrypoint the daemon actually launches) must therefore idle
@@ -842,7 +842,7 @@ func TestConstructionDrain_EnqueuesReplenishmentWhenBillRemains(t *testing.T) {
 	}
 }
 
-// sp-utjr: when a delivery MEETS the material's full bill (remaining == 0) the drain enqueues NO
+// When a delivery MEETS the material's full bill (remaining == 0) the drain enqueues NO
 // further task — the material is complete and the refill chain settles cleanly. Without this
 // stop condition a met gate would spin forever.
 func TestConstructionDrain_NoReplenishmentWhenBillMet(t *testing.T) {
@@ -867,7 +867,7 @@ func TestConstructionDrain_NoReplenishmentWhenBillMet(t *testing.T) {
 	}
 }
 
-// sp-utjr: the refill chain self-re-stages one cargo-load at a time across successive ticks until
+// The refill chain self-re-stages one cargo-load at a time across successive ticks until
 // the material's FULL bill is met, then stops — the end-to-end continuous-fill behaviour that was
 // lost. Bill 100, one load = 40: ticks deliver 40/80/120 (meeting the bill on the 3rd) then no
 // ready work remains, so exactly two refill tasks are enqueued (after loads 1 and 2, none after
@@ -907,7 +907,7 @@ func TestConstructionDrain_DrivesFullBillAcrossDeliveries(t *testing.T) {
 	}
 }
 
-// ladenHauler builds an idle in-system hauler already CARRYING `units` of `good` (sp-9ptm), so a
+// ladenHauler builds an idle in-system hauler already CARRYING `units` of `good`, so a
 // test can model a hull released mid-delivery that must unload its on-hand cargo. Capacity is the
 // newTestHauler default (40), so `units` must be <= 40.
 func ladenHauler(t *testing.T, symbol, good string, units int) *navigation.Ship {

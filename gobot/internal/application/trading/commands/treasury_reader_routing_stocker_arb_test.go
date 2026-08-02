@@ -1,7 +1,7 @@
 package commands
 
 // treasury_reader_routing_stocker_arb_test.go — the LAST two trading-side money guards read
-// treasury through the injected reader, not through Get Agent (sp-45s6f).
+// treasury through the injected reader, not through Get Agent.
 //
 // sp-muq66 routed the tour coordinator and the trade-route circuit; the stocker's capital
 // ceiling and the one-shot arb's spend floor were left calling Get Agent directly, which is

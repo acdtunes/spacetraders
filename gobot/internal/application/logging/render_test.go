@@ -12,7 +12,7 @@ var stamp = time.Date(2026, 7, 30, 23, 13, 2, 0, time.UTC)
 // The defect, stated as a test: fields handed to the sink must reach the text.
 // Before this renderer existed the stdout sink printed the message and dropped
 // the payload, so a grep of daemon.log for ANY field name — on any container,
-// for any field — returned zero lines (sp-qkskz).
+// for any field — returned zero lines.
 func TestFormatLine_CarriesTheStructuredFields(t *testing.T) {
 	line := FormatLine(stamp, "probe_sensing_coordinator-player-5", "INFO", "Parked sensing cycle: bought 6",
 		map[string]interface{}{"yards_need_presence": 64, "yard_slots_queued": 71})

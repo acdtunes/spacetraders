@@ -11,7 +11,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
-// sp-461l (epic sp-g9td): ReadRealizedPnL's per-good tour realized net now comes from the
+// ReadRealizedPnL's per-good tour realized net now comes from the
 // TRANSACTIONS ledger (operation_type="tour", metadata->>'good_symbol'), NOT tour_leg_telemetry
 // netting. sp-rd21 proved telemetry netting read ~2x inflated (dropped buy legs), so the factory
 // chain kill-switch (and the light-autosizer worker-rate guard) were judging an inflated per-good

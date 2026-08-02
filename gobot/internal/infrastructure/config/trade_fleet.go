@@ -89,12 +89,12 @@ type TradeFleetConfig struct {
 	// + restarting the daemon (RULINGS #5, no code redeploy).
 	StrandedConsecutiveThreshold int `mapstructure:"stranded_consecutive_threshold"`
 
-	// RepositionJumpBound is the sp-kl16 jump bound a tour reposition resolves its cross-system
+	// RepositionJumpBound is the jump bound a tour reposition resolves its cross-system
 	// leg over the PERSISTED stored adjacency (RepositionPath) with, routing PAST an unreadable
 	// frontier gate rather than fail-closing on it via the strict fetch-through Path. A tour
 	// reposition is a MOVEMENT of the hull to a fresh trading ground — not a commitment of money —
 	// so it shares the scout reposition's stored-adjacency relaxation (sp-8k9m): a heavy whose
-	// ORIGIN gate sits in the sp-ikx1 unreadable-backoff set can still
+	// ORIGIN gate sits in the unreadable-backoff set can still
 	// reposition. 0/absent → the tour coordinator's own default (12, matching the scout frontier
 	// depth); the default lives in the consumer, not this config layer. Threaded through the tour
 	// container config so a captain retunes it by editing config.yaml + restarting the daemon
@@ -102,7 +102,7 @@ type TradeFleetConfig struct {
 	// delivery) keeps the strict Path — money-commitment vs hull-movement is the guard line.
 	RepositionJumpBound int `mapstructure:"reposition_jump_bound"`
 
-	// MaxTourSystems is the sp-syaz per-tour DISTINCT-system cap (start system + gate
+	// MaxTourSystems is the per-tour DISTINCT-system cap (start system + gate
 	// neighbors) — the fleet-wide tour-length lever that reverses the tour-length clamp
 	// SAFELY. Like RepositionJumpBound/StrandedConsecutiveThreshold it is a daemon-global
 	// tour tuning: StartTourRun stamps it from here into every tour container's launch
@@ -233,7 +233,7 @@ type TradeFleetConfig struct {
 	// It is the BOOT floor only, and a floor is not the cap: the effective cap is
 	// max(floor, the live scan rotation's own anti-starvation bound) (sp-k4z5b). The LIVE
 	// lever is the tour operation's SINGLE market-data freshness knob — `spacetraders tune
-	// --operation tour market_data_max_age_minutes <N>` (sp-ry4r8) — which lands next tick
+	// --operation tour market_data_max_age_minutes <N>` — which lands next tick
 	// with no daemon bounce, and is what an operator should reach for mid-incident. Reach
 	// for this key only when the daemon must come up on an already-widened floor.
 	SinkFreshnessMaxMinutes int `mapstructure:"sink_freshness_max_minutes"`

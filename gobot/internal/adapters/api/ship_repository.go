@@ -2435,7 +2435,8 @@ func (r *ShipRepository) SyncAllFromAPI(ctx context.Context, playerID shared.Pla
 
 	// reconcile the persisted fleet to the live source of truth. The
 	// upsert above only ADDS/UPDATES the ships GET /my/ships returned; it never
-	// removed rows the live API no longer reports, so stale rows lingered forever:
+	// removes rows the live API no longer reports, so without this step stale rows
+	// linger forever:
 	//   (1) a hull sold/destroyed within the current era, and
 	//   (2) a PRIOR ERA's fleet. The agent re-registers
 	//       on every server reset under a NEW players row (new player_id) for the

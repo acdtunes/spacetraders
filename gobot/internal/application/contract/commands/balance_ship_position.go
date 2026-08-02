@@ -125,16 +125,15 @@ func (h *BalanceShipPositionHandler) Handle(ctx context.Context, request common.
 		return nil, fmt.Errorf("failed to load ship %s: %w", cmd.ShipSymbol, err)
 	}
 
-	// Atomic claim (sp-lprs, l7h2 Phase 2.5): reserve the hull for balancing
-	// through the operation-checked ClaimShip instead of the old non-atomic
-	// AssignToContainer+Save. A hull pinned to a foreign fleet (e.g. the command
-	// frigate's "command" pin), reserved by the captain, or already owned by
-	// another container is rejected inside ClaimShip's locked transaction.
+	// Atomic claim: reserve the hull for balancing through the operation-checked
+	// ClaimShip, never a non-atomic AssignToContainer+Save. A hull pinned to a
+	// foreign fleet (e.g. the command frigate's "command" pin), reserved by the
+	// captain, or already owned by another container is rejected inside
+	// ClaimShip's locked transaction.
 	// Balancing is best-effort repositioning, so a rejected claim skips this ship
 	// rather than poaching it via navigation. Crucially, the release defer is
 	// armed only AFTER a successful claim, so a hull we never claimed is never
-	// force-released out from under its real owner (the old code released
-	// unconditionally).
+	// force-released out from under its real owner.
 	if err := h.shipRepo.ClaimShip(ctx, cmd.ShipSymbol, balancingContainerID, cmd.PlayerID, dedicatedFleetContract); err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Skipping balance for %s: could not claim ship: %v", cmd.ShipSymbol, err), nil)
 		return &BalanceShipPositionResponse{Navigated: false}, nil

@@ -61,7 +61,7 @@ func NewMarketLocator(
 // WITHOUT IT THE HULL SEARCH FINDS NOTHING, deliberately. This search used to
 // issue one live GET /shipyard per shipyard in the system, uncached and unmetered,
 // from a path on the 30-second construction drain — one of the four bypasses that
-// put shipyard reads at 44.7% of the server ceiling (sp-mb0er). Failing to find a
+// put shipyard reads at 44.7% of the server ceiling. Failing to find a
 // hull is a recoverable planning outcome; quietly restoring an unmetered burst
 // because a wiring was missed is not.
 func (l *MarketLocator) SetYardSource(yards yardSource) {
@@ -118,12 +118,12 @@ func (l *MarketLocator) FindImportMarket(
 // findShipyardSellingShip finds a shipyard that sells a specific ship type.
 // Returns the shipyard with the lowest purchase price.
 //
-// STORE-FIRST (sp-mb0er). This used to issue one live GET /shipyard per shipyard
-// in the system, uncached and unmetered, from a path reachable on the 30-second
-// construction drain. One store query now covers every yard in the system, and
-// only yards the store has no priced row for cost a request — a request the
-// shipyard-read budget may decline, in which case that yard is simply not this
-// tick's candidate.
+// STORE-FIRST: one store query covers every yard in the system, and only yards
+// the store has no priced row for cost a request — a request the shipyard-read
+// budget may decline, in which case that yard is simply not this tick's
+// candidate. Fanning out instead — a live GET /shipyard per yard, off the store
+// and outside the budget — is uncached and unmetered on a path reachable from
+// the 30-second construction drain.
 //
 // A yard row with PurchasePrice 0 is catalogued but never priced (a presence-less
 // GET sees what a counter sells but not what it charges), and it is NOT a free
@@ -543,7 +543,7 @@ func (l *MarketLocator) InputSourceEligibility(
 //     its ask price. A LIMITED export that stalls indefinitely is worse than
 //     paying a modest premium at an oversupplied importer.
 //
-// minSupply is the caller-set EXPORT acceptance floor (sp-ezz9). It reuses the
+// minSupply is the caller-set EXPORT acceptance floor. It reuses the
 // existing supply-state tolerance ladder (Order()) - passing the zero value ""
 // defaults to the original MODERATE floor, leaving unset-flag behavior exactly
 // unchanged. Passing a lower state (e.g. SCARCE) lets the caller buy down to

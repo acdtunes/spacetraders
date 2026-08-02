@@ -18,8 +18,7 @@ const releaseReasonStaleClaim = "stale_claim_reconciled"
 
 // ContainerStatusReader reports the lifecycle status of the container that owns a
 // ship's claim, so RefreshShip can tell a live worker's claim apart from an
-// orphaned one left behind by a trade-route CLI runner that died mid-circuit
-// (sp-vjwb).
+// orphaned one left behind by a trade-route CLI runner that died mid-circuit.
 //
 // found=false means the container row no longer exists.
 type ContainerStatusReader interface {
@@ -97,7 +96,7 @@ func (h *RefreshShipHandler) Handle(ctx context.Context, request common.Request)
 
 	// Self-heal a hull deadlocked by a dead trade-route CLI runner: if this ship
 	// still carries a claim whose owning container is orphaned, clear it so the
-	// hull is free for the mfg coordinator / trade-route to pick up (sp-vjwb).
+	// hull is free for the mfg coordinator / trade-route to pick up.
 	if err := h.reconcileStaleClaim(ctx, ship, playerID); err != nil {
 		return nil, fmt.Errorf("failed to reconcile stale claim for ship %s: %w", query.ShipSymbol, err)
 	}
@@ -116,7 +115,7 @@ func (h *RefreshShipHandler) reconcileStaleClaim(ctx context.Context, ship *navi
 		return nil
 	}
 
-	// sp-i1ku: a captain reservation is an active assignment with no
+	// A captain reservation is an active assignment with no
 	// container_id — it was never a container claim. Without this guard it
 	// would fall straight into the lookup below, ask the container reader
 	// about an empty ID, get back "not found", and get reaped by
@@ -144,7 +143,7 @@ func (h *RefreshShipHandler) reconcileStaleClaim(ctx context.Context, ship *navi
 	// (ContainerRunner.releaseShipAssignments), so the ships row ends up in a
 	// clean idle state the mfg coordinator / trade-route can re-claim.
 	//
-	// Persist under CAS-retry (sp-wa7c): the closure re-applies ForceRelease on
+	// Persist under CAS-retry: the closure re-applies ForceRelease on
 	// the FRESH row so a concurrent writer's cargo/nav update on the same hull
 	// survives instead of being last-write-wins clobbered by this reconciler's
 	// post-sync snapshot. It re-checks that the SAME orphaned claim is still
@@ -168,7 +167,7 @@ func (h *RefreshShipHandler) reconcileStaleClaim(ctx context.Context, ship *navi
 // IsClaimOrphaned reports whether a ship claim whose owning container has the
 // given (status, found) is a stale artifact that is safe to clear. Exported so
 // the scout-post coordinator's fleet orphan sweep reaches the same verdict as
-// refresh-time reconciliation (sp-6zgs) — one predicate, so the two paths can
+// refresh-time reconciliation — one predicate, so the two paths can
 // never diverge on which claims are safe to reap.
 //
 // Orphaned iff the container row is GONE, the container is PENDING, or the
@@ -182,7 +181,7 @@ func (h *RefreshShipHandler) reconcileStaleClaim(ctx context.Context, ship *navi
 //
 // A TERMINAL container can never resume running, so any claim it still owns is
 // stale by definition — most often a release that should have fired on
-// completion but didn't (sp-9xc0: dock-TORWIND-6-e592be41 reached COMPLETED
+// completion but didn't (dock-TORWIND-6-e592be41 reached COMPLETED
 // without releasing, pinning the ship forever, since 'container stop' also
 // refuses an already-terminal container, leaving no manual escape).
 //

@@ -176,7 +176,7 @@ func (s *DaemonServer) RefreshShip(ctx context.Context, shipSymbol string, playe
 }
 
 // ReserveShip reserves a ship for the captain's direct manual use, hiding it
-// from every coordinator's assignment discovery (sp-i1ku). Returns the
+// from every coordinator's assignment discovery. Returns the
 // ship's own reservation reason (defaulted server-side if the caller gave
 // none) plus an advisory warning when the reserved hull was idle-critical.
 //
@@ -206,7 +206,7 @@ func (s *DaemonServer) ReserveShip(ctx context.Context, shipSymbol, reason strin
 }
 
 // ReleaseShip clears a captain reservation, returning the ship to idle so
-// normal coordinator discovery can claim it again (sp-i1ku).
+// normal coordinator discovery can claim it again.
 func (s *DaemonServer) ReleaseShip(ctx context.Context, shipSymbol, reason string, playerID *int, agentSymbol string) (string, error) {
 	cmd := &shipAssignmentCmd.ReleaseShipCommand{
 		ShipSymbol:  shipSymbol,
@@ -229,7 +229,7 @@ func (s *DaemonServer) ReleaseShip(ctx context.Context, shipSymbol, reason strin
 }
 
 // AssignShipFleet dedicates a ship to a named fleet, routing through the
-// single DedicatedFleet write path (sp-l7h2). Fleet == "" clears the
+// single DedicatedFleet write path. Fleet == "" clears the
 // dedication — UnassignShipFleet sends exactly that.
 func (s *DaemonServer) AssignShipFleet(ctx context.Context, shipSymbol, fleet string, playerID *int, agentSymbol string) (string, string, error) {
 	cmd := &shipAssignmentCmd.AssignShipFleetCommand{
@@ -289,7 +289,7 @@ func (s *DaemonServer) UnassignShipFleet(ctx context.Context, shipSymbol string,
 	return assignResp.ShipSymbol, nil
 }
 
-// ListFleets lists every dedicated fleet and its member ships (sp-l7h2).
+// ListFleets lists every dedicated fleet and its member ships.
 func (s *DaemonServer) ListFleets(ctx context.Context, playerID *int, agentSymbol string) ([]*pb.Fleet, error) {
 	query := &shipQuery.ListFleetsQuery{
 		PlayerID:    playerID,
@@ -400,7 +400,7 @@ func (s *DaemonServer) GetShipyardListings(ctx context.Context, systemSymbol, wa
 		PlayerID:       shared.MustNewPlayerID(*playerID),
 		// The gRPC/CLI surface (`spacetraders shipyard listings`). Nobody spends
 		// against this: it is a human looking at a counter, so it is paced like any
-		// other discovery read and — being deniable — no longer marks the yard as
+		// other discovery read and — being deniable — does NOT mark the yard as
 		// one the fleet is buying at. Left at the Discretionary zero value
 		// EXPLICITLY, so the classification is a decision on the record rather than
 		// an omission.

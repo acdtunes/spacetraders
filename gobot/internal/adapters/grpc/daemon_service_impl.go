@@ -98,7 +98,7 @@ func (s *daemonServiceImpl) NavigateShip(ctx context.Context, req *pb.NavigateSh
 	return response, nil
 }
 
-// RouteShip initiates cross-system point-to-point travel (sp-6hjw)
+// RouteShip initiates cross-system point-to-point travel
 func (s *daemonServiceImpl) RouteShip(ctx context.Context, req *pb.RouteShipRequest) (*pb.RouteShipResponse, error) {
 	// Resolve player ID from request (supports both player_id and agent_symbol)
 	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
@@ -245,7 +245,7 @@ func (s *daemonServiceImpl) JumpShip(ctx context.Context, req *pb.JumpShipReques
 
 	result, err := s.daemon.mediator.Send(ctx, cmd)
 	if err != nil {
-		// sp-n0x7: surface a workflow.failed event so the watchkeeper sees
+		// Surface a workflow.failed event so the watchkeeper sees
 		// jump attempts, mirroring container_runner.go's
 		// signalCompletionWithStatus for ContainerRunner-driven workflows.
 		recordCaptainEvent(captain.EventWorkflowFailed, req.ShipSymbol, playerID, map[string]any{
@@ -542,7 +542,7 @@ func (s *daemonServiceImpl) ContractFleetCoordinator(ctx context.Context, req *p
 	}
 
 	// No ship symbols needed - coordinator discovers idle haulers dynamically.
-	// dedicated_ships/standby_stations (sp-snmb) are optional operator params
+	// dedicated_ships/standby_stations are optional operator params
 	// for a static dedicated contract fleet; nil/empty when not configured.
 	containerID, err := s.daemon.ContractFleetCoordinator(ctx, nil, playerID, req.DedicatedShips, req.StandbyStations)
 	if err != nil {
@@ -683,7 +683,7 @@ func (s *daemonServiceImpl) BootstrapCoordinator(ctx context.Context, req *pb.Bo
 	return &pb.BootstrapCoordinatorResponse{ContainerId: containerID, Status: "RUNNING"}, nil
 }
 
-// CapacityReconcilerCoordinator is REMOVED (sp-y2ptq, epic sp-9le3x): the capacity-reconciler
+// CapacityReconcilerCoordinator is REMOVED: the capacity-reconciler
 // contract-capacity stack was deleted and the dedicated contract scaler replaces it. The proto RPC
 // is retained only to satisfy the generated DaemonServiceServer interface (no proto regen in this
 // lane); it now refuses the call rather than launching anything.
@@ -805,7 +805,7 @@ func (s *daemonServiceImpl) ListScoutPosts(ctx context.Context, req *pb.ListScou
 }
 
 // scoutPostToProto maps a domain scout post to its wire representation. hulls is the
-// probe budget and manned_count how many of those slots currently have a hull (sp-enry).
+// probe budget and manned_count how many of those slots currently have a hull.
 func scoutPostToProto(p *domainScouting.ScoutPost) *pb.ScoutPost {
 	return &pb.ScoutPost{
 		SystemSymbol:     p.SystemSymbol,
@@ -1019,7 +1019,7 @@ func (s *daemonServiceImpl) HealthCheck(ctx context.Context, req *pb.HealthCheck
 	}, nil
 }
 
-// GetAPIBudget returns API request-budget observability (sp-51ti): per-hull
+// GetAPIBudget returns API request-budget observability: per-hull
 // req/s, global utilization vs the rate ceiling (429 rate, poll-cadence
 // share of the budget, headroom), and the duty-cycle KPI (ship-hours
 // earning/day per hull). Reads the daemon-wide singletons set at startup
@@ -1167,7 +1167,7 @@ func (s *daemonServiceImpl) AssignShipFleet(ctx context.Context, req *pb.AssignS
 }
 
 // FleetHub adds or removes a standby-station ("hub") on a running operation's
-// coordinator, live (sp-jcke). Resolves the player from player_id or agent_symbol
+// coordinator, live. Resolves the player from player_id or agent_symbol
 // (like the other coordinator RPCs), then delegates the persisted-set mutation to
 // the daemon, which is the single writer (RULINGS #3).
 func (s *daemonServiceImpl) FleetHub(ctx context.Context, req *pb.FleetHubRequest) (*pb.FleetHubResponse, error) {
@@ -1426,7 +1426,7 @@ func (s *daemonServiceImpl) BatchPurchaseShips(ctx context.Context, req *pb.Batc
 		iterations = &iter
 	}
 
-	// sp-0ms61: the optional operator-named fleet to dedicate each purchased hull to
+	// The optional operator-named fleet to dedicate each purchased hull to
 	// atomically at purchase. Absent -> "" -> byte-identical (hull lands undedicated).
 	dedicateFleet := ""
 	if req.DedicateFleet != nil {
@@ -1459,7 +1459,7 @@ func (s *daemonServiceImpl) BatchPurchaseShips(ctx context.Context, req *pb.Batc
 }
 
 // StartTradeRoute implements the StartTradeRoute RPC: it launches a single-hull
-// pure-arbitrage circuit as a recovery-safe daemon container (sp-zewt), delegating to
+// pure-arbitrage circuit as a recovery-safe daemon container, delegating to
 // DaemonServer.StartTradeRoute which enforces the idle-gap discipline and owns the
 // container lifecycle.
 func (s *daemonServiceImpl) StartTradeRoute(ctx context.Context, req *pb.StartTradeRouteRequest) (*pb.StartTradeRouteResponse, error) {
@@ -1532,7 +1532,7 @@ func (s *daemonServiceImpl) StartWarehouse(ctx context.Context, req *pb.StartWar
 }
 
 // StartArbRun implements the StartArbRun RPC: it launches a one-shot, captain-directed,
-// guarded arbitrage run as a recovery-safe daemon container (sp-p4ua), delegating to
+// guarded arbitrage run as a recovery-safe daemon container, delegating to
 // DaemonServer.StartArbRun which enforces the idle-gap discipline and owns the container
 // lifecycle.
 func (s *daemonServiceImpl) StartArbRun(ctx context.Context, req *pb.StartArbRunRequest) (*pb.StartArbRunResponse, error) {
@@ -1619,7 +1619,7 @@ func (s *daemonServiceImpl) StartTourRun(ctx context.Context, req *pb.StartTourR
 	if req.AgentSymbol != nil {
 		agentSymbol = *req.AgentSymbol
 	}
-	// iterations (sp-m5kv): -1 = continuous, N>0 = N tours, unset/0 = one tour. Passed
+	// iterations: -1 = continuous, N>0 = N tours, unset/0 = one tour. Passed
 	// through verbatim; the coordinator normalizes 0 → one tour.
 	iterations := 0
 	if req.Iterations != nil {
@@ -1696,7 +1696,7 @@ func (s *daemonServiceImpl) StartStocker(ctx context.Context, req *pb.StartStock
 	}
 
 	// homeSystemOnly=false: the CLI `workflow stocker` launches the GENERIC cross-system stocker,
-	// unchanged. The intra-system constraint (sp-k2xav, RULINGS #14) is set only by launchDepotStocker
+	// unchanged. The intra-system constraint (RULINGS #14) is set only by launchDepotStocker
 	// for the contract depot — no proto/CLI surface, so this manual path keeps its cross-system economics.
 	result, err := s.daemon.StartStocker(ctx, req.ShipSymbol, req.WarehouseWaypoint, budgetPerLeg, workingCapitalReserve, iterations, maxMarketAgeMinutes, targetPerGood, standing, tickSeconds, refillHysteresis, false, agentSymbol, playerID)
 	if err != nil {
@@ -1828,7 +1828,7 @@ func (s *daemonServiceImpl) StartConstructionPipeline(ctx context.Context, req *
 		minSupply = *req.MinSupply
 	}
 
-	// Decode the optional per-good buy-gating overrides (sp-sdyo values, sp-pdb3 launch surface).
+	// Decode the optional per-good buy-gating overrides (sp-sdyo values, launch surface).
 	// The CLI encodes the validated+clamped GoodGatingOverrides map to JSON in good_overrides; an
 	// unset/empty field decodes to nil, preserving the global-default behaviour for every good. A
 	// malformed blob is a hard error rather than a silently-dropped bottleneck override.
@@ -1907,7 +1907,7 @@ func (s *daemonServiceImpl) GetConstructionStatus(ctx context.Context, req *pb.G
 	}, nil
 }
 
-// StopConstructionPipeline cancels the active construction pipeline for a site (sp-yzrv)
+// StopConstructionPipeline cancels the active construction pipeline for a site
 func (s *daemonServiceImpl) StopConstructionPipeline(ctx context.Context, req *pb.StopConstructionPipelineRequest) (*pb.StopConstructionPipelineResponse, error) {
 	// Resolve player ID from request
 	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
@@ -1930,7 +1930,7 @@ func (s *daemonServiceImpl) StopConstructionPipeline(ctx context.Context, req *p
 	}, nil
 }
 
-// SensingRescreen re-opens every sensing system verdict for a player (sp-j2efq) — the supported
+// SensingRescreen re-opens every sensing system verdict for a player — the supported
 // response to editing config.yaml's [sensing] goods_whitelist mid-era. It resolves the player and
 // delegates the write to the daemon, the single writer (RULINGS #3). The write is confined to
 // sensing_systems.verdict, so running it against a fleet of parked probes cannot disturb a hull the
@@ -1949,7 +1949,7 @@ func (s *daemonServiceImpl) SensingRescreen(ctx context.Context, req *pb.Sensing
 }
 
 // ConstructionGoodOverride sets or clears one good's per-good buy-gating override on a running
-// construction pipeline live (sp-pdb3). It resolves the player, builds a patch from the optional
+// construction pipeline live. It resolves the player, builds a patch from the optional
 // request knobs (a nil field leaves that dimension unchanged so an operator can tune one at a
 // time), and delegates the persisted-map mutation to the daemon — the single writer (RULINGS #3).
 // The multiplier is clamped to the domain hard cap inside the mutation (RULINGS #4). The
@@ -1981,7 +1981,7 @@ func (s *daemonServiceImpl) ConstructionGoodOverride(ctx context.Context, req *p
 }
 
 // ConstructionWorkerCap sets the live concurrent-worker cap (max_workers) on a running construction
-// pipeline (sp-duljg). Resolves the player from player_id or agent_symbol (like the other coordinator
+// pipeline. Resolves the player from player_id or agent_symbol (like the other coordinator
 // RPCs), then delegates the persisted-row mutation to the daemon — the single writer (RULINGS #3).
 // The running drain re-reads the cap each tick and converges its fan-out to N with no restart.
 func (s *daemonServiceImpl) ConstructionWorkerCap(ctx context.Context, req *pb.ConstructionWorkerCapRequest) (*pb.ConstructionWorkerCapResponse, error) {

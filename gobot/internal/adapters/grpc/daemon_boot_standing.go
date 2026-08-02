@@ -1,12 +1,12 @@
 package grpc
 
-// sp-382j: Admiral-selected launch model (a) — the construction-supply drain is now a STANDING
+// Admiral-selected launch model (a) — the construction-supply drain is a STANDING
 // coordinator launched unconditionally at every daemon boot, mirroring how the other standing
 // coordinators (probe-sensing, scout-post, bootstrap, ...) already
-// auto-start. Before this, launch was bootstrap-EnsureRunning-only: with no active bootstrapper
-// the ConstructionCoordinator never ran even once, so RecoverRunningContainers (which only
-// re-adopts containers already PERSISTED as RUNNING) found nothing to recover, leaving a live
-// gate-construction pipeline unsupplied forever. bootStandingCoordinatorTypes declares the
+// auto-start. Bootstrap-EnsureRunning-only launch does not work here: with no active bootstrapper
+// the ConstructionCoordinator never runs even once, and RecoverRunningContainers only
+// re-adopts containers already PERSISTED as RUNNING, so it finds nothing to recover and a live
+// gate-construction pipeline stays unsupplied forever. bootStandingCoordinatorTypes declares the
 // boot-launch membership as data, mirroring executorContainerTypes in bootstrap_ports_gate.go.
 
 import (
@@ -28,7 +28,7 @@ func (s *DaemonServer) launchBootStandingAfterRecovery() {
 	ctx, cancel := context.WithTimeout(s.runCtx, 30*time.Second)
 	defer cancel()
 
-	// Launch the boot-standing coordinators (sp-382j): unconditional, every boot, regardless
+	// Launch the boot-standing coordinators: unconditional, every boot, regardless
 	// of whether a bootstrapper has ever run. Unlike RecoverRunningContainers, this is
 	// safely re-runnable every boot — each launch goes through the idempotent EnsureRunning
 	// path (skips if already RUNNING/PENDING), so a container just re-adopted by recovery
@@ -45,7 +45,7 @@ func (s *DaemonServer) launchBootStandingAfterRecovery() {
 	// log reflects the same registry a re-adopted contract coordinator will route on.
 	s.reloadDepotRegistryAtBoot(ctx, playerID)
 
-	// sp-0eufi: re-assert the player's durable agent identity (headquarters / starting_faction /
+	// Re-assert the player's durable agent identity (headquarters / starting_faction /
 	// account_id) into players.metadata, so a row created by any path — including one that predates
 	// the identity write entirely — heals itself from its own /my/agent.
 	//
@@ -103,20 +103,20 @@ var bootStandingCoordinatorTypes = []container.ContainerType{
 	// (skips if already RUNNING/PENDING). THIS is what removes the manual `workflow bootstrap` at
 	// every era start.
 	container.ContainerTypeBootstrapCoordinator,
-	// sp-y2ptq (epic sp-9le3x): the capacity reconciler was DELETED (dedicated contract scaler replaces
+	// The capacity reconciler was DELETED (dedicated contract scaler replaces
 	// it; jump gate COMPLETE). It is no longer boot-standing — nothing restart-surviving depends on it.
 	//
 	// The fleet autosizer is DELIBERATELY NOT a member: the bootstrap GATE hand-off already launches it
 	// at the mature-economy phase; boot-standing it would launch it prematurely during DATA/INCOME.
-	// sp-9ujl (epic sp-difa, Auto-pilot Phase 1): the scout-post coordinator MANS the standing
-	// freshness posts the MarketFreshnessSizer (above) only DECLARES — each tick it assigns a probe to
+	// The scout-post coordinator MANS the standing freshness posts the MarketFreshnessSizer
+	// (above) only DECLARES — each tick it assigns a probe to
 	// every unmanned slot (SetAssignedHull), partitions the system's markets across the post's hulls,
 	// and drives the P90 rescans + idle-probe re-tasking. Without it a cold-start post stays UNMANNED
 	// (assigned_hull/tour_container_id/primary_partition all empty), so freshness coverage has no
-	// standing owner — the sizer's declarer is armed but its manner never was. Same profile as the
-	// members above: genuinely standing and self-adopting (sp-cxpq: persisted container_id re-adopted by
+	// standing owner — an armed declarer with nothing manning it. Same profile as the
+	// members above: genuinely standing and self-adopting (persisted container_id re-adopted by
 	// RecoverRunningContainers across restart). Launch is idempotent — the boot path skips when one is
-	// already RUNNING/PENDING, and its creation path's own double-launch guard (sp-9ujl) refuses a twin
+	// already RUNNING/PENDING, and its creation path's own double-launch guard refuses a twin
 	// whose second reconcile loop would fight the first over the same posts and idle probes.
 	container.ContainerTypeScoutPostCoordinator,
 	// sp-zvywu Part 2: the opportunity relocator is the standing meta-planner that moves trade hulls
@@ -138,7 +138,7 @@ var bootStandingCoordinatorTypes = []container.ContainerType{
 	// member, because it would buy prematurely during DATA/INCOME): with no trade-dedicated hulls yet,
 	// the relocator observes an empty fleet, relocates nothing, and re-derives 15 minutes later.
 	container.ContainerTypeOpportunityRelocator,
-	// The probe-buyer-fleet coordinator (sp-f082y) was a member here until it was RETIRED and
+	// The probe-buyer-fleet coordinator was a member here until it was RETIRED and
 	// DELETED (Admiral 2026-07-28). Boot-standing it is precisely what made its cost unbounded:
 	// nothing had to launch it, so nothing had to notice it, and the first tick after bootstrap
 	// reached EXPANSION it bought 9 probes for 245,316 credits in five minutes. Probe supply belongs
@@ -152,7 +152,7 @@ var bootStandingCoordinatorTypes = []container.ContainerType{
 // and non-fatal — one type's failure must never block another's launch attempt, and must never
 // fail daemon startup.
 func (s *DaemonServer) ensureBootStandingCoordinators(ctx context.Context, playerID int) {
-	// sp-ls7x: genesis cold-boot guard. On a fresh DB with no player row,
+	// Genesis cold-boot guard. On a fresh DB with no player row,
 	// primaryPlayerID() returns 0; every standing coordinator is player-scoped and
 	// building one with id 0 hits MustNewPlayerID(0), which panics. Skip them until
 	// a player exists — the next boot after registration launches them. No-op for

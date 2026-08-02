@@ -101,7 +101,7 @@ func TestClaimShip_ClaimsRegularHaulerForDepotOperation(t *testing.T) {
 	}
 }
 
-// The reported bug (sp-3tsjz), reproduced at the single write path: on daemon
+// The reported bug, reproduced at the single write path: on daemon
 // restart ReleaseAllActive frees the frigate to idle with no dedicated_fleet tag,
 // the orphaned warehouse-TORWIND-1 container RECOVERS from the container
 // registry and re-runs ClaimShip(operation="warehouse"). That recovered re-claim

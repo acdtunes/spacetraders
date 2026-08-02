@@ -104,7 +104,7 @@ func (h *SiphonResourcesHandler) Handle(ctx context.Context, request common.Requ
 		if err != nil {
 			return nil, fmt.Errorf("failed to create cargo from API response: %w", err)
 		}
-		// Persist the authoritative post-siphon cargo under CAS-retry (sp-wa7c): the
+		// Persist the authoritative post-siphon cargo under CAS-retry: the
 		// closure sets ONLY cargo on the FRESH row, so a concurrent writer's nav/fuel
 		// update on the same hull survives instead of being last-write-wins clobbered
 		// by this handler's pre-siphon snapshot.
@@ -128,7 +128,7 @@ func (h *SiphonResourcesHandler) Handle(ctx context.Context, request common.Requ
 // waitForShipArrival waits for a ship in transit to complete its journey.
 // Uses event-based waiting via ShipEventSubscriber for efficient arrival
 // detection, with a timeout->resync->park backstop if the ARRIVED event is
-// lost or raced against subscription (sp-pafv). This handles ships that were
+// lost or raced against subscription. This handles ships that were
 // mid-navigation when daemon restarted.
 func (h *SiphonResourcesHandler) waitForShipArrival(
 	ctx context.Context,

@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Behavior 1 (sp-p1ci): after the base interval elapses the scheduler invokes
+// Behavior 1: after the base interval elapses the scheduler invokes
 // the injected resync core. Uses a small base + jitter with the DEFAULT rand
 // seam, so it also exercises the real jitter path (a scheduler that never fired
 // — or nil-panicked on the default rand — fails here). Observable outcome: the
@@ -39,7 +39,7 @@ func TestShipResyncScheduler_FiresResyncAfterInterval(t *testing.T) {
 	require.GreaterOrEqual(t, calls.Load(), int32(1))
 }
 
-// Behavior 2 (sp-p1ci): each cycle's wait is base +/- a random offset bounded
+// Behavior 2: each cycle's wait is base +/- a random offset bounded
 // by jitter. Drives the rand seam across its whole [0,1) domain and asserts the
 // delay never escapes [base-jitter, base+jitter], with the extremes exact. A
 // miscomputed jitter (wrong sign, wrong scale, jitter treated as a fraction)
@@ -92,7 +92,7 @@ func TestShipResyncScheduler_LogsSuccessOnCleanPass(t *testing.T) {
 	}
 }
 
-// Behavior 3 (sp-p1ci): Stop() halts a running loop promptly and cleanly
+// Behavior 3: Stop() halts a running loop promptly and cleanly
 // (returns nil — the supervise layer treats that as a clean stop). Mirrors
 // TestRunSweeper_StopChAlsoStops for the state scheduler.
 func TestShipResyncScheduler_StopHaltsRunCleanly(t *testing.T) {

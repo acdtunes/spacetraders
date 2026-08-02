@@ -31,25 +31,25 @@ type Config struct {
 	// cooldown ledger. Refit per era: the FORM is stable, the NUMBERS are re-fitted, so
 	// they are config (edit config.yaml + restart), never consts.
 	TradeImpact TradeImpactConfig `mapstructure:"trade_impact"`
-	// Trading holds the trade-ranker tune knobs (sp-t5sh5) — the activity-conditioned
+	// Trading holds the trade-ranker tune knobs — the activity-conditioned
 	// listing freshness caps — read at daemon start into the trade-route coordinator's
 	// undirected auto-scan and the tour snapshot builder. Absent section defers to the
 	// fitted armed defaults (trading.DefaultRankerAgeCap*), so the ranker runs the
 	// analyst's era3/4 fit unchanged.
 	Trading TradingConfig `mapstructure:"trading"`
-	// WorkerRebalancer holds the worker-rebalancer coordinator's knobs (sp-f5pr),
+	// WorkerRebalancer holds the worker-rebalancer coordinator's knobs,
 	// injected live into the coordinator container on every build.
 	WorkerRebalancer WorkerRebalancerConfig `mapstructure:"worker_rebalancer"`
-	// Scouting holds the scouting subsystem's knobs (sp-x8i5) — the tour-start phase
+	// Scouting holds the scouting subsystem's knobs — the tour-start phase
 	// jitter ceiling — injected live into scout_tour and scout_post_coordinator
 	// containers on every build.
 	Scouting ScoutingConfig `mapstructure:"scouting"`
-	// MarketScan holds the fleet's ONE market-scan budget (sp-ntgfj) — the total
+	// MarketScan holds the fleet's ONE market-scan budget — the total
 	// market-read rate every reader in the daemon shares, and the value clamp that
 	// allocates it. Read at daemon start into the shared MarketScanner. Absent
 	// section defers to the armed defaults, so the budget is enforced regardless.
 	MarketScan MarketScanConfig `mapstructure:"market_scan"`
-	// ShipyardScan holds the fleet's ONE shipyard-read budget (sp-mb0er) — the
+	// ShipyardScan holds the fleet's ONE shipyard-read budget — the
 	// total shipyard-read rate every reader in the daemon shares, and the demand
 	// clamp that allocates it. Read at daemon start into the shared
 	// ShipyardScanner. Absent section defers to the armed defaults, so the budget
@@ -67,7 +67,7 @@ type Config struct {
 	// the bootstrap coordinator container on every build (creation + recovery), so a captain
 	// retunes the cold-start behaviour by editing config.yaml and restarting.
 	Bootstrap BootstrapConfig `mapstructure:"bootstrap"`
-	// ShipResync holds the periodic full-fleet ship-resync cadence knobs (sp-p1ci) — base
+	// ShipResync holds the periodic full-fleet ship-resync cadence knobs — base
 	// interval + jitter — consumed by the daemon's ShipResyncScheduler. Zero defers to the
 	// documented defaults (1h +/-10min).
 	ShipResync ResyncConfig `mapstructure:"ship_resync"`
@@ -122,8 +122,6 @@ func LoadConfig(configPath string) (*Config, error) {
 		v.Set("database.url", dbURL)
 	}
 
-	// sp-y2ptq: the capacity-reconciler misplaced-key guard was removed with the reconciler config.
-
 	// Create config struct and unmarshal
 	var cfg Config
 	if err := v.Unmarshal(&cfg); err != nil {
@@ -134,7 +132,7 @@ func LoadConfig(configPath string) (*Config, error) {
 	SetDefaults(&cfg)
 
 	// Resolve the tour market-model artifact path to an ABSOLUTE location relative to
-	// the config file's directory (sp-wj0h): the tour executor reads it at launch and
+	// the config file's directory: the tour executor reads it at launch and
 	// the launchd daemon's cwd is not the repo root, so a cwd-relative path DOA's the
 	// engine on "no such file or directory".
 	cfg.Routing.ModelArtifactPath = resolveModelArtifactPath(v.ConfigFileUsed(), cfg.Routing.ModelArtifactPath)
@@ -169,7 +167,7 @@ func MustLoadConfig(configPath string) *Config {
 }
 
 // resolveModelArtifactPath resolves the tour market-model artifact path to an absolute
-// location so the tour executor can read it regardless of the daemon's cwd (sp-wj0h).
+// location so the tour executor can read it regardless of the daemon's cwd.
 // When a config file was used, its directory anchors the resolution — config.yaml lives
 // at gobot/config.yaml and the artifact at gobot/services/..., so a config-dir-relative
 // default is correct in dev AND deploy:

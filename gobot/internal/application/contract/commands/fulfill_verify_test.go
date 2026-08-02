@@ -89,7 +89,7 @@ type fulfillVerifyMediator struct {
 	capacity     int
 	perUnit      int // realized purchase price per unit
 	projectedAsk int // basis handed to the ladder cap (0 disables it)
-	liveCredits  int // treasury snapshot returned to the source-buy reserve-floor read (sp-zq635)
+	liveCredits  int // treasury snapshot returned to the source-buy reserve-floor read
 
 	cargoUnits int
 	calls      []string
@@ -164,7 +164,7 @@ func (m *fulfillVerifyMediator) send(t *testing.T, ctx context.Context, request 
 		return &FulfillContractResponse{Contract: c}, nil
 
 	case *playerQueries.GetPlayerQuery:
-		// The proactive source-buy reserve floor (sp-zq635) reads live treasury; these
+		// The proactive source-buy reserve floor reads live treasury; these
 		// sourcing/delivery/fulfill tests are not treasury-constrained, so answer with an
 		// ample balance that leaves the floor inert — byte-identical to their pre-floor assertions.
 		return &playerQueries.GetPlayerResponse{Player: &player.Player{Credits: m.liveCredits}}, nil
@@ -253,7 +253,7 @@ func (verifyLogger) Log(_, _ string, _ map[string]interface{}) {}
 // A contract needing two cargo-loads (80 units, 40-hold) must NOT fulfill after
 // the first partial delivery: the delivery leg loops the sourcing path for the
 // remainder and fulfill fires exactly once, only after every unit has
-// registered. This is the sp-2ei3 livelock: pre-fix, executeWorkflow fulfilled
+// registered. This is the livelock: pre-fix, executeWorkflow fulfilled
 // straight after ProcessAllDeliveries returned a 40/80 contract and crashed on
 // "deliveries not complete".
 func TestRunWorkflow_MultiLoadContract_LoopsSourcingThenFulfillsOnce(t *testing.T) {

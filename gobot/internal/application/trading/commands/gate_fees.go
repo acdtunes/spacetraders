@@ -15,7 +15,7 @@ import (
 // to the tour solver, so a crossing is priced by the gate it actually leaves instead of by
 // one fleet-wide constant.
 //
-// WHY THIS IS A TABLE AND NOT A BETTER CONSTANT (sp-9idvn). The fee is a property of the
+// WHY THIS IS A TABLE AND NOT A BETTER CONSTANT. The fee is a property of the
 // departure gate: corr(fee, distance) = 0.124, the origin system explains 99.7% of the
 // variance, and the same edge measured 6,760 credits one way against 5,313 the other. The
 // flat charge is unbiased in aggregate (+236/jump against realised tour crossings) but
@@ -53,11 +53,10 @@ const gateFeeLookbackWindow = 7 * 24 * time.Hour
 //
 // GENEROUS ON PURPOSE. A gate's fee is a constant of the map, not a market price, so a
 // stale table is not a wrong one — the only thing staleness costs is that a gate crossed
-// for the first time within the last TTL is still priced at the flat fallback, which is
-// exactly what it was priced at before this file existed. Set against that, a tour solve
-// happens many times a minute per hull, and re-running a grouped aggregate over a week of
-// ledger rows on every solve would be a self-inflicted load problem on a box that is
-// already oversubscribed.
+// for the first time within the last TTL is still priced at the flat fallback. Set against
+// that, a tour solve happens many times a minute per hull, and re-running a grouped
+// aggregate over a week of ledger rows on every solve would be a self-inflicted load
+// problem on a box that is already oversubscribed.
 const gateFeeCacheTTL = 30 * time.Minute
 
 // LedgerGateFeeReader learns the table from recorded jumps and caches it.

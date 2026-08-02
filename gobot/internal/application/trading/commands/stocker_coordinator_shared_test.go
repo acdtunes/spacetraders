@@ -11,7 +11,7 @@ import (
 // entry is UNROUTABLE (Path errors) — the caller skips that source (fail-closed). It implements the
 // reused GateGraph interface (Path + RepositionPath + Routable + Connections + ChartPresentGate).
 // Originally defined in the worker-rebalancer coordinator's test file; relocated here when the
-// factory ops were retired (sp-hoj8u), the stocker-coordinator tests now being its sole users.
+// factory ops were retired, the stocker-coordinator tests now being its sole users.
 type fakeHopGraph struct {
 	hops map[string]int
 }
@@ -71,13 +71,13 @@ func (g *fakeHopGraph) Routable(_ context.Context, from, to string, _ int) (bool
 	return ok, nil
 }
 
-// Connections is inert here — it exists only to satisfy the GateGraph interface (sp-1ki5).
+// Connections is inert here — it exists only to satisfy the GateGraph interface.
 func (g *fakeHopGraph) Connections(_ context.Context, _ string, _ int) ([]system.GateEdge, error) {
 	return nil, nil
 }
 
 // ChartPresentGate is inert here — it exists only to satisfy the extended GateGraph interface
-// (sp-bcsu; shipSymbol added sp-lv2n).
+// (shipSymbol added sp-lv2n).
 func (g *fakeHopGraph) ChartPresentGate(_ context.Context, _, _ string, _ int) ([]system.GateEdge, error) {
 	return nil, nil
 }

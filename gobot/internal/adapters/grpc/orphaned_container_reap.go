@@ -1,6 +1,6 @@
 package grpc
 
-// orphaned_container_reap.go — sp-h8mbb: the single seam that terminalizes a container whose
+// orphaned_container_reap.go: the single seam that terminalizes a container whose
 // hull was taken out from under it.
 //
 // Severing a live work-claim (ReleaseContainerClaim / PreemptForCaptain — `fleet unassign`,

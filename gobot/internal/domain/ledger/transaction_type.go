@@ -25,17 +25,17 @@ const (
 	TransactionTypeContractFulfilled TransactionType = "CONTRACT_FULFILLED"
 
 	// TransactionTypeJump represents the jump gate fee charged when a hull
-	// jumps between systems (sp-shq63). The fee is returned in-band by the
+	// jumps between systems. The fee is returned in-band by the
 	// jump API (data.transaction.totalPrice) alongside the post-transaction
 	// agent credits, so the row re-anchors the chain like every other spend.
 	TransactionTypeJump TransactionType = "JUMP"
 
 	// TransactionTypeModuleInstall represents the shipyard fee charged when a
-	// module is installed on a hull (sp-shq63).
+	// module is installed on a hull.
 	TransactionTypeModuleInstall TransactionType = "MODULE_INSTALL"
 
 	// TransactionTypeModuleRemove represents the shipyard fee charged when a
-	// module is removed from a hull (sp-shq63). Removal is not a refund: the
+	// module is removed from a hull. Removal is not a refund: the
 	// API charges a modification fee in the same direction as an install.
 	TransactionTypeModuleRemove TransactionType = "MODULE_REMOVE"
 )

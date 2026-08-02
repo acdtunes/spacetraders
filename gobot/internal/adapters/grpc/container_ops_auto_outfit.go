@@ -66,7 +66,7 @@ func (s *DaemonServer) AutoOutfitCoordinator(ctx context.Context, playerID int, 
 		config["auto_outfit_launch_dry_run"] = true
 	}
 
-	// sp-rsgc: re-adopt the last persisted live-tuned config for this player's auto-outfit
+	// Re-adopt the last persisted live-tuned config for this player's auto-outfit
 	// coordinator so a relaunch of a stopped one keeps its price_ceiling tune (matching the
 	// daemon-restart recovery path) instead of silently reverting to the coordinator default.
 	// The launch-time dry-run mode stays authoritative from THIS start.

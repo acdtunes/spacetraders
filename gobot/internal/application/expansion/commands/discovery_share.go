@@ -11,7 +11,7 @@ import (
 // per-cycle post-declaration capacity by a 0-100 ratio — with GRACEFUL DEGRADATION so capacity never
 // idles because one side ran dry. The legacy discovery_share key survives ONLY as a read-through
 // migration alias for the rename (a persisted discovery_share still resolves to the equivalent share
-// until it is re-tuned as discover_scan_balance). The sp-jide scan_only knob is retired.
+// until it is re-tuned as discover_scan_balance). The scan_only knob is retired.
 
 const (
 	// defaultDiscoveryShare is the balanced 50/50 concurrent split default (charting virgin systems

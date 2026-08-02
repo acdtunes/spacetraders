@@ -15,7 +15,7 @@ import (
 // single jump from a given system's own jump gate. Unlike
 // FindNearestJumpGateQuery (ship-relative: "nearest gate to THIS ship"),
 // this is purely SystemSymbol-based, matching the multi-system trade-route
-// lane scanner's system-scoped needs (sp-wlev).
+// lane scanner's system-scoped needs.
 type GetJumpGateConnectionsQuery struct {
 	SystemSymbol string // Required: system to discover jump connections from
 	PlayerID     *int   // Optional: query by player ID
@@ -24,8 +24,8 @@ type GetJumpGateConnectionsQuery struct {
 
 // GetJumpGateConnectionsResponse reports the queried system's own jump gate
 // plus the set of system symbols one hop away via that gate's live
-// connections. Multiple gates per system are not handled (out of scope for
-// sp-wlev): the first gate found in the system graph is used.
+// connections. Multiple gates per system are not handled: the first gate found
+// in the system graph is used.
 type GetJumpGateConnectionsResponse struct {
 	JumpGate         *shared.Waypoint
 	ConnectedSystems []string

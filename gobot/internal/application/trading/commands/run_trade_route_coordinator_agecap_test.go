@@ -90,7 +90,7 @@ func staleAgeCapFixture() *msMarketRepo {
 	}
 }
 
-// The freshness cap is ACTIVITY-CONDITIONED (sp-t5sh5): each listing is dropped
+// The freshness cap is ACTIVITY-CONDITIONED: each listing is dropped
 // against its own activity's window, not one flat 75-minute threshold. A WEAK market
 // stays eligible for hours (a quote the retired flat cap would have dropped is now
 // retained); a STRONG one only ~30 min; an unknown/missing activity falls to the

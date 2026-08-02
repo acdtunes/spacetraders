@@ -12,7 +12,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// This file is the CONTRACT-WORKER RESERVE FLOOR (bead sp-mzdk): the guard that stops the depot
+// This file is the CONTRACT-WORKER RESERVE FLOOR: the guard that stops the depot
 // topology from pinning the ENTIRE flexible contract-worker pool to hubs as depot-delivery.
 //
 // The depot topology (sp-u9xa/sp-9j9c/sp-3l64) converts a declared delivery hull from an
@@ -25,7 +25,7 @@ import (
 //
 // The floor RESERVES min_home_contract_workers home general haulers that are NEVER converted to a
 // depot-delivery pin, and — the sp-7zoq fix — DEDICATES each of them to the exclusive "contract"
-// fleet. Merely leaving the reserve undedicated (the sp-mzdk behavior) left it in the shared idle pool
+// fleet. Merely leaving the reserve undedicated (the behavior) left it in the shared idle pool
 // where ANY coordinator (e.g. the goods_factory) could poach it as an opportunistic idle hull. An
 // exclusive "contract" dedication removes a hull from that pool
 // (FindIdleLightHaulers, the reconciler SENSE filter, and ClaimShip's atomic guard all skip any hull
@@ -119,7 +119,7 @@ func reclaimPinnedForFloor(budget deliveryPinBudget, freshlyReserved int) []stri
 
 // reserveHomeContractWorkers returns the set of delivery-hull ship symbols to RESERVE — held back
 // from depot-delivery pinning and (sp-7zoq) dedicated by the caller to the exclusive "contract" fleet
-// instead — so the contract sourcing reserve reaches the floor (bead sp-mzdk). It walks the launch
+// instead — so the contract sourcing reserve reaches the floor. It walks the launch
 // intents in stable order; a delivery hull currently IN the home general pool (InPool) consumes
 // one unit of the Available-Floor budget, and once that budget is spent every FURTHER in-pool
 // delivery hull is reserved. A delivery hull NOT in the pool — already depot-delivery pinned,
@@ -194,7 +194,7 @@ func (s *DaemonServer) activeContractCoordinatorConfig(ctx context.Context, play
 
 // homeContractWorkerReserve (depotCoordinatorSink) is the production reserve-floor census: it
 // resolves the live floor and counts the undedicated home general haulers currently backing the
-// contract coordinator's grab in the depot's hub system(s) (bead sp-mzdk). "Home" is the system of
+// contract coordinator's grab in the depot's hub system(s). "Home" is the system of
 // the registry's declared delivery-hull hubs — exactly the region the pinning depletes — so the
 // reserve keeps a HOME sourcing worker rather than forcing an expensive cross-gate foreign grab.
 // Fail-open: a nil ship repo / registry, an un-derivable home system, or a fetch error yields a

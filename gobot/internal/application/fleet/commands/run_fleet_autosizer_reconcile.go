@@ -19,7 +19,7 @@ type autosizerRunConfig struct {
 	PurchaseCapPerTick int
 
 	// HeavyCap is the resolved heavy-HULL cap (capital exposure) — the only count-based bound
-	// left since sp-r7eiu removed the per-class pool ceilings with the class_ceiling guard.
+	// left on any class.
 	HeavyCap int
 
 	PurchaseMarginOverFloor int64
@@ -48,7 +48,7 @@ type autosizerRunConfig struct {
 	MaxPriceExplorer               int64
 	ShipTypeExplorer               string
 
-	// sp-y2ptq: the contract-delivery class fields were removed (dedicated scaler owns contract capacity).
+	// No contract-delivery class fields: the dedicated scaler owns contract capacity.
 }
 
 func resolveFleetAutosizerConfig(cmd *RunFleetAutosizerCoordinatorCommand) autosizerRunConfig {
@@ -123,7 +123,6 @@ func resolveFleetAutosizerConfig(cmd *RunFleetAutosizerCoordinatorCommand) autos
 	if c.ShipTypeExplorer == "" {
 		c.ShipTypeExplorer = defaultShipTypeExplorer
 	}
-	// sp-y2ptq: the contract-delivery class default resolution was removed with the class.
 	// PreferDemandProximalYard defaults TRUE: nil (unset) → true; the *bool distinguishes an
 	// explicit false from "not configured".
 	c.PreferDemandProximalYard = true
@@ -210,8 +209,8 @@ func (h *RunFleetAutosizerCoordinatorHandler) reconcileOnce(ctx context.Context,
 		MaxExplorerHulls:     cfg.FleetCeilingExplorer,
 	}
 
-	// sp-y2ptq: the contract-delivery graduation gate was removed with the autosizer's contract class
-	// (the dedicated scaler owns contract capacity and carries its own graduation handling).
+	// No contract-delivery graduation gate here: the dedicated scaler owns contract capacity and
+	// carries its own graduation handling.
 
 	purchasesThisTick := 0
 	anyUnmetNoBuy := false

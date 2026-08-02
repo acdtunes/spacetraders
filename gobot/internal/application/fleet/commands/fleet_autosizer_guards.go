@@ -108,10 +108,9 @@ type PurchaseRequest struct {
 	ShortfallStreak    int
 	ShortfallStreakMin int
 
-	// sp-r7eiu: CurrentClassCount and ClassCeiling were removed with the class_ceiling guard —
-	// they were its inputs and nothing else read them. The per-class pool counts still reach the
+	// There is no per-class pool count or ceiling on this request. The pool counts reach the
 	// decision log through each class's ClassDemand (Demand/Current), which is where an operator
-	// reads pool size now.
+	// reads pool size.
 
 	// The HEAVY-HULL cap — the ONLY remaining count-based bound on any class, and the reason
 	// removing the pool ceiling did not leave heavies unbounded.
@@ -216,15 +215,15 @@ func EvaluateGuards(req PurchaseRequest) PurchaseDecision {
 // guardDemand answers the whole "is there a real, settled need?" question in ONE verdict: an unmet
 // shortfall AND — where the class uses one — that shortfall having PERSISTED the anti-thrash streak.
 //
-// The streak used to hold the buy OUTSIDE the guard chain, on its own log line
-// ("shortfall 17 persisting 2/3 ticks — holding for the anti-thrash streak") while the decision log
-// printed nothing at all for that tick. An operator had to correlate two lines to learn why a heavy
-// did not buy. It is a demand condition, so it belongs to the demand guard's verdict.
+// The streak is a demand condition, so it belongs to the demand guard's verdict. Holding the buy
+// OUTSIDE the guard chain puts its reason on a separate log line ("shortfall 17 persisting 2/3
+// ticks — holding for the anti-thrash streak") while the decision log prints nothing at all for
+// that tick, forcing an operator to correlate two lines to learn why a heavy did not buy.
 //
 // NON-LOOSENING: the streak term is unchanged (streak >= min, same counter, same reset rule) and is
-// now ANDed with the shortfall test rather than short-circuiting ahead of it. A tick that used to
-// hold for the streak still does not buy — it now says so in the decision line and meters a
-// `demand` block, where before it was invisible to the autosizer_blocked series.
+// now ANDed with the shortfall test rather than short-circuiting ahead of it. A tick held for the
+// streak still does not buy — it says so in the decision line and meters a `demand` block, so the
+// hold is visible on the autosizer_blocked series.
 func guardDemand(req PurchaseRequest) GuardVerdict {
 	if req.ShortfallStreakMin > 0 {
 		return GuardVerdict{
@@ -240,9 +239,8 @@ func guardDemand(req PurchaseRequest) GuardVerdict {
 	}
 }
 
-// guardHeavyCap bounds CAPITAL EXPOSURE in large hulls. Since sp-r7eiu removed the per-class pool
-// ceiling it is the ONLY count-based bound left on any class, so it is the whole answer to "how
-// many heavies may this fleet own".
+// guardHeavyCap bounds CAPITAL EXPOSURE in large hulls. It is the ONLY count-based bound left on
+// any class, so it is the whole answer to "how many heavies may this fleet own".
 //
 // It is HEAVY-SCOPED: every other class passes untouched, because the census it reads
 // (HeaviesOwned) counts heavy hulls fleet-wide and would otherwise starve the light

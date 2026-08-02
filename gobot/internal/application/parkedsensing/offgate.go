@@ -76,8 +76,9 @@ type ExplorerFinder interface {
 // IT MUST NOT BLOCK, and the existing adapter does not: it resolves the arrival waypoint FIRST and
 // fails closed if the target system's waypoints are unknown, then runs the warp itself on a
 // background goroutine, so an unreachable destination never buys a wasted flight and a multi-minute
-// warp never holds the tick open. Both properties mirror RouteAcross, and both were verified in the
-// adapter before this driver was written rather than assumed from its name.
+// warp never holds the tick open. Both properties mirror RouteAcross, and both belong to the
+// ADAPTER rather than to this interface — a replacement must be checked for them, never assumed
+// from its name.
 type ExplorerDispatcher interface {
 	DispatchExplorer(ctx context.Context, playerID int, shipSymbol string, target expansionCmd.OffGateTarget) error
 }
@@ -170,7 +171,7 @@ func advanceOffGate(
 
 	signal := expansionCmd.OffGateDemandSignal{
 		Demanded:      true,
-		ExplorerCount: 1, // hard cap of one; ExplorerDemandProvider clamps its want to this (sp-r7eiu removed the second enforcement at class_ceiling)
+		ExplorerCount: 1, // hard cap of one; ExplorerDemandProvider clamps its want to this, and that clamp is the ONLY enforcement — no class ceiling backs it up
 		Reason:        fmt.Sprintf("gate-reachable frontier exhausted (%d target(s) outstanding, none within %d gate hops)", len(targets), MaxWalkRings),
 	}
 

@@ -318,7 +318,7 @@ func TestBootstrap_Expansion_PartialRedirect_TalliesWhatLanded(t *testing.T) {
 // --- The destination must be MANAGED: ensure the trade-fleet coordinator at EXPANSION ---
 //
 // Tagging a hull "trade" only earns if something is working the trade fleet. Nothing else guarantees
-// that at EXPANSION: LaunchStandingCoordinators is a no-op since the factory retirement (sp-hoj8u),
+// that at EXPANSION: LaunchStandingCoordinators is a no-op since the factory retirement,
 // ContainerTypeTradeFleetCoordinator is NOT in bootStandingCoordinatorTypes, and the only other caller
 // of LaunchTradeFleetCoordinator is the INCOME-phase trade-seed — which a mature fleet restarting into
 // EXPANSION never reaches. So the hand-off ensures it here, beside the redirect.

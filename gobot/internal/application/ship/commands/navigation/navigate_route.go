@@ -60,11 +60,10 @@ type NavigateRouteHandler struct {
 	routePlanner     *RoutePlanner
 	routeExecutor    *RouteExecutor
 
-	// crossSystemRouter is the shared gate-crossing travel capability (sp-9l4p),
+	// crossSystemRouter is the shared gate-crossing travel capability,
 	// attached post-construction via WithCrossSystemRouter so every existing
 	// NewNavigateRouteHandler call site is unchanged. Nil until wired: a cross-system
-	// destination then fails closed exactly as before this fix (byte-identical), so the
-	// capability is purely additive.
+	// destination then fails closed, so the capability is purely additive.
 	crossSystemRouter CrossSystemRouter
 }
 
@@ -86,11 +85,11 @@ func NewNavigateRouteHandler(
 }
 
 // WithCrossSystemRouter attaches the shared gate-crossing travel capability to an
-// already-constructed handler and returns it for chaining (sp-9l4p). It mirrors
+// already-constructed handler and returns it for chaining. It mirrors
 // RouteExecutor.WithWarpSupport: the capability is additive and INERT until wired, so
 // the five-arg NewNavigateRouteHandler signature — and every existing call site and
-// test — stays untouched, and a handler with no router attached keeps the exact pre-fix
-// fail-closed behaviour on a cross-system destination. Intended to be called once at
+// test — stays untouched, and a handler with no router attached still fails closed on
+// a cross-system destination. Intended to be called once at
 // wiring time (main.go), before the handler is used concurrently.
 func (h *NavigateRouteHandler) WithCrossSystemRouter(router CrossSystemRouter) *NavigateRouteHandler {
 	h.crossSystemRouter = router
@@ -111,7 +110,7 @@ func (h *NavigateRouteHandler) Handle(ctx context.Context, request common.Reques
 		return nil, err
 	}
 
-	// sp-9l4p: a destination in a DIFFERENT system than the ship cannot be reached by
+	// A destination in a DIFFERENT system than the ship cannot be reached by
 	// the intra-system route planner below (the OR-Tools planner and the raw /navigate
 	// API are both single-system), so a bare cross-system NavigateRouteCommand used to
 	// fail-close at validateWaypointCache — the live -90k contract stall and the ceiling
@@ -236,7 +235,7 @@ func (h *NavigateRouteHandler) loadAndEnrichWaypoints(ctx context.Context, cmd *
 		return nil, "", fmt.Errorf("failed to enrich waypoints: %w", err)
 	}
 
-	// sp-g1g5: On a genuine in-system cache miss (origin absent, or an in-system
+	// On a genuine in-system cache miss (origin absent, or an in-system
 	// destination absent) the cache-first load is stale. Force-refresh the graph
 	// from the API exactly once and re-enrich so navigation self-heals instead of
 	// loud-failing at validateWaypointCache. Cross-system destinations are excluded
@@ -272,7 +271,7 @@ func (h *NavigateRouteHandler) loadAndEnrichWaypoints(ctx context.Context, cmd *
 // (it lives in another system's graph) and must NOT trigger a refresh. The
 // trigger is deliberately narrow so it fires only on a genuine in-system cache
 // miss — the same condition that would otherwise fail loudly at
-// validateWaypointCache. See sp-g1g5.
+// validateWaypointCache.
 func shouldForceRefreshWaypoints(waypoints map[string]*shared.Waypoint, origin, destination, systemSymbol string) bool {
 	if _, ok := waypoints[origin]; !ok {
 		return true
@@ -326,17 +325,17 @@ func (h *NavigateRouteHandler) planAndExecuteRoute(ctx context.Context, cmd *Nav
 	return route, nil
 }
 
-// tryCrossSystemNavigate handles a destination in a DIFFERENT system than the ship
-// (sp-9l4p). The intra-system route planner cannot move a hull across systems, so a bare
-// cross-system NavigateRouteCommand used to fail-close at validateWaypointCache
+// tryCrossSystemNavigate handles a destination in a DIFFERENT system than the ship.
+// The intra-system route planner cannot move a hull across systems, so without this seam
+// a bare cross-system NavigateRouteCommand fails closed at validateWaypointCache
 // ("waypoint <dest> not found in cache for system <current>"). Both live victims — the
 // contract worker sourcing a home good from another system, and the frontier's
 // target-aware probe-buy navigating an idle hull from home to a frontier shipyard —
 // converge on this one seam.
 //
 // It returns handled=false (deferring to the unchanged in-system path) in three cases,
-// so the fix is strictly additive:
-//   - no cross-system router is wired (behaviour byte-identical to before this fix);
+// so the seam is strictly additive:
+//   - no cross-system router is wired;
 //   - the destination is in the ship's CURRENT system (an ordinary in-system navigate);
 //   - the destination is genuinely UNKNOWN even after an on-demand sync — the existing
 //     validateWaypointCache then produces the exact same fail-closed error (last resort).
@@ -383,7 +382,7 @@ func (h *NavigateRouteHandler) tryCrossSystemNavigate(
 }
 
 // crossSystemDestinationResolvable reports whether cmd.Destination is a REAL, known
-// waypoint in its own system, auto-syncing that system's graph on-demand (sp-9l4p). It is
+// waypoint in its own system, auto-syncing that system's graph on-demand. It is
 // the production-safety gate: a hull is committed to a multi-jump journey only to a
 // destination the graph provider can confirm exists.
 //
@@ -391,7 +390,7 @@ func (h *NavigateRouteHandler) tryCrossSystemNavigate(
 // the same frontier target quoted twice in a cycle — costs zero API and the system is
 // synced at most once per window. A force-refresh fires at most ONCE, and only when the
 // cache-first read still missed the waypoint (a stale/partial cache), mirroring the
-// sp-g1g5 in-system self-heal. A nil or unreadable provider fails closed (returns false).
+// in-system self-heal. A nil or unreadable provider fails closed (returns false).
 func (h *NavigateRouteHandler) crossSystemDestinationResolvable(
 	ctx context.Context,
 	cmd *NavigateRouteCommand,

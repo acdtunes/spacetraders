@@ -1,5 +1,5 @@
-// Package outfitting implements ship module install/remove operations
-// (sp-wh0t). A module install/remove CHANGES ship state (cargo capacity), so
+// Package outfitting implements ship module install/remove operations.
+// A module install/remove CHANGES ship state (cargo capacity), so
 // per RULING #3 it is a daemon-side operation and never a CLI-side API call.
 // Every modification atomically claims the hull (RULING #7), gates the shipyard
 // modification fee on the working-capital floor (RULING #4), and persists the
@@ -31,8 +31,8 @@ const outfittingOperation = "outfitting"
 // defaultWorkingCapitalReserve is the hard, non-tunable working-capital floor
 // (RULING #4/#5) applied to the modification fee: an install/remove must never
 // drop live treasury below this. Sourced from the ONE shared immutable floor
-// (common.ImmutableReserveFloor, sp-zq635) that the trade-circuit (bp6f) and
-// factory (sp-9aoc) guards now also reference — a single definition the guards
+// (common.ImmutableReserveFloor) that the trade-circuit (bp6f) and
+// factory guards now also reference — a single definition the guards
 // can never disagree on, never weakened.
 const defaultWorkingCapitalReserve = common.ImmutableReserveFloor
 
@@ -58,7 +58,7 @@ type ContainerRepository interface {
 // types and their purchase prices, not the counter's modification charge — so
 // unlike the catalogue-searching callers this guard has no store to fall back on
 // and its read is genuinely undeniable. That is precisely the Earning class:
-// metered against the same allowance, never declined (sp-mb0er).
+// metered against the same allowance, never declined.
 type yardFeeReader interface {
 	ReadShipyard(ctx context.Context, playerID uint, waypointSymbol string, class marketscan.Class) (*ports.ShipyardData, error)
 }
@@ -81,7 +81,7 @@ type OutfittingHandler struct {
 // real clock (production default). yards is the metered shipyard reader the
 // spend-floor takes the modification fee from; a nil one leaves the guard
 // unavailable rather than reaching the API unmetered. mediator carries the
-// shipyard fee to the financial ledger (sp-shq63); a nil one records nothing
+// shipyard fee to the financial ledger; a nil one records nothing
 // and is logged loudly at spend time rather than silently dropping the row.
 func NewOutfittingHandler(
 	shipRepo navigation.ShipRepository,
@@ -230,7 +230,7 @@ func (h *OutfittingHandler) modifyModule(
 		return nil, err
 	}
 
-	// 7. Record the shipyard fee in the financial ledger (sp-shq63) BEFORE the
+	// 7. Record the shipyard fee in the financial ledger BEFORE the
 	//    state persist: the credits are already gone server-side, and a persist
 	//    failure must not be the reason the spend goes unrecorded.
 	h.recordModificationFee(ctx, verb, shipSymbol, moduleSymbol, playerID, player.AgentSymbol, result)
@@ -268,7 +268,7 @@ func (h *OutfittingHandler) modifyModule(
 }
 
 // recordModificationFee writes the shipyard modification fee to the financial
-// ledger (sp-shq63). Same defect class as the jump gate fee: the API charges it,
+// ledger. Same defect class as the jump gate fee: the API charges it,
 // the adapter parsed it into ModuleModificationResult.Fee (and the in-band
 // post-transaction credits into AgentCredits), and nothing consumed either — so
 // an autonomous auto-outfit install moved credits with no ledger row, letting the
@@ -392,8 +392,8 @@ func (h *OutfittingHandler) floorGuardBreached(ctx context.Context, ship *naviga
 	return false, agent.Credits, fee, ""
 }
 
-// releaseClaim releases the outfitting claim on shipSymbol under CAS-retry
-// (sp-wa7c): SaveWithRetry re-loads the ship FRESH (so it carries whatever
+// releaseClaim releases the outfitting claim on shipSymbol under CAS-retry:
+// SaveWithRetry re-loads the ship FRESH (so it carries whatever
 // capacity/cargo was just persisted) and re-applies ForceRelease on that fresh
 // row on every version conflict, so the release never clobbers a concurrent
 // writer's fields — closing the residual find→save race the plain Save left open.

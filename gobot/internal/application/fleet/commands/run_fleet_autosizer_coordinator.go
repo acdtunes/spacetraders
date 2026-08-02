@@ -19,11 +19,8 @@ const (
 	defaultAutosizerTickSeconds = 900 // 15min — sizing is strategic, not per-second
 	defaultPurchaseCapPerTick   = 1
 
-	// sp-r7eiu: defaultFleetCeiling{Lights,Heavies} were removed with the class_ceiling guard —
-	// a flat per-class pool cap refused a purchase for being the Nth hull without asking whether
-	// the fleet could afford it or had work for it, and had to be re-raised by hand every time the
-	// fleet legitimately grew. See fleet_autosizer_guards.go for what bounds each class now.
-	// defaultFleetCeilingExplorer SURVIVES below: it is the explorer's demand-side hard cap, not a
+	// There are no per-class pool ceilings — see fleet_autosizer_guards.go for what bounds each
+	// class. defaultFleetCeilingExplorer below is the explorer's demand-side hard cap, NOT a
 	// guard input.
 
 	defaultPurchaseMarginOverFloor     = 200000
@@ -31,9 +28,9 @@ const (
 	defaultHeavyUnservedLanesMin       = 3
 	defaultHeavyTreasuryPctPerPurchase = 25
 	// defaultHeavyCap bounds CAPITAL EXPOSURE in heavy hulls, counted fleet-wide regardless of
-	// dedicated_fleet tag. Since sp-r7eiu removed the pool ceilings it is the ONLY count-based
-	// bound on any class. 5 per the Admiral. An explicit 0 in config.yaml is a legitimate operator
-	// HOLD, which is why the config field is a *int (see config.FleetAutosizerConfig.HeavyCap).
+	// dedicated_fleet tag. It is the ONLY count-based bound on any class. 5 per the Admiral. An
+	// explicit 0 in config.yaml is a legitimate operator HOLD, which is why the config field is a
+	// *int (see config.FleetAutosizerConfig.HeavyCap).
 	defaultHeavyCap                  = 5
 	defaultAPIUtilCeilingPct         = 85
 	defaultMaxPremiumOverCheapestPct = 50
@@ -52,8 +49,8 @@ const (
 	defaultMaxPriceExplorer               = 900000
 	defaultShipTypeExplorer               = "SHIP_EXPLORER"
 
-	// sp-y2ptq: the autosizer's contract-delivery class defaults were removed with the class (the
-	// dedicated scaler owns contract-fleet capacity). The HullClassContractDelivery enum + the
+	// The autosizer carries no contract-delivery class defaults — the dedicated scaler owns
+	// contract-fleet capacity. The HullClassContractDelivery enum + the
 	// "contract" dedication mapping the scaler reuses stay.
 )
 
@@ -131,8 +128,7 @@ type RunFleetAutosizerCoordinatorCommand struct {
 	MaxPriceExplorer               int64
 	ShipTypeExplorer               string
 
-	// sp-y2ptq: the contract-delivery class knobs were removed with the autosizer's demand-driven
-	// contract scaling (the dedicated scaler owns it now).
+	// No contract-delivery class knobs here: the dedicated scaler owns contract capacity.
 }
 
 // RunFleetAutosizerCoordinatorResponse reports reconcile progress. Because the loop is infinite
@@ -163,8 +159,7 @@ type RunFleetAutosizerCoordinatorHandler struct {
 	heavyYard   HeavyYardReader
 	// heavyYardCatalog and heavyErrand drive the heavy-yard PRICING ERRAND: a shipyard prices
 	// its hulls only while a ship stands there, so a known-but-unpriced heavy yard needs a hull
-	// sent to it before any reservation can ever form. Both nil-safe: unwired ⇒ no errand, and
-	// the coordinator behaves exactly as it did before the errand existed.
+	// sent to it before any reservation can ever form. Both nil-safe: unwired ⇒ no errand.
 	heavyYardCatalog HeavyYardCatalogReader
 	heavyErrand      HeavyPricingErrandPort
 	// heavyCapCfg is the per-tick live-config snapshot for heavy_cap (the autosizer's only
@@ -324,8 +319,8 @@ func (c autosizerRunConfig) classDisabled(class HullClass) bool {
 		// deploy skips it entirely and buys no ~819k ROI-exempt hull.
 		return !c.ExplorerHullsEnabled
 	default:
-		// sp-y2ptq: HullClassContractDelivery (the autosizer's removed contract-scaling class) now
-		// falls here — never sized by the autosizer (the dedicated scaler owns it). "unknown class: never act".
+		// HullClassContractDelivery falls here — never sized by the autosizer (the dedicated scaler
+		// owns it). "unknown class: never act".
 		return true
 	}
 }

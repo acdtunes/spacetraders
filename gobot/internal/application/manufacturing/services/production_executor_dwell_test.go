@@ -11,7 +11,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// sp-npyr: goods_factory coordinators were observed DWELLING 40+ minutes
+// goods_factory coordinators were observed DWELLING 40+ minutes
 // holding docked light-hauler claims during a fabrication wait with only
 // sparse (every-5th-attempt) logging and no escalation — from the outside
 // this reads as a silent stall ("Idle light haulers discovered" fires

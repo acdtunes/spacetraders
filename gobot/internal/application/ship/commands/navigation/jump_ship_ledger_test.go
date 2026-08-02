@@ -249,7 +249,7 @@ func TestJumpFeeIsRecordedAsAnExpense(t *testing.T) {
 }
 
 // TestJumpFeeRecordsTheDepartureSystem kills the mutation "record the fee without
-// naming where the hull left from" (sp-9idvn).
+// naming where the hull left from".
 //
 // The fee is a property of the DEPARTURE gate — the origin system explains 99.7% of the
 // variance, and the same edge costs 27% more in one direction than the other — so a row

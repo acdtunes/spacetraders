@@ -18,7 +18,7 @@ type StockerOperationResult struct {
 }
 
 // operationStocker is the stocker's fleet identity for the atomic ClaimShip
-// dedication check (sp-m92a, mirroring operationWarehouse / RULINGS #7). It is
+// dedication check (mirroring operationWarehouse / RULINGS #7). It is
 // BOTH the operation the stocker container claims under AND the DedicatedFleet
 // tag the captain pins with `fleet assign --fleet stocker`: the ClaimShip guard
 // (ship_repository.go) permits a claim only when operation == DedicatedFleet, so
@@ -30,13 +30,13 @@ type StockerOperationResult struct {
 // crash/restart/idle-gap, no coordinator can poach the hull, and the next
 // stocker relaunch re-claims its own.
 //
-// Defined FROM the domain source-of-truth (sp-3tsjz) so this launcher and the
+// Defined FROM the domain source-of-truth so this launcher and the
 // claim-time command-frigate guard (ship_repository.go ClaimShip, via
 // domainContract.IsDepotOperation) can never name different strings and let the
 // guard silently drift out of coverage.
 const operationStocker = domainContract.DepotOperationStocker
 
-// StartStocker launches the STOCKER LOOP (sp-zdwg) as a recovery-safe daemon container:
+// StartStocker launches the STOCKER LOOP as a recovery-safe daemon container:
 // a dedicated hull that fills a home warehouse the tours rationally won't (sp-dchv proved
 // deposit legs lose to direct sells at every re-plan — correct economics; the stocker
 // dedicates capacity instead of distorting tour objectives). Each round-trip it need-ranks
@@ -117,7 +117,7 @@ func (s *DaemonServer) StartStocker(
 		// rebuild (buildStockerCoordinatorCommand) reads it back. A generic launch persists false.
 		"home_system_only": homeSystemOnly,
 		// The runner claims the hull through the atomic operation-checked
-		// ClaimShip when this key is present (sp-m92a, mirroring the warehouse):
+		// ClaimShip when this key is present (mirroring the warehouse):
 		// operation="stocker" matches the hull's "stocker" DedicatedFleet tag, so
 		// the stocker takes its own dedicated hull while every other coordinator
 		// is rejected. Persisted so a recovery rebuild re-claims under the same

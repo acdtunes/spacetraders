@@ -92,12 +92,12 @@ const (
 // hidden, so the full map still completes and uncharted_count still falls to
 // zero exactly as it always did.
 //
-// WHY SEQUENCE IS WORTH CHANGING ANYWAY. The design already separates two roles
+// WHY SEQUENCE IS WORTH ORDERING ANYWAY. The design already separates two roles
 // — ONE probe per system flying the charting errand, and SEVERAL probes parked
-// on markets scanning them. The tour used to run in arbitrary (alphabetical)
-// order, so a seed could spend fifty hours on asteroids before revealing the one
-// market a scanner could have been sitting on the whole time. Ordering by
-// expected value deploys those scanners early and still finishes the map.
+// on markets scanning them. In arbitrary (alphabetical) order, a seed can spend
+// fifty hours on asteroids before revealing the one market a scanner could have
+// been sitting on the whole time. Ordering by expected value deploys those
+// scanners early and still finishes the map.
 // TORWIND-18 is the live case: standing on an asteroid in X1-AJ10 with 54
 // asteroids and one FUEL_STATION left, and a FUEL_STATION is ~100% a market.
 //

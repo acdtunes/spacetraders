@@ -7,7 +7,7 @@ import (
 )
 
 // TradingConfig holds the trade-ranker knobs read at daemon start. Its only member
-// today is the activity-conditioned freshness table (sp-t5sh5); it exists as its own
+// today is the activity-conditioned freshness table; it exists as its own
 // [trading] section so the ranker's tune knobs live under one intuitive key rather
 // than being folded into the era-refit [trade_impact] coefficients.
 type TradingConfig struct {

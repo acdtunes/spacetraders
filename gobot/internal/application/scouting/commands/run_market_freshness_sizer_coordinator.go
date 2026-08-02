@@ -1,4 +1,4 @@
-// Package commands: the market-freshness auto-sizer (sp-orgp). A standing daemon
+// Package commands: the market-freshness auto-sizer. A standing daemon
 // coordinator that keeps EVERY scanned market fresh within a configurable SLA by
 // AUTO-SIZING and AUTO-BUYING probe capacity per system — the freshness analogue of the
 // frontier expansion coordinator (sp-8w89), which auto-sizes/buys for post COVERAGE.
@@ -64,7 +64,7 @@ const (
 	// here only when the launch config leaves it unset).
 	defaultSizerTickSeconds = 60
 	defaultSLASeconds       = 3600 // 1h freshness SLA (the global fallback when a system carries no activity signal)
-	// Per-activity freshness SLAs (sp-j4kjv): the freshness SLA is a FUNCTION OF market ACTIVITY
+	// Per-activity freshness SLAs: the freshness SLA is a FUNCTION OF market ACTIVITY
 	// STATE, not one global value. A WEAK market tolerates far staler prices than a STRONG one, so a
 	// single global SLA over-serves the weak and under-serves the tight. The sizer partitions each
 	// system's markets by activity, sizes each cohort against ITS OWN SLA (ceil(cohortMarkets × cycle
@@ -117,7 +117,7 @@ const (
 	// percentile up (arb core stays tight) while a low-traffic straggler stays in the tolerated
 	// tail. `tune value_weighted 1` disables it live (falls back to a plain count percentile).
 	defaultValueWeighted = true
-	// defaultDemandHalfLifeSeconds (sp-wuksw) is the EWMA half-life of the realized-sink-demand
+	// defaultDemandHalfLifeSeconds is the EWMA half-life of the realized-sink-demand
 	// weight: a SELL leg this many seconds old counts half as much as one just realized. 3h matches
 	// the lane-decay priors — long enough that a steady arb lane holds a stable weight, short enough
 	// that a lane the fleet abandons decays off within a shift so its markets stop winning scarce
@@ -226,13 +226,13 @@ type ChartedMarketplaceReader interface {
 	ChartedMarketSystemCounts(ctx context.Context) (map[string]int, error)
 }
 
-// TourTelemetryReader is the REUSED tour-telemetry read (sp-wuksw): the same
+// TourTelemetryReader is the REUSED tour-telemetry read: the same
 // trading.TourTelemetryRepository.ListByPlayer the auto-outfit coordinator reads, scoped to the
 // player and a rolling window. The freshness sizer folds its SELL legs into a per-sink realized-
 // demand weight that supersedes the intrinsic Σ(trade_volume × price) census weight as the PRIMARY
 // input to the value-weighted freshness percentile (a market never traded keeps its intrinsic
-// prior). Optional-injection: nil (unwired) leaves every market on its intrinsic weight — byte-
-// identical to pre-sp-wuksw. Structurally satisfied by *persistence.TourTelemetryRepositoryGORM
+// prior). Optional-injection: nil (unwired) leaves every market on its intrinsic weight.
+// Structurally satisfied by *persistence.TourTelemetryRepositoryGORM
 // (the read is REUSED, not forked — the repository enforces the player_id row filter).
 type TourTelemetryReader interface {
 	ListByPlayer(ctx context.Context, playerID int, since time.Time) ([]trading.TourLegTelemetry, error)
@@ -268,7 +268,7 @@ type RunMarketFreshnessSizerCoordinatorCommand struct {
 	// plain count percentile. 0 (unset) resolves to the default ON. Live-tunable (SizerTunableDefaults).
 	ValueWeightedMode       int
 	ReleaseSlackPercent     int // release hysteresis: shed a probe only below this % of the SLA
-	ReleaseStableWindowSecs int // a warm surplus must hold this long before one probe is shed (sp-iupr)
+	ReleaseStableWindowSecs int // a warm surplus must hold this long before one probe is shed
 
 	// ReservedFrontierFloor (sp-iopd) is the count of probes the sizer treats as reserved for
 	// the frontier: it holds its aggregate demand against (supply − this) and releases the
@@ -324,10 +324,10 @@ type RunMarketFreshnessSizerCoordinatorHandler struct {
 	// identical; even wired it is inert until the hold_unscanned_market_posts knob is armed.
 	chartedMarketplaceReader ChartedMarketplaceReader
 
-	// tourTelemetry is the optional REUSED tour-telemetry read (sp-wuksw): the sizer folds its
+	// tourTelemetry is the optional REUSED tour-telemetry read: the sizer folds its
 	// SELL legs into a per-sink realized-demand weight that supersedes the intrinsic census weight
 	// in the value-weighted percentile. nil (unwired) or no telemetry ⇒ every market keeps its
-	// intrinsic weight — byte-identical to pre-sp-wuksw.
+	// intrinsic weight.
 	tourTelemetry TourTelemetryReader
 
 	// captainEvents emits the coordinator error-loop event when a reconcile pass fails with
@@ -397,9 +397,9 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) SetChartedMarketplaceReader(
 	h.chartedMarketplaceReader = r
 }
 
-// SetTourTelemetryReader wires the REUSED tour-telemetry read (sp-wuksw) that drives the demand
-// weight. Leaving it unset keeps every market on its intrinsic census weight — byte-identical to
-// pre-sp-wuksw. The demand weight is applied only when value-weighting is on (mode 2).
+// SetTourTelemetryReader wires the REUSED tour-telemetry read that drives the demand
+// weight. Leaving it unset keeps every market on its intrinsic census weight.
+// The demand weight is applied only when value-weighting is on (mode 2).
 func (h *RunMarketFreshnessSizerCoordinatorHandler) SetTourTelemetryReader(r TourTelemetryReader) {
 	h.tourTelemetry = r
 }
@@ -475,7 +475,7 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) noteReconcile(ctx context.Co
 	}
 }
 
-// SizerTunableDefaults maps every LIVE-tunable freshness-sizer knob (sp-0z7f) to its
+// SizerTunableDefaults maps every LIVE-tunable freshness-sizer knob to its
 // documented default — the value that applies when neither the live container config
 // nor the launch command carries a positive one. The daemon's tune bounds registry
 // reads THIS map, so the defaults-of-record stay in this file next to the consts they
@@ -489,13 +489,13 @@ func SizerTunableDefaults() map[string]int {
 		"max_probe_fleet":             defaultSizerMaxProbeFleet,
 		"max_probes_per_system":       defaultMaxProbesPerSystem,
 		"sla_seconds":                 defaultSLASeconds,
-		"sla_seconds_weak":            defaultSLAWeakSeconds,        // sp-j4kjv per-activity SLA (WEAK, 360m)
-		"sla_seconds_restricted":      defaultSLARestrictedSeconds,  // sp-j4kjv per-activity SLA (RESTRICTED + unknown/null, 135m)
-		"sla_seconds_growing":         defaultSLAGrowingSeconds,     // sp-j4kjv per-activity SLA (GROWING, 45m)
-		"sla_seconds_strong":          defaultSLAStrongSeconds,      // sp-j4kjv per-activity SLA (STRONG, 22m)
+		"sla_seconds_weak":            defaultSLAWeakSeconds,        // Per-activity SLA (WEAK, 360m)
+		"sla_seconds_restricted":      defaultSLARestrictedSeconds,  // Per-activity SLA (RESTRICTED + unknown/null, 135m)
+		"sla_seconds_growing":         defaultSLAGrowingSeconds,     // Per-activity SLA (GROWING, 45m)
+		"sla_seconds_strong":          defaultSLAStrongSeconds,      // Per-activity SLA (STRONG, 22m)
 		"target_percentile":           defaultTargetPercentile,      // sp-r57g percentile-age target
 		"value_weighted":              valueWeightedModeOn,          // sp-r57g value-weighting mode (2=on default, 1=off)
-		"demand_ewma_half_life_secs":  defaultDemandHalfLifeSeconds, // sp-wuksw realized-demand EWMA half-life
+		"demand_ewma_half_life_secs":  defaultDemandHalfLifeSeconds, // Realized-demand EWMA half-life
 		"worst_cycle_seconds":         defaultWorstCycleSeconds,
 		"cycle_dampening_percent":     defaultCycleDampeningPercent,
 		"breach_response_percent":     defaultBreachResponsePercent,
@@ -515,7 +515,7 @@ func SizerTunableDefaults() map[string]int {
 type sizerConfig struct {
 	DefaultSLA time.Duration
 	Overrides  map[string]time.Duration
-	// ActivitySLA (sp-j4kjv) is the per-activity freshness SLA: each market ACTIVITY state is sized
+	// ActivitySLA is the per-activity freshness SLA: each market ACTIVITY state is sized
 	// against its own SLA, keyed by the canonical shared.ActivityLevel. Resolved once in
 	// resolveSizerConfig from the sla_seconds_{weak,restricted,growing,strong} knobs; read via
 	// slaForActivity, which maps an unknown/absent activity to the RESTRICTED entry.
@@ -528,7 +528,7 @@ type sizerConfig struct {
 	BreachResponsePercent    int
 	TargetPercentile         int           // sp-r57g percentile-age target (default 90; 100 = max-age behavior)
 	ValueWeighted            bool          // sp-r57g: weight the percentile by per-market value (default ON)
-	DemandHalfLife           time.Duration // sp-wuksw: EWMA half-life of the realized-sink-demand weight
+	DemandHalfLife           time.Duration // EWMA half-life of the realized-sink-demand weight
 	ReleaseSlackPercent      int
 	ReleaseStableWindow      time.Duration
 	ReservedFrontierFloor    int
@@ -672,10 +672,10 @@ func liveSecondsOrDefault(live liveconfig.Snapshot, key string, defaultSeconds i
 	return time.Duration(secs) * time.Second
 }
 
-// resolveDemandHalfLife (sp-wuksw) resolves the realized-demand EWMA half-life from the tick's live
+// resolveDemandHalfLife resolves the realized-demand EWMA half-life from the tick's live
 // snapshot: live-authoritative when a positive value is present, the documented default otherwise
 // (an absent/zeroed key, or no snapshot). It is tunable-only — no launch-command field, mirroring
-// the sp-j4kjv per-activity SLA knobs — so a nil snapshot yields the armed default directly.
+// the per-activity SLA knobs — so a nil snapshot yields the armed default directly.
 func resolveDemandHalfLife(live liveconfig.Snapshot) time.Duration {
 	secs := 0
 	if live != nil {
@@ -694,7 +694,7 @@ func (c sizerConfig) slaFor(system string) time.Duration {
 	return c.DefaultSLA
 }
 
-// resolveActivitySLA (sp-j4kjv) resolves the per-activity freshness SLA map from the tick's live
+// resolveActivitySLA resolves the per-activity freshness SLA map from the tick's live
 // snapshot. Each knob is live-authoritative when a positive value is present and falls back to its
 // documented default otherwise (an absent/zeroed key, or no snapshot) — the same tune-registry
 // semantics the other tunables use, where `tune <key> 0` reverts to the default. The launch verb
@@ -725,7 +725,7 @@ func activitySLAOrDefault(secs, defaultSecs int) time.Duration {
 	return time.Duration(secs) * time.Second
 }
 
-// slaForActivity returns the freshness SLA for a canonical activity level (sp-j4kjv). An activity
+// slaForActivity returns the freshness SLA for a canonical activity level. An activity
 // absent from the map — an unknown/null state, or the "" zero value — resolves to the RESTRICTED
 // entry, the documented unknown default.
 func (c sizerConfig) slaForActivity(level shared.ActivityLevel) time.Duration {
@@ -784,7 +784,7 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Co
 	now := h.clock.Now()
 	legs, tradeEvidence := h.readTradeLegs(ctx, cmd, cfg, now)
 
-	// sp-wuksw: override each market's intrinsic census weight with its realized SELL demand — the
+	// Override each market's intrinsic census weight with its realized SELL demand — the
 	// PRIMARY weight source for the value-weighted freshness percentile so the fleet holds SLA on
 	// the sinks it earns through and lets zero-demand markets breach. A never-traded market keeps
 	// its intrinsic prior; a no-op (byte-identical) when unwired, value-weighting off, or no demand.
@@ -909,7 +909,7 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Co
 	totalDemand += initialScanDemand(posts, marketBearing, holdCharted, scope)
 
 	// neediest{System,Gap} tracks the market-bearing system with the LARGEST unmet probe gap
-	// (desired − current) — the demand-proximal buy TARGET (sp-hej4). The aggregate buy lands one
+	// (desired − current) — the demand-proximal buy TARGET. The aggregate buy lands one
 	// undedicated probe for the reconciler to relay; naming the neediest system lets the purchaser
 	// spawn it at the probe-yard NEAREST that system. Empty (no positive gap) is the home-yard path.
 	neediestSystem := ""
@@ -928,7 +928,7 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Co
 			neediestGap = gap
 			neediestSystem = snap.SystemSymbol
 		}
-		// MANNING FLOOR (sp-2ci9y): the home post carries a permanent MinHulls floor (probe_target)
+		// MANNING FLOOR: the home post carries a permanent MinHulls floor (probe_target)
 		// so the freshsizer never sizes it below the probes bootstrap bought for the home scan. The
 		// floor raises only the size WRITTEN to the post; `desired` (the buy-demand summed into
 		// totalDemand, and the neediest-gap above) stays UN-floored, so the guarded buyer never
@@ -960,7 +960,7 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Co
 	// reserved frontier floor engaged, totalDemand is already ≤ (supply − floor) < supply, so the
 	// sizer never buys into the reserved probes — it holds strictly against the reduced pool.
 	buyer := probebuy.NewGuardedProbeBuyer(h.treasury, h.purchaser, h.ledgerRepo, h.clock, cfg.Buy)
-	// Demand-proximal buy hint (sp-hej4): spawn the probe at the yard nearest the neediest system.
+	// Demand-proximal buy hint: spawn the probe at the yard nearest the neediest system.
 	// The sizer has no per-hop tuning knob of its own, so it applies the shared default penalty
 	// (proximity-first) and the shared sp-iqv2 supply-depletion margin so a repeated aggregate buy
 	// spreads across sibling yards instead of spiraling one market to 4x. An empty neediestSystem is
@@ -988,7 +988,7 @@ func (h *RunMarketFreshnessSizerCoordinatorHandler) ReconcileOnce(ctx context.Co
 	return nil
 }
 
-// applyDemandWeights (sp-wuksw) overrides each market's intrinsic census weight with its realized
+// applyDemandWeights overrides each market's intrinsic census weight with its realized
 // SELL demand — the PRIMARY weight source for the value-weighted freshness percentile — leaving a
 // never-traded market on its intrinsic prior. Because it only rewrites the WEIGHT the percentile
 // consumes, the whole sizing pipeline (WeightedPercentileAgeSeconds, the per-activity static base,
@@ -1204,8 +1204,8 @@ func computeTarget(snap domainScouting.SystemFreshnessSnapshot, sla, cycle time.
 	//    one); the fullyManned gate keeps the age an HONEST reading — a partially-manned post's age
 	//    reflects fewer working probes than its budget, so sizing off it would over-count.
 	if !starved && fullyManned {
-		// sp-r57g: the age fed to the sp-tor9 circuit response is the MEASURED P90 (value-weighted),
-		// not the max — so the tail beyond the target percentile no longer drives the raise.
+		// The age fed to the breach-response circuit is the MEASURED P90 (value-weighted),
+		// not the max — so the tail beyond the target percentile does not drive the raise.
 		effectiveAge := breachResponseAge(measuredAgeSeconds, cfg.BreachResponsePercent)
 		if circuitTarget := domainScouting.CircuitRequiredHulls(current, effectiveAge, sla); circuitTarget > target {
 			target = circuitTarget
@@ -1225,8 +1225,8 @@ func computeTarget(snap domainScouting.SystemFreshnessSnapshot, sla, cycle time.
 // before it is fed to the circuit model — percent > 100 sizes for a proportionally WORSE effective
 // age (equivalently, a tighter effective SLA), buying headroom against a circuit that under-measures
 // in practice; 100 is the exact measured circuit; the coordinator's default chain guarantees a
-// positive percent so this never zeroes the age. sp-r57g: ageSeconds is the value-weighted P90, not
-// the max — the tail beyond the target percentile no longer inflates the breach response.
+// positive percent so this never zeroes the age. ageSeconds is the value-weighted P90, not
+// the max — the tail beyond the target percentile does not inflate the breach response.
 func breachResponseAge(ageSeconds float64, breachResponsePercent int) time.Duration {
 	scaledSeconds := ageSeconds * float64(breachResponsePercent) / 100
 	return time.Duration(scaledSeconds * float64(time.Second))
@@ -1235,7 +1235,7 @@ func breachResponseAge(ageSeconds float64, breachResponsePercent int) time.Durat
 // modelTargetFromBase turns the STATIC required-hull base into the cycle-driven model target. A
 // telemetry-starved system uses the base as-is and is NOT age-raised (issue 1: its age is a manning
 // signal, not a capacity one); a trusted system raises the base by its empirical P90 breach (the
-// sp-orgp/sp-r57g closed loop, via RaisedForBreach). The static base is either the sp-j4kjv per-
+// sp-orgp/sp-r57g closed loop, via RaisedForBreach). The static base is either the per-
 // activity cohort sum or the single-SLA RequiredHulls — computed by the caller (computeTarget), which
 // is where the per-activity vs global-SLA decision lives; this function only applies the age raise.
 func modelTargetFromBase(staticBase int, sla time.Duration, starved bool, measuredAgeSeconds float64) int {
@@ -1246,7 +1246,7 @@ func modelTargetFromBase(staticBase int, sla time.Duration, starved bool, measur
 	return domainScouting.RaisedForBreach(staticBase, sla, age)
 }
 
-// activityStaticHulls is the sp-j4kjv per-activity static base: it partitions the system's markets by
+// activityStaticHulls is the per-activity static base: it partitions the system's markets by
 // ACTIVITY and SUMS each cohort's RequiredHulls, sizing each cohort against ITS OWN SLA — a WEAK
 // cohort tolerates a longer SLA and needs fewer probes than an equal STRONG one. It replaces the
 // single-SLA RequiredHulls(MarketCount, cycle, sla) as the model's static base.
@@ -1291,7 +1291,7 @@ func activityStaticHulls(snap domainScouting.SystemFreshnessSnapshot, cycle time
 
 // canonicalActivity maps a raw market_data.activity string to its canonical ActivityLevel. An empty
 // or unrecognized value returns (ActivityLevelRestricted, false): unknown/null is SIZED at the
-// RESTRICTED default (sp-j4kjv), while the false flag lets activityStaticHulls tell an ALL-unknown
+// RESTRICTED default, while the false flag lets activityStaticHulls tell an ALL-unknown
 // system (fall back to the global SLA) from a mix carrying at least one known activity.
 func canonicalActivity(raw string) (shared.ActivityLevel, bool) {
 	switch shared.ActivityLevel(strings.ToUpper(strings.TrimSpace(raw))) {

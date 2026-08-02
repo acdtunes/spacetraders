@@ -1,6 +1,6 @@
 package yardscan
 
-// Unit tests for the shipyard value term (sp-mb0er). The budget arithmetic these
+// Unit tests for the shipyard value term. The budget arithmetic these
 // weights feed is marketscan's and is tested there; what is proven here is the
 // ORDERING — that the yards the fleet is about to spend at outrank the ones it is
 // not, which is the property whose absence cost the incident this package

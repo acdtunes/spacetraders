@@ -21,7 +21,7 @@ import (
 // restart path never re-persists it. handleError, meanwhile, eagerly writes FAILED
 // on the failed iteration. So a still-alive, restarted container carries a stale
 // FAILED row. RecoverRunningContainers queries only INTERRUPTED+RUNNING rows, and
-// the sp-tit8 lost-guard only diffs THAT candidate set — a FAILED-but-alive
+// the lost-guard only diffs THAT candidate set — a FAILED-but-alive
 // container is therefore neither recovered NOR flagged lost when the daemon
 // redeploys (frequent, real-time patching), leaving the hull idle-laden with no
 // container and no terminal event.

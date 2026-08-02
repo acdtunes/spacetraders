@@ -26,7 +26,7 @@ type TradeRouteOperationResult struct {
 const operationTrade = "trade"
 
 // StartTradeRoute launches a single-hull pure-arbitrage circuit as a recovery-safe
-// daemon container (sp-zewt). Templated on the gas/factory coordinator start path:
+// daemon container. Templated on the gas/factory coordinator start path:
 //
 //   - Idle-gap discipline: it refuses any hull that is not genuinely idle BEFORE
 //     persisting anything, so a refused start has no side effects and never steals a
@@ -45,7 +45,7 @@ const operationTrade = "trade"
 // arrival events) — so the container never spawns a re-claiming child navigate, avoiding
 // self-collision and orbit-before-nav races.
 //
-// destWaypoint is the optional --dest lane-targeting override (sp-xwa1): a destination
+// destWaypoint is the optional --dest lane-targeting override: a destination
 // waypoint or system symbol that pins the circuit to that lane instead of the ranker's
 // auto-selected one. Empty preserves the original undirected auto-scan unchanged; it is
 // threaded into the persisted launch config (dest_waypoint) so a recovery rebuild resumes

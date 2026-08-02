@@ -103,9 +103,9 @@ func (h *HomeShipHandler) Handle(ctx context.Context, request common.Request) (c
 		return nil, fmt.Errorf("assigned standby slot %s for ship %s not found in system %s graph", slot, cmd.ShipSymbol, systemSymbol)
 	}
 
-	// A hull already at ITS assigned slot stays — the "already home ONLY if at MY slot" rule (was "at ANY
-	// standby station", which let a hull sit on a peer's slot forever). A second homing pass therefore
-	// moves no hull (no thrash).
+	// A hull already at ITS assigned slot stays — "already home ONLY if at MY slot", not "at ANY
+	// standby station", which would let a hull sit on a peer's slot forever. A second homing pass
+	// therefore moves no hull (no thrash).
 	if ship.CurrentLocation().Symbol == slot {
 		return &HomeShipResponse{TargetStation: slot, Distance: 0, Navigated: false}, nil
 	}

@@ -169,8 +169,8 @@ func (p *WaypointCatalogPort) ListUnchartedCount(ctx context.Context, system str
 // The tier is the point and the alphabet is only the tie-break. A charted
 // shipyard makes its system buyable, which funds local spares, which stage more
 // seeds; a charted market lets a parked scanner be placed on it and start
-// producing trade data while the tour continues. The old flat alphabetical order
-// left both to chance, which is how a seed comes to spend fifty hours on
+// producing trade data while the tour continues. A flat alphabetical order
+// leaves both to chance, which is how a seed comes to spend fifty hours on
 // asteroids before revealing the one market in the system. Type is the only
 // evidence available before the flight, because the SHIPYARD and MARKETPLACE
 // traits are themselves hidden until the waypoint is charted; see
@@ -220,10 +220,10 @@ func (p *WaypointCatalogPort) UnchartedWaypoints(ctx context.Context, system str
 //     prices every candidate live before it spends anyway.
 //
 // Source 2 is NOT conditional on source 1 being empty, and that is the whole
-// point. It used to be: one priced yard anywhere in the system switched the trait
-// fallback off for every waypoint in it, so each yard we had not yet priced went
-// missing — 81 of 614 charted shipyards, measured live. Whether one yard is
-// priced is evidence about THAT yard and says nothing about its neighbour.
+// point. Whether one yard is priced is evidence about THAT yard and says nothing
+// about its neighbour: making the trait fallback conditional on any priced yard in
+// the system loses every not-yet-priced yard in it — 81 of 614 charted shipyards,
+// measured live.
 //
 // Membership is decided per waypoint by appSensing.ProbeYardIsCandidate, the shared
 // probe-stock rule, so a yard priced and found probe-less is excluded here on the
@@ -238,14 +238,12 @@ func (p *WaypointCatalogPort) UnchartedWaypoints(ctx context.Context, system str
 // runs this per system on every pass, and reaching for the API would turn yard
 // discovery into live calls exactly when the API is most degraded.
 //
-// ERA-SCOPED, closing what was a KNOWN INCONSISTENCY rather than a decision (sp-fwk8z T3
-// review Minor 4, resolved by sp-l0aqy). The sibling heavy read behind the reservation —
-// ShipyardInventoryRepositoryGORM's CheapestPricedYard — was already era-scoped, so the two
-// answered "which yards sell heavies" under different era rules and a stale pre-reset row
-// could still plan a quartermaster here. The pair is now aligned with each other, with
-// ListProbeYards, and with OutstandingYards: ALL FOUR answer under the open era only, and
-// all fail closed when it cannot be resolved. Scoping one alone was what the deferral was
-// avoiding, and it is no longer a reason to leave any of them unscoped.
+// ERA-SCOPED, and it must stay aligned with its siblings. The sibling heavy read behind the
+// reservation — ShipyardInventoryRepositoryGORM's CheapestPricedYard — is era-scoped too;
+// scoping only one of a pair lets them answer "which yards sell heavies" under different era
+// rules, and a stale pre-reset row can then plan a quartermaster here. ALL FOUR — this read,
+// CheapestPricedYard, ListProbeYards and OutstandingYards — answer under the open era only,
+// and all fail closed when it cannot be resolved.
 //
 // Unlike ListProbeYards there is NO bare-SHIPYARD-trait fallback. An unscanned
 // shipyard is already returned by ListProbeYards' fallback and therefore already
@@ -300,24 +298,24 @@ func (p *WaypointCatalogPort) ListHeavyYards(ctx context.Context, system string)
 //     SELF-QUIESCING: a yard read once never appears here again, so the backlog drains
 //     and the pass then costs one query per tick and nothing else.
 //
-// ERA-SCOPED, on the row's OWN era stamp, and this is the correction of a measured
-// production bleed rather than a tidy-up (sp-l0aqy).
+// ERA-SCOPED, on the row's OWN era stamp, and the reason is a measured production bleed
+// rather than tidiness.
 //
-// It used to read the era-AGNOSTIC trait set, on the reasoning that a shipyard is an
+// Reading the era-AGNOSTIC trait set instead — on the reasoning that a shipyard is an
 // immutable physical fact so a prior-era row is still proof one is there, and that the
-// worst case after a reset was UNDER-reading — discovery latency, never a wrong buy. The
-// first half is true; the second described the wrong direction of error. `waypoints`
+// worst case after a reset is UNDER-reading, discovery latency and never a wrong buy —
+// gets the direction of error wrong. The first half is true; the second is not. `waypoints`
 // holds 1,772 SHIPYARD rows across 862 systems and only 1,219 across 587 carry the open
-// era's stamp, so the unscoped work list was mostly waypoints in universes that no
+// era's stamp, so an unscoped work list is mostly waypoints in universes that no
 // longer exist. The API does not merely decline those, it 404s their whole SYSTEM
 // ("System X1-AF2 not found"), and this pass burned ~290 such failures an hour for ten
 // hours, flat and not converging, with utilisation at 88% against an 85% ceiling.
 // Because the per-tick bound counts ATTEMPTS and not successes — correctly, so a
-// refusing API cannot become an unbounded retry storm — every dead-era yard consumed a
-// slot a live yard needed. The sweep built to find heavy shipyards spent most of its
-// budget on systems that were gone.
+// refusing API cannot become an unbounded retry storm — every dead-era yard consumes a
+// slot a live yard needs. A sweep built to find heavy shipyards spends most of its
+// budget on systems that are gone.
 //
-// WHY THE ROW'S era_id AND NOT LEDGER MEMBERSHIP. The alternative was to intersect
+// WHY THE ROW'S era_id AND NOT LEDGER MEMBERSHIP. The alternative is to intersect
 // against sensing_systems for the player. It is neither sufficient nor free: measured
 // live, 11 dead-era-stamped yard waypoints sit in systems that ARE in this era's ledger,
 // so a ledger intersection admits exactly the class being removed, while one open-era
@@ -448,10 +446,10 @@ func (p *WaypointCatalogPort) OutstandingYards(ctx context.Context, playerID int
 // known=false when the waypoint has no rows at all, which the caller must read as
 // "ask once" and never as "no probe".
 //
-// DELIBERATELY NOT ERA-SCOPED, and it is the one read in this file that stays that way
-// after sp-l0aqy aligned the three yard reads. The distinction is which QUESTION the
-// read answers. The yard reads build a candidate UNIVERSE and hand it to something that
-// spends — so a dead-era row there manufactures work, and scoping them strictly REMOVES
+// DELIBERATELY NOT ERA-SCOPED, and it is the one read in this file that is not. The
+// distinction is which QUESTION the read answers. The yard reads build a candidate
+// UNIVERSE and hand it to something that spends — so a dead-era row there manufactures
+// work, and scoping them strictly REMOVES
 // candidates. This read is a per-waypoint stock MEMO consulted by ProbeYardIsCandidate,
 // and its rows are the reason a yard is refused: era-scoping it would turn a yard we
 // priced and found probe-less into a yard we have never priced, ADMITTING it to the buy
@@ -503,7 +501,7 @@ func (p *WaypointCatalogPort) LastListingScan(ctx context.Context, playerID int,
 }
 
 // ERA-SCOPED on BOTH halves of the union, and fail-closed when the open era cannot be
-// resolved (sp-l0aqy). The trait half already was, through the repository's
+// resolved. The trait half already was, through the repository's
 // ListBySystemWithTrait; the priced half read shipyard_inventory unscoped, so a
 // pre-reset row could put a yard from a dead universe at the head of the
 // cheapest-first ranking — the position the drain quotes from first. The whole file
@@ -532,11 +530,11 @@ func (p *WaypointCatalogPort) ListProbeYards(ctx context.Context, system string)
 	// waypoint already carrying a probe row, plus every charted SHIPYARD-trait
 	// waypoint. The union is what makes the two halves independent.
 	//
-	// This used to be an either/or — `if len(rows) > 0 { return priced }`, and the
-	// trait fallback only when the system held NOT ONE probe row anywhere. One
-	// priced yard therefore switched the fallback off for the WHOLE system, and
-	// every yard we had not yet priced became invisible: not merely unranked,
-	// absent. Measured live, 81 of 614 charted shipyards were lost that way, and a
+	// An either/or — `if len(rows) > 0 { return priced }`, with the trait fallback
+	// only when the system holds NOT ONE probe row anywhere — lets one priced
+	// yard switch the fallback off for the WHOLE system, and every yard not yet
+	// priced becomes invisible: not merely unranked, absent.
+	// Measured live, 81 of 614 charted shipyards were lost that way, and a
 	// yard nothing can see is a counter we can never buy at, because buying needs a
 	// hull already standing there. The evidence a yard IS priced says nothing about
 	// its neighbour, so the decision belongs to each waypoint on its own.
@@ -830,7 +828,7 @@ func (p *RemoteMarketPort) FetchGoods(ctx context.Context, playerID int, system,
 	if err != nil {
 		return nil, err
 	}
-	// Charged to the fleet market-scan budget, but never gated by it (sp-ntgfj).
+	// Charged to the fleet market-scan budget, but never gated by it.
 	// There is no store to serve this from — filling the gap is the point — and a
 	// declined catalogue read makes the screen record a durable rejection of a
 	// market it never managed to look at, which costs more than the request saves.
@@ -1005,12 +1003,12 @@ func (p *HomeSystemPort) HomeSystem(ctx context.Context, playerID int) (string, 
 	if uerr := json.Unmarshal([]byte(raw), &metadata); uerr != nil {
 		return "", fmt.Errorf("failed to decode player %d metadata: %w", playerID, uerr)
 	}
-	// sp-0eufi: this failure used to read "player N has no recorded headquarters" and surface four
-	// layers up as a sensing CUTOVER refusal, which aborts the entire reconcile — screen, reaper,
-	// adoption, drain, placements and expansion — every 30 seconds. Nothing in that chain named the
-	// key, said which of the many things sensing reads was missing, or hinted at how it gets
-	// populated, so the visible symptom ("0 parked, screened 0, bought 0, expansion +0 discovered")
-	// looked like an idle engine rather than a broken one. The error now carries all three.
+	// This failure surfaces four layers up as a sensing CUTOVER refusal, which aborts the entire
+	// reconcile — screen, reaper, adoption, drain, placements and expansion — every 30 seconds,
+	// and its visible symptom ("0 parked, screened 0, bought 0, expansion +0 discovered") looks
+	// like an idle engine rather than a broken one. Nothing else in that chain names the key,
+	// says which of the many things sensing reads is missing, or hints at how it gets populated,
+	// so this message must carry all three.
 	headquarters, ok := domainPlayer.HeadquartersFrom(metadata)
 	if !ok {
 		return "", fmt.Errorf(

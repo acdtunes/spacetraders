@@ -130,7 +130,7 @@ func (r *GormGateEdgeRepository) Edges(ctx context.Context, systemSymbol string)
 			UnderConstruction: m.UnderConstruction,
 			// Per-row: the row is past ITS OWN window (the shorter one while a gate is
 			// building). Routing consumers exclude it from the answer; the fetch-through
-			// resolver re-probes on it. It no longer condemns its siblings.
+			// resolver re-probes on it. It does NOT condemn its siblings.
 			Stale: r.rowStale(m),
 		})
 	}
@@ -153,7 +153,7 @@ func (r *GormGateEdgeRepository) Edges(ctx context.Context, systemSymbol string)
 // carries rows from every era this agent has played, and the difference matters precisely when
 // the era cannot be resolved: eraScopePredicate(nil) degrades to `era_id IS NULL`, which answers
 // confidently from pre-backfill rows belonging to a dead universe. OpenEraScope refuses instead.
-// Reading dead-era topology is the sp-l0aqy failure — ~290 API failures an hour for ten hours,
+// Reading dead-era topology is the failure — ~290 API failures an hour for ten hours,
 // routing against a map that no longer existed.
 func (r *GormGateEdgeRepository) AllEdges(ctx context.Context) (map[string][]system.GateEdge, error) {
 	predicate, args, err := OpenEraScope(ctx, r.db)

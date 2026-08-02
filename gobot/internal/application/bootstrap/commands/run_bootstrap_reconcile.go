@@ -9,7 +9,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
 )
 
-// BootstrapTunableDefaults maps every LIVE-tunable bootstrap knob (sp-r6yq) to its documented
+// BootstrapTunableDefaults maps every LIVE-tunable bootstrap knob to its documented
 // default — the value that applies when the persisted config column carries no positive
 // override. The daemon's tune bounds registry reads THIS map, so the default-of-record stays
 // in this file next to the const it mirrors. The map's KEY SET is also the contract for which
@@ -39,7 +39,7 @@ func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand, live liveconfig
 		Tick:     time.Duration(cmd.TickIntervalSecs) * time.Second,
 	}
 
-	// Live overlay (sp-r6yq): a `tune` writes a BARE positive key to the persisted config
+	// Live overlay: a `tune` writes a BARE positive key to the persisted config
 	// column; the per-tick snapshot overlays it here so the change lands on the NEXT tick with no
 	// restart. Only-when-present (NOT snapshot-authoritative like the freshsizer): bootstrap's
 	// launch keys are the SEPARATE prefixed bootstrap_* family, so an untuned bare key is genuinely
@@ -60,35 +60,35 @@ func resolveBootstrapConfig(cmd *RunBootstrapCoordinatorCommand, live liveconfig
 type reconcileResult struct {
 	Phase            Phase
 	Purchased        int    // probes actually bought this tick (the scanning workstream)
-	HomePostDeclared bool   // the home scout-post coverage target was ensured this tick (sp-pt7d)
+	HomePostDeclared bool   // the home scout-post coverage target was ensured this tick
 	Blocker          string // the one guard that blocked the highest-priority action (for the heartbeat)
 
 	// Contract-workstream tallies (Slice 2).
 	HaulersBought      int  // contract haulers actually bought this tick (staged: at most 1)
 	FrigateRetired     bool // the command frigate was retired from contract work this tick
 	ContractRun        bool // batch-contract was launched this tick
-	FrigateLoopStarted bool // the command frigate's continuous contract loop was started this tick (sp-rype)
-	FrigatePivoted     bool // the first-hauler pivot fired this tick: frigate loop STOPPED + dedicated the exclusive purchasing ship (sp-7r7w). With a readable yard price the buy also runs this tick; on a COLD price it is a SEPARATE later tick once the freed frigate is positioned (sp-5nd2 fault-2)
+	FrigateLoopStarted bool // the command frigate's continuous contract loop was started this tick
+	FrigatePivoted     bool // the first-hauler pivot fired this tick: frigate loop STOPPED + dedicated the exclusive purchasing ship. With a readable yard price the buy also runs this tick; on a COLD price it is a SEPARATE later tick once the freed frigate is positioned (fault-2)
 	PurchaserReleased  bool // the pivot's purchasing dedication was cleared this tick, handing a stranded frigate back to earning (the buy it was freed for had moved out of reach)
-	TradeHullSeeded    bool // the cold-start hull-routing trade-seed fired this tick (sp-192k4): acquisition #2 bought + dedicated to the trade fleet + the trade coordinator ensured
+	TradeHullSeeded    bool // the cold-start hull-routing trade-seed fired this tick: acquisition #2 bought + dedicated to the trade fleet + the trade coordinator ensured
 	PlacementSlots     int  // fixed delivery slots this era resolves — where the ramp spreads its hulls (for the heartbeat)
 
 	// GATE tallies.
 	ConstructionStartRan bool // `construction start` ran this tick (created/resumed the pipeline)
 	MfgEnsured           bool // the manufacturing coordinator (executor) was ensured-running this tick
 	MfgBounced           bool // the executor was bounced for pipeline adoption this tick (captain L57)
-	WorkersReleased      int  // gate workers un-dedicated to the idle pool this tick (sp-mxflh surplus re-balance; the sp-cdxy2 repurpose seam is dormant)
+	WorkersReleased      int  // gate workers un-dedicated to the idle pool this tick (surplus re-balance; the repurpose seam is dormant)
 	GateWorkersBought    int  // gate-worker hulls actually bought this tick (staged: at most 1)
 	DesiredWorkers       int  // the tick's gate-worker sizing target (for the heartbeat)
 
 	// COMPLETE tallies.
 	HandoffLaunched          bool // the autosizer + standing coordinators were launched this tick (the hand-off)
-	ConstructionHullsToTrade int  // gate construction hulls re-dedicated to the TRADE fleet this tick (sp-hv4f6): the gate is built, so its workers stop earning until they are put back to work
+	ConstructionHullsToTrade int  // gate construction hulls re-dedicated to the TRADE fleet this tick: the gate is built, so its workers stop earning until they are put back to work
 	Done                     bool // terminal: COMPLETE reached and handed off — the reconcile loop may exit
 
-	// sp-sjvv: the fleet autosizer was launched EARLY this tick (armed cold-start scaling). Test-only
+	// The fleet autosizer was launched EARLY this tick (armed cold-start scaling). Test-only
 	// observability — deliberately NOT in the heartbeat delta (keeping the flag-off log byte-identical);
-	// the early launch surfaces its own INFO line, mirroring how the sp-tsn2 deferral does.
+	// the early launch surfaces its own INFO line, mirroring how the deferral does.
 	AutosizerLaunchedEarly bool
 
 	// The dedicated contract auto-scaler was ensured this tick (unconditional in the cold-start window).
@@ -97,7 +97,7 @@ type reconcileResult struct {
 }
 
 // probeBuyBridge closes the sync-lag window between a probe purchase and the ship-count observation
-// reflecting it (sp-lgo3). The observed count LAGS a fresh buy — the count query does not see
+// reflecting it. The observed count LAGS a fresh buy — the count query does not see
 // just-bought hulls until a later sync — so at a SHORT reconcile tick the next tick would read the
 // stale low count and re-buy toward a target it already reached (over-buy → wasted capital). This
 // tracks the probes THIS coordinator bought but the observation has not yet confirmed (pending), folds
@@ -137,7 +137,7 @@ func (b *probeBuyBridge) recordProbeBuys(n int) {
 	}
 }
 
-// probeBridge returns the per-container count-sync bridge (sp-lgo3), lazily created. Keyed by
+// probeBridge returns the per-container count-sync bridge, lazily created. Keyed by
 // ContainerID because this handler is a REGISTERED SINGLETON serving every bootstrap container: a bare
 // field would be shared and RACED across concurrent players. One container's ticks run sequentially
 // (the Handle loop awaits each reconcile), so the returned *probeBuyBridge is only ever touched by a
@@ -162,7 +162,7 @@ func (h *RunBootstrapCoordinatorHandler) probeBridge(containerID string) *probeB
 // unreadable input, so re-evaluation (including the first tick after a restart) never double-acts.
 func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd *RunBootstrapCoordinatorCommand) (reconcileResult, error) {
 	// The tick runs entirely on the live-config snapshot taken here; a knob tuned mid-tick lands
-	// on the next tick (sp-r6yq). A nil reader / read miss yields a nil snapshot, which
+	// on the next tick. A nil reader / read miss yields a nil snapshot, which
 	// resolveBootstrapConfig treats as "run this tick on the launch command" (fail-safe launch).
 	cfg := resolveBootstrapConfig(cmd, h.liveConfigSnapshot(ctx, cmd))
 	logger := common.LoggerFromContext(ctx)
@@ -217,7 +217,7 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 		return res, nil
 	}
 
-	// Fresh-buy count-sync (sp-lgo3): fold probes this coordinator has bought but the ship-count
+	// Fresh-buy count-sync: fold probes this coordinator has bought but the ship-count
 	// observation has not yet reflected into the count the tick reads. The observed count lags a fresh
 	// buy (the count query does not see just-bought hulls until a later sync); at a SHORT tick that lag
 	// spans the next tick, so without this the buy gate would re-buy toward a target already reached
@@ -231,7 +231,7 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 
 	// Derive the phase from the observation — NEVER from a persisted enum (spec §Architecture).
 	phase := derivePhase(obs)
-	// Escape hatch (UNCONDITIONALLY ON, sp-gm7r): a GATE that latched under-scaled with ~no construction
+	// Escape hatch (UNCONDITIONALLY ON): a GATE that latched under-scaled with ~no construction
 	// re-derives COLDSTART (so the op can re-scale out of the death spiral) after an anti-thrash hysteresis
 	// streak. A legitimately-funded fresh GATE and a genuinely-building GATE are untouched — the re-derive
 	// only releases a sticky, starved latch (see reDeriveUnderScaledGate).
@@ -246,7 +246,7 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 
 	switch phase {
 	case PhaseColdStart:
-		// Scanning and contract income run TOGETHER, not in sequence (sp-t39j). actData drives
+		// Scanning and contract income run TOGETHER, not in sequence. actData drives
 		// probes→target + the home scout post + shipyard readability; actIncome starts the contract
 		// engine at HOUR-0 and stages haulers as their source markets appear (the contract engine holds
 		// an accepted-but-unsourceable contract gracefully — verified — and claims no ship until a
@@ -266,7 +266,7 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 		h.actExpansion(ctx, cmd, cfg, obs, &res)
 	}
 
-	// sp-sjvv (ktio-B): during the cold-start SCALING window, launch the fleet autosizer EARLY so the
+	// During the cold-start SCALING window, launch the fleet autosizer EARLY so the
 	// capacity reconciler's emitted contract-delivery demand finally has a buyer (steps 2-3 of the Admiral
 	// cold-start sequence), and ensure the standing dedicated contract auto-scaler so it ramps the exclusive
 	// contract fleet behind the 200000 cushion. Both are deliberately NOT launched in GATE/EXPANSION: GATE
@@ -277,7 +277,7 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 		h.ensureContractScalerEarly(ctx, cmd, &res)
 	}
 
-	// Fold any probes bought this tick into the count-sync bridge (sp-lgo3), so the NEXT tick counts
+	// Fold any probes bought this tick into the count-sync bridge, so the NEXT tick counts
 	// them against target before the observation reflects them — the invariant that prevents the
 	// short-tick cross-tick over-buy. Only the probe buy sets res.Purchased; other phases and
 	// dry-runs record nothing.
@@ -301,9 +301,9 @@ func (h *RunBootstrapCoordinatorHandler) reconcileOnce(ctx context.Context, cmd 
 // thrash). The GATE-ENTRY decision itself is factored into gateFunded, which demands a genuinely SCALED
 // AND FUNDED op (the full contract fleet has reached the auto-scaler's target AND the treasury holds a
 // surplus), which is what makes the sticky latch above safe — construction can only start after a
-// legitimate scaled+funded entry, so a lightly-scaled op can never latch GATE permanently (the sp-gm7r
+// legitimate scaled+funded entry, so a lightly-scaled op can never latch GATE permanently (the
 // death spiral).
-// EXPANSION (sp-feiy7) is terminal and monotone (a built gate stays built): the jump-gate construction is
+// EXPANSION is terminal and monotone (a built gate stays built): the jump-gate construction is
 // COMPLETE, so the world has entered the Admiral's steady-state-growth era — the ONE phase probe-buying
 // belongs to. It is checked FIRST, before every other signal, and rides the same world-signal stickiness
 // GATE does: the observer reports a BUILT home gate as ConstructionComplete every tick (including after a
@@ -333,7 +333,7 @@ func derivePhase(obs Observation) Phase {
 // signal one contract payout swings from net-negative to a false all-clear in a single tick):
 //   - the FULL contract fleet (delivery obs.Haulers + depot obs.ContractDepotHullCount) has reached the
 //     auto-scaler's live achievable target (obs.ContractScalerTarget) — the op is the size the scaler is
-//     genuinely driving it toward, not a 2-hull blip. This is a HARD bar (sp-gm7r): an op that cannot
+//     genuinely driving it toward, not a 2-hull blip. This is a HARD bar: an op that cannot
 //     reach the target stays in cold start by design, and it FAILS CLOSED — a 0/unread target (no scaler
 //     running) NEVER gates, so bootstrap never enters GATE on an unknown target; and
 //   - a treasury SURPLUS over the immutable reserve floor clearing the gate-bill war chest
@@ -357,7 +357,7 @@ func gateFunded(obs Observation) bool {
 // income blip (then cannibalized itself into the death spiral) can climb back out by re-scaling the contract
 // op. It is the EXIT-side complement to gateFunded's stricter ENTRY: entry is now hard to reach under-scaled,
 // and this releases an already-stuck latch (curing a live stuck-GATE the deploy inherits). UNCONDITIONALLY
-// ON (sp-gm7r removed the flag) — consulted every tick, but it only ever touches a STICKY, starved latch.
+// ON — consulted every tick, but it only ever touches a STICKY, starved latch.
 //
 // Anti-thrash HYSTERESIS: the under-scaled + low-progress condition must hold GateReentryStreakTicks
 // CONSECUTIVE ticks before the phase flips; ANY tick that breaks it resets the streak. The direction is
@@ -417,13 +417,13 @@ func (h *RunBootstrapCoordinatorHandler) resetUnderScaledStreak(containerID stri
 
 // actData runs the SCANNING workstream: (1) drive the probe fleet to probeTarget THIS tick —
 // buying up to (target-count) probes in a capital-gated loop, or (when the home shipyard price is not
-// yet readable) positioning a hull at the yard so the next tick's live read succeeds (sp-hh0h);
-// (2) declare the home-system scout post as a coverage target (sp-pt7d) — the boot-standing scout-post
-// coordinator (sp-9ujl) mans it by claiming an idle probe (bootstrap assigns NO probes itself). Both
+// yet readable) positioning a hull at the yard so the next tick's live read succeeds;
+// (2) declare the home-system scout post as a coverage target — the boot-standing scout-post
+// coordinator mans it by claiming an idle probe (bootstrap assigns NO probes itself). Both
 // actions are independently guarded and idempotent, so re-evaluation never double-acts. It executes
-// ALONGSIDE actIncome on every cold-start tick (the parallel model, sp-t39j).
+// ALONGSIDE actIncome on every cold-start tick (the parallel model).
 func (h *RunBootstrapCoordinatorHandler) actData(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult) {
-	// (1) Capital-gated probe acquisition — buy to target in ONE pass (sp-hh0h: a fresh universe must
+	// (1) Capital-gated probe acquisition — buy to target in ONE pass (a fresh universe must
 	// reach probeTarget fast, not one probe per 5-min tick). Guarded on the re-observed count, so a
 	// mid-purchase restart that already incremented the count simply buys the remainder. The seed is
 	// bootstrap's alone: it buys 0→probeTarget and nothing beyond, so the standing freshsizer owns
@@ -432,9 +432,9 @@ func (h *RunBootstrapCoordinatorHandler) actData(ctx context.Context, cmd *RunBo
 		h.acquireProbesToTarget(ctx, cmd, obs, res)
 	}
 
-	// (2) Declare the home-system scout post as a COVERAGE target (sp-pt7d). Bootstrap no longer
-	// ASSIGNS probes to scout tours — the old scout-all-markets sweep HELD the probes and starved
-	// the now-boot-standing scout-post coordinator (sp-9ujl). Instead it declares the desired-state
+	// (2) Declare the home-system scout post as a COVERAGE target. Bootstrap does NOT
+	// assign probes to scout tours — a scout-all-markets sweep here HOLDS the probes and starves
+	// the now-boot-standing scout-post coordinator. Instead it declares the desired-state
 	// home post; the coordinator mans it by claiming an IDLE probe (→ VRP-partition → scan), seeding
 	// the initial home scan → census → the freshsizer takes over declaring the rest. Idempotent (the
 	// declarer skips a post that already exists), so re-declaring every tick is a no-op. Guarded
@@ -446,13 +446,13 @@ func (h *RunBootstrapCoordinatorHandler) actData(ctx context.Context, cmd *RunBo
 }
 
 // maybeLaunchAutosizerEarly launches the standing fleet autosizer DURING the cold-start scaling window
-// (sp-sjvv, ktio-B) so the capacity reconciler's emitted contract-delivery demand has a buyer that scales
+// so the capacity reconciler's emitted contract-delivery demand has a buyer that scales
 // the contract operation (haulers/warehouse/stockers) — the Admiral's step 3. The caller has already
 // checked we are in the cold-start window. It:
 //   - is IDEMPOTENT: skips silently when the autosizer is already running (obs.AutosizerRunning) — the
 //     steady state once launched, so no per-tick log spam and no double-launch;
 //   - reuses the SAME hand-off launcher (LaunchAutosizer) the COMPLETE hand-off uses, so the early
-//     autosizer is byte-identical to the handed-off one — it arms contract_delivery iff sp-nkqn's own
+//     autosizer is byte-identical to the handed-off one — it arms contract_delivery iff the
 //     contract_delivery_hulls_enabled config knob is set (a SEPARATE arming, set at the coordinated arm);
 //   - is a BACKGROUND launch: it never claims res.Blocker (the scaling workstream's own blocker is the
 //     higher-signal heartbeat line), surfacing itself via its own INFO/ERROR log line instead;
@@ -518,11 +518,11 @@ func (h *RunBootstrapCoordinatorHandler) ensureContractScalerEarly(ctx context.C
 	})
 }
 
-// acquireProbesToTarget drives the probe fleet to probeTarget in ONE tick (sp-hh0h), behind the
+// acquireProbesToTarget drives the probe fleet to probeTarget in ONE tick, behind the
 // readiness and capital gates, emitting the guardrail arithmetic per buy (RULINGS #4, fail closed).
 // Caller has checked "needed" (ProbeCount < target).
 //
-// Two coupled cold-start fixes vs the old one-per-tick buy:
+// Two coupled cold-start mechanisms:
 //   - READABILITY: the yard price is unreadable on a fresh universe because nothing has visited the home
 //     shipyard (its live listing is presence-gated). Rather than fail closed forever, dispatch an idle
 //     hull to the yard (h.scanner) so the NEXT tick's live read succeeds. The price guard is NOT weakened
@@ -558,7 +558,7 @@ func (h *RunBootstrapCoordinatorHandler) acquireProbesToTarget(ctx context.Conte
 
 	// Price-check ONCE (the cheapest reachable yard's ask is stable within a tick, so it feeds the whole
 	// buy loop). Unreadable price ⇒ do NOT buy this tick; instead make it readable by positioning a hull
-	// at the yard (sp-hh0h). Still fails CLOSED (no spend) — a genuinely unreadable price buys nothing.
+	// at the yard. Still fails CLOSED (no spend) — a genuinely unreadable price buys nothing.
 	price, yard, readable, err := h.acquirer.PriceCheck(ctx, cmd.PlayerID, probeShipType)
 	if err != nil || !readable {
 		h.awaitReadablePrice(ctx, cmd, obs, res, "", fmt.Sprintf("probe (%d/%d)", obs.ProbeCount, probeTarget), err)
@@ -697,8 +697,8 @@ func buyBlockNote(affordable bool) string {
 	return "BLOCKED by the capital gate (would drop the cushion below the immutable reserve floor)"
 }
 
-// declareHomeScoutPost declares the STANDING home-system scout post as a coverage target (sp-pt7d):
-// the desired state the boot-standing scout-post coordinator (sp-9ujl) mans by claiming an IDLE
+// declareHomeScoutPost declares the STANDING home-system scout post as a coverage target:
+// the desired state the boot-standing scout-post coordinator mans by claiming an IDLE
 // probe. It does NOT assign or dedicate a probe — that is the coordinator's job — so bootstrap's
 // probes stay idle and claimable. Idempotent: the declarer skips a post that already exists, so
 // re-declaring every tick is a no-op. Caller has checked HomeSystem is resolved.
@@ -781,7 +781,7 @@ func (h *RunBootstrapCoordinatorHandler) emitHeartbeat(ctx context.Context, cmd 
 func (h *RunBootstrapCoordinatorHandler) nextAction(phase Phase, obs Observation) string {
 	switch phase {
 	case PhaseColdStart:
-		// Scanning and contracts run together (sp-t39j), so this walks both workstreams' outstanding
+		// Scanning and contracts run together, so this walks both workstreams' outstanding
 		// steps in one list — scanning first, because it is the critical path to markets.
 		if obs.ProbeCount < probeTarget {
 			return fmt.Sprintf("buy probes to target (%d/%d, capital-gated; positions a hull at the yard first if the price is cold)", obs.ProbeCount, probeTarget)

@@ -604,7 +604,7 @@ func TestMetrics_PublishesRateStalenessAndSlots(t *testing.T) {
 			AssignedShip: "PROBE-" + string(rune('1'+i)),
 		}
 		// LastDataAt, not LastScan: the gauge reports the age of the DATA, and
-		// LastScan is the rotation's pacing clock (sp-zml2u).
+		// LastScan is the rotation's pacing clock.
 		world.ledger.views[waypoint] = parkedsensing.SensingSlotView{LastDataAt: now.Add(-age)}
 	}
 

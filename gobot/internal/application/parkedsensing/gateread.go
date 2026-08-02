@@ -94,9 +94,8 @@ type GateReader interface {
 //
 // TWO CONSUMERS, ONE READ. This pass asks it of every system in scope to build its candidate set, and
 // orderByGateMapping asks it of every seed target to rank unknown territory first. Both are asking
-// the identical question of the identical store, and before this memo existed the second was the only
-// caller — so wiring the first without sharing would have doubled a per-system store read every tick
-// and let the two consumers observe different answers within one tick.
+// the identical question of the identical store, and two unshared reads would double a per-system
+// store read every tick and let the two consumers observe different answers within one tick.
 //
 // The answer cannot change while the tick runs. A gate READ this tick does not update the memo, and
 // that is deliberate rather than an oversight: the tick's remaining passes work from the neighbour map
@@ -114,12 +113,11 @@ func newGateMapping(gates GateNeighbours) *gateMapping {
 
 // mapped reports whether the store holds adjacency for a system, reading it at most once per tick.
 //
-// A READ FAILURE PROPAGATES rather than defaulting either way, exactly as orderByGateMapping's did
-// before this memo existed. Read as "mapped" it would silently drop a genuine unknown out of the
-// candidate set — the failure this whole file exists to prevent, arriving through a database hiccup
-// instead of an ordering bug. Read as "unmapped" it would spend the tick's whole read budget
-// re-reading gates we already hold. The tick is idempotent and re-derived from scratch, so failing
-// loudly costs one cycle.
+// A READ FAILURE PROPAGATES rather than defaulting either way. Read as "mapped" it would silently
+// drop a genuine unknown out of the candidate set — the failure this whole file exists to prevent,
+// arriving through a database hiccup instead of an ordering bug. Read as "unmapped" it would spend
+// the tick's whole read budget re-reading gates we already hold. The tick is idempotent and
+// re-derived from scratch, so failing loudly costs one cycle.
 func (m *gateMapping) mapped(ctx context.Context, system string) (bool, error) {
 	if held, cached := m.held[system]; cached {
 		return held, nil
@@ -245,8 +243,7 @@ func orderUnreadGatesByFrontier(
 //
 // A NIL READER IS A WIRING GAP, NOT A SWITCH, and the pass then costs literally nothing — not even the
 // per-system mapping sweep, because with nothing to read there is no candidate set worth building.
-// That is the same contract OffGatePorts carries, and it is why every test written before this port
-// existed still exercises the tick it always did.
+// That is the same contract OffGatePorts carries.
 //
 // NO FAILURE HERE FAILS THE TICK, and that is a deliberate asymmetry with the rest of the engine. The
 // passes around this one command hulls and write ledger rows, so a bad read there can strand a probe

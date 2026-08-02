@@ -42,7 +42,7 @@ func newSurgePoolDB(t *testing.T) (*gorm.DB, int, int) {
 	require.NoError(t, err)
 
 	// OUR player, created FIRST so it owns id 1: market_data.player_id carries a foreign
-	// key to players(id), and the harness enforces foreign keys by default (sp-55aa).
+	// key to players(id), and the harness enforces foreign keys by default.
 	// Creating it first also keeps the cross-player test honest — a second player
 	// auto-incremented into OUR id would make that test pass by collision.
 	require.NoError(t, db.Create(&persistence.PlayerModel{

@@ -6,7 +6,7 @@ import (
 	shipyardCmd "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/commands"
 )
 
-// sp-0ms61 wiring: the optional --fleet role MUST round-trip through the persisted
+// Wiring: the optional --fleet role MUST round-trip through the persisted
 // container launch config into the built BatchPurchaseShipsCommand, or the container's
 // atomic buy+dedicate never fires and the hull lands undedicated (reclaimable) — the exact
 // operator-intent-drift orphan this bead closes. A missing/misnamed config key would

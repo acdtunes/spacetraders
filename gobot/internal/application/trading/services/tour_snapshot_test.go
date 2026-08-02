@@ -153,7 +153,7 @@ func TestBuildTourSnapshot_ExcludesStaleAndAssemblesCoords(t *testing.T) {
 }
 
 // TestBuildTourSnapshot_PerGoodActivityStaleness proves the staleness gate is
-// per-GOOD, not per-market (sp-t5sh5): a single market observed once, holding a WEAK
+// per-GOOD, not per-market: a single market observed once, holding a WEAK
 // good and a STRONG good, keeps the WEAK row and drops the STRONG one at the SAME
 // observation age — so a market with mixed activities is neither wholly kept nor wholly
 // dropped.

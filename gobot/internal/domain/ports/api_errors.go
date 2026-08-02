@@ -8,11 +8,11 @@ import "fmt"
 // present, or is not a gate) from a TRANSIENT server/network failure (5xx / 429 / network,
 // which the adapter retries and surfaces as "max retries exceeded", never as an *APIError).
 //
-// It preserves the exact legacy error string ("API error (status <code>): <body>") that the
-// adapter's request() used to build with fmt.Errorf, so every existing body/error-code string
-// parser (cooldown extraction, insufficient-credits, the dock/orbit classifiers) keeps matching
-// unchanged. The only added capability is the typed StatusCode for errors.As classification —
-// e.g. negative-caching a 400'd jump gate WITHOUT caching a transient blip.
+// It preserves the exact legacy error string ("API error (status <code>): <body>"), so every
+// existing body/error-code string parser (cooldown extraction, insufficient-credits, the
+// dock/orbit classifiers) keeps matching unchanged. The typed StatusCode is the only added
+// capability, for errors.As classification — e.g. negative-caching a 400'd jump gate WITHOUT
+// caching a transient blip.
 type APIError struct {
 	StatusCode int
 	Body       string

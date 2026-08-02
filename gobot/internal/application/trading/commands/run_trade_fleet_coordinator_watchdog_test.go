@@ -371,7 +371,7 @@ func cooldownRunningTradeHull(t *testing.T, symbol string, cooldownExpiry time.T
 	return ship
 }
 
-// (B6, sp-39hjn HEADLINE) A RUNNING trade hull parked (IN_ORBIT) waiting out a STILL-ACTIVE
+// (B6, HEADLINE) A RUNNING trade hull parked (IN_ORBIT) waiting out a STILL-ACTIVE
 // jump cooldown is NOT hung — it is legitimately idle until the game timer clears. Even
 // though its last tour-progress log predates the stall threshold (a far sp-tp5c3 tour's
 // multi-minute cooldown is a silent log gap), the watchdog keys on the hull's OWN cooldown

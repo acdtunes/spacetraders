@@ -78,11 +78,11 @@ func TestTourRepositionPersister_ClearsInFlightStateAfterLanding(t *testing.T) {
 	require.False(t, tourCmd.RepositionInProgress, "a cleared config must rebuild a run that does NOT resume a reposition")
 }
 
-// sp-kl16 THE O34Q-CLASS PIN. The tour-reposition jump bound is a launch knob, so it must
+// THE O34Q-CLASS PIN. The tour-reposition jump bound is a launch knob, so it must
 // survive the REAL persist boundary a recovery restart crosses: written into the launch config
 // (container_ops_tour.go), preserved by the mid-run PersistRepositionState read-modify-write
 // (which merges only the reposition-state keys), and read back by buildTourCoordinatorCommand.
-// The scout bug (sp-o34q) was a persist path that DROPPED the bound because its coordinator fakes
+// The scout bug was a persist path that DROPPED the bound because its coordinator fakes
 // captured the command STRUCT directly, never crossing the serialize → config → rebuild boundary.
 // This pin models that real boundary — a persisted config row → the actual merge → the actual
 // rebuild — so a dropped bound here fails the test, not a fake that hides it.

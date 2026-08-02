@@ -90,7 +90,7 @@ func TestLaunchIdleArb_PersistsContainerRowBeforeClaim_NoFKViolation(t *testing.
 // dispatcher's read and this claim, LaunchIdleArb must refuse the launch AND clean up
 // the container row it already wrote — terminalizing it FAILED (claim_failed) rather
 // than leaving a zombie stuck at PENDING with no runner to advance or release it
-// (the sp-cr86 failure mode, here at the pre-runner claim boundary). The rival
+// (the failure mode, here at the pre-runner claim boundary). The rival
 // holder's claim must be left untouched.
 func TestLaunchIdleArb_ClaimRefusedAfterRowPersisted_TerminalizesOrphanRow(t *testing.T) {
 	s, db, playerID := idleArbFKServer(t)

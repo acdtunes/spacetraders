@@ -53,7 +53,7 @@ func applyTourRunOverrides(config map[string]interface{}, overrides *TourRunOver
 // lane: it asks the depth-aware planner for a tour, flies it leg by leg with prices
 // re-verified live at every dock, and re-plans on drift.
 //
-// iterations (sp-m5kv) makes it CONTINUOUS: -1 = tour, re-plan from the new position,
+// iterations makes it CONTINUOUS: -1 = tour, re-plan from the new position,
 // tour again until margins die/starvation/stop (engine-cadence capital velocity);
 // N>0 = exactly N tours; 0/unset = one tour (the original one-shot). The coordinator
 // owns this loop (CoordinatorOwnsIterations), so the container still runs one iteration.
@@ -118,15 +118,15 @@ func (s *DaemonServer) StartTourRun(
 		// (0 too, so an absent knob survives a recovery rebuild unchanged); buildTourCoordinatorCommand
 		// passes it to the coordinator, which resolves 0/absent → its default 3.
 		"stranded_consecutive_threshold": s.tradeFleetConfig.StrandedConsecutiveThreshold,
-		// sp-kl16: the tour-reposition jump bound, sourced from the daemon's live [trade_fleet]
+		// The tour-reposition jump bound, sourced from the daemon's live [trade_fleet]
 		// config (a daemon-global tuning, same for every tour). Persisted as-is (0 too, so an
 		// absent knob survives a recovery rebuild unchanged); buildTourCoordinatorCommand passes
 		// it to the coordinator, which resolves 0/absent → its default 12. This is the o34q WRITE
-		// side — the scout bug (sp-o34q) was a persist path that DROPPED the bound; writing it into
+		// side — the scout bug was a persist path that DROPPED the bound; writing it into
 		// the launch config here, where PersistRepositionState's read-modify-write preserves it and
 		// buildTourCoordinatorCommand reads it back, is what makes the bound survive the round-trip.
 		"reposition_jump_bound": s.tradeFleetConfig.RepositionJumpBound,
-		// sp-syaz: the per-tour distinct-system cap, sourced from the daemon's live
+		// The per-tour distinct-system cap, sourced from the daemon's live
 		// [trade_fleet] config (a daemon-global tour tuning, same for every tour — the
 		// mirror of reposition_jump_bound/stranded_consecutive_threshold above). Persisted
 		// as-is (0 too, so an absent knob survives a recovery rebuild unchanged);
@@ -135,7 +135,7 @@ func (s *DaemonServer) StartTourRun(
 		// (2). This WRITE is what makes the request-driven cap take effect in production —
 		// without it the knob is inert and every tour silently clamps to 2.
 		"max_tour_systems": s.tradeFleetConfig.MaxTourSystems,
-		// sp-im74 config plumbing: the closed-circuit (return-to-anchor) arming flag, sourced
+		// Config plumbing: the closed-circuit (return-to-anchor) arming flag, sourced
 		// from the daemon's live [trade_fleet] config (a daemon-global tour tuning, same for
 		// every tour — the mirror of max_tour_systems above). Persisted as-is (false too, so an
 		// absent/unarmed knob survives a recovery rebuild unchanged and OPEN mode stays stable);
@@ -177,7 +177,7 @@ func (s *DaemonServer) StartTourRun(
 		"reposition_rate_floor_pct":             s.tradeFleetConfig.RepositionRateFloorPct,
 		"reposition_rate_floor_improvement_pct": s.tradeFleetConfig.RepositionRateFloorImprovementPct,
 		"reposition_rate_floor_dwell_minutes":   s.tradeFleetConfig.RepositionRateFloorDwellMinutes,
-		// sp-jsng: the candidate-widening knobs (the #1 fleet-$/hr lever, sp-7q5t), sourced from the
+		// The candidate-widening knobs (the #1 fleet-$/hr lever), sourced from the
 		// daemon's live [trade_fleet] config (daemon-global tour tuning, the mirror of max_tour_systems/
 		// closed_tours above). Persisted as-is (0 too, so an absent knob survives a recovery rebuild
 		// unchanged and the 1-hop default is stable); buildTourCoordinatorCommand reads them back onto
@@ -195,7 +195,7 @@ func (s *DaemonServer) StartTourRun(
 		// keeps ranking on raw margin.
 		"externality_weight": s.tradeFleetConfig.ExternalityWeight,
 		"iterations":         iterations,
-		// sp-sg35: the tour heavies are dedicated to the "trade" fleet
+		// The tour heavies are dedicated to the "trade" fleet
 		// (ships.dedicated_fleet == "trade"), so tour_run MUST claim under that
 		// same 'trade' identity — otherwise the dedication guard (atomic ClaimShip
 		// AND the legacy-path guard) would reject a tour from claiming its OWN
@@ -220,7 +220,7 @@ func (s *DaemonServer) StartTourRun(
 		return nil, fmt.Errorf("failed to create tour-run command: %w", err)
 	}
 
-	// The coordinator owns the tour loop (CoordinatorOwnsIterations, sp-m5kv): whether
+	// The coordinator owns the tour loop (CoordinatorOwnsIterations): whether
 	// this is one tour or a continuous --iterations -1 run, the container runs Handle()
 	// exactly ONCE and the coordinator loops internally, so the container's own
 	// iteration budget stays 1 (re-entering it would double-loop the run). The

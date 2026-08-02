@@ -15,7 +15,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 )
 
-// sp-h0kr: the container iteration-error restart loop must SPACE restarts with an
+// The container iteration-error restart loop must SPACE restarts with an
 // escalating, clock-injected, ctx-interruptible backoff — never burn through
 // MaxRestartAttempts with no wait between attempts — so a dependency that fails
 // instantly (e.g. routing down => immediate connection-refused on localhost) gets

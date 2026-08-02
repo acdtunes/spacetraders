@@ -62,7 +62,7 @@ func relaunchHungContainers(
 	// progress looks old: a hull IN_TRANSIT is on a legitimately-long leg (progress), and a
 	// hull mid-cooldown (IsOnCooldown) is waiting out a game jump/reactor timer it cannot act
 	// through — a far sp-tp5c3 tour's multi-minute cooldown is a silent log gap the watchdog
-	// would otherwise misread as a hang and false-kill (sp-39hjn), orphaning the hull's
+	// would otherwise misread as a hang and false-kill, orphaning the hull's
 	// reserved-but-unexecuted sells. The cooldown is read from the hull's OWN state, not the
 	// log timestamp; a stale/past cooldown does NOT shield a genuinely hung hull. Gather the
 	// remaining candidates' container IDs for the progress read.

@@ -231,7 +231,7 @@ func (a *TaskActivator) ActivateSupplyGatedTasks(ctx context.Context) int {
 // seam Fail() already charges (retryCount increments on each failure) but which
 // nothing drove for construction tasks, so transient-class failures (a phantom-cargo
 // 4219 resync, a bad surplus-sell market pick) sat FAILED forever and froze the gate
-// leg (sp-qxxr6). The retry re-runs the whole chain: the existing resync machinery
+// leg. The retry re-runs the whole chain: the existing resync machinery
 // and a fresh market pick handle the transient causes, so no error-code special
 // cases here. Bounded three ways:
 //   - task.CanRetry(): after maxRetries the task stays FAILED (visible, existing
@@ -355,7 +355,7 @@ func (a *TaskActivator) resourcePendingTask(ctx context.Context, task *manufactu
 // resourceDeferredConstructionTask un-sticks a construction material that was deferred at planning
 // time (neither a buy source nor a factory found then). It recovers in two ways, in precedence order:
 //
-//  1. FABRICATE (primary, sp-9p87s): resolve a FACTORY that exports the good and set it on the task,
+//  1. FABRICATE (primary): resolve a FACTORY that exports the good and set it on the task,
 //     so the task goes READY and the drain fabricates it (buying inputs, feeding the factory,
 //     harvesting) instead of buying the good's own export cold. This breaks the buy-only deadlock:
 //     the drain buying a manufactured export without feeding it depletes that export MODERATE->SCARCE,
@@ -379,7 +379,7 @@ func (a *TaskActivator) resourceDeferredConstructionTask(ctx context.Context, ta
 }
 
 // resolveDeferredViaFactory sets a fabrication factory on a deferred construction task so it recovers
-// as a FABRICATE (sp-9p87s). It mirrors the planner's fabricate-eligibility (planFabrication): a good
+// as a FABRICATE. It mirrors the planner's fabricate-eligibility (planFabrication): a good
 // with a recipe (GetRequiredInputs non-empty) for which a factory EXPORTS it while IMPORTING its
 // inputs. Returns false (leaving the task for the buy fallback) when the good has no recipe or no such
 // factory exists — so a good with only a plain buy market falls through to the buy path.
@@ -443,7 +443,7 @@ func (a *TaskActivator) resolveDeferredViaBuySource(ctx context.Context, task *m
 }
 
 // pipelineMinSupply reads the EXPORT sourcing floor for a specific good on a construction
-// pipeline (sp-j2hq): the pipeline's persisted global --min-supply floor, or the good's per-good
+// pipeline: the pipeline's persisted global --min-supply floor, or the good's per-good
 // override when one is set (sp-sdyo). Returns "" (unset) if the pipeline repo is unavailable or
 // the pipeline can't be loaded, which FindConstructionSource treats as the default MODERATE floor.
 // Reading the override off the SAME persisted pipeline the global floor lives on is what makes a
@@ -589,13 +589,13 @@ func (a *TaskActivator) executingCollectionPipeline(ctx context.Context, cache m
 }
 
 // constructionRetryBackoff is the minimum age of a task's last failure before the
-// retry sweep re-queues it (sp-qxxr6): long enough that the transient cause (a
+// retry sweep re-queues it: long enough that the transient cause (a
 // phantom-cargo resync, a bad surplus-sell market pick) has had a tick to clear,
 // short enough that a gate leg doesn't sit dead for an hour.
 const constructionRetryBackoff = 2 * time.Minute
 
 // ActivateConstructionTasks first sweeps retryable FAILED DELIVER_TO_CONSTRUCTION
-// tasks back to PENDING (sp-qxxr6), then checks all PENDING DELIVER_TO_CONSTRUCTION
+// tasks back to PENDING, then checks all PENDING DELIVER_TO_CONSTRUCTION
 // tasks and activates those whose dependencies are complete — so a swept task is
 // promoted READY within the same pass when dependencies allow. Construction
 // deliveries have a fixed bill at the construction site, so no supply gating is

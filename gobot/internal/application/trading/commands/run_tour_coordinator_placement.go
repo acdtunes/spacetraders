@@ -149,7 +149,7 @@ func (h *RunTourCoordinatorHandler) maybeRepositionPlacement(
 // Readable=false (nil repo, read error, no computable tour, or a non-positive median) ⇒ the caller
 // falls back to the legacy engine — β is never invented (fail-closed, mirroring MedianTourRate).
 //
-// sp-461l (epic sp-g9td) cash-true audit: β STAYS on telemetry — it is a per-TOUR median that must be
+// Cash-true audit: β STAYS on telemetry — it is a per-TOUR median that must be
 // dimensionally commensurable with the per-candidate PROJECTED E_x (ProjectedCreditsPerHour) the score
 // function subtracts it from, and the transactions ledger has no ship/tour column to reproduce it.
 // sp-rd21's write-path fix (dropped buy legs now recorded) is what makes this honest: MedianTourRate
@@ -251,7 +251,7 @@ func (h *RunTourCoordinatorHandler) convergePlacementJump(
 	winner *placement.Evaluation,
 	maxSpend, reserve int64,
 ) (bool, bool, error) {
-	// sp-lq64: register the in-flight reposition target at commit (BEFORE the jump), released on
+	// Register the in-flight reposition target at commit (BEFORE the jump), released on
 	// return (defer, after the synchronous jump). Mirrors the margins-death + rate-floor commits so
 	// the fleet-wide per-system herd check (excludeHerdedSystems) sees a placement-driven mover while
 	// it is mid-flight and its landed count still lags. Dispatch-spreading only, no money guard.

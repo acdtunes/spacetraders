@@ -28,7 +28,7 @@ func NewContractMarketService(
 }
 
 // EnsureAccepted accepts the contract if it isn't already, returning the
-// (possibly refreshed) contract. The sourcing defer gate (sp-1z2h) calls this
+// (possibly refreshed) contract. The sourcing defer gate calls this
 // BEFORE parking a projected-negative contract: acceptance is what keeps a
 // deferred contract discoverable by FindActiveContracts on the next pass and
 // protects its accept-by deadline — deferral without acceptance would rot into

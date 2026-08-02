@@ -49,7 +49,7 @@ func (c *invFakeCoordinator) GetStorageShipsForOperation(operationID string) []*
 // invFakeAPI stubs the APIClient methods the withdrawal seam uses: TransferCargo
 // (recording the call and flipping the shared transferred flag) plus the nav-state
 // trio (GetShip/OrbitShip/DockShip) that AlignAndTransferCargo calls to align the
-// visitor to the warehouse hull before the transfer (sp-5qs1). Unset nav defaults to
+// visitor to the warehouse hull before the transfer. Unset nav defaults to
 // IN_ORBIT, so a test that does not care about alignment sees a no-op align.
 type invFakeAPI struct {
 	domainPorts.APIClient
@@ -210,7 +210,7 @@ func TestTrySourceFromInventory_CappedWithdrawal_TransfersNeedReleasesExcess(t *
 
 func TestTrySourceFromInventory_WarehouseDocked_DocksVisitorBeforeTransfer(t *testing.T) {
 	// The withdrawal seam must align the visitor to the warehouse's nav state, not
-	// assume orbit (sp-5qs1). A DOCKED warehouse hull docks the visitor before the
+	// assume orbit. A DOCKED warehouse hull docks the visitor before the
 	// transfer so the first-ever withdrawal cannot 4271.
 	hauler := buildShipWithIronOre(t, 0)
 	storageShip := storageShipWith(t, 200)

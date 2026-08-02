@@ -9,7 +9,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 )
 
-// sp-m5kv acceptance (1): a continuous (--iterations) tour completes a manifest and
+// Acceptance (1): a continuous (--iterations) tour completes a manifest and
 // starts the NEXT one from the hull's new position with no captain input. Two feasible
 // plans; the coordinator must call the planner once per tour and the SECOND call must
 // see the hull where the first tour left it (X1-S1-B), not the launch waypoint.
@@ -116,7 +116,7 @@ func TestTour_ContinuousStopsHonestlyOnMarginDeath(t *testing.T) {
 	}
 }
 
-// The sp-m5kv honest-completion boundary, GOOD path: a tour ending with held cargo is
+// The honest-completion boundary, GOOD path: a tour ending with held cargo is
 // NOT a strand mid-run — the next tour re-plans from the hull's current cargo (the
 // planner SEES the held load) and sells it, so the final exit is clean. This is the
 // laden-exit→manual-rescue class the feature kills.
@@ -163,7 +163,7 @@ func TestTour_ContinuousHeldCargoCarriesForwardAndSellsCleanly(t *testing.T) {
 	}
 }
 
-// The sp-m5kv honest-completion boundary, VETO path: the FINAL exit while still holding
+// The honest-completion boundary, VETO path: the FINAL exit while still holding
 // cargo BOUGHT this run vetoes success — the honest-exit contract does not bend across
 // iterations. Here tour 1 strands 20 G, tour 2 trades a different good and never clears
 // it, so the run ends laden with tour-bought cargo → CompletionOutcome false.

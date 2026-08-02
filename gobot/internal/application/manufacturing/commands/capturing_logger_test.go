@@ -16,7 +16,7 @@ type capturedLogEntry struct {
 // Coordinators fan out concurrent goroutines sharing one ContainerLogger pulled
 // from context, so Log is called concurrently. Every real implementation
 // (ContainerRunner.Log) guards its buffer with a mutex; this test double must
-// honor the same contract or -race fires (sp-8t30). Callers read entries via
+// honor the same contract or -race fires. Callers read entries via
 // snapshot(), never the field directly.
 //
 // (sp-jav2 X2: this helper previously lived in run_manufacturing_task_worker_test.go,

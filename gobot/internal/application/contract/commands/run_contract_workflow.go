@@ -73,7 +73,7 @@ func WithInventorySourcing(finder appContract.InventorySourceFinder, coordinator
 	}
 }
 
-// WithWithdrawalRecording wires the warehouse-withdrawal event recorder (sp-kqxe)
+// WithWithdrawalRecording wires the warehouse-withdrawal event recorder
 // onto the delivery executor: each successful warehouse→hauler buffer draw emits a
 // structured event (good, units, waypoint, hauler, contract id, timestamp) so
 // downstream analysis can measure warehouse ROI. A nil recorder is a no-op and a
@@ -102,7 +102,7 @@ func NewRunWorkflowHandler(
 	// Arm the proactive source-buy working-capital reserve floor unconditionally in
 	// production (sp-zq635 §4b): a contract source-buy can never silently drop treasury
 	// below the immutable reserve. Add-only safety guard (RULINGS #4), active on deploy
-	// like the manufacturing output-buy floor (sp-65xqo); the reactive 4600 park remains
+	// like the manufacturing output-buy floor; the reactive 4600 park remains
 	// the backstop.
 	deliveryOpts := append(cfg.deliveryOpts, contractServices.WithSourceBuyFloor())
 	deliveryExecutor := contractServices.NewDeliveryExecutor(mediator, shipRepo, cargoManager, deliveryOpts...)
@@ -143,7 +143,7 @@ func (h *RunWorkflowHandler) Handle(ctx context.Context, request common.Request)
 
 	// Execute workflow
 	if err := h.executeWorkflow(ctx, cmd, result); err != nil {
-		// PARK, don't crash (sp-vwhi): insufficient-credits during purchase
+		// PARK, don't crash: insufficient-credits during purchase
 		// is a clean recoverable exit, not a container crash. A nil Go
 		// error here means the container runner does NOT count this as a
 		// failure/restart - the dynamic-discovery fleet coordinator simply
@@ -203,7 +203,7 @@ func (h *RunWorkflowHandler) executeWorkflow(
 		return err
 	}
 
-	// VERIFY before fulfill (sp-2ei3): the delivery leg sources+delivers every
+	// VERIFY before fulfill: the delivery leg sources+delivers every
 	// unit it can and re-reads registration from each deliver response, but it
 	// returns an honestly-partial contract when sourcing halts (ladder cap) or
 	// the remainder can't be sourced this pass. Fulfilling that partial state is
@@ -236,7 +236,7 @@ func (h *RunWorkflowHandler) executeWorkflow(
 	// base first. Before this, a fulfilled ship had no path to claim its own
 	// next contract: it released back to the fleet coordinator and waited to
 	// be rediscovered, which measured fleet-wide as 74 ship-hours/day of idle
-	// time between fulfillment and next acceptance (sp-qpmi). This is a
+	// time between fulfillment and next acceptance. This is a
 	// latency optimization on top of an already-successful fulfillment, so
 	// failure here is non-fatal and never turns this result into an error -
 	// it just falls back to the coordinator's normal discovery pass.

@@ -26,17 +26,17 @@ import (
 // currently out of scope, where the honest state of a claim nobody will act on is
 // WANTED with no yard behind it.
 //
-// WHY IT IS SAFE TO TRANSITION A ROW THE SCAN PACER MAY BE WRITING. It used to
-// be an invariant that nothing transitioned a parked market, which is what kept
-// the pacer's scan columns and the reconcile's state columns off the same row.
-// That invariant is gone — this pass breaks it by design — and the protection is
-// now structural: ownership of sensing_slots is per-COLUMN, so a transition
-// emits state, updated_at and whichever of assigned_ship / purchase_yard it
-// actually changed, and cannot reach last_scan_at or spread_ewma however the two
-// writers interleave (sp-wgjb7, and the ownership block in
-// sensing_ledger_repository.go, which names this pass as the reason). That is
-// why the reaper needs no special-casing and uses the SlotFields DTO exactly as
-// the six other transition call sites do.
+// WHY IT IS SAFE TO TRANSITION A ROW THE SCAN PACER MAY BE WRITING. Nothing keeps
+// the pacer's scan columns and this pass's state columns off the same row: the
+// pacer runs concurrently with the reconcile and can commit at any instant, and
+// this pass is not the only writer that transitions a placement under it. The
+// protection is structural rather than an ordering invariant: ownership of
+// sensing_slots is per-COLUMN, so a transition emits state, updated_at and
+// whichever of assigned_ship / purchase_yard it actually changed, and cannot reach
+// last_scan_at or spread_ewma however the two writers interleave (see the
+// ownership block in sensing_ledger_repository.go, which names this pass as the
+// reason). That is why the reaper needs no special-casing and uses the SlotFields
+// DTO exactly as the six other transition call sites do.
 
 // DefaultMaxReaps bounds how many claims one pass may release. A plain constant,
 // deliberately not a knob: like maxDrainAttempts and DefaultMaxPlacementActions

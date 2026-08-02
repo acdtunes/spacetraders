@@ -83,7 +83,7 @@ func newExecutingConstructionPipeline(t *testing.T) *manufacturing.Manufacturing
 	return pipeline
 }
 
-// End-to-end for the execution-layer park (sp-hs2j): a delivery that reached
+// End-to-end for the execution-layer park: a delivery that reached
 // execution with no buy source is PARKED back to a deferred PENDING state (via
 // ParkForResupply) instead of failing. That parked task must plug straight into
 // r900's recovery machinery - the supply monitor re-sources it and marks it READY

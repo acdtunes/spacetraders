@@ -236,7 +236,7 @@ type JumpResult struct {
 	// in-band by the jump's own response (data.agent.credits). Nil when the
 	// API omitted the agent block. It is the ledger's AuthoritativeBalance:
 	// it re-anchors the running chain to API truth rather than merely
-	// appending the fee to it (sp-shq63).
+	// appending the fee to it.
 	AgentCredits *int
 }
 

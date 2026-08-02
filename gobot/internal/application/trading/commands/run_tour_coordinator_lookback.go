@@ -14,7 +14,7 @@ package commands
 // fresh listings (the hull's current system, and the ranked candidate whose listings the
 // candidate scan read via collectSystemListings). So BEFORE the empty jump, enumerate
 // departure EXPORT rows x destination IMPORT rows, buy the best floor-clearing manifest,
-// and let the post-jump re-plan liquidate it as launch cargo (sp-m5kv held-liquidation) at
+// and let the post-jump re-plan liquidate it as launch cargo (held-liquidation) at
 // the destination's import bids. Every existing money guard is applied UNTOUCHED (RULINGS
 // #4): the min-margin floor on the cached spread, the working-capital reserve at buy time
 // (sp-agzj), the live-ask ceiling (sp-9mkf), hold capacity, and the tour's max-spend cap.
@@ -66,7 +66,7 @@ type lookbackItem struct {
 	DestBid        int
 }
 
-// filterBlocklistedListings drops every GoodListing whose good is in the blocklist (sp-o4wa) —
+// filterBlocklistedListings drops every GoodListing whose good is in the blocklist —
 // the look-back mirror of filterBlocklistedCargo for the fresh-listing buy universe. Applied to
 // the buy-source rows before the manifest is built, so a blocklisted noise good is never a
 // look-back purchase (look-back only BUYS from src, so barring it as a buy source bars it
@@ -210,11 +210,11 @@ func buildLookbackManifest(src, dest []trading.GoodListing, holdCap, minMargin i
 // margins-death jump from fromSystem to the chosen destination, buy the best floor-clearing
 // manifest of fromSystem exports the destination imports, so the crossing carries value
 // instead of flying empty. The post-jump re-plan liquidates the load as launch cargo
-// (sp-m5kv held-liquidation) at the destination's live import bids.
+// (held-liquidation) at the destination's live import bids.
 //
 // It reuses the shared trade-route buy primitives (travel/dock/observeGood/reserveHeadroom/
 // purchaseWithCeiling) so every existing money guard applies UNTOUCHED (RULINGS #4): the
-// hold cap, the tour's max-spend cap, the working-capital reserve at buy time (sp-agzj), and
+// hold cap, the tour's max-spend cap, the working-capital reserve at buy time, and
 // the live-ask ceiling (sp-9mkf) — the ceiling is margin-preserving (never above
 // destBid-floor), so even a drifted live ask can only buy at a price that still clears the
 // min-margin against the cached sink bid. It BOOKS each buy into netBought / response so the
@@ -248,7 +248,7 @@ func (h *RunTourCoordinatorHandler) loadLookbackManifest(
 	maxAge := h.listingMaxAge(ctx, cmd.PlayerID)
 	src := freshListings(srcRaw, now, maxAge)
 	dst := freshListings(destRaw, now, maxAge)
-	// sp-o4wa: bar the noise-goods blocklist from the look-back buy universe — the SECOND
+	// Bar the noise-goods blocklist from the look-back buy universe — the SECOND
 	// tour cargo-selection path (fresh listings, independent of the solver snapshot). Filtering
 	// the buy-source rows means a blocklisted good (FUEL/ALUMINUM/PLASTICS) is never a look-back
 	// purchase; since look-back only BUYS from src, barring it here bars it entirely. No-op when
@@ -355,7 +355,7 @@ func (h *RunTourCoordinatorHandler) buyLookbackItem(
 		return 0
 	}
 
-	// Working-capital spend floor at BUY time (sp-agzj / RULINGS #4): shrink the tranche to
+	// Working-capital spend floor at BUY time (RULINGS #4): shrink the tranche to
 	// what the reserve can still afford, skip if even one unit pierces it, and fail CLOSED
 	// (no spend) if the live balance cannot be read. No live client wired → guard off
 	// (the optional-port contract every nil-apiClient test relies on).
@@ -414,11 +414,11 @@ func (h *RunTourCoordinatorHandler) buyLookbackItem(
 	response.TotalSpent += int64(buyResp.TotalCost)
 	response.TradesExecuted++
 	netBought[item.Good] += buyResp.UnitsAdded
-	// sp-rd21 (epic sp-g9td): record the look-back buy in tour telemetry exactly as
+	// Record the look-back buy in tour telemetry exactly as
 	// executeBuy records a plan leg — the FULL bought units and the volume-weighted realized
 	// price — so the windowed telemetry-netting rate reconciles with the PURCHASE_CARGO
-	// transactions this buy just wrote. Before this, look-back manifest buys were the ~1/3 of
-	// buy legs silently absent from telemetry (their destination SELLS were still logged as
+	// transactions this buy just wrote. Drop this record and look-back manifest buys are the ~1/3 of
+	// buy legs silently absent from telemetry (their destination SELLS still logged as
 	// launch-liquidation legs), the dominant cause of the ~2x realized-$/hr inflation. A
 	// synthetic single-stop leg carries the source waypoint; item.Units/SourceAsk are the plan
 	// basis (mirroring trade.Units/ExpectedUnitPrice) and lookbackLegIndex marks it a

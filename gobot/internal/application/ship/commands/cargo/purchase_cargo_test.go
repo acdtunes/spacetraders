@@ -19,7 +19,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// These tests pin the manual "ship buy" behavior (bead sp-71bj) at the handler
+// These tests pin the manual "ship buy" behavior at the handler
 // boundary the CLI verb dispatches to. They mirror the acceptance matrix of the
 // existing sell path: a docked ship purchases at its waypoint market, records a
 // PURCHASE_CARGO ledger transaction, and errors clearly when the ship is not
@@ -51,7 +51,7 @@ func (r *buyFakeShipRepo) Save(ctx context.Context, ship *navigation.Ship) error
 }
 
 // SaveWithRetry mirrors the real repository's non-conflict path (find → mutate →
-// save) so the handler's migrated cargo persist (sp-wa7c) exercises the same
+// save) so the handler's migrated cargo persist exercises the same
 // closure it uses in production. The fake has no version conflict to re-apply
 // against, so a single find+mutate+save is faithful.
 func (r *buyFakeShipRepo) SaveWithRetry(ctx context.Context, symbol string, playerID shared.PlayerID, mutate navigation.ShipMutation) (*navigation.Ship, bool, error) {
@@ -269,7 +269,7 @@ func TestPurchaseCargoErrorsWhenInsufficientCredits(t *testing.T) {
 // The purchase response carries the agent's post-transaction credits in-band
 // (data.agent.credits). The handler must forward that authoritative balance to
 // the ledger so balance_after anchors on API truth instead of a reconstructed
-// value that drifts (sp-sc6u).
+// value that drifts.
 func TestPurchaseCargoForwardsInBandAgentCreditsToLedger(t *testing.T) {
 	ship := newDockedBuyer(t, 40, 0, navigation.NavStatusDocked)
 	credits := 654321

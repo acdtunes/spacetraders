@@ -57,7 +57,7 @@ func (r *ShipRepository) SetPositionReanchorObserver(observer PositionReanchorOb
 
 // reportPositionReanchor is called after a sync has written a position that CONTRADICTS
 // the row it replaced. It is best-effort on every surface: an alarm that panics or errors
-// the sync it is reporting on is worse than the silence it was added to break.
+// the sync it is reporting on is worse than the silence it exists to break.
 func (r *ShipRepository) reportPositionReanchor(ctx context.Context, reanchor PositionReanchor) {
 	log.Printf(
 		"WARNING: POSITION RE-ANCHOR: %s was recorded in %s (%s) but the server reports it in %s (%s) — a completed move was never persisted; every tick since planned from the wrong system",

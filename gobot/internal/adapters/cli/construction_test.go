@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// These tests pin the `construction start --min-supply` flag (bead sp-ezz9):
+// These tests pin the `construction start --min-supply` flag:
 // it lowers the sourcing locator's EXPORT acceptance floor below the default
 // MODERATE baseline, but only for values that are real manufacturing.SupplyLevel
 // states. Invalid values must be rejected with a clear error before any
@@ -66,7 +66,7 @@ func TestParseMinSupplyFlag_RejectsUnknownValue(t *testing.T) {
 }
 
 // TestConstructionStopIsRegisteredWithExactlyOneArg pins the wiring for the
-// `construction stop <site>` verb (bead sp-yzrv): the construction command
+// `construction stop <site>` verb: the construction command
 // surface was start/status only, so a misplanned pipeline had no way to be
 // stopped. This guards the registration itself - unlike `start`, `stop` has
 // no flags/pre-infrastructure validation logic of its own to unit test, so

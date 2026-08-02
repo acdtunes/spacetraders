@@ -18,7 +18,7 @@ func edgesTo(systems ...string) []domainsystem.GateEdge {
 }
 
 // The `system gates` renderer must emit one aligned `SYS <-> a,b,c` line per
-// system, systems sorted and neighbors comma-joined — the sp-7gr2 topology-dump
+// system, systems sorted and neighbors comma-joined — the topology-dump
 // shape the captain greps for manual routing.
 func TestRenderGateAdjacency_TopologyDumpShape(t *testing.T) {
 	got := renderGateAdjacency(map[string][]domainsystem.GateEdge{
@@ -50,7 +50,7 @@ func TestRenderGateAdjacency_Empty(t *testing.T) {
 	}
 }
 
-// sp-8qhu: an under-construction gate must be marked with a trailing `*` and a
+// An under-construction gate must be marked with a trailing `*` and a
 // legend line appended, so the captain reading this chart never routes through an
 // unbuilt (unroutable) gate. The incident gate was AF2; PA3 alongside it is open.
 func TestRenderGateAdjacency_UnderConstructionAnnotated(t *testing.T) {
@@ -83,7 +83,7 @@ func TestRenderGateAdjacency_NoLegendWhenAllBuilt(t *testing.T) {
 	}
 }
 
-// sp-8qhu deploy-gap: a STALE row (invalidated cache — the migration cleared its
+// Deploy-gap: a STALE row (invalidated cache — the migration cleared its
 // synced_at) must render "?" + legend, never as an authoritative verdict. This is
 // the live scenario the harbormaster caught: KA42→AF2 sat at empty synced_at with
 // the pre-tracking OPEN default and the raw chart wrongly printed it routable.

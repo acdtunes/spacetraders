@@ -73,7 +73,7 @@ func TestTour_Lookback_RecordsTelemetryForBuy(t *testing.T) {
 	if row.TourID != "ctr-lb-tel" || row.PlayerID != 1 {
 		t.Fatalf("telemetry scoping = tour %q player %d, want ctr-lb-tel / 1", row.TourID, row.PlayerID)
 	}
-	// sp-fzt09: a look-back buy DOES carry a basis, but a CACHED SourceAsk its own buy was
+	// A look-back buy DOES carry a basis, but a CACHED SourceAsk its own buy was
 	// gated to — not the solver's projection. Pooled into planner accuracy it converges on 0%
 	// error and reports a figure describing neither population (sp-fpgl2), so it must declare
 	// itself rather than be recognised by its leg index.

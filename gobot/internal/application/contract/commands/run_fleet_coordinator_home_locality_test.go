@@ -10,7 +10,7 @@ import (
 
 // newHomeLocalityTestShip builds an idle, in-orbit hauler at the given waypoint so a test can
 // place contract-worker candidates in different systems and exercise the home-system locality
-// scope (sp-ue1s). Its system is derived from the waypoint symbol exactly as production does
+// scope. Its system is derived from the waypoint symbol exactly as production does
 // (shared.ExtractSystemSymbol), mirroring newOrphanReclaimTestShip but parameterizing location.
 func newHomeLocalityTestShip(t *testing.T, symbol, waypointSymbol string) *navigation.Ship {
 	t.Helper()
@@ -83,12 +83,12 @@ func TestScopeCandidatesToContractHome_ExcludesForeignSystemHull(t *testing.T) {
 	}
 }
 
-// EXCLUSIVE MODE untouched (sp-wq7r composition): a dedicated contract fleet is the operator's
+// EXCLUSIVE MODE untouched (composition): a dedicated contract fleet is the operator's
 // explicit, sealed choice, and its "draw ONLY from dedicated members, even when empty" contract
 // must not be silently narrowed by locality. Home-system scoping is the GENERAL grab pool's
 // constraint (the sp-ue1s bug class — an undedicated hull the pool poached cross-gate), so with
 // dedicatedFleetActive the pool passes through unscoped. This keeps the fix disjoint from the
-// dedicated-fleet feature (zero regression) and composes with the sp-mzdk reserve floor, whose
+// dedicated-fleet feature (zero regression) and composes with the reserve floor, whose
 // reserved hulls are UNDEDICATED + home and therefore ride the general (scoped) path where they
 // stay eligible.
 func TestScopeCandidatesToContractHome_ExclusiveModePassesThrough(t *testing.T) {

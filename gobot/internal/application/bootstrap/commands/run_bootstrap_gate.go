@@ -19,12 +19,12 @@ import (
 // by actGate behind the readiness/capital gates.
 type gateWorkerPlan struct {
 	// ReleaseShips are contract haulers to release into the executor's worker pool this tick. It is ALWAYS
-	// EMPTY now (sp-cdxy2): the contract fleet is EXCLUSIVE (sp-9le3x) and is NEVER repurposed to gate
+	// EMPTY now: the contract fleet is EXCLUSIVE and is NEVER repurposed to gate
 	// construction, so GATE never re-tags a "contract" hull "manufacturing" (the re-tag that dropped the
 	// scaler's ContractHullCount and drove the buy→repurpose→buy churn). The field + the repurposer seam
 	// it feeds are retained (dormant) rather than ripped out; sizeGateWorkers simply never iterates it.
 	ReleaseShips []string
-	// SurplusToUndedicate are the gate's OWN surplus IDLE manufacturing hulls to un-dedicate this tick (sp-mxflh):
+	// SurplusToUndedicate are the gate's OWN surplus IDLE manufacturing hulls to un-dedicate this tick:
 	// when the executor holds MORE gate workers than the workforce target, the idle overage is
 	// released to the UNDEDICATED idle pool so the contract scaler's reclaim-before-buy tier adopts it into the
 	// contract fleet BEFORE buying — the zero-buy re-balance. Distinct from ReleaseShips (the dormant
@@ -39,16 +39,16 @@ type gateWorkerPlan struct {
 	// DesiredWorkers is the sizing target: gateWorkerTarget, live from GATE entry.
 	DesiredWorkers int
 	// KeptOnContract is how many haulers stay on contracts through GATE — the WHOLE contract delivery fleet
-	// now (sp-cdxy2), never a floored subset — carried for the decision log.
+	// now, never a floored subset — carried for the decision log.
 	KeptOnContract int
 }
 
 // planGateWorkers sizes the gate-construction workforce deterministically from the observation. The
-// contract fleet is EXCLUSIVE (sp-9le3x): GATE builds its OWN construction fleet and never competes with
+// contract fleet is EXCLUSIVE: GATE builds its OWN construction fleet and never competes with
 // contracts for hulls, so the plan is two independent decisions:
 //
 //  1. KEEP THE WHOLE CONTRACT FLEET — every "contract"-dedicated delivery hauler stays EARNING on
-//     contracts through GATE (ReleaseShips is always empty). Repurposing them was the sp-cdxy2 churn: a
+//     contracts through GATE (ReleaseShips is always empty). Repurposing them was the churn: a
 //     contract→manufacturing re-tag dropped the scaler's ContractHullCount below its delivery target, so
 //     the scaler re-bought to refill and GATE repurposed again. Contracts fund the gate build at full
 //     scale (RULINGS #1); the depot warehouse/stocker hulls are separately tagged and likewise untouched.
@@ -89,7 +89,7 @@ func planGateWorkers(obs Observation) gateWorkerPlan {
 	}
 }
 
-// selectGateSurplus picks the IDLE manufacturing hulls to un-dedicate this tick (sp-mxflh) — the
+// selectGateSurplus picks the IDLE manufacturing hulls to un-dedicate this tick — the
 // (GateWorkers − desired) overage, drawn ONLY from idle hulls (never one mid-task) in deterministic
 // symbol order so the release is stable and reaches a fixed point (a released hull becomes a contract
 // hull next tick, shrinking the surplus). It returns nil — releasing nothing — unless the executor holds
@@ -140,7 +140,7 @@ func gateSiteOrNone(site string) string {
 //     (a fresh start adopts existing pipelines); if it is up but has not adopted the new pipeline, bounce
 //     it so a restart adopts. Running-and-adopted ⇒ nothing.
 //  4. Size the gate workforce (planGateWorkers): BUY the staged ramp delta while the executor's workers
-//     fall short of the workforce target. The exclusive contract fleet is never repurposed (sp-cdxy2).
+//     fall short of the workforce target. The exclusive contract fleet is never repurposed.
 //
 // The monitor→EXPANSION transition is derivePhase's job (obs.ConstructionComplete), so GATE has no explicit
 // "is it done?" branch — it just reconciles the construction drive each tick until the phase flips.
@@ -264,7 +264,7 @@ func (h *RunBootstrapCoordinatorHandler) ensureExecutorAdopted(ctx context.Conte
 
 // sizeGateWorkers executes the deterministic worker plan: buy the staged ramp delta while the executor's
 // workers fall short of the workforce target. The release loop is retained but INERT — planGateWorkers keeps
-// the whole exclusive contract fleet on contracts (sp-cdxy2), so plan.ReleaseShips is always empty and no
+// the whole exclusive contract fleet on contracts, so plan.ReleaseShips is always empty and no
 // hauler is ever repurposed; the loop stays only so a regression that reintroduced a release would still
 // route through the guarded, idempotent repurposer rather than a raw re-tag. Each step is independently
 // guarded, so a partial failure this tick simply retries next tick.
@@ -272,13 +272,13 @@ func (h *RunBootstrapCoordinatorHandler) sizeGateWorkers(ctx context.Context, cm
 	plan := planGateWorkers(obs)
 	res.DesiredWorkers = plan.DesiredWorkers
 
-	// (1) INERT (always empty, sp-cdxy2): the exclusive contract fleet is never repurposed. Retained as the
+	// (1) INERT (always empty): the exclusive contract fleet is never repurposed. Retained as the
 	// guarded seam so a reintroduced release could never bypass the idempotent repurposer.
 	for _, ship := range plan.ReleaseShips {
 		h.repurposeHauler(ctx, cmd, ship, res)
 	}
 
-	// (1b) sp-mxflh: release the gate's OWN surplus IDLE manufacturing hulls to the UNDEDICATED idle pool so the
+	// (1b) Release the gate's OWN surplus IDLE manufacturing hulls to the UNDEDICATED idle pool so the
 	// contract scaler's reclaim-before-buy tier adopts them into the contract fleet — the zero-buy re-balance
 	// (which is also how the scaler's over-buying stops). Non-empty ONLY when over-provisioned; FREE (no spend).
 	if len(plan.SurplusToUndedicate) > 0 {
@@ -294,7 +294,7 @@ func (h *RunBootstrapCoordinatorHandler) sizeGateWorkers(ctx context.Context, cm
 // releaseGateSurplus un-dedicates the gate's surplus IDLE manufacturing hulls (planGateWorkers selected them —
 // GateWorkers over the workforce target) back to the UNDEDICATED idle pool via the single-writer
 // AssignFleet (fleet→"", RULINGS #3), from where the contract scaler's IdleHullReclaimer adopts them into the
-// contract fleet before it buys — the zero-buy re-balance (sp-mxflh). FREE (un-dedicate spends nothing) ⇒ never
+// contract fleet before it buys — the zero-buy re-balance. FREE (un-dedicate spends nothing) ⇒ never
 // cushion-gated. Best-effort + fail-closed: a nil releaser or a partial release just re-balances fewer this
 // tick (retried next); the releaser re-guards each hull's idle status so one that started a task since the
 // observation is never yanked mid-task.
@@ -327,7 +327,7 @@ func (h *RunBootstrapCoordinatorHandler) releaseGateSurplus(ctx context.Context,
 }
 
 // repurposeHauler releases ONE contract hauler back to the idle pool (reuse fleet unassign) so the
-// manufacturing coordinator claims it as a gate worker. INERT under sp-cdxy2 (the exclusive contract fleet is
+// manufacturing coordinator claims it as a gate worker. INERT (the exclusive contract fleet is
 // never repurposed, so planGateWorkers hands it no ships) — retained as the guarded, idempotent seam. Idempotent
 // at the adapter (clearing an already-clear tag is a no-op), so a re-release across a laggy observation is harmless.
 func (h *RunBootstrapCoordinatorHandler) repurposeHauler(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, ship string, res *reconcileResult) {
@@ -400,8 +400,8 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyGateWorker(ctx context.Context,
 		return
 	}
 
-	// Capital gate (sp-bpdf): the gate-worker buy is bootstrap's GATE-phase construction spend, so it
-	// reserves the SAME absolute contract working-capital floor as the hauler buy (sp-acv5) — affordable ⇔
+	// Capital gate: the gate-worker buy is bootstrap's GATE-phase construction spend, so it
+	// reserves the SAME absolute contract working-capital floor as the hauler buy — affordable ⇔
 	// cushion=(treasury−price) ≥ the contract working-capital floor. Gate construction therefore can never
 	// drive the treasury below the working-capital line
 	// the fleet autosizer also honors (common.ImmutableReserveFloor; the two-buyer safety, ktio-B). A worker
@@ -453,7 +453,7 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyGateWorker(ctx context.Context,
 	})
 }
 
-// actExpansion runs the terminal EXPANSION phase (sp-feiy7 — formerly COMPLETE): the gate is built and
+// actExpansion runs the terminal EXPANSION phase (formerly COMPLETE): the gate is built and
 // steady-state growth begins, so bootstrap hands the fleet off to the mature demand-driven economy and
 // exits (the standing coordinators — including the probe-buyer fleet, the Admiral's EXPANSION spender —
 // own all growth from here). The hand-off launches the fleet-autosizer (OFF the whole bootstrap run so
@@ -587,7 +587,7 @@ func (h *RunBootstrapCoordinatorHandler) releaseHomeScoutReinforcement(ctx conte
 	})
 }
 
-// selectConstructionHullsForTrade picks the gate-construction hulls to hand to the trade fleet (sp-hv4f6):
+// selectConstructionHullsForTrade picks the gate-construction hulls to hand to the trade fleet:
 // every manufacturing-dedicated hull the observation reports as genuinely FREE — idle and not in transit
 // (GateWorkerSnapshot.Idle is exactly that conjunction) — in deterministic symbol order so the hand-over
 // is stable and logs read the same across ticks.
@@ -618,7 +618,7 @@ func selectConstructionHullsForTrade(obs Observation) []string {
 // hulls the redirect hands over are actually worked instead of pinned to an unmanaged fleet.
 //
 // Nothing else guarantees this at EXPANSION. LaunchStandingCoordinators is a no-op since the factory
-// retirement (sp-hoj8u); ContainerTypeTradeFleetCoordinator is NOT a member of
+// retirement; ContainerTypeTradeFleetCoordinator is NOT a member of
 // bootStandingCoordinatorTypes, so it has no unconditional boot launch; and the only other caller of
 // LaunchTradeFleetCoordinator is the INCOME-phase trade-seed, which a MATURE fleet restarting into a
 // built world never reaches — it derives EXPANSION on its first tick. That fleet would otherwise
@@ -666,9 +666,9 @@ func (h *RunBootstrapCoordinatorHandler) ensureTradeFleetCoordinator(ctx context
 }
 
 // redirectConstructionHullsToTrade hands the gate's construction hulls to the TRADE fleet once the arc
-// reaches EXPANSION (sp-hv4f6). The gate is built, and gate construction is the SOLE consumer of the
+// reaches EXPANSION. The gate is built, and gate construction is the SOLE consumer of the
 // "manufacturing" dedication — the goods-factory coordinator that also drew on it was retired with the
-// factories (sp-hoj8u) — so every hull still carrying that tag is a large-cargo hull polling a finished
+// factories — so every hull still carrying that tag is a large-cargo hull polling a finished
 // site. Trade is where it earns again.
 //
 // It ASSIGNS rather than un-dedicates, and that distinction is load-bearing. Clearing the tag to "" (what
@@ -676,7 +676,7 @@ func (h *RunBootstrapCoordinatorHandler) ensureTradeFleetCoordinator(ctx context
 // reclaim-before-buy tier is mid-ramp and adopts from the idle pool. At EXPANSION there is no such
 // adopter for trade: the trade coordinator partitions on hulls ALREADY tagged "trade", the fleet
 // autosizer tags only hulls it BUYS, and the capacity reconciler that once auto-pinned idle hulls was
-// deleted (sp-y2ptq). An un-dedicated gate hull would simply idle — strictly worse than leaving it alone.
+// deleted. An un-dedicated gate hull would simply idle — strictly worse than leaving it alone.
 //
 // IDEMPOTENCE IS DERIVED, NOT STORED. There is no "already done" flag: the selection comes from the live
 // observation, and a redirected hull carries "trade", so the observer stops counting it as a gate worker
@@ -788,7 +788,7 @@ func blockerOrNone(blocker string) string {
 	return blocker
 }
 
-// ensureStandingHandoff finishes the EXPANSION hand-off for the sp-sjvv case where the fleet autosizer was
+// ensureStandingHandoff finishes the EXPANSION hand-off for the case where the fleet autosizer was
 // launched EARLY (armed cold-start scaling) and is therefore already running — so launchHandoff's
 // autosizer-gated path is skipped, but its SECOND half (the standing coordinators: siting +
 // worker-rebalancer) still has to run. It reports whether the standing coordinators are confirmed up

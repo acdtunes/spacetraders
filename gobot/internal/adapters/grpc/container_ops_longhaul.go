@@ -32,7 +32,7 @@ const longHaulOperation = "long-haul"
 // The coordinator hands only decision inputs (LongHaulLaunchSpec); the daemon owns the claim,
 // the single-writer container row, and release-on-death, so the coordinator claims nothing
 // itself (RULINGS #3/#7). A claim refused AFTER the row is persisted terminalizes the orphan
-// row FAILED (the sp-cr86 pre-runner boundary) rather than leaving a zombie PENDING.
+// row FAILED (the pre-runner boundary) rather than leaving a zombie PENDING.
 func (s *DaemonServer) LaunchLongHaul(ctx context.Context, spec tradingCmd.LongHaulLaunchSpec) (string, error) {
 	if spec.ShipSymbol == "" {
 		return "", fmt.Errorf("long-haul launch requires a ship symbol")
@@ -74,8 +74,8 @@ func (s *DaemonServer) LaunchLongHaul(ctx context.Context, spec tradingCmd.LongH
 	)
 
 	// Persist the container row FIRST: it is the FK parent for the hull claim's
-	// ships.container_id (fk_ships_container). Claiming before this row exists is the sp-1hp9
-	// FK 23503 that made every idle-arb dispatch dead on arrival.
+	// ships.container_id (fk_ships_container). Claiming before this row exists is the
+	// FK 23503 that makes every such dispatch dead on arrival.
 	if err := s.containerRepo.Add(ctx, containerEntity, "longhaul_arb"); err != nil {
 		return "", fmt.Errorf("failed to persist long-haul worker container: %w", err)
 	}

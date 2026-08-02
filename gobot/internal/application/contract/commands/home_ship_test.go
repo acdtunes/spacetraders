@@ -140,7 +140,7 @@ func homeTestGraph(waypoints ...*shared.Waypoint) *system.NavigationGraph {
 }
 
 // A lone idle dedicated hull homes to its fixed slot — the first placement slot in symbol order
-// (B2 < C3), the symbol-zip of the single-hull roster onto the slots (sp-mtgje). Order-independent.
+// (B2 < C3), the symbol-zip of the single-hull roster onto the slots. Order-independent.
 func TestHomeShipHandler_NavigatesToItsFixedSlot(t *testing.T) {
 	ship := newHomeTestShip(t, "TORWIND-4", "X1-TEST-A1", 0, 0)
 	near := homeTestWaypoint(t, "X1-TEST-B2", 10, 0)
@@ -252,7 +252,7 @@ func TestHomeShipHandler_AlreadyAtItsSlot_NoOp(t *testing.T) {
 	}
 }
 
-// FIXED PLACEMENT (sp-mtgje): each hull homes to ITS OWN slot — the symbol-zip of the roster onto the
+// FIXED PLACEMENT: each hull homes to ITS OWN slot — the symbol-zip of the roster onto the
 // slots — ignoring occupancy. TORWIND-4 (roster index 0) owns the first slot B2 and homes there even
 // though a peer sits at B2 (the old occupancy balancer would have sent it to the "emptier" C3). The slot
 // set order is irrelevant (symbol-zipped), so [C3, B2] resolves identically.
@@ -286,7 +286,7 @@ func TestHomeShipHandler_HomesToItsOwnFixedSlot(t *testing.T) {
 	}
 }
 
-// The "already home ONLY if at MY slot" rule (sp-mtgje): a hull sitting at a PEER's slot is NOT left
+// The "already home ONLY if at MY slot" rule: a hull sitting at a PEER's slot is NOT left
 // there (the old "at ANY standby station" rule) — it moves to its OWN slot. TORWIND-5 (roster index 1)
 // owns C3 but sits at B2 (TORWIND-4's slot); it must navigate to C3.
 func TestHomeShipHandler_MovesOffAPeersSlotToItsOwn(t *testing.T) {
@@ -384,7 +384,7 @@ func TestHomeShipHandler_InTransitHullNeverMoved(t *testing.T) {
 	}
 }
 
-// THE LOAD-BEARING PROOF (sp-mtgje): several idle dedicated hulls sitting at the SAME sink, each homed
+// THE LOAD-BEARING PROOF: several idle dedicated hulls sitting at the SAME sink, each homed
 // by an INDEPENDENT Handle call (as the live concurrent between-legs homing fires), must land on N
 // DISTINCT slots — one per waypoint, never piled. The old runtime distributor piled them on the
 // top-demand hub when peers were in-transit/invisible (the live K83 pile); the fixed symbol-zip gives

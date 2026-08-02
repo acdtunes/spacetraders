@@ -431,7 +431,7 @@ func (h *PurchaseShipHandler) recordShipPurchaseTransaction(
 	// response — the ONLY place the real symbol appears. The shipyard transaction's
 	// own `shipSymbol` field is the API's deprecated alias for the ship TYPE
 	// ("SHIP_HEAVY_FREIGHTER"), so reading it here is what left every historical
-	// PURCHASE_SHIP row unjoinable to the hull it bought (sp-mjmqf). Empty only if
+	// PURCHASE_SHIP row unjoinable to the hull it bought. Empty only if
 	// the response carried no ship, in which case the row stays unattributed
 	// rather than re-stamping a type into a field named ship_symbol.
 	hullSymbol := ""
@@ -809,7 +809,7 @@ func (h *PurchaseShipHandler) createShipValueObjects(
 
 	// Authoritative API snapshot: clamp a transient current>capacity over-report
 	// to capacity rather than reject, so a freshly-purchased hull isn't dropped
-	// on ingest (sp-xxhn).
+	// on ingest.
 	fuel, err := shared.ReconstructFuel(shipData.FuelCurrent, shipData.FuelCapacity)
 	if err != nil {
 		return nil, nil, "", fmt.Errorf("failed to create fuel: %w", err)
@@ -855,7 +855,7 @@ func (h *PurchaseShipHandler) createIdleAssignment(
 	ctx context.Context,
 	ship *navigation.Ship,
 ) error {
-	// Persist the new ship's idle assignment under CAS-retry (sp-wa7c): the closure
+	// Persist the new ship's idle assignment under CAS-retry: the closure
 	// sets the idle assignment on the FRESH row so a concurrent writer's cargo/nav
 	// update on the just-synced hull survives instead of being last-write-wins
 	// clobbered. New ships start without an assignment.

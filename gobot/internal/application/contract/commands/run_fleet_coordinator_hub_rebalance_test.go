@@ -9,7 +9,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// These tests cover PART 2 of the operation-level live hub model (sp-jcke), under fixed placement
+// These tests cover PART 2 of the operation-level live hub model, under fixed placement
 // (sp-mtgje): after a `fleet hub add|remove` mutates the coordinator's LIVE standby set, the
 // coordinator's between-legs homing must re-home idle dedicated hulls to their assigned slot in the
 // CURRENT set — a changed set redirects the fixed placement — while NEVER interrupting a hull

@@ -62,10 +62,10 @@ func (h *FulfillContractHandler) Handle(ctx context.Context, request common.Requ
 	}
 
 	// The fulfill response returns the agent's post-fulfillment credits in-band.
-	// That authoritative balance replaces the old pre-fetched GetAgent snapshot,
-	// which could already be stale (re-anchoring the ledger to a wrong value)
-	// and, worse, caused the payment to be dropped from the ledger entirely
-	// whenever the fetch failed (sp-sc6u root cause #4).
+	// The ledger anchors to that authoritative balance, never to a pre-fetched
+	// GetAgent snapshot: a snapshot can already be stale (re-anchoring the ledger
+	// to a wrong value) and, worse, drops the payment from the ledger entirely
+	// whenever the fetch fails.
 	contractData, err := h.callFulfillContractAPI(ctx, cmd.ContractID, token)
 	if err != nil {
 		return nil, err

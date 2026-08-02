@@ -376,20 +376,20 @@ func containerSpecList() []ContainerSpec {
 		// CoordinatorOwnsIterations type; the container-level iteration budget (-1) is
 		// irrelevant because Handle() never returns.
 		{CommandType: "trade_fleet_coordinator", build: buildTradeFleetCoordinatorCommand},
-		// worker_ferry (sp-f5pr): a one-shot cross-system relay worker (twin of scout_reposition)
+		// worker_ferry: a one-shot cross-system relay worker (twin of scout_reposition)
 		// that moves a hull to a destination waypoint. Its former managing coordinator (the
-		// worker_rebalancer_coordinator) was retired with the factory ops (sp-hoj8u); the ferry
+		// worker_rebalancer_coordinator) was retired with the factory ops; the ferry
 		// primitive is retained for the daemon's persist/start dispatch + container recovery. It
 		// wraps exactly ONE iteration (CoordinatorOwnsIterations).
 		{CommandType: "worker_ferry", build: buildWorkerFerryCommand, CoordinatorOwnsIterations: true},
-		// cargo_liquidation (sp-39oi): the contract fleet coordinator's one-shot
+		// cargo_liquidation: the contract fleet coordinator's one-shot
 		// self-clearing worker for a parked-with-cargo hull (twin of worker_ferry). The
 		// coordinator owns re-dispatch, so the container wraps exactly ONE iteration
 		// (CoordinatorOwnsIterations).
 		{CommandType: "cargo_liquidation", build: buildCargoLiquidationCommand, CoordinatorOwnsIterations: true},
 		{CommandType: "purchase_ship", build: buildPurchaseShipCommand},
 		{CommandType: "batch_purchase_ships", build: buildBatchPurchaseShipsCommand},
-		// construction_coordinator (sp-382j): the standing construction-supply drain. Like
+		// construction_coordinator: the standing construction-supply drain. Like
 		// trade_fleet/siting it loops forever inside one Handle(), so it is NOT a
 		// CoordinatorOwnsIterations type; the container-level budget (-1) is irrelevant.
 		// Registering it here is what makes a launched or restart-recovered drain runnable.
@@ -470,7 +470,7 @@ func (s *DaemonServer) buildCommandForType(commandType string, config map[string
 	if !exists {
 		return nil, fmt.Errorf("unknown command type '%s'", commandType)
 	}
-	// sp-ts82: the contract coordinator's idle-arb harvest knobs are resolved LIVE
+	// The contract coordinator's idle-arb harvest knobs are resolved LIVE
 	// from the daemon's boot-loaded config.yaml on EVERY build. Both creation
 	// (ContractFleetCoordinator) and restart recovery (recoverContainer) funnel
 	// through here, so a config.yaml retune + daemon restart actually retunes a
@@ -480,7 +480,7 @@ func (s *DaemonServer) buildCommandForType(commandType string, config map[string
 	// needed for these knobs.
 	if commandType == "contract_fleet_coordinator" {
 		s.resolveIdleArbConfig(config)
-		// sp-39oi: same live-config discipline for the parked-hull auto-liquidation knobs
+		// Same live-config discipline for the parked-hull auto-liquidation knobs
 		// (enable/disable + min-jettison floor). Cleared and re-injected from config.yaml
 		// on every build so a retune reaches a recovered coordinator.
 		s.resolveAutoLiquidationConfig(config)
@@ -507,7 +507,7 @@ func (s *DaemonServer) buildCommandForType(commandType string, config map[string
 	if commandType == "bootstrap" {
 		s.resolveBootstrapConfig(config)
 	}
-	// sp-x8i5: same live-config discipline for the scouting subsystem's tour-start
+	// Same live-config discipline for the scouting subsystem's tour-start
 	// phase jitter ceiling. The [scouting] knob is cleared and re-injected from the
 	// boot-loaded config.yaml on every build — creation and recovery alike — for both
 	// scout_tour and scout_post_coordinator, so a config edit + restart retunes a
@@ -562,9 +562,9 @@ func buildScoutTourCommand(cfg *configReader, playerID int, containerID string) 
 // container-level iteration budget is irrelevant and it is NOT a
 // CoordinatorOwnsIterations type. tick_interval_secs, market_drift_threshold, and
 // market_drift_max_age_secs are all optional (0 → the coordinator's own default) —
-// the latter two bound the debounced market-set re-cut (sp-ykhl, RULINGS #5).
+// the latter two bound the debounced market-set re-cut (RULINGS #5).
 // budget_change_debounce_cycles (0 → default) bounds the debounced hull-budget
-// re-partition that absorbs the freshness sizer's ±1 demand-noise swings (sp-itr5).
+// re-partition that absorbs the freshness sizer's ±1 demand-noise swings.
 func buildScoutPostCoordinatorCommand(cfg *configReader, playerID int, containerID string) interface{} {
 	return &scoutingCmd.RunScoutPostCoordinatorCommand{
 		PlayerID:                        shared.MustNewPlayerID(playerID),
@@ -593,7 +593,7 @@ func buildScoutPostCoordinatorCommand(cfg *configReader, playerID int, container
 }
 
 // buildTradeFleetCoordinatorCommand rebuilds the standing trade-fleet coordinator
-// command (sp-1278) from a persisted launch config so a daemon restart re-adopts it.
+// command from a persisted launch config so a daemon restart re-adopts it.
 // The [trade_fleet] knobs are resolved LIVE from config.yaml just before this runs
 // (resolveTradeFleetConfig in buildCommandForType), so the persisted trade_fleet_*
 // keys are transient — the reads below see the current config.yaml. Enabled is
@@ -673,7 +673,7 @@ func buildLongHaulArbWorkerCommand(cfg *configReader, playerID int, containerID 
 }
 
 // buildWorkerFerryCommand rebuilds a one-shot cross-system ferry from its persisted launch
-// config so restart recovery re-adopts it (sp-f5pr, twin of buildScoutRepositionCommand). A
+// config so restart recovery re-adopts it (twin of buildScoutRepositionCommand). A
 // coordinator-spawned ferry (coordinator_id present) is skipped by recovery and reclaimed
 // by the worker_rebalancer_coordinator, but the command is still rebuilt here so the
 // coordinator's StartWorkerFerry path can reconstruct it. Re-running after a restart is
@@ -685,7 +685,7 @@ func buildWorkerFerryCommand(cfg *configReader, playerID int, containerID string
 		ShipSymbol:          cfg.RequiredString("ship_symbol"),
 		DestinationWaypoint: cfg.RequiredString("destination"),
 		CoordinatorID:       cfg.OptionalString("coordinator_id"),
-		// sp-fwxm: reload the ferry-reposition jump bound stamped at PersistWorkerFerryWorker (the
+		// Reload the ferry-reposition jump bound stamped at PersistWorkerFerryWorker (the
 		// [trade_fleet].reposition_jump_bound) so it survives the persist→rebuild boundary the ferry
 		// crosses on every start (the o34q read side). Absent → 0, which the ferry's Handle resolves
 		// to the default 12 (resolveRepositionJumpBound) — never a persist-layer magic value.
@@ -822,11 +822,11 @@ func buildAutoOutfitCoordinatorCommand(cfg *configReader, playerID int, containe
 }
 
 // buildScoutRepositionCommand rebuilds a one-shot cross-gate reposition relay from its
-// persisted launch config so restart recovery re-adopts it (sp-s232). A coordinator-
+// persisted launch config so restart recovery re-adopts it. A coordinator-
 // spawned relay (coordinator_id present) is skipped by recovery and re-dispatched by
 // the scout_post_coordinator, but the command is still rebuilt here so the coordinator's
 // StartScoutReposition path can reconstruct it. Re-running after a restart is safe:
-// travel() waits out any in-transit leg (sp-8l3o) and re-plans the gate path from the
+// travel() waits out any in-transit leg and re-plans the gate path from the
 // hull's CURRENT position, so a mid-relay restart resumes rather than strands.
 func buildScoutRepositionCommand(cfg *configReader, playerID int, containerID string) interface{} {
 	return &scoutingCmd.ScoutRepositionCommand{
@@ -834,11 +834,11 @@ func buildScoutRepositionCommand(cfg *configReader, playerID int, containerID st
 		ShipSymbol:          cfg.RequiredString("ship_symbol"),
 		DestinationWaypoint: cfg.RequiredString("destination"),
 		CoordinatorID:       cfg.OptionalString("coordinator_id"),
-		// sp-o34q: reload the expendable-probe reposition bound the coordinator selected.
+		// Reload the expendable-probe reposition bound the coordinator selected.
 		// Without it, the rebuilt relay runs unbounded — travelWithJumpBound degrades to the
 		// strict fetch-through resolver, which fails a >5-jump post with the verbatim
 		// ErrUnroutable "within N jumps". Absent (0) is the strict-resolver fallback, so a
-		// legacy/mis-wired config can never accidentally relax the sp-qxa4 unreadable-gate
+		// legacy/mis-wired config can never accidentally relax the unreadable-gate
 		// discipline; only an explicitly persisted positive bound routes past unreadable
 		// gates. resolveScoutingConfig deliberately does NOT run for scout_reposition (only
 		// scout_tour/scout_post_coordinator), so this per-relay value is never clobbered.
@@ -974,20 +974,20 @@ func buildContractFleetCoordinatorCommand(cfg *configReader, playerID int, conta
 		// the seed is NOT replayed, so a live `fleet remove` survives the restart
 		// (RULINGS #2). Written by DedicatedFleetSeedConfigPersister after first boot.
 		DedicatedShipsSeeded: cfg.OptionalBool(dedicatedShipsSeededConfigKey),
-		// Command-cargo baseline (sp-uj6a, RULINGS #5): absent key → 0 → the
+		// Command-cargo baseline (RULINGS #5): absent key → 0 → the
 		// contract package's documented default (80, the light-hauler
 		// standard - see CommandCargoBaselineDefault).
 		CommandCargoBaseline: cfg.OptionalInt("command_cargo_baseline", 0),
-		// Auto-liquidation knobs (sp-39oi): absent keys → default false/0 → feature ON
+		// Auto-liquidation knobs: absent keys → default false/0 → feature ON
 		// with jettison OFF. These are resolved LIVE from config.yaml by
-		// resolveAutoLiquidationConfig on every build (sp-ts82), so the persisted copies
+		// resolveAutoLiquidationConfig on every build, so the persisted copies
 		// are dead and a config edit + restart retunes a recovered coordinator.
 		AutoLiquidationDisabled:     cfg.OptionalBool("auto_liquidation_disabled"),
 		LiquidationMinJettisonValue: cfg.OptionalInt("liquidation_min_jettison_value", 0),
-		// Idle-gap arb knobs (sp-1z2h): absent keys → 0 → the contract
+		// Idle-gap arb knobs: absent keys → 0 → the contract
 		// package's documented defaults (IdleArbConfig.WithDefaults). These
 		// keys are resolved LIVE from config.yaml by resolveIdleArbConfig on
-		// every build (sp-ts82) — the persisted copies are dead — so a config
+		// every build — the persisted copies are dead — so a config
 		// edit + daemon restart retunes the harvest, recovery included.
 		IdleArbDisabled:     cfg.OptionalBool("idle_arb_disabled"),
 		IdleArbReserveHulls: cfg.OptionalInt("idle_arb_reserve_hulls", 0),
@@ -995,7 +995,7 @@ func buildContractFleetCoordinatorCommand(cfg *configReader, playerID int, conta
 		IdleArbMaxSpend:     cfg.OptionalInt("idle_arb_max_spend", 0),
 		IdleArbMinMargin:    cfg.OptionalInt("idle_arb_min_margin", 0),
 		IdleArbIntervalSecs: cfg.OptionalInt("idle_arb_interval_secs", 0),
-		// sp-uohe money guards. Absent → 0/nil → the contract package's
+		// Money guards. Absent → 0/nil → the contract package's
 		// WithDefaults applies the documented defaults (leash 80, leg-cap 480s,
 		// verify 80%, blacklist [ELECTRONICS]). An explicit empty blacklist ([])
 		// is preserved by OptionalStringSlice (non-nil) so a config whitelist-flip
@@ -1005,7 +1005,7 @@ func buildContractFleetCoordinatorCommand(cfg *configReader, playerID int, conta
 		IdleArbMarginVerifyPct:  cfg.OptionalInt("idle_arb_margin_verify_pct", 0),
 		IdleArbRecoveryHoldSecs: cfg.OptionalInt("idle_arb_recovery_hold_secs", 0),
 		IdleArbBlacklist:        cfg.OptionalStringSlice("idle_arb_blacklist"),
-		// sp-u4tv per-trip profitability floor (0 → WithDefaults: 100/u, 20%, 35/u fuel).
+		// Per-trip profitability floor (0 → WithDefaults: 100/u, 20%, 35/u fuel).
 		IdleArbMinNetProfit:    cfg.OptionalInt("idle_arb_min_net_profit", 0),
 		IdleArbNetProfitPct:    cfg.OptionalInt("idle_arb_net_profit_pct", 0),
 		IdleArbFuelCostPerUnit: cfg.OptionalInt("idle_arb_fuel_cost_per_unit", 0),
@@ -1029,7 +1029,7 @@ func buildBatchPurchaseShipsCommand(cfg *configReader, playerID int, containerID
 		MaxBudget:            cfg.RequiredInt("max_budget"),
 		PlayerID:             shared.MustNewPlayerID(playerID),
 		ShipyardWaypoint:     cfg.OptionalString("shipyard"),
-		// sp-0ms61: the optional operator-named fleet to dedicate each purchased hull
+		// The optional operator-named fleet to dedicate each purchased hull
 		// to atomically. Absent (plain purchase) -> "" -> byte-identical (hull lands
 		// undedicated). Persisted in the container config so a daemon restart re-adopts
 		// the same atomic buy+dedicate intent (RULINGS #2).
@@ -1038,7 +1038,7 @@ func buildBatchPurchaseShipsCommand(cfg *configReader, playerID int, containerID
 }
 
 // buildConstructionCoordinatorCommand rebuilds the standing construction-supply drain command
-// (sp-382j) from a persisted launch config so a daemon restart re-adopts it (RULINGS #2). The
+// from a persisted launch config so a daemon restart re-adopts it (RULINGS #2). The
 // drain is queue-driven: it re-polls READY DELIVER_TO_CONSTRUCTION tasks from persistence every
 // tick, so the only launch config it needs is the operating system + identity. max_iterations
 // defaults to -1 (standing: loops forever inside Handle); a positive value bounds a CLI/test run.
@@ -1051,7 +1051,7 @@ func buildConstructionCoordinatorCommand(cfg *configReader, playerID int, contai
 		ContainerID:   cfg.RequiredString("container_id"),
 		MaxIterations: cfg.OptionalInt("max_iterations", -1),
 		TickSeconds:   cfg.OptionalInt("tick_seconds", 0),
-		// sp-e55b: prefer the drain's OWN dedicated gate-hauler fleet (e.g. TORWIND-C/-D) before
+		// Prefer the drain's OWN dedicated gate-hauler fleet (e.g. TORWIND-C/-D) before
 		// opportunistic idle hulls. Empty dedicated_fleet defaults (in-handler) to the shared
 		// "manufacturing" identity that also authorizes the claim; exclusive_dedicated_fleet seals the
 		// drain to that fleet (no opportunistic fallback). Both reload on restart (RULINGS #2).
@@ -1095,7 +1095,7 @@ func buildWarehouseCommand(cfg *configReader, playerID int, containerID string) 
 
 // buildTradeRouteCoordinatorCommand rebuilds the single-hull arbitrage circuit
 // command from a persisted launch config so restart recovery can resume a RUNNING
-// trade_route container (sp-zewt). ContainerID is taken from the recovery-supplied
+// trade_route container. ContainerID is taken from the recovery-supplied
 // containerID (the persisted row's ID), mirroring contract_workflow, so the operation
 // context and the runner's ship claim stay pinned to the same container across a
 // restart. MaxVisits defaults to 0 (the coordinator's own default-50 safety bound).
@@ -1103,7 +1103,7 @@ func buildWarehouseCommand(cfg *configReader, playerID int, containerID string) 
 // floor, sp-bp6f) but is exposed as a launch-config knob so a captain can raise the
 // reserve for a specific circuit without a redeploy. TargetDest defaults to "" (the
 // undirected auto-scan) but is exposed as a launch-config knob so a captain can pin
-// the circuit to a specific lane via --dest (sp-xwa1); an empty value preserves the
+// the circuit to a specific lane via --dest; an empty value preserves the
 // original auto-selected behavior unchanged across a recovery rebuild.
 func buildTradeRouteCoordinatorCommand(cfg *configReader, playerID int, containerID string) interface{} {
 	return &tradingCmd.RunTradeRouteCoordinatorCommand{
@@ -1117,7 +1117,7 @@ func buildTradeRouteCoordinatorCommand(cfg *configReader, playerID int, containe
 	}
 }
 
-// buildArbCoordinatorCommand rebuilds the one-shot guarded arb command (sp-p4ua) from a
+// buildArbCoordinatorCommand rebuilds the one-shot guarded arb command from a
 // persisted launch config so restart recovery can resume a RUNNING arb_run container.
 // ContainerID is taken from the recovery-supplied containerID (the persisted row's ID),
 // mirroring trade_route so the operation context and the runner's ship claim stay pinned
@@ -1126,7 +1126,7 @@ func buildTradeRouteCoordinatorCommand(cfg *configReader, playerID int, containe
 // own "0 → unset/default" semantics for each guard), and are persisted as launch-config
 // knobs so a recovery rebuild resumes the same directed run with the same caps.
 //
-// prior_attempt_cost (sp-dkj7) is RUNTIME progress, not a launch knob: a fresh run
+// prior_attempt_cost is RUNTIME progress, not a launch knob: a fresh run
 // persists it into this same config the moment its buy succeeds, so a daemon-restart
 // rebuild reloads the already-incurred cost and the resumed run reports honest P&L
 // (RULINGS #2) rather than starting its accounting at TotalCost=0. Absent (a run that
@@ -1145,7 +1145,7 @@ func buildArbCoordinatorCommand(cfg *configReader, playerID int, containerID str
 		MinMargin:             cfg.OptionalInt("min_margin", 0),
 		WorkingCapitalReserve: cfg.OptionalInt("working_capital_reserve", 0),
 		PriorAttemptCost:      cfg.OptionalInt("prior_attempt_cost", 0),
-		// sp-lbbm per-tranche sell floor fraction. Absent → 0 → the coordinator's
+		// Per-tranche sell floor fraction. Absent → 0 → the coordinator's
 		// own defaultArbSellFloorFraction (0.80), so a captain arb-run with no knob
 		// set is still floored; idle-arb writes the live 80% knob here.
 		SellFloorFraction: cfg.OptionalFloat("sell_floor_fraction", 0),
@@ -1160,7 +1160,7 @@ func buildArbCoordinatorCommand(cfg *configReader, playerID int, containerID str
 // coordinator's own "0 → default" semantics: max_hops→6, max_spend→25% of treasury,
 // replan_limit→2, working_capital_reserve→150k, the non-contract floor per sp-q8bon).
 // iterations drives the CONTINUOUS-tour
-// loop (sp-m5kv): -1 = tour until margins die, N>0 = N tours, 0/absent → the one-tour
+// loop: -1 = tour until margins die, N>0 = N tours, 0/absent → the one-tour
 // default (unchanged one-shot behavior). The coordinator owns this loop
 // (CoordinatorOwnsIterations); the container still runs Handle() once. A restart
 // re-plans from current position/cargo — cargo-aware, never a blind re-buy — and a
@@ -1172,13 +1172,13 @@ func buildTourCoordinatorCommand(cfg *configReader, playerID int, containerID st
 		ContainerID: containerID,
 		AgentSymbol: cfg.OptionalString("agent_symbol"),
 		MaxHops:     cfg.OptionalInt("max_hops", 0),
-		// sp-syaz: reload the per-tour distinct-system cap StartTourRun stamped from
+		// Reload the per-tour distinct-system cap StartTourRun stamped from
 		// [trade_fleet].max_tour_systems (the read side of the launch/rebuild boundary,
 		// mirroring reposition_jump_bound). Absent → 0 → the solver's MAX_TOUR_SYSTEMS
 		// default (2), so a tour launched without the knob is byte-identical to today;
 		// a positive value sweeps tour length.
 		MaxTourSystems: cfg.OptionalInt("max_tour_systems", 0),
-		// sp-im74 config plumbing: reload the closed-circuit arming flag StartTourRun
+		// Config plumbing: reload the closed-circuit arming flag StartTourRun
 		// stamped from [trade_fleet].closed_tours (the read side of the launch/rebuild
 		// boundary, mirroring max_tour_systems). OptionalBool yields false for an absent
 		// key → cmd.ClosedTours=false → im74's cons.Closed reads an OPEN tour,
@@ -1212,7 +1212,7 @@ func buildTourCoordinatorCommand(cfg *configReader, playerID int, containerID st
 		RelocationOfferBackoffUntil:   parseRelocationOfferInstant(cfg.OptionalString("relocation_offer_backoff_until")),
 		RepositionMinMargin:           cfg.OptionalInt("reposition_min_margin", 0),
 		RepositionMaxCandidates:       cfg.OptionalInt("reposition_max_candidates", 0),
-		// sp-kl16: the stored-adjacency reposition jump bound (0/absent → the coordinator's own
+		// The stored-adjacency reposition jump bound (0/absent → the coordinator's own
 		// default 12). This is the READ side, paired with the container_ops_tour.go WRITE side —
 		// together they make the bound survive the launch-config → rebuild round-trip a recovery
 		// restart runs.
@@ -1223,7 +1223,7 @@ func buildTourCoordinatorCommand(cfg *configReader, playerID int, containerID st
 		// sp-686e: stranded-hull detector threshold from [trade_fleet]; 0/absent → the
 		// coordinator's own default (3, resolveStrandedThreshold).
 		StrandedConsecutiveThreshold: cfg.OptionalInt("stranded_consecutive_threshold", 0),
-		// sp-z7ng placement/relocation scoring loop (epic sp-fguo). OptionalBool/OptionalInt
+		// sp-z7ng placement/relocation scoring loop. OptionalBool/OptionalInt
 		// yield zero values for absent keys — the exact default-OFF dormancy mechanism the
 		// Reposition* knobs use: placement_score_enabled absent ⇒ false ⇒ the legacy static-floor
 		// reposition runs, byte-identical to today; the window/floor/shortlist default to 0 ⇒ the
@@ -1252,7 +1252,7 @@ func buildTourCoordinatorCommand(cfg *configReader, playerID int, containerID st
 		RepositionRateFloorPct:            cfg.OptionalInt("reposition_rate_floor_pct", 0),
 		RepositionRateFloorImprovementPct: cfg.OptionalInt("reposition_rate_floor_improvement_pct", 0),
 		RepositionRateFloorDwellMinutes:   cfg.OptionalInt("reposition_rate_floor_dwell_minutes", 0),
-		// sp-jsng candidate widening (the #1 fleet-$/hr lever, sp-7q5t): reload the gate-hop radius +
+		// Candidate widening (the #1 fleet-$/hr lever): reload the gate-hop radius +
 		// shortlist bound StartTourRun stamped from [trade_fleet].candidate_hop_depth /
 		// candidate_shortlist_top_n (the read side of the launch/rebuild boundary, mirroring
 		// max_tour_systems). OptionalInt yields 0 for an absent key → the coordinator's resolveCandidate*
@@ -1271,7 +1271,7 @@ func buildTourCoordinatorCommand(cfg *configReader, playerID int, containerID st
 	}
 }
 
-// buildStockerCoordinatorCommand rebuilds the stocker loop command (sp-zdwg) from a
+// buildStockerCoordinatorCommand rebuilds the stocker loop command from a
 // persisted launch config so restart recovery can resume a RUNNING stocker container.
 // ContainerID comes from the recovery-supplied containerID (the persisted row's ID),
 // mirroring tour_run so the operation context and the runner's ship claim stay pinned

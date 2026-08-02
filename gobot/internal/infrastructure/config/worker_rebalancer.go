@@ -1,6 +1,6 @@
 package config
 
-// WorkerRebalancerConfig holds the worker-rebalancer coordinator's knobs (sp-f5pr). The
+// WorkerRebalancerConfig holds the worker-rebalancer coordinator's knobs. The
 // daemon injects these into the coordinator container's launch config on every build —
 // creation AND restart recovery, via resolveWorkerRebalancerConfig — so a captain retunes
 // the standing ferry loop (the on/off switch, the vacancy clock, the source floor, the
@@ -43,7 +43,7 @@ type WorkerRebalancerConfig struct {
 	// may accumulate (0 => uncapped, the coordinator default).
 	MaxLightsPerSystem int `mapstructure:"max_lights_per_system"`
 
-	// EffectSelfcheckTicks is the effect self-check horizon (sp-57g9): consecutive ticks
+	// EffectSelfcheckTicks is the effect self-check horizon: consecutive ticks
 	// that would-ferry a real, jump-routable vacancy yet dispatch nothing before the
 	// coordinator WARNs once — the "dry-run survived a day" signal the error-streak monitor
 	// misses (the loop never errors). 0 => the coordinator default (10 ticks); a NEGATIVE
@@ -53,7 +53,7 @@ type WorkerRebalancerConfig struct {
 }
 
 // EnabledOrDefault reports whether the coordinator is enabled, treating an unset (nil)
-// value as true — the default-ON behavior the bead intends (sp-f5pr).
+// value as true — the default-ON behavior the bead intends.
 func (c WorkerRebalancerConfig) EnabledOrDefault() bool {
 	return c.Enabled == nil || *c.Enabled
 }

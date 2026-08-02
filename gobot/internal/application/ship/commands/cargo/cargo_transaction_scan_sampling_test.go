@@ -19,7 +19,7 @@ import (
 // sp-v34b behavior 2: SAMPLE the deliberate post-trade impact scan. The trade
 // executor re-scans a market right after a buy/sell (refreshMarketData →
 // ScanAndSaveMarket) to record how the price MOVED — the paired before/after that
-// fed the sp-tl68 impact model. That instrumentation is now the top API consumer, so
+// fed the impact model. That instrumentation is now the top API consumer, so
 // it fires on only a config FRACTION of trades (ImpactSampleRate); a non-sampled trade
 // falls back to the recent-scan freshness gate (one fresh scan for the decision, no
 // extra measurement scan). These drive the REAL CargoTransactionHandler tranche loop

@@ -682,7 +682,7 @@ func buyableWorld(t *testing.T) *cutoverWorld {
 // A placement filled by a hull we already own is a placement the drain does not buy a hull for. Run
 // it after the drain instead and the tick spends real credits on a probe for a placement an idle
 // probe was about to answer for nothing — which is the same argument that puts adoption ahead of the
-// drain (sp-0gp21), except that here the hull is not merely counted but actually put to work.
+// drain, except that here the hull is not merely counted but actually put to work.
 func TestOrphanDispatch_RunsBeforeTheDrain_SoAFilledPlacementIsNeverAlsoBought(t *testing.T) {
 	// CONTROL: with no idle orphan to answer it, the drain buys for this placement. Without this
 	// arm the real arm below would pass against a fixture that simply never buys anything.
@@ -734,7 +734,7 @@ func TestOrphanDispatch_SkipsAHullWithNoRecordedLocation(t *testing.T) {
 	require.Empty(t, world.ledger.slots[psSlotKey{"X1-KP23-D40", parkedsensing.SlotKindMarket}].AssignedShip)
 }
 
-// THE OPERATOR'S QUESTION, ANSWERED AT THE COORDINATOR (sp-3sc46). "Expansion off = don't buy any
+// THE OPERATOR'S QUESTION, ANSWERED AT THE COORDINATOR. "Expansion off = don't buy any
 // probe, keep sensing with the existing ones." This is the same live fleet with the switch OFF: the
 // four stacked idle hulls we already own still reach their placements, and nothing is bought.
 //

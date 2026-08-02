@@ -66,11 +66,11 @@ func NewScoutMarketsHandler(
 // re-partitions every requested hull over the system's markets, tearing the old tours
 // down and spawning fresh ones. The teardown is the last thing it does, never the first.
 //
-// The prior order stopped-and-released every hull UP FRONT, then did the fallible re-man
-// work (market check, ship-config load, graph read, VRP partition). Any failure after that
-// unconditional teardown — an empty market set, a missing hull, an unreadable graph, a VRP
-// error — left the system dark with nothing to re-man it (C81/SN21 went dark exactly this
-// way). Here the whole re-man PLAN is computed first, read-only; only once it is in hand —
+// Stopping-and-releasing every hull UP FRONT and then doing the fallible re-man
+// work (market check, ship-config load, graph read, VRP partition) leaves the system dark
+// on any failure after that unconditional teardown — an empty market set, a missing hull,
+// an unreadable graph, a VRP error — with nothing to re-man it (C81/SN21 went dark exactly
+// this way). Here the whole re-man PLAN is computed first, read-only; only once it is in hand —
 // so the re-man is guaranteed — are the old containers stopped and the new tours spawned.
 // A failure in the planning phase aborts with an honest error and NOTHING has been torn
 // down, so the existing posts keep running (verified-respawn-before-stop). Spawn-new-then-
@@ -83,7 +83,7 @@ func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request
 	}
 
 	// An empty market set is a no-op reset — there is nothing to re-man toward, so it must
-	// not tear down the existing posts (the pre-fix code stopped them, THEN early-returned).
+	// not tear down the existing posts. Return BEFORE any stop.
 	if len(cmd.Markets) == 0 {
 		return &ScoutMarketsResponse{
 			ContainerIDs:     []string{},
@@ -177,7 +177,7 @@ func (h *ScoutMarketsHandler) stopExistingContainers(ctx context.Context, cmd *S
 				})
 			}
 
-			// Release the scout claim under CAS-retry (sp-wa7c): re-apply ForceRelease
+			// Release the scout claim under CAS-retry: re-apply ForceRelease
 			// on the FRESH row so a concurrent writer's cargo/nav update on the same
 			// hull survives instead of being last-write-wins clobbered, and skip the
 			// write when the hull is no longer this scout's claim (already released /

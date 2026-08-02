@@ -9,18 +9,18 @@ import (
 )
 
 // yardqueue.go makes the buy queue's ordering aware that some of its placements
-// stand on a shipyard the fleet cannot price (sp-7qhum), and gives those
-// placements ABSOLUTE precedence over every ordinary market (sp-0j5hi).
+// stand on a shipyard the fleet cannot price, and gives those
+// placements ABSOLUTE precedence over every ordinary market.
 //
-// THE SECOND HALF IS AN ADMIRAL DIRECTIVE AND IT OVERRULES THE FIRST'S DESIGN.
-// sp-7qhum was built to leave coverage-first as the top-level key, so it could
-// only promote a yard within its own system's run of coverage values — and the
-// live result was that a yard in a system holding three probes competed at
-// coverage 3 and lost to every one of ~8,900 coverage-0 market rows elsewhere.
-// Ninety minutes with buying restored bought 56 probes and put 5 on yards. The
-// ordering now partitions yard-before-market ABOVE coverage; coverage-first
-// survives inside each tier, which is what keeps the yard tier spread across
-// systems. See yardFirstOffsets and drainCandidates' sort.
+// THE SECOND HALF IS AN ADMIRAL DIRECTIVE AND IT OVERRULES THE OBVIOUS DESIGN.
+// Leaving coverage-first as the top-level key can only promote a yard within its
+// own system's run of coverage values — and the live result was that a yard in a
+// system holding three probes competed at coverage 3 and lost to every one of
+// ~8,900 coverage-0 market rows elsewhere. Ninety minutes with buying restored
+// bought 56 probes and put 5 on yards. So the ordering partitions
+// yard-before-market ABOVE coverage; coverage-first survives inside each tier,
+// which is what keeps the yard tier spread across systems. See yardFirstOffsets
+// and drainCandidates' sort.
 //
 // THE DEFECT IT CLOSES. planSlots emits a YARD-kind slot only for a yard no
 // market slot already covers, and measured live that set is EMPTY: of 2,257
@@ -47,7 +47,7 @@ import (
 // INERT. recordSlots skips any waypoint that already carries a slot, and an
 // IN_SCOPE system is never re-screened — so a column written by planSlots would
 // never reach one of the 8,934 rows that already exist, which are precisely the
-// rows this bead is about. Worse, the fact worth ordering on is not "this is a
+// rows that need ordering. Worse, the fact worth ordering on is not "this is a
 // shipyard" (permanent) but "this is a shipyard selling a hull we buy whose price
 // we cannot see" (time-varying, and it RETRACTS the moment a hull arrives and
 // prices it). A stored flag would latch that. So the demand is pulled from the
@@ -107,14 +107,14 @@ type yardOrder struct {
 	// It is the pair with queued that makes a losing coordinator distinguishable
 	// from an idle one. queued alone cannot: a tick with 40 dark yards in the
 	// queue and none of them at the head reads exactly like a tick with none at
-	// all, which is the state this bead found the fleet in — 78 heavy yards
+	// all, which is the state the fleet was found in — 78 heavy yards
 	// present in the queue and reached approximately never.
 	atHead int
 }
 
 // wants reports whether a waypoint is a shipyard the fleet needs presence at.
 //
-// IT IS THE TIER PREDICATE (sp-0j5hi): true puts a placement ahead of every
+// IT IS THE TIER PREDICATE: true puts a placement ahead of every
 // ordinary market in the queue, so what this set contains is the whole of what
 // absolute precedence applies to. It is deliberately NARROWER than "stands on a
 // SHIPYARD-trait waypoint" — the map comes from WantsPresence, so a yard whose
@@ -133,8 +133,8 @@ func (y yardOrder) wants(waypoint string) bool {
 // key is the waypoint's sort position among dark yards — its presence rank, or
 // notAYard for a placement that is not one.
 //
-// A nil map answers notAYard for everything, which is what makes an unwired or
-// silent budget order the queue EXACTLY as it did before this term existed.
+// A nil map answers notAYard for everything, so an unwired or silent budget
+// leaves the queue's order untouched by this term.
 func (y yardOrder) key(waypoint string) int {
 	if rank, ok := y.rank[waypoint]; ok {
 		return rank
@@ -198,7 +198,7 @@ func readYardDemand(ctx context.Context, p BuyPorts, playerID int) yardOrder {
 //
 // IT IS WHAT SPREADS THE YARD TIER ACROSS SYSTEMS. drainCandidates ranks the i-th
 // outstanding placement of a system at parked + i, and the sort's top key is now
-// yard-before-market (sp-0j5hi), so the coverage a yard competes at only ever
+// yard-before-market, so the coverage a yard competes at only ever
 // separates it from OTHER YARDS. A system's dark yards take its indices 0,1,2,…
 // in RankPresence order, which means its second yard ranks behind every other
 // system's first, its third behind every other system's second, and no system can

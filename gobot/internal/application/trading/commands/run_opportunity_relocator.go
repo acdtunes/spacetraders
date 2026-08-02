@@ -26,7 +26,7 @@ package commands
 //     relocation uses). No money guard is read, touched, or relaxed (RULINGS #4).
 //   - IT NEVER TOUCHES A PROTECTED HULL. RULINGS #7 — "the ownership model is law. Pinned/dedicated
 //     hulls are never poached (l7h2 P1-P2.5, atomic ClaimShip); the command frigate hauls only as
-//     last resort (sp-4a4e)." The command frigate and any pinned hull are dropped at OBSERVATION, so
+//     last resort." The command frigate and any pinned hull are dropped at OBSERVATION, so
 //     no scoring path can reach them.
 //   - IT NEVER MOVES A HULL MID-TOUR. Only a hull at honest tour release is a candidate. A hull
 //     currently touring is skipped this tick and reconsidered on a later one.
@@ -305,7 +305,7 @@ type RunOpportunityRelocatorHandler struct {
 	// (sp-j1i49). Optional and nil-safe — observability never gates a tick. Its method returns
 	// nothing, so no decision path can read the streak.
 	stall health.StallObserver
-	// metrics is the WRITE-ONLY counter seam (sp-j1i49): per-tick verdict, per-hull decision, and the
+	// metrics is the WRITE-ONLY counter seam: per-tick verdict, per-hull decision, and the
 	// per-reason skip counts, so the relocator's behaviour is a RATE and not an anecdote reconstructed
 	// from a log/table join. Optional and nil-safe.
 	metrics RelocatorMetricsSink
@@ -787,7 +787,7 @@ func (h *RunOpportunityRelocatorHandler) scoreHull(
 			result.skip(string(valuation.Verdict))
 			continue
 		}
-		// sp-e8d92/relocator: staleness no longer vetoes (see regionUsable), so a LICENSED candidate
+		// Staleness does not veto (see regionUsable), so a LICENSED candidate
 		// may be resting on cold ground. Say so at the moment it is admitted, not afterwards — this is
 		// the only place that knows both the age and that the economics said yes. A licensed-on-stale
 		// candidate is the deliberate trade the Admiral authorised; an unexplained one later is not.
@@ -810,7 +810,7 @@ func (h *RunOpportunityRelocatorHandler) scoreHull(
 
 // regionUsable applies the region-side exclusions: FAIL CLOSED on an unreadable projection.
 //
-// STALENESS NO LONGER EXCLUDES A REGION (Admiral, 2026-07-31). The previous rule refused any region
+// STALENESS NO LONGER EXCLUDES A REGION (Admiral). The previous rule refused any region
 // whose snapshot was older than its activity's freshness cap, and it was the single largest blocker
 // of actual spreading: over the measured window the relocator was offered hulls at a healthy rate,
 // exempted them from the mid-tour rule correctly, and then refused 27 of ~48 eligible pairings as

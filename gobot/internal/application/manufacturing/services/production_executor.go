@@ -52,11 +52,11 @@ const productionEmptyTrancheRetryDelay = 2 * time.Second
 const productionDwellWarnThreshold = 5 * time.Minute
 
 // minOutputSellMarginFactor is the bid>=basis loss floor enforced on every
-// fabricated-OUTPUT sale (sp-rqwm). The harvested product is sold at the resale
+// fabricated-OUTPUT sale. The harvested product is sold at the resale
 // sink the chain-margin guard priced only if that sink's live bid is at least the
 // unit basis — the factory ask we paid to harvest — times this factor. 1.0 = strict
 // breakeven: the output leg never realizes a loss. It is the last-line backstop to
-// the sp-2dv4 chain-margin guard and the bp6f #3 crushed-sink harvest guard, checked
+// the chain-margin guard and the bp6f #3 crushed-sink harvest guard, checked
 // at the actual point of the output sale where the sink bid may have decayed since
 // production started (the −258k MEDICINE incident: guard cleared vs sink A1@5,248, the
 // worker instead dumped the output at the factory's own ~1,560 bid). Below the floor
@@ -65,7 +65,7 @@ const productionDwellWarnThreshold = 5 * time.Minute
 const minOutputSellMarginFactor = 1.0
 
 // defaultWorkingCapitalReserve is the IMMUTABLE lower bound of the working-capital
-// spend floor applied to factory INPUT purchases (sp-9aoc). It mirrors bp6f's
+// spend floor applied to factory INPUT purchases. It mirrors bp6f's
 // trade-circuit floor (the identically-named const in run_trade_route_coordinator.go)
 // and closes the same drain class one layer over — re-enabling 4 goods factories at
 // ~848k drained the float to 23k in ~1min because bp6f guarded trade circuits but NOT
@@ -90,12 +90,12 @@ func effectiveReserveFloor(ctx context.Context) int {
 	return defaultWorkingCapitalReserve
 }
 
-// budgetedReserveFloor is the floor a construction/factory buy is ACTUALLY guarded against
-// (sp-ftqgp): the flat effectiveReserveFloor RAISED by the share of deployable capital reserved
-// for the trade side. Before this bead the two non-contract engines drew on a shared pool with no
-// allocation between them, and because construction carried no proportional cap while trade caps
-// itself at 25% of treasury, construction consumed everything above its floor — including the
-// whole band trade needs to function.
+// budgetedReserveFloor is the floor a construction/factory buy is ACTUALLY guarded against:
+// the flat effectiveReserveFloor RAISED by the share of deployable capital reserved
+// for the trade side. Without that allocation the two non-contract engines draw on a shared pool
+// with no split between them, and because construction carries no proportional cap while trade
+// caps itself at 25% of treasury, construction consumes everything above its floor — including
+// the whole band trade needs to function.
 //
 // It can only ever RAISE the floor (common.BudgetedSpendFloor is >= floor for every input), so
 // this ADDS a constraint and weakens nothing (RULINGS #4), and it derives the deployable pool
@@ -110,7 +110,7 @@ func effectiveReserveFloor(ctx context.Context) int {
 //     no trade hull is live.
 //   - Sensor errors -> fail CONSERVATIVE, not open: assume trade IS working and take only the
 //     proportional share. A blind read must never hand construction 100% of the treasury, which
-//     is precisely the failure this bead exists to remove.
+//     is precisely the failure this floor exists to remove.
 //
 // Note that construction passes `true` for its OWN side unconditionally — an executor asking this
 // question is an executor about to buy — so a sensor miss can never budget construction to zero
@@ -124,7 +124,7 @@ func (e *ProductionExecutor) budgetedReserveFloor(ctx context.Context, playerID,
 	logger := common.LoggerFromContext(ctx)
 	tradeHasWork := true
 	if has, err := e.workSensor.TradeHasWork(ctx, playerID); err != nil {
-		// Numbers/cause in the MESSAGE (sp-iqyq): the container log renderer drops the
+		// Numbers/cause in the MESSAGE: the container log renderer drops the
 		// metadata map, so a conservative resolution must name its cause in the text.
 		logger.Log("WARNING", fmt.Sprintf("Could not sense whether trade is live for the capital budget — assuming it is and taking only construction's %d%% share (fail-conservative): %v", 100-common.TradeCapitalSharePct, err), map[string]interface{}{
 			"error": err.Error(),
@@ -139,7 +139,7 @@ func (e *ProductionExecutor) budgetedReserveFloor(ctx context.Context, playerID,
 }
 
 // defaultHullFillFraction is the fraction of a hauler's hold the construction-supply drain fills
-// per trip when no fraction is configured (sp-2me2). 1.0 = fill the whole hull — the fix's intent:
+// per trip when no fraction is configured. 1.0 = fill the whole hull — the fix's intent:
 // a construction buy tops the hold up toward capacity instead of stopping at one trade-volume
 // tranche (~1/4 hull), which quartered per-trip throughput. A 0/absent value resolves here at the
 // point of use — a protective default that turns the FILL on, not money movement, so a default is
@@ -160,7 +160,7 @@ type hullFillTarget struct {
 
 // WithHullFillTarget stamps the per-trip hull-fill target onto ctx so buyGood tops the hold up
 // toward hull capacity for a construction-supply buy instead of carrying a single trade-volume
-// tranche (sp-2me2). billRemaining caps the fill at the material's outstanding bill (never
+// tranche. billRemaining caps the fill at the material's outstanding bill (never
 // over-buying past demand); fraction (<=0 => full hull) parametrizes how much of the hold to fill
 // (RULINGS #5). ONLY the construction drain stamps this; every other buyGood caller (goods-factory
 // inputs) leaves it unset and keeps the single-tranche behavior exactly as before (RULINGS #2).
@@ -179,7 +179,7 @@ func HullFillTargetFromContext(ctx context.Context) (billRemaining int, fraction
 
 // liveAsk re-reads the current EXPORT ask (purchase_price — what WE PAY, sp-en5h7) of good at waypoint from the market DB — the
 // per-iteration price the hull-fill loop re-checks its guards against, so a laddering market is not
-// chased tranche-by-tranche (sp-2me2). ok is false when the market/good is unreadable or the ask is
+// chased tranche-by-tranche. ok is false when the market/good is unreadable or the ask is
 // non-positive; the loop treats that as fail-CLOSED (stop, deliver what is aboard), never buying at
 // an unknown price (RULINGS #4).
 func (e *ProductionExecutor) liveAsk(ctx context.Context, waypoint, good string, playerID int) (int, bool) {
@@ -199,7 +199,7 @@ func (e *ProductionExecutor) liveAsk(ctx context.Context, waypoint, good string,
 }
 
 // SpendReservationLedger is the cross-container concurrent factory-input spend cap
-// (sp-w3he). The per-buy floor (sp-9aoc) checks live treasury per container, but N factory
+// (sp-w3he). The per-buy floor checks live treasury per container, but N factory
 // containers can each pass that independent check inside the check->buy window and
 // collectively dip below the reserve. This ledger closes that race using shared DB state:
 // a factory records its spend intent and, in one serialized atomic step, verifies live
@@ -236,18 +236,18 @@ type ProductionExecutor struct {
 	marketLocator    *MarketLocator
 	clock            shared.Clock
 	pollingIntervals []time.Duration // Configurable polling intervals
-	// apiClient live-reads treasury for the working-capital spend floor (sp-9aoc).
+	// apiClient live-reads treasury for the working-capital spend floor.
 	// nil disables the floor — the fail-OPEN contract for the package's test fixtures
 	// that cannot supply a live client; the daemon always wires the real one (main.go).
 	apiClient domainPorts.APIClient
-	// spendLedger is the cross-container concurrent spend cap (sp-w3he). nil disables it —
+	// spendLedger is the cross-container concurrent spend cap. nil disables it —
 	// the same optional-port fail-OPEN contract as apiClient (tests pass nothing; the daemon
 	// wires the real DB-backed ledger via SetSpendLedger). Injected by setter, not constructor,
 	// so the package's existing test fixtures and the executor's many call sites stay untouched.
 	spendLedger SpendReservationLedger
 	// treasury is the LEDGER-backed treasury reader (sp-muq66) BOTH factory money guards —
 	// the per-buy spend floor and the cross-container concurrent-spend cap — read through
-	// instead of calling Get Agent before every input tranche (sp-45s6f). nil (every
+	// instead of calling Get Agent before every input tranche. nil (every
 	// existing fixture) leaves the direct apiClient read in place, byte-identical; the
 	// daemon injects the shared reader via SetTreasuryReader at boot, with no config gate
 	// between. Wired or not, an unreadable treasury still PARKS the buy (fail closed).
@@ -257,7 +257,7 @@ type ProductionExecutor struct {
 	// same optional-port fail-OPEN contract as apiClient/spendLedger (tests wire nothing; the
 	// daemon wires the DB-backed price history repo via SetPriceHistoryReader).
 	priceHistory InputPriceHistoryReader
-	// constructionRepo backs the DeliverToConstructionSite terminal (sp-382j): the construction
+	// constructionRepo backs the DeliverToConstructionSite terminal: the construction
 	// supply API a sourced hauler delivers gate materials through. nil leaves the terminal
 	// unavailable (returns an error if reached) — the optional-port contract; the daemon wires
 	// the real API-backed repo via SetConstructionRepo, and only the construction-supply drain
@@ -273,17 +273,17 @@ type ProductionExecutor struct {
 	workSensor common.CapitalWorkSensor
 }
 
-// SetSpendLedger wires the cross-container concurrent spend cap (sp-w3he). The daemon calls
+// SetSpendLedger wires the cross-container concurrent spend cap. The daemon calls
 // this after construction (main.go, via the coordinator handler); leaving it unset keeps the
 // cap fail-open, which is exactly what every non-daemon caller wants.
 func (e *ProductionExecutor) SetSpendLedger(ledger SpendReservationLedger) {
 	e.spendLedger = ledger
 }
 
-// SetTreasuryReader wires the daemon's shared ledger-backed treasury reader (sp-45s6f) into
+// SetTreasuryReader wires the daemon's shared ledger-backed treasury reader into
 // BOTH factory money guards. The daemon calls this UNCONDITIONALLY when it builds the
 // construction executor — no config key, no default-off, no arming step. Leaving it unset is
-// the test-fixture path only, and keeps the direct live read exactly as before this bead.
+// the test-fixture path only, and falls back to the direct live read.
 func (e *ProductionExecutor) SetTreasuryReader(r TreasuryReader) {
 	e.treasury = r
 }
@@ -313,17 +313,16 @@ func (e *ProductionExecutor) treasuryCredits(ctx context.Context, playerID int) 
 	return int64(agentData.Credits), nil
 }
 
-// SetCapitalWorkSensor wires the per-operation capital budget's hasWork sensor (sp-ftqgp). The
+// SetCapitalWorkSensor wires the per-operation capital budget's hasWork sensor. The
 // daemon calls this UNCONDITIONALLY when it builds the construction executor — there is no config
 // key, no default-off and no arming step between the sensor and a live budget. Leaving it unset
-// is the test-fixture path only, and keeps the flat reserve floor as the sole guard exactly as
-// before this bead.
+// is the test-fixture path only, and keeps the flat reserve floor as the sole guard.
 func (e *ProductionExecutor) SetCapitalWorkSensor(sensor common.CapitalWorkSensor) {
 	e.workSensor = sensor
 }
 
 // SetConstructionRepo wires the construction supply API the DeliverToConstructionSite terminal
-// delivers gate materials through (sp-382j). The daemon calls this when it builds the executor
+// delivers gate materials through. The daemon calls this when it builds the executor
 // for the construction-supply drain; leaving it unset keeps the terminal unavailable, which is
 // exactly what every non-construction caller (goods factory, tour, arb) wants.
 func (e *ProductionExecutor) SetConstructionRepo(repo manufacturing.ConstructionSiteRepository) {
@@ -394,7 +393,7 @@ type ProductionResult struct {
 //
 // inputsOnly applies to the OUTPUT of this node only: when true and this node is
 // fabricated, its finished output is left in factory stock instead of being
-// harvested (sp-q02m). It never suppresses an input buy — the raw materials still
+// harvested. It never suppresses an input buy — the raw materials still
 // have to be acquired and delivered — so buyGood ignores it, and fabricateGood
 // forces it off when recursing into children (an intermediate fabricated input must
 // be harvested so it can be delivered to the parent factory).
@@ -451,7 +450,7 @@ func (e *ProductionExecutor) buyGood(
 		return &ProductionResult{QuantityAcquired: 0, TotalCost: 0, WaypointSymbol: ""}, nil
 	}
 
-	// Tag this input buy with the selector branch that chose the source (sp-br0m): it rides ctx
+	// Tag this input buy with the selector branch that chose the source: it rides ctx
 	// down to the PURCHASE_CARGO ledger recorder (cargo_transaction.recordCargoTransaction),
 	// which stamps it into the transaction metadata beside good_symbol. That makes A1
 	// (supply-first compliance) gradable straight from the ledger — an ELIGIBLE buy is a healthy
@@ -496,12 +495,11 @@ func (e *ProductionExecutor) buyGood(
 	// Calculate purchase quantity (capped by cargo space and trade volume)
 	availableSpace := updatedShip.Cargo().Capacity - updatedShip.Cargo().Units
 	if availableSpace <= 0 {
-		// sp-mu6u: a full hold used to crash the feeder outright here. We're
-		// already docked at this market, so try to sell whatever is onboard to
+		// We're already docked at this market, so try to sell whatever is onboard to
 		// free space before giving up — a factory that didn't unload its last
 		// output before buying the next input should recover, not die.
 		//
-		// sp-rqwm: no protectGood here. This is an INPUT market (where a feed is
+		// No protectGood here. This is an INPUT market (where a feed is
 		// bought), never the terminal product's factory/buy market; the output is
 		// drained at its resale sink before the next input run, so it is not carried
 		// here, and the acceptance ("zero sells at the lift's buy market") concerns
@@ -540,7 +538,7 @@ func (e *ProductionExecutor) buyGood(
 		return nil, fmt.Errorf("trade volume is zero for %s", node.Good)
 	}
 
-	// Per-trip fill target (sp-2me2). A construction-supply buy tops the hold up TOWARD hull
+	// Per-trip fill target. A construction-supply buy tops the hold up TOWARD hull
 	// capacity so a full round-trip carries ~a hull, not one ~trade-volume tranche (~1/4 hull,
 	// which quadrupled the round-trips). A single SpaceTraders market buy is itself capped at
 	// trade_volume, so filling the hold needs a LOOP of tranches. Every OTHER caller (goods-factory
@@ -596,7 +594,7 @@ func (e *ProductionExecutor) buyGood(
 		// Per-tranche price. The single-tranche path keeps the selection-time snapshot (behavior
 		// preserved). The hull-fill loop RE-READS the live ask each iteration and re-checks the
 		// cross-market price ceiling, so a market laddering under our own draw is not chased
-		// tranche-by-tranche (sp-2me2). An unreadable live ask fails CLOSED — stop the loop and
+		// tranche-by-tranche. An unreadable live ask fails CLOSED — stop the loop and
 		// deliver what is aboard, never buy blind (RULINGS #4).
 		ask := marketResult.Price
 		if loopFill {
@@ -614,11 +612,11 @@ func (e *ProductionExecutor) buyGood(
 			}
 		}
 
-		// Working-capital spend floor (sp-9aoc) — re-checked EACH iteration against live treasury,
+		// Working-capital spend floor — re-checked EACH iteration against live treasury,
 		// fail-CLOSED under the loop (RULINGS #4): once the NEXT tranche would drop treasury below
 		// the reserve the loop stops and delivers what is aboard, never forcing the buy. This is the
-		// per-buy backstop to bp6f's circuit-level floor; chain_margin_guard (sp-2dv4) sits UPSTREAM
-		// at the coordinator. The park cause goes IN THE MESSAGE (sp-iqyq) — the container log
+		// per-buy backstop to bp6f's circuit-level floor; chain_margin_guard sits UPSTREAM
+		// at the coordinator. The park cause goes IN THE MESSAGE — the container log
 		// renderer drops the metadata map.
 		projectedCost := trancheQty * ask
 		if breached, enforcedFloor := e.spendFloorBreached(ctx, playerID, projectedCost); breached {
@@ -636,7 +634,7 @@ func (e *ProductionExecutor) buyGood(
 			break
 		}
 
-		// Cross-container concurrent spend cap (sp-w3he): the floor above is a PER-CONTAINER live
+		// Cross-container concurrent spend cap: the floor above is a PER-CONTAINER live
 		// check, so N containers can each clear it inside their own check->buy window and
 		// collectively breach the reserve. This HARD cap serializes all containers' in-flight input
 		// spend through a shared DB ledger and PARKS if the combined exposure would breach. Also
@@ -656,7 +654,7 @@ func (e *ProductionExecutor) buyGood(
 		}
 
 		// Dispatch through the empty-tranche guard: a transient "must be docked" is still re-docked
-		// and retried inside (sp-n7yp); an empty / zero-volume tranche ("partial failure: ... 0
+		// and retried inside; an empty / zero-volume tranche ("partial failure: ... 0
 		// units processed" / API 400) is bounded-retried then reported as a skip so the feeder
 		// survives instead of crashing the container (sp-q02m crash #4).
 		response, err := e.purchaseInputWithEmptyTrancheGuard(ctx, purchaseCmd)
@@ -713,7 +711,7 @@ func (e *ProductionExecutor) buyGood(
 // run_trade_route_coordinator.go): a pre-commit treasury read checked right before the buy
 // commits, so the caller can PARK instead of spending.
 //
-// That mirror is why the read is now the ledger-backed one (sp-45s6f): bp6f's floor was routed
+// That mirror is why the read is now the ledger-backed one: bp6f's floor was routed
 // through the shared reader in sp-muq66, and this guard exists to enforce the SAME line the
 // same way. It stays a genuine pre-commit read — the freshness bound is what makes the ledger
 // answer admissible, and past it the coalesced live call still answers.
@@ -740,7 +738,7 @@ func (e *ProductionExecutor) spendFloorBreached(ctx context.Context, playerID, p
 
 	credits, err := e.treasuryCredits(ctx, playerID)
 	if err != nil {
-		// Numbers/cause in the MESSAGE (sp-iqyq): the container log renderer drops the
+		// Numbers/cause in the MESSAGE: the container log renderer drops the
 		// metadata map, so a blind fail-closed park must name its cause in the text.
 		logger.Log("WARNING", fmt.Sprintf("Could not read treasury for factory spend-floor check — parking input buy (fail-closed): %v", err), map[string]interface{}{
 			"error": err.Error(),
@@ -766,7 +764,7 @@ func (e *ProductionExecutor) spendFloorBreached(ctx context.Context, playerID, p
 
 // reserveConcurrentSpendOrPark records this input buy's spend intent in the shared ledger
 // and reports whether it must PARK because the COMBINED in-flight factory spend would
-// breach the reserve (sp-w3he). On the proceed path it returns the reservation id the
+// breach the reserve. On the proceed path it returns the reservation id the
 // caller must Release after the buy.
 //
 // Fails OPEN when the cap is unavailable (no ledger wired, or no treasury source at all to
@@ -828,7 +826,7 @@ func (e *ProductionExecutor) reserveConcurrentSpendOrPark(ctx context.Context, p
 		return "", true
 	}
 	if !ok {
-		// Numbers in the MESSAGE (sp-iqyq): the container log renderer drops the metadata map,
+		// Numbers in the MESSAGE: the container log renderer drops the metadata map,
 		// so the cause — combined in-flight factory spend breaching the reserve — must be legible
 		// in the text or an operator never sees why this factory parked.
 		logger.Log("WARNING", fmt.Sprintf("Parked input purchase of %s at %s — cross-container concurrent spend cap: treasury %d minus in-flight factory reservations would breach the working-capital reserve %d (this buy %d)", good, market, treasury, reserve, projectedCost), map[string]interface{}{
@@ -998,7 +996,7 @@ func (e *ProductionExecutor) fabricateGood(
 	// Step 5: Poll for production until output good supply increases, then purchase
 	// The factory EXPORTS the finished good (we buy from them at their sell price).
 	// In inputs-only mode the poll still confirms the output was produced, but the
-	// harvest is skipped so the good is left in factory stock (sp-q02m).
+	// harvest is skipped so the good is left in factory stock.
 	quantity, cost, err := e.PollForProduction(ctx, node.Good, factoryMarket.WaypointSymbol, updatedShip.ShipSymbol(), playerIDValue, opContext, inputsOnly, systemSymbol)
 	if err != nil {
 		return nil, fmt.Errorf("failed during production polling: %w", err)
@@ -1119,7 +1117,7 @@ func (e *ProductionExecutor) PollForProduction(
 			// output now sits in the factory's export stock. Do NOT harvest it — leave
 			// it for the construction pipeline to be the sole buyer. Harvesting here is
 			// exactly what starved the era-2 gate fill: the factory bought back its own
-			// 149 FAB_MATS and froze the fill at 898/1600 for ~6h (sp-q02m).
+			// 149 FAB_MATS and froze the fill at 898/1600 for ~6h.
 			if inputsOnly {
 				logger.Log("INFO", fmt.Sprintf("inputs-only: %s produced and left in factory stock at %s — harvest skipped", good, waypointSymbol), map[string]interface{}{
 					"good":     good,
@@ -1172,7 +1170,7 @@ func (e *ProductionExecutor) PollForProduction(
 		// WARNING on EVERY attempt with the elapsed dwell stated in the message
 		// text itself (the container-log renderer prints only level+message and
 		// drops metadata, sp-iqyq) so a long fabrication wait is observable
-		// rather than reading as a silent stall (sp-npyr).
+		// rather than reading as a silent stall.
 		elapsed := e.clock.Now().Sub(pollStart)
 		if elapsed >= productionDwellWarnThreshold {
 			logger.Log("WARNING", fmt.Sprintf(
@@ -1235,14 +1233,13 @@ func (e *ProductionExecutor) purchaseFabricatedOutput(
 
 	availableSpace := ship.Cargo().Capacity - ship.Cargo().Units
 	if availableSpace <= 0 {
-		// sp-wwhu: sibling of sp-mu6u's crash, on the harvest side — a full hold
-		// used to crash the container outright here. We're already docked at this
-		// market to harvest, so try to sell whatever is onboard to free space
-		// first. Unlike a skipped INPUT purchase, a skipped output harvest loses
-		// nothing: the fabricated good stays in the factory's export stock and is
-		// picked up on a later pass, so skip gracefully rather than die.
+		// We're already docked at this market to harvest, so try to sell
+		// whatever is onboard to free space first. Unlike a skipped INPUT
+		// purchase, a skipped output harvest loses nothing: the fabricated good
+		// stays in the factory's export stock and is picked up on a later pass,
+		// so skip gracefully rather than die.
 		//
-		// sp-rqwm: protect `good` — the fabricated output. We are docked at the
+		// Protect `good` — the fabricated output. We are docked at the
 		// factory (the buy market) to harvest; dumping already-held output here to
 		// make room is the −258k incident. Skipping it means a parked resale sink
 		// holds the output onboard rather than deferring into a make-room dump.
@@ -1268,7 +1265,7 @@ func (e *ProductionExecutor) purchaseFabricatedOutput(
 
 	// The output-buy drains to what the market has to sell: min(cargo space, trade volume). A gate
 	// fill and a profit-factory harvest share this cap — the natural "buy only what's exported" limit
-	// paces the drain; the sp-9aoc solvency floor is the money bound.
+	// paces the drain; the solvency floor is the money bound.
 	perTrancheCap := tradeVolume
 
 	// sp-to2v: a fabricated INPUT harvested to FEED a parent factory is capped to the balanced tranche
@@ -1285,8 +1282,8 @@ func (e *ProductionExecutor) purchaseFabricatedOutput(
 		return 0, 0, fmt.Errorf("trade volume is zero for %s", good)
 	}
 
-	// Working-capital spend floor (sp-65xqo, floor-everywhere) — the fabricated-OUTPUT buy is floored
-	// IDENTICALLY to the raw-input buyGood path (sp-9aoc), reusing the SAME primitive: no new floor,
+	// Working-capital spend floor (floor-everywhere) — the fabricated-OUTPUT buy is floored
+	// IDENTICALLY to the raw-input buyGood path, reusing the SAME primitive: no new floor,
 	// no new knob (RULINGS #4/#5). Closes the gap where the two LARGEST gate purchases (FAB_MATS,
 	// ADVANCED_CIRCUITRY) executed bounded only by a units cap. Fail-CLOSED: a breach — or a blind
 	// live-treasury read inside spendFloorBreached — PARKS the harvest rather than spending below the
@@ -1302,7 +1299,7 @@ func (e *ProductionExecutor) purchaseFabricatedOutput(
 		return 0, 0, nil
 	}
 
-	// Cross-container concurrent spend cap (sp-w3he): the floor above is a PER-CONTAINER live check, so
+	// Cross-container concurrent spend cap: the floor above is a PER-CONTAINER live check, so
 	// N factories can each clear it inside their own check->buy window and collectively breach. This
 	// HARD cap serializes all in-flight factory spend — input AND output — through the shared ledger and
 	// PARKS if the combined exposure would breach. Reserved before the buy, released after (fail-CLOSED,
@@ -1322,7 +1319,7 @@ func (e *ProductionExecutor) purchaseFabricatedOutput(
 	}
 
 	// Same dock-retry guard as the raw-buy path: a transient "must be docked"
-	// re-docks and retries rather than crashing the container (sp-n7yp).
+	// re-docks and retries rather than crashing the container.
 	response, err := e.purchaseWithDockRetry(ctx, purchaseCmd)
 	// Release the concurrent-spend reservation on BOTH paths (success and error), mirroring buyGood
 	// (a no-op when no reservation was taken — the fail-open contract).
@@ -1342,8 +1339,8 @@ func (e *ProductionExecutor) purchaseFabricatedOutput(
 }
 
 // SellFabricatedOutputAtSink binds the fabricated OUTPUT sale to the resale sink the
-// chain-margin guard (sp-2dv4) priced — NEVER the factory/buy market — closing the
-// guard-vs-execution divergence that bled −258k on MEDICINE (sp-rqwm): the guard
+// chain-margin guard priced — NEVER the factory/buy market — closing the
+// guard-vs-execution divergence that bled −258k on MEDICINE: the guard
 // cleared a chain against sink A1@5,248 while execution accumulated the output at the
 // factory D39 and dumped it THERE via the make-room path, laddering D39's own bid down
 // to ~1,560 (far below the ~3,100 harvest cost) and re-buying.
@@ -1452,7 +1449,7 @@ func (e *ProductionExecutor) SellFabricatedOutputAtSink(
 
 // DeliverToConstructionSite flies an ALREADY-SOURCED hauler to a jump-gate construction site and
 // supplies whatever it carries of good via the construction supply API, returning the units the
-// site accepted (sp-382j). It is the delivery TERMINAL of the construction-supply drain: the drain
+// site accepted. It is the delivery TERMINAL of the construction-supply drain: the drain
 // sources the material into the hull with ProduceGood (the shared engine — no duplicate sourcing
 // logic), then hands off here to deliver. Modeled structurally on SellFabricatedOutputAtSink — the
 // sale terminal's twin — reusing NavigateAndDock so a laden hull reaches a CONFIRMED-DOCKED state at
@@ -1565,17 +1562,6 @@ func onboardUnits(ship *navigation.Ship, good string) int {
 // NavigateAndDock navigates to a waypoint and returns the ship only once it is
 // CONFIRMED docked — the dock is actually persisted via the API, not merely
 // flipped to DOCKED in memory.
-//
-// The previous implementation pre-mutated the reloaded ship with EnsureDocked in
-// its arrival poll, then handed that already-DOCKED ship to DockShipCommand. That
-// made the dock a no-op: runStateTransition sees EnsureDocked report "no change"
-// and short-circuits before calling the API, so the ship stayed IN_ORBIT in the
-// DB while the code believed it was docked. The very next PurchaseCargoCommand
-// reloaded IN_ORBIT and crashed the container with "ship must be docked"
-// (sp-n7yp feeder crash #3). We now detect arrival WITHOUT mutating the ship and
-// dock via a symbol-only command so the handler reloads the real IN_ORBIT state
-// and the API dock actually fires, then re-read and assert DOCKED before
-// returning.
 func (e *ProductionExecutor) NavigateAndDock(
 	ctx context.Context,
 	shipSymbol string,
@@ -1602,7 +1588,7 @@ func (e *ProductionExecutor) NavigateAndDock(
 // a fresh ship, and the dock is issued via a symbol-only DockShipCommand so the
 // handler loads the true (IN_ORBIT) state and EnsureDocked reports a real change
 // — otherwise the dock short-circuits to a no-op and the buy races an unpersisted
-// dock (sp-n7yp).
+// dock.
 func (e *ProductionExecutor) dockAndConfirm(
 	ctx context.Context,
 	shipSymbol string,
@@ -1822,11 +1808,10 @@ func (e *ProductionExecutor) redockFromAPI(
 // deliverInputs sells the hauled inputs to the factory the ship is docked at.
 //
 // Only goods this market actually takes are offered (marketBuys), and every good is
-// independent: a refused sell is held aboard and the rest of the hold still delivers.
-// A hold carrying ONE good the factory won't take used to abort the whole sourcing
-// step on the first rejection — and, because nothing reconciles a hold between lots,
-// that hold stays poisoned and the hull is disabled permanently. The revenue of
-// whatever did sell is returned in full; the old hard-return discarded it.
+// independent: a refused sell is held aboard and the rest of the hold still delivers,
+// and the revenue of whatever did sell is returned in full. Aborting the whole
+// sourcing step on the first rejection poisons the hold — nothing reconciles a hold
+// between lots, so the hull is disabled permanently.
 //
 // Nothing sellable is a no-op, not an error: it is indistinguishable from docking with
 // an empty hold, which this step has always accepted, and the production poll
@@ -1923,7 +1908,7 @@ func marketBuys(listings *market.Market, good string) bool {
 }
 
 // freeCargoSpace sells whatever is currently in the ship's hold at its current
-// docked market so a full hold does not block an input purchase (sp-mu6u).
+// docked market so a full hold does not block an input purchase.
 // Best-effort like deliverInputs: an item this market doesn't import is skipped
 // rather than aborting the whole attempt, since the goal here is only to make
 // room, not to guarantee every item sells. It offers the hold unfiltered — a
@@ -1931,7 +1916,7 @@ func marketBuys(listings *market.Market, good string) bool {
 // deliverInputs pre-filters on the listing to avoid dumping into an export bid.
 // Returns the reloaded ship reflecting whatever did sell.
 //
-// protectGood (sp-rqwm) is a good this make-room path must NEVER sell here — the
+// protectGood is a good this make-room path must NEVER sell here — the
 // fabricated OUTPUT. The output is sold ONLY at the guard's resale sink
 // (SellFabricatedOutputAtSink); dumping it at the current (factory/buy) market to
 // make room is exactly the −258k MEDICINE incident, so the harvest path passes the
@@ -1952,7 +1937,7 @@ func (e *ProductionExecutor) freeCargoSpace(
 
 	sold := 0
 	for _, item := range ship.Cargo().Inventory {
-		// sp-rqwm: never dump the fabricated output at the current/buy market to make
+		// Never dump the fabricated output at the current/buy market to make
 		// room — it is sold only at the guard's resale sink. Skip it here.
 		if protectGood != "" && item.Symbol == protectGood {
 			logger.Log("INFO", fmt.Sprintf("Not unloading %d units of %s here to free space — the fabricated output is sold only at its resale sink, never dumped at the factory/buy market", item.Units, item.Symbol), map[string]interface{}{

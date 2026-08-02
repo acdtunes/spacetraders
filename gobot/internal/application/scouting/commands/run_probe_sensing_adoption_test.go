@@ -1,6 +1,6 @@
 package commands
 
-// THE ADOPTION RETRY (sp-0gp21).
+// THE ADOPTION RETRY.
 //
 // The cutover adopts orphaned scout probes exactly once, and it skips any hull it
 // cannot place — a probe IN TRANSIT at that moment has no location, so it is
@@ -213,7 +213,7 @@ func TestAdoption_FailsClosedOnUnreadableInputs(t *testing.T) {
 // guard: a fleet is mostly ineligible hulls (haulers, manned probes, already-
 // adopted spares), and fleet order is stable — so a budget spent on rows that were
 // never going to be written would let the ineligible majority starve the eligible
-// few on EVERY tick, forever. The reaper learned the same lesson (sp-l3f3d).
+// few on EVERY tick, forever. The reaper learned the same lesson.
 func TestAdoption_BoundsWritesNotCandidates(t *testing.T) {
 	world := newCutoverWorld(t)
 	// A long run of ineligible hulls FIRST: already carrying the sensing tag, so

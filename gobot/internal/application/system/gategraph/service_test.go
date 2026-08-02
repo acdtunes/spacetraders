@@ -386,7 +386,7 @@ func (f *fakeGateAPI) GetWaypoint(ctx context.Context, sys, wp, tok string) (*po
 
 // CreateChart is inert for fakeGateAPI's construction-focused tests (they exercise
 // GetJumpGate/GetWaypoint, not the present-ship public chart) — it exists only to satisfy the
-// extended gateAPI interface (sp-lv2n). The chart behavior is exercised via perSystemGateAPI.
+// extended gateAPI interface. The chart behavior is exercised via perSystemGateAPI.
 func (f *fakeGateAPI) CreateChart(ctx context.Context, shipSymbol, token string) error { return nil }
 
 type stubPlayerRepo struct{ token string }
@@ -543,7 +543,7 @@ type perSystemMissStore struct {
 	replaced map[string][]system.GateEdge
 	backoff  map[string]backoffEntry
 	// gateWaypointMiss forces GateWaypointOf to MISS (ok=false) so fetchAndStore falls
-	// through to gateFromGraph — the branch the charted precondition (sp-jgcache) guards.
+	// through to gateFromGraph — the branch the charted precondition guards.
 	// Default false keeps the legacy "<system>-GATE" hit every existing test relies on.
 	gateWaypointMiss bool
 }
@@ -596,13 +596,13 @@ func (m *perSystemMissStore) MarkUnreadable(ctx context.Context, s, gate string,
 // GetJumpGate for a specific gate waypoint (the unreadable frontier gate). Every
 // probed waypoint reads as built unless listed under construction. jumpGateCalls counts
 // GetJumpGate invocations per gate waypoint so a test can prove the backoff actually
-// SUPPRESSES probes (the sp-ikx1 storm-stop), not merely that routing still works.
+// SUPPRESSES probes (the storm-stop), not merely that routing still works.
 type perSystemGateAPI struct {
 	connectionsBySystem map[string][]string // origin system -> connected gate waypoints
 	jumpGateErr         map[string]error    // gate waypoint -> live-fetch error (unreadable)
 	underConstruction   map[string]bool
 	jumpGateCalls       map[string]int // gate waypoint -> number of GetJumpGate probes
-	// chartCalls records every CreateChart(shipSymbol) call IN ORDER (sp-lv2n) so a test can
+	// chartCalls records every CreateChart(shipSymbol) call IN ORDER so a test can
 	// prove the present-ship PUBLIC chart fired exactly once and carried the right hull symbol.
 	// chartErr, when set, makes CreateChart fail — proving the chart is best-effort/non-fatal
 	// and (with a 4230 body) that an already-charted gate is swallowed without error-spam.
@@ -636,7 +636,7 @@ func (l *captureLogger) Log(_, message string, _ map[string]interface{}) {
 }
 
 // apiErr400 is the typed terminal client error the real SpaceTraders adapter now returns for a
-// non-2xx GetJumpGate response (sp-4bm3): a *ports.APIError carrying StatusCode 400. The fakes
+// non-2xx GetJumpGate response: a *ports.APIError carrying StatusCode 400. The fakes
 // use it so they model a GENUINE HTTP 400 (uncharted / no ship present / not a gate) — the
 // permanent verdict the negative-result backoff is meant to suppress — rather than an untyped
 // stand-in a transient blip could masquerade as.
@@ -677,7 +677,7 @@ func TestService_Path_UnreadableSiblingGate_RoutesAround(t *testing.T) {
 	if _, persisted := store.replaced["X1-XX56"]; persisted {
 		t.Fatal("the unreadable system must not be written as an edge set")
 	}
-	// It IS recorded as a backoff marker so the next tick does not re-probe it (sp-ikx1).
+	// It IS recorded as a backoff marker so the next tick does not re-probe it.
 	if _, backedOff, _ := backoffOf(store, "X1-XX56"); !backedOff {
 		t.Fatal("the unreadable system must be recorded as backed off")
 	}
@@ -771,7 +771,7 @@ func TestService_Connections_UnreadableGate_BacksOffNoReprobe(t *testing.T) {
 	}
 }
 
-// The distinction (sp-4bm3): a TRANSIENT gate-fetch failure — a 5xx / network / retry-exhausted
+// The distinction: a TRANSIENT gate-fetch failure — a 5xx / network / retry-exhausted
 // error, which never surfaces as a *ports.APIError — must NOT be negative-cached. It still
 // reports ErrGateUnreadable (so the BFS routes around it this tick), but because it was not
 // backed off it is RE-PROBED on the very next miss, so a momentary API blip never suppresses a
@@ -1049,7 +1049,7 @@ func TestRepositionPath_StoredAdjacencyOnly_NoFetchNoReprobe(t *testing.T) {
 }
 
 // An under-construction gate is still excluded (stipulation 3): a jump into an unbuilt
-// gate crashes at hop time (sp-8qhu) — a hazard just as real for a probe. When the only
+// gate crashes at hop time — a hazard just as real for a probe. When the only
 // route runs through one, the resolver refuses; a built alternate is taken instead.
 func TestRepositionPath_ExcludesUnderConstruction(t *testing.T) {
 	store := &adjStore{adjacency: map[string][]system.GateEdge{
@@ -1140,7 +1140,7 @@ func TestRepositionPath_ZeroBound_FallsBackToMaxJumpPath(t *testing.T) {
 // --- sp-bcsu: ChartPresentGate (the present-ship gate read that heals the frontier) ---
 
 // A hull physically on a system's jump gate is the ONE moment its outbound connections
-// are readable. ChartPresentGate BYPASSES the sp-ikx1 negative-result backoff — a plain
+// are readable. ChartPresentGate BYPASSES the negative-result backoff — a plain
 // Connections would skip an already-latched system even with a ship standing on its gate
 // — so a now-succeeding present read HEALS the latch: it probes past the backoff, persists
 // the edges, and store.Replace clears the marker. MUTATION GUARD: implement ChartPresentGate
@@ -1203,7 +1203,7 @@ func TestService_ChartPresentGate_AlreadyCharted_NoAPI(t *testing.T) {
 }
 
 // GUARD 2 (the negative cache stays intact): a present-ship read that STILL 400s (the gate
-// genuinely refuses even with the ship there) must re-enter the sp-4bm3 negative-result
+// genuinely refuses even with the ship there) must re-enter the negative-result
 // backoff unchanged — ChartPresentGate must not defeat the negative cache. It surfaces
 // ErrGateUnreadable and records the marker, exactly as an ordinary fetch would.
 func TestService_ChartPresentGate_StillFailing_ReentersBackoff(t *testing.T) {
@@ -1365,7 +1365,7 @@ func jumpGateWaypoint(symbol string, charted bool) *shared.Waypoint {
 
 // The doomed-call fix: a system whose own jump gate is still UNCHARTED (per the graph we
 // already hold) is guaranteed to 400 a no-ship GetJumpGate ("uncharted, no ship present").
-// The precondition must SKIP that live call entirely — 0 API — and record the sp-ikx1 backoff
+// The precondition must SKIP that live call entirely — 0 API — and record the backoff
 // so the next tick also skips it. The api serves the gate as a 400 so that WITHOUT the
 // precondition the call count would be 1 (the doomed 400): the 0-call assertion is the
 // mutation-sensitive guard (remove the precondition and this test fails).
@@ -1429,7 +1429,7 @@ func TestService_Connections_UnchartedGate_PreconditionDisabled_StillProbes(t *t
 	}
 }
 
-// The self-heal guard (sp-lv2n/sp-bcsu): ChartPresentGate is the PRESENT-SHIP read — a hull on
+// The self-heal guard: ChartPresentGate is the PRESENT-SHIP read — a hull on
 // the gate makes it readable EVEN when the graph still says UNCHARTED (and it charts it first).
 // The precondition must therefore NOT block the present-ship path; it applies only to the
 // remote, no-ship Connections read. Without this carve-out the fix would break frontier charting.
@@ -1515,7 +1515,7 @@ func (c *countingGateAPI) CreateChart(ctx context.Context, shipSymbol, token str
 	return nil
 }
 
-// The headline latency fix (sp-0o9ub): the long-haul reposition to a FAR source used the STRICT
+// The headline latency fix: the long-haul reposition to a FAR source used the STRICT
 // resolver, which probes construction (a GetWaypoint per edge) across the WHOLE bound-25 BFS
 // frontier on a cold cache — hundreds of probes, ~20 min. PathWithinJumpsStoredThenVerify instead
 // plans the shortest route over the persisted stored adjacency (no probe) and verifies construction
@@ -1573,7 +1573,7 @@ func TestPathWithinJumpsStoredThenVerify_SameRouteWithoutFrontierProbes(t *testi
 	}
 }
 
-// No-loop safety (sp-0o9ub): planning cheaply over the STORED adjacency can pick a path whose gate
+// No-loop safety: planning cheaply over the STORED adjacency can pick a path whose gate
 // has SINCE gone under construction (a stale stored flag) — or a gate whose live read now fails. The
 // verify step probes each chosen-path gate LIVE and, on a bad gate, returns ErrUnroutable so the
 // episode's reachability fallback skips this lane to the NEXT one (never a jump-time loop). It does
@@ -1657,7 +1657,7 @@ func (b *blockingGateAPI) CreateChart(ctx context.Context, shipSymbol, token str
 	return nil
 }
 
-// HEADLINE (sp-if4lx): a construction probe that hangs past the pathfind budget must NOT stall the
+// HEADLINE: a construction probe that hangs past the pathfind budget must NOT stall the
 // hull's planning step forever. The resolver wraps the plan+verify in a wall-clock budget and, on
 // the deadline, returns ErrUnroutable so the worker's reachability fallback skips this lane. A short
 // injected budget (production uses the 90s const) lets the deadline fire fast; the 5s guard proves
@@ -1692,7 +1692,7 @@ func TestPathWithinJumpsStoredThenVerify_PathfindDeadline_Unroutable(t *testing.
 	}
 }
 
-// ISOLATION (sp-if4lx): the budget is defense-in-depth, not a behavior change. A warm route over a
+// ISOLATION: the budget is defense-in-depth, not a behavior change. A warm route over a
 // fully-verified stored topology resolves WELL within even a short budget — the deadline never
 // fires, and the route costs no live probe at all, so no amount of API pressure can push the common
 // case toward the wall.
@@ -1717,7 +1717,7 @@ func TestPathWithinJumpsStoredThenVerify_WarmPath_NoDeadlineFired(t *testing.T) 
 	}
 }
 
-// SHUTDOWN SAFETY (sp-if4lx): a PARENT-context cancel (a real daemon shutdown) must PROPAGATE as a
+// SHUTDOWN SAFETY: a PARENT-context cancel (a real daemon shutdown) must PROPAGATE as a
 // cancel, NOT be masked as a skippable "unroutable" lane — even though the fail-closed construction
 // verify would otherwise turn the aborted probe into an ErrUnroutable. Only OUR budget's deadline
 // maps to ErrUnroutable; a genuine cancel ends the episode. This is the falsifiable guard against

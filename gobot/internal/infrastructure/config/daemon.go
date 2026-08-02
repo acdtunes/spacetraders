@@ -18,7 +18,7 @@ type DaemonConfig struct {
 	MaxCASRetries int `mapstructure:"max_cas_retries"`
 
 	// AgentCacheTTLSeconds bounds how long the shared API client may serve a
-	// cached agent before re-reading /my/agent live (sp-oszc): GetAgent was the
+	// cached agent before re-reading /my/agent live: GetAgent was the
 	// #2 API consumer (343 calls / 1306s rate-limit wait) and agent data changes
 	// rarely, so a short TTL cuts the redundant reads. 0/unset selects the
 	// built-in default (15s). This is only a staleness FLOOR — money safety comes

@@ -125,10 +125,9 @@ func (c *SpaceTradersClient) doWithRetry(ctx context.Context, method, path, toke
 
 	for attempt := 0; attempt <= c.maxRetries; attempt++ {
 		rateLimitStart := time.Now()
-		// Priority-aware token acquisition, armed unconditionally since
-		// 2026-07-17; the ctx tag orders acquisition. endpoint is the
-		// human-readable name computed above and is used to classify the call's
-		// scheduling priority.
+		// Priority-aware token acquisition, armed unconditionally; the ctx tag
+		// orders acquisition. endpoint is the human-readable name computed above
+		// and is used to classify the call's scheduling priority.
 		if err := c.acquireRateToken(ctx, endpoint); err != nil {
 			return fmt.Errorf("rate limiter error: %w", err)
 		}

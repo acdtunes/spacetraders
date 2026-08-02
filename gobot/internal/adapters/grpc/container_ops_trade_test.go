@@ -25,7 +25,7 @@ type tradeRouteShipRepo struct {
 
 	claimErr   error            // injected ClaimShip rejection (e.g. dedication)
 	claims     []tradeShipClaim // successful ClaimShip calls, in order
-	claimCalls int              // total ClaimShip invocations, incl. rejected (sp-ku8e: proves a permanent rejection is not retried)
+	claimCalls int              // total ClaimShip invocations, incl. rejected (proves a permanent rejection is not retried)
 }
 
 // tradeShipClaim records one ClaimShip call at the port boundary.
@@ -130,7 +130,7 @@ func newIdleTradeShip(t *testing.T, symbol string, playerID int) *navigation.Shi
 // The idle-gap discipline: trade-route only takes a genuinely idle hull. A hull the
 // daemon is actively flying (assigned to another container) must be refused BEFORE any
 // container is persisted, so a refused start has no side effects. This moved from the
-// old CLI claimShip refusal to the container-start boundary (sp-zewt).
+// old CLI claimShip refusal to the container-start boundary.
 func TestStartTradeRoute_RefusesNonIdleShip(t *testing.T) {
 	ship := newIdleTradeShip(t, "TRADER-BUSY", 1)
 	require.NoError(t, ship.AssignToContainer("goods_factory-OTHER", shared.NewRealClock()))
@@ -193,7 +193,7 @@ func TestStartTradeRoute_IdleShip_PersistsRecoveryVisibleContainer(t *testing.T)
 // Recovery must ADOPT a RUNNING trade_route container as a top-level coordinator (not
 // skip it as a worker, not leave it orphaned): rebuild the circuit command from the
 // launch config, re-assign the idle hull, and start a live runner. This is the daemon
-// restart guarantee the CLI runner never had (sp-zewt / sp-vjwb).
+// restart guarantee the CLI runner never had.
 func TestRecoveryAdoptsRunningTradeRouteContainer(t *testing.T) {
 	s, db, playerID := newRecoveryTestServer(t)
 	ship := newIdleTradeShip(t, "TRADER-2", playerID)

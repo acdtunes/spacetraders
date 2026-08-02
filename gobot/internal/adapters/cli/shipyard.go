@@ -187,7 +187,7 @@ Examples:
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
-			// sp-0ms61: trim so a whitespace-only --fleet is treated as omitted (no
+			// Trim so a whitespace-only --fleet is treated as omitted (no
 			// accidental empty-tag dedicate) before it ever leaves the CLI.
 			dedicateFleet = strings.TrimSpace(dedicateFleet)
 
@@ -242,7 +242,7 @@ type shipyardYardsProvider interface {
 	ListSavedYards(ctx context.Context, playerID int, shipTypes []string) ([]shipyard.ShipTypeAvailability, error)
 }
 
-// newShipyardYardsCommand creates the shipyard yards subcommand (sp-qx29f):
+// newShipyardYardsCommand creates the shipyard yards subcommand:
 // a read-only query over the SAVED shipyard_inventory scan cache, unlike
 // `shipyard list` which requires a ship physically docked at the yard.
 func newShipyardYardsCommand() *cobra.Command {

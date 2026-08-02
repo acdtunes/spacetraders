@@ -113,9 +113,9 @@ func (h *RefuelShipHandler) refuelShipViaAPI(ctx context.Context, ship *navigati
 	return result, nil
 }
 
-// refuelWithDockSelfHeal refuels, self-healing a wrong idempotent-dock skip
-// (sp-yd84 SAFETY item 2). The idempotent dock optimization (CUT 1) trusts the
-// in-memory NavStatus; if that has drifted from server reality, the skipped dock
+// refuelWithDockSelfHeal refuels, self-healing a wrong idempotent-dock skip.
+// The idempotent dock optimization trusts the in-memory NavStatus; if that has
+// drifted from server reality, the skipped dock
 // leaves the ship undocked and the refuel is rejected with the API's 4214/4244
 // "must be docked". Rather than fail the leg, issue a REAL dock (h.shipRepo.Dock
 // fires the API unconditionally, correcting the drift) and retry the refuel

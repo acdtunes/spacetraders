@@ -3,7 +3,7 @@ package player
 // identity.go owns the durable agent-identity half of players.metadata: the facts that come from
 // /my/agent, are fixed for the life of an era, and that engines later READ back out of the row.
 //
-// sp-0eufi: MetadataKeyHeadquarters had three readers and no reachable writer. The only code that
+// MetadataKeyHeadquarters had three readers and no reachable writer. The only code that
 // ever set it lived in SyncPlayerHandler, which nothing constructed or dispatched — so every
 // players row carried {"starting_faction": ...} and nothing else. The parked-sensing HomeSystemPort
 // read the missing key, failed, and because the sensing CUTOVER runs before expansion in the tick,
@@ -96,9 +96,10 @@ func HeadquartersFrom(metadata map[string]interface{}) (string, bool) {
 }
 
 // MissingHeadquartersHint is the operator-facing explanation attached wherever a missing
-// headquarters is reported. The key's absence used to surface four layers from its cause — as a
-// sensing cutover refusal — with nothing naming what was missing or how it gets populated. Any
-// reader that fails on the key states this, so the fix is one line away from the error.
+// headquarters is reported. Unattached, the key's absence surfaces layers away from its cause
+// — as a sensing cutover refusal, say — naming neither what is missing nor how it gets
+// populated. Any reader that fails on the key states this, so the fix is one line away from
+// the error.
 const MissingHeadquartersHint = "players.metadata." + MetadataKeyHeadquarters + " is written from /my/agent " +
 	"when the era is registered and re-asserted on every daemon boot; if it is absent this player predates " +
 	"that sync (restart the daemon for this player to repopulate it, or re-run the era registration)"

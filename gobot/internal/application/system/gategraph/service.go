@@ -1,5 +1,5 @@
 // Package gategraph resolves multi-jump routes over the persisted cross-system
-// jump-gate adjacency (sp-7gr2). It is the fix for the single-edge assumption
+// jump-gate adjacency. It is the fix for the single-edge assumption
 // that crashed a laden frigate at the home gate: travel() assumed origin→dest
 // was ONE jump, but JP61 is three jumps from KA42 (PA3→UQ16→JP61). The service
 // caches the API's own gate topology in a GateEdgeRepository, refreshes it
@@ -24,13 +24,13 @@ import (
 
 // gateAPI is the narrow slice of the SpaceTraders API the gate graph needs: the
 // live gate-connections fetch, plus the per-gate construction probe that learns
-// whether a connected gate is still being built (sp-8qhu). Narrowing the
+// whether a connected gate is still being built. Narrowing the
 // dependency (vs. the full ports.APIClient) states exactly what this service
 // touches and keeps the fetch-through path unit-testable with a tiny fake.
 type gateAPI interface {
 	GetJumpGate(ctx context.Context, systemSymbol, waypointSymbol, token string) (*ports.JumpGateData, error)
 	GetWaypoint(ctx context.Context, systemSymbol, waypointSymbol, token string) (*ports.WaypointDetail, error)
-	// CreateChart PUBLICLY charts the ship's current waypoint (sp-lv2n). Charting a gate once
+	// CreateChart PUBLICLY charts the ship's current waypoint. Charting a gate once
 	// makes every future GetJumpGate on it succeed WITHOUT a ship present, so an uncharted
 	// frontier gate stops being live-re-read (and 400ing) on each jump-out. Best-effort: the
 	// ChartPresentGate caller swallows an already-charted (4230) or any other failure.
@@ -50,7 +50,7 @@ const MaxJumpPath = 5
 
 // longHaulPathfindBudget is the hard wall-clock ceiling on the long-haul reposition PATHFIND
 // (PathWithinJumpsStoredThenVerify) — the stored-adjacency PLAN plus the chosen-path construction
-// VERIFY, both of which complete BEFORE any jump. It is defense-in-depth (sp-if4lx) atop the sp-0o9ub
+// VERIFY, both of which complete BEFORE any jump. It is defense-in-depth atop the sp-0o9ub
 // latency fix that already made the normal plan ~11s: no FUTURE slowness (e.g. an API rate-limit
 // hanging the chosen-path construction probes) can ever silently stall a hull's planning step again.
 // 90s is deliberately generous vs the ~11s normal case — it fires ONLY on a pathological stall, and
@@ -72,7 +72,7 @@ const maxChosenPathConstructionProbes = 2
 // unchartedTrait is the waypoint trait the SpaceTraders API stamps on an unswept waypoint.
 // A JUMP_GATE that still carries it has no readable /jump-gate endpoint without a ship
 // present — a no-ship GetJumpGate on it 400s — so it is the is-charted precondition the
-// doomed-call fix reads off the system graph before deciding to make the live call (sp-jgcache).
+// doomed-call fix reads off the system graph before deciding to make the live call.
 const unchartedTrait = "UNCHARTED"
 
 // ErrUnroutable wraps every "no path exists within the bound" outcome so callers
@@ -127,7 +127,7 @@ func (b BackoffSchedule) durationFor(attempts int) time.Duration {
 // GetJumpGateConnectionsHandler's (apiClient for the live gate fetch, graphProvider
 // to find a charted system's own gate, playerRepo for the token) plus the edge
 // store that makes the topology persistent and multi-hop-walkable. clock and backoff
-// drive the negative-result re-probe schedule for unreadable gates (sp-ikx1).
+// drive the negative-result re-probe schedule for unreadable gates.
 type Service struct {
 	store         system.GateEdgeRepository
 	apiClient     gateAPI
@@ -138,18 +138,18 @@ type Service struct {
 	// pathfindBudget is the wall-clock ceiling the long-haul reposition pathfind
 	// (PathWithinJumpsStoredThenVerify) is wrapped in — longHaulPathfindBudget in production, a
 	// short duration in tests via WithPathfindBudget so a hung construction probe surfaces as
-	// ErrUnroutable fast (sp-if4lx). Bounds ONLY the pathfind, never the flight.
+	// ErrUnroutable fast. Bounds ONLY the pathfind, never the flight.
 	pathfindBudget time.Duration
-	// skipUnchartedFetch is the doomed-call precondition (sp-jgcache): when true (default),
+	// skipUnchartedFetch is the doomed-call precondition: when true (default),
 	// a remote, no-ship Connections read whose OWN gate is still UNCHARTED (per the system
 	// graph we already hold) SKIPS the live GetJumpGate — that call is guaranteed to 400
 	// ("uncharted, no ship present"), so issuing it is pure rate-limit waste. The gate is
-	// entered into the sp-ikx1 backoff exactly as a real 400 would, so routing behaviour is
+	// entered into the backoff exactly as a real 400 would, so routing behaviour is
 	// unchanged (the BFS excludes it either way); only the wasted 400 disappears. Set false
 	// (WithSkipUnchartedFetch) to restore the pre-fix probe-then-backoff behaviour byte-for-
 	// byte — the staged-rollout escape hatch. The precondition applies ONLY to the graph-
 	// resolved gate on the no-present-ship path: ChartPresentGate (a hull IS on the gate, so
-	// it reads fine) always bypasses it, preserving the sp-lv2n/sp-bcsu frontier self-heal.
+	// it reads fine) always bypasses it, preserving the frontier self-heal.
 	skipUnchartedFetch bool
 }
 
@@ -158,7 +158,7 @@ type Service struct {
 // the configured backoff schedule and, in tests, a controllable clock).
 type Option func(*Service)
 
-// WithBackoff sets the unreadable-gate re-probe schedule (sp-ikx1), wired from config.
+// WithBackoff sets the unreadable-gate re-probe schedule, wired from config.
 func WithBackoff(b BackoffSchedule) Option {
 	return func(s *Service) { s.backoff = b }
 }
@@ -176,7 +176,7 @@ func WithPathfindBudget(d time.Duration) Option {
 	return func(s *Service) { s.pathfindBudget = d }
 }
 
-// WithSkipUnchartedGateFetch toggles the doomed-call precondition (sp-jgcache). Default is
+// WithSkipUnchartedGateFetch toggles the doomed-call precondition. Default is
 // ON (skip the live GetJumpGate on an UNCHARTED origin gate — it would only 400). Passing
 // false restores the legacy probe-then-backoff behaviour, wired from config as the staged-
 // rollout reversibility switch. See Service.skipUnchartedFetch.
@@ -201,7 +201,7 @@ func NewService(
 		clock:              shared.NewRealClock(),
 		backoff:            DefaultBackoffSchedule,
 		pathfindBudget:     longHaulPathfindBudget,
-		skipUnchartedFetch: true, // doomed-call precondition ON by default (sp-jgcache)
+		skipUnchartedFetch: true, // doomed-call precondition ON by default
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -235,7 +235,7 @@ func (s *Service) Connections(ctx context.Context, systemSymbol string, playerID
 	}
 	// A miss/stale set would normally re-fetch. But an UNREADABLE gate (one whose live
 	// fetch keeps 400ing) is a persisted miss FOREVER — re-fetching it every reconcile
-	// tick is the sp-ikx1 storm (1 req/s of guaranteed 400s). Honor the negative-result
+	// tick is the storm (1 req/s of guaranteed 400s). Honor the negative-result
 	// backoff first: if the system is backed off and its next-probe time has not arrived,
 	// skip the API call silently and report it unreadable, exactly as a real 400 would —
 	// the BFS excludes the node either way. The backoff is persisted, so this holds across
@@ -249,14 +249,14 @@ func (s *Service) Connections(ctx context.Context, systemSymbol string, playerID
 		}
 	}
 	// presentShip=false: this is the REMOTE read (no hull on the gate), so an uncharted
-	// origin gate is subject to the doomed-call precondition (sp-jgcache).
+	// origin gate is subject to the doomed-call precondition.
 	return s.fetchAndStore(ctx, systemSymbol, playerID, false)
 }
 
-// ChartPresentGate is the PRESENCE-FORCED gate read (sp-bcsu): a hull physically
+// ChartPresentGate is the PRESENCE-FORCED gate read: a hull physically
 // standing on systemSymbol's own jump gate is the ONE moment its outbound connections
 // are readable (a remote read with no ship present 400s, code 4001). It deliberately
-// BYPASSES the sp-ikx1 negative-result backoff short-circuit that Connections honors —
+// BYPASSES the negative-result backoff short-circuit that Connections honors —
 // a plain Connections would skip an already-latched system even with a ship on its gate,
 // the exact catch-22 that leaves a frontier gate uncharted forever. On a now-succeeding
 // present read, fetchAndStore -> store.Replace deletes every row for the system INCLUDING
@@ -272,14 +272,14 @@ func (s *Service) Connections(ctx context.Context, systemSymbol string, playerID
 //     only genuine ship-present success heals the latch.
 //
 // On that same store-miss (uncharted-to-us) branch it ALSO PUBLICLY charts the gate from the
-// present hull (sp-lv2n): reading the gate stores OUR edge copy but leaves the gate uncharted-
+// present hull: reading the gate stores OUR edge copy but leaves the gate uncharted-
 // public, so every future jump-OUT re-reads it live (GetJumpGate) and 400s whenever no hull is
 // on the gate. CreateChart makes the gate GetJumpGate-readable forever without a ship present,
 // collapsing that re-read storm. Charting is best-effort and idempotent-by-GUARD-1 (a later
 // arrival on a now-charted system store-hits and never re-charts) — see chartPresentWaypoint.
 //
 // It is best-effort from the caller's side: charting must never fail a trade/nav leg, so
-// callers (travelWithJumpBound.chartArrivedGate, the sp-bcsu reconcile sweep) log and
+// callers (travelWithJumpBound.chartArrivedGate, the reconcile sweep) log and
 // swallow the error. The error is surfaced here so those callers can log the cause.
 func (s *Service) ChartPresentGate(ctx context.Context, systemSymbol, shipSymbol string, playerID int) ([]system.GateEdge, error) {
 	if edges, ok, err := s.store.Edges(ctx, systemSymbol); err != nil {
@@ -296,7 +296,7 @@ func (s *Service) ChartPresentGate(ctx context.Context, systemSymbol, shipSymbol
 	s.chartPresentWaypoint(ctx, shipSymbol, playerID)
 	// presentShip=true: a hull IS on the gate, so the read succeeds even for an
 	// UNCHARTED gate (and we just charted it). BYPASS the doomed-call precondition —
-	// applying it here would defeat the sp-lv2n/sp-bcsu frontier self-heal.
+	// applying it here would defeat the frontier self-heal.
 	return s.fetchAndStore(ctx, systemSymbol, playerID, true)
 }
 
@@ -389,10 +389,10 @@ func (s *Service) fetchAndStore(ctx context.Context, systemSymbol string, player
 		if err != nil {
 			return nil, err
 		}
-		// Doomed-call precondition (sp-jgcache): a graph-resolved gate that is still
+		// Doomed-call precondition: a graph-resolved gate that is still
 		// UNCHARTED will 400 a no-ship GetJumpGate ("uncharted, no ship present"). On the
 		// REMOTE read (no hull present) skip that guaranteed-failing call entirely and enter
-		// the sp-ikx1 backoff exactly as a real 400 would — 0 API, identical routing outcome
+		// the backoff exactly as a real 400 would — 0 API, identical routing outcome
 		// (the BFS excludes the node either way). The present-ship path (charted==irrelevant,
 		// a hull makes it readable) passes presentShip=true and never reaches here.
 		if s.skipUnchartedFetch && !presentShip && !charted {
@@ -406,16 +406,16 @@ func (s *Service) fetchAndStore(ctx context.Context, systemSymbol string, player
 	if err != nil {
 		// A per-system fetch failure (a frontier gate the API refuses, 400 "no ship
 		// present") is NOT a whole-route failure: tag it ErrGateUnreadable so the BFS
-		// excludes just this node and continues (sp-qxa4).
+		// excludes just this node and continues.
 		//
 		// Only a PERMANENT client error (a terminal 4xx — the API's verdict that this
 		// waypoint has no readable gate: uncharted / no ship present / not a gate)
 		// records/extends the persisted negative-result backoff, so a doomed gate is not
-		// re-probed every tick (sp-ikx1) — the enter/extend INFO line is logged there, once
+		// re-probed every tick — the enter/extend INFO line is logged there, once
 		// per transition. A TRANSIENT failure (5xx / network / retry-exhausted, which never
 		// surfaces as a *ports.APIError) must NOT poison the cache: leaving it un-backed-off
 		// lets the next miss re-probe it, so a momentary API blip never suppresses a real
-		// gate for the whole 5m→30m→2h window (sp-4bm3).
+		// gate for the whole 5m→30m→2h window.
 		if isPermanentGateAbsence(err) {
 			s.enterBackoff(ctx, systemSymbol, gateWaypoint, err)
 		}
@@ -528,7 +528,7 @@ func (s *Service) priorNonEmptyEdges(ctx context.Context, systemSymbol string) (
 
 // isPermanentGateAbsence reports whether a GetJumpGate failure is the API's PERMANENT verdict
 // that this waypoint has no readable gate — a terminal 4xx (uncharted / no ship present / not a
-// gate). Only such a permanent failure is negative-cached (sp-4bm3): a TRANSIENT failure (5xx /
+// gate). Only such a permanent failure is negative-cached: a TRANSIENT failure (5xx /
 // network / retry-exhausted) never surfaces as a *ports.APIError, so it declines the cache and is
 // re-probed on the next miss instead of being suppressed for the whole backoff window. Matching a
 // typed status (not the error string) keeps the classification robust against message wording.
@@ -539,7 +539,7 @@ func isPermanentGateAbsence(err error) bool {
 
 // enterBackoff persists (or extends) the negative-result backoff for an unreadable gate
 // and logs the ONE INFO line the operator sees — carrying the attempt count and the
-// computed next-probe time (sp-ikx1). It fires only when a live probe actually failed
+// computed next-probe time. It fires only when a live probe actually failed
 // (once per backoff transition, at 5m/30m/2h boundaries), so the log is a handful of
 // lines per gate per day instead of the ~2,880 the old per-tick "will re-probe next
 // fetch" line produced. A persistence failure is logged and swallowed: the gate is still
@@ -591,7 +591,7 @@ func (s *Service) gateUnderConstruction(ctx context.Context, connSystem, gateWay
 // when no stored neighbor edge has already recorded the gate. It also reports whether
 // that gate is CHARTED (no UNCHARTED trait): the graph builder populates each waypoint's
 // traits[] from the API, so this is the same is-charted precondition the server itself
-// checks — read for free from data we already hold, before any live call (sp-jgcache).
+// checks — read for free from data we already hold, before any live call.
 func (s *Service) gateFromGraph(ctx context.Context, systemSymbol string, playerID int) (string, bool, error) {
 	graphResult, err := s.graphProvider.GetGraph(ctx, systemSymbol, false, playerID)
 	if err != nil {
@@ -622,7 +622,7 @@ func (s *Service) token(ctx context.Context, playerID int) (string, error) {
 // (a single element when they are equal; ≥2 for a real cross-system route),
 // resolved by a bounded BFS over the fetch-through adjacency. A single unreadable
 // gate (ErrGateUnreadable — a frontier gate the API refuses) is excluded from the
-// build and the search continues on the readable subgraph (sp-qxa4); it is never
+// build and the search continues on the readable subgraph; it is never
 // routed through. Path returns an ErrUnroutable-wrapped error naming both systems
 // when no route exists within MaxJumpPath (including when the only route required an
 // excluded gate), or an underlying store/token error otherwise (fail closed).
@@ -634,7 +634,7 @@ func (s *Service) Path(ctx context.Context, fromSystem, toSystem string, playerI
 // — same strict fetch-through neighbor closure, same fail-closed unreadable-gate discipline, same
 // under-construction exclusion, same bfsPath. It exists for the ONE strict caller that must reach
 // deeper than MaxJumpPath=5: the long-haul arb heavy repositioning to a far multi-hop exotic
-// source (sp-e059j). It stays STRICT (fetch-through, fail-closed) — a laden heavy still refuses an
+// source. It stays STRICT (fetch-through, fail-closed) — a laden heavy still refuses an
 // unreadable frontier gate — so it is emphatically NOT the RELAXED probe/scout RepositionPath
 // (which routes PAST unreadable gates over stored adjacency). The large bound is isolated to the
 // long-haul reposition wiring; every other strict caller keeps MaxJumpPath via Path. maxJumps <= 0
@@ -654,7 +654,7 @@ func (s *Service) PathWithinJumps(ctx context.Context, fromSystem, toSystem stri
 			// A route that genuinely REQUIRES this node then ends ErrUnroutable (an
 			// honest no-path), never silently rerouted through the unverified gate.
 			// Any OTHER error (store/DB, token) still fails the whole search closed.
-			// The exclusion is SILENT here (sp-ikx1): logging it every BFS traversal is
+			// The exclusion is SILENT here: logging it every BFS traversal is
 			// the 23k-line spam this fix removes — the operator signal is the single
 			// enter/extend line enterBackoff emits when a probe actually fails.
 			if errors.Is(err, ErrGateUnreadable) {
@@ -686,7 +686,7 @@ func (s *Service) PathWithinJumps(ctx context.Context, fromSystem, toSystem stri
 // ways, both justified by that class:
 //
 //   - It routes PAST an unreadable frontier gate instead of dead-ending on it. Path
-//     fails closed on an unreadable gate because its onward gates are unverified (sp-qxa4);
+//     fails closed on an unreadable gate because its onward gates are unverified;
 //     but a probe's whole purpose is to REACH that frontier, and a frontier gate is
 //     unreadable precisely because no probe has arrived to read it — the catch-22 a
 //     fail-closed router can never re-admit. Routing over the stored adjacency (which
@@ -695,7 +695,7 @@ func (s *Service) PathWithinJumps(ctx context.Context, fromSystem, toSystem stri
 //     on (sp-bcsu — travelWithJumpBound.chartArrivedGate -> ChartPresentGate, a PRESENT-ship
 //     read that self-heals the latch), so each successful reposition SHRINKS the unreadable
 //     set. RepositionPath ITSELF does this WITHOUT any live probe — Adjacency is a store
-//     read, so the sp-ikx1 negative-result backoff is fully honored here; we route PAST
+//     read, so the negative-result backoff is fully honored here; we route PAST
 //     unreadable gates over stored edges, and the present-ship arrival read (never a remote
 //     re-probe) is what actually re-charts them.
 //   - It takes a caller-supplied bound (the [scouting] max_reposition_jumps config,
@@ -717,7 +717,7 @@ func (s *Service) RepositionPath(ctx context.Context, fromSystem, toSystem strin
 		edges := adjacency[systemSymbol]
 		neighbors := make([]string, 0, len(edges))
 		for _, e := range edges {
-			// Never route INTO an under-construction gate (sp-8qhu). Unlike Path, an
+			// Never route INTO an under-construction gate. Unlike Path, an
 			// UNREADABLE gate is NOT a dead-end here — its stored edges stand, so the
 			// probe hops past it (and re-reads it on arrival).
 			if e.UnderConstruction {
@@ -730,7 +730,7 @@ func (s *Service) RepositionPath(ctx context.Context, fromSystem, toSystem strin
 }
 
 // PathWithinJumpsStoredThenVerify is the "plan cheap, verify the chosen path" resolver for the
-// long-haul heavy reposition to a FAR source (sp-0o9ub). It is the latency fix for the residual
+// long-haul heavy reposition to a FAR source. It is the latency fix for the residual
 // ~20-min cold-cache stall the STRICT PathWithinJumps left: that resolver probes construction with a
 // live GetWaypoint PER EDGE across the WHOLE bound-25 BFS frontier, hundreds of probes on a cold
 // cache. This resolver instead:
@@ -760,7 +760,7 @@ func (s *Service) RepositionPath(ctx context.Context, fromSystem, toSystem strin
 // used by tour/manual/arb at MaxJumpPath=5 are untouched. maxJumps <= 0 degrades to MaxJumpPath via
 // RepositionPath's own fallback.
 func (s *Service) PathWithinJumpsStoredThenVerify(ctx context.Context, fromSystem, toSystem string, playerID, maxJumps int) ([]string, error) {
-	// DEFENSE-IN-DEPTH (sp-if4lx): bound ONLY the PATHFIND — the stored-adjacency plan plus the
+	// DEFENSE-IN-DEPTH: bound ONLY the PATHFIND — the stored-adjacency plan plus the
 	// chosen-path construction verify, both of which return BEFORE any jump — with a generous
 	// wall-clock ceiling. A pathological stall (e.g. an API rate-limit hanging a construction probe)
 	// then surfaces as ErrUnroutable so the worker's reachability fallback skips this lane, instead
@@ -789,7 +789,7 @@ func (s *Service) PathWithinJumpsStoredThenVerify(ctx context.Context, fromSyste
 
 // storedThenVerify is the unbounded core of PathWithinJumpsStoredThenVerify: PLAN over the stored
 // adjacency, then VERIFY construction on only the chosen path. The public method wraps it in the
-// pathfind budget (sp-if4lx) and passes the bounded context here, so the RepositionPath store read
+// pathfind budget and passes the bounded context here, so the RepositionPath store read
 // and every per-gate GetWaypoint construction probe observe that deadline.
 func (s *Service) storedThenVerify(ctx context.Context, fromSystem, toSystem string, playerID, maxJumps int) ([]string, error) {
 	// PLAN over the stored adjacency (no probe). An unroutable/store-error verdict propagates
@@ -866,7 +866,7 @@ func (s *Service) Routable(ctx context.Context, fromSystem, toSystem string, pla
 	return s.RoutableWithinJumps(ctx, fromSystem, toSystem, playerID, MaxJumpPath)
 }
 
-// RoutableWithinJumps is Routable with a CALLER-SUPPLIED jump bound (sp-ry741): the same (bool, error)
+// RoutableWithinJumps is Routable with a CALLER-SUPPLIED jump bound: the same (bool, error)
 // contract resolved over the SAME strict PathWithinJumps primitive (no forked path logic), just at a
 // deeper reach. It exists for the ONE routability caller that must align its check past MaxJumpPath=5 —
 // the long-haul arb Guard-0, whose sell leg is 6-12 gate hops from its source (the far exotic sinks

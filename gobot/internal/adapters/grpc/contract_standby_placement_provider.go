@@ -12,7 +12,7 @@ import (
 )
 
 // contractStandbyPlacementProvider implements appContract.StandbyPlacementProvider for the contract
-// fleet coordinator's between-legs homing + the idle-arb re-home sweep (epic sp-9le3x / sp-mtgje). It
+// fleet coordinator's between-legs homing + the idle-arb re-home sweep. It
 // REUSES the auto-scaler's home-market read (homeMarkets), classifies this era's central parks by
 // market role + geometry, coord-dedups them (so slots are distinct LOCATIONS), and returns the ≤6
 // FIXED delivery placement slots (TopDeliverySlots) — the SAME selection the scaler buys against, via

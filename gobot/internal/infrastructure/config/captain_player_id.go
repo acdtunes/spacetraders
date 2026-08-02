@@ -49,7 +49,7 @@ func ResolveConfigFilePath() string {
 // Returns changed=false (and leaves the file untouched) when player_id is already
 // the target. Returns an error when there is no captain: block or no player_id
 // under it — the caller must fail loud rather than silently skip the repoint that
-// otherwise wakes the supervisor as the dead prior-era player (sp-m602).
+// otherwise wakes the supervisor as the dead prior-era player.
 func SetCaptainPlayerID(path string, playerID int) (bool, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {

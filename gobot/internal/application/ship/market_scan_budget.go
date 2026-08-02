@@ -284,7 +284,7 @@ func (b *ScanBudget) Observe(waypoint string, goods []market.TradeGood) {
 	quotes := make([]marketscan.Quote, 0, len(goods))
 	for _, g := range goods {
 		// Bid is what the market PAYS us, which is the persisted sell_price;
-		// Ask is what it CHARGES us, the persisted purchase_price (sp-en5h7).
+		// Ask is what it CHARGES us, the persisted purchase_price.
 		quotes = append(quotes, marketscan.Quote{Bid: g.SellPrice(), Ask: g.PurchasePrice()})
 	}
 	observed, _ := marketscan.SpreadOf(quotes)

@@ -104,7 +104,7 @@ func TestTour_PlannerReceivesMaxTourSystems(t *testing.T) {
 	}
 }
 
-// sp-syaz default-safety companion: an UNSET MaxTourSystems reaches the planner as 0 —
+// Default-safety companion: an UNSET MaxTourSystems reaches the planner as 0 —
 // which the Python solver resolves to its MAX_TOUR_SYSTEMS default (2), so a tour that
 // never sets the cap is byte-identical to today.
 func TestTour_PlannerReceivesZeroMaxTourSystemsWhenUnset(t *testing.T) {

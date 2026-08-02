@@ -71,7 +71,7 @@ func newTradeTypeMarket(t *testing.T, waypointSymbol, good, supply, activity str
 	return m
 }
 
-// Field case (sp-r900): no EXPORT market clears the MODERATE+ floor for
+// Field case: no EXPORT market clears the MODERATE+ floor for
 // ADVANCED_CIRCUITRY (only a LIMITED exporter), but an IMPORT market holds
 // ABUNDANT accumulated stock. FindConstructionSource must fall back to the
 // import market as a buy source rather than reporting "no source".
@@ -147,7 +147,7 @@ func TestFindConstructionSource_NoQualifyingMarket_ReturnsNil(t *testing.T) {
 	}
 }
 
-// sp-ezz9: construction start gains --min-supply, letting the caller lower the
+// Construction start gains --min-supply, letting the caller lower the
 // EXPORT acceptance floor below the default MODERATE baseline. The locator
 // reuses its existing Order()-based tolerance ladder - no new ladder, no new
 // sourcing logic - the caller just moves the floor.

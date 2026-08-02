@@ -1,6 +1,6 @@
 package commands
 
-// run_trade_route_coordinator_actions.go — ship I/O primitives: load, navigate, dock (nav-cache race), purchase, sell (sp-wads move-only split).
+// run_trade_route_coordinator_actions.go — ship I/O primitives: load, navigate, dock (nav-cache race), purchase, sell (move-only split).
 
 import (
 	"context"
@@ -18,7 +18,7 @@ import (
 // circuit. It does NOT claim or release: the runner owns the assignment lifecycle
 // (createShipAssignments on start via the container's ship_symbol metadata,
 // releaseShipAssignments on completion/crash/cancel), so the hull is force-released
-// on every terminal path without this handler touching it (sp-zewt). The idle-gap
+// on every terminal path without this handler touching it. The idle-gap
 // discipline — only fly a genuinely idle hull, never steal one — is enforced ahead of
 // time at DaemonServer.StartTradeRoute, before the container is persisted.
 func (h *RunTradeRouteCoordinatorHandler) loadShip(
@@ -46,7 +46,7 @@ func (h *RunTradeRouteCoordinatorHandler) navigate(ctx context.Context, ship *na
 }
 
 // dock docks the hull at its current waypoint, surviving the nav-cache race the goods
-// factory hit (sp-n7yp): right after arrival the ship's cached nav_status can still
+// factory hit: right after arrival the ship's cached nav_status can still
 // read IN_TRANSIT, so the domain EnsureDocked rejects the dock ("cannot dock while in
 // transit"). Rather than fail — and strand the circuit at zero visits — it reconciles
 // the hull against the live API (SyncShipFromAPI clears the stale IN_TRANSIT once the
@@ -124,7 +124,7 @@ func (h *RunTradeRouteCoordinatorHandler) sell(ctx context.Context, shipSymbol, 
 	return h.sellWithFloor(ctx, shipSymbol, good, units, playerID, 0)
 }
 
-// sellWithFloor sells like sell, but arms the per-tranche sell floor (sp-lbbm):
+// sellWithFloor sells like sell, but arms the per-tranche sell floor:
 // minBidPerUnit>0 makes the underlying handler re-verify the live bid before each
 // tranche and abort the remainder (held aboard, SellCargoResponse.FloorAborted)
 // if it falls below the floor. minBidPerUnit==0 is exactly the plain sell, so

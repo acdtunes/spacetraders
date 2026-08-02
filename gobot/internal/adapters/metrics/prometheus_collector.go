@@ -259,7 +259,7 @@ func RecordFuelConsumption(playerID int, flightMode shared.FlightMode, units int
 }
 
 // RecordStrandedJumpContainer records one leftover jump container row the
-// post-claim reap found, under the outcome it reached (sp-rqhzh).
+// post-claim reap found, under the outcome it reached.
 func RecordStrandedJumpContainer(playerID int, outcome string) {
 	if globalNavigationCollector != nil {
 		globalNavigationCollector.RecordStrandedJumpContainer(playerID, outcome)

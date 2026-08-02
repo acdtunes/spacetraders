@@ -16,7 +16,7 @@ import (
 
 // fakeReportEventSource is a reportEventSource test double that records the
 // playerID it was queried with, so tests can assert a resolved --agent flag
-// (sp-yr3f) reached the source as a concrete numeric ID.
+// reached the source as a concrete numeric ID.
 type fakeReportEventSource struct {
 	events       []*captain.Event
 	err          error

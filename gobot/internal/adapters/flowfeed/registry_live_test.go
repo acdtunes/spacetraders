@@ -1,6 +1,6 @@
 // gobot/internal/adapters/flowfeed/registry_live_test.go
 //
-// sp-2uvec: the feed must reflect every RUNNING trading container at REQUEST
+// The feed must reflect every RUNNING trading container at REQUEST
 // time. Publishing is event-sparse (plan adoption + leg arrival only) and dies
 // with the process, so a published-only feed reported 5 of 13 running tours.
 package flowfeed

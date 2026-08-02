@@ -5,7 +5,7 @@
 // no guard consults it; publishing is fire-and-forget and can never gate or relax
 // a buy.
 //
-// The feed has TWO inputs and is assembled at request time (sp-2uvec):
+// The feed has TWO inputs and is assembled at request time:
 //
 //  1. the published snapshots executors write at plan adoption and leg arrival —
 //     process-memory, so empty right after a daemon restart, and

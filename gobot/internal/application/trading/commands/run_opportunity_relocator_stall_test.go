@@ -11,7 +11,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/health"
 )
 
-// run_opportunity_relocator_stall_test.go — the tick verdict and its two consumers (sp-j1i49).
+// run_opportunity_relocator_stall_test.go — the tick verdict and its two consumers.
 //
 // The relocator shipped with no metrics, no stall observer, and a Skipped map nothing read, which
 // made a relocator losing EVERY decision indistinguishable from one with nothing to do. That is

@@ -21,12 +21,12 @@ type registrationStatusAPI interface {
 }
 
 // runPlayerRegisterFromToken imports an already-created agent (caller-supplied
-// token) into the local DB AND opens its era row (sp-pr42). Before this, the
-// from-token path wrote only the player row; `universe status` then reported
-// "NO ERA" and era/reset detection ran blind off the primaryPlayerID players[0]
-// fallback. It mirrors runPlayerRegisterNew minus the API Register call: same
-// open-era guard, same <symbol>-<resetDate> era name, and the same atomic
-// CreatePlayerWithEra so a player is never persisted without its era.
+// token) into the local DB AND opens its era row (sp-pr42). It mirrors
+// runPlayerRegisterNew minus the API Register call: same open-era guard, same
+// <symbol>-<resetDate> era name, and the same atomic CreatePlayerWithEra so a
+// player is never persisted without its era. A player row without its era makes
+// `universe status` report "NO ERA" and blinds era/reset detection, which falls
+// back to the primaryPlayerID players[0] row.
 func runPlayerRegisterFromToken(ctx context.Context, client registrationStatusAPI, store registrationStore, agentSymbol, token, faction string, out io.Writer) error {
 	if agentSymbol == "" {
 		return fmt.Errorf("--agent flag is required")

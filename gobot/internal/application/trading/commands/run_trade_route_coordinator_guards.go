@@ -1,6 +1,6 @@
 package commands
 
-// run_trade_route_coordinator_guards.go — pre-buy money/stale guards: the working-capital spend floor and the stale-ask abort (sp-wads move-only split).
+// run_trade_route_coordinator_guards.go — pre-buy money/stale guards: the working-capital spend floor and the stale-ask abort (move-only split).
 
 import (
 	"context"
@@ -65,7 +65,7 @@ func (h *RunTradeRouteCoordinatorHandler) treasuryCredits(ctx context.Context, p
 }
 
 // reserveHeadroom performs the single treasury read that BOTH working-capital
-// money guards share (sp-agzj): the circuit's spendFloorBreached (abort-on-breach)
+// money guards share: the circuit's spendFloorBreached (abort-on-breach)
 // and the tour's buy-time tranche shrink (executeBuy). It reports how many credits
 // may be spent right now while keeping treasury at or above reserve, so the two
 // call sites make the same read against the same fail-open/fail-closed contract
@@ -104,9 +104,9 @@ func (h *RunTradeRouteCoordinatorHandler) reserveHeadroom(ctx context.Context, p
 }
 
 // spendFloorBreached checks whether spending projectedCost right now would
-// drop treasury below reserve (sp-bp6f), setting the abort fields on response
+// drop treasury below reserve, setting the abort fields on response
 // and returning true if so — the caller must not proceed with the buy. It is the
-// circuit's abort-on-breach reading of the shared reserveHeadroom seam (sp-agzj).
+// circuit's abort-on-breach reading of the shared reserveHeadroom seam.
 //
 // Fails OPEN when NO treasury source is wired at all (neither the ledger-backed
 // reader nor an apiClient): the guard is simply unavailable, the same optional-port
@@ -179,7 +179,7 @@ func (h *RunTradeRouteCoordinatorHandler) staleAskAborts(
 	// LIVE, not budgeted: the whole point of this guard is that the RANKED basis
 	// came from a cache that can be many minutes stale, and executing on a moved
 	// basis has realised large losses. A budgeted cache read here would verify the
-	// basis against itself (sp-ntgfj).
+	// basis against itself.
 	if err := h.marketRefresher.ScanAndSaveMarket(shared.WithLiveScanRequired(ctx), uint(playerID), lane.SourceWaypoint); err != nil {
 		logger.Log("WARNING", "Could not refresh source market to live-verify basis - proceeding on ranked basis", map[string]interface{}{
 			"waypoint": lane.SourceWaypoint, "good": lane.Good, "error": err.Error(),

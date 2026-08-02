@@ -139,13 +139,13 @@ type RunFleetCoordinatorCommand struct {
 	ShipSymbols []string // Deprecated: kept for backward compatibility, no longer used
 	ContainerID string   // Coordinator's own container ID
 
-	// DedicatedShips (sp-snmb): operator-supplied ship symbols permanently
+	// DedicatedShips: operator-supplied ship symbols permanently
 	// reserved for this coordinator, parametrized via CLI/config - e.g.
 	// --dedicated-ships. NOT a hardcoded default; an empty list means no
 	// dedicated fleet and the coordinator behaves exactly as before.
 	DedicatedShips []string
 
-	// StandbyStations (sp-snmb): operator-supplied waypoint symbols an idle
+	// StandbyStations: operator-supplied waypoint symbols an idle
 	// dedicated ship homes to, parametrized via CLI/config - e.g.
 	// --standby-stations. An empty list disables homing (dedicated ships
 	// still get the claim-filter, they just don't relocate when idle).
@@ -161,7 +161,7 @@ type RunFleetCoordinatorCommand struct {
 	// while the coordinator ran — the removal survives the restart (RULINGS #2).
 	DedicatedShipsSeeded bool
 
-	// Idle-gap arb (sp-1z2h): harvest the dedicated fleet's idle time with
+	// Idle-gap arb: harvest the dedicated fleet's idle time with
 	// hub-local one-shot arb legs (see contract.IdleArbDispatcher). All knobs
 	// flow from the persisted launch config (RULINGS #5); zero values take the
 	// contract package's documented defaults. IdleArbDisabled is the escape
@@ -172,23 +172,23 @@ type RunFleetCoordinatorCommand struct {
 	IdleArbMaxSpend     int     // per-leg spend cap (default 100k)
 	IdleArbMinMargin    int     // absolute per-unit margin floor (default 1)
 	IdleArbIntervalSecs int     // dispatch tick in seconds (default 90)
-	// sp-uohe money guards (all parametrized, RULINGS #5):
+	// Money guards (all parametrized, RULINGS #5):
 	IdleArbLeashRadius     float64  // tight money-guard leash radius (default 80)
 	IdleArbMaxLegSecs      int      // projected per-leg flight-time cap, seconds (default 480)
 	IdleArbMarginVerifyPct int      // live-verify floor as % of quoted margin (default 80)
 	IdleArbBlacklist       []string // excluded goods; nil → default [ELECTRONICS]
-	// sp-lbbm lane mutex: post-termination recovery hold, seconds (default 1200 =
+	// Lane mutex: post-termination recovery hold, seconds (default 1200 =
 	// 20min). Keeps a (good, sink) lane closed after its leg terminates so
 	// sequential passes never re-dump a sink the last leg just depressed.
 	IdleArbRecoveryHoldSecs int
-	// sp-u4tv per-trip live-profitability floor (all parametrized, RULINGS #5):
+	// Per-trip live-profitability floor (all parametrized, RULINGS #5):
 	IdleArbMinNetProfit    int // absolute after-fuel net floor per unit (default 100)
 	IdleArbNetProfitPct    int // relative net floor as % of buy price (default 20)
 	IdleArbFuelCostPerUnit int // per-cargo-unit fuel estimate subtracted from spread (default 35)
 
-	// CommandCargoBaseline (sp-uj6a, RULINGS #5): minimum cargo capacity a
+	// CommandCargoBaseline (RULINGS #5): minimum cargo capacity a
 	// COMMAND-role hull must carry to remain a contract-selection candidate
-	// once IncludeCommandShip has opted it into the pool (sp-4a4e). A stock
+	// once IncludeCommandShip has opted it into the pool. A stock
 	// hull below this bar double-trips a load a light hauler single-trips,
 	// spending its whole speed advantage on the extra leg for a net loss, so
 	// it is filtered back out at selection time. Zero takes the contract
@@ -196,7 +196,7 @@ type RunFleetCoordinatorCommand struct {
 	// upgraded frigate (115 cargo) clears it.
 	CommandCargoBaseline int
 
-	// Auto-liquidation (sp-39oi): a hull FilterUnrelatedCargo parks for holding cargo
+	// Auto-liquidation: a hull FilterUnrelatedCargo parks for holding cargo
 	// unrelated to the active contract self-clears via a one-shot cargo_liquidation
 	// worker instead of sitting filtered out of candidacy forever — the fleet-scale
 	// jam this closes (every dual-duty contract hull stranded 6-77u of leftovers and
@@ -238,7 +238,7 @@ type BalanceShipPositionResponse struct {
 }
 
 // ============================================================================
-// Dedicated Ship Homing (sp-snmb)
+// Dedicated Ship Homing
 // ============================================================================
 
 // HomeShipCommand requests sending an idle dedicated hull to its FIXED placement slot

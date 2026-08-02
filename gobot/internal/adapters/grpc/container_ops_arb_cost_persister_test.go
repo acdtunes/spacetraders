@@ -11,7 +11,7 @@ import (
 	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
 )
 
-// sp-dkj7: the config-backed persister must MERGE the buy cost into the run's persisted
+// The config-backed persister must MERGE the buy cost into the run's persisted
 // config — adding prior_attempt_cost while preserving every launch knob the recovery
 // rebuild also needs — and a full round-trip back through buildArbCoordinatorCommand must
 // then reload it, so a restart-resumed run reports honest P&L (RULINGS #2).

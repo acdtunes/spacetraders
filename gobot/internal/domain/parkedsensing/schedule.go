@@ -26,7 +26,7 @@ type SlotSchedule struct {
 	//
 	// The distinction is load-bearing: the fleet's market-scan budget declines
 	// most turns and writes nothing, so anchoring on "last produced data" would
-	// leave every declined slot permanently due (sp-zml2u). The freshness claim
+	// leave every declined slot permanently due. The freshness claim
 	// is a separate stamp this type never sees.
 	LastScan time.Time
 }

@@ -16,7 +16,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
-// sp-br0m: a factory input buy records the a5j7 selector branch that chose its source into the
+// A factory input buy records the a5j7 selector branch that chose its source into the
 // PURCHASE_CARGO transaction metadata (beside good_symbol), so the analyst can grade A1
 // (supply-first compliance) straight from the ledger and split legal RESCUE buys from
 // violations. These pins run the REAL CargoTransactionHandler through the REAL ledger recorder

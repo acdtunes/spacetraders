@@ -88,7 +88,7 @@ type shipListRow struct {
 	CargoCapacity int32  `json:"cargoCapacity"`
 	EngineSpeed   int32  `json:"engineSpeed"`
 	Role          string `json:"role"`
-	// Fleet (sp-ioqt) is the ship's permanent dedicated-fleet tag (sp-snmb),
+	// Fleet is the ship's permanent dedicated-fleet tag,
 	// or "-" when unreserved. This is the sp-lybx-prevention column: it
 	// surfaces a hull pinned to the wrong fleet at purchase time without
 	// requiring a per-ship cross-check against `fleet list`.
@@ -151,7 +151,7 @@ func buildShipRows(ships []*pb.ShipInfo, infos map[string]persistence.ShipAssign
 			}
 			switch {
 			case info.AssignmentOwner == string(navigation.AssignmentOwnerCaptain):
-				// sp-i1ku: a captain reservation has no ContainerID (it was
+				// A captain reservation has no ContainerID (it was
 				// never a container claim), so without this branch it would
 				// fall through to "-" and look identical to a genuinely idle,
 				// unassigned ship. Show the reservation itself, plus the
@@ -651,7 +651,7 @@ Examples:
 }
 
 // shipReservationRepo builds the ship repository and resolves the player for the
-// cargo-reservation CLI verbs (sp-1vhv), mirroring newShipSellCommand's direct-DB
+// cargo-reservation CLI verbs, mirroring newShipSellCommand's direct-DB
 // wiring. Reservation reads/writes need only the ship repo — no mediator or market
 // repo — so this is a trimmed copy of that command's dependency assembly.
 func shipReservationRepo() (*api.ShipRepository, int, error) {
@@ -690,7 +690,7 @@ func shipReservationRepo() (*api.ShipRepository, int, error) {
 	return shipRepo, resolvedPlayerID, nil
 }
 
-// newShipReserveCargoCommand marks a good as do-not-sell on a hull (sp-1vhv), so
+// newShipReserveCargoCommand marks a good as do-not-sell on a hull, so
 // no coordinator (tour/arb/circuit/held-liquidation) or CLI sell can liquidate it.
 // Ship hardware (MODULE_*/MOUNT_*) is already reserved by default; this verb pins
 // an additional good, or re-protects a module previously released with
@@ -743,7 +743,7 @@ Examples:
 	return cmd
 }
 
-// newShipUnreserveCargoCommand releases a good for sale on a hull (sp-1vhv),
+// newShipUnreserveCargoCommand releases a good for sale on a hull,
 // overriding the default MODULE_*/MOUNT_* reservation — the deliberate-resale
 // escape hatch. After this, a coordinator or CLI sell of the good is permitted.
 func newShipUnreserveCargoCommand() *cobra.Command {
@@ -793,7 +793,7 @@ Examples:
 	return cmd
 }
 
-// newShipReservedCargoCommand shows a hull's cargo reservation state (sp-1vhv):
+// newShipReservedCargoCommand shows a hull's cargo reservation state:
 // the per-hull overrides and, for each good currently in the hold, whether it is
 // reserved and why (default classification vs an explicit override).
 func newShipReservedCargoCommand() *cobra.Command {
@@ -956,7 +956,7 @@ Examples:
 	return cmd
 }
 
-// newShipRouteCommand creates the ship route subcommand (sp-6hjw)
+// newShipRouteCommand creates the ship route subcommand
 func newShipRouteCommand() *cobra.Command {
 	var (
 		shipSymbol  string

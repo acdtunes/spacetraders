@@ -71,7 +71,7 @@ func TestAutosizerResolvesKnobsFromLiveConfig(t *testing.T) {
 	require.Equal(t, "SHIP_REFINING_FREIGHTER", cmd.ShipTypeHeavies)
 }
 
-// sp-ts82: a STALE persisted knob from a prior boot must be discarded for the current config.yaml
+// A STALE persisted knob from a prior boot must be discarded for the current config.yaml
 // value on the recovery rebuild.
 func TestAutosizerLiveKnobOverridesStalePersisted(t *testing.T) {
 	s := newFleetAutosizerTestServer(config.FleetAutosizerConfig{
@@ -94,7 +94,7 @@ func TestAutosizerUnsetKnobsAreZeroSentinel(t *testing.T) {
 	require.Nil(t, cmd.PreferDemandProximalYard, "unset proximal-yard must stay nil so the coordinator applies its true default")
 }
 
-// sp-a3yn DEPLOY-SAFETY PIN: with no explorer_hulls_enabled anywhere, the built command carries
+// DEPLOY-SAFETY PIN: with no explorer_hulls_enabled anywhere, the built command carries
 // ExplorerHullsEnabled=false — NOTHING boot-arms the ~819k ROI-exempt explorer buy. A bare deploy is
 // inert on the explorer class.
 func TestAutosizerExplorerDisarmedByDefault(t *testing.T) {
@@ -104,7 +104,7 @@ func TestAutosizerExplorerDisarmedByDefault(t *testing.T) {
 		"absent config must leave the explorer class DISARMED — nothing boot-arms the ROI-exempt buy")
 }
 
-// sp-a3yn: the captain arming the explorer (config.yaml explorer_hulls_enabled=true) + its knobs
+// The captain arming the explorer (config.yaml explorer_hulls_enabled=true) + its knobs
 // round-trips through the whole pipeline into the built command.
 func TestAutosizerResolvesExplorerKnobsFromLiveConfig(t *testing.T) {
 	s := newFleetAutosizerTestServer(config.FleetAutosizerConfig{
@@ -122,7 +122,7 @@ func TestAutosizerResolvesExplorerKnobsFromLiveConfig(t *testing.T) {
 	require.Equal(t, "SHIP_EXPLORER", cmd.ShipTypeExplorer)
 }
 
-// sp-a3yn DEPLOY-SAFETY PIN (sp-ts82 live discipline): dropping explorer_hulls_enabled from
+// DEPLOY-SAFETY PIN (sp-ts82 live discipline): dropping explorer_hulls_enabled from
 // config.yaml must CLEAR a stale persisted arm from a prior boot — otherwise a stale arm would
 // silently keep buying the ROI-exempt explorer after the captain disarmed it.
 func TestAutosizerExplorerArmingClearsStalePersisted(t *testing.T) {

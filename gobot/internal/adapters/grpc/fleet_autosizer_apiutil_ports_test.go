@@ -17,7 +17,7 @@ type fakeBudgetReporter struct{ report apibudget.DualReport }
 
 func (f *fakeBudgetReporter) Report() apibudget.DualReport { return f.report }
 
-// sp-a5dq: the reader surfaces the rolling-5m utilization percent as READABLE — the same
+// The reader surfaces the rolling-5m utilization percent as READABLE — the same
 // throughput/ceiling basis the ApproachCeiling alert uses — so the api_util guard can actually
 // gate concurrency growth. This is the fix for the "no per-coordinator read path → fail-open" stub.
 func TestAutosizerAPIUtilReader_RollingUtilizationIsReadable(t *testing.T) {
@@ -58,7 +58,7 @@ func TestAutosizerAPIUtilReader_AbsentSurface_FailsClosed(t *testing.T) {
 	require.False(t, readable, "a zero-ceiling report must fail closed")
 }
 
-// sp-a5dq: the REAL *metrics.APIBudgetTracker (the daemon-startup singleton) satisfies the reader's
+// The REAL *metrics.APIBudgetTracker (the daemon-startup singleton) satisfies the reader's
 // reporter seam and yields a readable utilization once wired. Uses a mock clock so the recorded
 // events land inside the rolling window instantly.
 func TestAutosizerAPIUtilReader_RealTracker_IsReadable(t *testing.T) {

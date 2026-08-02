@@ -30,7 +30,7 @@ import (
 //     here would erase a whole system's topology on a transient blip.
 //   - the negative-result BACKOFF MARKER (connected_system = "") is not an edge — it records
 //     the UNREADABLE ORIGIN gate, which no connection set will ever list. Excluding it is what
-//     stops a reconcile from silently clearing the sp-ikx1 backoff and re-opening the 400-storm.
+//     stops a reconcile from silently clearing the backoff and re-opening the 400-storm.
 //
 // Era-scoped exactly like every other read/write here, so a dead era's rows are never touched.
 func (r *GormGateEdgeRepository) PruneContradictedEdges(ctx context.Context, systemSymbol string, authoritativeConnections []string) (int, error) {

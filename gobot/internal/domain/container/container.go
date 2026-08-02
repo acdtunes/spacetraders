@@ -54,7 +54,7 @@ const (
 	ContainerTypeScoutReposition          ContainerType = "SCOUT_REPOSITION"
 	// ContainerTypeWorkerFerry is the one-shot cross-system ferry worker (twin of
 	// ContainerTypeScoutReposition). Its former spawner — the worker_rebalancer_coordinator — was
-	// retired with the factory ops (sp-hoj8u); the ferry primitive is retained.
+	// retired with the factory ops; the ferry primitive is retained.
 	ContainerTypeWorkerFerry ContainerType = "WORKER_FERRY"
 	// ContainerTypeCargoLiquidation is the one-shot cargo-liquidation worker the contract
 	// fleet coordinator spawns on a parked-with-cargo hull, twin of
@@ -159,7 +159,7 @@ const (
 	// composing the reused arb executor. Coordinator-managed, continuous (-1) until the worker
 	// finds no lane; recovery-safe (stateless re-derive from the DB on restart).
 	ContainerTypeLongHaulArb ContainerType = "LONGHAUL_ARB"
-	// ContainerTypeProbeBuyerCoordinator (PROBE_BUYER_COORDINATOR, sp-f082y) was REMOVED with the
+	// ContainerTypeProbeBuyerCoordinator (PROBE_BUYER_COORDINATOR) was REMOVED with the
 	// probe-buyer retirement (Admiral 2026-07-28). Probe supply belongs to the sensing coordinator.
 	//
 	// Persisted rows carrying the old string are not orphaned: recovery matches on COMMAND type, and

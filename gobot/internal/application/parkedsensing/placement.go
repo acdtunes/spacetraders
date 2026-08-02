@@ -68,7 +68,7 @@ const placementFailureBudgetMultiple = 3
 // placementCrossingReserve is the number of a tick's accepted-command budget held
 // back for hulls still travelling, when arrival work would otherwise take it all.
 //
-// WHY A RESERVE IS NEEDED AT ALL (sp-ygovs). Arrivals are spent first because an
+// WHY A RESERVE IS NEEDED AT ALL. Arrivals are spent first because an
 // arrival CONVERTS a hull into coverage and removes the slot from the worklist,
 // while a gate hop only moves it one ring closer and leaves it competing next tick.
 // But a class that always wins is precisely how sp-cwnwb's starvation worked, and
@@ -324,18 +324,18 @@ type placementWork struct {
 // arrivalsFirst reorders one tick's worklist so hulls that have ARRIVED are served
 // before hulls still travelling, and reads each hull's position once on the way.
 //
-// THE ORDERING IS THE WHOLE OF sp-ygovs. An arrival converts a hull into coverage
+// THE ORDERING IS THE WHOLE POINT. An arrival converts a hull into coverage
 // and takes its slot out of the worklist for good; a gate hop moves it one ring
 // closer and leaves it competing for the same budget next tick. Serving arrivals
 // first therefore shortens the queue, which speeds everything behind it — and it
 // costs no extra API budget at all, because it spends the SAME accepted-command
-// budget in a better order. Live, the old order read `dispatched 10 docking 0
+// budget in a better order. Live, ungrouped ledger order read `dispatched 10 docking 0
 // parked 0` for three consecutive ticks while 13 hulls stood on their targets: 287
 // crossing slots reached the budget first every tick, so hulls that were already
 // physically at their destination took ~30 minutes to berth.
 //
 // THE RESERVE IS NOT OPTIONAL, see placementCrossingReserve. A preference that
-// always wins is how the sp-cwnwb starvation worked, and the rotation cannot undo
+// always wins is how a class starves, and the rotation cannot undo
 // it, so the crossing class keeps a floor whenever it has work.
 //
 // Order within each class is left exactly as the ledger returned it — least
@@ -350,8 +350,8 @@ type placementWork struct {
 // both leave the slot exactly as it is, to be retried once the ledger can answer.
 //
 // COST. One indexed position read per in-flight slot per tick, against the database
-// and never the API (see ParkedShipReader). The previous shape read only as far as
-// the budget reached — around 40 slots — so this is roughly a 300-read tick at the
+// and never the API (see ParkedShipReader). Reading only as far as
+// the budget reaches would be around 40 slots; this is roughly a 300-read tick at the
 // current backlog, on a 756-row table keyed by the exact lookup. That is the price
 // of knowing which slots have arrived BEFORE choosing which to serve, and it buys
 // the reordering without touching the API budget that is actually scarce.
@@ -628,7 +628,7 @@ func flyToSlot(ctx context.Context, pl PlacementPorts, playerID int, slot Queued
 // there first, the placement is already where this tick wanted to put it.
 //
 // It takes the SLOT rather than a bare waypoint because a waypoint no longer
-// identifies a placement on its own (sp-dpfp8): a yard can hold a MARKET row and
+// identifies a placement on its own: a yard can hold a MARKET row and
 // a SPARE row at once, and this hull is flying to exactly one of them.
 func transitionInFlight(ctx context.Context, pl PlacementPorts, playerID int, slot QueuedSlot, from, to string) error {
 	err := pl.Ledger.TransitionSlot(ctx, playerID, slot.Waypoint, slot.Kind, from, to, SlotFields{})

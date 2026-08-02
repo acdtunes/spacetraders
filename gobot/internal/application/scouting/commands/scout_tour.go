@@ -16,9 +16,9 @@ import (
 
 const (
 	// defaultDirectScanInterval is the probe market-scan cadence applied when a
-	// scout_tour is launched with no ScanInterval supplied (sp-zixw) — the
+	// scout_tour is launched with no ScanInterval supplied — the
 	// CLI/legacy direct-launch path (workflow scout-markets and the daemon
-	// ScoutTour RPC). Replaces the old hardcoded 5-minute wait, which wasted API
+	// ScoutTour RPC). A 5-minute cadence wastes API
 	// budget at 54 hulls; the captain's ask was a 15-30m cap, so direct launches
 	// default to 15m. Coordinator-spawned tours instead derive their own interval
 	// from the post's freshness target (deriveScanInterval,
@@ -36,7 +36,7 @@ const (
 
 	// defaultTourStartJitterMax is the phase-jitter ceiling applied to a scout
 	// tour's start when tour_start_jitter_max_seconds is 0/absent in config.yaml
-	// (sp-x8i5, RULINGS #5). ~45 scouts booting with similar scan intervals were
+	// (RULINGS #5). ~45 scouts booting with similar scan intervals were
 	// waking in near-lockstep: the burst-window log showed 1080 scout_tour + 725
 	// scout_post_coordinator lines (43% of all activity) inside one 6-minute
 	// window, p99 limiter wait 4s, while the 15m-average utilization read a
@@ -49,7 +49,7 @@ const (
 )
 
 // stableJitter derives a deterministic pseudo-random duration in [0, ceiling)
-// from id via FNV-1a — NOT math/rand (sp-x8i5). The offset must be the SAME on
+// from id via FNV-1a — NOT math/rand. The offset must be the SAME on
 // every build (fresh launch or restart recovery) for a given id, or a daemon
 // restart would silently reshuffle every scout's phase and could re-cohere the
 // very wave this fix decoheres. ceiling<=0 returns 0 (no jitter).
@@ -62,7 +62,7 @@ func stableJitter(id string, ceiling time.Duration) time.Duration {
 	return time.Duration(h.Sum64() % uint64(ceiling))
 }
 
-// clampScanInterval bounds d to [scanIntervalFloor, scanIntervalCap] (sp-zixw).
+// clampScanInterval bounds d to [scanIntervalFloor, scanIntervalCap].
 // Shared by effectiveScanInterval (direct launches) and deriveScanInterval
 // (run_scout_post_coordinator.go) so both paths enforce one budget.
 func clampScanInterval(d time.Duration) time.Duration {
@@ -75,7 +75,7 @@ func clampScanInterval(d time.Duration) time.Duration {
 	return d
 }
 
-// circuitPaceInterval is the END-OF-CIRCUIT wait for a multi-market tour (sp-enry):
+// circuitPaceInterval is the END-OF-CIRCUIT wait for a multi-market tour:
 // it paces the circuit PERIOD to target — waiting only the remainder after the
 // circuit's own travel time, never a full extra interval and never a negative
 // duration. Two properties fall out of this one formula:
@@ -83,7 +83,7 @@ func clampScanInterval(d time.Duration) time.Duration {
 //   - The API-budget invariant holds. Each partition is re-scanned about once per
 //     target regardless of how many probes N split a system, so total scans/hour ≈
 //     markets / freshness-target — INDEPENDENT of N. More probes buy smaller
-//     partitions (fresher data), NOT more API calls (sp-enry, Admiral doctrine).
+//     partitions (fresher data), NOT more API calls (Admiral doctrine).
 //   - A single-hull post over a big system stays byte-identical to the pre-enry
 //     travel-paced loop: when the circuit already takes at least the target (a large
 //     partition), the wait is zero and the probe loops as fast as travel allows — no
@@ -130,16 +130,16 @@ type ScoutTourCommand struct {
 	CoordinatorID string
 
 	// ScanInterval is the cadence continuousMarketScanning waits between market
-	// scans at a stationary post (sp-zixw). Coordinator-spawned tours set it from
+	// scans at a stationary post. Coordinator-spawned tours set it from
 	// the post's freshness target (deriveScanInterval, run_scout_post_coordinator.go);
 	// zero/negative means "unset" — the direct/legacy launch path — and resolves to
 	// defaultDirectScanInterval. Either way effectiveScanInterval clamps the final
 	// value to [scanIntervalFloor, scanIntervalCap] so no path can drift outside the
-	// API budget at 54+ hulls (replaces the old hardcoded 5m wait).
+	// API budget at 54+ hulls.
 	ScanInterval time.Duration
 
 	// StartJitterMaxSecs bounds a one-time deterministic phase offset waited out
-	// before this tour's first scan (sp-x8i5): derived from a stable hash of
+	// before this tour's first scan: derived from a stable hash of
 	// ShipSymbol, so the SAME ship always gets the SAME offset (no math/rand,
 	// stable across restarts) in [0, StartJitterMaxSecs). Zero/absent resolves to
 	// defaultTourStartJitterMax. Decoheres a fleet of scouts that would otherwise
@@ -194,9 +194,9 @@ func (h *ScoutTourHandler) SetScanDedupWindow(window time.Duration) {
 }
 
 // NewScoutTourHandler creates a new scout tour command handler. A nil clock
-// defaults to shared.NewRealClock() (sp-zixw), matching the sibling coordinator
+// defaults to shared.NewRealClock(), matching the sibling coordinator
 // handlers' constructor idiom. A nil shipyardScanner disables the piggybacked
-// shipyard scan (sp-42ow) without affecting market scanning.
+// shipyard scan without affecting market scanning.
 func NewScoutTourHandler(
 	shipRepo navigation.ShipRepository,
 	mediator common.Mediator,
@@ -249,7 +249,7 @@ func (h *ScoutTourHandler) Handle(ctx context.Context, request common.Request) (
 }
 
 // waitStartJitter waits out this tour's deterministic start-of-tour phase offset
-// (sp-x8i5) before any navigation/scanning begins. Applied exactly once, here —
+// before any navigation/scanning begins. Applied exactly once, here —
 // the scan interval itself stays fixed for the tour's lifetime, so a one-time
 // start offset permanently decoheres the wave through every later wake cycle;
 // re-jittering per-iteration would buy nothing further and would complicate
@@ -570,7 +570,7 @@ func (h *ScoutTourHandler) continuousMarketScanning(
 }
 
 // sleepInterruptibly waits for d on h.clock, returning true if the wait completed
-// normally or false if ctx was cancelled first (sp-zixw). Clock-injected so tests
+// normally or false if ctx was cancelled first. Clock-injected so tests
 // run on a MockClock with no wall-time cost, mirroring the sleepInterruptibly
 // idiom used by run_factory_coordinator.go and run_trade_route_coordinator_travel.go
 // — this handler's own private copy, returning bool so the caller can react to
@@ -592,7 +592,7 @@ func (h *ScoutTourHandler) sleepInterruptibly(ctx context.Context, d time.Durati
 }
 
 // executeMultiMarketTour executes a tour visiting multiple markets in sequence.
-// Each circuit is travel-paced with NO per-hop waits (Admiral doctrine, sp-enry):
+// Each circuit is travel-paced with NO per-hop waits (Admiral doctrine):
 // the probe navigates market-to-market scanning on arrival, then — for an
 // infinite/standing tour — paces the CIRCUIT PERIOD to the freshness target once at
 // the end (circuitPaceInterval) so a small partition does not over-scan. This is the
@@ -639,11 +639,11 @@ func (h *ScoutTourHandler) executeMultiMarketTour(
 
 		response.Iterations++
 
-		// End-of-circuit pacing (sp-enry): pace the circuit period to the freshness
+		// End-of-circuit pacing: pace the circuit period to the freshness
 		// target. Skipped after the FINAL circuit of a finite tour (nothing follows),
 		// and a zero wait — a big partition whose circuit already exceeds the target —
-		// emits no wait and no log, keeping a single-hull big-system tour byte-identical
-		// to the pre-enry travel-paced loop.
+		// emits no wait and no log, so a single-hull big-system tour stays purely
+		// travel-paced.
 		lastCircuit := cmd.Iterations != -1 && iteration+1 >= cmd.Iterations
 		if lastCircuit {
 			continue

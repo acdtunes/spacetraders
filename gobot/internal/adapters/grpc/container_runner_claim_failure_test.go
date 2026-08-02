@@ -13,7 +13,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// sp-cr86: a container that dies PRE-CLAIM (spawns, then fails to claim its ship at
+// A container that dies PRE-CLAIM (spawns, then fails to claim its ship at
 // startup - e.g. the ship is already assigned to another live container, or reserved
 // by the captain) must not leave its row stuck at RUNNING forever. Start() persists
 // RUNNING to the DB and only THEN attempts the ship claim; before this fix, a claim
@@ -41,7 +41,7 @@ func TestStartTerminalizesRowWhenShipClaimFails(t *testing.T) {
 		map[string]interface{}{"ship_symbol": "SHIP-BUSY"}, nil)
 	require.NoError(t, s.containerRepo.Add(context.Background(), entity, "navigate_ship"))
 
-	// MockClock makes the sp-ku8e retry backoff instant.
+	// MockClock makes the retry backoff instant.
 	runner := NewContainerRunner(entity, s.mediator, nil, s.logRepo, s.containerRepo, s.shipRepo, claimTestClock())
 
 	err := runner.Start()
@@ -59,7 +59,7 @@ func TestStartTerminalizesRowWhenShipClaimFails(t *testing.T) {
 // sp-l7h2 Phase 2: a container carrying an "operation" metadata key claims its
 // hull through the atomic operation-checked ClaimShip. A hull dedicated to a
 // foreign fleet is rejected INSIDE that call's locked transaction — here the
-// rejection must ride the same sp-cr86 terminal path as any other claim
+// rejection must ride the same terminal path as any other claim
 // failure (row FAILED claim_failed, no stolen hull, no zombie runner).
 func TestStartTerminalizesRowWhenOperationClaimIsRejected(t *testing.T) {
 	s, db, playerID := newRecoveryTestServer(t)
@@ -86,7 +86,7 @@ func TestStartTerminalizesRowWhenOperationClaimIsRejected(t *testing.T) {
 	// our cleanup, and no legacy read-modify-write may have slipped past the claim.
 	require.False(t, pinnedShip.IsAssigned())
 	require.Empty(t, repo.recordedClaims())
-	// sp-ku8e: a dedication rejection is permanent — it must fail fast on the first
+	// A dedication rejection is permanent — it must fail fast on the first
 	// attempt, never enter the transient handoff-race retry loop.
 	require.Equal(t, 1, repo.claimCallCount(), "a dedication rejection must not be retried")
 	require.Nil(t, s.registeredRunner(containerID))
@@ -98,7 +98,7 @@ func TestStartTerminalizesRowWhenOperationClaimIsRejected(t *testing.T) {
 // the operation-keyed ClaimShip on the command frigate — the exact path every
 // sp-gvvph guard (scaler reclaim / launch viability) bypasses. That claim is now
 // rejected at ClaimShip with the standing command-hull error, so the recovered
-// container must ride the same sp-cr86 terminal path as any permanent claim
+// container must ride the same terminal path as any permanent claim
 // failure (row FAILED claim_failed, frigate untouched, no zombie runner) and fail
 // FAST — a command-hull rejection is permanent, never entering the transient
 // handoff-race retry — so the flagship can never come back as a warehouse.
@@ -189,12 +189,12 @@ func TestStartLeavesRowRunningWhenClaimSucceeds(t *testing.T) {
 	require.Equal(t, containerID, idleShip.ContainerID())
 }
 
-// sp-sg35: the legacy (non-operation) claim path must enforce the SAME
+// The legacy (non-operation) claim path must enforce the SAME
 // fleet-dedication guard as the atomic ClaimShip, closing the operation-key side
 // door — a container that never stamped an "operation" key (here a captain
 // navigate) must NOT be able to claim a hull pinned to a foreign fleet through
 // the legacy FindBySymbol+AssignToContainer+Save fallback. The rejection is the
-// standing ShipDedicatedToOtherFleetError, so it rides the same sp-cr86 terminal
+// standing ShipDedicatedToOtherFleetError, so it rides the same terminal
 // path as any other permanent claim failure (row FAILED, hull untouched, no
 // zombie runner) and fails fast without entering the transient handoff retry.
 func TestStartFailsFastWhenLegacyClaimHitsForeignDedication(t *testing.T) {
@@ -321,13 +321,13 @@ func TestStartFailsLoudlyWhenTheHullIsClaimedBetweenLoadAndPersist(t *testing.T)
 }
 
 // claimTestClock returns a MockClock whose Sleep advances virtual time instantly,
-// so the sp-ku8e claim-retry backoff adds no real delay to these tests while the
+// so the claim-retry backoff adds no real delay to these tests while the
 // production RealClock still sleeps for real.
 func claimTestClock() *shared.MockClock {
 	return &shared.MockClock{CurrentTime: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
 }
 
-// handoffRaceShipRepo models the sp-ku8e claim-handoff race for the legacy
+// handoffRaceShipRepo models the claim-handoff race for the legacy
 // (non-operation) assign path: FindBySymbol serves a hull still held by a
 // just-finished container for the first releaseAfterFinds reads, then serves it
 // released — exactly the sub-second window where navigate's claim outruns orbit's
@@ -391,7 +391,7 @@ func (r *handoffRaceShipRepo) findCount() int {
 	return r.finds
 }
 
-// sp-ku8e core acceptance: a captain CLI chain (orbit then navigate ~1s apart)
+// Core acceptance: a captain CLI chain (orbit then navigate ~1s apart)
 // races on the claim handoff — navigate's claim lands while orbit's synchronous
 // release is still in flight, surfacing as a transient ShipAlreadyAssignedError.
 // The claim must retry briefly and succeed once the release lands, WITHOUT a
@@ -423,7 +423,7 @@ func TestStartRetriesTransientClaimHandoffRaceThenSucceeds(t *testing.T) {
 	require.Equal(t, containerID, repo.saved.ContainerID())
 }
 
-// sp-ku8e / sp-l7h2: a captain reservation is a standing rejection, not a transient
+// A captain reservation is a standing rejection, not a transient
 // handoff race — assigning a captain-reserved hull to a container must fail fast on
 // the FIRST attempt (no retry), and still terminalize the row like any claim failure.
 func TestStartFailsFastWhenHullIsCaptainReserved(t *testing.T) {
@@ -450,7 +450,7 @@ func TestStartFailsFastWhenHullIsCaptainReserved(t *testing.T) {
 	require.Nil(t, s.registeredRunner(containerID))
 }
 
-// sp-ku8e: the transient-race retry must be BOUNDED — a hull held by a live
+// The transient-race retry must be BOUNDED — a hull held by a live
 // container for the whole budget must make the claim give up after exactly
 // claimRetryMaxAttempts attempts (no retry storm) and terminalize the row.
 func TestStartStopsRetryingClaimAfterBoundedAttempts(t *testing.T) {

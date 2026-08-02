@@ -63,7 +63,7 @@ type farSinkReach struct {
 // predicted at the ARRIVAL BOUND (trading.ArrivalBoundHopModel) — the fitted crossing shape at
 // its measured p90 — rather than at the solver's price.
 //
-// THOSE ARE DIFFERENT QUESTIONS, AND THE CONSTANT THIS REPLACES CONFLATED THEM (sp-dct0r). It
+// THOSE ARE DIFFERENT QUESTIONS, AND THE CONSTANT THIS REPLACES CONFLATED THEM. It
 // aged 1800s per hop "mirroring the solver's INTER_SYSTEM_TRAVEL_SECONDS", on the stated ground
 // that the ager must never diverge from the price. But the price answers "is this crossing worth
 // its time" and is rightly a MEDIAN, while the only thing this feeds — survivesArrival — asks
@@ -243,7 +243,7 @@ func (h *RunTourCoordinatorHandler) farSinkReachAt(
 			reach.maxHops = hops
 		}
 		// Only >1-hop pairs need correcting; a 1-hop pair already prices exactly at the
-		// solver's default single-crossing charge (base + per_hop, sp-smbgd).
+		// solver's default single-crossing charge (base + per_hop).
 		if hops > 1 {
 			from, to := sinkSystem, sys
 			if to < from {
@@ -368,8 +368,8 @@ func mergeInterSystemHops(base, proven []routing.InterSystemHopDistance) []routi
 }
 
 // logFarSinkAdmissions names the captured lanes so the counterpart of the long-standing
-// "Tour horizon dropped ..." line is equally legible: what the horizon used to lose and
-// what it now takes are readable from the same log.
+// "Tour horizon dropped ..." line is equally legible: what the horizon loses and
+// what it takes are readable from the same log.
 func (h *RunTourCoordinatorHandler) logFarSinkAdmissions(ctx context.Context, captured []unreachableLane) {
 	if len(captured) == 0 {
 		return

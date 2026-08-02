@@ -10,7 +10,7 @@ import (
 )
 
 // probe_sensing_adoption.go is the standing retry behind the cutover's one-shot
-// probe adoption (sp-0gp21).
+// probe adoption.
 //
 // THE LEAK IT CLOSES. The cutover adopts the touring model's orphaned probes
 // exactly once, and it skips any hull it cannot place — correctly, since a hull
@@ -57,12 +57,11 @@ const legacyProbeBuyerFleetTag = "probe-buyer"
 // adoptableFleetTag reports whether a hull's dedicated_fleet marks it as an ORPHAN this pass may
 // absorb, rather than a hull that belongs to somebody.
 //
-// An ALLOWLIST, not a denylist, and that direction is the guard (RULINGS #7). Adoption used to
-// require exactly freshnessScoutFleetTag — a tag no live hull carries, which is why the pass had
-// never adopted anything — so the fix is to widen it. But "widen" must not become "take any probe
-// you find": a hull dedicated to a live foreign fleet already has a single writer, and absorbing it
-// would give one hull two. Listing what is adoptable means a fleet tag invented later is refused by
-// default and has to be added deliberately; a denylist would silently absorb it the day it appears.
+// An ALLOWLIST, not a denylist, and that direction is the guard (RULINGS #7). Widening it must not
+// become "take any probe you find": a hull dedicated to a live foreign fleet already has a single
+// writer, and absorbing it would give one hull two. Listing what is adoptable means a fleet tag
+// invented later is refused by default and has to be added deliberately; a denylist would silently
+// absorb it the day it appears.
 //
 // The four members are the only ways a probe can be nobody's:
 //
@@ -72,8 +71,8 @@ const legacyProbeBuyerFleetTag = "probe-buyer"
 //   - SensingParkedFleetTag     OUR tag, present on a hull with no row — the other half of a
 //     failed write (recorded-then-tag-failed leaves a row, so
 //     holds.hulls strikes it off; tagged-then-record-failed leaves
-//     none, and used to be unrecoverable because the old filter
-//     rejected our own tag forever)
+//     none, and dropping our own tag from this list would strand
+//     such a hull forever)
 func adoptableFleetTag(fleet string) bool {
 	switch fleet {
 	case "", freshnessScoutFleetTag, legacyProbeBuyerFleetTag, parkedsensing.SensingParkedFleetTag:
@@ -134,7 +133,7 @@ func (h *RunProbeSensingCoordinatorHandler) adoptStrandedProbes(
 		// returns them in a stable order. A budget spent on rows that were never
 		// going to be written would therefore let the ineligible majority starve
 		// the eligible few on every tick, permanently. The reaper closes the same
-		// hole the same way (sp-l3f3d).
+		// hole the same way.
 		if writes >= DefaultMaxAdoptions {
 			break
 		}
@@ -176,11 +175,10 @@ func (h *RunProbeSensingCoordinatorHandler) adoptStrandedProbes(
 		// A HULL-LESS *WANTED* PLACEMENT THE ORPHAN IS STANDING ON IS NOT A CONFLICT — IT IS
 		// THE ANSWER. The screen declared "a probe should stand here"; a probe is standing
 		// here. Filling the row in place is strictly better than adding a second one, and it is
-		// what takes this pass from absorbing one live hull to absorbing the ones that matter:
+		// what makes this pass reach the hulls that matter:
 		// seven idle probes sit on X1-KP23-A2, the yard that sold them, and that waypoint
-		// already carried a hull-less WANTED/MARKET row. Under the old plain occupancy skip
-		// every one of them stayed invisible to the probe cap while the drain tried to buy
-		// another.
+		// already carried a hull-less WANTED/MARKET row. A plain occupancy skip leaves every
+		// one of them invisible to the probe cap while the drain buys another.
 		//
 		// It goes through the GUARDED transition rather than an upsert: kind is never touched,
 		// so a MARKET row stays MARKET and keeps scanning, and the write is conditional on the
@@ -333,20 +331,14 @@ func (h *RunProbeSensingCoordinatorHandler) adoptStrandedProbes(
 // What closes it is the ORPHAN-DISPATCH pass, not this one: it takes exactly the
 // hulls this guard declines and sends them to open placements elsewhere in reach,
 // which both records them and puts them to work. That division of labour is why
-// the guard below stays kind-blind even though the wider key (sp-dpfp8) would now
-// permit a narrower one — see occupiedAt.
+// the guard below stays kind-blind even though the wider (waypoint, kind) key
+// would permit a narrower one — see occupiedAt.
 //
-// sp-dpfp8 DID change what a skip costs at a shared waypoint, in the safe
-// direction. The old key meant a hull-less MARKET row and a staged SPARE want
-// could not coexist, so the expansion engine could never stage a seed at a yard
-// it was already watching; that is fixed in the ledger and the expansion engine,
-// and this pass simply keeps its hands off.
-//
-// ONE INVARIANT NOW HELD BY CONVENTION RATHER THAN CONSTRUCTION: `hulls` used to
-// align with CountOwnedProbes structurally, both reading the same three
-// hull-bearing states. This read is now all five, so the alignment holds only
-// because WANTED and QUEUED rows never name a hull — true of every writer today,
-// but nothing in the schema enforces it. A WANTED row that named a scout-tagged
+// ONE INVARIANT HELD BY CONVENTION RATHER THAN CONSTRUCTION: this read covers all
+// five states while CountOwnedProbes covers only the three hull-bearing ones, so
+// the alignment holds only because WANTED and QUEUED rows never name a hull —
+// true of every writer today, but nothing in the schema enforces it. A WANTED
+// row that named a scout-tagged
 // hull would make this pass skip a hull the cap does not count, which is the
 // money-unsafe direction. No writer produces that combination today.
 type ledgerHolds struct {

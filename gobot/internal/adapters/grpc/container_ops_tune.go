@@ -180,7 +180,7 @@ func tunableKnobsByContainerType() map[string]map[string]TuneBound {
 			"max_dispatches_per_cycle": {Type: "int", Min: 1, Max: 100, Default: shipyardBackfill["max_dispatches_per_cycle"], Unit: "posts", Description: "per-cycle cap on sweep-once posts the shipyard-backfill sweep declares (bounded further by idle probe supply) so it drains the blind spot over cycles instead of flooding the reconciler"},
 			"backfill_max_hops":        {Type: "int", Min: 1, Max: 1000, Default: shipyardBackfill["backfill_max_hops"], Unit: "hops", Description: "enumeration REACH — how deep into the gate graph the sweep hunts charted-but-unscanned shipyards; a charted shipyard is in-graph + relay-reachable so the default is the full gate graph (sp-b8lf), tune DOWN only to cap per-cycle enumeration cost"},
 		},
-		// sp-r6yq: the captain bootstrap coordinator (workflow bootstrap; COLDSTART→GATE→EXPANSION). It is
+		// The captain bootstrap coordinator (workflow bootstrap; COLDSTART→GATE→EXPANSION). It is
 		// the first CONFIG.YAML-AUTHORITATIVE coordinator in the registry, so its tune key is the SEPARATE
 		// BARE family — NOT the prefixed bootstrap_* launch keys, which resolveBootstrapConfig
 		// clears+reinjects from config.yaml on every rebuild. A bare tune therefore survives a daemon bounce

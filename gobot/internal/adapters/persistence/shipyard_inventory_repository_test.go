@@ -138,7 +138,7 @@ func TestShipyardInventory_ListSavedYards_FiltersByTypeOrderedByPriceAscending(t
 	require.Equal(t, 1_300_000, rows[1].PurchasePrice)
 }
 
-// The CRITICAL acceptance requirement (Admiral, sp-qx29f): a yard whose only
+// The CRITICAL acceptance requirement (Admiral): a yard whose only
 // shipyard_inventory rows are from a CLOSED era must never appear in the
 // `shipyard yards` result, even though a current-era yard for the same type
 // exists — a stale closed-era row would misdirect a live "buy 2 heavies" order.

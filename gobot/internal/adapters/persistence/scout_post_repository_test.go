@@ -314,7 +314,7 @@ func TestScoutPostRepo_SingleHullNoPartitionColumns(t *testing.T) {
 	require.Equal(t, 1, model.Hulls)
 }
 
-// The home manning FLOOR round-trips through the DB (sp-2ci9y): the freshsizer reads MinHulls off
+// The home manning FLOOR round-trips through the DB: the freshsizer reads MinHulls off
 // the post each tick to floor the home budget. A fresh/non-home post reads 0 (no floor,
 // byte-identical). UpdateMinHulls is the NARROW seam bootstrap stamps the floor through — it touches
 // ONLY min_hulls, so it cannot clobber the freshsizer's Hulls resize or the reconciler's live manning.

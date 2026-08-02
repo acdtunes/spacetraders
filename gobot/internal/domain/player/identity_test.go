@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// sp-0eufi: players.metadata.headquarters had three readers and no reachable writer, so the
+// players.metadata.headquarters had three readers and no reachable writer, so the
 // sensing cutover refused every 30s and ALL frontier expansion was dead. These pin the merge
 // contract the durable fix rests on: seed the key, preserve every other key, and stay quiet when
 // nothing changed.

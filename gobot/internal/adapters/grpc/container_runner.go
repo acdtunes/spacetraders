@@ -27,14 +27,14 @@ import (
 
 const dbOperationTimeout = 5 * time.Second
 
-// sp-ku8e: a captain CLI chain like `ship orbit` then `ship navigate` issued
+// A captain CLI chain like `ship orbit` then `ship navigate` issued
 // ~1s apart spawns back-to-back containers on the same hull. The second
 // container's claim can land in the sub-second window before the first's
 // synchronous release has been persisted, surfacing as a *transient*
 // ShipAlreadyAssignedError. createShipAssignments retries exactly that failure a
 // bounded number of times with growing backoff to absorb the handoff window,
 // instead of failing to the captain and forcing a manual retry. A *permanent*
-// rejection (captain reservation or foreign-fleet dedication, sp-l7h2) is never
+// rejection (captain reservation or foreign-fleet dedication) is never
 // retried — no amount of waiting clears it. The bound keeps a genuinely-held
 // hull from causing a retry storm; the growing backoff (200ms → 3s cap, ~9s
 // worst case over the whole budget) resolves the common sub-second race on the
@@ -46,7 +46,7 @@ const (
 )
 
 // restartBackoffSchedule is the escalating wait applied BEFORE each automatic
-// restart of a failed container (sp-h0kr). Without it, a dependency that fails
+// restart of a failed container. Without it, a dependency that fails
 // instantly — routing down means an immediate connection-refused on localhost —
 // burns all container.MaxRestartAttempts restarts in milliseconds, so the
 // container terminalizes (and, under supervisor doctrine, stays dead) even
@@ -112,10 +112,10 @@ type ContainerRunner struct {
 
 	// contractRunParked records whether the most recent iteration returned a
 	// contract RunWorkflowResponse with Fulfilled=false and a nil Go error —
-	// i.e. the credits-park path (sp-vwhi) rather than a true completion. A nil
+	// i.e. the credits-park path rather than a true completion. A nil
 	// error always drives the loop to a clean exit and signalCompletion(success
 	// =true), so without this flag a parked run would be misreported as
-	// contract.completed to the captain's income-stall detection (sp-82qs).
+	// contract.completed to the captain's income-stall detection.
 	// Guarded by mu like the other execution-control fields.
 	contractRunParked bool
 
@@ -254,7 +254,7 @@ func (r *ContainerRunner) Start() error {
 	if err := r.createShipAssignments(); err != nil {
 		wrapped := fmt.Errorf("failed to create ship assignments: %w", err)
 		r.log("ERROR", wrapped.Error(), nil)
-		// sp-cr86: the row above was just persisted as RUNNING, and the heartbeat
+		// The row above was just persisted as RUNNING, and the heartbeat
 		// goroutine (started below, on the success path only) never gets to run on
 		// this exit - so without terminalizing here, the row is stuck RUNNING with a
 		// heartbeat_at that never advances, and the watchkeeper spams heartbeat_lost
@@ -265,7 +265,7 @@ func (r *ContainerRunner) Start() error {
 
 	// Start heartbeat goroutine to update heartbeat_at periodically
 	// This allows detection of crashed containers that don't update their heartbeat.
-	// Guarded (sp-i01z): a heartbeat panic is logged + suppressed — a dead
+	// Guarded: a heartbeat panic is logged + suppressed — a dead
 	// heartbeat is already surfaced by the watchkeeper's container.heartbeat_lost,
 	// and the container itself keeps running.
 	r.heartbeatStarted.Store(true)
@@ -282,7 +282,7 @@ func (r *ContainerRunner) Start() error {
 // This is the claim-failure exit path: the row was just persisted RUNNING above, but
 // neither the heartbeat nor the execute goroutine ever starts on this path - so
 // without this, the row is a zombie stuck at RUNNING with a heartbeat_at that never
-// advances again, and the watchkeeper spams heartbeat_lost for it forever (sp-cr86).
+// advances again, and the watchkeeper spams heartbeat_lost for it forever.
 // Mirrors handleError's terminalization pattern, releases any partial ship state
 // (idempotent no-op if nothing was assigned), and signals the coordinator (if any) so
 // it doesn't wait forever on a worker that never actually started.
@@ -412,7 +412,7 @@ func (r *ContainerRunner) stopHeartbeat() {
 			return
 		}
 		// WAIT for the goroutine to return, don't just signal it. This is what orders a
-		// heartbeat write BEFORE the terminal status write that follows (sp-b79f1): an
+		// heartbeat write BEFORE the terminal status write that follows: an
 		// in-flight UpdateContainerHeartbeat completes before runHeartbeat's deferred
 		// close fires, so heartbeat_at cannot post-date stopped_at. The timeout bounds a
 		// wedged write rather than hanging shutdown — on that path the ordering is
@@ -445,7 +445,7 @@ func (r *ContainerRunner) execute() {
 	jitter := time.Duration(rand.Intn(5000)) * time.Millisecond
 	r.log("INFO", fmt.Sprintf("Startup jitter: waiting %v before first API call", jitter), nil)
 
-	// sp-h0kr: route the startup jitter through the injectable clock (a real
+	// Route the startup jitter through the injectable clock (a real
 	// 0-5s wait under RealClock, instant under the test MockClock) via the same
 	// ctx-interruptible primitive as the restart backoff. A shutdown during jitter
 	// still exits promptly, and execute()'s restart loop becomes testable without
@@ -512,7 +512,7 @@ func (r *ContainerRunner) execute() {
 			r.mu.RUnlock()
 
 			if canRestart {
-				// sp-h0kr: wait an escalating, ctx-interruptible backoff BEFORE
+				// Wait an escalating, ctx-interruptible backoff BEFORE
 				// restarting. A dependency that fails instantly (routing down =>
 				// immediate connection-refused on localhost) would otherwise burn
 				// every restart in milliseconds and terminalize a container that a
@@ -756,7 +756,7 @@ func (r *ContainerRunner) signalCompletionWithStatus(success bool, errMsg string
 
 	// A contract workflow reaching a terminal state is a first-class strategic
 	// signal, not merely "a workflow finished": in ADDITION to the generic
-	// event above, emit contract.completed / contract.failed (sp-82qs) so the
+	// event above, emit contract.completed / contract.failed so the
 	// watchkeeper receives a contract-grade signal instead of a low-fidelity
 	// workflow.finished. Credits and contract-id are not available at this site
 	// (the container carries only container/coordinator ids) and are
@@ -765,7 +765,7 @@ func (r *ContainerRunner) signalCompletionWithStatus(success bool, errMsg string
 	parked := r.contractRunParked
 	r.mu.RUnlock()
 
-	// A parked run (sp-vwhi credits-park) reaches this success=true path via a
+	// A parked run (credits-park) reaches this success=true path via a
 	// clean, deliberate loop exit — it is neither a true completion nor a true
 	// failure, so contract.completed/contract.failed are both suppressed here.
 	// The generic EventWorkflowFinished above still fires (a park IS a clean
@@ -804,7 +804,7 @@ func (r *ContainerRunner) signalCompletionWithStatus(success bool, errMsg string
 		// ship to name. Only a container whose coordinator IS awaiting a signal
 		// (coordinator_id present) but that cannot name its ship is a genuine
 		// should-have-signalled-but-couldn't defect — that stays a WARNING. The
-		// ship-less coordinator path (sp-hehz) was crying wolf at WARNING on every
+		// ship-less coordinator path was crying wolf at WARNING on every
 		// clean exit / chain tick / scout reset; downgrade it to DEBUG so a normal
 		// completion produces no spurious warn while the real defect still surfaces.
 		if awaitingCoordinatorID, _ := metadata["coordinator_id"].(string); awaitingCoordinatorID != "" {
@@ -833,10 +833,10 @@ func (r *ContainerRunner) signalCompletionWithStatus(success bool, errMsg string
 }
 
 // executeIteration executes a single iteration of the container operation
-// runIterationProtected wraps executeIteration in a panic barrier (sp-i01z):
+// runIterationProtected wraps executeIteration in a panic barrier:
 // a panic inside any command handler is converted to an error so the restart
-// machinery below handles it exactly like a returned error — before this,
-// one nil-deref in one coordinator killed the entire daemon process.
+// machinery below handles it exactly like a returned error. Without the barrier,
+// one nil-deref in one coordinator kills the entire daemon process.
 func (r *ContainerRunner) runIterationProtected() (err error) {
 	defer supervise.CapturePanic(&err, "container:"+r.containerEntity.ID())
 	return r.executeIteration()
@@ -859,7 +859,7 @@ func (r *ContainerRunner) executeIteration() error {
 	// Log command result
 	r.log("INFO", fmt.Sprintf("Command executed, result type: %T", result), nil)
 
-	// A contract workflow that parked on insufficient credits (sp-vwhi) returns
+	// A contract workflow that parked on insufficient credits returns
 	// (result, nil) by design — a clean loop exit so CanRestart's no-backoff
 	// continue never sees a Go error to crashloop on. Capture the park here so
 	// signalCompletionWithStatus can tell "parked" apart from "actually
@@ -921,7 +921,7 @@ func (r *ContainerRunner) handleError(err error) {
 	// re-persists it. Writing FAILED here would therefore leave a still-alive,
 	// restarted container carrying a stale FAILED row for the whole restart+backoff
 	// (up to ~2min). RecoverRunningContainers queries only INTERRUPTED+RUNNING rows,
-	// and the sp-tit8 lost-guard only diffs THAT candidate set, so a FAILED-but-alive
+	// and the lost-guard only diffs THAT candidate set, so a FAILED-but-alive
 	// container is neither recovered NOR flagged lost when the daemon redeploys — the
 	// hull is silently stranded idle-laden (RULING #2). The row instead stays at its
 	// last-persisted RUNNING across the restart loop (recovery re-adopts the live
@@ -948,7 +948,7 @@ func (r *ContainerRunner) handleError(err error) {
 // truly gives up (always alongside the workflow.failed event). Mirrors the
 // UpdateStatus shape of terminalizeClaimFailure and finishCleanExit's COMPLETED write.
 func (r *ContainerRunner) persistFailed(reason string) {
-	// sp-b79f1: STOP THE HEARTBEAT BEFORE STAMPING THE ROW DEAD. The crash path
+	// STOP THE HEARTBEAT BEFORE STAMPING THE ROW DEAD. The crash path
 	// (execute's unrecoverable-error branch) reached here without stopping it, so the
 	// heartbeat goroutine outlived the container it was reporting on and kept writing
 	// heartbeat_at to a FAILED row until the daemon itself died — up to 2h39m of
@@ -1024,15 +1024,10 @@ func (r *ContainerRunner) Log(level, message string, metadata map[string]interfa
 
 	// Print to stdout, MESSAGE AND FIELDS BOTH.
 	//
-	// This line used to render the message alone and drop the payload on the
-	// floor. Every structured field in the daemon was therefore invisible to a
-	// grep of daemon.log — not merely hard to find, absent — while remaining in
-	// container_logs.metadata for anyone who knew to go and join the table by
-	// hand. Counters written expressly so an operator could tell a working engine
-	// from an idle one were unreadable on the channel they were written for
-	// (sp-qkskz). logging.FormatLine now owns the whole rendering, so a field
-	// added to any call site tomorrow reaches daemon.log without its author
-	// having to know this hole ever existed.
+	// logging.FormatLine owns the WHOLE rendering, message and metadata together, so
+	// a field added at any call site reaches daemon.log without a change here.
+	// Rendering the message alone strands every structured field in
+	// container_logs.metadata, invisible to a grep of daemon.log.
 	fmt.Fprintln(r.stdout(), logging.FormatLine(
 		entry.Timestamp,
 		r.containerEntity.ID(),
@@ -1102,12 +1097,12 @@ func (r *ContainerRunner) GetLogs(limit *int, level *string) []LogEntry {
 // the same ship. It is a no-op for containers that carry no "ship_symbol" (e.g.
 // scout-fleet-assignment).
 //
-// The claim is retried briefly on the transient claim-handoff race (sp-ku8e): a
+// The claim is retried briefly on the transient claim-handoff race: a
 // captain CLI chain (orbit then navigate ~1s apart) can have navigate's claim
 // land before orbit's synchronous release has been persisted, surfacing as a
 // ShipAlreadyAssignedError. Retrying absorbs that window instead of failing to
 // the captain. A permanent rejection — captain reservation or foreign-fleet
-// dedication (sp-l7h2) — is returned on the first attempt, never retried.
+// dedication — is returned on the first attempt, never retried.
 func (r *ContainerRunner) createShipAssignments() error {
 	if r.shipRepo == nil {
 		return nil
@@ -1123,7 +1118,7 @@ func (r *ContainerRunner) createShipAssignments() error {
 
 	playerID := shared.MustNewPlayerID(r.containerEntity.PlayerID())
 	operation, _ := metadata["operation"].(string)
-	// captainManualAuthority (sp-sg35 BRIDGE) is set ONLY by the CLI manual-op path
+	// captainManualAuthority (BRIDGE) is set ONLY by the CLI manual-op path
 	// (container_ops_ship.go); it lets a deliberate captain op override the
 	// dedication guard on the legacy claim path. No automated coordinator sets it.
 	captainManualAuthority, _ := metadata[captainManualAuthorityKey].(bool)
@@ -1159,7 +1154,7 @@ func (r *ContainerRunner) createShipAssignments() error {
 	}
 }
 
-// captainManualAuthorityKey (sp-sg35 BRIDGE) is the container-metadata flag that
+// captainManualAuthorityKey (BRIDGE) is the container-metadata flag that
 // marks a deliberate captain-initiated manual CLI op (navigate/dock/orbit/refuel/
 // jettison) permitted to operate a fleet-dedicated hull as an explicit, audited
 // override of the legacy-path dedication guard. It is set ONLY by the CLI
@@ -1215,7 +1210,7 @@ func (r *ContainerRunner) attemptClaimShip(shipSymbol, operation string, captain
 		return nil
 	}
 
-	// sp-sg35: defense-in-depth — enforce the SAME fleet-dedication guard the
+	// Defense-in-depth — enforce the SAME fleet-dedication guard the
 	// atomic ClaimShip applies (ship_repository.go: DedicatedFleet != "" &&
 	// DedicatedFleet != operation), so a hull pinned to a foreign fleet can never
 	// be claimed through this operation-key side door. A container reaching the
@@ -1229,7 +1224,7 @@ func (r *ContainerRunner) attemptClaimShip(shipSymbol, operation string, captain
 	// fails fast (isTransientClaimError == false) and terminalizes the row like any
 	// other permanent claim rejection instead of retrying the handoff race.
 	if ship.DedicatedFleet() != "" && ship.DedicatedFleet() != operation {
-		// CAPTAIN-AUTHORITY MANUAL OVERRIDE (sp-sg35 BRIDGE): a deliberate captain
+		// CAPTAIN-AUTHORITY MANUAL OVERRIDE (BRIDGE): a deliberate captain
 		// CLI op (navigate/dock/orbit/refuel/jettison) may operate a fleet-dedicated
 		// hull without unassigning it first — the captain ruled unassign-first is
 		// non-atomic and would strand a heavy unpinned during the high-restart
@@ -1254,7 +1249,7 @@ func (r *ContainerRunner) attemptClaimShip(shipSymbol, operation string, captain
 	}
 
 	// CAPTAIN-CONTEXT RESERVATION PASS-THROUGH (sp-sfoe): a captain reservation
-	// (sp-i1ku) is modeled as an active assignment owned by the captain, so the
+	// is modeled as an active assignment owned by the captain, so the
 	// AssignToContainer below would reject it — correct for a coordinator, but wrong
 	// for the very captain who reserved the hull. A deliberate captain CLI manual op
 	// (navigate/dock/orbit/refuel/jettison — the only setters of captainAuthority)
@@ -1311,10 +1306,10 @@ func (r *ContainerRunner) attemptClaimShip(shipSymbol, operation string, captain
 }
 
 // isTransientClaimError reports whether a claim failure is the transient
-// claim-handoff race (sp-ku8e) — the hull is momentarily still assigned to
+// claim-handoff race — the hull is momentarily still assigned to
 // another, just-finished container — and is therefore worth a brief retry. A
 // captain reservation (ShipReservedByCaptainError) and a foreign-fleet
-// dedication (ShipDedicatedToOtherFleetError, sp-l7h2) are standing rejections
+// dedication (ShipDedicatedToOtherFleetError) are standing rejections
 // that no wait will clear, so those — and every other error, e.g. a DB failure —
 // are permanent and returned to the caller immediately.
 func isTransientClaimError(err error) bool {
@@ -1326,7 +1321,7 @@ func isTransientClaimError(err error) bool {
 // container's context is canceled (Stop/shutdown) before the sleep completes.
 // r.clock.Sleep is instant under the test MockClock and a real sleep in
 // production; racing it against ctx.Done keeps a Stop from having to wait the full
-// duration out — whether that is the sp-ku8e claim-retry backoff, the sp-h0kr
+// duration out — whether that is the claim-retry backoff, the sp-h0kr
 // restart backoff (up to 120s), or the startup jitter. The detached sleeper
 // goroutine outlives an early return by at most one sleep before exiting, so it
 // cannot leak.
@@ -1374,7 +1369,7 @@ func (r *ContainerRunner) releaseShipAssignments(reason string) {
 
 	for _, ship := range assignedShips {
 		symbol := ship.ShipSymbol()
-		// Release under CAS-retry (sp-wa7c): re-apply ForceRelease on the FRESH row
+		// Release under CAS-retry: re-apply ForceRelease on the FRESH row
 		// so a concurrent writer's cargo/nav update on the same hull survives instead
 		// of being last-write-wins clobbered by the FindByContainer snapshot. Skip
 		// unless the hull is still assigned to THIS container (a concurrent release or

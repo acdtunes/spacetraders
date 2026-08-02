@@ -73,7 +73,7 @@ type tourFixture struct {
 	neighbors map[string][]string
 	jumps     []string
 	// jumpHook, when set, fires at each JumpShipCommand AFTER the destination is recorded and the
-	// fixture lock is released — the sp-lq64 seam a contention test uses to snapshot in-flight
+	// fixture lock is released — the seam a contention test uses to snapshot in-flight
 	// reposition intent (pendingRelocationsBySystem) DURING the flight window, since the commit's
 	// incrementPendingRelocation is released by a deferred decrement the instant the reposition call
 	// returns. Default nil = no-op, byte-identical for every existing jump test.
@@ -120,7 +120,7 @@ type tourFixture struct {
 	sells    int
 
 	// Normalized operation_type carried on ctx at each buy/sell dispatch — the exact
-	// value the real cargo-tx path stamps onto the ledger row (sp-lgnh). Captured at
+	// value the real cargo-tx path stamps onto the ledger row. Captured at
 	// the mediator seam so a test can prove the coordinator threads "tour".
 	buyOpTypes  []string
 	sellOpTypes []string
@@ -299,7 +299,7 @@ func (m *tourFakeMediator) Send(ctx context.Context, request common.Request) (co
 		hook := m.fx.jumpHook
 		m.fx.mu.Unlock()
 		if hook != nil {
-			hook() // sp-lq64: observe in-flight pending-reposition intent mid-jump
+			hook() // Observe in-flight pending-reposition intent mid-jump
 		}
 		return &navCmd.JumpShipResponse{Success: true, DestinationSystem: cmd.DestinationSystem, CooldownSeconds: 0}, nil
 	default:
@@ -461,7 +461,7 @@ type tourFakeRoutingClient struct {
 	// cancel + cancelOnCall simulate a daemon stop: when the call count reaches
 	// cancelOnCall the planner cancels the run's context (as interruptAllContainers
 	// does), so a test can prove a continuous run exits RESUMABLE at the tour boundary
-	// rather than COMPLETING via the starvation streak (sp-ovkn).
+	// rather than COMPLETING via the starvation streak.
 	cancel       context.CancelFunc
 	cancelOnCall int
 	// planFn, when set, fully computes the plan for a call from the (synthetic or live)
@@ -474,11 +474,11 @@ type tourFakeRoutingClient struct {
 	// each call (sp-78ai L3): a netting integration test asserts the tour nets the ledger's
 	// outstanding depth into its plan request.
 	absorptions [][]routing.TourMarketAbsorption
-	// maxTourSystems captures cons.MaxTourSystems on each call (sp-syaz): a coordinator-level
+	// maxTourSystems captures cons.MaxTourSystems on each call: a coordinator-level
 	// pin that the request-driven distinct-system cap rides cmd.MaxTourSystems onto the
 	// TourConstraints the planner receives (unset → 0, the solver's default-2 hinge).
 	maxTourSystems []int
-	// closed + anchorSystems capture the sp-im74 closure fields on each call: the
+	// closed + anchorSystems capture the closure fields on each call: the
 	// cmd→cons hop that arms closed-tour mode on the planner request. Unset must reach
 	// the planner as false/"" — the dormant proto3 default, byte-identical to today.
 	closed        []bool
@@ -487,13 +487,13 @@ type tourFakeRoutingClient struct {
 	// allowed to route over. It is the seam a far-sink capture test asserts against — a sink
 	// system absent here was never even visible to the planner.
 	allowedSystems [][]string
-	// interSystemHops captures cons.InterSystemHops on each call (sp-tp5c3): the gate-graph
+	// interSystemHops captures cons.InterSystemHops on each call: the gate-graph
 	// feed a coordinator-level pin asserts against — the per-pair gate-hop distances that ride
 	// the widened horizon so the solver prices multi-hop crossings honestly. Unwidened must
 	// reach the planner empty (the flat-1-hop default, byte-identical to today).
 	interSystemHops [][]routing.InterSystemHopDistance
 	// snapshots captures the market good-universe the coordinator handed the planner on
-	// each call (sp-o4wa): the seam a noise-goods blocklist test asserts against — a
+	// each call: the seam a noise-goods blocklist test asserts against — a
 	// blocklisted good must never appear in the snapshot the solver plans cargo over.
 	snapshots [][]routing.TourGoodSnapshot
 	// snapshotAgeCaps captures cons.MaxSnapshotAgeMinutes on each call: the solver-side
@@ -642,7 +642,7 @@ func wireWarehouse(t *testing.T, h *RunTourCoordinatorHandler, opID, waypoint st
 }
 
 // coLocatedSpec describes one warehouse hull in a co-located group for the multi-
-// warehouse deposit harness (sp-5q2c).
+// warehouse deposit harness.
 type coLocatedSpec struct {
 	id        string
 	capacity  int
@@ -680,7 +680,7 @@ func wireWarehouses(t *testing.T, h *RunTourCoordinatorHandler, waypoint string,
 
 // tourWarehouseOpAt builds a RUNNING warehouse operation with id at waypoint, created
 // at createdAt (via a MockClock pinned to that instant, so CreatedAt() is fully
-// controllable) — used to pin the sp-3lj5 zombie-row collision shape directly at the
+// controllable) — used to pin the zombie-row collision shape directly at the
 // tour's warehouseAt call site.
 func tourWarehouseOpAt(t *testing.T, id, waypoint string, createdAt time.Time) *storage.StorageOperation {
 	t.Helper()
@@ -770,7 +770,7 @@ func TestTour_ExecutesLegsAndRecordsTelemetry(t *testing.T) {
 	if len(tel.rows) != 4 {
 		t.Fatalf("expected 4 telemetry rows (one per trade), got %d: %+v", len(tel.rows), tel.rows)
 	}
-	// sp-fzt09: every plan leg — BOTH sides — must declare the solver engine. This is the
+	// Every plan leg — BOTH sides — must declare the solver engine. This is the
 	// population that grades the market model, so it is the one that must not silently
 	// acquire members. Asserted on all four rows rather than the first: the buy and sell
 	// paths call recordLeg from separate sites and can regress independently.
@@ -946,7 +946,7 @@ func TestTour_UsesHandlerModelArtifactPathWhenCmdEmpty(t *testing.T) {
 	}
 }
 
-// An unreadable handler artifact path (the sp-wj0h DOA symptom) fails OPEN cleanly: a
+// An unreadable handler artifact path (the DOA symptom) fails OPEN cleanly: a
 // "tour unavailable" no-op, nil error, no planner call, no trades.
 func TestTour_UnreadableModelArtifactFailsClosed(t *testing.T) {
 	fx := &tourFixture{
@@ -977,7 +977,7 @@ func TestTour_UnreadableModelArtifactFailsClosed(t *testing.T) {
 	}
 }
 
-// sp-lgnh: every buy and sell a tour executes is dispatched under an operation
+// Every buy and sell a tour executes is dispatched under an operation
 // context that normalizes to "tour", so the shared cargo-tx path stamps
 // operation_type="tour" on the ledger row. Captured at the mediator seam — the exact
 // point the real CargoTransactionHandler reads the context — this proves the
@@ -1074,7 +1074,7 @@ func TestTour_DepositLeg_DepositsIntoWarehouseAndBooksNoRevenue(t *testing.T) {
 	}
 }
 
-// sp-5q2c multi-warehouse: a single deposit leg spills across the CO-LOCATED group —
+// Multi-warehouse: a single deposit leg spills across the CO-LOCATED group —
 // the newest hull fills to capacity, the remainder lands in the older sibling — so a
 // deposit larger than one hull still lands in full (additive capacity), not degrading
 // to a re-plan while a sibling sits with free slots.

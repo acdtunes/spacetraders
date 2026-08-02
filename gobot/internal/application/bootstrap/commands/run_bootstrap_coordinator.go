@@ -13,14 +13,14 @@ import (
 
 const (
 	// defaultBootstrapTickSeconds is the cold-start reconcile cadence — the ONE live-tunable knob
-	// (tick_secs, bounds 10..86400, no restart). SHORT on purpose (sp-lgo3): bootstrap runs ONLY during
+	// (tick_secs, bounds 10..86400, no restart). SHORT on purpose: bootstrap runs ONLY during
 	// cold start — 1 frigate + 1-3 probes make <0.1 req/s vs the 2 req/s ACCOUNT limit (20x+ headroom)
 	// and it exits at EXPANSION (gate built) before the fleet is ever large, so a fast tick carries zero
 	// API-pacing concern for its whole lifetime. A slow tick instead injects minutes of dead time between
 	// a real event (frigate docks, scan/arrival completes) and the coordinator reacting — almost all of
 	// the observed ~11min probe-buy was poll latency, not travel. 45s cuts time-to-gate (→ more Phase-2
 	// time → higher rank) with ample headroom, made SAFE against the fresh-buy over-buy a short tick
-	// would otherwise expose by the sp-lgo3 count-sync bridge.
+	// would otherwise expose by the count-sync bridge.
 	defaultBootstrapTickSeconds = 45
 
 	// The cold-start SIZES. Bootstrap seeds a fixed, known-good shape and the standing coordinators own
@@ -43,8 +43,8 @@ const (
 
 	// contractWorkingCapitalFloor is the ABSOLUTE cash cushion (whole credits) the treasury must still
 	// clear AFTER a staged bootstrap contract-op spend — the hauler buy (incl. the sp-7r7w first-hauler
-	// pivot) AND the GATE-phase gate-worker/construction spend (sp-bpdf): the spend is affordable when
-	// treasury−price ≥ this floor (sp-acv5, PLAYBOOK §3).
+	// pivot) AND the GATE-phase gate-worker/construction spend: the spend is affordable when
+	// treasury−price ≥ this floor (PLAYBOOK §3).
 	//
 	// 150k is the contract operation's OPERATING capital: a light-hauler contract cycle's goods+fuel plus
 	// enough headroom to keep several concurrent contract cycles funded through a treasury dip — a
@@ -61,29 +61,28 @@ const (
 	// permitted contract-op buy leaves the op funded at 150k.
 	contractWorkingCapitalFloor int64 = common.ContractReserveCushion
 
-	// GATE-entry gate — UNCONDITIONALLY ON (sp-1cbxz): GATE entry requires a genuinely SCALED contract op
-	// (the FULL fleet at the auto-scaler's live target) — closing the ktio deadlock where one contract
-	// payout spiked realized income and drove GATE with ZERO haulers, latching on ConstructionStarted.
+	// GATE-entry gate — UNCONDITIONALLY ON: GATE entry requires a genuinely SCALED contract op
+	// (the FULL fleet at the auto-scaler's live target). Without that bar one contract payout
+	// spiking realized income drives GATE with ZERO haulers, latching on ConstructionStarted.
 	//
-	// gateMinHaulers is the escape hatch's STARVED-EARNER floor (sp-gm7r repurposed it): a sticky GATE
+	// gateMinHaulers is the escape hatch's STARVED-EARNER floor: a sticky GATE
 	// holding fewer than this many contract haulers reads as under-scaled and (with low progress, for the
-	// hysteresis streak) re-derives COLDSTART. GATE ENTRY no longer uses it — the full scaler-target bar is
+	// hysteresis streak) re-derives COLDSTART. GATE ENTRY does not use it — the full scaler-target bar is
 	// the entry gate — so it scopes only the release of a stuck latch: 2 clearly marks a starved op (a lone
 	// frigate spike latched GATE with ZERO haulers).
 	gateMinHaulers = 2
 
 	// The fleet autosizer and the dedicated contract auto-scaler are both LAUNCHED EARLY during the
-	// cold-start scaling window (sp-1cbxz): the autosizer so the capacity reconciler's emitted
+	// cold-start scaling window: the autosizer so the capacity reconciler's emitted
 	// contract-delivery demand has a buyer, the scaler so it ramps the exclusive contract fleet behind the
-	// 200000 cushion. The ktio-A absolute treasury floor (sp-bpdf) is the load-bearing safety for running
+	// 200000 cushion. The ktio-A absolute treasury floor is the load-bearing safety for running
 	// the autosizer during cold start.
 
-	// Death-spiral cure (UNCONDITIONALLY ON, sp-gm7r removed the master flag). It replaces the premature
-	// GATE-entry gate with a three-part cure: (1) GATE entry requires the FULL contract fleet (delivery +
-	// depot) to have reached the auto-scaler's live achievable target AND a treasury
+	// Death-spiral cure (UNCONDITIONALLY ON). Three parts: (1) GATE entry requires the FULL contract
+	// fleet (delivery + depot) to have reached the auto-scaler's live achievable target AND a treasury
 	// surplus war chest (gateFunded); (2) GATE keeps the WHOLE contract fleet earning and never repurposes it
-	// to construction (sp-cdxy2: the contract fleet is EXCLUSIVE — the gate BUYS its own workers instead of
-	// cannibalizing contracts, which had churned buy→repurpose→buy against the scaler); (3) a sticky GATE that
+	// to construction (the contract fleet is EXCLUSIVE — the gate BUYS its own workers instead of
+	// cannibalizing contracts, which churns buy→repurpose→buy against the scaler); (3) a sticky GATE that
 	// latched under-scaled with ~no construction re-derives COLDSTART (so the op re-scales) after an
 	// anti-thrash hysteresis streak. Gate entry only ever tightens, never loosens (RULINGS #4). Its
 	// calibration bars follow.
@@ -173,15 +172,13 @@ type ProbeAcquirer interface {
 }
 
 // ScoutPostDeclarer declares the STANDING scout-post COVERAGE target for a system — the
-// desired-state post the boot-standing scout-post coordinator (sp-9ujl) mans by claiming an idle
+// desired-state post the boot-standing scout-post coordinator mans by claiming an idle
 // probe. It is a coverage declaration, NOT a probe assignment: bootstrap declares the home post and
 // leaves its probes IDLE, and the coordinator does the manning (claim → VRP-partition → scan),
 // which seeds the initial home scan → census → the freshsizer takes over declaring the rest.
 // Idempotent — a post already declared for the system is preserved, not re-touched — so bootstrap
-// can call it every tick. This REPLACES the old probe-holding scout-all-markets sweep, which
-// held the probes and starved the now-boot-standing coordinator (sp-pt7d, Admiral intent: bootstrap
-// buys probes but assigns them to nothing; the coordinator mans them). minHulls is the manning FLOOR
-// stamped on the home post through the equality-guarded min_hulls-only write (a floor already at the
+// can call it every tick. minHulls is the manning FLOOR stamped on the home post
+// through the equality-guarded min_hulls-only write (a floor already at the
 // requested value is a zero-write no-op): probeTarget through cold start so the sensing coordinator
 // never sizes home below the probes bootstrap bought, lowered to expansionHomeMinHulls at the
 // EXPANSION hand-off, which releases the reinforcement to the sensing coordinator's standard rule.
@@ -228,7 +225,7 @@ type MetricsSink interface {
 type FrigateRetirer interface {
 	RetireFromContract(ctx context.Context, playerID int, shipSymbol string) error
 	// DedicateAsPurchaser tags the frigate as the EXCLUSIVE purchasing ship (dedicated_fleet=purchasing)
-	// at the first-hauler pivot (sp-7r7w): a protected standing role — idle between buys but reserved as
+	// at the first-hauler pivot: a protected standing role — idle between buys but reserved as
 	// THE buy ship for every subsequent purchase, and NEVER re-drafted into the contract op (guarded like
 	// a foreign dedication in the reconciler / contract-fleet / autosizer selection paths, RULINGS #7).
 	// Reuses the single fleet-assign write path (AssignShipFleet with Fleet="purchasing").
@@ -248,7 +245,7 @@ type HaulerAcquirer interface {
 	// behavior (pick any idle hull), and a set value pins THE purchaser — the first-hauler pivot passes
 	// the freed command frigate so the buy is deterministic, not dependent on an incidentally-idle probe.
 	BuyAndPlace(ctx context.Context, playerID int, shipType, yard, hubWaypoint, purchaserSymbol string) (BuyResult, error)
-	// BuyAndDedicate buys ONE hull and dedicates it to the arbitrary fleet tag `fleet` (sp-192k4), with
+	// BuyAndDedicate buys ONE hull and dedicates it to the arbitrary fleet tag `fleet`, with
 	// NO hub placement — the fleet-parameterized sibling of BuyAndPlace (which hardcodes the contract
 	// fleet + a hub). The cold-start hull-routing trade-seed calls it with fleet="trade" to seed acquisition
 	// #2 to the trade fleet. purchaserSymbol pins the buy ship exactly as BuyAndPlace does (the trade seed
@@ -266,18 +263,18 @@ type ContractRunner interface {
 }
 
 // FrigateContractLoopStarter starts the command frigate's OWN continuous single-hull contract loop
-// (sp-rype), reusing the sp-ehg9 batch-contract --loop primitive (DaemonServer.BatchContractWorkflow
+// reusing the batch-contract --loop primitive (DaemonServer.BatchContractWorkflow
 // with iterations=-1). This is the pre-hauler frigate EARNER: after the frigate finishes its hour-0
 // shipyard run + probe buy it must run contracts as the sole earner rather than park idle at the yard
-// (the sp-rype stall — the contract_fleet_coordinator does not keep the frigate earning: sp-ehg9). The
+// (the contract_fleet_coordinator does not keep the frigate earning). The
 // reconciler calls StartLoop only when provisioning is done AND no loop is already running
 // (obs.FrigateContractLoopRunning), so the start is idempotent; the daemon's per-player
 // single-CONTRACT_WORKFLOW guard is the atomic backstop, so a duplicate start is a benign no-op. Unset
-// (nil) ⇒ the frigate-earner action is a logged skip (byte-identical to pre-sp-rype).
+// (nil) ⇒ the frigate-earner action is a logged skip.
 type FrigateContractLoopStarter interface {
 	StartLoop(ctx context.Context, playerID int, frigateSymbol string) error
 	// StopLoop stops the frigate's continuous contract-loop container (StopContainer), releasing the
-	// frigate's work-claim so it goes idle — the first-hauler pivot (sp-7r7w) the design already
+	// frigate's work-claim so it goes idle — the first-hauler pivot the design already
 	// documents (BatchContractWorkflow: "stops the returned container at the first-hauler pivot"). The
 	// freed frigate then executes the hauler buy and is retired to the exclusive purchasing role; the
 	// loop-start is gated on len(Haulers)==0 so it never restarts post-pivot. Idempotent (stopping an
@@ -316,7 +313,7 @@ type WorkerRepurposer interface {
 // GateSurplusReleaser un-dedicates the gate's OWN surplus IDLE manufacturing hulls back to the UNDEDICATED
 // idle pool via the single-writer AssignFleet (fleet→"", RULINGS #3), from where the contract scaler's
 // reclaim-before-buy tier (IdleHullReclaimer) adopts them into the contract fleet BEFORE it buys — the
-// zero-buy fleet re-balance (sp-mxflh). It mirrors the contract scaler's DeliverySurplusReleaser (un-dedicate
+// zero-buy fleet re-balance. It mirrors the contract scaler's DeliverySurplusReleaser (un-dedicate
 // to the idle pool); it is the OPPOSITE direction of WorkerRepurposer (which re-dedicates TO construction) and
 // never touches the exclusive contract fleet. Un-dedicate is FREE (no spend) ⇒ never cushion-gated. Nil-safe:
 // unset ⇒ the surplus release is a logged skip (the gate keeps its surplus until wired), never a panic.
@@ -329,11 +326,11 @@ type GateSurplusReleaser interface {
 	ReleaseSurplusGateWorkers(ctx context.Context, playerID int, shipSymbols []string) (int, error)
 
 	// ReleaseGateWorkersToTrade re-dedicates the given manufacturing hulls to the TRADE fleet at the
-	// EXPANSION hand-off (sp-hv4f6), returning how many it actually re-tagged. It is the same guarded
+	// EXPANSION hand-off, returning how many it actually re-tagged. It is the same guarded
 	// write as ReleaseSurplusGateWorkers but names a DESTINATION instead of clearing to the idle pool,
 	// because at EXPANSION there is no adopter to clear them to: the trade coordinator works only hulls
 	// ALREADY tagged "trade", the fleet autosizer tags only hulls it BUYS, and the capacity reconciler
-	// that once auto-pinned idle hulls was deleted (sp-y2ptq) — so an un-dedicated gate hull would sit
+	// that once auto-pinned idle hulls was deleted — so an un-dedicated gate hull would sit
 	// idle indefinitely unless the contract scaler happened to have a ramp deficit. It carries the same
 	// re-guards (still manufacturing-dedicated, still idle, not in transit) plus a cargo-capacity guard,
 	// so a hull mid-delivery is never yanked and a 0-cargo hull never lands in the trade pool.
@@ -357,11 +354,11 @@ type HandoffLauncher interface {
 	LaunchAutosizer(ctx context.Context, playerID int, agentSymbol string) error
 	LaunchStandingCoordinators(ctx context.Context, playerID int, agentSymbol string) error
 	// LaunchContractScaler launches the standing dedicated contract auto-scaler during the cold-start
-	// scaling window (unconditional in the cold-start window, sp-1cbxz). Idempotent (skips when one is
+	// scaling window (unconditional in the cold-start window). Idempotent (skips when one is
 	// already RUNNING/PENDING), so a re-run never double-launches.
 	LaunchContractScaler(ctx context.Context, playerID int, agentSymbol string) error
 	// LaunchTradeFleetCoordinator launches the standing trade-fleet coordinator at the cold-start trade-seed
-	// (sp-192k4), so the freshly-seeded trade hull is picked up and put on a continuous tour. Idempotent
+	// so the freshly-seeded trade hull is picked up and put on a continuous tour. Idempotent
 	// (skips when one is already RUNNING/PENDING) — the observable trade hull is the seeded signal, so a
 	// re-run never double-launches.
 	LaunchTradeFleetCoordinator(ctx context.Context, playerID int, agentSymbol string) error
@@ -415,7 +412,7 @@ type RunBootstrapCoordinatorHandler struct {
 	observer     WorldObserver
 	acquirer     ProbeAcquirer
 	postDeclarer ScoutPostDeclarer
-	scanner      ShipyardScanner // sp-hh0h: positions a hull at the home yard so the cold price reads
+	scanner      ShipyardScanner // Positions a hull at the home yard so the cold price reads
 	metrics      MetricsSink
 
 	// Contract-workstream collaborators. Each is nil-safe: a nil collaborator degrades the contract
@@ -423,22 +420,22 @@ type RunBootstrapCoordinatorHandler struct {
 	retirer      FrigateRetirer
 	haulAcquirer HaulerAcquirer
 	contractRun  ContractRunner
-	frigateLoop  FrigateContractLoopStarter // sp-rype: the pre-hauler frigate sole-earner contract loop
+	frigateLoop  FrigateContractLoopStarter // the pre-hauler frigate sole-earner contract loop
 
 	// GATE-phase collaborators. Same nil-safe contract.
 	construction  ConstructionManager
 	manufacturing ManufacturingController
 	repurposer    WorkerRepurposer
-	gateReleaser  GateSurplusReleaser // sp-mxflh: un-dedicate surplus idle gate workers → idle pool (scaler adopts)
+	gateReleaser  GateSurplusReleaser // Un-dedicate surplus idle gate workers → idle pool (scaler adopts)
 	gateAcquirer  GateWorkerAcquirer
 	handoff       HandoffLauncher
 
-	// liveConfig snapshots the container's OWN persisted config at each tick start (sp-r6yq),
+	// liveConfig snapshots the container's OWN persisted config at each tick start,
 	// so a `spacetraders tune --operation bootstrap` of a knob takes effect on the NEXT tick with
 	// no restart. Optional-injection: nil keeps the launch-frozen behavior byte-identical.
 	liveConfig liveconfig.Reader
 
-	// buyBridges holds the per-container fresh-buy count-sync bridge (sp-lgo3): it folds probes the
+	// buyBridges holds the per-container fresh-buy count-sync bridge: it folds probes the
 	// coordinator has bought but the ship-count observation has not yet reflected into the count the
 	// probe buy gate reads, so a SHORT reconcile tick never re-buys toward a target already reached
 	// (the over-buy the sync lag would otherwise cause). Keyed by ContainerID because this handler is
@@ -453,7 +450,7 @@ type RunBootstrapCoordinatorHandler struct {
 	// sticky-latched GATE has been under-scaled with ~no construction, so the GATE→COLDSTART re-derive fires only
 	// after gateReentryStreakTicks in a row (anti-thrash). Keyed by ContainerID for the same singleton
 	// reason as buyBridges; underScaledStreakMu guards the MAP only (one container's ticks are
-	// sequential). Consulted every tick (sp-gm7r removed the flag); NOT a progress cursor — dropped on
+	// sequential). Consulted every tick; NOT a progress cursor — dropped on
 	// restart (the re-derive just re-accrues from 0, delaying one window, never double-acting).
 	underScaledStreakMu sync.Mutex
 	underScaledStreaks  map[string]int
@@ -505,7 +502,7 @@ func (h *RunBootstrapCoordinatorHandler) SetScoutPostDeclarer(s ScoutPostDeclare
 	h.postDeclarer = s
 }
 
-// SetShipyardScanner wires the cold-start shipyard-readability positioner (sp-hh0h): when the home
+// SetShipyardScanner wires the cold-start shipyard-readability positioner: when the home
 // shipyard price is unreadable, it flies an idle hull to the yard so the next tick's live price read
 // succeeds. Unset → the coordinator keeps the pre-hh0h fail-closed behavior (byte-identical): an
 // unreadable price simply blocks the buy each tick with no repositioning.
@@ -549,7 +546,7 @@ func (h *RunBootstrapCoordinatorHandler) SetManufacturingController(m Manufactur
 // unassign). Unset → GATE cannot repurpose haulers and top-up buys carry the whole worker load (surfaced loudly).
 func (h *RunBootstrapCoordinatorHandler) SetWorkerRepurposer(r WorkerRepurposer) { h.repurposer = r }
 
-// SetGateSurplusReleaser wires the "un-dedicate surplus idle gate workers to the idle pool" action (sp-mxflh)
+// SetGateSurplusReleaser wires the "un-dedicate surplus idle gate workers to the idle pool" action
 // so the contract scaler's reclaim-before-buy tier adopts them (zero buys). Unset → the gate keeps its surplus
 // (a logged skip), never a panic.
 func (h *RunBootstrapCoordinatorHandler) SetGateSurplusReleaser(r GateSurplusReleaser) {
@@ -566,12 +563,12 @@ func (h *RunBootstrapCoordinatorHandler) SetGateWorkerAcquirer(a GateWorkerAcqui
 // the gate completes but the hand-off is a logged skip, so the mature economy is not launched (surfaced loudly).
 func (h *RunBootstrapCoordinatorHandler) SetHandoffLauncher(l HandoffLauncher) { h.handoff = l }
 
-// SetLiveConfigReader wires the per-tick live-config snapshot source (sp-r6yq), making the
+// SetLiveConfigReader wires the per-tick live-config snapshot source, making the
 // tunable knobs (BootstrapTunableDefaults) honor `spacetraders tune --operation bootstrap` on
-// the next tick. Leaving it unset keeps every knob launch-frozen (byte-identical to pre-sp-r6yq).
+// the next tick. Leaving it unset keeps every knob launch-frozen.
 func (h *RunBootstrapCoordinatorHandler) SetLiveConfigReader(r liveconfig.Reader) { h.liveConfig = r }
 
-// liveConfigSnapshot takes the tick's live-config snapshot (sp-r6yq). A nil reader (not wired —
+// liveConfigSnapshot takes the tick's live-config snapshot. A nil reader (not wired —
 // tests, minimal boots) or a read error yields nil, which resolveBootstrapConfig treats as "run
 // this tick entirely on the launch command" — the fail-safe launch behavior, never a
 // half-applied config. The read is logged, not fatal: a transient DB gap must not kill the loop.
@@ -600,7 +597,7 @@ func (h *RunBootstrapCoordinatorHandler) Handle(ctx context.Context, request com
 	}
 
 	// Startup log only — resolve from the launch command alone (nil live). Per-tick reconcile
-	// re-resolves WITH the live snapshot (sp-r6yq), so a later tune is reflected from that tick on.
+	// re-resolves WITH the live snapshot, so a later tune is reflected from that tick on.
 	cfg := resolveBootstrapConfig(cmd, nil)
 	logger.Log("INFO", fmt.Sprintf("Bootstrap coordinator starting (tick %s, disabled=%v, probes→%d, haulers→%d, gate workers→%d)", cfg.Tick, cfg.Disabled, probeTarget, haulerTarget, gateWorkerTarget), map[string]interface{}{
 		"action":       "bootstrap_start",
@@ -624,7 +621,7 @@ func (h *RunBootstrapCoordinatorHandler) Handle(ctx context.Context, request com
 		}
 		result.Ticks++
 
-		// Terminal EXPANSION (sp-feiy7 — formerly COMPLETE): the gate is built and the standing economy is
+		// Terminal EXPANSION: the gate is built and the standing economy is
 		// handed off, so the coordinator has finished its job and exits cleanly (spec §Architecture). A
 		// restart post-gate re-derives EXPANSION, re-observes the hand-off done, and exits again — idempotent.
 		// Done MUST reach the response: it is what stops the container runner's iteration loop

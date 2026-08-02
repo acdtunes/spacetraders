@@ -22,7 +22,7 @@ const (
 	CategoryContractRevenue Category = "CONTRACT_REVENUE"
 
 	// CategoryTravelCosts represents the NON-FUEL cost of moving a hull —
-	// today only jump gate fees (sp-shq63). Deliberately separate from
+	// today only jump gate fees. Deliberately separate from
 	// FUEL_COSTS: the two are different unit economics (fuel scales with
 	// distance burned, a gate fee is charged per jump), and the existing
 	// fuel-cost analytics would silently absorb a ~6.3k/jump line if these

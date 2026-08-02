@@ -209,7 +209,7 @@ func (r *ContainerRepositoryGORM) ListByStatus(
 // FindShipSymbolsWithActiveOrRecentContainers returns the set of ship symbols referenced
 // (via the config JSON "ship_symbol") by a container for the player that is either
 // NON-TERMINAL (PENDING/RUNNING/STOPPING/INTERRUPTED — a live claim or op) OR terminated
-// at/after activeSince (a recently-finished op). It is the sp-6asm stale-captain-reservation
+// at/after activeSince (a recently-finished op). It is the stale-captain-reservation
 // reaper's safety signal: a captain-reserved hull is reaped only when it is in NEITHER set —
 // i.e. nothing has touched it within the idle window — so a hull a live captain op is using,
 // or just finished using, is never reaped even though its ships-row reservation looks
@@ -367,7 +367,7 @@ func (r *ContainerRepositoryGORM) ListRunningScoutWorkers(
 }
 
 // ListJumpContainersForShip returns the IDs of every JUMP container row the player holds that
-// NAMES this hull in its config, in any status. It backs jump_ship's post-claim reap (sp-rqhzh).
+// NAMES this hull in its config, in any status. It backs jump_ship's post-claim reap.
 //
 // Matching is on config["ship_symbol"], never on an ID prefix. Jump IDs are "ship-jump-<symbol>-
 // <nonce>", and hull symbols are not prefix-free — "ship-jump-TORWIND-2" is a prefix of

@@ -120,7 +120,7 @@ type FleetAutosizerConfig struct {
 	// "SHIP_EXPLORER" (the only warp-drive-carrying hull).
 	ShipTypeExplorer string `mapstructure:"ship_type_explorer"`
 
-	// sp-y2ptq (epic sp-9le3x): the autosizer's demand-driven contract-delivery hull class (sp-nkqn)
+	// sp-y2ptq: the autosizer's demand-driven contract-delivery hull class
 	// was REMOVED with the capacity reconciler that fed it — the dedicated contract scaler now owns
 	// contract-fleet capacity. The shared BuyAndDedicate primitive + the HullClassContractDelivery→
 	// "contract" dedication mapping the scaler reuses are kept; only the autosizer's own auto-scaling

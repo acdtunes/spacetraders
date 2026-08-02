@@ -11,7 +11,7 @@ import (
 	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
 )
 
-// These tests cover the `construction workers <site>` CLI surface (sp-duljg): the live mutation of a
+// These tests cover the `construction workers <site>` CLI surface: the live mutation of a
 // running construction pipeline's concurrent supplyTask-worker cap. By construction the fake below
 // has ONLY the ConstructionWorkerCap RPC — no pipeline restart/stop method — so "no restart" is
 // guaranteed by the surface this verb can reach, exactly as the `goods factory workers` tests

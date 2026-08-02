@@ -13,7 +13,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// These tests cover the FIXED-placement homing (sp-mtgje): the contract coordinator's between-legs
+// These tests cover the FIXED-placement homing: the contract coordinator's between-legs
 // homing and the idle-arb re-home must carry the ≤6 fixed placement slots and — when the fleet-hub set
 // is empty — the placement provider's slots must AUTO-drive homing (no manual `fleet hub` pins). The
 // runtime homing zips each hull to its OWN distinct slot (no demand, no occupancy). Assertions are on
@@ -48,7 +48,7 @@ func (m *recordingHomeMediator) Send(_ context.Context, request common.Request) 
 
 // The idle-arb between-legs re-home (mediatorShipHomer.HomeShip): the dispatched HomeShipCommand must
 // carry the ≤6 fixed placement slots, and with the passed-in live set EMPTY the placement provider must
-// auto-drive the re-home (the sp-bu6ma / sp-mtgje auto hub-placement).
+// auto-drive the re-home (the auto hub-placement).
 func TestMediatorShipHomer_HomeShip_CarriesFixedSlotsAndAutoResolvesEmptySet(t *testing.T) {
 	ship := newHomeTestShip(t, "TORWIND-5", "X1-UM5-Z", 0, 0)
 	shipRepo := &homeStubShipRepo{ship: ship, fleet: []*navigation.Ship{ship}}

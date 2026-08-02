@@ -17,12 +17,12 @@ import (
 // absorber's own next plan, can step into the hole until the model says it has
 // regrown, and the absorber pays no synthetic tax.
 //
-// UNTAGGED sinks (empty activity) decay on the artifact's POOLED ("") fit. They used to
-// be excluded — no shadow at all — which meant consecutive plans saw virgin depth and
-// lawfully rebuilt the whole tranche ladder at the same sink. Untagged
-// is roughly a quarter of the live market universe, so that was where the ladder was
-// actually being rebuilt. The pooled fit is the SAME number the solver's thin-tier
-// fallback prices against; the 12h hard cap remains the outer bound on any shadow.
+// UNTAGGED sinks (empty activity) decay on the artifact's POOLED ("") fit. Excluding them
+// — no shadow at all — would let consecutive plans see virgin depth and lawfully rebuild
+// the whole tranche ladder at the same sink, and untagged is roughly a quarter of the live
+// market universe, so that exclusion would put the rebuild in the largest slice of it. The
+// pooled fit is the SAME number the solver's thin-tier fallback prices against; the 12h
+// hard cap remains the outer bound on any shadow.
 type absorptionRecoveryModel struct {
 	// halfLives maps activity tier → fitted recovery half-life, including the pooled
 	// ("") fit that untagged sinks decay on.

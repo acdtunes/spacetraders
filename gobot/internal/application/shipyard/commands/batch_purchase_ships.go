@@ -175,7 +175,7 @@ func (h *BatchPurchaseShipsHandler) calculatePurchasableCount(
 // type. Returns (0, false, nil) when the shipyard SELLS the type but the live
 // listing is empty because no ship is present at the waypoint yet — the
 // SpaceTraders /shipyard endpoint omits priced `ships` until a ship visits, so
-// the caller must refresh by visiting/reading fresh rather than fail (sp-vz9u).
+// the caller must refresh by visiting/reading fresh rather than fail.
 // Returns an error only when the shipyard genuinely does not sell the type.
 func (h *BatchPurchaseShipsHandler) getShipPriceFromShipyard(
 	ctx context.Context,
@@ -260,7 +260,7 @@ func (h *BatchPurchaseShipsHandler) executePurchaseLoop(
 			return nil, 0, fmt.Errorf("failed to purchase ship %d of %d: %w", i+1, purchasableCount, err)
 		}
 
-		// Money-integrity floor (sp-e7je): the batch boundary must never accept a
+		// Money-integrity floor: the batch boundary must never accept a
 		// ship the yard substituted for the requested type. The per-ship purchase
 		// echoes the authoritative purchased type; if it is not what we asked for,
 		// a yard sold us the wrong asset. Abort LOUDLY with zero spend reported and

@@ -66,7 +66,7 @@ func (h *RunSiphonWorkerHandler) Handle(ctx context.Context, request common.Requ
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	// sp-zc8i: stamp this worker's operation context so the positioning navigate to the
+	// Stamp this worker's operation context so the positioning navigate to the
 	// gas giant — and every refuel route_executor fires inside it — inherits
 	// operation_type="gas_siphon" instead of the 'manual' fallback. The navigate leg is
 	// ctx-transparent (it records whatever operation context rides the ctx), so without

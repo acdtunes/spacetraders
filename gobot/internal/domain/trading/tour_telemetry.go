@@ -20,7 +20,7 @@ type TourLegTelemetry struct {
 	ShipSymbol string
 
 	// Engine names WHICH execution path produced this leg, DECLARED by that path rather
-	// than inferred from the row (sp-fzt09). It is the attribution column: every leg with
+	// than inferred from the row. It is the attribution column: every leg with
 	// realized cargo says who made it, so a reader never has to recognise an engine by the
 	// shape of its data.
 	//
@@ -104,13 +104,13 @@ const (
 	// about the market model.
 	LegEngineSolver LegEngine = "solver"
 
-	// LegEngineLookback is a look-back manifest buy at the reposition seam (sp-rd21). It
+	// LegEngineLookback is a look-back manifest buy at the reposition seam. It
 	// carries a plan basis, but a CACHED SourceAsk rather than the solver's projection,
 	// and the buy is gated to a tolerance band around that very number — so it converges
 	// on 0% error and must never be pooled with solver legs (sp-fpgl2).
 	LegEngineLookback LegEngine = "lookback"
 
-	// LegEngineLiquidation is a distress dump or exit sweep (sp-xfrfw): cargo sold to free
+	// LegEngineLiquidation is a distress dump or exit sweep: cargo sold to free
 	// a hull, with no solver plan behind it. It deliberately records a ZERO basis rather
 	// than inventing one, so it is a real trade that is correctly absent from every
 	// planned-vs-realized measurement — and, before sp-fzt09, was indistinguishable in SQL
@@ -147,7 +147,7 @@ func EngineForLegIndex(legIdx int) LegEngine {
 	}
 }
 
-// LookbackLegIndex is the sentinel LegIndex stamped on a look-back manifest buy (sp-rd21):
+// LookbackLegIndex is the sentinel LegIndex stamped on a look-back manifest buy:
 // an opportunistic pre-jump load at the reposition seam, not a solver-plan position.
 //
 // It lives on the domain DTO because it is now read on BOTH sides — the executor stamps it,

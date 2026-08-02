@@ -18,7 +18,7 @@ import (
 // act before the API considers the ship arrived. Production runs with exactly this value —
 // byte-identical to the pre-seam behaviour, since ST_CLOCK_DRIFT_BUFFER_MS is unset in prod.
 //
-// INVARIANT (st-drm.8): in any digital-twin stack, the twin's TWIN_MIN_TRAVEL_MS travel floor
+// INVARIANT: in any digital-twin stack, the twin's TWIN_MIN_TRAVEL_MS travel floor
 // MUST be >= the resolved buffer. The twin mints arrivals at least that floor in the (real)
 // future; the daemon then waits arrival + buffer. If the buffer exceeded the floor, the daemon
 // could arm a delay past the twin's own arrival window and the harness's clock-step budget would
@@ -275,9 +275,9 @@ func (s *ShipStateScheduler) PendingCount() int {
 // RunSweeper blocks, checking for stuck ships every SweeperInterval, until
 // ctx is canceled or Stop() is called. It runs under the daemon Supervisor
 // (sp-i01z): a panic inside a sweep pass is captured there and the sweeper
-// restarts with backoff instead of dying silently — before this, a dead
-// sweeper meant arrivals stopped being swept for the rest of the daemon's
-// life with zero signal. Replaces StartBackgroundSweeper.
+// restarts with backoff instead of dying silently. An unsupervised sweeper that
+// dies stops arrivals being swept for the rest of the daemon's life, with zero
+// signal. Replaces StartBackgroundSweeper.
 func (s *ShipStateScheduler) RunSweeper(ctx context.Context) error {
 	fmt.Printf("Background sweeper started (interval: %v)\n", SweeperInterval)
 	ticker := time.NewTicker(SweeperInterval)

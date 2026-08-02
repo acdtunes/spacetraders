@@ -26,7 +26,7 @@ type deployEventStore interface {
 }
 
 // recordDeployIfPlayerExists guards RecordDeployIfChanged for the fresh-DB
-// cold-boot path (sp-7pri): captain_events.player_id is an FK onto players.id,
+// cold-boot path: captain_events.player_id is an FK onto players.id,
 // so on first boot against an empty database — before genesis registration
 // commits a player row — recording deploy.completed would violate
 // fk_captain_events_player (SQLSTATE 23503).

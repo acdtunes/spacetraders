@@ -52,7 +52,7 @@ func setRoutingDefaults(cfg *Config) {
 	if cfg.Routing.Address == "" {
 		cfg.Routing.Address = "localhost:50051"
 	}
-	// Gate-graph negative-result backoff (sp-ikx1). Defaults yield the ruled
+	// Gate-graph negative-result backoff. Defaults yield the ruled
 	// 5m → 30m → 2h re-probe schedule for an unreadable jump gate (5m, 5m×6=30m,
 	// 30m×6=180m capped to 2h, then 2h). RULINGS #5: knobs, not constants.
 	if cfg.Routing.GateBackoff.Initial == 0 {
@@ -64,7 +64,7 @@ func setRoutingDefaults(cfg *Config) {
 	if cfg.Routing.GateBackoff.Max == 0 {
 		cfg.Routing.GateBackoff.Max = 2 * time.Hour
 	}
-	// Chart-on-gate-arrival (sp-bcsu): default ON. A nil switch means the captain has not
+	// Chart-on-gate-arrival: default ON. A nil switch means the captain has not
 	// configured [routing] chart_gate_on_arrival, and its intent is to chart every jump gate
 	// a hull lands on (the one moment it is readable) so the frontier never strands hulls on
 	// empty gate_edges. An explicit `chart_gate_on_arrival: false` is preserved as the
@@ -74,13 +74,13 @@ func setRoutingDefaults(cfg *Config) {
 		chartGateOnArrivalDefault := true
 		cfg.Routing.ChartGateOnArrival = &chartGateOnArrivalDefault
 	}
-	// Gate topology-cache TTL (sp-jgcache): default 24h — the near-static gate graph is a
+	// Gate topology-cache TTL: default 24h — the near-static gate graph is a
 	// comfortable day-long freshness bound (per-tick neighbor scans hit the cache, the graph
 	// still self-heals). Zero => unset => the safe default.
 	if cfg.Routing.GateCacheTTL == 0 {
 		cfg.Routing.GateCacheTTL = 24 * time.Hour
 	}
-	// Doomed-call precondition (sp-jgcache): default ON. A nil switch means [routing]
+	// Doomed-call precondition: default ON. A nil switch means [routing]
 	// skip_uncharted_gate_fetch is unconfigured; its intent is to skip the guaranteed-400
 	// live read on an uncharted origin gate. An explicit `false` is preserved as the
 	// staged-rollout off-switch (restores probe-then-backoff).

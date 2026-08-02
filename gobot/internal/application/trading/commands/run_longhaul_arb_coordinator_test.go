@@ -153,7 +153,7 @@ func TestLongHaulReconcile_FailsClosedWhenLauncherUnwired(t *testing.T) {
 	require.Equal(t, 0, launched)
 }
 
-// UNCAPPED CONCURRENCY (sp-bwjyn, Admiral order): the coordinator launches a worker for
+// UNCAPPED CONCURRENCY (Admiral order): the coordinator launches a worker for
 // EVERY idle tagged long-haul hull each tick — the total-exposure CONCURRENCY ceiling is
 // removed, so tagged hulls never sit idle behind it even when the number already running
 // meets or exceeds the OLD cap (default 2M/1M = 2). It still threads the money envelope

@@ -55,7 +55,7 @@ func TestLaunchLiveDepotCoordinators_SkipsDepotWithNoLiveContractDemand(t *testi
 }
 
 // Byte-identical for a LIVE depot: a depot whose destination system HAS a live contract must launch
-// its warehouse + stocker exactly as launchDepotCoordinators does today (the sp-cftm behavior).
+// its warehouse + stocker exactly as launchDepotCoordinators does today (the behavior).
 func TestLaunchLiveDepotCoordinators_LaunchesDepotWithLiveContractDemand(t *testing.T) {
 	c, err := depot.NewContractDepot(
 		"j58",

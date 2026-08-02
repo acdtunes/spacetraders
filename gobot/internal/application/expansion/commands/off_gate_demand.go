@@ -8,7 +8,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 )
 
-// This file holds the sp-k645 slice-B OFF-GATE DEMAND SIGNAL: the frontier coordinator's
+// This file holds the slice-B OFF-GATE DEMAND SIGNAL: the frontier coordinator's
 // hook that raises "explorer demand" — a flag, a count, and a selected warp target — when
 // the gate-reachable frontier can no longer serve the fleet's need to expand. It is a
 // SIGNAL ONLY: slice B never warps, buys, or dispatches. Slice C reads OffGateDemand(playerID)
@@ -207,7 +207,7 @@ func (h *RunFrontierExpansionCoordinatorHandler) offGateTrigger(ctx context.Cont
 }
 
 // heavyYardHuntExhausted is trigger (b): the fleet has a heavy-capacity shortfall it cannot
-// buy (heavyShortfall > 0 AND no heavy yard known — reusing the sp-rjgr DepthObjectiveReader)
+// buy (heavyShortfall > 0 AND no heavy yard known — reusing the DepthObjectiveReader)
 // AND the gate-reachable shipyards are scan-exhausted, so a missing heavy yard is conclusive.
 // Every input fails SAFE to "do not fire": a nil/unreadable objective, a nil/unreadable/sparse
 // coverage reader, or a met objective all return false.

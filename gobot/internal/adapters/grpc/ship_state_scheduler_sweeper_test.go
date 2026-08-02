@@ -15,7 +15,7 @@ import (
 // BLOCKS, sweeping every SweeperInterval, and returns nil promptly when its
 // context is canceled — the supervise layer treats that as a clean stop.
 // (A panic inside a sweep pass propagates to the Supervisor, which restarts
-// the sweeper with backoff (sp-i01z) — an unsupervised goroutine would die
+// the sweeper with backoff — an unsupervised goroutine would die
 // silently on panic and arrivals would stop being swept forever.)
 func TestRunSweeper_BlocksUntilCtxCancelThenReturnsNil(t *testing.T) {
 	s := NewShipStateScheduler(nil, &shared.RealClock{}, nil)

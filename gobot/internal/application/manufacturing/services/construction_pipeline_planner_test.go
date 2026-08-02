@@ -304,9 +304,9 @@ func TestStartOrResume_ExistingPipelineWithIncompleteTasks_Resumes(t *testing.T)
 	}
 }
 
-// sp-j2hq: StartOrResume's resume branch must persist an updated --min-supply
+// StartOrResume's resume branch must persist an updated --min-supply
 // floor onto the EXISTING pipeline, not just consume it once during the
-// initial planning pass (sp-ezz9 only wired the new-pipeline path). Without
+// initial planning pass (only wired the new-pipeline path). Without
 // this, a floor supplied on a later `construction start` call against an
 // already-EXECUTING pipeline is silently dropped, so the deferred-material
 // recovery poll-loop (task_activator.go) can never observe it.
@@ -482,7 +482,7 @@ func TestStartOrResume_ResumeWithUnsetMaxWorkers_DoesNotClobberCap(t *testing.T)
 	}
 }
 
-// sp-j2hq: a brand-new pipeline must also persist its caller-set --min-supply
+// A brand-new pipeline must also persist its caller-set --min-supply
 // floor onto the entity (not just use it transiently while sourcing the
 // initial materials) - otherwise a material that defers during THIS SAME
 // initial planning pass would recover later at the wrong (default MODERATE)
@@ -536,7 +536,7 @@ func findTaskByGood(pipeline *manufacturing.ManufacturingPipeline, good string) 
 	return nil
 }
 
-// Field case (sp-r900): a construction bill where one material is ABUNDANT and
+// Field case: a construction bill where one material is ABUNDANT and
 // sourceable (FAB_MATS) and another has no acceptable buy source
 // (ADVANCED_CIRCUITRY, only a LIMITED exporter, no import stock). The pipeline
 // must NOT fail all-or-nothing: it saves with a sourceable FAB_MATS task and a
@@ -556,7 +556,7 @@ func TestStartOrResume_MixedSourceableAndUnsourceable_SavesWithDeferral(t *testi
 	taskRepo := &plannerStubTaskRepo{tasksByPipeline: map[string][]*manufacturing.ManufacturingTask{}}
 	planner := newPlannerUnderTest(pipelineRepo, taskRepo, marketRepo, newPlannerTestConstructionSite(t))
 
-	// Explicit MODERATE floor: unified gate-fill (sp-9i4mq) defaults an unset floor to SCARCE, which
+	// Explicit MODERATE floor: unified gate-fill defaults an unset floor to SCARCE, which
 	// would admit the LIMITED circuitry export; MODERATE keeps the SCARCE-below-floor good deferred.
 	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 3, 5, "", "MODERATE", nil)
 	if err != nil {
@@ -604,7 +604,7 @@ func TestStartOrResume_MixedSourceableAndUnsourceable_SavesWithDeferral(t *testi
 	}
 }
 
-// sp-560b/sp-ooba: the caller (daemon gRPC + CLI) needs the unsourceable
+// The caller (daemon gRPC + CLI) needs the unsourceable
 // material's NAME surfaced on the result, not just a task-level signal buried
 // in persisted state that never reaches `construction start` output. Same
 // setup as TestStartOrResume_MixedSourceableAndUnsourceable_SavesWithDeferral,
@@ -624,7 +624,7 @@ func TestStartOrResume_MixedSourceableAndUnsourceable_ReportsDeferredMaterialByN
 	taskRepo := &plannerStubTaskRepo{tasksByPipeline: map[string][]*manufacturing.ManufacturingTask{}}
 	planner := newPlannerUnderTest(pipelineRepo, taskRepo, marketRepo, newPlannerTestConstructionSite(t))
 
-	// Explicit MODERATE floor: unified gate-fill (sp-9i4mq) defaults an unset floor to SCARCE, which
+	// Explicit MODERATE floor: unified gate-fill defaults an unset floor to SCARCE, which
 	// would admit the LIMITED circuitry export; MODERATE keeps the SCARCE-below-floor good deferred.
 	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 3, 5, "", "MODERATE", nil)
 	if err != nil {
@@ -656,7 +656,7 @@ func TestStartOrResume_FullySourceable_ReportsNoDeferredMaterials(t *testing.T) 
 
 // A fully-unsourceable plan must report EVERY material by name, not a single
 // generic message - the operator needs to know exactly what to go source
-// manually (sp-560b). The plan must still succeed and start (sp-ooba: never
+// manually. The plan must still succeed and start (sp-ooba: never
 // a hard abort), just with zero READY tasks until supply regenerates.
 func TestStartOrResume_FullyUnsourceable_ReportsAllMaterialsByName(t *testing.T) {
 	marketRepo := &plannerStubMarketRepo{}
@@ -703,7 +703,7 @@ func TestStartOrResume_FullyUnsourceable_ReportsAllMaterialsByName(t *testing.T)
 	}
 }
 
-// The RESUME branch must also report deferred materials by name (sp-560b) -
+// The RESUME branch must also report deferred materials by name -
 // not just the new-pipeline branch. A resumed pipeline's deferred tasks come
 // from persisted rows (e.g. after a daemon restart), so the planner must scan
 // them via IsDeferredConstruction()/Good() rather than relying on the local
@@ -739,7 +739,7 @@ func TestStartOrResume_ResumeWithDeferredTask_ReportsDeferredMaterialByName(t *t
 	}
 }
 
-// sp-ezz9: proves --min-supply threads all the way from StartOrResume down to
+// Proves --min-supply threads all the way from StartOrResume down to
 // the locator, not just that FindConstructionSource itself honors a floor in
 // isolation (see market_locator_test.go). Same shape as
 // TestStartOrResume_MixedSourceableAndUnsourceable_SavesWithDeferral above,
@@ -782,7 +782,7 @@ func TestStartOrResume_MinSupplyFloor_ScarceExportSourcedInsteadOfDeferred(t *te
 	}
 }
 
-// Per-material depth ceiling (sp-r900): at --depth 2 a material that is trivially
+// Per-material depth ceiling: at --depth 2 a material that is trivially
 // BUYABLE (FAB_MATS ABUNDANT) must be bought directly, NOT fabricated. The old
 // global switch fabricated FAB_MATS at depth 2 and died on its QUARTZ_SAND input.
 func TestStartOrResume_BuyableMaterialBoughtEvenAtDepth2(t *testing.T) {
@@ -819,7 +819,7 @@ func TestStartOrResume_BuyableMaterialBoughtEvenAtDepth2(t *testing.T) {
 	}
 }
 
-// Per-material depth ceiling (sp-r900): a material that is NOT buyable but IS
+// Per-material depth ceiling: a material that is NOT buyable but IS
 // fabricable from sourceable inputs must be fabricated within the depth ceiling.
 // MACHINERY (not sold at MODERATE+) is fabricated from IRON (ABUNDANT) at depth 2.
 //
@@ -859,7 +859,7 @@ func TestStartOrResume_FabricableOnlyMaterialFabricatedWithinCeiling(t *testing.
 	taskRepo := &plannerStubTaskRepo{tasksByPipeline: map[string][]*manufacturing.ManufacturingTask{}}
 	planner := newPlannerUnderTest(pipelineRepo, taskRepo, marketRepo, singleMaterialSite("MACHINERY", 50))
 
-	// Explicit MODERATE floor: unified gate-fill (sp-9i4mq) defaults an unset floor to SCARCE, which
+	// Explicit MODERATE floor: unified gate-fill defaults an unset floor to SCARCE, which
 	// would admit the LIMITED factory export as a direct buy; MODERATE keeps this a fabricate decision.
 	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 2, 5, "", "MODERATE", nil)
 	if err != nil {
@@ -931,7 +931,7 @@ func TestStartOrResume_FabricableMaterialDefersWhenInputUnsourceable(t *testing.
 	taskRepo := &plannerStubTaskRepo{tasksByPipeline: map[string][]*manufacturing.ManufacturingTask{}}
 	planner := newPlannerUnderTest(pipelineRepo, taskRepo, marketRepo, singleMaterialSite("MACHINERY", 50))
 
-	// Explicit MODERATE floor: unified gate-fill (sp-9i4mq) defaults an unset floor to SCARCE, which
+	// Explicit MODERATE floor: unified gate-fill defaults an unset floor to SCARCE, which
 	// would admit the LIMITED factory export as a direct buy; MODERATE keeps this a fabricate decision.
 	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 2, 5, "", "MODERATE", nil)
 	if err != nil {
@@ -1049,7 +1049,7 @@ func scarceProducibleCircuitryRepo(t *testing.T) *plannerStubMarketRepo {
 	}
 }
 
-// INCIDENT REPRO (sp-3bza): ADVANCED_CIRCUITRY whose immediate input ELECTRONICS is SCARCE (not
+// INCIDENT REPRO: ADVANCED_CIRCUITRY whose immediate input ELECTRONICS is SCARCE (not
 // MODERATE+ buyable) but PRODUCIBLE. With the scarcity-gated resolver wired (as the daemon wires
 // it), planFabrication must judge the material FEASIBLE and STAGE it - a single dependency-free
 // DELIVER_TO_CONSTRUCTION task carrying the factory, no input legs, READY, not deferred. This is
@@ -1061,7 +1061,7 @@ func TestStartOrResume_ScarceButProducibleInput_StagedViaResolver(t *testing.T) 
 	// A resolver that builds a complete tree => the drain can source every input => FEASIBLE.
 	planner.SetTreeResolver(&fakeFabResolver{node: goods.NewSupplyChainNode("ADVANCED_CIRCUITRY", goods.AcquisitionFabricate)})
 
-	// Explicit MODERATE floor: unified gate-fill (sp-9i4mq) defaults an unset floor to SCARCE, which
+	// Explicit MODERATE floor: unified gate-fill defaults an unset floor to SCARCE, which
 	// would admit the SCARCE factory export as a direct buy; MODERATE keeps this a fabricate decision.
 	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 0, 5, "", "MODERATE", nil)
 	if err != nil {
@@ -1102,7 +1102,7 @@ func TestStartOrResume_ScarceButProducibleInput_StagedViaResolver(t *testing.T) 
 	}
 }
 
-// The RED half of the incident (sp-3bza): the SAME scarce-but-producible scenario, but with NO
+// The RED half of the incident: the SAME scarce-but-producible scenario, but with NO
 // resolver wired, falls back to the pre-sp-3bza gate (every immediate input buyable at MODERATE+),
 // which DEFERS the whole material because ELECTRONICS/MICROPROCESSORS are only SCARCE. This both
 // reproduces the original bug and proves the nil-resolver fallback is byte-identical to before.
@@ -1112,7 +1112,7 @@ func TestStartOrResume_ScarceProducibleInput_DeferredWithoutResolver(t *testing.
 	planner := newPlannerUnderTest(pipelineRepo, taskRepo, scarceProducibleCircuitryRepo(t), singleMaterialSite("ADVANCED_CIRCUITRY", 280))
 	// No SetTreeResolver: the fallback MODERATE+ immediate-input gate applies.
 
-	// Explicit MODERATE floor: unified gate-fill (sp-9i4mq) defaults an unset floor to SCARCE, which
+	// Explicit MODERATE floor: unified gate-fill defaults an unset floor to SCARCE, which
 	// would admit the SCARCE factory export as a direct buy; MODERATE keeps this a fabricate decision.
 	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 0, 5, "", "MODERATE", nil)
 	if err != nil {
@@ -1132,7 +1132,7 @@ func TestStartOrResume_ScarceProducibleInput_DeferredWithoutResolver(t *testing.
 	}
 }
 
-// RULINGS #1 / sp-3bza: a TRULY unsourceable input (the resolver cannot build a complete tree -
+// RULINGS #1: a TRULY unsourceable input (the resolver cannot build a complete tree -
 // no market AND no producible path within depth, surfaced as an error) must still DEFER the whole
 // material, never fail. The target's own factory exists (so the factory check passes and the defer
 // decision comes from the feasibility gate erroring, not the factory lookup).
@@ -1143,7 +1143,7 @@ func TestStartOrResume_TrulyUnsourceableInput_DefersWhenResolverErrors(t *testin
 	// The resolver errors - the tree cannot be completed because an input is genuinely unsourceable.
 	planner.SetTreeResolver(&fakeFabResolver{err: &goods.ErrUnknownGood{Good: "ELECTRONICS"}})
 
-	// Explicit MODERATE floor: unified gate-fill (sp-9i4mq) defaults an unset floor to SCARCE, which
+	// Explicit MODERATE floor: unified gate-fill defaults an unset floor to SCARCE, which
 	// would admit the SCARCE factory export as a direct buy; MODERATE keeps this a fabricate decision.
 	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 0, 5, "", "MODERATE", nil)
 	if err != nil {
@@ -1163,7 +1163,7 @@ func TestStartOrResume_TrulyUnsourceableInput_DefersWhenResolverErrors(t *testin
 	}
 }
 
-// Regression (sp-3bza): a fabricable material whose inputs are all buyable must still be STAGED
+// Regression: a fabricable material whose inputs are all buyable must still be STAGED
 // through the resolver path - the new feasibility gate must not defer the common all-buyable case.
 // MACHINERY (LIMITED export -> not buy-final) fabricated from IRON (ABUNDANT).
 func TestStartOrResume_AllInputsBuyable_StagedViaResolver(t *testing.T) {
@@ -1194,7 +1194,7 @@ func TestStartOrResume_AllInputsBuyable_StagedViaResolver(t *testing.T) {
 	planner := newPlannerUnderTest(pipelineRepo, taskRepo, marketRepo, singleMaterialSite("MACHINERY", 50))
 	planner.SetTreeResolver(&fakeFabResolver{node: goods.NewSupplyChainNode("MACHINERY", goods.AcquisitionFabricate)})
 
-	// Explicit MODERATE floor: unified gate-fill (sp-9i4mq) defaults an unset floor to SCARCE, which
+	// Explicit MODERATE floor: unified gate-fill defaults an unset floor to SCARCE, which
 	// would admit the LIMITED factory export as a direct buy; MODERATE keeps this a fabricate decision.
 	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 2, 5, "", "MODERATE", nil)
 	if err != nil {
@@ -1216,7 +1216,7 @@ func TestStartOrResume_AllInputsBuyable_StagedViaResolver(t *testing.T) {
 	}
 }
 
-// depth>=3 is "buy final only" (sp-r900): planMaterial buys a buyable material directly and never
+// depth>=3 is "buy final only": planMaterial buys a buyable material directly and never
 // enters the fabrication path, so the resolver must NOT be consulted at all - byte-identical to the
 // pre-sp-3bza buy-final behavior.
 func TestStartOrResume_BuyableFinalDepth3_BypassesResolver(t *testing.T) {

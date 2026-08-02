@@ -20,7 +20,7 @@ import (
 // never drift.
 //
 // DEPLOY-INERT (sp-s1ek): this coordinator is deliberately NOT a member of
-// bootStandingCoordinatorTypes (contrast the market-freshness sizer, sp-orgp). Nothing launches
+// bootStandingCoordinatorTypes (contrast the market-freshness sizer). Nothing launches
 // it at boot; a fresh deploy changes nothing until an operator runs `spacetraders workflow
 // shipyard-backfill`. Every knob is parametrized (RULINGS #5); a 0 value uses the coordinator's
 // own documented default (max_dispatches_per_cycle is also live-tunable via `tune --operation

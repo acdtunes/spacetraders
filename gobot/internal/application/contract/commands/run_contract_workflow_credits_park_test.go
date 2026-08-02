@@ -117,7 +117,7 @@ func (m *creditsParkFakeMediator) Send(_ context.Context, request common.Request
 	}
 }
 
-// Reproduces the sp-vwhi incident end-to-end through the public Handle()
+// Reproduces the incident end-to-end through the public Handle()
 // entrypoint: a contract purchase hitting 4600 must PARK (clean nil-error
 // exit so the container runner does not count it as a crash/restart) rather
 // than propagate the error and crashloop. Before this fix, the coordinator

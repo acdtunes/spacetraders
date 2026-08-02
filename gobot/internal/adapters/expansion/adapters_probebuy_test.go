@@ -87,7 +87,7 @@ func (m *probeFakeMediator) Send(_ context.Context, request common.Request) (com
 }
 
 // probeFakeShipRepo answers FindIdleByPlayer plus the atomic single-writer claim primitives the
-// probe-buy journey holds (ClaimShip / ReleaseContainerClaim, sp-1bme8); every other method
+// probe-buy journey holds (ClaimShip / ReleaseContainerClaim); every other method
 // nil-panics via the embedded interface. It models the row-locked DB contract: a claimed hull is
 // EXCLUSIVE (a second claim by another container is rejected) and drops out of the idle pool exactly
 // as the real ClaimShip flips assignment_status to "active".
@@ -528,7 +528,7 @@ func TestBuyProbe_NavigatingBuyer_SharedByBothConsumerTargetShapes(t *testing.T)
 	}
 }
 
-// THE LIVE BUG (sp-xvi15, RED-first): the demand-proximal yard the finder returns for the TARGET
+// THE LIVE BUG (RED-first): the demand-proximal yard the finder returns for the TARGET
 // system (X1-AM3-Z13F) is BEYOND the buyer's jump-reach — every relay to it fail-closes and the
 // probe fleet stalls at its cap. Meanwhile a current-era probe yard sits reachable from the buyer's
 // OWN system (or one hop out). The buy must FALL BACK to the nearest REACHABLE yard and succeed,

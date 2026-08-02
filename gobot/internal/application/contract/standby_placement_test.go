@@ -22,7 +22,7 @@ var _ StandbyPlacementProvider = (*fakePlacementProvider)(nil)
 
 // ResolveStandbyForHoming resolves the standby slot set for the pass across its input variations:
 //   - a live fleet-hub set present → kept as-is (operator pins win, RULINGS #2 no-thrash);
-//   - an EMPTY hub set → auto-driven by the provider's FIXED ≤6 placement slots (sp-bu6ma / sp-mtgje);
+//   - an EMPTY hub set → auto-driven by the provider's FIXED ≤6 placement slots;
 //   - nil provider / read error → fail OPEN: the passed set unchanged (never worse than before);
 //   - empty hub AND no placement → stays empty (homing disabled — the safe no-op).
 func TestResolveStandbyForHoming(t *testing.T) {

@@ -267,7 +267,7 @@ func TestDefers_WhenFinalQuoteExceedsPriceCeiling(t *testing.T) {
 	}
 }
 
-// Working-capital floor (sp-f082y): when Config.ReserveFloor is set, a buy must leave AT LEAST that
+// Working-capital floor: when Config.ReserveFloor is set, a buy must leave AT LEAST that
 // reserve spendable (credits − price >= floor) — the SAME flat 50k reserve the
 // frontier/tour/factory/trade already enforce. ReserveFloor 0 (the default) disables it, so every
 // pre-existing caller (the freshness sizer) is byte-identical. The stationed probe-buyer coordinator

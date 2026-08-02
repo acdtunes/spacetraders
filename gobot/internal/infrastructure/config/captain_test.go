@@ -75,7 +75,7 @@ func TestCaptainDetectorDefaults(t *testing.T) {
 	require.Empty(t, cfg.Captain.ExpectedStreams)
 }
 
-// TestCaptainPinnedHullContainerlessTunable proves the sp-v63s watchdog threshold
+// TestCaptainPinnedHullContainerlessTunable proves the watchdog threshold
 // is now a live CaptainConfig knob (sp-h88r): a set value is honored and tunes the
 // window without a rebuild, while an explicit zero resolves back to the 5m default
 // exactly as an unset value does — the detector must never be silently disabled by

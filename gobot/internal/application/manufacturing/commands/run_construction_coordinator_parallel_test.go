@@ -14,7 +14,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// sp-01eh: the construction drain must dispatch its per-hull supplyTask workers CONCURRENTLY
+// The construction drain must dispatch its per-hull supplyTask workers CONCURRENTLY
 // (bounded by the pipeline's max_workers), not serialize on one hull — the regression that put
 // the Admiral gate ~4x further out. These tests pin the concurrency contract at the drainOnce
 // seam using a synchronizing fake producer that proves how many workers are in flight at once.

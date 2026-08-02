@@ -15,8 +15,8 @@ import (
 // sp-65xqo (P1 money-guard, RULINGS #4 floor-everywhere): the fabricated-OUTPUT buy
 // (purchaseFabricatedOutput — the two LARGEST gate purchases, FAB_MATS / ADVANCED_CIRCUITRY)
 // executed bounded only by a UNITS cap (min(cargo, tradeVolume)) with NO treasury check, while
-// the INPUT buys (buyGood) were already floored by the 50k working-capital reserve (sp-9aoc) and
-// serialized by the cross-container concurrent cap (sp-w3he). This suite drives the output buy
+// the INPUT buys (buyGood) were already floored by the 50k working-capital reserve and
+// serialized by the cross-container concurrent cap. This suite drives the output buy
 // directly (the gate_output_drain idiom) with a live apiClient wired so the SAME floor primitives
 // are active, and asserts the output buy is now floored IDENTICALLY to buyGood: PARK (zero-spend,
 // zero-dispatch) when the buy would drop live treasury below the reserve, PROCEED + RELEASE the

@@ -10,8 +10,8 @@ import (
 // UPPERCASE (e.g. "PARALLEL_MANUFACTURING", "GAS_COORDINATOR"). The operations
 // verbs classify against these registered types; these tests pin the verbs to
 // the types the daemon actually stores so `operations status`/`stop` can never
-// again silently miss a running coordinator (sp-dpsq). The standard
-// MANUFACTURING_COORDINATOR was retired with the factory ops (sp-hoj8u);
+// again silently miss a running coordinator. The standard
+// MANUFACTURING_COORDINATOR was retired with the factory ops;
 // PARALLEL_MANUFACTURING is the surviving manufacturing-coordinator type.
 
 func TestClassifyOperationContainersMatchesRegisteredTypes(t *testing.T) {

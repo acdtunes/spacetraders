@@ -9,7 +9,7 @@ import (
 )
 
 // These tests cover the daemon-side hub mutation + its restart-resilience
-// (sp-jcke, RULINGS #2/#3). The daemon is the single writer of the persisted
+// (RULINGS #2/#3). The daemon is the single writer of the persisted
 // standby-station set: it reads the coordinator's container config, applies the
 // add/remove, and writes it back. The core is exercised over the config MAP (the
 // same shape the daemon reads/writes) so no live DB is needed; the GORM find +

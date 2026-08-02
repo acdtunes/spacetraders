@@ -24,7 +24,7 @@ func countContainersOfType(t *testing.T, db *gorm.DB, playerID int, containerTyp
 	return n
 }
 
-// sp-382j: Admiral-selected launch model (a) — the construction-supply drain must be a STANDING
+// Admiral-selected launch model (a) — the construction-supply drain must be a STANDING
 // coordinator launched unconditionally at every daemon boot (like GoodsFactoryCoordinator /
 // StartGoodsFactory and the other standing coordinators), not merely bootstrap-EnsureRunning-only.
 // Before this, with no bootstrapper ever having run, the ConstructionCoordinator never started
@@ -94,7 +94,7 @@ func TestEnsureBootStandingCoordinators_NoPanicOnGenesisEmptyDB(t *testing.T) {
 // sp-ov8z (epic sp-difa, Auto-pilot Phase 1): the ARMING half of zero-intervention cold start.
 // The captain-bootstrap coordinator must be BOOT-STANDING so an era transition + daemon boot
 // self-starts the whole cold-start machine with no manual `workflow bootstrap` launch.
-// sp-y2ptq (epic sp-9le3x): the capacity reconciler is NO LONGER a member — it was deleted (the
+// sp-y2ptq: the capacity reconciler is NO LONGER a member — it was deleted (the
 // dedicated contract scaler replaces it), so this test now guards only the bootstrap membership.
 func TestBootStandingSet_IncludesBootstrap(t *testing.T) {
 	require.Contains(t, bootStandingCoordinatorTypes, container.ContainerTypeBootstrapCoordinator,

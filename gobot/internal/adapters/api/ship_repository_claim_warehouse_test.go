@@ -16,7 +16,7 @@ import (
 // coordinator can poach the buffer hull out from under a running warehouse. The
 // rejection leaves the row untouched — still idle, still claimable by warehouse.
 //
-// NOTE (sp-3tsjz): the fixture hull is deliberately NOT a "*-1" symbol — that
+// NOTE: the fixture hull is deliberately NOT a "*-1" symbol — that
 // suffix marks the command frigate (IsCommandHull), which ClaimShip now refuses
 // for any depot role. A "-1" depot fixture would trip the frigate guard, not the
 // dedication path these tests exercise.

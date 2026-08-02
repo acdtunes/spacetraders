@@ -14,7 +14,7 @@ import (
 )
 
 // ErrShipHasNoWarpDrive is returned (fail-closed) when a warp is requested for a
-// ship with no MODULE_WARP_DRIVE_* installed (sp-0xd0). Only a SHIP_EXPLORER
+// ship with no MODULE_WARP_DRIVE_* installed. Only a SHIP_EXPLORER
 // carries the drive; refusing here keeps the executor from emitting a warp the
 // live API would reject, and gives slice B/C a typed signal to pick a warp-capable
 // hull instead.
@@ -78,7 +78,7 @@ func (e *ErrWarpDeadEnd) Error() string {
 const warpInsufficientFuelCode = 4203
 
 // ExecuteWarpLeg warps a ship to a single destination waypoint in ANOTHER system,
-// off the jump-gate network, and charts that system on arrival (sp-0xd0). This is
+// off the jump-gate network, and charts that system on arrival. This is
 // the clean, callable entrypoint slice B (off-gate target selection) and slice C
 // (the explorer hull) invoke with a chosen target waypoint + ship.
 //
@@ -99,7 +99,7 @@ func (e *RouteExecutor) ExecuteWarpLeg(
 }
 
 // ExecuteWarpRoute executes an ordered sequence of warp legs, refueling between
-// them (sp-0xd0). A far target off the gate network may be out of a single tank's
+// them. A far target off the gate network may be out of a single tank's
 // range; slice B hands the ordered intermediate targets here and this drives each
 // hop - checking onward viability, topping off at any waypoint that sells fuel
 // before the next warp, and charting every system on arrival. The warp-drive check

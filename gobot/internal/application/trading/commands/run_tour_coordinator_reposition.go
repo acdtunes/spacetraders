@@ -4,8 +4,8 @@ package commands
 // rank jump-reachable systems by expected tour margin, jump to the best one, and re-plan
 // there instead of stranding the hull on its own freshly-sold-out ground. Bounded to ONE
 // reposition per margins-death episode. The jump rides the SHARED cooldown-riding travel
-// machinery (sp-wc5h) via legs.RepositionToWaypointWithinJumps — the bounded stored-adjacency
-// resolver (sp-kl16): a reposition is a MOVEMENT of the hull, so it routes PAST an unreadable
+// machinery via legs.RepositionToWaypointWithinJumps — the bounded stored-adjacency
+// resolver: a reposition is a MOVEMENT of the hull, so it routes PAST an unreadable
 // origin gate over the persisted topology (the scout relaxation, sp-8k9m) instead of
 // fail-closing on the strict fetch-through Path, which the money-commitment paths keep.
 
@@ -60,11 +60,11 @@ const (
 
 	// repositionJumpBoundDefault is the jump bound the tour reposition resolves its
 	// cross-system flight over the PERSISTED stored adjacency (RepositionPath) with, when the
-	// captain leaves [trade_fleet].reposition_jump_bound at 0 (sp-kl16). A tour reposition is a
+	// captain leaves [trade_fleet].reposition_jump_bound at 0. A tour reposition is a
 	// MOVEMENT of the hull to a fresh trading ground — not a commitment of money — so, like a
 	// scout reposition (sp-8k9m), it routes PAST an unreadable frontier gate over the stored
 	// topology instead of fail-closing on it via the strict fetch-through Path: a heavy whose
-	// ORIGIN gate sits in the sp-ikx1 unreadable-backoff set (the live TORWIND-37/2C -> GQ92
+	// ORIGIN gate sits in the unreadable-backoff set (the live TORWIND-37/2C -> GQ92
 	// incident) is otherwise unroutable within the strict MaxJumpPath=5 even where a 2-hop
 	// stored route exists. 12 matches the scout frontier depth ([scouting].max_reposition_jumps
 	// default) — the expanded frontier's grounds sit 6-12 gate-jumps from a hull's home. A named
@@ -93,7 +93,7 @@ const (
 )
 
 // resolveRepositionJumpBound applies the 0/absent → default rule to the configured
-// [trade_fleet].reposition_jump_bound (sp-kl16), so the default lives in ONE place (RULINGS #5)
+// [trade_fleet].reposition_jump_bound, so the default lives in ONE place (RULINGS #5)
 // and both tour reposition call sites (the fresh margins-death jump and the restart-resume jump)
 // route over the SAME bound. A positive value is the captain's override. It is always > 0, so the
 // reposition never degrades to the strict fetch-through Path — which is precisely the fail-closed
@@ -232,9 +232,9 @@ func (h *RunTourCoordinatorHandler) maybeReposition(
 	currentSystem := ship.CurrentLocation().SystemSymbol
 
 	candidates := h.buildRepositionCandidates(ctx, cmd, currentSystem)
-	// sp-lq64: exclude herd-saturated systems on the DEFAULT margins-death path too. Until now only
+	// Exclude herd-saturated systems on the DEFAULT margins-death path too. Until now only
 	// the reach (RepositionReachEnabled) and rate-floor paths ran this cap; the default path — the one
-	// the sp-fmxp thundering-herd trace observed — ranked contention-blind, so N simultaneously
+	// the thundering-herd trace observed — ranked contention-blind, so N simultaneously
 	// margins-dead hulls each picked the same top system and deadheaded into a fleet-wide sink-cap
 	// breach on arrival (the pre-flight already nets the absorption ledger read-only, but a hull
 	// mid-deadhead has released its old reservation and not yet re-reserved, so it is invisible to the
@@ -300,11 +300,11 @@ func (h *RunTourCoordinatorHandler) maybeReposition(
 		return false, nil
 	}
 
-	// sp-lq64: register this hull's in-flight reposition target at the commit-decision (BEFORE the
+	// Register this hull's in-flight reposition target at the commit-decision (BEFORE the
 	// jump) and release it on return (defer, after the synchronous jump — success OR error), mirroring
 	// the proven rate-floor pattern (commitRateFloorRelocation). This is what a CONCURRENT margins-dead
 	// hull's excludeHerdedSystems (above) reads so N hulls don't all deadhead onto the same system
-	// while their landed count still lags a full multi-hop flight (the sp-fmxp TOCTOU herd). The jump
+	// while their landed count still lags a full multi-hop flight (the TOCTOU herd). The jump
 	// blocks until arrival, so the claim is held for the whole flight — exactly the window the landed
 	// count cannot yet see. Dispatch-spreading only: never a money guard (RULINGS #4).
 	h.incrementPendingRelocation(best.system)
@@ -319,7 +319,7 @@ func (h *RunTourCoordinatorHandler) maybeReposition(
 	if best.hasRate {
 		rateNote = fmt.Sprintf(" (projected %.0f fresh/hr)", best.rate)
 	}
-	// sp-kl16: the reposition flies over the stored-adjacency RepositionPath bounded to
+	// The reposition flies over the stored-adjacency RepositionPath bounded to
 	// jumpBound (routing PAST an unreadable origin gate), so the per-route log names the bound
 	// — the greppable operator signal that this leg used the movement resolver, not strict Path.
 	jumpBound := resolveRepositionJumpBound(cmd.RepositionJumpBound)
@@ -333,14 +333,14 @@ func (h *RunTourCoordinatorHandler) maybeReposition(
 	// is a pure empty move — no buy-commitment routing). Before jumping, buy the best
 	// floor-clearing manifest of THIS system's exports that the destination imports, so the
 	// crossing carries value. It is booked into netBought/response, rides the jump, and the
-	// post-jump re-plan liquidates it as launch cargo (sp-m5kv). No floor-clearing lane →
+	// post-jump re-plan liquidates it as launch cargo. No floor-clearing lane →
 	// nothing bought → an empty jump, exactly as pre-sp-ed4i. Persisted-in-progress is set
 	// FIRST (above), so a restart mid-load resumes the jump carrying whatever was already
 	// bought (RULINGS #2). Best-effort: it never blocks the reposition rescue.
 	loadedUnits := h.loadLookbackManifest(ctx, cmd, response, netBought, currentSystem, best.system, maxSpend, reserve)
 
-	// sp-kl16: resolve the cross-system leg over the PERSISTED stored adjacency (RepositionPath),
-	// bounded to jumpBound, so a heavy whose ORIGIN gate is in the sp-ikx1 unreadable-backoff set
+	// Resolve the cross-system leg over the PERSISTED stored adjacency (RepositionPath),
+	// bounded to jumpBound, so a heavy whose ORIGIN gate is in the unreadable-backoff set
 	// can still reposition — the strict fetch-through Path fail-closes on that gate and returned
 	// ErrUnroutable "within 5 jumps" even for a 2-hop route (the C1-blocking TORWIND-37/2C -> GQ92
 	// incident). A tour reposition is a MOVEMENT of the hull to a fresh trading ground, not a
@@ -396,7 +396,7 @@ type neighborRejection struct {
 // the set is returned ordered best-score-first so the caller can bound the real planner calls to
 // the top-K.
 //
-// Neighbor resolution is DURABLE-FIRST (sp-1ki5): it reads the persisted era-scoped gate_edges
+// Neighbor resolution is DURABLE-FIRST: it reads the persisted era-scoped gate_edges
 // adjacency (h.legs.repositionNeighbors), which answers regardless of the origin's charting/ship
 // state, instead of depending solely on the live GetJumpGate scan the tour graph uses — that live
 // call refuses an uncharted origin gate with 4001 and fails open to nil, which is exactly how
@@ -634,7 +634,7 @@ func (h *RunTourCoordinatorHandler) scoreRepositionNeighbors(ctx context.Context
 			continue
 		}
 		seen[sys] = true
-		// sp-8qhu/sp-1ki5: a neighbor whose gate is still building cannot be a candidate — the jump
+		// A neighbor whose gate is still building cannot be a candidate — the jump
 		// would fail at hop time. Name it "unbuilt" in the empty-discovery log, never a silent drop.
 		if nb.underConstruction {
 			rejections = append(rejections, neighborRejection{system: sys, reason: "unbuilt"})
@@ -815,13 +815,13 @@ func selectRepositionWinner(evaluated []repositionScore, floor int64) (winner, p
 }
 
 // repositionCandidateReason renders WHY a pre-flight candidate is not a contender, for the
-// ranking log (sp-lxwn). It disambiguates the two failure classes the pre-fix bare "infeasible"
-// conflated:
+// ranking log (sp-lxwn). It disambiguates the two failure classes a bare "infeasible" would
+// conflate:
 //   - the solver returned a verdict → its OWN infeasibility reason (e.g. "no_profitable_tour":
 //     tours were built but none cleared profit>0 — a tapped ground), plus the best rejected
 //     tour when the solver named one (barely-negative vs nothing-at-all is the diagnostic tell);
 //   - the pre-flight CALL itself failed (a gRPC/snapshot error) → a "planner-error" marker, a
-//     categorically different failure the old code silently swallowed as "infeasible".
+//     categorically different failure a bare "infeasible" silently swallows.
 //
 // Commas and parentheses are neutralised and the result is length-bounded so the reason stays a
 // single well-formed token inside the comma-joined, paren-delimited ranking line. A feasible
@@ -953,9 +953,8 @@ func logRepositionRanking(logger common.ContainerLogger, shipSymbol, fromSystem 
 	for _, s := range evaluated {
 		switch {
 		case !s.feasible:
-			// sp-lxwn: name the SPECIFIC rejection reason (the solver's own "no_profitable_tour",
-			// a "planner-error", etc.) instead of the pre-fix opaque bare "infeasible". Fall back
-			// to "infeasible" when no reason was captured, preserving the old line shape.
+			// Name the SPECIFIC rejection reason (the solver's own "no_profitable_tour", a
+			// "planner-error", etc.). Fall back to "infeasible" when no reason was captured.
 			reason := s.reason
 			if reason == "" {
 				reason = "infeasible"

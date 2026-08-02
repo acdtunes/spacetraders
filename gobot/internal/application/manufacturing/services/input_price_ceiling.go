@@ -16,7 +16,7 @@ import (
 // ADVANCED_CIRCUITRY chain bought ELECTRONICS+MICROPROCESSORS inputs at ~19k/u — 4x
 // market, chasing its own supply ladder up as each buy repriced the source — to
 // fabricate a ~7k/u output: −6.6M in 3h (−2.2M/hr), the operation's single largest
-// active leak. The coordinator ChainMarginGuard (sp-2dv4) already projects the whole
+// active leak. The coordinator ChainMarginGuard already projects the whole
 // chain's live P&L BEFORE a pass, but it runs ONCE at launch (run_factory_coordinator
 // Step 2.5); the ladder climbs DURING the per-tranche input-buy round, past a projection
 // made when the source ask was still ~4.75k. This file adds the two guards that gap
@@ -152,7 +152,7 @@ func (e *ProductionExecutor) inputPriceCeilingParked(ctx context.Context, waypoi
 	// multiplier (a non-overridden good's ceiling is byte-identical to today). The override is
 	// HARD-CAPPED at MaxPriceCeilingMultiplier inside PriceCeilingMultFor so a fat-finger can only
 	// LOOSEN, never DISABLE, the ceiling (RULINGS #4). This raises the per-tranche ladder ceiling
-	// ONLY: the structural inputRoundMarginParked round-gate and the sp-9aoc solvency floor read
+	// ONLY: the structural inputRoundMarginParked round-gate and the solvency floor read
 	// nothing from the override and still park an underwater round / a treasury breach — the
 	// sp-iv65 bleed stays prevented for overridden and non-overridden goods alike.
 	multiplier = goodGatingOverridesFromContext(ctx).PriceCeilingMultFor(good, multiplier)
@@ -192,7 +192,7 @@ func (e *ProductionExecutor) inputPriceCeilingParked(ctx context.Context, waypoi
 // before its input-buy round because it is structurally underwater: the summed live ask of
 // its direct inputs already exceeds what its output resells for, so fabricating loses money
 // every cycle regardless of the per-buy ceiling (sp-iv65 fix-shape, 2nd half). This is the
-// executor-level, live-at-buy-time re-check of the coordinator ChainMarginGuard's (sp-2dv4)
+// executor-level, live-at-buy-time re-check of the coordinator ChainMarginGuard's
 // negative-margin verdict — that guard projects ONCE at launch; prices move during a pass.
 //
 //   - output bid = the good's live in-system resale sink (FindImportMarket, the same call

@@ -49,7 +49,7 @@ func assertLiquidationLeg(t *testing.T, leg trading.TourLegTelemetry, tourID, sh
 	if leg.LegIndex < liquidationLegIndexBase {
 		t.Fatalf("a liquidation leg must sort after every plan leg, got LegIndex=%d want >= %d", leg.LegIndex, liquidationLegIndexBase)
 	}
-	// sp-fzt09: and it must SAY it is a liquidation. Carrying no plan basis is what makes this
+	// And it must SAY it is a liquidation. Carrying no plan basis is what makes this
 	// row correct; being indistinguishable from a solver leg whose plan failed to persist is
 	// what made a quarter of all realized sells unattributable in SQL. An analysis that read
 	// these zeros as solver legs concluded the planner used 36.7% of market depth and had to be

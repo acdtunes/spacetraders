@@ -52,7 +52,7 @@ func (r *spawnFakeShipRepo) Save(_ context.Context, ship *navigation.Ship) error
 }
 
 // SaveWithRetry mirrors the real repository's non-conflict path (find → mutate →
-// save) so the migrated gas pre-claim release (sp-wa7c) exercises its production
+// save) so the migrated gas pre-claim release exercises its production
 // closure while still honoring findErr/saveErr and routing through Save's snapshot
 // tracking.
 func (r *spawnFakeShipRepo) SaveWithRetry(ctx context.Context, symbol string, playerID shared.PlayerID, mutate navigation.ShipMutation) (*navigation.Ship, bool, error) {

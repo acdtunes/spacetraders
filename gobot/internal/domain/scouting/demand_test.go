@@ -33,7 +33,7 @@ func TestDemandWeightsBySink_HalfLifeDecaysRealizedValue(t *testing.T) {
 
 // A newly-hit sink outweighs a lane that stopped being traded: same realized value, but the
 // stale lane has decayed while the fresh sink has not — the auto-adaptive climb/decay the
-// demand weighting exists to produce (sp-wuksw).
+// demand weighting exists to produce.
 func TestDemandWeightsBySink_FreshSinkOutweighsDecayedLane(t *testing.T) {
 	const halfLife = 7200.0 // 2h
 	weights := DemandWeightsBySink([]SinkSale{

@@ -18,7 +18,7 @@ import (
 // is how the sp-1ek0 graduation gate came to report 0.309% for a model that actually drifts
 // 0.518%. Misattributing a leg here silently re-merges the two populations.
 // It is now keyed on the engine the executing path DECLARES rather than on the leg index it
-// happens to pass (sp-fzt09), so the basis label and the row's engine column cannot disagree.
+// happens to pass, so the basis label and the row's engine column cannot disagree.
 func TestLegPlanBasis(t *testing.T) {
 	// The look-back manifest buy is the ONLY engine carrying a cached ask.
 	if got := legPlanBasis(trading.LegEngineLookback); got != metrics.PlanBasisLookback {

@@ -94,8 +94,8 @@ type RunLongHaulArbCommand struct {
 	ContainerID string
 	Iterations  int
 	PerHaulCap  int64
-	// TotalExposureCap is carried for parity with the launch spec. The coordinator no longer
-	// enforces a total in-flight ceiling (sp-bwjyn, Admiral uncap order), so the worker itself
+	// TotalExposureCap is carried for parity with the launch spec. The coordinator does NOT
+	// enforce a total in-flight ceiling (Admiral uncap order), so the worker itself
 	// only applies the per-haul cap + cushion fence.
 	TotalExposureCap int64
 	// MinMargin is the per-unit floor handed to each leg's reused arb guard; 0 leaves the
@@ -207,8 +207,8 @@ func (h *RunLongHaulArbHandler) runEpisode(ctx context.Context, cmd *RunLongHaul
 	// Try the viable lanes in realized-$/hr order: reposition to the source (cross-gate), then run
 	// the OUT leg on the FIRST lane the hull can actually reach. The engine deliberately ranks far
 	// multi-hop exotic lanes, some structurally unreachable for this hull's supply; a gate-
-	// UNROUTABLE source is SKIPPED for the next lane rather than error-returned — the old single
-	// pick error-looped the same deterministic top lane forever, capturing zero value (sp-e059j).
+	// UNROUTABLE source is SKIPPED for the next lane rather than error-returned: error-returning
+	// on the first pick loops the same deterministic top lane forever, capturing zero value.
 	// A NON-unroutable reposition failure (a transient API blip) still fails the episode so the
 	// next cycle retries. Reachability is checked BEFORE any buy, so RULINGS #4 is untouched —
 	// still no spend without a completed reposition.

@@ -371,7 +371,7 @@ func TestConstructionDrain_DoesNotReBuyWhatAnInFlightSupplyAlreadyPaidFor(t *tes
 // A saturated tick is still a working tick: it activates, sweeps and RECONCILES the delivered
 // counters against the live site before it declines to dispatch. Reconciliation sits ahead of every
 // path that can consult a bill, so the tick that does start a supply has already sized it against
-// server truth (the sp-duxru ordering), and a long run of saturated ticks keeps the counters — and
+// server truth (the ordering), and a long run of saturated ticks keeps the counters — and
 // the gate percentage read off the same row — honest instead of frozen.
 func TestConstructionDrain_SaturatedTick_StillReconcilesAgainstTheLiveSite(t *testing.T) {
 	pipeline := newDrainPipelineWithWorkers(t, "FAB_MATS", 400, 1)

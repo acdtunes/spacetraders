@@ -17,7 +17,7 @@ import (
 )
 
 // TestAutosizerTreasuryReaderSeesPostSpendCreditsAfterBuy is the headline
-// money-safety proof for the shared agent cache (sp-oszc), driven end-to-end
+// money-safety proof for the shared agent cache, driven end-to-end
 // through the REAL money guard — autosizerTreasuryReader.Treasury, the credit
 // source for the 25%-treasury + reserve-floor BUY guards — not the client in
 // isolation. The cache lives in the one shared *api.SpaceTradersClient that both

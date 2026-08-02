@@ -765,7 +765,7 @@ func runMarketSpreads(
 	for i, lane := range lanes {
 		// The scan still ranks by CAPPED spread, but flags which lanes actually clear
 		// the executor's bid-floor discipline: trade-route flies the highest-ranked
-		// lane whose CLEARS FLOOR = yes, skipping a deeper-but-sub-floor lane (sp-sh6w).
+		// lane whose CLEARS FLOOR = yes, skipping a deeper-but-sub-floor lane.
 		clearsFloor := "no"
 		if lane.ClearsFloor() {
 			clearsFloor = "yes"

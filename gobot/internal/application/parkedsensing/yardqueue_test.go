@@ -9,7 +9,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/yardscan"
 )
 
-// yardqueue_test.go pins the yard-aware ordering (sp-7qhum) and the ABSOLUTE
+// yardqueue_test.go pins the yard-aware ordering and the ABSOLUTE
 // precedence it was later overruled into (sp-0j5hi).
 //
 // TWO TESTS HERE ASSERT THE OPPOSITE OF WHAT THEY USED TO, and that is the change
@@ -891,7 +891,7 @@ func TestDrain_ReportsTheOrderingWhileSpendingIsPaused(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// A YARD NEVER TAKES A MANNED MARKET'S HULL (sp-0j5hi, Admiral constraint).
+// A YARD NEVER TAKES A MANNED MARKET'S HULL (Admiral constraint).
 //
 // The question that produced these two tests: "will they be retasked? so we
 // will unman some already manned markets from days ago?" The answer is no, and

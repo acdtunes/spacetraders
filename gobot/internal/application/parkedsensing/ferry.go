@@ -26,7 +26,7 @@ import (
 // dispatch → flyToSlot → RouteAcross walk carries it from there, one step per
 // tick. That is the same machinery the foothold path and the seed claims already
 // ride, and reusing it is why this file adds no navigation, no deadline, and no
-// wait — the non-blocking property (sp-uwxwo) is preserved by reuse rather than
+// wait — the non-blocking property is preserved by reuse rather than
 // re-argued.
 //
 // THE ROUTE IS RESOLVED BEFORE THE MONEY MOVES, which is the safety property
@@ -37,14 +37,13 @@ import (
 // a probe that can never scan, and cap headroom held forever — so a source that
 // cannot reach the target is not offered as a counter at all.
 //
-// THE DIRECTION OF THAT TEST IS LOAD-BEARING, and it is where the earlier version
-// of this file (reverted as 4f4ca8ce) was wrong. It walked FORWARD OUT OF THE
-// TARGET and treated the result as valid sources, which is only the same set on a
+// THE DIRECTION OF THAT TEST IS LOAD-BEARING. Walking FORWARD OUT OF THE
+// TARGET and treating the result as valid sources gives the same set only on a
 // symmetric graph — and 624 of 5,488 live gate edges (11.4%) have no reverse row.
 // For a target reachable only over a one-way edge that search returns precisely
-// the systems a hull CANNOT arrive from. This version asks each candidate source
+// the systems a hull CANNOT arrive from. So each candidate source is asked
 // whether IT can reach the target, through the same forward-per-origin walker the
-// foothold path uses (sp-e7e859a4), so the route offered is the route the
+// foothold path uses, and the route offered is the route the
 // placement machine will actually fly.
 //
 // THE FRONTIER IS NOT REFUSED FOREVER by the reach bound. Each ferried hull
@@ -204,8 +203,7 @@ func (b *ferryBroker) load(ctx context.Context, p BuyPorts, playerID int) bool {
 //
 // Returns nothing, rather than an error, when the topology cannot be read or no
 // source has a counter. Both are ordinary answers: the placement simply waits,
-// exactly as it did before this path existed, and the drain's other work is
-// unaffected.
+// and the drain's other work is unaffected.
 func ferryCandidates(ctx context.Context, p BuyPorts, playerID int, slot QueuedSlot, broker *ferryBroker) ([]purchaseCandidate, error) {
 	if p.Gates == nil {
 		// No topology wired: no cross-system guess. This is the pre-ferry

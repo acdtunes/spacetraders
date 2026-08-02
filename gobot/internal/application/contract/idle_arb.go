@@ -367,11 +367,11 @@ type IdleArbDispatcher struct {
 	launchStandby   []string                       // the launch standby set — the fallback when no live resolver is wired
 	standbyResolver func(context.Context) []string // resolves the LIVE standby set each pass (nil → launchStandby)
 	// placementProvider auto-resolves the standby set from the ≤6 FIXED placement slots when
-	// the live `fleet hub` set is EMPTY (the sp-bu6ma / sp-mtgje auto hub-placement) — the SAME
+	// the live `fleet hub` set is EMPTY (the auto hub-placement) — the SAME
 	// resolution (ResolveStandbyForHoming) the coordinator's between-legs homing uses, so the
 	// standing re-home sweep and the between-legs hook place hulls on ONE slot set (RULINGS #7).
 	// Nil-safe: without it rehomeDriftedHulls keeps the raw fleet-hub/launch set, so a sweep with
-	// no hubs pinned is byte-identical to the pre-fix behavior.
+	// no hubs pinned is a no-op.
 	placementProvider StandbyPlacementProvider
 	lanes             *laneMutex // one hull per (good, sink) per recovery window
 
@@ -399,7 +399,7 @@ type IdleArbDispatcher struct {
 	skipLaneHeld     int // legs skipped: best lane held by a live/recovering leg
 	skipUnprofitable int // legs skipped: live net_per_u below the profitability floor
 	rehomed          int // hulls re-homed post-leg (cumulative)
-	heldReserveFloor int // passes cut short: one more leg would breach the working-capital reserve (sp-zq635)
+	heldReserveFloor int // passes cut short: one more leg would breach the working-capital reserve
 }
 
 // NewIdleArbDispatcher wires a dispatcher for the given dedicated fleet. A nil
@@ -972,12 +972,12 @@ func (d *IdleArbDispatcher) fleetShipContainerIDs(ctx context.Context) (map[stri
 // that clears the SITTING idle pool (contracts finished long ago, hulls held
 // ready): it runs at the top of every pass on ALL idle off-station hulls,
 // regardless of whether they ever fly an arb leg — so the reserve-floor buffer
-// (never arb'd) is homed too (sp-54uif).
+// (never arb'd) is homed too.
 //
 // STANDBY SET: resolved the SAME way the coordinator's between-legs homing
 // resolves it — the `fleet hub`/launch set, then ResolveStandbyForHoming
 // AUTO-FILLS it from the role-classified central parks when the pinned set is
-// EMPTY (the sp-bu6ma auto hub-placement). Without the auto-fill the sweep bailed
+// EMPTY (the auto hub-placement). Without the auto-fill the sweep bailed
 // whenever the operator relied on auto-placement, leaving the pool to pile where
 // it last finished (the live J59 pile).
 //
@@ -985,14 +985,14 @@ func (d *IdleArbDispatcher) fleetShipContainerIDs(ctx context.Context) (map[stri
 // honest: the leash is measured from the hull's CURRENT waypoint, so a hull
 // left at a drift position could chain legs arbitrarily far from home.
 //
-// WHY ONLY OFF-SLOT HULLS: a hull already parked at ITS OWN assigned slot is left alone
-// (sp-mtgje). Under fixed placement each delivery hull permanently owns one slot (the symbol-zip of
-// the roster onto the ≤6 placement slots, domainContract.AssignedSlot); re-firing HomeShipCommand on
-// a hull already at its slot would be a no-op churn, and a hull sitting at a PEER's slot must move to
-// its OWN (the old "at ANY standby station" rule left it there forever). Claimed and in-transit hulls
-// never appear here — FindIdleShipsByFleet already excludes them — so an active contract claim or an
-// in-flight leg is never disturbed. The command frigate is skipped explicitly (RULINGS #7). A surplus
-// hull (beyond the delivery knee) owns no slot and is left for the scaler to re-role into a warehouse.
+// WHY ONLY OFF-SLOT HULLS: a hull already parked at ITS OWN assigned slot is left alone. Under fixed
+// placement each delivery hull permanently owns one slot (the symbol-zip of the roster onto the ≤6
+// placement slots, domainContract.AssignedSlot); re-firing HomeShipCommand on a hull already at its
+// slot would be a no-op churn, and a hull sitting at a PEER's slot must move to its OWN — treating
+// "at ANY standby station" as home leaves it there forever. Claimed and in-transit hulls never appear
+// here — FindIdleShipsByFleet already excludes them — so an active contract claim or an in-flight leg
+// is never disturbed. The command frigate is skipped explicitly (RULINGS #7). A surplus hull (beyond
+// the delivery knee) owns no slot and is left for the scaler to re-role into a warehouse.
 //
 // Best-effort and inert when re-homing is off (nil homer, or an empty EFFECTIVE standby set — no
 // `fleet hub` pins AND no fixed placement resolved), matching HomeShipCommand's own "empty stations

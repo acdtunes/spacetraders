@@ -128,20 +128,13 @@ func (h *RunProbeSensingCoordinatorHandler) dispatchIdleOrphans(
 
 		// AS FAR AS THE WALK REACHES, AND NOT ONE SYSTEM FURTHER.
 		//
-		// This was same-system-only, and the restriction was honest when it was written: it matched
-		// the predicate flyToSlot uses to choose NavigateWithin over RouteAcross, because RouteAcross
-		// REFUSED outright — the stopgap from sp-uwxwo, since routing a whole crossing meant blocking
-		// the tick on multi-jump and cooldown waits. Handing out a cross-gate errand then would have
-		// been handing out an errand nothing could perform.
+		// SAME-SYSTEM-ONLY IS NOT THE CONSERVATIVE VERSION OF THIS, IT IS A WALL. RouteAcross
+		// advances one step per tick and never waits, so the placement machine carries a hull across
+		// gates as readily as across a system; and on the live map there is not ONE open placement
+		// in a system holding an idle hull — all 66 are in the eight systems next door — so a
+		// same-system bound makes this pass a no-op by construction.
 		//
-		// THAT PREMISE IS GONE. RouteAcross now advances one step per tick and never waits, so the
-		// placement machine carries a hull across gates as readily as across a system. What is left
-		// of the old restriction is not caution, it is a wall: on the live map there is not ONE open
-		// placement in a system holding an idle hull — all 66 are in the eight systems next door — so
-		// same-system-only makes this pass a no-op by construction, not a conservative version of
-		// itself.
-		//
-		// THE BOUND THAT REPLACES IT IS THE WALK'S OWN. reachableSystems runs the same bounded
+		// THE BOUND IS THE WALK'S OWN. reachableSystems runs the same bounded
 		// breadth-first search over the same stored adjacency that nextHopToward runs, out to the
 		// same shared MaxWalkRings, so "a target this pass will hand out" stays exactly "a target the
 		// walk can resolve". Overshooting is not a loud failure: the walk would name no next system,

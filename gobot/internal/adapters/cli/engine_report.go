@@ -33,7 +33,7 @@ type EngineReport struct {
 	BacklogOldestAgeSec float64        `json:"backlog_oldest_age_sec"`
 	PerType             map[string]int `json:"per_type"`
 	// TokenUsage is a compact per-wake/per-day token cost summary attached
-	// best-effort from the claude-session transcripts (sp-593x). It is omitted
+	// best-effort from the claude-session transcripts. It is omitted
 	// when token telemetry is unavailable (no `gc`, no transcripts) so the
 	// events report never depends on it. The full per-agent breakdown lives in
 	// `captain tokens`.

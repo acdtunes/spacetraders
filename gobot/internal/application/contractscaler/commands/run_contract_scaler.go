@@ -1,4 +1,4 @@
-// Package commands holds the dedicated contract auto-scaler (epic sp-9le3x): a
+// Package commands holds the dedicated contract auto-scaler: a
 // STANDING, PERMANENT coordinator that ramps a FIXED, EXCLUSIVE contract fleet to
 // a live-tunable ceiling behind ONE money guard — a 200000-credit working-capital
 // cushion. It replaces the reactive capacity-reconciler's contract-delivery role
@@ -119,7 +119,7 @@ type DepotGrower interface {
 
 // BuyOrder is one approved scaler purchase driven through the kept autosizer buy
 // primitive: buy the light frame, dedicate it EXCLUSIVELY to the contract fleet,
-// and home it to its FIXED placement slot (one hull per waypoint, sp-mtgje). The
+// and home it to its FIXED placement slot (one hull per waypoint). The
 // standby set is the ≤6 fixed delivery slots (TopDeliverySlots); the homing zips this
 // hull to its slot by symbol — NO runtime demand.
 type BuyOrder struct {
@@ -242,7 +242,7 @@ type RunContractScalerHandler struct {
 	grower         DepotGrower
 	buyer          Purchaser
 	reclaimer      IdleHullReclaimer
-	releaser       DeliverySurplusReleaser // sp-mtgje: re-role surplus delivery → warehouse (nil-safe: skip re-role)
+	releaser       DeliverySurplusReleaser // Re-role surplus delivery → warehouse (nil-safe: skip re-role)
 	depotReclaimer DepotHullReclaimer      // sp-fihvy: home-scoped stocker reuse tier (nil-safe fallback to reclaimer)
 	depotPrice     DepotPriceReader        // sp-fihvy: home-scoped stocker buy-fallback price (nil-safe fallback to price)
 	ceiling        liveconfig.Reader
@@ -255,7 +255,7 @@ type RunContractScalerHandler struct {
 
 // armedPlan is the per-coordinator once-at-arm resolution: the fixed buy sequence + the ≤6
 // FIXED placement slots (TopDeliverySlots) the homing zips hulls onto, stable for the era. No
-// demand map — the runtime homing carries no demand (sp-mtgje).
+// demand map — the runtime homing carries no demand.
 type armedPlan struct {
 	plan            []contractscaler.PlanUnit
 	standbyStations []string
@@ -398,7 +398,7 @@ func (h *RunContractScalerHandler) reconcileOnce(ctx context.Context, cmd *RunCo
 
 	bought := h.fillDeliveryRole(ctx, cmd, armed, takeDelivery)
 
-	// RE-ROLE the delivery surplus (sp-mtgje): when the live delivery count exceeds the knee (the cap
+	// RE-ROLE the delivery surplus: when the live delivery count exceeds the knee (the cap
 	// dropped 8→6), un-dedicate the surplus into the idle pool so the depot fill below RECLAIMS it into
 	// the warehouse deficit the SAME pass — a re-composition with ZERO new hulls, never left idle. Runs
 	// between the delivery fill (which never removes) and the depot fill (which reclaims the released
@@ -417,7 +417,7 @@ func (h *RunContractScalerHandler) reconcileOnce(ctx context.Context, cmd *RunCo
 
 // reroleSurplusDelivery un-dedicates the delivery hulls that exceed the plan knee so the depot fill's
 // reuse-before-buy tier reclaims them into the warehouse deficit the SAME pass — the delivery-over-target
-// path (sp-mtgje: live 8 delivery, knee 6 → the 2 surplus become warehouses). It releases AT MOST the
+// path (live 8 delivery, knee 6 → the 2 surplus become warehouses). It releases AT MOST the
 // warehouse deficit (takeWarehouse − haveWarehouse), so a released hull is always absorbed by a warehouse
 // slot rather than stranded idle. Best-effort + fail-closed: a nil releaser, an unreadable count, or no
 // surplus is a no-op; a partial release just re-roles fewer this pass (retried next tick). FREE — never

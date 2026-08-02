@@ -11,7 +11,7 @@ import (
 	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
 )
 
-// These tests cover the `fleet hub add|remove` CLI surface (sp-jcke): the
+// These tests cover the `fleet hub add|remove` CLI surface: the
 // operation-oriented, live mutation of a running coordinator's standby-station
 // ("hub") set. By construction the fake below has ONLY the FleetHub RPC — no
 // container-restart method — so "no restart" is guaranteed by the surface these

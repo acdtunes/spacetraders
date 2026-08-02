@@ -11,7 +11,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// sp-rqwm: the factory MAKE-stage sold its fabricated OUTPUT at the BUY market
+// The factory MAKE-stage sold its fabricated OUTPUT at the BUY market
 // instead of the sink the chain-margin guard priced. The guard cleared MEDICINE
 // against sink A1@5,248; execution accumulated the output at the factory D39 and
 // dumped it there via the make-room path (laddering D39's own ~1,560 bid, vs a
@@ -117,7 +117,7 @@ func newSinkExecutor(t *testing.T, mr *sinkTestMarketRepo) (*ProductionExecutor,
 	return executor, repo, mediator
 }
 
-// Acceptance core (sp-rqwm): a harvested output whose sink bid clears the basis is
+// Acceptance core: a harvested output whose sink bid clears the basis is
 // flown to the guard's resale sink and sold THERE — never at the factory/buy market.
 func TestSellFabricatedOutputAtSink_SellsAtGuardSink_NotBuyMarket(t *testing.T) {
 	mr := &sinkTestMarketRepo{sinkWP: sinkTestSinkWP, sinkBid: 5248, sinkVol: 40}

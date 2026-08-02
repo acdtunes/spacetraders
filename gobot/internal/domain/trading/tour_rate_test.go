@@ -52,7 +52,7 @@ func TestMedianTourRate_PerTourMedianOddAndEven(t *testing.T) {
 // β fails CLOSED — empty rows, buys with no realized sell, and a zero-span tour
 // each yield ok=false, never a misleading readable 0. A placement caller that cannot see β falls
 // back to the legacy engine; a fabricated 0 would silently arm the park floor at φ*0 = 0.
-// sp-461l (epic sp-g9td): MedianTourRate is the realized-rate SOURCE the reposition rate-floor
+// MedianTourRate is the realized-rate SOURCE the reposition rate-floor
 // (run_tour_coordinator_rate_floor.senseRateFloor) and placement β (run_tour_coordinator_placement.
 // senseBeta) steer on. Those consumers STAY on telemetry — they need PER-TOUR / PER-HULL rates the
 // transactions ledger (no ship column) cannot give, and β must be dimensionally commensurable with

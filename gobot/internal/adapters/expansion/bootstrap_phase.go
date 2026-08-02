@@ -2,7 +2,7 @@ package expansion
 
 // BootstrapExpansionPhaseReader backs the probe-buyer-fleet coordinator's EXPANSION phase gate
 // (sp-f3mcc): it re-derives the bootstrap lifecycle's EXPANSION signal from the LIVE world, exactly
-// the way bootstrap's own derivePhase does (sp-feiy7) — EXPANSION ⇔ the home-system jump-gate
+// the way bootstrap's own derivePhase does — EXPANSION ⇔ the home-system jump-gate
 // construction is COMPLETE. Deriving (not reading a stored phase) is the only honest seam: the
 // bootstrap phase is never persisted (a stored enum can desync — the reconciler doctrine), and the
 // bootstrap container EXITS after its hand-off, so there is nothing running to ask. The reads reuse

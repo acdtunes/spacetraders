@@ -128,7 +128,7 @@ func (f *fakeLedger) FindByPlayer(_ context.Context, _ shared.PlayerID, opts led
 	return out, nil
 }
 
-// fakeTourTelemetryReader stands in for the reused tour_telemetry_repository read (sp-wuksw):
+// fakeTourTelemetryReader stands in for the reused tour_telemetry_repository read:
 // it returns the player's realized trade legs and RECORDS the player_id + since it was asked
 // for, so a test can assert the coordinator scopes the demand read by player.
 type fakeTourTelemetryReader struct {
@@ -178,7 +178,7 @@ func standingSizerPost(system string, hulls int, hull string) *domainScouting.Sc
 }
 
 // fullyMannedSizerPost builds a standing post whose EVERY slot (primary + hulls-1 extras)
-// carries a hull, so IsFullyManned() is true — the precondition the sp-iupr issue-3 sanity
+// carries a hull, so IsFullyManned() is true — the precondition the issue-3 sanity
 // floor gates on (a fully-manned, telemetried, breaching post is genuinely under capacity).
 func fullyMannedSizerPost(system string, hulls int) *domainScouting.ScoutPost {
 	post := &domainScouting.ScoutPost{
@@ -230,7 +230,7 @@ func freshMarkets(n int, ageSecs, weight float64) []domainScouting.MarketFreshne
 }
 
 // activityMarkets builds n identical FRESH markets (age 100s < any SLA so no breach raise fires,
-// unit weight) carrying `activity` — a single-activity cohort for the sp-j4kjv per-activity SLA
+// unit weight) carrying `activity` — a single-activity cohort for the per-activity SLA
 // fixtures. An empty activity is the unknown/null case.
 func activityMarkets(n int, activity string) []domainScouting.MarketFreshnessSample {
 	out := make([]domainScouting.MarketFreshnessSample, 0, n)
@@ -347,12 +347,12 @@ func TestSizer_BuysWhenAggregateDemandExceedsSupply(t *testing.T) {
 	require.NoError(t, h.ReconcileOnce(context.Background(), sizerCmd()))
 
 	require.Equal(t, 1, pu.buyCalls, "one probe bought to close the freshness capacity gap")
-	// sp-hej4: the aggregate buy names its NEEDIEST system (largest desired−current gap; X1-A and
+	// The aggregate buy names its NEEDIEST system (largest desired−current gap; X1-A and
 	// X1-B both need 2 from 0, first wins) as the demand-proximal target, with the shared default
 	// per-hop penalty, so the probe spawns at the yard nearest the shortfall — fail-open otherwise.
 	require.Equal(t, "X1-A", pu.lastTarget.System, "the neediest market-bearing system is the buy target")
 	require.Equal(t, probebuy.DefaultHopPenaltyCredits, pu.lastTarget.HopPenaltyCredits, "the sizer applies the shared default proximal penalty")
-	// sp-1bme8: the aggregate buy owns its exclusive single-writer journey claim by the DRIVING
+	// The aggregate buy owns its exclusive single-writer journey claim by the DRIVING
 	// sizer's container id, so the frontier coordinator can never grab this buyer mid-relay.
 	require.Equal(t, "freshness-1", pu.lastTarget.ClaimOwnerContainerID, "the journey claim is owned by the freshness container id")
 }
@@ -618,7 +618,7 @@ func TestResolveSizerConfig_ReadsPerActivitySLAKnobsLiveWithDefaultFallback(t *t
 
 // ---- sp-iupr: telemetry-starved over-provisioning + slack release --------------
 
-// BUG 1 (sp-iupr): a system whose probes never complete scan cycles produces NO cycle
+// BUG 1: a system whose probes never complete scan cycles produces NO cycle
 // telemetry, so its markets go stale and OldestAgeSeconds grows without bound. The
 // closed-loop age raise then pins its post at the per-system cap (8) regardless of how
 // FEW markets it has — a 3-market system stuck at 8 forever, higher than a healthy
@@ -656,7 +656,7 @@ func TestSizer_SeedsTelemetryStarvedSystemByMarketCountNotAge(t *testing.T) {
 	}
 }
 
-// BUG 1 (sp-iupr) release half: a post ALREADY pinned oversized (8) by the old age raise,
+// BUG 1 release half: a post ALREADY pinned oversized (8) by the old age raise,
 // still telemetry-starved, must WALK DOWN to the market-count floor instead of parking at
 // the seed/cap forever — its age cannot hold it (age is not a capacity signal when the
 // probes aren't cycling). And once it reaches that market-count floor it HOLDS there, never
@@ -691,7 +691,7 @@ func TestSizer_TelemetryStarvedOversizedPostConvergesToMarketCountFloor(t *testi
 	})
 }
 
-// BUG 2 (sp-iupr): a post whose measured requirement has fallen below its current budget,
+// BUG 2: a post whose measured requirement has fallen below its current budget,
 // sitting UNDER its SLA but not yet comfortably fresh (the warm band the old code held
 // forever), releases its surplus once the slack has been STABLE for the release window —
 // so aggregate supply stops outrunning demand. The release is paced (the freed probe
@@ -720,7 +720,7 @@ func TestSizer_ReleasesStableWarmSurplusAfterWindow(t *testing.T) {
 		"a warm surplus stable across the release window sheds one probe toward the measured requirement")
 }
 
-// BUG 2 (sp-iupr) hysteresis: a ONE-CYCLE dip in demand (a single tick where desired drops
+// BUG 2 hysteresis: a ONE-CYCLE dip in demand (a single tick where desired drops
 // below current, then recovers) must NOT release — otherwise the sizer sheds a probe the
 // next tick's rebound re-buys, thrashing against the shared pool. Only a slack that stays
 // stable across the whole window releases.
@@ -747,7 +747,7 @@ func TestSizer_WarmSurplusOneCycleDipDoesNotRelease(t *testing.T) {
 	require.Empty(t, pr.hullUpdates, "a one-cycle demand dip never accrues a stable window — no probe is shed")
 }
 
-// BUG 2 (sp-iupr) frontier coordination: releasing surplus must return the probe to the
+// BUG 2 frontier coordination: releasing surplus must return the probe to the
 // SHARED idle pool (a resize-DOWN the scout reconciler un-mans, landing the hull undedicated
 // where the frontier expansion coordinator (sp-8w89) can claim it), NEVER retire the post or
 // sell the hull. No-churn: the post keeps its measured-requirement probes and the sizer does
@@ -1536,7 +1536,7 @@ func mannedBudget(pr *fakeSizerPostRepo, post *domainScouting.ScoutPost, systemS
 	return post.HullBudget()
 }
 
-// HOME MANNING FLOOR (sp-2ci9y): the home post carries a permanent MinHulls floor (probe_target)
+// HOME MANNING FLOOR: the home post carries a permanent MinHulls floor (probe_target)
 // so the freshsizer never sizes it below the probes bootstrap bought for the home scan. Same
 // fixture (26 markets, telemetry-starved → seed 180s cycle → SLA RequiredHulls=2) both ways: an
 // UN-floored post (MinHulls 0, every non-home post) sizes to the SLA minimum 2 — byte-identical to
@@ -1571,7 +1571,7 @@ func TestSizer_HomePostFlooredToProbeTarget(t *testing.T) {
 	}
 }
 
-// FLOOR IS A FLOOR, NOT A CAP (sp-2ci9y): if the SLA genuinely demands MORE than probe_target the
+// FLOOR IS A FLOOR, NOT A CAP: if the SLA genuinely demands MORE than probe_target the
 // home post still sizes UP. A fully-manned home post breaching its SLA 8× is raised to 8 probes —
 // the floor of 3 does not cap it. Guards against a min()-instead-of-max() mis-implementation (which
 // would clamp the raise back down to 3).
@@ -1591,7 +1591,7 @@ func TestSizer_HomeFloorDoesNotCapAnSLARaise(t *testing.T) {
 		"an 8× SLA breach raises the home post to 8 — the probe_target floor (3) never caps a legitimate SLA raise")
 }
 
-// NO EXTRA BUY FROM THE FLOOR (sp-2ci9y, RULINGS #4): the floor is a MANNING floor, not a spend
+// NO EXTRA BUY FROM THE FLOOR (RULINGS #4): the floor is a MANNING floor, not a spend
 // change. The home post is floored to 3 (probe_target) while its SLA buy-demand stays 2. With supply
 // exactly 2, the un-floored buy-demand (2) is covered — no purchase — even though the post is manned
 // to 3. Were the floor leaking into the buy-demand (3 > 2 supply), the guarded buyer would double-buy
@@ -1750,7 +1750,7 @@ func TestSizer_DemandReadIsScopedToThePlayer(t *testing.T) {
 }
 
 // KNOB WIRING (sp-wuksw test #3, config half): the EWMA half-life is a tunable-only knob resolving
-// live > default, mirroring the sp-j4kjv per-activity SLA knobs (no launch-command field). The decay
+// live > default, mirroring the per-activity SLA knobs (no launch-command field). The decay
 // math itself is proven in TestDemandWeightsBySink_HalfLifeDecaysRealizedValue.
 func TestResolveSizerConfig_ReadsDemandHalfLifeLiveWithDefaultFallback(t *testing.T) {
 	def := resolveSizerConfig(sizerCmd(), nil)

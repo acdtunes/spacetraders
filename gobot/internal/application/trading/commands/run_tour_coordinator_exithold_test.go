@@ -23,7 +23,7 @@ func warningContains(l *propFloorCapturingLogger, sub string) bool {
 	return false
 }
 
-// torwindAFixture is the sp-8zhit incident, to the waypoint. TORWIND-A is IN_ORBIT at
+// torwindAFixture is the incident, to the waypoint. TORWIND-A is IN_ORBIT at
 // X1-KP23-D41 holding the 20 MICROPROCESSORS it flew in from A3 — and D41 IS the sink for
 // MICROPROCESSORS, bidding 4,141/u (82,820 for the load) at that moment. The hull had already
 // flown the whole lane and arrived at the market that wanted the goods.
@@ -56,7 +56,7 @@ func torwindAFixture() *tourFixture {
 	}
 }
 
-// THE INCIDENT (sp-8zhit, era 5 TORWIND). A tour exits with no plan and the container
+// THE INCIDENT (era 5 TORWIND). A tour exits with no plan and the container
 // terminalizes; ContainerRunner.releaseShipAssignments then frees the hull on EVERY exit reason.
 // Pre-fix, TORWIND-A was released idle, in orbit above the very market bidding 4,141/u for the 20
 // MICROPROCESSORS in its hold — a delivered, sellable, full-price load marooned on a hull nothing
@@ -165,7 +165,7 @@ func TestTour_ExitWithUnsellableHold_ReportsResidualWithoutSellingOrVetoing(t *t
 // The RepositionDisabled kill-switch narrows the exit sweep to "sell only where you already
 // stand". TestTour_DistressLiquidation_RespectsRepositionKillSwitch pins the other half — that a
 // hull under the switch is never sent hunting for a buyer at another waypoint. This pins that the
-// switch does not reopen the sp-8zhit hole for the damning case: TORWIND-A was parked ON the
+// switch does not reopen the hole for the damning case: TORWIND-A was parked ON the
 // market bidding for its load, so no movement was ever required, and releasing it loaded would be
 // wrong with or without the rescue machinery armed.
 func TestTour_ExitSweep_UnderKillSwitch_StillSellsWhereTheHullStands(t *testing.T) {

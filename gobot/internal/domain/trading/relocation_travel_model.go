@@ -9,7 +9,7 @@ import "time"
 // hours a relocating hull earns nothing, so travel_h is load-bearing on every relocation decision.
 // The coefficients behind it were fitted (sp-smbgd, routing-service/utils/tour_solver.py) on a 24h
 // window that is ~85% cap-4-era crossings, and `max_tour_systems` was reverted 4 -> 2 on
-// 2026-07-30 (sp-0hodc). Per-hop cost is jump-cooldown + leg physics, so the MECHANISM is
+// 2026-07-30. Per-hop cost is jump-cooldown + leg physics, so the MECHANISM is
 // cap-independent — but the measured medians may still move, and sp-zvywu's spec v2 requires a
 // refit before the first live relocation if they shift more than 15%.
 //

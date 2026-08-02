@@ -181,7 +181,7 @@ func TestComputeTourGateMetrics_ExactNumbersAndFailVerdict(t *testing.T) {
 		telRow("ctr-2", "FUEL", false, 200, 240, base.Add(3*time.Hour)),       // 20%
 		telRow("ctr-3", "FABRICS", false, 500, 500, base.Add(4*time.Hour)),    // 0%
 	}
-	// sp-461l: tour $/hr is now the transactions-cash tour rate (injected), not telemetry netting.
+	// Tour $/hr is now the transactions-cash tour rate (injected), not telemetry netting.
 	m := computeTourGateMetrics(rows, 1 /*failed*/, 14000 /*tourCPH*/, true, 5000 /*singleLane*/, true)
 
 	if m.ToursCompleted != 3 {
@@ -232,7 +232,7 @@ func TestComputeTourGateMetrics_PassesWhenAllMet(t *testing.T) {
 	}
 }
 
-// sp-461l (epic sp-g9td): the graduation gate's tour $/hr now comes from the transactions-cash
+// The graduation gate's tour $/hr now comes from the transactions-cash
 // tour rate, NOT telemetry netting. sp-rd21 proved telemetry netting read ~2x inflated (dropped
 // buy legs); this test pins the SOURCE: the telemetry here would net to a HUGE sells-heavy $/hr,
 // but the injected cash rate is the true, lower one — TourCreditsPerHour and the ratio must track

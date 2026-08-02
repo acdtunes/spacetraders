@@ -25,7 +25,7 @@ import (
 // walked the price up unguarded. The ceiling re-reads the LIVE ask before each
 // tranche and aborts the remainder (left unbought) once it rises above the armed
 // per-unit ceiling. These drive the real CargoTransactionHandler tranche loop — the
-// exact mirror of the sp-lbbm sell floor.
+// exact mirror of the sell floor.
 
 // ceilingMarketFixture models a source whose ask ladders up after the first buy,
 // shared between the market repo (which serves the current ask) and the fake API

@@ -19,7 +19,7 @@ import (
 // prove an operation-keyed claim under the matching fleet identity is PERMITTED on
 // a same-fleet-dedicated hull and REJECTED on a foreign one. FindBySymbol + Save
 // back the legacy branch; ClaimShip backs the operation-keyed branch the tour now
-// takes (sp-sg35).
+// takes.
 type dedicationGuardShipRepo struct {
 	navigation.ShipRepository
 	ship *navigation.Ship
@@ -42,7 +42,7 @@ func (r *dedicationGuardShipRepo) FindByContainer(_ context.Context, _ string, _
 	return nil, nil
 }
 
-// sp-sg35 THE PREREQUISITE — this is the test that would have caught the
+// THE PREREQUISITE — this is the test that would have caught the
 // fleet-killer. The tour heavies (TORWIND-19/2B/2C/2D/2E/37/39/42) are dedicated
 // to the "trade" fleet, and tour_run claims through the ContainerRunner. If the
 // launch config does not stamp the "trade" operation, the dedication guard (both
@@ -75,9 +75,9 @@ func TestStartTourRun_StampsTradeOperationInLaunchConfig(t *testing.T) {
 	require.Contains(t, model.Config, `"operation":"trade"`)
 }
 
-// sp-kl16 THE O34Q WRITE-SIDE PIN. The tour-reposition jump bound is daemon-global tuning
+// THE O34Q WRITE-SIDE PIN. The tour-reposition jump bound is daemon-global tuning
 // ([trade_fleet].reposition_jump_bound), so StartTourRun must STAMP it into the launch config —
-// the write half of the persist boundary the scout relay's bug (sp-o34q) dropped. Without this
+// the write half of the persist boundary the scout relay's bug dropped. Without this
 // write, buildTourCoordinatorCommand would read 0 on every rebuild and the reposition would
 // silently degrade to the strict resolver, exactly the C1-blocking failure sp-kl16 fixes. Paired
 // with TestTourRepositionJumpBound_RoundTripsThroughRebuildAcrossPersist (the read+merge half).
@@ -107,9 +107,9 @@ func TestStartTourRun_StampsRepositionJumpBoundFromTradeFleetConfig(t *testing.T
 	require.Equal(t, 9, rebuilt.(*tradingCmd.RunTourCoordinatorCommand).RepositionJumpBound)
 }
 
-// sp-syaz THE CONFIG-KNOB PROPAGATION PIN (review major). max_tour_systems is a daemon-global
+// THE CONFIG-KNOB PROPAGATION PIN (review major). max_tour_systems is a daemon-global
 // tour tuning ([trade_fleet].max_tour_systems, the per-tour distinct-system cap), so — exactly
-// like the sp-kl16 reposition jump bound and the sp-686e stranded threshold above — StartTourRun
+// like the reposition jump bound and the sp-686e stranded threshold above — StartTourRun
 // must STAMP it into the launch config from tradeFleetConfig. Without this write,
 // buildTourCoordinatorCommand reads 0 on every launch AND rebuild and the request-driven cap is
 // INERT in production (the review finding): the operator's config.yaml value never reaches the
@@ -140,7 +140,7 @@ func TestStartTourRun_StampsMaxTourSystemsFromTradeFleetConfig(t *testing.T) {
 	require.Equal(t, 4, rebuilt.(*tradingCmd.RunTourCoordinatorCommand).MaxTourSystems)
 }
 
-// sp-syaz default-safety companion: an UNSET [trade_fleet].max_tour_systems (0) rebuilds to
+// Default-safety companion: an UNSET [trade_fleet].max_tour_systems (0) rebuilds to
 // cmd.MaxTourSystems 0 — which the solver reads as its MAX_TOUR_SYSTEMS default (2), so a daemon
 // that never sets the knob is byte-identical to today (the launch path stays default-safe).
 func TestStartTourRun_MaxTourSystemsDefaultsZeroWhenUnset(t *testing.T) {
@@ -489,7 +489,7 @@ func TestStartTourRun_RepositionRateFloorDefaultsWhenUnset(t *testing.T) {
 	require.Equal(t, 0, cmd.RepositionRateFloorDwellMinutes, "an unset reposition_rate_floor_dwell_minutes must rebuild to the sentinel 0 (consumer resolves -> 15)")
 }
 
-// sp-jsng THE CONFIG-KNOB PROPAGATION PIN (the #1 fleet-$/hr lever, sp-7q5t). sp-jsng BUILT the
+// THE CONFIG-KNOB PROPAGATION PIN (the #1 fleet-$/hr lever). sp-jsng BUILT the
 // widened candidate producer (widenedTourSystems reads cmd.CandidateHopDepth / cmd.CandidateShortlistTopN)
 // but DEFERRED the config knob that SETS them, so both were always 0 and the widening was unreachable
 // in production. candidate_hop_depth / candidate_shortlist_top_n are daemon-global [trade_fleet] tunings
@@ -528,7 +528,7 @@ func TestStartTourRun_StampsCandidateWideningFromTradeFleetConfig(t *testing.T) 
 	require.Equal(t, 8, cmd.CandidateShortlistTopN)
 }
 
-// sp-jsng default-safety companion: an UNSET [trade_fleet] candidate-widening block rebuilds to
+// Default-safety companion: an UNSET [trade_fleet] candidate-widening block rebuilds to
 // CandidateHopDepth 0 + CandidateShortlistTopN 0 — which the coordinator's resolveCandidateHopDepth
 // floors to 1 (the exact live 1-hop set) and resolveCandidateShortlistTopN resolves to 6, so a daemon
 // that never sets the knobs is byte-identical to today (the launch path stays default-safe/1-hop).

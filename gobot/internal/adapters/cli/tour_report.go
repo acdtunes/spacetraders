@@ -18,18 +18,18 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
-// The A→B graduation gate (spec sp-1ek0): a hull graduates from supervised one-shot
+// The A→B graduation gate: a hull graduates from supervised one-shot
 // tours to an autonomous circuit only after 10 completed tours with (i) zero guard
 // violations, (ii) realized $/hr ≥ 1.5× the trailing single-lane $/hr, and (iii)
 // median plan-vs-realized price error ≤ ±15% (the metric that proves the model, not
 // just profit). `tour report` measures all three from the telemetry + ledger.
 //
-// sp-fpgl2 — criterion (iii) IS NOW SOLVER-BASIS ONLY, and the figure changed meaning.
-// It formerly pooled every leg with a positive plan basis, including look-back manifest
-// buys whose basis is a CACHED ask the buy is itself gated against. Those legs converge on
+// CRITERION (iii) IS SOLVER-BASIS ONLY. Pooling every leg with a positive plan basis —
+// including look-back manifest buys whose basis is a CACHED ask the buy is itself gated
+// against — grades a number that describes neither population. Those legs converge on
 // zero error by construction: in production they measured a median of EXACTLY 0.000% over
 // 1423 of 3733 rows (38%), dragging the printed figure from the solver's 0.518% down to
-// 0.309%. The gate was grading a number that described neither population.
+// 0.309%.
 //
 // THE VERDICT DID NOT CHANGE and no hull graduated that should not have — 0.518% and 0.309%
 // are both far under the ±15% bar. This is a truthfulness repair to a reported figure, not a
@@ -88,7 +88,7 @@ type tourReportSource interface {
 	// terminalized FAILED (a stranded-cargo veto or an operational failure).
 	FailedTourRunCount(ctx context.Context, playerID int, since time.Time) (int, error)
 	// TourCreditsPerHour is the tour realized $/hr from the TRANSACTIONS-CASH ledger
-	// (operation_type="tour"), not telemetry netting (sp-461l, epic sp-g9td). sp-rd21
+	// (operation_type="tour"), not telemetry netting. sp-rd21
 	// proved telemetry netting read ~2x inflated — it dropped ~1/3 of buy legs while
 	// their sells stayed logged, so net = sells − (partial buys) over-counted. The
 	// transactions ledger records EVERY cargo trade and reconciles to the treasury, so
@@ -107,7 +107,7 @@ type tourReportSource interface {
 
 // computeTourGateMetrics derives the three gate metrics from the telemetry rows, the
 // failed-tour count, the transactions-cash tour $/hr, and the single-lane baseline.
-// sp-461l: the tour $/hr is the TRANSACTIONS-CASH tour rate (tourCPH), NOT telemetry
+// The tour $/hr is the TRANSACTIONS-CASH tour rate (tourCPH), NOT telemetry
 // netting — sp-rd21 proved telemetry netting read ~2x inflated (dropped buy legs), so a
 // graduation ratio built on it over-stated the multiple. The telemetry rows are still the
 // source for the two metrics that are inherently telemetry: the completed-tour COUNT (one
@@ -246,7 +246,7 @@ func (s *gormTourReportSource) FailedTourRunCount(ctx context.Context, playerID 
 
 // TourCreditsPerHour is the transactions-cash tour realized $/hr over [since, now) —
 // SELL_CARGO(+) − PURCHASE_CARGO(−) − REFUEL(−) scoped to operation_type="tour", divided
-// by the window's wall-clock hours (sp-461l). It defers to the canonical cash-rate reader
+// by the window's wall-clock hours. It defers to the canonical cash-rate reader
 // (GormTransactionRepository.RealizedCashRate) so this and every other cash-true consumer
 // share one window basis. Readable=false on an empty tour window → the ratio fails closed.
 func (s *gormTourReportSource) TourCreditsPerHour(ctx context.Context, playerID int, since time.Time) (float64, bool, error) {

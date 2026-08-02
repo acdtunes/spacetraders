@@ -30,7 +30,7 @@ func newRespawnLoopFixture(t *testing.T) (*RunScoutPostCoordinatorHandler, *fake
 	return handler, postRepo, daemonClient, cq, clock
 }
 
-// TestScoutPostRespawnCap_ConsecutiveFailures_ParkPostAfterCap pins the sp-py4n heart: a post
+// TestScoutPostRespawnCap_ConsecutiveFailures_ParkPostAfterCap pins the heart: a post
 // whose tour dies every tick is respawned only up to the cap, then PARKED for a backoff window
 // instead of respawned forever. Without the cap the reconciler starts a fresh tour on every one
 // of the eight ticks below; with it, respawns stop at the cap and the persisted counter records

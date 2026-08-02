@@ -107,7 +107,7 @@ func (h *RunTourCoordinatorHandler) planAndReserve(
 			// accumulates from this log; a live shadow-priced objective is gated on
 			// offline replay, not switched on here).
 			h.logRecoveryBurden(ctx, cmd, plan, snapshot)
-			// sp-8cz9 burn-in: score cap-binding on this accepted plan and hand the
+			// Burn-in: score cap-binding on this accepted plan and hand the
 			// execution path the ladder-probe set — both derived from the SAME netted
 			// depth already read, both pure observation (never gate a trade, RULINGS #4).
 			h.recordCapBinding(ctx, cmd, plan, snapshot, absorptionView)

@@ -397,7 +397,7 @@ func buildTourRequest(
 		return pbAbsorption[i].Side < pbAbsorption[j].Side
 	})
 
-	// sp-tp5c3: per-pair gate-hop distances so the solver prices cross-system crossings by
+	// Per-pair gate-hop distances so the solver prices cross-system crossings by
 	// the real hop count. Empty (the un-widened default) serializes to nothing — byte-identical
 	// to a pre-multi-hop binary. Emitted in a deterministic (from, to) order so request payloads
 	// and their logs are reproducible, mirroring the snapshot/deposit/absorption ordering.
@@ -416,7 +416,7 @@ func buildTourRequest(
 		return pbInterSystemHops[i].ToSystem < pbInterSystemHops[j].ToSystem
 	})
 
-	// sp-9idvn: per-departure-gate fees so the solver prices a crossing's first hop from the
+	// Per-departure-gate fees so the solver prices a crossing's first hop from the
 	// gate it actually leaves. Empty (no ledger history yet) serializes to nothing —
 	// byte-identical to a pre-table binary. Sorted by system for reproducible payloads/logs,
 	// mirroring the hop ordering above. NOT mirrored onto reverse pairs: a fee belongs to the

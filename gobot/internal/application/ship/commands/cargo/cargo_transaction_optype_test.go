@@ -19,7 +19,7 @@ import (
 )
 
 // These tests run the real CargoTransactionHandler through the real ledger recorder
-// onto a FK-enforcing SQLite DB (sp-lgnh). They prove the end result the bead exists
+// onto a FK-enforcing SQLite DB. They prove the end result the bead exists
 // for: a cargo transaction dispatched under the tour operation context lands an
 // operation_type='tour' row in the transactions table, for BOTH a buy and a sell —
 // and that an unrelated caller's tag (trade_route) is byte-identical to before, so

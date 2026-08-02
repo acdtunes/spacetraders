@@ -29,7 +29,7 @@ func (f *fakeFerryRepositioner) RepositionToWaypointWithinJumps(_ context.Contex
 }
 
 // The ferry worker delegates the whole cross-system relay to the shared travel
-// machinery — it writes no jump logic of its own (sp-f5pr, twin of scout_reposition).
+// machinery — it writes no jump logic of its own (twin of scout_reposition).
 func TestWorkerFerry_DelegatesToTravel(t *testing.T) {
 	rep := &fakeFerryRepositioner{}
 	handler := NewWorkerFerryHandler(rep)
@@ -108,12 +108,12 @@ func TestWorkerFerry_ConfiguredBound_ForwardedVerbatim(t *testing.T) {
 	require.Equal(t, []int{20}, rep.bounds, "a configured bound must be forwarded verbatim (never overridden by the default)")
 }
 
-// sp-fwxm THE FERRY PD21 PIN (harness-honest, the kl16 idiom, ferry variant — the vdld
+// THE FERRY PD21 PIN (harness-honest, the kl16 idiom, ferry variant — the vdld
 // far-cluster unblock). A worker ferry from a READABLE origin to an unreadable-gate factory
 // system — the live C81/GS93 vdld launches, whose destination gate sits in the sp-ikx1
 // unreadable-backoff set — must fly via the stored-adjacency RepositionPath, routing PAST the
 // unreadable gate, because a ferry is a hull MOVE (no money commitment), exactly like a tour
-// reposition (sp-kl16) or a scout reposition (sp-8k9m). This drives the REAL trade-route
+// reposition or a scout reposition (sp-8k9m). This drives the REAL trade-route
 // coordinator (the ferry's production movement port) with a gate graph where the strict
 // fetch-through Path FAILS (pathErr, the unreadable-gate fail-closed) while RepositionPath
 // returns the valid route: a ferry that stayed strict (the sp-fwxm bug) dies on pathErr and

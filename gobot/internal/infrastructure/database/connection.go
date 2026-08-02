@@ -145,7 +145,7 @@ func NewTestConnection() (*gorm.DB, error) {
 		return nil, fmt.Errorf("failed to auto-migrate test database: %w", err)
 	}
 
-	// sp-55aa: enforce foreign keys in the test harness by DEFAULT. SQLite leaves
+	// Enforce foreign keys in the test harness by DEFAULT. SQLite leaves
 	// PRAGMA foreign_keys OFF unless asked, so a real-DB test could silently tolerate
 	// FK violations that production Postgres rejects. Enabled AFTER AutoMigrate:
 	// enforcement during a migration that rebuilds tables could trip on transient
@@ -162,7 +162,7 @@ func NewTestConnection() (*gorm.DB, error) {
 // tables/columns/indexes, never destructive), and also performs one-time cache
 // invalidations tied to a schema transition.
 func AutoMigrate(db *gorm.DB) error {
-	// sp-8qhu: detect whether the gate-graph construction column is being
+	// Detect whether the gate-graph construction column is being
 	// introduced by THIS migration. Pre-sp-8qhu gate_edges rows predate
 	// construction tracking and default to under_construction=false (open) — but a
 	// gate that was actually still building at their sync time would be routed
@@ -173,7 +173,7 @@ func AutoMigrate(db *gorm.DB) error {
 	// is safe and self-healing.
 	gateConstructionColumnExisted := db.Migrator().HasColumn(&persistence.GateEdgeModel{}, "under_construction")
 
-	// sp-fzt09: same detection for the tour-telemetry engine column. Rows written before it
+	// Same detection for the tour-telemetry engine column. Rows written before it
 	// existed record their engine only in the LegIndex sentinel, so they must be attributed
 	// once or a `WHERE engine = 'solver'` reader silently loses all history.
 	legEngineColumnExisted := db.Migrator().HasColumn(&persistence.TourLegTelemetryModel{}, "engine")
@@ -198,7 +198,7 @@ func AutoMigrate(db *gorm.DB) error {
 
 // backfillTourLegEngine attributes pre-existing tour_leg_telemetry rows from their LegIndex
 // class, so the engine column answers for all of history and not merely for rows written
-// after the migration (sp-fzt09).
+// after the migration.
 //
 // The mapping is trading.EngineForLegIndex expressed in SQL, and it is exact rather than
 // approximate: across 45,466 production rows the three index classes partitioned without one

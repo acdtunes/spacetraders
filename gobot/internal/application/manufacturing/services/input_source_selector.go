@@ -12,7 +12,7 @@ import (
 // source PRICE-FIRST via FindExportMarket, ignoring the supply/activity data it even logged.
 // The original SupplyChainResolver design — alive but bypassed at market_locator.go:254
 // FindExportMarketBySupplyPriority — ranked SUPPLY-FIRST (MODERATE+ only, supply > activity >
-// price). The trade analyst ruled (sp-wedx) and the full-factory review confirmed (sp-hzz5)
+// price). The trade analyst ruled and the full-factory review confirmed
 // that supply-first is the correct PRIMARY policy: every input blowup this era (parts -220k,
 // the micro chase, electronics -891k, the -6.6M furnace) began at a SCARCE/LIMITED source;
 // zero from ABUNDANT/HIGH. Supply is the LEADING indicator (SCARCE regenerates ~194min

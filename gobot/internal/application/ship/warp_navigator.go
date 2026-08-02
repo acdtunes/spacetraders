@@ -10,7 +10,7 @@ import (
 )
 
 // WarpNavigator is the driven port RouteExecutor uses to execute a single
-// off-gate warp leg (sp-0xd0). It is the ONE boundary the warp path crosses to
+// off-gate warp leg. It is the ONE boundary the warp path crosses to
 // the live API, kept narrow (ISP, mirroring gategraph's gateAPI) so the executor's
 // warp behaviour - the fuel-safety guard and chart-on-arrival - is unit-testable
 // against a tiny fake warp API with no HTTP.

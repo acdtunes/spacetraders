@@ -8,7 +8,7 @@ import (
 )
 
 // TradeImpactConfig holds the era-3 price-impact + weak-recovery coefficients the
-// trade-route coordinator's lane ranker uses (sp-tl68). The economy analyst fit these
+// trade-route coordinator's lane ranker uses. The economy analyst fit these
 // on era-3 telemetry — a per-trade price-impact + slow-recovery model that beats
 // snapshot pricing 40-49% out-of-sample on next-leg price MAE (a real edge on the
 // income stream, ~80% of income).
@@ -34,12 +34,12 @@ type TradeImpactConfig struct {
 	// the refit knob are naturally expressed in minutes.
 	CooldownTauMinutes int `mapstructure:"cooldown_tau_minutes"`
 
-	// ScanMaxAgeSeconds is the sp-v34b recent-scan freshness window: an arrival or
+	// ScanMaxAgeSeconds is the recent-scan freshness window: an arrival or
 	// post-trade decision scan whose cached market was refreshed within this many seconds
 	// reuses the cache instead of re-calling GetMarket — the redundant re-scan killer that
 	// takes tour market scanning off the ~80%-of-API wall. 0 → the 75s default. Seconds
 	// because the operational window is tens of seconds (a hull's scan→buy→scan round trip).
-	// This governs COLLECTION load only; the sp-tl68 ranker reads whatever cached data
+	// This governs COLLECTION load only; the ranker reads whatever cached data
 	// exists (slightly-older-but-fresh-enough), so guards/capital/ranking are untouched.
 	ScanMaxAgeSeconds int `mapstructure:"scan_max_age_seconds"`
 	// ImpactSampleRate is the FRACTION of trades on which the deliberate post-trade impact
@@ -52,14 +52,14 @@ type TradeImpactConfig struct {
 	// ImpactSamplingDisabled zeroes JUST the deliberate post-trade impact instrumentation
 	// (sp-v34b behavior 2 — the paired before/after scans the analyst refits from) while the
 	// recent-scan freshness gate (behavior 1) stays fully live. This is the middle ground the
-	// ImpactSampleRate knob alone cannot express (sp-0dat): that field follows the struct-wide
+	// ImpactSampleRate knob alone cannot express: that field follows the struct-wide
 	// "0 → era-3 default 0.15" convention, so it can never resolve to a literal 0 — an operator
 	// who wants instrumentation OFF but the redundant-scan dedup kept ON flips this switch.
 	// Absent/false = the resolved ImpactSampleRate governs (sp-v34b unchanged).
 	ImpactSamplingDisabled bool `mapstructure:"impact_sampling_disabled"`
 }
 
-// sp-v34b scan-load defaults (config package locals, not domain constants — they govern
+// Scan-load defaults (config package locals, not domain constants — they govern
 // telemetry COLLECTION cadence, not the model's numeric form).
 const (
 	defaultScanMaxAgeSeconds = 75
@@ -93,7 +93,7 @@ func (c TradeImpactConfig) ResolvedCooldownTau() time.Duration {
 	return trading.DefaultCooldownTau
 }
 
-// ResolvedScanMaxAge returns the sp-v34b recent-scan freshness window as a Duration, or
+// ResolvedScanMaxAge returns the recent-scan freshness window as a Duration, or
 // the 75s default when unset (non-positive).
 func (c TradeImpactConfig) ResolvedScanMaxAge() time.Duration {
 	if c.ScanMaxAgeSeconds > 0 {
@@ -118,7 +118,7 @@ func (c TradeImpactConfig) ResolvedImpactSampleRate() float64 {
 // ResolvedScanPolicy bundles the two sp-v34b knobs into the ctx policy a trade
 // coordinator stamps.
 func (c TradeImpactConfig) ResolvedScanPolicy() shared.ScanPolicy {
-	// The impact-sampling kill switch (sp-0dat) forces the rate to a hard 0 — sampleImpact
+	// The impact-sampling kill switch forces the rate to a hard 0 — sampleImpact
 	// never fires an instrumentation scan, so the freshness gate (MaxScanAge, untouched)
 	// governs every trade.
 	sampleRate := c.ResolvedImpactSampleRate()

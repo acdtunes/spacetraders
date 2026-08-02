@@ -25,7 +25,7 @@ type SupplyMonitor struct {
 // The sell market distributor and event publisher are supplied by the
 // composition root; eventPublisher may be nil when no coordination is needed.
 // containerReader may be nil to disable the coordinator-liveness check on
-// storage sources (sp-86yb defense-in-depth; see StorageSourceFinder).
+// storage sources (defense-in-depth; see StorageSourceFinder).
 func NewSupplyMonitor(
 	marketRepo market.MarketRepository,
 	factoryTracker *manufacturing.FactoryStateTracker,

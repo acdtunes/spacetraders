@@ -71,7 +71,7 @@ func wpMarket(symbol string, x, y float64) *shared.Waypoint {
 	return &shared.Waypoint{Symbol: symbol, X: x, Y: y, Traits: []string{"MARKETPLACE"}}
 }
 
-// KEEP isCentralSink (sp-ojp32) UNDER FIXED PLACEMENT (sp-mtgje): eight distinct inner-band charted
+// KEEP isCentralSink UNDER FIXED PLACEMENT: eight distinct inner-band charted
 // MARKETPLACES, only four dock-scanned this pass. Classifying central parks by the DURABLE marketplace
 // trait keeps the four UNSCANNED bands (E/F/D/C) as placement CANDIDATES — without it only the four
 // scanned importers would be candidates and the op would cap at four slots. The fixed placement then

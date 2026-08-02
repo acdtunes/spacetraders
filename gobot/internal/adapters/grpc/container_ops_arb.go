@@ -20,7 +20,7 @@ type ArbRunOperationResult struct {
 	SellAt      string
 }
 
-// StartArbRun launches a ONE-SHOT, captain-directed, guarded arbitrage run (sp-p4ua) as
+// StartArbRun launches a ONE-SHOT, captain-directed, guarded arbitrage run as
 // a recovery-safe daemon container — the deliberate middle between hand-flying an arb
 // leg and the autonomous trade-route circuit. Unlike trade-route it does not scan or
 // loop: the captain names the good, the source, and the destination, and the run buys
@@ -131,7 +131,7 @@ func (s *DaemonServer) StartArbRun(
 }
 
 // ArbCostConfigPersister backs the arb coordinator's tradingCmd.ArbCostPersister with the
-// container config (sp-dkj7). When a fresh arb buy succeeds it merges the incurred cost
+// container config. When a fresh arb buy succeeds it merges the incurred cost
 // into the SAME persisted config the recovery rebuild reads (buildArbCoordinatorCommand's
 // prior_attempt_cost), so a daemon-restart-resumed run reloads the cost and reports honest
 // P&L instead of starting at TotalCost=0 (RULINGS #2). It is a read-modify-write of the

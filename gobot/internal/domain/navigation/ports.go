@@ -175,7 +175,7 @@ type ShipRepository interface {
 	// read inside the same row lock as the write, so it names the container that
 	// actually lost the hull with no TOCTOU gap. Callers need it because breaking
 	// the claim does nothing to that container: it keeps running the hull until
-	// something reaps it (sp-h8mbb).
+	// something reaps it.
 	ReleaseContainerClaim(ctx context.Context, shipSymbol string, playerID shared.PlayerID, reason string) (string, error)
 
 	// Sync methods (API -> Database)

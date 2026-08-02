@@ -25,7 +25,7 @@ import (
 // leak into routing).
 //
 // Staleness: each GOOD row is excluded when its market's cached snapshot is older than
-// that good's ACTIVITY-conditioned freshness cap (sp-t5sh5): caps.For(good.Activity) —
+// that good's ACTIVITY-conditioned freshness cap: caps.For(good.Activity) —
 // a WEAK good survives for hours, a STRONG one only ~30 min — the same activity-cap
 // discipline as the undirected lane ranker (partitionListingsByAge). The check is
 // per-good, not per-market, so a market with mixed activities keeps its WEAK rows while
@@ -73,7 +73,7 @@ func BuildTourSnapshot(
 			for _, g := range mkt.TradeGoods() {
 				activity := derefString(g.Activity())
 				if observedKnown && age > caps.For(activity) {
-					// Per-good activity-conditioned staleness (sp-t5sh5): drop this good's
+					// Per-good activity-conditioned staleness: drop this good's
 					// row against ITS OWN activity's cap, not one flat market-wide
 					// threshold, so a market with mixed activities keeps its WEAK rows and
 					// drops its STRONG ones. Counted per dropped good ("lane") so a

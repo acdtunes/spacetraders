@@ -175,7 +175,7 @@ func (s *DaemonServer) LoadDepotRegistry(ctx context.Context, playerID int) (*de
 
 // reloadDepotRegistryAtBoot re-derives the player's depot registry from the durable
 // repository at daemon startup, logs a one-line summary, and LAUNCHES each depot's
-// destination-side coordinators (sp-cftm) — the boot-time reload that makes RULINGS #2 visible
+// destination-side coordinators — the boot-time reload that makes RULINGS #2 visible
 // (persisted depots reload on restart) AND fills the depot warehouse so routing's
 // withdrawal-source preference has something to prefer. It is fail-open: a load error is logged
 // and swallowed so a transient DB hiccup never blocks startup. It routes through the same
@@ -193,25 +193,25 @@ func (s *DaemonServer) reloadDepotRegistryAtBoot(ctx context.Context, playerID i
 	}
 	fmt.Printf("Reloaded %d contract depot(s) for player %d from durable store (restart-safe registry)\n", len(depots), playerID)
 
-	// sp-cftm: launch the destination-side STOCKING half — a warehouse + stocker coordinator per
+	// Launch the destination-side STOCKING half — a warehouse + stocker coordinator per
 	// declared, crewed depot element, pointed at the depot's destination warehouse. This is
 	// what FILLS the depot warehouse so RouteContract's withdrawal-source preference stops
-	// falling through to the byte-identical fresh-source fallback (the sp-u9xa gap). Fail-open +
+	// falling through to the byte-identical fresh-source fallback. Fail-open +
 	// idempotent (the launch path's idle-gap discipline refuses a double-launch), so it is safe
 	// to run here after container recovery: a coordinator just re-adopted by recovery is not idle
 	// and is left alone; only a genuinely idle depot hull (freshly-applied topology, or a
 	// previously-stopped coordinator) is (re)started. Routes through s.depotSink() (the injectable
-	// seam sp-3l64 shares with the element-add positioning) — in production s itself.
+	// seam shared with the element-add positioning) — in production s itself.
 	//
-	// sp-udgc (re-strander (ii)): but launch ONLY depots whose domain still has LIVE contract
-	// demand. A decommissioned contract op leaves stale contract_depots rows behind; without this
-	// guard the boot reload re-spawns their stocker/warehouse containers and RE-DEDICATES the
-	// crewing hulls off trade EVERY restart, keyed off the stale rows rather than live demand — the
-	// confirmed live re-strander (sibling to sp-2jrz's reconciler). The signal is FindActiveContracts
-	// (live, accepted-not-fulfilled — NOT the demand miner's contract HISTORY, which a decommissioned
+	// But launch ONLY depots whose domain still has LIVE contract demand. A decommissioned
+	// contract op leaves stale contract_depots rows behind; without this guard the boot reload
+	// re-spawns their stocker/warehouse containers and RE-DEDICATES the crewing hulls off trade
+	// EVERY restart, keyed off the stale rows rather than live demand — a confirmed live
+	// re-strander. The signal is FindActiveContracts (live, accepted-not-fulfilled — NOT the
+	// demand miner's contract HISTORY, which a decommissioned
 	// domain still shows), matched at the destination-SYSTEM granularity the depot's own receipt
-	// solve uses. FAIL-OPEN: on a live-demand lookup error launch every depot exactly as before
-	// (byte-identical) rather than withhold a live buffer on a transient hiccup — the guard only ever
+	// solve uses. FAIL-OPEN: on a live-demand lookup error launch every depot rather than withhold
+	// a live buffer on a transient hiccup — the guard only ever
 	// WITHHOLDS on a positive "no live contract for this system" signal.
 	liveSystems, lerr := s.liveContractDestinationSystems(ctx, playerID)
 	if lerr != nil {
@@ -228,10 +228,10 @@ func (s *DaemonServer) reloadDepotRegistryAtBoot(ctx context.Context, playerID i
 // liveContractDestinationSystems resolves the set of destination SYSTEMS the player's LIVE
 // (accepted, not-yet-fulfilled) contracts deliver to — the demand signal the boot depot-launch guard
 // consults so a decommissioned domain (no active contract for its system) is not re-materialized on
-// restart (sp-udgc). It reads the SAME FindActiveContracts the bootstrapper trusts (live contracts,
+// restart. It reads the SAME FindActiveContracts the bootstrapper trusts (live contracts,
 // NOT the contract HISTORY the demand miner ranks — a fulfilled/expired contract still shows in
 // history but no longer counts here). A test override drives it without a DB; a nil DB yields
-// (nil, nil) so a degraded/test boot fails OPEN to the pre-sp-udgc launch-all behavior.
+// (nil, nil) so a degraded/test boot fails OPEN to launching every depot.
 func (s *DaemonServer) liveContractDestinationSystems(ctx context.Context, playerID int) (map[string]bool, error) {
 	if s.depotLiveContractSystemsOverride != nil {
 		return s.depotLiveContractSystemsOverride(ctx, playerID)

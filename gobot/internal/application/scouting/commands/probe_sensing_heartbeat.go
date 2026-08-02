@@ -187,7 +187,7 @@ func (h *RunProbeSensingCoordinatorHandler) heartbeat(ctx context.Context, cmd *
 			// The second was effectively zero before the yard term existed — 78 heavy
 			// counters among 8,934 rows ordered on coverage, depth and arrival — and a
 			// queued figure that stays high beside an at_head of zero is this ordering
-			// failing, which is the one reading that used to be indistinguishable from
+			// failing, which without these two counters is indistinguishable from
 			// having no dark yards at all.
 			//
 			// yard_slots_filled is the outcome: placements on a dark yard actually
@@ -342,11 +342,10 @@ const maxLoggedRefusals = 3
 
 // refusalSuffix renders why the counters that refused this tick refused.
 //
-// This is the line that used to read "(6 attempts)" and nothing else. Six silent
-// failures per tick, forever, with no way to tell an out-of-stock yard from a
-// hull that cannot dock from an API outage — so the underlying reason is
-// reported VERBATIM rather than mapped to a category, because the category is
-// exactly what nobody could work out from the outside.
+// The reason is reported VERBATIM rather than mapped to a category, because the
+// category is exactly what nobody could work out from the outside: a bare
+// "(6 attempts)" is six silent failures per tick, forever, with no way to tell an
+// out-of-stock yard from a hull that cannot dock from an API outage.
 //
 // Aggregated, never per attempt: one row per distinct refusal with the number of
 // placements it blocked. A count well above one is the signature of a single

@@ -12,7 +12,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
-// The operator rescreen (sp-j2efq), driven end to end through the REAL
+// The operator rescreen, driven end to end through the REAL
 // persistence path. The engine-level consequences (the sweep re-screening a
 // re-opened system, and reaching a different verdict under a changed whitelist)
 // are covered in internal/application/scouting/commands; what is under test here

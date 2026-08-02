@@ -8,7 +8,7 @@ import (
 )
 
 // sp-rh2z (analyst redesign C2). ComputeChainPnL is the per-good realized-P&L math the
-// chain kill-switch judges: it adapts the validated per-good panel-502 SQL (sp-i0hl)
+// chain kill-switch judges: it adapts the validated per-good panel-502 SQL
 // Go-side and adds the lift-cost approximation. These pins exercise the MATH from fixture
 // rows, decoupled from the DB reader — the "P&L math from fixture rows" the bead mandates.
 
@@ -19,7 +19,7 @@ func floatEq(a, b float64) bool { return math.Abs(a-b) < 0.01 }
 // A vertically-integrated pair the way panel 502 sees it: the OUTPUT good (CLOTHING) carries
 // its realization (tours sell it) with no input cost under its own symbol, while its INPUT
 // good (FABRICS) carries the input spend and a thin local sell. Attribution is atomic per
-// good_symbol (sp-i0hl: PURCHASE_CARGO is tagged the input good, never rolled up to output),
+// good_symbol (PURCHASE_CARGO is tagged the input good, never rolled up to output),
 // so CLOTHING reads as a strong earner and FABRICS as the loser — exactly the hidden-loser
 // visibility the ledger exists to give.
 func TestComputeChainPnL_PerGoodMathFromFixtureRows(t *testing.T) {

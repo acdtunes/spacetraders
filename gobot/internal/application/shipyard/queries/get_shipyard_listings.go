@@ -19,7 +19,7 @@ type GetShipyardListingsQuery struct {
 	PlayerID       shared.PlayerID
 
 	// Class is why this read is being made, and it is the ONE thing that can
-	// exempt it from the shipyard-read budget (sp-lr27k).
+	// exempt it from the shipyard-read budget.
 	//
 	// THE ZERO VALUE IS Discretionary, which is the fail-safe direction and the
 	// reason this is a field rather than a constructor argument. An unstamped
@@ -56,7 +56,7 @@ type yardPriceReader interface {
 //
 // NOT EVERY CONSUMER OF THIS QUERY IS A PRE-COMMIT PRICE READ, and this handler
 // used to assert that they all were — hardcoding the read at Earning on that
-// basis (sp-lr27k). Earning is "metered but never denied", so a read classed
+// basis. Earning is "metered but never denied", so a read classed
 // there skips the cached SHIPYARD trait filter, skips the rescan-window floor
 // and cannot be declined by the allowance. Every discovery read that reached
 // here therefore bypassed the budget entirely, which is how shipyard reads came
@@ -85,7 +85,7 @@ type GetShipyardListingsHandler struct {
 //
 // It takes the scanner rather than the API client on purpose: there is no longer a
 // way to reach GET /shipyard from this query without drawing on the fleet's one
-// shipyard-read allowance (sp-mb0er).
+// shipyard-read allowance.
 func NewGetShipyardListingsHandler(
 	yards yardPriceReader,
 	playerRepo player.PlayerRepository,

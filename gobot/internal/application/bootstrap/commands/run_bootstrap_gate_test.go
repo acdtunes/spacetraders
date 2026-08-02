@@ -42,7 +42,7 @@ func TestBootstrap_DerivePhase_ExpansionWhenConstructionComplete(t *testing.T) {
 	}
 }
 
-// STICKINESS (sp-feiy7): a built gate dominates EVERY pre-100%% signal — even an observation whose other
+// STICKINESS: a built gate dominates EVERY pre-100%% signal — even an observation whose other
 // fields all point at the coldest possible cold-start world (zero probes, zero coverage, no scaler
 // target, empty treasury) derives EXPANSION on ConstructionComplete alone. This is the
 // same world-signal stickiness GATE rides (ConstructionStarted): no post-gate income dip, fleet churn, or
@@ -63,7 +63,7 @@ func TestBootstrap_DerivePhase_ExpansionSticky_DominatesAllPreGateSignals(t *tes
 	}
 }
 
-// PARALLEL MODEL (sp-t39j): coverage NO LONGER gates the economic phase. The construction/income
+// PARALLEL MODEL: coverage NO LONGER gates the economic phase. The construction/income
 // signals are evaluated regardless of scan coverage — a built gate is EXPANSION (terminal, monotone)
 // even on a cold, uncovered world; a cold world with NO economic signal yet stays COLDSTART (still scanning),
 // and the contract workstream runs in parallel with it (see the tick dispatch). This
@@ -111,7 +111,7 @@ func TestBootstrap_DerivePhase_CoverageNeverGatesPhase(t *testing.T) {
 
 // --- planGateWorkers: the contract fleet is EXCLUSIVE (keep-all) → buy-only workforce sizing ---
 
-// sp-cdxy2: the contract fleet is EXCLUSIVE (sp-9le3x) — GATE NEVER repurposes it to construction. For ANY
+// The contract fleet is EXCLUSIVE — GATE NEVER repurposes it to construction. For ANY
 // contract delivery fleet size, planGateWorkers releases NOTHING and keeps the whole fleet on contracts, so
 // the scaler's ContractHullCount never drops and the observed buy→repurpose→buy churn cannot start. The
 // workforce is sourced by BUYING instead, at every fleet size — the gate never reaches for a contract hull.
@@ -160,7 +160,7 @@ func TestBootstrap_PlanGateWorkers_StagesOneBuyPerTick(t *testing.T) {
 
 // No buy when the executor already has enough workers (idempotency: a restart mid-GATE re-observes
 // GateWorkers and never re-buys or re-overshoots). The pool is the executor's OWN workers alone now — the
-// contract fleet is never released into it (sp-cdxy2), so a large contract fleet next to it never masks a
+// contract fleet is never released into it, so a large contract fleet next to it never masks a
 // genuine worker deficit.
 func TestBootstrap_PlanGateWorkers_NoBuyWhenWorkersSuffice(t *testing.T) {
 	obs := Observation{Haulers: nHaulers(8), GateWorkers: 4, GateMaterialChains: 3}
@@ -243,7 +243,7 @@ type fakeHandoff struct {
 	autosizer      int
 	standing       int
 	contractScaler int
-	tradeCoord     int // sp-192k4: LaunchTradeFleetCoordinator calls
+	tradeCoord     int // LaunchTradeFleetCoordinator calls
 	autoErr        error
 	standErr       error
 	scalerErr      error
@@ -627,7 +627,7 @@ func TestBootstrap_Expansion_HoldsWhenHandoffFails(t *testing.T) {
 	}
 }
 
-// STICKY across live ticks + full observability threading (sp-feiy7): a held EXPANSION (hand-off blocked,
+// STICKY across live ticks + full observability threading: a held EXPANSION (hand-off blocked,
 // so the loop keeps ticking — the one state where bootstrap genuinely ticks repeatedly post-gate) stays
 // EXPANSION every tick, the phase GAUGE records "EXPANSION" every tick, the heartbeat prints it, and the
 // nextAction switch handles it (no "unhandled" fallthrough). Meanwhile NO pre-gate action fires — the
@@ -760,12 +760,12 @@ func TestBootstrap_PlanGateWorkers_ReleasesIdleManufacturingSurplus(t *testing.T
 	}
 }
 
-// fakeGateReleaser is the GateSurplusReleaser double (sp-mxflh): it records each release call's symbols and
+// fakeGateReleaser is the GateSurplusReleaser double: it records each release call's symbols and
 // reports every requested hull released (the happy path), so the test can assert exactly which hulls the
 // coordinator handed to the un-dedicate action.
 type fakeGateReleaser struct {
 	calls      [][]string
-	tradeCalls [][]string // sp-hv4f6: the EXPANSION trade redirects, recorded separately from the surplus un-dedications
+	tradeCalls [][]string // The EXPANSION trade redirects, recorded separately from the surplus un-dedications
 	err        error
 }
 

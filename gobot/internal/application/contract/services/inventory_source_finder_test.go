@@ -158,7 +158,7 @@ func TestInventoryFinder_NilReceiverAndDeps_Safe(t *testing.T) {
 	require.Nil(t, NewStorageInventoryFinder(nil, nil).FindInSystemInventory(context.Background(), 1, "X1-HOME", "ELECTRONICS"))
 }
 
-// TestInventoryFinder_MultipleWarehouses_SourcesFromFullest is the sp-5q2c multi-
+// TestInventoryFinder_MultipleWarehouses_SourcesFromFullest is the multi-
 // warehouse pin: two co-located in-system warehouses hold the good (40 + 100 units).
 // The withdrawal targets the FULLEST hull (most units = fewest trips), and the
 // reported availability is the SUM across both — the total on hand, so a sibling's

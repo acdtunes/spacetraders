@@ -17,7 +17,7 @@ import (
 func strPtr(s string) *string   { return &s }
 func f64Ptr(f float64) *float64 { return &f }
 
-// seedOverridePlayer inserts a players row so the FK-enforcing test harness (sp-55aa) accepts a
+// seedOverridePlayer inserts a players row so the FK-enforcing test harness accepts a
 // pipeline row referencing it. Local to this package (the persistence package's seedPlayer is not
 // exported to grpc tests).
 func seedOverridePlayer(t *testing.T, db *gorm.DB, id int, symbol string) {
@@ -27,7 +27,7 @@ func seedOverridePlayer(t *testing.T, db *gorm.DB, id int, symbol string) {
 	}).Error)
 }
 
-// TestMutateConstructionGoodOverride_LiveSetPersistsAndClears drives the sp-pdb3 acceptance end to
+// TestMutateConstructionGoodOverride_LiveSetPersistsAndClears drives the acceptance end to
 // end through the REAL persistence path (an in-memory pipeline row = the restart-durable store):
 // setting FAB_MATS to {LIMITED} on the running pipeline persists exactly that good's override,
 // leaves the non-overridden ADVANCED_CIRCUITRY at the global default (byte-identical), and a
@@ -96,7 +96,7 @@ func TestMutateConstructionGoodOverride_NoActivePipelineErrors(t *testing.T) {
 
 // --- sp-duljg: live max-workers verb (DaemonServer write path) -----------------------------------
 
-// TestMutateConstructionMaxWorkers_LiveSetPersistsAndSurvivesReload drives the sp-duljg acceptance
+// TestMutateConstructionMaxWorkers_LiveSetPersistsAndSurvivesReload drives the acceptance
 // end to end through the REAL persistence path (the pipeline row is the restart-durable store):
 // raising a RUNNING pipeline's max_workers from its launch value to 10 persists exactly that, and a
 // reload via FindByConstructionSite — the daemon-bounce equivalent — still reports 10 (RULINGS #2).
@@ -172,7 +172,7 @@ func TestMutateConstructionMaxWorkers_RejectsNonPositiveCount(t *testing.T) {
 	}
 }
 
-// These tests pin applyGoodOverride (sp-pdb3), the PURE merge/clear at the heart of the live
+// These tests pin applyGoodOverride, the PURE merge/clear at the heart of the live
 // `construction override` verb: it produces the next per-good GoodGatingOverrides map from a patch,
 // leaving every other good byte-identical and clamping the price-ceiling multiplier to the domain
 // guardrail (RULINGS #4). The find→persist plumbing (MutateConstructionGoodOverride) wraps it; the

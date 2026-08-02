@@ -57,7 +57,7 @@ func TestPersistScoutReposition_MaxRepositionJumps_RoundTripsThroughRebuild(t *t
 
 // A relay persisted with NO explicit bound (the mis-wired / legacy-config case) rebuilds at
 // bound 0 — which travelWithJumpBound degrades to the STRICT resolver. This pins the safe
-// fallback: an omitted bound can never accidentally relax the sp-qxa4 unreadable-gate
+// fallback: an omitted bound can never accidentally relax the unreadable-gate
 // discipline; only an explicitly persisted positive bound routes past unreadable gates.
 func TestPersistScoutReposition_NoBound_RebuildsStrictFallback(t *testing.T) {
 	client, server, db, playerID := newLocalClientHarness(t)
@@ -82,7 +82,7 @@ func TestPersistScoutReposition_NoBound_RebuildsStrictFallback(t *testing.T) {
 // sp-4yse CRITICAL-PATH PIN. The worker's start path rebuilds the command FROM the persisted
 // config (StartScoutReposition -> buildScoutRepositionCommand), NOT from the in-memory command,
 // so the 0-hop gate-charting intent must survive the serialize->config->rebuild boundary — the
-// exact boundary the sp-o34q bound was dropped across. Without this round-trip the LIVE relay
+// exact boundary the bound was dropped across. Without this round-trip the LIVE relay
 // rebuilds with ChartGateOnArrival=false and charts nothing even on the initial dispatch, so
 // the 0-hop backlog (VH23/TD90) never drains despite the coordinator flagging it. A default
 // relay (no flag) rebuilds to the plain non-charting reposition — a manning relay never charts.

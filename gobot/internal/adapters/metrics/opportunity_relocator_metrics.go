@@ -41,8 +41,8 @@ type RelocatorMetricsCollector struct {
 	// decisionsTotal counts hulls actually moved, split relocated vs resumed — a fleet whose only
 	// movement is post-restart resumptions is not finding new ground.
 	decisionsTotal *prometheus.CounterVec
-	// skipsTotal counts exclusions by reason: the per-tick aggregate the reconciler always computed
-	// and, before this, always discarded.
+	// skipsTotal counts exclusions by reason — the per-tick aggregate the reconciler already
+	// computes and would otherwise discard.
 	skipsTotal *prometheus.CounterVec
 }
 

@@ -154,7 +154,7 @@ func (m *arbCooldownMediator) Send(ctx context.Context, request common.Request) 
 func (m *arbCooldownMediator) Register(reflect.Type, common.RequestHandler) error { return nil }
 func (m *arbCooldownMediator) RegisterMiddleware(common.Middleware)               {}
 
-// THE acceptance criterion (sp-yjrs): a two-hop cross-system arb-run WAITS the jump
+// THE acceptance criterion: a two-hop cross-system arb-run WAITS the jump
 // cooldown between hops and completes — no cooldown-409 retry storm, no laden strand.
 // The proof the wait fired is the injected clock: one cooldown-budget sleep per jump.
 // If arb ever stopped delegating to the cooldown-aware shared travel(), the clock would
@@ -237,7 +237,7 @@ func TestArbCoordinator_CrossSystemMultiHop_WaitsCooldownBetweenHops_CompletesNo
 	}
 }
 
-// Regression guard (sp-yjrs, the money-safe half): teaching the travel path that a
+// Regression guard (the money-safe half): teaching the travel path that a
 // cooldown is a WAIT must NOT swallow a genuine, NON-cooldown jump failure. A real
 // jump error still fails the run — it never reaches the cooldown wait — and the tranche
 // bought this attempt stays aboard for the runner's retry-safe resume (never re-bought,

@@ -280,7 +280,7 @@ func TestTour_Reposition_NoProfitableManifest_JumpsEmpty(t *testing.T) {
 	}
 }
 
-// Guard: the working-capital reserve (sp-agzj / RULINGS #4) binds the look-back buy exactly
+// Guard: the working-capital reserve (RULINGS #4) binds the look-back buy exactly
 // as it binds a plan buy — a live balance whose headroom cannot afford even one unit skips
 // the load (no spend), so look-back never spends past the reserve floor. Driven directly on
 // loadLookbackManifest with a low-balance live client, isolating the guard from the run loop.

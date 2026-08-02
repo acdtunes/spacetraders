@@ -20,7 +20,7 @@ import (
 // then its navigate leg went through the daemon's NavigateShip RPC, which spawned a
 // CHILD navigate container that RE-CLAIMED the same hull; the domain refused the
 // double-claim and the circuit flew zero, with only a bare "Visits: 0" to explain it.
-// sp-zewt eliminates that self-collision class entirely: as a daemon container the
+// Eliminates that self-collision class entirely: as a daemon container the
 // circuit's NavigateRouteCommand resolves to the RouteExecutor-backed handler, which
 // moves the already-claimed hull in-process (orbit → NavigateDirect → arrival events)
 // and never spawns a re-claiming child. So the collision can no longer happen.

@@ -50,7 +50,7 @@ func slot(waypoint, state string) persistence.SensingSlotModel {
 // updates in place (composite PK — no duplicate row), and the era is stamped.
 //
 // The re-upsert asserts the SCREEN's own columns, because those are the ones a
-// re-declaration owns (sp-wgjb7). It used to assert slot_kind and purchase_yard
+// re-declaration owns. It used to assert slot_kind and purchase_yard
 // instead — columns that only moved because the conflict set named every column
 // in the table, which is the lost-update bug this contract removed. The narrow
 // half of that contract is pinned in sensing_ledger_ownership_test.go.

@@ -197,7 +197,7 @@ func (r *SupplyChainResolver) buildTreeRecursive(
 		return nil, fmt.Errorf("error finding factory for %s: %w", goodSymbol, err)
 	}
 	if factory == nil {
-		// sp-lor4: a recipe-good with no in-system EXPORT factory is a NOT-YET-BUILT supply
+		// A recipe-good with no in-system EXPORT factory is a NOT-YET-BUILT supply
 		// chain (its exporter is built later at GATE), not a hard fault. Return a typed error
 		// so the factory coordinator honest-pauses and retries rather than crashing; the
 		// message is unchanged so existing log greps still match.
@@ -308,7 +308,7 @@ func (r *SupplyChainResolver) shouldBuyGood(
 	}
 
 	// The GLOBAL default fed into the per-good override lookup is the ctx-scoped PRODUCTION strategy
-	// when a production path stamped one (sp-yfzi WithProductionStrategy — smart, fleet-wide), else
+	// when a production path stamped one (WithProductionStrategy — smart, fleet-wide), else
 	// the resolver's own default (r.strategy = prefer-buy, the estimation default the demand finder
 	// and siting scanners rely on). Estimators and directly-built commands never stamp it, so they
 	// keep r.strategy — byte-identical to today.

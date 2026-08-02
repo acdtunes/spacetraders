@@ -1,6 +1,6 @@
 package grpc
 
-// Tests for the sp-42ow nearest-reachable-heavy-yard signal feeding the
+// Tests for the nearest-reachable-heavy-yard signal feeding the
 // autosizer's YardPriceReader port: the HEAVY class may open on scout-scanned,
 // gate-reachable yards when the live in-system walk finds no priced listing —
 // and MUST stay fail-closed with no scan data (the historical behavior) and

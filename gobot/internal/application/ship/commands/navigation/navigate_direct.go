@@ -96,14 +96,14 @@ func (h *NavigateDirectHandler) Handle(ctx context.Context, request common.Reque
 }
 
 // navigateWithOrbitSelfHeal navigates, self-healing a wrong idempotent-orbit
-// skip (sp-yd84 SAFETY item 2). The idempotent orbit optimization (CUT 1) trusts
-// the in-memory NavStatus; if that has drifted from server reality the skipped
+// skip. The idempotent orbit optimization trusts the in-memory NavStatus; if
+// that has drifted from server reality the skipped
 // orbit leaves the ship docked, and the navigate is rejected with the live API's
 // 4236 "not currently in orbit". Rather than fail the leg, issue a REAL orbit
 // (h.shipRepo.Orbit fires the API unconditionally, correcting the drift) and
 // retry the navigate exactly once. Any other error — including 4204
 // already-at-destination, handled by the caller — is propagated unchanged so a
-// genuine failure is never masked. Mirrors jumpWithOrbitRetry (sp-28n2).
+// genuine failure is never masked. Mirrors jumpWithOrbitRetry.
 func (h *NavigateDirectHandler) navigateWithOrbitSelfHeal(ctx context.Context, ship *navigation.Ship, destination *shared.Waypoint, playerID shared.PlayerID) (*navigation.Result, error) {
 	navResult, err := h.shipRepo.Navigate(ctx, ship, destination, playerID)
 	if err == nil {

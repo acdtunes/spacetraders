@@ -6,7 +6,7 @@ import (
 )
 
 // scan_budget_metrics.go is the ONE place the two scan allowances publish what
-// they decided (sp-e4dkw). Both budgets call through here rather than reaching
+// they decided. Both budgets call through here rather than reaching
 // the collector themselves, so the market and shipyard families cannot drift
 // apart in their label vocabulary — the question "what share of reads was
 // Earning" has to mean the same thing on both or the shared dashboard panel
@@ -39,7 +39,7 @@ func recordScanBudgetDecision(playerID int, budget string, class marketscan.Clas
 
 // recordScanBudgetOverdraft publishes one read admitted against an already-empty
 // bucket — the forced draw the shipyard config comment tells the operator to
-// watch, and which nothing counted before this.
+// watch.
 func recordScanBudgetOverdraft(playerID int, budget string, class marketscan.Class) {
 	collector := metrics.GetGlobalScanBudgetCollector()
 	if collector == nil {

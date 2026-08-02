@@ -21,7 +21,7 @@ import (
 // The manning-loop analogue of the sp-iupr sizing fix: a standing market-freshness post
 // can read IsFullyManned() yet produce ZERO new scan telemetry for many cycles (its tour
 // container reads RUNNING while its hull no longer scans — invisible to pass 1, whose only
-// health signal is container liveness). The sizer (sp-iupr) stopped HOARDING probes for
+// health signal is container liveness). The sizer stopped HOARDING probes for
 // such a silent post; this watchdog RE-MANS it. Detection is the SystemsFreshness census's
 // OldestAgeSeconds (worst-case market staleness): a fully-manned standing post whose
 // worst-case age breaches its OWN freshness target WITHOUT improving for a whole CIRCUIT
@@ -63,7 +63,7 @@ func distinctStopped(daemonClient *fakeScoutDaemonClient) int {
 	return len(seen)
 }
 
-// manningWatchdogHandler wires a coordinator with the sp-5les census + event ports plus the
+// manningWatchdogHandler wires a coordinator with the census + event ports plus the
 // partition/reposition scaffolding every reconcileOnce path touches, so tests exercise the
 // watchdog through the real tick seam.
 func manningWatchdogHandler(

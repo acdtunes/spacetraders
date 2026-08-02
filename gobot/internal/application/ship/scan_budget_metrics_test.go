@@ -1,6 +1,6 @@
 package ship
 
-// Tests for the WIRE (sp-e4dkw): that the two scan allowances actually publish
+// Tests for the WIRE: that the two scan allowances actually publish
 // what they decide, on the real Prometheus registry, from the real admission
 // path.
 //
@@ -127,7 +127,7 @@ func TestYardBudget_EmitsOverdraftWhenAnEarningReadDrawsOnAnEmptyBucket(t *testi
 //
 // Without the declined half there is no denominator: "0.1 req/s admitted" cannot
 // be read as a healthy budget or a starving one. This is also the series the
-// shipyard fix (sp-lr27k) is verified with — a read that moves from Earning to
+// shipyard fix is verified with — a read that moves from Earning to
 // Discretionary shows up here.
 func TestYardBudget_EmitsDeclinesWithTheClassThatWasDeclined(t *testing.T) {
 	b, now := newTestYardBudget(t, 84)

@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// These tests pin the "ship outfit" CLI verb family (bead sp-wh0t): the outfit
+// These tests pin the "ship outfit" CLI verb family: the outfit
 // group and its install/remove/list children are registered under `ship`, and
 // each verb validates its required flags before touching any infrastructure.
 // The install/remove/list behavior itself is exercised at the daemon handler

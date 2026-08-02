@@ -230,7 +230,7 @@ func TestAffineHopModelShould_ReportNoDrift_GivenNoMeasurements(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------------------
-// ArrivalBoundHopModel — the GUARD's travel model (sp-dct0r).
+// ArrivalBoundHopModel — the GUARD's travel model.
 // ---------------------------------------------------------------------------------------
 
 // measuredP90Fixture is the MEASURED p90 crossing seconds by gate-hop depth (2026-07-30,

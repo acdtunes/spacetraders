@@ -70,7 +70,7 @@ type TreasuryReader interface {
 //
 // ClaimOwnerContainerID is the DRIVING coordinator's container id, which OWNS the exclusive
 // single-writer journey claim the purchaser holds on the buyer hull for the whole source→yard
-// reposition (sp-1bme8, RULINGS #3). It stops the OTHER probe-buyer coordinator from grabbing the
+// reposition (RULINGS #3). It stops the OTHER probe-buyer coordinator from grabbing the
 // same idle hull mid-relay and desyncing the no-reload multi-hop jump into a physically-impossible
 // self-jump. Yard SELECTION and the money guards are untouched. Empty is safe: the claim is still
 // taken under a default owner, and the daemon's boot-time ReleaseAllActive frees a claim under any
@@ -253,7 +253,7 @@ func (b *GuardedProbeBuyer) MaybeBuy(ctx context.Context, playerID shared.Player
 	// Working-capital floor (RULINGS #4/#5): a buy must leave AT LEAST the configured reserve
 	// spendable, injected by the caller as ReserveFloor. It fails CLOSED on the treasury already read
 	// above and is never weakened. 0 disables it, so every pre-existing caller is byte-identical; only
-	// a caller that governs working capital (the sp-f082y probe-buyer coordinator) sets it.
+	// a caller that governs working capital (the probe-buyer coordinator) sets it.
 	//
 	// The comparison is the SHARED common.ReserveFloorGate — the one copy of "would this spend drop
 	// treasury below Floor?", already used by idle-arb and the long-haul envelope — rather than a

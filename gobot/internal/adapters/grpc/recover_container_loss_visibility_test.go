@@ -98,7 +98,7 @@ func TestRecoveryTerminalizesContainerWhenItsOwnBudgetExpiresMidPass(t *testing.
 	require.NoError(t, shipRepo.releaseCtxErr, "the hull release rode the dead recovery context")
 }
 
-// TestRecoveryEmitsNamedLostEventForFailedContainer is the sp-tit8 core guarantee:
+// TestRecoveryEmitsNamedLostEventForFailedContainer is the core guarantee:
 // a container that was expected to be RUNNING but fails to recover must announce
 // itself with exactly one interrupt-class container.lost event NAMING it (id +
 // type + why), while a coordinator-managed worker skipped in the same pass stays
@@ -166,7 +166,7 @@ func TestRecoveryCoordinatorManagedWorkerEmitsNoLostEvent(t *testing.T) {
 // TestRecoveryAllRecoveredEmitsNoLostEvent verifies the loud path stays silent
 // when recovery is clean: every candidate ended RUNNING, nothing fell out, so
 // zero container.lost events fire. A detector that cries loss on a healthy
-// recovery is worthless (sp-tit8).
+// recovery is worthless.
 func TestRecoveryAllRecoveredEmitsNoLostEvent(t *testing.T) {
 	rec := &syncRecorder{}
 	SetCaptainEventRecorder(rec)

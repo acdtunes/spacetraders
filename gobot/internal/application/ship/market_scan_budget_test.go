@@ -16,7 +16,7 @@ import (
 )
 
 // budgetTestPlayerID is the player every budget fixture admits on behalf of.
-// The budgets carry a player only to LABEL what they emit (sp-e4dkw) — one
+// The budgets carry a player only to LABEL what they emit — one
 // bucket, one map size and one rate are shared across the whole daemon — so the
 // value is arbitrary and identical everywhere.
 const budgetTestPlayerID = 1

@@ -11,7 +11,7 @@ import (
 )
 
 // yardpresence.go is the PAID half of shipyard discovery, and yardcatalog.go
-// beside it is the free one (sp-fox5u).
+// beside it is the free one.
 //
 // THE SPLIT IS THE API'S, NOT OURS. `GET /shipyard` answers with `shipTypes` —
 // what a counter sells — to anyone, and with `ships`, the listings carrying

@@ -18,7 +18,7 @@ import (
 
 // ladderFakeMediator drives the purchase path like
 // insufficientCreditsFakeMediator, but returns a real PurchaseCargoResponse so
-// the ladder cap (sp-1z2h) has a realized per-unit price to compare against.
+// the ladder cap has a realized per-unit price to compare against.
 type ladderFakeMediator struct {
 	common.Mediator
 

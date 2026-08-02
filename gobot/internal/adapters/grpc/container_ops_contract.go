@@ -166,7 +166,7 @@ const dedicatedShipsSeededConfigKey = "dedicated_ships_seeded"
 
 // DedicatedFleetSeedConfigPersister backs the contract coordinator's
 // contractCmd.DedicatedFleetSeedMarker with the container config (sp-86vb),
-// mirroring ArbCostConfigPersister (sp-dkj7 / RULINGS #2). After the coordinator
+// mirroring ArbCostConfigPersister (RULINGS #2). After the coordinator
 // applies its --dedicated-ships seed on first boot it merges
 // dedicated_ships_seeded=true into the SAME persisted config the recovery rebuild
 // reads (buildContractFleetCoordinatorCommand), so a daemon restart reloads the
@@ -218,7 +218,7 @@ func (p *DedicatedFleetSeedConfigPersister) MarkDedicatedShipsSeeded(ctx context
 // ContractFleetCoordinator creates a fleet coordinator for multi-ship contract operations
 // Ships are discovered dynamically - no pre-assignment needed.
 //
-// dedicatedShips/standbyStations (sp-snmb) are the operator's optional
+// dedicatedShips/standbyStations are the operator's optional
 // --dedicated-ships/--standby-stations CLI parameters, threaded straight into
 // the persisted launch config so they survive restart recovery unchanged
 // (buildContractFleetCoordinatorCommand reads them back via
@@ -238,7 +238,7 @@ func (s *DaemonServer) ContractFleetCoordinator(ctx context.Context, shipSymbols
 	}
 	// The idle-arb harvest knobs are NOT injected here. buildCommandForType
 	// resolves them from LIVE config.yaml on every coordinator build — creation
-	// AND restart recovery alike (sp-ts82) — so config.yaml is the single source
+	// AND restart recovery alike — so config.yaml is the single source
 	// of truth and a retune (config edit + daemon restart) actually reaches a
 	// recovered coordinator. The persisted idle_arb_* keys are dead.
 
@@ -270,7 +270,7 @@ func (s *DaemonServer) ContractFleetCoordinator(ctx context.Context, shipSymbols
 // idleArbConfigKeys enumerates every launch-config key the idle-arb harvest
 // knobs occupy. resolveIdleArbConfig clears these before re-injecting the live
 // values, so a stale persisted copy from a prior boot can never shadow the
-// current config.yaml (sp-ts82). Keep in lockstep with injectIdleArbConfig and
+// current config.yaml. Keep in lockstep with injectIdleArbConfig and
 // buildContractFleetCoordinatorCommand's reads.
 var idleArbConfigKeys = []string{
 	"idle_arb_disabled",
@@ -290,7 +290,7 @@ var idleArbConfigKeys = []string{
 }
 
 // resolveIdleArbConfig makes config.yaml the single LIVE source of truth for the
-// contract coordinator's idle-arb harvest knobs (sp-ts82). It clears any idle_arb_*
+// contract coordinator's idle-arb harvest knobs. It clears any idle_arb_*
 // keys already in the launch config (stale copies persisted at a prior boot) and
 // re-injects the daemon's boot-loaded values, so the rebuilt command reflects the
 // CURRENT config.yaml on every build — creation and restart recovery alike.
@@ -317,7 +317,7 @@ func (s *DaemonServer) resolveIdleArbConfig(config map[string]interface{}) {
 // (non-nil) list — including an empty one that disables the blacklist — is
 // injected verbatim so a captain's config whitelist-flip takes effect on the
 // next daemon start with no code change. Callers go through resolveIdleArbConfig
-// so any stale persisted keys are cleared first (sp-ts82).
+// so any stale persisted keys are cleared first.
 func (s *DaemonServer) injectIdleArbConfig(config map[string]interface{}) {
 	ia := s.contractConfig.IdleArb
 	if ia.Disabled {
@@ -365,9 +365,9 @@ func (s *DaemonServer) injectIdleArbConfig(config map[string]interface{}) {
 }
 
 // autoLiquidationConfigKeys enumerates every launch-config key the parked-hull
-// auto-liquidation knobs occupy (sp-39oi). resolveAutoLiquidationConfig clears these
+// auto-liquidation knobs occupy. resolveAutoLiquidationConfig clears these
 // before re-injecting the live values, so a stale persisted copy can never shadow the
-// current config.yaml (sp-ts82). Keep in lockstep with injectAutoLiquidationConfig and
+// current config.yaml. Keep in lockstep with injectAutoLiquidationConfig and
 // buildContractFleetCoordinatorCommand's reads.
 var autoLiquidationConfigKeys = []string{
 	"auto_liquidation_disabled",
@@ -375,7 +375,7 @@ var autoLiquidationConfigKeys = []string{
 }
 
 // resolveAutoLiquidationConfig makes config.yaml the single LIVE source of truth for the
-// contract coordinator's auto-liquidation knobs (sp-39oi, mirroring resolveIdleArbConfig).
+// contract coordinator's auto-liquidation knobs (mirroring resolveIdleArbConfig).
 // It clears any stale auto_liquidation keys and re-injects the daemon's boot-loaded values,
 // so a config edit + restart retunes even a recovered coordinator.
 func (s *DaemonServer) resolveAutoLiquidationConfig(config map[string]interface{}) {

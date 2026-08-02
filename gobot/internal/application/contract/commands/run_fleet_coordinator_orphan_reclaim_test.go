@@ -51,7 +51,7 @@ func (r *multiOrphanFakeShipRepo) Save(_ context.Context, ship *navigation.Ship)
 
 // SaveWithRetry mirrors the real repository's non-conflict path (find the tracked
 // hull by symbol → mutate → save) so the migrated interrupted-worker reclaim
-// (sp-wa7c) exercises its production closure while still routing through Save's
+// exercises its production closure while still routing through Save's
 // snapshot tracking.
 func (r *multiOrphanFakeShipRepo) SaveWithRetry(ctx context.Context, symbol string, playerID shared.PlayerID, mutate navigation.ShipMutation) (*navigation.Ship, bool, error) {
 	var target *navigation.Ship

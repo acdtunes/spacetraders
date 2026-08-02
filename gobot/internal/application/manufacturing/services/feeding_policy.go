@@ -24,7 +24,7 @@ import (
 //      feeding — ADVANCED_CIRCUITRY/SHIP_PLATING/SHIP_PARTS respond, EQUIPMENT/LAB_INSTRUMENTS/
 //      FOOD/MEDICINE do NOT, so those are BUY-OR-SKIP (feeding them wastes hull-hours).
 //
-// sp-sxyx6: this balanced feeding is now the executor's SOLE feeding path. The fabrication_efficiency
+// This balanced feeding is now the executor's SOLE feeding path. The fabrication_efficiency
 // toggle + its greedy OFF alternative + the per-run coefficient/non-responsive overrides were deleted
 // (they were LIVE-on with the default coefficients) — the algorithm below runs unconditionally against
 // the analyst-tuned defaultFeedingPolicy consts, so there is no per-run config to race on ctx.
@@ -60,7 +60,7 @@ type feedingPolicyConfig struct {
 	nonResponsiveGoods map[string]bool
 }
 
-// defaultFeedingPolicy is the SOLE feeding policy the executor runs (sp-sxyx6): the analyst-tuned
+// defaultFeedingPolicy is the SOLE feeding policy the executor runs: the analyst-tuned
 // saturation window [defaultFeedSaturationMinUnits, defaultFeedSaturationMaxUnits] and the verified
 // non-responsive OUTPUT-good exclusion set. It replaces the deleted fabrication_efficiency toggle +
 // WithFeedingPolicy/feedingPolicyEngaged plumbing — balanced feeding was LIVE-on with exactly these

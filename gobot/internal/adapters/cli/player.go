@@ -81,11 +81,11 @@ Example:
 			}
 
 			// Import the caller-supplied token AND open its era row (sp-pr42).
-			// The from-token path previously wrote only the player row, so
-			// `universe status` reported "NO ERA" and era/reset detection ran
-			// blind. runPlayerRegisterFromToken validates the flags, derives the
+			// runPlayerRegisterFromToken validates the flags, derives the
 			// <symbol>-<resetDate> era name from live server status, and persists
 			// player+era atomically (mirroring --new, minus the API Register call).
+			// Both rows or neither: a player with no era row makes `universe status`
+			// report "NO ERA" and blinds era/reset detection.
 			client := api.NewSpaceTradersClient()
 			store := persistence.NewEraRepository(db)
 			return runPlayerRegisterFromToken(context.Background(), client, store, agentSymbol, token, faction, os.Stdout)

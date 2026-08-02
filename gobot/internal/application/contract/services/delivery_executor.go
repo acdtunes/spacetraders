@@ -41,7 +41,7 @@ type DeliveryExecutor struct {
 	storageCoordinator storage.StorageCoordinator
 	apiClient          domainPorts.APIClient
 
-	// Withdrawal instrumentation (sp-kqxe): a driven port that records each
+	// Withdrawal instrumentation: a driven port that records each
 	// warehouse→hauler buffer draw as a structured economic event so downstream
 	// analysis can measure warehouse ROI (buffer hit-rate, served-from-buffer,
 	// contract-leg-avoided). Optional — a nil recorder disables emission so existing
@@ -75,7 +75,7 @@ func WithInventorySource(finder appContract.InventorySourceFinder, coordinator s
 	}
 }
 
-// WithWithdrawalRecorder wires the warehouse-withdrawal event recorder (sp-kqxe):
+// WithWithdrawalRecorder wires the warehouse-withdrawal event recorder:
 // on each successful warehouse→hauler buffer draw the executor emits a structured
 // storage.WithdrawalEvent (good, units, waypoint, hauler, contract id, timestamp)
 // so downstream analysis can measure warehouse ROI. A nil recorder is a no-op, so
@@ -96,7 +96,7 @@ func WithWithdrawalRecorder(recorder storage.WithdrawalRecorder, clock shared.Cl
 // (parks, resuming when treasury recovers) any buy that would drop it below the flat,
 // immutable reserve floor (common.ImmutableReserveFloor).
 // Fail-closed: an unreadable treasury parks the buy. A DeliveryExecutor built without
-// this option is byte-identical to before — reactive 4600 handling only.
+// this option has reactive 4600 handling only.
 func WithSourceBuyFloor() DeliveryExecutorOption {
 	return func(e *DeliveryExecutor) {
 		e.enforceSourceBuyFloor = true
@@ -218,8 +218,8 @@ func (e *DeliveryExecutor) ProcessSingleDelivery(
 }
 
 // processSingleDelivery is ProcessSingleDelivery's implementation plus the
-// DELIVER-HELD mode switch (sp-5jce2). deliverHeldOnly=false is the original leg,
-// unchanged.
+// DELIVER-HELD mode switch (sp-5jce2). deliverHeldOnly=false is the ordinary
+// source+deliver leg.
 func (e *DeliveryExecutor) processSingleDelivery(
 	ctx context.Context,
 	shipSymbol string,
@@ -286,7 +286,7 @@ func (e *DeliveryExecutor) processSingleDelivery(
 			// never parking the contract. A withdrawal that lands ANY units aboard
 			// short-circuits the market buy THIS trip; the outer loop delivers them
 			// and re-sources the remainder (inventory again until drained, then
-			// market) — the sp-2ei3 two-phase, re-entered by re-consulting the
+			// market) — the two-phase, re-entered by re-consulting the
 			// warehouse each trip.
 			// contract is nil on some caller paths (e.g. the insufficient-credits and
 			// ladder-breach flows drive the loop without a contract aggregate), so the
@@ -315,11 +315,11 @@ func (e *DeliveryExecutor) processSingleDelivery(
 				}
 				// The evaluation's cached ask for this good is the basis the sourcing
 				// defer gate projected against; the purchase loop's ladder cap
-				// (sp-1z2h) stops buying when realized prices run away from it.
+				// stops buying when realized prices run away from it.
 				projectedUnitAsk := profitResult.MarketPrices[currentDelivery.TradeSymbol]
 				ship, sourcingHalted, err = e.ExecutePurchaseLoop(ctx, shipSymbol, playerID, ship, currentDelivery.TradeSymbol, unitsToPurchase, profitResult.CheapestMarketWaypoint, projectedUnitAsk, result, opContext)
 				if err != nil {
-					// PARK, don't crash (sp-vwhi): a 4600 mid-purchase is a treasury
+					// PARK, don't crash: a 4600 mid-purchase is a treasury
 					// state, not a bug. Enrich the sentinel with the numbers an
 					// operator needs and log ONCE at WARNING before returning it
 					// unchanged - RunWorkflowHandler.Handle converts this into a
@@ -643,7 +643,7 @@ func (e *DeliveryExecutor) executeSinglePurchaseTrip(
 
 	unitsToPurchase -= unitsThisTrip
 
-	// SOURCING LADDER CAP (sp-1z2h): stop feeding an ask that has run away
+	// SOURCING LADDER CAP: stop feeding an ask that has run away
 	// from the projected basis. The tranche just bought stays aboard and gets
 	// delivered; only FURTHER buying stops — the remainder re-gates through the
 	// coordinator's defer projection at live prices.
@@ -900,7 +900,7 @@ func (e *DeliveryExecutor) trySourceFromInventory(
 
 	toMove := utils.Min(reserved, want)
 
-	// Align nav state before the ship-to-ship transfer (sp-5qs1). This is a WITHDRAWAL:
+	// Align nav state before the ship-to-ship transfer. This is a WITHDRAWAL:
 	// the warehouse hull (storageShip) is the stationary source, the contract worker
 	// (shipSymbol) is the visitor. SpaceTraders rejects the transfer with API 4271 unless
 	// both hulls share a nav state, so the visitor is orbited/docked to match the warehouse
@@ -935,7 +935,7 @@ func (e *DeliveryExecutor) trySourceFromInventory(
 		}
 	}
 
-	// Emit the withdrawal as a structured economic event (sp-kqxe) now that the
+	// Emit the withdrawal as a structured economic event now that the
 	// draw has physically moved (TransferCargo) and committed (ConfirmTransfer) —
 	// on the ACTUAL successful draw, never on intent. This is the record downstream
 	// warehouse-ROI analysis reads (buffer hit-rate, served-from-buffer,
@@ -982,7 +982,7 @@ func (e *DeliveryExecutor) trySourceFromInventory(
 	return true, reloaded, nil
 }
 
-// recordWithdrawal emits one warehouse→hauler withdrawal event (sp-kqxe) on the
+// recordWithdrawal emits one warehouse→hauler withdrawal event on the
 // actual successful draw, stamping it with the executor's clock. It is additive
 // instrumentation: a nil recorder is a no-op, and a persistence error is logged
 // and swallowed so telemetry can never fail a draw whose goods are already aboard

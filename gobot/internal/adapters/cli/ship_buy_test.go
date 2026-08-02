@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// These tests pin the manual "ship buy" CLI verb (bead sp-71bj), a mirror of the
+// These tests pin the manual "ship buy" CLI verb, a mirror of the
 // "ship sell" verb: it is registered under `ship` and validates its required
 // flags before touching any infrastructure. The purchase behavior itself is
 // exercised at the handler layer (see purchase_cargo_test.go in the cargo package).

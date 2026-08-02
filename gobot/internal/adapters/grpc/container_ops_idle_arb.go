@@ -10,7 +10,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
 
-// LaunchIdleArb implements appContract.IdleArbLauncher (sp-1z2h): it starts a
+// LaunchIdleArb implements appContract.IdleArbLauncher: it starts a
 // hub-local one-shot guarded arb leg on a contract-fleet hull, dispatched by
 // the contract coordinator's idle-gap dispatcher.
 //
@@ -21,7 +21,7 @@ import (
 //
 //   - SYNCHRONOUS CLAIM: the hull is claimed through the atomic operation-checked
 //     ClaimShip with the DISPATCHER'S fleet identity (spec.Operation, "contract")
-//     — the same row-locked l7h2 check every contract worker claim goes through —
+//     — the same row-locked check every contract worker claim goes through —
 //     BEFORE this returns, rather than leaving the claim to the runner's async
 //     start the way StartArbRun does. A hull that is busy, captain-reserved, or
 //     dedicated to a different fleet is rejected here; losing a race against the
@@ -30,10 +30,10 @@ import (
 //     the hull is claimed in the DB, return an error and the launch left nothing
 //     behind.
 //
-// ORDERING (sp-1hp9): the container row MUST be persisted BEFORE the hull claim.
+// ORDERING: the container row MUST be persisted BEFORE the hull claim.
 // ships.container_id carries a foreign key to containers.id (fk_ships_container),
 // so a ClaimShip that writes ships.container_id = containerID before the containers
-// row exists is an FK violation (Postgres 23503) — which is exactly what made every
+// row exists is an FK violation (Postgres 23503) — which makes every
 // idle-arb dispatch dead on arrival. StartArbRun is FK-safe for free because its
 // only claim is the runner's, which runs after Add; this claim-before-return path
 // has to order Add → ClaimShip explicitly.
@@ -67,7 +67,7 @@ func (s *DaemonServer) LaunchIdleArb(ctx context.Context, spec appContract.IdleA
 		"min_margin":              spec.MinMargin,
 		"working_capital_reserve": 0, // 0 → the run's non-tunable default floor
 		"operation":               spec.Operation,
-		// sp-lbbm: arm the arb run's per-tranche sell floor with the dispatcher's
+		// Arm the arb run's per-tranche sell floor with the dispatcher's
 		// live 80%-of-quote knob (0 → the run's own default). Persisted so a restart
 		// rebuild resumes with the same floor (RULINGS #2).
 		"sell_floor_fraction": spec.SellFloorFraction,
@@ -93,7 +93,7 @@ func (s *DaemonServer) LaunchIdleArb(ctx context.Context, spec appContract.IdleA
 
 	// Persist the container row FIRST: it is the FK parent for the hull claim's
 	// ships.container_id (fk_ships_container). Claiming before this row exists is the
-	// sp-1hp9 FK 23503 that made every idle-arb dispatch dead on arrival.
+	// FK 23503 that makes every idle-arb dispatch dead on arrival.
 	if err := s.containerRepo.Add(ctx, containerEntity, "arb_run"); err != nil {
 		return "", fmt.Errorf("failed to persist idle-arb container: %w", err)
 	}

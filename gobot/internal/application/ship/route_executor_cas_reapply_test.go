@@ -34,7 +34,7 @@ func (arrivedNowSubscriber) SubscribeArrived(symbol string) <-chan domainNavigat
 	return ch
 }
 
-// This is the regression for the reported incident's nav side (sp-wa7c): "a
+// This is the regression for the reported incident's nav side: "a
 // nav/arrival-style write must not clobber a fresh cargo quantity on the same
 // ship." The route executor's post-transit persist previously wrote its whole
 // stale in-memory snapshot with Save(); on a ships.version conflict that

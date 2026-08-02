@@ -58,9 +58,9 @@ const (
 	// stallReasonExpansionSkippedPrefix labels a pass held by its own gate. The sentinel is
 	// appended (expansion_budget), so the reason stays stable tick to tick and can escalate.
 	//
-	// EVERY REMAINING SKIP IS THE ENGINE BEING HELD BACK FROM WORK IT WANTED TO DO, which is
-	// what makes blocking the right verdict for all of them. There used to be an exception —
-	// "disabled", the operator's own switch — and it is gone because the switch no longer skips
+	// EVERY SKIP IS THE ENGINE BEING HELD BACK FROM WORK IT WANTED TO DO, which is
+	// what makes blocking the right verdict for all of them. The operator's own switch is NOT an
+	// exception, because it does not skip
 	// the tick: a spend-paused tick still marks the frontier and reads gates, reports that work
 	// in Discovered and GatesRead, and is graded on it like any other. Reading it as skipped
 	// would file a tick that discovered twenty systems as idle.
@@ -114,15 +114,15 @@ func (t sensingTickTally) buyWedged() bool {
 // placementWedged reports the placement machine having had work LICENSED and then LOST: moves were
 // selected and the actuator refused every one of them, so the tick advanced no placement at all.
 //
-// THIS IS THE DISCRIMINATOR sp-j1i49 SHIPPED FOR THE RELOCATOR, and it is here rather than a
+// THIS IS THE RELOCATOR'S DISCRIMINATOR, and it is here rather than a
 // second, similar rule so both coordinators answer the same question: was the work licensed and
 // then lost, or was there no work? A refusal is the actuator declining a move this machine had
 // already decided to make — the licence was granted and the move did not happen. A tick with no
 // refusals selected nothing, so nothing was lost, and it stays IDLE and silent forever, which on a
 // settled fleet is the common and correct state.
 //
-// It is deliberately NOT "refusals > 0 AND the refusal budget saturated for N ticks", which is
-// what this was first specified as. That threshold is unnecessary — the streak in
+// It is deliberately NOT "refusals > 0 AND the refusal budget saturated for N ticks".
+// That threshold is unnecessary — the streak in
 // health.StallEscalationTicks already supplies the "for N ticks" — and worse, a bare count cannot
 // tell a refused-because-legitimately-unaffordable from a refused-because-broken. The licensing
 // question can, and it is the same question buyWedged asks about the drain.

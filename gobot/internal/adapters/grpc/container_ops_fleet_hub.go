@@ -10,7 +10,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 )
 
-// The daemon side of the operation-level live hub model (sp-jcke). A `fleet hub
+// The daemon side of the operation-level live hub model. A `fleet hub
 // add|remove` RPC mutates the standby-station ("hub") set persisted in a RUNNING
 // coordinator's container config, and the coordinator reads that same config live
 // each discovery pass (StandbyStationConfigProvider). The daemon is the SOLE
@@ -118,7 +118,7 @@ func (s *DaemonServer) MutateStandbyStation(ctx context.Context, operation, wayp
 }
 
 // StandbyStationConfigProvider implements appContract.StandbyStationProvider by
-// reading a coordinator's OWN container config standby_stations (sp-jcke) — the
+// reading a coordinator's OWN container config standby_stations — the
 // store MutateStandbyStation writes. The coordinator resolves its live hub set
 // through this each discovery pass, so a `fleet hub` change is honored with no
 // restart. Mirrors the DedicatedFleetSeedConfigPersister's container-repo backing.

@@ -1,6 +1,6 @@
 package commands
 
-// run_trade_route_coordinator_lanes.go — lane discovery: cross-market listing collection, jump-gate neighbor scan, and live good re-observation (sp-wads move-only split).
+// run_trade_route_coordinator_lanes.go — lane discovery: cross-market listing collection, jump-gate neighbor scan, and live good re-observation (move-only split).
 
 import (
 	"context"
@@ -27,7 +27,7 @@ import (
 // query that errors, simply contributes no extra listings — never an aborted
 // scan. One hop only (no recursive multi-hop chase): out of scope for sp-wlev.
 //
-// Multi-daemon lane-dedupe semantics (sp-q1ca, confirmed): scanLanes has NO
+// Multi-daemon lane-dedupe semantics (confirmed): scanLanes has NO
 // awareness of other concurrently-running trade-route daemons or their active
 // circuits — there is no registry of in-flight lanes and no query of what any
 // other hull is doing. Two daemons started at the same instant against the same
@@ -69,7 +69,7 @@ func (h *RunTradeRouteCoordinatorHandler) scanLanes(
 		listings = append(listings, neighborListings...)
 	}
 
-	// Ranker age-cap (sp-xwa1, activity-conditioned sp-t5sh5): a lane priced from a
+	// Ranker age-cap (activity-conditioned sp-t5sh5): a lane priced from a
 	// market observation past its activity's freshness cap can already have moved, so
 	// ranking it chases a spread that no longer exists. Each listing is dropped against
 	// ITS OWN activity's cap (h.rankerAgeCaps.For — a WEAK market stays eligible for
@@ -106,14 +106,14 @@ func (h *RunTradeRouteCoordinatorHandler) scanLanes(
 		}
 	}
 
-	// Hold-vs-absorption weighting (sp-pnx0) and the cross-system circuit-time
+	// Hold-vs-absorption weighting and the cross-system circuit-time
 	// surcharge are folded into ONE scoring pass inside rankLanesByCircuitRate,
 	// not chained as two sequential re-rankings: both are "recompute-from-
 	// scratch" rankers that derive their score purely from each lane's own
 	// fields, ignoring input order, so composing them as funcB(funcA(lanes))
 	// would let funcB silently discard funcA's reordering. Start from the
 	// plain trading.RankSpreads order (not RankSpreadsForHold) since hold-fit
-	// weighting is applied here via shipCapacity instead. targetDest (sp-xwa1)
+	// weighting is applied here via shipCapacity instead. targetDest
 	// ranks the operator-directed lane at the in-system baseline — see
 	// rankLanesByCircuitRate's doc.
 	//
@@ -125,7 +125,7 @@ func (h *RunTradeRouteCoordinatorHandler) scanLanes(
 	ranked := trading.RankSpreads(listings)
 	consult := h.readAbsorption(ctx, playerID)
 	ranked = h.filterShadowedLanes(ctx, ranked, consult, shipCapacity, playerID)
-	// sp-tl68: rank on the effective spread (snapshot less self-compression + live shared
+	// Rank on the effective spread (snapshot less self-compression + live shared
 	// cooldown debt), so a lane this hull would compress or the fleet has hammered ranks
 	// lower and hulls rotate to fresh lanes. buildLaneImpactModel is inert when unwired.
 	return rankLanesByCircuitRate(ranked, shipCapacity, targetDest, h.buildLaneImpactModel()), nil
@@ -169,7 +169,7 @@ func (h *RunTradeRouteCoordinatorHandler) collectSystemListings(
 				Activity:  derefString(g.Activity()),
 				Volume:    g.TradeVolume(),
 				// Stamp each row with the market snapshot's freshness so the ranker can
-				// reject stale-priced lanes (sp-xwa1). One timestamp covers all of a
+				// reject stale-priced lanes. One timestamp covers all of a
 				// waypoint's goods — a market scan observes the whole board at once.
 				ObservedAt: mkt.LastUpdated(),
 			})
@@ -201,14 +201,13 @@ func (h *RunTradeRouteCoordinatorHandler) neighborSystems(ctx context.Context, s
 // gatedNeighborSystems returns systemSymbol's directly-gated neighbors DURABLE-FIRST (sp-jgcache
 // prong 2). When a gate graph is wired (the daemon always wires one) it reads the persisted,
 // era-scoped adjacency via gateGraph.Connections — a cache hit within the 24h gate_edges
-// freshness window (0 API), a single fetch-through on a cold miss, and the sp-ikx1 backoff +
-// sp-jgcache uncharted-skip on a doomed gate. This REPLACES the per-tick uncached live
-// GetJumpGate the scan used to issue on every lane pass — the redundant successful reads
-// (topology is near-static once charted) and the recurring 400s (an uncharted/no-ship gate) both
-// collapse to the shared cache. A durable read ERROR (uncharted origin skipped, or gate backed
-// off) fails OPEN to no neighbors — the scan degrades to home-only, exactly as the old
-// live-scan-failure did — and deliberately does NOT re-issue the doomed live query (that would
-// defeat the precondition and the backoff). With no gate graph wired (graph-less tests, or a
+// freshness window (0 API), a single fetch-through on a cold miss, and the backoff +
+// sp-jgcache uncharted-skip on a doomed gate. The shared cache is what collapses the two costs
+// of an uncached live GetJumpGate per lane pass: reads that are redundant because topology is
+// near-static once charted, and the recurring 400s of an uncharted/no-ship gate. A durable read ERROR
+// (uncharted origin skipped, or gate backed off) fails OPEN to no neighbors — the scan
+// degrades to home-only — and deliberately does NOT re-issue the doomed live query (that
+// would defeat the precondition and the backoff). With no gate graph wired (graph-less tests, or a
 // daemon pre-wiring) it falls back to the uncached live query so every existing caller is
 // byte-for-byte unchanged.
 func (h *RunTradeRouteCoordinatorHandler) gatedNeighborSystems(ctx context.Context, systemSymbol string, playerID int) []string {
@@ -227,7 +226,7 @@ func (h *RunTradeRouteCoordinatorHandler) gatedNeighborSystems(ctx context.Conte
 }
 
 // repositionNeighbors resolves originSystem's directly-gated neighbors for the sp-zhii
-// reposition candidate scan, DURABLE-FIRST (sp-1ki5). The persisted era-scoped gate_edges
+// reposition candidate scan, DURABLE-FIRST. The persisted era-scoped gate_edges
 // adjacency (via the wired gate graph) is origin-INDEPENDENT: it answers even when the origin's
 // own jump gate is uncharted or has no ship present — the case where the live GetJumpGate API
 // refuses with 4001 and neighborSystems fails open to nil, which is exactly how discovery
@@ -313,8 +312,8 @@ func (h *RunTradeRouteCoordinatorHandler) repositionNeighborsWithinJumps(ctx con
 		}
 		visited[nextSystem] = true
 		// sp-z7ng: stamp the BFS depth as the candidate's hop count so the armed placement path
-		// charges deadhead per-hop (a 3-hop broadened ground pays 3× the crossing). The frontier
-		// depth was previously discarded here — this is the write the hops threading rides on.
+		// charges deadhead per-hop (a 3-hop broadened ground pays 3× the crossing). This is the
+		// write the hops threading rides on.
 		out = append(out, repositionNeighborEdge{system: nextSystem, hops: depth})
 		queue = append(queue, frontier{system: nextSystem, depth: depth})
 	}

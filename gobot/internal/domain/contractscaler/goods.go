@@ -5,7 +5,7 @@ package contractscaler
 // instead of making the long far-source haul. It is the economy-analyst's AUTHORITATIVE definition
 // (st-wisp-2h6r5): the universe-invariant ores / precious metals+stones / drugs — IDENTICAL every era,
 // so it is a CONSTANT, not a computation. It is deliberately NOT demand-mined, NOT derived from this
-// era's exports, and NOT value-ranked (sp-9le3x: no runtime solver, no re-sensing, no recompute). A
+// era's exports, and NOT value-ranked (no runtime solver, no re-sensing, no recompute). A
 // good not contracted this era simply stays inert in the whitelist (harmless — the stocker only fills
 // what a live contract draws down). The per-era resolution is WHERE only (the far-source export
 // waypoints + the central hub, RULINGS #14 home-system scoped); the good SYMBOLS are this constant.

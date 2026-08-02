@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// sp-bcsu: chart-on-gate-arrival defaults ON when [routing] chart_gate_on_arrival is
+// Chart-on-gate-arrival defaults ON when [routing] chart_gate_on_arrival is
 // absent (a nil switch => chart every gate a hull lands on, so a market-swept frontier
 // never strands hulls on empty gate_edges), while an explicit `false` is preserved as the
 // reversibility off-switch. The *bool idiom is what lets an absent section default ON yet
@@ -31,7 +31,7 @@ func TestRoutingChartGateOnArrivalDefault(t *testing.T) {
 	})
 }
 
-// sp-jgcache: the gate topology-cache TTL and the doomed-call precondition are config knobs
+// The gate topology-cache TTL and the doomed-call precondition are config knobs
 // with safe defaults that round-trip. GateCacheTTL bounds how long a stored gate edge is
 // trusted before a re-fetch (the near-static gate topology makes a full day a comfortable
 // default); an explicit value is preserved so an operator can tighten/loosen it without a

@@ -6,7 +6,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 )
 
-// This file holds the PER-OPERATION CAPITAL BUDGET (sp-ftqgp). Capital used to be a shared POOL
+// This file holds the PER-OPERATION CAPITAL BUDGET. Capital used to be a shared POOL
 // guarded only by floors, and a floor ALLOCATES NOTHING: it says "do not spend below X", never
 // "this much is yours". So the engine with the LOWEST floor structurally outranked every engine
 // above it, and the asymmetry between the two non-contract spenders decided who ate — trade caps
@@ -138,7 +138,7 @@ type CapitalWorkSensor interface {
 	// ConstructionHasWork reports whether the construction-supply drain is live AND still
 	// owes material to a construction site. Read by the TRADE side to size its own budget.
 	// It is DEMAND, not liveness: a drain whose bill is filled keeps ticking forever, and
-	// answering "live" there reserves capital that funds nothing (sp-bzvu2).
+	// answering "live" there reserves capital that funds nothing.
 	ConstructionHasWork(ctx context.Context, playerID int) (bool, error)
 }
 
@@ -154,7 +154,7 @@ var tradeCapitalContainerTypes = []string{
 // capital. Post-sp-382j exactly one type runs the shared ProductionExecutor — the dedicated
 // construction-supply drain — and it is the same set the bootstrap GATE adoption check looks for
 // (executorContainerTypes in bootstrap_ports_gate.go). The vestigial PARALLEL_MANUFACTURING /
-// MANUFACTURING_TASK_WORKER types retired with the goods-factory ops (sp-hoj8u) have no creator
+// MANUFACTURING_TASK_WORKER types retired with the goods-factory ops have no creator
 // left in the daemon and no registered command type, so including them would sense nothing.
 var constructionCapitalContainerTypes = []string{
 	string(container.ContainerTypeConstructionCoordinator),

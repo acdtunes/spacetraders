@@ -36,7 +36,7 @@ func IsCommandHull(ship *navigation.Ship) bool {
 // IsCommandHull, taking the bare symbol + role so a persistence-layer guard
 // holding a locked row model (not a domain Ship) shares the EXACT same rule and
 // can never drift from it. Used by ClaimShip's depot-role command-frigate
-// rejection (sp-3tsjz), where reconstructing a full domain Ship inside the
+// rejection, where reconstructing a full domain Ship inside the
 // row-locked claim transaction would be needless.
 func IsCommandHullSymbolRole(shipSymbol, role string) bool {
 	return role == roleCommandHull || strings.HasSuffix(shipSymbol, "-1")
@@ -46,7 +46,7 @@ func IsCommandHullSymbolRole(shipSymbol, role string) bool {
 // (warehouse or stocker) — the roles the command frigate is rejected from at
 // claim time on EVERY path (launch, grow, and restart recovery), so an orphaned
 // depot container recovered from the registry can never re-claim the flagship
-// (sp-3tsjz, RULINGS #7). Every other operation (contract, gas, manufacturing,
+// (RULINGS #7). Every other operation (contract, gas, manufacturing,
 // scouting, ...) is unaffected: the frigate stays a legitimate last-resort haul
 // candidate there (SelectHullForCargo Tier 2/4).
 func IsDepotOperation(operation string) bool {

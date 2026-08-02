@@ -21,7 +21,7 @@ import (
 
 const (
 	// DefaultCooldownMarginFactor mirrors ship.DefaultArrivalMarginFactor
-	// (sp-ht1f) exactly: the multiplicative term scales naturally with
+	// exactly: the multiplicative term scales naturally with
 	// however long the wait is, so the same ratio is appropriate whether
 	// the thing being waited on is an arrival or a jump cooldown.
 	DefaultCooldownMarginFactor = 1.25
@@ -37,16 +37,16 @@ const (
 	DefaultCooldownMinMargin = 10 * time.Second
 
 	// cooldownHeartbeatInterval bounds the silence during a LONG jump-cooldown wait
-	// (sp-39hjn). waitForJumpCooldown logs once at the start, then — pre-fix — slept the
-	// whole budget in a single blocking call, emitting nothing until the cooldown ended. On
+	// (sp-39hjn). waitForJumpCooldown logs once at the start; an unchunked wait then sleeps
+	// the whole budget in a single blocking call, emitting nothing until the cooldown ends. On
 	// a far sp-tp5c3 tour that gap exceeds the sp-m3122 watchdog's 12-min (720s) stall
 	// threshold, so the log-derived liveness (LatestLogTimestamps, the newest container-log
 	// line) goes stale and a log-derived consumer misreads the parked, legitimately-waiting
 	// hull as hung. Chunking any wait longer than this and logging a heartbeat between the
 	// chunks keeps that signal advancing. Sized ABOVE every ordinary cooldown budget (a 60s
-	// jump -> 75s, a 352s jump -> 440s) so those still wait in a SINGLE sleep — byte-
-	// identical to the pre-fix behavior — and BELOW the 720s watchdog threshold so the
-	// heartbeat always breaks the silence before a false-hang could trip.
+	// jump -> 75s, a 352s jump -> 440s) so those still wait in a SINGLE sleep, and BELOW the
+	// 720s watchdog threshold so the heartbeat always breaks the silence before a false-hang
+	// could trip.
 	cooldownHeartbeatInterval = 10 * time.Minute
 )
 
@@ -76,7 +76,7 @@ func calculateCooldownWaitBudget(remaining time.Duration, marginFactor float64, 
 // fresher number to scale from; here the jump response just told us the
 // exact cooldown synchronously, so the ETA-scaled budget applies cleanly).
 //
-// sp-wc5h: the wait is now ctx-interruptible (see sleepInterruptibly). A bare
+// The wait is now ctx-interruptible (see sleepInterruptibly). A bare
 // h.clock.Sleep(budget) here was the tour-death exit path — a daemon shutdown
 // while a tour was settling out a jump cooldown blocked the whole graceful
 // window on a ~440s sleep the STOPPING flag could not reach (the wait sits
@@ -104,12 +104,12 @@ func (h *RunTradeRouteCoordinatorHandler) waitForJumpCooldown(ctx context.Contex
 // sleepWithCooldownHeartbeat waits out total ctx-interruptibly, but breaks any wait longer
 // than cooldownHeartbeatInterval into bounded chunks and logs a heartbeat between them, so a
 // long silent jump-cooldown wait keeps the tour's log-derived liveness signal advancing
-// instead of tripping the sp-m3122 watchdog's stall threshold (sp-39hjn). A wait within a
+// instead of tripping the sp-m3122 watchdog's stall threshold. A wait within a
 // single interval sleeps EXACTLY ONCE — byte-identical to the pre-heartbeat single
 // h.sleepInterruptibly(ctx, budget). This is the ONE shared cooldown-wait heartbeat: every
 // fleet whose cross-system travel rides waitForJumpCooldown (trade / arb / long-haul) gets
 // it here, not forked per fleet. Returns ctx.Err() the instant the context is cancelled, so
-// a Stop/shutdown never has to wait a chunk out (the sp-wc5h graceful-exit contract holds).
+// a Stop/shutdown never has to wait a chunk out (the graceful-exit contract holds).
 func (h *RunTradeRouteCoordinatorHandler) sleepWithCooldownHeartbeat(ctx context.Context, total time.Duration, logger common.ContainerLogger, cooldownSeconds int) error {
 	remaining := total
 	for {
@@ -135,7 +135,7 @@ func (h *RunTradeRouteCoordinatorHandler) sleepWithCooldownHeartbeat(ctx context
 // sleepInterruptibly blocks for d via the handler's injected clock (instant
 // under the test MockClock, a real sleep in production) but races it against
 // ctx.Done(), so a Stop/shutdown never has to wait the full cooldown budget
-// out. The same shape as the sp-l709 factory park wait and the container
+// out. The same shape as the factory park wait and the container
 // runner's sleepOrCancel: the detached sleeper goroutine outlives an early
 // return by at most one budget before exiting, so it cannot leak. Returns
 // ctx.Err() when the context is cancelled first, nil when the sleep completed.
@@ -154,7 +154,7 @@ func (h *RunTradeRouteCoordinatorHandler) sleepInterruptibly(ctx context.Context
 }
 
 // jumpHop dispatches ONE jump hop, riding out an active jump cooldown instead
-// of crashing on it (sp-wc5h). A tour re-adopted mid-circuit after a daemon
+// of crashing on it. A tour re-adopted mid-circuit after a daemon
 // restart (RULING #2) re-attempts the jump while the hull is STILL cooling down
 // from the hop it made just before the restart — the ship's cooldown clock is
 // persisted (jump_ship.go SetCooldown), so the live jump API rejects the
@@ -180,7 +180,7 @@ func (h *RunTradeRouteCoordinatorHandler) jumpHop(ctx context.Context, cmd *navC
 			if cooldown <= 0 || ride >= maxCooldownRides {
 				return nil, err
 			}
-			// sp-1bme8 re-anchor: a jump SUCCESS mis-reported as a 409 would otherwise re-fire the
+			// Re-anchor: a jump SUCCESS mis-reported as a 409 would otherwise re-fire the
 			// SAME jump from the just-arrived position — a physically-impossible self-jump (the
 			// residual self-jump that survives the single-writer buyer claim because it needs NO 2nd
 			// actor). Re-anchor to the hull's LIVE position: if it has ALREADY reached
@@ -220,7 +220,7 @@ func (h *RunTradeRouteCoordinatorHandler) jumpHop(ctx context.Context, cmd *navC
 
 // hullReachedJumpDestination re-anchors to the hull's LIVE persisted position and reports whether it
 // already sits in the jump's DestinationSystem — i.e. the jump landed and the 409 was a mis-reported
-// success (sp-1bme8). A reload error, a missing player id, or a missing location conservatively
+// success. A reload error, a missing player id, or a missing location conservatively
 // reports false, so the re-anchor never turns a genuine pre-restart cooldown into a skipped jump.
 func (h *RunTradeRouteCoordinatorHandler) hullReachedJumpDestination(ctx context.Context, cmd *navCmd.JumpShipCommand) bool {
 	if cmd.PlayerID == nil {
@@ -324,7 +324,7 @@ func (h *RunTradeRouteCoordinatorHandler) travelWithJumpBound(
 	// burns the container's whole restart budget just riding out a routine arrival.
 	// An in-transit ship is a WAIT state, not an error: wait out the ETA-aligned
 	// arrival via the SAME evented mechanism the RouteExecutor's own idempotency
-	// path uses (WaitForShipArrival, sp-7yej), then continue from the freshly
+	// path uses (WaitForShipArrival), then continue from the freshly
 	// arrived state. No subscriber wired → the wait is skipped (fail-open) so the
 	// docked-then-travel circuit path is byte-for-byte unchanged.
 	arrived, err := h.waitForInTransitArrival(ctx, ship, playerID)
@@ -343,7 +343,7 @@ func (h *RunTradeRouteCoordinatorHandler) travelWithJumpBound(
 		return ship, nil
 	}
 
-	// Resolve the ordered jump path over the gate graph (sp-7gr2). travel() used
+	// Resolve the ordered jump path over the gate graph. travel() used
 	// to assume origin→dest was a SINGLE edge and honestly crashed a laden frigate
 	// at the home gate when it wasn't — JP61 is THREE jumps from KA42
 	// (PA3→UQ16→JP61), and the direct jump 4262'd four times. With a gate graph
@@ -356,7 +356,7 @@ func (h *RunTradeRouteCoordinatorHandler) travelWithJumpBound(
 		return ship, err
 	}
 
-	// sp-5nqx departure hop — the SOURCE-side mirror of the sp-vzxu gate->waypoint
+	// sp-5nqx departure hop — the SOURCE-side mirror of the gate->waypoint
 	// arrival hop below. The jump verb requires a DRIVELESS hull (which the arb/
 	// trade haulers are) to already be sitting ON a jump gate: jump_ship.go rejects
 	// "no jump drive module and not at a jump gate" for a driveless hull UP FRONT,
@@ -437,7 +437,7 @@ func (h *RunTradeRouteCoordinatorHandler) travelWithJumpBound(
 		if werr := h.waitForJumpCooldown(ctx, jumpResp.CooldownSeconds); werr != nil {
 			return ship, werr
 		}
-		// sp-bcsu: the hop landed the hull ON nextSystem's jump gate — the one moment its
+		// The hop landed the hull ON nextSystem's jump gate — the one moment its
 		// outbound edges are readable. Chart it now (best-effort). The TERMINAL hop's system
 		// is charted from the authoritative reloaded pointer below (chartArrivedGate), so
 		// skip it here to avoid a redundant re-chart of the destination.
@@ -451,7 +451,7 @@ func (h *RunTradeRouteCoordinatorHandler) travelWithJumpBound(
 		return ship, fmt.Errorf("failed to reload ship %s after jump to %s: %w", ship.ShipSymbol(), destSystem, err)
 	}
 
-	// sp-bcsu: the hull is physically on destSystem's JUMP GATE — the one moment its
+	// The hull is physically on destSystem's JUMP GATE — the one moment its
 	// outbound connections are readable (a remote read with no ship present 400s, code
 	// 4001). Chart + persist now, BEFORE flying the gate->market hop, so gate_edges for
 	// destSystem is filled at the only chance it can be and the strict pathfinder stops
@@ -497,7 +497,7 @@ func (h *RunTradeRouteCoordinatorHandler) chartArrivedGate(ctx context.Context, 
 // location) and each intermediate hop (keyed off nextSystem — a successful jump is
 // guaranteed to have landed the hull ON that system's gate). The reversibility knob and
 // the nil-gate-graph guard live here so both call sites honor them. The read goes through
-// ChartPresentGate, which BYPASSES the sp-ikx1 backoff (a present ship heals a latched
+// ChartPresentGate, which BYPASSES the backoff (a present ship heals a latched
 // system) yet stays idempotent (an already-charted system is a single store read, zero
 // API) and backoff-honest (a still-failing read re-enters backoff, never defeating
 // sp-4bm3). Errors are logged and SWALLOWED — the same non-fatal discipline as
@@ -519,7 +519,7 @@ func (h *RunTradeRouteCoordinatorHandler) chartSystemGate(ctx context.Context, s
 // RepositionToWaypoint moves shipSymbol to destinationWaypoint, crossing system
 // boundaries via the coordinator's own multi-jump travel() primitive (sp-7gr2 gate
 // BFS + per-hop cooldown waits + the source/arrival gate hops). It is the exported
-// seam the scout-post coordinator's reposition worker (sp-s232) rides to jump-route
+// seam the scout-post coordinator's reposition worker rides to jump-route
 // an idle satellite to an unmanned frontier post WITHOUT duplicating jump logic
 // (RULINGS: reuse the shared travel machinery, do not re-implement it).
 //
@@ -590,7 +590,7 @@ func (h *RunTradeRouteCoordinatorHandler) RepositionToWaypointStrictWithinJumps(
 // maxJumps, instead of the strict fetch-through PathWithinJumps. That is the latency fix (sp-0o9ub):
 // the strict resolver probed construction per-edge across the WHOLE bound-25 frontier on a cold cache
 // (~20-min plan stall); this one probes only the chosen path's gates. Safe for the long-haul heavy
-// because its far sources are CHARTED (discovery ranks over stored adjacency, sp-yginc), and a
+// because its far sources are CHARTED (discovery ranks over stored adjacency), and a
 // chosen-path gate that is under construction / unreadable ends the plan in ErrUnroutable so the
 // episode's reachability fallback skips this lane (no jump-time loop); jump_ship.go remains the
 // authoritative hop-time backstop. The large bound is supplied by the long-haul wiring adapter and
@@ -670,7 +670,7 @@ func (h *RunTradeRouteCoordinatorHandler) RepositionToSystemGateAndChart(ctx con
 // jump/navigate now returns API 4214 'in-transit' — a routine arrival dressed up as
 // an error that burns the container's restart budget. An in-transit ship is a WAIT
 // state: this waits out the ETA-aligned arrival via WaitForShipArrival (the shared
-// evented wait the whole codebase uses, sp-7yej/sp-pafv — event-driven, with a
+// evented wait the whole codebase uses — event-driven, with a
 // resync/park backstop for a lost event), then reloads so the freshly-persisted
 // location (the hull now sitting on the gate/destination) drives the IsJumpGate
 // check and the rest of travel().
@@ -732,7 +732,7 @@ func (h *RunTradeRouteCoordinatorHandler) waitForInTransitArrival(
 
 // jumpPath resolves the ordered system hop path from fromSystem to destSystem
 // inclusive (the caller has already established they differ). With a gate graph
-// wired (sp-7gr2) it BFS-walks the persisted adjacency — the fix for the
+// wired it BFS-walks the persisted adjacency — the fix for the
 // single-edge assumption. Without one it returns the legacy [from, dest]: assume
 // dest is one directly-connected jump away, preserving every existing
 // caller/test that never wires a graph. A gate-graph error (unroutable, or a
@@ -843,7 +843,7 @@ func estimatedCircuitSeconds(crossSystem bool) float64 {
 
 // partitionListingsByAge splits listings into those still fresh and those stale,
 // preserving input order in each. Each listing is measured against ITS OWN activity's
-// freshness cap (sp-t5sh5): caps.For(l.Activity) — a WEAK market stays eligible for
+// freshness cap: caps.For(l.Activity) — a WEAK market stays eligible for
 // hours, a STRONG one only ~30 min — instead of one flat threshold, because the
 // analyst's era3/4 fit shows staleness cost is activity-dependent. A listing with a
 // zero ObservedAt is treated as FRESH — an unknown age is not evidence of staleness,
@@ -890,7 +890,7 @@ func laneCircuitValue(l trading.ArbitrageLane, shipCapacity int, model laneImpac
 	if shipCapacity > 0 {
 		weight = trading.HoldFitWeight(l.VolumeCap, shipCapacity)
 	}
-	// sp-tl68: rank on the EFFECTIVE spread, not the snapshot. plannedUnits = shipCapacity
+	// Rank on the EFFECTIVE spread, not the snapshot. plannedUnits = shipCapacity
 	// (the units this hull would move on the lane); effectiveSpreadPerUnit nets out the
 	// self-compression that volume would cause plus the live shared cooldown debt, so a
 	// lane this hull would compress (high units/tv) or one the fleet has hammered scores
@@ -905,7 +905,7 @@ func laneCircuitValue(l trading.ArbitrageLane, shipCapacity int, model laneImpac
 // round-trip jump+cooldown surcharge in its denominator UNLESS it is the operator's
 // directed --dest lane (laneMatchesTarget): a directed lane already carries the gate
 // time as the operator's explicit choice, so it is ranked at the in-system baseline
-// — the same waiver contract the retired subtractive penalty kept (sp-xwa1), narrowed
+// — the same waiver contract the retired subtractive penalty kept, narrowed
 // to the one lane asked for. Exposed to the selection log so the captain reads the
 // exact score a lane won or lost on.
 func laneCircuitRatePerHour(l trading.ArbitrageLane, shipCapacity int, targetDest string, model laneImpactModel) float64 {
@@ -926,10 +926,10 @@ func laneCircuitRatePerHour(l trading.ArbitrageLane, shipCapacity int, targetDes
 //     subtractive per-unit haircut. The captain-ruled DP51 economics survive: the
 //     surcharge is a bounded premium, so a deep frontier lane a heavy hull fills
 //     still out-ranks a saturated home lane (see the xsyspenalty test's ratio pin).
-//   - hold-fit weighting (sp-pnx0): a lane's VolumeCap is a market-absorption
+//   - hold-fit weighting: a lane's VolumeCap is a market-absorption
 //     bound, not a hold-sized one — a hull far bigger than VolumeCap will not
 //     clear a single tranche at that depth before moving the price.
-//   - price-impact + cooldown (sp-tl68): the score uses each lane's EFFECTIVE
+//   - price-impact + cooldown: the score uses each lane's EFFECTIVE
 //     per-unit spread (laneImpactModel.effectiveSpreadPerUnit), not its snapshot
 //     spread — the snapshot less the self-compression this hull's own volume would
 //     cause (era-3 fitted impact, half-terminal average fill) and the live shared

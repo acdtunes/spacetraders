@@ -50,7 +50,7 @@ func (r *spawnContractFakeShipRepo) Save(_ context.Context, ship *navigation.Shi
 }
 
 // SaveWithRetry mirrors the real repository's non-conflict path (find → mutate →
-// save) so the migrated balance-release (sp-wa7c) exercises its production closure
+// save) so the migrated balance-release exercises its production closure
 // while still recording into saves.
 func (r *spawnContractFakeShipRepo) SaveWithRetry(ctx context.Context, symbol string, playerID shared.PlayerID, mutate navigation.ShipMutation) (*navigation.Ship, bool, error) {
 	sh, err := r.FindBySymbol(ctx, symbol, playerID)
@@ -147,8 +147,8 @@ func contractSpawnCommand() *RunFleetCoordinatorCommand {
 
 // newCommandFrigateTestShip builds an idle, UNDEDICATED command frigate (role
 // COMMAND, no DedicatedFleet tag) - the shape of a hull deliberately retired via
-// `fleet unassign` (sp-sqq5). 115-cargo matches the era-2 upgraded frigate's
-// real capacity; spawnContractWorker never applies the sp-uj6a cargo baseline
+// `fleet unassign`. 115-cargo matches the era-2 upgraded frigate's
+// real capacity; spawnContractWorker never applies the cargo baseline
 // (that gate is a separate, later, opt-in filter the caller runs against
 // FindIdleLightHaulers' output, and this handler never calls it), so this
 // exercises the last-resort/dedication path cleanly, regardless of cargo size.
@@ -176,7 +176,7 @@ func newCommandFrigateTestShip(t *testing.T) *navigation.Ship {
 	return ship
 }
 
-// sp-sqq5 claim-side backstop: when a regular hauler is available the main loop
+// Claim-side backstop: when a regular hauler is available the main loop
 // passes commandDraftAllowed=false, and spawnContractWorker must REFUSE to draft
 // an undedicated command frigate for the contract haul - surfacing the typed
 // ErrCommandFrigateNotLastResort, rolling back the persisted worker container,
@@ -211,7 +211,7 @@ func TestSpawnContractWorker_UndedicatedCommandFrigate_NotLastResort_Refused(t *
 	}
 }
 
-// sp-sqq5 last-resort preserved (RULINGS #7: the command frigate CAN haul when
+// Last-resort preserved (RULINGS #7: the command frigate CAN haul when
 // it is the ONLY option): with commandDraftAllowed=true (no regular hauler was a
 // candidate), the same undedicated command frigate is drafted normally - the
 // exclusion is conditional, never an absolute ban. Guards the regression.
@@ -256,7 +256,7 @@ func TestSpawnContractWorker_HappyPath_PersistsAssignsStarts(t *testing.T) {
 		t.Fatalf("expected contract workflow kind, got persist=%v start=%v", daemonClient.persistedKind, daemonClient.startedKind)
 	}
 	// The acquisition goes through the atomic operation-checked ClaimShip under
-	// the contract fleet identity (sp-lprs) — not an AssignToContainer+Save
+	// the contract fleet identity — not an AssignToContainer+Save
 	// read-modify-write — so the happy path issues exactly one claim (op
 	// "contract") and no Save at all.
 	if len(repo.saves) != 0 {

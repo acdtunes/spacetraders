@@ -39,7 +39,7 @@ type depotLaunchIntent struct {
 	shipSymbol string
 	// targetWaypoint is where the element is anchored: a warehouse parks at its OWN waypoint; a
 	// stocker deposits into the depot's destination warehouse ANCHOR (warehouses[0]); a delivery
-	// hull parks at its OWN hub waypoint (sp-9j9c) to wait for the contract coordinator's dispatch;
+	// hull parks at its OWN hub waypoint to wait for the contract coordinator's dispatch;
 	// a source hub parks its crewing hull at its OWN market waypoint (sp-3l64).
 	targetWaypoint string
 }
@@ -99,7 +99,7 @@ func planDepotLaunches(reg *depot.Registry) []depotLaunchIntent {
 				targetWaypoint: dh.Waypoint, // a delivery hull parks at its own hub waypoint
 			})
 		}
-		// sp-3l64 (role-agnostic positioning): position each crewed source-hub hull at its OWN
+		// ROLE-AGNOSTIC POSITIONING: position each crewed source-hub hull at its OWN
 		// market waypoint. A source hub has no standing coordinator (it feeds the stockers as a
 		// buy anchor), so — like a delivery hull — its assignment is a one-shot free+exclude+park:
 		// the crewing hull is freed from any prior fleet, excluded from the contract grab, and
@@ -127,7 +127,7 @@ func planDepotLaunches(reg *depot.Registry) []depotLaunchIntent {
 type depotCoordinatorSink interface {
 	launchDepotWarehouse(ctx context.Context, shipSymbol, warehouseWaypoint string, playerID int) error
 	launchDepotStocker(ctx context.Context, shipSymbol, warehouseWaypoint string, playerID int) error
-	// launchDepotDelivery POSITIONS a delivery hull at its hub waypoint (sp-9j9c). Unlike the
+	// launchDepotDelivery POSITIONS a delivery hull at its hub waypoint. Unlike the
 	// standing warehouse/stocker coordinators it is a one-shot reposition — the hull waits idle
 	// at its hub for the contract coordinator to dispatch it on demand.
 	launchDepotDelivery(ctx context.Context, shipSymbol, hubWaypoint string, playerID int) error
@@ -137,7 +137,7 @@ type depotCoordinatorSink interface {
 	launchDepotSourceHub(ctx context.Context, shipSymbol, hubWaypoint string, playerID int) error
 	// homeContractWorkerReserve is the reserve-floor census the delivery-hull launch consults so it
 	// never pins the LAST undedicated home general haulers the contract coordinator needs to source
-	// an UNBUFFERED-good contract (bead sp-mzdk): the current pool size, the configured floor to
+	// an UNBUFFERED-good contract: the current pool size, the configured floor to
 	// keep, and which ships are in the pool right now. *DaemonServer computes it from the ship repo
 	// + the live min_home_contract_workers knob; a spy returns a canned budget. A zero value reserves
 	// nothing (regression-safe: the pre-sp-mzdk pin-everything behavior).
@@ -293,24 +293,24 @@ func dispatchDepotLaunch(ctx context.Context, sink depotCoordinatorSink, intent 
 // launchDepotWarehouse (depotCoordinatorSink) starts a destination-side depot warehouse on shipSymbol
 // parked at warehouseWaypoint, stocking the FIXED far-source whitelist + flat per-good caps
 // (contractscaler.FarSourceGoods / DepotTargetUnits) — universe-invariant, resolved once at design time,
-// NEVER demand-mined or recomputed (sp-9le3x: no runtime solver, no re-sensing; Admiral ruling +
-// economy-analyst st-wisp-2h6r5). This is the SINGLE launch path for BOTH the scaler's grow and the boot
+// NEVER demand-mined or recomputed (no runtime solver, no re-sensing; Admiral ruling +
+// economy-analyst review). This is the SINGLE launch path for BOTH the scaler's grow and the boot
 // reload (launchDepotCoordinators), so the pin is RESTART-SAFE (RULINGS #2): a reboot re-pins the SAME
-// set, so an armed warehouse's goods survive every restart — the old receipt-miner re-solve OVERWROTE
-// them on the first reboot (the bug this closes). A hull already flying its coordinator (recovered on
+// set, so an armed warehouse's goods survive every restart — a receipt-miner re-solve here would
+// OVERWRITE them on the first reboot. A hull already flying its coordinator (recovered on
 // reload) has the whitelist re-applied to its running row in place — no double-launch (the IsIdle gate
 // governs the LAUNCH only). It reuses persistAndRunWarehouse, so the container persistence / claim /
 // recovery path is byte-identical to a captain-launched warehouse.
 //
-// sp-3l64 (role-agnostic): FIRST free+re-dedicate the hull to its OWN "warehouse" fleet via the shared
+// ROLE-AGNOSTIC: FIRST free+re-dedicate the hull to its OWN "warehouse" fleet via the shared
 // positionDepotElementHull (navigateOnAssign=false — the warehouse COORDINATOR parks the hull). This
 // unblocks a hull added from a FOREIGN fleet: a "contract"-tagged hull can't be claimed under operation
 // "warehouse" and a busy one isn't idle — so re-dedicating to "warehouse" both excludes it from the
 // contract grab AND satisfies the coordinator's operation-checked claim.
 //
-// sp-fis8y (generalizes sp-fihvy to the warehouse role): a warehouse hull is validated for home
-// reachability FIRST, unconditionally, via the SAME depotElementHullViable precondition the stocker
-// uses — the live TORWIND-19 stranding (IN_ORBIT X1-ZK26, no gate route to home X1-UM5) hit the
+// A warehouse hull is validated for home reachability FIRST, unconditionally, via the SAME
+// depotElementHullViable precondition the stocker uses — the live TORWIND-19 stranding
+// (IN_ORBIT X1-ZK26, no gate route to home X1-UM5) hit the
 // warehouse grow, not just the stocker. A non-viable hull is evicted (stale binding removed,
 // un-dedicated, claim released) instead of (re)launched — never seated, never positioned — so the
 // scaler ramp re-grows the role on a home-viable hull next tick.
@@ -345,7 +345,7 @@ func (s *DaemonServer) launchDepotWarehouse(ctx context.Context, shipSymbol, war
 }
 
 // refreshRunningDepotWarehouseCaps re-applies a freshly-recomputed receipt whitelist to an
-// ALREADY-RUNNING depot warehouse (sp-94du) WITHOUT launching a second coordinator. On boot,
+// ALREADY-RUNNING depot warehouse WITHOUT launching a second coordinator. On boot,
 // container recovery re-adopts the warehouse hull (now non-idle) and RESUMES its persisted
 // storage_operations row with whatever whitelist it last carried; launchDepotWarehouse's idle
 // gate then skips the (re)launch. But a redeployed cap selector must still reach the running
@@ -392,15 +392,15 @@ func hullCrewsOperation(storageShips []string, shipSymbol string) bool {
 	return false
 }
 
-// positionDepotElementHull makes a depot element's hull assignment ATOMIC and ROLE-AGNOSTIC
-// (bead sp-3l64) — the shared spine every role's launch routes through, so a warehouse / stocker /
+// positionDepotElementHull makes a depot element's hull assignment ATOMIC and ROLE-AGNOSTIC —
+// the shared spine every role's launch routes through, so a warehouse / stocker /
 // source-hub hull is freed + excluded + positioned by the SAME machinery that shipped for the
 // delivery hull, instead of being persisted-but-left-docked. Parameterized by the role's
 // DedicatedFleet tag (fleetTag) and whether THIS call parks the hull itself (navigateOnAssign). It
 // performs, in order:
 //
 //  1. CLAIM-RELEASE + RE-DEDICATE (free from prior fleet): re-dedicate the hull to fleetTag and
-//     sever any prior fleet's LIVE work-claim, reusing the SAME sp-w3yd machinery `fleet unassign`
+//     sever any prior fleet's LIVE work-claim, reusing the SAME machinery `fleet unassign`
 //     uses (AssignFleet + ReleaseContainerClaim). Re-dedicate FIRST so the instant the claim breaks
 //     the tag already prevents the old coordinator from re-grabbing it; then break the claim so a
 //     hull that was MID-TASK at assign time becomes free. It fires only when the hull is not ALREADY
@@ -422,15 +422,14 @@ func hullCrewsOperation(storageShips []string, shipSymbol string) bool {
 // already at its waypoint is a no-op. Returns the reloaded ship plus crewed=true so a caller
 // (warehouse/stocker launch) can gate its coordinator start on the post-release state.
 //
-// NEVER-POACH (bead sp-udgc, RULINGS #7 generalized to depot-launch): if the hull is already
+// NEVER-POACH (RULINGS #7 generalized to depot-launch): if the hull is already
 // dedicated to a DIFFERENT non-empty fleet than this depot role, it is NOT poached — the element goes
 // UNCREWED (crewed=false) and the caller launches no coordinator. An operator's explicit dedication
 // (e.g. the Admiral moved a former depot-crew light to "trade") wins over the depot topology's naming,
 // so a daemon restart never overrides an existing assignment (the Admiral's invariant: a restart must
-// not change ship assignments). This SUPERSEDES the earlier sp-3l64 adoption of a
-// contract/manufacturing hull into a depot role — an already-dedicated hull is now left alone, and
+// not change ship assignments). An already-dedicated hull is left alone, and
 // only an UNDEDICATED hull (the cold-start bootstrap/reconciler provisioning norm) is crewed. A hull
-// already on THIS role (DedicatedFleet == fleetTag) is not foreign and crews idempotently as before.
+// already on THIS role (DedicatedFleet == fleetTag) is not foreign and crews idempotently.
 func (s *DaemonServer) positionDepotElementHull(
 	ctx context.Context, shipSymbol, targetWaypoint, fleetTag string, navigateOnAssign bool, playerID int,
 ) (ship *navigation.Ship, crewed bool, err error) {
@@ -460,7 +459,7 @@ func (s *DaemonServer) positionDepotElementHull(
 		if rerr != nil {
 			return nil, false, fmt.Errorf("failed to release prior work-claim on depot hull %s: %w", shipSymbol, rerr)
 		}
-		// Reap the container that just lost the hull (sp-h8mbb). Freeing a MID-TASK hull's
+		// Reap the container that just lost the hull. Freeing a MID-TASK hull's
 		// claim leaves its container running the hull it no longer owns, and a phantom
 		// RUNNING row that only a restart's recovery sweep clears.
 		s.ReapOrphanedContainer(ctx, brokenFrom, pid,
@@ -495,10 +494,10 @@ func (s *DaemonServer) positionDepotElementHull(
 }
 
 // depotHullNeedsFreeing reports whether a depot element's hull must be claim-released + re-dedicated
-// to fleetTag (sp-3l64). It fires when the hull is not already the role's own (DedicatedFleet !=
+// to fleetTag. It fires when the hull is not already the role's own (DedicatedFleet !=
 // fleetTag) AND it is safe to break its current occupancy.
 //
-// As of the sp-udgc never-poach guard, positionDepotElementHull SHORT-CIRCUITS any hull dedicated to
+// The never-poach guard in positionDepotElementHull SHORT-CIRCUITS any hull dedicated to
 // a FOREIGN fleet BEFORE this is reached, so by the time this runs the hull is either UNDEDICATED
 // (DedicatedFleet == "") or already this role's own. The `|| DedicatedFleet() != ""` clause is thus a
 // defensive no-op for the reachable inputs (kept so the predicate stays self-contained). The live
@@ -571,8 +570,8 @@ type depotHomeRouter interface {
 // the fill). A hull that is not idle is already flying its coordinator — a benign
 // already-launched skip (nil), never an error. It reuses StartStocker (no parallel channel).
 //
-// sp-fihvy (RULINGS #14 hard precondition; generalized to every depot role by sp-fis8y): the
-// stocker is an INTRA-SYSTEM role — it sources the FIXED far-source whitelist from the warehouse's
+// RULINGS #14 HARD PRECONDITION, applied to every depot role: the stocker is an
+// INTRA-SYSTEM role — it sources the FIXED far-source whitelist from the warehouse's
 // HOME system ONLY (homeSystemOnly below), so its hull must be IN, or gate-reachable to, that
 // system BEFORE it is ever (re)claimed. This is validated FIRST, unconditionally — before
 // positionDepotElementHull's claim and before the idle check — because a stranded hull's
@@ -582,10 +581,10 @@ type depotHomeRouter interface {
 // (re)launched; this is the SAME choke point GrowStocker's fresh grow and the boot/reload replay
 // both funnel through, so one guard covers selection, recovery, and positioning at once. A viable
 // hull (the overwhelming common case) falls straight through to the unchanged positioning below.
-// depotElementHullViable/evictStrandedDepotElement are role-neutral (sp-fis8y) — the warehouse
+// depotElementHullViable/evictStrandedDepotElement are role-neutral — the warehouse
 // launch above applies the identical guard.
 //
-// sp-3l64 (role-agnostic): FIRST free+re-dedicate the hull to its OWN "stocker" fleet via the
+// ROLE-AGNOSTIC: FIRST free+re-dedicate the hull to its OWN "stocker" fleet via the
 // shared positionDepotElementHull (navigateOnAssign=false — the stocker COORDINATOR moves the hull:
 // it shuttles buy→home→deposit, so there is no park leg to fire here). Same unblock as the
 // warehouse: a hull added from a foreign fleet (or busy) is severed + re-dedicated to "stocker" so
@@ -622,7 +621,7 @@ func (s *DaemonServer) launchDepotStocker(ctx context.Context, shipSymbol, wareh
 		true, // standing: re-stage on drain, survive restart
 		0,    // tickSeconds → 30s default
 		0,    // refillHysteresis → default
-		true, // homeSystemOnly: the contract depot sources INTRA-system only (sp-k2xav, RULINGS #14) — buy the fixed far-source goods from the home system's own export waypoints, never cross-gate
+		true, // homeSystemOnly: the contract depot sources INTRA-system only (RULINGS #14) — buy the fixed far-source goods from the home system's own export waypoints, never cross-gate
 		"",   // agentSymbol resolved by the coordinator
 		playerID,
 	)
@@ -658,7 +657,7 @@ func (s *DaemonServer) depotElementHullViable(ctx context.Context, shipSymbol, w
 	if err != nil || ship == nil {
 		return true // unreadable hull → fail open (never evict on a read hiccup)
 	}
-	// sp-gvvph (RULINGS #7): the command frigate is NEVER a depot hull — non-viable even when home-
+	// RULINGS #7: the command frigate is NEVER a depot hull — non-viable even when home-
 	// reachable, so a frigate seated as a depot element is evicted (below) rather than re-claimed on
 	// every restart recovery. Fails CLOSED here (unlike the reachability signal) because IsCommandHull
 	// is definite + stable (role/symbol never change): the eviction fires once and isReclaimable's
@@ -724,7 +723,7 @@ func (s *DaemonServer) evictStrandedDepotElement(ctx context.Context, shipSymbol
 	if brokenFrom, err := s.shipRepo.ReleaseContainerClaim(ctx, shipSymbol, shared.MustNewPlayerID(playerID), claimReason); err != nil {
 		fmt.Printf("depot %s eviction: failed to release work-claim on stranded hull %s: %v\n", role, shipSymbol, err)
 	} else {
-		// Reap the container the eviction orphaned (sp-h8mbb) — otherwise it keeps running
+		// Reap the container the eviction orphaned — otherwise it keeps running
 		// the evicted hull, and its RUNNING row survives until a restart sweep fails it.
 		s.ReapOrphanedContainer(ctx, brokenFrom, shared.MustNewPlayerID(playerID),
 			fmt.Sprintf("evicted as an unreachable depot %s hull", role))

@@ -568,7 +568,7 @@ func TestSensingSurge_RanksByValueDeterministicallyAcrossTicks(t *testing.T) {
 // DISTANCE. These are the two halves of the ranking's second key, and neither is
 // observable in a fixture where every candidate sits one gate away.
 //
-// The economics: a gate hop costs 850-1360s measured (sp-smbgd) — tens of minutes,
+// The economics: a gate hop costs 850-1360s measured — tens of minutes,
 // once — while a probe delivered to a system with more markets keeps paying for the
 // rest of the era. So distance breaks ties and never outranks marketplace count.
 func TestSensingSurge_PrefersTheNearerSystemButValueOutranksDistance(t *testing.T) {
@@ -618,7 +618,7 @@ func marketWaypoints(system string, n int) []string {
 // rather than guessing when the open era cannot be resolved (persistence.OpenEraScope),
 // and the pass has to honour that refusal: read permissively, an unresolvable era
 // yields the pre-backfill rows and this pass would fly probes at systems from
-// universes that no longer exist — sp-l0aqy, ~290 API failures an hour for ten hours,
+// universes that no longer exist — ~290 API failures an hour for ten hours,
 // against an 85% ceiling.
 //
 // The failure is COLLECTED, not swallowed: the tick reports it so a persistently

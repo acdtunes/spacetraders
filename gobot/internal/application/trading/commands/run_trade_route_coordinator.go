@@ -60,7 +60,7 @@ const defaultMaxCircuits = 20
 // means the system has nothing left worth absorbing a hull into.
 const noProgressStarvationLimit = 3
 
-// defaultWorkingCapitalReserve is the fallback hard spend floor (sp-bp6f): a
+// defaultWorkingCapitalReserve is the fallback hard spend floor: a
 // circuit must not execute a buy that would drop LIVE treasury below this
 // line. Originally sized to the exact level the 2026-07-09 incident called
 // "danger" — treasury bottomed at 43,041 and briefly went negative (-30,537)
@@ -113,12 +113,12 @@ const (
 	// exitReasonNoLanes: the market cache had nothing to rank at all.
 	exitReasonNoLanes = "no_lanes"
 	// exitReasonSpendFloor: a circuit was about to buy a tranche that would drop
-	// live treasury below the working-capital reserve floor (sp-bp6f); see
+	// live treasury below the working-capital reserve floor; see
 	// SpendFloorAbort/TreasuryAtAbort/ReserveFloor.
 	exitReasonSpendFloor = "spend_floor"
 	// exitReasonNegativeMargin: a circuit's own realized margin ran negative for
 	// negativeMarginAbortVisits consecutive visits - the lane is losing money on
-	// its actual recent fills, not just a stale ranked spread (sp-bp6f); see
+	// its actual recent fills, not just a stale ranked spread; see
 	// NegativeMarginAbort/RealizedCircuitMargin.
 	exitReasonNegativeMargin = "negative_margin"
 	// exitReasonCargoBlocked: the hull had no free cargo hold to buy a tranche
@@ -137,7 +137,7 @@ const (
 	// see CargoStranded/CargoStrandedUnits/CargoStrandedReason.
 	exitReasonCargoStranded = "cargo_stranded"
 	// exitReasonUnroutable: an operator-directed (--dest) cross-system lane was
-	// selected but its sell system is not reachable over the gate graph (sp-7gr2).
+	// selected but its sell system is not reachable over the gate graph.
 	// The run stops CLEANLY and EMPTY before the circuit's first buy — refusing to
 	// buy a tranche it cannot deliver — rather than crashing laden at the gate the
 	// way the arb-run incident did; see RoutabilityAbort.
@@ -145,7 +145,7 @@ const (
 )
 
 // minFreeCargoForCircuit is the smallest free hold (in units) a hull must have
-// before a circuit will fly it (sp-xwa1). Below this the hull cannot buy even a
+// before a circuit will fly it. Below this the hull cannot buy even a
 // one-unit tranche, so flying it wastes a cross-system round trip on nothing — the
 // exact non-empty-hull starvation the pre-flight cargo check exists to catch. Held
 // at 1 (i.e. "any free hold at all"): sub-viable slivers above zero are left to the
@@ -175,7 +175,7 @@ type RunTradeRouteCoordinatorCommand struct {
 	// remains unless a margin/starvation/error exit fires (sp-1hj5: one run
 	// owns its --max-visits; it is not a per-lane bound).
 	MaxVisits int
-	// WorkingCapitalReserve is the hard spend floor (sp-bp6f): 0 → defaultWorkingCapitalReserve.
+	// WorkingCapitalReserve is the hard spend floor: 0 → defaultWorkingCapitalReserve.
 	WorkingCapitalReserve int
 	// TargetDest is the operator-directed lane override (sp-xwa1, the CLI's
 	// --dest flag): a destination waypoint (e.g. "X1-ABC-D1") or bare system
@@ -219,7 +219,7 @@ type RunTradeRouteCoordinatorResponse struct {
 	RankedSourceAsk int
 	LiveSourceAsk   int
 	// SpendFloorAbort is set when a circuit was about to buy a tranche that would
-	// drop live treasury below the working-capital reserve floor (sp-bp6f) — the
+	// drop live treasury below the working-capital reserve floor — the
 	// buy was skipped and the circuit stopped BEFORE spending past the line,
 	// rather than the breach being discovered after the fact. TreasuryAtAbort and
 	// ReserveFloor are the live credits observed and the reserve in effect; a
@@ -255,7 +255,7 @@ type RunTradeRouteCoordinatorResponse struct {
 	// one-and-done). See the exitReason* constants for the full set.
 	ExitReason string
 	// RoutabilityAbort is set when an operator-directed (--dest) cross-system lane
-	// was selected but its sell system is unreachable over the gate graph (sp-7gr2),
+	// was selected but its sell system is unreachable over the gate graph,
 	// so the run stopped EMPTY before the first buy rather than buying a tranche it
 	// could not deliver. AbortReason carries the operator-facing prose naming both
 	// systems; ExitReason is exitReasonUnroutable.
@@ -317,7 +317,7 @@ type RunTradeRouteCoordinatorHandler struct {
 	marketRefresher MarketRefresher // optional; nil disables the live stale-ask guard
 	clock           shared.Clock    // used only for the cross-system jump-cooldown wait (sp-wlev)
 	// apiClient is used only to live-read treasury for the working-capital spend
-	// floor (sp-bp6f). Optional; nil disables the guard entirely (fails OPEN,
+	// floor. Optional; nil disables the guard entirely (fails OPEN,
 	// mirroring marketRefresher's own optional-port contract) rather than
 	// defaulting to a real client the way clock defaults to RealClock — a caller
 	// that cannot supply one (e.g. most tests) simply runs without the guard.
@@ -329,12 +329,12 @@ type RunTradeRouteCoordinatorHandler struct {
 	// gate between. Wired or not, an unreadable treasury still fails CLOSED.
 	treasury TreasuryReader
 	// gateGraph resolves multi-jump routes over the persisted cross-system gate
-	// adjacency (sp-7gr2). Optional; nil keeps travel()'s legacy single-jump
+	// adjacency. Optional; nil keeps travel()'s legacy single-jump
 	// assumption (a direct origin→dest edge) so every existing caller/test is
 	// unaffected. The daemon injects a real, fetch-through GateGraph via
 	// SetGateGraph so a multi-hop gap (KA42→PA3→UQ16→JP61) is actually crossed.
 	gateGraph GateGraph
-	// chartGateOnArrival is the sp-bcsu reversibility knob ([routing] chart_gate_on_arrival,
+	// chartGateOnArrival is the reversibility knob ([routing] chart_gate_on_arrival,
 	// default ON in prod): when true, travelWithJumpBound best-effort charts the jump gate of
 	// every system a hull arrives on (the one moment its outbound edges are readable), which
 	// unstrands the frontier the strict pathfinder fails closed on. Off (the handler zero
@@ -371,7 +371,7 @@ type RunTradeRouteCoordinatorHandler struct {
 	// across the trade-route/arb/tour/stocker coordinators so the ledger is fleet-wide.
 	laneLedger *trading.LaneCooldownLedger
 	// rankerAgeCaps is the activity-conditioned listing freshness table the UNDIRECTED
-	// auto-scan drops stale rows against (sp-t5sh5) — each cached listing measured
+	// auto-scan drops stale rows against — each cached listing measured
 	// against its OWN activity's cap instead of one flat threshold. The daemon injects
 	// the config-resolved table via SetRankerAgeCaps; the zero value is SAFE (For fills
 	// the fitted armed defaults per activity), so an unwired handler — every existing
@@ -381,7 +381,7 @@ type RunTradeRouteCoordinatorHandler struct {
 }
 
 // GateGraph resolves multi-jump routes over the persisted cross-system gate
-// adjacency (sp-7gr2). travel() walks Path hop-by-hop (each hop a single
+// adjacency. travel() walks Path hop-by-hop (each hop a single
 // directly-connected jump); the composing arb coordinator's pre-buy guard uses
 // Routable to refuse a cross-system buy whose sell leg is unreachable BEFORE
 // spending (the incident bought first, then crashed laden at the home gate with
@@ -439,7 +439,7 @@ type GateGraph interface {
 	// edge is still impassable and a never-cached system is still a dead end.
 	StoredRankingDistances(ctx context.Context, fromSystem string, targets []string, maxJumps int) (map[string]int, error)
 	Routable(ctx context.Context, fromSystem, toSystem string, playerID int) (bool, error)
-	// RoutableWithinJumps is Routable with a CALLER-SUPPLIED jump bound (sp-ry741) — the same
+	// RoutableWithinJumps is Routable with a CALLER-SUPPLIED jump bound — the same
 	// (bool, error) verdict, where (false, nil) is a DEFINITIVE unroutable veto and (false, err)
 	// a fail-closed lookup failure, resolved at a deeper horizon than the hardcoded MaxJumpPath=5.
 	// It is the routability twin of PathWithinJumps and shares its strict fetch-through resolver;
@@ -456,9 +456,9 @@ type GateGraph interface {
 	// edge carries its build state so an under-construction neighbor is rejected, not
 	// silently pre-flighted into a hop-time crash.
 	Connections(ctx context.Context, fromSystem string, playerID int) ([]system.GateEdge, error)
-	// ChartPresentGate is the PRESENCE-FORCED gate read (sp-bcsu): a hull physically on
+	// ChartPresentGate is the PRESENCE-FORCED gate read: a hull physically on
 	// systemSymbol's own jump gate is the ONE moment its outbound connections are readable
-	// (a remote read with no ship present 400s). It BYPASSES the sp-ikx1 negative-result
+	// (a remote read with no ship present 400s). It BYPASSES the negative-result
 	// backoff short-circuit Connections honors — so a present-ship arrival HEALS an
 	// already-latched system (fetchAndStore -> store.Replace clears the marker) instead of
 	// skipping it. Idempotent: an already-charted system early-returns with zero API. Called
@@ -466,7 +466,7 @@ type GateGraph interface {
 	// moment it can be, then kept current forever; a read failure is logged and swallowed and
 	// never fails the leg. It also PUBLICLY charts the gate (POST /chart) from the present hull
 	// on the first (uncharted-to-us) visit, so every future GetJumpGate resolves it WITHOUT a
-	// ship present (sp-lv2n) — hence the shipSymbol. *gategraph.Service satisfies this.
+	// ship present — hence the shipSymbol. *gategraph.Service satisfies this.
 	ChartPresentGate(ctx context.Context, systemSymbol, shipSymbol string, playerID int) ([]system.GateEdge, error)
 }
 
@@ -479,7 +479,7 @@ type GateGraph interface {
 // real MarketScanner so the guard is active. A nil clock defaults to shared.RealClock;
 // tests inject a shared.MockClock so the cross-system jump-cooldown wait (sp-wlev) is
 // instant instead of a real sleep. A nil apiClient disables the working-capital
-// spend-floor guard (sp-bp6f) — the circuit runs without live-checking treasury
+// spend-floor guard — the circuit runs without live-checking treasury
 // before each buy; the daemon injects the real APIClient so the guard is active in
 // production, the same fail-open contract marketRefresher already uses.
 func NewRunTradeRouteCoordinatorHandler(
@@ -512,7 +512,7 @@ func (h *RunTradeRouteCoordinatorHandler) SetTreasuryReader(r TreasuryReader) {
 	h.treasury = r
 }
 
-// SetGateGraph wires the multi-jump gate-graph resolver (sp-7gr2). The daemon
+// SetGateGraph wires the multi-jump gate-graph resolver. The daemon
 // injects a persisted, fetch-through GateGraph so travel() can cross a multi-hop
 // gap and the composing arb coordinator can pre-check routability. Left unset
 // (nil), travel() keeps the legacy single-jump behavior (one direct origin→dest
@@ -522,7 +522,7 @@ func (h *RunTradeRouteCoordinatorHandler) SetGateGraph(g GateGraph) {
 	h.gateGraph = g
 }
 
-// SetChartGateOnArrival wires the sp-bcsu chart-on-arrival reversibility knob
+// SetChartGateOnArrival wires the chart-on-arrival reversibility knob
 // ([routing] chart_gate_on_arrival, default ON). The daemon passes the resolved config
 // value; left unset (false) the handler never charts on arrival, so every existing
 // caller/test is byte-for-byte unchanged. Mirrors the SetGateGraph optional-injection idiom.
@@ -541,8 +541,8 @@ func (h *RunTradeRouteCoordinatorHandler) gateGraphResolver() GateGraph {
 // hull that is already IN_TRANSIT before attempting any movement (sp-8l3o). The
 // daemon injects the shared ShipEventBus (the same publisher the RouteExecutor
 // subscribes to). Left unset (nil), the pre-movement in-transit wait is skipped
-// entirely — every existing caller/test behaves exactly as before this lever
-// existed. Mirrors the SetGateGraph optional-injection idiom.
+// entirely, so every existing caller/test is unaffected. Mirrors the
+// SetGateGraph optional-injection idiom.
 func (h *RunTradeRouteCoordinatorHandler) SetEventSubscriber(subscriber navigation.ShipEventSubscriber) {
 	h.eventSubscriber = subscriber
 }
@@ -555,7 +555,7 @@ func (h *RunTradeRouteCoordinatorHandler) SetAbsorptionLedger(ledger absorption.
 }
 
 // SetLaneImpactModel wires the era-3 price-impact coefficients and the shared cooldown
-// ledger into lane ranking (sp-tl68), the same optional-injection idiom as the other
+// ledger into lane ranking, the same optional-injection idiom as the other
 // setters. buyImpact/sellImpact are the resolved cfg.TradeImpact coefficients the
 // effective-spread self-compression uses; ledger is the fleet-shared decaying
 // compression ledger the ranker subtracts (read) and the circuit accrues to (write).
@@ -567,7 +567,7 @@ func (h *RunTradeRouteCoordinatorHandler) SetLaneImpactModel(buyImpact, sellImpa
 	h.laneLedger = ledger
 }
 
-// SetRankerAgeCaps wires the activity-conditioned listing freshness table (sp-t5sh5)
+// SetRankerAgeCaps wires the activity-conditioned listing freshness table
 // into the undirected auto-scan, the same optional-injection idiom as the other
 // setters. The daemon injects cfg.Trading.RankerAgeCapMinutes.Resolved(); left unset
 // the zero-value table still ranks on the fitted armed defaults (RankerAgeCaps.For
@@ -649,9 +649,9 @@ func (h *RunTradeRouteCoordinatorHandler) execute(
 	exitReason := ""
 
 	// The RUN owns its visit budget (sp-1hj5): resolved once here, drawn down by
-	// every circuit's visits. The old per-circuit reading of MaxVisits let a
-	// 12-visit grant fly 12 visits per LANE (unbounded across re-ranks) while any
-	// mid-leg abort ended the run after a fraction of the grant.
+	// every circuit's visits. Reading MaxVisits per CIRCUIT instead lets a 12-visit
+	// grant fly 12 visits per LANE (unbounded across re-ranks) while any mid-leg
+	// abort ends the run after a fraction of the grant.
 	runMaxVisits := cmd.MaxVisits
 	if runMaxVisits <= 0 {
 		runMaxVisits = defaultMaxVisits
@@ -713,7 +713,7 @@ func (h *RunTradeRouteCoordinatorHandler) execute(
 			break
 		}
 
-		// Routability guard (sp-7gr2), directed lane only: an operator who pins a
+		// Routability guard, directed lane only: an operator who pins a
 		// cross-system --dest must not have the hull buy a tranche it then cannot
 		// deliver — the arb-run incident (bought, flew to the gate, found no route to
 		// JP61, crashed laden) in the circuit's directed form. Verify the selected
@@ -747,7 +747,7 @@ func (h *RunTradeRouteCoordinatorHandler) execute(
 			}
 		}
 
-		// Pre-flight cargo gate (sp-xwa1): a hull with no free hold cannot buy a
+		// Pre-flight cargo gate: a hull with no free hold cannot buy a
 		// tranche, so park BEFORE committing the circuit rather than burning
 		// starvation cycles on a non-empty hull or flying a cross-system round trip
 		// to buy nothing (the exact zero-tranche starvation the root cause named).
@@ -773,13 +773,13 @@ func (h *RunTradeRouteCoordinatorHandler) execute(
 		// a missed publish never touches the trade path — RULINGS #4).
 		flowfeed.Publish(buildTradeRouteFlow(cmd, lane, laneCircuitRatePerHour(lane, ship.CargoCapacity(), cmd.TargetDest, h.buildLaneImpactModel()), shipCargoItems(ship), time.Time{}, time.Now().UTC()))
 
-		// sp-q1ca: this line used to print no structured payload — the captain could
-		// not tell which lane a daemon picked, or whether cross-system lanes were even
-		// scanned, without inferring it from nav destinations. laneLogPayload carries
-		// the SELECTED lane's full identity (both endpoints' waypoint+system, margin,
-		// cross-system flag); laneLogCandidates attaches the top-ranked shortlist so a
-		// surcharged-but-present cross-system lane (see rankLanesByCircuitRate) is
-		// verifiable in the log even when a home lane wins the selection.
+		// laneLogPayload carries the SELECTED lane's full identity (both endpoints'
+		// waypoint+system, margin, cross-system flag); laneLogCandidates attaches the
+		// top-ranked shortlist so a surcharged-but-present cross-system lane (see
+		// rankLanesByCircuitRate) is verifiable in the log even when a home lane wins
+		// the selection. Without the structured payload the captain can only infer which
+		// lane a daemon picked, and whether cross-system lanes were scanned at all, from
+		// nav destinations.
 		selectionPayload := laneLogPayload(lane)
 		selectionPayload["ship_symbol"] = cmd.ShipSymbol
 		selectionPayload["circuit"] = response.Circuits

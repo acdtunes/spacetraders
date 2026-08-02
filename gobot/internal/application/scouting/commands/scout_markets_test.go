@@ -51,7 +51,7 @@ func (r *fakeMarketsShipRepo) Save(_ context.Context, ship *navigation.Ship) err
 }
 
 // SaveWithRetry mirrors the real repository's non-conflict path (find → mutate →
-// save) so the migrated scout-reset release (sp-wa7c) exercises its production
+// save) so the migrated scout-reset release exercises its production
 // closure while still funneling through Save's released-hull tracking.
 func (r *fakeMarketsShipRepo) SaveWithRetry(ctx context.Context, symbol string, playerID shared.PlayerID, mutate navigation.ShipMutation) (*navigation.Ship, bool, error) {
 	sh, err := r.FindBySymbol(ctx, symbol, playerID)

@@ -165,7 +165,7 @@ type RunConstructionCoordinatorHandler struct {
 	// reclaims its hull. Defaulted in the constructor to constructionWorkerReapGrace; in-package tests
 	// set a tiny bound directly to keep the liveness test fast.
 	reapGrace time.Duration
-	// Warehouse-first sourcing (sp-crjla): before buying a gate material at market, WITHDRAW it from
+	// Warehouse-first sourcing: before buying a gate material at market, WITHDRAW it from
 	// an in-system depot warehouse at zero cost, so the depot's stocker is the sole buyer and the
 	// construction buy is only ever the residual (RULINGS #4, no double-buy). invFinder is the SHARED
 	// contract StorageInventoryFinder — NOT a divergent parallel one. All four are wired together by
@@ -176,7 +176,7 @@ type RunConstructionCoordinatorHandler struct {
 	invAPI       domainPorts.APIClient
 	invNavigator ConstructionNavigator
 	// siteSource reads the LIVE construction site so each tick can reconcile the pipeline's delivered
-	// counters against the server (sp-duxru). Wired by SetConstructionSiteSource; left nil the drain
+	// counters against the server. Wired by SetConstructionSiteSource; left nil the drain
 	// logs that reconciliation is OFF every tick rather than silently trusting a cache that only ever
 	// drifts one way.
 	siteSource manufacturing.ConstructionSiteRepository
@@ -210,7 +210,7 @@ func NewRunConstructionCoordinatorHandler(
 }
 
 // SetConstructionSiteSource wires the LIVE construction-site read used to reconcile the pipeline's
-// delivered counters each tick (sp-duxru). It is the SAME shared ConstructionSiteRepository the
+// delivered counters each tick. It is the SAME shared ConstructionSiteRepository the
 // planner reads site requirements through — not a second fetch path.
 func (h *RunConstructionCoordinatorHandler) SetConstructionSiteSource(source manufacturing.ConstructionSiteRepository) {
 	h.siteSource = source
@@ -225,7 +225,7 @@ func (h *RunConstructionCoordinatorHandler) SetTreeResolver(resolver Constructio
 	h.resolver = resolver
 }
 
-// SetInventorySource wires warehouse-first sourcing (sp-crjla): the SHARED contract
+// SetInventorySource wires warehouse-first sourcing: the SHARED contract
 // StorageInventoryFinder, the shared storage coordinator it withdraws through, the API client for
 // the ship-to-ship transfer, and the navigator that flies the hull to the warehouse. A nil in ANY
 // argument disables warehouse-first, so the drain buys at market as today (byte-identical). A setter
@@ -535,8 +535,7 @@ func (h *RunConstructionCoordinatorHandler) runSupplyWorker(ctx context.Context,
 
 // operationManufacturing is the shared "manufacturing" fleet/claim identity: the construction-supply
 // drain claims idle in-system haulers under this operation and prefers hulls tagged with it (see
-// dedicatedFleet below). Originally the goods-factory coordinator's fleet identity; it moved here with
-// the factory-ops retirement (sp-hoj8u), the construction drain now being its sole consumer.
+// dedicatedFleet below). The construction drain is its sole consumer.
 const operationManufacturing = "manufacturing"
 
 // dedicatedFleet is the Ship.DedicatedFleet() tag this drain PREFERS, defaulting to the shared
@@ -804,8 +803,8 @@ func neediestMaterial(order []string, remaining, assigned map[string]int, lotUni
 }
 
 // assignFillCaps sets each lot's buy cap so the lots working a material never buy past what it still
-// needs (the over-supply guard). A material with a SINGLE lot takes the whole budget — the executor
-// stops at hull capacity anyway, so this is the old uncapped fill expressed as a number. A material
+// needs (the over-supply guard). A material with a SINGLE lot takes the whole budget — an
+// effectively uncapped fill, safe because the executor stops at hull capacity anyway. A material
 // with MULTIPLE lots has that budget sliced into hull-load caps that sum to it. The budget is the
 // planner's, already net of what in-flight workers are authorized to buy, so it is also the buy
 // reservation each dispatched lot registers.
@@ -958,7 +957,7 @@ func (h *RunConstructionCoordinatorHandler) supplyTask(ctx context.Context, cmd 
 		}
 	}
 
-	// ── PHASE 1.5: WAREHOUSE-FIRST sourcing (sp-crjla). Before buying at market, WITHDRAW the
+	// ── PHASE 1.5: WAREHOUSE-FIRST sourcing. Before buying at market, WITHDRAW the
 	// material from an in-system depot warehouse at ZERO cost, so the depot's stocker is the sole
 	// buyer and the construction buy is only ever the residual (RULINGS #4, no double-buy). A
 	// withdrawal trip delivers what it drew and re-stages the remainder; a later trip withdraws more
@@ -1038,7 +1037,7 @@ func (h *RunConstructionCoordinatorHandler) supplyTask(ctx context.Context, cmd 
 	produceCtx = mfgServices.WithUnifiedGateFill(produceCtx, true)
 	produceCtx = mfgServices.WithDeliveryTarget(produceCtx, mfgServices.ConstructionSiteTarget(task.ConstructionSite()))
 	// The executor feeds the drain's per-material production with the balanced-to-limiting policy
-	// (saturation-capped tranches, taproot-first, feed-responsive-only) unconditionally (sp-sxyx6);
+	// (saturation-capped tranches, taproot-first, feed-responsive-only) unconditionally;
 	// no per-run feeding config is threaded from the coordinator any more.
 	result, err := h.producer.ProduceGood(produceCtx, ship, node, systemSymbol, cmd.PlayerID, h.operationContext(cmd), false)
 	if err != nil {
@@ -1207,7 +1206,7 @@ func persistCleanupCtx(ctx context.Context) (context.Context, context.CancelFunc
 // its worker — and the slot that worker holds under max_workers — indefinitely. The task body runs on
 // a child goroutine over a timeout ctx; the worker is reclaimed the instant the task finishes OR the
 // deadline elapses, whichever comes first, so a slot always comes back. This is the hard safety net:
-// even a downstream op that ignores ctx entirely can no longer starve the drain of dispatch capacity
+// even a downstream op that ignores ctx entirely cannot starve the drain of dispatch capacity
 // — at worst its goroutine unwinds later while the drain keeps ticking, and because
 // taskCtx is cancelled the money paths abort rather than spend. done is buffered so a late finish
 // never blocks a possibly-orphaned child. Per-step enter/exit logging makes a slow/wedged task

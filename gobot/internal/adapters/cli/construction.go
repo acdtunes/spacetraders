@@ -12,12 +12,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// constructionSupplyChainDepth and constructionMaxWorkers replace the retired --depth and
-// --max-workers launch flags (sp-sxyx6): "smart" is the sole acquisition strategy now, so the
-// depth knob no longer has a live-CLI reason to vary from the buy-final default, and the worker
-// count is tuned live via `construction workers --count` (the standing sp-duljg verb) instead of
-// at launch. Both values are exactly the flags' former defaults, so a bare `construction start`
-// stages the byte-identical pipeline/tasks it always did.
+// constructionSupplyChainDepth and constructionMaxWorkers are fixed at launch, in place of the
+// retired --depth and --max-workers flags: "smart" is the sole acquisition strategy, so depth
+// has no live-CLI reason to vary from the buy-final default, and the worker count is tuned live
+// via `construction workers --count` rather than at launch. Both values are exactly the flags'
+// former defaults, so a bare `construction start` stages the pipeline/tasks it always did.
 const (
 	// constructionSupplyChainDepth = 3 (buy final product, no production) — the former --depth default.
 	constructionSupplyChainDepth = 3
@@ -752,7 +751,7 @@ func runConstructionWorkers(ctx context.Context, client constructionWorkerCapMut
 }
 
 // newConstructionWorkersCommand creates the `construction workers <site>` subcommand — the live
-// concurrent supplyTask-worker cap on a RUNNING construction pipeline (sp-duljg), the construction
+// concurrent supplyTask-worker cap on a RUNNING construction pipeline, the construction
 // analogue of `goods factory workers`. No restart: resolveWorkerCap re-reads max_workers off the
 // pipeline row each tick, and the value survives a daemon bounce (RULINGS #2). The positional site
 // matches `construction start/status/stop`; --count matches `goods factory workers`.

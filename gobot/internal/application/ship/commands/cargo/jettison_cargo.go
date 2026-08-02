@@ -73,8 +73,8 @@ func (h *JettisonCargoHandler) Handle(ctx context.Context, request common.Reques
 		return nil, err
 	}
 
-	// Persist the jettison's cargo removal onto the FRESH ship row under CAS-retry
-	// (sp-wa7c): the API already jettisoned the units, so the closure re-applies ONLY
+	// Persist the jettison's cargo removal onto the FRESH ship row under CAS-retry:
+	// the API already jettisoned the units, so the closure re-applies ONLY
 	// this good's removal on the fresh row, letting a concurrent writer's nav/fuel/
 	// other-cargo update on the same hull survive instead of being last-write-wins
 	// clobbered. Best-effort (unchanged): the API is authoritative and the daemon

@@ -7,10 +7,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Behavior 5 (sp-p1ci): [ship_resync] interval/jitter map to durations, an
+// Behavior 5: [ship_resync] interval/jitter map to durations, an
 // unset (zero) knob defers to the documented default, and a negative jitter
 // explicitly disables jitter. Config is the source of truth for the cadence
-// (sp-ts82 live-config idiom); this pins the default fallbacks so an absent
+// (live-config idiom); this pins the default fallbacks so an absent
 // section still boots the resync at 1h +/-10min.
 func TestResyncConfig_ResolvesIntervalAndJitterWithDefaults(t *testing.T) {
 	cases := []struct {

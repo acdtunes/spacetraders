@@ -186,7 +186,7 @@ func TestTune_ZeroRevertsKnobToDocumentedDefault(t *testing.T) {
 // A tuned value SURVIVES restart recovery: recovery rebuilds the launch command from
 // the config column (buildCommandForType), which now carries the tuned value — while
 // an untuned knob still resolves to its default. This is the RULINGS #2 guarantee
-// the sp-ev0n worker cap proved, applied to the sensing coordinator's money knobs.
+// the worker cap proved, applied to the sensing coordinator's money knobs.
 func TestTune_TunedValueSurvivesRestartRecovery(t *testing.T) {
 	db, repo, playerID := tuneTestDB(t)
 	seedTuneContainer(t, db, playerID, tuneSensingContainerID, sensingContainerType, "probe_sensing_coordinator", "RUNNING", map[string]interface{}{
@@ -355,7 +355,7 @@ func TestShowTunableConfig_ListsEffectiveValuesSourcesAndBounds(t *testing.T) {
 
 // ---- bootstrap: the config.yaml-authoritative coordinator joins the registry (sp-r6yq) ----
 
-// sp-r6yq acceptance (registry side): the captain bootstrap coordinator is a first-class tune target.
+// Acceptance (registry side): the captain bootstrap coordinator is a first-class tune target.
 // Resolved by `--operation bootstrap` (FindActiveCoordinatorByType), a live write of the BARE tune key
 // lands in the persisted column (the coordinator's per-tick liveconfig reader picks it up next tick),
 // `--show` lists it with its bounds, an effective tune emits the config.tuned audit, an out-of-bounds
@@ -429,7 +429,7 @@ func TestTune_Bootstrap_TunesLiveViaOperation_ShowRevertAudit(t *testing.T) {
 	require.False(t, set, "revert clears the bare tune key from the column")
 }
 
-// sp-r6yq restart-survival: bootstrap's launch config is config.yaml-authoritative — resolveBootstrapConfig
+// Restart-survival: bootstrap's launch config is config.yaml-authoritative — resolveBootstrapConfig
 // CLEARS the prefixed bootstrap_* keys and re-injects them from config.yaml on every build (creation and
 // recovery alike). The BARE tune key is a SEPARATE family, never in that clear list, so a tuned value
 // persists in the column across a daemon bounce and the coordinator's per-tick live reader keeps applying

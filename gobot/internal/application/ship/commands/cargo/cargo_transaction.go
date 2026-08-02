@@ -49,7 +49,7 @@ type CargoTransactionCommand struct {
 	Units      int             // Total units to transaction
 	PlayerID   shared.PlayerID // Player ID for authorization
 
-	// MinBidPerUnit (sp-lbbm) is the per-tranche SELL floor: before each sell
+	// MinBidPerUnit is the per-tranche SELL floor: before each sell
 	// tranche the handler re-reads the LIVE bid and, if it has fallen below this
 	// per-unit floor, ABORTS the remaining tranches and leaves the rest aboard
 	// (FloorAborted). It is the fix for the H50 co-dump — five tranches sold for 27
@@ -59,7 +59,7 @@ type CargoTransactionCommand struct {
 	// coordinator. Ignored for purchases.
 	MinBidPerUnit int
 
-	// MaxAskPerUnit (sp-9mkf) is the mirror of MinBidPerUnit for the BUY side: the
+	// MaxAskPerUnit is the mirror of MinBidPerUnit for the BUY side: the
 	// per-tranche buy CEILING. Before each purchase tranche the handler re-reads the
 	// LIVE ask and, if it has laddered ABOVE this per-unit ceiling, ABORTS the
 	// remaining tranches and leaves the rest unbought (CeilingAborted). It is the fix
@@ -82,7 +82,7 @@ type CargoTransactionResponse struct {
 	UnitsProcessed   int // Total units (added for purchase, sold for sell)
 	TransactionCount int // Number of API transactions executed
 
-	// FloorAborted (sp-lbbm) is true when the per-tranche sell floor stopped the
+	// FloorAborted is true when the per-tranche sell floor stopped the
 	// sale early: the live bid fell below MinBidPerUnit, so the remaining units
 	// were held aboard rather than dumped. UnitsProcessed then reports only what
 	// sold before the abort. FloorObservedBid is the live bid that tripped the
@@ -91,7 +91,7 @@ type CargoTransactionResponse struct {
 	FloorAborted     bool
 	FloorObservedBid int
 
-	// CeilingAborted (sp-9mkf) is true when the per-tranche buy ceiling stopped the
+	// CeilingAborted is true when the per-tranche buy ceiling stopped the
 	// purchase early: the live ask rose above MaxAskPerUnit, so the remaining units
 	// were left unbought. UnitsProcessed then reports only what was bought before the
 	// abort. CeilingObservedAsk is the live ask that tripped the ceiling (0 when it
@@ -99,7 +99,7 @@ type CargoTransactionResponse struct {
 	CeilingAborted     bool
 	CeilingObservedAsk int
 
-	// Reserved (sp-1vhv) is true when the sell was refused because the good is
+	// Reserved is true when the sell was refused because the good is
 	// reserved as do-not-sell on the hull (a staged outfitting module, or an
 	// operator-protected good). No API call is made and no ledger row is written;
 	// UnitsProcessed and TotalAmount stay zero and the cargo is held aboard. Only
@@ -109,8 +109,7 @@ type CargoTransactionResponse struct {
 
 // CargoTransactionHandler orchestrates cargo transaction operations using the Strategy pattern.
 //
-// This handler unifies the logic previously duplicated between PurchaseCargoHandler
-// and SellCargoHandler (~90% code duplication eliminated).
+// This handler unifies the logic shared by PurchaseCargoHandler and SellCargoHandler.
 //
 // Key responsibilities:
 //   - Validate ship is docked
@@ -133,8 +132,8 @@ type CargoTransactionHandler struct {
 	mediator        common.Mediator
 	marketRefresher MarketRefresher // Optional: refreshes market data after transactions
 
-	// impactNonce is the per-trade counter that spreads the sp-v34b impact-scan
-	// sampling evenly across every market and hull this shared handler serves: each
+	// impactNonce is the per-trade counter that spreads the impact-scan sampling
+	// evenly across every market and hull this shared handler serves: each
 	// post-trade scan decision consumes the next value, so no single lane is ever
 	// permanently sampled-in or -out. Atomic because the handler is a daemon singleton
 	// dispatched concurrently across hulls.
@@ -205,7 +204,7 @@ func (h *CargoTransactionHandler) Handle(ctx context.Context, request common.Req
 		return nil, err
 	}
 
-	// Reserved-cargo money guard (sp-1vhv): a coordinator (tour/arb/circuit/held-
+	// Reserved-cargo money guard: a coordinator (tour/arb/circuit/held-
 	// liquidation), manufacturing, or the CLI must NEVER sell cargo the hull has
 	// reserved as do-not-sell — ship hardware bought for outfitting (MODULE_*/MOUNT_*
 	// by default) that rides a working hull only to be installed. This is the single
@@ -285,8 +284,8 @@ func (h *CargoTransactionHandler) getTransactionLimit(ctx context.Context, ship 
 // The net cargo delta this transaction produces is accumulated (unitsProcessed for
 // cmd.GoodSymbol) and persisted once, after all batches, via SaveWithRetry so a
 // concurrent writer's nav/fuel/other-cargo update on the same hull is re-applied
-// rather than last-write-wins clobbered (sp-wa7c). The pre-loaded ship snapshot is
-// therefore no longer needed here — the persist closure reads the fresh row.
+// rather than last-write-wins clobbered. The persist closure reads the fresh row,
+// so no pre-loaded ship snapshot is needed here.
 func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *CargoTransactionCommand, token string, transactionLimit int, waypointSymbol string) (*CargoTransactionResponse, error) {
 	totalAmount := 0
 	unitsProcessed := 0
@@ -299,7 +298,7 @@ func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *
 	ceilingAborted := false
 	ceilingObservedAsk := 0
 
-	// serverGoodUnits (sp-wbcil) is the AUTHORITATIVE on-hand count of cmd.GoodSymbol
+	// serverGoodUnits is the AUTHORITATIVE on-hand count of cmd.GoodSymbol
 	// once this transaction is done, learned from a 4219 cargo-shortfall rejection.
 	// -1 means the server never corrected us, so the persist applies its own delta as
 	// before. shortfallExhausted stops the tranche loop after a clamped retry: the
@@ -315,7 +314,7 @@ func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *
 	const runningBalance = 0
 
 	for unitsRemaining > 0 {
-		// PER-TRANCHE SELL FLOOR (sp-lbbm): before every sell tranche, re-read the
+		// PER-TRANCHE SELL FLOOR: before every sell tranche, re-read the
 		// LIVE bid and abort the remainder if it has fallen below the armed floor —
 		// so a bid our own earlier tranches (or a colliding hull) crushed is never
 		// dumped into. The remainder stays aboard for later liquidation. Only sells
@@ -337,7 +336,7 @@ func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *
 			}
 		}
 
-		// PER-TRANCHE BUY CEILING (sp-9mkf): the mirror of the sell floor. Before every
+		// PER-TRANCHE BUY CEILING: the mirror of the sell floor. Before every
 		// buy tranche, re-read the LIVE ask and abort the remainder if it has laddered
 		// ABOVE the armed ceiling — so a source ask our own earlier tranches (or a
 		// colliding hull) walked up is never bought into above the price that justifies
@@ -364,14 +363,13 @@ func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *
 
 		result, err := h.strategy.Execute(ctx, cmd.ShipSymbol, cmd.GoodSymbol, unitsToProcess, token)
 		if err != nil {
-			// SERVER-CARGO RECONCILE (sp-wbcil): a sell the API rejects with 4219
+			// SERVER-CARGO RECONCILE: a sell the API rejects with 4219
 			// ("cargo does not contain N unit(s) ... Ship has M unit(s)") states the
-			// hull's true on-hand count in the payload. Before this, that correction
-			// was discarded and the whole sale aborted at zero transactions — which
-			// killed the tour and released a fully laden hull whose hold was then
-			// dumped below the profit floor. Now the tranche is clamped DOWN to what
-			// the server says is aboard and retried once, so a 71→11 rejection still
-			// books 11 units of revenue instead of none.
+			// hull's true on-hand count in the payload. The tranche is clamped DOWN to
+			// what the server says is aboard and retried once, so a 71→11 rejection
+			// still books 11 units of revenue instead of none. Discarding the correction
+			// aborts the whole sale at zero transactions, killing the tour and releasing
+			// a fully laden hull whose hold is then dumped below the profit floor.
 			shortfall := h.retrySellClampedToServerCargo(ctx, cmd, token, unitsToProcess, err)
 			if shortfall.known {
 				// Heal the cache to the count the server just gave us even when no
@@ -410,7 +408,7 @@ func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *
 		// Record ledger entry immediately after each successful batch.
 		// The API returns the agent's post-transaction credits in-band per
 		// batch; each recorded row re-anchors the ledger to that truth so the
-		// running balance can never fork from the live API (sp-sc6u).
+		// running balance can never fork from the live API.
 		batchResponse := &CargoTransactionResponse{
 			TotalAmount:      result.TotalAmount,
 			UnitsProcessed:   result.UnitsProcessed,
@@ -441,7 +439,7 @@ func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *
 }
 
 // persistCargoDelta writes this transaction's cargo change onto the FRESH ship row
-// under CAS-retry (sp-wa7c): on a concurrent-writer version conflict the closure
+// under CAS-retry: on a concurrent-writer version conflict the closure
 // re-loads the fresh row and re-applies ONLY this op's own cargo state for
 // cmd.GoodSymbol, so a colliding writer's nav/fuel/other-cargo update survives
 // instead of being last-write-wins clobbered (the reported cargo desync). This is
@@ -451,19 +449,19 @@ func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *
 // not fatal: the API transaction already committed and the daemon cache reconciles
 // from the API on the next sync.
 //
-// It runs on the FAILURE path too (sp-wbcil). A multi-tranche sell whose later
-// tranche errored used to return before this write, orphaning the units its EARLIER
-// tranches had really sold: the ledger recorded them, the hold did not, and the
-// cached count stayed permanently ahead of the server. That drift is what makes a
-// hull ask to sell 71 units it no longer has, so healing it here removes a standing
-// producer of the very rejection the clamp above contains.
+// It runs on the FAILURE path too. Returning before this write on a multi-tranche
+// sell whose later tranche errored orphans the units its EARLIER tranches really
+// sold: the ledger records them, the hold does not, and the cached count stays
+// permanently ahead of the server. That drift is what makes a hull ask to sell 71
+// units it no longer has, so healing it here removes a standing producer of the
+// very rejection the clamp above contains.
 func (h *CargoTransactionHandler) persistCargoDelta(ctx context.Context, cmd *CargoTransactionCommand, transactionType string, unitsProcessed, serverGoodUnits int) {
 	if unitsProcessed <= 0 && serverGoodUnits < 0 {
 		return
 	}
 	_, _, _ = h.shipRepo.SaveWithRetry(ctx, cmd.ShipSymbol, cmd.PlayerID,
 		func(sh *navigation.Ship) (bool, error) {
-			// SERVER TRUTH WINS (sp-wbcil): when a 4219 told us exactly how many units
+			// SERVER TRUTH WINS: when a 4219 told us exactly how many units
 			// the hull holds, reconcile the cache to that count ABSOLUTELY rather than
 			// applying our own delta to a belief the rejection just disproved —
 			// deducting the 11 units we sold from a phantom 71 would leave 60 phantom
@@ -573,7 +571,7 @@ func (h *CargoTransactionHandler) retrySellClampedToServerCargo(
 }
 
 // liveBidForFloor reads the current per-unit bid for good at waypoint for the
-// sp-lbbm per-tranche sell floor. When a market refresher is wired it live-
+// per-tranche sell floor. When a market refresher is wired it live-
 // refreshes first and fails CLOSED (ok=false) if the refresh errors — a tranche
 // whose live bid cannot be verified must not be sold. With no refresher wired it
 // reads the cached bid (fail-open on the missing port, matching the arb buy
@@ -583,7 +581,7 @@ func (h *CargoTransactionHandler) liveBidForFloor(ctx context.Context, waypoint,
 	if h.marketRefresher != nil {
 		// LIVE, not budgeted: this guard fails CLOSED, so a bid served from the
 		// market-scan budget's cache would either strand the tranche or price it
-		// off a stale bid — the exact thing the floor exists to prevent (sp-ntgfj).
+		// off a stale bid — the exact thing the floor exists to prevent.
 		if err := h.marketRefresher.ScanAndSaveMarket(shared.WithLiveScanRequired(ctx), uint(playerID.Value()), waypoint); err != nil {
 			return 0, false
 		}
@@ -596,11 +594,11 @@ func (h *CargoTransactionHandler) liveBidForFloor(ctx context.Context, waypoint,
 	if g == nil {
 		return 0, false
 	}
-	return g.SellPrice(), true // market SELL price = the BID the hull receives selling (sp-en5h7)
+	return g.SellPrice(), true // market SELL price = the BID the hull receives selling
 }
 
 // liveAskForCeiling reads the current per-unit ask for good at waypoint for the
-// sp-9mkf per-tranche buy ceiling — the exact mirror of liveBidForFloor. When a
+// per-tranche buy ceiling — the exact mirror of liveBidForFloor. When a
 // market refresher is wired it live-refreshes first and fails CLOSED (ok=false) if
 // the refresh errors — a tranche whose live ask cannot be verified must not be
 // bought. With no refresher wired it reads the cached ask (fail-open on the missing
@@ -621,7 +619,7 @@ func (h *CargoTransactionHandler) liveAskForCeiling(ctx context.Context, waypoin
 	if g == nil {
 		return 0, false
 	}
-	return g.PurchasePrice(), true // market PURCHASE price = the ASK the hull pays to buy (sp-en5h7)
+	return g.PurchasePrice(), true // market PURCHASE price = the ASK the hull pays to buy
 }
 
 // recordCargoTransaction records the cargo transaction in the ledger
@@ -682,7 +680,7 @@ func (h *CargoTransactionHandler) recordCargoTransaction(
 		"waypoint":    waypointSymbol,
 	}
 
-	// sp-br0m: tag a factory input buy with the a5j7 selector branch (ELIGIBLE | RESCUE |
+	// Tag a factory input buy with the a5j7 selector branch (ELIGIBLE | RESCUE |
 	// era-end | disabled) that chose its source, recorded beside good_symbol so the analyst can
 	// grade A1 (supply-first compliance) and split legal RESCUE buys from violations straight
 	// from the transactions table. Only the input-buy path stamps the branch onto ctx
@@ -745,12 +743,12 @@ func (h *CargoTransactionHandler) recordCargoTransaction(
 // OPTIMIZATION: Skip refresh when called from manufacturing operations (context flag).
 // Manufacturing scans markets separately and doesn't need immediate refresh after each sell.
 //
-// sp-v34b: this scan is the top API consumer, so under a trade coordinator's ScanPolicy
+// This scan is the top API consumer, so under a trade coordinator's ScanPolicy
 // it is SAMPLED — the full paired scan fires on only a config fraction of trades (enough
 // to refit the model per era), and every other trade falls back to the recent-scan
 // freshness gate (reuse a cache scanned within MaxScanAge, scan a stale/never-scanned
-// market). A caller that stamps no policy (manufacturing, contract delivery, refuel, CLI,
-// every pre-sp-v34b path) is byte-for-byte unchanged: the scan always fires.
+// market). A caller that stamps no policy (manufacturing, contract delivery, refuel, CLI)
+// is byte-for-byte unchanged: the scan always fires.
 func (h *CargoTransactionHandler) refreshMarketData(ctx context.Context, cmd *CargoTransactionCommand, waypointSymbol string) {
 	// Skip if no market refresher is configured
 	if h.marketRefresher == nil {
@@ -765,7 +763,7 @@ func (h *CargoTransactionHandler) refreshMarketData(ctx context.Context, cmd *Ca
 
 	logger := logging.LoggerFromContext(ctx)
 
-	// sp-v34b sampling + recent-scan freshness gate: a non-sampled trade at a
+	// Sampling + recent-scan freshness gate: a non-sampled trade at a
 	// freshly-scanned market reuses the cache instead of re-scanning.
 	wanted, paired := h.impactScanWanted(ctx, cmd, waypointSymbol)
 	if !wanted {
@@ -775,9 +773,9 @@ func (h *CargoTransactionHandler) refreshMarketData(ctx context.Context, cmd *Ca
 		return
 	}
 
-	// A SAMPLED trade's scan is the "after" half of the sp-tl68 impact pair, so it
+	// A SAMPLED trade's scan is the "after" half of the impact pair, so it
 	// is exempt from the market-scan budget's freshness veto — arriving right after
-	// the "before" observation is the whole point of it (sp-ntgfj). It still draws
+	// the "before" observation is the whole point of it. It still draws
 	// a token and still faces the value bar. The stale-cache branch is left
 	// unstamped and is paced as an ordinary discretionary decision scan.
 	if paired {
@@ -799,8 +797,8 @@ func (h *CargoTransactionHandler) refreshMarketData(ctx context.Context, cmd *Ca
 }
 
 // impactScanWanted decides whether this trade's deliberate post-trade impact scan should
-// fire, under the ctx ScanPolicy (sp-v34b):
-//   - no policy stamped (every pre-sp-v34b / non-tour caller) → always scan (unchanged);
+// fire, under the ctx ScanPolicy:
+//   - no policy stamped (every non-tour caller) → always scan;
 //   - the trade is SAMPLED (per ImpactSampleRate) → scan, to record the impact pair the
 //     analyst refits the model from;
 //   - otherwise the recent-scan freshness gate governs: a cache scanned within MaxScanAge
@@ -819,7 +817,7 @@ func (h *CargoTransactionHandler) impactScanWanted(ctx context.Context, cmd *Car
 	if sampleImpact(key, policy.ImpactSampleRate) {
 		// The sampled branch, and the ONLY paired one: this scan exists to record
 		// dP/P against the cached "before" row, so its freshness is the precondition
-		// rather than a reason to skip (sp-ntgfj).
+		// rather than a reason to skip.
 		return true, true
 	}
 	return !h.marketFreshWithin(ctx, cmd.PlayerID, waypointSymbol, policy.MaxScanAge), false

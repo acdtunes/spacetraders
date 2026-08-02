@@ -1,6 +1,6 @@
 package persistence_test
 
-// COLUMN OWNERSHIP on sensing_slots (sp-wgjb7).
+// COLUMN OWNERSHIP on sensing_slots.
 //
 // Three writers touch this table, and until this contract existed they overlapped:
 // every one of them wrote nearly the whole row, so whichever committed last
@@ -54,7 +54,7 @@ var (
 // deterministic, which is better for a regression pin anyway.
 //
 // The transition itself is PARKED→WANTED on a MARKET slot — the exact edge the
-// filed slot reaper (sp-l3f3d) will drive, and the one the old rotation invariant
+// filed slot reaper will drive, and the one the old rotation invariant
 // (SPARE excluded from scanning) was the only thing preventing.
 func TestSensingLedger_TransitionSlot_LeavesTheScanColumnsAlone(t *testing.T) {
 	db := newSensingLedgerDB(t)
@@ -147,7 +147,7 @@ func TestSensingLedger_TransitionSlot_WritesNothingOutsideItsOwnedColumns(t *tes
 // A transition that asks for no field changes must write its STATE and nothing
 // else — not even a carry-back of the columns it is allowed to own.
 //
-// This is what makes the filed slot reaper (sp-l3f3d) safe by construction: it is
+// This is what makes the filed slot reaper safe by construction: it is
 // a state-only transition, so its UPDATE names one column, and no concurrent
 // writer of assigned_ship or purchase_yard can be reverted by it.
 func TestSensingLedger_TransitionSlot_StateOnlyWriteNamesOnlyState(t *testing.T) {
@@ -166,7 +166,7 @@ func TestSensingLedger_TransitionSlot_StateOnlyWriteNamesOnlyState(t *testing.T)
 
 	// Only the SET clause is examined. Column OWNERSHIP is about what a statement
 	// WRITES, and the WHERE clause names columns for a different reason entirely —
-	// slot_kind is in it because it is part of the row's address (sp-dpfp8), which
+	// slot_kind is in it because it is part of the row's address, which
 	// narrows what this write can touch rather than widening it. Asserting over the
 	// whole statement conflated the two and would fail on a predicate that made the
 	// write strictly safer.

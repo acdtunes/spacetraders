@@ -11,7 +11,7 @@ import (
 
 // newTestCoordinator builds an InMemoryStorageCoordinator with a tiny grace
 // period and small attempt budget so tests exercise the timeout->resync->park
-// backstop (sp-pafv) without slowing down the suite. Production always goes
+// backstop without slowing down the suite. Production always goes
 // through NewInMemoryStorageCoordinator's fixed defaults.
 func newTestCoordinator(gracePeriod time.Duration, maxAttempts int) *InMemoryStorageCoordinator {
 	return &InMemoryStorageCoordinator{

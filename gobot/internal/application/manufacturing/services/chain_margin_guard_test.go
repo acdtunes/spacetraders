@@ -11,14 +11,14 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 )
 
-// sp-2dv4 pre-spend chain-margin + absorption guard. These tests drive the four
+// Pre-spend chain-margin + absorption guard. These tests drive the four
 // acceptance scenarios directly against ChainMarginGuard.Evaluate: crushed feed
 // import bids (Guard 1 parks on negative margin), healthy margins (proceeds),
 // a tiny final sink (Guard 2 caps feed spend below what the sink can absorb),
 // and a market-read error during projection (fail closed). Evaluate itself does
 // no logging — the coordinator logs proj.ParkMessage() — so the tests assert on
 // the returned projection and its message text, which carries every number
-// because the container-log renderer drops metadata (sp-iqyq).
+// because the container-log renderer drops metadata.
 
 const (
 	guardSystem   = "X1-GUARD"
@@ -113,7 +113,7 @@ func (r *guardMarketRepo) GetMarketData(_ context.Context, wp string, _ int) (*m
 }
 
 // FindAllMarketsInSystem returns every waypoint this fake knows a market for, so the
-// trade-type-aware FindExportMarket (sp-9mkf) can iterate them. The GetMarketData
+// trade-type-aware FindExportMarket can iterate them. The GetMarketData
 // above is consistent with the sell/buy maps, so iterating yields the same source the
 // old FindCheapestMarketSelling path did.
 func (r *guardMarketRepo) FindAllMarketsInSystem(_ context.Context, _ string, _ int) ([]string, error) {

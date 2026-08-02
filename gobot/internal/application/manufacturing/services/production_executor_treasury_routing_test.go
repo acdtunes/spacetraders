@@ -1,7 +1,7 @@
 package services
 
 // production_executor_treasury_routing_test.go — BOTH factory money guards read treasury
-// through the injected reader, not through Get Agent (sp-45s6f).
+// through the injected reader, not through Get Agent.
 //
 // sp-muq66 routed the trade-side guards and left the factory ones calling Get Agent before
 // every input tranche: the per-buy spend floor (spendFloorBreached) and the cross-container

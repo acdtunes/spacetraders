@@ -6,7 +6,7 @@ package grpc
 // that already ships: `construction start` (StartConstructionPipeline), the construction-supply drain
 // (the construction executor), fleet dedication (AssignFleet), and the standing fleet-autosizer launch.
 //
-// EXECUTOR NOTE (sp-382j): construction pipelines are worked by the dedicated construction-supply drain
+// EXECUTOR NOTE: construction pipelines are worked by the dedicated construction-supply drain
 // (ContainerTypeConstructionCoordinator) — a thin drain on the shared ProductionExecutor engine that
 // re-polls READY DELIVER_TO_CONSTRUCTION tasks every tick. EnsureRunning launches it when down (a fresh
 // start immediately adopts the gate pipeline by re-polling), closing the post-sp-jav2 gap that left the
@@ -144,8 +144,9 @@ func (s *DaemonServer) readBootstrapGateSnapshot(ctx context.Context, homeSystem
 		// A finished gate is never the construction TARGET — but it IS the EXPANSION world signal
 		// (sp-feiy7): the live-API read means this era's home gate is genuinely built, so remember it.
 		// Reporting it (below, when no under-construction gate supersedes it) is what makes
-		// obs.ConstructionComplete MONOTONE — previously a built gate was skipped entirely, the snapshot
-		// read zero-valued, and a post-completion tick or restart re-derived COLDSTART (phase flap).
+		// obs.ConstructionComplete MONOTONE: forgetting a built gate rather than recording it here
+		// leaves the snapshot zero-valued, and a post-completion tick or restart re-derives
+		// COLDSTART (phase flap).
 		// Era-safe: FindByWaypoint is a live API read, so a prior era's gate can never appear here.
 		if site.IsComplete() {
 			builtSite = wp.Symbol
@@ -178,7 +179,7 @@ func (s *DaemonServer) readBootstrapGateSnapshot(ctx context.Context, homeSystem
 		return snap
 	}
 	// No under-construction gate, but the home gate IS built: report it as the terminal EXPANSION
-	// signal (sp-feiy7) so the derived phase stays monotone across post-completion ticks and restarts.
+	// signal so the derived phase stays monotone across post-completion ticks and restarts.
 	// An under-construction gate (returned above) always supersedes — a built gate is never a target.
 	if builtSite != "" {
 		snap.Site = builtSite
@@ -190,7 +191,7 @@ func (s *DaemonServer) readBootstrapGateSnapshot(ctx context.Context, homeSystem
 
 // constructionExecutorAdopted reports whether the gate pipeline is being worked. Adoption keys on
 // a RUNNING construction executor (a ConstructionCoordinator container), NOT the pipeline-status
-// string (sp-382j): the planner sets EXECUTING when it creates the pipeline, but that pipeline is
+// string: the planner sets EXECUTING when it creates the pipeline, but that pipeline is
 // inert until a drain is running — reading EXECUTING as adopted was the false-adoption bug that
 // silently skipped the launch. The drain re-polls its worklist every tick, so a running drain is
 // continuously adopting; keying on live percent instead would thrash-bounce a legitimately
@@ -215,7 +216,7 @@ func (c *bootstrapConstructionManager) Start(ctx context.Context, playerID int, 
 
 type bootstrapManufacturingController struct{ server *DaemonServer }
 
-// EnsureRunning launches the standing construction-supply drain (sp-382j) when it is down: a fresh
+// EnsureRunning launches the standing construction-supply drain when it is down: a fresh
 // start immediately begins re-polling READY DELIVER_TO_CONSTRUCTION tasks and adopting the gate
 // pipeline. This closes the post-sp-jav2 gap — the GATE phase now has a real, launchable executor
 // instead of a dead-end error. Idempotent: it launches only when no drain is already RUNNING/PENDING.
@@ -286,7 +287,7 @@ func (r *bootstrapGateSurplusReleaser) ReleaseSurplusGateWorkers(ctx context.Con
 }
 
 // ReleaseGateWorkersToTrade re-dedicates the requested manufacturing hulls to the TRADE fleet — the
-// EXPANSION hand-off's redirect (sp-hv4f6). It names a destination rather than clearing to the idle pool
+// EXPANSION hand-off's redirect. It names a destination rather than clearing to the idle pool
 // because at EXPANSION nothing would pick them up: the trade coordinator partitions on hulls ALREADY
 // tagged "trade", the fleet autosizer tags only hulls it BUYS, and the capacity reconciler that once
 // auto-pinned idle hulls was deleted (sp-y2ptq) — an un-dedicated gate hull would idle indefinitely
@@ -386,7 +387,7 @@ func (h *bootstrapHandoffLauncher) LaunchAutosizer(ctx context.Context, playerID
 }
 
 // LaunchContractScaler launches the standing dedicated contract auto-scaler during the cold-start
-// scaling window (unconditional, sp-1cbxz). Idempotent on its own container type — this running check IS
+// scaling window (unconditional). Idempotent on its own container type — this running check IS
 // where the once-only guarantee lives, so a per-tick re-call never double-launches a second ramp loop
 // fighting the first over the same treasury cushion. The coordinator then survives restarts via the
 // persisted-container recovery idiom (launched once, runs forever).
@@ -419,7 +420,7 @@ func (h *bootstrapHandoffLauncher) LaunchTradeFleetCoordinator(ctx context.Conte
 	return err
 }
 
-// LaunchStandingCoordinators is a no-op since the factory-ops retirement (sp-hoj8u). It formerly
+// LaunchStandingCoordinators is a no-op since the factory-ops retirement. It formerly
 // launched the siting + worker-rebalancer coordinators at the GATE hand-off; both were retired with
 // the factories, so there is nothing left to launch here. The method is retained (returning nil) so
 // the bootstrap GATE hand-off's control flow and its port contract are unchanged; the fleet-autosizer

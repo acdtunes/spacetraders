@@ -1,7 +1,7 @@
 package commands
 
 // Tests that the shipyard search inside purchase_ship draws on the fleet's ONE
-// shipyard-read budget instead of reaching the API itself (sp-mb0er).
+// shipyard-read budget instead of reaching the API itself.
 //
 // This search used to issue one live GET /shipyard PER SHIPYARD IN THE SYSTEM,
 // uncached and unmetered, every time a hull had to be discovered — one of the four

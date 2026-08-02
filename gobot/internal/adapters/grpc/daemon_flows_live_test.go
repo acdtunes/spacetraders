@@ -1,6 +1,6 @@
 // gobot/internal/adapters/grpc/daemon_flows_live_test.go
 //
-// sp-2uvec: GET /api/flows reported 5 flows while `spacetraders container list`
+// GET /api/flows reported 5 flows while `spacetraders container list`
 // reported 13 RUNNING tour containers. Both now read the same runner map, so they
 // cannot disagree — and a hull that joined mid-era or survived a daemon restart
 // can no longer fall out of the feed while it is between publish points.

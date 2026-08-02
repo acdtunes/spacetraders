@@ -6,7 +6,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
 )
 
-// sp-192k4 cold-start hull-routing: cold-start light-hull acquisitions are routed by ORDER — #1 → the contract
+// Cold-start hull-routing: cold-start light-hull acquisitions are routed by ORDER — #1 → the contract
 // fleet, #2 → the TRADE fleet (the trade-seed, held until the first contract hull exists), #3… → contract
 // again. The trade hull EXISTING (obs.TradeHullCount) is the durable, observable "seeded" signal — no stored
 // flag. The contract/trade coordinators + the scaler stay phase-BLIND; all the phase logic lives in the

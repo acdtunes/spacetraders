@@ -1,7 +1,7 @@
 package queries
 
 // Tests for the ONE property this query exists to preserve under the shipyard-read
-// budget (sp-mb0er): its result is consumed by fail-closed money guards — the
+// budget: its result is consumed by fail-closed money guards — the
 // autosizer's price guard, the bootstrap capital gate, the probe-purchase treasury
 // floor and purchase_ship's own pre-buy verification — so it must NEVER be
 // answered from the persisted store (RULINGS #4).

@@ -33,7 +33,7 @@ type assignStubShipRepo struct {
 
 	// ReleaseContainerClaim behavior + capture (the `fleet unassign`
 	// work-claim break). releaseClaimReleased is the container id the repo reports
-	// it broke the claim from, or "" for a no-op (sp-h8mbb).
+	// it broke the claim from, or "" for a no-op.
 	releaseClaimReleased string
 	releaseClaimErr      error
 	releaseClaimSymbol   string

@@ -18,7 +18,7 @@ import (
 var ErrSlotStateConflict = errors.New("sensing slot is not in the expected state")
 
 // SensingLedgerRepository is the durable placement ledger of the parked-probe
-// sensing model (sp-k6v8z): which systems have been screened (sensing_systems)
+// sensing model: which systems have been screened (sensing_systems)
 // and which waypoints we want a probe parked at, with how far along each
 // placement is (sensing_slots). Everything the coordinator does is re-derivable
 // from these two tables after a restart (RULINGS #2).
@@ -82,12 +82,12 @@ var sensingSystemUpdateColumns = []string{
 //
 // The scan path is the only writer of the two scan clocks, and it writes them
 // through those two methods ONLY — which is what keeps "the rotation took a
-// turn" and "market data was written" independently answerable (sp-zml2u).
+// turn" and "market data was written" independently answerable.
 // MarkScanned names last_scan_attempt_at as well because a completed scan IS a
 // turn; a scan path that advanced only the data stamp would leave a
 // never-declined slot pacing off a NULL attempt clock.
 //
-// NOBODY owns slot_kind: it is part of the primary key (sp-dpfp8) and therefore
+// NOBODY owns slot_kind: it is part of the primary key and therefore
 // immutable. A row's kind is decided when it is inserted and can only change by
 // deleting the row, which is why every writer that names a waypoint now names a
 // kind alongside it — the pair is the address, and half an address addresses an
@@ -104,7 +104,7 @@ var sensingSystemUpdateColumns = []string{
 // only scanned PARKED MARKET/YARD slots and the only PARKED→X transition skipped
 // non-SPARE kinds, so the two write sets never met on a ROW. That held only as
 // long as nobody transitioned a parked market — which the filed slot reaper
-// (sp-l3f3d) does by design. Ownership is now per-COLUMN, so the reaper needs no
+// does by design. Ownership is now per-COLUMN, so the reaper needs no
 // special-casing and no future writer can re-open the window by accident.
 
 // sensingSlotMetadataUpdateColumns are what a SCREEN re-declaration refreshes on
@@ -133,13 +133,13 @@ var sensingSlotMetadataUpdateColumns = []string{
 // left stamped with a dead era would carry a live hull that no planner can see
 // while CountOwnedProbes (era-agnostic) still counts it.
 //
-// slot_kind LEFT THIS SET when it joined the primary key (sp-dpfp8). It is no
-// longer assignable in any meaningful sense — a conflict only fires on a row
-// whose kind already equals the incoming one — and keeping it would advertise a
-// capability the key has removed. The capability it used to provide was
-// converting a MARKET placement into a SPARE in place, which is exactly the
-// silent eviction that took working market placements out of the scan rotation
-// (see the occupancy guard in probe_sensing_adoption.go). A kind change is now a
+// slot_kind IS DELIBERATELY ABSENT: it is part of the primary key, so it is not
+// assignable in any meaningful sense — a conflict only fires on a row
+// whose kind already equals the incoming one — and naming it would advertise a
+// capability the key has removed. That capability is converting a MARKET
+// placement into a SPARE in place, which is exactly the
+// silent eviction that takes working market placements out of the scan rotation
+// (see the occupancy guard in probe_sensing_adoption.go). A kind change is a
 // different ROW, which is the honest representation: the yard is still scanning
 // AND is now staging a seed.
 var sensingSlotSpareUpdateColumns = []string{
@@ -286,15 +286,14 @@ func (r *SensingLedgerRepository) StampCatalogSynced(ctx context.Context, player
 // mission, and leaving the row behind would have the buy queue re-task a hull
 // that has already flown away.
 //
-// THE KIND IS A MONEY GUARD, not a filter for tidiness (sp-dpfp8, RULINGS #4).
+// THE KIND IS A MONEY GUARD, not a filter for tidiness (RULINGS #4).
 // A waypoint may now carry a MARKET row and a SPARE row at once, and the caller
 // is releasing exactly one of them. Deleting by waypoint alone would take BOTH —
 // so claiming a spare staged at a yard would also delete the MARKET placement of
 // the probe parked there scanning. That probe is named by the row the delete just
 // destroyed, so it vanishes from CountOwnedProbes while still flying: the cap
 // under-reads and authorises buying a replacement for a hull we already own. That
-// is the precise failure the narrow key used to make impossible for free, and
-// naming the kind is what replaces it.
+// is the precise failure naming the kind prevents.
 //
 // A missing row is NOT an error — the delete is idempotent by design, because
 // its caller has already stamped the errand and cannot usefully unwind.
@@ -335,18 +334,18 @@ func (r *SensingLedgerRepository) UpsertSpareSlot(ctx context.Context, m Sensing
 // SAME KIND updates the row in place — one slot per waypoint PER KIND is a
 // structural guarantee, not a convention.
 //
-// THE KEY AND THE CONFLICT SETS ARE ORTHOGONAL, which is what let the key widen
-// (sp-dpfp8) without disturbing the column-ownership split (sp-wgjb7). The key
+// THE KEY AND THE CONFLICT SETS ARE ORTHOGONAL, which is what keeps the key's width
+// independent of the column-ownership split. The key
 // decides WHICH ROW a write lands on; the conflict set decides WHICH COLUMNS it
 // may assert once it lands. Both callers share this one target and keep their own
 // disjoint set, so neither can reach a column the other owns.
 //
-// WHAT THE WIDER KEY CHANGES FOR CALLERS: a kind is now part of a row's identity
-// and therefore IMMUTABLE. UpsertSpareSlot used to be able to convert a MARKET
-// placement into a SPARE in place, through slot_kind in its conflict set; it now
-// INSERTS a separate SPARE row and leaves the MARKET row scanning. That is the
+// WHAT THE KIND IN THE KEY MEANS FOR CALLERS: a kind is part of a row's identity
+// and therefore IMMUTABLE. UpsertSpareSlot cannot convert a MARKET placement into a
+// SPARE in place; it INSERTS a separate SPARE row and leaves the MARKET row
+// scanning. That is the
 // intended behaviour — a yard that is scanning can also be staging — and it is
-// strictly safer than the rewrite it replaces, which silently evicted a working
+// strictly safer than an in-place rewrite, which silently evicts a working
 // market placement from the scan rotation.
 //
 // It is unexported ON PURPOSE: the conflict set is the whole safety property
@@ -398,7 +397,7 @@ func (r *SensingLedgerRepository) SlotsByState(ctx context.Context, playerID int
 // behind that head is never read at all. Measured live before this existed: 266
 // BOUGHT + 52 IN_TRANSIT slots, ~40 actions' worth of ticks, zero dispatches, and
 // a slot 22.5 hours old that had never been attempted once because its waypoint
-// sorted behind a hundred others that were failing every tick (sp-cwnwb).
+// sorted behind a hundred others that were failing every tick.
 //
 // The screening sweep hit the identical defect and fixed it the identical way —
 // see the screened_at rotation in run_probe_sensing_coordinator.go. This is that
@@ -491,23 +490,23 @@ func (r *SensingLedgerRepository) SlotsBySystem(ctx context.Context, playerID in
 // purchase_yard. Anything else mutate sets on its copy is ignored — the copy is a
 // GUARD, never a source for the write.
 //
-// That is the fix for a real lost update, not a tidiness rule. The write used to
-// re-assert every column from the row loaded at the top of this transaction, so a
+// That is a lost-update guard, not a tidiness rule. A write that re-asserted every
+// column from the row loaded at the top of this transaction would revert a
 // MarkScanned committing in between — which the scan pacer can do at any instant,
-// from its own goroutine — was reverted by a transition that had nothing to do
-// with scanning. Naming only the owned columns makes the two writers disjoint by
+// from its own goroutine — even though a transition has nothing to do with
+// scanning. Naming only the owned columns makes the two writers disjoint by
 // CONSTRUCTION, whatever rows they happen to meet on.
 //
 // The owned columns are narrowed further still: assigned_ship and purchase_yard
 // are named only when mutate actually CHANGED them. A transition that just moves
 // the state machine therefore writes one column, and cannot revert a hull another
-// writer recorded while it was in flight. The filed slot reaper (sp-l3f3d) is
+// writer recorded while it was in flight. The filed slot reaper is
 // exactly such a state-only transition, and is safe here without special-casing.
 //
 // Both statements run in one transaction and BOTH carry the state guard, so a
 // concurrent transition committing between the load and the update still loses
 // the race (the UPDATE matches zero rows) rather than overwriting.
-// THE KIND IS PART OF THE ADDRESS (sp-dpfp8). A waypoint may now carry a MARKET
+// THE KIND IS PART OF THE ADDRESS. A waypoint may now carry a MARKET
 // row and a SPARE row at once, and they are frequently in the SAME state — a yard
 // that is both a whitelisted market awaiting a probe and a staging post awaiting
 // a seed holds two WANTED rows. Matched on the waypoint and state alone, the load
@@ -654,7 +653,7 @@ func (r *SensingLedgerRepository) ResetVerdictsToPending(ctx context.Context, pl
 // assignment are untouched. A missing slot is an error, never an upsert: a
 // phantom row would later be read back as a real placement and dispatched to.
 //
-// Scoped to the scanning row's KIND (sp-dpfp8). The scan is a fact about one
+// Scoped to the scanning row's KIND. The scan is a fact about one
 // placement — the probe standing at that waypoint watching that market — and a
 // waypoint may now also carry a SPARE row for a seed staged there, which has
 // scanned nothing. Stamping by waypoint alone would mark both, backdating the

@@ -3,7 +3,7 @@
 // coverage gaps, buys probes (RULINGS #6), and declares posts/sweeps; the engine's
 // scout-post reconciler then mans them. This coordinator does the MEASURING, BUYING,
 // and DECLARING — while ALL movement and manning stay with the existing machinery
-// (the scout-post reconciler, the sp-s232 jump relays, and nn0y virgin discovery).
+// (the scout-post reconciler, the jump relays, and nn0y virgin discovery).
 //
 // It NEVER moves a probe and NEVER claims a hull (RULINGS #7). Its only two actions
 // per cycle are:
@@ -76,9 +76,9 @@ const (
 	// (sp-tlekc §2D — no longer operator knobs). hopPenaltyCredits is the demand-proximal
 	// price/distance tradeoff: the credits of price premium accepted per gate-hop closer to the
 	// target post, so a nearer-but-pricier yard beats a far-cheaper one iff the per-hop saving
-	// clears it (sp-hej4). siblingPriceMarginCredits is the supply-depletion / load-balance margin:
+	// clears it. siblingPriceMarginCredits is the supply-depletion / load-balance margin:
 	// once the proximal yard's scanned price exceeds the cheapest reachable sibling by more than
-	// this, the buy spreads to the sibling instead of spiraling one market to 4x (sp-iqv2). They
+	// this, the buy spreads to the sibling instead of spiraling one market to 4x. They
 	// mirror the freshness sizer's probebuy.Default* values, keeping the two coordinators' sourcing
 	// identical; the sourcing MECHANISM is unchanged, only the operator KNOBS were removed.
 	hopPenaltyCredits         = probebuy.DefaultHopPenaltyCredits
@@ -96,7 +96,7 @@ const (
 	maxProbePrice = 100000
 
 	// defaultReservedFreshnessFloor is the sp-iopd SYMMETRIC freshness floor: N idle probes the
-	// frontier treats as UNAVAILABLE (reserved for the market-freshness sizer, sp-orgp). The frontier
+	// frontier treats as UNAVAILABLE (reserved for the market-freshness sizer). The frontier
 	// discounts them from the idle supply it counts toward covering its OWN coverage demand, so an
 	// aggressive frontier GROWS the pool with a guarded buy rather than cannibalizing scanning below
 	// a relaxed baseline. 0 (the default) is the floor OFF. It is the ONE retained expert guard —
@@ -128,7 +128,7 @@ type TreasuryReader interface {
 // error fails closed.
 type ProbePurchaser interface {
 	// QuoteProbe returns the price of the demand-proximal reachable probe and the yard that
-	// sells it (sp-hej4: the yard nearest target, or the home yard when target is empty). An
+	// sells it (the yard nearest target, or the home yard when target is empty). An
 	// error (no yard, unpriceable) fails the purchase closed.
 	QuoteProbe(ctx context.Context, playerID shared.PlayerID, target probebuy.ProbeTarget) (price int, yard string, err error)
 	// BuyProbe purchases one probe at the target-selected yard, refusing any fill whose price
@@ -141,7 +141,7 @@ type ProbePurchaser interface {
 // deep target — so the coordinator can never price a probe and fleet growth halts forever once the
 // fleet drifts from yards. On that stall this positioner LOCATES the nearest reachable scanned
 // probe-yard from an eligible hull's OWN system and RELAYS that hull there, so the NEXT tick's
-// presence-gated live PriceCheck reads and the in-place buy clears. It mirrors the sp-hh0h home-yard
+// presence-gated live PriceCheck reads and the in-place buy clears. It mirrors the home-yard
 // ShipyardScanner idiom for the frontier. It NEVER buys and NEVER weakens a money guard (RULINGS #4)
 // — positioning only makes the price READABLE; if pricing still fails (e.g. over the ceiling) the buy
 // stays fail-closed. It NEVER poaches a dedicated hull (RULINGS #7 — only an idle, undedicated,
@@ -167,7 +167,7 @@ type ExpansionCandidate struct {
 	// as distinct from Charted (merely gate-reachable). market_data rows exist ONLY for
 	// systems that HAVE a market, so KnownMarkets==0 alone cannot tell a genuinely-barren
 	// system (swept, no marketplace anywhere) from a never-scanned one (markets simply
-	// undiscovered). Scanned supplies that missing distinction (sp-gb7h): a Scanned system
+	// undiscovered). Scanned supplies that missing distinction: a Scanned system
 	// with KnownMarkets==0 is genuinely marketless and buildExpansionQueue DROPS it (its
 	// markets were looked for and none exist — re-scouting it every cycle is waste); a
 	// !Scanned system stays a scout target. The scanner derives it from the waypoint
@@ -175,7 +175,7 @@ type ExpansionCandidate struct {
 	Scanned bool
 
 	// BranchRoot is the hop-1 ancestor system on the BFS path from the anchor set to this
-	// candidate — its CORRIDOR identity on the jump-gate graph (sp-rjgr). A hop-1 system is
+	// candidate — its CORRIDOR identity on the jump-gate graph. A hop-1 system is
 	// its own root; a deeper system inherits the hop-1 system it was first reached through;
 	// an anchor (hop 0) has none (""). It is the depth slice's "bearing": two deep virgins
 	// with DIFFERENT BranchRoots lie down different corridors, so fanning pathfinders across
@@ -253,7 +253,7 @@ type RunFrontierExpansionCoordinatorCommand struct {
 	ReachMode int
 }
 
-// ProbeReuseTarget is the reuse-relay request (sp-6vep): relay the nearest EXISTING probe to
+// ProbeReuseTarget is the reuse-relay request: relay the nearest EXISTING probe to
 // System, bounded by MaxHops (reach measured from the probe, not the buyer home), borrowing only
 // off a system whose trade-value is below ValueCeiling. It mirrors probebuy.ProbeTarget — the
 // caller bundles its tunables into the target so the port stays a single narrow call.
@@ -264,7 +264,7 @@ type ProbeReuseTarget struct {
 }
 
 // ProbeReuseRelayer relays an EXISTING probe from the charted frontier edge to a target virgin,
-// the reuse-before-buy path that fixes the deep-frontier deadlock (sp-6vep): instead of buying a
+// the reuse-before-buy path that fixes the deep-frontier deadlock: instead of buying a
 // probe at an unreachable deep yard and relaying a BUYER there, it hops a probe already parked at
 // the edge (~1 gate) onto the target. Relay-reach is anchored to the nearest usable probe, so
 // "unreachable within 5 jumps of the buyer home" becomes "one hop from the edge". A nil relayer
@@ -278,7 +278,7 @@ type ProbeReuseRelayer interface {
 	RelayNearestProbe(ctx context.Context, playerID shared.PlayerID, target ProbeReuseTarget) (shipSymbol string, ok bool, err error)
 }
 
-// FrontierNeighborReader answers the snowball walk (sp-6vep): the uncharted gate-neighbors of a
+// FrontierNeighborReader answers the snowball walk: the uncharted gate-neighbors of a
 // system the frontier has CHARTED. A still-virgin system has no persisted gate edges, so it yields
 // none — the reader self-gates the walk to genuinely-charted systems. A nil reader (unwired, or
 // snowball disarmed) makes the walk a no-op.
@@ -320,7 +320,7 @@ type RunFrontierExpansionCoordinatorHandler struct {
 	// byte-identical (never buys, never poaches — RULINGS #4/#7).
 	probePositioner ProbeBuyerPositioner
 
-	// darkScanner (sp-jide) enumerates the FULL charted-but-unscanned MARKET backlog the scan_only
+	// darkScanner enumerates the FULL charted-but-unscanned MARKET backlog the scan_only
 	// mode sweeps — every system with MARKETPLACE waypoints and zero player market_data, unbounded
 	// by gate hops (unlike scanner's expansion-frontier BFS). Optional-injection via
 	// SetDarkMarketScanner; nil (or scan_only=0) leaves the coordinator byte-identical to pre-sp-jide.
@@ -330,7 +330,7 @@ type RunFrontierExpansionCoordinatorHandler struct {
 	// (sp-rjgr §4). Nil ⇒ the split runs on its baseline fraction with no objective shift.
 	objective DepthObjectiveReader
 
-	// captainEvents emits the coordinator error-loop event (sp-e2l1, rollout sp-6wxq)
+	// captainEvents emits the coordinator error-loop event (rollout sp-6wxq)
 	// when a reconcile pass fails with the identical error for DefaultStreakThreshold
 	// consecutive ticks — the silent-stuck class becomes an interrupt-visible captain
 	// event instead of ERROR lines nothing reads. Optional-injection via
@@ -343,7 +343,7 @@ type RunFrontierExpansionCoordinatorHandler struct {
 	// launch-frozen behavior byte-identical.
 	liveConfig liveconfig.Reader
 
-	// Off-gate explorer demand signal (sp-k645, slice B). offGateSelector ranks the warp
+	// Off-gate explorer demand signal (slice B). offGateSelector ranks the warp
 	// target; shipyardCoverage guards trigger (b); offGate holds the cross-tick empty-queue
 	// streak + the latest per-player signal slice C reads via OffGateDemand. All optional:
 	// a nil selector makes the whole hook a no-op (byte-identical to pre-slice-B). Wired and
@@ -352,7 +352,7 @@ type RunFrontierExpansionCoordinatorHandler struct {
 	shipyardCoverage ShipyardCoverageReader
 	offGate          *offGateDemandTracker
 
-	// Explorer buy+dispatch seam (sp-a3yn, slice C). offGateSink mirrors each tick's off-gate signal
+	// Explorer buy+dispatch seam (slice C). offGateSink mirrors each tick's off-gate signal
 	// out to the fleet autosizer's explorer demand provider (the cross-coordinator BRIDGE — the buy
 	// side); explorerDispatch warps a bought+dedicated idle explorer to the selected off-gate target
 	// via slice-A ExecuteWarpRoute (the dispatch side). BOTH optional-injection: nil sink / nil
@@ -361,7 +361,7 @@ type RunFrontierExpansionCoordinatorHandler struct {
 	offGateSink      OffGateDemandSink
 	explorerDispatch ExplorerDispatchPort
 
-	// sp-6vep reuse-before-buy. reuseRelayer hops an EXISTING edge probe onto a target virgin
+	// Reuse-before-buy. reuseRelayer hops an EXISTING edge probe onto a target virgin
 	// (the deadlock fix); neighborReader answers the snowball walk. BOTH optional-injection: a nil
 	// relayer/reader — or the DEFAULT-SAFE knobs (reuse/snowball OFF) — makes their hooks no-ops, so
 	// the coordinator is byte-identical to the buy-only path until armed next era. Wired in main.go.
@@ -417,7 +417,7 @@ func (h *RunFrontierExpansionCoordinatorHandler) SetExpansionScanner(s Expansion
 }
 
 // SetEventRecorder wires the captain outbox the coordinator emits its error-loop
-// event through (sp-6wxq). Optional-injection like the other setters: without it
+// event through. Optional-injection like the other setters: without it
 // the streak monitor still tracks and logs, it just cannot escalate to a captain
 // event (nil-safe, see health.RecordErrorLoop).
 func (h *RunFrontierExpansionCoordinatorHandler) SetEventRecorder(rec captain.EventRecorder) {
@@ -431,14 +431,14 @@ func (h *RunFrontierExpansionCoordinatorHandler) SetLiveConfigReader(r liveconfi
 	h.liveConfig = r
 }
 
-// SetProbeReuseRelayer wires the reuse-before-buy edge-probe relayer (sp-6vep). Leaving it unset
+// SetProbeReuseRelayer wires the reuse-before-buy edge-probe relayer. Leaving it unset
 // — or leaving probe_reuse_enabled at its default 0 — keeps the coordinator on the buy-only path,
 // byte-identical to today.
 func (h *RunFrontierExpansionCoordinatorHandler) SetProbeReuseRelayer(r ProbeReuseRelayer) {
 	h.reuseRelayer = r
 }
 
-// SetFrontierNeighborReader wires the snowball walk's uncharted-neighbor source (sp-6vep). Leaving
+// SetFrontierNeighborReader wires the snowball walk's uncharted-neighbor source. Leaving
 // it unset — or leaving snowball_neighbors at its default 0 — makes the walk a no-op.
 func (h *RunFrontierExpansionCoordinatorHandler) SetFrontierNeighborReader(r FrontierNeighborReader) {
 	h.neighborReader = r
@@ -466,7 +466,7 @@ func (h *RunFrontierExpansionCoordinatorHandler) Handle(ctx context.Context, req
 	})
 
 	// errMon makes a reconcile pass that fails with the identical error every tick
-	// observable (sp-e2l1): once the streak crosses DefaultStreakThreshold it emits a
+	// observable: once the streak crosses DefaultStreakThreshold it emits a
 	// captain event instead of just another ERROR line. One per Handle invocation so
 	// the streak persists across ticks; noteReconcile keeps ReconcileOnce — the tested
 	// unit — unchanged.
@@ -495,7 +495,7 @@ func (h *RunFrontierExpansionCoordinatorHandler) Handle(ctx context.Context, req
 	}
 }
 
-// FrontierTunableDefaults maps every LIVE-tunable frontier-expansion knob (sp-0z7f) to
+// FrontierTunableDefaults maps every LIVE-tunable frontier-expansion knob to
 // its documented default — the value that applies when neither the live container
 // config nor the launch command carries a positive one. The daemon's tune bounds
 // registry reads THIS map, so the defaults-of-record stay in this file next to the
@@ -692,12 +692,12 @@ func (h *RunFrontierExpansionCoordinatorHandler) reconcile(ctx context.Context, 
 		return fmt.Errorf("failed to list scout posts: %w", err)
 	}
 
-	// NO-TIMEOUT DEADLOCK FIX (sp-6vep): reap wedged in-flight posts BEFORE measuring demand, so a
+	// NO-TIMEOUT DEADLOCK FIX: reap wedged in-flight posts BEFORE measuring demand, so a
 	// freed slot opens declaration capacity THIS cycle rather than staying jammed at the cap. It is
 	// independent of reuse and a no-op on the default (timeout 0). Survivors drive the rest of the tick.
 	posts = h.abandonStalePosts(ctx, cmd, cfg, posts)
 
-	// sp-pvw3 DISCOVERY/SCAN SPLIT (replacing the sp-jide binary scan_only): each cycle declares BOTH
+	// sp-pvw3 DISCOVERY/SCAN SPLIT (replacing the binary scan_only): each cycle declares BOTH
 	// discovery posts (chart virgin) AND scan posts (drain the dark-market backlog), dividing the
 	// per-cycle post-declaration capacity by discovery_share with GRACEFUL DEGRADATION. The plan
 	// consults each side's backlog LAZILY, so a pure-discovery cycle (share 100) never touches the
@@ -720,12 +720,12 @@ func (h *RunFrontierExpansionCoordinatorHandler) reconcile(ctx context.Context, 
 
 	declared := ""
 	if !pureScan {
-		// OFF-GATE DEMAND (sp-k645) + EXPLORER DISPATCH (sp-a3yn): discovery-side signals. They run
+		// OFF-GATE DEMAND + EXPLORER DISPATCH: discovery-side signals. They run
 		// whenever discovery is not fully suppressed — including a dry cycle, so queue exhaustion is
 		// still detected — over the plan's already-ranked queue (no re-scan).
 		h.evaluateOffGateDemand(ctx, cmd, cfg, len(plan.discoveryQueue))
 		h.dispatchOffGateExplorer(ctx, cmd)
-		// SNOWBALL (sp-6vep): walk outward from CHARTED frontier posts — a relayed probe charts a
+		// SNOWBALL: walk outward from CHARTED frontier posts — a relayed probe charts a
 		// virgin S, then S's uncharted neighbors become the next targets. Additive to the breadth
 		// head and bounded by the SAME in-flight cap; its declarations count toward this cycle's
 		// demand. Runs on any discovery-capable (non-pure-scan) cycle, so the walk continues even
@@ -741,14 +741,14 @@ func (h *RunFrontierExpansionCoordinatorHandler) reconcile(ctx context.Context, 
 		if declared != "" {
 			openSlots++ // the fresh post adds one unmanned slot to this cycle's demand
 		}
-		// DEPTH slice (sp-rjgr): pathfinders punching OUTWARD along distinct corridors, additive to
+		// DEPTH slice: pathfinders punching OUTWARD along distinct corridors, additive to
 		// the breadth head and bounded by the SAME in-flight cap. Its would-be posts add to demand.
 		openSlots += h.dispatchDepthPathfinders(ctx, cmd, cfg, posts, declared, frontierPosts)
 	}
 
 	// PURCHASE: buy one probe iff the fleet is short of open manning demand and every guard passes —
 	// never in a pure-scan cycle (draining the backlog spends nothing, == old scan_only=1). The
-	// demand-proximal target (sp-hej4) is the just-declared post, else the first pre-existing open slot.
+	// demand-proximal target is the just-declared post, else the first pre-existing open slot.
 	purchaseReason := "no purchase: pure backlog-scan cycle spends nothing (== deprecated scan_only=1)"
 	if !pureScan {
 		target := declared
@@ -786,7 +786,7 @@ func (h *RunFrontierExpansionCoordinatorHandler) reconcile(ctx context.Context, 
 	return nil
 }
 
-// abandonStalePosts is the NO-TIMEOUT deadlock fix (sp-6vep): it REMOVES every unmanned, relay-free
+// abandonStalePosts is the NO-TIMEOUT deadlock fix: it REMOVES every unmanned, relay-free
 // in-flight sweep-once post older than cfg.PostInflightTimeout, returning the survivors. Today
 // nothing reaps a post the reconciler cannot man — at the deep edge no yard/buyer is reachable — so
 // the in-flight cap jams permanently at 5/5 and discovery stalls at 0. Reaping the wedged posts frees
@@ -903,7 +903,7 @@ func (h *RunFrontierExpansionCoordinatorHandler) declareBreadthHead(
 	return head.SystemSymbol
 }
 
-// snowballFromChartedPosts is the walk-outward (sp-6vep): after a relayed probe CHARTS a frontier
+// snowballFromChartedPosts is the walk-outward: after a relayed probe CHARTS a frontier
 // virgin S, S's uncharted gate-neighbors become the next targets, so ONE probe walks the frontier
 // outward instead of the ranked queue backfilling inward. For each CHARTED frontier (sweep-once)
 // post it declares sweep-once posts for that system's uncharted neighbors, deduped against covered
@@ -978,7 +978,7 @@ func (h *RunFrontierExpansionCoordinatorHandler) decideAndMaybeBuy(
 	targetSystem string,
 ) string {
 	logger := common.LoggerFromContext(ctx)
-	// The demand-proximal yard hint handed to the quote+buy (sp-hej4). SELECTION only — every
+	// The demand-proximal yard hint handed to the quote+buy. SELECTION only — every
 	// guard below is unchanged and gates the buy on the quoted price of the selected yard.
 	target := probebuy.ProbeTarget{System: targetSystem, HopPenaltyCredits: cfg.ProximalYardHopPenalty, SiblingPriceMarginCredits: cfg.ProbeSiblingPriceMargin, MaxProbePriceCredits: cfg.MaxProbePrice, ClaimOwnerContainerID: cmd.ContainerID}
 
@@ -990,7 +990,7 @@ func (h *RunFrontierExpansionCoordinatorHandler) decideAndMaybeBuy(
 	}
 
 	// SYMMETRIC FRESHNESS FLOOR (sp-iopd): the frontier DISCOUNTS reserved_freshness_floor idle
-	// probes as reserved for the freshness sizer (sp-orgp) — it will not count them toward covering
+	// probes as reserved for the freshness sizer — it will not count them toward covering
 	// its OWN coverage demand, so an aggressive frontier GROWS the pool with a guarded buy rather
 	// than cannibalizing scanning below a relaxed baseline. floor 0 (default) leaves
 	// effectiveAvailable == availableCount, i.e. exact pre-sp-iopd behavior. The reconciler still
@@ -1007,7 +1007,7 @@ func (h *RunFrontierExpansionCoordinatorHandler) decideAndMaybeBuy(
 		return fmt.Sprintf("no purchase: supply covers demand (%d idle − %d reserved-freshness = %d >= %d open slots)", availableCount, cfg.ReservedFreshnessFloor, effectiveAvailable, openSlots)
 	}
 
-	// REUSE-BEFORE-BUY (sp-6vep): the fleet is short of open manning demand. Before GROWING it with
+	// REUSE-BEFORE-BUY: the fleet is short of open manning demand. Before GROWING it with
 	// a buy — which deadlocks at the deep edge where no yard/buyer is reachable ("no jump-gate route
 	// from VB74 to BK75 within 5 jumps") — try to RELAY an EXISTING probe from the charted frontier
 	// edge onto the target, anchoring reach to the nearest usable probe (~1 hop) rather than the far
@@ -1163,7 +1163,7 @@ func (h *RunFrontierExpansionCoordinatorHandler) positionProbeBuyerOnStall(ctx c
 	return "no purchase: probe unpriceable — positioned a buyer hull at a probe-selling yard, pricing resumes next tick (sp-255rz)"
 }
 
-// maybeReuseExistingProbe runs the reuse-before-buy relay (sp-6vep) for targetSystem. It returns
+// maybeReuseExistingProbe runs the reuse-before-buy relay for targetSystem. It returns
 // (reason, done): done=true ends the staffing decision this cycle (a committed relay — 0 purchases
 // — or the dry-run intent); done=false tells decideAndMaybeBuy to fall through to the unchanged buy
 // path (no reusable probe within reach / under the ceiling, or a relay error — never buy blind on a
@@ -1239,7 +1239,7 @@ func (h *RunFrontierExpansionCoordinatorHandler) buildExpansionQueue(
 			continue // already has a declared post
 		}
 		if c.Hops == 0 {
-			// sp-njwy: an occupied/anchor system (hop 0 — the HQ or a system the fleet
+			// An occupied/anchor system (hop 0 — the HQ or a system the fleet
 			// already sits in) is NOT a frontier. Auto-declaring it as a sweep-once post
 			// spins up a LOCAL in-system sweep tour that absorbs every freshly-bought probe
 			// before the scout reconciler can relay it to a genuinely virgin CROSS-SYSTEM
@@ -1250,7 +1250,7 @@ func (h *RunFrontierExpansionCoordinatorHandler) buildExpansionQueue(
 			continue
 		}
 		if c.Scanned && c.KnownMarkets == 0 {
-			// sp-gb7h: a scanned-and-genuinely-marketless system is unserviceable — DROP it.
+			// A scanned-and-genuinely-marketless system is unserviceable — DROP it.
 			// Its full waypoint set WAS swept (Scanned) and holds no marketplace anywhere
 			// (KnownMarkets==0), so its markets were looked for and none exist. Re-declaring
 			// it only re-scouts a barren system every cycle (declare → sweep-once → no market

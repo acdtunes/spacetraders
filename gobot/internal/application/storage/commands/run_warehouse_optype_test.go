@@ -18,7 +18,7 @@ import (
 // warehouseOpCtxMediator records the operation_type carried on the ctx of the parking
 // NavigateRouteCommand the warehouse fires to move its hull to the home waypoint. That
 // hop's refuels inherit its ctx, so the ctx decides whether they attribute to the
-// warehouse operation or fall through to operation_type='manual' (sp-zc8i). It returns
+// warehouse operation or fall through to operation_type='manual'. It returns
 // the arrived hull (parked at the home waypoint) so setup's post-navigate positioning
 // check passes and reaches registration.
 type warehouseOpCtxMediator struct {
@@ -52,7 +52,7 @@ func (m *warehouseOpCtxMediator) Send(ctx context.Context, request common.Reques
 func (m *warehouseOpCtxMediator) Register(reflect.Type, common.RequestHandler) error { return nil }
 func (m *warehouseOpCtxMediator) RegisterMiddleware(common.Middleware)               {}
 
-// The context-less warehouse parking hop (sp-zc8i). When its dedicated hull is parked
+// The context-less warehouse parking hop. When its dedicated hull is parked
 // away from the home waypoint, the warehouse navigates it there on a bare ctx, so that
 // hop's refuels landed operation_type='manual'. This asserts at the NavigateRouteCommand
 // boundary that the parking hop — and thus the refuels it drives — runs under

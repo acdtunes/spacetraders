@@ -18,7 +18,7 @@ import (
 // threads BY VALUE through the recursive production chain, so ONE stamp in the coordinator's
 // executeCoordination reaches every child node.
 //
-// A caller that never stamps these (every profit-factory run, every test that predates this bead,
+// A caller that never stamps these (every profit-factory run, every test that stamps neither,
 // the demand/siting estimators) reads the zero value: UnifiedGateFill off, DeliveryTarget = resale
 // sink — the no-op, byte-identical-to-today path. The whole feature is dark until the toggle is on
 // AND a construction-site target is stamped (IsUnifiedGateNode).
@@ -29,7 +29,7 @@ type DeliveryTargetKind int
 
 const (
 	// DeliverySink (zero value) sells the fabricated root output at the chain-margin guard's resale
-	// sink — the profit-factory terminal, unchanged by this bead.
+	// sink — the profit-factory terminal.
 	DeliverySink DeliveryTargetKind = iota
 	// DeliveryConstructionSite delivers the fabricated root output to a jump-gate construction site
 	// instead of selling it — the gate-fill terminal (sp-vh1s §5.1).

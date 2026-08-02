@@ -244,7 +244,7 @@ func TestFabricateGood_ChainMargin_ConstructionSupplyBypassesGate(t *testing.T) 
 // sp-qmp8 (RULINGS #4): construction supply scopes out ONLY the resale-margin guards — the INPUT
 // buys must STILL pass the money-guard stack. Driving the real fabricate path under construction
 // supply with a live treasury below the working-capital reserve, the input purchase must be
-// PARKED by the sp-9aoc spend floor (not spent blind). Proves the fabricate input legs the drain
+// PARKED by the spend floor (not spent blind). Proves the fabricate input legs the drain
 // now sources are money-guarded exactly like every other factory input buy.
 func TestFabricateGood_ConstructionSupply_InputBuysStillMoneyGuarded(t *testing.T) {
 	repo := &chainGateMarketRepo{sinkBid: 7500, fabAsk: 7000, inputAsks: map[string]int{cgInput1: 19000, cgInput2: 18700}}

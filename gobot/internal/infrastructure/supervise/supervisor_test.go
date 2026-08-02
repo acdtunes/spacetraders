@@ -122,7 +122,7 @@ func TestSupervisor_PanicIsConvertedAndRestarted(t *testing.T) {
 // Crash-loop escalation: the 5th crash inside the window emits ONE
 // interrupt-class daemon.component_crashloop event, the window re-arms, and
 // the 10th crash emits the second — edge-triggered, never per-crash
-// (sp-6g96: event spam saturates the wake cap).
+// (event spam saturates the wake cap).
 func TestSupervisor_CrashLoopEmitsEdgeTriggeredInterrupt(t *testing.T) {
 	clock := &shared.MockClock{CurrentTime: time.Date(2026, 7, 11, 0, 0, 0, 0, time.UTC)}
 	rec := &fakeRecorder{}

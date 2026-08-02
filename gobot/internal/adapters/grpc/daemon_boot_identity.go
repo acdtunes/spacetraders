@@ -1,7 +1,7 @@
 package grpc
 
 // daemon_boot_identity.go re-asserts the player's durable agent identity into players.metadata at
-// every daemon boot (sp-0eufi).
+// every daemon boot.
 //
 // THE OUTAGE THIS ENDS: players.metadata.headquarters had three readers and no reachable writer.
 // The only code that set it — SyncPlayerHandler — was never constructed or dispatched anywhere,

@@ -1,6 +1,6 @@
 package persistence_test
 
-// THE OPERATOR RESCREEN (sp-j2efq) and what it is forbidden to touch.
+// THE OPERATOR RESCREEN and what it is forbidden to touch.
 //
 // A system's VERDICT is stamped with the goods whitelist as of the moment it was
 // written, and NO_WHITELIST is durable — only PENDING systems are ever re-screened
@@ -10,7 +10,7 @@ package persistence_test
 // EXACTLY that. A rescreen re-evaluates JUDGEMENT, never OWNERSHIP: the hulls are
 // already bought and parked. Reaching a slot's state or assigned_ship would drop a
 // paid-for probe out of CountOwnedProbes and authorise buying it a second time —
-// the precise failure the column-ownership split (sp-wgjb7) exists to prevent, and
+// the precise failure the column-ownership split exists to prevent, and
 // the reason the assertions below are field-by-field rather than spot checks.
 //
 //	ResetVerdictsToPending   verdict   (+ updated_at)   — sensing_systems only

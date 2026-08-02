@@ -77,7 +77,7 @@ func (s *DarkMarketScanner) SetScoutCoverageSource(c scoutCoverageSource) {
 // ChartedUnscannedMarketSystems returns every charted market system with NO or STALE player
 // market_data (coverage-gap broadening), each annotated with its marketplace-waypoint count
 // (the scan ranking key). This is the WHOLE charted frontier's dark/stale set — the honest "dark-market
-// backlog", broader than the old never-scanned-only queue: a system whose markets were charted but
+// backlog", broader than a never-scanned-only queue: a system whose markets were charted but
 // whose prices were never scanned (the live charting→price-scan handoff gap) is dark, and a system
 // whose market_data has gone stale re-enters. Staleness is per-system (sp-gucu): a manned standing post
 // is judged against its own freshness SLA, so it is dark only when stale BEYOND that SLA — not at a

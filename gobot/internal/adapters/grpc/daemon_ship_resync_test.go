@@ -41,7 +41,7 @@ func (r *recordingSyncShipRepo) syncedPlayers() []int {
 	return out
 }
 
-// sp-ig6x: syncAllShips must re-sync ONLY the live/open-era player, never every
+// syncAllShips must re-sync ONLY the live/open-era player, never every
 // player row. A universe reset leaves dead prior-era player rows behind (empty
 // or reset-date-mismatched tokens); the old playerRepo.ListAll loop synced them
 // too, and each dead row's 401 burned the ONE shared 60s deadline so the live
@@ -82,7 +82,7 @@ func TestSyncAllShips_SyncsOnlyOpenEraPlayer(t *testing.T) {
 		live.ID, dead1.ID, dead2.ID)
 }
 
-// sp-ig6x: with no open-era player (genesis / fully-closed eras and no player
+// With no open-era player (genesis / fully-closed eras and no player
 // rows), syncAllShips must skip cleanly and NOT sync anything — never fall back
 // to iterating dead rows. primaryPlayerID returns 0 in that state.
 func TestSyncAllShips_SkipsWhenNoPrimaryPlayer(t *testing.T) {

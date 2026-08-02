@@ -61,7 +61,7 @@ func newCandidateShip(t *testing.T, symbol, role string, cargoCap int, x, y floa
 
 // newCandidateShipWithCargo builds an idle, docked ship already carrying the
 // given inventory - newCandidateShip always builds an empty hold, which
-// can't exercise the NO-CARGO-DUMP CLAIM GUARD (sp-wq7r).
+// can't exercise the NO-CARGO-DUMP CLAIM GUARD.
 func newCandidateShipWithCargo(t *testing.T, symbol, role string, cargoCap int, x, y float64, inventory []*shared.CargoItem) *navigation.Ship {
 	t.Helper()
 	units := 0
@@ -113,7 +113,7 @@ func containsSymbol(symbols []string, want string) bool {
 // regular hauler is idle, the command frigate must be HELD OUT of the candidate
 // pool - it hauls only as a last resort. sp-4a4e had made the command ship a
 // first-class candidate that entered the pool alongside idle haulers; the flaw
-// that surfaced (sp-sqq5) is that an undedicated command frigate the captain had
+// that surfaced is that an undedicated command frigate the captain had
 // deliberately retired via `fleet unassign` was then re-swept back onto
 // contracts by the running coordinator - once stranding a mid-delivery contract.
 // RULINGS #7 ("the command frigate hauls only as last resort") governs: with an
@@ -138,7 +138,7 @@ func TestFindIdleLightHaulers_ExcludesIdleCommandShipWhenHaulerAvailable(t *test
 	}
 }
 
-// Acceptance (sp-4a4e, preserved by sp-sqq5's conditional exclusion): with the
+// Acceptance (preserved by sp-sqq5's conditional exclusion): with the
 // only hauler busy and the command ship idle, the coordinator must still be able
 // to dispatch the command ship - not fall through to an empty pool and wait 5h+
 // while an idle hull sits docked. No REGULAR hauler is idle here (the only one
@@ -162,7 +162,7 @@ func TestFindIdleLightHaulers_BusyHauler_IdleCommandShip_CommandIsCandidate(t *t
 }
 
 // ============================================================================
-// RETIRED COMMAND FRIGATE STAYS OUT OF THE RUNNING COORDINATOR POOL (sp-sqq5)
+// RETIRED COMMAND FRIGATE STAYS OUT OF THE RUNNING COORDINATOR POOL
 //
 // A command frigate deliberately retired via `fleet unassign` has its
 // DedicatedFleet tag cleared to "" - it is pinned to no fleet. Before this fix
@@ -184,7 +184,7 @@ func TestCommandHull_FleetUnassigned_NotReclaimedWhileHaulersExist(t *testing.T)
 	// Undedicated command frigate (tag cleared by `fleet unassign`), sized to
 	// match the era-2 upgraded frigate's real cargo capacity. FindIdleLightHaulers
 	// applies no cargo-baseline screen to any role - only the generic
-	// CargoCapacity()==0 probe check; the sp-uj6a baseline is a separate,
+	// CargoCapacity()==0 probe check; the baseline is a separate,
 	// later, opt-in filter the caller applies AFTER this function returns, so
 	// it is not in play here. This proves the DEDICATION/last-resort path
 	// cleanly, regardless of cargo size.
@@ -245,7 +245,7 @@ func TestFindIdleLightHaulers_ExcludesCommandShip_WhenNotOptedIn(t *testing.T) {
 	}
 }
 
-// Claim-filter (sp-snmb): a ship marked DedicatedFleet is reserved exclusively
+// Claim-filter: a ship marked DedicatedFleet is reserved exclusively
 // for its own coordinator's direct lookup (FindIdleShipsByFleet) - every
 // other coordinator (manufacturing, factory, gas, balance-handler) shares
 // this same discovery function, so excluding dedicated ships here, unconditionally,
@@ -270,7 +270,7 @@ func TestFindIdleLightHaulers_ExcludesDedicatedShips(t *testing.T) {
 	}
 }
 
-// sp-m92a: the "stocker" fleet is a durable hauler dedication like "contract".
+// The "stocker" fleet is a durable hauler dedication like "contract".
 // The unconditional dedication exclude (DedicatedFleet != "") is what keeps a
 // stocker hull invisible to the factory/contract pool "for free" — so a hull the
 // captain pins `fleet assign --fleet stocker` is never poached between the
@@ -297,7 +297,7 @@ func TestFindIdleLightHaulers_ExcludesStockerDedicatedShips(t *testing.T) {
 
 // newCandidateShipAt builds an idle, docked hauler located at the given waypoint
 // symbol, so a test can place hulls in different systems and exercise the
-// single-system pool filter (sp-qr3v). Its system is derived from the waypoint
+// single-system pool filter. Its system is derived from the waypoint
 // symbol exactly as production does (shared.ExtractSystemSymbol).
 func newCandidateShipAt(t *testing.T, symbol, waypointSymbol string) *navigation.Ship {
 	t.Helper()
@@ -323,7 +323,7 @@ func newCandidateShipAt(t *testing.T, symbol, waypointSymbol string) *navigation
 	return ship
 }
 
-// Single-system filter (sp-qr3v): a factory operating in system X1-JP61 must see
+// Single-system filter: a factory operating in system X1-JP61 must see
 // ONLY hulls currently in that system. An idle hauler sitting in the home system
 // (X1-KA42) is unselectable - the factory can never navigate it home to work, so
 // claiming it just fails the worker on every pass. This is the incident:
@@ -351,7 +351,7 @@ func TestFindIdleLightHaulers_SystemFilter_ExcludesOutOfSystemHulls(t *testing.T
 // Contract compatibility: an empty systemFilter preserves the original
 // fleet-wide behavior - every idle hauler qualifies regardless of which system
 // it sits in. Contract callers (run_fleet_coordinator, balance_ship_position)
-// pass "" and must be entirely unaffected by the sp-qr3v filter.
+// pass "" and must be entirely unaffected by the filter.
 func TestFindIdleLightHaulers_EmptySystemFilter_ReturnsAllSystems(t *testing.T) {
 	home := newCandidateShipAt(t, "TORWIND-1F", "X1-KA42-E42")
 	away := newCandidateShipAt(t, "JP61-2", "X1-JP61-E42")
@@ -367,7 +367,7 @@ func TestFindIdleLightHaulers_EmptySystemFilter_ReturnsAllSystems(t *testing.T) 
 	}
 }
 
-// HOME-SYSTEM LOCALITY (sp-ue1s): a contract worker sources AND delivers in the delivery's
+// HOME-SYSTEM LOCALITY: a contract worker sources AND delivers in the delivery's
 // HOME system with ZERO jump capability (RULINGS #14 — the same scope PlanSourcing and
 // market_finder narrow contract sourcing to). FilterToHomeSystem is the worker-pool half of
 // that constraint: a hull idle in the delivery's home system stays eligible; a hull idle in a
@@ -435,7 +435,7 @@ func TestFilterToHomeSystem_ScopesCandidatesToDeliveryHomeSystem(t *testing.T) {
 }
 
 // FindIdleShipsByFleet is a coordinator's direct lookup for its own dedicated
-// fleet (sp-l7h2, replacing sp-snmb's symbol-list FindIdleDedicatedShips): it
+// fleet (replacing sp-snmb's symbol-list FindIdleDedicatedShips): it
 // returns only currently-idle ships whose persisted DedicatedFleet tag equals
 // the fleet name. Busy members are silently skipped rather than erroring,
 // members of OTHER fleets and untagged ships never appear, and - unlike
@@ -619,7 +619,7 @@ func TestFindIdleLightHaulers_ExcludesZeroCargoHauler(t *testing.T) {
 }
 
 // ============================================================================
-// COMMAND CARGO BASELINE (sp-uj6a)
+// COMMAND CARGO BASELINE
 //
 // FindIdleLightHaulers' generic cargo check (CargoCapacity() == 0) only
 // screens out probes/satellites - it does not stop a stock 40-cargo command
@@ -724,7 +724,7 @@ func TestFilterCommandCargoBaseline_NonCommandHulls_Unaffected(t *testing.T) {
 }
 
 // ============================================================================
-// EXCLUSIVE MODE (sp-wq7r)
+// EXCLUSIVE MODE
 //
 // Bug: with a dedicated fleet configured, the coordinator still combined
 // FindIdleLightHaulers' general pool with FindIdleShipsByFleet's dedicated
@@ -851,7 +851,7 @@ func TestSelectAvailableShips(t *testing.T) {
 }
 
 // ============================================================================
-// NO-CARGO-DUMP CLAIM GUARD (sp-wq7r)
+// NO-CARGO-DUMP CLAIM GUARD
 //
 // Bug: the coordinator selected candidates by distance alone, leaving the
 // worker's jettison step (CargoManager.JettisonWrongCargoIfNeeded) to

@@ -39,7 +39,7 @@ type HeavyCensusReader interface {
 
 // HeavyYardReader reports the heavy yard the purchase path would TARGET this tick, and its ask.
 //
-// It is deliberately NOT "the cheapest known heavy price" any more (sp-fwk8z). The buy targets the
+// It is deliberately NOT "the cheapest known heavy price" any more. The buy targets the
 // NEAREST reachable yard, so reserving the cheapest ask on the map under-reserves whenever the two
 // differ: treasury tops out below what the nearer yard asks and the purchase never clears. The
 // reservation must track the yard we will actually buy at.
@@ -113,7 +113,7 @@ type MetricsSink interface {
 	// RecordZeroEffectAlarm fires when demand persisted but the coordinator bought nothing for
 	// zero_effect_alarm_ticks consecutive ticks — a fleet-level "stuck" signal, not per-class.
 	RecordZeroEffectAlarm()
-	// RecordHeavyReserve reports the per-tick heavy-trade facts (sp-fwk8z): the derived
+	// RecordHeavyReserve reports the per-tick heavy-trade facts: the derived
 	// reservation, the tag-independent owned-heavy census, and the cap in force. Emitted
 	// EVERY tick, whatever happens — a reserve recorded only when something changes cannot
 	// answer "is the fleet saving for a heavy, or stuck?".
@@ -181,9 +181,9 @@ func (h *RunFleetAutosizerCoordinatorHandler) readTickInputs(ctx context.Context
 
 // classGuardConfig resolves the per-class guard knobs from the run config.
 //
-// sp-r7eiu removed the classCeiling return with the class_ceiling guard. The explorer's HARD CAP
-// of 1 did NOT go with it: that cap lives in ExplorerDemandProvider, which clamps its want to
-// MaxExplorerHulls, so the class is still capped — by its demand, one layer instead of two.
+// There is no class ceiling here. The explorer's HARD CAP of 1 is not missing: that cap lives
+// in ExplorerDemandProvider, which clamps its want to MaxExplorerHulls, so the class is capped
+// by its demand.
 func classGuardConfig(class HullClass, cfg autosizerRunConfig) (shipType string, maxPrice int64, treasuryPct int) {
 	switch class {
 	case HullClassLight:
@@ -199,8 +199,8 @@ func classGuardConfig(class HullClass, cfg autosizerRunConfig) (shipType string,
 		// guard bound the explorer must still clear.
 		return cfg.ShipTypeExplorer, cfg.MaxPriceExplorer, cfg.ExplorerTreasuryPctPerPurchase
 	default:
-		// sp-y2ptq: HullClassContractDelivery's guard config was removed with the autosizer's contract
-		// class (the dedicated scaler owns it). An unhandled class yields no buy config.
+		// HullClassContractDelivery has no guard config here — the dedicated contract scaler owns
+		// that capacity. An unhandled class yields no buy config.
 		return "", 0, 0
 	}
 }
@@ -346,9 +346,8 @@ func (h *RunFleetAutosizerCoordinatorHandler) buildPurchaseRequest(
 		ShortfallStreak:    streak,
 		ShortfallStreakMin: streakMin,
 
-		// The heavy-hull cap: since sp-r7eiu removed the per-class pool ceiling this is the
-		// only count-based bound left. guardHeavyCap is heavy-scoped and passes for every
-		// other class.
+		// The heavy-hull cap — the only count-based bound on any class. guardHeavyCap is
+		// heavy-scoped and passes for every other class.
 		HeaviesOwned:         in.heaviesOwned,
 		HeavyCap:             cfg.HeavyCap,
 		HeaviesOwnedReadable: in.heaviesOwnedOK,

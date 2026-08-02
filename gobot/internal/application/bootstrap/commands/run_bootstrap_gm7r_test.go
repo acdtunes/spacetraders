@@ -148,8 +148,8 @@ func TestBootstrap_Gm7r_FailClosed_ZeroScalerTarget_NeverGates(t *testing.T) {
 
 // --- Part 2: GATE never cannibalizes the contract fleet (superseded by sp-cdxy2: keep the WHOLE fleet) ---
 //
-// The sp-gm7r cure held a gate_contract_floor (2) and repurposed only the surplus ABOVE it. sp-cdxy2
-// SUPERSEDED that with the exclusive-fleet rule (sp-9le3x): GATE keeps the WHOLE contract delivery fleet and
+// The cure held a gate_contract_floor (2) and repurposed only the surplus ABOVE it. sp-cdxy2
+// SUPERSEDED that with the exclusive-fleet rule: GATE keeps the WHOLE contract delivery fleet and
 // repurposes NONE of it (the floor knob is gone), so the cannibalization the spiral turned on cannot happen
 // at all — the gate builds its own construction fleet by BUYING. That stronger invariant is pinned in
 // run_bootstrap_gate_test.go: TestBootstrap_PlanGateWorkers_KeepsWholeContractFleet_ReleasesNone (the sizing)

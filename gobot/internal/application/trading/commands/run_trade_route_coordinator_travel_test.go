@@ -146,7 +146,7 @@ type travelMediator struct {
 	// BEFORE falling back to jumpErr/jumpResp — a nil entry means "this jump
 	// succeeds (return jumpResp)", a non-nil entry is returned as the jump error.
 	// It lets a test make the FIRST jump 409 on cooldown and a later retry succeed
-	// (sp-wc5h resume-ride). A nil/empty slice leaves every existing test unchanged.
+	// (resume-ride). A nil/empty slice leaves every existing test unchanged.
 	jumpErrSeq []error
 	gateResp   *shipQueries.FindNearestJumpGateResponse
 	gateErr    error
@@ -230,7 +230,7 @@ type travelShipRepo struct {
 	// syncCalls counts the resyncs so a test can prove the departure hop re-confirmed.
 	syncedShip *navigation.Ship
 	syncCalls  int
-	// reloadShip, when set, is returned by every FindBySymbol call AFTER the first (sp-4yse):
+	// reloadShip, when set, is returned by every FindBySymbol call AFTER the first:
 	// the 0-hop gate-chart reposition loads the probe (at a market), flies it, then RELOADS to
 	// read the freshly-persisted ON-GATE position for the chart guard. Modelling those as two
 	// distinct instances lets a test prove the probe was routed market->gate AND charts the gate.
@@ -403,7 +403,7 @@ func TestTravel_CrossSystem_JumpsThenHopsGateToWaypoint_WaitsScaledCooldown_Relo
 	}
 
 	// Two NavigateRouteCommands in order: [1] departure hop to the SOURCE gate
-	// (sp-5nqx), [2] arrival hop to the DESTINATION waypoint (sp-vzxu). Without the
+	// (sp-5nqx), [2] arrival hop to the DESTINATION waypoint. Without the
 	// first the jump strands the bought tranche at the source; without the second the
 	// sell fires at the destination gate (which does not trade the good).
 	if len(mediator.navigates) != 2 {
@@ -429,7 +429,7 @@ func TestTravel_CrossSystem_JumpsThenHopsGateToWaypoint_WaitsScaledCooldown_Relo
 	}
 }
 
-// GUARD on the sp-vzxu hop: when the jump lands the hull DIRECTLY on the
+// GUARD on the hop: when the jump lands the hull DIRECTLY on the
 // destination waypoint (the lane's sink IS the system's gate waypoint), the
 // gate->waypoint hop is redundant and must be skipped - a gate-market lane
 // still costs exactly one jump and zero extra navigates. Here the reloaded ship
@@ -438,7 +438,7 @@ func TestTravel_CrossSystem_JumpsThenHopsGateToWaypoint_WaitsScaledCooldown_Relo
 func TestTravel_CrossSystem_JumpLandsOnDestinationWaypoint_SkipsRedundantHop(t *testing.T) {
 	// The hull starts ON the source gate, so the sp-5nqx departure hop is skipped
 	// (no gate lookup, no pre-jump navigate); the jump then lands it directly on the
-	// destination waypoint (the lane's sink IS the gate), so the sp-vzxu arrival hop
+	// destination waypoint (the lane's sink IS the gate), so the arrival hop
 	// is skipped too. A gate->gate lane costs exactly one jump and ZERO navigates.
 	ship := newTravelShipAtGate(t, "HAULER-1", "X1-AAA-GATE")
 	reloaded := newTravelShipAt(t, "HAULER-1", "X1-BBB-GATE")
@@ -493,7 +493,7 @@ func TestTravel_CrossSystem_JumpFails_ReturnsWrappedError(t *testing.T) {
 
 // sp-5nqx: when the hull already sits ON a jump gate, the departure hop is redundant
 // and must be skipped - no gate lookup and no pre-jump navigate. The jump then lands
-// the hull on the destination gate, and only the (sp-vzxu) arrival hop to the
+// the hull on the destination gate, and only the arrival hop to the
 // destination waypoint follows: exactly one NavigateRouteCommand, and it is the
 // arrival hop, never a departure one.
 func TestTravel_CrossSystem_AlreadyAtGate_SkipsDepartureHop(t *testing.T) {
@@ -539,7 +539,7 @@ func TestTravel_CrossSystem_AlreadyAtGate_SkipsDepartureHop(t *testing.T) {
 type fakeGateGraph struct {
 	path    []string
 	pathErr error
-	// edges is the canned durable adjacency for Connections (sp-1ki5): originSystem ->
+	// edges is the canned durable adjacency for Connections: originSystem ->
 	// its neighbor edges. connErr, when set, makes Connections fail (the uncharted-origin
 	// live-gate refusal the durable read normally survives). Absent origin -> nil edges.
 	edges   map[string][]system.GateEdge
@@ -573,9 +573,9 @@ type fakeGateGraph struct {
 	storedThenVerifyErr    error
 	storedThenVerifyBound  int
 
-	// chartPresentCalls records every ChartPresentGate(systemSymbol) call IN ORDER (sp-bcsu),
+	// chartPresentCalls records every ChartPresentGate(systemSymbol) call IN ORDER,
 	// so a test can assert travel() charted the gate of each system the hull arrived on (and
-	// in what sequence). chartPresentShips records the shipSymbol threaded on each call (sp-lv2n)
+	// in what sequence). chartPresentShips records the shipSymbol threaded on each call
 	// so a test can prove the PRESENT hull's symbol reaches the public-chart seam (a "" or wrong
 	// symbol would silently no-op the CreateChart). chartPresentErr, when set, makes
 	// ChartPresentGate fail — proving the charting is NON-FATAL (the leg still completes).
@@ -801,7 +801,7 @@ func TestTravel_MultiJump_Unroutable_AbortsBeforeAnyJump(t *testing.T) {
 	}
 }
 
-// sp-kl16 THE MONEY-COMMITMENT STRICT PIN (the other half of the PD21 fix). travel() — the
+// THE MONEY-COMMITMENT STRICT PIN (the other half of the PD21 fix). travel() — the
 // bound-0 path every MONEY-COMMITMENT flight rides (arb pre-buy delivery, trade-route lane
 // commits, cargo delivery) — must STAY strict: it resolves via the fetch-through Path and
 // fail-closes on an unreadable-gate origin EVEN WHEN a stored-adjacency RepositionPath would
@@ -872,7 +872,7 @@ func TestTravel_CrossSystem_JumpOnCooldown_RidesRemainingThenRetries(t *testing.
 		jumpResp:   &navCmd.JumpShipResponse{Success: true, DestinationSystem: "X1-BBB", CooldownSeconds: 60},
 	}
 	clock := &travelFakeClock{}
-	// sp-1bme8: the re-anchor reload on the 409 must see the hull STILL at its origin (X1-AAA) —
+	// The re-anchor reload on the 409 must see the hull STILL at its origin (X1-AAA) —
 	// a genuine pre-restart cooldown, not yet jumped — so travel rides it out and retries rather
 	// than mistaking it for an already-landed jump.
 	shipRepo := &travelShipRepo{ship: reloaded, findSeq: []*navigation.Ship{newTravelShipAtGate(t, "HAULER-1", "X1-AAA-GATE")}}
@@ -1018,7 +1018,7 @@ func TestTravel_CrossSystem_CooldownWaitCancelled_ReturnsPromptly(t *testing.T) 
 // travelBlockingClock blocks inside Sleep until the test releases it, signalling
 // entry exactly once so a test can deterministically cancel WHILE travel() is
 // parked in the cooldown wait — no wall-clock race. Mirrors parkWaitBlockingClock
-// (sp-l709, run_factory_coordinator_park_wait_interrupt_test.go).
+// (run_factory_coordinator_park_wait_interrupt_test.go).
 type travelBlockingClock struct {
 	enteredOnce  sync.Once
 	blockEntered chan struct{}
@@ -1204,7 +1204,7 @@ func TestTravel_MultiJump_ChartsEachArrivedGateInOrder(t *testing.T) {
 	if !reflect.DeepEqual(fake.chartPresentCalls, want) {
 		t.Fatalf("expected charts %v (intermediates per-hop + dest on arrival, no terminal dup), got %v", want, fake.chartPresentCalls)
 	}
-	// sp-lv2n: each arrival must thread the PRESENT hull's symbol to the public-chart seam — a
+	// Each arrival must thread the PRESENT hull's symbol to the public-chart seam — a
 	// "" or wrong symbol would silently no-op the CreateChart and leave the frontier gate uncharted.
 	if wantShips := []string{"HAULER-1", "HAULER-1", "HAULER-1"}; !reflect.DeepEqual(fake.chartPresentShips, wantShips) {
 		t.Fatalf("every arrival must carry the present hull symbol to ChartPresentGate, got %v", fake.chartPresentShips)
@@ -1296,7 +1296,7 @@ func TestRepositionToSystemGateAndChart_ZeroHop_RoutesToGateAndCharts(t *testing
 	if !reflect.DeepEqual(fake.chartPresentCalls, []string{"X1-VH23"}) {
 		t.Fatalf("expected the dark system X1-VH23 to be charted on arrival, got %v", fake.chartPresentCalls)
 	}
-	// The PRESENT probe symbol must reach the public-chart seam (sp-lv2n) — a "" or wrong symbol
+	// The PRESENT probe symbol must reach the public-chart seam — a "" or wrong symbol
 	// would silently no-op the CreateChart and leave the frontier gate uncharted.
 	if !reflect.DeepEqual(fake.chartPresentShips, []string{"PROBE-1"}) {
 		t.Fatalf("the present probe symbol must reach ChartPresentGate, got %v", fake.chartPresentShips)

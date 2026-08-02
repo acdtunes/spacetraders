@@ -7,7 +7,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/liveconfig"
 )
 
-// sp-sjvv (ktio-B): the cold-start contract-scaling feature, now UNCONDITIONALLY ON (sp-1cbxz) —
+// sp-sjvv (ktio-B): the cold-start contract-scaling feature, now UNCONDITIONALLY ON —
 // bootstrap LAUNCHES the fleet autosizer EARLY during the cold-start scaling window so the capacity
 // reconciler's emitted contract-delivery demand finally has a buyer. Bootstrap's OWN buys are statically
 // owned: it seeds the cold-start hulls behind its capital gates regardless of which standing coordinators
@@ -44,7 +44,7 @@ func sjvvColdStartObs(autosizerRunning bool, haulers int) Observation {
 	o.AutosizerRunning = autosizerRunning
 	o.BatchContractRunning = true
 	o.Haulers = make([]HaulerSnapshot, haulers)
-	// sp-192k4: the trade hull is seeded once the FIRST contract hull exists (acquisition #2 → trade), so a
+	// The trade hull is seeded once the FIRST contract hull exists (acquisition #2 → trade), so a
 	// fixture with ≥1 contract hull models the POST-seed state (TradeHullCount=1) — the contract-scaling /
 	// arbitration behavior these tests pin happens after the trade seed. A 0-hauler fixture is pre-seed.
 	if haulers >= 1 {

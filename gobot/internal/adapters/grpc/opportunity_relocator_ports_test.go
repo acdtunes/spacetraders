@@ -188,7 +188,7 @@ func TestRelocatorFleetObserverShould_ReportAClaimedTourHullAsOnTourRatherThanPi
 	require.False(t, got.Pinned, "a tour is not a protection event; reporting it as Pinned would hide the real mid_tour count")
 }
 
-// SLICE 2 (sp-x2jr6). A tour container that EXISTS but has not claimed its hull yet must still exclude
+// SLICE 2. A tour container that EXISTS but has not claimed its hull yet must still exclude
 // that hull — and the hull must be UNASSIGNED here, because that is the only shape in which the window
 // is real.
 //

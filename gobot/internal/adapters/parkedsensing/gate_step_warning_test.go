@@ -1,6 +1,6 @@
 package parkedsensing_test
 
-// The gate walk's two failure exits must BOTH be named (sp-cwnwb).
+// The gate walk's two failure exits must BOTH be named.
 //
 // Only the unroutable one ever was. A route that RESOLVED and then could not be
 // walked propagated back through flyToSlot to dispatch, which held the slot for the

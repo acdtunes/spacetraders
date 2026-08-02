@@ -1,6 +1,6 @@
 package ship
 
-// Unit tests for the fleet's ONE shipyard-read budget (sp-mb0er), at the seam
+// Unit tests for the fleet's ONE shipyard-read budget, at the seam
 // where policy meets state. What is proven here is the four properties the bead
 // asks for: total cost does not grow with the charted map, no known yard starves,
 // a money guard's read is never served from store, and attention goes to the yards

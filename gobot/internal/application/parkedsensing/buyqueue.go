@@ -179,8 +179,7 @@ const probeListingMemoTTL = 6 * time.Hour
 // ProbeListingMemo reports what a PREVIOUS shipyard read persisted about a yard's
 // stock, so the drain can stop paying to re-learn a standing fact.
 //
-// OPTIONAL: a nil memo quotes everything, which is exactly the behaviour that
-// existed before this port, so an unwired deployment is unchanged.
+// OPTIONAL: a nil memo quotes everything, so an unwired deployment is unchanged.
 type ProbeListingMemo interface {
 	// LastListingScan reports whether the yard's STORED listings include a priced
 	// probe, and when that reading was taken.
@@ -435,11 +434,11 @@ type BuyPorts struct {
 	// first, and a fleet where the two ranked yards differently would spend both
 	// resources on different counters.
 	//
-	// OPTIONAL and FAIL-OPEN. A nil reader orders the queue exactly as it was
-	// ordered before this term existed — the same direction reachableFills takes,
-	// and the opposite of the money guards above, because this term can only
-	// reorder placements the queue had already decided it wanted. It is wired in
-	// the sensing coordinator; nil is a test wiring, not a deployment one.
+	// OPTIONAL and FAIL-OPEN. A nil reader leaves the queue's order untouched by
+	// this term — the same direction reachableFills takes, and the opposite of the
+	// money guards above, because this term can only reorder placements the queue
+	// had already decided it wanted. It is wired in the sensing coordinator; nil is
+	// a test wiring, not a deployment one.
 	YardDemand YardDemandReader
 
 	// ClaimOwnerContainerID is the driving coordinator's container id, handed to
@@ -621,14 +620,13 @@ type BuyReport struct {
 	// YardsQueued, YardsAtHead and YardsFilled are the yard-aware ordering's
 	// accounting (yardqueue.go). They exist because a coordinator LOSING every one
 	// of these decisions would otherwise look identical to one with nothing to
-	// decide, which is exactly the state this ordering was written to end.
+	// decide.
 	//
 	//   - YardsQueued: candidate placements standing on a shipyard whose price the
 	//     fleet cannot see. The rows the ordering was CONSULTED on.
 	//   - YardsAtHead: how many of those the ordering delivered into the first
 	//     maxDrainAttempts places — the window this tick's budget can reach. High
-	//     YardsQueued beside a persistent zero here is the ordering failing, and it
-	//     is the number that was effectively zero before this feature: 78 heavy
+	//     YardsQueued beside a persistent zero here is the ordering failing: 78 heavy
 	//     counters sat in 8,934 rows with a head of six.
 	//   - YardsFilled: how many of the placements actually FUNDED this tick — by
 	//     reuse, foothold or purchase — stood on one. Presence achieved, and the
@@ -969,7 +967,7 @@ func fillSlot(
 			memo.record(rep, BuyStepQuote, candidate.yard, "", err.Error())
 			continue
 		}
-		// THE FLOOR BINDS ON LANDED COST, NOT STICKER (sp-e46yc). A probe bought at
+		// THE FLOOR BINDS ON LANDED COST, NOT STICKER. A probe bought at
 		// a counter in another system still has to be flown to its post, and every
 		// gate it crosses on the way charges a fee. Checking the quote alone
 		// authorised 10.15M of probes and then spent 6.44M more delivering them —
@@ -1037,7 +1035,7 @@ func fillSlot(
 		// delivery against the placements this same tick has yet to pop.
 		st.credits = postBuyCredits(st.credits, paid, probe) - ferry
 
-		// Purchase, ferry and landed cost logged SEPARATELY (sp-e46yc acceptance):
+		// Purchase, ferry and landed cost logged SEPARATELY (acceptance):
 		// the whole defect was that only the first was ever visible, so an operator
 		// reading a cycle line saw a 10.15M expansion that in fact cost 16.6M. The
 		// three numbers together make the multiplier readable per decision rather
@@ -1167,7 +1165,7 @@ func postBuyCredits(before, price int64, probe BoughtProbe) int64 {
 // head of every tick, so a poorer system never got a turn however long it
 // waited — measured on the live fleet as 67% of parked probes sitting in three
 // systems while covered systems held one each. Depth is still the tiebreak, so
-// once coverage is even this degenerates to the old ordering exactly.
+// once coverage is even this degenerates to depth order exactly.
 //
 // EVERY SLOT CARRIES ITS OWN COVERAGE, which is the part that would otherwise be
 // got wrong. Ranking purely on probes already parked would tie a 0-probe
@@ -1252,7 +1250,7 @@ func drainCandidates(ctx context.Context, p BuyPorts, playerID int) ([]QueuedSlo
 	// AFTER the reachability partition, and that order is load-bearing. A yard in
 	// a system no hull can walk to is still a dark yard, and promoting it would put
 	// an impossible placement at the very head of the queue — the exact failure
-	// reachableFills was written for (sp-1r08q) and the one an ordering fix
+	// reachableFills was written for and the one an ordering fix
 	// reproduces if it reorders before it partitions. Feasibility first, priority
 	// second.
 	//
@@ -1275,13 +1273,13 @@ func drainCandidates(ctx context.Context, p BuyPorts, playerID int) ([]QueuedSlo
 		// THE TIER, and it is ABOVE COVERAGE. A dark yard outranks every ordinary
 		// market in the queue, including one in a system holding no hull at all.
 		//
-		// This is what sp-7qhum could not do and what the Admiral overruled it for.
-		// That version promoted a yard only WITHIN its own system's run of coverage
-		// values, so a yard in a system already holding three probes competed at
-		// coverage 3 and lost to every one of ~8,900 coverage-0 market rows
+		// THE ADMIRAL OVERRULED A TIEBREAK INSIDE COVERAGE, and it cannot reach a set
+		// that never ties. Promoting a yard only WITHIN its own system's run of coverage
+		// values leaves a yard in a system already holding three probes competing at
+		// coverage 3 and losing to every one of ~8,900 coverage-0 market rows
 		// elsewhere. Measured over 90 minutes live with buying restored: 56 probes
 		// bought, 5 of them onto yards, and heavy yards priced stayed flat at 4
-		// of 86. A tiebreak inside coverage cannot reach a set that never ties.
+		// of 86.
 		//
 		// THE COST IS REAL AND WAS ACCEPTED. 1,575 of 9,216 unfilled placements
 		// stand on a shipyard, so placement capacity goes to yards until yards are
@@ -1375,7 +1373,7 @@ type rankedFill struct {
 // the tick, so stopping costs no requests and one cycle.
 // reachableFills drops the fills whose system no hull can currently walk to.
 //
-// THE DEFECT (sp-1r08q): neither the screen that declares a placement nor this queue that funds it
+// THE DEFECT: neither the screen that declares a placement nor this queue that funds it
 // asked whether a hull could ever get there. Measured live: 1,214 of 6,959 WANTED slots (17.4%)
 // named a system unreachable through the walker's own effective graph, and 5 already-funded slots
 // were in flight to targets they can never reach.

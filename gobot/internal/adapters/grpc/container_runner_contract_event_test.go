@@ -45,7 +45,7 @@ func findEvent(events []*captain.Event, target captain.EventType) *captain.Event
 // (a) A contract workflow reaching success must emit a first-class
 // contract.completed event carrying the ship, player, container id, and
 // coordinator id — the contract-grade signal the watchkeeper needs instead of
-// only a generic workflow.finished (sp-82qs).
+// only a generic workflow.finished.
 func TestSignalCompletion_ContractWorkflowSuccess_EmitsContractCompleted(t *testing.T) {
 	rec := &fakeRecorder{}
 	SetCaptainEventRecorder(rec)
@@ -117,13 +117,13 @@ func TestSignalCompletion_NonContractContainer_EmitsNoContractEvents(t *testing.
 		"the generic workflow.finished must still fire for non-contract containers")
 }
 
-// (d) A contract workflow that PARKED on insufficient credits (sp-vwhi)
+// (d) A contract workflow that PARKED on insufficient credits
 // resolves RunWorkflowHandler.Handle() as (result, nil) by design — a clean,
 // recoverable loop exit so the container never crashloops. Without a way to
 // tell "parked" apart from "actually fulfilled," that clean exit reaches
 // signalCompletionWithStatus(success=true) exactly like a real completion and
 // would emit a phantom contract.completed, corrupting the captain's
-// income-stall detection (sp-82qs) at the exact moment credits are short.
+// income-stall detection at the exact moment credits are short.
 // A parked run must therefore emit ZERO contract.completed and ZERO
 // contract.failed — while the generic workflow.finished (a park IS a clean
 // iteration from the runner's point of view) still fires exactly once.

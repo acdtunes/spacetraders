@@ -22,7 +22,7 @@ import (
 //	             + factory input buys                                (input cost, stored NEGATIVE)
 //	             − lift cost                                         (chain workers' refuel, approx.)
 //
-// ATTRIBUTION (sp-i0hl, verified live): transactions.metadata->>'good_symbol' tags the good
+// ATTRIBUTION (verified live): transactions.metadata->>'good_symbol' tags the good
 // LITERALLY transacted. A PURCHASE_CARGO of an input (FABRICS bought to make CLOTHING) is
 // tagged FABRICS, never rolled up to the output — the schema has no task-level input→output
 // linkage, so this is a strictly per-good ("atomic") ledger, exactly as the panel computes.

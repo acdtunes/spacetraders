@@ -75,7 +75,7 @@ func TestStaticSupplyChainDepth_FabMatsDeep_LeafShallow_CycleSafe(t *testing.T) 
 	}
 }
 
-// PART A — supplyTaskChainDepth: the drain fabricates EVERY material (unified gate-fill, sp-9i4mq), so
+// PART A — supplyTaskChainDepth: the drain fabricates EVERY material (unified gate-fill), so
 // a task takes the good's chain depth bounded by the pipeline's cap REGARDLESS of the planner's frozen
 // buy-vs-fabricate decision — a buy-planned good (no factory) is depth-scaled the same as a fabricate.
 func TestSupplyTaskChainDepth_UsesChainDepthRegardlessOfFactory(t *testing.T) {
@@ -99,7 +99,7 @@ func TestSupplyTaskChainDepth_UsesChainDepthRegardlessOfFactory(t *testing.T) {
 }
 
 // PART A (headline) — scaledSupplyTaskTimeout end-to-end: a deep chain resolves a LONGER deadline than
-// a shallow one. Unified gate-fill (sp-9i4mq) fabricates EVERY material, so the depth is driven by the
+// a shallow one. Unified gate-fill fabricates EVERY material, so the depth is driven by the
 // pipeline's fabricate cap, not the planner's buy-vs-fabricate decision: a depth-3 pipeline gets
 // base*3 headroom, a depth-1 pipeline stays at the flat 30m default (the sp-9f24o regression fence).
 func TestScaledSupplyTaskTimeout_DeepChainGetsHeadroom_ShallowUnchanged(t *testing.T) {

@@ -82,7 +82,7 @@ func (f *fakeAcquirer) Buy(ctx context.Context, playerID int, shipType, yard str
 type fakeDeclarer struct {
 	calls    int
 	systems  []string
-	minHulls []int // the manning-floor (probe_target) passed on each call (sp-2ci9y)
+	minHulls []int // the manning-floor (probe_target) passed on each call
 	err      error
 }
 
@@ -276,7 +276,7 @@ func baseCmd() *RunBootstrapCoordinatorCommand {
 
 // --- live-by-default: a fresh, all-zero-config launch acts (no enablement flip) ---
 
-// sp-hh0h: buy-to-target in ONE tick (not one probe per 5-min tick). A cold agent with 1 probe and
+// Buy-to-target in ONE tick (not one probe per 5-min tick). A cold agent with 1 probe and
 // target 3 buys the 2-probe remainder this tick, capital permitting.
 func TestBootstrap_LiveByDefault_BuysProbeOnColdAgent(t *testing.T) {
 	obs := Observation{HomeSystem: "X1-HQ", ProbeCount: 1, ProbesScouting: 1, HasIdlePurchaser: true, Treasury: 150000, Readable: true}
@@ -525,7 +525,7 @@ func TestBootstrap_BuyLoop_CapitalGateStopsPartway(t *testing.T) {
 }
 
 // --- home scout-post declaration (sp-pt7d): bootstrap declares the home COVERAGE post so the
-// boot-standing scout-post coordinator (sp-9ujl) can man an idle probe. Bootstrap assigns/dedicates
+// boot-standing scout-post coordinator can man an idle probe. Bootstrap assigns/dedicates
 // NO probe itself — the old probe-holding scout-all-markets sweep is gone. ---
 
 // The home post is declared whenever the home system is resolved — independent of how many probes
@@ -539,7 +539,7 @@ func TestBootstrap_DeclaresHomeScoutPost_WhenHomeResolved(t *testing.T) {
 	if declarer.calls != 1 || len(declarer.systems) != 1 || declarer.systems[0] != "X1-HQ" {
 		t.Fatalf("bootstrap must declare the home scout post in X1-HQ, got calls=%d systems=%v", declarer.calls, declarer.systems)
 	}
-	// sp-2ci9y: the declaration carries the permanent home manning FLOOR = probeTarget (default 3),
+	// The declaration carries the permanent home manning FLOOR = probeTarget (default 3),
 	// parametrized from config (RULINGS #5), NOT hardcoded — so the freshsizer never strands a
 	// bought home probe below it.
 	if len(declarer.minHulls) != 1 || declarer.minHulls[0] != 3 {
@@ -634,7 +634,7 @@ func TestBootstrap_Recovery_NoBuyWhenTargetMet(t *testing.T) {
 
 // --- cold-start acceptance (sp-hh0h + sp-pt7d): from a cold fixture, the probe fleet fills to target
 // in ONE tick with no overshoot, AND bootstrap DECLARES the home scout post while leaving the probes
-// IDLE — it assigns NO probe itself. The boot-standing scout-post coordinator (sp-9ujl) then mans an
+// IDLE — it assigns NO probe itself. The boot-standing scout-post coordinator then mans an
 // idle probe and seeds the initial home scan; that manning half is covered by the scouting package's
 // TestScoutPost_UnmannedPost_ClaimsIdleSatellite. This is the sp-pt7d seed-propagation contract on the
 // bootstrap side: declares the post + buys probes + leaves them idle + no scan sweep. ---

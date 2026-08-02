@@ -74,7 +74,7 @@ type DaemonServer struct {
 
 	// yardScanner is the fleet's metered shipyard reader, handed to the per-call
 	// MarketLocator StartConstructionPipeline builds so its hull search draws on the
-	// same one shipyard-read allowance as every other reader (sp-mb0er).
+	// same one shipyard-read allowance as every other reader.
 	yardScanner *ship.ShipyardScanner
 
 	// depotNavigateOverride, when non-nil, replaces NavigateShip for the depot element hull
@@ -113,7 +113,7 @@ type DaemonServer struct {
 	// Ship state scheduler (timer-based state transitions)
 	shipStateScheduler *ShipStateScheduler
 
-	// Ship resync scheduler (sp-p1ci): periodic full-fleet re-sync of ship
+	// Ship resync scheduler: periodic full-fleet re-sync of ship
 	// state from the API into the DB, so local state cannot drift vs live API
 	// truth between the event-driven updates. Launched under supervision in
 	// Start; halted by runCtx cancellation on shutdown.
@@ -151,7 +151,7 @@ type DaemonServer struct {
 	// decision code reads it.
 	flowRegistry *flowfeed.Registry
 
-	// contractConfig carries the idle-arb harvest knobs (sp-1z2h / sp-uohe)
+	// contractConfig carries the idle-arb harvest knobs
 	// from config.yaml. ContractFleetCoordinator injects them into the
 	// coordinator container's launch config, so a captain tunes the harvest —
 	// including the money-guard blacklist — by editing config and restarting,
@@ -166,7 +166,7 @@ type DaemonServer struct {
 	// restarting, no code redeploy.
 	tradeFleetConfig config.TradeFleetConfig
 
-	// workerRebalancerConfig carries the worker-rebalancer coordinator knobs (sp-f5pr)
+	// workerRebalancerConfig carries the worker-rebalancer coordinator knobs
 	// from config.yaml. WorkerRebalancerCoordinator injects them into the coordinator
 	// container's launch config on every build (creation + restart recovery via
 	// resolveWorkerRebalancerConfig), so a captain retunes the standing ferry loop —
@@ -175,7 +175,7 @@ type DaemonServer struct {
 	workerRebalancerConfig config.WorkerRebalancerConfig
 
 	// scoutingConfig carries the scouting subsystem's tour-start phase jitter ceiling
-	// (sp-x8i5) from config.yaml. ScoutTour and ScoutPostCoordinator resolve it into
+	// from config.yaml. ScoutTour and ScoutPostCoordinator resolve it into
 	// their container's launch config on every build (creation + restart recovery via
 	// resolveScoutingConfig), so a captain retunes the jitter ceiling by editing
 	// config and restarting, no code redeploy.
@@ -205,7 +205,7 @@ type DaemonServer struct {
 	shutdownChan chan os.Signal
 	done         chan struct{}
 
-	// Supervised background components (sp-i01z). runCtx is the daemon
+	// Supervised background components. runCtx is the daemon
 	// lifetime context: canceled first thing in handleShutdown so supervised
 	// loops (sweeper) wind down in parallel with the container drain.
 	runCtx    context.Context
@@ -265,7 +265,7 @@ func NewDaemonServer(
 	clock := shared.NewRealClock()
 	shipStateScheduler := NewShipStateScheduler(shipRepo, clock, shipEventPublisher)
 
-	// Wire the global API request-budget tracker (sp-51ti) unconditionally.
+	// Wire the global API request-budget tracker unconditionally.
 	// Unlike the Prometheus collectors below, this is a lightweight in-memory
 	// rolling tracker the CLI/gRPC health read depends on directly — it must
 	// not be gated behind the optional metricsConfig.Enabled flag. The API
@@ -321,7 +321,7 @@ func NewDaemonServer(
 		done:                   make(chan struct{}),
 	}
 
-	// Periodic full-fleet ship resync (sp-p1ci): re-syncs every player's ships
+	// Periodic full-fleet ship resync: re-syncs every player's ships
 	// from the API into the DB on a jittered ~hourly cadence, reusing the same
 	// syncAllShips core the startup sync runs. Config-driven with sane defaults
 	// (1h +/-10min); launched under supervision in Start.
@@ -332,7 +332,7 @@ func NewDaemonServer(
 	)
 
 	// Create container info getter function. Hoisted above the
-	// metricsConfig.Enabled block (sp-51ti) because the duty-cycle sampler
+	// metricsConfig.Enabled block because the duty-cycle sampler
 	// wired below needs it unconditionally — the same reasoning as the API
 	// budget tracker above: both are lightweight in-memory trackers the
 	// CLI/gRPC health read depends on directly, not optional Prometheus
@@ -353,7 +353,7 @@ func NewDaemonServer(
 	// repository which hulls are actively assigned to a container, for
 	// every player currently running at least one container (player-ID
 	// discovery mirrors FinancialMetricsCollector's getContainers-based
-	// approach). A captain-reserved hull (sp-i1ku) has an empty ContainerID
+	// approach). A captain-reserved hull has an empty ContainerID
 	// just like a genuinely idle one, so it correctly reads as non-earning
 	// with no special-casing needed.
 	shipAssignmentRepo := persistence.NewShipAssignmentRepository(db)
@@ -487,7 +487,7 @@ func NewDaemonServer(
 		// Store reference for lifecycle management
 		server.manufacturingMetricsCollector = mfgCollector
 
-		// Create absorption burn-in collector (sp-8cz9): the tour coordinator emits the
+		// Create absorption burn-in collector: the tour coordinator emits the
 		// cap-binding + ladder-incident counters through the global set here. Event-driven
 		// (no polling goroutine), so registration + the global wire is the whole lifecycle.
 		absorptionCollector := metrics.NewAbsorptionMetricsCollector()
@@ -514,7 +514,7 @@ func NewDaemonServer(
 		}
 		metrics.SetGlobalTreasuryReadCollector(treasuryReadCollector)
 
-		// Create tour instrumentation collector (sp-fbih): the tour coordinator emits the
+		// Create tour instrumentation collector: the tour coordinator emits the
 		// reposition/margins-death/reserve-floor/exit/duration/resolved-cap series through the
 		// global set here. Event-driven (no polling goroutine), so registration + the global
 		// wire is the whole lifecycle, mirroring the absorption collector above.
@@ -557,7 +557,7 @@ func NewDaemonServer(
 		// Store reference for lifecycle management
 		server.scoutMetricsCollector = scoutCollector
 
-		// Parked-probe sensing collector (sp-k6v8z): the sensing coordinator's reconcile
+		// Parked-probe sensing collector: the sensing coordinator's reconcile
 		// SETS all three gauges directly each tick — the pacer rate it just handed the scan
 		// rotation, the staleness percentiles of the parked fleet, and the placement census
 		// — so like the scout collector above this is event-driven and registration plus the
@@ -571,14 +571,14 @@ func NewDaemonServer(
 		}
 		metrics.SetGlobalParkedSensingCollector(parkedSensingCollector)
 
-		// Scan-budget collector (sp-e4dkw): the fleet's two scan allowances — the
+		// Scan-budget collector: the fleet's two scan allowances — the
 		// market budget and the shipyard budget — emit their admission decisions,
 		// forced overdrafts, rate and coverage denominator through the global set
-		// here. Until this existed BOTH budgets were armed and reached in production
-		// while publishing nothing at all, which is how shipyard reads ran at 3.2x
+		// here. Unpublished, BOTH budgets are armed and reached in production
+		// while signalling nothing at all, which is how shipyard reads ran at 3.2x
 		// their configured allowance unseen and how the shipyard knob's own documented
 		// operating procedure ("raise it when Forced overdrafts are persistently
-		// high") was unexecutable. Event-driven: each admission SETS the two gauges
+		// high") is unexecutable. Event-driven: each admission SETS the two gauges
 		// and increments the counters on values it re-derived that same call, so there
 		// is no polling goroutine and registration plus the global wire is the whole
 		// lifecycle, mirroring the parked-sensing collector above. The budgets resolve
@@ -671,9 +671,9 @@ func NewDaemonServer(
 		}
 		metrics.SetGlobalStallCollector(stallCollector)
 
-		// Opportunity-relocator collector (sp-j1i49): the counters that make the relocator's behaviour
-		// a RATE rather than an anecdote. It shipped emitting nothing, so a relocator losing every
-		// decision to the claim race was indistinguishable from one with nothing to do. Same lifecycle
+		// Opportunity-relocator collector: the counters that make the relocator's behaviour
+		// a RATE rather than an anecdote. Without them a relocator losing every
+		// decision to the claim race is indistinguishable from one with nothing to do. Same lifecycle
 		// and the same lazy-global reasoning as the stall collector above — the relocator handler is
 		// wired well before this constructor runs. A RELOCATOR-SPECIFIC series, never the tour's: this
 		// package already records that two hull-relocating engines keep separate series "so the two
@@ -709,7 +709,7 @@ func NewDaemonServer(
 func (s *DaemonServer) Start() error {
 	fmt.Printf("Daemon server listening on unix socket: %s\n", s.listener.Addr().String())
 
-	// Supervised-component wiring (sp-i01z). The captain recorder was
+	// Supervised-component wiring. The captain recorder was
 	// installed by main before Start; a nil recorder just means no events.
 	s.runCtx, s.runCancel = context.WithCancel(context.Background())
 	bootCtx, bootCancel := context.WithTimeout(s.runCtx, 10*time.Second)
@@ -761,12 +761,12 @@ func (s *DaemonServer) Start() error {
 		if err := s.shipStateScheduler.ScheduleAllPending(scheduleCtx); err != nil {
 			fmt.Printf("Warning: Failed to schedule pending state transitions: %v\n", err)
 		}
-		// Start background sweeper under supervision (sp-i01z): restarts
+		// Start background sweeper under supervision: restarts
 		// with backoff on crash, escalates a crash loop to the captain.
 		s.sup.Go(s.runCtx, "ship-state-sweeper", s.shipStateScheduler.RunSweeper)
 	}
 
-	// Start the periodic full-fleet ship resync under supervision (sp-p1ci):
+	// Start the periodic full-fleet ship resync under supervision:
 	// keeps DB ship state from drifting vs the live API between the
 	// event-driven updates. Like the sweeper, it restarts with backoff on
 	// crash and winds down on runCtx cancellation at shutdown.
@@ -774,7 +774,7 @@ func (s *DaemonServer) Start() error {
 		s.sup.Go(s.runCtx, "ship-resync", s.shipResyncScheduler.Run)
 	}
 
-	// Start the duty-cycle KPI sampler (sp-51ti). Unconditional, like the
+	// Start the duty-cycle KPI sampler. Unconditional, like the
 	// ship state scheduler above — not gated behind metricsConfig.Enabled.
 	if s.dutyCycleSampler != nil {
 		s.dutyCycleSampler.Start()
@@ -810,7 +810,7 @@ func (s *DaemonServer) Start() error {
 
 	// Recover RUNNING containers from previous daemon instance
 	// This runs in the background to avoid blocking daemon startup.
-	// Guard, not sup.Go (sp-i01z): recovery re-adopts containers and is NOT
+	// Guard, not sup.Go: recovery re-adopts containers and is NOT
 	// safely re-runnable — a restart could double-adopt. One attempt, loudly
 	// logged, panic-isolated; error behavior identical to today.
 	go supervise.Guard("container-recovery", func() {
@@ -872,7 +872,7 @@ func registerFlowsRoute(mux *http.ServeMux, reg *flowfeed.Registry) {
 
 // newFlowRegistry builds the daemon's flow registry with its live source wired.
 //
-// The live source is what makes the feed honest across a restart (sp-2uvec):
+// The live source is what makes the feed honest across a restart:
 // published snapshots die with the process and executors only re-publish at their
 // next plan adoption or leg arrival, so without it every hull is invisible for as
 // long as it takes to adopt a plan — tens of minutes while repositioning or
@@ -889,7 +889,7 @@ func newFlowRegistry(s *DaemonServer) *flowfeed.Registry {
 // liveTradingRuns enumerates the trading containers that are RUNNING right now,
 // off the SAME in-memory runner map ListContainers reads — so the flow feed can
 // never disagree with `spacetraders container list`, which is the source that was
-// right when the feed was wrong (sp-2uvec: feed 5, container list 13).
+// right when the feed was wrong (feed 5, container list 13).
 //
 // The program is read off the command's concrete type rather than launch
 // metadata: the command is what the runner actually executes, and restart
@@ -1016,7 +1016,7 @@ func (s *DaemonServer) handleShutdown() {
 	<-s.shutdownChan
 	fmt.Println("\nShutdown signal received, initiating graceful shutdown...")
 
-	// Cancel supervised components first (sp-i01z) so the sweeper stops
+	// Cancel supervised components first so the sweeper stops
 	// scheduling new writes while containers drain.
 	if s.runCancel != nil {
 		s.runCancel()
@@ -1027,7 +1027,7 @@ func (s *DaemonServer) handleShutdown() {
 		s.shipStateScheduler.Stop()
 	}
 
-	// Stop the duty-cycle KPI sampler (sp-51ti)
+	// Stop the duty-cycle KPI sampler
 	if s.dutyCycleSampler != nil {
 		s.dutyCycleSampler.Stop()
 	}
@@ -1073,23 +1073,23 @@ func (s *DaemonServer) primaryPlayerID(ctx context.Context) int {
 // syncAllShipsOnStartup syncs the live (open-era) player's ships from the API
 // into the database at daemon boot. After this sync, the database becomes the
 // source of truth for ship state. Thin wrapper over the shared syncAllShips
-// core (sp-p1ci), which the periodic ShipResyncScheduler also drives.
+// core, which the periodic ShipResyncScheduler also drives.
 func (s *DaemonServer) syncAllShipsOnStartup() error {
 	return s.syncAllShips(context.Background())
 }
 
 // syncAllShips re-syncs the live (open-era) player's ships from the API into
 // the DB. It is the shared core called at startup AND on every periodic resync
-// tick (sp-p1ci). The write path (SyncAllFromAPI) preserves the daemon-owned
-// dedicated_fleet tag per ship (sp-bi75/sp-90a3), so a repeated hourly resync
+// tick. The write path (SyncAllFromAPI) preserves the daemon-owned
+// dedicated_fleet tag per ship, so a repeated hourly resync
 // cannot clobber a `fleet assign` pin. The parent ctx bounds the sync (canceled
 // at shutdown) under a 60s timeout.
 //
-// sp-ig6x: sync ONLY s.primaryPlayerID — the open era's player — NOT every
+// Sync ONLY s.primaryPlayerID — the open era's player — NOT every
 // player row. A universe reset leaves dead prior-era rows behind (empty or
-// reset-date-mismatched tokens); the old playerRepo.ListAll loop synced them
-// too, and because every player shared this ONE 60s deadline, each dead row's
-// 401 burned the budget so the live player's ships never landed fresh —
+// reset-date-mismatched tokens); a playerRepo.ListAll loop syncs them
+// too, and because every player shares this ONE 60s deadline, each dead row's
+// 401 burns the budget so the live player's ships never land fresh —
 // fleet-wide synced_at froze 12h+. primaryPlayerID is the canonical open-era
 // resolver every other boot-scoped path already uses (ensureBootStandingCoordinators,
 // depot registry). On a normal single-player era it resolves the only player, so
@@ -1233,7 +1233,7 @@ func (s *DaemonServer) gracefulShutdownWithTimeout(timeout time.Duration) {
 // unknown-command-type errors. Data-driven: a future retirement adds one line here, with its
 // attribution.
 var retiredCommandTypes = map[string]bool{
-	// The factory-ops retirement (sp-hoj8u): goods-factory, factory-siting,
+	// The factory-ops retirement: goods-factory, factory-siting,
 	// worker-rebalancer, and the vestigial manufacturing coordinator.
 	"goods_factory_coordinator":     true,
 	"siting_coordinator":            true,
@@ -1278,10 +1278,10 @@ func (s *DaemonServer) RecoverRunningContainers(ctx context.Context) error {
 	fmt.Printf("Recovering %d container(s) from previous daemon instance (%d INTERRUPTED, %d RUNNING)...\n",
 		len(allContainers), len(interruptedContainers), len(runningContainers))
 
-	// sp-njpu: scope recovery to the current open era's player. After a universe
+	// Scope recovery to the current open era's player. After a universe
 	// reset / era close, containers belonging to a prior era's player must NOT be
 	// re-instantiated against the reset universe (cross-era zombies). Mirrors the
-	// open-era scoping of ReleaseAllActive on daemon startup (sp-s7b7). A nil openEra
+	// open-era scoping of ReleaseAllActive on daemon startup. A nil openEra
 	// means every era is closed, so nothing is live. A resolution error aborts
 	// recovery without touching any container so the next restart can retry.
 	openEra, err := persistence.NewEraRepository(s.db).FindOpenEra(ctx)
@@ -1289,7 +1289,7 @@ func (s *DaemonServer) RecoverRunningContainers(ctx context.Context) error {
 		return fmt.Errorf("failed to resolve open era for container recovery: %w", err)
 	}
 
-	// sp-tit8: track the outcome of every candidate so the pass can diff the
+	// Track the outcome of every candidate so the pass can diff the
 	// expected-running set (the INTERRUPTED+RUNNING rows loaded above) against
 	// what actually ended running, and announce anything that silently fell out —
 	// silence is the enemy, so any expected-but-missing hull that is NOT a
@@ -1302,11 +1302,11 @@ func (s *DaemonServer) RecoverRunningContainers(ctx context.Context) error {
 	deadEraCount := 0
 
 	for _, containerModel := range allContainers {
-		// sp-njpu: skip any container whose player is not the open-era player. This
+		// Skip any container whose player is not the open-era player. This
 		// runs before the worker-adoption checks so an entire dead-era subtree
 		// (coordinators AND their workers) stays down instead of being resurrected.
 		// Dead-era is a deliberate universe-reset skip, not a loss — exempt from the
-		// diff so a reset does not fire a storm of false lost-events (sp-tit8).
+		// diff so a reset does not fire a storm of false lost-events.
 		if openEra == nil || containerModel.PlayerID != openEra.PlayerID {
 			s.markContainerDeadEra(ctx, containerModel, openEra)
 			exempt[containerModel.ID] = true
@@ -1332,7 +1332,7 @@ func (s *DaemonServer) RecoverRunningContainers(ctx context.Context) error {
 		// field 3) known worker command types. markWorkerInterrupted marks them FAILED but
 		// deliberately does NOT release ship assignments (the coordinator resets those on
 		// its own recovery; releasing here would break SELL tasks holding cargo).
-		// sp-tit8: a worker is respawned by its coordinator by design, so it is NOT
+		// A worker is respawned by its coordinator by design, so it is NOT
 		// expected to end this pass running — exempt from the loss diff (a lost-event here
 		// would false-alarm on every restart) and counted separately, not as a failure.
 		if coordinatorID, hasCoordinator := config["coordinator_id"].(string); hasCoordinator && coordinatorID != "" {
@@ -1384,7 +1384,7 @@ func (s *DaemonServer) RecoverRunningContainers(ctx context.Context) error {
 		}
 	}
 
-	// sp-tit8: diff expected-vs-recovered and announce every candidate that
+	// Diff expected-vs-recovered and announce every candidate that
 	// neither ended running nor was a by-design skip. The summary NAMES each
 	// loss so an operator never has to guess which container "N failed" was.
 	lost := s.collectAndAnnounceLostContainers(allContainers, recovered, exempt, failReason)
@@ -1404,7 +1404,7 @@ func (s *DaemonServer) SetStorageRecovery(svc *storageApp.StorageRecoveryService
 	s.storageRecovery = svc
 }
 
-// SetYardScanner injects the fleet's metered shipyard reader (sp-mb0er).
+// SetYardScanner injects the fleet's metered shipyard reader.
 //
 // StartConstructionPipeline builds its own per-call MarketLocator, and that
 // locator's hull search must draw on the SAME one shipyard-read allowance as every
@@ -1461,7 +1461,7 @@ func (s *DaemonServer) recoverStorageOperations(ctx context.Context) {
 
 // recoveryLoss identifies a container that was expected to be RUNNING after boot
 // recovery but is not — carrying the id, type, and why for the loud captain event
-// and the named summary line (sp-tit8).
+// and the named summary line.
 type recoveryLoss struct {
 	id          string
 	commandType string
@@ -1473,7 +1473,7 @@ type recoveryLoss struct {
 // ended running (or was a by-design skip) and, for every container that fell
 // out, records an interrupt-class captain.EventContainerLost (which wakes the
 // captain via the watchkeeper) and logs a loud, greppable line naming it. This
-// is the sp-tit8 guarantee: a container that terminalizes unseen is impossible —
+// is the guarantee: a container that terminalizes unseen is impossible —
 // whatever the cause (recovery error, or a candidate that fell through every
 // branch uncategorized), the hull announces itself. Explicitly-failed candidates
 // carry their captured reason; an uncategorized one is reported as an unexpected
@@ -1509,7 +1509,7 @@ func (s *DaemonServer) collectAndAnnounceLostContainers(
 }
 
 // formatLostSummary renders the named-failure detail appended to the recovery
-// summary line, so "N lost" is never anonymous (sp-tit8). Empty when nothing
+// summary line, so "N lost" is never anonymous. Empty when nothing
 // was lost.
 func formatLostSummary(lost []recoveryLoss) string {
 	if len(lost) == 0 {
@@ -1523,7 +1523,7 @@ func formatLostSummary(lost []recoveryLoss) string {
 }
 
 // markContainerDeadEra marks a container FAILED because it belongs to a player whose
-// era is closed / the universe was reset (sp-njpu). It is NOT re-instantiated: reviving
+// era is closed / the universe was reset. It is NOT re-instantiated: reviving
 // it would burn API calls against a dead token on a reset map. Ship assignments are
 // left untouched — they belong to the reset universe, and the startup zombie-release
 // path (ReleaseAllActive) deliberately scopes only to the open-era player.
@@ -1590,7 +1590,7 @@ func (s *DaemonServer) recoverContainer(ctx context.Context, containerModel *per
 	// under "iterations", except goods_factory_coordinator which persists it
 	// under "max_iterations" (see StartGoodsFactory) — check both so a recovered
 	// factory resumes with its actual budget instead of silently collapsing to
-	// the single-iteration default (sp-perx).
+	// the single-iteration default.
 	//
 	// COORDINATOR-OWNED types are pinned to 1 regardless of config (sp-7yej
 	// invariant 3): their command's handler owns the whole run internally
@@ -1674,7 +1674,7 @@ func (s *DaemonServer) markContainerFailed(ctx context.Context, containerModel *
 	} else {
 		for _, ship := range assignedShips {
 			shipSymbol := ship.ShipSymbol()
-			// Release under CAS-retry (sp-wa7c): re-apply ForceRelease on the FRESH row
+			// Release under CAS-retry: re-apply ForceRelease on the FRESH row
 			// so a concurrent writer's cargo/nav update survives instead of being
 			// last-write-wins clobbered by the FindByContainer snapshot. Skip unless the
 			// hull is still on THIS failed container (a concurrent release or re-claim ->
@@ -1844,14 +1844,14 @@ func (s *DaemonServer) StopContainer(containerID string) error {
 	// Now stop the parent container
 	stopErr := runner.Stop()
 
-	// sp-86yb: a gas coordinator's storage_operations row must be terminalized
+	// A gas coordinator's storage_operations row must be terminalized
 	// alongside its container. Left at RUNNING, every manufacturing coordinator
 	// keeps discovering an "active" storage source at a now-dead coordinator and
 	// spawns STORAGE_ACQUIRE_DELIVER tasks against ships that are no longer there
 	// - the recurring storage wedge. ctx is still live here (unlike the stopped
 	// container's own cancelled ctx), so this write isn't racing shutdown.
 	//
-	// sp-3lj5: a warehouse container's storage_operations row needs the identical
+	// A warehouse container's storage_operations row needs the identical
 	// terminalization, for the identical reason. Left un-terminalized, the stale
 	// "zombie" RUNNING row keeps surfacing alongside its live replacement at the
 	// same waypoint - the stocker/tour warehouse lookup can resolve to the dead

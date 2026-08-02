@@ -8,7 +8,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 )
 
-// This file holds the sp-a3yn slice-C explorer BUY seam (the bridge sink) and DISPATCH loop — the
+// This file holds the slice-C explorer BUY seam (the bridge sink) and DISPATCH loop — the
 // two hooks the frontier coordinator drives after it computes the off-gate demand signal. Both are
 // optional-injection add-ons reached from ONE new line in ReconcileOnce (the frontier_depth_policy /
 // off_gate_demand idiom), so an unwired coordinator behaves byte-identically to pre-slice-C.
@@ -44,13 +44,13 @@ type ExplorerDispatchPort interface {
 	DispatchExplorer(ctx context.Context, playerID int, shipSymbol string, target OffGateTarget) error
 }
 
-// SetOffGateDemandSink wires the buy-path bridge (sp-a3yn). Leaving it unset publishes nowhere — the
+// SetOffGateDemandSink wires the buy-path bridge. Leaving it unset publishes nowhere — the
 // autosizer then reads no explorer demand and buys nothing (fail-safe).
 func (h *RunFrontierExpansionCoordinatorHandler) SetOffGateDemandSink(s OffGateDemandSink) {
 	h.offGateSink = s
 }
 
-// SetExplorerDispatchPort wires the slice-A warp dispatch (sp-a3yn). Leaving it unset makes the
+// SetExplorerDispatchPort wires the slice-A warp dispatch. Leaving it unset makes the
 // dispatch loop a no-op — a bought explorer simply sits idle until the port is wired.
 func (h *RunFrontierExpansionCoordinatorHandler) SetExplorerDispatchPort(p ExplorerDispatchPort) {
 	h.explorerDispatch = p

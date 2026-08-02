@@ -28,7 +28,7 @@ type PurchaseCargoCommand struct {
 	Units      int             // Total units to purchase
 	PlayerID   shared.PlayerID // Player ID for authorization
 
-	// MaxAskPerUnit (sp-9mkf) arms the per-tranche buy ceiling: before each tranche
+	// MaxAskPerUnit arms the per-tranche buy ceiling: before each tranche
 	// the handler re-verifies the live ask and aborts the remainder (left unbought)
 	// if it rises above this per-unit ceiling. 0 disables it — the unchanged path for
 	// every caller but the arb/circuit executors. See CargoTransactionCommand.
@@ -44,7 +44,7 @@ type PurchaseCargoResponse struct {
 	UnitsAdded       int // Total units successfully added to cargo
 	TransactionCount int // Number of API transactions executed
 
-	// CeilingAborted (sp-9mkf) is true when the per-tranche buy ceiling stopped the
+	// CeilingAborted is true when the per-tranche buy ceiling stopped the
 	// purchase early (live ask above MaxAskPerUnit); the remaining units were left
 	// unbought. CeilingObservedAsk is the live ask that tripped it (0 if unreadable).
 	CeilingAborted     bool
@@ -103,7 +103,7 @@ func (h *PurchaseCargoHandler) Handle(ctx context.Context, request common.Reques
 		GoodSymbol:    cmd.GoodSymbol,
 		Units:         cmd.Units,
 		PlayerID:      cmd.PlayerID,
-		MaxAskPerUnit: cmd.MaxAskPerUnit, // sp-9mkf per-tranche buy ceiling (0 → disabled)
+		MaxAskPerUnit: cmd.MaxAskPerUnit, // Per-tranche buy ceiling (0 → disabled)
 	}
 
 	// Delegate to unified handler

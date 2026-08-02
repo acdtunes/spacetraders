@@ -13,7 +13,7 @@ type fakeRetirer struct {
 	calls       int
 	ships       []string
 	err         error
-	dedications []string // sp-7r7w: ships dedicated as the exclusive purchasing ship
+	dedications []string // Ships dedicated as the exclusive purchasing ship
 	dedicateErr error
 	world       *incomeWorld // mutated on a successful retire (frigate untagged)
 }
@@ -51,10 +51,10 @@ type fakeHaulerAcquirer struct {
 	priceChks  int
 	lastAsk    int64    // what a cold yard reports: the last price it gave, 0 until one is read
 	placedOn   []string // the hub each BuyAndPlace was told to place on (order = buy order)
-	purchasers []string // sp-7r7w: the purchaser symbol each BuyAndPlace was told to use ("" = scan)
+	purchasers []string // The purchaser symbol each BuyAndPlace was told to use ("" = scan)
 	world      *incomeWorld
 
-	// sp-192k4: the trade-seed buy (BuyAndDedicate). Records the fleet tag + purchaser each call used and a
+	// The trade-seed buy (BuyAndDedicate). Records the fleet tag + purchaser each call used and a
 	// separate count, so a test can prove acquisition #2 was dedicated to "trade" (NOT placed on a contract hub).
 	dedicateBuys    int      // count of BuyAndDedicate calls that bought
 	dedicatedFleets []string // the fleet tag each BuyAndDedicate was told to dedicate to (order = call order)
@@ -85,7 +85,7 @@ func (f *fakeHaulerAcquirer) BuyAndPlace(ctx context.Context, playerID int, ship
 	return BuyResult{ShipSymbol: "HAULER-NEW", Price: f.price}, nil
 }
 
-// BuyAndDedicate is the sp-192k4 trade-seed buy: it records the fleet tag + purchaser it was told to use and
+// BuyAndDedicate is the trade-seed buy: it records the fleet tag + purchaser it was told to use and
 // (when a world is set) grows the world's trade-hull count so a multi-tick test sees the seeded signal appear.
 func (f *fakeHaulerAcquirer) BuyAndDedicate(ctx context.Context, playerID int, shipType, yard, fleet, purchaserSymbol string) (BuyResult, error) {
 	if f.buyErr != nil {
@@ -124,7 +124,7 @@ type fakeFrigateLoop struct {
 	calls     int
 	ships     []string
 	err       error
-	stopCalls int      // sp-7r7w: StopLoop invocations (the first-hauler pivot)
+	stopCalls int      // StopLoop invocations (the first-hauler pivot)
 	stopped   []string // ships whose loop StopLoop was asked to stop
 	stopErr   error
 	world     *incomeWorld
@@ -171,8 +171,8 @@ type incomeWorld struct {
 	hasPurchaser             bool
 	probeCount               int  // sp-rype: provisioning progress — the frigate-loop start gates on probes≥target
 	frigateLoopRunning       bool // sp-rype: the frigate's own contract loop is running (earner-signal)
-	frigateCargoEmpty        bool // sp-7r7w: the frigate carries no contract cargo (the pivot safe point)
-	commandFrigatePurchasing bool // sp-7r7w: the frigate is the exclusive purchasing ship (post-pivot)
+	frigateCargoEmpty        bool // The frigate carries no contract cargo (the pivot safe point)
+	commandFrigatePurchasing bool // The frigate is the exclusive purchasing ship (post-pivot)
 	tradeHullCount           int  // sp-192k4: 'trade'-dedicated hulls now — the observable trade-seeded signal
 }
 
@@ -261,7 +261,7 @@ func (w *incomeWorld) addHauler(hub string) {
 	w.haulers = append(w.haulers, HaulerSnapshot{Symbol: "HAULER-NEW", Waypoint: hub})
 }
 
-// addTradeHull models the sp-192k4 trade-seed: the bought hull is dedicated 'trade', so the observable
+// addTradeHull models the trade-seed: the bought hull is dedicated 'trade', so the observable
 // trade-hull count grows — the durable "seeded" signal a later tick reads to stop re-seeding.
 func (w *incomeWorld) addTradeHull() {
 	w.mu.Lock()
@@ -330,7 +330,7 @@ func TestBootstrap_Income_RetiresTaggedFrigate(t *testing.T) {
 	obs.CommandFrigateOnContract = true
 	obs.BatchContractRunning = true         // isolate: don't also launch batch-contract
 	obs.Haulers = make([]HaulerSnapshot, 4) // isolate: cap met, no buy
-	obs.TradeHullCount = 1                  // sp-192k4: post-seed state — isolate from the trade-seed detour
+	obs.TradeHullCount = 1                  // Post-seed state — isolate from the trade-seed detour
 	ret := &fakeRetirer{}
 	h := newIncomeHandler(obs, ret, &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true}, &fakeContractRunner{})
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
@@ -348,7 +348,7 @@ func TestBootstrap_Income_SkipsUntaggedFrigate(t *testing.T) {
 	obs.CommandFrigateOnContract = false // already retired
 	obs.BatchContractRunning = true
 	obs.Haulers = make([]HaulerSnapshot, 4)
-	obs.TradeHullCount = 1 // sp-192k4: post-seed state — isolate from the trade-seed detour
+	obs.TradeHullCount = 1 // Post-seed state — isolate from the trade-seed detour
 	ret := &fakeRetirer{}
 	h := newIncomeHandler(obs, ret, &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true}, &fakeContractRunner{})
 	h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
@@ -363,7 +363,7 @@ func TestBootstrap_Income_LaunchesBatchContractWhenNotRunning(t *testing.T) {
 	obs := incomeObs()
 	obs.BatchContractRunning = false
 	obs.Haulers = make([]HaulerSnapshot, 4) // isolate: cap met, no buy
-	obs.TradeHullCount = 1                  // sp-192k4: post-seed state — isolate from the trade-seed detour
+	obs.TradeHullCount = 1                  // Post-seed state — isolate from the trade-seed detour
 	run := &fakeContractRunner{}
 	h := newIncomeHandler(obs, &fakeRetirer{}, &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true}, run)
 	res, _ := h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
@@ -379,7 +379,7 @@ func TestBootstrap_Income_SkipsBatchContractWhenRunning(t *testing.T) {
 	obs := incomeObs()
 	obs.BatchContractRunning = true
 	obs.Haulers = make([]HaulerSnapshot, 4)
-	obs.TradeHullCount = 1 // sp-192k4: post-seed state — isolate from the trade-seed detour
+	obs.TradeHullCount = 1 // Post-seed state — isolate from the trade-seed detour
 	run := &fakeContractRunner{}
 	h := newIncomeHandler(obs, &fakeRetirer{}, &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true}, run)
 	h.reconcileOnce(ctxWithLogger(&capturingLogger{}), baseCmd())
@@ -413,7 +413,7 @@ func TestBootstrap_Income_BuysHaulerOnFirstSlot(t *testing.T) {
 
 func TestBootstrap_Income_CapitalGateBlocksHauler(t *testing.T) {
 	obs := incomeObs()
-	obs.Treasury = 150000 // cushion = 150000−300000 = −150000, below the 50k working-capital floor → blocked (sp-acv5)
+	obs.Treasury = 150000 // cushion = 150000−300000 = −150000, below the 50k working-capital floor → blocked
 	obs.BatchContractRunning = true
 	acq := &fakeHaulerAcquirer{price: 300000, yard: "Y", readable: true}
 	h := newIncomeHandler(obs, &fakeRetirer{}, acq, &fakeContractRunner{})
@@ -512,7 +512,7 @@ func TestBootstrap_Income_OneHaulerPerTick(t *testing.T) {
 func TestBootstrap_Income_PlacementSkipsServedSlot(t *testing.T) {
 	obs := incomeObs()
 	obs.BatchContractRunning = true
-	obs.TradeHullCount = 1                                              // sp-192k4: post-seed — a 2nd+ contract hull buys (not the trade-seed)
+	obs.TradeHullCount = 1                                              // Post-seed — a 2nd+ contract hull buys (not the trade-seed)
 	obs.Haulers = []HaulerSnapshot{{Symbol: "H1", Waypoint: "X1-HUBA"}} // first slot already served
 	acq := &fakeHaulerAcquirer{price: 100000, yard: "Y", readable: true}
 	h := newIncomeHandler(obs, &fakeRetirer{}, acq, &fakeContractRunner{})
@@ -527,7 +527,7 @@ func TestBootstrap_Income_PlacementSkipsServedSlot(t *testing.T) {
 func TestBootstrap_Income_NoBuyWhenTargetMet(t *testing.T) {
 	obs := incomeObs()
 	obs.BatchContractRunning = true
-	obs.TradeHullCount = 1          // sp-192k4: post-seed — isolate the target guard (no trade-seed detour)
+	obs.TradeHullCount = 1          // Post-seed — isolate the target guard (no trade-seed detour)
 	obs.Haulers = []HaulerSnapshot{ // haulerTarget haulers, one per slot → the fixed target is met
 		{Waypoint: "X1-HUBA"}, {Waypoint: "X1-HUBB"}, {Waypoint: "X1-HUBC"}, {Waypoint: "X1-HUBD"},
 	}
@@ -544,7 +544,7 @@ func TestBootstrap_Income_NoBuyWhenTargetMet(t *testing.T) {
 func TestBootstrap_Income_Recovery_NoDoubleBuy(t *testing.T) {
 	obs := incomeObs()
 	obs.BatchContractRunning = true
-	obs.TradeHullCount = 1 // sp-192k4: post-seed — isolate the recovery count guard (no trade-seed detour)
+	obs.TradeHullCount = 1 // Post-seed — isolate the recovery count guard (no trade-seed detour)
 	obs.Haulers = []HaulerSnapshot{{Waypoint: "X1-HUBA"}, {Waypoint: "X1-HUBB"}, {Waypoint: "X1-HUBC"}, {Waypoint: "X1-HUBD"}}
 	acq := &fakeHaulerAcquirer{price: 100000, yard: "Y", readable: true}
 	h := newIncomeHandler(obs, &fakeRetirer{}, acq, &fakeContractRunner{})
@@ -614,7 +614,7 @@ func frigateLoopObs() Observation {
 	obs.CommandFrigateID = "FRIGATE-1"
 	obs.FrigateContractLoopRunning = false
 	obs.BatchContractRunning = true // isolate: don't also launch the coordinator
-	// sp-7r7w: the frigate loop is the PRE-hauler earner — it starts only at 0 haulers. The staged buy
+	// The frigate loop is the PRE-hauler earner — it starts only at 0 haulers. The staged buy
 	// therefore also runs on this fixture; it is left fully affordable and placeable so it completes
 	// without raising a blocker of its own, isolating these pins to the loop-start action.
 	obs.Haulers = nil
@@ -651,7 +651,7 @@ func TestBootstrap_Income_SkipsFrigateLoopWhenAlreadyRunning(t *testing.T) {
 	}
 }
 
-// juggle order (sp-t39j): buy the initial probes FIRST, THEN earn — the loop must not start while the
+// juggle order: buy the initial probes FIRST, THEN earn — the loop must not start while the
 // frigate is still needed as the probe buyer (probes below target).
 func TestBootstrap_Income_SkipsFrigateLoopBeforeProvisioned(t *testing.T) {
 	obs := frigateLoopObs()
@@ -725,7 +725,7 @@ func TestBootstrap_Income_FrigateLoopStartedExactlyOnce(t *testing.T) {
 		frigateID: "FRIGATE-1", frigateOnContract: false, batchRunning: true,
 		probeCount:    3, // provisioned
 		incomePerHour: 0, hasPurchaser: true,
-		// sp-7r7w: the pre-hauler loop starts only at 0 haulers; leave NO viable hubs (markets/goods unset)
+		// The pre-hauler loop starts only at 0 haulers; leave NO viable hubs (markets/goods unset)
 		// so the hauler-buy step is not "needed" — isolating the frigate-loop lifecycle across ticks.
 	}
 	loop := &fakeFrigateLoop{world: world}
@@ -761,7 +761,7 @@ func TestBootstrap_IncomeAcceptance_RetiresLaunchesRampsHaulers(t *testing.T) {
 		probeCount:     3, // provisioned (probe_target 3) → COLDSTART-labeled
 		placementSlots: incomeSlots(),
 		incomePerHour:  0, hasPurchaser: true,
-		// sp-192k4: post-seed state (a trade hull already exists) so this test stays a PURE contract ramp;
+		// Post-seed state (a trade hull already exists) so this test stays a PURE contract ramp;
 		// the #1-contract → #2-trade routing is covered by TestBootstrap_TradeSeedAcceptance.
 		tradeHullCount: 1,
 	}

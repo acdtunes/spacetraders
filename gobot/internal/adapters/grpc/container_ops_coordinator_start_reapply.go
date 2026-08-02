@@ -9,7 +9,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 )
 
-// The SHARED coordinator-(re)start re-apply (sp-rsgc), generalizing the sp-ve3q frontier
+// The SHARED coordinator-(re)start re-apply, generalizing the frontier
 // fix. A coordinator whose `start` verb mints a fresh container id, builds a config from
 // CLI flags, and Add()s it will — on relaunch of a STOPPED coordinator — orphan the tuned
 // row and come up on config-file DEFAULTS, silently wiping every operator `tune`. The
@@ -56,7 +56,7 @@ type coordinatorSafetyKnob struct {
 // coordinatorStartConfig loads the last persisted live-config for the player's coordinator
 // of spec.containerType and overlays the fresh start config on top of it, so relaunching a
 // previously-stopped coordinator via its `start` verb RE-ADOPTS its live-tuned knobs
-// (sp-rsgc) instead of silently reverting to config-file defaults. A player with no prior
+// instead of silently reverting to config-file defaults. A player with no prior
 // coordinator of the type gets the base config verbatim (byte-identical fresh start). It
 // also returns operator warnings for any credit-moving safety knob a (re)start resolved to
 // a permissive value.
@@ -74,7 +74,7 @@ func (s *DaemonServer) coordinatorStartConfig(ctx context.Context, playerID int,
 }
 
 // mergeCoordinatorStartConfig overlays a fresh start's config on top of the last persisted
-// config so a relaunch RE-ADOPTS the live-tuned knobs (sp-rsgc). With no prior config it
+// config so a relaunch RE-ADOPTS the live-tuned knobs. With no prior config it
 // returns base UNCHANGED — a fresh coordinator comes up on config-file defaults exactly as
 // before. Otherwise the prior config is the base (carrying every tune the daemon-restart
 // path would rebuild), with the spec's authoritative keys taken from the new start and its
@@ -103,7 +103,7 @@ func mergeCoordinatorStartConfig(prior, base map[string]interface{}, spec coordi
 }
 
 // coordinatorStartSafetyWarnings flags every credit-moving safety knob a (re)start resolved
-// to a PERMISSIVE value (sp-rsgc backstop, generalizing sp-ve3q). A knob resolves permissive
+// to a PERMISSIVE value (backstop, generalizing sp-ve3q). A knob resolves permissive
 // when its effective value is <= 0 — i.e. neither the carried config nor a start flag gives
 // it a positive value AND its documented default is 0 (disabled), e.g. frontier's
 // max_probe_price overpay ceiling. This does NOT change any knob's 0=disabled contract; it
@@ -168,14 +168,14 @@ func probeSensingStartSpec() coordinatorStartSpec {
 	}
 }
 
-// autoOutfitStartSpec is the guarded auto-outfit re-apply spec (sp-rsgc). The launch config
+// autoOutfitStartSpec is the guarded auto-outfit re-apply spec. The launch config
 // is identity-only — every tunable knob defaults in the coordinator and is live-tunable — so
 // there are NO numeric start flags; the only authoritative keys are the new container id and
 // the launch-time dry-run mode (auto_outfit_launch_dry_run), which a live relaunch clears.
 // No safety knob: price_ceiling (default 500000) floors at a positive default in
-// resolveAutoOutfitConfig, so it can never resolve permissive. (The proportional
-// treasury_reserve knob this comment used to pair it with is gone — sp-05glh replaced it with
-// the flat, non-tunable common.ImmutableReserveFloor.)
+// resolveAutoOutfitConfig, so it can never resolve permissive. (There is no proportional
+// treasury_reserve knob to pair with it: the reserve is the flat, non-tunable
+// common.ImmutableReserveFloor.)
 func autoOutfitStartSpec() coordinatorStartSpec {
 	return coordinatorStartSpec{
 		containerType:     string(container.ContainerTypeAutoOutfitCoordinator),

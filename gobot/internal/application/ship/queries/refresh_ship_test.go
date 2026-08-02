@@ -37,7 +37,7 @@ func (s *refreshStubShipRepo) Save(_ context.Context, ship *navigation.Ship) err
 	return nil
 }
 
-// SaveWithRetry models the real repository's re-load-and-re-apply path (sp-wa7c):
+// SaveWithRetry models the real repository's re-load-and-re-apply path:
 // the freshly re-loaded row is the just-synced ship, so the closure is applied to
 // syncedShip and the released aggregate is captured exactly as Save would. A
 // closure that reports no change (already released / re-claimed elsewhere) persists
@@ -84,7 +84,7 @@ func newAssignedRefreshTestShip(t *testing.T, symbol, containerID string) *navig
 }
 
 // newCaptainReservedRefreshTestShip builds a ship reserved by the captain
-// directly (sp-i1ku) rather than claimed by any container.
+// directly rather than claimed by any container.
 func newCaptainReservedRefreshTestShip(t *testing.T, symbol, reason string) *navigation.Ship {
 	t.Helper()
 	location, _ := shared.NewWaypoint("X1-AU21-K82", 0, 0)
@@ -190,7 +190,7 @@ func dispatchRefresh(t *testing.T, handler *RefreshShipHandler, shipSymbol strin
 // The trade-route CLI runner died after persisting a claim, then its PENDING
 // container row was reaped — the ships row references a container that no longer
 // exists. Refresh must recognise the dangling reference as orphaned and free the
-// hull (sp-vjwb).
+// hull.
 func TestRefreshShip_ClearsClaimWhenOwningContainerIsGone(t *testing.T) {
 	ship := newAssignedRefreshTestShip(t, "TORWIND-3", "trade-route-TORWIND-3-78dd6806")
 	repo := &refreshStubShipRepo{syncedShip: ship}
@@ -258,7 +258,7 @@ func TestRefreshShip_KeepsClaimWhenOwningContainerIsRunning(t *testing.T) {
 	}
 }
 
-// Safety regression (sp-9xc0): INTERRUPTED means the container was RUNNING when
+// Safety regression: INTERRUPTED means the container was RUNNING when
 // the daemon stopped and is resurrected by restart recovery — it is a live,
 // recoverable owner, not a terminal one. The terminal-state extension below must
 // not sweep INTERRUPTED in alongside COMPLETED/FAILED/STOPPED.
@@ -279,7 +279,7 @@ func TestRefreshShip_KeepsClaimWhenOwningContainerIsInterrupted(t *testing.T) {
 	}
 }
 
-// sp-9xc0: dock-TORWIND-6-e592be41 reached COMPLETED without ever firing its
+// Dock-TORWIND-6-e592be41 reached COMPLETED without ever firing its
 // claim release, so ship T6 stayed pinned at F45 with 43 FAB_MATS aboard —
 // forever, since 'container stop' also refuses a container already in a
 // terminal state, leaving no manual escape. A terminal container (COMPLETED,
@@ -300,7 +300,7 @@ func TestRefreshShip_ClearsClaimWhenOwningContainerIsStopped(t *testing.T) {
 
 // assertTerminalContainerClaimCleared drives RefreshShip for a ship whose
 // claiming container reports the given terminal status and asserts the claim
-// was released exactly once (sp-9xc0).
+// was released exactly once.
 func assertTerminalContainerClaimCleared(t *testing.T, status string) {
 	t.Helper()
 	ship := newAssignedRefreshTestShip(t, "TORWIND-6", "dock-TORWIND-6-e592be41")

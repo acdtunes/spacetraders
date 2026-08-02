@@ -74,7 +74,7 @@ func (h *TransferCargoHandler) Handle(ctx context.Context, request common.Reques
 			cmd.ToShip, toShip.CurrentLocation().Symbol)
 	}
 
-	// 5. Align nav state, then transfer (sp-5qs1). This command is the warehouse
+	// 5. Align nav state, then transfer. This command is the warehouse
 	// DEPOSIT transfer: FromShip is the mobile visitor delivering cargo, ToShip is
 	// the stationary, coordinator-owned storage hull (the warehouse). SpaceTraders
 	// rejects the transfer with API 4271 unless both hulls share a nav state, so the
@@ -85,7 +85,7 @@ func (h *TransferCargoHandler) Handle(ctx context.Context, request common.Reques
 		return nil, fmt.Errorf("failed to transfer cargo: %w", err)
 	}
 
-	// 6. Persist each hull's own delta under CAS-retry (sp-wa7c): re-apply on the
+	// 6. Persist each hull's own delta under CAS-retry: re-apply on the
 	// FRESH row so a concurrent writer's fields on either hull survive instead of
 	// being last-write-wins clobbered by these pre-transfer snapshots. The visitor
 	// (FromShip) owns its post-alignment nav + the cargo it shipped out; the

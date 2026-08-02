@@ -93,7 +93,7 @@ type GateNeighbours interface {
 	// PassableGraph returns the WHOLE topology in one read: the same two questions
 	// Neighbours and Mapped answer per system, answered for every system at once.
 	//
-	// IT EXISTS BECAUSE REACHABILITY IS TRANSITIVE (sp-1r08q). Asking "can a hull
+	// IT EXISTS BECAUSE REACHABILITY IS TRANSITIVE. Asking "can a hull
 	// walk to this system?" needs a walk, and a walk over the per-system readers
 	// costs one store round trip per system reached — measured at ~1,070 reads and
 	// ~750ms against the live graph, on a 30s tick. The same rows arrive in a
@@ -284,16 +284,15 @@ type ExpandPorts struct {
 	// probe-listing memo makes, wired here so staging can prefer a yard we have
 	// EVIDENCE sells probes over one the trait fallback merely guessed at.
 	//
-	// OPTIONAL: a nil memo leaves staging choosing the nearest staffed yard exactly
-	// as it did before this port existed.
+	// OPTIONAL: a nil memo leaves staging choosing the nearest staffed yard.
 	ListingMemo ProbeListingMemo
 	// GateRead is the DELIBERATE, bounded, fetch-through jump-gate read — the pass that learns
 	// where a system connects WITHOUT waiting for a hull to fly there. See gateread.go.
 	//
 	// It is a SECOND port beside Gates rather than a widening of it, because Gates is a pure store
 	// read by contract and must stay one. A nil reader is a WIRING GAP, not a feature switch: the
-	// pass does nothing and the tick behaves exactly as it did before the port existed, in the same
-	// spirit as OffGatePorts. The daemon wires it.
+	// pass does nothing and the rest of the tick is unaffected, in the same spirit as OffGatePorts.
+	// The daemon wires it.
 	GateRead GateReader
 	// OffGate is the warp-expansion slice: the ports that raise explorer demand and warp an
 	// explorer past a sealed gate frontier. See offgate.go.
@@ -312,10 +311,10 @@ type ExpandKnobs struct {
 	// probes a cycle for hours (sp-com1h). See BuyKnobs.SpendEnabled, which is fed
 	// from the same resolved value on the same tick.
 	//
-	// WHAT IT USED TO BE, AND WHAT THAT COST. This was `Enabled`, and it returned
-	// the tick before its first port call — so an operator who wanted to stop
-	// BUYING PROBES also stopped markFrontier, which is a ledger write off stored
-	// adjacency and costs neither a credit nor an API call. Measured live: with the
+	// WHAT A WHOLE-ENGINE SWITCH COSTS INSTEAD. Returning the tick before the first
+	// port call also stops markFrontier, which is a ledger write off stored
+	// adjacency and costs neither a credit nor an API call, so an operator who
+	// wanted to stop BUYING PROBES stops discovery too. Measured live: with the
 	// switch off, new systems priced per hour fell to 1, 1, 5 across three hours
 	// against 20 in the first hour back on, while 308 idle probes we already owned
 	// stood unused. They were not blocked from moving — dispatchIdleOrphans and the
@@ -519,7 +518,7 @@ func AdvanceExpansion(
 	// AFTER THE GATE READ, DELIBERATELY. That pass spends API budget and no
 	// credits, and it is what keeps the adjacency store growing — without it
 	// markFrontier can only ever re-walk the neighbours we already hold, so the
-	// discovery half would drain and stall exactly as the whole engine used to.
+	// discovery half would drain and stall.
 	//
 	// EVERYTHING BELOW THIS LINE EITHER COMMANDS A HULL OR RAISES A PURCHASE
 	// INTENT. That is the invariant to preserve when adding a pass: if it can move
@@ -596,7 +595,7 @@ func AdvanceExpansion(
 // --- the ledger's working view ----------------------------------------------
 
 // slotKey addresses ONE placement row, and it mirrors the ledger's primary key
-// exactly (sp-dpfp8). A waypoint on its own stopped being an address the moment a
+// exactly. A waypoint on its own stopped being an address the moment a
 // yard could be scanning as a MARKET placement and staging a seed as a SPARE at
 // the same time; keyed on the waypoint alone this book collapsed the two into
 // one entry and reported whichever row it read last.
@@ -613,8 +612,8 @@ type slotBook struct {
 	// state holds every occupied (waypoint, KIND) placement's state. Occupancy is
 	// what keeps a write MEANINGFUL: a declaration aimed at a placement that is
 	// already there is a write with nothing to say.
-	// It is no longer what keeps a write SAFE — the ledger's per-column
-	// ownership (sp-wgjb7) is what prevents a declaration reassigning a hull.
+	// It is NOT what keeps a write SAFE — the ledger's per-column
+	// ownership is what prevents a declaration reassigning a hull.
 	//
 	// KEYED ON THE PAIR, and that is the whole fix for the expansion freeze. A
 	// waypoint-keyed occupancy test answered "something is here" when the question
@@ -796,13 +795,12 @@ func takeSupplyFor(
 			// No hull behind it, so it is only supply if the queue could still buy one
 			// for it — and "could buy" now means BOTH halves of what staging requires.
 			//
-			// THE THIRD CALLER OF ONE RULE. staffedAt alone was the whole definition of
-			// fundable when this was written; staging has since learned that a yard must
-			// also not be known to sell no probe, and this is the third consumer of that
-			// rule. Left on the old half it reads a want at a staffed, probe-less yard as
-			// a seed already on order, skips the target, and so the row that blocks the
-			// target is the row that can never be filled — the suppression loop closed in
-			// 554878e2, reopened because the DEFINITION of fundable moved underneath it.
+			// THE THIRD CALLER OF ONE RULE. Fundable is staffedAt AND not known to
+			// sell no probe, and this is the third consumer of that rule — the
+			// definition moves underneath this call site whenever staging changes it.
+			// Left on the staffed half alone it reads a want at a staffed, probe-less
+			// yard as a seed already on order, skips the target, and so the row that
+			// blocks the target is the row that can never be filled: a suppression loop.
 			//
 			// Reached through the trait pass rather than through a mistake: staging
 			// deliberately still stages at never-priced yards (that is how the fleet
@@ -836,7 +834,7 @@ func takeSupplyFor(
 // occupied reports whether a waypoint already carries a placement row OF THIS
 // KIND.
 //
-// The kind is the whole question (sp-dpfp8). A probe-selling yard is very often
+// The kind is the whole question. A probe-selling yard is very often
 // already a parked MARKET placement — that is what a yard worth buying at looks
 // like — and under a waypoint-only test that made it permanently ineligible to
 // stage a SPARE. The fleet's only two probe yards were both in exactly that
@@ -1185,14 +1183,13 @@ const SeedFlightUnbounded = 0
 // gateReach answers "how many gate hops is it from here to there?", bounded by
 // MaxWalkRings, from STORED adjacency alone.
 //
-// WHY IT EXISTS. Seed supply used to require DIRECT adjacency at both gates —
-// stagingYardFor would only stage at a yard in a system BORDERING the target,
-// and takeReachableSpare would only claim a spare parked in one. Gate
-// connectivity is sparse, so that exhausted almost immediately: measured on the
+// WHY IT EXISTS. Requiring DIRECT adjacency at both gates — staging only at a
+// yard in a system BORDERING the target, claiming only a spare parked in one —
+// exhausts the frontier almost immediately, because gate connectivity is
+// sparse: measured on the
 // live fleet, 33 unseeded systems carried uncharted waypoints and exactly ONE
 // was a direct neighbour of a system we occupied. Seven are within MaxWalkRings.
-// The frontier had run out of ring, and no amount of money, hulls or per-tick
-// budget could buy another one.
+// No amount of money, hulls or per-tick budget buys another ring.
 //
 // THE BOUND IS THE WALK'S, NOT A PREFERENCE. A seed further out than
 // MaxWalkRings is not merely expensive, it is UNROUTABLE: the adapter's
@@ -1225,10 +1222,10 @@ type gateReach struct {
 	// number would mean widening the seed's reach silently lengthened every
 	// placement draw too — which it did, until this field existed.
 	maxHops int
-	// gates is the gate-adjacency STORE read, narrowed from the ports struct it
-	// used to hold so this walker can serve any caller that has one — the buy
-	// queue's foothold path reaches for it through BuyPorts.Gates. Narrowing is
-	// what makes reuse possible without a second traversal of the same graph.
+	// gates is the gate-adjacency STORE read, narrowed so this walker can serve
+	// any caller that has one — the buy queue's foothold path reaches for it
+	// through BuyPorts.Gates. Narrowing is what makes reuse possible without a
+	// second traversal of the same graph.
 	gates GateNeighbours
 	// known is the tick's neighbour map, already read by readNeighbours. It
 	// covers every system in the ledger, which is nearly everything the search
@@ -1560,7 +1557,7 @@ func claimSpares(
 		// the alternative — leaving a stale spare row behind — would have the
 		// buy queue re-task a hull that has already left.
 		//
-		// RELEASED BY KIND, not by waypoint (sp-dpfp8). The spare was very likely
+		// RELEASED BY KIND, not by waypoint. The spare was very likely
 		// staged AT A YARD that is also a parked market — that co-location is the
 		// entire point of the wider key — and a waypoint-wide delete would take
 		// the MARKET row with it, dropping the probe scanning there out of the cap
@@ -1692,16 +1689,16 @@ func requestSeeds(
 // no SPARE placement of its own.
 //
 // WHERE WE CAN TRANSACT AND WHAT IS NEAR THE TARGET ARE TWO DIFFERENT QUESTIONS,
-// and this used to weld them: a yard had to be staffed AND sit within the
-// placement walk's couple of rings OF THE TARGET. The second half produced a
-// structural dead zone rather than a mere inefficiency — a target whose in-reach
-// systems all happen to lack a shipyard could never be seeded, however many
-// staffed yards the fleet owned elsewhere, and because a system with no shipyard
-// can never itself be staffed the dead zone propagated outward. Measured live it
+// AND WELDING THEM IS A STRUCTURAL DEAD ZONE rather than a mere inefficiency.
+// Require a yard to be staffed AND to sit within the placement walk's couple of
+// rings OF THE TARGET, and a target whose in-reach systems all happen to lack a
+// shipyard can never be seeded, however many staffed yards the fleet owns
+// elsewhere; because a system with no shipyard can never itself be staffed, the
+// dead zone propagates outward. Measured live it
 // left 18 of 23 unseeded targets unservable, including the only two systems whose
 // charting could add anything to the ledger.
 //
-// SO THE COUPLING IS GONE AND THE MONEY CONSTRAINT IS NOT. Eligibility is
+// SO THE TWO ARE NOT COUPLED AND THE MONEY CONSTRAINT IS NOT DROPPED. Eligibility is
 // routability — can a seed bought here actually fly to that target, bounded by
 // MaxSeedFlightHops, which is the bound the seed's own walk resolves under — and
 // candidates are ordered NEAREST FIRST, because a shorter flight is fewer ticks
@@ -1709,16 +1706,17 @@ func requestSeeds(
 // queue can only transact where a hull of ours stands, so a nearer yard we do not
 // hold is still skipped for a further one we do.
 //
-// "OUR OWN" IS ENFORCED, not merely intended. It used to be neither: the origins
-// this walks are every system carrying a screening VERDICT, and a verdict says
-// "screened and worth trading with", never "we have a hull there". So a seed was
-// happily staged at a yard in a system we had never visited, the buy queue —
-// which only buys where one of our hulls is already at the counter — refused it
-// on that tick and every tick after, and the target never got eyes. Measured on
-// the live fleet, every outstanding SPARE want sat in a system with zero probes.
+// "OUR OWN" IS ENFORCED, not merely intended, and nothing upstream supplies it:
+// the origins this walks are every system carrying a screening VERDICT, and a
+// verdict says "screened and worth trading with", never "we have a hull there".
+// Unenforced, a seed is staged at a yard in a system we have never visited, the
+// buy queue — which only buys where one of our hulls is already at the counter —
+// refuses it on that tick and every tick after, and the target never gets eyes.
+// Measured on the live fleet, every outstanding SPARE want sat in a system with
+// zero probes.
 //
-// The fix is the staffedYard test below, and it belongs HERE rather than in the
-// origin set. `neighbours` is shared with frontier propagation, which needs
+// The enforcement is the staffedYard test below, and it belongs HERE rather than
+// in the origin set. `neighbours` is shared with frontier propagation, which needs
 // every system whose gate adjacency we have measured precisely BECAUSE it has no
 // verdict yet; narrowing that map to occupied systems would silently collapse
 // the frontier back to one fully-charted ring at a time. Occupancy is a
@@ -1730,13 +1728,13 @@ func requestSeeds(
 // suppressing the correct request that could be made once a bordering system
 // finally is occupied. One bad row poisons its target indefinitely.
 //
-// The free-waypoint requirement started as a money guard: placement rows are
-// keyed on the waypoint, and writing a SPARE want over the yard's existing row
-// used to overwrite whatever state it held — dropping a parked probe out of the
+// The free-waypoint requirement is a money guard in depth: placement rows are
+// keyed on the waypoint, so writing a SPARE want over the yard's existing row
+// would overwrite whatever state it held — dropping a parked probe out of the
 // cap count and authorising the purchase of a replacement standing right there.
 //
-// The ledger now refuses that write on its own (UpsertSlotMetadata cannot touch
-// state or assigned_ship — sp-wgjb7), so the guard is defence in depth rather
+// The ledger refuses that write on its own (UpsertSlotMetadata cannot touch
+// state or assigned_ship), so this guard is defence in depth rather
 // than the only thing standing between a miss and a double purchase. It still
 // earns its place: staging a seed on an occupied yard would be pointless work,
 // and picking a free one is how two seed requests avoid the same waypoint.
@@ -2278,10 +2276,9 @@ func fillPlacement(
 // it stands that still needs charting, and reports whether it found one.
 //
 // Reachability is MaxWalkRings gate hops, because that is what a dispatched seed
-// now executes — the errand is re-stamped onto the new target and the seed walks
-// there a hop per tick, exactly as it walked to this one. It was one hop while
-// JumpTo was single-hop by construction, and leaving it there afterwards would
-// have made this the one place in the engine that refused reach the rest of it
+// executes — the errand is re-stamped onto the new target and the seed walks
+// there a hop per tick, exactly as it walked to this one. A one-hop bound here
+// would make this the one place in the engine that refuses reach the rest of it
 // grants: a finished hull standing two hops from a dark system would be parked
 // as a spare and a FRESH probe bought to cover the very target it was already
 // next to.
@@ -2413,13 +2410,12 @@ func standDownAsSpare(
 		}
 	}
 
-	// Asked of the SPARE half only (sp-dpfp8). This branch strands a hull — it
+	// Asked of the SPARE half only. This branch strands a hull — it
 	// stands the seed down with NO placement row, so the probe cap stops counting
 	// a probe we own, which is the money-unsafe direction and is why it is logged
-	// rather than passed over. Under the old waypoint-wide test a seed finishing
-	// on any placement at all landed here, including the common case of a market
-	// it had just charted. Now only a genuine SPARE-on-SPARE collision does, and
-	// everything else parks properly and stays counted.
+	// rather than passed over. The test is kind-scoped, so only a genuine
+	// SPARE-on-SPARE collision lands here — a seed finishing on a market it has
+	// just charted parks properly and stays counted.
 	if book.occupied(pos.Waypoint, SlotKindSpare) {
 		logging.LoggerFromContext(ctx).Log("WARN", "charting seed finished on a waypoint that already holds a spare placement; standing it down without a slot", map[string]interface{}{
 			"action":      "parked_sensing_seed_standdown_blocked",

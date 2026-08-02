@@ -77,7 +77,7 @@ func (c *callCounter) names() map[string]int {
 //
 // The lock is an artifact of this fake keeping both tables in one Go map. In
 // production the two paths ARE disjoint, by column: every writer of sensing_slots
-// names only the columns it owns (sp-wgjb7), so MarkScanned's stamp and spread
+// names only the columns it owns, so MarkScanned's stamp and spread
 // cannot be carried back to a stale value by a transition, a screen
 // re-declaration or a stand-down, whatever rows they meet on.
 //
@@ -435,7 +435,7 @@ func (f *psLedger) MarkScanned(_ context.Context, _ int, waypoint, _ string, at 
 
 // MarkScanAttempted mirrors the decline write: the PACING clock only. LastDataAt
 // is left exactly where it was, which is what keeps the staleness gauge honest
-// about a turn that produced nothing (sp-zml2u).
+// about a turn that produced nothing.
 func (f *psLedger) MarkScanAttempted(_ context.Context, _ int, waypoint, _ string, at time.Time) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -1,7 +1,7 @@
 package commands
 
 // run_longhaul_arb_leg_executor.go — the production binding of the worker's directedLegExecutor
-// port to the REUSED one-shot arb executor (RunArbCoordinatorHandler, sp-p4ua). This is the
+// port to the REUSED one-shot arb executor (RunArbCoordinatorHandler). This is the
 // reuse linchpin: a long-haul directed leg IS a guarded one-shot arb run, so the worker
 // composes RunArbCoordinatorHandler rather than re-implementing buy/travel/sell/held-cargo. The
 // mapping sets the money-envelope backstop — WorkingCapitalReserve = the 200k ContractScalerCushion
@@ -42,7 +42,7 @@ func arbCommandForLeg(cmd directedLegCommand) *RunArbCoordinatorCommand {
 		PlayerID:              cmd.PlayerID,
 		ContainerID:           cmd.ContainerID,
 		WorkingCapitalReserve: int(common.ContractScalerCushion),
-		// sp-ry741: align the reused arb leg's jump horizon — BOTH Guard-0's pre-buy delivery
+		// Align the reused arb leg's jump horizon — BOTH Guard-0's pre-buy delivery
 		// routability CHECK and the travel-to-sink FLIGHT — with the long-haul reposition bound. A
 		// long-haul lane's sell leg is 6–12 gate hops from its source (the whole reason long-haul
 		// exists — lanes beyond the 1-hop/5-hop horizon); at the default bound-5 the check vetoed every

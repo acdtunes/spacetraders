@@ -157,7 +157,7 @@ func (s *DaemonServer) injectFleetAutosizerConfig(config map[string]interface{})
 	if fa.ZeroEffectAlarmTicks != 0 {
 		config["autosizer_zero_effect_alarm_ticks"] = fa.ZeroEffectAlarmTicks
 	}
-	// Explorer class (sp-a3yn). The opt-in arming bool is written ONLY when true (an absent key reads
+	// Explorer class. The opt-in arming bool is written ONLY when true (an absent key reads
 	// as DISARMED, so nothing boot-arms it — mirrors warehouse_hulls_enabled).
 	if fa.ExplorerHullsEnabled {
 		config["autosizer_explorer_hulls_enabled"] = true
@@ -178,7 +178,7 @@ func (s *DaemonServer) injectFleetAutosizerConfig(config map[string]interface{})
 	// autosizer_contract_delivery_* keys are injected.
 }
 
-// buildFleetAutosizerCommand rebuilds the standing autosizer command (sp-1txd) from a persisted
+// buildFleetAutosizerCommand rebuilds the standing autosizer command from a persisted
 // launch config so a daemon restart re-adopts it. The [fleet_autosizer] knobs are resolved LIVE
 // from config.yaml just before this runs (resolveFleetAutosizerConfig in buildCommandForType), so
 // the persisted autosizer_* keys are transient — the reads below see the current config.yaml.

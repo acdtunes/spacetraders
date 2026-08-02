@@ -14,13 +14,12 @@ import (
 
 // FabricationTreeResolver builds the scarcity-gated supply-chain dependency tree for a candidate
 // fabrication material — the SAME engine (*SupplyChainResolver) the construction drain executes
-// (sp-yfzi). planFabrication uses it as its per-input FEASIBILITY oracle (sp-3bza): a material is
+// (sp-yfzi). planFabrication uses it as its per-input FEASIBILITY oracle: a material is
 // feasible to fabricate iff the resolver can build a COMPLETE tree for it within the depth ceiling
 // — every scarce intermediate that has a factory recurses, and every leaf resolves to a buyable
 // market. It is an OPTIONAL collaborator wired by SetTreeResolver: left unset (nil), planFabrication
-// falls back to the pre-sp-3bza gate (every IMMEDIATE input must be buyable at MODERATE+ now), so a
-// planner built without it is byte-identical to before. *SupplyChainResolver satisfies it via
-// BuildDependencyTree.
+// falls back to the pre-sp-3bza gate (every IMMEDIATE input must be buyable at MODERATE+ now).
+// *SupplyChainResolver satisfies it via BuildDependencyTree.
 type FabricationTreeResolver interface {
 	BuildDependencyTree(ctx context.Context, targetGood, systemSymbol string, playerID int) (*goods.SupplyChainNode, error)
 }
@@ -38,8 +37,8 @@ type ConstructionPipelinePlanner struct {
 	marketLocator    *MarketLocator
 	shipRepo         navigation.ShipRepository
 	clock            shared.Clock
-	// treeResolver is the sp-3bza fabrication FEASIBILITY oracle — the SAME scarcity-gated
-	// SupplyChainResolver the drain runs (sp-yfzi). Optional (wired by SetTreeResolver); nil falls
+	// treeResolver is the fabrication FEASIBILITY oracle — the SAME scarcity-gated
+	// SupplyChainResolver the drain runs. Optional (wired by SetTreeResolver); nil falls
 	// back to the pre-sp-3bza "every immediate input buyable at MODERATE+" gate.
 	treeResolver FabricationTreeResolver
 }
@@ -69,18 +68,18 @@ func NewConstructionPipelinePlanner(
 	}
 }
 
-// SetTreeResolver wires the scarcity-gated supply-chain resolver (sp-3bza) so planFabrication gates
+// SetTreeResolver wires the scarcity-gated supply-chain resolver so planFabrication gates
 // a material's feasibility on "SOURCEABLE within the depth ceiling" (buyable OR producible) — the
-// SAME verdict the sp-yfzi recursive drain reaches — instead of the stale "every immediate input
-// buyable at MODERATE+ now" gate that deferred a whole material when a deep input was scarce but
-// producible. Optional — the daemon injects the shared SupplyChainResolver singleton; left unset the
+// SAME verdict the recursive drain reaches — rather than on "every immediate input buyable at
+// MODERATE+ now", which defers a whole material when a deep input is scarce but producible.
+// Optional — the daemon injects the shared SupplyChainResolver singleton; left unset the
 // planner uses the pre-sp-3bza fallback. A setter (not a constructor arg) keeps the existing planner
 // constructor and its in-package tests unchanged (nil → fallback → byte-identical).
 func (p *ConstructionPipelinePlanner) SetTreeResolver(resolver FabricationTreeResolver) {
 	p.treeResolver = resolver
 }
 
-// admissionFloor resolves the pipeline's EXPORT admission floor (sp-yexq / unified gate-fill). A
+// admissionFloor resolves the pipeline's EXPORT admission floor (unified gate-fill). A
 // pipeline with NO explicit operator floor (empty minSupply) defaults to SCARCE — margin-blind
 // admission — so a gate material whose only source is SCARCE (e.g. ADVANCED_CIRCUITRY@D42) is
 // admitted and promoted automatically, no manual --min-supply. An explicit floor (non-empty
@@ -101,10 +100,10 @@ type StartOrResumeResult struct {
 
 	// DeferredMaterials names every material (trade symbol) that could not be
 	// sourced this call, in the same order the pipeline's materials were
-	// planned/loaded. Planning is never all-or-nothing (sp-ooba): a deferred
+	// planned/loaded. Planning is never all-or-nothing: a deferred
 	// material still gets a visible PENDING task that the SupplyMonitor
 	// re-sources later, but the operator needs the name surfaced here rather
-	// than a generic "no market" message (sp-560b) to go source it manually.
+	// than a generic "no market" message to go source it manually.
 	// Empty (nil) when every material was sourced.
 	DeferredMaterials []string
 }
@@ -118,7 +117,7 @@ type StartOrResumeResult struct {
 //   - supplyChainDepth: How deep to go in the supply chain (0=full, 1=raw only, 2=intermediates, 3=buy final)
 //   - maxWorkers: Maximum parallel workers (0=unlimited, default 5)
 //   - systemSymbol: System to search for markets (empty string = derive from constructionSite)
-//   - minSupply: caller-set EXPORT sourcing floor (sp-ezz9/sp-j2hq), e.g.
+//   - minSupply: caller-set EXPORT sourcing floor, e.g.
 //     "SCARCE". Empty string = "flag not passed this call" and never clobbers
 //     an already-persisted floor; it does NOT mean "reset to MODERATE". The
 //     floor is persisted on the pipeline (both for a new plan and when
@@ -170,7 +169,7 @@ func (p *ConstructionPipelinePlanner) StartOrResume(
 				existingPipeline.SetMinSupply(minSupply)
 				needsUpdate = true
 			}
-			// sp-yexq: a resumed pipeline that STILL has no explicit floor (empty — e.g. a gate pipeline
+			// A resumed pipeline that STILL has no explicit floor (empty — e.g. a gate pipeline
 			// created before unified gate-fill, now stuck with its SCARCE material deferred) is upgraded
 			// to the SCARCE admission default so the deferred-material recovery loop promotes it
 			// automatically, no manual --min-supply. Only FILLS an empty floor: an explicit operator
@@ -186,7 +185,7 @@ func (p *ConstructionPipelinePlanner) StartOrResume(
 				existingPipeline.SetGoodOverrides(goodOverrides)
 				needsUpdate = true
 			}
-			// sp-duljg: a resumed launch with an explicit --max-workers (>0) updates the persisted
+			// A resumed launch with an explicit --max-workers (>0) updates the persisted
 			// concurrent-worker cap — the SAME field the live `construction workers` verb writes. 0 is
 			// the unset sentinel (an omitted flag, and the bootstrap gate caller's value), so an
 			// idempotent re-run never clobbers a live-tuned pipeline's cap.
@@ -200,7 +199,7 @@ func (p *ConstructionPipelinePlanner) StartOrResume(
 				}
 			}
 
-			// sp-560b: a resumed pipeline's deferred materials live only in its
+			// A resumed pipeline's deferred materials live only in its
 			// persisted tasks (the local deferredMaterials slice below only
 			// exists during initial planning), so scan for them here too - the
 			// operator re-running `construction start` on an in-progress
@@ -268,11 +267,11 @@ func (p *ConstructionPipelinePlanner) StartOrResume(
 
 	// 4. Create pipeline
 	pipeline := manufacturing.NewConstructionPipeline(constructionSite, playerID, supplyChainDepth, maxWorkers)
-	// sp-yexq: resolve the admission floor ONCE — unified gate-fill defaults an unset floor to SCARCE
+	// Resolve the admission floor ONCE — unified gate-fill defaults an unset floor to SCARCE
 	// so scarce gate materials are admitted (and, once persisted, promoted) automatically; explicit
 	// and OFF are unchanged (admissionFloor is a no-op for both).
 	effectiveMinSupply := p.admissionFloor(minSupply)
-	// Persist the floor on the entity itself (sp-j2hq), not just pass it
+	// Persist the floor on the entity itself, not just pass it
 	// transiently to planMaterial below - a material that defers during THIS
 	// pass is recovered later by reading the floor back off the pipeline row.
 	pipeline.SetMinSupply(effectiveMinSupply)
@@ -300,11 +299,11 @@ func (p *ConstructionPipelinePlanner) StartOrResume(
 		systemSymbol = extractSystemSymbol(constructionSite)
 	}
 
-	// 7. Plan each material INDEPENDENTLY. This is the core of sp-r900: planning
-	// is no longer all-or-nothing. A material that cannot be sourced right now is
-	// DEFERRED (a visible PENDING task), not a fatal error - so the pipeline still
-	// saves and dispatches every sourceable material while the deferred one waits.
-	// The SupplyMonitor re-sources deferred tasks when supply regenerates.
+	// 7. Plan each material INDEPENDENTLY — planning is not all-or-nothing. A
+	// material that cannot be sourced right now is DEFERRED (a visible PENDING
+	// task), not a fatal error - so the pipeline still saves and dispatches every
+	// sourceable material while the deferred one waits. The SupplyMonitor
+	// re-sources deferred tasks when supply regenerates.
 	deferredMaterials := make([]string, 0)
 	for _, mat := range unfulfilledMaterials {
 		// sp-sdyo: resolve the EXPORT sourcing floor per material — a per-good override loosens the
@@ -377,7 +376,7 @@ type StopResult struct {
 	TasksCancelled int
 }
 
-// Stop cancels the active construction pipeline for a site (sp-yzrv). It:
+// Stop cancels the active construction pipeline for a site. It:
 //  1. Looks up the active (non-terminal) CONSTRUCTION pipeline for the site -
 //     FindByConstructionSite only ever returns PLANNING/EXECUTING pipelines,
 //     so "no pipeline" and "already stopped" both surface as the same clear
@@ -560,23 +559,23 @@ func (p *ConstructionPipelinePlanner) planMaterial(
 }
 
 // planFabrication stages the fabrication of targetGood as a SINGLE dependency-free
-// DELIVER_TO_CONSTRUCTION task carrying the factory (sp-qmp8). ok=false (with a nil error) means
+// DELIVER_TO_CONSTRUCTION task carrying the factory. ok=false (with a nil error) means
 // a factory or an input is not sourceable within the depth ceiling, so the whole material should be
 // deferred rather than partially planned. Only infrastructure failures are returned as errors.
 //
 // It does NOT stage separate ACQUIRE_DELIVER input legs. The construction drain executes the
 // delivery task by driving ProduceGood(Fabricate) on the shared engine, which sources the inputs
-// (buying OR recursively producing them, sp-yfzi), feeds the factory, and harvests the output
-// itself — one engine (the sp-jav2 regression restore). Staging input legs here would only create a
-// dependency the thin drain never satisfies, blocking the delivery task forever (the exact
-// orphaned-legs state sp-qmp8 fixed). The buy-vs-produce DECISION is unchanged: planMaterial still
-// fabricates only a non-buyable good within the depth ceiling; this method only stops decomposing
-// that decision into legs.
+// (buying OR recursively producing them), feeds the factory, and harvests the output
+// itself — one engine. Staging input legs here would only create a
+// dependency the thin drain never satisfies, orphaning those legs and blocking the delivery task
+// forever. The buy-vs-produce DECISION lives in planMaterial, which
+// fabricates only a non-buyable good within the depth ceiling; this method only declines to
+// decompose that decision into legs.
 //
-// sp-3bza: the FEASIBILITY gate that decides stage-vs-defer is now "every input is SOURCEABLE
-// within the depth ceiling" (buyable OR producible), not the stale "every immediate input buyable
-// at MODERATE+ now". The old gate deferred a whole material whenever a deep input was scarce — even
-// when the sp-yfzi recursive drain could PRODUCE that input (e.g. ADVANCED_CIRCUITRY deferred
+// The FEASIBILITY gate that decides stage-vs-defer is "every input is SOURCEABLE
+// within the depth ceiling" (buyable OR producible), NOT "every immediate input buyable
+// at MODERATE+ now": the latter defers a whole material whenever a deep input is scarce — even
+// when the recursive drain could PRODUCE that input (e.g. ADVANCED_CIRCUITRY deferred
 // because ELECTRONICS is SCARCE, though ELECTRONICS is fabricable from buyable SILICON+COPPER),
 // stalling the gate leg. fabricationInputsSourceable defers only a TRULY unsourceable input.
 func (p *ConstructionPipelinePlanner) planFabrication(
@@ -601,9 +600,9 @@ func (p *ConstructionPipelinePlanner) planFabrication(
 		return nil, false, nil
 	}
 
-	// FEASIBILITY (sp-3bza): defer the whole material only when an input is TRULY unsourceable
+	// FEASIBILITY: defer the whole material only when an input is TRULY unsourceable
 	// within the depth ceiling — no market AND no producible path. A scarce-but-producible input
-	// (the gate-critical ELECTRONICS case) is FEASIBLE, because the sp-yfzi drain will produce it.
+	// (the gate-critical ELECTRONICS case) is FEASIBLE, because the drain will produce it.
 	if !p.fabricationInputsSourceable(ctx, targetGood, systemSymbol, supplyChainDepth, playerID, goodOverrides, inputs) {
 		return nil, false, nil // an input is unsourceable within depth - defer whole material
 	}
@@ -622,7 +621,7 @@ func (p *ConstructionPipelinePlanner) planFabrication(
 }
 
 // fabricationInputsSourceable reports whether every input of targetGood can be SOURCED — bought OR
-// produced — within the depth ceiling, the sp-3bza feasibility gate that decides stage-vs-defer.
+// produced — within the depth ceiling, the feasibility gate that decides stage-vs-defer.
 //
 // When a tree resolver is wired (the daemon injects the shared SupplyChainResolver — the SAME
 // engine the construction drain runs, sp-yfzi), it asks the resolver to build the full
@@ -641,8 +640,8 @@ func (p *ConstructionPipelinePlanner) planFabrication(
 // whose deep raws are only LIMITED/SCARCE but still buyable.
 //
 // When no resolver is wired (nil — a planner built without SetTreeResolver, and the in-package
-// tests that never inject one), it falls back to the original pre-sp-3bza gate: every IMMEDIATE
-// input must be buyable at MODERATE+ now. Byte-identical to pre-sp-3bza for those callers.
+// tests that never inject one), it falls back to the pre-sp-3bza gate: every IMMEDIATE
+// input must be buyable at MODERATE+ now.
 func (p *ConstructionPipelinePlanner) fabricationInputsSourceable(
 	ctx context.Context,
 	targetGood string,

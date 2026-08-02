@@ -159,7 +159,7 @@ func (r *ShipyardInventoryRepositoryGORM) ScannedSystems(ctx context.Context, pl
 
 // ListSavedYards returns every era-scoped row for the player, optionally
 // filtered to shipTypes (empty = every saved ship type), ordered by
-// purchase_price ASCENDING — the `shipyard yards --type` CLI query (sp-qx29f).
+// purchase_price ASCENDING — the `shipyard yards --type` CLI query.
 // Unlike ListByTypes (waypoint/type order for deterministic downstream
 // ranking, and a no-op on empty shipTypes), this orders for an operator
 // scanning for the cheapest yard and treats an empty filter as "every type".

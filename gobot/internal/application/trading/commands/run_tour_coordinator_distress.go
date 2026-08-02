@@ -44,7 +44,7 @@ import (
 )
 
 // liquidationLegIndexBase is the LegIndex floor stamped on a telemetry row for a liquidation
-// sale — the exit sweep and the margins-death distress dump both (sp-xfrfw). Like the look-back
+// sale — the exit sweep and the margins-death distress dump both. Like the look-back
 // buy's lookbackLegIndex sentinel it is NOT a solver-plan leg, and the two sit on opposite sides
 // of the plan for the same reason: the visualizer's lane aggregator sorts a tour's legs by
 // leg_index and draws a directed lane between CONSECUTIVE legs, so a sentinel's SIGN decides
@@ -214,7 +214,7 @@ func (h *RunTourCoordinatorHandler) maybeDistressLiquidate(
 // exhausted, a fail-open no-plan, a re-plan budget exhausted mid-leg — shares it; a resumable
 // exit never reaches it (the runner retries, and the purchase obligation is carried forward).
 //
-// SCOPE (sp-8zhit): the hull's WHOLE sellable hold, not just this run's outstanding purchase
+// SCOPE: the hull's WHOLE sellable hold, not just this run's outstanding purchase
 // obligation. The netBought scope was the defect. TORWIND-A sat IN_ORBIT at X1-KP23-D41 — the
 // very market bidding 4,141/u for the 20 MICROPROCESSORS aboard — released idle by its tour with
 // 82,820 credits of delivered, sellable load still in the hold, because the purchase ledger is
@@ -263,7 +263,7 @@ func (h *RunTourCoordinatorHandler) liquidateStrandBeforeExit(
 	// Honour it as "this hull does not MOVE": narrow the sweep to the waypoint it is already
 	// standing on. That leaves the operator's contract intact (a hull under the switch is never
 	// sent hunting for a buyer, and never dumps at a distant near-worthless bid) while still
-	// refusing the sp-8zhit release — TORWIND-A was parked ON its own sink, so the damning case
+	// refusing the release — TORWIND-A was parked ON its own sink, so the damning case
 	// needs no movement at all.
 	if cmd.RepositionDisabled {
 		listings = listingsAt(listings, ship.CurrentLocation().Symbol)
@@ -394,7 +394,7 @@ func (h *RunTourCoordinatorHandler) distressSellGood(
 	response.TotalRevenue += int64(sellResp.TotalRevenue)
 	response.TradesExecuted++
 	dischargePurchaseObligation(netBought, good, sellResp.UnitsSold) // left the hull — no longer a stranded-veto candidate
-	// sp-xfrfw: record the liquidation in tour telemetry exactly as executeSell records a plan
+	// Record the liquidation in tour telemetry exactly as executeSell records a plan
 	// leg, so this path stays 1:1 with the SELL_CARGO transactions it just wrote. It was the one
 	// sell path that did not, and it cost a quarter of all tour sell legs (55 of 222 over 24h),
 	// leaving the galaxy view's lane aggregation blind to every liquidation hop. A synthetic

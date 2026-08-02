@@ -11,7 +11,7 @@ import (
 
 // ShipResyncScheduler periodically re-syncs the live (open-era) player's ships
 // from the API into the local DB, so ship state cannot drift vs live API truth
-// between the event-driven updates (sp-p1ci). It mirrors ShipStateScheduler's
+// between the event-driven updates. It mirrors ShipStateScheduler's
 // sweeper: a timer loop whose tick body runs under supervise.Guard
 // (panic-isolated), and which halts promptly on ctx cancellation OR Stop().
 //
@@ -81,10 +81,11 @@ func (s *ShipResyncScheduler) Run(ctx context.Context) error {
 					s.logf("Periodic ship resync failed: %v", err)
 				} else {
 					// sp-ig6x (point b): a per-run success heartbeat so a healthy
-					// loop is VISIBLE and a stalled one is diagnosable — previously
-					// the loop logged ONLY on failure, so a success-less (or
-					// non-ticking) loop was invisible. The resync core prints the
-					// synced-count summary to stdout; this confirms the pass ran.
+					// loop is VISIBLE and a stalled one is diagnosable. A loop that
+					// logs only on failure cannot distinguish a success-less (or
+					// non-ticking) pass from a quiet healthy one. The resync core
+					// prints the synced-count summary to stdout; this confirms the
+					// pass ran.
 					s.logf("Periodic ship resync ok")
 				}
 			})

@@ -36,7 +36,7 @@ const (
 	// a recovered market. 3min sits in the bead's 2-5min band.
 	defaultTradeFleetCooldownSeconds = 180
 
-	// tourIterationsContinuous makes every relaunched tour a CONTINUOUS run (sp-m5kv):
+	// tourIterationsContinuous makes every relaunched tour a CONTINUOUS run:
 	// the tour re-plans and re-flies from its new position until margins die in both
 	// systems (the honest exit), then THIS coordinator relaunches it after the
 	// cooldown. It is fixed, not configurable: a finite tour would exit after N tours
@@ -49,11 +49,11 @@ const (
 	// ceiling, so a fleet-wide-infeasible market is not hammered with a discovery+solver
 	// pass every base cooldown (862 tour-run log lines in 20 minutes prompted sp-1pli).
 	//
-	// sp-nxrt LOWERED this 1800->600 (30min->10min). The old 30min ceiling was only
-	// needed because SLEEP was the sole response to a fast-fail — a hull in a thin/stale
-	// pocket spiralled 6->12->24->30min parked (~238 hull-hours/day of pure parking). Now
-	// the 2nd consecutive fast-fail escalates to MOVEMENT (reposition-reach, see
-	// cooldownFor), so ever-longer sleep is no longer how a stuck hull is handled: the
+	// A ceiling this LOW is safe only because sleep is not the sole response to a fast-fail.
+	// Sleep-only needs a far higher one and pays for it: under a 30min ceiling a hull in a
+	// thin/stale pocket spirals 6->12->24->30min parked (~238 hull-hours/day of pure
+	// parking). Here the 2nd consecutive fast-fail escalates to MOVEMENT (reposition-reach,
+	// see cooldownFor), so ever-longer sleep is not how a stuck hull is handled: the
 	// remaining backoff exists only to rate-limit a GENUINELY map-wide-dead neighbourhood
 	// the reach-armed relaunch also could not escape, for which 10min is ample. A named
 	// config knob (RelaunchBackoffMaxSecs / [trade_fleet].relaunch_backoff_max_minutes,
@@ -293,7 +293,7 @@ type RunTradeFleetCoordinatorHandler struct {
 	// extra fast-fail cycle per hull before backoff re-accumulates.
 	backoff map[string]*hullBackoff
 
-	// captainEvents emits the coordinator error-loop event (sp-e2l1, rollout sp-6wxq)
+	// captainEvents emits the coordinator error-loop event (rollout sp-6wxq)
 	// when a reconcile pass fails with the identical error for DefaultStreakThreshold
 	// consecutive ticks — the s88 silent-stuck class (a launcher never wired, or the
 	// fleet listing failing forever) becomes an interrupt-visible captain event instead
@@ -339,7 +339,7 @@ func (h *RunTradeFleetCoordinatorHandler) SetTourLauncher(launcher TourLauncher)
 }
 
 // SetEventRecorder wires the captain outbox the coordinator emits its
-// error-loop event through (sp-6wxq). Optional-injection like SetTourLauncher:
+// error-loop event through. Optional-injection like SetTourLauncher:
 // without it the streak monitor still tracks and logs, it just cannot escalate
 // to a captain event (nil-safe, see health.RecordErrorLoop).
 func (h *RunTradeFleetCoordinatorHandler) SetEventRecorder(rec captain.EventRecorder) {
@@ -392,7 +392,7 @@ func (h *RunTradeFleetCoordinatorHandler) Handle(ctx context.Context, request co
 	})
 
 	// errMon makes a reconcile pass that fails with the identical error every tick
-	// observable (sp-e2l1): once the streak crosses DefaultStreakThreshold it emits a
+	// observable: once the streak crosses DefaultStreakThreshold it emits a
 	// captain event instead of just another ERROR line. Created once per Handle
 	// invocation (one container run) and threaded into reconcileOnce, so the streak
 	// persists across ticks and the crossing is unit-testable at the reconcile seam.
@@ -412,7 +412,7 @@ func (h *RunTradeFleetCoordinatorHandler) Handle(ctx context.Context, request co
 			result.Errors = append(result.Errors, err.Error())
 			logger.Log("ERROR", fmt.Sprintf("Trade fleet reconcile failed: %v", err), nil)
 		}
-		// Streak-track the pass outcome (sp-6wxq): a non-error pass resets the streak,
+		// Streak-track the pass outcome: a non-error pass resets the streak,
 		// a pass that fails with the identical error every tick (launcher unwired, or
 		// the fleet listing failing) crosses the threshold and emits the error-loop
 		// captain event instead of only logging ERROR forever. Placed here rather than
@@ -462,7 +462,7 @@ func (h *RunTradeFleetCoordinatorHandler) reconcileOnce(ctx context.Context, cmd
 
 	idle, running := partitionTradeFleet(ships)
 
-	// sp-m3122 liveness watchdog: a RUNNING claim is no longer trusted as healthy. Kill and
+	// Liveness watchdog: a RUNNING claim is no longer trusted as healthy. Kill and
 	// relaunch fresh any running tour that has made ZERO real progress past the stall
 	// threshold (a hung mid-jump restart-resume, or any other silent wedge). Runs BEFORE the
 	// empty-idle early return — a fleet whose ONLY problem is a hung RUNNING tour has an empty

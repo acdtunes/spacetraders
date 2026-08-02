@@ -25,7 +25,7 @@ func SetCaptainEventRecorder(rec captain.EventRecorder) {
 
 // currentCaptainEventRecorder returns the recorder installed by main (may be
 // nil in minimal boots/tests). Package-internal: the daemon server hands it
-// to the supervise layer at Start (sp-i01z).
+// to the supervise layer at Start.
 func currentCaptainEventRecorder() captain.EventRecorder {
 	captainRecorderMu.RLock()
 	defer captainRecorderMu.RUnlock()

@@ -39,7 +39,7 @@ func newImmediateHomingHandler(med common.Mediator, shipRepo navigation.ShipRepo
 // A hull that just delivered its contract sits OFF-station at the delivery waypoint
 // (X1-UM5-Z). The moment its worker completes, the coordinator must dispatch it to a
 // demand-ranked standby sink IN THE SAME HANDLING — not wait for the next
-// between-legs selection change or the ~90s idle-arb sweep (sp-x80j3). With no
+// between-legs selection change or the ~90s idle-arb sweep. With no
 // `fleet hub` pinned the role central parks auto-drive the set, and the dispatched
 // command must carry those parks and their demand weights.
 func TestCoordinator_ImmediateHomingOnCompletion_DispatchesCompletedHullToStandby(t *testing.T) {

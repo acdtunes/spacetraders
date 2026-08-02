@@ -325,7 +325,7 @@ type MarketFreshnessProvider interface {
 // gate waypoint the marker recorded. A marker row exists ONLY because fleet traffic
 // actually tried to route THROUGH that gate, so the set is intrinsically bounded to
 // traffic-touched gates. This is the "an active route traverses this uncharted gate"
-// signal the gate-reconcile sweep widens onto: it no longer needs the target to bear a
+// signal the gate-reconcile sweep widens onto: it does not need the target to bear a
 // market. Satisfied by the GORM gate-edge repository (GormGateEdgeRepository.
 // UnreadableGates). Optional: nil leaves the sweep market-only.
 type UnreadableGateProvider interface {

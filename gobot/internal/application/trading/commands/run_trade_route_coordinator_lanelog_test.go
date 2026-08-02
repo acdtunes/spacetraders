@@ -10,7 +10,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
 
-// sp-q1ca: the lane-selection log line ("Selected top disciplined arbitrage
+// The lane-selection log line ("Selected top disciplined arbitrage
 // lane") used to print no structured payload — the captain could not tell
 // which lane a daemon picked, or whether cross-system lanes were even scanned,
 // without inferring it from nav destinations. These tests pin the fix: the
@@ -154,7 +154,7 @@ func TestLaneLogCandidates_FewerThanLimit_ReturnsAll(t *testing.T) {
 // (cross_system=false) AND, from the candidates shortlist, that GOOD_B was
 // actually scanned and ranked (cross_system=true) rather than missing
 // entirely — this is what makes cross-system scanning verifiable instead of
-// inferred (sp-q1ca).
+// inferred.
 func TestTradeRouteCoordinator_SelectedLaneLog_CarriesPayloadAndCrossSystemCandidate(t *testing.T) {
 	ship := newTradeHauler(t, "TRADER-LOG")
 	marketRepo := &msMarketRepo{

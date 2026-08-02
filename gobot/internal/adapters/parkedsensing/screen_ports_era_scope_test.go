@@ -2,7 +2,7 @@ package parkedsensing_test
 
 // Integration tests (real GORM/sqlite, no mocks) for the ERA SCOPE of the three
 // yard reads on WaypointCatalogPort: OutstandingYards, ListProbeYards and
-// ListHeavyYards (sp-l0aqy).
+// ListHeavyYards.
 //
 // THE BLEED THESE PIN, measured in production over ten hours, flat and not
 // converging: ~290 failures/hour of

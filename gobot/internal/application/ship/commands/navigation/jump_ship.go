@@ -29,8 +29,8 @@ type JumpShipCommand struct {
 	AgentSymbol       string // Optional: agent symbol
 
 	// SkipClaim indicates the caller already holds the ship claimed under
-	// its own container (e.g. a trade-route coordinator mid-circuit,
-	// sp-wlev). When true, Handle does not create/remove the lightweight
+	// its own container (e.g. a trade-route coordinator mid-circuit). When
+	// true, Handle does not create/remove the lightweight
 	// "ship-jump-<symbol>-<nanos>" container record and does not
 	// AssignToContainer/ForceRelease the ship - it trusts the caller's
 	// existing claim instead of taking a second, conflicting one. Defaults
@@ -61,7 +61,7 @@ type ContainerRepository interface {
 	Remove(ctx context.Context, containerID string, playerID int) error
 	// ListJumpContainersForShip returns the IDs of every JUMP container row that names
 	// this hull, in any status. It is what lets a jump clear the claim records its own
-	// earlier attempts leaked (sp-rqhzh).
+	// earlier attempts leaked.
 	ListJumpContainersForShip(ctx context.Context, shipSymbol string, playerID int) ([]string, error)
 }
 
@@ -165,7 +165,7 @@ func (h *JumpShipHandler) Handle(ctx context.Context, request common.Request) (c
 	// 2. Validate the ship can jump. SpaceTraders rule: a ship with a
 	// jump-drive module can jump from anywhere; a ship WITHOUT a drive can
 	// only jump if it is currently at a COMPLETE jump gate - gate-adjacent
-	// driveless jumps are legal (sp-n0x7), but a gate still under
+	// driveless jumps are legal, but a gate still under
 	// construction is not a valid source.
 	if ship.HasJumpDrive() {
 		logger.Log("INFO", "Ship has jump drive", map[string]interface{}{
@@ -270,20 +270,20 @@ func (h *JumpShipHandler) Handle(ctx context.Context, request common.Request) (c
 	// ship directly. Both are released unconditionally on the way out,
 	// regardless of success or failure below.
 	//
-	// SkipClaim (sp-wlev) opts out of all of this: a caller that already
+	// SkipClaim opts out of all of this: a caller that already
 	// holds the ship claimed under its own container (e.g. a trade-route
 	// coordinator mid-circuit) sets it so jump_ship trusts that existing
 	// claim instead of taking a second, conflicting one - AssignToContainer
 	// would otherwise error "already assigned to container X", and
 	// ForceRelease on the way out would wrongly drop the caller's claim.
 	if !cmd.SkipClaim {
-		// UNIQUE PER ATTEMPT (sp-rqhzh). This ID used to be a bare
-		// "ship-jump-<symbol>" — deterministic, with nothing to distinguish one
-		// attempt from the next. A jump that left its row behind (the deferred
-		// Remove below never ran, because the daemon died mid-jump, or it ran and
-		// the delete failed — its error is discarded) therefore made every LATER
-		// jump for that hull collide on containers_pkey, forever: the hull could
-		// never jump again, and kept consuming a probe-cap slot it could not use.
+		// UNIQUE PER ATTEMPT. A deterministic ID — a bare "ship-jump-<symbol>",
+		// with nothing to distinguish one attempt from the next — is not safe
+		// here. A jump that leaves its row behind (the deferred Remove below
+		// never runs, because the daemon died mid-jump, or it runs and the
+		// delete fails — its error is discarded) makes every LATER jump for that
+		// hull collide on containers_pkey, forever: the hull can never jump
+		// again, and keeps consuming a probe-cap slot it cannot use.
 		// Measured on the live fleet as 156 failures across two permanently wedged
 		// hulls, whose leftover rows named a destination they had ALREADY reached.
 		//
@@ -296,9 +296,9 @@ func (h *JumpShipHandler) Handle(ctx context.Context, request common.Request) (c
 		// Each attempt owning its OWN row is also what makes the deferred Remove
 		// safe: ships.container_id references containers ON DELETE SET NULL, so
 		// deleting a row silently strips the claim of whatever hull points at it.
-		// Under the old shared ID, a losing attempt's cleanup would have silently
-		// unclaimed the WINNER's hull mid-jump. Now every Remove can only ever
-		// touch the row its own attempt created.
+		// Under a shared ID, a losing attempt's cleanup would silently unclaim the
+		// WINNER's hull mid-jump; every Remove can only ever touch the row its own
+		// attempt created.
 		//
 		// Mirrors ship-outfit-<symbol>-<nanos> in outfitting.go, the sibling
 		// operation that already claims a hull this way.
@@ -322,7 +322,7 @@ func (h *JumpShipHandler) Handle(ctx context.Context, request common.Request) (c
 			_ = h.containerRepo.Remove(ctx, jumpContainerID, playerID.Value())
 		}()
 
-		// Claim under CAS-retry (sp-wa7c): the closure re-applies AssignToContainer
+		// Claim under CAS-retry: the closure re-applies AssignToContainer
 		// on the FRESH row so a concurrent writer's cargo/nav/fuel update on the
 		// same hull survives instead of being last-write-wins clobbered by this
 		// handler's pre-jump snapshot. This op owns ONLY the assignment; a fresh row
@@ -365,11 +365,11 @@ func (h *JumpShipHandler) Handle(ctx context.Context, request common.Request) (c
 	}
 
 	// The live jump API requires the destination JUMP GATE WAYPOINT, not the
-	// bare destination system symbol (sp-n0x7 round 2) - posting the system
+	// bare destination system symbol - posting the system
 	// symbol 422s with "waypointSymbol Required, received undefined".
 	// Resolve it via the origin gate's connections list, which carries the
 	// full waypoint symbol of every system it's linked to. The resolve RE-READS
-	// the gate a bounded few times if the destination is missing (sp-hguq3): the
+	// the gate a bounded few times if the destination is missing: the
 	// live jump-gate endpoint intermittently returns an incomplete/empty 200, and
 	// treating that transient read as a permanent "no connection" is what bounced
 	// hulls forever between systems.
@@ -389,9 +389,9 @@ func (h *JumpShipHandler) Handle(ctx context.Context, request common.Request) (c
 	// gate on arrival (route_executor.handlePostArrivalRefueling docks to refuel
 	// and does not re-orbit), so the hull can reach here still DOCKED — and the
 	// live jump API then hard-rejects it with 400 code 4236 "not currently in
-	// orbit", killing the tour (sp-28n2, a class distinct from the wc5h
-	// cooldown-409). Every navigate path already orbits before departing
-	// (navigate_direct's EnsureInOrbit, RouteExecutor.ensureShipInOrbit); the jump
+	// orbit", killing the tour (a class distinct from the cooldown-409). Every
+	// navigate path already orbits before departing (navigate_direct's
+	// EnsureInOrbit, RouteExecutor.ensureShipInOrbit); the jump
 	// path was the one mover that did not. Orbit proactively when we already read
 	// the hull as DOCKED (no wasted jump attempt), and reactively in
 	// jumpWithOrbitRetry if the API still reports not-in-orbit under a raced
@@ -427,7 +427,7 @@ func (h *JumpShipHandler) Handle(ctx context.Context, request common.Request) (c
 		"gate_fee":             jumpResult.TotalPrice,
 	})
 
-	// Record the gate fee BEFORE persisting nav state (sp-shq63). The credits
+	// Record the gate fee BEFORE persisting nav state. The credits
 	// have already left the account server-side; a failure in any later step
 	// must not be the reason the spend goes unrecorded. Recording is
 	// best-effort and never fails the jump — the hull HAS moved, so returning
@@ -440,7 +440,7 @@ func (h *JumpShipHandler) Handle(ctx context.Context, request common.Request) (c
 	if err != nil {
 		return nil, fmt.Errorf("invalid destination waypoint: %w", err)
 	}
-	// Persist the post-jump nav state under CAS-retry (sp-wa7c): the closure
+	// Persist the post-jump nav state under CAS-retry: the closure
 	// re-applies ONLY this op's own fields — destination location + jump cooldown —
 	// on the FRESH row, so a concurrent writer's cargo/fuel update on the same hull
 	// survives instead of being last-write-wins clobbered by this handler's
@@ -469,11 +469,11 @@ func (h *JumpShipHandler) Handle(ctx context.Context, request common.Request) (c
 	}, nil
 }
 
-// recordJumpFee writes the jump gate fee to the financial ledger (sp-shq63).
+// recordJumpFee writes the jump gate fee to the financial ledger.
 //
-// Before this existed the fee was the ledger's one credit-DECREASING blind spot:
-// the API charged it, the adapter parsed it into JumpResult.TotalPrice, and
-// nothing consumed the value. That is the single failure direction a fail-closed
+// Without this the fee is the ledger's one credit-DECREASING blind spot: the
+// API charges it, the adapter parses it into JumpResult.TotalPrice, and nothing
+// consumes the value. That is the single failure direction a fail-closed
 // money guard cannot tolerate — an unrecorded spend makes the ledger report MORE
 // credits than exist, which is the direction that authorises an unaffordable buy.
 // (Staleness alone is safe; it only ever under-reports.)
@@ -534,7 +534,7 @@ func (h *JumpShipHandler) recordJumpFee(
 		Metadata: map[string]interface{}{
 			"agent":       agentSymbol,
 			"ship_symbol": cmd.ShipSymbol,
-			// origin_system is what makes the fee ATTRIBUTABLE (sp-9idvn). The fee is a
+			// origin_system is what makes the fee ATTRIBUTABLE. The fee is a
 			// property of the gate a hull DEPARTS from, not of the pair and not of the
 			// distance, so without this field the per-gate table can only be recovered by a
 			// window function over each hull's jump sequence — which mis-attributes silently
@@ -575,7 +575,7 @@ func (h *JumpShipHandler) recordJumpFee(
 // looping forever.
 // reapStrandedJumpContainers deletes the leftover JUMP container rows this hull
 // accumulated from earlier jumps, so a crash-leaked claim record cannot outlive the
-// fleet (sp-rqhzh). activeContainerID is this attempt's own row, which is never touched.
+// fleet. activeContainerID is this attempt's own row, which is never touched.
 //
 // WHY THIS CANNOT CLEAR A JUMP THAT IS ACTUALLY IN FLIGHT. It runs only AFTER this
 // handler's own AssignToContainer has committed, so this hull's single assignment row
@@ -639,7 +639,7 @@ func (h *JumpShipHandler) reapStrandedJumpContainers(
 const maxJumpOrbitRetries = 2
 
 // jumpWithOrbitRetry executes the live jump, riding out a not-in-orbit rejection
-// (400 code 4236) instead of hard-failing on it (sp-28n2). Handle's proactive
+// (400 code 4236) instead of hard-failing on it. Handle's proactive
 // guard already orbits a hull it READ as docked; this covers the residual race
 // where the persisted nav_status lagged a server-side dock, so the hull is
 // docked on the server while the daemon believed it orbited. It mirrors how the
@@ -700,7 +700,7 @@ const notConnectedCode = 4255
 // says the gate we asked for is not adjacent to where the hull IS — and that is what drives the
 // re-anchor, with or without a connection list. The list is the separate, optional evidence
 // that drives the adjacency reconcile; an absent one simply means there is nothing to reconcile
-// against (the jump-gate endpoint is known to return empty reads, sp-hguq3/sp-dmxy5).
+// against (the jump-gate endpoint is known to return empty reads).
 //
 // It reads the TYPED *ports.APIError body rather than string-matching the wrapped message, so
 // it cannot be fooled by an unrelated error that happens to mention a code, and it survives the
@@ -830,8 +830,8 @@ func isNotInOrbitError(err error) bool {
 }
 
 // maxJumpGateReadAttempts bounds how many times a cross-system jump re-reads the ORIGIN
-// gate's live connections when the intended destination is missing from the response
-// (sp-hguq3). The SpaceTraders jump-gate endpoint intermittently returns a 200 OK with an
+// gate's live connections when the intended destination is missing from the response.
+// The SpaceTraders jump-gate endpoint intermittently returns a 200 OK with an
 // incomplete/empty connections list — a transient, eventually-consistent read, DISTINCT
 // from a 429 (which the API client already retries on status code, so it never reaches
 // here as an empty list). Treating that one bad read as a permanent "no connection" is
@@ -850,9 +850,9 @@ const maxJumpGateReadAttempts = 3
 const jumpGateReadRetryBackoff = 750 * time.Millisecond
 
 // resolveDestinationGateWaypoint resolves the destination system's gate WAYPOINT from the
-// origin gate's LIVE connections (sp-n0x7 round 2 requires the waypoint, not the bare
-// system, in the jump request body), re-reading a bounded number of times when the
-// destination is missing (sp-hguq3). A single live read is NOT trusted for a NEGATIVE
+// origin gate's LIVE connections (the jump request body requires the waypoint, not the
+// bare system), re-reading a bounded number of times when the
+// destination is missing. A single live read is NOT trusted for a NEGATIVE
 // verdict: the jump-gate endpoint occasionally returns an incomplete/empty 200, and a
 // charted connection reappears on the next read. The happy path (destination present on
 // the first read) returns immediately with exactly one read — zero overhead, no spam. A
@@ -899,9 +899,9 @@ func (h *JumpShipHandler) resolveDestinationGateWaypoint(ctx context.Context, or
 // findDestinationGateWaypoint returns the connection in a jump gate's connections list
 // whose system matches destinationSystem, and whether one was found. The live SpaceTraders
 // jump API requires this full WAYPOINT (e.g. "X1-GQ92-I51"), not the bare system symbol, as
-// waypointSymbol in the request body (sp-n0x7 round 2). Returning ok=false (rather than an
+// waypointSymbol in the request body. Returning ok=false (rather than an
 // error) lets the caller distinguish "missing from THIS read" — worth a bounded re-read
-// (sp-hguq3) — from a hard fetch failure.
+// — from a hard fetch failure.
 func findDestinationGateWaypoint(connections []string, destinationSystem string) (string, bool) {
 	for _, conn := range connections {
 		if shared.ExtractSystemSymbol(conn) == destinationSystem {

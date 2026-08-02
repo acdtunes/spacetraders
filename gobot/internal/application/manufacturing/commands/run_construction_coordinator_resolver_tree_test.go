@@ -135,7 +135,7 @@ func (r *recordingResolver) BuildDependencyTree(_ context.Context, _, _ string, 
 }
 
 // A BUY-FINAL material (no factory) whose good the resolver CANNOT build a tree for (returns nil —
-// stale/absent market data) falls back to a direct AcquisitionBuy. Unified gate-fill (sp-9i4mq)
+// stale/absent market data) falls back to a direct AcquisitionBuy. Unified gate-fill
 // consults the resolver for EVERY material, but a buy-planned good with no resolvable tree stays a
 // plain buy rather than dying.
 func TestConstructionDrain_BuyFinalMaterial_FallsBackToBuyWhenResolverCannotBuild(t *testing.T) {

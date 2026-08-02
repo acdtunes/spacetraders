@@ -9,7 +9,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 )
 
-// The SITTING idle pool bug (sp-54uif / sp-mtgje): idle contract hulls that finished their contracts
+// The SITTING idle pool bug: idle contract hulls that finished their contracts
 // long ago and are held ready, parked off-slot with NO `fleet hub` pins (the operator relies on the
 // auto hub-placement). The standing re-home sweep must home each to ITS OWN fixed slot by auto-resolving
 // its standby set from the placement provider's ≤6 fixed slots — exactly as the between-legs hook does

@@ -67,7 +67,7 @@ type contractScalerRoleResolver struct {
 // unknown topology (fail-safe, not fail-error — an empty era is a valid state, not a failure). The
 // central parks are coord-DEDUPED to one representative per location (dedupedCentralParkSymbols — the
 // SAME helper the placement provider uses), so the scaler's TopDeliverySlots selection and the
-// coordinator's homing placement derive from ONE deduped park set (no drift; sp-mtgje).
+// coordinator's homing placement derive from ONE deduped park set (no drift).
 func (r *contractScalerRoleResolver) ResolveRoles(ctx context.Context, playerID int) (contractscaler.EraRoles, map[string]float64, error) {
 	markets, demand, err := r.homeMarkets(ctx, playerID)
 	if err != nil {
@@ -153,7 +153,7 @@ func (r *contractScalerRoleResolver) tradeRoles(ctx context.Context, waypointSym
 // --- concrete home-system reader (over the ship repo, mirroring the bootstrap observer) ---
 
 // contractScalerShipHomeReader resolves the home system from the player's hull locations by ANCHOR
-// PRIORITY (sp-cfvgj): (1) the contract fleet's own FOOTPRINT — the base where the "contract"-dedicated
+// PRIORITY: (1) the contract fleet's own FOOTPRINT — the base where the "contract"-dedicated
 // hulls sit — wins whenever any contract hull exists (degree 1+); (2) the command frigate's system
 // anchors ONLY when no contract hull exists yet (degree-0 cold-start, where the frigate IS the sole
 // contract hauler); (3) the lexicographically smallest ship system is the final determinism fallback.
@@ -295,7 +295,7 @@ func NewContractScalerCoordinatorHandler(
 	h.SetIdleHullReclaimer(reclaimer)
 	h.SetDepotHullReclaimer(reclaimer)
 
-	// Surplus-delivery releaser (sp-mtgje): un-dedicates idle "contract" delivery hulls over the knee so
+	// Surplus-delivery releaser: un-dedicates idle "contract" delivery hulls over the knee so
 	// the depot fill reclaims them into warehouse roles — the re-role that re-composes the live 8+5+1 to
 	// 6+7+1 with no new hulls. Reuses the SAME ship repo; no new daemon dependency.
 	h.SetDeliverySurplusReleaser(&contractScalerDeliveryReleaser{shipRepo: shipRepo})
@@ -311,7 +311,7 @@ func NewContractScalerCoordinatorHandler(
 	// so a `tune --operation contractscaler` lands on the next tick with no restart.
 	h.SetCeilingReader(NewContainerConfigReader(server.containerRepo))
 
-	// Depot actuation (sp-urpxy): arm the warehouse/stocker half of the fixed plan. The counter reads the
+	// Depot actuation: arm the warehouse/stocker half of the fixed plan. The counter reads the
 	// persistent depot registry (per-role Current); the grower adds one element at a time via the depot
 	// store + the surviving launch verbs. BOTH over server.depotStore — the SAME player-scoped store the
 	// boot reload + contract routing consult — so the reconcile is restart-safe (RULINGS #2). *DaemonServer
@@ -568,7 +568,7 @@ func homeContractHull(ctx context.Context, med commandSender, shipRepo navigatio
 	if err != nil {
 		return
 	}
-	// sp-orooy: a hull reclaimed/bought while idle in a FOREIGN system cannot be homed by the
+	// A hull reclaimed/bought while idle in a FOREIGN system cannot be homed by the
 	// intra-system spread-home below — HomeShipHandler resolves the standby parks in the hull's
 	// CURRENT system graph, so a foreign hull fails ("none of the configured standby stations found
 	// in system X graph") and STRANDS (dedicated to "contract" but idle in the wrong system, never

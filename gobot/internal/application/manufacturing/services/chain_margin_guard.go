@@ -64,7 +64,7 @@ const (
 )
 
 // ChainMarginGuard projects a fabrication chain's live P&L and its final sink's
-// absorption capacity BEFORE any feed is bought (sp-2dv4). See file header.
+// absorption capacity BEFORE any feed is bought. See file header.
 type ChainMarginGuard struct {
 	marketLocator *MarketLocator
 	marketRepo    market.MarketRepository
@@ -231,7 +231,7 @@ func failClosed(proj ChainProjection, detail string) ChainProjection {
 }
 
 // ParkMessage renders the human/greppable park reason with every number in the
-// text (the container-log renderer drops metadata, sp-iqyq).
+// text (the container-log renderer drops metadata).
 func (p ChainProjection) ParkMessage() string {
 	switch p.Reason {
 	case chainGuardNegativeMargin:

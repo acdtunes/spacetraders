@@ -172,7 +172,7 @@ func (h *RunTourCoordinatorHandler) maybeOffloadHeldCargo(
 		return false, nil
 	}
 
-	// sp-lq64 anti-herd registration, mirroring maybeReposition: claim the target for the whole
+	// Anti-herd registration, mirroring maybeReposition: claim the target for the whole
 	// synchronous flight so a concurrent stuck-laden hull's discovery sees this one in flight.
 	h.incrementPendingRelocation(best.system)
 	defer h.decrementPendingRelocation(best.system)

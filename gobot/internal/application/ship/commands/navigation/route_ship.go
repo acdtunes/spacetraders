@@ -8,7 +8,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// CrossSystemRouter is the narrow movement port the route verb rides (sp-6hjw):
+// CrossSystemRouter is the narrow movement port the route verb rides:
 // fly shipSymbol to destinationWaypoint, crossing gates as needed. It is satisfied
 // by the trade-route coordinator's exported RepositionToWaypoint, which delegates to
 // the SAME multi-jump travel() the arb/trade/scout circuits use (gate-graph BFS +
@@ -23,7 +23,7 @@ type CrossSystemRouter interface {
 }
 
 // RouteShipCommand is a one-shot cross-system point-to-point move: fly ShipSymbol to
-// Destination in ANY reachable system (sp-6hjw). It is the operator-facing primitive
+// Destination in ANY reachable system. It is the operator-facing primitive
 // behind `spacetraders ship route` — the gap that made every manual cross-gate hull
 // move (warehouse dispatch, spare repositioning, era-end consolidation) a fragile
 // hand-rolled navigate-to-gate + jump + navigate. Unlike NavigateRouteCommand (which
@@ -45,7 +45,7 @@ type RouteShipResponse struct {
 }
 
 // RouteShipHandler flies a claimed hull to a waypoint in any reachable system by
-// delegating to the shared multi-jump travel machinery (sp-6hjw). It is deliberately
+// delegating to the shared multi-jump travel machinery. It is deliberately
 // tiny: all it does is forward one move and report — no route planning or jump logic
 // lives here (REUSE ruling). The container it runs under already claims the hull
 // (container_ops_ship.go metadata "ship_symbol"), so travel()'s SkipClaim jumps trust

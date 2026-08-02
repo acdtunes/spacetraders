@@ -12,7 +12,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// sp-382j: the construction-supply TERMINAL on the shared ProductionExecutor
+// The construction-supply TERMINAL on the shared ProductionExecutor
 // engine. DeliverToConstructionSite flies the (already-sourced) hauler to the
 // construction site and supplies whatever it carries of the material via the
 // construction supply API — the acquire->navigate->supply->record leg recovered
@@ -82,7 +82,7 @@ func newDeliveryExecutor(t *testing.T, cargo []*shared.CargoItem, constructionRe
 	return executor, repo, mediator
 }
 
-// Acceptance core (sp-382j): a hauler carrying the material is flown to the
+// Acceptance core: a hauler carrying the material is flown to the
 // construction site and its cargo is supplied THERE via SupplyMaterial; the
 // terminal returns the units the site accepted.
 func TestDeliverToConstructionSite_SuppliesOnboardUnitsToSite(t *testing.T) {

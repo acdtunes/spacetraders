@@ -51,7 +51,7 @@ const (
 	contractFleetTag = "contract"
 	// tradeFleetTag is the dedicated-fleet tag the standing trade-fleet coordinator selects on (matches the
 	// trading package's tradeFleet and the autosizer's trade count). obs.TradeHullCount counts hulls carrying
-	// it — the observable "trade-seeded" signal that drives the sp-192k4 trade-seed + the scaler
+	// it — the observable "trade-seeded" signal that drives the trade-seed + the scaler
 	// delay-launch. The bootstrap trade-seed (BuyAndDedicate) is what stamps a bought hull with this tag.
 	tradeFleetTag = "trade"
 	// warehouseFleetTag / stockerFleetTag are the dedicated-fleet tags the contract auto-scaler stamps on the
@@ -116,7 +116,7 @@ func NewBootstrapCoordinatorHandler(
 	// parking idle at the yard — the fix for the cold-start income stall.
 	h.SetFrigateContractLoopStarter(&bootstrapFrigateContractLoop{server: server})
 	h.SetMetricsSink(&bootstrapMetricsSink{})
-	// sp-r6yq: the per-tick live-config reader makes every bootstrap knob honor
+	// The per-tick live-config reader makes every bootstrap knob honor
 	// `spacetraders tune --operation bootstrap` on the next reconcile with no restart. Reads the
 	// same persisted config column the tune verb writes (ContainerConfigReader).
 	h.SetLiveConfigReader(NewContainerConfigReader(server.containerRepo))
@@ -127,7 +127,7 @@ func NewBootstrapCoordinatorHandler(
 	h.SetConstructionManager(&bootstrapConstructionManager{server: server})
 	h.SetManufacturingController(&bootstrapManufacturingController{server: server})
 	h.SetWorkerRepurposer(&bootstrapWorkerRepurposer{shipRepo: shipRepo})
-	// sp-mxflh: un-dedicate surplus idle gate workers → idle pool so the contract scaler adopts them (zero buys).
+	// Un-dedicate surplus idle gate workers → idle pool so the contract scaler adopts them (zero buys).
 	h.SetGateSurplusReleaser(&bootstrapGateSurplusReleaser{shipRepo: shipRepo})
 	h.SetGateWorkerAcquirer(&bootstrapGateWorkerAcquirer{bootstrapAcquirer: acq, shipRepo: shipRepo})
 	h.SetHandoffLauncher(&bootstrapHandoffLauncher{server: server})
@@ -208,7 +208,7 @@ func (o *bootstrapObserver) Observe(ctx context.Context, playerID int) (bootstra
 		if s.Role() == commandRole {
 			obs.CommandFrigateID = s.ShipSymbol()
 			obs.CommandFrigateOnContract = s.DedicatedFleet() == contractFleetTag
-			// sp-7r7w: the first-hauler-pivot safe point (empty ⇒ no in-flight contract cargo to lose on a
+			// The first-hauler-pivot safe point (empty ⇒ no in-flight contract cargo to lose on a
 			// loop stop) and the exclusive-purchasing-ship signal (the pre-hauler loop must never restart on
 			// a purchasing-dedicated frigate; the buy paths resolve the purchaser to it).
 			obs.FrigateCargoEmpty = s.CargoUnits() == 0
@@ -216,7 +216,7 @@ func (o *bootstrapObserver) Observe(ctx context.Context, playerID int) (bootstra
 		} else if s.DedicatedFleet() == contractFleetTag {
 			obs.Haulers = append(obs.Haulers, bootstrapCmd.HaulerSnapshot{Symbol: s.ShipSymbol(), Waypoint: wp})
 		} else if s.DedicatedFleet() == tradeFleetTag {
-			// sp-192k4: a hull dedicated to the trade fleet is the observable "trade-seeded" signal. Counted
+			// A hull dedicated to the trade fleet is the observable "trade-seeded" signal. Counted
 			// here mirroring obs.Haulers (same ship set, same DedicatedFleet() source), filtering the "trade"
 			// tag instead of "contract" — drives the trade-seed routing + the contract-scaler
 			// delay-launch. Restart-safe by construction: the hull EXISTING is the marker (no stored flag).
@@ -224,7 +224,7 @@ func (o *bootstrapObserver) Observe(ctx context.Context, playerID int) (bootstra
 		} else if s.DedicatedFleet() == manufacturingFleetTag {
 			// A hull dedicated to the manufacturing fleet is a gate-construction worker (Slice 3) — the
 			// worker-sizing "have" count, so the staged top-up buy never overshoots the pipeline's shape.
-			// GateWorkerHulls carries the per-hull detail + idle status (sp-mxflh) the surplus-release
+			// GateWorkerHulls carries the per-hull detail + idle status the surplus-release
 			// selection reads — appended in lock-step with the count so len(GateWorkerHulls)==GateWorkers.
 			obs.GateWorkers++
 			obs.GateWorkerHulls = append(obs.GateWorkerHulls, bootstrapCmd.GateWorkerSnapshot{
@@ -232,7 +232,7 @@ func (o *bootstrapObserver) Observe(ctx context.Context, playerID int) (bootstra
 				Idle:   s.IsIdle() && !s.IsInTransit(),
 			})
 		} else if s.DedicatedFleet() == warehouseFleetTag || s.DedicatedFleet() == stockerFleetTag {
-			// sp-gm7r: a hull dedicated to the contract auto-scaler's DEPOT half (warehouse or stocker). Counted
+			// A hull dedicated to the contract auto-scaler's DEPOT half (warehouse or stocker). Counted
 			// here mirroring obs.Haulers/TradeHullCount (same ship set, same DedicatedFleet() source) — the
 			// delivery Haulers + this depot count are the FULL contract fleet the GATE-entry bar measures
 			// against ContractScalerTarget.
@@ -326,7 +326,7 @@ func (o *bootstrapObserver) Observe(ctx context.Context, playerID int) (bootstra
 		if running, rerr := containerTypeRunning(ctx, o.containerRepo, playerID, container.ContainerTypeFleetAutosizer); rerr == nil {
 			obs.AutosizerRunning = running
 		}
-		// sp-gm7r GATE-entry bar input: the contract auto-scaler's live achievable fleet target
+		// GATE-entry bar input: the contract auto-scaler's live achievable fleet target
 		// (min(scaler plan slots, the scaler's live contract_fleet_max_hulls ceiling)). 0 when no scaler is
 		// running or the target is unread — fail-closed, so gateFunded never enters GATE on an unknown target.
 		obs.ContractScalerTarget = contractScalerTargetFor(ctx, o.containerRepo, playerID)
@@ -591,7 +591,7 @@ func (a *bootstrapAcquirer) Buy(ctx context.Context, playerID int, shipType, yar
 }
 
 // buyWith purchases ONE shipType at yard using `purchaser` as the purchasing hull. purchaser=="" keeps
-// the legacy behavior (scan for any idle hull); a set value PINS the purchaser — the sp-7r7w first-hauler
+// the legacy behavior (scan for any idle hull); a set value PINS the purchaser — the first-hauler
 // pivot and every subsequent cold-start buy pass the exclusive purchasing frigate, so the buy is
 // deterministic rather than dependent on an incidentally-idle hull. The batch path still enforces the
 // sp-e7je money-integrity type guard and navigates the purchaser to the yard.
@@ -600,15 +600,14 @@ func (a *bootstrapAcquirer) buyWith(ctx context.Context, playerID int, shipType,
 	if err != nil {
 		return bootstrapCmd.BuyResult{}, err
 	}
-	// One roster read serves BOTH the search and the ownership guard below. It was
-	// previously taken only on the search path, which is exactly why a NAMED purchaser
-	// was never checked against anything.
+	// One roster read serves BOTH the search and the ownership guard below. Taking it
+	// only on the search path leaves a NAMED purchaser checked against nothing.
 	ships, err := a.shipRepo.FindAllByPlayer(ctx, pid)
 	if err != nil {
 		return bootstrapCmd.BuyResult{}, err
 	}
 	if purchaser == "" {
-		// sp-7r7w: PREFER the exclusive purchasing ship (the pivoted command frigate) when it is idle, so
+		// PREFER the exclusive purchasing ship (the pivoted command frigate) when it is idle, so
 		// every cold-start + scaling buy runs through the deterministic, protected buy ship rather than an
 		// incidentally-idle hull. Fall back to any idle hull before the pivot exists (e.g. the probe
 		// buy) or if the purchasing ship is momentarily busy.
@@ -728,7 +727,7 @@ func (a *bootstrapHaulerAcquirer) BuyAndPlace(ctx context.Context, playerID int,
 }
 
 // BuyAndDedicate buys ONE hull at yard (reused batch path) and dedicates it to the arbitrary fleet tag
-// `fleet` — the fleet-parameterized sibling of BuyAndPlace, minus the hub placement (sp-192k4). The
+// `fleet` — the fleet-parameterized sibling of BuyAndPlace, minus the hub placement. The
 // hull-routing trade-seed calls it with fleet="trade" to make acquisition #2 a trade hull; the dedication
 // uses the SAME single fleet-assign write path (shipRepo.AssignFleet) BuyAndPlace uses over the SAME
 // money-integrity BatchPurchaseShips buy, so no money guard is touched (RULINGS #4). NO navigate: a trade
@@ -763,7 +762,7 @@ func (r *bootstrapFrigateRetirer) RetireFromContract(ctx context.Context, player
 	return r.shipRepo.AssignFleet(ctx, shipSymbol, "", pid)
 }
 
-// DedicateAsPurchaser tags the frigate dedicated_fleet="purchasing" at the first-hauler pivot (sp-7r7w),
+// DedicateAsPurchaser tags the frigate dedicated_fleet="purchasing" at the first-hauler pivot,
 // reserving it as the EXCLUSIVE, protected buy ship. Reuses the single fleet-assign write path
 // (shipRepo.AssignFleet); the contract-op selection paths skip a purchasing-dedicated hull like any
 // foreign dedication (RULINGS #7), so it is never re-drafted while it stands by between buys.
@@ -817,7 +816,7 @@ func (r *bootstrapFrigateContractLoop) StartLoop(ctx context.Context, playerID i
 	return nil
 }
 
-// StopLoop stops the command frigate's continuous contract-loop container (sp-7r7w first-hauler pivot):
+// StopLoop stops the command frigate's continuous contract-loop container (first-hauler pivot):
 // it finds the frigate's CONTRACT_WORKFLOW (iterations=-1) container and StopContainer's it, which
 // gracefully cancels the loop goroutine and RELEASES the frigate's work-claim so it goes idle to serve
 // as the purchaser. Idempotent: no loop found ⇒ nil (the frigate is already free). The reconciler gates
@@ -839,11 +838,10 @@ func (r *bootstrapFrigateContractLoop) StopLoop(ctx context.Context, playerID in
 type bootstrapScoutPostDeclarer struct{ server *DaemonServer }
 
 // DeclareHomeScoutPost ensures a STANDING scout post exists for the home system so the boot-standing
-// scout-post coordinator (sp-9ujl) has a coverage target to man, and stamps its permanent manning
-// FLOOR = minHulls (probeTarget, sp-2ci9y). It assigns/dedicates NO probe; the coordinator claims an
+// scout-post coordinator has a coverage target to man, and stamps its permanent manning
+// FLOOR = minHulls (probeTarget). It assigns/dedicates NO probe; the coordinator claims an
 // idle one. hulls=1: one probe slot initially; the freshsizer resizes the budget once the system
-// enters the scanned census (but never below the floor). Replaces the old AssignScoutingFleet sweep
-// that HELD the probes.
+// enters the scanned census (but never below the floor).
 //
 // The post ROW is declared ONCE (re-Upsert every tick would churn the coordinator's manning and
 // the freshsizer's Hulls resize). The floor is stamped through the NARROW min_hulls-only seam

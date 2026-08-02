@@ -14,10 +14,10 @@ import (
 // one whose container has already died/stopped while its storage_operations row
 // is still (stale-)RUNNING.
 //
-// This is defense-in-depth for sp-86yb: DaemonServer.StopContainer terminalizes a
+// This is defense-in-depth: DaemonServer.StopContainer terminalizes a
 // gas coordinator's storage_operations row when its container is stopped, but this
 // second, independent check protects manufacturing coordinators against ANY row
-// left stale-RUNNING - whatever the cause - so a dead coordinator can never again
+// left stale-RUNNING - whatever the cause - so a dead coordinator can never
 // cause STORAGE_ACQUIRE_DELIVER tasks to pile up against an empty, agentless ship.
 //
 // found=false means the container row no longer exists.
@@ -37,7 +37,7 @@ type StorageSourceFinder struct {
 // NewStorageSourceFinder creates a new StorageSourceFinder.
 //
 // containerReader may be nil to disable the coordinator-liveness check, trusting
-// the storage_operations row status alone (pre-sp-86yb behavior).
+// the storage_operations row status alone.
 func NewStorageSourceFinder(storageOpRepo storage.StorageOperationRepository, containerReader ContainerStatusReader) *StorageSourceFinder {
 	return &StorageSourceFinder{storageOpRepo: storageOpRepo, containerReader: containerReader}
 }
@@ -64,7 +64,7 @@ func (f *StorageSourceFinder) FindRunningOperationForGood(ctx context.Context, p
 	}
 
 	// Return the first RUNNING operation that supports this good AND whose
-	// coordinator container is confirmed alive (sp-86yb).
+	// coordinator container is confirmed alive.
 	for _, op := range operations {
 		if !op.IsRunning() || !op.SupportsGood(good) {
 			continue
@@ -87,11 +87,11 @@ func (f *StorageSourceFinder) FindRunningOperationForGood(ctx context.Context, p
 // operation is confirmed RUNNING.
 //
 // With no reader wired (containerReader == nil), it passes through true - the
-// storage_operations row status remains the sole signal, matching pre-sp-86yb
-// behavior. Once a reader IS wired, any uncertainty (read error, container row
-// gone, non-RUNNING status) is treated as NOT alive: this is a liveness gate, so
-// "can't confirm alive" must mean "don't route deliveries here" - the fallback is
-// the existing, already-proven market-purchase path, not a wedge.
+// storage_operations row status remains the sole signal. Once a reader IS wired,
+// any uncertainty (read error, container row gone, non-RUNNING status) is treated
+// as NOT alive: this is a liveness gate, so "can't confirm alive" must mean "don't
+// route deliveries here" - the fallback is the existing, already-proven
+// market-purchase path, not a wedge.
 func (f *StorageSourceFinder) isCoordinatorAlive(ctx context.Context, containerID string, playerID int) bool {
 	if f.containerReader == nil {
 		return true

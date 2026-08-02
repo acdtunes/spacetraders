@@ -7,7 +7,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// sp-wwhu: the sibling of sp-mu6u's crash, on the OUTPUT-harvest path instead of
+// The sibling of sp-mu6u's crash, on the OUTPUT-harvest path instead of
 // the input-purchase path. purchaseFabricatedOutput (called from
 // PollForProduction once production is confirmed) crashed with "no cargo space
 // available for output" when the harvest was attempted against an already-full

@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// sp-hv4f6: at EXPANSION the gate is built and its construction hulls stop earning, so the hand-off
+// At EXPANSION the gate is built and its construction hulls stop earning, so the hand-off
 // re-dedicates them to the TRADE fleet — an ASSIGNMENT, not an un-dedication. Clearing the tag to ""
 // would strand them: the trade coordinator only works hulls already tagged "trade", the autosizer only
 // tags hulls it buys, and the capacity reconciler that once auto-pinned idle hulls is gone (sp-y2ptq).

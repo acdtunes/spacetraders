@@ -66,7 +66,7 @@ func TestResolveConfig_ImmutableSourcingAndCeilingConsts(t *testing.T) {
 
 // reach_mode shallow (1) is pure-BFS / reuse-off; deep (3) is the aggressive outward drive. The
 // presets compose the coupled values together, so a shallow reach can never leave reuse armed and
-// a deep reach always carries its relay + ceiling (the sp-6vep footguns are unexpressible).
+// a deep reach always carries its relay + ceiling (the footguns are unexpressible).
 func TestResolveConfig_ReachModeShallowAndDeep(t *testing.T) {
 	shallow := resolveConfig(func() *RunFrontierExpansionCoordinatorCommand {
 		c := testCmd()

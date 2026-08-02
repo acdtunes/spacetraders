@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// These tests pin the sp-pdb3 operator surface for the sp-sdyo per-good buy-gating override map:
+// These tests pin the operator surface for the sp-sdyo per-good buy-gating override map:
 // the `construction start` LAUNCH flags (--good-override / --overrides) and the boundary
 // validation/clamping the CLI applies before an override value is ever persisted. The CLI SETS
 // values into the existing override map; it never bypasses a guardrail. In particular the

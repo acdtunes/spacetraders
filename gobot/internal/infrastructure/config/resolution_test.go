@@ -104,7 +104,7 @@ func TestLoadConfig_ExecutableDirFallback(t *testing.T) {
 	require.Equal(t, "fromexecdir", cfg.Database.Host)
 }
 
-// sp-wj0h: the tour market-model artifact path resolves against the config file's dir
+// The tour market-model artifact path resolves against the config file's dir
 // so the tour executor reads it regardless of the daemon's cwd. Pins all four branches.
 func TestResolveModelArtifactPath(t *testing.T) {
 	cfgFile := filepath.Join("/etc", "spacetraders", "config.yaml")

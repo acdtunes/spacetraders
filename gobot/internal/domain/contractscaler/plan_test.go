@@ -165,7 +165,7 @@ func TestFarSourceGoods_FixedWhitelistAndFlatCaps(t *testing.T) {
 	}
 }
 
-// The FULL fixed plan at the delivery knee (sp-mtgje): delivery caps at MaxDeliveryHulls (6,
+// The FULL fixed plan at the delivery knee: delivery caps at MaxDeliveryHulls (6,
 // NEVER 8), and the warehouse deepens to one per far-source good (len(FarSourceGoods)=8) — the
 // reconcile budget then draws from this depth to fill the live ceiling (ceiling−delivery−stocker).
 // The plan CARRIES the full depth cap; the ceiling decides how much of it is bought.

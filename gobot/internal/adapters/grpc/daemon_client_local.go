@@ -96,7 +96,7 @@ func (c *DaemonClientLocal) PersistContainer(
 		if !ok {
 			return daemon.ErrInvalidCommandType
 		}
-		// sp-o34q: forward MaxRepositionJumps — the segment that dropped the bound on the way to
+		// Forward MaxRepositionJumps — the segment that dropped the bound on the way to
 		// the persisted config, degrading the live relay to the strict 5-jump resolver.
 		// sp-4yse: forward ChartGateOnArrival for the same reason — the worker's start path rebuilds
 		// the command FROM config (StartScoutReposition), so a flag dropped here never charts.

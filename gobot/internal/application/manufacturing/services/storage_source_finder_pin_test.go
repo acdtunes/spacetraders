@@ -11,7 +11,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
 )
 
-// sp-86yb: even when a storage_operations row is (stale-)RUNNING, a manufacturing
+// Even when a storage_operations row is (stale-)RUNNING, a manufacturing
 // coordinator must not spawn STORAGE_ACQUIRE_DELIVER against a coordinator whose
 // container has already died or stopped - that ship is empty and no longer being
 // worked, so every such task would fail forever (the storage wedge). This is

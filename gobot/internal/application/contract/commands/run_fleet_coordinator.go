@@ -996,7 +996,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			}
 			if recordWorkerCompletion(logger, event, fmt.Sprintf("Contract completed by %s", event.ShipSymbol)) {
 				result.ContractsCompleted++
-				// Home the just-delivered hull to a standby sink IMMEDIATELY (sp-x80j3)
+				// Home the just-delivered hull to a standby sink IMMEDIATELY
 				// instead of leaving it loitering at the delivery waypoint until the next
 				// between-legs selection change or the ~90s idle-arb sweep. Scoped to a
 				// successful delivery (the hull is free/idle at the delivery waypoint here);
@@ -1295,7 +1295,7 @@ func recordWorkerCompletion(logger common.ContainerLogger, event navigation.Work
 }
 
 // homeCompletedHullToStandby dispatches a just-completed contract-work hull to a
-// demand-ranked standby sink THE MOMENT its worker finishes (sp-x80j3), so the hull
+// demand-ranked standby sink THE MOMENT its worker finishes, so the hull
 // does not loiter at the delivery waypoint until the next between-legs selection
 // change or the ~90s idle-arb sweep.
 func (h *RunFleetCoordinatorHandler) homeCompletedHullToStandby(ctx context.Context, cmd *RunFleetCoordinatorCommand, shipSymbol string) {
@@ -1313,7 +1313,7 @@ func (h *RunFleetCoordinatorHandler) homeCompletedHullToStandby(ctx context.Cont
 	}
 
 	// The SAME live-set resolution the between-legs hook uses: live `fleet hub` pins, or the ≤6
-	// fixed placement slots auto-driving the set when no hub is pinned (sp-bu6ma / sp-mtgje).
+	// fixed placement slots auto-driving the set when no hub is pinned.
 	// Nil-safe → launch snapshot.
 	liveStandby := appContract.ResolveStandbyStations(ctx, logger, h.standbyProvider, cmd.ContainerID, cmd.PlayerID.Value(), cmd.StandbyStations)
 	liveStandby = appContract.ResolveStandbyForHoming(ctx, logger, h.standbyPlacementProvider, cmd.PlayerID.Value(), liveStandby)

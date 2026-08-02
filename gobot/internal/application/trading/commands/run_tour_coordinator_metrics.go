@@ -9,7 +9,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 )
 
-// Burn-in instrumentation for the absorption ledger (sp-8cz9): two counters the L5/xmwn
+// Burn-in instrumentation for the absorption ledger: two counters the L5/xmwn
 // mutex-retirement ruling and the Admiral's heavy-#9 gate consume. Both are pure
 // OBSERVATION — every function here derives from data the plan/execution ALREADY read
 // (the netted absorption view, the plan, the snapshot) and emits through the nil-safe

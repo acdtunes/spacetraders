@@ -107,11 +107,10 @@ type DemandMinerOptions struct {
 // joined to the cheapest SOURCE market anywhere that sells it (home OR foreign)
 // and, when the home system sells it, the home ask plus the per-unit savings.
 //
-// The Foreign* field names are a naming artifact of an earlier cross-system-only
-// version: they now carry the cheapest source ANYWHERE, which may be a market in the
-// HOME system itself. The consumers (stocker buy leg, tour deposit sink) buy at
-// ForeignMarket regardless of its system — an in-system source is trivially reachable
-// (0 jumps) and hauled to the central warehouse.
+// The Foreign* field names are a MISNOMER: they carry the cheapest source ANYWHERE,
+// which may be a market in the HOME system itself. The consumers (stocker buy leg,
+// tour deposit sink) buy at ForeignMarket regardless of its system — an in-system
+// source is trivially reachable (0 jumps) and hauled to the central warehouse.
 //
 // A row with NO market anywhere (not even home) is DROPPED — nothing to source, nowhere
 // to buy, so it cannot be pre-positioned (fail closed, RULINGS #4; this is not the
@@ -348,7 +347,7 @@ func (m *DemandMiner) resolveSourceMarket(ctx context.Context, good, homeSystem 
 }
 
 // cheapestSourceMarket returns the cheapest market selling good ANYWHERE — home system OR
-// foreign. It no longer excludes the home system: when home is the only scanned
+// foreign. It does NOT exclude the home system: when home is the only scanned
 // system (post-weekly-reset), the home export IS the cheapest source and the good must be
 // pre-positionable from it, not dropped. Returns nil only when NO market anywhere sells the
 // good. Market data exists only for scouted systems, so "has scanned data" doubles as the

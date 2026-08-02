@@ -1,10 +1,10 @@
 package commands
 
 // RunShipyardBackfillCoordinator (sp-rhju Part 3) is the standing CATCH-UP SWEEP that
-// closes the shipyard-scan blind spot. Historically the shipyard scan rode only scout
-// MARKET tours (sp-42ow), so it lagged the depth frontier: a system the frontier CHARTED
+// closes the shipyard-scan blind spot. Without it the shipyard scan rides only scout
+// MARKET tours and lags the depth frontier: a system the frontier CHARTED
 // (its waypoint set swept, so its SHIPYARD trait is known) but that no market tour ever
-// toured stayed unscanned — 55 charted shipyards, only 10 scanned, a 45-system blind spot
+// toured stays unscanned — 55 charted shipyards, only 10 scanned, a 45-system blind spot
 // the heavy-freighter yard the autosizer hunts (fail-closed on a 21-heavy shortfall) may
 // already sit in.
 //

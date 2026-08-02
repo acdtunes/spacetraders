@@ -1,6 +1,6 @@
 package queries
 
-// Unit tests for the reachable-yard ranking (sp-42ow): hop distance first,
+// Unit tests for the reachable-yard ranking: hop distance first,
 // price second, over the stored gate adjacency (under-construction edges
 // excluded), bounded to the strict heavy reach. 4 distinct behaviors:
 // ordering, reachability exclusion, empty-store empty rank, unpriced exclusion.
@@ -88,7 +88,7 @@ func TestNearestYardsSelling_RanksByHopsThenPrice(t *testing.T) {
 
 // Reachability: a yard with no stored route from any reference system is
 // excluded, and an edge whose gate is UNDER CONSTRUCTION does not carry the
-// route (the gategraph never routes into an unbuilt gate — sp-8qhu semantics).
+// route (the gategraph never routes into an unbuilt gate — semantics).
 func TestNearestYardsSelling_ExcludesUnreachableAndUnderConstructionRoutes(t *testing.T) {
 	gates := &fakeAdjacency{adj: map[string][]system.GateEdge{
 		// The ONLY route HOME→DARK is under construction.

@@ -24,8 +24,8 @@ const (
 // far-source good (each buffered ~2× contract qty — DepotUnitsPerGood). The reconcile budget
 // DEEPENS the warehouse to fill the remaining ceiling (ceiling − delivery − stocker) UP TO
 // this cap, so the live composition scales with the ceiling — the design curve (budget 10→3wh,
-// 12→5wh, 14→7wh), capping at len(FarSourceGoods). Replaces the prior fixed-5 depth: with
-// delivery capped at 6, the ceiling headroom past 7 hulls goes entirely to warehouse depth.
+// 12→5wh, 14→7wh), capping at len(FarSourceGoods). With delivery capped at 6, the ceiling
+// headroom past 7 hulls goes entirely to warehouse depth.
 var WarehouseUnits = len(FarSourceGoods)
 
 // UnitRole is a scaler hull's role in the fixed plan.

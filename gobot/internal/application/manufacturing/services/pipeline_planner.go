@@ -23,7 +23,7 @@ import (
 type PipelinePlanner struct {
 	marketLocator   *MarketLocator
 	storageSources  *StorageSourceFinder  // Optional: enables STORAGE_ACQUIRE_DELIVER tasks
-	containerReader ContainerStatusReader // Optional: gates STORAGE_ACQUIRE_DELIVER on coordinator liveness (sp-86yb)
+	containerReader ContainerStatusReader // Optional: gates STORAGE_ACQUIRE_DELIVER on coordinator liveness
 }
 
 // NewPipelinePlanner creates a new pipeline planner.

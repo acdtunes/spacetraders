@@ -3,7 +3,7 @@ package parkedsensing
 // ferrycost.go prices DELIVERY of a bought probe, so the buy floor binds on what
 // a hull actually costs to put on post rather than on its sticker price.
 //
-// WHY IT EXISTS (sp-e46yc). An Admiral-authorised ~10M probe expansion bought 258
+// WHY IT EXISTS. An Admiral-authorised ~10M probe expansion bought 258
 // probes for 10,152,775 — on budget — and then spent a further 6,444,427 in gate
 // fees flying them to post. Landed cost 16.6M, 63% over the authorisation. The
 // buy floor never saw it: fillSlot checked `credits - quote < floor`, and `quote`

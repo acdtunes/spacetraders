@@ -21,15 +21,14 @@ const (
 )
 
 // ScanBudgetMetricsCollector publishes what the market and shipyard scan
-// budgets decide, which is the thing neither of them could previously be shown
-// to do (sp-e4dkw).
+// budgets decide.
 //
-// WHY THIS EXISTS. Both budgets were ARMED and REACHED in production while
-// emitting nothing at all: no admit counter, no deny counter, no overdraft
-// counter. internal/infrastructure/config/shipyard_scan.go tells the operator
-// to "Raise it when Forced overdrafts are persistently high" — an operating
-// procedure that could not be executed, because nothing counted overdrafts. As
-// a direct consequence shipyard reads ran at 3.2x their configured allowance
+// WHY THIS EXISTS. Both budgets are ARMED and REACHED in production, and without
+// these series they decide silently: no admit counter, no deny counter, no
+// overdraft counter. internal/infrastructure/config/shipyard_scan.go tells the
+// operator to "Raise it when Forced overdrafts are persistently high" — an
+// operating procedure nothing can execute unless overdrafts are counted. Unseen,
+// shipyard reads ran at 3.2x their configured allowance
 // (0.388 req/s measured against 0.12 configured) with no signal whatever. A
 // budget that cannot be observed cannot be tuned, and cannot be shown to hold.
 //
@@ -38,8 +37,7 @@ const (
 // allowance and the coverage denominator are LEVELS that move both ways, so
 // they are Gauges — deliberately NOT observations into a Summary, because a
 // signed _sum makes rate() ramp instead of average and produces a climbing
-// phantom "average" (the sp-fpgl2 postmortem). No quantity here is ever
-// observed into a _sum.
+// phantom "average". No quantity here is ever observed into a _sum.
 //
 // Pure OBSERVATION (RULINGS #4): a recording miss must never touch an admission
 // decision, so every Record is nil-safe and best-effort, following

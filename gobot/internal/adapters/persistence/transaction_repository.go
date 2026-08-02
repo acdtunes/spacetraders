@@ -110,7 +110,7 @@ func (r *GormTransactionRepository) CountByPlayer(ctx context.Context, playerID 
 }
 
 // PerOriginGateFees aggregates recorded jump fees into a {departure system: mean fee}
-// table (sp-9idvn).
+// table.
 //
 // WHY THE MEAN AND NOT THE MEDIAN, given sp-wtc47 argued the mean for the FLEET constant:
 // there the estimator had to price a SUM of n crossings, so E[total] = n x E[fee] forced

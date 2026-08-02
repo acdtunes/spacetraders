@@ -55,7 +55,7 @@ func (s *stubJumpShipRepo) Save(_ context.Context, ship *domainNavigation.Ship) 
 }
 
 // SaveWithRetry mirrors the real repository's non-conflict path (find → mutate →
-// save) so the migrated claim/release/nav persists (sp-wa7c) exercise the same
+// save) so the migrated claim/release/nav persists exercise the same
 // closures they use in production while still funneling through Save's snapshot
 // capture. The fake has no version conflict, so a single mutate+save is faithful.
 func (s *stubJumpShipRepo) SaveWithRetry(ctx context.Context, _ string, _ shared.PlayerID, mutate domainNavigation.ShipMutation) (*domainNavigation.Ship, bool, error) {
@@ -116,7 +116,7 @@ func (s *stubJumpAPIClient) GetJumpGate(_ context.Context, _, _, _ string) (*por
 // FK constraint is created and cleaned up.
 //
 // Add ENFORCES PRIMARY-KEY UNIQUENESS on the container ID, exactly as containers_pkey
-// does in Postgres. That is not decoration: the sp-rqhzh wedge IS that duplicate-key
+// does in Postgres. That is not decoration: the wedge IS that duplicate-key
 // rejection, so a stub which quietly accepted a second row under the same ID could not
 // reproduce the bug at all, and every test written against it would pass with the fix
 // deleted.
@@ -201,7 +201,7 @@ func newJumpTestShip(t *testing.T, symbol string, location *shared.Waypoint) *do
 }
 
 // newDrivelessJumpTestShip builds a ship with no jump drive module, used to
-// exercise the gate-adjacent driveless-jump precondition (sp-n0x7): such a
+// exercise the gate-adjacent driveless-jump precondition: such a
 // ship may only jump if it is currently at a COMPLETE jump gate.
 func newDrivelessJumpTestShip(t *testing.T, symbol string, location *shared.Waypoint) *domainNavigation.Ship {
 	t.Helper()
@@ -419,7 +419,7 @@ func TestJumpShip_DestinationGateUnderConstruction4262_SurfacesCleanError(t *tes
 	}
 }
 
-// SpaceTraders rule (sp-n0x7): gate-adjacent driveless jumps are legal - a
+// SpaceTraders rule: gate-adjacent driveless jumps are legal - a
 // ship with NO jump drive module can still jump if it is currently at a
 // COMPLETE jump gate. The precondition must not hard-require a jump drive.
 func TestJumpShip_DrivelessShipAtCompleteGate_PassesPrecondition(t *testing.T) {

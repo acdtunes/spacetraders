@@ -43,7 +43,7 @@ func (s *DaemonServer) ScoutPostCoordinator(ctx context.Context, playerID int, t
 		"tick_interval_secs": tickIntervalSecs,
 	}
 
-	// sp-rsgc: re-adopt the last persisted live-tuned config for this player's scout-post
+	// Re-adopt the last persisted live-tuned config for this player's scout-post
 	// coordinator so a relaunch of a stopped one keeps its tunes (manning-stall window,
 	// cross-system relay switch/hops) instead of silently reverting to defaults — the same
 	// re-adopt the daemon-restart recovery path already does. The [scouting] config.yaml
@@ -82,7 +82,7 @@ func (s *DaemonServer) ScoutPostCoordinator(ctx context.Context, playerID int, t
 // AddScoutPost adds or updates a desired-state scout post for a system (sp-cxpq).
 // The daemon is the single writer of post state (RULINGS #3); the captain's CLI
 // reaches this only through the RPC. An existing post's live assignment — including
-// every multi-probe slot and its frozen partition (sp-enry) — is preserved, so a
+// every multi-probe slot and its frozen partition — is preserved, so a
 // freshness/kind edit never evicts a hull. hulls is the probe budget N (0 ⇒ 1); if it
 // CHANGES from the existing budget the coordinator re-partitions on its next tick
 // (ensurePartitions), tearing down and rebuilding the slots.
@@ -120,7 +120,7 @@ func (s *DaemonServer) AddScoutPost(ctx context.Context, playerID int, systemSym
 			post.PrimaryPartition = p.PrimaryPartition
 			post.ExtraSlots = p.ExtraSlots
 			post.CreatedAt = p.CreatedAt
-			// Preserve the manning floor (sp-2ci9y) — bootstrap owns it via the narrow
+			// Preserve the manning floor — bootstrap owns it via the narrow
 			// UpdateScoutPostMinHulls seam, so a full-row re-add here (a CLI `scout posts
 			// add`) must not zero the home post's probe_target floor.
 			post.MinHulls = p.MinHulls
@@ -136,7 +136,7 @@ func (s *DaemonServer) AddScoutPost(ctx context.Context, playerID int, systemSym
 
 // UpdateScoutPostMinHulls sets ONLY the manning-floor column of the (playerID, systemSymbol)
 // post — the narrow seam bootstrap uses to stamp the home post's permanent probe_target floor
-// (sp-2ci9y) without disturbing the freshsizer's Hulls resize or the reconciler's manning. A
+// without disturbing the freshsizer's Hulls resize or the reconciler's manning. A
 // missing post is a no-op (the caller creates it first, then stamps the floor).
 func (s *DaemonServer) UpdateScoutPostMinHulls(ctx context.Context, playerID int, systemSymbol string, minHulls int) error {
 	repo := persistence.NewGormScoutPostRepository(s.db)
@@ -156,7 +156,7 @@ func (s *DaemonServer) RemoveScoutPost(ctx context.Context, playerID int, system
 	for _, p := range posts {
 		if p.SystemSymbol == systemSymbol {
 			// Release EVERY slot's hull (a multi-probe post has more than one), so all
-			// its satellites flow to other posts on the next reconcile tick (sp-enry).
+			// its satellites flow to other posts on the next reconcile tick.
 			for _, hull := range p.MannedHulls() {
 				s.releaseScoutHull(ctx, playerID, hull)
 			}
@@ -185,7 +185,7 @@ func (s *DaemonServer) ListScoutPosts(ctx context.Context, playerID int) ([]*dom
 // coordinator's own reclaim on the next tick, it does not strand the removal.
 func (s *DaemonServer) releaseScoutHull(ctx context.Context, playerID int, hullSymbol string) {
 	pid := shared.MustNewPlayerID(playerID)
-	// Release under CAS-retry (sp-wa7c): the closure re-applies ForceRelease on the
+	// Release under CAS-retry: the closure re-applies ForceRelease on the
 	// FRESH row so a concurrent writer's cargo/nav update on the same hull survives
 	// instead of being last-write-wins clobbered, and skips the write when the hull
 	// is already idle (changed=false, no spurious version bump).

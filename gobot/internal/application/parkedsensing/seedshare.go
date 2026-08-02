@@ -54,10 +54,9 @@ const seedAttemptReserve = 2
 // before standing aside for the seeds queued behind them.
 //
 // NOT A STANDING TAX. The reserve is withheld only when a seed is actually
-// outstanding; with none, the fills keep the entire budget and the tick behaves
-// exactly as it did before this file existed. That matters because the steady
-// state is most ticks: a reserve that idled two attempts whenever the frontier
-// was quiet would cost two purchases a tick, forever, to protect nothing.
+// outstanding; with none, the fills keep the entire budget. That matters because
+// the steady state is most ticks: a reserve that idled two attempts whenever the
+// frontier was quiet would cost two purchases a tick, forever, to protect nothing.
 func fillAttemptBudget(candidates []QueuedSlot) int {
 	for _, slot := range candidates {
 		if slot.Kind == SlotKindSpare {

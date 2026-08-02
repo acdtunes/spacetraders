@@ -26,7 +26,7 @@ func (s *Ship) CooldownExpiration() *time.Time {
 	return s.cooldownExpiration
 }
 
-// PurchasingFleet is the dedicated_fleet tag for the EXCLUSIVE purchasing ship (sp-7r7w): the command
+// PurchasingFleet is the dedicated_fleet tag for the EXCLUSIVE purchasing ship: the command
 // frigate, retired from the contract operation at the first-hauler pivot and reserved as the standing
 // buy ship for every subsequent purchase. It is a PROTECTED role — a purchasing-dedicated hull is idle
 // between buys but must NEVER be re-drafted into the contract op (the reconciler / contract-fleet /

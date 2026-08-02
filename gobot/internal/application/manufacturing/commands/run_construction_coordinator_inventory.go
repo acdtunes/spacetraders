@@ -12,7 +12,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
 
-// Warehouse-first construction sourcing (sp-crjla). Before buying a gate material at market, the
+// Warehouse-first construction sourcing. Before buying a gate material at market, the
 // drain withdraws it from an in-system depot warehouse at zero marginal cost, enforcing
 // "one controller per resource": a depot stocker is the sole buyer→warehouse and the construction
 // coordinator only ever buys the RESIDUAL not covered by warehouse stock (RULINGS #4, no

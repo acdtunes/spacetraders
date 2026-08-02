@@ -23,13 +23,13 @@ import "context"
 type productionStrategyCtxKey struct{}
 
 // DefaultProductionStrategy is the strategy the PRODUCTION command builders default to when the
-// captain has not set [manufacturing] production_strategy (sp-yfzi, Admiral directive 2026-07-13):
+// captain has not set [manufacturing] production_strategy (Admiral directive 2026-07-13):
 // scarcity-gated recursion runs ON in production without the captain naming it. This only names the
 // default an absent/empty config value resolves to; the knob stays operator-tunable and
 // dial-back-able (RULINGS #5) — a captain can pin "prefer-buy" to restore the sp-jav2 posture.
 const DefaultProductionStrategy = string(StrategySmart)
 
-// WithProductionStrategy stamps the per-run production acquisition strategy onto ctx (sp-yfzi). An
+// WithProductionStrategy stamps the per-run production acquisition strategy onto ctx. An
 // empty string is a no-op at the point of use: the resolver falls back to its own default strategy,
 // so estimators and directly-built commands stay byte-identical to today.
 func WithProductionStrategy(ctx context.Context, strategy string) context.Context {

@@ -25,7 +25,7 @@ type StartConstructionPipelineResult struct {
 	Message          string
 
 	// DeferredMaterials names every material (trade symbol) that could not be
-	// sourced this call (sp-560b/sp-ooba). Each still has a visible PENDING
+	// sourced this call. Each still has a visible PENDING
 	// task that the SupplyMonitor re-sources when supply regenerates; this
 	// lets the caller report the gap by name instead of a generic message.
 	DeferredMaterials []string
@@ -52,7 +52,7 @@ type GetConstructionStatusResult struct {
 }
 
 // StartConstructionPipeline starts or resumes a construction pipeline for a construction site.
-// minSupply is the caller-set EXPORT sourcing floor (sp-ezz9), e.g. "SCARCE";
+// minSupply is the caller-set EXPORT sourcing floor, e.g. "SCARCE";
 // empty string means unset, preserving the original MODERATE default.
 // goodOverrides carries the per-good buy-gating overrides (sp-sdyo): a per-good MinSupply loosens
 // the sourcing floor for a single bottleneck good while every other material keeps the global
@@ -75,7 +75,7 @@ func (s *DaemonServer) StartConstructionPipeline(ctx context.Context, constructi
 		apiClient,
 	)
 	// The hull search draws on the fleet's one shipyard-read allowance, exactly like
-	// the shared locator in the composition root (sp-mb0er). Guarded rather than
+	// the shared locator in the composition root. Guarded rather than
 	// passed blind: a typed-nil scanner would satisfy the interface and defeat the
 	// setter's own nil check.
 	if s.yardScanner != nil {
@@ -92,7 +92,7 @@ func (s *DaemonServer) StartConstructionPipeline(ctx context.Context, constructi
 		s.clock,
 	)
 
-	// sp-3bza: DI the SAME scarcity-gated resolver the construction drain runs (sp-yfzi) so the
+	// DI the SAME scarcity-gated resolver the construction drain runs so the
 	// planner gates a fabrication material's feasibility on "SOURCEABLE within the depth ceiling"
 	// (buyable OR producible) - the drain's actual verdict - instead of the stale "every immediate
 	// input buyable at MODERATE+" gate that deferred a whole material when a deep input was scarce
@@ -201,7 +201,7 @@ type StopConstructionPipelineResult struct {
 	Message          string
 }
 
-// StopConstructionPipeline cancels the active construction pipeline for a site (sp-yzrv).
+// StopConstructionPipeline cancels the active construction pipeline for a site.
 // Returns a clear error if no active (non-terminal) construction pipeline exists for
 // the site - this covers both "never started" and "already stopped" uniformly.
 func (s *DaemonServer) StopConstructionPipeline(ctx context.Context, constructionSite string, playerID int) (*StopConstructionPipelineResult, error) {
@@ -231,7 +231,7 @@ func (s *DaemonServer) StopConstructionPipeline(ctx context.Context, constructio
 	}, nil
 }
 
-// ConstructionCoordinator starts the standing construction-supply drain (sp-382j): a
+// ConstructionCoordinator starts the standing construction-supply drain: a
 // recovery-safe container that each tick sources and delivers a gate-construction pipeline's
 // READY DELIVER_TO_CONSTRUCTION tasks to their site on the shared ProductionExecutor engine.
 // It mirrors WorkerRebalancerCoordinator's shape (build config → buildCommandForType so
@@ -279,7 +279,7 @@ func (s *DaemonServer) getAPIClient() domainPorts.APIClient {
 
 // --- sp-pdb3: live per-good buy-gating override verb ---------------------------------------------
 //
-// The daemon side of the live `construction override` verb (sp-pdb3): it SETS the values of the
+// The daemon side of the live `construction override` verb: it SETS the values of the
 // sp-sdyo per-good buy-gating override map on a RUNNING construction pipeline, with no restart. The
 // construction coordinator / task activator re-read the persisted GoodGatingOverrides off the
 // pipeline row on their next discovery pass (task_activator.pipelineMinSupply loads it via
@@ -291,7 +291,7 @@ func (s *DaemonServer) getAPIClient() domainPorts.APIClient {
 // pointer means "knob not supplied this call" — leave the good's existing value intact so an
 // operator can tune one dimension at a time; a non-nil pointer sets that dimension. This
 // provided-vs-absent distinction is why pointers are used instead of a bare GoodGatingOverride.
-// Strategy is not a live-settable dimension (sp-sxyx6 — "smart" is the sole acquisition strategy);
+// Strategy is not a live-settable dimension ("smart" is the sole acquisition strategy);
 // GoodGatingOverride.Strategy itself survives for the launch-time --good-override path.
 type goodOverridePatch struct {
 	minSupply        *string
@@ -393,7 +393,7 @@ func (s *DaemonServer) MutateConstructionGoodOverride(ctx context.Context, const
 
 // --- sp-duljg: live max_workers override verb ----------------------------------------------------
 //
-// The daemon side of the live `construction workers` verb (sp-duljg): it SETS the RUNNING
+// The daemon side of the live `construction workers` verb: it SETS the RUNNING
 // construction pipeline's max_workers — the concurrent supplyTask-worker cap — with no restart. The
 // construction drain re-reads max_workers off the pipeline row every tick (resolveWorkerCap →
 // errgroup.SetLimit), so the change converges the fan-out on the next tick and survives a daemon

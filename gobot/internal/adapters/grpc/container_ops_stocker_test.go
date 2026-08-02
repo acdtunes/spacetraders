@@ -38,7 +38,7 @@ func TestStartStocker_RefusesNonIdleShip(t *testing.T) {
 // "stocker" command_type, "TRADING" container_type, and a config carrying
 // ship_symbol/warehouse_waypoint/iterations so restart recovery can rebuild it (RULINGS #2),
 // plus the operation="stocker" fleet identity so both the fresh start and a recovery rebuild
-// claim the hull under the durable stocker dedication (sp-m92a) — the claim that lets the
+// claim the hull under the durable stocker dedication — the claim that lets the
 // stocker (and only the stocker) take its own 'stocker'-dedicated hull.
 func TestStartStocker_IdleShip_PersistsRecoveryVisibleContainer(t *testing.T) {
 	s, db, playerID := newRecoveryTestServer(t)
@@ -91,7 +91,7 @@ func TestStartStocker_Standing_PersistsStandingIntentForRestart(t *testing.T) {
 	require.Contains(t, model.Config, `"refill_hysteresis":8`)
 }
 
-// sp-k2xav: the intra-system sourcing intent (home_system_only) must PERSIST in the container
+// The intra-system sourcing intent (home_system_only) must PERSIST in the container
 // config so a daemon restart RE-ADOPTS the depot stocker home-system-scoped (RULINGS #2/#14) —
 // recovery rebuilds the command from this config; without the persisted flag a restart would
 // silently revert the depot to cross-system sourcing. Pairs with the command-factory rebuild pin.
@@ -113,7 +113,7 @@ func TestStartStocker_HomeSystemOnly_PersistsForRestart(t *testing.T) {
 	require.Contains(t, model.Config, `"home_system_only":true`, "the intra-system sourcing intent must be persisted for restart re-adoption")
 }
 
-// sp-k2xav: the command-factory REBUILD reads home_system_only back off the persisted config into
+// The command-factory REBUILD reads home_system_only back off the persisted config into
 // the command (the restart half of RULINGS #2) — so a recovered depot stocker resumes home-system
 // sourcing. An absent key rebuilds HomeSystemOnly=false (the generic cross-system default,
 // byte-identical for every pre-existing stocker container).

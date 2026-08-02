@@ -1,7 +1,7 @@
 package persistence_test
 
 // Integration tests (real GORM/sqlite) for the placement worklist's ORDER and for
-// the attempt stamp that drives it (sp-cwnwb).
+// the attempt stamp that drives it.
 //
 // The order is the contract here, not an incidental detail of the read. The
 // placement machine works a fixed budget over a queue that DOES NOT DRAIN — a slot

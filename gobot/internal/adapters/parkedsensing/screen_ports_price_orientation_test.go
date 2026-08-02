@@ -122,7 +122,7 @@ func TestScanToSensing_PriceHistoryRecordsSameOrientation(t *testing.T) {
 
 	// Second scan at moved prices — still a normal market, still ask above bid.
 	//
-	// Stamped as a PAIRED read (sp-ntgfj): back-to-back scans of one market are what
+	// Stamped as a PAIRED read: back-to-back scans of one market are what
 	// the fleet market-scan budget's freshness rule declines, and the "after" half of
 	// a before/after pair is the one read that exemption exists for. The production
 	// path that records a price move — the sampled post-trade impact scan — stamps

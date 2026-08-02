@@ -9,7 +9,7 @@
 // What differs between a market and a shipyard is only the VALUE TERM, and this
 // package is that term.
 //
-// WHY THE MARKET'S VALUE TERM DOES NOT TRANSFER (sp-mb0er). A market's worth is
+// WHY THE MARKET'S VALUE TERM DOES NOT TRANSFER. A market's worth is
 // its bid-ask spread: a continuous, self-revealing quantity that every scan
 // re-measures, so marketscan can weight a market on what it last quoted. A
 // shipyard has no spread. It has a CATALOGUE (which hull types it sells, which

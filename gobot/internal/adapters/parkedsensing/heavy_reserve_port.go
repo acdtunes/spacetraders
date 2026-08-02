@@ -197,16 +197,16 @@ func (p *HeavyReservePort) resolveHeavyCap(ctx context.Context, playerID int) (i
 		// AN UNREADABLE CAP IS NOT A CAP OF ZERO — it resolves to the SAME documented default an
 		// UNSET cap resolves to, one rung below.
 		//
-		// This used to reserve nothing, and that was a real divergence rather than a stylistic
+		// Reserving nothing here would be a real divergence rather than a stylistic
 		// choice: the fleet autosizer, reading THE SAME KNOB from THE SAME TABLE, explicitly
 		// refuses to read a failed read as zero — liveHeavyCap falls back to its launch value on a
 		// snapshot error, documented as "NEVER 0, which would read as an operator hold and
-		// silently stop all heavy buying". Sensing doing the opposite meant the two consumers of
-		// one shared predicate disagreed about the cap in precisely the window where they are
+		// silently stop all heavy buying". Sensing doing the opposite would leave the two consumers
+		// of one shared predicate disagreeing about the cap in precisely the window where they are
 		// otherwise guaranteed to agree.
 		//
-		// It cannot wrongly hold treasury for long, which was the original objection. The census
-		// and the yard reads that follow hit the SAME database, so a persistent database fault
+		// It cannot wrongly hold treasury for long. The census and the yard reads that
+		// follow hit the SAME database, so a persistent database fault
 		// still reserves zero through them; the only window this rung changes is the narrow one
 		// where the containers table alone is unreadable — and in that window the autosizer is
 		// itself running on its compiled default, so agreeing with it is the correct answer.

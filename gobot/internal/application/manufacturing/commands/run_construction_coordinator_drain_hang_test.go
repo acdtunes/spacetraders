@@ -17,12 +17,12 @@ import (
 // sp-v5d1 / sp-j09q / sp-6zkg — the drain-hang cascade at the coordinator seam.
 //
 // The cascade (reproduced live twice 2026-07-13): a successful supply removes a hull's cargo
-// server-side, but the daemon's cached cargo is not written back (sp-v5d1) -> the next tick sees
+// server-side, but the daemon's cached cargo is not written back -> the next tick sees
 // phantom cargo and re-routes the hull to re-deliver (sp-j09q) -> the API rejects it with 400 code
 // 4219 'ship has 0 units' -> the drain goes SILENT indefinitely (sp-6zkg), the coordinator stays
 // RUNNING but never ticks again until a daemon bounce.
 //
-// The root (sp-v5d1) is fixed in the executor's post-supply write-back (production_executor.go). These
+// The root is fixed in the executor's post-supply write-back (production_executor.go). These
 // tests pin the coordinator's SAFETY NET: a phantom-cargo 4219 must resync + defer (never fail, never
 // loop), a wedged supply task must never freeze the whole drain goroutine (a per-task timeout bounds
 // it), and a normal delivery still advances (sp-9ptm/2me2/yfzi intact).

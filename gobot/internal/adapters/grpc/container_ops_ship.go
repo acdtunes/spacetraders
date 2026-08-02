@@ -32,7 +32,7 @@ func (s *DaemonServer) NavigateShip(ctx context.Context, shipSymbol, destination
 		map[string]interface{}{
 			"ship_symbol": shipSymbol,
 			"destination": destination,
-			// sp-sg35 BRIDGE: captain manual-op authority — this deliberate CLI op
+			// BRIDGE: captain manual-op authority — this deliberate CLI op
 			// may operate a fleet-dedicated hull (audited override; see the const).
 			captainManualAuthorityKey: true,
 		},
@@ -48,7 +48,7 @@ func (s *DaemonServer) NavigateShip(ctx context.Context, shipSymbol, destination
 	return containerID, nil
 }
 
-// RouteShip handles cross-system point-to-point travel requests (sp-6hjw). It is the
+// RouteShip handles cross-system point-to-point travel requests. It is the
 // daemon side of the `ship route` verb: unlike NavigateShip (which dispatches the
 // in-system-only NavigateRouteCommand and fails cross-system with "waypoint not found
 // in cache for system X"), it dispatches a RouteShipCommand whose handler reuses the
@@ -75,7 +75,7 @@ func (s *DaemonServer) RouteShip(ctx context.Context, shipSymbol, destination st
 		map[string]interface{}{
 			"ship_symbol": shipSymbol,
 			"destination": destination,
-			// sp-sg35 BRIDGE: captain manual-op authority — this deliberate CLI op
+			// BRIDGE: captain manual-op authority — this deliberate CLI op
 			// may operate a fleet-dedicated hull (audited override; see the const).
 			captainManualAuthorityKey: true,
 		},
@@ -115,7 +115,7 @@ func (s *DaemonServer) WarpShip(ctx context.Context, shipSymbol, destination str
 		map[string]interface{}{
 			"ship_symbol": shipSymbol,
 			"destination": destination,
-			// sp-sg35 BRIDGE: captain manual-op authority — this deliberate CLI op
+			// BRIDGE: captain manual-op authority — this deliberate CLI op
 			// may operate a fleet-dedicated hull (audited override; see the const).
 			captainManualAuthorityKey: true,
 		},
@@ -148,7 +148,7 @@ func (s *DaemonServer) DockShip(ctx context.Context, shipSymbol string, playerID
 		nil, // No parent container
 		map[string]interface{}{
 			"ship_symbol": shipSymbol,
-			// sp-sg35 BRIDGE: captain manual-op authority (audited override; see const).
+			// BRIDGE: captain manual-op authority (audited override; see const).
 			captainManualAuthorityKey: true,
 		},
 		nil, // Use default RealClock for production
@@ -180,7 +180,7 @@ func (s *DaemonServer) OrbitShip(ctx context.Context, shipSymbol string, playerI
 		nil, // No parent container
 		map[string]interface{}{
 			"ship_symbol": shipSymbol,
-			// sp-sg35 BRIDGE: captain manual-op authority (audited override; see const).
+			// BRIDGE: captain manual-op authority (audited override; see const).
 			captainManualAuthorityKey: true,
 		},
 		nil, // Use default RealClock for production
@@ -207,7 +207,7 @@ func (s *DaemonServer) RefuelShip(ctx context.Context, shipSymbol string, player
 
 	metadata := map[string]interface{}{
 		"ship_symbol": shipSymbol,
-		// sp-sg35 BRIDGE: captain manual-op authority (audited override; see const).
+		// BRIDGE: captain manual-op authority (audited override; see const).
 		captainManualAuthorityKey: true,
 	}
 	if units != nil {
@@ -248,7 +248,7 @@ func (s *DaemonServer) JettisonCargo(ctx context.Context, shipSymbol string, pla
 		"ship_symbol": shipSymbol,
 		"good_symbol": goodSymbol,
 		"units":       units,
-		// sp-sg35 BRIDGE: captain manual-op authority (audited override; see const).
+		// BRIDGE: captain manual-op authority (audited override; see const).
 		captainManualAuthorityKey: true,
 	}
 

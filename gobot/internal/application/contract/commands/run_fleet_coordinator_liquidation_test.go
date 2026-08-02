@@ -61,7 +61,7 @@ func (r *liquidationE2EShipRepo) ClaimShip(_ context.Context, symbol, containerI
 func (r *liquidationE2EShipRepo) Save(_ context.Context, _ *navigation.Ship) error { return nil }
 
 // SaveWithRetry mirrors the real repository's non-conflict path (find → mutate →
-// save) so a migrated fleet-coordinator persist (sp-wa7c) exercises its production
+// save) so a migrated fleet-coordinator persist exercises its production
 // closure against this fake without hitting the embedded nil interface.
 func (r *liquidationE2EShipRepo) SaveWithRetry(ctx context.Context, symbol string, playerID shared.PlayerID, mutate navigation.ShipMutation) (*navigation.Ship, bool, error) {
 	sh, err := r.FindBySymbol(ctx, symbol, playerID)
@@ -185,7 +185,7 @@ func newLiquidationDispatchHandler(repo navigation.ShipRepository, daemonClient 
 
 // --- the acceptance ----------------------------------------------------------
 
-// ACCEPTANCE (sp-39oi, verbatim): a parked-with-cargo contract hull self-clears (sell or
+// ACCEPTANCE (verbatim): a parked-with-cargo contract hull self-clears (sell or
 // floor-jettison) and re-enters candidacy without captain hands. This pins the whole loop
 // at the command level: FilterUnrelatedCargo parks a laden hull out of candidacy (the
 // jam) -> the coordinator dispatches a cargo_liquidation worker on it -> the REAL

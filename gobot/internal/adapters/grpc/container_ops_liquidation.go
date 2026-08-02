@@ -10,7 +10,7 @@ import (
 )
 
 // PersistCargoLiquidationWorker persists (but does NOT start) a cargo_liquidation
-// container the contract fleet coordinator manages (sp-39oi). Like a worker_ferry it
+// container the contract fleet coordinator manages. Like a worker_ferry it
 // carries a coordinator_id and a parent link, so daemon restart recovery SKIPS it (marks
 // it worker_interrupted, preserving the ship claim) and leaves the reclaim/re-evaluation
 // to the coordinator's next pass. It wraps exactly ONE iteration — the whole liquidation —

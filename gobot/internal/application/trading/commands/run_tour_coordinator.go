@@ -391,7 +391,7 @@ type RunTourCoordinatorResponse struct {
 	// relaunch-after-relaunch full. Zero on every run that never strands a hull laden.
 	DistressLiquidations int
 
-	// ExitHoldLiquidations counts the goods the sp-8zhit exit sweep cleared out of the hold on
+	// ExitHoldLiquidations counts the goods the exit sweep cleared out of the hold on
 	// the way to release: cargo that had a live local bid and would otherwise have been marooned
 	// on an idle hull the instant releaseShipAssignments ran. It is the falsifier for that sweep
 	// — a run whose hold emptied for any OTHER reason leaves this at zero — so a regression that
@@ -470,7 +470,7 @@ type RunTourCoordinatorHandler struct {
 	// SetTreasuryReader at boot with no config gate. An unreadable treasury still fails
 	// CLOSED either way.
 	treasury TreasuryReader
-	// gateFees is the ledger-backed per-DEPARTURE-SYSTEM jump-fee table (sp-9idvn) the
+	// gateFees is the ledger-backed per-DEPARTURE-SYSTEM jump-fee table the
 	// solver prices crossings against. nil (every existing test, and any daemon that does
 	// not wire it) => no table on the wire => every crossing prices at the solver's flat
 	// charge, byte-identical to today. Injected via SetGateFeeReader at boot.
@@ -555,7 +555,7 @@ type RunTourCoordinatorHandler struct {
 	prePositioning     tradingsvc.DepositCandidateConfig
 	depositCeilingPct  int
 
-	// cargoBlocklist names goods the tour planner must NEVER trade as cargo (sp-o4wa):
+	// cargoBlocklist names goods the tour planner must NEVER trade as cargo:
 	// the economy-analyst's sub-70-cr/u noise goods (FUEL/ALUMINUM/PLASTICS) whose per-leg
 	// dock+dwell tempo cost exceeds the cargo value. Filtered out of the market snapshot in
 	// planForState BEFORE it reaches the solver, so a blocklisted good is unselectable as
@@ -760,7 +760,7 @@ func (h *RunTourCoordinatorHandler) SetTreasuryReader(r TreasuryReader) {
 	h.legs.SetTreasuryReader(r)
 }
 
-// SetGateFeeReader injects the ledger-backed per-departure-gate fee table (sp-9idvn).
+// SetGateFeeReader injects the ledger-backed per-departure-gate fee table.
 // Unset (every existing test) leaves gateFees nil, which plans byte-identically to today.
 func (h *RunTourCoordinatorHandler) SetGateFeeReader(r GateFeeReader) {
 	h.gateFees = r
@@ -797,7 +797,7 @@ func (h *RunTourCoordinatorHandler) SetScanPolicy(policy shared.ScanPolicy) {
 	h.scanPolicySet = true
 }
 
-// SetRankerAgeCaps wires the activity-conditioned listing freshness table (sp-t5sh5)
+// SetRankerAgeCaps wires the activity-conditioned listing freshness table
 // into the tour snapshot builder, the same optional-injection idiom as SetScanPolicy.
 // The daemon injects cfg.Trading.RankerAgeCapMinutes.Resolved() so the tour path and
 // the lane ranker drop stale rows against the SAME config-resolved caps; left unset
@@ -807,7 +807,7 @@ func (h *RunTourCoordinatorHandler) SetRankerAgeCaps(caps trading.RankerAgeCaps)
 	h.rankerAgeCaps = caps
 }
 
-// SetCargoBlocklist injects the tour cargo good-blocklist (sp-o4wa) from
+// SetCargoBlocklist injects the tour cargo good-blocklist from
 // cfg.TradeFleet.CargoBlocklist at daemon boot — the same global-config → handler-setter
 // injection SetPrePositioning/SetScanPolicy use. An empty/absent list leaves the handler's
 // set nil, so planForState's filter is a no-op and the tour plans over the full good
@@ -830,7 +830,7 @@ func (h *RunTourCoordinatorHandler) SetSinkFreshness(maxAge time.Duration) {
 // SetCapitalWorkSensor wires the per-operation capital budget's hasWork sensor (sp-ftqgp). The
 // daemon calls this UNCONDITIONALLY at boot — there is no config key, no default-off and no
 // arming step between the sensor and a live budget. Leaving it unset is the test path only, and
-// keeps the 25%-of-treasury dynamic cap as the sole cumulative bound exactly as before this bead.
+// keeps the 25%-of-treasury dynamic cap as the sole cumulative bound.
 func (h *RunTourCoordinatorHandler) SetCapitalWorkSensor(sensor common.CapitalWorkSensor) {
 	h.workSensor = sensor
 }
@@ -1030,7 +1030,7 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 		// reaching here with reserve==0 means the launch config carried no reserve (a
 		// captain CLI tour with no --reserve, or a fleet whose [trade_fleet] reserve is
 		// unset); surfacing it makes a fleet accidentally running on the floor visible in
-		// the log, not only in the P&L. The present-but-unparseable case can no longer
+		// the log, not only in the P&L. The present-but-unparseable case cannot
 		// reach here — it fails the build closed (PresentOrFailInt in
 		// buildTourCoordinatorCommand).
 		logger.Log("WARNING", fmt.Sprintf(
@@ -1382,7 +1382,7 @@ func (h *RunTourCoordinatorHandler) execute(ctx context.Context, cmd *RunTourCoo
 	}
 
 	// The honest-completion veto runs in the deferred epilogue, which every exit shares —
-	// including the ones that used to return before this point.
+	// including the ones that return before this point.
 	response.NetProfit = response.TotalRevenue - response.TotalSpent
 	logger.Log("INFO", "Tour run complete", map[string]interface{}{
 		"ship_symbol": cmd.ShipSymbol, "tours_completed": response.ToursCompleted, "exit_reason": response.ExitReason,
@@ -1503,7 +1503,7 @@ func (h *RunTourCoordinatorHandler) runOneTour(
 			break
 		}
 	}
-	// sp-461l (epic sp-g9td) cash-true audit: the phase="realized" observation is ALREADY cash-true
+	// Cash-true audit: the phase="realized" observation is ALREADY cash-true
 	// and needed NO change. The profit here is BOOKED cash — revenue minus spend accumulated from the
 	// actual buy/sell API responses (response.TotalRevenue/TotalSpent), which INCLUDE the look-back
 	// manifest buys (run_tour_coordinator_lookback.go increments TotalSpent). The sp-rd21 bug dropped
@@ -2112,7 +2112,7 @@ func (h *RunTourCoordinatorHandler) planForState(
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	// sp-o4wa: drop the config-driven noise-goods blocklist from the good universe BEFORE
+	// Drop the config-driven noise-goods blocklist from the good universe BEFORE
 	// any downstream consumer sees it, so a blocklisted good (FUEL/ALUMINUM/PLASTICS — sub-
 	// 70-cr/u tempo drag) is never chosen as tour cargo (buy source OR sell sink) and never
 	// misreported as an unreachable lane. No-op (same slice) when the blocklist is unset, so
@@ -2176,7 +2176,7 @@ func (h *RunTourCoordinatorHandler) planForState(
 		// anchor via an appended, honestly-priced no-trade return leg.
 		Closed:       cmd.ClosedTours,
 		AnchorSystem: cmd.AnchorSystem,
-		// sp-tp5c3: the gate-hop distance between every pair of allowedSystems, so the solver
+		// The gate-hop distance between every pair of allowedSystems, so the solver
 		// prices a cross-system crossing by its REAL hop count instead of a flat 1 hop. Empty
 		// at the default cap (every crossing is a single hop the flat charge prices exactly) =>
 		// byte-identical to today; only a widened horizon (MaxTourSystems > 2) populates it.
@@ -2189,7 +2189,7 @@ func (h *RunTourCoordinatorHandler) planForState(
 		// solver's min-margin gate keeps testing the raw margin (RULINGS #4: no guard is
 		// tightened as a side effect).
 		ExternalityWeight: cmd.ExternalityWeight,
-		// sp-9idvn: the per-departure-gate fee table, learned from the ledger's own recorded
+		// The per-departure-gate fee table, learned from the ledger's own recorded
 		// jumps, so a crossing's first hop is priced by the gate it leaves rather than by the
 		// fleet mean. Nil reader (every existing test, and any daemon that has not wired it)
 		// or an empty ledger => nil => every crossing prices at the flat charge =>
@@ -2207,7 +2207,7 @@ func (h *RunTourCoordinatorHandler) planForState(
 	return plan, snapshot, absorptionView, nil
 }
 
-// filterBlocklistedCargo drops every snapshot row whose good is in the blocklist (sp-o4wa),
+// filterBlocklistedCargo drops every snapshot row whose good is in the blocklist,
 // removing the good from the tour's cargo universe entirely — as both a buy source (Ask)
 // and a sell sink (Bid) — so the solver can never plan a buy or sell leg for it. An
 // empty/nil blocklist is a true no-op: the SAME slice is returned (zero copy), keeping the
@@ -2777,7 +2777,7 @@ func shipHeldUnits(ship *navigation.Ship, good string) int {
 // metric's own label vocabulary. It reads the engine the executing path DECLARED, so the
 // basis label on the metric and the engine column on the row cannot drift apart — they are
 // now one fact with two renderings rather than two independent classifications of the same
-// leg (sp-fzt09).
+// leg.
 //
 // A liquidation reports its own basis rather than borrowing the solver's. No series moves
 // either way: it leaves its plan basis at zero rather than inventing one, and a non-positive
@@ -2798,7 +2798,7 @@ func legPlanBasis(engine trading.LegEngine) string {
 // path calling in — solver, look-back or liquidation. It is a parameter rather than
 // something inferred from legIdx so that a new execution path cannot compile without saying
 // who it is: inference would file an unrecognised path under solver, quietly polluting the
-// population that grades the market model (sp-fzt09).
+// population that grades the market model.
 func (h *RunTourCoordinatorHandler) recordLeg(
 	ctx context.Context,
 	cmd *RunTourCoordinatorCommand,

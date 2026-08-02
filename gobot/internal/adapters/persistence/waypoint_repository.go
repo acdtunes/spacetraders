@@ -145,7 +145,7 @@ func eraScopePredicate(openEraID *int) (string, []any) {
 // could not be read" and "every era is closed" — and eraScopePredicate then turns
 // that nil into `era_id IS NULL`, which is a FALLBACK: it still answers, from the
 // pre-backfill rows. For a reader whose answer costs API budget that is the wrong
-// direction. sp-l0aqy: the sensing engine's yard sweep built its work list from an
+// direction. The sensing engine's yard sweep built its work list from an
 // unscoped `waypoints` read and spent ten hours at ~290 failures/hour asking the
 // API about systems from universes that no longer exist, while utilisation sat at
 // 88% against an 85% ceiling — and because the sweep's per-tick bound counts
@@ -212,7 +212,7 @@ func (r *GormWaypointRepository) ListWithTrait(ctx context.Context, trait string
 //     takes the enumeration and calls the API with it. For that caller an
 //     unscoped row is not a harmless extra candidate, it is a guaranteed 404
 //     against a system that no longer exists, charged against a per-tick bound
-//     that counts attempts (sp-l0aqy: ~290 failures/hour for ten hours).
+//     that counts attempts (~290 failures/hour for ten hours).
 //
 // A physical SHIPYARD trait really is immutable across eras, so nothing here
 // contradicts ListWithTrait's reasoning. What era_id records is narrower and is
@@ -255,7 +255,7 @@ func (r *GormWaypointRepository) ListBySystemWithTrait(ctx context.Context, syst
 
 // ChartedShipyardCount returns how many CHARTED waypoints in the current era bear
 // the SHIPYARD trait — the denominator of the fleet's "shipyard budget ÷ yards
-// known" rotation (sp-mb0er).
+// known" rotation.
 //
 // It applies the IDENTICAL trait predicate as ListBySystemWithTrait above, only
 // global and counted rather than scoped to one system and materialised, so the

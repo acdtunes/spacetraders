@@ -11,7 +11,7 @@ import (
 
 // activatorStubTaskRepo embeds the domain interface so only the methods the
 // activator exercises need concrete implementations; any unexpected call
-// panics on a nil-method deref. The retry sweep (sp-qxxr6) reads FAILED tasks,
+// panics on a nil-method deref. The retry sweep reads FAILED tasks,
 // and tasks it flips to PENDING re-enter the PENDING read within the same
 // activation pass — so FindByStatus filters the seeded tasks by their LIVE
 // status, like the real repository would.
@@ -76,7 +76,7 @@ func newActivatorUnderTest(taskRepo *activatorStubTaskRepo, pipelineRepo *activa
 	}
 }
 
-// sp-j2hq: a deferred DELIVER_TO_CONSTRUCTION task recovered by the poll-loop
+// A deferred DELIVER_TO_CONSTRUCTION task recovered by the poll-loop
 // must be sourced against the pipeline's persisted --min-supply floor, not a
 // hardcoded default MODERATE floor - otherwise a floor set at planning time
 // (or on a later resumed `construction start --min-supply X`) is silently
@@ -230,7 +230,7 @@ func TestActivateConstructionTasks_DeferredManufacturable_RecoversAsFabricate(t 
 	}
 }
 
-// sp-9p87s fallback (unchanged): a deferred good with NO factory to fabricate at AND no buy source
+// Fallback (unchanged): a deferred good with NO factory to fabricate at AND no buy source
 // stays deferred (PENDING, re-tried on a later poll) — the fix never spends and never fails closed.
 func TestActivateConstructionTasks_DeferredNoFactoryNoBuy_StaysDeferred(t *testing.T) {
 	pipeline := manufacturing.NewConstructionPipeline(plannerTestSite, 1, 3, 5)
@@ -266,7 +266,7 @@ func TestActivateConstructionTasks_DeferredNoFactoryNoBuy_StaysDeferred(t *testi
 	}
 }
 
-// sp-9p87s precedence — factory-first falls through to BUY: a manufacturable good whose only market
+// Precedence — factory-first falls through to BUY: a manufacturable good whose only market
 // is a plain EXPORT (no factory importing its inputs) has no fabrication factory to resolve, so the
 // recovery falls back to the buy-source path (source set, factory empty), never a phantom fabricate.
 func TestActivateConstructionTasks_DeferredManufacturable_NoFactory_RecoversViaBuy(t *testing.T) {
@@ -329,7 +329,7 @@ func reconstituteFailedTask(pipelineID string, taskType manufacturing.TaskType, 
 	)
 }
 
-// sp-qxxr6: FAILED DELIVER_TO_CONSTRUCTION tasks with retry budget left were never
+// FAILED DELIVER_TO_CONSTRUCTION tasks with retry budget left were never
 // retried — task.CanRetry() existed (and Fail() charged retryCount) but no sweeper
 // flipped them back to PENDING, so two gate materials sat FAILED (retry 1/3) for
 // >80min on transient-class errors and construction froze. The activation pass must

@@ -78,10 +78,10 @@ func (c *OperationContext) String() string {
 //   - tour_run → tour
 //
 // Every other raw type (factory_workflow, trade_route, construction_supply,
-// stocker, ...) passes through unchanged. The former arbitrage_worker→arbitrage
-// and goods_factory_coordinator→factory cases were removed as dead: no
-// coordinator constructs an OperationContext with those raw types, so they never
-// appeared in live data (detectors.go concurs).
+// stocker, ...) passes through unchanged. There is deliberately NO
+// arbitrage_worker→arbitrage or goods_factory_coordinator→factory case: no
+// coordinator constructs an OperationContext with those raw types, so neither
+// ever appears in live data (detectors.go concurs).
 func (c *OperationContext) NormalizedOperationType() string {
 	if c == nil || c.OperationType == "" {
 		return ""
@@ -221,12 +221,12 @@ func ScanPolicyFromContext(ctx context.Context) (ScanPolicy, bool) {
 
 // WithLiveScanRequired marks a market read as pre-commit verification for a money
 // guard, which exempts it from the fleet's market-scan budget declining it into a
-// cache read (sp-ntgfj).
+// cache read.
 //
 // Only FOUR call paths stamp it, and every one of them re-reads a price
 // immediately before a buy or a sell commits and fails CLOSED if it cannot:
 //
-//   - the per-tranche sell floor (sp-lbbm) and buy ceiling (sp-9mkf), which hold
+//   - the per-tranche sell floor and buy ceiling, which hold
 //     the remainder rather than trade on a bid or ask they could not verify;
 //   - the trade circuit's stale-ask abort, which exists because executing on a
 //     cache that had moved realised large losses;
@@ -256,8 +256,8 @@ func LiveScanRequiredFromContext(ctx context.Context) bool {
 }
 
 // WithPairedScan marks a market read as the "after" half of the scan-buy-scan
-// price-impact pair the sp-tl68 model is fitted from, which exempts it from the
-// market-scan budget's freshness veto (sp-ntgfj).
+// price-impact pair the model is fitted from, which exempts it from the
+// market-scan budget's freshness veto.
 //
 // It exempts that ONE rule and nothing else. For a paired measurement a fresh
 // cache is not evidence the read is redundant — the cached row is the "before"

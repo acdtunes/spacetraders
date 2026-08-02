@@ -350,7 +350,7 @@ func (h *RunGasCoordinatorHandler) createPoolAssignments(
 ) error {
 	for _, shipSymbol := range ships {
 		// Release any existing assignment from a previous run's container under
-		// CAS-retry (sp-wa7c) — gas ships are explicitly configured, so a stale claim
+		// CAS-retry — gas ships are explicitly configured, so a stale claim
 		// held by ANOTHER container is force-taken (recovery semantics, unchanged).
 		// The closure re-applies ForceRelease on the FRESH row so a concurrent writer's
 		// cargo/nav update survives instead of being last-write-wins clobbered; it
@@ -389,7 +389,7 @@ func (h *RunGasCoordinatorHandler) releasePoolAssignments(
 		return err
 	}
 
-	// Release each ship under CAS-retry (sp-wa7c): re-apply ForceRelease on the FRESH
+	// Release each ship under CAS-retry: re-apply ForceRelease on the FRESH
 	// row so a concurrent writer's cargo/nav update survives instead of being
 	// last-write-wins clobbered by the FindByContainer snapshot. Skip unless the hull
 	// is still on THIS container (a concurrent release or re-claim -> changed=false).
@@ -463,7 +463,7 @@ func (h *RunGasCoordinatorHandler) spawnWorker(
 		// transaction, not clobbered.
 		//
 		// A stale claim from a previous run's container is still force-taken first
-		// (config-listed hull, recovery semantics unchanged) under CAS-retry (sp-wa7c):
+		// (config-listed hull, recovery semantics unchanged) under CAS-retry:
 		// the closure re-applies ForceRelease on the FRESH row so a concurrent writer's
 		// cargo/nav update survives instead of being last-write-wins clobbered, and
 		// skips when the hull is idle or already on this worker container (changed=

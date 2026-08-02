@@ -171,7 +171,7 @@ func TestRoleResolver_UnreadableHomeSystemYieldsEmptyEra(t *testing.T) {
 	}
 }
 
-// --- home-system anchor (sp-cfvgj): the once-at-arm home resolves by ANCHOR PRIORITY, not the mobile
+// --- home-system anchor: the once-at-arm home resolves by ANCHOR PRIORITY, not the mobile
 // command frigate. Post-degree-0 the frigate is RETIRED from contracts and becomes the reserved PURCHASE
 // ship that WANDERS to shipyards, so it must NOT anchor the contract home — the contract fleet's own
 // footprint (the base where the "contract"-dedicated hulls sit) does. ---
@@ -213,7 +213,7 @@ func TestContractScalerShipHomeReader_AnchorsOnContractFootprintNotCommandFrigat
 		wantOK   bool
 	}{
 		{
-			// THE REGRESSION (sp-cfvgj): post-degree-0 the command frigate is the mobile PURCHASE ship,
+			// THE REGRESSION: post-degree-0 the command frigate is the mobile PURCHASE ship,
 			// parked at a far shipyard. The contract fleet's own footprint must anchor home, NOT the frigate.
 			name: "contract footprint beats the wandering command frigate",
 			ships: []*navigation.Ship{
@@ -431,7 +431,7 @@ func (r *fakeReclaimShipRepo) FindAllByPlayer(ctx context.Context, playerID shar
 }
 
 // FindBySymbol serves one hull from the fixed fleet by symbol — the read homeContractHull uses to learn
-// the hull's CURRENT system for the sp-orooy foreign-hull cross-gate decision. A miss returns (nil, nil)
+// the hull's CURRENT system for the foreign-hull cross-gate decision. A miss returns (nil, nil)
 // so the reposition guard degrades to "unreadable location → skip" (the intra-system home still fires).
 func (r *fakeReclaimShipRepo) FindBySymbol(ctx context.Context, symbol string, playerID shared.PlayerID) (*navigation.Ship, error) {
 	for _, s := range r.all {
@@ -628,7 +628,7 @@ func TestReclaim_ReDedicatesToContractAndHomesDemandRanked(t *testing.T) {
 
 	// The standby parks share the reclaimed hull's system (X1-SC — reclaimHull sits at X1-SC-A1), so this
 	// is the common ALREADY-HOME case: the fixed-placement home fires directly, with no cross-gate
-	// reposition (the sp-orooy foreign-hull path is covered by TestReclaim_CrossGatesAForeignHullHome...).
+	// reposition (the foreign-hull path is covered by TestReclaim_CrossGatesAForeignHullHome...).
 	err := r.Reclaim(context.Background(), contractScalerCmd.ReclaimOrder{
 		PlayerID:        1,
 		ShipSymbol:      "FREE-HAULER",
@@ -723,7 +723,7 @@ func TestReclaim_CrossGatesAForeignHullHomeBeforeSpreadHoming(t *testing.T) {
 	}
 }
 
-// --- depot-aware per-role counter (sp-urpxy): the depot registry is the source of truth for
+// --- depot-aware per-role counter: the depot registry is the source of truth for
 // actuated warehouse/stocker units, so raising the ceiling RECONCILES the existing depot
 // (adds only the plan-short units) instead of buying duplicate warehouses ---
 

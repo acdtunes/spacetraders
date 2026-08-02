@@ -10,8 +10,7 @@ import (
 //   - chain_pnl_realized_per_hour{good}: a GAUGE of the chain's realized P&L per hour over the
 //     rolling window, refreshed every time the coordinator runs a kill-check. This is the
 //     number the kill verdict is made on — the dashboard's chain-level view of what each chain
-//     actually nets (factory local sells + tour realized net − input cost − lift), the
-//     accounting the realization side previously lacked.
+//     actually nets (factory local sells + tour realized net − input cost − lift).
 //   - chain_pnl_kills_total{good}: a COUNTER incremented once per kill EPISODE (a chain
 //     crossing from running to auto-paused), mirroring the stranded-hull episode counter.
 //     Backs the ChainPnLKill alert.

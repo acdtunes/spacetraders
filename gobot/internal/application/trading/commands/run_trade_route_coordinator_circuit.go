@@ -1,6 +1,6 @@
 package commands
 
-// run_trade_route_coordinator_circuit.go — circuit execution: the disciplined visit/tranche loop and the finish-current-leg liquidation engine (sp-wads move-only split).
+// run_trade_route_coordinator_circuit.go — circuit execution: the disciplined visit/tranche loop and the finish-current-leg liquidation engine (move-only split).
 
 import (
 	"context"
@@ -180,13 +180,12 @@ func (h *RunTradeRouteCoordinatorHandler) flyVisits(
 		// here so a residual-cargo hull still flies. AvailableCargoSpace already nets out the
 		// residual cargo; held is this run's own bought-not-yet-sold units on top.
 		cargoSpace := ship.AvailableCargoSpace() - held
-		// Split the old "volume or hold exhausted" guard into its two distinct causes
-		// (sp-xwa1). A HULL-side stall (no free hold) and a MARKET-side one (source
-		// volume dried up) used to share one indistinguishable line, hiding WHICH it
-		// was — the silent-cause defect the root cause named. Check the hold first: a
-		// pre-buy cargo park is the same class as the pre-flight gate, parking with a
-		// structured reason rather than buying a useless sliver as accumulated cargo
-		// fills the hold. The outer loop reads CargoBlocked and stops the run.
+		// A HULL-side stall (no free hold) and a MARKET-side one (source volume dried
+		// up) are SEPARATE stops: merged into one guard they are indistinguishable, and
+		// the log cannot say WHICH fired. Check the hold first: a pre-buy cargo park is
+		// the same class as the pre-flight gate, parking with a structured reason rather
+		// than buying a useless sliver as accumulated cargo fills the hold. The outer
+		// loop reads CargoBlocked and stops the run.
 		if cargoSpace < minFreeCargoForCircuit {
 			response.CargoBlocked = true
 			response.CargoBlockReason = fmt.Sprintf(
@@ -203,7 +202,7 @@ func (h *RunTradeRouteCoordinatorHandler) flyVisits(
 			return ship, held
 		}
 
-		// Working-capital spend floor (sp-bp6f): refuse the buy BEFORE traveling,
+		// Working-capital spend floor: refuse the buy BEFORE traveling,
 		// docking, or purchasing if it would drop live treasury below the reserve.
 		// Must run here, ahead of Leg 1 committing to anything — a circuit that
 		// already docked and spent before checking has defeated the floor's whole
@@ -289,8 +288,7 @@ func (h *RunTradeRouteCoordinatorHandler) flyVisits(
 		sellUnits := trading.VisitTranche(dstGood.TradeVolume(), held)
 		if sellUnits <= 0 {
 			// The importer has no tradable volume this tick while we hold cargo: not a
-			// clean margin-death, so surface it rather than return silently (the one
-			// early-return that used to vanish without a trace).
+			// clean margin-death, so surface it rather than return silently.
 			response.AbortReason = fmt.Sprintf("destination %s has no sellable volume for %s while holding %d units", lane.DestWaypoint, lane.Good, held)
 			logger.Log("INFO", fmt.Sprintf("No sellable tranche at destination %s (importer trade volume %d exhausted) with %d %s aboard - finishing leg via liquidation", lane.DestWaypoint, dstGood.TradeVolume(), held, lane.Good), nil)
 			return ship, held
@@ -307,9 +305,9 @@ func (h *RunTradeRouteCoordinatorHandler) flyVisits(
 		circuitNetMargin += sellResp.TotalRevenue
 		response.Visits++
 
-		// sp-tl68 wire-in #2: record this leg's compression debt on the SHARED cooldown
-		// ledger so the ranker down-weights this lane for ~tau (hours, not the old ~30min
-		// assumption) and the fleet rotates to fresh lanes instead of re-hammering it.
+		// Record this leg's compression debt on the SHARED cooldown
+		// ledger so the ranker down-weights this lane for ~tau (hours, not minutes)
+		// and the fleet rotates to fresh lanes instead of re-hammering it.
 		// Keyed by lane (buy, sell, good); U = units sold this visit, tv = the lane's
 		// absorption cap (the same tv the ranker charges self-impact against). Best-effort:
 		// a nil ledger (unwired) or non-positive units/cap is a no-op inside Accrue.

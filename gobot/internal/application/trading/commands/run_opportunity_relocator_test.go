@@ -22,7 +22,7 @@ type relocFakeFleet struct {
 	hulls []RelocatorHull
 	err   error
 	// atActuation lets a test make the fleet answer DIFFERENTLY at the actuation re-read than it did
-	// at observation — the only way to exercise the sp-x2jr6 race, where a hull is eligible when it is
+	// at observation — the only way to exercise the race, where a hull is eligible when it is
 	// scored and claimed by the time it would be moved. Absent for a ship ⇒ the re-read returns the
 	// same hull the bulk observation did, so every pre-existing test is unaffected.
 	atActuation map[string]RelocatorHull
@@ -646,7 +646,7 @@ func TestOpportunityRelocatorShould_NotMoveAHullWhenTheIntentCannotBePersisted(t
 	relocRequireNoMove(t, h.actuator, "the relocation intent could not be persisted")
 	// COUNTED, not merely logged. A licensed relocation that did not happen is what the stall verdict
 	// escalates on, so a commit failure that records nothing is invisible to the escalator and to the
-	// heartbeat alike — which is how this whole class of loss stayed unmeasured (sp-j1i49).
+	// heartbeat alike — which is how this whole class of loss stayed unmeasured.
 	if result.Skipped[skipReasonIntentPersistFailed] != 1 {
 		t.Fatalf("an unpersistable intent recorded no skip; skips %v", result.Skipped)
 	}

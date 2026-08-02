@@ -8,7 +8,7 @@ import (
 )
 
 // container_ops_sensing_rescreen.go is the daemon side of the operator rescreen
-// verb (sp-j2efq): the supported response to editing config.yaml's [sensing]
+// verb: the supported response to editing config.yaml's [sensing]
 // goods_whitelist mid-era.
 //
 // WHY THE VERB HAS TO EXIST. Two things in the sensing ledger are stamped with
@@ -25,7 +25,7 @@ import (
 // leaves systems the new list would accept written off, and nothing re-opens them
 // on its own. Rotation
 // re-verdicts systems NO_WHITELIST while their PARKED hulls, already paid for,
-// sit there. Before this verb the only fix was editing the database by hand.
+// sit there. Without this verb the only fix is editing the database by hand.
 //
 // THIS VERB RE-OPENS THE VERDICTS ONLY, and the omission is deliberate. The
 // projection half cannot be done from here: recordSlots skips any waypoint that
@@ -46,7 +46,7 @@ import (
 //
 // WHAT IT IS NOT ALLOWED TO TOUCH is the half that carries the risk. A rescreen
 // re-evaluates JUDGEMENT, never OWNERSHIP: the hulls are bought and standing. The
-// write below is column-scoped (sp-wgjb7) and confined to sensing_systems, so
+// write below is column-scoped and confined to sensing_systems, so
 // state, assigned_ship, slot_kind, the scan stamps and the seed fields cannot be
 // reached from here — blanking a hull would drop it out of CountOwnedProbes and
 // authorise buying a replacement for a probe already on station (RULINGS #4).

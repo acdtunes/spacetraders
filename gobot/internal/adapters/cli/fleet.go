@@ -12,7 +12,7 @@ import (
 	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
 )
 
-// NewFleetCommand creates the fleet command group (sp-l7h2).
+// NewFleetCommand creates the fleet command group.
 //
 // A dedicated fleet is a named group of ships owned exclusively by one
 // operation's coordinator: tagged hulls are invisible to every other
@@ -22,7 +22,7 @@ import (
 // busy ship never evicts the current holder; the new fleet takes over when
 // the claim is released.
 //
-// `fleet add`/`fleet remove` (sp-4s9m) are the operation-oriented surface over
+// `fleet add`/`fleet remove` are the operation-oriented surface over
 // this same tag: a hull can be added to or removed from a RUNNING coordinator's
 // dedicated fleet with NO container restart and no interruption to other hulls'
 // in-progress work. The coordinator reads its fleet membership live from the DB
@@ -134,7 +134,7 @@ func runFleetRemove(ctx context.Context, client fleetMutator, operation, shipSym
 	return fmt.Sprintf("✓ %s removed from the %q fleet — it finishes any in-progress contract leg, then returns to the general pool; no container restart.\n", shipSymbol, operation), nil
 }
 
-// newFleetAddCommand creates the `fleet add` subcommand (sp-4s9m) — the
+// newFleetAddCommand creates the `fleet add` subcommand — the
 // operation-oriented, live add over the shared DedicatedFleet tag path.
 func newFleetAddCommand() *cobra.Command {
 	var (
@@ -195,7 +195,7 @@ Examples:
 	return cmd
 }
 
-// newFleetRemoveCommand creates the `fleet remove` subcommand (sp-4s9m) — the
+// newFleetRemoveCommand creates the `fleet remove` subcommand — the
 // operation-scoped, live removal with a clean mid-contract hand-off.
 func newFleetRemoveCommand() *cobra.Command {
 	var (
@@ -416,7 +416,7 @@ func runFleetHubRemove(ctx context.Context, client hubMutator, operation, waypoi
 	return fmt.Sprintf("✓ %s removed as a hub of the %q operation — idle hulls re-home to the remaining set next tick; a hull mid-leg finishes first. No container restart. Standby set now: %v\n", waypoint, operation, resp.StandbyStations), nil
 }
 
-// newFleetHubCommand creates the `fleet hub` subcommand group (sp-jcke) — the
+// newFleetHubCommand creates the `fleet hub` subcommand group — the
 // operation-oriented, live add/remove of standby-station hubs, the hub analogue
 // of `fleet add`/`remove` for ships.
 func newFleetHubCommand() *cobra.Command {

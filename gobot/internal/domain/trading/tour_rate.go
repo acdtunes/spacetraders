@@ -243,8 +243,8 @@ func computableRates(groups map[string]*legGroup) []float64 {
 // fabricated rate. The window is applied by the caller at the repository read (ListByPlayer's since
 // bound); this function is pure over the rows it sees.
 //
-// ON MATCHED NETS (see matchedTradesOnly). It was deliberately left counting every leg while its
-// consumers were unassessed; they have since been measured and the assessment inverted the call.
+// ON MATCHED NETS. It uses the package's one netting rule, matchedTradesOnly: a trade scores only
+// when the window holds BOTH of its halves, and an unmatched leg widens the span but adds no money.
 //
 // WHAT THE CONSUMERS ACTUALLY DO. β feeds two paths, and NEITHER of them accepts or refuses a tour:
 //

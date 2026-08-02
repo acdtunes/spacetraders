@@ -71,8 +71,8 @@ type LongHaulArbFleetCoordinatorCommand struct {
 	// Money-envelope knobs (design §3), Admiral-authorized aggressive SIZING, live-tunable;
 	// <=0 → the defaults. PerHaulCap caps a single out/backhaul buy (~1M) and is threaded to
 	// each worker's per-buy envelope (the fail-closed reserve-floor fence). TotalExposureCap
-	// (~2M) is still threaded to each worker for parity, but the coordinator NO LONGER
-	// enforces it as a concurrent-haul ceiling (sp-bwjyn, Admiral uncap order): every idle
+	// (~2M) is still threaded to each worker for parity, but the coordinator does NOT
+	// enforce it as a concurrent-haul ceiling (Admiral uncap order): every idle
 	// tagged hull launches each tick, and spend stays bounded per buy by the reserve-floor fence.
 	PerHaulCap       int64
 	TotalExposureCap int64
@@ -294,10 +294,10 @@ func (h *LongHaulArbFleetCoordinatorHandler) reconcileOnce(ctx context.Context, 
 	// Deterministic dispatch order (RULINGS #2): stable across ticks and tests.
 	sort.Slice(idle, func(i, j int) bool { return idle[i].ShipSymbol() < idle[j].ShipSymbol() })
 
-	// UNCAPPED CONCURRENCY (sp-bwjyn, Admiral order): launch a worker for EVERY idle tagged
-	// long-haul hull each tick. The total-exposure CONCURRENCY ceiling that previously held
-	// idle hulls when running >= totalExposureCap/perHaulCap is removed, so a tagged hull
-	// never sits idle behind it. Spend is still fail-closed PER BUY inside each worker — the
+	// UNCAPPED CONCURRENCY (Admiral order): launch a worker for EVERY idle tagged
+	// long-haul hull each tick. No total-exposure CONCURRENCY ceiling is applied here:
+	// maxConcurrentHauls (totalExposureCap/perHaulCap) is deliberately NOT consulted, so a
+	// tagged hull never sits idle behind it. Spend is still fail-closed PER BUY inside each worker — the
 	// reserve-floor fence (newLongHaulFence → common.ReserveFloorGate, the 200k cushion over
 	// the immutable 50k floor, RULINGS #4/#5) and the per-haul cap (threaded via
 	// buildLongHaulLaunchSpec) are untouched. launched already counts any watchdog relaunch.

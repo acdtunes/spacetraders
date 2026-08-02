@@ -18,7 +18,7 @@ import (
 )
 
 // These tests reproduce the LAST trade-route layer (sp-ynuf): the circuit's dock
-// step races the async arrival exactly as the goods-factory buy did (sp-n7yp). The
+// step races the async arrival exactly as the goods-factory buy did. The
 // ONLY faked collaborators are the ShipRepository (the DB/API boundary) and the
 // mediator's navigate/buy/sell; the REAL DockShipHandler, runStateTransition,
 // LoadShip and domain EnsureDocked all execute, so the tests exercise the actual

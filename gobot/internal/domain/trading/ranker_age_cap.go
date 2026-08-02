@@ -6,7 +6,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// Activity-conditioned ranker freshness caps (sp-t5sh5). The economy analyst fit
+// Activity-conditioned ranker freshness caps. The economy analyst fit
 // these on era3/4 telemetry (n=3,236 trades): a stale listing's price barely drifts,
 // and the drift COST is activity-dependent — a WEAK market is nearly static for
 // hours, a STRONG one moves fast — so a single uniform freshness cap (the retired
@@ -39,7 +39,7 @@ const (
 // It changes only the ranker's VISIBILITY cap (which cached rows are eligible to be
 // RANKED). The execution money guards — staleAskAborts, the per-visit margin
 // re-check, min-margin/price/reserve — are untouched (RULINGS #4): a directed --dest
-// lane keeps its stale rows and is re-verified LIVE at execution (sp-xwa1), so a
+// lane keeps its stale rows and is re-verified LIVE at execution, so a
 // loosened visibility cap can never spend into a moved price; the execution tail
 // still aborts.
 type RankerAgeCaps struct {

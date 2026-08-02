@@ -18,7 +18,7 @@ import (
 // flat floor waves through is PARKED once trade's share of deployable capital is reserved, and the
 // budget collapses to exactly the old behavior the moment trade goes idle.
 //
-// The harness is the sp-9aoc spend-floor one unchanged: the input buy costs exactly 100 credits,
+// The harness is the spend-floor one unchanged: the input buy costs exactly 100 credits,
 // so every case below turns purely on where the floor sits, never on affordability.
 
 type fakeCapitalWorkSensor struct {

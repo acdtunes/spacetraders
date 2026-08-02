@@ -106,7 +106,7 @@ func TestBootstrap_ResolveConfig_AbsentBareKey_KeepsLaunchValue(t *testing.T) {
 	}
 }
 
-// THE sp-r6yq acceptance (coordinator side): a live retune lands on the NEXT tick with NO restart.
+// THE acceptance (coordinator side): a live retune lands on the NEXT tick with NO restart.
 // Driven through the two calls reconcileOnce itself makes each tick — take the live snapshot, then
 // resolve against it — so the assertion covers the real per-tick re-read, not a stored value. The
 // launch command is untouched throughout, proving the coordinator acted on the LIVE column.

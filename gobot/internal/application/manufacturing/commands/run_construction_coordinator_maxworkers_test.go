@@ -9,7 +9,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 )
 
-// TestResolveWorkerCap_ReflectsLiveMaxWorkersChange_NoRestart is the sp-duljg live-change proof at
+// TestResolveWorkerCap_ReflectsLiveMaxWorkersChange_NoRestart is the live-change proof at
 // the CONSUMER seam. resolveWorkerCap computes the "dispatching ... (worker cap N)" bound by reading
 // the pipeline's MaxWorkers() off the repo EVERY tick (FindByID), so a live write to the stored cap
 // — what MutateConstructionMaxWorkers does — is picked up on the very next tick by the SAME running

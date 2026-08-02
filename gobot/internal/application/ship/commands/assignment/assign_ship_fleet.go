@@ -95,7 +95,7 @@ const dedicatedFleetStocker = "stocker"
 // HOLDS buffered cargo, so it is cargo-required — the capacity reconciler's tier-1
 // reuse-idle rung can pin an idle hull here, and a 0-cargo satellite pinned as a
 // warehouse can hold nothing. Duplicated as a local literal (like contract/stocker
-// above) because "warehouse" has no single exported constant to import. (sp-pt7d)
+// above) because "warehouse" has no single exported constant to import.
 const dedicatedFleetWarehouse = "warehouse"
 
 // DefaultFleetCargoRequirement is the standing eligibility rule wired in
@@ -105,7 +105,7 @@ const dedicatedFleetWarehouse = "warehouse"
 // the cargo-required fleets an AUTOMATED assigner can pin a hull to — the contract
 // pool, the stocker dedication, and the capacity reconciler's tier-1 reuse-idle
 // targets (fleetForRole maps a role gap to warehouse / stocker /
-// depot.DeliveryHullFleet). depot-delivery + warehouse close the sp-pt7d hole: the
+// depot.DeliveryHullFleet). depot-delivery + warehouse close the hole: the
 // reconciler pinned an idle PROBE to depot-delivery (a delivery hull that cannot
 // haul), the scout-tour could then not claim it, and cold-start scout coverage
 // froze. depot-delivery is keyed by its domain constant so a rename can never
@@ -114,11 +114,11 @@ var DefaultFleetCargoRequirement = FleetCargoRequirement{
 	dedicatedFleetContract:  1,
 	dedicatedFleetStocker:   1,
 	dedicatedFleetWarehouse: 1,
-	depot.DeliveryHullFleet: 1, // "depot-delivery" — the reconciler's GapWorkerShort pin (sp-pt7d)
+	depot.DeliveryHullFleet: 1, // "depot-delivery" — the reconciler's GapWorkerShort pin
 }
 
-// OrphanedContainerReaper terminalizes the container a severed work-claim just orphaned
-// (sp-h8mbb). Breaking a live claim frees the HULL, but the container that was flying it keeps
+// OrphanedContainerReaper terminalizes the container a severed work-claim just orphaned.
+// Breaking a live claim frees the HULL, but the container that was flying it keeps
 // running — still navigating, buying and selling on a hull it no longer owns — and its row stays
 // RUNNING until a daemon restart's recovery sweep finally fails it. Reaping it here is what makes
 // `fleet unassign` mean what it says.
@@ -151,8 +151,8 @@ func NewAssignShipFleetHandler(shipRepo navigation.ShipRepository, playerRepo pl
 // SetOrphanedContainerReaper wires the reaper post-construction, mirroring
 // SetTourLauncher: the handler is registered with the mediator before
 // NewDaemonServer runs, so the daemon cannot be passed to the constructor. A nil
-// reaper (any wiring that never sets one) leaves the claim break byte-identical
-// to its pre-sp-h8mbb behavior rather than panicking.
+// reaper (any wiring that never sets one) leaves the claim break unchanged
+// rather than panicking.
 func (h *AssignShipFleetHandler) SetOrphanedContainerReaper(reaper OrphanedContainerReaper) {
 	h.reaper = reaper
 }
@@ -277,7 +277,7 @@ func (h *AssignShipFleetHandler) Handle(ctx context.Context, request common.Requ
 					"container_id": brokenFrom,
 				})
 
-			// Reap the container the break just orphaned (sp-h8mbb). Freeing the hull is
+			// Reap the container the break just orphaned. Freeing the hull is
 			// only half of unassign: the container that was flying it is untouched by the
 			// claim write and keeps navigating, buying and selling on a hull it no longer
 			// owns, invisible to the coordinator (which reads ownership from the hull's

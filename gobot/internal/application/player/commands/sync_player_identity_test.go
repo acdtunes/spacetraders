@@ -12,7 +12,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// sp-0eufi: this handler is the ONLY writer of players.metadata.headquarters, and until now
+// This handler is the ONLY writer of players.metadata.headquarters, and until now
 // nothing dispatched it — the daemon boot hook does. These pin what that boot sync must do:
 // seed the key, preserve the rest of the row, and stay quiet when there is nothing to change.
 

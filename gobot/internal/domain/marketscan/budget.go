@@ -4,7 +4,7 @@
 // value comes round in the rotation, and the worst-case staleness that
 // rotation guarantees.
 //
-// WHY THIS PACKAGE EXISTS (sp-ntgfj). The SpaceTraders rate limiter caps the
+// WHY THIS PACKAGE EXISTS. The SpaceTraders rate limiter caps the
 // fleet at 2.00 req/s and that ceiling cannot be raised. Sensing scales with
 // the map we have charted while trading scales with credits, so the map
 // outruns the fleet and the ceiling binds EARLIER every era. Measured live at
@@ -78,7 +78,7 @@ const (
 
 	// Paired marks a read whose entire value comes from being taken IMMEDIATELY
 	// AFTER a known earlier one: the "after" half of the scan-buy-scan pair the
-	// price-impact model (sp-tl68) is fitted from, which is what tells the lane
+	// price-impact model is fitted from, which is what tells the lane
 	// ranker how far a market moves when we dump into it.
 	//
 	// For a paired read, a FRESH cache is not evidence the read is unnecessary —

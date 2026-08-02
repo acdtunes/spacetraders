@@ -59,7 +59,7 @@ func (r *transferFakeRepo) Save(_ context.Context, ship *navigation.Ship) error 
 }
 
 // SaveWithRetry mirrors the real repository's non-conflict path (find → mutate →
-// save) so the migrated transfer persists (sp-wa7c) exercise their production
+// save) so the migrated transfer persists exercise their production
 // closures while still recording into the saved map.
 func (r *transferFakeRepo) SaveWithRetry(ctx context.Context, symbol string, playerID shared.PlayerID, mutate navigation.ShipMutation) (*navigation.Ship, bool, error) {
 	sh, err := r.FindBySymbol(ctx, symbol, playerID)
@@ -98,7 +98,7 @@ func buildTransferShip(t *testing.T, symbol, waypoint string, nav navigation.Nav
 	return ship
 }
 
-// The sp-5qs1 incident at the handler seam: the stocker (visitor) arrives DOCKED,
+// The incident at the handler seam: the stocker (visitor) arrives DOCKED,
 // the warehouse hull parks IN_ORBIT. The deposit must orbit the visitor to match the
 // warehouse, transfer, and persist the visitor's reconciled (in-orbit) nav state.
 func TestTransferCargoHandler_Deposit_VisitorDockedWarehouseOrbit_OrbitsAndTransfers(t *testing.T) {

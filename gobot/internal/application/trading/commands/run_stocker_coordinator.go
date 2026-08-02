@@ -56,7 +56,7 @@ const (
 	stockerExitStanding = "standing_parked"
 )
 
-// RunStockerCoordinatorCommand is a captain-directed, guarded STOCKER LOOP (sp-zdwg):
+// RunStockerCoordinatorCommand is a captain-directed, guarded STOCKER LOOP:
 // a dedicated hull that fills a home warehouse the tours rationally won't (sp-dchv
 // proved deposit legs lose to direct sells at every re-plan — correct economics; the
 // stocker dedicates capacity instead of distorting tour objectives). Each round-trip it
@@ -182,7 +182,7 @@ type RunStockerCoordinatorHandler struct {
 	marketRepo         market.MarketRepository
 	apiClient          domainPorts.APIClient
 	// treasury is the LEDGER-backed treasury reader (sp-muq66) the stocker's capital
-	// ceiling reads through instead of calling Get Agent on every pick (sp-45s6f). nil —
+	// ceiling reads through instead of calling Get Agent on every pick. nil —
 	// every existing test — leaves the direct apiClient read in place, byte-identical; the
 	// daemon injects the shared reader via SetTreasuryReader at boot, with no config gate
 	// between. Wired or not, an unreadable balance still stocks nothing (fail closed).
@@ -193,7 +193,7 @@ type RunStockerCoordinatorHandler struct {
 	demandMiner        tradingsvc.DepositDemandMiner
 	config             tradingsvc.DepositCandidateConfig
 	ceilingPct         int
-	// waypointRepo resolves source/warehouse waypoint COORDINATES for the sp-9274 distance-aware
+	// waypointRepo resolves source/warehouse waypoint COORDINATES for the distance-aware
 	// residual buy-leg in the auto-cap knapsack. Cache-only (no API fetch-through), so the
 	// per-pass re-solve costs no API spend; a nil repo (or an uncached waypoint) FAILS OPEN to the
 	// coarse in/cross-system residual (RULINGS #1) — the pre-sp-9274 behavior.
@@ -209,14 +209,14 @@ type RunStockerCoordinatorHandler struct {
 	// verdict so a hull whose need-rank keeps landing on unreachable-only markets (a
 	// scouted-but-unroutable market like X1-PB12 staying artificially "cheapest" forever)
 	// logs ONCE per ship per distinct state, not once per pass — the same per-hull
-	// state-change de-dup discipline as the tour coordinator's depositParked (sp-13tl) and
+	// state-change de-dup discipline as the tour coordinator's depositParked and
 	// the ikx1 backoff. Keyed by ship symbol; the value is the last emitted
 	// "<unreachable>/<total>" signature. Guarded by noReachableSourceMu because the handler
 	// is a SHARED singleton dispatched concurrently across every stocker hull.
 	noReachableSourceMu sync.Mutex
 	noReachableSource   map[string]string
 
-	// Warehouse auto-cap optimizer (sp-5n7v). capParams are the analyst-owned tunables
+	// Warehouse auto-cap optimizer. capParams are the analyst-owned tunables
 	// (RULINGS #5), injected by the daemon via SetWarehouseCapParams (zero-value defaults
 	// otherwise). capState carries per-warehouse EWMA + last-selected targets across passes
 	// so the buffered good-set is STICKY (EWMA damps a one-tick spike; the held-good bonus is
@@ -228,7 +228,7 @@ type RunStockerCoordinatorHandler struct {
 	capStateMu sync.Mutex
 	capState   map[string]*warehouseCapState
 
-	// Stocking instrumentation (sp-j6uz): a driven port that records each CONFIRMED
+	// Stocking instrumentation: a driven port that records each CONFIRMED
 	// stocker→warehouse deposit as a structured economic event so downstream analysis can
 	// measure depot stock-IN throughput/coverage (the stock-IN mirror of the kqxe withdrawal
 	// stream). Optional — a nil recorder disables emission so existing tests and any caller
@@ -333,7 +333,7 @@ func (h *RunStockerCoordinatorHandler) resolveWarehouseCaps(ctx context.Context,
 	return plan.Targets
 }
 
-// waypointCoords builds the sp-9274 coordinate lookup the auto-cap knapsack uses to turn the
+// waypointCoords builds the coordinate lookup the auto-cap knapsack uses to turn the
 // residual buy-leg into a real dist(warehouse, source). It is a CACHE-ONLY read (waypointRepo,
 // never an API fetch-through) so the per-pass re-solve costs no API spend; a nil repo, an
 // unresolvable waypoint, or a TTL-expired cache row returns ok=false and the optimizer FAILS OPEN
@@ -359,14 +359,14 @@ func (h *RunStockerCoordinatorHandler) SetGateGraph(g GateGraph) {
 	h.legs.SetGateGraph(g)
 }
 
-// SetChartGateOnArrival propagates the sp-bcsu chart-on-gate-arrival knob to the movement
+// SetChartGateOnArrival propagates the chart-on-gate-arrival knob to the movement
 // legs, so this coordinator's cross-system stock-haul arrivals chart the gate they land on
 // too. Mirrors the SetGateGraph delegation.
 func (h *RunStockerCoordinatorHandler) SetChartGateOnArrival(enabled bool) {
 	h.legs.SetChartGateOnArrival(enabled)
 }
 
-// SetTreasuryReader wires the shared ledger-backed treasury reader (sp-45s6f) into this
+// SetTreasuryReader wires the shared ledger-backed treasury reader into this
 // coordinator's capital ceiling AND into its MOVEMENT LEGS, which run the buy-time
 // working-capital floor. The legs are this handler's OWN RunTradeRouteCoordinatorHandler
 // instance (the constructor builds one; the daemon passes nil), NOT the daemon's separately
@@ -384,7 +384,7 @@ func (h *RunStockerCoordinatorHandler) SetEventSubscriber(subscriber navigation.
 	h.legs.SetEventSubscriber(subscriber)
 }
 
-// SetStockingRecorder wires the stock-IN deposit-event recorder (sp-j6uz): on each CONFIRMED
+// SetStockingRecorder wires the stock-IN deposit-event recorder: on each CONFIRMED
 // stocker→warehouse deposit the handler emits a structured storage.StockingEvent (good,
 // units, warehouse, source market, hauler, player, timestamp) so downstream analysis can
 // measure depot stock-IN throughput/coverage. A nil recorder is a no-op, so the daemon may
@@ -463,7 +463,7 @@ func (h *RunStockerCoordinatorHandler) execute(ctx context.Context, cmd *RunStoc
 		// A stop/shutdown cancels ctx. Exit RESUMABLE at the round-trip boundary by
 		// returning the ctx error, which the runner routes through its ctx.Err() path
 		// (re-adopted at next boot) — never let a cancel be misread as starvation and
-		// COMPLETE a -1/standing container (the sp-ovkn trap).
+		// COMPLETE a -1/standing container (the trap).
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -550,7 +550,7 @@ func (h *RunStockerCoordinatorHandler) runOneRoundTrip(
 	logger := common.LoggerFromContext(ctx)
 
 	// The co-located warehouse group at the deposit waypoint is required to stock
-	// (sp-5q2c: one OR MORE running warehouses whose capacity sums). None
+	// (one OR MORE running warehouses whose capacity sums). None
 	// running/never-running → an empty pass (the starvation streak exits honestly
 	// after K of these).
 	group := h.warehousesAt(ctx, cmd.PlayerID, cmd.WarehouseWaypoint)
@@ -597,7 +597,7 @@ func (h *RunStockerCoordinatorHandler) runOneRoundTrip(
 	}
 
 	// HAUL HOME + DEPOSIT. The just-bought cargo's source is the picked foreign market,
-	// threaded onto each stock-IN event (sp-j6uz) for source-provenance analysis.
+	// threaded onto each stock-IN event for source-provenance analysis.
 	deposited, derr := h.haulAndDeposit(ctx, cmd, group, response, depositedGoods, pick.ForeignMarket)
 	if derr != nil {
 		return false, derr
@@ -706,7 +706,7 @@ func (h *RunStockerCoordinatorHandler) pick(
 	block := stringSet(h.config.Blocklist)
 	now := h.clock.Now()
 
-	// Auto-cap knapsack (sp-5n7v): per-good target_units from live demand × residual-buy-leg
+	// Auto-cap knapsack: per-good target_units from live demand × residual-buy-leg
 	// over Σ REAL hull capacity, re-solved every pass (RULINGS #2 re-derivable; "re-solved as
 	// demand/fleet change"). A nil result means STAND ASIDE — cold start (thin history), an
 	// explicit TargetPerGood override, or zero capacity — and the pre-existing per-good target
@@ -752,7 +752,7 @@ func (h *RunStockerCoordinatorHandler) pick(
 			// (0 => not buffered => skipped by the units-short guard below).
 			target = capTargets[r.Good]
 		}
-		// Net the target against AGGREGATE on-hand across the group (sp-5q2c) so a
+		// Net the target against AGGREGATE on-hand across the group so a
 		// sibling warehouse's stock is never invisible — the stocker stops buying once
 		// the COMBINED inventory reaches target, not once any single hull does.
 		unitsShort := target - tradingsvc.TotalCargoAvailable(h.storageCoordinator, group, r.Good)
@@ -767,7 +767,7 @@ func (h *RunStockerCoordinatorHandler) pick(
 			continue // at/over target, or within the hysteresis band — nothing to re-stage
 		}
 
-		// Reachability (sp-yuq9): an unreachable-cheapest foreign market must never win
+		// Reachability: an unreachable-cheapest foreign market must never win
 		// the need-rank — feeding it to buy()'s travel() unchecked crash-loops the hull
 		// identically on every relaunch (TORWIND-38 repeatedly picked X1-PB12 from
 		// X1-KA42, gate-unreachable within 5 jumps, while scout posts kept its ask
@@ -893,7 +893,7 @@ func (h *RunStockerCoordinatorHandler) pickPinned(
 	considered, unreachable := 0, 0
 
 	for _, good := range goods {
-		// Net the target against AGGREGATE on-hand across the group (sp-5q2c) so a
+		// Net the target against AGGREGATE on-hand across the group so a
 		// sibling warehouse's stock is never invisible.
 		unitsShort := target - tradingsvc.TotalCargoAvailable(h.storageCoordinator, group, good)
 		if unitsShort < refillFloor {
@@ -906,7 +906,7 @@ func (h *RunStockerCoordinatorHandler) pickPinned(
 			continue // no home-system seller found this pass - retry next pass (RULINGS #2)
 		}
 
-		// Reachability (sp-yuq9): same graph/bound travel() itself enforces. Same-system
+		// Reachability: same graph/bound travel() itself enforces. Same-system
 		// is trivially true for a genuinely home-scoped result; kept for parity/safety.
 		if !h.foreignMarketReachable(ctx, currentSystem, cheapest.WaypointSymbol, cmd.PlayerID) {
 			unreachable++
@@ -1065,7 +1065,7 @@ func (h *RunStockerCoordinatorHandler) buy(
 // is left aboard exactly as before (it will report stranded at the final exit if that
 // persists). Returns the total units deposited (jettisoned units are not counted as
 // deposited). source is the market the just-bought cargo came from, threaded onto each
-// emitted stock-IN event (sp-j6uz); it is "" on the resume path, where the aboard cargo was
+// emitted stock-IN event; it is "" on the resume path, where the aboard cargo was
 // bought in a prior run and its provenance is unknown.
 func (h *RunStockerCoordinatorHandler) haulAndDeposit(
 	ctx context.Context,
@@ -1119,7 +1119,7 @@ func (h *RunStockerCoordinatorHandler) haulAndDeposit(
 	total := 0
 	for _, good := range goods {
 		// Deposit the good into the co-located group, spilling from the newest member
-		// with space into the next as each fills (sp-5q2c additive capacity). The
+		// with space into the next as each fills (additive capacity). The
 		// remainder is held aboard ONLY when the WHOLE group is full or no member
 		// supports the good — that is the sole "warehouse full" condition now.
 		remaining := heldByGood[good]
@@ -1224,7 +1224,7 @@ func (h *RunStockerCoordinatorHandler) depositGood(
 	}
 	h.storageCoordinator.ConfirmDeposit(storageShip.ShipSymbol(), good, units)
 
-	// Emit the deposit as a structured stock-IN event (sp-j6uz) now that the transfer has
+	// Emit the deposit as a structured stock-IN event now that the transfer has
 	// physically moved (TransferCargo) and committed (ConfirmDeposit) — on the ACTUAL confirmed
 	// deposit, never on intent. This is the stock-IN mirror of kqxe's withdrawal event, read
 	// downstream to measure depot throughput/coverage and (differenced against draws) current
@@ -1246,7 +1246,7 @@ func (h *RunStockerCoordinatorHandler) depositGood(
 	return units, nil
 }
 
-// recordStocking emits one stocker→warehouse deposit event (sp-j6uz) on the actual CONFIRMED
+// recordStocking emits one stocker→warehouse deposit event on the actual CONFIRMED
 // deposit, stamping it with the handler's clock. It is additive instrumentation mirroring
 // kqxe's recordWithdrawal: a nil recorder is a no-op, and a persistence error is logged and
 // swallowed so telemetry can never fail a deposit whose goods are already physically in the
@@ -1297,7 +1297,7 @@ func (h *RunStockerCoordinatorHandler) warehouseAt(ctx context.Context, playerID
 // percent of treasury, held JUNIOR to the working-capital reserve. Returns known=false
 // when the balance is UNREADABLE — the pick then stocks nothing (fail closed, RULINGS #4).
 // Mirrors the tour's depositCapitalCeiling verbatim, including its treasury read: both go
-// through the shared ledger-backed reader (sp-45s6f) rather than each calling Get Agent.
+// through the shared ledger-backed reader rather than each calling Get Agent.
 func (h *RunStockerCoordinatorHandler) capitalCeiling(ctx context.Context, playerID int, reserve int64) (int64, bool) {
 	if h.apiClient == nil && h.treasury == nil {
 		return 0, false
@@ -1342,9 +1342,9 @@ func (h *RunStockerCoordinatorHandler) foreignMarketFresh(ctx context.Context, w
 
 // foreignMarketReachable reports whether waypoint's system has a jump-gate route from
 // the hull's CURRENT system, within the SAME bound buy()'s travel() itself enforces
-// (sp-yuq9). Before this filter existed, the need-rank picked the cheapest foreign
-// market across EVERY scouted market_data row with no reachability check at all, then
-// handed it to travel() unchecked — TORWIND-38 repeatedly selected X1-PB12 as cheapest
+// (sp-yuq9). Without this filter the need-rank picks the cheapest foreign
+// market across EVERY scouted market_data row with no reachability check at all and
+// hands it to travel() unchecked — TORWIND-38 repeatedly selected X1-PB12 as cheapest
 // from X1-KA42, but PB12 has no jump-gate route within 5 jumps, so every relaunch
 // crash-looped identically ("travel to market X1-PB12-C55F failed: no jump-gate route
 // from X1-KA42 to X1-PB12 within 5 jumps") because scout posts kept PB12's ask fresh

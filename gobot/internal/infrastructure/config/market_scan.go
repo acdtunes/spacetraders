@@ -1,6 +1,6 @@
 package config
 
-// market_scan.go carries the fleet's ONE market-scan budget (sp-ntgfj): the total
+// market_scan.go carries the fleet's ONE market-scan budget: the total
 // request rate every market reader in the daemon shares, and how much more
 // attention the most valuable market may earn than the least.
 //

@@ -39,7 +39,7 @@ func (r *reclaimFakeShipRepo) Save(_ context.Context, ship *navigation.Ship) err
 }
 
 // SaveWithRetry mirrors the real repository's non-conflict path (mutate the tracked
-// hull → save) so the migrated interrupted-worker reclaim (sp-wa7c) exercises its
+// hull → save) so the migrated interrupted-worker reclaim exercises its
 // production closure while still routing through Save's snapshot tracking. This fake
 // holds a single hull, so it applies the mutation to it directly rather than
 // re-finding by symbol.
@@ -120,7 +120,7 @@ func TestFleetCoordinator_ReclaimsShipHeldByInterruptedWorker(t *testing.T) {
 	}
 }
 
-// Recovery-safety for the contract coordinator's OWN liquidation workers (sp-39oi): a
+// Recovery-safety for the contract coordinator's OWN liquidation workers: a
 // daemon restart marks an interrupted cargo_liquidation worker FAILED with its ship claim
 // preserved. If the reclaim skipped it (as it skips genuinely-foreign containers), the
 // liquidation hull would deadlock — claimed to a dead container, invisible to discovery.

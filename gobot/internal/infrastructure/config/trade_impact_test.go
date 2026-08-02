@@ -40,7 +40,7 @@ func TestTradeImpactConfig_ExplicitValuesOverrideDefaults(t *testing.T) {
 	}
 }
 
-// sp-v34b: the scan-load knobs resolve to their operational defaults when unset, honor an
+// The scan-load knobs resolve to their operational defaults when unset, honor an
 // explicit dial (up before a refit, down to save API), and clamp a >1 rate to full
 // collection.
 func TestTradeImpactConfig_ScanPolicyResolution(t *testing.T) {
@@ -71,7 +71,7 @@ func TestTradeImpactConfig_ScanPolicyResolution(t *testing.T) {
 	}
 }
 
-// sp-0dat: impact_sampling_disabled zeroes the deliberate post-trade impact instrumentation
+// impact_sampling_disabled zeroes the deliberate post-trade impact instrumentation
 // (behavior 2) while the recent-scan freshness gate (behavior 1) stays fully ON. This is the
 // distinct middle ground the rate knob alone can't express: impact_sample_rate follows the
 // struct-wide "0 → era-3 default 0.15" convention, so it can never resolve to a literal 0 —

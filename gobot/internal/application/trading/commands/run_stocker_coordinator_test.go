@@ -281,7 +281,7 @@ func newStockerHandler(t *testing.T, fx *stkFixture, coord storage.StorageCoordi
 }
 
 // newStockerHandlerMulti wires a stocker handler whose warehouse finder returns
-// several co-located operations (sp-5q2c multi-warehouse harness).
+// several co-located operations (multi-warehouse harness).
 func newStockerHandlerMulti(t *testing.T, fx *stkFixture, coord storage.StorageCoordinator, ops []*storage.StorageOperation, miner tradingsvc.DepositDemandMiner, apiClient domainPorts.APIClient, cfg tradingsvc.DepositCandidateConfig, ceilingPct int) *RunStockerCoordinatorHandler {
 	finder := &fakeRunningFinder{ops: ops}
 	return NewRunStockerCoordinatorHandler(
@@ -320,7 +320,7 @@ func stkRegisterWarehouse(t *testing.T, coord *storageApp.InMemoryStorageCoordin
 
 // stkWarehouseOpAt builds a RUNNING warehouse operation with id at waypoint, created at
 // createdAt (via a MockClock pinned to that instant, so CreatedAt() is fully
-// controllable) — used to pin the sp-3lj5 zombie-row collision shape directly at the
+// controllable) — used to pin the zombie-row collision shape directly at the
 // stocker's warehouseAt call site.
 func stkWarehouseOpAt(t *testing.T, id, waypoint string, createdAt time.Time) *storage.StorageOperation {
 	t.Helper()
@@ -854,7 +854,7 @@ func TestStocker_FullRoundTrip_StocksWarehouse(t *testing.T) {
 	}
 }
 
-// TestStocker_StocksInSystemGood is the sp-layd end-to-end pin: with a REAL demand miner
+// TestStocker_StocksInSystemGood is the end-to-end pin: with a REAL demand miner
 // over a SINGLE-SYSTEM world (the good is sold only at a home-system export — 0 foreign
 // markets, exactly the post-weekly-reset state), the old foreign-only miner returned
 // miner_rows=0 and the stocker refused ("nothing to stock miner_rows=0"). The reframed
@@ -1239,7 +1239,7 @@ func TestStocker_Pick_RefillHysteresisFloorsShortfall(t *testing.T) {
 	}
 }
 
-// eligibleRecurring is eligible() plus the auto-cap knapsack inputs (sp-5n7v): a distinct
+// eligibleRecurring is eligible() plus the auto-cap knapsack inputs: a distinct
 // contract count (recurrence) and the largest single-contract size (s_G). foreignMkt's system
 // determines the residual buy-leg — an in-system source is hub-covered (residual 0, not
 // buffered); a cross-system source is far (buffered).
@@ -1358,7 +1358,7 @@ func TestStocker_Deposit_EmitsStockingEvent(t *testing.T) {
 	}
 }
 
-// The stocking event is additive, fail-open instrumentation (sp-j6uz, mirroring kqxe): a
+// The stocking event is additive, fail-open instrumentation (mirroring kqxe): a
 // recorder that errors must NOT fail the deposit whose cargo is already physically in the
 // warehouse. The warehouse still holds the deposited units and the run completes honestly.
 func TestStocker_Deposit_StockingRecordFailure_IsFailOpen(t *testing.T) {

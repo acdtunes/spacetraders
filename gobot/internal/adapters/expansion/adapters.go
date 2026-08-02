@@ -33,7 +33,7 @@ import (
 const probeShipType = "SHIP_PROBE"
 
 const (
-	// probeBuyClaimOperation is the fleet label the buyer-relay journey claim (sp-1bme8) records on
+	// probeBuyClaimOperation is the fleet label the buyer-relay journey claim records on
 	// ClaimShip. The buyer is always an UNDEDICATED hull (eligibleBuyers / resolveInPlaceBuy filter
 	// DedicatedFleet != ""), so ClaimShip's dedication guard is a no-op for it; the label is for
 	// observability of who holds the hull.
@@ -124,7 +124,7 @@ type ProbePurchaser struct {
 	ledger     ledger.TransactionRepository
 	clock      shared.Clock
 	// ownFleet is the dedicated-fleet tag whose hulls THIS purchaser may drive as buyers, in
-	// addition to undedicated hulls (sp-f082y). Default "" = undedicated-only, byte-identical to
+	// addition to undedicated hulls. Default "" = undedicated-only, byte-identical to
 	// every pre-existing caller (frontier + freshness sizer set nothing). Set to "probe-buyer" so the
 	// stationed probe-buyer coordinator reuses this exact buy path over its OWN dedicated hulls — the
 	// buyer selection accepts them AND the single-writer claim is taken under their fleet operation so
@@ -247,7 +247,7 @@ func (p *ProbePurchaser) BuyProbe(ctx context.Context, playerID shared.PlayerID,
 }
 
 // claimBuyer takes the EXCLUSIVE, atomic single-writer claim on the buyer hull for the whole
-// probe-buy journey (RULINGS #3, sp-1bme8) and returns a release closure that is always safe to
+// probe-buy journey (RULINGS #3) and returns a release closure that is always safe to
 // defer — the underlying ReleaseContainerClaim is idempotent (a no-op on an already-idle hull). A
 // lost claim race surfaces as an error so BuyProbe fails CLOSED, never a concurrent second driver.
 // owner defaults to a well-known label so the claim is taken even when the caller wires no container
@@ -715,7 +715,7 @@ func (p *ProbePurchaser) probePriceAt(ctx context.Context, playerID shared.Playe
 // clears. Reachability is anchored where the hull IS (not at the deep target the proximal path failed
 // on) — the load-bearing difference from the buy path. It reuses the SAME collaborators as the
 // ProbePurchaser (the ReachableYardFinder + ship repo + navigation mediator) — no new subsystem. It
-// mirrors the sp-hh0h home-shipyard positioner: NEVER buys, NEVER weakens a money guard (RULINGS #4),
+// mirrors the home-shipyard positioner: NEVER buys, NEVER weakens a money guard (RULINGS #4),
 // and NEVER poaches a dedicated or in-transit hull (RULINGS #7). Fail-safe + idempotent: a nil finder,
 // a fleet read miss, no reachable yard, a hull already at the yard, or an in-flight relay all no-op
 // (dispatched=false, no error) — only an unroutable relay surfaces an error.
@@ -724,7 +724,7 @@ type ProbeBuyerPositioner struct {
 	shipRepo   navigation.ShipRepository
 	yardFinder probeYardFinder
 	// ownFleet mirrors ProbePurchaser.ownFleet: the dedicated-fleet tag whose idle hulls this
-	// positioner may relay to a yard, in addition to undedicated ones (sp-f082y). Default "" =
+	// positioner may relay to a yard, in addition to undedicated ones. Default "" =
 	// undedicated-only, byte-identical to the pre-existing frontier caller. The probe-buyer
 	// coordinator wires SetOwnFleet("probe-buyer") so it stations its OWN dedicated buyers via the
 	// same relay path; every other caller keeps skipping all dedicated hulls.
@@ -899,7 +899,7 @@ func (s *ExpansionScanner) ExpansionCandidates(ctx context.Context, playerID int
 func (s *ExpansionScanner) anchorSystems(ctx context.Context, playerID int) map[string]bool {
 	anchors := make(map[string]bool)
 
-	// sp-0eufi: read through the shared player.HeadquartersFrom so this and the sensing
+	// Read through the shared player.HeadquartersFrom so this and the sensing
 	// HomeSystemPort cannot disagree about which key holds the home waypoint or what counts as
 	// present. Note this reader DEGRADES rather than failing: with no headquarters it silently
 	// falls back to ship locations alone, so hop distance is measured from wherever the fleet

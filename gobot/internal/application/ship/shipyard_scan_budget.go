@@ -15,7 +15,7 @@ import (
 )
 
 // shipyard_scan_budget.go is the stateful half of the fleet's ONE shipyard-read
-// budget (sp-mb0er), the sibling of market_scan_budget.go beside it. The
+// budget, the sibling of market_scan_budget.go beside it. The
 // admission arithmetic is not duplicated: Interval, MaxStaleness, the
 // anti-starvation escape and the Earning/Discretionary classes all come from
 // internal/domain/marketscan, which is generic over "a cached row with a value
@@ -105,7 +105,7 @@ const yardDemandTTL = time.Hour
 const yardTargetTTL = 15 * time.Minute
 
 // defaultYardPresenceReqPerSec is how fast the fleet may START repositioning
-// hulls to unpriced yards (sp-fox5u) — the meter behind PresenceRequests.
+// hulls to unpriced yards — the meter behind PresenceRequests.
 //
 // WHAT IS BEING METERED IS NOT THIS PACKAGE'S OWN TRAFFIC, and that is the whole
 // reason it is a rate rather than a per-tick count. A shipyard READ costs one
@@ -592,7 +592,7 @@ type YardBudgetSnapshot struct {
 	// should be raised, rather than the guards being weakened (RULINGS #4).
 	Forced uint64
 	// YardsNeedingPresence is how many known yards sell something wanted, hold no
-	// price, and therefore cannot be priced by any amount of reading (sp-fox5u).
+	// price, and therefore cannot be priced by any amount of reading.
 	//
 	// It is the honest denominator beside YardsUnpriced: the two are the same set,
 	// but this name says why the rotation alone will never drive it down. A working

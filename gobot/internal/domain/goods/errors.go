@@ -38,7 +38,7 @@ func (e *ErrUnknownGood) Error() string {
 // IMPORT/EXCHANGE markets do. For gate-construction materials this is a NOT-YET-BUILT
 // supply chain (the export factory is created later during GATE), so the factory
 // coordinator treats it as an honest-pause + backoff (await the build) rather than an
-// unrecoverable crash (sp-lor4). Typed so the coordinator can distinguish it from a
+// unrecoverable crash. Typed so the coordinator can distinguish it from a
 // genuine ErrUnknownGood / ErrCircularDependency; its message is kept byte-identical to
 // the pre-sp-lor4 inline error so existing log greps still match.
 type ErrNoInSystemExporter struct {

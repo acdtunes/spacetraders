@@ -18,7 +18,7 @@ type CaptainConfig struct {
 	StreamDownMinutes int      `mapstructure:"stream_down_minutes" validate:"omitempty,min=1"`
 	ExpectedStreams   []string `mapstructure:"expected_streams"`
 
-	// PinnedHullContainerlessMinutes is the sp-v63s watchdog threshold (sp-h88r,
+	// PinnedHullContainerlessMinutes is the watchdog threshold (sp-h88r,
 	// promoted from a package const): how long a fleet-pinned hull may sit
 	// containerless before the watchdog fires an interrupt naming it. A normal
 	// daemon redeploy re-adopts the hull's container within seconds, so the 5m
@@ -65,7 +65,7 @@ type CaptainConfig struct {
 	// the token-budget proxy instead of live in-game agent credits. Default 80.
 	QuotaAlertThresholdPct *int `mapstructure:"quota_alert_threshold_pct" validate:"omitempty,min=1,max=100"`
 
-	// BriefingDisabled is the sp-g2w6 wake-briefing escape hatch (RULINGS #5:
+	// BriefingDisabled is the wake-briefing escape hatch (RULINGS #5:
 	// live by default). The watchkeeper prepends a compact fleet+financial
 	// snapshot to every wake unless this is set. A briefing read failure never
 	// blocks a wake (fail-open), so this exists only to silence the block

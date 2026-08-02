@@ -84,11 +84,10 @@ func ResolveRoles(markets []WaypointMarket) EraRoles {
 // isCentralSink reports whether an inner-band waypoint is a contract-delivery sink —
 // a central park. It keys on the DURABLE marketplace fact, not transient scanned
 // import goods, so an inner-band MARKETPLACE whose per-good market has not been
-// dock-scanned this pass is STILL a park (sp-ojp32). This is the fix for the live
-// idle-hull pile-up: when classification required scanned imports, only the handful
-// of currently-scanned central sinks joined the standby set (the A/K/G/H pile) while
-// the unscanned E/F/D/C central bands sat empty, so N idle hulls clustered on ~4
-// waypoints instead of spreading one-per-band.
+// dock-scanned this pass is STILL a park. Requiring scanned imports instead admits only
+// the handful of currently-scanned central sinks to the standby set (the A/K/G/H pile) and
+// leaves the unscanned E/F/D/C central bands empty, piling N idle hulls onto ~4 waypoints
+// instead of spreading one-per-band.
 //
 //   - A scanned importer is a sink.
 //   - An unscanned marketplace (charted trait, or trade goods already observed) is

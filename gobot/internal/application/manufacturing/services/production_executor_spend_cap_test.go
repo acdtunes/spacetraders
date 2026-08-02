@@ -10,8 +10,8 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 )
 
-// sp-w3he: the cross-container concurrent spend cap sits in buyGood as a SECOND gate after
-// the per-buy floor (sp-9aoc). This suite drives buyGood (via ProduceGood with a BUY node)
+// The cross-container concurrent spend cap sits in buyGood as a SECOND gate after
+// the per-buy floor. This suite drives buyGood (via ProduceGood with a BUY node)
 // through the same dock-race harness the floor suite uses, wiring a live apiClient whose
 // treasury comfortably CLEARS the floor (so the cap gate is actually reached) plus a fake
 // ledger, and asserts the executor<->ledger contract: PARK on rejection, PARK fail-closed on

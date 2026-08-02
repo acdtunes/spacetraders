@@ -12,7 +12,7 @@ import (
 const depositSubscriberBufferSize = 10
 
 // Default grace period and attempt budget for WaitForCargo's
-// timeout->resync->park backstop (sp-pafv, subsumes sp-0e10). A waiter is
+// timeout->resync->park backstop (subsumes sp-0e10). A waiter is
 // woken via processWaiterQueue, called from NotifyCargoDeposited/
 // ConfirmDeposit/RegisterStorageShip. If a deposit lands and
 // processWaiterQueue runs in the gap between tryImmediateReservation
@@ -61,7 +61,7 @@ type InMemoryStorageCoordinator struct {
 	depositSubscribers map[string][]chan storage.CargoDepositNotification
 
 	// cargoWaitGracePeriod and cargoWaitMaxAttempts bound WaitForCargo's
-	// timeout->resync->park backstop (sp-pafv). See the Default* constants
+	// timeout->resync->park backstop. See the Default* constants
 	// above for the rationale; production always uses those defaults, tests
 	// construct the struct directly with tiny overrides.
 	cargoWaitGracePeriod time.Duration
@@ -204,7 +204,7 @@ func (c *InMemoryStorageCoordinator) WaitForCargo(
 // awaitCargo waits for a queued CargoWaiter to be satisfied via the FIFO
 // notification path (NotifyCargoDeposited/ConfirmDeposit/RegisterStorageShip
 // call processWaiterQueue), with a timeout->resync->park backstop
-// (sp-pafv, subsumes sp-0e10). If the notification that would have woken
+// (subsumes sp-0e10). If the notification that would have woken
 // this waiter is lost - e.g. a deposit lands and processWaiterQueue runs
 // BEFORE this waiter's enqueue above completes, a genuine lost-wakeup race -
 // the wait would otherwise block forever. Instead, each grace period this

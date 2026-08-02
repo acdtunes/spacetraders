@@ -104,8 +104,7 @@ type CheapestMarketResult struct {
 	WaypointSymbol string
 	TradeSymbol    string
 	// Ask is what WE PAY to buy here (market_data.purchase_price, the larger of the
-	// two prices). It was called SellPrice until sp-en5h7 — a leftover of the price
-	// transposition, when the ask really did live in the sell_price column.
+	// two prices).
 	Ask    int
 	Supply string
 }

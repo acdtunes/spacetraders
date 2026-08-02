@@ -17,7 +17,7 @@ import (
 // KNOW where to buy a heavy and still never form a reservation, never accumulate treasury, and
 // never buy one. That is the state this errand exists to leave.
 //
-// The fix is the sp-hh0h idiom the bootstrap coordinator already proved on the cold home yard:
+// The errand uses the idiom the bootstrap coordinator applies to the cold home yard:
 // when the price cannot be read, SEND A HULL so the next scan reads it. This tick still buys
 // nothing, so no money guard is weakened (RULINGS #4) — it makes the price readable, it does not
 // bypass the price.

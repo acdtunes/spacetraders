@@ -2,13 +2,13 @@ package scouting
 
 import "math"
 
-// demand.go holds the DEMAND-WEIGHT math for the market-freshness sizer (sp-wuksw): a
+// demand.go holds the DEMAND-WEIGHT math for the market-freshness sizer: a
 // per-sink freshness weight derived from where the fleet ACTUALLY earns — realized SELL
 // legs — rather than the intrinsic Σ(trade_volume × price) throughput proxy the census
 // carries. It supersedes the intrinsic weight as the PRIMARY input to the value-weighted
 // freshness percentile so that under probe scarcity the sizer holds SLA on the sinks the
 // fleet sells through and lets zero-demand markets breach, while a never-traded market keeps
-// its intrinsic prior (byte-identical to pre-sp-wuksw when there is no realized demand).
+// its intrinsic prior.
 //
 // Like circuit.go this is pure math with no I/O: the application maps tour_leg_telemetry
 // SELL legs to the slim SinkSale shape (keeping the scouting domain free of the trading
@@ -36,7 +36,7 @@ type SinkSale struct {
 // value is skipped so a skipped/degraded leg (RealizedUnits=0) never creates a sink entry —
 // that market then falls back to its intrinsic prior at the call site. Empty input returns an
 // empty map (the cold-start signal: no realized demand, keep every market on its intrinsic
-// weight, byte-identical to pre-sp-wuksw).
+// weight).
 func DemandWeightsBySink(sales []SinkSale, halfLifeSeconds float64) map[string]float64 {
 	weights := make(map[string]float64, len(sales))
 	for _, sale := range sales {

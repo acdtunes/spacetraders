@@ -30,7 +30,7 @@ const (
 	// EXPANSION — this is the phase where we start to buy probes"). It replaces the old COMPLETE
 	// label in that exact slot: bootstrap's own job here is unchanged (hand the standing economy
 	// off, then exit), but the DERIVED phase now names the era the world has entered — the phase
-	// growth spenders (the probe-buyer fleet, sp-f3mcc) key on. Like a built gate it is monotone:
+	// growth spenders (the probe-buyer fleet) key on. Like a built gate it is monotone:
 	// once derived it never regresses to a buying phase.
 	PhaseExpansion Phase = "EXPANSION"
 )
@@ -80,7 +80,7 @@ type Observation struct {
 	// (clear the tag); false ⇒ already retired (the idempotency guard).
 	CommandFrigateOnContract bool
 	// CommandFrigatePurchasing reports whether the command frigate carries the "purchasing" dedication —
-	// the EXCLUSIVE purchasing-ship role set at the first-hauler pivot (sp-7r7w). Once true the frigate is
+	// the EXCLUSIVE purchasing-ship role set at the first-hauler pivot. Once true the frigate is
 	// the protected standing buy ship: the pre-hauler contract loop must NEVER (re)start on it (the step-3
 	// gate reads this, so the pivot is durable across restarts even before a hauler is observed), and it
 	// is off-limits to the contract op (never re-drafted).
@@ -94,15 +94,15 @@ type Observation struct {
 	// relaunch a running coordinator).
 	BatchContractRunning bool
 	// FrigateContractLoopRunning reports whether the command frigate's OWN continuous single-hull
-	// contract loop is already running (sp-rype) — a CONTRACT_WORKFLOW loop container (sp-ehg9
-	// batch-contract --loop, iterations=-1) on the frigate. This is the earner-signal guard for the
+	// contract loop is already running — a CONTRACT_WORKFLOW loop container (batch-contract
+	// --loop, iterations=-1) on the frigate. This is the earner-signal guard for the
 	// pre-hauler frigate loop: bootstrap starts it exactly once and never re-starts a running loop.
 	// It is DISTINCT from BatchContractRunning, which detects the contract_fleet_coordinator TYPE and
-	// does NOT see this per-hull loop container (sp-ehg9 note): the two are separate earners, so the
+	// does NOT see this per-hull loop container: the two are separate earners, so the
 	// loop needs its own signal. false ⇒ no frigate loop yet (the fresh cold-start default).
 	FrigateContractLoopRunning bool
 	// FrigateCargoEmpty reports whether the command frigate currently carries NO cargo — the SAFE POINT
-	// for the first-hauler pivot (sp-7r7w). Stopping the frigate's contract loop mid-delivery would
+	// for the first-hauler pivot. Stopping the frigate's contract loop mid-delivery would
 	// abandon in-flight contract cargo, so the pivot fires ONLY when the frigate is empty (between
 	// contracts); a loaded frigate defers the pivot a tick (the loop delivers + empties). Defaults false
 	// on an unresolved/unreadable frigate ⇒ the pivot is BLOCKED (fail-safe: never stop the earner on an
@@ -140,7 +140,7 @@ type Observation struct {
 	ConstructionStarted bool
 	// ConstructionComplete reports whether the gate construction site is 100% delivered — the
 	// GATE→EXPANSION exit. Terminal and monotone (a built gate stays built — the observer reports a
-	// BUILT home gate as complete, sp-feiy7), so a restart post-completion re-derives EXPANSION.
+	// BUILT home gate as complete), so a restart post-completion re-derives EXPANSION.
 	ConstructionComplete bool
 	// ConstructionPercent is the site's delivery progress in [0,100] — heartbeat + metrics only (never a guard).
 	ConstructionPercent float64
@@ -159,7 +159,7 @@ type Observation struct {
 	// GateWorkers is how many hulls are NOW dedicated to gate construction (claimed by the executor) — the
 	// worker-sizing "have" count, so the staged top-up buy never overshoots the pipeline's shape.
 	GateWorkers int
-	// GateWorkerHulls is the per-hull detail of those same manufacturing-dedicated gate workers (sp-mxflh) —
+	// GateWorkerHulls is the per-hull detail of those same manufacturing-dedicated gate workers —
 	// each with its idle status — the surplus-release selection input. len(GateWorkerHulls) == GateWorkers by
 	// construction (the observer appends one here for every GateWorkers++). Only planGateWorkers's surplus
 	// path reads it, so it is inert unless the executor is over-provisioned; mirrors how obs.Haulers carries
@@ -170,14 +170,14 @@ type Observation struct {
 	AutosizerRunning bool
 
 	// TradeHullCount is the number of 'trade'-fleet-dedicated hulls NOW — the observable trade-seeded
-	// signal (sp-192k4). The trade hull EXISTING is the durable "seeded" marker: idempotent by
+	// signal. The trade hull EXISTING is the durable "seeded" marker: idempotent by
 	// construction, auto-re-derived each tick from the live fleet (no stored flag), so it is restart-safe.
 	// It drives the cold-start hull-routing trade-seed: acquisition #2 → trade, held until a trade hull
 	// exists. Mirrors how obs.Haulers counts contract-dedicated hulls, filtering on the "trade" tag
 	// instead. 0 (the cold-start default) ⇒ not yet seeded.
 	TradeHullCount int
 
-	// ContractDepotHullCount is the DEPOT half of the contract fleet NOW (sp-gm7r): hulls whose
+	// ContractDepotHullCount is the DEPOT half of the contract fleet NOW: hulls whose
 	// DedicatedFleet() is "warehouse" OR "stocker" — the central far-source warehouse + stocker the
 	// contract auto-scaler grows (container_ops_depot_launch.go stamps these tags). len(obs.Haulers) is
 	// the DELIVERY half; the two sum to the FULL contract fleet the GATE-entry bar measures against the
@@ -185,12 +185,12 @@ type Observation struct {
 	// cold-start default) ⇒ no depot yet, so the full fleet is just the delivery haulers.
 	ContractDepotHullCount int
 
-	// ContractScalerTarget is the contract auto-scaler's live ACHIEVABLE fleet target NOW (sp-gm7r) —
+	// ContractScalerTarget is the contract auto-scaler's live ACHIEVABLE fleet target NOW —
 	// min(scaler plan slots, the scaler's live contract_fleet_max_hulls ceiling) — the HARD bar
-	// GATE entry measures the full contract fleet (Haulers + ContractDepotHullCount) against. It replaces
-	// the old static hauler floor: GATE is entered only once the contract op has genuinely reached the
+	// GATE entry measures the full contract fleet (Haulers + ContractDepotHullCount) against.
+	// GATE is entered only once the contract op has genuinely reached the
 	// size the scaler is driving it toward, so a lightly-scaled op can never latch GATE and cannibalize
-	// itself (the sp-gm7r death spiral). 0 (no scaler running / unread target) ⇒ FAIL-CLOSED: gateFunded
+	// itself (the death spiral). 0 (no scaler running / unread target) ⇒ FAIL-CLOSED: gateFunded
 	// never gates on an unknown target, so a scaler-less op stays in cold start rather than entering GATE blind.
 	ContractScalerTarget int
 
@@ -209,7 +209,7 @@ type HaulerSnapshot struct {
 	Waypoint string
 }
 
-// GateWorkerSnapshot is one manufacturing-dedicated gate worker's identity + release-eligibility (sp-mxflh).
+// GateWorkerSnapshot is one manufacturing-dedicated gate worker's identity + release-eligibility.
 // Idle is true ONLY when the hull is genuinely free (idle and not in transit), so the surplus-release
 // selection can never pick a hull mid-construction-task. It carries only what the release decision needs,
 // mirroring HaulerSnapshot's minimal shape.

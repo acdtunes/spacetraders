@@ -8,7 +8,7 @@ import (
 )
 
 // tradeFleetTag is the dedicated-fleet tag the standing trade-fleet coordinator selects on (matches the
-// trading package's tradeFleet). The cold-start hull-routing trade-seed (sp-192k4) buys ONE hull and dedicates
+// trading package's tradeFleet). The cold-start hull-routing trade-seed buys ONE hull and dedicates
 // it to this fleet so acquisition #2 becomes a trade hull, decoupled from the contract op — the trade
 // coordinator, contract coordinator, and contract scaler stay phase-BLIND (all the phase logic lives here).
 const tradeFleetTag = "trade"
@@ -24,17 +24,17 @@ const tradeFleetTag = "trade"
 //     put it in exclusive mode), growing treasury so the staged hauler buys become affordable — this
 //     is what avoids the "retire everything, nothing earns" deadlock.
 //  3. Start the command frigate's OWN continuous single-hull contract loop once probe provisioning is
-//     done (sp-rype, reusing the sp-ehg9 batch-contract --loop primitive). The frigate is the pre-hauler
-//     sole earner but the contract fleet coordinator does not keep it earning (sp-ehg9), so without this
-//     the frigate parks idle at the shipyard after its hour-0 probe buy and income never flows — the
-//     stall this fixes. The loop and the coordinator are mutually exclusive at the daemon (per-player
+//     done (reusing the batch-contract --loop primitive). The frigate is the pre-hauler
+//     sole earner but the contract fleet coordinator does not keep it earning, so without this
+//     the frigate parks idle at the shipyard after its hour-0 probe buy and income never flows.
+//     The loop and the coordinator are mutually exclusive at the daemon (per-player
 //     single CONTRACT_WORKFLOW worker), so there is no double-claim (RULINGS #7).
 //  4. Hand a STRANDED purchasing frigate back to earning. Step 5's pivot makes the frigate the exclusive
 //     buy ship on the evidence that hauler #1 is within reach; when the ask sits outside the
 //     working-capital floor instead, that same frigate is the fleet's only earner and it is not earning.
 //     Clearing its dedication returns it to step 3, and it re-pivots by itself once the treasury clears
 //     the floor. Skipped whenever the buy is genuinely within reach — the pivot owns that case.
-//  5. Staged, capital-gated hull acquisition, ROUTED BY ORDER (sp-192k4): acquisition #1 → the contract
+//  5. Staged, capital-gated hull acquisition, ROUTED BY ORDER: acquisition #1 → the contract
 //     fleet, #2 → the TRADE fleet (the trade-seed, held until the first contract hull exists), #3… →
 //     contract again. The ramp climbs to the FIXED Phase-1 hauler target, placing each hull on a distinct
 //     fixed delivery slot. The COUNT guard (haulers < haulerTarget) is the double-buy protection;
@@ -45,7 +45,7 @@ const tradeFleetTag = "trade"
 // Each action is guarded "already done / in-flight?" against the FRESH observation, so re-evaluation —
 // including the first tick after a restart — never double-acts or double-buys.
 func (h *RunBootstrapCoordinatorHandler) actIncome(ctx context.Context, cmd *RunBootstrapCoordinatorCommand, obs Observation, res *reconcileResult) {
-	// CONTRACT GRADUATION (sp-difa.1): a graduated player has DURABLY retired contracts as the funding
+	// CONTRACT GRADUATION: a graduated player has DURABLY retired contracts as the funding
 	// floor (the operator's manual, era-scoped decision). This whole workstream is contract-income
 	// — batch-contract, the frigate sole-earner loop, staged hauler buys — so when graduated it does
 	// NOTHING: bootstrap never (re)starts or maintains a contract earner, even after a boot-standing
@@ -72,10 +72,10 @@ func (h *RunBootstrapCoordinatorHandler) actIncome(ctx context.Context, cmd *Run
 	}
 
 	// (3) Put the command frigate on its OWN continuous contract loop once provisioning is done, so it
-	// EARNS as the pre-hauler sole earner instead of parking idle at the shipyard (sp-rype). Guarded on
-	// probes≥target (the frigate juggles buy-probes-first, then earn — sp-t39j) AND the frigate not
+	// EARNS as the pre-hauler sole earner instead of parking idle at the shipyard. Guarded on
+	// probes≥target (the frigate juggles buy-probes-first, then earn) AND the frigate not
 	// already looping (obs.FrigateContractLoopRunning — the earner-signal, so it starts exactly once and
-	// never double-claims). A resolved frigate is required (no guess). sp-7r7w: also gated on ZERO
+	// never double-claims). A resolved frigate is required (no guess). Also gated on ZERO
 	// haulers — the loop is the PRE-hauler earner ONLY, and the first-hauler pivot (step 4) STOPS it to
 	// free the frigate as the purchaser; once a hauler exists the loop must NEVER (re)start (the hauler +
 	// the scaled fleet earn, and the frigate is retired to the exclusive purchasing role), so this gate is
@@ -97,7 +97,7 @@ func (h *RunBootstrapCoordinatorHandler) actIncome(ctx context.Context, cmd *Run
 	desired := haulerTarget
 	contractHaulers := len(obs.Haulers)
 
-	// (5a) HULL-ROUTING (sp-192k4): route cold-start light-hull acquisitions by order — #1 →
+	// (5a) HULL-ROUTING: route cold-start light-hull acquisitions by order — #1 →
 	// contract, #2 → TRADE, #3… → contract. Once the FIRST contract hull exists and no trade hull does yet,
 	// seed ONE trade-dedicated hull + ensure the trade coordinator, then RETURN so THIS tick's acquisition
 	// is the trade seed, not a 2nd contract hauler. The trade hull EXISTING (obs.TradeHullCount) is the
@@ -245,7 +245,7 @@ func (h *RunBootstrapCoordinatorHandler) ensureBatchContract(ctx context.Context
 }
 
 // startFrigateContractLoop puts the command frigate on its continuous single-hull contract loop so it
-// runs contracts as the pre-hauler sole earner (sp-rype, reusing the sp-ehg9 batch-contract --loop
+// runs contracts as the pre-hauler sole earner (reusing the batch-contract --loop
 // primitive: BatchContractWorkflow with iterations=-1). The caller has checked provisioning is done
 // (probes≥target), the frigate is resolved, and no loop is already running — so this is the guarded,
 // idempotent start. A nil starter degrades to a logged skip surfaced as a blocker (never a panic),
@@ -310,8 +310,8 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd
 		return
 	}
 
-	// Readiness / FIRST-HAULER PIVOT decision (sp-7r7w). Determined BEFORE the price-check so a genuine
-	// no-purchaser blocks cheaply without a shipyard read — the pre-sp-7r7w behavior.
+	// Readiness / FIRST-HAULER PIVOT decision. Determined BEFORE the price-check so a genuine
+	// no-purchaser blocks cheaply without a shipyard read.
 	//
 	// The FIRST hauler is bought by freeing the command frigate from its pre-hauler sole-earner loop to
 	// serve as THE purchaser (the documented first-hauler pivot) — the frigate is retired to contracts at
@@ -328,7 +328,7 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd
 	// before; with neither an idle hull nor a pivot available, BLOCK (no_purchaser) and retry.
 	pivot := len(obs.Haulers) == 0 && obs.FrigateContractLoopRunning && obs.CommandFrigateID != "" && obs.FrigateCargoEmpty && h.frigateLoop != nil
 	// committedPurchaser: a prior tick already FREED + DEDICATED the frigate as the exclusive buy ship
-	// (sp-5nd2 fault-2 pivot), so it is THE purchaser even while it is still navigating to the shipyard for
+	// (fault-2 pivot), so it is THE purchaser even while it is still navigating to the shipyard for
 	// the cold-price read — recognise it here so an en-route tick surfaces "positioning", not no_purchaser.
 	committedPurchaser := len(obs.Haulers) == 0 && obs.CommandFrigatePurchasing && obs.CommandFrigateID != ""
 	if !pivot && !committedPurchaser && !obs.HasIdlePurchaser {
@@ -353,7 +353,7 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd
 		return
 	}
 
-	// Capital gate (sp-acv5): buy as soon as the treasury AFTER the buy still clears the ABSOLUTE
+	// Capital gate: buy as soon as the treasury AFTER the buy still clears the ABSOLUTE
 	// contract working-capital floor — affordable ⇔ cushion=(treasury−price) ≥ contract_working_capital_floor.
 	// The hauler exists to SCALE cash flow, so it is bought as soon as the buy leaves a safe goods+fuel
 	// operating cushion (PLAYBOOK §3) — an absolute floor, not a fraction of a growing balance. The probe
@@ -452,7 +452,7 @@ func (h *RunBootstrapCoordinatorHandler) maybeBuyHauler(ctx context.Context, cmd
 	})
 }
 
-// maybeSeedTradeHull seeds acquisition #2 to the TRADE fleet (sp-192k4 hull-routing). The caller has
+// maybeSeedTradeHull seeds acquisition #2 to the TRADE fleet (hull-routing). The caller has
 // checked the routing gate (one contract hull exists, no trade hull yet — obs.TradeHullCount==0, the durable
 // observable "seeded" signal). It buys ONE hull, dedicates it to the trade fleet (NO hub — a trade hull runs
 // continuous tours the coordinator assigns, not a fixed contract hub), then ensures the standing trade-fleet
@@ -503,7 +503,7 @@ func (h *RunBootstrapCoordinatorHandler) maybeSeedTradeHull(ctx context.Context,
 		return
 	}
 
-	// Capital gate (sp-acv5): affordable ⇔ cushion=(treasury−price) ≥ contract_working_capital_floor — the SAME
+	// Capital gate: affordable ⇔ cushion=(treasury−price) ≥ contract_working_capital_floor — the SAME
 	// floor the contract-hauler buy this slot displaces uses, so re-routing #2 to trade never weakens the money
 	// guard (RULINGS #4/#5). A cushion below the floor does NOT buy.
 	cushion := obs.Treasury - price

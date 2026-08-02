@@ -26,7 +26,7 @@ func inPool(ships ...string) map[string]bool {
 	return m
 }
 
-// sp-mzdk core guard: a topology that would pin the WHOLE home general pool as depot-delivery is
+// Core guard: a topology that would pin the WHOLE home general pool as depot-delivery is
 // capped at the floor — pinning stops at (Available - Floor), and the LAST declared delivery hulls
 // are RESERVED (left undedicated + available to the contract grab) so an unbuffered-good contract
 // still has a sourcing worker. The within-budget hulls are NOT reserved, so buffered delivery keeps
@@ -49,7 +49,7 @@ func TestReserveHomeContractWorkers_CapsFreshPinsAtFloorLeavingReserveUndedicate
 	}
 }
 
-// sp-mzdk degenerate budgets (Mandate 5, parametrized): floor 0 pins everything; fewer haulers than
+// Degenerate budgets (Mandate 5, parametrized): floor 0 pins everything; fewer haulers than
 // the floor reserves every fresh conversion (never pins a negative); a delivery hull NOT in the home
 // general pool — already depot-delivery pinned, foreign-fleet, or off-home — is never reserved even
 // when the budget is exhausted (a reload re-pins the existing fleet unchanged); and a non-delivery
@@ -236,7 +236,7 @@ func TestLaunchDepotCoordinators_ReservesFloorFromDeliveryPinning(t *testing.T) 
 	require.Len(t, sink.stockers, 1, "the stocker launch is untouched by the reserve floor")
 }
 
-// sp-mzdk config resolution (Mandate 5, parametrized): the reserve floor resolves live>launch>default
+// Config resolution (Mandate 5, parametrized): the reserve floor resolves live>launch>default
 // — a positive live (tune) value wins; else the config.yaml launch value; else the documented
 // default. A zeroed live value (the `tune ... 0` revert) falls through to launch/default.
 func TestResolveMinHomeContractWorkers_LiveOverLaunchOverDefault(t *testing.T) {
@@ -259,7 +259,7 @@ func TestResolveMinHomeContractWorkers_LiveOverLaunchOverDefault(t *testing.T) {
 	}
 }
 
-// sp-mzdk census correctness (real ship repo): the reserve floor is measured against ONLY the
+// Census correctness (real ship repo): the reserve floor is measured against ONLY the
 // undedicated HOME general haulers — a hauler in a FOREIGN system (a would-be cross-gate grab) and a
 // hull ALREADY pinned to depot-delivery are both excluded from the count, so the floor neither
 // over-counts a foreign hull as home cover nor double-counts an already-pinned hull. The live floor

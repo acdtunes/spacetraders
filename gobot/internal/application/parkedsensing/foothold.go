@@ -54,7 +54,7 @@ import (
 // claimed IN_TRANSIT naming the hull, the source is released, and the tick
 // returns. The flying is the placement machine's job — dispatchClaim reads the
 // claimed row on a later tick and advances it one RouteAcross step at a time —
-// so a crossing that takes many ticks costs this tick nothing (sp-uwxwo).
+// so a crossing that takes many ticks costs this tick nothing.
 
 // maxFootholdRetasks bounds how many surplus hulls one tick may send across a
 // gate. A plain constant, deliberately not a knob, in the manner of
@@ -298,7 +298,7 @@ func (p *surplusPool) systems() []string {
 //
 // destinationGoods is what the hull will be watching once it ARRIVES, and
 // counting it is what makes the rule correct for a move that stays inside one
-// system (sp-fox5u). A hull sent from market A to market B in the same system
+// system. A hull sent from market A to market B in the same system
 // does not subtract coverage, it RELOCATES it: B's goods are observed after the
 // move exactly as A's were before. Ignoring that would refuse a move that costs
 // the system nothing. Pass nil for a destination that watches no market — an
@@ -392,15 +392,13 @@ func observedElsewhere(good, exclude string, rows []QueuedSlot) bool {
 // sourcesWithinReach lists the systems holding a surplus hull that could actually
 // be flown TO target, nearest ring first.
 //
-// IT ASKS THE RIGHT QUESTION, which the walk it replaced did not. The old search
-// walked FORWARD OUT OF THE TARGET and treated the result as valid sources —
+// IT ASKS THE RIGHT QUESTION, AND THE INVERSE ONE IS WRONG. Walking FORWARD OUT
+// OF THE TARGET and treating the result as valid sources is
 // correct only if a gate edge always has a reverse, and on the live map 624 of
 // 5,488 edges (11.4%) do not. For a target reachable only by a one-way edge that
-// search returns precisely the systems a hull CANNOT arrive from: it would
-// dispatch onto a route nextHopToward cannot resolve, and the row sits IN_TRANSIT
+// search returns precisely the systems a hull CANNOT arrive from: it
+// dispatches onto a route nextHopToward cannot resolve, and the row sits IN_TRANSIT
 // naming a hull that never arrives while still counting against the probe cap.
-// That is the stranding sp-9fdc258d was written to prevent, in a function it did
-// not touch.
 //
 // THE CANDIDATE SET IS THE SURPLUS POOL, not the graph. Only a system actually
 // holding a takeable hull can answer this placement, so walking from those — and

@@ -19,7 +19,7 @@ import (
 // the planner seam, the tranche scorer, or the absorption ledger — those are sibling
 // children. Everything here is dormant behind two independent guards (a hop-depth knob
 // defaulting to 1 AND an arming gate keyed to the solver clamp), so it is byte-identical
-// at the epic defaults; a prod flip is governed by the sp-f1yk replay gate.
+// at the epic defaults; a prod flip is governed by the replay gate.
 
 const (
 	candidateHopDepthDefault      = 1
@@ -56,12 +56,11 @@ func resolveCandidateShortlistTopN(configured int) int {
 // MAX_TOUR_SYSTEMS=2, so a lone live-config edit of candidate_hop_depth can never widen the
 // candidate set past what the solver will actually sequence.
 //
-// The gate rests on the CLAMP, not on how a crossing is priced. It originally cited the flat
-// INTER_SYSTEM_TRAVEL_SECONDS charge as the hazard — a deadhead deeper than one hop would be
-// underpriced — but sp-smbgd retired that constant for the affine base + per_hop*hops fit, so
-// depth is now priced on its own terms at every depth. The clamp is what still binds.
+// The gate rests on the CLAMP, not on how a crossing is priced. A crossing is priced by the
+// affine base + per_hop*hops fit, so depth is priced on its own terms at every depth and
+// under-pricing a multi-hop deadhead is not the hazard here. The clamp is what still binds.
 //
-// Integration checkpoint (sp-syaz): syaz threads cmd.MaxTourSystems with 0-as-absent
+// Integration checkpoint: syaz threads cmd.MaxTourSystems with 0-as-absent
 // semantics — 0 maps to the solver's MAX_TOUR_SYSTEMS default of 2, and there is no Go
 // resolver (the 0→2 mapping lives in tour_solver.py). So both 0 and 2 mean "clamp
 // unchanged, do not widen"; only a value strictly greater than 2 opens the gate.
