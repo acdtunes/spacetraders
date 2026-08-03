@@ -82,6 +82,7 @@ type transitionOpts struct {
 	agent        string
 	token        string
 	accountToken string
+	faction      string
 	dryRun       bool
 	confirm      bool
 }
@@ -100,6 +101,17 @@ func runUniverseTransition(ctx context.Context, deps transitionDeps, opts transi
 	}
 	apply := opts.confirm && !opts.dryRun
 
+	// Resolve --faction before anything else touches the API or the DB (sp-dqbzm).
+	// Doing it here rather than at the mint means a typo is refused on the PREVIEW
+	// too, so `--dry-run` can never promise a rollover that `--confirm` would then
+	// refuse. Normalising into the local copy of opts gives the mint, the preview and
+	// the era row ONE validated value to read.
+	mintFaction, err := resolveMintFaction(opts.faction)
+	if err != nil {
+		return fmt.Errorf("%w — no changes made", err)
+	}
+	opts.faction = mintFaction
+
 	// Resolve the working token. An explicit --token (manual/recovery override) wins
 	// and is validated exactly as before. Absent it, the new era's JWT is minted from
 	// ST_ACCOUNT_TOKEN. Registering an agent is an irreversible external effect that
@@ -112,18 +124,55 @@ func runUniverseTransition(ctx context.Context, deps transitionDeps, opts transi
 	if opts.token == "" && !apply {
 		return previewPendingMint(ctx, deps, opts, out)
 	}
-	token := opts.token
-	if token == "" {
-		minted, err := deps.api.Register(ctx, opts.accountToken, opts.agent, "")
-		if err != nil {
-			return fmt.Errorf("failed to mint new-era JWT for %q — no changes made: %w", opts.agent, err)
-		}
-		token = minted.Token
+
+	// 1. Server reset date and open era FIRST. Both reads are read-only and need no
+	//    agent token, and the idempotency verdict they produce must be reached BEFORE
+	//    the mint: a re-run on an already-synced universe used to register a fresh
+	//    agent — an irreversible account slot — and then discard it at the very next
+	//    check. That waste was unreachable while every mint 422'd on the empty faction;
+	//    making the mint work exposes it, so the order is now "every free check before
+	//    the irreversible one" (sp-dqbzm).
+	status, err := deps.api.GetServerStatus(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get server status: %w", err)
+	}
+	resetDate, err := time.Parse(eraDateLayout, status.ResetDate)
+	if err != nil {
+		return fmt.Errorf("failed to parse server reset date %q: %w", status.ResetDate, err)
+	}
+	openEra, err := deps.era.FindOpenEra(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to load open era: %w", err)
+	}
+	if eraInSyncWith(openEra, status.ResetDate) {
+		fmt.Fprintf(out, "Universe already in sync (open era %s, player %d, resetDate %s). No changes made.\n",
+			openEra.Name, openEra.PlayerID, status.ResetDate)
+		return nil
 	}
 
-	// 1. Validate the (provided or freshly-minted) token FIRST via the API. This is
-	//    the root-cause fix for the silent-corruption era: nothing is written unless
-	//    the token authenticates. On the mint path it also re-asserts the minted
+	// mintedFaction is the faction of an agent WE just created, and is empty on the
+	// --token path where the agent was created elsewhere. That distinction is what
+	// keeps the era row honest below.
+	token := opts.token
+	mintedFaction := ""
+	if token == "" {
+		minted, err := deps.api.Register(ctx, opts.accountToken, opts.agent, opts.faction)
+		if err != nil {
+			return fmt.Errorf("failed to mint new-era JWT for %q (faction %s) — no changes made: %w", opts.agent, opts.faction, err)
+		}
+		token = minted.Token
+		// The register response echoes the faction the API actually assigned; prefer
+		// it, and fall back to the value it just accepted (a bad enum would have
+		// 422'd instead of returning). Either way this is now known, not guessed.
+		mintedFaction = minted.Faction
+		if mintedFaction == "" {
+			mintedFaction = opts.faction
+		}
+	}
+
+	// 2. Validate the (provided or freshly-minted) token via the API BEFORE any write.
+	//    This is the root-cause fix for the silent-corruption era: nothing is written
+	//    unless the token authenticates. On the mint path it also re-asserts the minted
 	//    agent's symbol matches --agent.
 	agentData, err := deps.api.GetAgent(ctx, token)
 	if err != nil {
@@ -135,27 +184,33 @@ func runUniverseTransition(ctx context.Context, deps transitionDeps, opts transi
 	}
 	symbol := agentData.Symbol
 
-	// 2. Resolve the server reset date; refuse before any write if it won't parse.
-	status, err := deps.api.GetServerStatus(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get server status: %w", err)
+	// 2b. Settle the faction the new era (and the new player's identity metadata) will
+	//     record. GetAgent's startingFaction is the live truth and wins whenever the
+	//     API supplies it — but it is ONE externally-controlled read, it feeds BOTH
+	//     sinks, and an empty one used to be skipped in silence. That is not
+	//     hypothetical: era 3 (torwind-2026-07-12) landed eras.faction NULL and
+	//     players.metadata {} from this exact read, and nobody noticed for three weeks
+	//     (sp-dqbzm).
+	//
+	//     On the mint path we hold a better answer for the agent we just created, so
+	//     use it instead of recording nothing. On the --token path the agent was minted
+	//     elsewhere: --faction is then a guess, and stamping a guess into the era
+	//     history is worse than admitting we do not know — so we say so out loud
+	//     instead, because the silence is what let era 3 hide.
+	//
+	//     Mutating agentData here is sanctioned: GetAgent documents that it hands back
+	//     a defensive copy precisely so a caller can do this without poisoning its cache.
+	if agentData.StartingFaction == "" {
+		agentData.StartingFaction = mintedFaction
 	}
-	resetDate, err := time.Parse(eraDateLayout, status.ResetDate)
-	if err != nil {
-		return fmt.Errorf("failed to parse server reset date %q: %w", status.ResetDate, err)
+	if agentData.StartingFaction == "" {
+		fmt.Fprintf(out, "⚠ the API reported no startingFaction for %s — the new era row will record no faction.\n", symbol)
+		fmt.Fprintf(out, "  Re-run without --token to mint (and record) a known faction, or fix eras.faction by hand.\n")
 	}
-	newEraName := strings.ToLower(symbol) + "-" + resetDate.Format(eraDateLayout)
 
-	// 3. Idempotency: an already-synced universe is a no-op, exit 0.
-	openEra, err := deps.era.FindOpenEra(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to load open era: %w", err)
-	}
-	if eraInSyncWith(openEra, status.ResetDate) {
-		fmt.Fprintf(out, "Universe already in sync (open era %s, player %d, resetDate %s). No changes made.\n",
-			openEra.Name, openEra.PlayerID, status.ResetDate)
-		return nil
-	}
+	// 3. Name the new era. Only now is the validated symbol known, which is why this
+	//    trails the reset date it is keyed on.
+	newEraName := strings.ToLower(symbol) + "-" + resetDate.Format(eraDateLayout)
 
 	printTransitionPlan(out, symbol, agentData, status.ResetDate, newEraName, openEra)
 
@@ -286,7 +341,7 @@ func previewPendingMint(ctx context.Context, deps transitionDeps, opts transitio
 	}
 
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintf(w, "Agent\t%s — a fresh JWT will be minted from ST_ACCOUNT_TOKEN on --confirm\n", opts.agent)
+	fmt.Fprintf(w, "Agent\t%s — a fresh JWT will be minted from ST_ACCOUNT_TOKEN (faction %s) on --confirm\n", opts.agent, opts.faction)
 	fmt.Fprintf(w, "Server resetDate\t%s\n", status.ResetDate)
 	if openEra != nil {
 		fmt.Fprintf(w, "Prior era\t%s (player %d) → will be CLOSED (no cache truncation)\n", openEra.Name, openEra.PlayerID)
@@ -523,6 +578,7 @@ func newUniverseTransitionCommand() *cobra.Command {
 	var (
 		agent   string
 		token   string
+		faction string
 		dryRun  bool
 		confirm bool
 	)
@@ -549,18 +605,19 @@ Examples:
   spacetraders universe transition --agent TORWIND --token eyJ... --confirm`,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runUniverseTransitionCommand(agent, token, dryRun, confirm)
+			return runUniverseTransitionCommand(agent, token, faction, dryRun, confirm)
 		},
 	}
 
 	cmd.Flags().StringVar(&agent, "agent", "", "agent symbol for the new era (must match the token's agent)")
 	cmd.Flags().StringVar(&token, "token", "", "JWT for the new era's agent; if omitted, one is minted from ST_ACCOUNT_TOKEN (validated via API before any write)")
+	cmd.Flags().StringVar(&faction, "faction", defaultStartingFaction, "faction to mint the new era's agent under (mint path only; validated locally before any API call)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview the rollover plan without mutating anything")
 	cmd.Flags().BoolVar(&confirm, "confirm", false, "apply the destructive rollover (era flip, repoint, drain)")
 	return cmd
 }
 
-func runUniverseTransitionCommand(agent, token string, dryRun, confirm bool) error {
+func runUniverseTransitionCommand(agent, token, faction string, dryRun, confirm bool) error {
 	db, err := openDatabase()
 	if err != nil {
 		return err
@@ -597,6 +654,7 @@ func runUniverseTransitionCommand(agent, token string, dryRun, confirm bool) err
 		agent:        agent,
 		token:        token,
 		accountToken: os.Getenv("ST_ACCOUNT_TOKEN"),
+		faction:      faction,
 		dryRun:       dryRun,
 		confirm:      confirm,
 	}, os.Stdout)

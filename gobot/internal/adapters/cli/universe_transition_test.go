@@ -300,6 +300,30 @@ func TestTransition_Idempotent_SecondRunNoop(t *testing.T) {
 	require.Contains(t, out.String(), "in sync")
 }
 
+// The idempotency promise ("re-running once the universe is in sync is a no-op") has
+// to hold for the ACCOUNT, not just the DB. On the mint path the no-op decision sat
+// AFTER Register, so a re-run minted a fresh agent — consuming an irreversible account
+// slot — and then discarded it at the in-sync check. That waste was unreachable while
+// the mint itself always 422'd on the empty faction; fixing the mint (sp-dqbzm) exposes
+// it, so every read-only, token-independent check now precedes the irreversible effect.
+func TestTransition_Idempotent_MintPathRerunDoesNotBurnAnAccountSlot(t *testing.T) {
+	deps, apiFake, store, def, capCfg, fleet := happyDeps()
+	inSync := time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC)
+	store.openEra = &persistence.EraModel{Name: "torwind-2026-07-12", AgentSymbol: "TORWIND", PlayerID: 3, UniverseResetDate: &inSync}
+	apiFake.registerResult = &api.RegisterResult{Token: "wasted-jwt", AgentSymbol: "TORWIND", Faction: "COSMIC"}
+	var out bytes.Buffer
+
+	err := runUniverseTransition(context.Background(), deps, transitionOpts{agent: "TORWIND", accountToken: "acct-tok", confirm: true}, &out)
+	require.NoError(t, err)
+
+	require.Zero(t, apiFake.registerCalls, "an already-synced universe must not mint an agent it will immediately discard")
+	require.Zero(t, store.transitionCalls)
+	require.False(t, def.called)
+	require.False(t, capCfg.called)
+	require.Empty(t, fleet.stopOrder)
+	require.Contains(t, out.String(), "in sync")
+}
+
 func TestTransition_DryRunNoMutation(t *testing.T) {
 	deps, _, store, def, capCfg, fleet := happyDeps()
 	var out bytes.Buffer
@@ -339,12 +363,15 @@ func TestTransition_MintsJWTFromAccountTokenOnApply(t *testing.T) {
 	err := runUniverseTransition(context.Background(), deps, transitionOpts{agent: "TORWIND", accountToken: "acct-tok", confirm: true}, &out)
 	require.NoError(t, err)
 
-	// Registered exactly once with (accountToken, agent, faction="") — the same
-	// empty-faction default the `player register --new` path uses.
+	// Registered exactly once with (accountToken, agent, faction). The faction was
+	// hardcoded "" here until sp-dqbzm; the API 422s that (code 3001,
+	// invalid_enum_value), so this assertion was pinning the defect. It now pins the
+	// resolved --faction default instead — see universe_transition_faction_test.go
+	// for the full contract.
 	require.Equal(t, 1, apiFake.registerCalls)
 	require.Equal(t, "acct-tok", apiFake.registerAccountToken)
 	require.Equal(t, "TORWIND", apiFake.registerAgent)
-	require.Equal(t, "", apiFake.registerFaction)
+	require.Equal(t, "COSMIC", apiFake.registerFaction)
 
 	// The minted token is the working token: it is what GetAgent re-validates and
 	// what lands in the new player row.

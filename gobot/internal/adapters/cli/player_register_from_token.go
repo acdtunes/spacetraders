@@ -35,6 +35,18 @@ func runPlayerRegisterFromToken(ctx context.Context, client registrationStatusAP
 		return fmt.Errorf("--token flag is required")
 	}
 
+	// This path RECORDS a faction, it never sends one — the agent was minted elsewhere,
+	// so an unsupplied faction stays genuinely unknown rather than acquiring the mint
+	// default (stamping a guess into era history is worse than a NULL). A supplied one
+	// is still validated so `history` cannot inherit a typo (sp-dqbzm).
+	if faction != "" {
+		normalized, err := normalizeFaction(faction)
+		if err != nil {
+			return err
+		}
+		faction = normalized
+	}
+
 	open, err := store.FindOpenEra(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to check open era: %w", err)

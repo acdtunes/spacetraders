@@ -14,11 +14,12 @@ import (
 )
 
 type fakeRegistrationAPI struct {
-	status         *api.ServerStatus
-	statusErr      error
-	result         *api.RegisterResult
-	registerErr    error
-	registerCalled bool
+	status          *api.ServerStatus
+	statusErr       error
+	result          *api.RegisterResult
+	registerErr     error
+	registerCalled  bool
+	registerFaction string
 }
 
 func (f *fakeRegistrationAPI) GetServerStatus(ctx context.Context) (*api.ServerStatus, error) {
@@ -27,6 +28,7 @@ func (f *fakeRegistrationAPI) GetServerStatus(ctx context.Context) (*api.ServerS
 
 func (f *fakeRegistrationAPI) Register(ctx context.Context, accountToken, agentSymbol, faction string) (*api.RegisterResult, error) {
 	f.registerCalled = true
+	f.registerFaction = faction
 	return f.result, f.registerErr
 }
 

@@ -31,6 +31,16 @@ func runPlayerRegisterNew(ctx context.Context, client registrationAPI, store reg
 		return fmt.Errorf("--agent flag is required")
 	}
 
+	// --faction shipped as "(optional)" with an empty default and was passed straight
+	// into Register, which is the same 422 (code 3001, invalid_enum_value, received "")
+	// that broke `universe transition` — this path was equally unable to mint
+	// (sp-dqbzm). Resolve and validate it up front, before the irreversible Register
+	// call and before any row is written.
+	faction, err := resolveMintFaction(faction)
+	if err != nil {
+		return err
+	}
+
 	open, err := store.FindOpenEra(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to check open era: %w", err)
@@ -62,14 +72,14 @@ func runPlayerRegisterNew(ctx context.Context, client registrationAPI, store reg
 
 	now := time.Now().UTC()
 
-	metadata := ""
-	if faction != "" {
-		raw, err := json.Marshal(map[string]string{"starting_faction": faction})
-		if err != nil {
-			return fmt.Errorf("failed to encode metadata: %w", err)
-		}
-		metadata = string(raw)
+	// faction is non-empty by construction (resolveMintFaction substitutes the default),
+	// so both sinks are written unconditionally — an always-true guard here would only
+	// suggest an unreachable empty case.
+	raw, err := json.Marshal(map[string]string{"starting_faction": faction})
+	if err != nil {
+		return fmt.Errorf("failed to encode metadata: %w", err)
 	}
+	metadata := string(raw)
 
 	player := &persistence.PlayerModel{
 		AgentSymbol: result.AgentSymbol,
@@ -83,9 +93,7 @@ func runPlayerRegisterNew(ctx context.Context, client registrationAPI, store reg
 		AgentSymbol:       result.AgentSymbol,
 		RegisteredAt:      &now,
 		UniverseResetDate: &resetDate,
-	}
-	if faction != "" {
-		era.Faction = &faction
+		Faction:           &faction,
 	}
 
 	if err := store.CreatePlayerWithEra(ctx, player, era); err != nil {
