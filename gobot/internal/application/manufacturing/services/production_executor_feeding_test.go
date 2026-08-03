@@ -43,6 +43,13 @@ type feedInputSpec struct {
 // each with its own supply/trade-volume so the balanced-feed planner sizes the tranche to the
 // scarcest. No resale sink is served (nil FindBestMarketBuying) — the feeding runs are construction-
 // supply, which scopes out the resale-margin guards, isolating the feeding behavior under test.
+//
+// The factory ALSO lists every input as an IMPORT, which is what a real factory does: it exports a
+// manufactured good and buys that good's inputs. Without those rows the fixture describes a factory
+// that consumes nothing, and sp-b27a2's feed-destination guard correctly refuses to haul inputs to
+// it — silently, because these tests assert on purchase quantity and order, which are decided
+// inside produceInputsForFactory BEFORE the guard runs. They stayed green while no longer reaching
+// navigate -> deliverInputs -> PollForProduction at all. The IMPORT rows restore that tail.
 type feedingMarketRepo struct {
 	market.MarketRepository
 	outputGood   string
@@ -72,7 +79,18 @@ func (r *feedingMarketRepo) GetMarketData(ctx context.Context, waypointSymbol st
 		if err != nil {
 			return nil, err
 		}
-		return market.NewMarket(waypointSymbol, []market.TradeGood{*g}, time.Now())
+		listings := []market.TradeGood{*g}
+		// The factory consumes what it is fed. These rows never reach the feed SIZING — that
+		// reads FindExportMarket only (peekInputAvailability) — so they change no tranche.
+		for _, in := range r.inputs {
+			inputSupply := in.supply
+			consumed, err := market.NewTradeGood(in.good, &inputSupply, &activity, in.ask, in.ask, in.tradeVolume, market.TradeTypeImport)
+			if err != nil {
+				return nil, err
+			}
+			listings = append(listings, *consumed)
+		}
+		return market.NewMarket(waypointSymbol, listings, time.Now())
 	}
 	for _, in := range r.inputs {
 		if in.waypoint == waypointSymbol {
@@ -264,6 +282,28 @@ func TestFeeding_ResponsiveGood_IsFed(t *testing.T) {
 	}
 	if mediator.unitsFor(fpScarce) <= 0 || mediator.unitsFor(fpAmple) <= 0 {
 		t.Fatalf("a responsive good must have BOTH inputs fed, got SILICON=%d COPPER=%d", mediator.unitsFor(fpScarce), mediator.unitsFor(fpAmple))
+	}
+}
+
+// COVERAGE GUARD for the four tests above. Every one of them asserts on purchase quantity or
+// order, and both are decided inside produceInputsForFactory — which runs BEFORE the sp-b27a2
+// feed-destination guard. While the factory listing carried no IMPORT rows that guard refused the
+// haul, so all three ELECTRONICS runs short-circuited before navigate -> deliverInputs ->
+// PollForProduction and stayed green anyway; a full suite run could not see the loss (measured:
+// 3 refusals / 0 deliveries before the fixture fix, 0 / 3 after).
+//
+// This pins the tail directly. Harvesting the OUTPUT is reachable only past the guard, the
+// navigate and the delivery, so deleting the factory's IMPORT rows fails HERE — loudly and by
+// name — where the four tests above go on passing (verified by mutation).
+func TestFeeding_FedRunReachesTheHarvest_NotOnlyTheInputBuys(t *testing.T) {
+	executor, mediator := newFeedingExecutor(t, balancedFeedingRepo())
+
+	_, err := executor.ProduceGood(feedingCtx(), balancedFeedingRepo0Ship(), twoInputChain("ELECTRONICS"), fpSystem, 1, nil, false)
+	if err != nil {
+		t.Fatalf("a fed factory run must complete: %v", err)
+	}
+	if got := mediator.unitsFor("ELECTRONICS"); got <= 0 {
+		t.Fatalf("the run never harvested its output (%d units): it stopped before navigate -> deliverInputs -> PollForProduction, so this fixture no longer covers the delivery tail", got)
 	}
 }
 

@@ -48,6 +48,24 @@ func (r fabricationRun) forChild(child *goods.SupplyChainNode) fabricationRun {
 	return r
 }
 
+// haulingInputs is the goods this run acquires and carries to the factory: the node's CHILDREN,
+// which is exactly what produceInputsForFactory loops over to fill the hold.
+//
+// Deliberately not the recipe from goods.ExportToImportMap. The two agree in production (the tree
+// is built from that same map) but the tree is the authority on what was actually produced, and
+// where they diverge the recipe refuses runs that carry nothing: a childless FABRICATE node hauls
+// no inputs at all — it delivers whatever is already aboard and harvests — and judging it against
+// its recipe would park it over goods it was never carrying. Cargo aboard that this run did not
+// acquire is likewise not a reason to refuse the trip; deliverInputs already holds such goods
+// rather than dumping them (sp-w2qg5).
+func (r fabricationRun) haulingInputs() []string {
+	inputs := make([]string, 0, len(r.node.Children))
+	for _, child := range r.node.Children {
+		inputs = append(inputs, child.Good)
+	}
+	return inputs
+}
+
 // fabricateGood manufactures a good by producing inputs and delivering them to a manufacturing waypoint
 func (e *ProductionExecutor) fabricateGood(ctx context.Context, run fabricationRun) (*ProductionResult, error) {
 	logger := common.LoggerFromContext(ctx)
@@ -104,6 +122,16 @@ func (e *ProductionExecutor) fabricateGood(ctx context.Context, run fabricationR
 		"ask":      factoryMarket.Price, // the factory's ASK — what we pay to harvest (sp-en5h7)
 	})
 
+	if refused := e.feedDestinationRefused(ctx, run, factoryMarket.WaypointSymbol, playerIDValue); refused {
+		// The inputs already bought stay aboard and the run reports what it actually spent —
+		// see feedDestinationRefused for why this cost is not zeroed like the earlier parks.
+		return &ProductionResult{
+			QuantityAcquired: 0,
+			TotalCost:        totalCost,
+			WaypointSymbol:   factoryMarket.WaypointSymbol,
+		}, nil
+	}
+
 	updatedShip, err := e.NavigateAndDock(ctx, run.ship.ShipSymbol(), factoryMarket.WaypointSymbol, playerIDValue)
 	if err != nil {
 		return nil, fmt.Errorf("failed to navigate to factory: %w", err)
@@ -133,6 +161,66 @@ func (e *ProductionExecutor) fabricateGood(ctx context.Context, run fabricationR
 		TotalCost:        totalCost,
 		WaypointSymbol:   factoryMarket.WaypointSymbol,
 	}, nil
+}
+
+// gateTopology is the executor's role-resolving view of the era's topology. It is built on demand
+// from what the executor already holds rather than injected, and that is deliberate: the recipe
+// map is a game constant (the same goods.ExportToImportMap both production SupplyChainResolver
+// sites are built from) and *MarketLocator is already the executor's market-role resolver, so
+// there is nothing here a caller could meaningfully vary. Building it here also leaves every
+// existing construction site untouched — including the struct-literal ProductionExecutors in the
+// package's own fixtures, which a nil-able field would nil-panic through Inputs.
+//
+// Consequently the feed guard below is ARMED for every executor in the process; there is no
+// wiring step that can be forgotten and no configuration that can leave it off.
+func (e *ProductionExecutor) gateTopology() *GateTopology {
+	return NewGateTopology(e.marketLocator, goods.ExportToImportMap)
+}
+
+// feedDestinationRefused reports whether the factory this run is about to be sent to will refuse
+// the inputs it is carrying, and logs the reason when it does.
+//
+// fabricateGood navigates to the factory that EXPORTS the good, assuming that factory also IMPORTS
+// that good's inputs. Within one chain it does; across chains it does not, and sp-b27a2 is exactly
+// that case — IRON_ORE (FAB_MATS chain) carried to the ADVANCED_CIRCUITRY exporter, which imports
+// nothing from that chain, leaving the hauler at 80/80 unable to deliver or dump. Checking before
+// the navigate is the root-cause fix: deliverInputs already holds cargo the local market will not
+// buy (sp-w2qg5), but by the time it runs the hull is already at the wrong waypoint.
+//
+// The subject is run.haulingInputs — the goods this run actually acquired for the factory — not
+// the good's recipe. See haulingInputs for why the distinction matters.
+//
+// There is no fallback to another waypoint on refusal. Substituting one is precisely how cargo
+// ends up somewhere that cannot accept it, which is the incident this guard exists to prevent.
+func (e *ProductionExecutor) feedDestinationRefused(
+	ctx context.Context,
+	run fabricationRun,
+	factoryWaypoint string,
+	playerID shared.PlayerID,
+) bool {
+	// An unreadable listing is passed through as nil, which ValidateFeedDestination refuses.
+	// Reading the destination's OWN listing is what makes the check exact: a system can hold
+	// several markets importing a good, so the best-bid importer is not the question here.
+	destination, err := e.marketRepo.GetMarketData(ctx, factoryWaypoint, playerID.Value())
+	if err != nil {
+		destination = nil
+	}
+
+	refusal := e.gateTopology().ValidateFeedDestination(destination, factoryWaypoint, run.haulingInputs())
+	if refusal == nil {
+		return false
+	}
+
+	// Cause in the MESSAGE: the container-log renderer drops metadata.
+	common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf(
+		"Refusing to haul %s inputs to %s: %v — the hull would arrive with cargo it can neither deliver nor dump (sp-b27a2)",
+		run.node.Good, factoryWaypoint, refusal,
+	), map[string]interface{}{
+		"good": run.node.Good, "factory": factoryWaypoint,
+		"action": "feed_refused", "reason": "destination_cannot_accept_inputs",
+		"error": refusal.Error(),
+	})
+	return true
 }
 
 // chainMarginParked refuses, before ANY input is bought, a fabrication that is structurally
