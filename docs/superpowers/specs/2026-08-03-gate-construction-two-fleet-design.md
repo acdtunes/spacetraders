@@ -34,8 +34,26 @@ Two fleets with one clean boundary.
 Feeds the production chain recursively, terminating at the factories that export the gate
 materials. It delivers **into** those factories and never touches their output.
 
-Recursion terminates naturally at **raw goods** (no recipe), which are bought from whatever exports
-them. There is no depth limit.
+Recursion terminates at **raw goods**, which are bought from whatever exports them.
+
+> **CORRECTION (2026-08-03, from the phase 1 whole-branch review — see bead sp-4irrr).**
+> An earlier draft of this spec said recursion "terminates naturally" because the recipe DAG
+> bottoms out at goods with no recipe, and concluded the fabricate depth cap could be deleted.
+> **Both halves were false.**
+>
+> 1. `goods.ExportToImportMap` is **cyclic**, not a DAG:
+>    `IRON_ORE → EXPLOSIVES → LIQUID_HYDROGEN → MACHINERY → IRON → IRON_ORE`
+>    (`supply_chain.go:26,:45,:16,:63,:48`). Both gate materials feed into that cycle.
+> 2. **"Has no recipe" is not "is raw."** Every actual raw material — IRON_ORE,
+>    SILICON_CRYSTALS, QUARTZ_SAND — *has* a recipe entry, so a `!hasRecipe` test calls none of
+>    them raw. `goods.IsMineableRawMaterial` (`supply_chain.go:212-247`) is the curated predicate
+>    that gets this right, and `supply_chain_resolver.go:326-335` already needed a
+>    factory-existence check on top of `hasRecipe` for exactly this reason.
+>
+> **The depth cap is therefore doing real work and must NOT be deleted on the DAG argument.**
+> Termination must come from `goods.IsMineableRawMaterial`, from the cap, or from both — decide
+> in phase 3's plan, not here. `visited` alone would let every ore chain recurse five levels into
+> EXPLOSIVES first.
 
 ### Delivery fleet — buys terminal output, hauls to gate
 
@@ -67,7 +85,8 @@ lie no longer exists on this path.
 
 **Goods are invariant. Locations are not.**
 
-Every era's gate requires FAB_MATS and ADVANCED_CIRCUITRY, and the recipe DAG is a game constant —
+Every era's gate requires FAB_MATS and ADVANCED_CIRCUITRY, and the recipe graph is a game constant
+(a constant, but a **cyclic** one — see the correction above) —
 we know statically that FAB_MATS needs IRON + QUARTZ_SAND. These may be named directly.
 
 **No system or waypoint symbol may be hardcoded.** Every location is resolved at runtime by role,
@@ -176,10 +195,10 @@ two remaining policies reporting themselves.
 
 ## What Gets Deleted
 
-- The fabricate **depth cap** (`maxDepth`, depth config, the `len(path) >= depthCfg.maxDepth`
-  branch). Recursion is bounded by the recipe DAG terminating at raw goods.
-- **Cycle detection (`visited`) STAYS.** The depth cap was a backstop for not trusting the DAG;
-  `visited` is doing real work and must remain.
+- ~~The fabricate **depth cap**~~ — **STRUCK, see the correction above (sp-4irrr).** The recipe
+  map is cyclic and `!hasRecipe` does not identify raw materials, so the cap is not a redundant
+  backstop. Phase 3 must decide its termination rule deliberately; it may keep the cap.
+- **Cycle detection (`visited`) STAYS** — necessary, and now clearly not sufficient on its own.
 - The `isTargetGood` forced-fabricate branch on the delivery path.
 - Most gate-mode exemption machinery — margin-blindness stops being a special mode when nothing
   on this path is resold.
