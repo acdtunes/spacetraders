@@ -7,44 +7,46 @@ import (
 
 // sp-vh1s Part A — the lane-B integration contract. IsUnifiedGateNode is the single
 // predicate the per-node gates (input_source_selector, input_price_ceiling — lane B)
-// call to decide whether a node runs in MARGIN-BLIND gate mode. It must be true ONLY
-// when the toggle is ON *and* the run's delivery target is a construction site; every
-// other combination (toggle off, or a resale-sink run) keeps today's gates, so an
-// OFF fleet is byte-identical. This truth table pins that contract.
-func TestIsUnifiedGateNode_TrueOnlyWhenToggleOnAndTargetIsConstructionSite(t *testing.T) {
+// call to decide whether a node runs in MARGIN-BLIND gate mode. It must be true EXACTLY
+// when the run's delivery target is a construction site; an unstamped run and a
+// resale-sink (profit-factory) run both keep today's gates. This truth table pins that
+// contract.
+//
+// sp-k87tl: this table once had a fourth case pinning "toggle off + construction-site
+// target is not a gate node". That case is gone because the toggle is gone — it had no
+// config key and no struct field, and its sole stamper passed a literal true next to the
+// target, so "toggle off" was never reachable in production. The three cases below are
+// the whole reachable space.
+//
+// It also carried a second assertion on DeliveryTargetFromContext(ctx).IsConstructionSite().
+// That was independent only while the fourth case existed (it was the one row where the two
+// columns disagreed); without it the expression is verbatim the body of IsUnifiedGateNode, so
+// asserting it here could never fail on its own. The target builder and the zero-value default
+// are pinned directly by TestDeliveryTargetFromContext_CarriesGateWaypoint below.
+func TestIsUnifiedGateNode_TrueExactlyWhenTargetIsConstructionSite(t *testing.T) {
 	site := ConstructionSiteTarget("X1-VB74-I55")
-	sink := DeliveryTarget{} // zero value == resale sink (unchanged behavior)
+	sink := DeliveryTarget{} // zero value == resale sink (profit-factory behavior)
 
 	cases := []struct {
-		name           string
-		stampToggle    bool
-		toggle         bool
-		stampTarget    bool
-		target         DeliveryTarget
-		wantGateNode   bool
-		wantIsConstSit bool
+		name         string
+		stampTarget  bool
+		target       DeliveryTarget
+		wantGateNode bool
 	}{
 		{name: "unstamped context is never a gate node", wantGateNode: false},
-		{name: "toggle on but resale-sink target is not a gate node", stampToggle: true, toggle: true, stampTarget: true, target: sink, wantGateNode: false},
-		{name: "toggle off with construction-site target is not a gate node", stampToggle: true, toggle: false, stampTarget: true, target: site, wantGateNode: false, wantIsConstSit: true},
-		{name: "toggle on with construction-site target IS a gate node", stampToggle: true, toggle: true, stampTarget: true, target: site, wantGateNode: true, wantIsConstSit: true},
+		{name: "resale-sink target is not a gate node", stampTarget: true, target: sink, wantGateNode: false},
+		{name: "construction-site target IS a gate node", stampTarget: true, target: site, wantGateNode: true},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
-			if tc.stampToggle {
-				ctx = WithUnifiedGateFill(ctx, tc.toggle)
-			}
 			if tc.stampTarget {
 				ctx = WithDeliveryTarget(ctx, tc.target)
 			}
 
 			if got := IsUnifiedGateNode(ctx); got != tc.wantGateNode {
 				t.Fatalf("IsUnifiedGateNode = %v, want %v", got, tc.wantGateNode)
-			}
-			if got := DeliveryTargetFromContext(ctx).IsConstructionSite(); got != tc.wantIsConstSit {
-				t.Fatalf("DeliveryTargetFromContext().IsConstructionSite() = %v, want %v", got, tc.wantIsConstSit)
 			}
 		})
 	}

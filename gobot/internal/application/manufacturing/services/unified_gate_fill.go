@@ -8,7 +8,7 @@ import (
 // into a gate fill. A gate fill IS a goods-factory run differing in exactly one thing — what
 // happens to the finished root output: a profit factory SELLS it at a resale sink; a gate fill
 // DELIVERS it to a construction site. That one difference is carried here as a DeliveryTarget on
-// the run context, alongside the UnifiedGateFill toggle.
+// the run context.
 //
 // Everything rides on ctx (not a struct field) for the SAME singleton-executor race reason as the
 // input price ceiling / fabricate depth cap (WithInputPriceCeiling, WithFabricateDepthCap): the
@@ -18,10 +18,10 @@ import (
 // threads BY VALUE through the recursive production chain, so ONE stamp in the coordinator's
 // executeCoordination reaches every child node.
 //
-// A caller that never stamps these (every profit-factory run, every test that stamps neither,
-// the demand/siting estimators) reads the zero value: UnifiedGateFill off, DeliveryTarget = resale
-// sink — the no-op, byte-identical-to-today path. The whole feature is dark until the toggle is on
-// AND a construction-site target is stamped (IsUnifiedGateNode).
+// A caller that never stamps a target (every profit-factory run, the demand/siting estimators)
+// reads the zero value: DeliveryTarget = resale sink — the unchanged profit-factory path. Gate mode
+// engages ONLY where a construction-site target is stamped (IsUnifiedGateNode), which today is the
+// construction coordinator's gateSupplyContext and nothing else.
 
 // DeliveryTargetKind distinguishes the two terminals a produced root output can take. The zero value
 // is DeliverySink so an unstamped run is a resale sink (unchanged behavior).
@@ -62,7 +62,6 @@ func (t DeliveryTarget) SiteWaypoint() string {
 }
 
 type deliveryTargetCtxKey struct{}
-type unifiedGateFillCtxKey struct{}
 
 // WithDeliveryTarget stamps the run's delivery target onto ctx (sp-vh1s). A caller that never stamps
 // it reads the zero value (a resale sink) at the point of use.
@@ -79,25 +78,17 @@ func DeliveryTargetFromContext(ctx context.Context) DeliveryTarget {
 	return DeliveryTarget{}
 }
 
-// WithUnifiedGateFill stamps the unified_gate_fill toggle onto ctx (sp-vh1s CONTRACT #1). Fed from
-// ManufacturingConfig.UnifiedGateFill via the coordinator's command. false (the default) leaves the
-// whole feature dark — every gate node behaves exactly as today.
-func WithUnifiedGateFill(ctx context.Context, enabled bool) context.Context {
-	return context.WithValue(ctx, unifiedGateFillCtxKey{}, enabled)
-}
-
-// unifiedGateFillFromContext reads the toggle, defaulting to false (off) when unstamped.
-func unifiedGateFillFromContext(ctx context.Context) bool {
-	enabled, _ := ctx.Value(unifiedGateFillCtxKey{}).(bool)
-	return enabled
-}
-
 // IsUnifiedGateNode reports whether the current node runs in unified gate-fill mode — the single
 // predicate lane B's per-node gates (input_source_selector, input_price_ceiling) call to switch a
 // node to MARGIN-BLIND, solvency-bounded buying (sp-vh1s CONTRACT #2, §5.2, Admiral
-// sign-off 2026-07-14). It is true ONLY when the toggle is ON *and* the run delivers to a construction
-// site; a toggle-off run, or a resale-sink (profit-factory) run, is never a gate node — so those keep
-// today's price ceiling and chain-margin gates unchanged (OFF = byte-identical).
+// sign-off 2026-07-14). It is true exactly when the run delivers to a construction site; a
+// resale-sink (profit-factory) run is never a gate node — so those keep today's price ceiling and
+// chain-margin gates unchanged.
+//
+// This was once ALSO gated on a separate unified_gate_fill toggle, but that toggle had no config
+// key and no struct field behind it: the sole stamper passed a literal true alongside the
+// construction-site target, so the conjunct was always redundant with the target check. It was
+// removed in sp-k87tl rather than left as a knob that could never be turned (RULINGS: no flags).
 func IsUnifiedGateNode(ctx context.Context) bool {
-	return unifiedGateFillFromContext(ctx) && DeliveryTargetFromContext(ctx).IsConstructionSite()
+	return DeliveryTargetFromContext(ctx).IsConstructionSite()
 }

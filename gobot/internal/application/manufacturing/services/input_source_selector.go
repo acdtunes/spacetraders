@@ -71,12 +71,12 @@ func inputSourcingConfigFromContext(ctx context.Context) inputSourcingConfig {
 //     ADV freeze), with buy-vs-feed decided by ACTIVITY not supply alone (selectInputSource);
 //   - the per-tranche price ceiling and the chain-margin park are EXEMPTED (input_price_ceiling.go).
 //
-// A node is in gate mode iff IsUnifiedGateNode(ctx) — the single sp-vh1s predicate (unified_gate_fill.go,
-// Part A): the unified_gate_fill toggle is ON *and* the run delivers to a construction site. It rides
-// ctx (not a struct field) for the SAME singleton-executor race reason as the sibling sourcing /
-// price-ceiling / reserve configs: ProductionExecutor is a boot singleton shared across every concurrent
-// factory container, so a struct field would race between a gate run and a profit factory. The unstamped
-// default (every profit factory, estimator, and previous test) is false — byte-identical to today.
+// A node is in gate mode iff IsUnifiedGateNode(ctx) — the single sp-vh1s predicate
+// (unified_gate_fill.go, Part A): the run delivers to a construction site. It rides ctx (not a
+// struct field) for the SAME singleton-executor race reason as the sibling sourcing / price-ceiling
+// / reserve configs: ProductionExecutor is a boot singleton shared across every concurrent factory
+// container, so a struct field would race between a gate run and a profit factory. The unstamped
+// default (every profit factory, estimator, and previous test) is false — profit-factory behavior.
 
 // inputSourceMode is how selectInputSource chose the returned source — buyGood uses it to
 // decide which downstream guards still apply (the eligible path faces the cross-market ceiling;
@@ -265,12 +265,12 @@ func (e *ProductionExecutor) routeSubModerateSource(ctx context.Context, good st
 
 // perNodeSupplyFloor resolves the EXPORT sourcing floor for THIS node's good (sp-vh1s).
 //
-// OFF gate mode it returns MODERATE unconditionally — byte-identical to today, and the strict
-// meaning of the unified_gate_fill toggle's "OFF = today" contract: the per-good MinSupply override
-// (which already threads to the selector via the coordinators' WithGoodGatingOverrides) MUST NOT
-// change runtime sourcing outside a gate run. The override still drives the construction planner /
-// task-activator floor as before (those consumers are unchanged); factory-mode runtime gating is a
-// DEFERRED follow-up (Admiral §9), so it deliberately does nothing here off-gate.
+// OFF gate mode (a resale-sink / profit-factory run) it returns MODERATE unconditionally: the
+// per-good MinSupply override (which already threads to the selector via the coordinators'
+// WithGoodGatingOverrides) MUST NOT change runtime sourcing outside a gate run. The override still
+// drives the construction planner / task-activator floor as before (those consumers are unchanged);
+// factory-mode runtime gating is a DEFERRED follow-up (Admiral §9), so it deliberately does nothing
+// here off-gate.
 //
 // IN gate mode the floor drops to SCARCE (Admiral §9 — a MODERATE floor permanently freezes deep
 // chains like SILICON/ELECTRONICS that never regenerate to MODERATE under continuous buy), then the

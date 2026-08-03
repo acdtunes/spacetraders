@@ -9,9 +9,9 @@ import (
 
 // sp-yexq — unified gate-fill defaults the construction pipeline's ADMISSION floor to SCARCE.
 //
-// The gap: unified_gate_fill lowers the per-node PRODUCTION sourcing floor to SCARCE (lane B), but
-// the pipeline's ADMISSION/activation floor (the --min-supply knob, default MODERATE) was NOT wired
-// to the toggle — so a gate material whose only source is SCARCE (e.g. ADVANCED_CIRCUITRY@D42) was
+// The gap: gate mode lowers the per-node PRODUCTION sourcing floor to SCARCE (lane B), but the
+// pipeline's ADMISSION/activation floor (the --min-supply knob, default MODERATE) did not follow —
+// so a gate material whose only source is SCARCE (e.g. ADVANCED_CIRCUITRY@D42) was
 // rejected at admission ("Deferred unsourceable") and never reached the margin-blind production
 // floor, with the operator forced to type `--min-supply SCARCE` by hand.
 //
@@ -21,7 +21,7 @@ import (
 // (market-repo) boundary: the SCARCE material's task is READY+sourced (admitted) vs PENDING+deferred,
 // plus the floor the pipeline persists (which the deferred-material recovery loop reads back).
 
-// AC1 (the fix): with unified gate-fill ON and NO manual --min-supply, the SCARCE export is ADMITTED
+// AC1 (the fix): with NO manual --min-supply, the SCARCE export is ADMITTED
 // (sourced + READY, not deferred), and the pipeline persists a SCARCE floor so the activation /
 // recovery loop (task_activator.pipelineMinSupply) reads SCARCE too — promotion with no manual flag.
 func TestStartOrResume_UnifiedGateFill_AdmitsScarceExportWithoutMinSupply(t *testing.T) {

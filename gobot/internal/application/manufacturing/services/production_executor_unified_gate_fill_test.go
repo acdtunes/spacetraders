@@ -19,20 +19,19 @@ import (
 //   - input_price_ceiling.go: the per-tranche price ceiling and the chain-margin park are EXEMPTED
 //     under gate mode; byte-identical when off. The 9aoc solvency floor is NEVER exempted.
 //
-// gate mode is activated on the run ctx exactly as production does it (sp-vh1s Part A): the
-// unified_gate_fill toggle ON *and* a construction-site DeliveryTarget — precisely what the single
-// predicate IsUnifiedGateNode(ctx), which the executor's per-node gates read, keys on. The withGateMode
-// helper stamps both, so gate=false stays the byte-identical unstamped profit-factory path.
+// gate mode is activated on the run ctx exactly as production does it (sp-vh1s Part A): a
+// construction-site DeliveryTarget — precisely what the single predicate IsUnifiedGateNode(ctx),
+// which the executor's per-node gates read, keys on. The withGateMode helper stamps it, so
+// gate=false stays the unstamped profit-factory path.
 
 // withGateMode puts the run ctx into (or leaves it out of) unified gate-fill mode the same way lane A's
-// coordinators do — stamping the unified_gate_fill toggle plus a construction-site delivery target makes
-// IsUnifiedGateNode(ctx) true. gate=false returns ctx untouched: the unstamped, byte-identical-to-today
-// profit-factory default the OFF assertions pin.
+// coordinators do — stamping a construction-site delivery target makes IsUnifiedGateNode(ctx) true.
+// gate=false returns ctx untouched: the unstamped profit-factory default the OFF assertions pin.
 func withGateMode(ctx context.Context, gate bool) context.Context {
 	if !gate {
 		return ctx
 	}
-	return WithDeliveryTarget(WithUnifiedGateFill(ctx, true), ConstructionSiteTarget("X1-DR-GATE"))
+	return WithDeliveryTarget(ctx, ConstructionSiteTarget("X1-DR-GATE"))
 }
 
 // ROUTING (analyst live taproot as fixtures, kept generic on the supply+activity signal, never

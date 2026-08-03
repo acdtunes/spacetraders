@@ -254,9 +254,11 @@ func (h *RunConstructionCoordinatorHandler) hullFillTarget(ctx context.Context, 
 // engine's RESALE-margin guards (chain-margin, crushed-sink) are scoped out through the whole tree:
 // the harvested output is delivered to the gate, never resold. INPUT buys still pass the full
 // money-guard stack.
+//
+// The construction-site DeliveryTarget stamped here is what makes IsUnifiedGateNode true for every
+// node in the recursive tree below — this is the ONLY place gate mode is entered.
 func (h *RunConstructionCoordinatorHandler) gateSupplyContext(ctx context.Context, task *manufacturing.ManufacturingTask) context.Context {
 	produceCtx := shared.WithConstructionSupply(ctx)
-	produceCtx = mfgServices.WithUnifiedGateFill(produceCtx, true)
 	return mfgServices.WithDeliveryTarget(produceCtx, mfgServices.ConstructionSiteTarget(task.ConstructionSite()))
 }
 

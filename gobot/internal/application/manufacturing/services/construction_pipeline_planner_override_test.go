@@ -78,7 +78,7 @@ func TestConstructionOverride_PerGoodFloorSourcesBottleneckOnly(t *testing.T) {
 
 	overrides := manufacturing.GoodGatingOverrides{"ADVANCED_CIRCUITRY": {MinSupply: "SCARCE"}}
 	// Explicit MODERATE global floor (see baseline): the per-good SCARCE override must unstick the
-	// bottleneck against it, proving the override — not the toggle's SCARCE default — sources the good.
+	// bottleneck against it, proving the override — not the planner's SCARCE default — sources the good.
 	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 3, 5, "", "MODERATE", overrides)
 	if err != nil {
 		t.Fatalf("StartOrResume: %v", err)

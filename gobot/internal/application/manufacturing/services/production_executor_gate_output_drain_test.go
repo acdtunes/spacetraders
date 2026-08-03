@@ -39,11 +39,10 @@ func newGateFillExecutor(t *testing.T, cargoCapacity int) (*ProductionExecutor, 
 	return executor, mediator
 }
 
-// gateModeCtx stamps the run context as a unified gate-fill node (toggle on + construction-site
+// gateModeCtx stamps the run context as a unified gate-fill node (a construction-site delivery
 // target) so the executor treats the output-buy as a gate fill — the same stamp the coordinator
 // applies per run.
 func gateModeCtx(ctx context.Context) context.Context {
-	ctx = WithUnifiedGateFill(ctx, true)
 	return WithDeliveryTarget(ctx, ConstructionSiteTarget("X1-VB74-I55"))
 }
 
