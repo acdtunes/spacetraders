@@ -67,12 +67,6 @@ func SetGlobalFleetHealthCollector(collector *FleetHealthMetricsCollector) {
 	globalFleetHealthCollector = collector
 }
 
-// GetGlobalFleetHealthCollector returns the global fleet-health collector.
-// Returns nil if metrics are not enabled.
-func GetGlobalFleetHealthCollector() *FleetHealthMetricsCollector {
-	return globalFleetHealthCollector
-}
-
 // RecordHullStranded records one stranded-hull episode for a (ship, system) globally.
 // No-op when metrics are disabled, so a metrics miss never touches the
 // reposition/tour path (RULINGS #4).

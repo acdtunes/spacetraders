@@ -69,18 +69,3 @@ var globalChainInputPauseCollector *ChainInputPauseMetricsCollector
 func SetGlobalChainInputPauseCollector(collector *ChainInputPauseMetricsCollector) {
 	globalChainInputPauseCollector = collector
 }
-
-// GetGlobalChainInputPauseCollector returns the global input-pause collector.
-// Returns nil if metrics are not enabled.
-func GetGlobalChainInputPauseCollector() *ChainInputPauseMetricsCollector {
-	return globalChainInputPauseCollector
-}
-
-// RecordChainInputPause increments a chain's input-pause-episode counter globally.
-// No-op when metrics are disabled, so a metrics miss never touches the pause-check path
-// (RULINGS #4).
-func RecordChainInputPause(good string) {
-	if globalChainInputPauseCollector != nil {
-		globalChainInputPauseCollector.RecordPause(good)
-	}
-}

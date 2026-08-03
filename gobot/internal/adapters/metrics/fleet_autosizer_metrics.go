@@ -212,11 +212,6 @@ func SetGlobalFleetAutosizerCollector(collector *FleetAutosizerMetricsCollector)
 	globalFleetAutosizerCollector = collector
 }
 
-// GetGlobalFleetAutosizerCollector returns the global fleet-autosizer collector.
-func GetGlobalFleetAutosizerCollector() *FleetAutosizerMetricsCollector {
-	return globalFleetAutosizerCollector
-}
-
 // RecordAutosizerPurchase increments the autosizer purchase counter for a class globally.
 // No-op when metrics are disabled, so a metrics miss never touches the buy path.
 func RecordAutosizerPurchase(class string) {

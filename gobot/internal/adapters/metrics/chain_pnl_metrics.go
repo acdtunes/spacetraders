@@ -83,26 +83,3 @@ var globalChainPnLCollector *ChainPnLMetricsCollector
 func SetGlobalChainPnLCollector(collector *ChainPnLMetricsCollector) {
 	globalChainPnLCollector = collector
 }
-
-// GetGlobalChainPnLCollector returns the global chain-P&L collector.
-// Returns nil if metrics are not enabled.
-func GetGlobalChainPnLCollector() *ChainPnLMetricsCollector {
-	return globalChainPnLCollector
-}
-
-// RecordChainPnLRealizedPerHour sets a chain's realized-P&L/hr gauge globally.
-// No-op when metrics are disabled, so a metrics miss never touches the kill-check path
-// (RULINGS #4).
-func RecordChainPnLRealizedPerHour(good string, perHour float64) {
-	if globalChainPnLCollector != nil {
-		globalChainPnLCollector.RecordRealizedPerHour(good, perHour)
-	}
-}
-
-// RecordChainPnLKill increments a chain's kill-episode counter globally. No-op
-// when metrics are disabled (RULINGS #4).
-func RecordChainPnLKill(good string) {
-	if globalChainPnLCollector != nil {
-		globalChainPnLCollector.RecordKill(good)
-	}
-}

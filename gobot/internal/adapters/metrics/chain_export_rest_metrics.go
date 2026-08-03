@@ -50,15 +50,6 @@ func (c *ChainExportRestMetricsCollector) Register() error {
 	)
 }
 
-// RecordRest increments the export-rest-episode counter for a good. Emitted once per episode
-// by the coordinator when a chain crosses from lifting to export-rested.
-func (c *ChainExportRestMetricsCollector) RecordRest(good string) {
-	if c == nil || c.restsTotal == nil {
-		return // Recording is best-effort; never panic the rest-check path (RULINGS #4).
-	}
-	c.restsTotal.WithLabelValues(good).Inc()
-}
-
 // globalChainExportRestCollector is the singleton export-ask-subsidy rest collector.
 // Set by SetGlobalChainExportRestCollector() when metrics are enabled; the
 // goods_factory coordinator emits the export-rest episode counter through it (the
@@ -70,19 +61,4 @@ var globalChainExportRestCollector *ChainExportRestMetricsCollector
 // Pass nil to clear it (e.g. in test cleanup).
 func SetGlobalChainExportRestCollector(collector *ChainExportRestMetricsCollector) {
 	globalChainExportRestCollector = collector
-}
-
-// GetGlobalChainExportRestCollector returns the global export-rest collector.
-// Returns nil if metrics are not enabled.
-func GetGlobalChainExportRestCollector() *ChainExportRestMetricsCollector {
-	return globalChainExportRestCollector
-}
-
-// RecordChainExportRest increments a chain's export-rest-episode counter globally.
-// No-op when metrics are disabled, so a metrics miss never touches the rest-check path
-// (RULINGS #4).
-func RecordChainExportRest(good string) {
-	if globalChainExportRestCollector != nil {
-		globalChainExportRestCollector.RecordRest(good)
-	}
 }

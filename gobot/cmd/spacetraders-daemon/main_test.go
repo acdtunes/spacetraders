@@ -41,7 +41,6 @@ import (
 // rotting: an entry for a type that either disappears or becomes registered
 // fails that test.
 var knownUnregisteredExceptions = map[string]string{
-	"RefreshMarketDataCommand": "RefreshMarketDataHandler exists (internal/application/scouting/commands/refresh_market_data.go) but nothing constructs or dispatches this command anywhere in the codebase; dead code predating sp-423c",
 	// SyncPlayerCommand was exempted here as dead code until sp-0eufi. That exemption was
 	// load-bearing in the worst way: this handler is the sole writer of
 	// players.metadata.headquarters, so "nothing dispatches it" meant the key was never written

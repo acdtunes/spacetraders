@@ -65,12 +65,6 @@ func SetGlobalScoutCollector(collector *ScoutMetricsCollector) {
 	globalScoutCollector = collector
 }
 
-// GetGlobalScoutCollector returns the global scout metrics collector.
-// Returns nil if metrics are not enabled.
-func GetGlobalScoutCollector() *ScoutMetricsCollector {
-	return globalScoutCollector
-}
-
 // RecordScoutFreshness sets the scout market-freshness gauge for one (player, system)
 // globally. No-op when metrics are disabled (RULINGS #4).
 func RecordScoutFreshness(playerID int, system string, ageSeconds float64) {

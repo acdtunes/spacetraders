@@ -25,8 +25,3 @@ func InitRegistry() {
 func GetRegistry() *prometheus.Registry {
 	return Registry
 }
-
-// IsEnabled returns true if metrics collection is enabled
-func IsEnabled() bool {
-	return Registry != nil
-}

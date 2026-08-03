@@ -444,12 +444,6 @@ func SetGlobalTourCollector(collector *TourMetricsCollector) {
 	globalTourCollector = collector
 }
 
-// GetGlobalTourCollector returns the global tour instrumentation collector.
-// Returns nil if metrics are not enabled.
-func GetGlobalTourCollector() *TourMetricsCollector {
-	return globalTourCollector
-}
-
 // RecordTourReposition records one margins-death reposition evaluation globally.
 // No-op when metrics are disabled, so a metrics miss never touches the
 // trade path (RULINGS #4).

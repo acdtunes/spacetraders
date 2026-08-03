@@ -327,10 +327,3 @@ func RecordTransaction(playerID int, agentSymbol string, transactionType string,
 		globalFinancialCollector.RecordTransaction(playerID, agentSymbol, transactionType, category, amount, creditsBalance, operationType)
 	}
 }
-
-// RecordTrade records trade profitability metrics globally
-func RecordTrade(playerID int, goodSymbol string, buyPrice int, sellPrice int, quantity int) {
-	if globalFinancialCollector != nil {
-		globalFinancialCollector.RecordTrade(playerID, goodSymbol, buyPrice, sellPrice, quantity)
-	}
-}

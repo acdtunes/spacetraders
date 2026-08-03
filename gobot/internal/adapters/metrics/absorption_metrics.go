@@ -115,12 +115,6 @@ func SetGlobalAbsorptionCollector(collector *AbsorptionMetricsCollector) {
 	globalAbsorptionCollector = collector
 }
 
-// GetGlobalAbsorptionCollector returns the global absorption burn-in collector.
-// Returns nil if metrics are not enabled.
-func GetGlobalAbsorptionCollector() *AbsorptionMetricsCollector {
-	return globalAbsorptionCollector
-}
-
 // RecordAbsorptionCapBinding records one accepted-plan cap-binding classification
 // globally. No-op when metrics are disabled, so a metrics miss never
 // touches the trade path (RULINGS #4).

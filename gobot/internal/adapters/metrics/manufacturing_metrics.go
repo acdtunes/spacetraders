@@ -668,33 +668,6 @@ func SetGlobalManufacturingCollector(collector *ManufacturingMetricsCollector) {
 	globalManufacturingCollector = collector
 }
 
-// GetGlobalManufacturingCollector returns the global manufacturing metrics collector
-// Returns nil if metrics are not enabled
-func GetGlobalManufacturingCollector() *ManufacturingMetricsCollector {
-	return globalManufacturingCollector
-}
-
-// RecordManufacturingPipelineCompletion records a pipeline completion event globally
-func RecordManufacturingPipelineCompletion(playerID int, productGood, status string, duration time.Duration, profit int) {
-	if globalManufacturingCollector != nil {
-		globalManufacturingCollector.RecordPipelineCompletion(playerID, productGood, status, duration, profit)
-	}
-}
-
-// RecordManufacturingTaskCompletion records a task completion event globally
-func RecordManufacturingTaskCompletion(playerID int, taskType, status string, duration time.Duration) {
-	if globalManufacturingCollector != nil {
-		globalManufacturingCollector.RecordTaskCompletion(playerID, taskType, status, duration)
-	}
-}
-
-// RecordManufacturingTaskRetry records a task retry event globally
-func RecordManufacturingTaskRetry(playerID int, taskType string) {
-	if globalManufacturingCollector != nil {
-		globalManufacturingCollector.RecordTaskRetry(playerID, taskType)
-	}
-}
-
 // RecordManufacturingSupplyTransition records a supply level change event globally
 func RecordManufacturingSupplyTransition(playerID int, good, fromLevel, toLevel string) {
 	if globalManufacturingCollector != nil {
@@ -706,26 +679,5 @@ func RecordManufacturingSupplyTransition(playerID int, good, fromLevel, toLevel 
 func RecordManufacturingFactoryCycle(playerID int, factorySymbol, outputGood string) {
 	if globalManufacturingCollector != nil {
 		globalManufacturingCollector.RecordFactoryCycle(playerID, factorySymbol, outputGood)
-	}
-}
-
-// RecordManufacturingCost records a manufacturing cost globally
-func RecordManufacturingCost(playerID int, costType string, amount int) {
-	if globalManufacturingCollector != nil {
-		globalManufacturingCollector.RecordCost(playerID, costType, amount)
-	}
-}
-
-// RecordManufacturingRevenue records manufacturing revenue globally
-func RecordManufacturingRevenue(playerID int, amount int) {
-	if globalManufacturingCollector != nil {
-		globalManufacturingCollector.RecordRevenue(playerID, amount)
-	}
-}
-
-// RecordManufacturingTaskAssignment records a task assignment event globally
-func RecordManufacturingTaskAssignment(playerID int, taskType string) {
-	if globalManufacturingCollector != nil {
-		globalManufacturingCollector.RecordTaskAssignment(playerID, taskType)
 	}
 }
