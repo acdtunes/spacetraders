@@ -4,14 +4,14 @@ import (
 	"context"
 	"sync"
 
-	expansionCmd "github.com/andrescamacho/spacetraders-go/internal/application/expansion/commands"
+	"github.com/andrescamacho/spacetraders-go/internal/application/parkedsensing"
 )
 
 // ExplorerOffGateBridge is the cross-coordinator seam between slice B's off-gate demand
 // (raised in the FRONTIER expansion coordinator) and slice C's explorer BUY (in the FLEET autosizer).
 // One object plays two ports — the contract_delivery_bridge idiom:
 //
-//   - expansionCmd.OffGateDemandSink (WRITE): the frontier coordinator mirrors each tick's off-gate
+//   - parkedsensing.OffGateDemandSink (WRITE): the frontier coordinator mirrors each tick's off-gate
 //     signal here (emitOffGateDemand);
 //   - fleetCmd.OffGateDemandSource (READ, satisfied structurally): the autosizer's
 //     ExplorerDemandProvider reads it to gate the buy on BOTH arming AND live off-gate demand.
@@ -24,21 +24,21 @@ import (
 // Written on the frontier goroutine and read on the autosizer's, so access is mutex-guarded.
 type ExplorerOffGateBridge struct {
 	mu     sync.Mutex
-	latest map[int]expansionCmd.OffGateDemandSignal
+	latest map[int]parkedsensing.OffGateDemandSignal
 	seen   map[int]bool
 }
 
 // NewExplorerOffGateBridge builds an empty bridge (reads unreadable until the first frontier emit).
 func NewExplorerOffGateBridge() *ExplorerOffGateBridge {
 	return &ExplorerOffGateBridge{
-		latest: make(map[int]expansionCmd.OffGateDemandSignal),
+		latest: make(map[int]parkedsensing.OffGateDemandSignal),
 		seen:   make(map[int]bool),
 	}
 }
 
-// EmitOffGateDemand implements expansionCmd.OffGateDemandSink — the frontier coordinator's per-tick
+// EmitOffGateDemand implements parkedsensing.OffGateDemandSink — the frontier coordinator's per-tick
 // mirror of the off-gate signal (write side).
-func (b *ExplorerOffGateBridge) EmitOffGateDemand(playerID int, signal expansionCmd.OffGateDemandSignal) {
+func (b *ExplorerOffGateBridge) EmitOffGateDemand(playerID int, signal parkedsensing.OffGateDemandSignal) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.latest[playerID] = signal

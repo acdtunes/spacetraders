@@ -1,8 +1,7 @@
-package commands
+package parkedsensing
 
 import (
 	"context"
-	"sync"
 )
 
 // This file holds the slice-B OFF-GATE DEMAND SIGNAL: the frontier coordinator's
@@ -74,50 +73,4 @@ type OffGateDemandSignal struct {
 	Reason        string
 	HasTarget     bool
 	Target        OffGateTarget
-}
-
-// offGateDemandTracker holds the coordinator's ONLY cross-tick state for this slice: the
-// per-player streak of consecutive cycles the gate-reachable expansion queue has been empty
-// (the trigger-(a) debounce), and the latest computed signal (exposed to slice C). Every
-// other coordinator decision derives fresh from repositories each pass; this streak is the
-// analogue of Handle's errMon, kept here (keyed by player) because the queue it debounces is
-// built inside ReconcileOnce, not visible to Handle. Guarded by a mutex — the handler is a
-// registered singleton serving every player's ticks.
-type offGateDemandTracker struct {
-	mu          sync.Mutex
-	emptyStreak map[int]int
-	latest      map[int]OffGateDemandSignal
-}
-
-func newOffGateDemandTracker() *offGateDemandTracker {
-	return &offGateDemandTracker{
-		emptyStreak: make(map[int]int),
-		latest:      make(map[int]OffGateDemandSignal),
-	}
-}
-
-// advanceQueueStreak increments the empty-queue streak when the queue is empty this cycle,
-// resets it to 0 when the queue has entries (a new ring opened), and returns the result.
-func (t *offGateDemandTracker) advanceQueueStreak(playerID int, queueEmpty bool) int {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if !queueEmpty {
-		t.emptyStreak[playerID] = 0
-		return 0
-	}
-	t.emptyStreak[playerID]++
-	return t.emptyStreak[playerID]
-}
-
-func (t *offGateDemandTracker) setLatest(playerID int, signal OffGateDemandSignal) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.latest[playerID] = signal
-}
-
-func (t *offGateDemandTracker) get(playerID int) (OffGateDemandSignal, bool) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	signal, ok := t.latest[playerID]
-	return signal, ok
 }

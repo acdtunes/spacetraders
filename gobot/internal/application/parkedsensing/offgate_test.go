@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-
-	expansionCmd "github.com/andrescamacho/spacetraders-go/internal/application/expansion/commands"
 )
 
 // offgate_test.go pins the warp-expansion slice.
@@ -22,35 +20,35 @@ import (
 // --- fakes -------------------------------------------------------------------
 
 type fakeOffGateSelector struct {
-	target expansionCmd.OffGateTarget
+	target OffGateTarget
 	found  bool
 	err    error
 	calls  int
-	params expansionCmd.OffGateSelectionParams
+	params OffGateSelectionParams
 }
 
-func (f *fakeOffGateSelector) SelectTarget(_ context.Context, _ int, p expansionCmd.OffGateSelectionParams) (expansionCmd.OffGateTarget, bool, error) {
+func (f *fakeOffGateSelector) SelectTarget(_ context.Context, _ int, p OffGateSelectionParams) (OffGateTarget, bool, error) {
 	f.calls++
 	f.params = p
 	if f.err != nil {
 		// Adversarial: a usable target alongside the error, so a driver that leaks the error
 		// dispatches a warp and the test catches it rather than merely misreporting.
-		return expansionCmd.OffGateTarget{SystemSymbol: "X1-GHOST"}, true, f.err
+		return OffGateTarget{SystemSymbol: "X1-GHOST"}, true, f.err
 	}
 	return f.target, f.found, nil
 }
 
 type fakeDemandSink struct {
-	emitted []expansionCmd.OffGateDemandSignal
+	emitted []OffGateDemandSignal
 }
 
-func (f *fakeDemandSink) EmitOffGateDemand(_ int, s expansionCmd.OffGateDemandSignal) {
+func (f *fakeDemandSink) EmitOffGateDemand(_ int, s OffGateDemandSignal) {
 	f.emitted = append(f.emitted, s)
 }
 
-func (f *fakeDemandSink) last() (expansionCmd.OffGateDemandSignal, bool) {
+func (f *fakeDemandSink) last() (OffGateDemandSignal, bool) {
 	if len(f.emitted) == 0 {
-		return expansionCmd.OffGateDemandSignal{}, false
+		return OffGateDemandSignal{}, false
 	}
 	return f.emitted[len(f.emitted)-1], true
 }
@@ -78,7 +76,7 @@ type fakeWarpDispatcher struct {
 	err   error
 }
 
-func (f *fakeWarpDispatcher) DispatchExplorer(_ context.Context, _ int, ship string, t expansionCmd.OffGateTarget) error {
+func (f *fakeWarpDispatcher) DispatchExplorer(_ context.Context, _ int, ship string, t OffGateTarget) error {
 	f.calls = append(f.calls, warpCall{ship, t.SystemSymbol})
 	return f.err
 }
@@ -109,7 +107,7 @@ func sealedPocket() *offGateHarness {
 		expandHarness: h,
 		selector: &fakeOffGateSelector{
 			found: true,
-			target: expansionCmd.OffGateTarget{
+			target: OffGateTarget{
 				SystemSymbol: "X1-FARAWAY", FromSystem: "X1-HOME", WarpFuelCost: 240, Value: 2,
 			},
 		},

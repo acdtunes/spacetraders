@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	expansionCmd "github.com/andrescamacho/spacetraders-go/internal/application/expansion/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 )
 
@@ -248,7 +247,7 @@ func TestAdvanceExpansion_SpendPaused_RetractsThroughAPartiallyWiredSlice(t *tes
 	if !ok {
 		t.Fatal("no retraction written through a partially wired slice — the sink is all a retraction needs, and gating it on the other three ports is how a latched demand survives a pause")
 	}
-	if latest != (expansionCmd.OffGateDemandSignal{}) {
+	if latest != (OffGateDemandSignal{}) {
 		t.Fatalf("retraction wrote %+v, want the zero signal", latest)
 	}
 }

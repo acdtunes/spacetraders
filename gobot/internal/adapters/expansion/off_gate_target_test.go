@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	expansionCmd "github.com/andrescamacho/spacetraders-go/internal/application/expansion/commands"
+	"github.com/andrescamacho/spacetraders-go/internal/application/parkedsensing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
@@ -31,8 +31,8 @@ func (f *fakeAdjacency) Adjacency(context.Context) (map[string][]system.GateEdge
 	return f.adj, f.err
 }
 
-func selectParams() expansionCmd.OffGateSelectionParams {
-	return expansionCmd.OffGateSelectionParams{WarpRangeFuel: 100, ValueWeight: 10, FuelWeight: 1}
+func selectParams() parkedsensing.OffGateSelectionParams {
+	return parkedsensing.OffGateSelectionParams{WarpRangeFuel: 100, ValueWeight: 10, FuelWeight: 1}
 }
 
 // TestOffGateSelect_EnumeratesOffGateSystemsOnly pins the off-gate enumeration
@@ -206,7 +206,7 @@ func TestOffGateSelect_AnAdjacencyKeyStaysOnNetworkBehindItsOwnUnbuiltGates(t *t
 // still selected, and when EVERY off-gate system is out of range no target is found.
 func TestOffGateSelect_ExcludesOutOfWarpRange(t *testing.T) {
 	gate := &fakeAdjacency{adj: map[string][]system.GateEdge{"X1-EDGE": {{ConnectedSystem: "X1-NBR"}}}}
-	params := expansionCmd.OffGateSelectionParams{WarpRangeFuel: 6, ValueWeight: 10, FuelWeight: 1}
+	params := parkedsensing.OffGateSelectionParams{WarpRangeFuel: 6, ValueWeight: 10, FuelWeight: 1}
 
 	t.Run("out-of-range candidate excluded, in-range selected", func(t *testing.T) {
 		universe := &fakeUniverseProvider{systems: []system.SystemAPIData{

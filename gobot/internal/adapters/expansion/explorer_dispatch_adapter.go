@@ -6,12 +6,12 @@ import (
 	"sync"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	expansionCmd "github.com/andrescamacho/spacetraders-go/internal/application/expansion/commands"
+	"github.com/andrescamacho/spacetraders-go/internal/application/parkedsensing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// This adapter implements expansionCmd.ExplorerDispatchPort (slice C) over slice-A's warp
+// This adapter implements parkedsensing.ExplorerDispatchPort (slice C) over slice-A's warp
 // executor. The frontier coordinator decides WHO to warp WHERE (unit-tested at the port); this adapter
 // performs the warp.
 //
@@ -60,10 +60,10 @@ func NewExplorerWarpDispatcher(routes warpRouteRunner, ships shipBySymbolReader,
 	return &ExplorerWarpDispatcher{routes: routes, ships: ships, arrivals: arrivals, inFlight: make(map[string]bool)}
 }
 
-// DispatchExplorer implements expansionCmd.ExplorerDispatchPort. It loads the hull, resolves a landing
+// DispatchExplorer implements parkedsensing.ExplorerDispatchPort. It loads the hull, resolves a landing
 // waypoint in the off-gate system, and warps there in the background. Returns quickly; a warp failure
 // is logged in the goroutine (non-fatal).
-func (d *ExplorerWarpDispatcher) DispatchExplorer(ctx context.Context, playerID int, shipSymbol string, target expansionCmd.OffGateTarget) error {
+func (d *ExplorerWarpDispatcher) DispatchExplorer(ctx context.Context, playerID int, shipSymbol string, target parkedsensing.OffGateTarget) error {
 	pid, err := shared.NewPlayerID(playerID)
 	if err != nil {
 		return err
@@ -110,7 +110,7 @@ func (d *ExplorerWarpDispatcher) DispatchExplorer(ctx context.Context, playerID 
 
 // arrivalWaypoint resolves a concrete landing waypoint in the off-gate system, preferring a fuel
 // station (so the explorer can top off to warp onward). Fails when the system's waypoints are unknown.
-func (d *ExplorerWarpDispatcher) arrivalWaypoint(ctx context.Context, target expansionCmd.OffGateTarget, pid shared.PlayerID) (*shared.Waypoint, error) {
+func (d *ExplorerWarpDispatcher) arrivalWaypoint(ctx context.Context, target parkedsensing.OffGateTarget, pid shared.PlayerID) (*shared.Waypoint, error) {
 	waypoints, err := d.arrivals.ChartWaypoints(ctx, target.SystemSymbol, pid)
 	if err != nil {
 		return nil, fmt.Errorf("cannot resolve arrival waypoint in off-gate system %s: %w", target.SystemSymbol, err)

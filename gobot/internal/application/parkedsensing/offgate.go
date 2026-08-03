@@ -5,8 +5,6 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/logging"
-
-	expansionCmd "github.com/andrescamacho/spacetraders-go/internal/application/expansion/commands"
 )
 
 // offgate.go is the LIVE driver for off-gate warp expansion.
@@ -49,7 +47,7 @@ import (
 // scoring — exploration value against warp fuel from the nearest gate-connected system, bounded by
 // warp range, with a symbol tiebreak for stability — is used exactly as written.
 type OffGateSelector interface {
-	SelectTarget(ctx context.Context, playerID int, params expansionCmd.OffGateSelectionParams) (expansionCmd.OffGateTarget, bool, error)
+	SelectTarget(ctx context.Context, playerID int, params OffGateSelectionParams) (OffGateTarget, bool, error)
 }
 
 // OffGateDemandSink is the write side of the demand-to-buy bridge — the seam the fleet autosizer's
@@ -61,7 +59,7 @@ type OffGateSelector interface {
 // permanently blind on a fleet that never triggers, which is indistinguishable from the retirement
 // this file exists to undo.
 type OffGateDemandSink interface {
-	EmitOffGateDemand(playerID int, signal expansionCmd.OffGateDemandSignal)
+	EmitOffGateDemand(playerID int, signal OffGateDemandSignal)
 }
 
 // ExplorerFinder returns an idle, warp-capable, explorer-dedicated hull, if the fleet holds one.
@@ -80,7 +78,7 @@ type ExplorerFinder interface {
 // ADAPTER rather than to this interface — a replacement must be checked for them, never assumed
 // from its name.
 type ExplorerDispatcher interface {
-	DispatchExplorer(ctx context.Context, playerID int, shipSymbol string, target expansionCmd.OffGateTarget) error
+	DispatchExplorer(ctx context.Context, playerID int, shipSymbol string, target OffGateTarget) error
 }
 
 // OffGatePorts are the off-gate slice's collaborators. All four are wired in the daemon; a nil one
@@ -137,7 +135,7 @@ func retractOffGateDemand(p ExpandPorts, playerID int) {
 	if p.OffGate.Demand == nil {
 		return
 	}
-	p.OffGate.Demand.EmitOffGateDemand(playerID, expansionCmd.OffGateDemandSignal{})
+	p.OffGate.Demand.EmitOffGateDemand(playerID, OffGateDemandSignal{})
 }
 
 // advanceOffGate is the off-gate slice: one call from AdvanceExpansion, after the gate-based passes
@@ -165,17 +163,17 @@ func advanceOffGate(
 	// written to the bridge rather than skipped, so the autosizer's read is readable-and-zero
 	// instead of unreadable-and-fail-closed.
 	if len(targets) == 0 || gateReachable {
-		off.Demand.EmitOffGateDemand(playerID, expansionCmd.OffGateDemandSignal{})
+		off.Demand.EmitOffGateDemand(playerID, OffGateDemandSignal{})
 		return
 	}
 
-	signal := expansionCmd.OffGateDemandSignal{
+	signal := OffGateDemandSignal{
 		Demanded:      true,
 		ExplorerCount: 1, // hard cap of one; ExplorerDemandProvider clamps its want to this, and that clamp is the ONLY enforcement — no class ceiling backs it up
 		Reason:        fmt.Sprintf("gate-reachable frontier exhausted (%d target(s) outstanding, none within %d gate hops)", len(targets), MaxWalkRings),
 	}
 
-	target, found, err := off.Select.SelectTarget(ctx, playerID, expansionCmd.OffGateSelectionParams{
+	target, found, err := off.Select.SelectTarget(ctx, playerID, OffGateSelectionParams{
 		WarpRangeFuel: offGateWarpRangeFuel,
 		ValueWeight:   offGateValueWeight,
 		FuelWeight:    offGateFuelWeight,
@@ -215,7 +213,7 @@ func dispatchExplorer(
 	ctx context.Context,
 	off OffGatePorts,
 	playerID int,
-	target expansionCmd.OffGateTarget,
+	target OffGateTarget,
 	rep *ExpandReport,
 ) {
 	explorer, found, err := off.Explorer.IdleExplorer(ctx, playerID)

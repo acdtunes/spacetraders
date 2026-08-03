@@ -6,7 +6,7 @@ import (
 	"math"
 	"strings"
 
-	expansionCmd "github.com/andrescamacho/spacetraders-go/internal/application/expansion/commands"
+	"github.com/andrescamacho/spacetraders-go/internal/application/parkedsensing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
@@ -56,23 +56,23 @@ func NewOffGateWarpTargetSelector(universe UniverseSystemsProvider, gateGraph ga
 // SelectTarget returns the nearest-highest-value off-gate system within warp range, or
 // found=false when no reachable off-gate candidate exists (empty roster, no gate-connected
 // frontier edge to warp from, or every off-gate system out of range).
-func (s *OffGateWarpTargetSelector) SelectTarget(ctx context.Context, playerID int, params expansionCmd.OffGateSelectionParams) (expansionCmd.OffGateTarget, bool, error) {
+func (s *OffGateWarpTargetSelector) SelectTarget(ctx context.Context, playerID int, params parkedsensing.OffGateSelectionParams) (parkedsensing.OffGateTarget, bool, error) {
 	roster, err := s.universe.AllSystems(ctx, playerID)
 	if err != nil {
-		return expansionCmd.OffGateTarget{}, false, fmt.Errorf("universe roster unreadable: %w", err)
+		return parkedsensing.OffGateTarget{}, false, fmt.Errorf("universe roster unreadable: %w", err)
 	}
 	adjacency, err := s.gateGraph.Adjacency(ctx)
 	if err != nil {
-		return expansionCmd.OffGateTarget{}, false, fmt.Errorf("gate adjacency unreadable: %w", err)
+		return parkedsensing.OffGateTarget{}, false, fmt.Errorf("gate adjacency unreadable: %w", err)
 	}
 
 	gateConnected := gateConnectedSet(adjacency)
 	edges := frontierEdges(roster, gateConnected)
 	if len(edges) == 0 {
-		return expansionCmd.OffGateTarget{}, false, nil // no gate-connected frontier to warp FROM
+		return parkedsensing.OffGateTarget{}, false, nil // no gate-connected frontier to warp FROM
 	}
 
-	best := expansionCmd.OffGateTarget{}
+	best := parkedsensing.OffGateTarget{}
 	bestScore := 0
 	found := false
 	for _, candidate := range roster {
@@ -85,7 +85,7 @@ func (s *OffGateWarpTargetSelector) SelectTarget(ctx context.Context, playerID i
 		}
 		value := explorationValue(candidate)
 		score := params.ValueWeight*value - params.FuelWeight*fuel
-		target := expansionCmd.OffGateTarget{
+		target := parkedsensing.OffGateTarget{
 			SystemSymbol: candidate.Symbol,
 			X:            candidate.X,
 			Y:            candidate.Y,
@@ -206,7 +206,7 @@ func isPromisingSystemType(systemType string) bool {
 
 // betterOffGateTarget breaks the max-score comparison with a deterministic symbol tiebreak so
 // selection is stable across ticks (a jittering pick would thrash the demand signal).
-func betterOffGateTarget(score int, candidate expansionCmd.OffGateTarget, bestScore int, best expansionCmd.OffGateTarget) bool {
+func betterOffGateTarget(score int, candidate parkedsensing.OffGateTarget, bestScore int, best parkedsensing.OffGateTarget) bool {
 	if score != bestScore {
 		return score > bestScore
 	}
