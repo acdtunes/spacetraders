@@ -117,12 +117,6 @@ func OperationContextFromContext(ctx context.Context) *OperationContext {
 	return nil
 }
 
-// WithSkipMarketRefresh returns a context that signals to skip market refresh after cargo transactions.
-// This optimization reduces API calls for operations that manage their own market scanning.
-func WithSkipMarketRefresh(ctx context.Context) context.Context {
-	return context.WithValue(ctx, skipMarketRefreshKey, true)
-}
-
 func SkipMarketRefreshFromContext(ctx context.Context) bool {
 	if skip, ok := ctx.Value(skipMarketRefreshKey).(bool); ok {
 		return skip

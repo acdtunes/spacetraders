@@ -211,18 +211,6 @@ func NewManufacturingTask(
 	}
 }
 
-// NewLiquidationTask creates a task to sell orphaned cargo
-func NewLiquidationTask(playerID int, shipSymbol string, good string, quantity int, targetMarket string) *ManufacturingTask {
-	task := NewManufacturingTask(TaskTypeLiquidate, good, "", playerID)
-	task.targetMarket = targetMarket
-	task.quantity = quantity
-	task.assignedShip = shipSymbol
-	task.status = TaskStatusReady // Liquidation tasks are immediately ready
-	task.priority = PriorityLiquidate
-	task.readyAt = nowPtr()
-	return task
-}
-
 // NewAcquireDeliverTask creates an atomic task to buy from export market AND deliver to factory.
 // Atomic so the same ship does both operations.
 func NewAcquireDeliverTask(pipelineID string, playerID int, good string, sourceMarket string, factorySymbol string, dependsOn []string) *ManufacturingTask {

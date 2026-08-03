@@ -20,29 +20,6 @@ func (e *ErrOperationNotFound) Error() string {
 	return fmt.Sprintf("storage operation not found: %s", e.OperationID)
 }
 
-// ErrNoStorageShipsAvailable indicates no storage ships have space
-type ErrNoStorageShipsAvailable struct {
-	OperationID string
-	MinSpace    int
-}
-
-func (e *ErrNoStorageShipsAvailable) Error() string {
-	return fmt.Sprintf("no storage ships with %d space available for operation %s", e.MinSpace, e.OperationID)
-}
-
-// ErrInsufficientStorageCargo indicates not enough cargo is available
-type ErrInsufficientStorageCargo struct {
-	OperationID string
-	GoodSymbol  string
-	Requested   int
-	Available   int
-}
-
-func (e *ErrInsufficientStorageCargo) Error() string {
-	return fmt.Sprintf("insufficient cargo for operation %s: need %d %s, have %d available",
-		e.OperationID, e.Requested, e.GoodSymbol, e.Available)
-}
-
 // ErrStorageShipAlreadyRegistered indicates ship is already in coordinator
 type ErrStorageShipAlreadyRegistered struct {
 	ShipSymbol string
@@ -75,15 +52,4 @@ type ErrWaitTimeout struct {
 
 func (e *ErrWaitTimeout) Error() string {
 	return fmt.Sprintf("cargo wait timed out for operation %s, good %s", e.OperationID, e.GoodSymbol)
-}
-
-// ErrInvalidOperationState indicates operation is in wrong state for action
-type ErrInvalidOperationState struct {
-	OperationID   string
-	CurrentStatus OperationStatus
-	Action        string
-}
-
-func (e *ErrInvalidOperationState) Error() string {
-	return fmt.Sprintf("cannot %s operation %s in %s state", e.Action, e.OperationID, e.CurrentStatus)
 }

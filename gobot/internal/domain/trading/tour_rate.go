@@ -98,12 +98,6 @@ type tradeKey struct{ tour, good string }
 // legCounts decides whether one leg's money counts toward a group's net.
 type legCounts func(TourLegTelemetry) bool
 
-// countEveryLeg is the pre-matching rule: every leg's money counts, whether or not the window holds
-// its other half. NOTHING USES IT — MedianTourRate was the last caller and has since moved onto
-// matchedTradesOnly, which is now the package's only netting rule. It survives only as the named
-// statement of the rule the matching fix replaced.
-func countEveryLeg(TourLegTelemetry) bool { return true }
-
 // matchedTradesOnly returns a legCounts admitting only legs whose (tour, good) trade has realized
 // units on BOTH sides inside these rows.
 //

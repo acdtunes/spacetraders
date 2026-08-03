@@ -46,7 +46,6 @@ var knownUnregisteredExceptions = map[string]string{
 	// players.metadata.headquarters, so "nothing dispatches it" meant the key was never written
 	// and the parked-sensing cutover failed every 30s, killing all frontier expansion. It is now
 	// registered in main.go and dispatched by the daemon boot hook, so the entry is gone.
-	"RegisterPlayerCommand":   "dispatched via a direct handler.Handle() call from the CLI (internal/adapters/cli/player.go), bypassing the mediator by design",
 	"CargoTransactionCommand": "dispatched via a direct handler.Handle() call from SellCargoHandler/PurchaseCargoHandler as an internal shared-handler composition (internal/application/ship/commands/cargo/), bypassing the mediator by design",
 }
 

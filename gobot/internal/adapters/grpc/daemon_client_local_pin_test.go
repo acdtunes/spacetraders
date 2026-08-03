@@ -192,10 +192,3 @@ func TestLocalClientStartContainer_UnknownKindFails(t *testing.T) {
 
 	require.ErrorIs(t, err, daemon.ErrUnknownContainerKind)
 }
-
-func TestGRPCClientGenericContainerMethods_ReportNotImplemented(t *testing.T) {
-	client := &DaemonClientGRPC{}
-
-	require.Error(t, client.PersistContainer(context.Background(), daemon.ContainerKindContractWorkflow, "x-1", 1, nil))
-	require.Error(t, client.StartContainer(context.Background(), daemon.ContainerKindContractWorkflow, "x-1"))
-}

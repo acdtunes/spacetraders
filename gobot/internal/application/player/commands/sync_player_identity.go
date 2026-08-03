@@ -14,60 +14,6 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// RegisterPlayerCommand represents a command to register a new player
-type RegisterPlayerCommand struct {
-	AgentSymbol string
-	Token       string                 // JWT token from SpaceTraders API registration
-	Metadata    map[string]interface{} // Optional metadata (faction, headquarters, etc.)
-}
-
-// RegisterPlayerResponse represents the result of registering a player
-type RegisterPlayerResponse struct {
-	Player *player.Player
-}
-
-// RegisterPlayerHandler handles the RegisterPlayer command
-type RegisterPlayerHandler struct {
-	playerRepo player.PlayerRepository
-}
-
-// NewRegisterPlayerHandler creates a new RegisterPlayerHandler
-func NewRegisterPlayerHandler(playerRepo player.PlayerRepository) *RegisterPlayerHandler {
-	return &RegisterPlayerHandler{
-		playerRepo: playerRepo,
-	}
-}
-
-// Handle executes the RegisterPlayer command
-func (h *RegisterPlayerHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
-	cmd, ok := request.(*RegisterPlayerCommand)
-	if !ok {
-		return nil, fmt.Errorf("invalid request type: expected *RegisterPlayerCommand")
-	}
-
-	if cmd.AgentSymbol == "" {
-		return nil, fmt.Errorf("agent_symbol is required")
-	}
-	if cmd.Token == "" {
-		return nil, fmt.Errorf("token is required")
-	}
-
-	player := &player.Player{
-		AgentSymbol: cmd.AgentSymbol,
-		Token:       cmd.Token,
-		Metadata:    cmd.Metadata,
-		Credits:     0, // Will be synced from API later
-	}
-
-	if err := h.playerRepo.Add(ctx, player); err != nil {
-		return nil, fmt.Errorf("failed to save player: %w", err)
-	}
-
-	return &RegisterPlayerResponse{
-		Player: player,
-	}, nil
-}
-
 // SyncPlayerCommand represents a command to sync player data from API
 type SyncPlayerCommand struct {
 	PlayerID int

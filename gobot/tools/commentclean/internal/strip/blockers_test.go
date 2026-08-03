@@ -1,7 +1,6 @@
 package strip
 
 import (
-	"strings"
 	"testing"
 )
 
@@ -453,15 +452,4 @@ func TestBlockerFixturesAreReal(t *testing.T) {
 			}
 		})
 	}
-}
-
-// commentOf strips a fixture line's indentation, so a fixture is the comment
-// node text ProcessFile actually hands the rules -- never the raw source line.
-func commentOf(t *testing.T, file string, line int, raw string) string {
-	t.Helper()
-	i := strings.Index(raw, "//")
-	if i < 0 {
-		t.Fatalf("%s:%d is not a // comment: %q", file, line, raw)
-	}
-	return raw[i:]
 }
